@@ -26,6 +26,10 @@ id   = "aliyun/deepseek-v4-flash"
 name = "aliyun/glm-5.1"
 id   = "aliyun/glm-5.1"
 
+[provider.Cambricon.models."qwen3.7-max"]
+name = "aliyun/qwen3.7-max"
+id   = "aliyun/qwen3.7-max"
+
 # ── Agent ────────────────────────────────────────────────────────────────
 
 [agent.build]
