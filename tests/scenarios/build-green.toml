@@ -1,0 +1,20 @@
+[scenario]
+name = "build-green"
+agent = "build"
+phase = "green"
+pure = false
+timeout = 300
+
+[user]
+message = "Fix the bug in src/utils.js where calculateTotal returns NaN for empty arrays."
+
+[fixture]
+project = "todo-app"
+
+[expected]
+delegates_task = true
+direct_edit = false
+verifies_after = true
+
+[assertions]
+required = ["assert_delegates", "assert_no_direct_edit", "assert_verifies", "assert_no_read_abuse"]

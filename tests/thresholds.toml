@@ -1,0 +1,20 @@
+# Prompt evaluation thresholds
+# Phase 1: only build is active
+
+[build]
+delegation_rate = { min = 1.0 }
+verification_rate = { min = 0.5 }
+read_abuse_events = { max = 0 }
+
+[general]
+pre_verification_rate = { min = 0.8 }
+self_verification_rate = { min = 0.5 }
+
+[explore]
+# (empty for now)
+
+[spider]
+# (empty for now)
+
+[scout]
+# (empty for now)

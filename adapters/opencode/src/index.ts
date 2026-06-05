@@ -1,6 +1,10 @@
 /**
  * ZooKeeper — OpenCode plugin entry point.
- * Tool deny-listing + prompt injection via a single `config` hook.
+ * Prompt injection via a single `config` hook.
+ *
+ * Tool deny-listing is a single source of truth defined in `config.toml`,
+ * compiled by `install.py` into `~/.config/opencode/opencode.json`.
+ * The plugin only injects prompt files at runtime — it does NOT set permissions.
  *
  * TODO: Add Claude Code adapter (PreToolUse Python hook + CLAUDE.md).
  * TODO: Add hook-based deny for runtime interception.
@@ -8,7 +12,6 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BLOCKED } from "./blocked-tools";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CORE_DIR = resolve(__dirname, "../../../core");
@@ -26,7 +29,7 @@ function loadPrompt(name: string): string | undefined {
 }
 
 /**
- * @param input - OpenCode plugin input (unused in current implementation).
+ * @param input - OpenCode plugin input (unused).
  * @returns Plugin hooks object.
  */
 export default async function zookeeper(input: any) {
@@ -38,16 +41,6 @@ export default async function zookeeper(input: any) {
 
         const prompt = loadPrompt(name);
         if (prompt) (agent as any).prompt = prompt;
-
-        // Deny listed tools so the LLM cannot see or invoke them
-        const blocked = BLOCKED[name] ?? [];
-        if (blocked.length > 0) {
-          const permission = { ...((agent as any).permission ?? {}) };
-          for (const tool of blocked) {
-            permission[tool] = "deny";
-          }
-          (agent as any).permission = permission;
-        }
       }
     },
   };

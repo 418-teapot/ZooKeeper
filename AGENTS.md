@@ -2,9 +2,9 @@
 
 ## 项目概览
 
-ZooKeeper 是一个 OpenCode 编排器插件，通过 SDK deny + prompt 注入确保编排器不越权调用工具。
+ZooKeeper 是一个 OpenCode 编排器插件，通过静态配置权限 + prompt 注入确保编排器不越权调用工具。
 
-核心机制：插件在 `config` hook 里就地修改每个 agent 的 `permission`（deny 工具）和 `prompt`（从 `.md` 文件注入）。
+核心机制：`config.toml` 中声明各 agent 的 `permission` deny 列表（**单一事实来源**），install.py 编译后写入 OpenCode 配置；插件在 `config` hook 里注入 `core/prompts/*.md` 作为各 agent 的 prompt。
 
 ## 目录结构
 
@@ -15,6 +15,7 @@ config.toml             ← 用户可编辑的配置模板（{env:VAR} 占位符
 check.sh                ← 统一 lint/format 脚本
 core/prompts/*.md       ← 各 agent 的 prompt 文件（被插件动态注入）
 adapters/opencode/src/  ← OpenCode 插件 TS 代码
+tests/                  ← Prompt 评估测试框架（Phase 1: build.md）
 docs/                   ← 设计文档和调研报告
 ```
 
@@ -47,6 +48,14 @@ ruff format install.py
 npx biome check --write adapters/opencode/src/
 npx biome lint adapters/opencode/src/
 npx biome format --write adapters/opencode/src/
+
+# Prompt 评估测试
+python3 tests/runner.py --dry-run --agent build   # 干跑（不调用 LLM）
+python3 tests/runner.py --agent build             # 实际运行 build 场景
+python3 tests/runner.py --red                     # 仅 RED 基线阶段
+python3 tests/runner.py --green                   # GREEN + PRESSURE 阶段
+python3 tests/runner.py --pressure                # 仅 PRESSURE 场景
+python3 tests/runner.py --all                     # 全部场景
 ```
 
 ## 代码风格
@@ -58,18 +67,31 @@ npx biome format --write adapters/opencode/src/
 
 ## 插件工作原理
 
+OpenCode 支持两种互补的约束机制，ZooKeeper 各用其一：
+
+### 1. 工具 deny — 由 `config.toml` 定义（单一事实来源）
+
+每个 agent 的 `permission` 块中，通过 `<tool> = "deny"` 列出禁止工具。install.py 把这一段原样写入 `~/.config/opencode/opencode.json`，OpenCode 启动时从 agent 的工具定义列表中移除这些工具，LLM 根本看不到它们。
+
+```toml
+# 示例
+[agent.build.permission]
+grep = "deny"
+glob = "deny"
+```
+
+**为什么不用插件设 permission？** 插件的 `config` hook 在 OpenCode 已经构造好 agent 配置之后才执行，对已构造好的工具列表做运行时拦截更可靠，但会引入时序问题。静态配置在加载阶段就完成 deny，行为更可预测。
+
+**完整的 deny 配置见 `config.toml`**。需要新增禁止工具时，只改这一个文件，然后 `python3 install.py` 重新生成配置。
+
+### 2. Prompt 注入 — 由插件动态注入
+
 `adapters/opencode/src/index.ts` 是插件入口，导出 `config` hook：
 
 1. 遍历 config 中所有 agent
 2. 从 `core/prompts/{agent-name}.md` 加载 prompt 并注入到 `agent.prompt`
-3. 从 `blocked-tools.ts` 的 `BLOCKED` 字典读取工具 deny 列表，设置 `agent.permission[tool] = "deny"`
 
-工具 deny 是 SDK 级别：OpenCode 从 agent 的工具定义列表中移除这些工具，LLM 根本看不到它们。
-
-当前 deny 配置：
-- build: grep, glob, webfetch, websearch
-- spider: edit, write, bash
-- explore: edit, write
+prompt 文件在运行时动态加载，不需要 install.py。改 prompt 后**下一轮 opencode 调用**即可看到新行为（插件是每次 opencode run 重新加载的 .ts 文件）。
 
 ## 环境变量
 

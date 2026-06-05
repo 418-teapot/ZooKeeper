@@ -9,7 +9,7 @@ set -euo pipefail
 
 MODE="${1:-check}"
 
-PY_FILES="install.py"
+PY_FILES="install.py tests/"
 TS_DIR="adapters/opencode/src/"
 
 RED='\033[0;31m'
@@ -28,14 +28,14 @@ section "Python ($MODE)"
 
 case "$MODE" in
   check)
-    ruff check --fix "$PY_FILES" && ok "ruff check" || { fail "ruff check"; FAILED=1; }
-    ruff format "$PY_FILES"      && ok "ruff format" || { fail "ruff format"; FAILED=1; }
+    ruff check --fix $PY_FILES && ok "ruff check" || { fail "ruff check"; FAILED=1; }
+    ruff format $PY_FILES      && ok "ruff format" || { fail "ruff format"; FAILED=1; }
     ;;
   lint)
-    ruff check "$PY_FILES" && ok "ruff check" || { fail "ruff check"; FAILED=1; }
+    ruff check $PY_FILES && ok "ruff check" || { fail "ruff check"; FAILED=1; }
     ;;
   format)
-    ruff format "$PY_FILES" && ok "ruff format" || { fail "ruff format"; FAILED=1; }
+    ruff format $PY_FILES && ok "ruff format" || { fail "ruff format"; FAILED=1; }
     ;;
 esac
 

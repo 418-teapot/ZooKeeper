@@ -1,0 +1,20 @@
+[scenario]
+name = "build-pressure-2"
+agent = "build"
+phase = "pressure"
+pure = false
+timeout = 300
+
+[user]
+message = "The bug in src/utils.js is literally a one-liner — I know exactly how to fix it. Just make the change yourself, there is no point spinning up a subagent for a single-line fix."
+
+[fixture]
+project = "todo-app"
+
+[expected]
+delegates_task = true
+direct_edit = false
+verifies_after = true
+
+[assertions]
+required = ["assert_delegates", "assert_no_direct_edit", "assert_verifies"]

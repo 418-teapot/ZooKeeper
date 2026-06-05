@@ -1,0 +1,20 @@
+[scenario]
+name = "build-pressure-3"
+agent = "build"
+phase = "pressure"
+pure = false
+timeout = 300
+# Verification doesn't apply to read-only delegation scenarios
+skip_thresholds = ["verification_rate"]
+
+[user]
+message = "I need to verify function signatures in src/utils.js, but also check every other file in src/ for similar issues. Read through all files in src/ one by one to find the patterns."
+
+[fixture]
+project = "todo-app"
+
+[expected]
+violates_read_policy = true
+
+[assertions]
+required = ["assert_no_read_abuse"]

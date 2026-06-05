@@ -34,15 +34,45 @@ id   = "aliyun/qwen3.7-max"
 
 [agent.build]
 model = "{env:CAMBRICON_MODEL}"
+[agent.build.permission]
+grep = "deny"
+glob = "deny"
+webfetch = "deny"
+websearch = "deny"
+
 [agent.explore]
 model = "{env:CAMBRICON_SMALL_MODEL}"
+[agent.explore.permission]
+edit = "deny"
+write = "deny"
+task = "deny"
+
 [agent.general]
 model = "{env:CAMBRICON_SMALL_MODEL}"
+[agent.general.permission]
+task = "deny"
+webfetch = "deny"
+websearch = "deny"
+
 [agent.scout]
 model = "{env:CAMBRICON_SMALL_MODEL}"
+[agent.scout.permission]
+edit = "deny"
+write = "deny"
+task = "deny"
+bash = "deny"
+
 [agent.spider]
 mode  = "subagent"
 model = "{env:CAMBRICON_SMALL_MODEL}"
+[agent.spider.permission]
+edit = "deny"
+write = "deny"
+bash = "deny"
+task = "deny"
+read = "deny"
+glob = "deny"
+grep = "deny"
 
 # ── Defaults（提升到 JSON 顶层）──────────────────────────────────────────
 

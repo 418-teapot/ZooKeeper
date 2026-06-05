@@ -4,3 +4,4 @@ __pycache__/
 .env
 *.jsonl
 opencode.json
+tests/results/
