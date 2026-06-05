@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# ZooKeeper — Unified check/lint/format script for Python and TypeScript.
+#
+# Usage:
+#   ./check.sh           # check  (lint + format, auto-fix)
+#   ./check.sh lint      # lint   (check only, no auto-fix)
+#   ./check.sh format    # format (format only)
+set -euo pipefail
+
+MODE="${1:-check}"
+
+PY_FILES="install.py"
+TS_DIR="adapters/opencode/src/"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+section() { printf "\n${CYAN}━━━ %s ━━━${NC}\n" "$1"; }
+ok()      { printf "${GREEN}✓ %s${NC}\n" "$1"; }
+fail()    { printf "${RED}✖ %s${NC}\n" "$1"; }
+
+FAILED=0
+
+# ── Python ───────────────────────────────────────────────────────────────
+section "Python ($MODE)"
+
+case "$MODE" in
+  check)
+    ruff check --fix "$PY_FILES" && ok "ruff check" || { fail "ruff check"; FAILED=1; }
+    ruff format "$PY_FILES"      && ok "ruff format" || { fail "ruff format"; FAILED=1; }
+    ;;
+  lint)
+    ruff check "$PY_FILES" && ok "ruff check" || { fail "ruff check"; FAILED=1; }
+    ;;
+  format)
+    ruff format "$PY_FILES" && ok "ruff format" || { fail "ruff format"; FAILED=1; }
+    ;;
+esac
+
+# ── TypeScript ────────────────────────────────────────────────────────────
+section "TypeScript ($MODE)"
+
+case "$MODE" in
+  check)
+    npx biome check --write "$TS_DIR" && ok "biome check" || { fail "biome check"; FAILED=1; }
+    ;;
+  lint)
+    npx biome lint "$TS_DIR" && ok "biome lint" || { fail "biome lint"; FAILED=1; }
+    ;;
+  format)
+    npx biome format --write "$TS_DIR" && ok "biome format" || { fail "biome format"; FAILED=1; }
+    ;;
+esac
+
+# ── Result ───────────────────────────────────────────────────────────────
+if [ "$FAILED" -eq 0 ]; then
+  section "All passed"
+else
+  section "Some checks failed"
+  exit 1
+fi

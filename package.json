@@ -1,0 +1,11 @@
+{
+  "type": "module",
+  "scripts": {
+    "lint": "biome lint adapters/opencode/src/",
+    "format": "biome format --write adapters/opencode/src/",
+    "check": "biome check --write adapters/opencode/src/"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "latest"
+  }
+}
