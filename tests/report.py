@@ -5,6 +5,7 @@ Provides colored ANSI terminal output (via print_report) and JSON file
 serialization (via write_report) for structured test results.
 """
 
+import dataclasses
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -13,15 +14,12 @@ from pathlib import Path
 # ── Color constants ─────────────────────────────────────────────────────
 
 
-class _Colors:
-    """ANSI escape sequences for colored terminal output."""
-
-    GREEN = "\033[92m"
-    RED = "\033[91m"
-    CYAN = "\033[96m"
-    YELLOW = "\033[93m"
-    BOLD = "\033[1m"
-    NC = "\033[0m"  # No Color / reset
+_GREEN = "\033[92m"
+_RED = "\033[91m"
+_CYAN = "\033[96m"
+_YELLOW = "\033[93m"
+_BOLD = "\033[1m"
+_NC = "\033[0m"  # No Color / reset
 
 
 # ── Shared data types ───────────────────────────────────────────────────
@@ -99,7 +97,7 @@ def _color(text: str, color: str) -> str:
     Returns:
         The text wrapped with the color escape and reset code.
     """
-    return f"{color}{text}{_Colors.NC}"
+    return f"{color}{text}{_NC}"
 
 
 # ── Public API ──────────────────────────────────────────────────────────
@@ -117,9 +115,9 @@ def print_report(reports: list[ScenarioReport]) -> None:
     """
     sep = "━" * 55
     print()
-    print(_color(sep, _Colors.CYAN))
-    print(_color("  ZooKeeper Prompt Test Report", _Colors.CYAN))
-    print(_color(sep, _Colors.CYAN))
+    print(_color(sep, _CYAN))
+    print(_color("  ZooKeeper 提示词测试报告", _CYAN))
+    print(_color(sep, _CYAN))
     print()
 
     passed_count = 0
@@ -129,26 +127,26 @@ def print_report(reports: list[ScenarioReport]) -> None:
         # ── Scenario header ──────────────────────────────────────────
         label = f"{report.name} ({report.agent} / {report.phase})"
         if report.error:
-            label += f"  {_color('ERROR', _Colors.RED)}"
+            label += f"  {_color('错误', _RED)}"
         elif report.passed:
-            label += f"  {_color('PASSED', _Colors.GREEN)}"
+            label += f"  {_color('通过', _GREEN)}"
         else:
-            label += f"  {_color('FAILED', _Colors.RED)}"
-        print(_color(label, _Colors.BOLD))
+            label += f"  {_color('失败', _RED)}"
+        print(_color(label, _BOLD))
 
         # ── Error block ──────────────────────────────────────────────
         if report.error:
-            print(f"  {_color('✖', _Colors.RED)} {report.error}")
+            print(f"  {_color('✖', _RED)} {report.error}")
             print()
 
         # ── Assertions ───────────────────────────────────────────────
         for a in report.assertions:
-            icon = _color("✓", _Colors.GREEN) if a.passed else _color("✗", _Colors.RED)
+            icon = _color("✓", _GREEN) if a.passed else _color("✗", _RED)
             print(f"  {icon} {a.name}: {a.message}")
 
         # ── Thresholds ───────────────────────────────────────────────
         for t in report.thresholds:
-            icon = _color("✓", _Colors.GREEN) if t.passed else _color("✗", _Colors.RED)
+            icon = _color("✓", _GREEN) if t.passed else _color("✗", _RED)
             op = ">=" if t.direction == "min" else "<="
             detail = f"{t.metric} ({t.value} {op} {t.threshold})"
             print(f"  {icon} {detail}")
@@ -163,13 +161,13 @@ def print_report(reports: list[ScenarioReport]) -> None:
 
     # ── Summary line ─────────────────────────────────────────────────
     total = passed_count + failed_count
-    summary = f"  {passed_count} passed / {failed_count} failed / {total} total"
-    print(_color(sep, _Colors.CYAN))
+    summary = f"  通过 {passed_count} / 失败 {failed_count} / 共 {total}"
+    print(_color(sep, _CYAN))
     if failed_count == 0:
-        print(_color(summary, _Colors.GREEN))
+        print(_color(summary, _GREEN))
     else:
-        print(_color(summary, _Colors.YELLOW))
-    print(_color(sep, _Colors.CYAN))
+        print(_color(summary, _YELLOW))
+    print(_color(sep, _CYAN))
     print()
 
 
@@ -187,7 +185,9 @@ def write_report(reports: list[ScenarioReport], path: Path) -> None:
         json.dump(
             reports,
             f,
-            default=lambda o: o.__dict__,
+            default=lambda o: (
+                dataclasses.asdict(o) if dataclasses.is_dataclass(o) else str(o)
+            ),
             indent=2,
             ensure_ascii=False,
         )

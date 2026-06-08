@@ -14,7 +14,7 @@ and JSON report.
 """
 
 import argparse
-import glob as globmod
+import glob
 import shutil
 import subprocess
 import sys
@@ -95,6 +95,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Only GREEN + PRESSURE phase scenarios.",
     )
     parser.add_argument(
+        "--green-only",
+        action="store_true",
+        default=False,
+        help="Only GREEN phase scenarios (excludes PRESSURE).",
+    )
+    parser.add_argument(
         "--pressure",
         action="store_true",
         default=False,
@@ -116,13 +122,20 @@ def _build_parser() -> argparse.ArgumentParser:
             "assertions and thresholds on the existing session logs."
         ),
     )
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        default=False,
+        help="Print detailed debug info: subprocess stderr, metric details, tracebacks.",
+    )
     return parser
 
 
 # ── TOML helpers ────────────────────────────────────────────────────────
 
 
-def _load_thresholds(path: Path) -> dict:
+def _load_thresholds(path: Path) -> tuple[dict, bool]:
     """Load the global threshold configuration.
 
     Expected format (TOML):
@@ -140,13 +153,13 @@ def _load_thresholds(path: Path) -> dict:
         path: Path to the thresholds TOML file.
 
     Returns:
-        A dictionary mapping agent names to dicts of threshold entries.
-        Returns an empty dict if the file does not exist.
+        A tuple ``(thresholds_dict, file_exists)``. Returns an empty dict
+        and ``False`` if the file does not exist.
     """
     if not path.exists():
-        return {}
+        return {}, False
     with open(path, "rb") as f:
-        return tomli.load(f)
+        return tomli.load(f), True
 
 
 def _parse_threshold_entry(
@@ -216,7 +229,7 @@ def _check_thresholds(
         if actual is None:
             results.append(
                 report.ThresholdResult(
-                    metric=key,
+                    metric=metric_name,
                     value=0.0,
                     threshold=threshold_value,
                     direction=direction,
@@ -329,7 +342,7 @@ def _run_opencode(
     timeout: int,
     stdout_path: Path,
     dry_run: bool,
-) -> str:
+) -> tuple[str, str]:
     """Execute the opencode command and capture its output.
 
     Args:
@@ -339,7 +352,7 @@ def _run_opencode(
         dry_run: If true, skip subprocess and write an empty file.
 
     Returns:
-        The captured stdout string (empty string for dry-run).
+        A tuple ``(stdout, stderr)`` (empty strings for dry-run).
 
     Raises:
         subprocess.TimeoutExpired: Re-raised if the process times out.
@@ -347,8 +360,11 @@ def _run_opencode(
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
 
     if dry_run:
-        stdout_path.write_text("", encoding="utf-8")
-        return ""
+        # Only create the placeholder file if it doesn't already exist,
+        # so a real run's JSONL data is not destroyed by a subsequent --dry-run.
+        if not stdout_path.exists():
+            stdout_path.write_text("", encoding="utf-8")
+        return "", ""
 
     proc = subprocess.run(
         cmd,
@@ -357,13 +373,14 @@ def _run_opencode(
         timeout=timeout,
     )
     stdout_path.write_text(proc.stdout, encoding="utf-8")
-    return proc.stdout
+    return proc.stdout, proc.stderr
 
 
 def _analyse_session(
     stdout_path: Path,
     scenario: dict,
-) -> tuple[dict[str, float], list, str | None]:
+    verbose: bool = False,
+) -> tuple[dict[str, float | dict[str, int]], dict, list, str | None]:
     """Analyse opencode session output: parse metrics and run assertions.
 
     Calls ``session.parse_session(stdout_path)`` →
@@ -376,40 +393,53 @@ def _analyse_session(
         stdout_path: Path to the saved JSONL session log.
         scenario: The loaded scenario dict (includes ``expected`` and
             ``assertions`` sub-dicts).
+        verbose: If true, print full tracebacks on analysis errors.
 
     Returns:
-        A tuple ``(flat_metrics, assertion_results, error)``.
+        A tuple ``(flat_metrics, raw_metrics, assertion_results, error)``.
     """
-    flat_metrics: dict[str, float] = {}
+    flat_metrics: dict[str, float | dict[str, int]] = {}
+    raw_metrics: dict = {}
     assertion_results: list = []
     error: str | None = None
 
     # --- Session parsing ----------------------------------------------
     if session is None:
-        return flat_metrics, assertion_results, "session.py not available"
+        return flat_metrics, raw_metrics, assertion_results, "session.py 不可用"
 
     try:
         data = session.parse_session(stdout_path)  # type: ignore[attr-defined]
     except Exception as exc:
-        return flat_metrics, assertion_results, f"Session parse failed: {exc}"
+        if verbose:
+            traceback.print_exc()
+        return (
+            flat_metrics,
+            raw_metrics,
+            assertion_results,
+            f"会话解析失败: {exc}",
+        )
 
     # --- Metrics ------------------------------------------------------
     try:
         raw_metrics = session.compute_metrics(data)  # type: ignore[attr-defined]
         flat_metrics = {
-            name: (float(mv.value) if not isinstance(mv.value, dict) else 0.0)
+            name: (float(mv.value) if not isinstance(mv.value, dict) else mv.value)
             for name, mv in raw_metrics.items()
         }
+        if flat_metrics.get("is_empty_session", 0.0) == 1.0:
+            error = "空会话: 未检测到工具调用 (JSONL 可能为空或无法解析)"
     except Exception as exc:
-        error = f"Metric computation failed: {exc}"
-        return flat_metrics, assertion_results, error
+        if verbose:
+            traceback.print_exc()
+        error = f"指标计算失败: {exc}"
+        return flat_metrics, raw_metrics, assertion_results, error
 
     # --- Assertions ---------------------------------------------------
     if assertions is not None:
         try:
             # The TOML assertions section can be either:
             #   1. required = ["assert_delegates", "assert_verifies"]
-            #   2. output_clean = "No error messages"  (flat name→desc)
+            #   2. output_clean = "No error messages"  (flat name->desc)
             assertions_raw = scenario.get("assertions", {})
             if isinstance(assertions_raw, dict) and "required" in assertions_raw:
                 required_names = list(assertions_raw["required"])
@@ -423,12 +453,14 @@ def _analyse_session(
             )
             assertion_results = list(raw_results)
         except Exception as exc:
+            if verbose:
+                traceback.print_exc()
             if error:
-                error += f" | Assertions failed: {exc}"
+                error += f" | 断言执行失败: {exc}"
             else:
-                error = f"Assertions failed: {exc}"
+                error = f"断言执行失败: {exc}"
 
-    return flat_metrics, assertion_results, error
+    return flat_metrics, raw_metrics, assertion_results, error
 
 
 def _copy_fixture(fixture_project: str) -> str:
@@ -447,7 +479,7 @@ def _copy_fixture(fixture_project: str) -> str:
     src = fixtures_dir / fixture_project
     if not src.is_dir():
         raise FileNotFoundError(
-            f"Fixture directory not found: {src}",
+            f"夹具目录未找到: {src}",
         )
 
     tmpdir = tempfile.mkdtemp(prefix="zk-test-")
@@ -471,53 +503,40 @@ def main() -> None:
         phase_set = {"red"}
     elif args.green:
         phase_set = {"green", "pressure"}
+    elif args.green_only:
+        phase_set = {"green"}
     elif args.pressure:
         phase_set = {"pressure"}
 
     # ── Discover scenarios ───────────────────────────────────────────
-    scenario_paths = sorted(globmod.glob(SCENARIOS_GLOB))
+    scenario_paths = sorted(glob.glob(SCENARIOS_GLOB))
     if not scenario_paths:
-        print(f"No scenario files found at {SCENARIOS_GLOB}", file=sys.stderr)
+        print(f"未找到场景文件: {SCENARIOS_GLOB}", file=sys.stderr)
         sys.exit(1)
 
     # ── Load thresholds ──────────────────────────────────────────────
-    thresholds_cfg = _load_thresholds(THRESHOLDS_PATH)
+    thresholds_cfg, thresholds_found = _load_thresholds(THRESHOLDS_PATH)
+    if not thresholds_found:
+        print(
+            f"⚠ 警告: 阈值文件未找到: {THRESHOLDS_PATH}，将跳过所有阈值检查",
+            file=sys.stderr,
+        )
 
     reports: list[report.ScenarioReport] = []
+    seen_scenario_names: set[str] = set()
 
-    # ── Quick summary of what we're about to run ──────────────────────
-    matching_scenarios = []
+    # ── Pre-load all scenario TOMLs once ──────────────────────────────
+    all_scenarios: list[tuple[Path, dict | None]] = []
     for sp in scenario_paths:
         sp_path = Path(sp)
         if args.scenario_name and sp_path.stem != args.scenario_name:
+            all_scenarios.append((sp_path, None))
             continue
         try:
             scenario = _load_scenario_toml(sp_path)
-        except Exception:
-            continue
-        if args.agent and scenario["agent"] != args.agent:
-            continue
-        if phase_set is not None and scenario["phase"].lower() not in phase_set:
-            continue
-        matching_scenarios.append(scenario["name"])
-
-    print(
-        f"🚀 Starting {len(matching_scenarios)} scenarios: {', '.join(matching_scenarios)}",
-        flush=True,
-    )
-
-    for sp in scenario_paths:
-        sp_path = Path(sp)
-
-        # ── Quick basename filter (before TOML parse) ────────────────
-        if args.scenario_name and sp_path.stem != args.scenario_name:
-            continue
-
-        # ── Load TOML ────────────────────────────────────────────────
-        try:
-            scenario = _load_scenario_toml(sp_path)
+            all_scenarios.append((sp_path, scenario))
         except FileNotFoundError:
-            err_msg = f"Scenario file not found: {sp}"
+            err_msg = f"场景文件未找到: {sp}"
             print(err_msg, file=sys.stderr)
             reports.append(
                 report.ScenarioReport(
@@ -528,9 +547,9 @@ def main() -> None:
                     error=err_msg,
                 ),
             )
-            continue
+            all_scenarios.append((sp_path, None))
         except tomli.TOMLError as exc:
-            err_msg = f"TOML parse error in {sp}: {exc}"
+            err_msg = f"TOML 解析错误 ({sp}): {exc}"
             print(err_msg, file=sys.stderr)
             reports.append(
                 report.ScenarioReport(
@@ -541,9 +560,9 @@ def main() -> None:
                     error=err_msg,
                 ),
             )
-            continue
+            all_scenarios.append((sp_path, None))
         except KeyError as exc:
-            err_msg = f"Missing required key in {sp}: {exc}"
+            err_msg = f"场景缺少必需字段 ({sp}): {exc}"
             print(err_msg, file=sys.stderr)
             reports.append(
                 report.ScenarioReport(
@@ -554,19 +573,38 @@ def main() -> None:
                     error=err_msg,
                 ),
             )
-            continue
+            all_scenarios.append((sp_path, None))
 
-        # ── Agent filter ─────────────────────────────────────────────
+    # ── Count and print preview ───────────────────────────────────────
+    filtered_count = sum(
+        1
+        for _, sc in all_scenarios
+        if sc is not None
+        and (not args.agent or sc["agent"] == args.agent)
+        and (phase_set is None or sc["phase"].lower() in phase_set)
+    )
+    print(f"🚀 开始执行 {filtered_count} 个场景", flush=True)
+
+    # ── Execute in a single pass over pre-loaded scenarios ───────────
+    for sp_path, scenario in all_scenarios:
+        if scenario is None:
+            continue  # Already handled as error above
         if args.agent and scenario["agent"] != args.agent:
             continue
-
-        # ── Phase filter (case-insensitive, after load) ────────────────
         if phase_set is not None and scenario["phase"].lower() not in phase_set:
             continue
+
+        # ── Scenario name collision check ─────────────────────────────
+        if scenario["name"] in seen_scenario_names:
+            print(
+                f"⚠ 警告: 重复的场景名称 '{scenario['name']}' 位于 {sp_path}",
+                file=sys.stderr,
+            )
+        seen_scenario_names.add(scenario["name"])
 
         # ── Progress output ──────────────────────────────────────────
         print(
-            f"\n▶ Running: {scenario['name']} ({scenario['agent']}/{scenario['phase']})",
+            f"\n▶ 运行: {scenario['name']} ({scenario['agent']}/{scenario['phase']})",
             flush=True,
         )
 
@@ -586,7 +624,7 @@ def main() -> None:
             )
             continue
         except Exception as exc:
-            err_msg = f"Fixture copy failed: {exc}"
+            err_msg = f"夹具拷贝失败: {exc}"
             print(err_msg, file=sys.stderr)
             reports.append(
                 report.ScenarioReport(
@@ -607,39 +645,50 @@ def main() -> None:
 
         # ── Run opencode ─────────────────────────────────────────────
         exec_error: str | None = None
+        stderr = ""
         if args.replay:
             # Replay mode: skip subprocess, use existing JSONL
             if not stdout_path.exists():
                 exec_error = (
-                    f"Replay JSONL not found: {stdout_path}. "
-                    "Run the scenario first without --replay."
+                    f"回放 JSONL 未找到: {stdout_path}。请先不使用 --replay 运行场景。"
                 )
         else:
             try:
-                _ = _run_opencode(
+                _, stderr = _run_opencode(
                     cmd,
                     scenario["timeout"],
                     stdout_path,
                     args.dry_run,
                 )
             except subprocess.TimeoutExpired:
-                exec_error = f"Timeout after {scenario['timeout']} seconds"
+                exec_error = f"超时 (超过 {scenario['timeout']} 秒)"
             except Exception as exc:
-                exec_error = f"Subprocess error: {exc}"
+                exec_error = f"子进程错误: {exc}"
+
+        # Verbose: print subprocess stderr
+        if args.verbose and stderr:
+            print(f"  [标准错误] {stderr[:2000]}")
 
         # ── Analyse session ──────────────────────────────────────────
         metrics: dict[str, float] = {}
+        raw_metrics: dict = {}
         assertion_results: list = []
         analysis_error: str | None = exec_error
 
         if exec_error is None:
             try:
-                metrics, assertion_results, analysis_error = _analyse_session(
-                    stdout_path, scenario
+                metrics, raw_metrics, assertion_results, analysis_error = (
+                    _analyse_session(stdout_path, scenario, verbose=args.verbose)
                 )
             except Exception as exc:
-                analysis_error = f"Analysis error: {exc}"
-                traceback.print_exc()
+                analysis_error = f"分析错误: {exc}"
+                if args.verbose:
+                    traceback.print_exc()
+
+        # Verbose: print metric details
+        if args.verbose and raw_metrics:
+            for name, mv in raw_metrics.items():
+                print(f"  [指标] {name}: {mv.detail}")
 
         # ── Check thresholds ─────────────────────────────────────────
         skip_thresholds = set(scenario.get("skip_thresholds", []))
@@ -662,9 +711,16 @@ def main() -> None:
         )
 
         # RED / baseline scenarios use expect_fail=true: assertions and
-        # thresholds are *expected* to fail, so ``passed`` is inverted.
+        # thresholds are *expected* to fail, so ``passed`` is inverted
+        # only for assertion/threshold failures, not infrastructure errors.
+        infra_broken = analysis_error is not None and not (
+            analysis_error.startswith("断言执行失败")
+        )
         if scenario.get("expect_fail", False):
-            overall_pass = not raw_pass
+            if infra_broken:
+                overall_pass = False
+            else:
+                overall_pass = not raw_pass
         else:
             overall_pass = raw_pass
 

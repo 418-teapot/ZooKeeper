@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Data types
@@ -64,9 +64,9 @@ class SessionData:
         raw_events: The original parsed JSON objects from the log.
     """
 
-    calls: List[ToolCall]
+    calls: list[ToolCall]
     agent_text: str
-    raw_events: List[Dict[str, Any]]
+    raw_events: list[dict[str, Any]]
 
 
 @dataclass
@@ -78,7 +78,7 @@ class MetricValue:
         detail: Human-readable explanation of the metric.
     """
 
-    value: float | int | Dict[str, int]
+    value: float | int | dict[str, int]
     detail: str
 
 
@@ -165,9 +165,9 @@ def parse_session(path: str | Path) -> SessionData:
         A :class:`SessionData` instance with parsed tool calls and text.
     """
     path = Path(path)
-    raw_events: List[Dict[str, Any]] = []
-    calls: List[ToolCall] = []
-    text_parts: List[str] = []
+    raw_events: list[dict[str, Any]] = []
+    calls: list[ToolCall] = []
+    text_parts: list[str] = []
 
     if not path.exists():
         return SessionData(calls=[], agent_text="", raw_events=[])
@@ -220,15 +220,16 @@ def _is_verify_command(args: dict) -> bool:
     return False
 
 
-def compute_metrics(data: SessionData) -> Dict[str, MetricValue]:
+def compute_metrics(data: SessionData) -> dict[str, MetricValue]:
     """Compute behavioral metrics from parsed session data.
 
     Metrics returned:
 
     - ``delegation_rate``: ``task / (task + edit_or_write)``.
       Returns ``1.0`` if denominator is zero.
-    - ``verification_rate``: ``verify-bash-after-task / task_count``.
-      Returns ``0.0`` if ``task_count`` is zero.
+    - ``verification_rate``: ``verify-bash-after-task / code_modifying_tasks``.
+      Only counts tasks delegated to code-modifying subagents (subagent_type="general").
+      Returns ``0.0`` if ``code_modifying_tasks`` is zero.
     - ``read_abuse_events``: Number of times consecutive ``read`` calls
       exceed 3 (resets on any non-read tool).
     - ``pre_verification_rate``: Ratio of ``edit``/``write`` calls
@@ -251,7 +252,7 @@ def compute_metrics(data: SessionData) -> Dict[str, MetricValue]:
     # edit_count = direct file modification calls (edit or write)
     edit_count = sum(1 for c in calls if c.tool in ("edit", "write"))
 
-    tool_counts: Dict[str, int] = {}
+    tool_counts: dict[str, int] = {}
     for c in calls:
         tool_counts[c.tool] = tool_counts.get(c.tool, 0) + 1
 
@@ -261,19 +262,33 @@ def compute_metrics(data: SessionData) -> Dict[str, MetricValue]:
     delegation_rate = 1.0 if denom == 0 else task_count / denom
 
     # --- verification_rate ----------------------------------------------
-    # For each task call, check whether a bash verify command follows it
-    # before the next task call (or end of session).
+    # For each task call targeting a code-modifying subagent, check whether
+    # a bash verify command follows it before the next task call (or end of session).
+    # Read-only subagents (explore, scout, spider) don't need bash verification.
     task_indices = [idx for idx, c in enumerate(calls) if c.tool == "task"]
     verify_after_task = 0
+    code_modifying_tasks = 0  # Count of tasks to code-modifying subagents
     for i, t_idx in enumerate(task_indices):
+        # Check if this task targets a code-modifying subagent
+        subagent = calls[t_idx].args.get("subagent_type", "")
+        # Currently only 'general' is defined as code-modifying
+        is_code_task = subagent == "general"
+        if is_code_task:
+            code_modifying_tasks += 1
+
         # Determine the window: from t_idx+1 to the next task or end
         end_idx = task_indices[i + 1] if i + 1 < len(task_indices) else len(calls)
-        for c in calls[t_idx + 1 : end_idx]:
-            if c.tool == "bash" and _is_verify_command(c.args):
-                verify_after_task += 1
-                break  # one verify per task slot is enough
 
-    verification_rate = 0.0 if task_count == 0 else verify_after_task / task_count
+        # Only check verification for code-modifying subagent tasks
+        if is_code_task:
+            for c in calls[t_idx + 1 : end_idx]:
+                if c.tool == "bash" and _is_verify_command(c.args):
+                    verify_after_task += 1
+                    break  # one verify per task slot is enough
+
+    verification_rate = (
+        0.0 if code_modifying_tasks == 0 else verify_after_task / code_modifying_tasks
+    )
 
     # --- read_abuse_events ----------------------------------------------
     consecutive_read = 0
@@ -297,13 +312,14 @@ def compute_metrics(data: SessionData) -> Dict[str, MetricValue]:
     self_verification_rate = 0.0 if edit_count == 0 else verify_bash_count / edit_count
 
     # --- pre_verification_rate -------------------------------------------
-    # Ratio of edit/write calls that are preceded (earlier in sequence) by
-    # at least one read or grep call.
+    # An edit/write is "pre-verified" if at least one of the last N
+    # preceding calls (within the same session) is a read or grep.
+    _PRE_VERIFY_WINDOW = 10
     verified_edits = 0
     for i, c in enumerate(calls):
         if c.tool in ("edit", "write"):
-            # Check if any earlier call is a read or grep
-            if any(calls[j].tool in ("read", "grep") for j in range(i)):
+            window_start = max(0, i - _PRE_VERIFY_WINDOW)
+            if any(calls[j].tool in ("read", "grep") for j in range(window_start, i)):
                 verified_edits += 1
     pre_verification_rate = 1.0 if edit_count == 0 else verified_edits / edit_count
 
@@ -326,7 +342,7 @@ def compute_metrics(data: SessionData) -> Dict[str, MetricValue]:
             value=verification_rate,
             detail=(
                 f"verify_bash_after_task={verify_after_task}, "
-                f"task_count={task_count} → rate={verification_rate:.3f}"
+                f"code_modifying_tasks={code_modifying_tasks} → rate={verification_rate:.3f}"
             ),
         ),
         "read_abuse_events": MetricValue(
@@ -354,5 +370,11 @@ def compute_metrics(data: SessionData) -> Dict[str, MetricValue]:
         "total_tool_calls": MetricValue(
             value=len(calls),
             detail=f"Total tool invocations: {len(calls)}",
+        ),
+        "is_empty_session": MetricValue(
+            value=1.0 if (not calls and not data.agent_text.strip()) else 0.0,
+            detail="No tool calls and no agent text in session"
+            if (not calls and not data.agent_text.strip())
+            else "Session has content",
         ),
     }

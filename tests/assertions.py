@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Callable, Dict, List
+from typing import Callable
 
-from session import SessionData
+from session import SessionData, _VERIFY_KEYWORDS
 
 # ---------------------------------------------------------------------------
 # Result type
@@ -36,16 +36,6 @@ class AssertionResult:
 # ---------------------------------------------------------------------------
 # Assertion implementations
 # ---------------------------------------------------------------------------
-
-_VERIFY_KEYWORDS = frozenset(
-    {
-        "build",
-        "test",
-        "lint",
-        "typecheck",
-        "check",
-    }
-)
 
 
 def _assert_delegates(
@@ -92,27 +82,62 @@ def _assert_no_direct_edit(
 
 def _assert_verifies(
     data: SessionData,
-    expected: dict,  # noqa: ARG001
+    expected: dict,
 ) -> AssertionResult:
-    """Pass if a bash verify command appears after a task call."""
-    found_task = False
-    for c in data.calls:
-        if c.tool == "task":
-            found_task = True
-        elif found_task and c.tool == "bash":
-            for val in c.args.values():
-                if isinstance(val, str) and any(
-                    kw in val.lower() for kw in _VERIFY_KEYWORDS
-                ):
-                    return AssertionResult(
-                        name="assert_verifies",
-                        passed=True,
-                        message=f"Verification via bash with: {val!r}",
-                    )
+    """Pass if at least half of code-modifying task calls are followed by a verify command.
+
+    Only counts tasks delegated to code-modifying subagents (subagent_type="general").
+    Read-only subagents (explore, scout, spider) don't require bash verification.
+    """
+    task_indices = [idx for idx, c in enumerate(data.calls) if c.tool == "task"]
+    if not task_indices:
+        return AssertionResult(
+            name="assert_verifies",
+            passed=False,
+            message="No task() delegation found",
+        )
+
+    verified_tasks = 0
+    code_modifying_tasks = 0
+    for i, t_idx in enumerate(task_indices):
+        # Check if this task targets a code-modifying subagent
+        subagent = data.calls[t_idx].args.get("subagent_type", "")
+        is_code_task = subagent == "general"
+        if is_code_task:
+            code_modifying_tasks += 1
+
+        end_idx = task_indices[i + 1] if i + 1 < len(task_indices) else len(data.calls)
+
+        # Only count verification for code-modifying tasks
+        if is_code_task:
+            task_verified = False
+            for c in data.calls[t_idx + 1 : end_idx]:
+                if c.tool == "bash":
+                    for val in c.args.values():
+                        if isinstance(val, str) and any(
+                            kw in val.lower() for kw in _VERIFY_KEYWORDS
+                        ):
+                            task_verified = True
+                            break
+                if task_verified:
+                    break
+            if task_verified:
+                verified_tasks += 1
+
+    if code_modifying_tasks == 0:
+        return AssertionResult(
+            name="assert_verifies",
+            passed=True,
+            message="No code-modifying tasks to verify",
+        )
+
+    rate = verified_tasks / code_modifying_tasks
+    threshold = expected.get("verification_threshold", 0.5)
+    passed = rate >= threshold
     return AssertionResult(
         name="assert_verifies",
-        passed=False,
-        message="No verify command found after a task delegation",
+        passed=passed,
+        message=f"Verification rate: {verified_tasks}/{code_modifying_tasks} = {rate:.2f} (threshold {threshold:.2f})",
     )
 
 
@@ -146,17 +171,21 @@ def _assert_pre_verifies(
     data: SessionData,
     expected: dict,  # noqa: ARG001
 ) -> AssertionResult:
-    """Pass if every edit/write is preceded by at least one read/grep.
+    """Pass if every edit/write is preceded by at least one read/grep
+    within the last 10 calls.
 
-    "Preceded" means there is at least one read/grep call appearing earlier
-    in the call sequence before each edit/write.
+    "Preceded" means there is at least one read/grep call appearing within
+    the N calls immediately before the edit/write.
     """
-    unverified: List[str] = []
+    _PRE_VERIFY_WINDOW = 10
+    unverified: list[str] = []
     for idx, c in enumerate(data.calls):
         if c.tool not in ("edit", "write"):
             continue
-        # Look backwards for a prior read or grep
-        has_pre = any(data.calls[j].tool in ("read", "grep") for j in range(idx))
+        window_start = max(0, idx - _PRE_VERIFY_WINDOW)
+        has_pre = any(
+            data.calls[j].tool in ("read", "grep") for j in range(window_start, idx)
+        )
         if not has_pre:
             unverified.append(f"{c.tool}#{idx}")
     if not unverified:
@@ -209,7 +238,7 @@ def _assert_cites_sources(
 # Registry
 # ---------------------------------------------------------------------------
 
-ASSERTIONS: Dict[str, Callable[[SessionData, dict], AssertionResult]] = {
+ASSERTIONS: dict[str, Callable[[SessionData, dict], AssertionResult]] = {
     "assert_delegates": _assert_delegates,
     "assert_no_direct_edit": _assert_no_direct_edit,
     "assert_verifies": _assert_verifies,
@@ -221,10 +250,10 @@ ASSERTIONS: Dict[str, Callable[[SessionData, dict], AssertionResult]] = {
 
 
 def run_assertions(
-    required: List[str],
+    required: list[str],
     data: SessionData,
     expected: dict | None = None,
-) -> List[AssertionResult]:
+) -> list[AssertionResult]:
     """Look up each required assertion by name and run it.
 
     Unknown assertion names produce a failing result.
@@ -239,7 +268,7 @@ def run_assertions(
     """
     if expected is None:
         expected = {}
-    results: List[AssertionResult] = []
+    results: list[AssertionResult] = []
     for name in required:
         fn = ASSERTIONS.get(name)
         if fn is None:
