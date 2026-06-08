@@ -18,7 +18,7 @@ project = "todo-app"
 [expected]
 delegates_task = true
 delegation_accuracy = { general = 1, explore = 1, spider = 1 }
-max_prompt_lines = 20
+max_prompt_words = 250
 
 [assertions]
 required = [

@@ -10,8 +10,14 @@ from __future__ import annotations
 import re
 from typing import Callable
 
-from session import (VERIFY_KEYWORDS, AssertionResult, SessionData,
-                     SubagentSession, count_verified_tasks, measure_read_abuse)
+from session import (
+    VERIFY_KEYWORDS,
+    AssertionResult,
+    SessionData,
+    SubagentSession,
+    count_verified_tasks,
+    measure_read_abuse,
+)
 
 # ---------------------------------------------------------------------------
 # Assertion implementations
@@ -289,12 +295,12 @@ def _assert_task_prompt_concise(
     data: SessionData,
     expected: dict,
 ) -> AssertionResult:
-    """Verify every ``task()`` prompt is within the line limit.
+    """Verify every ``task()`` prompt is within the word limit.
 
-    Uses ``expected.get("max_prompt_lines", 20)`` as the upper bound for
-    non-blank lines.
+    Uses ``expected.get("max_prompt_words", 250)`` as the upper bound
+    for the total word count of the prompt string.
     """
-    max_lines = expected.get("max_prompt_lines", 20)
+    max_words = expected.get("max_prompt_words", 250)
     task_calls = [c for c in data.calls if c.tool == "task"]
     if not task_calls:
         return AssertionResult(
@@ -306,11 +312,9 @@ def _assert_task_prompt_concise(
     issues: list[str] = []
     for i, c in enumerate(task_calls):
         prompt = c.args.get("prompt", "") or ""
-        lines = [line for line in prompt.strip().split("\n") if line.strip()]
-        if len(lines) > max_lines:
-            issues.append(
-                f"Task #{i + 1}: {len(lines)} non-blank lines (max {max_lines})"
-            )
+        word_count = len(prompt.split())
+        if word_count > max_words:
+            issues.append(f"Task #{i + 1}: {word_count} words (max {max_words})")
 
     if issues:
         return AssertionResult(
@@ -321,7 +325,7 @@ def _assert_task_prompt_concise(
     return AssertionResult(
         name="assert_task_prompt_concise",
         passed=True,
-        message=f"All task prompts within {max_lines}-line limit",
+        message=f"All task prompts within {max_words}-word limit",
     )
 
 

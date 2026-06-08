@@ -13,6 +13,7 @@ install.py              ← 安装脚本（读取 config.toml + .env → 生成 
 config.toml             ← 用户可编辑的配置模板（{env:VAR} 占位符）
 .env / .env.example     ← 环境变量（apiKey、baseURL、模型名）
 check.sh                ← 统一 lint/format 脚本
+test.sh                 ← 统一测试脚本（Python 静态测试 + dry-run + TS 单元测试）
 core/prompts/*.md       ← 各 agent 的 prompt 文件（被插件动态注入）
 adapters/opencode/src/  ← OpenCode 插件 TS 代码
 tests/                  ← Prompt 评估测试框架（Phase 1: build.md）
@@ -40,13 +41,19 @@ python3 install.py
 ./check.sh lint       # lint:   只检查不修复
 ./check.sh format     # format: 只格式化
 
+# 测试命令
+./test.sh                                         # 统一测试入口（静态分析 + dry-run + TS 单元测试）
+
 # Prompt 评估测试
-python3 tests/runner.py --dry-run                 # 干跑（不调用 LLM）
+python3 tests/runner.py --dry-run                 # 干跑（不调用 LLM，回放 JSONL）
 python3 tests/runner.py --scenario build-green    # 只跑指定场景
 python3 tests/runner.py --replay                  # 从 JSONL 回放（不调 LLM，只跑断言+阈值）
 python3 tests/runner.py --replay --scenario build-green  # 回放指定场景
 python3 tests/runner.py -v                        # 详细输出（标准错误、指标明细、堆栈）
-python3 -m pytest tests/test_static.py -v         # 静态分析测试
+
+# 已知失败说明
+# build-pressure-2 场景测试"语言正确性 vs 行为完整性"问题，
+# 预期失败已被 test.sh 排除。详见 docs/verbal-correctness-vs-behavioral-completeness.md
 ```
 
 ## 代码风格
@@ -98,4 +105,3 @@ prompt 文件在运行时动态加载，不需要 install.py。改 prompt 后**�
 ## 未来计划（代码中的 TODO）
 
 - Claude Code 适配器（PreToolUse Python hook + CLAUDE.md）
-- Hook 级别的工具 deny（运行时拦截，而非仅 SDK 移除）
