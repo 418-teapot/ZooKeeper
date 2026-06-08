@@ -105,12 +105,24 @@ export const pluginModule = createPluginModule({
 
 ```typescript
 interface PluginModule {
-  id: string
+  id: string              // 运行时强制要求（尽管 TS 类型标注为可选 id?: string）
   name?: string
   version?: string
   server: (input: PluginInput) => Hooks | Promise<Hooks>
 }
 ```
+
+> **⚠️ 关键限制：`file://` 路径插件不支持函数导出形式。**
+>
+> 当插件通过 `opencode.json` 的 `plugin` 数组以文件路径（相对路径、绝对路径或 `file://` URL）加载时，
+> OpenCode 的 `file://` 路径插件加载器仅识别 `PluginModule` 对象导出格式
+> （`export default { id, server }`）。`export default async function` 形式会导致运行时无法
+> 识别插件，抛出 "not a valid plugin" 错误。
+>
+> **`id` 字段的运行时要求：**
+> 尽管 `@opencode-ai/plugin` 的 TypeScript 类型将 `PluginModule.id` 标记为可选
+> （`id?: string`），运行时加载器在解析 `file://` 路径插件时**强制要求 `id`**。
+> 缺少 `id` 会抛出：`"Path plugin ... must export id"`。
 
 ### 2.2 PluginInput 接口
 

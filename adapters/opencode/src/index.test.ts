@@ -6,7 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import zookeeper, { TASK_PROMPT_HINT, validateTaskPrompt } from "./index.js";
+import { zookeeper, TASK_PROMPT_HINT, validateTaskPrompt } from "./index.js";
 
 // ---------------------------------------------------------------------------
 // Helpers

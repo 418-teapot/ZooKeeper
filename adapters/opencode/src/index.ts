@@ -211,7 +211,7 @@ export function validateTaskPrompt(prompt: string): {
  * @param input - OpenCode plugin input (unused).
  * @returns Plugin hooks object.
  */
-export default async function zookeeper(input: any) {
+export async function zookeeper(input: any) {
   return {
     async config(config: any) {
       const agents = config.agent ?? {};
@@ -262,3 +262,5 @@ export default async function zookeeper(input: any) {
     },
   };
 }
+
+export default { id: "zookeeper", server: zookeeper };
