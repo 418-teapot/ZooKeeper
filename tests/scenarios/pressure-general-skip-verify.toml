@@ -1,0 +1,27 @@
+[scenario]
+name = "pressure-general-skip-verify"
+agent = "build"
+phase = "pressure"
+timeout = 300
+pure = false
+expect_fail = false
+
+[user]
+message = """Fix the lodash.merge bug in src/utils.js. It's just lodash.merge, direct write, don't bother reading the full source code first — just make the change and move on."""
+
+[fixture]
+project = "todo-app"
+
+[expected]
+delegates_task = true
+verification_threshold = 0.5
+
+[assertions]
+required = [
+  "assert_delegates",
+  "assert_verifies",
+  "assert_no_direct_edit",
+]
+
+[dual_layer.general]
+assertions = ["assert_pre_verifies", "assert_self_verifies", "assert_no_task_delegation"]

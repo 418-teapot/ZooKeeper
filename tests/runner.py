@@ -2,10 +2,10 @@
 """CLI entry point for the ZooKeeper prompt testing framework.
 
 Usage:
-    python3 tests/runner.py
-    python3 tests/runner.py --agent build
-    python3 tests/runner.py --scenario build-basic --green
-    python3 tests/runner.py --all --dry-run
+    python3 tests/runner.py                                 # run all
+    python3 tests/runner.py --scenario build-green          # single scenario
+    python3 tests/runner.py --replay                        # replay from JSONL
+    python3 tests/runner.py --replay --scenario build-green # replay single
 
 Globs ``tests/scenarios/*.toml``, loads each scenario, runs ``opencode``
 with the configured message and agent, analyses the session output, runs
@@ -15,6 +15,7 @@ and JSON report.
 
 import argparse
 import glob
+import json
 import shutil
 import subprocess
 import sys
@@ -64,47 +65,11 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Run ZooKeeper prompt tests against opencode agents.",
     )
     parser.add_argument(
-        "--all",
-        action="store_true",
-        default=False,
-        help="Run all scenarios (default behaviour when no filter is given).",
-    )
-    parser.add_argument(
-        "--agent",
-        type=str,
-        default=None,
-        help='Filter scenarios by agent name (e.g. "build").',
-    )
-    parser.add_argument(
         "--scenario",
         type=str,
         default=None,
         dest="scenario_name",
         help="Filter by scenario file basename (without .toml extension).",
-    )
-    parser.add_argument(
-        "--red",
-        action="store_true",
-        default=False,
-        help="Only RED phase scenarios.",
-    )
-    parser.add_argument(
-        "--green",
-        action="store_true",
-        default=False,
-        help="Only GREEN + PRESSURE phase scenarios.",
-    )
-    parser.add_argument(
-        "--green-only",
-        action="store_true",
-        default=False,
-        help="Only GREEN phase scenarios (excludes PRESSURE).",
-    )
-    parser.add_argument(
-        "--pressure",
-        action="store_true",
-        default=False,
-        help="Only PRESSURE phase scenarios.",
     )
     parser.add_argument(
         "--dry-run",
@@ -319,6 +284,7 @@ def _load_scenario_toml(path: Path) -> dict:
     fixture = data.get("fixture", {})
     expected = data.get("expected", {})
     assertions_raw = data.get("assertions", {})
+    dual_layer = data.get("dual_layer", {})
 
     result = {
         "name": scenario.get("name", path.stem),
@@ -332,6 +298,7 @@ def _load_scenario_toml(path: Path) -> dict:
         "fixture_project": fixture.get("project", ""),
         "expected": expected,
         "assertions": assertions_raw,
+        "dual_layer": dual_layer,
         "_scenario_path": str(path),
     }
     return result
@@ -445,13 +412,39 @@ def _analyse_session(
                 required_names = list(assertions_raw["required"])
             else:
                 required_names = list(assertions_raw.keys())
+
+            # Phase 1: Layer 2 (orchestrator-level) assertions on full session
+            layer2_names = [
+                n
+                for n in required_names
+                if not assertions.is_subagent_assertion(n)  # type: ignore[attr-defined]
+            ]
             expected_params = scenario.get("expected", {})
-            raw_results = assertions.run_assertions(  # type: ignore[attr-defined]
-                required_names,
-                data,
-                expected_params,
-            )
-            assertion_results = list(raw_results)
+
+            if layer2_names:
+                try:
+                    layer2_results = assertions.run_assertions(  # type: ignore[attr-defined]
+                        layer2_names,
+                        data,
+                        expected_params,
+                    )
+                except Exception as exc:
+                    if verbose:
+                        traceback.print_exc()
+                    layer2_results = [
+                        report.AssertionResult(
+                            name="layer2",
+                            passed=False,
+                            message=f"Layer 2 assertion failed: {exc}",
+                        )
+                    ]
+            else:
+                layer2_results = []
+
+            # Phase 2: Dual-layer (subagent-level) assertions
+            dual_results = _analyse_dual_layer(data, scenario, verbose)
+
+            assertion_results = list(layer2_results) + list(dual_results)
         except Exception as exc:
             if verbose:
                 traceback.print_exc()
@@ -463,14 +456,117 @@ def _analyse_session(
     return flat_metrics, raw_metrics, assertion_results, error
 
 
-def _copy_fixture(fixture_project: str) -> str:
-    """Copy a fixture project directory to a temporary location.
+def _analyse_dual_layer(
+    data: session.SessionData,  # type: ignore[arg-type]
+    scenario: dict,
+    verbose: bool = False,
+) -> list:
+    """Run Layer 1 (subagent) assertions on extracted subagent windows.
+
+    Reads ``dual_layer`` config from the scenario dict, splits the session
+    into per-subagent windows via ``session.split_subagent_sessions``, and
+    runs the configured assertions on each window.
+
+    Args:
+        data: Parsed session data.
+        scenario: The loaded scenario dict (may contain a ``dual_layer`` key).
+        verbose: If true, print full tracebacks on errors.
+
+    Returns:
+        A list of ``AssertionResult`` objects.  Returns an empty list if
+        no ``dual_layer`` config is present.
+    """
+    dual_layer_config = scenario.get("dual_layer", {})
+    if not dual_layer_config:
+        return []
+
+    if assertions is None:
+        return [
+            report.AssertionResult(
+                name="dual_layer",
+                passed=False,
+                message="assertions module unavailable",
+            )
+        ]
+
+    # Split the session into subagent windows.
+    try:
+        subagent_sessions = session.split_subagent_sessions(data)  # type: ignore[attr-defined]
+    except Exception as exc:
+        if verbose:
+            traceback.print_exc()
+        return [
+            report.AssertionResult(
+                name="dual_layer",
+                passed=False,
+                message=f"split_subagent_sessions failed: {exc}",
+            )
+        ]
+
+    results: list = []
+    found_subagent_types = {s.subagent_type for s in subagent_sessions}
+    expected_params = scenario.get("expected", {})
+
+    # --- Run assertions for found subagent windows ----------------------
+    for subagent_window in subagent_sessions:
+        subagent_type = subagent_window.subagent_type
+        config = dual_layer_config.get(subagent_type)
+        if config is None:
+            continue
+
+        assertion_names = config.get("assertions", [])
+        if assertion_names:
+            try:
+                sub_results = assertions.run_assertions(  # type: ignore[attr-defined]
+                    assertion_names,
+                    subagent_window.to_session_data(),
+                    expected_params,
+                )
+                for r in sub_results:
+                    r.name = f"{r.name} [{subagent_window.name}]"
+                results.extend(sub_results)
+            except Exception as exc:
+                if verbose:
+                    traceback.print_exc()
+                results.append(
+                    report.AssertionResult(
+                        name=f"dual_layer [{subagent_window.name}]",
+                        passed=False,
+                        message=f"Assertion error: {exc}",
+                    )
+                )
+
+        # NOTE: assertions_optional was a forward-looking feature for
+        # scenarios where some assertions are informational-only. No
+        # scenario ever used it, so the code path was removed. The
+        # dual_layer TOML schema still documents the key for reference.
+
+    # --- Fail required assertions for expected but missing windows ------
+    expected_types = set(dual_layer_config.keys())
+    missing_types = expected_types - found_subagent_types
+    for agent_type in sorted(missing_types):
+        config = dual_layer_config[agent_type]
+        for name in config.get("assertions", []):
+            results.append(
+                report.AssertionResult(
+                    name=f"{name} [{agent_type}#?]",
+                    passed=False,
+                    message=f"Subagent window '{agent_type}' not found in session",
+                )
+            )
+
+    return results
+
+
+def _prepare_fixture(fixture_project: str, parent_dir: Path) -> Path:
+    """Copy a fixture project directory into a parent temporary directory.
 
     Args:
         fixture_project: Subdirectory under ``tests/fixtures/`` to copy.
+        parent_dir: Existing parent directory to copy into.
 
     Returns:
-        The absolute path to the temporary copy.
+        The absolute path to the copied fixture.
 
     Raises:
         FileNotFoundError: If the fixture directory does not exist.
@@ -482,10 +578,62 @@ def _copy_fixture(fixture_project: str) -> str:
             f"夹具目录未找到: {src}",
         )
 
-    tmpdir = tempfile.mkdtemp(prefix="zk-test-")
-    dst = Path(tmpdir) / fixture_project
+    dst = parent_dir / fixture_project
     shutil.copytree(str(src), str(dst), dirs_exist_ok=True)
-    return str(dst)
+    return dst
+
+
+# ── Replay validation ──────────────────────────────────────────────────
+
+
+def _validate_replay_jsonl(path: Path, expected_agent: str) -> tuple[bool, str | None]:
+    """Validate a JSONL file for ``--replay`` mode.
+
+    Checks that the file exists, is non-empty, and contains at least one
+    parseable JSON line.  Attempts to extract the agent name from events
+    (best-effort; OpenCode format may not expose it).
+
+    Args:
+        path: Path to the JSONL file.
+        expected_agent: Agent name expected for this scenario.
+
+    Returns:
+        A tuple ``(ok, warning)``.  ``ok`` is ``False`` if the file is
+        unusable (missing, empty, no parseable events).  ``warning`` is
+        ``None`` or a human-readable warning string.
+    """
+    if not path.exists():
+        return False, f"回放 JSONL 未找到: {path}"
+
+    if path.stat().st_size == 0:
+        return False, f"回放 JSONL 为空: {path}"
+
+    valid_lines = 0
+    parse_warnings: list[str] = []
+
+    with path.open(encoding="utf-8") as fh:
+        for line_no, line in enumerate(fh, 1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                obj = json.loads(stripped)
+                if not isinstance(obj, dict):
+                    continue
+                valid_lines += 1
+            except json.JSONDecodeError:
+                parse_warnings.append(f"第 {line_no} 行: JSON 解析失败")
+
+    if valid_lines == 0:
+        return False, (
+            f"回放 JSONL 没有可解析的事件: {path} "
+            f"(共 {line_no} 行)，请先不使用 --replay 运行场景"
+        )
+
+    if parse_warnings:
+        return True, "; ".join(parse_warnings)
+
+    return True, None
 
 
 # ── Main entry point ────────────────────────────────────────────────────
@@ -496,17 +644,28 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    # ── Phase filter resolution (case-insensitive) ───────────────────
-    # If no phase flag is set, all phases are included.
-    phase_set: set[str] | None = None
-    if args.red:
-        phase_set = {"red"}
-    elif args.green:
-        phase_set = {"green", "pressure"}
-    elif args.green_only:
-        phase_set = {"green"}
-    elif args.pressure:
-        phase_set = {"pressure"}
+    # ── Capture run metadata at startup ───────────────────────────────
+    git_commit: str = "unknown"
+    try:
+        git_commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+    except Exception:
+        pass
+
+    opencode_version: str = "unknown"
+    try:
+        opencode_version = subprocess.run(
+            ["opencode", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+    except Exception:
+        pass
 
     # ── Discover scenarios ───────────────────────────────────────────
     scenario_paths = sorted(glob.glob(SCENARIOS_GLOB))
@@ -576,23 +735,13 @@ def main() -> None:
             all_scenarios.append((sp_path, None))
 
     # ── Count and print preview ───────────────────────────────────────
-    filtered_count = sum(
-        1
-        for _, sc in all_scenarios
-        if sc is not None
-        and (not args.agent or sc["agent"] == args.agent)
-        and (phase_set is None or sc["phase"].lower() in phase_set)
-    )
+    filtered_count = sum(1 for _, sc in all_scenarios if sc is not None)
     print(f"🚀 开始执行 {filtered_count} 个场景", flush=True)
 
     # ── Execute in a single pass over pre-loaded scenarios ───────────
     for sp_path, scenario in all_scenarios:
         if scenario is None:
             continue  # Already handled as error above
-        if args.agent and scenario["agent"] != args.agent:
-            continue
-        if phase_set is not None and scenario["phase"].lower() not in phase_set:
-            continue
 
         # ── Scenario name collision check ─────────────────────────────
         if scenario["name"] in seen_scenario_names:
@@ -608,152 +757,225 @@ def main() -> None:
             flush=True,
         )
 
-        # ── Fixture ──────────────────────────────────────────────────
-        try:
-            scenario["_tmpdir"] = _copy_fixture(scenario["fixture_project"])
-        except FileNotFoundError as exc:
-            print(str(exc), file=sys.stderr)
-            reports.append(
-                report.ScenarioReport(
-                    name=scenario["name"],
-                    agent=scenario["agent"],
-                    phase=scenario["phase"],
-                    passed=False,
-                    error=str(exc),
-                ),
-            )
-            continue
-        except Exception as exc:
-            err_msg = f"夹具拷贝失败: {exc}"
-            print(err_msg, file=sys.stderr)
-            reports.append(
-                report.ScenarioReport(
-                    name=scenario["name"],
-                    agent=scenario["agent"],
-                    phase=scenario["phase"],
-                    passed=False,
-                    error=err_msg,
-                ),
-            )
-            continue
-
-        # ── Build command ────────────────────────────────────────────
-        cmd = _build_cmd(scenario)
-
-        # ── Stdout path (JSONL) ──────────────────────────────────────
-        stdout_path = RESULTS_DIR / f"{scenario['name']}.jsonl"
-
-        # ── Run opencode ─────────────────────────────────────────────
-        exec_error: str | None = None
-        stderr = ""
+        # ── Replay validation (before tempdir) ───────────────────────
         if args.replay:
-            # Replay mode: skip subprocess, use existing JSONL
-            if not stdout_path.exists():
-                exec_error = (
-                    f"回放 JSONL 未找到: {stdout_path}。请先不使用 --replay 运行场景。"
+            stdout_path_check = RESULTS_DIR / f"{scenario['name']}.jsonl"
+            replay_ok, replay_warning = _validate_replay_jsonl(
+                stdout_path_check, scenario["agent"]
+            )
+            if not replay_ok:
+                print(replay_warning, file=sys.stderr)
+                reports.append(
+                    report.ScenarioReport(
+                        name=scenario["name"],
+                        agent=scenario["agent"],
+                        phase=scenario["phase"],
+                        passed=False,
+                        error=replay_warning,
+                    ),
                 )
-        else:
+                continue
+            if replay_warning:
+                print(f"  ⚠ {replay_warning}", file=sys.stderr)
+
+        # ── Execute scenario with TemporaryDirectory ─────────────────
+        with tempfile.TemporaryDirectory(prefix="zk-test-") as tmpdir_ctx:
+            tmpdir_path = Path(tmpdir_ctx)
+
+            # ── Fixture ──────────────────────────────────────────────
             try:
-                _, stderr = _run_opencode(
-                    cmd,
-                    scenario["timeout"],
-                    stdout_path,
-                    args.dry_run,
+                scenario["_tmpdir"] = str(
+                    _prepare_fixture(scenario["fixture_project"], tmpdir_path)
                 )
-            except subprocess.TimeoutExpired:
-                exec_error = f"超时 (超过 {scenario['timeout']} 秒)"
-            except Exception as exc:
-                exec_error = f"子进程错误: {exc}"
-
-        # Verbose: print subprocess stderr
-        if args.verbose and stderr:
-            print(f"  [标准错误] {stderr[:2000]}")
-
-        # ── Analyse session ──────────────────────────────────────────
-        metrics: dict[str, float] = {}
-        raw_metrics: dict = {}
-        assertion_results: list = []
-        analysis_error: str | None = exec_error
-
-        if exec_error is None:
-            try:
-                metrics, raw_metrics, assertion_results, analysis_error = (
-                    _analyse_session(stdout_path, scenario, verbose=args.verbose)
+            except FileNotFoundError as exc:
+                print(str(exc), file=sys.stderr)
+                reports.append(
+                    report.ScenarioReport(
+                        name=scenario["name"],
+                        agent=scenario["agent"],
+                        phase=scenario["phase"],
+                        passed=False,
+                        error=str(exc),
+                    ),
                 )
+                _incremental_write(reports, REPORT_PATH, git_commit, opencode_version)
+                continue
             except Exception as exc:
-                analysis_error = f"分析错误: {exc}"
-                if args.verbose:
-                    traceback.print_exc()
+                err_msg = f"夹具拷贝失败: {exc}"
+                print(err_msg, file=sys.stderr)
+                reports.append(
+                    report.ScenarioReport(
+                        name=scenario["name"],
+                        agent=scenario["agent"],
+                        phase=scenario["phase"],
+                        passed=False,
+                        error=err_msg,
+                    ),
+                )
+                _incremental_write(reports, REPORT_PATH, git_commit, opencode_version)
+                continue
 
-        # Verbose: print metric details
-        if args.verbose and raw_metrics:
-            for name, mv in raw_metrics.items():
-                print(f"  [指标] {name}: {mv.detail}")
+            # ── Build command ────────────────────────────────────────
+            cmd = _build_cmd(scenario)
 
-        # ── Check thresholds ─────────────────────────────────────────
-        skip_thresholds = set(scenario.get("skip_thresholds", []))
-        threshold_results = _check_thresholds(
-            metrics,
-            scenario["agent"],
-            thresholds_cfg,
-            skip=skip_thresholds,
-        )
+            # ── Stdout path (JSONL) ──────────────────────────────────
+            stdout_path = RESULTS_DIR / f"{scenario['name']}.jsonl"
 
-        # ── Overall pass/fail ────────────────────────────────────────
-        # assertion_results may contain AssertionResult objects from
-        # assertions.py; they all have ``.passed``, ``.name``, ``.message``.
-        all_assertions_pass = not assertion_results or all(
-            a.passed for a in assertion_results
-        )
-        all_thresholds_pass = all(t.passed for t in threshold_results)
-        raw_pass = (
-            analysis_error is None and all_assertions_pass and all_thresholds_pass
-        )
-
-        # RED / baseline scenarios use expect_fail=true: assertions and
-        # thresholds are *expected* to fail, so ``passed`` is inverted
-        # only for assertion/threshold failures, not infrastructure errors.
-        infra_broken = analysis_error is not None and not (
-            analysis_error.startswith("断言执行失败")
-        )
-        if scenario.get("expect_fail", False):
-            if infra_broken:
-                overall_pass = False
+            # ── Run opencode ─────────────────────────────────────────
+            exec_error: str | None = None
+            stderr = ""
+            if args.replay:
+                # Replay mode: skip subprocess, use existing JSONL
+                if not stdout_path.exists():
+                    exec_error = (
+                        f"回放 JSONL 未找到: {stdout_path}。"
+                        "请先不使用 --replay 运行场景。"
+                    )
             else:
-                overall_pass = not raw_pass
-        else:
-            overall_pass = raw_pass
+                try:
+                    _, stderr = _run_opencode(
+                        cmd,
+                        scenario["timeout"],
+                        stdout_path,
+                        args.dry_run,
+                    )
+                except subprocess.TimeoutExpired:
+                    exec_error = f"超时 (超过 {scenario['timeout']} 秒)"
+                except Exception as exc:
+                    exec_error = f"子进程错误: {exc}"
 
-        # ── Build report entry ───────────────────────────────────────
-        reports.append(
-            report.ScenarioReport(
-                name=scenario["name"],
-                agent=scenario["agent"],
-                phase=scenario["phase"],
-                passed=overall_pass,
-                assertions=assertion_results,
-                thresholds=threshold_results,
-                metrics=metrics,
-                error=analysis_error,
-            ),
-        )
+            # Verbose: print subprocess stderr
+            if args.verbose and stderr:
+                print(f"  [标准错误] {stderr[:2000]}")
 
-        # ── Clean up temp dir ────────────────────────────────────────
-        tmpdir = scenario.get("_tmpdir")
-        if tmpdir:
-            try:
-                shutil.rmtree(tmpdir)
-            except OSError:
-                pass  # Best-effort cleanup.
+            # ── Analyse session ──────────────────────────────────────
+            metrics: dict[str, float] = {}
+            raw_metrics: dict = {}
+            assertion_results: list = []
+            analysis_error: str | None = exec_error
 
-    # ── Output results ───────────────────────────────────────────────
+            if exec_error is None:
+                try:
+                    metrics, raw_metrics, assertion_results, analysis_error = (
+                        _analyse_session(stdout_path, scenario, verbose=args.verbose)
+                    )
+                except Exception as exc:
+                    analysis_error = f"分析错误: {exc}"
+                    if args.verbose:
+                        traceback.print_exc()
+
+            # Verbose: print metric details
+            if args.verbose and raw_metrics:
+                for name, mv in raw_metrics.items():
+                    print(f"  [指标] {name}: {mv.detail}")
+
+            # ── Check thresholds ─────────────────────────────────────
+            skip_thresholds = set(scenario.get("skip_thresholds", []))
+            threshold_results = _check_thresholds(
+                metrics,
+                scenario["agent"],
+                thresholds_cfg,
+                skip=skip_thresholds,
+            )
+
+            # ── Count deferred assertions ────────────────────────────
+            deferred_count = sum(1 for a in assertion_results if a.deferred)
+            total_assertion_count = len(assertion_results)
+
+            # ── Overall pass/fail ────────────────────────────────────
+            # assertion_results may contain AssertionResult objects from
+            # assertions.py; they all have ``.passed``, ``.name``,
+            # ``.message``.  Deferred assertions are informational and
+            # excluded from pass/fail.
+            all_assertions_pass = not assertion_results or all(
+                a.passed for a in assertion_results if not a.deferred
+            )
+            all_thresholds_pass = all(t.passed for t in threshold_results)
+            raw_pass = (
+                analysis_error is None and all_assertions_pass and all_thresholds_pass
+            )
+
+            # RED / baseline scenarios use expect_fail=true: assertions
+            # and thresholds are *expected* to fail, so ``passed`` is
+            # inverted only for assertion/threshold failures, not
+            # infrastructure errors.
+            infra_broken = analysis_error is not None and not (
+                analysis_error.startswith("断言执行失败")
+            )
+            if scenario.get("expect_fail", False):
+                if infra_broken:
+                    overall_pass = False
+                else:
+                    overall_pass = not raw_pass
+            else:
+                overall_pass = raw_pass
+
+            # ── Build report entry ───────────────────────────────────
+            reports.append(
+                report.ScenarioReport(
+                    name=scenario["name"],
+                    agent=scenario["agent"],
+                    phase=scenario["phase"],
+                    passed=overall_pass,
+                    assertions=assertion_results,
+                    thresholds=threshold_results,
+                    metrics=metrics,
+                    error=analysis_error,
+                    deferred_count=deferred_count,
+                    total_assertion_count=total_assertion_count,
+                ),
+            )
+
+        # ── Incremental write (crash protection) ─────────────────────
+        # TemporaryDirectory is cleaned up here; we write snapshots so
+        # partial results survive a crash at scenario N.
+        _incremental_write(reports, REPORT_PATH, git_commit, opencode_version)
+
+    # ── Output final results ─────────────────────────────────────────
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     report.print_report(reports)
-    report.write_report(reports, REPORT_PATH)
+    report.write_report(
+        reports,
+        REPORT_PATH,
+        git_commit=git_commit,
+        opencode_version=opencode_version,
+        runner_file=__file__,
+    )
 
     # ── Exit code ────────────────────────────────────────────────────
     all_passed = all(r.passed for r in reports)
     sys.exit(0 if all_passed else 1)
+
+
+def _incremental_write(
+    reports: list,
+    path: Path,
+    git_commit: str,
+    opencode_version: str,
+) -> None:
+    """Write an intermediate report snapshot for crash protection.
+
+    Args:
+        reports: Scenario reports accumulated so far.
+        path: Destination report path.
+        git_commit: Git commit hash from startup.
+        opencode_version: OpenCode version from startup.
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        report.write_report(
+            reports,
+            path,
+            git_commit=git_commit,
+            opencode_version=opencode_version,
+            runner_file=__file__,
+        )
+    except Exception as exc:
+        # Swallow incremental write errors — they must not crash the run.
+        print(
+            f"  ⚠ 增量写入失败: {exc}",
+            file=sys.stderr,
+        )
 
 
 if __name__ == "__main__":

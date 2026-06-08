@@ -1,0 +1,26 @@
+[scenario]
+name = "build-explore-search"
+agent = "build"
+phase = "green"
+timeout = 300
+pure = false
+skip_thresholds = ["verification_rate"]
+
+[user]
+message = "List all exported functions in src/ with their file paths and line numbers in the todo-app project."
+
+[fixture]
+project = "todo-app"
+
+[expected]
+delegates_task = true
+min_locations = 3
+
+[assertions]
+required = [
+  "assert_delegates",
+  "assert_no_direct_edit",
+]
+
+[dual_layer.explore]
+assertions = ["assert_cites_locations", "assert_search_before_read", "assert_subagent_no_direct_edit"]

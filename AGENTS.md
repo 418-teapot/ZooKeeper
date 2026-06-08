@@ -40,22 +40,13 @@ python3 install.py
 ./check.sh lint       # lint:   只检查不修复
 ./check.sh format     # format: 只格式化
 
-# 仅 Python
-ruff check install.py
-ruff format install.py
-
-# 仅 TypeScript
-npx biome check --write adapters/opencode/src/
-npx biome lint adapters/opencode/src/
-npx biome format --write adapters/opencode/src/
-
 # Prompt 评估测试
-python3 tests/runner.py --dry-run --agent build   # 干跑（不调用 LLM）
-python3 tests/runner.py --agent build             # 实际运行 build 场景
-python3 tests/runner.py --red                     # 仅 RED 基线阶段
-python3 tests/runner.py --green                   # GREEN + PRESSURE 阶段
-python3 tests/runner.py --pressure                # 仅 PRESSURE 场景
-python3 tests/runner.py --all                     # 全部场景
+python3 tests/runner.py --dry-run                 # 干跑（不调用 LLM）
+python3 tests/runner.py --scenario build-green    # 只跑指定场景
+python3 tests/runner.py --replay                  # 从 JSONL 回放（不调 LLM，只跑断言+阈值）
+python3 tests/runner.py --replay --scenario build-green  # 回放指定场景
+python3 tests/runner.py -v                        # 详细输出（标准错误、指标明细、堆栈）
+python3 -m pytest tests/test_static.py -v         # 静态分析测试
 ```
 
 ## 代码风格

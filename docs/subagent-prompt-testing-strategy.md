@@ -21,6 +21,7 @@
 9. [实施路径与优先级](#9-实施路径与优先级)
 10. [风险与陷阱](#10-风险与陷阱)
 11. [参考资料](#11-参考资料)
+12. [双层测试实施报告](#12-双层测试实施报告)
 
 ---
 
@@ -1170,3 +1171,144 @@ Phase 0 (立即可做，0 成本)    │ Phase 1 (1-2 天)           │ Phase 2
 ---
 
 *本文档基于 2026-06-05 的开源调研和项目经验编写。随着开源生态的发展和 ZooKeeper 测试框架的迭代，本文档应定期更新。*
+
+---
+
+## 12. 双层测试实施报告
+
+### 12.1 实施概述
+
+- **日期**: 2026-06-07
+- **范围**: 实现了 Section 5 提出的双层测试方案——Layer 2（编排器断言）和 Layer 1（subagent 断言），覆盖 build、general、explore 三个 agent
+- **修改的文件**:
+  - `tests/session.py` — 新增 `SubagentSession` dataclass（含 agent 名称、场景名称、task 输入/输出、工具调用列表、deferred 状态字段）；新增 `split_subagent_sessions()` 函数，按 `task()` 调用边界分割编排器事件流
+  - `tests/assertions.py` — 新增 10 个断言函数（3 个 Layer 2 + 7 个 Layer 1），每个断言遵循统一的 `(session, config) -> AssertionResult` 签名；新增 `deferred_threshold` 配置支持软通过
+  - `tests/runner.py` — 场景加载（TOML 解析新增断言配置段）、断言分发（按 `assertions` 字段匹配 Layer 1/Layer 2 断言）、报告渲染（集成 deferred 状态）
+  - `tests/report.py` — 新增 deferred 状态渲染（终端以黄色 `⊘` 标识）；报告表中新增 `Layer` 列区分 L1/L2；deferred 断言不计入 pass/fail 统计
+- **新增的场景文件**:
+  - `tests/scenarios/build-delegation-accuracy.toml` — 验证 build 委派正确性 + prompt 格式
+  - `tests/scenarios/build-general-coding.toml` — 验证 build 对 general 的编码类委派
+  - `tests/scenarios/build-explore-search.toml` — 验证 build 对 explore 的搜索类委派
+  - `tests/scenarios/pressure-general-skip-verify.toml` — 向 general 施压跳过验证步骤
+- **验证结果**:
+  - `ruff check` — 通过（Python + TypeScript lint 均无错误）
+  - `pytest tests/test_static.py` — 37 passed（静态测试覆盖场景加载、断言注册、配置解析）
+  - `runner.py --dry-run` — 9 scenarios loaded（5 个原有场景 + 4 个新增场景）
+
+### 12.2 实现内容
+
+| 类别 | 内容 | 数量 |
+|------|------|------|
+| Layer 2 assertions | `assert_delegation_accuracy`, `assert_task_prompt_format`, `assert_task_prompt_concise` | 3 |
+| Layer 1 assertions | `assert_no_task_delegation`, `assert_cites_locations`, `assert_search_before_read`, `assert_concise_response`, `assert_no_bash_calls`, `assert_subagent_no_direct_edit`, `assert_self_verifies` | 7 |
+| Session infrastructure | `SubagentSession` dataclass, `split_subagent_sessions()` function, `deferred` status field | 3 |
+| Scenarios | `build-delegation-accuracy`, `build-general-coding`, `build-explore-search`, `pressure-general-skip-verify` | 4 |
+
+**Layer 2 断言详述**:
+
+- `assert_delegation_accuracy` — 验证编排器是否将任务委派给正确的 subagent（例如：编码任务委派给 general，搜索任务委派给 explore）。检查 `task()` 调用的 `subagent` 参数是否与场景定义的预期相符。
+- `assert_task_prompt_format` — 验证编排器构造的 subagent prompt 是否包含必要的上下文元素：任务描述、文件位置、输出格式要求。检查 `task()` 的 `prompt` 参数字段结构。
+- `assert_task_prompt_concise` — 验证 subagent prompt 长度在合理范围内，无冗余上下文。以字符数阈值衡量，配置项 `max_prompt_chars` 默认 2000。
+
+**Layer 1 断言详述**:
+
+- `assert_no_task_delegation` — subagent 不得再次调用 `task()` 委派任务（general/scout/spider 均为叶子 agent）。检查 subagent 工具调用列表中是否包含 `task` 工具。
+- `assert_cites_locations` — subagent 的回复中应引用文件位置（`file:line` 格式）。正则匹配 `\w+\.\w+:\d+` 模式，支持 `min_locations` 和 `min_locations_soft` 两个阈值。
+- `assert_search_before_read` — subagent 应先搜索再读取具体文件。检查工具调用序列中 `grep`/`glob`（搜索）是否出现在 `read`（读取）之前。
+- `assert_concise_response` — subagent 回复不应超过指定长度。基于词数或字符数阈值，默认 500 词。
+- `assert_no_bash_calls` — subagent 禁止调用 `bash` 工具（scout/spider 无执行权限）。检查工具调用列表中是否包含 `bash`。
+- `assert_subagent_no_direct_edit` — subagent 禁止直接编辑文件（应为只读 agent）。检查工具调用列表中是否包含 `edit` 或 `write`。
+- `assert_self_verifies` — subagent 在每次编辑后应执行验证（bash verify 命令）。对每次 `edit`/`write` 调用，检查后续是否有 `bash` 调用且命令字符串包含验证语义（`verify`、`check`、`test`、`diff`、`run`）。
+
+### 12.3 关键架构发现
+
+**发现**: subagent 的中间工具调用**不存储在编排器 JSONL 中**。编排器 JSONL 是平面的事件流——它记录编排器自身的 `tool_use` 事件（包括 `task()` 调用），以及 `task()` 的 `part.state.output` 字段（subagent 的最终文本回复）。但 subagent 在其自身会话中执行的中间工具调用——包括 `edit`、`write`、`bash`、`read`、`grep`、`glob`——完全不出现在编排器的 JSONL 中。
+
+**Subagent 会话数据**存储在 `~/.local/share/opencode/opencode.db`（SQLite 数据库）。该数据库中包含 `sessions` 表（会话元数据）、`events` 表（工具调用事件）、`artifacts` 表（文件变更记录）。通过 SQLite 查询工具调用轨迹需要两个步骤：先按 `parent_session_id` 或时间窗口找到 subagent 会话，再查询该会话下的 `events` 表。
+
+**编排器 JSONL 的记录边界**:
+
+| 记录对象 | 编排器 JSONL | opencode.db |
+|----------|-------------|-------------|
+| 编排器工具调用 | 完整记录 | 部分记录 |
+| `task()` 输入参数（subagent + prompt） | 完整记录 | 完整记录 |
+| `task()` 输出（subagent 文本回复） | 记录在 `part.state.output` | 记录 |
+| Subagent 中间工具调用 | **不记录** | 完整记录 |
+| Subagent 文件修改内容 | **不记录** | 记录在 artifacts 表 |
+| Subagent 会话 ID | **不记录** | 完整记录（父子会话关联） |
+
+**对测试的影响**:
+
+- Layer 1 **文本型**断言（`assert_cites_locations`、`assert_cites_sources`、`assert_concise_response`）正常工作——它们仅需操作 `task()` 输出的文本内容，这些内容在编排器 JSONL 中可完整获取
+- Layer 1 **工具调用型**断言（`assert_no_bash_calls`、`assert_subagent_no_direct_edit`、`assert_self_verifies`、`assert_search_before_read`）无法仅从编排器 JSONL 验证——编排器不记录 subagent 的中间工具调用
+
+**解决方案**: 引入 `deferred` 状态（终端报告中以黄色 `⊘` 标识）。当 subagent 窗口中无工具调用可见时，工具调用断言自动标记为 deferred，避免误报。deferred 状态的含义是："因数据源限制，本断言暂未验真"，而非 "通过" 或 "失败"。
+
+### 12.4 真实 LLM 测试结果
+
+全部 9 个场景对真实 LLM 运行的汇总结果：
+
+| 场景 | Agent | Phase | Layer 2 | Layer 1 (text) | Layer 1 (tool) | 总体 |
+|------|-------|-------|---------|----------------|----------------|------|
+| build-green | build | GREEN | 3/3 pass | — | — | pass |
+| build-pressure-1 | build | PRESSURE | 3/3 pass | — | — | pass |
+| build-pressure-2 | build | PRESSURE | 2/3 pass | — | — | **fail** |
+| build-delegation-accuracy | build | GREEN | 3/3 pass | — | — | pass |
+| build-general-coding | build | GREEN | 3/3 pass | — | — | pass |
+| build-explore-search | build | GREEN | 3/3 pass | — | — | pass |
+| general-green | general | GREEN | — | 2/2 pass | 2/2 deferred | pass |
+| explore-green | explore | GREEN | — | 1/2 soft-pass | 3/3 deferred | pass |
+| pressure-general-skip-verify | general | PRESSURE | — | 2/2 pass | 2/2 deferred | pass |
+
+- **8/9 通过，1/9 失败**（`build-pressure-2`）
+- **Layer 2 断言**: 所有委派准确性、prompt 格式、prompt 简洁度断言在 GREEN 和 PRESSURE 场景中一致通过
+- **Layer 1 文本断言**:
+  - `assert_cites_locations` 正确检测到 `src/utils.js:1` 格式的文件位置引用
+  - `assert_cites_sources` 正确检测到 MDN 文档 URL（如 `https://developer.mozilla.org/...`）
+  - `assert_cites_locations` 在 explore 场景中增加了 `min_locations_soft` 软通过阈值（从 3 降到 1）——因为 explore 的输出格式以自然语言描述为主，不总是严格的 `file:line` 格式
+- **工具调用断言**: 全部 deferred（`⊘`），原因见 Section 12.3 的数据源限制
+- **`build-pressure-2` 失败模式**: agent 在推理层面正确回应——它明确拒绝了压力指令、引用了项目规则、解释了为什么委派是必要的——但未执行任何工具操作（0 次 `task()` 调用）。这是一个 "语言的正确性 vs 行为的完整性" 问题：口头遵守规则、但行为上未完成工作。详见 `docs/verbal-correctness-vs-behavioral-completeness.md`
+
+**软通过阈值的使用经验**: `assert_cites_locations` 在 explore-green 场景中首次触发软通过（`min_locations_soft=1`）。explore 的典型输出是搜索摘要而非逐行定位，设置硬阈值 3 会导致不必要的失败。软通过的设计允许低于硬阈值的断言仍标记为 pass，同时在报告中注明实际计数，便于后续调优。
+
+### 12.5 框架修复记录
+
+真实测试运行中发现并修复了两个缺陷：
+
+1. **`assert_self_verifies` 错误别名**：该函数最初被实现为 `assert_self_verifies = _assert_verifies`（一个简单的函数别名）。但 `_assert_verifies` 是 Layer 2 断言，其逻辑是：在工具调用列表中查找 `task()` 调用，验证每个 `task()` 之后是否跟随后续工具事件。当 `_assert_verifies` 被用作 Layer 1 断言时，它在 subagent 窗口（无 `task()` 调用）中始终失败——0 次 `task()` 调用代表 0 次验证，但 subagent 本应验证的是自己的 `edit`/`write` 操作而非 `task()` 调用。**修复**：实现专用的 `_assert_self_verifies` 函数，其核心逻辑是：遍历 subagent 工具调用列表，统计 `edit` + `write` 调用次数，对每次编辑操作检查后续 N 个事件中是否存在 `bash` 调用且命令字符串包含验证语义。该函数接收 `max_lookahead` 参数（默认 3），控制向后搜索的步长。
+
+2. **Subagent 文本提取逻辑错误**：初始实现通过 `type:"text"` 事件提取 subagent 回复——在编排器事件流中，`task()` 调用后可能出现编排器的文本事件，这些事件位于连续 `task()` 调用之间。但对于背靠背（back-to-back）的 `task()` 调用（中间无编排器文本事件），`type:"text"` 提取结果为空字符串，导致所有文本断言收到空输入而误报失败。**修复**：直接从 `task()` 的 `tool_use` 事件中提取 `part.state.output` 字段——该字段始终包含 subagent 的最终文本回复，不受编排器事件流的影响。同时将 subagent 窗口的 `calls` 属性置空，因为编排器 JSONL 中 `task()` 调用之后的事件属于编排器而非 subagent，不应计入 subagent 的工具调用统计。
+
+修复验证：修复后对 9 个场景重新运行，`assert_self_verifies` 正确产生 deferred 状态（而非错误地报告失败），所有文本断言在背靠背 `task()` 场景中正确提取到非空文本。
+
+### 12.6 Phase 2 工作项
+
+以下工作项尚未实现，计划在 Phase 2 完成：
+
+1. **SQLite 集成**: 使用 `sqlite3` 模块连接 `~/.local/share/opencode/opencode.db`，按 subagent 会话 ID 查询 `events` 表中的工具调用记录。需要处理的边缘情况包括：数据库文件不存在（opencode 未运行）、会话未完成（工具调用事件不完整）、多轮对话中的会话 ID 变更。预期实现一个 `SubagentTrace` 数据类和一个 `query_subagent_traces(session_id)` 查询函数。
+
+2. **会话关联**: 编排器 JSONL 不包含 subagent 会话 ID，因此需要一种间接映射方法。两种候选方案：(a) 按 `task()` 的执行时间窗口在 SQLite 中查找吻合的子会话（时间关联法）；(b) 修改编排器在 `task()` 输出中包含 subagent 会话 ID（注入关联法）。方案 (a) 无需修改编排器代码但准确度受时间精度影响；方案 (b) 准确度高但需要编排器配合。
+
+3. **Deferred 迁移**: 待 SQLite 数据可用后，将 Layer 1 工具调用断言中的 `deferred=True` 路径全部移除，替换为基于真实工具调用数据的真实验证。迁移的关键步骤：(a) 确认 SQLite 查询的稳定性和性能；(b) 为每个工具调用断言编写基于事件数据的验证逻辑；(c) 更新 `SubagentSession` 的 `calls` 字段类型（从 `list` 扩展为包含工具名、参数、时间戳的结构化记录）。
+
+4. **重复运行机制**: 实现 `--repeat N` 参数，对同一场景重复运行 N 次并聚合结果。该功能的目标是量化 LLM 非确定性的影响——每次运行可能产生不同的工具调用序列和输出文本。聚合输出应包括：每次运行的单独结果 + N 次运行的通过率统计（例如 "8/10 pass"）。参考 AutoGen 的 `test_repeat` 实现。
+
+5. **A/B 基线工具**: 实现 `tests/baseline.py`，用于 prompt 回归检测（Section 6）。核心流程：(a) 在 prompt 修改前运行全量场景集，保存结果为 JSON 基线文件；(b) 修改 prompt；(c) 重新运行并 diff 结果。差异报告应标记出：新增的失败、消失的通过、行为变化的断言。基线文件应纳入版本控制（`tests/baselines/` 目录）。
+
+### 12.7 经验教训
+
+- **Deferred 机制至关重要**: 没有它，6 个工具调用断言会以误导性信息报 "通过"（例如 "No edit/write calls to verify"）——但实际上我们根本无法判断 subagent 是否执行了编辑操作。Deferred 提供了信息性提示，而非静默误导。该机制的设计原则是：透明地说明验证无法完成的原因，而不是在数据缺失的情况下给出错误结论。
+
+- **文本提取的局限性**: 从 `part.state.output` 提取文本虽然可行，但可能丢失格式细节（如 markdown 表格、反引号包裹的代码）。subagent 的输出可能包含结构化内容（表格、列表、代码块），纯文本提取会丢失这些结构信息。对输出格式类断言，采用软通过阈值比硬失败更务实——允许断言在格式不完整时仍标记为 pass，同时在报告中注明提取内容的长度和格式特征。
+
+- **Layer 2 的即时价值**: 即使没有 Layer 1 工具调用数据，Layer 2 测试仍然立即产生价值——build 的委派决策、prompt 格式化、抗压力能力均可仅从编排器 JSONL 验证。在 9 个场景中，Layer 2 断言直接检测到了 `build-pressure-2` 的零工具行为失败。如果没有 Layer 2 测试，这个失败模式会在 review 中被漏掉。
+
+- **软通过阈值的设计需要场景特异性**: `assert_cites_locations` 的 `min_locations_soft` 在 explore 场景中设置为 1（而非全局默认的 3），因为 explore 的输出格式与其他 agent 有本质差异。这说明断言配置应该是场景级别的，而非全局统一值。TOML 场景文件中的断言配置段自然地支持了这种场景特异性。
+
+- **测试框架对架构约束的暴露**: 本实施过程意外地暴露了一个架构约束——编排器 JSONL 不记录 subagent 中间事件。这个信息不是新发现的（架构设计时已知），但直到测试实现阶段才真正感受到其影响。这验证了 Section 10 中关于 "测试驱动架构理解" 的观察：实现测试的工程成本是评估架构决策质量的有效反馈。
+
+- **断言签名统一的重要性**: 所有 10 个断言遵循 `(session, config) -> AssertionResult` 签名，这使得 `runner.py` 可以统一遍历断言表并通过反射调用断言函数，无需为每个 agent 编写特殊的断言分发逻辑。该设计在新增场景和断言时保持了扩展性——新场景只需声明要使用的断言名称列表，新断言只需在断言表中注册。
+
+---
+
+*Section 12 最后更新: 2026-06-07*

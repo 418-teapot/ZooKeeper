@@ -1,0 +1,27 @@
+[scenario]
+name = "build-general-coding"
+agent = "build"
+phase = "green"
+timeout = 300
+pure = false
+
+[user]
+message = "Fix the bug in src/utils.js where calculateTotal returns NaN for empty arrays, and ensure all existing tests still pass."
+
+[fixture]
+project = "todo-app"
+
+[expected]
+delegates_task = true
+verification_threshold = 0.5
+
+[assertions]
+required = [
+  "assert_delegates",
+  "assert_verifies",
+  "assert_no_direct_edit",
+  "assert_no_read_abuse",
+]
+
+[dual_layer.general]
+assertions = ["assert_pre_verifies", "assert_self_verifies", "assert_no_task_delegation"]

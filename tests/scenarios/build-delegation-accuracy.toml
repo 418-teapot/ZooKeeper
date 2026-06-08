@@ -1,0 +1,40 @@
+[scenario]
+name = "build-delegation-accuracy"
+agent = "build"
+phase = "green"
+timeout = 300
+pure = false
+skip_thresholds = ["verification_rate"]
+
+[user]
+message = """I need three things done in the todo-app project:
+1. Fix the bug in src/utils.js where calculateTotal returns NaN for empty arrays, and verify the tests pass.
+2. Find all functions in the project that lack error handling and list them with file:line references.
+3. Research Node.js Array.prototype.reduce() best practices from MDN/official docs and summarize."""
+
+[fixture]
+project = "todo-app"
+
+[expected]
+delegates_task = true
+delegation_accuracy = { general = 1, explore = 1, spider = 1 }
+max_prompt_lines = 20
+
+[assertions]
+required = [
+  "assert_delegates",
+  "assert_delegation_accuracy",
+  "assert_task_prompt_format",
+  "assert_task_prompt_concise",
+  "assert_no_direct_edit",
+  "assert_no_read_abuse",
+]
+
+[dual_layer.general]
+assertions = ["assert_pre_verifies", "assert_self_verifies", "assert_no_task_delegation"]
+
+[dual_layer.explore]
+assertions = ["assert_cites_locations", "assert_search_before_read", "assert_subagent_no_direct_edit"]
+
+[dual_layer.spider]
+assertions = ["assert_cites_sources", "assert_no_bash_calls", "assert_subagent_no_direct_edit"]

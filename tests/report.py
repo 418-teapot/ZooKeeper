@@ -7,9 +7,14 @@ serialization (via write_report) for structured test results.
 
 import dataclasses
 import json
+import os
+import subprocess
+import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
+from session import AssertionResult  # noqa: F401  # re-exported for runner.py
 
 # ── Color constants ─────────────────────────────────────────────────────
 
@@ -26,18 +31,35 @@ _NC = "\033[0m"  # No Color / reset
 
 
 @dataclass
-class AssertionResult:
-    """Result of a single named assertion check.
+class RunMetadata:
+    """Metadata about the test run, collected once at report time.
 
     Attributes:
-        name: Short identifier for the assertion (e.g. \"output_clean\").
-        passed: Whether the assertion succeeded.
-        message: Human-readable description of what was checked.
+        timestamp: ISO8601 timestamp of when the report was written.
+        git_commit: Git commit hash from ``git rev-parse HEAD``.
+        opencode_version: Version string from ``opencode --version``.
+        python: Python version (``sys.version.split()[0]``).
+        runner_file: Absolute path to the runner script.
     """
 
-    name: str
-    passed: bool
-    message: str
+    timestamp: str
+    git_commit: str
+    opencode_version: str
+    python: str
+    runner_file: str
+
+
+@dataclass
+class TestRun:
+    """Top-level container for a test run report.
+
+    Attributes:
+        metadata: Run-level metadata.
+        scenarios: Ordered list of per-scenario results.
+    """
+
+    metadata: RunMetadata
+    scenarios: list
 
 
 @dataclass
@@ -45,10 +67,10 @@ class ThresholdResult:
     """Result of comparing a metric against a numeric threshold.
 
     Attributes:
-        metric: Name of the metric (e.g. \"accuracy\").
+        metric: Name of the metric (e.g. "accuracy").
         value: Actual measured value.
         threshold: Expected bound value.
-        direction: \"min\" when value must be >= threshold, \"max\" when <=.
+        direction: "min" when value must be >= threshold, "max" when <=.
         passed: Whether the value satisfies the threshold.
     """
 
@@ -65,13 +87,15 @@ class ScenarioReport:
 
     Attributes:
         name: Scenario name from the TOML [scenario] section.
-        agent: Agent under test (e.g. \"build\").
-        phase: Test phase (\"RED\", \"GREEN\", \"PRESSURE\").
+        agent: Agent under test (e.g. "build").
+        phase: Test phase ("RED", "GREEN", "PRESSURE").
         passed: Overall pass/fail for this scenario.
         assertions: List of assertion results.
         thresholds: List of threshold comparison results.
         metrics: Raw metric key-value pairs from session analysis.
         error: Optional error string if execution or parsing failed.
+        deferred_count: Number of assertions that were deferred.
+        total_assertion_count: Total number of assertions evaluated.
     """
 
     name: str
@@ -82,6 +106,56 @@ class ScenarioReport:
     thresholds: list = field(default_factory=list)  # list[ThresholdResult]
     metrics: dict = field(default_factory=dict)
     error: str | None = None
+    deferred_count: int = 0
+    total_assertion_count: int = 0
+
+
+# ── Helper for metadata collection ──────────────────────────────────────
+
+
+def _collect_metadata(
+    git_commit: str | None = None,
+    opencode_version: str | None = None,
+    runner_file: str | None = None,
+) -> RunMetadata:
+    """Build a RunMetadata instance, shelling out for missing values.
+
+    Args:
+        git_commit: Pre-captured git commit hash, or None to shell out.
+        opencode_version: Pre-captured opencode version, or None to shell out.
+        runner_file: Path to the runner script, or None (will use "unknown").
+
+    Returns:
+        A populated RunMetadata dataclass instance.
+    """
+    if git_commit is None:
+        try:
+            git_commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            ).stdout.strip()
+        except Exception:
+            git_commit = "unknown"
+    if opencode_version is None:
+        try:
+            opencode_version = subprocess.run(
+                ["opencode", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            ).stdout.strip()
+        except Exception:
+            opencode_version = "unknown"
+
+    return RunMetadata(
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        git_commit=git_commit,
+        opencode_version=opencode_version,
+        python=sys.version.split()[0],
+        runner_file=runner_file or "unknown",
+    )
 
 
 # ── Helper for color formatting ─────────────────────────────────────────
@@ -132,6 +206,14 @@ def print_report(reports: list[ScenarioReport]) -> None:
             label += f"  {_color('通过', _GREEN)}"
         else:
             label += f"  {_color('失败', _RED)}"
+
+        # ── Deferred marker (when most assertions are deferred) ──────
+        if report.deferred_count > report.total_assertion_count // 2:
+            label += _color(
+                f"  (deferred: {report.deferred_count}/{report.total_assertion_count})",
+                _YELLOW,
+            )
+
         print(_color(label, _BOLD))
 
         # ── Error block ──────────────────────────────────────────────
@@ -141,7 +223,12 @@ def print_report(reports: list[ScenarioReport]) -> None:
 
         # ── Assertions ───────────────────────────────────────────────
         for a in report.assertions:
-            icon = _color("✓", _GREEN) if a.passed else _color("✗", _RED)
+            if a.deferred:
+                icon = _color("⊘", _YELLOW)
+            elif a.passed:
+                icon = _color("✓", _GREEN)
+            else:
+                icon = _color("✗", _RED)
             print(f"  {icon} {a.name}: {a.message}")
 
         # ── Thresholds ───────────────────────────────────────────────
@@ -161,7 +248,10 @@ def print_report(reports: list[ScenarioReport]) -> None:
 
     # ── Summary line ─────────────────────────────────────────────────
     total = passed_count + failed_count
+    total_deferred = sum(r.deferred_count for r in reports)
     summary = f"  通过 {passed_count} / 失败 {failed_count} / 共 {total}"
+    if total_deferred > 0:
+        summary += _color(f"  (deferred: {total_deferred})", _YELLOW)
     print(_color(sep, _CYAN))
     if failed_count == 0:
         print(_color(summary, _GREEN))
@@ -171,24 +261,41 @@ def print_report(reports: list[ScenarioReport]) -> None:
     print()
 
 
-def write_report(reports: list[ScenarioReport], path: Path) -> None:
+def write_report(
+    reports: list[ScenarioReport],
+    path: Path,
+    git_commit: str | None = None,
+    opencode_version: str | None = None,
+    runner_file: str | None = None,
+) -> None:
     """Write a JSON report file from a list of scenario reports.
 
-    Each ScenarioReport is serialised via its __dict__ attribute.  The output
-    file is human-readable (2-space indent).
+    Wraps the reports in a ``TestRun`` container with ``RunMetadata``.
+    The output has the shape ``{"metadata": {...}, "scenarios": [...]}``.
+    Writes atomically to a ``.tmp`` file then ``os.replace``.
 
     Args:
         reports: Ordered list of scenario results to serialise.
         path: Destination file path (parent directory must exist).
+        git_commit: Pre-captured git commit hash, or None to auto-detect.
+        opencode_version: Pre-captured opencode version, or None to auto-detect.
+        runner_file: Path to the runner script, or None to use "unknown".
     """
-    with open(path, "w", encoding="utf-8") as f:
+    metadata = _collect_metadata(
+        git_commit=git_commit,
+        opencode_version=opencode_version,
+        runner_file=runner_file,
+    )
+    test_run = TestRun(metadata=metadata, scenarios=reports)
+
+    # Atomic write: write to .tmp then replace
+    tmp_path = Path(str(path) + ".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(
-            reports,
+            dataclasses.asdict(test_run),
             f,
-            default=lambda o: (
-                dataclasses.asdict(o) if dataclasses.is_dataclass(o) else str(o)
-            ),
             indent=2,
             ensure_ascii=False,
         )
         f.write("\n")
+    os.replace(str(tmp_path), str(path))

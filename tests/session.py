@@ -30,15 +30,36 @@ _KNOWN_TOOLS = frozenset(
     }
 )
 
-_VERIFY_KEYWORDS = frozenset(
+VERIFY_KEYWORDS = frozenset(
     {
         "build",
         "test",
         "lint",
         "typecheck",
         "check",
+        "verify",
     }
 )
+
+
+@dataclass
+class AssertionResult:
+    """Outcome of a single behavior assertion.
+
+    Attributes:
+        name: The assertion name (matches the registry key).
+        passed: Whether the assertion passed.
+        message: Human-readable explanation of the result.
+        deferred: If ``True``, the assertion could not be meaningfully
+            verified (e.g. because the subagent's tool calls are not
+            visible in the orchestrator JSONL). A deferred assertion
+            is informational and does not count as pass or fail.
+    """
+
+    name: str
+    passed: bool
+    message: str
+    deferred: bool = False
 
 
 @dataclass
@@ -80,6 +101,44 @@ class MetricValue:
 
     value: float | int | dict[str, int]
     detail: str
+
+
+@dataclass
+class SubagentSession:
+    """A window of session data belonging to a single subagent invocation.
+
+    Extracted from a parent ``SessionData`` by :func:`split_subagent_sessions`.
+    Each ``SubagentSession`` corresponds to one ``task()`` call from the
+    orchestrator.
+
+    Attributes:
+        name: Display name like ``"general#1"``, ``"explore#1"``.
+        subagent_type: The subagent type (e.g. ``"general"``, ``"explore"``).
+        task_prompt: The prompt string sent to the subagent.
+        task_args: Full args dict of the task() call.
+        calls: Tool calls made during this subagent's execution window.
+        agent_text: Concatenated text output from this window.
+    """
+
+    name: str
+    subagent_type: str
+    task_prompt: str
+    task_args: dict[str, Any]
+    calls: list[ToolCall] = field(default_factory=list)
+    agent_text: str = ""
+
+    def to_session_data(self) -> SessionData:
+        """Convert this subagent window into a plain SessionData.
+
+        Returns:
+            A :class:`SessionData` with the same calls and agent_text but
+            no raw_events (these are not reconstructed for subagent windows).
+        """
+        return SessionData(
+            calls=self.calls,
+            agent_text=self.agent_text,
+            raw_events=[],
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +264,7 @@ def parse_session(path: str | Path) -> SessionData:
 # ---------------------------------------------------------------------------
 
 
-def _is_verify_command(args: dict) -> bool:
+def is_verify_command(args: dict) -> bool:
     """Check if a bash tool's arguments contain a verify-related command.
 
     Args:
@@ -215,9 +274,73 @@ def _is_verify_command(args: dict) -> bool:
         ``True`` if any argument value string contains a verify keyword.
     """
     for val in args.values():
-        if isinstance(val, str) and any(kw in val.lower() for kw in _VERIFY_KEYWORDS):
+        if isinstance(val, str) and any(kw in val.lower() for kw in VERIFY_KEYWORDS):
             return True
     return False
+
+
+def count_verified_tasks(calls: list[ToolCall]) -> tuple[int, int]:
+    """Count code-modifying task() calls and how many are followed by a bash verify.
+
+    A task is considered "verified" if a ``bash`` command containing a verify
+    keyword appears after it and before the next ``task()`` call (or end of
+    session).  Only tasks delegated to code-modifying subagents
+    (``subagent_type="general"``) are counted; read-only subagents
+    (explore, scout, spider) do not require bash verification.
+
+    Args:
+        calls: The ordered list of tool calls from a session.
+
+    Returns:
+        A tuple ``(verified_count, code_modifying_task_count)``.
+    """
+    task_indices = [idx for idx, c in enumerate(calls) if c.tool == "task"]
+    verified_count = 0
+    code_modifying_tasks = 0
+    for i, t_idx in enumerate(task_indices):
+        subagent = calls[t_idx].args.get("subagent_type", "")
+        is_code_task = subagent == "general"
+        if is_code_task:
+            code_modifying_tasks += 1
+
+        end_idx = task_indices[i + 1] if i + 1 < len(task_indices) else len(calls)
+
+        if is_code_task:
+            for c in calls[t_idx + 1 : end_idx]:
+                if c.tool == "bash" and is_verify_command(c.args):
+                    verified_count += 1
+                    break
+    return verified_count, code_modifying_tasks
+
+
+def measure_read_abuse(calls: list[ToolCall]) -> tuple[int, int]:
+    """Measure consecutive read streaks in a call sequence.
+
+    Args:
+        calls: The ordered list of tool calls from a session.
+
+    Returns:
+        A tuple ``(max_consecutive_read, abuse_event_count)`` where
+        ``abuse_event_count`` is the number of runs that exceed 3
+        consecutive reads.
+    """
+    consecutive_read = 0
+    max_consecutive_read = 0
+    abuse_events = 0
+    for c in calls:
+        if c.tool == "read":
+            consecutive_read += 1
+            max_consecutive_read = max(max_consecutive_read, consecutive_read)
+        else:
+            if consecutive_read > 3:
+                abuse_events += 1
+            consecutive_read = 0
+    # Check tail
+    if consecutive_read > 3:
+        abuse_events += 1
+    if consecutive_read > max_consecutive_read:
+        max_consecutive_read = consecutive_read
+    return max_consecutive_read, abuse_events
 
 
 def compute_metrics(data: SessionData) -> dict[str, MetricValue]:
@@ -262,51 +385,17 @@ def compute_metrics(data: SessionData) -> dict[str, MetricValue]:
     delegation_rate = 1.0 if denom == 0 else task_count / denom
 
     # --- verification_rate ----------------------------------------------
-    # For each task call targeting a code-modifying subagent, check whether
-    # a bash verify command follows it before the next task call (or end of session).
-    # Read-only subagents (explore, scout, spider) don't need bash verification.
-    task_indices = [idx for idx, c in enumerate(calls) if c.tool == "task"]
-    verify_after_task = 0
-    code_modifying_tasks = 0  # Count of tasks to code-modifying subagents
-    for i, t_idx in enumerate(task_indices):
-        # Check if this task targets a code-modifying subagent
-        subagent = calls[t_idx].args.get("subagent_type", "")
-        # Currently only 'general' is defined as code-modifying
-        is_code_task = subagent == "general"
-        if is_code_task:
-            code_modifying_tasks += 1
-
-        # Determine the window: from t_idx+1 to the next task or end
-        end_idx = task_indices[i + 1] if i + 1 < len(task_indices) else len(calls)
-
-        # Only check verification for code-modifying subagent tasks
-        if is_code_task:
-            for c in calls[t_idx + 1 : end_idx]:
-                if c.tool == "bash" and _is_verify_command(c.args):
-                    verify_after_task += 1
-                    break  # one verify per task slot is enough
-
+    verified_after_task, code_modifying_tasks = count_verified_tasks(calls)
     verification_rate = (
-        0.0 if code_modifying_tasks == 0 else verify_after_task / code_modifying_tasks
+        0.0 if code_modifying_tasks == 0 else verified_after_task / code_modifying_tasks
     )
 
     # --- read_abuse_events ----------------------------------------------
-    consecutive_read = 0
-    read_abuse_events = 0
-    for c in calls:
-        if c.tool == "read":
-            consecutive_read += 1
-        else:
-            if consecutive_read > 3:
-                read_abuse_events += 1
-            consecutive_read = 0
-    # Check tail
-    if consecutive_read > 3:
-        read_abuse_events += 1
+    _max_streak, read_abuse_events = measure_read_abuse(calls)
 
     # --- self_verification_rate -----------------------------------------
     verify_bash_count = sum(
-        1 for c in calls if c.tool == "bash" and _is_verify_command(c.args)
+        1 for c in calls if c.tool == "bash" and is_verify_command(c.args)
     )
     # edit_count already includes both edit and write
     self_verification_rate = 0.0 if edit_count == 0 else verify_bash_count / edit_count
@@ -341,7 +430,7 @@ def compute_metrics(data: SessionData) -> dict[str, MetricValue]:
         "verification_rate": MetricValue(
             value=verification_rate,
             detail=(
-                f"verify_bash_after_task={verify_after_task}, "
+                f"verify_bash_after_task={verified_after_task}, "
                 f"code_modifying_tasks={code_modifying_tasks} → rate={verification_rate:.3f}"
             ),
         ),
@@ -378,3 +467,107 @@ def compute_metrics(data: SessionData) -> dict[str, MetricValue]:
             else "Session has content",
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# Subagent session splitting
+# ---------------------------------------------------------------------------
+
+
+def _build_call_to_event_map(data: SessionData) -> dict[int, int]:
+    """Build a mapping from tool-call index to raw-event index.
+
+    Iterates through ``raw_events`` and reconstructs the same detection
+    logic used in :func:`parse_session` so we can locate which raw event
+    produced each call.
+
+    Args:
+        data: Parsed session data.
+
+    Returns:
+        A dict ``{call_index: raw_event_index}``.
+    """
+    mapping: dict[int, int] = {}
+    call_index = 0
+    for event_idx, obj in enumerate(data.raw_events):
+        tc = _infer_tool_call(obj)
+        if tc is not None:
+            mapping[call_index] = event_idx
+            call_index += 1
+    return mapping
+
+
+def split_subagent_sessions(data: SessionData) -> list[SubagentSession]:
+    """Split session data into per-subagent windows based on ``task()`` calls.
+
+    Each ``task()`` invocation marks the beginning of a subagent window.
+    The window extends to the next ``task()`` call (or the end of the
+    session).  Tool calls and text events within that window are assigned
+    to the subagent.
+
+    Args:
+        data: Parsed session data from :func:`parse_session`.
+
+    Returns:
+        A list of :class:`SubagentSession` instances, one per ``task()``
+        call, ordered by occurrence.
+
+    Notes:
+        Subagent windows may include orchestrator-level calls that occur
+        between subagent return and the next delegation (e.g. build's own
+        ``bash`` verification).  Layer 1 assertions should be designed
+        with this overlap in mind.
+    """
+    call_to_event = _build_call_to_event_map(data)
+
+    task_calls = [(i, c) for i, c in enumerate(data.calls) if c.tool == "task"]
+    if not task_calls:
+        return []
+
+    sessions: list[SubagentSession] = []
+
+    for window_idx, (call_idx, task_call) in enumerate(task_calls):
+        subagent_type = task_call.args.get("subagent_type", "unknown")
+        task_prompt = task_call.args.get("prompt", "")
+        task_args = task_call.args
+
+        # --- Call window -------------------------------------------------
+        # The orchestrator JSONL stores each task() as a single tool_use
+        # event containing both input AND output. All tool calls *after* a
+        # task() event belong to the orchestrator, not the subagent.
+        # Subagent intermediate calls live in a separate SQLite DB and are
+        # NOT visible in the orchestrator JSONL. Always set calls=[] for
+        # subagent windows derived from the orchestrator JSONL.
+        window_calls: list[ToolCall] = []
+
+        # --- Text window -------------------------------------------------
+        # Subagent response text lives in the task() event's output field:
+        #   part["state"]["output"]
+        window_text = ""
+        task_event_idx = call_to_event.get(call_idx)
+        if task_event_idx is not None:
+            raw = data.raw_events[task_event_idx]
+            # OpenCode schema: {"type":"tool_use","part":{"tool":"task","state":{"output":"..."}}}
+            part = raw.get("part", {})
+            if isinstance(part, dict):
+                state = part.get("state", {})
+                if isinstance(state, dict):
+                    output = state.get("output")
+                    if isinstance(output, str):
+                        window_text = output
+
+        # --- Naming ------------------------------------------------------
+        name = f"{subagent_type}#{window_idx + 1}"
+
+        sessions.append(
+            SubagentSession(
+                name=name,
+                subagent_type=subagent_type,
+                task_prompt=task_prompt,
+                task_args=task_args,
+                calls=window_calls,
+                agent_text=window_text,
+            )
+        )
+
+    return sessions
