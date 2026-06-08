@@ -6,7 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { zookeeper, TASK_PROMPT_HINT, validateTaskPrompt } from "./index.js";
+import { TASK_PROMPT_HINT, validateTaskPrompt, zookeeper } from "./index.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -235,7 +235,8 @@ describe("forbidden patterns in CONTEXT", () => {
 
   it('rejects "第 N 行" references in CONTEXT', () => {
     const prompt = validPrompt({
-      context: "bug 在 src/api/handler.go 第 42 行，response 对象没有做 nil 检查",
+      context:
+        "bug 在 src/api/handler.go 第 42 行，response 对象没有做 nil 检查",
     });
     const result = validateTaskPrompt(prompt);
     assert.equal(result.valid, false);
@@ -464,6 +465,128 @@ describe("tool.definition hook", () => {
       output.parameters.properties.prompt.description,
       `${existingDesc}\n\n${TASK_PROMPT_HINT}`,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tool.execute.before hook
+// ---------------------------------------------------------------------------
+
+describe("tool.execute.before hook", () => {
+  it("valid prompt passes without throwing", async () => {
+    const plugin = await zookeeper({});
+    const prompt = validPrompt();
+    await plugin["tool.execute.before"](
+      { tool: "task", sessionID: "s1", callID: "c1" },
+      { args: { prompt } },
+    );
+    // No throw means success
+  });
+
+  it("invalid prompt throws with format error", async () => {
+    const plugin = await zookeeper({});
+    const prompt = "Some random text without any sections";
+    await assert.rejects(
+      async () =>
+        plugin["tool.execute.before"](
+          { tool: "task", sessionID: "s1", callID: "c1" },
+          { args: { prompt } },
+        ),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.ok(err.message.includes("Task prompt format error"));
+        assert.ok(err.message.includes("SUMMARY"));
+        assert.ok(err.message.includes("CONTEXT"));
+        assert.ok(err.message.includes("ACCEPTANCE"));
+        assert.ok(err.message.includes("Required format"));
+        return true;
+      },
+    );
+  });
+
+  it("rejects CONTEXT too long via hook", async () => {
+    const plugin = await zookeeper({});
+    const longContext = "word ".repeat(101).trim();
+    const prompt = validPrompt({ context: longContext });
+    await assert.rejects(
+      async () =>
+        plugin["tool.execute.before"](
+          { tool: "task", sessionID: "s1", callID: "c1" },
+          { args: { prompt } },
+        ),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.ok(err.message.includes("Task prompt format error"));
+        assert.ok(err.message.includes("CONTEXT too long"));
+        return true;
+      },
+    );
+  });
+
+  it("rejects forbidden patterns in CONTEXT via hook", async () => {
+    const plugin = await zookeeper({});
+    const prompt = validPrompt({
+      context: "The bug is at src/db.py line 42. Fix it.",
+    });
+    await assert.rejects(
+      async () =>
+        plugin["tool.execute.before"](
+          { tool: "task", sessionID: "s1", callID: "c1" },
+          { args: { prompt } },
+        ),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.ok(err.message.includes("Task prompt format error"));
+        assert.ok(err.message.includes("line-number"));
+        return true;
+      },
+    );
+  });
+
+  it("non-task tools are skipped", async () => {
+    const plugin = await zookeeper({});
+    // Even with an invalid prompt, non-task tools must not validate
+    await plugin["tool.execute.before"](
+      { tool: "grep", sessionID: "s1", callID: "c1" },
+      { args: { prompt: "no sections at all here" } },
+    );
+    // No throw means success
+  });
+
+  it("missing args handled gracefully", async () => {
+    const plugin = await zookeeper({});
+    await plugin["tool.execute.before"](
+      { tool: "task", sessionID: "s1", callID: "c1" },
+      {}, // no args at all
+    );
+    // No throw means success
+  });
+
+  it("missing prompt in args handled gracefully", async () => {
+    const plugin = await zookeeper({});
+    await plugin["tool.execute.before"](
+      { tool: "task", sessionID: "s1", callID: "c1" },
+      { args: { someOtherField: "value" } },
+    );
+    // No throw means success
+  });
+
+  it("non-string prompt handled gracefully", async () => {
+    const plugin = await zookeeper({});
+    await plugin["tool.execute.before"](
+      { tool: "task", sessionID: "s1", callID: "c1" },
+      { args: { prompt: 123 } },
+    );
+    // No throw means success
+  });
+
+  it("null prompt handled gracefully", async () => {
+    const plugin = await zookeeper({});
+    await plugin["tool.execute.before"](
+      { tool: "task", sessionID: "s1", callID: "c1" },
+      { args: { prompt: null } },
+    );
+    // No throw means success
   });
 });
 

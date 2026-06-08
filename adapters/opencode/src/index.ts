@@ -239,12 +239,12 @@ export async function zookeeper(input: any) {
     },
 
     async "tool.execute.before"(
-      input: { tool: string; args?: Record<string, unknown> },
-      _output: { args?: Record<string, unknown> },
+      input: { tool: string; sessionID: string; callID: string },
+      output: { args?: Record<string, unknown> },
     ) {
       if (input.tool !== "task") return;
 
-      const promptArg = input.args?.prompt;
+      const promptArg = output.args?.prompt;
       if (typeof promptArg !== "string") return;
 
       const result = validateTaskPrompt(promptArg);
