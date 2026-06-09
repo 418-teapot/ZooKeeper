@@ -5,8 +5,22 @@
  * `tool.execute.before` hook to verify build agent `task()` prompt format.
  */
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import { TASK_PROMPT_HINT, validateTaskPrompt, zookeeper } from "./index.js";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, resolve } from "node:path";
+import { after, before, describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
+import {
+  loadValidationConfig,
+  TASK_PROMPT_HINT,
+  validateTaskPrompt,
+  zookeeper,
+} from "./index.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -28,6 +42,45 @@ function validPrompt(overrides?: {
   const a =
     overrides?.acceptance ?? "All auth tests pass with no new flaky tests";
   return `SUMMARY: ${s}\nCONTEXT: ${c}\nACCEPTANCE: ${a}`;
+}
+
+// ---------------------------------------------------------------------------
+// Test fixture: ensure core/config.json exists for plugin init tests.
+// zookeeper() calls loadValidationConfig() on startup, which throws if the
+// file is missing or malformed.
+// ---------------------------------------------------------------------------
+
+const CORE_DIR = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../core",
+);
+const CONFIG_PATH = resolve(CORE_DIR, "config.json");
+let originalContent: string | null = null;
+
+before(() => {
+  if (!existsSync(CORE_DIR)) mkdirSync(CORE_DIR, { recursive: true });
+  if (existsSync(CONFIG_PATH)) {
+    originalContent = readFileSync(CONFIG_PATH, "utf-8");
+    return;
+  }
+  writeFileSync(CONFIG_PATH, validConfigJson());
+});
+
+after(() => {
+  if (originalContent !== null) {
+    writeFileSync(CONFIG_PATH, originalContent);
+    return;
+  }
+  if (existsSync(CONFIG_PATH)) rmSync(CONFIG_PATH);
+});
+
+/** Helper: serialize the default test config to JSON. */
+function validConfigJson(): string {
+  return `${JSON.stringify(
+    { context_word_limit: 100, prompt_word_limit: 250 },
+    null,
+    2,
+  )}\n`;
 }
 
 // ---------------------------------------------------------------------------
@@ -125,35 +178,38 @@ describe("extractSections (via validateTaskPrompt)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Word count limits
+// Word count limits → soft warnings
 // ---------------------------------------------------------------------------
 
-describe("CONTEXT word count limit (≤ 100)", () => {
+describe("CONTEXT word count limit (≤ 100) — soft warning", () => {
   it("passes when CONTEXT is exactly 100 words", () => {
     // Generate exactly 100 words
     const words = Array.from({ length: 100 }, (_, i) => `word${i + 1}`);
     const prompt = validPrompt({ context: words.join(" ") });
     const result = validateTaskPrompt(prompt);
     assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+    assert.deepEqual(result.warnings, []);
   });
 
-  it("fails when CONTEXT exceeds 100 words", () => {
+  it("warns when CONTEXT exceeds 100 words", () => {
     const words = Array.from({ length: 101 }, (_, i) => `word${i + 1}`);
     const prompt = validPrompt({ context: words.join(" ") });
     const result = validateTaskPrompt(prompt);
-    assert.equal(result.valid, false);
-    assert.ok(result.errors.some((e) => e.includes("CONTEXT too long")));
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+    assert.ok(result.warnings.some((e) => e.includes("101 words")));
   });
 
-  it("reports the actual word count in the error", () => {
+  it("reports the actual word count in the warning", () => {
     const words = Array.from({ length: 150 }, (_, i) => `word${i + 1}`);
     const prompt = validPrompt({ context: words.join(" ") });
     const result = validateTaskPrompt(prompt);
-    assert.ok(result.errors[0].includes("150"));
+    assert.ok(result.warnings[0].includes("150"));
   });
 });
 
-describe("total prompt word count limit (≤ 250)", () => {
+describe("total prompt word count limit (≤ 250) — soft warning", () => {
   it("passes when total is well under 250 and CONTEXT is under 100", () => {
     const contextWords = Array.from({ length: 97 }, (_, i) => `word${i + 1}`);
     const prompt = validPrompt({
@@ -164,6 +220,7 @@ describe("total prompt word count limit (≤ 250)", () => {
     // Total = 3 (headers) + 3 (summary) + 97 (context) + 3 (acceptance) = 106
     const result = validateTaskPrompt(prompt);
     assert.equal(result.valid, true);
+    assert.deepEqual(result.warnings, []);
   });
 
   it("passes when CONTEXT is exactly 100 and total is under 250", () => {
@@ -176,9 +233,10 @@ describe("total prompt word count limit (≤ 250)", () => {
     // Total = 3 (headers) + 1 (summary) + 100 (context) + 2 (acceptance) = 106
     const result = validateTaskPrompt(prompt);
     assert.equal(result.valid, true);
+    assert.deepEqual(result.warnings, []);
   });
 
-  it("fails when CONTEXT is moderate but total exceeds 250", () => {
+  it("warns when CONTEXT is moderate but total exceeds 250", () => {
     // CONTEXT = 50 words (well under 100 limit)
     // We need SUMMARY + ACCEPTANCE to push total over 250
     // Total = 3 (headers) + S + 50 + A > 250  →  S + A > 197
@@ -195,69 +253,229 @@ describe("total prompt word count limit (≤ 250)", () => {
     ].join("\n");
     // Total = 3 + 100 + 50 + 100 = 253 > 250
     const result = validateTaskPrompt(prompt);
-    assert.equal(result.valid, false);
-    assert.ok(result.errors.some((e) => e.includes("Total prompt too long")));
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+    assert.ok(
+      result.warnings.some(
+        (e) => e.includes("253 words") || e.includes("concise"),
+      ),
+    );
   });
 });
 
 // ---------------------------------------------------------------------------
-// Forbidden patterns in CONTEXT
+// Configurable word-count limits
 // ---------------------------------------------------------------------------
 
-describe("forbidden patterns in CONTEXT", () => {
-  it("rejects triple-backtick code blocks in CONTEXT", () => {
+describe("loadValidationConfig behaviour", () => {
+  it("returns loaded limits when core/config.json is valid", () => {
+    writeFileSync(
+      CONFIG_PATH,
+      JSON.stringify(
+        { context_word_limit: 77, prompt_word_limit: 333 },
+        null,
+        2,
+      ),
+    );
+    const limits = loadValidationConfig();
+    assert.equal(limits.contextWordLimit, 77);
+    assert.equal(limits.promptWordLimit, 333);
+    // Restore default fixture for subsequent tests
+    writeFileSync(CONFIG_PATH, validConfigJson());
+  });
+
+  it("throws when core/config.json is missing a required field", () => {
+    writeFileSync(
+      CONFIG_PATH,
+      JSON.stringify({ context_word_limit: 50 }), // missing prompt_word_limit
+    );
+    assert.throws(
+      () => loadValidationConfig(),
+      /missing required fields.*prompt_word_limit/,
+    );
+    // Restore
+    writeFileSync(CONFIG_PATH, validConfigJson());
+  });
+
+  it("throws when core/config.json contains invalid JSON", () => {
+    writeFileSync(CONFIG_PATH, "{not valid json");
+    assert.throws(() => loadValidationConfig(), /invalid JSON/);
+    // Restore
+    writeFileSync(CONFIG_PATH, validConfigJson());
+  });
+
+  it("throws when core/config.json does not exist", () => {
+    rmSync(CONFIG_PATH);
+    assert.throws(
+      () => loadValidationConfig(),
+      /Cannot read core\/config\.json/,
+    );
+    // Restore for subsequent tests
+    writeFileSync(CONFIG_PATH, validConfigJson());
+  });
+});
+
+describe("validateTaskPrompt with custom limits", () => {
+  it("uses custom contextWordLimit instead of default 100", () => {
+    // With default 100, 80 words would pass; with custom 50, 80 words warns
+    const contextWords = Array.from({ length: 80 }, (_, i) => `word${i + 1}`);
+    const prompt = validPrompt({ context: contextWords.join(" ") });
+    const result = validateTaskPrompt(prompt, { contextWordLimit: 50 });
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+    assert.ok(result.warnings.some((e) => e.includes("80 words")));
+  });
+
+  it("passes context word count check with generous limit", () => {
+    const contextWords = Array.from({ length: 200 }, (_, i) => `word${i + 1}`);
+    const prompt = validPrompt({ context: contextWords.join(" ") });
+    const result = validateTaskPrompt(prompt, { contextWordLimit: 250 });
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+    assert.equal(
+      result.warnings.filter((w) => w.includes("CONTEXT is")).length,
+      0,
+    );
+  });
+
+  it("uses custom promptWordLimit instead of default 250", () => {
+    const contextWords = Array.from({ length: 50 }, (_, i) => `word${i + 1}`);
+    const summaryWords = Array.from({ length: 80 }, (_, i) => `word${i + 1}`);
+    const acceptanceWords = Array.from(
+      { length: 80 },
+      (_, i) => `word${i + 1}`,
+    );
+    const prompt = [
+      `SUMMARY: ${summaryWords.join(" ")}`,
+      `CONTEXT: ${contextWords.join(" ")}`,
+      `ACCEPTANCE: ${acceptanceWords.join(" ")}`,
+    ].join("\n");
+    // Total ≈ 3 + 80 + 50 + 80 = 213, which exceeds custom limit of 150
+    const result = validateTaskPrompt(prompt, { promptWordLimit: 150 });
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+    assert.ok(result.warnings.some((e) => e.includes("concise")));
+  });
+
+  it("passes total word count check with generous limit", () => {
+    const contextWords = Array.from({ length: 80 }, (_, i) => `word${i + 1}`);
+    const summaryWords = Array.from({ length: 100 }, (_, i) => `word${i + 1}`);
+    const acceptanceWords = Array.from(
+      { length: 100 },
+      (_, i) => `word${i + 1}`,
+    );
+    const prompt = [
+      `SUMMARY: ${summaryWords.join(" ")}`,
+      `CONTEXT: ${contextWords.join(" ")}`,
+      `ACCEPTANCE: ${acceptanceWords.join(" ")}`,
+    ].join("\n");
+    // Total ≈ 3 + 100 + 80 + 100 = 283, but custom limit of 500 passes
+    const result = validateTaskPrompt(prompt, { promptWordLimit: 500 });
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+    assert.equal(
+      result.warnings.filter((w) => w.includes("concise")).length,
+      0,
+    );
+  });
+
+  it("accepts both limits overridden simultaneously", () => {
+    const contextWords = Array.from({ length: 60 }, (_, i) => `word${i + 1}`);
+    const prompt = validPrompt({ context: contextWords.join(" ") });
+    // 60 > 50 (context limit) → warn; total ≈ 3+3+60+3 = 69 < 300 → no total warn
+    const result = validateTaskPrompt(prompt, {
+      contextWordLimit: 50,
+      promptWordLimit: 300,
+    });
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+    assert.ok(result.warnings.some((e) => e.includes("60 words")));
+    assert.equal(
+      result.warnings.filter((w) => w.includes("concise")).length,
+      0,
+    );
+  });
+
+  it("uses default for omitted limit when only one is provided (partial)", () => {
+    // Only override promptWordLimit; contextWordLimit stays at default 100
+    const contextWords = Array.from({ length: 101 }, (_, i) => `word${i + 1}`);
+    const prompt = validPrompt({ context: contextWords.join(" ") });
+    const result = validateTaskPrompt(prompt, { promptWordLimit: 300 });
+    // contextWordLimit defaults to 100 → 101 > 100 should warn
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+    assert.ok(result.warnings.some((e) => e.includes("101 words")));
+    // prompt is ~107 words, well under 300 → no total warning
+    assert.equal(
+      result.warnings.filter((w) => w.includes("concise")).length,
+      0,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Forbidden patterns in CONTEXT → soft warnings
+// ---------------------------------------------------------------------------
+
+describe("forbidden patterns in CONTEXT — soft warning", () => {
+  it("warns on triple-backtick code blocks in CONTEXT", () => {
     const prompt = validPrompt({
       context:
         "The function signature is:\n```\ndef foo()\n```\nDo not change it.",
     });
     const result = validateTaskPrompt(prompt);
-    assert.equal(result.valid, false);
-    assert.ok(result.errors.some((e) => e.includes("code blocks")));
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+    assert.ok(result.warnings.some((e) => e.includes("code blocks")));
   });
 
-  it('rejects "line N" references in CONTEXT', () => {
+  it('warns on "line N" references in CONTEXT', () => {
     const prompt = validPrompt({
       context: "The bug is at src/db.py line 42. Fix it.",
     });
     const result = validateTaskPrompt(prompt);
-    assert.equal(result.valid, false);
-    assert.ok(result.errors.some((e) => e.includes("line-number")));
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+    assert.ok(result.warnings.some((e) => e.includes("line references")));
   });
 
-  it('rejects "行 N" references in CONTEXT', () => {
+  it('warns on "行 N" references in CONTEXT', () => {
     const prompt = validPrompt({
       context: "问题出现在 src/db.py 行 42 位置",
     });
     const result = validateTaskPrompt(prompt);
-    assert.equal(result.valid, false);
-    assert.ok(result.errors.some((e) => e.includes("行")));
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+    assert.ok(result.warnings.some((e) => e.includes("line references")));
   });
 
-  it('rejects "第 N 行" references in CONTEXT', () => {
+  it('warns on "第 N 行" references in CONTEXT', () => {
     const prompt = validPrompt({
       context:
         "bug 在 src/api/handler.go 第 42 行，response 对象没有做 nil 检查",
     });
     const result = validateTaskPrompt(prompt);
-    assert.equal(result.valid, false);
-    assert.ok(result.errors.some((e) => e.includes("行")));
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+    assert.ok(result.warnings.some((e) => e.includes("line references")));
   });
 
-  it("reports multiple forbidden patterns at once", () => {
+  it("reports multiple nudge patterns at once", () => {
     const prompt = validPrompt({
       context:
         "The bug is at src/db.py line 42. Code:\n```\ndef foo()\n```\nFix the 行 42 issue.",
     });
     const result = validateTaskPrompt(prompt);
-    assert.equal(result.valid, false);
-    const codeBlockErrors = result.errors.filter((e) =>
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+    const codeBlockWarnings = result.warnings.filter((e) =>
       e.includes("code blocks"),
     );
-    const lineRefErrors = result.errors.filter((e) =>
-      e.includes("line-number"),
+    const lineRefWarnings = result.warnings.filter((e) =>
+      e.includes("line references"),
     );
-    assert.ok(codeBlockErrors.length >= 1);
-    assert.ok(lineRefErrors.length >= 1);
+    assert.ok(codeBlockWarnings.length >= 1);
+    assert.ok(lineRefWarnings.length >= 1);
   });
 
   it("passes when CONTEXT has no forbidden patterns", () => {
@@ -267,6 +485,8 @@ describe("forbidden patterns in CONTEXT", () => {
     });
     const result = validateTaskPrompt(prompt);
     assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+    assert.deepEqual(result.warnings, []);
   });
 });
 
@@ -348,9 +568,15 @@ describe("edge cases", () => {
     const longContext = "word ".repeat(300).trim();
     const prompt = validPrompt({ context: longContext });
     const result = validateTaskPrompt(prompt);
-    assert.equal(result.valid, false);
-    assert.ok(result.errors.some((e) => e.includes("CONTEXT too long")));
-    assert.ok(result.errors.some((e) => e.includes("Total prompt too long")));
+    // Sections are present → valid, word count issues are soft warnings
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+    assert.ok(
+      result.warnings.some(
+        (e) => e.includes("300 words") || e.includes("splitting"),
+      ),
+    );
+    assert.ok(result.warnings.some((e) => e.includes("concise")));
   });
 });
 
@@ -504,43 +730,49 @@ describe("tool.execute.before hook", () => {
     );
   });
 
-  it("rejects CONTEXT too long via hook", async () => {
+  it("does not throw on CONTEXT too long — nudge delivered via tool.execute.after", async () => {
     const plugin = await zookeeper({});
     const longContext = "word ".repeat(101).trim();
     const prompt = validPrompt({ context: longContext });
-    await assert.rejects(
-      async () =>
-        plugin["tool.execute.before"](
-          { tool: "task", sessionID: "s1", callID: "c1" },
-          { args: { prompt } },
-        ),
-      (err: unknown) => {
-        assert.ok(err instanceof Error);
-        assert.ok(err.message.includes("Task prompt format error"));
-        assert.ok(err.message.includes("CONTEXT too long"));
-        return true;
-      },
+    // Must not throw — structural check passes, warnings are soft
+    await plugin["tool.execute.before"](
+      { tool: "task", sessionID: "s1", callID: "c1" },
+      { args: { prompt } },
     );
+    // Now verify the nudge is appended via tool.execute.after
+    const afterOutput: { args?: Record<string, unknown>; output?: string } = {
+      args: { prompt },
+      output: "Task completed successfully",
+    };
+    await plugin["tool.execute.after"](
+      { tool: "task", sessionID: "s1", callID: "c1" },
+      afterOutput,
+    );
+    assert.ok(afterOutput.output?.includes("Guidance for next time"));
+    assert.ok(afterOutput.output?.includes("101 words"));
   });
 
-  it("rejects forbidden patterns in CONTEXT via hook", async () => {
+  it("does not throw on line references — nudge delivered via tool.execute.after", async () => {
     const plugin = await zookeeper({});
     const prompt = validPrompt({
       context: "The bug is at src/db.py line 42. Fix it.",
     });
-    await assert.rejects(
-      async () =>
-        plugin["tool.execute.before"](
-          { tool: "task", sessionID: "s1", callID: "c1" },
-          { args: { prompt } },
-        ),
-      (err: unknown) => {
-        assert.ok(err instanceof Error);
-        assert.ok(err.message.includes("Task prompt format error"));
-        assert.ok(err.message.includes("line-number"));
-        return true;
-      },
+    // Must not throw — structural check passes, warnings are soft
+    await plugin["tool.execute.before"](
+      { tool: "task", sessionID: "s1", callID: "c1" },
+      { args: { prompt } },
     );
+    // Now verify the nudge is appended via tool.execute.after
+    const afterOutput: { args?: Record<string, unknown>; output?: string } = {
+      args: { prompt },
+      output: "Task completed successfully",
+    };
+    await plugin["tool.execute.after"](
+      { tool: "task", sessionID: "s1", callID: "c1" },
+      afterOutput,
+    );
+    assert.ok(afterOutput.output?.includes("Guidance for next time"));
+    assert.ok(afterOutput.output?.includes("line references"));
   });
 
   it("non-task tools are skipped", async () => {
@@ -587,6 +819,60 @@ describe("tool.execute.before hook", () => {
       { args: { prompt: null } },
     );
     // No throw means success
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tool.execute.after hook (soft nudges)
+// ---------------------------------------------------------------------------
+
+describe("tool.execute.after hook (nudge delivery)", () => {
+  it("appends nudges when prompt has soft warnings", async () => {
+    const plugin = await zookeeper({});
+    const longContext = "word ".repeat(101).trim();
+    const prompt = validPrompt({ context: longContext });
+    const output: { args?: Record<string, unknown>; output?: string } = {
+      args: { prompt },
+      output: "Task result here",
+    };
+    await plugin["tool.execute.after"](
+      { tool: "task", sessionID: "s1", callID: "c1" },
+      output,
+    );
+    assert.ok(output.output?.includes("Guidance for next time"));
+    assert.ok(output.output?.includes("101 words"));
+    // Original output preserved
+    assert.ok(output.output?.startsWith("Task result here"));
+  });
+
+  it("does NOT append nudges when prompt is clean", async () => {
+    const plugin = await zookeeper({});
+    const prompt = validPrompt(); // short, no forbidden patterns
+    const output: { args?: Record<string, unknown>; output?: string } = {
+      args: { prompt },
+      output: "Task completed",
+    };
+    await plugin["tool.execute.after"](
+      { tool: "task", sessionID: "s1", callID: "c1" },
+      output,
+    );
+    assert.equal(output.output, "Task completed");
+  });
+
+  it("non-task tools are skipped", async () => {
+    const plugin = await zookeeper({});
+    const prompt = validPrompt({
+      context: "line 42 bug here", // would trigger nudge if this were task
+    });
+    const output: { args?: Record<string, unknown>; output?: string } = {
+      args: { prompt },
+      output: "grep result",
+    };
+    await plugin["tool.execute.after"](
+      { tool: "grep", sessionID: "s1", callID: "c1" },
+      output,
+    );
+    assert.equal(output.output, "grep result");
   });
 });
 

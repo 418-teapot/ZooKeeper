@@ -314,6 +314,32 @@ def main() -> None:
         error(f"JSON 格式无效: {e}")
         sys.exit(1)
 
+    header("生成 ZooKeeper 配置")
+    validation = toml_data.get("validation")
+    if not validation:
+        error("config.toml 缺少 [validation] 段")
+        print("  请添加：")
+        print("    [validation]")
+        print("    context_word_limit = 100")
+        print("    prompt_word_limit  = 250")
+        sys.exit(1)
+    missing_fields = [
+        f for f in ("context_word_limit", "prompt_word_limit") if f not in validation
+    ]
+    if missing_fields:
+        error(f"config.toml [validation] 段缺少字段: {', '.join(missing_fields)}")
+        print("  请补全所有必填字段。")
+        sys.exit(1)
+    project_config = {
+        "context_word_limit": validation["context_word_limit"],
+        "prompt_word_limit": validation["prompt_word_limit"],
+    }
+    config_path = os.path.join(SCRIPT_DIR, "core", "config.json")
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(project_config, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    info(f"✓ 项目配置已写入: {config_path}")
+
     header("安装完成")
     info(f"✅ 配置已写入: {opencode_json}")
     print("")

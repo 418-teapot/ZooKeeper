@@ -79,3 +79,9 @@ grep = "deny"
 [defaults]
 model       = "{env:CAMBRICON_MODEL}"
 small_model = "{env:CAMBRICON_SMALL_MODEL}"
+
+# ── Validation thresholds ──────────────────────────────────────────────────
+
+[validation]
+context_word_limit = 200
+prompt_word_limit  = 500

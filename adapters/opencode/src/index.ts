@@ -1,12 +1,13 @@
 /**
  * ZooKeeper — OpenCode plugin entry point.
  * Prompt injection via `config` hook + `task()` prompt validation via
- * `tool.execute.before` hook.
+ * `tool.execute.before` hook + advisory nudges via `tool.execute.after`.
  *
  * Tool deny-listing is a single source of truth defined in `config.toml`,
  * compiled by `install.py` into `~/.config/opencode/opencode.json`.
  * The plugin injects prompt files at runtime via `config` hook,
- * and validates task() prompt format at runtime via `tool.execute.before` hook.
+ * validates task() prompt structure via `tool.execute.before`,
+ * and appends soft guidance nudges via `tool.execute.after`.
  *
  * TODO: Add Claude Code adapter (PreToolUse Python hook + CLAUDE.md).
  */
@@ -27,7 +28,7 @@ const CORE_DIR = resolve(__dirname, "../../../core");
  * The LLM sees this in the schema on every call.
  */
 export const TASK_PROMPT_HINT =
-  "Format: SUMMARY (1 sentence), CONTEXT (≤ 100 words — only facts subagent cannot discover: user intent, constraints, prior failures, fresh error output), ACCEPTANCE (1-2 verifiable outcomes). Max 250 words total. If CONTEXT needs > 100 words, the task is too large — split into multiple task() calls.";
+  "Format: SUMMARY (1 sentence — desired outcome) | CONTEXT (facts subagent cannot discover: target file path, user intent, constraints, prior failure conclusions) | ACCEPTANCE (1-2 verifiable outcomes). Keep CONTEXT focused on WHAT and WHY, not HOW — subagents read files and decide implementation themselves.";
 
 // ---------------------------------------------------------------------------
 // Prompt loading
@@ -112,7 +113,7 @@ function wordCount(text: string): number {
 }
 
 // ---------------------------------------------------------------------------
-// Forbidden pattern detection
+// Nudge pattern detection — advisory, not blocking
 // ---------------------------------------------------------------------------
 
 const LINE_REF_RE = /\bline\s+\d+\b/i;
@@ -120,32 +121,30 @@ const CHINESE_LINE_REF_RE = /行\s*\d+|第\s*\d+\s*行/;
 const CODE_BLOCK_RE = /```/;
 
 /**
- * Check a CONTEXT section for patterns that are not allowed.
+ * Check a CONTEXT section for patterns worth nudging about.
  *
- * Forbidden items (from build.md):
- *   - Code blocks (triple-backtick fences)
- *   - Line-number references ("line X", "行 X")
- *   - File-content transcriptions (estimated via word-count limit)
+ * These are advisory suggestions, not hard rules. They help the orchestrator
+ * write better prompts over time without blocking execution.
  *
  * @param context - The extracted CONTEXT section content.
- * @returns A list of human-readable error messages (empty = no issues).
+ * @returns A list of advisory nudge messages (empty = no issues).
  */
-function checkForbiddenPatterns(context: string): string[] {
-  const errors: string[] = [];
+function buildContextNudges(context: string): string[] {
+  const nudges: string[] = [];
 
   if (CODE_BLOCK_RE.test(context)) {
-    errors.push("CONTEXT contains code blocks (triple backticks)");
+    nudges.push(
+      "CONTEXT contains code blocks — subagents can read files themselves, consider describing the intent instead.",
+    );
   }
 
-  if (LINE_REF_RE.test(context)) {
-    errors.push('CONTEXT contains line-number references ("line N")');
+  if (LINE_REF_RE.test(context) || CHINESE_LINE_REF_RE.test(context)) {
+    nudges.push(
+      "CONTEXT contains line references — lines change; let subagents locate the exact code.",
+    );
   }
 
-  if (CHINESE_LINE_REF_RE.test(context)) {
-    errors.push('CONTEXT contains line-number references ("行 N")');
-  }
-
-  return errors;
+  return nudges;
 }
 
 // ---------------------------------------------------------------------------
@@ -153,24 +152,91 @@ function checkForbiddenPatterns(context: string): string[] {
 // ---------------------------------------------------------------------------
 
 /**
+ * Configurable word-count limits for task prompt validation,
+ * loaded from `core/config.json` at plugin initialization.
+ */
+export interface ValidationLimits {
+  contextWordLimit: number;
+  promptWordLimit: number;
+}
+
+/**
+ * Load validation limits from `core/config.json`.
+ *
+ * Called once at plugin initialization. Throws on any misconfiguration:
+ * missing file, invalid JSON, or missing fields.
+ *
+ * @returns A `ValidationLimits` object with both thresholds.
+ * @throws Error if config.json is missing or malformed.
+ */
+export function loadValidationConfig(): ValidationLimits {
+  let raw: string;
+  try {
+    raw = readFileSync(resolve(CORE_DIR, "config.json"), "utf-8");
+  } catch (err) {
+    throw new Error(
+      `Cannot read core/config.json: ${(err as Error).message}. ` +
+        "Run `python3 install.py` to generate it from config.toml.",
+    );
+  }
+
+  let config: Record<string, unknown>;
+  try {
+    config = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(
+      `core/config.json contains invalid JSON: ${(err as Error).message}. ` +
+        "Run `python3 install.py` to regenerate it.",
+    );
+  }
+
+  const missing: string[] = [];
+  if (typeof config.context_word_limit !== "number")
+    missing.push("context_word_limit");
+  if (typeof config.prompt_word_limit !== "number")
+    missing.push("prompt_word_limit");
+  if (missing.length > 0) {
+    throw new Error(
+      `core/config.json is missing required fields: ${missing.join(", ")}. ` +
+        "Re-run `python3 install.py` to regenerate it from config.toml.",
+    );
+  }
+  return {
+    contextWordLimit: config.context_word_limit as number,
+    promptWordLimit: config.prompt_word_limit as number,
+  };
+}
+
+/**
  * Validate a task() prompt against the build.md specification.
  *
- * Rules checked, in order:
- * 1. All three required sections (SUMMARY, CONTEXT, ACCEPTANCE) are present.
- * 2. CONTEXT ≤ 100 words.
- * 3. Total prompt ≤ 250 words.
- * 4. CONTEXT contains no forbidden patterns (code blocks, line references).
+ * Hard check (blocking):
+ *   1. All three required sections (SUMMARY, CONTEXT, ACCEPTANCE) are present.
+ *
+ * Soft checks (advisory nudges, not blocking):
+ *   2. CONTEXT ≤ `limits.contextWordLimit` words — nudge to split or condense.
+ *   3. Total prompt ≤ `limits.promptWordLimit` words — nudge toward conciseness.
+ *   4. CONTEXT contains code blocks or line references — nudge toward intent.
  *
  * @param prompt - The `prompt` argument passed to the `task()` tool.
- * @returns Validation result with `valid` flag and list of error messages.
+ * @param limits - Optional thresholds; defaults to 100 (context) and 250 (total).
+ * @returns Validation result with `valid` flag, hard `errors`, and soft `warnings`.
  */
-export function validateTaskPrompt(prompt: string): {
+export function validateTaskPrompt(
+  prompt: string,
+  limits?: Partial<ValidationLimits>,
+): {
   valid: boolean;
   errors: string[];
+  warnings: string[];
 } {
   const errors: string[] = [];
+  const warnings: string[] = [];
 
-  // --- 1. Extract sections ---
+  const contextWordLimit = limits?.contextWordLimit ?? 100;
+  const promptWordLimit = limits?.promptWordLimit ?? 250;
+
+  // --- 1. Extract sections (hard check) ---
   const sections = extractSections(prompt);
   const required = ["SUMMARY", "CONTEXT", "ACCEPTANCE"];
 
@@ -180,27 +246,31 @@ export function validateTaskPrompt(prompt: string): {
     }
   }
 
-  // If CONTEXT is missing we can't proceed with the rest of the checks
+  // If CONTEXT is missing we can't proceed with soft checks
   if (!sections.CONTEXT) {
-    return { valid: false, errors };
+    return { valid: false, errors, warnings };
   }
 
-  // --- 2. CONTEXT word count ≤ 100 ---
+  // --- 2. CONTEXT word count (soft) ---
   const cw = wordCount(sections.CONTEXT);
-  if (cw > 100) {
-    errors.push(`CONTEXT too long: ${cw} words (max 100)`);
+  if (cw > contextWordLimit) {
+    warnings.push(
+      `CONTEXT is ${cw} words — consider splitting into multiple task() calls if subagent struggles with this much context.`,
+    );
   }
 
-  // --- 3. Total prompt word count ≤ 250 ---
+  // --- 3. Total prompt word count (soft) ---
   const tw = wordCount(prompt);
-  if (tw > 250) {
-    errors.push(`Total prompt too long: ${tw} words (max 250)`);
+  if (tw > promptWordLimit) {
+    warnings.push(
+      `Total prompt is ${tw} words — subagents work best with concise task descriptions.`,
+    );
   }
 
-  // --- 4. Forbidden patterns in CONTEXT ---
-  errors.push(...checkForbiddenPatterns(sections.CONTEXT));
+  // --- 4. Pattern nudges in CONTEXT (soft) ---
+  warnings.push(...buildContextNudges(sections.CONTEXT));
 
-  return { valid: errors.length === 0, errors };
+  return { valid: errors.length === 0, errors, warnings };
 }
 
 // ---------------------------------------------------------------------------
@@ -212,6 +282,8 @@ export function validateTaskPrompt(prompt: string): {
  * @returns Plugin hooks object.
  */
 export async function zookeeper(input: any) {
+  const limits = loadValidationConfig();
+
   return {
     async config(config: any) {
       const agents = config.agent ?? {};
@@ -247,18 +319,38 @@ export async function zookeeper(input: any) {
       const promptArg = output.args?.prompt;
       if (typeof promptArg !== "string") return;
 
-      const result = validateTaskPrompt(promptArg);
+      const result = validateTaskPrompt(promptArg, limits);
+      // Hard check: missing sections → throw (blocking)
       if (!result.valid) {
         const details = result.errors.map((e) => `- ${e}`).join("\n");
         throw new Error(
           `Task prompt format error:\n${details}\n\n` +
             "Required format:\n" +
-            "- SUMMARY: one sentence\n" +
-            "- CONTEXT: 2-4 lines, ≤ 100 words\n" +
-            "- ACCEPTANCE: one sentence\n\n" +
+            "- SUMMARY: one sentence — desired outcome\n" +
+            "- CONTEXT: facts subagent cannot discover\n" +
+            "- ACCEPTANCE: 1-2 verifiable outcomes\n\n" +
             "Please rewrite before delegating.",
         );
       }
+      // Soft warnings are handled by tool.execute.after hook
+    },
+
+    async "tool.execute.after"(
+      input: { tool: string; sessionID: string; callID: string },
+      output: { args?: Record<string, unknown>; output?: string },
+    ) {
+      if (input.tool !== "task") return;
+
+      const promptArg = output.args?.prompt;
+      if (typeof promptArg !== "string") return;
+
+      const result = validateTaskPrompt(promptArg, limits);
+      if (result.warnings.length === 0) return;
+
+      // Append nudges to tool output so the orchestrator LLM sees them
+      const nudgeText = result.warnings.map((w) => `- ${w}`).join("\n");
+      const suffix = `\n\n--- Guidance for next time ---\n${nudgeText}`;
+      output.output = (output.output ?? "") + suffix;
     },
   };
 }

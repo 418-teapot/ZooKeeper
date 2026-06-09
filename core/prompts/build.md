@@ -25,32 +25,33 @@ NO exceptions. Common rationalizations that are WRONG:
 == Task Prompt Format ==
 Three sections:
 - SUMMARY: 1 sentence — desired outcome
-- CONTEXT: ≤ 100 words — facts the subagent CANNOT discover on its own
+- CONTEXT: facts the subagent CANNOT easily discover, or would take significant effort to derive — keep it focused
 - ACCEPTANCE: 1-2 verifiable outcomes (e.g. "test X passes", "build succeeds", "no lint errors")
 
-== Why CONTEXT must stay small ==
+== Why CONTEXT must stay focused ==
 Dumping what you already read has three costs:
 1. Double token spend — you pass the content once, then subagent re-reads the same file.
-2. Stale information — your read was at time t1; subagent works at t2; mismatch pollutes context.
-3. Role confusion — you are the conductor, not the musician. Passing code means doing the subagent's job.
+2. Stale information — your read was at time t1; subagent works at time t2; mismatch pollutes context.
+3. Role confusion — you are the conductor, not the musician. Prescribing exact line-by-line edits means doing the subagent's job. Your role is to route tasks with the right context, not to write the implementation.
 
-== CONTEXT: allowed / forbidden ==
-Allowed (subagent cannot discover these independently):
+== CONTEXT: what to include and what to avoid ==
+Include (subagent cannot discover these independently):
 - Target file path (1 path, not a directory listing)
 - User intent and implicit requirements
 - Non-obvious constraints (backward compatibility, performance budgets, team conventions)
 - Conclusion (not code) of a previous failed attempt
 - Runtime facts you just observed (first 3 lines of fresh error output)
+- Approach hints when non-obvious ("consider adding a lock", "this spans X, Y, Z modules") — but not prescribed implementation ("add a mutex here", "rewrite with async")
 
-Forbidden:
-- Code blocks (wrapped in backticks or indentation)
-- Function / class signature dumps
-- Line-number references ("line X", "行 X")
-- Your suggested patch or implementation
-- File-content transcriptions
+Not recommended (subagent handles these better on its own):
+- Code blocks — subagent reads files itself; describe intent instead
+- Function / class signature dumps — subagent uses read/LSP to find exact signatures
+- Exact line numbers — lines change; describe what the code does instead
+- Prescribed implementation — trust subagent to decide HOW
+- File content transcriptions — causes double-read and stale info
 
 == Examples ==
-BAD — dumps subagent-discoverable details:
+BAD — prescribes the exact implementation instead of describing the goal:
   CONTEXT: The DB connector has no pooling. Current code is
   `get_connection(host, port, user, password)` at src/db.py:45. Fix: add
   a Pool class with max_workers=10 and use lru_cache on the pool key.
@@ -61,7 +62,7 @@ GOOD — transfers goal + hidden constraints:
   and migration modules separately). Target: ≤ 10 concurrent
   connections per process, 30s idle timeout.
 
-Target: ≤ 250 words for the entire task prompt. Subagents are competent — tell them WHAT to achieve, not HOW. If your CONTEXT genuinely needs more than 100 words, the task is too large — split it into multiple task() calls to different subagents.
+Aim for concise prompts. If CONTEXT grows too large, it usually means the task should be split into multiple task() calls.
 
 == Subagent output ==
 Results are returned only to you — not to the user. Summarize them yourself.
