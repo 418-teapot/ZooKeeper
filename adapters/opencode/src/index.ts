@@ -28,6 +28,7 @@ const CORE_DIR = resolve(__dirname, "../../../core");
  * Format guidance shown in the `task` tool's `prompt` parameter description.
  * The LLM sees this in the schema on every call.
  */
+
 export const TASK_PROMPT_HINT =
   "Format: SUMMARY (1 sentence — desired outcome) | CONTEXT (facts subagent cannot discover: target file path, user intent, constraints, prior failure conclusions) | ACCEPTANCE (1-2 verifiable outcomes). Keep CONTEXT focused on WHAT and WHY, not HOW — subagents read files and decide implementation themselves.";
 

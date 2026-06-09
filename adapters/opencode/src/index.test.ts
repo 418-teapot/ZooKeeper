@@ -635,7 +635,7 @@ describe("tool.definition hook", () => {
     const output = {
       description: "Run a task",
       // No parameters at all
-    };
+    } as any;
     // Should not throw
     await plugin["tool.definition"]({ toolID: "task" }, output);
     // Output remains as-is
@@ -720,11 +720,12 @@ describe("tool.execute.before hook", () => {
         ),
       (err: unknown) => {
         assert.ok(err instanceof Error);
-        assert.ok(err.message.includes("Task prompt format error"));
-        assert.ok(err.message.includes("SUMMARY"));
-        assert.ok(err.message.includes("CONTEXT"));
-        assert.ok(err.message.includes("ACCEPTANCE"));
-        assert.ok(err.message.includes("Required format"));
+        const e = err as Error;
+        assert.ok(e.message.includes("Task prompt format error"));
+        assert.ok(e.message.includes("SUMMARY"));
+        assert.ok(e.message.includes("CONTEXT"));
+        assert.ok(e.message.includes("ACCEPTANCE"));
+        assert.ok(e.message.includes("Required format"));
         return true;
       },
     );

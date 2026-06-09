@@ -54,6 +54,14 @@ else
     ok "runner --dry-run"
 fi
 
+section "TypeScript type check"
+if npx tsc --noEmit -p adapters/opencode/tsconfig.json; then
+  ok "tsc --noEmit"
+else
+  fail "tsc --noEmit"
+  FAILED=1
+fi
+
 section "TypeScript tests"
 if npx tsx --test "${TS_TEST_FILES[@]}"; then
   ok "ts tests"
