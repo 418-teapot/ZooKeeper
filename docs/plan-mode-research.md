@@ -484,7 +484,7 @@ You must NEVER: edit, bash, task, webfetch, websearch
 
 **实现步骤**：
 1. 新建 `core/prompts/plan.md`
-2. 在 `adapters/opencode/src/index.ts` 中扩展：
+2. 在 `src/index.ts` 中扩展：
    - 在 `config` hook 中注册 plan agent 并设置为默认（如果未在 config.toml 中配置）
    - 在会话启动时自动进入 plan 模式，注入 plan prompt 并启用工具阻断
    - 在 `chat.message` hook 中实现命令检测（`/go`, `/go-with-risk`, `/redirect`）
@@ -553,7 +553,7 @@ You must NEVER: edit, bash, task, webfetch, websearch
 **代码实现框架**：
 
 ```typescript
-// adapters/opencode/src/plan-mode.ts
+// src/plan-mode.ts
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { dirname } from "node:path";

@@ -59,9 +59,9 @@ ZooKeeper/
 ├── test.sh                  # 统一测试脚本（Python 静态测试 + dry-run + TS 单元测试）
 ├── core/
 │   └── prompts/*.md         # 各 agent 的 prompt 文件（被插件动态注入）
-├── adapters/
-│   └── opencode/src/        # OpenCode 插件 TS 代码
-│       └── index.ts         # 插件入口（config hook）
+├── src/                        # OpenCode 插件 TS 代码
+│   ├── index.ts                # 插件入口（config hook + prompt validation）
+│   └── hooks/                  # 各功能 hook（如 json-error-recovery）
 ├── tests/                   # Prompt 评估测试框架（Phase 1: build.md）
 │   └── runner.py            # 评估测试运行器
 └── docs/                    # 设计文档和调研报告
@@ -79,7 +79,7 @@ ZooKeeper/
 
 - **`install.py`** — 安装脚本入口，读取 config.toml + .env → 生成 OpenCode 配置
 - **`config.toml`** — 用户配置模板（单一事实来源），所有 deny 权限和 agent 配置在此声明
-- **`adapters/opencode/src/index.ts`** — 插件入口，导出 `config` hook 动态注入 prompt
+- **`src/index.ts`** — 插件入口，导出 `config` hook 动态注入 prompt + 任务 prompt 校验
 - **`core/prompts/*.md`** — 各 agent 的 prompt 文件，按 `{agent-name}.md` 命名
 
 ## 调试/日志

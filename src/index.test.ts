@@ -8,10 +8,12 @@ import assert from "node:assert/strict";
 import {
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -50,10 +52,7 @@ function validPrompt(overrides?: {
 // file is missing or malformed.
 // ---------------------------------------------------------------------------
 
-const CORE_DIR = resolve(
-  dirname(fileURLToPath(import.meta.url)),
-  "../../../core",
-);
+const CORE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../core");
 const CONFIG_PATH = resolve(CORE_DIR, "config.json");
 let originalContent: string | null = null;
 
@@ -61,8 +60,9 @@ before(() => {
   if (!existsSync(CORE_DIR)) mkdirSync(CORE_DIR, { recursive: true });
   if (existsSync(CONFIG_PATH)) {
     originalContent = readFileSync(CONFIG_PATH, "utf-8");
-    return;
   }
+  // Always overwrite so tests get the expected limits (100/250),
+  // regardless of what the production file contains.
   writeFileSync(CONFIG_PATH, validConfigJson());
 });
 
@@ -268,50 +268,54 @@ describe("total prompt word count limit (≤ 250) — soft warning", () => {
 // ---------------------------------------------------------------------------
 
 describe("loadValidationConfig behaviour", () => {
+  let tempDir: string;
+  let tempConfigPath: string;
+
+  before(() => {
+    tempDir = mkdtempSync(resolve(tmpdir(), "zookeeper-test-"));
+    tempConfigPath = resolve(tempDir, "config.json");
+  });
+
+  after(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
   it("returns loaded limits when core/config.json is valid", () => {
     writeFileSync(
-      CONFIG_PATH,
+      tempConfigPath,
       JSON.stringify(
         { context_word_limit: 77, prompt_word_limit: 333 },
         null,
         2,
       ),
     );
-    const limits = loadValidationConfig();
+    const limits = loadValidationConfig(tempDir);
     assert.equal(limits.contextWordLimit, 77);
     assert.equal(limits.promptWordLimit, 333);
-    // Restore default fixture for subsequent tests
-    writeFileSync(CONFIG_PATH, validConfigJson());
   });
 
   it("throws when core/config.json is missing a required field", () => {
     writeFileSync(
-      CONFIG_PATH,
+      tempConfigPath,
       JSON.stringify({ context_word_limit: 50 }), // missing prompt_word_limit
     );
     assert.throws(
-      () => loadValidationConfig(),
+      () => loadValidationConfig(tempDir),
       /missing required fields.*prompt_word_limit/,
     );
-    // Restore
-    writeFileSync(CONFIG_PATH, validConfigJson());
   });
 
   it("throws when core/config.json contains invalid JSON", () => {
-    writeFileSync(CONFIG_PATH, "{not valid json");
-    assert.throws(() => loadValidationConfig(), /invalid JSON/);
-    // Restore
-    writeFileSync(CONFIG_PATH, validConfigJson());
+    writeFileSync(tempConfigPath, "{not valid json");
+    assert.throws(() => loadValidationConfig(tempDir), /invalid JSON/);
   });
 
   it("throws when core/config.json does not exist", () => {
-    rmSync(CONFIG_PATH);
+    rmSync(tempConfigPath);
     assert.throws(
-      () => loadValidationConfig(),
+      () => loadValidationConfig(tempDir),
       /Cannot read core\/config\.json/,
     );
-    // Restore for subsequent tests
-    writeFileSync(CONFIG_PATH, validConfigJson());
   });
 });
 

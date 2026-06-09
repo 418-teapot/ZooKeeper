@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { recoverJsonError } from "./hooks/json-error-recovery";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const CORE_DIR = resolve(__dirname, "../../../core");
+const CORE_DIR = resolve(__dirname, "../core");
 
 // ---------------------------------------------------------------------------
 // Task prompt hint — appended to the `prompt` parameter description by the
@@ -168,13 +168,17 @@ export interface ValidationLimits {
  * Called once at plugin initialization. Throws on any misconfiguration:
  * missing file, invalid JSON, or missing fields.
  *
+ * @param coreDir - Optional custom path to the core directory. Defaults to
+ *   the built-in `CORE_DIR` pointing at `<repo>/core/`. Only provided for
+ *   test isolation — production callers always use the default.
  * @returns A `ValidationLimits` object with both thresholds.
  * @throws Error if config.json is missing or malformed.
  */
-export function loadValidationConfig(): ValidationLimits {
+export function loadValidationConfig(coreDir?: string): ValidationLimits {
+  const dir = coreDir ?? CORE_DIR;
   let raw: string;
   try {
-    raw = readFileSync(resolve(CORE_DIR, "config.json"), "utf-8");
+    raw = readFileSync(resolve(dir, "config.json"), "utf-8");
   } catch (err) {
     throw new Error(
       `Cannot read core/config.json: ${(err as Error).message}. ` +

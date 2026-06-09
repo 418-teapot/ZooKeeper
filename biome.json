@@ -15,7 +15,7 @@
     }
   },
   "files": {
-    "includes": ["**/adapters/opencode/src/**/*.ts"]
+    "includes": ["src/**/*.ts"]
   },
   "javascript": {
     "formatter": {

@@ -1,10 +1,10 @@
 {
   "type": "module",
   "scripts": {
-    "typecheck": "tsc --noEmit -p adapters/opencode/tsconfig.json",
-    "lint": "biome lint adapters/opencode/src/",
-    "format": "biome format --write adapters/opencode/src/",
-    "check": "biome check --write adapters/opencode/src/"
+    "typecheck": "tsc --noEmit",
+    "lint": "biome lint src/",
+    "format": "biome format --write src/",
+    "check": "biome check --write src/"
   },
   "devDependencies": {
     "@biomejs/biome": "latest",

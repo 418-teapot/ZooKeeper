@@ -10,7 +10,7 @@ set -euo pipefail
 MODE="${1:-check}"
 
 PY_FILES="install.py tests/"
-TS_DIR="adapters/opencode/src/"
+TS_DIR="src/"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -45,11 +45,11 @@ section "TypeScript ($MODE)"
 case "$MODE" in
   check)
     npx biome check --write "$TS_DIR" && ok "biome check" || { fail "biome check"; FAILED=1; }
-    npx tsc --noEmit -p adapters/opencode/tsconfig.json && ok "tsc --noEmit" || { fail "tsc --noEmit"; FAILED=1; }
+    npx tsc --noEmit && ok "tsc --noEmit" || { fail "tsc --noEmit"; FAILED=1; }
     ;;
   lint)
     npx biome lint "$TS_DIR" && ok "biome lint" || { fail "biome lint"; FAILED=1; }
-    npx tsc --noEmit -p adapters/opencode/tsconfig.json && ok "tsc --noEmit" || { fail "tsc --noEmit"; FAILED=1; }
+    npx tsc --noEmit && ok "tsc --noEmit" || { fail "tsc --noEmit"; FAILED=1; }
     ;;
   format)
     npx biome format --write "$TS_DIR" && ok "biome format" || { fail "biome format"; FAILED=1; }

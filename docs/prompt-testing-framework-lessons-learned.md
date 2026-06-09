@@ -54,7 +54,7 @@ permission = { task = "deny" }
 
 ### 2.1 第一阶段：初步实现与验证
 
-**初始实现**（`adapters/opencode/src/index.ts`）：
+**初始实现**（`src/index.ts`）：
 
 ```typescript
 // 使用 Proxy 拦截权限设置
@@ -792,7 +792,7 @@ agent.permission = new Proxy({}, {
 ### A.1 正确的 Plugin 实现
 
 ```typescript
-// adapters/opencode/src/index.ts
+// src/index.ts
 import { BLOCKED_TOOLS } from './blocked-tools.ts';
 
 export const plugin = {

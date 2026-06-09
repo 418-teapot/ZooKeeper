@@ -243,7 +243,7 @@ def build_config(toml_data: dict, project_dir: str) -> dict:
     """
     project_dir = os.path.abspath(project_dir)
 
-    plugin_rel = os.path.join("adapters", "opencode", "src", "index.ts")
+    plugin_rel = os.path.join("src", "index.ts")
     plugin_abs = os.path.join(project_dir, plugin_rel)
     plugin_uri = "file://" + plugin_abs
 

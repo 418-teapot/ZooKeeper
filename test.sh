@@ -9,10 +9,10 @@ RUNNER="tests/runner.py"
 TS_TEST_FILES=()
 while IFS= read -r -d '' f; do
   TS_TEST_FILES+=("$f")
-done < <(find adapters/opencode/src -type f -name '*.test.ts' -print0 | sort -z)
+done < <(find src -type f -name '*.test.ts' -print0 | sort -z)
 
 if [ ${#TS_TEST_FILES[@]} -eq 0 ]; then
-  echo "ERROR: no *.test.ts files found under adapters/opencode/src/" >&2
+  echo "ERROR: no *.test.ts files found under src/" >&2
   exit 1
 fi
 
@@ -55,7 +55,7 @@ else
 fi
 
 section "TypeScript type check"
-if npx tsc --noEmit -p adapters/opencode/tsconfig.json; then
+if npx tsc --noEmit; then
   ok "tsc --noEmit"
 else
   fail "tsc --noEmit"
