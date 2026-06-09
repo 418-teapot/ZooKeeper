@@ -14,6 +14,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { recoverJsonError } from "./hooks/json-error-recovery";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CORE_DIR = resolve(__dirname, "../../../core");
@@ -284,6 +285,34 @@ export function validateTaskPrompt(
 export async function zookeeper(input: any) {
   const limits = loadValidationConfig();
 
+  /**
+   * Append advisory prompt nudges to task tool output.
+   *
+   * Extracts the prompt from the output args, validates it, and appends any
+   * soft warnings (context too long, code blocks, line references) as
+   * guidance for the orchestrator LLM.
+   *
+   * @param i - Hook input.
+   * @param o - Hook output object mutated in place.
+   */
+  function nudgeTaskOutput(
+    i: { tool: string; sessionID: string; callID: string },
+    o: { args?: Record<string, unknown>; output?: string },
+  ): void {
+    if (i.tool !== "task") return;
+
+    const promptArg = o.args?.prompt;
+    if (typeof promptArg !== "string") return;
+
+    const result = validateTaskPrompt(promptArg, limits);
+    if (result.warnings.length === 0) return;
+
+    // Append nudges to tool output so the orchestrator LLM sees them
+    const nudgeText = result.warnings.map((w) => `- ${w}`).join("\n");
+    const suffix = `\n\n--- Guidance for next time ---\n${nudgeText}`;
+    o.output = (o.output ?? "") + suffix;
+  }
+
   return {
     async config(config: any) {
       const agents = config.agent ?? {};
@@ -339,18 +368,15 @@ export async function zookeeper(input: any) {
       input: { tool: string; sessionID: string; callID: string },
       output: { args?: Record<string, unknown>; output?: string },
     ) {
-      if (input.tool !== "task") return;
-
-      const promptArg = output.args?.prompt;
-      if (typeof promptArg !== "string") return;
-
-      const result = validateTaskPrompt(promptArg, limits);
-      if (result.warnings.length === 0) return;
-
-      // Append nudges to tool output so the orchestrator LLM sees them
-      const nudgeText = result.warnings.map((w) => `- ${w}`).join("\n");
-      const suffix = `\n\n--- Guidance for next time ---\n${nudgeText}`;
-      output.output = (output.output ?? "") + suffix;
+      const handlers = [nudgeTaskOutput, recoverJsonError];
+      for (const handler of handlers) {
+        try {
+          handler(input, output);
+        } catch {
+          // Swallow per-handler errors so one failure does not
+          // prevent other handlers from running.
+        }
+      }
     },
   };
 }

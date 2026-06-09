@@ -4,7 +4,17 @@ set -euo pipefail
 
 STATIC_TEST="tests/test_static.py"
 RUNNER="tests/runner.py"
-TS_FILE="adapters/opencode/src/index.test.ts"
+
+# Auto-discover all *.test.ts files under the plugin source tree.
+TS_TEST_FILES=()
+while IFS= read -r -d '' f; do
+  TS_TEST_FILES+=("$f")
+done < <(find adapters/opencode/src -type f -name '*.test.ts' -print0 | sort -z)
+
+if [ ${#TS_TEST_FILES[@]} -eq 0 ]; then
+  echo "ERROR: no *.test.ts files found under adapters/opencode/src/" >&2
+  exit 1
+fi
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -45,7 +55,7 @@ else
 fi
 
 section "TypeScript tests"
-if npx tsx --test "$TS_FILE"; then
+if npx tsx --test "${TS_TEST_FILES[@]}"; then
   ok "ts tests"
 else
   fail "ts tests"
