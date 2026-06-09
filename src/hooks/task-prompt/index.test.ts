@@ -17,11 +17,11 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { zookeeper } from "../../index.js";
 import {
   loadValidationConfig,
   TASK_PROMPT_HINT,
   validateTaskPrompt,
-  zookeeper,
 } from "./index.js";
 
 // ---------------------------------------------------------------------------
@@ -52,7 +52,10 @@ function validPrompt(overrides?: {
 // file is missing or malformed.
 // ---------------------------------------------------------------------------
 
-const CORE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../core");
+const CORE_DIR = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../core",
+);
 const CONFIG_PATH = resolve(CORE_DIR, "config.json");
 let originalContent: string | null = null;
 
@@ -745,12 +748,11 @@ describe("tool.execute.before hook", () => {
       { args: { prompt } },
     );
     // Now verify the nudge is appended via tool.execute.after
-    const afterOutput: { args?: Record<string, unknown>; output?: string } = {
-      args: { prompt },
+    const afterOutput: { output?: string } = {
       output: "Task completed successfully",
     };
     await plugin["tool.execute.after"](
-      { tool: "task", sessionID: "s1", callID: "c1" },
+      { tool: "task", sessionID: "s1", callID: "c1", args: { prompt } },
       afterOutput,
     );
     assert.ok(afterOutput.output?.includes("Guidance for next time"));
@@ -768,12 +770,11 @@ describe("tool.execute.before hook", () => {
       { args: { prompt } },
     );
     // Now verify the nudge is appended via tool.execute.after
-    const afterOutput: { args?: Record<string, unknown>; output?: string } = {
-      args: { prompt },
+    const afterOutput: { output?: string } = {
       output: "Task completed successfully",
     };
     await plugin["tool.execute.after"](
-      { tool: "task", sessionID: "s1", callID: "c1" },
+      { tool: "task", sessionID: "s1", callID: "c1", args: { prompt } },
       afterOutput,
     );
     assert.ok(afterOutput.output?.includes("Guidance for next time"));
@@ -836,12 +837,11 @@ describe("tool.execute.after hook (nudge delivery)", () => {
     const plugin = await zookeeper({});
     const longContext = "word ".repeat(101).trim();
     const prompt = validPrompt({ context: longContext });
-    const output: { args?: Record<string, unknown>; output?: string } = {
-      args: { prompt },
+    const output: { output?: string } = {
       output: "Task result here",
     };
     await plugin["tool.execute.after"](
-      { tool: "task", sessionID: "s1", callID: "c1" },
+      { tool: "task", sessionID: "s1", callID: "c1", args: { prompt } },
       output,
     );
     assert.ok(output.output?.includes("Guidance for next time"));
@@ -853,12 +853,11 @@ describe("tool.execute.after hook (nudge delivery)", () => {
   it("does NOT append nudges when prompt is clean", async () => {
     const plugin = await zookeeper({});
     const prompt = validPrompt(); // short, no forbidden patterns
-    const output: { args?: Record<string, unknown>; output?: string } = {
-      args: { prompt },
+    const output: { output?: string } = {
       output: "Task completed",
     };
     await plugin["tool.execute.after"](
-      { tool: "task", sessionID: "s1", callID: "c1" },
+      { tool: "task", sessionID: "s1", callID: "c1", args: { prompt } },
       output,
     );
     assert.equal(output.output, "Task completed");
@@ -869,12 +868,11 @@ describe("tool.execute.after hook (nudge delivery)", () => {
     const prompt = validPrompt({
       context: "line 42 bug here", // would trigger nudge if this were task
     });
-    const output: { args?: Record<string, unknown>; output?: string } = {
-      args: { prompt },
+    const output: { output?: string } = {
       output: "grep result",
     };
     await plugin["tool.execute.after"](
-      { tool: "grep", sessionID: "s1", callID: "c1" },
+      { tool: "grep", sessionID: "s1", callID: "c1", args: { prompt } },
       output,
     );
     assert.equal(output.output, "grep result");

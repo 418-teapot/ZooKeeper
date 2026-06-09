@@ -364,12 +364,11 @@ describe("integration: tool.execute.after via plugin", () => {
     const prompt = validPrompt({
       context: "The bug is at src/db.py line 42. Fix it.",
     });
-    const output: { args?: Record<string, unknown>; output?: string } = {
-      args: { prompt },
+    const output: { output?: string } = {
       output: "Task finished with a json parse error in subagent output",
     };
     await plugin["tool.execute.after"](
-      { tool: "task", sessionID: "s1", callID: "c1" },
+      { tool: "task", sessionID: "s1", callID: "c1", args: { prompt } },
       output,
     );
     assert.equal(
