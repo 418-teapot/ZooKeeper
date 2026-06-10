@@ -202,7 +202,7 @@ build.md 混了三类内容：
 | `session-recovery/` | ~10 | 7 种结构性错误 | 每个错误类型有专用恢复器：合成 tool_result 注入、thinking block 重排、thinking block 剥离 |
 | `anthropic-context-window-limit/` | ~8 | Anthropic token 限制错误 | 两阶段：激进截断 → 摘要重试（指数退避，120s 窗口，3 次上限） |
 | `preemptive-compaction/` | ~5 | 工具执行后 token 超阈值 | 主动触发 compaction，含退化监控（连续 3 条无文本助手消息 → 恢复压缩） |
-| `json-error-recovery/` | 1 | JSON 解析错误 | 输出追加 `[JSON PARSE ERROR - IMMEDIATE ACTION REQUIRED]` |
+| `json-error-nudge/` | 1 | JSON 解析错误 | 输出追加 `[JSON PARSE ERROR - IMMEDIATE ACTION REQUIRED]` |
 | `edit-error-recovery/` | 1 | `oldString not found` / `found multiple times` | 输出追加 `[EDIT ERROR - IMMEDIATE ACTION REQUIRED]`，指示先 read |
 
 **错误分类器** (`error-classifier.ts`) 是核心组件，能识别 `missing_api_key`、`model_not_found`、`quota_exceeded`（含中文/本地化配额消息）、`rate_limit` 等类型。支持可配置的重试状态码列表和正则表达式模式匹配。
@@ -678,7 +678,7 @@ ZooKeeper 的核心优势在**可维护性、轻量性和学习曲线**。劣势
 | `src/index.ts` | 组合根（1237 行） |
 | `src/agents/orchestrator.ts` | 编排器 prompt 构建 |
 | `src/hooks/foreground-fallback/` | 前台模型回退（~386 行） |
-| `src/hooks/json-error-recovery/` | JSON 错误恢复 |
+| `src/hooks/json-error-nudge/` | JSON 错误恢复 |
 | `src/hooks/delegate-task-retry/` | 委托重试 |
 | `src/config/loader.ts` | 分层配置加载 |
 | `src/council/council-manager.ts` | 多 LLM 共识 |

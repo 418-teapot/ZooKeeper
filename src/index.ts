@@ -19,7 +19,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { nudgeDirectWork } from "./hooks/direct-work-nudge";
-import { recoverJsonError } from "./hooks/json-error-recovery";
+import { recoverJsonError } from "./hooks/json-error-nudge";
 import { nudgePostTask } from "./hooks/post-task-nudge";
 import {
   enhanceTaskDefinition,

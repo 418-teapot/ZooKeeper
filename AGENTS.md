@@ -61,7 +61,7 @@ ZooKeeper/
 │   └── prompts/*.md         # 各 agent 的 prompt 文件（被插件动态注入）
 ├── src/                        # OpenCode 插件 TS 代码
 │   ├── index.ts                # 插件入口（config hook + prompt validation）
-│   └── hooks/                  # 各功能 hook（如 json-error-recovery）
+│   └── hooks/                  # 各功能 hook（如 json-error-nudge）
 ├── tests/                   # Prompt 评估测试框架（Phase 1: build.md）
 │   └── runner.py            # 评估测试运行器
 └── docs/                    # 设计文档和调研报告
