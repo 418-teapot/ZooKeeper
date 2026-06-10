@@ -108,7 +108,7 @@ async function applyNudge(
  */
 function assertHasVerify(obj: { output?: string }, msg?: string): void {
   assert.ok(
-    obj.output?.includes("VERIFY NOW"),
+    obj.output?.includes("PROBABLY LYING"),
     msg ?? "expected output to contain VERIFY reminder",
   );
 }
@@ -428,8 +428,56 @@ describe("original output is preserved", () => {
 // ---------------------------------------------------------------------------
 
 describe("constants", () => {
-  it("VERIFY_REMINDER starts with bold VERIFY NOW", () => {
-    assert.ok(VERIFY_REMINDER.startsWith("**VERIFY NOW"));
+  it("VERIFY_REMINDER starts with anti-sycophancy framing", () => {
+    assert.ok(VERIFY_REMINDER.startsWith("**THE SUBAGENT JUST CLAIMED"));
+  });
+
+  it("VERIFY_REMINDER has 3 phases: read code, checks, gate decision", () => {
+    assert.ok(
+      VERIFY_REMINDER.includes("PHASE 1: READ THE CODE FIRST"),
+      "should have Phase 1 — read code before running anything",
+    );
+    assert.ok(
+      VERIFY_REMINDER.includes("PHASE 2: RUN AUTOMATED CHECKS"),
+      "should have Phase 2 — lsp_diagnostics and targeted tests",
+    );
+    assert.ok(
+      VERIFY_REMINDER.includes("PHASE 3: GATE DECISION"),
+      "should have Phase 3 — gate decision before proceeding",
+    );
+  });
+
+  it("VERIFY_REMINDER includes cross-check claims instruction", () => {
+    assert.ok(
+      VERIFY_REMINDER.includes("Cross-check every claim"),
+      "should require verifying subagent claims against actual code",
+    );
+  });
+
+  it("VERIFY_REMINDER includes specific tool instructions (Read, lsp_diagnostics)", () => {
+    assert.ok(
+      VERIFY_REMINDER.includes("which files changed"),
+      "Phase 1 should instruct checking which files changed (without prescribing exact git command)",
+    );
+    assert.ok(
+      VERIFY_REMINDER.includes("`Read` EVERY changed file"),
+      "Phase 1 should instruct Read of every changed file",
+    );
+    assert.ok(
+      VERIFY_REMINDER.includes("`lsp_diagnostics` on EACH changed file"),
+      "Phase 2 should instruct lsp_diagnostics on each file",
+    );
+  });
+
+  it('VERIFY_REMINDER enforces "Probably = NO" certainty standard', () => {
+    assert.ok(VERIFY_REMINDER.includes("Probably"));
+  });
+
+  it("VERIFY_REMINDER opens with anti-sycophancy framing", () => {
+    assert.ok(
+      VERIFY_REMINDER.includes("PROBABLY LYING"),
+      "should question subagent reliability before verification steps",
+    );
   });
 
   it("TODO_GENERAL starts with bold TODO UPDATE REQUIRED", () => {
