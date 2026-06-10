@@ -55,7 +55,7 @@ else
 fi
 
 section "TypeScript type check"
-if npx tsc --noEmit; then
+if bunx tsc --noEmit; then
   ok "tsc --noEmit"
 else
   fail "tsc --noEmit"
@@ -63,7 +63,7 @@ else
 fi
 
 section "TypeScript tests"
-if npx tsx --test "${TS_TEST_FILES[@]}"; then
+if bun test "${TS_TEST_FILES[@]}"; then
   ok "ts tests"
 else
   fail "ts tests"
