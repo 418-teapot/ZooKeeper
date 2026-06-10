@@ -1,6 +1,6 @@
 # Plan Mode Detection and Switching Research
 
-**Version: 0.1 — Date: 2026-06-08 — Classification: 技术调研**
+**Version: 0.2 — Date: 2026-06-10 — Classification: 技术调研**
 
 ---
 
@@ -13,7 +13,9 @@
    - [2.3 ZooKeeper 当前缺口](#23-zookeeper-当前缺口)
 3. [参考项目分析](#3-参考项目分析)
    - [3.1 Superpowers: Skill 自动门控](#31-superpowers-skill-自动门控)
-   - [3.2 oh-my-openagent: 关键词意图检测](#32-oh-my-openagent-关键词意图检测)
+   - [3.2 oh-my-openagent: Prometheus + demoted plan](#32-oh-my-openagent-prometheus--demoted-plan)
+   - [3.3 oh-my-opencode-slim: 编排器即规划者](#33-oh-my-opencode-slim-编排器即规划者)
+   - [3.4 oh-my-pi: plan subagent + /plan 双层设计](#34-oh-my-pi-plan-subagent--plan-双层设计)
 4. [对比分析](#4-对比分析)
 5. [ZooKeeper 适配方案](#5-zookeeper-适配方案)
    - [方案 A: 纯 Prompt 引导](#方案-a-纯-prompt-引导)
@@ -34,7 +36,7 @@ ZooKeeper 当前的工作流围绕 build（编排器）为主 agent、general/ex
 - **实现冲动**：LLM 天然倾向于产生可运行的输出（代码、命令），在需要纯粹讨论和规划的场景中，agent 仍可能尝试执行工具调用。
 - **无模式切换视口**：用户需要自行判断何时应该从"实现模式"切换到"规划模式"，并由自己按 Tab 键手动切换。
 
-本报告调研两种参考项目如何处理"先规划后实现"的问题——Superpowers 的 Skill 自动门控机制和 oh-my-openagent 的关键词意图检测——并针对 ZooKeeper 的架构特点提出三种适配方案。
+本报告调研四种参考项目如何处理"先规划后实现"的问题——Superpowers 的 Skill 自动门控机制、oh-my-openagent (omo) 的双层规划架构、oh-my-opencode-slim 的编排器即规划者模式以及 oh-my-pi (omp) 的 plan subagent + /plan 双层设计——并针对 ZooKeeper 的架构特点提出三种适配方案。
 
 ---
 
@@ -188,121 +190,476 @@ subagent-driven-development: "→ 完成"
 | 与 OpenCode 现有机制的兼容性 | 🟡 中（Skill 系统需要额外适配） |
 | 对现有 ZooKeeper prompt 的影响 | 🔴 大（需要重写 build.md 等） |
 
-### 3.2 oh-my-openagent: 关键词意图检测
+### 3.2 oh-my-openagent: Prometheus + demoted plan
 
-oh-my-openagent（OMA）是一个基于 OpenCode 插件构建的多 Agent 编排参考实现，采用关键词驱动的 IntentGate 机制实现模式切换。
+oh-my-openagent（omo）是一个基于 OpenCode 插件构建的多 Agent 编排参考实现，采用"双 agent 规划架构"：Prometheus 作为主规划者（primary agent），原生 plan agent 被降级为隐藏 subagent。
 
 #### 3.2.1 架构总览
 
 ```
-OMA IntentGate 流水线
+omo 双 Agent 规划架构
 │
-├─ chat.message hook (入口)
-│   ├─ 拦截用户消息
-│   ├─ 正则匹配关键词模式
-│   ├─ 匹配成功 → 注入对应模式的 system prompt
-│   └─ 匹配失败 → 继续默认行为
+├─ Prometheus（主规划者，mode: primary）
+│   ├─ ~1200 行超长 prompt，内置完整规划方法论
+│   ├─ 权限：edit=allow，bash=allow（可写可执行）
+│   ├─ prometheus-md-only：tool.execute.before 中阻断
+│   │   Writes/Edits，除非路径匹配 `.omo/*.md`
+│   └─ 不可 task() plan agent（同属 PLAN_FAMILY_NAMES）
 │
-├─ 关键词注册表 (关键词 → 模式映射)
-│   ├─ "ultrawork" / "ulw"      → 深度规划模式
-│   ├─ "hyperplan" / "hpp"      → 对抗性多 agent 规划
-│   ├─ "search" / "analyze"     → 调研分析模式
-│   ├─ "team" / "team mode"     → 团队协作模式
-│   └─ ... (可扩展)
-│
-└─ 模式系统
-    ├─ ultrawork: 注入"慢思考"prompt，强制 agent 多步推理
-    ├─ hyperplan: 启动 3 个以上独立 agent 并行生成方案，交叉评审
-    ├─ search: 限制只使用搜索工具，禁止修改文件
-    └─ team: 创建多个专业化 agent 协作执行
+└─ plan agent（降级 subagent，hidden: true）
+    ├─ 继承 Prometheus 的 MODEL_SETTINGS_KEYS（不含 prompt）
+    ├─ 提示词注入方式：动态组装（非静态文件）
+    ├─ 获取完整工具集（无 AGENT_RESTRICTIONS 条目）
+    └─ 可见于 task() 通过 isDemotedPlanAgent() 特殊逻辑
 ```
 
-#### 3.2.2 关键词注册表
+#### 3.2.2 Plan Agent 降级机制
 
-OMA 的模式匹配基于一个可配置的关键词注册表：
+降级在 `agent-config-assembly.ts` 中实现，由两个配置字段控制：
 
-| 关键词 | 匹配模式 | 注入模式 | 说明 |
-|--------|---------|---------|------|
-| `ultrawork\|ulw` | 正则前缀匹配 | 深度规划 | 用户主动触发，要求渐进式推理 |
-| `hyperplan\|hpp` | 正则前缀匹配 | 对抗规划 | 多 agent 辩论式规划，覆盖更多角度 |
-| `search` | 精确匹配 | 搜索模式 | 仅搜索不修改 |
-| `analyze` | 精确匹配 | 分析模式 | 深度分析但不实现 |
-| `team` | 精确匹配 | 团队模式 | 分配合适 agent |
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `planner_enabled` | boolean | `true` | 是否启用 Prometheus 作为主规划者 |
+| `replace_plan` | boolean | `true` | 是否将内置 plan agent 降级为 subagent |
 
-#### 3.2.3 Plan Agent 设计
+核心逻辑 `buildPlanDemoteConfig()`：
 
-OMA 定义了一个专用的 `plan` agent（在 `plan.toml` 中配置）：
-
-- **纯规划**：该 agent 只负责规划，从不实施
-- **结构输出**：规划结果以结构化计划文件输出，包含依赖矩阵、并行波次、验收标准
-- **过渡机制**：用户通过 `/start-work` 命令从规划状态切换到执行状态
-
-```
-OMA 规划 → 执行流程
-
-用户: "ultrawork 帮我想想怎么重构这个支付模块"
-     │
-     ▼
-chat.message hook 匹配 "ultrawork"
-     │
-     ▼
-注入 ultrawork 规划 prompt → agent 进入深度规划模式
-     │
-     ├─ 产出规划文档 (plan-xxx.md)
-     │   ├─ 依赖矩阵 (A → B → C)
-     │   ├─ 并行波次 (Wave 1: A+B, Wave 2: C)
-     │   └─ 验收标准
-     │
-     └─ 等待用户确认
-
-用户: "/start-work"
-     │
-     ▼
-chat.message hook 匹配 "/start-work"
-     │
-     ▼
-清除规划 prompt → agent 回到默认执行模式
-     │
-     └─ 按规划文档开始实现
+```typescript
+// src/agent-config-assembly.ts（概念示意）
+function buildPlanDemoteConfig(): AgentConfig {
+  return {
+    mode: "subagent",
+    hidden: true,
+    // 仅继承 MODEL_SETTINGS_KEYS（model、temperature 等）
+    // 不继承 prompt — plan 使用动态注入的提示词
+    ...pick(primaryConfig, MODEL_SETTINGS_KEYS),
+  };
+}
 ```
 
-#### 3.2.4 默认模式配置
+降级后的 plan agent：
+- `mode: "subagent"` — 不再是 Tab 可切换的 primary agent
+- `hidden: true` — 在 agent 列表中不可见
+- **仅继承** Prometheus 的 `MODEL_SETTINGS_KEYS`（模型名、temperature 等参数），**不继承** prompt
 
-OMA 支持配置 `default_mode.ultrawork: true`，使得所有会话默认启用规划模式，无需输入关键词：
+#### 3.2.3 动态 Prompt 注入
 
-```toml
-[default_mode]
-ultrawork = true  # 每次对话都先进入规划模式
+Plan agent 的提示词**不是静态文件**——它在 `task()` 调用时通过 `prompt-builder.ts` 动态组装：
+
+```typescript
+// src/prompt-builder.ts（概念示意）
+function buildPlanAgentSystemPrepend(): string {
+  return [
+    BEFORE_SKILLS,       // 上下文收集指令
+    buildSkillsSection(), // 动态技能列表（根据可用工具实时生成）
+    AFTER_SKILLS,        // 输出格式要求
+  ].join("\n\n");
+}
 ```
 
-#### 3.2.5 与 ZooKeeper 的适配性分析
+关键设计：
+- **仅 plan agent** 获得该 prepend——`isPlanAgent()` 守卫确保 Prometheus 不会被误注入
+- **BEFORE_SKILLS**：引导 agent 在调用任何工具前先收集上下文
+- **buildSkillsSection()**：动态列举可用技能，根据运行时工具注册情况生成
+- **AFTER_SKILLS**：规定响应格式（如必须包含推理步骤）
+
+#### 3.2.4 Prometheus 专属约束
+
+**prometheus-md-only hook**（`tool.execute.before`）：
+
+```typescript
+// tool.execute.before 中
+if (isPrometheusAgent(input.agent)) {
+  if ((input.tool === "write" || input.tool === "edit") &&
+      !input.args.path?.startsWith(".omo/") &&
+      !input.args.path?.endsWith(".md")) {
+    throw new Error("[Prometheus] 仅允许写入 .omo/*.md 文件");
+  }
+}
+```
+
+Prometheus 虽然拥有 `edit: allow` 和 `bash: allow` 权限，但通过此 hook **运行时限制**其写操作范围——只能写 `.omo/*.md` 文件，不能修改项目源码。
+
+**互斥委派机制**：
+
+```typescript
+// 规划 agent 家族 — 互斥 task()
+const PLAN_FAMILY_NAMES = ["plan", "prometheus"];
+
+// 在 task() 调用时检测
+if (PLAN_FAMILY_NAMES.includes(target) &&
+    PLAN_FAMILY_NAMES.includes(current)) {
+  throw new Error("规划 agent 之间不允许互相委派");
+}
+```
+
+Prometheus 和 plan agent 属于同一"规划家族"（`PLAN_FAMILY_NAMES`），两者不能互相通过 `task()` 调用，防止循环委派。
+
+#### 3.2.5 权限模型
+
+| agent | permission.edit | permission.bash | AGENT_RESTRICTIONS | 运行时约束 |
+|-------|----------------|-----------------|-------------------|-----------|
+| Prometheus | allow | allow | PROMETHEUS_PERMISSION（显式条目） | prometheus-md-only：仅 .omo/*.md |
+| plan | 无条目（继承全部） | 无条目（继承全部） | 无条目（全部允许） | 动态 prompt 引导行为 |
+
+Prometheus 在 `AGENT_RESTRICTIONS` 中有显式条目（`PROMETHEUS_PERMISSION`），而 plan agent **没有对应条目**——这意味着 plan 默认获得全部工具权限。plan 的行为约束完全由动态注入的 prompt 控制，而非权限系统。
+
+#### 3.2.6 Subagent 可见性
+
+Plan agent 虽然被降级为 `hidden: true`，但仍然可被 `task()` 发现——`subagent-discovery.ts` 中的 `isDemotedPlanAgent()` 特殊逻辑将其从隐藏列表中"恢复"为可见：
+
+```typescript
+// src/subagent-discovery.ts（概念示意）
+function isDemotedPlanAgent(agent: AgentConfig): boolean {
+  return agent.name === "plan" && agent.hidden === true;
+}
+```
+
+这使得 build 等编排 agent 仍然可以通过 `task(subagent_type="plan", ...)` 调用已降级的 plan agent，实现规划即服务的模式。
+
+#### 3.2.7 与 ZooKeeper 的适配性分析
 
 | 维度 | 评估 |
 |------|------|
-| 轻量级，无需修改 agent 配置 | ✅ 仅需在插件中添加 chat.message hook |
-| 用户显式控制模式切换 | ✅ 关键词触发 /start-work 切换 |
-| 自动默认模式可配置 | ✅ 支持 default_mode 配置 |
-| 对现有 ZooKeeper prompt 的影响 | 🟡 中（需新增 plan.md，但 build.md 等不需重写） |
-| 与现有 plugin hooks 的兼容性 | ✅ 高（ZooKeeper 已有 tool.execute.before 和 config hook） |
-| 实现复杂度 | 🟢 低（集中在插件层，约 100-200 行 TS） |
+| 双 agent 规划架构（主规划者 + 降级 subagent） | ✅ 灵活分工：Prometheus 负责大局，plan 处理具体任务 |
+| 动态 prompt 注入而非静态文件 | ✅ 可根据运行时上下文调整规划指令 |
+| 运行时文件写保护（prometheus-md-only） | ✅ 防止规划 agent 意外修改源码 |
+| 规划家族互斥委派 | ✅ 防止循环调用 |
+| 实现复杂度 | 🔴 高（~1200 行 prompt + 多个 TS hook + 动态组装） |
+| 与 ZooKeeper 现有架构的兼容性 | 🟡 中（需要引入动态 prompt 组装逻辑） |
+
+### 3.3 oh-my-opencode-slim: 编排器即规划者
+
+oh-my-opencode-slim（slim）是一个极简 OpenCode 配置参考实现，**没有独立的 plan agent，也没有 plan 模式**。规划能力完全嵌入编排器（orchestrator）的 prompt 中。
+
+#### 3.3.1 架构总览
+
+```
+slim 规划体系
+│
+└─ Orchestrator（编排器，也是唯一的"规划者"）
+    ├─ Prompt 内置 6 步工作流：
+    │   1. Understand — 理解用户需求
+    │   2. Path Selection — 选择实现路径
+    │   3. "STOP. Review specialists before acting"
+    │      （委派检查 — 隐式规划步骤）
+    │   4. Split and Parallelize — 拆解并行任务
+    │   5. Execute — 执行
+    │   6. Verify — 验证
+    │
+    ├─ Delegation Check（第 3 步）：
+    │   ─ 显式要求 agent "停下来，先审查可用的 specialists"
+    │   ─ 这是 slim 中唯一的隐式规划机制
+    │
+    ├─ 工具集：完整（edit、bash、read 等全部可用）
+    │
+    └─ Subtask 工具 — 轻量级规划原语
+        └─ src/tools/subtask/：
+            ─ 创建独立上下文隔离的子会话
+            ─ 每个 subtask 有独立的 prompt 和工具集
+            ─ 可在 orchestrator 中并行执行
+```
+
+#### 3.3.2 Delegation Check：隐式规划
+
+Slim 的规划能力不在于专门的规划 agent，而在于 orchestrator prompt 中的关键一步：
+
+```markdown
+## Workflow
+
+3. **STOP. Review specialists before acting**
+   - Before executing any task, review the available specialists
+   - Determine if the task should be delegated to a specialist
+   - Consider: complexity, domain expertise needed, parallelism opportunity
+```
+
+这一步强制编排器在采取任何行动之前**停下来**思考：
+- 当前任务是否需要委派 specialists？
+- 能否拆分为多个并行子任务？
+- 哪个 specialist 最适合处理每个子任务？
+
+这是 slim 中最接近"规划"的机制——虽然没有独立的规划步骤，但通过 prompt 指令在编排器中嵌入了规划思维。
+
+#### 3.3.3 Subtask 工具：轻量规划原语
+
+`src/tools/subtask/` 提供了 slim 的轻量级规划+执行原语：
+
+```typescript
+// src/tools/subtask/（概念示意）
+interface SubtaskInput {
+  goal: string;           // 子任务目标
+  context: string;        // 上下文（文件路径、现有代码等）
+  agent?: string;         // 指定 specialist
+}
+
+interface SubtaskOutput {
+  result: string;         // 执行结果
+  artifacts: string[];    // 产出文件列表
+}
+```
+
+Subtask 的核心设计：
+- **上下文隔离**：每个 subtask 运行在独立的会话中，互不干扰
+- **并行执行**：多个 subtask 可以同时运行
+- **可指定 specialist**：将子任务分配给最合适的 agent
+
+#### 3.3.4 Designer：UI/UX 专家（非规划者）
+
+Slim 中有一个 `designer` agent，但它的定位是 **UI/UX 专家**，而非规划者：
+
+| 属性 | 值 |
+|------|-----|
+| mode | subagent |
+| temperature | 0.7（比默认更高，鼓励创意） |
+| delegation rules | 空（不委派任何子 agent） |
+| 职责 | 前端 UI/UX 设计、组件结构规划 |
+| 触发 | 由 orchestrator 通过 task() 手动调用 |
+
+Designer 不触发规划流程，仅在 orchestrator 需要 UI/UX 专业知识时才被调用。
+
+#### 3.3.5 权限模型
+
+| agent | 工具集 | 子 agent | 规划能力 |
+|-------|-------|---------|---------|
+| orchestrator | 全部（edit、bash、read 等） | subtask + specialists | 隐式（prompt 内嵌） |
+| specialists | 受限（取决于角色） | 无（leaf node） | 无 |
+| designer | read、write、question | 无 | 无（仅 UI 设计） |
+
+Slim 的权限模型是典型的**编排器全权限 + subagent 受限**：编排器拥有所有工具，subagent 是叶节点，不进一步委派。
+
+#### 3.3.6 与 ZooKeeper 的适配性分析
+
+| 维度 | 评估 |
+|------|------|
+| 零额外 agent、零额外模式 | ✅ 极简，无需新增任何 agent 配置 |
+| 隐式规划嵌入编排器 prompt | 🟡 轻量但依赖 LLM 理解遵守 |
+| Subtask 作为规划原语 | ✅ 轻量级上下文隔离并行执行 |
+| 无需动态 prompt 注入 | ✅ 所有规划逻辑在静态 prompt 中 |
+| 实现复杂度 | 🟢 低（仅修改 orchestrator prompt） |
+| 规划保障强度 | 🟡 弱（纯 prompt 约束，LLM 可绕过） |
+
+### 3.4 oh-my-pi: plan subagent + /plan 双层设计
+
+oh-my-pi（omp）是一个基于 OpenCode 插件构建的深度规划参考实现，采用**双层规划体系**：静态的 plan subagent（可被编排器 task() 调用）+ 动态的 `/plan` 模式（会话级状态机）。
+
+#### 3.4.1 架构总览
+
+```
+omp 双层规划体系
+│
+├─ Layer 1: Plan Subagent（静态）
+│   ├─ 注册于 task/agents.ts，配置固定
+│   ├─ 工具集：read/search/find/bash/lsp/web_search/ast_grep
+│   │          （NO write/edit — 纯分析不产出代码）
+│   ├─ spawns: explore agent（强制探索阶段）
+│   ├─ model: pi/plan + pi/slow（双模型）
+│   └─ thinking-level: high
+│
+└─ Layer 2: /plan 模式（动态状态机）
+    ├─ #enterPlanMode() 入口
+    │   ├─ 添加 "resolve" 工具到 active tools
+    │   ├─ 设置 PlanModeState 状态
+    │   └─ 注册 standing resolve handler
+    │
+    ├─ plan-mode-guard.ts：enforcePlanModeWrite()
+    │   ├─ 阻断所有 write/edit/delete/move 操作
+    │   └─ 仅允许 local:// 沙箱的 artifact 写入
+    │
+    ├─ 批准流程：resolve { action: "apply" }
+    │   └─ 4 种选择：execute / compact context / keep context / refine plan
+    │
+    └─ 配套机制：
+        ├─ plan-mode-active.md（109 行）：规划范式 prompt
+        ├─ plan-protection.ts：保护 plan 文件不被 compaction 剪枝
+        └─ plan-handoff.ts：将批准的 plan 传递给 subagent 作为共享上下文
+```
+
+#### 3.4.2 Plan Subagent（Layer 1）
+
+在 `task/agents.ts` 中配置的 plan subagent：
+
+```typescript
+// task/agents.ts（概念示意）
+const planAgent = {
+  name: "plan",
+  tools: [
+    "read", "search", "find", "bash",
+    "lsp", "web_search", "ast_grep",
+    // 注意：没有 write/edit — plan 只分析不产出
+  ],
+  spawns: ["explore"],     // 强制进入探索阶段
+  model: ["pi/plan", "pi/slow"], // 双模型：plan 专用 + 慢思考
+  "thinking-level": "high",
+};
+```
+
+**4 阶段工作流**（在 plan subagent 的 prompt 中定义）：
+
+```
+Phase 1: Understand
+  ─ 分析需求，明确目标与约束
+
+Phase 2: Explore（MUST spawn explore agents）
+  ─ 强制：必须先 spawn explore agent 进行代码库调研
+  ─ explore agent 使用 read/search/find 收集上下文
+  ─ 返回调研报告给 plan agent
+
+Phase 3: Design
+  ─ 基于探索结果设计方案
+  ─ 对比候选方案，分析 trade-off
+
+Phase 4: Produce Plan
+  ─ 输出 6 节结构规划文档：
+    1. Summary — 方案概述
+    2. Changes — 具体变更清单
+    3. Sequence — 实施步骤与依赖关系
+    4. Edge Cases — 边界情况与风险
+    5. Verification — 验证策略
+    6. Critical Files — 关键文件列表
+```
+
+#### 3.4.3 /plan 模式（Layer 2）
+
+`/plan` 是一个会话级状态机，通过 `enterPlanMode()` 函数进入：
+
+```typescript
+// plan-mode.ts（概念示意）
+function enterPlanMode(sessionID: string): void {
+  // 1. 添加 resolve 工具到 active tools
+  addTool(sessionID, "resolve", {
+    handler: resolveHandler,
+    // resolve 工具用于批准/拒绝/修改计划
+  });
+
+  // 2. 设置 PlanModeState
+  setPlanModeState(sessionID, {
+    active: true,
+    phase: "planning",
+    planFile: null,
+    resolved: false,
+  });
+
+  // 3. 注册 standing resolve handler
+  registerStandingHandler(sessionID, "resolve", handleResolve);
+}
+```
+
+**plan-mode-guard.ts — 写保护**：
+
+```typescript
+// plan-mode-guard.ts（概念示意）
+function enforcePlanModeWrite(tool: string, args: Record<string, unknown>): void {
+  if (tool !== "write" && tool !== "edit" && tool !== "delete" && tool !== "move") {
+    return; // 非写操作，放行
+  }
+
+  // 仅允许写入 local:// 沙箱的 artifact 文件
+  const path = args.path as string;
+  if (!path.startsWith("local://")) {
+    throw new Error(
+      "[Plan Mode] 规划模式下禁止修改工作区文件。\n" +
+      "规划结果应输出到 local:// 沙箱路径。\n" +
+      "如需退出规划模式，请使用 resolve 工具。"
+    );
+  }
+}
+```
+
+在 `/plan` 模式下：
+- 所有 `write`/`edit`/`delete`/`move` 操作被**阻断**
+- 仅 `local://` 沙箱路径的 artifact 写入被允许
+- 这确保规划阶段不会意外修改项目源码
+
+#### 3.4.4 批准与移交流程
+
+```typescript
+// 批准流程：用户或 LLM 调用 resolve 工具
+const resolution = {
+  action: "apply",        // 批准规划
+  extra: {
+    title: "refactor-payment-module", // 规划文档 slug
+  },
+};
+
+// resolve handler 提供 4 种选择：
+// 1. execute        → 退出 plan 模式，按规划开始实现
+// 2. compact context → 压缩上下文后继续
+// 3. keep context    → 保持当前上下文继续
+// 4. refine plan     → 留在 plan 模式，优化规划
+```
+
+**plan-handoff.ts**：批准的规划文档通过此模块传递给后续的 subagent：
+
+```typescript
+// plan-handoff.ts（概念示意）
+function handoffPlan(planFile: string, targetAgent: string): void {
+  // 将规划文档作为共享上下文注入 targetAgent
+  injectSharedContext(targetAgent, {
+    type: "plan",
+    source: planFile,
+    content: readPlanFile(planFile),
+  });
+}
+```
+
+**plan-protection.ts**：规划文档受保护，不会被上下文 compaction 机制剪枝：
+
+```typescript
+// plan-protection.ts（概念示意）
+function isProtectedFile(path: string): boolean {
+  return path.startsWith(".pi/plans/") || path.endsWith(".plan.md");
+}
+```
+
+#### 3.4.5 规划范式 Prompt
+
+`plan-mode-active.md`（109 行）定义了 `/plan` 模式下的核心范式：
+
+> **规划文档是执行规范，不是设计文档。**
+> - 必须自包含，不依赖历史对话上下文
+> - 每条指令必须精确到文件路径、函数名
+> - 子 agent 必须能独立理解并执行
+
+该 prompt 强调规划的**可执行性**而非设计美感——规划文档应当能被其他 agent 直接理解并执行，不依赖对话上下文。
+
+#### 3.4.6 权限与能力对比
+
+| 层次 | 工具集 | 写操作 | 模型 | 思维层级 |
+|------|-------|-------|------|---------|
+| Plan Subagent (Layer 1) | read/search/find/bash/lsp/web_search/ast_grep | ❌ 禁止 | pi/plan + pi/slow | high |
+| /plan 模式 (Layer 2) | 基础工具 + resolve 工具 | ❌ 阻断（仅 local://） | 可切换至 pi/plan | — |
+| 执行阶段（退出 /plan 后） | 全部 | ✅ 允许 | 默认模型 | 默认 |
+
+#### 3.4.7 与 ZooKeeper 的适配性分析
+
+| 维度 | 评估 |
+|------|------|
+| 双层规划（subagent + 模式） | ✅ 灵活：task() 调用规划 + 手动进入规划模式 |
+| 仅分析不产出（plan subagent 无 write/edit） | ✅ 纯规划 agent，不会意外修改代码 |
+| 强制探索阶段（MUST spawn explore） | ✅ 规划前先充分理解代码库 |
+| /plan 模式的写保护 | ✅ 硬约束，LLM 无法绕过 |
+| resolve 工具 + 4 种后处理选择 | ✅ 灵活的批准/迭代流程 |
+| 规划文档受 compaction 保护 | ✅ 避免长会话中规划被剪枝 |
+| 实现复杂度 | 🔴 高（~5 个 TS 模块 + 专用 prompt + 状态机） |
+| 与 ZooKeeper 现有架构的兼容性 | 🟡 中（需要新增 plan 模式状态机和写保护） |
 
 ---
 
 ## 4. 对比分析
 
-### 4.1 三种方案维度对比
+### 4.1 六种方案维度对比
 
-| 维度 | OpenCode 原生 Plan | Superpowers Skill 门控 | OMA IntentGate |
-|------|-------------------|----------------------|----------------|
-| **触发方式** | 用户手动 Tab 切换 | 自动检测 + 规则门控 | 关键词匹配 / 默认模式 |
-| **用户控制力** | 完全手动 | 低（系统自动门控） | 中（关键词主动触发） |
-| **是否强制规划** | 否 | 是（HARD-GATE） | 条件性（可配置默认） |
-| **实现位置** | 平台内置 | 独立 Skill 系统 | 插件 chat.message hook |
-| **实现成本** | 零（已有） | 高（完整 Skill 框架） | 低（单 hook + prompt 注入） |
-| **与 ZooKeeper 兼容性** | 🟡 风格不一致 | 🔴 架构冲突大 | ✅ 可增量接入 |
-| **自定义 prompt 支持** | 需要手动加 config | 原生支持 | 通过注入实现 |
-| **规划→执行过渡** | 手动 Tab 切回 | Skill 链自动流转 | `/start-work` 命令 |
-| **对现有配置的影响** | 无（新增 agent 块） | 颠覆性 | 增量式 |
+| 维度 | OpenCode 原生 Plan | Superpowers Skill 门控 | omo Prometheus+demoted plan | slim 编排器即规划者 | omp plan subagent + /plan |
+|------|-------------------|----------------------|---------------------------|--------------------|---------------------------|
+| **触发方式** | 用户手动 Tab 切换 | 自动检测 + 规则门控 | 双 agent 自动委派 | 编排器 prompt 内嵌 | subagent task() + /plan 命令 |
+| **用户控制力** | 完全手动 | 低（系统自动门控） | 中（通过 task 调用） | 低（编排器自动判定） | 高（命令行 + resolve 工具） |
+| **是否强制规划** | 否 | 是（HARD-GATE） | 是（双 agent 架构） | 条件性（prompt 指引） | 是（/plan 模式写保护） |
+| **实现位置** | 平台内置 | 独立 Skill 系统 | 插件 + agent-config 组装 | 编排器 prompt + subtask 工具 | 插件 + 状态机 + 多 TS 模块 |
+| **实现成本** | 零（已有） | 高（完整 Skill 框架） | 高（~1200 行 prompt + 多 hook） | 低（仅改 prompt） | 高（~5 TS 模块 + 状态机） |
+| **与 ZooKeeper 兼容性** | 🟡 风格不一致 | 🔴 架构冲突大 | 🟡 需动态 prompt 注入 | ✅ 极简，无冲突 | 🟡 需新增状态机和写保护 |
+| **自定义 prompt 支持** | 需要手动加 config | 原生支持 | 动态组装（非静态文件） | 静态 prompt 内嵌 | 静态 prompt + mode prompt |
+| **规划→执行过渡** | 手动 Tab 切回 | Skill 链自动流转 | task() 委派 + 运行时约束 | 编排器自动流转 | resolve 工具 + 4 种选择 |
+| **对现有配置的影响** | 无（新增 agent 块） | 颠覆性 | 中（需降级 plan agent） | 极小 | 中（需新增 plan 模式状态） |
 
 ### 4.2 规划保障强度对比
 
@@ -310,7 +667,9 @@ ultrawork = true  # 每次对话都先进入规划模式
 |------|----------------|---------|---------|-------|
 | OpenCode 原生 plan | ✅ 可跳过（不切 Tab 即可） | 无结构化要求 | 无 | 低 |
 | Superpowers HARD-GATE | ❌ 不可跳过 | 结构化方案文档 | 用户批准 | 高 |
-| OMA ultrawork | 🟡 可配置 | 结构化计划文件 | `/start-work` | 中 |
+| omo Prometheus+plan | ❌ 不可跳过（双 agent 架构） | 动态注入引导 | task() 委派 | 高（写保护 hook） |
+| slim 编排器即规划者 | ✅ 可跳过（prompt 指引） | 无强制结构 | 编排器自动流转 | 低（纯 prompt） |
+| omp /plan 模式 | ❌ 不可跳过（写保护阻断） | 6 节结构文档 | resolve 工具 | 高（硬约束） |
 
 ### 4.3 ZooKeeper 适配优先级矩阵
 
@@ -318,7 +677,7 @@ ultrawork = true  # 每次对话都先进入规划模式
 |------|---------|---------|------|-------|
 | Pure Prompt | 🟢 低 | 🟡 中 | 🟢 低 | ⭐⭐⭐ |
 | Plan Subagent | 🟡 中 | ✅ 高 | 🟡 中 | ⭐⭐⭐⭐ |
-| Plugin IntentGate | 🟡 中 | ✅ 高 | 🟢 低 | ⭐⭐⭐⭐⭐ |
+| Plugin Plan Mode | 🟡 中 | ✅ 高 | 🟢 低 | ⭐⭐⭐⭐⭐ |
 
 ---
 
@@ -718,7 +1077,9 @@ plan.md refine ─────→ 规划产出验证 ───→ 自动化评�
 |------|---------|--------------------------|
 | OpenCode 原生 plan | Tab 切换 primary agent | 配置 `[agent.plan]` 即可获得基础规划能力 |
 | Superpowers | Skill 自动门控 + HARD-GATE | Red Flags 表、Terminal State 模式可借鉴到 prompt 设计 |
-| OMA | 关键词 IntentGate + 模式注入 | 轻量级 chat.message hook + 命令驱动的模式切换思路 |
+| omo | Prometheus 主规划者 + demoted plan subagent | 双 agent 规划分工、动态 prompt 注入、规划家族互斥委派 |
+| slim | 编排器即规划者（无独立 plan agent） | Subtask 轻量规划原语、Delegation Check 隐式规划步骤 |
+| omp | Plan subagent + /plan 双层设计 | 写保护硬约束、resolve 工具批准流程、规划文档 compaction 保护 |
 
 ### 7.2 推荐方案优先级
 
@@ -742,6 +1103,6 @@ plan.md refine ─────→ 规划产出验证 ───→ 自动化评�
 
 ---
 
-*本文档为技术性调研报告，基于对 OpenCode 平台、Superpowers 项目（https://github.com/obra/superpowers）源代码以及 oh-my-openagent 参考实现的事实性分析。所有方案均以 ZooKeeper 现有架构为基础，不包含虚构的 API 或机制。*
+*本文档为技术性调研报告，基于对 OpenCode 平台、Superpowers 项目（https://github.com/obra/superpowers）源代码、oh-my-openagent 参考实现、oh-my-opencode-slim 极简配置以及 oh-my-pi 深度规划参考实现的事实性分析。所有方案均以 ZooKeeper 现有架构为基础，不包含虚构的 API 或机制。*
 
-*报告日期：2026 年 6 月 8 日*
+*报告日期：2026 年 6 月 10 日*
