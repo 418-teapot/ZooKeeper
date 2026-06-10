@@ -5,18 +5,10 @@
  * `tool.execute.before` hook to verify build agent `task()` prompt format.
  */
 import assert from "node:assert/strict";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { after, before, describe, it } from "node:test";
-import { fileURLToPath } from "node:url";
 import { zookeeper } from "../../index.js";
 import {
   loadValidationConfig,
@@ -44,46 +36,6 @@ function validPrompt(overrides?: {
   const a =
     overrides?.acceptance ?? "All auth tests pass with no new flaky tests";
   return `SUMMARY: ${s}\nCONTEXT: ${c}\nACCEPTANCE: ${a}`;
-}
-
-// ---------------------------------------------------------------------------
-// Test fixture: ensure core/config.json exists for plugin init tests.
-// zookeeper() calls loadValidationConfig() on startup, which throws if the
-// file is missing or malformed.
-// ---------------------------------------------------------------------------
-
-const CORE_DIR = resolve(
-  dirname(fileURLToPath(import.meta.url)),
-  "../../../core",
-);
-const CONFIG_PATH = resolve(CORE_DIR, "config.json");
-let originalContent: string | null = null;
-
-before(() => {
-  if (!existsSync(CORE_DIR)) mkdirSync(CORE_DIR, { recursive: true });
-  if (existsSync(CONFIG_PATH)) {
-    originalContent = readFileSync(CONFIG_PATH, "utf-8");
-  }
-  // Always overwrite so tests get the expected limits (100/250),
-  // regardless of what the production file contains.
-  writeFileSync(CONFIG_PATH, validConfigJson());
-});
-
-after(() => {
-  if (originalContent !== null) {
-    writeFileSync(CONFIG_PATH, originalContent);
-    return;
-  }
-  if (existsSync(CONFIG_PATH)) rmSync(CONFIG_PATH);
-});
-
-/** Helper: serialize the default test config to JSON. */
-function validConfigJson(): string {
-  return `${JSON.stringify(
-    { context_word_limit: 100, prompt_word_limit: 250 },
-    null,
-    2,
-  )}\n`;
 }
 
 // ---------------------------------------------------------------------------
@@ -276,48 +228,44 @@ describe("loadValidationConfig behaviour", () => {
 
   before(() => {
     tempDir = mkdtempSync(resolve(tmpdir(), "zookeeper-test-"));
-    tempConfigPath = resolve(tempDir, "config.json");
+    tempConfigPath = resolve(tempDir, "config.toml");
   });
 
   after(() => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("returns loaded limits when core/config.json is valid", () => {
+  it("returns loaded limits when config.toml is valid", () => {
     writeFileSync(
       tempConfigPath,
-      JSON.stringify(
-        { context_word_limit: 77, prompt_word_limit: 333 },
-        null,
-        2,
-      ),
+      "[validation]\ncontext_word_limit = 77\nprompt_word_limit = 333\n",
     );
-    const limits = loadValidationConfig(tempDir);
+    const limits = loadValidationConfig(tempConfigPath);
     assert.equal(limits.contextWordLimit, 77);
     assert.equal(limits.promptWordLimit, 333);
   });
 
-  it("throws when core/config.json is missing a required field", () => {
-    writeFileSync(
-      tempConfigPath,
-      JSON.stringify({ context_word_limit: 50 }), // missing prompt_word_limit
-    );
+  it("throws when config.toml is missing a required field", () => {
+    writeFileSync(tempConfigPath, "[validation]\ncontext_word_limit = 50\n");
     assert.throws(
-      () => loadValidationConfig(tempDir),
+      () => loadValidationConfig(tempConfigPath),
       /missing required fields.*prompt_word_limit/,
     );
   });
 
-  it("throws when core/config.json contains invalid JSON", () => {
-    writeFileSync(tempConfigPath, "{not valid json");
-    assert.throws(() => loadValidationConfig(tempDir), /invalid JSON/);
+  it("throws when config.toml has no [validation] section", () => {
+    writeFileSync(tempConfigPath, "some random content without sections\n");
+    assert.throws(
+      () => loadValidationConfig(tempConfigPath),
+      /missing \[validation\] section/,
+    );
   });
 
-  it("throws when core/config.json does not exist", () => {
+  it("throws when config.toml does not exist", () => {
     rmSync(tempConfigPath);
     assert.throws(
-      () => loadValidationConfig(tempDir),
-      /Cannot read core\/config\.json/,
+      () => loadValidationConfig(tempConfigPath),
+      /Cannot read config\.toml/,
     );
   });
 });
@@ -740,7 +688,7 @@ describe("tool.execute.before hook", () => {
 
   it("does not throw on CONTEXT too long — nudge delivered via tool.execute.after", async () => {
     const plugin = await zookeeper({});
-    const longContext = "word ".repeat(101).trim();
+    const longContext = "word ".repeat(201).trim();
     const prompt = validPrompt({ context: longContext });
     // Must not throw — structural check passes, warnings are soft
     await plugin["tool.execute.before"](
@@ -756,7 +704,7 @@ describe("tool.execute.before hook", () => {
       afterOutput,
     );
     assert.ok(afterOutput.output?.includes("Guidance for next time"));
-    assert.ok(afterOutput.output?.includes("101 words"));
+    assert.ok(afterOutput.output?.includes("201 words"));
   });
 
   it("does not throw on line references — nudge delivered via tool.execute.after", async () => {
@@ -835,7 +783,7 @@ describe("tool.execute.before hook", () => {
 describe("tool.execute.after hook (nudge delivery)", () => {
   it("appends nudges when prompt has soft warnings", async () => {
     const plugin = await zookeeper({});
-    const longContext = "word ".repeat(101).trim();
+    const longContext = "word ".repeat(201).trim();
     const prompt = validPrompt({ context: longContext });
     const output: { output?: string } = {
       output: "Task result here",
@@ -845,7 +793,7 @@ describe("tool.execute.after hook (nudge delivery)", () => {
       output,
     );
     assert.ok(output.output?.includes("Guidance for next time"));
-    assert.ok(output.output?.includes("101 words"));
+    assert.ok(output.output?.includes("201 words"));
     // Original output preserved
     assert.ok(output.output?.startsWith("Task result here"));
   });

@@ -6,7 +6,7 @@
 
 **ZooKeeper** — 一个 OpenCode 编排器插件，通过静态配置权限 + prompt 注入确保编排器不越权调用工具。基于 Python + TypeScript 构建。
 
-核心机制：`config.toml` 中声明各 agent 的 `permission` deny 列表（**单一事实来源**），install.py 编译后写入 OpenCode 配置；插件在 `config` hook 里注入 `core/prompts/*.md` 作为各 agent 的 prompt。
+核心机制：`config.toml` 中声明各 agent 的 `permission` deny 列表（**单一事实来源**）和 `[validation]` 阈值（上下文/提示词长度限制），install.py 编译 permission 部分后写入 OpenCode 配置；`[validation]` 阈值由 TS 插件在运行时直接读取；插件在 `config` hook 里注入 `core/prompts/*.md` 作为各 agent 的 prompt。
 
 ## 命令
 
@@ -53,7 +53,7 @@
 ```
 ZooKeeper/
 ├── install.py               # 安装脚本（读取 config.toml + .env → 生成配置）
-├── config.toml              # 用户可编辑的配置模板（{env:VAR} 占位符）
+├── config.toml              # 用户可编辑的配置模板（{env:VAR} 占位符；含 [validation] 阈值）
 ├── .env / .env.example      # 环境变量（apiKey、baseURL、模型名）
 ├── check.sh                 # 统一 lint/format 脚本
 ├── test.sh                  # 统一测试脚本（Python 静态测试 + dry-run + TS 单元测试）
@@ -78,7 +78,7 @@ ZooKeeper/
 ## 关键文件
 
 - **`install.py`** — 安装脚本入口，读取 config.toml + .env → 生成 OpenCode 配置
-- **`config.toml`** — 用户配置模板（单一事实来源），所有 deny 权限和 agent 配置在此声明
+- **`config.toml`** — 用户配置模板（单一事实来源），所有 deny 权限和 agent 配置在此声明，`[validation]` 阈值由 TS 插件在运行时直接读取
 - **`src/index.ts`** — 插件入口，导出 `config` hook 动态注入 prompt + 任务 prompt 校验
 - **`core/prompts/*.md`** — 各 agent 的 prompt 文件，按 `{agent-name}.md` 命名
 

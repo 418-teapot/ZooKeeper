@@ -5,16 +5,7 @@
  * and false positives.
  */
 import assert from "node:assert/strict";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, resolve } from "node:path";
-import { after, before, describe, it } from "node:test";
-import { fileURLToPath } from "node:url";
+import { describe, it } from "node:test";
 import { zookeeper } from "../../index.js";
 import {
   JSON_ERROR_PATTERNS,
@@ -244,45 +235,6 @@ describe("barrel export", () => {
     assert.ok(JSON_ERROR_REMINDER.startsWith(JSON_ERROR_REMINDER_MARKER));
   });
 });
-
-// ---------------------------------------------------------------------------
-// Test fixture: ensure core/config.json exists for plugin init tests.
-// zookeeper() calls loadValidationConfig() on startup, which throws if the
-// file is missing or malformed.
-// ---------------------------------------------------------------------------
-
-const CORE_DIR = resolve(
-  dirname(fileURLToPath(import.meta.url)),
-  "../../../../../core",
-);
-const CONFIG_PATH = resolve(CORE_DIR, "config.json");
-let originalContent: string | null = null;
-
-before(() => {
-  if (!existsSync(CORE_DIR)) mkdirSync(CORE_DIR, { recursive: true });
-  if (existsSync(CONFIG_PATH)) {
-    originalContent = readFileSync(CONFIG_PATH, "utf-8");
-    return;
-  }
-  writeFileSync(CONFIG_PATH, validConfigJson());
-});
-
-after(() => {
-  if (originalContent !== null) {
-    writeFileSync(CONFIG_PATH, originalContent);
-    return;
-  }
-  if (existsSync(CONFIG_PATH)) rmSync(CONFIG_PATH);
-});
-
-/** Serialize default test config to JSON. */
-function validConfigJson(): string {
-  return `${JSON.stringify(
-    { context_word_limit: 100, prompt_word_limit: 250 },
-    null,
-    2,
-  )}\n`;
-}
 
 // ---------------------------------------------------------------------------
 // Helper: build a minimal valid prompt that passes all checks.

@@ -146,7 +146,7 @@ function buildContextNudges(context: string): string[] {
 
 /**
  * Configurable word-count limits for task prompt validation,
- * loaded from `core/config.json` at plugin initialization.
+ * loaded from `config.toml` at plugin initialization.
  */
 export interface ValidationLimits {
   contextWordLimit: number;
@@ -154,55 +154,61 @@ export interface ValidationLimits {
 }
 
 /**
- * Load validation limits from `core/config.json`.
+ * Load validation limits directly from `config.toml`.
  *
- * Called once at plugin initialization. Throws on any misconfiguration:
- * missing file, invalid JSON, or missing fields.
+ * Parses the `[validation]` section using simple regex — no TOML parser
+ * dependency required. Called once at plugin initialization. Throws on any
+ * misconfiguration: missing file, missing section, or missing fields.
  *
- * @param coreDir - Optional custom path to the core directory. Defaults to
- *   `CORE_DIR` pointing at `<repo>/core/`. Only provided for test isolation
- *   — production callers always use the default.
+ * @param configPath - Optional direct path to a TOML file. Defaults to
+ *   `<repo>/config.toml`. Only provided for test isolation — production
+ *   callers always use the default.
  * @returns A `ValidationLimits` object with both thresholds.
- * @throws Error if config.json is missing or malformed.
+ * @throws Error if config.toml is missing, lacks `[validation]`, or is
+ *   missing required fields.
  */
 const HOOK_DIR = dirname(fileURLToPath(import.meta.url));
 
-export function loadValidationConfig(coreDir?: string): ValidationLimits {
-  const dir = coreDir ?? resolve(HOOK_DIR, "../../../core");
+export function loadValidationConfig(configPath?: string): ValidationLimits {
+  const path = configPath ?? resolve(HOOK_DIR, "../../../config.toml");
   let raw: string;
   try {
-    raw = readFileSync(resolve(dir, "config.json"), "utf-8");
+    raw = readFileSync(path, "utf-8");
   } catch (err) {
     throw new Error(
-      `Cannot read core/config.json: ${(err as Error).message}. ` +
-        "Run `python3 install.py` to generate it from config.toml.",
+      `Cannot read config.toml: ${(err as Error).message}. ` +
+        "Ensure config.toml exists at the project root.",
     );
   }
 
-  let config: Record<string, unknown>;
-  try {
-    config = JSON.parse(raw);
-  } catch (err) {
+  // Extract the [validation] section via regex
+  const sectionMatch = raw.match(/\[validation\]\s*\n([\s\S]*?)(?=\n\[|\n*$)/);
+  if (!sectionMatch) {
     throw new Error(
-      `core/config.json contains invalid JSON: ${(err as Error).message}. ` +
-        "Run `python3 install.py` to regenerate it.",
+      "config.toml is missing [validation] section. " +
+        "Add [validation] with context_word_limit and prompt_word_limit.",
     );
   }
+
+  const validationSection = sectionMatch[1];
+  const contextMatch = validationSection.match(
+    /context_word_limit\s*=\s*(\d+)/,
+  );
+  const promptMatch = validationSection.match(/prompt_word_limit\s*=\s*(\d+)/);
 
   const missing: string[] = [];
-  if (typeof config.context_word_limit !== "number")
-    missing.push("context_word_limit");
-  if (typeof config.prompt_word_limit !== "number")
-    missing.push("prompt_word_limit");
+  if (!contextMatch) missing.push("context_word_limit");
+  if (!promptMatch) missing.push("prompt_word_limit");
   if (missing.length > 0) {
     throw new Error(
-      `core/config.json is missing required fields: ${missing.join(", ")}. ` +
-        "Re-run `python3 install.py` to regenerate it from config.toml.",
+      `config.toml [validation] section is missing required fields:` +
+        ` ${missing.join(", ")}.`,
     );
   }
+
   return {
-    contextWordLimit: config.context_word_limit as number,
-    promptWordLimit: config.prompt_word_limit as number,
+    contextWordLimit: parseInt(contextMatch![1], 10),
+    promptWordLimit: parseInt(promptMatch![1], 10),
   };
 }
 
