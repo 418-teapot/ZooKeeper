@@ -196,10 +196,10 @@ export function loadValidationConfig(configPath?: string): ValidationLimits {
   );
   const promptMatch = validationSection.match(/prompt_word_limit\s*=\s*(\d+)/);
 
-  const missing: string[] = [];
-  if (!contextMatch) missing.push("context_word_limit");
-  if (!promptMatch) missing.push("prompt_word_limit");
-  if (missing.length > 0) {
+  if (!contextMatch || !promptMatch) {
+    const missing: string[] = [];
+    if (!contextMatch) missing.push("context_word_limit");
+    if (!promptMatch) missing.push("prompt_word_limit");
     throw new Error(
       `config.toml [validation] section is missing required fields:` +
         ` ${missing.join(", ")}.`,
@@ -207,8 +207,8 @@ export function loadValidationConfig(configPath?: string): ValidationLimits {
   }
 
   return {
-    contextWordLimit: parseInt(contextMatch![1], 10),
-    promptWordLimit: parseInt(promptMatch![1], 10),
+    contextWordLimit: parseInt(contextMatch[1], 10),
+    promptWordLimit: parseInt(promptMatch[1], 10),
   };
 }
 

@@ -19,6 +19,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { recoverJsonError } from "./hooks/json-error-recovery";
+import { nudgePostTask } from "./hooks/post-task-nudge";
 import {
   enhanceTaskDefinition,
   loadValidationConfig,
@@ -55,6 +56,7 @@ function loadPrompt(name: string): string | undefined {
  */
 export async function zookeeper(input: any) {
   const limits = loadValidationConfig();
+  const client = input.client;
 
   return {
     async config(config: any) {
@@ -93,10 +95,11 @@ export async function zookeeper(input: any) {
       const handlers = [
         (i: typeof input, o: typeof output) => nudgeTaskOutput(i, o, limits),
         recoverJsonError,
+        (i: typeof input, o: typeof output) => nudgePostTask(client, i, o),
       ] as const;
       for (const handler of handlers) {
         try {
-          handler(input, output);
+          await handler(input, output);
         } catch {
           // Swallow per-handler errors so one failure does not
           // prevent other handlers from running.
