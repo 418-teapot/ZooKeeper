@@ -18,6 +18,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { nudgeDirectWork } from "./hooks/direct-work-nudge";
 import { recoverJsonError } from "./hooks/json-error-recovery";
 import { nudgePostTask } from "./hooks/post-task-nudge";
 import {
@@ -95,6 +96,7 @@ export async function zookeeper(input: any) {
       const handlers = [
         (i: typeof input, o: typeof output) => nudgeTaskOutput(i, o, limits),
         recoverJsonError,
+        nudgeDirectWork,
         (i: typeof input, o: typeof output) => nudgePostTask(client, i, o),
       ] as const;
       for (const handler of handlers) {

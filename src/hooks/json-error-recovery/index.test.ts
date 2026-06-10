@@ -272,7 +272,7 @@ describe("integration: tool.execute.after via plugin", () => {
     assert.ok(output.output?.includes("You sent invalid JSON arguments"));
   });
 
-  it("non-task tool with normal output unchanged via plugin", async () => {
+  it("non-task tool with normal output — no JSON reminder appended via plugin", async () => {
     const plugin = await zookeeper({});
     const output: { output?: string } = {
       output: "File written successfully",
@@ -281,7 +281,14 @@ describe("integration: tool.execute.after via plugin", () => {
       { tool: "write", sessionID: "s1", callID: "c1" },
       output,
     );
-    assert.equal(output.output, "File written successfully");
+    // JSON error recovery must NOT have appended — no JSON error detected.
+    // Other handlers (e.g. nudgeDirectWork) may append, so check absence
+    // of JSON marker rather than strict equality.
+    assert.equal(
+      output.output?.includes(JSON_ERROR_REMINDER_MARKER),
+      false,
+      "should not contain JSON error reminder",
+    );
   });
 
   it("excluded tool (bash) with JSON error NOT appended via plugin", async () => {
