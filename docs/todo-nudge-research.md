@@ -910,7 +910,7 @@ P0 (本次实现):
   ┌─────────────────────────────────────────┐
   │ 1. Post-task Nudge    ✅ 已实现          │  解决 A (子 Agent 完成后)
   │ 2. Direct Work Reminder ✅ 已实现        │  解决 B (违规编辑)
-  │ 3. Phase Reminder     ❌ 未实现          │  解决每 turn 委派提示
+  │ 3. Focus Reminder     ✅ 已实现          │  解决每 turn 委派提示
   └─────────────────────────────────────────┘
 
 P1 (后续):
@@ -1082,13 +1082,14 @@ export function remindDirectWork(
 
 ---
 
-### 8.4 机制 3: Phase Reminder ❌ 未实现
+### 8.4 机制 3: Focus Reminder ✅ 已实现（原名 Phase Reminder）
 
-**触发条件**: 每 LLM turn（`messages.transform` hook）
+**位置**: `src/hooks/focus-reminder/`
+**触发条件**: 每 LLM turn（`experimental.chat.messages.transform` hook）
 **作用**: 在最后一条 user message 注入委派流程提示
-**Hook 点**: `messages.transform`
+**Hook 点**: `experimental.chat.messages.transform`
 
-> **状态说明**: 此机制依赖 `messages.transform` hook，当前插件未注册该 hook。实现优先级已被 Todo Nudge P0 覆盖——Mechanism 1 和 2 已基本覆盖场景 A 和 B，Phase Reminder 的补充价值较低，未列入当前实现计划。
+> **实现说明**: 实现时更名为 **Focus Reminder**（语义更准确：提醒保持聚焦，避免与"phase"概念混淆）。Agent 名称通过 `lastUserMsg.info.agent` 读取，不存在时 fallback 到 `client.getSession(sessionId)`。实现为无状态，每 turn 重新注入自然去重。
 
 #### 设计决策
 
@@ -1220,19 +1221,20 @@ Stale status = Invisible work = Forgotten work.
 
 ### 8.7 src/index.ts 变更 ✅ 已实现
 
-当前 `src/index.ts` 已注册以下 handler 链（含 Mechanism 1 和 2，不含 Mechanism 3）：
+当前 `src/index.ts` 已注册以下 handler 链（含全部三个 P0 机制）：
 
 ```typescript
-// tool.execute.after hook (当前实现)
+// tool.execute.after hook (tool-output 注入：Mechanism 1 + 2)
 const handlers = [
   (i, o) => nudgeTaskOutput(i, o, limits),   // task prompt nudge
   recoverJsonError,                            // JSON error recovery
   nudgeDirectWork,                             // Mechanism 2
   (i, o) => nudgePostTask(client, i, o),      // Mechanism 1
 ];
-```
 
-> **与设计文档的差异**: 当前实现未使用文档原设计中的 `messages.transform` hook（Mechanism 3 未实现）。Mechanism 1 和 2 全部在 `tool.execute.after` 中串联执行。
+// experimental.chat.messages.transform hook (user-message 注入：Mechanism 3)
+await injectFocusReminder(client, output);    // Focus Reminder
+```
 
 ---
 
@@ -1316,15 +1318,15 @@ build 验证通过，应该标记 todo 完成
 
 | 文件 | 操作 | 行数 (hook/test) |
 |------|------|----------------|
-| `core/prompts/build.md` | 删除 verify-iterate section (-8 行) | — |
-| `src/hooks/shared/todo-nudge.ts` | **新建** | 40 / — |
-| `src/hooks/post-task-nudge/hook.ts` | **新建** | 80 / 300 |
-| `src/hooks/post-task-nudge/index.ts` | **新建** | 5 / — |
-| `src/hooks/direct-work-reminder/hook.ts` | **新建** | 50 / 200 |
-| `src/hooks/direct-work-reminder/index.ts` | **新建** | 5 / — |
-| `src/hooks/phase-reminder/hook.ts` | **新建** | 90 / 150 |
-| `src/hooks/phase-reminder/index.ts` | **新建** | 5 / — |
-| `src/index.ts` | 修改 (+20 行) | 20 / — |
+| `core/prompts/build.md` | 删除 verify-iterate section (-8 行) ✅ | — |
+| `src/hooks/shared/todo-nudge.ts` | **新建** ✅ | 40 / — |
+| `src/hooks/post-task-nudge/hook.ts` | **新建** ✅ | 80 / 300 |
+| `src/hooks/post-task-nudge/index.ts` | **新建** ✅ | 5 / — |
+| `src/hooks/direct-work-nudge/hook.ts` | **新建** ✅ | 50 / 200 |
+| `src/hooks/direct-work-nudge/index.ts` | **新建** ✅ | 5 / — |
+| `src/hooks/focus-reminder/hook.ts` | **新建** ✅（原名 phase-reminder） | 90 / 150 |
+| `src/hooks/focus-reminder/index.ts` | **新建** ✅（原名 phase-reminder） | 5 / — |
+| `src/index.ts` | 修改 ✅ | 20 / — |
 | **总计** | | ~295 / ~650 |
 
 ### 10.2 P0 实施顺序
@@ -1334,11 +1336,10 @@ Phase 1: 基础设施
   ✅ 已实现 — 创建 shared/todo-nudge.ts (TODO_GENERAL, TODO_FINAL_ACTIVE, getTodoState)
   ✅ 已实现 — 修改 src/index.ts (handler 链支持 async、支持 ctx 传递)
 
-Phase 2: 机制 3 - Phase Reminder (最简单)
-  ❌ 未实现 — 创建 src/hooks/phase-reminder/（目录不存在）
-  ❌ 未实现 — 在 src/index.ts 注册 messages.transform hook
-  ❌ 未实现 — 验证：每次 LLM turn 都注入 reminder
-  > Phase Reminder 被搁置。Mechanism 1 和 2 已在 tool.execute.after 中实现，覆盖了主要场景。
+Phase 2: 机制 3 - Focus Reminder (messages.transform 注入)
+  ✅ 已实现 — 创建 src/hooks/focus-reminder/（实现时更名）
+  ✅ 已实现 — 在 src/index.ts 注册 experimental.chat.messages.transform hook
+  ✅ 已实现 — 验证：每次 LLM turn 都注入 reminder（仅 build agent）
 
 Phase 3: 机制 2 - Direct Work Reminder
   ✅ 已实现 — 创建 src/hooks/direct-work-nudge/
@@ -1429,7 +1430,7 @@ ZooKeeper 方案遵循以下原则：
 |------|-----|------|-----------|
 | 任务完成 → 验证+todo | ✅ | (通过 hygiene 间接) | ✅ post-task nudge **已实现** |
 | 违规编辑 → 警告 | ✅ | ✅ | ✅ direct-work reminder **已实现** |
-| 每 turn → 委派提示 | ❌ | ✅ phase-reminder | ❌ phase-reminder **未实现（已搁置）** |
+| 每 turn → 委派提示 | ❌ | ✅ phase-reminder | ✅ focus-reminder **已实现** |
 | 任务完成 → todo 更新 | (通过 Idle Enf. 兜底) | ✅ todo-hygiene | (通过 Idle Cont. P1) |
 | idle → 强制续接 | ✅ Continuation Enf. | ✅ Auto-continuation | ✅ Idle Continuation (P1 **未实现**) |
 

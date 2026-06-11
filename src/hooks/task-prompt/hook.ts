@@ -334,6 +334,10 @@ export function validateBeforeExec(
 
   if (!result.valid) {
     const details = result.errors.map((e) => `- ${e}`).join("\n");
+    console.debug("[zookeeper:task-prompt-validate] trigger", {
+      valid: false,
+      errors: result.errors.length,
+    });
     throw new Error(
       "Task prompt format error:\n" +
         `${details}\n\n` +
@@ -343,6 +347,14 @@ export function validateBeforeExec(
         "- ACCEPTANCE: 1-2 verifiable outcomes\n\n" +
         "Please rewrite before delegating.",
     );
+  }
+
+  // Validation passed — log if there are warnings
+  if (result.warnings.length > 0) {
+    console.debug("[zookeeper:task-prompt-validate] trigger", {
+      valid: true,
+      warnings: result.warnings.length,
+    });
   }
 }
 
@@ -377,4 +389,8 @@ export function nudgeTaskOutput(
   const nudgeText = result.warnings.map((w) => `- ${w}`).join("\n");
   const suffix = `\n\n--- Guidance for next time ---\n${nudgeText}`;
   output.output = (output.output ?? "") + suffix;
+
+  console.debug("[zookeeper:task-prompt-nudge] trigger", {
+    warnings: result.warnings.length,
+  });
 }

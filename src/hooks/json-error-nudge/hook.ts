@@ -103,6 +103,10 @@ export function recoverJsonError(
   for (const pattern of JSON_ERROR_PATTERNS) {
     if (pattern.test(output.output)) {
       output.output += `\n${JSON_ERROR_REMINDER}`;
+      console.debug("[zookeeper:json-error-nudge] trigger", {
+        tool: input.tool,
+        pattern: pattern.source,
+      });
       return;
     }
   }

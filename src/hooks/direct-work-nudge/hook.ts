@@ -52,4 +52,6 @@ export function nudgeDirectWork(
   if (output.output == null) return;
 
   output.output += `\n\n${DIRECT_WORK_NUDGE}`;
+
+  console.debug("[zookeeper:direct-work-nudge] trigger", { tool: input.tool });
 }

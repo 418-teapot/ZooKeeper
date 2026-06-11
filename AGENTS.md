@@ -61,7 +61,13 @@ ZooKeeper/
 │   └── prompts/*.md         # 各 agent 的 prompt 文件（被插件动态注入）
 ├── src/                        # OpenCode 插件 TS 代码
 │   ├── index.ts                # 插件入口（config hook + prompt validation）
-│   └── hooks/                  # 各功能 hook（如 json-error-nudge）
+│   └── hooks/
+│       ├── task-prompt/        # task prompt 校验 + nudge
+│       ├── json-error-nudge/   # JSON 解析错误恢复
+│       ├── direct-work-nudge/  # 直接编辑提醒
+│       ├── post-task-nudge/    # task() 返回后验证+todo 提醒
+│       ├── focus-reminder/     # 每 turn 注入委派聚焦提醒
+│       └── shared/             # 共享模块
 ├── tests/                   # Prompt 评估测试框架（Phase 1: build.md）
 │   └── runner.py            # 评估测试运行器
 └── docs/                    # 设计文档和调研报告
@@ -90,3 +96,15 @@ OpenCode 日志写入以下位置：
 - **Windows：** `%USERPROFILE%\.local\share\opencode\log`
 
 日志文件按时间戳命名（如 `2025-01-09T123456.log`），保留最近 10 个日志文件。可使用 `--log-level DEBUG` 命令行选项获取更详细的调试信息。
+
+### 插件调试日志
+
+所有 hook 使用 `console.debug()` 输出触发记录，格式为 `[zookeeper:<hook-name>] trigger`。在 `--log-level DEBUG` 模式下，这些日志会写入 OpenCode 日志文件。例如：
+
+```
+[zookeeper:task-prompt-validate] trigger { valid: false, errors: 1 }
+[zookeeper:json-error-nudge] trigger { tool: "webfetch", pattern: "...", }
+[zookeeper:direct-work-nudge] trigger { tool: "edit" }
+[zookeeper:post-task-nudge] trigger { hasTodo: true, nudge: "general" }
+[zookeeper:focus-reminder] trigger { agent: "build", sessionId: "..." }
+```

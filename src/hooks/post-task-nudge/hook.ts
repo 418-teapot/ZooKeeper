@@ -81,6 +81,7 @@ export async function nudgePostTask(
     if (activeCount === 0) {
       // All completed / cancelled — VERIFY only
       output.output += suffix;
+      console.debug("[zookeeper:post-task-nudge] trigger", { hasTodo: false });
       return;
     }
 
@@ -96,4 +97,11 @@ export async function nudgePostTask(
   }
 
   output.output += suffix;
+  const todoNudge = suffix.includes(TODO_FINAL_ACTIVE)
+    ? "final_active"
+    : "general";
+  console.debug("[zookeeper:post-task-nudge] trigger", {
+    hasTodo: true,
+    nudge: todoNudge,
+  });
 }

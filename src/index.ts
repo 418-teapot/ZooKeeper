@@ -19,6 +19,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { nudgeDirectWork } from "./hooks/direct-work-nudge";
+import { injectFocusReminder } from "./hooks/focus-reminder";
 import { recoverJsonError } from "./hooks/json-error-nudge";
 import { nudgePostTask } from "./hooks/post-task-nudge";
 import {
@@ -67,6 +68,27 @@ export async function zookeeper(input: any) {
 
         const prompt = loadPrompt(name);
         if (prompt) (agent as any).prompt = prompt;
+      }
+    },
+
+    async "experimental.chat.messages.transform"(
+      _input: Record<string, never>,
+      output: {
+        messages?: Array<{
+          info: {
+            role: string;
+            id: string;
+            sessionID?: string;
+            agent?: string;
+          };
+          parts: Array<{ type: "text"; text: string }>;
+        }>;
+      },
+    ) {
+      try {
+        await injectFocusReminder(client, output);
+      } catch {
+        // Swallow errors so a reminder failure never disrupts the LLM turn.
       }
     },
 
