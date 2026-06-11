@@ -256,13 +256,13 @@ assert:
 
 ### 🔴 高优先级（测试准确性）
 
-- [ ] **修复 `delegation_rate = 1.0` 的假阳性**
+- [ ] ❌ **修复 `delegation_rate = 1.0` 的假阳性**（**未修复** — 代码 `tests/session.py:385` 仍为 `1.0 if denom == 0`）
   - 当 `task_count=0, edit_count=0` 时，`delegation_rate` 分支返回 `1.0` 而不是 `0.0` 或特殊值
   - 这导致"代理什么都没做"被指标报告为"完美委派"
-  - 位置：`tests/session.py` 第 259-261 行
+  - 位置：`tests/session.py` 第 385 行
   - 方案：区分"没有委派必要"和"应该委派但没委派"两种状态，或者返回 `None`/特殊标记
 
-- [ ] **添加 `assert_commitment_matched_action` 断言**（见 [§6.1](#61-短期增加失败分类维度无需-llm)）
+- [ ] ❌ **添加 `assert_commitment_matched_action` 断言**（**未实现** — 不在 `tests/assertions.py` 中）
   - 低成本高价值的增强
   - 可以立即在 build-pressure-2 上捕获当前现象
   - 需要：在 `tests/assertions.py` 中实现，并在多个压力场景 TOML 中启用

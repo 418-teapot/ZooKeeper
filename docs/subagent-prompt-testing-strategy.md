@@ -1180,6 +1180,7 @@ Phase 0 (立即可做，0 成本)    │ Phase 1 (1-2 天)           │ Phase 2
 
 - **日期**: 2026-06-07
 - **范围**: 实现了 Section 5 提出的双层测试方案——Layer 2（编排器断言）和 Layer 1（subagent 断言），覆盖 build、general、explore 三个 agent
+- **状态**: ✅ **已实现（Phase 1 完成）** — 10 个断言函数 + 4 个新场景 + 9 场景运行框架
 - **修改的文件**:
   - `tests/session.py` — 新增 `SubagentSession` dataclass（含 agent 名称、场景名称、task 输入/输出、工具调用列表、deferred 状态字段）；新增 `split_subagent_sessions()` 函数，按 `task()` 调用边界分割编排器事件流
   - `tests/assertions.py` — 新增 10 个断言函数（3 个 Layer 2 + 7 个 Layer 1），每个断言遵循统一的 `(session, config) -> AssertionResult` 签名；新增 `deferred_threshold` 配置支持软通过

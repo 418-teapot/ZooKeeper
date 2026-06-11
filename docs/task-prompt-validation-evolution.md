@@ -246,12 +246,12 @@ build.md、tool.definition、tool.execute.before 三层表达**同一个**约束
 
 **短期（已具备条件，可选做）**：
 
-- **JSON error recovery 守卫**：在 `tool.execute.after` hook 检测 LLM 输出中的格式错误（参照 oh-my-opencode-slim 的 21 个模式），追加修正提示。成本低，能解决 LLM 偶尔输出格式不规范导致的下游工具失败。
+- **JSON error recovery 守卫** ✅ **已实现**：在 `tool.execute.after` hook 检测 LLM 输出中的格式错误（参照 oh-my-opencode-slim 的 21 个模式），追加修正提示。已在 `src/hooks/json-error-nudge/` 中实现。
 
 **中期**：
 
-- **Prompt 按需注入**：把 verify-iterate 规则从 build.md 拆出为独立 skill 文件，通过 `tool.execute.after` 在 `task()` 返回后注入。token 节省有限，但行为效果更好（指令在需要时出现）。
+- **Prompt 按需注入** ✅ **已实现**：把 verify-iterate 规则从 build.md 拆出，通过 `tool.execute.after` 在 `task()` 返回后注入。已在 `src/hooks/post-task-nudge/` 中实现。
 
 **长期**：
 
-- **多 harness 适配**：当 Claude Code 适配器实现后，三层表达机制的映射（build.md ↔ CLAUDE.md，tool.definition ↔ PreToolUse message，tool.execute.before ↔ PreToolUse deny）需要保持一致的"结构性阻断 + 内容引导"哲学。
+- **多 harness 适配** ❌ 未实现：当 Claude Code 适配器实现后，三层表达机制的映射（build.md ↔ CLAUDE.md，tool.definition ↔ PreToolUse message，tool.execute.before ↔ PreToolUse deny）需要保持一致的"结构性阻断 + 内容引导"哲学。当前 `src/index.ts:16` 仅有一个 TODO 注释。

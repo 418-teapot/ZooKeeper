@@ -2,6 +2,8 @@
 
 **Version: 0.2 — Date: 2026-06-10 — Classification: 技术调研**
 
+> **实现状态更新 (2026-06-10)**: 本报告中的所有方案均处于纯设计阶段，尚未有任何代码实现。`core/prompts/plan.md` 不存在，`config.toml` 中无 `[agent.plan]` 块，`src/hooks/` 下无任何 plan mode 相关代码。Plan Mode 仍作为未来方向保留。
+
 ---
 
 ## 目录
@@ -102,10 +104,12 @@ ZooKeeper 的 `config.toml` 中未配置 `[agent.plan]` 块，因此 OpenCode �
 | 维度 | 状态 |
 |------|------|
 | plan agent 是否存在 | ✅ 存在（OpenCode 内置默认） |
-| 是否有自定义 prompt | ❌ 无（无 `core/prompts/plan.md`） |
+| 是否有自定义 prompt | ❌ 无（`core/prompts/plan.md` 不存在） |
 | 权限是否符合 ZooKeeper 风格 | ❌ 使用 ask 而不是 deny |
 | 自动检测规划意图 | ❌ 无 |
 | 与 build agent 的协作流程 | ❌ 无（各自独立） |
+| **插件层 Plan Mode 实现** | **❌ 未实现** — 无 `src/hooks/plan-mode/`，无状态机，无工具阻断 |
+| **/go /go-with-risk /redirect 命令** | **❌ 未实现** — 无 `chat.message` hook 检测逻辑 |
 
 ---
 
@@ -1027,7 +1031,7 @@ async "tool.execute.before"(
 
 ## 6. 改进方向
 
-### 🔴 短期（1-2 周，可独立实施）
+### 🔴 短期（1-2 周，可独立实施）— ❌ 全部未实现
 
 | 序号 | 改进项 | 方案 | 优先级 |
 |------|-------|------|--------|
@@ -1035,7 +1039,7 @@ async "tool.execute.before"(
 | 2 | 在 `config.toml` 中注册 plan agent | 添加 `[agent.plan]` 块，设置合理权限，作为默认 agent | 🔴 高 |
 | 3 | 默认开启 plan 模式 | 插件在会话启动时自动进入规划模式，无需关键词检测 | 🔴 高 |
 
-### 🟡 中期（2-4 周，涉及插件修改）
+### 🟡 中期（2-4 周，涉及插件修改）— ❌ 全部未实现
 
 | 序号 | 改进项 | 方案 | 优先级 |
 |------|-------|------|--------|
@@ -1044,7 +1048,7 @@ async "tool.execute.before"(
 | 6 | 规划产出验证 | 在 `/go` 前检查是否生成了有效的规划方案 | 🟡 中 |
 | 7 | plan prompt 与现有 prompt 的一致性验证 | 确保 plan.md 与 build.md 在规划流程上不冲突 | 🟡 中 |
 
-### 🟢 长期（4-8 周，需评估收益）
+### 🟢 长期（4-8 周，需评估收益）— ❌ 全部未实现
 
 | 序号 | 改进项 | 方案 | 优先级 |
 |------|-------|------|--------|
@@ -1053,7 +1057,7 @@ async "tool.execute.before"(
 | 10 | 规划产出自动化评估 | 使用 LLM-as-Judge 评估规划文档的完整性和质量 | 🟢 低 |
 | 11 | 多轮规划对话支持 | 在 plan 模式中支持多轮对话迭代方案，而非一次产出就结束 | 🟢 低 |
 
-### 推荐实施路线
+### 推荐实施路线 — ❌ 全部未开始
 
 ```
 短期             中期                   长期
@@ -1066,6 +1070,8 @@ plan.md refine ─────→ 规划产出验证 ───→ 自动化评�
                                               │
                                         多轮规划对话
 ```
+
+> **当前状态 (2026-06-10)**: 以上路线图上的所有节点均未开始实施。`core/prompts/plan.md` 不存在，config.toml 中无 `[agent.plan]`，插件中无 plan mode 相关 hook。
 
 ---
 
@@ -1081,7 +1087,7 @@ plan.md refine ─────→ 规划产出验证 ───→ 自动化评�
 | slim | 编排器即规划者（无独立 plan agent） | Subtask 轻量规划原语、Delegation Check 隐式规划步骤 |
 | omp | Plan subagent + /plan 双层设计 | 写保护硬约束、resolve 工具批准流程、规划文档 compaction 保护 |
 
-### 7.2 推荐方案优先级
+### 7.2 推荐方案优先级 — ❌ 全部未实现
 
 | 优先级 | 方案 | 理由 |
 |--------|------|------|
@@ -1089,6 +1095,8 @@ plan.md refine ─────→ 规划产出验证 ───→ 自动化评�
 | P1 | 方案 C: 插件层默认 plan 模式 + 命令驱动 | 硬约束阻断 + /go /go-with-risk /redirect 三命令体系 |
 | P2 | 方案 B: Plan Subagent | 更强的流程管控，适合规划产出需要落地为文件的场景 |
 | P3 | 方案 A: 纯 Prompt 引导 | 轻量补充，可与其他方案共存 |
+
+> **当前状态**: 以上所有方案均未开始实施。无 plan 相关代码、无 plan.md 文件、无 plan agent 配置。
 
 ### 7.3 关键决策点
 

@@ -632,21 +632,21 @@ ZooKeeper 的核心优势在**可维护性、轻量性和学习曲线**。劣势
 
 **短期（1-2 周）**：
 
-1. **L1 错误恢复**：在 `tool.execute.after` 加 JSON error recovery（~80 行），引导 LLM 自我修正输出格式错误
-2. **配置增强**：config.toml 支持通配符（`"mcp_*" = "deny"`），减少 MCP 权限的配置噪音
-3. **测试补强**：添加"植入 Bug"测试场景和 anti-sycophancy 检查
+1. **L1 错误恢复**：在 `tool.execute.after` 加 JSON error recovery（~80 行），引导 LLM 自我修正输出格式错误 → ✅ **已实现**（`src/hooks/json-error-nudge/`）
+2. **配置增强**：config.toml 支持通配符（`"mcp_*" = "deny"`），减少 MCP 权限的配置噪音 → ❌ 未实现
+3. **测试补强**：添加"植入 Bug"测试场景和 anti-sycophancy 检查 → ❌ 未实现
 
 **中期（2-4 周）**：
 
-4. **L2 模型回退链**：config.toml 的 model 字段支持数组，插件监听 `session.error` 事件做模型切换
-5. **Prompt 按需注入**：把 verify-iterate 规则从 build.md 拆出来，通过 `tool.execute.after` 在 `task()` 返回后注入
-6. **DCP 兼容性**：确保 ZooKeeper 的 hook 不与 DCP 的 `messages.transform` 冲突，写兼容性测试
+4. **L2 模型回退链**：config.toml 的 model 字段支持数组，插件监听 `session.error` 事件做模型切换 → ❌ 未实现
+5. **Prompt 按需注入**：把 verify-iterate 规则从 build.md 拆出来，通过 `tool.execute.after` 在 `task()` 返回后注入 → ✅ **已实现**（`src/hooks/post-task-nudge/`）
+6. **DCP 兼容性**：确保 ZooKeeper 的 hook 不与 DCP 的 `messages.transform` 冲突，写兼容性测试 → ❌ 未实现
 
 **长期（4-8 周）**：
 
-7. **Plan Mode**：引入 plan agent（只读），强制编排器在动手前先规划
-8. **子 agent 行为测试**：借鉴 superpowers 的隐式触发测试，验证子 agent 是否真正遵循 prompt 约束
-9. **Skill 体系**：把方法论指令（verify-iterate、task-prompt-format）拆为独立 skill 文件，按需触发
+7. **Plan Mode**：引入 plan agent（只读），强制编排器在动手前先规划 → ❌ 未实现
+8. **子 agent 行为测试**：借鉴 superpowers 的隐式触发测试，验证子 agent 是否真正遵循 prompt 约束 → ❌ 未实现
+9. **Skill 体系**：把方法论指令（verify-iterate、task-prompt-format）拆为独立 skill 文件，按需触发 → ❌ 未实现
 
 ### 11.3 核心原则
 

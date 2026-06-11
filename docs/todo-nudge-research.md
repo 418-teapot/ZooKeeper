@@ -908,19 +908,20 @@ export function createTodoHygieneHook(): HookHandlers {
 ```
 P0 (本次实现):
   ┌─────────────────────────────────────────┐
-  │ 1. Post-task Nudge                      │  解决 A (子 Agent 完成后)
-  │ 2. Direct Work Reminder                 │  解决 B (违规编辑)
-  │ 3. Phase Reminder                       │  解决每 turn 委派提示
+  │ 1. Post-task Nudge    ✅ 已实现          │  解决 A (子 Agent 完成后)
+  │ 2. Direct Work Reminder ✅ 已实现        │  解决 B (违规编辑)
+  │ 3. Phase Reminder     ❌ 未实现          │  解决每 turn 委派提示
   └─────────────────────────────────────────┘
 
 P1 (后续):
   ┌─────────────────────────────────────────┐
-  │ 4. Idle Continuation                    │  解决 D (idle 时强制续接)
+  │ 4. Idle Continuation  ❌ 未实现 (P1)    │  解决 D (idle 时强制续接)
   └─────────────────────────────────────────┘
 ```
 
-### 8.2 机制 1: Post-task Nudge
+### 8.2 机制 1: Post-task Nudge ✅ 已实现
 
+**位置**: `src/hooks/post-task-nudge/`  
 **触发条件**: `tool === "task"`
 **作用**: 从 build.md 拆出 verify-iterate section，在 task() 返回时注入 verify + todo nudge
 **Hook 点**: `tool.execute.after`
@@ -1016,8 +1017,9 @@ After subagent code changes, you MUST verify: build, tests, lint. If verificatio
 
 ---
 
-### 8.3 机制 2: Direct Work Reminder
+### 8.3 机制 2: Direct Work Reminder ✅ 已实现
 
+**位置**: `src/hooks/direct-work-nudge/`  
 **触发条件**: `tool === ("edit" | "write")` 且路径不在排除列表
 **作用**: 警告编排器违规直接编辑
 **Hook 点**: `tool.execute.after`
@@ -1080,11 +1082,13 @@ export function remindDirectWork(
 
 ---
 
-### 8.4 机制 3: Phase Reminder
+### 8.4 机制 3: Phase Reminder ❌ 未实现
 
 **触发条件**: 每 LLM turn（`messages.transform` hook）
 **作用**: 在最后一条 user message 注入委派流程提示
 **Hook 点**: `messages.transform`
+
+> **状态说明**: 此机制依赖 `messages.transform` hook，当前插件未注册该 hook。实现优先级已被 Todo Nudge P0 覆盖——Mechanism 1 和 2 已基本覆盖场景 A 和 B，Phase Reminder 的补充价值较低，未列入当前实现计划。
 
 #### 设计决策
 
@@ -1138,7 +1142,7 @@ export function injectPhaseReminder(
 
 ---
 
-### 8.5 机制 4: Idle Continuation (P1)
+### 8.5 机制 4: Idle Continuation (P1) ❌ 未实现
 
 **触发条件**: `session.idle`（编排器空闲）
 **作用**: 当编排器在 todo 未完成时停止，强制续接
@@ -1171,7 +1175,9 @@ P1，本次不实现。原因：
 
 ---
 
-### 8.6 共享模块
+### 8.6 共享模块 ✅ 已实现
+
+**位置**: `src/hooks/shared/todo-nudge.ts`
 
 为了在机制 1 和 2 中复用 todo 查询逻辑，引入共享模块：
 
@@ -1212,50 +1218,21 @@ Stale status = Invisible work = Forgotten work.
 
 ---
 
-### 8.7 src/index.ts 变更
+### 8.7 src/index.ts 变更 ✅ 已实现
+
+当前 `src/index.ts` 已注册以下 handler 链（含 Mechanism 1 和 2，不含 Mechanism 3）：
 
 ```typescript
-export async function zookeeper(input: any) {
-  const limits = loadValidationConfig();
-
-  return {
-    config: async (input: ConfigInput) => { ... },
-
-    "tool.definition": async (input: ToolDefinitionInput) => { ... },
-
-    "tool.execute.before": async (input: ToolExecuteBeforeInput) => { ... },
-
-    "tool.execute.after": async (input: ToolExecuteAfterInput, output: ToolExecuteAfterOutput) => {
-      // Phase Reminder 由 messages.transform 处理，不在此注入
-
-      const preHandlers: Array<(input: ToolExecuteAfterInput, output: ToolExecuteAfterOutput) => void> = [
-        async (i, o) => await nudgeTaskOutput(i, o, limits),  // 现有
-        async (i, o) => await recoverJsonError(i, o),       // 现有
-      ];
-
-      const postHandlers: Array<(ctx: any, input: ToolExecuteAfterInput, output: ToolExecuteAfterOutput) => void> = [
-        async (ctx, i, o) => await nudgePostTask(ctx, i, o),    // 机制 1
-        async (ctx, i, o) => await remindDirectWork(ctx, i, o), // 机制 2
-      ];
-
-      // 执行 pre handlers
-      for (const handler of preHandlers) {
-        try { await handler(input, output); } catch { /* swallow */ }
-      }
-
-      // 执行 post handlers（需要 ctx）
-      for (const handler of postHandlers) {
-        try { await handler(input.ctx, input, output); } catch { /* swallow */ }
-      }
-    },
-
-    "messages.transform": async (input: { event: Message }) => {
-      // 机制 3
-      await injectPhaseReminder(input.ctx, input);
-    },
-  };
-}
+// tool.execute.after hook (当前实现)
+const handlers = [
+  (i, o) => nudgeTaskOutput(i, o, limits),   // task prompt nudge
+  recoverJsonError,                            // JSON error recovery
+  nudgeDirectWork,                             // Mechanism 2
+  (i, o) => nudgePostTask(client, i, o),      // Mechanism 1
+];
 ```
+
+> **与设计文档的差异**: 当前实现未使用文档原设计中的 `messages.transform` hook（Mechanism 3 未实现）。Mechanism 1 和 2 全部在 `tool.execute.after` 中串联执行。
 
 ---
 
@@ -1354,24 +1331,25 @@ build 验证通过，应该标记 todo 完成
 
 ```
 Phase 1: 基础设施
-  ✓ 创建 shared/todo-nudge.ts (TODO_GENERAL, TODO_FINAL_ACTIVE, getTodoState)
-  ✓ 修改 src/index.ts (handler 链支持 async、支持 ctx 传递)
+  ✅ 已实现 — 创建 shared/todo-nudge.ts (TODO_GENERAL, TODO_FINAL_ACTIVE, getTodoState)
+  ✅ 已实现 — 修改 src/index.ts (handler 链支持 async、支持 ctx 传递)
 
 Phase 2: 机制 3 - Phase Reminder (最简单)
-  ✓ 创建 src/hooks/phase-reminder/
-  ✓ 在 src/index.ts 注册 messages.transform hook
-  ✓ 验证：每次 LLM turn 都注入 reminder
+  ❌ 未实现 — 创建 src/hooks/phase-reminder/（目录不存在）
+  ❌ 未实现 — 在 src/index.ts 注册 messages.transform hook
+  ❌ 未实现 — 验证：每次 LLM turn 都注入 reminder
+  > Phase Reminder 被搁置。Mechanism 1 和 2 已在 tool.execute.after 中实现，覆盖了主要场景。
 
 Phase 3: 机制 2 - Direct Work Reminder
-  ✓ 创建 src/hooks/direct-work-reminder/
-  ✓ 在 src/index.ts 注册 tool.execute.after hook
-  ✓ 验证：非配置路径的 edit/write 注入违规提醒
+  ✅ 已实现 — 创建 src/hooks/direct-work-nudge/
+  ✅ 已实现 — 在 src/index.ts 注册 tool.execute.after hook
+  ✅ 已实现 — 验证：非配置路径的 edit/write 注入违规提醒
 
 Phase 4: 机制 1 - Post-task Nudge
-  ✓ 创建 src/hooks/post-task-nudge/
-  ✓ 修改 build.md 删除 verify-iterate section
-  ✓ 在 src/index.ts 注册 tool.execute.after hook
-  ✓ 验证：task() 返回后注入 verify + todo nudge
+  ✅ 已实现 — 创建 src/hooks/post-task-nudge/
+  ✅ 已实现 — 修改 build.md 删除 verify-iterate section
+  ✅ 已实现 — 在 src/index.ts 注册 tool.execute.after hook
+  ✅ 已实现 — 验证：task() 返回后注入 verify + todo nudge
 ```
 
 ### 10.3 验证方法
@@ -1390,7 +1368,7 @@ Phase 4: 机制 1 - Post-task Nudge
 #   - 是否避免违规编辑源文件
 ```
 
-### 10.4 P1 待办
+### 10.4 P1 待办 ❌ 未实现
 
 ```
 □ 机制 4: Idle Continuation
@@ -1440,7 +1418,7 @@ ZooKeeper 方案遵循以下原则：
 |-----------------|---------|
 | 身份声明 ("You are an orchestrator") | **保留** (每轮静态注入) |
 | 委派规则 ("What you MUST delegate") | **保留** (每轮静态注入) |
-| 验证迭代 ("Verify-Iterate Pattern") | **拆出** → 改为 `task()` 返回后按需注入 |
+| 验证迭代 ("Verify-Iterate Pattern") | **已移出** ✅ — 改为 `tool.execute.after` 中 post-task nudge 按需注入 |
 | CONTEXT 约束 ("Why CONTEXT must stay focused") | **保留** (每轮静态注入，帮助 task 格式正确) |
 | Examples | **保留** (每轮静态注入，减少 token 浪费) |
 | Subagent output | **保留** (每轮静态注入) |
@@ -1449,11 +1427,11 @@ ZooKeeper 方案遵循以下原则：
 
 | 机制 | OMO | slim | ZooKeeper |
 |------|-----|------|-----------|
-| 任务完成 → 验证+todo | ✅ | (通过 hygiene 间接) | ✅ post-task nudge |
-| 违规编辑 → 警告 | ✅ | ✅ | ✅ direct-work reminder |
-| 每 turn → 委派提示 | ❌ | ✅ phase-reminder | ✅ phase-reminder |
+| 任务完成 → 验证+todo | ✅ | (通过 hygiene 间接) | ✅ post-task nudge **已实现** |
+| 违规编辑 → 警告 | ✅ | ✅ | ✅ direct-work reminder **已实现** |
+| 每 turn → 委派提示 | ❌ | ✅ phase-reminder | ❌ phase-reminder **未实现（已搁置）** |
 | 任务完成 → todo 更新 | (通过 Idle Enf. 兜底) | ✅ todo-hygiene | (通过 Idle Cont. P1) |
-| idle → 强制续接 | ✅ Continuation Enf. | ✅ Auto-continuation | ✅ Idle Continuation (P1) |
+| idle → 强制续接 | ✅ Continuation Enf. | ✅ Auto-continuation | ✅ Idle Continuation (P1 **未实现**) |
 
 ### 11.5 未来方向
 
