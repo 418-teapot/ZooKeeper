@@ -118,7 +118,7 @@ export async function zookeeper(input: any) {
       const handlers = [
         (i: typeof input, o: typeof output) => nudgeTaskOutput(i, o, limits),
         recoverJsonError,
-        nudgeDirectWork,
+        (i: typeof input, o: typeof output) => nudgeDirectWork(client, i, o),
         (i: typeof input, o: typeof output) => nudgePostTask(client, i, o),
       ] as const;
       for (const handler of handlers) {

@@ -26,12 +26,31 @@ const NON_EDIT_WRITE_TOOLS = [
 ];
 
 /**
- * Invoke nudgeDirectWork with the given tool and output and return the
- * mutated output object.
+ * Create a mock client that returns the given agent name for any session.
  */
-function applyReminder(tool: string, text: string): { output?: string } {
+function mockClient(agent: string) {
+  return { getSession: async () => ({ agent }) };
+}
+
+/** Pre-built mock build client used by most tests. */
+const BUILD_CLIENT = mockClient("build");
+
+/**
+ * Invoke nudgeDirectWork with the given tool, output, and optional client.
+ *
+ * Defaults to a mock build client.  Pass `null` to test the no-client path.
+ */
+async function applyReminder(
+  tool: string,
+  text: string,
+  client?: Parameters<typeof nudgeDirectWork>[0],
+): Promise<{ output?: string }> {
   const result: { output?: string } = { output: text };
-  nudgeDirectWork({ tool }, result);
+  await nudgeDirectWork(
+    client ?? BUILD_CLIENT,
+    { tool, sessionID: "s1" },
+    result,
+  );
   return result;
 }
 
@@ -50,14 +69,14 @@ function assertHasReminder(obj: { output?: string }, message?: string): void {
 // ---------------------------------------------------------------------------
 
 describe("edit/write fires reminder", () => {
-  it('appends reminder for tool="edit"', () => {
-    const res = applyReminder("edit", "Fixed indentation in foo.ts");
+  it('appends reminder for tool="edit"', async () => {
+    const res = await applyReminder("edit", "Fixed indentation in foo.ts");
     assertHasReminder(res);
     assert.ok(res.output?.includes(DIRECT_WORK_NUDGE));
   });
 
-  it('appends reminder for tool="write"', () => {
-    const res = applyReminder("write", "Created new file bar.ts");
+  it('appends reminder for tool="write"', async () => {
+    const res = await applyReminder("write", "Created new file bar.ts");
     assertHasReminder(res);
     assert.ok(res.output?.includes(DIRECT_WORK_NUDGE));
   });
@@ -69,8 +88,8 @@ describe("edit/write fires reminder", () => {
 
 describe("non edit/write tools are skipped", () => {
   for (const tool of NON_EDIT_WRITE_TOOLS) {
-    it(`skips tool "${tool}"`, () => {
-      const res = applyReminder(tool, "some output text here");
+    it(`skips tool "${tool}"`, async () => {
+      const res = await applyReminder(tool, "some output text here");
       assert.equal(
         res.output,
         "some output text here",
@@ -85,21 +104,21 @@ describe("non edit/write tools are skipped", () => {
 // ---------------------------------------------------------------------------
 
 describe("null / undefined output", () => {
-  it("does not modify when output is absent", () => {
+  it("does not modify when output is absent", async () => {
     const obj: { output?: string } = {};
-    nudgeDirectWork({ tool: "edit" }, obj);
+    await nudgeDirectWork(BUILD_CLIENT, { tool: "edit", sessionID: "s1" }, obj);
     assert.equal(obj.output, undefined);
   });
 
-  it("does not modify when output is undefined", () => {
+  it("does not modify when output is undefined", async () => {
     const obj: { output?: string } = { output: undefined };
-    nudgeDirectWork({ tool: "edit" }, obj);
+    await nudgeDirectWork(BUILD_CLIENT, { tool: "edit", sessionID: "s1" }, obj);
     assert.equal(obj.output, undefined);
   });
 
-  it("does not modify when output is null", () => {
+  it("does not modify when output is null", async () => {
     const obj: { output?: string } = { output: null as unknown as string };
-    nudgeDirectWork({ tool: "edit" }, obj);
+    await nudgeDirectWork(BUILD_CLIENT, { tool: "edit", sessionID: "s1" }, obj);
     assert.equal(obj.output, null);
   });
 });
@@ -109,18 +128,18 @@ describe("null / undefined output", () => {
 // ---------------------------------------------------------------------------
 
 describe("case-insensitive tool name matching", () => {
-  it('matches "EDIT"', () => {
-    const res = applyReminder("EDIT", "some change");
+  it('matches "EDIT"', async () => {
+    const res = await applyReminder("EDIT", "some change");
     assertHasReminder(res);
   });
 
-  it('matches "Write"', () => {
-    const res = applyReminder("Write", "some change");
+  it('matches "Write"', async () => {
+    const res = await applyReminder("Write", "some change");
     assertHasReminder(res);
   });
 
-  it('matches "EdIt"', () => {
-    const res = applyReminder("EdIt", "some change");
+  it('matches "EdIt"', async () => {
+    const res = await applyReminder("EdIt", "some change");
     assertHasReminder(res);
   });
 });
@@ -130,21 +149,21 @@ describe("case-insensitive tool name matching", () => {
 // ---------------------------------------------------------------------------
 
 describe("fires on any path (no path exemptions)", () => {
-  it('fires on ".opencode/config.json"', () => {
+  it('fires on ".opencode/config.json"', async () => {
     const obj: { output?: string } = { output: "updated config" };
-    nudgeDirectWork({ tool: "edit" }, obj);
+    await nudgeDirectWork(BUILD_CLIENT, { tool: "edit", sessionID: "s1" }, obj);
     assertHasReminder(obj);
   });
 
-  it('fires on "tests/scenarios/x.json"', () => {
+  it('fires on "tests/scenarios/x.json"', async () => {
     const obj: { output?: string } = { output: "updated test data" };
-    nudgeDirectWork({ tool: "edit" }, obj);
+    await nudgeDirectWork(BUILD_CLIENT, { tool: "edit", sessionID: "s1" }, obj);
     assertHasReminder(obj);
   });
 
-  it('fires on "src/foo.ts"', () => {
+  it('fires on "src/foo.ts"', async () => {
     const obj: { output?: string } = { output: "changed source" };
-    nudgeDirectWork({ tool: "edit" }, obj);
+    await nudgeDirectWork(BUILD_CLIENT, { tool: "edit", sessionID: "s1" }, obj);
     assertHasReminder(obj);
   });
 });
@@ -154,22 +173,64 @@ describe("fires on any path (no path exemptions)", () => {
 // ---------------------------------------------------------------------------
 
 describe("consecutive calls", () => {
-  it("both calls append the reminder (stateless, no dedup)", () => {
+  it("both calls append the reminder (stateless, no dedup)", async () => {
     const obj: { output?: string } = {
       output: "original content",
     };
 
     // First call
-    nudgeDirectWork({ tool: "edit" }, obj);
+    await nudgeDirectWork(BUILD_CLIENT, { tool: "edit", sessionID: "s1" }, obj);
     const out1 = obj.output as string;
     const countAfterFirst = out1.split("DELEGATION REQUIRED").length - 1;
     assert.equal(countAfterFirst, 1);
 
     // Second call — reminder appended again
-    nudgeDirectWork({ tool: "edit" }, obj);
+    await nudgeDirectWork(BUILD_CLIENT, { tool: "edit", sessionID: "s1" }, obj);
     const out2 = obj.output as string;
     const countAfterSecond = out2.split("DELEGATION REQUIRED").length - 1;
     assert.equal(countAfterSecond, 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Subagent filtering — only build gets the nudge
+// ---------------------------------------------------------------------------
+
+describe("subagent filtering", () => {
+  const SUBAGENTS = ["explore", "general", "scout", "spider"];
+
+  for (const agent of SUBAGENTS) {
+    it(`does not nudge "${agent}" agent`, async () => {
+      const c = mockClient(agent);
+      const obj: { output?: string } = {
+        output: "edited something as subagent",
+      };
+      await nudgeDirectWork(c, { tool: "edit", sessionID: "s1" }, obj);
+      assert.equal(obj.output, "edited something as subagent");
+    });
+  }
+
+  it("skips nudge when client is null (no client available)", async () => {
+    const obj: { output?: string } = { output: "edited something" };
+    await nudgeDirectWork(null, { tool: "edit", sessionID: "s1" }, obj);
+    assert.equal(obj.output, "edited something");
+  });
+
+  it("nudges when getSession returns agent='build'", async () => {
+    const obj: { output?: string } = { output: "edited something" };
+    await nudgeDirectWork(BUILD_CLIENT, { tool: "edit", sessionID: "s1" }, obj);
+    assertHasReminder(obj);
+  });
+
+  it("skips nudge when getSession throws", async () => {
+    const badClient = {
+      getSession: async () => {
+        throw new Error("fail");
+      },
+    };
+    const obj: { output?: string } = { output: "edited something" };
+    await nudgeDirectWork(badClient, { tool: "edit", sessionID: "s1" }, obj);
+    assert.equal(obj.output, "edited something");
   });
 });
 
@@ -212,7 +273,7 @@ describe("barrel export", () => {
 
 describe("integration: tool.execute.after via plugin", () => {
   it("edit tool appends reminder via plugin", async () => {
-    const plugin = await zookeeper({ client: null });
+    const plugin = await zookeeper({ client: BUILD_CLIENT });
     const output: { output?: string } = {
       output: "fixed formatting in index.ts",
     };
@@ -225,7 +286,7 @@ describe("integration: tool.execute.after via plugin", () => {
   });
 
   it("bash tool remains unchanged via plugin", async () => {
-    const plugin = await zookeeper({ client: null });
+    const plugin = await zookeeper({ client: BUILD_CLIENT });
     const output: { output?: string } = {
       output: "ls output here",
     };

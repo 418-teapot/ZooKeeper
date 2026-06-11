@@ -1,12 +1,14 @@
 /**
  * Direct Work Nudge hook for ZooKeeper OpenCode plugin.
  *
- * After every edit/write tool call, appends a protocol reminder telling the
- * orchestrator to delegate work via `task()` instead of doing it directly.
+ * After every edit/write tool call by the build orchestrator agent, appends
+ * a protocol reminder telling the orchestrator to delegate work via `task()`
+ * instead of doing it directly.
  *
  * @module
  */
 
+import { type Clientish, isBuildAgent } from "../shared/agent.js";
 import { debug } from "../shared/logger.js";
 
 // ---------------------------------------------------------------------------
@@ -35,23 +37,36 @@ Did you ACTUALLY need to be the one doing that?
 // ---------------------------------------------------------------------------
 
 /**
- * Append a protocol nudge to edit/write tool output.
+ * Append a protocol nudge to edit/write tool output, but only for the build
+ * orchestrator agent.
  *
- * Fires on EVERY edit/write tool call regardless of the file path.  Non-null
- * output gets the nudge appended.  Non-matching tools are skipped.
+ * Fires on edit/write tool calls originating from the "build" agent.
+ * Subagent calls (explore/general/scout/spider) are silently skipped.
+ * Non-null output gets the nudge appended.  Non-matching tools are skipped.
  *
- * @param input - Input containing the tool name.
+ * When no client is available (e.g. in tests) the nudge is skipped —
+ * `isBuildAgent` returns `false` for null/undefined clients.
+ *
+ * @param client - OpenCode client (captured via closure), or null/undefined.
+ * @param input - Input containing the tool name and session ID.
  * @param input.tool - Name of the tool that was executed.
+ * @param input.sessionID - Session ID for agent lookup.
  * @param output - Output object mutated in place.
  * @param output.output - Text output from the tool call.
  */
-export function nudgeDirectWork(
-  input: { tool: string },
+export async function nudgeDirectWork(
+  client: Clientish | null | undefined,
+  input: { tool: string; sessionID: string },
   output: { output?: string },
-): void {
+): Promise<void> {
   const tool = input.tool.toLowerCase();
   if (tool !== "edit" && tool !== "write") return;
   if (output.output == null) return;
+
+  // Only fire for the build orchestrator agent.
+  // isBuildAgent returns false when client is null/undefined, skipping
+  // the nudge conservatively.
+  if (!(await isBuildAgent(client, input.sessionID))) return;
 
   output.output += `\n\n${DIRECT_WORK_NUDGE}`;
 

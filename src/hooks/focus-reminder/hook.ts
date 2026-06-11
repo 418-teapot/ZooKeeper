@@ -9,6 +9,7 @@
  * @module
  */
 
+import { type Clientish, getAgentName } from "../shared/agent.js";
 import { debug } from "../shared/logger.js";
 
 // ---------------------------------------------------------------------------
@@ -56,13 +57,6 @@ export interface MessageEntry {
   parts: TextPart[];
 }
 
-/**
- * Minimal client interface required by this hook.
- */
-export interface Clientish {
-  getSession?: (id: string) => Promise<{ agent?: string }>;
-}
-
 // ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
@@ -95,20 +89,18 @@ export async function injectFocusReminder(
   );
   if (!lastUserMsg) return;
 
-  // Determine the agent name.
   // Only fall back to client.getSession when info.agent is null/undefined
   // (empty string is treated as a known agent name, just not "build").
-  let agent = lastUserMsg.info.agent;
-
-  if (agent == null && client?.getSession) {
+  // Use the shared getAgentName helper for the fallback.
+  if (lastUserMsg.info.agent == null) {
     const sessionId = lastUserMsg.info.sessionID ?? lastUserMsg.info.id;
-    try {
-      const session = await client.getSession(sessionId);
-      agent = session?.agent;
-    } catch {
-      // Swallow errors from the session lookup
+    const resolved = await getAgentName(client, sessionId);
+    if (resolved != null) {
+      lastUserMsg.info.agent = resolved;
     }
   }
+
+  const agent = lastUserMsg.info.agent;
 
   // Only inject for the build agent
   if (agent !== "build") return;
