@@ -69,6 +69,11 @@ export async function zookeeper(input: any) {
         const prompt = loadPrompt(name);
         if (prompt) (agent as any).prompt = prompt;
       }
+
+      // Register core/skills/ for auto-discovery by OpenCode.
+      config.skills ??= {};
+      config.skills.paths ??= [];
+      config.skills.paths.push(resolve(CORE_DIR, "skills"));
     },
 
     async "experimental.chat.messages.transform"(
