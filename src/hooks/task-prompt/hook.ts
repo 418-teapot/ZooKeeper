@@ -28,6 +28,8 @@ export const TASK_PROMPT_HINT =
   " target file path, user intent, constraints," +
   " prior failure conclusions)" +
   " | ACCEPTANCE (1-2 verifiable outcomes)." +
+  " Required for all delegation targets," +
+  " regardless of agent type." +
   " Keep CONTEXT focused on WHAT and WHY," +
   " not HOW — subagents read files and decide" +
   " implementation themselves.";

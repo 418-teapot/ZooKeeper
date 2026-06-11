@@ -25,7 +25,8 @@ import { debug } from "../shared/logger.js";
  */
 export const FOCUS_REMINDER =
   "!IMPORTANT! Remember your role: orchestrate, don't implement.\n" +
-  "Understand the request \u2192 choose the right agent \u2192 delegate via task() \u2192 verify the result.";
+  "Understand the request \u2192 choose the right agent \u2192 delegate via task() \u2192 verify the result.\n" +
+  "Split large tasks — one task() = one focused outcome.";
 
 // ---------------------------------------------------------------------------
 // Types
