@@ -7,6 +7,8 @@
  * @module
  */
 
+import { debug } from "../shared/logger.js";
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -53,5 +55,5 @@ export function nudgeDirectWork(
 
   output.output += `\n\n${DIRECT_WORK_NUDGE}`;
 
-  console.debug("[zookeeper:direct-work-nudge] trigger", { tool: input.tool });
+  debug("direct-work-nudge", { tool: input.tool });
 }

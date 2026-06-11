@@ -9,6 +9,8 @@
  * @module
  */
 
+import { debug } from "../shared/logger.js";
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -118,7 +120,7 @@ export async function injectFocusReminder(
 
   lastUserMsg.parts.push({ type: "text", text: FOCUS_REMINDER });
 
-  console.debug("[zookeeper:focus-reminder] trigger", {
+  debug("focus-reminder", {
     agent,
     sessionId: lastUserMsg.info.id,
   });

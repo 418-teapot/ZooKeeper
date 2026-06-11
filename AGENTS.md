@@ -99,7 +99,13 @@ OpenCode 日志写入以下位置：
 
 ### 插件调试日志
 
-所有 hook 使用 `console.debug()` 输出触发记录，格式为 `[zookeeper:<hook-name>] trigger`。在 `--log-level DEBUG` 模式下，这些日志会写入 OpenCode 日志文件。例如：
+所有 hook 使用 `src/hooks/shared/logger.ts` 导出的 `debug()` 函数输出触发记录，格式为 `[zookeeper:<hook-name>] trigger`。
+
+- **默认静默** — 不设置 `ZOOKEEPER_DEBUG` 时完全无输出
+- **启用方式：** `ZOOKEEPER_DEBUG=1 opencode`（或在 shell 中 `export ZOOKEEPER_DEBUG=1`）
+- **输出目标：** stderr（不进 TUI），避免 Bun 将 `console.debug` 当成 `console.log` 污染界面
+
+示例输出：
 
 ```
 [zookeeper:task-prompt-validate] trigger { valid: false, errors: 1 }

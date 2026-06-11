@@ -9,6 +9,7 @@
  * @module
  */
 
+import { debug } from "../shared/logger.js";
 import {
   getTodoState,
   TODO_FINAL_ACTIVE,
@@ -81,7 +82,7 @@ export async function nudgePostTask(
     if (activeCount === 0) {
       // All completed / cancelled — VERIFY only
       output.output += suffix;
-      console.debug("[zookeeper:post-task-nudge] trigger", { hasTodo: false });
+      debug("post-task-nudge", { hasTodo: false });
       return;
     }
 
@@ -100,7 +101,7 @@ export async function nudgePostTask(
   const todoNudge = suffix.includes(TODO_FINAL_ACTIVE)
     ? "final_active"
     : "general";
-  console.debug("[zookeeper:post-task-nudge] trigger", {
+  debug("post-task-nudge", {
     hasTodo: true,
     nudge: todoNudge,
   });

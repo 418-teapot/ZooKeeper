@@ -7,6 +7,8 @@
  * @module
  */
 
+import { debug } from "../shared/logger.js";
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -103,7 +105,7 @@ export function recoverJsonError(
   for (const pattern of JSON_ERROR_PATTERNS) {
     if (pattern.test(output.output)) {
       output.output += `\n${JSON_ERROR_REMINDER}`;
-      console.debug("[zookeeper:json-error-nudge] trigger", {
+      debug("json-error-nudge", {
         tool: input.tool,
         pattern: pattern.source,
       });

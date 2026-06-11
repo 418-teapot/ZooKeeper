@@ -12,6 +12,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { debug } from "../shared/logger.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -334,7 +335,7 @@ export function validateBeforeExec(
 
   if (!result.valid) {
     const details = result.errors.map((e) => `- ${e}`).join("\n");
-    console.debug("[zookeeper:task-prompt-validate] trigger", {
+    debug("task-prompt-validate", {
       valid: false,
       errors: result.errors.length,
     });
@@ -351,7 +352,7 @@ export function validateBeforeExec(
 
   // Validation passed — log if there are warnings
   if (result.warnings.length > 0) {
-    console.debug("[zookeeper:task-prompt-validate] trigger", {
+    debug("task-prompt-validate", {
       valid: true,
       warnings: result.warnings.length,
     });
@@ -390,7 +391,7 @@ export function nudgeTaskOutput(
   const suffix = `\n\n--- Guidance for next time ---\n${nudgeText}`;
   output.output = (output.output ?? "") + suffix;
 
-  console.debug("[zookeeper:task-prompt-nudge] trigger", {
+  debug("task-prompt-nudge", {
     warnings: result.warnings.length,
   });
 }
