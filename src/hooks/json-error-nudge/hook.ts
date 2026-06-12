@@ -7,11 +7,33 @@
  * @module
  */
 
-import { debug } from "../shared/logger.js";
+import { debug } from "../utils/logger.js";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
+
+/**
+ * Marker string prefixed to the JSON error reminder.
+ * Used for deduplication — if output already contains this marker, skip.
+ */
+export const JSON_ERROR_REMINDER_MARKER =
+  "[JSON PARSE ERROR - IMMEDIATE ACTION REQUIRED]";
+
+/**
+ * Full reminder text appended to tool output when a JSON parse error is
+ * detected.
+ */
+export const JSON_ERROR_REMINDER = `${JSON_ERROR_REMINDER_MARKER}
+
+You sent invalid JSON arguments. The system could not parse your tool call.
+STOP and do this NOW:
+
+1. LOOK at the error message above to see what was expected vs what you sent.
+2. CORRECT your JSON syntax (missing braces, unescaped quotes, trailing commas, etc).
+3. RETRY the tool call with valid JSON.
+
+DO NOT repeat the exact same invalid call.`;
 
 /**
  * List of tool names excluded from JSON error recovery.
@@ -49,28 +71,6 @@ export const JSON_ERROR_PATTERNS: RegExp[] = [
   /json[^\n]*expected '\}'/i,
   /json[^\n]*unexpected eof/i,
 ];
-
-/**
- * Marker string prefixed to the JSON error reminder.
- * Used for deduplication — if output already contains this marker, skip.
- */
-export const JSON_ERROR_REMINDER_MARKER =
-  "[JSON PARSE ERROR - IMMEDIATE ACTION REQUIRED]";
-
-/**
- * Full reminder text appended to tool output when a JSON parse error is
- * detected.
- */
-export const JSON_ERROR_REMINDER = `${JSON_ERROR_REMINDER_MARKER}
-
-You sent invalid JSON arguments. The system could not parse your tool call.
-STOP and do this NOW:
-
-1. LOOK at the error message above to see what was expected vs what you sent.
-2. CORRECT your JSON syntax (missing braces, unescaped quotes, trailing commas, etc).
-3. RETRY the tool call with valid JSON.
-
-DO NOT repeat the exact same invalid call.`;
 
 // ---------------------------------------------------------------------------
 // Handler

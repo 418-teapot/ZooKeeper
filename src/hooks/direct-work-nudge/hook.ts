@@ -8,8 +8,8 @@
  * @module
  */
 
-import { type Clientish, isBuildAgent } from "../shared/agent.js";
-import { debug } from "../shared/logger.js";
+import { type Clientish, isBuildAgent } from "../utils/agent.js";
+import { debug } from "../utils/logger.js";
 
 // ---------------------------------------------------------------------------
 // Constants

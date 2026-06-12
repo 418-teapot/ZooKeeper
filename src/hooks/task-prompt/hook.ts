@@ -12,11 +12,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { debug } from "../shared/logger.js";
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
+import { debug } from "../utils/logger.js";
 
 /**
  * Format guidance shown in the `task` tool's `prompt` parameter description.

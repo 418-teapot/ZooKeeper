@@ -9,8 +9,8 @@
  * @module
  */
 
-import { type Clientish, getAgentName } from "../shared/agent.js";
-import { debug } from "../shared/logger.js";
+import { type Clientish, getAgentName } from "../utils/agent.js";
+import { debug } from "../utils/logger.js";
 
 // ---------------------------------------------------------------------------
 // Constants

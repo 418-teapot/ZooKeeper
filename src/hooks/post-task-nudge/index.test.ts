@@ -8,11 +8,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { zookeeper } from "../../index.js";
-import {
-  TODO_FINAL_ACTIVE,
-  TODO_GENERAL,
-  VERIFY_REMINDER,
-} from "../shared/todo-nudge.js";
+import { TODO_FINAL_ACTIVE, TODO_GENERAL } from "../utils/prompts.js";
+import { VERIFY_REMINDER } from "./hook.js";
 import { nudgePostTask } from "./index.js";
 
 // ---------------------------------------------------------------------------
