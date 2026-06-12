@@ -286,7 +286,7 @@ def count_verified_tasks(calls: list[ToolCall]) -> tuple[int, int]:
     keyword appears after it and before the next ``task()`` call (or end of
     session).  Only tasks delegated to code-modifying subagents
     (``subagent_type="general"``) are counted; read-only subagents
-    (explore, scout, spider) do not require bash verification.
+    (explore, spider) do not require bash verification.
 
     Args:
         calls: The ordered list of tool calls from a session.

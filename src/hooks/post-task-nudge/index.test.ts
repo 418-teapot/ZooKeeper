@@ -290,7 +290,6 @@ describe("non-task tools are skipped", () => {
     "websearch",
     "explore",
     "general",
-    "scout",
     "spider",
   ];
 

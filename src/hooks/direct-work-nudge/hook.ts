@@ -41,7 +41,7 @@ Did you ACTUALLY need to be the one doing that?
  * orchestrator agent.
  *
  * Fires on edit/write tool calls originating from the "build" agent.
- * Subagent calls (explore/general/scout/spider) are silently skipped.
+ * Subagent calls (explore/general/spider) are silently skipped.
  * Non-null output gets the nudge appended.  Non-matching tools are skipped.
  *
  * When no client is available (e.g. in tests) the nudge is skipped —

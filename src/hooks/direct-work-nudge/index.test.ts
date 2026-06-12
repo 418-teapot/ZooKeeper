@@ -197,7 +197,7 @@ describe("consecutive calls", () => {
 // ---------------------------------------------------------------------------
 
 describe("subagent filtering", () => {
-  const SUBAGENTS = ["explore", "general", "scout", "spider"];
+  const SUBAGENTS = ["explore", "general", "spider"];
 
   for (const agent of SUBAGENTS) {
     it(`does not nudge "${agent}" agent`, async () => {

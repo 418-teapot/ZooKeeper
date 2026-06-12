@@ -155,7 +155,7 @@ describe("build agent gets the reminder", () => {
 // ---------------------------------------------------------------------------
 
 describe("non-build agents are skipped", () => {
-  const skipAgents = ["general", "explore", "scout", "spider", "review", ""];
+  const skipAgents = ["general", "explore", "spider", "review", ""];
 
   for (const agent of skipAgents) {
     it(`skips agent "${agent || "(empty string)"}"`, async () => {

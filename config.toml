@@ -54,14 +54,6 @@ task = "deny"
 webfetch = "deny"
 websearch = "deny"
 
-[agent.scout]
-model = "{env:CAMBRICON_SMALL_MODEL}"
-[agent.scout.permission]
-edit = "deny"
-write = "deny"
-task = "deny"
-bash = "deny"
-
 [agent.spider]
 mode  = "subagent"
 model = "{env:CAMBRICON_SMALL_MODEL}"

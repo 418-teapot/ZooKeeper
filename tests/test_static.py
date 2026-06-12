@@ -27,7 +27,6 @@ AGENT_STRUCTURE_REQUIREMENTS: dict[str, list[list[str]]] = {
     "build": [DELEGATE_PHRASES],
     "general": [RESTRICTION_PHRASES],
     "explore": [RESTRICTION_PHRASES],
-    "scout": [RESTRICTION_PHRASES],
     "spider": [RESTRICTION_PHRASES],
 }
 

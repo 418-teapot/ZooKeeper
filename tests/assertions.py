@@ -73,7 +73,7 @@ def _assert_verifies(
     """Pass if at least half of code-modifying task calls are followed by a verify command.
 
     Only counts tasks delegated to code-modifying subagents (subagent_type="general").
-    Read-only subagents (explore, scout, spider) don't require bash verification.
+    Read-only subagents (explore, spider) don't require bash verification.
     """
     task_indices = [idx for idx, c in enumerate(data.calls) if c.tool == "task"]
     if not task_indices:
