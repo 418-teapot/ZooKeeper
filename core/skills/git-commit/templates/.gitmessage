@@ -1,0 +1,22 @@
+# <type>(<scope>): <imperative summary — 72 chars max, no period>
+# Types: feat fix perf security refactor test docs chore hotfix revert
+# Scopes: auth api payments ui db cli core config deps
+
+# CONTEXT: What state existed BEFORE this change? (past tense, ≤ 40 words)
+# Each sub-item starts with "- " and ends with a period.
+CONTEXT: - 
+
+# CHANGE: What exactly was done? (present tense, ≤ 70 words)
+CHANGE:  - 
+
+# WHY: Reason not obvious from the code? (≤ 70 words)
+WHY:     - 
+
+# IMPACT: What does this enable or unblock? (≤ 30 words)
+IMPACT:  - 
+
+# Footers (delete unused lines):
+# Closes #
+# Fixes #
+# Refs #
+# BREAKING CHANGE:
