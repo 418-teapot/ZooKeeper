@@ -25,6 +25,18 @@
 - **聚焦提醒**：每轮 LLM 回复前，向编排器注入"保持聚焦、委派子代理"的提醒
 - **Prompt 长度检测**：根据 `[validation]` 阈值自动检测 Task Prompt 是否过长或包含不推荐的代码片段
 
+### 技能管理
+
+插件支持通过 `[zoo.skills]` 配置控制技能（Skill）的启用与禁用。技能存放在 `core/skills/` 目录下，每个技能为一个独立子目录（如 `core/skills/git-commit/`）。
+
+```toml
+[zoo.skills]
+git-commit = "enable"    # 启用技能
+# my-skill = "disable"   # 禁用技能
+```
+
+设置为 `"enable"` 时，插件会在运行时注册该技能；设置为 `"disable"` 时则跳过。未在配置中列出的技能默认启用。
+
 ## 安装
 
 ### 前置要求

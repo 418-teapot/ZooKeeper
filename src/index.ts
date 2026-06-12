@@ -15,9 +15,10 @@
  *
  * TODO: Add Claude Code adapter (PreToolUse Python hook + CLAUDE.md).
  */
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import config from "../config.toml" with { type: "toml" };
 import { nudgeDirectWork } from "./hooks/direct-work-nudge";
 import { injectFocusReminder } from "./hooks/focus-reminder";
 import { recoverJsonError } from "./hooks/json-error-nudge";
@@ -58,6 +59,8 @@ function loadPrompt(name: string): string | undefined {
  */
 export async function zookeeper(input: any) {
   const limits = loadValidationConfig();
+  const skillsConfig: Record<string, string> =
+    (config as any).zoo?.skills ?? {};
   const client = input.client;
 
   return {
@@ -70,10 +73,20 @@ export async function zookeeper(input: any) {
         if (prompt) (agent as any).prompt = prompt;
       }
 
-      // Register core/skills/ for auto-discovery by OpenCode.
+      // Register each skill in core/skills/ individually, skipping disabled ones.
       config.skills ??= {};
       config.skills.paths ??= [];
-      config.skills.paths.push(resolve(CORE_DIR, "skills"));
+      const skillsDir = resolve(CORE_DIR, "skills");
+      try {
+        for (const entry of readdirSync(skillsDir)) {
+          const skillPath = resolve(skillsDir, entry);
+          if (!statSync(skillPath).isDirectory()) continue;
+          if (skillsConfig[entry] === "disable") continue;
+          config.skills.paths.push(skillPath);
+        }
+      } catch {
+        // skills/ directory does not exist or is inaccessible — skip.
+      }
     },
 
     async "experimental.chat.messages.transform"(

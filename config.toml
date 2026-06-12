@@ -77,3 +77,10 @@ small_model = "{env:CAMBRICON_SMALL_MODEL}"
 [validation]
 context_word_limit = 200
 prompt_word_limit  = 500
+
+# ── Skills（内建技能管理）────────────────────────────────────────────────
+# 每个 core/skills/ 下的子目录对应一个内建技能。
+# 可用值："enable"（启用）| "disable"（禁用）
+
+[zoo.skills]
+git-commit = "enable"
