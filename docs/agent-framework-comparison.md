@@ -515,7 +515,6 @@ ZooKeeper 的 JSONL 回放能力是独特优势（superpowers 没有），但缺
 | general | 代码实现 | task, webfetch, websearch |
 | explore | 代码搜索 | edit, write, task |
 | spider | 网络调研 | edit, write, bash, task, read, glob, grep |
-| scout | 快速查询 | edit, write, task, bash |
 
 ### 8.2 委托模型对比
 

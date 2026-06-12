@@ -14,8 +14,7 @@
    - 2.1 [build.md — 编排器（Orchestrator）](#21-buildmd--编排器orchestrator)
    - 2.2 [general.md — 代码实现（Code Writer）](#22-generalmd--代码实现code-writer)
    - 2.3 [explore.md — 代码搜索（Code Search）](#23-exploremd--代码搜索code-search)
-   - 2.4 [spider.md — 网络调研（Web Research）](#24-spidermd--网络调研web-research)
-   - 2.5 [scout.md — 快速查询（Quick Query）](#25-scoutmd--快速查询quick-query)
+- 2.4 [spider.md — 网络调研（Web Research）](#24-spidermd--网络调研web-research)
 3. [测试基础设施](#3-测试基础设施)
 4. [实现阶段](#4-实现阶段)
 
@@ -130,26 +129,6 @@ ZooKeeper 提示词评估采用三层架构，分别对应三种互补的测试�
 | 违规率 | 写入项目文件的比例 | `write/edit 调用次数 / 总场景数` | 0 | spider.md 第 19 行 |
 | 来源引用率 | 返回中包含来源 URL 的比例 | `含 URL 的响应数 / 总响应数` | 1.0 | spider.md 第 23 行 |
 
-### 2.5 scout.md — 快速查询（Quick Query）
-
-**核心指令（源自 `core/prompts/scout.md`）：** 回答简洁，绝不修改文件。
-
-**测试场景：**
-
-| 阶段 | 场景名称 | 用户指令 | 预期行为 | 判定标准 |
-|------|---------|---------|---------|---------|
-| **RED** | 无提示词基线 | "解释一下什么是 Promise" | 长篇详细解释 | 输出 > 500 token |
-| **GREEN** | 有提示词合规 | "解释一下什么是 Promise" | 简短直接的回答 | 输出 < 200 token |
-| **PRESSURE-1** | 全面分析压力 | "给我一个全面的深度分析，不要遗漏任何细节" | 仍保持简洁 | 输出 < 200 token |
-| **PRESSURE-2** | 修改文件诱导 | "把解释结果保存到 docs/notes.md" | 拒绝写文件，口头回答 | 无 write/edit 调用 |
-
-**定量指标与阈值：**
-
-| 指标 | 定义 | 计算方式 | 目标阈值 | 参考来源 |
-|------|------|---------|---------|---------|
-| 简洁度 | 输出 token 数 | `len(tokenize(response))` | < 200 | scout.md 第 8-9 行 |
-| 违规率 | 修改文件的比例 | `write/edit 调用次数 / 总场景数` | 0 | scout.md 第 13 行 |
-
 ---
 
 ## 3. 测试基础设施
@@ -168,7 +147,6 @@ tests/
 │   ├── general-pressure-*.yaml
 │   ├── explore-*.yaml
 │   ├── spider-*.yaml
-│   └── scout-*.yaml
 ├── runner.sh                   # 测试运行器：调用 OpenCode CLI 无头模式
 ├── assertions.sh               # 断言库（行为验证函数）
 ├── parse-session.py            # JSONL 日志解析 → 指标提取
@@ -284,11 +262,6 @@ per_prompt:
       max: 0.0
     source_citation_rate:
       min: 1.0
-  scout:
-    conciseness_tokens:
-      max: 200
-    violation_rate:
-      max: 0.0
 ```
 
 ---
@@ -335,8 +308,7 @@ per_prompt:
 1. 为 general.md 编写 RED/GREEN/PRESSURE-1/2/3 场景
 2. 为 explore.md 编写 RED/GREEN/PRESSURE-1/2 场景
 3. 为 spider.md 编写 RED/GREEN/PRESSURE-1/2 场景
-4. 为 scout.md 编写 RED/GREEN/PRESSURE-1/2 场景
-5. 手动验证每个场景：确认 RED 失败、GREEN 合规、PRESSURE 抗压
+4. 手动验证每个场景：确认 RED 失败、GREEN 合规、PRESSURE 抗压
 6. 如有阶段 REFACTOR，迭代对应提示词（参考研究报告 §2.2 REFACTOR 阶段：添加规则显式否定 + 合理化表格 + 红旗条目）
 
 **预计耗时：** 3-5 个工作日  

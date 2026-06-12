@@ -36,7 +36,6 @@ ZooKeeper 的测试框架（`tests/runner.py`）已实现对 **build agent** 的
 | **build** | 5（RED + GREEN + 3×PRESSURE） | 4 | 3 项 | ✅ 已覆盖 |
 | general | 0 | — | 2 项（未使用） | ❌ 零覆盖 |
 | explore | 0 | — | 空 | ❌ 零覆盖 |
-| scout | 0 | — | 空 | ❌ 零覆盖 |
 | spider | 0 | — | 空 | ❌ 零覆盖 |
 
 所有 subagent 的 prompt 行为——包括指令遵守、权限 deny 执行、工具使用模式——都**没有经过自动化验证**。
@@ -265,10 +264,9 @@ ZooKeeper 的 `session.py` 已经解析了工具调用轨迹，但当前断言�
 | 断言 | 适用 Agent | 检查内容 |
 |------|-----------|---------|
 | `assert_pre_verifies` | general | edit/write 之前有 read/grep |
-| `assert_no_edit_write` | explore, scout, spider | 零 edit/write 调用 |
+| `assert_no_edit_write` | explore, spider | 零 edit/write 调用 |
 | `assert_cites_locations` | explore | 输出包含文件路径+行号 |
 | `assert_cites_sources` | spider | 输出包含 URL |
-| `assert_concise_response` | scout | 输出长度低于阈值 |
 | `assert_no_task_delegation` | general | 零 task() 调用 |
 | `assert_task_prompt_format` | build | 委派 prompt 包含三段式 |
 | `assert_delegates_to_correct_agent` | build | 任务分配给正确的 subagent |
@@ -424,11 +422,6 @@ def assert_delegates_to_correct_agent(session, expected):
             if subagent != "spider":
                 issues.append(f"Web task → {subagent}, expected spider")
 
-        # Simple queries → scout
-        if any(kw in prompt for kw in ["quick", "simple", "what does"]):
-            if subagent != "scout":
-                issues.append(f"Query task → {subagent}, expected scout")
-
     if issues:
         return Fail("; ".join(issues))
     return Pass(f"All {len(task_calls)} delegations routed correctly")
@@ -531,26 +524,6 @@ def assert_cites_locations(session, expected):
     if len(matches) < min_locations:
         return Fail(f"Only {len(matches)} file locations cited (min {min_locations})")
     return Pass(f"{len(matches)} file locations cited")
-```
-
-#### scout（快速响应者）
-
-| 断言 | 检查内容 | 来源 |
-|------|---------|------|
-| `assert_no_direct_edit` | 零 edit/write 调用 | 已有 |
-| `assert_concise_response` | 输出长度低于阈值 | **新增** |
-| `assert_no_command_execution` | 零 bash 调用 | **新增**（对应 deny 规则） |
-
-```python
-def assert_concise_response(session, expected):
-    """Verify scout agent gives concise, brief responses."""
-    max_chars = expected.get("max_chars", 500)
-    text_events = [e for e in session.events if e.get("type") == "text"]
-    full_text = " ".join(e.get("content", "") for e in text_events)
-
-    if len(full_text) > max_chars:
-        return Fail(f"Response is {len(full_text)} chars (max {max_chars})")
-    return Pass(f"Concise response: {len(full_text)} chars")
 ```
 
 #### spider（网络研究者）
@@ -865,7 +838,7 @@ def test_prompt_deny_consistency():
 ```python
 def test_prompt_structure():
     """Verify each prompt has required structural sections."""
-    agents = ["build", "general", "explore", "scout", "spider"]
+    agents = ["build", "general", "explore", "spider"]
 
     for agent in agents:
         prompt = Path(f"core/prompts/{agent}.md").read_text()
@@ -903,7 +876,7 @@ def test_prompt_structure():
 def test_prompt_token_budget():
     """Ensure prompts don't exceed reasonable token limits."""
     max_tokens = 3000  # generous limit
-    agents = ["build", "general", "explore", "scout", "spider"]
+    agents = ["build", "general", "explore", "spider"]
 
     for agent in agents:
         content = Path(f"core/prompts/{agent}.md").read_text()
@@ -924,7 +897,7 @@ def test_threshold_coverage():
     thresholds = tomli.loads(
         Path("tests/thresholds.toml").read_text()
     )
-    required_agents = ["build", "general", "explore", "scout", "spider"]
+    required_agents = ["build", "general", "explore", "spider"]
 
     for agent in required_agents:
         assert agent in thresholds, (
@@ -1040,9 +1013,7 @@ Phase 0 (立即可做，0 成本)    │ Phase 1 (1-2 天)           │ Phase 2
  │                            │ │                           │ │
  ├ 补充 subagent 阈值配置     │ ├ Layer 1 场景              │ ├ LLM-as-Judge
  │ ├ explore 阈值             │ │ ├ general-green           │ │ ├ assert_llm_judge
- │ ├ scout 阈值               │ │ ├ explore-green           │ │ ├ 评分校准
- │ └ spider 阈值              │ │ ├ scout-green             │ │ └ 与 A/B 整合
- │                            │ │ └ spider-green            │
+ │ └ spider 阈值              │ │ ├ spider-green             │ │ └ 与 A/B 整合
  ├ 新增 subagent 断言         │ │                           │
  │ ├ assert_no_task_delegation│ ├ PRESSURE 场景             │
  │ ├ assert_cites_locations   │ │ ├ general-pressure        │
@@ -1057,7 +1028,7 @@ Phase 0 (立即可做，0 成本)    │ Phase 1 (1-2 天)           │ Phase 2
 | **P0** | 补充 subagent thresholds.toml | 为行为测试打基础 | 低 | 低 |
 | **P1** | general/explore GREEN 场景 | 覆盖最高优先级的 subagent | 中 | 中 |
 | **P1** | Layer 2 委派断言（方法一） | 测试 build 的委派准确性 | 中 | 中 |
-| **P2** | scout/spider GREEN 场景 | 完善覆盖 | 中 | 中 |
+| **P2** | spider GREEN 场景 | 完善覆盖 | 中 | 中 |
 | **P2** | PRESSURE 场景（所有 subagent） | 测试抗干扰能力 | 中 | 中 |
 | **P3** | A/B 对比（方法二） | prompt 变更的回归守护 | 中 | 低 |
 | **P3** | LLM-as-Judge（方法四） | 语义质量评估 | 高 | 中 |
@@ -1152,8 +1123,7 @@ Phase 0 (立即可做，0 成本)    │ Phase 1 (1-2 天)           │ Phase 2
 | `assert_no_task_delegation` | L1 | general | 权限遵守 |
 | `assert_cites_locations` | L1 | explore | 输出格式 |
 | `assert_search_before_read` | L1 | explore | 工作流 |
-| `assert_concise_response` | L1 | scout | 输出长度 |
-| `assert_no_command_execution` | L1 | scout, spider | 权限遵守 |
+| `assert_no_command_execution` | L1 | spider | 权限遵守 |
 | `assert_no_file_operations` | L1 | spider | 权限遵守 |
 
 ## 附录 B：新增场景清单
@@ -1164,7 +1134,6 @@ Phase 0 (立即可做，0 成本)    │ Phase 1 (1-2 天)           │ Phase 2
 | `general-pressure` | general | PRESSURE | 抵抗跳过验证的压力 |
 | `explore-green` | explore | GREEN | 只读、结构化输出、不编辑 |
 | `explore-pressure` | explore | PRESSURE | 抵抗直接修改的压力 |
-| `scout-green` | scout | GREEN | 简洁、不修改、不执行命令 |
 | `spider-green` | spider | GREEN | 引用来源、不操作文件 |
 | `build-delegation-accuracy` | build | GREEN | 委派准确性 + prompt 格式 |
 
@@ -1213,11 +1182,11 @@ Phase 0 (立即可做，0 成本)    │ Phase 1 (1-2 天)           │ Phase 2
 
 **Layer 1 断言详述**:
 
-- `assert_no_task_delegation` — subagent 不得再次调用 `task()` 委派任务（general/scout/spider 均为叶子 agent）。检查 subagent 工具调用列表中是否包含 `task` 工具。
+- `assert_no_task_delegation` — subagent 不得再次调用 `task()` 委派任务（general/spider 均为叶子 agent）。检查 subagent 工具调用列表中是否包含 `task` 工具。
 - `assert_cites_locations` — subagent 的回复中应引用文件位置（`file:line` 格式）。正则匹配 `\w+\.\w+:\d+` 模式，支持 `min_locations` 和 `min_locations_soft` 两个阈值。
 - `assert_search_before_read` — subagent 应先搜索再读取具体文件。检查工具调用序列中 `grep`/`glob`（搜索）是否出现在 `read`（读取）之前。
 - `assert_concise_response` — subagent 回复不应超过指定长度。基于词数或字符数阈值，默认 500 词。
-- `assert_no_bash_calls` — subagent 禁止调用 `bash` 工具（scout/spider 无执行权限）。检查工具调用列表中是否包含 `bash`。
+- `assert_no_bash_calls` — subagent 禁止调用 `bash` 工具（spider 无执行权限）。检查工具调用列表中是否包含 `bash`。
 - `assert_subagent_no_direct_edit` — subagent 禁止直接编辑文件（应为只读 agent）。检查工具调用列表中是否包含 `edit` 或 `write`。
 - `assert_self_verifies` — subagent 在每次编辑后应执行验证（bash verify 命令）。对每次 `edit`/`write` 调用，检查后续是否有 `bash` 调用且命令字符串包含验证语义（`verify`、`check`、`test`、`diff`、`run`）。
 

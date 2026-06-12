@@ -1093,7 +1093,7 @@ export function remindDirectWork(
 
 #### 设计决策
 
-1. **仅 build agent**：其他 agent（explore/general/scout/spider）不需要委派提示
+1. **仅 build agent**：其他 agent（explore/general/spider）不需要委派提示
 2. **每 turn 注入一次**：不是每次工具调用后都注入
 3. **天然去重**：重写而非追加，防止多次注入累积
 4. **温和但明确**：3 行简洁的委派流程提示
@@ -1137,7 +1137,7 @@ export function injectPhaseReminder(
 | 场景 | 期望行为 |
 |------|---------|
 | 每 LLM turn + agent=build | 注入 reminder |
-| agent=general/explore/scout/spider | 不注入 |
+| agent=general/explore/spider | 不注入 |
 | 无 user message | 不注入 |
 | 连续 10 次 LLM turn | 每次注入一次，但每次都重写（天然去重） |
 

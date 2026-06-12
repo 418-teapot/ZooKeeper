@@ -26,7 +26,7 @@
 
 ZooKeeper 项目需要一套自动化测试框架，用于评估 LLM 代理（agent）对提示词（prompt）和权限配置（permission deny rules）的遵守程度。测试框架需要支持：
 
-- **多代理测试**：5 个代理（build、general、explore、scout、spider）
+- **多代理测试**：4 个代理（build、general、explore、spider）
 - **多阶段测试**：RED（基线）、GREEN（期望）、PRESSURE（压力）三阶段
 - **行为验证**：通过 JSONL 日志解析工具调用序列，计算行为指标
 - **阈值检查**：对比指标与预设阈值，判定测试通过/失败
@@ -137,7 +137,7 @@ explore: {
 | Mode | 调用方式 | 示例 |
 |------|---------|------|
 | `primary` | CLI 直接调用 | build |
-| `subagent` | 只能通过 task() 委派 | general, explore, scout, spider |
+| `subagent` | 只能通过 task() 委派 | general, explore, spider |
 | `all` | 两种方式都支持 | 自定义代理 |
 
 **重要机制**：用户配置中的 `mode` 字段会**覆盖**内置 mode：
@@ -348,10 +348,6 @@ permission = { task = "deny" }
 mode = "all"  # 覆盖内置 subagent 模式
 permission = { write = "deny" }
 
-[agent.scout]
-mode = "all"
-permission = { edit = "deny", write = "deny" }
-
 [agent.spider]
 mode = "all"
 permission = { edit = "deny", write = "deny", bash = "deny" }
@@ -483,11 +479,6 @@ permission = { write = "deny" }
 prompt = { file = "core/prompts/general.md" }
 mode = "all"  # 覆盖内置 subagent 模式，支持测试
 permission = { task = "deny" }
-
-[agent.scout]
-prompt = { file = "core/prompts/scout.md" }
-mode = "all"
-permission = { edit = "deny", write = "deny" }
 
 [agent.spider]
 prompt = { file = "core/prompts/spider.md" }
@@ -716,7 +707,7 @@ agent.permission = new Proxy({}, {
 3. **定期验证配置正确性**
    ```bash
    # scripts/validate-config.sh
-   for agent in build general explore scout spider; do
+   for agent in build general explore spider; do
      mode=$(cat ~/.config/opencode/opencode.json | jq -r ".agent.$agent.mode")
      if [ "$mode" != "all" ]; then
        echo "Warning: $agent mode is $mode, expected 'all'"
@@ -954,7 +945,6 @@ class TestRunner:
   "build": ["grep", "glob"],
   "general": ["task"],
   "explore": ["write"],
-  "scout": ["edit", "write"],
   "spider": ["edit", "write", "bash"]
 }
 [ZooKeeper] config hook called

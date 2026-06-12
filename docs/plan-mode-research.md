@@ -30,7 +30,7 @@
 
 ## 1. 概述
 
-ZooKeeper 当前的工作流围绕 build（编排器）为主 agent、general/explore/spider/scout 为 subagent 的委派模式构建。用户通过 Tab 键在主 agent 和 build agent 之间切换，直接开始编码工作。这种模式在处理纯实现任务时高效流畅，但存在一个结构性缺口：**当用户需要讨论方案设计、架构决策或技术选型时，没有专门的"规划模式"引导 agent 先思考再实现。**
+ZooKeeper 当前的工作流围绕 build（编排器）为主 agent、general/explore/spider 为 subagent 的委派模式构建。用户通过 Tab 键在主 agent 和 build agent 之间切换，直接开始编码工作。这种模式在处理纯实现任务时高效流畅，但存在一个结构性缺口：**当用户需要讨论方案设计、架构决策或技术选型时，没有专门的"规划模式"引导 agent 先思考再实现。**
 
 具体问题表现为：
 
