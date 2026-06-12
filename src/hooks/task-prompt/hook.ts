@@ -9,9 +9,6 @@
  * @module
  */
 
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { debug } from "../utils/logger.js";
 
 /**
@@ -150,65 +147,6 @@ function buildContextNudges(context: string): string[] {
 export interface ValidationLimits {
   contextWordLimit: number;
   promptWordLimit: number;
-}
-
-/**
- * Load validation limits directly from `config.toml`.
- *
- * Parses the `[validation]` section using simple regex — no TOML parser
- * dependency required. Called once at plugin initialization. Throws on any
- * misconfiguration: missing file, missing section, or missing fields.
- *
- * @param configPath - Optional direct path to a TOML file. Defaults to
- *   `<repo>/config.toml`. Only provided for test isolation — production
- *   callers always use the default.
- * @returns A `ValidationLimits` object with both thresholds.
- * @throws Error if config.toml is missing, lacks `[validation]`, or is
- *   missing required fields.
- */
-const HOOK_DIR = dirname(fileURLToPath(import.meta.url));
-
-export function loadValidationConfig(configPath?: string): ValidationLimits {
-  const path = configPath ?? resolve(HOOK_DIR, "../../../config.toml");
-  let raw: string;
-  try {
-    raw = readFileSync(path, "utf-8");
-  } catch (err) {
-    throw new Error(
-      `Cannot read config.toml: ${(err as Error).message}. ` +
-        "Ensure config.toml exists at the project root.",
-    );
-  }
-
-  // Extract the [validation] section via regex
-  const sectionMatch = raw.match(/\[validation\]\s*\n([\s\S]*?)(?=\n\[|\n*$)/);
-  if (!sectionMatch) {
-    throw new Error(
-      "config.toml is missing [validation] section. " +
-        "Add [validation] with context_word_limit and prompt_word_limit.",
-    );
-  }
-
-  const validationSection = sectionMatch[1];
-  const contextMatch = validationSection.match(
-    /context_word_limit\s*=\s*(\d+)/,
-  );
-  const promptMatch = validationSection.match(/prompt_word_limit\s*=\s*(\d+)/);
-
-  if (!contextMatch || !promptMatch) {
-    const missing: string[] = [];
-    if (!contextMatch) missing.push("context_word_limit");
-    if (!promptMatch) missing.push("prompt_word_limit");
-    throw new Error(
-      `config.toml [validation] section is missing required fields:` +
-        ` ${missing.join(", ")}.`,
-    );
-  }
-
-  return {
-    contextWordLimit: parseInt(contextMatch[1], 10),
-    promptWordLimit: parseInt(promptMatch[1], 10),
-  };
 }
 
 /**

@@ -9,7 +9,6 @@
 export type { ValidationLimits } from "./hook";
 export {
   enhanceTaskDefinition,
-  loadValidationConfig,
   nudgeTaskOutput,
   TASK_PROMPT_HINT,
   validateBeforeExec,

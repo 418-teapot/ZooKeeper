@@ -25,7 +25,6 @@ import { recoverJsonError } from "./hooks/json-error-nudge";
 import { nudgePostTask } from "./hooks/post-task-nudge";
 import {
   enhanceTaskDefinition,
-  loadValidationConfig,
   nudgeTaskOutput,
   validateBeforeExec,
 } from "./hooks/task-prompt";
@@ -58,9 +57,12 @@ function loadPrompt(name: string): string | undefined {
  * @returns Plugin hooks object.
  */
 export async function zookeeper(input: any) {
-  const limits = loadValidationConfig();
-  const skillsConfig: Record<string, string> =
-    (config as any).zoo?.skills ?? {};
+  const zooConfig = (config as any).zoo ?? {};
+  const limits = {
+    contextWordLimit: zooConfig.validation?.context_word_limit ?? 200,
+    promptWordLimit: zooConfig.validation?.prompt_word_limit ?? 500,
+  };
+  const skillsConfig: Record<string, string> = zooConfig.skills ?? {};
   const client = input.client;
 
   return {

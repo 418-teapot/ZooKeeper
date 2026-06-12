@@ -5,16 +5,9 @@
  * `tool.execute.before` hook to verify build agent `task()` prompt format.
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { resolve } from "node:path";
-import { after, before, describe, it } from "node:test";
+import { describe, it } from "node:test";
 import { zookeeper } from "../../index.js";
-import {
-  loadValidationConfig,
-  TASK_PROMPT_HINT,
-  validateTaskPrompt,
-} from "./index.js";
+import { TASK_PROMPT_HINT, validateTaskPrompt } from "./index.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -221,54 +214,6 @@ describe("total prompt word count limit (≤ 250) — soft warning", () => {
 // ---------------------------------------------------------------------------
 // Configurable word-count limits
 // ---------------------------------------------------------------------------
-
-describe("loadValidationConfig behaviour", () => {
-  let tempDir: string;
-  let tempConfigPath: string;
-
-  before(() => {
-    tempDir = mkdtempSync(resolve(tmpdir(), "zookeeper-test-"));
-    tempConfigPath = resolve(tempDir, "config.toml");
-  });
-
-  after(() => {
-    rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  it("returns loaded limits when config.toml is valid", () => {
-    writeFileSync(
-      tempConfigPath,
-      "[validation]\ncontext_word_limit = 77\nprompt_word_limit = 333\n",
-    );
-    const limits = loadValidationConfig(tempConfigPath);
-    assert.equal(limits.contextWordLimit, 77);
-    assert.equal(limits.promptWordLimit, 333);
-  });
-
-  it("throws when config.toml is missing a required field", () => {
-    writeFileSync(tempConfigPath, "[validation]\ncontext_word_limit = 50\n");
-    assert.throws(
-      () => loadValidationConfig(tempConfigPath),
-      /missing required fields.*prompt_word_limit/,
-    );
-  });
-
-  it("throws when config.toml has no [validation] section", () => {
-    writeFileSync(tempConfigPath, "some random content without sections\n");
-    assert.throws(
-      () => loadValidationConfig(tempConfigPath),
-      /missing \[validation\] section/,
-    );
-  });
-
-  it("throws when config.toml does not exist", () => {
-    rmSync(tempConfigPath);
-    assert.throws(
-      () => loadValidationConfig(tempConfigPath),
-      /Cannot read config\.toml/,
-    );
-  });
-});
 
 describe("validateTaskPrompt with custom limits", () => {
   it("uses custom contextWordLimit instead of default 100", () => {
