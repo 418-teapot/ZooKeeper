@@ -8,7 +8,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { zookeeper } from "../../index.js";
-import { DIRECT_WORK_NUDGE, nudgeDirectWork } from "./index.js";
+import {
+  DIRECT_WORK_NUDGE,
+  nudgeDirectWork,
+  SEARCH_DELEGATE_NUDGE,
+} from "./index.js";
 
 // ---------------------------------------------------------------------------
 // Constants / helpers
@@ -17,13 +21,13 @@ import { DIRECT_WORK_NUDGE, nudgeDirectWork } from "./index.js";
 const NON_EDIT_WRITE_TOOLS = [
   "bash",
   "read",
-  "grep",
-  "glob",
   "task",
   "skill",
   "webfetch",
   "websearch",
 ];
+
+const SEARCH_TOOLS = ["grep", "glob"];
 
 /**
  * Create a mock client that returns the given agent name for any session.
@@ -64,6 +68,19 @@ function assertHasReminder(obj: { output?: string }, message?: string): void {
   );
 }
 
+/**
+ * Assert that `obj.output` contains the SEARCH_DELEGATE_NUDGE text.
+ */
+function assertHasSearchReminder(
+  obj: { output?: string },
+  message?: string,
+): void {
+  assert.ok(
+    obj.output?.includes("POTENTIAL DELEGATION OPPORTUNITY"),
+    message ?? "expected output to contain search delegation nudge",
+  );
+}
+
 // ---------------------------------------------------------------------------
 // edit / write fire the reminder
 // ---------------------------------------------------------------------------
@@ -79,6 +96,30 @@ describe("edit/write fires reminder", () => {
     const res = await applyReminder("write", "Created new file bar.ts");
     assertHasReminder(res);
     assert.ok(res.output?.includes(DIRECT_WORK_NUDGE));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// grep / glob fire the search delegation reminder
+// ---------------------------------------------------------------------------
+
+describe("grep/glob fires search delegation reminder", () => {
+  for (const tool of SEARCH_TOOLS) {
+    it(`appends search delegation reminder for tool="${tool}"`, async () => {
+      const res = await applyReminder(tool, "found some matches");
+      assertHasSearchReminder(res);
+      assert.ok(res.output?.includes(SEARCH_DELEGATE_NUDGE));
+    });
+  }
+
+  it('appends search delegation reminder for tool="GREP" (uppercase)', async () => {
+    const res = await applyReminder("GREP", "found something");
+    assertHasSearchReminder(res);
+  });
+
+  it('appends search delegation reminder for tool="Glob" (mixed case)', async () => {
+    const res = await applyReminder("Glob", "found files");
+    assertHasSearchReminder(res);
   });
 });
 
@@ -232,6 +273,29 @@ describe("subagent filtering", () => {
     await nudgeDirectWork(badClient, { tool: "edit", sessionID: "s1" }, obj);
     assert.equal(obj.output, "edited something");
   });
+
+  for (const tool of SEARCH_TOOLS) {
+    it(`does not nudge "${tool}" for non-build agent`, async () => {
+      const c = mockClient("explore");
+      const obj: { output?: string } = {
+        output: "searched as subagent",
+      };
+      await nudgeDirectWork(c, { tool, sessionID: "s1" }, obj);
+      assert.equal(obj.output, "searched as subagent");
+    });
+  }
+
+  it("skips grep nudge when client is null", async () => {
+    const obj: { output?: string } = { output: "searched something" };
+    await nudgeDirectWork(null, { tool: "grep", sessionID: "s1" }, obj);
+    assert.equal(obj.output, "searched something");
+  });
+
+  it("nudges grep when agent is build", async () => {
+    const obj: { output?: string } = { output: "searched something" };
+    await nudgeDirectWork(BUILD_CLIENT, { tool: "grep", sessionID: "s1" }, obj);
+    assertHasSearchReminder(obj);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -253,6 +317,24 @@ describe("DIRECT_WORK_NUDGE contents", () => {
   });
 });
 
+describe("SEARCH_DELEGATE_NUDGE contents", () => {
+  it('contains "POTENTIAL DELEGATION OPPORTUNITY"', () => {
+    assert.ok(
+      SEARCH_DELEGATE_NUDGE.includes("POTENTIAL DELEGATION OPPORTUNITY"),
+    );
+  });
+
+  it("contains codebase discovery guidance", () => {
+    assert.ok(SEARCH_DELEGATE_NUDGE.includes("Codebase discovery"));
+    assert.ok(SEARCH_DELEGATE_NUDGE.includes("`explore` agent"));
+  });
+
+  it("contains verification exception", () => {
+    assert.ok(SEARCH_DELEGATE_NUDGE.includes("Verification"));
+    assert.ok(SEARCH_DELEGATE_NUDGE.includes("fine, continue"));
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Barrel export
 // ---------------------------------------------------------------------------
@@ -264,6 +346,10 @@ describe("barrel export", () => {
 
   it("exports DIRECT_WORK_NUDGE as a string", () => {
     assert.equal(typeof DIRECT_WORK_NUDGE, "string");
+  });
+
+  it("exports SEARCH_DELEGATE_NUDGE as a string", () => {
+    assert.equal(typeof SEARCH_DELEGATE_NUDGE, "string");
   });
 });
 

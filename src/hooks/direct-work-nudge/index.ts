@@ -5,4 +5,8 @@
  *
  * @module
  */
-export { DIRECT_WORK_NUDGE, nudgeDirectWork } from "./hook";
+export {
+  DIRECT_WORK_NUDGE,
+  nudgeDirectWork,
+  SEARCH_DELEGATE_NUDGE,
+} from "./hook";

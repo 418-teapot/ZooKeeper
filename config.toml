@@ -35,8 +35,6 @@ id   = "aliyun/qwen3.7-max"
 [agent.build]
 model = "{env:CAMBRICON_MODEL}"
 [agent.build.permission]
-grep = "deny"
-glob = "deny"
 webfetch = "deny"
 websearch = "deny"
 

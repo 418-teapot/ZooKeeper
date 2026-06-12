@@ -32,6 +32,17 @@ Did you ACTUALLY need to be the one doing that?
 
 **Build does not implement. Build orchestrates.**`;
 
+/**
+ * Nudge text appended to grep/glob tool output for the build agent.
+ *
+ * Distinguishes between codebase discovery (delegate to the explore agent)
+ * and simple verification (fine to proceed).
+ */
+export const SEARCH_DELEGATE_NUDGE = `**POTENTIAL DELEGATION OPPORTUNITY** — You just searched the codebase.
+
+- **Codebase discovery** (finding files, searching across multiple files, exploring structure) → delegate to the \`explore\` agent via \`task()\`.
+- **Verification** (confirming a change in a specific file, checking if a pattern exists in a known file) → fine, continue.`;
+
 // ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
@@ -60,7 +71,9 @@ export async function nudgeDirectWork(
   output: { output?: string },
 ): Promise<void> {
   const tool = input.tool.toLowerCase();
-  if (tool !== "edit" && tool !== "write") return;
+  const isDirectEdit = tool === "edit" || tool === "write";
+  const isSearch = tool === "grep" || tool === "glob";
+  if (!isDirectEdit && !isSearch) return;
   if (output.output == null) return;
 
   // Only fire for the build orchestrator agent.
@@ -68,7 +81,11 @@ export async function nudgeDirectWork(
   // the nudge conservatively.
   if (!(await isBuildAgent(client, input.sessionID))) return;
 
-  output.output += `\n\n${DIRECT_WORK_NUDGE}`;
+  if (isDirectEdit) {
+    output.output += `\n\n${DIRECT_WORK_NUDGE}`;
+  } else {
+    output.output += `\n\n${SEARCH_DELEGATE_NUDGE}`;
+  }
 
   debug("direct-work-nudge", { tool: input.tool });
 }
