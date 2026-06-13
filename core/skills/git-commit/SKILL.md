@@ -147,8 +147,10 @@ fix(api): add idempotency key and rate limiter to payment endpoint
 CONTEXT: - Stripe delivered webhooks twice under high load due to 30s
            application timeout, causing duplicate charges.
 
-CHANGE:  - Adds idempotency_key (order_id + unix_ts hash) to all Stripe charges.
-         - Implements per-user rate limiter (100 req/min) on POST /payment.
+CHANGE:  - Adds idempotency_key (order_id + unix_ts hash) to
+           all Stripe charges.
+         - Implements per-user rate limiter (100 req/min) on POST
+           /payment.
 
 WHY:     - Stripe natively deduplicates on idempotency keys — simpler
            than Redis-based deduplication.
@@ -159,6 +161,19 @@ Closes #301
 ```
 
 阅读 `references/message-examples.md` 获取 15 个完整示例。
+
+### 消息格式验证（不得跳过）
+
+提交前，用 `-m` 直接传入消息字符串运行验证脚本：
+
+```bash
+bash scripts/check-commit-msg.sh -m "<完整提交消息>"
+```
+
+- **Exit 0** → 消息格式正确，继续提交。
+- **Exit 1** → **HARD STOP**。根据报告的错误修正消息，重新验证直到通过。不得提交未通过验证的消息。
+
+此门控与安全扫描同级，不得跳过。
 
 ---
 

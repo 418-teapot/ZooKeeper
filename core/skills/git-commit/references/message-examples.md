@@ -51,14 +51,16 @@ Fixes #301
 ## 3. perf — 性能优化
 
 ```
-perf(db): add composite index on (org_id, created_at) for dashboard queries
+perf(db): add composite index on (org_id, created_at) for dashboard
 
 CONTEXT: - Dashboard loaded 18s for org-scoped date-range queries.
          - Queries ran sequential scans on 12M-row audit_logs table.
 
-CHANGE:  - Adds B-tree composite index on audit_logs(org_id, created_at).
+CHANGE:  - Adds B-tree composite index on audit_logs(org_id,
+           created_at).
 
-WHY:     - All dashboard queries filter by org_id then sort by created_at.
+WHY:     - All dashboard queries filter by org_id
+           then sort by created_at.
          - Composite index covers both without INCLUDE columns.
 
 IMPACT:  - Dashboard P95 drops from 18s to 340ms.
@@ -77,7 +79,8 @@ security(api): add rate limiting to login endpoint
 CONTEXT: - POST /api/auth/login had no rate limiting.
          - Allowed unlimited brute-force: 12k requests/min in prod.
 
-CHANGE:  - Adds token-bucket limiter: 5 attempts/min per IP, 10/min per email.
+CHANGE:  - Adds token-bucket limiter: 5 attempts/min per IP,
+           10/min per email.
          - Returns 429 with Retry-After header on exceed.
 
 WHY:     - OWASP ASVS requires rate limiting on auth endpoints.
@@ -117,7 +120,8 @@ test(cart): add empty cart checkout and quantity overflow cases
 CONTEXT: - Cart checkout had 68% line coverage.
          - Missing edge cases for empty carts and max quantity.
 
-CHANGE:  - Adds 14 test cases: empty cart returns 422, quantity exceeds 999.
+CHANGE:  - Adds 14 test cases: empty cart returns 422,
+           quantity exceeds 999.
          - Adds concurrent add/remove and mixed currency validation.
 
 WHY:     - Empty cart edge case caused P0 incident last sprint.
@@ -134,7 +138,8 @@ IMPACT:  - Cart checkout coverage goes from 68% to 94%.
 ```
 docs(api): document webhook payload format and retry behavior
 
-CONTEXT: - Webhook consumers reverse-engineered payload from Stripe docs.
+CONTEXT: - Webhook consumers reverse-engineered payload
+           from Stripe docs.
          - No internal documentation existed for webhook format.
 
 CHANGE:  - Adds webhooks.md with payload schema for all 6 event types.
@@ -187,15 +192,16 @@ WHY:     - Payload size reduced by 85% on list views.
 IMPACT:  - Old endpoint redirects with deprecation header for 90 days.
          - All clients must update URLs and adopt field selection.
 
-BREAKING CHANGE: /api/users/:id/profile deprecated. Use /api/v2/users/:id/profile.
+BREAKING CHANGE: /api/users/:id/profile deprecated.
+  Use /api/v2/users/:id/profile instead.
 ```
 
 ---
 
-## 10. WIP — 进行中的工作
+## 10. wip — 进行中的工作
 
 ```
-WIP: refactor(notifications): migrate from email to push
+wip(notifications): migrate from email to push
 
 CONTEXT: - Email notification latency was 2-5 minutes during peak hours.
          - Push notifications are under 500ms.
