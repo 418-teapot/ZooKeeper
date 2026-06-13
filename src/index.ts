@@ -13,7 +13,7 @@
  * This module is a thin wiring layer — all hook implementation lives in
  * `src/hooks/` submodules.
  *
- * TODO: Add Claude Code adapter (PreToolUse Python hook + CLAUDE.md).
+ * TODO: Add pi / oh-my-pi adapter (framework adapter).
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
