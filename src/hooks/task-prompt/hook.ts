@@ -9,7 +9,7 @@
  * @module
  */
 
-import { debug } from "../utils/logger.js";
+import { debug } from "../../utils/logger.js";
 
 /**
  * Format guidance shown in the `task` tool's `prompt` parameter description.

@@ -10,7 +10,7 @@
  */
 
 import { type Clientish, getAgentName } from "../utils/agent.js";
-import { debug } from "../utils/logger.js";
+import { debug } from "../../utils/logger.js";
 
 // ---------------------------------------------------------------------------
 // Constants

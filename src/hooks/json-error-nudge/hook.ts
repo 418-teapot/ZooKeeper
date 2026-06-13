@@ -7,7 +7,7 @@
  * @module
  */
 
-import { debug } from "../utils/logger.js";
+import { debug } from "../../utils/logger.js";
 
 // ---------------------------------------------------------------------------
 // Constants

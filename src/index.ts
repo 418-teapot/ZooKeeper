@@ -28,6 +28,7 @@ import {
   nudgeTaskOutput,
   validateBeforeExec,
 } from "./hooks/task-prompt";
+import { initLogger } from "./utils/logger.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CORE_DIR = resolve(__dirname, "../core");
@@ -64,6 +65,27 @@ export async function zookeeper(input: any) {
   };
   const skillsConfig: Record<string, string> = zooConfig.skills ?? {};
   const client = input.client;
+
+  // Initialize file-based logging from [zoo.logging] config.
+  {
+    const logConfig = zooConfig.logging ?? {};
+    initLogger("", {
+      logDir:
+        typeof logConfig.dir === "string" ? logConfig.dir : undefined,
+      maxFileSize:
+        typeof logConfig.max_file_size_mb === "number"
+          ? logConfig.max_file_size_mb * 1024 * 1024
+          : undefined,
+      maxBackups:
+        typeof logConfig.max_backups === "number"
+          ? logConfig.max_backups
+          : undefined,
+      retentionDays:
+        typeof logConfig.retention_days === "number"
+          ? logConfig.retention_days
+          : undefined,
+    });
+  }
 
   return {
     async config(config: any) {

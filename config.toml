@@ -131,7 +131,19 @@ small_model = "{env:ZOO_SMALL_MODEL}"
 
 [zoo.validation]
 context_word_limit = 200
-prompt_word_limit  = 500
+prompt_word_limit = 500
+
+# ── Logging ──────────────────────────────────────────────────────────────────
+
+[zoo.logging]
+# 插件日志写入目录，支持 ~ 展开
+dir = "~/.zoo/log"
+# 单个日志文件大小上限 (MB)，最小 1
+max_file_size_mb = 5
+# 保留的轮转备份数，设为 0 不轮转
+max_backups = 2
+# 自动清理多少天前的日志
+retention_days = 7
 
 # ── Skills ──────────────────────────────────────────────────────────────────
 # 每个 core/skills/ 下的子目录对应一个内建技能。

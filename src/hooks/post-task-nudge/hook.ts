@@ -9,7 +9,7 @@
  * @module
  */
 
-import { debug } from "../utils/logger.js";
+import { debug } from "../../utils/logger.js";
 import { TODO_FINAL_ACTIVE, TODO_GENERAL } from "../utils/prompts.js";
 import { getTodoState } from "../utils/todo-state.js";
 
