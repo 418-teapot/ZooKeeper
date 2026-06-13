@@ -142,6 +142,10 @@ def parse_toml(filepath: str) -> dict:
                     value = value[1:-1]
                 elif len(value) >= 2 and value[0] == "'" and value[-1] == "'":
                     value = value[1:-1]
+                elif value.lower() == "true":
+                    value = True
+                elif value.lower() == "false":
+                    value = False
                 else:
                     try:
                         value = (
@@ -228,11 +232,49 @@ def resolve_env_refs_deep(obj):
     return obj
 
 
+def _filter_missing_providers(toml_data: dict) -> None:
+    """Remove provider entries whose credential env vars are not set.
+
+    Scans each ``provider.<name>.options`` sub-dict for ``{env:VAR}``
+    references.  If any referenced variable is missing from ``os.environ``,
+    the entire provider entry is removed from *toml_data* and a warning is
+    printed to stderr.
+
+    Args:
+        toml_data: The parsed TOML dictionary (mutated in-place).
+    """
+    providers = toml_data.get("provider")
+    if not isinstance(providers, dict):
+        return
+
+    to_remove: list[str] = []
+    for prov_name, prov_data in providers.items():
+        if not isinstance(prov_data, dict):
+            continue
+        options = prov_data.get("options")
+        if not isinstance(options, dict):
+            continue
+        missing: list[str] = []
+        for value in options.values():
+            if not isinstance(value, str):
+                continue
+            m = _ENV_REF_RE.match(value.strip())
+            if m is not None and m.group(1) not in os.environ:
+                missing.append(m.group(1))
+        if missing:
+            warn(f"provider.{prov_name} 的环境变量未配置，跳过")
+            to_remove.append(prov_name)
+
+    for prov_name in to_remove:
+        del providers[prov_name]
+
+
 def build_config(toml_data: dict, project_dir: str) -> dict:
     """Convert parsed TOML data into the OpenCode JSON configuration.
 
     Fields in the [defaults] section are promoted to the top-level of the config.
     All {env:} placeholders are resolved to actual environment variable values.
+    Providers whose credential env vars are not set are silently skipped.
 
     Args:
         toml_data: The dictionary returned by parse_toml().
@@ -259,6 +301,9 @@ def build_config(toml_data: dict, project_dir: str) -> dict:
         config["$schema"] = toml_data["$schema"]
     config["plugin"] = [plugin_uri]
     if "provider" in toml_data:
+        # Pre-filter: remove providers whose credential env vars are not set
+        # so that resolve_env_refs_deep only sees "real" (non-provider) refs.
+        _filter_missing_providers(toml_data)
         config["provider"] = toml_data["provider"]
     if "agent" in toml_data:
         config["agent"] = toml_data["agent"]

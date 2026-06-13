@@ -13,14 +13,32 @@ apiKey  = "{env:CAMBRICON_API_KEY}"
 [provider.Cambricon.models.deepseek-v4-pro]
 name = "aliyun/deepseek-v4-pro"
 id   = "aliyun/deepseek-v4-pro"
+reasoning = true
 
 [provider.Cambricon.models.deepseek-v4-pro.limit]
 context = 1000000
 output  = 384000
 
+[provider.Cambricon.models.deepseek-v4-pro.cost]
+input       = 0
+output      = 0
+cache_read  = 0
+cache_write = 0
+
 [provider.Cambricon.models.deepseek-v4-flash]
 name = "aliyun/deepseek-v4-flash"
 id   = "aliyun/deepseek-v4-flash"
+reasoning = true
+
+[provider.Cambricon.models.deepseek-v4-flash.limit]
+context = 1000000
+output  = 384000
+
+[provider.Cambricon.models.deepseek-v4-flash.cost]
+input       = 0
+output      = 0
+cache_read  = 0
+cache_write = 0
 
 [provider.Cambricon.models."glm-5.1"]
 name = "aliyun/glm-5.1"
@@ -30,23 +48,62 @@ id   = "aliyun/glm-5.1"
 name = "aliyun/qwen3.7-max"
 id   = "aliyun/qwen3.7-max"
 
-# ── Agent ────────────────────────────────────────────────────────────────
+# ── DeepSeek ────────────────────────────────────────────────────────────────
+
+[provider.DeepSeek]
+npm = "@ai-sdk/anthropic"
+
+[provider.DeepSeek.options]
+baseURL = "{env:DEEPSEEK_BASE_URL}"
+apiKey  = "{env:DEEPSEEK_API_KEY}"
+
+[provider.DeepSeek.models.deepseek-v4-pro]
+name = "deepseek-v4-pro"
+id   = "deepseek-v4-pro"
+reasoning = true
+
+[provider.DeepSeek.models.deepseek-v4-pro.limit]
+context = 1000000
+output  = 384000
+
+[provider.DeepSeek.models.deepseek-v4-pro.cost]
+input       = 1.74
+output      = 3.48
+cache_read  = 0.145
+cache_write = 0
+
+[provider.DeepSeek.models.deepseek-v4-flash]
+name = "deepseek-v4-flash"
+id   = "deepseek-v4-flash"
+reasoning = true
+
+[provider.DeepSeek.models.deepseek-v4-flash.limit]
+context = 1000000
+output  = 384000
+
+[provider.DeepSeek.models.deepseek-v4-flash.cost]
+input       = 0.14
+output      = 0.28
+cache_read  = 0.028
+cache_write = 0
+
+# ── Agents ──────────────────────────────────────────────────────────────────
 
 [agent.build]
-model = "{env:CAMBRICON_MODEL}"
+model = "{env:ZOO_MODEL}"
 [agent.build.permission]
 webfetch = "deny"
 websearch = "deny"
 
 [agent.explore]
-model = "{env:CAMBRICON_SMALL_MODEL}"
+model = "{env:ZOO_SMALL_MODEL}"
 [agent.explore.permission]
 edit = "deny"
 write = "deny"
 task = "deny"
 
 [agent.general]
-model = "{env:CAMBRICON_SMALL_MODEL}"
+model = "{env:ZOO_SMALL_MODEL}"
 [agent.general.permission]
 task = "deny"
 webfetch = "deny"
@@ -54,7 +111,7 @@ websearch = "deny"
 
 [agent.spider]
 mode  = "subagent"
-model = "{env:CAMBRICON_SMALL_MODEL}"
+model = "{env:ZOO_SMALL_MODEL}"
 [agent.spider.permission]
 edit = "deny"
 write = "deny"
@@ -64,19 +121,19 @@ read = "deny"
 glob = "deny"
 grep = "deny"
 
-# ── Defaults（提升到 JSON 顶层）──────────────────────────────────────────
+# ── Defaults ────────────────────────────────────────────────────────────────
 
 [defaults]
-model       = "{env:CAMBRICON_MODEL}"
-small_model = "{env:CAMBRICON_SMALL_MODEL}"
+model       = "{env:ZOO_MODEL}"
+small_model = "{env:ZOO_SMALL_MODEL}"
 
-# ── Validation thresholds ──────────────────────────────────────────────────
+# ── Validation ──────────────────────────────────────────────────────────────
 
 [zoo.validation]
 context_word_limit = 200
 prompt_word_limit  = 500
 
-# ── Skills（内建技能管理）────────────────────────────────────────────────
+# ── Skills ──────────────────────────────────────────────────────────────────
 # 每个 core/skills/ 下的子目录对应一个内建技能。
 # 可用值："enable"（启用）| "disable"（禁用）
 

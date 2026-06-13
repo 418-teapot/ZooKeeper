@@ -62,10 +62,15 @@ cp .env.example .env
 编辑 `.env`，填入你的 LLM API 凭据：
 
 ```
+# 模型 ID（所有 Agent 共用）
+ZOO_MODEL=Cambricon/glm-5.1
+ZOO_SMALL_MODEL=Cambricon/deepseek-v4-flash
+
+# Provider 凭据 — 只需设置你实际使用的 Provider，其余可注释或留空
 CAMBRICON_API_KEY=your-api-key-here
 CAMBRICON_BASE_URL=https://api.example.com/v1
-CAMBRICON_MODEL=Cambricon/glm-5.1
-CAMBRICON_SMALL_MODEL=Cambricon/deepseek-v4-flash
+DEEPSEEK_API_KEY=your-deepseek-api-key-here
+DEEPSEEK_BASE_URL=https://api.deepseek.com/anthropic
 ```
 
 **3. 生成 OpenCode 配置**
