@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""ZooKeeper log filter — real-time JSON log viewer for ~/.zoo/log/opencode-*.log."""
+
+import argparse
+import glob as glob_module
+import os
+import subprocess
+import sys
+from datetime import datetime
+
+from _parser import resolve_session_path
+
+LOG_DIR = os.path.expanduser("~/.zoo/log")
+
+
+def build_jq_filter(
+    hook: str | None, level: str | None, event: str | None
+) -> str | None:
+    """Build a jq select filter string. Returns None if no filters given."""
+    parts = []
+    if hook is not None:
+        parts.append(f'.hook == "{hook}"')
+    if level is not None:
+        parts.append(f'.level == "{level}"')
+    if event is not None:
+        parts.append(f'.event == "{event}"')
+    if parts:
+        return " and ".join(parts)
+    return None
+
+
+def run_jq_pipeline(filter_str: str | None, unbuffered: bool = True) -> list[str]:
+    """Build jq argument list for the given filter."""
+    args = ["/usr/bin/jq", "-c"]
+    if unbuffered:
+        args.append("--unbuffered")
+    if filter_str:
+        args.append(f"select({filter_str})")
+    else:
+        args.append(".")
+    return args
+
+
+def cmd_tail(args: argparse.Namespace) -> None:
+    """Tail -f a log file with optional jq filtering."""
+    path = resolve_session_path(args.session_id)
+    if path is None:
+        print(
+            f"Error: no unique log file found for session '{args.session_id}'",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if args.raw:
+        # Bypass jq entirely — inherit tail output directly
+        try:
+            subprocess.run(["tail", "-f", path], check=False)
+        except KeyboardInterrupt:
+            pass
+        return
+
+    filter_str = build_jq_filter(args.hook, args.level, args.event)
+    jq_args = run_jq_pipeline(filter_str)
+
+    tail_proc: subprocess.Popen | None = None
+    jq_proc: subprocess.Popen | None = None
+    try:
+        tail_proc = subprocess.Popen(
+            ["tail", "-f", path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+
+        jq_proc = subprocess.Popen(
+            jq_args,
+            stdin=tail_proc.stdout,
+            stdout=sys.stdout,
+            stderr=None,  # inherit parent stderr so jq errors are visible
+        )
+        tail_proc.stdout.close()  # allow tail to receive SIGPIPE if jq exits
+
+        jq_proc.wait()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        for proc in (tail_proc, jq_proc):
+            if proc is not None:
+                try:
+                    proc.terminate()
+                except OSError:
+                    pass
+
+
+def cmd_show(args: argparse.Namespace) -> None:
+    """Read an entire log file with optional jq filtering."""
+    path = resolve_session_path(args.session_id)
+    if path is None:
+        print(
+            f"Error: no unique log file found for session '{args.session_id}'",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if args.raw:
+        with open(path, "r", encoding="utf-8") as f:
+            sys.stdout.write(f.read())
+        return
+
+    filter_str = build_jq_filter(args.hook, args.level, args.event)
+    jq_args = run_jq_pipeline(filter_str, unbuffered=False)
+
+    with open(path, "r", encoding="utf-8") as f:
+        proc = subprocess.Popen(
+            jq_args,
+            stdin=f,
+            stdout=sys.stdout,
+            stderr=None,  # inherit parent stderr so jq errors are visible
+        )
+        proc.wait()
+
+
+def cmd_list(args: argparse.Namespace) -> None:
+    """List all log files with metadata."""
+    pattern = os.path.join(LOG_DIR, "opencode-*.log")
+    files = sorted(glob_module.glob(pattern))
+
+    if not files:
+        print("No log files found in ~/.zoo/log/")
+        return
+
+    prefix = "opencode-"
+    suffix = ".log"
+
+    # Headers
+    print(f"{'Session ID':<42} {'Size':>8} {'Modified':<22} {'Events':>6}")
+    print("-" * 82)
+
+    for path in files:
+        filename = os.path.basename(path)
+        session_id = filename
+        if filename.startswith(prefix) and filename.endswith(suffix):
+            session_id = filename[len(prefix) : -len(suffix)]
+
+        st = os.stat(path)
+        size = st.st_size
+        mtime_str = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+
+        with open(path, "r", encoding="utf-8") as f:
+            event_count = sum(1 for _ in f)
+
+        print(f"{session_id:<42} {size:>8} {mtime_str:<22} {event_count:>6}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description=(
+            "ZooKeeper log filter \u2014 real-time JSON log viewer"
+            " for ~/.zoo/log/opencode-*.log."
+        ),
+    )
+    subparsers = parser.add_subparsers(dest="command", title="Commands")
+
+    # --- tail ---
+    p_tail = subparsers.add_parser("tail", help="Tail -f a log file in real-time")
+    p_tail.add_argument("session_id", help="Session ID (full or prefix)")
+    p_tail.add_argument("--hook", help="Filter by hook name")
+    p_tail.add_argument("--level", help="Filter by level (e.g. info, warn, error)")
+    p_tail.add_argument("--event", help="Filter by event name")
+    p_tail.add_argument(
+        "--raw", action="store_true", help="Skip jq filtering, output raw lines"
+    )
+
+    # --- show ---
+    p_show = subparsers.add_parser("show", help="Read and filter an entire log file")
+    p_show.add_argument("session_id", help="Session ID (full or prefix)")
+    p_show.add_argument("--hook", help="Filter by hook name")
+    p_show.add_argument("--level", help="Filter by level (e.g. info, warn, error)")
+    p_show.add_argument("--event", help="Filter by event name")
+    p_show.add_argument(
+        "--raw", action="store_true", help="Skip jq filtering, output raw lines"
+    )
+
+    # --- list ---
+    subparsers.add_parser("list", help="List all log files with metadata")
+
+    args = parser.parse_args()
+
+    if not os.path.isdir(LOG_DIR):
+        print(f"Error: log directory {LOG_DIR} does not exist", file=sys.stderr)
+        sys.exit(1)
+
+    if args.command == "tail":
+        cmd_tail(args)
+    elif args.command == "show":
+        cmd_show(args)
+    elif args.command == "list":
+        cmd_list(args)
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

@@ -9,7 +9,7 @@ set -euo pipefail
 
 MODE="${1:-check}"
 
-PY_FILES="install.py tests/"
+PY_FILES="install.py tests/ tools/"
 TS_DIR="src/"
 
 RED='\033[0;31m'

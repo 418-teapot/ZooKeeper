@@ -114,3 +114,13 @@ OpenCode 日志写入以下位置：
 [zookeeper:post-task-nudge] trigger { hasTodo: true, nudge: "general" }
 [zookeeper:focus-reminder] trigger { agent: "build", sessionId: "..." }
 ```
+
+## 调试工具
+
+`tools/` 下的 CLI 工具用于分析日志。插件默认记录 info/warn/error 级别事件到 `~/.zoo/log/`；`ZOO_DEBUG=1` 额外启用 debug 级别记录。
+
+| 工具 | 说明 |
+|------|------|
+| `tools/zoo-log` | 实时过滤当前 session 的插件日志（JSONL），支持 `list`（列出所有日志）、`show <id>`（回放完整日志，支持 `--hook`/`--level`/`--event` 过滤）、`tail <id>`（实时 tail，同上过滤参数）。基于 jq 管道。 |
+| `tools/zoo-inspect` | 事件统计与时间线。支持 `list`（rich 表格列出 session）、`stats <id>`（事件统计：级别分布、hook 分类）、`timeline <id>`（按时间排序的事件流水）。基于 rich 渲染。 |
+| `tools/zoo-trace` | 完整编排 trace（合并插件日志 + opencode 日志 + SQLite 消息）。支持 `list`/`show`/`export` 子命令。 |

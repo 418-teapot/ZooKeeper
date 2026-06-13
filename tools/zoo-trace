@@ -1,0 +1,809 @@
+#!/usr/bin/env python3
+"""ZooKeeper trace — full orchestration trace with timeline merging."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+
+from rich.cells import cell_len
+from rich.console import Console
+from rich.panel import Panel
+from rich.style import Style
+from rich.table import Table
+from rich.text import Text
+
+from _jaeger import build_chrome_trace, build_jaeger_doc
+from _parser import list_sessions, parse_opencode_log
+from _trace_builder import build_stats, build_timeline
+
+
+# ── Helpers ────────────────────────────────────────────────────────────
+
+LEVEL_STYLES = {
+    "info": "green",
+    "debug": "dim white",
+    "warn": "yellow",
+    "error": "red",
+    "fatal": "red bold",
+}
+
+TYPE_STYLES = {
+    "session": "green",
+    "llm": "blue",
+    "llm_stream": "blue",
+    "permission": "orange1",
+    "tool_read": "yellow",
+    "tool_write": "yellow",
+    "tool_exec": "yellow",
+    "tool_orch": "cyan",
+    "tool_other": "yellow",
+    "file": "magenta",
+    "hook": "cyan",
+}
+
+TYPE_ICONS = {
+    "session": "◆",
+    "llm": "▲",
+    "llm_stream": "▲",
+    "permission": "▼",
+    "tool_read": "■",
+    "tool_write": "■",
+    "tool_exec": "■",
+    "tool_orch": "◈",
+    "tool_other": "■",
+    "file": "■",
+    "hook": "◈",
+}
+
+
+def _render_timeline_rich(timeline: list[dict], console: Console) -> None:
+    """Render timeline events using rich Tree/Table.
+
+    Groups ZooKeeper events under their parent LLM or session turn.
+    Child session events are indented and prefixed with ``[子: <agent>]``.
+    """
+    if not timeline:
+        console.print("[yellow]No events in timeline.[/yellow]")
+        return
+
+    table = Table(
+        title=None,
+        show_header=False,
+        box=None,
+        padding=(0, 1),
+        collapse_padding=True,
+    )
+    table.add_column("Time", style="dim", no_wrap=True, width=9)
+    table.add_column("Icon", no_wrap=True, width=2)
+    table.add_column("Summary", no_wrap=False)
+
+    for e in timeline:
+        ts = e.get("timestamp", "")
+        time_str = ts[11:19] if len(ts) >= 19 else ts[-8:]
+
+        icon = e.get("icon", "●")
+        etype = e.get("type", "hook")
+        source = e.get("source", "")
+        depth = e.get("depth", 0)
+
+        icon_color = TYPE_STYLES.get(etype, "white")
+        icon_str = Text(icon, style=icon_color)
+
+        summary_text = Text(e.get("summary", ""))
+
+        # Child session prefix + indentation
+        if depth > 0:
+            agent = e.get("session_agent", "")
+            prefix = f"[子:{agent}] " if agent else "[子session] "
+            summary_text = Text.assemble(
+                ("  " * depth, ""),
+                (prefix, "dim"),
+                (summary_text.plain, ""),
+            )
+        elif source == "zoo":
+            summary_text = Text.assemble(
+                ("[zoo] ", "cyan"),
+                (e.get("summary", ""), ""),
+            )
+
+        table.add_row(time_str, icon_str, summary_text)
+
+    console.print(table)
+
+
+def _build_model_map(timeline: list[dict]) -> list[str]:
+    """Build a parallel list of active model names for each timeline index.
+
+    Walks the timeline and tracks the most recent LLM runtime selected or
+    session-created model name.  Events before any LLM event get an empty
+    string.
+    """
+    current = ""
+    models: list[str] = []
+    for e in timeline:
+        if e.get("type") == "llm":
+            detail = e.get("detail", {})
+            m = detail.get("model", "")
+            if m:
+                current = m
+        elif e.get("type") == "session":
+            detail = e.get("detail", {})
+            m = detail.get("model_id", detail.get("model", ""))
+            if m and not current:
+                current = m
+        models.append(current)
+    return models
+
+
+def _truncate_display(text: str, max_cols: int) -> str:
+    """Truncate text to fit within *max_cols* display columns (forward scan).
+
+    Handles CJK characters (2 columns each) and emoji using
+    ``rich.cells.cell_len`` for correct terminal width measurement.
+
+    Args:
+        text: The text to truncate.
+        max_cols: Maximum display columns (terminal cell width).
+
+    Returns:
+        Truncated text with ``"..."`` suffix if needed, or the original text.
+    """
+    if not text:
+        return text
+    if cell_len(text) <= max_cols:
+        return text
+    width = 0
+    for i, ch in enumerate(text):
+        width += cell_len(ch)
+        if width + 3 > max_cols:  # +3 for "..."
+            # If even the first char doesn't fit, show it anyway (edge
+            # case matching the original O(n²) implementation). This
+            # path is never hit in practice (max_cols is 48 or 56).
+            return text[:max(i, 1)] + "..."
+    return text
+
+
+def _pad(s: str, width: int) -> str:
+    """Pad string to exact display width using ``rich.cells.cell_len``.
+
+    Args:
+        s: Plain text string (no rich markup).
+        width: Target display width in terminal cells.
+
+    Returns:
+        Padded string with trailing spaces.
+    """
+    current = cell_len(s)
+    return s + " " * max(0, width - current)
+
+
+def _render_ops_summary(
+    timeline: list[dict],
+    stats: dict,
+    console: Console,
+    verbose: bool = False,
+) -> None:
+    """Render chronological operations summary with fixed-width columns.
+
+    Each line follows the format::
+
+        HH:MM:SS  model             tag         │ content
+
+    Columns:
+        Time    —  8 cells  (``HH:MM:SS``)
+        Model   — 18 cells  (right-padded, truncated if > 18)
+        Tag     —  dynamic (icon + label, max 14 cells)
+        Sep     —  1 cell   (``│``)
+        Content — remaining  (sub-agent prefix ``[子:agent] `` when depth > 0)
+
+    Sub-agent depth indents only the time column and the content column
+    (after ``│``) by ``depth × 2`` spaces, keeping model and tag columns
+    aligned across all depths.
+    """
+    if not timeline:
+        console.print("[yellow]No events in timeline.[/yellow]")
+        return
+
+    model_map = _build_model_map(timeline)
+
+    OP_LABELS: dict[str, str] = {
+        "tool_read": "读",
+        "tool_write": "写",
+        "tool_exec": "执行",
+        "tool_orch": "编排",
+        "tool_other": "其他",
+    }
+
+    # Collect tool_* + zoo + llm events in chronological order
+    ops: list[dict] = []
+    for i, e in enumerate(timeline):
+        etype = e.get("type", "")
+        source = e.get("source", "")
+        if etype.startswith("tool_") or source == "zoo":
+            ops.append({"index": i, "event": e})
+        elif etype in ("llm", "llm_stream"):
+            if verbose:
+                ops.append({"index": i, "event": e})
+        elif source == "db":
+            ops.append({"index": i, "event": e})
+
+    ops.sort(key=lambda o: (o["event"].get("timestamp", ""), o["index"]))
+
+    # ── Compute dynamic tag column width ──
+    tag_labels: list[str] = []
+    for op in ops:
+        e = op["event"]
+        etype = e.get("type", "")
+        if etype in ("llm", "llm_stream"):
+            tag_labels.append("🤖 LLM stream" if etype == "llm_stream" else "🤖 LLM call")
+        elif e.get("source") == "zoo":
+            tag_labels.append("zoo")
+        elif e.get("source") == "db":
+            if etype == "user_msg":
+                tag_labels.append("User")
+            elif etype == "assistant_reply":
+                agent = e.get("agent", "") or "assistant"
+                tag_labels.append(f"{agent}:")
+            elif etype == "assistant_reasoning" and verbose:
+                tag_labels.append("🧠 Reasoning")
+        else:
+            icon = TYPE_ICONS.get(etype, "■")
+            op_label = OP_LABELS.get(etype, "其他")
+            tag_labels.append(f"{icon} {op_label}")
+
+    tag_width = max((cell_len(t) for t in tag_labels), default=8)
+    tag_width = min(tag_width, 14)
+
+    # ── Cache Style objects ──
+    S = {
+        "dim": Style(dim=True),
+        "blue": Style(color="blue"),
+        "green": Style(color="green"),
+        "cyan": Style(color="cyan"),
+        "yellow": Style(color="yellow"),
+        "white": Style(color="white"),
+        "orange1": Style(color="orange1"),
+        "magenta": Style(color="magenta"),
+    }
+
+    # ── Build all output lines ──
+    lines: list[str] = []
+    for op in ops:
+        e = op["event"]
+        ts = e.get("timestamp", "")
+        time_str = ts[11:19] if len(ts) >= 19 else ts[-8:]
+        time_str = time_str.ljust(8)  # fixed 8-char width
+        i = op["index"]
+        etype = e.get("type", "")
+        depth = e.get("depth", 0)
+
+        # Fixed-width time column: always 8 chars, no indent
+        time_padded = _pad(time_str, 8)
+
+        # Indent for sub-agent depth (content column only)
+        indent = "  " * depth if depth > 0 else ""
+
+        # Content prefix for sub-agent events
+        content_prefix = ""
+        if depth > 0:
+            agent = e.get("session_agent", "")
+            content_prefix = f"[子:{agent}] " if agent else "[子] "
+
+        # Model column: padded to 18, truncated if too long
+        model_raw = model_map[i] if i < len(model_map) else ""
+        if len(model_raw) > 18:
+            model_raw = model_raw[:18]
+        model_plain = model_raw or "—"
+        model_padded = _pad(model_plain, 18)
+        model_style_obj = S["blue"] if model_raw else S["dim"]
+
+        # Build styled segments
+        time_seg = S["dim"].render(time_padded)
+        model_seg = model_style_obj.render(model_padded)
+        sep_seg = S["dim"].render(f"{indent}│")
+
+        if etype in ("llm", "llm_stream"):
+            # ── LLM call / stream ──
+            detail = e.get("detail", {})
+            agent_name = detail.get("agent", "")
+            agent_suffix = f"({agent_name}) " if agent_name and agent_name != "?" else ""
+            label = "🤖 LLM stream" if etype == "llm_stream" else "🤖 LLM call"
+            tag_padded = _pad(label, tag_width)
+            tag_seg = S["blue"].render(tag_padded)
+            lines.append(
+                f"{time_seg}  {model_seg}  {tag_seg} {sep_seg} {content_prefix}{agent_suffix}"
+            )
+
+        elif e.get("source") == "zoo":
+            # ── ZooKeeper intervention ──
+            summary = e.get("summary", "")
+            tag_padded = _pad("zoo", tag_width)
+            tag_seg = S["cyan"].render(tag_padded)
+            lines.append(
+                f"{time_seg}  {model_seg}  {tag_seg} {sep_seg} {content_prefix}{summary}"
+            )
+
+        elif e.get("source") == "db":
+            # ── Database message (user / assistant) ──
+            if etype == "user_msg":
+                tag_padded = _pad("User", tag_width)
+                tag_seg = S["green"].render(tag_padded)
+                content = e.get("content", "")
+                if not verbose:
+                    one_line = " ".join(content.split())
+                    content = _truncate_display(one_line, 56)
+                lines.append(
+                    f"{time_seg}  {model_seg}  {tag_seg} {sep_seg} {content_prefix}{content}"
+                )
+
+            elif etype == "assistant_reply":
+                agent = e.get("agent", "") or "assistant"
+                tag_padded = _pad(f"{agent}:", tag_width)
+                tag_seg = S["blue"].render(tag_padded)
+                content = e.get("content", "")
+                if not verbose:
+                    one_line = " ".join(content.split())
+                    content = _truncate_display(one_line, 48)
+                lines.append(
+                    f"{time_seg}  {model_seg}  {tag_seg} {sep_seg} {content_prefix}{content}"
+                )
+
+            elif etype == "assistant_reasoning" and verbose:
+                tag_padded = _pad("🧠 Reasoning", tag_width)
+                tag_seg = S["dim"].render(tag_padded)
+                content = e.get("content", "")
+                lines.append(
+                    f"{time_seg}  {model_seg}  {tag_seg} {sep_seg} {content_prefix}{content}"
+                )
+
+        else:
+            # ── Tool call ──
+            summary = e.get("summary", "")
+            if ": " in summary:
+                tool_name, arg = summary.split(": ", 1)
+            else:
+                tool_name = summary
+                arg = ""
+
+            icon = TYPE_ICONS.get(etype, "■")
+            color = TYPE_STYLES.get(etype, "white")
+            op_label = OP_LABELS.get(etype, "其他")
+            tag_plain = f"{icon} {op_label}"
+            tag_padded = _pad(tag_plain, tag_width)
+            tag_seg = S.get(color, S["white"]).render(tag_padded)
+
+            line_content = f"{tool_name} {arg}".strip()
+            line_content = " ".join(line_content.split())  # collapse newlines
+            line_content = _truncate_display(line_content, 120)  # max 120 display cols
+            full_content = (
+                f"{content_prefix}{line_content}" if content_prefix else line_content
+            )
+            lines.append(
+                f"{time_seg}  {model_seg}  {tag_seg} {sep_seg} {full_content}"
+            )
+
+    # Output all lines at once
+    console.file.write("\n".join(lines))
+    console.file.write("\n")
+
+    # Render bottom stats line
+    tools = stats.get("tools", {})
+    tool_parts = []
+    if tools.get("read"):
+        tool_parts.append(f"读{tools['read']}")
+    if tools.get("write"):
+        tool_parts.append(f"写{tools['write']}")
+    if tools.get("exec"):
+        tool_parts.append(f"执行{tools['exec']}")
+    if tools.get("orch"):
+        tool_parts.append(f"编排{tools['orch']}")
+    if tools.get("other"):
+        tool_parts.append(f"其他{tools['other']}")
+    tool_str = (
+        f"tools: {tools['total']}({'/'.join(tool_parts)})"
+        if tool_parts
+        else f"tools: {tools['total']}"
+    )
+
+    zoo_total = stats.get("zoo_interventions", 0)
+
+    console.print()
+    console.print(
+        f"[bold]总计:[/bold] {stats['total_events']} events | "
+        f"{stats['llm_calls']} LLM | "
+        f"{tool_str} | "
+        f"{zoo_total} zoo"
+    )
+
+
+def _find_session_info(timeline: list[dict]) -> dict | None:
+    """Extract session info (slug, agent, model, etc.) from timeline events."""
+    for e in timeline:
+        if e.get("type") == "session" and e.get("detail", {}).get("slug"):
+            d = e["detail"]
+            return {
+                "slug": d.get("slug", ""),
+                "agent": d.get("agent", ""),
+                "model": d.get("model_id", d.get("model", "")),
+                "provider": d.get("model_provider", d.get("provider", "")),
+                "project_id": d.get("project_id", ""),
+                "title": d.get("title", ""),
+            }
+    return None
+
+
+def _render_session_panel(
+    session_id: str,
+    timeline: list[dict],
+    stats: dict,
+    console: Console,
+    compact: bool = False,
+) -> None:
+    """Render session summary panel.
+
+    Args:
+        session_id: The session ID to display.
+        timeline: Unified event list (used to extract session info).
+        stats: Stats dict from :func:`build_stats`.
+        console: Rich console to print to.
+        compact: If ``True``, render a single-line compact header instead
+            of the full detail panel (used for default ``show`` output).
+    """
+    info = _find_session_info(timeline)
+
+    if compact:
+        # ── Compact single-line header ──
+        slug = info.get("slug", "") if info else ""
+        agent = info.get("agent", "") if info else ""
+        model = info.get("model", "") if info else ""
+
+        ts = stats.get("time_span")
+        dur_str = ""
+        if ts:
+            dur = ts.get("seconds", 0)
+            mins, secs = divmod(dur, 60)
+            dur_str = f"{mins}m {secs}s" if mins else f"{secs}s"
+
+        sid_short = f"{session_id[:20]}…"
+        title_str = (
+            f"Session: {slug} ({sid_short})" if slug else f"Session ({sid_short})"
+        )
+
+        parts = []
+        if agent:
+            parts.append(f"Agent: [green]{agent}[/green]")
+        if model:
+            parts.append(f"Model: [blue]{model}[/blue]")
+        if dur_str:
+            parts.append(f"Duration: [yellow]{dur_str}[/yellow]")
+
+        child_sessions = stats.get("child_sessions")
+        child_line = ""
+        if child_sessions:
+            child_line = f"子 sessions: [cyan]{stats['total_child_sessions']}[/cyan]"
+
+        content = "  ".join(parts)
+        if child_line:
+            if content:
+                content += f"\n{child_line}"
+            else:
+                content = child_line
+
+        panel = Panel(
+            content,
+            title=f"[bold]{title_str}[/bold]",
+            border_style="cyan",
+        )
+        console.print(panel)
+        console.print()
+        return
+
+    # ── Full detail panel (verbose mode or fallback) ──
+    lines = [f"Session ID: [cyan]{session_id}[/cyan]"]
+
+    if info:
+        if info.get("slug"):
+            lines.append(f"Slug:       [bold]{info['slug']}[/bold]")
+        if info.get("agent"):
+            lines.append(f"Agent:      [green]{info['agent']}[/green]")
+        if info.get("model"):
+            lines.append(f"Model:      [blue]{info['model']}[/blue]")
+        if info.get("provider"):
+            lines.append(f"Provider:   {info['provider']}")
+        if info.get("project_id"):
+            lines.append(f"Project ID: [dim]{info['project_id']}[/dim]")
+
+    ts = stats.get("time_span")
+    if ts:
+        dur = ts.get("seconds", 0)
+        mins, secs = divmod(dur, 60)
+        dur_str = f"{mins}m {secs}s" if mins else f"{secs}s"
+        lines.append(f"Duration:   [yellow]{dur_str}[/yellow]")
+
+    # Child session summary
+    child_sessions = stats.get("child_sessions")
+    if child_sessions:
+        lines.append(f"子 sessions: [cyan]{stats['total_child_sessions']}[/cyan]")
+        for cs in child_sessions:
+            agent = cs.get("agent", "?")
+            sid_short = cs["session_id"][:12] + "..."
+            lines.append(
+                f"  ├ [dim]{sid_short}[/dim] "
+                f"[green]{agent}[/green] "
+                f"[yellow]{cs['event_count']}[/yellow] events"
+            )
+        lines.append("")
+
+    tools = stats.get("tools", {})
+    tool_parts = []
+    if tools.get("read"):
+        tool_parts.append(f"读{tools['read']}")
+    if tools.get("write"):
+        tool_parts.append(f"写{tools['write']}")
+    if tools.get("exec"):
+        tool_parts.append(f"执行{tools['exec']}")
+    if tools.get("orch"):
+        tool_parts.append(f"编排{tools['orch']}")
+    if tools.get("other"):
+        tool_parts.append(f"其他{tools['other']}")
+    tool_str = (
+        f"tools: {tools['total']}({'/'.join(tool_parts)})"
+        if tool_parts
+        else f"tools: {tools['total']}"
+    )
+
+    lines.append("")
+    lines.append(
+        f"[bold]Stats:[/bold] {stats['total_events']} events | "
+        f"{stats['llm_calls']} LLM | "
+        f"{tool_str} | "
+        f"{stats['permission_checks']} permissions | "
+        f"{stats['zoo_interventions']} zoo"
+    )
+
+    panel = Panel(
+        "\n".join(lines),
+        title="[bold]Session Summary[/bold]",
+        border_style="cyan",
+    )
+    console.print(panel)
+    console.print()
+
+
+def _collect_child_sessions_info(
+    timeline: list[dict],
+    root_session_id: str,
+) -> list[dict]:
+    """Collect per-child-session stats for the summary panel.
+
+    Args:
+        timeline: List of unified event dicts (may include children).
+        root_session_id: The root session ID (excluded from children).
+
+    Returns:
+        List of dicts with ``session_id``, ``depth``, ``agent``,
+        ``event_count`` for each non-root session in the timeline.
+    """
+    seen: dict[str, dict] = {}
+    for e in timeline:
+        sid = e.get("session_id", "")
+        if sid == root_session_id or not sid:
+            continue
+        if sid not in seen:
+            seen[sid] = {
+                "session_id": sid,
+                "depth": e.get("depth", 0),
+                "agent": e.get("session_agent", "?"),
+                "event_count": 0,
+            }
+        seen[sid]["event_count"] += 1
+
+    # Sort by depth then session_id for stable output
+    return sorted(seen.values(), key=lambda x: (x["depth"], x["session_id"]))
+
+
+# ── Commands ────────────────────────────────────────────────────────────
+
+
+def cmd_list(_args: argparse.Namespace) -> None:
+    """List all sessions from both log sources."""
+    console = Console()
+
+    # Sessions from ZooKeeper logs
+    zoo_sessions = list_sessions("~/.zoo/log")
+
+    # Sessions from opencode log (parse to find session IDs)
+    oc_path = os.path.expanduser("~/.local/share/opencode/log/opencode.log")
+    oc_sessions: set[str] = set()
+    if os.path.isfile(oc_path):
+        entries = parse_opencode_log(oc_path)
+        for e in entries:
+            if e.get("message") == "created":
+                sid = e.get("id", "")
+                if sid:
+                    oc_sessions.add(sid)
+
+    if not zoo_sessions and not oc_sessions:
+        console.print("[yellow]No sessions found in either log source.[/yellow]")
+        return
+
+    table = Table(title="Available Sessions")
+    table.add_column("Session ID", style="cyan", no_wrap=True)
+    table.add_column("Source", no_wrap=True)
+    table.add_column("Slug / Title", style="bold")
+    table.add_column("Agent", style="green")
+    table.add_column("Events", justify="right")
+
+    shown: set[str] = set()
+
+    # Show ZooKeeper sessions first
+    for s in zoo_sessions:
+        sid = s["session_id"]
+        if sid in shown:
+            continue
+        shown.add(sid)
+        table.add_row(
+            sid,
+            "[cyan]zoo[/cyan]",
+            "—",
+            "—",
+            str(s["event_count"]),
+        )
+
+    # Show opencode-only sessions
+    for sid in sorted(oc_sessions):
+        if sid in shown:
+            continue
+        shown.add(sid)
+        table.add_row(
+            sid,
+            "[blue]opencode[/blue]",
+            "—",
+            "—",
+            "—",
+        )
+
+    console.print(table)
+
+
+def cmd_show(args: argparse.Namespace) -> None:
+    """Show merged timeline for a session.
+
+    Default output is a grouped operations summary.  Pass ``--verbose`` /
+    ``-v`` to render the full per-event timeline (original behaviour).
+    """
+    console = Console()
+
+    try:
+        timeline = build_timeline(
+            args.session_id,
+            include_children=getattr(args, "subsessions", False),
+        )
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+    if not timeline:
+        console.print("[yellow]No events found for this session.[/yellow]")
+        return
+
+    # Build child session stats for the panel
+    child_sessions_info = _collect_child_sessions_info(timeline, args.session_id)
+
+    stats = build_stats(timeline, child_sessions=child_sessions_info)
+
+    if args.verbose:
+        _render_session_panel(args.session_id, timeline, stats, console, compact=False)
+        _render_timeline_rich(timeline, console)
+    else:
+        _render_session_panel(args.session_id, timeline, stats, console, compact=True)
+
+        _render_ops_summary(timeline, stats, console, verbose=args.verbose)
+
+
+def cmd_export(args: argparse.Namespace) -> None:
+    """Export merged timeline as JSON trace (Jaeger or Chrome format)."""
+    console = Console()
+
+    try:
+        timeline = build_timeline(
+            args.session_id,
+            include_children=getattr(args, "subsessions", False),
+        )
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+    if not timeline:
+        console.print("[yellow]No events found for this session.[/yellow]")
+        return
+
+    if args.format == "chrome":
+        doc = build_chrome_trace(timeline)
+    else:
+        doc = build_jaeger_doc(args.session_id, timeline)
+
+    with open(args.output, "w", encoding="utf-8") as f:
+        json.dump(doc, f, indent=2, ensure_ascii=False)
+
+    if args.format == "chrome":
+        console.print(
+            f"[green]已导出 {len(doc)} 个 Chrome trace 事件到 {args.output}[/green]"
+        )
+    else:
+        span_count = len(doc.get("data", [{}])[0].get("spans", []))
+        console.print(
+            f"[green]已导出 {span_count} 个 span 到 {args.output}[/green]"
+        )
+
+
+# ── Main ────────────────────────────────────────────────────────────────
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="ZooKeeper trace — full orchestration trace with timeline merging.",
+    )
+    subparsers = parser.add_subparsers(dest="command", title="Commands")
+
+    # --- list ---
+    subparsers.add_parser("list", help="List all sessions from both log sources")
+
+    # --- show ---
+    p_show = subparsers.add_parser("show", help="Show merged timeline for a session")
+    p_show.add_argument("session_id", help="Session ID")
+    p_show.add_argument(
+        "-s",
+        "--subsessions",
+        action="store_true",
+        help="Include all child sessions in the timeline",
+    )
+    p_show.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Show full per-event timeline instead of grouped summary",
+    )
+
+    # --- export ---
+    p_export = subparsers.add_parser(
+        "export", help="Export merged timeline as JSON trace (Jaeger or Chrome)"
+    )
+    p_export.add_argument("session_id", help="Session ID")
+    p_export.add_argument(
+        "-s",
+        "--subsessions",
+        action="store_true",
+        help="Include all child sessions in the trace",
+    )
+    p_export.add_argument(
+        "--format",
+        choices=["jaeger", "chrome"],
+        default="jaeger",
+        help="导出格式 (default: jaeger)",
+    )
+    p_export.add_argument(
+        "-o",
+        "--output",
+        default="trace.json",
+        help="Output JSON file path (default: trace.json)",
+    )
+
+    args = parser.parse_args()
+
+    if args.command == "list":
+        cmd_list(args)
+    elif args.command == "show":
+        cmd_show(args)
+    elif args.command == "export":
+        cmd_export(args)
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
