@@ -48,6 +48,7 @@ let _retentionDays = DEFAULT_RETENTION_DAYS;
 const _buffer: Array<Record<string, unknown>> = [];
 let _flushTimer: ReturnType<typeof setInterval> | null = null;
 let _testLogPathOverride: string | null = null;
+let _logFilePath: string | null = null;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -100,8 +101,10 @@ function shouldLog(level: string): boolean {
  */
 function getLogFilePath(): string {
   if (_testLogPathOverride) return _testLogPathOverride;
+  if (_logFilePath) return _logFilePath;
   const sid = _sessionId || new Date().toISOString().replace(/[:.]/g, "").slice(0, 15);
-  return join(_logDir, `opencode-${sid}.log`);
+  _logFilePath = join(_logDir, `opencode-${sid}.log`);
+  return _logFilePath;
 }
 
 /**
@@ -179,6 +182,8 @@ function rotateLogFile(filePath: string): void {
  */
 function flushBuffer(): void {
   if (_buffer.length === 0) return;
+  // Only flush after sessionId is known.
+  if (!_sessionId && !_testLogPathOverride) return;
 
   const entries = _buffer.splice(0, _buffer.length);
   const filePath = getLogFilePath();
@@ -268,7 +273,7 @@ function startFlushTimer(): void {
 /**
  * Initialise the logger with a session ID and optional configuration.
  *
- * Must be called once before `log()` or `debug()`.  Sets up the log
+ * Must be called once before `log()`.  Sets up the log
  * directory, cleans old log files, and starts the flush timer.
  *
  * @param sessionId - The session identifier for the current run.
@@ -309,6 +314,8 @@ export function initLogger(
  */
 export function setSessionId(sid: string): void {
   _sessionId = sid;
+  // Flush any pre-sessionId entries that were buffered while waiting.
+  flushBuffer();
 }
 
 /**
@@ -322,17 +329,17 @@ export function setSessionId(sid: string): void {
  * @param sessionId - The current session identifier.
  * @param callId - Optional call identifier tied to the current tool
  *   execution, written as a fixed JSON field when present.
- * @param extra - Optional additional fields merged into the JSON line.
  * @param level - Log level: `"debug"`, `"info"`, `"warn"`, or `"error"`.
  *   Defaults to `"debug"`.
+ * @param extra - Optional additional fields merged into the JSON line.
  */
 export function log(
   hook: string,
   event: string,
   sessionId: string,
   callId?: string,
-  extra?: Record<string, unknown>,
   level?: string,
+  extra?: Record<string, unknown>,
 ): void {
   const lvl = level ?? "debug";
   if (!shouldLog(lvl)) return;
@@ -370,24 +377,6 @@ export function log(
   if (_buffer.length >= 50) {
     flushBuffer();
   }
-}
-
-/**
- * Backward-compatible debug logging.
- *
- * Delegates to `log()` with level `"debug"`.  The `tag` value is used for
- * both the `hook` and `event` fields.  The session ID is taken from the
- * module-level state set by `initLogger()`.
- *
- * @deprecated Use `log()` instead to obtain structured fields such as
- *   `callId` and explicit `event` names.
- *
- * @param tag - Short label identifying the calling hook
- *   (e.g. `"focus-reminder"`).
- * @param data - Optional structured data to include in the log entry.
- */
-export function debug(tag: string, data?: Record<string, unknown>): void {
-  log(tag, tag, _sessionId, undefined, data, "debug");
 }
 
 // ---------------------------------------------------------------------------
@@ -442,4 +431,5 @@ export function _resetForTesting(): void {
     _flushTimer = null;
   }
   _testLogPathOverride = null;
+  _logFilePath = null;
 }

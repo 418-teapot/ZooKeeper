@@ -7,7 +7,7 @@
  * @module
  */
 
-import { debug } from "../../utils/logger.js";
+import { log } from "../../utils/logger.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -83,33 +83,58 @@ export const JSON_ERROR_PATTERNS: RegExp[] = [
  * the reminder marker. If any JSON error pattern matches, the reminder is
  * appended to the output in place.
  *
- * @param input - Input containing the tool name.
+ * @param input - Input containing the tool name and optional identifiers.
  * @param input.tool - Name of the tool that was executed.
+ * @param input.sessionID - Optional session identifier for logging.
+ * @param input.callID - Optional call identifier for logging.
  * @param output - Output object mutated in place.
  * @param output.output - Text output from the tool call.
  */
 export function recoverJsonError(
-  input: { tool: string },
+  input: { tool: string; sessionID?: string; callID?: string },
   output: { output?: string },
 ): void {
   // Skip if tool is in exclude list
-  if (JSON_ERROR_TOOL_EXCLUDES.has(input.tool.toLowerCase())) return;
+  if (JSON_ERROR_TOOL_EXCLUDES.has(input.tool.toLowerCase())) {
+    log("json-error-nudge", "recovery_skipped", input.sessionID ?? "", input.callID, "debug", {
+      tool: input.tool,
+      reason: "excluded",
+    });
+    return;
+  }
 
   // Skip undefined/missing output
-  if (output.output == null) return;
+  if (output.output == null) {
+    log("json-error-nudge", "recovery_skipped", input.sessionID ?? "", input.callID, "debug", {
+      tool: input.tool,
+      reason: "no_output",
+    });
+    return;
+  }
 
   // Skip if output already contains the reminder marker (dedup)
-  if (output.output.includes(JSON_ERROR_REMINDER_MARKER)) return;
+  if (output.output.includes(JSON_ERROR_REMINDER_MARKER)) {
+    log("json-error-nudge", "recovery_skipped", input.sessionID ?? "", input.callID, "debug", {
+      tool: input.tool,
+      reason: "already_marked",
+    });
+    return;
+  }
 
   // Check each pattern
   for (const pattern of JSON_ERROR_PATTERNS) {
     if (pattern.test(output.output)) {
       output.output += `\n${JSON_ERROR_REMINDER}`;
-      debug("json-error-nudge", {
+      log("json-error-nudge", "recovery_injected", input.sessionID ?? "", input.callID, "info", {
         tool: input.tool,
         pattern: pattern.source,
       });
       return;
     }
   }
+
+  log("json-error-nudge", "recovery_skipped", input.sessionID ?? "", input.callID, "debug", {
+    tool: input.tool,
+    reason: "no_match",
+  });
 }

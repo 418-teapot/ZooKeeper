@@ -10,7 +10,7 @@
  */
 
 import { type Clientish, getAgentName } from "../utils/agent.js";
-import { debug } from "../../utils/logger.js";
+import { log } from "../../utils/logger.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -82,13 +82,23 @@ export async function injectFocusReminder(
   output: { messages?: MessageEntry[] },
 ): Promise<void> {
   const messages = output.messages;
-  if (!messages || messages.length === 0) return;
+  if (!messages || messages.length === 0) {
+    log("focus-reminder", "reminder_skipped", "", undefined, "debug", {
+      reason: "no_messages",
+    });
+    return;
+  }
 
   // Find the last user message
   const lastUserMsg = messages.findLast(
     (m: MessageEntry) => m.info.role === "user",
   );
-  if (!lastUserMsg) return;
+  if (!lastUserMsg) {
+    log("focus-reminder", "reminder_skipped", "", undefined, "debug", {
+      reason: "no_user_msg",
+    });
+    return;
+  }
 
   // Only fall back to client.getSession when info.agent is null/undefined
   // (empty string is treated as a known agent name, just not "build").
@@ -104,7 +114,12 @@ export async function injectFocusReminder(
   const agent = lastUserMsg.info.agent;
 
   // Only inject for the build agent
-  if (agent !== "build") return;
+  if (agent !== "build") {
+    log("focus-reminder", "reminder_skipped", lastUserMsg.info.sessionID ?? "", undefined, "debug", {
+      reason: agent === undefined || agent === null ? "agent_unknown" : "not_build",
+    });
+    return;
+  }
 
   // Ensure parts array exists
   if (!lastUserMsg.parts) {
@@ -113,8 +128,8 @@ export async function injectFocusReminder(
 
   lastUserMsg.parts.push({ type: "text", text: FOCUS_REMINDER });
 
-  debug("focus-reminder", {
+  log("focus-reminder", "reminder_injected", lastUserMsg.info.sessionID ?? lastUserMsg.info.id, undefined, "info", {
     agent,
-    sessionId: lastUserMsg.info.id,
+    message_id: lastUserMsg.info.id,
   });
 }

@@ -28,10 +28,12 @@ import {
   nudgeTaskOutput,
   validateBeforeExec,
 } from "./hooks/task-prompt";
-import { initLogger } from "./utils/logger.js";
+import { initLogger, log, setSessionId } from "./utils/logger.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CORE_DIR = resolve(__dirname, "../core");
+
+let _sessionIdSet = false;
 
 // ---------------------------------------------------------------------------
 // Prompt loading
@@ -90,11 +92,17 @@ export async function zookeeper(input: any) {
   return {
     async config(config: any) {
       const agents = config.agent ?? {};
+
+      log("plugin", "plugin_init", "", undefined, "info", {agents: Object.keys(agents), limits, skills: Object.keys(skillsConfig).filter(k => skillsConfig[k] !== "disable")});
+
       for (const [name, agent] of Object.entries(agents)) {
         if (typeof agent !== "object" || agent === null) continue;
 
         const prompt = loadPrompt(name);
-        if (prompt) (agent as any).prompt = prompt;
+        if (prompt) {
+          (agent as any).prompt = prompt;
+          log("plugin", "agent_loaded", "", undefined, "debug", {agent: name, prompt_len: prompt.length});
+        }
       }
 
       // Register each skill in core/skills/ individually, skipping disabled ones.
@@ -107,9 +115,20 @@ export async function zookeeper(input: any) {
           if (!statSync(skillPath).isDirectory()) continue;
           if (skillsConfig[entry] === "disable") continue;
           config.skills.paths.push(skillPath);
+          log("plugin", "skill_registered", "", undefined, "debug", {skill: entry});
         }
       } catch {
         // skills/ directory does not exist or is inaccessible — skip.
+      }
+    },
+
+    async "chat.params"(
+      input: { sessionID: string },
+      _output: Record<string, unknown>,
+    ) {
+      if (!_sessionIdSet && input.sessionID) {
+        setSessionId(input.sessionID);
+        _sessionIdSet = true;
       }
     },
 
@@ -129,8 +148,8 @@ export async function zookeeper(input: any) {
     ) {
       try {
         await injectFocusReminder(client, output);
-      } catch {
-        // Swallow errors so a reminder failure never disrupts the LLM turn.
+      } catch (err) {
+        log("plugin", "handler_crashed", output.messages?.[0]?.info?.sessionID ?? "", undefined, "error", {handler: "injectFocusReminder", error: String(err)});
       }
     },
 
@@ -157,18 +176,20 @@ export async function zookeeper(input: any) {
       },
       output: { output?: string },
     ) {
-      const handlers = [
-        (i: typeof input, o: typeof output) => nudgeTaskOutput(i, o, limits),
-        recoverJsonError,
-        (i: typeof input, o: typeof output) => nudgeDirectWork(client, i, o),
-        (i: typeof input, o: typeof output) => nudgePostTask(client, i, o),
-      ] as const;
-      for (const handler of handlers) {
+      const handlers: Array<{
+        name: string;
+        fn: (i: typeof input, o: typeof output) => void | Promise<void>;
+      }> = [
+        {name: "nudgeTaskOutput", fn: (i, o) => nudgeTaskOutput(i, o, limits)},
+        {name: "recoverJsonError", fn: (i, o) => { recoverJsonError(i, o); }},
+        {name: "nudgeDirectWork", fn: (i, o) => nudgeDirectWork(client, i, o)},
+        {name: "nudgePostTask", fn: (i, o) => nudgePostTask(client, i, o)},
+      ];
+      for (const {name, fn} of handlers) {
         try {
-          await handler(input, output);
-        } catch {
-          // Swallow per-handler errors so one failure does not
-          // prevent other handlers from running.
+          await fn(input, output);
+        } catch (err) {
+          log("plugin", "handler_crashed", input.sessionID, input.callID, "error", {handler: name, error: String(err)});
         }
       }
     },

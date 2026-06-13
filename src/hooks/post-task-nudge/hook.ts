@@ -9,7 +9,7 @@
  * @module
  */
 
-import { debug } from "../../utils/logger.js";
+import { log } from "../../utils/logger.js";
 import { TODO_FINAL_ACTIVE, TODO_GENERAL } from "../utils/prompts.js";
 import { getTodoState } from "../utils/todo-state.js";
 
@@ -105,7 +105,7 @@ export async function nudgePostTask(
       }
     | null
     | undefined,
-  input: { tool: string; sessionID: string },
+  input: { tool: string; sessionID: string; callID?: string },
   output: { output?: string },
 ): Promise<void> {
   // Skip non-task tools
@@ -132,7 +132,9 @@ export async function nudgePostTask(
     if (activeCount === 0) {
       // All completed / cancelled — VERIFY only
       output.output += suffix;
-      debug("post-task-nudge", { hasTodo: false });
+      log("post-task-nudge", "verify_injected", input.sessionID, input.callID, "info", {
+        todo_state: "none_active",
+      });
       return;
     }
 
@@ -142,8 +144,11 @@ export async function nudgePostTask(
     } else {
       suffix += `\n\n${TODO_GENERAL}`;
     }
-  } catch {
+  } catch (err) {
     // API failure: fallback to VERIFY + TODO_GENERAL
+    log("post-task-nudge", "todo_api_failed", input.sessionID, input.callID, "error", {
+      error: String(err),
+    });
     suffix += `\n\n${TODO_GENERAL}`;
   }
 
@@ -151,8 +156,7 @@ export async function nudgePostTask(
   const todoNudge = suffix.includes(TODO_FINAL_ACTIVE)
     ? "final_active"
     : "general";
-  debug("post-task-nudge", {
-    hasTodo: true,
-    nudge: todoNudge,
+  log("post-task-nudge", "verify_injected", input.sessionID, input.callID, "info", {
+    todo_state: todoNudge,
   });
 }
