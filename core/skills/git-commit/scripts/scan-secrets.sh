@@ -102,14 +102,16 @@ done
 # Build JSON
 JSON_FINDINGS="["
 FIRST=true
-for f in "${FINDINGS_ARR[@]}"; do
-  if [ "$FIRST" = true ]; then
-    FIRST=false
-  else
-    JSON_FINDINGS+=","
+if [ ${#FINDINGS_ARR[@]} -gt 0 ]; then
+    for f in "${FINDINGS_ARR[@]}"; do
+      if [ "$FIRST" = true ]; then
+        FIRST=false
+      else
+        JSON_FINDINGS+=","
+      fi
+      JSON_FINDINGS+="$f"
+    done
   fi
-  JSON_FINDINGS+="$f"
-done
 JSON_FINDINGS+="]"
 
 if [ "$SUSPICIOUS_FOUND" -eq 1 ]; then

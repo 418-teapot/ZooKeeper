@@ -28,7 +28,7 @@ fail()    { printf "${RED}✖ %s${NC}\n" "$1"; }
 FAILED=0
 
 section "Python static tests"
-if python3 -m pytest "$STATIC_TEST" -v; then
+if uv run pytest "$STATIC_TEST" -v; then
   ok "pytest test_static"
 else
   fail "pytest test_static"
@@ -37,7 +37,7 @@ fi
 
 section "Python runner dry-run"
 set +e
-python3 "$RUNNER" --dry-run 2>&1 | tee /tmp/runner_output.txt
+uv run python "$RUNNER" --dry-run 2>&1 | tee /tmp/runner_output.txt
 RUNNER_EXIT_CODE=${PIPESTATUS[0]}
 set -e
 

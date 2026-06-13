@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import sys
+import tomllib
 from datetime import datetime
 
 
@@ -77,10 +78,7 @@ def header(title: str) -> None:
 
 
 def parse_toml(filepath: str) -> dict:
-    """Parse a TOML file into a Python dictionary.
-
-    Supports sections, key=value pairs, and comment syntax.
-    Does NOT support arrays, inline tables, or multi-line strings.
+    """Parse a TOML file into a Python dictionary using the stdlib tomllib.
 
     Args:
         filepath: Path to the TOML file.
@@ -90,74 +88,10 @@ def parse_toml(filepath: str) -> dict:
 
     Raises:
         FileNotFoundError: Raised by open() when the file does not exist.
+        tomllib.TOMLDecodeError: If the file is not valid TOML.
     """
-    result: dict = {}
-    current: dict = result
-
-    with open(filepath, encoding="utf-8") as f:
-        for line in f:
-            if "#" in line:
-                line = line.split("#", 1)[0]
-            line = line.strip()
-            if not line:
-                continue
-
-            if line.startswith("[") and line.endswith("]"):
-                # Section: [foo.bar.baz] — supports quoted keys (e.g. [provider.Cambricon.models."glm-5.1"])
-                path = line[1:-1].strip()
-                parts = []
-                buf = []
-                in_quote = None
-                for ch in path:
-                    if ch in ('"', "'"):
-                        if in_quote is None:
-                            in_quote = ch
-                        elif ch == in_quote:
-                            in_quote = None
-                            continue
-                        else:
-                            buf.append(ch)
-                    elif ch == "." and in_quote is None:
-                        part = "".join(buf).strip().strip('"').strip("'")
-                        if part:
-                            parts.append(part)
-                        buf = []
-                    else:
-                        buf.append(ch)
-                part = "".join(buf).strip().strip('"').strip("'")
-                if part:
-                    parts.append(part)
-                current = result
-                for part in parts:
-                    if part not in current:
-                        current[part] = {}
-                    current = current[part]
-
-            elif "=" in line:
-                key, _, value = line.partition("=")
-                key = key.strip().strip('"').strip("'")
-                value = value.strip()
-
-                if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
-                    value = value[1:-1]
-                elif len(value) >= 2 and value[0] == "'" and value[-1] == "'":
-                    value = value[1:-1]
-                elif value.lower() == "true":
-                    value = True
-                elif value.lower() == "false":
-                    value = False
-                else:
-                    try:
-                        value = (
-                            float(value)
-                            if ("." in value or "e" in value.lower())
-                            else int(value)
-                        )
-                    except ValueError:
-                        pass
-                current[key] = value
-
-    return result
+    with open(filepath, "rb") as f:
+        return tomllib.load(f)
 
 
 def load_env_file(env_path: str) -> None:

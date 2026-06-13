@@ -6,7 +6,7 @@ All tests are zero-LLM-cost, pure file inspection.
 from pathlib import Path
 
 import pytest
-import tomli
+import tomllib
 
 # ── Paths ────────────────────────────────────────────────────────────────
 
@@ -40,13 +40,13 @@ MAX_PROMPT_TOKENS = 3000
 def _load_config() -> dict:
     """Parse and return the project config.toml."""
     with open(CONFIG_TOML, "rb") as f:
-        return tomli.load(f)
+        return tomllib.load(f)
 
 
 def _load_thresholds() -> dict:
     """Parse and return tests/thresholds.toml."""
     with open(THRESHOLDS_TOML, "rb") as f:
-        return tomli.load(f)
+        return tomllib.load(f)
 
 
 def _get_agent_names(config: dict | None = None) -> list[str]:

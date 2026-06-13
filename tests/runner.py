@@ -23,7 +23,7 @@ import tempfile
 import traceback
 from pathlib import Path
 
-import tomli
+import tomllib
 
 # Ensure ``tests/`` is on the module search path so that sibling modules
 # (session.py, assertions.py, report.py) can be imported without a package.
@@ -124,7 +124,7 @@ def _load_thresholds(path: Path) -> tuple[dict, bool]:
     if not path.exists():
         return {}, False
     with open(path, "rb") as f:
-        return tomli.load(f), True
+        return tomllib.load(f), True
 
 
 def _parse_threshold_entry(
@@ -273,11 +273,11 @@ def _load_scenario_toml(path: Path) -> dict:
         ``assertions``, and the raw ``_scenario_path``.
 
     Raises:
-        tomli.TOMLError: If the file is not valid TOML.
+        tomllib.TOMLDecodeError: If the file is not valid TOML.
         KeyError: If a required section or key is missing.
     """
     with open(path, "rb") as f:
-        data = tomli.load(f)
+        data = tomllib.load(f)
 
     scenario = data.get("scenario", {})
     user = data.get("user", {})
@@ -707,7 +707,7 @@ def main() -> None:
                 ),
             )
             all_scenarios.append((sp_path, None))
-        except tomli.TOMLError as exc:
+        except tomllib.TOMLDecodeError as exc:
             err_msg = f"TOML 解析错误 ({sp}): {exc}"
             print(err_msg, file=sys.stderr)
             reports.append(

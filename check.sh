@@ -28,14 +28,14 @@ section "Python ($MODE)"
 
 case "$MODE" in
   check)
-    ruff check --fix $PY_FILES && ok "ruff check" || { fail "ruff check"; FAILED=1; }
-    ruff format $PY_FILES      && ok "ruff format" || { fail "ruff format"; FAILED=1; }
+    uv run ruff check --fix $PY_FILES && ok "ruff check" || { fail "ruff check"; FAILED=1; }
+    uv run ruff format $PY_FILES      && ok "ruff format" || { fail "ruff format"; FAILED=1; }
     ;;
   lint)
-    ruff check $PY_FILES && ok "ruff check" || { fail "ruff check"; FAILED=1; }
+    uv run ruff check $PY_FILES && ok "ruff check" || { fail "ruff check"; FAILED=1; }
     ;;
   format)
-    ruff format $PY_FILES && ok "ruff format" || { fail "ruff format"; FAILED=1; }
+    uv run ruff format $PY_FILES && ok "ruff format" || { fail "ruff format"; FAILED=1; }
     ;;
 esac
 
