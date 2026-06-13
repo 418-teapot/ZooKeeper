@@ -1,12 +1,6 @@
 ---
 name: git-commit
-description: >
-  在任何 fit 提交操作中均可使用此技能 — 提交(commit)、修改(amend)或
-  暂存(staging)变更。触发器包括："commit"、"save my changes"、"checkpoint
-  my work"、"stage and commit" 或任何记录代码变更的请求。
-  使用5部分格式（CONTEXT/CHANGE/WHY/IMPACT）生成黄金标准提交，
-  包含密钥扫描和 lint 门控。
-  只要涉及 git 提交，就请积极使用此技能。
+description: 用于所有 git 提交操作（commit/amend/stage）。自动执行 diff 分析、安全扫描、lint 检查，并使用 5 部分格式（CONTEXT/CHANGE/WHY/IMPACT）生成标准提交。只要涉及 git 提交或任何记录代码变更的请求，就请加载此技能。
 ---
 
 # Git 提交技能
