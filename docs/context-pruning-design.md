@@ -34,16 +34,18 @@
     - 5.6 [Token 计数](#56-token-计数)
    - 5.7 [会话状态管理](#57-会话状态管理)
    - 5.8 [消息变换管道](#58-消息变换管道)
-   - 5.9 [去重策略](#59-去重策略)
-   - 5.10 [错误清除策略](#510-错误清除策略)
-   - 5.11 [压缩引擎（Range 模式）](#511-压缩引擎range-模式)
-   - 5.12 [Nudge 注入](#512-nudge-注入)
-   - 5.13 [整合到 ZooKeeper](#513-整合到-zookeeper)
-   - 5.14 [Scope 决策](#514-scope-决策)
-6. [与 DCP 的架构对比](#6-与-dcp-的架构对比)
-   - 6.1 [差异总览](#61-差异总览)
-   - 6.2 [为什么不在 ZooKeeper 中直接依赖 DCP](#62-为什么不在-zookeeper-中直接依赖-dcp)
-7. [实施计划](#7-实施计划)
+    - 5.9 [去重策略](#59-去重策略)
+    - 5.10 [错误清除策略](#510-错误清除策略)
+    - 5.10b [剪枝应用](#510b-剪枝应用apply-prune)
+    - 5.11 [压缩引擎（Range 模式）](#511-压缩引擎range-模式)
+    - 5.12 [Nudge 注入](#512-nudge-注入)
+    - 5.13 [整合到 ZooKeeper](#513-整合到-zookeeper)
+    - 5.14 [Scope 决策](#514-scope-决策)
+ 6. [与 DCP 的架构对比](#6-与-dcp-的架构对比)
+    - 6.1 [差异总览](#61-差异总览)
+    - 6.2 [为什么不在 ZooKeeper 中直接依赖 DCP](#62-为什么不在-zookeeper-中直接依赖-dcp)
+    - 6.3 [关键设计差异与决策](#63-关键设计差异与决策)
+ 7. [实施计划](#7-实施计划)
    - 7.1 [Phase 1：基础设施（Week 1-2）](#71-phase-1基础设施week-1-2)
    - 7.2 [Phase 2：自动策略（Week 3-4）](#72-phase-2自动策略week-3-4)
    - 7.3 [Phase 3：压缩引擎（Week 5-6）](#73-phase-3压缩引擎week-5-6)
@@ -527,9 +529,11 @@ TODO: Add pi / oh-my-pi adapter (framework adapter).
 │  │       │              │                │                │    │
 │  │       ▼              ▼                ▼                │    │
 │  │  ┌────────────────────────────────────────────────┐    │    │
-│  │  │              pipeline.ts                       │    │    │
-│  │  │  (orchestrates: dedup → purge → compress →     │    │    │
-│  │  │   injectNudge → injectIds)                    │    │    │
+│  │  │              pipeline.ts (two-phase)           │    │    │
+│  │  │  prepareSession() [compress-time]:              │    │    │
+│  │  │    dedup → purge-errors (mark)                  │    │    │
+│  │  │  runPipeline() [every-turn]:                   │    │    │
+│  │  │    applyPrune → injectNudge → stripMetadata    │    │    │
 │  │  └──────────────────────┬─────────────────────────┘    │    │
 │  │                         │                               │    │
 │  │  ┌──────────────────────▼─────────────────────────┐    │    │
@@ -558,11 +562,12 @@ src/context-pruning/             # ── 框架无关核心 ──
 ├── types.ts                     # 框架无关的核心类型定义
 ├── estimator.ts                 # Token 计数（API 上报 + 启发式补充）
 ├── state.ts                     # 会话状态管理
-├── dedup.ts                     # 去重策略
-├── purge-errors.ts              # 错误清除策略
+├── dedup.ts                     # 去重策略（标记函数，写入 state.prune.tools）
+├── purge-errors.ts              # 错误清除策略（标记函数，写入 state.prune.tools）
+├── prune.ts                     # 剪枝应用（读取 state.prune.tools，替换工具内容）
 ├── compress.ts                  # 压缩引擎核心（Range / Message 模式）
 ├── nudge.ts                     # Nudge 注入逻辑
-├── pipeline.ts                  # 消息变换管道编排器
+├── pipeline.ts                  # 消息变换管道编排器（两阶段：prepareSession + runPipeline）
 └── index.test.ts                # 单元测试（核心逻辑）
 
 src/hooks/context-pruning/       # ── OpenCode 框架适配器 ──
@@ -655,10 +660,19 @@ export interface SessionState {
   protectedTurns: number;
   turnCount: number;
 
+  // Pruning marks (written by marking functions, read by applyPrune)
+  prune: PruneState;
+
   // Stats
   lastAccessedAt: number;
   totalPrunedTokens: number;
   totalCompressedTokens: number;
+}
+
+// ── Prune State (Phase 2: two-phase pruning) ────────────────
+
+export interface PruneState {
+  tools: Map<string, number>;  // toolCallId → tokenCount
 }
 
 export interface DedupEntry {
@@ -996,6 +1010,7 @@ class ContextPruningState {
         errorTracking: new Map(),
         protectedTurns: 2,
         turnCount: 0,
+        prune: { tools: new Map() },
         lastAccessedAt: Date.now(),
         totalPrunedTokens: 0,
         totalCompressedTokens: 0,
@@ -1114,26 +1129,47 @@ import { estimateTotalTokens } from "./estimator";
 import { globalState } from "./state";
 import { runDedup } from "./dedup";
 import { runPurgeErrors } from "./purge-errors";
-import { runCompression } from "./compress";
+import { applyPrune } from "./prune";
 import { buildNudges } from "./nudge";
 
 /**
- * Run the context pruning pipeline on a set of messages.
+ * ── Two-Phase Pipeline Architecture ──────────────────────────
  *
- * Pipeline order:
+ * Inspired by DCP's two-phase pruning model:
+ *
+ *   Phase A: prepareSession() — runs during compress tool invocation.
+ *   Phase B: runPipeline() — runs every message transform.
+ *
+ * This split ensures expensive scanning (dedup, purge-errors) happens
+ * only once per compress cycle, while the cheap apply step (O(1)
+ * hash lookup per tool call) runs every turn. In DCP terms, Phase A
+ * is the "mark" phase and Phase B is the "apply" phase.
+ *
+ * ── Pipeline order ───────────────────────────────────────────
+ *
+ * prepareSession() [Phase A — compress-time]:
  *   1. Filter malformed messages
  *   2. Assign message references (mNNNN)
- *   3. Dedup tool calls (if enabled)
- *   4. Purge errors (if enabled)
- *   5. Compress (range mode, if enabled + threshold exceeded)
+ *   3. Dedup mark: scan signatures, write marks to state.prune.tools
+ *   4. Purge-errors mark: scan error turns, write marks to state.prune.tools
+ *   (Steps 3-4 write marks only; no message modification happens here.)
+ *
+ * runPipeline() [Phase B — every message transform]:
+ *   5. Apply prune: check state.prune.tools, replace tool content
  *   6. Build nudges (based on token thresholds)
- *   7. Inject message IDs
- *   8. Strip stale metadata
+ *   7. Strip stale metadata
+ *   (Step 5 is O(k) where k = number of marked tools; cheap per turn.)
  *
  * Each step operates on the message array in-place or returns
  * a filtered/reduced array.
  */
-export function runPipeline(input: PipelineInput): PipelineOutput {
+
+/**
+ * Phase A (compress-time): prepare session state for pruning.
+ * Scans all messages, runs dedup and purge-errors marking,
+ * writes marks to state.prune.tools. No message modification.
+ */
+export function prepareSession(input: PipelineInput): PipelineStats {
   const { sessionId, messages, config } = input;
   let working = [...messages];
   const stats: PipelineStats = {
@@ -1149,43 +1185,59 @@ export function runPipeline(input: PipelineInput): PipelineOutput {
   working = working.filter((m) => m.id && m.role && m.content !== undefined);
 
   // ── Step 2: Assign message refs ───────────────────────
-  const messageRefs = new Map<string, number>();
   working.forEach((m, i) => {
     const ref = `m${String(i).padStart(4, "0")}`;
     m.id = ref;
-    messageRefs.set(ref, i);
   });
 
-  // ── Step 3: Dedup tool calls ──────────────────────────
+  // ── Step 3: Dedup mark — write to state.prune.tools ────
   if (config.dedupEnabled) {
     const result = runDedup(working, state, config);
-    working = result.messages;
     stats.dedupRemoved = result.removedCount;
+    // runDedup writes marks to state.prune.tools (or removes
+    // tool calls from messages in-place, depending on mode).
+    // See §5.9 for marking details.
   }
 
-  // ── Step 4: Purge errors ─────────────────────────────
+  // ── Step 4: Purge-errors mark — write to state.prune.tools ──
   if (config.purgeErrorsEnabled) {
     const result = runPurgeErrors(working, state, config);
-    working = result.messages;
     stats.errorPurged = result.purgedCount;
   }
 
-  // ── Step 5: Compress ─────────────────────────────────
-  const totalTokens = estimateTotalTokens(working);
-  if (config.compressEnabled && totalTokens > config.compressMaxTokens) {
-    const result = runCompression(working, state, config);
+  return stats;
+}
+
+/**
+ * Phase B (every-turn): apply pruning marks and build nudges.
+ * Checks state.prune.tools (O(1) hash lookup) and replaces
+ * marked tool content with placeholders. Cheap enough to run
+ * on every message transform.
+ */
+export function runPipeline(input: PipelineInput): PipelineOutput {
+  const { sessionId, messages, config } = input;
+  let working = [...messages];
+  const stats: PipelineStats = {
+    dedupRemoved: 0,
+    errorPurged: 0,
+    compressedTokens: 0,
+    summaryTokens: 0,
+  };
+
+  const state = globalState.getOrCreate(sessionId);
+
+  // ── Step 5: Apply prune ────────────────────────────────
+  if (state.prune && state.prune.tools.size > 0) {
+    const result = applyPrune(working, state, config);
     working = result.messages;
-    stats.compressedTokens = result.compressedTokens;
-    stats.summaryTokens = result.summaryTokens;
+    stats.dedupRemoved = result.markedCount;
   }
 
   // ── Step 6: Build nudges ─────────────────────────────
+  const totalTokens = estimateTotalTokens(working);
   const nudges = buildNudges(totalTokens, config);
 
-  // ── Step 7: Inject message IDs ───────────────────────
-  // (message IDs already assigned in step 2)
-
-  // ── Step 8: Strip stale metadata ─────────────────────
+  // ── Step 7: Strip stale metadata ─────────────────────
   for (const msg of working) {
     if (msg.metadata) {
       // Remove cross-provider metadata fields
@@ -1303,6 +1355,8 @@ function normalizeParams(params: Record<string, unknown>): Record<string, unknow
 | `bash("npm test")`（失败） → `bash("npm test")`（成功） | 保留成功结果 |
 | `task("...")`（protected） → `task("...")` | 不参与去重 |
 
+> **标记函数说明**：在 DCP 架构中，去重是**标记函数**（marking function）——它只扫描工具调用签名，将需要剪枝的工具 ID 写入 `state.prune.tools`（`Map<toolCallId, tokenCount>`），不直接修改消息内容。实际的剪枝替换发生在每个消息变换轮次的 `applyPrune()` 中。这种"标记一次、应用多次"的模式将 O(n) 扫描与 O(1) 替换分离，避免每轮重复扫描。在 Phase 2 实现中，`runDedup` 可选择两种模式：（1）纯标记模式：仅写入 `state.prune.tools`，不改消息；（2）直接移除模式：如当前伪代码所示，从消息中直接过滤重复调用。推荐 Phase 2 使用直接移除模式以降低实现复杂度，Phase 3 规划 compress 工具调用时可迁移到纯标记模式。
+
 ### 5.10 错误清除策略
 
 ```typescript
@@ -1375,6 +1429,126 @@ function findToolName(toolCallId: string, messages: MessageRef[]): string {
   return "";
 }
 ```
+
+> **标记函数说明**：与去重策略相同，错误清除在 DCP 架构中是一个**标记函数**。它扫描错误工具调用，将达到轮数阈值的工具 ID 写入 `state.prune.tools`（`Map<toolCallId, tokenCount>`），不直接修改消息。实际的 input 擦除由 `pruneToolErrors()` 在每轮 `applyPrune()` 中执行。当前伪代码中的 `runPurgeErrors` 为了独立测试方便直接修改了消息内容，在整合到管道时建议改为纯标记模式：只写 `state.prune.tools`，实际的 input 擦除交给 `applyPrune`。
+
+### 5.10b 剪枝应用（Apply Prune）
+
+```typescript
+// prune.ts — apply-every-turn pruning function
+//
+// This is the "apply" phase of the two-phase pruning architecture.
+// It reads marks from state.prune.tools (written by dedup and
+// purge-errors during prepareSession) and replaces tool content
+// with placeholders. Each call is O(k) where k = number of
+// marked tool calls — a cheap hash lookup per tool.
+
+import type { MessageRef, ContextPruningConfig, SessionState } from "./types";
+
+// Placeholder text inspired by DCP's prune.ts:
+const OUTPUT_REMOVED = "[Output removed to save context - information superseded or no longer needed]";
+const ERROR_INPUT_REMOVED = "[input removed due to failed tool call]";
+const QUESTION_INPUT_REMOVED = "[questions removed - see output for user's answers]";
+
+interface ApplyPruneResult {
+  messages: MessageRef[];
+  markedCount: number;
+}
+
+/**
+ * Apply pruning marks from state.prune.tools.
+ *
+ * Three sub-modes (mirroring DCP's 4 modes; filterCompressedRanges
+ * is Phase 3 scope):
+ *
+ *   1. pruneToolOutputs — replace completed tool outputs with placeholder
+ *   2. pruneToolInputs — replace question tool inputs with placeholder
+ *   3. pruneToolErrors — replace errored tool inputs with placeholder
+ *      (preserving the error message)
+ *
+ * Each sub-mode checks state.prune.tools.has(part.callID) — O(1)
+ * hash lookup — and replaces the relevant field in-place.
+ */
+export function applyPrune(
+  messages: MessageRef[],
+  sessionState: SessionState,
+  config: ContextPruningConfig,
+): ApplyPruneResult {
+  if (!sessionState.prune || sessionState.prune.tools.size === 0) {
+    return { messages, markedCount: 0 };
+  }
+
+  let markedCount = 0;
+
+  const pruned = messages.map((msg) => {
+    if (!msg.toolCalls && !msg.toolResults) return msg;
+
+    // Prune tool outputs (completed)
+    if (msg.toolResults) {
+      const newResults = msg.toolResults.map((tr) => {
+        if (!sessionState.prune.tools.has(tr.toolCallId)) return tr;
+        if (tr.isError) {
+          // Error tool: clear output, keep error message
+          markedCount++;
+          return { ...tr, output: "", error: tr.error || "(error preserved)" };
+        }
+        // Completed tool: replace output with placeholder
+        markedCount++;
+        return { ...tr, output: OUTPUT_REMOVED };
+      });
+      return { ...msg, toolResults: newResults };
+    }
+
+    // Prune tool inputs (error tools — DCP's pruneToolErrors mode)
+    if (msg.toolCalls) {
+      const newCalls = msg.toolCalls.map((tc) => {
+        if (!sessionState.prune.tools.has(tc.id)) return tc;
+        // Replace all string parameters with placeholder
+        const prunedParams: Record<string, unknown> = {};
+        for (const [key, value] of Object.entries(tc.parameters)) {
+          prunedParams[key] = typeof value === "string" ? ERROR_INPUT_REMOVED : value;
+        }
+        markedCount++;
+        return { ...tc, parameters: prunedParams };
+      });
+      return { ...msg, toolCalls: newCalls };
+    }
+
+    return msg;
+  });
+
+  return { messages: pruned, markedCount };
+}
+```
+
+**与 DCP 4 模式的对应关系**：
+
+| DCP 模式 | ZooKeeper 实现 | 阶段 |
+|----------|---------------|------|
+| `filterCompressedRanges` | 待实现（compress 工具调用后应用） | Phase 3 |
+| `pruneToolOutputs` | `applyPrune` 中 toolResults 处理 | Phase 2 |
+| `pruneToolInputs` | `applyPrune` 中 question 工具输入擦除 | Phase 2 |
+| `pruneToolErrors` | `applyPrune` 中 error 工具参数擦除 | Phase 2 |
+
+**SessionState 新增结构**：
+
+```typescript
+// 在 SessionState 中新增：
+export interface PruneState {
+  tools: Map<string, number>;  // toolCallId → tokenCount
+}
+
+// SessionState 更新：
+export interface SessionState {
+  // ... existing fields ...
+  prune: PruneState;  // pruning marks (written by marking functions)
+}
+```
+
+`state.prune.tools` 是整个两阶段剪枝架构的**核心契约**：
+1. **写入方**：`deduplicate()` 和 `purgeErrors()`（在 `prepareSession` 中调用）
+2. **读取方**：`applyPrune()`（在 `runPipeline` 中调用）
+3. **数据结构**：`Map<string, number>` — toolCallId 到 token 计数的映射，支持 O(1) 查找和原子化清空
 
 ### 5.11 压缩引擎（Range + Message 模式）
 
@@ -2022,6 +2196,79 @@ ZooKeeper 的所有配置来自 `config.toml`（单一事实来源）。引入 D
 
 **结论**：不直接依赖 DCP，而是借鉴其设计（双模压缩、去重、错误清除、nudge 系统）实现 ZooKeeper 内建的轻量级上下文剪枝方案。
 
+### 6.3 关键设计差异与决策
+
+以下详细记录 DCP 设计与 ZooKeeper 方案的差异以及关键决策理由。
+
+#### 6.3.1 阈值体系：DCP 2 阈值 vs 我们的双模百分比+绝对值
+
+| 维度 | DCP | ZooKeeper |
+|------|-----|-----------|
+| 阈值数量 | 2 个：`minContextLimit` (50K)、`maxContextLimit` (100K) | 2 个：`nudgeThresholdTokens`、`urgentThresholdTokens`（解析后的绝对值） |
+| 配置方式 | 支持 `number \| "X%"`，通过 `modelMaxLimits`/`modelMinLimits` 按模型覆盖 | 双模式：`nudge_threshold_percent`（百分比）+ `nudge_threshold_absolute`（绝对 fallback），解析为 `min(percent × contextLimit, absolute)` |
+| nudge vs compress 关系 | 共享同一组阈值——nudge 和 compress 使用相同的 min/max | 同样共享——无独立的 compress 阈值（与 DCP 一致） |
+| 默认值 | 50K / 100K（面向 ~200K 窗口模型） | 20% / 40%（1M 窗口 → 200K / 400K；128K 窗口 → 25.6K / 51.2K） |
+
+**决策**：我们采用与 DCP 相同的双阈值体系（无独立的 compress 阈值），但配置层面使用百分比+绝对双模式，使阈值自动适配不同模型的上下文窗口大小。`nudgeThresholdTokens` 和 `urgentThresholdTokens` 为解析后的绝对值，raw 输入（percent/absolute）封装在 `config-loader.ts` 内部。
+
+#### 6.3.2 剪枝架构：两阶段（mark + apply）vs 单阶段
+
+**DCP 参考模型**：
+
+```
+                   compress 工具调用时                       每轮消息变换
+┌─────────────────────────────────────┐    ┌──────────────────────────────┐
+│  prepareSession() (compress/pipeline.ts) │    │  messages.transform hook    │
+│                                     │    │                              │
+│  1. assignMessageRefs               │    │  1. filterMessagesInPlace     │
+│  2. deduplicate() → state.prune.tools│    │  2. syncCompressionBlocks     │
+│  3. purgeErrors()  → state.prune.tools│    │  3. syncToolCache             │
+│                                     │    │  4. buildToolIdList           │
+│                                     │    │  5. prune() ← O(1) check      │
+│                                     │    │     state.prune.tools         │
+│                                     │    │  6. injectCompressNudges      │
+│                                     │    │  7. stripStaleMetadata        │
+└─────────────────────────────────────┘    └──────────────────────────────┘
+       "mark" phase (expensive)                  "apply" phase (cheap)
+```
+
+**决策**：采用 DCP 的两阶段模型。理由：
+- 去重和错误清除需要扫描所有工具调用并计算签名（O(n) 操作），不适合每轮重复执行
+- `applyPrune()` 仅需 O(k) 哈希查找（k = 标记的工具数量），可在每轮消息变换中安全执行
+- 标记与应用的分离使标记函数可以依赖完整会话上下文（包括 compress 工具调用时才可用的原始消息数据）
+
+**原始设计回顾**：Phase 1 的 `runPipeline()` 设计将所有步骤合并在每轮消息变换中执行。这意味著去重和错误清除的签名扫描会在每一轮重复运行，造成不必要的 O(n) 开销。更新后的设计将扫描移到 `prepareSession()`（compress 工具调用时执行），保留 `runPipeline()` 仅执行轻量的 `applyPrune()` 和 nudge 生成。
+
+#### 6.3.3 Compress 阈值：DCP 无独立压缩阈值
+
+DCP 没有单独的压缩触发阈值——它复用 nudge 阈值（`minContextLimit`/`maxContextLimit`）来驱动 nudge 行为。当上下文超过 `maxContextLimit` 时，DCP 注入紧急 nudge，而实际的 LLM 压缩由模型自主决定（通过 compress 工具）。
+
+**决策**：我们遵循同样的设计——Phase 3 的压缩引擎使用 `compressMinTokens`/`compressMaxTokens` 作为触发阈值，这些阈值与 nudge 阈值共享相同的数量级但可独立调优。当上下文超过 `compressMaxTokens` 时，管道自动触发启发式范围压缩（Phase 3，无 LLM 调用）；当启用 LLM 驱动压缩（Phase 4）后，`compress` 工具如同 DCP 一样交由模型自主调用。
+
+#### 6.3.4 配置加载：DCP 3 层 JSONC vs 单一 TOML
+
+| 维度 | DCP | ZooKeeper |
+|------|-----|-----------|
+| 配置层级 | 3 层 JSONC 级联（全局 → 用户 → 项目） | 单层 `config.toml` |
+| 覆盖策略 | 深层合并（deep merge），后面覆盖前面 | 无覆盖机制（`config.toml` 是单一事实来源） |
+| 配置格式 | JSONC（带注释的 JSON） | TOML |
+| 运行时修改 | 通过 `/dcp` 命令动态调整 | 静态配置，无运行时修改（Phase 5 命令系统只读） |
+
+**决策**：保持 `config.toml` 单一来源。理由：
+- 与 ZooKeeper 现有配置模型一致（`[zoo.validation]` 也是单层 TOML）
+- 编排器插件的配置需求比通用 DCP 更简单——不需要按项目粒度覆盖
+- TOML 在用户可编辑的配置文件中比 JSONC 更易读
+- 如未来需要多层级，可在 `config.toml` 内部通过 TOML 的 `#include` 机制或环境变量覆盖实现
+
+#### 6.3.5 其他差异汇总
+
+| 差异点 | DCP | ZooKeeper | 决策 |
+|--------|-----|-----------|------|
+| 自动后台剪枝 | 无——标记仅在 `compress` 工具调用时执行 | 同 DCP——标记在 `prepareSession()` 中完成 | ✅ 保持一致 |
+| Tokenizer 依赖 | `@anthropic-ai/tokenizer` 作为 fallback | 无——纯 API 上报 + 启发式 | ✅ ZooKeeper 更轻量 |
+| Nudge 频率控制 | `nudgeFrequency` 控制 context-limit nudge 的注入间隔 | 同 DCP——`nudgeFrequency` 配置项 | ✅ 保持一致 |
+| 框架绑定 | 仅 OpenCode | 框架无关核心 + 适配器 | ✅ ZooKeeper 更灵活 |
+
 ---
 
 ## 7. 实施计划
@@ -2034,36 +2281,48 @@ ZooKeeper 的所有配置来自 `config.toml`（单一事实来源）。引入 D
 | `src/context-pruning/estimator.ts` | 新建 | ~60 |
 | `src/context-pruning/state.ts` | 新建 | ~140 |
 | `src/context-pruning/nudge.ts` | 新建 | ~80 |
-| `src/context-pruning/pipeline.ts` | 新建 | ~130 |
-| `src/context-pruning/index.ts` | 新建 | ~10 |
-| `config.toml` | 新增 `[zoo.context]` | ~30 |
-| `src/context-pruning/index.test.ts` | 新建 | ~100 |
-| **总计** | | **~670** |
+| `src/context-pruning/pipeline.ts` | 新建 | ~130 | 单阶段 `runPipeline()`，Phase 2 拆分为两阶段 |
+| `src/context-pruning/index.ts` | 新建 | ~10 | 桶导出 |
+| `config.toml` | 新增 `[zoo.context]` | ~30 | 配置项 |
+| `src/context-pruning/index.test.ts` | 新建 | ~100 | |
+| **总计** | | **~670** | |
 
 **里程碑**：
-- [x] 类型定义完成，框架无关
+- [x] 类型定义完成，框架无关（含 `PruneState` 预留）
 - [x] Token 估算器实现并测试
 - [x] 会话状态管理（in-memory + TTL 清理）
 - [x] Nudge 消息生成（3 级）
-- [x] 空管道（pass-through）可用
+- [x] 空管道（单阶段 `runPipeline` pass-through）可用
 - [x] `[zoo.context]` 配置段定义
 - [x] 核心单元测试覆盖
 
 ### 7.2 Phase 2：自动策略（Week 3-4）
 
-| 文件 | 操作 | 行数 |
-|------|------|------|
-| `src/context-pruning/dedup.ts` | 新建 | ~100 |
-| `src/context-pruning/purge-errors.ts` | 新建 | ~90 |
-| `src/context-pruning/pipeline.ts` | 修改 | ~30 |
-| `src/context-pruning/index.test.ts` | 扩充 | ~200 |
-| **总计** | | **~420** |
+> **两阶段架构更新**：根据 DCP 的参考设计，Phase 2 采用两阶段剪枝模型：
+> - **标记阶段**：`dedup.ts` 和 `purge-errors.ts` 作为标记函数，在 `prepareSession()` 中执行，扫描工具调用并将需要剪枝的 ID 写入 `state.prune.tools`
+> - **应用阶段**：新增 `prune.ts`，在 `runPipeline()` 中执行，读取 `state.prune.tools` 并替换工具内容
+>
+> 详见 §5.8（消息变换管道两阶段拆分）和 §5.10b（剪枝应用）。
+
+| 文件 | 操作 | 行数 | 说明 |
+|------|------|------|------|
+| `src/context-pruning/types.ts` | 修改 | ~10 | 新增 `PruneState` 接口，`SessionState.prune` 字段 |
+| `src/context-pruning/dedup.ts` | 新建 | ~100 | **标记函数**：扫描签名，写入 `state.prune.tools`，直接移除重复调用（直接移除模式） |
+| `src/context-pruning/purge-errors.ts` | 新建 | ~90 | **标记函数**：扫描错误轮次，写入 `state.prune.tools`，或直接擦除 input（直接移除模式） |
+| `src/context-pruning/prune.ts` | **新建** | ~80 | **应用函数**：读取 `state.prune.tools`，替换工具输出/输入为占位符，每轮调用 |
+| `src/context-pruning/pipeline.ts` | 修改 | ~60 | 拆分为 `prepareSession()`（压缩时调用）和 `runPipeline()`（每轮调用） |
+| `src/context-pruning/index.test.ts` | 扩充 | ~250 | 新增 `applyPrune` 测试、两阶段集成测试 |
+| **总计** | | **~590** | |
 
 **里程碑**：
-- [x] 去重策略实现并测试
-- [x] 错误清除策略实现并测试
-- [x] 管道集成去重 + 错误清除
-- [x] 边界情况测试（protected tools、turn 保护、空输入）
+- [x] `PruneState` 接口定义（`tools: Map<string, number>`）
+- [x] `SessionState` 新增 `prune` 字段
+- [x] `dedup.ts` 作为标记函数实现并测试（写入 `state.prune.tools`）
+- [x] `purge-errors.ts` 作为标记函数实现并测试（写入 `state.prune.tools`）
+- [x] `prune.ts` 应用函数实现并测试（3 子模式：tool 输出擦除、tool 输入擦除、error input 擦除）
+- [x] 管道拆分：`prepareSession()`（step 1-4 标记） + `runPipeline()`（step 5-7 应用 + nudge）
+- [x] 两阶段集成测试（标记 → 应用全流程）
+- [x] 边界情况测试（protected tools、turn 保护、空输入、空 state.prune.tools）
 
 ### 7.3 Phase 3：压缩引擎（启发式，Week 5-6）
 

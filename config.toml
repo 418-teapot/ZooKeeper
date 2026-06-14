@@ -127,6 +127,15 @@ grep = "deny"
 model       = "{env:ZOO_MODEL}"
 small_model = "{env:ZOO_SMALL_MODEL}"
 
+# ── Compaction ────────────────────────────────────────────────────────────
+# OpenCode 内置压缩（V1 层 —— 工具输出剪枝 + overflow 检测）
+# V2 层 LLM 摘要压缩始终自动运行，不受此段控制。
+
+[compaction]
+auto = true           # 启用自动压缩（默认 true）
+prune = true          # 启用工具输出剪枝（默认 false，需手动开）
+tail_turns = 2        # 压缩时保留最近 N 轮交互
+
 # ── Validation ──────────────────────────────────────────────────────────────
 
 [zoo.validation]
@@ -151,3 +160,65 @@ retention_days = 7
 
 [zoo.skills]
 git-commit = "enable"
+
+# ── Context Pruning ─────────────────────────────────────────────────────────
+# 控制 ZooKeeper 内置的上下文剪枝行为。
+# 每个字段都有默认值，可选择性覆盖。
+
+[zoo.context]
+enabled = true
+
+# Token 计数：优先使用 API 上报的精确数据，仅在新增 in-progress 消息时回退启发式
+# 阈值 = min(百分比 × 模型窗口, 绝对上限)。任一缺失则用另一值。
+nudge_threshold_percent = 20       # 模型上下文窗口的百分比（1M → 200K）
+urgent_threshold_percent = 40      # 模型上下文窗口的百分比（1M → 400K）
+nudge_threshold_absolute = 200000  # 绝对 token 上限（百分比未知时的 fallback）
+urgent_threshold_absolute = 400000 # 绝对 token 上限
+
+# 自动策略
+dedup_enabled = false               # 去重（暂时关闭，待实现）
+purge_errors_enabled = false        # 清除错误工具输入（暂时关闭，待实现）
+purge_errors_turns = 3              # 错误清除前的等待轮数
+
+# 压缩（启发式范围压缩，无需 LLM 调用）
+compress_enabled = false            # 压缩（暂时关闭，待实现）
+compress_mode = "range"             # "range" | "message"
+compress_nudge_frequency = 5        # nudge 注入间隔（降低频率，减少干扰）
+
+# LLM 驱动压缩
+compress_llm_enabled = false        # 注册 compress 工具供模型调用
+compress_message_mode_enabled = false # 启用 Message 模式（单消息粒度的 LLM 压缩）
+
+# 命令系统
+commands_enabled = false            # 启用 /context、/stats、/sweep 等命令
+
+# 跨会话持久化
+persist_state = false               # 会话状态持久化（暂时关闭，待实现）
+
+# 保护规则 — 以下列表中的工具永不参与剪枝
+protected_tools = [
+  "task",
+  "skill",
+  "question",
+  "todowrite",
+  "todoread",
+]
+
+# 用户消息保护
+protect_user_messages = true
+
+# 最近 N 轮用户交互受保护（不参与压缩/剪枝）
+turn_protection = 2
+
+# 去重保护 — 列表中工具不参与去重
+dedup_protected_tools = [
+  "task",
+  "skill",
+  "read",
+]
+
+# 错误清除保护 — 列表中工具的错误不参与清除
+purge_errors_protected_tools = [
+  "task",
+  "skill",
+]

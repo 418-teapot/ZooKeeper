@@ -1,7 +1,22 @@
+# Dependencies
 node_modules/
-dist/
+
+# Python
 __pycache__/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Environment
 .env
+
+# Build output
+dist/
+
+# Test artifacts
 *.jsonl
-opencode.json
 tests/results/
+.coverage
+
+# Generated config (installed to ~/.config/opencode/opencode.json)
+opencode.json

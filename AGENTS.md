@@ -84,7 +84,7 @@ ZooKeeper/
 ## 关键文件
 
 - **`install.py`** — 安装脚本入口，读取 config.toml + .env → 生成 OpenCode 配置
-- **`config.toml`** — 用户配置模板（单一事实来源），所有 deny 权限和 agent 配置在此声明，`[zoo.validation]` 阈值由 TS 插件在运行时直接读取
+- **`config.toml`** — 用户配置模板（单一事实来源），所有 deny 权限和 agent 配置在此声明，`[zoo.validation]` 阈值由 TS 插件在运行时直接读取。OpenCode 完整 config 字段参考：https://opencode.ai/config.json
 - **`src/index.ts`** — 插件入口，导出 `config` hook 动态注入 prompt + 任务 prompt 校验
 - **`core/prompts/*.md`** — 各 agent 的 prompt 文件，按 `{agent-name}.md` 命名
 
