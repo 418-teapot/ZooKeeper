@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Any
 
 from _db import query_db_messages
-from _parser import parse_opencode_line
+from _parser import _get_zoo_log_dir, parse_opencode_line
 
 
 def _normalize_timestamp(ts: str) -> str:
@@ -24,65 +24,6 @@ def _normalize_timestamp(ts: str) -> str:
         return dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     except (ValueError, AttributeError):
         return ts
-
-
-def discover_child_sessions(
-    session_id: str,
-    opencode_path: str,
-) -> list[tuple[str, int]]:
-    """Discover all child sessions that have *session_id* as an ancestor.
-
-    Parses ``message=created`` lines in the opencode log to build a
-    ``parentID → [child IDs]`` map, then BFS-traverses from
-    *session_id* to collect all descendants.
-
-    Args:
-        session_id: Root session ID to start discovery from.
-        opencode_path: Path to the opencode log file.
-
-    Returns:
-        List of ``(sid, depth)`` tuples including the root session
-        (depth 0), direct children (depth 1), grandchildren (depth 2),
-        etc., in BFS order (root first).
-    """
-    if not os.path.isfile(opencode_path):
-        return [(session_id, 0)]
-
-    # Build parent → children map from message=created lines
-    children: dict[str, list[str]] = defaultdict(list)
-
-    with open(opencode_path, "r", encoding="utf-8") as f:
-        for line in f:
-            entry = parse_opencode_line(line)
-            if entry is None:
-                continue
-
-            if entry.get("message") != "created":
-                continue
-
-            eid = entry.get("id", "")
-            if not eid:
-                continue
-
-            pid = entry.get("parentID", "") or entry.get("parent_id", "")
-            if pid and pid != "undefined":
-                children[pid].append(eid)
-
-    # BFS from root session_id
-    result: list[tuple[str, int]] = [(session_id, 0)]
-    queue: deque[tuple[str, int]] = deque([(session_id, 0)])
-    visited: set[str] = {session_id}
-
-    while queue:
-        current, depth = queue.popleft()
-        for child in children.get(current, []):
-            if child not in visited:
-                visited.add(child)
-                entry = (child, depth + 1)
-                result.append(entry)
-                queue.append(entry)
-
-    return result
 
 
 def _tool_type_and_icon(permission: str) -> tuple[str, str]:
@@ -322,54 +263,6 @@ def _classify_zoo(entry: dict) -> dict | None:
     }
 
 
-def _parse_opencode_for_session(
-    path: str,
-    session_id: str,
-) -> list[dict]:
-    """Parse opencode log, filtering entries for a specific session.
-
-    Handles ``message=evaluated`` lines that lack ``session.id`` by
-    using the ``run → session_id`` mapping from ``message=created``
-    lines.
-
-    Args:
-        path: Path to the opencode log file.
-        session_id: Target session ID to filter for.
-
-    Returns:
-        List of parsed entry dicts for the given session.
-    """
-    if not os.path.isfile(path):
-        raise FileNotFoundError(f"Log file not found: {path}")
-
-    run_to_session: dict[str, str] = {}
-    events: list[dict] = []
-
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            entry = parse_opencode_line(line)
-            if entry is None:
-                continue
-
-            # Build run → session_id mapping from 'created' lines
-            if (
-                entry.get("message") == "created"
-                and entry.get("id")
-                and entry.get("run")
-            ):
-                run_to_session[entry["run"]] = entry["id"]
-
-            # Filter: direct session_id/id match or run-based match
-            if entry.get("session_id") == session_id:
-                events.append(entry)
-            elif entry.get("id") == session_id:
-                events.append(entry)
-            elif entry.get("run") and run_to_session.get(entry["run"]) == session_id:
-                events.append(entry)
-
-    return events
-
-
 def _parse_opencode_multi_session(
     path: str,
     sids: set[str],
@@ -377,12 +270,11 @@ def _parse_opencode_multi_session(
     """Parse opencode log once, grouping entries by session_id.
 
     Single-file scan that returns ``{sid: [entry dicts]}`` for all
-    requested session IDs.  Eliminates the N-scan pattern where
-    :func:`_parse_opencode_for_session` was called once per session.
+    requested session IDs.
 
     Handles ``message=evaluated`` lines that lack ``session.id`` by
     using the ``run → session_id`` mapping from ``message=created``
-    lines (same logic as :func:`_parse_opencode_for_session`).
+    lines.
 
     Args:
         path: Path to the opencode log file.
@@ -584,11 +476,7 @@ def _group_entries_by_session(
 
     for entry in all_entries:
         # Build run → session_id mapping from 'created' lines
-        if (
-            entry.get("message") == "created"
-            and entry.get("id")
-            and entry.get("run")
-        ):
+        if entry.get("message") == "created" and entry.get("id") and entry.get("run"):
             run_to_session[entry["run"]] = entry["id"]
 
         # Check direct session_id / id match
@@ -650,7 +538,7 @@ def build_timeline(
 
     for sid, depth in sessions:
         # ── ZooKeeper log ──
-        zoo_dir = os.path.expanduser("~/.zoo/log")
+        zoo_dir = _get_zoo_log_dir()
         zoo_path = os.path.join(zoo_dir, f"opencode-{sid}.log")
         if os.path.isfile(zoo_path):
             with open(zoo_path, "r", encoding="utf-8") as f:
@@ -691,7 +579,9 @@ def build_timeline(
             ev["session_agent"] = session_agents[sid]
 
     # Sort by timestamp (missing timestamps last)
-    timeline.sort(key=lambda e: (e.get("timestamp", ""), e.get("source", ""), e.get("type", "")))
+    timeline.sort(
+        key=lambda e: (e.get("timestamp", ""), e.get("source", ""), e.get("type", ""))
+    )
 
     return timeline
 

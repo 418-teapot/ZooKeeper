@@ -106,14 +106,33 @@ def _build_tags(event: dict) -> list[dict]:
 
     # ---- Type-specific tags ----
     if etype == "session":
-        _add_detail_tags(tags, detail, (
-            "slug", "agent", "model_id", "model_provider",
-            "parent_id", "project_id", "cost",
-            "tokens_input", "tokens_output",
-        ))
+        _add_detail_tags(
+            tags,
+            detail,
+            (
+                "slug",
+                "agent",
+                "model_id",
+                "model_provider",
+                "parent_id",
+                "project_id",
+                "cost",
+                "tokens_input",
+                "tokens_output",
+            ),
+        )
     elif etype in ("llm", "llm_stream"):
-        _add_detail_tags(tags, detail, ("provider", "model", "runtime", "agent", "mode"))
-    elif etype in ("permission", "tool_read", "tool_write", "tool_exec", "tool_orch", "tool_other"):
+        _add_detail_tags(
+            tags, detail, ("provider", "model", "runtime", "agent", "mode")
+        )
+    elif etype in (
+        "permission",
+        "tool_read",
+        "tool_write",
+        "tool_exec",
+        "tool_orch",
+        "tool_other",
+    ):
         _add_detail_tags(tags, detail, ("permission", "pattern", "action"))
     elif etype == "file":
         _add_detail_tags(tags, detail, ("file", "action"))
@@ -280,9 +299,21 @@ def build_chrome_trace(timeline: list[dict]) -> list[dict]:
             if content:
                 args["content"] = content[:500]
         elif detail:
-            for k in ("hook", "event", "level", "model", "agent",
-                      "provider", "permission", "pattern", "action",
-                      "file", "slug", "mode", "runtime"):
+            for k in (
+                "hook",
+                "event",
+                "level",
+                "model",
+                "agent",
+                "provider",
+                "permission",
+                "pattern",
+                "action",
+                "file",
+                "slug",
+                "mode",
+                "runtime",
+            ):
                 v = detail.get(k)
                 if v:
                     args[k] = v
@@ -370,7 +401,6 @@ def _find_root_session_detail(timeline: list[dict]) -> dict:
             if detail.get("slug"):
                 return detail
     return {}
-
 
 
 def build_jaeger_doc(session_id: str, timeline: list[dict]) -> dict:

@@ -4,7 +4,27 @@ import glob
 import json
 import os
 import shlex
+import tomllib
 from datetime import datetime
+from pathlib import Path
+
+
+def _get_zoo_log_dir() -> str:
+    """Read [zoo.logging].dir from config.toml, fall back to ~/.zoo/log.
+
+    Returns:
+        Expanded (user-home-resolved) log directory path.
+    """
+    try:
+        config_path = Path(__file__).resolve().parent.parent / "config.toml"
+        if config_path.is_file():
+            with open(config_path, "rb") as f:
+                config = tomllib.load(f)
+            zoo_dir = config.get("zoo", {}).get("logging", {}).get("dir", "~/.zoo/log")
+            return os.path.expanduser(zoo_dir)
+    except Exception:
+        pass
+    return os.path.expanduser("~/.zoo/log")
 
 
 def parse_zoo_log(path: str) -> list[dict]:
@@ -14,11 +34,10 @@ def parse_zoo_log(path: str) -> list[dict]:
         path: Path to the JSONL log file.
 
     Returns:
-        List of parsed dict objects.
+        List of parsed dict objects. Invalid JSON lines are silently skipped.
 
     Raises:
         FileNotFoundError: If the file does not exist.
-        json.JSONDecodeError: If a line is not valid JSON.
     """
     if not os.path.isfile(path):
         raise FileNotFoundError(f"Log file not found: {path}")
@@ -29,7 +48,10 @@ def parse_zoo_log(path: str) -> list[dict]:
             line = line.strip()
             if not line:
                 continue
-            events.append(json.loads(line))
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
     return events
 
 
@@ -94,29 +116,38 @@ def parse_opencode_log(
     return events
 
 
-def resolve_log_path(session_id: str, log_dir: str = "~/.zoo/log") -> str:
+def resolve_log_path(
+    session_id: str,
+    log_dir: str | None = None,
+) -> str:
     """Resolve a session ID to its ZooKeeper log file path.
 
     Args:
         session_id: The session ID string.
-        log_dir: Directory containing log files (default: ~/.zoo/log).
+        log_dir: Directory containing log files (default: from
+            config.toml ``[zoo.logging].dir``, or ``~/.zoo/log``).
 
     Returns:
         Absolute path to the log file.
     """
+    if log_dir is None:
+        log_dir = _get_zoo_log_dir()
     log_dir = os.path.expanduser(log_dir)
     return os.path.join(log_dir, f"opencode-{session_id}.log")
 
 
-def list_sessions(zoo_dir: str = "~/.zoo/log") -> list[dict]:
+def list_sessions(zoo_dir: str | None = None) -> list[dict]:
     """List all ZooKeeper log sessions.
 
     Args:
-        zoo_dir: Directory containing opencode-*.log files.
+        zoo_dir: Directory containing opencode-*.log files (default:
+            from config.toml ``[zoo.logging].dir``, or ``~/.zoo/log``).
 
     Returns:
         List of dicts with session_id, path, size, mtime, event_count.
     """
+    if zoo_dir is None:
+        zoo_dir = _get_zoo_log_dir()
     log_dir = os.path.expanduser(zoo_dir)
     sessions: list[dict] = []
 
@@ -153,7 +184,10 @@ def list_sessions(zoo_dir: str = "~/.zoo/log") -> list[dict]:
     return sessions
 
 
-def resolve_session_path(session_id: str, log_dir: str = "~/.zoo/log") -> str | None:
+def resolve_session_path(
+    session_id: str,
+    log_dir: str | None = None,
+) -> str | None:
     """Resolve a session ID (or prefix) to the full log file path.
 
     Searches for files matching ``opencode-<session_id>*.log`` in *log_dir*.
@@ -161,11 +195,14 @@ def resolve_session_path(session_id: str, log_dir: str = "~/.zoo/log") -> str | 
 
     Args:
         session_id: The session ID or prefix string.
-        log_dir: Directory containing log files (default: ~/.zoo/log).
+        log_dir: Directory containing log files (default: from
+            config.toml ``[zoo.logging].dir``, or ``~/.zoo/log``).
 
     Returns:
         Absolute path to the log file, or None if not found or ambiguous.
     """
+    if log_dir is None:
+        log_dir = _get_zoo_log_dir()
     session_id = os.path.basename(session_id)
     dir_path = os.path.expanduser(log_dir)
     if not os.path.isdir(dir_path):

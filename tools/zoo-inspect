@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ZooKeeper session inspector — stats and timeline for ~/.zoo/log/ sessions."""
+"""ZooKeeper session inspector — stats and timeline for log sessions."""
 
 import argparse
 import os
@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from rich.console import Console
 from rich.table import Table
 
-from _parser import list_sessions, parse_zoo_log, resolve_session_path
+from _parser import _get_zoo_log_dir, list_sessions, parse_zoo_log, resolve_session_path
 
 
 def cmd_list(_args: argparse.Namespace) -> None:
@@ -19,7 +19,7 @@ def cmd_list(_args: argparse.Namespace) -> None:
     sessions = list_sessions()
 
     if not sessions:
-        console.print("[yellow]No log files found in ~/.zoo/log/[/yellow]")
+        console.print(f"[yellow]No log files found in {_get_zoo_log_dir()}/[/yellow]")
         return
 
     table = Table(title="ZooKeeper Sessions")
@@ -145,7 +145,7 @@ def cmd_timeline(args: argparse.Namespace) -> None:
 
     max_rows = 30
     total = len(events_sorted)
-    if total > max_rows:
+    if total > max_rows and not getattr(args, "all_events", False):
         console.print(
             f"[yellow]Showing first {max_rows} of {total} events "
             f"(use --all to see all)[/yellow]"
@@ -276,7 +276,7 @@ def _format_details(event: dict) -> str:
 def main() -> None:
     """Entry point for zoo-inspect."""
     parser = argparse.ArgumentParser(
-        description="ZooKeeper session inspector — stats and timeline for ~/.zoo/log/ sessions.",
+        description=f"ZooKeeper session inspector — stats and timeline for {_get_zoo_log_dir()}/ sessions.",
     )
     subparsers = parser.add_subparsers(dest="command", title="Commands")
 
@@ -289,6 +289,12 @@ def main() -> None:
         "timeline", help="Show event timeline for a session"
     )
     p_timeline.add_argument("session_id", help="Session ID (full or prefix)")
+    p_timeline.add_argument(
+        "--all",
+        action="store_true",
+        dest="all_events",
+        help="Show all events (no row limit)",
+    )
 
     args = parser.parse_args()
 

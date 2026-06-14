@@ -613,7 +613,7 @@ def cmd_list(_args: argparse.Namespace) -> None:
     console = Console()
 
     # Sessions from ZooKeeper logs
-    zoo_sessions = list_sessions("~/.zoo/log")
+    zoo_sessions = list_sessions()
 
     # Sessions from opencode log (parse to find session IDs)
     oc_path = os.path.expanduser("~/.local/share/opencode/log/opencode.log")
