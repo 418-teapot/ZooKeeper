@@ -248,7 +248,16 @@ def _classify_zoo(entry: dict) -> dict | None:
     event = entry.get("event", "?")
     level = entry.get("level", "info")
 
-    summary = f"{hook}/{event}"
+    if hook == "context-metrics" and event == "context_measured":
+        tokens = entry.get("estimated_tokens", 0)
+        msgs = entry.get("message_count", 0)
+        agent = entry.get("agent", "")
+        if agent:
+            summary = f"context [{agent}]: {tokens:,} tokens ({msgs} msgs)"
+        else:
+            summary = f"context: {tokens:,} tokens ({msgs} msgs)"
+    else:
+        summary = f"{hook}/{event}"
 
     detail = dict(entry)
 

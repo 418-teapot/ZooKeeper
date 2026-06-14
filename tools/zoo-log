@@ -54,7 +54,7 @@ def cmd_tail(args: argparse.Namespace) -> None:
     if args.raw:
         # Bypass jq entirely — inherit tail output directly
         try:
-            subprocess.run(["tail", "-f", path], check=False)
+            subprocess.run(["tail", "-n", "0", "-f", path], check=False)
         except KeyboardInterrupt:
             pass
         return
@@ -62,33 +62,59 @@ def cmd_tail(args: argparse.Namespace) -> None:
     filter_str = build_jq_filter(args.hook, args.level, args.event)
     jq_args = run_jq_pipeline(filter_str)
 
-    tail_proc: subprocess.Popen | None = None
-    jq_proc: subprocess.Popen | None = None
+    procs: list[subprocess.Popen] = []
     try:
+        # Build grep pre-filter patterns for cheap substring matching.
+        # grep is inserted before jq so jq only parses lines that may match.
+        grep_patterns = []
+        if args.event is not None:
+            grep_patterns.append(f'"event":"{args.event}"')
+        if args.hook is not None:
+            grep_patterns.append(f'"hook":"{args.hook}"')
+        if args.level is not None:
+            grep_patterns.append(f'"level":"{args.level}"')
+
+        # Start tail from the end (no history replay)
         tail_proc = subprocess.Popen(
-            ["tail", "-f", path],
+            ["tail", "-n", "0", "-f", path],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
+        procs.append(tail_proc)
+        prev_pipe = tail_proc.stdout
+
+        # Chain grep pre-filters (AND semantics — each pipe narrows further)
+        for pattern in grep_patterns:
+            grep_proc = subprocess.Popen(
+                ["grep", "-F", pattern],
+                stdin=prev_pipe,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+            if prev_pipe is not None:
+                prev_pipe.close()
+            prev_pipe = grep_proc.stdout
+            procs.append(grep_proc)
 
         jq_proc = subprocess.Popen(
             jq_args,
-            stdin=tail_proc.stdout,
+            stdin=prev_pipe,
             stdout=sys.stdout,
             stderr=None,  # inherit parent stderr so jq errors are visible
         )
-        tail_proc.stdout.close()  # allow tail to receive SIGPIPE if jq exits
+        if prev_pipe is not None:
+            prev_pipe.close()
+        procs.append(jq_proc)
 
         jq_proc.wait()
     except KeyboardInterrupt:
         pass
     finally:
-        for proc in (tail_proc, jq_proc):
-            if proc is not None:
-                try:
-                    proc.terminate()
-                except OSError:
-                    pass
+        for proc in procs:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
 
 
 def cmd_show(args: argparse.Namespace) -> None:

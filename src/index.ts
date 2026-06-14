@@ -19,6 +19,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import config from "../config.toml" with { type: "toml" };
+import { measureContext } from "./hooks/context-metrics";
 import { nudgeDirectWork } from "./hooks/direct-work-nudge";
 import { injectFocusReminder } from "./hooks/focus-reminder";
 import { recoverJsonError } from "./hooks/json-error-nudge";
@@ -148,8 +149,9 @@ export async function zookeeper(input: any) {
     ) {
       try {
         await injectFocusReminder(client, output);
+        measureContext(output);
       } catch (err) {
-        log("plugin", "handler_crashed", output.messages?.[0]?.info?.sessionID ?? "", undefined, "error", {handler: "injectFocusReminder", error: String(err)});
+        log("plugin", "handler_crashed", output.messages?.[0]?.info?.sessionID ?? "", undefined, "error", {handler: "injectFocusReminder / measureContext", error: String(err)});
       }
     },
 

@@ -270,6 +270,18 @@ def _format_details(event: dict) -> str:
                 parts.append(f"skills={','.join(skills)}")
         return ", ".join(parts)
 
+    if hook == "context-metrics":
+        if "estimated_tokens" in event:
+            et = event["estimated_tokens"]
+            mc = event.get("message_count", 0)
+            xt = event.get("exact_tokens", 0)
+            en = event.get("estimated_new_tokens", 0)
+            agent = event.get("agent", "")
+            if agent:
+                return f"{agent}: estimated={et} tokens, {mc} msgs (exact={xt} + est={en})"
+            return f"estimated={et} tokens, {mc} msgs (exact={xt} + est={en})"
+        return ""
+
     return ""
 
 
