@@ -166,14 +166,14 @@ git-commit = "enable"
 # 每个字段都有默认值，可选择性覆盖。
 
 [zoo.context]
-enabled = true
+enabled = false
 
 # Token 计数：优先使用 API 上报的精确数据，仅在新增 in-progress 消息时回退启发式
 # 阈值 = min(百分比 × 模型窗口, 绝对上限)。任一缺失则用另一值。
 nudge_threshold_percent = 20       # 模型上下文窗口的百分比（1M → 200K）
 urgent_threshold_percent = 40      # 模型上下文窗口的百分比（1M → 400K）
-nudge_threshold_absolute = 200000  # 绝对 token 上限（百分比未知时的 fallback）
-urgent_threshold_absolute = 400000 # 绝对 token 上限
+nudge_threshold_absolute = 5000  # 绝对 token 上限（百分比未知时的 fallback）
+urgent_threshold_absolute = 10000 # 绝对 token 上限
 
 # 自动策略
 dedup_enabled = false               # 去重（暂时关闭，待实现）
@@ -181,7 +181,7 @@ purge_errors_enabled = false        # 清除错误工具输入（暂时关闭，
 purge_errors_turns = 3              # 错误清除前的等待轮数
 
 # 压缩（启发式范围压缩，无需 LLM 调用）
-compress_enabled = false            # 压缩（暂时关闭，待实现）
+compress_enabled = false             # 启用启发式范围压缩
 compress_mode = "range"             # "range" | "message"
 compress_nudge_frequency = 5        # nudge 注入间隔（降低频率，减少干扰）
 
@@ -190,10 +190,10 @@ compress_llm_enabled = false        # 注册 compress 工具供模型调用
 compress_message_mode_enabled = false # 启用 Message 模式（单消息粒度的 LLM 压缩）
 
 # 命令系统
-commands_enabled = false            # 启用 /context、/stats、/sweep 等命令
+commands_enabled = false           # 启用 /context、/stats、/sweep 等命令
 
 # 跨会话持久化
-persist_state = false               # 会话状态持久化（暂时关闭，待实现）
+persist_state = true               # 会话状态持久化（暂时关闭，待实现）
 
 # 保护规则 — 以下列表中的工具永不参与剪枝
 protected_tools = [

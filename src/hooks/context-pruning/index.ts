@@ -8,8 +8,10 @@
  */
 
 export {
+  handleCommandExecute,
   handleMessagesTransform,
   handleSessionCleanup,
+  handleSystemTransform,
   handleToolAfter,
   handleToolBefore,
 } from "./hook";

@@ -17,6 +17,7 @@ import { estimateTotalTokens } from "./estimator";
 import { buildNudges } from "./nudge";
 import { applyPruning } from "./prune";
 import { markPurgeErrors } from "./purge-errors";
+import { saveSessionState } from "./persist";
 import { globalState } from "./state";
 import type {
   ContextPruningConfig,
@@ -233,6 +234,10 @@ export function runPipeline(input: PipelineInput): PipelineOutput {
   if (config.compressEnabled) {
     working = applyCompression(state, config, working, stats);
   }
+
+  // ── Persist state after compression (captures totalPrunedTokens,
+  //     totalCompressedTokens, blocksById updates) ──────────
+  saveSessionState(state);
 
   // ── Step 4: Build nudges ─────────────────────────────
   const totalTokens = estimateTotalTokens(working);

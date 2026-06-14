@@ -15,6 +15,8 @@
  */
 
 import config from "../../../config.toml" with { type: "toml" };
+import type { CommandContext } from "../../context-pruning/commands";
+import { dispatchCommand } from "../../context-pruning/commands";
 import { loadContextConfig } from "../../context-pruning/config-loader";
 import { runPipeline } from "../../context-pruning/pipeline";
 import { globalState } from "../../context-pruning/state";
@@ -36,6 +38,11 @@ const OC_METADATA_KEY = "__zoo_oc_idx";
 // ── Session lifecycle tracking ──────────────────────────────
 let _lastSeenSessionId: string | null = null;
 const _lastMessageCountBySession = new Map<string, number>();
+
+// ── DCP command dedup tracking ──────────────────────────────
+// Tracks sessions where command.execute.before already handled /dcp,
+// so handleSystemTransform (the transform fallback) skips re-processing.
+const _dcpHandledSessions = new Map<string, number>(); // sessionId → timestamp
 
 const COMPACTION_KEYWORDS: readonly string[] = [
   "compressed",
@@ -528,6 +535,216 @@ function loadConfig(enabledDefault: boolean = false): ContextPruningConfig {
 // ---------------------------------------------------------------------------
 
 /**
+ * Handle `/dcp` slash commands in the last user message.
+ *
+ * Detects `/dcp` commands in the most recent user message, parses the
+ * subcommand and arguments, builds a {@link CommandContext}, and dispatches
+ * to the appropriate command handler from commands.ts.
+ *
+ * On success:
+ *   - The command response is injected as a **system message at the start** of
+ *     `output.messages`.
+ *   - The original user message containing `/dcp` is **removed** so the LLM
+ *     never sees it.
+ *
+ * This handler runs **before** the normal pipeline (handleMessagesTransform)
+ * so that `/dcp` commands bypass compression/dedup entirely.
+ *
+ * @param _input - Hook input (unused).
+ * @param output - Hook output whose `messages` array is mutated in place.
+ */
+export async function handleSystemTransform(
+  _input: Record<string, never>,
+  output: TransformOutput,
+): Promise<void> {
+  const messages = output.messages;
+  if (!messages) return;
+
+  // ── Find the last user message ────────────────────────────
+  let lastUserIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.info?.role === "user") {
+      lastUserIdx = i;
+      break;
+    }
+  }
+
+  try {
+    log("context-pruning", "dcp_transform_fired", "", undefined, "debug", {
+      messageCount: messages.length,
+    });
+
+    if (messages.length === 0) return;
+
+    if (lastUserIdx === -1) {
+      log("context-pruning", "dcp_transform_skipped", "", undefined, "debug", {
+        reason: "no_user_message",
+      });
+      return;
+    }
+
+    // ── Extract text content from the user message ────────────
+    const userMsg = messages[lastUserIdx];
+    const textParts = (userMsg.parts ?? []).filter(
+      (p): p is TextPart => p.type === "text",
+    );
+    const content = textParts
+      .map((p) => p.text)
+      .join("")
+      .trim();
+
+    // ── Resolve session ID early for both dedup-check and later use ──
+    const sid = findLastUserSessionId(messages);
+
+    // ── Check if command.execute.before already handled this ──
+    if (sid) {
+      const lastHandledTs = _dcpHandledSessions.get(sid);
+      if (lastHandledTs !== undefined && Date.now() - lastHandledTs < 5000) {
+        _dcpHandledSessions.delete(sid);
+        // command.execute.before already provided the response; just remove
+        // the raw /dcp user message so the LLM never sees it.
+        log(
+          "context-pruning",
+          "dcp_skip_command_execute_handled",
+          sid,
+          undefined,
+          "debug",
+          { content: content.slice(0, 50) },
+        );
+        messages.splice(lastUserIdx, 1);
+        return;
+      }
+    }
+
+    // ── Check if it starts with /dcp ──────────────────────────
+    if (!content.startsWith("/dcp")) {
+      log(
+        "context-pruning",
+        "dcp_transform_no_match",
+        sid ?? "",
+        undefined,
+        "debug",
+        { firstChars: content.slice(0, 50) },
+      );
+      return;
+    }
+    // Must be exactly "/dcp" or followed by whitespace (space, newline, tab).
+    // Other plugins (e.g. focus-reminder) may append text with newlines,
+    // so we accept any whitespace separator, not just U+0020.
+    if (content.length > 4 && !/\s/.test(content[4])) return;
+
+    // ── Parse subcommand and args ─────────────────────────────
+    const parts = content.split(/\s+/);
+    const subcommand = parts[1]; // parts[0] is "/dcp"
+    const args = parts.slice(2);
+
+    const now = Date.now();
+
+    // ── No subcommand → show help ────────────────────────────
+    if (!subcommand) {
+      messages.unshift({
+        info: { id: `dcp-help-${now}`, role: "system" },
+        parts: [
+          {
+            type: "text",
+            text: "Available commands: /dcp context, /dcp stats, /dcp sweep [N], /dcp decompress [N], /dcp recompress [N]",
+          },
+        ],
+      });
+      // Remove the user message containing /dcp (index shifted by 1 after unshift)
+      messages.splice(lastUserIdx + 1, 1);
+      return;
+    }
+
+    // ── Get session ID ────────────────────────────────────────
+    // sid was already resolved earlier; it may be null/undefined.
+    if (!sid) {
+      messages.unshift({
+        info: { id: `dcp-error-${now}`, role: "system" },
+        parts: [
+          {
+            type: "text",
+            text: "Cannot process /dcp command: no active session.",
+          },
+        ],
+      });
+      messages.splice(lastUserIdx + 1, 1);
+      return;
+    }
+
+    // ── Load config and gate on commandsEnabled ──────────────
+    const ctxConfig = loadConfig();
+    if (!ctxConfig.commandsEnabled) {
+      log("context-pruning", "dcp_command_skipped", sid, undefined, "debug", {
+        reason: "commands_disabled",
+      });
+      messages.unshift({
+        info: { id: `dcp-disabled-${now}`, role: "system" },
+        parts: [
+          {
+            type: "text",
+            text: "Commands are disabled in config.toml (commands_enabled = false).",
+          },
+        ],
+      });
+      // Remove the user message containing /dcp (index shifted by 1 after unshift)
+      messages.splice(lastUserIdx + 1, 1);
+      return;
+    }
+
+    // ── Build CommandContext ──────────────────────────────────
+    const state = globalState.getOrCreate(sid);
+    const refs = convertOpenCodeToMessageRefs(messages);
+
+    const cmdCtx: CommandContext = {
+      sessionId: sid,
+      state,
+      config: ctxConfig,
+      messages: refs,
+      args,
+    };
+
+    // ── Compute response BEFORE any mutation ───────────────────
+    // If dispatchCommand throws, the /dcp user message must still be
+    // removed — preventing LLM from seeing the raw command text.
+    let responseText: string;
+    try {
+      const result = dispatchCommand(subcommand, cmdCtx);
+      responseText =
+        result === null
+          ? `Unknown command: /dcp ${subcommand}. Try /dcp help.`
+          : result;
+    } catch (dispatchErr) {
+      responseText = `Error processing /dcp command: ${String(dispatchErr)}`;
+    }
+
+    // ── Apply mutations now that response is ready ────────────
+    messages.unshift({
+      info: { id: `dcp-response-${now}`, role: "system" },
+      parts: [{ type: "text", text: responseText }],
+    });
+    // After unshift, the original message index increased by 1
+    messages.splice(lastUserIdx + 1, 1);
+  } catch (err) {
+    // Remove the /dcp user message even on error — otherwise it leaks into
+    // the LLM context and gets the focus-reminder appended.
+    try {
+      if (lastUserIdx >= 0 && lastUserIdx < messages.length) {
+        messages.splice(lastUserIdx, 1);
+      }
+    } catch {
+      // Best-effort cleanup — don't mask the original error.
+    }
+
+    const sid =
+      ((output as any)?.messages?.[0]?.info?.sessionID as string) ?? "";
+    log("context-pruning", "dcp_command_error", sid, undefined, "error", {
+      error: String(err),
+    });
+  }
+}
+
+/**
  * Handle `experimental.chat.messages.transform`.
  *
  * Steps:
@@ -689,6 +906,7 @@ export async function handleToolBefore(
   input: { tool: string; sessionID: string; callID: string },
   output: { args?: Record<string, unknown> },
 ): Promise<void> {
+  if ((config as any).zoo?.context?.enabled === false) return;
   try {
     const { sessionID, tool, callID } = input;
     const parameters = output.args ?? {};
@@ -734,6 +952,7 @@ export async function handleToolAfter(
   input: { tool: string; sessionID: string; callID: string },
   output: { output?: string; error?: string },
 ): Promise<void> {
+  if ((config as any).zoo?.context?.enabled === false) return;
   try {
     const { sessionID, tool, callID } = input;
 
@@ -782,6 +1001,7 @@ export async function handleSessionCleanup(
   input: { sessionID: string },
   _output: Record<string, never>,
 ): Promise<void> {
+  if ((config as any).zoo?.context?.enabled === false) return;
   try {
     const { sessionID } = input;
     globalState.delete(sessionID);
@@ -800,5 +1020,175 @@ export async function handleSessionCleanup(
       "error",
       { error: String(err) },
     );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Command execute handler — primary /dcp interception
+// ---------------------------------------------------------------------------
+
+/**
+ * Handle `command.execute.before` for `/dcp` slash commands.
+ *
+ * This is the **primary** interception mechanism for `/dcp` commands.  The
+ * `experimental.chat.messages.transform` handler (`handleSystemTransform`)
+ * is a fallback for OpenCode versions that don't fire the transform hook
+ * for slash-prefixed messages.
+ *
+ * Steps:
+ *   1. Only processes `input.command === "dcp"` — all other commands pass
+ *      through untouched.
+ *   2. Loads config and gates on `commandsEnabled`.
+ *   3. Gets or creates session state from `globalState`.
+ *   4. Parses `input.arguments` to extract the subcommand and arguments.
+ *   5. Calls `dispatchCommand` with the parsed subcommand and a
+ *      CommandContext.  Note: `messages` is empty because the
+ *      `command.execute.before` hook does not carry the message array.
+ *      Commands that only need session state (`stats`, `decompress`) work
+ *      fully; commands that traverse messages (`context`, `sweep`) return
+ *      limited results.
+ *   6. Replaces `output.parts` with the response text.
+ *   7. Records a dedup marker so that `handleSystemTransform` (the transform
+ *      hook fallback) skips re-processing for this session.
+ *
+ * @param input - The command.execute.before input.
+ * @param input.command - Command name (without `/`).  Only `"dcp"` is handled.
+ * @param input.sessionID - Current session identifier.
+ * @param input.arguments - Raw argument string after the command name.
+ * @param output - The command.execute.before output whose `parts` array is
+ *   replaced with the response.
+ * @param output.parts - Array of output parts; replaced with a single text
+ *   part containing the command response.
+ */
+export async function handleCommandExecute(
+  input: { command: string; sessionID: string; arguments: string },
+  output: { parts: any[] },
+  client: any,
+): Promise<void> {
+  // Only handle /dcp commands — pass everything else through unchanged.
+  if (input.command !== "dcp") return;
+
+  const sessionId = input.sessionID;
+  log(
+    "context-pruning",
+    "dcp_command_execute_fired",
+    sessionId,
+    undefined,
+    "debug",
+    { arguments: input.arguments },
+  );
+
+  try {
+    // ── Parse arguments ──────────────────────────────────────────
+    // input.arguments is the raw string after the command name, e.g.
+    // `/dcp stats --verbose` → arguments = "stats --verbose"
+    const argParts = input.arguments ? input.arguments.trim().split(/\s+/) : [];
+    const argParts_ = argParts.length > 0 && argParts[0] === "" ? [] : argParts;
+    const subcommand = argParts_[0];
+    const args = argParts_.slice(1);
+
+    // ── Load config and gate on commandsEnabled ────────────────
+    const ctxConfig = loadConfig();
+    if (!ctxConfig.commandsEnabled) {
+      await client.session.prompt({
+        path: { id: sessionId },
+        body: {
+          noReply: true,
+          parts: [
+            {
+              type: "text",
+              text: "Commands are disabled in config.toml (commands_enabled = false).",
+              ignored: true,
+            },
+          ],
+        },
+      });
+      _dcpHandledSessions.set(sessionId, Date.now());
+      log(
+        "context-pruning",
+        "dcp_command_skipped",
+        sessionId,
+        undefined,
+        "debug",
+        { reason: "commands_disabled", source: "command.execute.before" },
+      );
+      throw new Error("__DCP_HANDLED__");
+    }
+
+    // ── No subcommand → show help ──────────────────────────────
+    if (!subcommand) {
+      await client.session.prompt({
+        path: { id: sessionId },
+        body: {
+          noReply: true,
+          parts: [
+            {
+              type: "text",
+              text: "Available commands: /dcp context, /dcp stats, /dcp sweep [N], /dcp decompress [N], /dcp recompress [N]",
+              ignored: true,
+            },
+          ],
+        },
+      });
+      _dcpHandledSessions.set(sessionId, Date.now());
+      log("context-pruning", "dcp_help_shown", sessionId, undefined, "debug", {
+        source: "command.execute.before",
+      });
+      throw new Error("__DCP_HANDLED__");
+    }
+
+    // ── Get or create session state ────────────────────────────
+    const state = globalState.getOrCreate(sessionId);
+
+    // ── Build CommandContext (messages are empty — unavailable in this hook) ─
+    const cmdCtx: CommandContext = {
+      sessionId,
+      state,
+      config: ctxConfig,
+      messages: [], // Not available in command.execute.before
+      args,
+    };
+
+    // ── Dispatch command ──────────────────────────────────────
+    const result = dispatchCommand(subcommand, cmdCtx);
+    const responseText =
+      result === null
+        ? `Unknown command: /dcp ${subcommand}. Try /dcp help.`
+        : result;
+
+    // ── Send response via API, then throw ───────────────────────
+    // DCP reference pattern: send output via client.session.prompt()
+    // (bypassing the hook pipeline), then throw to prevent OpenCode
+    // from re-adding the command text as a user message.
+    await client.session.prompt({
+      path: { id: sessionId },
+      body: {
+        noReply: true,
+        parts: [{ type: "text", text: responseText, ignored: true }],
+      },
+    });
+    _dcpHandledSessions.set(sessionId, Date.now());
+    log(
+      "context-pruning",
+      "dcp_command_executed",
+      sessionId,
+      undefined,
+      "info",
+      { subcommand, handledBy: "command.execute.before" },
+    );
+    throw new Error("__DCP_HANDLED__");
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith("__DCP_")) {
+      throw err;
+    }
+    log("context-pruning", "dcp_command_error", sessionId, undefined, "error", {
+      error: String(err),
+      source: "command.execute.before",
+    });
+    output.parts.length = 0;
+    output.parts.push({
+      type: "text",
+      text: `Error processing /dcp command: ${String(err)}`,
+    });
   }
 }

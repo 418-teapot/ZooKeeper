@@ -232,6 +232,7 @@ export function applyCompression(
         activeBlockIds: [blockId],
       });
     }
+    state.totalPrunedTokens += compressedTokens;
     state.totalCompressedTokens += compressedTokens;
 
     // ── Step 7: Update pipeline stats ─────────────────────

@@ -19,14 +19,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import config from "../config.toml" with { type: "toml" };
-import { compressToolDef } from "./context-pruning/compress-tool";
 import { measureContext } from "./hooks/context-metrics";
-import {
-  handleMessagesTransform,
-  handleSessionCleanup,
-  handleToolAfter,
-  handleToolBefore,
-} from "./hooks/context-pruning";
 import { nudgeDirectWork } from "./hooks/direct-work-nudge";
 import { injectFocusReminder } from "./hooks/focus-reminder";
 import { recoverJsonError } from "./hooks/json-error-nudge";
@@ -42,7 +35,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const CORE_DIR = resolve(__dirname, "../core");
 
 let _sessionIdSet = false;
-let _lastSessionId = "";
 
 // ---------------------------------------------------------------------------
 // Prompt loading
@@ -77,21 +69,12 @@ export async function zookeeper(input: any) {
   const skillsConfig: Record<string, string> = zooConfig.skills ?? {};
   const client = input.client;
 
-  // Determine whether to register the LLM compress tool.
-  // Safe default: false (don't register) when config is unavailable.
-  let compressEnabled = false;
-  try {
-    const ctxConfig: Record<string, unknown> = zooConfig.context ?? {};
-    compressEnabled = ctxConfig.compress_llm_enabled === true;
-  } catch {
-    // Config not available — safely default to false
-  }
-
   // Initialize file-based logging from [zoo.logging] config.
   {
     const logConfig = zooConfig.logging ?? {};
     initLogger("", {
-      logDir: typeof logConfig.dir === "string" ? logConfig.dir : undefined,
+      logDir:
+        typeof logConfig.dir === "string" ? logConfig.dir : undefined,
       maxFileSize:
         typeof logConfig.max_file_size_mb === "number"
           ? logConfig.max_file_size_mb * 1024 * 1024
@@ -108,17 +91,10 @@ export async function zookeeper(input: any) {
   }
 
   return {
-    tool: compressEnabled ? { compress: compressToolDef } : {},
     async config(config: any) {
       const agents = config.agent ?? {};
 
-      log("plugin", "plugin_init", "", undefined, "info", {
-        agents: Object.keys(agents),
-        limits,
-        skills: Object.keys(skillsConfig).filter(
-          (k) => skillsConfig[k] !== "disable",
-        ),
-      });
+      log("plugin", "plugin_init", "", undefined, "info", {agents: Object.keys(agents), limits, skills: Object.keys(skillsConfig).filter(k => skillsConfig[k] !== "disable")});
 
       for (const [name, agent] of Object.entries(agents)) {
         if (typeof agent !== "object" || agent === null) continue;
@@ -126,10 +102,7 @@ export async function zookeeper(input: any) {
         const prompt = loadPrompt(name);
         if (prompt) {
           (agent as any).prompt = prompt;
-          log("plugin", "agent_loaded", "", undefined, "debug", {
-            agent: name,
-            prompt_len: prompt.length,
-          });
+          log("plugin", "agent_loaded", "", undefined, "debug", {agent: name, prompt_len: prompt.length});
         }
       }
 
@@ -143,9 +116,7 @@ export async function zookeeper(input: any) {
           if (!statSync(skillPath).isDirectory()) continue;
           if (skillsConfig[entry] === "disable") continue;
           config.skills.paths.push(skillPath);
-          log("plugin", "skill_registered", "", undefined, "debug", {
-            skill: entry,
-          });
+          log("plugin", "skill_registered", "", undefined, "debug", {skill: entry});
         }
       } catch {
         // skills/ directory does not exist or is inaccessible — skip.
@@ -156,12 +127,9 @@ export async function zookeeper(input: any) {
       input: { sessionID: string },
       _output: Record<string, unknown>,
     ) {
-      if (input.sessionID) {
-        _lastSessionId = input.sessionID;
-        if (!_sessionIdSet) {
-          setSessionId(input.sessionID);
-          _sessionIdSet = true;
-        }
+      if (!_sessionIdSet && input.sessionID) {
+        setSessionId(input.sessionID);
+        _sessionIdSet = true;
       }
     },
 
@@ -182,30 +150,8 @@ export async function zookeeper(input: any) {
       try {
         await injectFocusReminder(client, output);
         measureContext(output);
-        try {
-          await handleMessagesTransform(_input, output);
-        } catch (innerErr) {
-          log(
-            "plugin",
-            "handler_crashed",
-            output.messages?.[0]?.info?.sessionID ?? "",
-            undefined,
-            "error",
-            { handler: "handleMessagesTransform", error: String(innerErr) },
-          );
-        }
       } catch (err) {
-        log(
-          "plugin",
-          "handler_crashed",
-          output.messages?.[0]?.info?.sessionID ?? "",
-          undefined,
-          "error",
-          {
-            handler: "injectFocusReminder / measureContext",
-            error: String(err),
-          },
-        );
+        log("plugin", "handler_crashed", output.messages?.[0]?.info?.sessionID ?? "", undefined, "error", {handler: "injectFocusReminder / measureContext", error: String(err)});
       }
     },
 
@@ -220,18 +166,6 @@ export async function zookeeper(input: any) {
       input: { tool: string; sessionID: string; callID: string },
       output: { args?: Record<string, unknown> },
     ) {
-      try {
-        await handleToolBefore(input, output);
-      } catch (err) {
-        log(
-          "plugin",
-          "handler_crashed",
-          input.sessionID,
-          input.callID,
-          "error",
-          { handler: "handleToolBefore", error: String(err) },
-        );
-      }
       validateBeforeExec(input, output, limits);
     },
 
@@ -248,48 +182,16 @@ export async function zookeeper(input: any) {
         name: string;
         fn: (i: typeof input, o: typeof output) => void | Promise<void>;
       }> = [
-        {
-          name: "nudgeTaskOutput",
-          fn: (i, o) => nudgeTaskOutput(i, o, limits),
-        },
-        {
-          name: "recoverJsonError",
-          fn: (i, o) => {
-            recoverJsonError(i, o);
-          },
-        },
-        {
-          name: "nudgeDirectWork",
-          fn: (i, o) => nudgeDirectWork(client, i, o),
-        },
-        { name: "nudgePostTask", fn: (i, o) => nudgePostTask(client, i, o) },
-        { name: "handleToolAfter", fn: (i, o) => handleToolAfter(i, o) },
+        {name: "nudgeTaskOutput", fn: (i, o) => nudgeTaskOutput(i, o, limits)},
+        {name: "recoverJsonError", fn: (i, o) => { recoverJsonError(i, o); }},
+        {name: "nudgeDirectWork", fn: (i, o) => nudgeDirectWork(client, i, o)},
+        {name: "nudgePostTask", fn: (i, o) => nudgePostTask(client, i, o)},
       ];
-      for (const { name, fn } of handlers) {
+      for (const {name, fn} of handlers) {
         try {
           await fn(input, output);
         } catch (err) {
-          log(
-            "plugin",
-            "handler_crashed",
-            input.sessionID,
-            input.callID,
-            "error",
-            { handler: name, error: String(err) },
-          );
-        }
-      }
-    },
-
-    async dispose() {
-      if (_lastSessionId) {
-        try {
-          await handleSessionCleanup({ sessionID: _lastSessionId }, {});
-        } catch (err) {
-          log("plugin", "handler_crashed", _lastSessionId, undefined, "error", {
-            handler: "handleSessionCleanup",
-            error: String(err),
-          });
+          log("plugin", "handler_crashed", input.sessionID, input.callID, "error", {handler: name, error: String(err)});
         }
       }
     },

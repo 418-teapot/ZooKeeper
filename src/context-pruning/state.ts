@@ -8,6 +8,14 @@
  * @module
  */
 
+import {
+  cancelAllPendingSaves,
+  cancelPendingSave,
+  cleanupExpiredSessions,
+  deletePersistedState,
+  loadSessionState,
+  saveSessionState,
+} from "./persist";
 import type { SessionState } from "./types";
 
 const DEFAULT_SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes
@@ -45,25 +53,32 @@ class ContextPruningState {
   getOrCreate(sessionId: string, protectedTurns?: number): SessionState {
     let state = this.sessions.get(sessionId);
     if (!state) {
-      state = {
-        sessionId,
-        blocksById: new Map(),
-        byMessageId: new Map(),
-        activeBlockIds: new Set(),
-        activeByAnchorMessageId: new Map(),
-        dedupCache: new Map(),
-        errorTracking: new Map(),
-        protectedTurns: protectedTurns ?? 2,
-        turnCount: 0,
-        nudgeCounter: 0,
-        prune: { tools: new Map(), prunedCallIds: new Set() },
-        nextBlockId: 1,
-        nextRunId: 1,
-        lastAccessedAt: Date.now(),
-        totalPrunedTokens: 0,
-        totalCompressedTokens: 0,
-      };
+      // Try loading from disk first
+      const loaded = loadSessionState(sessionId);
+      if (loaded) {
+        state = loaded;
+      } else {
+        state = {
+          sessionId,
+          blocksById: new Map(),
+          byMessageId: new Map(),
+          activeBlockIds: new Set(),
+          activeByAnchorMessageId: new Map(),
+          dedupCache: new Map(),
+          errorTracking: new Map(),
+          protectedTurns: protectedTurns ?? 2,
+          turnCount: 0,
+          nudgeCounter: 0,
+          prune: { tools: new Map(), prunedCallIds: new Set() },
+          nextBlockId: 1,
+          nextRunId: 1,
+          lastAccessedAt: Date.now(),
+          totalPrunedTokens: 0,
+          totalCompressedTokens: 0,
+        };
+      }
       this.sessions.set(sessionId, state);
+      saveSessionState(state);
     }
     state.lastAccessedAt = Date.now();
     return state;
@@ -88,6 +103,8 @@ class ContextPruningState {
    */
   delete(sessionId: string): void {
     this.sessions.delete(sessionId);
+    cancelPendingSave(sessionId);
+    deletePersistedState(sessionId);
   }
 
   /**
@@ -111,6 +128,7 @@ class ContextPruningState {
 
     if (existing) {
       existing.latestSeenAt = messageId;
+      saveSessionState(state);
       return true; // duplicate detected
     }
 
@@ -129,6 +147,8 @@ class ContextPruningState {
         state.dedupCache.delete(firstKey);
       }
     }
+
+    saveSessionState(state);
 
     return false; // not a duplicate
   }
@@ -162,6 +182,8 @@ class ContextPruningState {
         state.errorTracking.delete(firstKey);
       }
     }
+
+    saveSessionState(state);
   }
 
   /**
@@ -172,6 +194,7 @@ class ContextPruningState {
   advanceTurn(sessionId: string): void {
     const state = this.getOrCreate(sessionId);
     state.turnCount++;
+    // NOTE: save is deferred to runPipeline caller, which saves after compression.
   }
 
   /**
@@ -224,6 +247,7 @@ class ContextPruningState {
         this.sessions.delete(sessionId);
       }
     }
+    cleanupExpiredSessions();
   }
 
   /**
@@ -234,7 +258,9 @@ class ContextPruningState {
       clearInterval(this.cleanupTimer);
       this.cleanupTimer = null;
     }
+    cancelAllPendingSaves();
     this.sessions.clear();
+    cleanupExpiredSessions();
   }
 }
 
