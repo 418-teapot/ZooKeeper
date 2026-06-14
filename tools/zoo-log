@@ -29,7 +29,9 @@ def build_jq_filter(
     return None
 
 
-def run_jq_pipeline(filter_str: str | None, unbuffered: bool = True) -> list[str]:
+def run_jq_pipeline(
+    filter_str: str | None, unbuffered: bool = True
+) -> list[str]:
     """Build jq argument list for the given filter."""
     args = ["/usr/bin/jq", "-c"]
     if unbuffered:
@@ -169,7 +171,9 @@ def cmd_list(args: argparse.Namespace) -> None:
 
         st = os.stat(path)
         size = st.st_size
-        mtime_str = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+        mtime_str = datetime.fromtimestamp(st.st_mtime).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
 
         with open(path, "r", encoding="utf-8") as f:
             event_count = sum(1 for _ in f)
@@ -187,23 +191,35 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", title="Commands")
 
     # --- tail ---
-    p_tail = subparsers.add_parser("tail", help="Tail -f a log file in real-time")
+    p_tail = subparsers.add_parser(
+        "tail", help="Tail -f a log file in real-time"
+    )
     p_tail.add_argument("session_id", help="Session ID (full or prefix)")
     p_tail.add_argument("--hook", help="Filter by hook name")
-    p_tail.add_argument("--level", help="Filter by level (e.g. info, warn, error)")
+    p_tail.add_argument(
+        "--level", help="Filter by level (e.g. info, warn, error)"
+    )
     p_tail.add_argument("--event", help="Filter by event name")
     p_tail.add_argument(
-        "--raw", action="store_true", help="Skip jq filtering, output raw lines"
+        "--raw",
+        action="store_true",
+        help="Skip jq filtering, output raw lines",
     )
 
     # --- show ---
-    p_show = subparsers.add_parser("show", help="Read and filter an entire log file")
+    p_show = subparsers.add_parser(
+        "show", help="Read and filter an entire log file"
+    )
     p_show.add_argument("session_id", help="Session ID (full or prefix)")
     p_show.add_argument("--hook", help="Filter by hook name")
-    p_show.add_argument("--level", help="Filter by level (e.g. info, warn, error)")
+    p_show.add_argument(
+        "--level", help="Filter by level (e.g. info, warn, error)"
+    )
     p_show.add_argument("--event", help="Filter by event name")
     p_show.add_argument(
-        "--raw", action="store_true", help="Skip jq filtering, output raw lines"
+        "--raw",
+        action="store_true",
+        help="Skip jq filtering, output raw lines",
     )
 
     # --- list ---
@@ -212,7 +228,9 @@ def main() -> None:
     args = parser.parse_args()
 
     if not os.path.isdir(LOG_DIR):
-        print(f"Error: log directory {LOG_DIR} does not exist", file=sys.stderr)
+        print(
+            f"Error: log directory {LOG_DIR} does not exist", file=sys.stderr
+        )
         sys.exit(1)
 
     if args.command == "tail":

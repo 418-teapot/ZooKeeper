@@ -10,14 +10,14 @@ import sys
 from pathlib import Path
 
 # Allow import from the tools/ directory (not on sys.path by default).
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "tools"))
+sys.path.insert(
+    0, str(Path(__file__).resolve().parent.parent.parent / "tools")
+)
 
 import json
 import sqlite3
 
-
 from _db import query_db_messages  # noqa: E402
-
 
 # ── Test helpers ──────────────────────────────────────────────────────────
 
@@ -206,7 +206,9 @@ def test_single_assistant_reply(tmp_path: Path) -> None:
                 "id": "m1",
                 "session_id": "sess-1",
                 "time_created": ts,
-                "data": _msg_data("assistant", agent="build", model_id="gpt-4"),
+                "data": _msg_data(
+                    "assistant", agent="build", model_id="gpt-4"
+                ),
             },
         ],
         parts=[
@@ -243,7 +245,9 @@ def test_single_assistant_reasoning(tmp_path: Path) -> None:
                 "id": "m1",
                 "session_id": "sess-1",
                 "time_created": ts,
-                "data": _msg_data("assistant", agent="build", model_id="claude-3"),
+                "data": _msg_data(
+                    "assistant", agent="build", model_id="claude-3"
+                ),
             },
         ],
         parts=[
@@ -452,7 +456,8 @@ def test_timestamp_conversion(tmp_path: Path) -> None:
     ts_ms = 1_705_312_245_123
     expected_dt = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc)
     expected_ts = (
-        expected_dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{expected_dt.microsecond:06d}Z"
+        expected_dt.strftime("%Y-%m-%dT%H:%M:%S.")
+        + f"{expected_dt.microsecond:06d}Z"
     )
 
     _create_db(
@@ -478,7 +483,9 @@ def test_timestamp_conversion(tmp_path: Path) -> None:
     assert len(result) == 1
     timestamp = result[0]["timestamp"]
     # Must end with Z
-    assert timestamp.endswith("Z"), f"Timestamp {timestamp!r} does not end with Z"
+    assert timestamp.endswith("Z"), (
+        f"Timestamp {timestamp!r} does not end with Z"
+    )
     # Must contain a 'T' separator
     assert "T" in timestamp
     assert timestamp == expected_ts, (
@@ -533,7 +540,9 @@ def test_model_id_on_assistant_not_on_user(tmp_path: Path) -> None:
                 "id": "m2",
                 "session_id": "sess-1",
                 "time_created": ts + 1000,
-                "data": _msg_data("assistant", agent="build", model_id="gpt-4"),
+                "data": _msg_data(
+                    "assistant", agent="build", model_id="gpt-4"
+                ),
             },
         ],
         parts=[
@@ -576,7 +585,9 @@ def test_reasoning_truncation_still_has_prefix(tmp_path: Path) -> None:
                 "id": "m1",
                 "session_id": "sess-1",
                 "time_created": ts,
-                "data": _msg_data("assistant", agent="build", model_id="claude-3"),
+                "data": _msg_data(
+                    "assistant", agent="build", model_id="claude-3"
+                ),
             },
         ],
         parts=[
@@ -611,7 +622,9 @@ def test_multiple_parts_same_message(tmp_path: Path) -> None:
                 "id": "m1",
                 "session_id": "sess-1",
                 "time_created": ts,
-                "data": _msg_data("assistant", agent="build", model_id="claude-3"),
+                "data": _msg_data(
+                    "assistant", agent="build", model_id="claude-3"
+                ),
             },
         ],
         parts=[
@@ -653,7 +666,9 @@ def test_default_db_path_is_tilde_expanded() -> None:
     assert result == []
 
 
-def test_assistant_reasoning_no_model_gives_empty_string(tmp_path: Path) -> None:
+def test_assistant_reasoning_no_model_gives_empty_string(
+    tmp_path: Path,
+) -> None:
     """When modelID is missing from assistant reasoning event, model is
     empty string (not None)."""
     db_path = str(tmp_path / "test.db")

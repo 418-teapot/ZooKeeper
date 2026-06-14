@@ -9,7 +9,9 @@ set -euo pipefail
 
 MODE="${1:-check}"
 
-PY_FILES="install.py tests/ tools/"
+PY_DIRS="install.py tests/ tools/"
+PY_SCRIPTS="tools/zoo-inspect tools/zoo-log tools/zoo-trace"
+PY_FILES="$PY_DIRS $PY_SCRIPTS"
 TS_DIR="src/"
 
 RED='\033[0;31m'
@@ -30,12 +32,15 @@ case "$MODE" in
   check)
     uv run ruff check --fix $PY_FILES && ok "ruff check" || { fail "ruff check"; FAILED=1; }
     uv run ruff format $PY_FILES      && ok "ruff format" || { fail "ruff format"; FAILED=1; }
+    uv run isort --profile black $PY_FILES && ok "isort" || { fail "isort"; FAILED=1; }
     ;;
   lint)
     uv run ruff check $PY_FILES && ok "ruff check" || { fail "ruff check"; FAILED=1; }
+    uv run isort --check-only --profile black $PY_FILES && ok "isort" || { fail "isort"; FAILED=1; }
     ;;
   format)
     uv run ruff format $PY_FILES && ok "ruff format" || { fail "ruff format"; FAILED=1; }
+    uv run isort --profile black $PY_FILES && ok "isort" || { fail "isort"; FAILED=1; }
     ;;
 esac
 

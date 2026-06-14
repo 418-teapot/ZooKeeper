@@ -8,7 +8,9 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "tools"))
+sys.path.insert(
+    0, str(Path(__file__).resolve().parent.parent.parent / "tools")
+)
 
 from _jaeger import (
     _add_detail_tags,
@@ -106,11 +108,18 @@ class TestGetOperationName:
     )
     def test_session_types(self, detail: dict, expected: str) -> None:
         """Map session events based on detail keys."""
-        assert _get_operation_name({"type": "session", "detail": detail}) == expected
+        assert (
+            _get_operation_name({"type": "session", "detail": detail})
+            == expected
+        )
 
     def test_zoo_hook(self) -> None:
         """Zoo hook uses detail.hook name."""
-        event = {"type": "hook", "source": "zoo", "detail": {"hook": "post-task"}}
+        event = {
+            "type": "hook",
+            "source": "zoo",
+            "detail": {"hook": "post-task"},
+        }
         assert _get_operation_name(event) == "zoo.post-task"
 
     def test_zoo_hook_missing_name(self) -> None:
@@ -161,7 +170,9 @@ class TestAddDetailTags:
     def test_from_detail(self) -> None:
         """Keys present in detail are appended as tags."""
         tags: list[dict] = []
-        _add_detail_tags(tags, {"model": "gpt-4", "count": "3"}, ("model", "count"))
+        _add_detail_tags(
+            tags, {"model": "gpt-4", "count": "3"}, ("model", "count")
+        )
         assert len(tags) == 2
         assert {"key": "model", "type": "string", "value": "gpt-4"} in tags
         assert {"key": "count", "type": "string", "value": "3"} in tags
@@ -428,7 +439,11 @@ class TestBuildTags:
             "tool_orch",
             "tool_other",
         ):
-            detail = {"permission": "allow", "pattern": "src/**", "action": "read"}
+            detail = {
+                "permission": "allow",
+                "pattern": "src/**",
+                "action": "read",
+            }
             tags = _build_tags(_event(etype, detail=detail))
             assert self._tag_value(tags, "permission") == "allow"
             assert self._tag_value(tags, "pattern") == "src/**"
@@ -473,7 +488,9 @@ class TestBuildTags:
     def test_assistant_reply_tags(self) -> None:
         """Assistant reply events include model and agent."""
         detail = {"model": "gpt-4"}
-        tags = _build_tags(_event("assistant_reply", detail=detail, agent="build"))
+        tags = _build_tags(
+            _event("assistant_reply", detail=detail, agent="build")
+        )
         assert self._tag_value(tags, "model") == "gpt-4"
         assert self._tag_value(tags, "agent") == "build"
 
@@ -496,7 +513,9 @@ class TestBuildLogs:
     def test_user_msg_with_content(self) -> None:
         """user_msg events produce a log entry with the content field."""
         event = _event(
-            "user_msg", content="Hello, assistant!", timestamp="2025-06-14T12:00:00Z"
+            "user_msg",
+            content="Hello, assistant!",
+            timestamp="2025-06-14T12:00:00Z",
         )
         logs = _build_logs(event)
         assert len(logs) == 1
@@ -511,7 +530,9 @@ class TestBuildLogs:
 
     def test_user_msg_empty_content(self) -> None:
         """user_msg events with empty content produce no logs."""
-        event = _event("user_msg", content="", timestamp="2025-06-14T12:00:00Z")
+        event = _event(
+            "user_msg", content="", timestamp="2025-06-14T12:00:00Z"
+        )
         assert _build_logs(event) == []
 
     def test_assistant_reply_with_content(self) -> None:
@@ -540,7 +561,10 @@ class TestBuildLogs:
         """OpenCode hook events dump entire detail as JSON."""
         detail = {"hook": "task-prompt", "valid": False}
         event = _event(
-            "hook", source="opencode", detail=detail, timestamp="2025-06-14T12:00:00Z"
+            "hook",
+            source="opencode",
+            detail=detail,
+            timestamp="2025-06-14T12:00:00Z",
         )
         logs = _build_logs(event)
         assert len(logs) == 1
@@ -594,8 +618,12 @@ class TestBuildChromeTrace:
         """Each unique session_id gets a different pid."""
         timeline = [
             _event("llm", timestamp="2025-06-14T12:00:00Z", session_id="root"),
-            _event("llm", timestamp="2025-06-14T12:00:01Z", session_id="child-1"),
-            _event("llm", timestamp="2025-06-14T12:00:02Z", session_id="child-2"),
+            _event(
+                "llm", timestamp="2025-06-14T12:00:01Z", session_id="child-1"
+            ),
+            _event(
+                "llm", timestamp="2025-06-14T12:00:02Z", session_id="child-2"
+            ),
         ]
         result = build_chrome_trace(timeline)
         pids = [ev["pid"] for ev in result]
@@ -617,7 +645,9 @@ class TestBuildChromeTrace:
         """Duration is the delta in µs to the next event (min 1000)."""
         timeline = [
             _event("llm", timestamp="2025-06-14T12:00:00.000Z"),
-            _event("llm", timestamp="2025-06-14T12:00:00.005Z"),  # 5000 µs later
+            _event(
+                "llm", timestamp="2025-06-14T12:00:00.005Z"
+            ),  # 5000 µs later
         ]
         result = build_chrome_trace(timeline)
         assert len(result) == 2
@@ -630,7 +660,9 @@ class TestBuildChromeTrace:
         """Duration is never less than 1000 µs."""
         timeline = [
             _event("llm", timestamp="2025-06-14T12:00:00.000Z"),
-            _event("llm", timestamp="2025-06-14T12:00:00.000200Z"),  # only 200 µs later
+            _event(
+                "llm", timestamp="2025-06-14T12:00:00.000200Z"
+            ),  # only 200 µs later
         ]
         result = build_chrome_trace(timeline)
         assert result[0]["dur"] == 1000
@@ -648,14 +680,18 @@ class TestBuildChromeTrace:
         """Event summary is truncated to 120 characters."""
         long_summary = "a" * 200
         timeline = [
-            _event("llm", summary=long_summary, timestamp="2025-06-14T12:00:00Z")
+            _event(
+                "llm", summary=long_summary, timestamp="2025-06-14T12:00:00Z"
+            )
         ]
         result = build_chrome_trace(timeline)
         assert len(result[0]["name"]) == 120
 
     def test_name_empty_when_no_summary(self) -> None:
         """Event with empty summary gets an empty name."""
-        timeline = [_event("llm", summary="", timestamp="2025-06-14T12:00:00Z")]
+        timeline = [
+            _event("llm", summary="", timestamp="2025-06-14T12:00:00Z")
+        ]
         result = build_chrome_trace(timeline)
         assert result[0]["name"] == ""
 
@@ -690,7 +726,9 @@ class TestBuildChromeTrace:
     def test_args_contain_agent(self) -> None:
         """args always contain agent field."""
         timeline = [
-            _event("llm", timestamp="2025-06-14T12:00:00Z", session_agent="build")
+            _event(
+                "llm", timestamp="2025-06-14T12:00:00Z", session_agent="build"
+            )
         ]
         result = build_chrome_trace(timeline)
         assert result[0]["args"]["agent"] == "build"
@@ -711,7 +749,11 @@ class TestBuildChromeTrace:
     def test_args_content_for_message_types(self) -> None:
         """user_msg/assistant_reply/assistant_reasoning include truncated content."""
         timeline = [
-            _event("user_msg", content="Hello world", timestamp="2025-06-14T12:00:00Z"),
+            _event(
+                "user_msg",
+                content="Hello world",
+                timestamp="2025-06-14T12:00:00Z",
+            ),
         ]
         result = build_chrome_trace(timeline)
         assert result[0]["args"]["content"] == "Hello world"
@@ -720,15 +762,25 @@ class TestBuildChromeTrace:
         """Content in args is truncated to 500 characters."""
         long_content = "x" * 1000
         timeline = [
-            _event("user_msg", content=long_content, timestamp="2025-06-14T12:00:00Z")
+            _event(
+                "user_msg",
+                content=long_content,
+                timestamp="2025-06-14T12:00:00Z",
+            )
         ]
         result = build_chrome_trace(timeline)
         assert len(result[0]["args"]["content"]) == 500
 
     def test_args_detail_keys(self) -> None:
         """Detail keys are copied to args for non-message events."""
-        detail = {"model": "gpt-4", "provider": "openai", "permission": "allow"}
-        timeline = [_event("llm", detail=detail, timestamp="2025-06-14T12:00:00Z")]
+        detail = {
+            "model": "gpt-4",
+            "provider": "openai",
+            "permission": "allow",
+        }
+        timeline = [
+            _event("llm", detail=detail, timestamp="2025-06-14T12:00:00Z")
+        ]
         result = build_chrome_trace(timeline)
         assert result[0]["args"]["model"] == "gpt-4"
         assert result[0]["args"]["provider"] == "openai"
@@ -761,7 +813,11 @@ class TestBuildJaegerDoc:
         session_id = "test-session-uuid"
         expected_hash = hashlib.sha256(session_id.encode()).hexdigest()[:32]
         timeline = [
-            _event("session", detail={"slug": "s1"}, timestamp="2025-06-14T12:00:00Z")
+            _event(
+                "session",
+                detail={"slug": "s1"},
+                timestamp="2025-06-14T12:00:00Z",
+            )
         ]
         result = build_jaeger_doc(session_id, timeline)
         assert result["data"][0]["traceID"] == expected_hash
@@ -770,7 +826,9 @@ class TestBuildJaegerDoc:
         """Root span has traceID, spanID, operationName, startTime, duration, tags, logs, processID."""
         timeline = [
             _event(
-                "session", detail={"slug": "s1"}, timestamp="2025-06-14T12:00:00.000Z"
+                "session",
+                detail={"slug": "s1"},
+                timestamp="2025-06-14T12:00:00.000Z",
             ),
             _event("llm", timestamp="2025-06-14T12:00:00.005Z"),
         ]
@@ -797,7 +855,9 @@ class TestBuildJaegerDoc:
         """Root span duration is at least 1 µs even for single event."""
         timeline = [
             _event(
-                "session", detail={"slug": "s1"}, timestamp="2025-06-14T12:00:00.000Z"
+                "session",
+                detail={"slug": "s1"},
+                timestamp="2025-06-14T12:00:00.000Z",
             )
         ]
         result = build_jaeger_doc("sid", timeline)
@@ -808,7 +868,9 @@ class TestBuildJaegerDoc:
         """Each timeline event becomes a CHILD_OF span referencing the root."""
         timeline = [
             _event(
-                "session", detail={"slug": "s1"}, timestamp="2025-06-14T12:00:00.000Z"
+                "session",
+                detail={"slug": "s1"},
+                timestamp="2025-06-14T12:00:00.000Z",
             ),
             _event("llm", timestamp="2025-06-14T12:00:00.001Z"),
             _event("tool_read", timestamp="2025-06-14T12:00:00.002Z"),
@@ -826,7 +888,9 @@ class TestBuildJaegerDoc:
         """Event spanIDs are sequential 16-char hex strings starting at 2."""
         timeline = [
             _event(
-                "session", detail={"slug": "s1"}, timestamp="2025-06-14T12:00:00.000Z"
+                "session",
+                detail={"slug": "s1"},
+                timestamp="2025-06-14T12:00:00.000Z",
             ),
             _event("llm", timestamp="2025-06-14T12:00:00.001Z"),
             _event("tool_read", timestamp="2025-06-14T12:00:00.002Z"),
@@ -875,9 +939,15 @@ class TestBuildJaegerDoc:
         """Span logs contain content for message-type events."""
         timeline = [
             _event(
-                "session", detail={"slug": "s1"}, timestamp="2025-06-14T12:00:00.000Z"
+                "session",
+                detail={"slug": "s1"},
+                timestamp="2025-06-14T12:00:00.000Z",
             ),
-            _event("user_msg", content="Hello!", timestamp="2025-06-14T12:00:00.001Z"),
+            _event(
+                "user_msg",
+                content="Hello!",
+                timestamp="2025-06-14T12:00:00.001Z",
+            ),
         ]
         result = build_jaeger_doc("sid", timeline)
         spans = result["data"][0]["spans"]
@@ -891,9 +961,13 @@ class TestBuildJaegerDoc:
         """Event span duration is max(1000, delta to next)."""
         timeline = [
             _event(
-                "session", detail={"slug": "s1"}, timestamp="2025-06-14T12:00:00.000Z"
+                "session",
+                detail={"slug": "s1"},
+                timestamp="2025-06-14T12:00:00.000Z",
             ),
-            _event("llm", timestamp="2025-06-14T12:00:00.003Z"),  # 3000 µs later
+            _event(
+                "llm", timestamp="2025-06-14T12:00:00.003Z"
+            ),  # 3000 µs later
             _event(
                 "tool_read", timestamp="2025-06-14T12:00:00.003200Z"
             ),  # 200 µs later
@@ -909,7 +983,9 @@ class TestBuildJaegerDoc:
         """Last event duration falls back to 1_000_000 µs."""
         timeline = [
             _event(
-                "session", detail={"slug": "s1"}, timestamp="2025-06-14T12:00:00.000Z"
+                "session",
+                detail={"slug": "s1"},
+                timestamp="2025-06-14T12:00:00.000Z",
             ),
             _event("llm", timestamp="2025-06-14T12:00:00.001Z"),
         ]
@@ -920,7 +996,11 @@ class TestBuildJaegerDoc:
     def test_skip_events_without_timestamp(self) -> None:
         """Events without timestamp are skipped in span generation."""
         timeline = [
-            _event("session", detail={"slug": "s1"}, timestamp="2025-06-14T12:00:00Z"),
+            _event(
+                "session",
+                detail={"slug": "s1"},
+                timestamp="2025-06-14T12:00:00Z",
+            ),
             _event("llm", timestamp=""),
             _event("tool_read", timestamp="2025-06-14T12:00:01Z"),
         ]
@@ -939,7 +1019,11 @@ class TestBuildJaegerDoc:
     def test_total_field(self) -> None:
         """Top-level 'total' is always 1 when timeline is non-empty."""
         timeline = [
-            _event("session", detail={"slug": "s1"}, timestamp="2025-06-14T12:00:00Z")
+            _event(
+                "session",
+                detail={"slug": "s1"},
+                timestamp="2025-06-14T12:00:00Z",
+            )
         ]
         result = build_jaeger_doc("sid", timeline)
         assert result["total"] == 1
@@ -947,7 +1031,11 @@ class TestBuildJaegerDoc:
     def test_operation_name_on_event_spans(self) -> None:
         """Event spans use _get_operation_name for their operationName."""
         timeline = [
-            _event("session", detail={"slug": "s1"}, timestamp="2025-06-14T12:00:00Z"),
+            _event(
+                "session",
+                detail={"slug": "s1"},
+                timestamp="2025-06-14T12:00:00Z",
+            ),
             _event("llm", timestamp="2025-06-14T12:00:01Z"),
             _event("tool_read", timestamp="2025-06-14T12:00:02Z"),
         ]

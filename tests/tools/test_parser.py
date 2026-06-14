@@ -11,7 +11,9 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "tools"))
+sys.path.insert(
+    0, str(Path(__file__).resolve().parent.parent.parent / "tools")
+)
 
 from _parser import (
     list_sessions,
@@ -21,7 +23,6 @@ from _parser import (
     resolve_log_path,
     resolve_session_path,
 )
-
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -33,7 +34,9 @@ def _write(path: Path, lines: list[str]) -> None:
         path: Target file path.
         lines: List of lines to write. An empty list produces an empty file.
     """
-    path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    path.write_text(
+        "\n".join(lines) + ("\n" if lines else ""), encoding="utf-8"
+    )
 
 
 # ── Tests: parse_zoo_log ────────────────────────────────────────────────────
@@ -47,7 +50,10 @@ class TestParseZooLog:
         p = tmp_path / "events.jsonl"
         _write(p, ['{"event": "start"}', '{"event": "end", "duration": 1.5}'])
         result = parse_zoo_log(str(p))
-        assert result == [{"event": "start"}, {"event": "end", "duration": 1.5}]
+        assert result == [
+            {"event": "start"},
+            {"event": "end", "duration": 1.5},
+        ]
 
     def test_empty_file(self, tmp_path: Path) -> None:
         """Return an empty list for an empty file."""
@@ -242,7 +248,9 @@ class TestResolveLogPath:
     def test_expands_user(self) -> None:
         """Expand user home directory in the log_dir."""
         path = resolve_log_path("s1", "~/logs")
-        assert path == os.path.join(os.path.expanduser("~/logs"), "opencode-s1.log")
+        assert path == os.path.join(
+            os.path.expanduser("~/logs"), "opencode-s1.log"
+        )
 
     def test_session_id_with_special_chars(self) -> None:
         """Session IDs with dots or dashes are used as-is in the filename."""
@@ -265,7 +273,9 @@ class TestListSessions:
         (tmp_path / "opencode-s1.log").write_text(
             '{"event": "a"}\n{"event": "b"}\n', encoding="utf-8"
         )
-        (tmp_path / "opencode-s2.log").write_text('{"event": "c"}\n', encoding="utf-8")
+        (tmp_path / "opencode-s2.log").write_text(
+            '{"event": "c"}\n', encoding="utf-8"
+        )
         # A non-matching file that should be ignored
         (tmp_path / "other.log").write_text("data\n", encoding="utf-8")
 
@@ -315,7 +325,9 @@ class TestListSessions:
     def test_files_sorted(self, tmp_path: Path) -> None:
         """Sessions are returned in sorted order by filename."""
         for sid in ["z", "a", "m"]:
-            (tmp_path / f"opencode-{sid}.log").write_text("x=1\n", encoding="utf-8")
+            (tmp_path / f"opencode-{sid}.log").write_text(
+                "x=1\n", encoding="utf-8"
+            )
         sessions = list_sessions(str(tmp_path))
         assert [s["session_id"] for s in sessions] == ["a", "m", "z"]
 
@@ -334,20 +346,26 @@ class TestResolveSessionPath:
 
     def test_unique_match(self, tmp_path: Path) -> None:
         """Return the full path when exactly one file matches."""
-        (tmp_path / "opencode-session-123.log").write_text("data\n", encoding="utf-8")
+        (tmp_path / "opencode-session-123.log").write_text(
+            "data\n", encoding="utf-8"
+        )
         result = resolve_session_path("session-123", str(tmp_path))
         expected = str(tmp_path / "opencode-session-123.log")
         assert result == expected
 
     def test_no_match(self, tmp_path: Path) -> None:
         """Return None when no file matches the session_id."""
-        (tmp_path / "opencode-other.log").write_text("data\n", encoding="utf-8")
+        (tmp_path / "opencode-other.log").write_text(
+            "data\n", encoding="utf-8"
+        )
         assert resolve_session_path("nonexistent", str(tmp_path)) is None
 
     def test_ambiguous_match(self, tmp_path: Path) -> None:
         """Return None when multiple files match the session prefix."""
         (tmp_path / "opencode-s1.log").write_text("data\n", encoding="utf-8")
-        (tmp_path / "opencode-s1-extra.log").write_text("data\n", encoding="utf-8")
+        (tmp_path / "opencode-s1-extra.log").write_text(
+            "data\n", encoding="utf-8"
+        )
         assert resolve_session_path("s1", str(tmp_path)) is None
 
     def test_dir_not_exist(self) -> None:
@@ -365,12 +383,18 @@ class TestResolveSessionPath:
 
     def test_prefix_matching(self, tmp_path: Path) -> None:
         """Match session_id as a prefix (not exact)."""
-        (tmp_path / "opencode-build-abc-123.log").write_text("data\n", encoding="utf-8")
+        (tmp_path / "opencode-build-abc-123.log").write_text(
+            "data\n", encoding="utf-8"
+        )
         result = resolve_session_path("build-abc", str(tmp_path))
         assert result == str(tmp_path / "opencode-build-abc-123.log")
 
     def test_ambiguous_prefix_collision(self, tmp_path: Path) -> None:
         """Return None when prefix matches multiple files."""
-        (tmp_path / "opencode-build-a.log").write_text("data\n", encoding="utf-8")
-        (tmp_path / "opencode-build-ab.log").write_text("data\n", encoding="utf-8")
+        (tmp_path / "opencode-build-a.log").write_text(
+            "data\n", encoding="utf-8"
+        )
+        (tmp_path / "opencode-build-ab.log").write_text(
+            "data\n", encoding="utf-8"
+        )
         assert resolve_session_path("build-a", str(tmp_path)) is None

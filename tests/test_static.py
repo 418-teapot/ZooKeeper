@@ -3,10 +3,10 @@
 All tests are zero-LLM-cost, pure file inspection.
 """
 
+import tomllib
 from pathlib import Path
 
 import pytest
-import tomllib
 
 # ── Paths ────────────────────────────────────────────────────────────────
 
@@ -142,7 +142,12 @@ def test_prompt_not_claims_denied_tools(agent: str, tool: str) -> None:
         # Detect tool-listing section headers.
         if any(
             p in line_lower
-            for p in ["your tools", "== tools", "you have access", "available tools"]
+            for p in [
+                "your tools",
+                "== tools",
+                "you have access",
+                "available tools",
+            ]
         ):
             in_tool_context = True
         elif line_lower.startswith("=="):
@@ -157,7 +162,9 @@ def test_prompt_not_claims_denied_tools(agent: str, tool: str) -> None:
         # before the colon is the tool name; text after is description.
         if in_tool_context and line_lower.startswith("- "):
             colon_idx = line_lower.find(":")
-            search_zone = line_lower[:colon_idx] if colon_idx > 0 else line_lower
+            search_zone = (
+                line_lower[:colon_idx] if colon_idx > 0 else line_lower
+            )
         else:
             search_zone = line_lower
 
@@ -197,7 +204,12 @@ def _extract_claimed_tools(agent: str, content: str) -> list[str]:
 
         if any(
             p in line_lower
-            for p in ["your tools", "== tools", "you have access", "available tools"]
+            for p in [
+                "your tools",
+                "== tools",
+                "you have access",
+                "available tools",
+            ]
         ):
             in_tools_section = True
             # The header line itself may contain a comma-separated list of

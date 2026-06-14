@@ -75,7 +75,9 @@ def _assert_verifies(
     Only counts tasks delegated to code-modifying subagents (subagent_type="general").
     Read-only subagents (explore, spider) don't require bash verification.
     """
-    task_indices = [idx for idx, c in enumerate(data.calls) if c.tool == "task"]
+    task_indices = [
+        idx for idx, c in enumerate(data.calls) if c.tool == "task"
+    ]
     if not task_indices:
         return AssertionResult(
             name="assert_verifies",
@@ -146,7 +148,8 @@ def _assert_pre_verifies(
             continue
         window_start = max(0, idx - _PRE_VERIFY_WINDOW)
         has_pre = any(
-            data.calls[j].tool in ("read", "grep") for j in range(window_start, idx)
+            data.calls[j].tool in ("read", "grep")
+            for j in range(window_start, idx)
         )
         if not has_pre:
             unverified.append(f"{c.tool}#{idx}")
@@ -159,7 +162,9 @@ def _assert_pre_verifies(
     return AssertionResult(
         name="assert_pre_verifies",
         passed=False,
-        message=(f"Edit/write calls without prior read/grep: {', '.join(unverified)}"),
+        message=(
+            f"Edit/write calls without prior read/grep: {', '.join(unverified)}"
+        ),
     )
 
 
@@ -314,7 +319,9 @@ def _assert_task_prompt_concise(
         prompt = c.args.get("prompt", "") or ""
         word_count = len(prompt.split())
         if word_count > max_words:
-            issues.append(f"Task #{i + 1}: {word_count} words (max {max_words})")
+            issues.append(
+                f"Task #{i + 1}: {word_count} words (max {max_words})"
+            )
 
     if issues:
         return AssertionResult(
