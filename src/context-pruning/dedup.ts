@@ -1,8 +1,7 @@
 /**
  * Mark duplicate tool calls in session state for later pruning.
  *
- * This function is called during compress-time (prepareSession), NOT every
- * turn. It scans all historical tool calls,
+ * Called from runPipeline every turn. Scans all historical tool calls,
  * identifies duplicates by signature, and writes toolCallIds to state.prune.tools
  * so that prune.ts (called every turn) can replace them with placeholders.
  *
@@ -86,7 +85,11 @@ export function markDuplicates(
   // Phase 4 will track per-message turn numbers.
   let protectedAssistantCount = 0;
   let cutoffIndex = messages.length;
-  for (let i = messages.length - 1; i >= 0 && protectedAssistantCount < config.turnProtection; i--) {
+  for (
+    let i = messages.length - 1;
+    i >= 0 && protectedAssistantCount < config.turnProtection;
+    i--
+  ) {
     if (messages[i].role === "assistant") {
       protectedAssistantCount++;
     }

@@ -1,10 +1,9 @@
 /**
  * Purge-errors marking function for the context pruning subsystem.
  *
- * This is a compress-time marking function called during `prepareSession()`.
- * It scans errored tool results from TWO sources and writes marks to
- * `state.prune.tools` so that `prune.ts` can replace them with placeholders
- * on every turn.
+ * Called from runPipeline every turn. Scans errored tool results from TWO
+ * sources and writes marks to `state.prune.tools` so that `prune.ts` can
+ * replace them with placeholders on every turn.
  *
  * The TWO sources are:
  *   1. `state.errorTracking` — iterates tracked error entries and marks those
@@ -70,6 +69,9 @@ export function markPurgeErrors(
 
     // Skip if already marked
     if (state.prune.tools.has(toolCallId)) continue;
+
+    // Skip entries within the protected turn window (recent turns)
+    if (state.turnCount - entry.turnNumber <= state.protectedTurns) continue;
 
     // Skip if still within the purge-errors turns window (not old enough)
     if (state.turnCount - entry.turnNumber < config.purgeErrorsTurns) continue;

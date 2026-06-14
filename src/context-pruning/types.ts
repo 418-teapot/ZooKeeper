@@ -51,17 +51,17 @@ export interface CompressionBlock {
   topic: string;
 
   // Lifecycle tracking
-  createdAt: number;              // timestamp (Date.now()) when block was created
-  anchorMessageId: string;        // which message this block anchors to
-  compressMessageId: string;       // which pipeline-assigned message ID created this block
-  durationMs: number;             // compression execution duration (0 for heuristic)
-  deactivatedAt?: number;         // timestamp when deactivated (optional)
-  deactivatedByBlockId?: number;  // which block deactivated this one (optional)
+  createdAt: number; // timestamp (Date.now()) when block was created
+  anchorMessageId: string; // which message this block anchors to
+  compressMessageId: string; // which pipeline-assigned message ID created this block
+  durationMs: number; // compression execution duration (0 for heuristic)
+  deactivatedAt?: number; // timestamp when deactivated (optional)
+  deactivatedByBlockId?: number; // which block deactivated this one (optional)
 
   // Block hierarchy
-  consumedBlockIds: number[];     // blocks superseded by this one
-  parentBlockIds: number[];       // blocks that superseded this one
-  includedBlockIds: number[];     // consumed + self (for recursive resolution)
+  consumedBlockIds: number[]; // blocks superseded by this one
+  parentBlockIds: number[]; // blocks that superseded this one
+  includedBlockIds: number[]; // consumed + self (for recursive resolution)
 
   startId: string;
   endId: string;
@@ -179,6 +179,10 @@ export interface ContextPruningConfig {
   // Protection
   protectedTools: string[];
   turnProtection: number; // 2 — protect last N turns
+
+  // User message protection
+  // TODO: Wire into pipeline logic — the field is parsed but not yet enforced.
+  protectUserMessages: boolean;
 
   // Dedup
   dedupProtectedTools: string[];

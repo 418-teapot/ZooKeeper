@@ -12,6 +12,7 @@ import type { SessionState } from "./types";
 
 const DEFAULT_SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const DEFAULT_CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // every 5 minutes
+const MAX_DEDUP_CACHE_SIZE = 1000;
 
 class ContextPruningState {
   private sessions = new Map<string, SessionState>();
@@ -109,7 +110,6 @@ class ContextPruningState {
     const existing = state.dedupCache.get(signature);
 
     if (existing) {
-      existing.callCount++;
       existing.latestSeenAt = messageId;
       return true; // duplicate detected
     }
@@ -121,6 +121,15 @@ class ContextPruningState {
       latestSeenAt: messageId,
       callCount: 1,
     });
+
+    // Cap cache size — evict oldest entry when over limit
+    if (state.dedupCache.size > MAX_DEDUP_CACHE_SIZE) {
+      const firstKey = state.dedupCache.keys().next().value;
+      if (firstKey !== undefined) {
+        state.dedupCache.delete(firstKey);
+      }
+    }
+
     return false; // not a duplicate
   }
 
@@ -145,6 +154,14 @@ class ContextPruningState {
       turnNumber: state.turnCount,
       errorMessage,
     });
+
+    // Cap error tracking — evict oldest entry when over limit
+    if (state.errorTracking.size > MAX_DEDUP_CACHE_SIZE) {
+      const firstKey = state.errorTracking.keys().next().value;
+      if (firstKey !== undefined) {
+        state.errorTracking.delete(firstKey);
+      }
+    }
   }
 
   /**
@@ -224,4 +241,4 @@ class ContextPruningState {
 // Singleton instance
 export const globalState = new ContextPruningState();
 
-export { ContextPruningState };
+export { ContextPruningState, MAX_DEDUP_CACHE_SIZE };

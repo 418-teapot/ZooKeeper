@@ -19,7 +19,14 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import config from "../config.toml" with { type: "toml" };
+import { compressToolDef } from "./context-pruning/compress-tool";
 import { measureContext } from "./hooks/context-metrics";
+import {
+  handleMessagesTransform,
+  handleSessionCleanup,
+  handleToolAfter,
+  handleToolBefore,
+} from "./hooks/context-pruning";
 import { nudgeDirectWork } from "./hooks/direct-work-nudge";
 import { injectFocusReminder } from "./hooks/focus-reminder";
 import { recoverJsonError } from "./hooks/json-error-nudge";
@@ -35,6 +42,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const CORE_DIR = resolve(__dirname, "../core");
 
 let _sessionIdSet = false;
+let _lastSessionId = "";
 
 // ---------------------------------------------------------------------------
 // Prompt loading
@@ -69,6 +77,16 @@ export async function zookeeper(input: any) {
   const skillsConfig: Record<string, string> = zooConfig.skills ?? {};
   const client = input.client;
 
+  // Determine whether to register the LLM compress tool.
+  // Safe default: false (don't register) when config is unavailable.
+  let compressEnabled = false;
+  try {
+    const ctxConfig: Record<string, unknown> = zooConfig.context ?? {};
+    compressEnabled = ctxConfig.compress_llm_enabled === true;
+  } catch {
+    // Config not available — safely default to false
+  }
+
   // Initialize file-based logging from [zoo.logging] config.
   {
     const logConfig = zooConfig.logging ?? {};
@@ -90,6 +108,7 @@ export async function zookeeper(input: any) {
   }
 
   return {
+    tool: compressEnabled ? { compress: compressToolDef } : {},
     async config(config: any) {
       const agents = config.agent ?? {};
 
@@ -137,9 +156,12 @@ export async function zookeeper(input: any) {
       input: { sessionID: string },
       _output: Record<string, unknown>,
     ) {
-      if (!_sessionIdSet && input.sessionID) {
-        setSessionId(input.sessionID);
-        _sessionIdSet = true;
+      if (input.sessionID) {
+        _lastSessionId = input.sessionID;
+        if (!_sessionIdSet) {
+          setSessionId(input.sessionID);
+          _sessionIdSet = true;
+        }
       }
     },
 
@@ -160,6 +182,18 @@ export async function zookeeper(input: any) {
       try {
         await injectFocusReminder(client, output);
         measureContext(output);
+        try {
+          await handleMessagesTransform(_input, output);
+        } catch (innerErr) {
+          log(
+            "plugin",
+            "handler_crashed",
+            output.messages?.[0]?.info?.sessionID ?? "",
+            undefined,
+            "error",
+            { handler: "handleMessagesTransform", error: String(innerErr) },
+          );
+        }
       } catch (err) {
         log(
           "plugin",
@@ -186,6 +220,18 @@ export async function zookeeper(input: any) {
       input: { tool: string; sessionID: string; callID: string },
       output: { args?: Record<string, unknown> },
     ) {
+      try {
+        await handleToolBefore(input, output);
+      } catch (err) {
+        log(
+          "plugin",
+          "handler_crashed",
+          input.sessionID,
+          input.callID,
+          "error",
+          { handler: "handleToolBefore", error: String(err) },
+        );
+      }
       validateBeforeExec(input, output, limits);
     },
 
@@ -217,6 +263,7 @@ export async function zookeeper(input: any) {
           fn: (i, o) => nudgeDirectWork(client, i, o),
         },
         { name: "nudgePostTask", fn: (i, o) => nudgePostTask(client, i, o) },
+        { name: "handleToolAfter", fn: (i, o) => handleToolAfter(i, o) },
       ];
       for (const { name, fn } of handlers) {
         try {
@@ -230,6 +277,19 @@ export async function zookeeper(input: any) {
             "error",
             { handler: name, error: String(err) },
           );
+        }
+      }
+    },
+
+    async dispose() {
+      if (_lastSessionId) {
+        try {
+          await handleSessionCleanup({ sessionID: _lastSessionId }, {});
+        } catch (err) {
+          log("plugin", "handler_crashed", _lastSessionId, undefined, "error", {
+            handler: "handleSessionCleanup",
+            error: String(err),
+          });
         }
       }
     },

@@ -38,7 +38,11 @@ export function estimateTotalTokens(messages: MessageRef[]): number {
   let total = 0;
   for (const msg of messages) {
     // Skip placeholder/compressed messages (they double-count)
-    if (msg.content.startsWith("[Compressed:") || msg.content.startsWith("[pruned:")) continue;
+    if (
+      msg.content.startsWith("[Compressed:") ||
+      msg.content.startsWith("[pruned:")
+    )
+      continue;
     if (msg.id.startsWith("dcp_c")) continue;
     total += estimateTokens(msg.content);
     if (msg.toolCalls) {

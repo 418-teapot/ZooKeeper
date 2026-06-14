@@ -2,17 +2,20 @@
  * Context pruning pipeline — orchestrates the message transformation steps.
  *
  * Split architecture:
- *   prepareSession()  — compress-time: filter + assign IDs + dedup marking + purge-errors marking
- *   runPipeline()     — every-turn: filter + assign IDs + advanceTurn + apply prune + nudge + strip metadata
+ *   prepareSession()  — every-turn: ensure session state exists
+ *   runPipeline()     — every-turn: filter + assign IDs + advanceTurn + sync blocks + dedup + purge-errors + apply prune + nudge + strip metadata
+ *
+ * syncCompressionBlocks is called only once per turn, from runPipeline,
+ * after ID assignment (P3), so it always sees the final mNNNN-format IDs.
  *
  * @module
  */
 
+import { applyCompression } from "./compress";
 import { markDuplicates } from "./dedup";
 import { estimateTotalTokens } from "./estimator";
 import { buildNudges } from "./nudge";
 import { applyPruning } from "./prune";
-import { applyCompression } from "./compress";
 import { markPurgeErrors } from "./purge-errors";
 import { globalState } from "./state";
 import type {
@@ -38,58 +41,30 @@ function stripHallucinations(content: string): string {
     .replace(/<zoo:block-id>.*?<\/zoo:block-id>/g, "");
 }
 
-// ── prepareSession (compress-time) ────────────────────────
+// ── prepareSession (state init) ────────────────────────────
 
 /**
- * Prepare session state for context pruning — called once at session start
- * (or when the agent begins a new task, i.e. "compress-time").
+ * Ensure session state exists for context pruning — called every turn.
  *
- * Steps:
- *   1. Filter malformed messages
- *   2. Assign message references (mNNNN)
- *   3. Dedup marking — writes to state.prune.tools
- *   4. Purge-errors marking — writes to state.prune.tools
+ * State creation (getOrCreate) is also done inside runPipeline, so this
+ * function is purely a convenience / explicit-init export for callers
+ * that want to guarantee state exists before runPipeline.
+ *
+ * NOTE: syncCompressionBlocks is NOT called here — it runs once from
+ * runPipeline after ID assignment (P3) so that block anchorMessageIds
+ * always match the mNNNN-format IDs visible at pipeline runtime.
  *
  * @param config - Context pruning configuration.
- * @param messages - The messages to prepare.
+ * @param messages - Unused (kept for API compatibility).
  * @param sessionId - The session identifier.
  */
 export function prepareSession(
   config: ContextPruningConfig,
-  messages: MessageRef[],
+  _messages: MessageRef[],
   sessionId: string,
 ): void {
   if (!config.enabled) return;
-  const state = globalState.getOrCreate(sessionId, config.turnProtection);
-
-  // Step 1: Filter malformed
-  messages = messages.filter((m) => m.id && m.role && m.content !== undefined);
-
-  // Step 1.5: Strip hallucinated <zoo:*> tags
-  for (const m of messages) {
-    if (m.content) {
-      m.content = stripHallucinations(m.content);
-    }
-  }
-
-  // Step 2: Assign message refs (mNNNN) and inject visible ID tag
-  messages.forEach((m, i) => {
-    if (!/^m\d{4,}$/.test(m.id) && !m.id.startsWith("dcp_c")) {
-      m.id = `m${String(i).padStart(4, "0")}`;
-      if (m.content && !m.content.includes("<zoo:message-id>")) {
-        m.content = `<zoo:message-id>${m.id}</zoo:message-id>\n${m.content}`;
-      }
-    }
-  });
-
-  // Step 3: Dedup marking — writes to state.prune.tools
-  markDuplicates(state, config, messages);
-
-  // Step 4: Purge-errors marking — writes to state.prune.tools
-  markPurgeErrors(state, config, messages);
-
-  // Step 4.5: Sync compression blocks — deactivate orphaned blocks
-  syncCompressionBlocks(state, messages);
+  globalState.getOrCreate(sessionId, config.turnProtection);
 }
 
 // ── syncCompressionBlocks ──────────────────────────────────
@@ -156,11 +131,18 @@ export function syncCompressionBlocks(
  * Called every turn to:
  *   1. Filter malformed messages
  *   2. Assign message references (mNNNN)
- *   2b. Advance turn counter
- *   2c. Sync compression blocks (deactivate orphaned blocks)
+ *   2b. Sync compression blocks (deactivate orphaned blocks) — after ID
+ *       assignment so block anchorMessageIds match the mNNNN-format IDs
+ *   2c. Advance turn counter
+ *   2d. Dedup marking — writes to state.prune.tools
+ *   2e. Purge-errors marking — writes to state.prune.tools
  *   3. Apply prune (reads state.prune.tools)
  *   4. Build nudges (based on token thresholds)
  *   5. Strip stale metadata
+ *
+ * syncCompressionBlocks is called here (step 2c) because messages have
+ * been assigned mNNNN IDs in step 2.  This is the only call to
+ * syncCompressionBlocks per turn — prepareSession no longer calls it.
  *
  * @param input - Pipeline input with session ID, messages, and config.
  * @returns Pipeline output with filtered messages, nudges, and stats.
@@ -186,6 +168,17 @@ export function runPipeline(input: PipelineInput): PipelineOutput {
   for (const m of working) {
     if (m.content) {
       m.content = stripHallucinations(m.content);
+    }
+    // Also strip hallucinations from tool result output/error fields
+    if (m.toolResults) {
+      for (const tr of m.toolResults) {
+        if (tr.output) {
+          tr.output = stripHallucinations(tr.output);
+        }
+        if (tr.error) {
+          tr.error = stripHallucinations(tr.error);
+        }
+      }
     }
   }
 
@@ -217,11 +210,18 @@ export function runPipeline(input: PipelineInput): PipelineOutput {
     }
   });
 
-  // ── Step 2b: Advance turn counter ─────────────────────
-  globalState.advanceTurn(sessionId);
-
   // ── Step 2c: Sync compression blocks ─────────────────
   syncCompressionBlocks(state, working);
+
+  // ── Advance turn counter (before marking steps so turnCount
+  //     is correct for markPurgeErrors error age calculation) ──
+  globalState.advanceTurn(sessionId);
+
+  // ── Step 2d: Dedup marking — writes to state.prune.tools ──
+  markDuplicates(state, config, working);
+
+  // ── Step 2e: Purge-errors marking — writes to state.prune.tools ──
+  markPurgeErrors(state, config, working);
 
   // ── Step 3: Apply prune ──────────────────────────────
   const pruneResult = applyPruning(state, working);

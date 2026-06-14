@@ -9,6 +9,7 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import { applyCompression } from "./compress";
 import { loadContextConfig, resolveThreshold } from "./config-loader";
 import { markDuplicates } from "./dedup";
 import {
@@ -17,12 +18,7 @@ import {
   getContextTokens,
 } from "./estimator";
 import { buildNudges } from "./nudge";
-import {
-  prepareSession,
-  runPipeline,
-  syncCompressionBlocks,
-} from "./pipeline";
-import { applyCompression } from "./compress";
+import { prepareSession, runPipeline, syncCompressionBlocks } from "./pipeline";
 import { applyPruning } from "./prune";
 import { markPurgeErrors } from "./purge-errors";
 import { ContextPruningState, globalState } from "./state";
@@ -60,6 +56,7 @@ function passThroughConfig(
     persistState: false,
     protectedTools: ["task", "skill", "question"],
     turnProtection: 2,
+    protectUserMessages: false,
     dedupProtectedTools: ["task", "skill", "read"],
     purgeErrorsProtectedTools: ["task", "skill"],
     protectedFilePatterns: [],
@@ -374,7 +371,7 @@ describe("state methods", () => {
     assert.equal(entry.callCount, 1);
   });
 
-  it("trackToolCall duplicate call returns true, callCount becomes 2", () => {
+  it("trackToolCall duplicate call returns true, callCount stays 1 (only markDuplicates increments)", () => {
     globalState.trackToolCall(
       "test-session",
       "read",
@@ -392,7 +389,8 @@ describe("state methods", () => {
     assert.ok(session);
     const entry = session.dedupCache.values().next().value;
     assert.ok(entry);
-    assert.equal(entry.callCount, 2);
+    // trackToolCall no longer increments callCount — only markDuplicates owns it
+    assert.equal(entry.callCount, 1);
   });
 
   it("trackToolCall with different params returns false", () => {
@@ -689,24 +687,24 @@ describe("pipeline metadata stripping + advanceTurn", () => {
 
     // Messages before the last assistant (indices 0, 1, 2) have _provider and _raw stripped
     assert.ok(output.messages[0].metadata);
-    assert.equal(output.messages[0].metadata!.keep, "yes");
-    assert.equal(output.messages[0].metadata!._provider, undefined);
-    assert.equal(output.messages[0].metadata!._raw, undefined);
+    assert.equal(output.messages[0].metadata?.keep, "yes");
+    assert.equal(output.messages[0].metadata?._provider, undefined);
+    assert.equal(output.messages[0].metadata?._raw, undefined);
 
     assert.ok(output.messages[1].metadata);
-    assert.equal(output.messages[1].metadata!.keep, "also");
-    assert.equal(output.messages[1].metadata!._provider, undefined);
+    assert.equal(output.messages[1].metadata?.keep, "also");
+    assert.equal(output.messages[1].metadata?._provider, undefined);
 
     assert.ok(output.messages[2].metadata);
-    assert.equal(output.messages[2].metadata!.keep, "too");
-    assert.equal(output.messages[2].metadata!._provider, undefined);
-    assert.equal(output.messages[2].metadata!._raw, undefined);
+    assert.equal(output.messages[2].metadata?.keep, "too");
+    assert.equal(output.messages[2].metadata?._provider, undefined);
+    assert.equal(output.messages[2].metadata?._raw, undefined);
 
     // The last assistant (index 3) keeps all metadata
     assert.ok(output.messages[3].metadata);
-    assert.equal(output.messages[3].metadata!.keep, "last");
-    assert.equal(output.messages[3].metadata!._provider, "anthropic");
-    assert.equal(output.messages[3].metadata!._raw, "last-raw");
+    assert.equal(output.messages[3].metadata?.keep, "last");
+    assert.equal(output.messages[3].metadata?._provider, "anthropic");
+    assert.equal(output.messages[3].metadata?._raw, "last-raw");
   });
 
   it("message without metadata — no error, output unchanged", () => {
@@ -758,18 +756,21 @@ describe("pipeline metadata stripping + advanceTurn", () => {
 // ---------------------------------------------------------------------------
 
 describe("prepareSession", () => {
-  it("filters malformed messages and assigns IDs (stub)", () => {
+  it("creates session state and syncs blocks without filtering or reassigning IDs", () => {
     const messages: MessageRef[] = [
       { id: "", role: "user" as const, content: "bad" },
       { id: "x0000", role: "user" as const, content: "good" },
     ];
     prepareSession(passThroughConfig(), messages, "test-session");
-    // The .filter() creates a new local array so the original array length
-    // is unchanged. But surviving message objects (shared references) have
-    // their IDs reassigned. The "good" message (original index 1) survives
-    // the filter and becomes index 0 in the filtered array → id "m0000".
+    // prepareSession no longer filters malformed messages or reassigns IDs;
+    // that is done by runPipeline. The message array is not mutated.
     assert.equal(messages.length, 2);
-    assert.equal(messages[1].id, "m0000");
+    assert.equal(messages[0].id, "");
+    assert.equal(messages[1].id, "x0000");
+    // Session state was created
+    const state = globalState.get("test-session");
+    assert.ok(state);
+    assert.equal(state.sessionId, "test-session");
   });
 
   it("is a no-op when config.enabled is false", () => {
@@ -1090,6 +1091,7 @@ describe("loadContextConfig", () => {
     assert.equal(config.persistState, false);
     assert.deepEqual(config.protectedTools, ["task"]);
     assert.equal(config.turnProtection, 4);
+    assert.equal(config.protectUserMessages, false);
     assert.deepEqual(config.dedupProtectedTools, ["task"]);
     assert.deepEqual(config.purgeErrorsProtectedTools, ["task", "bash"]);
   });
@@ -1844,11 +1846,11 @@ describe("applyPruning", () => {
 });
 
 // ---------------------------------------------------------------------------
-// (n) Prepare-and-run integration
+// (n) Pipeline integration (mark + prune in one call)
 // ---------------------------------------------------------------------------
 
-describe("two-phase integration", () => {
-  it("prepareSession marks duplicates, then runPipeline prunes them", () => {
+describe("pipeline integration", () => {
+  it("runPipeline marks duplicates and prunes them in a single call", () => {
     const messages: MessageRef[] = [
       msg("raw1", "assistant", "", {
         toolCalls: [
@@ -1869,19 +1871,7 @@ describe("two-phase integration", () => {
       }),
     ];
 
-    // compress-time: marks duplicates
-    prepareSession(
-      passThroughConfig({ dedupEnabled: true, turnProtection: 0 }),
-      messages,
-      "test-session",
-    );
-
-    // t000a should be marked as the older duplicate
-    const state = globalState.get("test-session");
-    assert.ok(state);
-    assert.ok(state.prune.tools.has("t000a"));
-
-    // every-turn: applies pruning marks
+    // runPipeline does both marking (markDuplicates) and pruning (applyPruning)
     const output = runPipeline({
       sessionId: "test-session",
       messages,
@@ -1905,7 +1895,7 @@ describe("two-phase integration", () => {
     assert.equal(output.stats.prunedErrors, 0);
   });
 
-  it("prepareSession marks purge errors, then runPipeline prunes them", () => {
+  it("runPipeline marks purge errors and prunes them in a single call", () => {
     // Set turnCount so old errors are beyond the purgeErrorsTurns window
     const session = globalState.getOrCreate("test-session");
     session.turnCount = 10;
@@ -1927,18 +1917,7 @@ describe("two-phase integration", () => {
       }),
     ];
 
-    // compress-time: marks errors
-    prepareSession(
-      passThroughConfig({
-        purgeErrorsEnabled: true,
-        purgeErrorsProtectedTools: [],
-        turnProtection: 0,
-      }),
-      messages,
-      "test-session",
-    );
-
-    // every-turn: applies pruning marks
+    // runPipeline does both marking (markPurgeErrors) and pruning (applyPruning)
     const output = runPipeline({
       sessionId: "test-session",
       messages,
@@ -2028,7 +2007,7 @@ describe("applyCompression", () => {
   it("protects the last N assistant turns from compression", () => {
     const state = globalState.getOrCreate(
       "test-session",
-      2, /* protectedTurns */
+      2 /* protectedTurns */,
     );
     const config = compressConfig({ turnProtection: 2 });
     const long = "X".repeat(300);
@@ -2069,7 +2048,7 @@ describe("applyCompression", () => {
   it("returns unchanged when all messages are within protection window", () => {
     const state = globalState.getOrCreate(
       "test-session",
-      3, /* protectedTurns */
+      3 /* protectedTurns */,
     );
     const config = compressConfig({ turnProtection: 3 });
     const long = "X".repeat(300);
@@ -2151,7 +2130,7 @@ describe("applyCompression", () => {
   it("creates correct placeholder format with topic extracted from first assistant", () => {
     const state = globalState.getOrCreate(
       "test-session",
-      1, /* protectedTurns */
+      1 /* protectedTurns */,
     );
     const config = compressConfig({ turnProtection: 1 });
     const long = "X".repeat(300);
@@ -2171,7 +2150,9 @@ describe("applyCompression", () => {
     const result = applyCompression(state, config, messages, stats);
 
     assert.ok(result[0].content.startsWith("[Compressed:"));
-    assert.ok(result[0].content.includes("Install dependencies for the project"));
+    assert.ok(
+      result[0].content.includes("Install dependencies for the project"),
+    );
     assert.ok(
       /\[Compressed: .+ — \d+ messages \/ \d+ tokens removed\]\n<zoo:block-id>\d+<\/zoo:block-id>$/.test(
         result[0].content,
@@ -2186,7 +2167,7 @@ describe("applyCompression", () => {
   it("falls back to 'earlier conversation' when no assistant message in compressible range", () => {
     const state = globalState.getOrCreate(
       "test-session",
-      1, /* protectedTurns */
+      1 /* protectedTurns */,
     );
     const config = compressConfig({ turnProtection: 1 });
     const long = "X".repeat(300);
@@ -2231,7 +2212,7 @@ describe("applyCompression", () => {
   it("updates blocksById and byMessageId on compression", () => {
     const state = globalState.getOrCreate(
       "test-session",
-      1, /* protectedTurns */
+      1 /* protectedTurns */,
     );
     const config = compressConfig({ turnProtection: 1 });
     const long = "X".repeat(300);
@@ -2266,7 +2247,7 @@ describe("applyCompression", () => {
   it("updates activeBlockIds and totalCompressedTokens", () => {
     const state = globalState.getOrCreate(
       "test-session",
-      1, /* protectedTurns */
+      1 /* protectedTurns */,
     );
     const config = compressConfig({ turnProtection: 1 });
     const long = "X".repeat(300);
@@ -2337,7 +2318,7 @@ describe("applyCompression", () => {
   it("updates pipeline stats", () => {
     const state = globalState.getOrCreate(
       "test-session",
-      1, /* protectedTurns */
+      1 /* protectedTurns */,
     );
     const config = compressConfig({ turnProtection: 1 });
     const long = "X".repeat(300);
@@ -2388,7 +2369,7 @@ describe("applyCompression", () => {
   it("handles messages with toolCalls — collects toolCall IDs into block", () => {
     const state = globalState.getOrCreate(
       "test-session",
-      1, /* protectedTurns */
+      1 /* protectedTurns */,
     );
     const config = compressConfig({ turnProtection: 1 });
     const long = "X".repeat(300);

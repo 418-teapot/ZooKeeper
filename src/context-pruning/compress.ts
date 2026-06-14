@@ -9,6 +9,12 @@
  * @module
  */
 
+import { log } from "../utils/logger.js";
+import { estimateTotalTokens } from "./estimator";
+import {
+  getFilePathsFromParameters,
+  isFilePathProtected,
+} from "./protected-patterns";
 import type {
   CompressionBlock,
   ContextPruningConfig,
@@ -16,7 +22,6 @@ import type {
   PipelineStats,
   SessionState,
 } from "./types";
-import { estimateTotalTokens } from "./estimator";
 
 /**
  * Apply heuristic range compression to messages that exceed the context
@@ -88,6 +93,40 @@ export function applyCompression(
 
     // ── Step 4: Build compression block ───────────────────
     const range = messages.slice(0, boundaryIndex);
+
+    // ── Step 4a: Protected file check ─────────────────────
+    // Before compressing, verify that no message in the range contains tool
+    // calls whose parameters reference protected file paths.  If any are
+    // found, skip compression entirely to avoid losing context about files
+    // the user has asked us to protect.
+    const patterns = config.protectedFilePatterns;
+    if (patterns.length > 0) {
+      let hasProtected = false;
+      for (const msg of range) {
+        if (!msg.toolCalls) continue;
+        for (const tc of msg.toolCalls) {
+          const filePaths = getFilePathsFromParameters(tc.parameters);
+          for (const fp of filePaths) {
+            if (isFilePathProtected(fp, patterns)) {
+              hasProtected = true;
+              break;
+            }
+          }
+          if (hasProtected) break;
+        }
+        if (hasProtected) break;
+      }
+      if (hasProtected) {
+        log(
+          "compress",
+          "protected_files_skipped",
+          "<unknown>",
+          undefined,
+          "debug",
+        );
+        return messages;
+      }
+    }
     const blockId = state.nextBlockId++;
     const compressedTokens = estimateTotalTokens(range);
     const summaryTokens = 50;
@@ -205,7 +244,7 @@ export function applyCompression(
     // ── Return new message array ──────────────────────────
     return [placeholder, ...messages.slice(boundaryIndex)];
   } catch (e) {
-    console.error("[zookeeper:compress] error:", e);
+    log("compress", "error", "", undefined, "error", { error: String(e) });
     return messages;
   }
 }

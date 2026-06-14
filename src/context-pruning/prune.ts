@@ -12,6 +12,7 @@
  * @module
  */
 
+import { MAX_DEDUP_CACHE_SIZE } from "./state";
 import type { MessageRef, SessionState, ToolResultRef } from "./types";
 
 /**
@@ -101,7 +102,10 @@ export function applyPruning(
         if (msg.toolCalls) {
           for (const tc of msg.toolCalls) {
             if (tc.id === tr.toolCallId) {
-              tc.parameters = { pruned: true, reason: `[input removed — failed tool call: ${toolName}]` };
+              tc.parameters = {
+                pruned: true,
+                reason: `[input removed — failed tool call: ${toolName}]`,
+              };
             }
           }
         }
@@ -117,6 +121,15 @@ export function applyPruning(
       }
 
       state.prune.prunedCallIds.add(tr.toolCallId);
+
+      // Cap prunedCallIds Set — evict oldest entry when over limit
+      if (state.prune.prunedCallIds.size > MAX_DEDUP_CACHE_SIZE) {
+        const firstValue = state.prune.prunedCallIds.values().next().value;
+        if (firstValue !== undefined) {
+          state.prune.prunedCallIds.delete(firstValue);
+        }
+      }
+
       changed = true;
     }
 

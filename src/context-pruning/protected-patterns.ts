@@ -127,7 +127,11 @@ export function getFilePathsFromParameters(
 
   // Check apply_patch pattern: { file: { path: "..." } }
   const file = params.file;
-  if (file && typeof file === "object" && typeof (file as Record<string, unknown>).path === "string") {
+  if (
+    file &&
+    typeof file === "object" &&
+    typeof (file as Record<string, unknown>).path === "string"
+  ) {
     paths.push((file as Record<string, unknown>).path as string);
   }
 
@@ -149,7 +153,11 @@ export function getFilePathsFromParameters(
   const edits = params.edits;
   if (Array.isArray(edits)) {
     for (const edit of edits) {
-      if (typeof edit === "object" && edit && typeof (edit as any).filePath === "string") {
+      if (
+        typeof edit === "object" &&
+        edit &&
+        typeof (edit as any).filePath === "string"
+      ) {
         paths.push((edit as any).filePath);
       }
     }

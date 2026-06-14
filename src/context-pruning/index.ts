@@ -7,6 +7,8 @@
  */
 
 export { applyCompression } from "./compress";
+export { applyMessageCompression } from "./compress-message";
+export { compressToolDef } from "./compress-tool";
 export {
   loadContextConfig,
   resolveThreshold,

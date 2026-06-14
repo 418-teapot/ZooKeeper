@@ -57,6 +57,7 @@ const DEFAULTS: ContextPruningConfig = {
   persistState: false,
   protectedTools: ["task", "skill", "question"],
   turnProtection: 2,
+  protectUserMessages: false,
   dedupProtectedTools: ["task", "skill", "read"],
   purgeErrorsProtectedTools: ["task", "skill"],
   protectedFilePatterns: [],
@@ -148,6 +149,8 @@ export function loadContextConfig(
     persistState: ctx.persist_state ?? DEFAULTS.persistState,
     protectedTools: ctx.protected_tools ?? DEFAULTS.protectedTools,
     turnProtection: ctx.turn_protection ?? DEFAULTS.turnProtection,
+    protectUserMessages:
+      ctx.protect_user_messages ?? DEFAULTS.protectUserMessages,
     dedupProtectedTools:
       ctx.dedup_protected_tools ?? DEFAULTS.dedupProtectedTools,
     purgeErrorsProtectedTools:
