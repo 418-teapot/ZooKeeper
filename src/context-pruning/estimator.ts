@@ -37,6 +37,9 @@ export function estimateTokens(text: string): number {
 export function estimateTotalTokens(messages: MessageRef[]): number {
   let total = 0;
   for (const msg of messages) {
+    // Skip placeholder/compressed messages (they double-count)
+    if (msg.content.startsWith("[Compressed:") || msg.content.startsWith("[pruned:")) continue;
+    if (msg.id.startsWith("dcp_c")) continue;
     total += estimateTokens(msg.content);
     if (msg.toolCalls) {
       for (const tc of msg.toolCalls) {
@@ -102,9 +105,10 @@ export function getContextTokens(
     break;
   }
 
-  // Step 2: Estimate tokens for messages after the last assistant
+  // Step 2: Estimate tokens for messages from the last assistant onward
+  // (includes the assistant's own tool calls and outputs)
   let estimatedNewTokens = 0;
-  for (let i = lastAssistantIndex + 1; i < messages.length; i++) {
+  for (let i = Math.max(0, lastAssistantIndex); i < messages.length; i++) {
     estimatedNewTokens += estimateMessageHeuristic(messages[i]);
   }
 

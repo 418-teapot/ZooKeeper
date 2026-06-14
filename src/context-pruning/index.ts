@@ -6,6 +6,7 @@
  * @module
  */
 
+export { applyCompression } from "./compress";
 export {
   loadContextConfig,
   resolveThreshold,

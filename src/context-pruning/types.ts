@@ -39,15 +39,29 @@ export interface ToolResultRef {
 export type CompressionMode = "range" | "message";
 
 export interface CompressionBlock {
-  blockId: string;
-  runId: string;
+  blockId: number;
+  runId: number;
   active: boolean;
+  deactivatedByUser: boolean;
 
   compressedTokens: number;
   summaryTokens: number;
 
   mode: CompressionMode;
   topic: string;
+
+  // Lifecycle tracking
+  createdAt: number;              // timestamp (Date.now()) when block was created
+  anchorMessageId: string;        // which message this block anchors to
+  compressMessageId: string;       // which pipeline-assigned message ID created this block
+  durationMs: number;             // compression execution duration (0 for heuristic)
+  deactivatedAt?: number;         // timestamp when deactivated (optional)
+  deactivatedByBlockId?: number;  // which block deactivated this one (optional)
+
+  // Block hierarchy
+  consumedBlockIds: number[];     // blocks superseded by this one
+  parentBlockIds: number[];       // blocks that superseded this one
+  includedBlockIds: number[];     // consumed + self (for recursive resolution)
 
   startId: string;
   endId: string;
@@ -57,7 +71,7 @@ export interface CompressionBlock {
   effectiveMessageIds: string[];
   effectiveToolIds: string[];
 
-  summary: CompressionSummary;
+  summary: string; // Phase 4 will upgrade to CompressionSummary — see docs
 }
 
 export interface CompressionSummary {
@@ -68,15 +82,24 @@ export interface CompressionSummary {
   files: string[];
 }
 
+// ── Message-Block index ────────────────────────────────────
+
+export interface MessageBlockEntry {
+  tokenCount: number;
+  allBlockIds: number[];
+  activeBlockIds: number[];
+}
+
 // ── Session State ──────────────────────────────────────────
 
 export interface SessionState {
   sessionId: string;
 
   // Compression blocks
-  blocksById: Map<string, CompressionBlock>;
-  byMessageId: Map<string, string[]>; // messageId → blockId[]
-  activeBlockIds: Set<string>;
+  blocksById: Map<number, CompressionBlock>;
+  byMessageId: Map<string, MessageBlockEntry>;
+  activeBlockIds: Set<number>;
+  activeByAnchorMessageId: Map<string, number>;
 
   // Dedup cache
   dedupCache: Map<string, DedupEntry>;
@@ -87,6 +110,11 @@ export interface SessionState {
   // Turn protection
   protectedTurns: number;
   turnCount: number;
+  nudgeCounter: number;
+
+  // Monotonically increasing counters
+  nextBlockId: number;
+  nextRunId: number;
 
   // Prune state (tool outputs/errors marked for replacement)
   prune: PruneState;
@@ -114,6 +142,7 @@ export interface ErrorEntry {
 
 export interface PruneState {
   tools: Map<string, number>; // toolCallId → tokenCount (value unused, just set presence)
+  prunedCallIds: Set<string>; // toolCallIds already pruned in this session
 }
 
 // ── Config ─────────────────────────────────────────────────
@@ -156,6 +185,9 @@ export interface ContextPruningConfig {
 
   // Purge errors
   purgeErrorsProtectedTools: string[];
+
+  // File path protection (glob patterns for files whose tool outputs are never pruned)
+  protectedFilePatterns: string[];
 }
 
 // ── Pipeline ───────────────────────────────────────────────

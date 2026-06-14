@@ -17,7 +17,12 @@ import {
   getContextTokens,
 } from "./estimator";
 import { buildNudges } from "./nudge";
-import { prepareSession, runPipeline } from "./pipeline";
+import {
+  prepareSession,
+  runPipeline,
+  syncCompressionBlocks,
+} from "./pipeline";
+import { applyCompression } from "./compress";
 import { applyPruning } from "./prune";
 import { markPurgeErrors } from "./purge-errors";
 import { ContextPruningState, globalState } from "./state";
@@ -25,6 +30,7 @@ import type {
   ContextPruningConfig,
   MessageRef,
   PipelineInput,
+  PipelineStats,
   SessionState,
 } from "./types";
 
@@ -56,6 +62,7 @@ function passThroughConfig(
     turnProtection: 2,
     dedupProtectedTools: ["task", "skill", "read"],
     purgeErrorsProtectedTools: ["task", "skill"],
+    protectedFilePatterns: [],
     ...overrides,
   };
 }
@@ -85,7 +92,9 @@ function freshState(overrides?: Partial<SessionState>): SessionState {
     errorTracking: new Map(),
     protectedTurns: 2,
     turnCount: 5,
-    prune: { tools: new Map() },
+    prune: { tools: new Map(), prunedCallIds: new Set() },
+    nextBlockId: 1,
+    nextRunId: 1,
     lastAccessedAt: Date.now(),
     totalPrunedTokens: 0,
     totalCompressedTokens: 0,
@@ -176,6 +185,27 @@ describe("pipeline pass-through", () => {
     const output = runPipeline(input);
     assert.equal(output.messages[0].id, "m0000");
     assert.equal(output.messages[1].id, "m0001");
+  });
+
+  it("preserves existing mNNNN-format IDs when reassigning others", () => {
+    const messages: MessageRef[] = [
+      msg("m0003", "user", "A"),
+      msg("custom-id", "assistant", "B"),
+      msg("m0007", "user", "C"),
+    ];
+    const input: PipelineInput = {
+      sessionId: "test-session",
+      messages,
+      config: passThroughConfig(),
+    };
+
+    const output = runPipeline(input);
+
+    // m0003 and m0007 kept; custom-id gets next ID after max(3, 7) + 1 = 8
+    assert.equal(output.messages[0].id, "m0003");
+    assert.equal(output.messages[1].id, "m0008");
+    assert.equal(output.messages[2].id, "m0007");
+    assert.equal(output.messages.length, 3);
   });
 });
 
@@ -436,6 +466,7 @@ describe("buildNudges thresholds", () => {
   const config = passThroughConfig({
     nudgeThresholdTokens: 100,
     urgentThresholdTokens: 200,
+    nudgeFrequency: 1,
   });
 
   it("returns no nudges below nudge threshold", () => {
@@ -466,6 +497,36 @@ describe("buildNudges thresholds", () => {
     assert.equal(nudges.length, 1);
     assert.ok(nudges[0].includes("Warning"));
     assert.ok(nudges[0].includes("250"));
+  });
+
+  it("respects nudgeFrequency — only fires every N calls", () => {
+    const state = { nudgeCounter: 0 } as SessionState;
+    const freqConfig = passThroughConfig({
+      nudgeThresholdTokens: 100,
+      urgentThresholdTokens: 200,
+      nudgeFrequency: 3,
+    });
+
+    // Call buildNudges 5 times with a value above threshold, using
+    // per-session state for frequency control (counter starts at 0).
+    // The counter is always incremented; nudge fires only when
+    // counter % nudgeFrequency === 0.
+    const call1 = buildNudges(150, freqConfig, state);
+    const call2 = buildNudges(150, freqConfig, state);
+    const call3 = buildNudges(150, freqConfig, state);
+    const call4 = buildNudges(150, freqConfig, state);
+    const call5 = buildNudges(150, freqConfig, state);
+
+    // Call 1: counter=0, 0%3=0 → fires, counter becomes 1
+    // Call 2: counter=1, 1%3=1≠0 → skips, counter becomes 2
+    // Call 3: counter=2, 2%3=2≠0 → skips, counter becomes 3
+    // Call 4: counter=3, 3%3=0 → fires, counter becomes 4
+    // Call 5: counter=4, 4%3=1≠0 → skips, counter becomes 5
+    assert.equal(call1.length, 1);
+    assert.equal(call2.length, 0);
+    assert.equal(call3.length, 0);
+    assert.equal(call4.length, 1);
+    assert.equal(call5.length, 0);
   });
 });
 
@@ -517,6 +578,42 @@ describe("pipeline edge cases", () => {
     assert.equal(output.messages[0].toolResults?.length, 1);
     assert.equal(output.messages[0].toolCalls?.[0].toolName, "read");
   });
+
+  it("injects message IDs into content for non-mNNNN IDs", () => {
+    const messages: MessageRef[] = [
+      msg("custom-id-1", "user", "Hello from custom"),
+      msg("m0000", "assistant", "I have a valid ID"),
+      msg("custom-id-2", "user", "Another custom"),
+    ];
+    const input: PipelineInput = {
+      sessionId: "test-session",
+      messages,
+      config: passThroughConfig(),
+    };
+
+    const output = runPipeline(input);
+
+    // custom-id-1 gets reassigned to next available ID after max existing mNNNN
+    // m0000 is valid, so nextId starts at 1 (m0000 + 1)
+    // custom-id-1 → m0001, custom-id-2 → m0002
+    assert.equal(output.messages[0].id, "m0001");
+    assert.equal(output.messages[1].id, "m0000");
+    assert.equal(output.messages[2].id, "m0002");
+
+    // Messages with non-mNNNN IDs get <zoo:message-id> injected into content
+    assert.ok(
+      output.messages[0].content.startsWith("<zoo:message-id>m0001"),
+      "custom-id-1 should get message-id tag",
+    );
+    assert.ok(
+      !output.messages[1].content.includes("<zoo:message-id>"),
+      "m0000 already has valid ID, no tag needed",
+    );
+    assert.ok(
+      output.messages[2].content.startsWith("<zoo:message-id>m0002"),
+      "custom-id-2 should get message-id tag",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -532,6 +629,11 @@ describe("pipeline metadata stripping + advanceTurn", () => {
         content: "hello",
         metadata: { _provider: "anthropic", _raw: "xxx", keep: "me" },
       },
+      {
+        id: "m0001",
+        role: "assistant",
+        content: "hi",
+      },
     ];
     const input: PipelineInput = {
       sessionId: "test-session",
@@ -540,12 +642,71 @@ describe("pipeline metadata stripping + advanceTurn", () => {
     };
 
     const output = runPipeline(input);
-    assert.equal(output.messages.length, 1);
+    assert.equal(output.messages.length, 2);
     const meta = output.messages[0].metadata;
     assert.ok(meta);
     assert.equal(meta.keep, "me");
     assert.equal(meta._provider, undefined);
     assert.equal(meta._raw, undefined);
+  });
+
+  it("only strips metadata from messages before the last assistant", () => {
+    const messages: MessageRef[] = [
+      {
+        id: "m0000",
+        role: "user",
+        content: "first",
+        metadata: { _provider: "anthropic", keep: "yes" },
+      },
+      {
+        id: "m0001",
+        role: "assistant",
+        content: "middle",
+        metadata: { _provider: "openai", keep: "also" },
+      },
+      {
+        id: "m0002",
+        role: "user",
+        content: "second",
+        metadata: { _provider: "anthropic", _raw: "raw", keep: "too" },
+      },
+      // This is the LAST assistant — its metadata should be kept
+      {
+        id: "m0003",
+        role: "assistant",
+        content: "last",
+        metadata: { _provider: "anthropic", _raw: "last-raw", keep: "last" },
+      },
+    ];
+    const input: PipelineInput = {
+      sessionId: "test-session",
+      messages,
+      config: passThroughConfig(),
+    };
+
+    const output = runPipeline(input);
+    assert.equal(output.messages.length, 4);
+
+    // Messages before the last assistant (indices 0, 1, 2) have _provider and _raw stripped
+    assert.ok(output.messages[0].metadata);
+    assert.equal(output.messages[0].metadata!.keep, "yes");
+    assert.equal(output.messages[0].metadata!._provider, undefined);
+    assert.equal(output.messages[0].metadata!._raw, undefined);
+
+    assert.ok(output.messages[1].metadata);
+    assert.equal(output.messages[1].metadata!.keep, "also");
+    assert.equal(output.messages[1].metadata!._provider, undefined);
+
+    assert.ok(output.messages[2].metadata);
+    assert.equal(output.messages[2].metadata!.keep, "too");
+    assert.equal(output.messages[2].metadata!._provider, undefined);
+    assert.equal(output.messages[2].metadata!._raw, undefined);
+
+    // The last assistant (index 3) keeps all metadata
+    assert.ok(output.messages[3].metadata);
+    assert.equal(output.messages[3].metadata!.keep, "last");
+    assert.equal(output.messages[3].metadata!._provider, "anthropic");
+    assert.equal(output.messages[3].metadata!._raw, "last-raw");
   });
 
   it("message without metadata — no error, output unchanged", () => {
@@ -1151,8 +1312,9 @@ describe("markDuplicates", () => {
   });
 
   it("respects turn protection (recent messages not marked)", () => {
-    // turnProtection=2 → protectedMessageCount = 8, cutoffIndex = max(0, 10-8) = 2
-    // Indices 0-1 are non-protected, 2-9 are protected.
+    // The new assistant-based counting: last `turnProtection` (2) assistant
+    // messages are protected. With 10 assistant messages, cutoffIndex = 8,
+    // so indices 0-7 are scanned and indices 8-9 are protected.
     const state = freshState({ turnCount: 1 });
     const messages: MessageRef[] = Array.from({ length: 10 }, (_, i) =>
       msg(`m${String(i).padStart(4, "0")}`, "assistant", "", {
@@ -1174,11 +1336,14 @@ describe("markDuplicates", () => {
       }),
       messages,
     );
-    // Only index 0 (first, not marked) and index 1 (duplicate, marks t0000)
-    // are processed. Indices 2+ are in the protected window.
-    assert.equal(count, 1);
+    // Indices 0-6 are marked as duplicates, index 7 survives (newest non-protected).
+    // Indices 8-9 are protected (not scanned).
+    assert.equal(count, 7);
     assert.ok(state.prune.tools.has("t0000"));
-    assert.ok(!state.prune.tools.has("t0001"));
+    assert.ok(state.prune.tools.has("t0006"));
+    assert.ok(!state.prune.tools.has("t0007")); // newest non-protected survives
+    assert.ok(!state.prune.tools.has("t0008")); // protected
+    assert.ok(!state.prune.tools.has("t0009")); // protected
   });
 
   it("multiple different tools with same signature pattern", () => {
@@ -1246,6 +1411,70 @@ describe("markDuplicates", () => {
     assert.equal(count, 1);
     assert.ok(state.prune.tools.has("t000a"));
     assert.ok(!state.prune.tools.has("t000c")); // newest occurrence survives
+  });
+
+  it("protects last N assistant turns regardless of message count per turn", () => {
+    // turnProtection=2 — only the last 2 assistant messages are protected.
+    // Create alternating messages with varying counts per turn (3, 5, 4 msgs),
+    // but the only thing that matters is the number of assistant messages.
+    const state = freshState({ turnCount: 1 });
+    const messages: MessageRef[] = [
+      // Turn 1: 3 messages (1 assistant at index 0)
+      msg("m0000", "assistant", "", {
+        toolCalls: [
+          { id: "t0000", toolName: "edit", parameters: { file: "a.ts" } },
+        ],
+      }),
+      msg("m0001", "tool", "", {
+        toolResults: [{ id: "tr0000", toolCallId: "t0000", output: "ok" }],
+      }),
+      msg("m0002", "user", "", {}),
+      // Turn 2: 5 messages (1 assistant at index 3)
+      msg("m0003", "assistant", "", {
+        toolCalls: [
+          { id: "t0001", toolName: "edit", parameters: { file: "a.ts" } },
+        ],
+      }),
+      msg("m0004", "tool", "", {
+        toolResults: [{ id: "tr0001", toolCallId: "t0001", output: "ok" }],
+      }),
+      msg("m0005", "user", "", {}),
+      msg("m0006", "tool", "", {
+        toolResults: [{ id: "tr0002", toolCallId: "t0001", output: "ok" }],
+      }),
+      msg("m0007", "tool", "", {
+        toolResults: [{ id: "tr0003", toolCallId: "t0001", output: "ok" }],
+      }),
+      // Turn 3: 4 messages (1 assistant at index 8 — protected)
+      msg("m0008", "assistant", "", {
+        toolCalls: [
+          { id: "t0002", toolName: "edit", parameters: { file: "a.ts" } },
+        ],
+      }),
+      msg("m0009", "tool", "", {
+        toolResults: [{ id: "tr0004", toolCallId: "t0002", output: "ok" }],
+      }),
+      msg("m0010", "user", "", {}),
+      msg("m0011", "user", "", {}),
+    ];
+
+    const count = markDuplicates(
+      state,
+      passThroughConfig({
+        dedupEnabled: true,
+        turnProtection: 2,
+        dedupProtectedTools: [],
+      }),
+      messages,
+    );
+
+    // Assistant messages at indices 0, 3, 8
+    // turnProtection=2 → last 2 assistants protected (indices 3, 8)
+    // CutoffIndex = 3 (start of the first protected assistant)
+    // Only index 0 is scanned (non-protected)
+    // Index 0 is first occurrence → no mark
+    assert.equal(count, 0);
+    assert.equal(state.prune.tools.size, 0);
   });
 });
 
@@ -1545,6 +1774,9 @@ describe("applyPruning", () => {
   it("idempotent: already-replaced placeholders are not double-processed", () => {
     const state = freshState();
     state.prune.tools.set("t0000", 5);
+    // Pre-populate prunedCallIds so the new idempotency check
+    // (which uses the Set rather than output content) skips t0000
+    state.prune.prunedCallIds.add("t0000");
     const messages: MessageRef[] = [
       msg("m0000", "assistant", "", {
         toolCalls: [{ id: "t0000", toolName: "read", parameters: {} }],
@@ -1563,6 +1795,51 @@ describe("applyPruning", () => {
     // Already pruned, should not count again
     assert.equal(result.prunedOutputs, 0);
     assert.equal(result.prunedErrors, 0);
+  });
+
+  it("replaces tool call parameters for errored tools", () => {
+    const state = freshState();
+    state.prune.tools.set("t0000", 5);
+    // Same message has both toolCalls and toolResults (inline format)
+    const messages: MessageRef[] = [
+      {
+        id: "m0000",
+        role: "tool",
+        content: "",
+        toolCalls: [
+          {
+            id: "t0000",
+            toolName: "bash",
+            parameters: { cmd: "rm -rf /" },
+          },
+        ],
+        toolResults: [
+          {
+            id: "tr0000",
+            toolCallId: "t0000",
+            output: "permission denied",
+            isError: true,
+            error: "permission denied",
+          },
+        ],
+      },
+    ];
+    const result = applyPruning(state, messages);
+
+    // The errored tool result should be replaced with a placeholder
+    assert.equal(result.prunedOutputs, 0);
+    assert.equal(result.prunedErrors, 1);
+    const tr = result.messages[0].toolResults?.[0];
+    assert.ok(tr);
+    assert.ok(tr.output.startsWith("[pruned:"));
+
+    // The tool call parameters should also be replaced
+    const tc = result.messages[0].toolCalls?.[0];
+    assert.ok(tc);
+    assert.deepEqual(tc.parameters, {
+      pruned: true,
+      reason: "[input removed — failed tool call: bash]",
+    });
   });
 });
 
@@ -1682,4 +1959,536 @@ describe("two-phase integration", () => {
   });
 });
 
-// 94 tests
+// ---------------------------------------------------------------------------
+// (p) applyCompression — heuristic range compression
+// ---------------------------------------------------------------------------
+
+describe("applyCompression", () => {
+  // ── Helpers ──────────────────────────────────────────────
+
+  function compressConfig(
+    overrides?: Partial<ContextPruningConfig>,
+  ): ContextPruningConfig {
+    return passThroughConfig({
+      compressEnabled: true,
+      nudgeThresholdTokens: 50,
+      turnProtection: 2,
+      compressMode: "range",
+      ...overrides,
+    });
+  }
+
+  function zeroStats(): PipelineStats {
+    return {
+      dedupRemoved: 0,
+      errorPurged: 0,
+      compressedTokens: 0,
+      summaryTokens: 0,
+      prunedOutputs: 0,
+      prunedErrors: 0,
+    };
+  }
+
+  // ── 1. No-op gates ──
+
+  it("returns messages unchanged when compressEnabled is false", () => {
+    const state = globalState.getOrCreate("test-session");
+    const config = compressConfig({ compressEnabled: false });
+    const long = "X".repeat(300);
+    const messages: MessageRef[] = [
+      { id: "m0000", role: "user", content: long },
+      { id: "m0001", role: "assistant", content: long },
+    ];
+    const stats = zeroStats();
+
+    const result = applyCompression(state, config, messages, stats);
+
+    assert.equal(result, messages);
+    assert.equal(stats.compressedTokens, 0);
+    assert.equal(stats.summaryTokens, 0);
+  });
+
+  it("returns messages unchanged when tokens are below threshold", () => {
+    const state = globalState.getOrCreate("test-session");
+    const config = compressConfig({ nudgeThresholdTokens: 10_000 });
+    const messages: MessageRef[] = [
+      { id: "m0000", role: "user", content: "hi" },
+      { id: "m0001", role: "assistant", content: "hello" },
+    ];
+    const stats = zeroStats();
+
+    const result = applyCompression(state, config, messages, stats);
+
+    assert.equal(result, messages);
+    assert.equal(stats.compressedTokens, 0);
+  });
+
+  // ── 2. Protected turns — boundary detection ──
+
+  it("protects the last N assistant turns from compression", () => {
+    const state = globalState.getOrCreate(
+      "test-session",
+      2, /* protectedTurns */
+    );
+    const config = compressConfig({ turnProtection: 2 });
+    const long = "X".repeat(300);
+
+    // 6 assistant messages interleaved with tool results (12 total)
+    const messages: MessageRef[] = [];
+    for (let i = 0; i < 6; i++) {
+      messages.push({
+        id: `m${String(i * 2).padStart(4, "0")}`,
+        role: "assistant",
+        content: long,
+      });
+      messages.push({
+        id: `m${String(i * 2 + 1).padStart(4, "0")}`,
+        role: "tool",
+        content: "",
+      });
+    }
+
+    const stats = zeroStats();
+    const result = applyCompression(state, config, messages, stats);
+
+    // 4 assistants compressed → placeholder + 2 protected assistants + 2 tool results
+    assert.equal(result.length, 5);
+    // First message is the placeholder
+    assert.ok(result[0].content.startsWith("[Compressed:"));
+    assert.equal(result[0].role, "user");
+    // Protected messages preserved
+    assert.equal(result[1].id, "m0008");
+    assert.equal(result[2].id, "m0009");
+    assert.equal(result[3].id, "m0010");
+    assert.equal(result[4].id, "m0011");
+    // Placeholder summary: 8 messages compressed (4 assistants + 4 tools)
+    assert.ok(result[0].content.includes("8 messages"));
+    assert.ok(result[0].content.includes("tokens removed"));
+  });
+
+  it("returns unchanged when all messages are within protection window", () => {
+    const state = globalState.getOrCreate(
+      "test-session",
+      3, /* protectedTurns */
+    );
+    const config = compressConfig({ turnProtection: 3 });
+    const long = "X".repeat(300);
+
+    // 3 assistant messages with interleaved tool results — all protected
+    const messages: MessageRef[] = [
+      { id: "m0000", role: "assistant", content: long },
+      { id: "m0001", role: "tool", content: "" },
+      { id: "m0002", role: "assistant", content: long },
+      { id: "m0003", role: "tool", content: "" },
+      { id: "m0004", role: "assistant", content: long },
+      { id: "m0005", role: "tool", content: "" },
+    ];
+
+    const stats = zeroStats();
+    const result = applyCompression(state, config, messages, stats);
+
+    assert.equal(result, messages);
+    assert.equal(stats.compressedTokens, 0);
+  });
+
+  it("returns unchanged when all messages are within protection window (over-protection guard)", () => {
+    // turnProtection=0 means "protect nothing" but the algorithm
+    // interprets this as "everything is within the window" to avoid
+    // compressing the entire active context. The D12 guard returns
+    // messages unchanged.
+    const state = globalState.getOrCreate("test-session", 0);
+    const config = compressConfig({ turnProtection: 0 });
+    const long = "X".repeat(300);
+    const messages: MessageRef[] = [
+      { id: "m0000", role: "user", content: long },
+      { id: "m0001", role: "assistant", content: long },
+      { id: "m0002", role: "assistant", content: long },
+    ];
+
+    const stats = zeroStats();
+    const result = applyCompression(state, config, messages, stats);
+
+    // Over-protection guard prevents compression when all messages
+    // are within the protection window (turnProtection=0)
+    assert.equal(result, messages);
+    assert.equal(stats.compressedTokens, 0);
+  });
+
+  it("compresses all but the last assistant when turnProtection is 1", () => {
+    const state = globalState.getOrCreate("test-session", 1);
+    const config = compressConfig({ turnProtection: 1 });
+    const long = "X".repeat(300);
+
+    // 3 assistant messages with interleaved tool results (6 total)
+    const messages: MessageRef[] = [];
+    for (let i = 0; i < 3; i++) {
+      messages.push({
+        id: `m${String(i * 2).padStart(4, "0")}`,
+        role: "assistant",
+        content: long,
+      });
+      messages.push({
+        id: `m${String(i * 2 + 1).padStart(4, "0")}`,
+        role: "tool",
+        content: "",
+      });
+    }
+
+    const stats = zeroStats();
+    const result = applyCompression(state, config, messages, stats);
+
+    // 2 assistants compressed → placeholder + 1 protected assistant + 1 tool result
+    assert.equal(result.length, 3);
+    assert.ok(result[0].content.startsWith("[Compressed:"));
+    assert.equal(result[0].role, "user");
+    // Protected: last assistant turn (m0004 + m0005)
+    assert.equal(result[1].id, "m0004");
+    assert.equal(result[2].id, "m0005");
+  });
+
+  // ── 4. Placeholder format ──
+
+  it("creates correct placeholder format with topic extracted from first assistant", () => {
+    const state = globalState.getOrCreate(
+      "test-session",
+      1, /* protectedTurns */
+    );
+    const config = compressConfig({ turnProtection: 1 });
+    const long = "X".repeat(300);
+    const messages: MessageRef[] = [
+      { id: "m0000", role: "user", content: "How do I install deps?" },
+      {
+        id: "m0001",
+        role: "assistant",
+        content:
+          "Install dependencies for the project using npm and then run the build script",
+      },
+      { id: "m0002", role: "tool", content: "" },
+      { id: "m0003", role: "assistant", content: long }, // protected
+    ];
+
+    const stats = zeroStats();
+    const result = applyCompression(state, config, messages, stats);
+
+    assert.ok(result[0].content.startsWith("[Compressed:"));
+    assert.ok(result[0].content.includes("Install dependencies for the project"));
+    assert.ok(
+      /\[Compressed: .+ — \d+ messages \/ \d+ tokens removed\]\n<zoo:block-id>\d+<\/zoo:block-id>$/.test(
+        result[0].content,
+      ),
+    );
+    assert.equal(result[0].role, "user");
+    assert.ok(result[0].id.startsWith("dcp_c"));
+    // 3 messages compressed → placeholder + 1 protected assistant
+    assert.equal(result.length, 2);
+  });
+
+  it("falls back to 'earlier conversation' when no assistant message in compressible range", () => {
+    const state = globalState.getOrCreate(
+      "test-session",
+      1, /* protectedTurns */
+    );
+    const config = compressConfig({ turnProtection: 1 });
+    const long = "X".repeat(300);
+    const messages: MessageRef[] = [
+      { id: "m0000", role: "user", content: "Hello there" },
+      { id: "m0001", role: "user", content: "Are you there?" },
+      { id: "m0002", role: "assistant", content: long }, // protected (only assistant)
+    ];
+
+    const stats = zeroStats();
+    const result = applyCompression(state, config, messages, stats);
+
+    assert.ok(result[0].content.startsWith("[Compressed:"));
+    assert.ok(result[0].content.includes("earlier conversation"));
+  });
+
+  it("includes machine-parseable block-id footer in placeholder", () => {
+    const state = globalState.getOrCreate("test-session", 1);
+    const config = compressConfig({ turnProtection: 1 });
+    const long = "X".repeat(300);
+    const messages: MessageRef[] = [
+      { id: "m0000", role: "user", content: "Hello" },
+      { id: "m0001", role: "assistant", content: long },
+      { id: "m0002", role: "assistant", content: long }, // protected
+    ];
+
+    const stats = zeroStats();
+    const result = applyCompression(state, config, messages, stats);
+
+    assert.ok(result[0].content.includes("<zoo:block-id>"));
+    const block = state.blocksById.values().next().value;
+    assert.ok(block);
+    assert.ok(
+      result[0].content.includes(
+        `<zoo:block-id>${block.blockId}</zoo:block-id>`,
+      ),
+    );
+  });
+
+  // ── 5. State updates ──
+
+  it("updates blocksById and byMessageId on compression", () => {
+    const state = globalState.getOrCreate(
+      "test-session",
+      1, /* protectedTurns */
+    );
+    const config = compressConfig({ turnProtection: 1 });
+    const long = "X".repeat(300);
+    const messages: MessageRef[] = [
+      { id: "m0000", role: "user", content: "Hello" },
+      { id: "m0001", role: "assistant", content: "install deps" },
+      { id: "m0002", role: "tool", content: "" },
+      { id: "m0003", role: "assistant", content: long }, // protected
+    ];
+
+    assert.equal(state.blocksById.size, 0);
+
+    const stats = zeroStats();
+    applyCompression(state, config, messages, stats);
+
+    assert.equal(state.blocksById.size, 1);
+    const block = state.blocksById.values().next().value;
+    assert.ok(block);
+    assert.equal(block.active, true);
+    assert.equal(block.mode, "range");
+    assert.equal(block.directMessageIds.length, 3); // m0000, m0001, m0002
+
+    // byMessageId for compressed messages
+    for (const msgId of ["m0000", "m0001", "m0002"]) {
+      const entry = state.byMessageId.get(msgId);
+      assert.ok(entry);
+      assert.equal(entry.allBlockIds.length, 1);
+      assert.equal(entry.allBlockIds[0], block.blockId);
+    }
+  });
+
+  it("updates activeBlockIds and totalCompressedTokens", () => {
+    const state = globalState.getOrCreate(
+      "test-session",
+      1, /* protectedTurns */
+    );
+    const config = compressConfig({ turnProtection: 1 });
+    const long = "X".repeat(300);
+    const messages: MessageRef[] = [
+      { id: "m0000", role: "user", content: "Hello" },
+      { id: "m0001", role: "assistant", content: long },
+      { id: "m0002", role: "assistant", content: long }, // protected
+    ];
+
+    assert.equal(state.activeBlockIds.size, 0);
+    assert.equal(state.totalCompressedTokens, 0);
+
+    const stats = zeroStats();
+    applyCompression(state, config, messages, stats);
+
+    // activeBlockIds
+    assert.equal(state.activeBlockIds.size, 1);
+    const blockId = state.blocksById.keys().next().value;
+    assert.ok(blockId);
+    assert.ok(state.activeBlockIds.has(blockId));
+
+    // totalCompressedTokens
+    assert.ok(state.totalCompressedTokens > 0);
+  });
+
+  // ── 5b. Multiple compressions ──
+
+  it("supports compressing again when new turns push tokens above threshold", () => {
+    const state = globalState.getOrCreate("test-session", 1);
+    const config = compressConfig({ turnProtection: 1 });
+    const long = "X".repeat(300);
+
+    // First compression: 2 assistants, last one protected
+    const messages1: MessageRef[] = [
+      { id: "m0000", role: "user", content: long },
+      { id: "m0001", role: "assistant", content: long },
+      { id: "m0002", role: "assistant", content: long }, // protected (last 1)
+    ];
+
+    const stats1 = zeroStats();
+    const result1 = applyCompression(state, config, messages1, stats1);
+
+    // First compression: placeholder + m0002
+    assert.equal(result1.length, 2);
+    assert.ok(result1[0].content.startsWith("[Compressed:"));
+    assert.ok(result1[0].content.includes("2 messages"));
+
+    // Second compression: add more messages, tokens exceed threshold again
+    const messages2: MessageRef[] = [
+      ...result1,
+      { id: "m0003", role: "user", content: long },
+      { id: "m0004", role: "assistant", content: long }, // new protected (last 1)
+    ];
+
+    const stats2 = zeroStats();
+    const result2 = applyCompression(state, config, messages2, stats2);
+
+    // Old placeholder + m0002 + m0003 should be compressed into a new placeholder
+    // Protected: m0004 (last assistant)
+    assert.equal(result2.length, 2);
+    assert.ok(result2[0].content.startsWith("[Compressed:"));
+    assert.notEqual(result2[0].id, result1[0].id); // new placeholder ID
+    assert.equal(result2[1].id, "m0004");
+  });
+
+  // ── 6. Stats ──
+
+  it("updates pipeline stats", () => {
+    const state = globalState.getOrCreate(
+      "test-session",
+      1, /* protectedTurns */
+    );
+    const config = compressConfig({ turnProtection: 1 });
+    const long = "X".repeat(300);
+    const messages: MessageRef[] = [
+      { id: "m0000", role: "user", content: "Hello" },
+      { id: "m0001", role: "assistant", content: long },
+      { id: "m0002", role: "tool", content: "" },
+      { id: "m0003", role: "assistant", content: long }, // protected
+    ];
+
+    const stats = zeroStats();
+    applyCompression(state, config, messages, stats);
+
+    assert.ok(stats.compressedTokens > 0);
+    assert.equal(stats.summaryTokens, 50);
+  });
+
+  // ── 7. Edge cases ──
+
+  it("returns messages unchanged when estimateTotalTokens throws", () => {
+    const state = globalState.getOrCreate("test-session");
+    const config = compressConfig();
+    // Use null content to trigger a TypeError in estimateTokens → caught by try-catch
+    const messages: MessageRef[] = [
+      { id: "m0000", role: "assistant", content: null as unknown as string },
+      { id: "m0001", role: "user", content: "hello" },
+    ];
+    const stats = zeroStats();
+
+    const result = applyCompression(state, config, messages, stats);
+
+    assert.equal(result, messages);
+    assert.equal(stats.compressedTokens, 0);
+  });
+
+  it("handles empty messages array", () => {
+    const state = globalState.getOrCreate("test-session");
+    const config = compressConfig();
+    const messages: MessageRef[] = [];
+    const stats = zeroStats();
+
+    const result = applyCompression(state, config, messages, stats);
+
+    assert.deepEqual(result, []);
+    assert.equal(stats.compressedTokens, 0);
+  });
+
+  it("handles messages with toolCalls — collects toolCall IDs into block", () => {
+    const state = globalState.getOrCreate(
+      "test-session",
+      1, /* protectedTurns */
+    );
+    const config = compressConfig({ turnProtection: 1 });
+    const long = "X".repeat(300);
+    const messages: MessageRef[] = [
+      {
+        id: "m0000",
+        role: "assistant",
+        content: long,
+        toolCalls: [
+          { id: "t0000", toolName: "read", parameters: { path: "a.ts" } },
+        ],
+      },
+      { id: "m0001", role: "user", content: "Hello" },
+      { id: "m0002", role: "assistant", content: long }, // protected
+    ];
+
+    const stats = zeroStats();
+    applyCompression(state, config, messages, stats);
+
+    const blocks = [...state.blocksById.values()];
+    assert.equal(blocks.length, 1);
+    assert.ok(blocks[0].directToolIds.includes("t0000"));
+    assert.equal(blocks[0].directToolIds.length, 1);
+  });
+
+  // ── 8. Block deactivation ──
+
+  it("deactivates existing blocks when they are consumed by a new block", () => {
+    const state = globalState.getOrCreate("test-session", 1);
+    // Use turnProtection=1 so the first compression creates a block
+    // and the second compression overlaps with its anchor
+    const config = compressConfig({ turnProtection: 1 });
+    const long = "X".repeat(300);
+
+    // First compression: 3 messages, all compressible
+    const messages1: MessageRef[] = [
+      { id: "m0000", role: "user", content: long },
+      { id: "m0001", role: "assistant", content: long },
+      { id: "m0002", role: "assistant", content: long },
+    ];
+    const stats1 = zeroStats();
+    applyCompression(state, config, messages1, stats1);
+
+    // Block 1 should be active (anchor = m0000)
+    const block1 = state.blocksById.get(1);
+    assert.ok(block1);
+    assert.equal(block1.active, true);
+    assert.equal(block1.anchorMessageId, "m0000");
+
+    // Second compression — use the ORIGINAL messages plus new ones,
+    // so m0000 (the anchor) is still in the compression range.
+    const messages2: MessageRef[] = [
+      { id: "m0000", role: "user", content: long },
+      { id: "m0001", role: "assistant", content: long },
+      { id: "m0002", role: "assistant", content: long },
+      { id: "m0003", role: "user", content: long },
+      { id: "m0004", role: "assistant", content: long },
+    ];
+    const stats2 = zeroStats();
+    applyCompression(state, config, messages2, stats2);
+
+    // Block 1 should now be deactivated (its anchor m0000 was consumed
+    // by the new block's compression range)
+    assert.equal(block1.active, false);
+    assert.ok(block1.deactivatedAt);
+    assert.ok(block1.deactivatedByBlockId);
+  });
+
+  it("syncCompressionBlocks deactivates orphan blocks", () => {
+    const state = globalState.getOrCreate("test-session2", 1);
+    const config = compressConfig({ turnProtection: 1 });
+    const long = "X".repeat(300);
+
+    // Create a compression block
+    const messages: MessageRef[] = [
+      { id: "m0000", role: "user", content: long },
+      { id: "m0001", role: "assistant", content: long },
+      { id: "m0002", role: "assistant", content: long }, // protected
+    ];
+    const stats = zeroStats();
+    applyCompression(state, config, messages, stats);
+
+    // Block should be active
+    const block = state.blocksById.values().next().value;
+    assert.ok(block);
+    assert.equal(block.active, true);
+
+    // Simulate removal of the anchor message (e.g., OpenCode compaction)
+    const messagesWithoutAnchor: MessageRef[] = [
+      { id: "m0002", role: "assistant", content: long },
+    ];
+
+    // Call syncCompressionBlocks — should deactivate the block
+    syncCompressionBlocks(state, messagesWithoutAnchor);
+
+    // Block should now be deactivated
+    assert.equal(block.active, false);
+    assert.ok(block.deactivatedAt);
+    assert.ok(!state.activeBlockIds.has(block.blockId));
+  });
+});
+
+// 116 tests

@@ -5,14 +5,14 @@
  *   1. Urgent nudge — token usage exceeds the urgent threshold
  *   2. Gentle nudge — token usage is between the nudge and urgent thresholds
  *
+ * Frequency control: nudges fire at most once every `config.nudgeFrequency`
+ * calls, using a per-session counter. This prevents excessive nudge spam
+ * across consecutive turns.
+ *
  * @module
  */
 
-import type { ContextPruningConfig } from "./types";
-
-export interface NudgeResult {
-  nudges: string[];
-}
+import type { ContextPruningConfig, SessionState } from "./types";
 
 /**
  * Build context management nudges based on current token totals.
@@ -21,15 +21,29 @@ export interface NudgeResult {
  * 1. Context limit nudge (above max threshold) — urgent
  * 2. Turn nudge (between min and max) — gentle
  *
+ * Frequency control: nudges fire at most once every `config.nudgeFrequency`
+ * calls per session, using `state.nudgeCounter`.
+ *
  * @param totalTokens - Current estimated total token count.
  * @param config - Context pruning configuration with thresholds.
+ * @param state - Optional session state for per-session nudge frequency control.
  * @returns Array of nudge message strings (may be empty).
  */
 export function buildNudges(
   totalTokens: number,
   config: ContextPruningConfig,
+  state?: SessionState,
 ): string[] {
   const nudges: string[] = [];
+
+  // ── Frequency control ─────────────────────────────
+  // Only fire every nudgeFrequency calls per session.
+  // The counter is always incremented so it tracks total turn count.
+  if (state && config.nudgeFrequency > 0) {
+    const shouldNudge = state.nudgeCounter % config.nudgeFrequency === 0;
+    state.nudgeCounter++;
+    if (!shouldNudge) return nudges;
+  }
 
   // Tier 1: Context limit (urgent)
   if (totalTokens >= config.urgentThresholdTokens) {

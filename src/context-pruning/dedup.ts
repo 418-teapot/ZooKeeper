@@ -9,7 +9,11 @@
  * @module
  */
 
-import { isToolNameProtected } from "./protected-patterns";
+import {
+  getFilePathsFromParameters,
+  isFilePathProtected,
+  isToolNameProtected,
+} from "./protected-patterns";
 import type { ContextPruningConfig, MessageRef, SessionState } from "./types";
 
 /**
@@ -75,10 +79,21 @@ export function markDuplicates(
 
   // ── Protected turn guard ──────────────────────────────
   // Do NOT mark tool calls from messages that fall within the last
-  // config.turnProtection turns.  Approximate by computing a cutoff
-  // index from the end of the message list.
-  const protectedMessageCount = config.turnProtection * 4;
-  const cutoffIndex = Math.max(0, messages.length - protectedMessageCount);
+  // config.turnProtection turns.
+  //
+  // Heuristic: counts assistant messages from end to estimate turn
+  // boundary.  This does not handle multi-assistant turns correctly.
+  // Phase 4 will track per-message turn numbers.
+  let protectedAssistantCount = 0;
+  let cutoffIndex = messages.length;
+  for (let i = messages.length - 1; i >= 0 && protectedAssistantCount < config.turnProtection; i--) {
+    if (messages[i].role === "assistant") {
+      protectedAssistantCount++;
+    }
+    if (protectedAssistantCount <= config.turnProtection) {
+      cutoffIndex = i;
+    }
+  }
 
   // ── Scan messages oldest to newest ────────────────────
   // Map: signature → toolCallId (always the newest seen so far)
@@ -99,6 +114,16 @@ export function markDuplicates(
     for (const tc of msg.toolCalls) {
       // Skip protected tools
       if (isToolNameProtected(tc.toolName, config.dedupProtectedTools)) {
+        continue;
+      }
+
+      // Skip tool calls that touch protected file paths
+      const filePaths = getFilePathsFromParameters(tc.parameters);
+      if (
+        filePaths.some((fp) =>
+          isFilePathProtected(fp, config.protectedFilePatterns),
+        )
+      ) {
         continue;
       }
 
@@ -128,7 +153,10 @@ export function markDuplicates(
         if (!state.prune.tools.has(existing)) {
           newlyMarked++;
         }
-        state.prune.tools.set(existing, state.turnCount);
+        const tokenEstimate = Math.ceil(
+          JSON.stringify(tc.parameters).length / 4,
+        );
+        state.prune.tools.set(existing, tokenEstimate);
 
         // Update dedup cache
         const entry = state.dedupCache.get(sig);

@@ -103,3 +103,74 @@ export function isToolNameProtected(
 
   return false;
 }
+
+/**
+ * Extract file paths from tool call parameters.
+ *
+ * Inspects common parameter keys (`path`, `filePath`, `file`) and the
+ * apply_patch-style nested `file.path` pattern.
+ *
+ * @param params - The tool call parameters.
+ * @returns Array of file path strings found, possibly empty.
+ */
+export function getFilePathsFromParameters(
+  params: Record<string, unknown>,
+): string[] {
+  const paths: string[] = [];
+
+  // Check common patterns: path, filePath, file
+  for (const key of ["path", "filePath", "file"]) {
+    if (typeof params[key] === "string") {
+      paths.push(params[key] as string);
+    }
+  }
+
+  // Check apply_patch pattern: { file: { path: "..." } }
+  const file = params.file;
+  if (file && typeof file === "object" && typeof (file as Record<string, unknown>).path === "string") {
+    paths.push((file as Record<string, unknown>).path as string);
+  }
+
+  // Check apply_patch content — scan for "*** Add File:", etc.
+  for (const key of Object.keys(params)) {
+    if (typeof params[key] === "string") {
+      const content = params[key] as string;
+      const lines = content.split("\n");
+      for (const line of lines) {
+        const match = line.match(/^\*\*\* (?:Add|Delete|Update) File:\s*(.+)$/);
+        if (match) {
+          paths.push(match[1].trim());
+        }
+      }
+    }
+  }
+
+  // Check multiedit nested edits[].filePath
+  const edits = params.edits;
+  if (Array.isArray(edits)) {
+    for (const edit of edits) {
+      if (typeof edit === "object" && edit && typeof (edit as any).filePath === "string") {
+        paths.push((edit as any).filePath);
+      }
+    }
+  }
+
+  return paths;
+}
+
+/**
+ * Check if a file path matches any of the given glob patterns.
+ *
+ * Delegates to {@link matchesGlob} for each pattern.
+ *
+ * @param filePath - The file path to check.
+ * @param patterns - List of glob patterns to test against.
+ * @returns `true` if the file path matches any pattern.
+ */
+export function isFilePathProtected(
+  filePath: string,
+  patterns: string[],
+): boolean {
+  if (patterns.length === 0) return false;
+  return patterns.some((p) => matchesGlob(filePath, p));
+}

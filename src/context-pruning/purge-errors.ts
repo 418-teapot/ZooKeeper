@@ -9,15 +9,20 @@
  * The TWO sources are:
  *   1. `state.errorTracking` — iterates tracked error entries and marks those
  *      beyond the `purgeErrorsTurns` turn threshold.
- *   2. Messages scan — iterates tool-result messages and marks errors beyond
- *      the protected message window (`config.turnProtection * 4` from end).
- *      This provides immediate functionality without waiting for the planned
- *      OpenCode hooks integration to populate `errorTracking`.
+ *   2. Messages scan — iterates messages with toolResults and marks errors
+ *      that are both beyond the protected turn window (last `config.turnProtection`
+ *      assistant messages) and older than `config.purgeErrorsTurns`. This
+ *      provides immediate functionality without waiting for the planned OpenCode
+ *      hooks integration to populate `errorTracking`.
  *
  * @module
  */
 
-import { isToolNameProtected } from "./protected-patterns";
+import {
+  getFilePathsFromParameters,
+  isFilePathProtected,
+  isToolNameProtected,
+} from "./protected-patterns";
 import type { ContextPruningConfig, MessageRef, SessionState } from "./types";
 
 /**
@@ -29,10 +34,12 @@ import type { ContextPruningConfig, MessageRef, SessionState } from "./types";
  * 2. **Source A (errorTracking):** For each tracked error entry, if it is
  *    beyond `config.purgeErrorsTurns` turns old and the tool is not
  *    protected, mark its `toolCallId` in `state.prune.tools`.
- * 3. **Source B (messages scan):** Iterate tool-role messages older than the
- *    protected window (last `config.turnProtection * 4` messages). For each
- *    errored tool result (`isError === true` or non-empty `error` string),
- *    mark its `toolCallId` if the tool is not protected. Also record the
+ * 3. **Source B (messages scan):** Iterate messages with toolResults,
+ *    scanning only those beyond the protected turn window (last
+ *    `config.turnProtection` assistant messages). For each errored tool
+ *    result (`isError === true` or non-empty `error` string), mark its
+ *    `toolCallId` if the tool is not protected, file paths are not protected,
+ *    and the error is older than `config.purgeErrorsTurns`. Also record the
  *    entry in `state.errorTracking` if not already present.
  * 4. Return the count of **newly** marked entries (those not already in
  *    `state.prune.tools`).
@@ -73,24 +80,39 @@ export function markPurgeErrors(
   }
 
   // ── Source B: Messages scan ───────────────────────────────
-  // Build a lookup: toolCallId → toolName for all tool calls in messages.
+  // Build lookups: toolCallId → toolName and toolCallId → parameters.
   const toolNameByCallId = new Map<string, string>();
+  const toolParamsByCallId = new Map<string, Record<string, unknown>>();
   for (const msg of messages) {
     if (msg.toolCalls) {
       for (const tc of msg.toolCalls) {
         toolNameByCallId.set(tc.id, tc.toolName);
+        toolParamsByCallId.set(tc.id, tc.parameters);
       }
     }
   }
 
-  // Messages within the protected window (last N messages) are NOT scanned.
+  // Messages within the protected turn window are NOT scanned.
   // Only errors in messages older than this window are candidates for marking.
-  const protectedWindowSize = config.turnProtection * 4;
-  const nonProtectedEnd = Math.max(0, messages.length - protectedWindowSize);
+  // Heuristic: counts assistant messages from end (same as dedup.ts).
+  // Phase 4 will use per-message turn numbers.
+  let assistantCount = 0;
+  let nonProtectedEnd = messages.length;
+  for (
+    let i = messages.length - 1;
+    i >= 0 && assistantCount < config.turnProtection;
+    i--
+  ) {
+    if (messages[i].role === "assistant") {
+      assistantCount++;
+    }
+    nonProtectedEnd = i;
+  }
 
   for (let i = 0; i < nonProtectedEnd; i++) {
     const msg = messages[i];
-    if (msg.role !== "tool" || !msg.toolResults) continue;
+    // Scan any message with toolResults, regardless of role
+    if (!msg.toolResults || msg.toolResults.length === 0) continue;
 
     for (const tr of msg.toolResults) {
       // Check if this is an error result
@@ -107,6 +129,32 @@ export function markPurgeErrors(
       if (isToolNameProtected(toolName, config.purgeErrorsProtectedTools))
         continue;
 
+      // Check file path protection
+      const params = toolParamsByCallId.get(tr.toolCallId);
+      if (params) {
+        const filePaths = getFilePathsFromParameters(params);
+        if (
+          filePaths.some((fp) =>
+            isFilePathProtected(fp, config.protectedFilePatterns),
+          )
+        ) {
+          continue;
+        }
+      }
+
+      // Count assistant messages up to this tool result to determine
+      // which turn the error actually occurred in.
+      let turnsBeforeError = 0;
+      for (let j = 0; j <= i; j++) {
+        if (messages[j].role === "assistant") {
+          turnsBeforeError++;
+        }
+      }
+
+      // D18: Check error age — must be old enough per purgeErrorsTurns
+      const errorAge = state.turnCount - turnsBeforeError;
+      if (errorAge < config.purgeErrorsTurns) continue;
+
       // Mark for pruning
       state.prune.tools.set(tr.toolCallId, state.turnCount);
       newMarkCount++;
@@ -117,7 +165,7 @@ export function markPurgeErrors(
         state.errorTracking.set(tr.toolCallId, {
           toolCallId: tr.toolCallId,
           toolName,
-          turnNumber: state.turnCount,
+          turnNumber: turnsBeforeError,
           errorMessage: tr.error ?? "",
         });
       }

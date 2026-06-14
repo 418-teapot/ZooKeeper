@@ -77,9 +77,10 @@ export function applyPruning(
       }
 
       // ── Idempotency ──────────────────────────────────
-      // If the output already starts with the placeholder prefix, skip it.
-      // This prevents double-replacement across multiple turns.
-      if (tr.output.startsWith("[pruned:")) {
+      // If this toolCallId was already pruned in a previous turn, skip it.
+      // Uses the prunedCallIds Set instead of checking output content,
+      // which would break on JSON strings containing the placeholder prefix.
+      if (state.prune.prunedCallIds.has(tr.toolCallId)) {
         newResults.push(tr);
         continue;
       }
@@ -95,6 +96,15 @@ export function applyPruning(
         };
         newResults.push(replacement);
         prunedErrors++;
+
+        // Also replace tool call parameters for errored tools
+        if (msg.toolCalls) {
+          for (const tc of msg.toolCalls) {
+            if (tc.id === tr.toolCallId) {
+              tc.parameters = { pruned: true, reason: `[input removed — failed tool call: ${toolName}]` };
+            }
+          }
+        }
       } else {
         // Non-error result — replace only output, count as output prune
         const replacement: ToolResultRef = {
@@ -106,6 +116,7 @@ export function applyPruning(
         prunedOutputs++;
       }
 
+      state.prune.prunedCallIds.add(tr.toolCallId);
       changed = true;
     }
 

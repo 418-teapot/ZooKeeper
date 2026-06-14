@@ -59,6 +59,7 @@ const DEFAULTS: ContextPruningConfig = {
   turnProtection: 2,
   dedupProtectedTools: ["task", "skill", "read"],
   purgeErrorsProtectedTools: ["task", "skill"],
+  protectedFilePatterns: [],
 };
 
 /**
@@ -151,6 +152,8 @@ export function loadContextConfig(
       ctx.dedup_protected_tools ?? DEFAULTS.dedupProtectedTools,
     purgeErrorsProtectedTools:
       ctx.purge_errors_protected_tools ?? DEFAULTS.purgeErrorsProtectedTools,
+    protectedFilePatterns:
+      ctx.protected_file_patterns ?? DEFAULTS.protectedFilePatterns,
   };
 
   // Resolve effective thresholds from local raw inputs
