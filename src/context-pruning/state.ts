@@ -8,7 +8,7 @@
  * @module
  */
 
-import type { SessionState, CompressionBlock, DedupEntry, ErrorEntry } from "./types";
+import type { SessionState } from "./types";
 
 const DEFAULT_SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const DEFAULT_CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // every 5 minutes

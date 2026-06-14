@@ -73,8 +73,7 @@ export async function zookeeper(input: any) {
   {
     const logConfig = zooConfig.logging ?? {};
     initLogger("", {
-      logDir:
-        typeof logConfig.dir === "string" ? logConfig.dir : undefined,
+      logDir: typeof logConfig.dir === "string" ? logConfig.dir : undefined,
       maxFileSize:
         typeof logConfig.max_file_size_mb === "number"
           ? logConfig.max_file_size_mb * 1024 * 1024
@@ -94,7 +93,13 @@ export async function zookeeper(input: any) {
     async config(config: any) {
       const agents = config.agent ?? {};
 
-      log("plugin", "plugin_init", "", undefined, "info", {agents: Object.keys(agents), limits, skills: Object.keys(skillsConfig).filter(k => skillsConfig[k] !== "disable")});
+      log("plugin", "plugin_init", "", undefined, "info", {
+        agents: Object.keys(agents),
+        limits,
+        skills: Object.keys(skillsConfig).filter(
+          (k) => skillsConfig[k] !== "disable",
+        ),
+      });
 
       for (const [name, agent] of Object.entries(agents)) {
         if (typeof agent !== "object" || agent === null) continue;
@@ -102,7 +107,10 @@ export async function zookeeper(input: any) {
         const prompt = loadPrompt(name);
         if (prompt) {
           (agent as any).prompt = prompt;
-          log("plugin", "agent_loaded", "", undefined, "debug", {agent: name, prompt_len: prompt.length});
+          log("plugin", "agent_loaded", "", undefined, "debug", {
+            agent: name,
+            prompt_len: prompt.length,
+          });
         }
       }
 
@@ -116,7 +124,9 @@ export async function zookeeper(input: any) {
           if (!statSync(skillPath).isDirectory()) continue;
           if (skillsConfig[entry] === "disable") continue;
           config.skills.paths.push(skillPath);
-          log("plugin", "skill_registered", "", undefined, "debug", {skill: entry});
+          log("plugin", "skill_registered", "", undefined, "debug", {
+            skill: entry,
+          });
         }
       } catch {
         // skills/ directory does not exist or is inaccessible — skip.
@@ -151,7 +161,17 @@ export async function zookeeper(input: any) {
         await injectFocusReminder(client, output);
         measureContext(output);
       } catch (err) {
-        log("plugin", "handler_crashed", output.messages?.[0]?.info?.sessionID ?? "", undefined, "error", {handler: "injectFocusReminder / measureContext", error: String(err)});
+        log(
+          "plugin",
+          "handler_crashed",
+          output.messages?.[0]?.info?.sessionID ?? "",
+          undefined,
+          "error",
+          {
+            handler: "injectFocusReminder / measureContext",
+            error: String(err),
+          },
+        );
       }
     },
 
@@ -182,16 +202,34 @@ export async function zookeeper(input: any) {
         name: string;
         fn: (i: typeof input, o: typeof output) => void | Promise<void>;
       }> = [
-        {name: "nudgeTaskOutput", fn: (i, o) => nudgeTaskOutput(i, o, limits)},
-        {name: "recoverJsonError", fn: (i, o) => { recoverJsonError(i, o); }},
-        {name: "nudgeDirectWork", fn: (i, o) => nudgeDirectWork(client, i, o)},
-        {name: "nudgePostTask", fn: (i, o) => nudgePostTask(client, i, o)},
+        {
+          name: "nudgeTaskOutput",
+          fn: (i, o) => nudgeTaskOutput(i, o, limits),
+        },
+        {
+          name: "recoverJsonError",
+          fn: (i, o) => {
+            recoverJsonError(i, o);
+          },
+        },
+        {
+          name: "nudgeDirectWork",
+          fn: (i, o) => nudgeDirectWork(client, i, o),
+        },
+        { name: "nudgePostTask", fn: (i, o) => nudgePostTask(client, i, o) },
       ];
-      for (const {name, fn} of handlers) {
+      for (const { name, fn } of handlers) {
         try {
           await fn(input, output);
         } catch (err) {
-          log("plugin", "handler_crashed", input.sessionID, input.callID, "error", {handler: name, error: String(err)});
+          log(
+            "plugin",
+            "handler_crashed",
+            input.sessionID,
+            input.callID,
+            "error",
+            { handler: name, error: String(err) },
+          );
         }
       }
     },

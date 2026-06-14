@@ -120,9 +120,9 @@ export function getContextTokens(
  * @param msg - A message entry with a `parts` array.
  * @returns Estimated token count for the message.
  */
-function estimateMessageHeuristic(
-  msg: { parts: Array<{ type: string; text?: string }> },
-): number {
+function estimateMessageHeuristic(msg: {
+  parts: Array<{ type: string; text?: string }>;
+}): number {
   let chars = 0;
   for (const part of msg.parts) {
     if (part.text) chars += part.text.length;

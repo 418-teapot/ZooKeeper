@@ -9,18 +9,24 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import { loadContextConfig, resolveThreshold } from "./config-loader";
+import { markDuplicates } from "./dedup";
+import {
+  estimateTokens,
+  estimateTotalTokens,
+  getContextTokens,
+} from "./estimator";
+import { buildNudges } from "./nudge";
+import { prepareSession, runPipeline } from "./pipeline";
+import { applyPruning } from "./prune";
+import { markPurgeErrors } from "./purge-errors";
+import { ContextPruningState, globalState } from "./state";
 import type {
   ContextPruningConfig,
   MessageRef,
   PipelineInput,
-  PipelineOutput,
-  PruneState,
+  SessionState,
 } from "./types";
-import { runPipeline, prepareSession } from "./pipeline";
-import { buildNudges } from "./nudge";
-import { ContextPruningState, globalState } from "./state";
-import { loadContextConfig, resolveThreshold } from "./config-loader";
-import { estimateTokens, estimateTotalTokens, getContextTokens } from "./estimator";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -47,7 +53,6 @@ function passThroughConfig(
     commandsEnabled: false,
     persistState: false,
     protectedTools: ["task", "skill", "question"],
-    protectUserMessages: true,
     turnProtection: 2,
     dedupProtectedTools: ["task", "skill", "read"],
     purgeErrorsProtectedTools: ["task", "skill"],
@@ -65,6 +70,27 @@ function msg(
   overrides?: Partial<MessageRef>,
 ): MessageRef {
   return { id, role, content, ...overrides };
+}
+
+/**
+ * Create a fresh session state with empty maps/sets for unit testing.
+ */
+function freshState(overrides?: Partial<SessionState>): SessionState {
+  return {
+    sessionId: "test-session",
+    blocksById: new Map(),
+    byMessageId: new Map(),
+    activeBlockIds: new Set(),
+    dedupCache: new Map(),
+    errorTracking: new Map(),
+    protectedTurns: 2,
+    turnCount: 5,
+    prune: { tools: new Map() },
+    lastAccessedAt: Date.now(),
+    totalPrunedTokens: 0,
+    totalCompressedTokens: 0,
+    ...overrides,
+  } as SessionState;
 }
 
 // ---------------------------------------------------------------------------
@@ -105,13 +131,14 @@ describe("pipeline pass-through", () => {
   });
 
   it("returns empty nudges when below threshold", () => {
-    const messages: MessageRef[] = [
-      msg("m0000", "user", "Hello"),
-    ];
+    const messages: MessageRef[] = [msg("m0000", "user", "Hello")];
     const input: PipelineInput = {
       sessionId: "test-session",
       messages,
-      config: passThroughConfig({ dedupEnabled: false, purgeErrorsEnabled: false }),
+      config: passThroughConfig({
+        dedupEnabled: false,
+        purgeErrorsEnabled: false,
+      }),
     };
 
     const output = runPipeline(input);
@@ -119,9 +146,7 @@ describe("pipeline pass-through", () => {
   });
 
   it("returns zero stats when all strategies are disabled", () => {
-    const messages: MessageRef[] = [
-      msg("m0000", "user", "Hello"),
-    ];
+    const messages: MessageRef[] = [msg("m0000", "user", "Hello")];
     const input: PipelineInput = {
       sessionId: "test-session",
       messages,
@@ -195,7 +220,11 @@ describe("pipeline malformed filtering", () => {
 
   it("removes messages with undefined content", () => {
     const messages = [
-      { id: "m0000", role: "user" as const, content: undefined as unknown as string },
+      {
+        id: "m0000",
+        role: "user" as const,
+        content: undefined as unknown as string,
+      },
       { id: "m0001", role: "user" as const, content: "Valid" },
     ];
 
@@ -211,9 +240,7 @@ describe("pipeline malformed filtering", () => {
   });
 
   it("keeps messages with empty string content", () => {
-    const messages = [
-      msg("m0000", "assistant", ""),
-    ];
+    const messages = [msg("m0000", "assistant", "")];
 
     const input: PipelineInput = {
       sessionId: "test-session",
@@ -309,9 +336,11 @@ describe("state methods", () => {
       "m0000",
     );
     assert.equal(result, false);
-    const session = globalState.get("test-session")!;
+    const session = globalState.get("test-session");
+    assert.ok(session);
     assert.equal(session.dedupCache.size, 1);
-    const entry = session.dedupCache.values().next().value!;
+    const entry = session.dedupCache.values().next().value;
+    assert.ok(entry);
     assert.equal(entry.callCount, 1);
   });
 
@@ -329,8 +358,10 @@ describe("state methods", () => {
       "m0001",
     );
     assert.equal(result, true);
-    const session = globalState.get("test-session")!;
-    const entry = session.dedupCache.values().next().value!;
+    const session = globalState.get("test-session");
+    assert.ok(session);
+    const entry = session.dedupCache.values().next().value;
+    assert.ok(entry);
     assert.equal(entry.callCount, 2);
   });
 
@@ -348,7 +379,8 @@ describe("state methods", () => {
       "m0001",
     );
     assert.equal(result, false);
-    const session = globalState.get("test-session")!;
+    const session = globalState.get("test-session");
+    assert.ok(session);
     assert.equal(session.dedupCache.size, 2);
   });
 
@@ -360,7 +392,8 @@ describe("state methods", () => {
       "bash",
       "command not found",
     );
-    const session = globalState.get("test-session")!;
+    const session = globalState.get("test-session");
+    assert.ok(session);
     const entry = session.errorTracking.get("t0000");
     assert.ok(entry);
     assert.equal(entry.turnNumber, 1);
@@ -379,7 +412,8 @@ describe("state methods", () => {
     globalState.getOrCreate("test-session");
     globalState.advanceTurn("test-session");
     globalState.advanceTurn("test-session");
-    const session = globalState.get("test-session")!;
+    const session = globalState.get("test-session");
+    assert.ok(session);
     assert.equal(session.turnCount, 2);
   });
 
@@ -433,17 +467,6 @@ describe("buildNudges thresholds", () => {
     assert.ok(nudges[0].includes("Warning"));
     assert.ok(nudges[0].includes("250"));
   });
-
-  it("does not include iteration nudge when count is below threshold", () => {
-    const nudges = buildNudges(50, config, 5, 8);
-    assert.deepEqual(nudges, []);
-  });
-
-  it("includes iteration nudge when iteration count exceeds 10", () => {
-    const nudges = buildNudges(50, config, 5, 15);
-    assert.equal(nudges.length, 1);
-    assert.ok(nudges[0].includes("Iteration"));
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -492,7 +515,7 @@ describe("pipeline edge cases", () => {
     assert.equal(output.messages.length, 1);
     assert.equal(output.messages[0].toolCalls?.length, 1);
     assert.equal(output.messages[0].toolResults?.length, 1);
-    assert.equal(output.messages[0].toolCalls![0].toolName, "read");
+    assert.equal(output.messages[0].toolCalls?.[0].toolName, "read");
   });
 });
 
@@ -820,6 +843,10 @@ describe("barrel export", () => {
   it("exports getContextTokens as a function", () => {
     assert.equal(typeof getContextTokens, "function");
   });
+
+  it("exports markPurgeErrors as a function", () => {
+    assert.equal(typeof markPurgeErrors, "function");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -844,14 +871,15 @@ describe("loadContextConfig", () => {
     assert.equal(config.commandsEnabled, false);
     assert.equal(config.persistState, false);
     assert.deepEqual(config.protectedTools, ["task", "skill", "question"]);
-    assert.equal(config.protectUserMessages, true);
     assert.equal(config.turnProtection, 2);
     assert.deepEqual(config.dedupProtectedTools, ["task", "skill", "read"]);
     assert.deepEqual(config.purgeErrorsProtectedTools, ["task", "skill"]);
   });
 
   it("returns correct defaults when input is undefined", () => {
-    const config = loadContextConfig(undefined as unknown as Record<string, any>);
+    const config = loadContextConfig(
+      undefined as unknown as Record<string, any>,
+    );
     assert.equal(config.enabled, true);
     assert.equal(config.nudgeThresholdTokens, 200_000);
     assert.equal(config.urgentThresholdTokens, 400_000);
@@ -900,7 +928,6 @@ describe("loadContextConfig", () => {
     assert.equal(config.commandsEnabled, true);
     assert.equal(config.persistState, false);
     assert.deepEqual(config.protectedTools, ["task"]);
-    assert.equal(config.protectUserMessages, false);
     assert.equal(config.turnProtection, 4);
     assert.deepEqual(config.dedupProtectedTools, ["task"]);
     assert.deepEqual(config.purgeErrorsProtectedTools, ["task", "bash"]);
@@ -1006,3 +1033,653 @@ describe("dual-mode threshold resolution", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// (k) markDuplicates — dedup marking
+// ---------------------------------------------------------------------------
+
+describe("markDuplicates", () => {
+  it("does not mark anything when dedupEnabled is false", () => {
+    const state = freshState();
+    const messages: MessageRef[] = [
+      msg("m0000", "assistant", "", {
+        toolCalls: [
+          { id: "t0000", toolName: "edit", parameters: { file: "a.ts" } },
+        ],
+      }),
+      msg("m0001", "assistant", "", {
+        toolCalls: [
+          { id: "t0001", toolName: "edit", parameters: { file: "a.ts" } },
+        ],
+      }),
+    ];
+    const count = markDuplicates(
+      state,
+      passThroughConfig({ dedupEnabled: false, turnProtection: 0 }),
+      messages,
+    );
+    assert.equal(count, 0);
+    assert.equal(state.prune.tools.size, 0);
+  });
+
+  it("marks older duplicate by signature (same toolName + same params)", () => {
+    const state = freshState();
+    const messages: MessageRef[] = [
+      msg("m0000", "assistant", "", {
+        toolCalls: [
+          { id: "t000a", toolName: "edit", parameters: { file: "a.ts" } },
+        ],
+      }),
+      msg("m0001", "assistant", "", {
+        toolCalls: [
+          { id: "t000b", toolName: "edit", parameters: { file: "a.ts" } },
+        ],
+      }),
+    ];
+    const count = markDuplicates(
+      state,
+      passThroughConfig({
+        dedupEnabled: true,
+        dedupProtectedTools: [],
+        turnProtection: 0,
+      }),
+      messages,
+    );
+    // Older call (t000a) should be marked, newer (t000b) survives
+    assert.equal(count, 1);
+    assert.ok(state.prune.tools.has("t000a"));
+    assert.ok(!state.prune.tools.has("t000b"));
+  });
+
+  it("keeps newest occurrence of each signature (older ones get marked)", () => {
+    const state = freshState();
+    const messages: MessageRef[] = [
+      msg("m0000", "assistant", "", {
+        toolCalls: [
+          { id: "t000a", toolName: "edit", parameters: { file: "a.ts" } },
+        ],
+      }),
+      msg("m0001", "assistant", "", {
+        toolCalls: [
+          { id: "t000b", toolName: "edit", parameters: { file: "a.ts" } },
+        ],
+      }),
+      msg("m0002", "assistant", "", {
+        toolCalls: [
+          { id: "t000c", toolName: "edit", parameters: { file: "a.ts" } },
+        ],
+      }),
+    ];
+    const count = markDuplicates(
+      state,
+      passThroughConfig({
+        dedupEnabled: true,
+        dedupProtectedTools: [],
+        turnProtection: 0,
+      }),
+      messages,
+    );
+    // t000a and t000b marked, t000c survives
+    assert.equal(count, 2);
+    assert.ok(state.prune.tools.has("t000a"));
+    assert.ok(state.prune.tools.has("t000b"));
+    assert.ok(!state.prune.tools.has("t000c"));
+  });
+
+  it("skips protected tools (dedupProtectedTools)", () => {
+    const state = freshState();
+    const messages: MessageRef[] = [
+      msg("m0000", "assistant", "", {
+        toolCalls: [
+          { id: "t000a", toolName: "task", parameters: { name: "test" } },
+        ],
+      }),
+      msg("m0001", "assistant", "", {
+        toolCalls: [
+          { id: "t000b", toolName: "task", parameters: { name: "test" } },
+        ],
+      }),
+    ];
+    // Uses default dedupProtectedTools: ["task", "skill", "read"]
+    const count = markDuplicates(
+      state,
+      passThroughConfig({ dedupEnabled: true, turnProtection: 0 }),
+      messages,
+    );
+    assert.equal(count, 0);
+    assert.equal(state.prune.tools.size, 0);
+  });
+
+  it("respects turn protection (recent messages not marked)", () => {
+    // turnProtection=2 → protectedMessageCount = 8, cutoffIndex = max(0, 10-8) = 2
+    // Indices 0-1 are non-protected, 2-9 are protected.
+    const state = freshState({ turnCount: 1 });
+    const messages: MessageRef[] = Array.from({ length: 10 }, (_, i) =>
+      msg(`m${String(i).padStart(4, "0")}`, "assistant", "", {
+        toolCalls: [
+          {
+            id: `t${String(i).padStart(4, "0")}`,
+            toolName: "edit",
+            parameters: { file: "a.ts" },
+          },
+        ],
+      }),
+    );
+    const count = markDuplicates(
+      state,
+      passThroughConfig({
+        dedupEnabled: true,
+        turnProtection: 2,
+        dedupProtectedTools: [],
+      }),
+      messages,
+    );
+    // Only index 0 (first, not marked) and index 1 (duplicate, marks t0000)
+    // are processed. Indices 2+ are in the protected window.
+    assert.equal(count, 1);
+    assert.ok(state.prune.tools.has("t0000"));
+    assert.ok(!state.prune.tools.has("t0001"));
+  });
+
+  it("multiple different tools with same signature pattern", () => {
+    const state = freshState();
+    const messages: MessageRef[] = [
+      msg("m0000", "assistant", "", {
+        toolCalls: [
+          { id: "t000a", toolName: "read", parameters: { path: "x.ts" } },
+          { id: "t000b", toolName: "write", parameters: { path: "x.ts" } },
+        ],
+      }),
+      msg("m0001", "assistant", "", {
+        toolCalls: [
+          { id: "t000c", toolName: "read", parameters: { path: "x.ts" } },
+          { id: "t000d", toolName: "write", parameters: { path: "x.ts" } },
+        ],
+      }),
+    ];
+    const count = markDuplicates(
+      state,
+      passThroughConfig({
+        dedupEnabled: true,
+        dedupProtectedTools: [],
+        turnProtection: 0,
+      }),
+      messages,
+    );
+    // Both tools have duplicates → 2 marks
+    assert.equal(count, 2);
+    assert.ok(state.prune.tools.has("t000a")); // older read marked
+    assert.ok(state.prune.tools.has("t000b")); // older write marked
+    assert.ok(!state.prune.tools.has("t000c")); // newer read survives
+    assert.ok(!state.prune.tools.has("t000d")); // newer write survives
+  });
+
+  it("returns correct count of newly marked entries", () => {
+    const state = freshState();
+    const messages: MessageRef[] = [
+      msg("m0000", "assistant", "", {
+        toolCalls: [
+          { id: "t000a", toolName: "edit", parameters: { file: "a.ts" } },
+        ],
+      }),
+      msg("m0001", "assistant", "", {
+        toolCalls: [
+          { id: "t000b", toolName: "edit", parameters: { file: "b.ts" } },
+        ],
+      }),
+      msg("m0002", "assistant", "", {
+        toolCalls: [
+          { id: "t000c", toolName: "edit", parameters: { file: "a.ts" } },
+        ],
+      }),
+    ];
+    const count = markDuplicates(
+      state,
+      passThroughConfig({
+        dedupEnabled: true,
+        dedupProtectedTools: [],
+        turnProtection: 0,
+      }),
+      messages,
+    );
+    // Only edit(a.ts) has a duplicate → 1 mark (t000a)
+    assert.equal(count, 1);
+    assert.ok(state.prune.tools.has("t000a"));
+    assert.ok(!state.prune.tools.has("t000c")); // newest occurrence survives
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (l) markPurgeErrors — purge-errors marking
+// ---------------------------------------------------------------------------
+
+describe("markPurgeErrors", () => {
+  it("does not mark anything when purgeErrorsEnabled is false", () => {
+    const state = freshState();
+    const messages: MessageRef[] = [
+      msg("m0000", "assistant", "", {
+        toolCalls: [{ id: "t0000", toolName: "read", parameters: {} }],
+      }),
+      msg("m0001", "tool", "", {
+        toolResults: [
+          { id: "tr0000", toolCallId: "t0000", output: "", isError: true },
+        ],
+      }),
+    ];
+    const count = markPurgeErrors(
+      state,
+      passThroughConfig({ purgeErrorsEnabled: false }),
+      messages,
+    );
+    assert.equal(count, 0);
+    assert.equal(state.prune.tools.size, 0);
+  });
+
+  it("marks errored tool results (isError=true) from old messages", () => {
+    const state = freshState({ turnCount: 10 });
+    const messages: MessageRef[] = [
+      msg("m0000", "assistant", "", {
+        toolCalls: [{ id: "t0000", toolName: "read", parameters: {} }],
+      }),
+      msg("m0001", "tool", "", {
+        toolResults: [
+          { id: "tr0000", toolCallId: "t0000", output: "", isError: true },
+        ],
+      }),
+    ];
+    const count = markPurgeErrors(
+      state,
+      passThroughConfig({
+        purgeErrorsEnabled: true,
+        purgeErrorsProtectedTools: [],
+        turnProtection: 0,
+      }),
+      messages,
+    );
+    assert.equal(count, 1);
+    assert.ok(state.prune.tools.has("t0000"));
+  });
+
+  it("does NOT mark recent errors within protected window", () => {
+    // protectedWindowSize = turnProtection * 4 = 1 * 4 = 4
+    // With 4 messages, nonProtectedEnd = max(0, 4-4) = 0 → no messages scanned
+    const state = freshState({ turnCount: 10 });
+    const messages: MessageRef[] = Array.from({ length: 4 }, (_, i) =>
+      msg(`m${String(i).padStart(4, "0")}`, "tool", "", {
+        toolResults: [
+          {
+            id: `tr${String(i).padStart(4, "0")}`,
+            toolCallId: `t${String(i).padStart(4, "0")}`,
+            output: "",
+            isError: true,
+          },
+        ],
+      }),
+    );
+    const count = markPurgeErrors(
+      state,
+      passThroughConfig({
+        purgeErrorsEnabled: true,
+        purgeErrorsProtectedTools: [],
+        turnProtection: 1,
+      }),
+      messages,
+    );
+    // All messages are within protected window → nothing marked
+    assert.equal(count, 0);
+    assert.equal(state.prune.tools.size, 0);
+  });
+
+  it("skips protected tools (purgeErrorsProtectedTools)", () => {
+    const state = freshState({ turnCount: 10 });
+    const messages: MessageRef[] = [
+      msg("m0000", "assistant", "", {
+        toolCalls: [{ id: "t0000", toolName: "task", parameters: {} }],
+      }),
+      msg("m0001", "tool", "", {
+        toolResults: [
+          { id: "tr0000", toolCallId: "t0000", output: "", isError: true },
+        ],
+      }),
+    ];
+    const count = markPurgeErrors(
+      state,
+      passThroughConfig({ purgeErrorsEnabled: true }),
+      messages,
+    );
+    // "task" is in purgeErrorsProtectedTools by default
+    assert.equal(count, 0);
+    assert.equal(state.prune.tools.size, 0);
+  });
+
+  it("does not double-mark already-marked toolCallIds", () => {
+    const state = freshState({ turnCount: 10 });
+    state.prune.tools.set("t0000", 5); // already marked from a previous pass
+    const messages: MessageRef[] = [
+      msg("m0000", "assistant", "", {
+        toolCalls: [{ id: "t0000", toolName: "read", parameters: {} }],
+      }),
+      msg("m0001", "tool", "", {
+        toolResults: [
+          { id: "tr0000", toolCallId: "t0000", output: "", isError: true },
+        ],
+      }),
+    ];
+    const count = markPurgeErrors(
+      state,
+      passThroughConfig({
+        purgeErrorsEnabled: true,
+        purgeErrorsProtectedTools: [],
+        turnProtection: 0,
+      }),
+      messages,
+    );
+    assert.equal(count, 0); // already marked, no new marks
+    assert.equal(state.prune.tools.size, 1); // still just one
+  });
+
+  it("handles Source A (errorTracking) — marks old errors from tracking", () => {
+    // Source A iterates errorTracking entries and marks those beyond purgeErrorsTurns
+    const state = freshState({ turnCount: 10 });
+    // Old error: turnNumber=2, age=8 > purgeErrorsTurns=3 → should be marked
+    state.errorTracking.set("t0000", {
+      toolCallId: "t0000",
+      toolName: "read",
+      turnNumber: 2,
+      errorMessage: "not found",
+    });
+    // Recent error: turnNumber=9, age=1 <= purgeErrorsTurns=3 → NOT marked
+    state.errorTracking.set("t0001", {
+      toolCallId: "t0001",
+      toolName: "read",
+      turnNumber: 9,
+      errorMessage: "permission denied",
+    });
+    const count = markPurgeErrors(
+      state,
+      passThroughConfig({
+        purgeErrorsEnabled: true,
+        purgeErrorsTurns: 3,
+        purgeErrorsProtectedTools: [],
+      }),
+      [],
+    );
+    assert.equal(count, 1);
+    assert.ok(state.prune.tools.has("t0000")); // old error → marked
+    assert.ok(!state.prune.tools.has("t0001")); // recent error → not marked
+  });
+
+  it("returns correct count of newly marked entries", () => {
+    const state = freshState({ turnCount: 10 });
+    // Error entry that's already marked (should not count)
+    state.prune.tools.set("t0000", 3);
+    state.errorTracking.set("t0000", {
+      toolCallId: "t0000",
+      toolName: "read",
+      turnNumber: 1, // old enough
+      errorMessage: "fail",
+    });
+    // Unmarked old error (should count)
+    state.errorTracking.set("t0002", {
+      toolCallId: "t0002",
+      toolName: "bash",
+      turnNumber: 2,
+      errorMessage: "command not found",
+    });
+    const count = markPurgeErrors(
+      state,
+      passThroughConfig({
+        purgeErrorsEnabled: true,
+        purgeErrorsTurns: 3,
+        purgeErrorsProtectedTools: [],
+      }),
+      [],
+    );
+    // t0000 already marked → not counted, t0002 newly marked → counted
+    assert.equal(count, 1);
+    assert.ok(state.prune.tools.has("t0002"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (m) applyPruning — prune application
+// ---------------------------------------------------------------------------
+
+describe("applyPruning", () => {
+  it("returns messages unchanged when prune.tools is empty", () => {
+    const state = freshState(); // prune.tools is empty
+    const messages: MessageRef[] = [
+      msg("m0000", "assistant", "", {
+        toolCalls: [{ id: "t0000", toolName: "read", parameters: {} }],
+      }),
+      msg("m0001", "tool", "", {
+        toolResults: [
+          { id: "tr0000", toolCallId: "t0000", output: "file content" },
+        ],
+      }),
+    ];
+    const result = applyPruning(state, messages);
+    assert.equal(result.prunedOutputs, 0);
+    assert.equal(result.prunedErrors, 0);
+    assert.equal(result.messages[1].toolResults?.[0].output, "file content");
+  });
+
+  it("replaces tool result output with placeholder when toolCallId is in prune.tools", () => {
+    const state = freshState();
+    state.prune.tools.set("t0000", 5);
+    const messages: MessageRef[] = [
+      msg("m0000", "assistant", "", {
+        toolCalls: [{ id: "t0000", toolName: "read", parameters: {} }],
+      }),
+      msg("m0001", "tool", "", {
+        toolResults: [
+          { id: "tr0000", toolCallId: "t0000", output: "file content" },
+        ],
+      }),
+    ];
+    const result = applyPruning(state, messages);
+    assert.equal(result.prunedOutputs, 1);
+    assert.equal(result.prunedErrors, 0);
+    assert.ok(
+      result.messages[1].toolResults?.[0].output.startsWith("[pruned:"),
+    );
+  });
+
+  it("replaces both output and error for isError=true results", () => {
+    const state = freshState();
+    state.prune.tools.set("t0000", 5);
+    const messages: MessageRef[] = [
+      msg("m0000", "assistant", "", {
+        toolCalls: [{ id: "t0000", toolName: "read", parameters: {} }],
+      }),
+      msg("m0001", "tool", "", {
+        toolResults: [
+          {
+            id: "tr0000",
+            toolCallId: "t0000",
+            output: "error occurred",
+            isError: true,
+            error: "not found",
+          },
+        ],
+      }),
+    ];
+    const result = applyPruning(state, messages);
+    assert.equal(result.prunedOutputs, 0);
+    assert.equal(result.prunedErrors, 1);
+    assert.ok(
+      result.messages[1].toolResults?.[0].output.startsWith("[pruned:"),
+    );
+    assert.ok(
+      result.messages[1].toolResults?.[0].error?.startsWith("[pruned:"),
+    );
+  });
+
+  it("does NOT replace content when toolCallId is NOT in prune.tools", () => {
+    const state = freshState();
+    state.prune.tools.set("t0000", 5);
+    const messages: MessageRef[] = [
+      msg("m0000", "assistant", "", {
+        toolCalls: [
+          { id: "t0000", toolName: "read", parameters: {} },
+          { id: "t0001", toolName: "write", parameters: {} },
+        ],
+      }),
+      msg("m0001", "tool", "", {
+        toolResults: [
+          { id: "tr0000", toolCallId: "t0000", output: "marked output" },
+          { id: "tr0001", toolCallId: "t0001", output: "not marked" },
+        ],
+      }),
+    ];
+    const result = applyPruning(state, messages);
+    // t0000 is marked → replaced, t0001 is not → preserved
+    assert.equal(result.prunedOutputs, 1);
+    assert.equal(result.prunedErrors, 0);
+    const results = result.messages[1].toolResults;
+    assert.ok(results);
+    assert.ok(results[0].output.startsWith("[pruned:"));
+    assert.equal(results[1].output, "not marked");
+  });
+
+  it("idempotent: already-replaced placeholders are not double-processed", () => {
+    const state = freshState();
+    state.prune.tools.set("t0000", 5);
+    const messages: MessageRef[] = [
+      msg("m0000", "assistant", "", {
+        toolCalls: [{ id: "t0000", toolName: "read", parameters: {} }],
+      }),
+      msg("m0001", "tool", "", {
+        toolResults: [
+          {
+            id: "tr0000",
+            toolCallId: "t0000",
+            output: "[pruned: duplicate tool call — read]",
+          },
+        ],
+      }),
+    ];
+    const result = applyPruning(state, messages);
+    // Already pruned, should not count again
+    assert.equal(result.prunedOutputs, 0);
+    assert.equal(result.prunedErrors, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (n) Prepare-and-run integration
+// ---------------------------------------------------------------------------
+
+describe("two-phase integration", () => {
+  it("prepareSession marks duplicates, then runPipeline prunes them", () => {
+    const messages: MessageRef[] = [
+      msg("raw1", "assistant", "", {
+        toolCalls: [
+          { id: "t000a", toolName: "bash", parameters: { cmd: "echo 1" } },
+        ],
+      }),
+      msg("raw2", "user", "Check file"),
+      msg("raw3", "assistant", "", {
+        toolCalls: [
+          { id: "t000b", toolName: "bash", parameters: { cmd: "echo 1" } },
+        ],
+      }),
+      msg("raw4", "tool", "", {
+        toolResults: [
+          { id: "tr0000", toolCallId: "t000a", output: "first result" },
+          { id: "tr0001", toolCallId: "t000b", output: "second result" },
+        ],
+      }),
+    ];
+
+    // compress-time: marks duplicates
+    prepareSession(
+      passThroughConfig({ dedupEnabled: true, turnProtection: 0 }),
+      messages,
+      "test-session",
+    );
+
+    // t000a should be marked as the older duplicate
+    const state = globalState.get("test-session");
+    assert.ok(state);
+    assert.ok(state.prune.tools.has("t000a"));
+
+    // every-turn: applies pruning marks
+    const output = runPipeline({
+      sessionId: "test-session",
+      messages,
+      config: passThroughConfig({ dedupEnabled: true, turnProtection: 0 }),
+    });
+
+    const toolMsg = output.messages.find((m) => m.role === "tool");
+    assert.ok(toolMsg);
+    const trForT000a = toolMsg.toolResults?.find(
+      (tr) => tr.toolCallId === "t000a",
+    );
+    assert.ok(trForT000a);
+    assert.ok(trForT000a.output.startsWith("[pruned:"));
+    const trForT000b = toolMsg.toolResults?.find(
+      (tr) => tr.toolCallId === "t000b",
+    );
+    assert.ok(trForT000b);
+    assert.equal(trForT000b.output, "second result");
+
+    assert.equal(output.stats.prunedOutputs, 1);
+    assert.equal(output.stats.prunedErrors, 0);
+  });
+
+  it("prepareSession marks purge errors, then runPipeline prunes them", () => {
+    // Set turnCount so old errors are beyond the purgeErrorsTurns window
+    const session = globalState.getOrCreate("test-session");
+    session.turnCount = 10;
+
+    const messages: MessageRef[] = [
+      msg("m0000", "assistant", "", {
+        toolCalls: [{ id: "t0000", toolName: "bash", parameters: {} }],
+      }),
+      msg("m0001", "tool", "", {
+        toolResults: [
+          {
+            id: "tr0000",
+            toolCallId: "t0000",
+            output: "",
+            isError: true,
+            error: "not found",
+          },
+        ],
+      }),
+    ];
+
+    // compress-time: marks errors
+    prepareSession(
+      passThroughConfig({
+        purgeErrorsEnabled: true,
+        purgeErrorsProtectedTools: [],
+        turnProtection: 0,
+      }),
+      messages,
+      "test-session",
+    );
+
+    // every-turn: applies pruning marks
+    const output = runPipeline({
+      sessionId: "test-session",
+      messages,
+      config: passThroughConfig({
+        purgeErrorsEnabled: true,
+        purgeErrorsProtectedTools: [],
+        turnProtection: 0,
+      }),
+    });
+
+    const toolMsg = output.messages.find((m) => m.role === "tool");
+    assert.ok(toolMsg);
+    const tr = toolMsg.toolResults?.[0];
+    assert.ok(tr);
+    assert.ok(tr.output.startsWith("[pruned:"));
+    assert.ok(tr.error?.startsWith("[pruned:"));
+    assert.equal(output.stats.prunedErrors, 1);
+  });
+});
+
+// 94 tests

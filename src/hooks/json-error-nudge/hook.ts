@@ -96,28 +96,49 @@ export function recoverJsonError(
 ): void {
   // Skip if tool is in exclude list
   if (JSON_ERROR_TOOL_EXCLUDES.has(input.tool.toLowerCase())) {
-    log("json-error-nudge", "recovery_skipped", input.sessionID ?? "", input.callID, "debug", {
-      tool: input.tool,
-      reason: "excluded",
-    });
+    log(
+      "json-error-nudge",
+      "recovery_skipped",
+      input.sessionID ?? "",
+      input.callID,
+      "debug",
+      {
+        tool: input.tool,
+        reason: "excluded",
+      },
+    );
     return;
   }
 
   // Skip undefined/missing output
   if (output.output == null) {
-    log("json-error-nudge", "recovery_skipped", input.sessionID ?? "", input.callID, "debug", {
-      tool: input.tool,
-      reason: "no_output",
-    });
+    log(
+      "json-error-nudge",
+      "recovery_skipped",
+      input.sessionID ?? "",
+      input.callID,
+      "debug",
+      {
+        tool: input.tool,
+        reason: "no_output",
+      },
+    );
     return;
   }
 
   // Skip if output already contains the reminder marker (dedup)
   if (output.output.includes(JSON_ERROR_REMINDER_MARKER)) {
-    log("json-error-nudge", "recovery_skipped", input.sessionID ?? "", input.callID, "debug", {
-      tool: input.tool,
-      reason: "already_marked",
-    });
+    log(
+      "json-error-nudge",
+      "recovery_skipped",
+      input.sessionID ?? "",
+      input.callID,
+      "debug",
+      {
+        tool: input.tool,
+        reason: "already_marked",
+      },
+    );
     return;
   }
 
@@ -125,16 +146,30 @@ export function recoverJsonError(
   for (const pattern of JSON_ERROR_PATTERNS) {
     if (pattern.test(output.output)) {
       output.output += `\n${JSON_ERROR_REMINDER}`;
-      log("json-error-nudge", "recovery_injected", input.sessionID ?? "", input.callID, "info", {
-        tool: input.tool,
-        pattern: pattern.source,
-      });
+      log(
+        "json-error-nudge",
+        "recovery_injected",
+        input.sessionID ?? "",
+        input.callID,
+        "info",
+        {
+          tool: input.tool,
+          pattern: pattern.source,
+        },
+      );
       return;
     }
   }
 
-  log("json-error-nudge", "recovery_skipped", input.sessionID ?? "", input.callID, "debug", {
-    tool: input.tool,
-    reason: "no_match",
-  });
+  log(
+    "json-error-nudge",
+    "recovery_skipped",
+    input.sessionID ?? "",
+    input.callID,
+    "debug",
+    {
+      tool: input.tool,
+      reason: "no_match",
+    },
+  );
 }

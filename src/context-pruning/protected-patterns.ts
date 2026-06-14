@@ -1,0 +1,105 @@
+/**
+ * Glob/wildcard pattern matching for tool name protection.
+ *
+ * Provides `matchesGlob` for converting glob patterns to regex and testing,
+ * and `isToolNameProtected` for checking tool names against a list of
+ * patterns (exact matches first, then glob patterns).
+ *
+ * @module
+ */
+
+/**
+ * Escape regex special characters in a string.
+ * Only characters that are not glob metacharacters (*, ?, **) are escaped.
+ *
+ * @param str - The string to escape.
+ * @returns The string with regex special characters escaped.
+ */
+function escapeRegex(str: string): string {
+  return str.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Convert a glob pattern to a RegExp.
+ *
+ * Supported glob features:
+ * - `*` — matches any characters except `/`
+ * - `?` — matches any single character except `/`
+ * - `**` — matches any characters including `/`
+ *
+ * @param pattern - The glob pattern to convert.
+ * @returns A RegExp equivalent to the glob pattern.
+ */
+function globToRegex(pattern: string): RegExp {
+  let regexStr = "^";
+  let i = 0;
+
+  while (i < pattern.length) {
+    const ch = pattern[i];
+
+    if (ch === "*" && pattern[i + 1] === "*") {
+      // `**` — match anything including `/`
+      regexStr += ".*";
+      i += 2;
+    } else if (ch === "*") {
+      // `*` — match anything except `/`
+      regexStr += "[^/]*";
+      i += 1;
+    } else if (ch === "?") {
+      // `?` — match single char except `/`
+      regexStr += "[^/]";
+      i += 1;
+    } else {
+      // Escape other regex special chars
+      regexStr += escapeRegex(ch);
+      i += 1;
+    }
+  }
+
+  regexStr += "$";
+  return new RegExp(regexStr);
+}
+
+/**
+ * Check if an input string matches a glob pattern.
+ *
+ * Supports `*` (any chars except `/`), `?` (single char except `/`),
+ * and `**` (any chars including `/`).
+ *
+ * @param input   - The string to test.
+ * @param pattern - The glob pattern to test against.
+ * @returns `true` if the input matches the pattern.
+ */
+export function matchesGlob(input: string, pattern: string): boolean {
+  return globToRegex(pattern).test(input);
+}
+
+/**
+ * Check if a tool name is protected by any of the given patterns.
+ *
+ * First checks exact match against the patterns list, then falls back to
+ * glob matching for patterns containing `*` or `?`.
+ *
+ * @param toolName - The tool name to check.
+ * @param patterns - The list of patterns (exact names or globs).
+ * @returns `true` if the tool name matches any pattern.
+ */
+export function isToolNameProtected(
+  toolName: string,
+  patterns: string[],
+): boolean {
+  // Fast path: exact match
+  if (patterns.includes(toolName)) return true;
+
+  // Glob match for patterns containing wildcards
+  for (const pattern of patterns) {
+    if (
+      (pattern.includes("*") || pattern.includes("?")) &&
+      matchesGlob(toolName, pattern)
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}

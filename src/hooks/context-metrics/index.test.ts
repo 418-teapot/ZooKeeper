@@ -10,7 +10,6 @@ import { afterEach, describe, it } from "node:test";
 import { _resetForTesting } from "../../utils/logger.js";
 import {
   type ContextMessageEntry,
-  type ContextMetricsOutput,
   estimateMessageHeuristic,
   measureContext,
 } from "./index.js";
@@ -33,7 +32,12 @@ afterEach(() => {
  */
 function msg(
   role: string,
-  tokens?: { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } },
+  tokens?: {
+    input?: number;
+    output?: number;
+    reasoning?: number;
+    cache?: { read?: number; write?: number };
+  },
   text?: string,
   overrides?: Partial<{ sessionID: string; id: string; agent: string }>,
 ): ContextMessageEntry {
@@ -47,20 +51,6 @@ function msg(
       agent: overrides?.agent,
     },
     parts,
-  };
-}
-
-/**
- * Build a message entry with multiple parts.
- */
-function msgWithParts(
-  role: string,
-  parts: Array<{ type: string; text?: string }>,
-  tokens?: { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } },
-): ContextMessageEntry {
-  return {
-    info: { role, id: "m1", tokens },
-    parts: parts as ContextMessageEntry["parts"],
   };
 }
 
@@ -119,7 +109,9 @@ describe("normal messages with completed assistant", () => {
   it("uses sessionID from the last assistant message", () => {
     const msgs: ContextMessageEntry[] = [
       msg("user", undefined, "Hello"),
-      msg("assistant", { input: 100, output: 50 }, "OK", { sessionID: "sess-123" }),
+      msg("assistant", { input: 100, output: 50 }, "OK", {
+        sessionID: "sess-123",
+      }),
     ];
     const result = measureContext({ messages: msgs });
     assert.equal(result.exact_tokens, 150);
@@ -250,11 +242,17 @@ describe("messages without parts", () => {
 
 describe("estimateMessageHeuristic", () => {
   it("returns 0 for empty parts", () => {
-    assert.equal(estimateMessageHeuristic({ info: { role: "user", id: "m1" }, parts: [] }), 0);
+    assert.equal(
+      estimateMessageHeuristic({ info: { role: "user", id: "m1" }, parts: [] }),
+      0,
+    );
   });
 
   it("returns 0 for undefined parts", () => {
-    assert.equal(estimateMessageHeuristic({ info: { role: "user", id: "m1" } }), 0);
+    assert.equal(
+      estimateMessageHeuristic({ info: { role: "user", id: "m1" } }),
+      0,
+    );
   });
 
   it("computes Math.ceil(text.length / 4) for single part", () => {
@@ -270,8 +268,8 @@ describe("estimateMessageHeuristic", () => {
     const entry: ContextMessageEntry = {
       info: { role: "assistant", id: "a1" },
       parts: [
-        { type: "text", text: "Short" },       // 5 chars
-        { type: "text", text: "Longer text" },  // 11 chars
+        { type: "text", text: "Short" }, // 5 chars
+        { type: "text", text: "Longer text" }, // 11 chars
       ],
     };
     // Total chars = 16 → 16 / 4 = 4 → ceil = 4
@@ -282,8 +280,8 @@ describe("estimateMessageHeuristic", () => {
     const entry: ContextMessageEntry = {
       info: { role: "user", id: "m1" },
       parts: [
-        { type: "text", text: "ABC" },  // 3 / 4 → ceil = 1
-        { type: "text" },                // no text → 0
+        { type: "text", text: "ABC" }, // 3 / 4 → ceil = 1
+        { type: "text" }, // no text → 0
       ],
     };
     assert.equal(estimateMessageHeuristic(entry), 1);

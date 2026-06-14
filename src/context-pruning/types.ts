@@ -149,7 +149,6 @@ export interface ContextPruningConfig {
 
   // Protection
   protectedTools: string[];
-  protectUserMessages: boolean;
   turnProtection: number; // 2 — protect last N turns
 
   // Dedup
@@ -179,5 +178,5 @@ export interface PipelineStats {
   compressedTokens: number;
   summaryTokens: number;
   prunedOutputs: number; // count of tool outputs replaced by prune
-  prunedErrors: number;  // count of error inputs replaced by prune
+  prunedErrors: number; // count of error inputs replaced by prune
 }

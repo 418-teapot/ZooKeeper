@@ -6,44 +6,42 @@
  * @module
  */
 
-export type {
-  MessageRef,
-  ToolCallRef,
-  ToolResultRef,
-  CompressionMode,
-  CompressionBlock,
-  CompressionSummary,
-  SessionState,
-  PruneState,
-  DedupEntry,
-  ErrorEntry,
-  ContextPruningConfig,
-  PipelineInput,
-  PipelineOutput,
-  PipelineStats,
-} from "./types";
-
+export {
+  loadContextConfig,
+  resolveThreshold,
+} from "./config-loader";
+export { markDuplicates } from "./dedup";
 export {
   estimateTokens,
   estimateTotalTokens,
   getContextTokens,
 } from "./estimator";
 
-export {
-  globalState,
-  ContextPruningState,
-} from "./state";
+export { buildNudges } from "./nudge";
 
 export {
-  buildNudges,
-} from "./nudge";
-
-export {
-  runPipeline,
   prepareSession,
+  runPipeline,
 } from "./pipeline";
-
+export { applyPruning } from "./prune";
+export { markPurgeErrors } from "./purge-errors";
 export {
-  loadContextConfig,
-  resolveThreshold,
-} from "./config-loader";
+  ContextPruningState,
+  globalState,
+} from "./state";
+export type {
+  CompressionBlock,
+  CompressionMode,
+  CompressionSummary,
+  ContextPruningConfig,
+  DedupEntry,
+  ErrorEntry,
+  MessageRef,
+  PipelineInput,
+  PipelineOutput,
+  PipelineStats,
+  PruneState,
+  SessionState,
+  ToolCallRef,
+  ToolResultRef,
+} from "./types";

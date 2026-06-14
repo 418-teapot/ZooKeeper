@@ -44,11 +44,11 @@ section "TypeScript ($MODE)"
 
 case "$MODE" in
   check)
-    bunx biome check --write "$TS_DIR" && ok "biome check" || { fail "biome check"; FAILED=1; }
+    bunx biome check --write --error-on-warnings "$TS_DIR" && ok "biome check" || { fail "biome check"; FAILED=1; }
     bunx tsc --noEmit && ok "tsc --noEmit" || { fail "tsc --noEmit"; FAILED=1; }
     ;;
   lint)
-    bunx biome lint "$TS_DIR" && ok "biome lint" || { fail "biome lint"; FAILED=1; }
+    bunx biome lint --error-on-warnings "$TS_DIR" && ok "biome lint" || { fail "biome lint"; FAILED=1; }
     bunx tsc --noEmit && ok "tsc --noEmit" || { fail "tsc --noEmit"; FAILED=1; }
     ;;
   format)

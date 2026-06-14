@@ -56,7 +56,6 @@ const DEFAULTS: ContextPruningConfig = {
   commandsEnabled: false,
   persistState: false,
   protectedTools: ["task", "skill", "question"],
-  protectUserMessages: true,
   turnProtection: 2,
   dedupProtectedTools: ["task", "skill", "read"],
   purgeErrorsProtectedTools: ["task", "skill"],
@@ -118,13 +117,17 @@ export function loadContextConfig(
   // Read raw percent/absolute inputs into local variables (never exposed on config)
   const raw: RawThresholds = {
     nudgeThresholdPercent:
-      ctx.nudge_threshold_percent ?? RAW_THRESHOLD_DEFAULTS.nudgeThresholdPercent,
+      ctx.nudge_threshold_percent ??
+      RAW_THRESHOLD_DEFAULTS.nudgeThresholdPercent,
     urgentThresholdPercent:
-      ctx.urgent_threshold_percent ?? RAW_THRESHOLD_DEFAULTS.urgentThresholdPercent,
+      ctx.urgent_threshold_percent ??
+      RAW_THRESHOLD_DEFAULTS.urgentThresholdPercent,
     nudgeThresholdAbsolute:
-      ctx.nudge_threshold_absolute ?? RAW_THRESHOLD_DEFAULTS.nudgeThresholdAbsolute,
+      ctx.nudge_threshold_absolute ??
+      RAW_THRESHOLD_DEFAULTS.nudgeThresholdAbsolute,
     urgentThresholdAbsolute:
-      ctx.urgent_threshold_absolute ?? RAW_THRESHOLD_DEFAULTS.urgentThresholdAbsolute,
+      ctx.urgent_threshold_absolute ??
+      RAW_THRESHOLD_DEFAULTS.urgentThresholdAbsolute,
   };
 
   const config: ContextPruningConfig = {
@@ -136,24 +139,18 @@ export function loadContextConfig(
     purgeErrorsTurns: ctx.purge_errors_turns ?? DEFAULTS.purgeErrorsTurns,
     compressEnabled: ctx.compress_enabled ?? DEFAULTS.compressEnabled,
     compressMode: ctx.compress_mode ?? DEFAULTS.compressMode,
-    nudgeFrequency:
-      ctx.compress_nudge_frequency ?? DEFAULTS.nudgeFrequency,
-    compressLlmEnabled:
-      ctx.compress_llm_enabled ?? DEFAULTS.compressLlmEnabled,
+    nudgeFrequency: ctx.compress_nudge_frequency ?? DEFAULTS.nudgeFrequency,
+    compressLlmEnabled: ctx.compress_llm_enabled ?? DEFAULTS.compressLlmEnabled,
     compressMessageModeEnabled:
-      ctx.compress_message_mode_enabled ??
-      DEFAULTS.compressMessageModeEnabled,
+      ctx.compress_message_mode_enabled ?? DEFAULTS.compressMessageModeEnabled,
     commandsEnabled: ctx.commands_enabled ?? DEFAULTS.commandsEnabled,
     persistState: ctx.persist_state ?? DEFAULTS.persistState,
     protectedTools: ctx.protected_tools ?? DEFAULTS.protectedTools,
-    protectUserMessages:
-      ctx.protect_user_messages ?? DEFAULTS.protectUserMessages,
     turnProtection: ctx.turn_protection ?? DEFAULTS.turnProtection,
     dedupProtectedTools:
       ctx.dedup_protected_tools ?? DEFAULTS.dedupProtectedTools,
     purgeErrorsProtectedTools:
-      ctx.purge_errors_protected_tools ??
-      DEFAULTS.purgeErrorsProtectedTools,
+      ctx.purge_errors_protected_tools ?? DEFAULTS.purgeErrorsProtectedTools,
   };
 
   // Resolve effective thresholds from local raw inputs

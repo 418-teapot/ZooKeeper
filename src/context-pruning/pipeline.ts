@@ -1,41 +1,26 @@
 /**
  * Context pruning pipeline — orchestrates the message transformation steps.
  *
- * Two-phase architecture following DCP's design:
+ * Split architecture:
  *   prepareSession()  — compress-time: filter + assign IDs + dedup marking + purge-errors marking
  *   runPipeline()     — every-turn: filter + assign IDs + advanceTurn + apply prune + nudge + strip metadata
  *
  * @module
  */
 
+import { markDuplicates } from "./dedup";
+import { estimateTotalTokens } from "./estimator";
+import { buildNudges } from "./nudge";
+import { applyPruning } from "./prune";
+import { markPurgeErrors } from "./purge-errors";
+import { globalState } from "./state";
 import type {
-  MessageRef,
   ContextPruningConfig,
+  MessageRef,
   PipelineInput,
   PipelineOutput,
   PipelineStats,
-  PruneState,
 } from "./types";
-import { estimateTotalTokens } from "./estimator";
-import { globalState } from "./state";
-import { buildNudges } from "./nudge";
-
-// ── Apply prune stub ──────────────────────────────────────
-// Not yet implemented: will import the real prune.ts module.
-
-/**
- * Stub: applyPrune is a no-op that returns messages unchanged.
- *
- * Not yet implemented: will be replaced with the real prune application logic
- * that reads state.prune.tools and replaces pruned tool outputs/errors with
- * placeholder text.
- */
-function applyPrune(
-  messages: MessageRef[],
-  _state: unknown,
-): { messages: MessageRef[]; prunedOutputs: number; prunedErrors: number } {
-  return { messages, prunedOutputs: 0, prunedErrors: 0 };
-}
 
 // ── prepareSession (compress-time) ────────────────────────
 
@@ -46,11 +31,8 @@ function applyPrune(
  * Steps:
  *   1. Filter malformed messages
  *   2. Assign message references (mNNNN)
- *   3. Dedup marking (not yet implemented — writes nothing)
- *   4. Purge-errors marking (not yet implemented — writes nothing)
- *
- * Not yet implemented: markDuplicates(state, config, messages) and
- * markPurgeErrors(state, config, messages).
+ *   3. Dedup marking — writes to state.prune.tools
+ *   4. Purge-errors marking — writes to state.prune.tools
  *
  * @param config - Context pruning configuration.
  * @param messages - The messages to prepare.
@@ -72,14 +54,14 @@ export function prepareSession(
     m.id = `m${String(i).padStart(4, "0")}`;
   });
 
-  // Step 3: Dedup marking (not yet implemented — writes nothing)
-  // Not yet implemented: markDuplicates(state, config, messages);
+  // Step 3: Dedup marking — writes to state.prune.tools
+  markDuplicates(state, config, messages);
 
-  // Step 4: Purge-errors marking (not yet implemented — writes nothing)
-  // Not yet implemented: markPurgeErrors(state, config, messages);
+  // Step 4: Purge-errors marking — writes to state.prune.tools
+  markPurgeErrors(state, config, messages);
 }
 
-// ── runPipeline (every-turn phase) ────────────────────────
+// ── runPipeline (every-turn) ──────────────────────────────
 
 /**
  * Run the every-turn pruning pipeline on a set of messages.
@@ -88,7 +70,7 @@ export function prepareSession(
  *   1. Filter malformed messages
  *   2. Assign message references (mNNNN)
  *   2b. Advance turn counter
- *   3. Apply prune (reads state.prune.tools — not yet implemented, currently no-op)
+ *   3. Apply prune (reads state.prune.tools)
  *   4. Build nudges (based on token thresholds)
  *   5. Strip stale metadata
  *
@@ -120,8 +102,8 @@ export function runPipeline(input: PipelineInput): PipelineOutput {
   // ── Step 2b: Advance turn counter ─────────────────────
   globalState.advanceTurn(sessionId);
 
-  // ── Step 3: Apply prune (not yet implemented) ────────
-  const pruneResult = applyPrune(working, state.prune);
+  // ── Step 3: Apply prune ──────────────────────────────
+  const pruneResult = applyPruning(state, working);
   working = pruneResult.messages;
   stats.prunedOutputs = pruneResult.prunedOutputs;
   stats.prunedErrors = pruneResult.prunedErrors;
