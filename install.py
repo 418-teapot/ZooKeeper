@@ -121,7 +121,11 @@ def load_env_file(env_path: str) -> None:
                 warn(f".env:{lineno}: 忽略空键名")
                 continue
             value = value.strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+            if (
+                len(value) >= 2
+                and value[0] == value[-1]
+                and value[0] in ('"', "'")
+            ):
                 value = value[1:-1]
             if key not in os.environ:
                 os.environ[key] = value
@@ -159,7 +163,9 @@ def resolve_env_refs_deep(obj):
         var_name = m.group(1)
         resolved = os.environ.get(var_name)
         if resolved is None:
-            error(f"环境变量 {var_name} 未设置！请创建 .env 文件（参考 .env.example）")
+            error(
+                f"环境变量 {var_name} 未设置！请创建 .env 文件（参考 .env.example）"
+            )
             error(f'或 export {var_name}="..." 后再运行 install.py')
             sys.exit(1)
         return resolved
@@ -256,7 +262,9 @@ def main() -> None:
     load_env_file(os.path.join(SCRIPT_DIR, ".env"))
 
     toml_path = os.path.abspath(
-        sys.argv[1] if len(sys.argv) > 1 else os.path.join(SCRIPT_DIR, "config.toml")
+        sys.argv[1]
+        if len(sys.argv) > 1
+        else os.path.join(SCRIPT_DIR, "config.toml")
     )
     opencode_dir = os.path.join(os.path.expanduser("~"), ".config", "opencode")
     opencode_json = os.path.join(opencode_dir, "opencode.json")
@@ -269,7 +277,9 @@ def main() -> None:
 
     header("备份已有配置")
     if os.path.isfile(opencode_json):
-        backup_path = f"{opencode_json}.bak.{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        backup_path = (
+            f"{opencode_json}.bak.{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        )
         shutil.copy2(opencode_json, backup_path)
         info(f"✓ 已备份: {backup_path}")
     else:
@@ -298,7 +308,9 @@ def main() -> None:
     print("")
     print(f"  {bold('查看:')}  opencode config --path")
     print(f"  {bold('验证:')}  opencode config --json")
-    print(f"  {bold('.env:')}  参考 {os.path.join(SCRIPT_DIR, '.env.example')}")
+    print(
+        f"  {bold('.env:')}  参考 {os.path.join(SCRIPT_DIR, '.env.example')}"
+    )
     print("")
 
 

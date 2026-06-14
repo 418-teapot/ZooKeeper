@@ -192,7 +192,13 @@ export function validateTaskPrompt(
 
   // If CONTEXT is missing we can't proceed with soft checks
   if (!sections.CONTEXT) {
-    return { valid: false, errors, warnings, ctx_words: 0, total_words: wordCount(prompt) };
+    return {
+      valid: false,
+      errors,
+      warnings,
+      ctx_words: 0,
+      total_words: wordCount(prompt),
+    };
   }
 
   // --- 2. CONTEXT word count (soft) ---
@@ -216,7 +222,13 @@ export function validateTaskPrompt(
   // --- 4. Pattern nudges in CONTEXT (soft) ---
   warnings.push(...buildContextNudges(sections.CONTEXT));
 
-  return { valid: errors.length === 0, errors, warnings, ctx_words: cw, total_words: tw };
+  return {
+    valid: errors.length === 0,
+    errors,
+    warnings,
+    ctx_words: cw,
+    total_words: tw,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -241,7 +253,9 @@ export function enhanceTaskDefinition(
 
   const promptParam = output.parameters?.properties?.prompt;
   if (!promptParam || typeof promptParam !== "object") {
-    log("task-prompt", "definition_skipped", "", undefined, "debug", { reason: "no_prompt_param" });
+    log("task-prompt", "definition_skipped", "", undefined, "debug", {
+      reason: "no_prompt_param",
+    });
     return;
   }
 
@@ -278,9 +292,16 @@ export function validateBeforeExec(
 
   if (!result.valid) {
     const details = result.errors.map((e) => `- ${e}`).join("\n");
-    log("task-prompt", "validate_failed", input.sessionID ?? "", input.callID, "warn", {
-      errors: result.errors,
-    });
+    log(
+      "task-prompt",
+      "validate_failed",
+      input.sessionID ?? "",
+      input.callID,
+      "warn",
+      {
+        errors: result.errors,
+      },
+    );
     throw new Error(
       "Task prompt format error:\n" +
         `${details}\n\n` +
@@ -294,11 +315,18 @@ export function validateBeforeExec(
 
   // Validation passed — log if there are warnings (include word counts regardless)
   if (result.warnings.length > 0) {
-    log("task-prompt", "validate_passed", input.sessionID ?? "", input.callID, "info", {
-      warnings: result.warnings.length,
-      ctx_words: result.ctx_words,
-      total_words: result.total_words,
-    });
+    log(
+      "task-prompt",
+      "validate_passed",
+      input.sessionID ?? "",
+      input.callID,
+      "info",
+      {
+        warnings: result.warnings.length,
+        ctx_words: result.ctx_words,
+        total_words: result.total_words,
+      },
+    );
   }
 }
 
@@ -317,24 +345,50 @@ export function validateBeforeExec(
  * @param limits - Validation limits (word count thresholds).
  */
 export function nudgeTaskOutput(
-  input: { tool: string; sessionID?: string; callID?: string; args?: Record<string, unknown> },
+  input: {
+    tool: string;
+    sessionID?: string;
+    callID?: string;
+    args?: Record<string, unknown>;
+  },
   output: { output?: string },
   limits: ValidationLimits,
 ): void {
   if (input.tool !== "task") {
-    log("task-prompt", "nudge_skipped", input.sessionID ?? "", input.callID, "debug", { reason: "not_task" });
+    log(
+      "task-prompt",
+      "nudge_skipped",
+      input.sessionID ?? "",
+      input.callID,
+      "debug",
+      { reason: "not_task" },
+    );
     return;
   }
 
   const promptArg = input.args?.prompt;
   if (typeof promptArg !== "string") {
-    log("task-prompt", "nudge_skipped", input.sessionID ?? "", input.callID, "debug", { reason: "no_prompt_arg" });
+    log(
+      "task-prompt",
+      "nudge_skipped",
+      input.sessionID ?? "",
+      input.callID,
+      "debug",
+      { reason: "no_prompt_arg" },
+    );
     return;
   }
 
   const result = validateTaskPrompt(promptArg, limits);
   if (result.warnings.length === 0) {
-    log("task-prompt", "nudge_skipped", input.sessionID ?? "", input.callID, "debug", undefined);
+    log(
+      "task-prompt",
+      "nudge_skipped",
+      input.sessionID ?? "",
+      input.callID,
+      "debug",
+      undefined,
+    );
     return;
   }
 
@@ -343,7 +397,14 @@ export function nudgeTaskOutput(
   const suffix = `\n\n--- Guidance for next time ---\n${nudgeText}`;
   output.output = (output.output ?? "") + suffix;
 
-  log("task-prompt", "nudge_injected", input.sessionID ?? "", input.callID, "info", {
-    warnings: result.warnings,
-  });
+  log(
+    "task-prompt",
+    "nudge_injected",
+    input.sessionID ?? "",
+    input.callID,
+    "info",
+    {
+      warnings: result.warnings,
+    },
+  );
 }

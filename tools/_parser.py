@@ -20,7 +20,11 @@ def _get_zoo_log_dir() -> str:
         if config_path.is_file():
             with open(config_path, "rb") as f:
                 config = tomllib.load(f)
-            zoo_dir = config.get("zoo", {}).get("logging", {}).get("dir", "~/.zoo/log")
+            zoo_dir = (
+                config.get("zoo", {})
+                .get("logging", {})
+                .get("dir", "~/.zoo/log")
+            )
             return os.path.expanduser(zoo_dir)
     except Exception:
         pass
@@ -110,7 +114,10 @@ def parse_opencode_log(
             entry = parse_opencode_line(line)
             if entry is None:
                 continue
-            if session_id is not None and entry.get("session_id") != session_id:
+            if (
+                session_id is not None
+                and entry.get("session_id") != session_id
+            ):
                 continue
             events.append(entry)
     return events

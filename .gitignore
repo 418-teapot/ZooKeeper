@@ -1,7 +1,24 @@
+# ——— Python ———
+__pycache__/
+.ruff_cache/
+.pytest_cache/
+.venv/
+.coverage
+
+# ——— Node / Bun ———
 node_modules/
 dist/
-__pycache__/
-.env
-*.jsonl
+
+# ——— OpenCode ———
 opencode.json
+
+# ——— Test outputs ———
 tests/results/
+*.jsonl
+
+# ——— Environment ———
+.env
+
+# ——— OS & editors ———
+.DS_Store
+*~

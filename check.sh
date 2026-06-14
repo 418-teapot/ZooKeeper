@@ -9,7 +9,7 @@ set -euo pipefail
 
 MODE="${1:-check}"
 
-PY_FILES="install.py tests/ tools/"
+PY_FILES="install.py tests/ tools/ tools/zoo-log tools/zoo-trace tools/zoo-inspect"
 TS_DIR="src/"
 
 RED='\033[0;31m'
@@ -44,15 +44,15 @@ section "TypeScript ($MODE)"
 
 case "$MODE" in
   check)
-    bunx biome check --write "$TS_DIR" && ok "biome check" || { fail "biome check"; FAILED=1; }
+    bunx biome check --error-on-warnings --write "$TS_DIR" && ok "biome check" || { fail "biome check"; FAILED=1; }
     bunx tsc --noEmit && ok "tsc --noEmit" || { fail "tsc --noEmit"; FAILED=1; }
     ;;
   lint)
-    bunx biome lint "$TS_DIR" && ok "biome lint" || { fail "biome lint"; FAILED=1; }
+    bunx biome lint --error-on-warnings "$TS_DIR" && ok "biome lint" || { fail "biome lint"; FAILED=1; }
     bunx tsc --noEmit && ok "tsc --noEmit" || { fail "tsc --noEmit"; FAILED=1; }
     ;;
   format)
-    bunx biome format --write "$TS_DIR" && ok "biome format" || { fail "biome format"; FAILED=1; }
+    bunx biome format --error-on-warnings --write "$TS_DIR" && ok "biome format" || { fail "biome format"; FAILED=1; }
     ;;
 esac
 

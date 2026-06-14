@@ -10,11 +10,12 @@ import sys
 from pathlib import Path
 
 # tools/ is not on sys.path during test runs
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "tools"))
+sys.path.insert(
+    0, str(Path(__file__).resolve().parent.parent.parent / "tools")
+)
 
 
 import pytest  # noqa: E402
-
 from _trace_builder import (  # noqa: E402
     _build_session_agents,
     _build_session_agents_from_entries,
@@ -576,7 +577,9 @@ class TestParseOpencodeMultiSession:
             "timestamp=2024-01-01T00:02:00Z message=created id=sess-b slug=b\n"
             "timestamp=2024-01-01T00:03:00Z message=loop step=1 session_id=sess-b\n"
         )
-        result = _parse_opencode_multi_session(str(log_file), {"sess-a", "sess-b"})
+        result = _parse_opencode_multi_session(
+            str(log_file), {"sess-a", "sess-b"}
+        )
         assert len(result) == 2
         assert len(result["sess-a"]) == 2
         assert len(result["sess-b"]) == 2
@@ -711,12 +714,16 @@ class TestDiscoverChildSessionsFromEntries:
 
     def test_no_children(self, sample_entries: list[dict]) -> None:
         """An entry without children yields only root (depth 0)."""
-        result = _discover_child_sessions_from_entries(sample_entries, "orphan")
+        result = _discover_child_sessions_from_entries(
+            sample_entries, "orphan"
+        )
         assert result == [("orphan", 0)]
 
     def test_direct_child(self, sample_entries: list[dict]) -> None:
         """Direct child of root appears at depth 1."""
-        result = _discover_child_sessions_from_entries(sample_entries, "root-session")
+        result = _discover_child_sessions_from_entries(
+            sample_entries, "root-session"
+        )
         sids = {sid for sid, _ in result}
         assert "child-a" in sids
         assert "child-b" in sids
@@ -728,17 +735,23 @@ class TestDiscoverChildSessionsFromEntries:
 
     def test_grandchild(self, sample_entries: list[dict]) -> None:
         """Grandchild appears at depth 2."""
-        result = _discover_child_sessions_from_entries(sample_entries, "root-session")
+        result = _discover_child_sessions_from_entries(
+            sample_entries, "root-session"
+        )
         for sid, depth in result:
             if sid == "grandchild":
                 assert depth == 2
 
     def test_bfs_includes_root(self, sample_entries: list[dict]) -> None:
         """Root session is first in the result list with depth 0."""
-        result = _discover_child_sessions_from_entries(sample_entries, "root-session")
+        result = _discover_child_sessions_from_entries(
+            sample_entries, "root-session"
+        )
         assert result[0] == ("root-session", 0)
 
-    def test_circular_reference_protection(self, sample_entries: list[dict]) -> None:
+    def test_circular_reference_protection(
+        self, sample_entries: list[dict]
+    ) -> None:
         """Circular parentID references are handled via visited set."""
         entries = list(sample_entries)
         # Add a circular reference: child-a's parent is grandchild
@@ -850,7 +863,9 @@ class TestBuildSessionAgentsFromEntries:
 
     def test_not_in_sids(self, sample_entries: list[dict]) -> None:
         """Sessions not in the set are excluded."""
-        result = _build_session_agents_from_entries(sample_entries, {"root-session"})
+        result = _build_session_agents_from_entries(
+            sample_entries, {"root-session"}
+        )
         assert "child-a" not in result
 
     def test_empty_sids(self, sample_entries: list[dict]) -> None:
@@ -860,7 +875,9 @@ class TestBuildSessionAgentsFromEntries:
 
     def test_only_created_messages(self, sample_entries: list[dict]) -> None:
         """Non-created messages are ignored."""
-        result = _build_session_agents_from_entries(sample_entries, {"root-session"})
+        result = _build_session_agents_from_entries(
+            sample_entries, {"root-session"}
+        )
         assert result == {"root-session": "build"}
 
     def test_fallback_to_slug(self) -> None:
@@ -889,7 +906,9 @@ class TestGroupEntriesBySession:
 
     def test_normal_grouping(self, sample_entries: list[dict]) -> None:
         """Entries are correctly grouped by session_id/id."""
-        result = _group_entries_by_session(sample_entries, {"root-session", "child-a"})
+        result = _group_entries_by_session(
+            sample_entries, {"root-session", "child-a"}
+        )
         assert "root-session" in result
         assert "child-a" in result
         # root-session should have: created + loop + evaluated
@@ -934,7 +953,9 @@ class TestGroupEntriesBySession:
             {"message": "created", "id": "sess-a"},
             {"message": "created", "id": "sess-b"},
         ]
-        result = _group_entries_by_session(entries, {"sess-a", "sess-b", "sess-c"})
+        result = _group_entries_by_session(
+            entries, {"sess-a", "sess-b", "sess-c"}
+        )
         assert "sess-c" in result
         assert result["sess-c"] == []
 
@@ -1105,7 +1126,12 @@ class TestBuildStats:
         stats = build_stats(
             [],
             child_sessions=[
-                {"session_id": "c1", "depth": 1, "agent": "explore", "event_count": 5}
+                {
+                    "session_id": "c1",
+                    "depth": 1,
+                    "agent": "explore",
+                    "event_count": 5,
+                }
             ],
         )
         assert "child_sessions" in stats
@@ -1213,5 +1239,7 @@ class TestBuildTimeline:
             "timestamp=2024-01-01T00:03:00Z message=loop step=2 session_id=sess-1\n"
         )
         timeline = build_timeline("sess-1", opencode_path=str(oc_path))
-        timestamps = [ev["timestamp"] for ev in timeline if ev.get("timestamp")]
+        timestamps = [
+            ev["timestamp"] for ev in timeline if ev.get("timestamp")
+        ]
         assert timestamps == sorted(timestamps)

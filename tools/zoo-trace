@@ -8,17 +8,15 @@ import json
 import os
 import sys
 
+from _jaeger import build_chrome_trace, build_jaeger_doc
+from _parser import list_sessions, parse_opencode_log
+from _trace_builder import build_stats, build_timeline
 from rich.cells import cell_len
 from rich.console import Console
 from rich.panel import Panel
 from rich.style import Style
 from rich.table import Table
 from rich.text import Text
-
-from _jaeger import build_chrome_trace, build_jaeger_doc
-from _parser import list_sessions, parse_opencode_log
-from _trace_builder import build_stats, build_timeline
-
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -162,7 +160,7 @@ def _truncate_display(text: str, max_cols: int) -> str:
             # If even the first char doesn't fit, show it anyway (edge
             # case matching the original O(n²) implementation). This
             # path is never hit in practice (max_cols is 48 or 56).
-            return text[:max(i, 1)] + "..."
+            return text[: max(i, 1)] + "..."
     return text
 
 
@@ -238,7 +236,9 @@ def _render_ops_summary(
         e = op["event"]
         etype = e.get("type", "")
         if etype in ("llm", "llm_stream"):
-            tag_labels.append("🤖 LLM stream" if etype == "llm_stream" else "🤖 LLM call")
+            tag_labels.append(
+                "🤖 LLM stream" if etype == "llm_stream" else "🤖 LLM call"
+            )
         elif e.get("source") == "zoo":
             tag_labels.append("zoo")
         elif e.get("source") == "db":
@@ -309,7 +309,9 @@ def _render_ops_summary(
             # ── LLM call / stream ──
             detail = e.get("detail", {})
             agent_name = detail.get("agent", "")
-            agent_suffix = f"({agent_name}) " if agent_name and agent_name != "?" else ""
+            agent_suffix = (
+                f"({agent_name}) " if agent_name and agent_name != "?" else ""
+            )
             label = "🤖 LLM stream" if etype == "llm_stream" else "🤖 LLM call"
             tag_padded = _pad(label, tag_width)
             tag_seg = S["blue"].render(tag_padded)
@@ -377,9 +379,13 @@ def _render_ops_summary(
 
             line_content = f"{tool_name} {arg}".strip()
             line_content = " ".join(line_content.split())  # collapse newlines
-            line_content = _truncate_display(line_content, 120)  # max 120 display cols
+            line_content = _truncate_display(
+                line_content, 120
+            )  # max 120 display cols
             full_content = (
-                f"{content_prefix}{line_content}" if content_prefix else line_content
+                f"{content_prefix}{line_content}"
+                if content_prefix
+                else line_content
             )
             lines.append(
                 f"{time_seg}  {model_seg}  {tag_seg} {sep_seg} {full_content}"
@@ -469,7 +475,9 @@ def _render_session_panel(
 
         sid_short = f"{session_id[:20]}…"
         title_str = (
-            f"Session: {slug} ({sid_short})" if slug else f"Session ({sid_short})"
+            f"Session: {slug} ({sid_short})"
+            if slug
+            else f"Session ({sid_short})"
         )
 
         parts = []
@@ -483,7 +491,9 @@ def _render_session_panel(
         child_sessions = stats.get("child_sessions")
         child_line = ""
         if child_sessions:
-            child_line = f"子 sessions: [cyan]{stats['total_child_sessions']}[/cyan]"
+            child_line = (
+                f"子 sessions: [cyan]{stats['total_child_sessions']}[/cyan]"
+            )
 
         content = "  ".join(parts)
         if child_line:
@@ -526,7 +536,9 @@ def _render_session_panel(
     # Child session summary
     child_sessions = stats.get("child_sessions")
     if child_sessions:
-        lines.append(f"子 sessions: [cyan]{stats['total_child_sessions']}[/cyan]")
+        lines.append(
+            f"子 sessions: [cyan]{stats['total_child_sessions']}[/cyan]"
+        )
         for cs in child_sessions:
             agent = cs.get("agent", "?")
             sid_short = cs["session_id"][:12] + "..."
@@ -627,7 +639,9 @@ def cmd_list(_args: argparse.Namespace) -> None:
                     oc_sessions.add(sid)
 
     if not zoo_sessions and not oc_sessions:
-        console.print("[yellow]No sessions found in either log source.[/yellow]")
+        console.print(
+            "[yellow]No sessions found in either log source.[/yellow]"
+        )
         return
 
     table = Table(title="Available Sessions")
@@ -691,15 +705,21 @@ def cmd_show(args: argparse.Namespace) -> None:
         return
 
     # Build child session stats for the panel
-    child_sessions_info = _collect_child_sessions_info(timeline, args.session_id)
+    child_sessions_info = _collect_child_sessions_info(
+        timeline, args.session_id
+    )
 
     stats = build_stats(timeline, child_sessions=child_sessions_info)
 
     if args.verbose:
-        _render_session_panel(args.session_id, timeline, stats, console, compact=False)
+        _render_session_panel(
+            args.session_id, timeline, stats, console, compact=False
+        )
         _render_timeline_rich(timeline, console)
     else:
-        _render_session_panel(args.session_id, timeline, stats, console, compact=True)
+        _render_session_panel(
+            args.session_id, timeline, stats, console, compact=True
+        )
 
         _render_ops_summary(timeline, stats, console, verbose=args.verbose)
 
@@ -750,10 +770,14 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", title="Commands")
 
     # --- list ---
-    subparsers.add_parser("list", help="List all sessions from both log sources")
+    subparsers.add_parser(
+        "list", help="List all sessions from both log sources"
+    )
 
     # --- show ---
-    p_show = subparsers.add_parser("show", help="Show merged timeline for a session")
+    p_show = subparsers.add_parser(
+        "show", help="Show merged timeline for a session"
+    )
     p_show.add_argument("session_id", help="Session ID")
     p_show.add_argument(
         "-s",
@@ -770,7 +794,8 @@ def main() -> None:
 
     # --- export ---
     p_export = subparsers.add_parser(
-        "export", help="Export merged timeline as JSON trace (Jaeger or Chrome)"
+        "export",
+        help="Export merged timeline as JSON trace (Jaeger or Chrome)",
     )
     p_export.add_argument("session_id", help="Session ID")
     p_export.add_argument(

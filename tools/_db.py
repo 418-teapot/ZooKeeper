@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-
 from datetime import datetime, timezone
 
 
@@ -77,7 +76,9 @@ def query_db_messages(
 
         ts_ms = first["msg_time"]
         dt = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc)
-        timestamp = dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond:06d}Z"
+        timestamp = (
+            dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond:06d}Z"
+        )
 
         agent = msg_data.get("agent", "")
         model = msg_data.get("modelID", "") if role == "assistant" else ""

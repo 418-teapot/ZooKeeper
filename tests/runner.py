@@ -20,10 +20,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import traceback
 from pathlib import Path
-
-import tomllib
 
 # Ensure ``tests/`` is on the module search path so that sibling modules
 # (session.py, assertions.py, report.py) can be imported without a package.
@@ -372,7 +371,12 @@ def _analyse_session(
 
     # --- Session parsing ----------------------------------------------
     if session is None:
-        return flat_metrics, raw_metrics, assertion_results, "session.py 不可用"
+        return (
+            flat_metrics,
+            raw_metrics,
+            assertion_results,
+            "session.py 不可用",
+        )
 
     try:
         data = session.parse_session(stdout_path)  # type: ignore[attr-defined]
@@ -390,7 +394,9 @@ def _analyse_session(
     try:
         raw_metrics = session.compute_metrics(data)  # type: ignore[attr-defined]
         flat_metrics = {
-            name: (float(mv.value) if not isinstance(mv.value, dict) else mv.value)
+            name: (
+                float(mv.value) if not isinstance(mv.value, dict) else mv.value
+            )
             for name, mv in raw_metrics.items()
         }
         if flat_metrics.get("is_empty_session", 0.0) == 1.0:
@@ -408,7 +414,10 @@ def _analyse_session(
             #   1. required = ["assert_delegates", "assert_verifies"]
             #   2. output_clean = "No error messages"  (flat name->desc)
             assertions_raw = scenario.get("assertions", {})
-            if isinstance(assertions_raw, dict) and "required" in assertions_raw:
+            if (
+                isinstance(assertions_raw, dict)
+                and "required" in assertions_raw
+            ):
                 required_names = list(assertions_raw["required"])
             else:
                 required_names = list(assertions_raw.keys())
@@ -586,7 +595,9 @@ def _prepare_fixture(fixture_project: str, parent_dir: Path) -> Path:
 # ── Replay validation ──────────────────────────────────────────────────
 
 
-def _validate_replay_jsonl(path: Path, expected_agent: str) -> tuple[bool, str | None]:
+def _validate_replay_jsonl(
+    path: Path, expected_agent: str
+) -> tuple[bool, str | None]:
     """Validate a JSONL file for ``--replay`` mode.
 
     Checks that the file exists, is non-empty, and contains at least one
@@ -798,7 +809,9 @@ def main() -> None:
                         error=str(exc),
                     ),
                 )
-                _incremental_write(reports, REPORT_PATH, git_commit, opencode_version)
+                _incremental_write(
+                    reports, REPORT_PATH, git_commit, opencode_version
+                )
                 continue
             except Exception as exc:
                 err_msg = f"夹具拷贝失败: {exc}"
@@ -812,7 +825,9 @@ def main() -> None:
                         error=err_msg,
                     ),
                 )
-                _incremental_write(reports, REPORT_PATH, git_commit, opencode_version)
+                _incremental_write(
+                    reports, REPORT_PATH, git_commit, opencode_version
+                )
                 continue
 
             # ── Build command ────────────────────────────────────────
@@ -857,7 +872,9 @@ def main() -> None:
             if exec_error is None:
                 try:
                     metrics, raw_metrics, assertion_results, analysis_error = (
-                        _analyse_session(stdout_path, scenario, verbose=args.verbose)
+                        _analyse_session(
+                            stdout_path, scenario, verbose=args.verbose
+                        )
                     )
                 except Exception as exc:
                     analysis_error = f"分析错误: {exc}"
@@ -892,7 +909,9 @@ def main() -> None:
             )
             all_thresholds_pass = all(t.passed for t in threshold_results)
             raw_pass = (
-                analysis_error is None and all_assertions_pass and all_thresholds_pass
+                analysis_error is None
+                and all_assertions_pass
+                and all_thresholds_pass
             )
 
             # RED / baseline scenarios use expect_fail=true: assertions

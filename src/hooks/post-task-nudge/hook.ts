@@ -132,9 +132,16 @@ export async function nudgePostTask(
     if (activeCount === 0) {
       // All completed / cancelled — VERIFY only
       output.output += suffix;
-      log("post-task-nudge", "verify_injected", input.sessionID, input.callID, "info", {
-        todo_state: "none_active",
-      });
+      log(
+        "post-task-nudge",
+        "verify_injected",
+        input.sessionID,
+        input.callID,
+        "info",
+        {
+          todo_state: "none_active",
+        },
+      );
       return;
     }
 
@@ -146,9 +153,16 @@ export async function nudgePostTask(
     }
   } catch (err) {
     // API failure: fallback to VERIFY + TODO_GENERAL
-    log("post-task-nudge", "todo_api_failed", input.sessionID, input.callID, "error", {
-      error: String(err),
-    });
+    log(
+      "post-task-nudge",
+      "todo_api_failed",
+      input.sessionID,
+      input.callID,
+      "error",
+      {
+        error: String(err),
+      },
+    );
     suffix += `\n\n${TODO_GENERAL}`;
   }
 
@@ -156,7 +170,14 @@ export async function nudgePostTask(
   const todoNudge = suffix.includes(TODO_FINAL_ACTIVE)
     ? "final_active"
     : "general";
-  log("post-task-nudge", "verify_injected", input.sessionID, input.callID, "info", {
-    todo_state: todoNudge,
-  });
+  log(
+    "post-task-nudge",
+    "verify_injected",
+    input.sessionID,
+    input.callID,
+    "info",
+    {
+      todo_state: todoNudge,
+    },
+  );
 }

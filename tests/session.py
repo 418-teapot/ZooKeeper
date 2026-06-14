@@ -274,7 +274,9 @@ def is_verify_command(args: dict) -> bool:
         ``True`` if any argument value string contains a verify keyword.
     """
     for val in args.values():
-        if isinstance(val, str) and any(kw in val.lower() for kw in VERIFY_KEYWORDS):
+        if isinstance(val, str) and any(
+            kw in val.lower() for kw in VERIFY_KEYWORDS
+        ):
             return True
     return False
 
@@ -303,7 +305,9 @@ def count_verified_tasks(calls: list[ToolCall]) -> tuple[int, int]:
         if is_code_task:
             code_modifying_tasks += 1
 
-        end_idx = task_indices[i + 1] if i + 1 < len(task_indices) else len(calls)
+        end_idx = (
+            task_indices[i + 1] if i + 1 < len(task_indices) else len(calls)
+        )
 
         if is_code_task:
             for c in calls[t_idx + 1 : end_idx]:
@@ -387,7 +391,9 @@ def compute_metrics(data: SessionData) -> dict[str, MetricValue]:
     # --- verification_rate ----------------------------------------------
     verified_after_task, code_modifying_tasks = count_verified_tasks(calls)
     verification_rate = (
-        0.0 if code_modifying_tasks == 0 else verified_after_task / code_modifying_tasks
+        0.0
+        if code_modifying_tasks == 0
+        else verified_after_task / code_modifying_tasks
     )
 
     # --- read_abuse_events ----------------------------------------------
@@ -398,7 +404,9 @@ def compute_metrics(data: SessionData) -> dict[str, MetricValue]:
         1 for c in calls if c.tool == "bash" and is_verify_command(c.args)
     )
     # edit_count already includes both edit and write
-    self_verification_rate = 0.0 if edit_count == 0 else verify_bash_count / edit_count
+    self_verification_rate = (
+        0.0 if edit_count == 0 else verify_bash_count / edit_count
+    )
 
     # --- pre_verification_rate -------------------------------------------
     # An edit/write is "pre-verified" if at least one of the last N
@@ -408,9 +416,14 @@ def compute_metrics(data: SessionData) -> dict[str, MetricValue]:
     for i, c in enumerate(calls):
         if c.tool in ("edit", "write"):
             window_start = max(0, i - _PRE_VERIFY_WINDOW)
-            if any(calls[j].tool in ("read", "grep") for j in range(window_start, i)):
+            if any(
+                calls[j].tool in ("read", "grep")
+                for j in range(window_start, i)
+            ):
                 verified_edits += 1
-    pre_verification_rate = 1.0 if edit_count == 0 else verified_edits / edit_count
+    pre_verification_rate = (
+        1.0 if edit_count == 0 else verified_edits / edit_count
+    )
 
     # --- Build result ---------------------------------------------------
     counts_detail = ", ".join(

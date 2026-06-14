@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-
 from collections import Counter, defaultdict, deque
 from datetime import datetime
 from typing import Any
@@ -74,7 +73,9 @@ def _classify_opencode(entry: dict) -> dict | None:
         if model_provider:
             parts.append(f"provider={model_provider}")
         summary = (
-            f"Session {slug}: {title}" if title and title != slug else f"Session {slug}"
+            f"Session {slug}: {title}"
+            if title and title != slug
+            else f"Session {slug}"
         )
         if parts:
             summary = f"Session {slug} ({', '.join(parts)})"
@@ -110,7 +111,10 @@ def _classify_opencode(entry: dict) -> dict | None:
             "type": "session",
             "icon": "◆",
             "summary": f"Loop step={step}",
-            "detail": {"step": step, "session_id": entry.get("session_id", "")},
+            "detail": {
+                "step": step,
+                "session_id": entry.get("session_id", ""),
+            },
         }
 
     # Process message (no role/content in opencode log — just a message ID)
@@ -485,7 +489,11 @@ def _group_entries_by_session(
 
     for entry in all_entries:
         # Build run → session_id mapping from 'created' lines
-        if entry.get("message") == "created" and entry.get("id") and entry.get("run"):
+        if (
+            entry.get("message") == "created"
+            and entry.get("id")
+            and entry.get("run")
+        ):
             run_to_session[entry["run"]] = entry["id"]
 
         # Check direct session_id / id match
@@ -533,7 +541,9 @@ def build_timeline(
     # Discover sessions to include
     sessions: list[tuple[str, int]] = [(session_id, 0)]
     if include_children:
-        sessions = _discover_child_sessions_from_entries(all_entries, session_id)
+        sessions = _discover_child_sessions_from_entries(
+            all_entries, session_id
+        )
 
     # Pre-build session → agent map for child labelling
     all_sids = {sid for sid, _ in sessions}
@@ -589,7 +599,11 @@ def build_timeline(
 
     # Sort by timestamp (missing timestamps last)
     timeline.sort(
-        key=lambda e: (e.get("timestamp", ""), e.get("source", ""), e.get("type", ""))
+        key=lambda e: (
+            e.get("timestamp", ""),
+            e.get("source", ""),
+            e.get("type", ""),
+        )
     )
 
     return timeline
@@ -631,8 +645,12 @@ def build_stats(
     time_span = None
     if len(timestamps) >= 2:
         try:
-            first = datetime.fromisoformat(timestamps[0].replace("Z", "+00:00"))
-            last = datetime.fromisoformat(timestamps[-1].replace("Z", "+00:00"))
+            first = datetime.fromisoformat(
+                timestamps[0].replace("Z", "+00:00")
+            )
+            last = datetime.fromisoformat(
+                timestamps[-1].replace("Z", "+00:00")
+            )
             delta = last - first
             time_span = {
                 "start": timestamps[0],

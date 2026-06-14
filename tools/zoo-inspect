@@ -2,15 +2,18 @@
 """ZooKeeper session inspector — stats and timeline for log sessions."""
 
 import argparse
-import os
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 
+from _parser import (
+    _get_zoo_log_dir,
+    list_sessions,
+    parse_zoo_log,
+    resolve_session_path,
+)
 from rich.console import Console
 from rich.table import Table
-
-from _parser import _get_zoo_log_dir, list_sessions, parse_zoo_log, resolve_session_path
 
 
 def cmd_list(_args: argparse.Namespace) -> None:
@@ -19,7 +22,9 @@ def cmd_list(_args: argparse.Namespace) -> None:
     sessions = list_sessions()
 
     if not sessions:
-        console.print(f"[yellow]No log files found in {_get_zoo_log_dir()}/[/yellow]")
+        console.print(
+            f"[yellow]No log files found in {_get_zoo_log_dir()}/[/yellow]"
+        )
         return
 
     table = Table(title="ZooKeeper Sessions")
@@ -31,7 +36,9 @@ def cmd_list(_args: argparse.Namespace) -> None:
     for s in sessions:
         size_str = f"{s['size']:,} bytes"
         mtime_str = s["mtime"].strftime("%Y-%m-%d %H:%M:%S")
-        table.add_row(s["session_id"], size_str, mtime_str, str(s["event_count"]))
+        table.add_row(
+            s["session_id"], size_str, mtime_str, str(s["event_count"])
+        )
 
     console.print(table)
 
@@ -54,7 +61,9 @@ def cmd_stats(args: argparse.Namespace) -> None:
     time_span = ""
     if timestamps:
         try:
-            first = datetime.fromisoformat(timestamps[0].replace("Z", "+00:00"))
+            first = datetime.fromisoformat(
+                timestamps[0].replace("Z", "+00:00")
+            )
             last = datetime.fromisoformat(
                 timestamps[-1].replace("Z", "+00:00")
             )
@@ -68,7 +77,9 @@ def cmd_stats(args: argparse.Namespace) -> None:
             time_span = "N/A"
 
     # By hook
-    hook_counts: Counter[str] = Counter(e.get("hook", "unknown") for e in events)
+    hook_counts: Counter[str] = Counter(
+        e.get("hook", "unknown") for e in events
+    )
     hook_events: dict[str, Counter[str]] = defaultdict(Counter)
     for e in events:
         hook = e.get("hook", "unknown")
@@ -76,7 +87,9 @@ def cmd_stats(args: argparse.Namespace) -> None:
         hook_events[hook][evt] += 1
 
     # By level
-    level_counts: Counter[str] = Counter(e.get("level", "unknown") for e in events)
+    level_counts: Counter[str] = Counter(
+        e.get("level", "unknown") for e in events
+    )
 
     # Active session IDs
     session_ids: set[str] = set()
@@ -86,7 +99,9 @@ def cmd_stats(args: argparse.Namespace) -> None:
             session_ids.add(sid)
 
     # --- Render ---
-    console.print(f"\n[bold]Stats for session:[/bold] [cyan]{args.session_id}[/cyan]")
+    console.print(
+        f"\n[bold]Stats for session:[/bold] [cyan]{args.session_id}[/cyan]"
+    )
     console.print(f"File: [dim]{path}[/dim]")
     console.print(f"Total events: [bold]{total}[/bold]")
     console.print(f"Time span: {time_span}")
@@ -294,7 +309,9 @@ def main() -> None:
 
     subparsers.add_parser("list", help="List all sessions with metadata")
 
-    p_stats = subparsers.add_parser("stats", help="Show statistics for a session")
+    p_stats = subparsers.add_parser(
+        "stats", help="Show statistics for a session"
+    )
     p_stats.add_argument("session_id", help="Session ID (full or prefix)")
 
     p_timeline = subparsers.add_parser(

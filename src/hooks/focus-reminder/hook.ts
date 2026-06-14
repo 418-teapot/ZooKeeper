@@ -9,8 +9,8 @@
  * @module
  */
 
-import { type Clientish, getAgentName } from "../utils/agent.js";
 import { log } from "../../utils/logger.js";
+import { type Clientish, getAgentName } from "../utils/agent.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -115,9 +115,17 @@ export async function injectFocusReminder(
 
   // Only inject for the build agent
   if (agent !== "build") {
-    log("focus-reminder", "reminder_skipped", lastUserMsg.info.sessionID ?? "", undefined, "debug", {
-      reason: agent === undefined || agent === null ? "agent_unknown" : "not_build",
-    });
+    log(
+      "focus-reminder",
+      "reminder_skipped",
+      lastUserMsg.info.sessionID ?? "",
+      undefined,
+      "debug",
+      {
+        reason:
+          agent === undefined || agent === null ? "agent_unknown" : "not_build",
+      },
+    );
     return;
   }
 
@@ -128,8 +136,15 @@ export async function injectFocusReminder(
 
   lastUserMsg.parts.push({ type: "text", text: FOCUS_REMINDER });
 
-  log("focus-reminder", "reminder_injected", lastUserMsg.info.sessionID ?? lastUserMsg.info.id, undefined, "info", {
-    agent,
-    message_id: lastUserMsg.info.id,
-  });
+  log(
+    "focus-reminder",
+    "reminder_injected",
+    lastUserMsg.info.sessionID ?? lastUserMsg.info.id,
+    undefined,
+    "info",
+    {
+      agent,
+      message_id: lastUserMsg.info.id,
+    },
+  );
 }

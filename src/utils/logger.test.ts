@@ -5,20 +5,21 @@
  * initLogger, setSessionId, file rotation, old-log cleanup, silent failure,
  * and all testing seams.
  */
+
+import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import assert from "node:assert/strict";
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 
 import {
-  initLogger,
-  setSessionId,
-  log,
-  _getBufferForTesting,
-  _setLogPathForTesting,
   _flushForTesting,
+  _getBufferForTesting,
   _resetForTesting,
+  _setLogPathForTesting,
+  initLogger,
+  log,
+  setSessionId,
 } from "./logger.js";
 
 // ---------------------------------------------------------------------------
@@ -445,7 +446,13 @@ describe("logger", () => {
       const logPath = path.join(testDir, "test.log");
       _setLogPathForTesting(logPath);
 
-      log("focus-reminder", "reminder_injected", "session-abc", undefined, "info");
+      log(
+        "focus-reminder",
+        "reminder_injected",
+        "session-abc",
+        undefined,
+        "info",
+      );
       _flushForTesting();
 
       const parsed = JSON.parse(fs.readFileSync(logPath, "utf-8").trim());
@@ -527,7 +534,10 @@ describe("logger", () => {
         "file should exist after setSessionId flushes buffer",
       );
 
-      const lines = fs.readFileSync(expectedFile, "utf-8").trimEnd().split("\n");
+      const lines = fs
+        .readFileSync(expectedFile, "utf-8")
+        .trimEnd()
+        .split("\n");
       assert.equal(lines.length, 3);
       for (const line of lines) {
         const entry = JSON.parse(line);
@@ -552,7 +562,10 @@ describe("logger", () => {
       _flushForTesting();
 
       const expectedFile = path.join(testDir, "opencode-real-session.log");
-      const lines = fs.readFileSync(expectedFile, "utf-8").trimEnd().split("\n");
+      const lines = fs
+        .readFileSync(expectedFile, "utf-8")
+        .trimEnd()
+        .split("\n");
       assert.equal(lines.length, 1);
       const entry = JSON.parse(lines[0]);
       assert.equal(entry.sessionId, "post-set");
@@ -576,7 +589,7 @@ describe("logger", () => {
       _flushForTesting();
 
       assert.ok(
-        fs.existsSync(logPath + ".1"),
+        fs.existsSync(`${logPath}.1`),
         "backup .1 should exist after rotation",
       );
     });
@@ -591,15 +604,15 @@ describe("logger", () => {
         log("h", "e", "s", undefined, "info");
       }
       _flushForTesting();
-      assert.ok(fs.existsSync(logPath + ".1"));
+      assert.ok(fs.existsSync(`${logPath}.1`));
 
       for (let i = 0; i < 3; i++) {
         log("h", "e", "s", undefined, "info");
       }
       _flushForTesting();
 
-      assert.ok(fs.existsSync(logPath + ".1"));
-      assert.ok(fs.existsSync(logPath + ".2"));
+      assert.ok(fs.existsSync(`${logPath}.1`));
+      assert.ok(fs.existsSync(`${logPath}.2`));
     });
 
     it("respects maxBackups limit (does not create .3 when maxBackups=2)", () => {
@@ -615,10 +628,10 @@ describe("logger", () => {
         _flushForTesting();
       }
 
-      assert.ok(fs.existsSync(logPath + ".1"));
-      assert.ok(fs.existsSync(logPath + ".2"));
+      assert.ok(fs.existsSync(`${logPath}.1`));
+      assert.ok(fs.existsSync(`${logPath}.2`));
       assert.equal(
-        fs.existsSync(logPath + ".3"),
+        fs.existsSync(`${logPath}.3`),
         false,
         ".3 should not exist with maxBackups=2",
       );
@@ -628,14 +641,18 @@ describe("logger", () => {
       const logPath = path.join(testDir, "test.log");
 
       _setLogPathForTesting(logPath);
-      initLogger("test", { logDir: testDir, maxFileSize: 10240, maxBackups: 2 });
+      initLogger("test", {
+        logDir: testDir,
+        maxFileSize: 10240,
+        maxBackups: 2,
+      });
 
       log("h", "e", "s", undefined, "info");
       _flushForTesting();
 
       assert.ok(fs.existsSync(logPath));
       assert.equal(
-        fs.existsSync(logPath + ".1"),
+        fs.existsSync(`${logPath}.1`),
         false,
         "no rotation should happen for small file",
       );
@@ -663,9 +680,21 @@ describe("logger", () => {
 
       initLogger("test", { logDir: testDir, retentionDays: 0 });
 
-      assert.equal(fs.existsSync(logFile1), false, "old log file should be deleted");
-      assert.equal(fs.existsSync(logFile2), false, "old log backup should be deleted");
-      assert.equal(fs.existsSync(nonLogFile), true, "non-log file should not be deleted");
+      assert.equal(
+        fs.existsSync(logFile1),
+        false,
+        "old log file should be deleted",
+      );
+      assert.equal(
+        fs.existsSync(logFile2),
+        false,
+        "old log backup should be deleted",
+      );
+      assert.equal(
+        fs.existsSync(nonLogFile),
+        true,
+        "non-log file should not be deleted",
+      );
     });
 
     it("retains recent log files within retention period", () => {
@@ -674,7 +703,10 @@ describe("logger", () => {
 
       initLogger("test", { logDir: testDir, retentionDays: 30 });
 
-      assert.ok(fs.existsSync(recentFile), "recent log file should be retained");
+      assert.ok(
+        fs.existsSync(recentFile),
+        "recent log file should be retained",
+      );
     });
   });
 

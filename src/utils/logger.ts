@@ -102,7 +102,8 @@ function shouldLog(level: string): boolean {
 function getLogFilePath(): string {
   if (_testLogPathOverride) return _testLogPathOverride;
   if (_logFilePath) return _logFilePath;
-  const sid = _sessionId || new Date().toISOString().replace(/[:.]/g, "").slice(0, 15);
+  const sid =
+    _sessionId || new Date().toISOString().replace(/[:.]/g, "").slice(0, 15);
   _logFilePath = join(_logDir, `opencode-${sid}.log`);
   return _logFilePath;
 }
@@ -191,7 +192,7 @@ function flushBuffer(): void {
   ensureDir(_logDir);
 
   try {
-    const lines = entries.map((e) => JSON.stringify(e)).join("\n") + "\n";
+    const lines = `${entries.map((e) => JSON.stringify(e)).join("\n")}\n`;
     appendFileSync(filePath, lines, "utf-8");
 
     // Check if rotation is needed
@@ -290,7 +291,8 @@ export function initLogger(
     _logDir = resolve(opts.logDir.replace(/^~/, homedir()));
   }
   if (opts?.maxFileSize !== undefined) {
-    _maxFileSize = opts.maxFileSize <= 0 ? DEFAULT_MAX_FILE_SIZE : opts.maxFileSize;
+    _maxFileSize =
+      opts.maxFileSize <= 0 ? DEFAULT_MAX_FILE_SIZE : opts.maxFileSize;
   }
   if (opts?.maxBackups !== undefined) {
     _maxBackups = opts.maxBackups;

@@ -8,8 +8,8 @@
  * @module
  */
 
-import { type Clientish, isBuildAgent } from "../utils/agent.js";
 import { log } from "../../utils/logger.js";
+import { type Clientish, isBuildAgent } from "../utils/agent.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -76,10 +76,17 @@ export async function nudgeDirectWork(
   const isSearch = tool === "grep" || tool === "glob";
   if (!isDirectEdit && !isSearch) return;
   if (output.output == null) {
-    log("direct-work-nudge", "nudge_skipped", input.sessionID, input.callID, "debug", {
-      tool: input.tool,
-      reason: "no_output",
-    });
+    log(
+      "direct-work-nudge",
+      "nudge_skipped",
+      input.sessionID,
+      input.callID,
+      "debug",
+      {
+        tool: input.tool,
+        reason: "no_output",
+      },
+    );
     return;
   }
 
@@ -87,24 +94,45 @@ export async function nudgeDirectWork(
   // isBuildAgent returns false when client is null/undefined, skipping
   // the nudge conservatively.
   if (!(await isBuildAgent(client, input.sessionID))) {
-    log("direct-work-nudge", "nudge_skipped", input.sessionID, input.callID, "debug", {
-      tool: input.tool,
-      reason: "not_build",
-    });
+    log(
+      "direct-work-nudge",
+      "nudge_skipped",
+      input.sessionID,
+      input.callID,
+      "debug",
+      {
+        tool: input.tool,
+        reason: "not_build",
+      },
+    );
     return;
   }
 
   if (isDirectEdit) {
     output.output += `\n\n${DIRECT_WORK_NUDGE}`;
-    log("direct-work-nudge", "nudge_injected", input.sessionID, input.callID, "info", {
-      tool: input.tool,
-      nudge_type: "edit",
-    });
+    log(
+      "direct-work-nudge",
+      "nudge_injected",
+      input.sessionID,
+      input.callID,
+      "info",
+      {
+        tool: input.tool,
+        nudge_type: "edit",
+      },
+    );
   } else {
     output.output += `\n\n${SEARCH_DELEGATE_NUDGE}`;
-    log("direct-work-nudge", "nudge_injected", input.sessionID, input.callID, "info", {
-      tool: input.tool,
-      nudge_type: "search",
-    });
+    log(
+      "direct-work-nudge",
+      "nudge_injected",
+      input.sessionID,
+      input.callID,
+      "info",
+      {
+        tool: input.tool,
+        nudge_type: "search",
+      },
+    );
   }
 }

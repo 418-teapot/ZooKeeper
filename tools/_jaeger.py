@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-
 from datetime import datetime
 from typing import Any
 
@@ -90,7 +89,11 @@ def _build_tags(event: dict) -> list[dict]:
     tags: list[dict] = [
         {"key": "source", "type": "string", "value": source},
         {"key": "event.type", "type": "string", "value": etype},
-        {"key": "session_id", "type": "string", "value": event.get("session_id", "")},
+        {
+            "key": "session_id",
+            "type": "string",
+            "value": event.get("session_id", ""),
+        },
         {"key": "depth", "type": "int64", "value": depth},
         {"key": "summary", "type": "string", "value": summary[:256]},
     ]
@@ -437,7 +440,9 @@ def build_jaeger_doc(session_id: str, timeline: list[dict]) -> dict:
     for k in ("agent", "model_id", "model_provider"):
         val = root_detail.get(k, "")
         if val:
-            process_tags.append({"key": k, "type": "string", "value": str(val)})
+            process_tags.append(
+                {"key": k, "type": "string", "value": str(val)}
+            )
 
     # ---- Root span ----
     first_ts = timeline[0].get("timestamp", "")

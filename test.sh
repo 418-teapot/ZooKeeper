@@ -16,6 +16,8 @@ if [ ${#TS_TEST_FILES[@]} -eq 0 ]; then
   exit 1
 fi
 
+TS_COV_THRESHOLD=90
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 CYAN='\033[0;36m'
@@ -28,7 +30,7 @@ fail()    { printf "${RED}✖ %s${NC}\n" "$1"; }
 FAILED=0
 
 section "Python static tests"
-if uv run pytest "$PY_TEST_DIR" -v; then
+if uv run pytest "$PY_TEST_DIR" -v --cov=tools --cov-report=term-missing; then
   ok "pytest all Python tests"
 else
   fail "pytest all Python tests"
@@ -63,10 +65,27 @@ else
 fi
 
 section "TypeScript tests"
-if bun test "${TS_TEST_FILES[@]}"; then
-  ok "ts tests"
+set +e
+TS_OUTPUT=$(bun test --coverage "${TS_TEST_FILES[@]}" 2>&1)
+TS_EXIT=$?
+set -e
+
+echo "$TS_OUTPUT"
+
+TS_COV=$(echo "$TS_OUTPUT" | awk -F'|' '/All files/ {gsub(/[[:space:]]/, "", $3); print $3}')
+
+if [ -z "$TS_COV" ]; then
+  fail "ts coverage (could not parse 'All files' line from coverage output)"
+  FAILED=1
+elif awk -v cov="$TS_COV" -v thr="$TS_COV_THRESHOLD" 'BEGIN{exit (cov < thr)}'; then
+  ok "ts coverage ${TS_COV}%"
 else
-  fail "ts tests"
+  fail "ts coverage ${TS_COV}% < ${TS_COV_THRESHOLD}% threshold"
+  FAILED=1
+fi
+
+if [ $TS_EXIT -ne 0 ]; then
+  fail "ts tests (exit code $TS_EXIT)"
   FAILED=1
 fi
 
