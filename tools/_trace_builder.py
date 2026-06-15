@@ -276,6 +276,72 @@ def _classify_zoo(entry: dict) -> dict | None:
     }
 
 
+def _resolve_and_group_entries(
+    entries: list[dict],
+    sids: set[str],
+) -> dict[str, list[dict]]:
+    """Shared session-disambiguation logic for grouping entries by session ID.
+
+    Builds a ``run → session_id`` mapping from ``message=created`` lines,
+    maintains a ``session_stack`` for run-based disambiguation via
+    ``loop``/``exiting loop`` events, matches entries directly by
+    ``session_id`` or ``id``, and falls back to run-based resolution.
+
+    This is the extracted inner algorithm shared by
+    ``_parse_opencode_multi_session`` and ``_group_entries_by_session``.
+
+    Args:
+        entries: List of parsed opencode entry dicts.
+        sids: Set of session IDs to extract.
+
+    Returns:
+        Dict mapping each session_id to its list of entry dicts.
+        Sessions not present in the input will have an empty list.
+    """
+    if not sids:
+        return {}
+
+    run_to_session: dict[str, str] = {}  # 1-to-1 last-seen run → session_id
+    session_stack: list[
+        str
+    ] = []  # active session stack from loop/exiting-loop
+    result: dict[str, list[dict]] = {sid: [] for sid in sids}
+
+    for entry in entries:
+        msg = entry.get("message")
+
+        # Build run → session_id mapping from 'created' lines (1-to-1 last-seen)
+        if msg == "created" and entry.get("id") and entry.get("run"):
+            run_to_session[entry["run"]] = entry["id"]
+
+        # Active session stack: push on loop, pop on exiting loop
+        if msg == "loop" and entry.get("session_id"):
+            session_stack.append(entry["session_id"])
+        if msg == "exiting loop" and entry.get("session_id"):
+            if session_stack and session_stack[-1] == entry["session_id"]:
+                session_stack.pop()
+
+        # Check direct session_id / id match
+        matched_id = entry.get("session_id") or entry.get("id")
+        if matched_id and matched_id in sids:
+            result[matched_id].append(entry)
+            continue
+
+        # Check run-based mapping (for entries without session_id)
+        run = entry.get("run")
+        if run and run in run_to_session:
+            # Primary: use top of active-session stack
+            if session_stack and session_stack[-1] in sids:
+                sid = session_stack[-1]
+            else:
+                # Fallback: use last-seen 1-to-1 run mapping
+                sid = run_to_session[run]
+            if sid in sids:
+                result[sid].append(entry)
+
+    return result
+
+
 def _parse_opencode_multi_session(
     path: str,
     sids: set[str],
@@ -306,50 +372,14 @@ def _parse_opencode_multi_session(
     if not sids:
         return {}
 
-    run_to_session: dict[str, str] = {}  # 1-to-1 last-seen run → session_id
-    session_stack: list[
-        str
-    ] = []  # active session stack from loop/exiting-loop
-    result: dict[str, list[dict]] = {sid: [] for sid in sids}
-
+    entries: list[dict] = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             entry = parse_opencode_line(line)
-            if entry is None:
-                continue
+            if entry is not None:
+                entries.append(entry)
 
-            msg = entry.get("message")
-
-            # Build run → session_id mapping from 'created' lines (1-to-1 last-seen)
-            if msg == "created" and entry.get("id") and entry.get("run"):
-                run_to_session[entry["run"]] = entry["id"]
-
-            # Active session stack: push on loop, pop on exiting loop
-            if msg == "loop" and entry.get("session_id"):
-                session_stack.append(entry["session_id"])
-            if msg == "exiting loop" and entry.get("session_id"):
-                if session_stack and session_stack[-1] == entry["session_id"]:
-                    session_stack.pop()
-
-            # Check direct session_id / id match
-            matched_id = entry.get("session_id") or entry.get("id")
-            if matched_id and matched_id in sids:
-                result[matched_id].append(entry)
-                continue
-
-            # Check run-based mapping (for entries without session_id)
-            run = entry.get("run")
-            if run and run in run_to_session:
-                # Primary: use top of active-session stack
-                if session_stack and session_stack[-1] in sids:
-                    sid = session_stack[-1]
-                else:
-                    # Fallback: use last-seen 1-to-1 run mapping
-                    sid = run_to_session[run]
-                if sid in sids:
-                    result[sid].append(entry)
-
-    return result
+    return _resolve_and_group_entries(entries, sids)
 
 
 def _build_session_agents(
@@ -488,6 +518,9 @@ def _group_entries_by_session(
     using the ``run → session_id`` mapping from ``message=created``
     lines.
 
+    Delegates to :func:`_resolve_and_group_entries` for the shared
+    session-disambiguation algorithm.
+
     Args:
         all_entries: Pre-parsed opencode log entries.
         sids: Set of session IDs to extract.
@@ -496,48 +529,7 @@ def _group_entries_by_session(
         Dict mapping each session_id to its list of entry dicts.
         Sessions not present in the log will have an empty list.
     """
-    if not sids:
-        return {}
-
-    run_to_session: dict[str, str] = {}  # 1-to-1 last-seen run → session_id
-    session_stack: list[
-        str
-    ] = []  # active session stack from loop/exiting-loop
-    result: dict[str, list[dict]] = {sid: [] for sid in sids}
-
-    for entry in all_entries:
-        msg = entry.get("message")
-
-        # Build run → session_id mapping from 'created' lines (1-to-1 last-seen)
-        if msg == "created" and entry.get("id") and entry.get("run"):
-            run_to_session[entry["run"]] = entry["id"]
-
-        # Active session stack: push on loop, pop on exiting loop
-        if msg == "loop" and entry.get("session_id"):
-            session_stack.append(entry["session_id"])
-        if msg == "exiting loop" and entry.get("session_id"):
-            if session_stack and session_stack[-1] == entry["session_id"]:
-                session_stack.pop()
-
-        # Check direct session_id / id match
-        matched_id = entry.get("session_id") or entry.get("id")
-        if matched_id and matched_id in sids:
-            result[matched_id].append(entry)
-            continue
-
-        # Check run-based mapping (for entries without session_id)
-        run = entry.get("run")
-        if run and run in run_to_session:
-            # Primary: use top of active-session stack
-            if session_stack and session_stack[-1] in sids:
-                sid = session_stack[-1]
-            else:
-                # Fallback: use last-seen 1-to-1 run mapping
-                sid = run_to_session[run]
-            if sid in sids:
-                result[sid].append(entry)
-
-    return result
+    return _resolve_and_group_entries(all_entries, sids)
 
 
 def build_timeline(
@@ -683,19 +675,15 @@ def sort_ops_by_session(ops: list[dict]) -> list[dict]:
     Returns:
         New list sorted according to session-aware ordering.
     """
-    # First pass: compute min_timestamp per child session
-    child_session_min_ts: dict[str, str] = {}
+    # Collect timestamps per child session, then compute min
+    child_ts: dict[str, list[str]] = defaultdict(list)
     for op in ops:
         e = op["event"]
-        depth = e.get("depth", 0)
-        sid = e.get("session_id", "")
-        if depth > 0 and sid:
-            ts = e.get("timestamp", "")
-            if (
-                sid not in child_session_min_ts
-                or ts < child_session_min_ts[sid]
-            ):
-                child_session_min_ts[sid] = ts
+        if e.get("depth", 0) > 0 and (sid := e.get("session_id", "")):
+            child_ts[sid].append(e.get("timestamp", ""))
+    child_session_min_ts = {
+        sid: min(ts_list) for sid, ts_list in child_ts.items()
+    }
 
     def _session_sort_key(op: dict) -> tuple:
         e = op["event"]
@@ -712,6 +700,70 @@ def sort_ops_by_session(ops: list[dict]) -> list[dict]:
         return (group_key, depth_priority, sid, ts, op["index"])
 
     return sorted(ops, key=_session_sort_key)
+
+
+def mark_block_boundaries(ops: list[dict]) -> tuple[dict, dict]:
+    """Pre-compute block start/end positions for child session box borders.
+
+    Each op dict must have ``event`` with ``depth`` and ``session_id``.
+    Returns (tops, bottoms):
+
+    - ``tops``: dict[int, list[tuple[int, str]]] — top border BEFORE op[i],
+      value is list of (depth, session_id).
+    - ``bottoms``: dict[int, list[int]] — bottom border BEFORE op[i] (or
+      AFTER last event for index == len(ops)), value is list of depths.
+
+    Algorithm uses a stack of (depth, session_id):
+
+    1. Before each event, close any open blocks whose depth >= current
+       depth AND (depth != current depth OR sid differs). Skip closing
+       when going deeper (depth > top_depth) or when continuing the same
+       block (depth == top_depth AND sid == top_sid).
+
+    2. After closing, open a new block if depth > 0 and the event is
+       deeper than the current deepest open block.
+
+    3. After the loop, append closing bottoms for all remaining open
+       blocks (in reverse stack order) at index == len(ops).
+
+    Args:
+        ops: List of op dicts (already sorted by sort_ops_by_session).
+
+    Returns:
+        Tuple of (tops_dict, bottoms_dict).
+    """
+    tops: dict[int, list[tuple[int, str]]] = {}
+    bottoms: dict[int, list[int]] = {}
+    stack: list[tuple[int, str]] = []
+
+    for i, op in enumerate(ops):
+        e = op["event"]
+        d = e.get("depth", 0)
+        s = e.get("session_id", "")
+
+        # Close blocks whose depth >= current depth AND
+        # (depth != current depth OR sid differs).
+        # Skip closing when going deeper or continuing the same block.
+        while stack:
+            top_depth, top_sid = stack[-1]
+            if d > top_depth:
+                break  # going deeper — keep parent open
+            if d == top_depth and s == top_sid:
+                break  # same block continuing
+            closed_depth = stack.pop()[0]
+            bottoms.setdefault(i, []).append(closed_depth)
+
+        # Open new block if depth > 0 and deeper than current deepest
+        if d > 0 and (not stack or d > stack[-1][0]):
+            stack.append((d, s))
+            tops.setdefault(i, []).append((d, s))
+
+    # Close remaining open blocks at the end
+    while stack:
+        closed_depth = stack.pop()[0]
+        bottoms.setdefault(len(ops), []).append(closed_depth)
+
+    return tops, bottoms
 
 
 def build_stats(

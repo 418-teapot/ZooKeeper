@@ -28,6 +28,7 @@ from _trace_builder import (  # noqa: E402
     _parse_opencode_multi_session,
     _tool_type_and_icon,
     build_stats,
+    mark_block_boundaries,
     sort_ops_by_session,
 )
 
@@ -1721,6 +1722,153 @@ class TestBuildTimeline:
         summaries = {ev["summary"] for ev in zoo_events}
         assert "task-prompt-validate/trigger" in summaries
         assert "json-error-nudge/trigger" in summaries
+
+
+# ── mark_block_boundaries ───────────────────────────────────────────────
+
+
+class TestMarkBlockBoundaries:
+    """Tests for ``mark_block_boundaries()``."""
+
+    # ── Helpers ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _make_op(
+        index: int,
+        depth: int,
+        session_id: str,
+        timestamp: str,
+        *,
+        session_agent: str = "",
+    ) -> dict:
+        """Build a mock op dict (matching sort_ops_by_session output)."""
+        return {
+            "index": index,
+            "event": {
+                "depth": depth,
+                "session_id": session_id,
+                "timestamp": timestamp,
+                "session_agent": session_agent,
+            },
+        }
+
+    # ── Tests ───────────────────────────────────────────────────────────
+
+    def test_single_child_session(self) -> None:
+        """One child block: top before first event, bottom after last."""
+        ops = [
+            self._make_op(0, 0, "root", "2024-01-01T00:00:01Z"),
+            self._make_op(
+                1, 1, "child", "2024-01-01T00:00:02Z", session_agent="child"
+            ),
+            self._make_op(
+                2, 1, "child", "2024-01-01T00:00:03Z", session_agent="child"
+            ),
+        ]
+        tops, bottoms = mark_block_boundaries(ops)
+
+        # Top border before first child event (index 1 in ops list)
+        assert tops == {1: [(1, "child")]}, f"Unexpected tops: {tops}"
+        # Bottom border after last event (index 3 == len(ops))
+        assert bottoms == {3: [1]}, f"Unexpected bottoms: {bottoms}"
+
+    def test_nested_child_in_parent(self) -> None:
+        """Depth 1 parent → depth 2 child → depth 1 parent.
+
+        Parent box spans across child; child box nested inside.
+        """
+        ops = [
+            self._make_op(
+                0, 1, "parent", "2024-01-01T00:00:01Z", session_agent="parent"
+            ),
+            self._make_op(
+                1,
+                2,
+                "grandchild",
+                "2024-01-01T00:00:02Z",
+                session_agent="grandchild",
+            ),
+            self._make_op(
+                2,
+                2,
+                "grandchild",
+                "2024-01-01T00:00:03Z",
+                session_agent="grandchild",
+            ),
+            self._make_op(
+                3, 1, "parent", "2024-01-01T00:00:04Z", session_agent="parent"
+            ),
+        ]
+        tops, bottoms = mark_block_boundaries(ops)
+
+        # Top borders: parent before i=0, grandchild before i=1
+        assert tops == {0: [(1, "parent")], 1: [(2, "grandchild")]}, (
+            f"Unexpected tops: {tops}"
+        )
+        # Bottoms: grandchild closes before i=3 (returning to parent),
+        # parent closes after loop (index 4 == len(ops))
+        assert bottoms == {3: [2], 4: [1]}, f"Unexpected bottoms: {bottoms}"
+
+    def test_depth2_to_root_closes_all(self) -> None:
+        """Depth 2 → depth 0 closes both depth=2 and depth=1 blocks."""
+        ops = [
+            self._make_op(
+                0, 1, "child", "2024-01-01T00:00:01Z", session_agent="child"
+            ),
+            self._make_op(
+                1,
+                2,
+                "grandchild",
+                "2024-01-01T00:00:02Z",
+                session_agent="grandchild",
+            ),
+            self._make_op(2, 0, "root", "2024-01-01T00:00:03Z"),
+        ]
+        tops, bottoms = mark_block_boundaries(ops)
+
+        # Top borders: child before i=0, grandchild before i=1
+        assert tops == {0: [(1, "child")], 1: [(2, "grandchild")]}, (
+            f"Unexpected tops: {tops}"
+        )
+        # Both blocks close before the root event at i=2.
+        # Innermost (depth 2) closes first, then depth 1.
+        assert bottoms == {2: [2, 1]}, f"Unexpected bottoms: {bottoms}"
+
+    def test_sibling_switch(self) -> None:
+        """Depth 1 sid A → depth 1 sid B: A closes and B opens at same pos."""
+        ops = [
+            self._make_op(
+                0, 1, "A", "2024-01-01T00:00:01Z", session_agent="A"
+            ),
+            self._make_op(
+                1, 1, "B", "2024-01-01T00:00:02Z", session_agent="B"
+            ),
+        ]
+        tops, bottoms = mark_block_boundaries(ops)
+
+        # Top before i=0 for A, top before i=1 for B (A closes first)
+        assert tops == {0: [(1, "A")], 1: [(1, "B")]}, (
+            f"Unexpected tops: {tops}"
+        )
+        # A closes at i=1 (before B opens), B closes after loop (index 2)
+        assert bottoms == {1: [1], 2: [1]}, f"Unexpected bottoms: {bottoms}"
+
+    def test_no_root_events(self) -> None:
+        """Only child events: all close at after-loop index."""
+        ops = [
+            self._make_op(
+                0, 1, "child", "2024-01-01T00:00:01Z", session_agent="child"
+            ),
+            self._make_op(
+                1, 1, "child", "2024-01-01T00:00:02Z", session_agent="child"
+            ),
+        ]
+        tops, bottoms = mark_block_boundaries(ops)
+
+        # Top before first event
+        assert tops == {0: [(1, "child")]}, f"Unexpected tops: {tops}"
+        # Both events at depth 1, same session — block closes at end
+        assert bottoms == {2: [1]}, f"Unexpected bottoms: {bottoms}"
 
     def test_zoo_subagent_entries_in_subsession(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
