@@ -101,8 +101,8 @@ OpenCode 日志写入以下位置：
 
 所有 hook 使用 `src/hooks/shared/logger.ts` 导出的 `debug()` 函数输出触发记录，格式为 `[zookeeper:<hook-name>] trigger`。
 
-- **默认静默** — 不设置 `ZOOKEEPER_DEBUG` 时完全无输出
-- **启用方式：** `ZOOKEEPER_DEBUG=1 opencode`（或在 shell 中 `export ZOOKEEPER_DEBUG=1`）
+- **info/warn/error 始终记录** — 即使不设置 `ZOO_DEBUG`，这三个级别也会写入日志文件
+- **debug 日志默认关闭** — 设置 `ZOO_DEBUG=1 opencode`（或在 shell 中 `export ZOO_DEBUG=1`）后额外启用 debug 级别
 - **输出目标：** stderr（不进 TUI），避免 Bun 将 `console.debug` 当成 `console.log` 污染界面
 
 示例输出：

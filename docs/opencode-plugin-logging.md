@@ -97,10 +97,10 @@ Bun 运行时原生支持直接加载和执行 TypeScript 源文件，**无需�
 
 ### 3.1 设计思路
 
-ZooKeeper 采用**最小改动原则**——不引入文件系统依赖，通过环境变量 `ZOOKEEPER_DEBUG` 控制日志输出，并将所有日志写入 stderr 而非 stdout。
+ZooKeeper 采用**最小改动原则**——不引入文件系统依赖，通过环境变量 `ZOO_DEBUG` 控制日志输出，并将所有日志写入 stderr 而非 stdout。
 
 关键决策：
-- **默认静默**：不设置 `ZOOKEEPER_DEBUG` 时，日志函数体为空操作（no-op），零运行时开销
+- **debug 级别默认关闭**：不设置 `ZOO_DEBUG` 时，仅跳过 debug 级别日志；info/warn/error 始终写入日志文件
 - **stderr 输出**：使用 `process.stderr.write()` 替代 `console.*`，避免 OpenCode TUI 对 stdout 的捕获
 - **无文件持久化**：日志仅输出到终端，不写入磁盘文件
 
@@ -111,7 +111,7 @@ ZooKeeper 采用**最小改动原则**——不引入文件系统依赖，通过
 ```typescript
 // src/hooks/shared/logger.ts — 核心逻辑（55 行）
 function isDebugEnabled(): boolean {
-  const val = process.env.ZOOKEEPER_DEBUG;
+  const val = process.env.ZOO_DEBUG;
   if (!val) return false;
   return (
     val === "1" || val.toLowerCase() === "true" || val.toLowerCase() === "yes"
@@ -138,9 +138,9 @@ export function debug(tag: string, data?: Record<string, unknown>): void {
 
 启用方式：
 ```bash
-ZOOKEEPER_DEBUG=1 opencode
+ZOO_DEBUG=1 opencode
 # 或
-export ZOOKEEPER_DEBUG=1
+export ZOO_DEBUG=1
 opencode
 ```
 
@@ -435,7 +435,7 @@ try {
 | **写入策略** | 直接 stderr write | 同步 `appendFileSync` + 批量 | 异步 Promise 链串行 |
 | **缓冲机制** | 无 | 500ms / 50 条批量 | 无（每行直接加入 Promise 链） |
 | **文件轮转** | N/A | 50MB 上限，2 备份 | 7 天定期清理 |
-| **门控方式** | `ZOOKEEPER_DEBUG` | 无门控（始终记录） | 无门控（始终记录） |
+| **门控方式** | `ZOO_DEBUG` | 无门控（始终记录） | 无门控（始终记录） |
 | **调用点数量** | 8 处 | ~100 处 | ~30 处 |
 | **代码行数** | 55 行 | ~120 行 | ~150 行 |
 | **TUI 污染** | ✅ 无 | ✅ 无 | ✅ 无 |
@@ -542,7 +542,7 @@ function safeStringify(obj: unknown): string {
 2. 日志文件路径：`~/.local/share/opencode/log/zookeeper.{sessionId}.log`
 3. 采用 slim 的 Promise 链串行模式实现异步写入
 4. 输出格式扩展为带时间戳和日志级别：`[2026-06-11T10:00:00.000Z] [INFO] [zookeeper:tag] {JSON}`
-5. 文件日志默认开启，不依赖 `ZOOKEEPER_DEBUG` 门控
+5. 文件日志默认开启，不依赖 `ZOO_DEBUG` 门控
 6. 保留现有的 env-var-gated stderr logger 作为实时调试选项
 
 **目标：** 在不大幅改动现有代码的前提下，获得日志持久化能力。
@@ -554,10 +554,10 @@ function safeStringify(obj: unknown): string {
 | 级别 | 用途 | 输出目标 |
 |------|------|---------|
 | `ERROR` | 插件异常、Hook 执行失败 | 文件 + stderr（始终输出） |
-| `WARN` | 非严重但值得关注的情况 | 文件（始终） + stderr（`ZOOKEEPER_DEBUG` 时） |
+| `WARN` | 非严重但值得关注的情况 | 文件（始终） + stderr（`ZOO_DEBUG` 时） |
 | `INFO` | 关键生命周期事件（插件初始化、config 注入等） | 文件（始终） |
-| `DEBUG` | 详细调试信息 | 文件（`ZOOKEEPER_DEBUG` 时） |
-| `TRACE` | 极详细的流程跟踪 | 文件（`ZOOKEEPER_DEBUG=trace` 时） |
+| `DEBUG` | 详细调试信息 | 文件（`ZOO_DEBUG` 时） |
+| `TRACE` | 极详细的流程跟踪 | 文件（`ZOO_DEBUG=trace` 时） |
 
 **实施要点：**
 1. 将现有 `debug(tag, data)` 扩展为 `log(level, tag, data)` 统一接口

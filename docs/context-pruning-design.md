@@ -2253,7 +2253,7 @@ python3 tests/runner.py --dry-run
 #   - Nudge 消息在阈值附近出现
 
 # 5. 日志验证
-ZOOKEEPER_DEBUG=1 opencode  # 查看 context pruning 触发记录
+ZOO_DEBUG=1 opencode  # 查看 context pruning 触发记录
 ```
 
 ---
