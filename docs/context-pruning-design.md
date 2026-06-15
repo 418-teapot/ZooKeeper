@@ -30,7 +30,7 @@
    - 5.2 [架构总览](#52-架构总览)
    - 5.3 [模块布局](#53-模块布局)
    - 5.4 [核心类型定义](#54-核心类型定义)
-   - 5.5 [配置方案](#55-配置方案)
+    - 5.5 [配置方案](#55-配置方案)
     - 5.6 [Token 计数](#56-token-计数)
    - 5.7 [会话状态管理](#57-会话状态管理)
    - 5.8 [消息变换管道](#58-消息变换管道)
@@ -50,8 +50,18 @@
    - 7.4 [Phase 4：OpenCode 整合（Week 7-8）](#74-phase-4opencode-整合week-7-8)
    - 7.5 [Phase 5：测试与调优（Week 9-10）](#75-phase-5测试与调优week-9-10)
    - 7.6 [验证方法](#76-验证方法)
-8. [已知风险与缓解措施](#8-已知风险与缓解措施)
-9. [总结](#9-总结)
+ 8. [已知风险与缓解措施](#8-已知风险与缓解措施)
+ 9. [总结](#9-总结)
+ 10. [最小实现方案（V0）](#10-最小实现方案v0)
+     - 10.1 [为什么要最小实现](#101-为什么要最小实现)
+     - 10.2 [文件清单与职责](#102-文件清单与职责)
+     - 10.3 [明确砍掉的部分](#103-明确砍掉的部分)
+     - 10.4 [两阶段标记-清理的精确实现](#104-两阶段标记-清理的精确实现)
+     - 10.5 [命令系统设计](#105-命令系统设计)
+     - 10.6 [src/index.ts 集成代码](#106-srcindexts-集成代码最小修改25-行)
+     - 10.7 [V0 验证方法](#107-v0-验证方法)
+     - 10.8 [后续增量路径](#108-后续增量路径)
+     - 10.9 [关键认知收获](#109-关键认知收获)
 
 ---
 
@@ -1106,8 +1116,34 @@ export const globalState = new ContextPruningState();
 
 ### 5.8 消息变换管道
 
+> **⚠️ 本节原始设计存在根本性缺陷（已废弃，参见 §10）。**
+>
+> DCP 源码分析（`docs/dcp-architecture.md`）证明，正确的实现是**两阶段标记-清理模型**，而非本节描述的单遍 pipeline：
+>
+> - **Turn N（标记阶段）**：策略扫描消息，识别剪枝目标，**写入** `state.prune.tools`（例如 `state.prune.tools.set(callID_A, tokens)`）。这一阶段**不直接修改消息**。
+> - **Turn N+1（清理阶段）**：`filterCompressedRanges` + `pruneToolOutputs` **读取** `state.prune.tools`，根据标记替换工具输出为占位符文本。
+>
+> 本节下方的 `runPipeline()` 代码在同一个 turn 内同时**标记**和**执行**，会导致"本轮标记的 callID 在同一轮被替换"——这是错的。实际行为是错位的。
+>
+> **正确设计的精确时序：**
+>
+> ```
+> Turn N:
+>   messages.transform 被调用
+>     ├─ syncToolCache     缓存工具参数到 state.toolParameters
+>     ├─ runDedup          发现重复签名 → state.prune.tools.set(oldCallID, tokens)
+>     └─ pruneToolOutputs  检查 state.prune.tools → 仅替换上一轮标记的 callID
+>                          ⚠️ 本轮标记的 callID 要到下一轮才被替换
+>
+> Turn N+1:
+>   messages.transform 被调用
+>     └─ pruneToolOutputs  检查 state.prune.tools → 替换 Turn N 标记的 callID
+> ```
+>
+> 两阶段模型是 DCP 的核心架构决策（详见 `docs/dcp-architecture.md §5`），也是最小实现（`§10`）必须坚持的不变量。
+
 ```typescript
-// pipeline.ts
+// pipeline.ts（原始设计，已废弃 — 正确实现见 §10）
 
 import type { MessageRef, ContextPruningConfig, PipelineInput, PipelineOutput, PipelineStats } from "./types";
 import { estimateTotalTokens } from "./estimator";
@@ -1906,19 +1942,68 @@ export async function zookeeper(input: any) {
 
 ### 5.15 命令系统
 
-为提供手动上下文管理的交互入口，在 Phase 5 引入以下命令（通过 `experimental.chat.messages.transform` 的文本模式匹配检测，或注册 `command.execute.before` hook）：
+> **⚠️ 命令注册机制的修正（原始描述有误）：**
+>
+> OpenCode 插件可以在 `config` hook 中**动态注册**命令，不需要在 `config.toml` 或 `install.py` 中静态声明。源码证据：
+>
+> ```typescript
+> // OpenCode 实际调用顺序：
+> // 1. 解析 opencode.json
+> // 2. 加载所有插件
+> // 3. 对每个插件调用 config hook，传入可修改的 config 对象
+> // 4. 最终合并 config（包含插件的修改）
+> // 5. 从 config.command 注册命令到 TUI 自动完成
+> //
+> // @opencode-ai/plugin/dist/index.d.ts
+> export interface Hooks {
+>     config?: (input: Config) => Promise<void>;
+> }
+> // Config 类型包含 command 字段：
+> // command?: { [key: string]: { template: string; description?: string; ... } }
+> ```
+>
+> DCP 的实际做法：在 `config` hook 中 mutate `opencodeConfig.command["dcp"] = {...}`。ZooKeeper 的调试命令应采用相同方式。
+>
+> **结论**：不需要修改 `config.toml` 的 `[zoo.commands]` 段落，也不需要修改 `install.py`。命令注册完全在插件运行时完成。
+
+为提供手动上下文管理的交互入口，在 Phase 5 引入以下命令：
 
 | 命令 | 用途 | 实现方式 |
 |------|------|---------|
-| `/context` | 查看当前上下文 token 使用统计（总量、压缩率、各策略贡献） | 在 assistant 回复末尾追加格式化统计信息 |
-| `/stats` | 查看去重/错误清除/压缩的累计效果明细 | 从 `SessionState` 中读取 `totalPrunedTokens`、`totalCompressedTokens` 等指标 |
-| `/sweep` | 手动触发一次完整的去重 + 错误清除 + 压缩管道 | 调用 `runPipeline()` 并强制忽略阈值检查 |
-| `decompress` | 恢复指定 blockId 的原始消息（取消压缩） | 从 `SessionState.blocksById` 中查找 block，替换回原始消息范围 |
-| `recompress` | 用新的策略重新压缩指定范围 | 移除旧 block，在新范围内重新执行压缩逻辑 |
+| `/zoo context` | 查看当前上下文 token 使用统计（总量、压缩率、各策略贡献） | 在聊天窗口显示格式化输出 |
+| `/zoo stats` | 查看去重/错误清除/压缩的累计效果明细 | 从 `SessionState` 中读取累计指标 |
+| `/zoo sweep [n]` | 手动触发一次工具剪枝（标记目标到 `state.prune.tools`） | 扫描最近工具调用，写入剪枝标记 |
+| `/zoo decompress <n>` | 恢复指定 blockId 的原始消息 | 从 `SessionState.blocksById` 中查找并替换 |
+| `/zoo recompress <n>` | 用新策略重新压缩指定范围 | 移除旧 block，重新执行压缩 |
 
-**命令注册**：OpenCode 插件通过 `command.execute.before` hook 注册自定义命令。命令匹配以文本前缀 `/` 为标记，解析后触发对应 handler。
+**命令注册（通过 `config` hook）：**
+```typescript
+async config(config: any) {
+    // ... 现有 prompt 注入 + skills 注册逻辑 ...
 
-**UI 模式**：命令响应结果以系统消息（system-style assistant message）追加到会话中，不修改用户消息或上游上下文位置。
+    // 注册 /zoo 命令
+    config.command ??= {};
+    config.command["zoo"] = {
+        template: "",
+        description: "Context pruning management",
+    };
+}
+```
+
+**命令处理（通过 `command.execute.before` hook）：**
+```typescript
+async "command.execute.before"(
+    input: { command: string; sessionID: string; arguments: string },
+    output: { parts: any[] },
+) {
+    if (input.command !== "zoo") return;
+    const args = (input.arguments || "").trim().split(/\s+/).filter(Boolean);
+    const subcommand = args[0]?.toLowerCase() || "";
+    // 分发到 context / stats / sweep handler...
+}
+```
+
+**命令输出**：通过 `client.session.prompt({ noReply: true, parts: [{ type: "text", text, ignored: true }] })` 显示在聊天窗口。`ignored: true` 防止模型把它当成用户指令重新处理。
 
 ### 5.16 持久化
 
@@ -2279,3 +2364,213 @@ ZooKeeper 剪枝 → 插件级，启发式策略，编排器专用
 - `docs/task-prompt-validation-evolution.md` — 相近的"软约束先行"设计哲学
 - `docs/todo-nudge-research.md` — 类似的 nudge 系统设计和实施计划
 - `docs/opencode-plugin-mechanism.md` — OpenCode 插件机制参考
+- `docs/dcp-architecture.md` — DCP v3.1.12 完整代码级分析（19 章，约 1200 行）
+
+---
+
+## 10. 最小实现方案（V0）
+
+**版本：** 1.1（2026-06-15，基于 `docs/dcp-architecture.md` 深度源码分析后的修正）
+
+### 10.1 为什么要最小实现
+
+尝试直接复制 DCP 源码集成到 ZooKeeper 失败（`2026-06-14` 尝试）：
+- DCP 约 5000 行 TS 代码，模块间隐式依赖极多
+- 集成管道中的 4 个 bug：`install.py` 不输出 `command` 字段、适配器 try/catch 吞没 sentinel 错误、configHandler 写入错误的 `primaryTools` 路径、命令注册时机不明
+- 无法在不完整运行 DCP 全部功能的情况下验证部分功能
+- DCP 的压缩引擎（2000+ 行）依赖完整的 mNNNN 引用 + 占位符 + 边界解析 + 受保护内容，任何部分缺失都会崩溃
+
+§5 的原始自研设计也有根本性缺陷（单遍 pipeline 而非两阶段标记-清理）。
+
+最小实现的目标：**验证 DCP 最核心且最容易出错的两阶段标记-清理模型**，约 610 行（DCP 的 ~12%）。如果 V0 稳定运行，后续增量是确定性的；如果 V0 在标记-清理边界有 off-by-one 类 bug，可以在扩展前发现。
+
+### 10.2 文件清单与职责
+
+| 文件 | 路径 | 行估算 | 职责 | 对应 DCP 文件 |
+|------|------|--------|------|-------------|
+| `types.ts` | `src/hooks/context-pruning/types.ts` | ~50 | SessionState、Prune、PruneMessagesState、ToolParameterEntry | `lib/state/types.ts` |
+| `state.ts` | `src/hooks/context-pruning/state.ts` | ~40 | createSessionState、checkSession、ensureSessionInitialized | `lib/state/state.ts` |
+| `tool-cache.ts` | `src/hooks/context-pruning/tool-cache.ts` | ~60 | syncToolCache：按 callID 缓存工具参数 + token 数（FIFO 上限 1000） | `lib/state/tool-cache.ts` |
+| `strategies.ts` | `src/hooks/context-pruning/strategies.ts` | ~80 | runDedup + runPurgeErrors：**标记阶段**——只写 `state.prune.tools`，不直接改消息 | `lib/strategies/*.ts` |
+| `prune.ts` | `src/hooks/context-pruning/prune.ts` | ~80 | filterCompressedRanges + pruneToolOutputs + pruneToolErrors：**清理阶段** | `lib/messages/prune.ts` |
+| `strip.ts` | `src/hooks/context-pruning/strip.ts` | ~20 | stripHallucinations：移除 `<zoo-dcp>` 标签（保留机制，防止 LLM 幻觉污染） | `lib/messages/utils.ts` |
+| `hook.ts` | `src/hooks/context-pruning/hook.ts` | ~70 | 组装 transform handler（7 步顺序执行） | `lib/hooks.ts` 的 createChatMessageTransformHandler 简化版 |
+| `commands.ts` | `src/hooks/context-pruning/commands.ts` | ~120 | `/zoo context`、`/zoo stats`、`/zoo sweep [n]` 三个命令 handler + 分发 | `lib/commands/context.ts` + `stats.ts` + `sweep.ts` |
+| `notification.ts` | `src/hooks/context-pruning/notification.ts` | ~30 | sendIgnoredMessage：通过 `ignored: true` 输出命令结果 | `lib/ui/notification.ts` |
+| `format.ts` | `src/hooks/context-pruning/format.ts` | ~60 | formatTokenCount（1.2K/45K）、进度条（`█░⣿`）、表格对齐 | `lib/ui/utils.ts` |
+| **修改：`src/index.ts`** | `src/index.ts` | ~25 | import + config hook 注册命令 + 命令 handler 调用 + transform 串联 | — |
+| **总计** | | **~635** | | |
+
+### 10.3 明确砍掉的部分
+
+| 模块 | 砍掉原因 |
+|------|---------|
+| **compress/\*（压缩引擎，2000+ 行）** | 两阶段模型最复杂的体现：LLM 调用 compress 工具触发、需工具注册、prompt 注入、mNNNN 引用、占位符解析、边界解析、受保护内容保留、块嵌套、块生命周期管理 |
+| **CompressionBlock 状态模型** | 整个块状态（active/consumed/deactivated/nested）在 V0 不需要 |
+| **prompt system（6 模板 + PromptStore，~1000 行）** | 没有 compress 工具就不需要工具描述 prompt |
+| **nudge 系统（3 级 + 锚点，~500 行）** | 没有 compress 工具就没有注入目标 |
+| **message IDs（mNNNN/bN，~300 行）** | 只有 LLM 调 compress 工具时才需要引用系统 |
+| **commands/\*（7 个命令，~600 行）** | V0 只需 3 个命令，且通过 config hook 动态注册 |
+| **permissions（规则引擎，~300 行）** | V0 不需要 per-agent 权限 |
+| **persistence（~400 行）** | 磁盘序列化后加 |
+| **timing（压缩计时，~100 行）** | 没有 compress 就不需要 |
+| **auth/update** | DCP 特有 |
+| **subagents** | V0 不需要子代理结果展开 |
+
+### 10.4 两阶段标记-清理的精确实现
+
+核心不变量：**策略在 Turn N 标记，清理在 Turn N+1 执行**。
+
+```typescript
+// hook.ts — 最小 transform handler
+export async function contextPruningHandler(
+  state: SessionState,
+  messages: WithParts[],
+): Promise<void> {
+  // Step 0: 清理 LLM 幻觉标签（保护性机制，防止污染判断）
+  stripHallucinations(messages);
+
+  // Step 1: 检测会话切换 / 初始化状态
+  checkSession(state, messages);
+
+  // Step 2: 缓存工具参数到 state.toolParameters
+  syncToolCache(state, messages);
+
+  // ── 标记阶段（Turn N 写入，不修改消息）──
+  // Step 3: 去重策略 — state.prune.tools.set(旧 callID, tokens)
+  //         purge-errors — state.prune.tools.set(过期错误 callID, tokens)
+  runDedup(state);
+  runPurgeErrors(state);
+
+  // ── 清理阶段（Turn N+1 读取上一轮的标记，执行替换）──
+  // Step 4: 跳过被压缩块覆盖的消息（V0 无块，此步为 noop）
+  filterCompressedRanges(state, messages);
+
+  // Step 5: 替换已标记工具的输出为 "[Output removed...]"
+  pruneToolOutputs(state, messages);
+
+  // Step 6: 替换已标记错误工具的输入为 "[input removed...]"
+  pruneToolErrors(state, messages);
+}
+```
+
+**关键边界案例**（实现时必须测试）：
+
+1. **首次 turn**：`state.prune.tools` 为空，清理阶段全部跳过 ✓
+2. **同一工具的多次重复**：保留最新的，旧的才进 prune.tools ✓
+3. **Turn protection 保护期内的工具**：不加入 tool cache → 不会被标记 ✓
+4. **保护工具（task/skill/question/edit/write）**：即使有重复签名也不被标记 ✓
+5. **压缩消息中的工具**：`isMessageCompacted` 跳过，不参与任何处理 ✓
+
+### 10.5 命令系统设计
+
+| 命令 | 触发后行为 | 输出格式 |
+|------|----------|---------|
+| `/zoo context` | 读最后 assistant 的 tokens.input/output/reasoning/cache，分类估算 user/assistant/tools 占比 | 进度条 + 百分比表格 |
+| `/zoo stats` | 累加 `state.stats.totalPruneTokens`、`state.prune.tools.size`、去重/清理计数 | 紧凑统计面板 |
+| `/zoo sweep` | 自最后用户消息以来的工具标记为剪枝 | 列出被标记的工具名 + 路径参数 |
+| `/zoo sweep n` | 最后 n 个工具标记为剪枝 | 同上 |
+
+**命令注册（动态，无需改 config.toml）：**
+```typescript
+// src/index.ts — config hook 中
+async config(config: any) {
+    // ... 现有逻辑 ...
+
+    // 动态注册 /zoo 命令（OpenCode 在 config 最终化时会读取）
+    config.command ??= {};
+    config.command["zoo"] = {
+        template: "",
+        description: "Context pruning management",
+    };
+}
+```
+
+**命令输出**：通过 `sendIgnoredMessage` 注入到聊天窗口（`ignored: true`）：
+```typescript
+// notification.ts
+function sendIgnoredMessage(client: any, sessionId: string, text: string) {
+    client.session.prompt({
+        path: { id: sessionId },
+        body: {
+            noReply: true,                       // 不让 LLM 响应这条
+            parts: [{ type: "text", text, ignored: true }],
+        },
+    });
+}
+```
+
+### 10.6 src/index.ts 集成代码（最小修改，~25 行）
+
+```typescript
+import { contextPruningHandler } from "./hooks/context-pruning/hook";
+import { handleZooCommand } from "./hooks/context-pruning/commands";
+
+// config hook（追加）
+async config(config: any) {
+    // ... 现有 prompt + skills 逻辑 ...
+    config.command ??= {};
+    config.command["zoo"] = { template: "", description: "..." };
+}
+
+// command.execute.before（新增）
+async "command.execute.before"(
+    input: { command: string; sessionID: string; arguments: string },
+    output: { parts: any[] },
+) {
+    if (input.command === "zoo") {
+        await handleZooCommand(client, input.sessionID, input.arguments);
+        throw new Error("__ZOO_COMMAND_HANDLED__");
+    }
+}
+
+// experimental.chat.messages.transform（追加）
+async "experimental.chat.messages.transform"(_input, output) {
+    try { await injectFocusReminder(client, output); measureContext(output); }
+    catch (err) { log(...); }
+    try { await contextPruningHandler(cpState, output.messages); }
+    catch (err) { log(...); }
+}
+```
+
+### 10.7 V0 验证方法
+
+```bash
+# 会话内验证（手动）
+/zoo context          # 确认能看到 token 分布
+/zoo sweep            # 手动标记当前工具
+/zoo context          # 确认 pruned 数增加
+/zoo stats            # 确认累计统计
+
+# 自动验证
+# 等待几轮，观察 /zoo stats 中 dedup + purge 是否自动触发
+
+# 单元测试
+./test.sh             # 新增 context-pruning 相关测试
+./check.sh            # lint + format
+```
+
+### 10.8 后续增量路径
+
+| 版本 | 增量 | 行数 | 前置依赖 |
+|------|------|------|---------|
+| **V0**（本文） | dedup + purge + prune（两阶段）+ 3 个命令 | ~635 | — |
+| **V1** | + turn protection + nudge（纯文本注入，不需要 compress 工具） | +100 | V0 稳定 |
+| **V2** | + persistence（状态写入磁盘） | +200 | V1 |
+| **V3** | + compress 工具 + mNNNN 引用 + nudge 三级系统 | +500 | V2 |
+| **V4** | + commands 扩展（decompress/recompress） + 更多命令 | +200 | V3 |
+| **V5** | + Message 模式压缩、子代理结果展开 | +300 | V3 |
+
+每个版本都是可独立验证的。V3+ 才需要引入 `@anthropic-ai/tokenizer` 和修改配置体系。
+
+### 10.9 关键认知收获
+
+经过 DCP 全量源码分析，以下认知在最小实现中必须坚持：
+
+1. **两阶段是必须的**：单遍 pipeline 会在标记-清理边界产生 off-by-one 类 bug
+2. **`state.prune.tools` 是唯一的数据通路**：策略写，prune 读；不要绕过这层抽象
+3. **Turn protection 在 syncToolCache 时生效**：不在策略执行时检查（避免重复判断）
+4. **命令注册用 config hook**：不要在 config.toml 静态声明——这是 OpenCode 的标准插件模式
+5. **`sendIgnoredMessage` 用 `ignored: true`**：命令输出不要变成新的上下文
+6. **hallucinations 清理是保护性步骤**：即使 V0 没有注入 `<zoo-dcp>` 标签，也要保留清理逻辑（防止 LLM 偶然生成）
+
