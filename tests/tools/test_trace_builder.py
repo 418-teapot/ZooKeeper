@@ -144,17 +144,17 @@ class TestToolTypeAndIcon:
     @pytest.mark.parametrize(
         ("permission", "expected_type", "expected_icon"),
         [
-            ("read", "tool_read", "■"),
-            ("grep", "tool_read", "■"),
-            ("glob", "tool_read", "■"),
-            ("edit", "tool_write", "■"),
-            ("write", "tool_write", "■"),
-            ("bash", "tool_exec", "■"),
+            ("read", "tool_read", "▶"),
+            ("grep", "tool_read", "▶"),
+            ("glob", "tool_read", "▶"),
+            ("edit", "tool_write", "◀"),
+            ("write", "tool_write", "◀"),
+            ("bash", "tool_exec", "⚙"),
             ("task", "tool_orch", "◈"),
-            ("webfetch", "tool_other", "■"),
-            ("websearch", "tool_other", "■"),
-            ("unknown_tool", "tool_other", "■"),
-            ("", "tool_other", "■"),
+            ("webfetch", "tool_other", "◆"),
+            ("websearch", "tool_other", "◆"),
+            ("unknown_tool", "tool_other", "◆"),
+            ("", "tool_other", "◆"),
         ],
     )
     def test_mapping(
@@ -365,7 +365,7 @@ class TestClassifyOpencode:
         ev = _classify_opencode(entry)
         assert ev is not None
         assert ev["type"] == "tool_read"
-        assert ev["icon"] == "■"
+        assert ev["icon"] == "▶"
 
     def test_evaluated_allow_edit(self) -> None:
         """evaluated + allow + edit permission yields type=tool_write."""
@@ -606,6 +606,66 @@ class TestParseOpencodeMultiSession:
         )
         assert len(result["sess-a"]) == 1
         assert result["sess-missing"] == []
+
+    def test_multiple_sessions_same_run(self, tmp_path: Path) -> None:
+        """Multiple sessions sharing the same run use loop stack for disambiguation.
+
+        Loop/exiting-loop events determine which session is active.
+        Each evaluated entry goes to exactly ONE session, not both.
+        """
+        log_file = tmp_path / "opencode.log"
+        log_file.write_text(
+            "timestamp=2024-01-01T00:00:00Z message=created id=sess-a run=run-1\n"
+            "timestamp=2024-01-01T00:01:00Z message=created id=sess-b run=run-1\n"
+            "timestamp=2024-01-01T00:02:00Z message=loop step=1 session_id=sess-a\n"
+            "timestamp=2024-01-01T00:03:00Z message=evaluated permission=read "
+            "pattern=foo run=run-1\n"
+            "timestamp=2024-01-01T00:04:00Z message=\"exiting loop\" session_id=sess-a\n"
+            "timestamp=2024-01-01T00:05:00Z message=loop step=1 session_id=sess-b\n"
+            "timestamp=2024-01-01T00:06:00Z message=evaluated permission=read "
+            "pattern=bar run=run-1\n"
+            "timestamp=2024-01-01T00:07:00Z message=\"exiting loop\" session_id=sess-b\n"
+        )
+        result = _parse_opencode_multi_session(
+            str(log_file), {"sess-a", "sess-b"}
+        )
+        # Each session gets 4 entries: created + loop + evaluated + exiting_loop
+        assert len(result["sess-a"]) == 4
+        assert len(result["sess-b"]) == 4
+        # First evaluated goes to sess-a (stack top = sess-a)
+        evaluated_summaries_a = [
+            e for e in result["sess-a"] if e.get("message") == "evaluated"
+        ]
+        assert len(evaluated_summaries_a) == 1
+        # Second evaluated goes to sess-b (stack top = sess-b)
+        evaluated_summaries_b = [
+            e for e in result["sess-b"] if e.get("message") == "evaluated"
+        ]
+        assert len(evaluated_summaries_b) == 1
+
+    def test_evaluated_not_duplicated_across_sessions(self, tmp_path: Path) -> None:
+        """Evaluated entries are not duplicated across sessions sharing a run.
+
+        When parent P and child C share run=X, proper loop/exiting-loop
+        events ensure parent's evaluated entries don't appear in child's
+        list and vice versa.
+        """
+        log_file = tmp_path / "opencode.log"
+        log_file.write_text(
+            "timestamp=2024-01-01T00:00:00Z message=created id=parent run=run-X\n"
+            "timestamp=2024-01-01T00:01:00Z message=created id=child run=run-X\n"
+            "timestamp=2024-01-01T00:02:00Z message=loop step=1 session_id=parent\n"
+            "timestamp=2024-01-01T00:03:00Z message=evaluated permission=read "
+            "pattern=main.py run=run-X\n"
+            "timestamp=2024-01-01T00:04:00Z message=\"exiting loop\" session_id=parent\n"
+        )
+        result = _parse_opencode_multi_session(
+            str(log_file), {"parent", "child"}
+        )
+        # parent: created + loop + evaluated + exiting_loop = 4
+        assert len(result["parent"]) == 4
+        # child: created only (evaluated not duplicated)
+        assert len(result["child"]) == 1
 
 
 # ── _build_session_agents ────────────────────────────────────────────────
@@ -959,6 +1019,67 @@ class TestGroupEntriesBySession:
         assert "sess-c" in result
         assert result["sess-c"] == []
 
+    def test_multiple_sessions_same_run(self) -> None:
+        """Multiple sessions sharing the same run use loop stack for disambiguation.
+
+        Loop/exiting-loop events determine which session is active.
+        Each evaluated entry goes to exactly ONE session, not both.
+        """
+        entries = [
+            {"message": "created", "id": "sess-a", "run": "run-1"},
+            {"message": "created", "id": "sess-b", "run": "run-1"},
+            {"message": "loop", "step": "1", "session_id": "sess-a"},
+            {
+                "message": "evaluated",
+                "permission": "read",
+                "pattern": "foo",
+                "run": "run-1",
+            },
+            {"message": "exiting loop", "session_id": "sess-a"},
+            {"message": "loop", "step": "1", "session_id": "sess-b"},
+            {
+                "message": "evaluated",
+                "permission": "read",
+                "pattern": "bar",
+                "run": "run-1",
+            },
+            {"message": "exiting loop", "session_id": "sess-b"},
+        ]
+        result = _group_entries_by_session(entries, {"sess-a", "sess-b"})
+        # Each session gets 4 entries: created + loop + evaluated + exiting_loop
+        assert len(result["sess-a"]) == 4
+        assert len(result["sess-b"]) == 4
+        # First evaluated goes to sess-a, second to sess-b
+        evals_a = [e for e in result["sess-a"] if e.get("message") == "evaluated"]
+        evals_b = [e for e in result["sess-b"] if e.get("message") == "evaluated"]
+        assert len(evals_a) == 1
+        assert len(evals_b) == 1
+
+    def test_evaluated_not_duplicated_across_sessions(self) -> None:
+        """Evaluated entries are not duplicated across sessions sharing a run.
+
+        When parent P and child C share run=X, proper loop/exiting-loop
+        events ensure parent's evaluated entries don't appear in child's
+        list and vice versa.
+        """
+        entries = [
+            {"message": "created", "id": "parent", "run": "run-X"},
+            {"message": "created", "id": "child", "run": "run-X"},
+            {"message": "loop", "step": "1", "session_id": "parent"},
+            {
+                "message": "evaluated",
+                "permission": "read",
+                "pattern": "main.py",
+                "run": "run-X",
+            },
+            {"message": "exiting loop", "session_id": "parent"},
+        ]
+        result = _group_entries_by_session(entries, {"parent", "child"})
+        # parent: created + loop + evaluated + exiting_loop = 4
+        assert len(result["parent"]) == 4
+        # child: created only (evaluated not duplicated)
+        assert len(result["child"]) == 1
+
 
 # ── build_stats ──────────────────────────────────────────────────────────
 
@@ -1243,3 +1364,130 @@ class TestBuildTimeline:
             ev["timestamp"] for ev in timeline if ev.get("timestamp")
         ]
         assert timestamps == sorted(timestamps)
+
+    def test_zoo_filter_removes_subagent_entries(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Subagent ZooKeeper entries in the main session's log are
+        filtered out; only matching entries survive."""
+        from _trace_builder import build_timeline
+
+        # Point _get_zoo_log_dir to tmp_path so we control the zoo log
+        monkeypatch.setattr(
+            "_trace_builder._get_zoo_log_dir", lambda: str(tmp_path)
+        )
+
+        # ── OpenCode log ──
+        oc_path = tmp_path / "opencode.log"
+        oc_path.write_text(
+            "timestamp=2024-01-01T00:00:00Z message=created "
+            "id=main-session agent=build slug=main\n"
+            "timestamp=2024-01-01T00:01:00Z message=loop step=1 "
+            "session_id=main-session\n"
+        )
+
+        # ── ZooKeeper log (opencode-{sid}.log) ──
+        # Contains a mix of main-session, subagent, and generic entries.
+        zoo_path = tmp_path / "opencode-main-session.log"
+        zoo_path.write_text(
+            # 1. Explicit main-session entry → include
+            '{"timestamp":"2024-01-01T00:00:00Z","level":"info",'
+            '"hook":"task-prompt-validate","sessionId":"main-session",'
+            '"event":"trigger","agent":"build"}\n'
+            # 2. Empty sessionId + subagent agent → skip (wrong agent)
+            '{"timestamp":"2024-01-01T00:01:00Z","level":"info",'
+            '"hook":"focus-reminder","sessionId":"","event":"trigger",'
+            '"agent":"explore"}\n'
+            # 3. Explicit subagent sessionId → skip
+            '{"timestamp":"2024-01-01T00:02:00Z","level":"info",'
+            '"hook":"focus-reminder","sessionId":"sub-session",'
+            '"event":"trigger","agent":"explore"}\n'
+            # 4. Another main-session entry → include
+            '{"timestamp":"2024-01-01T00:03:00Z","level":"info",'
+            '"hook":"context-metrics","sessionId":"main-session",'
+            '"event":"context_measured","agent":"build"}\n'
+            # 5. Empty sessionId + empty agent → include (generic)
+            '{"timestamp":"2024-01-01T00:04:00Z","level":"info",'
+            '"hook":"json-error-nudge","sessionId":"",'
+            '"event":"trigger"}\n'
+        )
+
+        timeline = build_timeline(
+            "main-session", opencode_path=str(oc_path)
+        )
+
+        zoo_events = [
+            ev for ev in timeline if ev.get("source") == "zoo"
+        ]
+        assert len(zoo_events) == 3, (
+            f"Expected 3 zoo events, got {len(zoo_events)}"
+        )
+        for ev in zoo_events:
+            assert ev["session_id"] == "main-session"
+            assert ev["depth"] == 0
+
+        summaries = {ev["summary"] for ev in zoo_events}
+        assert "task-prompt-validate/trigger" in summaries
+        assert "json-error-nudge/trigger" in summaries
+
+    def test_zoo_subagent_entries_in_subsession(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Subagent ZooKeeper entries appear in child timeline with subsessions."""
+        from _trace_builder import build_timeline
+
+        monkeypatch.setattr(
+            "_trace_builder._get_zoo_log_dir", lambda: str(tmp_path)
+        )
+
+        # ── OpenCode log: main session + child session ──
+        oc_path = tmp_path / "opencode.log"
+        oc_path.write_text(
+            "timestamp=2024-01-01T00:00:00Z message=created "
+            "id=main-session agent=build slug=main\n"
+            "timestamp=2024-01-01T00:01:00Z message=created "
+            "id=child-session agent=explore slug=explore parentID=main-session\n"
+            "timestamp=2024-01-01T00:02:00Z message=loop step=1 "
+            "session_id=main-session\n"
+        )
+
+        # ── ZooKeeper log: all events in main session's file ──
+        zoo_path = tmp_path / "opencode-main-session.log"
+        zoo_path.write_text(
+            '{"timestamp":"2024-01-01T00:01:00Z","level":"info",'
+            '"hook":"context-metrics","sessionId":"main-session",'
+            '"event":"context_measured","agent":"build",'
+            '"estimated_tokens":1000,"message_count":2}\n'
+            # Subagent with empty sessionId but matching agent
+            + '{"timestamp":"2024-01-01T00:02:00Z","level":"info",'
+            '"hook":"context-metrics","sessionId":"",'
+            '"event":"context_measured","agent":"explore",'
+            '"estimated_tokens":500,"message_count":1}\n'
+            # Subagent with explicit sessionId
+            + '{"timestamp":"2024-01-01T00:03:00Z","level":"info",'
+            '"hook":"context-metrics","sessionId":"child-session",'
+            '"event":"context_measured","agent":"explore",'
+            '"estimated_tokens":2000,"message_count":3}\n'
+        )
+
+        timeline = build_timeline(
+            "main-session", opencode_path=str(oc_path), include_children=True
+        )
+
+        zoo_events = [ev for ev in timeline if ev.get("source") == "zoo"]
+        assert len(zoo_events) == 3
+
+        # Main session entry
+        main_events = [
+            ev for ev in zoo_events if ev["session_id"] == "main-session"
+        ]
+        assert len(main_events) == 1
+        assert main_events[0]["depth"] == 0
+
+        # Subagent entries (2 total)
+        child_events = [
+            ev for ev in zoo_events if ev["session_id"] == "child-session"
+        ]
+        assert len(child_events) == 2
+        for ev in child_events:
+            assert ev["depth"] == 1

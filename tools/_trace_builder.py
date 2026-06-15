@@ -35,14 +35,14 @@ def _tool_type_and_icon(permission: str) -> tuple[str, str]:
         Tuple of (type, icon).
     """
     if permission in ("read", "grep", "glob"):
-        return "tool_read", "■"
+        return "tool_read", "▶"
     if permission in ("edit", "write"):
-        return "tool_write", "■"
+        return "tool_write", "◀"
     if permission == "bash":
-        return "tool_exec", "■"
+        return "tool_exec", "⚙"
     if permission == "task":
         return "tool_orch", "◈"
-    return "tool_other", "■"
+    return "tool_other", "◆"
 
 
 def _classify_opencode(entry: dict) -> dict | None:
@@ -306,7 +306,8 @@ def _parse_opencode_multi_session(
     if not sids:
         return {}
 
-    run_to_session: dict[str, str] = {}
+    run_to_session: dict[str, str] = {}  # 1-to-1 last-seen run → session_id
+    session_stack: list[str] = []  # active session stack from loop/exiting-loop
     result: dict[str, list[dict]] = {sid: [] for sid in sids}
 
     with open(path, "r", encoding="utf-8") as f:
@@ -315,13 +316,18 @@ def _parse_opencode_multi_session(
             if entry is None:
                 continue
 
-            # Build run → session_id mapping from 'created' lines
-            if (
-                entry.get("message") == "created"
-                and entry.get("id")
-                and entry.get("run")
-            ):
+            msg = entry.get("message")
+
+            # Build run → session_id mapping from 'created' lines (1-to-1 last-seen)
+            if msg == "created" and entry.get("id") and entry.get("run"):
                 run_to_session[entry["run"]] = entry["id"]
+
+            # Active session stack: push on loop, pop on exiting loop
+            if msg == "loop" and entry.get("session_id"):
+                session_stack.append(entry["session_id"])
+            if msg == "exiting loop" and entry.get("session_id"):
+                if session_stack and session_stack[-1] == entry["session_id"]:
+                    session_stack.pop()
 
             # Check direct session_id / id match
             matched_id = entry.get("session_id") or entry.get("id")
@@ -329,10 +335,17 @@ def _parse_opencode_multi_session(
                 result[matched_id].append(entry)
                 continue
 
-            # Check run-based mapping (for evaluated lines without session_id)
+            # Check run-based mapping (for entries without session_id)
             run = entry.get("run")
-            if run and run in run_to_session and run_to_session[run] in sids:
-                result[run_to_session[run]].append(entry)
+            if run and run in run_to_session:
+                # Primary: use top of active-session stack
+                if session_stack and session_stack[-1] in sids:
+                    sid = session_stack[-1]
+                else:
+                    # Fallback: use last-seen 1-to-1 run mapping
+                    sid = run_to_session[run]
+                if sid in sids:
+                    result[sid].append(entry)
 
     return result
 
@@ -484,17 +497,23 @@ def _group_entries_by_session(
     if not sids:
         return {}
 
-    run_to_session: dict[str, str] = {}
+    run_to_session: dict[str, str] = {}  # 1-to-1 last-seen run → session_id
+    session_stack: list[str] = []  # active session stack from loop/exiting-loop
     result: dict[str, list[dict]] = {sid: [] for sid in sids}
 
     for entry in all_entries:
-        # Build run → session_id mapping from 'created' lines
-        if (
-            entry.get("message") == "created"
-            and entry.get("id")
-            and entry.get("run")
-        ):
+        msg = entry.get("message")
+
+        # Build run → session_id mapping from 'created' lines (1-to-1 last-seen)
+        if msg == "created" and entry.get("id") and entry.get("run"):
             run_to_session[entry["run"]] = entry["id"]
+
+        # Active session stack: push on loop, pop on exiting loop
+        if msg == "loop" and entry.get("session_id"):
+            session_stack.append(entry["session_id"])
+        if msg == "exiting loop" and entry.get("session_id"):
+            if session_stack and session_stack[-1] == entry["session_id"]:
+                session_stack.pop()
 
         # Check direct session_id / id match
         matched_id = entry.get("session_id") or entry.get("id")
@@ -502,10 +521,17 @@ def _group_entries_by_session(
             result[matched_id].append(entry)
             continue
 
-        # Check run-based mapping (for evaluated lines without session_id)
+        # Check run-based mapping (for entries without session_id)
         run = entry.get("run")
-        if run and run in run_to_session and run_to_session[run] in sids:
-            result[run_to_session[run]].append(entry)
+        if run and run in run_to_session:
+            # Primary: use top of active-session stack
+            if session_stack and session_stack[-1] in sids:
+                sid = session_stack[-1]
+            else:
+                # Fallback: use last-seen 1-to-1 run mapping
+                sid = run_to_session[run]
+            if sid in sids:
+                result[sid].append(entry)
 
     return result
 
@@ -555,27 +581,51 @@ def build_timeline(
     # Collect events for every session
     timeline: list[dict] = []
 
-    for sid, depth in sessions:
-        # ── ZooKeeper log ──
-        zoo_dir = _get_zoo_log_dir()
-        zoo_path = os.path.join(zoo_dir, f"opencode-{sid}.log")
-        if os.path.isfile(zoo_path):
-            with open(zoo_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        zoo_ev = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
+    # ── ZooKeeper log ──
+    # The plugin writes ALL events (main + subagents) to a single file
+    # named after the root session.  Read it once, then distribute entries
+    # to the matching session by sessionId / agent.
+    zoo_dir = _get_zoo_log_dir()
+    root_zoo_path = os.path.join(zoo_dir, f"opencode-{session_id}.log")
+    if os.path.isfile(root_zoo_path):
+        session_depth_map = dict(sessions)
+        with open(root_zoo_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    zoo_ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                # Determine which session this entry belongs to
+                target_sid = ""
+                zoo_sid = zoo_ev.get("sessionId", "")
+                zoo_agent = zoo_ev.get("agent", "")
+
+                if zoo_sid and zoo_sid in all_sids:
+                    # Explicit sessionId that matches a known session
+                    target_sid = zoo_sid
+                elif zoo_agent:
+                    # Empty or unknown sessionId — match by agent name
+                    for s, _ in sessions:
+                        if session_agents.get(s, "") == zoo_agent:
+                            target_sid = s
+                            break
+                elif zoo_sid == "":
+                    # Both sessionId and agent empty — assign to root
+                    target_sid = session_id
+
+                if target_sid and target_sid in all_sids:
                     ev = _classify_zoo(zoo_ev)
                     if ev is not None:
-                        ev["session_id"] = sid
-                        ev["depth"] = depth
+                        ev["session_id"] = target_sid
+                        ev["depth"] = session_depth_map.get(target_sid, 0)
                         timeline.append(ev)
 
-        # ── Opencode log (from pre-parsed multi-session map) ──
+    # ── Opencode log (from pre-parsed multi-session map) ──
+    for sid, depth in sessions:
         for oc_entry in oc_entries_by_sid.get(sid, []):
             ev = _classify_opencode(oc_entry)
             if ev is not None:

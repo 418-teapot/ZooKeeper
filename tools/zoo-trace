@@ -33,27 +33,13 @@ TYPE_STYLES = {
     "llm": "blue",
     "llm_stream": "blue",
     "permission": "orange1",
-    "tool_read": "yellow",
-    "tool_write": "yellow",
-    "tool_exec": "yellow",
-    "tool_orch": "cyan",
+    "tool_read": "bright_cyan",
+    "tool_write": "magenta",
+    "tool_exec": "orange1",
+    "tool_orch": "bright_green",
     "tool_other": "yellow",
     "file": "magenta",
     "hook": "cyan",
-}
-
-TYPE_ICONS = {
-    "session": "◆",
-    "llm": "▲",
-    "llm_stream": "▲",
-    "permission": "▼",
-    "tool_read": "■",
-    "tool_write": "■",
-    "tool_exec": "■",
-    "tool_orch": "◈",
-    "tool_other": "■",
-    "file": "■",
-    "hook": "◈",
 }
 
 
@@ -250,7 +236,7 @@ def _render_ops_summary(
             elif etype == "assistant_reasoning" and verbose:
                 tag_labels.append("🧠 Reasoning")
         else:
-            icon = TYPE_ICONS.get(etype, "■")
+            icon = e.get("icon", "●")
             op_label = OP_LABELS.get(etype, "其他")
             tag_labels.append(f"{icon} {op_label}")
 
@@ -267,6 +253,8 @@ def _render_ops_summary(
         "white": Style(color="white"),
         "orange1": Style(color="orange1"),
         "magenta": Style(color="magenta"),
+        "bright_cyan": Style(color="bright_cyan"),
+        "bright_green": Style(color="bright_green"),
     }
 
     # ── Build all output lines ──
@@ -370,7 +358,7 @@ def _render_ops_summary(
                 tool_name = summary
                 arg = ""
 
-            icon = TYPE_ICONS.get(etype, "■")
+            icon = e.get("icon", "●")
             color = TYPE_STYLES.get(etype, "white")
             op_label = OP_LABELS.get(etype, "其他")
             tag_plain = f"{icon} {op_label}"
