@@ -75,6 +75,11 @@ ZooKeeper/
 
 生成的配置写入 `~/.config/opencode/opencode.json`（不在 git 仓库里）。项目级 `opencode.json` 已 gitignore。
 
+## 重要规则
+
+- **禁止自行提交 git commit**：除非用户明确要求进行 git 提交（如"提交"、"commit"、"push"等），否则绝对不得执行 `git commit`、`git add` + `git commit` 或任何形式的提交操作。运行 `./check.sh` 时其内部的自动格式化修改是可以接受的，但不得主动暂存或提交这些修改。
+- **git 提交必须使用 git-commit skill**：当用户要求提交代码时，必须加载 `git-commit` skill（位于 `core/skills/git-commit/SKILL.md`）来执行提交，不得自行拼写 commit message 或手动执行 `git commit`。
+
 ## 开发流程
 
 1. 修改代码（config.toml、prompt 文件、插件代码等）

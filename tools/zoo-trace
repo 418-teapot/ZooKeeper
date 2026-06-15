@@ -10,7 +10,7 @@ import sys
 
 from _jaeger import build_chrome_trace, build_jaeger_doc
 from _parser import list_sessions, parse_opencode_log
-from _trace_builder import build_stats, build_timeline
+from _trace_builder import build_stats, build_timeline, sort_ops_by_session
 from rich.cells import cell_len
 from rich.console import Console
 from rich.panel import Panel
@@ -214,7 +214,7 @@ def _render_ops_summary(
         elif source == "db":
             ops.append({"index": i, "event": e})
 
-    ops.sort(key=lambda o: (o["event"].get("timestamp", ""), o["index"]))
+    ops = sort_ops_by_session(ops)
 
     # ── Compute dynamic tag column width ──
     tag_labels: list[str] = []
@@ -348,6 +348,8 @@ def _render_ops_summary(
                 lines.append(
                     f"{time_seg}  {model_seg}  {tag_seg} {sep_seg} {content_prefix}{content}"
                 )
+
+            # unmatched db event type — skip silently
 
         else:
             # ── Tool call ──

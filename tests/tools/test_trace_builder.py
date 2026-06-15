@@ -28,6 +28,7 @@ from _trace_builder import (  # noqa: E402
     _parse_opencode_multi_session,
     _tool_type_and_icon,
     build_stats,
+    sort_ops_by_session,
 )
 
 # ── Fixtures ─────────────────────────────────────────────────────────────
@@ -620,11 +621,11 @@ class TestParseOpencodeMultiSession:
             "timestamp=2024-01-01T00:02:00Z message=loop step=1 session_id=sess-a\n"
             "timestamp=2024-01-01T00:03:00Z message=evaluated permission=read "
             "pattern=foo run=run-1\n"
-            "timestamp=2024-01-01T00:04:00Z message=\"exiting loop\" session_id=sess-a\n"
+            'timestamp=2024-01-01T00:04:00Z message="exiting loop" session_id=sess-a\n'
             "timestamp=2024-01-01T00:05:00Z message=loop step=1 session_id=sess-b\n"
             "timestamp=2024-01-01T00:06:00Z message=evaluated permission=read "
             "pattern=bar run=run-1\n"
-            "timestamp=2024-01-01T00:07:00Z message=\"exiting loop\" session_id=sess-b\n"
+            'timestamp=2024-01-01T00:07:00Z message="exiting loop" session_id=sess-b\n'
         )
         result = _parse_opencode_multi_session(
             str(log_file), {"sess-a", "sess-b"}
@@ -643,7 +644,9 @@ class TestParseOpencodeMultiSession:
         ]
         assert len(evaluated_summaries_b) == 1
 
-    def test_evaluated_not_duplicated_across_sessions(self, tmp_path: Path) -> None:
+    def test_evaluated_not_duplicated_across_sessions(
+        self, tmp_path: Path
+    ) -> None:
         """Evaluated entries are not duplicated across sessions sharing a run.
 
         When parent P and child C share run=X, proper loop/exiting-loop
@@ -657,7 +660,7 @@ class TestParseOpencodeMultiSession:
             "timestamp=2024-01-01T00:02:00Z message=loop step=1 session_id=parent\n"
             "timestamp=2024-01-01T00:03:00Z message=evaluated permission=read "
             "pattern=main.py run=run-X\n"
-            "timestamp=2024-01-01T00:04:00Z message=\"exiting loop\" session_id=parent\n"
+            'timestamp=2024-01-01T00:04:00Z message="exiting loop" session_id=parent\n'
         )
         result = _parse_opencode_multi_session(
             str(log_file), {"parent", "child"}
@@ -1050,8 +1053,12 @@ class TestGroupEntriesBySession:
         assert len(result["sess-a"]) == 4
         assert len(result["sess-b"]) == 4
         # First evaluated goes to sess-a, second to sess-b
-        evals_a = [e for e in result["sess-a"] if e.get("message") == "evaluated"]
-        evals_b = [e for e in result["sess-b"] if e.get("message") == "evaluated"]
+        evals_a = [
+            e for e in result["sess-a"] if e.get("message") == "evaluated"
+        ]
+        evals_b = [
+            e for e in result["sess-b"] if e.get("message") == "evaluated"
+        ]
         assert len(evals_a) == 1
         assert len(evals_b) == 1
 
@@ -1292,6 +1299,295 @@ class TestBuildStats:
         assert stats["source_distribution"]["opencode"] == 1
 
 
+# ── sort_ops_by_session ────────────────────────────────────────────────
+
+
+class TestSortOpsBySession:
+    """Tests for ``sort_ops_by_session()``."""
+
+    # ── Helpers ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _make_op(
+        index: int,
+        depth: int,
+        session_id: str,
+        timestamp: str,
+        *,
+        session_agent: str = "",
+    ) -> dict:
+        """Build a mock op dict (matching the structure used in zoo-trace)."""
+        return {
+            "index": index,
+            "event": {
+                "depth": depth,
+                "session_id": session_id,
+                "timestamp": timestamp,
+                "session_agent": session_agent,
+            },
+        }
+
+    @staticmethod
+    def _extract_order(ops: list[dict]) -> list[tuple[str, str]]:
+        """Extract (session_id, timestamp) pairs for assertion."""
+        return [
+            (op["event"]["session_id"], op["event"]["timestamp"]) for op in ops
+        ]
+
+    # ── Scenario A: Normal orchestration ────────────────────────────────
+
+    def test_normal_orchestration(self) -> None:
+        """Sequential children, no parallelism.
+
+        Root events at t1, t2, t3.
+        Child "explore" at t2 (min_ts=t2), events t2, t4.
+        Child "general" at t3 (min_ts=t3), events t3, t5.
+
+        Expected order: root t1, root t2, explore t2, explore t4, root t3,
+        general t3, general t5.
+        """
+        ops = [
+            self._make_op(0, 0, "root", "2024-01-01T00:00:01Z"),
+            self._make_op(1, 0, "root", "2024-01-01T00:00:02Z"),
+            self._make_op(2, 0, "root", "2024-01-01T00:00:03Z"),
+            # child "explore" — depth=1
+            self._make_op(
+                3,
+                1,
+                "explore",
+                "2024-01-01T00:00:02Z",
+                session_agent="explore",
+            ),
+            self._make_op(
+                4,
+                1,
+                "explore",
+                "2024-01-01T00:00:04Z",
+                session_agent="explore",
+            ),
+            # child "general" — depth=1
+            self._make_op(
+                5,
+                1,
+                "general",
+                "2024-01-01T00:00:03Z",
+                session_agent="general",
+            ),
+            self._make_op(
+                6,
+                1,
+                "general",
+                "2024-01-01T00:00:05Z",
+                session_agent="general",
+            ),
+        ]
+
+        result = sort_ops_by_session(ops)
+        order = self._extract_order(result)
+
+        expected = [
+            ("root", "2024-01-01T00:00:01Z"),
+            ("root", "2024-01-01T00:00:02Z"),
+            ("explore", "2024-01-01T00:00:02Z"),
+            ("explore", "2024-01-01T00:00:04Z"),
+            ("root", "2024-01-01T00:00:03Z"),
+            ("general", "2024-01-01T00:00:03Z"),
+            ("general", "2024-01-01T00:00:05Z"),
+        ]
+
+        assert order == expected, f"Expected {expected}, got {order}"
+
+        # Verify child events from same session are contiguous
+        explore_indices = [
+            i for i, (sid, _) in enumerate(order) if sid == "explore"
+        ]
+        assert explore_indices == list(
+            range(explore_indices[0], explore_indices[-1] + 1)
+        ), "explore events not contiguous"
+
+        general_indices = [
+            i for i, (sid, _) in enumerate(order) if sid == "general"
+        ]
+        assert general_indices == list(
+            range(general_indices[0], general_indices[-1] + 1)
+        ), "general events not contiguous"
+
+    # ── Scenario B: Parallel children ───────────────────────────────────
+
+    def test_parallel_children(self) -> None:
+        """Two children launched at same timestamp.
+
+        Root events at t1, t2.
+        Child "build" at t2, events t2, t4.
+        Child "review" at t2, events t2, t3.
+
+        Either child block can come first, but each child's events must
+        be contiguous and not interleaved.
+        """
+        ops = [
+            self._make_op(0, 0, "root", "2024-01-01T00:00:01Z"),
+            self._make_op(1, 0, "root", "2024-01-01T00:00:02Z"),
+            # child "build" — depth=1
+            self._make_op(
+                2, 1, "build", "2024-01-01T00:00:02Z", session_agent="build"
+            ),
+            self._make_op(
+                3, 1, "build", "2024-01-01T00:00:04Z", session_agent="build"
+            ),
+            # child "review" — depth=1
+            self._make_op(
+                4, 1, "review", "2024-01-01T00:00:02Z", session_agent="review"
+            ),
+            self._make_op(
+                5, 1, "review", "2024-01-01T00:00:03Z", session_agent="review"
+            ),
+        ]
+
+        result = sort_ops_by_session(ops)
+        order = self._extract_order(result)
+
+        # Root events first (chronological)
+        assert order[0] == ("root", "2024-01-01T00:00:01Z")
+        assert order[1] == ("root", "2024-01-01T00:00:02Z")
+
+        # Remaining should be two contiguous blocks: build and review
+        remaining = order[2:]
+        # Collect contiguous blocks by session_id
+        blocks: list[list[tuple[str, str]]] = []
+        current_block: list[tuple[str, str]] = []
+        current_sid = remaining[0][0] if remaining else ""
+        for item in remaining:
+            if item[0] == current_sid:
+                current_block.append(item)
+            else:
+                blocks.append(current_block)
+                current_block = [item]
+                current_sid = item[0]
+        if current_block:
+            blocks.append(current_block)
+
+        # Should be exactly 2 blocks
+        assert len(blocks) == 2, (
+            f"Expected 2 contiguous child blocks, got {len(blocks)}: {blocks}"
+        )
+
+        # Each block is all 'build' or all 'review'
+        block_sids = {block[0][0] for block in blocks}
+        assert block_sids == {"build", "review"}, (
+            f"Expected blocks for {{'build', 'review'}}, got {block_sids}"
+        )
+
+        # Within each block, timestamps are in original relative order
+        for block in blocks:
+            sid = block[0][0]
+            timestamps = [ts for _, ts in block]
+            orig_timestamps = [
+                op["event"]["timestamp"]
+                for op in ops
+                if op["event"]["session_id"] == sid
+            ]
+            assert timestamps == orig_timestamps, (
+                f"Block for {sid} timestamps {timestamps} "
+                f"don't match original {orig_timestamps}"
+            )
+
+    # ── Scenario C: Nested sub-agents ───────────────────────────────────
+
+    def test_nested_sub_agents(self) -> None:
+        """Child (depth=1) launches grandchild (depth=2).
+
+        Root events at t1, t2.
+        Child "parent" depth=1 at t2, events t2, t5.
+        Child "grandchild" depth=2 at t3 (min_ts=t3), events t3, t4.
+
+        Depth=2 events are also grouped contiguously.
+        """
+        ops = [
+            self._make_op(0, 0, "root", "2024-01-01T00:00:01Z"),
+            self._make_op(1, 0, "root", "2024-01-01T00:00:02Z"),
+            # child "parent" — depth=1
+            self._make_op(
+                2, 1, "parent", "2024-01-01T00:00:02Z", session_agent="parent"
+            ),
+            self._make_op(
+                3, 1, "parent", "2024-01-01T00:00:05Z", session_agent="parent"
+            ),
+            # child "grandchild" — depth=2 (child of "parent")
+            self._make_op(
+                4,
+                2,
+                "grandchild",
+                "2024-01-01T00:00:03Z",
+                session_agent="grandchild",
+            ),
+            self._make_op(
+                5,
+                2,
+                "grandchild",
+                "2024-01-01T00:00:04Z",
+                session_agent="grandchild",
+            ),
+        ]
+
+        result = sort_ops_by_session(ops)
+        order = self._extract_order(result)
+
+        # Root events first (chronological)
+        assert order[0] == ("root", "2024-01-01T00:00:01Z")
+        assert order[1] == ("root", "2024-01-01T00:00:02Z")
+
+        # The remaining events are depth>0.  Since "parent" has min_ts=t2
+        # and "grandchild" has min_ts=t3, parent block comes first.
+        remaining = order[2:]
+
+        # Parent events should be contiguous
+        parent_indices = [
+            i for i, (sid, _) in enumerate(remaining) if sid == "parent"
+        ]
+        assert parent_indices == list(
+            range(parent_indices[0], parent_indices[-1] + 1)
+        ), "parent events not contiguous"
+
+        # Grandchild events should be contiguous
+        grandchild_indices = [
+            i for i, (sid, _) in enumerate(remaining) if sid == "grandchild"
+        ]
+        assert grandchild_indices == list(
+            range(grandchild_indices[0], grandchild_indices[-1] + 1)
+        ), "grandchild events not contiguous"
+
+        # Verify parent block precedes grandchild block
+        # (parent min_ts=t2 < grandchild min_ts=t3)
+        parent_block_end = parent_indices[-1]
+        grandchild_block_start = grandchild_indices[0]
+        assert parent_block_end < grandchild_block_start, (
+            f"Parent block (ends at {parent_block_end}) should precede "
+            f"grandchild block (starts at {grandchild_block_start})"
+        )
+
+    def test_does_not_mutate_input(self) -> None:
+        """The input list is not mutated."""
+        ops = [
+            self._make_op(0, 0, "root", "2024-01-01T00:00:02Z"),
+            self._make_op(1, 0, "root", "2024-01-01T00:00:01Z"),
+        ]
+        original_ids = [id(op) for op in ops]
+        original_events = [
+            {k: v for k, v in op["event"].items()} for op in ops
+        ]
+
+        result = sort_ops_by_session(ops)
+
+        # Input list unchanged
+        assert [id(op) for op in ops] == original_ids
+        for op, original in zip(ops, original_events):
+            assert op["event"] == original
+
+        # Result is a different list with same items in different order
+        assert result is not ops
+        assert set(id(op) for op in result) == set(original_ids)
+
+
 # ── build_timeline (wrapped in tmp_path) ──────────────────────────────
 
 
@@ -1412,13 +1708,9 @@ class TestBuildTimeline:
             '"event":"trigger"}\n'
         )
 
-        timeline = build_timeline(
-            "main-session", opencode_path=str(oc_path)
-        )
+        timeline = build_timeline("main-session", opencode_path=str(oc_path))
 
-        zoo_events = [
-            ev for ev in timeline if ev.get("source") == "zoo"
-        ]
+        zoo_events = [ev for ev in timeline if ev.get("source") == "zoo"]
         assert len(zoo_events) == 3, (
             f"Expected 3 zoo events, got {len(zoo_events)}"
         )
@@ -1464,7 +1756,7 @@ class TestBuildTimeline:
             '"event":"context_measured","agent":"explore",'
             '"estimated_tokens":500,"message_count":1}\n'
             # Subagent with explicit sessionId
-            + '{"timestamp":"2024-01-01T00:03:00Z","level":"info",'
+             + '{"timestamp":"2024-01-01T00:03:00Z","level":"info",'
             '"hook":"context-metrics","sessionId":"child-session",'
             '"event":"context_measured","agent":"explore",'
             '"estimated_tokens":2000,"message_count":3}\n'

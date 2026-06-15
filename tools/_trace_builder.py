@@ -307,7 +307,9 @@ def _parse_opencode_multi_session(
         return {}
 
     run_to_session: dict[str, str] = {}  # 1-to-1 last-seen run → session_id
-    session_stack: list[str] = []  # active session stack from loop/exiting-loop
+    session_stack: list[
+        str
+    ] = []  # active session stack from loop/exiting-loop
     result: dict[str, list[dict]] = {sid: [] for sid in sids}
 
     with open(path, "r", encoding="utf-8") as f:
@@ -498,7 +500,9 @@ def _group_entries_by_session(
         return {}
 
     run_to_session: dict[str, str] = {}  # 1-to-1 last-seen run → session_id
-    session_stack: list[str] = []  # active session stack from loop/exiting-loop
+    session_stack: list[
+        str
+    ] = []  # active session stack from loop/exiting-loop
     result: dict[str, list[dict]] = {sid: [] for sid in sids}
 
     for entry in all_entries:
@@ -657,6 +661,57 @@ def build_timeline(
     )
 
     return timeline
+
+
+def sort_ops_by_session(ops: list[dict]) -> list[dict]:
+    """Sort ops: root events chronologically, child events grouped by session.
+
+    Root events appear at their own timestamp position.  Child events from
+    the same session form a contiguous block anchored at that session's
+    minimum timestamp, appearing right after any root event at that same
+    timestamp.
+
+    Each op is a dict with keys ``index`` (int) and ``event`` (dict).
+    The event dict must contain ``depth``, ``session_id``, and
+    ``timestamp`` fields.
+
+    Returns a new sorted list.  Does NOT mutate the input.
+
+    Args:
+        ops: List of op dicts to sort.
+
+    Returns:
+        New list sorted according to session-aware ordering.
+    """
+    # First pass: compute min_timestamp per child session
+    child_session_min_ts: dict[str, str] = {}
+    for op in ops:
+        e = op["event"]
+        depth = e.get("depth", 0)
+        sid = e.get("session_id", "")
+        if depth > 0 and sid:
+            ts = e.get("timestamp", "")
+            if (
+                sid not in child_session_min_ts
+                or ts < child_session_min_ts[sid]
+            ):
+                child_session_min_ts[sid] = ts
+
+    def _session_sort_key(op: dict) -> tuple:
+        e = op["event"]
+        depth = e.get("depth", 0)
+        ts = e.get("timestamp", "")
+        sid = e.get("session_id", "")
+        # depth>0 events use the session's min_timestamp as group key
+        # so all events from one child session share the same anchor
+        if depth > 0 and sid in child_session_min_ts:
+            group_key = child_session_min_ts[sid]
+        else:
+            group_key = ts
+        depth_priority = 0 if depth == 0 else 1
+        return (group_key, depth_priority, sid, ts, op["index"])
+
+    return sorted(ops, key=_session_sort_key)
 
 
 def build_stats(
