@@ -9,6 +9,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { zookeeper } from "../../index.js";
+import { ZOO_INTERNAL_INITIATOR_MARKER } from "../utils/internal-initiator.js";
+import { SYSTEM_DIRECTIVE_PREFIX } from "../utils/system-directive.js";
 import { FOCUS_REMINDER, injectFocusReminder } from "./index.js";
 
 // ---------------------------------------------------------------------------
@@ -95,7 +97,7 @@ function assertHasReminder(output: Output, message?: string): void {
     throw new Error(message ?? "expected a user message to exist");
   }
   const hasReminder = lastUser.parts.some(
-    (p) => p.type === "text" && p.text === FOCUS_REMINDER,
+    (p) => p.type === "text" && p.text.includes(FOCUS_REMINDER),
   );
   assert.ok(hasReminder, message ?? "expected focus reminder in parts");
 }
@@ -109,7 +111,7 @@ function assertNoReminder(output: Output, message?: string): void {
   const userMsgs = msgs.filter((m) => m.info.role === "user");
   for (const m of userMsgs) {
     const hasReminder = m.parts.some(
-      (p) => p.type === "text" && p.text === FOCUS_REMINDER,
+      (p) => p.type === "text" && p.text.includes(FOCUS_REMINDER),
     );
     assert.equal(hasReminder, false, message ?? "expected no focus reminder");
   }
@@ -141,12 +143,46 @@ describe("build agent gets the reminder", () => {
     // The first user message should not have the reminder
     const firstUser = msgs[0];
     const firstHasReminder = firstUser.parts.some(
-      (p) => p.type === "text" && p.text === FOCUS_REMINDER,
+      (p) => p.type === "text" && p.text.includes(FOCUS_REMINDER),
     );
     assert.equal(firstHasReminder, false);
 
     // The last user message should have the reminder
     assertHasReminder(result);
+  });
+
+  it("injected part contains all three separation markers", async () => {
+    const msgs: MessageEntry[] = [msg("user", "build", "Implement feature X")];
+    const result = await applyReminder(msgs);
+    const userMessages = result.messages?.filter((m) => m.info.role === "user");
+    assert.ok(userMessages && userMessages.length > 0, "expected user message");
+    const lastUser = userMessages[userMessages.length - 1];
+    const injectedPart = lastUser.parts.find(
+      (p) => p.type === "text" && p.text.includes(FOCUS_REMINDER),
+    );
+    assert.ok(injectedPart, "expected injected part to exist");
+
+    // Layer 3 — system directive header
+    assert.ok(
+      injectedPart.text.includes(SYSTEM_DIRECTIVE_PREFIX),
+      "expected system directive prefix",
+    );
+
+    // Layer 2 — XML internal-reminder tags
+    assert.ok(
+      injectedPart.text.includes("<internal-reminder>"),
+      "expected opening internal-reminder tag",
+    );
+    assert.ok(
+      injectedPart.text.includes("</internal-reminder>"),
+      "expected closing internal-reminder tag",
+    );
+
+    // Layer 1 — HTML comment initiator marker
+    assert.ok(
+      injectedPart.text.includes(ZOO_INTERNAL_INITIATOR_MARKER),
+      "expected internal initiator marker",
+    );
   });
 });
 

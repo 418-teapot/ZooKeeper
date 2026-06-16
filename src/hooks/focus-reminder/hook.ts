@@ -11,6 +11,11 @@
 
 import { log } from "../../utils/logger.js";
 import { type Clientish, getAgentName } from "../utils/agent.js";
+import { createInternalAgentTextPart } from "../utils/internal-initiator.js";
+import {
+  createSystemDirective,
+  SystemDirectiveTypes,
+} from "../utils/system-directive.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -67,8 +72,11 @@ export interface MessageEntry {
  *
  * Finds the last message with `role === "user"` and, if the agent is
  * `"build"` (determined via `info.agent` or fallback to
- * `client.getSession()`), pushes a text part containing `FOCUS_REMINDER`
- * onto its `parts` array.
+ * `client.getSession()`), pushes a three-layer-wrapped text part onto its
+ * `parts` array.  The text is wrapped with:
+ *   - Layer 3: `[SYSTEM DIRECTIVE: ZOO - ...]` header
+ *   - Layer 2: `<internal-reminder>...</internal-reminder>` XML tags
+ *   - Layer 1: `<!-- ZOO_INTERNAL_INITIATOR -->` HTML comment marker
  *
  * This is stateless — no session tracking.  Every LLM turn starts with a
  * fresh messages array, so the reminder is naturally injected exactly once
@@ -134,7 +142,16 @@ export async function injectFocusReminder(
     lastUserMsg.parts = [];
   }
 
-  lastUserMsg.parts.push({ type: "text", text: FOCUS_REMINDER });
+  // Inject wrapped focus reminder using all three separation layers:
+  //   Layer 3 — system directive header ([SYSTEM DIRECTIVE: ...])
+  //   Layer 2 — XML <internal-reminder> tags
+  //   Layer 1 — HTML comment initiator marker (<!-- ZOO_INTERNAL_INITIATOR -->)
+  const directiveHeader = createSystemDirective(
+    SystemDirectiveTypes.FOCUS_REMINDER,
+  );
+  const reminderContent = `<internal-reminder>\n${FOCUS_REMINDER}\n</internal-reminder>`;
+  const wrappedText = `${directiveHeader}\n${reminderContent}`;
+  lastUserMsg.parts.push(createInternalAgentTextPart(wrappedText));
 
   log(
     "focus-reminder",
