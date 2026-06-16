@@ -120,12 +120,31 @@ OpenCode 日志写入以下位置：
 [zookeeper:focus-reminder] trigger { agent: "build", sessionId: "..." }
 ```
 
-## 调试工具
+## CLI 工具
 
-`tools/` 下的 CLI 工具用于分析日志。插件默认记录 info/warn/error 级别事件到 `~/.zoo/log/`；`ZOO_DEBUG=1` 额外启用 debug 级别记录。
+`tools/` 下有 4 个 Python 脚本，用于分析 zoo 插件日志、会话记录和 token 消耗。
+完整文档见 `docs/tools-design.md`。
 
-| 工具 | 说明 |
-|------|------|
-| `tools/zoo-log` | 实时过滤当前 session 的插件日志（JSONL），支持 `list`（列出所有日志）、`show <id>`（回放完整日志，支持 `--hook`/`--level`/`--event` 过滤）、`tail <id>`（实时 tail，同上过滤参数）。基于 jq 管道。 |
-| `tools/zoo-inspect` | 事件统计与时间线。支持 `list`（rich 表格列出 session）、`stats <id>`（事件统计：级别分布、hook 分类）、`timeline <id>`（按时间排序的事件流水）。基于 rich 渲染。 |
-| `tools/zoo-trace` | 完整编排 trace（合并插件日志 + opencode 日志 + SQLite 消息）。支持 `list`/`show`/`export` 子命令。 |
+| 工具 | 职责 | 主要子命令 |
+|------|------|-----------|
+| `zoo-find` | 搜索 SQLite 中的会话与消息 | 模糊搜索 / `--all` / `--exact` / `--session <sid>` / `--message <id>...` |
+| `zoo-log` | 实时过滤 zoo JSONL 日志 | `show <id>` / `tail <id>`（支持 `--hook` / `--level` / `--event` 过滤） |
+| `zoo-inspect` | 事件统计与 hook 影响分析 | `stats <id>` / `stats --sessions N` / `timeline <id>` / `impact` |
+| `zoo-trace` | 完整编排追踪（多源合并） | `show <id>` / `export <id>` / `steps <id>` / `tokens <id>` |
+
+**共享标志**（`zoo-find` / `zoo-inspect` / `zoo-trace`）：`--db <path>` / `--no-color` / `--json`。
+
+**退出码**：`0` 成功 / `1` 错误 / `2` 未找到。`zoo-log` 和 `zoo-inspect` 支持 session ID 前缀匹配；`zoo-find` 和 `zoo-trace` 需完整 ID。
+
+**典型工作流：**
+
+```shell
+# 1. 用 zoo-find 搜索会话，单条匹配时只输出 ID（管道友好）
+$ zoo-trace show $(zoo-find "auth middleware") -s
+
+# 2. 跨会话分析 hook 对缓存命中率的影响
+$ zoo-inspect impact --sessions 20 --hook focus-reminder --cost
+
+# 3. 追踪单个会话的 step 级 token 消耗
+$ zoo-trace steps <sid> --min-cache-drop 1000
+```

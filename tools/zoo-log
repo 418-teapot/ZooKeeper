@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""ZooKeeper log filter — real-time JSON log viewer."""
+"""ZooKeeper log filter — real-time JSON log viewer.
+
+Session ID resolution: Supports prefix matching via
+:func:`_parser.resolve_session_path` (globbing ``opencode-<prefix>*.log``).
+"""
 
 import argparse
-import glob as glob_module
 import os
 import subprocess
 import sys
-from datetime import datetime
 
+from _db import _setup_logging
 from _parser import _get_zoo_log_dir, resolve_session_path
 
 LOG_DIR = _get_zoo_log_dir()
@@ -51,7 +54,7 @@ def cmd_tail(args: argparse.Namespace) -> None:
             f"Error: no unique log file found for session '{args.session_id}'",
             file=sys.stderr,
         )
-        sys.exit(1)
+        sys.exit(2)
 
     if args.raw:
         # Bypass jq entirely — inherit tail output directly
@@ -127,7 +130,7 @@ def cmd_show(args: argparse.Namespace) -> None:
             f"Error: no unique log file found for session '{args.session_id}'",
             file=sys.stderr,
         )
-        sys.exit(1)
+        sys.exit(2)
 
     if args.raw:
         with open(path, "r", encoding="utf-8") as f:
@@ -147,41 +150,8 @@ def cmd_show(args: argparse.Namespace) -> None:
         proc.wait()
 
 
-def cmd_list(args: argparse.Namespace) -> None:
-    """List all log files with metadata."""
-    pattern = os.path.join(LOG_DIR, "opencode-*.log")
-    files = sorted(glob_module.glob(pattern))
-
-    if not files:
-        print(f"No log files found in {LOG_DIR}/")
-        return
-
-    prefix = "opencode-"
-    suffix = ".log"
-
-    # Headers
-    print(f"{'Session ID':<42} {'Size':>8} {'Modified':<22} {'Events':>6}")
-    print("-" * 82)
-
-    for path in files:
-        filename = os.path.basename(path)
-        session_id = filename
-        if filename.startswith(prefix) and filename.endswith(suffix):
-            session_id = filename[len(prefix) : -len(suffix)]
-
-        st = os.stat(path)
-        size = st.st_size
-        mtime_str = datetime.fromtimestamp(st.st_mtime).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-
-        with open(path, "r", encoding="utf-8") as f:
-            event_count = sum(1 for _ in f)
-
-        print(f"{session_id:<42} {size:>8} {mtime_str:<22} {event_count:>6}")
-
-
 def main() -> None:
+    _setup_logging()
     parser = argparse.ArgumentParser(
         description=(
             "ZooKeeper log filter \u2014 real-time JSON log viewer"
@@ -222,23 +192,18 @@ def main() -> None:
         help="Skip jq filtering, output raw lines",
     )
 
-    # --- list ---
-    subparsers.add_parser("list", help="List all log files with metadata")
-
     args = parser.parse_args()
 
     if not os.path.isdir(LOG_DIR):
         print(
             f"Error: log directory {LOG_DIR} does not exist", file=sys.stderr
         )
-        sys.exit(1)
+        sys.exit(2)
 
     if args.command == "tail":
         cmd_tail(args)
     elif args.command == "show":
         cmd_show(args)
-    elif args.command == "list":
-        cmd_list(args)
     else:
         parser.print_help()
         sys.exit(1)

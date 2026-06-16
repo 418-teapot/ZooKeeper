@@ -8,7 +8,7 @@ from collections import Counter, defaultdict, deque
 from datetime import datetime
 from typing import Any
 
-from _db import query_db_messages
+from _db import _format_dt_to_iso, query_db_messages
 from _parser import _get_zoo_log_dir, parse_opencode_line
 
 
@@ -20,7 +20,7 @@ def _normalize_timestamp(ts: str) -> str:
         return ts
     try:
         dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-        return dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        return _format_dt_to_iso(dt)
     except (ValueError, AttributeError):
         return ts
 
@@ -202,17 +202,25 @@ def _classify_opencode(entry: dict) -> dict | None:
 
         # Allowed (or missing) → tool call (classified by permission)
         type_, icon = _tool_type_and_icon(permission)
+        detail: dict = {
+            "permission": permission,
+            "pattern": pattern,
+            "action": action,
+        }
+        # Parse duration field from opencode log entry if present
+        duration_str = entry.get("duration", "")
+        if duration_str:
+            try:
+                detail["duration_sec"] = float(duration_str)
+            except ValueError:
+                pass
         return {
             "timestamp": _normalize_timestamp(entry.get("timestamp", "")),
             "source": "opencode",
             "type": type_,
             "icon": icon,
             "summary": f"{permission}: {pattern}",
-            "detail": {
-                "permission": permission,
-                "pattern": pattern,
-                "action": action,
-            },
+            "detail": detail,
         }
 
     # Touching file

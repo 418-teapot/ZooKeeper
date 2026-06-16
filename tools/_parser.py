@@ -4,7 +4,12 @@ import glob
 import json
 import os
 import shlex
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    # Python < 3.11 没有 tomllib，需要安装 tomli 包作为回退
+    import tomli as tomllib  # type: ignore[no-redef]
 from datetime import datetime
 from pathlib import Path
 

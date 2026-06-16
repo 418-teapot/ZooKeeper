@@ -1,16 +1,34 @@
 #!/usr/bin/env python3
-"""ZooKeeper trace — full orchestration trace with timeline merging."""
+"""ZooKeeper trace — full orchestration trace with timeline merging.
+
+Session ID resolution: Requires a full session ID (prefix resolution not
+supported).  Use ``zoo-find`` to resolve partial IDs before passing to
+this tool.
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import shutil
 import sys
+from datetime import datetime, timezone
 
+from _db import (
+    _estimate_tokens,
+    _iso_to_epoch_ms,
+    _setup_logging,
+    query_message_parts,
+    query_step_data,
+    query_step_data_batch,
+    query_tool_durations_batch,
+)
 from _jaeger import build_chrome_trace, build_jaeger_doc
-from _parser import list_sessions, parse_opencode_log
+from _parser import parse_zoo_log, resolve_session_path
 from _trace_builder import (
+    _discover_child_sessions_from_entries,
+    _parse_opencode_all,
     build_stats,
     build_timeline,
     mark_block_boundaries,
@@ -83,6 +101,14 @@ def _render_timeline_rich(timeline: list[dict], console: Console) -> None:
 
         summary_text = Text(e.get("summary", ""))
 
+        # Duration prefix for LLM/tool events
+        dur = e.get("duration_sec")
+        if dur is not None:
+            summary_text = Text.assemble(
+                (f"[{dur:.1f}s] ", "dim"),
+                summary_text,
+            )
+
         # Child session prefix + indentation
         if depth > 0:
             agent = e.get("session_agent", "")
@@ -95,7 +121,7 @@ def _render_timeline_rich(timeline: list[dict], console: Console) -> None:
         elif source == "zoo":
             summary_text = Text.assemble(
                 ("[zoo] ", "cyan"),
-                (e.get("summary", ""), ""),
+                (e.get("summary", ""), "dim"),
             )
 
         table.add_row(time_str, icon_str, summary_text)
@@ -127,6 +153,127 @@ def _build_model_map(timeline: list[dict]) -> list[str]:
     return models
 
 
+def _attach_durations(timeline: list[dict]) -> None:
+    """Attach duration_sec (float) to timeline events in-place.
+
+    - For tool_* events from opencode: uses ``detail.duration_sec`` from
+      the parsed log entry (``evaluated`` line's ``duration=`` field).
+    - For LLM events: matches to the ``assistant_reply`` DB event whose
+      ``msg_time_created``/``msg_time_completed`` range contains the LLM
+      event timestamp, and uses the reply's duration
+    - Zoo and session events are left unchanged (no duration).
+    """
+    # Phase 2a: forward tool durations from detail
+    for e in timeline:
+        etype = e.get("type", "")
+        if etype.startswith("tool_"):
+            dur = e.get("detail", {}).get("duration_sec")
+            if dur is not None:
+                e["duration_sec"] = dur
+
+    # Phase 2b: match tool events against DB tool durations
+    # (for events where the opencode log has no duration field)
+    # Collect ALL session IDs in the timeline (root + children)
+    all_sids: set[str] = set()
+    for e in timeline:
+        sid = e.get("session_id", "")
+        if sid:
+            all_sids.add(sid)
+
+    # Query tool durations for all sessions at once (avoid N+1)
+    all_tool_durations: list[dict] = []
+    if all_sids:
+        all_tool_durations = query_tool_durations_batch(list(all_sids))
+
+    if all_tool_durations:
+        for e in timeline:
+            etype = e.get("type", "")
+            if not etype.startswith("tool_"):
+                continue
+            if e.get("duration_sec") is not None:
+                continue  # already set from Phase 2a
+
+            # Extract tool name from summary (e.g. "read: src/auth/middleware.ts")
+            summary = e.get("summary", "")
+            if ": " in summary:
+                tool_name = summary.split(": ", 1)[0]
+            else:
+                tool_name = summary
+
+            ts = e.get("timestamp", "")
+            if not ts:
+                continue
+            ts_ms = _iso_to_epoch_ms(ts)
+            if ts_ms == 0:
+                continue
+
+            # Find best match: same tool name, closest time_start within 30s
+            best_match = None
+            best_diff = float("inf")
+            for td in all_tool_durations:
+                if td["tool_name"] != tool_name:
+                    continue
+                diff = abs(td["time_start"] - ts_ms)
+                if diff < best_diff and diff <= 30_000:
+                    best_diff = diff
+                    best_match = td
+
+            if best_match is not None:
+                e["duration_sec"] = best_match["duration_sec"]
+
+    # Phase 3: collect assistant_reply durations keyed by epoch-ms range
+    assistant_ranges: list[tuple[int, int, float]] = []
+    for e in timeline:
+        if e.get("type") == "assistant_reply":
+            mc = e.get("msg_time_completed")
+            mcr = e.get("msg_time_created")
+            if mc is not None and mcr is not None and mc > mcr:
+                dur = (mc - mcr) / 1000.0
+                assistant_ranges.append((mcr, mc, dur))
+
+    if not assistant_ranges:
+        return
+
+    # Phase 3: match LLM events — find the reply whose time range
+    # is closest (by midpoint distance) to the LLM event timestamp.
+    for e in timeline:
+        etype = e.get("type", "")
+        if etype not in ("llm", "llm_stream"):
+            continue
+        ts = e.get("timestamp", "")
+        if not ts:
+            continue
+        ts_ms = _iso_to_epoch_ms(ts)
+        if ts_ms == 0:
+            continue
+
+        # Step 1: find exact containment matches (ts_ms inside [created, completed])
+        exact_matches = [
+            (cr, cc, dur)
+            for cr, cc, dur in assistant_ranges
+            if cr <= ts_ms <= cc
+        ]
+
+        if len(exact_matches) == 1:
+            # Single exact match — use it
+            if exact_matches[0][2] > 0:
+                e["duration_sec"] = exact_matches[0][2]
+        else:
+            # No unique exact match — find the closest by midpoint distance
+            # within the 5s grace window
+            best_match: float | None = None
+            best_dist = float("inf")
+            for cr, cc, dur in assistant_ranges:
+                if cr <= ts_ms <= cc + 5000:
+                    midpoint = (cr + cc) / 2
+                    dist = abs(ts_ms - midpoint)
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_match = dur
+            if best_match is not None and best_match > 0:
+                e["duration_sec"] = best_match
+
+
 def _truncate_display(text: str, max_cols: int) -> str:
     """Truncate text to fit within *max_cols* display columns (forward scan).
 
@@ -145,14 +292,19 @@ def _truncate_display(text: str, max_cols: int) -> str:
         return text
     if cell_len(text) <= max_cols:
         return text
-    width = 0
-    for i, ch in enumerate(text):
-        width += cell_len(ch)
-        if width + 3 > max_cols:  # +3 for "..."
-            # If even the first char doesn't fit, show it anyway (edge
-            # case matching the original O(n²) implementation). This
-            # path is never hit in practice (max_cols is 48 or 56).
-            return text[: max(i, 1)] + "..."
+    # Edge case: when the first character is wider than max_cols - 3,
+    # we cannot fit first_char + "...". Return "..." as safe fallback.
+    if cell_len(text[0]) > max_cols - 3:
+        return "..."
+    # Walk forward through grapheme boundaries using slicing.
+    # Per-char ``cell_len`` misses combining characters and emoji variation
+    # selectors (e.g. ⚠️ counts as 1 when iterated char-by-char but 2 as a
+    # grapheme), so use ``cell_len(text[:i])`` for accuracy.
+    for i in range(1, len(text) + 1):
+        w = cell_len(text[:i])
+        if w + 3 > max_cols:  # +3 for "..."
+            idx = max(i - 1, 1)
+            return text[:idx] + "..."
     return text
 
 
@@ -258,6 +410,13 @@ def _render_ops_summary(
     tag_width = max((cell_len(t) for t in tag_labels), default=8)
     tag_width = min(tag_width, 14)
 
+    # ── Dynamic content width based on terminal size ──
+    # Layout: Time(8) + sep(2) + Model(18) + sep(2) + Tag(tag_width)
+    #       + sep(1) + │(1) + sep(1) + content
+    # = 33 + tag_width + content_width
+    term_width = console.width or 120
+    content_width = max(20, term_width - 33 - tag_width)
+
     # ── Agent color map ──
     AGENT_COLORS: dict[str, str] = {
         "explore": "cyan",
@@ -346,6 +505,9 @@ def _render_ops_summary(
 
         # Indent for sub-agent depth (content column only)
         indent = "  " * depth if depth > 0 else ""
+        # sep_seg grows from 1 char (depth 0: "│") to 2+2d (depth d: "│  │..."),
+        # subtract the extra chars so content fits terminal width
+        depth_content_offset = 0 if depth == 0 else (1 + 2 * depth)
 
         # ── Borders (pre-computed) ──
         for dep in bottoms.get(pos, []):
@@ -384,11 +546,13 @@ def _render_ops_summary(
             agent_suffix = (
                 f"({agent_name}) " if agent_name and agent_name != "?" else ""
             )
+            dur = e.get("duration_sec")
+            dur_seg = f"{S['dim'].render(f'[{dur:.1f}s]')} " if dur else ""
             label = "🤖 LLM stream" if etype == "llm_stream" else "🤖 LLM call"
             tag_padded = _pad(label, tag_width)
             tag_seg = S["blue"].render(tag_padded)
             lines.append(
-                f"{time_seg}  {model_seg}  {tag_seg} {sep_seg} {agent_suffix}"
+                f"{time_seg}  {model_seg}  {tag_seg} {sep_seg} {dur_seg}{agent_suffix}"
             )
 
         elif e.get("source") == "zoo":
@@ -396,8 +560,13 @@ def _render_ops_summary(
             summary = e.get("summary", "")
             tag_padded = _pad("zoo", tag_width)
             tag_seg = S["cyan"].render(tag_padded)
+            summary = _truncate_display(
+                summary,
+                max(20, content_width - depth_content_offset),
+            )
             lines.append(
-                f"{time_seg}  {model_seg}  {tag_seg} {sep_seg} {summary}"
+                f"{time_seg}  {model_seg}  {tag_seg} {sep_seg} "
+                f"{S['dim'].render(summary)}"
             )
 
         elif e.get("source") == "db":
@@ -408,7 +577,9 @@ def _render_ops_summary(
                 content = e.get("content", "")
                 if not verbose:
                     one_line = " ".join(content.split())
-                    content = _truncate_display(one_line, 56)
+                    content = _truncate_display(
+                        one_line, content_width - depth_content_offset
+                    )
                 lines.append(
                     f"{time_seg}  {model_seg}  {tag_seg} {sep_seg} {content}"
                 )
@@ -418,11 +589,29 @@ def _render_ops_summary(
                 tag_padded = _pad(f"{agent}:", tag_width)
                 tag_seg = S["blue"].render(tag_padded)
                 content = e.get("content", "")
+                mc = e.get("msg_time_completed")
+                mcr = e.get("msg_time_created")
+                dur = e.get("duration_sec") or (
+                    (mc - mcr) / 1000.0
+                    if mc is not None and mcr is not None and mc > mcr
+                    else None
+                )
+                # Account for "[X.Xs] " prefix width when truncating
+                dur_visible_chars = len(f"[{dur:.1f}s] ") if dur else 0
                 if not verbose:
                     one_line = " ".join(content.split())
-                    content = _truncate_display(one_line, 48)
+                    avail = max(
+                        20,
+                        content_width
+                        - dur_visible_chars
+                        - depth_content_offset,
+                    )
+                    content = _truncate_display(one_line, avail)
+                dur_prefix = (
+                    f"{S['dim'].render(f'[{dur:.1f}s]')} " if dur else ""
+                )
                 lines.append(
-                    f"{time_seg}  {model_seg}  {tag_seg} {sep_seg} {content}"
+                    f"{time_seg}  {model_seg}  {tag_seg} {sep_seg} {dur_prefix}{content}"
                 )
 
             elif etype == "assistant_reasoning" and verbose:
@@ -451,13 +640,22 @@ def _render_ops_summary(
             tag_padded = _pad(tag_plain, tag_width)
             tag_seg = S.get(color, S["white"]).render(tag_padded)
 
+            dur = e.get("duration_sec")
+            dur_seg = f"{S['dim'].render(f'[{dur:.1f}s]')} " if dur else ""
+
             line_content = f"{tool_name} {arg}".strip()
             line_content = " ".join(line_content.split())  # collapse newlines
+            # Account for "[X.Xs] " prefix width when truncating
+            dur_visible_chars = len(f"[{dur:.1f}s] ") if dur else 0
             line_content = _truncate_display(
-                line_content, 120
-            )  # max 120 display cols
+                line_content,
+                max(
+                    20,
+                    content_width - dur_visible_chars - depth_content_offset,
+                ),
+            )
             lines.append(
-                f"{time_seg}  {model_seg}  {tag_seg} {sep_seg} {line_content}"
+                f"{time_seg}  {model_seg}  {tag_seg} {sep_seg} {dur_seg}{line_content}"
             )
 
     # ── Close any open child blocks (from after-loop bottoms) ──
@@ -491,11 +689,17 @@ def _render_ops_summary(
     )
 
     zoo_total = stats.get("zoo_interventions", 0)
+    total_llm_dur = sum(
+        e.get("duration_sec", 0)
+        for e in timeline
+        if e.get("type") in ("llm", "llm_stream") and e.get("duration_sec")
+    )
+    llm_dur_str = f" ({total_llm_dur:.1f}s)" if total_llm_dur > 0 else ""
 
     console.print()
     console.print(
         f"[bold]总计:[/bold] {stats['total_events']} events | "
-        f"{stats['llm_calls']} LLM | "
+        f"{stats['llm_calls']} LLM{llm_dur_str} | "
         f"{tool_str} | "
         f"{zoo_total} zoo"
     )
@@ -549,7 +753,9 @@ def _render_session_panel(
             mins, secs = divmod(dur, 60)
             dur_str = f"{mins}m {secs}s" if mins else f"{secs}s"
 
-        sid_short = f"{session_id[:20]}…"
+        sid_short = (
+            f"{session_id[:20]}…"  # session ID 为纯 ASCII，无需 cell_len 截断
+        )
         title_str = (
             f"Session: {slug} ({sid_short})"
             if slug
@@ -643,9 +849,17 @@ def _render_session_panel(
     )
 
     lines.append("")
+
+    total_llm_dur = sum(
+        e.get("duration_sec", 0)
+        for e in timeline
+        if e.get("type") in ("llm", "llm_stream") and e.get("duration_sec")
+    )
+    llm_dur_str = f" ({total_llm_dur:.1f}s)" if total_llm_dur > 0 else ""
+
     lines.append(
         f"[bold]Stats:[/bold] {stats['total_events']} events | "
-        f"{stats['llm_calls']} LLM | "
+        f"{stats['llm_calls']} LLM{llm_dur_str} | "
         f"{tool_str} | "
         f"{stats['permission_checks']} permissions | "
         f"{stats['zoo_interventions']} zoo"
@@ -695,76 +909,15 @@ def _collect_child_sessions_info(
 # ── Commands ────────────────────────────────────────────────────────────
 
 
-def cmd_list(_args: argparse.Namespace) -> None:
-    """List all sessions from both log sources."""
-    console = Console()
-
-    # Sessions from ZooKeeper logs
-    zoo_sessions = list_sessions()
-
-    # Sessions from opencode log (parse to find session IDs)
-    oc_path = os.path.expanduser("~/.local/share/opencode/log/opencode.log")
-    oc_sessions: set[str] = set()
-    if os.path.isfile(oc_path):
-        entries = parse_opencode_log(oc_path)
-        for e in entries:
-            if e.get("message") == "created":
-                sid = e.get("id", "")
-                if sid:
-                    oc_sessions.add(sid)
-
-    if not zoo_sessions and not oc_sessions:
-        console.print(
-            "[yellow]No sessions found in either log source.[/yellow]"
-        )
-        return
-
-    table = Table(title="Available Sessions")
-    table.add_column("Session ID", style="cyan", no_wrap=True)
-    table.add_column("Source", no_wrap=True)
-    table.add_column("Slug / Title", style="bold")
-    table.add_column("Agent", style="green")
-    table.add_column("Events", justify="right")
-
-    shown: set[str] = set()
-
-    # Show ZooKeeper sessions first
-    for s in zoo_sessions:
-        sid = s["session_id"]
-        if sid in shown:
-            continue
-        shown.add(sid)
-        table.add_row(
-            sid,
-            "[cyan]zoo[/cyan]",
-            "—",
-            "—",
-            str(s["event_count"]),
-        )
-
-    # Show opencode-only sessions
-    for sid in sorted(oc_sessions):
-        if sid in shown:
-            continue
-        shown.add(sid)
-        table.add_row(
-            sid,
-            "[blue]opencode[/blue]",
-            "—",
-            "—",
-            "—",
-        )
-
-    console.print(table)
-
-
 def cmd_show(args: argparse.Namespace) -> None:
     """Show merged timeline for a session.
 
     Default output is a grouped operations summary.  Pass ``--verbose`` /
     ``-v`` to render the full per-event timeline (original behaviour).
     """
-    console = Console()
+    console = Console(
+        no_color=args.no_color if hasattr(args, "no_color") else False
+    )
 
     try:
         timeline = build_timeline(
@@ -773,7 +926,7 @@ def cmd_show(args: argparse.Namespace) -> None:
         )
     except FileNotFoundError as e:
         console.print(f"[red]Error:[/red] {e}")
-        sys.exit(1)
+        sys.exit(2)
 
     if not timeline:
         console.print("[yellow]No events found for this session.[/yellow]")
@@ -785,6 +938,9 @@ def cmd_show(args: argparse.Namespace) -> None:
     )
 
     stats = build_stats(timeline, child_sessions=child_sessions_info)
+
+    # Attach duration_sec to LLM and tool events for display
+    _attach_durations(timeline)
 
     if args.verbose:
         _render_session_panel(
@@ -801,7 +957,9 @@ def cmd_show(args: argparse.Namespace) -> None:
 
 def cmd_export(args: argparse.Namespace) -> None:
     """Export merged timeline as JSON trace (Jaeger or Chrome format)."""
-    console = Console()
+    console = Console(
+        no_color=args.no_color if hasattr(args, "no_color") else False
+    )
 
     try:
         timeline = build_timeline(
@@ -810,7 +968,7 @@ def cmd_export(args: argparse.Namespace) -> None:
         )
     except FileNotFoundError as e:
         console.print(f"[red]Error:[/red] {e}")
-        sys.exit(1)
+        sys.exit(2)
 
     if not timeline:
         console.print("[yellow]No events found for this session.[/yellow]")
@@ -835,23 +993,697 @@ def cmd_export(args: argparse.Namespace) -> None:
         )
 
 
-# ── Main ────────────────────────────────────────────────────────────────
+# ── Helpers for steps / tokens ─────────────────────────────────────────
+
+
+def _parse_iso(ts: str) -> datetime:
+    """Parse ISO 8601 timestamp string to datetime.
+
+    Args:
+        ts: ISO 8601 string (may end with ``Z``).
+
+    Returns:
+        Parsed datetime in UTC, or ``datetime.min`` on failure.
+    """
+    if not ts:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return dt
+    except (ValueError, AttributeError):
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _cache_bar(pct: float, width: int = 20) -> str:
+    """Render a cache hit rate bar.
+
+    Each char = 100/width percentage points; ▏..▉ = 1..7/8 sub-steps;
+    ``░`` = zero placeholder.
+
+    Args:
+        pct: Percentage value (0-100).
+        width: Total character width (default 20).
+
+    Returns:
+        Bar string of exactly *width* characters.
+    """
+    each_pct = 100.0 / width  # e.g. 5.0 pp per char for width=20
+    full = int(pct // each_pct)  # e.g. 99.98 // 5.0 = 19
+    remainder = pct % each_pct  # e.g. 0.98
+    frac_idx = int(remainder / each_pct * 8)  # 0-7
+    frac_chars = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"]
+    bar = "█" * min(full, width)
+    bar += frac_chars[min(frac_idx, 7)] if full < width else ""
+    bar = bar.ljust(width, "░")
+    return bar[:width]
+
+
+def _match_hooks_to_steps(
+    steps: list[dict],
+    zoo_events: list[dict],
+) -> dict[int, list[str]]:
+    """Match zoo hook events to steps by timestamp proximity.
+
+    A hook event belongs to step *N* if its timestamp falls between
+    ``step[N-1].time_created`` and ``step[N].time_created`` (for N > 1),
+    or before ``step[0].time_created`` (for N = 1).
+
+    Args:
+        steps: List of step dicts (must have ``_display_index`` and
+            ``time_created``).
+        zoo_events: List of parsed zoo JSONL event dicts.
+
+    Returns:
+        Dict mapping ``_display_index`` to list of hook names.
+    """
+    result: dict[int, list[str]] = {}
+
+    for ev in zoo_events:
+        hook = ev.get("hook", "")
+        if not hook:
+            continue
+        ts = ev.get("timestamp", "")
+
+        matched = False
+        for i, step in enumerate(steps):
+            di = step["_display_index"]
+            step_start = step["time_created"]
+
+            if i == 0:
+                if ts <= step_start:
+                    result.setdefault(di, []).append(hook)
+                    matched = True
+                    break
+            else:
+                prev_end = steps[i - 1]["time_created"]
+                if prev_end < ts <= step_start:
+                    result.setdefault(di, []).append(hook)
+                    matched = True
+                    break
+
+        if not matched and steps:
+            if ts > steps[-1]["time_created"]:
+                result.setdefault(steps[-1]["_display_index"], []).append(hook)
+
+    return result
+
+
+def _discover_child_steps(
+    session_id: str,
+    db_path: str,
+) -> list[tuple[str, int, list[dict]]]:
+    """发现子 session 并批量查询它们的 step 数据。
+
+    使用 ``query_step_data_batch`` 一次性查询所有子 session 的 step 数据，
+    避免 N+1 次独立 DB 查询。
+
+    Args:
+        session_id: 根 session ID。
+        db_path: SQLite 数据库路径。
+
+    Returns:
+        子 session 的 ``(sid, depth, steps)`` 元组列表（不含根 session）。
+    """
+    oc_path = os.path.expanduser("~/.local/share/opencode/log/opencode.log")
+    if not os.path.isfile(oc_path):
+        return []
+
+    all_entries = _parse_opencode_all(oc_path)
+    discovered = _discover_child_sessions_from_entries(all_entries, session_id)
+
+    # 收集所有子 session ID（depth > 0）
+    child_sids = [sid for sid, depth in discovered if depth > 0]
+    if not child_sids:
+        return []
+
+    # 一次性批量查询，而非逐 session 循环
+    all_child_steps = query_step_data_batch(child_sids, db_path)
+
+    # 按 session_id 分组
+    steps_by_sid: dict[str, list[dict]] = {}
+    for step in all_child_steps:
+        steps_by_sid.setdefault(step["session_id"], []).append(step)
+
+    # 构建 depth 查找表
+    depth_map = dict(discovered)
+
+    result: list[tuple[str, int, list[dict]]] = []
+    for sid in child_sids:
+        child_steps = steps_by_sid.get(sid, [])
+        depth = depth_map[sid]
+        for s in child_steps:
+            s["_session_id"] = sid
+            s["_child_depth"] = depth
+        if child_steps:
+            result.append((sid, depth, child_steps))
+    return result
+
+
+# ── Commands: steps / tokens ──────────────────────────────────────────
+
+
+def cmd_steps(args: argparse.Namespace) -> None:
+    """Step-by-step token timeline.
+
+    Queries step-finish records from the SQLite database, computes
+    per-step metrics (delta cache, cache hit rate, duration), and
+    optionally overlays zoo hook events and child session data.
+    """
+    console = Console(no_color=getattr(args, "no_color", False))
+    db_path = getattr(args, "db", "~/.local/share/opencode/opencode.db")
+    use_json = getattr(args, "json", False)
+
+    steps = query_step_data(args.session_id, db_path)
+    if not steps:
+        if use_json:
+            print(json.dumps({"steps": [], "summary": {}}, ensure_ascii=False))
+        else:
+            console.print(
+                "[yellow]No step data found for this session.[/yellow]"
+            )
+        return
+
+    # Add metadata
+    for s in steps:
+        s["_session_id"] = args.session_id
+
+    # Discover child steps if requested
+    child_data = []
+    if getattr(args, "child", False):
+        child_data = _discover_child_steps(args.session_id, db_path)
+
+    all_steps: list[dict] = list(steps)
+    for _sid, _depth, child_steps_list in child_data:
+        all_steps.extend(child_steps_list)
+
+    # Sort by time_created and assign display indices
+    all_steps.sort(key=lambda s: s.get("time_created", ""))
+    for i, s in enumerate(all_steps, 1):
+        s["_display_index"] = i
+
+    # Parse zoo log for hook overlays (if enabled)
+    hook_overlays: dict[int, list[str]] = {}
+    if getattr(args, "hook_overlays", True):
+        # Collect all session IDs needing hook lookup
+        hook_sids = {args.session_id}
+        for sid, _depth, _ in child_data:
+            hook_sids.add(sid)
+
+        for sid in hook_sids:
+            try:
+                zoo_path = resolve_session_path(sid)
+                if zoo_path and os.path.isfile(zoo_path):
+                    zoo_events = parse_zoo_log(zoo_path)
+                    matched = _match_hooks_to_steps(all_steps, zoo_events)
+                    for k, v in matched.items():
+                        hook_overlays.setdefault(k, []).extend(v)
+            except FileNotFoundError:
+                pass
+
+    # Compute per-step metrics
+    prev_cache = 0
+    for s in all_steps:
+        if s["step_index"] == 1:
+            delta_cache = s["cache_write"]
+        else:
+            delta_cache = s["cache_read"] - prev_cache
+        s["delta_cache"] = delta_cache
+        total_input = s["input_tokens"] + s["cache_read"]
+        s["cache_pct"] = (
+            (s["cache_read"] / total_input * 100) if total_input > 0 else 0.0
+        )
+        s["duration"] = (
+            _parse_iso(s["time_updated"]) - _parse_iso(s["time_created"])
+        ).total_seconds()
+        # Override with message-level timing if available (epoch ms).
+        msg_created = s.get("msg_time_created")
+        msg_completed = s.get("msg_time_completed")
+        if msg_created and msg_completed:
+            s["duration"] = (msg_completed - msg_created) / 1000.0
+        prev_cache = s["cache_read"]
+
+    # Apply --min-cache-drop filter
+    min_drop = getattr(args, "min_cache_drop", None)
+    if min_drop is not None:
+        # Save old → new display_index mapping before reassignment
+        old_to_new: dict[int, int] = {}
+        new_steps: list[dict] = []
+        for s in all_steps:
+            old_di = s["_display_index"]
+            if s["delta_cache"] < -min_drop:
+                new_di = len(new_steps) + 1
+                old_to_new[old_di] = new_di
+                s["_display_index"] = new_di
+                new_steps.append(s)
+        all_steps = new_steps
+        # Rebuild hook_overlays with new indices
+        if hook_overlays:
+            new_overlays: dict[int, list[str]] = {}
+            for old_di, hooks in hook_overlays.items():
+                new_di = old_to_new.get(old_di)
+                if new_di is not None:
+                    new_overlays[new_di] = hooks
+            hook_overlays = new_overlays
+
+    if use_json:
+        _output_steps_json(all_steps, hook_overlays)
+    else:
+        _render_steps_table(all_steps, hook_overlays, console)
+
+
+def _output_steps_json(
+    steps: list[dict],
+    hook_overlays: dict[int, list[str]],
+) -> None:
+    """Output steps data as JSON."""
+    rows = []
+    for s in steps:
+        rows.append(
+            {
+                "step": s["_display_index"],
+                "session_id": s.get("_session_id", ""),
+                "cache_read": s["cache_read"],
+                "delta_cache": s["delta_cache"],
+                "input_tokens": s["input_tokens"],
+                "output_tokens": s["output_tokens"],
+                "reasoning_tokens": s["reasoning_tokens"],
+                "cache_pct": round(s["cache_pct"], 2),
+                "duration_sec": round(s["duration"], 2),
+                "hooks": hook_overlays.get(s["_display_index"], []),
+                "tools": s.get("tools", []),
+                "reason": s.get("reason", ""),
+                "time_created": s.get("time_created", ""),
+                "time_updated": s.get("time_updated", ""),
+            }
+        )
+
+    total_input = sum(s["input_tokens"] for s in steps)
+    total_output = sum(s["output_tokens"] for s in steps)
+    total_cache_read = sum(s["cache_read"] for s in steps)
+    total_cache_delta = sum(s["delta_cache"] for s in steps)
+    avg_hit = sum(s["cache_pct"] for s in steps) / len(steps) if steps else 0.0
+    total_dur = sum(s["duration"] for s in steps)
+    total_hooks = sum(len(v) for v in hook_overlays.values())
+    total_tools = sum(len(s.get("tools", [])) for s in steps)
+
+    print(
+        json.dumps(
+            {
+                "steps": rows,
+                "summary": {
+                    "total_steps": len(steps),
+                    "total_input": total_input,
+                    "total_output": total_output,
+                    "total_cache_read": total_cache_read,
+                    "total_cache_delta": total_cache_delta,
+                    "avg_hit_rate": round(avg_hit, 2),
+                    "total_duration_sec": round(total_dur, 2),
+                    "total_hooks": total_hooks,
+                    "total_tools": total_tools,
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+def _render_steps_table(
+    steps: list[dict],
+    hook_overlays: dict[int, list[str]],
+    console: Console,
+) -> None:
+    """Render steps data as a rich table."""
+    if not steps:
+        console.print("[yellow]No steps to display after filtering.[/yellow]")
+        return
+
+    unique_sids = {
+        s.get("_session_id", "") for s in steps if s.get("_session_id")
+    }
+    show_session = len(unique_sids) > 1
+
+    table = Table(title="Step Token Timeline")
+    table.add_column("Step", justify="right", no_wrap=True)
+    if show_session:
+        table.add_column("Session", no_wrap=True)
+    table.add_column("Cache Read", justify="right", no_wrap=True)
+    table.add_column("Δ Cache", justify="right", no_wrap=True)
+    table.add_column("Input", justify="right", no_wrap=True)
+    table.add_column("Output", justify="right", no_wrap=True)
+    table.add_column("Cache%", justify="right", no_wrap=True)
+    table.add_column("Duration", justify="right", no_wrap=True)
+    table.add_column("Hook Events", no_wrap=True)
+    table.add_column("Tools", no_wrap=True)
+    table.add_column("Reason", no_wrap=True)
+
+    for s in steps:
+        di = s["_display_index"]
+        sid_label = s.get("_session_id", "")
+        if show_session and sid_label:
+            sid_short = (
+                sid_label[:12] + ".." if len(sid_label) > 14 else sid_label
+            )
+        else:
+            sid_short = ""
+
+        delta = s["delta_cache"]
+        if delta > 0:
+            delta_text = Text(f"+{delta:,}", style="green")
+        elif delta < 0:
+            delta_text = Text(f"{delta:,}", style="red")
+        else:
+            delta_text = Text("0", style="dim")
+
+        pct = s["cache_pct"]
+        if pct >= 80:
+            pct_color = "green"
+        elif pct >= 50:
+            pct_color = "yellow"
+        else:
+            pct_color = "red"
+        pct_str = f"{pct:>7.2f}%"
+        bar = _cache_bar(pct)
+        pct_display = Text.assemble(
+            (pct_str, pct_color),
+            (" ", ""),
+            (bar, pct_color),
+        )
+
+        dur = s["duration"]
+        if dur >= 60:
+            dur_str = f"{int(dur // 60)}m{int(dur % 60)}s"
+        else:
+            dur_str = f"{dur:.1f}s"
+
+        hooks = hook_overlays.get(di, [])
+        hook_str = ", ".join(dict.fromkeys(hooks)) if hooks else ""
+        if hook_str:
+            hook_str = _truncate_display(hook_str, 20)
+
+        tools = s.get("tools", [])
+        tool_str = ", ".join(tools[:4]) if tools else ""
+        if len(tools) > 4:
+            tool_str += f" +{len(tools) - 4}"
+
+        reason_str = s.get("reason", "")
+        if reason_str:
+            reason_str = _truncate_display(reason_str, 16)
+
+        row_cells = [str(di)]
+        if show_session:
+            row_cells.append(sid_short)
+        row_cells.extend(
+            [
+                f"{s['cache_read']:,}",
+                delta_text,
+                f"{s['input_tokens']:,}",
+                f"{s['output_tokens']:,}",
+                pct_display,
+                dur_str,
+                hook_str,
+                tool_str,
+                reason_str,
+            ]
+        )
+        table.add_row(*row_cells)
+
+    # Summary row
+    total_input = sum(s["input_tokens"] for s in steps)
+    total_output = sum(s["output_tokens"] for s in steps)
+    total_cache_delta = sum(s["delta_cache"] for s in steps)
+    avg_hit = sum(s["cache_pct"] for s in steps) / len(steps) if steps else 0.0
+    total_dur = sum(s["duration"] for s in steps)
+    total_hooks = sum(len(v) for v in hook_overlays.values())
+    total_tools = sum(len(s.get("tools", [])) for s in steps)
+
+    table.add_section()
+    total_dur_str = (
+        f"{int(total_dur // 60)}m{int(total_dur % 60)}s"
+        if total_dur >= 60
+        else f"{total_dur:.1f}s"
+    )
+    summary_cells = ["[bold]Total[/bold]"]
+    if show_session:
+        summary_cells.append("")
+    summary_cells.extend(
+        [
+            "",
+            Text(
+                f"{total_cache_delta:+,}" if total_cache_delta != 0 else "0",
+                style="green" if total_cache_delta > 0 else "red",
+            ),
+            f"{total_input:,}",
+            f"{total_output:,}",
+            f"{avg_hit:.2f}%",
+            total_dur_str,
+            str(total_hooks),
+            str(total_tools),
+            "",
+        ]
+    )
+    table.add_row(*summary_cells)
+
+    console.print(table)
+
+
+def cmd_tokens(args: argparse.Namespace) -> None:
+    """Message-level token distribution.
+
+    Queries all messages + parts from the SQLite database, estimates
+    token counts (text length / 4), and renders a distribution table
+    with size bars.
+    """
+    console = Console(no_color=getattr(args, "no_color", False))
+    db_path = getattr(args, "db", "~/.local/share/opencode/opencode.db")
+    use_json = getattr(args, "json", False)
+
+    messages = query_message_parts(args.session_id, db_path)
+    if not messages:
+        if use_json:
+            print(
+                json.dumps({"messages": [], "summary": {}}, ensure_ascii=False)
+            )
+        else:
+            console.print(
+                "[yellow]No messages found for this session.[/yellow]"
+            )
+        return
+
+    rows: list[dict] = []
+    for msg in messages:
+        role = msg.get("role", "unknown")
+        parts = msg.get("parts", [])
+        msg_id = msg.get("id", "")
+
+        total_tokens = _estimate_tokens(parts)
+        segments = sum(1 for p in parts if p.get("type") != "step-finish")
+        has_tool = any(p.get("type") == "tool" for p in parts)
+
+        # Classify display role
+        if role == "user":
+            display_role = "user"
+        elif role == "assistant":
+            display_role = "tool_use" if has_tool else "assistant"
+        elif role == "tool":
+            display_role = "tool_result"
+        else:
+            display_role = role
+
+        # First text content for preview
+        first_text = ""
+        for part in parts:
+            if part.get("type") == "text":
+                first_text = part.get("text", "")
+                break
+
+        preview = _truncate_display(first_text.replace("\n", " ").strip(), 40)
+
+        rows.append(
+            {
+                "id": msg_id,
+                "role": display_role,
+                "tokens": total_tokens,
+                "segments": segments,
+                "preview": preview,
+            }
+        )
+
+    if use_json:
+        _output_tokens_json(rows)
+    else:
+        _render_tokens_table(rows, console)
+
+
+def _output_tokens_json(rows: list[dict]) -> None:
+    """Output token distribution as JSON."""
+    total = sum(r["tokens"] for r in rows)
+    by_role: dict[str, int] = {}
+    for r in rows:
+        by_role[r["role"]] = by_role.get(r["role"], 0) + r["tokens"]
+
+    sorted_rows = sorted(rows, key=lambda r: r["tokens"], reverse=True)
+    largest = sorted_rows[:3]
+
+    empty_count = sum(1 for r in rows if r["tokens"] == 0)
+    avg_tokens = total / len(rows) if rows else 0
+    max_tokens = max((r["tokens"] for r in rows), default=0)
+
+    print(
+        json.dumps(
+            {
+                "messages": rows,
+                "summary": {
+                    "total_tokens": total,
+                    "by_role": by_role,
+                    "avg_tokens_per_msg": round(avg_tokens, 1),
+                    "max_tokens": max_tokens,
+                    "empty_parts_count": empty_count,
+                    "largest_messages": [
+                        {
+                            "tokens": r["tokens"],
+                            "role": r["role"],
+                            "id": r["id"],
+                        }
+                        for r in largest
+                    ],
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+def _render_tokens_table(rows: list[dict], console: Console) -> None:
+    """Render token distribution as a rich table.
+
+    Auto-detects terminal width; uses wide mode (≥110 cols) to show
+    ``Segments``, ``ID``, and ``Preview`` columns.
+    """
+    if not rows:
+        return
+
+    term_width = shutil.get_terminal_size().columns
+    wide = term_width >= 110
+
+    # Role color mapping
+    role_colors = {
+        "user": "green",
+        "assistant": "blue",
+        "tool_use": "magenta",
+        "tool_result": "yellow",
+    }
+
+    max_tokens = max((r["tokens"] for r in rows), default=0)
+
+    table = Table(title="Message Token Distribution")
+    table.add_column("#", justify="right", no_wrap=True)
+    table.add_column("Role", no_wrap=True)
+    table.add_column("Tokens", justify="right", no_wrap=True)
+    table.add_column("Size", no_wrap=True)
+    if wide:
+        table.add_column("Segments", justify="right", no_wrap=True)
+        table.add_column("ID", no_wrap=True)
+        table.add_column("Preview", no_wrap=False)
+    else:
+        table.add_column("ID", no_wrap=True)
+
+    for idx, r in enumerate(rows, 1):
+        color = role_colors.get(r["role"], "white")
+        role_text = Text(r["role"], style=color)
+
+        ratio = r["tokens"] / max_tokens if max_tokens > 0 else 0
+        if ratio < 0.02:
+            bar = "░" * 20
+        else:
+            filled = int(ratio * 20)
+            bar = "█" * filled + "░" * (20 - filled)
+
+        if wide:
+            table.add_row(
+                str(idx),
+                role_text,
+                f"{r['tokens']:,}",
+                bar,
+                str(r["segments"]),
+                r["id"],
+                r["preview"],
+            )
+        else:
+            table.add_row(
+                str(idx),
+                role_text,
+                f"{r['tokens']:,}",
+                bar,
+                r["id"],
+            )
+
+    # Bottom stats
+    total = sum(r["tokens"] for r in rows)
+    by_role: dict[str, int] = {}
+    for r in rows:
+        by_role[r["role"]] = by_role.get(r["role"], 0) + r["tokens"]
+
+    sorted_rows = sorted(rows, key=lambda r: r["tokens"], reverse=True)
+    largest = sorted_rows[:3]
+
+    empty_count = sum(1 for r in rows if r["tokens"] == 0)
+    avg_tokens = total / len(rows) if rows else 0
+    max_tok = max((r["tokens"] for r in rows), default=0)
+
+    stats_parts = [f"[bold]Total tokens:[/bold] {total:,}"]
+    breakdown = " | ".join(
+        f"{role}: {count:,}" for role, count in sorted(by_role.items())
+    )
+    if breakdown:
+        stats_parts.append(breakdown)
+    top3 = ", ".join(f"{r['tokens']:,} ({r['role']})" for r in largest)
+    stats_parts.append(f"[bold]Largest:[/bold] {top3}")
+    stats_parts.append(
+        f"[bold]Avg:[/bold] {avg_tokens:.0f} [bold]Max:[/bold] {max_tok:,}"
+    )
+    if empty_count:
+        stats_parts.append(f"[bold]Empty:[/bold] {empty_count}")
+
+    console.print(table)
+    console.print("  " + "  |  ".join(stats_parts))
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="ZooKeeper trace — full orchestration trace with timeline merging.",
-    )
-    subparsers = parser.add_subparsers(dest="command", title="Commands")
+    _setup_logging()
 
-    # --- list ---
-    subparsers.add_parser(
-        "list", help="List all sessions from both log sources"
+    parser = argparse.ArgumentParser(
+        description="ZooKeeper trace — full orchestration trace with timeline merging."
+        " Note: global flags (--json, --db, --no-color) must be placed"
+        " after the subcommand, e.g. 'zoo-trace show --json'.",
     )
+
+    # Global flags shared by all subcommands
+    global_parser = argparse.ArgumentParser(add_help=False)
+    global_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output as JSON instead of rich table",
+    )
+    global_parser.add_argument(
+        "--db",
+        default="~/.local/share/opencode/opencode.db",
+        help="Path to SQLite database (default: ~/.local/share/opencode/opencode.db)",
+    )
+    global_parser.add_argument(
+        "--no-color",
+        action="store_true",
+        help="Disable ANSI color output",
+    )
+
+    subparsers = parser.add_subparsers(dest="command", title="Commands")
 
     # --- show ---
     p_show = subparsers.add_parser(
-        "show", help="Show merged timeline for a session"
+        "show",
+        parents=[global_parser],
+        help="Show merged timeline for a session",
     )
     p_show.add_argument("session_id", help="Session ID")
     p_show.add_argument(
@@ -870,6 +1702,7 @@ def main() -> None:
     # --- export ---
     p_export = subparsers.add_parser(
         "export",
+        parents=[global_parser],
         help="Export merged timeline as JSON trace (Jaeger or Chrome)",
     )
     p_export.add_argument("session_id", help="Session ID")
@@ -892,14 +1725,50 @@ def main() -> None:
         help="Output JSON file path (default: trace.json)",
     )
 
+    # --- steps ---
+    p_steps = subparsers.add_parser(
+        "steps",
+        parents=[global_parser],
+        help="Step-by-step token timeline",
+    )
+    p_steps.add_argument("session_id", help="Session ID")
+    p_steps.add_argument(
+        "--hook-overlays",
+        default=True,
+        action=argparse.BooleanOptionalAction,
+        help="Overlay zoo hook events on steps (default: enabled)",
+    )
+    p_steps.add_argument(
+        "--child",
+        action="store_true",
+        help="Include child session steps",
+    )
+    p_steps.add_argument(
+        "--min-cache-drop",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Only show steps where Δ Cache < -N",
+    )
+
+    # --- tokens ---
+    p_tokens = subparsers.add_parser(
+        "tokens",
+        parents=[global_parser],
+        help="Message-level token distribution",
+    )
+    p_tokens.add_argument("session_id", help="Session ID")
+
     args = parser.parse_args()
 
-    if args.command == "list":
-        cmd_list(args)
-    elif args.command == "show":
+    if args.command == "show":
         cmd_show(args)
     elif args.command == "export":
         cmd_export(args)
+    elif args.command == "steps":
+        cmd_steps(args)
+    elif args.command == "tokens":
+        cmd_tokens(args)
     else:
         parser.print_help()
         sys.exit(1)

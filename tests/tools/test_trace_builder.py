@@ -369,6 +369,70 @@ class TestClassifyOpencode:
         assert ev["type"] == "tool_read"
         assert ev["icon"] == "▶"
 
+    def test_evaluated_allow_with_duration(self) -> None:
+        """evaluated + allow with duration field sets detail.duration_sec."""
+        entry = {
+            "message": "evaluated",
+            "permission": "bash",
+            "pattern": "echo hi",
+            "action_action": "allow",
+            "duration": "3.75",
+            "session_id": "sess-1",
+            "timestamp": "2024-01-01T00:07:30Z",
+        }
+        ev = _classify_opencode(entry)
+        assert ev is not None
+        assert ev["type"] == "tool_exec"
+        assert ev["detail"]["duration_sec"] == 3.75
+        assert isinstance(ev["detail"]["duration_sec"], float)
+
+    def test_evaluated_allow_without_duration_field(self) -> None:
+        """entry 没有 duration 键 → detail 不应包含 duration_sec。"""
+        entry = {
+            "message": "evaluated",
+            "permission": "bash",
+            "pattern": "echo hi",
+            "action_action": "allow",
+            "session_id": "sess-1",
+            "timestamp": "2024-01-01T00:07:30Z",
+        }
+        ev = _classify_opencode(entry)
+        assert ev is not None
+        assert ev["type"] == "tool_exec"
+        assert "duration_sec" not in ev["detail"]
+
+    def test_evaluated_allow_with_empty_duration_string(self) -> None:
+        """duration 为空字符串 → detail 不应包含 duration_sec。"""
+        entry = {
+            "message": "evaluated",
+            "permission": "bash",
+            "pattern": "echo hi",
+            "action_action": "allow",
+            "duration": "",
+            "session_id": "sess-1",
+            "timestamp": "2024-01-01T00:07:30Z",
+        }
+        ev = _classify_opencode(entry)
+        assert ev is not None
+        assert ev["type"] == "tool_exec"
+        assert "duration_sec" not in ev["detail"]
+
+    def test_evaluated_allow_with_non_numeric_duration(self) -> None:
+        """duration 为非法数值字符串（如 'abc'）→ ValueError 被捕获，无 duration_sec。"""
+        entry = {
+            "message": "evaluated",
+            "permission": "bash",
+            "pattern": "echo hi",
+            "action_action": "allow",
+            "duration": "abc",
+            "session_id": "sess-1",
+            "timestamp": "2024-01-01T00:07:30Z",
+        }
+        ev = _classify_opencode(entry)
+        assert ev is not None
+        assert ev["type"] == "tool_exec"
+        assert "duration_sec" not in ev["detail"]
+
     def test_evaluated_allow_edit(self) -> None:
         """evaluated + allow + edit permission yields type=tool_write."""
         entry = {
