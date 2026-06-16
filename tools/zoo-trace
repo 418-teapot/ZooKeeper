@@ -394,7 +394,7 @@ def _render_ops_summary(
             )
         elif e.get("source") == "zoo":
             tag_labels.append("zoo")
-        elif e.get("source") == "db":
+        elif e.get("source") == "db" and not etype.startswith("tool_"):
             if etype == "user_msg":
                 tag_labels.append("User")
             elif etype == "assistant_reply":
@@ -569,7 +569,7 @@ def _render_ops_summary(
                 f"{S['dim'].render(summary)}"
             )
 
-        elif e.get("source") == "db":
+        elif e.get("source") == "db" and not etype.startswith("tool_"):
             # ── Database message (user / assistant) ──
             if etype == "user_msg":
                 tag_padded = _pad("User", tag_width)

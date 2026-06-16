@@ -196,6 +196,31 @@ def list_sessions(zoo_dir: str | None = None) -> list[dict]:
     return sessions
 
 
+def tool_type_and_icon(tool_id: str) -> tuple[str, str]:
+    """Map a tool identifier string to a trace event type and icon.
+
+    Accepts either the ``permission`` field from an opencode log
+    ``evaluated`` entry or the ``tool`` name field from a SQLite
+    ``part`` row (``type='tool'``). In practice both fields carry the
+    same tool identifier (``"read"``, ``"edit"``, ``"bash"``, etc.).
+
+    Args:
+        tool_id: Tool identifier string (e.g. ``"read"``, ``"bash"``).
+
+    Returns:
+        Tuple of (event_type, icon).
+    """
+    if tool_id in ("read", "grep", "glob"):
+        return "tool_read", "▶"
+    if tool_id in ("edit", "write"):
+        return "tool_write", "◀"
+    if tool_id == "bash":
+        return "tool_exec", "⚙"
+    if tool_id == "task":
+        return "tool_orch", "◈"
+    return "tool_other", "◆"
+
+
 def resolve_session_path(
     session_id: str,
     log_dir: str | None = None,

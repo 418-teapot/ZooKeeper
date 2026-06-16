@@ -20,6 +20,7 @@ import sqlite3
 from _db import (  # noqa: E402
     _safe_json_loads,
     query_db_messages,
+    query_db_tool_calls,
     query_message_by_ids,
     query_message_parts,
     query_recent_sessions,
@@ -2431,6 +2432,421 @@ def test_query_message_parts_part_without_message(tmp_path: Path) -> None:
     assert len(results) == 1
     assert results[0]["id"] == "m1"
     assert len(results[0]["parts"]) == 1  # orphan not included
+
+
+# ── query_db_tool_calls tests ─────────────────────────────────────────────
+
+
+def test_query_db_tool_calls_happy_path(tmp_path: Path) -> None:
+    """Completed tool parts are returned as timeline-compatible events."""
+    db_path = str(tmp_path / "test.db")
+    ts = 1_700_000_000_000
+    _create_db(
+        db_path,
+        parts=[
+            {
+                "id": "p1",
+                "message_id": "m1",
+                "session_id": "sess-1",
+                "time_created": ts,
+                "data": _tool_data(
+                    "read",
+                    "call_001",
+                    state={
+                        "status": "completed",
+                        "input": {"filePath": "src/main.py"},
+                        "time": {
+                            "start": 1_700_000_000_000,
+                            "end": 1_700_000_001_500,
+                        },
+                    },
+                ),
+            },
+        ],
+    )
+    results = query_db_tool_calls(["sess-1"], db_path)
+    assert len(results) == 1
+    ev = results[0]
+    assert ev["source"] == "db"
+    assert ev["type"] == "tool_read"
+    assert ev["icon"] == "▶"
+    assert ev["summary"] == "read: src/main.py"
+    assert ev["session_id"] == "sess-1"
+    assert ev["detail"]["tool_name"] == "read"
+    assert ev["detail"]["status"] == "completed"
+    assert ev["detail"]["input_keys"] == ["filePath"]
+    assert ev["detail"]["duration_sec"] == 1.5
+    assert ev["timestamp"].endswith("Z")
+
+
+def test_query_db_tool_calls_all_types(tmp_path: Path) -> None:
+    """All tool types map to correct event types and icons."""
+    db_path = str(tmp_path / "test.db")
+    ts = 1_700_000_000_000
+    tool_specs = [
+        ("read", "tool_read", "▶", {"filePath": "a.ts"}),
+        ("grep", "tool_read", "▶", {"pattern": "foo"}),
+        ("glob", "tool_read", "▶", {"pattern": "*.ts"}),
+        ("edit", "tool_write", "◀", {"filePath": "b.ts"}),
+        ("write", "tool_write", "◀", {"filePath": "c.ts"}),
+        ("bash", "tool_exec", "⚙", {"command": "ls -la"}),
+        ("task", "tool_orch", "◈", {"description": "do stuff"}),
+        ("webfetch", "tool_other", "◆", {"url": "https://example.com"}),
+    ]
+    parts = []
+    for i, (tool_name, expected_type, expected_icon, inp) in enumerate(
+        tool_specs
+    ):
+        parts.append(
+            {
+                "id": f"p{i}",
+                "message_id": f"m{i}",
+                "session_id": "sess-1",
+                "time_created": ts + i * 1000,
+                "data": _tool_data(
+                    tool_name,
+                    f"call_{i:03d}",
+                    state={
+                        "status": "completed",
+                        "input": inp,
+                        "time": {
+                            "start": 1_700_000_000_000 + i * 1000,
+                            "end": 1_700_000_000_000 + i * 1000 + 500,
+                        },
+                    },
+                ),
+            }
+        )
+    _create_db(db_path, parts=parts)
+    results = query_db_tool_calls(["sess-1"], db_path)
+    assert len(results) == len(tool_specs)
+    for ev, (tool_name, expected_type, expected_icon, inp) in zip(
+        results, tool_specs
+    ):
+        assert ev["type"] == expected_type, (
+            f"Expected {expected_type} for {tool_name}, got {ev['type']}"
+        )
+        assert ev["icon"] == expected_icon, (
+            f"Expected {expected_icon} for {tool_name}, got {ev['icon']}"
+        )
+        assert ev["detail"]["tool_name"] == tool_name
+        assert ev["detail"]["status"] == "completed"
+
+
+def test_query_db_tool_calls_skips_non_completed(tmp_path: Path) -> None:
+    """Tool parts without status=completed are excluded."""
+    db_path = str(tmp_path / "test.db")
+    ts = 1_700_000_000_000
+    _create_db(
+        db_path,
+        parts=[
+            {
+                "id": "p1",
+                "message_id": "m1",
+                "session_id": "sess-1",
+                "time_created": ts,
+                "data": _tool_data(
+                    "read",
+                    "call_001",
+                    state={
+                        "status": "error",
+                        "input": {"filePath": "x.ts"},
+                        "time": {"start": ts, "end": ts + 500},
+                    },
+                ),
+            },
+            {
+                "id": "p2",
+                "message_id": "m2",
+                "session_id": "sess-1",
+                "time_created": ts + 100,
+                "data": _tool_data(
+                    "bash",
+                    "call_002",
+                    state={
+                        "status": "running",
+                        "input": {"command": "sleep 10"},
+                    },
+                ),
+            },
+        ],
+    )
+    results = query_db_tool_calls(["sess-1"], db_path)
+    assert results == []
+
+
+def test_query_db_tool_calls_skips_without_start_time(tmp_path: Path) -> None:
+    """Tool parts without state.time.start are excluded."""
+    db_path = str(tmp_path / "test.db")
+    ts = 1_700_000_000_000
+    _create_db(
+        db_path,
+        parts=[
+            {
+                "id": "p1",
+                "message_id": "m1",
+                "session_id": "sess-1",
+                "time_created": ts,
+                "data": _tool_data(
+                    "read",
+                    "call_001",
+                    state={
+                        "status": "completed",
+                        "input": {"filePath": "x.ts"},
+                        # No time.start
+                    },
+                ),
+            },
+        ],
+    )
+    results = query_db_tool_calls(["sess-1"], db_path)
+    assert results == []
+
+
+def test_query_db_tool_calls_primary_input(tmp_path: Path) -> None:
+    """Primary input is extracted correctly per tool type."""
+    db_path = str(tmp_path / "test.db")
+    ts = 1_700_000_000_000
+    _create_db(
+        db_path,
+        parts=[
+            # filePath → read/edit/write
+            {
+                "id": "p1",
+                "message_id": "m1",
+                "session_id": "sess-1",
+                "time_created": ts,
+                "data": _tool_data(
+                    "read",
+                    "call_001",
+                    state={
+                        "status": "completed",
+                        "input": {"filePath": "src/main.py"},
+                        "time": {"start": ts, "end": ts + 100},
+                    },
+                ),
+            },
+            # pattern → grep/glob
+            {
+                "id": "p2",
+                "message_id": "m2",
+                "session_id": "sess-1",
+                "time_created": ts + 100,
+                "data": _tool_data(
+                    "grep",
+                    "call_002",
+                    state={
+                        "status": "completed",
+                        "input": {"pattern": "def foo"},
+                        "time": {"start": ts + 100, "end": ts + 200},
+                    },
+                ),
+            },
+            # command → bash (truncated to 50 chars)
+            {
+                "id": "p3",
+                "message_id": "m3",
+                "session_id": "sess-1",
+                "time_created": ts + 200,
+                "data": _tool_data(
+                    "bash",
+                    "call_003",
+                    state={
+                        "status": "completed",
+                        "input": {"command": "ls -la /very/long/path/" * 5},
+                        "time": {"start": ts + 200, "end": ts + 300},
+                    },
+                ),
+            },
+            # description → task
+            {
+                "id": "p4",
+                "message_id": "m4",
+                "session_id": "sess-1",
+                "time_created": ts + 300,
+                "data": _tool_data(
+                    "task",
+                    "call_004",
+                    state={
+                        "status": "completed",
+                        "input": {"description": "Build the project"},
+                        "time": {"start": ts + 300, "end": ts + 400},
+                    },
+                ),
+            },
+            # Empty input → just tool name
+            {
+                "id": "p5",
+                "message_id": "m5",
+                "session_id": "sess-1",
+                "time_created": ts + 400,
+                "data": _tool_data(
+                    "webfetch",
+                    "call_005",
+                    state={
+                        "status": "completed",
+                        "input": {},
+                        "time": {"start": ts + 400, "end": ts + 500},
+                    },
+                ),
+            },
+        ],
+    )
+    results = query_db_tool_calls(["sess-1"], db_path)
+    summaries = {ev["summary"] for ev in results}
+    assert "read: src/main.py" in summaries
+    assert "grep: def foo" in summaries
+    assert "webfetch" in summaries  # no primary input → just tool name
+
+
+def test_query_db_tool_calls_multi_session(tmp_path: Path) -> None:
+    """Tool calls from multiple sessions are all returned."""
+    db_path = str(tmp_path / "test.db")
+    ts = 1_700_000_000_000
+    _create_db(
+        db_path,
+        parts=[
+            {
+                "id": "p1",
+                "message_id": "m1",
+                "session_id": "sess-a",
+                "time_created": ts,
+                "data": _tool_data(
+                    "read",
+                    "call_001",
+                    state={
+                        "status": "completed",
+                        "input": {"filePath": "a.ts"},
+                        "time": {"start": ts, "end": ts + 100},
+                    },
+                ),
+            },
+            {
+                "id": "p2",
+                "message_id": "m2",
+                "session_id": "sess-b",
+                "time_created": ts + 100,
+                "data": _tool_data(
+                    "bash",
+                    "call_002",
+                    state={
+                        "status": "completed",
+                        "input": {"command": "echo hi"},
+                        "time": {"start": ts + 100, "end": ts + 200},
+                    },
+                ),
+            },
+        ],
+    )
+    results = query_db_tool_calls(["sess-a", "sess-b"], db_path)
+    assert len(results) == 2
+    sids = {ev["session_id"] for ev in results}
+    assert sids == {"sess-a", "sess-b"}
+
+
+def test_query_db_tool_calls_no_matching_sessions(tmp_path: Path) -> None:
+    """Querying non-existent sessions returns empty list."""
+    db_path = str(tmp_path / "test.db")
+    _create_db(db_path)
+    results = query_db_tool_calls(["nonexistent"], db_path)
+    assert results == []
+
+
+def test_query_db_tool_calls_empty_ids(tmp_path: Path) -> None:
+    """Empty session_ids list returns empty list."""
+    db_path = str(tmp_path / "test.db")
+    _create_db(db_path)
+    results = query_db_tool_calls([], db_path)
+    assert results == []
+
+
+def test_query_db_tool_calls_db_not_exists(tmp_path: Path) -> None:
+    """Non-existent DB file returns empty list."""
+    results = query_db_tool_calls(["sess-1"], str(tmp_path / "nope.db"))
+    assert results == []
+
+
+def test_query_db_tool_calls_skips_missing_tool_name(tmp_path: Path) -> None:
+    """Parts with null/empty tool name are skipped."""
+    db_path = str(tmp_path / "test.db")
+    ts = 1_700_000_000_000
+    _create_db(
+        db_path,
+        parts=[
+            {
+                "id": "p1",
+                "message_id": "m1",
+                "session_id": "sess-1",
+                "time_created": ts,
+                "data": json.dumps(
+                    {
+                        "type": "tool",
+                        "tool": None,
+                        "callID": "call_001",
+                        "state": {
+                            "status": "completed",
+                            "input": {"filePath": "x.ts"},
+                            "time": {"start": ts, "end": ts + 500},
+                        },
+                    }
+                ),
+            },
+            {
+                "id": "p2",
+                "message_id": "m2",
+                "session_id": "sess-1",
+                "time_created": ts,
+                "data": json.dumps(
+                    {
+                        "type": "tool",
+                        "tool": "",
+                        "callID": "call_002",
+                        "state": {
+                            "status": "completed",
+                            "input": {"filePath": "y.ts"},
+                            "time": {"start": ts + 100, "end": ts + 600},
+                        },
+                    }
+                ),
+            },
+        ],
+    )
+    results = query_db_tool_calls(["sess-1"], db_path)
+    assert results == []
+
+
+def test_query_db_tool_calls_bash_command_truncated(tmp_path: Path) -> None:
+    """Bash command longer than 50 chars is truncated in summary."""
+    db_path = str(tmp_path / "test.db")
+    ts = 1_700_000_000_000
+    long_cmd = "echo " + "A" * 60
+    _create_db(
+        db_path,
+        parts=[
+            {
+                "id": "p1",
+                "message_id": "m1",
+                "session_id": "sess-1",
+                "time_created": ts,
+                "data": _tool_data(
+                    "bash",
+                    "call_001",
+                    state={
+                        "status": "completed",
+                        "input": {"command": long_cmd},
+                        "time": {"start": ts, "end": ts + 500},
+                    },
+                ),
+            },
+        ],
+    )
+    results = query_db_tool_calls(["sess-1"], db_path)
+    assert len(results) == 1
+    # "echo " (5) + "A" * 45 = 50 chars truncated
+    expected_cmd = "echo " + "A" * 45
+    assert results[0]["summary"] == f"bash: {expected_cmd}"
+    # Summary should be shorter than the original command
+    assert len(results[0]["summary"]) < len("bash: ") + len(long_cmd)
 
 
 # ── Helper function used internally (test private helper) ─────────────────

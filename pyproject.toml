@@ -16,5 +16,8 @@ line-length = 79
 [tool.ruff.lint]
 extend-select = ["I"]
 
+[tool.coverage.run]
+omit = ["tools/zoo-find", "tools/zoo-trace", "tools/zoo-inspect", "tools/zoo-log"]
+
 [tool.coverage.report]
 fail_under = 90

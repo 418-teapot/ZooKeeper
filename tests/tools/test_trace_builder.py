@@ -16,6 +16,7 @@ sys.path.insert(
 
 
 import pytest  # noqa: E402
+from _parser import tool_type_and_icon  # noqa: E402
 from _trace_builder import (  # noqa: E402
     _build_session_agents,
     _build_session_agents_from_entries,
@@ -26,7 +27,6 @@ from _trace_builder import (  # noqa: E402
     _normalize_timestamp,
     _parse_opencode_all,
     _parse_opencode_multi_session,
-    _tool_type_and_icon,
     build_stats,
     mark_block_boundaries,
     sort_ops_by_session,
@@ -137,11 +137,11 @@ class TestNormalizeTimestamp:
         assert _normalize_timestamp("garbage!!!") == "garbage!!!"
 
 
-# ── _tool_type_and_icon ──────────────────────────────────────────────────
+# ── tool_type_and_icon ────────────────────────────────────────────────────
 
 
 class TestToolTypeAndIcon:
-    """Tests for ``_tool_type_and_icon()``."""
+    """Tests for ``tool_type_and_icon()``."""
 
     @pytest.mark.parametrize(
         ("permission", "expected_type", "expected_icon"),
@@ -163,7 +163,7 @@ class TestToolTypeAndIcon:
         self, permission: str, expected_type: str, expected_icon: str
     ) -> None:
         """Verify permission string maps to correct type and icon."""
-        type_, icon = _tool_type_and_icon(permission)
+        type_, icon = tool_type_and_icon(permission)
         assert type_ == expected_type
         assert icon == expected_icon
 
@@ -1787,6 +1787,267 @@ class TestBuildTimeline:
         assert "task-prompt-validate/trigger" in summaries
         assert "json-error-nudge/trigger" in summaries
 
+    # ── Database tool call dedup tests ───────────────────────────────
+
+    def test_db_tool_dedup_same_within_3s(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same tool 'read' within 3s → DB event deduped out."""
+        from unittest.mock import patch
+
+        from _trace_builder import build_timeline
+
+        monkeypatch.setattr(
+            "_trace_builder._get_zoo_log_dir", lambda: str(tmp_path)
+        )
+
+        oc_path = tmp_path / "opencode.log"
+        oc_path.write_text(
+            "timestamp=2024-01-01T00:00:00Z message=created "
+            "id=sess-1 slug=test\n"
+            "timestamp=2024-01-01T00:00:05Z message=evaluated "
+            "permission=read pattern=src/foo.ts action_action=allow "
+            "session_id=sess-1\n"
+        )
+
+        db_tool_events = [
+            {
+                "timestamp": "2024-01-01T00:00:06Z",
+                "source": "db",
+                "type": "tool_read",
+                "icon": "▶",
+                "summary": "read: src/bar.ts",
+                "detail": {
+                    "tool_name": "read",
+                    "status": "completed",
+                    "input_keys": ["path"],
+                },
+                "session_id": "sess-1",
+            }
+        ]
+
+        with patch(
+            "_trace_builder.query_db_tool_calls", return_value=db_tool_events
+        ):
+            timeline = build_timeline("sess-1", opencode_path=str(oc_path))
+
+        tool_events = [
+            ev for ev in timeline if ev.get("type", "").startswith("tool_")
+        ]
+
+        # Dedup fires: only the opencode event survives
+        assert len(tool_events) == 1
+        assert tool_events[0]["source"] == "opencode"
+
+    def test_db_tool_no_dedup_beyond_3s(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same tool 'read' at 3001ms apart → both appear."""
+        from unittest.mock import patch
+
+        from _trace_builder import build_timeline
+
+        monkeypatch.setattr(
+            "_trace_builder._get_zoo_log_dir", lambda: str(tmp_path)
+        )
+
+        oc_path = tmp_path / "opencode.log"
+        oc_path.write_text(
+            "timestamp=2024-01-01T00:00:00Z message=created "
+            "id=sess-1 slug=test\n"
+            "timestamp=2024-01-01T00:00:05Z message=evaluated "
+            "permission=read pattern=src/foo.ts action_action=allow "
+            "session_id=sess-1\n"
+        )
+
+        db_tool_events = [
+            {
+                "timestamp": "2024-01-01T00:00:08.001Z",
+                "source": "db",
+                "type": "tool_read",
+                "icon": "▶",
+                "summary": "read: src/bar.ts",
+                "detail": {
+                    "tool_name": "read",
+                    "status": "completed",
+                    "input_keys": ["path"],
+                },
+                "session_id": "sess-1",
+            }
+        ]
+
+        with patch(
+            "_trace_builder.query_db_tool_calls", return_value=db_tool_events
+        ):
+            timeline = build_timeline("sess-1", opencode_path=str(oc_path))
+
+        tool_events = [
+            ev for ev in timeline if ev.get("type", "").startswith("tool_")
+        ]
+
+        # Outside ±3s window → both appear
+        assert len(tool_events) == 2
+        sources = {ev["source"] for ev in tool_events}
+        assert sources == {"opencode", "db"}
+
+    def test_db_tool_no_dedup_different_tool(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Different tool names within 3s → both appear."""
+        from unittest.mock import patch
+
+        from _trace_builder import build_timeline
+
+        monkeypatch.setattr(
+            "_trace_builder._get_zoo_log_dir", lambda: str(tmp_path)
+        )
+
+        oc_path = tmp_path / "opencode.log"
+        oc_path.write_text(
+            "timestamp=2024-01-01T00:00:00Z message=created "
+            "id=sess-1 slug=test\n"
+            "timestamp=2024-01-01T00:00:05Z message=evaluated "
+            "permission=grep pattern=src/foo.ts action_action=allow "
+            "session_id=sess-1\n"
+        )
+
+        db_tool_events = [
+            {
+                "timestamp": "2024-01-01T00:00:06Z",
+                "source": "db",
+                "type": "tool_read",
+                "icon": "▶",
+                "summary": "read: src/bar.ts",
+                "detail": {
+                    "tool_name": "read",
+                    "status": "completed",
+                    "input_keys": ["path"],
+                },
+                "session_id": "sess-1",
+            }
+        ]
+
+        with patch(
+            "_trace_builder.query_db_tool_calls", return_value=db_tool_events
+        ):
+            timeline = build_timeline("sess-1", opencode_path=str(oc_path))
+
+        tool_events = [
+            ev for ev in timeline if ev.get("type", "").startswith("tool_")
+        ]
+
+        # Different tool names → both appear
+        assert len(tool_events) == 2
+        sources = {ev["source"] for ev in tool_events}
+        assert sources == {"opencode", "db"}
+
+    def test_db_tool_no_dedup_different_session(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same tool+time but different session → both appear."""
+        from unittest.mock import patch
+
+        from _trace_builder import build_timeline
+
+        monkeypatch.setattr(
+            "_trace_builder._get_zoo_log_dir", lambda: str(tmp_path)
+        )
+
+        oc_path = tmp_path / "opencode.log"
+        oc_path.write_text(
+            "timestamp=2024-01-01T00:00:00Z message=created "
+            "id=sess-a slug=test\n"
+            "timestamp=2024-01-01T00:00:05Z message=evaluated "
+            "permission=read pattern=src/foo.ts action_action=allow "
+            "session_id=sess-a\n"
+        )
+
+        db_tool_events = [
+            {
+                "timestamp": "2024-01-01T00:00:06Z",
+                "source": "db",
+                "type": "tool_read",
+                "icon": "▶",
+                "summary": "read: src/bar.ts",
+                "detail": {
+                    "tool_name": "read",
+                    "status": "completed",
+                    "input_keys": ["path"],
+                },
+                "session_id": "sess-b",
+            }
+        ]
+
+        with patch(
+            "_trace_builder.query_db_tool_calls", return_value=db_tool_events
+        ):
+            timeline = build_timeline("sess-a", opencode_path=str(oc_path))
+
+        tool_events = [
+            ev for ev in timeline if ev.get("type", "").startswith("tool_")
+        ]
+
+        # Different sessions → both appear
+        assert len(tool_events) == 2
+        sources = {ev["source"] for ev in tool_events}
+        assert sources == {"opencode", "db"}
+
+    def test_db_tool_cross_bucket_not_deduped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Opencode at ~1ms, DB at ~5999ms (~6s apart) → NOT deduped.
+
+        This was the original bucket-based bug: events ~6s apart could
+        fall in adjacent buckets and be incorrectly deduped. With
+        absolute-time proximity (±3s), they are correctly kept separate.
+        """
+        from unittest.mock import patch
+
+        from _trace_builder import build_timeline
+
+        monkeypatch.setattr(
+            "_trace_builder._get_zoo_log_dir", lambda: str(tmp_path)
+        )
+
+        oc_path = tmp_path / "opencode.log"
+        oc_path.write_text(
+            "timestamp=2024-01-01T00:00:00Z message=created "
+            "id=sess-1 slug=test\n"
+            "timestamp=2024-01-01T00:00:00.001Z message=evaluated "
+            "permission=read pattern=src/foo.ts action_action=allow "
+            "session_id=sess-1\n"
+        )
+
+        db_tool_events = [
+            {
+                "timestamp": "2024-01-01T00:00:05.999Z",
+                "source": "db",
+                "type": "tool_read",
+                "icon": "▶",
+                "summary": "read: src/bar.ts",
+                "detail": {
+                    "tool_name": "read",
+                    "status": "completed",
+                    "input_keys": ["path"],
+                },
+                "session_id": "sess-1",
+            }
+        ]
+
+        with patch(
+            "_trace_builder.query_db_tool_calls", return_value=db_tool_events
+        ):
+            timeline = build_timeline("sess-1", opencode_path=str(oc_path))
+
+        tool_events = [
+            ev for ev in timeline if ev.get("type", "").startswith("tool_")
+        ]
+
+        # ~5998ms apart → outside ±3s window → both appear
+        assert len(tool_events) == 2
+        sources = {ev["source"] for ev in tool_events}
+        assert sources == {"opencode", "db"}
+
 
 # ── mark_block_boundaries ───────────────────────────────────────────────
 
@@ -1995,3 +2256,5 @@ class TestMarkBlockBoundaries:
         assert len(child_events) == 2
         for ev in child_events:
             assert ev["depth"] == 1
+
+

@@ -9,6 +9,8 @@ import sqlite3
 import sys
 from datetime import datetime, timezone
 
+from _parser import tool_type_and_icon
+
 logger = logging.getLogger(__name__)
 
 
@@ -607,6 +609,131 @@ def query_message_by_ids(
         )
 
     return results
+
+
+def _primary_tool_input(state: dict) -> str:
+    """Extract the primary input field from a tool's state for summary.
+
+    Priority: ``filePath`` > ``pattern`` > ``command`` (first 50 chars)
+    > ``description`` > first non-empty value > ``""``.
+
+    Args:
+        state: The ``state`` dict from a tool part.
+
+    Returns:
+        A short string identifying the tool's primary input, or ``""``.
+    """
+    inp = state.get("input", {})
+    if not isinstance(inp, dict):
+        return ""
+    fp = inp.get("filePath")
+    if fp:
+        return str(fp)
+    pattern = inp.get("pattern")
+    if pattern:
+        return str(pattern)
+    cmd = inp.get("command")
+    if cmd:
+        return str(cmd)[:50]
+    desc = inp.get("description")
+    if desc:
+        return str(desc)
+    for v in inp.values():
+        if v is not None and str(v).strip():
+            return str(v)
+    return ""
+
+
+def query_db_tool_calls(
+    session_ids: list[str],
+    db_path: str = "~/.local/share/opencode/opencode.db",
+) -> list[dict]:
+    """Query completed tool calls from the part table for timeline events.
+
+    Queries ``part`` where ``json_extract(data, '$.type') = 'tool'`` and
+    ``status = 'completed'``, returning events compatible with the timeline
+    format used by ``build_timeline()`` in ``_trace_builder.py``.
+
+    Args:
+        session_ids: List of session IDs to query.
+        db_path: Path to the SQLite database file
+            (default: ``~/.local/share/opencode/opencode.db``).
+
+    Returns:
+        List of event dicts with keys: ``timestamp`` (ISO), ``source``
+        (``"db"``), ``type`` (tool_*), ``icon``, ``summary``, ``detail``
+        (dict with ``tool_name``, ``status``, ``input_keys``, and optionally
+        ``duration_sec``), ``session_id``.
+    """
+    if not session_ids:
+        return []
+
+    db_path = os.path.expanduser(db_path)
+    if not os.path.isfile(db_path):
+        return []
+
+    events: list[dict] = []
+    placeholders = ",".join("?" * len(session_ids))
+
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT session_id, data "
+            "FROM part "
+            f"WHERE session_id IN ({placeholders}) "
+            "AND json_extract(data, '$.type') = 'tool' "
+            "AND json_extract(data, '$.state.status') = 'completed' "
+            "ORDER BY time_created ASC",
+            tuple(session_ids),
+        )
+        rows = cursor.fetchall()
+
+    for row in rows:
+        data = _safe_json_loads(row["data"])
+        if data is None:
+            continue
+        tool_name = data.get("tool", "")
+        if not tool_name:
+            continue
+        state = data.get("state", {})
+        if not isinstance(state, dict):
+            continue
+        time_info = state.get("time", {})
+        if not isinstance(time_info, dict):
+            continue
+        start_ms = time_info.get("start")
+        if start_ms is None:
+            continue
+
+        timestamp = _epoch_ms_to_iso(start_ms)
+        type_, icon = tool_type_and_icon(tool_name)
+        inp = state.get("input", {})
+        primary = _primary_tool_input(state)
+        summary = f"{tool_name}: {primary}" if primary else tool_name
+
+        detail: dict = {
+            "tool_name": tool_name,
+            "status": state.get("status", ""),
+            "input_keys": list(inp.keys()) if isinstance(inp, dict) else [],
+        }
+        end_ms = time_info.get("end")
+        if end_ms is not None:
+            detail["duration_sec"] = (end_ms - start_ms) / 1000.0
+
+        events.append(
+            {
+                "timestamp": timestamp,
+                "source": "db",
+                "type": type_,
+                "icon": icon,
+                "summary": summary,
+                "detail": detail,
+                "session_id": row["session_id"],
+            }
+        )
+
+    return events
 
 
 def query_tool_durations_batch(

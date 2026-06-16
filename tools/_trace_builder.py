@@ -8,8 +8,17 @@ from collections import Counter, defaultdict, deque
 from datetime import datetime
 from typing import Any
 
-from _db import _format_dt_to_iso, query_db_messages
-from _parser import _get_zoo_log_dir, parse_opencode_line
+from _db import (
+    _format_dt_to_iso,
+    _iso_to_epoch_ms,
+    query_db_messages,
+    query_db_tool_calls,
+)
+from _parser import (
+    _get_zoo_log_dir,
+    parse_opencode_line,
+    tool_type_and_icon,
+)
 
 
 def _normalize_timestamp(ts: str) -> str:
@@ -23,26 +32,6 @@ def _normalize_timestamp(ts: str) -> str:
         return _format_dt_to_iso(dt)
     except (ValueError, AttributeError):
         return ts
-
-
-def _tool_type_and_icon(permission: str) -> tuple[str, str]:
-    """Map a permission string to a trace event type and icon.
-
-    Args:
-        permission: The permission field from an evaluated entry.
-
-    Returns:
-        Tuple of (type, icon).
-    """
-    if permission in ("read", "grep", "glob"):
-        return "tool_read", "▶"
-    if permission in ("edit", "write"):
-        return "tool_write", "◀"
-    if permission == "bash":
-        return "tool_exec", "⚙"
-    if permission == "task":
-        return "tool_orch", "◈"
-    return "tool_other", "◆"
 
 
 def _classify_opencode(entry: dict) -> dict | None:
@@ -201,7 +190,7 @@ def _classify_opencode(entry: dict) -> dict | None:
             }
 
         # Allowed (or missing) → tool call (classified by permission)
-        type_, icon = _tool_type_and_icon(permission)
+        type_, icon = tool_type_and_icon(permission)
         detail: dict = {
             "permission": permission,
             "pattern": pattern,
@@ -644,6 +633,48 @@ def build_timeline(
         sid = ev.get("session_id", "")
         ev["depth"] = depth_map.get(sid, 0)
         timeline.append(ev)
+
+    # ── Database tool calls (from part table) ──
+    # The opencode log often misses many tool calls (especially read/edit/write).
+    # The SQLite part table with type='tool' has all completed tool calls.
+    db_tool_events = query_db_tool_calls(list(all_sids))
+    if db_tool_events:
+        # Build dedup index from existing timeline (opencode log) tool events.
+        # Each entry: (tool_name, epoch_ms, session_id) — use absolute-time
+        # proximity (±3 s) to avoid false dedup across bucket boundaries.
+        existing_tool_times: list[tuple[str, int, str]] = []
+        for ev in timeline:
+            etype = ev.get("type", "")
+            if etype.startswith("tool_"):
+                ts_ms = _iso_to_epoch_ms(ev.get("timestamp", ""))
+                if ts_ms:
+                    tool_name = ev.get("detail", {}).get("permission", "")
+                    if tool_name:
+                        existing_tool_times.append(
+                            (tool_name, ts_ms, ev.get("session_id", ""))
+                        )
+
+        for ev in db_tool_events:
+            sid = ev.get("session_id", "")
+            ev["depth"] = depth_map.get(sid, 0)
+
+            ts_ms = _iso_to_epoch_ms(ev.get("timestamp", ""))
+            tool_name = ev.get("detail", {}).get("tool_name", "")
+            # Check absolute proximity (≤ 3s) against existing events
+            # with the same tool name and the same session.
+            is_dup = False
+            if ts_ms and tool_name:
+                is_dup = any(
+                    name == tool_name
+                    and ev_sid == sid
+                    and abs(existing_ts - ts_ms) <= 3000
+                    for name, existing_ts, ev_sid in existing_tool_times
+                )
+
+            if not is_dup and ts_ms and tool_name:
+                existing_tool_times.append((tool_name, ts_ms, sid))
+            if not is_dup:
+                timeline.append(ev)
 
     # Attach session_agent label for child events
     for ev in timeline:
