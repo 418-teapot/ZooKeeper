@@ -1,7 +1,7 @@
 # Code Review 实现横向对比：技术路线分析
 
 > 调研范围：oh-my-openagent (omo)、oh-my-opencode-slim (slim)、oh-my-pi (omp)、superpowers
-> 对比对象：ZooKeeper Hawk Code Review Skill（设计阶段）
+> 对比对象：ZooKeeper Eagle Code Review Skill（设计阶段）
 > 日期：2026-06-16
 
 ## 一、调研概览
@@ -16,7 +16,7 @@ Code Review 是 agent 编码流程中的关键质量门禁。不同框架对"谁
 | **oh-my-opencode-slim (slim)** | OpenCode 轻量编排层 | 编排器手动委托 @oracle、Multi-model council |
 | **oh-my-pi (omp)** | 独立全栈编码代理 | `/review` 命令、1-16 并行 reviewer、schema 校验输出 |
 | **superpowers** | 纯方法论行为塑形框架 | 4 层 review 类型、质疑框架、反谄媚校准、接收 review 行为技能 |
-| **ZooKeeper (设计)** | OpenCode 编排器插件 | Skill 封装 2 并行 Hawk、read-only 权限声明、混源设计 |
+| **ZooKeeper (设计)** | OpenCode 编排器插件 | Skill 封装 2 并行 Eagle、read-only 权限声明、混源设计 |
 
 ```
                        手动触发 ←───────────────→ 自动触发
@@ -157,13 +157,15 @@ Code Review 是 agent 编码流程中的关键质量门禁。不同框架对"谁
 
 #### Prompt 工程亮点
 
-1. **跨边界 bug 检测：** reviewer 必须追踪消费侧的 dispatch 点（通常在 diff 之外）。例如改了一个 API，需要检查调用方是否正确。
-2. **四条件噪声过滤：** 仅报告同时满足以下条件的 issues：
+1. **跨边界 dispatch 点校验：** 对于每个跨越函数/模块边界的新类型、变体或值，reviewer 必须在消费侧定位 dispatch 点（switch/router/filter/handler registry），确认存在显式分支处理。dispatch 点通常在 diff 之外，**必须主动读取相关文件**。
+2. **六条件噪声过滤：** 仅报告同时满足以下条件的 issues：
    - 有可证明的影响（provable impact）
    - 可操作的（actionable）
    - 非故意的（unintentional）
    - 本次 patch 引入的（introduced in patch）
-   - 有相应严格度的证据（proportionate rigor）
+   - 无未声明假设（no unstated assumptions）— reviewer 不得依赖关于代码库或作者意图的未声明假设
+   - 有相应严格度的证据（proportionate rigor）— 修复方案不得要求超出代码库其余部分的严格度
+3. **行范围约束：** `report_finding` 的 `line_end - line_start` 不得超过 10 行，且必须与 diff hunk 重叠。防止 reviewer 报告与本次变更无关的远处问题。
 
 #### 附加机制
 
@@ -177,8 +179,8 @@ Code Review 是 agent 编码流程中的关键质量门禁。不同框架对"谁
 |------|------|
 | 结构化输出（schema 校验保证质量） | 必须用户显式触发 |
 | diff 权重感知的并行扩缩容 | 每 reviewer 用最强模型，token 极高 |
-| 噪声过滤（四条件） | 无编码后自动 review |
-| 跨边界 bug 检测 | |
+| 噪声过滤（六条件） | 无编码后自动 review |
+| 跨边界 dispatch 点校验 | |
 | 多种调用模式（CI/交互/程序化） | |
 
 ---
@@ -195,9 +197,9 @@ Code Review 是 agent 编码流程中的关键质量门禁。不同框架对"谁
     ├── 1. Self-review（实现者 prompt 内嵌，4 轴自查）
     │
     └── 2. Spec compliance review（子 agent，循环直到批准）
-         │
+         │  ⚠ 必须通过后才能进入下一阶段
          └── 3. Code quality review（子 agent，循环直到批准）
-              │
+              │  （code-quality-reviewer-prompt.md: "Only dispatch after spec compliance review passes"）
               └── 4. Final full review（所有任务完成后）
 ```
 
@@ -205,13 +207,15 @@ Code Review 是 agent 编码流程中的关键质量门禁。不同框架对"谁
 
 **A. 质疑框架（skeptical framing）** — `spec-reviewer-prompt.md`
 
-核心 prompt 语句：
+开头声明 **"CRITICAL: Do Not Trust the Report"**，核心 prompt 语句：
 
 > "The implementer finished suspiciously quickly. Their report may be incomplete, inaccurate, or optimistic. You MUST verify everything independently."
+
+显式 DO / DON'T 区分清单：
 > DO NOT: Take their word for what they implemented
 > DO: Read the actual code they wrote
 
-**B. 反 Nitpick 校准** — `code-reviewer.md`
+**B. 反 Nitpick 校准** — `code-reviewer.md`（**模板文件**，含 4 个占位符 {DESCRIPTION}、{PLAN_OR_REQUIREMENTS}、{BASE_SHA}、{HEAD_SHA}，每次 review 渲染为完整 prompt，非独立可用的 prompt）
 
 > "Categorize issues by actual severity. Not everything is Critical."
 > "Acknowledge what was done well before listing issues"
@@ -274,13 +278,13 @@ READ → UNDERSTAND → VERIFY → EVALUATE → RESPOND → IMPLEMENT
 | **Reviewer 数量** | 5 | 1 (oracle) / 3+ (council) | 1-16 (按 diff 权重) | 1/阶段 | 2 |
 | **并行度** | ✅ 5 全并行 | ❌ 单 agent | ✅ N 全并行 | ❌ 顺序 | ✅ 2 并行 |
 | **只读强制** | 权限级（deny write/edit） | 权限级（deny * + allow read） | 工具级（bash 限制 + report_finding） | Prompt 级 | 权限级（deny write/edit/apply_patch） |
-| **模型选择** | Oracle 用最强模型 | @oracle 用最强模型 | pi/slow（最强大模型） | 同主 agent | Pro 模型（两 Hawk 同规格） |
+| **模型选择** | Oracle 用最强模型 | @oracle 用最强模型 | pi/slow（最强大模型） | 同主 agent | Pro 模型（两 Eagle 同规格） |
 | **输出格式** | XML 标签 | 自然语言 | 结构化 Schema | 自然语言 + 裁决 | 自然语言 + 裁决 |
-| **严重度层级** | 无（verdict 仅 PASS/FAIL） | 无 | priority 字段 | 3 级（Critical/Important/Minor） | 3 级（Critical/Important/Minor） |
+| **严重度层级** | 无（verdict 仅 PASS/FAIL） | 无 | priority 字段 | 3 级（Critical/Important/Minor） | 3 级（Must Fix / Should Fix / Could Fix + 分层过滤） |
 | **自动触发** | ✅ Ralph-loop 自动（仅 ultrawork 模式） | ❌ 无 | ❌ 无 | ✅ Self-review 内嵌 | ❌（设计阶段暂定 Skill 调用） |
 | **Review 循环** | ✅ INCONCLUSIVE retry（1 次） | ❌ 无 | ❌ 无（一次审查） | ✅ 子 agent 循环直到批准 | ✅ INCONCLUSIVE retry（1 次） |
-| **Self-review** | ❌ 无 | ❌ 无 | ❌ 无 | ✅ 4 轴内嵌 | ❌（设计阶段暂定） |
-| **接收 review 行为** | ❌ 无 | ❌ 无 | ❌ 无 | ✅ 完整 Skill（213 行） | ✅ 参考设计 |
+| **Self-review** | ❌ 无 | ❌ 无 | ❌ 无 | ✅ 4 轴内嵌 | ✅ 4 轴内嵌（轻量版，不做子 agent） |
+| **接收 review 行为** | ❌ 无 | ❌ 无 | ❌ 无 | ✅ 完整 Skill（213 行） | ✅ 嵌入 SKILL.md |
 | **Skill 可组合** | ✅ `pre-publish-review` 组合 `review-work` | ❌ | ❌ | ❌ | ✅ SKILL.md 封装 |
 
 ### 3.2 关键维度的 trade-off 分析
@@ -350,12 +354,15 @@ omp 的 `/review` 命令实现了目前最 token 智能的并行 reviewer 扩缩
 #### 权重计算公式
 
 ```
-weight = linesAdded + linesRemoved
-fileCount = Math.min(fileCount, weight)   # 文件数不超 weight
+weight = totalAdded + totalRemoved           # 源码变量名 totalAdded/totalRemoved
+# fileCount 上限分 tier 计算，非简单的 Math.min(fileCount, weight)
+# tier 1: Math.ceil(fileCount / 3)
+# tier 2: Math.ceil(fileCount / 2)
+# tier 3: fileCount（无额外约束）
 ```
 
-- **`linesAdded`** + **`linesRemoved`** 之和作为原始 weight
-- **`fileCount`** 经 `Math.min(fileCount, weight)` 约束，避免文件数主导权重
+- **`totalAdded`** + **`totalRemoved`** 之和直接作为 weight（源码中变量名为 `totalAdded`/`totalRemoved`，非 `linesAdded`/`linesRemoved`）
+- **`fileCount`** 的上限分 tier 约束，而非简单的 `Math.min(fileCount, weight)`：低 tier 用 `Math.ceil(fileCount / 3)`，中 tier 用 `Math.ceil(fileCount / 2)`，高 tier 无额外 fileCount 约束
 
 #### 5 级扩缩容 & 硬上限
 
@@ -392,7 +399,7 @@ preview_per_file = max(5, floor(100 / fileCount))
 
 | 优势 | 劣势 |
 |------|------|
-| **Token 智能** — 小变更 1 agent，大变更 16，动态适配 | **fileCount 单文件失灵** — `Math.min(fileCount, weight)` 在单文件超大变更时可能低估 |
+| **Token 智能** — 小变更 1 agent，大变更 16，动态适配 | **fileCount 多 tier 约束** — `Math.ceil(fileCount / 3)` / `Math.ceil(fileCount / 2)` 等 tier 级上限在单文件超大变更时可能低估 |
 | **Locality grouping** — 变更集中的文件自然被更多 reviewer 覆盖 | **无复杂度启发** — 纯按行数，不考虑变更的语义复杂度或跨模块影响范围 |
 | **噪声提前过滤** — 22 条模式在权重前拦截，避免 lock 文件等占用 reviewer | **固定 preview budget** — `max(5, floor(100/fileCount))` 不区分文件的重要性层级 |
 | **skipDiff 快通路** — 超大 diff 不阻塞，reviewer 自行 git diff 兜底 | |
@@ -602,34 +609,34 @@ IDENTIFY → RUN → READ → VERIFY → ONLY THEN claim
 | < 5000 行 | 4-8 | 跨模块变更 |
 | > 5000 行 | 8-16 | 重构/新功能 |
 
-四条件噪声过滤确保 reviewer 只报告真正重要的问题，而非吹毛求疵。
+六条件噪声过滤确保 reviewer 只报告真正重要的问题，而非吹毛求疵。
 
 ---
 
-## 五、ZooKeeper 设计方案：Hawk Code Review Skill
+## 五、ZooKeeper 设计方案：Eagle Code Review Skill
 
 ### 5.1 设计概览
 
-ZooKeeper 的 Hawk Code Review 系统处于**设计阶段**，目标文件结构：
+ZooKeeper 的 Eagle Code Review 系统处于**设计阶段**，目标文件结构：
 
 ```
 core/skills/code-review/
 ├── SKILL.md                   # 编排逻辑，~150 行，中文
 └── references/
-    ├── hawk-code-security.md  # Hawk 1 prompt 模板，~80 行
-    └── hawk-goal-context.md   # Hawk 2 prompt 模板，~80 行
+    ├── eagle-code-security.md  # Eagle 1 prompt 模板，~80 行
+    └── eagle-goal-context.md   # Eagle 2 prompt 模板，~80 行
 ```
 
 Agent 配置（config.toml）：
 
 ```toml
-[agent.hawk]
+[agent.eagle]
 model = "..."
-[agent.hawk.permission]
+[agent.eagle.permission]
 deny = ["write", "edit", "apply_patch"]
 ```
 
-### 5.2 架构：2 并行 Hawk + Skill 封装
+### 5.2 架构：2 并行 Eagle + Skill 封装
 
 ```
 用户调用 "code review" Skill
@@ -642,14 +649,14 @@ deny = ["write", "edit", "apply_patch"]
         │    ├── git log（近期提交历史）
         │    └── PR comments（PR 评论，如可用）
         │
-   Phase 1: 并行启动 2 Hawks（run_in_background=true）
+   Phase 1: 并行启动 2 Eagles（run_in_background=true）
         │
-        ├── Hawk 1: Code & Security（只读）
+        ├── Eagle 1: Code & Security（只读）
         │   ├── 核心问题: "Is the code well-written and secure?"
         │   ├── 评审维度: 10 项
         │   └── 模式: 所有上下文注入 prompt
         │
-        └── Hawk 2: Goal & Context（半自主）
+        └── Eagle 2: Goal & Context（半自主）
             ├── 核心问题: "Did we build the right thing?"
             ├── 可执行: git log, gh pr list（只读命令）
             └── 关注: 目标完整性 + 约束合规 + 过度工程 + 边界情况
@@ -659,16 +666,16 @@ deny = ["write", "edit", "apply_patch"]
    Phase 3: 汇聚报告（ALL PASS = 通过, 任一 FAIL = 失败）
 ```
 
-#### 两个 Hawk 的分工
+#### 两个 Eagle 的分工
 
-| 维度 | Hawk 1: Code & Security | Hawk 2: Goal & Context |
+| 维度 | Eagle 1: Code & Security | Eagle 2: Goal & Context |
 |------|------------------------|------------------------|
 | **核心问题** | 代码写得好吗？安全吗？ | 我们构建了正确的东西吗？错过了上下文吗？ |
 | **自主度** | 只读（所有上下文注入 prompt） | 半自主（可运行 git log, gh pr list） |
 | **评审维度** | 10 项（见下文） | 目标完整性、约束合规、需求差距、过度工程、边界情况 + Git 历史 + PR 评论 + 交叉引用 |
 | **工具** | 无（纯分析） | bash（限于只读命令） |
 
-Hawk 1 的 10 个评审维度：
+Eagle 1 的 10 个评审维度：
 1. Correctness（正确性）
 2. Patterns（代码模式与风格）
 3. Naming（命名规范）
@@ -680,6 +687,18 @@ Hawk 1 的 10 个评审维度：
 9. Security（安全性）
 10. Testing（测试覆盖）
 
+#### 三级严重度与分层过滤
+
+两个 Eagle 报告的每个 issue 按以下三级严重度分级，各级有明确的准入条件：
+
+| 级别 | 条件 | 含义 | 合入要求 |
+|------|------|------|---------|
+| **Must Fix** | 条件 #1+2+3+4 全部满足：Provable impact + Actionable + Unintentional + Introduced in patch | 有可证明影响、可操作、非故意、本次 patch 引入 | 必须修，否则不能合 |
+| **Should Fix** | 条件 #1+2 满足：Provable impact + Actionable | 有可证明影响、可操作（可以是历史技术债、隐式依赖脆弱性等） | 建议合之前修 |
+| **Could Fix** | 仅条件 #1 满足：Provable impact | 有可证明影响（记录在案，修不修随意） | 可选 |
+
+**设计意图：** 三层过滤取代了简单按严重度打标签的做法。最严的 Must Fix 层确保严格 PR reviewer 不放过真正有问题的变更；最宽的 Could Fix 层防止遗漏系统性/历史性问题，同时用"记录在案"替代"必须要修"的压力，保持高信噪比。
+
 ### 5.3 设计决策追踪
 
 | 决策项 | 选择 | 备选 | 理由 | 参考来源 |
@@ -690,12 +709,15 @@ Hawk 1 的 10 个评审维度：
 | INCONCLUSIVE 处理 | 1 次重试，不阻塞 | 无 | 避免幻觉判断，同时不 deadlock | omo |
 | 质疑框架 | ✅ 采用 | ❌ | 减少假阳性批准 | superpowers |
 | 反 Nitpick 校准 | ✅ 采用 | ❌ | 避免 reviewer 吹毛求疵 | superpowers |
-| 3 级严重度 | ✅ 采用 | 无级别 | 区分必须修 vs 建议修 vs 锦上添花 | superpowers |
+| 3 级严重度（Must Fix / Should Fix / Could Fix） | ✅ 采用 | 无级别 | 分层过滤条件 + 明确合入要求，替代简单标签 | superpowers + omp 六条件 |
 | Ready to merge? | ✅ 采用 | ❌ | 明确的最终裁决 | superpowers |
-| 接收 review 行为 | ✅ 参考设计 | ❌ | 确保 review 建议不浪费 | superpowers |
+| 接收 review 行为 | ✅ 嵌入 SKILL.md | ❌ | 确保 review 建议不浪费 | superpowers |
+| 分层过滤（Must Fix / Should Fix / Could Fix） | ✅ 采用 | 无条件分级 | 每级有明确准入条件，防误报 + 不遗漏系统性缺陷 | omp 六条件 |
+| 跨边界 dispatch 点校验 | ✅ 采用 | ❌ | reviewer 必须读取 diff 外的 dispatch 点，确认分支存在 | omp |
+| 六条件噪声过滤 | ✅ 采用 | 无条件 | 6 条条件（含无未声明假设 + 比例严格度），确保高信噪比 | omp |
 | Diff 权重扩缩容 | ❌ 暂缓 | 动态 | 当前阶段 2 个固定 reviewer 够用 | omp |
 | 结构化输出 Schema | ❌ 暂缓 | 固定 schema | 自然语言 + 裁决已够用 | omp |
-| Self-review | ❌ 暂缓 | 内嵌 check | 加在实施 prompt 会膨胀体积 | superpowers |
+| Self-review | ✅ 内嵌轻量版 | 子 agent 版 | 内嵌实现者 prompt，不拆子 agent（superpowers 证据：子 agent 浪费 25× 时间） | superpowers |
 | 验证前置完成 | ❌ 暂缓 | Gate 函数 | 属于通用行为，非专属 review | superpowers |
 
 ### 5.4 SKILL.md 编排流程（设计草案）
@@ -715,11 +737,11 @@ description: "Review your implementation for code quality, security, goal comple
 - 可选：获取最近的 git log 和 PR 评论
 
 ## Phase 1: 并行审查
-- 同时启动 Hawk 1（Code & Security）和 Hawk 2（Goal & Context）
-- 每个 Hawk 在独立 session 中执行
+- 同时启动 Eagle 1（Code & Security）和 Eagle 2（Goal & Context）
+- 每个 Eagle 在独立 session 中执行
 
 ## Phase 2: 结果汇聚
-- 收集各 Hawk 的 PASS / FAIL / INCONCLUSIVE
+- 收集各 Eagle 的 PASS / FAIL / INCONCLUSIVE
 - INCONCLUSIVE 获得一次自动重试
 
 ## Phase 3: 报告生成
@@ -727,13 +749,23 @@ description: "Review your implementation for code quality, security, goal comple
 - 任一 FAIL → ❌ 失败，列出 blocking issues
 - 输出内容：
   - Ready to merge? [Yes | No | With fixes]
-  - 严重度分级（Critical / Important / Minor）
+  - 严重度分级（Must Fix / Should Fix / Could Fix），每级附条件说明
   - 每个 issue 的描述，带文件路径和行号
 
-## 接收 Review
+## Self-review（实施前自查）
+
+内嵌在实现者 prompt 中的轻量检查表（4 轴），发现 issues 先修复再提交 review：
+- Completeness（完整性）
+- Quality（代码质量）
+- Discipline（纪律：禁止用语、验证前置）
+- Testing（测试覆盖）
+
+注意：此 Self-review 不做子 agent 封装——superpowers 的进化证据表明子 agent self-review 浪费 25× 时间且无质量提升。
+
+## 接收 Review（嵌入 SKILL.md 的行为规则）
 
 当被其他 agent 或用户 review 时：
-1. 先理解，不要立即同意
+1. 先理解，不要立即同意（禁止谄媚用语）
 2. 验证每个建议（YAGNI check）
 3. 实施顺序：blocking → 简单 → 复杂
 4. 逐个测试
@@ -743,19 +775,21 @@ description: "Review your implementation for code quality, security, goal comple
 ### 5.5 与其他项目的关系
 
 ```
-ZooKeeper Hawk 的设计继承关系图：
+ZooKeeper Eagle 的设计继承关系图：
 
-omo ───→ 并行子 agent 模式 ──→ ZooKeeper 2 并行 Hawk
+omo ───→ 并行子 agent 模式 ──→ ZooKeeper 2 并行 Eagle
 omo ───→ INCONCLUSIVE 容忍  ──→ ZooKeeper INCONCLUSIVE retry
 omo ───→ Skill 封装驱动     ──→ ZooKeeper SKILL.md 编排
 
-superpowers ─→ 质疑框架     ──→ Hawk prompt 中嵌入
-superpowers ─→ 3 级严重度   ──→ 报告格式标准
-superpowers ─→ 接收 review  ──→ SKILL.md 中的行为规则
-superpowers ─→ Ready to merge? ─→ 最终裁决
+superpowers ─→ 质疑框架         ──→ Eagle prompt 中嵌入
+superpowers ─→ 三级严重度命名   ──→ Must Fix / Should Fix / Could Fix
+superpowers ─→ 接收 review 行为 ──→ SKILL.md 中嵌入行为规则
+superpowers ─→ Ready to merge?  ──→ 最终裁决
+superpowers ─→ Self-review 内嵌 ──→ 4 轴轻量检查表（不做子 agent）
 
-omp ────────→ 权限工具限制   ──→ Hawk tool deny
-omp ────────→ noise filtering ─→ 只报告有明确证据的 issues
+omp ────────→ 权限工具限制         ──→ Eagle tool deny
+omp ────────→ 六条件噪声过滤       ──→ 只报告同时满足 6 条件的 issues
+omp ────────→ 跨边界 dispatch 校验 ──→ 消费侧 dispatch 点必须显式读取
 ```
 
 **刻意不学的模式：**
@@ -766,7 +800,7 @@ omp ────────→ noise filtering ─→ 只报告有明确证据�
 
 ### 5.6 自定义命令 vs Skill 路线选择
 
-在设计 ZooKeeper Hawk Code Review 的触发方式时，曾考虑两种技术路线。
+在设计 ZooKeeper Eagle Code Review 的触发方式时，曾考虑两种技术路线。
 
 #### 方案 A：自定义命令（command.execute.before hook）
 
@@ -785,7 +819,7 @@ omp ────────→ noise filtering ─→ 只报告有明确证据�
         +-- experimental.chat.messages.transform
             +-- 从闭包读取预计算结果
             +-- 注入 diff weight、agent 数量、上下文到消息
-            +-- 触发指定数量 Hawk agent 并行执行
+            +-- 触发指定数量 Eagle agent 并行执行
 ```
 
 优势：
@@ -816,11 +850,11 @@ omp ────────→ noise filtering ─→ 只报告有明确证据�
     └──────────┬───────────────┘
                │
          ZooKeeper 选择 Skill
-         因为对于 2 个固定 Hawk
+         因为对于 2 个固定 Eagle
          LLM 估算已足够精确
 ```
 
-自定义命令的精确预计算优势在 reviewer 数量固定（2 个 Hawk）时意义不大——不需要算法决定 agent 数，只需要按 prompt 线索组织上下文。Skill 方案在实现成本和可维护性上明显更优。
+自定义命令的精确预计算优势在 reviewer 数量固定（2 个 Eagle）时意义不大——不需要算法决定 agent 数，只需要按 prompt 线索组织上下文。Skill 方案在实现成本和可维护性上明显更优。
 
 #### 未来演进
 
@@ -829,7 +863,7 @@ omp ────────→ noise filtering ─→ 只报告有明确证据�
 1. **Phase 2 内先做 prompt 加强**——把更详细的权重计算步骤写进 SKILL.md
 2. **Phase 3 再迁移到自定义命令**——复用 DCP 已验证的 `command.execute.before` + `experimental.chat.messages.transform` 组合模式，将计算逻辑从 LLM 移到 TypeScript 层
 
-**当前判断**：Skill 方案在 2 固定 Hawk 场景下足够，不值得为预计算精度引入额外的 hook 维护成本。
+**当前判断**：Skill 方案在 2 固定 Eagle 场景下足够，不值得为预计算精度引入额外的 hook 维护成本。
 
 ---
 
@@ -837,12 +871,12 @@ omp ────────→ noise filtering ─→ 只报告有明确证据�
 
 ### 6.1 第一阶段：基础 Skill 实现（当前目标）
 
-实现上述 2 Hawk 并行 review Skill。核心产出：
+实现上述 2 Eagle 并行 review Skill。核心产出：
 - `core/skills/code-review/SKILL.md`（编排逻辑）
-- `core/skills/code-review/references/hawk-code-security.md`
-- `core/skills/code-review/references/hawk-goal-context.md`
-- `config.toml` 中添加 `[agent.hawk]` 配置
-- 质疑框架 + 3 级严重度 + Ready to merge?
+- `core/skills/code-review/references/eagle-code-security.md`
+- `core/skills/code-review/references/eagle-goal-context.md`
+- `config.toml` 中添加 `[agent.eagle]` 配置
+- 质疑框架 + 三级严重度（Must Fix / Should Fix / Could Fix）+ 分层过滤条件 + Ready to merge?
 
 ### 6.2 第二阶段：report_finding + submit_verdict 工具（程序化保证）
 
@@ -853,8 +887,9 @@ omp ────────→ noise filtering ─→ 只报告有明确证据�
 **核心设计：**
 
 1. **注册 `report_finding` 工具**（zod schema 校验每条 finding）
-   - 字段：title/body/priority(P0-P3)/confidence(0-1)/file_path/line_start/line_end
-   - 工具内部检查 `context.agent === "hawk"`，其他 agent 调用报权限错误
+   - 字段：title/body/priority(Must Fix/Should Fix/Could Fix)/confidence(0-1)/file_path/line_start/line_end
+   - 字段约束：line_end - line_start ≤ 10，且 line_range 必须与 diff hunk 有重叠——直接从 omp 的硬约束继承
+   - 工具内部检查 `context.agent === "eagle"`，其他 agent 调用报权限错误
    - 闭包累积 findings 到 session-local registry
 
 2. **注册 `submit_verdict` 工具**（强制明确裁决）
@@ -862,55 +897,179 @@ omp ────────→ noise filtering ─→ 只报告有明确证据�
    - 合并 findings + verdict 到完整 review record
 
 3. **`tool.execute.after` hook**（事后校验）
-   - 检测 hawk 是否调用了 submit_verdict
-   - 缺失 verdict 时追加 nudge："Hawk did not call submit_verdict. Ask Hawk to submit a structured verdict."
+   - 检测 eagle 是否调用了 submit_verdict
+   - 缺失 verdict 时追加 nudge："Eagle did not call submit_verdict. Ask Eagle to submit a structured verdict."
    - 完整的情况下注入 review summary 到 task output
 
 4. **permission deny 双保险**
    - build/general agent 都 deny report_finding 和 submit_verdict
-   - 仅 hawk 可以使用
+   - 仅 eagle 可以使用
+
+**关于 omp 的 `intent: "omit"` 模式：** omp 可以对特定 agent 隐藏工具（工具在 LLM 视野中完全消失），OpenCode 不支持此能力。ZooKeeper 的替代方案是 permission deny + hook 校验：工具对所有 agent 可见，但非 eagle 调用时返回权限错误。虽然不如 omit 优雅（LLM 仍可能尝试调用），但功能上是等效的——非授权调用被拒绝。
 
 **保证 vs 不足：**
 - ✅ 每条 finding 格式正确（zod）
+- ✅ line_range 约束防止 Eagle 引用非修改代码
 - ✅ 最终有明确裁决（submit_verdict）
 - ✅ 其他 agent 无法调用（permission + agent 检查）
-- ✅ hawk 完全没用工具时能检测到（hook 校验 registry）
-- ❌ 无法强制 hawk"一定"调用工具（只能靠 prompt 引导，这是 OpenCode 和 omp 都有的固有局限）
+- ✅ eagle 完全没用工具时能检测到（hook 校验 registry）
+- ❌ 无法强制 eagle"一定"调用工具（只能靠 prompt 引导，这是 OpenCode 和 omp 都有的固有局限）
 
-**与原阶段的关系：** 此阶段替代了原 Phase 4（Schema 校验）和原 Phase 2（QA Tester）的部分价值。QA Tester 推到 Phase 3。Self-review 推到 Phase 4。
+**与原阶段的关系：** 此阶段承担了原本 Phase 5（结构化输出）的核心价值——通过工具 schema 保证每条 finding 结构正确，且比 JTD schema 更直接（OpenCode 不支持自定义输出 schema 校验）。此阶段与后续 Phase 4（build agent 自检清单）是独立的加固维度。
 
-### 6.3 第三阶段：可选 QA Tester 扩展
+### 6.3 第2.5阶段：大 diff 策略（上下文预算管理）
 
-从 omo 借鉴 QA Executor 的定位——当用户明确要求时，启动第三个 agent（Hawk 3: QA Tester），可执行命令、运行测试、验证功能行为。
+第一阶段上线后可能立即遇到的实际问题：当一次提交 diff 很大时，2 个 Eagle 的上下文窗口可能被 diff 内容撑爆，导致 review 质量下降。
+
+**来源：** omp 的 preview budget 算法 + `git diff` 自指令模式。
+
+**核心设计：**
+
+1. **预览预算算法（借鉴 omp）：**
+   - 当 diff 超过上下文预算阈值时，不为每个文件提供完整 diff
+   - 改为给每个文件分配预览行数：`max(5, floor(100 / fileCount))` 行
+   - 引导 LLM 从摘要中判断哪些文件需要深入查看
+
+2. **`git diff` 自指令：**
+   - 在 SKILL.md 中增加指令："If you need to see the full diff for a specific file, use `git diff <file>`"
+   - 依赖 read-only permission 允许 git 命令执行
+   - 让 Eagle 按需拉取完整 diff，而非一次性喂入
+
+3. **阈值配置：**
+   - 在 `config.toml` 的 `[zoo.validation]` 中增加 `max_diff_bytes` 或 `max_diff_lines` 参数
+   - 插件在 task prompt 注入时判断 diff 大小，超过阈值时触发"大 diff 模式"指令注入
+
+**实施时机：** 第一阶段上线后，收集实际 diff 大小分布数据后决定。若多数 diff 远小于上下文窗口，此阶段可跳过或大幅简化。
+
+**与 Phase 2 的关系：** 两者独立——Phase 2 解决格式规范问题，第 2.5 阶段解决上下文容量问题。可并行实施。
+
+### 6.4 第三阶段：可选 QA Tester 扩展
+
+从 omo 借鉴 QA Executor 的定位——当用户明确要求时，启动第三个 agent（Eagle 3: QA Tester），可执行命令、运行测试、验证功能行为。
+
+**参考 omo 的 5 步 QA 流程：**
+1. **Brainstorm scenarios** — 列出可能出问题的场景
+2. **Self-review and augment** — 自查后补充遗漏场景
+3. **Create task list** — 转化为可执行的测试任务
+4. **Execute systematically** — 逐个执行测试
+5. **Compile results** — 汇总到 review 报告中
+
+**关于 omp 的 `spawns: explore` 模式：** omp 的 reviewer agent 声明了 `spawns: explore`，可以在发现深层问题时 spawn 子 agent 做深入调查。ZooKeeper 可以考虑在 QA Tester 阶段引入类似模式——当需要跨文件追踪问题时，允许 QA Tester spawn 一个临时的"探索者"子 agent。
 
 **触发条件：** 用户显式要求（"run tests too"），不作为默认流程。
 
-### 6.4 第四阶段：Self-review + 验证 gate
+### 6.5 第四阶段：Build agent 自检清单
 
-从 superpowers 借鉴，在 build agent 的 prompt 中添加轻量 self-review 检查表（4 轴：Completeness / Quality / Discipline / Testing），和验证前置完成 Gate。
+**重要区分：** 此阶段与 Phase 1 中已嵌入的 self-review 不同。Phase 1 的自我审查机制位于 `core/skills/code-review/SKILL.md` 中，是 Eagle review agent 自身的质量和格式自检。Phase 4 是**build agent**（编码者）在自己的 prompt 中注入一份 pre-completion 检查清单，在执行 task() 结尾时自行核对。
 
-**注意：** superpowers 的进化历史表明，self-review 改为子 agent 后回退了（因 25× 时间浪费）。ZooKeeper 应该直接做**内嵌轻量版**，不拆子 agent。
+**核心设计：**
 
-### 6.5 第五阶段：结构化输出 + Schema 校验
+1. **在 build agent 的 prompt 中注入轻量自检清单（4 轴）：**
+   - Completeness：所有计划中的修改都完成了？
+   - Quality：代码风格一致，无明显的坏味道？
+   - Discipline：没有引入不必要的依赖？修改范围符合 task 要求？
+   - Testing：修改后需要测试验证吗？
 
-当 Hawk 数量增多或需要 CI 集成时，从 omp 借鉴结构化输出 Schema，进一步强化 review 报告的可解析性。此阶段与 Phase 2 的 report_finding 工具互补——前者保证工具调用格式正确，后者保证最终报告的 schema 统一。
+2. **验证前置完成 Gate：**
+   - build agent 在返回 task 结果前自行核对清单
+   - 有未完成项时，在 task output 中说明理由（而非阻止返回）
 
-### 6.6 第六阶段：自动触发 + Nudge
+**借鉴来源：** superpowers 的 4 轴 self-review 模式，但取其轻量内核、去掉子 agent 包装。superpowers 的历史教训（self-review 拆子 agent 后 25× 时间浪费）表明，直接内嵌 prompt 指令远比子 agent 模式高效。
+
+**与原阶段的关系：** 此阶段的 prompt 注入与 Phase 1 的 code-review SKILL.md 自检不同——前者是"编码者写完后的自我核对"，后者是"审查者写完 review 后的自我核对"。两者互为补充，形成双层质量门禁。
+
+### 6.6 第五阶段：结构化输出 + CI 集成（降级为可选）
+
+**OpenCode 的硬天花板：** OpenCode 不支持 JTD（JSON Type Definition）输出 schema 校验。这意味着无法像 omp 那样定义一个 `review-output.schema.jtd.json` 并在工具链层面强制执行。Phase 2 已经通过 `report_finding` + `submit_verdict` 工具的 zod schema 实现了等价的结构化保证——只是校验发生在工具调用层而非最终输出层。
+
+**剩余价值：** Phase 5 的真正价值不在于结构校验（已被 Phase 2 覆盖），而在于：
+1. **CI 集成：** review 结果可解析为 JSON，供 CI pipeline 消费（如门禁检查、趋势跟踪）
+2. **机器可读的 review report：** 将 review 结果写入文件，格式统一
+
+**推荐路径：** 此阶段降级为"可选扩展"，不设固定实施时间。当出现实际 CI 集成需求时，直接在 Phase 2 的 `submit_verdict` hook 中加入 JSON 导出功能即可——不需要独立的 Phase 5。
+
+**实施思路（如需）：**
+- 在 `submit_verdict` 的 `tool.execute.after` hook 中，将 findings + verdict 序列化为 JSON
+- 写入 `~/.zookeeper/reviews/{session-id}.json`
+- 可选：通过 `experimental.chat.messages.transform` 在 task output 末尾附加 JSON 摘要
+
+### 6.7 第六阶段：自动触发 + Nudge
 
 当 ZooKeeper 积累足够使用数据后，考虑从 omo 的 Ralph-loop hook 借鉴自动触发机制——在检测到 build agent 完成编码后，自动建议 code review（而非自动执行）。
 
-### 6.7 不建议做的方向
+**Ralph-loop 的实际实现：** omo 的 oracle 检测机制是简单的文本解析（匹配 `Agent: oracle` + promise tag），并非复杂的行为检测。这意味着自动触发不需要复杂的语义理解——pattern 匹配就已足够。
 
-| 方向 | 来源 | 原因 |
-|------|------|------|
-| 动态 diff 权重扩缩容 | omp | 当前阶段 2 个固定 Hawk 已足够覆盖 |
-| 3+ 并行 reviewer | omo | Token 成本线性增长，收益递减 |
-| Council 多模型共识 | slim | Token 成本极高（3× 并发），权重低的应用场景不值得 |
-| Review 循环直到批准 | superpowers | 增加延迟，对自动化场景不友好 |
-| CI 模式 headless review | omp | 超出编排器插件范畴，应由 CI 工具链提供 |
+**利用现有基础设施：** ZooKeeper 已有的 focus-reminder hook（`src/hooks/focus-reminder/`）提供了每 turn 注入委派聚焦提醒的能力。Phase 6 可以在此基础上扩展：
+
+1. **检测触发信号：** 在 `experimental.chat.messages.transform` 中监听 task() 返回的消息
+   - 检测关键词如 "done", "completed", "修复完成", "PR 已创建" 等完成信号
+   - 或检测 build agent 最后一次 tool 调用是 `task.complete` / `task` 返回
+
+2. **注入 nudge：**
+   - 检测到完成信号后，在下一轮系统消息中追加："是否需要 Code Review？输入 /review 启动。"
+   - 不自动执行 review，只做建议——尊重用户自主权
+
+**实施时机：** 至少等到第三阶段稳定运行后，且收集到足够的多 session 交互模式数据后再启动。
+
+### 6.8 第七阶段：Review 结果持久化
+
+让 review 结果可查询、可回溯，利用 ZooKeeper 已有的工具链基础设施。
+
+**核心设计：**
+
+1. **review 记录存储：**
+   - 每个 review session 完成后，将 findings + verdict + metadata 写入 SQLite
+   - 复用 slim's session manager 的会话跟踪模式（session_id、timestamp、agent 角色）
+   - 存储字段：session_id、agent（eagle-security / eagle-goal）、review_timestamp、finding 列表（JSON）、verdict、diff_hash（可选）
+
+2. **查询集成：**
+   - 利用 `zoo-find` 搜索 review 历史（按关键词、agent、时间窗口）
+   - 利用 `zoo-inspect stats` 统计 review 趋势（通过率、平均 finding 数、严重度分布）
+   - 利用 `zoo-log` 回放 review session 的完整交互过程
+
+3. **与 slim 模式的异同：**
+   - slim 的 council-manager 有完善的 session tracking 和 retry 逻辑
+   - ZooKeeper 不需要 retry（review 是一次性的），但可以复用 session tracking 的数据结构
+   - slim 的 parallel/serial 执行模式对 ZooKeeper 的 2 并行 Eagle 场景有参考价值
+
+**实施时机：** 在 Phase 6 之后，或当多个团队开始使用 ZooKeeper review 功能时。早期阶段 review 数据量小，持久化的价值有限。
+
+### 6.9 不建议做的方向（需重新评估）
+
+| 方向 | 来源 | 当前判断 | 备注 |
+|------|------|---------|------|
+| 动态 diff 权重扩缩容 | omp | 暂缓 | 见下方详细分析 |
+| 3+ 并行 reviewer | omo | Token 成本线性增长，收益递减，不建议 | — |
+| Council 多模型共识 | slim | Token 成本极高，不建议作为默认 | 见下方"轻量 2 模型共识"说明 |
+| Review 循环直到批准 | superpowers | 不建议 | 见下方详细分析 |
+| CI 模式 headless review | omp | 暂缓 | 更可行的路径是利用 `command.execute.before` hook 注册 `/review` 作为 slash 命令（类似 DCP 的 `/dcp`），让用户在 CI 上下文中手动触发，而非构建完整的 CI pipeline |
+
+#### 为什么不建议"review 循环直到批准"
+
+1. **实际上没有任何框架做"真正的 review 循环"。** omo 的 `review-work` 是单次审查，唯一的"重试"是 INCONCLUSIVE lane 的降级容错（不是 review 循环）。`work-with-pr` 有循环逻辑，但驱动力是 CI 和外部 bot——PR 工作流层发现失败后重新触发 review-work，而非 review 机制自身循环。omp 单次审查，superpowers 只是 gate（先过 spec 再过 code），都不是循环。四个框架里没有任何一个在 review 机制层实现"review → 修 → 再 review → …"的自动循环。
+
+2. **ZooKeeper 的场景不需要。** superpowers 的 review gate 嵌入的是无人值守的 agent pipeline。ZooKeeper 的 Eagle 是用户手动调用的 Skill——用户看完报告自己决定"修了再跑一遍"，这个循环就是用户的决策，不需要 agent 替你循环。
+
+3. **没有 CI 兜底的循环是假安全。** omp 能做 round-trip（review → 修 → CI 跑测试 → 再 review）是因为 CI 提供了客观的真值信号。ZooKeeper 没有 CI hook，review 循环只能靠 LLM 自我检查自己的修复——superpowers 的 25× 教训本质上就是同类问题：同一个模型反复验证自己，信噪比极低。
+
+4. **Token 成本不划算。** 3 轮 review = 6 次 Eagle 调用。ZooKeeper 的单次小变更场景不值得。如果一个修复值得验证，用户手动再调一次 review 即可——可控、有意识、成本透明。
+
+#### 为什么不建议"动态 diff 权重扩缩容"
+
+1. **omp 的计算不是 LLM 做的。** `getRecommendedAgentCount()` 是 TypeScript 函数，diff 行数是 `parseDiff()` 从 unified diff 精确解析的。ZooKeeper 要用这条路，必须先建设自定义命令基础设施（`command.execute.before` hook）才能拿到精确的 diff 数据——这本身就是 Phase 2.5+ 的工作。而一旦有了精确 diff 预计算，真正的瓶颈已经不是 reviewer 数量，而是单个 reviewer 的上下文容量（Phase 2.5 的 preview budget 策略直接解决这个问题，不需要扩缩容）。
+
+2. **ZooKeeper 只有 2 个 Eagle，不需要"缩"。** omp 的动态范围是 1-16——大变更 16 reviewer，小变更 1 reviewer。ZooKeeper 固定 2 个 Eagle，动态范围 1→2。这个区别不值得引入一套计算逻辑：2 个 Eagle 的 token 成本始终可控，第二视角（正交维度）在任何变更规模下都有独立价值。
+
+3. **大 diff 的真问题不是 reviewer 太少了，是 context 装不下。** 10000 行 diff：omp 的解法是派 8 个 reviewer 每人分一块文件；ZooKeeper 的解法是 Phase 2.5——2 个 Eagle 用 preview budget 按需读取。问题的根因是上下文容量，不是人手。
+
+4. **ZooKeeper 的 reviewer 分工不按文件边界。** omp 可以按文件分配 reviewer（"你负责 a.ts，你负责 b.ts"），前提是文件间变更独立。ZooKeeper 的两个 Eagle 审查正交维度（代码质量 vs 目标完备性），同一个文件两个 Eagle 都要看——按文件拆分没有意义。
 
 ---
 
-> **总结：** ZooKeeper 的 Hawk Code Review 设计是一个**混源设计**，主要从 omo（并行架构 + INCONCLUSIVE 处理 + Skill 封装）和 superpowers（质疑框架 + 3 级严重度 + 接收 review 行为）继承，同时用 omp 的权限级工具限制加固安全。刻意保持 2 agent 轻量（而非 omo 的 5 agent 或 omp 的 1-16 dynamic），目的是在覆盖深度和 token 成本之间取得平衡。
+**关于"轻量 2 模型共识"的说明：** 如果 Phase 6 上线后，有用户反映单个 Eagle 的 FAIL verdict 准确率不够高，可以考虑在 `submit_verdict` hook 中增加一个可选的二次确认步骤——当首个 Eagle 输出 FAIL 时，用第二个模型（如低成本小模型）快速验证。这不是 slim 式的高成本 council，而是"按需二次确认"，成本可控。
+
+---
+
+> **总结：** ZooKeeper 的 Eagle Code Review 设计是一个**混源设计**，主要从 omo（并行架构 + INCONCLUSIVE 处理 + Skill 封装）和 superpowers（质疑框架 + Must Fix / Should Fix / Could Fix 三级严重度 + 接收 review 行为）继承，同时用 omp 的权限级工具限制加固安全。刻意保持 2 agent 轻量（而非 omo 的 5 agent 或 omp 的 1-16 dynamic），目的是在覆盖深度和 token 成本之间取得平衡。
 >
 > 特别值得一提的是 ZooKeeper 的程序化保证策略采用**两阶段渐进**方式：第一阶段纯 prompt 约束，依赖 LLM 格式遵循能力；第二阶段（report_finding + submit_verdict 工具 + hook 校验）提供 zod 级别的程序化保证。这种做法既兼顾了初始实现的轻量性，又为格式不守的 Pro 模型留下了加固路径——在 OpenCode 插件能力天花板下，这是最务实的平衡。

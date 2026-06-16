@@ -132,6 +132,16 @@ read = "deny"
 glob = "deny"
 grep = "deny"
 
+[agent.eagle]
+mode  = "subagent"
+model = "{env:ZOO_MODEL}"
+[agent.eagle.permission]
+write = "deny"
+edit = "deny"
+task = "deny"
+webfetch = "deny"
+websearch = "deny"
+
 # ── Defaults ────────────────────────────────────────────────────────────────
 
 [defaults]
@@ -162,3 +172,4 @@ retention_days = 7
 
 [zoo.skills]
 git-commit = "enable"
+code-review = "enable"

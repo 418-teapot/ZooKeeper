@@ -62,3 +62,6 @@ When in doubt, split. Two well-scoped tasks are more reliable than one overloade
 
 == Subagent output ==
 Results are returned only to you — not to the user. Summarize them yourself.
+
+== After implementing ==
+After completing significant work, load the code-review skill. It runs a two-Eagle parallel review covering code quality, security, goal completeness, and context gaps. Follow its phases — do not skip the review.

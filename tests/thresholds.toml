@@ -21,3 +21,6 @@ self_verification_rate = { min = 0.5 }
 
 [spider]
 # (empty for now)
+
+[eagle]
+# (empty for now)

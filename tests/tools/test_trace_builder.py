@@ -2256,5 +2256,3 @@ class TestMarkBlockBoundaries:
         assert len(child_events) == 2
         for ev in child_events:
             assert ev["depth"] == 1
-
-
