@@ -63,6 +63,7 @@ ZooKeeper 是编排器插件项目，知识范围有限（~5 个 agent，~50 个
 wiki/
 ├── index.md                  # 类别组织的目录，含单行摘要
 ├── log.md                    # 追加式日志，记录 ingest/query/check 事件
+├── overview.md               # 活的综合页面，随 ingest 更新
 ├── SCHEMA.md                 # 定义约定、工作流、页面格式
 │
 ├── sources/                  # 原始源摘要（不可变的参考文档）
@@ -80,19 +81,24 @@ wiki/
 │   ├── task-tool.md          # task() 工具行为说明
 │   └── ...
 │
-└── analysis/                 # 分析页面（推理、对比、经验总结）
-    ├── lint-tradeoffs.md     # 各语言 lint 工具对比结论
+├── analysis/                 # 分析页面（结构化决策/权衡文档）
+│   ├── lint-tradeoffs.md     # 各语言 lint 工具对比结论
+│   └── ...
+│
+└── syntheses/                # 合成页面（归档的 query 答案）
     └── ...
 ```
 
 ### 各目录说明
 
-| 目录 | 内容类型 | 生成者 | 不可变？ |
+| 路径 | 内容类型 | 生成者 | 不可变？ |
 |------|---------|--------|---------|
+| `wiki/overview.md` | 活的综合页面，项目级知识快照 | kiwi（ingest 时重写） | 否 — 每次 ingest 可能重写 |
 | `wiki/sources/` | 对原始参考文档的人类可读摘要 | kiwi（ingest 时创建） | 是 — 追加新版本而非修改旧版本 |
 | `wiki/concepts/` | 抽象知识、机制原理、设计模式 | kiwi（ingest 或分析时创建） | 否 — 随理解加深可更新 |
 | `wiki/entities/` | 具象事物、工具、角色、API | kiwi（ingest 或 query 归档时创建） | 否 — 随行为变更可更新 |
-| `wiki/analysis/` | 分析对比、最佳实践、经验教训 | kiwi（query 归档或 health check 时创建） | 否 — 定期审查更新 |
+| `wiki/analysis/` | 结构化决策/权衡文档（非 query 归档） | kiwi（ingest 或 health check 时创建） | 否 — 定期审查更新 |
+| `wiki/syntheses/` | 归档的 query 答案，问题→答案映射 | kiwi（query 归档时创建） | 否 — 定期审查更新 |
 
 ---
 
@@ -122,14 +128,25 @@ wiki/
 
 ---
 title: <页面标题>
-type: <concept | entity | source | analysis>
+type: <concept | entity | source | analysis | synthesis>
 created: <YYYY-MM-DD>
 updated: <YYYY-MM-DD>
 source: <原始源路径或 URL>（可选）
+sources: [<slug>, ...]（可选 — 本页信息来源的源 slug 列表）
 tags: [<tag1>, <tag2>]
 related: [<相对路径>, ...]（可选）
 status: <draft | review | stable | deprecated>
 ---
+
+### overview.md 规范
+
+`wiki/overview.md` 是一个特殊的**活的综合页面**（type: synthesis）：
+
+- **目的**：提供项目级知识快照，让读者快速了解 wiki 中最重要的知识点
+- **更新方式**：**重写而非追加** — 每次 ingest 时，kiwi 判断是否有实质变化需要更新 overview；如果更新，直接重写整个文件
+- **触发条件**：ingest 完成后，由 kiwi 判断新知识是否足以 warrant 一次 overview 更新（LLM 决定）
+- **内容**：高度凝练的摘要 + 指向详细页面的交叉引用，不包含完整细节
+- **位置**：`wiki/overview.md`，wiki/ 根目录，与 index.md 同级
 
 ### 节结构
 
@@ -153,6 +170,7 @@ status: <draft | review | stable | deprecated>
 - 使用基于项目根目录的路径：`[prompt injection](wiki/concepts/prompt-injection.md)`
 - 在 related frontmatter 字段中列出直接关联页面的项目根目录路径
 - index.md 中的摘要应反映页面间的关联关系
+- overview.md 应引用各目录中最重要的页面，但不替代 index.md 的完整索引
 
 ### 写作风格指南
 
@@ -344,12 +362,21 @@ description: 用于将外部源文档或对话知识 ingest 到项目 wiki 中�
 - 在新页面的 `related` frontmatter 中列出关联页面
 - 在每个关联页面的 `related` frontmatter 中添加新页面的引用
 
+## Phase 5.5 — 决定是否更新 overview.md
+
+判断新 ingest 的知识是否有实质变化需要反映到 `wiki/overview.md`：
+
+- 读取现有 `wiki/overview.md`（如存在）
+- 评估新知识是否 warrant 一次重写（LLM 判断）
+- 如果 warrant：重写 `wiki/overview.md`（直接覆盖，不追加）
+- 如果不 warrant：跳过，保留现有 overview
+
 ## Phase 6 — 记录日志
 
-在 `wiki/log.md` 追加一行：
+在 `wiki/log.md` 追加一条新格式日志：
 
 ```
-| 2026-06-17 | ingest | wiki/concepts/prompt-injection.md | created | 摘要来自 ADR-003 |
+## [2026-06-17] ingest | wiki/concepts/prompt-injection.md | created — 摘要来自 ADR-003
 ```
 
 ## Phase 7 — 报告
@@ -374,11 +401,12 @@ description: 用于将外部源文档或对话知识 ingest 到项目 wiki 中�
 │  1. 加载 wiki-ingest skill                                   │
 │  2. 读取 wiki/SCHEMA.md（通过注入的 schema 知识确认格式）    │
 │  3. 读取 wiki/index.md 检查是否已有重复                     │
-│  4. 构造三段式 prompt：                                      │
+│  4. 可选择运行 health.py 检查当前 wiki 状态                  │
+│  5. 构造三段式 prompt：                                      │
 │     SUMMARY: 将 [源材料] ingest到wiki中                       │
 │     CONTEXT: 源内容 + 已有 wiki 状态                         │
 │     ACCEPTANCE: 创建 [N] 个页面，更新 index.md，追加 log.md  │
-│  5. 调用 task(subagent="kiwi", prompt=...)                 │
+│  6. 调用 task(subagent="kiwi", prompt=...)                 │
 └──────────────────────────────────────────────────────────────┘
     │
     ▼
@@ -389,16 +417,20 @@ description: 用于将外部源文档或对话知识 ingest 到项目 wiki 中�
 │  4. 创建 wiki 页面（按页面模板）                              │
 │  5. 更新 index.md（追加条目到对应类别）                      │
 │  6. 更新关联页面的 related 字段                              │
-│  7. 追加 log.md 条目                                         │
-│  8. 向 build 报告完成情况                                    │
+│  7. 判断是否需要更新 overview.md（LLM 决定是否重写）          │
+│  8. 追加 log.md 条目                                         │
+│  9. 向 build 报告完成情况                                    │
 └──────────────────────────────────────────────────────────────┘
     │
     ▼
 ┌─ build ──────────────────────────────────────────────────────┐
-│  6. 确认 kiwi 完成                                       │
-│  7. 向用户报告做了什么（可选）                              │
+│  7. 确认 kiwi 完成                                             │
+│  8. 可选：运行 health.py --save 生成 post-ingest 健康报告    │
+│  9. 向用户报告做了什么（可选）                                │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+> **overview.md 重写决策**：kiwi 在每次 ingest 后读取现有 overview.md，判断新知识是否有实质变化。如果 warrant，直接重写整个文件（不是追加）。如果只是增量变化，跳过。
 
 ### 6.2 Query 工作流
 
@@ -418,39 +450,152 @@ description: 用于将外部源文档或对话知识 ingest 到项目 wiki 中�
 │  4. 如果探索产生了有价值的答案：                              │
 │     ├─ 构造 SUMMARY: 将 [答案] 归档到 wiki                   │
 │     ├─ 调用 task(subagent="kiwi", prompt=...)              │
-│     └─ kiwi 创建分析页面或更新已有页面                     │
+│     └─ kiwi 创建 synthesis 页面到 wiki/syntheses/ 或         │
+│        更新已有页面（视答案类型决定目录）                    │
 │  5. 向用户合成最终答案                                       │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-**关键在于步骤 4：** 好的 query 答案被归档回 wiki。这是"Knowledge Compiled Once"原则的体现——答案被编译为结构化知识后，下次同类问题不需要重新探索。
+**关键在于步骤 4：** 好的 query 答案被归档回 wiki。答案如果是一次性问答（问题→答案），存入 `wiki/syntheses/`；如果是结构化决策/权衡，存入 `wiki/analysis/`。这是"Knowledge Compiled Once"原则的体现。
 
-### 6.3 Health Check 工作流
+### 6.3 Health Check 工作流（两层级）
+
+Wiki 维护分为两个层级：**health**（零 LLM，每次会话运行）和 **lint**（基于 LLM，每 10-15 次 ingest 运行）。
+
+#### 6.3.1 Health 工作流（Phase 0 — 零 LLM）
 
 ```
-触发方式：手动或定时（git hook / CI）
+触发方式：每次会话开始、每次 ingest 完成后自动触发
     │
     ▼
 ┌─ build ──────────────────────────────────────────────────────┐
-│  1. 读取 wiki/index.md 获取全量页面列表                      │
-│  2. 构造 prompt 给 kiwi：                                  │
-│     SUMMARY: 对 wiki 执行健康检查                            │
-│     CONTEXT: 全部页面列表                                    │
-│     ACCEPTANCE: 发现 contradictions/orphans/stale/missing    │
-│  3. 调用 task(subagent="kiwi", prompt=...)                 │
+│  运行: python core/skills/wiki-maintain/tools/health.py      │
+│                                                              │
+│  工具脚本 health.py（零 LLM 调用）:                          │
+│                                                              │
+│  检查项:                                                     │
+│  1. Empty/stub files — 文件存在但内容为空或仅骨架            │
+│  2. index.md sync — 对比 wiki/ 目录下的文件和 index.md       │
+│     中的条目，发现缺少或多余的条目                          │
+│  3. Log coverage — 检查 index.md 中所有页面是否都有          │
+│     对应的 log.md 条目                                      │
+│  4. Frontmatter completeness — 检查所有页面是否都有          │
+│     必需的 frontmatter 字段                                 │
+│                                                              │
+│  输出:                                                      │
+│  - stdout: 每个检查项通过/失败，失败项附详情                 │
+│  - --save: 写入 wiki/health-report.md                        │
+│  - --json: JSON 格式输出供 agent 程序化消费                  │
+│                                                              │
+│  CLI 用法:                                                   │
+│  python core/skills/wiki-maintain/tools/health.py [--save]   │
+│      [--json]                                                │
+│                                                              │
+│  根据 --json 结果决定是否继续 ingest 或提示用户修复          │
+└──────────────────────────────────────────────────────────────┘
+```
+
+#### 6.3.2 Lint 工作流（Phase 0.5 — 基于 LLM）
+
+```
+触发方式：每 10-15 次 ingest 后，或 health 检查发现问题时
+    │
+    ▼
+┌─ build ──────────────────────────────────────────────────────┐
+│  运行: python core/skills/wiki-maintain/tools/lint.py       │
+│                                                              │
+│  工具脚本 lint.py（使用 LLM 进行语义检查）:                 │
+│                                                              │
+│  检查项:                                                    │
+│  1. Orphan pages — newly created pages not yet referenced    │
+│      by any existing page                                    │
+│  2. Broken links — related frontmatter 或正文中的链接       │
+│     指向不存在或已被移动的页面                              │
+│  3. Contradictions — 两个页面对同一事实的声明矛盾           │
+│  4. Sparse pages — 内容过少的页面（< 50 字正文）            │
+│  5. Missing cross-refs — 语义相关的页面未互相引用           │
+│                                                              │
+│  可选增强（--graph）:                                       │
+│  - Graph-aware orphan detection (pages not reachable        │
+│     from index.md in 3 hops)                                │
+│                                                              │
+│  输出:                                                     │
+│  - stdout: 每个检查项的详细信息                             │
+│  - --save: 写入 wiki/lint-report.md                         │
+│                                                              │
+│  CLI 用法:                                                  │
+│  python core/skills/wiki-maintain/tools/lint.py [--save]    │
+│      [--graph]                                              │
+│                                                              │
+│  lint 发现问题后，build 决定是否调用 heal 工作流           │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**两层级配合方式：**
+1. 每次会话开始：`health.py` 运行（零成本，~毫秒级）
+2. 如果 health 发现问题：阻止 ingest，提示用户先修复
+3. 每 10-15 次 ingest：`lint.py` 运行（调用 LLM，成本较高）
+4. lint 发现的 orphan/missing 问题 -> 触发 heal 工作流
+
+### 6.4 Heal 工作流
+
+自动修复 lint 发现的结构性问题。
+
+```
+触发方式：lint 发现 orphan 或 missing 页面后，由 build 触发
+    │
+    ▼
+┌─ build ──────────────────────────────────────────────────────┐
+│  运行: python core/skills/wiki-maintain/tools/heal.py       │
+│                                                              │
+│  工具脚本 heal.py:                                          │
+│  - 读取 lint-report.md 或接受 stdin JSON                    │
+│  - 对每种问题类型：                                         │
+│    ├─ Orphan page → 自动寻找相关页面并补充 cross-ref         │
+│    ├─ Missing entity page → 根据引用上下文创建            │
+│    │  骨架页面（frontmatter + stub content）                │
+│    └─ Broken link → 如果目标页面确定已删除，移除引用        │
+│  - 不处理的：contradictions（需人工介入或 kiwi 审查）        │
+│                                                              │
+│  输出: 修复摘要，记录到 log.md                              │
+│                                                              │
+│  CLI 用法:                                                  │
+│  python core/skills/wiki-maintain/tools/heal.py [--report    │
+│      <path>]                                                 │
 └──────────────────────────────────────────────────────────────┘
     │
     ▼
-┌─ kiwi ─────────────────────────────────────────────────────┐
-│  检查项：                                                    │
-│  1. Contradictions — 两个页面声称同一事实但结论矛盾           │
-│  2. Orphan pages — 页面的 related 指向不存在或已被删除页面    │
-│  3. Stale claims — 标注了 "待确认" 但来源已不可用           │
-│  4. Missing cross-refs — 两个相关页面未互相引用              │
-│  5. Dead source links — source 字段中的文件路径或 URL 不可用  │
+┌─ build ──────────────────────────────────────────────────────┐
+│  审查 heal 的修复结果                                       │
+│  可选：运行 health.py --json 验证修复后状态                 │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### 6.5 Refresh 工作流
+
+检测原始源文档的变更并重新 ingest。
+
+```
+触发方式：手动触发或检测到原始源文件变更
+    │
+    ▼
+┌─ build ──────────────────────────────────────────────────────┐
+│  运行: python core/skills/wiki-maintain/tools/refresh.py    │
 │                                                              │
-│  输出：健康检查报告，列出每个问题及其严重程度                 │
-│  可选：自动修复简单问题（补充缺失的 cross-ref，删除 orphan） │
+│  工具脚本 refresh.py:                                       │
+│  - 扫描 wiki/sources/ 中所有页面的 frontmatter `source`    │
+│    字段，对比文件修改时间                                   │
+│  - 对每个已变更的源：                                      │
+│    ├─ 备份旧页面（可选 --backup）                          │
+│    ├─ 调用 kiwi 重新 ingest                                 │
+│    └─ 更新页面版本号 / updated 日期                        │
+│  - 报告：哪些源已变更、哪些已重新 ingest                    │
+│                                                              │
+│  CLI 用法:                                                  │
+│  python core/skills/wiki-maintain/tools/refresh.py          │
+│      [--backup] [--dry-run]                                 │
+│                                                              │
+│  --dry-run: 只检测变更，不实际 ingest                       │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -531,6 +676,18 @@ build: 合成回答或委派 explore 进一步探索代码
 - **按需读取更高效：** LLM 自己决定读什么，基于 index.md 导航
 - **SCHEMA 缩略版足够小：** 目录结构 + 使用方式通常 < 1K tokens，注入成本可忽略
 
+### 7.4 工具脚本的 programmatic 访问
+
+所有 `core/skills/wiki-maintain/tools/` 下的 Python 工具脚本（health.py、lint.py 等）支持 `--json` 标志，输出结构化 JSON 到 stdout。这使得 build agent 或其他 agent 可以通过 `bash` 工具调用脚本并解析结果，而无需解析人类可读文本。例如：
+
+```
+python core/skills/wiki-maintain/tools/health.py --json
+```
+
+返回 JSON 包含 `{ "passed": bool, "checks": [{ "name": str, "status": "pass"|"fail", "details": str }] }`。
+
+build agent 可在 Phase 0 或 Phase 0.5 中直接调用这些脚本，根据 JSON 结果决定是否继续 ingest 或需要先修复。
+
 ---
 
 ## 8. index.md 与 log.md 格式
@@ -586,34 +743,37 @@ build: 合成回答或委派 explore 进一步探索代码
 ```
 # Wiki Change Log
 
-> 追加式日志，记录所有 wiki 页面变更。
+> Heading-line 格式日志，每条记录是一个 Markdown 二级标题。
+> Grep-parseable: grep "^## \[" wiki/log.md | tail -5
 > 按时间倒序排列（最新在最上）。
 
-| 日期 | 操作 | 页面 | 类型 | 备注 |
-|------|------|------|------|------|
-| 2026-06-17 | update | wiki/concepts/prompt-injection.md | edit | 补充 Phase 2 实施方案 |
-| 2026-06-17 | ingest | wiki/sources/adr/adr-003-prompt-validation.md | create | 来自 ADR-003 文档 |
-| 2026-06-17 | ingest | wiki/concepts/validation-thresholds.md | create | 基于 ADR-003 和设计讨论 |
-| 2026-06-17 | query-archive | wiki/analysis/lint-tradeoffs.md | create | 来自 "which linter" 问答 |
-| 2026-06-16 | check | — | health | 发现 1 个 orphan, 2 个 missing refs, 已修复 |
-| 2026-06-15 | ingest | wiki/entities/build-agent.md | create | 来自 build.md prompt 文档 |
+---
+
+## [2026-06-17] update | wiki/concepts/prompt-injection.md | edit — 补充 Phase 2 实施方案
+## [2026-06-17] ingest | wiki/sources/adr/adr-003-prompt-validation.md | create — 来自 ADR-003 文档
+## [2026-06-17] ingest | wiki/concepts/validation-thresholds.md | create — 基于 ADR-003 和设计讨论
+## [2026-06-17] query | wiki/syntheses/linter-comparison.md | create — 来自 "which linter" 问答
+## [2026-06-16] health | — | pass — 所有检查通过，无 orphan/missing
+## [2026-06-15] ingest | wiki/entities/build-agent.md | create — 来自 build.md prompt 文档
 ```
 
 **格式规则：**
 
-| 列 | 值 |
+| 部分 | 规则 |
 |------|------|
-| 日期 | `YYYY-MM-DD` |
-| 操作 | `ingest` / `update` / `delete` / `check` / `query-archive` |
-| 页面 | 基于项目根目录的路径（`wiki/<dir>/file.md`），health check 写 `—` |
-| 类型 | `create` / `edit` / `delete` / `health` |
-| 备注 | 自由文本，说明触发原因或变更摘要 |
+| 前缀 | `## [` + `YYYY-MM-DD` + `]` 空格 |
+| 操作 | `ingest` / `update` / `delete` / `query` / `health` / `lint` / `heal` / `refresh` / `check` |
+| 分隔符 | `\|` 空格包围 |
+| 页面 | 基于项目根目录的路径（`wiki/<dir>/file.md`），非页面事件写 `—` |
+| 类型 | `create` / `edit` / `delete` / `pass` / `fail` |
+| 备注 | `—` 后自由文本，说明触发原因或变更摘要 |
 
 **行为规则：**
-- 永远追加（append），不修改已有行
-- 最新条目在最上方（新行插在表头之后第一行）
+- 新条目**插入在最顶部**（紧接 `---` 分隔符之后第一行）
+- 永远不修改已有行（追加式日志）
 - 每次 mutate 操作（create/edit/delete）都必须记录
-- health check 无论是否发现问题都记录一行
+- health / lint 无论是否发现问题都记录一行
+- Grep 友好：`grep "^## \[" wiki/log.md | head -5` 获取最近 5 条
 
 ---
 
@@ -628,6 +788,7 @@ type: concept
 created: <YYYY-MM-DD>
 updated: <YYYY-MM-DD>
 tags: [<tag1>, <tag2>]
+sources: [<source-slug-1>, <source-slug-2>]（可选）
 related: [<wiki/entities/related-entity.md>, ...]
 status: <draft | review | stable | deprecated>
 ---
@@ -674,6 +835,7 @@ type: entity
 created: <YYYY-MM-DD>
 updated: <YYYY-MM-DD>
 tags: [agent, tool]
+sources: [<source-slug-1>, <source-slug-2>]（可选）
 related: [<wiki/concepts/related-concept.md>, ...]
 status: <draft | review | stable | deprecated>
 ---
@@ -713,6 +875,7 @@ type: source
 created: <YYYY-MM-DD>
 updated: <YYYY-MM-DD>
 source: <原始文件路径或 URL>
+sources: [<source-slug>]（可选 — 衍生此页的源 slug）
 tags: [adr, decision]
 related: [<wiki/concepts/derived-concept.md>, ...]
 status: <draft | review | stable | deprecated>
@@ -746,6 +909,8 @@ status: <draft | review | stable | deprecated>
 
 ### 9.4 分析页面（Analysis）
 
+用于结构化决策/权衡文档，如工具对比、方案选型。**非 query 归档**（query 归档请用 synthesis 模板）。
+
 ```markdown
 ---
 title: <分析主题>
@@ -753,6 +918,7 @@ type: analysis
 created: <YYYY-MM-DD>
 updated: <YYYY-MM-DD>
 tags: [tradeoff, comparison]
+sources: [<source-slug-1>, <source-slug-2>]（可选）
 related: [<wiki/entities/page1.md>, <wiki/concepts/page2.md>]
 status: <draft | review | stable | deprecated>
 ---
@@ -782,6 +948,41 @@ status: <draft | review | stable | deprecated>
 ## References
 
 - <来源 1>
+```
+
+### 9.5 合成页面（Synthesis）
+
+用于归档 query 答案（一次性问答），位于 `wiki/syntheses/<slug>.md`。
+
+```markdown
+---
+title: <合成主题>
+type: synthesis
+created: <YYYY-MM-DD>
+updated: <YYYY-MM-DD>
+tags: [query, qa]
+sources: [<source-slug-1>, <source-slug-2>]（可选）
+related: [<wiki/entities/page1.md>, <wiki/concepts/page2.md>]
+status: <draft | review | stable | deprecated>
+---
+
+# <合成主题>
+
+## Question
+
+<原始用户问题>
+
+## Answer
+
+<完整答案>
+
+## Sources Consulted
+
+<在回答此问题时参考了哪些 wiki 页面或外部源>
+
+## Related
+
+<相关的其他 wiki 页面链接>
 ```
 
 ---
@@ -885,6 +1086,24 @@ wiki-ingest = "enable"
 
 并在 `src/index.ts` 的 skill 注册循环中自动发现（现有逻辑已支持从 `core/skills/` 目录自动注册所有 enabled skill）。
 
+### 10.8 工具脚本集成
+
+build agent 可通过 `bash` 工具直接调用 `core/skills/wiki-maintain/tools/` 下的 Python 脚本，在委派 kiwi 之前获取结构化结果：
+
+```python
+# build 在 Phase 0 中
+python core/skills/wiki-maintain/tools/health.py --json
+# → 返回 {"passed": true, "checks": [...]}
+# → 如果 passed=false，先修复再继续 ingest
+
+# build 在 Phase 0.5 中
+python core/skills/wiki-maintain/tools/lint.py --json
+# → 返回 {"issues": [...], "summary": {...}}
+# → 根据 issues 决定是否触发 heal 工作流
+```
+
+这种模式允许 build agent **不依赖 kiwi** 即可完成结构检查（health），仅在需要 LLM 语义分析（lint）或页面创建（ingest/heal）时委派给 kiwi。
+
 ---
 
 ## 11. 迁移路径
@@ -898,8 +1117,12 @@ wiki-ingest = "enable"
 | 创建 `wiki/` 目录和 `wiki/index.md`（仅骨架） | `wiki/index.md` | 小 |
 | 创建 `wiki/SCHEMA.md`（完整规范） | `wiki/SCHEMA.md` | 中 |
 | 创建 `wiki/log.md`（空日志） | `wiki/log.md` | 小 |
+| 创建 `wiki/overview.md`（骨架） | `wiki/overview.md` | 小 |
 | 编写 `core/prompts/kiwi.md` | `core/prompts/kiwi.md` | 中 |
 | 编写 `core/skills/wiki-ingest/SKILL.md` | `core/skills/wiki-ingest/SKILL.md` | 中 |
+| 编写 `core/skills/wiki-maintain/tools/health.py` | 结构检查脚本，零 LLM | 中 |
+| 编写 `core/skills/wiki-maintain/tools/lint.py` | 语义检查脚本，使用 LLM | 中 |
+| 编写 `core/skills/wiki-maintain/tools/heal.py` | 自动创建缺失页面 | 中 |
 | 在 `config.toml` 中添加 `[agent.kiwi]` | `config.toml` | 小 |
 | 在 `config.toml` 中添加 `wiki-ingest` skill 启用 | `config.toml` | 小 |
 | 在 `src/index.ts` 的 `config` hook 中添加 SCHEMA 注入 | `src/index.ts` | 中 |
@@ -910,17 +1133,21 @@ wiki-ingest = "enable"
 - `python3 install.py` 运行成功，`opencode.json` 中包含 kiwi agent 配置
 - `src/index.ts` 的 `config` hook 正确注入 SCHEMA 缩略版到 build/explore/general/eagle
 - `src/index.ts` 的 `config` hook 正确注入完整 SCHEMA.md 到 kiwi
+- `python core/skills/wiki-maintain/tools/health.py --json` 返回有效 JSON 且无报错
+- `python core/skills/wiki-maintain/tools/lint.py --save` 可运行（即使未发现问题）
 - 通过学习 wiki-ingest skill 并恰当填写 prompt，可手动验证 build → task(kiwi) 的 ingest 流程
 
-### Phase 2: Query 归档 + 健康检查
+### Phase 2: Query 归档 + 健康检查 + 工具链
 
 **目标：** 完整的读写循环 + 维护能力
 
 | 工作项 | 说明 |
 |--------|------|
 | 在 build.md 中添加 Phase 0.5 Wiki Check 阶段 | 使 build 在规划前自动检查 wiki |
-| 实现 query-archive 流程 | build 在回答用户后判断是否需要归档到 wiki |
-| 编写 health-check 工作流（手动触发） | 通过 build 委派 kiwi 执行健康检查 |
+| 实现 query-archive 流程 | build 在回答用户后判断是否需要归档到 wiki，答案存入 syntheses/ |
+| 编写 `core/skills/wiki-maintain/tools/build_graph.py` | 知识图谱构建（可选，用于 lint --graph 模式） |
+| 编写 `core/skills/wiki-maintain/tools/refresh.py` | 检测原始源变更并重新 ingest |
+| 编写 `core/skills/wiki-maintain/tools/query.py` | 带图谱展开的 query 查询 |
 | 补齐更多 wiki 页面模板 | 基于 MVP 使用经验完善 frontmatter 和节结构 |
 | 添加 `wiki-ingest` 技能对 hashnode 的支持 | 对于已有的 wiki-ingest prompt 场景，增加在 python 工具中的自动校验 |
 
@@ -943,20 +1170,19 @@ wiki-ingest = "enable"
 ┌─────────────────────────────────────────────────────────────────────┐
 │                          LLM Wiki 架构                               │
 │                                                                     │
-│  ┌────────────┐    ┌──────────────┐    ┌────────────────────┐      │
-│  │  Raw Sources│───▶│  Wiki Pages  │◀───│   SCHEMA.md        │      │
-│  │ (immutable) │    │ (structured) │    │   (conventions)    │      │
-│  │  files/URLs │    │  concepts/   │    └────────┬───────────┘      │
-│  │  ADR/notes  │    │  entities/   │             │                   │
-│  └────────────┘    │  sources/    │             │ auto-inject       │
-│                    │  analysis/   │             ▼                   │
-│                    └──────┬───────┘    ┌────────────────────┐      │
-│                           │            │  Plugin Config Hook │      │
-│                           │ on-demand  │  (src/index.ts)    │      │
-│                           ▼            │  → build/explore/  │      │
-│                    ┌──────────────┐    │    general/eagle   │      │
-│                    │  index.md    │    └────────────────────┘      │
-│                    │  (TOC + nav) │                                 │
+│  ┌────────────┐    ┌──────────────────────┐    ┌────────────────────┐      │
+│  │  Raw Sources│───▶│  Wiki Pages          │◀───│   SCHEMA.md        │      │
+│  │ (immutable) │    │ (structured)         │    │   (conventions)    │      │
+│  │  files/URLs │    │  concepts/           │    └────────┬───────────┘      │
+│  │  ADR/notes  │    │  entities/           │             │                   │
+│  └────────────┘    │  sources/             │             │ auto-inject       │
+│                    │  analysis/            │             ▼                   │
+│                    │  syntheses/           │    ┌────────────────────┐      │
+│                    │  overview.md          │    │  Plugin Config Hook │      │
+│                    └──────────┬────────────┘    │  (src/index.ts)    │      │
+│                               │                 │  → build/explore/  │      │
+│                               │ on-demand       │    general/eagle   │      │
+│                               ▼                 └────────────────────┘      │
 │                    └──────────────┘                                 │
 │                                                                     │
 │  ┌──────────┐     ┌──────────────┐    ┌────────────────────┐      │
@@ -990,6 +1216,9 @@ wiki-ingest = "enable"
 | `core/prompts/eagle.md` | prompt 尾部注入 SCHEMA 缩略版 |
 | `core/prompts/kiwi.md` | 新建 — kiwi agent 的 prompt |
 | `core/skills/wiki-ingest/SKILL.md` | 新建 — ingest 工作流定义 |
+| `core/skills/wiki-maintain/tools/health.py` | 新建 — 零 LLM 结构检查工具 |
+| `core/skills/wiki-maintain/tools/lint.py` | 新建 — LLM 语义检查工具 |
+| `core/skills/wiki-maintain/tools/heal.py` | 新建 — 自动创建缺失页面工具 |
 | `docs/` 文档 | wiki 存放可操作的知识，docs/ 存放静态设计文档 |
 | `.env` | 无直接影响（kiwi 复用 `ZOO_MODEL` 配置） |
 
