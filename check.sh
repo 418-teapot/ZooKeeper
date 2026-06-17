@@ -9,7 +9,7 @@ set -euo pipefail
 
 MODE="${1:-check}"
 
-PY_FILES="install.py tests/ tools/ tools/zoo-log tools/zoo-trace tools/zoo-inspect"
+PY_FILES="install.py tests/ tools/ tools/zoo-log tools/zoo-trace tools/zoo-inspect core/skills/"
 TS_DIR="src/"
 
 RED='\033[0;31m'

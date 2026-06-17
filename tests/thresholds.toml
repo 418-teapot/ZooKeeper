@@ -24,3 +24,6 @@ self_verification_rate = { min = 0.5 }
 
 [eagle]
 # (empty for now)
+
+[kiwi]
+# (empty for now)
