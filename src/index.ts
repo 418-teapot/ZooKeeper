@@ -21,7 +21,6 @@ import { fileURLToPath } from "node:url";
 import config from "../config.toml" with { type: "toml" };
 import { measureContext } from "./hooks/context-metrics";
 import { nudgeDirectWork } from "./hooks/direct-work-nudge";
-import { injectFocusReminder } from "./hooks/focus-reminder";
 import { recoverJsonError } from "./hooks/json-error-nudge";
 import { nudgePostTask } from "./hooks/post-task-nudge";
 import {
@@ -158,7 +157,6 @@ export async function zookeeper(input: any) {
       },
     ) {
       try {
-        await injectFocusReminder(client, output);
         measureContext(output);
       } catch (err) {
         log(
@@ -168,7 +166,7 @@ export async function zookeeper(input: any) {
           undefined,
           "error",
           {
-            handler: "injectFocusReminder / measureContext",
+            handler: "measureContext",
             error: String(err),
           },
         );

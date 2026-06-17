@@ -427,7 +427,7 @@ ZooKeeper 目前是一个 OpenCode orchestrator 插件，在 `src/index.ts` 中�
 | Hook | 功能 | 实现位置 |
 |------|------|---------|
 | `config` | 注入 prompt 文件、注册 skills | inline |
-| `experimental.chat.messages.transform` | per-turn focus reminder | `src/hooks/focus-reminder/` |
+| `experimental.chat.messages.transform` | 上下文度量 | `src/hooks/context-metrics` |
 | `tool.definition` | 增强 task() prompt 参数描述 | `src/hooks/task-prompt/` |
 | `tool.execute.before` | 阻断式校验 task() prompt 结构 | `src/hooks/task-prompt/` |
 | `tool.execute.after` | 4 个 advisory handler 链式执行 | 多 handler 串联 |
@@ -1852,9 +1852,7 @@ export async function zookeeper(input: any) {
       output: { messages?: any[] },
     ) {
       try {
-        await injectFocusReminder(client, output);
-
-        // Context pruning pipeline (runs after focus reminder)
+        // Context pruning pipeline
         if (contextConfig.enabled && output.messages?.length) {
           const sessionId = output.messages[0]?.info?.sessionID || "";
           if (sessionId) {
@@ -1927,7 +1925,7 @@ export async function zookeeper(input: any) {
 | **Range 模式压缩** | ✅ Phase 3 | 核心功能，提供启发式摘要 |
 | **去重** | ✅ Phase 2 | 低成本高收益，默认启用 |
 | **错误清除** | ✅ Phase 2 | 清理失败调用，减少噪声 |
-| **Nudge 系统** | ✅ Phase 1 | 轻量，与现有 focus reminder 互补 |
+| **Nudge 系统** | ✅ Phase 1 | 轻量，行为提醒 |
 | **状态管理** | ✅ Phase 1 | 基础设施，被所有策略依赖 |
 | **消息变换管道** | ✅ Phase 1 | 编排器，串联所有策略 |
 | **OpenCode 适配器** | ✅ Phase 4 | 框架绑定，最后实现 |
@@ -2526,7 +2524,7 @@ async "command.execute.before"(
 
 // experimental.chat.messages.transform（追加）
 async "experimental.chat.messages.transform"(_input, output) {
-    try { await injectFocusReminder(client, output); measureContext(output); }
+    try { measureContext(output); }
     catch (err) { log(...); }
     try { await contextPruningHandler(cpState, output.messages); }
     catch (err) { log(...); }

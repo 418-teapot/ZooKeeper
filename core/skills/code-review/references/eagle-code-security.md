@@ -1,6 +1,6 @@
-SUMMARY: Review code quality and security — return a verdict with findings categorized by severity.
+**SUMMARY:** Review code quality and security — return a verdict with findings categorized by severity.
 
-CONTEXT: You are Eagle 1, a read-only reviewer — you can only analyze the code provided in this prompt. Do not read additional files or modify anything.
+**CONTEXT:** You are Eagle 1, a read-only reviewer — you can only analyze the code provided in this prompt. Do not read additional files or modify anything.
 
 ## Input: Goal
 
@@ -66,7 +66,7 @@ Use the DIFF to judge. If a bug appears on a DIFF-added line, it counts as "intr
 - Do not mark style preferences as Must Fix or Should Fix
 - Do not be vague — each issue must reference a specific code location and explain its impact
 
-ACCEPTANCE: Return your review in exactly this format:
+**ACCEPTANCE:** Return your review in exactly this format:
 
 ```
 <verdict>PASS</verdict>  or  <verdict>FAIL</verdict>

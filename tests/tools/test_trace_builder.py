@@ -1755,15 +1755,7 @@ class TestBuildTimeline:
             '{"timestamp":"2024-01-01T00:00:00Z","level":"info",'
             '"hook":"task-prompt-validate","sessionId":"main-session",'
             '"event":"trigger","agent":"build"}\n'
-            # 2. Empty sessionId + subagent agent → skip (wrong agent)
-            '{"timestamp":"2024-01-01T00:01:00Z","level":"info",'
-            '"hook":"focus-reminder","sessionId":"","event":"trigger",'
-            '"agent":"explore"}\n'
-            # 3. Explicit subagent sessionId → skip
-            '{"timestamp":"2024-01-01T00:02:00Z","level":"info",'
-            '"hook":"focus-reminder","sessionId":"sub-session",'
-            '"event":"trigger","agent":"explore"}\n'
-            # 4. Another main-session entry → include
+            # 2. Another main-session entry → include
             '{"timestamp":"2024-01-01T00:03:00Z","level":"info",'
             '"hook":"context-metrics","sessionId":"main-session",'
             '"event":"context_measured","agent":"build"}\n'

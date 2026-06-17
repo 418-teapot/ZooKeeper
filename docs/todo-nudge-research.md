@@ -910,7 +910,6 @@ P0 (本次实现):
   ┌─────────────────────────────────────────┐
   │ 1. Post-task Nudge    ✅ 已实现          │  解决 A (子 Agent 完成后)
   │ 2. Direct Work Reminder ✅ 已实现        │  解决 B (违规编辑)
-  │ 3. Focus Reminder     ✅ 已实现          │  解决每 turn 委派提示
   └─────────────────────────────────────────┘
 
 P1 (后续):
@@ -1082,67 +1081,6 @@ export function remindDirectWork(
 
 ---
 
-### 8.4 机制 3: Focus Reminder ✅ 已实现（原名 Phase Reminder）
-
-**位置**: `src/hooks/focus-reminder/`
-**触发条件**: 每 LLM turn（`experimental.chat.messages.transform` hook）
-**作用**: 在最后一条 user message 注入委派流程提示
-**Hook 点**: `experimental.chat.messages.transform`
-
-> **实现说明**: 实现时更名为 **Focus Reminder**（语义更准确：提醒保持聚焦，避免与"phase"概念混淆）。Agent 名称通过 `lastUserMsg.info.agent` 读取，不存在时 fallback 到 `client.getSession(sessionId)`。实现为无状态，每 turn 重新注入自然去重。
-
-#### 设计决策
-
-1. **仅 build agent**：其他 agent（explore/general/spider）不需要委派提示
-2. **每 turn 注入一次**：不是每次工具调用后都注入
-3. **天然去重**：重写而非追加，防止多次注入累积
-4. **温和但明确**：3 行简洁的委派流程提示
-
-#### 代码设计
-
-```typescript
-// src/hooks/phase-reminder/hook.ts
-
-const PHASE_REMINDER = `
-!IMPORTANT! Remember your role: orchestrate, don't implement.
-Understand the request → choose the right agent → delegate via task()
-→ verify the result.
-If delegating, launch the specialist in this turn !END!
-`;
-
-export function injectPhaseReminder(
-  _ctx: any,
-  input: { event: Message },
-): void {
-  if (!input.event.messages?.length) return;
-
-  // 找到最后一条 user message
-  const lastUserMessage = input.event.messages.findLast(
-    (m) => m.role === "user"
-  );
-
-  if (!lastUserMessage) return;
-
-  // 检查 agent 是否是 build（编排器）
-  const agentName = lastUserMessage.agent;
-  if (agentName !== "build") return;
-
-  // 注入 reminder（重写最后一条 user message 的 content）
-  lastUserMessage.content = `!INTERNAL_REMINDER!\n${PHASE_REMINDER}\n\n${lastUserMessage.content}`;
-}
-```
-
-#### 测试矩阵
-
-| 场景 | 期望行为 |
-|------|---------|
-| 每 LLM turn + agent=build | 注入 reminder |
-| agent=general/explore/spider | 不注入 |
-| 无 user message | 不注入 |
-| 连续 10 次 LLM turn | 每次注入一次，但每次都重写（天然去重） |
-
----
-
 ### 8.5 机制 4: Idle Continuation (P1) ❌ 未实现
 
 **触发条件**: `session.idle`（编排器空闲）
@@ -1233,7 +1171,7 @@ const handlers = [
 ];
 
 // experimental.chat.messages.transform hook (user-message 注入：Mechanism 3)
-await injectFocusReminder(client, output);    // Focus Reminder
+// Removed: per-turn delegate reminder was removed from the plugin lifecycle
 ```
 
 ---
@@ -1324,10 +1262,8 @@ build 验证通过，应该标记 todo 完成
 | `src/hooks/post-task-nudge/index.ts` | **新建** ✅ | 5 / — |
 | `src/hooks/direct-work-nudge/hook.ts` | **新建** ✅ | 50 / 200 |
 | `src/hooks/direct-work-nudge/index.ts` | **新建** ✅ | 5 / — |
-| `src/hooks/focus-reminder/hook.ts` | **新建** ✅（原名 phase-reminder） | 90 / 150 |
-| `src/hooks/focus-reminder/index.ts` | **新建** ✅（原名 phase-reminder） | 5 / — |
 | `src/index.ts` | 修改 ✅ | 20 / — |
-| **总计** | | ~295 / ~650 |
+| **总计** | | ~200 / ~500 |
 
 ### 10.2 P0 实施顺序
 
@@ -1336,14 +1272,7 @@ Phase 1: 基础设施
   ✅ 已实现 — 创建 shared/todo-nudge.ts (TODO_GENERAL, TODO_FINAL_ACTIVE, getTodoState)
   ✅ 已实现 — 修改 src/index.ts (handler 链支持 async、支持 ctx 传递)
 
-Phase 2: 机制 3 - Focus Reminder (messages.transform 注入)
-  ✅ 已实现 — 创建 src/hooks/focus-reminder/（实现时更名）
-  ✅ 已实现 — 在 src/index.ts 注册 experimental.chat.messages.transform hook
-  ✅ 已实现 — 验证：每次 LLM turn 都注入 reminder（仅 build agent）
-
-Phase 3: 机制 2 - Direct Work Reminder
-  ✅ 已实现 — 创建 src/hooks/direct-work-nudge/
-  ✅ 已实现 — 在 src/index.ts 注册 tool.execute.after hook
+Phase 2: 机制 3 - Direct Work Reminder
   ✅ 已实现 — 验证：非配置路径的 edit/write 注入违规提醒
 
 Phase 4: 机制 1 - Post-task Nudge
@@ -1430,7 +1359,7 @@ ZooKeeper 方案遵循以下原则：
 |------|-----|------|-----------|
 | 任务完成 → 验证+todo | ✅ | (通过 hygiene 间接) | ✅ post-task nudge **已实现** |
 | 违规编辑 → 警告 | ✅ | ✅ | ✅ direct-work reminder **已实现** |
-| 每 turn → 委派提示 | ❌ | ✅ phase-reminder | ✅ focus-reminder **已实现** |
+| 每 turn → 委派提示 | ❌ | ✅ phase-reminder | ❌（已移除） |
 | 任务完成 → todo 更新 | (通过 Idle Enf. 兜底) | ✅ todo-hygiene | (通过 Idle Cont. P1) |
 | idle → 强制续接 | ✅ Continuation Enf. | ✅ Auto-continuation | ✅ Idle Continuation (P1 **未实现**) |
 

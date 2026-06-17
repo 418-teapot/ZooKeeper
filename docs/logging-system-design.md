@@ -77,7 +77,7 @@ ZooKeeper 作为 OpenCode 编排器插件，当前日志能力薄弱——仅有
 | **持久化** | 仅 stderr | 关闭终端后日志丢失 |
 | **格式** | `[zookeeper:<tag>] <JSON>` | 无固定字段 schema，不可查询 |
 | **级别** | binary on/off | 无法区分正常触发与异常 |
-| **session 关联** | 仅 focus-reminder 带 sessionId | 其他 4 个 hook 均不带 |
+| **session 关联** | 仅 task-prompt 带 sessionId/callId | 其他 hook 均不带 sessionId |
 | **call 关联** | 无 | 无法定位到单次工具调用 |
 | **初始化** | 完全静默 | 不知道插件是否加载、哪些 agent 注入了 prompt |
 | **异常** | 4 个 `catch {}` 静默吞掉 | handler 静默失效不可知 |
@@ -197,20 +197,12 @@ TS 插件运行时通过 config hook 传入的配置对象读取这些值，与 
 | `verify_injected` | `debug` | `todo_state: "none_active" \| "final_active" \| "general" \| "fallback"` | task() 返回后 |
 | `todo_api_failed` | `error` | `error: string` | getTodoState 抛异常 |
 
-#### `focus-reminder` — 每 turn 委派聚焦提醒
-
-| event | level | 附加字段 | 触发点 |
-|-------|-------|---------|--------|
-| `reminder_injected` | `debug` | `agent: string`, `message_id: string` | 找到 build 的最后 user message |
-| `reminder_skipped` | `debug` | `reason: "no_messages" \| "no_user_msg" \| "not_build" \| "agent_unknown"` | 跳过 |
-
 ### 3.5 完整日志示例
 
 ```jsonl
 {"timestamp":"2026-06-13T14:46:31.050Z","level":"info","hook":"plugin","sessionId":"","event":"plugin_init","agents":["build","explore","general","spider"],"limits":{"contextWordLimit":200,"promptWordLimit":500},"skills":["git-commit"]}
 {"timestamp":"2026-06-13T14:46:31.052Z","level":"debug","hook":"plugin","sessionId":"","event":"agent_loaded","agent":"build","prompt_len":3823}
 {"timestamp":"2026-06-13T14:46:31.054Z","level":"debug","hook":"plugin","sessionId":"","event":"skill_registered","skill":"git-commit"}
-{"timestamp":"2026-06-13T14:46:32.100Z","level":"debug","hook":"focus-reminder","sessionId":"ses_1407dd2a0ffe","event":"reminder_injected","agent":"build","message_id":"msg_abc123"}
 {"timestamp":"2026-06-13T14:46:33.000Z","level":"debug","hook":"task-prompt","sessionId":"ses_1407dd2a0ffe","callId":"call_xyz","event":"validate_passed","warnings":1,"ctx_words":145,"total_words":312}
 {"timestamp":"2026-06-13T14:46:33.001Z","level":"debug","hook":"task-prompt","sessionId":"ses_1407dd2a0ffe","callId":"call_xyz","event":"nudge_injected","warnings":["CONTEXT is 145 words — consider splitting into multiple task() calls..."]}
 {"timestamp":"2026-06-13T14:46:45.000Z","level":"debug","hook":"post-task-nudge","sessionId":"ses_1407dd2a0ffe","callId":"call_xyz","event":"verify_injected","todo_state":"final_active"}
@@ -288,7 +280,6 @@ TS 插件运行时通过 config hook 传入的配置对象读取这些值，与 
 14:46:31.000  ◆ SESSION START  [open]
 14:46:31.050  ● config loaded  [open → config]
 14:46:31.200  ▲ LLM CALL #1 (deepseek-v4-pro, 3500→580 tokens)  [thinking]
-              │  ZooKeeper: focus-reminder injected (build)
 14:46:32.100  ▼ PERMISSION CHECK  read *.env.example → allow
 14:46:32.150  ■ TOOL: read .env.example  [tool]
 14:46:33.000  ▲ LLM CALL #2 (deepseek-v4-pro, 15000→2400 tokens)  [thinking]
@@ -365,7 +356,6 @@ Duration:                4m 32s
 | `src/hooks/json-error-nudge/hook.ts` | 修改 | 增加 sid/cid，增加 skip reason |
 | `src/hooks/direct-work-nudge/hook.ts` | 修改 | 增加 sid/cid，增加 skip reason |
 | `src/hooks/post-task-nudge/hook.ts` | 修改 | 增加 sid/cid，增加 error 日志 |
-| `src/hooks/focus-reminder/hook.ts` | 修改 | 增加 skip reason |
 | `config.toml` | 修改 | 新增 `[zoo.logging]` section |
 | `tools/zoo-log` | 新增 | 实时日志过滤工具（Python） |
 | `tools/zoo-inspect` | 新增 | Session 摘要工具（Python） |

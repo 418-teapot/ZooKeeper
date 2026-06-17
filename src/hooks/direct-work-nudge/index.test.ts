@@ -315,6 +315,16 @@ describe("DIRECT_WORK_NUDGE contents", () => {
     assert.ok(DIRECT_WORK_NUDGE.includes("Documentation"));
     assert.ok(DIRECT_WORK_NUDGE.includes("this is your job"));
   });
+
+  it("references Contract R1 instead of orchestrator protocol", () => {
+    assert.ok(DIRECT_WORK_NUDGE.includes("Contract R1"));
+    assert.ok(!DIRECT_WORK_NUDGE.includes("orchestrator protocol"));
+  });
+
+  it("wraps content in <internal-reminder> tags", () => {
+    assert.ok(DIRECT_WORK_NUDGE.startsWith("<internal-reminder>\n"));
+    assert.ok(DIRECT_WORK_NUDGE.endsWith("\n</internal-reminder>"));
+  });
 });
 
 describe("SEARCH_DELEGATE_NUDGE contents", () => {
@@ -332,6 +342,11 @@ describe("SEARCH_DELEGATE_NUDGE contents", () => {
   it("contains verification exception", () => {
     assert.ok(SEARCH_DELEGATE_NUDGE.includes("Verification"));
     assert.ok(SEARCH_DELEGATE_NUDGE.includes("fine, continue"));
+  });
+
+  it("wraps content in <internal-reminder> tags", () => {
+    assert.ok(SEARCH_DELEGATE_NUDGE.startsWith("<internal-reminder>\n"));
+    assert.ok(SEARCH_DELEGATE_NUDGE.endsWith("\n</internal-reminder>"));
   });
 });
 
@@ -368,7 +383,7 @@ describe("integration: tool.execute.after via plugin", () => {
       output,
     );
     assert.ok(output.output?.includes("DELEGATION REQUIRED"));
-    assert.ok(output.output?.includes("orchestrator protocol"));
+    assert.ok(output.output?.includes("Contract R1"));
   });
 
   it("bash tool remains unchanged via plugin", async () => {

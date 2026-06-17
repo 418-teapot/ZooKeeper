@@ -326,7 +326,7 @@ export function setSessionId(sid: string): void {
  * The entry is buffered in memory and flushed to disk when either the
  * buffer reaches 50 entries or after 500ms (whichever comes first).
  *
- * @param hook - The hook module name (e.g. `"focus-reminder"`).
+ * @param hook - The hook module name (e.g. `"task-prompt-validate"`).
  * @param event - The event name (e.g. `"reminder_injected"`).
  * @param sessionId - The current session identifier.
  * @param callId - Optional call identifier tied to the current tool

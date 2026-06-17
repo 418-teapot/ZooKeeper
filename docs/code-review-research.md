@@ -417,7 +417,7 @@ preview_per_file = max(5, floor(100 / fileCount))
 | `tool.execute.after` | `(input: {tool, sessionID, args}, output: {title, output, metadata})` | 拦截/修改工具输出（string） | ✅ post-task-nudge 追加提示 | ❌ |
 | `tool.schema` (zod) | 通过 `tool()` factory | 工具输入侧 zod 校验 | ❌（无自定义工具） | ❌ |
 | `tool.definition` | `(input: {toolID}, output: {description, parameters})` | 修改 LLM 侧工具描述/参数 | ✅ task-prompt 注入格式提示 | ❌ |
-| `experimental.chat.messages.transform` | `(input: {}, output: {messages})` | 向最后一条用户消息追加文本 | ✅ focus-reminder 每 turn 提醒 | ✅ DCP 注入预计算结果 |
+| `experimental.chat.messages.transform` | `(input: {}, output: {messages})` | 向最后一条用户消息追加文本 | ❌（已移除） | ✅ DCP 注入预计算结果 |
 | `experimental.chat.system.transform` | `(input: {sessionID, model}, output: {system})` | 向 system prompt 数组追加内容 | ❌（暂未使用；权重高于 user message） | ❌ |
 | `chat.params` | `(input: {sessionID, agent, model}, output: {temperature, topP, topK, maxOutputTokens})` | 覆盖每 session 的 LLM 参数 | ✅ | ❌ |
 | `command.execute.before` | `(input: {command, sessionID, arguments}, output: {parts})` | 拦截自定义命令 | ❌ | ✅ DCP 的 `/dcp` 分发 |
@@ -455,7 +455,7 @@ ZooKeeper 当前仅使用了有限的 hook 子集：
 - **`tool.execute.after`** — post-task nudge
 - **`tool.definition`** — 格式提示注入
 - **`chat.params`** — 参数覆盖
-- **`experimental.chat.messages.transform`** — focus-reminder
+- **`experimental.chat.messages.transform`** — 上下文度量
 
 不注册自定义工具（仅使用 hook），与 slim 的策略不同——slim 注册了 `council_session`、`webfetch`、`ast_grep` 三个自定义工具。
 
@@ -836,7 +836,7 @@ omp ────────→ 跨边界 dispatch 校验 ──→ 消费侧 di
 | **实现复杂度** | 高（需 command hook + message transform + 状态管理） | **低**（单个 SKILL.md + 两个 prompt 模板） |
 | **可发现性** | 用户需知道 `/review` 命令存在 | **高**（Skill 在 OpenCode 命令面板中可见） |
 | **文档完整性** | 散落在代码和文档中 | **统一**（SKILL.md 既是执行代码也是文档） |
-| **注入基础设施** | 需额外 hook 注入预计算结果 | **无额外需求**（ZooKeeper 已有 focus-reminder 的基础设施） |
+| **注入基础设施** | 需额外 hook 注入预计算结果 | **无额外需求**（ZooKeeper 已有 `experimental.chat.messages.transform` 基础设施） |
 | **diff 权重计算** | TypeScript，精确可编程 | LLM 按 prompt 中的公式估算，可能不精确 |
 
 #### 核心权衡
@@ -999,7 +999,7 @@ omp ────────→ 跨边界 dispatch 校验 ──→ 消费侧 di
 
 **Ralph-loop 的实际实现：** omo 的 oracle 检测机制是简单的文本解析（匹配 `Agent: oracle` + promise tag），并非复杂的行为检测。这意味着自动触发不需要复杂的语义理解——pattern 匹配就已足够。
 
-**利用现有基础设施：** ZooKeeper 已有的 focus-reminder hook（`src/hooks/focus-reminder/`）提供了每 turn 注入委派聚焦提醒的能力。Phase 6 可以在此基础上扩展：
+**利用现有基础设施：** ZooKeeper 已有的 `experimental.chat.messages.transform` hook 提供了每 turn 干预消息的能力。Phase 6 可以在此基础上扩展：
 
 1. **检测触发信号：** 在 `experimental.chat.messages.transform` 中监听 task() 返回的消息
    - 检测关键词如 "done", "completed", "修复完成", "PR 已创建" 等完成信号

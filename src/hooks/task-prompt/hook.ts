@@ -16,12 +16,13 @@ import { log } from "../../utils/logger.js";
  * The LLM sees this in the schema on every call.
  */
 export const TASK_PROMPT_HINT =
-  "Format: SUMMARY (1 sentence — desired outcome)" +
-  " | CONTEXT (facts subagent cannot discover:" +
-  " target file path, user intent, constraints," +
-  " prior failure conclusions)" +
-  " | ACCEPTANCE (1-2 verifiable outcomes)." +
-  " Required for all delegation targets," +
+  "Format:\n" +
+  "**SUMMARY:** 1 sentence — desired outcome.\n" +
+  "**CONTEXT:** facts subagent cannot discover" +
+  " (target file path, user intent, constraints," +
+  " prior failure conclusions).\n" +
+  "**ACCEPTANCE:** 1-2 verifiable outcomes.\n" +
+  "Required for all delegation targets," +
   " regardless of agent type." +
   " Keep CONTEXT focused on WHAT and WHY," +
   " not HOW — subagents read files and decide" +
@@ -306,9 +307,9 @@ export function validateBeforeExec(
       "Task prompt format error:\n" +
         `${details}\n\n` +
         "Required format:\n" +
-        "- SUMMARY: one sentence — desired outcome\n" +
-        "- CONTEXT: facts subagent cannot discover\n" +
-        "- ACCEPTANCE: 1-2 verifiable outcomes\n\n" +
+        "**SUMMARY:** one sentence — desired outcome.\n" +
+        "**CONTEXT:** facts subagent cannot discover.\n" +
+        "**ACCEPTANCE:** 1-2 verifiable outcomes.\n\n" +
         "Please rewrite before delegating.",
     );
   }

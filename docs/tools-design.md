@@ -220,7 +220,6 @@ Hook Breakdown
 ┌──────────────────────────────┬───────┬──────────────────────────────┐
 │ Hook                         │ Count │ Events                       │
 ├──────────────────────────────┼───────┼──────────────────────────────┤
-│ focus-reminder               │ 38    │ injected:38                  │
 │ context-metrics              │ 30    │ context_measured:30          │
 │ task-prompt                  │ 28    │ validated:26, invalid:2      │
 │ post-task-nudge              │ 22    │ completed:18, deferred:4     │
@@ -291,13 +290,11 @@ zoo-inspect timeline <session_id>
 Timeline: ses_abc123def456
 
   Time       Level   Hook                Event              Details
-  ─────────  ───────  ──────────────────  ─────────────────  ─────────────────────────
-  14:23:00   info    context-metrics      context_measured   build: 4,580 tokens (12 msgs)
-  14:23:01   info    focus-reminder       injected           agent=build
-  14:23:05   info    task-prompt          validated          warnings=0, errors=0
-  14:23:10   info    context-metrics      context_measured   build: 6,210 tokens (16 msgs)
-  14:23:15   info    focus-reminder       injected           agent=build
-  14:24:00   info    direct-work-nudge    triggered          tool=edit
+─────────  ───────  ──────────────────  ─────────────────  ─────────────────────────
+   14:23:00   info    context-metrics      context_measured   build: 4,580 tokens (12 msgs)
+   14:23:05   info    task-prompt          validated          warnings=0, errors=0
+   14:23:10   info    context-metrics      context_measured   build: 6,210 tokens (16 msgs)
+   14:24:00   info    direct-work-nudge    triggered          tool=edit
   14:24:02   info    post-task-nudge      completed          todo=done, nudge=general
   14:24:05   warn    task-prompt          invalid            errors=1
   14:24:10   info    context-metrics      context_measured   build: 8,430 tokens (21 msgs)
@@ -317,7 +314,7 @@ zoo-inspect impact [--sessions <N>]
 | `--sessions <N>` | int | — | 分析最近 N 个会话 |
 | `--session <ID>` | string | — | 分析单个指定会话 |
 | `--all` | flag | false | 包含子会话 |
-| `--hook <name>` | string | — | 只分析指定 hook 类型（如 `focus-reminder`） |
+| `--hook <name>` | string | — | 只分析指定 hook 类型（如 `task-prompt`） |
 | `--window <N>` | int | 6 | hook 前后观察窗口步数 |
 | `--cost` | flag | false | 显示成本估算（Anthropic 定价） |
 | `--verbose` | flag | false | 逐事件明细 |
@@ -337,7 +334,6 @@ Hook-by-Hook Aggregation
 ┌──────────────────────┬──────────┬─────────────┬────────────┬───────────┐
 │ Hook                 │ Triggers │ Hit% Before │ Hit% After │ Δ         │
 ├──────────────────────┼──────────┼─────────────┼────────────┼───────────┤
-│ focus-reminder       │ 156      │ 72.3%       │ 64.8%      │ -7.5%     │
 │ task-prompt          │ 112      │ 71.5%       │ 68.9%      │ -2.6%     │
 │ direct-work-nudge    │ 42       │ 74.1%       │ 70.2%      │ -3.9%     │
 │ json-error-nudge     │ 18       │ 69.4%       │ 62.1%      │ -7.3%     │
@@ -390,17 +386,6 @@ Cost Impact (Anthropic Claude pricing: $3.00/M input, $15.00/M output)
 ##### 区块 4：逐事件明细（`--verbose` 时显示）
 
 ```
-Verbose Event Detail (first 5 of 42 focus-reminder events)
-┌──────────┬──────────────────────────┬─────────┬──────────┬──────────┬───────────────┐
-│ #        │ Timestamp                │ Hook    │ Before % │ After %  │ Delta         │
-├──────────┼──────────────────────────┼─────────┼──────────┼──────────┼───────────────┤
-│ 1        │ 14:23:01                 │ focus   │ 74.2%    │ 68.1%    │ -6.1%         │
-│ 2        │ 14:25:30                 │ focus   │ 75.0%    │ 66.5%    │ -8.5%         │
-│ 3        │ 14:28:15                 │ focus   │ 73.8%    │ 65.9%    │ -7.9%         │
-│ 4        │ 14:31:00                 │ focus   │ 72.1%    │ 63.4%    │ -8.7%         │
-│ 5        │ 14:33:45                 │ focus   │ 71.0%    │ 62.8%    │ -8.2%         │
-└──────────┴──────────────────────────┴─────────┴──────────┴──────────┴───────────────┘
-```
 
 ---
 
@@ -432,7 +417,6 @@ Session: auth-middleware (ses_abc123def456…)
 Agent: build    Model: claude-sonnet-4     Duration: 22m 12s
 
 14:23:00  —                    zoo        │ context [build]: 4,580 tokens (12 msgs)
-14:23:01  —                    zoo        │ focus-reminder/injected agent=build
 14:23:05  claude-sonnet-4      🤖 LLM     │
 14:23:30  claude-sonnet-4      ▶ 读       │ read: src/auth/middleware.ts
 14:23:35  claude-sonnet-4      ▶ 读       │ grep: "auth" src/**/*.ts
@@ -625,9 +609,8 @@ zoo-log tail [session_id]
 示例输出：
 
 ```
-$ zoo-log show ses_abc123def456 --hook focus-reminder
-{"timestamp":"2026-06-15T14:23:01.000Z","level":"info","hook":"focus-reminder","event":"injected","agent":"build","sessionId":"ses_abc123def456"}
-{"timestamp":"2026-06-15T14:25:30.000Z","level":"info","hook":"focus-reminder","event":"injected","agent":"build","sessionId":"ses_abc123def456"}
+$ zoo-log show ses_abc123def456 --hook task-prompt
+{"timestamp":"2026-06-15T14:23:05.000Z","level":"info","hook":"task-prompt","event":"validated","warnings":0,"errors":0,"sessionId":"ses_abc123def456"}
 ```
 
 ```bash

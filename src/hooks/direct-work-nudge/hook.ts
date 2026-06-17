@@ -21,16 +21,18 @@ import { type Clientish, isBuildAgent } from "../utils/agent.js";
  * Reminds the orchestrator that direct editing violates protocol and should
  * be delegated via `task()`.
  */
-export const DIRECT_WORK_NUDGE = `**DELEGATION REQUIRED** — You just edited a source file directly.
+export const DIRECT_WORK_NUDGE = `<internal-reminder>
+**DELEGATION REQUIRED** — You just edited a source file directly.
 
 Did you ACTUALLY need to be the one doing that?
 
 - Documentation, design docs, research reports, prompts → **fine, this is your job.** Continue.
 - Tiny verification fix during subagent review → fine, continue.
-- Anything else → **you violated orchestrator protocol.**
+- Anything else → **you violated Contract R1.**
   Revert the change and delegate it via \`task()\`.
 
-**Build does not implement. Build orchestrates.**`;
+**Build does not implement. Build orchestrates.**
+</internal-reminder>`;
 
 /**
  * Nudge text appended to grep/glob tool output for the build agent.
@@ -38,10 +40,12 @@ Did you ACTUALLY need to be the one doing that?
  * Distinguishes between codebase discovery (delegate to the explore agent)
  * and simple verification (fine to proceed).
  */
-export const SEARCH_DELEGATE_NUDGE = `**POTENTIAL DELEGATION OPPORTUNITY** — You just searched the codebase.
+export const SEARCH_DELEGATE_NUDGE = `<internal-reminder>
+**POTENTIAL DELEGATION OPPORTUNITY** — You just searched the codebase.
 
 - **Codebase discovery** (finding files, searching across multiple files, exploring structure) → delegate to the \`explore\` agent via \`task()\`.
-- **Verification** (confirming a change in a specific file, checking if a pattern exists in a known file) → fine, continue.`;
+- **Verification** (confirming a change in a specific file, checking if a pattern exists in a known file) → fine, continue.
+</internal-reminder>`;
 
 // ---------------------------------------------------------------------------
 // Handler

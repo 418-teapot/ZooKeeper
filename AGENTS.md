@@ -66,7 +66,6 @@ ZooKeeper/
 │       ├── json-error-nudge/   # JSON 解析错误恢复
 │       ├── direct-work-nudge/  # 直接编辑提醒
 │       ├── post-task-nudge/    # task() 返回后验证+todo 提醒
-│       ├── focus-reminder/     # 每 turn 注入委派聚焦提醒
 │       └── shared/             # 共享模块
 ├── tests/                   # Prompt 评估测试框架（Phase 1: build.md）
 │   └── runner.py            # 评估测试运行器
@@ -117,7 +116,6 @@ OpenCode 日志写入以下位置：
 [zookeeper:json-error-nudge] trigger { tool: "webfetch", pattern: "...", }
 [zookeeper:direct-work-nudge] trigger { tool: "edit" }
 [zookeeper:post-task-nudge] trigger { hasTodo: true, nudge: "general" }
-[zookeeper:focus-reminder] trigger { agent: "build", sessionId: "..." }
 ```
 
 ## CLI 工具
@@ -142,9 +140,6 @@ OpenCode 日志写入以下位置：
 # 1. 用 zoo-find 搜索会话，单条匹配时只输出 ID（管道友好）
 $ zoo-trace show $(zoo-find "auth middleware") -s
 
-# 2. 跨会话分析 hook 对缓存命中率的影响
-$ zoo-inspect impact --sessions 20 --hook focus-reminder --cost
-
-# 3. 追踪单个会话的 step 级 token 消耗
+# 2. 追踪单个会话的 step 级 token 消耗
 $ zoo-trace steps <sid> --min-cache-drop 1000
 ```

@@ -144,10 +144,6 @@ def _format_details(event: dict) -> str:
     """
     hook = event.get("hook", "")
 
-    if hook == "focus-reminder":
-        agent = event.get("agent", "")
-        return f"agent={agent}" if agent else ""
-
     if hook == "task-prompt":
         parts = []
         if "warnings" in event:

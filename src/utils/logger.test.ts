@@ -441,25 +441,6 @@ describe("logger", () => {
       const parsed = JSON.parse(fs.readFileSync(logPath, "utf-8").trim());
       assert.equal(parsed.level, "warn");
     });
-
-    it("includes the correct hook, event and sessionId values", () => {
-      const logPath = path.join(testDir, "test.log");
-      _setLogPathForTesting(logPath);
-
-      log(
-        "focus-reminder",
-        "reminder_injected",
-        "session-abc",
-        undefined,
-        "info",
-      );
-      _flushForTesting();
-
-      const parsed = JSON.parse(fs.readFileSync(logPath, "utf-8").trim());
-      assert.equal(parsed.hook, "focus-reminder");
-      assert.equal(parsed.event, "reminder_injected");
-      assert.equal(parsed.sessionId, "session-abc");
-    });
   });
 
   // -----------------------------------------------------------------------
