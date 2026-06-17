@@ -65,8 +65,18 @@ Inspect each item in order:
 2. **Constraint Compliance** — List each explicit constraint and verify PASS/FAIL with code evidence
 3. **Requirements Gap** — Requirements implied by the goal but not explicitly stated, that a reasonable engineer would handle
 4. **Overengineering** — Unrequested code/abstraction/features added
-5. **Edge Cases** — Trace at least 5 edge cases (empty input, error paths, concurrent access, boundary values, exceptional states)
+5. **Edge Cases** — Trace edge cases — aim for 5 on non-trivial changes, minimum 2 (empty input, error paths, boundary values)
 6. **Cross-Boundary Impact** — For each dispatch point, confirm the consumer side has a corresponding branch
+
+## Critical Rules
+
+- Must reference specific file paths and line numbers from the DIFF and file contents
+- Must decompose the goal into at least 2 sub-requirements before giving verdict
+- Must provide code evidence (file:line) for each ACHIEVED / MISSED / PARTIAL judgment
+- Must run at least one read-only command from Context Mining, or explicitly state why none were needed
+- Do not classify pre-existing technical debt as Must Fix — condition #4 (introduced this patch) still applies at Must Fix tier
+- Do not report overengineering for changes that directly serve the stated goal
+- If the goal was ambiguous, state the ambiguity explicitly rather than assuming one interpretation
 
 ## Severity Classification
 

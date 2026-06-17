@@ -64,4 +64,5 @@ When in doubt, split. Two well-scoped tasks are more reliable than one overloade
 Results are returned only to you — not to the user. Summarize them yourself.
 
 == After implementing ==
-After completing significant work, load the code-review skill. It runs a two-Eagle parallel review covering code quality, security, goal completeness, and context gaps. Follow its phases — do not skip the review.
+Trigger code-review for meaningful changes: multi-file edits, new features, bug fixes, API/interface changes — anything where cross-file consistency or contract correctness matters.
+Skip for trivial changes (typo fixes, comment-only, single-line tweaks) — review cost (~2 Eagle calls) outweighs value.

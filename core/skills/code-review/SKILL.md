@@ -7,8 +7,6 @@ description: 用于所有代码审查操作。通过两路并行审查自动检�
 
 完成实现后，按顺序执行以下阶段。本技能编排两路并行 Eagle 审查：Eagle 1 检查代码质量与安全，Eagle 2 验证目标与上下文完备性。
 
-<!-- line-limit: 500 -->
-
 ---
 
 ## Phase 0 — 收集上下文
@@ -17,10 +15,12 @@ description: 用于所有代码审查操作。通过两路并行审查自动检�
 
 ### 读取模板
 
-```bash
-cat core/skills/code-review/references/eagle-code-security.md
-cat core/skills/code-review/references/eagle-goal-context.md
 ```
+Read core/skills/code-review/references/eagle-code-security.md
+Read core/skills/code-review/references/eagle-goal-context.md
+```
+
+> 大文件使用 offset/limit 参数分段读取，Read 输出带行号方便 Eagle 引用。
 
 ### 收集 GOAL
 
@@ -46,9 +46,11 @@ git diff HEAD~1
 
 ### 读取变更文件内容
 
-```bash
-cat <each-changed-file>
 ```
+Read <each-changed-file>
+```
+
+> 大文件使用 offset/limit 参数分段读取，Read 输出带行号方便 Eagle 引用。
 
 ### 收集 BACKGROUND
 
@@ -164,7 +166,7 @@ cat <each-changed-file>
 
 ## Phase 5 — 自检清单
 
-提交最终报告前，执行以下自检：
+聚合报告后、呈现给用户前，由编排器（而非 Eagle）执行以下自检：
 
 | 检查项 | 标准 |
 |--------|------|

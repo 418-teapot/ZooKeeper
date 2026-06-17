@@ -26,7 +26,7 @@ Inspect each dimension in order:
 2. **Pattern Consistency** — Does the change follow existing patterns in the codebase? If it deviates, is there a compelling reason?
 3. **Naming** — Are names clear and self-explanatory? Avoid single-letter names (loop variables excepted), unintuitive abbreviations
 4. **Error Handling** — Are errors caught, logged, and propagated correctly? No empty catch blocks or swallowed exceptions
-5. **Type Safety** — (TS) Any `as any`, `@ts-ignore`? Are generics correct? Are union type discriminations exhaustive?
+5. **Type Safety** — (TS) Any `as any`, `@ts-ignore`? Are generics correct? Are union type discriminations exhaustive? (Python) Missing type hints? Incorrect `Any` usage? `# type: ignore` abuse?
 6. **Performance** — N+1 queries, unnecessary allocations on hot paths, blocking I/O in async contexts
 7. **Abstraction Level** — Is the abstraction level appropriate? No copy-paste duplication, no premature or excessive abstraction
 8. **Interface Design** — Are public interfaces clear and consistent with existing APIs? Any breaking changes?
@@ -51,6 +51,10 @@ Each finding must be classified into one of three tiers. Conditions are cumulati
 4. Introduced this patch — (Must Fix tier) Only flag bugs introduced by this patch, not pre-existing issues
 5. No unstated assumptions — Evidence must be self-contained in the given context, without assuming knowledge of other codebase parts or author intent
 6. Proportional strictness — Do not demand a higher level of strictness than the rest of the codebase exhibits
+
+### Judging condition #4 ("introduced this patch")
+
+Use the DIFF to judge. If a bug appears on a DIFF-added line, it counts as "introduced this patch." If the line was merely moved, reformatted, or only had whitespace changes, condition #4 is NOT met. This is a conservative judgment — if uncertain, downgrade to Should Fix.
 
 ## Critical Rules
 
