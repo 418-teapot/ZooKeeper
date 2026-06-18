@@ -34,6 +34,14 @@ status: draft|review|stable|deprecated
 
 该源文档对项目产生的影响。
 
+## Relations
+
+- [相关页面](analysis/related.md) — 关联说明
+
+## Backlinks
+
+由 `backlinks.py` 自动维护。列出引用本页面的其他页面。
+
 ## References
 
 - 原始文档路径

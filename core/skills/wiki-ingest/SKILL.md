@@ -62,6 +62,10 @@ description: 用于将外部源文档或对话知识 ingest 到项目 wiki 中�
         --action create --note "<简短说明>"
     ```
 5. （可选）更新相关页面的 `related` 字段
+6. 运行 `backlinks.py` 同步反向链接：
+    ```bash
+    python3 ~/.zoo/wiki/tools/backlinks.py --write
+    ```
 
 不需要委派 kiwi，直接进入 Phase 3。
 
@@ -128,7 +132,7 @@ cat ~/.zoo/wiki/index.md 2>/dev/null || echo "~/.zoo/wiki/index.md 不存在，�
 返回一份结构化分析，描述：
   - 要创建/更新的页面路径、完整 frontmatter、完整页面内容（遵循 SCHEMA.md 规范）
   - 要在 `wiki/index.md` 中添加的索引条目
-  - 需要更新的交叉引用（更新哪些已有页面的 `related` 字段）
+  - 需要更新的交叉引用（更新哪些已有页面的 `related` 字段；反向链接由 `backlinks.py` 自动维护，kiwi 无需处理）
   - 关于 `overview.md` 是否需要更新的建议
   - 要通过 wiki_log.py 追加的日志条目
 ```
@@ -163,7 +167,11 @@ kiwi 返回分析后，由你（调用方 agent）执行所有文件写入：
         --action create --note "<简短说明>"
     ```
 5. **更新 overview.md** — 如果 kiwi 的分析建议更新，则执行
-6. **更新交叉引用** — 按照 kiwi 的建议，在已有页面的 `related` frontmatter 字段中添加新页面引用
+6. **更新交叉引用** — 按照 kiwi 的建议，在已有页面的 `related` frontmatter 字段中添加新页面引用。反向链接由 `backlinks.py` 自动维护，无需手动操作
+7. **同步反向链接** — 运行 `backlinks.py` 更新所有页面的 `## Backlinks` 节：
+    ```bash
+    python3 ~/.zoo/wiki/tools/backlinks.py --write
+    ```
 
 ---
 
@@ -174,7 +182,11 @@ kiwi 返回分析后，由你（调用方 agent）执行所有文件写入：
 1. **路径确认** — 确认创建/更新的页面路径列表与预期一致
 2. **日志检查** — 确认 `~/.zoo/wiki/log.md` 中已有对应的日志条目
 3. **索引检查** — 确认 `~/.zoo/wiki/index.md` 的对应类别已更新
-4. **可选：健康检查** — 如果存在健康检查工具，运行它以验证 wiki 结构完整性：
+4. **反向链接检查** — 确认 `backlinks.py` 已运行且幂等（二次运行报告 0 更新）：
+    ```bash
+    python3 ~/.zoo/wiki/tools/backlinks.py --write
+    ```
+5. **可选：健康检查** — 如果存在健康检查工具，运行它以验证 wiki 结构完整性：
 
 ```bash
 python3 ~/.zoo/wiki/tools/health.py --json 2>/dev/null \

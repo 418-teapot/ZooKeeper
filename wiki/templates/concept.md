@@ -36,6 +36,10 @@ status: draft|review|stable|deprecated
 - [相关页面](concepts/related.md) — 关联说明
 - [实体](entities/some-entity.md) — 实现该概念的实体
 
+## Backlinks
+
+由 `backlinks.py` 自动维护。列出引用本页面的其他页面。
+
 ## References
 
 - 外部链接

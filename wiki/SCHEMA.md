@@ -13,6 +13,7 @@ wiki/
 ├── log.md                 # 变更日志，append-only，grep-parseable
 ├── overview.md            # 项目知识概览，living synthesis
 ├── SCHEMA.md              # 本文件，schema 定义
+├── raw/                   # 原始源材料（不可变，LLM 只读，不在索引中）
 ├── concepts/              # 概念页面：项目中的领域概念、术语、抽象
 ├── entities/              # 实体页面：具体的模块、类、文件、角色
 ├── sources/               # 源文档：原始材料的摘要与引用
@@ -24,6 +25,22 @@ wiki/
 ```
 
 每个子目录下的文件使用 `.md` 扩展名。空目录含 `.gitkeep` 以纳入版本控制。
+
+### raw/ 目录约定
+
+`raw/` 存放摄入源的**完整原文副本**。与 `sources/` 的区别：
+
+| | `raw/` | `sources/` |
+|---|---|---|
+| 内容 | 原文全文，未经 LLM 修改 | LLM 生成的摘要和元信息 |
+| 可变性 | 不可变 — 摄入后不修改 | 可变 — LLM 可更新摘要 |
+| 索引 | 不在 index.md 中 | 在 index.md 中 |
+| 写入者 | 调用方 agent（抓取原文存入） | LLM 蒸馏 agent |
+| 用途 | 蒸馏忠实度的事后可验证依据 | 人类快速了解来源 |
+
+- **文件命名：** `<YYYY-MM-DD>-<source-slug>.md`，日期为摄入日期
+- **源更新时：** 不覆盖旧版本，以新文件名追加（如 `2026-06-18-karpathy-llm-wiki.md` → `2026-07-01-karpathy-llm-wiki.md`）
+- **LLM 行为：** 只读。蒸馏 agent 应读取 `raw/` 下对应的原文进行蒸馏，而非依赖 `sources/` 摘要
 
 ---
 
@@ -63,13 +80,14 @@ status: stable
 
 ### 节结构
 
-所有页面遵循统一的五段式结构（非必需段落可省略）：
+所有页面遵循统一的六段式结构（非必需段落可省略）：
 
 1. **Overview** — 一句话概括和一节概述（blockquote），说明该页面回答的核心问题
 2. **Details** — 详细展开，可使用二级/三级标题细分
 3. **Relations** — 与本页面相关的其他 wiki 页面列表，含简要关联说明
-4. **References** — 引用来源（外部链接、代码路径、文档路径）
-5. **Notes** — 补充说明、待确认事项、边缘情况
+4. **Backlinks** — 反向链接列表，由 `backlinks.py`（纯确定性工具，无 LLM 调用）自动维护，列出引用本页面的其他页面。ingest 后运行 `python3 ~/.zoo/wiki/tools/backlinks.py --write` 同步
+5. **References** — 引用来源（外部链接、代码路径、文档路径）
+6. **Notes** — 补充说明、待确认事项、边缘情况
 
 每个段落用 `##` 二级标题开始。
 
@@ -111,6 +129,7 @@ Agent 直接读写文件时（`read` / `write` / `edit` / `bash` 指令）使用
   > **待确认：** 此行为在 OpenCode 0.5.x 中可能有变化。
   ```
 - **代码引用：** 文件路径、函数名、配置项等使用行内代码 `` ` ``
+- **内联链接：** 页面正文中首次出现已被其他 wiki 页面定义的概念/实体/分析时，使用内联 Markdown 链接指向该页面。此外，当页面存在多个可通过搜索或目录独立进入的节时，每个节内首次出现该概念也应链接——原则是**每个独立阅读入口至少一个链接入口**。`## Relations` 节作为兜底，列出所有关联页面，确保无论从哪开始读都能发现交叉引用
 
 ### overview.md 规范
 
@@ -135,25 +154,7 @@ Agent 直接读写文件时（`read` / `write` / `edit` / `bash` 指令）使用
 | analysis | `~/.zoo/wiki/templates/analysis.md` | 分析页面：方案对比、利弊权衡 |
 | synthesis | `~/.zoo/wiki/templates/synthesis.md` | 合成页面：对 query 的结构化回答 |
 
-创建新页面的命令：
-
-```
-python3 ~/.zoo/wiki/tools/new_page.py \
-    --type <concept|entity|source|analysis|synthesis> \
-    --title "<页面标题>"
-```
-
-对于 source 类型，额外指定 `--source-type`：
-
-```
-python3 ~/.zoo/wiki/tools/new_page.py \
-    --type source \
-    --title "<页面标题>" \
-    --source-type <adr|rfc|notes>
-```
-
-脚本会从模板生成带完整 frontmatter 和骨架节的页面，kiwi 只需 `edit` 填充
-各节的实际内容。不要在未使用脚本的情况下手动创建页面，以保证格式一致性。
+创建新页面时使用 `new_page.py` 脚本生成骨架，然后 `edit` 填充内容。**禁止手动创建页面**以保证格式一致性。用法见 `python3 ~/.zoo/wiki/tools/new_page.py --help`。
 
 ---
 
@@ -205,35 +206,12 @@ python3 ~/.zoo/wiki/tools/new_page.py \
 
 ```
 ## [2026-06-17] ingest | concepts/prompt-injection.md | create — 摘要来自 ADR-003
-## [2026-06-17] ingest | entities/install-py.md | create — 来自 install.py 分析
 ## [2026-06-18] update | concepts/prompt-injection.md | edit — 补充 Phase 2 实施方案
-## [2026-06-19] query | syntheses/linter-comparison.md | create — 来自 "which linter" 问答
 ## [2026-06-16] health | — | pass — 所有检查通过，无 orphan/missing
 ```
 
-日志按时间倒序排列，最新记录在最上方。可使用以下命令快速查看最近操作：
-
-```bash
-grep "^## \[" ~/.zoo/wiki/log.md | head -5
-```
+日志按时间倒序排列，最新记录在最上方。
 
 ---
 
-## 操作工作流
-
-### Ingest 工作流（kiwi 负责）
-
-1. **读取 SCHEMA.md** — 确认格式规范
-2. **更新 index.md** — 按分类添加新页面条目
-3. **追加 log.md** — 记录 ingest 操作（`ingest | <path> | create/edit`）
-4. **判断 overview.md** — 如果新知识显著改变项目概览，重写 overview.md
-5. **跨页关联更新** — 在新页面中添加 `related` 引用到已有页面
-
-### Query 工作流（kiwi 负责）
-
-1. **读取 SCHEMA.md** — 确认格式规范
-2. **读取 index.md** — 确定哪些页面可能包含相关信息
-3. **读取相关页面** — 根据 index 和 cross-reference 导航
-4. **生成 synthesis** — 创建 `syntheses/<query-slug>.md` 作为回答
-5. **更新 index.md** — 在 Syntheses 分类下添加条目
-6. **追加 log.md** — 记录 synthesis 的创建
+> **操作工作流（ingest / query）** 由 `wiki-ingest` skill 和 `kiwi` prompt 定义。SCHEMA.md 仅覆盖格式规范。执行写入前请阅读对应 skill 或 agent prompt。

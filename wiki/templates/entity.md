@@ -34,6 +34,15 @@ status: draft|review|stable|deprecated
 - [概念](concepts/related-concept.md) — 实现的领域概念
 - [源文档](sources/adr/some-adr.md) — 相关决策记录
 
+## Backlinks
+
+由 `backlinks.py` 自动维护。列出引用本页面的其他页面。
+
+## References
+
+- 外部链接
+- 代码路径引用
+
 ## Notes
 
 - 依赖关系

@@ -144,7 +144,7 @@ websearch = "deny"
 
 [agent.kiwi]
 mode  = "subagent"
-model = "{env:ZOO_SMALL_MODEL}"
+model = "{env:ZOO_MODEL}"
 [agent.kiwi.permission]
 task = "deny"
 write = "deny"

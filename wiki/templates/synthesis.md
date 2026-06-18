@@ -30,6 +30,20 @@ status: draft|review|stable|deprecated
 - [概念](concepts/foo.md) — 使用方式与贡献
 - [实体](entities/bar.md) — 使用方式与贡献
 
-## Related
+## Relations
 
 - [其他 synthesis](syntheses/other.md) — 关联说明
+
+## Backlinks
+
+由 `backlinks.py` 自动维护。列出引用本页面的其他页面。
+
+## References
+
+- 外部链接
+- 代码路径引用
+
+## Notes
+
+- 补充说明
+- 待确认事项
