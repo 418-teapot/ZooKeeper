@@ -15,6 +15,8 @@ Checks:
   - Index sync (index.md entries vs actual files on disk)
   - Log coverage (source pages without a corresponding log entry)
   - Frontmatter completeness (required fields + valid enums)
+  - Related field integrity (no system file references in related field)
+  - Source field validation (source-type pages must have URL in source field)
 
 Design boundary:
   health.py = structural integrity, deterministic, run every session
@@ -398,6 +400,119 @@ def check_frontmatter(pages: list[Path]) -> list[dict]:
 # ── Report Generation ───────────────────────────────────────────────
 
 
+# ── Check: Related field integrity ──────────────────────────────────
+
+
+def check_related_field(pages: list[Path]) -> list[dict]:
+    """Check that related fields and Markdown links don't point to system files.
+
+    System files (index.md, log.md, SCHEMA.md, overview.md) should not
+    appear in:
+      1. Any page's related frontmatter field
+      2. Markdown links in the page body (e.g. [SCHEMA.md](SCHEMA.md))
+    """
+    SYSTEM_FILES = {"index.md", "log.md", "SCHEMA.md", "overview.md"}
+    LINK_PATTERN = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+    results: list[dict] = []
+
+    for page in pages:
+        content = read_file(page)
+        if not content:
+            continue
+
+        rel_page = _wiki_rel(page)
+
+        # 1. Check frontmatter related field
+        fm = _parse_frontmatter(content)
+        related = fm.get("related", [])
+
+        if isinstance(related, str):
+            related = [related]
+
+        for target in related:
+            target_name = Path(target).name if target else ""
+            if target_name in SYSTEM_FILES:
+                results.append(
+                    {
+                        "page": rel_page,
+                        "issue": "related_to_system_file",
+                        "details": f"Frontmatter 'related' field points to system file '{target}' — this is not allowed",
+                    }
+                )
+
+        # 2. Check Markdown links in body text
+        body = strip_frontmatter(content)
+        matches = LINK_PATTERN.findall(body)
+        for link_text, link_target in matches:
+            link_name = Path(link_target).name if link_target else ""
+            if link_name in SYSTEM_FILES:
+                results.append(
+                    {
+                        "page": rel_page,
+                        "issue": "markdown_link_to_system_file",
+                        "details": f"Markdown link [{link_text}]({link_target}) points to system file — this is not allowed",
+                    }
+                )
+
+    return results
+
+
+# ── Check: Source field validation ──────────────────────────────────
+
+
+def check_source_field(pages: list[Path]) -> list[dict]:
+    """Validate source field for source-type pages.
+
+    Checks:
+      - source-type pages must have a source field
+      - source field should be a valid URL (starts with http/https)
+    """
+    results: list[dict] = []
+
+    for page in pages:
+        # Only check files under sources/ directory
+        if "sources" not in page.parts:
+            continue
+
+        content = read_file(page)
+        if not content:
+            continue
+
+        fm = _parse_frontmatter(content)
+        page_type = fm.get("type", "")
+
+        # Only validate source-type pages
+        if page_type != "source":
+            continue
+
+        source_value = fm.get("source")
+
+        # Check if source field exists
+        if not source_value:
+            results.append(
+                {
+                    "page": _wiki_rel(page),
+                    "issue": "missing_source_field",
+                    "details": f"Source-type page '{page.name}' is missing required 'source' field",
+                }
+            )
+            continue
+
+        # Check if source is a valid URL
+        if isinstance(source_value, str) and not source_value.startswith(
+            ("http://", "https://")
+        ):
+            results.append(
+                {
+                    "page": _wiki_rel(page),
+                    "issue": "invalid_source_url",
+                    "details": f"Page '{page.name}' has source value '{source_value}' — should be a URL (starts with http:// or https://)",
+                }
+            )
+
+    return results
+
+
 def run_health() -> dict:
     """Run all health checks, return structured results."""
     pages = all_wiki_pages()
@@ -409,6 +524,8 @@ def run_health() -> dict:
         "index_sync": check_index_sync(pages),
         "log_coverage": check_log_coverage(pages),
         "frontmatter": check_frontmatter(pages),
+        "related_field": check_related_field(pages),
+        "source_field": check_source_field(pages),
     }
 
 
@@ -489,6 +606,36 @@ def format_report(results: dict) -> str:
             )
     else:
         lines.append("所有页面 frontmatter 字段完整有效。✅")
+    lines.append("")
+
+    # ── Related Field Integrity
+    related_issues = results["related_field"]
+    lines.append(f"## Related 字段完整性（发现 {len(related_issues)} 个问题）")
+    lines.append("")
+    if related_issues:
+        lines.append("| 页面 | 问题 | 详情 |")
+        lines.append("|---|---|---|")
+        for ri in related_issues:
+            lines.append(
+                f"| `{ri['page']}` | {ri['issue']} | {ri['details']} |"
+            )
+    else:
+        lines.append("所有页面的 related 字段均合法，未指向系统文件。✅")
+    lines.append("")
+
+    # ── Source Field Validation
+    source_issues = results["source_field"]
+    lines.append(f"## Source 字段验证（发现 {len(source_issues)} 个问题）")
+    lines.append("")
+    if source_issues:
+        lines.append("| 页面 | 问题 | 详情 |")
+        lines.append("|---|---|---|")
+        for si in source_issues:
+            lines.append(
+                f"| `{si['page']}` | {si['issue']} | {si['details']} |"
+            )
+    else:
+        lines.append("所有 source 类型页面的 source 字段均为有效 URL。✅")
     lines.append("")
 
     return "\n".join(lines)

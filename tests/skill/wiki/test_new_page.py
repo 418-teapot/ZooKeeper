@@ -35,6 +35,8 @@ _TEST_FILES: list[Path] = [
     REPO_ROOT / "wiki" / "concepts" / "evil.md",
     REPO_ROOT / "wiki" / "concepts" / "testconcept.md",
     REPO_ROOT / "wiki" / "concepts" / "drafttest.md",
+    REPO_ROOT / "wiki" / "concepts" / "three-layer-architecture.md",
+    REPO_ROOT / "wiki" / "concepts" / "renamed-page.md",
 ]
 
 
@@ -272,3 +274,67 @@ def test_invalid_type_exits_with_error(_fake_home_and_symlink) -> None:
     )
     assert result.returncode == 2
     assert "invalid choice" in result.stderr
+
+
+# -- --slug parameter tests --------------------------------------------------
+
+
+class TestSlugParameter:
+    """Verify the ``--slug`` parameter overrides auto-derivation."""
+
+    def test_slug_overrides_auto(self, _fake_home_and_symlink) -> None:
+        """--slug "renamed-page" overrides --title "Original Title"."""
+        result = _run(
+            "--type",
+            "concept",
+            "--title",
+            "Original Title",
+            "--slug",
+            "renamed-page",
+            env=_fake_home_and_symlink,
+        )
+        assert result.returncode == 0
+        assert "已创建页面" in result.stdout
+        assert "wiki/concepts/renamed-page.md" in result.stdout
+
+        output_file = REPO_ROOT / "wiki" / "concepts" / "renamed-page.md"
+        assert output_file.is_file()
+
+    def test_chinese_title_without_slug_fails(
+        self, _fake_home_and_symlink
+    ) -> None:
+        """Chinese title without --slug exits with error (empty slug)."""
+        result = _run(
+            "--type",
+            "concept",
+            "--title",
+            "三层架构",
+            env=_fake_home_and_symlink,
+        )
+        assert result.returncode == 2
+        assert "--slug" in result.stderr
+
+    def test_chinese_title_with_slug_works(
+        self, _fake_home_and_symlink
+    ) -> None:
+        """--title "三层架构" --slug "three-layer-architecture" creates the page."""
+        result = _run(
+            "--type",
+            "concept",
+            "--title",
+            "三层架构",
+            "--slug",
+            "three-layer-architecture",
+            env=_fake_home_and_symlink,
+        )
+        assert result.returncode == 0
+        assert "已创建页面" in result.stdout
+        assert "wiki/concepts/three-layer-architecture.md" in result.stdout
+
+        output_file = (
+            REPO_ROOT / "wiki" / "concepts" / "three-layer-architecture.md"
+        )
+        assert output_file.is_file()
+        content = output_file.read_text(encoding="utf-8")
+        assert "title: 三层架构" in content
+        assert "# 三层架构" in content

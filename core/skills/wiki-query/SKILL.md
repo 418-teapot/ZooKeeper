@@ -44,7 +44,7 @@ description: 从 ~/.zoo/wiki/ 中查询知识并合成答案。查询 wiki 覆�
 可选：调用 `wiki_log.py` 记录查询事件，便于追踪查询频率和覆盖范围：
 
 ```bash
-python wiki/tools/wiki_log.py \
+python3 ~/.zoo/wiki/tools/wiki_log.py \
     --op query --path "—" --action pass \
     --note "查询了 <主题>"
 ```

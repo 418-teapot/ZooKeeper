@@ -217,7 +217,7 @@ SCHEMA.md 的内容（至少缩略版本）在插件 `config` hook 中被注入�
 
 ### 4.1 角色定义
 
-Kiwi 是 **只读知识蒸馏专家**（read-only knowledge distillation expert），而非 wiki 管理器。它不参与代码编写、代码搜索或 web 研究——它专注于一件事：**将非结构化的复杂源材料分析为结构化分析报告，返回给调用方执行写入**。
+Kiwi 是 **只读知识蒸馏专家**（read-only knowledge distillation expert），而非 wiki 管理器。它不参与代码编写或代码搜索——它专注于一件事：**将非结构化的复杂源材料分析为结构化分析报告，返回给调用方执行写入**。与 OMO/SLIM/OMP 的 librarian 一样，kiwi 可以使用 `webfetch` 和 `websearch` 访问外部资源，以获取引用 URL 的内容或搜索补充上下文。
 
 Kiwi 不负责简单的 wiki CRUD 操作（那些由工具脚本处理），也不负责日常维护（由 health/lint 脚本处理）。Kiwi 的触发条件是：源材料是 **非结构化、复杂、需要摘要/重写/组织** 的原始内容（如会议记录、设计文档、API 规范），而不仅仅是简单的条目追加。
 
@@ -231,13 +231,11 @@ mode  = "subagent"
 model = "{env:ZOO_SMALL_MODEL}"
 [agent.kiwi.permission]
 task = "deny"
-webfetch = "deny"
-websearch = "deny"
 write = "deny"
 edit = "deny"
 ```
 
-Kiwi 有 5 条 deny 规则（task、webfetch、websearch、write、edit），其余工具均继承默认 allow 状态。注意 kiwi 使用小模型（`ZOO_SMALL_MODEL`），这是成本效率选择。
+Kiwi 有 3 条 deny 规则（task、write、edit），其余工具均继承默认 allow 状态。`webfetch`、`websearch` 和 `bash` 未 deny，使 kiwi 可以直接获取外部资源（如引用 URL 的内容）和执行脚本命令（如 `wiki_log.py`），与 OMO/SLIM/OMP 的 librarian 能力对齐。注意 kiwi 使用小模型（`ZOO_SMALL_MODEL`），这是成本效率选择。
 
 ### 4.3 模型选择理由
 
@@ -261,7 +259,8 @@ well-organized wiki pages in `wiki/`. You do NOT do simple CRUD — those are
 handled by tool scripts that any agent can call directly. You activate only
 when the source material is complex enough to warrant expert distillation.
 
-You never write code, search the web, or delegate work.
+You never write code or delegate work; you CAN search the web and fetch
+external URLs to gather information for analysis.
 </Role>
 
 <Context>
@@ -279,6 +278,9 @@ Before any operation, read `wiki/SCHEMA.md` to confirm formatting
 conventions, page templates, and naming rules. If you already read it
 earlier in this session and remember the rules, don't re-read
 unnecessarily.
+
+If CONTEXT contains external URLs, use `webfetch` to retrieve content.
+Use `websearch` if additional context is needed.
 
 ## Phase 1: Load Existing State
 
@@ -1601,13 +1603,13 @@ Plan A 启动条件（任一满足）：
 
 | 维度 | OMO Librarian | OMP Librarian | SLIM Librarian | ZooKeeper kiwi |
 |------|--------------|--------------|----------------|----------------|
-| **允许的工具** | read、search、find、grep | read、search、find、bash、lsp、web_search、ast_grep | read、search、webfetch | read、glob、grep |
-| **明确禁止** | write、edit、apply_patch | 白名单制 — 未列入的工具均不可用 | write、edit、bash、task | write、edit、task、webfetch、websearch |
+| **允许的工具** | read、search、find、grep | read、search、find、bash、lsp、web_search、ast_grep | read、search、webfetch | read、glob、grep、webfetch、websearch |
+| **明确禁止** | write、edit、apply_patch | 白名单制 — 未列入的工具均不可用 | write、edit、bash、task | write、edit、task |
 | **输出格式** | 自由格式 Markdown | 结构化 JSON（通过 `yield` 工具） | 自由格式 Markdown | 自由格式 Markdown |
 | **写入执行者** | 编排器（orchestrator） | Sisyphus-Junior（专用写入 agent） | 无（SLIM 不写知识库） | 调用方（任意 agent） |
 | **只读保证方式** | 权限 deny | 工具白名单 | 权限 deny | 权限 deny |
 
-**关键发现：** 三个项目独立得出了相同的结论——**知识 specialist agent 必须只读**。最严格的是 OMP，使用白名单机制只放行 7 个工具；最宽松的是 OMO，通过 deny write/edit/apply_patch 实现。无论哪种方式，specialist 都不调用 memory 工具或文件写入工具。
+**关键发现：** 三个项目独立得出了相同的结论——**知识 specialist agent 必须只读**。最严格的是 OMP，使用白名单机制只放行 7 个工具；最宽松的是 OMO，通过 deny write/edit/apply_patch 实现。无论哪种方式，specialist 都不调用 memory 工具或文件写入工具。ZooKeeper 的 kiwi 遵循相同的只读原则（deny write/edit/task），同时开放 `webfetch`/`websearch` 使其能像参考项目中的 librarian 一样自主获取外部资源。
 
 ### 15.3 输出格式与协约机制
 
@@ -1707,7 +1709,7 @@ OMP 的 `yield` 工具依赖 OpenCode 的 `shouldTerminate` 回调和 `extractDa
 |------|------|
 | **Process** | 复杂路径增加一个步骤：kiwi 返回分析 → 调用方审查 → 调用方写入 |
 | **Prompt** | kiwi.md 的 Workflow 结束于 Phase 3（Return Analysis），Contract 包含 NEVER use write/edit |
-| **Permission** | kiwi 有 5 条 deny 规则（task、webfetch、websearch、write、edit） |
+| **Permission** | kiwi 有 3 条 deny 规则（task、write、edit）；`webfetch`/`websearch` 已开放，与 OMO/SLIM/OMP 的 librarian 对齐 |
 | **工具脚本** | kiwi 不调用 new_page.py 或 wiki_log.py——这些由调用方使用 |
 | **Phase 2 演进** | MCP 工具（wiki_remember/wiki_recall/wiki_health）将进一步简化写入路径，但 kiwi 仍然只读 |
 

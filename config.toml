@@ -147,8 +147,6 @@ mode  = "subagent"
 model = "{env:ZOO_SMALL_MODEL}"
 [agent.kiwi.permission]
 task = "deny"
-webfetch = "deny"
-websearch = "deny"
 write = "deny"
 edit = "deny"
 

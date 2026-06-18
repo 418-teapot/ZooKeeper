@@ -527,3 +527,169 @@ status: draft
         )
         issues = {r["issue"] for r in results}
         assert "invalid_date:created" in issues
+
+
+class TestCheckRelatedField:
+    """Test that check_related_field detects issues correctly."""
+
+    def _run_check(
+        self,
+        wiki_dir: Path,
+        pages: list[tuple[str, str]],
+    ) -> list[dict]:
+        """Helper: create *pages* under *wiki_dir* and run check_related_field."""
+        page_paths = []
+        for rel_path, content in pages:
+            p = wiki_dir / rel_path
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content)
+            page_paths.append(p)
+        return health.check_related_field(page_paths)
+
+    def test_valid_related_field(self, tmp_path):
+        """Valid related field with wiki-root-relative path passes."""
+        results = self._run_check(
+            tmp_path / "wiki",
+            [
+                (
+                    "concepts/page.md",
+                    "---\ntitle: Test\ntype: concept\nrelated: [sources/notes/example.md]\n---\n# Content",
+                ),
+            ],
+        )
+        assert len(results) == 0
+
+    def test_related_to_system_file(self, tmp_path):
+        """Related field pointing to system file is flagged."""
+        results = self._run_check(
+            tmp_path / "wiki",
+            [
+                (
+                    "concepts/page.md",
+                    "---\ntitle: Test\ntype: concept\nrelated: [SCHEMA.md]\n---\n# Content",
+                ),
+            ],
+        )
+        issues = [r["issue"] for r in results]
+        assert "related_to_system_file" in issues
+        assert any("SCHEMA.md" in r["details"] for r in results)
+
+    def test_markdown_link_to_system_file(self, tmp_path):
+        """Markdown link in body pointing to system file is flagged."""
+        results = self._run_check(
+            tmp_path / "wiki",
+            [
+                (
+                    "concepts/page.md",
+                    "---\ntitle: Test\ntype: concept\n---\n# Content\n\nSee [SCHEMA.md](SCHEMA.md) for details.",
+                ),
+            ],
+        )
+        issues = [r["issue"] for r in results]
+        assert "markdown_link_to_system_file" in issues
+        assert any("SCHEMA.md" in r["details"] for r in results)
+
+    def test_multiple_markdown_links(self, tmp_path):
+        """Multiple Markdown links to system files are all flagged."""
+        results = self._run_check(
+            tmp_path / "wiki",
+            [
+                (
+                    "concepts/page.md",
+                    "---\ntitle: Test\ntype: concept\n---\n# Content\n\n"
+                    "See [SCHEMA.md](SCHEMA.md), [index.md](index.md), and [log.md](log.md).",
+                ),
+            ],
+        )
+        assert len(results) == 3
+        targets = [r["details"] for r in results]
+        assert any("SCHEMA.md" in t for t in targets)
+        assert any("index.md" in t for t in targets)
+        assert any("log.md" in t for t in targets)
+
+    def test_external_links_ignored(self, tmp_path):
+        """External URLs and anchors are not flagged."""
+        results = self._run_check(
+            tmp_path / "wiki",
+            [
+                (
+                    "concepts/page.md",
+                    "---\ntitle: Test\ntype: concept\n---\n# Content\n\n"
+                    "See [External](https://example.com) and [Section](#details).",
+                ),
+            ],
+        )
+        assert len(results) == 0
+
+
+class TestCheckSourceField:
+    """Test that check_source_field validates source URLs correctly."""
+
+    def _run_check(
+        self,
+        wiki_dir: Path,
+        pages: list[tuple[str, str]],
+    ) -> list[dict]:
+        """Helper: create *pages* under *wiki_dir* and run check_source_field."""
+        page_paths = []
+        for rel_path, content in pages:
+            p = wiki_dir / rel_path
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content)
+            page_paths.append(p)
+        return health.check_source_field(page_paths)
+
+    def test_valid_source_url(self, tmp_path):
+        """Source page with valid URL passes."""
+        results = self._run_check(
+            tmp_path / "wiki",
+            [
+                (
+                    "sources/notes/example.md",
+                    "---\ntitle: Test\ntype: source\nsource: https://example.com\n---\n# Content",
+                ),
+            ],
+        )
+        assert len(results) == 0
+
+    def test_missing_source_field(self, tmp_path):
+        """Source page without source field is flagged."""
+        results = self._run_check(
+            tmp_path / "wiki",
+            [
+                (
+                    "sources/notes/example.md",
+                    "---\ntitle: Test\ntype: source\n---\n# Content",
+                ),
+            ],
+        )
+        issues = [r["issue"] for r in results]
+        assert "missing_source_field" in issues
+
+    def test_invalid_source_url(self, tmp_path):
+        """Source page with non-URL source field is flagged."""
+        results = self._run_check(
+            tmp_path / "wiki",
+            [
+                (
+                    "sources/notes/example.md",
+                    "---\ntitle: Test\ntype: source\nsource: karpathy-llm-wiki\n---\n# Content",
+                ),
+            ],
+        )
+        issues = [r["issue"] for r in results]
+        assert "invalid_source_url" in issues
+        assert any("karpathy-llm-wiki" in r["details"] for r in results)
+
+    def test_non_source_page_ignored(self, tmp_path):
+        """Non-source pages are not checked."""
+        results = self._run_check(
+            tmp_path / "wiki",
+            [
+                (
+                    "concepts/page.md",
+                    "---\ntitle: Test\ntype: concept\n---\n# Content",
+                ),
+            ],
+        )
+        assert len(results) == 0

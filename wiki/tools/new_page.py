@@ -80,6 +80,10 @@ def main() -> None:
         choices=["adr", "rfc", "notes"],
         help="源类型（仅 type=source 时需要：adr/rfc/notes）",
     )
+    parser.add_argument(
+        "--slug",
+        help="自定义文件名 slug（覆盖自动推导）。中文标题时必需，否则自动推导会得到空字符串。",
+    )
     args = parser.parse_args()
 
     # --source-type is required when type == "source"
@@ -94,7 +98,18 @@ def main() -> None:
     # Compute output path from type + title (+ source-type for sources)
     # ------------------------------------------------------------------
 
-    slug = to_kebab_case(args.title)
+    if args.slug:
+        slug = args.slug
+    else:
+        slug = to_kebab_case(args.title)
+
+    if not slug:
+        print(
+            "错误：无法从标题推导出有效的文件名 slug。"
+            "请使用 --slug 参数指定英文文件名。",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     if args.type == "source":
         assert args.source_type is not None  # validated above

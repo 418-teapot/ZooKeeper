@@ -77,6 +77,7 @@ status: stable
 
 - **格式：** 全小写 kebab-case，如 `permission-system.md`、`deny-list.md`
 - **禁止：** 数字前缀（如 `01-permission.md`）、空格、大写字母
+- **语言：** 文件名必须是英文 kebab-case，禁止中文或非 ASCII 字符。中文标题需要用英文翻译或缩写作为文件名
 - **唯一性：** 同一 type 下文件名唯一。不同 type 之间可以重名（如 `concepts/plugin.md` 和 `entities/plugin.md` 含义不同）
 
 ### 路径与交叉引用规则
@@ -137,7 +138,7 @@ Agent 直接读写文件时（`read` / `write` / `edit` / `bash` 指令）使用
 创建新页面的命令：
 
 ```
-python3 wiki/tools/new_page.py \
+python3 ~/.zoo/wiki/tools/new_page.py \
     --type <concept|entity|source|analysis|synthesis> \
     --title "<页面标题>"
 ```
@@ -145,7 +146,7 @@ python3 wiki/tools/new_page.py \
 对于 source 类型，额外指定 `--source-type`：
 
 ```
-python3 wiki/tools/new_page.py \
+python3 ~/.zoo/wiki/tools/new_page.py \
     --type source \
     --title "<页面标题>" \
     --source-type <adr|rfc|notes>
