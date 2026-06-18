@@ -1,81 +1,17 @@
 ---
 name: wiki-ingest
-description: 用于将外部源文档或对话知识 ingest 到项目 wiki 中。收到 wiki 可 ingest 的源材料时加载此技能。
+description: 用于将外部源文档或对话知识 ingest 到项目 wiki 中。统一委派 kiwi 蒸馏后执行写入，自动维护原始材料副本和反向链接。只要涉及 wiki 摄入、知识归档或文档蒸馏的请求，就请加载此技能。
 ---
 
 # Wiki Ingest 技能
 
 将外部源文档或对话发现的知识 ingest 到 `~/.zoo/wiki/` 中。
-收到值得归档的源材料时加载此技能，根据源材料复杂度选择直接写入或委派 kiwi 蒸馏。
+
+收到值得归档的源材料时加载此技能，统一委派 kiwi 蒸馏后执行写入。
 
 ---
 
-## Phase 0 — 判断路径
-
-根据源材料的性质选择执行路径：
-
-| 特征 | 路径 | 说明 |
-|------|------|------|
-| 结构化内容、已 wiki 格式化的文本、简短的摘要 | **简单路径** | 直接调用工具脚本写入 |
-| URL（网页链接） | **复杂路径** | 直接传给 kiwi（kiwi 自己 webfetch 抓取） |
-| 非结构化原始源、会议记录、外部 RFC、设计文档 | **复杂路径** | 委派 kiwi 蒸馏 |
-
-**结构化判定标准：**
-- 内容已按 wiki 页面节结构组织（Overview / Details / Relations）
-- 已知目标目录和文件名
-- 不需要摘要/重写/组织
-
-**URL 输入规则：**
-- 不要委派 spider 抓取 — 浪费上下文
-- 直接把 URL 放入 kiwi 的 CONTEXT，kiwi 用 `webfetch` 自行获取内容
-
-**非结构化判定标准：**
-- 聊天记录、会议转录、原始 API 文档
-- 需要分类、摘要、提取要点
-- 需要跨多个 wiki 目录组织
-
----
-
-## Phase 1 — 简单路径：直接写入
-
-适用于结构化/已格式化的内容。
-
-1. 使用 `new_page.py` 脚手架创建骨架页面（如果需要新页面）：
-    ```bash
-    python3 ~/.zoo/wiki/tools/new_page.py \
-        --type <concept|entity|analysis|synthesis> \
-        --title "<页面标题>"
-    ```
-    对于 source 类型：
-    ```bash
-    python3 ~/.zoo/wiki/tools/new_page.py \
-        --type source \
-        --title "<页面标题>" \
-        --source-type <adr|rfc|notes>
-    ```
-2. 使用 `write` 或 `edit` 工具填充页面内容
-3. 更新 `~/.zoo/wiki/index.md` — 在对应类别追加条目
-4. 调用 `wiki_log.py` 追加日志：
-    ```bash
-    python3 ~/.zoo/wiki/tools/wiki_log.py \
-        --op ingest --path "wiki/<dir>/<file>.md" \
-        --action create --note "<简短说明>"
-    ```
-5. （可选）更新相关页面的 `related` 字段
-6. 运行 `backlinks.py` 同步反向链接：
-    ```bash
-    python3 ~/.zoo/wiki/tools/backlinks.py --write
-    ```
-
-不需要委派 kiwi，直接进入 Phase 3。
-
----
-
-## Phase 2 — 复杂路径：委派 kiwi 蒸馏
-
-适用于非结构化复杂源材料。
-
-### 2.1 分类源材料
+## Phase 0 — 分类源材料
 
 根据源材料的性质确定目标目录和页面类型：
 
@@ -90,18 +26,13 @@ description: 用于将外部源文档或对话知识 ingest 到项目 wiki 中�
 
 如果源材料无法明确归入以上类型 → 归类为 `wiki/concepts/`，页面类型为 concept。
 
-### 2.2 检查重复
+将分类建议放入 Phase 1 的 CONTEXT 中传递给 kiwi。去重检查由 kiwi 在其工作流的 Phase 1（Load Existing State）中执行。
 
-读取 `~/.zoo/wiki/index.md` 搜索已有页面是否覆盖了相同主题：
+---
 
-```bash
-cat ~/.zoo/wiki/index.md 2>/dev/null || echo "~/.zoo/wiki/index.md 不存在，无需去重检查"
-```
+## Phase 1 — 委派 kiwi
 
-- 如果找到重复：在已有页面补充信息，**不创建新页面**。记录补充了哪些内容。
-- 如果未找到重复：继续到下一步。
-
-### 2.3 准备源材料
+### 1.1 准备源材料
 
 根据输入形式执行对应的获取步骤：
 
@@ -117,7 +48,7 @@ cat ~/.zoo/wiki/index.md 2>/dev/null || echo "~/.zoo/wiki/index.md 不存在，�
 - 附上元信息：来源路径/URL、获取时间、内容长度
 - 如果是 URL 输入，直接将 URL 放入 CONTEXT，kiwi 自行 webfetch 获取内容
 
-### 2.4 构造三段式 Prompt
+### 1.2 构造三段式 Prompt
 
 构造包含 SUMMARY / CONTEXT / ACCEPTANCE 三段的 prompt：
 
@@ -126,7 +57,8 @@ cat ~/.zoo/wiki/index.md 2>/dev/null || echo "~/.zoo/wiki/index.md 不存在，�
 
 **CONTEXT:**
 [源内容摘要，如果是 URL 输入则放入原始 URL 而非嵌入全文]
-[已有 wiki 状态：index.md 当前条目、相关页面摘要、约束条件]
+[调用方掌握的额外上下文：相关页面变动、约束条件、用户偏好]
+[Phase 0 的分类建议（目标目录和页面类型）]
 
 **ACCEPTANCE:**
 返回一份结构化分析，描述：
@@ -137,38 +69,45 @@ cat ~/.zoo/wiki/index.md 2>/dev/null || echo "~/.zoo/wiki/index.md 不存在，�
   - 要通过 wiki_log.py 追加的日志条目
 ```
 
-### 2.5 委派 kiwi
+### 1.3 委派 kiwi
 
 将三段式 prompt 传给 kiwi subagent，不要对 kiwi 做额外约束 — 所有要求已在 ACCEPTANCE 中表达。
 
-### 2.6 执行写入
+---
 
-kiwi 返回分析后，由你（调用方 agent）执行所有文件写入：
+## Phase 2 — 通用写入步骤
 
-1. **创建新页面** — 使用 `new_page.py` 脚手架创建骨架页面：
+kiwi 返回分析后，由调用方 agent 执行写入：
+
+**创建新页面时：**
+1. **创建骨架** — 使用 `new_page.py`：
     ```bash
     python3 ~/.zoo/wiki/tools/new_page.py \
         --type <concept|entity|analysis|synthesis> \
         --title "<页面标题>"
     ```
-    对于 source 类型：
+    对于 source 类型追加 `--source-type <adr|rfc|notes>`
+2. **填充内容** — 使用 `write` / `edit` 将 kiwi 提供的页面内容写入
+
+**更新已有页面时：**
+1. 无需创建新页面
+2. **编辑页面** — 使用 `edit` 工具按照 kiwi 的建议修改已有页面的指定节
+
+**以下步骤创建和更新共用：**
+3. **保存原始材料** — 如果输入为 URL 或文件，保存原文副本到 `raw/`：
     ```bash
-    python3 ~/.zoo/wiki/tools/new_page.py \
-        --type source \
-        --title "<页面标题>" \
-        --source-type <adr|rfc|notes>
+    curl -sL "<url>" -o ~/.zoo/wiki/raw/$(date +%F)-<slug>.md
     ```
-2. **填充内容** — 使用 `write` / `edit` 工具将 kiwi 提供的页面内容写入
-3. **更新索引** — 在 `~/.zoo/wiki/index.md` 对应类别下追加条目
-4. **记录日志** — 调用 `wiki_log.py` 为每个页面追加日志：
+4. **更新索引** — 创建新页面时在 `~/.zoo/wiki/index.md` 对应类别下追加条目；更新已有页面时跳过
+5. **记录日志** — 调用 `wiki_log.py`，`--action` 用 `create` 或 `edit`：
     ```bash
     python3 ~/.zoo/wiki/tools/wiki_log.py \
         --op ingest --path "wiki/<dir>/<file>.md" \
-        --action create --note "<简短说明>"
+        --action <create|edit> --note "<简短说明>"
     ```
-5. **更新 overview.md** — 如果 kiwi 的分析建议更新，则执行
-6. **更新交叉引用** — 按照 kiwi 的建议，在已有页面的 `related` frontmatter 字段中添加新页面引用。反向链接由 `backlinks.py` 自动维护，无需手动操作
-7. **同步反向链接** — 运行 `backlinks.py` 更新所有页面的 `## Backlinks` 节：
+6. **更新 overview.md** — 如果 kiwi 的分析建议更新，则执行
+7. **更新交叉引用** — 按照 kiwi 的建议，在已有页面的 `related` 字段中添加新引用。反向链接由 `backlinks.py` 自动维护
+8. **同步反向链接**：
     ```bash
     python3 ~/.zoo/wiki/tools/backlinks.py --write
     ```
@@ -177,7 +116,7 @@ kiwi 返回分析后，由你（调用方 agent）执行所有文件写入：
 
 ## Phase 3 — 验证
 
-复杂路径（Phase 2.6 写入后）或简单路径（工具写入后），执行以下验证：
+写入完成后，执行以下验证：
 
 1. **路径确认** — 确认创建/更新的页面路径列表与预期一致
 2. **日志检查** — 确认 `~/.zoo/wiki/log.md` 中已有对应的日志条目
