@@ -8,7 +8,7 @@ sources:
   - adr-XXX
   - rfc-YYY
 related:
-  - wiki/concepts/foo.md
+  - concepts/foo.md
 status: draft|review|stable|deprecated
 ---
 

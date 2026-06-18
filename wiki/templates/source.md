@@ -6,7 +6,7 @@ updated: YYYY-MM-DD
 source: <source-id>
 tags: [tag1, tag2]
 related:
-  - wiki/analysis/foo.md
+  - analysis/foo.md
 status: draft|review|stable|deprecated
 ---
 

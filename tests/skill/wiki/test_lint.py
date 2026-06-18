@@ -31,7 +31,6 @@ from lint import (  # noqa: E402
     _pages,
     _parse_frontmatter,
     check_broken_links,
-    check_frontmatter,
     check_orphan_pages,
     check_sparse_pages,
     check_stale_pages,
@@ -175,155 +174,7 @@ class TestOrphanPages:
 
 
 # ===================================================================
-# 3. Frontmatter completeness
-# ===================================================================
-
-
-class TestFrontmatter:
-    """``check_frontmatter`` — required fields + valid enum values."""
-
-    VALID_PAGE = """\
----
-title: Valid Page
-type: concept
-created: 2024-01-01
-updated: 2024-06-01
-tags: [test]
-status: draft
----
-"""
-
-    def _write_and_check(
-        self,
-        wiki_dir: Path,
-        pages: list[tuple[str, str]],
-    ) -> list[dict]:
-        """Helper: write pages, build cache, run check_frontmatter."""
-        page_paths: list[Path] = []
-        for name, content in pages:
-            p = wiki_dir / name
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(content)
-            page_paths.append(p)
-
-        with patch.object(_lint, "WIKI_DIR", wiki_dir):
-            cache = _make_page_cache(wiki_dir, page_paths)
-            return check_frontmatter(page_paths, cache)
-
-    def test_missing_title(self, tmp_path: Path) -> None:
-        """Missing ``title`` is flagged."""
-        results = self._write_and_check(
-            tmp_path / "wiki",
-            [
-                (
-                    "page.md",
-                    "---\ntype: concept\ncreated: 2024-01-01\n"
-                    "updated: 2024-06-01\ntags: [test]\nstatus: draft\n---\n",
-                ),
-            ],
-        )
-        issues = {r["issue"] for r in results}
-        assert "missing_field:title" in issues
-
-    def test_missing_type(self, tmp_path: Path) -> None:
-        """Missing ``type`` is flagged."""
-        results = self._write_and_check(
-            tmp_path / "wiki",
-            [
-                (
-                    "page.md",
-                    "---\ntitle: No Type\ncreated: 2024-01-01\n"
-                    "updated: 2024-06-01\ntags: [test]\nstatus: draft\n---\n",
-                ),
-            ],
-        )
-        issues = {r["issue"] for r in results}
-        assert "missing_field:type" in issues
-
-    def test_invalid_type(self, tmp_path: Path) -> None:
-        """Invalid ``type`` value is flagged."""
-        results = self._write_and_check(
-            tmp_path / "wiki",
-            [
-                (
-                    "page.md",
-                    "---\ntitle: Bad Type\ntype: bogus\ncreated: 2024-01-01\n"
-                    "updated: 2024-06-01\ntags: [test]\nstatus: draft\n---\n",
-                ),
-            ],
-        )
-        issues = {r["issue"] for r in results}
-        assert "invalid_type:bogus" in issues
-
-    def test_invalid_status(self, tmp_path: Path) -> None:
-        """Invalid ``status`` value is flagged."""
-        results = self._write_and_check(
-            tmp_path / "wiki",
-            [
-                (
-                    "page.md",
-                    "---\ntitle: Bad Status\ntype: concept\ncreated: 2024-01-01\n"
-                    "updated: 2024-06-01\ntags: [test]\nstatus: unknown\n---\n",
-                ),
-            ],
-        )
-        issues = {r["issue"] for r in results}
-        assert "invalid_status:unknown" in issues
-
-    def test_invalid_date_format(self, tmp_path: Path) -> None:
-        """Invalid date format in ``created`` or ``updated`` is flagged."""
-        results = self._write_and_check(
-            tmp_path / "wiki",
-            [
-                (
-                    "page.md",
-                    "---\ntitle: Bad Date\ntype: concept\ncreated: not-a-date\n"
-                    "updated: 2024-06-01\ntags: [test]\nstatus: draft\n---\n",
-                ),
-            ],
-        )
-        issues = {r["issue"] for r in results}
-        assert "invalid_date:created" in issues
-
-    def test_valid_frontmatter_not_flagged(self, tmp_path: Path) -> None:
-        """All fields valid → no issues."""
-        results = self._write_and_check(
-            tmp_path / "wiki",
-            [
-                ("page.md", self.VALID_PAGE),
-            ],
-        )
-        assert len(results) == 0, f"Expected clean, got: {results}"
-
-    def test_no_frontmatter(self, tmp_path: Path) -> None:
-        """Page without YAML frontmatter gets ``missing_frontmatter``."""
-        results = self._write_and_check(
-            tmp_path / "wiki",
-            [
-                ("page.md", "# Just content\n\nNo frontmatter here.\n"),
-            ],
-        )
-        issues = {r["issue"] for r in results}
-        assert "missing_frontmatter" in issues
-
-    def test_multiple_issues_same_page(self, tmp_path: Path) -> None:
-        """A page with multiple problems reports all of them."""
-        results = self._write_and_check(
-            tmp_path / "wiki",
-            [
-                ("page.md", "---\ntitle: Only Title\n---\n\nBody.\n"),
-            ],
-        )
-        issues = {r["issue"] for r in results}
-        # Missing: type, created, updated, tags, status
-        for field in ("type", "created", "updated", "tags", "status"):
-            assert f"missing_field:{field}" in issues, (
-                f"Expected missing_field:{field} in {issues}"
-            )
-
-
-# ===================================================================
-# 4. Sparse pages
+# 3. Sparse pages
 # ===================================================================
 
 
@@ -379,7 +230,7 @@ class TestSparsePages:
 
 
 # ===================================================================
-# 5. Stale pages
+# 4. Stale pages
 # ===================================================================
 
 
@@ -472,7 +323,7 @@ class TestStalePages:
 
 
 # ===================================================================
-# 6. Page discovery (_pages)
+# 5. Page discovery (_pages)
 # ===================================================================
 
 

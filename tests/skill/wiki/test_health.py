@@ -153,8 +153,8 @@ class TestCheckEmptyFiles:
         assert len(result) == 2
         statuses = {r["path"]: r["status"] for r in result}
         # paths are relative to REPO_ROOT (tmp_path)
-        assert statuses["wiki/sources/small.md"] == "stub"
-        assert statuses["wiki/concepts/empty.md"] == "empty"
+        assert statuses["sources/small.md"] == "stub"
+        assert statuses["concepts/empty.md"] == "empty"
 
     def test_custom_threshold(self, tmp_path):
         """Custom threshold changes what qualifies as a stub."""
@@ -192,7 +192,7 @@ class TestCheckIndexSync:
     def test_on_disk_not_in_index(self, tmp_path):
         """File on disk but missing from index.md → on_disk_not_in_index."""
         index = tmp_path / "wiki" / "index.md"
-        _write(index, "# Index\n\n- [Existing](wiki/sources/existing.md)\n")
+        _write(index, "# Index\n\n- [Existing](sources/existing.md)\n")
         disk_page = _write(
             tmp_path / "wiki" / "sources" / "orphan.md",
             "# Orphan page",
@@ -206,7 +206,7 @@ class TestCheckIndexSync:
         result = health.check_index_sync(
             [disk_page, tmp_path / "wiki" / "sources" / "existing.md"]
         )
-        assert result["on_disk_not_in_index"] == ["wiki/sources/orphan.md"]
+        assert result["on_disk_not_in_index"] == ["sources/orphan.md"]
         assert result["in_index_not_on_disk"] == []
 
     def test_in_index_not_on_disk(self, tmp_path):
@@ -215,8 +215,8 @@ class TestCheckIndexSync:
         _write(
             index,
             "# Index\n\n"
-            "- [Stale](wiki/sources/stale.md)\n"
-            "- [Alive](wiki/sources/alive.md)\n",
+            "- [Stale](sources/stale.md)\n"
+            "- [Alive](sources/alive.md)\n",
         )
         alive = _write(
             tmp_path / "wiki" / "sources" / "alive.md",
@@ -225,8 +225,8 @@ class TestCheckIndexSync:
 
         result = health.check_index_sync([alive])
         stale_paths = result["in_index_not_on_disk"]
-        assert "wiki/sources/stale.md" in stale_paths
-        assert "wiki/sources/alive.md" not in stale_paths
+        assert "sources/stale.md" in stale_paths
+        assert "sources/alive.md" not in stale_paths
         assert result["on_disk_not_in_index"] == []
 
     def test_all_synced(self, tmp_path):
@@ -234,9 +234,7 @@ class TestCheckIndexSync:
         index = tmp_path / "wiki" / "index.md"
         _write(
             index,
-            "# Index\n\n"
-            "- [Page A](wiki/sources/a.md)\n"
-            "- [Page B](wiki/concepts/b.md)\n",
+            "# Index\n\n- [Page A](sources/a.md)\n- [Page B](concepts/b.md)\n",
         )
         a = _write(tmp_path / "wiki" / "sources" / "a.md", "# A")
         b = _write(tmp_path / "wiki" / "concepts" / "b.md", "# B")
@@ -271,7 +269,7 @@ class TestCheckLogCoverage:
         log = tmp_path / "wiki" / "log.md"
         _write(
             log,
-            "## [2024-06-01] create | wiki/sources/adr/my-adr.md | adr — Added\n",
+            "## [2024-06-01] create | sources/adr/my-adr.md | adr — Added\n",
         )
         page = _write(
             tmp_path / "wiki" / "sources" / "adr" / "my-adr.md",
@@ -289,7 +287,7 @@ class TestCheckLogCoverage:
         )
         result = health.check_log_coverage([page])
         assert len(result) == 1
-        assert result[0]["path"] == "wiki/sources/adr/unlogged.md"
+        assert result[0]["path"] == "sources/adr/unlogged.md"
         assert result[0]["slug"] == "unlogged"
         assert result[0]["title"] == "unlogged adr"
 
@@ -298,7 +296,7 @@ class TestCheckLogCoverage:
         _write(tmp_path / "wiki" / "log.md", "# Log\n")
         _write(
             tmp_path / "wiki" / "log.md",
-            "# Log\n## [2024-06-01] create | wiki/sources/adr/logged.md | adr\n",
+            "# Log\n## [2024-06-01] create | sources/adr/logged.md | adr\n",
         )
         # A source page that is logged
         _write(
@@ -427,3 +425,108 @@ class TestAllWikiPages:
         names = [p.name for p in pages]
         assert "real.md" in names
         assert "nested.md" not in names
+
+
+# ── check_frontmatter ────────────────────────────────────────────────
+
+
+class TestCheckFrontmatter:
+    """``check_frontmatter`` — required fields + valid enum values."""
+
+    VALID_PAGE = """\
+---
+title: Valid Page
+type: concept
+created: 2024-01-01
+updated: 2024-06-01
+tags: [test]
+status: draft
+---
+"""
+
+    def _run_check(self, wiki_dir, pages) -> list[dict]:
+        """Helper: write pages and run check_frontmatter."""
+        page_paths: list[Path] = []
+        for name, content in pages:
+            p = wiki_dir / name
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content)
+            page_paths.append(p)
+        return health.check_frontmatter(page_paths)
+
+    def test_missing_frontmatter_detection(self, tmp_path):
+        """Page without YAML frontmatter gets ``missing_frontmatter``."""
+        results = self._run_check(
+            tmp_path / "wiki",
+            [("page.md", "# Just content\n\nNo frontmatter here.\n")],
+        )
+        issues = {r["issue"] for r in results}
+        assert "missing_frontmatter" in issues
+
+    def test_missing_required_field(self, tmp_path):
+        """Missing required field is flagged."""
+        results = self._run_check(
+            tmp_path / "wiki",
+            [
+                (
+                    "page.md",
+                    "---\ntype: concept\ncreated: 2024-01-01\n"
+                    "updated: 2024-06-01\ntags: [test]\nstatus: draft\n---\n",
+                ),
+            ],
+        )
+        issues = {r["issue"] for r in results}
+        assert "missing_field:title" in issues
+
+    def test_invalid_type(self, tmp_path):
+        """Invalid ``type`` value is flagged."""
+        results = self._run_check(
+            tmp_path / "wiki",
+            [
+                (
+                    "page.md",
+                    "---\ntitle: Bad Type\ntype: bogus\ncreated: 2024-01-01\n"
+                    "updated: 2024-06-01\ntags: [test]\nstatus: draft\n---\n",
+                ),
+            ],
+        )
+        issues = {r["issue"] for r in results}
+        assert "invalid_type:bogus" in issues
+
+    def test_invalid_status(self, tmp_path):
+        """Invalid ``status`` value is flagged."""
+        results = self._run_check(
+            tmp_path / "wiki",
+            [
+                (
+                    "page.md",
+                    "---\ntitle: Bad Status\ntype: concept\ncreated: 2024-01-01\n"
+                    "updated: 2024-06-01\ntags: [test]\nstatus: unknown\n---\n",
+                ),
+            ],
+        )
+        issues = {r["issue"] for r in results}
+        assert "invalid_status:unknown" in issues
+
+    def test_valid_frontmatter_passes(self, tmp_path):
+        """All fields valid → no issues."""
+        results = self._run_check(
+            tmp_path / "wiki",
+            [("page.md", self.VALID_PAGE)],
+        )
+        assert len(results) == 0, f"Expected clean, got: {results}"
+
+    def test_invalid_date_format(self, tmp_path):
+        """Invalid date format in ``created`` or ``updated`` is flagged."""
+        results = self._run_check(
+            tmp_path / "wiki",
+            [
+                (
+                    "page.md",
+                    "---\ntitle: Bad Date\ntype: concept\ncreated: not-a-date\n"
+                    "updated: 2024-06-01\ntags: [test]\nstatus: draft\n---\n",
+                ),
+            ],
+        )
+        issues = {r["issue"] for r in results}
+        assert "invalid_date:created" in issues

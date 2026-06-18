@@ -5,7 +5,7 @@ created: YYYY-MM-DD
 updated: YYYY-MM-DD
 tags: [tag1, tag2]
 related:
-  - wiki/entities/foo.md
+  - entities/foo.md
 status: draft|review|stable|deprecated
 ---
 
@@ -33,8 +33,8 @@ status: draft|review|stable|deprecated
 
 ## Relations
 
-- [相关页面](wiki/concepts/related.md) — 关联说明
-- [实体](wiki/entities/some-entity.md) — 实现该概念的实体
+- [相关页面](concepts/related.md) — 关联说明
+- [实体](entities/some-entity.md) — 实现该概念的实体
 
 ## References
 

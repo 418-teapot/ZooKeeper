@@ -1,11 +1,11 @@
 ---
 name: wiki-ingest
-description: 用于将外部源文档或对话发现的知识 ingest 到 wiki/ 中。由 build agent 在收到源材料时加载本技能，生成三段式 prompt 后委派给 kiwi 执行。
+description: 用于将外部源文档或对话发现的知识 ingest 到 ~/.zoo/wiki/ 中。由 build agent 在收到源材料时加载本技能，生成三段式 prompt 后委派给 kiwi 执行。
 ---
 
 # Wiki Ingest 技能
 
-将外部源文档或对话发现的知识 ingest 到 `wiki/` 中。
+将外部源文档或对话发现的知识 ingest 到 `~/.zoo/wiki/` 中。
 由 build agent 在收到源材料时加载本技能，生成三段式 prompt 后委派给 kiwi 执行。
 
 ---
@@ -16,24 +16,24 @@ description: 用于将外部源文档或对话发现的知识 ingest 到 wiki/ �
 
 | 类型 | 特征 | 目标目录 | 页面类型 |
 |------|------|---------|---------|
-| 架构决策记录 | ADR、设计文档、RFC | `wiki/sources/adr/` | source |
-| 外部规范 | 第三方 API 文档、标准、指南 | `wiki/sources/rfc/` | source |
-| 会议记录 | 讨论总结、决策会议笔记 | `wiki/sources/notes/` | source |
-| 概念知识 | 关于某机制或原理的说明 | `wiki/concepts/` | concept |
-| 实体行为 | 某工具、agent、模块的行为 | `wiki/entities/` | entity |
-| 分析对比 | 多个选项的权衡、经验总结 | `wiki/analysis/` | analysis |
+| 架构决策记录 | ADR、设计文档、RFC | `~/.zoo/wiki/sources/adr/` | source |
+| 外部规范 | 第三方 API 文档、标准、指南 | `~/.zoo/wiki/sources/rfc/` | source |
+| 会议记录 | 讨论总结、决策会议笔记 | `~/.zoo/wiki/sources/notes/` | source |
+| 概念知识 | 关于某机制或原理的说明 | `~/.zoo/wiki/concepts/` | concept |
+| 实体行为 | 某工具、agent、模块的行为 | `~/.zoo/wiki/entities/` | entity |
+| 分析对比 | 多个选项的权衡、经验总结 | `~/.zoo/wiki/analysis/` | analysis |
 
-如果源材料无法明确归入以上类型 → 归类为 `wiki/concepts/`，页面类型为 concept。
+如果源材料无法明确归入以上类型 → 归类为 `~/.zoo/wiki/concepts/`，页面类型为 concept。
 
 ---
 
 ## Phase 1 — 检查重复
 
-读取 `wiki/index.md` 搜索已有页面是否覆盖了相同主题：
+读取 `~/.zoo/wiki/index.md` 搜索已有页面是否覆盖了相同主题：
 
 ```bash
 # 如果存在 index.md，读取并搜索相关关键词
-cat wiki/index.md 2>/dev/null || echo "wiki/index.md 不存在，无需去重检查"
+cat ~/.zoo/wiki/index.md 2>/dev/null || echo "~/.zoo/wiki/index.md 不存在，无需去重检查"
 ```
 
 - 如果找到重复：在已有页面补充信息，**不创建新页面**。记录补充了哪些内容。
@@ -72,8 +72,8 @@ cat wiki/index.md 2>/dev/null || echo "wiki/index.md 不存在，无需去重检
 
 **ACCEPTANCE:**
 - 创建 [N] 个 wiki 页面（指定目录和预期页面类型）
-- 更新 `wiki/index.md` 的对应类别条目
-- 追加日志条目到 `wiki/log.md`
+- 更新 `~/.zoo/wiki/index.md` 的对应类别条目
+- 追加日志条目到 `~/.zoo/wiki/log.md`
 - 适当时更新相关页面的 `related` 字段
 - 返回创建/更新的页面路径列表
 ```
@@ -106,8 +106,8 @@ task(subagent="kiwi", prompt=<Phase 3 构造的三段式 prompt>)
 kiwi 返回后执行以下验证：
 
 1. **路径确认** — 确认 kiwi 返回的页面路径列表与 ACCEPTANCE 中预期的目录和数量一致
-2. **完整性检查** — 确认 `wiki/log.md` 中已有对应的 ingest 日志条目
-3. **索引检查** — 确认 `wiki/index.md` 的对应类别已更新
+2. **完整性检查** — 确认 `~/.zoo/wiki/log.md` 中已有对应的 ingest 日志条目
+3. **索引检查** — 确认 `~/.zoo/wiki/index.md` 的对应类别已更新
 4. **可选：健康检查** — 如果存在健康检查工具，运行它以验证 wiki 结构完整性：
 
 ```bash

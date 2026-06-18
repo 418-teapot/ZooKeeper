@@ -18,7 +18,10 @@ from pathlib import Path
 # core/skills/wiki-maintain/tools/new_page.py
 #   -> tools/ -> wiki-maintain/ -> skills/ -> core/ -> repo root
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
-TEMPLATES_DIR = REPO_ROOT / "wiki" / "templates"
+# Wiki is accessed via the user-global ~/.zoo/wiki symlink.
+# Resolve to the real path so template files can be found.
+WIKI_DIR = (Path.home() / ".zoo" / "wiki").resolve()
+TEMPLATES_DIR = WIKI_DIR / "templates"
 VALID_TYPES = {"concept", "entity", "source", "analysis", "synthesis"}
 
 
@@ -67,7 +70,7 @@ def main() -> None:
         print("错误：无效的输出路径。", file=sys.stderr)
         sys.exit(1)
 
-    wiki_dir = (REPO_ROOT / "wiki").resolve()
+    wiki_dir = WIKI_DIR
     try:
         resolved.relative_to(wiki_dir)
     except ValueError:

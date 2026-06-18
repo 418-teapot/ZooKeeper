@@ -305,6 +305,28 @@ def main() -> None:
 
     header("安装完成")
     info(f"✅ 配置已写入: {opencode_json}")
+
+    # ── Wiki symlink ────────────────────────────────────────────────
+    header("Wiki 软链接")
+    zoo_dir = os.path.join(os.path.expanduser("~"), ".zoo")
+    source_wiki = os.path.join(SCRIPT_DIR, "wiki")
+    target_link = os.path.join(zoo_dir, "wiki")
+
+    if not os.path.isdir(source_wiki):
+        warn(f"Wiki 源目录不存在，跳过软链接: {source_wiki}")
+    else:
+        os.makedirs(zoo_dir, exist_ok=True)
+        if os.path.islink(target_link):
+            os.unlink(target_link)
+        elif os.path.exists(target_link):
+            warn(f"路径已存在，将覆盖: {target_link}")
+            if os.path.isdir(target_link):
+                shutil.rmtree(target_link)
+            else:
+                os.remove(target_link)
+        os.symlink(source_wiki, target_link)
+        info(f"✓ Wiki 软链接: {target_link} → {source_wiki}")
+
     print("")
     print(f"  {bold('查看:')}  opencode config --path")
     print(f"  {bold('验证:')}  opencode config --json")

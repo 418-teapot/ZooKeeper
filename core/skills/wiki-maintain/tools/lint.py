@@ -1,12 +1,12 @@
+#!/usr/bin/env python3
 """
 lint.py — Deep structural checks for wiki pages.
 
-Performs 5 deterministic checks on the wiki:
+Performs 4 deterministic checks on the wiki:
   1. Broken links (Markdown links + frontmatter `related` entries)
   2. Orphan pages (zero inbound links AND not listed in index.md)
-  3. Frontmatter completeness (required fields + valid enums)
-  4. Sparse pages (body text < 50 chars after stripping frontmatter)
-  5. Stale pages (updated > 90 days ago, status != deprecated)
+  3. Sparse pages (body text < 50 chars after stripping frontmatter)
+  4. Stale pages (updated > 90 days ago, status != deprecated)
 
 No LLM calls — pure structural validation.
 """
@@ -26,7 +26,9 @@ from typing import Any
 REPO_ROOT = (
     Path(__file__).resolve().parent.parent.parent.parent.parent
 )  # lint.py -> tools/ -> wiki-maintain/ -> skills/ -> core/ -> repo root
-WIKI_DIR = REPO_ROOT / "wiki"
+# Wiki is accessed via the user-global ~/.zoo/wiki symlink.
+# Resolve the symlink so that all paths resolve under REPO_ROOT.
+WIKI_DIR = (Path.home() / ".zoo" / "wiki").resolve()
 
 # Meta pages that are excluded from most checks (config, logs, index, etc.)
 META_PAGES: set[str] = {
@@ -38,16 +40,6 @@ META_PAGES: set[str] = {
     "overview.md",
 }
 
-REQUIRED_FRONTMATTER_FIELDS = [
-    "title",
-    "type",
-    "created",
-    "updated",
-    "tags",
-    "status",
-]
-VALID_TYPES = {"concept", "entity", "source", "analysis", "synthesis"}
-VALID_STATUSES = {"draft", "review", "stable", "deprecated"}
 STALE_DAYS = 90
 SPARSE_BODY_CHARS = 50
 
@@ -203,24 +195,17 @@ def _resolve_target(link_target: str) -> Path | None:
     """
     Resolve a link target to an absolute path.
 
-    Handles both wiki-relative paths (wiki/foo.md) and
-    project-root-relative paths.
+    Links are now wiki-root-relative (e.g. ``concepts/foo.md``). For backward
+    compatibility, legacy ``wiki/``-prefixed targets are also accepted.
     """
     p = Path(link_target)
     if p.is_absolute():
         return None
-    # If it starts with wiki/, resolve relative to repo root
+    # Strip legacy wiki/ prefix for backward compatibility
     if str(p).startswith("wiki/"):
-        full = (REPO_ROOT / p).resolve()
-    else:
-        full = (WIKI_DIR / p).resolve()
-    if full.exists():
-        return full
-    # Try as relative to WIKI_DIR
-    full2 = (WIKI_DIR / p).resolve()
-    if full2.exists():
-        return full2
-    return None
+        p = Path(*p.parts[1:])
+    full = (WIKI_DIR / p).resolve()
+    return full if full.exists() else None
 
 
 def _links_in_page(content: str, page_path: Path) -> list[tuple[str, str]]:
@@ -257,10 +242,10 @@ def _pages_referenced_in_index() -> set[str]:
     for match in MD_LINK_RE.finditer(content):
         target = match.group(2)
         ref_path = Path(target)
+        # Strip legacy wiki/ prefix; current paths are already wiki-root-relative
         if str(ref_path).startswith("wiki/"):
-            referenced.add(str(ref_path.relative_to("wiki")))
-        else:
-            referenced.add(str(ref_path))
+            ref_path = Path(*ref_path.parts[1:])
+        referenced.add(str(ref_path))
     return referenced
 
 
@@ -353,78 +338,6 @@ def check_orphan_pages(
     return results
 
 
-def check_frontmatter(
-    pages: list[Path],
-    page_cache: dict[str, tuple[str, dict[str, Any]]],
-) -> list[dict[str, Any]]:
-    """
-    Check 3: Frontmatter completeness.
-
-    Verify every page has required fields with valid enum values.
-    Skip pages without frontmatter.
-    """
-    results: list[dict[str, Any]] = []
-    for page in pages:
-        rel = _relative_path(page)
-        content, fm = page_cache.get(rel, ("", {}))
-        if not content or not fm:
-            # No frontmatter — this is an issue for content pages
-            results.append(
-                {
-                    "page": rel,
-                    "issue": "missing_frontmatter",
-                    "details": "No YAML frontmatter found",
-                }
-            )
-            continue
-
-        for field in REQUIRED_FRONTMATTER_FIELDS:
-            if field not in fm:
-                results.append(
-                    {
-                        "page": rel,
-                        "issue": f"missing_field:{field}",
-                        "details": f"Required frontmatter field '{field}' is missing",
-                    }
-                )
-
-        # Validate type
-        page_type = fm.get("type")
-        if page_type is not None and page_type not in VALID_TYPES:
-            results.append(
-                {
-                    "page": rel,
-                    "issue": f"invalid_type:{page_type}",
-                    "details": f"Type '{page_type}' is not valid. Must be one of: {', '.join(sorted(VALID_TYPES))}",
-                }
-            )
-
-        # Validate status
-        status = fm.get("status")
-        if status is not None and status not in VALID_STATUSES:
-            results.append(
-                {
-                    "page": rel,
-                    "issue": f"invalid_status:{status}",
-                    "details": f"Status '{status}' is not valid. Must be one of: {', '.join(sorted(VALID_STATUSES))}",
-                }
-            )
-
-        # Validate date formats
-        for date_field in ("created", "updated"):
-            val = fm.get(date_field)
-            if val and _parse_date(str(val)) is None:
-                results.append(
-                    {
-                        "page": rel,
-                        "issue": f"invalid_date:{date_field}",
-                        "details": f"Field '{date_field}' value '{val}' is not a valid YYYY-MM-DD date",
-                    }
-                )
-
-    return results
-
-
 def check_sparse_pages(
     pages: list[Path],
     page_cache: dict[str, tuple[str, dict[str, Any]]],
@@ -512,7 +425,6 @@ def format_markdown(results: dict[str, list[dict[str, Any]]]) -> str:
     check_names = {
         "broken_links": "断裂链接 (Broken Links)",
         "orphan_pages": "孤立页面 (Orphan Pages)",
-        "frontmatter": "Frontmatter 完整性 (Frontmatter Completeness)",
         "sparse_pages": "稀疏页面 (Sparse Pages)",
         "stale_pages": "过时页面 (Stale Pages)",
     }
@@ -545,15 +457,6 @@ def format_markdown(results: dict[str, list[dict[str, Any]]]) -> str:
                 inbound = item.get("inbound_links", 0)
                 in_idx = "否" if not item.get("in_index") else "是"
                 lines.append(f"| {page} | {inbound} | {in_idx} |")
-
-        elif key == "frontmatter":
-            lines.append("| 页面 | 问题 | 详情 |")
-            lines.append("|------|------|------|")
-            for item in items:
-                page = item.get("page", "")
-                issue = item.get("issue", "")
-                details = item.get("details", "")
-                lines.append(f"| {page} | {issue} | {details} |")
 
         elif key == "sparse_pages":
             lines.append("| 页面 | 正文长度 | 阈值 |")
@@ -620,11 +523,10 @@ def main() -> None:
         fm = _parse_frontmatter(content)
         page_cache[rel] = (content, fm)
 
-    # Run all 5 checks
+    # Run all 4 checks
     results: dict[str, list[dict[str, Any]]] = {
         "broken_links": check_broken_links(pages, page_cache),
         "orphan_pages": check_orphan_pages(pages, page_cache),
-        "frontmatter": check_frontmatter(pages, page_cache),
         "sparse_pages": check_sparse_pages(pages, page_cache),
         "stale_pages": check_stale_pages(pages, page_cache),
     }

@@ -1,14 +1,6 @@
 #!/usr/bin/env python3
-from __future__ import annotations
-
-import argparse
-import json
-import re
-from datetime import date
-from pathlib import Path
-
 """
-Structural health checks for the ZooKeeper wiki.
+Structural health checks for the ZooKeeper wiki (accessed via ~/.zoo/wiki).
 
 Unlike lint.py (which performs deeper structural checks), health.py is purely
 deterministic — zero API calls, fast enough to run every session.
@@ -22,16 +14,29 @@ Checks:
   - Empty / stub files (pages with no real content beyond frontmatter)
   - Index sync (index.md entries vs actual files on disk)
   - Log coverage (source pages without a corresponding log entry)
+  - Frontmatter completeness (required fields + valid enums)
 
 Design boundary:
   health.py = structural integrity, deterministic, run every session
   lint.py   = content quality, semantic (LLM), run periodically
 """
 
+from __future__ import annotations
+
+import argparse
+import json
+import re
+from datetime import date
+from pathlib import Path
+from typing import Any
+
 # ZooKeeper: health.py is at core/skills/wiki-maintain/tools/health.py
 # 5 levels up: tools/ -> wiki-maintain/ -> skills/ -> core/ -> repo root
 REPO_ROOT = Path(__file__).parent.parent.parent.parent.parent
-WIKI_DIR = REPO_ROOT / "wiki"
+# Wiki is accessed via the user-global ~/.zoo/wiki symlink (portable across
+# plugin installations).  Resolve the symlink so that all paths resolve
+# under REPO_ROOT for relative path operations.
+WIKI_DIR = (Path.home() / ".zoo" / "wiki").resolve()
 INDEX_FILE = WIKI_DIR / "index.md"
 LOG_FILE = WIKI_DIR / "log.md"
 
@@ -69,6 +74,18 @@ def strip_frontmatter(content: str) -> str:
     return content.strip()
 
 
+def _wiki_rel(path: Path) -> str:
+    """Return path relative to WIKI_DIR (wiki-root-relative, no ``wiki/`` prefix).
+
+    Used for cross-references, index entries, log ``<path>`` and for matching
+    against wiki-root-relative values returned by index / log parsers.
+    """
+    try:
+        return str(path.relative_to(WIKI_DIR))
+    except ValueError:
+        return str(path)
+
+
 # ── Check: Empty / Stub files ───────────────────────────────────────
 
 
@@ -83,7 +100,7 @@ def check_empty_files(
         if len(body) < threshold:
             results.append(
                 {
-                    "path": str(p.relative_to(REPO_ROOT)),
+                    "path": _wiki_rel(p),
                     "total_bytes": len(raw),
                     "body_bytes": len(body),
                     "status": "empty" if len(body) == 0 else "stub",
@@ -123,9 +140,8 @@ def check_index_sync(pages: list[Path]) -> dict:
 
     index_paths = set()
     for link in index_links:
-        resolved = (REPO_ROOT / link).resolve()
-        link_name = Path(link).name
-        if link_name not in meta_pages:
+        resolved = (WIKI_DIR / link).resolve()
+        if resolved.name not in meta_pages:
             index_paths.add(resolved)
 
     disk_paths = set()
@@ -134,12 +150,10 @@ def check_index_sync(pages: list[Path]) -> dict:
             disk_paths.add(p.resolve())
 
     in_index_not_on_disk = [
-        str(p.relative_to(REPO_ROOT))
-        for p in sorted(index_paths - disk_paths)
-        if REPO_ROOT in p.parents or p == REPO_ROOT
+        _wiki_rel(p) for p in sorted(index_paths - disk_paths)
     ]
     on_disk_not_in_index = [
-        str(p.relative_to(REPO_ROOT)) for p in sorted(disk_paths - index_paths)
+        _wiki_rel(p) for p in sorted(disk_paths - index_paths)
     ]
 
     return {
@@ -155,7 +169,7 @@ def _parse_log_entries(log_content: str) -> set[str]:
     """Extract paths from log.md entries.
 
     ZooKeeper log format:
-        ## [YYYY-MM-DD] <op> | <path> | <type> — <note>
+        ## [<YYYY-MM-DD>] <op> | <path> | <action> — <note>
     Returns set of relative paths (e.g. 'wiki/sources/adr/some-file.md').
     """
     return set(
@@ -204,9 +218,9 @@ def check_log_coverage(pages: list[Path]) -> list[dict]:
 
     missing = []
     for p in source_pages:
-        rel_path = str(p.relative_to(REPO_ROOT))
+        rel_path = _wiki_rel(p)
 
-        # Match by relative path against logged paths
+        # Match by wiki-root-relative path against logged paths
         if rel_path not in logged_paths:
             content = read_file(p)
             fm_title = _parse_frontmatter_title(content)
@@ -219,6 +233,164 @@ def check_log_coverage(pages: list[Path]) -> list[dict]:
             )
 
     return missing
+
+
+# ── Check: Frontmatter completeness ──────────────────────────────
+
+
+def _parse_frontmatter(content: str) -> dict[str, Any]:
+    """Minimal YAML frontmatter parser.
+
+    Handles ``key: value`` pairs and YAML list syntax (both inline ``[a, b]``
+    and block ``- a\\n- b``). Returns a dict with raw string/list values.
+
+    Adapted from lint.py's ``_parse_frontmatter``.
+    """
+    fm: dict[str, Any] = {}
+    fm_match = re.match(r"^---\s*$", content, re.MULTILINE)
+    if not fm_match:
+        return fm
+    end = fm_match.end()
+    fm_end = re.search(r"^---\s*$", content[end:], re.MULTILINE)
+    if not fm_end:
+        return fm
+    raw = content[end : end + fm_end.start()].strip()
+
+    current_key: str | None = None
+    list_accum: list[str] = []
+
+    for line in raw.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("- ") and current_key is not None:
+            list_accum.append(stripped[2:].strip())
+            continue
+
+        if current_key is not None and list_accum:
+            fm[current_key] = list_accum
+            list_accum = []
+
+        if not stripped or stripped.startswith("#"):
+            if not stripped:
+                current_key = None
+            continue
+
+        if ":" in stripped and not stripped.startswith("-"):
+            colon_idx = stripped.index(":")
+            current_key = stripped[:colon_idx].strip()
+            value_part = stripped[colon_idx + 1 :].strip()
+
+            if value_part.startswith("[") and value_part.endswith("]"):
+                items = [
+                    item.strip().strip('"').strip("'")
+                    for item in value_part[1:-1].split(",")
+                ]
+                items = [i for i in items if i]
+                fm[current_key] = items
+                list_accum = []
+            elif value_part:
+                value_part = value_part.strip('"').strip("'")
+                fm[current_key] = value_part
+                list_accum = []
+            else:
+                list_accum = []
+        else:
+            current_key = None
+
+    if current_key is not None and list_accum:
+        fm[current_key] = list_accum
+
+    return fm
+
+
+REQUIRED_FRONTMATTER_FIELDS = [
+    "title",
+    "type",
+    "created",
+    "updated",
+    "tags",
+    "status",
+]
+VALID_TYPES = {"concept", "entity", "source", "analysis", "synthesis"}
+VALID_STATUSES = {"draft", "review", "stable", "deprecated"}
+
+
+def _parse_date(date_str: str) -> date | None:
+    """Parse YYYY-MM-DD string, return ``date`` or ``None``."""
+    try:
+        return date.fromisoformat(date_str.strip())
+    except (ValueError, AttributeError):
+        return None
+
+
+def check_frontmatter(pages: list[Path]) -> list[dict]:
+    """Verify every page has required frontmatter fields with valid values.
+
+    Checks:
+      - Required fields: title, type, created, updated, tags, status
+      - Valid type enum: concept/entity/source/analysis/synthesis
+      - Valid status enum: draft/review/stable/deprecated
+      - Valid date format (YYYY-MM-DD) for created and updated
+    """
+    results: list[dict] = []
+    for page in pages:
+        content = read_file(page)
+        if not content:
+            continue
+        fm = _parse_frontmatter(content)
+        rel = _wiki_rel(page)
+
+        if not fm:
+            results.append(
+                {
+                    "page": rel,
+                    "issue": "missing_frontmatter",
+                    "details": "No YAML frontmatter found",
+                }
+            )
+            continue
+
+        for field in REQUIRED_FRONTMATTER_FIELDS:
+            if field not in fm:
+                results.append(
+                    {
+                        "page": rel,
+                        "issue": f"missing_field:{field}",
+                        "details": f"Required frontmatter field '{field}' is missing",
+                    }
+                )
+
+        page_type = fm.get("type")
+        if page_type is not None and page_type not in VALID_TYPES:
+            results.append(
+                {
+                    "page": rel,
+                    "issue": f"invalid_type:{page_type}",
+                    "details": f"Type '{page_type}' is not valid. Must be one of: {', '.join(sorted(VALID_TYPES))}",
+                }
+            )
+
+        status = fm.get("status")
+        if status is not None and status not in VALID_STATUSES:
+            results.append(
+                {
+                    "page": rel,
+                    "issue": f"invalid_status:{status}",
+                    "details": f"Status '{status}' is not valid. Must be one of: {', '.join(sorted(VALID_STATUSES))}",
+                }
+            )
+
+        for date_field in ("created", "updated"):
+            val = fm.get(date_field)
+            if val and _parse_date(str(val)) is None:
+                results.append(
+                    {
+                        "page": rel,
+                        "issue": f"invalid_date:{date_field}",
+                        "details": f"Field '{date_field}' value '{val}' is not a valid YYYY-MM-DD date",
+                    }
+                )
+
+    return results
 
 
 # ── Report Generation ───────────────────────────────────────────────
@@ -234,6 +406,7 @@ def run_health() -> dict:
         "empty_files": check_empty_files(pages),
         "index_sync": check_index_sync(pages),
         "log_coverage": check_log_coverage(pages),
+        "frontmatter": check_frontmatter(pages),
     }
 
 
@@ -299,6 +472,21 @@ def format_report(results: dict) -> str:
             lines.append(f"- `{lm['path']}` — {lm['title']}")
     else:
         lines.append("所有源页面都有对应的日志记录。✅")
+    lines.append("")
+
+    # ── Frontmatter Completeness
+    fm_issues = results["frontmatter"]
+    lines.append(f"## Frontmatter 完整性（发现 {len(fm_issues)} 个问题）")
+    lines.append("")
+    if fm_issues:
+        lines.append("| 页面 | 问题 | 详情 |")
+        lines.append("|---|---|---|")
+        for fi in fm_issues:
+            lines.append(
+                f"| `{fi['page']}` | {fi['issue']} | {fi['details']} |"
+            )
+    else:
+        lines.append("所有页面 frontmatter 字段完整有效。✅")
     lines.append("")
 
     return "\n".join(lines)

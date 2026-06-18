@@ -1,6 +1,7 @@
 # Wiki Schema
 
-> 本文件是 LLM Wiki 系统的唯一权威引用。Ingest 和 query 流程中所有页面生成、格式化、命名、交叉引用操作均须遵循本 schema 的规定。LLM 在读取或写入 wiki 前应先阅读此文件。
+> 本文件位于 `~/.zoo/wiki/SCHEMA.md`（软链接到 ZooKeeper 插件源目录）。
+> 它是 LLM Wiki 系统的唯一权威引用。Ingest 和 query 流程中所有页面生成、格式化、命名、交叉引用操作均须遵循本 schema 的规定。LLM 在读取或写入 wiki 前应先阅读此文件。
 
 ---
 
@@ -41,7 +42,7 @@ wiki/
 | `source` | 否 | string | 来源标识（主要用于 source 类型，如 `adr-001`、`rfc-auth`） |
 | `sources` | 否 | string[] | 参考的源文档标识列表（用于 analysis / synthesis 类型） |
 | `tags` | 是 | string[] | 标签列表，如 `[permission, config]` |
-| `related` | 否 | string[] | 相关 wiki 页面路径列表，如 `["wiki/concepts/permission.md"]` |
+| `related` | 否 | string[] | 相关 wiki 页面路径列表（相对 wiki 根目录），如 `["concepts/permission.md"]` |
 | `status` | 是 | string | 状态：`draft` / `review` / `stable` / `deprecated` |
 
 示例：
@@ -54,8 +55,8 @@ created: 2026-06-17
 updated: 2026-06-17
 tags: [permission, security]
 related:
-  - wiki/entities/install-py.md
-  - wiki/concepts/deny-list.md
+  - entities/install-py.md
+  - concepts/deny-list.md
 status: stable
 ---
 ```
@@ -77,17 +78,26 @@ status: stable
 - **格式：** 全小写 kebab-case，如 `permission-system.md`、`deny-list.md`
 - **禁止：** 数字前缀（如 `01-permission.md`）、空格、大写字母
 - **唯一性：** 同一 type 下文件名唯一。不同 type 之间可以重名（如 `concepts/plugin.md` 和 `entities/plugin.md` 含义不同）
-- **路径：** 所有引用使用项目根目录相对路径，如 `wiki/concepts/permission.md`
 
-### 交叉引用规则
+### 路径与交叉引用规则
 
-- **内联引用：** 使用 Markdown 链接语法，路径为项目根相对路径：
+本页内交叉引用（Markdown 链接、frontmatter `related`/`sources`、log.md 的 `<path>` 字段）一律**相对 wiki 根目录**，不带 `wiki/` 或 `~/.zoo/wiki/` 前缀：
+
+- **内联链接：**
   ```
-  [权限系统](wiki/concepts/permission.md)
+  [权限系统](concepts/permission.md)
+  [构建脚本](entities/build-script.md)
   ```
-- **Frontmatter related：** 在 `related` 字段列出相关页面路径，方便工具批量解析
-- **同 type 引用：** 同一 type 内引用可直接用文件名，但推荐使用完整路径以确保鲁棒性
-- **外部引用：** 使用完整 URL
+- **Frontmatter `related`：**
+  ```yaml
+  related: [entities/install-py.md, concepts/deny-list.md]
+  ```
+- **Frontmatter `sources`（synthesis 页面）：**
+  ```yaml
+  sources: [concepts/foo.md, entities/bar.md]
+  ```
+
+Agent 直接读写文件时（`read` / `write` / `edit` / `bash` 指令）使用绝对路径 `~/.zoo/wiki/<path>`。
 
 ### 写作风格
 
@@ -113,16 +123,16 @@ status: stable
 
 ## 页面模板
 
-每种页面类型有对应的模板文件位于 `wiki/templates/`，由 `new_page.py` 脚本
+每种页面类型有对应的模板文件位于 `~/.zoo/wiki/templates/`，由 `new_page.py` 脚本
 用于创建骨架页面。kiwi 在创建新页面时应使用脚本生成骨架，然后 `edit` 填充内容。
 
 | 类型 | 模板文件 | 用途 |
 |------|---------|------|
-| concept | `wiki/templates/concept.md` | 概念页面：定义和解释领域概念、术语、抽象机制 |
-| entity | `wiki/templates/entity.md` | 实体页面：具体的模块、类、文件、角色、组件 |
-| source | `wiki/templates/source.md` | 源摘要页面：对原始材料的摘要 |
-| analysis | `wiki/templates/analysis.md` | 分析页面：方案对比、利弊权衡 |
-| synthesis | `wiki/templates/synthesis.md` | 合成页面：对 query 的结构化回答 |
+| concept | `~/.zoo/wiki/templates/concept.md` | 概念页面：定义和解释领域概念、术语、抽象机制 |
+| entity | `~/.zoo/wiki/templates/entity.md` | 实体页面：具体的模块、类、文件、角色、组件 |
+| source | `~/.zoo/wiki/templates/source.md` | 源摘要页面：对原始材料的摘要 |
+| analysis | `~/.zoo/wiki/templates/analysis.md` | 分析页面：方案对比、利弊权衡 |
+| synthesis | `~/.zoo/wiki/templates/synthesis.md` | 合成页面：对 query 的结构化回答 |
 
 创建新页面的命令：
 
@@ -130,7 +140,7 @@ status: stable
 python3 core/skills/wiki-maintain/tools/new_page.py \
     --type <concept|entity|source|analysis|synthesis> \
     --title "<页面标题>" \
-    --output wiki/<dir>/<slug>.md
+    --output ~/.zoo/wiki/<dir>/<slug>.md
 ```
 
 脚本会从模板生成带完整 frontmatter 和骨架节的页面，kiwi 只需 `edit` 填充
@@ -142,59 +152,60 @@ python3 core/skills/wiki-maintain/tools/new_page.py \
 
 ### index.md 格式
 
-`wiki/index.md` 是 wiki 的入口索引，按以下格式组织：
+`~/.zoo/wiki/index.md` 是 wiki 的入口索引，按以下格式组织：
 
 ```markdown
 ## <Category>（<中文名称>）
 
-- [页面标题](wiki/type/page.md) — 单行摘要（不超过 30 字）
-- [页面标题](wiki/type/page.md) — 单行摘要（不超过 30 字）
+- [页面标题](type/page.md) — 单行摘要（不超过 30 字）
+- [页面标题](type/page.md) — 单行摘要（不超过 30 字）
 ```
 
 分类与目录的对应关系：
 
 | index 分类 | 对应目录 | type 值 |
 |------------|----------|---------|
-| Concepts | `wiki/concepts/` | `concept` |
-| Entities | `wiki/entities/` | `entity` |
-| Sources → ADR | `wiki/sources/adr/` | `source` |
-| Sources → RFC | `wiki/sources/rfc/` | `source` |
-| Sources → Notes | `wiki/sources/notes/` | `source` |
-| Analysis | `wiki/analysis/` | `analysis` |
-| Syntheses | `wiki/syntheses/` | `synthesis` |
+| Concepts | `concepts/` | `concept` |
+| Entities | `entities/` | `entity` |
+| Sources → ADR | `sources/adr/` | `source` |
+| Sources → RFC | `sources/rfc/` | `source` |
+| Sources → Notes | `sources/notes/` | `source` |
+| Analysis | `analysis/` | `analysis` |
+| Syntheses | `syntheses/` | `synthesis` |
 
 同一分类下的条目按添加时间倒序排列（最新在最上）。
 
 ### log.md 格式
 
-`wiki/log.md` 是 append-only 变更日志，记录所有 wiki 页面的增删改操作。
+`~/.zoo/wiki/log.md` 是追加式变更日志，记录所有 wiki 页面的增删改和运维检查事件。
 
 每条记录是一个 Markdown 二级标题，格式如下：
 
 ```
-## [YYYY-MM-DD] <op> | <path> | <type> — <note>
+## [<YYYY-MM-DD>] <op> | <path> | <action> — <note>
 ```
 
 其中：
 
-- `<op>`：操作类型，取值 `add` / `update` / `delete` / `rewrite` / `archive`
-- `<path>`：页面路径（相对于项目根），如 `wiki/concepts/permission.md`
-- `<type>`：页面 type 值
+- `<op>`：**触发操作**，即触发本次变更的上游流程。取值 `ingest` / `query` / `update` / `delete` / `health` / `lint` / `heal` / `refresh`
+- `<path>`：页面路径，相对 wiki 根目录（不带 `wiki/` 前缀），如 `concepts/permission.md`。非页面事件写 `—`
+- `<action>`：**变更结果**，即对页面的实际操作。取值 `create` / `edit` / `delete` / `pass` / `fail`
 - `<note>`：简短说明（不超过 60 字）
 
 示例：
 
 ```
-## [2026-06-17] add | wiki/concepts/permission.md | concept — 权限系统概念定义
-## [2026-06-17] add | wiki/entities/install-py.md | entity — install.py 实体描述
-## [2026-06-18] update | wiki/concepts/permission.md | concept — 补充 deny 机制说明
-## [2026-06-19] rewrite | wiki/overview.md | synthesis — 首次 ingest 后重写
+## [2026-06-17] ingest | concepts/prompt-injection.md | create — 摘要来自 ADR-003
+## [2026-06-17] ingest | entities/install-py.md | create — 来自 install.py 分析
+## [2026-06-18] update | concepts/prompt-injection.md | edit — 补充 Phase 2 实施方案
+## [2026-06-19] query | syntheses/linter-comparison.md | create — 来自 "which linter" 问答
+## [2026-06-16] health | — | pass — 所有检查通过，无 orphan/missing
 ```
 
 日志按时间倒序排列，最新记录在最上方。可使用以下命令快速查看最近操作：
 
 ```bash
-grep "^## \[" wiki/log.md | head -10
+grep "^## \[" ~/.zoo/wiki/log.md | head -5
 ```
 
 ---
@@ -205,7 +216,7 @@ grep "^## \[" wiki/log.md | head -10
 
 1. **读取 SCHEMA.md** — 确认格式规范
 2. **更新 index.md** — 按分类添加新页面条目
-3. **追加 log.md** — 记录 add/update/delete 操作
+3. **追加 log.md** — 记录 ingest 操作（`ingest | <path> | create/edit`）
 4. **判断 overview.md** — 如果新知识显著改变项目概览，重写 overview.md
 5. **跨页关联更新** — 在新页面中添加 `related` 引用到已有页面
 
@@ -214,6 +225,6 @@ grep "^## \[" wiki/log.md | head -10
 1. **读取 SCHEMA.md** — 确认格式规范
 2. **读取 index.md** — 确定哪些页面可能包含相关信息
 3. **读取相关页面** — 根据 index 和 cross-reference 导航
-4. **生成 synthesis** — 创建 `wiki/syntheses/<query-slug>.md` 作为回答
+4. **生成 synthesis** — 创建 `syntheses/<query-slug>.md` 作为回答
 5. **更新 index.md** — 在 Syntheses 分类下添加条目
 6. **追加 log.md** — 记录 synthesis 的创建

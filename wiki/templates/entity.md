@@ -5,7 +5,7 @@ created: YYYY-MM-DD
 updated: YYYY-MM-DD
 tags: [tag1, tag2]
 related:
-  - wiki/concepts/foo.md
+  - concepts/foo.md
 status: draft|review|stable|deprecated
 ---
 
@@ -31,8 +31,8 @@ status: draft|review|stable|deprecated
 
 ## Relations
 
-- [概念](wiki/concepts/related-concept.md) — 实现的领域概念
-- [源文档](wiki/sources/adr/some-adr.md) — 相关决策记录
+- [概念](concepts/related-concept.md) — 实现的领域概念
+- [源文档](sources/adr/some-adr.md) — 相关决策记录
 
 ## Notes
 

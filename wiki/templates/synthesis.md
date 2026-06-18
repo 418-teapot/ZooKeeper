@@ -5,11 +5,11 @@ created: YYYY-MM-DD
 updated: YYYY-MM-DD
 tags: [tag1, tag2]
 sources:
-  - wiki/concepts/foo.md
-  - wiki/entities/bar.md
-  - wiki/analysis/baz.md
+  - concepts/foo.md
+  - entities/bar.md
+  - analysis/baz.md
 related:
-  - wiki/syntheses/other.md
+  - syntheses/other.md
 status: draft|review|stable|deprecated
 ---
 
@@ -27,9 +27,9 @@ status: draft|review|stable|deprecated
 
 ## Sources Consulted
 
-- [概念](wiki/concepts/foo.md) — 使用方式与贡献
-- [实体](wiki/entities/bar.md) — 使用方式与贡献
+- [概念](concepts/foo.md) — 使用方式与贡献
+- [实体](entities/bar.md) — 使用方式与贡献
 
 ## Related
 
-- [其他 synthesis](wiki/syntheses/other.md) — 关联说明
+- [其他 synthesis](syntheses/other.md) — 关联说明
