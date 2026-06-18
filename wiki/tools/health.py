@@ -6,9 +6,9 @@ Unlike lint.py (which performs deeper structural checks), health.py is purely
 deterministic — zero API calls, fast enough to run every session.
 
 Usage:
-    python3 core/skills/wiki-maintain/tools/health.py              # print report to stdout
-    python3 core/skills/wiki-maintain/tools/health.py --save       # also save to wiki/health-report.md
-    python3 core/skills/wiki-maintain/tools/health.py --json       # machine-readable output
+    python3 wiki/tools/health.py              # print report to stdout
+    python3 wiki/tools/health.py --save       # also save to wiki/health-report.md
+    python3 wiki/tools/health.py --json       # machine-readable output
 
 Checks:
   - Empty / stub files (pages with no real content beyond frontmatter)
@@ -30,9 +30,9 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-# ZooKeeper: health.py is at core/skills/wiki-maintain/tools/health.py
-# 5 levels up: tools/ -> wiki-maintain/ -> skills/ -> core/ -> repo root
-REPO_ROOT = Path(__file__).parent.parent.parent.parent.parent
+# ZooKeeper: health.py is at wiki/tools/health.py
+# 3 levels up: tools/ -> wiki/ -> repo root
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 # Wiki is accessed via the user-global ~/.zoo/wiki symlink (portable across
 # plugin installations).  Resolve the symlink so that all paths resolve
 # under REPO_ROOT for relative path operations.
@@ -61,7 +61,9 @@ def all_wiki_pages() -> list[Path]:
     return [
         p
         for p in WIKI_DIR.rglob("*.md")
-        if p.name not in exclude and "templates" not in p.parts
+        if p.name not in exclude
+        and "templates" not in p.parts
+        and "tools" not in p.parts  # tools/ only has .py files, but be safe
     ]
 
 

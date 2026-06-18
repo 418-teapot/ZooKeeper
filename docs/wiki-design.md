@@ -22,6 +22,7 @@
 13. [迁移路径](#13-迁移路径)
 14. [附录：架构图](#14-附录架构图)
 15. [附录：与类似方案对比（OMO / SLIM / OMP）](#15-附录与类似方案对比omo--slim--omp)
+16. [架构决策：只读专家](#16-架构决策只读专家read-only-specialist)
 
 ---
 
@@ -160,8 +161,8 @@ status: <draft | review | stable | deprecated>
 `wiki/overview.md` 是一个特殊的**活的综合页面**（type: synthesis）：
 
 - **目的**：提供项目级知识快照，让读者快速了解 wiki 中最重要的知识点
-- **更新方式**：**重写而非追加** — 每次 ingest 时，kiwi 判断是否有实质变化需要更新 overview；如果更新，直接重写整个文件
-- **触发条件**：ingest 完成后，由 kiwi 判断新知识是否足以 warrant 一次 overview 更新（LLM 决定）
+- **更新方式**：**重写而非追加** — 每次 ingest 时，kiwi 判断是否有实质变化需要更新 overview，在分析报告中给出建议；如果建议重写，由调用方执行重写
+- **触发条件**：ingest 完成后，由 kiwi 分析新知识并给出是否 warrant overview 更新的建议（LLM 决定），调用方根据建议执行
 - **内容**：高度凝练的摘要 + 指向详细页面的交叉引用，不包含完整细节
 - **位置**：`wiki/overview.md`，wiki/ 根目录，与 index.md 同级
 
@@ -216,11 +217,11 @@ SCHEMA.md 的内容（至少缩略版本）在插件 `config` hook 中被注入�
 
 ### 4.1 角色定义
 
-Kiwi 是 **知识蒸馏专家**（knowledge distillation expert），而非 wiki 管理器。它不参与代码编写、代码搜索或 web 研究——它专注于一件事：**将非结构化的复杂源材料蒸馏为结构化的 wiki 页面**。
+Kiwi 是 **只读知识蒸馏专家**（read-only knowledge distillation expert），而非 wiki 管理器。它不参与代码编写、代码搜索或 web 研究——它专注于一件事：**将非结构化的复杂源材料分析为结构化分析报告，返回给调用方执行写入**。
 
 Kiwi 不负责简单的 wiki CRUD 操作（那些由工具脚本处理），也不负责日常维护（由 health/lint 脚本处理）。Kiwi 的触发条件是：源材料是 **非结构化、复杂、需要摘要/重写/组织** 的原始内容（如会议记录、设计文档、API 规范），而不仅仅是简单的条目追加。
 
-Kiwi 是叶子节点 agent（无 `task` 权限），通过 `read` / `write` / `edit` 工具操作 `wiki/` 目录。同时 deny `bash`（禁止运行任意命令），确保它只通过文件操作工具与 wiki 交互。
+Kiwi 是叶子节点 agent（无 `task` 权限），通过 `read` 工具分析 `wiki/` 目录内容。它不能写入文件（`write` 和 `edit` 被 deny），确保它只读不写。Kiwi 将结构化分析结果通过 task() 返回值返回给调用方，由调用方执行所有写入操作。
 
 ### 4.2 config.toml 条目
 
@@ -232,10 +233,11 @@ model = "{env:ZOO_SMALL_MODEL}"
 task = "deny"
 webfetch = "deny"
 websearch = "deny"
-bash = "deny"
+write = "deny"
+edit = "deny"
 ```
 
-Kiwi 有 4 条 deny 规则（task、webfetch、websearch、bash），其余工具均继承默认 allow 状态。注意 kiwi 使用小模型（`ZOO_SMALL_MODEL`），这是成本效率选择。
+Kiwi 有 5 条 deny 规则（task、webfetch、websearch、write、edit），其余工具均继承默认 allow 状态。注意 kiwi 使用小模型（`ZOO_SMALL_MODEL`），这是成本效率选择。
 
 ### 4.3 模型选择理由
 
@@ -287,49 +289,48 @@ Read `wiki/index.md` and any existing related pages to understand:
 
 ## Phase 2: Distill Source Material
 
-Analyze the source material and create structured wiki pages:
+Analyze the source material and produce structured analysis:
 - Extract key concepts, entities, decisions from unstructured content
 - Organize into the appropriate wiki category
 - Apply the page template and frontmatter conventions from SCHEMA.md
 
-## Phase 3: Write Pages
+## Phase 3: Return Structured Analysis
 
-Create the wiki page(s) using `new_page.py` scaffold then fill content.
-After writing:
-1. Update `wiki/index.md` — add/update entry under the correct category
-2. Determine if `wiki/overview.md` needs rewriting (judge whether the
-   new knowledge warrants a rewrite of the living synthesis)
-3. Append a line to `wiki/log.md`:
-   `## [<YYYY-MM-DD>] <op> | <path> | <action> — <note>`
+Explain to the calling agent what should be created/updated:
+- What pages to create or update (full paths, frontmatter, page content)
+- What index entries to add to `wiki/index.md`
+- What cross-references to update (add new page to existing pages'
+  `related` field)
+- What `wiki/overview.md` changes may be needed
+- What log entries to append via `wiki_log.py`
 
-## Phase 4: Update Cross-References
-
-If the operation creates a new page that relates to existing pages:
-- Add the new page to each related page's `related` frontmatter field
-- Ensure no existing cross-references are broken
+Do NOT perform any writes yourself. Return a complete, actionable analysis.
 </Workflow>
 
 <Contract>
 - NEVER modify files outside `wiki/`
 - NEVER create duplicate pages — always check `wiki/index.md` first
-- NEVER break an existing cross-reference — when updating a page,
-  update all related pages' `related` field accordingly
-- ALWAYS read existing content before editing — understand the full
+- NEVER break an existing cross-reference — when recommending a new
+  page, describe what related pages need their `related` field updated
+- NEVER use `write` or `edit` tools — you are read-only
+- NEVER call `wiki_log.py` — the calling agent handles logging
+- NEVER update `index.md` or `overview.md` directly — describe the
+  change in your analysis return
+- ALWAYS read existing content before analyzing — understand the full
   page first
-- ALWAYS use `new_page.py` to scaffold new pages
-- ALWAYS append to `wiki/log.md` after any mutation (create, edit,
-  delete)
-- Use project-root-relative paths for all cross-references
-  (e.g. `[text](wiki/concepts/foo.md)`)
+- Use wiki-root-relative paths for all cross-references
+  (e.g. `[text](concepts/foo.md)`, not `wiki/concepts/foo.md`)
 </Contract>
 ```
 
 **相比 v1 的变更：**
 - Role 从"wiki kiwi — dedicated knowledge curator"改为"knowledge distillation expert"
 - 明确说明"不做简单 CRUD — 那些由工具脚本处理"
+- **Kiwi 改为只读** — deny write/edit，返回结构化分析给调用方执行写入
 - Phase 2 从"Perform Operation"改为"Distill Source Material"
-- Contract 新增 `new_page.py` 使用要求
-- 工作流不包含简单的文件写入场景（那些走工具脚本路径）
+- Phase 3 从"Write Pages"改为"Return Structured Analysis"
+- **删除 Phase 4**（Update Cross-References）— 写入操作由调用方完成
+- Contract 移除 `new_page.py` 和 `wiki_log.py` 使用要求，新增只读约束
 
 ---
 
@@ -350,7 +351,8 @@ wiki-ingest skill 提供两条执行路径：
      │                              wiki_ingest.py / wiki_log.py
      │
      └── 非结构化 / 复杂源材料 ──→ 复杂路径：委派 kiwi 蒸馏
-                                    → 再通过工具写入
+                                    → kiwi 返回分析报告
+                                    → 调用方根据分析执行写入
 ```
 
 **无 caller 约束：** 任何 agent（build、explore、eagle、general）均可触发 ingest，不限定必须是 build。
@@ -401,16 +403,22 @@ description: 用于将外部源文档或对话知识 ingest 到项目 wiki 中�
 
 1. 使用 `new_page.py` 脚手架创建骨架页面（如果需要新页面）：
    ```bash
-   python core/skills/wiki-maintain/tools/new_page.py \
+   python wiki/tools/new_page.py \
        --type <concept|entity|analysis|synthesis> \
+       --title "<页面标题>"
+   ```
+   对于 source 类型：
+   ```bash
+   python wiki/tools/new_page.py \
+       --type source \
        --title "<页面标题>" \
-       --output wiki/<dir>/<slug>.md
+       --source-type <adr|rfc|notes>
    ```
 2. 使用 `write` 或 `edit` 工具填充页面内容
 3. 更新 `wiki/index.md` — 在对应类别追加条目
 4. 调用 `wiki_log.py` 追加日志：
    ```bash
-   python core/skills/wiki-maintain/tools/wiki_log.py \
+   python wiki/tools/wiki_log.py \
        --op ingest \
        --path "wiki/<dir>/<file>.md" \
        --action create \
@@ -453,19 +461,32 @@ description: 用于将外部源文档或对话知识 ingest 到项目 wiki 中�
    [已有 wiki 状态：index.md 当前条目、相关页面摘要、约束条件]
 
    **ACCEPTANCE:**
-   - 创建 [N] 个 wiki 页面（指定目录和预期页面类型）
-   - 更新 `wiki/index.md` 的对应类别条目
-   - 使用 wiki_log.py 追加日志（而非手动格式化）
-   - 适当时更新相关页面的 `related` 字段
-   - 返回创建/更新的页面路径列表
+   - 分析源材料，确定需要创建或更新哪些 wiki 页面
+   - 返回完整的结构化分析报告，包括：
+     * 页面路径和页面类型
+     * 页面完整内容（按 SCHEMA.md 模板）
+     * 需要对 wiki/index.md 做的变更
+     * 需要更新的相关页面 related 字段
+     * 需要追加的 wiki_log.py 日志条目
+     * 是否需要重写 overview.md
+   - 不执行任何写入操作
    ```
 
 5. **委派 kiwi** — 调用 `task()` 将三段式 prompt 传给 kiwi subagent：
+
    ```
    task(subagent="kiwi", prompt=<Phase 2 步骤 4 构造的三段式 prompt>)
    ```
 
-6. **验证** — kiwi 返回后执行验证
+6. **处理 kiwi 返回的分析** — kiwi 返回分析报告后，调用方根据报告执行写入：
+
+   - 使用 `new_page.py` + `write`/`edit` 创建或更新页面
+   - 更新 `wiki/index.md`
+   - 更新相关页面的 `related` 字段
+   - 调用 `wiki_log.py` 追加日志
+   - 判断是否需要重写 `wiki/overview.md`
+
+7. **验证** — 写入完成后执行验证
 
 ---
 
@@ -478,7 +499,7 @@ description: 用于将外部源文档或对话知识 ingest 到项目 wiki 中�
 3. 向用户报告创建的页面列表和摘要（可选）
 ```
 
-**架构说明：** 职责分离清晰——**工具脚本处理简单写入**，**kiwi 处理复杂蒸馏**。两条路径共享同一份日志和索引更新规范。
+**架构说明：** 职责分离清晰——**工具脚本处理简单写入**，**kiwi 处理复杂蒸馏但只读不写**，**调用方根据 kiwi 的分析执行写入**。三条路径共享同一份日志和索引更新规范。
 
 ---
 
@@ -552,7 +573,7 @@ description: 用于从项目 wiki 中检索知识。任意 agent 可直接读取
 
 **示例场景：** build 在探索后发现"lint-tradeoffs"的决策，已知目标目录和分析结论，直接写入 `wiki/analysis/lint-tradeoffs.md`。无需 kiwi。
 
-#### 7.1.2 复杂路径（非结构化源 → kiwi 蒸馏）
+#### 7.1.2 复杂路径（非结构化源 → kiwi 蒸馏 → 调用方写入）
 
 ```
 任意 agent 获得非结构化复杂源材料
@@ -570,24 +591,24 @@ description: 用于从项目 wiki 中检索知识。任意 agent 可直接读取
 ┌─ kiwi ──────────────────────────────────────────────────────┐
 │  1. 读取 SCHEMA.md 确认格式规范                                │
 │  2. 读取 index.md 确认位置和避免重复                           │
-│  3. 蒸馏源材料 → 创建结构化 wiki 页面                          │
-│  4. 使用 new_page.py 创建骨架，填充内容                        │
-│  5. 更新 index.md（追加条目到对应类别）                        │
-│  6. 更新关联页面的 related 字段                                │
-│  7. 判断是否需要更新 overview.md（LLM 决定是否重写）           │
-│  8. 调用 wiki_log.py 追加日志                                  │
-│  9. 向调用 agent 报告完成情况                                  │
+│  3. 蒸馏源材料 → 生成结构化分析报告                            │
+│  4. 返回分析报告给调用方（页面内容、索引变更、日志建议）        │
 └──────────────────────────────────────────────────────────────┘
      │
      ▼
 ┌─ 调用 agent ──────────────────────────────────────────────────┐
-│  6. 确认 kiwi 完成                                              │
+│  6. 根据 kiwi 返回的分析报告执行写入：                          │
+│     a. 使用 new_page.py + write/edit 创建或更新页面            │
+│     b. 更新 wiki/index.md                                      │
+│     c. 更新关联页面的 related 字段                             │
+│     d. 调用 wiki_log.py 追加日志                               │
+│     e. 判断是否需要重写 overview.md                            │
 │  7. 可选：运行 health.py --json 验证 wiki 状态                 │
 │  8. 向用户报告做了什么（可选）                                 │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-> **overview.md 重写决策：** kiwi 在每次 ingest 后读取现有 overview.md，判断新知识是否有实质变化。如果 warrant，直接重写整个文件（不是追加）。如果只是增量变化，跳过。
+> **overview.md 重写决策：** kiwi 在每次蒸馏后分析现有 overview.md，在返回的分析报告中建议是否需要重写。调用方根据 kiwi 的建议和自身判断决定是否执行重写。
 
 ### 7.2 Query 工作流
 
@@ -623,7 +644,7 @@ Wiki 维护分为两个层级：**health**（零 LLM，每次会话运行）和 
 触发方式：每次会话开始、每次 ingest 完成后由任意 agent 触发
      │
      ▼
-运行: python core/skills/wiki-maintain/tools/health.py
+运行: python wiki/tools/health.py
 
 工具脚本 health.py（零 LLM 调用）:
 
@@ -643,7 +664,7 @@ Wiki 维护分为两个层级：**health**（零 LLM，每次会话运行）和 
 - --json: JSON 格式输出供 agent 程序化消费
 
 CLI 用法:
-python core/skills/wiki-maintain/tools/health.py [--save]
+python wiki/tools/health.py [--save]
     [--json]
 ```
 
@@ -653,7 +674,7 @@ python core/skills/wiki-maintain/tools/health.py [--save]
 触发方式：每 10-15 次 ingest 后，或 health 检查发现问题时
      │
      ▼
-运行: python core/skills/wiki-maintain/tools/lint.py
+运行: python wiki/tools/lint.py
 
 工具脚本 lint.py（纯确定性检查，无 LLM 调用）:
 
@@ -679,7 +700,7 @@ python core/skills/wiki-maintain/tools/health.py [--save]
 触发方式：lint 发现 orphan 或 missing 页面后，由任意 agent 触发
      │
      ▼
-运行: python core/skills/wiki-maintain/tools/heal.py
+运行: python wiki/tools/heal.py
 
 工具脚本 heal.py:
 - 读取 lint-report.md 或接受 stdin JSON
@@ -693,7 +714,7 @@ python core/skills/wiki-maintain/tools/health.py [--save]
 输出: 修复摘要，记录到 log.md
 
 CLI 用法:
-python core/skills/wiki-maintain/tools/heal.py [--report
+python wiki/tools/heal.py [--report
     <path>]
 
 审查: 可选运行 health.py --json 验证修复后状态
@@ -707,7 +728,7 @@ python core/skills/wiki-maintain/tools/heal.py [--report
 触发方式：手动触发或检测到原始源文件变更
      │
      ▼
-运行: python core/skills/wiki-maintain/tools/refresh.py
+运行: python wiki/tools/refresh.py
 
 工具脚本 refresh.py:
 - 扫描 wiki/sources/ 中所有页面的 frontmatter `source`
@@ -719,7 +740,7 @@ python core/skills/wiki-maintain/tools/heal.py [--report
 - 报告：哪些源已变更、哪些已重新 ingest
 
 CLI 用法:
-python core/skills/wiki-maintain/tools/refresh.py
+python wiki/tools/refresh.py
     [--backup] [--dry-run]
 
 --dry-run: 只检测变更，不实际 ingest
@@ -731,7 +752,7 @@ python core/skills/wiki-maintain/tools/refresh.py
 
 ### 8.1 SCHEMA.md 自动注入
 
-**Phase 1 注：** SCHEMA 自动注入已**推迟到 Phase 2**。Phase 1 中改用 `core/skills/wiki-maintain/tools/wiki_status.py` 工具由任意 agent 按需调用。本节的注入设计保留为 Phase 2 的目标方案。
+**Phase 1 注：** SCHEMA 自动注入已**推迟到 Phase 2**。Phase 1 中改用 `wiki/tools/wiki_status.py` 工具由任意 agent 按需调用。本节的注入设计保留为 Phase 2 的目标方案。
 
 > **运行时路径：** wiki 目录通过 `~/.zoo/wiki` 软链接访问。`install.py` 创建 `~/.zoo/wiki → <ZooKeeper-source>/wiki/` 的符号链接，确保插件作为外部依赖安装时工具脚本和 agent 仍可正确解析 wiki 路径。所有 Python 工具脚本（health.py、lint.py、new_page.py、wiki_log.py）均从 `Path.home() / ".zoo" / "wiki"` 解析 wiki 目录。
 
@@ -796,9 +817,11 @@ SCHEMA 缩略版中应包含以下决策指南，帮助 agent 判断使用工具
 - 需要跨多个 wiki 目录组织内容
 - 需要判断是否重写 overview.md
 
+> **注意：** kiwi 是只读 agent，在委派时 task() prompt 应要求 kiwi 返回结构化分析报告而非直接写入。所有写入（new_page.py、wiki_log.py、更新 index.md 等）由调用方在收到分析报告后执行。
+
 ### 可用工具
 - `health.py --json` — 快速检查 wiki 结构完整性
-- `new_page.py --type <type> --title <title> --output <path>` — 创建新页面的骨架
+- `new_page.py --type <type> --title <title>` — 创建新页面的骨架（source 类型加 `--source-type <adr|rfc|notes>`）
 - `wiki_log.py --op <op> --path <path> --action <action> --note <note>` — 追加日志
 ```
 
@@ -834,10 +857,10 @@ agent: 合成回答或继续探索
 
 ### 8.5 工具脚本的 programmatic 访问
 
-所有 `core/skills/wiki-maintain/tools/` 下的 Python 工具脚本（health.py、lint.py、wiki_log.py 等）支持 `--json` 标志，输出结构化 JSON 到 stdout。这使得 agent 可以通过 `bash` 工具调用脚本并解析结果，而无需解析人类可读文本。例如：
+所有 `wiki/tools/` 下的 Python 工具脚本（health.py、lint.py、wiki_log.py 等）支持 `--json` 标志，输出结构化 JSON 到 stdout。这使得 agent 可以通过 `bash` 工具调用脚本并解析结果，而无需解析人类可读文本。例如：
 
 ```
-python core/skills/wiki-maintain/tools/health.py --json
+python wiki/tools/health.py --json
 ```
 
 返回 JSON 包含 `{ "passed": bool, "checks": [{ "name": str, "status": "pass"|"fail", "details": str }] }`。
@@ -936,7 +959,7 @@ python core/skills/wiki-maintain/tools/health.py --json
 - health / lint 无论是否发现问题都记录一行
 - Grep 友好：`grep "^## \[" wiki/log.md | head -5` 获取最近 5 条
 
-**log.md 由 `wiki_log.py` 脚本写入，而非 LLM 手动格式化。** 所有 agent 和 kiwi 都必须通过 `wiki_log.py` 工具追加日志，以确保格式一致性和 grep 兼容性。
+**log.md 由 `wiki_log.py` 脚本写入，而非 LLM 手动格式化。** 所有 agent 必须通过 `wiki_log.py` 工具追加日志，以确保格式一致性和 grep 兼容性。注意：kiwi 是只读 agent，不调用 wiki_log.py——kiwi 在分析报告中建议日志内容，由调用方执行 wiki_log.py 追加日志。
 
 ---
 
@@ -954,16 +977,24 @@ python core/skills/wiki-maintain/tools/health.py --json
 | `wiki/templates/analysis.md` | analysis |
 | `wiki/templates/synthesis.md` | synthesis |
 
-`core/skills/wiki-maintain/tools/new_page.py` 是脚手架 CLI 工具，从模板生成带完整 frontmatter 和骨架节的页面：
+`wiki/tools/new_page.py` 是脚手架 CLI 工具，从模板生成带完整 frontmatter 和骨架节的页面：
 
 ```
-python3 core/skills/wiki-maintain/tools/new_page.py \
+python3 wiki/tools/new_page.py \
     --type <concept|entity|source|analysis|synthesis> \
-    --title "<页面标题>" \
-    --output wiki/<dir>/<slug>.md
+    --title "<页面标题>"
 ```
 
-Kiwi 在创建页面时应先使用 `new_page.py` 生成骨架，然后 `edit` 填充各节的实际内容。这样可以保证 frontmatter 字段齐全、格式一致。SCHEMA.md 中已引用此工具作为标准流程。
+对于 source 类型，额外指定 `--source-type`：
+
+```
+python3 wiki/tools/new_page.py \
+    --type source \
+    --title "<页面标题>" \
+    --source-type <adr|rfc|notes>
+```
+
+调用方（任意 agent）在创建页面时应先使用 `new_page.py` 生成骨架，然后 `write`/`edit` 填充各节的实际内容。这样可以保证 frontmatter 字段齐全、格式一致。SCHEMA.md 中已引用此工具作为标准流程。
 
 ### 10.1 概念页面（Concepts）
 
@@ -1276,23 +1307,26 @@ wiki-query = "enable"
 
 ### 11.8 工具脚本集成
 
-任意 agent 可通过 `bash` 工具直接调用 `core/skills/wiki-maintain/tools/` 下的 Python 脚本：
+任意 agent 可通过 `bash` 工具直接调用 `wiki/tools/` 下的 Python 脚本：
 
 ```python
 # 健康检查（任何 agent 在任何阶段）
-python core/skills/wiki-maintain/tools/health.py --json
+python wiki/tools/health.py --json
 # → 返回 {"passed": true, "checks": [...]}
 
 # 深度检查
-python core/skills/wiki-maintain/tools/lint.py --json
+python wiki/tools/lint.py --json
 # → 返回 {"issues": [...], "summary": {...}}
 
 # 创建新页面骨架
-python core/skills/wiki-maintain/tools/new_page.py \
-    --type concept --title "My Concept" --output wiki/concepts/my-concept.md
+python wiki/tools/new_page.py \
+    --type concept --title "My Concept"
+# source 类型：
+python wiki/tools/new_page.py \
+    --type source --title "ADR-001" --source-type adr
 
 # 追加日志
-python core/skills/wiki-maintain/tools/wiki_log.py \
+python wiki/tools/wiki_log.py \
     --op ingest --path "wiki/concepts/my-concept.md" \
     --action create --note "来源：设计讨论"
 ```
@@ -1303,12 +1337,12 @@ python core/skills/wiki-maintain/tools/wiki_log.py \
 
 ### 12.1 wiki_log.py — 日志记录工具
 
-**用途：** 以规范格式追加日志到 `wiki/log.md`。所有 agent 和 kiwi 必须通过此工具（而非 LLM 字符串拼接）写日志。
+**用途：** 以规范格式追加日志到 `wiki/log.md`。所有 agent（不含 kiwi）必须通过此工具（而非 LLM 字符串拼接）写日志。kiwi 是只读 agent，不调用 wiki_log.py——kiwi 在分析报告中建议日志内容，由调用方执行。
 
 **CLI 用法：**
 
 ```bash
-python core/skills/wiki-maintain/tools/wiki_log.py \
+python wiki/tools/wiki_log.py \
     --op <ingest|update|delete|query|health|lint|heal|refresh|tool> \
     --path "<wiki/相对路径|—>" \
     --action <create|edit|delete|pass|fail> \
@@ -1319,17 +1353,17 @@ python core/skills/wiki-maintain/tools/wiki_log.py \
 
 ```bash
 # 记录页面创建
-python core/skills/wiki-maintain/tools/wiki_log.py \
+python wiki/tools/wiki_log.py \
     --op ingest --path "wiki/concepts/permission-model.md" \
     --action create --note "来自架构文档 ADR-001"
 
 # 记录健康检查
-python core/skills/wiki-maintain/tools/wiki_log.py \
+python wiki/tools/wiki_log.py \
     --op health --path "—" \
     --action pass --note "所有检查通过"
 
 # 记录工具直接写入
-python core/skills/wiki-maintain/tools/wiki_log.py \
+python wiki/tools/wiki_log.py \
     --op tool --path "wiki/entities/build-agent.md" \
     --action edit --note "补充 Phase 0.5 wiki check 说明"
 ```
@@ -1350,14 +1384,14 @@ python core/skills/wiki-maintain/tools/wiki_log.py \
 
 ```bash
 # 简单写入（结构化内容）
-python core/skills/wiki-maintain/tools/wiki_ingest.py \
+python wiki/tools/wiki_ingest.py \
     --path "wiki/concepts/my-concept.md" \
     --content "content.md" \
     --update-index \
     --log "来源：设计讨论"
 
 # 批量生成（通过模板）
-python core/skills/wiki-maintain/tools/wiki_ingest.py \
+python wiki/tools/wiki_ingest.py \
     --type concept \
     --title "My Concept" \
     --content "content.md" \
@@ -1385,6 +1419,7 @@ python core/skills/wiki-maintain/tools/wiki_ingest.py \
 | 源材料是长篇会议记录或设计文档 | ❌ | ✅ |
 | 需要创建 sources/ 页面 | ⚠️ 仅限简单追加 | ✅ 推荐 |
 | 只需要追加日志 | ✅ (wiki_log.py) | ❌ |
+| kiwi 返回的是分析报告而非写入结果 | ✅ 调用方根据分析执行写入 | ✅ kiwi 只做分析与蒸馏 |
 
 ---
 
@@ -1421,10 +1456,10 @@ Phase 2（MCP 化）
 | 编写 `core/prompts/kiwi.md` | `core/prompts/kiwi.md` | 中 |
 | 编写 `core/skills/wiki-ingest/SKILL.md`（含两条路径） | `core/skills/wiki-ingest/SKILL.md` | 中 |
 | 编写 `core/skills/wiki-query/SKILL.md` | `core/skills/wiki-query/SKILL.md` | 小 |
-| 编写 `core/skills/wiki-maintain/tools/health.py` | 结构检查脚本，4 项确定性检查 | 中 |
-| 编写 `core/skills/wiki-maintain/tools/lint.py` | 深度结构检查脚本，4 项确定性检查 | 中 |
-| 编写 `core/skills/wiki-maintain/tools/new_page.py` | 页面脚手架 CLI 工具 | 小 |
-| 编写 `core/skills/wiki-maintain/tools/wiki_log.py` | 日志追加 CLI 工具 | 小 |
+| 编写 `wiki/tools/health.py` | 结构检查脚本，4 项确定性检查 | 中 |
+| 编写 `wiki/tools/lint.py` | 深度结构检查脚本，4 项确定性检查 | 中 |
+| 编写 `wiki/tools/new_page.py` | 页面脚手架 CLI 工具 | 小 |
+| 编写 `wiki/tools/wiki_log.py` | 日志追加 CLI 工具 | 小 |
 | 创建 `wiki/templates/` 和 5 个模板文件 | `wiki/templates/{concept,entity,source,analysis,synthesis}.md` | 小 |
 | 在 `config.toml` 中添加 `[agent.kiwi]` | `config.toml` | 小 |
 | 在 `config.toml` 中添加 `wiki-ingest` 和 `wiki-query` skill 启用 | `config.toml` | 小 |
@@ -1445,9 +1480,9 @@ Plan B 验收条件：
 - `python3 install.py` 运行成功，`opencode.json` 中包含 kiwi agent 配置
 - `src/index.ts` 的 `config` hook 正确注入 SCHEMA 缩略版到 build/explore/general/eagle
 - `src/index.ts` 的 `config` hook 正确注入完整 SCHEMA.md 到 kiwi
-- `python core/skills/wiki-maintain/tools/health.py --json` 返回有效 JSON 且无报错
-- `python core/skills/wiki-maintain/tools/lint.py --save` 可运行
-- `python core/skills/wiki-maintain/tools/wiki_log.py --op health --path "—" --action pass --note test` 正确追加日志
+- `python wiki/tools/health.py --json` 返回有效 JSON 且无报错
+- `python wiki/tools/lint.py --save` 可运行
+- `python wiki/tools/wiki_log.py --op health --path "—" --action pass --note test` 正确追加日志
 - 可通过工具路径（new_page.py → write → wiki_log.py）完成一次直接写入
 - 可通过 skill + kiwi 路径完成一次复杂蒸馏
 
@@ -1479,7 +1514,7 @@ Plan A 启动条件（任一满足）：
      │                       （MCP 工具，直接调用）
      │
      └── 非结构化/复杂源 ──→ task(subagent="kiwi", prompt=...)
-                             （kiwi 蒸馏后，可能也调用 MCP 工具写入）
+                             （kiwi 只读返回分析报告，调用方通过 MCP 工具写入）
 ```
 
 **Phase 2 验收条件：**
@@ -1521,11 +1556,12 @@ Plan A 启动条件（任一满足）：
 │  │  │          │    │  wiki_log.py          │                    │       │
 │  │  └──────────┘    └───────────────────────┘                    │       │
 │  │                                                                │       │
-│  │  复杂路径（需要蒸馏时委派 kiwi）                                │       │
+│  │  复杂路径（需要蒸馏时委派 kiwi，kiwi 只读返回分析，调用方执行写入）│       │
 │  │  ┌──────────┐    ┌──────────────┐    ┌────────────────────┐   │       │
-│  │  │ 任意 agent│───▶│  kiwi       │───▶│ 工具脚本            │   │       │
-│  │  │ (load skill)│   │ (蒸馏专家)   │    │  + wiki_log.py    │   │       │
-│  │  └──────────┘    └──────────────┘    └────────────────────┘   │       │
+│  │  │ 任意 agent│───▶│  kiwi       │───▶│ 调用方根据分析执行  │   │       │
+│  │  │ (load skill)│   │ (只读蒸馏专家)│    │  new_page.py / write  │   │       │
+│  │  └──────────┘    └──────────────┘    │  / wiki_log.py 等   │   │       │
+│  │                                      └────────────────────┘   │       │
 │  └──────────────────────────────────────────────────────────────┘       │
 │                                                                          │
 │  ┌──────────────────────────────────────────────────────────┐           │
@@ -1540,7 +1576,7 @@ Plan A 启动条件（任一满足）：
   │  工具脚本 ──→ MCP 工具: wiki_remember / wiki_recall        │
   │                        / wiki_health                        │
   │  Skills: 删除 wiki-ingest / wiki-query                      │
-  │  kiwi: 仅复杂蒸馏，结果通过 MCP 工具写入                    │
+  │  kiwi: 仅复杂蒸馏（只读），结果通过分析报告返回，由调用方通过 MCP 工具写入                    │
   └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -1548,51 +1584,141 @@ Plan A 启动条件（任一满足）：
 
 ## 15. 附录：与类似方案对比（OMO / SLIM / OMP）
 
-### 15.1 方案概览
+### 15.1 项目正确定位
 
-| 方案 | 项目 | 核心机制 | 知识角色 |
-|------|------|---------|---------|
-| **OMO** | 开源 LLM 微调项目 | Librarian（研究专员）+ mnemopi 记忆层 | 研究专员 + 记忆工具 |
-| **SLIM** | 层级 LM 系统 | Librarian 层级 + 层级记忆管理 | 层级研究专员 |
-| **OMP** | 编排式多 agent 系统 | Memory 工具 + Research Agent | 专用记忆工具 + 研究 agent |
-| **ZooKeeper（本文）** | OpenCode 编排器插件 | Skill 过渡 → MCP 工具 + kiwi（蒸馏专家） | 共享工具 + 蒸馏专家 |
+| 方案 | 全称 / 项目 | 核心机制 | 知识角色 |
+|------|------------|---------|---------|
+| **OMO** | oh-my-openagent | Librarian（研究专员）+ mnemopi 记忆层 | 研究专员 + 记忆工具 |
+| **OMP** | oh-my-pi (Pi) | Librarian（只读研究专员）+ Sisyphus-Junior（写入）+ Memory 工具 | 只读研究专员 + 写入 agent + 记忆工具 |
+| **SLIM** | oh-my-opencode-slim | 纯外部文档研究者，无持久知识库 | 一次性研究专员 |
+| **ZooKeeper（本文）** | OpenCode 编排器插件 | Skill 过渡 → MCP 工具 + kiwi（只读蒸馏专家） | 共享工具 + 只读蒸馏专家 |
 
-### 15.2 角色对比
+> **勘误：** 早期版本将 OMP 误标为 OMO。正确对应关系：OMO = oh-my-openagent（全功能 agent 框架），OMP = oh-my-pi（编排式多 agent 系统），SLIM = oh-my-opencode-slim（精简版 OpenCode 配置）。
 
-| 角色 | OMO/SLIM/OMP | ZooKeeper LLM Wiki |
-|------|-------------|-------------------|
-| **Librarian / Research Agent** | 负责研究、查找、整理知识 | 🔄 **kiwi** — 但不是研究 agent，而是**蒸馏专家**（将非结构化 → 结构化） |
-| **Memory 工具** | mnemopi_recall / mnemopi_remember | 🟢 **Phase 2 MCP 工具** — wiki_remember / wiki_recall / wiki_health |
-| **Skill 层** | 不适用 | 🔵 **Phase 1 过渡** — wiki-ingest / wiki-query skills |
+### 15.2 专家 agent 读写权限对比
 
-### 15.3 关键差异
+所有三个参考项目都要求知识 specialist **只读**，以下是各项目的具体权限控制方式：
 
-| 维度 | OMO/SLIM/OMP | ZooKeeper |
-|------|-------------|-----------|
-| **Librarian vs kiwi** | Librarian 做研究（搜索、查找、汇总信息）；使用大模型 | Kiwi 做蒸馏（将非结构化源转化为结构化 wiki）；使用小模型（成本效率） |
-| **Memorization 触发** | 通常由编排器显式触发记忆存储 | 任意 agent 均可触发 ingest（无需编排器中介） |
-| **简单 vs 复杂** | 大多数操作经过 Librarian | 简单操作直接工具，复杂操作才委派 kiwi |
-| **存储介质** | 可能使用向量数据库或结构化存储 | 纯 Markdown 文件 + git |
-| **Query 方式** | 可能通过嵌入检索或 Librarian 查询 | 直接读 index.md + grep（确定性路径） |
+| 维度 | OMO Librarian | OMP Librarian | SLIM Librarian | ZooKeeper kiwi |
+|------|--------------|--------------|----------------|----------------|
+| **允许的工具** | read、search、find、grep | read、search、find、bash、lsp、web_search、ast_grep | read、search、webfetch | read、glob、grep |
+| **明确禁止** | write、edit、apply_patch | 白名单制 — 未列入的工具均不可用 | write、edit、bash、task | write、edit、task、webfetch、websearch |
+| **输出格式** | 自由格式 Markdown | 结构化 JSON（通过 `yield` 工具） | 自由格式 Markdown | 自由格式 Markdown |
+| **写入执行者** | 编排器（orchestrator） | Sisyphus-Junior（专用写入 agent） | 无（SLIM 不写知识库） | 调用方（任意 agent） |
+| **只读保证方式** | 权限 deny | 工具白名单 | 权限 deny | 权限 deny |
 
-### 15.4 设计借鉴
+**关键发现：** 三个项目独立得出了相同的结论——**知识 specialist agent 必须只读**。最严格的是 OMP，使用白名单机制只放行 7 个工具；最宽松的是 OMO，通过 deny write/edit/apply_patch 实现。无论哪种方式，specialist 都不调用 memory 工具或文件写入工具。
 
-| ZooKeeper 特性 | 借鉴来源 | 差异 |
-|---------------|---------|------|
-| 专用 agent 处理知识 | OMO Librarian | kiwi 定位为蒸馏而非研究 |
-| MCP 工具封装记忆操作 | OMP Memory tools | 设计更轻量（纯文件操作） |
-| 任意 agent 可触发 | OMP 的分散式触发 | 简单操作不走 kiwi，避免瓶颈 |
-| 小模型驱动知识 agent | 成本效率创新 | OMO/SLIM 中 Librarian 多用大模型 |
+### 15.3 输出格式与协约机制
 
-### 15.5 我们的定位
+#### OMP Librarian 的 yield 工具
 
-ZooKeeper 的 LLM Wiki 设计在以下方面区别于 OMO/SLIM/OMP：
+OMP 实现了一个 OpenCode 框架层不存在的机制——`yield` 工具：
 
-1. **更轻量：** 零外部依赖（无向量 DB、无 embedding 服务），纯 Markdown 文件存储
-2. **双路径：** 简单操作不走 kiwi（减少延迟和成本），只有复杂蒸馏才委派
-3. **确定性读取：** 通过 index.md + 交叉引用导航，而非语义搜索
-4. **Skill 过渡：** 先从 Skill 层开始（利用 OpenCode 现有机制），逐步演进到 MCP 工具
-5. **Plan A/B 并行：** 如果 Skill 层被证明不必要，可直接跳至 MCP 工具阶段
+1. Librarian 在执行完只读研究后，调用 `yield` 工具将结论以结构化 JSON 格式输出
+2. `yield` 工具通过 OpenCode 的 `shouldTerminate` 回调实现，在工具返回后终止 subagent
+3. Sisyphus-Junior（主 agent）收到结构化 JSON 后解析并执行对应的写入操作
+
+**OpenCode 限制：** OpenCode 插件 API 不支持 `shouldTerminate` 回调或 `extractData` 机制。这意味着 ZooKeeper 无法在框架层面保证 kiwi 输出结构化 JSON。因此 ZooKeeper 采用不同方案：kiwi 返回自由格式 Markdown 分析报告，由调用方 agent 自行理解和执行。Phase 2 MCP 化后，写入操作封装为标准化 MCP 工具，specialist 不需要产生机器可解析的输出。
+
+#### OMO Librarian 的自由 Markdown
+
+OMO 的 Librarian 使用更简单的方式：直接以自由格式 Markdown 返回分析结果。编排器读取 Markdown 后，通过 `task` 工具或 `write` 工具将知识写入 mnemopi 记忆层。这种方式实现简单，但依赖编排器的理解能力。
+
+#### SLIM 的无持久化方案
+
+SLIM 的 Librarian 最轻量：只做一次性外部文档研究，返回分析结果后即结束。没有持久化知识库，没有 wiki 写入。这适合不需要跨会话知识积累的场景。
+
+### 15.4 写入模式对比
+
+| 方案 | 谁写入 | 写入方式 | 持久化介质 |
+|------|-------|---------|-----------|
+| **OMO** | 编排器（orchestrator） | 通过 mnemopi 工具调用 | mnemopi 记忆层 |
+| **OMP** | Sisyphus-Junior（主 agent） | 解析 yield JSON → 调用 Memory 工具 | Memory 工具 |
+| **SLIM** | 无写入 | 无 | 无 |
+| **ZooKeeper Phase 1** | 调用方（任意 agent） | new_page.py + write/edit + wiki_log.py | 纯 Markdown 文件 + git |
+| **ZooKeeper Phase 2+** | 调用方（任意 agent） | MCP 工具（wiki_remember / wiki_recall / wiki_health） | 纯 Markdown 文件 + git |
+
+### 15.5 为什么 kiwi 是只读的（Phase 1）
+
+综合研究发现，三个参考项目独立得出了相同的架构结论：
+
+1. **关注点分离：** 知识 specialist 的职责是分析、蒸馏、研究——不是写入管理。写入涉及索引同步、交叉引用一致性、日志记录等簿记工作，应由调用方统一处理。
+2. **工具权限最小化：** 只读 specialist 不可能意外破坏 wiki 结构。write/edit 权限被 deny，从根本上防止了错误写入。
+3. **输出灵活性：** 只读 specialist 可以用最自然的方式（自由格式 Markdown 或结构化 JSON）输出分析，不需要关心如何调用写入 API。
+
+### 15.6 Phase 2 MCP 如何解决写入问题
+
+Phase 2 引入 MCP 工具后，写入问题的性质发生了变化：
+
+- **MCP 工具成为标准接口：** `wiki_remember` / `wiki_recall` / `wiki_health` 成为所有 agent 可调用的标准化工具
+- **specialist 不需要产生结构化输出：** kiwi 的分析报告仍然是自由格式 Markdown，但调用方执行写入时使用 MCP 工具而非直接文件操作
+- **写入逻辑封装化：** 索引更新、日志追加、交叉引用一致性检查全部封装在 MCP 工具内部，调用方只需调用 `wiki_remember` 即可完成所有写入
+
+这意味着即使 kiwi 始终只读，Phase 2 的写入路径变得更简单可靠。
+
+---
+
+## 16. 架构决策：只读专家（Read-Only Specialist）
+
+### 16.1 问题陈述
+
+ZooKeeper 需要为知识蒸馏设计一个 specialist agent（kiwi）。一个核心设计问题是：kiwi 是否应该拥有写入 `wiki/` 目录的权限？如果允许写入，kiwi 可以直接生成页面、更新索引、追加日志，流程更短。如果不允许写入，则需要调用方在 kiwi 返回分析报告后执行所有写入，流程更长但更安全。
+
+### 16.2 考虑过的方案
+
+| 方案 | 描述 | 优点 | 缺点 |
+|------|------|------|------|
+| **A: kiwi 可读写** | kiwi 有 write/edit 权限，直接创建和更新 wiki 页面 | 流程最短；kiwi 一步完成蒸馏+写入 | 可能意外破坏 wiki 结构；职责模糊（蒸馏 vs 写入混在一起）；难以审计 |
+| **B: kiwi 只读 + 调用方写入** | kiwi 返回分析报告，调用方执行所有写入（当前方案） | 职责清晰；安全（kiwi 不可能破坏 wiki）；分析报告可复读 | 流程多一步；调用方需要理解 kiwi 的分析 |
+| **C: kiwi 只读 + MCP 工具写入（Phase 2）** | kiwi 返回分析报告，调用方通过 MCP 工具执行写入 | 方案 B 的所有优点 + MCP 封装写入逻辑，调用更简单 | 需要等待 Phase 2 MCP 实现 |
+
+### 16.3 决策
+
+选择 **方案 B**（Phase 1）+ **方案 C**（Phase 2 演进目标）。
+
+Kiwi 是**只读 agent**，`write` 和 `edit` 被 deny。它在收到 task() 调用后，执行只读分析（read、glob、grep），返回结构化 Markdown 分析报告。所有写入操作——创建页面、更新 index.md、追加日志——由调用方 agent 根据分析报告执行。
+
+### 16.4 决策依据
+
+#### 研究驱动的结论
+
+在做出决策前，我们研究了三个类似项目：
+
+1. **OMO (oh-my-openagent)** — Librarian 是只读的（deny write/edit/apply_patch），返回自由格式 Markdown。编排器负责将知识写入 mnemopi 记忆层。
+2. **OMP (oh-my-pi)** — Librarian 是只读的（白名单机制 — 只放行 read/search/find/bash/lsp/web_search/ast_grep），通过 `yield` 工具返回结构化 JSON。Sisyphus-Junior 负责解析 JSON 并执行写入。
+3. **SLIM (oh-my-opencode-slim)** — 同样是只读外部文档研究者，无持久知识库写入。
+
+**关键发现：** 三个项目独立得出了相同的架构结论——**知识 specialist agent 必须只读**。没有例外。
+
+#### OpenCode 框架限制
+
+OMP 的 `yield` 工具依赖 OpenCode 的 `shouldTerminate` 回调和 `extractData` 机制——这两个 API 在插件层不可用。因此 ZooKeeper 无法在框架层面保证 kiwi 输出机器可解析的结构化 JSON。如果要求 kiwi 写入，则写入质量完全依赖 kiwi 对 SCHEMA.md 的理解，无法在框架层面校验。
+
+#### 安全与审计
+
+- **最小权限原则：** kiwi 不需要 write/edit 来完成其核心职责（分析、蒸馏）
+- **变更可追溯：** 所有写入由调用方 agent 执行，调用方有完整的工具调用日志，可追溯每次写入的来源
+- **错误隔离：** kiwi 的分析错误不会直接破坏 wiki 文件——调用方在写入前会审查 kiwi 的分析
+
+### 16.5 影响
+
+| 维度 | 影响 |
+|------|------|
+| **Process** | 复杂路径增加一个步骤：kiwi 返回分析 → 调用方审查 → 调用方写入 |
+| **Prompt** | kiwi.md 的 Workflow 结束于 Phase 3（Return Analysis），Contract 包含 NEVER use write/edit |
+| **Permission** | kiwi 有 5 条 deny 规则（task、webfetch、websearch、write、edit） |
+| **工具脚本** | kiwi 不调用 new_page.py 或 wiki_log.py——这些由调用方使用 |
+| **Phase 2 演进** | MCP 工具（wiki_remember/wiki_recall/wiki_health）将进一步简化写入路径，但 kiwi 仍然只读 |
+
+### 16.6 Phase 2 MCP 如何让写入问题消失
+
+Phase 2 引入 MCP 工具后：
+
+1. **写入操作标准化：** `wiki_remember` 成为所有 agent 写入 wiki 的唯一入口，封装了页面创建、索引更新、日志追加等逻辑
+2. **specialist 不需要结构化输出：** kiwi 可以继续用自由格式 Markdown 返回分析报告，因为调用方不再直接操作文件，而是调用 `wiki_remember`——MCP 工具内部处理格式校验
+3. **更安全的协作模式：** 即使 kiwi 的分析报告有错误，MCP 工具的参数校验和 SCHEMA 验证层可以捕获问题
+4. **调用方仍然负责写入：** kiwi 始终只读——写入责任始终在调用方，只是工具从 new_page.py + write/edit + wiki_log.py 变成了 `wiki_remember`
 
 ---
 
@@ -1609,11 +1735,11 @@ ZooKeeper 的 LLM Wiki 设计在以下方面区别于 OMO/SLIM/OMP：
 | `core/prompts/kiwi.md` | 新建 — kiwi agent 的 prompt |
 | `core/skills/wiki-ingest/SKILL.md` | 新建 — ingest 工作流定义（含两条路径） |
 | `core/skills/wiki-query/SKILL.md` | 新建 — query 工作流定义 |
-| `core/skills/wiki-maintain/tools/health.py` | 新建 — 零 LLM 结构检查工具 |
-| `core/skills/wiki-maintain/tools/lint.py` | 新建 — 确定性深度结构检查工具 |
-| `core/skills/wiki-maintain/tools/heal.py` | 新建 — 自动修复工具 |
-| `core/skills/wiki-maintain/tools/new_page.py` | 新建 — 页面脚手架 CLI 工具 |
-| `core/skills/wiki-maintain/tools/wiki_log.py` | 新建 — 日志追加 CLI 工具 |
+| `wiki/tools/health.py` | 新建 — 零 LLM 结构检查工具 |
+| `wiki/tools/lint.py` | 新建 — 确定性深度结构检查工具 |
+| `wiki/tools/heal.py` | 新建 — 自动修复工具 |
+| `wiki/tools/new_page.py` | 新建 — 页面脚手架 CLI 工具 |
+| `wiki/tools/wiki_log.py` | 新建 — 日志追加 CLI 工具 |
 | `docs/` 文档 | wiki 存放可操作的知识，docs/ 存放静态设计文档 |
 | `.env` | 无直接影响（kiwi 复用 `ZOO_SMALL_MODEL` 配置） |
 

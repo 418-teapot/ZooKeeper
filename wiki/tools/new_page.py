@@ -3,7 +3,8 @@
 new_page.py — Scaffold a new wiki page from a template.
 
 Reads the template from wiki/templates/{type}.md, replaces title and date
-placeholders, and writes the result to --output under wiki/.
+placeholders, and writes the result to an auto-derived path under wiki/.
+The path is computed from --type, --title, and (for sources) --source-type.
 """
 
 from __future__ import annotations
@@ -14,15 +15,49 @@ import sys
 from datetime import date
 from pathlib import Path
 
-# REPO_ROOT: 5 levels up from this file
-# core/skills/wiki-maintain/tools/new_page.py
-#   -> tools/ -> wiki-maintain/ -> skills/ -> core/ -> repo root
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
+# REPO_ROOT: 3 levels up from this file
+# wiki/tools/new_page.py
+#   -> tools/ -> wiki/ -> repo root
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 # Wiki is accessed via the user-global ~/.zoo/wiki symlink.
 # Resolve to the real path so template files can be found.
 WIKI_DIR = (Path.home() / ".zoo" / "wiki").resolve()
 TEMPLATES_DIR = WIKI_DIR / "templates"
 VALID_TYPES = {"concept", "entity", "source", "analysis", "synthesis"}
+
+# Maps page type to subdirectory under wiki/
+TYPE_DIR_MAP: dict[str, str] = {
+    "concept": "concepts",
+    "entity": "entities",
+    "source": "sources",
+    "analysis": "analysis",
+    "synthesis": "syntheses",
+}
+
+
+def to_kebab_case(title: str) -> str:
+    """Convert a title string to a kebab-case filename (no extension).
+
+    Rules:
+      - All lowercase
+      - Spaces, underscores -> hyphens
+      - Non-alphanumeric (excluding hyphens) stripped
+      - Multiple consecutive hyphens collapsed
+      - Leading/trailing hyphens stripped
+
+    Args:
+        title: The page title to convert.
+
+    Returns:
+        Kebab-case string safe for use as a filename.
+    """
+    name = title.lower()
+    name = name.replace("_", "-")
+    name = re.sub(r"\s+", "-", name)
+    name = re.sub(r"[^a-z0-9-]", "", name)
+    name = re.sub(r"-{2,}", "-", name)
+    name = name.strip("-")
+    return name
 
 
 def main() -> None:
@@ -41,38 +76,41 @@ def main() -> None:
         help="页面标题",
     )
     parser.add_argument(
-        "--output",
-        required=True,
-        help="输出路径（相对于项目根，须在 wiki/ 下）",
+        "--source-type",
+        choices=["adr", "rfc", "notes"],
+        help="源类型（仅 type=source 时需要：adr/rfc/notes）",
     )
     args = parser.parse_args()
 
-    output_path = Path(args.output)
+    # --source-type is required when type == "source"
+    if args.type == "source" and args.source_type is None:
+        print(
+            "错误：type=source 时必须指定 --source-type (adr/rfc/notes)。",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     # ------------------------------------------------------------------
-    # Path traversal guard
+    # Compute output path from type + title (+ source-type for sources)
     # ------------------------------------------------------------------
 
-    # Reject absolute paths (e.g. /etc/passwd)
-    if output_path.is_absolute():
-        print("错误：输出路径不能为绝对路径。", file=sys.stderr)
-        sys.exit(1)
+    slug = to_kebab_case(args.title)
 
-    # Reject paths starting with ../ (obvious traversal attempt)
-    if args.output.startswith("../"):
-        print("错误：输出路径不能以 '../' 开头。", file=sys.stderr)
-        sys.exit(1)
+    if args.type == "source":
+        assert args.source_type is not None  # validated above
+        rel_path = Path("sources") / args.source_type / f"{slug}.md"
+    else:
+        rel_path = Path(TYPE_DIR_MAP[args.type]) / f"{slug}.md"
 
     # Resolve and verify the final path is under wiki/
     try:
-        resolved = (REPO_ROOT / output_path).resolve()
+        resolved = (WIKI_DIR / rel_path).resolve()
     except (ValueError, OSError):
         print("错误：无效的输出路径。", file=sys.stderr)
         sys.exit(1)
 
-    wiki_dir = WIKI_DIR
     try:
-        resolved.relative_to(wiki_dir)
+        resolved.relative_to(WIKI_DIR)
     except ValueError:
         print("错误：输出路径必须在 wiki/ 目录下。", file=sys.stderr)
         sys.exit(1)

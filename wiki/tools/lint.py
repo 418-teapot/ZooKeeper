@@ -24,8 +24,8 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 REPO_ROOT = (
-    Path(__file__).resolve().parent.parent.parent.parent.parent
-)  # lint.py -> tools/ -> wiki-maintain/ -> skills/ -> core/ -> repo root
+    Path(__file__).resolve().parent.parent.parent
+)  # lint.py -> tools/ -> wiki/ -> repo root
 # Wiki is accessed via the user-global ~/.zoo/wiki symlink.
 # Resolve the symlink so that all paths resolve under REPO_ROOT.
 WIKI_DIR = (Path.home() / ".zoo" / "wiki").resolve()
@@ -65,6 +65,9 @@ def _pages() -> list[Path]:
             continue
         # Skip template files (infrastructure, not wiki content)
         if "templates" in p.parts:
+            continue
+        # Skip tools directory (only has .py files, but be safe)
+        if "tools" in p.parts:
             continue
         pages.append(p)
     return pages

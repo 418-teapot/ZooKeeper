@@ -149,6 +149,8 @@ model = "{env:ZOO_SMALL_MODEL}"
 task = "deny"
 webfetch = "deny"
 websearch = "deny"
+write = "deny"
+edit = "deny"
 
 # ── Defaults ────────────────────────────────────────────────────────────────
 

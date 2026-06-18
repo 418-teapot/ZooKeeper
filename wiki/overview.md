@@ -9,6 +9,6 @@ status: draft
 
 # Project Knowledge Overview
 
-> 项目级知识快照。每次 ingest 后由 kiwi 判断是否需要重写。
+> 项目级知识快照。每次 ingest 后由 kiwi 建议是否需要重写，调用方执行。
 
 （待首次 ingest 后填充）

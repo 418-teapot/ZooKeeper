@@ -1,4 +1,4 @@
-"""Tests for core/skills/wiki-maintain/tools/health.py.
+"""Tests for wiki/tools/health.py.
 
 All tests use tmp_path to create temporary wiki structures and monkeypatch
 health.py module-level constants (REPO_ROOT, WIKI_DIR, INDEX_FILE, LOG_FILE)
@@ -11,13 +11,10 @@ from pathlib import Path
 
 import pytest
 
-# ── Load health.py via importlib (hyphen in "wiki-maintain" blocks
-# standard ``import``) ────────────────────────────────────────────────
+# ── Load health.py via importlib ───────────────────────────────────
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-_HEALTH_PATH = (
-    _REPO_ROOT / "core" / "skills" / "wiki-maintain" / "tools" / "health.py"
-)
+_HEALTH_PATH = _REPO_ROOT / "wiki" / "tools" / "health.py"
 
 _spec = importlib.util.spec_from_file_location("health", _HEALTH_PATH)
 health = importlib.util.module_from_spec(_spec)

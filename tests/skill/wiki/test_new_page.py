@@ -1,12 +1,12 @@
-"""Tests for core/skills/wiki-maintain/tools/new_page.py.
+"""Tests for wiki/tools/new_page.py.
 
 All tests use subprocess to exercise the real CLI entry point, covering
-path traversal guards, valid page creation, placeholder replacement, and
-invalid argument handling.
+auto-derived path generation, placeholder replacement, source-type
+validation, and kebab-case conversion.
 
 Because the script now resolves the wiki directory via Path.home() / ".zoo" / "wiki",
 test automatically sets up a temporary HOME directory with a symlink
-~/.zoo/wiki → <REPO_ROOT>/wiki so that template resolution works.
+~/.zoo/wiki -> <REPO_ROOT>/wiki so that template resolution works.
 """
 
 from __future__ import annotations
@@ -19,18 +19,26 @@ from pathlib import Path
 
 import pytest
 
-# ── Paths ────────────────────────────────────────────────────────────────
+# -- Paths ------------------------------------------------------------------
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-SCRIPT = (
-    REPO_ROOT / "core" / "skills" / "wiki-maintain" / "tools" / "new_page.py"
-)
+SCRIPT = REPO_ROOT / "wiki" / "tools" / "new_page.py"
 
-# Temporary output file used by creation tests; cleaned up after each test.
-_TEMP_OUTPUT = "wiki/concepts/_test_new_page_temp.md"
+# Files that may be created by the test suite; cleaned up after each test.
+_TEST_FILES: list[Path] = [
+    REPO_ROOT / "wiki" / "concepts" / "permission-model.md",
+    REPO_ROOT / "wiki" / "entities" / "buildagent.md",
+    REPO_ROOT / "wiki" / "sources" / "adr" / "adr-001.md",
+    REPO_ROOT / "wiki" / "analysis" / "analysis-test.md",
+    REPO_ROOT / "wiki" / "syntheses" / "synthesis-test.md",
+    REPO_ROOT / "wiki" / "concepts" / "special-case-test.md",
+    REPO_ROOT / "wiki" / "concepts" / "evil.md",
+    REPO_ROOT / "wiki" / "concepts" / "testconcept.md",
+    REPO_ROOT / "wiki" / "concepts" / "drafttest.md",
+]
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────
+# -- Helpers ----------------------------------------------------------------
 
 
 def _run(
@@ -55,7 +63,7 @@ def _run(
 
 @pytest.fixture(autouse=True)
 def _fake_home_and_symlink(tmp_path) -> dict[str, str]:
-    """Set HOME to tmp_path and create tmp_path/.zoo/wiki → REPO_ROOT/wiki.
+    """Set HOME to tmp_path and create tmp_path/.zoo/wiki -> REPO_ROOT/wiki.
 
     This ensures the subprocess resolves ``Path.home() / ".zoo" / "wiki"``
     to the real wiki directory (via the symlink), without touching the real
@@ -77,71 +85,134 @@ def _fake_home_and_symlink(tmp_path) -> dict[str, str]:
 
 @pytest.fixture(autouse=True)
 def _cleanup_temp_page() -> None:
-    """Remove the temporary test page after every test.
-
-    This is a no-op for most tests; only the creation tests actually
-    produce the file.
-    """
+    """Remove any temporary test pages after every test."""
     yield
-    p = REPO_ROOT / _TEMP_OUTPUT
-    if p.exists():
-        p.unlink()
+    for p in _TEST_FILES:
+        if p.exists():
+            p.unlink()
 
 
-# ── Path traversal guards ────────────────────────────────────────────────
+# -- Auto-derived path tests ------------------------------------------------
 
 
-class TestPathTraversal:
-    """Reject unsafe output paths before any file I/O."""
+class TestAutoDerivedPath:
+    """Verify that paths are automatically derived from --type and --title."""
 
-    def test_rejects_absolute_path(self, _fake_home_and_symlink) -> None:
-        """--output /tmp/outside.md → exit 1, stderr contains "绝对路径"."""
+    def test_concept_auto_path(self, _fake_home_and_symlink) -> None:
+        """--type concept --title "Permission Model" -> wiki/concepts/permission-model.md."""
         result = _run(
             "--type",
             "concept",
             "--title",
-            "Test",
-            "--output",
-            "/tmp/outside.md",
+            "Permission Model",
             env=_fake_home_and_symlink,
         )
-        assert result.returncode == 1
-        assert "绝对路径" in result.stderr
+        assert result.returncode == 0
+        assert "已创建页面" in result.stdout
+        assert "wiki/concepts/permission-model.md" in result.stdout
 
-    def test_rejects_dotdot_prefix(self, _fake_home_and_symlink) -> None:
-        """--output ../outside.md → exit 1, stderr mentions ".."."""
+        output_file = REPO_ROOT / "wiki" / "concepts" / "permission-model.md"
+        assert output_file.is_file()
+
+    def test_entity_auto_path(self, _fake_home_and_symlink) -> None:
+        """--type entity --title "BuildAgent" -> wiki/entities/buildagent.md."""
+        result = _run(
+            "--type",
+            "entity",
+            "--title",
+            "BuildAgent",
+            env=_fake_home_and_symlink,
+        )
+        assert result.returncode == 0
+        output_file = REPO_ROOT / "wiki" / "entities" / "buildagent.md"
+        assert output_file.is_file()
+        assert str(output_file.relative_to(REPO_ROOT)) in result.stdout
+
+    def test_source_with_source_type(self, _fake_home_and_symlink) -> None:
+        """--type source --title "ADR-001" --source-type adr
+        -> wiki/sources/adr/adr-001.md."""
+        result = _run(
+            "--type",
+            "source",
+            "--title",
+            "ADR-001",
+            "--source-type",
+            "adr",
+            env=_fake_home_and_symlink,
+        )
+        assert result.returncode == 0
+        output_file = REPO_ROOT / "wiki" / "sources" / "adr" / "adr-001.md"
+        assert output_file.is_file()
+
+    def test_source_without_source_type(self, _fake_home_and_symlink) -> None:
+        """--type source without --source-type exits with error."""
+        result = _run(
+            "--type",
+            "source",
+            "--title",
+            "ADR-001",
+            env=_fake_home_and_symlink,
+        )
+        assert result.returncode == 2
+        assert "source-type" in result.stderr
+
+    def test_analysis_auto_path(self, _fake_home_and_symlink) -> None:
+        """--type analysis --title "Analysis Test"
+        -> wiki/analysis/analysis-test.md."""
+        result = _run(
+            "--type",
+            "analysis",
+            "--title",
+            "Analysis Test",
+            env=_fake_home_and_symlink,
+        )
+        assert result.returncode == 0
+        output_file = REPO_ROOT / "wiki" / "analysis" / "analysis-test.md"
+        assert output_file.is_file()
+
+    def test_synthesis_auto_path(self, _fake_home_and_symlink) -> None:
+        """--type synthesis --title "Synthesis Test"
+        -> wiki/syntheses/synthesis-test.md."""
+        result = _run(
+            "--type",
+            "synthesis",
+            "--title",
+            "Synthesis Test",
+            env=_fake_home_and_symlink,
+        )
+        assert result.returncode == 0
+        output_file = REPO_ROOT / "wiki" / "syntheses" / "synthesis-test.md"
+        assert output_file.is_file()
+
+    def test_title_special_chars(self, _fake_home_and_symlink) -> None:
+        """Title with spaces and underscores gets cleaned to kebab-case."""
         result = _run(
             "--type",
             "concept",
             "--title",
-            "Test",
-            "--output",
-            "../outside.md",
+            "Special_Case Test!",
             env=_fake_home_and_symlink,
         )
-        assert result.returncode == 1
-        assert "../" in result.stderr
+        assert result.returncode == 0
+        output_file = REPO_ROOT / "wiki" / "concepts" / "special-case-test.md"
+        assert output_file.is_file()
 
-    def test_rejects_path_outside_wiki(self, _fake_home_and_symlink) -> None:
-        """--output wiki/../../outside.md → exit 1, stderr says "wiki/ 目录下"."""
+    def test_title_traversal_safe(self, _fake_home_and_symlink) -> None:
+        """Title with ``../`` is cleaned to safe kebab-case, no escape.
+
+        Because kebab-case stripping removes dots and slashes, a title like
+        ``../evil`` becomes just ``evil`` and stays safely under wiki/.
+        """
         result = _run(
             "--type",
             "concept",
             "--title",
-            "Test",
-            "--output",
-            "wiki/../../outside.md",
+            "../evil",
             env=_fake_home_and_symlink,
         )
-        assert result.returncode == 1
-        assert "必须在 wiki/ 目录下" in result.stderr
-
-
-# ── Valid page creation ──────────────────────────────────────────────────
-
-
-class TestValidCreation:
-    """Successful page creation into ``wiki/concepts/`` with cleanup."""
+        assert result.returncode == 0
+        output_file = REPO_ROOT / "wiki" / "concepts" / "evil.md"
+        assert output_file.is_file()
 
     def test_creates_valid_page(self, _fake_home_and_symlink) -> None:
         """Creates a page with correct title, heading, and date."""
@@ -150,14 +221,12 @@ class TestValidCreation:
             "concept",
             "--title",
             "TestConcept",
-            "--output",
-            _TEMP_OUTPUT,
             env=_fake_home_and_symlink,
         )
         assert result.returncode == 0
         assert "已创建页面" in result.stdout
 
-        output_file = REPO_ROOT / _TEMP_OUTPUT
+        output_file = REPO_ROOT / "wiki" / "concepts" / "testconcept.md"
         assert output_file.is_file()
 
         content = output_file.read_text(encoding="utf-8")
@@ -173,13 +242,11 @@ class TestValidCreation:
             "concept",
             "--title",
             "DraftTest",
-            "--output",
-            _TEMP_OUTPUT,
             env=_fake_home_and_symlink,
         )
         assert result.returncode == 0
 
-        output_file = REPO_ROOT / _TEMP_OUTPUT
+        output_file = REPO_ROOT / "wiki" / "concepts" / "drafttest.md"
         content = output_file.read_text(encoding="utf-8")
 
         # The pipe-separated placeholder must not survive.
@@ -191,7 +258,7 @@ class TestValidCreation:
         )
 
 
-# ── Invalid type ─────────────────────────────────────────────────────────
+# -- Invalid type -----------------------------------------------------------
 
 
 def test_invalid_type_exits_with_error(_fake_home_and_symlink) -> None:
@@ -201,8 +268,6 @@ def test_invalid_type_exits_with_error(_fake_home_and_symlink) -> None:
         "invalid",
         "--title",
         "Test",
-        "--output",
-        "wiki/concepts/x.md",
         env=_fake_home_and_symlink,
     )
     assert result.returncode == 2

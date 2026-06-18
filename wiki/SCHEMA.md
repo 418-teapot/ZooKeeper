@@ -137,10 +137,18 @@ Agent 直接读写文件时（`read` / `write` / `edit` / `bash` 指令）使用
 创建新页面的命令：
 
 ```
-python3 core/skills/wiki-maintain/tools/new_page.py \
+python3 wiki/tools/new_page.py \
     --type <concept|entity|source|analysis|synthesis> \
+    --title "<页面标题>"
+```
+
+对于 source 类型，额外指定 `--source-type`：
+
+```
+python3 wiki/tools/new_page.py \
+    --type source \
     --title "<页面标题>" \
-    --output ~/.zoo/wiki/<dir>/<slug>.md
+    --source-type <adr|rfc|notes>
 ```
 
 脚本会从模板生成带完整 frontmatter 和骨架节的页面，kiwi 只需 `edit` 填充

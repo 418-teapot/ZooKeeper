@@ -1,12 +1,12 @@
 ---
 name: wiki-query
-description: 从 ~/.zoo/wiki/ 中查询知识并合成答案。由 build agent 在用户提问时加载，替代盲目委派 explore 或 spider。
+description: 从 ~/.zoo/wiki/ 中查询知识并合成答案。查询 wiki 覆盖的项目知识时加载此技能，替代盲目委派 explore 或 spider。
 ---
 
 # Wiki Query 技能
 
-从 `~/.zoo/wiki/` 中查询知识并合成答案。由 build agent 在用户提问时加载，
-替代盲目委派 explore 或 spider。
+从 `~/.zoo/wiki/` 中查询知识并合成答案。
+查询 wiki 覆盖的项目知识时加载此技能，替代盲目委派 explore 或 spider。
 
 ---
 
@@ -41,16 +41,24 @@ description: 从 ~/.zoo/wiki/ 中查询知识并合成答案。由 build agent �
 - **wiki 部分覆盖** → wiki 内容作为上下文，委派 explore 补充探索缺失部分
 - **wiki 无覆盖** → 委派 explore 或 spider 探索，必要时触发 ingest
 
+可选：调用 `wiki_log.py` 记录查询事件，便于追踪查询频率和覆盖范围：
+
+```bash
+python wiki/tools/wiki_log.py \
+    --op query --path "—" --action pass \
+    --note "查询了 <主题>"
+```
+
 ---
 
 ## Phase 4 — 判断是否归档
 
-回答用户后，判断答案是否值得持久化：
+回答后，判断答案是否值得持久化：
 
 **值得归档**（可复用知识、非一次性问答）：
-1. 构造三段式 prompt（SUMMARY / CONTEXT / ACCEPTANCE）
-2. 委派 `task(subagent="kiwi")` 创建 `~/.zoo/wiki/syntheses/<slug>.md`
-3. kiwi 自动更新 `~/.zoo/wiki/index.md` 和 `~/.zoo/wiki/log.md`
+1. 加载 wiki-ingest skill，根据源材料复杂度选择直接写入或委派 kiwi 蒸馏
+2. 创建 `~/.zoo/wiki/syntheses/<slug>.md`
+3. 更新 `~/.zoo/wiki/index.md` 和 `~/.zoo/wiki/log.md`
 4. 告知用户已归档的页面路径
 
 **不归档**（一次性问答、时效性内容）→ 跳过
