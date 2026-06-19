@@ -6,6 +6,7 @@ updated: 2026-06-19
 tags: [autoresearch, scope-management, agent-constraint]
 related:
   - concepts/autonomous-experiment-loop.md
+  - concepts/post-hoc-accountability.md
   - concepts/npc.md
   - entities/autoresearch-train-py.md
   - entities/autoresearch-prepare-py.md
@@ -56,6 +57,7 @@ agent 在 `train.py` 内几乎拥有无限自由：可改架构、改优化器�
 - [自主实验循环](concepts/autonomous-experiment-loop.md)
 - [固定时间预算评估](concepts/fixed-time-budget-evaluation.md)
 - [NPC 式分工](concepts/npc.md)
+- [后验问责制](concepts/post-hoc-accountability.md)
 - [简约准则](concepts/simplicity-criterion.md)
 - [prepare.py](entities/autoresearch-prepare-py.md)
 - [train.py](entities/autoresearch-train-py.md)

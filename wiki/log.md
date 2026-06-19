@@ -1,3 +1,21 @@
+# Wiki Change Log
+
+> Heading-line 格式日志，每条记录是一个 Markdown 二级标题。
+> Grep-parseable: grep "^## \[" wiki/log.md | head -5
+> 按时间倒序排列（最新在最上）。
+
+---
+## [2026-06-19] ingest | overview.md | edit — 更新知识版图与外部参考
+## [2026-06-19] ingest | concepts/autonomous-experiment-loop.md | edit — 添加扩展循环交叉引用
+## [2026-06-19] ingest | concepts/experiment-versioning.md | edit — 补充 segment 模型和扩展分支策略
+## [2026-06-19] ingest | sources/rfc/autoresearch-design.md | create — oh-my-pi autoresearch 扩展设计文档摘要
+## [2026-06-19] ingest | analysis/autoresearch-porting-roadmap.md | create — ZooKeeper 移植三阶段计划与路径分析
+## [2026-06-19] ingest | analysis/performance-tuning-design-patterns.md | create — 6 个 AI 调优系统的设计模式提炼
+## [2026-06-19] ingest | analysis/agent-skill-plugin-framework.md | create — Agent/Skill/Plugin 六维度判断框架
+## [2026-06-19] ingest | concepts/post-hoc-accountability.md | create — 后验问责制设计哲学
+## [2026-06-19] ingest | concepts/metric-asi-protocol.md | create — METRIC/ASI 零依赖文本协议
+## [2026-06-19] ingest | concepts/mad-confidence.md | create — MAD 置信度算法原理
+## [2026-06-19] ingest | concepts/autoresearch-extension-loop.md | create — 扩展的两阶段循环与自动恢复
 ## [2026-06-19] ingest | overview.md | edit — 扩展知识版图，添加 autoresearch 参考
 ## [2026-06-19] ingest | analysis/autoresearch-design-tradeoffs.md | create — 设计权衡结构化分析
 ## [2026-06-19] ingest | entities/autoresearch-program-md.md | create — autoresearch agent 指令文件

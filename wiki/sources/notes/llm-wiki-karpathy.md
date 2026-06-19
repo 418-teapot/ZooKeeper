@@ -17,14 +17,14 @@ status: stable
 
 ## Overview
 
-> Andrej Karpathy 提出的 LLM Wiki 模式：将 LLM 作为知识库的"维护者"，增量构建和维持一个结构化、交叉引用的 markdown wiki，替代传统的 RAG 检索方案。核心理念是让知识库成为一个[复利增长](concepts/compounding-knowledge.md)的持久化产物，而非每次查询时从零推导。
+> Andrej Karpathy 提出的 [LLM Wiki](analysis/llm-wiki-vs-rag.md) 模式：将 LLM 作为知识库的"维护者"，增量构建和维持一个结构化、交叉引用的 markdown wiki，替代传统的 RAG 检索方案。核心理念是让知识库成为一个[复利增长](concepts/compounding-knowledge.md)的持久化产物，而非每次查询时从零推导。
 
 ## Details
 
 - **来源：** Gist 非正式提案，目标读者是有 LLM agent 使用经验的开发者
 - **三个核心操作：** [ingest](concepts/wiki-ingest-workflow.md)（摄入）→ [query](concepts/wiki-query-synthesis.md)（查询）→ [lint](concepts/wiki-health-check.md)（健康检查）
 - **三层架构：** 原始源材料（不可变）→ wiki（LLM 全权维护）→ schema（约定文档，人机共演进）
-- **与 ZooKeeper 的关系：** ZooKeeper 的 wiki 系统是该模式的独立实现。Karpathy 的文章可视为其设计理念的独立阐述，二者的差异见 [LLM Wiki vs RAG](analysis/llm-wiki-vs-rag.md)
+- **与 ZooKeeper 的关系：** ZooKeeper 的 wiki 系统是该模式的独立实现。Karpathy 的文章可视为其设计理念的独立阐述，二者的差异见 LLM Wiki vs RAG
 
 ## Relations
 

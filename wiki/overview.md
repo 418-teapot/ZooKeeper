@@ -45,14 +45,16 @@ status: stable
 
 | 分类 | 页面数 | 核心内容 |
 |------|--------|----------|
-| Concepts | 10 | 复利知识、ingest 工作流、query→synthesis 归档、健康检查、自主实验循环、固定时间预算评估、单文件修改原则、NPC 式分工、简约准则、实验版本管理 |
+| Concepts | 14 | 复利知识、ingest 工作流、query→synthesis 归档、健康检查、自主实验循环、扩展实验循环、固定时间预算评估、单文件修改原则、后验问责制、NPC 式分工、简约准则、实验版本管理、MAD 置信度算法、METRIC/ASI 协议 |
 | Entities | 3 | train.py、prepare.py、program.md（autoresearch 核心文件） |
 | Sources → Notes | 2 | Karpathy LLM Wiki 模式原始提案、autoresearch 自主实验框架 |
-| Analysis | 3 | LLM Wiki vs RAG 结构化对比、蒸馏示例、autoresearch 设计权衡分析 |
+| Sources → RFC | 1 | autoresearch 设计文档 |
+| Analysis | 6 | LLM Wiki vs RAG 结构化对比、蒸馏示例、autoresearch 设计权衡分析、Agent/Skill/Plugin 判断框架、性能调优设计模式、ZooKeeper 移植路线图 |
 
 ### 外部参考知识
 
 - [autoresearch](sources/notes/autoresearch.md) — Karpathy 的 AI agent 自主 LLM 训练实验框架，为 ZooKeeper 的 agent 自动化设计提供参考。其核心机制（自主实验循环、NPC 式分工、单文件修改原则）与 ZooKeeper 的 agent 编排理念高度相关。
+- [autoresearch 设计文档](sources/rfc/autoresearch-design.md) — oh-my-pi 的 autoresearch 扩展设计，为 ZooKeeper 的 agent 自动化和内核调优提供架构参考。核心机制（扩展循环、MAD 置信度、METRIC/ASI 协议）与 ZooKeeper 的插件架构和 perf-tuner 规划直接相关。
 
 ### 与 RAG 的本质区别
 

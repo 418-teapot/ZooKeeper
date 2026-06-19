@@ -15,7 +15,7 @@ related:
 status: stable
 ---
 
-# autoresearch 设计权衡分析
+# [autoresearch 设计](sources/rfc/autoresearch-design.md)权衡分析
 
 > [autoresearch](sources/notes/autoresearch.md) 项目的核心设计决策及其利弊分析。每个决策都是在特定约束下的权衡，理解这些权衡有助于评估该框架的适用边界和扩展方向。
 
@@ -58,7 +58,7 @@ autoresearch 的设计不是"最优解"，而是"在约束下的合理选择"。
 
 **结论：** 自包含是"最小可行实验跟踪"，适合快速启动和隐私敏感场景。规模化后可能需要补充外部工具。
 
-### NPC 式分工 vs 协作编程
+### [NPC 式分工](concepts/npc.md) vs 协作编程
 
 | 维度 | NPC 式分工 | 协作编程 |
 |------|-----------|---------|

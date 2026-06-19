@@ -9,6 +9,7 @@ related:
   - concepts/single-file-modification.md
   - concepts/npc.md
   - concepts/experiment-versioning.md
+  - concepts/autoresearch-extension-loop.md
   - entities/autoresearch-train-py.md
   - entities/autoresearch-program-md.md
   - sources/notes/autoresearch.md
@@ -22,6 +23,8 @@ status: stable
 ## Overview
 
 自主实验循环是 [autoresearch](sources/notes/autoresearch.md) 项目的核心机制。它让 AI agent（如 Claude、Codex）在无人值守的情况下，整夜持续进行 LLM 训练实验。每次循环约 5 分钟，一个睡眠周期可完成约 100 次实验。
+
+oh-my-pi 的 [autoresearch 扩展循环](concepts/autoresearch-extension-loop.md)在此基础上增加了插件基础设施、SQLite 持久化和自动恢复机制。
 
 该循环的关键在于"完全自主"——agent 在实验过程中禁止询问人类，所有决策（修改方向、保留/丢弃、异常处理）均由 agent 自行判断。
 
@@ -66,6 +69,7 @@ status: stable
 
 由 `backlinks.py` 自动维护。列出引用本页面的其他页面。
 
+- [autoresearch 扩展循环](concepts/autoresearch-extension-loop.md)
 - [实验版本管理](concepts/experiment-versioning.md)
 - [固定时间预算评估](concepts/fixed-time-budget-evaluation.md)
 - [NPC 式分工](concepts/npc.md)

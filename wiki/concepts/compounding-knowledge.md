@@ -13,7 +13,7 @@ status: stable
 
 ## Overview
 
-> RAG 的问题不是检索不准，而是**每次查询都从零推导**——知识没有积累。LLM Wiki 的核心转变在于：把知识编译一次、持续维护、复利增长。每[摄入](concepts/wiki-ingest-workflow.md)一个新源，不仅创建摘要，还同步更新所有相关页面。每提出一个好问题，[回答本身被归档](concepts/wiki-query-synthesis.md)为新知识。交叉引用、矛盾标记、综合摘要都是**预计算**的，查询时直接消费，而非实时拼凑。
+> RAG 的问题不是检索不准，而是**每次查询都从零推导**——知识没有积累。[LLM Wiki](sources/notes/llm-wiki-karpathy.md) 的核心转变在于：把知识编译一次、持续维护、复利增长。每[摄入](concepts/wiki-ingest-workflow.md)一个新源，不仅创建摘要，还同步更新所有相关页面。每提出一个好问题，[回答本身被归档](concepts/wiki-query-synthesis.md)为新知识。交叉引用、矛盾标记、综合摘要都是**预计算**的，查询时直接消费，而非实时拼凑。
 
 ## Details
 

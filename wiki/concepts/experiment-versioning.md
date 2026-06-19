@@ -6,6 +6,7 @@ updated: 2026-06-19
 tags: [autoresearch, versioning, git, experiment-tracking]
 related:
   - concepts/autonomous-experiment-loop.md
+  - concepts/autoresearch-extension-loop.md
   - entities/autoresearch-train-py.md
   - sources/notes/autoresearch.md
 status: stable
@@ -24,6 +25,7 @@ status: stable
 ### 分支策略
 
 - **命名规则** — `autoresearch/<tag>`，如 `autoresearch/mar5` 或 `autoresearch/mar5-gpu0`
+- **扩展格式** — `autoresearch/{slug}-{yyyymmdd}`，冲突时自动递增后缀
 - **起点** — 从 `master` 切出，确保每次 session 有干净的基线
 - **生命周期** — 实验期间持续 advancing，session 结束后可保留或删除
 
@@ -33,6 +35,10 @@ status: stable
 - **改善则保留** — `val_bpb` 降低时，branch HEAD 前进
 - **失败则回退** — `val_bpb` 未改善或崩溃时，`git reset` 到上一个好 commit
 - **永不 amend** — 历史是线性的，便于回溯
+
+### Segment 模型
+
+[autoresearch 扩展](concepts/autoresearch-extension-loop.md)引入 segment 将迭代分组，每个 segment 有独立基线。当 benchmark 需要更改（如切换 workload）时，通过 `init_experiment new_segment: true` 创建新 segment，旧 segment 数据保留归档。
 
 ### results.tsv 格式
 
@@ -64,6 +70,7 @@ commit  val_bpb  memory_gb  status  description
 由 `backlinks.py` 自动维护。列出引用本页面的其他页面。
 
 - [自主实验循环](concepts/autonomous-experiment-loop.md)
+- [autoresearch 扩展循环](concepts/autoresearch-extension-loop.md)
 - [autoresearch — AI agent 自主 LLM 训练实验框架](sources/notes/autoresearch.md)
 
 ## References

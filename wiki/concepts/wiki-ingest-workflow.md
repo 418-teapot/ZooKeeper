@@ -14,7 +14,7 @@ status: stable
 
 ## Overview
 
-> Ingest 是 LLM Wiki 的核心写入操作：将一个新源材料**结构性整合**进已有知识库，而非简单追加。一个源的摄入可能触碰 10-15 个页面——这不是 bug，是 feature。它体现了[复利知识](concepts/compounding-knowledge.md)的核心理念：每个新输入都通过交叉引用和摘要更新让整个知识库更丰富。
+> Ingest 是 [LLM Wiki](sources/notes/llm-wiki-karpathy.md) 的核心写入操作：将一个新源材料**结构性整合**进已有知识库，而非简单追加。一个源的摄入可能触碰 10-15 个页面——这不是 bug，是 feature。它体现了[复利知识](concepts/compounding-knowledge.md)的核心理念：每个新输入都通过交叉引用和摘要更新让整个知识库更丰富。
 
 ## Details
 

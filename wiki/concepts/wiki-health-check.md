@@ -12,7 +12,7 @@ status: stable
 
 ## Overview
 
-> Lint（健康检查）是 LLM Wiki 三个核心操作中的"维持性"操作。随着 wiki 增长，矛盾、过时声明、孤立页面、缺失交叉引用会自然累积。定期让 LLM 扫描 wiki 结构并建议修正，是用 LLM 的"不厌其烦"对抗[知识库](concepts/compounding-knowledge.md)的"熵增"。
+> Lint（健康检查）是 [LLM Wiki](sources/notes/llm-wiki-karpathy.md) 三个核心操作中的"维持性"操作。随着 wiki 增长，矛盾、过时声明、孤立页面、缺失交叉引用会自然累积。定期让 LLM 扫描 wiki 结构并建议修正，是用 LLM 的"不厌其烦"对抗[知识库](concepts/compounding-knowledge.md)的"熵增"。
 
 ## Details
 

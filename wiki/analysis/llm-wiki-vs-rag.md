@@ -13,7 +13,7 @@ status: stable
 
 ## Overview
 
-> Karpathy 在文章中通过对比 RAG 来定义 LLM Wiki 模式。这个对比不是技术优劣的评判，而是**两种截然不同的知识管理哲学**：RAG 走"实时检索→综合→丢弃"路径；LLM Wiki 走"预编译→存储→[复利](concepts/compounding-knowledge.md)"路径。
+> Karpathy 在文章中通过对比 RAG 来定义 [LLM Wiki](sources/notes/llm-wiki-karpathy.md) 模式。这个对比不是技术优劣的评判，而是**两种截然不同的知识管理哲学**：RAG 走"实时检索→综合→丢弃"路径；LLM Wiki 走"预编译→存储→[复利](concepts/compounding-knowledge.md)"路径。
 
 ## Details
 
@@ -30,7 +30,7 @@ status: stable
 ### 适用场景
 
 - **RAG 更适合：** 文档集频繁变化、单次查询为主、不需要长期积累的场景（如客服知识库的一次性检索）
-- **LLM Wiki 更适合：** 个人/团队长期研究、知识需要综合和对比、需要"[知识复利](concepts/compounding-knowledge.md)"的场景
+- **LLM Wiki 更适合：** 个人/团队长期研究、知识需要综合和对比、需要"知识复利"的场景
 
 ### 边界与混合
 

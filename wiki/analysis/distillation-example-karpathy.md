@@ -17,7 +17,7 @@ status: stable
 
 ## Overview
 
-> 本文以 Karpathy 的 LLM Wiki gist 为例，完整展示一次蒸馏的决策过程：原始文章怎么拆、什么东西被丢弃、为什么这样分类、内联链接放在哪。是一份"蒸馏过程的蒸馏"——meta 级别的示例，供后续蒸馏任务参考。
+> 本文以 Karpathy 的 [LLM Wiki](sources/notes/llm-wiki-karpathy.md) gist 为例，完整展示一次蒸馏的决策过程：原始文章怎么拆、什么东西被丢弃、为什么这样分类、内联链接放在哪。是一份"蒸馏过程的蒸馏"——meta 级别的示例，供后续蒸馏任务参考。
 
 ## Details
 

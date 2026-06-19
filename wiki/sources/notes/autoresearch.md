@@ -7,6 +7,7 @@ source: https://github.com/karpathy/autoresearch
 tags: [autoresearch, ai-agent, llm-training, research-automation]
 related:
   - concepts/autonomous-experiment-loop.md
+  - concepts/autoresearch-extension-loop.md
   - concepts/fixed-time-budget-evaluation.md
   - concepts/single-file-modification.md
   - concepts/npc.md
@@ -16,6 +17,7 @@ related:
   - entities/autoresearch-prepare-py.md
   - entities/autoresearch-program-md.md
   - analysis/autoresearch-design-tradeoffs.md
+  - sources/rfc/autoresearch-design.md
 status: stable
 ---
 
@@ -39,9 +41,9 @@ autoresearch 是一个让 AI agent 自动在小规模单 GPU LLM 训练实验上
 
 | 文件 | 角色 | 编辑者 |
 |------|------|--------|
-| [train.py](entities/autoresearch-train-py.md) | 模型、优化器、训练循环 | Agent |
+| train.py | 模型、优化器、训练循环 | Agent |
 | [prepare.py](entities/autoresearch-prepare-py.md) | 数据、tokenizer、评估 | 固定 |
-| [program.md](entities/autoresearch-program-md.md) | Agent 指令 | 人类 |
+| program.md | Agent 指令 | 人类 |
 
 ### 关键设计选择
 

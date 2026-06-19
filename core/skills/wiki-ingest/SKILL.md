@@ -130,13 +130,17 @@ kiwi 返回分析后，由调用方 agent 执行写入：
     ```bash
     python3 ~/.zoo/wiki/tools/backlinks.py --write
     ```
-5. **可选：健康检查** — 如果存在健康检查工具，运行它以验证 wiki 结构完整性：
-
-```bash
-python3 ~/.zoo/wiki/tools/health.py --json 2>/dev/null \
-  && echo "✓ wiki 结构完整" \
-  || echo "ℹ 健康检查工具不可用，跳过"
-```
+5. **增量内联链接检查** — 扫描本次写入的新增文本，检查是否有已知 wiki 术语首次出现时缺少内联链接：
+    ```bash
+    python3 ~/.zoo/wiki/tools/diff_check.py || echo "⚠ 新增文本中存在缺失的内联链接，请检查并修复"
+    ```
+    如果检查发现问题 → 在新增文本中为缺失链接的术语添加 `[术语](目标页.md)` 内联链接，然后重新运行检查确认通过。
+6. **可选：健康检查** — 运行全量 wiki 结构完整性检查：
+    ```bash
+    python3 ~/.zoo/wiki/tools/health.py --json 2>/dev/null \
+      && echo "✓ wiki 结构完整" \
+      || echo "ℹ 健康检查工具不可用，跳过"
+    ```
 
 如果验证失败 → 检查失败原因，必要时重新委派 kiwi。
 如果验证通过 → 向用户报告创建的页面列表和摘要。
