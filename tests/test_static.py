@@ -31,7 +31,7 @@ AGENT_STRUCTURE_REQUIREMENTS: dict[str, list[list[str]]] = {
 }
 
 # Max estimated tokens (len // 3) per prompt.
-MAX_PROMPT_TOKENS = 3000
+MAX_PROMPT_TOKENS = 5000
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────

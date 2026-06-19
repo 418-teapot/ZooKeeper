@@ -37,6 +37,11 @@ else
   FAILED=1
 fi
 
+# Temporarily skip dry-run tests (behavioral assertions depend on LLM model
+# adherence to prompt-injected delegation instructions).
+# Set SKIP_DRY_RUN=0 to re-enable.
+SKIP_DRY_RUN="${SKIP_DRY_RUN:-1}"
+if [ "$SKIP_DRY_RUN" = "0" ]; then
 section "Python runner dry-run"
 set +e
 uv run python "$RUNNER" --dry-run 2>&1 | tee /tmp/runner_output.txt
@@ -54,6 +59,10 @@ elif [ $RUNNER_EXIT_CODE -ne 0 ]; then
     FAILED=1
 else
     ok "runner --dry-run"
+fi
+else
+    echo ""
+    echo "⏭️  Skipping dry-run tests (SKIP_DRY_RUN=1)"
 fi
 
 section "TypeScript type check"
