@@ -64,6 +64,7 @@ cp .env.example .env
 ```
 # 模型 ID（所有 Agent 共用）
 ZOO_MODEL=Cambricon/glm-5.1
+ZOO_MEDIUM_MODEL=Cambricon/glm-5.1
 ZOO_SMALL_MODEL=Cambricon/deepseek-v4-flash
 
 # Provider 凭据 — 只需设置你实际使用的 Provider，其余可注释或留空

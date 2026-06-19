@@ -152,7 +152,7 @@ grep = "deny"
 
 [agent.eagle]
 mode  = "subagent"
-model = "{env:ZOO_MODEL}"
+model = "{env:ZOO_MEDIUM_MODEL}"
 [agent.eagle.permission]
 write = "deny"
 edit = "deny"
@@ -162,7 +162,7 @@ websearch = "deny"
 
 [agent.kiwi]
 mode  = "subagent"
-model = "{env:ZOO_MODEL}"
+model = "{env:ZOO_MEDIUM_MODEL}"
 [agent.kiwi.permission]
 task = "deny"
 write = "deny"
