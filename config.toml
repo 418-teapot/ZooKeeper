@@ -98,6 +98,24 @@ output      = 0.28
 cache_read  = 0.028
 cache_write = 0
 
+# ── MoonShot ────────────────────────────────────────────────────────────────
+
+[provider.MoonShot]
+npm = "@ai-sdk/anthropic"
+
+[provider.MoonShot.options]
+baseURL = "{env:MOONSHOT_BASE_URL}"
+apiKey  = "{env:MOONSHOT_API_KEY}"
+
+[provider.MoonShot.models.kimi-for-coding]
+name = "kimi-for-coding"
+id   = "kimi-for-coding"
+reasoning = true
+
+[provider.MoonShot.models.kimi-for-coding.limit]
+context = 262144
+output  = 131072
+
 # ── Agents ──────────────────────────────────────────────────────────────────
 
 [agent.build]
