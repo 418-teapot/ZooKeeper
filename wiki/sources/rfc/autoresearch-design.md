@@ -47,6 +47,9 @@ status: stable
 由 `backlinks.py` 自动维护。列出引用本页面的其他页面。
 
 - [Agent/Skill/Plugin 判断框架](analysis/agent-skill-plugin-framework.md)
+- [autoresearch 设计权衡分析](analysis/autoresearch-design-tradeoffs.md)
+- [autoresearch ZooKeeper 移植路线图](analysis/autoresearch-porting-roadmap.md)
+- [性能调优设计模式](analysis/performance-tuning-design-patterns.md)
 - [autoresearch 扩展循环](concepts/autoresearch-extension-loop.md)
 - [MAD 置信度算法](concepts/mad-confidence.md)
 - [METRIC/ASI 文本协议](concepts/metric-asi-protocol.md)

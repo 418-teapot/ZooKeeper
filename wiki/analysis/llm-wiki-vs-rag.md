@@ -8,6 +8,7 @@ sources:
   - sources/notes/llm-wiki-karpathy.md
 related:
   - concepts/compounding-knowledge.md
+  - concepts/graph-link-prediction.md
 status: stable
 ---
 
@@ -48,6 +49,7 @@ status: stable
 
 - [蒸馏示例 — Karpathy LLM Wiki 文章的摄入过程](analysis/distillation-example-karpathy.md)
 - [复利知识 — 持久化知识库的核心价值](concepts/compounding-knowledge.md)
+- [图链接预测 — 基于拓扑结构的缺失链接推断](concepts/graph-link-prediction.md)
 - [LLM Wiki — 用 LLM 构建个人知识库的模式](sources/notes/llm-wiki-karpathy.md)
 
 ## References

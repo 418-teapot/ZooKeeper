@@ -7,6 +7,7 @@ tags: [wiki, maintenance, quality]
 related:
   - concepts/wiki-ingest-workflow.md
   - concepts/wiki-query-synthesis.md
+  - concepts/graph-link-prediction.md
 status: stable
 ---
 
@@ -48,6 +49,7 @@ status: stable
 由 `backlinks.py` 自动维护。列出引用本页面的其他页面。
 
 - [蒸馏示例 — Karpathy LLM Wiki 文章的摄入过程](analysis/distillation-example-karpathy.md)
+- [图链接预测 — 基于拓扑结构的缺失链接推断](concepts/graph-link-prediction.md)
 - [Wiki Ingest 工作流 — 源材料的增量整合](concepts/wiki-ingest-workflow.md)
 - [Query → Synthesis → 归档 — 查询即知识生产](concepts/wiki-query-synthesis.md)
 - [LLM Wiki — 用 LLM 构建个人知识库的模式](sources/notes/llm-wiki-karpathy.md)

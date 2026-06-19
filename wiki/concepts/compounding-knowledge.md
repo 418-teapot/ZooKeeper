@@ -8,6 +8,7 @@ related:
   - concepts/wiki-ingest-workflow.md
   - concepts/wiki-query-synthesis.md
   - analysis/llm-wiki-vs-rag.md
+  - concepts/graph-link-prediction.md
 status: stable
 ---
 
@@ -55,6 +56,7 @@ LLM Wiki 在"源文档"和"查询"之间插入一个**持久化 wiki 层**：
 
 - [蒸馏示例 — Karpathy LLM Wiki 文章的摄入过程](analysis/distillation-example-karpathy.md)
 - [LLM Wiki vs RAG — 两种知识管理范式的对比](analysis/llm-wiki-vs-rag.md)
+- [图链接预测 — 基于拓扑结构的缺失链接推断](concepts/graph-link-prediction.md)
 - [Wiki 健康检查 — 知识库的持续质量维护](concepts/wiki-health-check.md)
 - [Wiki Ingest 工作流 — 源材料的增量整合](concepts/wiki-ingest-workflow.md)
 - [Query → Synthesis → 归档 — 查询即知识生产](concepts/wiki-query-synthesis.md)

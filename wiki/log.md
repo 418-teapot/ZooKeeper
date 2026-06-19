@@ -1,10 +1,4 @@
-# Wiki Change Log
-
-> Heading-line 格式日志，每条记录是一个 Markdown 二级标题。
-> Grep-parseable: grep "^## \[" wiki/log.md | head -5
-> 按时间倒序排列（最新在最上）。
-
----
+## [2026-06-19] ingest | concepts/graph-link-prediction.md | create — 图链接预测理论知识蒸馏，作为健康检查拓扑互补路径
 ## [2026-06-19] ingest | overview.md | edit — 更新知识版图与外部参考
 ## [2026-06-19] ingest | concepts/autonomous-experiment-loop.md | edit — 添加扩展循环交叉引用
 ## [2026-06-19] ingest | concepts/experiment-versioning.md | edit — 补充 segment 模型和扩展分支策略

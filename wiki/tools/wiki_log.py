@@ -3,8 +3,7 @@
 wiki_log.py — Prepend a structured log entry to the top of ``wiki/log.md``.
 
 Called by agents (LLM tool calls) whenever a wiki mutation happens.
-Prepends a heading-line log entry at the top of log.md, immediately after
-the ``---`` separator.
+New entries are prepended, keeping the list in reverse-chronological order.
 
 Entry format::
 
@@ -33,16 +32,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 # Wiki is accessed via the user-global ~/.zoo/wiki symlink.
 WIKI_DIR = (Path.home() / ".zoo" / "wiki").resolve()
 LOG_FILE = WIKI_DIR / "log.md"
-
-LOG_HEADER = """\
-# Wiki Change Log
-
-> Heading-line 格式日志，每条记录是一个 Markdown 二级标题。
-> Grep-parseable: grep "^## \\[" wiki/log.md | head -5
-> 按时间倒序排列（最新在最上）。
-
----
-"""
 
 VALID_OPS = [
     "ingest",
@@ -117,9 +106,7 @@ def _format_entry(op: str, path: str, action: str, note: str) -> str:
 def add_entry(op: str, path: str, action: str, note: str) -> str:
     """Prepend a structured log entry to the top of ``wiki/log.md``.
 
-    The entry is inserted immediately after the ``---`` separator line.
-    If ``log.md`` does not exist or has no ``---``, the header is created
-    first.  Existing entries are preserved — the new entry appears at the
+    Existing entries are preserved — the new entry appears at the
     top (most recent first).
 
     Args:
@@ -137,29 +124,7 @@ def add_entry(op: str, path: str, action: str, note: str) -> str:
 
     content = LOG_FILE.read_text(encoding="utf-8") if LOG_FILE.exists() else ""
 
-    if not content:
-        # File doesn't exist or is empty — create header with entry
-        new_content = LOG_HEADER + entry + "\n"
-    else:
-        lines = content.splitlines(keepends=True)
-        sep_idx: int | None = None
-        for i, line in enumerate(lines):
-            if line.strip() == "---":
-                sep_idx = i
-                break
-
-        if sep_idx is None:
-            # No --- separator found — prepend header + entry
-            new_content = LOG_HEADER + entry + "\n" + content
-        else:
-            # Everything up to and including the separator line
-            prefix = "".join(lines[: sep_idx + 1])
-            # Everything after the separator
-            suffix = "".join(lines[sep_idx + 1 :])
-            # Ensure prefix ends with a newline
-            if not prefix.endswith("\n"):
-                prefix += "\n"
-            new_content = prefix + entry + "\n" + suffix
+    new_content = entry + "\n" + (content if content else "")
 
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     LOG_FILE.write_text(new_content, encoding="utf-8")

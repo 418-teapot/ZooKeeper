@@ -40,6 +40,9 @@ status: stable
 由 `backlinks.py` 自动维护。列出引用本页面的其他页面。
 
 - [蒸馏示例 — Karpathy LLM Wiki 文章的摄入过程](analysis/distillation-example-karpathy.md)
+- [LLM Wiki vs RAG — 两种知识管理范式的对比](analysis/llm-wiki-vs-rag.md)
+- [复利知识 — 持久化知识库的核心价值](concepts/compounding-knowledge.md)
+- [Wiki 健康检查 — 知识库的持续质量维护](concepts/wiki-health-check.md)
 - [Wiki Ingest 工作流 — 源材料的增量整合](concepts/wiki-ingest-workflow.md)
 
 ## References

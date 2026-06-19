@@ -11,10 +11,7 @@ related:
   - concepts/wiki-ingest-workflow.md
   - concepts/wiki-query-synthesis.md
   - concepts/wiki-health-check.md
-  - analysis/llm-wiki-vs-rag.md
-  - concepts/wiki-ingest-workflow.md
-  - concepts/wiki-query-synthesis.md
-  - concepts/wiki-health-check.md
+  - concepts/graph-link-prediction.md
   - analysis/llm-wiki-vs-rag.md
 status: stable
 ---
@@ -45,7 +42,7 @@ status: stable
 
 | 分类 | 页面数 | 核心内容 |
 |------|--------|----------|
-| Concepts | 14 | 复利知识、ingest 工作流、query→synthesis 归档、健康检查、自主实验循环、扩展实验循环、固定时间预算评估、单文件修改原则、后验问责制、NPC 式分工、简约准则、实验版本管理、MAD 置信度算法、METRIC/ASI 协议 |
+| Concepts | 15 | 复利知识、ingest 工作流、query→synthesis 归档、健康检查、图链接预测、自主实验循环、扩展实验循环、固定时间预算评估、单文件修改原则、后验问责制、NPC 式分工、简约准则、实验版本管理、MAD 置信度算法、METRIC/ASI 协议 |
 | Entities | 3 | train.py、prepare.py、program.md（autoresearch 核心文件） |
 | Sources → Notes | 2 | Karpathy LLM Wiki 模式原始提案、autoresearch 自主实验框架 |
 | Sources → RFC | 1 | autoresearch 设计文档 |

@@ -16,6 +16,7 @@
 - [Wiki Ingest 工作流](concepts/wiki-ingest-workflow.md) — 源材料增量整合到知识库的完整流程
 - [Query → Synthesis 归档](concepts/wiki-query-synthesis.md) — 查询结果归档为知识库新页面的闭环机制
 - [Wiki 健康检查](concepts/wiki-health-check.md) — 定期扫描矛盾、过时内容、缺失链接的维护机制
+- [图链接预测](concepts/graph-link-prediction.md) — 基于拓扑结构的缺失链接推断，与锚文本挖掘互补
 
 ## Entities（实体）
 

@@ -251,15 +251,10 @@ class TestAddEntry:
             "Second entry must appear above first entry in log.md"
         )
 
-        # Both entries should be after the --- separator
-        sep_pos = content.index("---")
-        assert pos_first > sep_pos
-        assert pos_second > sep_pos
-
     # ── 11. Log file doesn't exist ───────────────────────────────────
 
-    def test_no_log_file_creates_header_and_entry(self) -> None:
-        """When log.md does not exist, header + entry is created."""
+    def test_no_log_file_creates_entry(self) -> None:
+        """When log.md does not exist, entry is created in a new file."""
         # Ensure log.md does not exist
         log_file = wiki_log.LOG_FILE
         if log_file.exists():
@@ -276,17 +271,8 @@ class TestAddEntry:
 
         content = log_file.read_text(encoding="utf-8")
 
-        # Header should be present
-        assert "# Wiki Change Log" in content
-        assert "---" in content
-
         # Entry should be present
         assert result in content
-
-        # The entry should appear after the separator
-        sep_pos = content.index("---")
-        entry_pos = content.index(result)
-        assert entry_pos > sep_pos
 
 
 # ── CLI argument parsing ─────────────────────────────────────────────
