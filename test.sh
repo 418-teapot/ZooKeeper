@@ -30,7 +30,7 @@ fail()    { printf "${RED}✖ %s${NC}\n" "$1"; }
 FAILED=0
 
 section "Python static tests"
-if uv run pytest "$PY_TEST_DIR" -v --cov=tools --cov-report=term-missing; then
+if uv run pytest "$PY_TEST_DIR" -v --cov=tools --cov=wiki/tools --cov-report=term-missing; then
   ok "pytest all Python tests"
 else
   fail "pytest all Python tests"

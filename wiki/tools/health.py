@@ -30,66 +30,24 @@ import json
 import re
 from datetime import date
 from pathlib import Path
-from typing import Any
 
-# ZooKeeper: health.py is at wiki/tools/health.py
-# 3 levels up: tools/ -> wiki/ -> repo root
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-# Wiki is accessed via the user-global ~/.zoo/wiki symlink (portable across
-# plugin installations).  Resolve the symlink so that all paths resolve
-# under REPO_ROOT for relative path operations.
-WIKI_DIR = (Path.home() / ".zoo" / "wiki").resolve()
+from shared.utils import (
+    REPO_ROOT,
+    WIKI_DIR,
+    all_wiki_pages,
+    parse_date,
+    parse_frontmatter,
+    parse_frontmatter_title,
+    read_file,
+    strip_frontmatter,
+    wiki_rel,
+)
+
 INDEX_FILE = WIKI_DIR / "index.md"
 LOG_FILE = WIKI_DIR / "log.md"
 
 # Minimum content length (excluding frontmatter) to not be considered a stub
 STUB_THRESHOLD_CHARS = 100
-
-
-def read_file(path: Path) -> str:
-    return path.read_text(encoding="utf-8") if path.exists() else ""
-
-
-def all_wiki_pages() -> list[Path]:
-    """All .md files in wiki/, excluding meta files and raw/."""
-    exclude = {
-        "index.md",
-        "log.md",
-        "lint-report.md",
-        "health-report.md",
-        "overview.md",
-        "SCHEMA.md",
-    }
-    return [
-        p
-        for p in WIKI_DIR.rglob("*.md")
-        if p.name not in exclude
-        and "templates" not in p.parts
-        and "tools" not in p.parts  # tools/ only has .py files, but be safe
-        and "raw"
-        not in p.parts  # raw/ stores immutable source copies, not wiki pages
-    ]
-
-
-def strip_frontmatter(content: str) -> str:
-    """Remove YAML frontmatter (--- ... ---) from content."""
-    if content.startswith("---"):
-        end = content.find("---", 3)
-        if end != -1:
-            return content[end + 3 :].strip()
-    return content.strip()
-
-
-def _wiki_rel(path: Path) -> str:
-    """Return path relative to WIKI_DIR (wiki-root-relative, no ``wiki/`` prefix).
-
-    Used for cross-references, index entries, log ``<path>`` and for matching
-    against wiki-root-relative values returned by index / log parsers.
-    """
-    try:
-        return str(path.relative_to(WIKI_DIR))
-    except ValueError:
-        return str(path)
 
 
 # ── Check: Empty / Stub files ───────────────────────────────────────
@@ -106,7 +64,7 @@ def check_empty_files(
         if len(body) < threshold:
             results.append(
                 {
-                    "path": _wiki_rel(p),
+                    "path": wiki_rel(p),
                     "total_bytes": len(raw),
                     "body_bytes": len(body),
                     "status": "empty" if len(body) == 0 else "stub",
@@ -156,10 +114,10 @@ def check_index_sync(pages: list[Path]) -> dict:
             disk_paths.add(p.resolve())
 
     in_index_not_on_disk = [
-        _wiki_rel(p) for p in sorted(index_paths - disk_paths)
+        wiki_rel(p) for p in sorted(index_paths - disk_paths)
     ]
     on_disk_not_in_index = [
-        _wiki_rel(p) for p in sorted(disk_paths - index_paths)
+        wiki_rel(p) for p in sorted(disk_paths - index_paths)
     ]
 
     return {
@@ -188,25 +146,6 @@ def _parse_log_entries(log_content: str) -> set[str]:
     )
 
 
-def _parse_frontmatter_title(content: str) -> str:
-    """Extract and lightly unescape a frontmatter title scalar.
-
-    Handles YAML-escaped quotes (e.g. title: "few \"people\" laptop")
-    so that log coverage matching doesn't false-positive on escaped strings.
-    """
-    match = re.search(r"^title:\s*(.+?)\s*$", content, re.MULTILINE)
-    if not match:
-        return ""
-    raw = match.group(1).strip()
-    # Strip surrounding quotes and unescape inner ones
-    if len(raw) >= 2 and raw[0] == raw[-1] == '"':
-        raw = raw[1:-1]
-        raw = raw.replace(r"\"", '"').replace(r"\'", "'").replace(r"\\", "\\")
-    elif len(raw) >= 2 and raw[0] == raw[-1] == "'":
-        raw = raw[1:-1].replace("''", "'")
-    return raw.strip().lower()
-
-
 def check_log_coverage(pages: list[Path]) -> list[dict]:
     """Find source pages that have no corresponding log entry in log.md.
 
@@ -224,12 +163,12 @@ def check_log_coverage(pages: list[Path]) -> list[dict]:
 
     missing = []
     for p in source_pages:
-        rel_path = _wiki_rel(p)
+        rel_path = wiki_rel(p)
 
         # Match by wiki-root-relative path against logged paths
         if rel_path not in logged_paths:
             content = read_file(p)
-            fm_title = _parse_frontmatter_title(content)
+            fm_title = parse_frontmatter_title(content)
             missing.append(
                 {
                     "path": rel_path,
@@ -244,70 +183,6 @@ def check_log_coverage(pages: list[Path]) -> list[dict]:
 # ── Check: Frontmatter completeness ──────────────────────────────
 
 
-def _parse_frontmatter(content: str) -> dict[str, Any]:
-    """Minimal YAML frontmatter parser.
-
-    Handles ``key: value`` pairs and YAML list syntax (both inline ``[a, b]``
-    and block ``- a\\n- b``). Returns a dict with raw string/list values.
-
-    Adapted from lint.py's ``_parse_frontmatter``.
-    """
-    fm: dict[str, Any] = {}
-    fm_match = re.match(r"^---\s*$", content, re.MULTILINE)
-    if not fm_match:
-        return fm
-    end = fm_match.end()
-    fm_end = re.search(r"^---\s*$", content[end:], re.MULTILINE)
-    if not fm_end:
-        return fm
-    raw = content[end : end + fm_end.start()].strip()
-
-    current_key: str | None = None
-    list_accum: list[str] = []
-
-    for line in raw.split("\n"):
-        stripped = line.strip()
-        if stripped.startswith("- ") and current_key is not None:
-            list_accum.append(stripped[2:].strip())
-            continue
-
-        if current_key is not None and list_accum:
-            fm[current_key] = list_accum
-            list_accum = []
-
-        if not stripped or stripped.startswith("#"):
-            if not stripped:
-                current_key = None
-            continue
-
-        if ":" in stripped and not stripped.startswith("-"):
-            colon_idx = stripped.index(":")
-            current_key = stripped[:colon_idx].strip()
-            value_part = stripped[colon_idx + 1 :].strip()
-
-            if value_part.startswith("[") and value_part.endswith("]"):
-                items = [
-                    item.strip().strip('"').strip("'")
-                    for item in value_part[1:-1].split(",")
-                ]
-                items = [i for i in items if i]
-                fm[current_key] = items
-                list_accum = []
-            elif value_part:
-                value_part = value_part.strip('"').strip("'")
-                fm[current_key] = value_part
-                list_accum = []
-            else:
-                list_accum = []
-        else:
-            current_key = None
-
-    if current_key is not None and list_accum:
-        fm[current_key] = list_accum
-
-    return fm
-
-
 REQUIRED_FRONTMATTER_FIELDS = [
     "title",
     "type",
@@ -318,14 +193,6 @@ REQUIRED_FRONTMATTER_FIELDS = [
 ]
 VALID_TYPES = {"concept", "entity", "source", "analysis", "synthesis"}
 VALID_STATUSES = {"draft", "review", "stable", "deprecated"}
-
-
-def _parse_date(date_str: str) -> date | None:
-    """Parse YYYY-MM-DD string, return ``date`` or ``None``."""
-    try:
-        return date.fromisoformat(date_str.strip())
-    except (ValueError, AttributeError):
-        return None
 
 
 def check_frontmatter(pages: list[Path]) -> list[dict]:
@@ -342,8 +209,8 @@ def check_frontmatter(pages: list[Path]) -> list[dict]:
         content = read_file(page)
         if not content:
             continue
-        fm = _parse_frontmatter(content)
-        rel = _wiki_rel(page)
+        fm = parse_frontmatter(content)
+        rel = wiki_rel(page)
 
         if not fm:
             results.append(
@@ -387,7 +254,7 @@ def check_frontmatter(pages: list[Path]) -> list[dict]:
 
         for date_field in ("created", "updated"):
             val = fm.get(date_field)
-            if val and _parse_date(str(val)) is None:
+            if val and parse_date(str(val)) is None:
                 results.append(
                     {
                         "page": rel,
@@ -422,10 +289,10 @@ def check_related_field(pages: list[Path]) -> list[dict]:
         if not content:
             continue
 
-        rel_page = _wiki_rel(page)
+        rel_page = wiki_rel(page)
 
         # 1. Check frontmatter related field
-        fm = _parse_frontmatter(content)
+        fm = parse_frontmatter(content)
         related = fm.get("related", [])
 
         if isinstance(related, str):
@@ -480,7 +347,7 @@ def check_source_field(pages: list[Path]) -> list[dict]:
         if not content:
             continue
 
-        fm = _parse_frontmatter(content)
+        fm = parse_frontmatter(content)
         page_type = fm.get("type", "")
 
         # Only validate source-type pages
@@ -493,7 +360,7 @@ def check_source_field(pages: list[Path]) -> list[dict]:
         if not source_value:
             results.append(
                 {
-                    "page": _wiki_rel(page),
+                    "page": wiki_rel(page),
                     "issue": "missing_source_field",
                     "details": f"Source-type page '{page.name}' is missing required 'source' field",
                 }
@@ -507,7 +374,7 @@ def check_source_field(pages: list[Path]) -> list[dict]:
         ):
             results.append(
                 {
-                    "page": _wiki_rel(page),
+                    "page": wiki_rel(page),
                     "issue": "invalid_source_url",
                     "details": f"Page '{page.name}' has source value '{source_value}' — should be a URL (http:// or https://) or a raw/ file path",
                 }
@@ -760,12 +627,12 @@ def check_missing_inline_links(pages: list[Path]) -> list[dict]:
     # Also register each page's own title as an anchor text pointing to itself.
     for page in pages:
         content = read_file(page)
-        fm = _parse_frontmatter(content)
+        fm = parse_frontmatter(content)
         title = fm.get("title", "")
         if title and len(title) >= 3:
             if title not in anchor_map:
                 anchor_map[title] = set()
-            anchor_map[title].add(_wiki_rel(page))
+            anchor_map[title].add(wiki_rel(page))
 
     # Expand multi-word anchor texts with prefix aliases so that
     # shorthand references (e.g. "autoresearch 扩展") are detected
@@ -775,7 +642,7 @@ def check_missing_inline_links(pages: list[Path]) -> list[dict]:
     results: list[dict] = []
     for page in pages:
         content = read_file(page)
-        rel_page = _wiki_rel(page)
+        rel_page = wiki_rel(page)
         results.extend(
             _check_body_for_missing_links(
                 content, rel_page, anchor_map, page.parent
@@ -836,7 +703,7 @@ def check_duplicate_inline_links(pages: list[Path]) -> list[dict]:
         if not content:
             continue
 
-        rel_page = _wiki_rel(page)
+        rel_page = wiki_rel(page)
         body = strip_frontmatter(content)
 
         # Remove code blocks.
@@ -1062,7 +929,7 @@ def format_report(results: dict) -> str:
     return "\n".join(lines)
 
 
-if __name__ == "__main__":
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="ZooKeeper wiki 结构性健康检查（确定性检查，无需 LLM）"
     )
@@ -1088,3 +955,7 @@ if __name__ == "__main__":
             report_path = WIKI_DIR / "health-report.md"
             report_path.write_text(report, encoding="utf-8")
             print(f"\n已保存：{report_path.relative_to(REPO_ROOT)}")
+
+
+if __name__ == "__main__":
+    main()

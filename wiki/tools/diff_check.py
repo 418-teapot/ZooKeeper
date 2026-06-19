@@ -25,20 +25,18 @@ import subprocess
 import sys
 from pathlib import Path
 
-# ZooKeeper: diff_check.py lives at wiki/tools/diff_check.py.
-# Import shared utilities from health.py (same directory).
-_TOOLS_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(_TOOLS_DIR))
-
-from health import (  # noqa: E402
-    WIKI_DIR,
+from health import (
     _check_body_for_missing_links,
     _deduplicate_prefix_matches,
     _expand_anchor_prefixes,
     _extract_anchor_map,
-    _wiki_rel,
+)
+from shared.utils import (
+    WIKI_DIR,
     all_wiki_pages,
+    parse_frontmatter,
     read_file,
+    wiki_rel,
 )
 
 # Matches a diff hunk header:  @@ -old,count +new,count @@
@@ -127,9 +125,9 @@ def run_diff(args: argparse.Namespace) -> int:
 
     # Compute the wiki path relative to git root for scoped diff.
     try:
-        wiki_rel = str(wiki_dir.relative_to(git_root))
+        wiki_rel_prefix = str(wiki_dir.relative_to(git_root))
     except ValueError:
-        wiki_rel = str(wiki_dir)
+        wiki_rel_prefix = str(wiki_dir)
 
     # Build the git diff command, scoped to the wiki directory.
     cmd = ["git", "-C", str(git_root), "diff", "--unified=0"]
@@ -137,7 +135,7 @@ def run_diff(args: argparse.Namespace) -> int:
         cmd.append("--cached")
     if args.commit:
         cmd.append(args.commit)
-    cmd.extend(["--", wiki_rel])
+    cmd.extend(["--", wiki_rel_prefix])
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -160,14 +158,13 @@ def run_diff(args: argparse.Namespace) -> int:
     anchor_map = _extract_anchor_map(pages)
     for page in pages:
         content = read_file(page)
-        from health import _parse_frontmatter  # noqa: E402
 
-        fm = _parse_frontmatter(content)
+        fm = parse_frontmatter(content)
         title = fm.get("title", "")
         if title and len(title) >= 3:
             if title not in anchor_map:
                 anchor_map[title] = set()
-            anchor_map[title].add(_wiki_rel(page))
+            anchor_map[title].add(wiki_rel(page))
 
     _expand_anchor_prefixes(anchor_map)
 
@@ -178,7 +175,7 @@ def run_diff(args: argparse.Namespace) -> int:
         return 0
 
     # Compute prefix to strip from diff paths (e.g. "wiki/" → "").
-    wiki_prefix = wiki_rel.rstrip("/") + "/"
+    wiki_prefix = wiki_rel_prefix.rstrip("/") + "/"
 
     all_issues: list[dict] = []
     for file_path, added_text in added_by_file.items():

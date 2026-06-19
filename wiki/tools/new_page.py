@@ -60,6 +60,113 @@ def to_kebab_case(title: str) -> str:
     return name
 
 
+def _compute_output_path(
+    args_type: str,
+    args_title: str,
+    args_slug: str | None = None,
+    args_source_type: str | None = None,
+) -> Path:
+    """Compute the output file path for a new wiki page.
+
+    Args:
+        args_type: Page type (concept/entity/source/analysis/synthesis).
+        args_title: Page title (used to derive slug if ``args_slug`` is not given).
+        args_slug: Optional explicit slug override.
+        args_source_type: Source sub-type (adr/rfc/notes), required when
+            ``args_type == "source"``.
+
+    Returns:
+        Resolved absolute ``Path`` to the output file.
+
+    Raises:
+        SystemExit: If the slug is invalid or the resolved path is outside
+            ``WIKI_DIR`` (exit code 1 or 2).
+    """
+    if args_slug:
+        slug = args_slug
+    else:
+        slug = to_kebab_case(args_title)
+
+    # Validate slug — reject path traversal characters
+    if not slug or ".." in slug or "/" in slug or "\\" in slug:
+        print(
+            "错误：无效的文件名 slug — 不能包含 .. / \\ 等路径分隔符。"
+            "请使用 --slug 参数指定有效的英文文件名。",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    if args_type == "source":
+        assert args_source_type is not None  # caller must validate
+        rel_path = Path("sources") / args_source_type / f"{slug}.md"
+    else:
+        rel_path = Path(TYPE_DIR_MAP[args_type]) / f"{slug}.md"
+
+    # Resolve and verify the final path is under wiki/
+    try:
+        resolved = (WIKI_DIR / rel_path).resolve()
+    except (ValueError, OSError):
+        print("错误：无效的输出路径。", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        resolved.relative_to(WIKI_DIR)
+    except ValueError:
+        print("错误：输出路径必须在 wiki/ 目录下。", file=sys.stderr)
+        sys.exit(1)
+
+    return resolved
+
+
+def _apply_template(content: str, title: str, today: str) -> str:
+    """Replace placeholders in template content with actual values.
+
+    Performs three substitutions:
+      1. ``created`` / ``updated`` date fields → *today*
+      2. ``status: draft|review|stable|deprecated`` → ``status: draft``
+      3. ``title: <...>`` and ``# <...>`` → actual *title*
+
+    Args:
+        content: Raw template content.
+        title: Page title to substitute.
+        today: ISO-formatted date string (``YYYY-MM-DD``).
+
+    Returns:
+        Processed content with all placeholders replaced.
+    """
+    # 1. Date placeholders in created / updated fields
+    content = re.sub(
+        r"^(created|updated): YYYY-MM-DD$",
+        lambda m: f"{m.group(1)}: {today}",
+        content,
+        flags=re.MULTILINE,
+    )
+
+    # 2. Default status to "draft"
+    content = re.sub(
+        r"^status: draft\|review\|stable\|deprecated$",
+        "status: draft",
+        content,
+        flags=re.MULTILINE,
+    )
+
+    # 3. Title placeholders in frontmatter title field and body heading.
+    content = re.sub(
+        r"^title: <[^>]+>$",
+        lambda m: f"title: {title}",
+        content,
+        flags=re.MULTILINE,
+    )
+    content = re.sub(
+        r"^# <[^>]+>$",
+        lambda m: f"# {title}",
+        content,
+        flags=re.MULTILINE,
+    )
+
+    return content
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="从模板创建新的 wiki 页面",
@@ -98,37 +205,12 @@ def main() -> None:
     # Compute output path from type + title (+ source-type for sources)
     # ------------------------------------------------------------------
 
-    if args.slug:
-        slug = args.slug
-    else:
-        slug = to_kebab_case(args.title)
-
-    if not slug:
-        print(
-            "错误：无法从标题推导出有效的文件名 slug。"
-            "请使用 --slug 参数指定英文文件名。",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-
-    if args.type == "source":
-        assert args.source_type is not None  # validated above
-        rel_path = Path("sources") / args.source_type / f"{slug}.md"
-    else:
-        rel_path = Path(TYPE_DIR_MAP[args.type]) / f"{slug}.md"
-
-    # Resolve and verify the final path is under wiki/
-    try:
-        resolved = (WIKI_DIR / rel_path).resolve()
-    except (ValueError, OSError):
-        print("错误：无效的输出路径。", file=sys.stderr)
-        sys.exit(1)
-
-    try:
-        resolved.relative_to(WIKI_DIR)
-    except ValueError:
-        print("错误：输出路径必须在 wiki/ 目录下。", file=sys.stderr)
-        sys.exit(1)
+    resolved = _compute_output_path(
+        args_type=args.type,
+        args_title=args.title,
+        args_slug=args.slug,
+        args_source_type=args.source_type,
+    )
 
     # ------------------------------------------------------------------
     # Read template
@@ -149,29 +231,7 @@ def main() -> None:
     # ------------------------------------------------------------------
 
     today = date.today().isoformat()  # YYYY-MM-DD
-
-    # 1. Date placeholders in created / updated fields
-    content = content.replace("YYYY-MM-DD", today)
-
-    # 2. Default status to "draft" (templates use "draft|review|stable|deprecated"
-    #    as documentation of valid values, not an actual status)
-    content = content.replace("draft|review|stable|deprecated", "draft")
-
-    # 3. Title placeholders in frontmatter title field and body heading.
-    #    Only target exact lines like "title: <...>" and "# <...>",
-    #    NOT other angle-bracket placeholders (e.g. <方案名称>, <source-id>).
-    content = re.sub(
-        r"^title: <[^>]+>$",
-        lambda m: f"title: {args.title}",
-        content,
-        flags=re.MULTILINE,
-    )
-    content = re.sub(
-        r"^# <[^>]+>$",
-        lambda m: f"# {args.title}",
-        content,
-        flags=re.MULTILINE,
-    )
+    content = _apply_template(content, args.title, today)
 
     # ------------------------------------------------------------------
     # Write output

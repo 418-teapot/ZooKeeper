@@ -23,13 +23,15 @@ import re
 from pathlib import Path
 from typing import Any
 
-# ZooKeeper: backlinks.py is at wiki/tools/backlinks.py
-# 3 levels up: tools/ -> wiki/ -> repo root
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-# Wiki is accessed via the user-global ~/.zoo/wiki symlink (portable across
-# plugin installations).  Resolve the symlink so that all paths resolve
-# under REPO_ROOT for relative path operations.
-WIKI_DIR = (Path.home() / ".zoo" / "wiki").resolve()
+from shared.utils import (
+    WIKI_DIR,
+    all_wiki_pages,
+    parse_frontmatter,
+    parse_frontmatter_title,
+    read_file,
+    strip_frontmatter,
+    wiki_rel,
+)
 
 # System files that should never appear as backlink targets
 SYSTEM_FILES: set[str] = {
@@ -47,121 +49,6 @@ MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+\.md)\)")
 BT_LINK_RE = re.compile(r"`([^\s`]+\.md)`")
 
 
-# ── Helpers (mirror health.py) ────────────────────────────────────────
-
-
-def read_file(path: Path) -> str:
-    """Read a file, returning empty string if it does not exist."""
-    return path.read_text(encoding="utf-8") if path.exists() else ""
-
-
-def all_wiki_pages() -> list[Path]:
-    """All .md files in wiki/, excluding meta / system / template / tool files."""
-    exclude = {
-        "index.md",
-        "log.md",
-        "lint-report.md",
-        "health-report.md",
-        "overview.md",
-        "SCHEMA.md",
-    }
-    return [
-        p
-        for p in WIKI_DIR.rglob("*.md")
-        if p.name not in exclude
-        and "templates" not in p.parts
-        and "tools" not in p.parts
-    ]
-
-
-def strip_frontmatter(content: str) -> str:
-    """Remove YAML frontmatter (--- ... ---) from content."""
-    if content.startswith("---"):
-        end = content.find("---", 3)
-        if end != -1:
-            return content[end + 3 :].strip()
-    return content.strip()
-
-
-def _wiki_rel(path: Path) -> str:
-    """Return path relative to WIKI_DIR (wiki-root-relative, no ``wiki/`` prefix).
-
-    Used for cross-references, index entries, and log entries.
-    """
-    try:
-        return str(path.relative_to(WIKI_DIR))
-    except ValueError:
-        return str(path)
-
-
-def _parse_frontmatter(content: str) -> dict[str, Any]:
-    """Minimal YAML frontmatter parser.
-
-    Handles ``key: value`` pairs and YAML list syntax (both inline ``[a, b]``
-    and block ``- a\\n- b``). Returns a dict with raw string/list values.
-    """
-    fm: dict[str, Any] = {}
-    fm_match = re.match(r"^---\s*$", content, re.MULTILINE)
-    if not fm_match:
-        return fm
-    end = fm_match.end()
-    fm_end = re.search(r"^---\s*$", content[end:], re.MULTILINE)
-    if not fm_end:
-        return fm
-    raw = content[end : end + fm_end.start()].strip()
-
-    current_key: str | None = None
-    list_accum: list[str] = []
-
-    for line in raw.split("\n"):
-        stripped = line.strip()
-        if stripped.startswith("- ") and current_key is not None:
-            list_accum.append(stripped[2:].strip())
-            continue
-
-        if current_key is not None and list_accum:
-            fm[current_key] = list_accum
-            list_accum = []
-
-        if not stripped or stripped.startswith("#"):
-            if not stripped:
-                current_key = None
-            continue
-
-        if ":" in stripped and not stripped.startswith("-"):
-            colon_idx = stripped.index(":")
-            current_key = stripped[:colon_idx].strip()
-            value_part = stripped[colon_idx + 1 :].strip()
-
-            if value_part.startswith("[") and value_part.endswith("]"):
-                items = [
-                    item.strip().strip('"').strip("'")
-                    for item in value_part[1:-1].split(",")
-                ]
-                items = [i for i in items if i]
-                fm[current_key] = items
-                list_accum = []
-            elif value_part:
-                value_part = value_part.strip('"').strip("'")
-                fm[current_key] = value_part
-                list_accum = []
-            else:
-                list_accum = []
-        else:
-            current_key = None
-
-    if current_key is not None and list_accum:
-        fm[current_key] = list_accum
-
-    return fm
-
-
-def _parse_frontmatter_title(content: str) -> str:
-    """Extract the title from frontmatter."""
-    fm = _parse_frontmatter(content)
-    return str(fm.get("title", "")) if fm.get("title") else ""
-
-
 # ── Link extraction ───────────────────────────────────────────────────
 
 
@@ -169,13 +56,20 @@ def _is_valid_wiki_target(path_str: str) -> bool:
     """Check whether *path_str* is a valid wiki-root-relative link target.
 
     Must be a ``.md`` path that is not a system file, not under
-    ``templates/`` or ``tools/``, and points to a file that actually exists.
+    ``templates/``, ``tools/``, or ``raw/``, and points to a file that
+    actually exists.
+
+    Paths containing ``..`` are rejected to prevent symlink traversal attacks.
     """
     p = Path(path_str)
+    if ".." in str(p):
+        return False
     if p.suffix != ".md":
         return False
     if p.name in SYSTEM_FILES:
         return False
+    # Defence-in-depth: callers already filter out templates/tools/raw via
+    # ``all_wiki_pages()``, but this keeps the check explicit and local.
     if any(part in p.parts for part in ("templates", "tools", "raw")):
         return False
     # Resolve: must be under WIKI_DIR
@@ -217,7 +111,7 @@ def extract_links(content: str) -> list[str]:
     links: set[str] = set()
     body = strip_frontmatter(content)
     body = _strip_backlinks_section(body)
-    fm = _parse_frontmatter(content)
+    fm = parse_frontmatter(content)
 
     # 1. Frontmatter related field
     related = fm.get("related", [])
@@ -255,7 +149,7 @@ def build_reverse_index(pages: list[Path]) -> dict[str, list[str]]:
     reverse: dict[str, list[str]] = {}
 
     for page in pages:
-        rel = _wiki_rel(page)
+        rel = wiki_rel(page)
         content = read_file(page)
         if not content:
             continue
@@ -279,7 +173,7 @@ def _page_title(rel_path: str) -> str:
     page_path = WIKI_DIR / rel_path
     content = read_file(page_path)
     if content:
-        title = _parse_frontmatter_title(content)
+        title = parse_frontmatter_title(content)
         if title:
             return title
     return Path(rel_path).stem.replace("-", " ").title()
@@ -373,7 +267,7 @@ def update_backlinks(
     updated_count = 0
 
     for page in pages:
-        rel = _wiki_rel(page)
+        rel = wiki_rel(page)
         sources = reverse_index.get(rel, [])
         has_backlinks = len(sources) > 0
 

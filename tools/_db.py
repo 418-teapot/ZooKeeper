@@ -7,6 +7,7 @@ import logging
 import os
 import sqlite3
 import sys
+from contextlib import closing
 from datetime import datetime, timezone
 
 from _parser import tool_type_and_icon
@@ -143,7 +144,7 @@ def query_db_messages(
 
     events: list[dict] = []
 
-    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -358,7 +359,7 @@ def query_sessions(
     if not os.path.isfile(db_path):
         return []
 
-    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(
@@ -395,7 +396,7 @@ def query_sessions_all(
         query += "WHERE parent_id IS NULL "
     query += "ORDER BY time_updated DESC LIMIT ?"
 
-    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(query, (limit,))
@@ -421,7 +422,7 @@ def query_sessions_exact(
     if not os.path.isfile(db_path):
         return []
 
-    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(
@@ -457,7 +458,7 @@ def query_recent_sessions(
         query += "WHERE parent_id IS NULL "
     query += "ORDER BY time_updated DESC LIMIT ?"
 
-    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(query, (n,))
@@ -518,7 +519,7 @@ def query_message_by_ids(
         "ORDER BY m.time_created ASC, p.time_created ASC"
     )
 
-    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(query, params)
@@ -552,7 +553,9 @@ def query_message_by_ids(
             "ORDER BY m.time_created ASC, p.time_created ASC"
         )
 
-        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+        with closing(
+            sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        ) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(like_query, like_params)
@@ -675,7 +678,7 @@ def query_db_tool_calls(
     events: list[dict] = []
     placeholders = ",".join("?" * len(session_ids))
 
-    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(
@@ -765,7 +768,7 @@ def query_tool_durations_batch(
     results: list[dict] = []
     placeholders = ",".join("?" * len(session_ids))
 
-    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(
@@ -831,7 +834,7 @@ def query_tool_durations(
 
     results: list[dict] = []
 
-    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(
@@ -897,7 +900,7 @@ def query_step_data_batch(
 
     placeholders = ",".join("?" * len(session_ids))
 
-    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -1032,7 +1035,7 @@ def query_step_data(
     if not os.path.isfile(db_path):
         return []
 
-    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -1158,7 +1161,7 @@ def query_message_parts(
     if not os.path.isfile(db_path):
         return []
 
-    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 

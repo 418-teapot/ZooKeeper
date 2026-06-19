@@ -22,6 +22,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import fcntl
 import sys
 from datetime import date
 from pathlib import Path
@@ -33,6 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 WIKI_DIR = (Path.home() / ".zoo" / "wiki").resolve()
 LOG_FILE = WIKI_DIR / "log.md"
 
+# Intentionally a list for argparse choices (requires a sequence).
 VALID_OPS = [
     "ingest",
     "update",
@@ -44,6 +46,7 @@ VALID_OPS = [
     "refresh",
     "tool",
 ]
+# Intentionally a list for argparse choices (requires a sequence).
 VALID_ACTIONS = ["create", "edit", "delete", "pass", "fail"]
 
 
@@ -122,12 +125,26 @@ def add_entry(op: str, path: str, action: str, note: str) -> str:
     note = _truncate_note(note)
     entry = _format_entry(op, path, action, note)
 
-    content = LOG_FILE.read_text(encoding="utf-8") if LOG_FILE.exists() else ""
-
-    new_content = entry + "\n" + (content if content else "")
-
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    LOG_FILE.write_text(new_content, encoding="utf-8")
+
+    # Ensure the file exists (``r+`` does not create it).
+    LOG_FILE.touch()
+
+    # Use an exclusive file lock to prevent concurrent write interleaving.
+    # ``r+`` mode (not ``a+``) so that writes go to the position set by
+    # ``seek()`` rather than always appending at the end.
+    with open(LOG_FILE, "r+") as f:
+        fd = f.fileno()
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            content = f.read()
+            f.seek(0)
+            new_content = entry + "\n" + (content if content else "")
+            f.write(new_content)
+            f.truncate()
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+
     return entry
 
 

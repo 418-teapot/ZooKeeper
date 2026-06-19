@@ -16,6 +16,7 @@ sys.path.insert(
 
 import json
 import sqlite3
+from contextlib import closing
 
 from _db import (  # noqa: E402
     _safe_json_loads,
@@ -54,121 +55,119 @@ def _create_db(
         sessions: List of session row dicts (all columns from the session
             table schema). When provided, a ``session`` table is created.
     """
-    conn = sqlite3.connect(db_path)
-    conn.execute(
-        "CREATE TABLE message ("
-        "  id TEXT PRIMARY KEY,"
-        "  session_id TEXT,"
-        "  time_created INTEGER,"
-        "  time_updated INTEGER,"
-        "  data TEXT"
-        ")"
-    )
-    conn.execute(
-        "CREATE TABLE part ("
-        "  id TEXT PRIMARY KEY,"
-        "  message_id TEXT,"
-        "  session_id TEXT,"
-        "  time_created INTEGER,"
-        "  time_updated INTEGER,"
-        "  data TEXT"
-        ")"
-    )
-    if sessions is not None:
+    with closing(sqlite3.connect(db_path)) as conn:
         conn.execute(
-            "CREATE TABLE session ("
+            "CREATE TABLE message ("
             "  id TEXT PRIMARY KEY,"
-            "  project_id TEXT NOT NULL,"
-            "  parent_id TEXT,"
-            "  slug TEXT NOT NULL,"
-            "  directory TEXT NOT NULL,"
-            "  title TEXT NOT NULL,"
-            "  version TEXT NOT NULL,"
-            "  time_created INTEGER NOT NULL,"
-            "  time_updated INTEGER NOT NULL,"
-            "  cost REAL DEFAULT 0,"
-            "  tokens_input INTEGER DEFAULT 0,"
-            "  tokens_output INTEGER DEFAULT 0,"
-            "  tokens_reasoning INTEGER DEFAULT 0,"
-            "  tokens_cache_read INTEGER DEFAULT 0,"
-            "  tokens_cache_write INTEGER DEFAULT 0,"
-            "  agent TEXT,"
-            "  model TEXT"
+            "  session_id TEXT,"
+            "  time_created INTEGER,"
+            "  time_updated INTEGER,"
+            "  data TEXT"
             ")"
         )
-        for sess in sessions:
-            # Build INSERT dynamically to allow omitting optional fields.
-            cols = [
-                "id",
-                "project_id",
-                "parent_id",
-                "slug",
-                "directory",
-                "title",
-                "version",
-                "time_created",
-                "time_updated",
-            ]
-            optional_cols = [
-                "cost",
-                "tokens_input",
-                "tokens_output",
-                "tokens_reasoning",
-                "tokens_cache_read",
-                "tokens_cache_write",
-                "agent",
-                "model",
-            ]
-            vals = [sess.get(c) for c in cols]
-            for c in optional_cols:
-                if c in sess:
-                    cols.append(c)
-                    vals.append(sess[c])
-            placeholders = ",".join("?" * len(cols))
-            col_names = ",".join(cols)
+        conn.execute(
+            "CREATE TABLE part ("
+            "  id TEXT PRIMARY KEY,"
+            "  message_id TEXT,"
+            "  session_id TEXT,"
+            "  time_created INTEGER,"
+            "  time_updated INTEGER,"
+            "  data TEXT"
+            ")"
+        )
+        if sessions is not None:
             conn.execute(
-                f"INSERT INTO session ({col_names}) VALUES ({placeholders})",
-                vals,
+                "CREATE TABLE session ("
+                "  id TEXT PRIMARY KEY,"
+                "  project_id TEXT NOT NULL,"
+                "  parent_id TEXT,"
+                "  slug TEXT NOT NULL,"
+                "  directory TEXT NOT NULL,"
+                "  title TEXT NOT NULL,"
+                "  version TEXT NOT NULL,"
+                "  time_created INTEGER NOT NULL,"
+                "  time_updated INTEGER NOT NULL,"
+                "  cost REAL DEFAULT 0,"
+                "  tokens_input INTEGER DEFAULT 0,"
+                "  tokens_output INTEGER DEFAULT 0,"
+                "  tokens_reasoning INTEGER DEFAULT 0,"
+                "  tokens_cache_read INTEGER DEFAULT 0,"
+                "  tokens_cache_write INTEGER DEFAULT 0,"
+                "  agent TEXT,"
+                "  model TEXT"
+                ")"
             )
-    if messages:
-        for msg in messages:
-            cols = ["id", "session_id", "time_created", "data"]
-            vals = [
-                msg["id"],
-                msg["session_id"],
-                msg["time_created"],
-                msg["data"],
-            ]
-            if "time_updated" in msg:
-                cols.append("time_updated")
-                vals.append(msg["time_updated"])
-            placeholders = ",".join("?" * len(cols))
-            col_names = ",".join(cols)
-            conn.execute(
-                f"INSERT INTO message ({col_names}) VALUES ({placeholders})",
-                vals,
-            )
-    if parts:
-        for part in parts:
-            cols = ["id", "message_id", "time_created", "data"]
-            vals = [
-                part["id"],
-                part["message_id"],
-                part["time_created"],
-                part["data"],
-            ]
-            for extra_col in ("session_id", "time_updated"):
-                if extra_col in part:
-                    cols.append(extra_col)
-                    vals.append(part[extra_col])
-            placeholders = ",".join("?" * len(cols))
-            col_names = ",".join(cols)
-            conn.execute(
-                f"INSERT INTO part ({col_names}) VALUES ({placeholders})",
-                vals,
-            )
-    conn.commit()
-    conn.close()
+            for sess in sessions:
+                cols = [
+                    "id",
+                    "project_id",
+                    "parent_id",
+                    "slug",
+                    "directory",
+                    "title",
+                    "version",
+                    "time_created",
+                    "time_updated",
+                ]
+                optional_cols = [
+                    "cost",
+                    "tokens_input",
+                    "tokens_output",
+                    "tokens_reasoning",
+                    "tokens_cache_read",
+                    "tokens_cache_write",
+                    "agent",
+                    "model",
+                ]
+                vals = [sess.get(c) for c in cols]
+                for c in optional_cols:
+                    if c in sess:
+                        cols.append(c)
+                        vals.append(sess[c])
+                placeholders = ",".join("?" * len(cols))
+                col_names = ",".join(cols)
+                conn.execute(
+                    f"INSERT INTO session ({col_names}) VALUES ({placeholders})",
+                    vals,
+                )
+        if messages:
+            for msg in messages:
+                cols = ["id", "session_id", "time_created", "data"]
+                vals = [
+                    msg["id"],
+                    msg["session_id"],
+                    msg["time_created"],
+                    msg["data"],
+                ]
+                if "time_updated" in msg:
+                    cols.append("time_updated")
+                    vals.append(msg["time_updated"])
+                placeholders = ",".join("?" * len(cols))
+                col_names = ",".join(cols)
+                conn.execute(
+                    f"INSERT INTO message ({col_names}) VALUES ({placeholders})",
+                    vals,
+                )
+        if parts:
+            for part in parts:
+                cols = ["id", "message_id", "time_created", "data"]
+                vals = [
+                    part["id"],
+                    part["message_id"],
+                    part["time_created"],
+                    part["data"],
+                ]
+                for extra_col in ("session_id", "time_updated"):
+                    if extra_col in part:
+                        cols.append(extra_col)
+                        vals.append(part[extra_col])
+                placeholders = ",".join("?" * len(cols))
+                col_names = ",".join(cols)
+                conn.execute(
+                    f"INSERT INTO part ({col_names}) VALUES ({placeholders})",
+                    vals,
+                )
+        conn.commit()
 
 
 def _msg_data(
@@ -2876,12 +2875,11 @@ def test_session_row_to_dict_json_model(tmp_path: Path) -> None:
     )
     from _db import _session_row_to_dict  # noqa: E402
 
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    row = conn.execute(
-        "SELECT * FROM session WHERE id = ?", ("sess-json",)
-    ).fetchone()
-    d = _session_row_to_dict(row)
-    assert isinstance(d["model"], dict)
-    assert d["model"]["name"] == "gpt-4"
-    conn.close()
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM session WHERE id = ?", ("sess-json",)
+        ).fetchone()
+        d = _session_row_to_dict(row)
+        assert isinstance(d["model"], dict)
+        assert d["model"]["name"] == "gpt-4"

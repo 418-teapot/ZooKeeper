@@ -19,16 +19,15 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
-
-REPO_ROOT = (
-    Path(__file__).resolve().parent.parent.parent
-)  # lint.py -> tools/ -> wiki/ -> repo root
-# Wiki is accessed via the user-global ~/.zoo/wiki symlink.
-# Resolve the symlink so that all paths resolve under REPO_ROOT.
-WIKI_DIR = (Path.home() / ".zoo" / "wiki").resolve()
+from shared.utils import (
+    WIKI_DIR,
+    all_wiki_pages,
+    parse_date,
+    parse_frontmatter,
+    read_file,
+    strip_frontmatter,
+    wiki_rel,
+)
 
 # Meta pages that are excluded from most checks (config, logs, index, etc.)
 META_PAGES: set[str] = {
@@ -46,128 +45,10 @@ SPARSE_BODY_CHARS = 50
 # Regex to extract Markdown links pointing to .md files
 MD_LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)]+\.md)\)")
 
-# Regex to match YAML frontmatter delimiters
-FRONTMATTER_RE = re.compile(r"^---\s*$", re.MULTILINE)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _pages() -> list[Path]:
-    """Return all .md files under WIKI_DIR, excluding meta pages."""
-    pages: list[Path] = []
-    for p in sorted(WIKI_DIR.rglob("*.md")):
-        if p.name in META_PAGES:
-            continue
-        if p.name == ".gitkeep":
-            continue
-        # Skip template files (infrastructure, not wiki content)
-        if "templates" in p.parts:
-            continue
-        # Skip tools directory (only has .py files, but be safe)
-        if "tools" in p.parts:
-            continue
-        pages.append(p)
-    return pages
-
-
-def _read_file(path: Path) -> str:
-    """Read file content, return empty string on error."""
-    try:
-        return path.read_text(encoding="utf-8")
-    except (FileNotFoundError, IOError, UnicodeDecodeError):
-        return ""
-
-
-def _parse_frontmatter(content: str) -> dict[str, Any]:
-    """
-    Minimal YAML frontmatter parser.
-
-    Handles key: value pairs and YAML list syntax (both inline `[a, b]`
-    and block `- a\\n- b`). Returns a dict with raw string/list values.
-    """
-    fm: dict[str, Any] = {}
-    # Match content between first pair of --- markers
-    m = FRONTMATTER_RE.match(content)
-    if not m:
-        return fm
-    end = m.end()
-    m2 = FRONTMATTER_RE.search(content, end)
-    if not m2:
-        return fm
-    raw = content[end : m2.start()].strip()
-
-    current_key: str | None = None
-    list_accum: list[str] = []
-
-    for line in raw.split("\n"):
-        stripped = line.strip()
-        # Block list item
-        if stripped.startswith("- ") and current_key is not None:
-            list_accum.append(stripped[2:].strip())
-            continue
-
-        # If we were accumulating a list, save it now
-        if current_key is not None and list_accum:
-            fm[current_key] = list_accum
-            list_accum = []
-
-        # Empty line or comment
-        if not stripped or stripped.startswith("#"):
-            if not stripped:
-                current_key = None
-            continue
-
-        # key: value line
-        if ":" in stripped and not stripped.startswith("-"):
-            colon_idx = stripped.index(":")
-            current_key = stripped[:colon_idx].strip()
-            value_part = stripped[colon_idx + 1 :].strip()
-
-            # Inline list: [a, b, c]
-            if value_part.startswith("[") and value_part.endswith("]"):
-                items = [
-                    item.strip().strip('"').strip("'")
-                    for item in value_part[1:-1].split(",")
-                ]
-                items = [i for i in items if i]
-                fm[current_key] = items
-                list_accum = []
-            elif value_part:
-                # Strip surrounding quotes
-                value_part = value_part.strip('"').strip("'")
-                fm[current_key] = value_part
-                list_accum = []
-            else:
-                # Value might be a block list starting on next lines
-                list_accum = []
-        else:
-            current_key = None
-
-    # Flush trailing list accumulator
-    if current_key is not None and list_accum:
-        fm[current_key] = list_accum
-
-    return fm
-
-
-def _strip_frontmatter(content: str) -> str:
-    """Return content with YAML frontmatter removed."""
-    m = FRONTMATTER_RE.match(content)
-    if not m:
-        return content
-    end = m.end()
-    m2 = FRONTMATTER_RE.search(content, end)
-    if not m2:
-        return content
-    return content[m2.end() :].strip()
-
 
 def _body_text(content: str) -> str:
     """Return body text after stripping frontmatter and heading markers."""
-    body = _strip_frontmatter(content)
+    body = strip_frontmatter(content)
     # Remove leading # headings and blockquote markers for length estimation
     lines = []
     for line in body.split("\n"):
@@ -176,22 +57,6 @@ def _body_text(content: str) -> str:
         if s and not s.startswith("#") and not s.startswith(">"):
             lines.append(s)
     return " ".join(lines)
-
-
-def _parse_date(date_str: str) -> date | None:
-    """Parse YYYY-MM-DD string, return date or None."""
-    try:
-        return datetime.strptime(date_str.strip(), "%Y-%m-%d").date()
-    except (ValueError, AttributeError):
-        return None
-
-
-def _relative_path(path: Path) -> str:
-    """Return path relative to WIKI_DIR."""
-    try:
-        return str(path.relative_to(WIKI_DIR))
-    except ValueError:
-        return str(path)
 
 
 def _resolve_target(link_target: str) -> Path | None:
@@ -227,7 +92,7 @@ def _links_in_page(content: str, page_path: Path) -> list[tuple[str, str]]:
         links.append((text, target))
 
     # Frontmatter `related` field
-    fm = _parse_frontmatter(content)
+    fm = parse_frontmatter(content)
     related = fm.get("related", [])
     if isinstance(related, str):
         related = [related]
@@ -240,7 +105,7 @@ def _links_in_page(content: str, page_path: Path) -> list[tuple[str, str]]:
 def _pages_referenced_in_index() -> set[str]:
     """Return set of wiki-relative paths referenced in index.md."""
     index_path = WIKI_DIR / "index.md"
-    content = _read_file(index_path)
+    content = read_file(index_path)
     referenced: set[str] = set()
     for match in MD_LINK_RE.finditer(content):
         target = match.group(2)
@@ -269,7 +134,7 @@ def check_broken_links(
     """
     results: list[dict[str, Any]] = []
     for page in pages:
-        content, fm = page_cache.get(_relative_path(page), ("", {}))
+        content, fm = page_cache.get(wiki_rel(page), ("", {}))
         if not content:
             continue
         links = _links_in_page(content, page)
@@ -278,7 +143,7 @@ def check_broken_links(
             if resolved is None:
                 results.append(
                     {
-                        "page": _relative_path(page),
+                        "page": wiki_rel(page),
                         "link_text": text,
                         "link_target": target,
                         "issue": "target_not_found",
@@ -302,10 +167,10 @@ def check_orphan_pages(
 
     # Build inbound graph: for each page, collect pages that link to it
     inbound: dict[str, set[str]] = {}
-    rel_names = {_relative_path(p) for p in pages}
+    rel_names = {wiki_rel(p) for p in pages}
 
     for page in pages:
-        rel = _relative_path(page)
+        rel = wiki_rel(page)
         if rel not in inbound:
             inbound[rel] = set()
         content, _ = page_cache.get(rel, ("", {}))
@@ -316,7 +181,7 @@ def check_orphan_pages(
             resolved = _resolve_target(target)
             if resolved is not None:
                 try:
-                    target_rel = _relative_path(resolved)
+                    target_rel = wiki_rel(resolved)
                     if target_rel in rel_names:
                         if target_rel not in inbound:
                             inbound[target_rel] = set()
@@ -327,7 +192,7 @@ def check_orphan_pages(
     # Find orphans
     results: list[dict[str, Any]] = []
     for page in pages:
-        rel = _relative_path(page)
+        rel = wiki_rel(page)
         linked_from_elsewhere = len(inbound.get(rel, set())) > 0
         in_index = rel in index_refs or page.name in index_refs
         if not linked_from_elsewhere and not in_index:
@@ -353,7 +218,7 @@ def check_sparse_pages(
     """
     results: list[dict[str, Any]] = []
     for page in pages:
-        rel = _relative_path(page)
+        rel = wiki_rel(page)
         content, _ = page_cache.get(rel, ("", {}))
         if not content:
             continue
@@ -385,7 +250,7 @@ def check_stale_pages(
     cutoff = reference_date - timedelta(days=STALE_DAYS)
     results: list[dict[str, Any]] = []
     for page in pages:
-        rel = _relative_path(page)
+        rel = wiki_rel(page)
         _, fm = page_cache.get(rel, ("", {}))
         if not fm:
             continue
@@ -395,7 +260,7 @@ def check_stale_pages(
         updated_str = fm.get("updated")
         if not updated_str:
             continue
-        updated_date = _parse_date(str(updated_str))
+        updated_date = parse_date(str(updated_str))
         if updated_date is None:
             continue
         if updated_date < cutoff:
@@ -516,14 +381,14 @@ def main() -> None:
     args = parser.parse_args()
 
     # Discover pages
-    pages = _pages()
+    pages = all_wiki_pages()
 
     # Preload all page content and frontmatter into cache
     page_cache: dict[str, tuple[str, dict[str, Any]]] = {}
     for page in pages:
-        rel = _relative_path(page)
-        content = _read_file(page)
-        fm = _parse_frontmatter(content)
+        rel = wiki_rel(page)
+        content = read_file(page)
+        fm = parse_frontmatter(content)
         page_cache[rel] = (content, fm)
 
     # Run all 4 checks
