@@ -208,7 +208,7 @@ def extract_links(content: str) -> list[str]:
       1. Frontmatter ``related`` field
       2. Inline markdown links ``[text](path.md)`` in body text
          (excluding the ``## Backlinks`` section)
-      3. Backtick-wrapped paths ``\`path.md\````` in body text
+      3. Backtick-wrapped paths ``\\`path.md\\````` in body text
          (common in ``## Relations`` sections, excluding ``## Backlinks``)
 
     Returns a sorted list of wiki-root-relative ``.md`` paths that pass

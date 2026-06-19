@@ -51,7 +51,7 @@ def read_file(path: Path) -> str:
 
 
 def all_wiki_pages() -> list[Path]:
-    """All .md files in wiki/, excluding meta files."""
+    """All .md files in wiki/, excluding meta files and raw/."""
     exclude = {
         "index.md",
         "log.md",
@@ -66,6 +66,8 @@ def all_wiki_pages() -> list[Path]:
         if p.name not in exclude
         and "templates" not in p.parts
         and "tools" not in p.parts  # tools/ only has .py files, but be safe
+        and "raw"
+        not in p.parts  # raw/ stores immutable source copies, not wiki pages
     ]
 
 

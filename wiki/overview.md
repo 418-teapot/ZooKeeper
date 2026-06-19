@@ -5,7 +5,13 @@ created: 2026-06-18
 updated: 2026-06-18
 tags: [overview, wiki, knowledge-base]
 related:
+  - sources/notes/autoresearch.md
+  - concepts/autonomous-experiment-loop.md
   - concepts/compounding-knowledge.md
+  - concepts/wiki-ingest-workflow.md
+  - concepts/wiki-query-synthesis.md
+  - concepts/wiki-health-check.md
+  - analysis/llm-wiki-vs-rag.md
   - concepts/wiki-ingest-workflow.md
   - concepts/wiki-query-synthesis.md
   - concepts/wiki-health-check.md
@@ -39,9 +45,14 @@ status: stable
 
 | 分类 | 页面数 | 核心内容 |
 |------|--------|----------|
-| Concepts | 4 | 复利知识、ingest 工作流、query→synthesis 归档、健康检查 |
-| Sources → Notes | 1 | Karpathy LLM Wiki 模式原始提案 |
-| Analysis | 1 | LLM Wiki vs RAG 结构化对比 |
+| Concepts | 10 | 复利知识、ingest 工作流、query→synthesis 归档、健康检查、自主实验循环、固定时间预算评估、单文件修改原则、NPC 式分工、简约准则、实验版本管理 |
+| Entities | 3 | train.py、prepare.py、program.md（autoresearch 核心文件） |
+| Sources → Notes | 2 | Karpathy LLM Wiki 模式原始提案、autoresearch 自主实验框架 |
+| Analysis | 3 | LLM Wiki vs RAG 结构化对比、蒸馏示例、autoresearch 设计权衡分析 |
+
+### 外部参考知识
+
+- [autoresearch](sources/notes/autoresearch.md) — Karpathy 的 AI agent 自主 LLM 训练实验框架，为 ZooKeeper 的 agent 自动化设计提供参考。其核心机制（自主实验循环、NPC 式分工、单文件修改原则）与 ZooKeeper 的 agent 编排理念高度相关。
 
 ### 与 RAG 的本质区别
 

@@ -3,9 +3,10 @@ title: LLM Wiki — 用 LLM 构建个人知识库的模式
 type: source
 created: 2026-06-18
 updated: 2026-06-18
-source: karpathy-llm-wiki-gist
+source: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
 tags: [wiki, knowledge-base, llm, pattern]
 related:
+  - sources/notes/autoresearch.md
   - concepts/compounding-knowledge.md
   - concepts/wiki-ingest-workflow.md
   - concepts/wiki-query-synthesis.md

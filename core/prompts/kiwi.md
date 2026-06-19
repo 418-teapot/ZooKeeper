@@ -96,16 +96,15 @@ Before finalizing, review your draft against ALL criteria below. If a criterion 
 ### 3.5 Cross-Reference Check
 - For every recommended page, identify at least 1 existing wiki page it should link to via `related`. If none exists, explain why.
 - All cross-reference paths are wiki-root-relative (e.g. `concepts/foo.md` NOT `wiki/concepts/foo.md`).
-- Inline links in page body: each independent reading entry point (a section reachable via search or TOC) should have at least one link to each referenced concept. Short pages need only first occurrence.
+- **Inline links in page body:** each independent reading entry point (a section reachable via search or TOC) should have at least one link to each referenced concept. Short pages need only first occurrence.
+- **Verify no duplicate inline links:** after adding the first-occurrence link, scan the rest of the page body and remove any additional inline links to the same target — only the first occurrence in each independent section should carry a link.
 
 ### 3.6 Self-Deletion Check
 Before moving to Phase 4, answer these three questions for EVERY recommended page:
 
-1. **"Could a reader who forgot the context, six months from now, find the 'why this page exists' anchor in 10 seconds?"** — If not, the Overview is too vague. Rewrite it.
-
-2. **"Is there any subsection that exists only because the source had it, not because the wiki genuinely needs this information?"** — If yes, delete it. "The source mentioned it" is not a reason to keep it.
-
-3. **"Is there a table, diagram, or code block that could be replaced with one sentence without losing actionable insight?"** — If yes, replace it.
+- **"Could a reader who forgot the context, six months from now, find the 'why this page exists' anchor in 10 seconds?"** — If not, the Overview is too vague. Rewrite it.
+- **"Is there any subsection that exists only because the source had it, not because the wiki genuinely needs this information?"** — If yes, delete it. "The source mentioned it" is not a reason to keep it.
+- **"Is there a table, diagram, or code block that could be replaced with one sentence without losing actionable insight?"** — If yes, replace it.
 
 If any question exposes an issue, fix it before Phase 4.
 
@@ -144,6 +143,7 @@ Before returning your analysis, confirm ALL of the following:
 - [ ] Before recommending a new page, confirmed no existing wiki page already covers the same concept with a more authoritative description (dedup check against existing wiki state, not just the source)
 - [ ] All external references (URLs, citations) are in the References section, not inline in main text
 - [ ] Inline wiki links follow the "independent reading entry point" rule: short pages link at first occurrence; long pages link at first occurrence within each independently-reachable section
+- [ ] **No duplicate inline links:** the page body contains only one inline link per target (first occurrence only), with no repeated links to the same concept/entity later in the page
 
 ### Density & Conciseness
 - [ ] Every page is within its assigned density level (L1: 40–60 lines, L2: 60–100 lines)
