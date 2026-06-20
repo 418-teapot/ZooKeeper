@@ -38,7 +38,7 @@ else
 fi
 
 section "Rust workspace tests"
-if cargo test --manifest-path tools/Cargo.toml --workspace -- --test-threads=1 2>&1; then
+if RUSTFLAGS="-D warnings" cargo test --manifest-path tools/Cargo.toml --workspace -- --test-threads=1 2>&1; then
   ok "cargo test --workspace"
 else
   fail "cargo test --workspace"
@@ -48,7 +48,7 @@ fi
 # Coverage requires llvm-tools-preview (rustup component add llvm-tools-preview).
 if rustup component list 2>/dev/null | grep -q 'llvm-tools-preview.*installed'; then
   section "Rust coverage"
-  COV_OUTPUT=$(cargo llvm-cov --manifest-path tools/Cargo.toml --workspace --summary-only -- --test-threads=1 2>&1) || true
+  COV_OUTPUT=$(RUSTFLAGS="-D warnings" cargo llvm-cov --manifest-path tools/Cargo.toml --workspace --summary-only -- --test-threads=1 2>&1) || true
 
   if echo "$COV_OUTPUT" | grep -q "llvm-tools"; then
     echo ""
@@ -76,6 +76,7 @@ if rustup component list 2>/dev/null | grep -q 'llvm-tools-preview.*installed'; 
     COV_ZUTIL=$(crate_cov 'zutil/src/')
     COV_ZLOG=$(crate_cov 'zlog/src/')
     COV_ZFIND=$(crate_cov 'zfind/src/')
+    COV_ZINSPECT=$(crate_cov 'zinspect/src/')
     COV_TOTAL=$(echo "$COV_OUTPUT" | awk '/^TOTAL/ {print $10}' | tr -d '%')
 
     check_cov() {
@@ -94,12 +95,14 @@ if rustup component list 2>/dev/null | grep -q 'llvm-tools-preview.*installed'; 
       fi
     }
 
-    # Thresholds: zutil pure functions, zlog jq + integration, zfind db.rs (core logic);
+    # Thresholds: zutil pure functions, zlog jq + integration,
+    # zfind/zinspect db.rs + helpers.rs (core logic);
     # display.rs/main.rs are 0% by design (stdout rendering / CLI dispatch).
-    check_cov "zutil"  "$COV_ZUTIL" 70 || FAILED=1
-    check_cov "zlog"   "$COV_ZLOG"  50 || FAILED=1
-    check_cov "zfind"  "$COV_ZFIND" 45 || FAILED=1  # aggregate of 4 modules
-    check_cov "total"  "$COV_TOTAL" 50 || true
+    check_cov "zutil"     "$COV_ZUTIL"    80 || FAILED=1
+    check_cov "zlog"      "$COV_ZLOG"     55 || FAILED=1
+    check_cov "zfind"     "$COV_ZFIND"    45 || FAILED=1  # aggregate of 4 modules
+    check_cov "zinspect"  "$COV_ZINSPECT" 50 || FAILED=1  # aggregate of 4 modules
+    check_cov "total"     "$COV_TOTAL"    50 || true
   fi
 else
   echo ""

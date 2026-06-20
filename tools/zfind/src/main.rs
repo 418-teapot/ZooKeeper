@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::all)]
+#![deny(dead_code)]
 #![warn(clippy::pedantic)]
 #![warn(clippy::nursery)]
 
@@ -24,7 +25,8 @@ use crate::display::{
     print_json_messages, print_json_session_messages, print_json_sessions,
     print_message_detail, print_session_messages_table, print_session_table,
 };
-use crate::helpers::{COLOR, classify_role, preview_text};
+use crate::helpers::{classify_role, preview_text};
+use zutil::color::COLOR;
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
@@ -178,7 +180,7 @@ fn cmd_session_messages(args: &Args) {
 
             let total_tokens = estimate_tokens(&parts);
             let display_role = classify_role(role, &parts);
-            let preview = preview_text(&parts);
+            let preview = preview_text(&parts, 40);
 
             json_rows.push(
                 serde_json::from_value(serde_json::json!({

@@ -1,78 +1,11 @@
 use std::collections::HashMap;
-use std::path::Path;
 
+#[cfg_attr(not(test), allow(unused_imports))]
 use rusqlite::{Connection, params};
 use serde_json::{Map, Value};
 
-use zutil::{epoch_ms_to_iso, expand_tilde, safe_json_loads};
-
-/// Try to open the DB in read-only URI mode.  Returns None if the file does
-/// not exist (matching Python: empty results, no error).
-pub fn open_db(path: &str) -> Option<Connection> {
-    let expanded = expand_tilde(path);
-    if !Path::new(&expanded).exists() {
-        return None;
-    }
-    let uri = format!("file:{expanded}?mode=ro");
-    Connection::open(&uri).ok()
-}
-
-pub fn row_to_session_value(row: &rusqlite::Row) -> rusqlite::Result<Value> {
-    let mut m = Map::new();
-
-    // Simple string columns
-    for key in &["id", "parent_id", "title", "slug", "agent", "directory"] {
-        let val: Option<String> = row.get(*key)?;
-        m.insert(key.to_string(), val.map_or(Value::Null, Value::String));
-    }
-
-    // Model: stored as a JSON string, parse it
-    let model_str: Option<String> = row.get("model")?;
-    match model_str {
-        Some(s) => {
-            let parsed = safe_json_loads(&s).unwrap_or(Value::String(s));
-            m.insert("model".to_string(), parsed);
-        }
-        None => {
-            m.insert("model".to_string(), Value::Null);
-        }
-    }
-
-    // Timestamps: epoch ms -> ISO
-    for key in &["time_created", "time_updated"] {
-        let val: Option<i64> = row.get(*key)?;
-        m.insert(
-            key.to_string(),
-            val.map_or(Value::Null, |v| Value::String(epoch_ms_to_iso(v))),
-        );
-    }
-
-    // Numeric columns
-    for key in &[
-        "cost",
-        "tokens_input",
-        "tokens_output",
-        "tokens_reasoning",
-        "tokens_cache_read",
-        "tokens_cache_write",
-    ] {
-        let val: Option<f64> = row.get(*key)?;
-        m.insert(
-            key.to_string(),
-            val.map_or(Value::Null, |v| {
-                serde_json::Number::from_f64(v)
-                    .map_or(Value::Null, Value::Number)
-            }),
-        );
-    }
-
-    Ok(Value::Object(m))
-}
-
-pub const SESSION_COLS: &str = "id, parent_id, title, slug, agent, model, \
-                            directory, time_created, time_updated, cost, \
-                            tokens_input, tokens_output, tokens_reasoning, \
-                            tokens_cache_read, tokens_cache_write";
+use zutil::db_helpers::{SESSION_COLS, open_db, row_to_session_value};
+use zutil::{epoch_ms_to_iso, safe_json_loads};
 
 pub fn query_sessions(
     keyword: &str,
@@ -94,7 +27,7 @@ pub fn query_sessions(
     let rows = stmt
         .query_map(
             params![pattern, i64::try_from(limit).unwrap_or(i64::MAX)],
-            row_to_session_value,
+            |row| Ok(row_to_session_value(row)),
         )
         .expect("SQL query failed");
 
@@ -114,10 +47,9 @@ pub fn query_sessions_all(db_path: &str, limit: usize) -> Vec<Value> {
 
     let mut stmt = conn.prepare(&sql).expect("SQL prepare failed");
     let rows = stmt
-        .query_map(
-            params![i64::try_from(limit).unwrap_or(i64::MAX)],
-            row_to_session_value,
-        )
+        .query_map(params![i64::try_from(limit).unwrap_or(i64::MAX)], |row| {
+            Ok(row_to_session_value(row))
+        })
         .expect("SQL query failed");
 
     rows.filter_map(std::result::Result::ok).collect()
@@ -142,7 +74,7 @@ pub fn query_sessions_exact(
     let rows = stmt
         .query_map(
             params![title, i64::try_from(limit).unwrap_or(i64::MAX)],
-            row_to_session_value,
+            |row| Ok(row_to_session_value(row)),
         )
         .expect("SQL query failed");
 

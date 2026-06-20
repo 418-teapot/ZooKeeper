@@ -9,3 +9,8 @@ chrono = "0.4"
 dirs = "6"
 glob = "0.3"
 serde_json = "1"
+rich_rust = "0.2.2"
+rusqlite = { version = "0.31", features = ["bundled"], optional = true }
+
+[features]
+db-helpers = ["rusqlite"]

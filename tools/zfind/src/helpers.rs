@@ -1,80 +1,6 @@
-use std::sync::LazyLock;
-use std::sync::atomic::{AtomicBool, Ordering};
-
-use rich_rust::color::ColorSystem;
-use rich_rust::console::Console;
-use rich_rust::segment::Segment;
-use rich_rust::style::Style;
-
 use serde_json::Value;
 
 use zutil::truncate_chars;
-
-/// Global flag: whether ANSI color output is enabled.
-pub static COLOR: AtomicBool = AtomicBool::new(true);
-
-/// Console instance for `print_message_detail`, configured with `TrueColor`
-/// and default markup + `ReprHighlighter` enabled.
-pub static MSG_CONSOLE: LazyLock<Console> = LazyLock::new(|| {
-    Console::builder().color_system(ColorSystem::TrueColor).build()
-});
-
-/// Print a message-detail line with markup syntax when colors are enabled,
-/// or with plain text (markup stripped) when `--no-color` is active.
-pub fn msg_print(text: &str) {
-    if COLOR.load(Ordering::SeqCst) {
-        MSG_CONSOLE.print(text);
-    } else {
-        // Strip markup tags for plain-text output
-        let plain = text.replace("[bold]", "").replace("[/bold]", "");
-        println!("{plain}");
-    }
-}
-
-/// Apply a `Style` to text, returning an ANSI-colored string
-/// (or plain text when `--no-color` is active).
-pub fn style_text(text: &str, style: &Style) -> String {
-    if !COLOR.load(Ordering::SeqCst) {
-        return text.to_string();
-    }
-    style.render(text, ColorSystem::TrueColor)
-}
-
-/// Convert `rich_rust` segments to an ANSI-colored string.
-pub fn render_segments_to_ansi(segments: &[Segment]) -> String {
-    if !COLOR.load(Ordering::SeqCst) {
-        let total_len: usize = segments.iter().map(|s| s.text.len()).sum();
-        let mut output = String::with_capacity(total_len);
-        for segment in segments {
-            if segment.is_control() {
-                continue;
-            }
-            output.push_str(segment.text.as_ref());
-        }
-        return output;
-    }
-
-    let color_system = ColorSystem::TrueColor;
-    let total_text_len: usize = segments.iter().map(|s| s.text.len()).sum();
-    let mut output =
-        String::with_capacity(total_text_len + segments.len() * 20);
-
-    for segment in segments {
-        if segment.is_control() {
-            continue;
-        }
-        if let Some(ref style) = segment.style {
-            let ansi = style.render_ansi(color_system);
-            output.push_str(&ansi.0);
-            output.push_str(segment.text.as_ref());
-            output.push_str(&ansi.1);
-        } else {
-            output.push_str(segment.text.as_ref());
-        }
-    }
-
-    output
-}
 
 /// Classify a message role for display purposes.
 pub fn classify_role(role: &str, parts: &[Value]) -> String {
@@ -96,14 +22,21 @@ pub fn classify_role(role: &str, parts: &[Value]) -> String {
 }
 
 /// Generate a preview string from message parts.
-pub fn preview_text(parts: &[Value]) -> String {
+///
+/// The preview is truncated to fit within `max_chars` characters
+/// (simple char count — the table engine handles display width).
+pub fn preview_text(parts: &[Value], max_chars: usize) -> String {
     for part in parts {
         let ptype = part.get("type").and_then(|v| v.as_str()).unwrap_or("");
         if ptype == "text" {
             let text = part.get("text").and_then(|v| v.as_str()).unwrap_or("");
-            let text = text.replace('\n', " ").trim().to_string();
-            if text.chars().count() > 40 {
-                return truncate_chars(&text, 37);
+            let text = text
+                .replace('\n', " ")
+                .replace('\u{fe0f}', "") // strip emoji VS16: terminal renders 2 cells,
+                .trim() // unicode_width says 1 cell — mismatch avoided
+                .to_string();
+            if text.chars().count() > max_chars {
+                return truncate_chars(&text, max_chars - 3); // room for ...
             }
             return text;
         }
@@ -123,8 +56,8 @@ pub fn preview_text(parts: &[Value]) -> String {
                 }
                 Some(ref v) => {
                     let s = v.to_string();
-                    if s.chars().count() > 20 {
-                        truncate_chars(&s, 17)
+                    if s.chars().count() > max_chars / 2 {
+                        truncate_chars(&s, max_chars / 2)
                     } else {
                         s
                     }
@@ -132,8 +65,8 @@ pub fn preview_text(parts: &[Value]) -> String {
                 None => String::new(),
             };
             let preview = format!("{tool_name}: {key_info}");
-            if preview.chars().count() > 40 {
-                return truncate_chars(&preview, 37);
+            if preview.chars().count() > max_chars {
+                return truncate_chars(&preview, max_chars - 3); // room for ...
             }
             return preview;
         }
@@ -164,7 +97,7 @@ mod tests {
     #[test]
     fn test_preview_text_short() {
         let parts = vec![json!({"type": "text", "text": "hello"})];
-        assert_eq!(preview_text(&parts), "hello");
+        assert_eq!(preview_text(&parts, 40), "hello");
     }
 
     #[test]
@@ -173,7 +106,7 @@ mod tests {
             "type": "text",
             "text": "this is a very long text that exceeds forty characters easily"
         })];
-        let p = preview_text(&parts);
+        let p = preview_text(&parts, 40);
         assert!(p.ends_with("..."), "expected '...' suffix, got: {p}");
         assert!(
             p.chars().count() <= 40,
@@ -191,20 +124,20 @@ mod tests {
                 "input": {"filePath": "/some/path", "limit": 10}
             }
         })];
-        let p = preview_text(&parts);
+        let p = preview_text(&parts, 40);
         assert!(p.contains("read:"), "got: {p}");
         assert!(p.contains("filePath"), "got: {p}");
     }
 
     #[test]
     fn test_preview_text_utf8_no_panic() {
-        // Chinese text exceeding 40 chars to trigger truncation
+        // Chinese text — truncated by char count now
         let long_text = "这是一个很长的中文文本用来测试截断功能是否正常工作不会崩溃还需要更多字符";
         let parts = vec![json!({"type": "text", "text": long_text})];
-        let p = preview_text(&parts);
+        let p = preview_text(&parts, 40);
         assert!(
             p.chars().count() <= 40,
-            "expected ≤ 40, got {}: {p}",
+            "expected ≤ 40 chars, got {}: {p}",
             p.chars().count()
         );
     }
@@ -215,37 +148,33 @@ mod tests {
             "type": "text",
             "text": "line one\nline two\nline three"
         })];
-        let p = preview_text(&parts);
+        let p = preview_text(&parts, 40);
         assert!(!p.contains('\n'), "newlines should be collapsed");
         assert!(p.contains(' '));
     }
 
     #[test]
-    fn test_style_text_bold() {
-        COLOR.store(true, Ordering::SeqCst);
-        let s = Style::new().bold();
-        let result = style_text("test", &s);
-        assert!(result.contains("\x1b[1m"), "must contain bold ANSI code");
-        assert!(result.contains("\x1b[0m"), "must contain reset code");
-        assert!(result.contains("test"), "must contain the text");
+    fn test_preview_text_terminal_width() {
+        // Test with narrow max_chars (10 chars)
+        let parts = vec![json!({
+            "type": "text",
+            "text": "this text is too long for narrow terminal"
+        })];
+        let p = preview_text(&parts, 10);
+        assert!(p.chars().count() <= 10);
+        assert!(p.ends_with("..."));
     }
 
     #[test]
-    fn test_style_text_no_color() {
-        COLOR.store(false, Ordering::SeqCst);
-        let s = Style::new().bold();
-        let result = style_text("test", &s);
-        assert_eq!(result, "test");
-        // Restore color for other tests
-        COLOR.store(true, Ordering::SeqCst);
-    }
-
-    #[test]
-    fn test_render_segments_to_ansi_plain() {
-        let seg = Segment::new("hello", None);
-        COLOR.store(false, Ordering::SeqCst);
-        let result = render_segments_to_ansi(&[seg]);
-        assert_eq!(result, "hello");
-        COLOR.store(true, Ordering::SeqCst);
+    fn test_preview_text_cjk_terminal_width() {
+        // CJK text truncated by char count — preview limits chars,
+        // the rich_rust table engine handles actual display width.
+        let parts = vec![json!({
+            "type": "text",
+            "text": "你好世界这是测试"
+        })];
+        // 8 chars ≤ max, no truncation
+        let p = preview_text(&parts, 8);
+        assert_eq!(p, "你好世界这是测试");
     }
 }

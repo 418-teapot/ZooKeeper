@@ -1,0 +1,542 @@
+use std::collections::{HashMap, HashSet};
+
+#[cfg_attr(not(test), allow(unused_imports))]
+use rusqlite::{Connection, params};
+use serde_json::{Map, Number, Value};
+
+use zutil::db_helpers::{SESSION_COLS, open_db, row_to_session_value};
+use zutil::{epoch_ms_to_iso, safe_json_loads};
+
+/// Get the *n* most recently updated sessions.
+pub fn query_recent_sessions(
+    n: i64,
+    db_path: &str,
+    include_children: bool,
+) -> Vec<Value> {
+    let Some(conn) = open_db(db_path) else {
+        return vec![];
+    };
+
+    let child_filter =
+        if include_children { "" } else { "WHERE parent_id IS NULL " };
+
+    let sql = format!(
+        "SELECT {SESSION_COLS} FROM session \
+         {child_filter}ORDER BY time_updated DESC LIMIT ?"
+    );
+
+    let mut stmt = conn.prepare(&sql).expect("SQL prepare failed");
+    let rows = stmt
+        .query_map(params![n], |row| Ok(row_to_session_value(row)))
+        .expect("SQL query failed");
+
+    rows.filter_map(std::result::Result::ok).collect()
+}
+
+/// Extract per-step token timeline for a session.
+///
+/// Queries step-finish parts and tool parts, then associates tool
+/// names with their corresponding step by matching `message_id`.
+#[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
+pub fn query_step_data(session_id: &str, db_path: &str) -> Vec<Value> {
+    #[derive(Clone)]
+    #[allow(dead_code)]
+    struct StepRow {
+        id: String,
+        message_id: String,
+        time_created: Option<i64>,
+        time_updated: Option<i64>,
+        data: Value,
+    }
+
+    #[derive(Clone)]
+    struct ToolRow {
+        message_id: String,
+        data: Value,
+    }
+
+    let Some(conn) = open_db(db_path) else {
+        return vec![];
+    };
+
+    // Step-finish parts
+    let mut step_stmt = conn
+        .prepare(
+            "SELECT id, message_id, time_created, time_updated, data \
+             FROM part \
+             WHERE session_id = ? \
+             AND json_extract(data, '$.type') = 'step-finish' \
+             ORDER BY time_created ASC",
+        )
+        .expect("SQL prepare failed");
+
+    let step_rows: Vec<StepRow> = step_stmt
+        .query_map(params![session_id], |row| {
+            let id: String = row.get("id")?;
+            let message_id: String = row.get("message_id")?;
+            let tc: Option<i64> = row.get("time_created")?;
+            let tu: Option<i64> = row.get("time_updated")?;
+            let data_str: String = row.get("data")?;
+            Ok(StepRow {
+                id,
+                message_id,
+                time_created: tc,
+                time_updated: tu,
+                data: safe_json_loads(&data_str).unwrap_or(Value::Null),
+            })
+        })
+        .expect("SQL query failed")
+        .filter_map(std::result::Result::ok)
+        .collect();
+
+    // Tool parts
+    let mut tool_stmt = conn
+        .prepare(
+            "SELECT id, message_id, time_created, data \
+             FROM part \
+             WHERE session_id = ? \
+             AND json_extract(data, '$.type') = 'tool' \
+             ORDER BY time_created ASC",
+        )
+        .expect("SQL prepare failed");
+
+    let tool_rows: Vec<ToolRow> = tool_stmt
+        .query_map(params![session_id], |row| {
+            let _id: String = row.get("id")?;
+            let message_id: String = row.get("message_id")?;
+            let data_str: String = row.get("data")?;
+            Ok(ToolRow {
+                message_id,
+                data: safe_json_loads(&data_str).unwrap_or(Value::Null),
+            })
+        })
+        .expect("SQL query failed")
+        .filter_map(std::result::Result::ok)
+        .collect();
+
+    // Build tool name lookup keyed by message_id
+    let mut tools_by_msg: HashMap<String, Vec<String>> = HashMap::new();
+    for trow in &tool_rows {
+        if let Some(tool_name) = trow
+            .data
+            .get("tool")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            tools_by_msg
+                .entry(trow.message_id.clone())
+                .or_default()
+                .push(tool_name.to_string());
+        }
+    }
+
+    // Fetch parent message data for step-finish message_ids to extract
+    // LLM step timing from message.data.time
+    let msg_ids: HashSet<String> =
+        step_rows.iter().map(|s| s.message_id.clone()).collect();
+    let mut msg_time_map: HashMap<String, (Option<i64>, Option<i64>)> =
+        HashMap::new();
+
+    if !msg_ids.is_empty() {
+        let placeholders: Vec<String> =
+            msg_ids.iter().map(|_| "?".to_string()).collect();
+        let in_clause = placeholders.join(",");
+
+        let mut msg_stmt = conn
+            .prepare(&format!(
+                "SELECT id, data FROM message \
+                 WHERE id IN ({in_clause}) AND session_id = ?"
+            ))
+            .expect("SQL prepare failed");
+
+        let mut msg_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        for mid in &msg_ids {
+            msg_params.push(Box::new(mid.clone()));
+        }
+        msg_params.push(Box::new(session_id.to_string()));
+        let msg_refs: Vec<&dyn rusqlite::types::ToSql> =
+            msg_params.iter().map(std::convert::AsRef::as_ref).collect();
+
+        let msg_rows = msg_stmt
+            .query_map(msg_refs.as_slice(), |row| {
+                let id: String = row.get("id")?;
+                let data_str: String = row.get("data")?;
+                Ok((id, safe_json_loads(&data_str).unwrap_or(Value::Null)))
+            })
+            .expect("SQL query failed");
+
+        for msg_row in msg_rows.flatten() {
+            let time_info = msg_row.1.get("time");
+            let created = time_info
+                .and_then(|t| t.get("created"))
+                .and_then(serde_json::Value::as_i64);
+            let completed = time_info
+                .and_then(|t| t.get("completed"))
+                .and_then(serde_json::Value::as_i64);
+            msg_time_map.insert(msg_row.0, (created, completed));
+        }
+    }
+
+    // Build results
+    let mut results: Vec<Value> = Vec::new();
+    for (idx, srow) in step_rows.iter().enumerate() {
+        let step_index = idx + 1;
+        let msg_id = &srow.message_id;
+        let sdata = &srow.data;
+
+        let ts_created =
+            srow.time_created.map(epoch_ms_to_iso).unwrap_or_default();
+        let ts_updated =
+            srow.time_updated.map(epoch_ms_to_iso).unwrap_or_default();
+
+        // step-finish JSON has nested tokens:
+        // {"tokens": {"input": N, "output": N,
+        //             "cache": {"read": N, "write": N}}}
+        let tokens_obj = sdata
+            .get("tokens")
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+        let cache_obj = tokens_obj
+            .get("cache")
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+
+        let input_tokens = tokens_obj
+            .get("input")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0);
+        let output_tokens = tokens_obj
+            .get("output")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0);
+        let reasoning_tokens = tokens_obj
+            .get("reasoning")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0);
+        let cache_read = cache_obj
+            .get("read")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0);
+        let cache_write = cache_obj
+            .get("write")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0);
+        let cost = sdata
+            .get("cost")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0);
+        let reason = sdata
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let tools: Vec<Value> = tools_by_msg
+            .get(msg_id)
+            .map(|v| v.iter().map(|s| Value::String(s.clone())).collect())
+            .unwrap_or_default();
+
+        let msg_times = msg_time_map.get(msg_id);
+        let msg_time_created = msg_times
+            .and_then(|(c, _)| *c)
+            .and_then(|ts| Number::from_f64(ts as f64))
+            .map(Value::Number);
+        let msg_time_completed = msg_times
+            .and_then(|(_, c)| *c)
+            .and_then(|ts| Number::from_f64(ts as f64))
+            .map(Value::Number);
+
+        let mut step = Map::new();
+        step.insert(
+            "step_index".to_string(),
+            Value::Number(Number::from(step_index as u64)),
+        );
+        step.insert("message_id".to_string(), Value::String(msg_id.clone()));
+        step.insert("time_created".to_string(), Value::String(ts_created));
+        step.insert("time_updated".to_string(), Value::String(ts_updated));
+        step.insert(
+            "cache_read".to_string(),
+            Number::from_f64(cache_read).map_or(Value::Null, Value::Number),
+        );
+        step.insert(
+            "cache_write".to_string(),
+            Number::from_f64(cache_write).map_or(Value::Null, Value::Number),
+        );
+        step.insert(
+            "input_tokens".to_string(),
+            Number::from_f64(input_tokens).map_or(Value::Null, Value::Number),
+        );
+        step.insert(
+            "output_tokens".to_string(),
+            Number::from_f64(output_tokens).map_or(Value::Null, Value::Number),
+        );
+        step.insert(
+            "reasoning_tokens".to_string(),
+            Number::from_f64(reasoning_tokens)
+                .map_or(Value::Null, Value::Number),
+        );
+        step.insert(
+            "cost".to_string(),
+            Number::from_f64(cost).map_or(Value::Null, Value::Number),
+        );
+        step.insert("reason".to_string(), Value::String(reason));
+        step.insert("tools".to_string(), Value::Array(tools));
+        step.insert(
+            "msg_time_created".to_string(),
+            msg_time_created.unwrap_or(Value::Null),
+        );
+        step.insert(
+            "msg_time_completed".to_string(),
+            msg_time_completed.unwrap_or(Value::Null),
+        );
+
+        results.push(Value::Object(step));
+    }
+
+    results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::sync::Mutex;
+
+    /// Mutex to serialize DB-creating tests (all use the same temp file name).
+    static DB_MUTEX: Mutex<()> = Mutex::new(());
+
+    /// Create a temporary SQLite database with test tables and sample data.
+    /// Returns the file path. Caller should delete it after the test.
+    fn create_test_db() -> String {
+        let dir = std::env::temp_dir();
+        let path =
+            dir.join(format!("zoo_inspect_test_{}.db", std::process::id()));
+        let _ = fs::remove_file(&path);
+
+        let conn = Connection::open(&path).expect("open test db");
+
+        conn.execute_batch(
+            "CREATE TABLE session (
+                id TEXT PRIMARY KEY,
+                parent_id TEXT,
+                title TEXT,
+                slug TEXT,
+                agent TEXT,
+                directory TEXT,
+                model TEXT,
+                time_created INTEGER,
+                time_updated INTEGER,
+                cost REAL,
+                tokens_input REAL,
+                tokens_output REAL,
+                tokens_reasoning REAL,
+                tokens_cache_read REAL,
+                tokens_cache_write REAL
+            );
+            CREATE TABLE message (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                time_created INTEGER,
+                data TEXT
+            );
+            CREATE TABLE part (
+                id TEXT PRIMARY KEY,
+                message_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                time_created INTEGER,
+                time_updated INTEGER,
+                data TEXT
+            );",
+        )
+        .expect("create test tables");
+
+        let model_json = r#"{"name":"deepseek-v4"}"#;
+
+        // Root sessions
+        conn.execute(
+            "INSERT INTO session VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+            rusqlite::params![
+                "ses-001", Option::<&str>::None, "auth middleware debug",
+                "auth-middleware-debug", "general", "/app",
+                model_json,
+                1715000000000_i64, 1715000100000_i64,
+                0.012, 500.0, 300.0, 0.0, 0.0, 0.0,
+            ],
+        ).expect("insert ses-001");
+
+        conn.execute(
+            "INSERT INTO session VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+            rusqlite::params![
+                "ses-002", Option::<&str>::None, "DB migration from v2 to v3",
+                "db-migration-v2-v3", "explore", "/db",
+                model_json,
+                1715000200000_i64, 1715000300000_i64,
+                0.008, 200.0, 100.0, 50.0, 0.0, 0.0,
+            ],
+        ).expect("insert ses-002");
+
+        // Child session
+        conn.execute(
+            "INSERT INTO session VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+            rusqlite::params![
+                "ses-003", "ses-001", "auth retry",
+                "auth-retry", "general", "/app",
+                model_json,
+                1715000400000_i64, 1715000500000_i64,
+                0.004, 100.0, 50.0, 0.0, 0.0, 0.0,
+            ],
+        ).expect("insert ses-003");
+
+        // Messages for ses-001
+        conn.execute(
+            "INSERT INTO message VALUES (?1,?2,?3,?4)",
+            rusqlite::params![
+                "msg-001",
+                "ses-001",
+                1715000010000_i64,
+                r#"{"role":"user","agent":"general"}"#,
+            ],
+        )
+        .expect("insert msg-001");
+
+        conn.execute(
+            "INSERT INTO message VALUES (?1,?2,?3,?4)",
+            rusqlite::params![
+                "msg-002", "ses-001", 1715000020000_i64,
+                r#"{"role":"assistant","agent":"general","time":{"created":1715000020000,"completed":1715000090000}}"#,
+            ],
+        ).expect("insert msg-002");
+
+        // Parts for msg-002 (step-finish + tool)
+        conn.execute(
+            "INSERT INTO part (id, message_id, session_id, time_created, \
+             time_updated, data) \
+             VALUES (?1,?2,?3,?4,?5,?6)",
+            rusqlite::params![
+                "part-001", "msg-002", "ses-001",
+                1715000020000_i64, 1715000025000_i64,
+                r#"{"type":"step-finish","tokens":{"input":100,"output":50,"cache":{"read":30,"write":10}},"cost":0.005,"reason":"completed"}"#,
+            ],
+        ).expect("insert part-001");
+
+        conn.execute(
+            "INSERT INTO part (id, message_id, session_id, time_created, \
+             time_updated, data) \
+             VALUES (?1,?2,?3,?4,?5,?6)",
+            rusqlite::params![
+                "part-002", "msg-002", "ses-001",
+                1715000021000_i64, 1715000021000_i64,
+                r#"{"type":"tool","tool":"read","state":{"input":{"filePath":"src/auth.ts"}}}"#,
+            ],
+        ).expect("insert part-002");
+
+        // Messages for ses-002
+        conn.execute(
+            "INSERT INTO message VALUES (?1,?2,?3,?4)",
+            rusqlite::params![
+                "msg-003",
+                "ses-002",
+                1715000210000_i64,
+                r#"{"role":"user","agent":"explore"}"#,
+            ],
+        )
+        .expect("insert msg-003");
+
+        // Parts for msg-003 (step-finish only)
+        conn.execute(
+            "INSERT INTO part (id, message_id, session_id, time_created, \
+             time_updated, data) \
+             VALUES (?1,?2,?3,?4,?5,?6)",
+            rusqlite::params![
+                "part-003", "msg-003", "ses-002",
+                1715000210000_i64, 1715000220000_i64,
+                r#"{"type":"step-finish","tokens":{"input":200,"output":100,"cache":{"read":50,"write":20}},"cost":0.003,"reason":"completed"}"#,
+            ],
+        ).expect("insert part-003");
+
+        conn.close().expect("close test db");
+        path.to_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn test_query_recent_sessions_root_only() {
+        let _lock = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let db_path = create_test_db();
+        let results = query_recent_sessions(10, &db_path, false);
+        // 2 root sessions (ses-003 is a child)
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0]["id"], "ses-002");
+        assert_eq!(results[1]["id"], "ses-001");
+        let _ = fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn test_query_recent_sessions_include_children() {
+        let _lock = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let db_path = create_test_db();
+        let results = query_recent_sessions(10, &db_path, true);
+        // 3 sessions including child
+        assert_eq!(results.len(), 3);
+        let _ = fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn test_query_recent_sessions_limit() {
+        let _lock = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let db_path = create_test_db();
+        let results = query_recent_sessions(1, &db_path, false);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["id"], "ses-002");
+        let _ = fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn test_query_step_data() {
+        let _lock = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let db_path = create_test_db();
+        let results = query_step_data("ses-001", &db_path);
+        // 1 step-finish for ses-001
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["step_index"], 1);
+        assert_eq!(results[0]["message_id"], "msg-002");
+        assert_eq!(results[0]["input_tokens"].as_f64().unwrap() as i64, 100);
+        assert_eq!(results[0]["output_tokens"].as_f64().unwrap() as i64, 50);
+        assert_eq!(results[0]["cache_read"].as_f64().unwrap() as i64, 30);
+        assert_eq!(results[0]["cache_write"].as_f64().unwrap() as i64, 10);
+        assert_eq!(results[0]["reason"], "completed");
+        // Has a tool associated
+        let tools = results[0]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0], "read");
+        let _ = fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn test_query_step_data_empty_session() {
+        let _lock = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let db_path = create_test_db();
+        let results = query_step_data("nonexistent-session", &db_path);
+        // No data for nonexistent session
+        assert!(results.is_empty());
+        let _ = fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn test_query_step_data_nonexistent_db() {
+        let results =
+            query_step_data("ses-001", "/tmp/nonexistent_db_file_12345.db");
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_query_recent_sessions_nonexistent_db() {
+        let results = query_recent_sessions(
+            10,
+            "/tmp/nonexistent_db_file_12345.db",
+            false,
+        );
+        assert!(results.is_empty());
+    }
+}

@@ -16,7 +16,7 @@ section "Release build"
 cargo build --release
 
 section "Binaries"
-for bin in zlog zfind; do
+for bin in zlog zfind zinspect; do
     path="target/release/$bin"
     if [ -f "$path" ]; then
         size=$(du -h "$path" | cut -f1)

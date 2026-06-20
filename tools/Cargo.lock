@@ -1266,6 +1266,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "zinspect"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "rich_rust",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "zutil",
+]
+
+[[package]]
 name = "zlog"
 version = "0.1.0"
 dependencies = [
@@ -1287,5 +1300,7 @@ dependencies = [
  "chrono",
  "dirs",
  "glob",
+ "rich_rust",
+ "rusqlite",
  "serde_json",
 ]

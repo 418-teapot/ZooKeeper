@@ -4,15 +4,16 @@ use rich_rust::color::Color;
 use rich_rust::renderables::table::{Cell, Column, Row, Table};
 use rich_rust::style::Style;
 use rich_rust::terminal;
-use rich_rust::text::{JustifyMethod, Text};
+use rich_rust::text::{JustifyMethod, OverflowMethod, Text};
 
 use serde_json::Value;
 
 use zutil::{estimate_tokens, format_number, ts_display};
 
-use crate::helpers::{
-    classify_role, msg_print, preview_text, render_segments_to_ansi, style_text,
-};
+use zutil::color::{render_segments_to_ansi, style_text};
+
+use crate::helpers::{classify_role, preview_text};
+use zutil::color::msg_print;
 
 /// Print a table of session results.
 ///
@@ -71,9 +72,9 @@ pub fn print_session_table(
 
     table.add_column(Column::new("Title"));
     if is_all {
-        table.add_column(Column::new("Agent"));
-        table.add_column(Column::new("Session ID"));
-        table.add_column(Column::new("Updated"));
+        table.add_column(Column::new("Agent").no_wrap().min_width(7));
+        table.add_column(Column::new("Session ID").no_wrap().min_width(32));
+        table.add_column(Column::new("Updated").no_wrap().min_width(22));
 
         for s in results {
             let title = s
@@ -97,8 +98,8 @@ pub fn print_session_table(
             ]));
         }
     } else {
-        table.add_column(Column::new("Session ID"));
-        table.add_column(Column::new("Updated"));
+        table.add_column(Column::new("Session ID").no_wrap().min_width(32));
+        table.add_column(Column::new("Updated").no_wrap().min_width(22));
 
         for s in results {
             let title = s
@@ -311,18 +312,26 @@ pub fn print_session_messages_table(messages: &[Value], session_id: &str) {
 
     let width = terminal::get_terminal_width();
 
+    // Estimate Preview column width (terminal minus fixed columns minus slack)
+    let preview_width = width.saturating_sub(72).max(8);
+
     let mut table =
         Table::new().show_header(true).show_edge(true).show_lines(false);
 
     table.add_column(
-        Column::new("#").justify(JustifyMethod::Right).min_width(3),
+        Column::new("#").justify(JustifyMethod::Right).min_width(3).no_wrap(),
     );
-    table.add_column(Column::new("Role"));
+    table.add_column(Column::new("Role").min_width(11).no_wrap());
     table.add_column(
-        Column::new("Tokens").justify(JustifyMethod::Right).min_width(6),
+        Column::new("Tokens")
+            .justify(JustifyMethod::Right)
+            .min_width(8)
+            .no_wrap(),
     );
-    table.add_column(Column::new("ID"));
-    table.add_column(Column::new("Preview"));
+    table.add_column(Column::new("ID").no_wrap().min_width(30));
+    table.add_column(
+        Column::new("Preview").no_wrap().overflow(OverflowMethod::Ellipsis),
+    );
 
     for (idx, msg) in messages.iter().enumerate() {
         let role =
@@ -336,7 +345,7 @@ pub fn print_session_messages_table(messages: &[Value], session_id: &str) {
 
         let total_tokens = estimate_tokens(&parts);
         let display_role = classify_role(role, &parts);
-        let preview = preview_text(&parts);
+        let preview = preview_text(&parts, preview_width);
 
         let role_color =
             role_colors.get(display_role.as_str()).unwrap_or(&default_color);

@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::all)]
+#![deny(dead_code)]
 #![warn(clippy::pedantic)]
 #![warn(clippy::nursery)]
 
@@ -7,6 +8,11 @@ use std::path::Path;
 
 use chrono::TimeZone;
 use serde_json::Value;
+
+pub mod color;
+
+#[cfg(feature = "db-helpers")]
+pub mod db_helpers;
 
 /// Return the `ZooKeeper` log directory, expanding `~` to the user home.
 #[must_use]
@@ -130,6 +136,47 @@ pub fn ts_display(ts: &str) -> String {
     ts.replace('T', " ")[..19.min(ts.len())].to_string()
 }
 
+/// Return the terminal display width (columns) of a string.
+///
+/// Delegates to `rich_rust::cells::cell_len` which uses the `unicode_width`
+/// crate for correct East-Asian-Width and emoji handling.
+#[must_use]
+pub fn display_width(s: &str) -> usize {
+    rich_rust::cells::cell_len(s)
+}
+
+/// Truncate a string to at most `max_width` terminal columns,
+/// appending `"..."` when truncation occurs.
+///
+/// Uses `display_width` (delegating to `rich_rust::cells`) for accurate
+/// column measurement.
+#[must_use]
+pub fn truncate_width(s: &str, max_width: usize) -> String {
+    if display_width(s) <= max_width {
+        return s.to_string();
+    }
+    let suffix = "...";
+    let suffix_width = display_width(suffix);
+    if max_width <= suffix_width {
+        return suffix[..max_width.min(suffix.len())].to_string();
+    }
+    let target = max_width - suffix_width;
+    let mut w = 0;
+    let truncated: String = s
+        .chars()
+        .take_while(|c| {
+            let cw = rich_rust::cells::cell_len(&c.to_string());
+            if w + cw > target {
+                false
+            } else {
+                w += cw;
+                true
+            }
+        })
+        .collect();
+    format!("{truncated}{suffix}")
+}
+
 /// Truncate a string to at most `max_chars` Unicode characters,
 /// appending "..." when truncation occurs.
 ///
@@ -166,6 +213,65 @@ mod tests {
         );
         assert_eq!(ts_display(""), "");
         assert_eq!(ts_display("2025-01-09"), "2025-01-09");
+    }
+
+    #[test]
+    fn test_display_width_ascii() {
+        assert_eq!(display_width("hello"), 5);
+        assert_eq!(display_width(""), 0);
+        assert_eq!(display_width(" "), 1);
+    }
+
+    #[test]
+    fn test_display_width_cjk() {
+        assert_eq!(display_width("你好"), 4);
+        assert_eq!(display_width("a你好b"), 6);
+        assert_eq!(display_width("😀"), 2);
+    }
+
+    #[test]
+    fn test_display_width_mixed() {
+        assert_eq!(display_width("Hello 你好"), 10);
+        assert_eq!(display_width("a你b"), 4);
+    }
+
+    #[test]
+    fn test_truncate_width_no_truncation() {
+        assert_eq!(truncate_width("hello", 10), "hello");
+        assert_eq!(truncate_width("你好", 10), "你好");
+        assert_eq!(truncate_width("", 5), "");
+    }
+
+    #[test]
+    fn test_truncate_width_with_truncation() {
+        assert_eq!(truncate_width("hello world", 5), "he...");
+        assert_eq!(truncate_width("hello world", 8), "hello...");
+        // "你好世界" = 8 cols, max=4 -> suffix(3 cols) + 0 chars fits = "..."
+        assert_eq!(truncate_width("你好世界", 4), "...");
+        // max=6 -> suffix(3) + "你"(2) = 5 cols, "世"(2) would overflow
+        assert_eq!(truncate_width("你好世界", 6), "你...");
+        // max=7 -> suffix(3) + "你"(2) + "好"(2) would be 7, fits exactly
+        assert_eq!(truncate_width("你好世界", 7), "你好...");
+    }
+
+    #[test]
+    fn test_truncate_width_suffix_fits() {
+        assert_eq!(truncate_width("hello", 1), ".");
+        assert_eq!(truncate_width("hello", 2), "..");
+        assert_eq!(truncate_width("hello", 3), "...");
+    }
+
+    #[test]
+    fn test_truncate_width_cjk_vs_ascii() {
+        // "ab" = 2 width, "你好" = 4 width
+        // max=3 equals suffix_width=3 -> only suffix fits
+        assert_eq!(truncate_width("ab你好", 3), "...");
+        // max=4 -> suffix(3) + "a"(1) = 4
+        assert_eq!(truncate_width("a你好", 4), "a...");
+        // max=5 -> "a你好" = 1+2+2 = 5, fits exactly
+        assert_eq!(truncate_width("a你好", 5), "a你好");
+        // max=6 -> suffix(3) + "a"(1) + "你"(2) = 6
+        assert_eq!(truncate_width("a你好世界", 6), "a你...");
     }
 
     #[test]

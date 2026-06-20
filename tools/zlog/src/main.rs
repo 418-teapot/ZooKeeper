@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::all)]
+#![deny(dead_code)]
 #![warn(clippy::pedantic)]
 #![warn(clippy::nursery)]
 
@@ -503,9 +504,15 @@ mod tests {
 
     /// Create a temporary JSONL log file with sample ZooKeeper log
     /// entries. Returns the file path.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static LOG_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
     fn create_mock_log() -> String {
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("zlog_test_{}.log", std::process::id()));
+        let n = LOG_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let path =
+            dir.join(format!("zlog_test_{}_{}.log", std::process::id(), n));
         let _ = fs::remove_file(&path);
         let content = r#"
 {"hook":"task-prompt-validate","level":"info","event":"trigger","ts":"2025-01-09T12:00:00Z"}

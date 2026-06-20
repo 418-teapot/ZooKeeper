@@ -1,8 +1,8 @@
 [package]
-name = "zfind"
+name = "zinspect"
 version = "0.1.0"
 edition = "2024"
-description = "ZooKeeper session finder — search OpenCode sessions and messages in SQLite"
+description = "ZooKeeper session inspector -- stats, timeline, and impact analysis for OpenCode sessions."
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
