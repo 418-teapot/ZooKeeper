@@ -14,8 +14,9 @@
 4. [设计一：知识生命周期](#4-设计一知识生命周期)
 5. [设计二：数据检索](#5-设计二数据检索)
 6. [设计三：自动化策略](#6-设计三自动化策略)
-7. [实施路线图](#7-实施路线图)
-8. [总结](#8-总结)
+7. [设计四：工具统一 — zwiki CLI](#7-设计四工具统一--zwiki-cli)
+8. [实施路线图](#8-实施路线图)
+9. [总结](#9-总结)
 
 ---
 
@@ -426,11 +427,118 @@ Phase 3: 全文 grep（新增）
 
 ---
 
-## 7. 实施路线图
+## 7. 设计四：工具统一 — zwiki CLI
 
-### 7.0 P0-pre：OKF 字段对齐（纯机械，零 LLM 成本）
+核心问题：**六个脚本六种 CLI 风格，agent 和人都要记住不同名字和参数约定。新增的 property 操作、deadends 检测、idempotent ingest 如果要再变成独立脚本，调用方认知负担会持续膨胀。**
 
-**目标：wiki 格式与 OKF v0.1 合规对齐。**
+### 7.1 现状
+
+```
+wiki/tools/
+├── backlinks.py      python3 wiki/tools/backlinks.py --write
+├── health.py         python3 wiki/tools/health.py --json
+├── lint.py           python3 wiki/tools/lint.py
+├── diff_check.py     python3 wiki/tools/diff_check.py
+├── new_page.py       python3 wiki/tools/new_page.py --type concept --title "..."
+└── wiki_log.py       python3 wiki/tools/wiki_log.py --op ingest --path ...
+```
+
+所有操作都需要记住文件路径。`--json` 只在 `health.py` 和 `backlinks.py` 上支持，`lint.py` 不支持。
+`diff_check.py` 需要 git 上下文。
+
+### 7.2 方案：zwiki 统一入口
+
+按操作类型分四组——维护（check/fix）、读写（CRUD + property）、检索（search）、迁移（OKF）。
+zwiki 是薄路由层，底层仍然调用现有模块：
+
+```
+zwiki
+├── 维护
+│   ├── check              → 运行 health + lint，输出报告
+│   │   --apply            →   自动修复（stale 标记、deadends 标记）
+│   │   --ci               →   按阈值退出码（CI gating）
+│   │   --json             →   JSON 输出
+│   ├── backlinks <page>   → 反向链接查询
+│   │   --write            →   写入 Backlinks 节到所有页面
+│   └── log --op ...       → 追加日志（原 wiki_log.py）
+│
+├── 读写
+│   ├── page <path>        → 读页面（frontmatter + body）
+│   │   --property <name>  →   只读某个属性
+│   │   --outline          →   标题树
+│   ├── property <name> --value <val> --page <path>
+│   │                      → 设置单个属性（结构化，不手改 YAML）
+│   ├── property <name> --delete --page <path>
+│   │                      → 删除属性
+│   ├── create --type <type> --title "..."
+│   │                      → 新页面脚手架（原 new_page.py）
+│   ├── ingest <source>
+│   │   --idempotent       →   内容未变则跳过
+│   └── move <old> <new>   → 重命名 + 自动更新所有链接
+│
+├── 检索
+│   └── search "<query>"   → 三阶段级联检索（index → tag → grep）
+│       --json             →   JSON 输出
+│
+└── 迁移
+    └── okf check          → OKF 合规检查
+        okf export <dir>   → 导出 OKF bundle
+```
+
+### 7.3 内部架构
+
+六个现有脚本的核心逻辑全部保留为内部模块。`zwiki` 是薄路由，新增三个内部模块，
+其余全是对现有函数的包装：
+
+```
+zwiki (CLI 入口，argparse)
+├── _check.py      → 新增：health.py::run_health() + lint.py::run_lint()
+│                    + --apply（stale 标记、deadends 标记）
+│                    + --ci（阈值 YAML → exit code）
+├── _property.py   → 新增：YAML 解析 + 键路径修改 + 原子写
+├── _search.py     → 新增：index 解析 + tag 匹配 + rg 调用
+├── _okf.py        → 新增：格式校验 + bundle 导出
+├── _move.py       → 新增：backlinks 反向索引 + 批量 edit
+│
+├── 包装现有模块（不改内部逻辑）:
+│   backlinks → backlinks.py
+│   log       → wiki_log.py
+│   page      → shared/utils.py
+│   create    → new_page.py
+│   ingest    → 现有 ingest 路径 + idempotent 检查
+```
+
+### 7.4 外部工具借鉴
+
+三件事的来源：
+
+| 能力 | 来源 | 核心逻辑 |
+|------|------|---------|
+| `property:set` / `property:read` / `property:remove` | Obsidian CLI | YAML 解析 → 路径修改 → 原子写回。使 agent 无需理解 YAML 缩进就能安全修改 frontmatter |
+| `deadends`（零出链检测） | Obsidian CLI | 现有 `check_orphan_pages` 反着做：页面有 inbound 但自身不链接出任何目标 → 警告 |
+| `move` 重命名 + 自动更新链接 | notesmd-cli（Go） | backlinks 反向索引定位所有引用者 → 批量 `edit` 替换路径 |
+| idempotent ingest | llm-wiki-compiler | 源身份匹配（frontmatter `resource` 字段比对）+ 内容 SHA-256 跳过未变化重复摄入 |
+| eval CI gating | llm-wiki-compiler | `thresholds.yaml` 定义阈值 → `zwiki check --ci` 不符合时 exit 1 |
+| 12 条静态 lint 规则 | llm-wiki-compiler | 我们已有 4 条，可加 `deadends`、`schema_cross_link_minimums`（纯拓扑） |
+
+### 7.5 本节的取舍
+
+| 做什么 | 不做什么 |
+|--------|---------|
+| ✅ 统一 zwiki 入口，薄路由 | ❌ 重写现有工具逻辑 |
+| ✅ property 结构化操作（消除 agent 手改 YAML） | ❌ 支持 Obsidian 的 `type=checkbox\|datetime` 等高级类型 |
+| ✅ deadends 检测（纯拓扑，20 行） | ❌ 引入知识图谱（规模不够） |
+| ✅ 三阶段检索 CLI 化 | ❌ 在 CLI 层做向量搜索（→ skill 层） |
+| ✅ idempotent ingest（SHA-256 跳过） | ❌ 增量编译的依赖传播（P2 再考虑） |
+| ✅ CI gating（thresholds.yaml） | ❌ 全量 eval 套件（citation support LLM judge 成本高） |
+
+---
+
+## 8. 实施路线图
+
+### 8.0 P0-pre：OKF 字段对齐 + zwiki 骨架（纯机械，零 LLM 成本）
+
+**目标：wiki 格式与 OKF v0.1 合规对齐；建立统一的 zwiki CLI 入口。**
 
 | # | 改动 | 文件 | 工作量 |
 |---|------|------|--------|
@@ -439,8 +547,10 @@ Phase 3: 全文 grep（新增）
 | 0c | 新增 `description` 字段 | SCHEMA.md + 5 模板 | ~6 行 |
 | 0d | 新增 `okf_version: "0.1"` | wiki/index.md | 2 行 |
 | 0e | 删除 `created` 字段 | SCHEMA.md + 5 模板 + 27 wiki 页面 + health.py | ~35 行 |
+| 0f | zwiki CLI 骨架：统一入口 argparse，挂载 check/page/property/create/backlinks/log 子命令 | 新增 zwiki（薄路由，~100 行） | ~100 行 |
+| 0g | `zwiki property`：结构化读/写/删 frontmatter 属性（新增 `_property.py`） | 新增 _property.py + shared/utils.py | ~80 行 |
 
-### 7.1 P0：地基（纯机械，零 LLM 成本）
+### 8.1 P0：地基（纯机械，零 LLM 成本）
 
 **目标：让 wiki 知道哪些页面过时了，查询时自动感知。**
 
@@ -452,8 +562,11 @@ Phase 3: 全文 grep（新增）
 | 4 | 五个页面模板追加新字段（可选，默认兼容） | templates/*.md | 各 ~3 行 |
 | 5 | 三阶段级联检索：index → tag → grep | wiki-query SKILL.md | ~20 行 |
 | 6 | post-ingest 强制 backlinks + health | wiki-ingest SKILL.md | ~5 行 |
+| 7 | `zwiki check --apply`：整合 stale 自动标记 + deadends 检测 | 新增 _check.py | ~60 行 |
+| 8 | `zwiki search`：三阶段级联检索 CLI 化 | 新增 _search.py | ~50 行 |
+| 9 | `zwiki okf check`：OKF 合规自检 | 新增 _okf.py | ~40 行 |
 
-### 7.2 P1：半自动机制（LLM 辅助，但调用量极小）
+### 8.2 P1：半自动机制（LLM 辅助，但调用量极小）
 
 **目标：supersede 声明 + 矛盾发现。**
 
@@ -463,28 +576,30 @@ Phase 3: 全文 grep（新增）
 | 8 | `check_cascade_stale`：页面 superseded 后扫描引用者，生成候审列表 | lint.py | ~80 行 |
 | 9 | 矛盾检测：图拓扑预筛选 → LLM 声明提取 → contradictions 写入 | 新增 contradiction.py | ~150 行 |
 | 10 | wiki-query 矛盾感知：读到 contradiction 页面时呈现冲突 | wiki-query SKILL.md | ~10 行 |
+| 11 | `zwiki move`：重命名 + 自动更新所有引用链接 | 新增 _move.py | ~100 行 |
+| 12 | `zwiki ingest --idempotent`：源身份匹配 + SHA-256 跳过 | 修改现有 ingest 路径 | ~60 行 |
 
-### 7.3 P2：验证体系
+### 8.3 P2：验证体系
 
 **目标：不只检测过期，还能验证不过期。**
 
 | # | 改动 | 文件 | 工作量 |
 |---|------|------|--------|
-| 11 | 交叉验证：ingest 新源时自动比对已有声明，一致则刷新 `last_validated` | lint.py | ~100 行 |
-| 12 | 来源回溯验证：source ↔ 衍生页面一致性比对 | 新增脚本 | ~120 行 |
+| 13 | 交叉验证：ingest 新源时自动比对已有声明，一致则刷新 `last_validated` | lint.py | ~100 行 |
+| 14 | 来源回溯验证：source ↔ 衍生页面一致性比对 | 新增脚本 | ~120 行 |
 
-### 7.4 P3：全自动维护
+### 8.4 P3：全自动维护
 
 | # | 改动 | 文件 | 工作量 |
 |---|------|------|--------|
-| 13 | pre-query 自动 lint 注入（> 7 天触发） | wiki-query SKILL.md | ~15 行 |
-| 14 | health.py `--fix`：自动修复 index 不一致 | health.py | ~30 行 |
+| 15 | pre-query 自动 lint 注入（> 7 天触发） | wiki-query SKILL.md | ~15 行 |
+| 16 | `zwiki check --ci`：阈值 YAML → exit code CI gating | 修改 _check.py | ~30 行 |
 
 ---
 
-## 8. 总结
+## 9. 总结
 
-这份调研围绕四个问题展开：**wiki 里哪些知识过时了？找不到怎么办？谁来记得做维护？格式是否应该对齐外部标准？**
+这份调研围绕五个问题展开：**wiki 里哪些知识过时了？找不到怎么办？谁来记得做维护？格式是否应该对齐外部标准？工具散落怎么统一？**
 
 答案分别是：
 
@@ -494,9 +609,11 @@ Phase 3: 全文 grep（新增）
 
 3. **自动化策略** — 画一条清晰的线：确定性计算的全自动（`--apply`/`--fix`），语义判断的半自动（LLM 提议 + 人确认），裁决类的人工。不做事件驱动全自动，不信任 LLM 当裁判。
 
-4. **OKF 格式对齐** — 我们的 wiki 已经是 OKF v0.1 的超集合规格式。四个字段重命名/新增（`timestamp`、`resource`、`description`、`okf_version`）、一个冗余字段删除（`created`），改动约 100 行，纯机械。OKF 的知识图谱和自动索引再生模式为远期路图提供了参考，但其 BigQuery/Dataplex 云生态特化部分与己无关。
+4. **OKF 格式对齐** — 我们的 wiki 已经是 OKF v0.1 的超集合规格式。四个字段重命名/新增、一个冗余字段删除，改动约 100 行。OKF 的知识图谱和自动索引再生模式为远期路图提供了参考。
 
-这四个方向共用一个地基——P0-pre + P0 共约 210 行代码，纯机械，零 LLM 成本，可以立即实施。P1-P3 逐步引入 LLM 辅助和自动化，但始终保持**机械活自动、判断活留人**的分界线。
+5. **工具统一** — 六个散落脚本 + 多个新增能力整合为 `zwiki` 统一 CLI。借鉴 Obsidian CLI（`property:set`、`deadends`、`move`）和 llm-wiki-compiler（idempotent ingest、eval CI gating）的设计，薄路由层包装现有模块逻辑。
+
+这五个方向共用一个地基——P0-pre + P0 共 16 项改动约 600 行代码，纯机械，零 LLM 成本，可以立即实施。P1-P3 逐步引入 LLM 辅助和自动化，但始终保持**机械活自动、判断活留人**的分界线。
 
 ---
 
@@ -512,3 +629,6 @@ Phase 3: 全文 grep（新增）
 - 复利知识概念: `wiki/concepts/compounding-knowledge.md`
 - SCHEMA.md: `wiki/SCHEMA.md`
 - lint.py: `wiki/tools/lint.py`
+- Obsidian CLI: `https://help.obsidian.md/cli`
+- notesmd-cli: `https://github.com/Yakitrak/notesmd-cli`
+- llm-wiki-compiler: `https://github.com/atomicstrata/llm-wiki-compiler`
