@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ZooKeeper — Unified check/lint/format script for Python and TypeScript.
+# ZooKeeper — Unified check/lint/format script for Python, TypeScript, Rust.
 #
 # Usage:
 #   ./check.sh           # check  (lint + format, auto-fix)
@@ -9,8 +9,9 @@ set -euo pipefail
 
 MODE="${1:-check}"
 
-PY_FILES="install.py tests/ tools/ tools/zoo-log tools/zoo-trace tools/zoo-inspect core/skills/ wiki/tools/"
+PY_FILES="install.py tests/ tools/ tools/zoo-trace tools/zoo-inspect core/skills/ wiki/tools/"
 TS_DIR="src/"
+ZOO_DIR="tools/"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -53,6 +54,23 @@ case "$MODE" in
     ;;
   format)
     bunx biome format --error-on-warnings --write "$TS_DIR" && ok "biome format" || { fail "biome format"; FAILED=1; }
+    ;;
+esac
+
+# ── Rust ──────────────────────────────────────────────────────────────────
+section "Rust ($MODE)"
+
+case "$MODE" in
+  check)
+    (cd "$ZOO_DIR" && cargo clippy --fix --allow-dirty --allow-staged -- -D warnings) && ok "cargo clippy" || { fail "cargo clippy"; FAILED=1; }
+    (cd "$ZOO_DIR" && cargo fmt)                                                    && ok "cargo fmt"    || { fail "cargo fmt"; FAILED=1; }
+    ;;
+  lint)
+    (cd "$ZOO_DIR" && cargo clippy -- -D warnings) && ok "cargo clippy" || { fail "cargo clippy"; FAILED=1; }
+    (cd "$ZOO_DIR" && cargo fmt --check)            && ok "cargo fmt"    || { fail "cargo fmt"; FAILED=1; }
+    ;;
+  format)
+    (cd "$ZOO_DIR" && cargo fmt) && ok "cargo fmt" || { fail "cargo fmt"; FAILED=1; }
     ;;
 esac
 

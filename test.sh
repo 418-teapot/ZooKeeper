@@ -37,6 +37,76 @@ else
   FAILED=1
 fi
 
+section "Rust workspace tests"
+if cargo test --manifest-path tools/Cargo.toml --workspace -- --test-threads=1 2>&1; then
+  ok "cargo test --workspace"
+else
+  fail "cargo test --workspace"
+  FAILED=1
+fi
+
+# Coverage requires llvm-tools-preview (rustup component add llvm-tools-preview).
+if rustup component list 2>/dev/null | grep -q 'llvm-tools-preview.*installed'; then
+  section "Rust coverage"
+  COV_OUTPUT=$(cargo llvm-cov --manifest-path tools/Cargo.toml --workspace --summary-only -- --test-threads=1 2>&1) || true
+
+  if echo "$COV_OUTPUT" | grep -q "llvm-tools"; then
+    echo ""
+    echo "⏭️  llvm-tools not installed, skip Rust coverage"
+    echo "   Install: rustup component add llvm-tools-preview"
+  else
+    echo "$COV_OUTPUT"
+
+    # Aggregate coverage across all source files under a crate prefix.
+    crate_cov() {
+      # Sum Lines (col 8) and Missed Lines (col 9) across all files matching prefix.
+      echo "$COV_OUTPUT" | awk -v prefix="$1" '
+        $1 ~ prefix {
+          lines += $8
+          missed += $9
+        }
+        END {
+          if (lines > 0)
+            printf "%.2f", (lines - missed) / lines * 100
+          else
+            print "0"
+        }'
+    }
+
+    COV_ZUTIL=$(crate_cov 'zutil/src/')
+    COV_ZLOG=$(crate_cov 'zlog/src/')
+    COV_ZFIND=$(crate_cov 'zfind/src/')
+    COV_TOTAL=$(echo "$COV_OUTPUT" | awk '/^TOTAL/ {print $10}' | tr -d '%')
+
+    check_cov() {
+      local name="$1" cov="$2" thr="$3"
+      if [ -z "$cov" ]; then
+        fail "$name coverage (could not parse)"
+        return 1
+      elif ! [[ "$cov" =~ ^[0-9.]+$ ]]; then
+        fail "$name coverage (invalid format: $cov)"
+        return 1
+      elif awk -v c="$cov" -v t="$thr" 'BEGIN{exit (c < t)}'; then
+        ok "$name ${cov}% (≥ ${thr}%)"
+      else
+        fail "$name ${cov}% < ${thr}% threshold"
+        return 1
+      fi
+    }
+
+    # Thresholds: zutil pure functions, zlog jq + integration, zfind db.rs (core logic);
+    # display.rs/main.rs are 0% by design (stdout rendering / CLI dispatch).
+    check_cov "zutil"  "$COV_ZUTIL" 70 || FAILED=1
+    check_cov "zlog"   "$COV_ZLOG"  50 || FAILED=1
+    check_cov "zfind"  "$COV_ZFIND" 45 || FAILED=1  # aggregate of 4 modules
+    check_cov "total"  "$COV_TOTAL" 50 || true
+  fi
+else
+  echo ""
+  echo "⏭️  llvm-tools-preview not installed, skip Rust coverage"
+  echo "   Install: rustup component add llvm-tools-preview"
+fi
+
 # Temporarily skip dry-run tests (behavioral assertions depend on LLM model
 # adherence to prompt-injected delegation instructions).
 # Set SKIP_DRY_RUN=0 to re-enable.

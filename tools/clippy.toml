@@ -1,0 +1,2 @@
+# Clippy configuration for ZooKeeper Rust tools.
+cognitive-complexity-threshold = 25

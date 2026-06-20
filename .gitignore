@@ -19,6 +19,9 @@ tests/results/
 # ——— Environment ———
 .env
 
+# ——— Rust ———
+tools/target/
+
 # ——— OS & editors ———
 .DS_Store
 *~

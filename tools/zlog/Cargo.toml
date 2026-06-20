@@ -1,0 +1,10 @@
+[package]
+name = "zlog"
+version = "0.1.0"
+edition = "2024"
+description = "ZooKeeper log filter — real-time JSON log viewer"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+ctrlc = "3"
+zutil = { path = "../zutil" }
