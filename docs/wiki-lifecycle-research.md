@@ -15,8 +15,9 @@
 5. [设计二：数据检索](#5-设计二数据检索)
 6. [设计三：自动化策略](#6-设计三自动化策略)
 7. [设计四：工具统一 — zwiki CLI](#7-设计四工具统一--zwiki-cli)
-8. [实施路线图](#8-实施路线图)
-9. [总结](#9-总结)
+8. [设计五：大规模摄入与增量同步](#8-设计五大规模摄入与增量同步)
+9. [实施路线图](#9-实施路线图)
+10. [总结](#10-总结)
 
 ---
 
@@ -534,9 +535,141 @@ zwiki (CLI 入口，argparse)
 
 ---
 
-## 8. 实施路线图
+## 8. 设计五：大规模摄入与增量同步
 
-### 8.0 P0-pre：OKF 字段对齐 + zwiki 骨架（纯机械，零 LLM 成本）
+核心问题：**当前 wiki-ingest 假设源材料能一次性塞进 kiwi 的上下文。面对 50 个模块、8 万行代码的仓库，单次 ingest 直接撑爆。且仓库每周有 15% 的模块变更——反复全量重蒸馏不可行。正确的做法是分而治之的蒸馏流水线 + 增量同步机制。**
+
+### 8.1 当前局限
+
+现有 ingest 流程（wiki-design.md §5/§7）针对的是单篇文章、设计文档、讨论记录——
+源材料大小在 LLM 上下文窗口内。对于大型代码仓库，kiwi 面临两个问题：
+
+1. **首次摄入：** 8 万行代码远超上下文限制。不可能一次性读完再蒸馏。
+2. **持续同步：** 仓库每周变更后，无法判断哪些 wiki 页面受影响、哪些需要重蒸馏。
+
+### 8.2 首次摄入：四阶段分块蒸馏
+
+不是"切成小块分别 ingest"（会产生一堆孤立概念页），而是有层次地蒸馏：
+
+```
+Phase 1: 结构扫描（确定性，零 LLM）
+  输入：仓库文件系统
+  工具：目录遍历 + AST 解析 import 图
+  产出：结构化摘要表——每个模块一行，含路径/文件大小/import 列表/注释密度/被引用关系
+        （几百行，不是 8 万行代码）
+
+Phase 2: 内容地图（1 次 LLM 调用）
+  输入：Phase 1 的结构化摘要表（~500 行）
+  kiwi 判断：
+    ✓ 模块分类：核心模块（单独成页）/ 支撑模块（合并）/ 工具模块（跳过）
+    ✓ 块划分方案：auth+crypto → 块 1，db+config → 块 2，api+gateway → 块 3
+    ✓ 块间关系：块 1 依赖块 2，块 3 依赖块 1
+  产出：内容地图
+
+Phase 3: 分块蒸馏（N 次 LLM 调用，可并行）
+  输入：每个块内的完整源码（~600 行/块，远低于上下文限制）
+  每个 kiwi 只看自己的块，产出：
+    ✓ entities/auth-middleware.md、concepts/token-lifecycle.md 等概念/实体页
+    ✓ 跨块引用声明："token-lifecycle 与块 2 的 db-pool 相关"
+        （声明是单向的、轻量的——kiwi 不需要知道其他块的具体内容）
+  各块独立蒸馏，可并行执行，互不依赖
+
+Phase 4: 综合编织（1 次 LLM 调用）
+  输入：Phase 2 的内容地图 + Phase 3 所有产出（页面 frontmatter + 摘要 + 声明）
+  kiwi 全局视角：
+    ✓ 匹配声明 → 建立准确的 related 交叉引用
+    ✓ 检测未被引用的页面 → 补充正文链接
+    ✓ 生成 overview.md + 更新 index.md + log.md
+  相当于把 Phase 3 独立蒸馏的碎片"缝"成一本完整的书
+```
+
+**关键设计决策：**
+
+- Phase 1 的结构扫描是纯确定性的——目录遍历 + AST 解析 import 图，零 LLM 成本。借鉴 oh-my-opencode-slim 的 [codemap](https://github.com/user/oh-my-opencode-slim) 模式：确定性脚本做文件发现 + 哈希，LLM 只做语义填充。
+- Phase 2 的块划分由 Phase 1 的摘要表驱动——不是机械地每 5000 行一切，而是根据模块的"独立成页价值"和自然耦合关系划分。
+- Phase 3 的并行性来自块之间的独立性——各块共享的是"声明"而非"内容"，不需要互相等待。
+- Phase 4 不重新写内容——只补充关系。跨块引用在 Phase 3 各块独立蒸馏时无法建立，Phase 4 统一缝合。
+
+### 8.3 每周增量：六步同步
+
+仓库每周变更 ~15% 的模块。不是全量重蒸馏——增量同步分六个步骤：
+
+```
+Step A: 哈希扫描（确定性，零 LLM）
+  输入：仓库当前状态 + 上次 codemap 快照（文件 MD5 哈希）
+  输出：{changed: [auth/middleware.go, db/pool.go, api/handler.go],
+         unchanged: [...47 个模块...]}
+  所有 unchanged 模块的 wiki 页面完全不受影响——跳过。
+
+Step B: 变更量判断（确定性）
+  middleware.go: +30 / 540 = 5.5%   → < 10%，走差分蒸馏（Step D）
+  pool.go:       -5 / 200 = 2.5%    → < 10%，走差分蒸馏（Step D）
+  handler.go:    +200 / 350 = 57%   → > 50%，走全量重蒸馏（Step E）
+  阈值 10%/50% 是经验值，实际由 Phase 2 产出的模块知识决定——
+  注释密度高、稳定的模块阈值可以放宽。
+
+Step C: 概念依赖追踪（确定性 + 1 次 LLM 补充）
+  查 state.json：middleware.go → 提取了 concept "token-lifecycle" 和 entity "auth-middleware"
+  查 backlinks：concepts/token-lifecycle.md 被 3 个页面引用 →
+    analysis/auth-vs-oauth.md    → 标记 needs_review
+    concepts/token-lifecycle.md  → 标记 needs_review（自身来源变更）
+    overview.md                  → 标记 needs_review
+  对所有 changed 模块重复此过程。
+  不自动改任何东西——只标记。确切的引用性质判断（"基于 A 的结论做推理"
+  vs "介绍 A 本身"）确需 LLM 判断，后续由 zwiki check 报告引导人工审查。
+
+Step D: 差分蒸馏（小变更，LLM 调用）
+  输入：源文件 diff + 旧版本摘要（上次蒸馏时的状态）
+  kiwi 回答三个问题，返回增量操作列表：
+    1. 这些变更是否改变了模块的核心职责？（是 → 需要重写 Overview）
+    2. 这些变更是否引入了新概念或废弃旧概念？（是 → 需要增删 concept 页）
+    3. 这些变更是否改变了模块间关系？（是 → 需要更新交叉引用）
+  输出不是完整页面，而是增量操作：
+    - page: entities/auth-middleware.md
+      section: "## Details / Token 验证"
+      action: append_after
+      suggested_content: "### Refresh Token 轮换\n当 access token 过期时..."
+
+Step E: 全量重蒸馏（大变更，LLM 调用）
+  变更量 > 50% 的模块走回 Phase 3 完整蒸馏流程——
+  生成新页面覆盖旧页面，保留 ## Notes 等人工维护节。
+
+Step F: 报告
+  zwiki sync 完成：
+    扫描：50 个模块，3 个变更
+    蒸馏：2 个差分，1 个全量
+    标记：8 个页面 needs_review
+    跳过：47 个模块未变
+  建议执行 zwiki check 审查标记页面。
+```
+
+### 8.4 与现有机制的衔接
+
+| 概念 | 连接点 |
+|------|--------|
+| Step A 哈希扫描 | 复用 codemap 风格的文件发现 + MD5 快照脚本 |
+| Step C 依赖追踪 | 复用路图 P1 的 `check_cascade_stale`（backlinks 反向查引用者） |
+| Step D 差分蒸馏 | kiwi 新增模式：输入从"完整源码"扩展为"diff + 旧摘要" |
+| Phase 2 内容地图 | kiwi 新增模式：输入从"原始材料"扩展为"结构化摘要表" |
+| 全流程门控 | 每阶段输出被审查后才进入下一阶段（借鉴 slim `deepwork` 的 plan → review → delegate → verify） |
+| Phase 1 结构扫描 | 借鉴 oh-my-opencode-slim 的 codemap：确定性文件发现 + LLM 填充分离 |
+
+### 8.5 本节的取舍
+
+| 做什么 | 不做什么 |
+|--------|---------|
+| ✅ 四阶段分块蒸馏（首次） | ❌ 机械切片——每 5000 行一切 |
+| ✅ 六步增量同步（持续） | ❌ 每次变更全量重蒸馏 |
+| ✅ 概念依赖追踪 → 标记 needs_review | ❌ 自动重蒸馏标记页面 |
+| ✅ 差分蒸馏（小变更） | ❌ LLM 自动裁决变更影响（只生成增量操作列表，不自动应用） |
+| ✅ 哈希快照驱动增量检测 | ❌ 引入外部 CI 系统依赖 |
+| ✅ kiwi 两种新模式（摘要表蒸馏 + 差分蒸馏） | ❌ 新建独立 agent（kiwi 扩展即可） |
+
+---
+
+## 9. 实施路线图
+
+### 9.0 P0-pre：OKF 字段对齐 + zwiki 骨架（纯机械，零 LLM 成本）
 
 **目标：wiki 格式与 OKF v0.1 合规对齐；建立统一的 zwiki CLI 入口。**
 
@@ -550,7 +683,7 @@ zwiki (CLI 入口，argparse)
 | 0f | zwiki CLI 骨架：统一入口 argparse，挂载 check/page/property/create/backlinks/log 子命令 | 新增 zwiki（薄路由，~100 行） | ~100 行 |
 | 0g | `zwiki property`：结构化读/写/删 frontmatter 属性（新增 `_property.py`） | 新增 _property.py + shared/utils.py | ~80 行 |
 
-### 8.1 P0：地基（纯机械，零 LLM 成本）
+### 9.1 P0：地基（纯机械，零 LLM 成本）
 
 **目标：让 wiki 知道哪些页面过时了，查询时自动感知。**
 
@@ -566,7 +699,7 @@ zwiki (CLI 入口，argparse)
 | 8 | `zwiki search`：三阶段级联检索 CLI 化 | 新增 _search.py | ~50 行 |
 | 9 | `zwiki okf check`：OKF 合规自检 | 新增 _okf.py | ~40 行 |
 
-### 8.2 P1：半自动机制（LLM 辅助，但调用量极小）
+### 9.2 P1：半自动机制（LLM 辅助，但调用量极小）
 
 **目标：supersede 声明 + 矛盾发现。**
 
@@ -579,7 +712,7 @@ zwiki (CLI 入口，argparse)
 | 11 | `zwiki move`：重命名 + 自动更新所有引用链接 | 新增 _move.py | ~100 行 |
 | 12 | `zwiki ingest --idempotent`：源身份匹配 + SHA-256 跳过 | 修改现有 ingest 路径 | ~60 行 |
 
-### 8.3 P2：验证体系
+### 9.3 P2：验证体系
 
 **目标：不只检测过期，还能验证不过期。**
 
@@ -588,18 +721,23 @@ zwiki (CLI 入口，argparse)
 | 13 | 交叉验证：ingest 新源时自动比对已有声明，一致则刷新 `last_validated` | lint.py | ~100 行 |
 | 14 | 来源回溯验证：source ↔ 衍生页面一致性比对 | 新增脚本 | ~120 行 |
 
-### 8.4 P3：全自动维护
+### 9.4 P3：全自动维护 + 大规模摄入
 
 | # | 改动 | 文件 | 工作量 |
 |---|------|------|--------|
 | 15 | pre-query 自动 lint 注入（> 7 天触发） | wiki-query SKILL.md | ~15 行 |
 | 16 | `zwiki check --ci`：阈值 YAML → exit code CI gating | 修改 _check.py | ~30 行 |
+| 17 | 结构扫描脚本：目录遍历 + import 图解析 → 结构化摘要表（Phase 1，纯确定性） | 新增 _structure_scan.py | ~150 行 |
+| 18 | 哈希快照脚本：文件 MD5 快照 + 增量变更检测（Step A，codemap 风格） | 新增 _hash_snapshot.py | ~80 行 |
+| 19 | kiwi 摘要表蒸馏模式：读摘要表 → 模块分类 + 块划分（Phase 2） | kiwi SKILL.md | ~40 行 |
+| 20 | kiwi 差分蒸馏模式：读 diff + 旧摘要 → 增量操作列表（Step D） | kiwi SKILL.md | ~40 行 |
+| 21 | `zwiki sync`：六步增量同步流程（Step A-F，编排层） | 新增 _sync.py | ~200 行 |
 
 ---
 
-## 9. 总结
+## 10. 总结
 
-这份调研围绕五个问题展开：**wiki 里哪些知识过时了？找不到怎么办？谁来记得做维护？格式是否应该对齐外部标准？工具散落怎么统一？**
+这份调研围绕六个问题展开：**wiki 里哪些知识过时了？找不到怎么办？谁来记得做维护？格式是否应该对齐外部标准？工具散落怎么统一？超大仓库怎么摄入和同步？**
 
 答案分别是：
 
@@ -609,11 +747,13 @@ zwiki (CLI 入口，argparse)
 
 3. **自动化策略** — 画一条清晰的线：确定性计算的全自动（`--apply`/`--fix`），语义判断的半自动（LLM 提议 + 人确认），裁决类的人工。不做事件驱动全自动，不信任 LLM 当裁判。
 
-4. **OKF 格式对齐** — 我们的 wiki 已经是 OKF v0.1 的超集合规格式。四个字段重命名/新增、一个冗余字段删除，改动约 100 行。OKF 的知识图谱和自动索引再生模式为远期路图提供了参考。
+4. **OKF 格式对齐** — 我们的 wiki 已经是 OKF v0.1 的超集合规格式。四个字段重命名/新增、一个冗余字段删除，改动约 100 行。
 
-5. **工具统一** — 六个散落脚本 + 多个新增能力整合为 `zwiki` 统一 CLI。借鉴 Obsidian CLI（`property:set`、`deadends`、`move`）和 llm-wiki-compiler（idempotent ingest、eval CI gating）的设计，薄路由层包装现有模块逻辑。
+5. **工具统一** — 六个散落脚本 + 多个新增能力整合为 `zwiki` 统一 CLI。借鉴 Obsidian CLI 和 llm-wiki-compiler 的设计，薄路由层包装现有模块逻辑。
 
-这五个方向共用一个地基——P0-pre + P0 共 16 项改动约 600 行代码，纯机械，零 LLM 成本，可以立即实施。P1-P3 逐步引入 LLM 辅助和自动化，但始终保持**机械活自动、判断活留人**的分界线。
+6. **大规模摄入与增量同步** — 首次摄入用四阶段分块蒸馏（扫描→地图→分块编织→综合缝合），每周增量用六步同步（哈希→分大小→依赖追踪→差分或全量→报告）。借鉴 oh-my-opencode-slim 的 codemap 确定性扫描模式，kiwi 新增摘要表蒸馏和差分蒸馏两种能力。始终不自动应用 LLM 的修改——只标记，等审查。
+
+这六个方向共用一个地基——P0-pre + P0 共 16 项改动约 600 行代码，纯机械，零 LLM 成本，可以立即实施。P1-P3 逐步引入 LLM 辅助和自动化，最终形成 21 步的完整路图，始终保持**机械活自动、判断活留人**的分界线。
 
 ---
 
@@ -632,3 +772,4 @@ zwiki (CLI 入口，argparse)
 - Obsidian CLI: `https://help.obsidian.md/cli`
 - notesmd-cli: `https://github.com/Yakitrak/notesmd-cli`
 - llm-wiki-compiler: `https://github.com/atomicstrata/llm-wiki-compiler`
+- oh-my-opencode-slim (codemap): `https://github.com/user/oh-my-opencode-slim`
