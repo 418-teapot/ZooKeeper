@@ -129,7 +129,14 @@ fn cmd_stats(
 
     // Multi-session mode
     if let Some(n) = sessions_n {
-        let sessions = db::query_recent_sessions(n, &args.db, all);
+        let sessions = match db::query_recent_sessions(n, &args.db, all) {
+            Ok(s) => s,
+            Err(e) => {
+                let msg = format!("[red]Database query failed: {e}[/red]");
+                msg_print(&msg);
+                return;
+            }
+        };
         if sessions.is_empty() {
             msg_print("[yellow]No sessions found in database.[/yellow]");
             return;
@@ -291,8 +298,18 @@ fn cmd_impact(
         let path = helpers::resolve_session(sid, &log_dir);
         session_ids.push(helpers::session_id_from_path(&path));
     } else {
-        let sessions =
-            db::query_recent_sessions(sessions_n, &args.db, include_all);
+        let sessions = match db::query_recent_sessions(
+            sessions_n,
+            &args.db,
+            include_all,
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                let msg = format!("[red]Database query failed: {e}[/red]");
+                msg_print(&msg);
+                return;
+            }
+        };
         if sessions.is_empty() {
             msg_print("[yellow]No sessions found in database.[/yellow]");
             return;
@@ -758,7 +775,7 @@ mod tests {
 
     #[test]
     fn test_args_stats_with_session_id() {
-        let args = Args::try_parse_from(&["zinspect", "stats", "ses-001"])
+        let args = Args::try_parse_from(["zinspect", "stats", "ses-001"])
             .expect("stats with session should parse");
         assert!(args.command.is_some());
         if let Some(Command::Stats {
@@ -779,7 +796,7 @@ mod tests {
     #[test]
     fn test_args_stats_with_sessions() {
         let args =
-            Args::try_parse_from(&["zinspect", "stats", "--sessions", "5"])
+            Args::try_parse_from(["zinspect", "stats", "--sessions", "5"])
                 .expect("stats with --sessions should parse");
         if let Some(Command::Stats { session_id: _, sessions, .. }) =
             &args.command
@@ -792,7 +809,7 @@ mod tests {
 
     #[test]
     fn test_args_stats_with_flags() {
-        let args = Args::try_parse_from(&[
+        let args = Args::try_parse_from([
             "zinspect", "stats", "ses-001", "--tokens", "--hooks",
         ])
         .expect("stats with --tokens --hooks should parse");
@@ -806,7 +823,7 @@ mod tests {
 
     #[test]
     fn test_args_timeline() {
-        let args = Args::try_parse_from(&["zinspect", "timeline", "ses-001"])
+        let args = Args::try_parse_from(["zinspect", "timeline", "ses-001"])
             .expect("timeline should parse");
         if let Some(Command::Timeline { session_id, all_events }) =
             &args.command
@@ -820,7 +837,7 @@ mod tests {
 
     #[test]
     fn test_args_timeline_with_all() {
-        let args = Args::try_parse_from(&[
+        let args = Args::try_parse_from([
             "zinspect",
             "timeline",
             "ses-001",
@@ -839,7 +856,7 @@ mod tests {
 
     #[test]
     fn test_args_impact_default() {
-        let args = Args::try_parse_from(&["zinspect", "impact"])
+        let args = Args::try_parse_from(["zinspect", "impact"])
             .expect("impact should parse");
         if let Some(Command::Impact {
             sessions,
@@ -862,7 +879,7 @@ mod tests {
 
     #[test]
     fn test_args_impact_with_options() {
-        let args = Args::try_parse_from(&[
+        let args = Args::try_parse_from([
             "zinspect",
             "impact",
             "--sessions",
@@ -897,14 +914,14 @@ mod tests {
     #[test]
     fn test_args_global_json() {
         let args =
-            Args::try_parse_from(&["zinspect", "--json", "stats", "ses-001"])
+            Args::try_parse_from(["zinspect", "--json", "stats", "ses-001"])
                 .expect("--json should parse");
         assert!(args.json);
     }
 
     #[test]
     fn test_args_global_no_color() {
-        let args = Args::try_parse_from(&[
+        let args = Args::try_parse_from([
             "zinspect",
             "--no-color",
             "stats",
@@ -916,28 +933,28 @@ mod tests {
 
     #[test]
     fn test_args_help_shows_help() {
-        let err = Args::try_parse_from(&["zinspect", "--help"])
+        let err = Args::try_parse_from(["zinspect", "--help"])
             .expect_err("--help should produce error");
         assert_eq!(err.kind(), ErrorKind::DisplayHelp);
     }
 
     #[test]
     fn test_args_stats_help_shows_help() {
-        let err = Args::try_parse_from(&["zinspect", "stats", "--help"])
+        let err = Args::try_parse_from(["zinspect", "stats", "--help"])
             .expect_err("stats --help should produce error");
         assert_eq!(err.kind(), ErrorKind::DisplayHelp);
     }
 
     #[test]
     fn test_args_timeline_help_shows_help() {
-        let err = Args::try_parse_from(&["zinspect", "timeline", "--help"])
+        let err = Args::try_parse_from(["zinspect", "timeline", "--help"])
             .expect_err("timeline --help should produce error");
         assert_eq!(err.kind(), ErrorKind::DisplayHelp);
     }
 
     #[test]
     fn test_args_impact_help_shows_help() {
-        let err = Args::try_parse_from(&["zinspect", "impact", "--help"])
+        let err = Args::try_parse_from(["zinspect", "impact", "--help"])
             .expect_err("impact --help should produce error");
         assert_eq!(err.kind(), ErrorKind::DisplayHelp);
     }

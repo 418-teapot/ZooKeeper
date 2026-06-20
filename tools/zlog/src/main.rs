@@ -502,7 +502,7 @@ mod tests {
     use std::fs;
     use std::process::{Command, Stdio};
 
-    /// Create a temporary JSONL log file with sample ZooKeeper log
+    /// Create a temporary JSONL log file with sample `ZooKeeper` log
     /// entries. Returns the file path.
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -531,8 +531,7 @@ mod tests {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+            .is_ok_and(|s| s.success())
     }
 
     #[test]

@@ -191,6 +191,9 @@ pub fn truncate_chars(s: &str, max_chars: usize) -> String {
     format!("{truncated}...")
 }
 
+#[cfg(feature = "db-helpers")]
+pub mod test_db;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,8 +204,8 @@ mod tests {
         assert_eq!(format_number(1), "1");
         assert_eq!(format_number(123), "123");
         assert_eq!(format_number(1234), "1,234");
-        assert_eq!(format_number(1234567), "1,234,567");
-        assert_eq!(format_number(1000000), "1,000,000");
+        assert_eq!(format_number(1_234_567), "1,234,567");
+        assert_eq!(format_number(1_000_000), "1,000,000");
     }
 
     #[test]

@@ -1360,7 +1360,7 @@ mod tests {
 
     // ── build_json roundtrip (verify output is valid JSON) ─────────────────
 
-    /// Verify that the build_json functions produce values that serialize to
+    /// Verify that the `build_json` functions produce values that serialize to
     /// valid JSON (same output the print functions would produce).
     #[test]
     fn test_build_json_token_summary_roundtrip() {

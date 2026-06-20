@@ -313,6 +313,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn test_cache_hit_rate() {
         assert!((cache_hit_rate(30.0, 100.0) - 23.076).abs() < 0.01);
         assert_eq!(cache_hit_rate(0.0, 0.0), 0.0);

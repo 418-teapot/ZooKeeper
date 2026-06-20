@@ -83,7 +83,11 @@ struct Args {
 
 fn cmd_keyword(args: &Args) {
     let kw = args.keyword.as_ref().unwrap_or_else(|| unreachable!());
-    let results = query_sessions(kw, &args.db, args.session_list_limit);
+    let results = query_sessions(kw, &args.db, args.session_list_limit)
+        .unwrap_or_else(|e| {
+            eprintln!("Error: database query failed: {e}");
+            std::process::exit(1);
+        });
 
     if results.is_empty() {
         eprintln!(
@@ -101,7 +105,11 @@ fn cmd_keyword(args: &Args) {
 }
 
 fn cmd_all(args: &Args) {
-    let results = query_sessions_all(&args.db, args.session_list_limit);
+    let results = query_sessions_all(&args.db, args.session_list_limit)
+        .unwrap_or_else(|e| {
+            eprintln!("Error: database query failed: {e}");
+            std::process::exit(1);
+        });
 
     if results.is_empty() {
         eprintln!("Error: no sessions found in database.");
@@ -118,7 +126,11 @@ fn cmd_all(args: &Args) {
 fn cmd_exact(args: &Args) {
     let title = args.exact.as_ref().unwrap_or_else(|| unreachable!());
     let results =
-        query_sessions_exact(title, &args.db, args.session_list_limit);
+        query_sessions_exact(title, &args.db, args.session_list_limit)
+            .unwrap_or_else(|e| {
+                eprintln!("Error: database query failed: {e}");
+                std::process::exit(1);
+            });
 
     if results.is_empty() {
         eprintln!("Error: no session found with exact title \"{title}\"");

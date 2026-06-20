@@ -4,81 +4,43 @@ use std::collections::HashMap;
 use rusqlite::{Connection, params};
 use serde_json::{Map, Value};
 
-use zutil::db_helpers::{SESSION_COLS, open_db, row_to_session_value};
+use zutil::db_helpers::{open_db, query_sessions_where};
 use zutil::{epoch_ms_to_iso, safe_json_loads};
 
 pub fn query_sessions(
     keyword: &str,
     db_path: &str,
     limit: usize,
-) -> Vec<Value> {
-    let Some(conn) = open_db(db_path) else {
-        return vec![];
-    };
-
-    let sql = format!(
-        "SELECT {SESSION_COLS} FROM session \
-         WHERE parent_id IS NULL AND title LIKE ? \
-         ORDER BY time_updated DESC LIMIT ?"
-    );
-
+) -> Result<Vec<Value>, rusqlite::Error> {
     let pattern = format!("%{keyword}%");
-    let mut stmt = conn.prepare(&sql).expect("SQL prepare failed");
-    let rows = stmt
-        .query_map(
-            params![pattern, i64::try_from(limit).unwrap_or(i64::MAX)],
-            |row| Ok(row_to_session_value(row)),
-        )
-        .expect("SQL query failed");
-
-    rows.filter_map(std::result::Result::ok).collect()
+    query_sessions_where(
+        db_path,
+        "WHERE parent_id IS NULL AND title LIKE ? ORDER BY time_updated DESC LIMIT ?",
+        rusqlite::params![pattern, i64::try_from(limit).unwrap_or(i64::MAX)],
+    )
 }
 
-pub fn query_sessions_all(db_path: &str, limit: usize) -> Vec<Value> {
-    let Some(conn) = open_db(db_path) else {
-        return vec![];
-    };
-
-    let sql = format!(
-        "SELECT {SESSION_COLS} FROM session \
-         WHERE parent_id IS NULL \
-         ORDER BY time_updated DESC LIMIT ?"
-    );
-
-    let mut stmt = conn.prepare(&sql).expect("SQL prepare failed");
-    let rows = stmt
-        .query_map(params![i64::try_from(limit).unwrap_or(i64::MAX)], |row| {
-            Ok(row_to_session_value(row))
-        })
-        .expect("SQL query failed");
-
-    rows.filter_map(std::result::Result::ok).collect()
+pub fn query_sessions_all(
+    db_path: &str,
+    limit: usize,
+) -> Result<Vec<Value>, rusqlite::Error> {
+    query_sessions_where(
+        db_path,
+        "WHERE parent_id IS NULL ORDER BY time_updated DESC LIMIT ?",
+        rusqlite::params![i64::try_from(limit).unwrap_or(i64::MAX)],
+    )
 }
 
 pub fn query_sessions_exact(
     title: &str,
     db_path: &str,
     limit: usize,
-) -> Vec<Value> {
-    let Some(conn) = open_db(db_path) else {
-        return vec![];
-    };
-
-    let sql = format!(
-        "SELECT {SESSION_COLS} FROM session \
-         WHERE title = ? \
-         ORDER BY time_updated DESC LIMIT ?"
-    );
-
-    let mut stmt = conn.prepare(&sql).expect("SQL prepare failed");
-    let rows = stmt
-        .query_map(
-            params![title, i64::try_from(limit).unwrap_or(i64::MAX)],
-            |row| Ok(row_to_session_value(row)),
-        )
-        .expect("SQL query failed");
-
-    rows.filter_map(std::result::Result::ok).collect()
+) -> Result<Vec<Value>, rusqlite::Error> {
+    query_sessions_where(
+        db_path,
+        "WHERE title = ? ORDER BY time_updated DESC LIMIT ?",
+        rusqlite::params![title, i64::try_from(limit).unwrap_or(i64::MAX)],
+    )
 }
 
 #[allow(clippy::too_many_lines)]
@@ -380,11 +342,12 @@ mod tests {
     use serde_json::json;
     use std::fs;
     use std::sync::Mutex;
+    use zutil::test_db::{create_common_tables, insert_session_fixtures};
 
     /// Mutex to serialize DB-creating tests (all use the same temp file name).
     static DB_MUTEX: Mutex<()> = Mutex::new(());
 
-    /// Create a temporary SQLite database with test tables and sample data.
+    /// Create a temporary `SQLite` database with test tables and sample data.
     /// Returns the file path. Caller should delete it after the test.
     fn create_test_db() -> String {
         let dir = std::env::temp_dir();
@@ -394,74 +357,19 @@ mod tests {
         let conn = Connection::open(&path).expect("open test db");
 
         // Create tables
+        create_common_tables(&conn);
         conn.execute_batch(
-            "CREATE TABLE session (
-                id TEXT PRIMARY KEY,
-                parent_id TEXT,
-                title TEXT,
-                slug TEXT,
-                agent TEXT,
-                directory TEXT,
-                model TEXT,
-                time_created INTEGER,
-                time_updated INTEGER,
-                cost REAL,
-                tokens_input REAL,
-                tokens_output REAL,
-                tokens_reasoning REAL,
-                tokens_cache_read REAL,
-                tokens_cache_write REAL
-            );
-            CREATE TABLE message (
-                id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                time_created INTEGER,
-                data TEXT
-            );
-            CREATE TABLE part (
+            "CREATE TABLE part (
                 message_id TEXT NOT NULL,
                 session_id TEXT NOT NULL,
                 time_created INTEGER,
                 data TEXT
             );",
         )
-        .expect("create test tables");
+        .expect("create part table");
 
         // Insert sessions
-        let model_json = r#"{"name":"deepseek-v4"}"#;
-        conn.execute(
-            "INSERT INTO session VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
-            rusqlite::params![
-                "ses-001", Option::<&str>::None, "auth middleware debug",
-                "auth-middleware-debug", "general", "/app",
-                model_json,
-                1715000000000_i64, 1715000100000_i64,
-                0.012, 500.0, 300.0, 0.0, 0.0, 0.0,
-            ],
-        ).expect("insert ses-001");
-
-        conn.execute(
-            "INSERT INTO session VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
-            rusqlite::params![
-                "ses-002", Option::<&str>::None, "DB migration from v2 to v3",
-                "db-migration-v2-v3", "explore", "/db",
-                model_json,
-                1715000200000_i64, 1715000300000_i64,
-                0.008, 200.0, 100.0, 50.0, 0.0, 0.0,
-            ],
-        ).expect("insert ses-002");
-
-        // Child session (parent_id not null — excluded from root queries)
-        conn.execute(
-            "INSERT INTO session VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
-            rusqlite::params![
-                "ses-003", "ses-001", "auth retry",
-                "auth-retry", "general", "/app",
-                model_json,
-                1715000400000_i64, 1715000500000_i64,
-                0.004, 100.0, 50.0, 0.0, 0.0, 0.0,
-            ],
-        ).expect("insert ses-003");
+        insert_session_fixtures(&conn);
 
         // Messages and parts
         conn.execute(
@@ -469,7 +377,7 @@ mod tests {
             rusqlite::params![
                 "msg-001",
                 "ses-001",
-                1715000010000_i64,
+                1_715_000_010_000_i64,
                 r#"{"role":"user","agent":"general","tokens":null}"#,
             ],
         )
@@ -480,7 +388,7 @@ mod tests {
             rusqlite::params![
                 "msg-002",
                 "ses-001",
-                1715000020000_i64,
+                1_715_000_020_000_i64,
                 r#"{"role":"assistant","agent":"general","tokens":null}"#,
             ],
         )
@@ -491,7 +399,7 @@ mod tests {
             rusqlite::params![
                 "msg-003",
                 "ses-002",
-                1715000210000_i64,
+                1_715_000_210_000_i64,
                 r#"{"role":"user","agent":"explore","tokens":null}"#,
             ],
         )
@@ -502,7 +410,7 @@ mod tests {
             rusqlite::params![
                 "msg-004",
                 "ses-002",
-                1715000220000_i64,
+                1_715_000_220_000_i64,
                 r#"{"role":"assistant","agent":"explore","tokens":null}"#,
             ],
         )
@@ -514,7 +422,7 @@ mod tests {
             rusqlite::params![
                 "msg-001",
                 "ses-001",
-                1715000010000_i64,
+                1_715_000_010_000_i64,
                 r#"{"type":"text","text":"fix the auth middleware bug"}"#,
             ],
         )
@@ -526,7 +434,7 @@ mod tests {
             rusqlite::params![
                 "msg-002",
                 "ses-001",
-                1715000020000_i64,
+                1_715_000_020_000_i64,
                 r#"{"type":"reasoning","text":"I need to read the auth file"}"#,
             ],
         )
@@ -535,7 +443,7 @@ mod tests {
         conn.execute(
             "INSERT INTO part VALUES (?1,?2,?3,?4)",
             rusqlite::params![
-                "msg-002", "ses-001", 1715000021000_i64,
+                "msg-002", "ses-001", 1_715_000_021_000_i64,
                 r#"{"type":"tool","tool":"read","state":{"input":{"filePath":"src/auth.ts","limit":50}}}"#,
             ],
         ).expect("insert part tool msg-002");
@@ -546,7 +454,7 @@ mod tests {
             rusqlite::params![
                 "msg-003",
                 "ses-002",
-                1715000210000_i64,
+                1_715_000_210_000_i64,
                 r#"{"type":"text","text":"how does the migration work?"}"#,
             ],
         )
@@ -558,9 +466,10 @@ mod tests {
 
     #[test]
     fn test_query_sessions_all() {
-        let _lock = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock =
+            DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
-        let results = query_sessions_all(&db_path, 50);
+        let results = query_sessions_all(&db_path, 50).unwrap();
         // Should return 2 root sessions, ses-003 excluded (parent_id not null)
         assert_eq!(results.len(), 2, "expected 2 root sessions");
         // Most recent first
@@ -571,21 +480,22 @@ mod tests {
 
     #[test]
     fn test_query_sessions_keyword() {
-        let _lock = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock =
+            DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
 
         // Search for "auth" — should match ses-001
-        let results = query_sessions("auth", &db_path, 50);
+        let results = query_sessions("auth", &db_path, 50).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["id"], "ses-001");
 
         // Search for "migration" — should match ses-002
-        let results = query_sessions("migration", &db_path, 50);
+        let results = query_sessions("migration", &db_path, 50).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["id"], "ses-002");
 
         // Search for nothing — no match
-        let results = query_sessions("nonexistent", &db_path, 50);
+        let results = query_sessions("nonexistent", &db_path, 50).unwrap();
         assert_eq!(results.len(), 0);
 
         let _ = fs::remove_file(&db_path);
@@ -593,15 +503,18 @@ mod tests {
 
     #[test]
     fn test_query_sessions_exact() {
-        let _lock = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock =
+            DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
 
         let results =
-            query_sessions_exact("auth middleware debug", &db_path, 50);
+            query_sessions_exact("auth middleware debug", &db_path, 50)
+                .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["id"], "ses-001");
 
-        let results = query_sessions_exact("nonexistent title", &db_path, 50);
+        let results =
+            query_sessions_exact("nonexistent title", &db_path, 50).unwrap();
         assert_eq!(results.len(), 0);
 
         let _ = fs::remove_file(&db_path);
@@ -609,7 +522,8 @@ mod tests {
 
     #[test]
     fn test_query_message_by_ids() {
-        let _lock = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock =
+            DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
 
         let results =
@@ -636,7 +550,8 @@ mod tests {
 
     #[test]
     fn test_query_message_parts() {
-        let _lock = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock =
+            DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
 
         let results = query_message_parts("ses-001", &db_path);

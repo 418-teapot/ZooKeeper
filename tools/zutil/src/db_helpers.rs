@@ -77,6 +77,32 @@ pub fn row_to_session_value(row: &rusqlite::Row) -> Value {
     Value::Object(m)
 }
 
+/// Run a session query with the given WHERE/ORDER/LIMIT clause and parameters.
+///
+/// Constructs `SELECT {SESSION_COLS} FROM session {where_order}`,
+/// maps each row through `row_to_session_value`, and returns results.
+///
+/// The caller includes the full suffix starting from WHERE through LIMIT
+/// in `where_order`, e.g. `"WHERE parent_id IS NULL ORDER BY
+/// time_updated DESC LIMIT ?"`.
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the SQL query fails.
+pub fn query_sessions_where(
+    db_path: &str,
+    where_order: &str,
+    params: &[&dyn rusqlite::types::ToSql],
+) -> Result<Vec<Value>, rusqlite::Error> {
+    let Some(conn) = open_db(db_path) else {
+        return Ok(vec![]);
+    };
+    let sql = format!("SELECT {SESSION_COLS} FROM session {where_order}");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params, |row| Ok(row_to_session_value(row)))?;
+    rows.collect::<Result<Vec<_>, _>>()
+}
+
 /// Session table columns used in SELECT queries.
 ///
 /// Uses `*` to avoid drifting out of sync with the `OpenCode` session table

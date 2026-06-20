@@ -109,7 +109,7 @@ mod tests {
     static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
     fn acquire_lock() -> std::sync::MutexGuard<'static, ()> {
-        TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner())
+        TEST_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     #[test]

@@ -62,12 +62,12 @@ section "Rust ($MODE)"
 
 case "$MODE" in
   check)
-    (cd "$ZOO_DIR" && cargo clippy --fix --allow-dirty --allow-staged -- -D warnings) && ok "cargo clippy" || { fail "cargo clippy"; FAILED=1; }
-    (cd "$ZOO_DIR" && cargo fmt)                                                    && ok "cargo fmt"    || { fail "cargo fmt"; FAILED=1; }
+    (cd "$ZOO_DIR" && cargo clippy --all-targets --all-features --fix --allow-dirty --allow-staged -- -D warnings) && ok "cargo clippy" || { fail "cargo clippy"; FAILED=1; }
+    (cd "$ZOO_DIR" && cargo fmt)                                                                                    && ok "cargo fmt"    || { fail "cargo fmt"; FAILED=1; }
     ;;
   lint)
-    (cd "$ZOO_DIR" && cargo clippy -- -D warnings) && ok "cargo clippy" || { fail "cargo clippy"; FAILED=1; }
-    (cd "$ZOO_DIR" && cargo fmt --check)            && ok "cargo fmt"    || { fail "cargo fmt"; FAILED=1; }
+    (cd "$ZOO_DIR" && cargo clippy --all-targets --all-features -- -D warnings) && ok "cargo clippy" || { fail "cargo clippy"; FAILED=1; }
+    (cd "$ZOO_DIR" && cargo fmt --check)                                            && ok "cargo fmt"    || { fail "cargo fmt"; FAILED=1; }
     ;;
   format)
     (cd "$ZOO_DIR" && cargo fmt) && ok "cargo fmt" || { fail "cargo fmt"; FAILED=1; }
