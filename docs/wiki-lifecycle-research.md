@@ -10,11 +10,12 @@
 
 1. [问题陈述](#1-问题陈述)
 2. [外部参考：LLM Wiki v2 分析](#2-外部参考llm-wiki-v2-分析)
-3. [设计一：知识生命周期](#3-设计一知识生命周期)
-4. [设计二：数据检索](#4-设计二数据检索)
-5. [设计三：自动化策略](#5-设计三自动化策略)
-6. [实施路线图](#6-实施路线图)
-7. [总结](#7-总结)
+3. [外部参考：Open Knowledge Format (OKF)](#3-外部参考open-knowledge-format-okf)
+4. [设计一：知识生命周期](#4-设计一知识生命周期)
+5. [设计二：数据检索](#5-设计二数据检索)
+6. [设计三：自动化策略](#6-设计三自动化策略)
+7. [实施路线图](#7-实施路线图)
+8. [总结](#8-总结)
 
 ---
 
@@ -105,7 +106,119 @@ v2 的目标：自治的知识库
 
 ---
 
-## 3. 设计一：知识生命周期
+## 3. 外部参考：Open Knowledge Format (OKF)
+
+### 3.1 概述
+
+OKF 是 Google 提出的知识格式规范（[v0.1 草案](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)），
+目标是定义一种**人机可读、跨组织可交换**的知识表示。核心理念与我们完全一致——
+Markdown + YAML frontmatter + 目录树，零基础设施依赖。
+
+OKF 的极简设计：**`type` 是唯一必填字段**。推荐字段为 `title`、`description`、`resource`、`tags`、`timestamp`。
+保留文件名 `index.md`（目录导航）和 `log.md`（变更记录）。
+链接为 bundle-relative（`/path.md` 或 `./other.md`），broken link 不报错。
+
+### 3.2 与我们的关系：超集合规
+
+OKF v0.1 §9 的三个合规条件我们全部满足，且是超集：
+
+| 条件 | 我们 | 状态 |
+|------|------|------|
+| 每个非保留 `.md` 有可解析 YAML frontmatter | 6 个必填字段，更严格 | ✅ |
+| 每个 frontmatter 有非空 `type` | `type: concept\|entity\|source\|analysis\|synthesis` 枚举 | ✅ |
+| `index.md`/`log.md` 遵循规范 | 格式不同但语义等价 | ✅ |
+
+我们多出的字段（`status`、`related`、`sources` 复数、以及本报告设计的 `timeliness`/`last_validated`/`contradictions`）
+都是 OKF §4.1 明确允许的扩展——消费者保留未知字段，不拒绝未知 type 值。
+
+### 3.3 字段对齐
+
+对比后需要四个改动，删除一个冗余字段：
+
+| 操作 | 字段 | 理由 |
+|------|------|------|
+| 重命名 | `updated` → `timestamp` | OKF 对齐，"last meaningful change"。格式改为 ISO 8601 datetime（`YYYY-MM-DDTHH:mm:ssZ`，未知时间默认 `T00:00:00Z`） |
+| 重命名 | `source`（单数）→ `resource` | OKF 对齐（外部资产 URI）。同时修掉跟内部引用 `sources`（复数）的命名事故 |
+| 新增 | `description` | OKF 推荐，一句话摘要。可用于三阶段检索排序 |
+| 新增 | `okf_version: "0.1"` | 放 `wiki/index.md` frontmatter（OKF §11） |
+| 删除 | `created` | 全系统无消费者（lint/query/backlinks 全不读），跟 log.md 信息冗余 |
+
+**不动的字段：**
+
+| 字段 | 理由 |
+|------|------|
+| `sources`（复数） | 内部 wiki 引用列表，级联过期和交叉验证依赖它 |
+| `type` 枚举 | 五个值是 OKF type 的有效子集，放宽会破坏 health.py 校验 |
+| `related` | OKF 用正文链接实现，保留为扩展 |
+| `status` 及所有生命周期扩展 | OKF 允许任意扩展 |
+
+### 3.4 命名事故：`source` ≠ `sources`
+
+两个字段不是单复数关系，是两个独立概念恰好撞名：
+
+| 字段 | 实际语义 | 值类型 | 用于 |
+|------|---------|--------|------|
+| `source`（单数） → 改为 `resource` | 页面**描述的对象**（外部 URI） | `https://...` 或 `raw/xxx.md` | 仅 `type: source` |
+| `sources`（复数） → 不动 | 页面**引用的材料**（内部路径列表） | `sources/notes/xxx.md` 等 | `type: analysis` / `type: synthesis` |
+
+两个字段从不同时出现在同一页面上，所以一直未被发现。`source → resource` 一改正好修掉。
+
+### 3.5 目录结构：类型优先 vs 域优先
+
+OKF 允许 `index.md` 出现在任意层级，支持**渐进式披露**——agent 逐层深入，
+每层只面对少量条目。这天然倾向域优先结构，但我们当前是类型优先：
+
+```
+当前（类型优先）:           OKF 倾向（域优先）:
+wiki/                       wiki/
+├── concepts/ (15 页)       ├── index.md
+├── entities/ (3 页)        ├── autoresearch/
+├── analysis/ (6 页)        │   ├── index.md
+└── sources/ (3 页)         │   └── concepts/
+                             │       ├── index.md
+                             │       └── npc.md
+                             ├── wiki-system/
+                             │   ├── index.md
+                             │   └── concepts/
+                             │       └── wiki-health-check.md
+                             └── shared/
+                                 ├── npc.md
+                                 └── simplicity-criterion.md
+```
+
+跨领域共享概念（`npc.md`、`simplicity-criterion.md`）不是域优先的障碍——
+放在 `shared/` 下两边引用即可。域优先不要求概念归属单一域，只要求**索引结构以域为第一级路由**。
+
+当前 28 页一屏 index 够用。页数接近 50 时域拆分的收益会显现——每个子域 index 只有 5-10 个条目，
+agent 不需要扫完全部 50 条才知道有没有相关概念。
+
+### 3.6 单 bundle vs 多 bundle
+
+OKF 定义 bundle 为**链接隔离域**——bundle 内自由链接，跨 bundle 无链接语法。
+Google 的三个样例（ga4 / stackoverflow / crypto_bitcoin）就是三个独立 bundle，互不联通。
+
+我们是单 bundle——所有目录之间自由交叉引用。这符合 ZooKeeper 单项目、知识需要融合的场景，
+而非 OKF 多团队、各管各的场景。将来如果需要导出某个领域知识给外部系统（如打包 autoresearch
+知识发给另一个项目的 agent），域优先结构下直接打包子目录就是合法 OKF bundle。
+
+### 3.7 对 knowledge-catalog 仓库的考察
+
+OKF 规范所在的 [knowledge-catalog](https://github.com/GoogleCloudPlatform/knowledge-catalog)
+远不止一个格式文件。它是一整套元数据富化流水线：
+
+| 组件 | 语言 | 功能 | 对我们的可借鉴点 |
+|------|------|------|-----------------|
+| `okf/` enrichment-agent | Python | BQ 元数据 → OKF bundle，自动 index 再生，Cytoscape.js 图谱可视化 | 自动 index 再生模式（→ 路图 P3 `--fix`） |
+| `agents/enrichment/` | Python | 四种模式的表/文档/叠加/混合富化，支持 Drive/Confluence/SharePoint/GitHub | 评估框架的 9 项指标（`hallucination_free`、`absence_of_contradictions` 等 → 矛盾检测验收标准） |
+| `agents/conversation_learner/` | Python | 从 Cloud Logging 分析对话，LLM-as-judge 发现知识缺口 → 生成富化提案 | 跟"从对话日志发现 wiki 覆盖不足"思路一致 |
+| `toolbox/mdcode/` (kcmd) | TypeScript | Metadata-as-Code CLI + MCP 服务，支持 OKF layout | MCP 工具模式（→ wiki-design.md 已规划的 MCP 化） |
+| `toolbox/enrichment/` | TypeScript | 逐条元数据调 Gemini 富化，自带 `md-fileset` MCP 工具 | `md-fileset` 是把 Markdown 目录暴露为 MCP 资源的标准做法 |
+
+其余 BigQuery/Dataplex/Drive/Confluence 部分属 Google 云生态特化，与本项目无关。
+
+---
+
+## 4. 设计一：知识生命周期
 
 核心问题：**一条知识从写入到废弃，中间应该经历什么状态？谁来决定状态迁移？消费者在不同状态下如何对待它？**
 
@@ -138,7 +251,7 @@ deprecated│ 不用 │ 不用   │ 历史存档│
 
 ```yaml
 timeliness: current | stale | superseded | deprecated
-last_validated: 2026-06-19    # 区别于 updated（编辑时间 ≠ 验证时间）
+last_validated: 2026-06-19T00:00:00Z    # 区别于 timestamp（编辑时间 ≠ 验证时间）
 validation_level: 0 | 1 | 2 | 3
 supersedes:                    # 可选，声明推翻哪些旧页面
   - path: concepts/old.md
@@ -213,7 +326,7 @@ LLM 不裁决。所有矛盾最终由人类解决。系统的职责是**保证�
 
 ---
 
-## 4. 设计二：数据检索
+## 5. 设计二：数据检索
 
 核心问题：**wiki-query 只有 index.md 导航一条路。如果关键词不匹配，整条链路就断了。没有 fallback，没有排序。**
 
@@ -265,7 +378,7 @@ Phase 3: 全文 grep（新增）
 
 ---
 
-## 5. 设计三：自动化策略
+## 6. 设计三：自动化策略
 
 核心问题：**四个工具全部手动触发。但机械活和人判断活混在一起，导致该自动的没自动，不该自动的也不敢自动。**
 
@@ -313,9 +426,21 @@ Phase 3: 全文 grep（新增）
 
 ---
 
-## 6. 实施路线图
+## 7. 实施路线图
 
-### 6.1 P0：地基（纯机械，零 LLM 成本）
+### 7.0 P0-pre：OKF 字段对齐（纯机械，零 LLM 成本）
+
+**目标：wiki 格式与 OKF v0.1 合规对齐。**
+
+| # | 改动 | 文件 | 工作量 |
+|---|------|------|--------|
+| 0a | `updated` → `timestamp`（格式改为 ISO 8601 datetime，默认 `T00:00:00Z`） | SCHEMA.md + 5 模板 + 27 wiki 页面 + shared/utils.py + health.py + lint.py + test_lint.py | ~50 行 |
+| 0b | `source`（单数）→ `resource` | SCHEMA.md + templates/source.md + 3 wiki 页面 + health.py | ~15 行 |
+| 0c | 新增 `description` 字段 | SCHEMA.md + 5 模板 | ~6 行 |
+| 0d | 新增 `okf_version: "0.1"` | wiki/index.md | 2 行 |
+| 0e | 删除 `created` 字段 | SCHEMA.md + 5 模板 + 27 wiki 页面 + health.py | ~35 行 |
+
+### 7.1 P0：地基（纯机械，零 LLM 成本）
 
 **目标：让 wiki 知道哪些页面过时了，查询时自动感知。**
 
@@ -328,7 +453,7 @@ Phase 3: 全文 grep（新增）
 | 5 | 三阶段级联检索：index → tag → grep | wiki-query SKILL.md | ~20 行 |
 | 6 | post-ingest 强制 backlinks + health | wiki-ingest SKILL.md | ~5 行 |
 
-### 6.2 P1：半自动机制（LLM 辅助，调用量极小）
+### 7.2 P1：半自动机制（LLM 辅助，但调用量极小）
 
 **目标：supersede 声明 + 矛盾发现。**
 
@@ -339,7 +464,7 @@ Phase 3: 全文 grep（新增）
 | 9 | 矛盾检测：图拓扑预筛选 → LLM 声明提取 → contradictions 写入 | 新增 contradiction.py | ~150 行 |
 | 10 | wiki-query 矛盾感知：读到 contradiction 页面时呈现冲突 | wiki-query SKILL.md | ~10 行 |
 
-### 6.3 P2：验证体系
+### 7.3 P2：验证体系
 
 **目标：不只检测过期，还能验证不过期。**
 
@@ -348,7 +473,7 @@ Phase 3: 全文 grep（新增）
 | 11 | 交叉验证：ingest 新源时自动比对已有声明，一致则刷新 `last_validated` | lint.py | ~100 行 |
 | 12 | 来源回溯验证：source ↔ 衍生页面一致性比对 | 新增脚本 | ~120 行 |
 
-### 6.4 P3：全自动维护
+### 7.4 P3：全自动维护
 
 | # | 改动 | 文件 | 工作量 |
 |---|------|------|--------|
@@ -357,19 +482,21 @@ Phase 3: 全文 grep（新增）
 
 ---
 
-## 7. 总结
+## 8. 总结
 
-这份调研围绕三个问题展开：**wiki 里哪些知识过时了？找不到怎么办？谁来记得做维护？**
+这份调研围绕四个问题展开：**wiki 里哪些知识过时了？找不到怎么办？谁来记得做维护？格式是否应该对齐外部标准？**
 
 答案分别是：
 
-1. **知识生命周期** — 给每个页面加一个双轴状态（置信度 × 时效性），按页面类型分档衰减，五类事件驱动状态迁移。不做置信度浮点数，不搞艾宾浩斯曲线。最核心的改动是 `last_validated` 与 `updated` 分离，以及 `stale` 中间状态的引入。
+1. **知识生命周期** — 给每个页面加一个双轴状态（置信度 × 时效性），按页面类型分档衰减，五类事件驱动状态迁移。不做置信度浮点数，不搞艾宾浩斯曲线。最核心的改动是 `last_validated` 与 `timestamp` 分离，以及 `stale` 中间状态的引入。
 
 2. **数据检索** — 在 index.md 导航之后加两道 fallback：标签过滤 + 全文 grep。三道防线逐级降级，确保链路不断。不做向量搜索，不做 BM25，当前 38 页用 ripgrep 足够。
 
 3. **自动化策略** — 画一条清晰的线：确定性计算的全自动（`--apply`/`--fix`），语义判断的半自动（LLM 提议 + 人确认），裁决类的人工。不做事件驱动全自动，不信任 LLM 当裁判。
 
-这三个方向共用一个地基——P0 六项改动约 110 行代码，纯机械，零 LLM 成本，可以立即实施。P1-P3 逐步引入 LLM 辅助和自动化，但始终保持**机械活自动、判断活留人**的分界线。
+4. **OKF 格式对齐** — 我们的 wiki 已经是 OKF v0.1 的超集合规格式。四个字段重命名/新增（`timestamp`、`resource`、`description`、`okf_version`）、一个冗余字段删除（`created`），改动约 100 行，纯机械。OKF 的知识图谱和自动索引再生模式为远期路图提供了参考，但其 BigQuery/Dataplex 云生态特化部分与己无关。
+
+这四个方向共用一个地基——P0-pre + P0 共约 210 行代码，纯机械，零 LLM 成本，可以立即实施。P1-P3 逐步引入 LLM 辅助和自动化，但始终保持**机械活自动、判断活留人**的分界线。
 
 ---
 
@@ -377,6 +504,8 @@ Phase 3: 全文 grep（新增）
 
 - Karpathy, "LLM Wiki" (2026): https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
 - Rohit Gupta, "LLM Wiki v2" (2026): https://gist.github.com/rohitg00/2067ab416f7bbe447c1977edaaa681e2
+- Google, "Open Knowledge Format (OKF) v0.1": https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md
+- Google, "Knowledge Catalog": https://github.com/GoogleCloudPlatform/knowledge-catalog
 - ZooKeeper wiki 设计文档: `docs/wiki-design.md`
 - Wiki 健康检查概念: `wiki/concepts/wiki-health-check.md`
 - 图链接预测概念: `wiki/concepts/graph-link-prediction.md`
