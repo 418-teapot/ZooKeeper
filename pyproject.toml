@@ -17,7 +17,6 @@ line-length = 79
 extend-select = ["I"]
 
 [tool.coverage.run]
-omit = ["tools/zoo-trace"]
 
 [tool.coverage.report]
 fail_under = 90

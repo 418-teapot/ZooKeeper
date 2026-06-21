@@ -13,11 +13,9 @@
 | 命令 | 说明 |
 |------|------|
 | `python3 install.py` | 安装/更新 OpenCode 配置（读取 config.toml + .env → 生成 ~/.config/opencode/opencode.json） |
-| `./check.sh` | 自动修复 lint + format 问题（Python + TS + Rust） |
-| `./check.sh lint` | 只检查 lint 不修复 |
-| `./check.sh format` | 只格式化 |
+| `./check.sh` | 自动修复 + 严格 lint（Python + TS + Rust），禁止 `#[expect]`/`#[allow]` |
 | `./test.sh` | 统一测试入口（Python + Rust 测试 + 覆盖率 + TS 单元测试） |
-| `./build.sh` | Release 编译 Rust CLI 工具（zlog / zfind） |
+| `./build.sh` | Release 编译 Rust CLI 工具（zlog / zfind / ztrace / zinspect） |
 | `python3 tests/runner.py --dry-run` | 干跑（不调用 LLM，回放 JSONL） |
 | `python3 tests/runner.py --scenario <name>` | 只跑指定场景 |
 | `python3 tests/runner.py --replay` | 从 JSONL 回放（不调 LLM，只跑断言+阈值） |
@@ -78,13 +76,13 @@ ZooKeeper/
 ├── tests/                   # Prompt 评估测试框架（Phase 1: build.md）
 │   └── runner.py            # 评估测试运行器
 ├── tools/                   # Rust CLI tools workspace
-│   ├── Cargo.toml           # workspace root (members: zutil, zlog, zfind)
+│   ├── Cargo.toml           # workspace root (members: zutil, zlog, zfind, ztrace, zinspect)
 │   ├── rustfmt.toml         # max_width = 80
 │   ├── zutil/               # 共享库（expand_tilde, format_number, ts_display 等）
 │   ├── zlog/                # 实时日志过滤（取代 Python zoo-log）
 │   ├── zfind/               # 会话/消息搜索（取代 Python zoo-find）
-│   ├── zoo-trace/           # Python 编排追踪（未迁移）
-│   └── zoo-inspect/         # Python 事件统计（未迁移）
+│   ├── ztrace/              # 编排追踪（取代 Python zoo-trace）
+│   ├── zinspect/            # 事件统计（取代 Python zoo-inspect）
 └── docs/                    # 设计文档和调研报告
 ```
 
@@ -145,19 +143,19 @@ OpenCode 日志写入以下位置：
 |------|------|------|-----------|
 | `zfind` | Rust | 搜索 SQLite 中的会话与消息 | 模糊搜索 / `--all` / `--exact` / `--session <sid>` / `--message <id>` |
 | `zlog` | Rust | 实时过滤 zoo JSONL 日志 | `show <id>` / `tail <id>`（支持 `--hook` / `--level` / `--event` 过滤） |
-| `zoo-inspect` | Python | 事件统计与 hook 影响分析 | `stats <id>` / `stats --sessions N` / `timeline <id>` / `impact` |
-| `zoo-trace` | Python | 完整编排追踪（多源合并） | `show <id>` / `export <id>` / `steps <id>` / `tokens <id>` |
+| `ztrace` | Rust | 完整编排追踪（多源合并） | `show <id>` / `export <id>` / `steps <id>` / `tokens <id>` |
+| `zinspect` | Rust | 事件统计与 hook 影响分析 | `stats <id>` / `stats --sessions N` / `timeline <id>` / `impact` |
 
-**共享标志**（`zfind` / `zoo-inspect` / `zoo-trace`）：`--db <path>` / `--no-color` / `--json`。
+**共享标志**（`zfind` / `ztrace` / `zinspect`）：`--db <path>` / `--no-color` / `--json`。
 
-**退出码**：`0` 成功 / `1` 错误 / `2` 未找到。`zlog` 和 `zoo-inspect` 支持 session ID 前缀匹配；`zfind` 和 `zoo-trace` 需完整 ID。
+**退出码**：`0` 成功 / `1` 错误 / `2` 未找到。`zlog` 支持 session ID 前缀匹配；`zfind`、`ztrace`、`zinspect` 需完整 ID。
 
 **典型工作流：**
 
 ```shell
 # 1. 用 zfind 搜索会话，单条匹配时只输出 ID（管道友好）
-$ zoo-trace show $(zfind "auth middleware") -s
+$ ztrace show $(zfind "auth middleware") -s
 
 # 2. 追踪单个会话的 step 级 token 消耗
-$ zoo-trace steps <sid> --min-cache-drop 1000
+$ ztrace steps <sid> --min-cache-drop 1000
 ```

@@ -1,15 +1,11 @@
 #!/usr/bin/env bash
-# ZooKeeper — Unified check/lint/format script for Python, TypeScript, Rust.
+# ZooKeeper — Auto-fix → format → strict lint for Python, TypeScript, Rust.
 #
-# Usage:
-#   ./check.sh           # check  (lint + format, auto-fix)
-#   ./check.sh lint      # lint   (check only, no auto-fix)
-#   ./check.sh format    # format (format only)
+# Phase 1: auto-fix and format (best-effort, failures logged but not fatal).
+# Phase 2: strict lint check (any failure fails the script).
 set -euo pipefail
 
-MODE="${1:-check}"
-
-PY_FILES="install.py tests/ tools/ tools/zoo-trace core/skills/ wiki/tools/"
+PY_FILES="install.py tests/ tools/ core/skills/ wiki/tools/"
 TS_DIR="src/"
 ZOO_DIR="tools/"
 
@@ -24,57 +20,45 @@ fail()    { printf "${RED}✖ %s${NC}\n" "$1"; }
 
 FAILED=0
 
-# ── Python ───────────────────────────────────────────────────────────────
-section "Python ($MODE)"
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 1 — Auto-fix & format (best-effort)
+# ═══════════════════════════════════════════════════════════════════════════
+section "Phase 1 — Auto-fix & format"
 
-case "$MODE" in
-  check)
-    uv run ruff check --fix $PY_FILES && ok "ruff check" || { fail "ruff check"; FAILED=1; }
-    uv run ruff format $PY_FILES      && ok "ruff format" || { fail "ruff format"; FAILED=1; }
-    ;;
-  lint)
-    uv run ruff check $PY_FILES && ok "ruff check" || { fail "ruff check"; FAILED=1; }
-    ;;
-  format)
-    uv run ruff format $PY_FILES && ok "ruff format" || { fail "ruff format"; FAILED=1; }
-    ;;
-esac
+echo "Python …"
+uv run ruff check --fix $PY_FILES && ok "ruff fix" || fail "ruff fix"
+uv run ruff format $PY_FILES      && ok "ruff format" || fail "ruff format"
 
-# ── TypeScript ────────────────────────────────────────────────────────────
-section "TypeScript ($MODE)"
+echo "TypeScript …"
+bunx biome check --error-on-warnings --write "$TS_DIR" && ok "biome fix" || fail "biome fix"
 
-case "$MODE" in
-  check)
-    bunx biome check --error-on-warnings --write "$TS_DIR" && ok "biome check" || { fail "biome check"; FAILED=1; }
-    bunx tsc --noEmit && ok "tsc --noEmit" || { fail "tsc --noEmit"; FAILED=1; }
-    ;;
-  lint)
-    bunx biome lint --error-on-warnings "$TS_DIR" && ok "biome lint" || { fail "biome lint"; FAILED=1; }
-    bunx tsc --noEmit && ok "tsc --noEmit" || { fail "tsc --noEmit"; FAILED=1; }
-    ;;
-  format)
-    bunx biome format --error-on-warnings --write "$TS_DIR" && ok "biome format" || { fail "biome format"; FAILED=1; }
-    ;;
-esac
+echo "Rust …"
+(cd "$ZOO_DIR" && cargo clippy --all-targets --all-features --fix --allow-dirty --allow-staged) && ok "cargo clippy fix" || fail "cargo clippy fix"
+(cd "$ZOO_DIR" && cargo fmt) && ok "cargo fmt" || fail "cargo fmt"
 
-# ── Rust ──────────────────────────────────────────────────────────────────
-section "Rust ($MODE)"
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 2 — Strict lint (fail on any problem)
+# ═══════════════════════════════════════════════════════════════════════════
+section "Phase 2 — Strict lint"
 
-case "$MODE" in
-  check)
-    (cd "$ZOO_DIR" && cargo clippy --all-targets --all-features --fix --allow-dirty --allow-staged -- -D warnings) && ok "cargo clippy" || { fail "cargo clippy"; FAILED=1; }
-    (cd "$ZOO_DIR" && cargo fmt)                                                                                    && ok "cargo fmt"    || { fail "cargo fmt"; FAILED=1; }
-    ;;
-  lint)
-    (cd "$ZOO_DIR" && cargo clippy --all-targets --all-features -- -D warnings) && ok "cargo clippy" || { fail "cargo clippy"; FAILED=1; }
-    (cd "$ZOO_DIR" && cargo fmt --check)                                            && ok "cargo fmt"    || { fail "cargo fmt"; FAILED=1; }
-    ;;
-  format)
-    (cd "$ZOO_DIR" && cargo fmt) && ok "cargo fmt" || { fail "cargo fmt"; FAILED=1; }
-    ;;
-esac
+echo "Python …"
+uv run ruff check $PY_FILES && ok "ruff check" || { fail "ruff check"; FAILED=1; }
 
-# ── Result ───────────────────────────────────────────────────────────────
+echo "TypeScript …"
+bunx biome lint --error-on-warnings "$TS_DIR" && ok "biome lint" || { fail "biome lint"; FAILED=1; }
+bunx tsc --noEmit && ok "tsc" || { fail "tsc"; FAILED=1; }
+
+echo "Rust …"
+# Ban any #[expect(...)] or #[allow(...)] in Rust source — lints must be fixed, not suppressed.
+if grep -rn '#\[expect\|#\[allow' "$ZOO_DIR" --include='*.rs' 2>/dev/null; then
+  fail "no-expect/allow: found forbidden #[expect] or #[allow] — fix the code, don't suppress"
+  FAILED=1
+else
+  ok "no-expect/allow"
+fi
+(cd "$ZOO_DIR" && cargo clippy --all-targets --all-features -- -D warnings) && ok "cargo clippy" || { fail "cargo clippy"; FAILED=1; }
+
+# ═══════════════════════════════════════════════════════════════════════════
 if [ "$FAILED" -eq 0 ]; then
   section "All passed"
 else

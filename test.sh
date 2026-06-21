@@ -83,6 +83,7 @@ if rustup component list 2>/dev/null | grep -q 'llvm-tools.*installed'; then
     COV_ZLOG=$(crate_cov 'zlog/src/')
     COV_ZFIND=$(crate_cov 'zfind/src/')
     COV_ZINSPECT=$(crate_cov 'zinspect/src/')
+    COV_ZTRACE=$(crate_cov 'ztrace/src/')
     COV_TOTAL=$(echo "$COV_OUTPUT" | awk '/^TOTAL/ {print $10}' | tr -d '%')
 
     check_cov() {
@@ -104,11 +105,12 @@ if rustup component list 2>/dev/null | grep -q 'llvm-tools.*installed'; then
     # Thresholds: zutil pure functions, zlog jq + integration,
     # zfind/zinspect db.rs + helpers.rs (core logic);
     # display.rs/main.rs are 0% by design (stdout rendering / CLI dispatch).
-    check_cov "zutil"     "$COV_ZUTIL"    80 || FAILED=1
+    check_cov "zutil"     "$COV_ZUTIL"    85 || FAILED=1
     check_cov "zlog"      "$COV_ZLOG"     65 || FAILED=1
-    check_cov "zfind"     "$COV_ZFIND"    50 || FAILED=1  # aggregate of 4 modules
-    check_cov "zinspect"  "$COV_ZINSPECT" 50 || FAILED=1  # aggregate of 4 modules
-    check_cov "total"     "$COV_TOTAL"    55 || true
+    check_cov "zfind"     "$COV_ZFIND"    50 || FAILED=1
+    check_cov "zinspect"  "$COV_ZINSPECT" 50 || FAILED=1
+    check_cov "ztrace"    "$COV_ZTRACE"   65 || FAILED=1
+    check_cov "total"     "$COV_TOTAL"    60 || true
   fi
 else
   echo ""

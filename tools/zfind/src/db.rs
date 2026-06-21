@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 
-#[cfg_attr(not(test), allow(unused_imports))]
 use rusqlite::{Connection, params};
 use serde_json::{Map, Value};
 
 use zutil::db_helpers::{open_db, query_sessions_where};
 use zutil::{epoch_ms_to_iso, safe_json_loads};
+
+/// Group of (`session_id`, `timestamp`, `msg_data`, `part_data`) for a message.
+type MsgGroup = Vec<(String, Option<i64>, Value, Value)>;
 
 pub fn query_sessions(
     keyword: &str,
@@ -43,62 +45,15 @@ pub fn query_sessions_exact(
     )
 }
 
-#[allow(clippy::too_many_lines)]
-pub fn query_message_by_ids(
-    msg_ids: &[String],
-    session_id: Option<&str>,
-    db_path: &str,
-    scan_limit: usize,
-) -> Vec<Value> {
-    type MsgGroup = Vec<(String, Option<i64>, Value, Value)>;
-
-    if msg_ids.is_empty() {
-        return vec![];
-    }
-
-    let Some(conn) = open_db(db_path) else {
-        return vec![];
-    };
-
-    // Build dynamic placeholders for IN clause
-    let placeholders: Vec<String> =
-        msg_ids.iter().map(|_| "?".to_string()).collect();
-    let in_clause = placeholders.join(",");
-
-    let session_filter: String = match session_id {
-        Some(_) => "AND m.session_id = ?".to_string(),
-        None => "AND m.session_id IN (SELECT id FROM session \
-             ORDER BY time_updated DESC LIMIT ?)"
-            .to_string(),
-    };
-
-    let sql = format!(
-        "SELECT m.id, m.session_id, m.time_created, m.data AS msg_data, \
-         p.data AS part_data \
-         FROM message m \
-         JOIN part p ON p.message_id = m.id \
-         WHERE m.id IN ({in_clause}) {session_filter} \
-         ORDER BY m.time_created ASC, p.time_created ASC"
-    );
-
-    // Build params: msg_ids first, then session_id or scan_limit
-    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-    for id in msg_ids {
-        params.push(Box::new(id.clone()));
-    }
-    match session_id {
-        Some(sid) => params.push(Box::new(sid.to_string())),
-        None => {
-            params
-                .push(Box::new(i64::try_from(scan_limit).unwrap_or(i64::MAX)));
-        }
-    }
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-        params.iter().map(std::convert::AsRef::as_ref).collect();
-
-    let mut stmt = conn.prepare(&sql).expect("SQL prepare failed");
+/// Execute a query and group results by message ID.
+fn query_and_group(
+    conn: &Connection,
+    sql: &str,
+    params: &[&dyn rusqlite::types::ToSql],
+) -> HashMap<String, MsgGroup> {
+    let mut stmt = conn.prepare(sql).expect("SQL prepare failed");
     let rows = stmt
-        .query_map(param_refs.as_slice(), |row| {
+        .query_map(params, |row| {
             let id: String = row.get("id")?;
             let sid: String = row.get("session_id")?;
             let ts: Option<i64> = row.get("time_created")?;
@@ -118,69 +73,38 @@ pub fn query_message_by_ids(
     for row in rows.flatten() {
         grouped.entry(row.0).or_default().push((row.1, row.2, row.3, row.4));
     }
+    grouped
+}
 
-    // Fallback to LIKE prefix matching for any IDs not found by exact match.
-    let found: std::collections::HashSet<&str> =
-        grouped.keys().map(std::string::String::as_str).collect();
-    let missing: Vec<&String> =
-        msg_ids.iter().filter(|id| !found.contains(id.as_str())).collect();
-
-    if !missing.is_empty() {
-        let like_placeholders: Vec<String> =
-            missing.iter().map(|_| "m.id LIKE ?".to_string()).collect();
-        let like_clause = like_placeholders.join(" OR ");
-
-        let like_sql = format!(
-            "SELECT m.id, m.session_id, m.time_created, m.data AS msg_data, \
-             p.data AS part_data \
-             FROM message m \
-             JOIN part p ON p.message_id = m.id \
-             WHERE ({like_clause}) {session_filter} \
-             ORDER BY m.time_created ASC, p.time_created ASC"
-        );
-
-        let mut like_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-        for id in &missing {
-            like_params.push(Box::new(format!("{id}%")));
-        }
-        match session_id {
-            Some(sid) => like_params.push(Box::new(sid.to_string())),
-            None => like_params
-                .push(Box::new(i64::try_from(scan_limit).unwrap_or(i64::MAX))),
-        }
-        let like_refs: Vec<&dyn rusqlite::types::ToSql> =
-            like_params.iter().map(std::convert::AsRef::as_ref).collect();
-
-        let mut like_stmt =
-            conn.prepare(&like_sql).expect("SQL prepare failed");
-        let like_rows = like_stmt
-            .query_map(like_refs.as_slice(), |row| {
-                let id: String = row.get("id")?;
-                let sid: String = row.get("session_id")?;
-                let ts: Option<i64> = row.get("time_created")?;
-                let msg_data_str: String = row.get("msg_data")?;
-                let part_data_str: String = row.get("part_data")?;
-                Ok((
-                    id,
-                    sid,
-                    ts,
-                    safe_json_loads(&msg_data_str).unwrap_or(Value::Null),
-                    safe_json_loads(&part_data_str).unwrap_or(Value::Null),
-                ))
-            })
-            .expect("SQL query failed");
-
-        for row in like_rows.flatten() {
-            grouped
-                .entry(row.0)
-                .or_default()
-                .push((row.1, row.2, row.3, row.4));
+/// Build params vector from `msg_ids` and optional `session_id` / `scan_limit`.
+fn build_query_params(
+    msg_ids: &[String],
+    session_id: Option<&str>,
+    scan_limit: usize,
+    is_like: bool,
+) -> Vec<Box<dyn rusqlite::types::ToSql>> {
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    for id in msg_ids {
+        if is_like {
+            params.push(Box::new(format!("{id}%")));
+        } else {
+            params.push(Box::new(id.clone()));
         }
     }
+    match session_id {
+        Some(sid) => params.push(Box::new(sid.to_string())),
+        None => {
+            params
+                .push(Box::new(i64::try_from(scan_limit).unwrap_or(i64::MAX)));
+        }
+    }
+    params
+}
 
-    // Convert grouped data to result Values
+/// Convert grouped message data into result Values.
+fn build_message_results(grouped: &HashMap<String, MsgGroup>) -> Vec<Value> {
     let mut results: Vec<Value> = Vec::new();
-    for (msg_id, part_rows) in &grouped {
+    for (msg_id, part_rows) in grouped {
         let first = &part_rows[0];
         let msg_data = &first.2;
         let timestamp = first.1.map(epoch_ms_to_iso).unwrap_or_default();
@@ -257,8 +181,85 @@ pub fn query_message_by_ids(
 
         results.push(Value::Object(m));
     }
-
     results
+}
+
+pub fn query_message_by_ids(
+    msg_ids: &[String],
+    session_id: Option<&str>,
+    db_path: &str,
+    scan_limit: usize,
+) -> Vec<Value> {
+    if msg_ids.is_empty() {
+        return vec![];
+    }
+
+    let Some(conn) = open_db(db_path) else {
+        return vec![];
+    };
+
+    // Build dynamic placeholders for IN clause
+    let placeholders: Vec<String> =
+        msg_ids.iter().map(|_| "?".to_string()).collect();
+    let in_clause = placeholders.join(",");
+
+    let session_filter: String = match session_id {
+        Some(_) => "AND m.session_id = ?".to_string(),
+        None => "AND m.session_id IN (SELECT id FROM session \
+             ORDER BY time_updated DESC LIMIT ?)"
+            .to_string(),
+    };
+
+    let sql = format!(
+        "SELECT m.id, m.session_id, m.time_created, m.data AS msg_data, \
+         p.data AS part_data \
+         FROM message m \
+         JOIN part p ON p.message_id = m.id \
+         WHERE m.id IN ({in_clause}) {session_filter} \
+         ORDER BY m.time_created ASC, p.time_created ASC"
+    );
+
+    let params = build_query_params(msg_ids, session_id, scan_limit, false);
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+        params.iter().map(std::convert::AsRef::as_ref).collect();
+    let mut grouped = query_and_group(&conn, &sql, &param_refs);
+
+    // Fallback to LIKE prefix matching for any IDs not found by exact match.
+    let found: std::collections::HashSet<&str> =
+        grouped.keys().map(std::string::String::as_str).collect();
+    let missing: Vec<&String> =
+        msg_ids.iter().filter(|id| !found.contains(id.as_str())).collect();
+
+    if !missing.is_empty() {
+        let like_placeholders: Vec<String> =
+            missing.iter().map(|_| "m.id LIKE ?".to_string()).collect();
+        let like_clause = like_placeholders.join(" OR ");
+
+        let like_sql = format!(
+            "SELECT m.id, m.session_id, m.time_created, m.data AS msg_data, \
+             p.data AS part_data \
+             FROM message m \
+             JOIN part p ON p.message_id = m.id \
+             WHERE ({like_clause}) {session_filter} \
+             ORDER BY m.time_created ASC, p.time_created ASC"
+        );
+
+        let like_params = build_query_params(
+            &missing.iter().map(|s| (*s).clone()).collect::<Vec<_>>(),
+            session_id,
+            scan_limit,
+            true,
+        );
+        let like_refs: Vec<&dyn rusqlite::types::ToSql> =
+            like_params.iter().map(std::convert::AsRef::as_ref).collect();
+
+        let like_grouped = query_and_group(&conn, &like_sql, &like_refs);
+        for (k, v) in like_grouped {
+            grouped.entry(k).or_default().extend(v);
+        }
+    }
+
+    build_message_results(&grouped)
 }
 
 pub fn query_message_parts(session_id: &str, db_path: &str) -> Vec<Value> {
@@ -583,10 +584,9 @@ mod tests {
             json!({"type": "step-finish"}),
             json!({"type": "tool", "state": {"input": "query", "output": "result"}}),
         ];
-        // text(11) + reasoning(11) + tool_input(json-"query"=7) +
-        // tool_output(json-"result"=8) = 37 / 4 = 9
-        // Wait: inp.to_string() on a JSON string Value produces "\"query\"" (7 chars)
-        // to_string uses display format with quotes
-        assert_eq!(estimate_tokens(&parts), 7);
+        // text(11/4=2) + reasoning(11/4=2) + tool_input("query"=5/4=1) +
+        // tool_output("result"=6/4=1) = 6
+        // (strings are NOT JSON-quoted — kept bare)
+        assert_eq!(estimate_tokens(&parts), 6);
     }
 }

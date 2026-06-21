@@ -15,28 +15,12 @@ use zutil::color::{render_segments_to_ansi, style_text};
 use crate::helpers::{classify_role, preview_text};
 use zutil::color::msg_print;
 
-/// Print a table of session results.
-///
-/// Single match + non-JSON -> print only the session ID (pipe-friendly).
-/// Multiple matches -> render a styled table.
-pub fn print_session_table(
+/// Print session title + header based on format.
+fn print_session_header(
     results: &[Value],
     is_all: bool,
     keyword: Option<&str>,
 ) {
-    if results.is_empty() {
-        return;
-    }
-
-    if results.len() == 1 {
-        // Single match: output only the session ID
-        if let Some(id) = results[0].get("id").and_then(|v| v.as_str()) {
-            println!("{id}");
-        }
-        return;
-    }
-
-    // Multiple matches: render a table
     let bold = Style::new().bold();
     if is_all {
         println!(
@@ -62,6 +46,100 @@ pub fn print_session_table(
         );
     }
     println!();
+}
+
+/// Populate table with all columns (`is_all` mode).
+fn populate_all_table(
+    table: &mut Table,
+    results: &[Value],
+    cyan: &Style,
+    green: &Style,
+) {
+    table.add_column(
+        Column::new("Agent").no_wrap().overflow(OverflowMethod::Ellipsis),
+    );
+    table.add_column(
+        Column::new("Session ID").no_wrap().overflow(OverflowMethod::Ellipsis),
+    );
+    table.add_column(
+        Column::new("Updated").no_wrap().overflow(OverflowMethod::Ellipsis),
+    );
+
+    for s in results {
+        let title =
+            s.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let agent = s.get("agent").and_then(|v| v.as_str()).unwrap_or("");
+        let session_id = s.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let updated = s
+            .get("time_updated")
+            .and_then(|v| v.as_str())
+            .map(ts_display)
+            .unwrap_or_default();
+
+        table.add_row(Row::new(vec![
+            Cell::new(Text::from(title)),
+            Cell::new(Text::styled(agent.to_string(), cyan.clone())),
+            Cell::new(Text::styled(session_id.to_string(), cyan.clone())),
+            Cell::new(Text::styled(updated, green.clone())),
+        ]));
+    }
+}
+
+/// Populate table with compact columns (not `is_all` mode).
+fn populate_compact_table(
+    table: &mut Table,
+    results: &[Value],
+    cyan: &Style,
+    green: &Style,
+) {
+    table.add_column(
+        Column::new("Session ID").no_wrap().overflow(OverflowMethod::Ellipsis),
+    );
+    table.add_column(
+        Column::new("Updated").no_wrap().overflow(OverflowMethod::Ellipsis),
+    );
+
+    for s in results {
+        let title =
+            s.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let session_id = s.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let updated = s
+            .get("time_updated")
+            .and_then(|v| v.as_str())
+            .map(ts_display)
+            .unwrap_or_default();
+
+        table.add_row(Row::new(vec![
+            Cell::new(Text::from(title)),
+            Cell::new(Text::styled(session_id.to_string(), cyan.clone())),
+            Cell::new(Text::styled(updated, green.clone())),
+        ]));
+    }
+}
+
+/// Print a table of session results.
+///
+/// Single match + non-JSON -> print only the session ID (pipe-friendly).
+/// Multiple matches -> render a styled table.
+pub fn print_session_table(
+    results: &[Value],
+    is_all: bool,
+    keyword: Option<&str>,
+) {
+    if results.is_empty() {
+        return;
+    }
+
+    if results.len() == 1 {
+        // Single match: output only the session ID
+        if let Some(id) = results[0].get("id").and_then(|v| v.as_str()) {
+            println!("{id}");
+        }
+        return;
+    }
+
+    // Multiple matches: render a table
+    print_session_header(results, is_all, keyword);
 
     let cyan = Style::new().color(Color::from_ansi(6));
     let green = Style::new().color(Color::from_ansi(2));
@@ -72,54 +150,9 @@ pub fn print_session_table(
 
     table.add_column(Column::new("Title"));
     if is_all {
-        table.add_column(Column::new("Agent").no_wrap().min_width(7));
-        table.add_column(Column::new("Session ID").no_wrap().min_width(32));
-        table.add_column(Column::new("Updated").no_wrap().min_width(22));
-
-        for s in results {
-            let title = s
-                .get("title")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let agent = s.get("agent").and_then(|v| v.as_str()).unwrap_or("");
-            let session_id = s.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            let updated = s
-                .get("time_updated")
-                .and_then(|v| v.as_str())
-                .map(ts_display)
-                .unwrap_or_default();
-
-            table.add_row(Row::new(vec![
-                Cell::new(Text::from(title)),
-                Cell::new(Text::styled(agent.to_string(), cyan.clone())),
-                Cell::new(Text::styled(session_id.to_string(), cyan.clone())),
-                Cell::new(Text::styled(updated, green.clone())),
-            ]));
-        }
+        populate_all_table(&mut table, results, &cyan, &green);
     } else {
-        table.add_column(Column::new("Session ID").no_wrap().min_width(32));
-        table.add_column(Column::new("Updated").no_wrap().min_width(22));
-
-        for s in results {
-            let title = s
-                .get("title")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let session_id = s.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            let updated = s
-                .get("time_updated")
-                .and_then(|v| v.as_str())
-                .map(ts_display)
-                .unwrap_or_default();
-
-            table.add_row(Row::new(vec![
-                Cell::new(Text::from(title)),
-                Cell::new(Text::styled(session_id.to_string(), cyan.clone())),
-                Cell::new(Text::styled(updated, green.clone())),
-            ]));
-        }
+        populate_compact_table(&mut table, results, &cyan, &green);
     }
 
     let segments = table.render(width);
@@ -170,8 +203,64 @@ pub fn print_json_session_messages(
     );
 }
 
+/// Print a text or reasoning part.
+fn print_text_part(part: &Value, visible_idx: &mut usize, label: &str) {
+    *visible_idx += 1;
+    let text = part.get("text").and_then(|v| v.as_str()).unwrap_or("");
+    msg_print(&format!("  [bold]Part {visible_idx} ({label}):[/bold]"));
+    for line in text.split('\n') {
+        msg_print(&format!("    {line}"));
+    }
+}
+
+/// Print a tool part (with input/output).
+fn print_tool_part(part: &Value, visible_idx: &mut usize) {
+    *visible_idx += 1;
+    let tool_name = part.get("tool").and_then(|v| v.as_str()).unwrap_or("?");
+    let state = part.get("state");
+    let inp = state.and_then(|s| s.get("input")).cloned();
+    let out = state.and_then(|s| s.get("output")).cloned();
+
+    msg_print(&format!(
+        "  [bold]Part {visible_idx} (tool: {tool_name}):[/bold]"
+    ));
+
+    if let Some(Value::Object(ref obj)) = inp {
+        if !obj.is_empty() {
+            let inp_str = serde_json::to_string(obj).unwrap_or_default();
+            msg_print(&format!("    Input: {inp_str}"));
+        }
+    } else if let Some(ref v) = inp {
+        msg_print(&format!("    Input: {v}"));
+    }
+
+    if let Some(Value::Object(ref obj)) = out {
+        if !obj.is_empty() {
+            let mut out_str = serde_json::to_string(obj).unwrap_or_default();
+            if out_str.len() > 500 {
+                out_str = format!("{}...", &out_str[..497]);
+            }
+            msg_print(&format!("    Output: {out_str}"));
+        }
+    } else if let Some(ref v) = out {
+        let out_str = v.to_string();
+        if out_str.len() > 500 {
+            msg_print(&format!("    Output: {}...", &out_str[..497]));
+        } else {
+            msg_print(&format!("    Output: {out_str}"));
+        }
+    }
+}
+
+/// Print an unknown part type as raw JSON.
+fn print_unknown_part(part: &Value, visible_idx: &mut usize, ptype: &str) {
+    *visible_idx += 1;
+    msg_print(&format!("  [bold]Part {visible_idx} ({ptype}):[/bold]"));
+    let json_str = serde_json::to_string(part).unwrap_or_default();
+    msg_print(&format!("  {json_str}"));
+}
+
 /// Print detailed message output with parts content.
-#[allow(clippy::too_many_lines)]
 pub fn print_message_detail(results: &[Value]) {
     for msg in results {
         let role =
@@ -203,85 +292,15 @@ pub fn print_message_detail(results: &[Value]) {
         for part in &parts {
             let ptype = part.get("type").and_then(|v| v.as_str()).unwrap_or("");
             match ptype {
-                "text" => {
-                    visible_idx += 1;
-                    let text =
-                        part.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                    msg_print(&format!(
-                        "  [bold]Part {visible_idx} (text):[/bold]"
-                    ));
-                    for line in text.split('\n') {
-                        msg_print(&format!("    {line}"));
-                    }
-                }
+                "text" => print_text_part(part, &mut visible_idx, "text"),
                 "reasoning" => {
-                    visible_idx += 1;
-                    let text =
-                        part.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                    msg_print(&format!(
-                        "  [bold]Part {visible_idx} (reasoning):[/bold]"
-                    ));
-                    for line in text.split('\n') {
-                        msg_print(&format!("    {line}"));
-                    }
+                    print_text_part(part, &mut visible_idx, "reasoning");
                 }
-                "tool" => {
-                    visible_idx += 1;
-                    let tool_name = part
-                        .get("tool")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
-                    let state = part.get("state");
-                    let inp = state.and_then(|s| s.get("input")).cloned();
-                    let out = state.and_then(|s| s.get("output")).cloned();
-
-                    msg_print(&format!(
-                        "  [bold]Part {visible_idx} (tool: {tool_name}):[/bold]"
-                    ));
-
-                    if let Some(Value::Object(ref obj)) = inp {
-                        if !obj.is_empty() {
-                            let inp_str =
-                                serde_json::to_string(obj).unwrap_or_default();
-                            msg_print(&format!("    Input: {inp_str}"));
-                        }
-                    } else if let Some(ref v) = inp {
-                        msg_print(&format!("    Input: {v}"));
-                    }
-
-                    if let Some(Value::Object(ref obj)) = out {
-                        if !obj.is_empty() {
-                            let mut out_str =
-                                serde_json::to_string(obj).unwrap_or_default();
-                            if out_str.len() > 500 {
-                                out_str = format!("{}...", &out_str[..497]);
-                            }
-                            msg_print(&format!("    Output: {out_str}"));
-                        }
-                    } else if let Some(ref v) = out {
-                        let out_str = v.to_string();
-                        if out_str.len() > 500 {
-                            msg_print(&format!(
-                                "    Output: {}...",
-                                &out_str[..497]
-                            ));
-                        } else {
-                            msg_print(&format!("    Output: {out_str}"));
-                        }
-                    }
-                }
+                "tool" => print_tool_part(part, &mut visible_idx),
                 "step-finish" => {
                     // Skip step-finish parts in display
                 }
-                _ => {
-                    visible_idx += 1;
-                    msg_print(&format!(
-                        "  [bold]Part {visible_idx} ({ptype}):[/bold]"
-                    ));
-                    let json_str =
-                        serde_json::to_string(part).unwrap_or_default();
-                    msg_print(&format!("  {json_str}"));
-                }
+                _ => print_unknown_part(part, &mut visible_idx, ptype),
             }
         }
     }
@@ -319,16 +338,23 @@ pub fn print_session_messages_table(messages: &[Value], session_id: &str) {
         Table::new().show_header(true).show_edge(true).show_lines(false);
 
     table.add_column(
-        Column::new("#").justify(JustifyMethod::Right).min_width(3).no_wrap(),
+        Column::new("#")
+            .justify(JustifyMethod::Right)
+            .no_wrap()
+            .overflow(OverflowMethod::Ellipsis),
     );
-    table.add_column(Column::new("Role").min_width(11).no_wrap());
+    table.add_column(
+        Column::new("Role").no_wrap().overflow(OverflowMethod::Ellipsis),
+    );
     table.add_column(
         Column::new("Tokens")
             .justify(JustifyMethod::Right)
-            .min_width(8)
-            .no_wrap(),
+            .no_wrap()
+            .overflow(OverflowMethod::Ellipsis),
     );
-    table.add_column(Column::new("ID").no_wrap().min_width(30));
+    table.add_column(
+        Column::new("ID").no_wrap().overflow(OverflowMethod::Ellipsis),
+    );
     table.add_column(
         Column::new("Preview").no_wrap().overflow(OverflowMethod::Ellipsis),
     );

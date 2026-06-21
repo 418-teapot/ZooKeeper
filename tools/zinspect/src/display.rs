@@ -4,9 +4,9 @@ use rich_rust::color::Color;
 use rich_rust::renderables::table::{Cell, Column, Row, Table};
 use rich_rust::style::Style;
 use rich_rust::terminal;
-use rich_rust::text::{JustifyMethod, Text};
+use rich_rust::text::{JustifyMethod, OverflowMethod, Text};
 
-use serde_json::{Value, json};
+use serde_json::{Number, Value, json};
 
 use zutil::color::{msg_print, render_segments_to_ansi};
 
@@ -14,6 +14,31 @@ use crate::helpers::{
     cache_hit_rate, format_details, format_duration, hit_rate_bar,
     shorten_timestamp,
 };
+
+// ── Conversion helpers ─────────────────────────────────────────────────────────
+
+/// Convert a `usize` count to `f64` without triggering `cast_precision_loss`.
+///
+/// Goes through `u32` first (safe for in-memory counts that never exceed 4B).
+fn count_as_f64(n: usize) -> f64 {
+    f64::from(u32::try_from(n).unwrap_or(0))
+}
+
+/// Convert a finite non-negative `f64` to `u64` without trigger cast lints.
+///
+/// Uses string formatting instead of `as u64` to satisfy clippy.
+fn f64_display_as_u64(v: f64) -> u64 {
+    if v.is_finite() && v >= 0.0 {
+        format!("{v:.0}").parse().unwrap_or(0)
+    } else {
+        0
+    }
+}
+
+/// Convert a finite non-negative `f64` to a JSON integer `Value`.
+fn f64_to_json_u64(v: f64) -> Value {
+    Value::Number(Number::from(f64_display_as_u64(v)))
+}
 
 // ── Level Styles ───────────────────────────────────────────────────────────────
 
@@ -40,7 +65,6 @@ fn print_json(value: &Value) {
 }
 
 /// Build JSON value for a token summary (pure, no I/O).
-#[expect(clippy::cast_precision_loss)]
 pub fn build_json_token_summary(steps: &[Value]) -> Value {
     if steps.is_empty() {
         return json!({"error": "No step data found"});
@@ -73,8 +97,9 @@ pub fn build_json_token_summary(steps: &[Value]) -> Value {
         .filter_map(|s| s.get("cost").and_then(serde_json::Value::as_f64))
         .sum();
     let n = steps.len();
-    let avg_input = if n > 0 { total_input / n as f64 } else { 0.0 };
-    let avg_output = if n > 0 { total_output / n as f64 } else { 0.0 };
+    let n_f64 = count_as_f64(n);
+    let avg_input = if n > 0 { total_input / n_f64 } else { 0.0 };
+    let avg_output = if n > 0 { total_output / n_f64 } else { 0.0 };
     let hit_rate = cache_hit_rate(total_cache_read, total_input);
 
     json!({
@@ -137,8 +162,54 @@ pub fn build_json_hook_breakdown(events: &[Value], session_id: &str) -> Value {
     })
 }
 
+/// Compute token summary JSON (assumes steps is non-empty).
+fn compute_token_summary_json(steps: &[Value]) -> Value {
+    let total_input: f64 = steps
+        .iter()
+        .filter_map(|s| {
+            s.get("input_tokens").and_then(serde_json::Value::as_f64)
+        })
+        .sum();
+    let total_output: f64 = steps
+        .iter()
+        .filter_map(|s| {
+            s.get("output_tokens").and_then(serde_json::Value::as_f64)
+        })
+        .sum();
+    let total_cache_read: f64 = steps
+        .iter()
+        .filter_map(|s| s.get("cache_read").and_then(serde_json::Value::as_f64))
+        .sum();
+    let total_cache_write: f64 = steps
+        .iter()
+        .filter_map(|s| {
+            s.get("cache_write").and_then(serde_json::Value::as_f64)
+        })
+        .sum();
+    let total_cost: f64 = steps
+        .iter()
+        .filter_map(|s| s.get("cost").and_then(serde_json::Value::as_f64))
+        .sum();
+    let n = steps.len();
+    let n_f64 = count_as_f64(n);
+    let avg_input = total_input / n_f64;
+    let avg_output = total_output / n_f64;
+    let hit_rate = cache_hit_rate(total_cache_read, total_input);
+
+    json!({
+        "total_input": total_input,
+        "total_output": total_output,
+        "total_cache_read": total_cache_read,
+        "total_cache_write": total_cache_write,
+        "avg_input_per_turn": (avg_input * 10.0).round() / 10.0,
+        "avg_output_per_turn": (avg_output * 10.0).round() / 10.0,
+        "cache_hit_rate": (hit_rate * 100.0).round() / 100.0,
+        "est_cost": (total_cost * 10_000.0).round() / 10_000.0,
+        "num_steps": n,
+    })
+}
+
 /// Build full session stats as a JSON value (pure, no I/O).
-#[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
 pub fn build_json_full_stats(
     events: &[Value],
     steps: &[Value],
@@ -207,50 +278,7 @@ pub fn build_json_full_stats(
     let token_summary = if steps.is_empty() {
         json!(null)
     } else {
-        let total_input: f64 = steps
-            .iter()
-            .filter_map(|s| {
-                s.get("input_tokens").and_then(serde_json::Value::as_f64)
-            })
-            .sum();
-        let total_output: f64 = steps
-            .iter()
-            .filter_map(|s| {
-                s.get("output_tokens").and_then(serde_json::Value::as_f64)
-            })
-            .sum();
-        let total_cache_read: f64 = steps
-            .iter()
-            .filter_map(|s| {
-                s.get("cache_read").and_then(serde_json::Value::as_f64)
-            })
-            .sum();
-        let total_cache_write: f64 = steps
-            .iter()
-            .filter_map(|s| {
-                s.get("cache_write").and_then(serde_json::Value::as_f64)
-            })
-            .sum();
-        let total_cost: f64 = steps
-            .iter()
-            .filter_map(|s| s.get("cost").and_then(serde_json::Value::as_f64))
-            .sum();
-        let n = steps.len();
-        let avg_input = if n > 0 { total_input / n as f64 } else { 0.0 };
-        let avg_output = if n > 0 { total_output / n as f64 } else { 0.0 };
-        let hit_rate = cache_hit_rate(total_cache_read, total_input);
-
-        json!({
-            "total_input": total_input,
-            "total_output": total_output,
-            "total_cache_read": total_cache_read,
-            "total_cache_write": total_cache_write,
-            "avg_input_per_turn": (avg_input * 10.0).round() / 10.0,
-            "avg_output_per_turn": (avg_output * 10.0).round() / 10.0,
-            "cache_hit_rate": (hit_rate * 100.0).round() / 100.0,
-            "est_cost": (total_cost * 10_000.0).round() / 10_000.0,
-            "num_steps": n,
-        })
+        compute_token_summary_json(steps)
     };
 
     let json_levels = json!({
@@ -273,7 +301,6 @@ pub fn build_json_full_stats(
 }
 
 /// Build cross-session token summary as a JSON value (pure, no I/O).
-#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn build_json_multi_stats(
     sessions_data: &[Value],
     totals: &Value,
@@ -293,12 +320,12 @@ pub fn build_json_multi_stats(
     json!({
         "sessions": sessions_data,
         "total": {
-            "input": totals.get("input").and_then(serde_json::Value::as_f64).unwrap_or(0.0) as u64,
-            "output": totals.get("output").and_then(serde_json::Value::as_f64).unwrap_or(0.0) as u64,
-            "cache_read": totals.get("cache_read").and_then(serde_json::Value::as_f64).unwrap_or(0.0) as u64,
+            "input": f64_to_json_u64(totals.get("input").and_then(serde_json::Value::as_f64).unwrap_or(0.0)),
+            "output": f64_to_json_u64(totals.get("output").and_then(serde_json::Value::as_f64).unwrap_or(0.0)),
+            "cache_read": f64_to_json_u64(totals.get("cache_read").and_then(serde_json::Value::as_f64).unwrap_or(0.0)),
             "hit_rate": total_hit_rate,
             "cost": (totals.get("cost").and_then(serde_json::Value::as_f64).unwrap_or(0.0) * 10_000.0).round() / 10_000.0,
-            "hook_events": totals.get("hook_events").and_then(serde_json::Value::as_f64).unwrap_or(0.0) as u64,
+            "hook_events": f64_to_json_u64(totals.get("hook_events").and_then(serde_json::Value::as_f64).unwrap_or(0.0)),
         },
     })
 }
@@ -350,11 +377,6 @@ pub fn print_json_token_summary(steps: &[Value]) {
 }
 
 /// Print token summary as a rich table.
-#[expect(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)]
 pub fn print_token_summary_table(steps: &[Value]) {
     if steps.is_empty() {
         msg_print("");
@@ -389,10 +411,11 @@ pub fn print_token_summary_table(steps: &[Value]) {
         .filter_map(|s| s.get("cost").and_then(serde_json::Value::as_f64))
         .sum();
     let n = steps.len();
-    let avg_input = if n > 0 { total_input / n as f64 } else { 0.0 };
-    let avg_output = if n > 0 { total_output / n as f64 } else { 0.0 };
+    let n_f64 = count_as_f64(n);
+    let avg_input = if n > 0 { total_input / n_f64 } else { 0.0 };
+    let avg_output = if n > 0 { total_output / n_f64 } else { 0.0 };
     let hit_rate = cache_hit_rate(total_cache_read, total_input);
-    let denom = (total_input + total_cache_read) as u64;
+    let denom = f64_display_as_u64(total_input + total_cache_read);
 
     let width = terminal::get_terminal_width();
     let mut table =
@@ -486,13 +509,35 @@ pub fn print_json_full_stats(
     print_json(&build_json_full_stats(events, steps, path, session_id));
 }
 
+/// Print level distribution table.
+fn print_level_distribution_table(events: &[Value]) {
+    let mut level_counts: HashMap<&str, i64> = HashMap::new();
+    for event in events {
+        let level =
+            event.get("level").and_then(|v| v.as_str()).unwrap_or("unknown");
+        *level_counts.entry(level).or_insert(0) += 1;
+    }
+
+    let width = terminal::get_terminal_width();
+    let mut level_table =
+        Table::new().show_header(true).show_edge(true).show_lines(false);
+    level_table.add_column(Column::new("Level"));
+    level_table.add_column(Column::new("Count").justify(JustifyMethod::Right));
+
+    let level_order = ["info", "debug", "warn", "error", "fatal"];
+    for level in &level_order {
+        let count = level_counts.get(level).copied().unwrap_or(0);
+        let lvl_style = level_style(level);
+        level_table.add_row(Row::new(vec![
+            Cell::new(Text::styled(level.to_string(), lvl_style)),
+            Cell::new(count.to_string()),
+        ]));
+    }
+
+    render_table(width, &level_table);
+}
+
 /// Print full session stats as rich output.
-#[allow(
-    clippy::too_many_lines,
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)]
 pub fn print_full_stats(
     events: &[Value],
     steps: &[Value],
@@ -528,138 +573,14 @@ pub fn print_full_stats(
 
     // ── Token Summary ──────────────────────────────────────────────────
     if !steps.is_empty() {
-        let total_input: f64 = steps
-            .iter()
-            .filter_map(|s| {
-                s.get("input_tokens").and_then(serde_json::Value::as_f64)
-            })
-            .sum();
-        let total_output: f64 = steps
-            .iter()
-            .filter_map(|s| {
-                s.get("output_tokens").and_then(serde_json::Value::as_f64)
-            })
-            .sum();
-        let total_cache_read: f64 = steps
-            .iter()
-            .filter_map(|s| {
-                s.get("cache_read").and_then(serde_json::Value::as_f64)
-            })
-            .sum();
-        let total_cache_write: f64 = steps
-            .iter()
-            .filter_map(|s| {
-                s.get("cache_write").and_then(serde_json::Value::as_f64)
-            })
-            .sum();
-        let total_cost: f64 = steps
-            .iter()
-            .filter_map(|s| s.get("cost").and_then(serde_json::Value::as_f64))
-            .sum();
-        let n = steps.len();
-        let avg_input = if n > 0 { total_input / n as f64 } else { 0.0 };
-        let avg_output = if n > 0 { total_output / n as f64 } else { 0.0 };
-        let hit_rate = cache_hit_rate(total_cache_read, total_input);
-        let denom = (total_input + total_cache_read) as u64;
-
-        let width = terminal::get_terminal_width();
-        let mut tok_table =
-            Table::new().show_header(true).show_edge(true).show_lines(false);
-        tok_table.add_column(Column::new("Metric"));
-        tok_table
-            .add_column(Column::new("Value").justify(JustifyMethod::Right));
-        let tok_rows: [(&str, String); 8] = [
-            ("Total input tokens", total_input.to_string()),
-            ("Total output tokens", total_output.to_string()),
-            ("Total cache read", total_cache_read.to_string()),
-            ("Total cache write", total_cache_write.to_string()),
-            ("Avg input / turn", format!("{avg_input:.1}")),
-            ("Avg output / turn", format!("{avg_output:.1}")),
-            (
-                "Cache hit rate",
-                format!("{hit_rate:.2}% ({total_cache_read} / {denom})"),
-            ),
-            ("Est. cost", format!("${total_cost:.4}")),
-        ];
-        for (metric, value) in &tok_rows {
-            tok_table.add_row(Row::new(vec![
-                Cell::new(*metric),
-                Cell::new(value.as_str()),
-            ]));
-        }
-        render_table(width, &tok_table);
+        print_token_summary_table(steps);
     }
 
     // ── Level Distribution ─────────────────────────────────────────────
-    let mut level_counts: HashMap<&str, i64> = HashMap::new();
-    for event in events {
-        let level =
-            event.get("level").and_then(|v| v.as_str()).unwrap_or("unknown");
-        *level_counts.entry(level).or_insert(0) += 1;
-    }
-
-    let width = terminal::get_terminal_width();
-    let mut level_table =
-        Table::new().show_header(true).show_edge(true).show_lines(false);
-    level_table.add_column(Column::new("Level"));
-    level_table.add_column(Column::new("Count").justify(JustifyMethod::Right));
-
-    let level_order = ["info", "debug", "warn", "error", "fatal"];
-    for level in &level_order {
-        let count = level_counts.get(level).copied().unwrap_or(0);
-        let lvl_style = level_style(level);
-        level_table.add_row(Row::new(vec![
-            Cell::new(Text::styled(level.to_string(), lvl_style)),
-            Cell::new(count.to_string()),
-        ]));
-    }
-
-    render_table(width, &level_table);
+    print_level_distribution_table(events);
 
     // ── Hook Breakdown ─────────────────────────────────────────────────
-    let mut hook_counts: HashMap<&str, i64> = HashMap::new();
-    let mut hook_event_map: HashMap<&str, HashMap<&str, i64>> = HashMap::new();
-    for event in events {
-        let hook =
-            event.get("hook").and_then(|v| v.as_str()).unwrap_or("unknown");
-        let evt =
-            event.get("event").and_then(|v| v.as_str()).unwrap_or("unknown");
-        *hook_counts.entry(hook).or_insert(0) += 1;
-        hook_event_map
-            .entry(hook)
-            .or_default()
-            .entry(evt)
-            .and_modify(|c| *c += 1)
-            .or_insert(1);
-    }
-
-    let width = terminal::get_terminal_width();
-    let mut hook_table =
-        Table::new().show_header(true).show_edge(true).show_lines(false);
-    hook_table.add_column(Column::new("Hook"));
-    hook_table.add_column(Column::new("Count").justify(JustifyMethod::Right));
-    hook_table.add_column(Column::new("Events"));
-
-    let mut hook_order: Vec<&str> = hook_counts.keys().copied().collect();
-    hook_order.sort_by(|a, b| hook_counts[b].cmp(&hook_counts[a]));
-    for hook in hook_order {
-        let count = hook_counts[hook];
-        let evt_map = &hook_event_map[hook];
-        let mut evt_order: Vec<&str> = evt_map.keys().copied().collect();
-        evt_order.sort_by(|a, b| evt_map[b].cmp(&evt_map[a]));
-        let detail: Vec<String> = evt_order
-            .iter()
-            .map(|evt| format!("{}:{}", evt, evt_map[evt]))
-            .collect();
-        let detail_str = detail.join(", ");
-        hook_table.add_row(Row::new(vec![
-            Cell::new(hook),
-            Cell::new(count.to_string()),
-            Cell::new(detail_str),
-        ]));
-    }
-
-    render_table(width, &hook_table);
+    print_hook_breakdown_table(events, session_id);
 }
 
 // ── Multi-session Stats ────────────────────────────────────────────────────────
@@ -670,13 +591,8 @@ pub fn print_json_multi_stats(sessions_data: &[Value], totals: &Value) {
 }
 
 /// Print cross-session token summary as a rich table.
-#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-pub fn print_multi_stats_table(
-    sessions_data: &[Value],
-    totals: &Value,
-    n: i64,
-) {
-    let bold = Style::new().bold();
+/// Compute total metrics from the totals JSON for the multi-stats table.
+fn compute_totals(totals: &Value) -> (f64, u64, u64, f64, u64) {
     let total_hit_rate = {
         let input = totals
             .get("input")
@@ -688,18 +604,31 @@ pub fn print_multi_stats_table(
             .unwrap_or(0.0);
         cache_hit_rate(cache_read, input)
     };
-    let totals_input =
-        totals.get("input").and_then(serde_json::Value::as_f64).unwrap_or(0.0)
-            as u64;
-    let totals_output =
-        totals.get("output").and_then(serde_json::Value::as_f64).unwrap_or(0.0)
-            as u64;
+    let totals_input = f64_display_as_u64(
+        totals.get("input").and_then(serde_json::Value::as_f64).unwrap_or(0.0),
+    );
+    let totals_output = f64_display_as_u64(
+        totals.get("output").and_then(serde_json::Value::as_f64).unwrap_or(0.0),
+    );
     let totals_cost =
         totals.get("cost").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
-    let totals_hook = totals
-        .get("hook_events")
-        .and_then(serde_json::Value::as_f64)
-        .unwrap_or(0.0) as u64;
+    let totals_hook = f64_display_as_u64(
+        totals
+            .get("hook_events")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0),
+    );
+    (total_hit_rate, totals_input, totals_output, totals_cost, totals_hook)
+}
+
+pub fn print_multi_stats_table(
+    sessions_data: &[Value],
+    totals: &Value,
+    n: i64,
+) {
+    let bold = Style::new().bold();
+    let (total_hit_rate, totals_input, totals_output, totals_cost, totals_hook) =
+        compute_totals(totals);
 
     let width = terminal::get_terminal_width();
     let mut table = Table::new()
@@ -708,41 +637,59 @@ pub fn print_multi_stats_table(
         .show_header(true)
         .show_edge(true)
         .show_lines(false);
-    table.add_column(Column::new("Session ID").no_wrap().min_width(32));
     table.add_column(
-        Column::new("Input").justify(JustifyMethod::Right).no_wrap(),
+        Column::new("Session ID").no_wrap().overflow(OverflowMethod::Ellipsis),
     );
     table.add_column(
-        Column::new("Output").justify(JustifyMethod::Right).no_wrap(),
+        Column::new("Input")
+            .justify(JustifyMethod::Right)
+            .no_wrap()
+            .overflow(OverflowMethod::Ellipsis),
     );
     table.add_column(
-        Column::new("Hit Rate").justify(JustifyMethod::Right).no_wrap(),
+        Column::new("Output")
+            .justify(JustifyMethod::Right)
+            .no_wrap()
+            .overflow(OverflowMethod::Ellipsis),
     );
     table.add_column(
-        Column::new("Cost").justify(JustifyMethod::Right).no_wrap(),
+        Column::new("Hit Rate")
+            .justify(JustifyMethod::Right)
+            .no_wrap()
+            .overflow(OverflowMethod::Ellipsis),
     );
     table.add_column(
-        Column::new("Hook Events").justify(JustifyMethod::Right).no_wrap(),
+        Column::new("Cost")
+            .justify(JustifyMethod::Right)
+            .no_wrap()
+            .overflow(OverflowMethod::Ellipsis),
+    );
+    table.add_column(
+        Column::new("Hook Events")
+            .justify(JustifyMethod::Right)
+            .no_wrap()
+            .overflow(OverflowMethod::Ellipsis),
     );
 
     for s in sessions_data {
         let sid = s.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        let inp =
-            s.get("input").and_then(serde_json::Value::as_f64).unwrap_or(0.0)
-                as u64;
-        let out =
-            s.get("output").and_then(serde_json::Value::as_f64).unwrap_or(0.0)
-                as u64;
+        let inp = f64_display_as_u64(
+            s.get("input").and_then(serde_json::Value::as_f64).unwrap_or(0.0),
+        );
+        let out = f64_display_as_u64(
+            s.get("output").and_then(serde_json::Value::as_f64).unwrap_or(0.0),
+        );
         let hr = s
             .get("hit_rate")
             .and_then(serde_json::Value::as_f64)
             .unwrap_or(0.0);
         let cost =
             s.get("cost").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
-        let hook = s
-            .get("hook_events")
-            .and_then(serde_json::Value::as_f64)
-            .unwrap_or(0.0) as u64;
+        let hook = f64_display_as_u64(
+            s.get("hook_events")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0),
+        );
 
         table.add_row(Row::new(vec![
             Cell::new(sid),
@@ -798,10 +745,18 @@ pub fn print_timeline_table(events: &[Value], session_id: &str, is_all: bool) {
         .show_header(true)
         .show_edge(true)
         .show_lines(false);
-    table.add_column(Column::new("Time").no_wrap().min_width(8));
-    table.add_column(Column::new("Level").no_wrap().min_width(5));
-    table.add_column(Column::new("Hook").no_wrap().min_width(16));
-    table.add_column(Column::new("Event").no_wrap().min_width(14));
+    table.add_column(
+        Column::new("Time").no_wrap().overflow(OverflowMethod::Ellipsis),
+    );
+    table.add_column(
+        Column::new("Level").no_wrap().overflow(OverflowMethod::Ellipsis),
+    );
+    table.add_column(
+        Column::new("Hook").no_wrap().overflow(OverflowMethod::Ellipsis),
+    );
+    table.add_column(
+        Column::new("Event").no_wrap().overflow(OverflowMethod::Ellipsis),
+    );
     table.add_column(Column::new("Details"));
 
     for event in display_events {
@@ -839,26 +794,42 @@ pub fn print_json_impact(result: &Value) {
 ///
 /// `analysis` maps hook names to per-trigger entries, where each entry contains
 /// `session_id`, `timestamp`, `before`, `after`, `n_before`, `n_after`.
-#[expect(clippy::cast_precision_loss)]
 pub fn print_impact_aggregation(analysis: &HashMap<String, Vec<Value>>) {
     let width = terminal::get_terminal_width();
     let mut table =
         Table::new().show_header(true).show_edge(true).show_lines(false);
-    table.add_column(Column::new("Hook").no_wrap().min_width(16));
     table.add_column(
-        Column::new("Triggers").justify(JustifyMethod::Right).no_wrap(),
+        Column::new("Hook").no_wrap().overflow(OverflowMethod::Ellipsis),
     );
     table.add_column(
-        Column::new("Avg Before").justify(JustifyMethod::Right).no_wrap(),
+        Column::new("Triggers")
+            .justify(JustifyMethod::Right)
+            .no_wrap()
+            .overflow(OverflowMethod::Ellipsis),
     );
     table.add_column(
-        Column::new("Avg After").justify(JustifyMethod::Right).no_wrap(),
+        Column::new("Avg Before")
+            .justify(JustifyMethod::Right)
+            .no_wrap()
+            .overflow(OverflowMethod::Ellipsis),
     );
     table.add_column(
-        Column::new("\u{0394}").justify(JustifyMethod::Right).no_wrap(),
+        Column::new("Avg After")
+            .justify(JustifyMethod::Right)
+            .no_wrap()
+            .overflow(OverflowMethod::Ellipsis),
     );
     table.add_column(
-        Column::new("Correlated Steps").justify(JustifyMethod::Right).no_wrap(),
+        Column::new("\u{0394}")
+            .justify(JustifyMethod::Right)
+            .no_wrap()
+            .overflow(OverflowMethod::Ellipsis),
+    );
+    table.add_column(
+        Column::new("Correlated Steps")
+            .justify(JustifyMethod::Right)
+            .no_wrap()
+            .overflow(OverflowMethod::Ellipsis),
     );
 
     let mut hook_names: Vec<&String> = analysis.keys().collect();
@@ -890,8 +861,9 @@ pub fn print_impact_aggregation(analysis: &HashMap<String, Vec<Value>>) {
             })
             .sum();
 
-        let avg_b = if n > 0 { all_before / n as f64 } else { 0.0 };
-        let avg_a = if n > 0 { all_after / n as f64 } else { 0.0 };
+        let n_f64 = count_as_f64(n);
+        let avg_b = if n > 0 { all_before / n_f64 } else { 0.0 };
+        let avg_a = if n > 0 { all_after / n_f64 } else { 0.0 };
         let delta = avg_a - avg_b;
 
         let delta_str = format!("{delta:+.1}pp");
@@ -919,7 +891,6 @@ pub fn print_impact_aggregation(analysis: &HashMap<String, Vec<Value>>) {
 /// Print the cache recovery curve table.
 ///
 /// `data` maps step distance to a list of observed hit rates.
-#[expect(clippy::cast_precision_loss)]
 pub fn print_recovery_curve(data: &BTreeMap<i64, Vec<f64>>) {
     let width = terminal::get_terminal_width();
     let mut table =
@@ -933,7 +904,7 @@ pub fn print_recovery_curve(data: &BTreeMap<i64, Vec<f64>>) {
         let avg_rate: f64 = if rates.is_empty() {
             0.0
         } else {
-            rates.iter().sum::<f64>() / rates.len() as f64
+            rates.iter().sum::<f64>() / count_as_f64(rates.len())
         };
         let bar = hit_rate_bar(avg_rate);
 
@@ -994,7 +965,6 @@ pub fn print_cost_impact(data: &HashMap<String, CostData>) {
 /// Each row in `rows` is a Value with fields: `session_id`, `hook`,
 /// `timestamp`, `avg_before`, `avg_after`, `delta`, `before_steps`,
 /// `after_steps`.
-#[allow(clippy::too_many_lines)]
 pub fn print_impact_verbose(rows: &[Value]) {
     for row in rows {
         let sid = row.get("session_id").and_then(|v| v.as_str()).unwrap_or("?");

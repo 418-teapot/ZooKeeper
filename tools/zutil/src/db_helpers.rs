@@ -6,7 +6,7 @@ use serde_json::{Map, Value};
 use crate::{epoch_ms_to_iso, expand_tilde, safe_json_loads};
 
 /// Try to open the DB in read-only URI mode.  Returns None if the file does
-/// not exist (matching Python: empty results, no error).
+/// not exist (returns empty results, no error).
 #[must_use]
 pub fn open_db(path: &str) -> Option<Connection> {
     let expanded = expand_tilde(path);

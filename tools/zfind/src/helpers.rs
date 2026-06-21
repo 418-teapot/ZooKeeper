@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use zutil::truncate_chars;
+use zutil::truncate_width;
 
 /// Classify a message role for display purposes.
 pub fn classify_role(role: &str, parts: &[Value]) -> String {
@@ -23,9 +23,9 @@ pub fn classify_role(role: &str, parts: &[Value]) -> String {
 
 /// Generate a preview string from message parts.
 ///
-/// The preview is truncated to fit within `max_chars` characters
-/// (simple char count — the table engine handles display width).
-pub fn preview_text(parts: &[Value], max_chars: usize) -> String {
+/// The preview is truncated to fit within `max_width` terminal display
+/// columns (CJK = 2 cols, ASCII = 1 col), appending "..." when cut.
+pub fn preview_text(parts: &[Value], max_width: usize) -> String {
     for part in parts {
         let ptype = part.get("type").and_then(|v| v.as_str()).unwrap_or("");
         if ptype == "text" {
@@ -35,10 +35,7 @@ pub fn preview_text(parts: &[Value], max_chars: usize) -> String {
                 .replace('\u{fe0f}', "") // strip emoji VS16: terminal renders 2 cells,
                 .trim() // unicode_width says 1 cell — mismatch avoided
                 .to_string();
-            if text.chars().count() > max_chars {
-                return truncate_chars(&text, max_chars - 3); // room for ...
-            }
-            return text;
+            return truncate_width(&text, max_width);
         }
         if ptype == "tool" {
             let tool_name =
@@ -56,19 +53,12 @@ pub fn preview_text(parts: &[Value], max_chars: usize) -> String {
                 }
                 Some(ref v) => {
                     let s = v.to_string();
-                    if s.chars().count() > max_chars / 2 {
-                        truncate_chars(&s, max_chars / 2)
-                    } else {
-                        s
-                    }
+                    truncate_width(&s, max_width / 2)
                 }
                 None => String::new(),
             };
             let preview = format!("{tool_name}: {key_info}");
-            if preview.chars().count() > max_chars {
-                return truncate_chars(&preview, max_chars - 3); // room for ...
-            }
-            return preview;
+            return truncate_width(&preview, max_width);
         }
     }
     String::new()
@@ -131,14 +121,13 @@ mod tests {
 
     #[test]
     fn test_preview_text_utf8_no_panic() {
-        // Chinese text — truncated by char count now
+        // Chinese text — truncated by display width (CJK = 2 cols per char)
         let long_text = "这是一个很长的中文文本用来测试截断功能是否正常工作不会崩溃还需要更多字符";
         let parts = vec![json!({"type": "text", "text": long_text})];
         let p = preview_text(&parts, 40);
         assert!(
-            p.chars().count() <= 40,
-            "expected ≤ 40 chars, got {}: {p}",
-            p.chars().count()
+            p.ends_with("..."),
+            "expected '...' suffix with CJK truncation, got: {p}"
         );
     }
 
@@ -155,26 +144,25 @@ mod tests {
 
     #[test]
     fn test_preview_text_terminal_width() {
-        // Test with narrow max_chars (10 chars)
+        // Test with narrow max_width (10 display columns)
         let parts = vec![json!({
             "type": "text",
             "text": "this text is too long for narrow terminal"
         })];
         let p = preview_text(&parts, 10);
-        assert!(p.chars().count() <= 10);
-        assert!(p.ends_with("..."));
+        // 10 display columns: 7 chars + "..."
+        assert_eq!(p, "this te...");
     }
 
     #[test]
     fn test_preview_text_cjk_terminal_width() {
-        // CJK text truncated by char count — preview limits chars,
-        // the rich_rust table engine handles actual display width.
+        // CJK text measured by display columns (2 cols per char).
+        // 8 display columns → 5 for text + 3 for "..."
         let parts = vec![json!({
             "type": "text",
             "text": "你好世界这是测试"
         })];
-        // 8 chars ≤ max, no truncation
         let p = preview_text(&parts, 8);
-        assert_eq!(p, "你好世界这是测试");
+        assert_eq!(p, "你好...");
     }
 }

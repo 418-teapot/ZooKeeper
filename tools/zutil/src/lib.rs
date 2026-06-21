@@ -80,6 +80,50 @@ pub fn epoch_ms_to_iso(ms: i64) -> String {
     )
 }
 
+/// Convert ISO 8601 timestamp to epoch milliseconds with full precision.
+///
+/// Uses integer arithmetic to avoid floating-point rounding errors.
+/// Returns `0` on parse failure or empty input.
+#[must_use]
+pub fn iso_to_epoch_ms(ts: &str) -> i64 {
+    if ts.is_empty() {
+        return 0;
+    }
+    // Normalize Z suffix to +00:00 for RFC 3339 parser
+    let cleaned = ts.replace('Z', "+00:00");
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&cleaned) {
+        return dt.timestamp_millis();
+    }
+    // Try NaiveDateTime formats (no timezone)
+    let bare = ts.trim_end_matches('Z');
+    if let Ok(nd) =
+        chrono::NaiveDateTime::parse_from_str(bare, "%Y-%m-%dT%H:%M:%S%.f")
+    {
+        return nd.and_utc().timestamp_millis();
+    }
+    if let Ok(nd) =
+        chrono::NaiveDateTime::parse_from_str(bare, "%Y-%m-%dT%H:%M:%S")
+    {
+        return nd.and_utc().timestamp_millis();
+    }
+    0
+}
+
+/// Convert a `serde_json::Value` to a string for token estimation.
+///
+/// Objects and arrays are serialized to JSON; strings are kept bare (no quotes);
+/// everything else uses `Display` (numbers, booleans, null).
+fn value_to_estimate_string(v: &Value) -> String {
+    match v {
+        Value::Object(_) | Value::Array(_) => {
+            serde_json::to_string(v).unwrap_or_default()
+        }
+        Value::String(s) => s.clone(),
+        Value::Null => "null".to_string(),
+        other => other.to_string(),
+    }
+}
+
 /// Estimate token count from message parts.
 ///
 /// Text/reasoning parts: `char_count / 4`.
@@ -100,8 +144,14 @@ pub fn estimate_tokens(parts: &[Value]) -> usize {
             let state = part.get("state").unwrap_or(&Value::Null);
             let inp = state.get("input").unwrap_or(&Value::Null);
             let out = state.get("output").unwrap_or(&Value::Null);
-            total += inp.to_string().chars().count() / 4;
-            total += out.to_string().chars().count() / 4;
+
+            // Serialize dict/list as JSON, scalar via Display.
+            // serde_json::Value::to_string() adds JSON quotes around
+            // strings — avoid that by serializing only objects/arrays.
+            let input_text = value_to_estimate_string(inp);
+            let output_text = value_to_estimate_string(out);
+            total += input_text.chars().count() / 4;
+            total += output_text.chars().count() / 4;
         }
     }
     total
@@ -289,6 +339,64 @@ mod tests {
     #[test]
     fn test_epoch_ms_to_iso_invalid() {
         assert_eq!(epoch_ms_to_iso(i64::MAX), "invalid-timestamp");
+    }
+
+    #[test]
+    fn test_iso_to_epoch_ms_empty() {
+        assert_eq!(iso_to_epoch_ms(""), 0);
+    }
+
+    #[test]
+    fn test_iso_to_epoch_ms_z_suffix() {
+        // 2024-01-01T00:00:00Z = 1704067200000 ms
+        let ms = iso_to_epoch_ms("2024-01-01T00:00:00Z");
+        assert!(ms > 0, "got {ms}");
+    }
+
+    #[test]
+    fn test_iso_to_epoch_ms_microseconds() {
+        // 0.123456s → truncates to 123ms (not floor, not round)
+        let ms = iso_to_epoch_ms("2024-01-01T00:00:00.123456Z");
+        let base = iso_to_epoch_ms("2024-01-01T00:00:00Z");
+        assert_eq!(ms - base, 123, "123456µs → 123ms");
+    }
+
+    #[test]
+    fn test_iso_to_epoch_ms_no_timezone() {
+        let ms = iso_to_epoch_ms("2024-01-01T00:00:00");
+        assert!(ms > 0, "got {ms}");
+    }
+
+    #[test]
+    fn test_iso_to_epoch_ms_invalid() {
+        assert_eq!(iso_to_epoch_ms("not-a-date"), 0);
+        assert_eq!(iso_to_epoch_ms("garbage"), 0);
+    }
+
+    #[test]
+    fn test_estimate_tokens_tool_string_no_quotes() {
+        // Bugfix: string tool input should NOT be JSON-quoted in estimation.
+        // str("hello world") = 11 chars (bare, not JSON-quoted)
+        // Bug (old): Value::String.to_string() = "\"hello world\"" (15 chars)
+        let parts = vec![serde_json::json!({
+            "type": "tool",
+            "state": {"input": "hello world", "output": "ok"}
+        })];
+        let tokens = estimate_tokens(&parts);
+        // 11/4 + 2/4 = 2 + 0 = 2
+        assert_eq!(tokens, 2);
+    }
+
+    #[test]
+    fn test_estimate_tokens_tool_object() {
+        // Object input should be JSON-serialized
+        let parts = vec![serde_json::json!({
+            "type": "tool",
+            "state": {"input": {"key": "val"}, "output": {}}
+        })];
+        let tokens = estimate_tokens(&parts);
+        // {"key":"val"} = 13 chars / 4 = 3, {} = 2 chars / 4 = 0
+        assert_eq!(tokens, 3);
     }
 
     #[test]

@@ -32,22 +32,72 @@ pub fn query_recent_sessions(
     }
 }
 
+/// Fetch message time map (created, completed) for the given message IDs.
+fn fetch_msg_time_map(
+    conn: &Connection,
+    msg_ids: &HashSet<String>,
+    session_id: &str,
+) -> HashMap<String, (Option<i64>, Option<i64>)> {
+    let mut msg_time_map: HashMap<String, (Option<i64>, Option<i64>)> =
+        HashMap::new();
+
+    if !msg_ids.is_empty() {
+        let placeholders: Vec<String> =
+            msg_ids.iter().map(|_| "?".to_string()).collect();
+        let in_clause = placeholders.join(",");
+
+        let mut msg_stmt = conn
+            .prepare(&format!(
+                "SELECT id, data FROM message \
+                 WHERE id IN ({in_clause}) AND session_id = ?"
+            ))
+            .expect("SQL prepare failed");
+
+        let mut msg_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        for mid in msg_ids {
+            msg_params.push(Box::new(mid.clone()));
+        }
+        msg_params.push(Box::new(session_id.to_string()));
+        let msg_refs: Vec<&dyn rusqlite::types::ToSql> =
+            msg_params.iter().map(std::convert::AsRef::as_ref).collect();
+
+        let msg_rows = msg_stmt
+            .query_map(msg_refs.as_slice(), |row| {
+                let id: String = row.get("id")?;
+                let data_str: String = row.get("data")?;
+                Ok((id, safe_json_loads(&data_str).unwrap_or(Value::Null)))
+            })
+            .expect("SQL query failed");
+
+        for msg_row in msg_rows.flatten() {
+            let time_info = msg_row.1.get("time");
+            let created = time_info
+                .and_then(|t| t.get("created"))
+                .and_then(serde_json::Value::as_i64);
+            let completed = time_info
+                .and_then(|t| t.get("completed"))
+                .and_then(serde_json::Value::as_i64);
+            msg_time_map.insert(msg_row.0, (created, completed));
+        }
+    }
+
+    msg_time_map
+}
+
+/// A row from the step-finish parts query.
+#[derive(Clone)]
+struct StepRow {
+    message_id: String,
+    time_created: Option<i64>,
+    time_updated: Option<i64>,
+    data: Value,
+}
+
 /// Extract per-step token timeline for a session.
 ///
 /// Queries step-finish parts and tool parts, then associates tool
 /// names with their corresponding step by matching `message_id`.
-#[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
 pub fn query_step_data(session_id: &str, db_path: &str) -> Vec<Value> {
-    #[derive(Clone)]
-    #[allow(dead_code)]
-    struct StepRow {
-        id: String,
-        message_id: String,
-        time_created: Option<i64>,
-        time_updated: Option<i64>,
-        data: Value,
-    }
-
     #[derive(Clone)]
     struct ToolRow {
         message_id: String,
@@ -61,7 +111,7 @@ pub fn query_step_data(session_id: &str, db_path: &str) -> Vec<Value> {
     // Step-finish parts
     let mut step_stmt = conn
         .prepare(
-            "SELECT id, message_id, time_created, time_updated, data \
+            "SELECT message_id, time_created, time_updated, data \
              FROM part \
              WHERE session_id = ? \
              AND json_extract(data, '$.type') = 'step-finish' \
@@ -71,13 +121,11 @@ pub fn query_step_data(session_id: &str, db_path: &str) -> Vec<Value> {
 
     let step_rows: Vec<StepRow> = step_stmt
         .query_map(params![session_id], |row| {
-            let id: String = row.get("id")?;
             let message_id: String = row.get("message_id")?;
             let tc: Option<i64> = row.get("time_created")?;
             let tu: Option<i64> = row.get("time_updated")?;
             let data_str: String = row.get("data")?;
             Ok(StepRow {
-                id,
                 message_id,
                 time_created: tc,
                 time_updated: tu,
@@ -129,172 +177,105 @@ pub fn query_step_data(session_id: &str, db_path: &str) -> Vec<Value> {
         }
     }
 
-    // Fetch parent message data for step-finish message_ids to extract
-    // LLM step timing from message.data.time
     let msg_ids: HashSet<String> =
         step_rows.iter().map(|s| s.message_id.clone()).collect();
-    let mut msg_time_map: HashMap<String, (Option<i64>, Option<i64>)> =
-        HashMap::new();
-
-    if !msg_ids.is_empty() {
-        let placeholders: Vec<String> =
-            msg_ids.iter().map(|_| "?".to_string()).collect();
-        let in_clause = placeholders.join(",");
-
-        let mut msg_stmt = conn
-            .prepare(&format!(
-                "SELECT id, data FROM message \
-                 WHERE id IN ({in_clause}) AND session_id = ?"
-            ))
-            .expect("SQL prepare failed");
-
-        let mut msg_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-        for mid in &msg_ids {
-            msg_params.push(Box::new(mid.clone()));
-        }
-        msg_params.push(Box::new(session_id.to_string()));
-        let msg_refs: Vec<&dyn rusqlite::types::ToSql> =
-            msg_params.iter().map(std::convert::AsRef::as_ref).collect();
-
-        let msg_rows = msg_stmt
-            .query_map(msg_refs.as_slice(), |row| {
-                let id: String = row.get("id")?;
-                let data_str: String = row.get("data")?;
-                Ok((id, safe_json_loads(&data_str).unwrap_or(Value::Null)))
-            })
-            .expect("SQL query failed");
-
-        for msg_row in msg_rows.flatten() {
-            let time_info = msg_row.1.get("time");
-            let created = time_info
-                .and_then(|t| t.get("created"))
-                .and_then(serde_json::Value::as_i64);
-            let completed = time_info
-                .and_then(|t| t.get("completed"))
-                .and_then(serde_json::Value::as_i64);
-            msg_time_map.insert(msg_row.0, (created, completed));
-        }
-    }
+    let msg_time_map = fetch_msg_time_map(&conn, &msg_ids, session_id);
 
     // Build results
-    let mut results: Vec<Value> = Vec::new();
-    for (idx, srow) in step_rows.iter().enumerate() {
-        let step_index = idx + 1;
-        let msg_id = &srow.message_id;
-        let sdata = &srow.data;
-
-        let ts_created =
-            srow.time_created.map(epoch_ms_to_iso).unwrap_or_default();
-        let ts_updated =
-            srow.time_updated.map(epoch_ms_to_iso).unwrap_or_default();
-
-        // step-finish JSON has nested tokens:
-        // {"tokens": {"input": N, "output": N,
-        //             "cache": {"read": N, "write": N}}}
-        let tokens_obj = sdata
-            .get("tokens")
-            .and_then(|v| v.as_object())
-            .cloned()
-            .unwrap_or_default();
-        let cache_obj = tokens_obj
-            .get("cache")
-            .and_then(|v| v.as_object())
-            .cloned()
-            .unwrap_or_default();
-
-        let input_tokens = tokens_obj
-            .get("input")
-            .and_then(serde_json::Value::as_f64)
-            .unwrap_or(0.0);
-        let output_tokens = tokens_obj
-            .get("output")
-            .and_then(serde_json::Value::as_f64)
-            .unwrap_or(0.0);
-        let reasoning_tokens = tokens_obj
-            .get("reasoning")
-            .and_then(serde_json::Value::as_f64)
-            .unwrap_or(0.0);
-        let cache_read = cache_obj
-            .get("read")
-            .and_then(serde_json::Value::as_f64)
-            .unwrap_or(0.0);
-        let cache_write = cache_obj
-            .get("write")
-            .and_then(serde_json::Value::as_f64)
-            .unwrap_or(0.0);
-        let cost = sdata
-            .get("cost")
-            .and_then(serde_json::Value::as_f64)
-            .unwrap_or(0.0);
-        let reason = sdata
-            .get("reason")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        let tools: Vec<Value> = tools_by_msg
-            .get(msg_id)
-            .map(|v| v.iter().map(|s| Value::String(s.clone())).collect())
-            .unwrap_or_default();
-
-        let msg_times = msg_time_map.get(msg_id);
-        let msg_time_created = msg_times
-            .and_then(|(c, _)| *c)
-            .and_then(|ts| Number::from_f64(ts as f64))
-            .map(Value::Number);
-        let msg_time_completed = msg_times
-            .and_then(|(_, c)| *c)
-            .and_then(|ts| Number::from_f64(ts as f64))
-            .map(Value::Number);
-
-        let mut step = Map::new();
-        step.insert(
-            "step_index".to_string(),
-            Value::Number(Number::from(step_index as u64)),
-        );
-        step.insert("message_id".to_string(), Value::String(msg_id.clone()));
-        step.insert("time_created".to_string(), Value::String(ts_created));
-        step.insert("time_updated".to_string(), Value::String(ts_updated));
-        step.insert(
-            "cache_read".to_string(),
-            Number::from_f64(cache_read).map_or(Value::Null, Value::Number),
-        );
-        step.insert(
-            "cache_write".to_string(),
-            Number::from_f64(cache_write).map_or(Value::Null, Value::Number),
-        );
-        step.insert(
-            "input_tokens".to_string(),
-            Number::from_f64(input_tokens).map_or(Value::Null, Value::Number),
-        );
-        step.insert(
-            "output_tokens".to_string(),
-            Number::from_f64(output_tokens).map_or(Value::Null, Value::Number),
-        );
-        step.insert(
-            "reasoning_tokens".to_string(),
-            Number::from_f64(reasoning_tokens)
-                .map_or(Value::Null, Value::Number),
-        );
-        step.insert(
-            "cost".to_string(),
-            Number::from_f64(cost).map_or(Value::Null, Value::Number),
-        );
-        step.insert("reason".to_string(), Value::String(reason));
-        step.insert("tools".to_string(), Value::Array(tools));
-        step.insert(
-            "msg_time_created".to_string(),
-            msg_time_created.unwrap_or(Value::Null),
-        );
-        step.insert(
-            "msg_time_completed".to_string(),
-            msg_time_completed.unwrap_or(Value::Null),
-        );
-
-        results.push(Value::Object(step));
-    }
+    let results: Vec<Value> = step_rows
+        .iter()
+        .enumerate()
+        .map(|(idx, srow)| {
+            build_step_value(idx, srow, &tools_by_msg, &msg_time_map)
+        })
+        .collect();
 
     results
+}
+
+/// Build a single step JSON value from a `StepRow` and auxiliary data.
+/// Helper: convert an f64 token value to JSON Number or Null.
+fn f64_to_json(v: f64) -> Value {
+    Number::from_f64(v).map_or(Value::Null, Value::Number)
+}
+
+fn build_step_value(
+    idx: usize,
+    srow: &StepRow,
+    tools_by_msg: &HashMap<String, Vec<String>>,
+    msg_time_map: &HashMap<String, (Option<i64>, Option<i64>)>,
+) -> Value {
+    let step_index = idx + 1;
+    let msg_id = &srow.message_id;
+    let sdata = &srow.data;
+
+    let ts_created = srow.time_created.map(epoch_ms_to_iso).unwrap_or_default();
+    let ts_updated = srow.time_updated.map(epoch_ms_to_iso).unwrap_or_default();
+
+    let tokens_obj = sdata
+        .get("tokens")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let cache_obj = tokens_obj
+        .get("cache")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+
+    let input_tokens =
+        tokens_obj.get("input").and_then(Value::as_f64).unwrap_or(0.0);
+    let output_tokens =
+        tokens_obj.get("output").and_then(Value::as_f64).unwrap_or(0.0);
+    let reasoning_tokens =
+        tokens_obj.get("reasoning").and_then(Value::as_f64).unwrap_or(0.0);
+    let cache_read =
+        cache_obj.get("read").and_then(Value::as_f64).unwrap_or(0.0);
+    let cache_write =
+        cache_obj.get("write").and_then(Value::as_f64).unwrap_or(0.0);
+    let cost = sdata.get("cost").and_then(Value::as_f64).unwrap_or(0.0);
+    let reason =
+        sdata.get("reason").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    let tools: Vec<Value> = tools_by_msg
+        .get(msg_id)
+        .map(|v| v.iter().map(|s| Value::String(s.clone())).collect())
+        .unwrap_or_default();
+
+    let msg_times = msg_time_map.get(msg_id);
+    let msg_time_created = msg_times
+        .and_then(|(c, _)| *c)
+        .map(|ts| Value::Number(Number::from(ts)));
+    let msg_time_completed = msg_times
+        .and_then(|(_, c)| *c)
+        .map(|ts| Value::Number(Number::from(ts)));
+
+    let mut step = Map::new();
+    step.insert(
+        "step_index".to_string(),
+        Value::Number(Number::from(step_index as u64)),
+    );
+    step.insert("message_id".to_string(), Value::String(msg_id.clone()));
+    step.insert("time_created".to_string(), Value::String(ts_created));
+    step.insert("time_updated".to_string(), Value::String(ts_updated));
+    step.insert("cache_read".to_string(), f64_to_json(cache_read));
+    step.insert("cache_write".to_string(), f64_to_json(cache_write));
+    step.insert("input_tokens".to_string(), f64_to_json(input_tokens));
+    step.insert("output_tokens".to_string(), f64_to_json(output_tokens));
+    step.insert("reasoning_tokens".to_string(), f64_to_json(reasoning_tokens));
+    step.insert("cost".to_string(), f64_to_json(cost));
+    step.insert("reason".to_string(), Value::String(reason));
+    step.insert("tools".to_string(), Value::Array(tools));
+    step.insert(
+        "msg_time_created".to_string(),
+        msg_time_created.unwrap_or(Value::Null),
+    );
+    step.insert(
+        "msg_time_completed".to_string(),
+        msg_time_completed.unwrap_or(Value::Null),
+    );
+
+    Value::Object(step)
 }
 
 #[cfg(test)]
@@ -440,7 +421,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::cast_possible_truncation)]
     fn test_query_step_data() {
         let _lock =
             DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -450,10 +430,20 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["step_index"], 1);
         assert_eq!(results[0]["message_id"], "msg-002");
-        assert_eq!(results[0]["input_tokens"].as_f64().unwrap() as i64, 100);
-        assert_eq!(results[0]["output_tokens"].as_f64().unwrap() as i64, 50);
-        assert_eq!(results[0]["cache_read"].as_f64().unwrap() as i64, 30);
-        assert_eq!(results[0]["cache_write"].as_f64().unwrap() as i64, 10);
+        assert!(
+            (results[0]["input_tokens"].as_f64().unwrap() - 100.0).abs()
+                < 0.001
+        );
+        assert!(
+            (results[0]["output_tokens"].as_f64().unwrap() - 50.0).abs()
+                < 0.001
+        );
+        assert!(
+            (results[0]["cache_read"].as_f64().unwrap() - 30.0).abs() < 0.001
+        );
+        assert!(
+            (results[0]["cache_write"].as_f64().unwrap() - 10.0).abs() < 0.001
+        );
         assert_eq!(results[0]["reason"], "completed");
         // Has a tool associated
         let tools = results[0]["tools"].as_array().unwrap();

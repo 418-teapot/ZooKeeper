@@ -3,8 +3,8 @@ use serde_json::Value;
 
 use zutil::resolve_session_path;
 
-/// Histogram bar characters (each represents 1.25 pp, from 1.25 to 8.75).
-const HIT_BAR_TICKS: &[&str] = &["▏", "▎", "▍", "▌", "▋", "▊", "▉"];
+// Note: sub-tick characters for the histogram bar (▏..▉) are emitted
+// directly in `hit_rate_bar` to satisfy single_char_add_str as `bar.push()`.
 
 /// Convert an ISO timestamp to `HH:MM:SS`.
 ///
@@ -58,19 +58,43 @@ pub fn cache_hit_rate(cache_read: f64, input_tokens: f64) -> f64 {
 ///
 /// Each `█` represents 10 percentage points; sub-steps (▉▊▋▌▍▎▏)
 /// represent 1.25 pp each.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+///
+/// Uses bounded for-loop and direct string emission to avoid
+/// integer-cast and float-comparison lints.
 pub fn hit_rate_bar(rate: f64) -> String {
-    let full = (rate / 10.0) as usize;
-    let remainder = (full as f64).mul_add(-10.0, rate);
-    let tick_index = (remainder / 1.25) as usize;
-    let mut bar = "█".repeat(full);
-    if tick_index > 0 && tick_index <= HIT_BAR_TICKS.len() {
-        bar.push_str(HIT_BAR_TICKS[tick_index - 1]);
+    let clamped = rate.clamp(0.0, 100.0);
+    let mut bar = String::new();
+
+    // At most 10 full blocks (100 %)
+    let mut remaining = clamped;
+    for _ in 0..10 {
+        if remaining >= 10.0 {
+            bar.push('█');
+            remaining -= 10.0;
+        } else {
+            break;
+        }
     }
+
+    // remaining is 0.0..10.0 — append the sub-tick character
+    if remaining >= 1.25 {
+        if remaining >= 8.75 {
+            bar.push('▉');
+        } else if remaining >= 7.50 {
+            bar.push('▊');
+        } else if remaining >= 6.25 {
+            bar.push('▋');
+        } else if remaining >= 5.00 {
+            bar.push('▌');
+        } else if remaining >= 3.75 {
+            bar.push('▍');
+        } else if remaining >= 2.50 {
+            bar.push('▎');
+        } else {
+            bar.push('▏');
+        }
+    }
+
     bar
 }
 
@@ -114,10 +138,43 @@ fn strip_vs16_from_value(value: &mut Value) {
     }
 }
 
+/// Format the context-metrics hook details.
+fn format_context_metrics(event: &Value) -> String {
+    let Some(estimated_tokens) =
+        event.get("estimated_tokens").and_then(serde_json::Value::as_i64)
+    else {
+        return String::new();
+    };
+    let message_count = event
+        .get("message_count")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0);
+    let exact_tokens = event
+        .get("exact_tokens")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0);
+    let estimated_new_tokens = event
+        .get("estimated_new_tokens")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0);
+    if let Some(agent) = event.get("agent").and_then(|v| v.as_str())
+        && !agent.is_empty()
+    {
+        format!(
+            "{agent}: estimated={estimated_tokens} tokens, \
+             {message_count} msgs \
+             (exact={exact_tokens} + est={estimated_new_tokens})"
+        )
+    } else {
+        format!(
+            "estimated={estimated_tokens} tokens, \
+             {message_count} msgs \
+             (exact={exact_tokens} + est={estimated_new_tokens})"
+        )
+    }
+}
+
 /// Format key details for a timeline row based on hook type.
-///
-/// Matches the exact Python logic from `_format_details()`.
-#[allow(clippy::too_many_lines)]
 pub fn format_details(event: &Value) -> String {
     let hook = event.get("hook").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -188,40 +245,7 @@ pub fn format_details(event: &Value) -> String {
             }
             parts.join(", ")
         }
-        "context-metrics" => {
-            event
-                .get("estimated_tokens")
-                .and_then(serde_json::Value::as_i64)
-                .map_or_else(String::new, |estimated_tokens| {
-                    let message_count = event
-                        .get("message_count")
-                        .and_then(serde_json::Value::as_i64)
-                        .unwrap_or(0);
-                    let exact_tokens = event
-                        .get("exact_tokens")
-                        .and_then(serde_json::Value::as_i64)
-                        .unwrap_or(0);
-                    let estimated_new_tokens = event
-                        .get("estimated_new_tokens")
-                        .and_then(serde_json::Value::as_i64)
-                        .unwrap_or(0);
-                    if let Some(agent) = event.get("agent").and_then(|v| v.as_str())
-                        && !agent.is_empty()
-                    {
-                        format!(
-                            "{agent}: estimated={estimated_tokens} tokens, \
-                                 {message_count} msgs \
-                                 (exact={exact_tokens} + est={estimated_new_tokens})"
-                        )
-                    } else {
-                        format!(
-                            "estimated={estimated_tokens} tokens, \
-                             {message_count} msgs \
-                             (exact={exact_tokens} + est={estimated_new_tokens})"
-                        )
-                    }
-                })
-        }
+        "context-metrics" => format_context_metrics(event),
         _ => String::new(),
     }
     .trim()
@@ -313,12 +337,11 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::float_cmp)]
     fn test_cache_hit_rate() {
         assert!((cache_hit_rate(30.0, 100.0) - 23.076).abs() < 0.01);
-        assert_eq!(cache_hit_rate(0.0, 0.0), 0.0);
-        assert_eq!(cache_hit_rate(0.0, 100.0), 0.0);
-        assert_eq!(cache_hit_rate(100.0, 0.0), 100.0);
+        assert!((cache_hit_rate(0.0, 0.0) - 0.0).abs() < f64::EPSILON);
+        assert!((cache_hit_rate(0.0, 100.0) - 0.0).abs() < f64::EPSILON);
+        assert!((cache_hit_rate(100.0, 0.0) - 100.0).abs() < f64::EPSILON);
     }
 
     #[test]

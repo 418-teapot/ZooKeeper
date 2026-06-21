@@ -162,7 +162,7 @@ task = "deny"
 
 [agent.eagle]
 mode  = "subagent"
-model = "{env:ZOO_MEDIUM_MODEL}"
+model = "{env:ZOO_MODEL}"
 [agent.eagle.permission]
 write = "deny"
 edit = "deny"

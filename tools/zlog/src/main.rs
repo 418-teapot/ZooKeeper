@@ -78,7 +78,7 @@ fn cmd_show(
     };
 
     if raw {
-        // Cat the file — matches Python's sys.stdout.write(f.read())
+        // Cat the file — output raw content to stdout
         match fs::read_to_string(&path) {
             Ok(content) => print!("{content}"),
             Err(e) => {
@@ -115,7 +115,7 @@ fn cmd_show(
         }
     };
 
-    // Python does not check the exit code, so we don't either.
+    // Exit code is deliberately not checked.
     let _ = child.wait();
 }
 
@@ -133,7 +133,7 @@ fn cmd_tail(
     };
 
     if raw {
-        // Bypass jq entirely — tail -f directly, same as Python
+        // Bypass jq entirely — tail -f directly
         let mut child = match Command::new("tail")
             .args(["-n", "0", "-f", &path])
             .stdout(Stdio::inherit())
@@ -154,7 +154,7 @@ fn cmd_tail(
     let jq_args =
         run_jq_pipeline(filter_str.as_deref(), true /* unbuffered */);
 
-    // Build grep pre-filter patterns (same order as Python: event, hook, level)
+    // Build grep pre-filter patterns (order: event, hook, level)
     let mut grep_patterns: Vec<String> = Vec::new();
     if let Some(e) = event {
         grep_patterns.push(format!("\"event\":\"{e}\""));
@@ -198,8 +198,7 @@ fn cmd_tail(
             Ok(c) => c,
             Err(e) => {
                 eprintln!("Error: failed to spawn grep: {e}");
-                #[allow(clippy::iter_with_drain)]
-                for mut c in children.drain(..) {
+                for mut c in std::mem::take(&mut children) {
                     let _ = c.kill();
                     let _ = c.wait();
                 }
@@ -221,8 +220,7 @@ fn cmd_tail(
         Ok(c) => c,
         Err(e) => {
             eprintln!("Error: failed to spawn jq: {e}");
-            #[allow(clippy::iter_with_drain)]
-            for mut c in children.drain(..) {
+            for mut c in std::mem::take(&mut children) {
                 let _ = c.kill();
                 let _ = c.wait();
             }
@@ -239,7 +237,7 @@ fn cmd_tail(
     let _ = children[last_idx].wait();
 
     // Finally: terminate all processes (unconditionally — reachable both
-    // on normal exit and after Ctrl-C).  Matches Python's finally block.
+    // on normal exit and after Ctrl-C).
     for c in &mut children {
         let _ = c.kill();
         let _ = c.wait();
@@ -307,8 +305,7 @@ enum Commands {
 
 fn main() {
     // Set up Ctrl-C handler: the flag is set but the process keeps running so
-    // we can clean up child processes (matching Python's KeyboardInterrupt
-    // catch + finally-terminate pattern).
+    // we can clean up child processes (SIGINT is caught, cleanup runs).
     let interrupted = Arc::new(AtomicBool::new(false));
     let r = Arc::clone(&interrupted);
     if ctrlc::set_handler(move || {
@@ -321,7 +318,7 @@ fn main() {
 
     let log_dir = get_zoo_log_dir();
 
-    // Check log directory exists (matches Python: check before dispatch)
+    // Check log directory exists before dispatching subcommand
     if !Path::new(&log_dir).is_dir() {
         eprintln!("Error: log directory {log_dir} does not exist");
         std::process::exit(2);
@@ -351,8 +348,7 @@ fn main() {
             );
         }
         None => {
-            // No subcommand given — print help and exit 1 (matches Python:
-            // parser.print_help(); sys.exit(1))
+            // No subcommand given — print help and exit 1
             let mut cmd = Cli::command();
             let _ = cmd.print_help();
             println!();

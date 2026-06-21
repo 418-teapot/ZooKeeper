@@ -1,3 +1,3 @@
 [workspace]
-members = ["zutil", "zlog", "zfind", "zinspect"]
+members = ["zutil", "zlog", "zfind", "zinspect", "ztrace"]
 resolver = "2"
