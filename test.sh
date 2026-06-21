@@ -45,8 +45,14 @@ else
   FAILED=1
 fi
 
-# Coverage requires llvm-tools-preview (rustup component add llvm-tools-preview).
-if rustup component list 2>/dev/null | grep -q 'llvm-tools-preview.*installed'; then
+# Coverage requires cargo-llvm-cov (binary) and llvm-tools-preview (rustup component).
+if ! command -v cargo-llvm-cov &>/dev/null; then
+  echo ""
+  echo "📦 Installing cargo-llvm-cov..."
+  cargo install cargo-llvm-cov
+fi
+
+if rustup component list 2>/dev/null | grep -q 'llvm-tools.*installed'; then
   section "Rust coverage"
   COV_OUTPUT=$(RUSTFLAGS="-D warnings" cargo llvm-cov --manifest-path tools/Cargo.toml --workspace --summary-only -- --test-threads=1 2>&1) || true
 
@@ -99,10 +105,10 @@ if rustup component list 2>/dev/null | grep -q 'llvm-tools-preview.*installed'; 
     # zfind/zinspect db.rs + helpers.rs (core logic);
     # display.rs/main.rs are 0% by design (stdout rendering / CLI dispatch).
     check_cov "zutil"     "$COV_ZUTIL"    80 || FAILED=1
-    check_cov "zlog"      "$COV_ZLOG"     55 || FAILED=1
-    check_cov "zfind"     "$COV_ZFIND"    45 || FAILED=1  # aggregate of 4 modules
+    check_cov "zlog"      "$COV_ZLOG"     65 || FAILED=1
+    check_cov "zfind"     "$COV_ZFIND"    50 || FAILED=1  # aggregate of 4 modules
     check_cov "zinspect"  "$COV_ZINSPECT" 50 || FAILED=1  # aggregate of 4 modules
-    check_cov "total"     "$COV_TOTAL"    50 || true
+    check_cov "total"     "$COV_TOTAL"    55 || true
   fi
 else
   echo ""
