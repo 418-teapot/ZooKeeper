@@ -56,7 +56,7 @@ MAD 对异常值鲁棒。单个极端测量值不会大幅膨胀噪声底限，�
 
 ## Backlinks
 
-由 `backlinks.py` 自动维护。列出引用本页面的其他页面。
+> 此节由 zwiki 自动维护，请勿手动编辑。
 
 - [autoresearch 扩展循环](concepts/autoresearch-extension-loop.md)
 - [METRIC/ASI 文本协议](concepts/metric-asi-protocol.md)

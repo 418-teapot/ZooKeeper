@@ -75,7 +75,7 @@ autoresearch (plugin)        ← 4 个工具、SQLite、segment、auto-resume、
 
 ## Backlinks
 
-由 `backlinks.py` 自动维护。列出引用本页面的其他页面。
+> 此节由 zwiki 自动维护，请勿手动编辑。
 
 - [autoresearch ZooKeeper 移植路线图](analysis/autoresearch-porting-roadmap.md)
 - [性能调优设计模式](analysis/performance-tuning-design-patterns.md)

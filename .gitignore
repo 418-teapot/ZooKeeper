@@ -21,6 +21,7 @@ tests/results/
 
 # ——— Rust ———
 tools/target/
+tools/bin/
 
 # ——— OS & editors ———
 .DS_Store

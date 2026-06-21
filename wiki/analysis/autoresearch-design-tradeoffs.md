@@ -79,7 +79,7 @@ autoresearch 的设计不是"最优解"，而是"在约束下的合理选择"。
 
 ## Backlinks
 
-由 `backlinks.py` 自动维护。列出引用本页面的其他页面。
+> 此节由 zwiki 自动维护，请勿手动编辑。
 
 - [autoresearch — AI agent 自主 LLM 训练实验框架](sources/notes/autoresearch.md)
 

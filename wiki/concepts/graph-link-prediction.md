@@ -59,7 +59,7 @@ Wiki 已有的锚文本挖掘（见 [Wiki 健康检查](concepts/wiki-health-che
 
 ## Backlinks
 
-由 `backlinks.py` 自动维护。列出引用本页面的其他页面。
+> 此节由 zwiki 自动维护，请勿手动编辑。
 
 - [LLM Wiki vs RAG — 两种知识管理范式的对比](analysis/llm-wiki-vs-rag.md)
 - [复利知识 — 持久化知识库的核心价值](concepts/compounding-knowledge.md)

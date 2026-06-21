@@ -50,7 +50,7 @@ Agent 的自主性不应被硬限制束缚。实际优化中，意料之外的�
 
 ## Backlinks
 
-由 `backlinks.py` 自动维护。列出引用本页面的其他页面。
+> 此节由 zwiki 自动维护，请勿手动编辑。
 
 - [autoresearch 扩展循环](concepts/autoresearch-extension-loop.md)
 - [单文件修改原则](concepts/single-file-modification.md)

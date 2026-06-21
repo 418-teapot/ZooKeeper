@@ -68,7 +68,7 @@ commit  val_bpb  memory_gb  status  description
 
 ## Backlinks
 
-由 `backlinks.py` 自动维护。列出引用本页面的其他页面。
+> 此节由 zwiki 自动维护，请勿手动编辑。
 
 - [自主实验循环](concepts/autonomous-experiment-loop.md)
 - [autoresearch 扩展循环](concepts/autoresearch-extension-loop.md)

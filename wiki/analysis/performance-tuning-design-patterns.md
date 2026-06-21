@@ -62,7 +62,7 @@ NPU Agent 将人类 guided sessions 蒸馏为可复用 skill。渐进式自治�
 
 ## Backlinks
 
-由 `backlinks.py` 自动维护。列出引用本页面的其他页面。
+> 此节由 zwiki 自动维护，请勿手动编辑。
 
 - [autoresearch ZooKeeper 移植路线图](analysis/autoresearch-porting-roadmap.md)
 - [autoresearch 设计文档](sources/rfc/autoresearch-design.md)

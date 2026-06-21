@@ -85,7 +85,7 @@ status: stable
 1. **Overview** — 一句话概括和一节概述（blockquote），说明该页面回答的核心问题
 2. **Details** — 详细展开，可使用二级/三级标题细分
 3. **Relations** — 与本页面相关的其他 wiki 页面列表，含简要关联说明
-4. **Backlinks** — 反向链接列表，由 `backlinks.py`（纯确定性工具，无 LLM 调用）自动维护，列出引用本页面的其他页面。ingest 后运行 `python3 ~/.zoo/wiki/tools/backlinks.py --write` 同步
+4. **Backlinks** — 反向链接列表，由 `zwiki check` 自动维护，列出引用本页面的其他页面。
 5. **References** — 引用来源（外部链接、代码路径、文档路径）
 6. **Notes** — 补充说明、待确认事项、边缘情况
 
@@ -143,7 +143,7 @@ Agent 直接读写文件时（`read` / `write` / `edit` / `bash` 指令）使用
 
 ## 页面模板
 
-每种页面类型有对应的模板文件位于 `~/.zoo/wiki/templates/`，由 `new_page.py` 脚本
+每种页面类型有对应的模板文件位于 `~/.zoo/wiki/templates/`，由 `zwiki create` 命令
 用于创建骨架页面。kiwi 在创建新页面时应使用脚本生成骨架，然后 `edit` 填充内容。
 
 | 类型 | 模板文件 | 用途 |
@@ -154,7 +154,7 @@ Agent 直接读写文件时（`read` / `write` / `edit` / `bash` 指令）使用
 | analysis | `~/.zoo/wiki/templates/analysis.md` | 分析页面：方案对比、利弊权衡 |
 | synthesis | `~/.zoo/wiki/templates/synthesis.md` | 合成页面：对 query 的结构化回答 |
 
-创建新页面时使用 `new_page.py` 脚本生成骨架，然后 `edit` 填充内容。**禁止手动创建页面**以保证格式一致性。用法见 `python3 ~/.zoo/wiki/tools/new_page.py --help`。
+创建新页面时使用 `zwiki create` 生成骨架，然后 `edit` 填充内容。**禁止手动创建页面**以保证格式一致性。用法见 `zwiki create --help`。
 
 ---
 

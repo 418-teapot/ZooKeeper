@@ -41,10 +41,10 @@ description: 从 ~/.zoo/wiki/ 中查询知识并合成答案。查询 wiki 覆�
 - **wiki 部分覆盖** → wiki 内容作为上下文，委派 explore 补充探索缺失部分
 - **wiki 无覆盖** → 委派 explore 或 spider 探索，必要时触发 ingest
 
-可选：调用 `wiki_log.py` 记录查询事件，便于追踪查询频率和覆盖范围：
+可选：调用 `zwiki log` 记录查询事件，便于追踪查询频率和覆盖范围：
 
 ```bash
-python3 ~/.zoo/wiki/tools/wiki_log.py \
+zwiki log \
     --op query --path "—" --action pass \
     --note "查询了 <主题>"
 ```

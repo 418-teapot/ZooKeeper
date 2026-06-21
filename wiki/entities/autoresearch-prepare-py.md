@@ -49,7 +49,7 @@ prepare.py 是 [autoresearch](sources/notes/autoresearch.md) 的固定基础设�
 
 ## Backlinks
 
-由 `backlinks.py` 自动维护。列出引用本页面的其他页面。
+> 此节由 zwiki 自动维护，请勿手动编辑。
 
 - [固定时间预算评估](concepts/fixed-time-budget-evaluation.md)
 - [单文件修改原则](concepts/single-file-modification.md)

@@ -119,13 +119,13 @@ Explain to the calling agent what should be created/updated:
 - What index entries to add to `index.md`
 - What cross-references to update (add new page to existing pages' `related` field)
 - Whether `overview.md` needs rewriting
-- What log entries to append via `wiki_log.py`
+- What log entries to append via `zwiki log`
 
 Do NOT perform any writes yourself. Return a complete, actionable analysis.
 </Workflow>
 
 <Contract>
-- NEVER call `wiki_log.py` — the calling agent handles logging
+- NEVER call `zwiki log` — the calling agent handles logging
 - NEVER update `index.md` or `overview.md` directly — describe the change in your analysis return
 - ALWAYS use the absolute path from Phase 0 when reading wiki files — the `read` tool doesn't expand `~`
 - ALWAYS read existing content before analyzing — understand the full page first

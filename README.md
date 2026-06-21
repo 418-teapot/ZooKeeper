@@ -80,4 +80,8 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com/anthropic
 python3 install.py
 ```
 
-安装脚本读取 `config.toml` + `.env`，解析 `{env:VAR}` 占位符，将编译后的配置写入 `~/.config/opencode/opencode.json`。已有配置会自动备份（带时间戳）。
+安装脚本读取 `config.toml` + `.env`，解析 `{env:VAR}` 占位符，将编译后的配置写入 `~/.config/opencode/opencode.json`。已有配置会自动备份（带时间戳）。同时创建 Wiki 和 CLI 工具的软链接到 `~/.zoo/`。
+
+**4. 添加 CLI 工具到 PATH**
+
+将 `~/.zoo/tools/bin` 加入 `PATH` 环境变量，使 `zwiki`、`zlog` 等 CLI 工具全局可用。

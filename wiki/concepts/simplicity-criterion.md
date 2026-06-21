@@ -49,7 +49,7 @@ Agent 作为自主决策者，需要清晰的启发式来避免：
 
 ## Backlinks
 
-由 `backlinks.py` 自动维护。列出引用本页面的其他页面。
+> 此节由 zwiki 自动维护，请勿手动编辑。
 
 - [autoresearch 设计权衡分析](analysis/autoresearch-design-tradeoffs.md)
 - [program.md](entities/autoresearch-program-md.md)

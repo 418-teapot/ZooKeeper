@@ -81,7 +81,7 @@ autoresearch 是一个让 AI agent 自动在小规模单 GPU LLM 训练实验上
 
 ## Backlinks
 
-由 `backlinks.py` 自动维护。列出引用本页面的其他页面。
+> 此节由 zwiki 自动维护，请勿手动编辑。
 
 - [autoresearch 设计权衡分析](analysis/autoresearch-design-tradeoffs.md)
 - [自主实验循环](concepts/autonomous-experiment-loop.md)

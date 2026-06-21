@@ -44,7 +44,7 @@ status: stable
 
 ## Backlinks
 
-由 `backlinks.py` 自动维护。列出引用本页面的其他页面。
+> 此节由 zwiki 自动维护，请勿手动编辑。
 
 - [Agent/Skill/Plugin 判断框架](analysis/agent-skill-plugin-framework.md)
 - [autoresearch 设计权衡分析](analysis/autoresearch-design-tradeoffs.md)

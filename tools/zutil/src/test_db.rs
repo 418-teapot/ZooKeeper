@@ -1,8 +1,10 @@
-#![allow(clippy::missing_panics_doc)]
-
 use rusqlite::Connection;
 
 /// Create the `session` and `message` tables (identical schemas in both tools).
+///
+/// # Panics
+///
+/// Panics if the SQL table creation fails (test-only — indicates broken schema).
 pub fn create_common_tables(conn: &Connection) {
     conn.execute_batch(
         "CREATE TABLE session (
@@ -35,6 +37,10 @@ pub fn create_common_tables(conn: &Connection) {
 /// Insert 3 shared session fixtures (ses-001, ses-002, ses-003).
 ///
 /// Data is identical between zfind and zinspect tests.
+///
+/// # Panics
+///
+/// Panics if any INSERT fails (test-only — indicates broken fixture data).
 pub fn insert_session_fixtures(conn: &Connection) {
     let model_json = r#"{"name":"deepseek-v4"}"#;
 

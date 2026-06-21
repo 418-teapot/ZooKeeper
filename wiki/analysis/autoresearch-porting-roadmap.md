@@ -79,7 +79,7 @@ oh-my-pi 的 autoresearch 扩展（~4131 行 TypeScript）为 ZooKeeper 的 agen
 
 ## Backlinks
 
-由 `backlinks.py` 自动维护。列出引用本页面的其他页面。
+> 此节由 zwiki 自动维护，请勿手动编辑。
 
 - [Agent/Skill/Plugin 判断框架](analysis/agent-skill-plugin-framework.md)
 - [性能调优设计模式](analysis/performance-tuning-design-patterns.md)

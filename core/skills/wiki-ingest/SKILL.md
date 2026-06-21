@@ -69,9 +69,9 @@ description: 用于将外部源文档或对话知识 ingest 到项目 wiki 中�
 返回一份结构化分析，描述：
   - 要创建/更新的页面路径、完整 frontmatter、完整页面内容（遵循 SCHEMA.md 规范）
   - 要在 `wiki/index.md` 中添加的索引条目
-  - 需要更新的交叉引用（更新哪些已有页面的 `related` 字段；反向链接由 `backlinks.py` 自动维护，kiwi 无需处理）
-  - 关于 `overview.md` 是否需要更新的建议
-  - 要通过 wiki_log.py 追加的日志条目
+   - 需要更新的交叉引用（更新哪些已有页面的 `related` 字段；反向链接由 `zwiki backlinks` 自动维护，kiwi 无需处理）
+   - 关于 `overview.md` 是否需要更新的建议
+   - 要通过 `zwiki log` 追加的日志条目
 ```
 
 ### 1.3 委派 kiwi
@@ -85,13 +85,13 @@ description: 用于将外部源文档或对话知识 ingest 到项目 wiki 中�
 kiwi 返回分析后，由调用方 agent 执行写入：
 
 **创建新页面时：**
-1. **创建骨架** — 使用 `new_page.py`：
+1. **创建骨架** — 使用 `zwiki create`：
     ```bash
-    python3 ~/.zoo/wiki/tools/new_page.py \
+    zwiki create \
         --type <concept|entity|analysis|synthesis> \
         --title "<页面标题>"
     ```
-    对于 source 类型追加 `--source-type <adr|rfc|notes>`
+    对于 source 类型追加 `--source-type <adr|rfc|notes>`；中文标题需加 `--slug <english-slug>`
 2. **填充内容** — 使用 `write` / `edit` 将 kiwi 提供的页面内容写入
 
 **更新已有页面时：**
@@ -104,18 +104,15 @@ kiwi 返回分析后，由调用方 agent 执行写入：
     curl -sL "<url>" -o ~/.zoo/wiki/raw/$(date +%F)-<slug>.md
     ```
 4. **更新索引** — 创建新页面时在 `~/.zoo/wiki/index.md` 对应类别下追加条目；更新已有页面时跳过
-5. **记录日志** — 调用 `wiki_log.py`，`--action` 用 `create` 或 `edit`：
+5. **记录日志** — 调用 `zwiki log`，`--action` 用 `create` 或 `edit`：
     ```bash
-    python3 ~/.zoo/wiki/tools/wiki_log.py \
-        --op ingest --path "wiki/<dir>/<file>.md" \
+    zwiki log \
+        --op ingest --path "concepts/<file>.md" \
         --action <create|edit> --note "<简短说明>"
     ```
 6. **更新 overview.md** — 如果 kiwi 的分析建议更新，则执行
-7. **更新交叉引用** — 按照 kiwi 的建议，在已有页面的 `related` 字段中添加新引用。反向链接由 `backlinks.py` 自动维护
-8. **同步反向链接**：
-    ```bash
-    python3 ~/.zoo/wiki/tools/backlinks.py --write
-    ```
+7. **更新交叉引用** — 按照 kiwi 的建议，在已有页面的 `related` 字段中添加新引用。反向链接由 `zwiki check` 自动同步
+8. **同步反向链接** — `zwiki check` 已自动执行，无需手动调用
 
 ---
 
@@ -126,18 +123,15 @@ kiwi 返回分析后，由调用方 agent 执行写入：
 1. **路径确认** — 确认创建/更新的页面路径列表与预期一致
 2. **日志检查** — 确认 `~/.zoo/wiki/log.md` 中已有对应的日志条目
 3. **索引检查** — 确认 `~/.zoo/wiki/index.md` 的对应类别已更新
-4. **反向链接检查** — 确认 `backlinks.py` 已运行且幂等（二次运行报告 0 更新）：
+4. **反向链接检查** — `zwiki check` 已自动同步，二次运行应报告 0 更新
+5. **增量内联链接检查** — 扫描本次写入的新增文本：
     ```bash
-    python3 ~/.zoo/wiki/tools/backlinks.py --write
-    ```
-5. **增量内联链接检查** — 扫描本次写入的新增文本，检查是否有已知 wiki 术语首次出现时缺少内联链接：
-    ```bash
-    python3 ~/.zoo/wiki/tools/diff_check.py || echo "⚠ 新增文本中存在缺失的内联链接，请检查并修复"
+    zwiki check --diff || echo "⚠ 新增文本中存在缺失的内联链接，请检查并修复"
     ```
     如果检查发现问题 → 在新增文本中为缺失链接的术语添加 `[术语](目标页.md)` 内联链接，然后重新运行检查确认通过。
 6. **可选：健康检查** — 运行全量 wiki 结构完整性检查：
     ```bash
-    python3 ~/.zoo/wiki/tools/health.py --json 2>/dev/null \
+    zwiki check 2>/dev/null \
       && echo "✓ wiki 结构完整" \
       || echo "ℹ 健康检查工具不可用，跳过"
     ```

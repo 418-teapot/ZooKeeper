@@ -53,7 +53,7 @@ status: stable
 
 ## Backlinks
 
-由 `backlinks.py` 自动维护。列出引用本页面的其他页面。
+> 此节由 zwiki 自动维护，请勿手动编辑。
 
 - [蒸馏示例 — Karpathy LLM Wiki 文章的摄入过程](analysis/distillation-example-karpathy.md)
 - [复利知识 — 持久化知识库的核心价值](concepts/compounding-knowledge.md)

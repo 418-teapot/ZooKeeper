@@ -55,7 +55,7 @@ train.py 是 [autoresearch](sources/notes/autoresearch.md) 的核心文件，约
 
 ## Backlinks
 
-由 `backlinks.py` 自动维护。列出引用本页面的其他页面。
+> 此节由 zwiki 自动维护，请勿手动编辑。
 
 - [autoresearch 设计权衡分析](analysis/autoresearch-design-tradeoffs.md)
 - [自主实验循环](concepts/autonomous-experiment-loop.md)

@@ -327,6 +327,27 @@ def main() -> None:
         os.symlink(source_wiki, target_link)
         info(f"✓ Wiki 软链接: {target_link} → {source_wiki}")
 
+    # ── Tools symlink ───────────────────────────────────────────────
+    header("Tools 软链接")
+    source_tools_bin = os.path.join(SCRIPT_DIR, "tools", "bin")
+    zoo_tools_dir = os.path.join(zoo_dir, "tools")
+    target_tools_link = os.path.join(zoo_tools_dir, "bin")
+
+    if not os.path.isdir(source_tools_bin):
+        warn(f"tools/bin 目录不存在，跳过软链接: {source_tools_bin}")
+    else:
+        os.makedirs(zoo_tools_dir, exist_ok=True)
+        if os.path.islink(target_tools_link):
+            os.unlink(target_tools_link)
+        elif os.path.exists(target_tools_link):
+            warn(f"路径已存在，将覆盖: {target_tools_link}")
+            if os.path.isdir(target_tools_link):
+                shutil.rmtree(target_tools_link)
+            else:
+                os.remove(target_tools_link)
+        os.symlink(source_tools_bin, target_tools_link)
+        info(f"✓ Tools 软链接: {target_tools_link} → {source_tools_bin}")
+
     print("")
     print(f"  {bold('查看:')}  opencode config --path")
     print(f"  {bold('验证:')}  opencode config --json")

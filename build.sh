@@ -16,11 +16,16 @@ section "Release build"
 cargo build --release
 
 section "Binaries"
-for bin in zlog zfind zinspect ztrace; do
+BIN_DIR="$SCRIPT_DIR/tools/bin"
+mkdir -p "$BIN_DIR"
+
+for bin in zwiki zlog zfind zinspect ztrace; do
     path="target/release/$bin"
     if [ -f "$path" ]; then
-        size=$(du -h "$path" | cut -f1)
-        ok "$bin ($size) → $SCRIPT_DIR/tools/$path"
+        cp "$path" "$BIN_DIR/$bin"
+        strip "$BIN_DIR/$bin"
+        size=$(du -h "$BIN_DIR/$bin" | cut -f1)
+        ok "$bin ($size) → $BIN_DIR/$bin"
     else
         echo "  ✖ $bin not found"
     fi
