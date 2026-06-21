@@ -116,7 +116,6 @@ ZooKeeper 作为 OpenCode 编排器插件，当前日志能力薄弱——仅有
 
 ```toml
 [zoo.logging]
-dir = "~/.zoo/log"        # 日志目录
 max_file_size_mb = 5      # 单文件上限
 max_backups = 2           # 保留备份数
 retention_days = 7        # 清理 > 7 天的日志

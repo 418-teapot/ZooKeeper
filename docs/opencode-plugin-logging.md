@@ -572,7 +572,6 @@ function safeStringify(obj: unknown): string {
 1. **可配置输出通道**：允许用户通过 `config.toml` 的 `[logging]` 部分配置日志行为：
    ```toml
    [logging]
-   file = "~/.local/share/opencode/log/zookeeper.log"
    level = "INFO"
    retention_days = 14
    max_size_mb = 100

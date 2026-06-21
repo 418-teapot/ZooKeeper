@@ -72,7 +72,6 @@ export async function zookeeper(input: any) {
   {
     const logConfig = zooConfig.logging ?? {};
     initLogger("", {
-      logDir: typeof logConfig.dir === "string" ? logConfig.dir : undefined,
       maxFileSize:
         typeof logConfig.max_file_size_mb === "number"
           ? logConfig.max_file_size_mb * 1024 * 1024
