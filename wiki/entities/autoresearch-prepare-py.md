@@ -1,8 +1,8 @@
 ---
 title: prepare.py
+description: 固定不变的基础设施文件，负责数据下载、BPE tokenizer 训练和 val_bpb 评估，确保实验可比性。
 type: entity
-created: 2026-06-19
-updated: 2026-06-19
+timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, file, data, evaluation]
 related:
   - concepts/fixed-time-budget-evaluation.md

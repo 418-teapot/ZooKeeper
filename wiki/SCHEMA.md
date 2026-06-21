@@ -54,9 +54,9 @@ wiki/
 |------|------|------|------|
 | `title` | 是 | string | 页面标题，中文为主 |
 | `type` | 是 | string | 页面类型：`concept` / `entity` / `source` / `analysis` / `synthesis` |
-| `created` | 是 | string | 创建日期，格式 `YYYY-MM-DD` |
-| `updated` | 是 | string | 最后更新日期，格式 `YYYY-MM-DD` |
-| `source` | 否 | string | 来源标识（主要用于 source 类型，如 `adr-001`、`rfc-auth`） |
+| `description` | 否 | string | 一句话摘要 |
+| `timestamp` | 否 | string | 最后更新日期时间，格式 `YYYY-MM-DDTHH:mm:ssZ` |
+| `resource` | 否 | string | 外部资产 URI |
 | `sources` | 否 | string[] | 参考的源文档标识列表（用于 analysis / synthesis 类型） |
 | `tags` | 是 | string[] | 标签列表，如 `[permission, config]` |
 | `related` | 否 | string[] | 相关 wiki 页面路径列表（相对 wiki 根目录），如 `["concepts/permission.md"]` |
@@ -67,9 +67,9 @@ wiki/
 ```yaml
 ---
 title: 权限系统
+description: <一句话摘要>。
 type: concept
-created: 2026-06-17
-updated: 2026-06-17
+timestamp: 2026-06-17T00:00:00Z
 tags: [permission, security]
 related:
   - entities/install-py.md

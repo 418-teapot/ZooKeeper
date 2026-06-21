@@ -1,8 +1,8 @@
 ---
 title: <概念名称>
+description: <一句话摘要>。
 type: concept
-created: YYYY-MM-DD
-updated: YYYY-MM-DD
+timestamp: YYYY-MM-DDTHH:mm:ssZ
 tags: [tag1, tag2]
 related:
   - entities/foo.md

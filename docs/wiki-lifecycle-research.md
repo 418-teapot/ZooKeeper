@@ -2,7 +2,7 @@
 
 **版本:** 2.0
 **日期:** 2026-06-19
-**状态:** 调研阶段，未实施
+**状态:** P0-pre 字段对齐已完成（0a–0e），zwiki 骨架待实施（0f–0g）
 
 ---
 
@@ -682,6 +682,8 @@ Step F: 报告
 | 0e | 删除 `created` 字段 | SCHEMA.md + 5 模板 + 27 wiki 页面 + health.py | ~35 行 |
 | 0f | zwiki CLI 骨架：统一入口 argparse，挂载 check/page/property/create/backlinks/log 子命令 | 新增 zwiki（薄路由，~100 行） | ~100 行 |
 | 0g | `zwiki property`：结构化读/写/删 frontmatter 属性（新增 `_property.py`） | 新增 _property.py + shared/utils.py | ~80 行 |
+
+> **进度 (2026-06-21):** 0a–0e 已完成。0f–0g 待实施。
 
 ### 9.1 P0：地基（纯机械，零 LLM 成本）
 

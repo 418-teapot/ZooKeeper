@@ -1,8 +1,8 @@
 ---
 title: program.md
+description: 人类可编辑的 agent 指令文件，定义实验目标、约束条件和行为准则的轻量级 skill。
 type: entity
-created: 2026-06-19
-updated: 2026-06-19
+timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, file, skill, prompt]
 related:
   - concepts/autonomous-experiment-loop.md

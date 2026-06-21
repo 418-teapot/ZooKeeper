@@ -1,8 +1,8 @@
 ---
 title: Agent/Skill/Plugin 判断框架
+description: 通过六个维度评估一个能力应实现为 Agent、Skill 还是 Plugin Extension 的结构化判断框架。
 type: analysis
-created: 2026-06-19
-updated: 2026-06-19
+timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, architecture, agent-design, extension-design]
 sources:
   - sources/rfc/autoresearch-design.md

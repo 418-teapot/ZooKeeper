@@ -1,9 +1,9 @@
 ---
 title: <源文档标题>
+description: <一句话摘要>。
 type: source
-created: YYYY-MM-DD
-updated: YYYY-MM-DD
-source: <source-id>
+timestamp: YYYY-MM-DDTHH:mm:ssZ
+resource: <source-id>
 tags: [tag1, tag2]
 related:
   - analysis/foo.md

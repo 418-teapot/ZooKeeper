@@ -1,8 +1,9 @@
 ---
 title: 单文件修改原则
+description: 在自主实验框架中 agent 只能修改单一文件 train.py，其余文件固定不变，将搜索空间限制在模型架构和训练流程内。
+resource: https://github.com/karpathy/autoresearch
 type: concept
-created: 2026-06-19
-updated: 2026-06-19
+timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, scope-management, agent-constraint]
 related:
   - concepts/autonomous-experiment-loop.md

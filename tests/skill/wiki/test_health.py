@@ -450,8 +450,7 @@ class TestCheckFrontmatter:
 ---
 title: Valid Page
 type: concept
-created: 2024-01-01
-updated: 2024-06-01
+timestamp: 2024-06-01T00:00:00Z
 tags: [test]
 status: draft
 ---
@@ -483,8 +482,9 @@ status: draft
             [
                 (
                     "page.md",
-                    "---\ntype: concept\ncreated: 2024-01-01\n"
-                    "updated: 2024-06-01\ntags: [test]\nstatus: draft\n---\n",
+                    "---\ntype: concept\n"
+                    "timestamp: 2024-06-01T00:00:00Z\n"
+                    "tags: [test]\nstatus: draft\n---\n",
                 ),
             ],
         )
@@ -498,8 +498,9 @@ status: draft
             [
                 (
                     "page.md",
-                    "---\ntitle: Bad Type\ntype: bogus\ncreated: 2024-01-01\n"
-                    "updated: 2024-06-01\ntags: [test]\nstatus: draft\n---\n",
+                    "---\ntitle: Bad Type\ntype: bogus\n"
+                    "timestamp: 2024-06-01T00:00:00Z\n"
+                    "tags: [test]\nstatus: draft\n---\n",
                 ),
             ],
         )
@@ -513,8 +514,9 @@ status: draft
             [
                 (
                     "page.md",
-                    "---\ntitle: Bad Status\ntype: concept\ncreated: 2024-01-01\n"
-                    "updated: 2024-06-01\ntags: [test]\nstatus: unknown\n---\n",
+                    "---\ntitle: Bad Status\ntype: concept\n"
+                    "timestamp: 2024-06-01T00:00:00Z\n"
+                    "tags: [test]\nstatus: unknown\n---\n",
                 ),
             ],
         )
@@ -530,19 +532,20 @@ status: draft
         assert len(results) == 0, f"Expected clean, got: {results}"
 
     def test_invalid_date_format(self, tmp_path):
-        """Invalid date format in ``created`` or ``updated`` is flagged."""
+        """Invalid date format in ``timestamp`` is flagged."""
         results = self._run_check(
             tmp_path / "wiki",
             [
                 (
                     "page.md",
-                    "---\ntitle: Bad Date\ntype: concept\ncreated: not-a-date\n"
-                    "updated: 2024-06-01\ntags: [test]\nstatus: draft\n---\n",
+                    "---\ntitle: Bad Date\ntype: concept\n"
+                    "timestamp: not-a-date\n"
+                    "tags: [test]\nstatus: draft\n---\n",
                 ),
             ],
         )
         issues = {r["issue"] for r in results}
-        assert "invalid_date:created" in issues
+        assert "invalid_date:timestamp" in issues
 
 
 class TestCheckRelatedField:
@@ -662,14 +665,14 @@ class TestCheckSourceField:
             [
                 (
                     "sources/notes/example.md",
-                    "---\ntitle: Test\ntype: source\nsource: https://example.com\n---\n# Content",
+                    "---\ntitle: Test\ntype: source\nresource: https://example.com\n---\n# Content",
                 ),
             ],
         )
         assert len(results) == 0
 
-    def test_missing_source_field(self, tmp_path):
-        """Source page without source field is flagged."""
+    def test_missing_resource_field(self, tmp_path):
+        """Source page without resource field is flagged."""
         results = self._run_check(
             tmp_path / "wiki",
             [
@@ -680,21 +683,21 @@ class TestCheckSourceField:
             ],
         )
         issues = [r["issue"] for r in results]
-        assert "missing_source_field" in issues
+        assert "missing_resource_field" in issues
 
-    def test_invalid_source_url(self, tmp_path):
-        """Source page with non-URL source field is flagged."""
+    def test_invalid_resource_url(self, tmp_path):
+        """Source page with non-URL resource field is flagged."""
         results = self._run_check(
             tmp_path / "wiki",
             [
                 (
                     "sources/notes/example.md",
-                    "---\ntitle: Test\ntype: source\nsource: karpathy-llm-wiki\n---\n# Content",
+                    "---\ntitle: Test\ntype: source\nresource: karpathy-llm-wiki\n---\n# Content",
                 ),
             ],
         )
         issues = [r["issue"] for r in results]
-        assert "invalid_source_url" in issues
+        assert "invalid_resource_url" in issues
         assert any("karpathy-llm-wiki" in r["details"] for r in results)
 
     def test_non_source_page_ignored(self, tmp_path):
@@ -1342,7 +1345,7 @@ class TestFormatReport:
         assert "日志覆盖" in report
         assert "Frontmatter 完整性" in report
         assert "Related 字段完整性" in report
-        assert "Source 字段验证" in report
+        assert "Resource 字段验证" in report
         assert "缺失内联链接" in report
         assert "重复内联链接" in report
 
@@ -1432,8 +1435,9 @@ class TestCliJson:
         # Create at least one wiki page with valid frontmatter so health checks pass.
         _write(
             wiki_source / "concepts" / "test-page.md",
-            "---\ntitle: Test\ntype: concept\ncreated: 2025-01-01\n"
-            "updated: 2025-06-01\ntags: [test]\nstatus: draft\n---\n\nSome content.\n",
+            "---\ntitle: Test\ntype: concept\n"
+            "timestamp: 2025-06-01T00:00:00Z\n"
+            "tags: [test]\nstatus: draft\n---\n\nSome content.\n",
         )
         _write(
             wiki_source / "index.md",
@@ -1486,8 +1490,9 @@ class TestCliSave:
 
         _write(
             test_wiki_dir / "concepts" / "test-page.md",
-            "---\ntitle: Test\ntype: concept\ncreated: 2025-01-01\n"
-            "updated: 2025-06-01\ntags: [test]\nstatus: draft\n---\n\nSome content.\n",
+            "---\ntitle: Test\ntype: concept\n"
+            "timestamp: 2025-06-01T00:00:00Z\n"
+            "tags: [test]\nstatus: draft\n---\n\nSome content.\n",
         )
         _write(
             test_wiki_dir / "index.md",
@@ -1533,7 +1538,7 @@ class TestCheckFrontmatterEdgeCases:
         _write(
             tmp_path / "wiki" / "page.md",
             "---\ntitle: A\ntype: concept\n"
-            "created: 2024-01-01\nupdated: 2024-06-01\n"
+            "timestamp: 2024-06-01T00:00:00Z\n"
             "tags: [test]\nstatus: draft\nrelated: SCHEMA.md\n---\n# Content",
         )
         result = health.check_related_field([tmp_path / "wiki" / "page.md"])
@@ -1804,15 +1809,15 @@ class TestFormatReportEdgeCases:
             "source_field": [
                 {
                     "page": "sources/notes/bad.md",
-                    "issue": "missing_source_field",
-                    "details": "Missing source field",
+                    "issue": "missing_resource_field",
+                    "details": "Missing resource field",
                 }
             ],
             "missing_inline_links": [],
             "duplicate_inline_links": [],
         }
         report = health.format_report(results)
-        assert "missing_source_field" in report
+        assert "missing_resource_field" in report
         assert "bad.md" in report
 
     def test_missing_inline_links_section(self):

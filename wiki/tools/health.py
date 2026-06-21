@@ -186,8 +186,7 @@ def check_log_coverage(pages: list[Path]) -> list[dict]:
 REQUIRED_FRONTMATTER_FIELDS = [
     "title",
     "type",
-    "created",
-    "updated",
+    "timestamp",
     "tags",
     "status",
 ]
@@ -199,10 +198,10 @@ def check_frontmatter(pages: list[Path]) -> list[dict]:
     """Verify every page has required frontmatter fields with valid values.
 
     Checks:
-      - Required fields: title, type, created, updated, tags, status
+      - Required fields: title, type, timestamp, tags, status
       - Valid type enum: concept/entity/source/analysis/synthesis
       - Valid status enum: draft/review/stable/deprecated
-      - Valid date format (YYYY-MM-DD) for created and updated
+      - Valid ISO 8601 date format for timestamp
     """
     results: list[dict] = []
     for page in pages:
@@ -252,14 +251,14 @@ def check_frontmatter(pages: list[Path]) -> list[dict]:
                 }
             )
 
-        for date_field in ("created", "updated"):
+        for date_field in ("timestamp",):
             val = fm.get(date_field)
             if val and parse_date(str(val)) is None:
                 results.append(
                     {
                         "page": rel,
                         "issue": f"invalid_date:{date_field}",
-                        "details": f"Field '{date_field}' value '{val}' is not a valid YYYY-MM-DD date",
+                        "details": f"Field '{date_field}' value '{val}' is not a valid ISO 8601 date",
                     }
                 )
 
@@ -330,11 +329,11 @@ def check_related_field(pages: list[Path]) -> list[dict]:
 
 
 def check_source_field(pages: list[Path]) -> list[dict]:
-    """Validate source field for source-type pages.
+    """Validate resource field for source-type pages.
 
     Checks:
-      - source-type pages must have a source field
-      - source field should be a valid URL (starts with http/https)
+      - source-type pages must have a resource field
+      - resource field should be a valid URL (starts with http/https)
     """
     results: list[dict] = []
 
@@ -354,29 +353,29 @@ def check_source_field(pages: list[Path]) -> list[dict]:
         if page_type != "source":
             continue
 
-        source_value = fm.get("source")
+        resource_value = fm.get("resource")
 
-        # Check if source field exists
-        if not source_value:
+        # Check if resource field exists
+        if not resource_value:
             results.append(
                 {
                     "page": wiki_rel(page),
-                    "issue": "missing_source_field",
-                    "details": f"Source-type page '{page.name}' is missing required 'source' field",
+                    "issue": "missing_resource_field",
+                    "details": f"Source-type page '{page.name}' is missing required 'resource' field",
                 }
             )
             continue
 
-        # Check if source is a valid URL or local raw copy path
-        if isinstance(source_value, str) and not (
-            source_value.startswith(("http://", "https://"))
-            or source_value.startswith("raw/")
+        # Check if resource is a valid URL or local raw copy path
+        if isinstance(resource_value, str) and not (
+            resource_value.startswith(("http://", "https://"))
+            or resource_value.startswith("raw/")
         ):
             results.append(
                 {
                     "page": wiki_rel(page),
-                    "issue": "invalid_source_url",
-                    "details": f"Page '{page.name}' has source value '{source_value}' — should be a URL (http:// or https://) or a raw/ file path",
+                    "issue": "invalid_resource_url",
+                    "details": f"Page '{page.name}' has resource value '{resource_value}' — should be a URL (http:// or https://) or a raw/ file path",
                 }
             )
 
@@ -870,7 +869,7 @@ def format_report(results: dict) -> str:
 
     # ── Source Field Validation
     source_issues = results["source_field"]
-    lines.append(f"## Source 字段验证（发现 {len(source_issues)} 个问题）")
+    lines.append(f"## Resource 字段验证（发现 {len(source_issues)} 个问题）")
     lines.append("")
     if source_issues:
         lines.append("| 页面 | 问题 | 详情 |")
@@ -880,7 +879,7 @@ def format_report(results: dict) -> str:
                 f"| `{si['page']}` | {si['issue']} | {si['details']} |"
             )
     else:
-        lines.append("所有 source 类型页面的 source 字段均有效。✅")
+        lines.append("所有 source 类型页面的 resource 字段均有效。✅")
     lines.append("")
 
     # ── Missing Inline Links (Anchor Text Mining)

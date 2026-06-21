@@ -1,8 +1,8 @@
 ---
 title: autoresearch 设计权衡分析
+description: autoresearch 项目核心设计决策（固定时间预算、单文件修改等）的利弊分析与适用边界。
 type: analysis
-created: 2026-06-19
-updated: 2026-06-19
+timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, design, tradeoff, analysis]
 sources:
   - sources/notes/autoresearch.md

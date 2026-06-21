@@ -16,7 +16,7 @@ import os
 import subprocess
 import sys
 from contextlib import ExitStack, contextmanager
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -241,11 +241,12 @@ class TestApplyTemplateDirect:
     """``_apply_template`` — placeholder replacement (direct import)."""
 
     def test_date_replaced(self) -> None:
-        """Created/updated YYYY-MM-DD is replaced with today's date."""
-        content = "created: YYYY-MM-DD\nupdated: YYYY-MM-DD\n"
-        result = _new_page._apply_template(content, "Test Title", "2025-06-19")
-        assert "created: 2025-06-19" in result
-        assert "updated: 2025-06-19" in result
+        """Timestamp placeholder is replaced with ISO 8601 date."""
+        content = "timestamp: YYYY-MM-DDTHH:mm:ssZ\n"
+        result = _new_page._apply_template(
+            content, "Test Title", "2025-06-19T00:00:00Z"
+        )
+        assert "timestamp: 2025-06-19T00:00:00Z" in result
 
     def test_status_defaulted(self) -> None:
         """Status placeholder is replaced with 'draft'."""
@@ -281,16 +282,16 @@ class TestApplyTemplateDirect:
         content = (
             "---\n"
             "title: <Page Title>\n"
-            "created: YYYY-MM-DD\n"
-            "updated: YYYY-MM-DD\n"
+            "timestamp: YYYY-MM-DDTHH:mm:ssZ\n"
             "status: draft|review|stable|deprecated\n"
             "---\n"
             "# <Page Title>\n"
         )
-        result = _new_page._apply_template(content, "My Page", "2025-06-19")
+        result = _new_page._apply_template(
+            content, "My Page", "2025-06-19T00:00:00Z"
+        )
         assert "title: My Page" in result
-        assert "created: 2025-06-19" in result
-        assert "updated: 2025-06-19" in result
+        assert "timestamp: 2025-06-19T00:00:00Z" in result
         assert "status: draft" in result
         assert "# My Page" in result
 
@@ -489,7 +490,7 @@ class TestAutoDerivedPath:
         content = output_file.read_text(encoding="utf-8")
         assert "title: TestConcept" in content
         assert "# TestConcept" in content
-        assert date.today().isoformat() in content
+        assert datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ") in content
 
     def test_status_defaults_to_draft(self, _fake_home_and_symlink) -> None:
         """Verify the ``draft|review|stable|deprecated`` placeholder is replaced

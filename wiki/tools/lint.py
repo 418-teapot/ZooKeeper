@@ -6,7 +6,7 @@ Performs 4 deterministic checks on the wiki:
   1. Broken links (Markdown links + frontmatter `related` entries)
   2. Orphan pages (zero inbound links AND not listed in index.md)
   3. Sparse pages (body text < 50 chars after stripping frontmatter)
-  4. Stale pages (updated > 90 days ago, status != deprecated)
+   4. Stale pages (timestamp > 90 days ago, status != deprecated)
 
 No LLM calls — pure structural validation.
 """
@@ -242,7 +242,7 @@ def check_stale_pages(
     """
     Check 5: Stale pages.
 
-    Pages where `updated` date is more than STALE_DAYS ago AND
+    Pages where `timestamp` date is more than STALE_DAYS ago AND
     `status` is not `deprecated`.
     """
     if reference_date is None:
@@ -257,19 +257,21 @@ def check_stale_pages(
         status = fm.get("status", "")
         if status == "deprecated":
             continue
-        updated_str = fm.get("updated")
-        if not updated_str:
+        timestamp_str = fm.get("timestamp")
+        if not timestamp_str:
             continue
-        updated_date = parse_date(str(updated_str))
-        if updated_date is None:
+        timestamp_date = parse_date(str(timestamp_str))
+        if timestamp_date is None:
             continue
-        if updated_date < cutoff:
+        if timestamp_date < cutoff:
             results.append(
                 {
                     "page": rel,
-                    "updated": str(updated_str),
+                    "timestamp": str(timestamp_str),
                     "status": status,
-                    "days_since_update": (reference_date - updated_date).days,
+                    "days_since_update": (
+                        reference_date - timestamp_date
+                    ).days,
                     "threshold_days": STALE_DAYS,
                 }
             )
@@ -336,14 +338,14 @@ def format_markdown(results: dict[str, list[dict[str, Any]]]) -> str:
                 lines.append(f"| {page} | {bl} | {th} |")
 
         elif key == "stale_pages":
-            lines.append("| 页面 | 更新日期 | 状态 | 距今天数 |")
-            lines.append("|------|----------|------|----------|")
+            lines.append("| 页面 | 时间戳 | 状态 | 距今天数 |")
+            lines.append("|------|--------|------|----------|")
             for item in items:
                 page = item.get("page", "")
-                updated = item.get("updated", "")
+                timestamp = item.get("timestamp", "")
                 status = item.get("status", "")
                 days = item.get("days_since_update", 0)
-                lines.append(f"| {page} | {updated} | {status} | {days} |")
+                lines.append(f"| {page} | {timestamp} | {status} | {days} |")
 
         lines.append("")
 

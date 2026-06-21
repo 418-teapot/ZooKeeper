@@ -1,8 +1,8 @@
 ---
 title: 自主实验循环
+description: AI agent 自主进行小规模 LLM 训练实验的闭环机制：读取指令、修改代码、运行训练、评估结果、保留或丢弃。
 type: concept
-created: 2026-06-19
-updated: 2026-06-19
+timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, ai-agent, experiment-loop, automation]
 related:
   - concepts/fixed-time-budget-evaluation.md

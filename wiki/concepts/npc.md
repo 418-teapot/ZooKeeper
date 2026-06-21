@@ -1,8 +1,9 @@
 ---
 title: NPC 式分工
+description: 人类扮演"游戏设计师"编写 NPC 行为脚本，AI agent 扮演 NPC 在脚本约束下自主行动，实现策略与执行的分离。
+resource: https://github.com/karpathy/autoresearch
 type: concept
-created: 2026-06-19
-updated: 2026-06-19
+timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, human-agent-division, skill-pattern]
 related:
   - concepts/autonomous-experiment-loop.md

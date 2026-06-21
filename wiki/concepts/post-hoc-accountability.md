@@ -1,8 +1,8 @@
 ---
 title: 后验问责制
+description: 不阻止 agent 越界编辑，而是在实验记录时捕获偏差并要求合理性说明，通过透明度而非硬限制管理 agent 自主性。
 type: concept
-created: 2026-06-19
-updated: 2026-06-19
+timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, design-philosophy, scope-management, agent-constraint]
 related:
   - concepts/autoresearch-extension-loop.md

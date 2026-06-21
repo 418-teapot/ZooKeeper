@@ -1,8 +1,8 @@
 ---
 title: ZooKeeper Wiki 概览
+description: ZooKeeper wiki 系统的结构化概览，涵盖设计哲学、三层架构、当前知识版图及工具与 Agent 的分工原则。
 type: synthesis
-created: 2026-06-18
-updated: 2026-06-18
+timestamp: 2026-06-18T00:00:00Z
 tags: [overview, wiki, knowledge-base]
 related:
   - sources/notes/autoresearch.md

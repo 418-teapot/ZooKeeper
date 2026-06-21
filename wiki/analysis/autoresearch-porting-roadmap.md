@@ -1,8 +1,8 @@
 ---
 title: autoresearch ZooKeeper 移植路线图
+description: 将 oh-my-pi 的 autoresearch 扩展移植到 ZooKeeper 的三阶段计划及关键障碍分析。
 type: analysis
-created: 2026-06-19
-updated: 2026-06-19
+timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, zookeeper, porting, roadmap, opencode]
 sources:
   - sources/rfc/autoresearch-design.md

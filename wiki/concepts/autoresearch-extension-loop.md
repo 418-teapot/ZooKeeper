@@ -1,8 +1,8 @@
 ---
 title: autoresearch 扩展循环
+description: oh-my-pi 提供的两阶段自主实验循环，通过插件基础设施、SQLite 持久化和 agent_end hook 实现无人值守的持续迭代优化。
 type: concept
-created: 2026-06-19
-updated: 2026-06-19
+timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, extension, experiment-loop, auto-resume]
 related:
   - concepts/autonomous-experiment-loop.md

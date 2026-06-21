@@ -1,8 +1,8 @@
 ---
 title: <问题标题>
+description: <一句话摘要>。
 type: synthesis
-created: YYYY-MM-DD
-updated: YYYY-MM-DD
+timestamp: YYYY-MM-DDTHH:mm:ssZ
 tags: [tag1, tag2]
 sources:
   - concepts/foo.md

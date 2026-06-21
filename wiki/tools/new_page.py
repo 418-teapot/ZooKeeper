@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 
 # REPO_ROOT: 3 levels up from this file
@@ -122,22 +122,22 @@ def _apply_template(content: str, title: str, today: str) -> str:
     """Replace placeholders in template content with actual values.
 
     Performs three substitutions:
-      1. ``created`` / ``updated`` date fields → *today*
+      1. ``timestamp`` date field → *today*
       2. ``status: draft|review|stable|deprecated`` → ``status: draft``
       3. ``title: <...>`` and ``# <...>`` → actual *title*
 
     Args:
         content: Raw template content.
         title: Page title to substitute.
-        today: ISO-formatted date string (``YYYY-MM-DD``).
+        today: ISO 8601 date string (``YYYY-MM-DDTHH:mm:ssZ``).
 
     Returns:
         Processed content with all placeholders replaced.
     """
-    # 1. Date placeholders in created / updated fields
+    # 1. Date placeholder in timestamp field
     content = re.sub(
-        r"^(created|updated): YYYY-MM-DD$",
-        lambda m: f"{m.group(1)}: {today}",
+        r"^timestamp: YYYY-MM-DDTHH:mm:ssZ$",
+        lambda m: f"timestamp: {today}",
         content,
         flags=re.MULTILINE,
     )
@@ -230,7 +230,7 @@ def main() -> None:
     # Replace placeholders
     # ------------------------------------------------------------------
 
-    today = date.today().isoformat()  # YYYY-MM-DD
+    today = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
     content = _apply_template(content, args.title, today)
 
     # ------------------------------------------------------------------

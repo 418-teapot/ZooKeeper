@@ -260,7 +260,7 @@ class TestSparsePages:
 
 
 class TestStalePages:
-    """``check_stale_pages`` — ``updated`` date older than ``STALE_DAYS``."""
+    """``check_stale_pages`` — ``timestamp`` date older than ``STALE_DAYS``."""
 
     REFERENCE_DATE = date(2025, 1, 1)
     # STALE_DAYS = 90 days → cutoff = 2024-10-03
@@ -289,15 +289,16 @@ class TestStalePages:
             )
 
     def test_stale_flagged(self, tmp_path: Path) -> None:
-        """Updated > 90 days ago, status != deprecated → stale."""
+        """Timestamp > 90 days ago, status != deprecated → stale."""
         old_date = self.CUTOFF - timedelta(days=1)  # 2024-10-02
         results = self._write_and_check(
             tmp_path / "wiki",
             [
                 (
                     "stale.md",
-                    f"---\ntitle: Stale\ntype: concept\ncreated: 2024-01-01\n"
-                    f"updated: {old_date}\ntags: [test]\nstatus: draft\n---\n",
+                    f"---\ntitle: Stale\ntype: concept\n"
+                    f"timestamp: {old_date}T00:00:00Z\n"
+                    f"tags: [test]\nstatus: draft\n---\n",
                 ),
             ],
         )
@@ -313,36 +314,38 @@ class TestStalePages:
             [
                 (
                     "dep.md",
-                    f"---\ntitle: Dep\ntype: concept\ncreated: 2024-01-01\n"
-                    f"updated: {old_date}\ntags: [test]\nstatus: deprecated\n---\n",
+                    f"---\ntitle: Dep\ntype: concept\n"
+                    f"timestamp: {old_date}T00:00:00Z\n"
+                    f"tags: [test]\nstatus: deprecated\n---\n",
                 ),
             ],
         )
         assert len(results) == 0
 
     def test_recent_update_not_stale(self, tmp_path: Path) -> None:
-        """Updated within 90 days → not stale."""
+        """Timestamp within 90 days → not stale."""
         recent_date = self.CUTOFF + timedelta(days=1)  # 2024-10-04
         results = self._write_and_check(
             tmp_path / "wiki",
             [
                 (
                     "recent.md",
-                    f"---\ntitle: Recent\ntype: concept\ncreated: 2024-01-01\n"
-                    f"updated: {recent_date}\ntags: [test]\nstatus: draft\n---\n",
+                    f"---\ntitle: Recent\ntype: concept\n"
+                    f"timestamp: {recent_date}T00:00:00Z\n"
+                    f"tags: [test]\nstatus: draft\n---\n",
                 ),
             ],
         )
         assert len(results) == 0
 
-    def test_no_updated_field(self, tmp_path: Path) -> None:
-        """No ``updated`` field → skipped (not stale)."""
+    def test_no_timestamp_field(self, tmp_path: Path) -> None:
+        """No ``timestamp`` field → skipped (not stale)."""
         results = self._write_and_check(
             tmp_path / "wiki",
             [
                 (
-                    "no-upd.md",
-                    "---\ntitle: No Updated\ntype: concept\ncreated: 2024-01-01\n"
+                    "no-ts.md",
+                    "---\ntitle: No Timestamp\ntype: concept\n"
                     "tags: [test]\nstatus: draft\n---\n",
                 ),
             ],
@@ -455,7 +458,7 @@ class TestFormatMarkdown:
             "stale_pages": [
                 {
                     "page": "concepts/stale.md",
-                    "updated": "2024-01-01",
+                    "timestamp": "2024-01-01T00:00:00Z",
                     "status": "draft",
                     "days_since_update": 100,
                     "threshold_days": 90,
@@ -530,8 +533,9 @@ class TestCliJson:
             parents=True, exist_ok=True
         )
         (wiki_source / "concepts" / "test.md").write_text(
-            "---\ntitle: Test\ntype: concept\ncreated: 2025-01-01\n"
-            "updated: 2025-06-01\ntags: [test]\nstatus: draft\n---\n\nContent."
+            "---\ntitle: Test\ntype: concept\n"
+            "timestamp: 2025-06-01T00:00:00Z\n"
+            "tags: [test]\nstatus: draft\n---\n\nContent."
         )
         (wiki_source / "index.md").write_text(
             "# Index\n\n- [Test](concepts/test.md)\n"
@@ -577,8 +581,9 @@ class TestCliSave:
             parents=True, exist_ok=True
         )
         (wiki_source / "concepts" / "test.md").write_text(
-            "---\ntitle: Test\ntype: concept\ncreated: 2025-01-01\n"
-            "updated: 2025-06-01\ntags: [test]\nstatus: draft\n---\n\nContent."
+            "---\ntitle: Test\ntype: concept\n"
+            "timestamp: 2025-06-01T00:00:00Z\n"
+            "tags: [test]\nstatus: draft\n---\n\nContent."
         )
         (wiki_source / "index.md").write_text(
             "# Index\n\n- [Test](concepts/test.md)\n"
@@ -728,8 +733,9 @@ class TestCheckOrphanPagesEdgeCases:
         (wiki_dir / "index.md").write_text("[Test](wiki/concepts/foo.md)\n")
         (wiki_dir / "concepts").mkdir()
         (wiki_dir / "concepts" / "foo.md").write_text(
-            "---\ntitle: Foo\ntype: concept\ncreated: 2024-01-01\n"
-            "updated: 2024-06-01\ntags: [test]\nstatus: draft\n---\n# Foo"
+            "---\ntitle: Foo\ntype: concept\n"
+            "timestamp: 2024-06-01T00:00:00Z\n"
+            "tags: [test]\nstatus: draft\n---\n# Foo"
         )
 
         with (
@@ -770,8 +776,9 @@ class TestCheckStalePagesEdgeCases:
         wiki_dir.mkdir()
         page = wiki_dir / "page.md"
         page.write_text(
-            "---\ntitle: A\ntype: concept\ncreated: 2024-01-01\n"
-            "updated: 2024-01-01\ntags: [test]\nstatus: draft\n---\n"
+            "---\ntitle: A\ntype: concept\n"
+            "timestamp: 2024-01-01T00:00:00Z\n"
+            "tags: [test]\nstatus: draft\n---\n"
         )
 
         with (
@@ -802,13 +809,13 @@ class TestCheckStalePagesEdgeCases:
         assert results == []
 
     def test_invalid_date_skipped(self, tmp_path: Path) -> None:
-        """Page with invalid updated date is skipped (line 265)."""
+        """Page with invalid timestamp date is skipped (line 265)."""
         wiki_dir = tmp_path / "wiki"
         wiki_dir.mkdir()
         page = wiki_dir / "page.md"
         page.write_text(
-            "---\ntitle: A\ntype: concept\ncreated: 2024-01-01\n"
-            "updated: not-a-date\ntags: [test]\nstatus: draft\n---\n"
+            "---\ntitle: A\ntype: concept\n"
+            "timestamp: not-a-date\ntags: [test]\nstatus: draft\n---\n"
         )
 
         with (
@@ -816,7 +823,7 @@ class TestCheckStalePagesEdgeCases:
             patch.object(_shared_utils, "WIKI_DIR", wiki_dir),
         ):
             rel = str(page.relative_to(wiki_dir))
-            fm = {"title": "A", "type": "concept", "updated": "not-a-date"}
+            fm = {"title": "A", "type": "concept", "timestamp": "not-a-date"}
             cache = {rel: (page.read_text(), fm)}
             results = _lint.check_stale_pages([page], cache)
 
@@ -830,8 +837,9 @@ class TestMainCliLint:
         """Create a minimal wiki page so page_cache building loop runs."""
         (wiki_dir / "concepts").mkdir(parents=True, exist_ok=True)
         (wiki_dir / "concepts" / "test.md").write_text(
-            "---\ntitle: Test\ntype: concept\ncreated: 2025-01-01\n"
-            "updated: 2025-06-01\ntags: [test]\nstatus: draft\n---\n# Test"
+            "---\ntitle: Test\ntype: concept\n"
+            "timestamp: 2025-06-01T00:00:00Z\n"
+            "tags: [test]\nstatus: draft\n---\n# Test"
         )
 
     def test_main_default(self, monkeypatch, capsys, tmp_path):

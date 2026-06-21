@@ -1,8 +1,8 @@
 ---
 title: METRIC/ASI 文本协议
+description: 基于标准输出的零依赖文本协议，通过 METRIC 行报告指标和 ASI 行存储结构化元数据，任何语言均可通过简单 echo 输出。
 type: concept
-created: 2026-06-19
-updated: 2026-06-19
+timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, protocol, metric, benchmark]
 related:
   - concepts/autoresearch-extension-loop.md

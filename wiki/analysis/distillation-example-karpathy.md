@@ -1,8 +1,9 @@
 ---
 title: 蒸馏示例 — Karpathy LLM Wiki 文章的摄入过程
+description: 以 Karpathy 的 LLM Wiki gist 为例完整展示一次 wiki 蒸馏的决策过程和跨页结构设计。
+resource: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
 type: analysis
-created: 2026-06-18
-updated: 2026-06-18
+timestamp: 2026-06-18T00:00:00Z
 tags: [distillation, example, methodology]
 sources:
   - sources/notes/llm-wiki-karpathy.md

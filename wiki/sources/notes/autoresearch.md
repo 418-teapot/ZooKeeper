@@ -1,9 +1,9 @@
 ---
 title: autoresearch — AI agent 自主 LLM 训练实验框架
+description: Andrej Karpathy 发布的让 AI agent 在单 GPU 上自主进行 LLM 训练实验的开源框架。
 type: source
-created: 2026-06-19
-updated: 2026-06-19
-source: https://github.com/karpathy/autoresearch
+timestamp: 2026-06-19T00:00:00Z
+resource: https://github.com/karpathy/autoresearch
 tags: [autoresearch, ai-agent, llm-training, research-automation]
 related:
   - concepts/autonomous-experiment-loop.md

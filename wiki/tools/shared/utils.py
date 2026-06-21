@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -219,16 +219,22 @@ def parse_frontmatter_title(content: str) -> str:
 
 
 def parse_date(date_str: str) -> date | None:
-    """Parse a ``YYYY-MM-DD`` date string.
+    """Parse an ISO 8601 date string (``YYYY-MM-DD`` or ``YYYY-MM-DDTHH:mm:ssZ``).
+
+    Accepts both with and without time component for backward compatibility.
 
     Args:
-        date_str: Date string in ``YYYY-MM-DD`` format.
+        date_str: Date string in ISO 8601 format.
 
     Returns:
         A ``date`` object, or ``None`` if parsing fails.
     """
     try:
-        return date.fromisoformat(date_str.strip())
+        cleaned = date_str.strip()
+        # Handle trailing "Z" suffix
+        if cleaned.endswith("Z"):
+            cleaned = cleaned[:-1]
+        return datetime.fromisoformat(cleaned).date()
     except (ValueError, AttributeError):
         return None
 
