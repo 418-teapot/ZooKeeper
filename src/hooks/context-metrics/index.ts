@@ -1,7 +1,7 @@
 /**
  * Context Metrics barrel export.
  *
- * Re-exports all public API from the hook module.
+ * Thin re-export — all logic lives in `src/core/metrics.ts`.
  *
  * @module
  */
@@ -13,8 +13,8 @@ export type {
   ContextMetricsResult,
   ContextTextPart,
   ContextTokenInfo,
-} from "./hook";
+} from "../../core/metrics.js";
 export {
   estimateMessageHeuristic,
   measureContext,
-} from "./hook";
+} from "../../core/metrics.js";

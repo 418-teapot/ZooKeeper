@@ -1,5 +1,5 @@
 /**
- * Shared agent-type detection utilities for ZooKeeper OpenCode plugin hooks.
+ * Framework-independent agent-type detection utilities.
  *
  * Provides a minimal `Clientish` interface and two async helpers:
  * `getAgentName` for resolving the agent name from a session, and
@@ -37,7 +37,7 @@ export interface Clientish {
  * - `getSession` throws (failures are silently swallowed)
  * - the session has no `agent` field
  *
- * @param client - OpenCode client, or null/undefined.
+ * @param client - Framework client providing session access, or null/undefined.
  * @param sessionId - Session identifier to look up.
  * @returns The agent name string, or undefined when unavailable.
  */
@@ -61,7 +61,7 @@ export async function getAgentName(
  * When no client is available (null/undefined/missing getSession), returns
  * `false` — a conservative behaviour that causes callers to skip their action.
  *
- * @param client - OpenCode client, or null/undefined.
+ * @param client - Framework client providing session access, or null/undefined.
  * @param sessionId - Session identifier to look up.
  * @returns `true` when the agent is `"build"`, `false` otherwise.
  */

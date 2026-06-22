@@ -1,39 +1,21 @@
 /**
- * JSON error recovery hook for ZooKeeper OpenCode plugin.
+ * JSON error detection and recovery utilities for ZooKeeper.
  *
- * Detects JSON parse errors in tool call output and appends a reminder
- * instructing the LLM to fix its JSON syntax and retry.
+ * Provides constants and a function to detect JSON parse errors in tool
+ * call output and append a recovery reminder instructing the LLM to fix its
+ * JSON syntax and retry. Uses the file-based logger for observability.
+ *
+ * This module has no OpenCode framework dependencies.
  *
  * @module
  */
 
-import { log } from "../../utils/logger.js";
+import { log } from "../utils/logger.js";
+import { JSON_ERROR_REMINDER, JSON_ERROR_REMINDER_MARKER } from "./prompts.js";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-/**
- * Marker string prefixed to the JSON error reminder.
- * Used for deduplication — if output already contains this marker, skip.
- */
-export const JSON_ERROR_REMINDER_MARKER =
-  "[JSON PARSE ERROR - IMMEDIATE ACTION REQUIRED]";
-
-/**
- * Full reminder text appended to tool output when a JSON parse error is
- * detected.
- */
-export const JSON_ERROR_REMINDER = `${JSON_ERROR_REMINDER_MARKER}
-
-You sent invalid JSON arguments. The system could not parse your tool call.
-STOP and do this NOW:
-
-1. LOOK at the error message above to see what was expected vs what you sent.
-2. CORRECT your JSON syntax (missing braces, unescaped quotes, trailing commas, etc).
-3. RETRY the tool call with valid JSON.
-
-DO NOT repeat the exact same invalid call.`;
 
 /**
  * List of tool names excluded from JSON error recovery.

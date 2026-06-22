@@ -10,8 +10,9 @@
  * validates task() prompt structure via `tool.execute.before`,
  * and appends soft guidance nudges via `tool.execute.after`.
  *
- * This module is a thin wiring layer — all hook implementation lives in
- * `src/hooks/` submodules.
+ * This module is a thin wiring layer — hook implementation lives in
+ * `src/hooks/` submodules, and framework-independent logic lives in
+ * `src/core/`.
  *
  * TODO: Add pi / oh-my-pi adapter (framework adapter).
  */
@@ -19,6 +20,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import config from "../config.toml" with { type: "toml" };
+import type { ContextMetricsOutput } from "./hooks/context-metrics";
 import { measureContext } from "./hooks/context-metrics";
 import { nudgeDirectWork } from "./hooks/direct-work-nudge";
 import { recoverJsonError } from "./hooks/json-error-nudge";
@@ -52,6 +54,159 @@ function loadPrompt(name: string): string | undefined {
 }
 
 // ---------------------------------------------------------------------------
+// Config helpers
+// ---------------------------------------------------------------------------
+
+/** Extract word-count limits from zoo config. */
+function parseLimits(zooConfig: any) {
+  const v = zooConfig.validation ?? {};
+  return {
+    contextWordLimit: v.context_word_limit ?? 200,
+    promptWordLimit: v.prompt_word_limit ?? 500,
+  };
+}
+
+/** Extract skills config map from zoo config. */
+function parseSkillsConfig(zooConfig: any): Record<string, string> {
+  return zooConfig.skills ?? {};
+}
+
+/** Initialize file-based logger from [zoo.logging] config. */
+function initPluginLogger(zooConfig: any): void {
+  const logConfig = zooConfig.logging ?? {};
+  initLogger("", {
+    maxFileSize:
+      typeof logConfig.max_file_size_mb === "number"
+        ? logConfig.max_file_size_mb * 1024 * 1024
+        : undefined,
+    maxBackups:
+      typeof logConfig.max_backups === "number"
+        ? logConfig.max_backups
+        : undefined,
+    retentionDays:
+      typeof logConfig.retention_days === "number"
+        ? logConfig.retention_days
+        : undefined,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Config hook helpers
+// ---------------------------------------------------------------------------
+
+/** Log plugin init event with agent/skills summary. */
+function logPluginInit(
+  agents: Record<string, any>,
+  limits: ReturnType<typeof parseLimits>,
+  skillsConfig: Record<string, string>,
+): void {
+  log("plugin", "plugin_init", "", undefined, "info", {
+    agents: Object.keys(agents),
+    limits,
+    skills: Object.keys(skillsConfig).filter(
+      (k) => skillsConfig[k] !== "disable",
+    ),
+  });
+}
+
+/** Inject prompt files into each agent config. */
+function injectAgentPrompts(agents: Record<string, any>): void {
+  for (const [name, agent] of Object.entries(agents)) {
+    if (typeof agent !== "object" || agent === null) continue;
+    const prompt = loadPrompt(name);
+    if (prompt) {
+      (agent as any).prompt = prompt;
+      log("plugin", "agent_loaded", "", undefined, "debug", {
+        agent: name,
+        prompt_len: prompt.length,
+      });
+    }
+  }
+}
+
+/** Register enabled skills from the core/skills/ directory. */
+function registerSkills(
+  pluginConfig: any,
+  skillsConfig: Record<string, string>,
+): void {
+  pluginConfig.skills ??= {};
+  pluginConfig.skills.paths ??= [];
+  const skillsDir = resolve(CORE_DIR, "skills");
+  try {
+    for (const entry of readdirSync(skillsDir)) {
+      const skillPath = resolve(skillsDir, entry);
+      if (!statSync(skillPath).isDirectory()) continue;
+      if (skillsConfig[entry] === "disable") continue;
+      pluginConfig.skills.paths.push(skillPath);
+      log("plugin", "skill_registered", "", undefined, "debug", {
+        skill: entry,
+      });
+    }
+  } catch (err) {
+    const code = (err as { code?: string }).code;
+    if (code !== "ENOENT") {
+      log("plugin", "skill_register_error", "", undefined, "warn", {
+        error: String(err),
+      });
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Hook handler helpers
+// ---------------------------------------------------------------------------
+
+/** Input shape for the tool.execute.after hook. */
+interface AfterExecInput {
+  tool: string;
+  sessionID: string;
+  callID: string;
+  args?: Record<string, unknown>;
+}
+
+/** Output shape for the tool.execute.after hook. */
+interface AfterExecOutput {
+  output?: string;
+}
+
+/** Track context metrics with error isolation. */
+function handleMessagesTransform(output: ContextMetricsOutput): void {
+  try {
+    measureContext(output);
+  } catch (err) {
+    log(
+      "plugin",
+      "handler_crashed",
+      output.messages?.[0]?.info?.sessionID ?? "",
+      undefined,
+      "error",
+      { handler: "measureContext", error: String(err) },
+    );
+  }
+}
+
+/** Run a list of after-exec handlers with per-handler error isolation. */
+async function runAfterHandlers(
+  handlers: Array<{
+    name: string;
+    fn: (i: AfterExecInput, o: AfterExecOutput) => void | Promise<void>;
+  }>,
+  input: AfterExecInput,
+  output: AfterExecOutput,
+): Promise<void> {
+  for (const { name, fn } of handlers) {
+    try {
+      await fn(input, output);
+    } catch (err) {
+      log("plugin", "handler_crashed", input.sessionID, input.callID, "error", {
+        handler: name,
+        error: String(err),
+      });
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Plugin entry point
 // ---------------------------------------------------------------------------
 
@@ -61,74 +216,18 @@ function loadPrompt(name: string): string | undefined {
  */
 export async function zookeeper(input: any) {
   const zooConfig = (config as any).zoo ?? {};
-  const limits = {
-    contextWordLimit: zooConfig.validation?.context_word_limit ?? 200,
-    promptWordLimit: zooConfig.validation?.prompt_word_limit ?? 500,
-  };
-  const skillsConfig: Record<string, string> = zooConfig.skills ?? {};
+  const limits = parseLimits(zooConfig);
+  const skillsConfig = parseSkillsConfig(zooConfig);
   const client = input.client;
 
-  // Initialize file-based logging from [zoo.logging] config.
-  {
-    const logConfig = zooConfig.logging ?? {};
-    initLogger("", {
-      maxFileSize:
-        typeof logConfig.max_file_size_mb === "number"
-          ? logConfig.max_file_size_mb * 1024 * 1024
-          : undefined,
-      maxBackups:
-        typeof logConfig.max_backups === "number"
-          ? logConfig.max_backups
-          : undefined,
-      retentionDays:
-        typeof logConfig.retention_days === "number"
-          ? logConfig.retention_days
-          : undefined,
-    });
-  }
+  initPluginLogger(zooConfig);
 
   return {
     async config(config: any) {
       const agents = config.agent ?? {};
-
-      log("plugin", "plugin_init", "", undefined, "info", {
-        agents: Object.keys(agents),
-        limits,
-        skills: Object.keys(skillsConfig).filter(
-          (k) => skillsConfig[k] !== "disable",
-        ),
-      });
-
-      for (const [name, agent] of Object.entries(agents)) {
-        if (typeof agent !== "object" || agent === null) continue;
-
-        const prompt = loadPrompt(name);
-        if (prompt) {
-          (agent as any).prompt = prompt;
-          log("plugin", "agent_loaded", "", undefined, "debug", {
-            agent: name,
-            prompt_len: prompt.length,
-          });
-        }
-      }
-
-      // Register each skill in core/skills/ individually, skipping disabled ones.
-      config.skills ??= {};
-      config.skills.paths ??= [];
-      const skillsDir = resolve(CORE_DIR, "skills");
-      try {
-        for (const entry of readdirSync(skillsDir)) {
-          const skillPath = resolve(skillsDir, entry);
-          if (!statSync(skillPath).isDirectory()) continue;
-          if (skillsConfig[entry] === "disable") continue;
-          config.skills.paths.push(skillPath);
-          log("plugin", "skill_registered", "", undefined, "debug", {
-            skill: entry,
-          });
-        }
-      } catch {
-        // skills/ directory does not exist or is inaccessible — skip.
-      }
+      logPluginInit(agents, limits, skillsConfig);
+      injectAgentPrompts(agents);
+      registerSkills(config, skillsConfig);
     },
 
     async "chat.params"(
@@ -143,33 +242,9 @@ export async function zookeeper(input: any) {
 
     async "experimental.chat.messages.transform"(
       _input: Record<string, never>,
-      output: {
-        messages?: Array<{
-          info: {
-            role: string;
-            id: string;
-            sessionID?: string;
-            agent?: string;
-          };
-          parts: Array<{ type: "text"; text: string }>;
-        }>;
-      },
+      output: ContextMetricsOutput,
     ) {
-      try {
-        measureContext(output);
-      } catch (err) {
-        log(
-          "plugin",
-          "handler_crashed",
-          output.messages?.[0]?.info?.sessionID ?? "",
-          undefined,
-          "error",
-          {
-            handler: "measureContext",
-            error: String(err),
-          },
-        );
-      }
+      handleMessagesTransform(output);
     },
 
     async "tool.definition"(
@@ -186,51 +261,43 @@ export async function zookeeper(input: any) {
       validateBeforeExec(input, output, limits);
     },
 
-    async "tool.execute.after"(
-      input: {
-        tool: string;
-        sessionID: string;
-        callID: string;
-        args?: Record<string, unknown>;
-      },
-      output: { output?: string },
-    ) {
-      const handlers: Array<{
-        name: string;
-        fn: (i: typeof input, o: typeof output) => void | Promise<void>;
-      }> = [
+    async "tool.execute.after"(input: AfterExecInput, output: AfterExecOutput) {
+      const handlers = [
         {
           name: "nudgeTaskOutput",
-          fn: (i, o) => nudgeTaskOutput(i, o, limits),
+          fn: (i: AfterExecInput, o: AfterExecOutput) =>
+            nudgeTaskOutput(i, o, limits),
         },
         {
           name: "recoverJsonError",
-          fn: (i, o) => {
-            recoverJsonError(i, o);
-          },
+          fn: (i: AfterExecInput, o: AfterExecOutput) => recoverJsonError(i, o),
         },
         {
           name: "nudgeDirectWork",
-          fn: (i, o) => nudgeDirectWork(client, i, o),
+          fn: (i: AfterExecInput, o: AfterExecOutput) =>
+            nudgeDirectWork(client, i, o),
         },
-        { name: "nudgePostTask", fn: (i, o) => nudgePostTask(client, i, o) },
+        {
+          name: "nudgePostTask",
+          fn: (i: AfterExecInput, o: AfterExecOutput) =>
+            nudgePostTask(client, i, o),
+        },
       ];
-      for (const { name, fn } of handlers) {
-        try {
-          await fn(input, output);
-        } catch (err) {
-          log(
-            "plugin",
-            "handler_crashed",
-            input.sessionID,
-            input.callID,
-            "error",
-            { handler: name, error: String(err) },
-          );
-        }
-      }
+      await runAfterHandlers(handlers, input, output);
     },
   };
 }
 
 export default { id: "zookeeper", server: zookeeper };
+
+// ---------------------------------------------------------------------------
+// Test-only exports — exposed for unit testing
+// ---------------------------------------------------------------------------
+export {
+  handleMessagesTransform,
+  injectAgentPrompts,
+  parseLimits,
+  parseSkillsConfig,
+  registerSkills,
+  runAfterHandlers,
+};

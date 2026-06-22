@@ -1,12 +1,13 @@
 /**
  * Direct Work Nudge barrel export.
  *
- * Re-exports all public API from the hook module.
+ * Re-exports the handler function from the hook module and prompt constants
+ * from `src/core/prompts.ts`.
  *
  * @module
  */
 export {
   DIRECT_WORK_NUDGE,
-  nudgeDirectWork,
   SEARCH_DELEGATE_NUDGE,
-} from "./hook";
+} from "../../core/prompts.js";
+export { nudgeDirectWork } from "./hook";

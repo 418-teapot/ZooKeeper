@@ -3,49 +3,18 @@
  *
  * After every edit/write tool call by the build orchestrator agent, appends
  * a protocol reminder telling the orchestrator to delegate work via `task()`
- * instead of doing it directly.
+ * instead of doing it directly. The prompt constants live in
+ * `src/core/prompts.ts`.
  *
  * @module
  */
 
+import { type Clientish, isBuildAgent } from "../../core/agent.js";
+import {
+  DIRECT_WORK_NUDGE,
+  SEARCH_DELEGATE_NUDGE,
+} from "../../core/prompts.js";
 import { log } from "../../utils/logger.js";
-import { type Clientish, isBuildAgent } from "../utils/agent.js";
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/**
- * Full nudge text appended to edit/write tool output.
- *
- * Reminds the orchestrator that direct editing violates protocol and should
- * be delegated via `task()`.
- */
-export const DIRECT_WORK_NUDGE = `<internal-reminder>
-**DELEGATION REQUIRED** — You just edited a source file directly.
-
-Did you ACTUALLY need to be the one doing that?
-
-- Documentation, design docs, research reports, prompts → **fine, this is your job.** Continue.
-- Tiny verification fix during subagent review → fine, continue.
-- Anything else → **you violated Contract R1.**
-  Revert the change and delegate it via \`task()\`.
-
-**Build does not implement. Build orchestrates.**
-</internal-reminder>`;
-
-/**
- * Nudge text appended to grep/glob tool output for the build agent.
- *
- * Distinguishes between codebase discovery (delegate to the explore agent)
- * and simple verification (fine to proceed).
- */
-export const SEARCH_DELEGATE_NUDGE = `<internal-reminder>
-**POTENTIAL DELEGATION OPPORTUNITY** — You just searched the codebase.
-
-- **Codebase discovery** (finding files, searching across multiple files, exploring structure) → delegate to the \`explore\` agent via \`task()\`.
-- **Verification** (confirming a change in a specific file, checking if a pattern exists in a known file) → fine, continue.
-</internal-reminder>`;
 
 // ---------------------------------------------------------------------------
 // Handler

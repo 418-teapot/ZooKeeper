@@ -64,15 +64,25 @@ ZooKeeper/
 ├── test.sh                  # 统一测试脚本（Python + Rust + TS）
 ├── build.sh                 # Release 编译 Rust CLI 工具
 ├── core/
-│   └── prompts/*.md         # 各 agent 的 prompt 文件（被插件动态注入）
+│   ├── prompts/*.md         # 各 agent 的 prompt 文件（被插件动态注入）
+│   └── skills/              # skill 定义目录
 ├── src/                     # OpenCode 插件 TS 代码
-│   ├── index.ts             # 插件入口（config hook + prompt validation）
-│   └── hooks/
-│       ├── task-prompt/     # task prompt 校验 + nudge
-│       ├── json-error-nudge/# JSON 解析错误恢复
-│       ├── direct-work-nudge/# 直接编辑提醒
-│       ├── post-task-nudge/ # task() 返回后验证+todo 提醒
-│       └── shared/          # 共享模块
+│   ├── index.ts             # 插件入口 — 薄接线层，注册 6 个 hook
+│   ├── core/                # 框架无关纯逻辑（零 OpenCode 依赖）
+│   │   ├── validate.ts      # task prompt 校验（section 提取、词数限制、反模式检测）
+│   │   ├── metrics.ts       # 上下文 token 估算（混合策略：API 报告 + 启发式）
+│   │   ├── recovery.ts      # JSON 解析错误检测与恢复
+│   │   ├── agent.ts         # Agent 类型检测（Clientish 接口 + getAgentName）
+│   │   ├── todo.ts          # Todo 状态查询（TinyClient 接口 + getTodoState）
+│   │   └── prompts.ts       # 所有 prompt 文本常量（单一事实来源）
+│   ├── hooks/               # 薄适配层 — 解包框架 (input, output) → 调 core 函数
+│   │   ├── task-prompt/     # task prompt 校验 + nudge（3 个适配器函数）
+│   │   ├── json-error-nudge/# JSON 解析错误恢复（重导出，hook.ts 已删除）
+│   │   ├── context-metrics/ # 上下文指标（重导出，hook.ts 已删除）
+│   │   ├── direct-work-nudge/# 直接编辑提醒（nudgeDirectWork 适配器）
+│   │   └── post-task-nudge/ # task() 返回后验证+todo 提醒（nudgePostTask 适配器）
+│   └── utils/
+│       └── logger.ts        # JSON Lines 文件日志（旋转 + 保留策略）
 ├── tests/                   # Prompt 评估测试框架（Phase 1: build.md）
 │   └── runner.py            # 评估测试运行器
 ├── tools/                   # Rust CLI tools workspace
@@ -104,7 +114,8 @@ ZooKeeper/
 
 - **`install.py`** — 安装脚本入口，读取 config.toml + .env → 生成 OpenCode 配置
 - **`config.toml`** — 用户配置模板（单一事实来源），所有 deny 权限和 agent 配置在此声明，`[zoo.validation]` 阈值由 TS 插件在运行时直接读取
-- **`src/index.ts`** — 插件入口，导出 `config` hook 动态注入 prompt + 任务 prompt 校验
+- **`src/index.ts`** — 插件入口，薄接线层，注册 6 个 hook
+- **`src/core/`** — 框架无关纯逻辑模块，零 OpenCode 依赖，可被任何 TS 运行时 import
 - **`core/prompts/*.md`** — 各 agent 的 prompt 文件，按 `{agent-name}.md` 命名
 - **`tools/Cargo.toml`** — Rust workspace 根配置
 
@@ -119,7 +130,7 @@ OpenCode 日志写入以下位置：
 
 ### 插件调试日志
 
-所有 hook 使用 `src/hooks/shared/logger.ts` 导出的 `debug()` 函数输出触发记录，格式为 `[zookeeper:<hook-name>] trigger`。
+所有 hook 使用 `src/utils/logger.ts` 导出的 `log()` 函数输出触发记录，格式为 `[zookeeper:<hook-name>] trigger`。
 
 - **info/warn/error 始终记录** — 即使不设置 `ZOO_DEBUG`，这三个级别也会写入日志文件
 - **debug 日志默认关闭** — 设置 `ZOO_DEBUG=1 opencode`（或在 shell 中 `export ZOO_DEBUG=1`）后额外启用 debug 级别

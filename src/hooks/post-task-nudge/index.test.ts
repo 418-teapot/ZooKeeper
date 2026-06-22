@@ -7,9 +7,13 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import {
+  TODO_FINAL_ACTIVE,
+  TODO_GENERAL,
+  VERIFY_REMINDER,
+} from "../../core/prompts.js";
+import type { TinyClient } from "../../core/todo.js";
 import { zookeeper } from "../../index.js";
-import { TODO_FINAL_ACTIVE, TODO_GENERAL } from "../utils/prompts.js";
-import { VERIFY_REMINDER } from "./hook.js";
 import { nudgePostTask } from "./index.js";
 
 // ---------------------------------------------------------------------------
@@ -29,18 +33,7 @@ function mockClient(
     priority: string;
     id: string;
   }>,
-): {
-  session: {
-    todo: (opts: { path: { id: string } }) => Promise<{
-      data: Array<{
-        content: string;
-        status: string;
-        priority: string;
-        id: string;
-      }>;
-    }>;
-  };
-} {
+): TinyClient {
   return {
     session: {
       todo: async () => ({ data: items }),
@@ -53,18 +46,7 @@ function mockClient(
  *
  * @returns A mock client that throws on any todo call.
  */
-function failingClient(): {
-  session: {
-    todo: (opts: { path: { id: string } }) => Promise<{
-      data: Array<{
-        content: string;
-        status: string;
-        priority: string;
-        id: string;
-      }>;
-    }>;
-  };
-} {
+function failingClient(): TinyClient {
   return {
     session: {
       todo: async () => {
@@ -79,18 +61,7 @@ function failingClient(): {
  * the mutated output.
  */
 async function applyNudge(
-  client: {
-    session: {
-      todo: (opts: { path: { id: string } }) => Promise<{
-        data: Array<{
-          content: string;
-          status: string;
-          priority: string;
-          id: string;
-        }>;
-      }>;
-    };
-  },
+  client: TinyClient,
   tool: string,
   sessionID: string,
   output?: string,

@@ -1,16 +1,20 @@
 /**
  * Task prompt validation hook barrel export.
  *
- * Re-exports all public API from the hook module.
+ * Re-exports all public API. Types and validation functions come from
+ * `src/core/validate.ts` and `src/core/prompts.ts`; adapter/handler
+ * functions come from the hook module.
  *
  * @module
  */
 
-export type { ValidationLimits } from "./hook";
+export { TASK_PROMPT_HINT } from "../../core/prompts.js";
+export {
+  type ValidationLimits,
+  validateTaskPrompt,
+} from "../../core/validate.js";
 export {
   enhanceTaskDefinition,
   nudgeTaskOutput,
-  TASK_PROMPT_HINT,
   validateBeforeExec,
-  validateTaskPrompt,
 } from "./hook";

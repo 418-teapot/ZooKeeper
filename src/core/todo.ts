@@ -1,21 +1,21 @@
 /**
- * Todo state logic for ZooKeeper OpenCode plugin.
+ * Framework-independent todo state logic.
  *
- * Provides the `getTodoState` helper used by the post-task-nudge hook to
- * inspect the session's todo list.
+ * Provides the `TinyClient` interface and `getTodoState` helper used
+ * to inspect a session's todo list and compute in-progress/pending counts.
  *
  * @module
  */
 
 // ---------------------------------------------------------------------------
-// Types (local — not exported)
+// Types
 // ---------------------------------------------------------------------------
 
 /**
  * Minimal inline interface for the OpenCode client object.
  * Only the `session.todo` method is needed.
  */
-interface TinyClient {
+export interface TinyClient {
   session: {
     todo: (opts: { path: { id: string } }) => Promise<{
       data: Array<{

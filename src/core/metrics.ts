@@ -1,23 +1,18 @@
 /**
- * Context Metrics hook for ZooKeeper OpenCode plugin.
+ * Context metrics functions for ZooKeeper.
  *
- * Phase 0 of Dynamic Context Pruning — adds observability before any pruning
- * logic.  On every LLM turn, estimates the total context token usage using a
- * hybrid approach:
+ * Provides types and functions for measuring estimated context token
+ * usage using a hybrid approach: API-reported tokens from the last completed
+ * assistant message plus heuristic (text.length / 4) estimates for subsequent
+ * messages. Results are logged via the file-based logger for observability.
  *
- *   1. Find the last completed assistant message (where `tokens.output > 0`)
- *      and sum its API-reported tokens.
- *   2. For any messages after that point, estimate tokens using
- *      `text.length / 4` heuristic.
- *   3. Total = API-reported + heuristic estimate.
- *
- * Results are logged via the file-based logger so we can calibrate pruning
- * thresholds later.
+ * These functions have no OpenCode framework dependencies, but they do
+ * produce log side effects.
  *
  * @module
  */
 
-import { log } from "../../utils/logger.js";
+import { log } from "../utils/logger.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -67,7 +62,7 @@ export interface ContextMessageEntry {
  * Output object passed to the messages.transform hook.
  */
 export interface ContextMetricsOutput {
-  messages?: ContextMessageEntry[];
+  messages?: ContextMessageEntry[] | null;
 }
 
 /**
@@ -99,7 +94,7 @@ export interface ContextMetricsResult {
  * Results are logged at `"info"` level via the file-based logger.  When the
  * messages array is empty, a `"debug"` log is emitted instead.
  *
- * This is a pure synchronous function — no async needed.
+ * This is a synchronous function with logging side effects — no async needed.
  *
  * @param output - The hook output object whose `messages` array is examined.
  * @returns Context metrics including estimated total, message count, exact
