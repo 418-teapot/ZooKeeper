@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::{CommandFactory, Parser, Subcommand};
+use zutil::color::COLOR;
 use zutil::{get_zoo_log_dir, resolve_session_path};
 
 // ── jq helpers -------------------------------------------------------------
@@ -67,6 +68,7 @@ fn run_jq_pipeline(filter_str: Option<&str>, unbuffered: bool) -> Vec<String> {
 fn cmd_show(
     session_id: &str,
     raw: bool,
+    json: bool,
     hook: Option<&str>,
     level: Option<&str>,
     event: Option<&str>,
@@ -76,6 +78,9 @@ fn cmd_show(
         eprintln!("Error: no unique log file found for session '{session_id}'");
         std::process::exit(2);
     };
+
+    // --json takes precedence over --raw
+    let raw = raw && !json;
 
     if raw {
         // Cat the file — output raw content to stdout
@@ -122,6 +127,7 @@ fn cmd_show(
 fn cmd_tail(
     session_id: &str,
     raw: bool,
+    json: bool,
     hook: Option<&str>,
     level: Option<&str>,
     event: Option<&str>,
@@ -131,6 +137,9 @@ fn cmd_tail(
         eprintln!("Error: no unique log file found for session '{session_id}'");
         std::process::exit(2);
     };
+
+    // --json takes precedence over --raw
+    let raw = raw && !json;
 
     if raw {
         // Bypass jq entirely — tail -f directly
@@ -253,6 +262,14 @@ fn cmd_tail(
     disable_help_subcommand = true
 )]
 struct Cli {
+    /// Output results in JSON format
+    #[arg(short = 'j', long, global = true)]
+    json: bool,
+
+    /// Disable colored output
+    #[arg(long, global = true)]
+    no_color: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -326,11 +343,15 @@ fn main() {
 
     let cli = Cli::parse();
 
+    let colors_enabled = !cli.no_color;
+    COLOR.store(colors_enabled, Ordering::SeqCst);
+
     match &cli.command {
         Some(Commands::Tail { session_id, hook, level, event, raw }) => {
             cmd_tail(
                 session_id,
                 *raw,
+                cli.json,
                 hook.as_deref(),
                 level.as_deref(),
                 event.as_deref(),
@@ -341,6 +362,7 @@ fn main() {
             cmd_show(
                 session_id,
                 *raw,
+                cli.json,
                 hook.as_deref(),
                 level.as_deref(),
                 event.as_deref(),
@@ -655,5 +677,29 @@ mod tests {
         assert_eq!(stdout.lines().count(), 4);
 
         let _ = fs::remove_file(&log_path);
+    }
+
+    // ── Global flags ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_args_global_json() {
+        let args = Cli::try_parse_from(["zlog", "--json", "show", "ses-001"])
+            .expect("--json should parse");
+        assert!(args.json);
+    }
+
+    #[test]
+    fn test_args_global_no_color() {
+        let args =
+            Cli::try_parse_from(["zlog", "--no-color", "show", "ses-001"])
+                .expect("--no-color should parse");
+        assert!(args.no_color);
+    }
+
+    #[test]
+    fn test_args_global_json_tail() {
+        let args = Cli::try_parse_from(["zlog", "--json", "tail", "ses-001"])
+            .expect("--json with tail should parse");
+        assert!(args.json);
     }
 }

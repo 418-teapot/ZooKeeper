@@ -148,24 +148,24 @@ OpenCode 日志写入以下位置：
 ## CLI 工具
 
 `tools/` 下有 4 个 CLI 工具用于分析 zoo 插件日志、会话记录和 token 消耗。
-完整文档见 `docs/tools-design.md`。
 
 | 工具 | 语言 | 职责 | 主要子命令 |
 |------|------|------|-----------|
-| `zfind` | Rust | 搜索 SQLite 中的会话与消息 | 模糊搜索 / `--all` / `--exact` / `--session <sid>` / `--message <id>` |
-| `zlog` | Rust | 实时过滤 zoo JSONL 日志 | `show <id>` / `tail <id>`（支持 `--hook` / `--level` / `--event` 过滤） |
+| `zfind` | Rust | 搜索 SQLite 中的会话与消息 | `search <keyword>` / `search --exact <title>` / `list [--all]` / `show <sid>` / `message <id>` |
+| `zlog` | Rust | 实时过滤 zoo JSONL 日志 | `show <id>` / `tail <id>`（支持 `--hook` / `--level` / `--event` / `--raw` 过滤） |
 | `ztrace` | Rust | 完整编排追踪（多源合并） | `show <id>` / `export <id>` / `steps <id>` / `tokens <id>` |
-| `zinspect` | Rust | 事件统计与 hook 影响分析 | `stats <id>` / `stats --sessions N` / `timeline <id>` / `impact` |
+| `zinspect` | Rust | 事件统计与 hook 影响分析 | `stats <id>` / `stats --sessions N` / `timeline <id>` / `impact [<id>]` |
 
-**共享标志**（`zfind` / `ztrace` / `zinspect`）：`--db <path>` / `--no-color` / `--json`。
+**共享标志**（全部四工具）：`--json` / `--no-color`；`zfind` / `ztrace` / `zinspect` 额外 `--db <path>`。
+**短标志**：`-j`（`--json`）、`-a`（`--all`，含子会话）、`-v`（`--verbose`）。
 
-**退出码**：`0` 成功 / `1` 错误 / `2` 未找到。`zlog` 支持 session ID 前缀匹配；`zfind`、`ztrace`、`zinspect` 需完整 ID。
+**退出码**：`0` 成功 / `1` 参数错误 / `2` 未找到。全部工具支持 session ID 前缀匹配。
 
 **典型工作流：**
 
 ```shell
 # 1. 用 zfind 搜索会话，单条匹配时只输出 ID（管道友好）
-$ ztrace show $(zfind "auth middleware") -s
+$ ztrace steps $(zfind search "auth middleware")
 
 # 2. 追踪单个会话的 step 级 token 消耗
 $ ztrace steps <sid> --min-cache-drop 1000

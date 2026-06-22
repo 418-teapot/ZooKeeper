@@ -107,12 +107,12 @@ if rustup component list 2>/dev/null | grep -q 'llvm-tools.*installed'; then
     # zfind/zinspect db.rs + helpers.rs (core logic);
     # display.rs/main.rs are 0% by design (stdout rendering / CLI dispatch).
     check_cov "zwiki"     "$COV_ZWIKI"    85 || FAILED=1
-    check_cov "zutil"     "$COV_ZUTIL"    85 || FAILED=1
-    check_cov "zlog"      "$COV_ZLOG"     65 || FAILED=1
+    check_cov "zutil"     "$COV_ZUTIL"    90 || FAILED=1
+    check_cov "zlog"      "$COV_ZLOG"     70 || FAILED=1
     check_cov "zfind"     "$COV_ZFIND"    50 || FAILED=1
-    check_cov "zinspect"  "$COV_ZINSPECT" 50 || FAILED=1
+    check_cov "zinspect"  "$COV_ZINSPECT" 65 || FAILED=1
     check_cov "ztrace"    "$COV_ZTRACE"   65 || FAILED=1
-    check_cov "total"     "$COV_TOTAL"    65 || true
+    check_cov "total"     "$COV_TOTAL"    70 || true
   fi
 else
   echo ""

@@ -29,15 +29,19 @@ use zutil::color::msg_print;
 )]
 struct Args {
     /// Output results in JSON format
-    #[arg(long)]
+    #[arg(short = 'j', long, global = true)]
     json: bool,
 
     /// Path to the `OpenCode` `SQLite` database
-    #[arg(long, default_value = "~/.local/share/opencode/opencode.db")]
+    #[arg(
+        long,
+        default_value = "~/.local/share/opencode/opencode.db",
+        global = true
+    )]
     db: String,
 
     /// Disable colored output
-    #[arg(long)]
+    #[arg(long, global = true)]
     no_color: bool,
 
     #[command(subcommand)]
@@ -56,7 +60,7 @@ enum Command {
         sessions: Option<i64>,
 
         /// Include child sessions in multi-session mode
-        #[arg(long)]
+        #[arg(short = 'a', long)]
         all: bool,
 
         /// Show only the token summary section
@@ -78,16 +82,15 @@ enum Command {
     },
     /// Analyze how zoo hook triggers affect cache hit rates
     Impact {
-        /// Number of recent sessions to analyze (default: 5)
+        /// Session ID (full or prefix). If omitted, uses --sessions <N> multi-session mode.
+        session_id: Option<String>,
+
+        /// Number of recent sessions to analyze in multi-session mode (default: 5)
         #[arg(long, default_value_t = 5, value_name = "N")]
         sessions: i64,
 
-        /// Analyze a single session by ID
-        #[arg(long, value_name = "ID")]
-        session: Option<String>,
-
         /// Include child sessions
-        #[arg(long)]
+        #[arg(short = 'a', long)]
         all: bool,
 
         /// Filter to a specific hook type
@@ -103,7 +106,7 @@ enum Command {
         cost: bool,
 
         /// Show per-event detail
-        #[arg(long)]
+        #[arg(short = 'v', long)]
         verbose: bool,
     },
 }
@@ -824,8 +827,8 @@ fn main() {
             cmd_timeline(&args, session_id, *all_events);
         }
         Some(Command::Impact {
+            session_id,
             sessions,
-            session,
             all,
             hook,
             window,
@@ -836,7 +839,7 @@ fn main() {
                 &args,
                 &ImpactArgs {
                     sessions_n: *sessions,
-                    single_session: session.as_deref(),
+                    single_session: session_id.as_deref(),
                     include_all: *all,
                     hook_filter: hook.as_deref(),
                     window: *window,
@@ -946,8 +949,8 @@ mod tests {
         let args = Args::try_parse_from(["zinspect", "impact"])
             .expect("impact should parse");
         if let Some(Command::Impact {
+            session_id,
             sessions,
-            session,
             window,
             cost,
             verbose,
@@ -955,7 +958,30 @@ mod tests {
         }) = &args.command
         {
             assert_eq!(*sessions, 5);
-            assert_eq!(*session, None);
+            assert_eq!(*session_id, None);
+            assert_eq!(*window, 6);
+            assert!(!*cost);
+            assert!(!*verbose);
+        } else {
+            panic!("expected Impact command");
+        }
+    }
+
+    #[test]
+    fn test_args_impact_with_session_id() {
+        let args = Args::try_parse_from(["zinspect", "impact", "ses-001"])
+            .expect("impact with session_id should parse");
+        if let Some(Command::Impact {
+            session_id,
+            sessions,
+            window,
+            cost,
+            verbose,
+            ..
+        }) = &args.command
+        {
+            assert_eq!(session_id.as_deref(), Some("ses-001"));
+            assert_eq!(*sessions, 5);
             assert_eq!(*window, 6);
             assert!(!*cost);
             assert!(!*verbose);
@@ -980,6 +1006,7 @@ mod tests {
         ])
         .expect("impact with options should parse");
         if let Some(Command::Impact {
+            session_id,
             sessions,
             window,
             cost,
@@ -988,6 +1015,7 @@ mod tests {
             ..
         }) = &args.command
         {
+            assert_eq!(*session_id, None);
             assert_eq!(*sessions, 10);
             assert_eq!(*window, 3);
             assert!(*cost);
@@ -1044,5 +1072,39 @@ mod tests {
         let err = Args::try_parse_from(["zinspect", "impact", "--help"])
             .expect_err("impact --help should produce error");
         assert_eq!(err.kind(), ErrorKind::DisplayHelp);
+    }
+
+    #[test]
+    fn test_args_stats_all_short_flag() {
+        let args = Args::try_parse_from([
+            "zinspect",
+            "stats",
+            "--sessions",
+            "3",
+            "-a",
+        ])
+        .expect("stats --sessions 3 -a should parse");
+        if let Some(Command::Stats { all, .. }) = &args.command {
+            assert!(*all);
+        } else {
+            panic!("expected Stats command");
+        }
+    }
+
+    #[test]
+    fn test_args_impact_all_short_flag() {
+        let args = Args::try_parse_from([
+            "zinspect",
+            "impact",
+            "-a",
+            "--sessions",
+            "3",
+        ])
+        .expect("impact -a --sessions 3 should parse");
+        if let Some(Command::Impact { all, .. }) = &args.command {
+            assert!(*all);
+        } else {
+            panic!("expected Impact command");
+        }
     }
 }

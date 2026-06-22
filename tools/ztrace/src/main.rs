@@ -12,6 +12,7 @@ use std::sync::atomic::Ordering;
 
 use zutil::color::COLOR;
 use zutil::color::msg_print;
+use zutil::db_helpers::resolve_session_id;
 
 mod db;
 mod display;
@@ -37,15 +38,19 @@ enum ExportFormat {
 )]
 struct Args {
     /// Output results in JSON format
-    #[arg(long)]
+    #[arg(short = 'j', long, global = true)]
     json: bool,
 
     /// Path to the `OpenCode` `SQLite` database
-    #[arg(long, default_value = "~/.local/share/opencode/opencode.db")]
+    #[arg(
+        long,
+        default_value = "~/.local/share/opencode/opencode.db",
+        global = true
+    )]
     db: String,
 
     /// Disable colored output
-    #[arg(long)]
+    #[arg(long, global = true)]
     no_color: bool,
 
     #[command(subcommand)]
@@ -60,8 +65,8 @@ enum Command {
         session_id: String,
 
         /// Include all child sessions in the timeline
-        #[arg(short, long)]
-        subsessions: bool,
+        #[arg(short = 'a', long)]
+        all: bool,
 
         /// Show full per-event timeline instead of grouped summary
         #[arg(short, long)]
@@ -73,8 +78,8 @@ enum Command {
         session_id: String,
 
         /// Include all child sessions in the trace
-        #[arg(short, long)]
-        subsessions: bool,
+        #[arg(short = 'a', long)]
+        all: bool,
 
         /// Export format (jaeger or chrome)
         #[arg(long, default_value = "jaeger", value_enum)]
@@ -100,9 +105,9 @@ enum Command {
         )]
         hook_overlays: bool,
 
-        /// Include child session steps
-        #[arg(long)]
-        child: bool,
+        /// Include all child session steps
+        #[arg(short = 'a', long)]
+        all: bool,
 
         /// Only show steps where Δ Cache < -N
         #[arg(long, value_name = "N")]
@@ -117,16 +122,36 @@ enum Command {
 
 // ── Command Handlers ─────────────────────────────────────────────────────
 
-fn cmd_show(args: &Args, session_id: &str, subsessions: bool, verbose: bool) {
+fn cmd_show(args: &Args, session_id: &str, all: bool, verbose: bool) {
     let opencode_path =
         zutil::expand_tilde("~/.local/share/opencode/log/opencode.log");
     let db_path = zutil::expand_tilde(&args.db);
+
+    let resolved = match resolve_session_id(session_id, &db_path) {
+        Ok(Some(id)) => id,
+        Ok(None) => {
+            eprintln!("Error: no session found matching '{session_id}'");
+            std::process::exit(2);
+        }
+        Err(amb) => {
+            eprintln!(
+                "Error: ambiguous session ID prefix '{}' matches \
+                 multiple sessions:",
+                amb.prefix
+            );
+            for m in &amb.matches {
+                eprintln!("  {m}");
+            }
+            std::process::exit(2);
+        }
+    };
+    let session_id = &resolved;
 
     let mut timeline = match trace_builder::build_timeline(
         session_id,
         &opencode_path,
         &db_path,
-        subsessions,
+        all,
     ) {
         Ok(t) => t,
         Err(e) => {
@@ -159,6 +184,16 @@ fn cmd_show(args: &Args, session_id: &str, subsessions: bool, verbose: bool) {
         all_sids.iter().map(std::string::String::as_str).collect();
     helpers::attach_durations(&mut timeline, &all_sids_refs, &db_path);
 
+    // --json output
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&timeline)
+                .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+        );
+        return;
+    }
+
     if verbose {
         display::render_session_panel(session_id, &timeline, &stats, false);
         display::render_timeline_rich(&timeline);
@@ -171,7 +206,7 @@ fn cmd_show(args: &Args, session_id: &str, subsessions: bool, verbose: bool) {
 fn cmd_export(
     args: &Args,
     session_id: &str,
-    subsessions: bool,
+    all: bool,
     format: &ExportFormat,
     output: &str,
 ) {
@@ -180,11 +215,31 @@ fn cmd_export(
     let db_path = zutil::expand_tilde(&args.db);
     let output_path = zutil::expand_tilde(output);
 
+    let resolved = match resolve_session_id(session_id, &db_path) {
+        Ok(Some(id)) => id,
+        Ok(None) => {
+            eprintln!("Error: no session found matching '{session_id}'");
+            std::process::exit(2);
+        }
+        Err(amb) => {
+            eprintln!(
+                "Error: ambiguous session ID prefix '{}' matches \
+                 multiple sessions:",
+                amb.prefix
+            );
+            for m in &amb.matches {
+                eprintln!("  {m}");
+            }
+            std::process::exit(2);
+        }
+    };
+    let session_id = &resolved;
+
     let timeline = match trace_builder::build_timeline(
         session_id,
         &opencode_path,
         &db_path,
-        subsessions,
+        all,
     ) {
         Ok(t) => t,
         Err(e) => {
@@ -232,6 +287,21 @@ fn cmd_export(
                 "[green]Exported {count} spans to {output_path}[/green]"
             ));
         }
+    }
+
+    // --json output: print JSON envelope
+    if args.json {
+        let envelope = serde_json::json!({
+            "status": "ok",
+            "format": format!("{format:?}").to_lowercase(),
+            "output": output_path,
+            "events": timeline.len(),
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&envelope)
+                .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+        );
     }
 }
 
@@ -433,16 +503,36 @@ fn cmd_steps(
     args: &Args,
     session_id: &str,
     hook_overlays: bool,
-    child: bool,
+    all: bool,
     min_cache_drop: Option<i64>,
 ) {
     let db_path = zutil::expand_tilde(&args.db);
+
+    let resolved = match resolve_session_id(session_id, &db_path) {
+        Ok(Some(id)) => id,
+        Ok(None) => {
+            eprintln!("Error: no session found matching '{session_id}'");
+            std::process::exit(2);
+        }
+        Err(amb) => {
+            eprintln!(
+                "Error: ambiguous session ID prefix '{}' matches \
+                 multiple sessions:",
+                amb.prefix
+            );
+            for m in &amb.matches {
+                eprintln!("  {m}");
+            }
+            std::process::exit(2);
+        }
+    };
+    let session_id = &resolved;
 
     // 1. Query steps from DB
     let mut all_steps = db::query_step_data_batch(&[session_id], &db_path);
 
     // 2. Child steps (stub — returns empty for now)
-    if child {
+    if all {
         discover_and_merge_child_steps(session_id, &db_path, &mut all_steps);
     }
 
@@ -482,6 +572,26 @@ fn cmd_steps(
 
 fn cmd_tokens(args: &Args, session_id: &str) {
     let db_path = zutil::expand_tilde(&args.db);
+
+    let resolved = match resolve_session_id(session_id, &db_path) {
+        Ok(Some(id)) => id,
+        Ok(None) => {
+            eprintln!("Error: no session found matching '{session_id}'");
+            std::process::exit(2);
+        }
+        Err(amb) => {
+            eprintln!(
+                "Error: ambiguous session ID prefix '{}' matches \
+                 multiple sessions:",
+                amb.prefix
+            );
+            for m in &amb.matches {
+                eprintln!("  {m}");
+            }
+            std::process::exit(2);
+        }
+    };
+    let session_id = &resolved;
 
     let messages = db::query_message_parts(session_id, &db_path);
 
@@ -559,25 +669,19 @@ fn main() {
     COLOR.store(colors_enabled, Ordering::SeqCst);
 
     match &args.command {
-        Some(Command::Show { session_id, subsessions, verbose }) => {
-            cmd_show(&args, session_id, *subsessions, *verbose);
+        Some(Command::Show { session_id, all, verbose }) => {
+            cmd_show(&args, session_id, *all, *verbose);
         }
-        Some(Command::Export { session_id, subsessions, format, output }) => {
-            cmd_export(&args, session_id, *subsessions, format, output);
+        Some(Command::Export { session_id, all, format, output }) => {
+            cmd_export(&args, session_id, *all, format, output);
         }
         Some(Command::Steps {
             session_id,
             hook_overlays,
-            child,
+            all,
             min_cache_drop,
         }) => {
-            cmd_steps(
-                &args,
-                session_id,
-                *hook_overlays,
-                *child,
-                *min_cache_drop,
-            );
+            cmd_steps(&args, session_id, *hook_overlays, *all, *min_cache_drop);
         }
         Some(Command::Tokens { session_id }) => {
             cmd_tokens(&args, session_id);
@@ -602,11 +706,10 @@ mod tests {
         let args = Args::try_parse_from(["ztrace", "show", "ses-001"])
             .expect("show should parse");
         assert!(args.command.is_some());
-        if let Some(Command::Show { session_id, subsessions, verbose }) =
-            &args.command
+        if let Some(Command::Show { session_id, all, verbose }) = &args.command
         {
             assert_eq!(session_id, "ses-001");
-            assert!(!subsessions);
+            assert!(!all);
             assert!(!verbose);
         } else {
             panic!("expected Show command");
@@ -616,12 +719,12 @@ mod tests {
     #[test]
     fn test_args_show_with_flags() {
         let args =
-            Args::try_parse_from(["ztrace", "show", "ses-001", "-s", "-v"])
-                .expect("show with -s -v should parse");
-        if let Some(Command::Show { session_id: _, subsessions, verbose }) =
+            Args::try_parse_from(["ztrace", "show", "ses-001", "-a", "-v"])
+                .expect("show with -a -v should parse");
+        if let Some(Command::Show { session_id: _, all, verbose }) =
             &args.command
         {
-            assert!(*subsessions);
+            assert!(*all);
             assert!(*verbose);
         } else {
             panic!("expected Show command");
@@ -632,15 +735,11 @@ mod tests {
     fn test_args_export_defaults() {
         let args = Args::try_parse_from(["ztrace", "export", "ses-001"])
             .expect("export should parse");
-        if let Some(Command::Export {
-            session_id,
-            subsessions,
-            format,
-            output,
-        }) = &args.command
+        if let Some(Command::Export { session_id, all, format, output }) =
+            &args.command
         {
             assert_eq!(session_id, "ses-001");
-            assert!(!subsessions);
+            assert!(!all);
             assert!(matches!(format, ExportFormat::Jaeger));
             assert_eq!(output, "trace.json");
         } else {
@@ -651,18 +750,14 @@ mod tests {
     #[test]
     fn test_args_export_with_options() {
         let args = Args::try_parse_from([
-            "ztrace", "export", "ses-001", "-s", "--format", "chrome", "-o",
+            "ztrace", "export", "ses-001", "-a", "--format", "chrome", "-o",
             "out.json",
         ])
         .expect("export with options should parse");
-        if let Some(Command::Export {
-            session_id: _,
-            subsessions,
-            format,
-            output,
-        }) = &args.command
+        if let Some(Command::Export { session_id: _, all, format, output }) =
+            &args.command
         {
-            assert!(*subsessions);
+            assert!(*all);
             assert!(matches!(format, ExportFormat::Chrome));
             assert_eq!(output, "out.json");
         } else {
@@ -677,13 +772,13 @@ mod tests {
         if let Some(Command::Steps {
             session_id,
             hook_overlays,
-            child,
+            all,
             min_cache_drop,
         }) = &args.command
         {
             assert_eq!(session_id, "ses-001");
             assert!(*hook_overlays);
-            assert!(!child);
+            assert!(!all);
             assert_eq!(*min_cache_drop, None);
         } else {
             panic!("expected Steps command");
@@ -698,7 +793,7 @@ mod tests {
             "ses-001",
             "--hook-overlays",
             "false",
-            "--child",
+            "--all",
             "--min-cache-drop",
             "500",
         ])
@@ -706,12 +801,12 @@ mod tests {
         if let Some(Command::Steps {
             session_id: _,
             hook_overlays,
-            child,
+            all,
             min_cache_drop,
         }) = &args.command
         {
             assert!(!*hook_overlays);
-            assert!(*child);
+            assert!(*all);
             assert_eq!(*min_cache_drop, Some(500));
         } else {
             panic!("expected Steps command");

@@ -26,9 +26,22 @@ pub fn query_sessions_all(
     db_path: &str,
     limit: usize,
 ) -> Result<Vec<Value>, rusqlite::Error> {
+    // Root sessions only (no parent_id)
     query_sessions_where(
         db_path,
         "WHERE parent_id IS NULL ORDER BY time_updated DESC LIMIT ?",
+        rusqlite::params![i64::try_from(limit).unwrap_or(i64::MAX)],
+    )
+}
+
+/// Query all sessions including sub-sessions. No `parent_id` filter.
+pub fn query_sessions_all_including_children(
+    db_path: &str,
+    limit: usize,
+) -> Result<Vec<Value>, rusqlite::Error> {
+    query_sessions_where(
+        db_path,
+        "ORDER BY time_updated DESC LIMIT ?",
         rusqlite::params![i64::try_from(limit).unwrap_or(i64::MAX)],
     )
 }
@@ -40,7 +53,7 @@ pub fn query_sessions_exact(
 ) -> Result<Vec<Value>, rusqlite::Error> {
     query_sessions_where(
         db_path,
-        "WHERE title = ? ORDER BY time_updated DESC LIMIT ?",
+        "WHERE parent_id IS NULL AND title = ? ORDER BY time_updated DESC LIMIT ?",
         rusqlite::params![title, i64::try_from(limit).unwrap_or(i64::MAX)],
     )
 }
@@ -471,11 +484,29 @@ mod tests {
             DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
         let results = query_sessions_all(&db_path, 50).unwrap();
-        // Should return 2 root sessions, ses-003 excluded (parent_id not null)
+        // Root sessions only (parent_id IS NULL) — ses-001 and ses-002
         assert_eq!(results.len(), 2, "expected 2 root sessions");
-        // Most recent first
+        // Most recent first: ses-002 (time_updated=1_715_000_300_000)
+        // then ses-001 (1_715_000_100_000)
         assert_eq!(results[0]["id"], "ses-002");
         assert_eq!(results[1]["id"], "ses-001");
+        let _ = fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn test_query_sessions_all_including_children() {
+        let _lock =
+            DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let db_path = create_test_db();
+        let results =
+            query_sessions_all_including_children(&db_path, 50).unwrap();
+        // Should return all 3 sessions (includes sub-session ses-003)
+        assert_eq!(results.len(), 3, "expected 3 sessions");
+        // Most recent first: ses-003 (time_updated=1_715_000_500_000)
+        // then ses-002 (1_715_000_300_000), then ses-001 (1_715_000_100_000)
+        assert_eq!(results[0]["id"], "ses-003");
+        assert_eq!(results[1]["id"], "ses-002");
+        assert_eq!(results[2]["id"], "ses-001");
         let _ = fs::remove_file(&db_path);
     }
 
