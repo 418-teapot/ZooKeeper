@@ -16,8 +16,8 @@ description: 用于所有代码审查操作。通过两路并行审查自动检�
 ### 读取模板
 
 ```
-Read core/skills/code-review/references/eagle-code-security.md
-Read core/skills/code-review/references/eagle-goal-context.md
+Read references/eagle-code-security.md
+Read references/eagle-goal-context.md
 ```
 
 > 大文件使用 offset/limit 参数分段读取，Read 输出带行号方便 Eagle 引用。
@@ -30,27 +30,34 @@ Read core/skills/code-review/references/eagle-goal-context.md
 
 整理技术栈约束、架构限制、性能要求、兼容性要求等。
 
+### 获取 diff 基准引用
+
+根据变更状态确定 `{DIFF_BASE}`：
+
+| 场景 | `{DIFF_BASE}` |
+|------|---------------|
+| 代码未提交（staged 或 unstaged 变更） | `HEAD` |
+| 已提交的单笔 commit | `HEAD~1` |
+| Feature branch 多笔 commit | `git merge-base HEAD <target>`（target 从对话上下文提取，通常是 `main` 或 `origin/main`） |
+
 ### 获取变更文件列表
 
 ```bash
-git diff --name-only HEAD~1
+git diff --name-only {DIFF_BASE}
 ```
 
-merge commit 时使用 `git diff --name-only <base>` 定位实际基准。
+输出干净的变更路径列表（每行一个文件），可直接用于 git 命令的路径参数。
 
-### 获取完整 DIFF
+> 可额外参考 `git diff --stat {DIFF_BASE}` 中的增删行信息编写变更概要。
 
-```bash
-git diff HEAD~1
+### 收集变更概要
+
+基于变更文件列表和对话上下文，编写 3-5 句的人类可读变更概要，记录为 `{CHANGE_SUMMARY}`。描述变更目的和影响范围，不包含原始 diff。
+
+例：
 ```
-
-### 读取变更文件内容
-
+本次变更为认证模块新增 JWT refresh token 机制。新增了 refresh.ts 文件，修改了 auth.ts 中的 token 验证逻辑。后端新增 /auth/refresh 端点，前端登录流程同步更新以支持 token 自动刷新。
 ```
-Read <each-changed-file>
-```
-
-> 大文件使用 offset/limit 参数分段读取，Read 输出带行号方便 Eagle 引用。
 
 ### 收集 BACKGROUND
 
@@ -68,9 +75,9 @@ Read <each-changed-file>
 |--------|------|------|
 | `{GOAL}` | Phase 0 · 收集 GOAL | 两个 Eagle |
 | `{CONSTRAINTS}` | Phase 0 · 收集 CONSTRAINTS | Eagle 2 |
-| `{DIFF}` | Phase 0 · 获取完整 DIFF | 两个 Eagle |
-| `{CHANGED_FILES}` | Phase 0 · 获取变更文件列表 | Eagle 2 |
-| `{FILE_CONTENTS}` | Phase 0 · 读取变更文件内容 | 两个 Eagle |
+| `{CHANGED_FILES}` | Phase 0 · 获取变更文件列表（路径列表） | 两个 Eagle |
+| `{DIFF_BASE}` | Phase 0 · 获取 diff 基准引用 | 两个 Eagle |
+| `{CHANGE_SUMMARY}` | Phase 0 · 收集变更概要 | 两个 Eagle |
 | `{BACKGROUND}` | Phase 0 · 收集 BACKGROUND | 两个 Eagle |
 
 ---
@@ -81,11 +88,11 @@ Read <each-changed-file>
 
 ### Eagle 1 — 代码质量与安全审查
 
-启动 Eagle 1 子 agent，传入填充后的 `eagle-code-security` 模板作为 prompt。在后台并行运行，不等待结果。Eagle 1 只读，不修改任何文件。
+启动 Eagle 1 子 agent，传入填充后的 `eagle-code-security` 模板作为 prompt。在后台并行运行，不等待结果。Eagle 1 半自主，可执行只读命令（git diff、Read、git blame）获取代码，不修改任何文件。
 
 ### Eagle 2 — 目标与上下文完备性审查
 
-同一轮次，启动 Eagle 2 子 agent，传入填充后的 `eagle-goal-context` 模板作为 prompt。同样在后台并行运行。Eagle 2 半自主，可执行只读命令（git log、git blame、gh pr list）搜索额外上下文。
+同一轮次，启动 Eagle 2 子 agent，传入填充后的 `eagle-goal-context` 模板作为 prompt。同样在后台并行运行。Eagle 2 半自主，可执行只读命令（git diff、Read、git log、git blame、gh pr list、gh issue list）搜索额外上下文。
 
 ---
 
@@ -105,9 +112,10 @@ Read <each-changed-file>
 
 如果任一 Eagle 返回 INCONCLUSIVE，执行一次简化重试：
 
-1. 构造简化版 prompt：只包含 `{DIFF}` 和 `{GOAL}`，去掉 `{FILE_CONTENTS}` 和其他大块上下文
-2. 重新启动同一 Eagle，传入简化版 prompt，仍然后台并行运行
-3. 如果重试后仍然 INCONCLUSIVE → 保持为 INCONCLUSIVE，**继续执行不阻塞**
+1. 构造简化版 prompt：只包含 `{CHANGE_SUMMARY}`, `{CHANGED_FILES}`, `{DIFF_BASE}` 和 `{GOAL}`，去掉其他上下文
+2. 指示 Eagle 聚焦与目标相关的特定文件/函数，而非自由探索
+3. 重新启动同一 Eagle，传入简化版 prompt，仍然后台并行运行
+4. 如果重试后仍然 INCONCLUSIVE → 保持为 INCONCLUSIVE，**继续执行不阻塞**
 
 ### 注意事项
 
