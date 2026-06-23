@@ -1,8 +1,8 @@
 # ZooKeeper Plan Mode: 完整设计文档
 
-**Version: 1.0 — Date: 2026-06-23 — Classification: 设计方案**
+**Version: 1.1 — Date: 2026-06-23 — Classification: 设计方案**
 
-> **前置阅读**: [`plan-mode-research.md`](./plan-mode-research.md) 覆盖 6 月 10 日的早期调研（plan mode 检测与切换机制）。本文档是该调研的**深化版本**：在调研 omo/slim/omp 的基础上加入 ECC，并深入探索了 session reuse、handoff、unreconciled 等具体机制，最终敲定了 ZooKeeper Plan Mode 的完整架构设计。
+> **前置阅读**: [`plan-mode-research.md`](./plan-mode-research.md) 覆盖 6 月 10 日的早期调研（plan mode 检测与切换机制）。本文档 v1.0 在调研 omo/slim/omp 的基础上加入 ECC，深入探索了 session reuse、handoff、unreconciled 等具体机制。**v1.1 修订**：对四项目约 20 个关键源文件进行代码级验证，直接在原文各节修正了路由机制（复杂度判定→完备性门控）、对话强度模型（trivial/standard/complex→知识缺口三档）、叶子委派路径等多项设计。修订记录见第 18 章。
 
 ---
 
@@ -18,13 +18,14 @@
 8. [最终设计方案](#8-最终设计方案)
 9. [状态机设计](#9-状态机设计)
 10. [Plan 文件结构](#10-plan-文件结构)
-11. [意图门 (IntentGate)](#11-意图门-intentgate)
+11. [完备性门控 (Completeness Gate)](#11-完备性门控-completeness-gate)
 12. [多 Project Plan 管理](#12-多-project-plan-管理)
 13. [权限与工具控制](#13-权限与工具控制)
 14. [实施路径](#14-实施路径)
 15. [未来演进](#15-未来演进)
 16. [决策日志](#16-决策日志)
 17. [参考资料](#17-参考资料)
+18. [修订记录](#18-修订记录)
 
 ---
 
@@ -388,13 +389,13 @@ function isReusable(job): boolean {
 | **对话形态** | `task(plan_agent)` → 返回结果 → orchestrator 继续 | 主 agent role 切换，同一 session，prompt 变化 |
 | **用户体验** | 用户和 orchestrator 一问一答，规划是 orchestrator 的一个"步骤" | 用户和规划师对话，规划师把活交棒给执行指挥 |
 
-**本质**: 两者对应不同的**对话强度**维度：
+**本质**: 两者对应不同的**对话强度**维度。对话强度的判断不是基于"任务有多复杂"，而是基于"orchestrator 缺多少信息"：
 
-| 复杂度 | 对话强度 | 谁做规划 | 用什么机制 |
+| 知识缺口 | 对话强度 | 谁做规划 | 用什么机制 |
 |---|---|---|---|
-| **trivial** | none | orchestrator 自己（脑内规划） | 都不用 |
-| **standard** | low（1-2 个澄清问题） | plan agent（subagent，被 task() 派出） | **Resume** |
-| **complex** | high（反复辩论、权衡、迭代） | plan agent（变成 primary） | **Handoff** |
+| **无缺口**（知道改哪里、怎么改、边界清晰） | none | orchestrator 自己（脑内规划） | 都不用，直接 task(general) |
+| **中等缺口**（缺方案/步骤，需要探索+设计） | low（1-2 个澄清问题） | plan agent（subagent，被 task() 派出） | **Resume** |
+| **大量缺口**（缺意图、缺架构理解、需要反复权衡） | high（反复辩论、迭代） | plan agent（变成 primary） | **Handoff** |
 
 ### 7.2 Resume 的优势（覆盖 90% 场景）
 
@@ -415,12 +416,12 @@ function isReusable(job): boolean {
 ```
 P0 (现在做): Resume only
   ├── plan agent 作为 subagent
-  ├── 意图门: trivial/standard 走 resume
+  ├── 完备性门控：缺方案→resume（plan agent 续期澄清）
   └── 用 session reuse 让 plan agent 能续期、回答澄清问题
 
-P1 (未来加): Complex + Handoff
+P1 (未来加): 重度缺口 + Handoff
   ├── 新增 plan-primary agent（不是 subagent）
-  ├── 意图门: complex 触发 plan phase，session 动态切 prompt
+  ├── 完备性门控：缺意图/架构理解→handoff，session 动态切 prompt
   ├── $start-work 命令或自动触发执行 handoff
   └── executor agent 接管（Atlas-style）
 ```
@@ -429,7 +430,7 @@ P1 (未来加): Complex + Handoff
 - **Plan 文件位置** —— `~/.zoo/plans/` 中 plan agent 和 executor 都能读
 - **Plan 状态机** —— `planning-done` 状态就是 handoff 触发点
 - **`active_sessions`** —— handoff 时把 session ID 加入此列表
-- **意图门 + reasoning 输出** —— 已经为 complex → handoff 留了判定路径
+- **完备性门控 + reasoning 输出** —— 已经为重度缺口 → handoff 留了判定路径
 
 ---
 
@@ -444,8 +445,9 @@ P1 (未来加): Complex + Handoff
 └─────────────────────────────────────────────┘
                  ↓
 ┌─────────────────────────────────────────────┐
-│  意图门 (IntentGate, orchestrator prompt)    │
-│  └─ trivial / standard / complex 分支        │
+│  完备性门控 (Completeness Gate, prompt)      │
+│  └─ 四个自检：改哪里？怎么改？边界？意图？    │
+│  └─ 缺文件→explore / 缺方案→plan / 缺意图→反问 │
 └─────────────────────────────────────────────┘
                  ↓
 ┌─────────────────────────────────────────────┐
@@ -473,9 +475,9 @@ P1 (未来加): Complex + Handoff
                  ↓
 ┌─────────────────────────────────────────────┐
 │  实现层                                      │
-│  ├─ standard: orchestrator 委派 general/etc  │
-│  └─ complex: 多 subagent（串行，未来并行）    │
-│  └─ 通过 session resume 续期失败任务         │
+│  └─ orchestrator 按 plan 文件委派 subagent   │
+│  └─ session resume 续期失败/未完成任务       │
+│  └─ P1: handoff + 并行多 subagent            │
 └─────────────────────────────────────────────┘
 ```
 
@@ -623,48 +625,59 @@ Trivial 任务可跳过 step 3（orchestrator 自己决定）。
 
 ---
 
-## 11. 意图门 (IntentGate)
+## 11. 完备性门控 (Completeness Gate)
 
-### 11.1 三层混合判定
+> **2026-06-23 修订：** 原设计为"意图门 (IntentGate)"，基于复杂度三档（trivial/standard/complex）+ 关键词 + 文件数。omo 代码验证后发现 omo 的 Sisyphus 不使用复杂度评分——它的路由基于请求分类和知识缺口自检。改为完备性门控，核心原则：**delegate to PLAN when you would need to GUESS the approach**。
 
-```markdown
-### Hard Rules (优先判断)
-触发词（关键词）:
-- force complex: "先别动手"、"规划一下"、"plan mode"、"我们讨论一下"、"对比方案"
-- force trivial: "直接改"、"小修改"、"typo"、"改个错别字"
+### 11.1 请求分类（Phase 0，保持）
 
-文件数规则:
-- 1 个文件 + < 20 行改动 → trivial
-- 2-3 个文件 OR 跨目录 → standard
-- 4+ 文件 OR 跨模块 → complex
+orchestrator 首先将用户请求归入五类之一：
 
-### LLM 兜底 (灰色地带)
-上面 hard rules 都不匹配时，orchestrator 自主判断:
-  - 任务涉及架构决策？→ 倾向 complex
-  - 任务有明显固定 pattern？→ 倾向 trivial
-  - 任务需要理解多个上下文？→ 倾向 standard
-  - 显式输出 reasoning: "判断为 standard: 涉及 2 个文件，无架构影响"
-```
-
-### 11.2 输出 reasoning
-
-orchestrator 判断意图后，先在输出里声明判断：
-
-```
-[判断: standard 复杂度 — 涉及 2 个文件 + 1 个跨目录修改，无架构影响]
-
-好的，我先派 plan agent 探索一下现状...
-```
-
-用户看到 reasoning 后，如果有异议可以说"这其实是 complex，好好规划一下"——orchestrator 会重新判断。
-
-### 11.3 工作流分支
-
-| 判定结果 | 行为 |
+| 意图 | 行为 |
 |---|---|
-| trivial | orchestrator 直接委派 general，不需要 plan 文件 |
-| standard | orchestrator 调 plan agent（session 续期模式），生成 plan 文件，然后委派实现 |
-| complex | （P1 阶段: handoff 给 plan-primary agent；现阶段: 走 standard 流程） |
+| Discussion | 直接回答，不委派 |
+| Wiki Ingestion | wiki-ingest skill |
+| Exploration | task(explore) 或 task(spider) |
+| Implementation | 进入完备性门控 ↓ |
+| Diagnosis | task(explore) → 分析结果 → 进入完备性门控 ↓ |
+
+### 11.2 完备性门控（Phase 1，新增）
+
+实现和诊断意图在委派之前，orchestrator 必须自检四个问题。**这不是评估"任务有多大"，而是评估"我缺什么信息"。**
+
+| 自检 | 不过 → 行为 | 原因 |
+|---|---|---|
+| 我知道改**哪里**吗？（文件位置不用猜） | task(explore) | 缺文件位置信息 |
+| 我知道**怎么**改吗？（方案不用猜） | task(plan) | 缺方案/步骤 |
+| 改动**边界**清晰吗？（不会误伤其他模块） | task(plan) | 需要先理清依赖 |
+| 用户到底**想要什么**？（意图不用猜） | 反问用户，不做任何事 | **模糊 ≠ 复杂**——缺信息就该问，不该猜 |
+
+**关键区分：模糊 vs 复杂。** 用户说"帮我改进一下认证模块"——听起来规模可控，但它是**模糊**的（不知道要修 bug、加功能、重构、还是加日志）。正确的反应是反问，不是规划。
+
+只有四个问题全部通过时，orchestrator 才直接委派 task(general) 或自己动手。
+
+### 11.3 输出 reasoning
+
+orchestrator 做出完备性判断后，在输出里声明：
+
+```
+[完备性: 缺方案 → 派 plan agent]
+[完备性: 全部通过 → 直接委派 general]
+[完备性: 意图模糊 → 反问澄清]
+```
+
+用户看到 reasoning 后如有异议可纠正（如"不需要规划，直接改就行"）。reasoning 用中文以 `[完备性: ...]` 前缀输出，与现有的 discussion/exploration 等声明保持风格一致。
+
+### 11.4 与 omo 的对照
+
+om o 的 Sisyphus 使用了完全相同的模式（`sisyphus-dynamic-prompt-role.ts:53-81`）：
+
+```
+omo 的五请求分类 → ZooKeeper 的五意图门（Phase 0）
+omo 的上下文完成门控（三条自问）→ ZooKeeper 的完备性门控（四条自问）
+```
+
+核心差异：omo 的"模糊"对应"问一个问题"，ZooKeeper 同样处理。omo 没有文件数阈值——无一行代码数文件。ZooKeeper 同样放弃文件数规则。
 
 ---
 
@@ -783,6 +796,8 @@ task = "deny"
 - ZooKeeper 的 `config.toml` 已有每个 agent 的 permission deny 列表
 - 这是最合适的 place，install 时一次性编译，运行时零开销
 - plan 文件写入由 orchestrator 代理 —— 单一责任
+- **2026-06-23 验证：** 与现有 6 个 agent 风格一致。不引入白名单特例。omo 的 plan-family guard 和 ECC 的工具白名单是不同项目在各自框架约束下的选择，ZooKeeper 的 deny 模型够用且一致。
+- **P1 预留：** plan agent 当前 `task = "deny"`（P0 不委派叶子 agent）。P1 如开方案 B，参照 omo 的 `call_omo_agent` 模式加轻量委派通道，不改现有 deny 模型。
 
 ### 13.2 Bash 的 prompt 约束
 
@@ -812,16 +827,43 @@ Bash Usage Rules:
 
 ## 14. 实施路径
 
-### 14.1 七步分解
+> **2026-06-23 修订：** 代码验证后新增 P0 前置步骤（完备性门控 + plan agent prompt）。原 Step 1-7 顺延为 P1 工程实施。详见 [第 18 章](#18-深度代码验证与设计修订-2026-06-23)。
+
+### 14.0 P0 前置：路由层改造（零代码，纯 prompt+配置）
+
+在原有七步之前，先完成路由层的完备性门控和 plan agent 定义。这三个文件改动仅约 110 行，不改任何 TS/Python/Rust 代码：
+
+**P0-Step A. `core/prompts/build.md` — 完备性门控**（~40 行）
+- 在 Phase 0（意图门）和 Phase 2（委派）之间插入 Phase 1：Completeness Gate
+- 四个自检问题：知道改哪里？知道怎么改？范围有界？请求模糊？
+- 核心原则："delegate to PLAN when you would need to GUESS the approach"
+- 纠正原有"Phase 1: Plan & Split"的命名误导（名为 plan 实为 task prompt 格式检查）
+
+**P0-Step B. `core/prompts/plan.md` — plan agent prompt**（~60 行）
+- 角色：规划分析，不实现
+- 工具：read / grep / glob / bash（bash 仅诊断命令）
+- 工作流：理解 → 探索 → 可选澄清 → 设计 → 产出
+- 输出格式：Context / Approach / Critical Files / Verification / Risks / TODOs / Metadata（status + questions）
+- 关键约束：task = "deny"（P0 不做叶子委派）
+- P1 预留：注释说明未来 handoff 模式下可 task(explore/spider)
+
+**P0-Step C. `config.toml` — plan agent 注册**（~12 行）
+- 新增 `[agent.plan]` section，mode 默认（subagent）
+- deny: edit / write / task
+- skill: "*" = deny, wiki-query = allow
+- 模型: {env:ZOO_MODEL}
+- 不改 install.py（agent 块直接透传）
+
+### 14.1 七步分解（P1 工程实施，顺延自原设计）
 
 ```
-Step 1. core/prompts/plan.md                     — plan agent prompt
-Step 2. config.toml + install.py                 — plan agent 注册 + deny 权限
-Step 3. src/core/plan-state.ts                   — plan 文件解析/写入/状态机
-Step 4. src/core/session-tracker.ts              — unreconciled + reusable session
-Step 5. src/core/project-id.ts + _projects.json  — 项目 ID 推导 + 索引管理
-Step 6. core/prompts/orchestrator.md             — 加意图门章节 + plan 相关纪律
-Step 7. src/hooks/plan-lifecycle/index.ts        — 注入动态段 + task 输出追加续期提示
+Step 1. config.toml + install.py                 — plan agent 注册 + deny 权限（部分已在 P0 完成）
+Step 2. src/core/plan-state.ts                   — plan 文件解析/写入/状态机
+Step 3. src/core/session-tracker.ts              — unreconciled + reusable session
+Step 4. src/core/project-id.ts + _projects.json  — 项目 ID 推导 + 索引管理
+Step 5. core/prompts/orchestrator.md             — 加意图门章节 + plan 相关纪律（部分已在 P0 完成）
+Step 6. src/hooks/plan-lifecycle/index.ts        — 注入动态段 + task 输出追加续期提示
+Step 7. 集成测试 + runner.py 场景               — trivial/standard/complex 三场景验证
 ```
 
 ### 14.2 每步的具体产出
@@ -976,6 +1018,14 @@ interface BackgroundManager {
 | 22 | Plan 文件写入者 | orchestrator 代理写 | plan agent 完全只读，单一责任 |
 | 23 | Plan 执行期间可用 subagent | general + explore + spider | 灵活，TODOs 里可注明推荐 |
 | 24 | 未来扩展性 | PlanSessionTracker 接口为 BackgroundManager 预留方法 | 升级不改现有调用方 |
+| 25 | 意图门机制 | **完备性门控替代复杂度判定** | omo 代码验证：路由不是评估任务规模，是评估模型自身知识缺口（知道改哪里？知道怎么改？） |
+| 26 | 路由粒度 | **基于知识缺口：缺文件→explore，缺方案→plan，缺意图→反问** | omo Sisyphus 的"请求分类 + 上下文完成门控"比文件数阈值更可靠 |
+| 27 | Plan agent 叶子节点 | **P0 task = "deny"，不自委派探索** | ECC 模式（planner 自己 read/grep/glob）；P1 参考 omo Prometheus 开 task 只给 explore/spider |
+| 28 | 叶子委派演进 | **P0 方案 A（不自委派）→ P1 方案 B（可调 explore/spider）** | omo plan-family guard 验证可行；需解决 deny 粒度问题（当前 deny 是全局二值） |
+| 29 | 权限模型 | **坚持 deny list，不引入白名单** | 与现有 6 个 agent 风格一致；plan agent 连 plan.md 写权限都不需要（orchestrator 代理写） |
+| 30 | Hook 层数 | **P0 两层（session.idle 解 unreconciled + tool.execute.after 续期提示），接口预留三层** | omo 三层 hook 经验证是不同 scope（Atlas/TodoEnforcer/StopGuard），P0 不需要但 P1 用得上 |
+| 31 | Alias 机制 | **P1 再加（等 agent 命名稳定）** | slim alias 重写 30 行可做，但依赖 agent 前缀约定（pln-1 等） |
+| 32 | 安全边界 | **prompt 管决策质量，code 管破坏范围** | omo 架构验证：路由判断靠 prompt（模型可无视），权限底线靠 config.toml deny（结构保证） |
 
 ---
 
@@ -1007,6 +1057,44 @@ interface BackgroundManager {
 - **slim BackgroundJobBoard**: `utils/background-job-board.ts`（528 行）
 - **omp plan mode guard**: `tools/plan-mode-guard.ts` `enforcePlanModeWrite()`
 - **omp IRC revive**: `irc/bus.ts` + `agent-session.ts` `deliverIrcMessage`
+
+---
+
+## 18. 修订记录
+
+### v1.1 (2026-06-23) — 代码验证修订
+
+基于对 omo/slim/omp/ECC 四项目约 20 个关键源文件的代码级验证（两轮 8 个 explore subagent），对以下章节进行了修正：
+
+| 章节 | 修订内容 | 验证来源 |
+|---|---|---|
+| **§7** Resume vs Handoff | 复杂度三档（trivial/standard/complex）→ 知识缺口三档（无缺口/中等缺口/大量缺口） | omo Sisyphus 的请求分类 + 上下文完成门控（`sisyphus-dynamic-prompt-role.ts`） |
+| **§8** 架构图 | "意图门 (IntentGate) — trivial/standard/complex 分支" → "完备性门控 (Completeness Gate) — 四个自检" | 同上；slim BackgroundJobBoard 注入格式验证了 subagent 隔离上下文 |
+| **§11** 意图门 | **完全重写**：三层混合判定（关键词+文件数+LLM兜底）→ 完备性门控（请求分类 → 四个知识缺口自检 → reasoning 输出）。核心原则：delegate to PLAN when GUESSING the approach | omo `sisyphus-dynamic-prompt-role.ts:53-81`（五分类+三条自问）；验证发现 omo 无一行代码使用文件数阈值 |
+| **§13** 权限 | 补充 deny list 一致性验证 + P1 叶子委派预留说明 | omo plan-family guard + Prometheus 委派矩阵；ECC 工具白名单对比 |
+| **§14** 实施路径 | 新增 **14.0 P0 前置**（完备性门控 + plan agent prompt + config.toml），三个文件 ~110 行，零代码改动。原 Step 1-7 顺延为 P1 工程实施 | ZooKeeper 当前 agent 层级分析（6 agent，两层结构）；omo 安全边界模型（prompt vs code 分层） |
+| **§16** 决策日志 | 新增 #25-#32（完备性门控、知识缺口路由、叶子节点委派、deny list 一致性、hook 层数、alias 暂缓、安全边界分层） | 综合四项目验证结果 |
+
+**代码验证确认无需修订的章节：**
+
+| 章节 | 验证结论 |
+|---|---|
+| §4 Session Reuse | omo 的 `sync-continuation.ts` + slim 的 alias 重写均验证了设计文档描述准确 |
+| §5 Handoff | omo 的 `start-work-hook.ts`（同 session `updateSessionAgent` 切换）+ `boulder.json` 状态桥验证准确 |
+| §6 Background Job Board | slim 的 `background-job-board.ts` unreconciled 状态机验证准确；omo BackgroundManager 实际接近 3000 行（设计文档估算偏小，但对 P0 无影响） |
+| §9-10 状态机和文件结构 | 无变更 |
+| §12 多项目管理 | 无变更 |
+| §15 未来演进 | P1/P2 演进方向与 omo/slim 实践路径一致 |
+
+**主要发现源文件清单：**
+
+| 项目 | 关键验证文件 |
+|---|---|
+| omo | `sync-continuation.ts`, `start-work-hook.ts`, `background-agent/manager.ts`, `sisyphus-dynamic-prompt-role.ts`, `subagent-request-preflight.ts`, `tool-config-handler.ts`, `boulder-state/src/types.ts` |
+| slim | `background-job-board.ts`, `task-session-manager/index.ts`, `council-manager.ts`, `subagent-depth.ts`, `agents/orchestrator.ts`, `agents/permissions.ts` |
+| omp | `plan-mode-guard.ts`, `irc/bus.ts`, `agent-lifecycle.ts`, `orchestrate-notice.md` |
+| ECC | `commands/plan.md`, `agents/planner.md`, `commands/multi-plan.md`, `skills/continuous-learning-v2/SKILL.md` |
+| ZooKeeper | `config.toml`, `core/prompts/build.md`, `install.py` |
 
 ---
 
