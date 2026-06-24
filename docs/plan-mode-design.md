@@ -1,8 +1,8 @@
 # ZooKeeper Plan Mode: 完整设计文档
 
-**Version: 1.2 — Date: 2026-06-24 — Classification: 设计方案**
+**Version: 1.3 — Date: 2026-06-24 — Classification: 设计方案**
 
-> **前置阅读**: [`plan-mode-research.md`](./plan-mode-research.md) 覆盖 6 月 10 日的早期调研（plan mode 检测与切换机制）。本文档 v1.0 在调研 omo/slim/omp 的基础上加入 ECC，深入探索了 session reuse、handoff、unreconciled 等具体机制。**v1.1 修订**：对四项目约 20 个关键源文件进行代码级验证，直接在原文各节修正了路由机制（复杂度判定→完备性门控）、对话强度模型（trivial/standard/complex→知识缺口三档）、叶子委派路径等多项设计。修订记录见第 18 章。
+> **前置阅读**: [`plan-mode-research.md`](./plan-mode-research.md) 覆盖 6 月 10 日的早期调研（plan mode 检测与切换机制）。本文档 v1.0 在调研 omo/slim/omp 的基础上加入 ECC，深入探索了 session reuse、handoff、unreconciled 等具体机制。**v1.1 修订**：对四项目约 20 个关键源文件进行代码级验证，直接在原文各节修正了路由机制（复杂度判定→完备性门控）、对话强度模型（trivial/standard/complex→知识缺口三档）、叶子委派路径等多项设计。修订记录见第 18 章。**v1.3 修订**：P0 mola subagent 方案被尝试后证实不可行并移除，handoff 确认为正确方向；根据实施经验细化 P1 范围。
 
 ---
 
@@ -37,21 +37,21 @@
 
 1. **编排质量上限不在 subagent 能力，而在任务分解精准度** —— Plan Mode 是 ZooKeeper 当前最大杠杆点
 2. **四个项目用完全不同的方式解决"追踪并行任务"**，但核心思想趋同：外挂 LLM 的短期记忆，用结构化状态呈现
-3. **Plan 不应该是 primary agent** —— 现在做 Resume，未来加 Handoff 是正确顺序
+3. **Plan 必须是 primary agent（handoff 模式）** —— subagent 方案（P0）尝试后证实不可行，handoff 是唯一满足多轮规划需求的架构
 4. **ZooKeeper 已有 session reuse 基础设施**（OpenCode 原生 `task_id`），缺的是 prompt 纪律 + 自动追踪 + plan 文件持久化
 
 **最终设计要点**:
 
-- **Plan 作为 subagent**（不是 skill，不是 primary），通过 `task()` 派生
+- **Plan 作为 primary agent**（handoff 模式），通过新会话 handoff 与 build orchestrator 协作
 - **Plan 文件存储于 `~/.zoo/plans/<project-id>/<slug>-<YYYYMMDD>.md`** —— 用户级集中管理，按 git remote / basename 推导 project-id
 - **TOML frontmatter + markdown body + checkboxes** —— 状态字段（`planning`/`planning-done`/`executing`/`done`）+ TODOs 列表
-- **Session resume 模式，透明显示 + 自动执行** —— 用户能看到续期信息，但无需操作
-- **静态 deny 权限**: plan agent 禁止 `edit`/`write`/`task`，允许 `read`/`grep`/`glob`/`bash`（bash 靠 prompt 约束只跑诊断命令）
-- **Plan 文件由 orchestrator 代理写**，plan agent 只输出 markdown 文本
-- **意图门三层混合判定**: 关键词 hard rules + 文件数 + LLM 兜底（输出 reasoning 便于用户纠正）
-- **未来为 Handoff 和 BackgroundManager 预留扩展点**
+- **新会话 handoff 为默认方案** —— 规划与执行 session 物理分离，`parentID` 关联保留可追溯性
+- **静态 deny + hook 路径约束**: mola 允许 `edit`/`write`（路径约束至 `~/.zoo/**/*.md`），禁止 `task`（P2 再开）；bash 靠 prompt 约束只跑诊断命令
+- **Plan 文件由 mola 直接写**（hook 路径约束保证安全），orchestrator 仅维护 `_projects.json` 索引与状态更新
+- **完备性门控**: 四个知识缺口自检 + reasoning 输出，替代原始的三层混合判定
+- **未来为 BackgroundManager 和 Job Board 预留扩展点**（P2）
 
-**实施路径**: 7 步，约 1000+ 行代码，分布在 7 个组件。
+**实施路径**: 6 步，分布在 6 个组件（P0 mola subagent 已尝试并废弃）。
 
 ---
 
@@ -324,7 +324,7 @@ Layer 3: 执行阶段 (Atlas)
 - 切换后是"粘性的"——后续消息持续路由到目标 agent，直到 hook 显式改回
 - **对话历史完全保留**——session ID 不变，消息列表不受影响
 - 非官方 API——OpenCode 可能在未来版本变更此行为
-- 目标 agent 需 `mode = "primary"` 或 `"all"`（当前 mola 是 `subagent`，需改配置）
+- 目标 agent 需 `mode = "primary"` 或 `"all"`（P0 subagent 方案验证了此约束 —— subagent 不能作为 handoff 目标，需升级为 primary）
 
 **新会话 handoff 方案（推荐用于长规划场景）：** 除同会话切换外，OpenCode 还支持自动创建新会话并切换焦点：
 
@@ -336,13 +336,21 @@ Layer 3: 执行阶段 (Atlas)
 
 优势：执行会话上下文干净（不受规划长跑拖累）、角色无混淆、规划与执行日志分离便于追溯；`parentID` 关联使 zfind/ztrace 可跨会话追踪。omo 的 `ralph-loop` 模块（迭代延续场景）已在生产验证此三步骤模式。
 
-### 5.7 Omo 规划架构的关键洞见
+### 5.7 Omo 规划架构的关键洞见 + P0 mola subagent 方案验证
 
 omo 的规划 agent（Prometheus）是 `mode = "primary"`，与实现编排者（Sisyphus）平级。它拥有独立 session，通过 hook 路径约束其写操作——`prometheus-md-only` hook 把 `edit: "allow"` 限制在 `.omo/*.md` 内。"进入规划" 在 omo 里本身就是 handoff：用户在 UI agent 下拉菜单切换到 Prometheus。
 
-这意味着 mola 的 P0 模式（输出文本、orchestrator 代写）是 handoff 不可用时的临时方案。P1 阶段 mola 升级为 primary 后应**接管 plan 文件写入**（hook 路径约束至 `~/.zoo/**/*.md`），orchestrator 仅维护 `_projects.json` 索引等系统级状态，并保留 `executing` / `done` 的状态更新权（因为这些状态发生在规划之后）。
+**P0 mola subagent 方案：尝试与废弃。** 基于 omo 架构分析，我们尝试了将规划 agent 作为 subagent 实现的折中路径：mola 通过 `task()` 派生，输出 markdown 文本，由 orchestrator 代写 plan 文件。实际测试发现此方案存在三个不可接受的结构性问题：
 
-此外，"mola 作为 subagent" 在 P1 handoff 上线后**没有独立价值**——subagent 能做的所有事情，handoff 都能做且还能多轮采访 + 直接写文件。subagent 角色在 P1 中应被完全取代。
+1. **无多轮采访能力** —— subagent 在单次 `task()` 调用中只能输出一段文本，无法与用户进行反复辩论、场景压力测试、替代方案权衡等深度对话
+2. **编排器沦为消息中继** —— 若通过 orchestrator 透传用户回复实现多轮对话，orchestrator 的 session 上下文被规划对话填满，角色从编排者降格为转发器
+3. **角色混淆** —— orchestrator 同时承担编排和中继职责，任务边界模糊，用户感知不到明确的规划角色切换
+
+**验证结论：** P0 mola subagent 的失败恰好**证实了本文档自身的分析** —— subagent 模式是 handoff 不可用时的权宜方案，它无法满足规划任务对多轮深度对话的需求。subagent 能做的所有事情（单次 plan 生成 + 探索），handoff 都能做且做得更好。**mola agent prompt / config 条目已从代码库清除** —— 但 mola-plan skill 设计范式（分层加载、CLEAR/UNCLEAR 双路径、explore-before-ask 协议、两过滤器纪律、审批门）作为有效架构向前存活至 P1（详见 [§14.0](#140-p0-mola-subagent-尝试与废弃) 与 [§18 v1.3](#v13-2026-06-24--p0-mola-subagent-废弃与-p1-范围修订)）。完备性门控（四个自检 + reasoning）仅为本文档 §11 的设计规格，**从未在代码中实现**，需在 P1 中实现。
+
+**Handoff 确认为正确方向。** P1 中 mola 升级为 primary 后应**接管 plan 文件写入**（hook 路径约束至 `~/.zoo/**/*.md`），orchestrator 仅维护 `_projects.json` 索引等系统级状态，并保留 `executing` / `done` 的状态更新权（因为这些状态发生在规划之后）。subagent 角色在 P1 中应被完全取代。
+
+**执行阶段 plan 修改规则：** 规划完成进入执行阶段后，对 plan 的中等/轻微调整无需 handoff 回 mola。build 可直接编辑 plan 文件（更新 TODOs、标记完成项、调整步骤顺序等），写入权通过 `~/.zoo/**/*.md` 路径约束控制。仅当需要**完整的重新规划**（架构重设计、方案全面推翻）时才触发新的 mola handoff 会话。此规则确保执行效率不受不必要的 agent 切换拖累。
 
 ### 5.8 Handoff 的上下文处理
 
@@ -452,27 +460,39 @@ function isReusable(job): boolean {
 3. **执行阶段的彻底切换** —— Atlas 接管，planning mode 完全退出
 4. **适合架构重构、跨模块大改** —— 这类任务规划本身就需要 20+ 轮对话
 
-### 7.4 最终决策: 分层策略
+### 7.4 最终决策: 直接 handoff（P0 subagent 方案已废弃）
+
+**P0 mola subagent 方案（已废弃）。** 曾在 v1.2 中列为"当前临时方案"并实施了三个组件（mola agent prompt、mola-plan skill、config.toml 注册）。实际测试后废弃，原因详见 [§5.7](#57-omo-规划架构的关键洞见--p0-mola-subagent-方案验证)。mola prompt/skill/config 条目已清除。mola-plan skill 设计范式作为前向携带架构存活至 P1（详见 [§14.0](#140-p0-mola-subagent-尝试与废弃)）。完备性门控仅为本文档 §11 的设计规格，**从未在代码中实现**，需在 P1 中实现。
+
+**关键确认：** P0 的失败验证了 handoff 是唯一可行的规划架构。规划需要多轮深度对话、独立的上下文空间、清晰的角色边界——这些都是 subagent 模式无法提供的。
+
+**P1（唯一路径）：Handoff — 新会话 handoff 为默认方案**
 
 ```
-P0 (当前，临时方案): mola 作为 subagent
-   ├── mola 单次 task() 输出 plan 文本 → build 代写文件
-   ├── 完备性门控：缺方案 → task(mola)
-   └── CLEAR / UNCLEAR 两路由，均加载 mola-plan skill
-
-P1 (待做): Handoff — mola 升级为可对话的 primary，废弃 subagent
-   ├── mola mode 从 subagent 改为 primary（或 all）
-   ├── mola 获得 edit: allow（hook 路径约束 ~/.zoo/**/*.md）
-   ├── 用户与 mola 直接对话（多轮采访得以实现）
-   ├── mola 自己写 plan 文件 + durable draft
-   ├── 长规划（>100k tokens）使用新会话 handoff（推荐）
-   ├── build 接管时按 plan 委派 general 执行
-   └── mola-spec 重新启用（依赖 handoff 的多轮 grill 采访）
-
-P2+: subagent 角色完全废弃
+P1 实施:
+├── mola 升级为 primary agent（hook 路径约束 ~/.zoo/**/*.md）
+├── 用户与 mola 直接对话（多轮采访得以实现）
+├── mola 自己写 plan 文件 + durable draft
+├── 完备性门控（待实现）触发 handoff — §11 设计规格的四个自检确定"缺方案" → handoff 到 mola（需在 build.md 中首次实现）
+├── mola-plan skill 重建 — SKILL.md + CLEAR/UNCLEAR 双路径 + explore-before-ask 协议 + 双过滤器 + 审批门
+├── 长规划（>100k tokens）使用新会话 handoff
+├── build 接管时按 plan 委派 general 执行
+├── mola-spec 重新启用（依赖 handoff 的多轮 grill 采访）
+├── 执行阶段 plan 修改：build 直接编辑 plan 文件（中等/轻微调整）
+└── 仅完整重新规划时才触发新 mola handoff 会话
 ```
 
-**P1 推荐方案：新会话 handoff**
+**范围裁剪（基于实施经验）：**
+
+| 组件 | 决策 | 理由 |
+|------|------|------|
+| `session-tracker.ts` | **暂缓至 P2** | handoff 模式下规划与执行完全隔离，P1 不需要追踪 active sessions；与 Background Job Board 一起在 P2 实现 |
+| `plan-lifecycle hook` | **去掉 idle 检测** | handoff 替代了 idle 自动转 executing 的需求——执行 session 在 handoff 时显式创建，无需推测状态转换 |
+| `plan-state.ts` | **逻辑不变** | 读写 plan 文件、解析 frontmatter、状态校验仍必需；写入者由 orchestrator 代理写改为 mola 直接写 |
+| `project-id.ts` | **不变** | 无影响 |
+| Background Job Board | **暂缓至 P2** | handoff 模式下规划与执行物理分离，P1 不需要并行任务追踪；可独立实现 |
+
+**推荐方案：新会话 handoff**
 
 规划完成后（`status: ready`），plan-lifecycle hook 调用三段 API 创建干净的执行会话：
 
@@ -514,11 +534,13 @@ build 在新会话中读 plan 文件，按 TODOs 委派 general 执行
 TUI 自动跳转到新会话
 ```
 
-**现在的设计为 handoff 预留了口子**：
+执行阶段中 build 可直接编辑 plan 文件进行中等/轻微调整，无需 handoff 回 mola。仅完整重新规划（架构重设计、方案全面推翻）时触发新的 mola handoff。
+
+**设计为 handoff 预留的基础设施**：
 - **Plan 文件位置** —— `~/.zoo/plans/` 中 mola 和 build 都能读
-- **Plan 状态机** —— `planning-done` 状态就是 handoff 触发点
+- **Plan 状态机** —— `planning-done` 状态是 handoff 触发点
 - **`active_sessions`** —— handoff 时把 session ID 加入此列表
-- **完备性门控 + reasoning 输出** —— 已经为重度缺口 → handoff 留了判定路径
+- **完备性门控 + reasoning 输出** —— §11 设计规格定义了重度缺口 → handoff 的判定路径，需在 P1 实现
 - **内存 Map 追踪** —— 插件级 session→target-agent 映射（omo 的 `state.ts` 模式）
 
 ---
@@ -528,61 +550,65 @@ TUI 自动跳转到新会话
 ### 8.1 整体架构
 
 ```
-┌─────────────────────────────────────────────┐
-│  用户层                                      │
-│  └─ 单一入口 orchestrator                    │
-└─────────────────────────────────────────────┘
-                 ↓
-┌─────────────────────────────────────────────┐
-│  完备性门控 (Completeness Gate, prompt)      │
-│  └─ 四个自检：改哪里？怎么改？边界？意图？    │
-│  └─ 缺文件→explore / 缺方案→plan / 缺意图→反问 │
-└─────────────────────────────────────────────┘
-                 ↓
-┌─────────────────────────────────────────────┐
-│  Plan Agent (subagent, task() 派生)          │
-│  └─ 探索代码库 (read/grep/glob/bash)         │
-│  └─ 用户问答 (via session resume)            │
-│  └─ 输出 markdown 文本（不写文件）            │
-└─────────────────────────────────────────────┘
-                 ↓
-┌─────────────────────────────────────────────┐
-│  状态层                                      │
-│  ├── 文件: ~/.zoo/plans/<slug>.md            │
-│  │     TOML frontmatter + markdown body      │
-│  │     status / active_sessions / project    │
-│  │                                           │
-│  └── 内存: PlanSessionTracker (TS 单例)      │
-│        Map<sessionId, SessionRecord>         │
-│        (未来升级为 BackgroundManager)        │
-└─────────────────────────────────────────────┘
-                 ↓
-┌─────────────────────────────────────────────┐
-│  注入层 (system prompt 动态段)               │
-│  └─ config hook 注入: active plan + reusable │
-└─────────────────────────────────────────────┘
-                 ↓
-┌─────────────────────────────────────────────┐
-│  实现层                                      │
-│  └─ orchestrator 按 plan 文件委派 subagent   │
-│  └─ session resume 续期失败/未完成任务       │
-│  └─ P1: handoff + 并行多 subagent            │
-└─────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│  用户层                                           │
+│  └─ 单一入口 orchestrator (build)                 │
+└──────────────────────────────────────────────────┘
+                        ↓
+┌──────────────────────────────────────────────────┐
+│  完备性门控 (Completeness Gate, prompt)           │
+│  └─ 四个自检：改哪里？怎么改？边界？意图？         │
+│  └─ 缺文件→explore / 缺方案→handoff 到 mola      │
+│                     / 缺意图→反问                  │
+└──────────────────────────────────────────────────┘
+                        ↓
+┌──────────────────────────────────────────────────┐
+│  Handoff 通道 (plan-lifecycle hook)               │
+│  ├─ chat.message hook → output.message["agent"]   │
+│  │  = "mola"（同会话，短规划 <50k）               │
+│  └─ session.create + session.promptAsync          │
+│     + tui.publish（新会话，长规划，推荐）          │
+└──────────────────────────────────────────────────┘
+                        ↕
+┌──────────────────────────────────────────────────┐
+│  Mola (primary agent, 独立 session)               │
+│  ├─ 多轮采访/辩论/场景压力测试                     │
+│  ├─ 读代码库 (read/grep/glob/bash)                │
+│  ├─ 写 plan 文件 (edit/write 路径约束)            │
+│  └─ 输出 status: ready → 触发 handoff 回 build    │
+└──────────────────────────────────────────────────┘
+                        ↓
+┌──────────────────────────────────────────────────┐
+│  状态层                                           │
+│  ├── 文件: ~/.zoo/plans/<slug>.md                 │
+│  │     TOML frontmatter + markdown body           │
+│  │     status / active_sessions / project         │
+│  │                                                │
+│  └── (P1 无内存 tracker — 暂缓至 P2)              │
+│        P2: PlanSessionTracker → BackgroundManager │
+└──────────────────────────────────────────────────┘
+                        ↓
+┌──────────────────────────────────────────────────┐
+│  实现层                                           │
+│  ├─ build 在新会话中读 plan 文件，委派 subagent   │
+│  ├─ session resume 续期失败/未完成任务            │
+│  ├─ build 直接编辑 plan（中等/轻微调整）          │
+│  └─ P2: Background Job Board + 并行多 subagent    │
+└──────────────────────────────────────────────────┘
 ```
 
 ### 8.2 组件清单
 
 | 组件 | 文件位置 | 职责 | 行数估算 |
 |---|---|---|---|
-| Plan agent prompt | `core/prompts/plan.md` | subagent prompt，工具受限、结构化输出 | ~150 |
-| Plan state manager | `src/core/plan-state.ts` | 读写 plan 文件、解析 frontmatter、状态机 | ~200 |
-| Plan session tracker | `src/core/session-tracker.ts` | 内存单例，追踪 active + reusable sessions | ~150 |
-| Orchestrator 意图门 | `core/prompts/orchestrator.md` | 新增章节：trivial/standard/complex 判定 + plan 调用纪律 | ~80 |
-| System prompt 动态段 | `src/core/prompts.ts` | 注入 active plan + reusable sessions | ~100 |
-| Plan lifecycle hook | `src/hooks/plan-lifecycle/index.ts` | 注入 hook + plan 文件状态更新 hook | ~300 |
-| Session resume 提示 | `src/hooks/task-resume-info/` 新增 | 每次 task() 后追加续期提示到 system prompt | ~50 |
+| Mola primary prompt | `core/prompts/mola.md` | primary agent prompt，handoff 协议、多轮采访纪律、结构化输出 | ~150 |
+| Plan state manager | `src/core/plan-state.ts` | 读写 plan 文件、解析 frontmatter、状态机；写入者为 mola（hook 路径约束） | ~200 |
+| Project ID manager | `src/core/project-id.ts` | git remote / basename 推导 project-id，`_projects.json` 索引 | ~150 |
+| 完备性门控 | §11 设计规格（需在 P1 实现于 `core/prompts/build.md`） | 四个知识缺口自检 + reasoning 输出，handoff 触发 | ~130 |
+| Plan lifecycle hook | `src/hooks/plan-lifecycle/index.ts` | handoff 三段 API、状态更新、config 活跃 plan 注入（无 idle 检测） | ~250 |
+| 集成测试 | `tests/runner.py` 新增场景 | trivial/standard/complex 三场景验证 | ~80 |
 
-**总计**: ~1030 行代码，7 个组件。
+**总计**: ~960 行代码，6 个组件（P1 核心）。**已暂缓至 P2**：`session-tracker.ts`、Background Job Board、idle 检测。
 
 ---
 
@@ -599,11 +625,11 @@ planning → planning-done → executing → done
 ```
 
 | 状态 | 含义 | 谁写入 |
-|---|---|---|
-| `planning` | plan agent 正在探索/问答/生成 plan | plan agent（通过输出）→ orchestrator 代理写文件 |
-| `planning-done` | plan 已就绪，等 orchestrator 读 | plan agent 输出 `ready` → orchestrator 写文件 |
-| `executing` | orchestrator 开始委派实现 subagent | orchestrator（委派第一个 subagent 时） |
-| `done` | 所有 TODO 完成 + 验证通过 | orchestrator（最后一个 checkbox 勾完后） |
+|---|---|---|---|
+| `planning` | mola 正在探索/多轮采访/生成 plan | **mola 直接写**（hook 路径约束至 `~/.zoo/**/*.md`） |
+| `planning-done` | plan 已就绪，等 handoff 到 build | mola 设 `status: ready` 并触发 handoff |
+| `executing` | build 开始委派实现 subagent | build（委派第一个 subagent 时或直接编辑 plan） |
+| `done` | 所有 TODO 完成 + 验证通过 | build（最后一个 checkbox 勾完后） |
 
 ### 9.2 Plan 迭代
 
@@ -615,14 +641,14 @@ planning → planning-done → executing → done
 
 **直接删除**: 用户说"算了，不做这个"时，orchestrator 直接删除 plan 文件。不 archive，不 abandoned 状态。
 
-### 9.4 Unreconciled 生命周期
+### 9.4 Unreconciled 生命周期（P1 简化版）
 
-1. plan agent 完成规划，输出 `status: ready` + markdown
-2. orchestrator 代理写 plan 文件，写入 `status: planning-done`
-3. orchestrator session.idle 时（或委派第一个实现 subagent 时）→ plan hook 自动把 `planning-done` 改为 `executing`
-4. 如果用户在 executing 前就要求修改 plan，orchestrator 手动把状态改回 `planning`
+1. mola 完成多轮采访，产出 plan 并直接写入文件，状态设为 `planning-done`（`status: ready`）
+2. plan-lifecycle hook 检测到 `planning-done`，触发 handoff 三段 API（创建执行 session + 注入 plan + TUI 跳转）
+3. build 在新会话中读 plan 文件，委派第一个 subagent 时将状态改为 `executing`
+4. 如果用户在 executing 前要求修改 plan，mola 将状态改回 `planning` 并继续采访
 
-**session.idle 自动解除** 的关键：参考 slim 的 `reconcileInjectedTerminalJobs` 触发时机。在 plan 场景下，orchestrator 读完 plan 文件（或委派第一个实现 subagent）时自然进入 idle，hook 检测到 planning-done → 自动转 executing。
+**注意**：P1 不使用 idle 检测（handoff 显式创建执行 session，无需推测状态转换）。Unreconciled 概念在 P2 引入 Background Job Board 时再完整实现。
 
 ---
 
@@ -869,24 +895,23 @@ orchestrator 启动时:
 
 ## 13. 权限与工具控制
 
-### 13.1 Plan agent 工具权限
+### 13.1 Mola 工具权限
 
-**静态 deny list**（在 `config.toml` 中声明，install 时编译到 OpenCode 配置）:
+**混合权限模型**（在 `config.toml` 中声明，install 时编译到 OpenCode 配置）:
 
 ```toml
-[agent.plan.permission]
-edit = "deny"
-write = "deny"
+[agent.mola.permission]
 task = "deny"
+# edit/write = "allow" 但由 hook 路径约束至 ~/.zoo/**/*.md
 # 允许: read, grep, glob, bash (bash 由 prompt 约束只跑诊断命令)
 ```
 
-**为什么静态 deny list**:
+**为什么混合**:
 - ZooKeeper 的 `config.toml` 已有每个 agent 的 permission deny 列表
-- 这是最合适的 place，install 时一次性编译，运行时零开销
-- plan 文件写入由 orchestrator 代理 —— 单一责任
-- **2026-06-23 验证：** 与现有 6 个 agent 风格一致。不引入白名单特例。omo 的 plan-family guard 和 ECC 的工具白名单是不同项目在各自框架约束下的选择，ZooKeeper 的 deny 模型够用且一致。
-- **P1 预留：** plan agent 当前 `task = "deny"`（P0 不委派叶子 agent）。P1 如开方案 B，参照 omo 的 `call_omo_agent` 模式加轻量委派通道，不改现有 deny 模型。
+- mola 作为 primary agent 需要写入 plan 文件，但写权限必须路径受限——hook 在 `tool.execute.before` 中检查目标路径是否在 `~/.zoo/**/*.md` 范围内，超出则拒绝并提示
+- `task = "deny"` ：mola 在 P1 中不自委派叶子 agent（自己 read/grep/glob 探索），P2 再开（仅 explore/spider）
+- **2026-06-23 验证：** deny list 与现有 6 个 agent 风格一致。路径约束参考 omo 的 `prometheus-md-only` hook 模式，不引入白名单特例。ZooKeeper 的 deny 模型 + hook 级路径检查够用且一致。
+- **P2 预留：** `task` 从 `"deny"` 改为 `"allow"` 并加轻量委派通道（参考 omo `call_omo_agent`）
 
 ### 13.2 Bash 的 prompt 约束
 
@@ -900,124 +925,156 @@ Bash Usage Rules:
   "Bash 在 plan mode 只允许诊断命令。如需执行，请在 plan 文件 TODOs 中列为执行任务。"
 ```
 
-### 13.3 Plan 文件写入的责任分离
+### 13.3 Plan 文件写入的责任分离（P1）
 
 | 角色 | 职责 |
 |---|---|
-| Plan agent | 输出 markdown 文本（不碰文件系统）|
-| Orchestrator | 把 plan markdown 写入 `~/.zoo/plans/<slug>.md`，更新 `_projects.json` |
+| **Mola**（primary）| **直接写 plan 文件**（edit/write 路径约束至 `~/.zoo/**/*.md`）|
+| **Build**（orchestrator）| 维护 `_projects.json` 索引；更新 `executing`/`done` 状态；执行阶段直接编辑 plan |
 
 **为什么这样**:
-- plan agent 完全只读，权限最简单
-- orchestrator 负责所有状态管理（frontmatter、status、active sessions）
-- plan 文件写入失败可在 orchestrator 层重试
+- mola 在多轮采访后直接产出 plan 并写入，减少 orchestrator 的中继开销
+- hook 路径约束保证写入安全（参考 omo `prometheus-md-only`）
+- build 保留状态更新权（`executing`/`done` 发生在规划之后）
+- 执行阶段 build 可直接编辑 plan（中等/轻微调整），无需 handoff 回 mola
+
+**P0 旧设计（已废弃）**: plan agent 输出文本 → orchestrator 代理写。该方案因缺少多轮采访能力被放弃。
 
 ---
 
 ## 14. 实施路径
 
-> **2026-06-23 修订：** 代码验证后新增 P0 前置步骤（完备性门控 + plan agent prompt）。原 Step 1-7 顺延为 P1 工程实施。详见 [第 18 章](#18-深度代码验证与设计修订-2026-06-23)。
+> **v1.3 更新：** P0 mola subagent 方案已废弃。本节重写以记录尝试过程与结论。mola prompt/skill/config 条目已清除。mola-plan skill 设计范式作为前向携带架构存活至 P1。完备性门控仅为设计规格（§11），从未在代码中实现，需在 P1 中实现。
 
-### 14.0 P0 前置已完成：路由层改造（2026-06-24 全部完成）
+### 14.0 P0 mola subagent：尝试与废弃
 
-> **2026-06-24 状态：** P0 前置已全部完成。实际实现与设计存在以下偏差：agent 命名为 `mola`（而非 `plan`）；规划引擎从单一 prompt 升级为 skill 分层架构（prompt → skill → references）；内置 plan agent 被禁用。
+#### 尝试了什么
 
-三个核心组件实际建成并投入生产：
+基于 v1.2 的设计，我们实现了三个核心组件：
 
-**✅ P0-Step A. `core/prompts/build.md` — 完备性门控**（131 行）
-- 在 Phase 0（意图门）和 Phase 2（委派）之间插入 Phase 1：Completeness Gate
-- 四个自检问题：知道改哪里？知道怎么改？范围有界？请求模糊？
-- 核心原则："Delegate to mola PLAN when you would need to GUESS the approach"
-- 纠正原有"Phase 1: Plan & Split"的命名误导（名为 plan 实为 task prompt 格式检查）
+| 组件 | 内容 | 行数 |
+|------|------|------|
+| mola agent prompt | `core/prompts/mola.md` — XML 标签结构，含意图路由、CLEAR/UNCLEAR 判定 | ~52 行 |
+| mola-plan skill 分层 | `core/skills/mola-plan/SKILL.md` + 三个参考文件（intent-clear / intent-unclear / full-workflow） | ~262 行 |
+| config.toml 注册 | `[agent.mola]` mode=subagent，deny edit/write/task；内置 plan 禁用 | ~25 行 |
 
-**✅ P0-Step B. `core/prompts/mola.md` — mola agent prompt**（52 行，XML 标签结构）
-- 原设计名为 `plan.md`，实际按项目命名惯例命名为 `mola.md`
-- 角色标注 `<Role>`、意图路由 `<Intent Routing>`（CLEAR/UNCLEAR 判定）、工作流 `<Workflow>`、工具列表 `<Tools>`、合约 `<Contract>`
-- 核心设计：**意图路由在 mola 的 prompt 中完成**，不是 skill 层；skill 是纯执行引擎
-- 工具：read / grep / glob / bash（仅诊断）/ skill
-- 输出：用户界面中文，代码/结构引用英文
+并设计了完备性门控（§11 设计规格，四个自检问题 + reasoning 输出），使编排器在缺方案时路由到 mola。**注：该门控仅为设计规格，从未在代码中实现。**
 
-**✅ P0-Step C. `config.toml` — mola agent 注册 + plan 禁用**（~25 行）
-- 新增 `[agent.mola]`，mode=subagent，deny edit/write/task
-- skill 白名单：`"*" = "deny"`，`"wiki-query" = "allow"`，`"mola-plan" = "allow"`
-- `[agent.plan] disable = true` —— 内置 plan agent 被禁用，规划职责由 mola 接管
+**设计亮点（实施中确认有效的决策）：**
 
-**额外建成组件：**
+- **技能分层架构**（agent prompt → skill → reference）—— 只加载匹配的参考文件，token 效率优于单一大 prompt
+- **意图路由在 agent prompt 中完成** —— skill 是纯执行引擎，不承担路由判断
+- **完备性门控（设计阶段）** —— 四个知识缺口自检 + reasoning 输出（§11 设计规格），概念上使用户能纠正路由判断。**未在代码中实现，需在 P1 中实现。**
 
-- `core/skills/mola-plan/SKILL.md`（56 行）—— Planning 执行引擎，加载匹配参考文件（CLEAR/UNCLEAR），explore-before-ask 协议，两滤网问题纪律，审批门，停止规则
-- `core/skills/mola-plan/references/intent-clear.md`（56 行）—— CLEAR 路径：研读 → 两滤网 → 1-3 问题/轮 → 审批
-- `core/skills/mola-plan/references/intent-unclear.md`（58 行）—— UNCLEAR 路径：研读为先，默认采用，不采访用户
-- `core/skills/mola-plan/references/full-workflow.md`（92 行）—— Plan 模板（含 Scope/Must-NOT-Have/QA 自动化指令/执行波等）
+#### 为什么废弃
 
-**总计实际建成：** ~470 行（prompt + skill + references），零 TS/Python/Rust 代码改动。
+实际测试发现 mola subagent 方案存在三个不可接受的结构性问题：
 
-### 14.1 七步分解（P1 工程实施，顺延自原设计）
+1. **无多轮采访能力** —— subagent 在单次 `task()` 中只能输出一段文本，无法进行反复辩论、场景压力测试、替代方案权衡等深度对话
+2. **编排器沦为消息中继** —— 若通过 orchestrator 透传实现多轮，orchestrator 上下文被规划对话填满，角色从编排者降格为转发器
+3. **角色混淆** —— orchestrator 同时承担编排和转发职责，用户感知不到明确的规划角色切换
 
-> **2026-06-24 修订：** P0 实现完成后，P1 依赖链修订为：session reuse 基础设施 → handoff 机制 → mola-spec 复活。session reuse 是多轮采访的结构性前提，handoff 是 mola 从 subagent 升级为 primary 的必经步骤。详见 [§18 v1.2](#18-修订记录)。
+#### 现状
+
+**文件已清除，设计遗产向前携带至 P1：**
+
+- **代码库中 mola agent prompt / config 条目已清除** —— prompt、skill 文件、config.toml 注册条目在废弃后删除。但以下设计遗产存活：
+  1. **mola-plan skill 设计范式（存活）** —— skill 文件已删除，但其设计范式（skill → reference 分层加载、CLEAR/UNCLEAR 双路径、explore-before-ask 协议、两过滤器问题纪律、审批门）是经过验证的有效架构，P1 中 mola 作为 primary agent 时将以此蓝本重建 skill
+  2. **完备性门控（设计规格，待 P1 实现）** —— 四个自检问题 + reasoning 输出仅存在于本文档 §11 的设计规格中，**从未在代码中实现**。P1 中需在 `core/prompts/build.md` 中实现此门控，作为 handoff 的主动触发机制：detect 缺方案 → 输出 `[完备性: 缺方案 → handoff 到 mola]` → chat.message hook 截获并路由到 mola
+- mola 的尝试证实了本文档自身分析：**subagent 无法满足规划的多轮深度对话需求**，handoff 是唯一正确方向
+
+#### P0 的正面价值：前向携带 (forward-carried) 的架构组件
+
+尽管被废弃，P0 的核心设计并非纯教训。两项架构设计在 P1 中复用，但**存活形态不同**：
+
+1. **完备性门控（设计规格，待 P1 实现）** —— 四个自检问题 + reasoning 输出（§11）定义了 orchestrator 判定"缺方案 → handoff 到 mola"的**路由逻辑**。该门控**从未在代码中实现**——它仅存在于本文档的设计规格中。P1 中需在 `core/prompts/build.md` 中完整实现：自检四个问题 → reasoning 输出 → chat.message hook 触发 handoff。这是**新实现**，而非 P0 遗产的延续。
+
+2. **mola-plan skill 设计范式 → P1 中重建的架构蓝本**
+    虽然 skill 文件（SKILL.md + 三个 reference）已删除，但以下设计决策经过 P0 验证有效，将在 P1 中以 skill 重建形式复活：
+   - **skill → reference 分层加载** —— 只加载匹配的参考文件（CLEAR/UNCLEAR），token 效率优于单一大 prompt
+   - **CLEAR/UNCLEAR 双路径** —— 需求明确时走快速通道（推荐答案优先），需求模糊时走深度探索通道
+   - **explore-before-ask 协议** —— 提问前先探索代码库，不凭空猜测
+   - **两过滤器问题纪律** —— 证据过滤器（已有信息）→ 默认过滤器（仍未知），每轮 1-2 个问题 + 多选优先
+   - **审批门** —— plan 输出后经用户批准才进入执行
+
+P0 还提供了以下过程验证（lessons learned，非前向携带）：
+
+- **确认 handoff 为正确方向** —— P0 的失败使 handoff 从"备选方案"升级为"唯一路径"
+- **积累角色边界经验** —— orchestrator 不应承担规划对话的中继
+
+### 14.1 七步分解（P1 工程实施）
+
+> **v1.3 修订：** P0 mola subagent 已废弃，P1 直接实现 handoff。`session-tracker.ts` 暂缓至 P2（与 Background Job Board 一起实现）；plan-lifecycle hook 去掉 idle 检测（handoff 替代了该需求）。新增 Step 5（mola-plan skill 重建）—— P0 的设计范式作为前向携带架构在 P1 中复活。
 
 ```
-Step 1. config.toml + install.py                 — plan agent 注册 + deny 权限（部分已在 P0 完成）
-Step 2. src/core/plan-state.ts                   — plan 文件解析/写入/状态机
-Step 3. src/core/session-tracker.ts              — unreconciled + reusable session
-Step 4. src/core/project-id.ts + _projects.json  — 项目 ID 推导 + 索引管理
-Step 5. core/prompts/orchestrator.md             — 加意图门章节 + plan 相关纪律（部分已在 P0 完成）
-Step 6. src/hooks/plan-lifecycle/index.ts        — 注入动态段 + task 输出追加续期提示
+Step 1. config.toml + install.py                 — mola primary agent 注册 + 权限（edit: allow, hook 路径约束）
+Step 2. src/core/plan-state.ts                   — plan 文件解析/写入/状态机（写入者改为 mola 直接写）
+Step 3. src/core/project-id.ts + _projects.json  — 项目 ID 推导 + 索引管理
+Step 4. core/prompts/mola.md                     — primary agent prompt，含 handoff 协议
+Step 5. core/skills/mola-plan/                   — mola-plan skill 重建（SKILL.md + CLEAR/UNCLEAR 双路径 + 参考文件）
+Step 6. src/hooks/plan-lifecycle/index.ts        — handoff 注入（三段 API）+ plan 状态更新（去掉 idle 检测）
 Step 7. 集成测试 + runner.py 场景               — trivial/standard/complex 三场景验证
 ```
 
 ### 14.2 每步的具体产出
 
-**Step 1: plan agent prompt** (~150 行)
-- 角色定义 + 工具列表（read/grep/glob/bash）
-- 5 阶段工作流（Understand/Explore/Clarify/Design/Produce）
-- 结构化输出规范（Context/Approach/Critical Files/Verification/Risks/TODOs/Metadata）
-- Bash 诊断约束
-- 不能 spawn subagent，不能 task()
-
-**Step 2: config.toml + install.py** (~50 行)
-- `[agent.plan]` 块：mode=subagent，deny edit/write/task
+**Step 1: config.toml + install.py** (~50 行)
+- `[agent.mola]` 块：mode=primary（或 all），edit=allow（hook 路径约束至 `~/.zoo/**/*.md`），task=allow（仅 explore/spider 委派）
 - install.py 编译逻辑（沿用现有模式）
 
-**Step 3: plan-state.ts** (~200 行)
+**Step 2: plan-state.ts** (~200 行)
 - 纯逻辑模块（零 OpenCode 依赖，可被 TS 运行时 import）
 - 函数: readPlan(slug), writePlan(slug, content, metadata), updateStatus(slug, newStatus)
 - TOML frontmatter 解析（用 gray-matter 或类似库）
 - 状态机校验: planning → planning-done → executing → done
+- **写入者变更**：P1 中 mola 直接写 plan 文件（非 orchestrator 代理写），hook 路径约束保证安全
 
-**Step 4: session-tracker.ts** (~150 行)
-- 单例内存 tracker
-- 接口: register(sessionId, agent, slug), updateStatus, getReusables(agentType), getAllActive
-- 未来升级为 BackgroundManager 时扩展为: run/resume/cancel/collect
-
-**Step 5: project-id.ts + _projects.json** (~150 行)
+**Step 3: project-id.ts + _projects.json** (~150 行)
 - deriveProjectId() 函数: git remote → basename → 冲突 hash
 - loadProjectsIndex() / saveProjectsIndex()
 - isProjectMapped(projectRoot) + registerProject(projectRoot)
 
-**Step 6: orchestrator.md 意图门章节** (~80 行)
-- Plan Mode Workflow 章节
-- Hard rules（关键词 + 文件数）
-- LLM 兜底判定 + reasoning 输出要求
-- Session 续期纪律（参考 omo Sisyphus 的"Session Continuity"章节）
-- Plan 调用的 prompt 模板
+**Step 4: mola primary agent prompt** (~150 行)
+- 角色定义 + handoff 协议（新会话 handoff 为默认，同会话为 fallback）
+- 工具列表（read/grep/glob/bash/edit/write/task，edit/write 路径约束至 `~/.zoo/**/*.md`）
+- 5 阶段工作流（Understand/Explore/Interview/Design/Produce）
+- 多轮采访纪律（每轮 1-2 个问题 + 多选优先，参考 Matt Pocock grilling + Superpowers brainstorm）
+- 结构化输出规范（Context/Approach/Critical Files/Verification/Risks/TODOs/Metadata）
+- Bash 诊断约束
 
-**Step 7: plan-lifecycle hook** (~300 行)
+**Step 5: mola-plan skill 重建** (~180 行)
+- `core/skills/mola-plan/SKILL.md` — skill 主文件，定义 CLEAR/UNCLEAR 双路径执行协议
+- `core/skills/mola-plan/references/intent-clear.md` — 需求明确时的快速通道：推荐答案优先 + 产出式采访
+- `core/skills/mola-plan/references/intent-unclear.md` — 需求模糊时的深度通道：explore-before-ask 协议 + 两过滤器问题纪律（每轮 1-2 问题 + 多选优先）
+- `core/skills/mola-plan/references/full-workflow.md` — 完整端到端工作流参考（Understand → Explore → Interview → Design → Produce + 审批门）
+- 技能分层架构继承自 P0 设计：agent prompt（路由 + 角色定义）→ skill（执行协议）→ reference（具体策略），token 加载只匹配路径
+- 输入协议：mola 已通过完备性门控（缺方案），进入规划模式
+- 输出协议：结构化 markdown（Context/Approach/Critical Files/Verification/Risks/TODOs）+ 审批门等待用户确认
+
+**Step 6: plan-lifecycle hook** (~250 行)
 - `config` hook: 在新 session 启动时注入系统级 active-plans 概况
-- `tool.execute.after` hook: task() 后追加 `to continue: task(task_id="ses_...")`
-- `session.idle` hook: 检测 planning-done 状态触发自动转 executing
-- System prompt 动态段注入（参考 slim 的 `experimental.chat.messages.transform`）
+- `tool.execute.after` hook（handoff 后）: task() 返回时检查 plan 进度，更新 frontmatter 状态
+- `chat.message` hook（触发 handoff）: 完备性门控输出 → `output.message["agent"] = "mola"`
+- 新会话 handoff 三段 API（`session.create` → `session.promptAsync` → `tui.publish`）
+- **不含 idle 检测**：handoff 显式创建执行 session，无需推测状态转换
+
+**Step 7: 集成测试 + runner.py 场景** — trivial/standard/complex 三场景验证
+
+**暂缓至 P2 的组件：**
+- `session-tracker.ts` —— 与 Background Job Board 一起实现
+- `plan-lifecycle hook` 的 idle 检测 —— handoff 替代了此需求
 
 ### 14.3 顺序约束
 
 ```
-Step 1 + 2 (并行) → Step 3 → Step 4 → Step 5 → Step 6 → Step 7
+Step 1 → Step 2 + 3 (并行) → Step 4 → Step 5 → Step 6 → Step 7
 
 理由:
-- Step 1/2 是基础设施，可先做
-- Step 3 依赖 step 1 的输出格式约定
-- Step 4 依赖 step 3 的 slug 结构
-- Step 5 依赖 step 3 的 plan 路径
-- Step 6 依赖 step 3-5 的接口
+- Step 1 是基础设施，先做
+- Step 2/3 独立，可并行
+- Step 4 依赖 step 1-3 的基础设施（plan 文件约定、项目 ID）
+- Step 5（skill）依赖 Step 4 的 agent prompt 输出协议与角色定义
+- Step 6（handoff hook）依赖 Step 4 + 5 的 agent 与 skill 输出协议
 - Step 7 依赖前面全部
 ```
 
@@ -1028,36 +1085,37 @@ Step 1 + 2 (并行) → Step 3 → Step 4 → Step 5 → Step 6 → Step 7
 - `./test.sh` 过现有测试
 - dry-run 跑一个真实场景（用 `runner.py --dry-run`）
 
-Step 7 完成后集成测试:
+Step 7（集成测试）完成后验证:
 - trivial 任务（typo 修复）→ 不应触发 plan
-- standard 任务（加个功能）→ 应触发 plan + resume
-- 中断恢复（关闭 OpenCode，开新 session）→ 应自动注入 active plan
+- standard 任务（加个功能）→ 应触发完备性门控 → handoff 到 mola
+- handoff 流程：mola 多轮采访 → 写 plan → 触发 handoff → build 在新 session 执行
+- 执行阶段 plan 修改：build 直接编辑 plan 文件，无需 handoff 回 mola
 
 ---
 
 ## 15. 未来演进
 
-### 15.1 P1: Complex Plan + Handoff
+### 15.1 P1 稳定后的 P2 演进
 
-在 P0 稳定后:
+在 P1 handoff 稳定后:
 
 ```
-P1 新增:
-├── plan-primary agent (mode=primary，可切换)
-├── executor agent (Atlas-style, mode=primary)
-├── /start-work 命令触发 handoff
-├── session prompt 动态切换机制
-└── complex 场景的意图门 → handoff
+P2 新增:
+├── Background Job Board（并行任务追踪 + unreconciled 状态机）
+├── session-tracker.ts（活性 session 管理，与 Job Board 一起实现）
+├── BackgroundManager 升级（并发控制、卡死检测、主动派发）
+├── mola 叶子委派扩展（task=allow，仅 explore/spider）
+└── complex 场景的意图门 → handoff（补充调研技术吸收）
 ```
 
-**关键前置准备**（P0 已做的）:
+**关键前置准备**（P1 已做的）:
 - Plan 文件位置 `~/.zoo/plans/`（handoff 时 plan agent 和 executor 都能读）
 - Plan 状态机（`planning-done` 状态是 handoff 触发点）
 - active_sessions frontmatter 字段（handoff 时把 session ID 加入）
 
 ### 15.2 P2: BackgroundManager 升级
 
-P0 的 `PlanSessionTracker` 接口预留了升级为 BackgroundManager:
+P1 暂缓的 `PlanSessionTracker` 接口在 P2 中升级为 BackgroundManager:
 
 ```typescript
 // P0 简单 tracker
@@ -1093,7 +1151,7 @@ interface BackgroundManager {
 
 | # | 决策 | 选择 | 理由 |
 |---|---|---|---|
-| 1 | Plan 作为什么实现 | **agent**（subagent，task() 派生） | skill 会污染 orchestrator context；agent 提供干净分离 |
+| 1 | Plan 作为什么实现 | **primary agent**（handoff 模式，非 subagent） | skill 会污染 orchestrator context；agent 提供干净分离。subagent 模式（P0）尝试后废弃——无法满足多轮深度对话需求 |
 | 2 | Plan 文件位置 | `~/.zoo/plans/<project-id>/<slug>-<YYYYMMDD>.md` | 用户级集中管理，按项目子目录分组 |
 | 3 | project-id 推导 | git remote → basename → +hash8 冲突 | git remote 是真正的项目标识符 |
 | 4 | 索引文件 | `~/.zoo/plans/_projects.json` | 用户删除/重命名项目时 plan 不变孤立 |
@@ -1114,14 +1172,14 @@ interface BackgroundManager {
 | 19 | Plan 废弃 | 直接删除 | 不做 archive |
 | 20 | Plan agent 工具权限 | 静态 deny（edit/write/task）| ZooKeeper 已有基础设施 |
 | 21 | Bash 权限 | allow + prompt 约束 | 需要跑诊断命令 |
-| 22 | Plan 文件写入者 | orchestrator 代理写 | plan agent 完全只读，单一责任 |
+| 22 | Plan 文件写入者（P0） | orchestrator 代理写 | 已废弃。P1 改为 mola 直接写（hook 路径约束）|
 | 23 | Plan 执行期间可用 subagent | general + explore + spider | 灵活，TODOs 里可注明推荐 |
 | 24 | 未来扩展性 | PlanSessionTracker 接口为 BackgroundManager 预留方法 | 升级不改现有调用方 |
 | 25 | 意图门机制 | **完备性门控替代复杂度判定** | omo 代码验证：路由不是评估任务规模，是评估模型自身知识缺口（知道改哪里？知道怎么改？） |
 | 26 | 路由粒度 | **基于知识缺口：缺文件→explore，缺方案→plan，缺意图→反问** | omo Sisyphus 的"请求分类 + 上下文完成门控"比文件数阈值更可靠 |
 | 27 | Plan agent 叶子节点 | **P0 task = "deny"，不自委派探索** | ECC 模式（planner 自己 read/grep/glob）；P1 参考 omo Prometheus 开 task 只给 explore/spider |
 | 28 | 叶子委派演进 | **P0 方案 A（不自委派）→ P1 方案 B（可调 explore/spider）** | omo plan-family guard 验证可行；需解决 deny 粒度问题（当前 deny 是全局二值） |
-| 29 | 权限模型 | **坚持 deny list，不引入白名单** | 与现有 6 个 agent 风格一致；plan agent 连 plan.md 写权限都不需要（orchestrator 代理写） |
+| 29 | 权限模型 | **deny list + hook 路径约束** | P1 中 mola 获取 edit/write 权限，但通过 hook 路径约束至 `~/.zoo/**/*.md`。P0 orchestrator 代理写模式已废弃。ZooKeeper deny list 风格不变，补充入路径检查 |
 | 30 | Hook 层数 | **P0 两层（session.idle 解 unreconciled + tool.execute.after 续期提示），接口预留三层** | omo 三层 hook 经验证是不同 scope（Atlas/TodoEnforcer/StopGuard），P0 不需要但 P1 用得上 |
 | 31 | Alias 机制 | **P1 再加（等 agent 命名稳定）** | slim alias 重写 30 行可做，但依赖 agent 前缀约定（pln-1 等） |
 | 32 | 安全边界 | **prompt 管决策质量，code 管破坏范围** | omo 架构验证：路由判断靠 prompt（模型可无视），权限底线靠 config.toml deny（结构保证） |
@@ -1136,6 +1194,12 @@ interface BackgroundManager {
 | 41 | Plan 文件写入权 | **P1 转移到 mola（hook 路径约束至 `~/.zoo/**/*.md`）** | 反转 P0 设计（mola 输出文本，orchestrator 代写）。omo 通过 `prometheus-md-only` hook 验证此模式。Orchestrator 仅保留 `_projects.json` 索引维护与 `executing`/`done` 状态更新 |
 
 | 42 | TUI 切换机制 | **`tui.publish()` + SSE 事件总线** | 实测验证：`tui.selectSession()` endpoint 存在且返回 200，但不触发 TUI 响应。TUI 前端通过 SSE 订阅 `tui.session.select` 事件，必须用 `tui.publish({body:{type:"tui.session.select", properties:{sessionID}}})` 触发切换。这是 P1-B 新会话 handoff 的关键实现细节 |
+| 43 | P0 mola subagent 方案 | **尝试后废弃，mola prompt/skill/config 条目已清除；设计遗产向前携带至 P1** | 实现三个组件（prompt/skill/config）后测试发现三个结构性问题：无多轮采访、编排器沦为消息中继、角色混淆。验证了本文档自身分析——subagent 无法满足规划需求。**存活组件：** (1) mola-plan skill 设计范式（分层加载、CLEAR/UNCLEAR 双路径、explore-before-ask 协议、两过滤器纪律、审批门）作为 P1 重建蓝本；(2) 完备性门控（§11 设计规格，**从未在代码中实现**）作为 P1 待实现的路由机制 |
+| 44 | 实施方向 | **跳过 P0，直接 P1 handoff** | P0 失败使 handoff 从备选升级为唯一路径。不再需要两条腿走路。执行阶段 plan 修改由 build 直接编辑，仅完整重规划才 handoff 回 mola |
+| 45 | 执行阶段 plan 修改 | **build 直接编辑 plan 文件，无需 handoff 回 mola** | 中等/轻微调整（更新 TODOs、标记完成、调整步骤顺序）由 build 直接做，写入权通过 `~/.zoo/**/*.md` 路径约束控制。仅完整重新规划（架构重设计、方案全面推翻）触发新 mola handoff |
+| 46 | Background Job Board | **暂缓至 P2，非 handoff 前置** | handoff 模式下规划与执行物理分离，P1 不需要并行任务追踪。Job Board 在 P2 与 session-tracker 一起独立实现 |
+| 47 | session-tracker.ts | **暂缓至 P2** | handoff 模式下规划与执行完全隔离，P1 不需要追踪 active sessions。与 Background Job Board 一起在 P2 实现 |
+| 48 | plan-lifecycle idle 检测 | **去掉，handoff 替代此需求** | 原设计在 session.idle 时自动将 planning-done 转为 executing。handoff 显式创建执行 session，无需推测状态转换 |
 
 ---
 
@@ -1182,7 +1246,7 @@ interface BackgroundManager {
 | **§8** 架构图 | "意图门 (IntentGate) — trivial/standard/complex 分支" → "完备性门控 (Completeness Gate) — 四个自检" | 同上；slim BackgroundJobBoard 注入格式验证了 subagent 隔离上下文 |
 | **§11** 意图门 | **完全重写**：三层混合判定（关键词+文件数+LLM兜底）→ 完备性门控（请求分类 → 四个知识缺口自检 → reasoning 输出）。核心原则：delegate to PLAN when GUESSING the approach | omo `sisyphus-dynamic-prompt-role.ts:53-81`（五分类+三条自问）；验证发现 omo 无一行代码使用文件数阈值 |
 | **§13** 权限 | 补充 deny list 一致性验证 + P1 叶子委派预留说明 | omo plan-family guard + Prometheus 委派矩阵；ECC 工具白名单对比 |
-| **§14** 实施路径 | 新增 **14.0 P0 前置**（完备性门控 + plan agent prompt + config.toml），三个文件 ~110 行，零代码改动。原 Step 1-7 顺延为 P1 工程实施 | ZooKeeper 当前 agent 层级分析（6 agent，两层结构）；omo 安全边界模型（prompt vs code 分层） |
+| **§14** 实施路径 | 新增 **14.0 P0 前置**（完备性门控设计 + plan agent prompt + config.toml），约三个文件 ~110 行，零代码改动。**注：完备性门控在此阶段仅为设计规格（§11），未实际编码至 build.md。** 原 Step 1-7 顺延为 P1 工程实施 | ZooKeeper 当前 agent 层级分析（6 agent，两层结构）；omo 安全边界模型（prompt vs code 分层） |
 | **§16** 决策日志 | 新增 #25-#32（完备性门控、知识缺口路由、叶子节点委派、deny list 一致性、hook 层数、alias 暂缓、安全边界分层） | 综合四项目验证结果 |
 
 **代码验证确认无需修订的章节：**
@@ -1219,7 +1283,7 @@ interface BackgroundManager {
 
 ### v1.2 (2026-06-24) — P0 实施与补充调研
 
-P0 前置全部完成（详见 [§14.0](#140-p0-前置已完成路由层改造2026-06-24-全部完成) 与 [§16 #33-#38](#16-决策日志)）：build.md 完备性门控、mola agent prompt、mola-plan skill + 三个 references、config.toml agent 注册 + 内置 plan 禁用。总建成 ~470 行 prompt/skill，零 TS/Python/Rust 代码改动。
+P0 实施（详见 §14.0 与 [§16 #33-#38](#16-决策日志)）：mola agent prompt、mola-plan skill + 三个 references、config.toml agent 注册 + 内置 plan 禁用。总建成 ~470 行 prompt/skill，零 TS/Python/Rust 代码改动。**注：完备性门控（四个自检 + reasoning）在此阶段仅为 §11 设计规格，从未实际编码于 build.md。**
 
 **架构决策沉淀：** 意图路由放在 agent prompt（`<Intent Routing>`），skill 只做执行引擎——镜像 omo 的 Sisyphus→Prometheus 分工。skill 采用分层加载（agent prompt → skill → reference），token 效率优于单一大 prompt。
 
@@ -1236,7 +1300,7 @@ P0 前置全部完成（详见 [§14.0](#140-p0-前置已完成路由层改造20
 
 **mola-spec（深度设计探索 skill）：** 曾创建后删除。subagent 在单次 `task()` 中只能输出一段文本，无法进行多轮 grill 采访。需要 mola 升级为 primary agent 后才能重新启用，列入 P1-C 优先级。orchestrator 透传式转发方案被否决：使编排器沦为消息中继，浪费上下文（详见 [§16 #38](#16-决策日志)）。
 
-**Handoff 机制发现：** 确认 OpenCode 支持两种 handoff 路径——**(1)** 同会话切换（`chat.message` hook + `output.message["agent"]`，omo 的 start-work-hook 已在生产验证）和 **(2)** 新会话 handoff（`session.create` + `session.promptAsync` + `tui.publish`，omo 的 ralph-loop 模块验证），后者是长规划场景的推荐方案，详见 [§5.6](#56-关键局限--已发现可行机制) 与 [§7.4](#74-最终决策-分层策略)。
+**Handoff 机制发现：** 确认 OpenCode 支持两种 handoff 路径——**(1)** 同会话切换（`chat.message` hook + `output.message["agent"]`，omo 的 start-work-hook 已在生产验证）和 **(2)** 新会话 handoff（`session.create` + `session.promptAsync` + `tui.publish`，omo 的 ralph-loop 模块验证），后者是长规划场景的推荐方案，详见 §5.6 与 §7.4。
 
 **Omo 规划架构洞见：** 确认 omo 的规划 agent（Prometheus）是 `mode = "primary"`，与实现编排者平级，拥有独立 session，并通过 hook 路径约束其写操作。用户通过 UI agent 切换进入规划——这本身就是 handoff，不是 subagent 委派。这意味着 mola 的 P0 subagent 模式（输出文本、orchestrator 代写）仅是 handoff 不可用时的临时方案。P1 阶段 mola 升级为 primary 后应接管 plan 文件写入，subagent 角色随之完全废弃。
 
@@ -1257,6 +1321,44 @@ P0 前置全部完成（详见 [§14.0](#140-p0-前置已完成路由层改造20
 4. 改用 `tui.publish({body:{type:"tui.session.select", properties:{sessionID}}})` 后成功触发切换
 
 **影响：** P1-B 新会话 handoff 可以完全自动化，无需用户手动切换 session。详见 [§16 #42](#16-决策日志)。
+
+> **⚠️ v1.3 订正：** 上文中"P0 前置全部完成"的结论是在实施测试之前作出的。实际测试后 mola subagent 方案被废弃。mola prompt/skill/config 文件已删除。mola-plan skill 设计范式作为前向携带架构存活至 P1。完备性门控仅为 §11 设计规格，**从未在代码中实现**，需在 P1 中实现。详见 v1.3 修订记录。
+
+### v1.3 (2026-06-24) — P0 mola subagent 废弃与 P1 范围修订
+
+**P0 mola subagent 方案被尝试后废弃。** v1.2 中实施的三个组件（mola agent prompt、mola-plan skill 分层、config.toml 注册）均经过实际测试，确认 subagent 模式无法满足规划的多轮深度对话需求。三个结构性问题：**(1)** 无多轮采访能力——单次 `task()` 只能输出一段文本；**(2)** orchestrator 透传使其沦为消息中继，上下文被规划对话污染；**(3)** 角色混淆，用户感知不到明确的规划角色切换。
+
+**文件清除，设计遗产向前携带至 P1。** mola agent prompt、skill 文件、config.toml 注册条目已删除。存活情况如下：
+1. **mola-plan skill 设计范式** —— 尽管文件已删除，其 skill → reference 分层加载、CLEAR/UNCLEAR 双路径、explore-before-ask 协议、两过滤器问题纪律、审批门等架构是经过验证的有效设计，P1 中以 skill 重建形式复活
+2. **完备性门控（设计规格，待 P1 实现）** —— 四个自检 + reasoning 输出仅存在于本文档 §11 的设计规格中，**从未在代码中实现**。P1 中需在 `core/prompts/build.md` 中实现，作为 orchestrator 判定"缺方案 → handoff 到 mola"的主动路由机制
+
+**修正的设计文档章节：**
+
+| 章节 | 修订内容 |
+|------|----------|
+| **§5.7** Omo 规划架构关键洞见 | 新增 P0 方案验证说明，记录尝试与废弃过程；新增执行阶段 plan 修改规则（build 直接编辑，无需 handoff 回 mola） |
+| **§7.4** 最终决策 | P0 从"当前临时方案"重写为"已废弃"；新增范围裁剪表（session-tracker 暂缓、idle 检测去掉、plan-state.ts 逻辑不变但写入者变更）；确认 handoff 为唯一路径 |
+| **§8.1** 架构图 | Plan Agent 从 subagent 改为 primary handoff 模式 |
+| **§8.2** 组件清单 | 更新 Plan agent prompt 文件路径；session-tracker 标注暂缓至 P2；更新行数估算 |
+| **§13.1** 工具权限 | 移除 P0 引用；更新 P1 deny 模型说明 |
+| **§13.3** 责任分离 | P1 中 plan 文件由 mola 直接写（hook 路径约束），orchestrator 仅维护 `_projects.json` 索引与状态更新 |
+| **§14.0** 实施路径 | **完全重写**：从"P0 前置已完成"改为"P0 mola subagent 尝试与废弃"，详细记录尝试内容、废弃原因、正面价值。**v1.3 原版错误地将完备性门控列为已实现组件（实为 §11 设计规格，从未编码），已在本版修正** |
+| **§14.1** 实施步骤 | 七步分解：移除 session-tracker 和 idle 检测（原 7→6），新增 mola-plan skill 重建（Step 5，6→7）；更新写入者 |
+| **§14.2** 每步产出 | 按新步骤重写，增加 P2 暂缓组件说明；新增 Step 5 产出描述（skill 分层、CLEAR/UNCLEAR 双路径、参考文件） |
+| **§14.3** 顺序约束 | 按新步骤重写，补充 Step 5/6 依赖关系 |
+| **§15.1** 未来演进 | P1 段从"在 P0 稳定后"改为"在 P1 handoff 稳定后"，更新 P2 新增列表 |
+| **§15.2** BackgroundManager | 更新为从 P1 暂缓的 PlanSessionTracker 升级 |
+| **§16** 决策日志 | 新增 #43-#48（P0 废弃、执行阶段修改规则、Job Board/session-tracker 暂缓、idle 检测移除） |
+
+**关键设计决策确认：**
+
+- **Handoff 确认为正确方向** —— P0 的失败使 handoff 从备选升级为唯一路径
+- **完备性门控作为主动 handoff 触发器（待 P1 实现）** —— §11 设计规格定义四个自检 + reasoning 输出路由"缺方案 → handoff 到 mola"，非旧式 `task(mola)` 调用。需在 P1 中首次实现于 `core/prompts/build.md`
+- **mola-plan skill 设计范式存活** —— 文件已删除，但 skill → reference 分层、CLEAR/UNCLEAR 双路径、explore-before-ask 协议、两过滤器纪律、审批门在 P1 中重建
+- **执行阶段 plan 修改** —— build 直接编辑 plan 文件（中等/轻微调整），仅完整重规划才 handoff 回 mola
+- **Background Job Board 和 session-tracker 暂缓至 P2** —— handoff 模式下规划与执行物理分离，P1 不需要并行追踪
+- **plan-lifecycle 去掉 idle 检测** —— handoff 显式创建执行 session，无需推测状态转换
+- **plan-state.ts 逻辑不变，写入者从 orchestrator 改为 mola** —— hook 路径约束保证安全
 
 ---
 
