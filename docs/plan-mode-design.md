@@ -330,7 +330,9 @@ Layer 3: 执行阶段 (Atlas)
 
 - `client.session.create({ body: { parentID, title } })` — 创建子 session，`parentID` 关联原会话
 - `client.session.promptAsync({ body: { agent, parts } })` — 注入 plan 上下文并启动目标 agent
-- `client.tui.selectSession({ body: { sessionID } })` — TUI 自动跳转到新 session
+- `client.tui.publish({ body: { type: "tui.session.select", properties: { sessionID } } })` — 通过 SSE 事件总线触发 TUI 自动跳转
+
+**v1.2 Day-2 实测修正**：原设计中写的 `tui.selectSession()` 虽然 endpoint 存在且返回 200，但**不会触发 TUI 切换**。TUI 前端通过 SSE 事件总线订阅 `tui.session.select` 事件，必须使用 `tui.publish()` 发布事件才能触发切换（详见 [§16 #42](#16-决策日志)）。
 
 优势：执行会话上下文干净（不受规划长跑拖累）、角色无混淆、规划与执行日志分离便于追溯；`parentID` 关联使 zfind/ztrace 可跨会话追踪。omo 的 `ralph-loop` 模块（迭代延续场景）已在生产验证此三步骤模式。
 
@@ -475,10 +477,12 @@ P2+: subagent 角色完全废弃
 规划完成后（`status: ready`），plan-lifecycle hook 调用三段 API 创建干净的执行会话：
 
 ```
-session.create(parentID=planSession, title="执行: X")     → executionSession
-session.promptAsync(executionSession, agent="build", text=readPlanText)
-tui.selectSession(executionSession)                       → TUI 自动跳转
+session.create(parentID=planSession, title="执行: X")                                → executionSession
+session.promptAsync(executionSession, agent="build", text=readPlanText)             → 注入 plan
+tui.publish({body:{type:"tui.session.select", properties:{sessionID}}})             → TUI 自动跳转
 ```
+
+**v1.2 Day-2 实测确认**：第三段必须使用 `tui.publish()` 发布 SSE 事件，而非 `tui.selectSession()`（后者 endpoint 存在但不触发 TUI 响应）。详见 [§16 #42](#16-决策日志)。
 
 **优势 vs 同会话 handoff**：
 - 执行会话有满额智能窗，不受规划长跑拖累
@@ -1131,6 +1135,8 @@ interface BackgroundManager {
 | 40 | P1-B handoff 实现方案 | **新会话 handoff 为默认，同会话切换为短规划 fallback** | 新会话避免规划长跑拖累执行智能窗、避免角色混淆、规划/执行日志物理分离；`parentID` 关联保留可追溯性（zfind/ztrace 跨会话）|
 | 41 | Plan 文件写入权 | **P1 转移到 mola（hook 路径约束至 `~/.zoo/**/*.md`）** | 反转 P0 设计（mola 输出文本，orchestrator 代写）。omo 通过 `prometheus-md-only` hook 验证此模式。Orchestrator 仅保留 `_projects.json` 索引维护与 `executing`/`done` 状态更新 |
 
+| 42 | TUI 切换机制 | **`tui.publish()` + SSE 事件总线** | 实测验证：`tui.selectSession()` endpoint 存在且返回 200，但不触发 TUI 响应。TUI 前端通过 SSE 订阅 `tui.session.select` 事件，必须用 `tui.publish({body:{type:"tui.session.select", properties:{sessionID}}})` 触发切换。这是 P1-B 新会话 handoff 的关键实现细节 |
+
 ---
 
 ## 17. 参考资料
@@ -1230,13 +1236,27 @@ P0 前置全部完成（详见 [§14.0](#140-p0-前置已完成路由层改造20
 
 **mola-spec（深度设计探索 skill）：** 曾创建后删除。subagent 在单次 `task()` 中只能输出一段文本，无法进行多轮 grill 采访。需要 mola 升级为 primary agent 后才能重新启用，列入 P1-C 优先级。orchestrator 透传式转发方案被否决：使编排器沦为消息中继，浪费上下文（详见 [§16 #38](#16-决策日志)）。
 
-**Handoff 机制发现：** 确认 OpenCode 支持两种 handoff 路径——**(1)** 同会话切换（`chat.message` hook + `output.message["agent"]`，omo 的 start-work-hook 已在生产验证）和 **(2)** 新会话 handoff（`session.create` + `session.promptAsync` + `tui.selectSession`，omo 的 ralph-loop 模块验证），后者是长规划场景的推荐方案，详见 [§5.6](#56-关键局限--已发现可行机制) 与 [§7.4](#74-最终决策-分层策略)。
+**Handoff 机制发现：** 确认 OpenCode 支持两种 handoff 路径——**(1)** 同会话切换（`chat.message` hook + `output.message["agent"]`，omo 的 start-work-hook 已在生产验证）和 **(2)** 新会话 handoff（`session.create` + `session.promptAsync` + `tui.publish`，omo 的 ralph-loop 模块验证），后者是长规划场景的推荐方案，详见 [§5.6](#56-关键局限--已发现可行机制) 与 [§7.4](#74-最终决策-分层策略)。
 
 **Omo 规划架构洞见：** 确认 omo 的规划 agent（Prometheus）是 `mode = "primary"`，与实现编排者平级，拥有独立 session，并通过 hook 路径约束其写操作。用户通过 UI agent 切换进入规划——这本身就是 handoff，不是 subagent 委派。这意味着 mola 的 P0 subagent 模式（输出文本、orchestrator 代写）仅是 handoff 不可用时的临时方案。P1 阶段 mola 升级为 primary 后应接管 plan 文件写入，subagent 角色随之完全废弃。
 
 **Session resume 独立性：** Resume 与 handoff 解决不同问题，P1 中两者并存不互斥——resume 用于 task_id 续期、跨会话恢复、失败后回拉同一 subagent；handoff 用于 build↔mola 之间的角色切换。
 
 **P1 路线图修订：** session reuse（P1-A，独立通用基础）→ 新会话 handoff（P1-B，推荐）→ mola 升级 primary + mola-spec 复活（P1-C）→ 补充调研技术吸收（P1-D）。
+
+#### Day-2 实测（同日晚间）
+
+在 `/tmp/handoff-prototype/` 构建最小化 handoff 插件进行端到端验证。关键发现：
+
+**TUI 切换的真正机制：** `tui.publish()` + SSE 事件总线，而非 `tui.selectSession()`。
+
+实测过程：
+1. SDK v1 client 上 `tui.selectSession` 方法运行时为 `undefined`（`typeof === "undefined"`）
+2. 从 SDK v2 类型定义发现该方法存在，调用后返回 200 但 TUI 不切换
+3. 逆向工程 opencode 1.17.9 二进制，发现 TUI 通过 SSE 订阅 `tui.session.select` 事件
+4. 改用 `tui.publish({body:{type:"tui.session.select", properties:{sessionID}}})` 后成功触发切换
+
+**影响：** P1-B 新会话 handoff 可以完全自动化，无需用户手动切换 session。详见 [§16 #42](#16-决策日志)。
 
 ---
 
