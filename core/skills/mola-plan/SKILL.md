@@ -34,12 +34,11 @@ Complete all 6 phases in order.
 ### Phase 1 - Ground Check
 
 Explore the codebase to validate the problem exists and understand what is involved.
-Run these in parallel when independent:
+Run these in parallel when independent. Delegate searches to explore (codebase) and spider (external docs) via `task()` for parallel execution — do not do all searching manually.
 
-1. **Search** — affected files, entry points, call sites, dependency graph
-2. **Pattern discovery** — existing implementations to reference, established conventions
-3. **Context gathering** — related docs, `AGENTS.md`, README, prior plans in
-   `~/.zoo/plans/`
+1. **Search** — delegate to explore: affected files, entry points, call sites, dependency graph
+2. **Pattern discovery** — delegate to explore: existing implementations to reference, established conventions
+3. **Context gathering** — delegate to explore for codebase docs (`AGENTS.md`, README) or spider for external documentation, prior plans in `~/.zoo/plans/`
 
 **Scope assessment:** If the work spans 2+ independent subsystems, stop and request
 decomposition: "Request decomposition needed: this spans [subsystems] which should be

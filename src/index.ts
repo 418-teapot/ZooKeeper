@@ -25,6 +25,7 @@ import { measureContext } from "./hooks/context-metrics";
 import { nudgeDirectWork } from "./hooks/direct-work-nudge";
 import { recoverJsonError } from "./hooks/json-error-nudge";
 import { nudgePostTask } from "./hooks/post-task-nudge";
+import { validateDelegationTarget } from "./hooks/task-delegation";
 import {
   enhanceTaskDefinition,
   nudgeTaskOutput,
@@ -259,6 +260,7 @@ export async function zookeeper(input: any) {
       output: { args?: Record<string, unknown> },
     ) {
       validateBeforeExec(input, output, limits);
+      await validateDelegationTarget(client, input, output);
     },
 
     async "tool.execute.after"(input: AfterExecInput, output: AfterExecOutput) {

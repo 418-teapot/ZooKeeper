@@ -255,7 +255,6 @@ edit = "deny"
 [agent.mola]
 model = "{env:ZOO_MODEL}"
 [agent.mola.permission]
-task      = "deny"
 webfetch  = "deny"
 websearch = "deny"
 
