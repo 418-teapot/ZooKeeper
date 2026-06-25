@@ -27,3 +27,6 @@ self_verification_rate = { min = 0.5 }
 
 [kiwi]
 # (empty for now)
+
+[mola]
+# (empty for now)

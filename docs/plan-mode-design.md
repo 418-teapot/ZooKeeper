@@ -44,7 +44,7 @@
 
 - **Plan 作为 primary agent**（handoff 模式），通过新会话 handoff 与 build orchestrator 协作
 - **Plan 文件存储于 `~/.zoo/plans/<project-id>/<slug>-<YYYYMMDD>.md`** —— 用户级集中管理，按 git remote / basename 推导 project-id
-- **TOML frontmatter + markdown body + checkboxes** —— 状态字段（`planning`/`planning-done`/`executing`/`done`）+ TODOs 列表
+- **YAML frontmatter + markdown body + checkboxes** —— 状态字段（`planning`/`planning-done`/`executing`/`done`）+ TODOs 列表
 - **新会话 handoff 为默认方案** —— 规划与执行 session 物理分离，`parentID` 关联保留可追溯性
 - **静态 deny + hook 路径约束**: mola 允许 `edit`/`write`（路径约束至 `~/.zoo/**/*.md`），禁止 `task`（P2 再开）；bash 靠 prompt 约束只跑诊断命令
 - **Plan 文件由 mola 直接写**（hook 路径约束保证安全），orchestrator 仅维护 `_projects.json` 索引与状态更新
@@ -249,7 +249,7 @@ Reusable Sessions:
 Layer 1: 规划阶段 (Prometheus)
   ├── Prometheus prompt 切换（但 session 不变）
   ├── 探索代码库，使用 Metis 做预分析
-  ├── 写 .omo/plans/<slug>.md（TOML frontmatter + markdown checkbox）
+  ├── 写 .omo/plans/<slug>.md（YAML frontmatter + markdown checkbox）
   ├── 可选: Momus 审查 plan 完整性
   └── 用户批准
 
@@ -572,6 +572,10 @@ TUI 自动跳转到新会话
                         ↕
 ┌──────────────────────────────────────────────────┐
 │  Mola (primary agent, 独立 session)               │
+│  ├─ 两层 skill 架构:                              │
+│  │  ├─ mola-plan (CLEAR/UNCLEAR 双路径)           │
+│  │  └─ mola-spec (深度设计探索/grill 通道)         │
+│  ├─ 路由内嵌 Workflow(无独立 Intent Routing 段)    │
 │  ├─ 多轮采访/辩论/场景压力测试                     │
 │  ├─ 读代码库 (read/grep/glob/bash)                │
 │  ├─ 写 plan 文件 (edit/write 路径约束)            │
@@ -581,7 +585,7 @@ TUI 自动跳转到新会话
 ┌──────────────────────────────────────────────────┐
 │  状态层                                           │
 │  ├── 文件: ~/.zoo/plans/<slug>.md                 │
-│  │     TOML frontmatter + markdown body           │
+│  │     YAML frontmatter + markdown body           │
 │  │     status / active_sessions / project         │
 │  │                                                │
 │  └── (P1 无内存 tracker — 暂缓至 P2)              │
@@ -601,8 +605,8 @@ TUI 自动跳转到新会话
 
 | 组件 | 文件位置 | 职责 | 行数估算 |
 |---|---|---|---|
-| Mola primary prompt | `core/prompts/mola.md` | primary agent prompt，handoff 协议、多轮采访纪律、结构化输出 | ~150 |
-| Plan state manager | `src/core/plan-state.ts` | 读写 plan 文件、解析 frontmatter、状态机；写入者为 mola（hook 路径约束） | ~200 |
+| Mola primary prompt | `core/prompts/mola.md` | Role ~10 / Contract ~30 / Workflow ~40 三标签结构；handoff 协议、多轮采访纪律 | ~80 |
+| Plan state manager | `src/core/plan-state.ts` | 读写 plan/spec 文件、解析 frontmatter、状态机、plan/spec state coordination；写入者为 mola（hook 路径约束） | ~200 |
 | Project ID manager | `src/core/project-id.ts` | git remote / basename 推导 project-id，`_projects.json` 索引 | ~150 |
 | 完备性门控 | §11 设计规格（需在 P1 实现于 `core/prompts/build.md`） | 四个知识缺口自检 + reasoning 输出，handoff 触发 | ~130 |
 | Plan lifecycle hook | `src/hooks/plan-lifecycle/index.ts` | handoff 三段 API、状态更新、config 活跃 plan 注入（无 idle 检测） | ~250 |
@@ -658,17 +662,29 @@ planning → planning-done → executing → done
 
 `.zoo/plans/auth-middleware-20260115.md`:
 
-```toml
-+++
-status = "executing"
-slug = "auth-middleware-20260115"
-project_root = "/home/cambricon/Agent/ZooKeeper"
-created_at = "2026-01-15T10:23:45"
-updated_at = "2026-01-15T10:28:12"
-active_sessions = ["ses_abc123"]
-+++
+```yaml
+---
+status: executing
+slug: "auth-middleware-20260115"
+project_root: "/home/cambricon/Agent/ZooKeeper"
+created_at: "2026-01-15T10:23:45"
+updated_at: "2026-01-15T10:28:12"
+active_sessions:
+  - "ses_abc123"
+---
 
 # Auth Middleware
+
+## Scope
+### Must have
+- JWT access token 验证(签入所有 /api/* 路由)
+- 过期 token 返回 401 + WWW-Authenticate header
+- 中间件可插拔(不影响现有路由测试)
+
+### Must NOT have
+- 不在本 plan 实现 refresh token 轮换(依赖现有 refresh 机制)
+- 不改动 rate limiting / logging 中间件
+- 不引入新的数据库表或配置项
 
 ## Context
 为现有 API 路由添加 JWT 验证中间件。现有代码在 `src/server/routes.ts`，
@@ -679,6 +695,10 @@ active_sessions = ["ses_abc123"]
 2. 修改 `src/server/routes.ts` 在敏感路由前挂上中间件
 3. 添加对 expired token 的 401 响应
 
+## Execution strategy
+依赖矩阵: auth.ts → types.ts(类型扩展) → routes.ts(挂载) → test.ts(验证)
+各步骤间无并行依赖，可串行执行。
+
 ## Critical Files
 - `src/server/routes.ts` (现有路由定义，必须插入中间件)
 - `src/server/types.ts` (需要扩展 RequestWithAuth 类型)
@@ -688,6 +708,21 @@ active_sessions = ["ses_abc123"]
 - 跑 `ts-node tests/server/auth.test.ts` 验证验证逻辑
 - 跑现有测试套件确保无回归
 - 测试 expired/invalid/malformed 三种 token 的 401 响应
+
+## Final verification wave
+- F1: 单元测试全部通过
+- F2: 手动 curl 验证三种 token 的 401 行为
+- F3: 现有测试零回归
+- F4: 中间件不影响 rate limit / logger 等已有中间件
+
+## Commit strategy
+- 步骤 1-3 完成 → 单 commit "feat: add auth middleware"
+- 步骤 4-5 完成 → squash commit "test: add auth middleware tests"
+
+## Success criteria
+- 所有 TODO checkbox 勾选
+- F1-F4 全部 pass
+- 用户确认最终实现与 plan scope 一致
 
 ## TODOs
 - [ ] 创建 middleware/auth.ts（推荐用 general）
@@ -1007,25 +1042,29 @@ P0 还提供了以下过程验证（lessons learned，非前向携带）：
 > **v1.3 修订：** P0 mola subagent 已废弃，P1 直接实现 handoff。`session-tracker.ts` 暂缓至 P2（与 Background Job Board 一起实现）；plan-lifecycle hook 去掉 idle 检测（handoff 替代了该需求）。新增 Step 5（mola-plan skill 重建）—— P0 的设计范式作为前向携带架构在 P1 中复活。
 
 ```
-Step 1. config.toml + install.py                 — mola primary agent 注册 + 权限（edit: allow, hook 路径约束）
+Step 1. config.toml + install.py                 — ✅ mola primary agent 注册 + 内置 plan 禁用
 Step 2. src/core/plan-state.ts                   — plan 文件解析/写入/状态机（写入者改为 mola 直接写）
 Step 3. src/core/project-id.ts + _projects.json  — 项目 ID 推导 + 索引管理
-Step 4. core/prompts/mola.md                     — primary agent prompt，含 handoff 协议
-Step 5. core/skills/mola-plan/                   — mola-plan skill 重建（SKILL.md + CLEAR/UNCLEAR 双路径 + 参考文件）
+Step 4. core/prompts/mola.md                     — ✅ mola prompt (Role/Contract/Workflow, no Intent Routing)
+Step 5. core/skills/mola-plan/                   — ✅ plan skill (SKILL.md + 三个 reference + 两个 scaffold 脚本)
 Step 6. src/hooks/plan-lifecycle/index.ts        — handoff 注入（三段 API）+ plan 状态更新（去掉 idle 检测）
 Step 7. 集成测试 + runner.py 场景               — trivial/standard/complex 三场景验证
 ```
 
 ### 14.2 每步的具体产出
 
-**Step 1: config.toml + install.py** (~50 行)
-- `[agent.mola]` 块：mode=primary（或 all），edit=allow（hook 路径约束至 `~/.zoo/**/*.md`），task=allow（仅 explore/spider 委派）
-- install.py 编译逻辑（沿用现有模式）
+**Step 1: config.toml + install.py** (~50 行) ✅ 已完成
+- `[agent.mola]` 块：`mode = "primary"`（默认），`model = "{env:ZOO_MODEL}"`
+- 工具权限：`task = "deny"`（P1 阶段不自委派），`webfetch/websearch = "deny"`，`edit/write/read/grep/glob/bash/question` 默认 allow（hook 运行时路径约束至 `~/.zoo/**/*.md`）
+- Skill 授权：`mola-plan` + `wiki-query` allow，其余 deny
+- `[agent.plan] disable = true`（内置 plan agent 禁用，mola 接管规划职责）
+- `[zoo.skills]` 新增 `mola-plan = "enable"`
+- install.py 无需改动（直接透传 agent 配置，透传 `[zoo.skills]`）
 
 **Step 2: plan-state.ts** (~200 行)
 - 纯逻辑模块（零 OpenCode 依赖，可被 TS 运行时 import）
 - 函数: readPlan(slug), writePlan(slug, content, metadata), updateStatus(slug, newStatus)
-- TOML frontmatter 解析（用 gray-matter 或类似库）
+- YAML frontmatter 解析（用 gray-matter 或类似库）
 - 状态机校验: planning → planning-done → executing → done
 - **写入者变更**：P1 中 mola 直接写 plan 文件（非 orchestrator 代理写），hook 路径约束保证安全
 
@@ -1034,22 +1073,20 @@ Step 7. 集成测试 + runner.py 场景               — trivial/standard/compl
 - loadProjectsIndex() / saveProjectsIndex()
 - isProjectMapped(projectRoot) + registerProject(projectRoot)
 
-**Step 4: mola primary agent prompt** (~150 行)
-- 角色定义 + handoff 协议（新会话 handoff 为默认，同会话为 fallback）
-- 工具列表（read/grep/glob/bash/edit/write/task，edit/write 路径约束至 `~/.zoo/**/*.md`）
-- 5 阶段工作流（Understand/Explore/Interview/Design/Produce）
-- 多轮采访纪律（每轮 1-2 个问题 + 多选优先，参考 Matt Pocock grilling + Superpowers brainstorm）
-- 结构化输出规范（Context/Approach/Critical Files/Verification/Risks/TODOs/Metadata）
-- Bash 诊断约束
+**Step 4: mola prompt** (~50 行) ✅ 已完成
+- **Role** (~5 行): mola 规划顾问身份，plan mode sticky
+- **Contract** (~15 行): 6 条硬约束 (plan mode sticky / explore-before-ask / ≤2 questions per turn / adopt defaults / approval gate / diagnostic-only bash)
+- **Workflow** (~15 行): 3 步极简（Load → Execute → Handoff signal），所有规划逻辑下沉到 skill
+- **Tools** (~6 行): read/grep/glob + bash (C6) + edit/write (路径约束) + question
 
-**Step 5: mola-plan skill 重建** (~180 行)
-- `core/skills/mola-plan/SKILL.md` — skill 主文件，定义 CLEAR/UNCLEAR 双路径执行协议
-- `core/skills/mola-plan/references/intent-clear.md` — 需求明确时的快速通道：推荐答案优先 + 产出式采访
-- `core/skills/mola-plan/references/intent-unclear.md` — 需求模糊时的深度通道：explore-before-ask 协议 + 两过滤器问题纪律（每轮 1-2 问题 + 多选优先）
-- `core/skills/mola-plan/references/full-workflow.md` — 完整端到端工作流参考（Understand → Explore → Interview → Design → Produce + 审批门）
-- 技能分层架构继承自 P0 设计：agent prompt（路由 + 角色定义）→ skill（执行协议）→ reference（具体策略），token 加载只匹配路径
-- 输入协议：mola 已通过完备性门控（缺方案），进入规划模式
-- 输出协议：结构化 markdown（Context/Approach/Critical Files/Verification/Risks/TODOs）+ 审批门等待用户确认
+**Step 5: mola-plan skill** (~600 行) ✅ 已完成
+- `core/skills/mola-plan/SKILL.md` — 单一技能接管全部规划逻辑（6 phases: Ground Check → Classify → Interview → Present Design → Produce → Handoff Signal）
+- Classify 阶段根据 Ground 发现决定加载路径：Clear/Unclear/Architecture，支持中途升级
+- Architectural 路径加载 grill-protocol.md + 生成 spec，然后自动继续走 plan 生产
+- 3 个 reference 文件：intent-clear.md（明确路径）/ intent-unclear.md（调研默认值路径）/ grill-protocol.md（深度访谈 + 场景压力测试 + 领域词汇精炼）
+- 2 个 scaffold 脚本：scaffold-plan.py + scaffold-spec.py，是 plan/spec 格式的唯一权威（包含结构定义 + 内联内容指引）
+- 统一 YAML frontmatter（plan 和 spec 都是 `---`）
+- `mola-spec` skill **已废弃**——其 grill 协议、spec 模板、scenario 压力测试等能力已整体合并进 mola-plan
 
 **Step 6: plan-lifecycle hook** (~250 行)
 - `config` hook: 在新 session 启动时注入系统级 active-plans 概况
@@ -1070,10 +1107,10 @@ Step 7. 集成测试 + runner.py 场景               — trivial/standard/compl
 Step 1 → Step 2 + 3 (并行) → Step 4 → Step 5 → Step 6 → Step 7
 
 理由:
-- Step 1 是基础设施，先做
+- Step 1 是基础设施，先做 ✅
 - Step 2/3 独立，可并行
-- Step 4 依赖 step 1-3 的基础设施（plan 文件约定、项目 ID）
-- Step 5（skill）依赖 Step 4 的 agent prompt 输出协议与角色定义
+- Step 4 依赖 step 1 的基础设施（mola agent 注册）✅
+- Step 5（skill）依赖 Step 4 的 agent prompt Workflow 与 Contract ✅
 - Step 6（handoff hook）依赖 Step 4 + 5 的 agent 与 skill 输出协议
 - Step 7 依赖前面全部
 ```
@@ -1155,7 +1192,7 @@ interface BackgroundManager {
 | 2 | Plan 文件位置 | `~/.zoo/plans/<project-id>/<slug>-<YYYYMMDD>.md` | 用户级集中管理，按项目子目录分组 |
 | 3 | project-id 推导 | git remote → basename → +hash8 冲突 | git remote 是真正的项目标识符 |
 | 4 | 索引文件 | `~/.zoo/plans/_projects.json` | 用户删除/重命名项目时 plan 不变孤立 |
-| 5 | Plan 格式 | TOML frontmatter + markdown body + checkboxes | 状态在 frontmatter，人类可读 body |
+| 5 | Plan 格式 | YAML frontmatter + markdown body + checkboxes | 状态在 frontmatter，人类可读 body |
 | 6 | Git 管理 | 天然 gitignore（用户级） | 与 omo/slim/omp 一致 |
 | 7 | 输出协议 | 结构化 markdown sections | 4 个项目都用 markdown 不用 JSON |
 | 8 | Session resume | 透明显示 + 自动执行 | 用户可见但无需操作，omo 已验证可行 |
@@ -1200,6 +1237,18 @@ interface BackgroundManager {
 | 46 | Background Job Board | **暂缓至 P2，非 handoff 前置** | handoff 模式下规划与执行物理分离，P1 不需要并行任务追踪。Job Board 在 P2 与 session-tracker 一起独立实现 |
 | 47 | session-tracker.ts | **暂缓至 P2** | handoff 模式下规划与执行完全隔离，P1 不需要追踪 active sessions。与 Background Job Board 一起在 P2 实现 |
 | 48 | plan-lifecycle idle 检测 | **去掉，handoff 替代此需求** | 原设计在 session.idle 时自动将 planning-done 转为 executing。handoff 显式创建执行 session，无需推测状态转换 |
+| 49 | 规划 skill 架构 | **两 skill 分离: mola-plan + mola-spec** | 继承 P0 分层设计但拆分用途：mola-plan 负责常规规划(CLEAR/UNCLEAR 双路径)，mola-spec 负责深度设计探索/grill。两 skill 通过 Workflow 路由选择，非 agent prompt 层判断 |
+| 50 | 路由位置 | **内嵌 Workflow 段，非独立 Intent Routing 段** | 旧版在 agent prompt 中设独立 `<Intent Routing>` 段。新版路由逻辑 = Workflow 第二步的子分支(Explore vs Interview)，减少 prompt 冗余 + 提升 token 密度 |
+| 51 | Contract 替代 Discipline | **Contract 标签(6 硬约束)取代旧 Discipline 段** | 旧结构: Role → Discipline → Workflow。新结构: Role → Contract → Workflow。Contract 将约束从"软纪律"升级为"硬协议"(输出格式、工具限制、每轮问题数、探索纪律等)，Workflow 专注于流程步骤 |
+| 52 | Spec→Plan 管道 | **通过 prompt 路由而非代码管道** | mola-spec 产出(深度设计文档)不经过代码层转换。spec 完成后用户批准，Workflow 引导进入 mola-plan 通道生成 plan 文件。两阶段共享同一 mola session，路由 = prompt 中的条件分支 |
+| 53 | Plan 模板 | **从 omo 扩展：新增 Scope/Execution strategy/Final verification/Commit strategy/Success criteria** | 旧模板(Context/Approach/Critical Files/Verification/TODOs/Risks)缺少范围界定和验证标准。omo 的 plan 模板基础上加入 Must/Must NOT have、依赖矩阵、F1-F4 验证波、commit 策略、成功标准，使 plan 即可执行又可审计 |
+| 54 | 两 skill 合并为一 skill | **mola-spec 整体合并进 mola-plan** | 路由判断（spec vs plan）下沉到 skill 内的 Classify 阶段。mola-spec 目录删除，grill-protocol.md + spec-template.md + scaffold-spec.py 全部迁移到 mola-plan。中途升级替代 prompt 层的重试（发现任务更重时追加加载 heavier reference，不需要回到 Workflow 重新路由）。试错成本极低 |
+| 55 | 路由全面下沉 skill | **mola.md Workflow 极简为 3 步（Load/Execute/Handoff），不再做路由决策** | 所有路由（Clear/Unclear/Architecture）和升级逻辑下沉到 mola-plan 的 Phase 2 Classify。prompt 不再承担 Ground/Interview/Design/Produce 等任何阶段的描述。prompt 只声明身份+硬约束+交接 |
+| 56 | 脚手架脚本作为格式唯一权威 | **scaffold-plan.py + scaffold-spec.py 是 plan/spec 格式的唯一事实来源** | 删除 `references/spec-template.md` 和 `SKILL.md` 中的 Plan/Spec File Output Format section。脚本生成的 YAML frontmatter + markdown body + 内联 `<!-- placeholder -->` 注释就是格式定义和填充指引。模型填充内容时看脚手架脚本生成的注释即可 |
+| 57 | 统一 YAML frontmatter | **plan 和 spec 的 frontmatter 都是 YAML `---` 格式** | plan 原本用 TOML `+++`，spec 用 YAML `---`。统一到 YAML 使两个文件解析逻辑一致，未来 plan-state.ts 只需实现一套 parser。脚手架脚本同步更新为统一格式 |
+| 58 | mola 工具权限具体配置 | **task=deny + webfetch=deny + websearch=deny；edit/write/read/grep/glob/bash/question 默认 allow** | mola 作为 primary 不委派子 agent（P1 阶段），hook 在运行时把 edit/write 路径约束到 `~/.zoo/**/*.md`。允许 bash 但 prompt 硬约束只跑诊断命令 |
+| 59 | 禁用内置 plan agent | **`[agent.plan] disable = true`** | mola 接管规划职责后，OpenCode 内置 plan agent 会与 mola 冲突。禁用避免两个规划 agent 共存的歧义 |
+| 60 | mola-plan 注册到 skills | **`[zoo.skills] mola-plan = "enable"`** | 通过现有的 skill 注册机制把 mola-plan 加入可用技能列表。mola 的 permission.skill 仅允许 mola-plan + wiki-query，防止 skill 滥用 |
 
 ---
 
@@ -1359,6 +1408,90 @@ P0 实施（详见 §14.0 与 [§16 #33-#38](#16-决策日志)）：mola agent p
 - **Background Job Board 和 session-tracker 暂缓至 P2** —— handoff 模式下规划与执行物理分离，P1 不需要并行追踪
 - **plan-lifecycle 去掉 idle 检测** —— handoff 显式创建执行 session，无需推测状态转换
 - **plan-state.ts 逻辑不变，写入者从 orchestrator 改为 mola** —— hook 路径约束保证安全
+
+---
+
+### v1.4 (2026-06-25) — P1 前期实施：prompt、skill、config
+
+**P1 已完成的步骤**（Step 1 + Step 4 + Step 5）：
+
+| Step | 组件 | 状态 | 规模 |
+|---|---|---|---|
+| 1 | config.toml | ✅ 已完成 | mola 注册 + plan 禁用 |
+| 2 | plan-state.ts | 待实施 | ~200 行 |
+| 3 | project-id.ts | 待实施 | ~150 行 |
+| 4 | mola.md | ✅ 已完成 | ~50 行 |
+| 5 | mola-plan skill | ✅ 已完成 | SKILL.md + 3 reference + 2 scaffold 脚本 |
+| 6 | plan-lifecycle hook | 待实施 | ~250 行 |
+| 7 | 集成测试 | 待实施 | ~80 行 |
+
+**mola-plan 单一 skill 架构**：
+
+v1.3 中设计的 mola-plan + mola-spec 双 skill 架构在实际编写时发现**路由判断的脆弱性**——prompt 需要在 Ground 之后判断"明确 vs 模糊 vs 架构"，误判时需要回到 Workflow 重走，试错成本偏高。v1.4 改为：
+
+- **单一 skill**（mola-plan）接管全部规划逻辑：Ground → Classify → Interview → Present Design → Produce → Handoff
+- **Classify 阶段**（在 skill 内部）根据 Ground 发现决定加载哪些 reference：
+  - Clear → `intent-clear.md`（明确路径）
+  - Unclear → `intent-unclear.md`（调研默认值路径）
+  - Architecture → `grill-protocol.md`（深度访谈 + 场景压力测试）
+- **Graceful upgrade**：访谈中途发现任务更重，可以追加加载 heavier reference，不需要回到 prompt Workflow
+- **mola-spec 已废弃**：目录删除，grill-protocol.md + spec-template.md + scaffold-spec.py 全部迁移到 mola-plan
+
+**mola.md prompt 极简为 3 步 Workflow**：
+
+原设计让 prompt 描述 Ground/Route/Interview/Design/Produce 5 个阶段，实际编写时发现这等同于在 prompt 层重复 skill 内容。v1.4 改为：
+
+- **Load**（1 行）：加载 mola-plan skill
+- **Execute**（1 行）：让 skill 接管
+- **Handoff signal**（3 行）：检测 `[Plan approved and written. Ready for handoff to build orchestrator.]` 信号
+
+**所有规划逻辑在 skill 内部**：Ground Check、Classify、Interview、Present Design、Produce、Handoff Signal 全部由 SKILL.md 拥有。Skill 现在是自洽的——不引用 prompt 的 Contract。
+
+**脚手架脚本作为格式唯一权威**：
+
+- 删除了 `references/spec-template.md`（spec 格式独立文档）
+- 删除了 SKILL.md 中 `## Plan File Output Format` 和 `## Spec File Output Format` section
+- `scaffold-plan.py` + `scaffold-spec.py` 现在既是文件生成器，又是格式定义+内容指引（内联的 `<!-- placeholder -->` 注释包含每节该写什么）
+- 脚手架生成的 YAML frontmatter + markdown body 就是唯一格式权威
+
+**统一 YAML frontmatter**：
+
+plan 原本用 TOML `+++`，spec 用 YAML `---`。v1.4 统一为 YAML `---`：两个文件格式解析逻辑一致，未来 plan-state.ts 只需实现一套 parser。
+
+**config.toml 实际配置**：
+
+```toml
+[agent.mola]
+model = "{env:ZOO_MODEL}"
+[agent.mola.permission]
+task      = "deny"    # P1 阶段不自委派
+webfetch  = "deny"
+websearch = "deny"
+# edit/write/read/grep/glob/bash/question 默认 allow（hook 路径约束至 ~/.zoo/**/*.md）
+
+[agent.mola.permission.skill]
+"*"           = "deny"
+"mola-plan"   = "allow"
+"wiki-query"  = "allow"
+
+[agent.plan]
+disable = true  # mola 接管规划职责
+
+[zoo.skills]
+mola-plan = "enable"
+```
+
+**测试修复**：
+
+- `tests/test_static.py` 的 `_get_agent_names()` 加入 disabled agent 过滤，避免测试为 disabled 的 plan agent 找不存在的 prompt 文件
+- `tests/thresholds.toml` 新增空 `[mola]` 阈值条目
+
+**下一步（待实施）**：
+
+- Step 2：plan-state.ts（plan/spec 文件的前端/写入/状态机，TS 模块）
+- Step 3：project-id.ts + `_projects.json`（项目 ID 推导 + 索引）
+- Step 6：plan-lifecycle hook（handoff 三段 API + plan 状态更新）
+- Step 7：集成测试场景（trivial/standard/architecture 三种深度验证）
 
 ---
 

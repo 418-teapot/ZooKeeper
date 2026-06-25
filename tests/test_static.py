@@ -31,7 +31,7 @@ AGENT_STRUCTURE_REQUIREMENTS: dict[str, list[list[str]]] = {
 }
 
 # Max estimated tokens (len // 3) per prompt.
-MAX_PROMPT_TOKENS = 5000
+MAX_PROMPT_TOKENS = 6000
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -53,6 +53,7 @@ def _get_agent_names(config: dict | None = None) -> list[str]:
     """Extract sorted list of agent names from ``[agent.<name>]`` sections.
 
     TOML ``[agent.build]`` is parsed as ``config["agent"]["build"]``.
+    Agents with ``disable = true`` are excluded.
 
     Args:
         config: Parsed config.toml dict. Loaded fresh if None.
@@ -63,7 +64,11 @@ def _get_agent_names(config: dict | None = None) -> list[str]:
     if config is None:
         config = _load_config()
     agents = config.get("agent", {})
-    return sorted(agents.keys())
+    return sorted(
+        name
+        for name, cfg in agents.items()
+        if not (isinstance(cfg, dict) and cfg.get("disable"))
+    )
 
 
 def _get_denied_tools(config: dict, agent_name: str) -> list[str]:
