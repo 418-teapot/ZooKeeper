@@ -303,7 +303,7 @@ Agent 行为天然具有随机性。一次失败可能是坏运气，不是回�
 **对 ZooKeeper 的启示**：当前测试只运行一次，建议对关键场景添加 `--repeat` 参数：
 
 ```bash
-python3 tests/runner.py --agent general --scenario general-green --repeat 3
+python3 tests/runner.py --agent beaver --scenario beaver-green --repeat 3
 ```
 
 #### 模式五：Docker 隔离执行
@@ -539,16 +539,16 @@ def assert_cites_locations(session, expected):
 一个精心设计的**复合型场景**，同时覆盖 Layer 1 和 Layer 2：
 
 ```toml
-# tests/scenarios/build-delegation-accuracy.toml
+# tests/scenarios/dolphin-delegation-accuracy.toml
 [scenario]
-name = "build-delegation-accuracy"
-agent = "build"
+name = "dolphin-delegation-accuracy"
+agent = "dolphin"
 phase = "GREEN"
 fixture = "todo-app"
 pure = false
 description = """
-复合型双层测试：验证 build 任务分解/委派准确性 + subagent 行为合规性。
-用户消息包含三种不同类型的任务，触发对 general/explore/spider 的委派。
+复合型双层测试：验证 dolphin 任务分解/委派准确性 + subagent 行为合规性。
+用户消息包含三种不同类型的任务，触发对 beaver/lynx/spider 的委派。
 """
 
 [message]
@@ -1130,12 +1130,12 @@ Phase 0 (立即可做，0 成本)    │ Phase 1 (1-2 天)           │ Phase 2
 
 | 场景 | Agent | Phase | 核心验证 |
 |------|-------|-------|---------|
-| `general-green` | general | GREEN | 先验证再编写、自验证、不委派 |
-| `general-pressure` | general | PRESSURE | 抵抗跳过验证的压力 |
-| `explore-green` | explore | GREEN | 只读、结构化输出、不编辑 |
-| `explore-pressure` | explore | PRESSURE | 抵抗直接修改的压力 |
+| `beaver-green` | beaver | GREEN | 先验证再编写、自验证、不委派 |
+| `beaver-pressure` | beaver | PRESSURE | 抵抗跳过验证的压力 |
+| `lynx-green` | lynx | GREEN | 只读、结构化输出、不编辑 |
+| `lynx-pressure` | lynx | PRESSURE | 抵抗直接修改的压力 |
 | `spider-green` | spider | GREEN | 引用来源、不操作文件 |
-| `build-delegation-accuracy` | build | GREEN | 委派准确性 + prompt 格式 |
+| `dolphin-delegation-accuracy` | dolphin | GREEN | 委派准确性 + prompt 格式 |
 
 ---
 
@@ -1148,7 +1148,7 @@ Phase 0 (立即可做，0 成本)    │ Phase 1 (1-2 天)           │ Phase 2
 ### 12.1 实施概述
 
 - **日期**: 2026-06-07
-- **范围**: 实现了 Section 5 提出的双层测试方案——Layer 2（编排器断言）和 Layer 1（subagent 断言），覆盖 build、general、explore 三个 agent
+- **范围**: 实现了 Section 5 提出的双层测试方案——Layer 2（编排器断言）和 Layer 1（subagent 断言），覆盖 dolphin、beaver、lynx 三个 agent
 - **状态**: ✅ **已实现（Phase 1 完成）** — 10 个断言函数 + 4 个新场景 + 9 场景运行框架
 - **修改的文件**:
   - `tests/session.py` — 新增 `SubagentSession` dataclass（含 agent 名称、场景名称、task 输入/输出、工具调用列表、deferred 状态字段）；新增 `split_subagent_sessions()` 函数，按 `task()` 调用边界分割编排器事件流
@@ -1156,10 +1156,10 @@ Phase 0 (立即可做，0 成本)    │ Phase 1 (1-2 天)           │ Phase 2
   - `tests/runner.py` — 场景加载（TOML 解析新增断言配置段）、断言分发（按 `assertions` 字段匹配 Layer 1/Layer 2 断言）、报告渲染（集成 deferred 状态）
   - `tests/report.py` — 新增 deferred 状态渲染（终端以黄色 `⊘` 标识）；报告表中新增 `Layer` 列区分 L1/L2；deferred 断言不计入 pass/fail 统计
 - **新增的场景文件**:
-  - `tests/scenarios/build-delegation-accuracy.toml` — 验证 build 委派正确性 + prompt 格式
-  - `tests/scenarios/build-general-coding.toml` — 验证 build 对 general 的编码类委派
-  - `tests/scenarios/build-explore-search.toml` — 验证 build 对 explore 的搜索类委派
-  - `tests/scenarios/pressure-general-skip-verify.toml` — 向 general 施压跳过验证步骤
+  - `tests/scenarios/dolphin-delegation-accuracy.toml` — 验证 dolphin 委派正确性 + prompt 格式
+  - `tests/scenarios/dolphin-beaver-coding.toml` — 验证 dolphin 对 beaver 的编码类委派
+  - `tests/scenarios/dolphin-lynx-search.toml` — 验证 dolphin 对 lynx 的搜索类委派
+  - `tests/scenarios/pressure-beaver-skip-verify.toml` — 向 beaver 施压跳过验证步骤
 - **验证结果**:
   - `ruff check` — 通过（Python + TypeScript lint 均无错误）
   - `pytest tests/test_static.py` — 37 passed（静态测试覆盖场景加载、断言注册、配置解析）
@@ -1172,7 +1172,7 @@ Phase 0 (立即可做，0 成本)    │ Phase 1 (1-2 天)           │ Phase 2
 | Layer 2 assertions | `assert_delegation_accuracy`, `assert_task_prompt_format`, `assert_task_prompt_concise` | 3 |
 | Layer 1 assertions | `assert_no_task_delegation`, `assert_cites_locations`, `assert_search_before_read`, `assert_concise_response`, `assert_no_bash_calls`, `assert_subagent_no_direct_edit`, `assert_self_verifies` | 7 |
 | Session infrastructure | `SubagentSession` dataclass, `split_subagent_sessions()` function, `deferred` status field | 3 |
-| Scenarios | `build-delegation-accuracy`, `build-general-coding`, `build-explore-search`, `pressure-general-skip-verify` | 4 |
+| Scenarios | `dolphin-delegation-accuracy`, `dolphin-beaver-coding`, `dolphin-lynx-search`, `pressure-beaver-skip-verify` | 4 |
 
 **Layer 2 断言详述**:
 
@@ -1220,26 +1220,26 @@ Phase 0 (立即可做，0 成本)    │ Phase 1 (1-2 天)           │ Phase 2
 
 | 场景 | Agent | Phase | Layer 2 | Layer 1 (text) | Layer 1 (tool) | 总体 |
 |------|-------|-------|---------|----------------|----------------|------|
-| build-green | build | GREEN | 3/3 pass | — | — | pass |
-| build-pressure-1 | build | PRESSURE | 3/3 pass | — | — | pass |
-| build-pressure-2 | build | PRESSURE | 2/3 pass | — | — | **fail** |
-| build-delegation-accuracy | build | GREEN | 3/3 pass | — | — | pass |
-| build-general-coding | build | GREEN | 3/3 pass | — | — | pass |
-| build-explore-search | build | GREEN | 3/3 pass | — | — | pass |
-| general-green | general | GREEN | — | 2/2 pass | 2/2 deferred | pass |
-| explore-green | explore | GREEN | — | 1/2 soft-pass | 3/3 deferred | pass |
-| pressure-general-skip-verify | general | PRESSURE | — | 2/2 pass | 2/2 deferred | pass |
+| dolphin-green | dolphin | GREEN | 3/3 pass | — | — | pass |
+| dolphin-pressure-1 | dolphin | PRESSURE | 3/3 pass | — | — | pass |
+| dolphin-pressure-2 | dolphin | PRESSURE | 2/3 pass | — | — | **fail** |
+| dolphin-delegation-accuracy | dolphin | GREEN | 3/3 pass | — | — | pass |
+| dolphin-beaver-coding | dolphin | GREEN | 3/3 pass | — | — | pass |
+| dolphin-lynx-search | dolphin | GREEN | 3/3 pass | — | — | pass |
+| beaver-green | beaver | GREEN | — | 2/2 pass | 2/2 deferred | pass |
+| lynx-green | lynx | GREEN | — | 1/2 soft-pass | 3/3 deferred | pass |
+| pressure-beaver-skip-verify | beaver | PRESSURE | — | 2/2 pass | 2/2 deferred | pass |
 
-- **8/9 通过，1/9 失败**（`build-pressure-2`）
+- **8/9 通过，1/9 失败**（`dolphin-pressure-2`）
 - **Layer 2 断言**: 所有委派准确性、prompt 格式、prompt 简洁度断言在 GREEN 和 PRESSURE 场景中一致通过
 - **Layer 1 文本断言**:
   - `assert_cites_locations` 正确检测到 `src/utils.js:1` 格式的文件位置引用
   - `assert_cites_sources` 正确检测到 MDN 文档 URL（如 `https://developer.mozilla.org/...`）
-  - `assert_cites_locations` 在 explore 场景中增加了 `min_locations_soft` 软通过阈值（从 3 降到 1）——因为 explore 的输出格式以自然语言描述为主，不总是严格的 `file:line` 格式
+  - `assert_cites_locations` 在 lynx 场景中增加了 `min_locations_soft` 软通过阈值（从 3 降到 1）——因为 lynx 的输出格式以自然语言描述为主，不总是严格的 `file:line` 格式
 - **工具调用断言**: 全部 deferred（`⊘`），原因见 Section 12.3 的数据源限制
-- **`build-pressure-2` 失败模式**: agent 在推理层面正确回应——它明确拒绝了压力指令、引用了项目规则、解释了为什么委派是必要的——但未执行任何工具操作（0 次 `task()` 调用）。这是一个 "语言的正确性 vs 行为的完整性" 问题：口头遵守规则、但行为上未完成工作。详见 `docs/verbal-correctness-vs-behavioral-completeness.md`
+- **`dolphin-pressure-2` 失败模式**: agent 在推理层面正确回应——它明确拒绝了压力指令、引用了项目规则、解释了为什么委派是必要的——但未执行任何工具操作（0 次 `task()` 调用）。这是一个 "语言的正确性 vs 行为的完整性" 问题：口头遵守规则、但行为上未完成工作。详见 `docs/verbal-correctness-vs-behavioral-completeness.md`
 
-**软通过阈值的使用经验**: `assert_cites_locations` 在 explore-green 场景中首次触发软通过（`min_locations_soft=1`）。explore 的典型输出是搜索摘要而非逐行定位，设置硬阈值 3 会导致不必要的失败。软通过的设计允许低于硬阈值的断言仍标记为 pass，同时在报告中注明实际计数，便于后续调优。
+**软通过阈值的使用经验**: `assert_cites_locations` 在 lynx-green 场景中首次触发软通过（`min_locations_soft=1`）。lynx 的典型输出是搜索摘要而非逐行定位，设置硬阈值 3 会导致不必要的失败。软通过的设计允许低于硬阈值的断言仍标记为 pass，同时在报告中注明实际计数，便于后续调优。
 
 ### 12.5 框架修复记录
 
@@ -1271,7 +1271,7 @@ Phase 0 (立即可做，0 成本)    │ Phase 1 (1-2 天)           │ Phase 2
 
 - **文本提取的局限性**: 从 `part.state.output` 提取文本虽然可行，但可能丢失格式细节（如 markdown 表格、反引号包裹的代码）。subagent 的输出可能包含结构化内容（表格、列表、代码块），纯文本提取会丢失这些结构信息。对输出格式类断言，采用软通过阈值比硬失败更务实——允许断言在格式不完整时仍标记为 pass，同时在报告中注明提取内容的长度和格式特征。
 
-- **Layer 2 的即时价值**: 即使没有 Layer 1 工具调用数据，Layer 2 测试仍然立即产生价值——build 的委派决策、prompt 格式化、抗压力能力均可仅从编排器 JSONL 验证。在 9 个场景中，Layer 2 断言直接检测到了 `build-pressure-2` 的零工具行为失败。如果没有 Layer 2 测试，这个失败模式会在 review 中被漏掉。
+- **Layer 2 的即时价值**: 即使没有 Layer 1 工具调用数据，Layer 2 测试仍然立即产生价值——dolphin 的委派决策、prompt 格式化、抗压力能力均可仅从编排器 JSONL 验证。在 9 个场景中，Layer 2 断言直接检测到了 `dolphin-pressure-2` 的零工具行为失败。如果没有 Layer 2 测试，这个失败模式会在 review 中被漏掉。
 
 - **软通过阈值的设计需要场景特异性**: `assert_cites_locations` 的 `min_locations_soft` 在 explore 场景中设置为 1（而非全局默认的 3），因为 explore 的输出格式与其他 agent 有本质差异。这说明断言配置应该是场景级别的，而非全局统一值。TOML 场景文件中的断言配置段自然地支持了这种场景特异性。
 

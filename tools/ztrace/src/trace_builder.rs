@@ -1439,7 +1439,7 @@ mod tests {
         );
         entry.insert("id".to_string(), "ses-001".to_string());
         entry.insert("slug".to_string(), "my-session".to_string());
-        entry.insert("agent".to_string(), "general".to_string());
+        entry.insert("agent".to_string(), "beaver".to_string());
         entry.insert("model_id".to_string(), "gpt-4".to_string());
         entry.insert("title".to_string(), "Debug auth".to_string());
 
@@ -1453,7 +1453,7 @@ mod tests {
         let detail = ev["detail"].as_object().unwrap();
         assert_eq!(detail["id"].as_str().unwrap(), "ses-001");
         assert_eq!(detail["slug"].as_str().unwrap(), "my-session");
-        assert_eq!(detail["agent"].as_str().unwrap(), "general");
+        assert_eq!(detail["agent"].as_str().unwrap(), "beaver");
         assert_eq!(detail["model_id"].as_str().unwrap(), "gpt-4");
     }
 
@@ -1519,7 +1519,7 @@ mod tests {
         entry.insert("message".to_string(), "stream".to_string());
         entry.insert("providerID".to_string(), "openai".to_string());
         entry.insert("modelID".to_string(), "gpt-4".to_string());
-        entry.insert("agent".to_string(), "general".to_string());
+        entry.insert("agent".to_string(), "beaver".to_string());
         entry.insert("mode".to_string(), "chat".to_string());
 
         let ev = classify_opencode(&entry);
@@ -1673,7 +1673,7 @@ mod tests {
             "message_count".to_string(),
             Value::Number(Number::from(10_u64)),
         );
-        entry.insert("agent".to_string(), Value::String("general".to_string()));
+        entry.insert("agent".to_string(), Value::String("beaver".to_string()));
         entry.insert("level".to_string(), Value::String("info".to_string()));
         entry.insert(
             "timestamp".to_string(),
@@ -1684,7 +1684,7 @@ mod tests {
         let ev = classify_zoo(&entry);
         assert_eq!(
             ev["summary"].as_str().unwrap(),
-            "context [general]: 2,500 tokens (10 msgs)"
+            "context [beaver]: 2,500 tokens (10 msgs)"
         );
     }
 
@@ -1794,12 +1794,12 @@ message="stream" providerID=openai"#;
         let mut e1 = HashMap::new();
         e1.insert("message".to_string(), "created".to_string());
         e1.insert("id".to_string(), "ses-001".to_string());
-        e1.insert("agent".to_string(), "general".to_string());
+        e1.insert("agent".to_string(), "beaver".to_string());
 
         let mut e2 = HashMap::new();
         e2.insert("message".to_string(), "created".to_string());
         e2.insert("id".to_string(), "ses-002".to_string());
-        e2.insert("slug".to_string(), "explore".to_string());
+        e2.insert("slug".to_string(), "lynx".to_string());
 
         let entries = vec![e1, e2];
         let mut sids = HashSet::new();
@@ -1807,8 +1807,8 @@ message="stream" providerID=openai"#;
         sids.insert("ses-002");
 
         let agents = build_session_agents(&entries, &sids);
-        assert_eq!(agents.get("ses-001").unwrap(), "general");
-        assert_eq!(agents.get("ses-002").unwrap(), "explore");
+        assert_eq!(agents.get("ses-001").unwrap(), "beaver");
+        assert_eq!(agents.get("ses-002").unwrap(), "lynx");
     }
 
     #[test]
@@ -1816,7 +1816,7 @@ message="stream" providerID=openai"#;
         let mut e1 = HashMap::new();
         e1.insert("message".to_string(), "created".to_string());
         e1.insert("id".to_string(), "ses-001".to_string());
-        e1.insert("agent".to_string(), "general".to_string());
+        e1.insert("agent".to_string(), "beaver".to_string());
         e1.insert("slug".to_string(), "my-slug".to_string());
 
         let entries = vec![e1];
@@ -1824,7 +1824,7 @@ message="stream" providerID=openai"#;
         sids.insert("ses-001");
 
         let agents = build_session_agents(&entries, &sids);
-        assert_eq!(agents.get("ses-001").unwrap(), "general");
+        assert_eq!(agents.get("ses-001").unwrap(), "beaver");
     }
 
     // ── resolve_and_group_entries tests ────────────────────────────────────

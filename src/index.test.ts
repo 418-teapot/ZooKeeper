@@ -80,10 +80,10 @@ describe("parseSkillsConfig", () => {
   });
 
   it("returns skills map when defined", () => {
-    const cfg = { skills: { git: "enable", build: "disable" } };
+    const cfg = { skills: { git: "enable", dolphin: "disable" } };
     assert.deepEqual(parseSkillsConfig(cfg), {
       git: "enable",
-      build: "disable",
+      dolphin: "disable",
     });
   });
 
@@ -102,12 +102,12 @@ describe("parseSkillsConfig", () => {
 
 describe("injectAgentPrompts", () => {
   it("injects prompt for agent with a matching prompt file", () => {
-    const agents: Record<string, any> = { build: {} };
+    const agents: Record<string, any> = { dolphin: {} };
     injectAgentPrompts(agents);
-    assert.ok(typeof agents.build.prompt === "string");
-    assert.ok(agents.build.prompt.length > 0);
+    assert.ok(typeof agents.dolphin.prompt === "string");
+    assert.ok(agents.dolphin.prompt.length > 0);
     // Verify actual prompt content is from the file
-    assert.ok(agents.build.prompt.includes("<Role>"));
+    assert.ok(agents.dolphin.prompt.includes("<Role>"));
   });
 
   it("skips agents without a matching prompt file", () => {
@@ -117,25 +117,25 @@ describe("injectAgentPrompts", () => {
   });
 
   it("skips null agents", () => {
-    const agents: Record<string, any> = { build: null };
+    const agents: Record<string, any> = { dolphin: null };
     injectAgentPrompts(agents);
     // No throw — null agents are skipped
-    assert.equal(agents.build, null);
+    assert.equal(agents.dolphin, null);
   });
 
   it("skips non-object (string) agents", () => {
-    const agents: Record<string, any> = { build: "string-value" };
+    const agents: Record<string, any> = { dolphin: "string-value" };
     injectAgentPrompts(agents);
     // No throw — string agents are skipped
-    assert.equal(agents.build, "string-value");
+    assert.equal(agents.dolphin, "string-value");
   });
 
   it("skips array agents", () => {
-    const agents: Record<string, any> = { build: [] };
+    const agents: Record<string, any> = { dolphin: [] };
     injectAgentPrompts(agents);
     // No throw — arrays pass typeof check but are not mutated
-    assert.ok(Array.isArray(agents.build));
-    assert.equal(agents.build.length, 0);
+    assert.ok(Array.isArray(agents.dolphin));
+    assert.equal(agents.dolphin.length, 0);
   });
 
   it("handles empty agents object", () => {
@@ -155,12 +155,12 @@ describe("injectAgentPrompts", () => {
   });
 
   it("injects prompts for multiple agents", () => {
-    const agents: Record<string, any> = { build: {}, general: {} };
+    const agents: Record<string, any> = { dolphin: {}, beaver: {} };
     injectAgentPrompts(agents);
-    assert.ok(typeof agents.build.prompt === "string");
-    assert.ok(agents.build.prompt.length > 0);
-    assert.ok(typeof agents.general.prompt === "string");
-    assert.ok(agents.general.prompt.length > 0);
+    assert.ok(typeof agents.dolphin.prompt === "string");
+    assert.ok(agents.dolphin.prompt.length > 0);
+    assert.ok(typeof agents.beaver.prompt === "string");
+    assert.ok(agents.beaver.prompt.length > 0);
   });
 });
 

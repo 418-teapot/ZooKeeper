@@ -199,8 +199,8 @@ TS 插件运行时通过 config hook 传入的配置对象读取这些值，与 
 ### 3.5 完整日志示例
 
 ```jsonl
-{"timestamp":"2026-06-13T14:46:31.050Z","level":"info","hook":"plugin","sessionId":"","event":"plugin_init","agents":["build","explore","general","spider"],"limits":{"contextWordLimit":200,"promptWordLimit":500},"skills":["git-commit"]}
-{"timestamp":"2026-06-13T14:46:31.052Z","level":"debug","hook":"plugin","sessionId":"","event":"agent_loaded","agent":"build","prompt_len":3823}
+{"timestamp":"2026-06-13T14:46:31.050Z","level":"info","hook":"plugin","sessionId":"","event":"plugin_init","agents":["dolphin","lynx","beaver","spider"],"limits":{"contextWordLimit":200,"promptWordLimit":500},"skills":["git-commit"]}
+{"timestamp":"2026-06-13T14:46:31.052Z","level":"debug","hook":"plugin","sessionId":"","event":"agent_loaded","agent":"dolphin","prompt_len":3823}
 {"timestamp":"2026-06-13T14:46:31.054Z","level":"debug","hook":"plugin","sessionId":"","event":"skill_registered","skill":"git-commit"}
 {"timestamp":"2026-06-13T14:46:33.000Z","level":"debug","hook":"task-prompt","sessionId":"ses_1407dd2a0ffe","callId":"call_xyz","event":"validate_passed","warnings":1,"ctx_words":145,"total_words":312}
 {"timestamp":"2026-06-13T14:46:33.001Z","level":"debug","hook":"task-prompt","sessionId":"ses_1407dd2a0ffe","callId":"call_xyz","event":"nudge_injected","warnings":["CONTEXT is 145 words — consider splitting into multiple task() calls..."]}

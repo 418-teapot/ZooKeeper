@@ -3,9 +3,9 @@
 
 Usage:
     python3 tests/runner.py                                 # run all
-    python3 tests/runner.py --scenario build-green          # single scenario
+    python3 tests/runner.py --scenario dolphin-green          # single scenario
     python3 tests/runner.py --replay                        # replay from JSONL
-    python3 tests/runner.py --replay --scenario build-green # replay single
+    python3 tests/runner.py --replay --scenario dolphin-green # replay single
 
 Globs ``tests/scenarios/*.toml``, loads each scenario, runs ``opencode``
 with the configured message and agent, analyses the session output, runs
@@ -20,7 +20,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib  # Python < 3.11
 import traceback
 from pathlib import Path
 
@@ -106,7 +110,7 @@ def _load_thresholds(path: Path) -> tuple[dict, bool]:
 
     .. code-block:: toml
 
-        [build]
+        [dolphin]
         accuracy_min = 0.7
         latency_max = 30.0
 

@@ -1048,7 +1048,7 @@ mod tests {
                 "msg-001",
                 "ses-001",
                 1_715_000_010_000_i64,
-                r#"{"role":"user","agent":"general"}"#,
+                r#"{"role":"user","agent":"beaver"}"#,
             ],
         )
         .expect("insert msg-001");
@@ -1059,7 +1059,7 @@ mod tests {
                 "msg-002",
                 "ses-001",
                 1_715_000_020_000_i64,
-                r#"{"role":"assistant","agent":"general","modelID":"gpt-4","time":{"created":1715000020000,"completed":1715000090000}}"#,
+                r#"{"role":"assistant","agent":"beaver","modelID":"gpt-4","time":{"created":1715000020000,"completed":1715000090000}}"#,
             ],
         )
         .expect("insert msg-002");
@@ -1096,7 +1096,7 @@ mod tests {
                 "msg-005",
                 "ses-001",
                 1_715_000_005_000_i64,
-                r#"{"role":"user","agent":"general"}"#,
+                r#"{"role":"user","agent":"beaver"}"#,
             ],
         )
         .expect("insert msg-005");
@@ -1120,7 +1120,7 @@ mod tests {
                 "msg-006",
                 "ses-001",
                 1_715_000_030_000_i64,
-                r#"{"role":"assistant","agent":"general","modelID":"gpt-4","time":{"created":1715000030000,"completed":1715000095000}}"#,
+                r#"{"role":"assistant","agent":"beaver","modelID":"gpt-4","time":{"created":1715000030000,"completed":1715000095000}}"#,
             ],
         )
         .expect("insert msg-006");
@@ -1158,7 +1158,7 @@ mod tests {
                 "msg-003",
                 "ses-002",
                 1_715_000_210_000_i64,
-                r#"{"role":"user","agent":"explore"}"#,
+                r#"{"role":"user","agent":"lynx"}"#,
             ],
         )
         .expect("insert msg-003");
@@ -1169,7 +1169,7 @@ mod tests {
                 "msg-004",
                 "ses-002",
                 1_715_000_220_000_i64,
-                r#"{"role":"assistant","agent":"explore","modelID":"claude-3"}"#,
+                r#"{"role":"assistant","agent":"lynx","modelID":"claude-3"}"#,
             ],
         )
         .expect("insert msg-004");

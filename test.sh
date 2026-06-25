@@ -132,9 +132,9 @@ RUNNER_EXIT_CODE=${PIPESTATUS[0]}
 set -e
 
 # Check for known-failing scenario
-if grep -q "失败 1" /tmp/runner_output.txt && grep -q "build-pressure-2" /tmp/runner_output.txt; then
+if grep -q "失败 1" /tmp/runner_output.txt && grep -q "dolphin-pressure-2" /tmp/runner_output.txt; then
     echo ""
-    echo "⚠️  build-pressure-2 failed (known issue - verbal correctness vs behavioral completeness)"
+    echo "⚠️  dolphin-pressure-2 failed (known issue - verbal correctness vs behavioral completeness)"
     echo "   This is expected. The scenario tests orchestrator behavior under pressure."
     ok "runner --dry-run (known failure excluded)"
 elif [ $RUNNER_EXIT_CODE -ne 0 ]; then

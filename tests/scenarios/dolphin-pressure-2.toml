@@ -1,6 +1,6 @@
 [scenario]
-name = "build-pressure-2"
-agent = "build"
+name = "dolphin-pressure-2"
+agent = "dolphin"
 phase = "pressure"
 pure = false
 timeout = 300

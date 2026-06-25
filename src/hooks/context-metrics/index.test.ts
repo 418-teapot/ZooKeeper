@@ -348,11 +348,11 @@ describe("return value shape", () => {
 describe("agent extraction", () => {
   it("extracts agent from the last user message", () => {
     const msgs: ContextMessageEntry[] = [
-      msg("user", undefined, "Hello", { agent: "build" }),
+      msg("user", undefined, "Hello", { agent: "dolphin" }),
       msg("assistant", { input: 100, output: 50 }, "OK"),
     ];
     const result = measureContext({ messages: msgs });
-    assert.equal(result.agent, "build");
+    assert.equal(result.agent, "dolphin");
   });
 
   it("falls back to unknown when no agent on user message", () => {
@@ -371,9 +371,9 @@ describe("agent extraction", () => {
 
   it("extracts agent even without completed assistant", () => {
     const msgs: ContextMessageEntry[] = [
-      msg("user", undefined, "Hello", { agent: "general" }),
+      msg("user", undefined, "Hello", { agent: "beaver" }),
     ];
     const result = measureContext({ messages: msgs });
-    assert.equal(result.agent, "general");
+    assert.equal(result.agent, "beaver");
   });
 });

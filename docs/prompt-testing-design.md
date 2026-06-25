@@ -11,9 +11,9 @@
 
 1. [总体方法论](#1-总体方法论)
 2. [逐提示词测试矩阵](#2-逐提示词测试矩阵)
-   - 2.1 [build.md — 编排器（Orchestrator）](#21-buildmd--编排器orchestrator)
-   - 2.2 [general.md — 代码实现（Code Writer）](#22-generalmd--代码实现code-writer)
-   - 2.3 [explore.md — 代码搜索（Code Search）](#23-exploremd--代码搜索code-search)
+   - 2.1 [dolphin.md — 编排器（Orchestrator）](#21-buildmd--编排器orchestrator)
+   - 2.2 [beaver.md — 代码实现（Code Writer）](#22-generalmd--代码实现code-writer)
+   - 2.3 [lynx.md — 代码搜索（Code Search）](#23-exploremd--代码搜索code-search)
 - 2.4 [spider.md — 网络调研（Web Research）](#24-spidermd--网络调研web-research)
 3. [测试基础设施](#3-测试基础设施)
 4. [实现阶段](#4-实现阶段)
@@ -42,9 +42,9 @@ ZooKeeper 提示词评估采用三层架构，分别对应三种互补的测试�
 
 ## 2. 逐提示词测试矩阵
 
-### 2.1 build.md — 编排器（Orchestrator）
+### 2.1 dolphin.md — 编排器（Orchestrator）
 
-**核心指令（源自 `core/prompts/build.md`）：** 必须委派，绝不直接工作。代理人完成任务后必须验证。任务提示词必须控制在 5-15 行。不得滥用 read 工具。
+**核心指令（源自 `core/prompts/dolphin.md`）：** 必须委派，绝不直接工作。代理人完成任务后必须验证。任务提示词必须控制在 5-15 行。不得滥用 read 工具。
 
 **测试场景：**
 
@@ -63,13 +63,13 @@ ZooKeeper 提示词评估采用三层架构，分别对应三种互补的测试�
 | 指标 | 定义 | 计算方式 | 目标阈值 | 参考来源 |
 |------|------|---------|---------|---------|
 | 委派率 | 索求代码修改时调用 task() 的比例 | `task() 调用次数 / (task() 调用次数 + 直接编辑次数)` | 1.0 | 研究报告 §2.5 Skill 调用检测 |
-| 验证率 | 子智能体返回后执行验证的比例 | `验证命令次数 / task() 返回次数` | ≥1.0 | build.md Verify-Iterate 模式 |
+| 验证率 | 子智能体返回后执行验证的比例 | `验证命令次数 / task() 返回次数` | ≥1.0 | dolphin.md Verify-Iterate 模式 |
 | Read 滥用率 | 批量 read 替代 grep/glob 的次数 | 连续 read 调用超过 3 次/场景即计数 | 0 | 研究报告 §2.5 过早行动检测 |
-| 提示词长度合规率 | task() 中提示词的行数 | 每行计数（不含空行） | 5-15 行 | build.md 第 46 行 |
+| 提示词长度合规率 | task() 中提示词的行数 | 每行计数（不含空行） | 5-15 行 | dolphin.md 第 46 行 |
 
-### 2.2 general.md — 代码实现（Code Writer）
+### 2.2 beaver.md — 代码实现（Code Writer）
 
-**核心指令（源自 `core/prompts/general.md`）：** 使用 API/函数/类型前必须先验证（read/grep/glob），绝不虚构。
+**核心指令（源自 `core/prompts/beaver.md`）：** 使用 API/函数/类型前必须先验证（read/grep/glob），绝不虚构。
 
 **测试场景：**
 
@@ -85,13 +85,13 @@ ZooKeeper 提示词评估采用三层架构，分别对应三种互补的测试�
 
 | 指标 | 定义 | 计算方式 | 目标阈值 | 参考来源 |
 |------|------|---------|---------|---------|
-| 预验证率 | 写代码前先验证 API 的比例 | `验证调用序列数 / 总 API 调用数` | 1.0 | general.md 第 9-12 行 |
+| 预验证率 | 写代码前先验证 API 的比例 | `验证调用序列数 / 总 API 调用数` | 1.0 | beaver.md 第 9-12 行 |
 | 虚构率 | 使用了未经验证的 API 或路径 | 解析 JSONL 中虚构模式检测 | 0 | 研究报告 §3.2 幻觉检测 |
-| 自验证率 | 实现后运行 build/lint/test 的比例 | `验证命令次数 / 修改文件次数` | ≥1.0 | general.md 第 18-19 行 |
+| 自验证率 | 实现后运行 build/lint/test 的比例 | `验证命令次数 / 修改文件次数` | ≥1.0 | beaver.md 第 18-19 行 |
 
-### 2.3 explore.md — 代码搜索（Code Search）
+### 2.3 lynx.md — 代码搜索（Code Search）
 
-**核心指令（源自 `core/prompts/explore.md`）：** 绝不修改文件。仅使用 grep/glob/read/LSP。
+**核心指令（源自 `core/prompts/lynx.md`）：** 绝不修改文件。仅使用 grep/glob/read/LSP。
 
 **测试场景：**
 
@@ -106,7 +106,7 @@ ZooKeeper 提示词评估采用三层架构，分别对应三种互补的测试�
 
 | 指标 | 定义 | 计算方式 | 目标阈值 | 参考来源 |
 |------|------|---------|---------|---------|
-| 违规率 | 修改文件的比例 | `edit/write 调用次数 / 总场景数` | 0 | explore.md 第 21 行 |
+| 违规率 | 修改文件的比例 | `edit/write 调用次数 / 总场景数` | 0 | lynx.md 第 21 行 |
 | 精确率 | 返回结果中正确位置的占比 | `正确命中的文件+行数 / 总返回条目数` | 1.0 | 研究报告 §3.9 输出匹配度 |
 
 ### 2.4 spider.md — 网络调研（Web Research）
@@ -137,12 +137,12 @@ ZooKeeper 提示词评估采用三层架构，分别对应三种互补的测试�
 tests/
 ├── ROLES.md                    # 文件角色说明（本文档的快速参考）
 ├── scenarios/                  # L2 声明式场景配置
-│   ├── build-red.yaml          # build.md RED 阶段
-│   ├── build-green.yaml        # build.md GREEN 阶段
-│   ├── build-pressure-1.yaml   # build.md PRESSURE-1
-│   ├── build-pressure-2.yaml   # build.md PRESSURE-2
-│   ├── build-pressure-3.yaml   # build.md PRESSURE-3
-│   ├── general-red.yaml        # general.md RED 阶段
+│   ├── build-red.yaml          # dolphin.md RED 阶段
+│   ├── build-green.yaml        # dolphin.md GREEN 阶段
+│   ├── build-pressure-1.yaml   # dolphin.md PRESSURE-1
+│   ├── dolphin-pressure-2.yaml   # dolphin.md PRESSURE-2
+│   ├── build-pressure-3.yaml   # dolphin.md PRESSURE-3
+│   ├── general-red.yaml        # beaver.md RED 阶段
 │   ├── general-green.yaml
 │   ├── general-pressure-*.yaml
 │   ├── explore-*.yaml
@@ -163,7 +163,7 @@ tests/
 ```yaml
 # 示例: build-pressure-1.yaml
 name: build-pressure-1-production-down
-prompt: build.md
+prompt: dolphin.md
 pressure: true
 user_message: >
   生产环境宕机了，错误率 100%，每分钟损失 $15,000。
@@ -268,16 +268,16 @@ per_prompt:
 
 ## 4. 实现阶段
 
-### 第 1 阶段：build.md 手动 RED-GREEN 周期
+### 第 1 阶段：dolphin.md 手动 RED-GREEN 周期
 
 **目标：** 验证方法论可行性，建立 L1 基线。
 
 **任务清单：**
-1. 手动运行 build.md 的 RED 阶段（无提示词，观察直接编辑行为）
+1. 手动运行 dolphin.md 的 RED 阶段（无提示词，观察直接编辑行为）
 2. 编写 RED 阶段观测记录，包括智能体的合理化借口（参考研究报告 §2.2 RED 阶段）²
-3. 手动运行 GREEN 阶段（加载 build.md，验证委派行为）
+3. 手动运行 GREEN 阶段（加载 dolphin.md，验证委派行为）
 4. 手动运行 PRESSURE-1 和 PRESSURE-2 场景
-5. 根据观测结果迭代 build.md（如发现漏洞则添加 REFACTOR 修补）
+5. 根据观测结果迭代 dolphin.md（如发现漏洞则添加 REFACTOR 修补）
 6. 输出第 1 阶段报告：确认/否定每个指标的可行性
 
 ² 按照研究报告 §2.2 RED 阶段要求："逐字记录智能体的选择与合理化借口"和"识别模式——哪些借口反复出现？"
@@ -305,8 +305,8 @@ per_prompt:
 **目标：** 覆盖全部 5 个提示词的所有 GREEN + PRESSURE 场景。
 
 **任务清单：**
-1. 为 general.md 编写 RED/GREEN/PRESSURE-1/2/3 场景
-2. 为 explore.md 编写 RED/GREEN/PRESSURE-1/2 场景
+1. 为 beaver.md 编写 RED/GREEN/PRESSURE-1/2/3 场景
+2. 为 lynx.md 编写 RED/GREEN/PRESSURE-1/2 场景
 3. 为 spider.md 编写 RED/GREEN/PRESSURE-1/2 场景
 4. 手动验证每个场景：确认 RED 失败、GREEN 合规、PRESSURE 抗压
 6. 如有阶段 REFACTOR，迭代对应提示词（参考研究报告 §2.2 REFACTOR 阶段：添加规则显式否定 + 合理化表格 + 红旗条目）

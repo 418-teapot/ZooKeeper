@@ -321,7 +321,7 @@ mod tests {
                 "msg-001",
                 "ses-001",
                 1_715_000_010_000_i64,
-                r#"{"role":"user","agent":"general"}"#,
+                r#"{"role":"user","agent":"beaver"}"#,
             ],
         )
         .expect("insert msg-001");
@@ -330,7 +330,7 @@ mod tests {
             "INSERT INTO message VALUES (?1,?2,?3,?4)",
             rusqlite::params![
                 "msg-002", "ses-001", 1_715_000_020_000_i64,
-                r#"{"role":"assistant","agent":"general","time":{"created":1715000020000,"completed":1715000090000}}"#,
+                r#"{"role":"assistant","agent":"beaver","time":{"created":1715000020000,"completed":1715000090000}}"#,
             ],
         ).expect("insert msg-002");
 
@@ -364,7 +364,7 @@ mod tests {
                 "msg-003",
                 "ses-002",
                 1_715_000_210_000_i64,
-                r#"{"role":"user","agent":"explore"}"#,
+                r#"{"role":"user","agent":"lynx"}"#,
             ],
         )
         .expect("insert msg-003");

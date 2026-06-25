@@ -1074,13 +1074,10 @@ mod tests {
             1,
             "child event",
             &[],
-            &[("session_agent", "explore")],
+            &[("session_agent", "lynx")],
         );
         let tags = build_tags(&ev);
-        assert_eq!(
-            tag_value(&tags, "session_agent"),
-            Some("explore".to_string())
-        );
+        assert_eq!(tag_value(&tags, "session_agent"), Some("lynx".to_string()));
     }
 
     #[test]
@@ -1108,7 +1105,7 @@ mod tests {
             "Session",
             &[
                 ("slug", "test"),
-                ("agent", "general"),
+                ("agent", "beaver"),
                 ("model_id", "gpt-4"),
                 ("model_provider", "openai"),
             ],
@@ -1116,7 +1113,7 @@ mod tests {
         );
         let tags = build_tags(&ev);
         assert_eq!(tag_value(&tags, "slug"), Some("test".to_string()));
-        assert_eq!(tag_value(&tags, "agent"), Some("general".to_string()));
+        assert_eq!(tag_value(&tags, "agent"), Some("beaver".to_string()));
         assert_eq!(tag_value(&tags, "model_id"), Some("gpt-4".to_string()));
         assert_eq!(
             tag_value(&tags, "model_provider"),
@@ -1149,10 +1146,10 @@ mod tests {
             0,
             "",
             &[],
-            &[("agent", "general")],
+            &[("agent", "beaver")],
         );
         let tags = build_tags(&ev);
-        assert_eq!(tag_value(&tags, "agent"), Some("general".to_string()));
+        assert_eq!(tag_value(&tags, "agent"), Some("beaver".to_string()));
     }
 
     #[test]
@@ -1164,11 +1161,11 @@ mod tests {
             0,
             "",
             &[],
-            &[("model", "gpt-4"), ("agent", "general")],
+            &[("model", "gpt-4"), ("agent", "beaver")],
         );
         let tags = build_tags(&ev);
         assert_eq!(tag_value(&tags, "model"), Some("gpt-4".to_string()));
-        assert_eq!(tag_value(&tags, "agent"), Some("general".to_string()));
+        assert_eq!(tag_value(&tags, "agent"), Some("beaver".to_string()));
     }
 
     #[test]
@@ -1365,13 +1362,13 @@ mod tests {
             1,
             "child event",
             "2024-05-06T12:53:21.000Z",
-            &[("session_agent", "explore")],
+            &[("session_agent", "lynx")],
         )];
         let result = build_chrome_trace(&timeline);
         assert_eq!(result.len(), 1);
         assert_eq!(
             result[0].get("name").and_then(|v| v.as_str()),
-            Some("[子:explore] child event")
+            Some("[子:lynx] child event")
         );
     }
 
@@ -1501,7 +1498,7 @@ mod tests {
                 0,
                 "Session auth-debug",
                 "2024-05-06T12:53:21.000Z",
-                &[("detail", r#"{"slug":"auth-debug","agent":"general"}"#)],
+                &[("detail", r#"{"slug":"auth-debug","agent":"beaver"}"#)],
             ),
             make_timeline_event(
                 "llm",
@@ -1588,7 +1585,7 @@ mod tests {
             depth: 0,
             summary: "Session auth-debug",
             timestamp: "2024-05-06T12:53:21.000Z",
-            detail_keys: &[("slug", "auth-debug"), ("agent", "general")],
+            detail_keys: &[("slug", "auth-debug"), ("agent", "beaver")],
             extra_keys: &[],
         })];
         let result = build_jaeger_doc("ses-001", &timeline);
@@ -1654,7 +1651,7 @@ mod tests {
                 depth: 0,
                 summary: "Session create",
                 timestamp: "2024-05-06T12:53:21.000Z",
-                detail_keys: &[("slug", "test"), ("agent", "general")],
+                detail_keys: &[("slug", "test"), ("agent", "beaver")],
                 extra_keys: &[],
             }),
             make_detailed_event(&DetailedEventConfig {
@@ -1713,7 +1710,7 @@ mod tests {
             timestamp: "2024-05-06T12:53:21.000Z",
             detail_keys: &[
                 ("slug", "test"),
-                ("agent", "general"),
+                ("agent", "beaver"),
                 ("model_id", "gpt-4"),
                 ("model_provider", "openai"),
             ],
@@ -1734,7 +1731,7 @@ mod tests {
         );
         let tags = p1.get("tags").and_then(|v| v.as_array()).unwrap();
         assert_eq!(tags.len(), 3);
-        assert_eq!(tag_value(tags, "agent"), Some("general".to_string()));
+        assert_eq!(tag_value(tags, "agent"), Some("beaver".to_string()));
         assert_eq!(tag_value(tags, "model_id"), Some("gpt-4".to_string()));
         assert_eq!(
             tag_value(tags, "model_provider"),
@@ -2118,14 +2115,14 @@ mod tests {
             depth: 0,
             summary: "Session",
             timestamp: "2024-05-06T12:53:21.000Z",
-            detail_keys: &[("slug", "test"), ("agent", "general")],
+            detail_keys: &[("slug", "test"), ("agent", "beaver")],
             extra_keys: &[],
         })];
         let detail = find_root_session_detail(&timeline);
         assert!(detail.is_some());
         let d = detail.unwrap();
         assert_eq!(d.get("slug").and_then(|v| v.as_str()), Some("test"));
-        assert_eq!(d.get("agent").and_then(|v| v.as_str()), Some("general"));
+        assert_eq!(d.get("agent").and_then(|v| v.as_str()), Some("beaver"));
     }
 
     #[test]

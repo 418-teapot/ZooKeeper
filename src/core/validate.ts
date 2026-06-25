@@ -134,7 +134,7 @@ export interface ValidationLimits {
 }
 
 /**
- * Validate a task() prompt against the build.md specification.
+ * Validate a task() prompt against the dolphin.md specification.
  *
  * Hard check (blocking):
  *   1. All three required sections (SUMMARY, CONTEXT, ACCEPTANCE) are present.

@@ -1,7 +1,7 @@
 /**
  * Direct Work Nudge hook for ZooKeeper OpenCode plugin.
  *
- * After every edit/write tool call by the build orchestrator agent, appends
+ * After every edit/write tool call by the dolphin orchestrator agent, appends
  * a protocol reminder telling the orchestrator to delegate work via `task()`
  * instead of doing it directly. The prompt constants live in
  * `src/core/prompts.ts`.
@@ -9,7 +9,7 @@
  * @module
  */
 
-import { type Clientish, isBuildAgent } from "../../core/agent.js";
+import { type Clientish, isDolphinAgent } from "../../core/agent.js";
 import {
   DIRECT_WORK_NUDGE,
   SEARCH_DELEGATE_NUDGE,
@@ -24,12 +24,12 @@ import { log } from "../../utils/logger.js";
  * Append a protocol nudge to edit/write tool output, but only for the build
  * orchestrator agent.
  *
- * Fires on edit/write tool calls originating from the "build" agent.
- * Subagent calls (explore/general/spider) are silently skipped.
+ * Fires on edit/write tool calls originating from the "dolphin" agent.
+ * Subagent calls (lynx/beaver/spider) are silently skipped.
  * Non-null output gets the nudge appended.  Non-matching tools are skipped.
  *
  * When no client is available (e.g. in tests) the nudge is skipped —
- * `isBuildAgent` returns `false` for null/undefined clients.
+ * `isDolphinAgent` returns `false` for null/undefined clients.
  *
  * @param client - OpenCode client (captured via closure), or null/undefined.
  * @param input - Input containing the tool name, session ID, and optional call ID.
@@ -63,10 +63,10 @@ export async function nudgeDirectWork(
     return;
   }
 
-  // Only fire for the build orchestrator agent.
-  // isBuildAgent returns false when client is null/undefined, skipping
+  // Only fire for the dolphin orchestrator agent.
+  // isDolphinAgent returns false when client is null/undefined, skipping
   // the nudge conservatively.
-  if (!(await isBuildAgent(client, input.sessionID))) {
+  if (!(await isDolphinAgent(client, input.sessionID))) {
     log(
       "direct-work-nudge",
       "nudge_skipped",
@@ -75,7 +75,7 @@ export async function nudgeDirectWork(
       "debug",
       {
         tool: input.tool,
-        reason: "not_build",
+        reason: "not_dolphin",
       },
     );
     return;

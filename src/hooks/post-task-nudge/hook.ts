@@ -106,7 +106,7 @@ export async function nudgePostTask(
   output.output += suffix;
   const todoNudge = suffix.includes(TODO_FINAL_ACTIVE)
     ? "final_active"
-    : "general";
+    : "beaver";
   log(
     "post-task-nudge",
     "verify_injected",

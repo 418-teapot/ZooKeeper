@@ -112,8 +112,8 @@ class SubagentSession:
     orchestrator.
 
     Attributes:
-        name: Display name like ``"general#1"``, ``"explore#1"``.
-        subagent_type: The subagent type (e.g. ``"general"``, ``"explore"``).
+        name: Display name like ``"beaver#1"``, ``"lynx#1"``.
+        subagent_type: The subagent type (e.g. ``"beaver"``, ``"lynx"``).
         task_prompt: The prompt string sent to the subagent.
         task_args: Full args dict of the task() call.
         calls: Tool calls made during this subagent's execution window.
@@ -287,8 +287,8 @@ def count_verified_tasks(calls: list[ToolCall]) -> tuple[int, int]:
     A task is considered "verified" if a ``bash`` command containing a verify
     keyword appears after it and before the next ``task()`` call (or end of
     session).  Only tasks delegated to code-modifying subagents
-    (``subagent_type="general"``) are counted; read-only subagents
-    (explore, spider) do not require bash verification.
+    (``subagent_type="beaver"``) are counted; read-only subagents
+    (lynx, spider) do not require bash verification.
 
     Args:
         calls: The ordered list of tool calls from a session.
@@ -301,7 +301,7 @@ def count_verified_tasks(calls: list[ToolCall]) -> tuple[int, int]:
     code_modifying_tasks = 0
     for i, t_idx in enumerate(task_indices):
         subagent = calls[t_idx].args.get("subagent_type", "")
-        is_code_task = subagent == "general"
+        is_code_task = subagent == "beaver"
         if is_code_task:
             code_modifying_tasks += 1
 
@@ -355,7 +355,7 @@ def compute_metrics(data: SessionData) -> dict[str, MetricValue]:
     - ``delegation_rate``: ``task / (task + edit_or_write)``.
       Returns ``1.0`` if denominator is zero.
     - ``verification_rate``: ``verify-bash-after-task / code_modifying_tasks``.
-      Only counts tasks delegated to code-modifying subagents (subagent_type="general").
+      Only counts tasks delegated to code-modifying subagents (subagent_type="beaver").
       Returns ``0.0`` if ``code_modifying_tasks`` is zero.
     - ``read_abuse_events``: Number of times consecutive ``read`` calls
       exceed 3 (resets on any non-read tool).
@@ -527,7 +527,7 @@ def split_subagent_sessions(data: SessionData) -> list[SubagentSession]:
 
     Notes:
         Subagent windows may include orchestrator-level calls that occur
-        between subagent return and the next delegation (e.g. build's own
+        between subagent return and the next delegation (e.g. dolphin's own
         ``bash`` verification).  Layer 1 assertions should be designed
         with this overlap in mind.
     """

@@ -22,7 +22,7 @@
 | `python3 tests/runner.py --replay --scenario <name>` | 回放指定场景 |
 | `python3 tests/runner.py -v` | 详细输出（标准错误、指标明细、堆栈） |
 
-> **已知失败说明：** `build-pressure-2` 场景测试"语言正确性 vs 行为完整性"问题，预期失败已被 `test.sh` 排除。详见 `docs/verbal-correctness-vs-behavioral-completeness.md`。
+> **已知失败说明：** `dolphin-pressure-2` 场景测试"语言正确性 vs 行为完整性"问题，预期失败已被 `test.sh` 排除。详见 `docs/verbal-correctness-vs-behavioral-completeness.md`。
 
 ## 代码风格
 
@@ -83,7 +83,7 @@ ZooKeeper/
 │   │   └── post-task-nudge/ # task() 返回后验证+todo 提醒（nudgePostTask 适配器）
 │   └── utils/
 │       └── logger.ts        # JSON Lines 文件日志（旋转 + 保留策略）
-├── tests/                   # Prompt 评估测试框架（Phase 1: build.md）
+├── tests/                   # Prompt 评估测试框架（Phase 1: dolphin.md）
 │   └── runner.py            # 评估测试运行器
 ├── tools/                   # Rust CLI tools workspace
 │   ├── Cargo.toml           # workspace root (members: zutil, zlog, zfind, ztrace, zinspect)
@@ -142,7 +142,7 @@ OpenCode 日志写入以下位置：
 [zookeeper:task-prompt-validate] trigger { valid: false, errors: 1 }
 [zookeeper:json-error-nudge] trigger { tool: "webfetch", pattern: "...", }
 [zookeeper:direct-work-nudge] trigger { tool: "edit" }
-[zookeeper:post-task-nudge] trigger { hasTodo: true, nudge: "general" }
+[zookeeper:post-task-nudge] trigger { hasTodo: true, nudge: "beaver" }
 ```
 
 ## CLI 工具

@@ -185,31 +185,45 @@ output  = 131072
 
 # ── Agents ────────────────────────────────────────────────────────────────────
 
-[agent.build]
+[agent.dolphin]
 model = "{env:ZOO_MODEL}"
-[agent.build.permission]
+color = "#66CCFF"
+[agent.dolphin.permission]
 webfetch = "deny"
 websearch = "deny"
 
-[agent.explore]
+[agent.mola]
+model = "{env:ZOO_MODEL}"
+color = "#FFA500"
+[agent.mola.permission]
+webfetch  = "deny"
+websearch = "deny"
+[agent.mola.permission.skill]
+"*"           = "deny"
+"mola-plan"   = "allow"
+"wiki-query"  = "allow"
+
+[agent.lynx]
+mode  = "subagent"
 model = "{env:ZOO_SMALL_MODEL}"
-[agent.explore.permission]
+color = "#FFE211"
+[agent.lynx.permission]
 edit = "deny"
 write = "deny"
 task = "deny"
-
-[agent.explore.permission.skill]
+[agent.lynx.permission.skill]
 "*" = "deny"
 "wiki-query" = "allow"
 
-[agent.general]
+[agent.beaver]
+mode  = "subagent"
 model = "{env:ZOO_SMALL_MODEL}"
-[agent.general.permission]
+color = "#39C5BB"
+[agent.beaver.permission]
 task = "deny"
 webfetch = "deny"
 websearch = "deny"
-
-[agent.general.permission.skill]
+[agent.beaver.permission.skill]
 "*" = "deny"
 "git-commit" = "allow"
 "wiki-query" = "allow"
@@ -222,7 +236,6 @@ edit = "deny"
 write = "deny"
 bash = "deny"
 task = "deny"
-
 [agent.spider.permission.skill]
 "*" = "deny"
 "wiki-query" = "allow"
@@ -230,13 +243,13 @@ task = "deny"
 [agent.eagle]
 mode  = "subagent"
 model = "{env:ZOO_MODEL}"
+color = "#961E32"
 [agent.eagle.permission]
 write = "deny"
 edit = "deny"
 task = "deny"
 webfetch = "deny"
 websearch = "deny"
-
 [agent.eagle.permission.skill]
 "*" = "deny"
 "wiki-query" = "allow"
@@ -248,23 +261,20 @@ model = "{env:ZOO_MEDIUM_MODEL}"
 task = "deny"
 write = "deny"
 edit = "deny"
-
 [agent.kiwi.permission.skill]
 "*" = "deny"
 
-[agent.mola]
-model = "{env:ZOO_MODEL}"
-[agent.mola.permission]
-webfetch  = "deny"
-websearch = "deny"
-
-[agent.mola.permission.skill]
-"*"           = "deny"
-"mola-plan"   = "allow"
-"wiki-query"  = "allow"
-
-# 禁用内置 plan agent（mola 接管规划职责）
+# 禁用内置 agent
 [agent.plan]
+disable = true
+
+[agent.build]
+disable = true
+
+[agent.general]
+disable = true
+
+[agent.explore]
 disable = true
 
 # ── Defaults ──────────────────────────────────────────────────────────────────

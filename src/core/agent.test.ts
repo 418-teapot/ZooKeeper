@@ -1,13 +1,13 @@
 /**
  * Direct unit tests for core/agent.ts.
  *
- * Tests `getAgentName()` and `isBuildAgent()` in isolation, covering all edge
+ * Tests `getAgentName()` and `isDolphinAgent()` in isolation, covering all edge
  * cases: valid clients, null/undefined clients, missing methods, and thrown
  * errors. These complement the indirect coverage provided by hook adapter tests.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { type Clientish, getAgentName, isBuildAgent } from "./agent.js";
+import { type Clientish, getAgentName, isDolphinAgent } from "./agent.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -28,9 +28,9 @@ function mockClient(agent?: string): Clientish {
 
 describe("getAgentName", () => {
   it("returns the agent name when client returns one", async () => {
-    const client = mockClient("build");
+    const client = mockClient("dolphin");
     const name = await getAgentName(client, "s1");
-    assert.equal(name, "build");
+    assert.equal(name, "dolphin");
   });
 
   it("returns undefined when session has no agent field", async () => {
@@ -67,35 +67,35 @@ describe("getAgentName", () => {
 });
 
 // ---------------------------------------------------------------------------
-// isBuildAgent
+// isDolphinAgent
 // ---------------------------------------------------------------------------
 
-describe("isBuildAgent", () => {
-  it("returns true when agent is 'build'", async () => {
-    const client = mockClient("build");
-    const result = await isBuildAgent(client, "s1");
+describe("isDolphinAgent", () => {
+  it("returns true when agent is 'dolphin'", async () => {
+    const client = mockClient("dolphin");
+    const result = await isDolphinAgent(client, "s1");
     assert.equal(result, true);
   });
 
-  it("returns false when agent is 'general'", async () => {
-    const client = mockClient("general");
-    const result = await isBuildAgent(client, "s1");
+  it("returns false when agent is 'beaver'", async () => {
+    const client = mockClient("beaver");
+    const result = await isDolphinAgent(client, "s1");
     assert.equal(result, false);
   });
 
-  it("returns false when agent is 'explore'", async () => {
-    const client = mockClient("explore");
-    const result = await isBuildAgent(client, "s1");
+  it("returns false when agent is 'lynx'", async () => {
+    const client = mockClient("lynx");
+    const result = await isDolphinAgent(client, "s1");
     assert.equal(result, false);
   });
 
   it("returns false for null client", async () => {
-    const result = await isBuildAgent(null, "s1");
+    const result = await isDolphinAgent(null, "s1");
     assert.equal(result, false);
   });
 
   it("returns false for undefined client", async () => {
-    const result = await isBuildAgent(undefined, "s1");
+    const result = await isDolphinAgent(undefined, "s1");
     assert.equal(result, false);
   });
 
@@ -105,13 +105,13 @@ describe("isBuildAgent", () => {
         throw new Error("fail");
       },
     };
-    const result = await isBuildAgent(badClient, "s1");
+    const result = await isDolphinAgent(badClient, "s1");
     assert.equal(result, false);
   });
 
   it("returns false when agent is undefined", async () => {
     const client = mockClient(undefined);
-    const result = await isBuildAgent(client, "s1");
+    const result = await isDolphinAgent(client, "s1");
     assert.equal(result, false);
   });
 });

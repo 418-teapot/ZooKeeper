@@ -259,8 +259,8 @@ describe("non-task tools are skipped", () => {
     "glob",
     "webfetch",
     "websearch",
-    "explore",
-    "general",
+    "lynx",
+    "beaver",
     "spider",
   ];
 

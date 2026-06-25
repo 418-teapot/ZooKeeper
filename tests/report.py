@@ -87,7 +87,7 @@ class ScenarioReport:
 
     Attributes:
         name: Scenario name from the TOML [scenario] section.
-        agent: Agent under test (e.g. "build").
+        agent: Agent under test (e.g. "dolphin").
         phase: Test phase ("RED", "GREEN", "PRESSURE").
         passed: Overall pass/fail for this scenario.
         assertions: List of assertion results.

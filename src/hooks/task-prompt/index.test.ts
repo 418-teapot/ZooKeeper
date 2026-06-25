@@ -2,7 +2,7 @@
  * Tests for the ZooKeeper OpenCode plugin's task prompt validation logic.
  *
  * These tests cover `validateTaskPrompt()` — the core function used by the
- * `tool.execute.before` hook to verify build agent `task()` prompt format.
+ * `tool.execute.before` hook to verify dolphin agent `task()` prompt format.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
@@ -488,7 +488,7 @@ describe("tool.definition hook", () => {
   it("appends hint to prompt parameter description when toolID is task", async () => {
     const plugin = await zookeeper({});
     const output = {
-      description: "Run a task for the build agent",
+      description: "Run a task for the dolphin agent",
       parameters: {
         type: "object",
         properties: {

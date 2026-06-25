@@ -14,8 +14,8 @@ import { isDelegationAllowed } from "./delegation.js";
 // ---------------------------------------------------------------------------
 
 describe("isDelegationAllowed — mola (restricted)", () => {
-  it("allows delegation to explore", () => {
-    const result = isDelegationAllowed("mola", "explore");
+  it("allows delegation to lynx", () => {
+    const result = isDelegationAllowed("mola", "lynx");
     assert.equal(result.allowed, true);
     assert.equal(result.reason, undefined);
   });
@@ -26,11 +26,11 @@ describe("isDelegationAllowed — mola (restricted)", () => {
     assert.equal(result.reason, undefined);
   });
 
-  it("blocks delegation to general", () => {
-    const result = isDelegationAllowed("mola", "general");
+  it("blocks delegation to beaver", () => {
+    const result = isDelegationAllowed("mola", "beaver");
     assert.equal(result.allowed, false);
-    assert.ok(result.reason?.includes("mola can only delegate to explore"));
-    assert.ok(result.reason?.includes("general"));
+    assert.ok(result.reason?.includes("mola can only delegate to lynx"));
+    assert.ok(result.reason?.includes("beaver"));
   });
 
   it("blocks delegation to eagle", () => {
@@ -46,16 +46,16 @@ describe("isDelegationAllowed — mola (restricted)", () => {
   });
 
   it("reason lists allowed targets", () => {
-    const result = isDelegationAllowed("mola", "general");
+    const result = isDelegationAllowed("mola", "beaver");
     assert.ok(result.reason?.includes("Allowed targets:"));
-    assert.ok(result.reason?.includes("explore"));
+    assert.ok(result.reason?.includes("lynx"));
     assert.ok(result.reason?.includes("spider"));
   });
 
   it("reason includes fallback guidance for implementation work", () => {
-    const result = isDelegationAllowed("mola", "general");
+    const result = isDelegationAllowed("mola", "beaver");
     assert.ok(result.reason?.includes("plan TODOs"));
-    assert.ok(result.reason?.includes("execution belongs to build"));
+    assert.ok(result.reason?.includes("execution belongs to dolphin"));
   });
 });
 
@@ -64,16 +64,20 @@ describe("isDelegationAllowed — mola (restricted)", () => {
 // ---------------------------------------------------------------------------
 
 describe("isDelegationAllowed — unrestricted agents", () => {
-  it("allows build to delegate to any subagent", () => {
-    for (const target of ["general", "explore", "spider", "eagle", "kiwi"]) {
-      const result = isDelegationAllowed("build", target);
-      assert.equal(result.allowed, true, `build → ${target} should be allowed`);
+  it("allows dolphin to delegate to any subagent", () => {
+    for (const target of ["beaver", "lynx", "spider", "eagle", "kiwi"]) {
+      const result = isDelegationAllowed("dolphin", target);
+      assert.equal(
+        result.allowed,
+        true,
+        `dolphin → ${target} should be allowed`,
+      );
       assert.equal(result.reason, undefined);
     }
   });
 
   it("allows unknown agent to delegate to any subagent", () => {
-    const result = isDelegationAllowed("some-new-agent", "general");
+    const result = isDelegationAllowed("some-new-agent", "beaver");
     assert.equal(result.allowed, true);
     assert.equal(result.reason, undefined);
   });
@@ -85,7 +89,7 @@ describe("isDelegationAllowed — unrestricted agents", () => {
 
 describe("isDelegationAllowed — edge cases", () => {
   it("empty string caller is unrestricted", () => {
-    const result = isDelegationAllowed("", "general");
+    const result = isDelegationAllowed("", "beaver");
     assert.equal(result.allowed, true);
   });
 
@@ -95,7 +99,7 @@ describe("isDelegationAllowed — edge cases", () => {
   });
 
   it("case-sensitive: 'Mola' is not recognized as restricted", () => {
-    const result = isDelegationAllowed("Mola", "general");
+    const result = isDelegationAllowed("Mola", "beaver");
     assert.equal(result.allowed, true);
   });
 });

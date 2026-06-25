@@ -16,14 +16,14 @@
  * Per-agent map of allowed subagent types.
  *
  * Entries here restrict delegation targets for that agent. Agents not listed
- * (e.g. build) have unrestricted delegation — `isDelegationAllowed` returns
+ * (e.g. dolphin) have unrestricted delegation — `isDelegationAllowed` returns
  * `{ allowed: true }` for those callers.
  *
  * The keys are agent names; values are arrays of allowed `subagent_type`
  * strings that the agent may pass to `task()`.
  */
 const DELEGATION_ALLOWLIST: Record<string, string[]> = {
-  mola: ["explore", "spider"],
+  mola: ["lynx", "spider"],
 };
 
 // ---------------------------------------------------------------------------
@@ -68,9 +68,9 @@ export function isDelegationAllowed(
         `${callerAgent} can only delegate to ${list}. ` +
         `"${targetSubagent}" is not allowed.\n\n` +
         `Allowed targets:\n` +
-        `- explore — codebase search, file discovery, structural analysis\n` +
+        `- lynx — codebase search, file discovery, structural analysis\n` +
         `- spider — web research, API documentation lookup\n\n` +
-        `For implementation work, add to the plan TODOs — execution belongs to build.`,
+        `For implementation work, add to the plan TODOs — execution belongs to dolphin.`,
     };
   }
 

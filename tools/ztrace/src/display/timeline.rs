@@ -828,7 +828,7 @@ fn print_ops_summary_footer(timeline: &[Value], stats: &Value) {
 /// Content column: remaining terminal width.
 /// Child session events: indented + `[子:agent]` prefix.
 /// Block borders: `╭─ [session:agent] ───` and `╰─────────────`.
-/// Colors by agent: explore=cyan, general=magenta, build=blue, default=green.
+/// Colors by agent: lynx=cyan, beaver=magenta, dolphin=blue, default=green.
 pub fn render_ops_summary(timeline: &[Value], stats: &Value, verbose: bool) {
     if timeline.is_empty() {
         msg_print("[yellow]No events in timeline.[/yellow]");

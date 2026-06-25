@@ -1,22 +1,22 @@
 # Prompt evaluation thresholds
-# build agent is the primary consumer; thresholds for other agents
+# dolphin agent is the primary consumer; thresholds for other agents
 # are defined here but currently dormant since all test scenarios
-# use agent="build".
+# use agent="dolphin".
 
-[build]
+[dolphin]
 delegation_rate = { min = 1.0 }
 verification_rate = { min = 0.5 }
 read_abuse_events = { max = 0 }
 
 # ── Dormant thresholds ──────────────────────────────────────────────────
-# These [general] thresholds are defined but not yet enforced because all
-# scenarios currently specify agent="build". They will become active when
-# scenarios targeting agent="general" are added.
-[general]
+# These [beaver] thresholds are defined but not yet enforced because all
+# scenarios currently specify agent="dolphin". They will become active when
+# scenarios targeting agent="beaver" are added.
+[beaver]
 pre_verification_rate = { min = 0.8 }
 self_verification_rate = { min = 0.5 }
 
-[explore]
+[lynx]
 # (empty for now)
 
 [spider]

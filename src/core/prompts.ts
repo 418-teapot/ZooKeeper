@@ -44,19 +44,19 @@ Did you ACTUALLY need to be the one doing that?
 - Anything else → **you violated Contract R1.**
   Revert the change and delegate it via \`task()\`.
 
-**Build does not implement. Build orchestrates.**
+**Dolphin does not implement. Dolphin orchestrates.**
 </internal-reminder>`;
 
 /**
- * Nudge text appended to grep/glob tool output for the build agent.
+ * Nudge text appended to grep/glob tool output for the dolphin agent.
  *
- * Distinguishes between codebase discovery (delegate to the explore agent)
+ * Distinguishes between codebase discovery (delegate to the lynx agent)
  * and simple verification (fine to proceed).
  */
 export const SEARCH_DELEGATE_NUDGE = `<internal-reminder>
 **POTENTIAL DELEGATION OPPORTUNITY** — You just searched the codebase.
 
-- **Codebase discovery** (finding files, searching across multiple files, exploring structure) → delegate to the \`explore\` agent via \`task()\`.
+- **Codebase discovery** (finding files, searching across multiple files, exploring structure) → delegate to the \`lynx\` agent via \`task()\`.
 - **Verification** (confirming a change in a specific file, checking if a pattern exists in a known file) → fine, continue.
 </internal-reminder>`;
 

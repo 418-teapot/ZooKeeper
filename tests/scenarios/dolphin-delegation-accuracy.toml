@@ -1,6 +1,6 @@
 [scenario]
-name = "build-delegation-accuracy"
-agent = "build"
+name = "dolphin-delegation-accuracy"
+agent = "dolphin"
 phase = "green"
 timeout = 300
 pure = false
@@ -17,7 +17,7 @@ project = "todo-app"
 
 [expected]
 delegates_task = true
-delegation_accuracy = { general = 1, explore = 1, spider = 1 }
+delegation_accuracy = { beaver = 1, lynx = 1, spider = 1 }
 max_prompt_words = 250
 
 [assertions]
@@ -30,10 +30,10 @@ required = [
   "assert_no_read_abuse",
 ]
 
-[dual_layer.general]
+[dual_layer.beaver]
 assertions = ["assert_pre_verifies", "assert_self_verifies", "assert_no_task_delegation"]
 
-[dual_layer.explore]
+[dual_layer.lynx]
 assertions = ["assert_cites_locations", "assert_search_before_read", "assert_subagent_no_direct_edit"]
 
 [dual_layer.spider]

@@ -916,7 +916,7 @@ mod tests {
     fn test_find_session_info_found() {
         let timeline = vec![make_session_event_with_slug(
             "auth-debug",
-            "general",
+            "beaver",
             Some("gpt-4"),
             None,
             Some("openai"),
@@ -930,7 +930,7 @@ mod tests {
             info.get("slug").and_then(|v| v.as_str()),
             Some("auth-debug")
         );
-        assert_eq!(info.get("agent").and_then(|v| v.as_str()), Some("general"));
+        assert_eq!(info.get("agent").and_then(|v| v.as_str()), Some("beaver"));
         assert_eq!(info.get("model").and_then(|v| v.as_str()), Some("gpt-4"));
         assert_eq!(
             info.get("provider").and_then(|v| v.as_str()),
@@ -955,8 +955,7 @@ mod tests {
     #[test]
     fn test_find_session_info_no_slug() {
         let mut detail = Map::new();
-        detail
-            .insert("agent".to_string(), Value::String("general".to_string()));
+        detail.insert("agent".to_string(), Value::String("beaver".to_string()));
         let mut m = Map::new();
         m.insert("type".to_string(), Value::String("session".to_string()));
         m.insert("detail".to_string(), Value::Object(detail));
@@ -990,7 +989,7 @@ mod tests {
     fn test_find_session_info_model_fallback() {
         let timeline = vec![make_session_event_with_slug(
             "test",
-            "general",
+            "beaver",
             None,
             Some("claude-3"),
             None,
@@ -1027,8 +1026,8 @@ mod tests {
     #[test]
     fn test_collect_child_sessions_excludes_root() {
         let timeline = vec![
-            make_event("ses-001", 0, "general"),
-            make_event("ses-001", 0, "general"),
+            make_event("ses-001", 0, "beaver"),
+            make_event("ses-001", 0, "beaver"),
         ];
         let result = collect_child_sessions_info(&timeline, "ses-001");
         assert!(result.is_empty());
@@ -1037,9 +1036,9 @@ mod tests {
     #[test]
     fn test_collect_child_sessions_counts_events() {
         let timeline = vec![
-            make_event("ses-002", 1, "explore"),
-            make_event("ses-002", 1, "explore"),
-            make_event("ses-003", 2, "build"),
+            make_event("ses-002", 1, "lynx"),
+            make_event("ses-002", 1, "lynx"),
+            make_event("ses-003", 2, "dolphin"),
         ];
         let result = collect_child_sessions_info(&timeline, "ses-001");
         assert_eq!(result.len(), 2);

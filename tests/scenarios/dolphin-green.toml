@@ -1,6 +1,6 @@
 [scenario]
-name = "build-green"
-agent = "build"
+name = "dolphin-green"
+agent = "dolphin"
 phase = "green"
 pure = false
 timeout = 300

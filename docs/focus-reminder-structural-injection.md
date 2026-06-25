@@ -17,7 +17,7 @@
 3. [OpenCode SDK 消息注入能力分析](#3-opencode-sdk-消息注入能力分析)
 4. [路径 B 设计方案：从注入机制转向强化核心 prompt](#4-路径-b-设计方案从注入机制转向强化核心-prompt)
 
-   - 4.1 设计目标 / **4.2 主推荐：用 omp 式契约强化 build.md** / **4.3 补充：关键词激活的 orchestrate-notice**
+   - 4.1 设计目标 / **4.2 主推荐：用 omp 式契约强化 dolphin.md** / **4.3 补充：关键词激活的 orchestrate-notice**
    - **4.4 条件触发纠正（omp 风格）** / **4.5 工具级硬约束（omo 风格）** / **4.6 逐步淘汰每轮 focus-reminder**
 5. [路径 A 对比（放弃方案）与跨项目教训](#5-路径-a-对比放弃方案与跨项目教训)
    - 5.1 路径 A 定义 / 5.2 为什么放弃 / **5.5 跨项目教训：每轮注入是错误的原语**
@@ -477,9 +477,9 @@ export type V2SessionPromptData = {
 
 这四个目标共同指向一个结论：**Path B 的最佳方案不是在 SDK 中找到更好的注入机制，而是设计一个不需要注入的系统。**
 
-### 4.2 主推荐：用 omp 式契约强化 build.md
+### 4.2 主推荐：用 omp 式契约强化 dolphin.md
 
-将 per-turn focus-reminder 替换为内化在 `core/prompts/build.md` 中的、带有具体阈值的委派契约。
+将 per-turn focus-reminder 替换为内化在 `core/prompts/dolphin.md` 中的、带有具体阈值的委派契约。
 
 **当前的 focus-reminder 文本（每轮注入，per-turn）：**
 
@@ -526,7 +526,7 @@ This is not an opinion — the threshold is calibrated from 3 independent projec
 
 | 文件 | 变更 |
 |------|------|
-| `core/prompts/build.md` | 添加 Delegation Contract 章节，包含具体阈值 |
+| `core/prompts/dolphin.md` | 添加 Delegation Contract 章节，包含具体阈值 |
 | `src/hooks/focus-reminder/hook.ts` | **不删除**（在 Phase 4 之前保留，用于条件触发纠正） |
 | `config.toml` | 无变更 |
 
@@ -534,7 +534,7 @@ This is not an opinion — the threshold is calibrated from 3 independent projec
 
 添加 omp 风格的 orchestrate-notice，仅当用户输入特定关键词时激活。
 
-**内容（添加到 `core/prompts/build.md`）：**
+**内容（添加到 `core/prompts/dolphin.md`）：**
 
 ```markdown
 ### Orchestrate Mode
@@ -562,7 +562,7 @@ This contract is only active when the user explicitly invokes "orchestrate".
 - 模型尊重显式模式切换（已验证：omp 的 orchestrate/ultrathink/workflow 关键词）
 - 零额外复杂度——仅需编辑 prompt 文件
 
-**实现：** 添加到 `core/prompts/build.md` 的条件块中。LLM 理解关键词激活语义，不需要额外代码。
+**实现：** 添加到 `core/prompts/dolphin.md` 的条件块中。LLM 理解关键词激活语义，不需要额外代码。
 
 ### 4.4 条件触发纠正（omp 风格）
 
@@ -612,7 +612,7 @@ omp 使用 internal REST API 的 `role: "developer"` 创建真正的 developer �
 `config.toml` 中 build agent 的 deny 列表已经禁止了部分直接操作工具。验证实际配置：
 
 ```toml
-[agents.build.permission]
+[agents.dolphin.permission]
 deny = ["bash", "glob"]
 ```
 
@@ -652,8 +652,8 @@ deny = ["bash", "glob"]
 | Phase | 每轮 focus-reminder | 替代机制 |
 |-------|-------------------|---------|
 | 当前 | ✅ 活跃，3 层包裹 | — |
-| Phase 1 | ✅ 保留 | 添加 Delegation Contract 到 build.md |
-| Phase 2 | ✅ 保留 | 添加 Orchestrate-notice 到 build.md |
+| Phase 1 | ✅ 保留 | 添加 Delegation Contract 到 dolphin.md |
+| Phase 2 | ✅ 保留 | 添加 Orchestrate-notice 到 dolphin.md |
 | Phase 3 | ✅ 保留 | 添加条件触发纠正到 hook.ts |
 | Phase 4 | ❌ 移除 | 仅保留条件触发纠正 + 工具级约束 |
 
@@ -767,14 +767,14 @@ ZooKeeper 当前的 per-turn nudge 方案在三个成熟项目中都没有同类
 
 | 文件 | 变更类型 | 说明 |
 |------|---------|------|
-| `core/prompts/build.md` | 修改 | 添加 Delegation Contract 章节，包含具体委派阈值 |
+| `core/prompts/dolphin.md` | 修改 | 添加 Delegation Contract 章节，包含具体委派阈值 |
 | `config.toml` | 不变 | 无变更 |
 
 #### Phase 2（关键词激活契约）
 
 | 文件 | 变更类型 | 说明 |
 |------|---------|------|
-| `core/prompts/build.md` | 修改 | 添加 Orchestrate Mode 条件块 |
+| `core/prompts/dolphin.md` | 修改 | 添加 Orchestrate Mode 条件块 |
 
 #### Phase 3（条件触发纠正）
 
@@ -814,11 +814,11 @@ ZooKeeper 当前的 per-turn nudge 方案在三个成熟项目中都没有同类
 
 ### 8.1 Phase 1 (V0)：强化核心 prompt
 
-**目标：** Delegation Contract 写入 `build.md`，开启内化 prompt 的第一阶段。
+**目标：** Delegation Contract 写入 `dolphin.md`，开启内化 prompt 的第一阶段。
 
 | 待办 | 详情 |
 |------|------|
-| 编辑 `core/prompts/build.md` | 添加 Delegation Contract 章节（约 30 行） |
+| 编辑 `core/prompts/dolphin.md` | 添加 Delegation Contract 章节（约 30 行） |
 | 定义具体委派阈值 | 基于跨项目经验校准（30 lines, 2+ files, file-level ops） |
 | 保留当前 per-turn focus-reminder | 作为安全网，直到 Phase 4 |
 | 运行玩具测试 | 验证模型理解阈值 |
@@ -834,7 +834,7 @@ ZooKeeper 当前的 per-turn nudge 方案在三个成熟项目中都没有同类
 
 | 待办 | 详情 |
 |------|------|
-| 编辑 `core/prompts/build.md` | 添加 Orchestrate Mode 条件块（约 15 行） |
+| 编辑 `core/prompts/dolphin.md` | 添加 Orchestrate Mode 条件块（约 15 行） |
 | 文档说明 | 在帮助文档中记录 `orchestrate` 关键词 |
 | 验证 | 回放测试包含 orchestrate 场景 |
 
@@ -864,7 +864,7 @@ ZooKeeper 当前的 per-turn nudge 方案在三个成熟项目中都没有同类
 
 ```
 Phase 1 (V0): Week 1-2
-  ┌─ 编辑 build.md（~30 行新内容）
+  ┌─ 编辑 dolphin.md（~30 行新内容）
   ├─ 验证回放测试
   └─ 观察 1-2 周
 
@@ -913,7 +913,7 @@ Phase 4 (V3): Week 7-8
 
 | Phase | 动作 | 预期效果 |
 |-------|------|---------|
-| **Phase 1** | 将 Delegation Contract（带具体阈值）写入 `core/prompts/build.md` | 模型从 system prompt 中获得委派指令，不再仅依赖运行时注入 |
+| **Phase 1** | 将 Delegation Contract（带具体阈值）写入 `core/prompts/dolphin.md` | 模型从 system prompt 中获得委派指令，不再仅依赖运行时注入 |
 | **Phase 2** | 添加 Orchestrate Mode 关键词激活契约 | 用户发起模式切换，增强关键场景的委派纪律 |
 | **Phase 3** | 将 `focus-reminder/hook.ts` 从 per-turn 注入改为条件触发纠正 | 仅在违规时注入，大幅减少频率和 token 消耗 |
 | **Phase 4** | 完全移除 per-turn focus-reminder | 零注入开销，完全依赖内化 prompt + 条件触发纠正 + 工具级约束 |

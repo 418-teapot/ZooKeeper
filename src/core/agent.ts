@@ -3,7 +3,7 @@
  *
  * Provides a minimal `Clientish` interface and two async helpers:
  * `getAgentName` for resolving the agent name from a session, and
- * `isBuildAgent` as a convenience boolean check.
+ * `isDolphinAgent` as a convenience boolean check.
  *
  * @module
  */
@@ -55,20 +55,20 @@ export async function getAgentName(
 }
 
 /**
- * Check whether the session belongs to the `"build"` agent.
+ * Check whether the session belongs to the `"dolphin"` agent.
  *
- * Returns `true` only when `getAgentName` returns the exact string `"build"`.
+ * Returns `true` only when `getAgentName` returns the exact string `"dolphin"`.
  * When no client is available (null/undefined/missing getSession), returns
  * `false` — a conservative behaviour that causes callers to skip their action.
  *
  * @param client - Framework client providing session access, or null/undefined.
  * @param sessionId - Session identifier to look up.
- * @returns `true` when the agent is `"build"`, `false` otherwise.
+ * @returns `true` when the agent is `"dolphin"`, `false` otherwise.
  */
-export async function isBuildAgent(
+export async function isDolphinAgent(
   client: Clientish | null | undefined,
   sessionId: string,
 ): Promise<boolean> {
   const agent = await getAgentName(client, sessionId);
-  return agent === "build";
+  return agent === "dolphin";
 }

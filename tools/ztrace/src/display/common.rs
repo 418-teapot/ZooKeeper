@@ -55,9 +55,9 @@ pub fn type_style(etype: &str) -> Style {
 
 pub fn agent_color(agent: &str) -> Color {
     match agent {
-        "explore" => Color::from_ansi(6), // cyan
-        "general" => Color::from_ansi(5), // magenta
-        "build" => Color::from_ansi(4),   // blue
+        "lynx" => Color::from_ansi(6),    // cyan
+        "beaver" => Color::from_ansi(5),  // magenta
+        "dolphin" => Color::from_ansi(4), // blue
         _ => Color::from_ansi(2),         // green (default)
     }
 }

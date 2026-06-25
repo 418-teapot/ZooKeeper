@@ -392,7 +392,7 @@ mod tests {
                 "msg-001",
                 "ses-001",
                 1_715_000_010_000_i64,
-                r#"{"role":"user","agent":"general","tokens":null}"#,
+                r#"{"role":"user","agent":"beaver","tokens":null}"#,
             ],
         )
         .expect("insert msg-001");
@@ -403,7 +403,7 @@ mod tests {
                 "msg-002",
                 "ses-001",
                 1_715_000_020_000_i64,
-                r#"{"role":"assistant","agent":"general","tokens":null}"#,
+                r#"{"role":"assistant","agent":"beaver","tokens":null}"#,
             ],
         )
         .expect("insert msg-002");
@@ -414,7 +414,7 @@ mod tests {
                 "msg-003",
                 "ses-002",
                 1_715_000_210_000_i64,
-                r#"{"role":"user","agent":"explore","tokens":null}"#,
+                r#"{"role":"user","agent":"lynx","tokens":null}"#,
             ],
         )
         .expect("insert msg-003");
@@ -425,7 +425,7 @@ mod tests {
                 "msg-004",
                 "ses-002",
                 1_715_000_220_000_i64,
-                r#"{"role":"assistant","agent":"explore","tokens":null}"#,
+                r#"{"role":"assistant","agent":"lynx","tokens":null}"#,
             ],
         )
         .expect("insert msg-004");

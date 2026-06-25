@@ -186,7 +186,7 @@ config: (config: Config) => void
 ```typescript
 // 示例：在 config hook 中动态注入权限
 config(config) {
-  const agent = config.agent?.build
+  const agent = config.agent?.dolphin
   if (agent) {
     agent.permission = {
       ...agent.permission,
@@ -1210,7 +1210,7 @@ export default async function guardPlugin(input: PluginInput) {
   if (input.tool === "grep") {
     throw new Error(
       `[OrchestratorGuard] "grep" 已被阻断以防止编排器直接进行代码搜索。` +
-      `请使用 task(subagent_type="explore", prompt="...") 委托给 explore Agent 执行搜索。`
+      `请使用 task(subagent_type="lynx", prompt="...") 委托给 lynx Agent 执行搜索。`
     )
   }
 }
@@ -1336,7 +1336,7 @@ const promptParts = await resolvePromptParts(params.prompt)
 `resolvePromptParts` 函数不仅处理纯文本，还支持 `@file` 引用语法，自动将指定文件内容注入到提示词中：
 
 ```
-task(subagent_type="general", prompt="请重构 src/utils.ts 中的 parseConfig 函数，源文件内容：@src/utils.ts")
+task(subagent_type="beaver", prompt="请重构 src/utils.ts 中的 parseConfig 函数，源文件内容：@src/utils.ts")
 ```
 
 `@file` 引用在解析时被替换为对应文件的完整内容，这使得父 Agent 可以精确控制子 Agent 能"看到"哪些代码，而无需手动复制粘贴。

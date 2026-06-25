@@ -1,6 +1,6 @@
 [scenario]
-name = "build-explore-search"
-agent = "build"
+name = "dolphin-lynx-search"
+agent = "dolphin"
 phase = "green"
 timeout = 300
 pure = false
@@ -22,5 +22,5 @@ required = [
   "assert_no_direct_edit",
 ]
 
-[dual_layer.explore]
+[dual_layer.lynx]
 assertions = ["assert_cites_locations", "assert_search_before_read", "assert_subagent_no_direct_edit"]

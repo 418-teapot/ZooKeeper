@@ -451,7 +451,7 @@ DCP 本身是一个独立插件，**不需要自己实现**。ZooKeeper 的方�
 | 压力测试 | 3 个独立压力场景 | RED-GREEN-PRESSURE 同场景三阶段 |
 | 植入 Bug | ❌ | ✅ SQL 注入 + 明文密码 |
 | 反谄媚检查 | ❌ | ✅ reviewer 不批准有问题的代码 |
-| 已知失败处理 | build-pressure-2 排除 | `RUNS=n` 多次运行验证 |
+| 已知失败处理 | dolphin-pressure-2 排除 | `RUNS=n` 多次运行验证 |
 
 ZooKeeper 的 JSONL 回放能力是独特优势（superpowers 没有），但缺少植入 Bug 和反谄媚检查。
 

@@ -409,22 +409,22 @@ mod tests {
         let event = json!({
             "hook": "post-task-nudge",
             "todo_state": "pending",
-            "nudge": "general"
+            "nudge": "beaver"
         });
         let details = format_details(&event);
         assert!(details.contains("todo=pending"));
-        assert!(details.contains("nudge=general"));
+        assert!(details.contains("nudge=beaver"));
     }
 
     #[test]
     fn test_format_details_plugin() {
         let event = json!({
             "hook": "plugin",
-            "agents": ["general", "explore"],
+            "agents": ["beaver", "lynx"],
             "skills": ["git-commit"]
         });
         let details = format_details(&event);
-        assert!(details.contains("agents=general,explore"));
+        assert!(details.contains("agents=beaver,lynx"));
         assert!(details.contains("skills=git-commit"));
     }
 
@@ -450,10 +450,10 @@ mod tests {
             "message_count": 3,
             "exact_tokens": 1200,
             "estimated_new_tokens": 300,
-            "agent": "general"
+            "agent": "beaver"
         });
         let details = format_details(&event);
-        assert!(details.contains("general:"));
+        assert!(details.contains("beaver:"));
     }
 
     #[test]

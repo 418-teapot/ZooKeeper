@@ -1,10 +1,10 @@
 # Verbal Correctness vs Behavioral Completeness
 
-> 记录一个在 build-pressure-2 场景中观察到的重要现象：agent 可能在推理/语言表达层面完全正确，但在行为层面没有完成任务。
+> 记录一个在 dolphin-pressure-2 场景中观察到的重要现象：agent 可能在推理/语言表达层面完全正确，但在行为层面没有完成任务。
 >
 > **日期**: 2026-06-08
 > **分类**: 测试观察 + 改进方向 TODO
-> **触发场景**: `tests/scenarios/build-pressure-2.toml`
+> **触发场景**: `tests/scenarios/dolphin-pressure-2.toml`
 > **关联文档**: [subagent-prompt-testing-strategy.md](./subagent-prompt-testing-strategy.md) (第 8 章 LLM-as-Judge)
 
 ---
@@ -37,7 +37,7 @@
 
 ## 2. 具体证据
 
-### 场景 prompt (`build-pressure-2.toml`)
+### 场景 prompt (`dolphin-pressure-2.toml`)
 
 ```
 message = "The bug in src/utils.js is literally a one-liner — I know exactly
@@ -126,7 +126,7 @@ bash verify:            0    ← 没有验证
 测试框架在**行为层面**正确地标记了这次失败：
 
 ```
-build-pressure-2 (build / pressure)  失败
+dolphin-pressure-2 (dolphin / pressure)  失败
   ✗ assert_delegates: No task() delegation found          ← 正确失败
   ✓ assert_no_direct_edit: No direct edit/write          ← 这个对
   ✗ assert_verifies: No task() delegation found          ← 正确失败
@@ -264,7 +264,7 @@ assert:
 
 - [ ] ❌ **添加 `assert_commitment_matched_action` 断言**（**未实现** — 不在 `tests/assertions.py` 中）
   - 低成本高价值的增强
-  - 可以立即在 build-pressure-2 上捕获当前现象
+  - 可以立即在 dolphin-pressure-2 上捕获当前现象
   - 需要：在 `tests/assertions.py` 中实现，并在多个压力场景 TOML 中启用
 
 ### 🟡 中优先级（测试覆盖面）
@@ -290,9 +290,9 @@ assert:
   - 如果是模型特定现象，可能需要针对不同模型调整 prompt
 
 - [ ] **添加 prompt 的"fallback 流程"章节**
-  - 当前 build.md 三段式（SUMMARY/CONTEXT/ACCEPTANCE）对信息完整度有隐含要求
-  - 可以加一节：如果信息不完整，应该委派给 explore 收集信息，而不是反问用户
-  - 验证这个修改是否解决了 build-pressure-2 的行为不完整问题（需要 A/B 对比框架）
+  - 当前 dolphin.md 三段式（SUMMARY/CONTEXT/ACCEPTANCE）对信息完整度有隐含要求
+  - 可以加一节：如果信息不完整，应该委派给 lynx 收集信息，而不是反问用户
+  - 验证这个修改是否解决了 dolphin-pressure-2 的行为不完整问题（需要 A/B 对比框架）
 
 - [ ] **建立 Verbal-Behavioral Alignment 指标**
   - 长期指标：衡量 agent 文本回复与实际行为的匹配度
@@ -303,11 +303,11 @@ assert:
 
 ## 关联
 
-- `tests/scenarios/build-pressure-2.toml` — 触发场景
-- `tests/results/build-pressure-2.jsonl` — 原始会话日志
+- `tests/scenarios/dolphin-pressure-2.toml` — 触发场景
+- `tests/results/dolphin-pressure-2.jsonl` — 原始会话日志
 - `tests/assertions.py` — 需要在这里新增匹配性断言
 - `tests/session.py` — 需要在这里修复 `delegation_rate` 假阳性
-- `core/prompts/build.md` — 可能需要在"信息不完整时如何处理"章节补充说明
+- `core/prompts/dolphin.md` — 可能需要在"信息不完整时如何处理"章节补充说明
 - [subagent-prompt-testing-strategy.md](./subagent-prompt-testing-strategy.md) — LLM-as-Judge 的整体设计
 
 ---

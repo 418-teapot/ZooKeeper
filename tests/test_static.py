@@ -3,7 +3,12 @@
 All tests are zero-LLM-cost, pure file inspection.
 """
 
-import tomllib
+from __future__ import annotations
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib  # Python < 3.11
 from pathlib import Path
 
 import pytest
@@ -24,9 +29,9 @@ RESTRICTION_PHRASES = ["do not", "never", "must not", "绝不", "不要"]
 AGENT_STRUCTURE_REQUIREMENTS: dict[str, list[list[str]]] = {
     # Each value is a list of phrase-groups; for each group,
     # at least one phrase must appear in the prompt.
-    "build": [DELEGATE_PHRASES],
-    "general": [RESTRICTION_PHRASES],
-    "explore": [RESTRICTION_PHRASES],
+    "dolphin": [DELEGATE_PHRASES],
+    "beaver": [RESTRICTION_PHRASES],
+    "lynx": [RESTRICTION_PHRASES],
     "spider": [RESTRICTION_PHRASES],
 }
 
@@ -49,10 +54,10 @@ def _load_thresholds() -> dict:
         return tomllib.load(f)
 
 
-def _get_agent_names(config: dict | None = None) -> list[str]:
+def _get_agent_names(config: dict = None) -> list[str]:  # type: ignore[assignment]
     """Extract sorted list of agent names from ``[agent.<name>]`` sections.
 
-    TOML ``[agent.build]`` is parsed as ``config["agent"]["build"]``.
+    TOML ``[agent.dolphin]`` is parsed as ``config["agent"]["dolphin"]``.
     Agents with ``disable = true`` are excluded.
 
     Args:
@@ -76,7 +81,7 @@ def _get_denied_tools(config: dict, agent_name: str) -> list[str]:
 
     Args:
         config: Parsed config.toml dict.
-        agent_name: Agent section name (e.g. ``"build"``).
+        agent_name: Agent section name (e.g. ``"dolphin"``).
 
     Returns:
         List of denied tool name strings.

@@ -14,7 +14,11 @@ import os
 import re
 import shutil
 import sys
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib  # Python < 3.11
 from datetime import datetime
 
 

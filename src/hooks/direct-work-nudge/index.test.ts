@@ -37,7 +37,7 @@ function mockClient(agent: string) {
 }
 
 /** Pre-built mock build client used by most tests. */
-const BUILD_CLIENT = mockClient("build");
+const BUILD_CLIENT = mockClient("dolphin");
 
 /**
  * Invoke nudgeDirectWork with the given tool, output, and optional client.
@@ -238,7 +238,7 @@ describe("consecutive calls", () => {
 // ---------------------------------------------------------------------------
 
 describe("subagent filtering", () => {
-  const SUBAGENTS = ["explore", "general", "spider"];
+  const SUBAGENTS = ["lynx", "beaver", "spider"];
 
   for (const agent of SUBAGENTS) {
     it(`does not nudge "${agent}" agent`, async () => {
@@ -257,7 +257,7 @@ describe("subagent filtering", () => {
     assert.equal(obj.output, "edited something");
   });
 
-  it("nudges when getSession returns agent='build'", async () => {
+  it("nudges when getSession returns agent='dolphin'", async () => {
     const obj: { output?: string } = { output: "edited something" };
     await nudgeDirectWork(BUILD_CLIENT, { tool: "edit", sessionID: "s1" }, obj);
     assertHasReminder(obj);
@@ -275,8 +275,8 @@ describe("subagent filtering", () => {
   });
 
   for (const tool of SEARCH_TOOLS) {
-    it(`does not nudge "${tool}" for non-build agent`, async () => {
-      const c = mockClient("explore");
+    it(`does not nudge "${tool}" for non-dolphin agent`, async () => {
+      const c = mockClient("lynx");
       const obj: { output?: string } = {
         output: "searched as subagent",
       };
@@ -291,7 +291,7 @@ describe("subagent filtering", () => {
     assert.equal(obj.output, "searched something");
   });
 
-  it("nudges grep when agent is build", async () => {
+  it("nudges grep when agent is dolphin", async () => {
     const obj: { output?: string } = { output: "searched something" };
     await nudgeDirectWork(BUILD_CLIENT, { tool: "grep", sessionID: "s1" }, obj);
     assertHasSearchReminder(obj);
@@ -307,8 +307,8 @@ describe("DIRECT_WORK_NUDGE contents", () => {
     assert.ok(DIRECT_WORK_NUDGE.includes("DELEGATION REQUIRED"));
   });
 
-  it('contains "Build does not implement"', () => {
-    assert.ok(DIRECT_WORK_NUDGE.includes("Build does not implement"));
+  it('contains "Dolphin does not implement"', () => {
+    assert.ok(DIRECT_WORK_NUDGE.includes("Dolphin does not implement"));
   });
 
   it("contains documentation exception", () => {
@@ -336,7 +336,7 @@ describe("SEARCH_DELEGATE_NUDGE contents", () => {
 
   it("contains codebase discovery guidance", () => {
     assert.ok(SEARCH_DELEGATE_NUDGE.includes("Codebase discovery"));
-    assert.ok(SEARCH_DELEGATE_NUDGE.includes("`explore` agent"));
+    assert.ok(SEARCH_DELEGATE_NUDGE.includes("`lynx` agent"));
   });
 
   it("contains verification exception", () => {
