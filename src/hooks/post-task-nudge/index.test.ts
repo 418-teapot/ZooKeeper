@@ -6,10 +6,14 @@
  * fallback, case-insensitive tool names, and stateless consecutive calls.
  */
 import assert from "node:assert/strict";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
-  TODO_FINAL_ACTIVE,
-  TODO_GENERAL,
+  TODO_DONE_NUDGE,
+  TODO_PROGRESS_NUDGE,
+  TODO_RESUME_NUDGE,
   VERIFY_REMINDER,
 } from "../../core/prompts.js";
 import type { TinyClient } from "../../core/todo.js";
@@ -82,33 +86,32 @@ function assertHasVerify(obj: { output?: string }, msg?: string): void {
 }
 
 /**
- * Assert that the output contains TODO_GENERAL.
+ * Assert that the output contains TODO_PROGRESS_NUDGE.
  */
 function assertHasGeneral(obj: { output?: string }, msg?: string): void {
   assert.ok(
     obj.output?.includes("TODO UPDATE REQUIRED"),
-    msg ?? "expected output to contain TODO_GENERAL",
+    msg ?? "expected output to contain TODO_PROGRESS_NUDGE",
   );
 }
 
 /**
- * Assert that the output contains TODO_FINAL_ACTIVE.
+ * Assert that the output contains TODO_DONE_NUDGE.
  */
 function assertHasFinalActive(obj: { output?: string }, msg?: string): void {
   assert.ok(
-    obj.output?.includes("LAST TASK STILL in_progress"),
-    msg ?? "expected output to contain TODO_FINAL_ACTIVE",
+    obj.output?.includes("last task still in_progress"),
+    msg ?? "expected output to contain TODO_DONE_NUDGE",
   );
 }
 
 /**
- * Assert that the output does NOT contain any todo nudge text.
+ * Assert that the output contains TODO_RESUME_NUDGE.
  */
-function assertNoTodoNudge(obj: { output?: string }, msg?: string): void {
-  assert.equal(
-    obj.output?.includes("TODO UPDATE REQUIRED"),
-    false,
-    msg ?? "expected output not to contain any todo nudge",
+function assertHasDoneNudge(obj: { output?: string }, msg?: string): void {
+  assert.ok(
+    obj.output?.includes("TODO LIST DONE"),
+    msg ?? "expected output to contain TODO_RESUME_NUDGE",
   );
 }
 
@@ -198,38 +201,56 @@ describe("task + 1 in_progress 0 pending → VERIFY + FINAL_ACTIVE", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Task + all completed → VERIFY only
+// Task + all completed → VERIFY + DONE
 // ---------------------------------------------------------------------------
 
-describe("task + all completed → VERIFY only", () => {
-  it("appends VERIFY only when all items are completed", async () => {
+describe("task + all completed → VERIFY + DONE", () => {
+  it("appends VERIFY reminder and TODO_RESUME_NUDGE when all items are completed", async () => {
     const client = mockClient([
       { content: "Task 1", status: "completed", priority: "high", id: "1" },
       { content: "Task 2", status: "completed", priority: "medium", id: "2" },
     ]);
     const result = await applyNudge(client, "task", "s1", "Done");
     assertHasVerify(result);
-    assertNoTodoNudge(result);
+    assertHasDoneNudge(result);
   });
 
-  it("appends VERIFY only when all items are cancelled", async () => {
+  it("appends VERIFY reminder and TODO_RESUME_NUDGE when all items are cancelled", async () => {
     const client = mockClient([
       { content: "Task 1", status: "cancelled", priority: "high", id: "1" },
       { content: "Task 2", status: "cancelled", priority: "medium", id: "2" },
     ]);
     const result = await applyNudge(client, "task", "s1", "Done");
     assertHasVerify(result);
-    assertNoTodoNudge(result);
+    assertHasDoneNudge(result);
   });
 
-  it("appends VERIFY only when todos are mixed completed/cancelled", async () => {
+  it("appends VERIFY reminder and TODO_RESUME_NUDGE when todos are mixed completed/cancelled", async () => {
     const client = mockClient([
       { content: "Task 1", status: "completed", priority: "high", id: "1" },
       { content: "Task 2", status: "cancelled", priority: "medium", id: "2" },
     ]);
     const result = await applyNudge(client, "task", "s1", "Done");
     assertHasVerify(result);
-    assertNoTodoNudge(result);
+    assertHasDoneNudge(result);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task + all completed → VERIFY + TODO_RESUME_NUDGE (new test block)
+// ---------------------------------------------------------------------------
+
+describe("task + all completed → VERIFY + TODO_RESUME_NUDGE", () => {
+  it("appends VERIFY reminder and TODO_RESUME_NUDGE when all items completed", async () => {
+    const client = mockClient([
+      { content: "Task 1", status: "completed", priority: "high", id: "1" },
+    ]);
+    const result = await applyNudge(client, "task", "s1", "Done");
+    assertHasVerify(result);
+    assert.ok(
+      result.output?.includes("TODO LIST DONE"),
+      "expected TODO_RESUME_NUDGE",
+    );
   });
 });
 
@@ -313,7 +334,7 @@ describe("null / undefined output is skipped", () => {
 // ---------------------------------------------------------------------------
 
 describe("stateless consecutive calls", () => {
-  it("first call with active todos injects VERIFY+GENERAL, second call with completed injects VERIFY only", async () => {
+  it("first call with active todos injects VERIFY+GENERAL, second call with completed injects VERIFY + TODO_RESUME_NUDGE", async () => {
     const sessionID = "s1";
 
     // First call: active todos
@@ -334,20 +355,20 @@ describe("stateless consecutive calls", () => {
     const client2 = mockClient(state2);
     const result2 = await applyNudge(client2, "task", sessionID, "Second run");
     assertHasVerify(result2);
-    assertNoTodoNudge(result2);
+    assertHasDoneNudge(result2);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Empty todo list → VERIFY only
+// Empty todo list → VERIFY + DONE
 // ---------------------------------------------------------------------------
 
-describe("empty todo list → VERIFY only", () => {
-  it("appends VERIFY only when todo list is empty", async () => {
+describe("empty todo list → VERIFY + DONE", () => {
+  it("appends VERIFY reminder and TODO_RESUME_NUDGE when todo list is empty", async () => {
     const client = mockClient([]);
     const result = await applyNudge(client, "task", "s1", "Done");
     assertHasVerify(result);
-    assertNoTodoNudge(result);
+    assertHasDoneNudge(result);
   });
 });
 
@@ -447,12 +468,16 @@ describe("constants", () => {
     );
   });
 
-  it("TODO_GENERAL starts with bold TODO UPDATE REQUIRED", () => {
-    assert.ok(TODO_GENERAL.startsWith("**TODO UPDATE REQUIRED"));
+  it("TODO_PROGRESS_NUDGE starts with <internal-reminder> tag", () => {
+    assert.ok(TODO_PROGRESS_NUDGE.startsWith("<internal-reminder>"));
   });
 
-  it("TODO_FINAL_ACTIVE includes LAST TASK STILL in_progress", () => {
-    assert.ok(TODO_FINAL_ACTIVE.includes("LAST TASK STILL in_progress"));
+  it("TODO_DONE_NUDGE includes last task still in_progress", () => {
+    assert.ok(TODO_DONE_NUDGE.includes("last task still in_progress"));
+  });
+
+  it("TODO_RESUME_NUDGE includes TODO LIST DONE", () => {
+    assert.ok(TODO_RESUME_NUDGE.includes("TODO LIST DONE"));
   });
 });
 
@@ -488,7 +513,7 @@ describe("integration via plugin (tool.execute.after)", () => {
     assert.ok(output.output?.startsWith("Task completed"));
   });
 
-  it("appends VERIFY only via plugin when todo API returns all completed", async () => {
+  it("appends VERIFY + TODO_RESUME_NUDGE via plugin when todo API returns all completed", async () => {
     const plugin = await zookeeper({
       client: mockClient([
         {
@@ -505,7 +530,7 @@ describe("integration via plugin (tool.execute.after)", () => {
       output,
     );
     assertHasVerify(output);
-    assertNoTodoNudge(output);
+    assertHasDoneNudge(output);
   });
 
   it("does not modify non-task tool output via plugin", async () => {
@@ -559,5 +584,160 @@ describe("integration via plugin (tool.execute.after)", () => {
     );
     assertHasVerify(output);
     assertHasGeneral(output);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plan nudge scenarios
+// ---------------------------------------------------------------------------
+
+/**
+ * Write a plan file under ~/.zoo/plans/<sessionID>/.
+ */
+function writePlanFile(
+  sessionID: string,
+  filename: string,
+  frontmatter: Record<string, string>,
+  body: string,
+): void {
+  const fmLines = Object.entries(frontmatter)
+    .map(([k, v]) => `${k}: ${v}`)
+    .join("\n");
+  const content = `---\n${fmLines}\n---\n\n${body}`;
+  const dir = join(homedir(), ".zoo", "plans", sessionID);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, filename), content, "utf-8");
+}
+
+/**
+ * Remove a session's plan directory recursively.
+ */
+function cleanupPlanDir(sessionID: string): void {
+  try {
+    rmSync(join(homedir(), ".zoo", "plans", sessionID), {
+      recursive: true,
+      force: true,
+    });
+  } catch {
+    // ignore
+  }
+}
+
+let _planNudgeCounter = 0;
+
+describe("plan nudge scenarios", () => {
+  it("executing plan with open TODOs includes PLAN_PROGRESS_NUDGE", async () => {
+    const sessionID = `test-post-nudge-${Date.now()}-${_planNudgeCounter++}`;
+    try {
+      writePlanFile(
+        sessionID,
+        "my-plan.md",
+        { status: "executing", slug: "my-plan" },
+        "- [ ] Write tests\n- [x] Implement feature\n",
+      );
+      const client = mockClient([
+        {
+          content: "Some task",
+          status: "completed",
+          priority: "high",
+          id: "1",
+        },
+      ]);
+      const result = await applyNudge(client, "task", sessionID, "Done");
+      assert.ok(
+        result.output?.includes("PLAN PROGRESS"),
+        "expected PLAN PROGRESS nudge",
+      );
+    } finally {
+      cleanupPlanDir(sessionID);
+    }
+  });
+
+  it("executing plan with all TODOs done includes PLAN_DONE_NUDGE", async () => {
+    const sessionID = `test-post-nudge-${Date.now()}-${_planNudgeCounter++}`;
+    try {
+      writePlanFile(
+        sessionID,
+        "my-plan.md",
+        { status: "executing", slug: "my-plan" },
+        "- [x] Task A\n- [x] Task B\n",
+      );
+      const client = mockClient([
+        {
+          content: "Some task",
+          status: "completed",
+          priority: "high",
+          id: "1",
+        },
+      ]);
+      const result = await applyNudge(client, "task", sessionID, "Done");
+      assert.ok(
+        result.output?.includes("PLAN COMPLETE"),
+        "expected PLAN COMPLETE nudge",
+      );
+    } finally {
+      cleanupPlanDir(sessionID);
+    }
+  });
+
+  it("done plan includes PLAN_RESUME_NUDGE", async () => {
+    const sessionID = `test-post-nudge-${Date.now()}-${_planNudgeCounter++}`;
+    try {
+      writePlanFile(
+        sessionID,
+        "my-plan.md",
+        { status: "done", slug: "my-plan" },
+        "- [x] All done\n",
+      );
+      const client = mockClient([
+        {
+          content: "Some task",
+          status: "completed",
+          priority: "high",
+          id: "1",
+        },
+      ]);
+      const result = await applyNudge(client, "task", sessionID, "Done");
+      assert.ok(
+        result.output?.includes("PLAN RESURRECTED"),
+        "expected PLAN RESURRECTED nudge",
+      );
+    } finally {
+      cleanupPlanDir(sessionID);
+    }
+  });
+
+  it("no plan file does not include any plan nudge", async () => {
+    const sessionID = `test-post-nudge-${Date.now()}-${_planNudgeCounter++}`;
+    try {
+      cleanupPlanDir(sessionID);
+      const client = mockClient([
+        {
+          content: "Some task",
+          status: "completed",
+          priority: "high",
+          id: "1",
+        },
+      ]);
+      const result = await applyNudge(client, "task", sessionID, "Done");
+      assert.ok(result.output, "output should exist");
+      assert.equal(
+        result.output?.includes("PLAN PROGRESS"),
+        false,
+        "should not contain PLAN PROGRESS",
+      );
+      assert.equal(
+        result.output?.includes("PLAN COMPLETE"),
+        false,
+        "should not contain PLAN COMPLETE",
+      );
+      assert.equal(
+        result.output?.includes("PLAN RESURRECTED"),
+        false,
+        "should not contain PLAN RESURRECTED",
+      );
+    } finally {
+      cleanupPlanDir(sessionID);
+    }
   });
 });

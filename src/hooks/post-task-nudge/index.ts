@@ -8,8 +8,9 @@
  */
 
 export {
-  TODO_FINAL_ACTIVE,
-  TODO_GENERAL,
+  TODO_DONE_NUDGE,
+  TODO_PROGRESS_NUDGE,
+  TODO_RESUME_NUDGE,
   VERIFY_REMINDER,
 } from "../../core/prompts.js";
 export { nudgePostTask } from "./hook.js";

@@ -6,6 +6,9 @@
  * and integration via the plugin entry point.
  */
 import assert from "node:assert/strict";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import { zookeeper } from "../../index.js";
 import {
@@ -396,5 +399,170 @@ describe("integration: tool.execute.after via plugin", () => {
       output,
     );
     assert.equal(output.output, "ls output here");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plan nudge scenarios
+// ---------------------------------------------------------------------------
+
+/**
+ * Write a plan file under ~/.zoo/plans/<sessionID>/.
+ */
+function writePlanFile(
+  sessionID: string,
+  filename: string,
+  frontmatter: Record<string, string>,
+  body: string,
+): void {
+  const fmLines = Object.entries(frontmatter)
+    .map(([k, v]) => `${k}: ${v}`)
+    .join("\n");
+  const content = `---\n${fmLines}\n---\n\n${body}`;
+  const dir = join(homedir(), ".zoo", "plans", sessionID);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, filename), content, "utf-8");
+}
+
+/**
+ * Remove a session's plan directory recursively.
+ */
+function cleanupPlanDir(sessionID: string): void {
+  try {
+    rmSync(join(homedir(), ".zoo", "plans", sessionID), {
+      recursive: true,
+      force: true,
+    });
+  } catch {
+    // ignore
+  }
+}
+
+let _planNudgeCounter = 0;
+
+describe("plan nudge scenarios", () => {
+  it("dolphin edit with executing plan (open TODOs) includes PLAN_PROGRESS_NUDGE", async () => {
+    const sessionID = `test-direct-nudge-${Date.now()}-${_planNudgeCounter++}`;
+    try {
+      writePlanFile(
+        sessionID,
+        "my-plan.md",
+        { status: "executing", slug: "my-plan" },
+        "- [ ] Write tests\n- [x] Implement feature\n",
+      );
+      const result: { output?: string } = { output: "edited file" };
+      await nudgeDirectWork(BUILD_CLIENT, { tool: "edit", sessionID }, result);
+      assert.ok(
+        result.output?.includes("PLAN PROGRESS"),
+        "expected PLAN PROGRESS nudge",
+      );
+    } finally {
+      cleanupPlanDir(sessionID);
+    }
+  });
+
+  it("dolphin edit with executing plan (all done) includes PLAN_DONE_NUDGE", async () => {
+    const sessionID = `test-direct-nudge-${Date.now()}-${_planNudgeCounter++}`;
+    try {
+      writePlanFile(
+        sessionID,
+        "my-plan.md",
+        { status: "executing", slug: "my-plan" },
+        "- [x] Task A\n- [x] Task B\n",
+      );
+      const result: { output?: string } = { output: "edited file" };
+      await nudgeDirectWork(BUILD_CLIENT, { tool: "edit", sessionID }, result);
+      assert.ok(
+        result.output?.includes("PLAN COMPLETE"),
+        "expected PLAN COMPLETE nudge",
+      );
+    } finally {
+      cleanupPlanDir(sessionID);
+    }
+  });
+
+  it("dolphin edit with done plan includes PLAN_RESUME_NUDGE", async () => {
+    const sessionID = `test-direct-nudge-${Date.now()}-${_planNudgeCounter++}`;
+    try {
+      writePlanFile(
+        sessionID,
+        "my-plan.md",
+        { status: "done", slug: "my-plan" },
+        "- [x] All done\n",
+      );
+      const result: { output?: string } = { output: "edited file" };
+      await nudgeDirectWork(BUILD_CLIENT, { tool: "edit", sessionID }, result);
+      assert.ok(
+        result.output?.includes("PLAN RESURRECTED"),
+        "expected PLAN RESURRECTED nudge",
+      );
+    } finally {
+      cleanupPlanDir(sessionID);
+    }
+  });
+
+  it("beaver edit does not include plan nudge", async () => {
+    const sessionID = `test-direct-nudge-${Date.now()}-${_planNudgeCounter++}`;
+    try {
+      // No plan directory needed — beaver is not dolphin so the hook
+      // returns before checking plans.
+      cleanupPlanDir(sessionID);
+      const client = mockClient("beaver");
+      const result: { output?: string } = { output: "edited file" };
+      await nudgeDirectWork(client, { tool: "edit", sessionID }, result);
+      assert.equal(
+        result.output,
+        "edited file",
+        "beaver output should be unchanged",
+      );
+      assert.equal(
+        result.output?.includes("PLAN PROGRESS"),
+        false,
+        "should not contain PLAN PROGRESS",
+      );
+      assert.equal(
+        result.output?.includes("PLAN COMPLETE"),
+        false,
+        "should not contain PLAN COMPLETE",
+      );
+      assert.equal(
+        result.output?.includes("PLAN RESURRECTED"),
+        false,
+        "should not contain PLAN RESURRECTED",
+      );
+    } finally {
+      cleanupPlanDir(sessionID);
+    }
+  });
+
+  it("dolphin grep does not include plan nudge", async () => {
+    const sessionID = `test-direct-nudge-${Date.now()}-${_planNudgeCounter++}`;
+    try {
+      // Plan nudge only fires for edit/write, not search tools.
+      cleanupPlanDir(sessionID);
+      const result: { output?: string } = { output: "grep result" };
+      await nudgeDirectWork(BUILD_CLIENT, { tool: "grep", sessionID }, result);
+      assert.ok(
+        result.output?.includes("POTENTIAL DELEGATION OPPORTUNITY"),
+        "grep should still include search delegation nudge",
+      );
+      assert.equal(
+        result.output?.includes("PLAN PROGRESS"),
+        false,
+        "grep should not contain PLAN PROGRESS",
+      );
+      assert.equal(
+        result.output?.includes("PLAN COMPLETE"),
+        false,
+        "grep should not contain PLAN COMPLETE",
+      );
+      assert.equal(
+        result.output?.includes("PLAN RESURRECTED"),
+        false,
+        "grep should not contain PLAN RESURRECTED",
+      );
+    } finally {
+      cleanupPlanDir(sessionID);
+    }
   });
 });

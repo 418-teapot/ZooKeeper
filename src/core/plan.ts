@@ -196,6 +196,38 @@ export function rewritePlanPath(
 }
 
 // ---------------------------------------------------------------------------
+// TODO counting
+// ---------------------------------------------------------------------------
+
+/**
+ * Count open TODO checkboxes in plan file content.
+ *
+ * Only lines starting with `- [ ]` (markdown unchecked checkbox) are
+ * counted. Lines with `- [x]` (checked), nested indentation, or other
+ * patterns are ignored.
+ *
+ * @param content - Full plan file content.
+ * @returns Number of open TODOs (0 if none or empty content).
+ */
+export function countOpenTodos(content: string): number {
+  const matches = content.match(/^- \[ \]/gm);
+  return matches ? matches.length : 0;
+}
+
+/**
+ * Check whether all TODOs in a plan are done.
+ *
+ * Returns `true` when {@link countOpenTodos} returns 0. Content with no
+ * checkboxes at all is considered "all done" (vacuously true).
+ *
+ * @param content - Full plan file content.
+ * @returns `true` if there are zero open TODOs.
+ */
+export function allTodosDone(content: string): boolean {
+  return countOpenTodos(content) === 0;
+}
+
+// ---------------------------------------------------------------------------
 // Prompt generation
 // ---------------------------------------------------------------------------
 

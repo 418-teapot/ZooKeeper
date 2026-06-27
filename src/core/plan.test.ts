@@ -16,8 +16,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  allTodosDone,
   buildConfirmText,
   buildPlanReference,
+  countOpenTodos,
   findPlanByStatus,
   parseFrontmatter,
   plansDir,
@@ -333,5 +335,45 @@ describe("buildConfirmText", () => {
   it("returns the expected confirmation text", () => {
     const text = buildConfirmText();
     expect(text).toBe("Plan handed off to dolphin.");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// countOpenTodos / allTodosDone
+// ---------------------------------------------------------------------------
+
+describe("countOpenTodos", () => {
+  it("returns 0 for empty string", () => {
+    expect(countOpenTodos("")).toBe(0);
+  });
+
+  it("returns 1 for one open and one checked task", () => {
+    expect(countOpenTodos("- [ ] task\n- [x] done")).toBe(1);
+  });
+
+  it("returns 0 when all tasks are checked", () => {
+    expect(countOpenTodos("- [x] a\n- [x] b")).toBe(0);
+  });
+
+  it("returns 2 for multiple open tasks", () => {
+    expect(countOpenTodos("- [ ] a\n- [ ] b\n- [x] c")).toBe(2);
+  });
+});
+
+describe("allTodosDone", () => {
+  it("returns true when all tasks are checked", () => {
+    expect(allTodosDone("- [x] a\n- [x] b")).toBe(true);
+  });
+
+  it("returns false when a task is open", () => {
+    expect(allTodosDone("- [ ] a\n- [x] b")).toBe(false);
+  });
+
+  it("returns true for content with no checkboxes (vacuously true)", () => {
+    expect(allTodosDone("no checkboxes here")).toBe(true);
+  });
+
+  it("returns true for empty string", () => {
+    expect(allTodosDone("")).toBe(true);
   });
 });

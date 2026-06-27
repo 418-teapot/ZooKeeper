@@ -1,8 +1,8 @@
 # ZooKeeper Plan Mode: 完整设计文档
 
-**Version: 1.6 — Date: 2026-06-27 — Classification: 设计方案**
+**Version: 1.7 — Date: 2026-06-27 — Classification: 设计方案**
 
-> **前置阅读**: [`plan-mode-research.md`](./plan-mode-research.md) 覆盖 6 月 10 日的早期调研（plan mode 检测与切换机制）。本文档 v1.0 在调研 omo/slim/omp 的基础上加入 ECC，深入探索了 session reuse、handoff、unreconciled 等具体机制。**v1.1** 对四项目约 20 个关键源文件进行代码级验证。**v1.3** P0 mola subagent 废弃，handoff 确认为正确方向。**v1.5** P1 Steps 2 & 6 完成实施。**v1.6** sessionID 正式采纳，project-id 方案废弃——plan 文件按 sessionID 分子目录，跨 session 发现用扫描方案替代索引文件。
+> **前置阅读**: [`plan-mode-research.md`](./plan-mode-research.md) 覆盖 6 月 10 日的早期调研（plan mode 检测与切换机制）。本文档 v1.0 在调研 omo/slim/omp 的基础上加入 ECC，深入探索了 session reuse、handoff、unreconciled 等具体机制。**v1.1** 对四项目约 20 个关键源文件进行代码级验证。**v1.3** P0 mola subagent 废弃，handoff 确认为正确方向。**v1.5** P1 Steps 2 & 6 完成实施。**v1.6** sessionID 正式采纳，project-id 方案废弃——plan 文件按 sessionID 分子目录，跨 session 发现用扫描方案替代索引文件。**v1.7** Plan progress nudge pipeline 统一——共享检查函数 + 6 个对称 nudge 常量 + 两端点注入覆盖所有代码变更。
 
 ---
 
@@ -608,7 +608,8 @@ TUI 自动跳转到新会话
 | 组件 | 设计文件 | 实际文件 | 状态 | 行数 |
 |---|---|---|---|---|
 | Mola primary prompt | `core/prompts/mola.md` | 同左 | ✅ 已实现 | 60 |
-| Plan state manager | `src/core/plan-state.ts` | `src/core/plan.ts` | ✅ 已实现 | 231 (+337 测试) |
+| Plan state manager（countOpenTodos, allTodosDone） | `src/core/plan-state.ts` | `src/core/plan.ts` | ✅ 已实现 | 263 (+379 测试) |
+| Plan progress checks | `src/core/checks.ts` | 同左 | ✅ 已实现 | 133 (+7 测试) |
 | 完备性门控 | `core/prompts/build.md`（§11 规格） | `core/prompts/dolphin.md` Phase 1（简化版） | ⚠️ 简化版存在，§11 四问版本未实现 | ~10（简化版） |
 | Plan lifecycle hook | `src/hooks/plan-lifecycle/` | 同左 | ✅ 已实现 | 273 (+398 测试) |
 | `/go` 命令注册 | `src/index.ts` | 同左 | ✅ 已实现 | ~40（command.execute.before） |
@@ -616,6 +617,63 @@ TUI 自动跳转到新会话
 | 集成测试 | `tests/runner.py` 场景 | — | ❌ 未实现 | 设计估 ~80 |
 
 **P1 核心已实现**: plan.ts + plan-lifecycle hook + mola.md + mola-plan skill + config.toml + `/go` 命令 ≈ 1,340 行代码 + 735 行测试。**未实现**: 完备性门控（§11 四问版）、集成测试场景。**设计变更**: project-id.ts + `_projects.json` 已废弃——sessionID 替代为正式方案（§12）。**已暂缓至 P2**: `session-tracker.ts`、Background Job Board、idle 检测、active-plans 概况注入。
+
+### 8.3 Plan Progress Nudge Pipeline
+
+**问题：** dolphin 在委派子 agent 或直接编辑文件后，经常遗漏更新 plan 文件的 checkbox 进度。这导致 Todo 完成情况与 plan 状态脱节，丢失进度上下文。
+
+**解决方案：** 每次代码变更后，向 tool output 流中注入进度提醒。系统**永不自动修改 plan 文件**——仅做感知提醒（nudge），将决策权留给模型。
+
+**三个 nudge 场景：**
+
+| 场景 | 条件 | 对应常量 |
+|------|------|----------|
+| PROGRESS | plan 中存在未勾选的 `- [ ]` 待办项 | `PLAN_PROGRESS_NUDGE` / `TODO_PROGRESS_NUDGE` |
+| DONE | 全部 checkbox 已勾选但 plan 状态未更新为 done | `PLAN_DONE_NUDGE` / `TODO_DONE_NUDGE` |
+| RESUME | plan 状态为 done 但用户仍通过 tool 继续修改 | `PLAN_RESUME_NUDGE` / `TODO_RESUME_NUDGE` |
+
+**管道架构：**
+
+```
+┌─ hook 触发 ──→  checks.ts 共享函数 ──→  prompts.ts 常量 ──→ 注入 tool output
+│                 同步/异步检查            6 个 nudge 模板
+│                 返回 nudge | null        统一 <internal-reminder> 包裹
+```
+
+- **两个共享检查函数**（`src/core/checks.ts`，133 行 + 7 测试）：
+  - `checkPlanProgress(sessionID)` — 同步文件系统读取，扫描 `~/.zoo/plans/<sessionID>/` 下的 plan 文件
+  - `checkTodoProgress(client, sessionID)` — 异步 API 调用，通过 OpenCode client 读取当前会话消息计算 checkbox 状态
+- **薄 hook 适配器**：将框架 (input, output) 解包后调用共享函数
+  - `post-task-nudge/hook.ts` — 在 `VERIFY_REMINDER` 后注入
+  - `direct-work-nudge/hook.ts` — 在 `DIRECT_WORK_NUDGE` 后注入，仅 edit/write 操作触发
+
+**六个统一 nudge 常量**（`src/core/prompts.ts`，重构：+72/-22 行）：
+
+| 命名 | 格式 | 尾部公式 |
+|------|------|----------|
+| `TODO_PROGRESS_NUDGE` | `<internal-reminder>` 包裹 | `X = Y = LOST PROGRESS` |
+| `PLAN_PROGRESS_NUDGE` | 同上 | 同上 |
+| `TODO_DONE_NUDGE` | 同上 | 同上 |
+| `PLAN_DONE_NUDGE` | 同上 | 同上 |
+| `TODO_RESUME_NUDGE` | 同上 | 同上 |
+| `PLAN_RESUME_NUDGE` | 同上 | 同上 |
+
+**新的纯函数**（`src/core/plan.ts`，+32 行）：
+- `countOpenTodos(content: string): number` — 统计 `- [ ]` 开头的未勾选 checkbox 行数
+- `allTodosDone(content: string): boolean` — 当无未勾选 checkbox 时返回 true
+
+**注入端点：** 两个 hook 各自独立注入 todo + plan nudge，覆盖所有代码变更路径：
+
+| Hook | 触发时机 | 注入内容 | 位置 |
+|------|----------|----------|------|
+| post-task-nudge | `task()` 返回后 | todo + plan | 接在 `VERIFY_REMINDER` 之后 |
+| direct-work-nudge | edit/write 执行后 | todo + plan | 接在 `DIRECT_WORK_NUDGE` 之后 |
+
+> **v1.6 对比：** direct-work-nudge 原来只注入 plan nudge，缺失 todo 检查；post-task-nudge 的 todo 处理中 `TODO_RESUME_NUDGE` 场景（全部完成但仍在编辑）被静默跳过。v1.7 补全了两端点的 todo + plan 完整覆盖。
+
+**无 plan 文件 → 静默跳过：** 若 session 目录下无 plan 文件，两个检查函数均返回 `null`，不注入任何 nudge。
+
+**错误处理：** 每个 nudge 独立执行。`checkPlanProgress()` 的文件 I/O 错误或 `checkTodoProgress()` 的 API 错误以 `warn` 级别记录日志，不影响其他 nudge 的注入。完整容错设计保证一个 nudge 失败不会阻断另一个。
 
 ---
 
@@ -1025,13 +1083,13 @@ Step 6. 集成测试 + runner.py 场景               — ❌ 未实现
 - `[zoo.skills]` 新增 `mola-plan = "enable"`
 - install.py 无需改动（直接透传 agent 配置，透传 `[zoo.skills]`）
 
-**Step 2: plan.ts** (231 行 + 337 测试) ✅ 已完成
+**Step 2: plan.ts** (263 行 + 379 测试) ✅ 已完成
 - 纯逻辑模块（零 OpenCode 依赖，可被 TS 运行时 import），文件名 `plan.ts`（设计文档原 `plan-state.ts`）
-- 函数: `plansDir(sessionID)`, `parseFrontmatter(content)`, `findPlanByStatus(sessionID, targetStatus)`, `updatePlanStatus(content, newStatus)`, `writePlan(planPath, content)`, `rewritePlanPath(tool, args, sessionID)`, `buildPlanReference(planPath)`, `buildConfirmText()`
+- 函数: `plansDir(sessionID)`, `parseFrontmatter(content)`, `findPlanByStatus(sessionID, targetStatus)`, `updatePlanStatus(content, newStatus)`, `writePlan(planPath, content)`, `rewritePlanPath(tool, args, sessionID)`, `buildPlanReference(planPath)`, `buildConfirmText()`, `countOpenTodos(content)`, `allTodosDone(content)`
 - Plan 文件存储路径：`~/.zoo/plans/<sessionID>/<slug>.md`（详见 §12）
 - `rewritePlanPath()` 透明地将 mola 对 `~/.zoo/plans/<file>.md` 的写入重定向到 `~/.zoo/plans/<sessionID>/<file>.md`
 - 状态机校验未显式实现——`updatePlanStatus()` 是自由字符串替换，不校验状态合法性
-- 测试覆盖：plansDir、parseFrontmatter（5 场景）、findPlanByStatus（5 场景）、updatePlanStatus（4 场景）、writePlan、rewritePlanPath（7 场景）、buildPlanReference、buildConfirmText
+- 测试覆盖：plansDir、parseFrontmatter（5 场景）、findPlanByStatus（5 场景）、updatePlanStatus（4 场景）、writePlan、rewritePlanPath（7 场景）、buildPlanReference、buildConfirmText、countOpenTodos、allTodosDone
 
 **Step 3: mola prompt** (60 行) ✅ 已完成
 - **Role** (~5 行): mola 规划顾问身份，plan mode sticky
@@ -1224,6 +1282,7 @@ interface BackgroundManager {
 | 68 | project-id.ts 废弃 | **不实现 project-id.ts + `_projects.json`** | sessionID 方案消除了跨 session 映射需求；`_projects.json` 失去存在理由——plan 归属 session，不需要中间索引关联项目路径 |
 | 69 | plan 归档 | **不归档，靠 mtime + status 过滤** | 已完成 plan 留在原 session 子目录；mtime 过滤（30 天）自然排除僵尸 session；等效于物理归档，无路径变更 bug 风险 |
 | 70 | active-plans 概况注入 | **扫描方案：遍历所有 session 子目录 + mtime + status 两层过滤，P2 实现** | 不建索引文件；plan 数量不可能大到遍历成为瓶颈（每个 plan 是几十 KB markdown）；复杂度 O(子目录数)，约 40 行 |
+| 71 | Plan progress nudge | nudge pipeline: shared check functions + unified constants + thin hook adapters | "只提醒，不做决策"（不自动修改 plan 文件）；两个 hook 均注入 todo + plan；错误降级到 warn 不阻断；两端点（task 返回 + edit/write）覆盖所有代码变更 |
 
 ---
 
@@ -1587,6 +1646,35 @@ mola-plan = "enable"
 | **v1.5 修订段** | P1 剩余表更新为仅 Step 6（集成测试）；偏差 #2 修正为正式方案；偏差 #10 补充 P2 扫描方案说明 |
 
 **决策日志新增：** #67–#70（sessionID 正式化、project-id 废弃、不归档、扫描方案）。
+
+**P1 剩余：** Step 6（集成测试, ~80 行）。
+
+### v1.7 (2026-06-27) — Plan progress nudge pipeline 统一
+
+**新完成的组件：**
+
+| 组件 | 文件 | 规模 | 测试 |
+|------|------|------|------|
+| Plan progress checks | `src/core/checks.ts` | 133 行 | `checks.test.ts` 7 行 |
+| TODO counting | `src/core/plan.ts`（新增函数） | +32 行 | `plan.test.ts` +42 行 |
+| Unified nudge constants | `src/core/prompts.ts`（重构） | +72/−22 行 | — |
+| Hook refactoring | `post-task-nudge/hook.ts`, `direct-work-nudge/hook.ts` | −90/+21 行 | 已有测试更新 |
+
+**统一内容：**
+1. **格式** — 6 个 nudge 常量全部 `<internal-reminder>` 包裹，`X = Y = LOST PROGRESS` 公式结尾
+2. **命名** — TODO 与 PLAN 对称：PROGRESS ↔ PROGRESS，DONE ↔ DONE，RESUME ↔ RESUME
+3. **注入点** — 两个 hook（post-task、direct-work edit/write）均注入 todo + plan
+4. **逻辑复用** — 两份重复的 plan 检查逻辑合并为 `checkPlanProgress()` 共享函数
+5. **错误处理** — 统一 warn 级别日志，不阻断其他 nudge
+6. **场景覆盖** — 补齐 TODO 全部完成时的 `TODO_RESUME_NUDGE`（原来静默跳过）；direct-work-nudge 补齐 todo 检查（原来只有 plan）
+
+**修改的设计文档章节：**
+| 章节 | 修订内容 |
+|------|----------|
+| §8.2 | 组件清单新增 checks.ts 行，plan.ts 行更新 |
+| §8.3（新） | Plan Progress Nudge Pipeline 机制文档 |
+| §14.2 Step 2 | 更新行数和新增函数 |
+| §16 | 新增决策日志 #71 |
 
 **P1 剩余：** Step 6（集成测试, ~80 行）。
 

@@ -122,23 +122,74 @@ export const VERIFY_REMINDER =
  * Nudge text injected when there are multiple in-progress or pending
  * items, reminding the orchestrator to update the todo list.
  */
-export const TODO_GENERAL =
-  "**TODO UPDATE REQUIRED — DO THIS NOW**\n" +
-  "\n" +
-  "A subagent just completed work. Before proceeding, mark finished items as\n" +
-  "`completed` and set the next item to `in_progress`.\n" +
-  "UNMARKED = UNTRACKED = LOST PROGRESS.";
+export const TODO_PROGRESS_NUDGE = `<internal-reminder>
+**TODO UPDATE REQUIRED** — a subagent just completed work.
+
+Before proceeding, mark finished items as \`completed\` and set the next item to \`in_progress\`.
+UNMARKED TODO = UNTRACKED WORK = LOST PROGRESS.
+</internal-reminder>`;
 
 /**
  * Nudge text injected when exactly 1 task remains `in_progress` and
  * 0 tasks are `pending`, reminding the orchestrator to close it out.
  */
-export const TODO_FINAL_ACTIVE =
-  "**TODO UPDATE REQUIRED — LAST TASK STILL in_progress**\n" +
-  "\n" +
-  "1 task remains `in_progress`, 0 `pending`. A subagent just finished work.\n" +
-  "Mark it `completed` now, or move unfinished items back to `pending`.\n" +
-  "STALE STATUS = INVISIBLE WORK = FORGOTTEN WORK.";
+export const TODO_DONE_NUDGE = `<internal-reminder>
+**TODO UPDATE REQUIRED** — last task still in_progress.
+
+1 task remains \`in_progress\`, 0 \`pending\`. Mark it \`completed\` or move unfinished items back to \`pending\`.
+UNCLOSED LIST = STALE STATUS = LOST PROGRESS.
+</internal-reminder>`;
+
+/**
+ * Nudge text injected when all todos are completed or cancelled but work
+ * is still happening (analogous to PLAN_RESUME_NUDGE for plan).
+ */
+export const TODO_RESUME_NUDGE = `<internal-reminder>
+**TODO LIST DONE** — all items completed or cancelled.
+
+If work continues, add new items and set one to \`in_progress\`.
+CLEARED LIST = BROKEN TRACKING = LOST PROGRESS.
+</internal-reminder>`;
+
+// ---------------------------------------------------------------------------
+// Plan progress nudges
+// ---------------------------------------------------------------------------
+
+/**
+ * Nudge text shown when an executing plan has unchecked TODOs.
+ * `{slug}`, `{done}`, `{total}` are replaced at injection time.
+ */
+export const PLAN_PROGRESS_NUDGE = `<internal-reminder>
+**PLAN PROGRESS — {slug}** ({done}/{total} TODOs completed)
+
+Open \`{path}\` and check off completed TODOs.
+
+UNMARKED TODO = UNTRACKED WORK = LOST PROGRESS.
+</internal-reminder>`;
+
+/**
+ * Nudge text shown when all TODOs are checked off but plan status is still "executing".
+ * `{slug}` is replaced at injection time.
+ */
+export const PLAN_DONE_NUDGE = `<internal-reminder>
+**PLAN COMPLETE — {slug}** All TODOs are checked off but the plan status is still "executing".
+
+Open \`{path}\` — mark status as "done" or add new TODOs.
+
+UNCLOSED PLAN = STALE STATUS = LOST PROGRESS.
+</internal-reminder>`;
+
+/**
+ * Nudge text shown when the plan status is "done" but code edits are still happening.
+ * `{slug}` is replaced at injection time.
+ */
+export const PLAN_RESUME_NUDGE = `<internal-reminder>
+**PLAN RESURRECTED — {slug}** This plan is marked "done" but you are still editing files.
+
+Open \`{path}\` — revert status to "executing" or add new TODOs.
+
+RESURRECTED PLAN = BROKEN TRACKING = LOST PROGRESS.
+</internal-reminder>`;
 
 // ---------------------------------------------------------------------------
 // JSON error recovery
