@@ -718,6 +718,60 @@ fn cmd_impact_output(
     }
 }
 
+/// Resolve session IDs from the database (multi-session mode).
+/// Returns `None` when no sessions found or DB error (output already printed).
+fn resolve_impact_multi_sessions(
+    args: &Args,
+    impact: &ImpactArgs<'_>,
+) -> Option<Vec<String>> {
+    let sessions = match db::query_recent_sessions(
+        impact.sessions_n,
+        &args.db,
+        impact.include_all,
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            if args.json {
+                let error =
+                    json!({"error": format!("Database query failed: {e}")});
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&error)
+                        .expect("JSON serialization")
+                );
+            } else {
+                let msg = format!("[red]Database query failed: {e}[/red]");
+                msg_print(&msg);
+            }
+            return None;
+        }
+    };
+    if sessions.is_empty() {
+        if args.json {
+            let warning = json!({
+                "sessions_analyzed": [],
+                "warning": "No sessions found in database."
+            });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&warning)
+                    .expect("JSON serialization")
+            );
+        } else {
+            msg_print("[yellow]No sessions found in database.[/yellow]");
+        }
+        return None;
+    }
+    Some(
+        sessions
+            .iter()
+            .filter_map(|s| {
+                s.get("id").and_then(|v| v.as_str()).map(String::from)
+            })
+            .collect(),
+    )
+}
+
 fn cmd_impact(args: &Args, impact: &ImpactArgs<'_>) {
     let log_dir = zutil::get_zoo_log_dir();
 
@@ -727,27 +781,10 @@ fn cmd_impact(args: &Args, impact: &ImpactArgs<'_>) {
         let path = helpers::resolve_session(sid, &log_dir);
         session_ids.push(helpers::session_id_from_path(&path));
     } else {
-        let sessions = match db::query_recent_sessions(
-            impact.sessions_n,
-            &args.db,
-            impact.include_all,
-        ) {
-            Ok(s) => s,
-            Err(e) => {
-                let msg = format!("[red]Database query failed: {e}[/red]");
-                msg_print(&msg);
-                return;
-            }
-        };
-        if sessions.is_empty() {
-            msg_print("[yellow]No sessions found in database.[/yellow]");
+        let Some(ids) = resolve_impact_multi_sessions(args, impact) else {
             return;
-        }
-        for s in &sessions {
-            if let Some(id) = s.get("id").and_then(|v| v.as_str()) {
-                session_ids.push(id.to_string());
-            }
-        }
+        };
+        session_ids = ids;
     }
 
     // Analysis data structures
@@ -779,14 +816,26 @@ fn cmd_impact(args: &Args, impact: &ImpactArgs<'_>) {
 
     // Output
     if hook_analysis.is_empty() {
-        msg_print(
-            "[yellow]No hook events found in session logs \
-             matching the filter.[/yellow]",
-        );
+        if args.json {
+            let warning = json!({
+                "sessions_analyzed": session_ids,
+                "warning": "No hook events found in session logs matching the filter."
+            });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&warning)
+                    .expect("JSON serialization")
+            );
+        } else {
+            msg_print(
+                "[yellow]No hook events found in session logs \
+                 matching the filter.[/yellow]",
+            );
+        }
         return;
     }
 
-    if !found_steps {
+    if !found_steps && !args.json {
         msg_print(
             "[yellow]No step-finish records found in database for \
              any session. Impact analysis will be incomplete.[/yellow]",
