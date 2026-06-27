@@ -1,8 +1,8 @@
 # ZooKeeper Plan Mode: 完整设计文档
 
-**Version: 1.3 — Date: 2026-06-24 — Classification: 设计方案**
+**Version: 1.5 — Date: 2026-06-27 — Classification: 设计方案**
 
-> **前置阅读**: [`plan-mode-research.md`](./plan-mode-research.md) 覆盖 6 月 10 日的早期调研（plan mode 检测与切换机制）。本文档 v1.0 在调研 omo/slim/omp 的基础上加入 ECC，深入探索了 session reuse、handoff、unreconciled 等具体机制。**v1.1 修订**：对四项目约 20 个关键源文件进行代码级验证，直接在原文各节修正了路由机制（复杂度判定→完备性门控）、对话强度模型（trivial/standard/complex→知识缺口三档）、叶子委派路径等多项设计。修订记录见第 18 章。**v1.3 修订**：P0 mola subagent 方案被尝试后证实不可行并移除，handoff 确认为正确方向；根据实施经验细化 P1 范围。
+> **前置阅读**: [`plan-mode-research.md`](./plan-mode-research.md) 覆盖 6 月 10 日的早期调研（plan mode 检测与切换机制）。本文档 v1.0 在调研 omo/slim/omp 的基础上加入 ECC，深入探索了 session reuse、handoff、unreconciled 等具体机制。**v1.1 修订**：对四项目约 20 个关键源文件进行代码级验证，直接在原文各节修正了路由机制（复杂度判定→完备性门控）、对话强度模型（trivial/standard/complex→知识缺口三档）、叶子委派路径等多项设计。修订记录见第 18 章。**v1.3 修订**：P0 mola subagent 方案被尝试后证实不可行并移除，handoff 确认为正确方向；根据实施经验细化 P1 范围。**v1.5 修订**：P1 Steps 2（plan.ts）+ 6（plan-lifecycle hook）+ `/go` 命令完成实施；完整设计-实现校对，记录 12 项偏差。agent 命名为 "dolphin"，plan 文件暂用 sessionID 子目录。project-id.ts 和集成测试仍待实施。
 
 ---
 
@@ -545,6 +545,8 @@ TUI 自动跳转到新会话
 
 ---
 
+> **v1.5 注：** 本节架构图保留设计意图；实际实现的 agent 命名为 "dolphin"（非 "build")，plan 文件路径为 `~/.zoo/plans/<sessionID>/`（非 `<project-id>/`）——详见 §14 实施状态与 v1.5 修订记录。
+
 ## 8. 最终设计方案
 
 ### 8.1 整体架构
@@ -603,16 +605,18 @@ TUI 自动跳转到新会话
 
 ### 8.2 组件清单
 
-| 组件 | 文件位置 | 职责 | 行数估算 |
-|---|---|---|---|
-| Mola primary prompt | `core/prompts/mola.md` | Role ~10 / Contract ~30 / Workflow ~40 三标签结构；handoff 协议、多轮采访纪律 | ~80 |
-| Plan state manager | `src/core/plan-state.ts` | 读写 plan/spec 文件、解析 frontmatter、状态机、plan/spec state coordination；写入者为 mola（hook 路径约束） | ~200 |
-| Project ID manager | `src/core/project-id.ts` | git remote / basename 推导 project-id，`_projects.json` 索引 | ~150 |
-| 完备性门控 | §11 设计规格（需在 P1 实现于 `core/prompts/build.md`） | 四个知识缺口自检 + reasoning 输出，handoff 触发 | ~130 |
-| Plan lifecycle hook | `src/hooks/plan-lifecycle/index.ts` | handoff 三段 API、状态更新、config 活跃 plan 注入（无 idle 检测） | ~250 |
-| 集成测试 | `tests/runner.py` 新增场景 | trivial/standard/complex 三场景验证 | ~80 |
+| 组件 | 设计文件 | 实际文件 | 状态 | 行数 |
+|---|---|---|---|---|
+| Mola primary prompt | `core/prompts/mola.md` | 同左 | ✅ 已实现 | 60 |
+| Plan state manager | `src/core/plan-state.ts` | `src/core/plan.ts` | ✅ 已实现 | 231 (+337 测试) |
+| Project ID manager | `src/core/project-id.ts` | — | ❌ 未实现 | 设计估 ~150 |
+| 完备性门控 | `core/prompts/build.md`（§11 规格） | `core/prompts/dolphin.md` Phase 1（简化版） | ⚠️ 简化版存在，§11 四问版本未实现 | ~10（简化版） |
+| Plan lifecycle hook | `src/hooks/plan-lifecycle/` | 同左 | ✅ 已实现 | 273 (+398 测试) |
+| `/go` 命令注册 | `src/index.ts` | 同左 | ✅ 已实现 | ~40（command.execute.before） |
+| mola-plan skill | `core/skills/mola-plan/` | 同左 | ✅ 已实现 | SKILL.md 241 + references 350 + templates 158 |
+| 集成测试 | `tests/runner.py` 场景 | — | ❌ 未实现 | 设计估 ~80 |
 
-**总计**: ~960 行代码，6 个组件（P1 核心）。**已暂缓至 P2**：`session-tracker.ts`、Background Job Board、idle 检测。
+**P1 核心已实现**: plan.ts + plan-lifecycle hook + mola.md + mola-plan skill + config.toml + `/go` 命令 ≈ 1,340 行代码 + 735 行测试。**未实现**: project-id.ts、完备性门控（§11 四问版）、集成测试场景。**已暂缓至 P2**: `session-tracker.ts`、Background Job Board、idle 检测。
 
 ---
 
@@ -965,13 +969,13 @@ Bash Usage Rules:
 | 角色 | 职责 |
 |---|---|
 | **Mola**（primary）| **直接写 plan 文件**（edit/write 路径约束至 `~/.zoo/**/*.md`）|
-| **Build**（orchestrator）| 维护 `_projects.json` 索引；更新 `executing`/`done` 状态；执行阶段直接编辑 plan |
+| **Dolphin**（orchestrator）| 维护 `_projects.json` 索引；更新 `executing`/`done` 状态；执行阶段直接编辑 plan |
 
 **为什么这样**:
 - mola 在多轮采访后直接产出 plan 并写入，减少 orchestrator 的中继开销
 - hook 路径约束保证写入安全（参考 omo `prometheus-md-only`）
-- build 保留状态更新权（`executing`/`done` 发生在规划之后）
-- 执行阶段 build 可直接编辑 plan（中等/轻微调整），无需 handoff 回 mola
+- dolphin 保留状态更新权（`executing`/`done` 发生在规划之后）
+- 执行阶段 dolphin 可直接编辑 plan（中等/轻微调整），无需 handoff 回 mola
 
 **P0 旧设计（已废弃）**: plan agent 输出文本 → orchestrator 代理写。该方案因缺少多轮采访能力被放弃。
 
@@ -1039,67 +1043,75 @@ P0 还提供了以下过程验证（lessons learned，非前向携带）：
 
 ### 14.1 七步分解（P1 工程实施）
 
-> **v1.3 修订：** P0 mola subagent 已废弃，P1 直接实现 handoff。`session-tracker.ts` 暂缓至 P2（与 Background Job Board 一起实现）；plan-lifecycle hook 去掉 idle 检测（handoff 替代了该需求）。新增 Step 5（mola-plan skill 重建）—— P0 的设计范式作为前向携带架构在 P1 中复活。
+> **v1.5 更新：** Steps 2 和 6 已完成。Step 3（project-id.ts）和 Step 7（集成测试）仍待实施。完备性门控（§11 四问版）在 dolphin.md 中仅有简化版。agent 最终命名为 "dolphin"（替代设计文档原 "build"）。plan 文件存储路径为 `~/.zoo/plans/<sessionID>/`（替代设计文档原 `<project-id>/`，详见 v1.5 修订记录）。
 
 ```
 Step 1. config.toml + install.py                 — ✅ mola primary agent 注册 + 内置 plan 禁用
-Step 2. src/core/plan-state.ts                   — plan 文件解析/写入/状态机（写入者改为 mola 直接写）
-Step 3. src/core/project-id.ts + _projects.json  — 项目 ID 推导 + 索引管理
-Step 4. core/prompts/mola.md                     — ✅ mola prompt (Role/Contract/Workflow, no Intent Routing)
-Step 5. core/skills/mola-plan/                   — ✅ plan skill (SKILL.md + 三个 reference + 两个 scaffold 脚本)
-Step 6. src/hooks/plan-lifecycle/index.ts        — handoff 注入（三段 API）+ plan 状态更新（去掉 idle 检测）
-Step 7. 集成测试 + runner.py 场景               — trivial/standard/complex 三场景验证
+Step 2. src/core/plan.ts                         — ✅ plan 文件解析/写入/状态机（实现文件名 plan.ts 替代设计 plan-state.ts）
+Step 3. src/core/project-id.ts + _projects.json  — ❌ 未实现
+Step 4. core/prompts/mola.md                     — ✅ mola prompt (60 行，含 Agents 委派段)
+Step 5. core/skills/mola-plan/                   — ✅ plan skill (SKILL.md + 3 reference + 2 template，无 scaffold 脚本)
+Step 6. src/hooks/plan-lifecycle/ + src/index.ts — ✅ handoff `/go` 命令 + 三段 API + plan 状态更新
+Step 7. 集成测试 + runner.py 场景               — ❌ 未实现
 ```
 
 ### 14.2 每步的具体产出
 
-**Step 1: config.toml + install.py** (~50 行) ✅ 已完成
-- `[agent.mola]` 块：`mode = "primary"`（默认），`model = "{env:ZOO_MODEL}"`
-- 工具权限：`task = "deny"`（P1 阶段不自委派），`webfetch/websearch = "deny"`，`edit/write/read/grep/glob/bash/question` 默认 allow（hook 运行时路径约束至 `~/.zoo/**/*.md`）
-- Skill 授权：`mola-plan` + `wiki-query` allow，其余 deny
+**Step 1: config.toml + install.py** (~15 行) ✅ 已完成
+- `[agent.mola]` 块：默认 `mode = "primary"`（不显式声明），`model = "{env:ZOO_MODEL}"`，`color = "#FFA500"`
+- 工具权限：`webfetch = "deny"`，`websearch = "deny"`。`task = "deny"` 为隐式（未列出，OpenCode 框架默认 deny）。`edit/write/read/grep/glob/bash/question` 默认 allow（hook 运行时路径约束至 `~/.zoo/**/*.md`）
+- Skill 授权：`"*" = "deny"`，`"mola-plan" = "allow"`，`"wiki-query" = "allow"`
 - `[agent.plan] disable = true`（内置 plan agent 禁用，mola 接管规划职责）
+- `[agent.dolphin]`：orchestrator agent（设计文档原 "build" 最终命名为 "dolphin"）
 - `[zoo.skills]` 新增 `mola-plan = "enable"`
 - install.py 无需改动（直接透传 agent 配置，透传 `[zoo.skills]`）
 
-**Step 2: plan-state.ts** (~200 行)
-- 纯逻辑模块（零 OpenCode 依赖，可被 TS 运行时 import）
-- 函数: readPlan(slug), writePlan(slug, content, metadata), updateStatus(slug, newStatus)
-- YAML frontmatter 解析（用 gray-matter 或类似库）
-- 状态机校验: planning → planning-done → executing → done
-- **写入者变更**：P1 中 mola 直接写 plan 文件（非 orchestrator 代理写），hook 路径约束保证安全
+**Step 2: plan.ts** (231 行 + 337 测试) ✅ 已完成
+- 纯逻辑模块（零 OpenCode 依赖，可被 TS 运行时 import），文件名 `plan.ts`（设计文档原 `plan-state.ts`）
+- 函数: `plansDir(sessionID)`, `parseFrontmatter(content)`, `findPlanByStatus(sessionID, targetStatus)`, `updatePlanStatus(content, newStatus)`, `writePlan(planPath, content)`, `rewritePlanPath(tool, args, sessionID)`, `buildPlanReference(planPath)`, `buildConfirmText()`
+- Plan 文件存储路径：`~/.zoo/plans/<sessionID>/<slug>.md`（设计原为 `<project-id>/`——project-id 管理器未实现时退化为 sessionID 子目录）
+- `rewritePlanPath()` 透明地将 mola 对 `~/.zoo/plans/<file>.md` 的写入重定向到 `~/.zoo/plans/<sessionID>/<file>.md`
+- 状态机校验未显式实现——`updatePlanStatus()` 是自由字符串替换，不校验状态合法性
+- 测试覆盖：plansDir、parseFrontmatter（5 场景）、findPlanByStatus（5 场景）、updatePlanStatus（4 场景）、writePlan、rewritePlanPath（7 场景）、buildPlanReference、buildConfirmText
 
-**Step 3: project-id.ts + _projects.json** (~150 行)
+**Step 3: project-id.ts + _projects.json** ❌ 未实现
 - deriveProjectId() 函数: git remote → basename → 冲突 hash
 - loadProjectsIndex() / saveProjectsIndex()
 - isProjectMapped(projectRoot) + registerProject(projectRoot)
+- 当前临时方案：使用 sessionID 作为 plan 子目录名
 
-**Step 4: mola prompt** (~50 行) ✅ 已完成
+**Step 4: mola prompt** (60 行) ✅ 已完成
 - **Role** (~5 行): mola 规划顾问身份，plan mode sticky
-- **Contract** (~15 行): 6 条硬约束 (plan mode sticky / explore-before-ask / ≤2 questions per turn / adopt defaults / approval gate / diagnostic-only bash)
-- **Workflow** (~15 行): 3 步极简（Load → Execute → Handoff signal），所有规划逻辑下沉到 skill
-- **Tools** (~6 行): read/grep/glob + bash (C6) + edit/write (路径约束) + question
+- **Agents** (~21 行): 声明 lynx/spider 可通过 `task()` 委派（与设计 §14.2 原 "task=deny" 描述不同——mola prompt 中设委派通道，但 config.toml 未显式 allow task）
+- **Contract** (~14 行): 6 条硬约束 (C1–C6)
+- **Workflow** (~5 行): 3 步极简（Load → Execute → Handoff signal），所有规划逻辑下沉到 skill
+- **Tools** (~9 行): task/read/grep/glob/bash + edit/write (路径约束) + question
 
-**Step 5: mola-plan skill** (~600 行) ✅ 已完成
-- `core/skills/mola-plan/SKILL.md` — 单一技能接管全部规划逻辑（6 phases: Ground Check → Classify → Interview → Present Design → Produce → Handoff Signal）
-- Classify 阶段根据 Ground 发现决定加载路径：Clear/Unclear/Architecture，支持中途升级
-- Architectural 路径加载 grill-protocol.md + 生成 spec，然后自动继续走 plan 生产
-- 3 个 reference 文件：intent-clear.md（明确路径）/ intent-unclear.md（调研默认值路径）/ grill-protocol.md（深度访谈 + 场景压力测试 + 领域词汇精炼）
-- 2 个 scaffold 脚本：scaffold-plan.py + scaffold-spec.py，是 plan/spec 格式的唯一权威（包含结构定义 + 内联内容指引）
-- 统一 YAML frontmatter（plan 和 spec 都是 `---`）
-- `mola-spec` skill **已废弃**——其 grill 协议、spec 模板、scenario 压力测试等能力已整体合并进 mola-plan
+**Step 5: mola-plan skill** (SKILL.md 241 + references 350 + templates 158 = 749 行) ✅ 已完成
+- `core/skills/mola-plan/SKILL.md` — 单一技能（6 phases: Ground Check → Classify → Interview → Present Design → Produce → Handoff Signal）
+- 3 个 reference 文件：`intent-clear.md`（83 行，明确路径）/ `intent-unclear.md`（105 行，调研默认值路径）/ `grill-protocol.md`（163 行，深度访谈 + 场景压力测试）
+- 2 个 template 文件：`plan-template.md`（94 行）/ `spec-template.md`（64 行）—— **设计文档原 "scaffold-plan.py / scaffold-spec.py 作为格式唯一权威" 未实现**，模板文件替代此角色
+- Classify 阶段根据 Ground 发现决定加载路径，支持 Graceful upgrade
+- 统一 YAML frontmatter（plan 初始 `status: planning`，完成时设为 `planning-done`）
 
-**Step 6: plan-lifecycle hook** (~250 行)
-- `config` hook: 在新 session 启动时注入系统级 active-plans 概况
-- `tool.execute.after` hook（handoff 后）: task() 返回时检查 plan 进度，更新 frontmatter 状态
-- `chat.message` hook（触发 handoff）: 完备性门控输出 → `output.message["agent"] = "mola"`
-- 新会话 handoff 三段 API（`session.create` → `session.promptAsync` → `tui.publish`）
-- **不含 idle 检测**：handoff 显式创建执行 session，无需推测状态转换
+**Step 6: plan-lifecycle hook** (hook.ts 273 + index.ts 12 + src/index.ts 注册 ~40 = 325 行 + 398 测试) ✅ 已完成
+- `src/index.ts` 中注册 `/go` 命令（`config.command.go`）和 `command.execute.before` handler
+- `handleGoCommand()` 八步编排：查找 plan → 验证 client API → 创建 dolphin 子 session → 更新 plan status → navigate home + TUI publish → 注入 plan reference（promptAsync）→ 注入 silent confirmation（prompt + noReply）→ 可选删除旧 session
+- 使用 `tui.publish()` SSE 事件触发 TUI 切换（非 `tui.selectSession()`）
+- `rewritePlanPath()` 在 `tool.execute.before` 中注册，透明重定向 mola 的 plan 文件写入
+- **未实现：** config hook 的 active-plans 概况注入、chat.message hook 的自动 handoff 触发（`output.message["agent"] = "mola"`）——当前 handoff 仅通过用户显式 `/go` 命令触发
+- **测试覆盖：** 成功路径（5 场景）、错误处理（5 场景）、客户端 API 边界（5 场景）、plan 状态边界（2 场景）
 
-**Step 7: 集成测试 + runner.py 场景** — trivial/standard/complex 三场景验证
+**Step 7: 集成测试 + runner.py 场景** ❌ 未实现
+- 设计规格：trivial/standard/complex 三场景验证
+- `tests/thresholds.toml` 中已有空 `[mola]` 阈值条目
+- 无 plan-mode 场景文件存在
 
 **暂缓至 P2 的组件：**
 - `session-tracker.ts` —— 与 Background Job Board 一起实现
 - `plan-lifecycle hook` 的 idle 检测 —— handoff 替代了此需求
+- `chat.message` hook 自动 handoff 触发 —— 当前仅 `/go` 命令方式
+- `config` hook active-plans 概况注入 —— 需 project-id.ts 先完成
 
 ### 14.3 顺序约束
 
@@ -1249,6 +1261,12 @@ interface BackgroundManager {
 | 58 | mola 工具权限具体配置 | **task=deny + webfetch=deny + websearch=deny；edit/write/read/grep/glob/bash/question 默认 allow** | mola 作为 primary 不委派子 agent（P1 阶段），hook 在运行时把 edit/write 路径约束到 `~/.zoo/**/*.md`。允许 bash 但 prompt 硬约束只跑诊断命令 |
 | 59 | 禁用内置 plan agent | **`[agent.plan] disable = true`** | mola 接管规划职责后，OpenCode 内置 plan agent 会与 mola 冲突。禁用避免两个规划 agent 共存的歧义 |
 | 60 | mola-plan 注册到 skills | **`[zoo.skills] mola-plan = "enable"`** | 通过现有的 skill 注册机制把 mola-plan 加入可用技能列表。mola 的 permission.skill 仅允许 mola-plan + wiki-query，防止 skill 滥用 |
+| 61 | orchestrator 命名 | **"dolphin" 替代设计文档原 "build"** | 实施时最终确定 dolphin 为 orchestrator agent 名，语义更清晰（"海豚——海洋的编排者"）。`config.toml` 中为 `[agent.dolphin]`，prompt 文件为 `dolphin.md`。设计文档历史章节中 "build" 均应理解为 "dolphin" |
+| 62 | plan 文件路径退化方案 | **`~/.zoo/plans/<sessionID>/` 作为 `<project-id>/` 未实现时的临时方案** | project-id.ts（Step 3）未实现时，以 sessionID 作为 plan 子目录名。`rewritePlanPath()` 和 `findPlanByStatus()` 均适配此模式。project-id.ts 实现后切换 |
+| 63 | plan.ts 命名 | **`plan.ts` 替代设计原名 `plan-state.ts`** | 简化命名，state 隐含但非必需的限定词 |
+| 64 | scaffold 脚本 | **不实现 scaffold Python 脚本，template markdown 文件替代** | 决策 #56（脚手架作为格式唯一权威）未落地。模板文件（`templates/plan-template.md` + `spec-template.md`）同时作为生成模板和内联内容指引，mola-plan skill Phase 5 基于模板通过 `write`+`edit` 创建 plan/spec 文件 |
+| 65 | handoff 触发方式 | **仅 `/go` 命令手动触发，不实现 chat.message hook 自动触发** | chat.message hook 检测 `[完备性: ...]` 自动路由到 mola 的设计未实现。当前用户显式在 UI 下拉菜单切换到 mola 或 mola 输出后用户键入 `/go`。自动路由推迟至 P2 |
+| 66 | mola prompt 委派段 | **`<Agents>` 段声明 lynx/spider 委派能力** | 设计文档在 prompt 结构和 config.toml 中均未给 mola 委派子 agent 的能力描述。实际 mola.md 设 `<Agents>` 段声明 task() 委派探索能力。config.toml 中 `task` 未显式 deny 或 allow——存在 prompt-config 权限声明不一致，需在 P2 中对齐 |
 
 ---
 
@@ -1486,12 +1504,105 @@ mola-plan = "enable"
 - `tests/test_static.py` 的 `_get_agent_names()` 加入 disabled agent 过滤，避免测试为 disabled 的 plan agent 找不存在的 prompt 文件
 - `tests/thresholds.toml` 新增空 `[mola]` 阈值条目
 
-**下一步（待实施）**：
+**下一步（至 v1.5，已完成其中的 Steps 2、6）：**
 
-- Step 2：plan-state.ts（plan/spec 文件的前端/写入/状态机，TS 模块）
-- Step 3：project-id.ts + `_projects.json`（项目 ID 推导 + 索引）
-- Step 6：plan-lifecycle hook（handoff 三段 API + plan 状态更新）
-- Step 7：集成测试场景（trivial/standard/architecture 三种深度验证）
+- Step 2：plan-state.ts ✅ → 以 `plan.ts` 文件名实现（231 行 + 337 测试）
+- Step 6：plan-lifecycle hook ✅ → 实现 `/go` 命令 + 八步 handoff 编排（273 行 + 398 测试）
+- Step 3：project-id.ts ❌ 仍待实施
+- Step 7：集成测试场景 ❌ 仍待实施
+
+### v1.5 (2026-06-27) — P1 Steps 2 & 6 完成，设计-实现校对
+
+**新完成的组件（自 v1.4 起）：**
+
+| Step | 组件 | 文件 | 规模 | 测试 |
+|------|------|------|------|------|
+| 2 | Plan state manager | `src/core/plan.ts` | 231 行 | `plan.test.ts` 337 行 |
+| 6 | Plan lifecycle hook | `src/hooks/plan-lifecycle/` | 285 行 | `hook.test.ts` 398 行 |
+| — | `/go` 命令注册 | `src/index.ts` (command.execute.before) | ~40 行 | 由 hook.test.ts 间接覆盖 |
+
+**设计-实现校对与修正：**
+
+| # | 设计文档（v1.4 及之前） | 实际实现 | 状态 |
+|---|---|---|---|
+| 1 | orchestrator 命名为 "build" | 命名为 "dolphin"（`[agent.dolphin]`） | 文档需更新：design doc 中 "build" 均应理解为 "dolphin" |
+| 2 | plan 文件路径 `~/.zoo/plans/<project-id>/` | `~/.zoo/plans/<sessionID>/` | project-id.ts 未实现时退化为 sessionID 子目录；`rewritePlanPath()` 已适配此模式 |
+| 3 | Step 2 文件名 `plan-state.ts` | 实际为 `plan.ts` | 命名简化 |
+| 4 | scaffold-plan.py / scaffold-spec.py 作为格式唯一权威 | 不存在；`templates/plan-template.md` + `spec-template.md` 替代 | 脚本未实现 |
+| 5 | `task = "deny"` 显式声明 | config.toml 中隐式（未列出，框架默认 deny） | 效果等价，但设计文档描述不精确 |
+| 6 | mola prompt "不允许委派子 agent" | mola.md 包含 `<Agents>` 段声明 lynx/spider 委派 | prompt 授权委派，但 config.toml 未显式 allow task——存在 prompt-config 不一致 |
+| 7 | 完备性门控 §11 四个自检 + handoff 路由 | dolphin.md Phase 1 为简化 3-condition gate，无 handoff 路由 | 设计未实现 |
+| 8 | `build.md` 作为 orchestrator prompt | 实际为 `dolphin.md` | 命名已对齐 agent config |
+| 9 | Handoff 自动触发（chat.message hook） | 仅 `/go` 命令手动触发 | 自动 handoff 未实现 |
+| 10 | config hook 注入 active-plans 概况 | 未实现 | 依赖 project-id.ts |
+| 11 | 状态机校验（planning→planning-done→executing→done） | `updatePlanStatus()` 为自由字符串替换，无校验 | 合法状态校验未实现 |
+| 12 | plan 文件初始状态 `status: executing`（§10.1 示例） | mola-plan skill 使用 `status: planning`，完成时设 `planning-done` | 示例应更新以匹配实际模板 |
+
+**关于 agent 命名的说明：**
+
+设计文档 v1.0–v1.4 中统一使用 "build" 指代 orchestrator。实际实现中 orchestrator agent 命名为 "dolphin"（`config.toml` 中 `[agent.dolphin]`）。此更改不影响架构设计——dolphin 承担的设计职责与设计文档中的 build 完全一致。本文档后续版本中的 "build" 均应理解为 "dolphin"，不再逐处替换历史章节。
+
+**关于 plan 文件存储路径的说明：**
+
+设计 §12 计划使用 `~/.zoo/plans/<project-id>/<slug>.md`，由 `project-id.ts`（Step 3）推导 project-id。该组件尚未实现，当前以 sessionID 作为子目录名。`rewritePlanPath()` 和 `findPlanByStatus()` 均已在 sessionID 模式下正常工作。
+
+**关于 scaffold 脚本的说明：**
+
+设计决策 #56（脚手架脚本作为格式唯一权威）未实施。模板文件（`plan-template.md`、`spec-template.md`）替代了脚本角色——它们同时作为文件生成模板和内联内容指引。mola-plan skill Phase 5 直接通过 `write` + `edit` 工具基于模板文件创建 plan/spec，无需经过脚本。
+
+**P1 剩余待实施：**
+
+| 优先级 | 组件 | 预估 |
+|--------|------|------|
+| P1 | Step 3: project-id.ts + `_projects.json` | ~150 行 |
+| P1 | Step 7: 集成测试场景 | ~80 行 |
+| P2 | 完备性门控 §11 四问版（dolphin.md 升级） | ~130 行 |
+| P2 | `chat.message` hook 自动 handoff | ~30 行 |
+| P2 | config hook active-plans 概况注入 | ~50 行 |
+| P2 | 状态机校验 | ~30 行 |
+| P2 | mola prompt-config task 权限对齐 | ~5 行 |
+
+---
+
+### v1.5 (2026-06-27) — P1 Steps 2 & 6 完成，设计-实现校对
+
+**新完成的组件：**
+
+| Step | 组件 | 文件 | 规模 | 测试 |
+|------|------|------|------|------|
+| 2 | Plan state manager | `src/core/plan.ts` | 231 行 | `plan.test.ts` 337 行 |
+| 6 | Plan lifecycle hook | `src/hooks/plan-lifecycle/hook.ts` | 273 行 | `hook.test.ts` 398 行 |
+| — | `/go` 命令 wiring | `src/index.ts` | ~40 行 | 由 hook.test.ts 间接覆盖 |
+| — | barrel export | `src/hooks/plan-lifecycle/index.ts` | 12 行 | — |
+
+**修改的设计文档章节：**
+
+| 章节 | 修订内容 |
+|------|----------|
+| **文档头** | 版本号 1.3→1.5，补充 v1.5 修订摘要 |
+| **§8.1** 架构图前置注 | agent 命名 "dolphin" 替代 "build"，plan 文件路径 `<sessionID>/` 替代 `<project-id>/` |
+| **§8.2** 组件清单表 | 从 6 行估算表扩展为 8 行实际状态表，含文件名、实现状态、行数、测试覆盖 |
+| **§13.3** 责任分离 | "Build" → "Dolphin" |
+| **§14.1** 七步分解 | 更新 7 步状态：Step 2 ✅、Step 3 ❌、Step 6 ✅、Step 7 ❌；添加 agent 命名和路径偏差说明 |
+| **§14.2** 每步产出 | **完全重写**：Steps 1-6 均按实际实现更新（文件名、行数、函数列表、测试覆盖）；Step 5 删除 scaffold 脚本引用、改为 template 文件；Step 6 八步 handoff 流程详述；暂缓至 P2 项新增 4 条 |
+| **v1.4→v1.5** 过渡段 | "下一步" 从待实施改为已完成状态，新增 v1.5 修订条目 |
+
+**12 项设计-实现偏差记录（详见 v1.5 修订）：**
+
+1. orchestrator 命名：build → dolphin
+2. plan 文件路径：`<project-id>/` → `<sessionID>/`（project-id.ts 未实现时的退化方案）
+3. Step 2 文件名：`plan-state.ts` → `plan.ts`
+4. scaffold 脚本：py 脚本 → markdown 模板文件替代
+5. `task = "deny"`：设计显式 → 实现隐式（未列出）
+6. mola 委派：设计不允许 → prompt 设 `<Agents>` 段 + config 未显式 allow（不一致）
+7. 完备性门控：§11 四问 + handoff 路由 → dolphin.md 简化 3-condition，无 handoff 路由
+8. orchestrator prompt 文件名：`build.md` → `dolphin.md`
+9. handoff 触发：chat.message hook 自动 → `/go` 命令手动
+10. config hook active-plans 注入：未实现
+11. 状态机校验：未实现（自由字符串替换）
+12. plan 初始状态示例：`executing` → `planning`（匹配实际模板）
+
+**P1 剩余待实施（优先级排序）：** Step 3（project-id.ts, ~150 行）、Step 7（集成测试, ~80 行）。P2 候选：完备性门控 §11 四问版、chat.message hook 自动 handoff、config hook active-plans 注入、状态机校验、mola prompt-config task 权限对齐。
 
 ---
 

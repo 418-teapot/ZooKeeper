@@ -24,6 +24,7 @@ import type { ContextMetricsOutput } from "./hooks/context-metrics";
 import { measureContext } from "./hooks/context-metrics";
 import { nudgeDirectWork } from "./hooks/direct-work-nudge";
 import { recoverJsonError } from "./hooks/json-error-nudge";
+import { handleGoCommand, rewritePlanPath } from "./hooks/plan-lifecycle";
 import { nudgePostTask } from "./hooks/post-task-nudge";
 import { validateDelegationTarget } from "./hooks/task-delegation";
 import {
@@ -211,6 +212,9 @@ async function runAfterHandlers(
 // Plugin entry point
 // ---------------------------------------------------------------------------
 
+/** Sentinel to short-circuit command processing after /go completes. */
+const GO_HANDLED = new Error("/go command handled — no user message needed");
+
 /**
  * @param input - OpenCode plugin input (unused).
  * @returns Plugin hooks object.
@@ -220,6 +224,7 @@ export async function zookeeper(input: any) {
   const limits = parseLimits(zooConfig);
   const skillsConfig = parseSkillsConfig(zooConfig);
   const client = input.client;
+  const directory: string = (input as any).directory ?? "";
 
   initPluginLogger(zooConfig);
 
@@ -229,6 +234,14 @@ export async function zookeeper(input: any) {
       logPluginInit(agents, limits, skillsConfig);
       injectAgentPrompts(agents);
       registerSkills(config, skillsConfig);
+
+      // Register /go slash command for plan-to-execution handoff.
+      // Handoff is handled entirely in command.execute.before.
+      config.command ??= {};
+      config.command.go = {
+        template: "",
+        description: "Approve plan and handoff to dolphin",
+      };
     },
 
     async "chat.params"(
@@ -259,6 +272,7 @@ export async function zookeeper(input: any) {
       input: { tool: string; sessionID: string; callID: string },
       output: { args?: Record<string, unknown> },
     ) {
+      rewritePlanPath(input.tool, output.args, input.sessionID);
       validateBeforeExec(input, output, limits);
       await validateDelegationTarget(client, input, output);
     },
@@ -286,6 +300,40 @@ export async function zookeeper(input: any) {
         },
       ];
       await runAfterHandlers(handlers, input, output);
+    },
+
+    async "command.execute.before"(
+      input: { command: string; sessionID: string; arguments: string },
+      _output: { parts?: Array<{ type: string; text: string }> },
+    ) {
+      if (input.command !== "go") return;
+      try {
+        await handleGoCommand(client, input.sessionID, directory);
+      } catch (err) {
+        // Inject error message silently — no LLM processing.
+        const msg = err instanceof Error ? err.message : String(err);
+        log(
+          "plan-lifecycle",
+          "go_command_failed",
+          input.sessionID,
+          undefined,
+          "warn",
+          { error: msg },
+        );
+        try {
+          await client?.session?.prompt({
+            path: { id: input.sessionID },
+            body: {
+              noReply: true,
+              parts: [{ type: "text", text: msg, ignored: true }],
+            },
+          });
+        } catch {
+          // Best-effort notification
+        }
+        throw GO_HANDLED;
+      }
+      throw GO_HANDLED;
     },
   };
 }

@@ -45,6 +45,8 @@ The following rules are inviolable. Violation = planning failure.
 
 <Workflow>
 Load the mola-plan skill. The skill owns everything — ground check, classification, routing, interview, design presentation, artifact production, approval gates. Let the skill drive.
+
+When the plan reaches `status: planning-done`, tell the user: **"Plan approved. Type `/go` to handoff to dolphin."**
 </Workflow>
 
 <Tools>

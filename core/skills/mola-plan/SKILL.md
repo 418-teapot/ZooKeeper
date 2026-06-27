@@ -118,16 +118,29 @@ ask for user approval. If the user requests revision, revise that section and co
 
 **Step 5a: Scaffold spec file**
 
-```
-python "scripts/scaffold-spec.py" <slug> <project-root>
-```
+Read `templates/spec-template.md` and adapt it into a spec file:
 
-Idempotent — re-run without `--force` is a no-op (exits 0, prints existing path).
-Creates `~/.zoo/plans/<project-id>/<slug>-spec-<YYYYMMDD>.md` with YAML frontmatter.
+1. Derive the title from the slug (kebab-case → title case).
+2. Compute today's date as `YYYYMMDD`.
+3. Write the spec via the `write` tool to `~/.zoo/plans/<slug>-spec-<YYYYMMDD>.md`
+   with this frontmatter:
+
+   ```yaml
+   ---
+   title: "<Title>"
+   slug: "<slug>-spec-<YYYYMMDD>"
+   created: "<ISO timestamp>"
+   updated: "<ISO timestamp>"
+   status: awaiting-approval
+   ---
+   ```
+
+   Then write the template body, replacing `{{TITLE}}` with the title and filling
+   placeholder sections from the design interview.
 
 **Step 5b: Fill sections** — via edit tool, fill each section per the inline placeholder
-guidance from the scaffold script. Each decision entry includes: Chosen option,
-Alternatives considered, Scenarios tested.
+guidance. Each decision entry includes: Chosen option, Alternatives considered,
+Scenarios tested.
 
 **Step 5c: Self-review** — run 4 checks, fix findings inline:
 
@@ -164,21 +177,37 @@ clarified during the spec process) and continue to plan production below.
 
 **Step 5p: Scaffold plan file**
 
-```
-python "scripts/scaffold-plan.py" <slug> <project-root>
-```
+Read `templates/plan-template.md` and adapt it into a plan file:
 
-Idempotent — re-run without `--force` is a no-op. Use `--force` only when regenerating.
-Scaffold creates `~/.zoo/plans/<project-id>/<slug>-<YYYYMMDD>.md` with YAML frontmatter
-and empty section stubs.
+1. Derive the title from the slug (kebab-case → title case).
+2. Compute today's date as `YYYYMMDD`.
+3. Write the plan via the `write` tool to `~/.zoo/plans/<slug>-<YYYYMMDD>.md`
+   with this frontmatter:
+
+   ```yaml
+   ---
+   status: planning
+   slug: "<slug>-<YYYYMMDD>"
+   project_root: "<path to project root>"
+   created_at: "<ISO timestamp>"
+   updated_at: "<ISO timestamp>"
+   active_sessions: []
+   ---
+   ```
+
+   Then write the template body, replacing `{{TITLE}}` with the title and filling
+   placeholder sections from the interview + design presentation.
+
+The path is automatically redirected to a per-session subdirectory by the plugin,
+so mola does not need to know the session ID.
 
 If a spec was also produced, use it as input context: Decisions + Domain Notes from
-spec flow into the plan's Approach section. Add an optional `## Domain Notes` section
-if vocabulary was sharpened during the spec process.
+the spec flow into the plan's Approach section. Add an optional `## Domain Notes`
+section if vocabulary was sharpened during the spec process.
 
 **Step 5q: Fill sections** — via edit tool, fill each section using the inline
-placeholder guidance from the scaffold script. Do NOT hand-build the file from scratch
-— always scaffold first.
+placeholder guidance from the template. Do NOT hand-build the file from scratch
+— always use the template.
 
 **Step 5r: Self-review** — same 4 checks adapted for the plan file:
 1. **Placeholder scan** — no TBD / TODO-as-value / "implement later"
