@@ -1,3 +1,5 @@
+> Path note (2026-06-28): prompt files have since moved to src/agents/<name>.ts; paths below reflect the pre-refactor layout.
+
 # ZooKeeper Plan Mode: 完整设计文档
 
 **Version: 1.7 — Date: 2026-06-27 — Classification: 设计方案**

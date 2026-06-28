@@ -6,7 +6,7 @@
 
 **ZooKeeper** — 一个 OpenCode 编排器插件，通过静态配置权限 + prompt 注入确保编排器不越权调用工具。基于 Python + TypeScript + Rust 构建。
 
-核心机制：`config.toml` 中声明各 agent 的 `permission` deny 列表（**单一事实来源**）和 `[zoo.validation]` 阈值（上下文/提示词长度限制），install.py 编译 permission 部分后写入 OpenCode 配置；`[zoo.validation]` 阈值由 TS 插件在运行时直接读取；插件在 `config` hook 里注入 `core/prompts/*.md` 作为各 agent 的 prompt。
+核心机制：`config.toml` 中声明各 agent 的 `permission` deny 列表（**单一事实来源**）和 `[zoo.validation]` 阈值（上下文/提示词长度限制），install.py 编译 permission 部分后写入 OpenCode 配置；`[zoo.validation]` 阈值由 TS 插件在运行时直接读取；插件在 `config` hook 里注入 `src/agents/<name>.ts` 中定义的 prompt 常量作为各 agent 的 prompt。
 
 ## 命令
 
@@ -64,9 +64,17 @@ ZooKeeper/
 ├── test.sh                  # 统一测试脚本（Python + Rust + TS）
 ├── build.sh                 # Release 编译 Rust CLI 工具
 ├── core/
-│   ├── prompts/*.md         # 各 agent 的 prompt 文件（被插件动态注入）
 │   └── skills/              # skill 定义目录
 ├── src/                     # OpenCode 插件 TS 代码
+│   ├── agents/              # 各 agent 的 prompt 常量文件
+│   │   ├── parts.ts         # 共享 prompt 片段（DELEGATION_FORMAT_TEXT、TASK_PROMPT_HINT）
+│   │   ├── dolphin.ts
+│   │   ├── beaver.ts
+│   │   ├── mola.ts
+│   │   ├── lynx.ts
+│   │   ├── spider.ts
+│   │   ├── eagle.ts
+│   │   └── kiwi.ts
 │   ├── index.ts             # 插件入口 — 薄接线层，注册 6 个 hook
 │   ├── core/                # 框架无关纯逻辑（零 OpenCode 依赖）
 │   │   ├── validate.ts      # task prompt 校验（section 提取、词数限制、反模式检测）
@@ -116,7 +124,8 @@ ZooKeeper/
 - **`config.toml`** — 用户配置模板（单一事实来源），所有 deny 权限和 agent 配置在此声明，`[zoo.validation]` 阈值由 TS 插件在运行时直接读取
 - **`src/index.ts`** — 插件入口，薄接线层，注册 6 个 hook
 - **`src/core/`** — 框架无关纯逻辑模块，零 OpenCode 依赖，可被任何 TS 运行时 import
-- **`core/prompts/*.md`** — 各 agent 的 prompt 文件，按 `{agent-name}.md` 命名
+- **`src/agents/<name>.ts`** — 各 agent 的 prompt 常量文件，按 `{agent-name}.ts` 命名
+- **`src/agents/parts.ts`** — 共享 prompt 片段常量（`DELEGATION_FORMAT_TEXT`、`TASK_PROMPT_HINT`）
 - **`tools/Cargo.toml`** — Rust workspace 根配置
 
 ## 调试/日志

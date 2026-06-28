@@ -1,3 +1,5 @@
+> Path note (2026-06-28): prompt files have since moved to src/agents/<name>.ts; paths below reflect the pre-refactor layout.
+
 # Plan Mode Detection and Switching Research
 
 **Version: 0.2 — Date: 2026-06-10 — Classification: 技术调研**

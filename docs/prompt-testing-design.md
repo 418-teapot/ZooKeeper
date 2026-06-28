@@ -1,3 +1,5 @@
+> Path note (2026-06-28): prompt files have since moved to src/agents/<name>.ts; paths below reflect the pre-refactor layout.
+
 # ZooKeeper 提示词评估测试设计文档
 
 **版本:** 1.0  

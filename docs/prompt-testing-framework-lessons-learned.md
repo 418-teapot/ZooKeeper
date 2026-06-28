@@ -1,3 +1,5 @@
+> Path note (2026-06-28): prompt files have since moved to src/agents/<name>.ts; paths below reflect the pre-refactor layout.
+
 # ZooKeeper Prompt 测试框架：经验教训与技术复盘
 
 > 本文档记录 ZooKeeper 提示词评估测试框架开发过程中的关键问题、解决方案与经验教训。

@@ -1,3 +1,5 @@
+> Path note (2026-06-28): prompt files have since moved to src/agents/<name>.ts; paths below reflect the pre-refactor layout.
+
 # Agent 自主循环机制调研：Ralph Loop vs Auto Research
 
 **版本:** 1.0  

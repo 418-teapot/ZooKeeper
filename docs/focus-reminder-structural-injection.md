@@ -1,3 +1,5 @@
+> Path note (2026-06-28): prompt files have since moved to src/agents/<name>.ts; paths below reflect the pre-refactor layout.
+
 # Focus Reminder 结构注入调研报告：从用户消息附加到强化核心 Prompt
 
 **版本:** 2.0  

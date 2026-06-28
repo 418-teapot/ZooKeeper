@@ -1,3 +1,5 @@
+> Path note (2026-06-28): prompt files have since moved to src/agents/<name>.ts; paths below reflect the pre-refactor layout.
+
 # LLM Wiki — 轻量文件知识库设计文档
 
 **版本:** 2.0

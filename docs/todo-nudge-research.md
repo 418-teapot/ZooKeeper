@@ -1,3 +1,5 @@
+> Path note (2026-06-28): prompt files have since moved to src/agents/<name>.ts; paths below reflect the pre-refactor layout.
+
 # Todo Nudge 机制调研报告：编排器中的进度跟踪与行为引导
 
 **版本:** 1.0  

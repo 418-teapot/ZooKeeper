@@ -17,7 +17,7 @@
 
 插件在运行时通过 Prompt 注入和行为引导 hook 增强 Agent 能力：
 
-- **Prompt 注入**：自动将 `core/prompts/*.md` 注入到对应 Agent，无需手动配置
+- **Prompt 注入**：自动将 `src/agents/<name>.ts` 中定义的 prompt 常量注入到对应 Agent，无需手动配置
 - **Task Prompt 校验**：拦截格式不合规的 `task()` 调用，要求包含 SUMMARY / CONTEXT / ACCEPTANCE 三段式结构
 - **直接工作提醒**：当编排器直接执行代码编辑时，提醒其应当委派子代理完成任务
 - **JSON 错误恢复**：检测工具输出中的 JSON 解析错误，自动注入修复提示

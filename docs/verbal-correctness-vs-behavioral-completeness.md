@@ -1,3 +1,5 @@
+> Path note (2026-06-28): prompt files have since moved to src/agents/<name>.ts; paths below reflect the pre-refactor layout.
+
 # Verbal Correctness vs Behavioral Completeness
 
 > 记录一个在 dolphin-pressure-2 场景中观察到的重要现象：agent 可能在推理/语言表达层面完全正确，但在行为层面没有完成任务。

@@ -8,7 +8,7 @@
  * @module
  */
 
-export { TASK_PROMPT_HINT } from "../../core/prompts.js";
+export { TASK_PROMPT_HINT } from "../../agents/parts.js";
 export {
   type ValidationLimits,
   validateTaskPrompt,

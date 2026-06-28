@@ -1,3 +1,5 @@
+> Path note (2026-06-28): prompt files have since moved to src/agents/<name>.ts; paths below reflect the pre-refactor layout.
+
 # Subagent Prompt 测试策略：开源调研与方案设计
 
 > 本文档基于 8 个开源项目的调研，结合 ZooKeeper 已有测试框架的经验教训，提出 subagent prompt 测试的完整策略。

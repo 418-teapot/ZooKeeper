@@ -9,7 +9,10 @@
  * @module
  */
 
-import { TASK_PROMPT_HINT } from "../../core/prompts.js";
+import {
+  DELEGATION_FORMAT_TEXT,
+  TASK_PROMPT_HINT,
+} from "../../agents/parts.js";
 import {
   type ValidationLimits,
   validateTaskPrompt,
@@ -91,12 +94,7 @@ export function validateBeforeExec(
       "Task prompt format error:\n" +
         `${details}\n\n` +
         "Required format:\n" +
-        "**SUMMARY:** {SUMMARY_TEXT}\n" +
-        "**CONTEXT:** {CONTEXT_FACTS}\n" +
-        "**ACCEPTANCE:** {ACCEPTANCE_CRITERIA}\n\n" +
-        "Fill each placeholder: {SUMMARY_TEXT} = 1 sentence desired outcome; " +
-        "{CONTEXT_FACTS} = facts the subagent cannot discover (focus on WHAT/WHY, not HOW); " +
-        "{ACCEPTANCE_CRITERIA} = 1-2 verifiable outcomes.\n\n" +
+        `${DELEGATION_FORMAT_TEXT}\n\n` +
         "Please rewrite before delegating.",
     );
   }

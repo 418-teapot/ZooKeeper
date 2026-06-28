@@ -1,3 +1,5 @@
+> Path note (2026-06-28): prompt files have since moved to src/agents/<name>.ts; paths below reflect the pre-refactor layout.
+
 # 编排框架横向对比：技术路线分析
 
 > 调研范围：oh-my-openagent、oh-my-opencode-slim、oh-my-pi (omp)、opencode-dynamic-context-pruning、superpowers、skills  

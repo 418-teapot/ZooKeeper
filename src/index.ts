@@ -16,10 +16,17 @@
  *
  * TODO: Add pi / oh-my-pi adapter (framework adapter).
  */
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import config from "../config.toml" with { type: "toml" };
+import { BEAVER_PROMPT } from "./agents/beaver.js";
+import { DOLPHIN_PROMPT } from "./agents/dolphin.js";
+import { EAGLE_PROMPT } from "./agents/eagle.js";
+import { KIWI_PROMPT } from "./agents/kiwi.js";
+import { LYNX_PROMPT } from "./agents/lynx.js";
+import { MOLA_PROMPT } from "./agents/mola.js";
+import { SPIDER_PROMPT } from "./agents/spider.js";
 import type { ContextMetricsOutput } from "./hooks/context-metrics";
 import { measureContext } from "./hooks/context-metrics";
 import { nudgeDirectWork } from "./hooks/direct-work-nudge";
@@ -34,26 +41,20 @@ import {
 } from "./hooks/task-prompt";
 import { initLogger, log, setSessionId } from "./utils/logger.js";
 
+const AGENT_PROMPTS: Record<string, string> = {
+  dolphin: DOLPHIN_PROMPT,
+  beaver: BEAVER_PROMPT,
+  mola: MOLA_PROMPT,
+  lynx: LYNX_PROMPT,
+  spider: SPIDER_PROMPT,
+  eagle: EAGLE_PROMPT,
+  kiwi: KIWI_PROMPT,
+};
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CORE_DIR = resolve(__dirname, "../core");
 
 let _sessionIdSet = false;
-
-// ---------------------------------------------------------------------------
-// Prompt loading
-// ---------------------------------------------------------------------------
-
-/**
- * @param name - Agent name to locate `prompts/{name}.md`.
- * @returns Prompt content, or `undefined` if no file exists.
- */
-function loadPrompt(name: string): string | undefined {
-  try {
-    return readFileSync(resolve(CORE_DIR, `prompts/${name}.md`), "utf-8");
-  } catch {
-    return undefined;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -115,7 +116,7 @@ function logPluginInit(
 function injectAgentPrompts(agents: Record<string, any>): void {
   for (const [name, agent] of Object.entries(agents)) {
     if (typeof agent !== "object" || agent === null) continue;
-    const prompt = loadPrompt(name);
+    const prompt = AGENT_PROMPTS[name];
     if (prompt) {
       (agent as any).prompt = prompt;
       log("plugin", "agent_loaded", "", undefined, "debug", {
