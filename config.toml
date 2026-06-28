@@ -263,7 +263,6 @@ mode  = "subagent"
 model = "{env:ZOO_SMALL_MODEL}"
 color = "#39C5BB"
 [agent.beaver.permission]
-task = "deny"
 webfetch = "deny"
 websearch = "deny"
 [agent.beaver.permission.skill]

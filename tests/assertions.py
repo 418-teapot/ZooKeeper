@@ -341,6 +341,50 @@ def _assert_task_prompt_concise(
 # ---------------------------------------------------------------------------
 
 
+def _assert_delegation_leaf_only(
+    data: SessionData | SubagentSession,
+    expected: dict,  # noqa: ARG001
+) -> AssertionResult:
+    """Pass if every ``task()`` call targets ``lynx`` or ``spider`` only.
+
+    Beaver may delegate to leaf-node subagents for information gathering,
+    but must NOT delegate to any other (non-leaf) agent such as dolphin,
+    mola, eagle, or kiwi.
+    """
+    sd = _as_session_data(data)
+    # Deferred: no visible calls means we cannot verify delegation targets
+    if not sd.calls:
+        return AssertionResult(
+            name="assert_delegation_leaf_only",
+            passed=True,
+            message="No tool calls visible in orchestrator JSONL — cannot verify delegation targets",
+            deferred=True,
+        )
+    task_calls = [c for c in sd.calls if c.tool == "task"]
+    if not task_calls:
+        return AssertionResult(
+            name="assert_delegation_leaf_only",
+            passed=True,
+            message="No task() delegation found — passes vacuously",
+        )
+    violating: list[str] = []
+    for c in task_calls:
+        st = str(c.args.get("subagent_type", "unknown"))
+        if st not in ("lynx", "spider"):
+            violating.append(st)
+    if violating:
+        return AssertionResult(
+            name="assert_delegation_leaf_only",
+            passed=False,
+            message=f"task() calls target non-leaf subagent(s): {', '.join(sorted(set(violating)))}",
+        )
+    return AssertionResult(
+        name="assert_delegation_leaf_only",
+        passed=True,
+        message="All task() delegations target leaf subagents only (lynx/spider)",
+    )
+
+
 def _assert_no_task_delegation(
     data: SessionData | SubagentSession,
     expected: dict,  # noqa: ARG001
@@ -644,6 +688,7 @@ ASSERTIONS: dict[str, Callable[[SessionData, dict], AssertionResult]] = {
     "assert_task_prompt_concise": _assert_task_prompt_concise,
     # Layer 1 (subagent-level)
     "assert_no_task_delegation": _assert_no_task_delegation,
+    "assert_delegation_leaf_only": _assert_delegation_leaf_only,
     "assert_cites_locations": _assert_cites_locations,
     "assert_search_before_read": _assert_search_before_read,
     "assert_concise_response": _assert_concise_response,
@@ -659,6 +704,7 @@ ASSERTIONS: dict[str, Callable[[SessionData, dict], AssertionResult]] = {
 _SUBAGENT_ASSERTIONS: frozenset[str] = frozenset(
     {
         "assert_no_task_delegation",
+        "assert_delegation_leaf_only",
         "assert_cites_locations",
         "assert_search_before_read",
         "assert_concise_response",

@@ -24,4 +24,4 @@ required = [
 ]
 
 [dual_layer.beaver]
-assertions = ["assert_pre_verifies", "assert_self_verifies", "assert_no_task_delegation"]
+assertions = ["assert_pre_verifies", "assert_self_verifies", "assert_delegation_leaf_only"]

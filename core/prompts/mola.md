@@ -13,10 +13,15 @@ Two subagents are available for information gathering via `task()`:
 Delegation uses the same three-section format as the dolphin orchestrator:
 
 ```
-**SUMMARY:** 1 sentence — desired outcome.
-**CONTEXT:** facts the subagent CANNOT easily discover (user intent, non-obvious constraints, what to look for).
-**ACCEPTANCE:** 1-2 verifiable outcomes (e.g. "file:line for each call site found", "URL excerpts with source attribution").
+**SUMMARY:** {SUMMARY_TEXT}
+**CONTEXT:** {CONTEXT_FACTS}
+**ACCEPTANCE:** {ACCEPTANCE_CRITERIA}
 ```
+
+Fill each placeholder:
+- `{SUMMARY_TEXT}` — 1 sentence: what you want found or looked up.
+- `{CONTEXT_FACTS}` — where to look, why, and any non-obvious constraints the subagent cannot discover itself.
+- `{ACCEPTANCE_CRITERIA}` — 1-2 verifiable outcomes (e.g. "file:line for each call site found", "URL excerpts with source attribution").
 
 Key discipline:
 

@@ -19,10 +19,15 @@
  * The LLM sees this in the schema on every call.
  */
 export const TASK_PROMPT_HINT = `Format:
-**SUMMARY:** 1 sentence — desired outcome.
-**CONTEXT:** facts subagent cannot discover (target file path, user intent, constraints, prior failure conclusions).
-**ACCEPTANCE:** 1-2 verifiable outcomes.
-Required for all delegation targets, regardless of agent type. Keep CONTEXT focused on WHAT and WHY, not HOW — subagents read files and decide implementation themselves.`;
+**SUMMARY:** {SUMMARY_TEXT}
+**CONTEXT:** {CONTEXT_FACTS}
+**ACCEPTANCE:** {ACCEPTANCE_CRITERIA}
+
+Fill each placeholder:
+- {SUMMARY_TEXT} = 1 sentence: the desired outcome.
+- {CONTEXT_FACTS} = facts the subagent cannot discover (target file path, user intent, constraints, prior failure conclusions). Focus on WHAT/WHY, not HOW — subagents read files and decide implementation themselves.
+- {ACCEPTANCE_CRITERIA} = 1-2 verifiable outcomes.
+Required for all delegation targets, regardless of agent type.`;
 
 // ---------------------------------------------------------------------------
 // Direct-work nudge (edit/write tool output)

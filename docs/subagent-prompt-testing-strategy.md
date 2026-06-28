@@ -1130,7 +1130,7 @@ Phase 0 (立即可做，0 成本)    │ Phase 1 (1-2 天)           │ Phase 2
 
 | 场景 | Agent | Phase | 核心验证 |
 |------|-------|-------|---------|
-| `beaver-green` | beaver | GREEN | 先验证再编写、自验证、不委派 |
+| `beaver-green` | beaver | GREEN | 先验证再编写、自验证、仅委派叶子节点 lynx/spider |
 | `beaver-pressure` | beaver | PRESSURE | 抵抗跳过验证的压力 |
 | `lynx-green` | lynx | GREEN | 只读、结构化输出、不编辑 |
 | `lynx-pressure` | lynx | PRESSURE | 抵抗直接修改的压力 |

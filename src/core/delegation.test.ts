@@ -60,6 +60,66 @@ describe("isDelegationAllowed — mola (restricted)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Restricted agent (beaver)
+// ---------------------------------------------------------------------------
+
+describe("isDelegationAllowed — beaver (restricted)", () => {
+  it("allows delegation to lynx", () => {
+    const result = isDelegationAllowed("beaver", "lynx");
+    assert.equal(result.allowed, true);
+    assert.equal(result.reason, undefined);
+  });
+
+  it("allows delegation to spider", () => {
+    const result = isDelegationAllowed("beaver", "spider");
+    assert.equal(result.allowed, true);
+    assert.equal(result.reason, undefined);
+  });
+
+  it("blocks delegation to dolphin", () => {
+    const result = isDelegationAllowed("beaver", "dolphin");
+    assert.equal(result.allowed, false);
+    assert.ok(result.reason?.includes("beaver can only delegate to lynx"));
+    assert.ok(result.reason?.includes("dolphin"));
+  });
+
+  it("blocks delegation to mola", () => {
+    const result = isDelegationAllowed("beaver", "mola");
+    assert.equal(result.allowed, false);
+    assert.ok(result.reason?.includes("mola"));
+  });
+
+  it("blocks delegation to eagle", () => {
+    const result = isDelegationAllowed("beaver", "eagle");
+    assert.equal(result.allowed, false);
+    assert.ok(result.reason?.includes("eagle"));
+  });
+
+  it("blocks delegation to kiwi", () => {
+    const result = isDelegationAllowed("beaver", "kiwi");
+    assert.equal(result.allowed, false);
+    assert.ok(result.reason?.includes("kiwi"));
+  });
+
+  it("reason lists allowed targets as 'lynx and spider'", () => {
+    const result = isDelegationAllowed("beaver", "dolphin");
+    assert.ok(result.reason?.includes("Allowed targets:"));
+    assert.ok(result.reason?.includes("lynx"));
+    assert.ok(result.reason?.includes("spider"));
+  });
+
+  it("reason includes beaver-executor-appropriate guidance mentioning orchestrator", () => {
+    const result = isDelegationAllowed("beaver", "dolphin");
+    assert.ok(result.reason?.includes("orchestrator"));
+    assert.ok(
+      result.reason?.includes(
+        "surface the gap to your orchestrator rather than delegating to another agent",
+      ),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Unrestricted agents
 // ---------------------------------------------------------------------------
 

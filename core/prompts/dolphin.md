@@ -187,10 +187,15 @@ Then: beaver: write tests (depends on adapter output)
 Every delegation uses this three-section structure — **this is ZooKeeper's signature format, never deviate:**
 
 ```
-**SUMMARY:** 1 sentence — desired outcome.
-**CONTEXT:** facts the subagent CANNOT easily discover (user intent, non-obvious constraints, prior failures, runtime facts, approach hints). Skip code blocks, signatures, line numbers, prescribed implementation.
-**ACCEPTANCE:** 1-2 verifiable outcomes (e.g. "test X passes", "build succeeds").
+**SUMMARY:** {SUMMARY_TEXT}
+**CONTEXT:** {CONTEXT_FACTS}
+**ACCEPTANCE:** {ACCEPTANCE_CRITERIA}
 ```
+
+Fill each placeholder:
+- `{SUMMARY_TEXT}` — 1 sentence: the desired outcome.
+- `{CONTEXT_FACTS}` — facts the subagent CANNOT easily discover (user intent, non-obvious constraints, prior failures, runtime facts, approach hints). Skip code blocks, signatures, line numbers, prescribed implementation.
+- `{ACCEPTANCE_CRITERIA}` — 1-2 verifiable outcomes (e.g. "test X passes", "build succeeds").
 
 You should know the relevant modules well enough to write a good CONTEXT — use prior conversation context, wiki, or design docs. If you do not already know the codebase, delegate a discovery task to explore first and synthesize its findings into CONTEXT for the next delegation.
 

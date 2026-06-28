@@ -172,6 +172,71 @@ describe("validateDelegationTarget — mola blocked", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Beaver — allowlisted targets
+// ---------------------------------------------------------------------------
+
+describe("validateDelegationTarget — beaver allowlisted", () => {
+  it("allows beaver to delegate to lynx", async () => {
+    const client = mockClient("beaver");
+    const err = await tryValidate(client, "task", "s1", {
+      subagent_type: "lynx",
+    });
+    assert.equal(err, null);
+  });
+
+  it("allows beaver to delegate to spider", async () => {
+    const client = mockClient("beaver");
+    const err = await tryValidate(client, "task", "s1", {
+      subagent_type: "spider",
+    });
+    assert.equal(err, null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Beaver — blocked targets
+// ---------------------------------------------------------------------------
+
+describe("validateDelegationTarget — beaver blocked", () => {
+  it("blocks beaver delegating to dolphin", async () => {
+    const client = mockClient("beaver");
+    const err = await tryValidate(client, "task", "s1", {
+      subagent_type: "dolphin",
+    });
+    assert.ok(err instanceof Error);
+    assert.ok(err.message.includes("beaver can only delegate to lynx"));
+    assert.ok(err.message.includes("dolphin"));
+  });
+
+  it("blocks beaver delegating to mola", async () => {
+    const client = mockClient("beaver");
+    const err = await tryValidate(client, "task", "s1", {
+      subagent_type: "mola",
+    });
+    assert.ok(err instanceof Error);
+    assert.ok(err.message.includes("mola"));
+  });
+
+  it("blocks beaver delegating to eagle", async () => {
+    const client = mockClient("beaver");
+    const err = await tryValidate(client, "task", "s1", {
+      subagent_type: "eagle",
+    });
+    assert.ok(err instanceof Error);
+    assert.ok(err.message.includes("eagle"));
+  });
+
+  it("blocks beaver delegating to kiwi", async () => {
+    const client = mockClient("beaver");
+    const err = await tryValidate(client, "task", "s1", {
+      subagent_type: "kiwi",
+    });
+    assert.ok(err instanceof Error);
+    assert.ok(err.message.includes("kiwi"));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Build — unrestricted
 // ---------------------------------------------------------------------------
 

@@ -91,9 +91,12 @@ export function validateBeforeExec(
       "Task prompt format error:\n" +
         `${details}\n\n` +
         "Required format:\n" +
-        "**SUMMARY:** one sentence — desired outcome.\n" +
-        "**CONTEXT:** facts subagent cannot discover.\n" +
-        "**ACCEPTANCE:** 1-2 verifiable outcomes.\n\n" +
+        "**SUMMARY:** {SUMMARY_TEXT}\n" +
+        "**CONTEXT:** {CONTEXT_FACTS}\n" +
+        "**ACCEPTANCE:** {ACCEPTANCE_CRITERIA}\n\n" +
+        "Fill each placeholder: {SUMMARY_TEXT} = 1 sentence desired outcome; " +
+        "{CONTEXT_FACTS} = facts the subagent cannot discover (focus on WHAT/WHY, not HOW); " +
+        "{ACCEPTANCE_CRITERIA} = 1-2 verifiable outcomes.\n\n" +
         "Please rewrite before delegating.",
     );
   }

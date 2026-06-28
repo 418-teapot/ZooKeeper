@@ -24,6 +24,23 @@
  */
 const DELEGATION_ALLOWLIST: Record<string, string[]> = {
   mola: ["lynx", "spider"],
+  beaver: ["lynx", "spider"],
+};
+
+// ---------------------------------------------------------------------------
+// Caller-aware guidance map
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-caller guidance suffix appended to blocked delegation reasons.
+ *
+ * Agents not listed here fall back to the beaver executor wording,
+ * which is the safest default for restricted callers.
+ */
+const CALLER_GUIDANCE: Record<string, string> = {
+  mola: "For implementation work, add to the plan TODOs — execution belongs to dolphin.",
+  beaver:
+    "For needs beyond codebase search or web research, surface the gap to your orchestrator rather than delegating to another agent.",
 };
 
 // ---------------------------------------------------------------------------
@@ -62,6 +79,9 @@ export function isDelegationAllowed(
 
   if (!allowed.includes(targetSubagent)) {
     const list = allowed.join(" and ");
+    const guidance =
+      CALLER_GUIDANCE[callerAgent] ??
+      "For needs beyond codebase search or web research, surface the gap to your orchestrator rather than delegating to another agent.";
     return {
       allowed: false,
       reason:
@@ -70,7 +90,7 @@ export function isDelegationAllowed(
         `Allowed targets:\n` +
         `- lynx — codebase search, file discovery, structural analysis\n` +
         `- spider — web research, API documentation lookup\n\n` +
-        `For implementation work, add to the plan TODOs — execution belongs to dolphin.`,
+        `${guidance}`,
     };
   }
 
