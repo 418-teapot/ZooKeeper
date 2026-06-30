@@ -118,9 +118,13 @@ apiKey  = "{env:CAMBRICON_API_KEY}"
 [provider.Cambricon.options.headers]
 x-project = "personal"
 
-[provider.Cambricon.models."glm-5.1"]
-name = "glm-5.1"
-id   = "glm-5.1"
+[provider.Cambricon.models."glm-5.2"]
+name = "glm-5.2"
+id   = "glm-5.2"
+
+[provider.Cambricon.models."glm-5.2".limit]
+context = 200000
+output  = 128000
 
 [provider.Cambricon.models."MiniMax-M2.7"]
 name = "MiniMax-M2.7"
