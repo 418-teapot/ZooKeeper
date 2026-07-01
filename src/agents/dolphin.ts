@@ -1,6 +1,7 @@
 import {
   BEAVER_AGENT_LINE,
   DELEGATION_FORMAT_TEXT,
+  DELEGATION_LEAF_EXAMPLE,
   EAGLE_AGENT_LINE,
   KIWI_AGENT_LINE,
   LYNX_AGENT_LINE,
@@ -203,11 +204,7 @@ Every delegation uses this three-section structure — **this is ZooKeeper's sig
 ${DELEGATION_FORMAT_TEXT}
 You should know the relevant modules well enough to write a good CONTEXT — use prior conversation context, wiki, or design docs. If you do not already know the codebase, delegate a discovery task to explore first and synthesize its findings into CONTEXT for the next delegation.
 
-> BAD — prescribes implementation:
-> **CONTEXT:** DB connector has no pooling. Add Pool class with max_workers=10 at src/db.py:45.
->
-> GOOD — transfers goal + constraints:
-> **CONTEXT:** Production DB shows "too many connections" under load. Must keep existing get_connection API (called from auth, query, migration). Target: ≤10 concurrent connections per process, 30s idle timeout.
+${DELEGATION_LEAF_EXAMPLE}
 
 ### 4.2 Brief the user
 

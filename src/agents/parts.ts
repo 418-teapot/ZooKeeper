@@ -16,17 +16,12 @@
 /**
  * Canonical delegation-format block.
  *
- * Three required sections (SUMMARY / CONTEXT / ACCEPTANCE) with placeholder
- * descriptions. Used by all agents that delegate via `task()`.
+ * Three required sections (SUMMARY / CONTEXT / ACCEPTANCE) with concise
+ * structural guidance. Used by all agents that delegate via `task()`.
  */
-export const DELEGATION_FORMAT_TEXT = `**SUMMARY:** {SUMMARY_TEXT}
-**CONTEXT:** {CONTEXT_FACTS}
-**ACCEPTANCE:** {ACCEPTANCE_CRITERIA}
-
-Fill each placeholder:
-- \`{SUMMARY_TEXT}\` — 1 sentence: the desired outcome.
-- \`{CONTEXT_FACTS}\` — facts the subagent CANNOT easily discover (user intent, non-obvious constraints, prior failures, runtime facts, approach hints). Skip code blocks, signatures, line numbers, prescribed implementation.
-- \`{ACCEPTANCE_CRITERIA}\` — 1-2 verifiable outcomes (e.g. "test X passes", "build succeeds").
+export const DELEGATION_FORMAT_TEXT = `- **SUMMARY** — 1 sentence: the desired outcome.
+- **CONTEXT** — facts the subagent CANNOT easily discover (user intent, non-obvious constraints, prior failures, runtime facts, approach hints). Skip code blocks, signatures, line numbers, prescribed implementation.
+- **ACCEPTANCE** — 1-2 verifiable outcomes (e.g. "test X passes", "build succeeds").
 `;
 
 // ---------------------------------------------------------------------------
@@ -91,4 +86,30 @@ export const DELEGATION_DISCIPLINE_TEXT = `Key discipline:
 - **Parallelize independent searches** — dispatch lynx (codebase) and spider (web) simultaneously when both are needed.
 - **One \`task()\` = one focused outcome** — split if multiple unrelated goals hide inside a single search.
 - **Information gathering only** — lynx and spider return raw findings; you synthesize them into your implementation. Do not delegate implementation work or design decisions.
+`;
+
+// ---------------------------------------------------------------------------
+// Leaf delegation example — shared across beaver + mola
+// ---------------------------------------------------------------------------
+
+/**
+ * Filled three-section example for leaf-subagent delegation.
+ *
+ * Shows a concrete SUMMARY / CONTEXT / ACCEPTANCE block for a lynx
+ * codebase-search task. Uses a generic scenario (error-handling audit)
+ * so agents pattern-match the structure, not project-specific symbols.
+ * The BAD/GOOD contrast teaches the real failure mode for leaf
+ * delegation: turning a search into a consultation by front-loading
+ * background the subagent never asked for.
+ */
+export const DELEGATION_LEAF_EXAMPLE = `Example (codebase search):
+**SUMMARY:** List every function in \`src/\` that catches an exception and silently returns a default value.
+**CONTEXT:** A user reported a bug where failures vanish without a log — suspect silent catches are masking errors. Focus on catch blocks that return, not those that re-throw.
+**ACCEPTANCE:** Each match as file:line; the catch block's return statement quoted.
+
+> BAD — turns a search into a consultation:
+> **CONTEXT:** We're improving observability across the codebase. Please investigate our error-handling strategy and look for places where exceptions might be swallowed. Consider logging, rethrowing, and error codes. Report on overall patterns.
+>
+> GOOD — scoped search with the one fact lynx cannot derive:
+> **CONTEXT:** A user reported a bug where failures vanish without a log — suspect silent catches are masking errors. Focus on catch blocks that return, not those that re-throw.
 `;

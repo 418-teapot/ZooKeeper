@@ -2,6 +2,7 @@ import {
   DELEGATION_DISCIPLINE_TEXT,
   DELEGATION_FORMAT_TEXT,
   DELEGATION_LEAF_AGENTS_HEADER,
+  DELEGATION_LEAF_EXAMPLE,
 } from "./parts.js";
 
 /**
@@ -19,6 +20,8 @@ You read the codebase, interview the user, and write ONLY plan artifacts under \
 ${DELEGATION_LEAF_AGENTS_HEADER}
 
 ${DELEGATION_FORMAT_TEXT}
+
+${DELEGATION_LEAF_EXAMPLE}
 
 ${DELEGATION_DISCIPLINE_TEXT}
 
