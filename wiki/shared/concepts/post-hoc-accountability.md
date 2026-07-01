@@ -4,10 +4,10 @@ description: 不阻止 agent 越界编辑，而是在实验记录时捕获偏差
 type: concept
 timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, design-philosophy, scope-management, agent-constraint]
-related:
-  - autoresearch/concepts/autoresearch-extension-loop.md
-  - autoresearch/concepts/single-file-modification.md
-  - autoresearch/sources/rfc/autoresearch-design.md
+relations:
+  - "[autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md)"
+  - "[单文件修改原则](autoresearch/concepts/single-file-modification.md)"
+  - "[autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)"
 status: stable
 ---
 
@@ -41,12 +41,6 @@ status: stable
 ### 设计理由
 
 Agent 的自主性不应被硬限制束缚。实际优化中，意料之外的文件修改有时是必要的（如修改配置文件以启用新优化选项）。问责制在保持灵活性的同时提供了透明度，并通过 `flag_runs` 允许人类后续修正。
-
-## Relations
-
-- [autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md) — 问责制是循环的权限管理基础
-- [单文件修改原则](autoresearch/concepts/single-file-modification.md) — Karpathy 原始方案使用硬限制，扩展改用问责制
-- [autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md) — 完整来源
 
 ## Backlinks
 

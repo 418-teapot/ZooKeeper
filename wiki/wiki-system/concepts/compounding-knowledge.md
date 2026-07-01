@@ -5,11 +5,11 @@ resource: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
 type: concept
 timestamp: 2026-06-18T00:00:00Z
 tags: [wiki, knowledge-base, design-principle]
-related:
-  - wiki-system/concepts/wiki-ingest-workflow.md
-  - wiki-system/concepts/wiki-query-synthesis.md
-  - wiki-system/analysis/llm-wiki-vs-rag.md
-  - wiki-system/sources/notes/llm-wiki-karpathy.md
+relations:
+  - "[Wiki Ingest 工作流 — 源材料的增量整合](wiki-system/concepts/wiki-ingest-workflow.md)"
+  - "[Query → Synthesis → 归档 — 查询即知识生产](wiki-system/concepts/wiki-query-synthesis.md)"
+  - "[LLM Wiki vs RAG — 两种知识管理范式的对比](wiki-system/analysis/llm-wiki-vs-rag.md)"
+  - "[LLM Wiki — 用 LLM 构建个人知识库的模式](wiki-system/sources/notes/llm-wiki-karpathy.md)"
 status: stable
 ---
 
@@ -43,13 +43,6 @@ LLM Wiki 在"源文档"和"查询"之间插入一个**持久化 wiki 层**：
 | 每次查询做什么 | 检索分块 → 实时综合 | 导航预建结构 → 补充推理 |
 | 知识积累 | 无 | 每次 ingest/query 都沉淀 |
 | 交叉引用 | 查询时发现 | 维护时建立，查询时复用 |
-
-## Relations
-
-- [Wiki Ingest 工作流 — 源材料的增量整合](wiki-system/concepts/wiki-ingest-workflow.md) — 摄入是复利积累的具体执行流程
-- [Query → Synthesis → 归档 — 查询即知识生产](wiki-system/concepts/wiki-query-synthesis.md) — 查询→归档的闭环是复利机制的关键补充
-- [LLM Wiki vs RAG — 两种知识管理范式的对比](wiki-system/analysis/llm-wiki-vs-rag.md) — 两种模式的结构化对比
-
 
 ## Backlinks
 

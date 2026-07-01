@@ -4,11 +4,11 @@ description: 自主实验中变更评估准则：复杂度成本必须与收益 
 type: concept
 timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, design-principle, complexity-tradeoff]
-related:
-  - autoresearch/concepts/autonomous-experiment-loop.md
-  - autoresearch/concepts/single-file-modification.md
-  - autoresearch/entities/autoresearch-program-md.md
-  - autoresearch/sources/notes/autoresearch.md
+relations:
+  - "[自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md)"
+  - "[单文件修改原则](autoresearch/concepts/single-file-modification.md)"
+  - "[program.md](autoresearch/entities/autoresearch-program-md.md)"
+  - "[autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)"
 status: stable
 ---
 
@@ -41,12 +41,6 @@ Agent 作为自主决策者，需要清晰的启发式来避免：
 ### 与 Occam's Razor 的区别
 
 简约准则不是"选最简单的假设"，而是"在收益相当时选更简单的实现"。它允许复杂方案，但要求复杂方案必须有与之相称的显著收益。
-
-## Relations
-
-- [自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md) — 简约准则是循环中的决策规则
-- [单文件修改原则](autoresearch/concepts/single-file-modification.md) — 单文件约束从物理上限制了复杂度蔓延
-- [autoresearch 项目](autoresearch/sources/notes/autoresearch.md) — 本概念的来源项目
 
 ## Backlinks
 

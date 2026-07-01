@@ -4,9 +4,9 @@ description: 使用 Median Absolute Deviation 作为噪声底限，计算实验�
 type: concept
 timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, statistics, confidence, algorithm]
-related:
-  - autoresearch/concepts/autoresearch-extension-loop.md
-  - autoresearch/sources/rfc/autoresearch-design.md
+relations:
+  - "[autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md)"
+  - "[autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)"
 status: stable
 ---
 
@@ -48,11 +48,6 @@ MAD 对异常值鲁棒。单个极端测量值不会大幅膨胀噪声底限，�
 - 当前 segment 有效 run 少于 3 个（数据不足）
 - `MAD === 0`（所有值相同，无噪声信息）
 - `bestKept === baseline` 或 `bestKept === null`（无改善或无最佳值）
-
-## Relations
-
-- [autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md) — 本算法是循环的评估环节
-- [autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md) — 算法的完整来源
 
 ## Backlinks
 

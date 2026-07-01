@@ -6,10 +6,10 @@ timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, zookeeper, porting, roadmap, opencode]
 sources:
   - autoresearch/sources/rfc/autoresearch-design.md
-related:
-  - autoresearch/concepts/autoresearch-extension-loop.md
-  - shared/analysis/agent-skill-plugin-framework.md
-  - autoresearch/analysis/performance-tuning-design-patterns.md
+relations:
+  - "[autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md)"
+  - "[Agent/Skill/Plugin 判断框架](shared/analysis/agent-skill-plugin-framework.md)"
+  - "[性能调优设计模式](autoresearch/analysis/performance-tuning-design-patterns.md)"
 status: draft
 ---
 
@@ -71,12 +71,6 @@ oh-my-pi 的 autoresearch 扩展（~4131 行 TypeScript）为 ZooKeeper 的 agen
 
 按"低难度优先"顺序：类型定义和 MAD 算法 → METRIC/ASI 解析 → SQLite 存储层 → Git 操作 → 4 个实验工具 → Dashboard → Plugin hooks（最后两者难度高且依赖路径选择）。
 
-## Relations
-
-- [autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md) — 被移植的核心机制
-- [Agent/Skill/Plugin 判断框架](shared/analysis/agent-skill-plugin-framework.md) — 移植的架构设计基础
-- [性能调优设计模式](autoresearch/analysis/performance-tuning-design-patterns.md) — Phase 2 特化的参考模式
-
 ## Backlinks
 
 > 此节由 zwiki 自动维护，请勿手动编辑。
@@ -84,7 +78,6 @@ oh-my-pi 的 autoresearch 扩展（~4131 行 TypeScript）为 ZooKeeper 的 agen
 - [性能调优设计模式](autoresearch/analysis/performance-tuning-design-patterns.md)
 - [autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md)
 - [autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)
-- [Agent/Skill/Plugin 判断框架](shared/analysis/agent-skill-plugin-framework.md)
 
 ## References
 

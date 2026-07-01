@@ -165,13 +165,15 @@ fn fmt_frontmatter(issues: &[Issue]) -> Vec<String> {
 
 fn fmt_related_field(issues: &[Issue]) -> Vec<String> {
     let mut lines = Vec::new();
-    lines
-        .push(format!("## Related 字段完整性（发现 {} 个问题）", issues.len()));
+    lines.push(format!(
+        "## Relations 字段完整性（发现 {} 个问题）",
+        issues.len()
+    ));
     lines.push(String::new());
 
     if issues.is_empty() {
         lines.push(
-            "所有页面的 related 字段均合法，未指向系统文件。✅".to_string(),
+            "所有页面的 relations 字段均合法，未指向系统文件。✅".to_string(),
         );
     } else {
         lines.push("| 页面 | 问题 | 详情 |".to_string());
@@ -190,14 +192,14 @@ fn fmt_related_field(issues: &[Issue]) -> Vec<String> {
 fn fmt_related_body_consistency(issues: &[Issue]) -> Vec<String> {
     let mut lines = Vec::new();
     lines.push(format!(
-        "## Related 与正文一致性（发现 {} 个问题）",
+        "## Relations 与正文一致性（发现 {} 个问题）",
         issues.len()
     ));
     lines.push(String::new());
 
     if issues.is_empty() {
         lines.push(
-            "所有页面的 related 字段与正文内联链接双向一致。✅".to_string(),
+            "所有页面的 relations 字段与正文内联链接双向一致。✅".to_string(),
         );
     } else {
         lines.push("| 页面 | 方向 | 详情 |".to_string());
@@ -611,8 +613,8 @@ mod tests {
             "## 索引同步",
             "## 日志覆盖",
             "## Frontmatter 完整性",
-            "## Related 字段完整性",
-            "## Related 与正文一致性",
+            "## Relations 字段完整性",
+            "## Relations 与正文一致性",
             "## Resource 字段验证",
             "## 缺失内联链接",
             "## 重复内联链接",

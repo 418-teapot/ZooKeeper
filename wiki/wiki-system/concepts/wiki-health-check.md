@@ -5,10 +5,10 @@ resource: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
 type: concept
 timestamp: 2026-06-18T00:00:00Z
 tags: [wiki, maintenance, quality]
-related:
-  - wiki-system/concepts/wiki-ingest-workflow.md
-  - wiki-system/sources/notes/llm-wiki-karpathy.md
-  - wiki-system/concepts/compounding-knowledge.md
+relations:
+  - "[Wiki Ingest 工作流 — 源材料的增量整合](wiki-system/concepts/wiki-ingest-workflow.md)"
+  - "[LLM Wiki — 用 LLM 构建个人知识库的模式](wiki-system/sources/notes/llm-wiki-karpathy.md)"
+  - "[复利知识 — 持久化知识库的核心价值](wiki-system/concepts/compounding-knowledge.md)"
 status: stable
 ---
 
@@ -38,12 +38,6 @@ status: stable
 
 - **LLM 负责：** 语义检查（矛盾、过时声明、数据缺口）——需要理解页面内容
 - **工具脚本负责：** 机械检查（孤立页面、缺失交叉引用、格式一致性）——规则确定，不应由 agent 执行
-
-## Relations
-
-- [Wiki Ingest 工作流 — 源材料的增量整合](wiki-system/concepts/wiki-ingest-workflow.md) — lint 检查 ingest 的质量结果
-- [复利知识 — 持久化知识库的核心价值](wiki-system/concepts/compounding-knowledge.md) — lint 保证复利积累的"本金"不腐烂
-
 
 ## Backlinks
 

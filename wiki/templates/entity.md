@@ -4,8 +4,8 @@ description: <一句话摘要>。
 type: entity
 timestamp: YYYY-MM-DDTHH:mm:ssZ
 tags: [tag1, tag2]
-related:
-  - shared/concepts/foo.md
+relations:
+  - "[示例概念](shared/concepts/foo.md)"
 status: draft|review|stable|deprecated
 ---
 
@@ -28,11 +28,6 @@ status: draft|review|stable|deprecated
 ## Permissions（如适用）
 
 如果该实体涉及权限（如插件、agent），列出其权限范围。
-
-## Relations
-
-- [概念](autoresearch/concepts/related-concept.md) — 实现的领域概念
-- [源文档](autoresearch/sources/adr/some-adr.md) — 相关决策记录
 
 ## Backlinks
 

@@ -4,10 +4,10 @@ description: 不依赖文本内容，仅从页面间拓扑结构推断哪些页�
 type: concept
 timestamp: 2026-06-19T00:00:00Z
 tags: [wiki, graph-theory, link-prediction, health-check]
-related:
-  - wiki-system/concepts/wiki-health-check.md
-  - wiki-system/concepts/compounding-knowledge.md
-  - wiki-system/analysis/llm-wiki-vs-rag.md
+relations:
+  - "[Wiki 健康检查 — 知识库的持续质量维护](wiki-system/concepts/wiki-health-check.md)"
+  - "[复利知识 — 持久化知识库的核心价值](wiki-system/concepts/compounding-knowledge.md)"
+  - "[LLM Wiki vs RAG — 两种知识管理范式的对比](wiki-system/analysis/llm-wiki-vs-rag.md)"
 status: stable
 ---
 
@@ -51,11 +51,7 @@ Wiki 已有的锚文本挖掘（见 [Wiki 健康检查](wiki-system/concepts/wik
 
 理想组合：图方法先缩小候选搜索空间 → 在候选对上做文本匹配决策，避免全对文本比较的开销。
 
-## Relations
-
-- [Wiki 健康检查 — 知识库的持续质量维护](wiki-system/concepts/wiki-health-check.md) — 图链接预测作为"缺失交叉引用"检测的拓扑互补路径
-- [复利知识 — 持久化知识库的核心价值](wiki-system/concepts/compounding-knowledge.md) — 交叉引用密度是 wiki 产生 n² 级关联价值的前提
-- [LLM Wiki vs RAG — 两种知识管理范式的对比](wiki-system/analysis/llm-wiki-vs-rag.md) — 超线性价值依赖交叉引用的完整性## References
+## References
 
 - Liben-Nowell & Kleinberg, "The Link Prediction Problem for Social Networks" (2007)
 - Adamic & Adar, "Friends and Neighbors on the Web" (2003)

@@ -52,9 +52,9 @@
 | 页面模板 | 5 个模板（concept/entity/source/analysis/synthesis） | `wiki/templates/` |
 | SCHEMA.md | **已全面对齐 OKF**：内容页面字段集 + index/log 格式 + 域优先目录结构规范 | `wiki/SCHEMA.md` |
 | `okf_version` 标记 | 仅在 `index.md` frontmatter ✅（OKF §11 唯一允许 frontmatter 的位置） | `wiki/index.md` |
-| 实际页面前置元数据 | 一致使用 `title`/`type`/`description`/`timestamp`/`tags`/`related`/`status`，source 页用 `resource`，analysis/synthesis 用 `sources`（复数） | 抽查 wiki/autoresearch、wiki-system、shared 全部对齐 |
+| 实际页面前置元数据 | 一致使用 `title`/`type`/`description`/`timestamp`/`tags`/`relations`/`status`，source 页用 `resource`，analysis/synthesis 用 `sources`（复数） | 抽查 wiki/autoresearch、wiki-system、shared 全部对齐 |
 | zwiki CLI | **Rust 实现**，含 7 个子命令：`check`、`backlinks`、`log`、`page`、`property`、`create`（含 `--domain` 自动建域骨架） | `tools/zwiki/`（构建产物 `tools/bin/zwiki`） |
-| 健康检查 | `zwiki check` 内含：empty files、index sync（递归 + indexed_anywhere 跨层豁免）、log coverage、frontmatter、related field、**related-body consistency（双向，error 级）**、source field、missing/duplicate inline links | `tools/zwiki/src/health.rs` |
+| 健康检查 | `zwiki check` 内含：empty files、index sync（递归 + indexed_anywhere 跨层豁免）、log coverage、frontmatter、relations field、**relations-body consistency（双向，error 级）**、source field、missing/duplicate inline links | `tools/zwiki/src/health.rs` |
 | Lint 检查 | `zwiki check` 内含：broken links、orphan pages、sparse pages、**stale pages**（`timestamp` 超 90 天且非 deprecated） | `tools/zwiki/src/lint.rs` |
 | `--save` / `--ci` / `--diff` | check 子命令支持 `--save`（写 health-report.md）、`--ci`（按阈值退出码）、`--diff`（git diff 检查） | `tools/zwiki/src/main.rs` |
 | wiki-ingest skill | 4 阶段（Phase 0 分类 → Phase 1 委派 kiwi → Phase 2 通用写入 → Phase 3 验证） | `core/skills/wiki-ingest/SKILL.md` |
@@ -154,7 +154,7 @@
 | `resource` | 否 | string | 仅 `type: source`；外部资产 URI（URL 或 raw 路径） |
 | `sources` | 否 | string[] | 仅 `analysis`/`synthesis`；引用的内部 source slug 列表 |
 | `tags` | 是 | string[] | 自由标签，用于检索过滤 |
-| `related` | 否 | string[] | 关联页面（wiki-root-relative 路径） |
+| `relations` | 否 | string[] | 关联页面（wiki-root-relative 路径） |
 | `status` | 是 | enum | `draft` / `review` / `stable` / `deprecated` |
 
 **命名事故已修正：** `resource`（单数，页面描述的外部对象）与 `sources`（复数，页面引用的内部材料）是两个独立概念，不再撞名。`created`/`updated`/`source`（单数旧名）已从 schema 移除。
@@ -170,7 +170,7 @@ OKF v0.1 §9 一致性三要求：
 2. 每个 frontmatter 含非空 `type`（五值枚举，OKF type 的有效子集）✅
 3. 保留文件名遵循 §6/§7 结构 — ✅ **已合规**
 
-扩展字段（`status`/`related`/`sources` 复数/`description`/`resource`/`tags`）均为 OKF §4.1 允许的扩展。`okf_version: "0.1"` 标记在 `index.md` frontmatter ✅（§11 唯一允许 frontmatter 的位置）。
+扩展字段（`status`/`relations`/`sources` 复数/`description`/`resource`/`tags`）均为 OKF §4.1 允许的扩展。`okf_version: "0.1"` 标记在 `index.md` frontmatter ✅（§11 唯一允许 frontmatter 的位置）。
 
 #### 5.2.2 index.md — 已合规
 
@@ -337,15 +337,18 @@ contributors:
 正文按以下顺序（可省略不适用的）：
 1. **Overview** — 一句话说明本页内容
 2. **Details** / **Role** / **Key Points**（按 type 不同）— 主体内容
-3. **Relations** — 关联页面（带链接和关系描述）
+3. **Backlinks** — 反向链接，由 `zwiki backlinks` 自动维护，勿手编
 4. **References** — 外部引用
 5. **Notes** — 临时备注、待确认事项（用 `> **待确认：** ...`）
+
+页面关联图由 frontmatter `relations` 字段（Markdown 链接格式 `- "[标题](path.md)"`）单一声明，正文中以内联链接自然呈现；`zwiki check` 强制 `relations` 与正文内联链接双向一致。
 
 ### 5.6 命名与交叉引用规则
 
 - 文件名：小写 kebab-case，无序号前缀
 - source 页面：`sources/<type>/<short-title>.md`，`<type>` 为 `adr`/`rfc`/`notes`
 - 交叉引用用 **wiki 根目录相对路径**（不带 `wiki/` 前缀）：`[text](concepts/foo.md)`
+- frontmatter `relations` 用 Markdown 链接格式（YAML 需引号）：`- "[标题](concepts/foo.md)"`，链接文字取目标页 `title`
 - L3 引入 `@name/path` 跨命名空间引用（见 §14.4）
 
 ### 5.7 写作风格
@@ -427,7 +430,7 @@ OpenCode 框架不支持 OMP 的 `yield`/`shouldTerminate`，无法保证结构�
 2. `write`/`edit` 填充内容（或 `zwiki property` 改单个字段）
 3. 更新 `wiki/index.md`
 4. `zwiki log --op ingest --path <path> --action create --note "..."`
-5. （可选）更新相关页面 `related` 字段
+5. （可选）更新相关页面 `relations` 字段
 
 ### 7.3 复杂路径（已实现于 skill）
 
@@ -448,7 +451,7 @@ OpenCode 框架不支持 OMP 的 `yield`/`shouldTerminate`，无法保证结构�
 | Phase 1: 结构扫描 | 仓库文件系统 | 结构化摘要表（每模块一行：路径/大小/import/注释密度） | 零（纯确定性，AST 解析） |
 | Phase 2: 内容地图 | Phase 1 摘要表（~500 行） | 模块分类 + 块划分方案 + 块间关系 | 1 次 LLM |
 | Phase 3: 分块蒸馏 | 每块完整源码（~600 行/块） | 各块独立的概念/实体页 + 跨块引用声明 | N 次 LLM，**可并行** |
-| Phase 4: 综合编织 | Phase 2 地图 + Phase 3 全部产出 | 匹配声明 → 建立准确 related → 生成 overview.md + 更新 index.md | 1 次 LLM |
+| Phase 4: 综合编织 | Phase 2 地图 + Phase 3 全部产出 | 匹配声明 → 建立准确 relations → 生成 overview.md + 更新 index.md | 1 次 LLM |
 
 关键设计：Phase 1 纯确定性（借鉴 codemap 模式）；Phase 3 各块独立可并行；Phase 4 只补充关系不重写内容。
 
@@ -477,7 +480,7 @@ OpenCode 框架不支持 OMP 的 `yield`/`shouldTerminate`，无法保证结构�
 |------|------|
 | Phase 0 | 判断问题类型（是否可能被 wiki 覆盖） |
 | Phase 1 | 读 `wiki/index.md` 导航 |
-| Phase 2 | 读相关页面（按需递归 `related`） |
+| Phase 2 | 读相关页面（按需递归 `relations`） |
 | Phase 3 | 合成答案 |
 | Phase 4 | 判断是否归档（结构化走简单路径，复杂走 kiwi） |
 | Phase 5 | 呈现答案 |
@@ -488,7 +491,7 @@ OpenCode 框架不支持 OMP 的 `yield`/`shouldTerminate`，无法保证结构�
 
 ```
 Phase 1: index.md 导航（现有，优先级最高）
-  按类别定位 → 读匹配页面 → 沿 related 递归
+  按类别定位 → 读匹配页面 → 沿 relations 递归
   ↓ 如果结果 < 3 个页面
 
 Phase 2: 标签过滤（新增）
@@ -835,7 +838,7 @@ blocked = ["deprecated-legacy-wiki"]
 1. agent 收到可能由 wiki 覆盖的问题 → 读 `wiki/index.md`
 2. 从 index 找相关页面路径
 3. `read` 具体页面
-4. 按 `related` 递归读取
+4. 按 `relations` 递归读取
 
 ### 15.4 工具调用约定（注入内容应含）
 
@@ -881,7 +884,7 @@ blocked = ["deprecated-legacy-wiki"]
 | 5 | 三阶段级联检索：index → tag → grep | ⬜ |
 | 6 | post-ingest 强制 backlinks + health（skill 强制调用 zwiki check） | ✅ 已完成（wiki-ingest skill Phase 3 已含 `zwiki check`） |
 | 7 | `zwiki search` CLI 化 | ⬜ |
-| 8 | `zwiki check` 内置 OKF 合规自检（含 §9 第 3 条：保留文件 §6/§7 结构校验），默认最严格、无开关 | ✅ 已完成（OKF check 已合并入 `zwiki check`，默认严格，含 related-body 双向一致性检查） |
+| 8 | `zwiki check` 内置 OKF 合规自检（含 §9 第 3 条：保留文件 §6/§7 结构校验），默认最严格、无开关 | ✅ 已完成（OKF check 已合并入 `zwiki check`，默认严格，含 relations-body 双向一致性检查） |
 
 #### 16.2 OKF-LOG / OKF-DOMAIN 对齐记录（✅ 已完成）
 

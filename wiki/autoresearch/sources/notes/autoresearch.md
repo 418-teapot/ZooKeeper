@@ -5,19 +5,19 @@ type: source
 timestamp: 2026-06-19T00:00:00Z
 resource: https://github.com/karpathy/autoresearch
 tags: [autoresearch, ai-agent, llm-training, research-automation]
-related:
-  - autoresearch/concepts/autonomous-experiment-loop.md
-  - autoresearch/concepts/autoresearch-extension-loop.md
-  - autoresearch/concepts/fixed-time-budget-evaluation.md
-  - autoresearch/concepts/single-file-modification.md
-  - shared/concepts/npc.md
-  - shared/concepts/simplicity-criterion.md
-  - autoresearch/concepts/experiment-versioning.md
-  - autoresearch/entities/autoresearch-train-py.md
-  - autoresearch/entities/autoresearch-prepare-py.md
-  - autoresearch/entities/autoresearch-program-md.md
-  - autoresearch/analysis/autoresearch-design-tradeoffs.md
-  - autoresearch/sources/rfc/autoresearch-design.md
+relations:
+  - "[自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md)"
+  - "[autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md)"
+  - "[固定时间预算评估](autoresearch/concepts/fixed-time-budget-evaluation.md)"
+  - "[单文件修改原则](autoresearch/concepts/single-file-modification.md)"
+  - "[NPC 式分工](shared/concepts/npc.md)"
+  - "[简约准则](shared/concepts/simplicity-criterion.md)"
+  - "[实验版本管理](autoresearch/concepts/experiment-versioning.md)"
+  - "[train.py](autoresearch/entities/autoresearch-train-py.md)"
+  - "[prepare.py](autoresearch/entities/autoresearch-prepare-py.md)"
+  - "[program.md](autoresearch/entities/autoresearch-program-md.md)"
+  - "[autoresearch 设计权衡分析](autoresearch/analysis/autoresearch-design-tradeoffs.md)"
+  - "[autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)"
 status: stable
 ---
 
@@ -65,19 +65,6 @@ autoresearch 是一个让 AI agent 自动在小规模单 GPU LLM 训练实验上
 - MacOS: [miolini/autoresearch-macos](https://github.com/miolini/autoresearch-macos), [trevin-creator/autoresearch-mlx](https://github.com/trevin-creator/autoresearch-mlx)
 - Windows: [jsegov/autoresearch-win-rtx](https://github.com/jsegov/autoresearch-win-rtx)
 - AMD: [andyluo7/autoresearch](https://github.com/andyluo7/autoresearch)
-
-## Relations
-
-- [自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md) — 项目的核心机制
-- [固定时间预算评估](autoresearch/concepts/fixed-time-budget-evaluation.md) — 项目的关键评估设计
-- [单文件修改原则](autoresearch/concepts/single-file-modification.md) — 项目的范围管理原则
-- [NPC 式分工](shared/concepts/npc.md) — 项目的人类/agent 分工模式
-- [简约准则](shared/concepts/simplicity-criterion.md) — 项目的变更评估准则
-- [实验版本管理](autoresearch/concepts/experiment-versioning.md) — 项目的版本控制机制
-- [train.py](autoresearch/entities/autoresearch-train-py.md) — 项目的可修改文件
-- [prepare.py](autoresearch/entities/autoresearch-prepare-py.md) — 项目的固定基础设施文件
-- [program.md](autoresearch/entities/autoresearch-program-md.md) — 项目的 agent 指令文件
-- [设计权衡分析](autoresearch/analysis/autoresearch-design-tradeoffs.md) — 对项目设计决策的结构化分析
 
 ## Backlinks
 

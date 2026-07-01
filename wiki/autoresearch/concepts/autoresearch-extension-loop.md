@@ -4,14 +4,14 @@ description: oh-my-pi 提供的两阶段自主实验循环，通过插件基础�
 type: concept
 timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, extension, experiment-loop, auto-resume]
-related:
-  - autoresearch/concepts/autonomous-experiment-loop.md
-  - autoresearch/concepts/mad-confidence.md
-  - autoresearch/concepts/metric-asi-protocol.md
-  - shared/concepts/post-hoc-accountability.md
-  - autoresearch/concepts/experiment-versioning.md
-  - autoresearch/analysis/autoresearch-porting-roadmap.md
-  - autoresearch/sources/rfc/autoresearch-design.md
+relations:
+  - "[自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md)"
+  - "[MAD 置信度算法](autoresearch/concepts/mad-confidence.md)"
+  - "[METRIC/ASI 文本协议](autoresearch/concepts/metric-asi-protocol.md)"
+  - "[后验问责制](shared/concepts/post-hoc-accountability.md)"
+  - "[实验版本管理](autoresearch/concepts/experiment-versioning.md)"
+  - "[autoresearch ZooKeeper 移植路线图](autoresearch/analysis/autoresearch-porting-roadmap.md)"
+  - "[autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)"
 status: stable
 ---
 
@@ -62,15 +62,6 @@ autoresearch 扩展循环是 [Karpathy 自主实验循环](autoresearch/concepts
 
 条件满足时，插件发送 `autoresearch-resume` 自定义消息作为下一 turn 输入，触发 LLM 继续迭代。这一设计解耦于特定工具，支持 overnight 无人值守运行。
 
-## Relations
-
-- [自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md) — Karpathy 原始循环，本扩展的基础
-- [METRIC/ASI 协议](autoresearch/concepts/metric-asi-protocol.md) — 循环的度量与元数据协议
-- [后验问责制](shared/concepts/post-hoc-accountability.md) — 循环的权限设计哲学
-- [实验版本管理](autoresearch/concepts/experiment-versioning.md) — 循环的版本控制机制
-- [ZooKeeper 移植路线图](autoresearch/analysis/autoresearch-porting-roadmap.md) — 将该循环移植到 ZooKeeper 的分析
-- [autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md) — 完整来源
-
 ## Backlinks
 
 > 此节由 zwiki 自动维护，请勿手动编辑。
@@ -83,7 +74,6 @@ autoresearch 扩展循环是 [Karpathy 自主实验循环](autoresearch/concepts
 - [autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)
 - [autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)
 - [ZooKeeper Wiki 概览](overview.md)
-- [Agent/Skill/Plugin 判断框架](shared/analysis/agent-skill-plugin-framework.md)
 - [后验问责制](shared/concepts/post-hoc-accountability.md)
 
 ## References

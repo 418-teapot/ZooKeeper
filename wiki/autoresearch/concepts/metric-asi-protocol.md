@@ -4,10 +4,10 @@ description: 基于标准输出的零依赖文本协议，通过 METRIC 行报�
 type: concept
 timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, protocol, metric, benchmark]
-related:
-  - autoresearch/concepts/autoresearch-extension-loop.md
-  - autoresearch/concepts/mad-confidence.md
-  - autoresearch/sources/rfc/autoresearch-design.md
+relations:
+  - "[autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md)"
+  - "[MAD 置信度算法](autoresearch/concepts/mad-confidence.md)"
+  - "[autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)"
 status: stable
 ---
 
@@ -53,12 +53,6 @@ METRIC/ASI 协议是 [autoresearch 扩展](autoresearch/concepts/autoresearch-ex
 - **语言无关** — Shell、Python、C、Rust 等无差别支持
 - **约定优于配置** — 无需预定义 schema，agent 自由使用 ASI
 - **日志即协议** — benchmark 输出同时是人类可读日志和机器可解析数据
-
-## Relations
-
-- [autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md) — 协议是循环的度量传递机制
-- [MAD 置信度算法](autoresearch/concepts/mad-confidence.md) — 协议提供的主指标是置信度计算的输入
-- [autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md) — 完整来源
 
 ## Backlinks
 

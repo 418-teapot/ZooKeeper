@@ -5,11 +5,11 @@ resource: https://github.com/karpathy/autoresearch
 type: concept
 timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, evaluation, metric, fair-comparison]
-related:
-  - autoresearch/concepts/autonomous-experiment-loop.md
-  - autoresearch/concepts/single-file-modification.md
-  - autoresearch/entities/autoresearch-prepare-py.md
-  - autoresearch/sources/notes/autoresearch.md
+relations:
+  - "[自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md)"
+  - "[单文件修改原则](autoresearch/concepts/single-file-modification.md)"
+  - "[prepare.py](autoresearch/entities/autoresearch-prepare-py.md)"
+  - "[autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)"
 status: stable
 ---
 
@@ -46,13 +46,6 @@ status: stable
 - 不能通过训练更久来刷分
 - 不能通过缩小 vocab 来虚假降低 loss
 - 所有改进必须来自真正的架构/优化器/超参进步
-
-## Relations
-
-- [自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md) — 本概念是循环的评估环节
-- [单文件修改原则](autoresearch/concepts/single-file-modification.md) — 评估指标固定是"单文件"约束的一部分（[prepare.py](autoresearch/entities/autoresearch-prepare-py.md) 不可改）
-- [prepare.py](autoresearch/entities/autoresearch-prepare-py.md) — 包含固定的 `evaluate_bpb` 实现
-- [autoresearch 项目](autoresearch/sources/notes/autoresearch.md) — 本概念的来源项目
 
 ## Backlinks
 

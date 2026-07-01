@@ -1,6 +1,6 @@
 //! Bidirectional backlinks — reverse index and automatic section maintenance.
 //!
-//! Scans all wiki pages, extracts cross-references (frontmatter `related`,
+//! Scans all wiki pages, extracts cross-references (frontmatter `relations`,
 //! inline markdown links `[text](path.md)`, and backtick-wrapped paths
 //! `` `path.md` ``), builds a reverse index, and optionally writes
 //! `## Backlinks` sections into each page.
@@ -109,7 +109,7 @@ pub fn strip_backlinks_section(body: &str) -> String {
 /// against `wiki_root`.
 ///
 /// Sources (in order):
-/// 1. Frontmatter `related` field
+/// 1. Frontmatter `relations` field
 /// 2. Inline markdown links `[text](path.md)` in body text
 ///    (excluding the `## Backlinks` section)
 /// 3. Backtick-wrapped paths `` `path.md` `` in body text
@@ -125,16 +125,16 @@ pub fn extract_links(wiki_root: &Path, content: &str) -> Vec<String> {
     let body = wiki::strip_frontmatter(content);
     let clean_body = strip_backlinks_section(&body);
 
-    // 1. Frontmatter related field
-    if let Some(Value::Array(related)) = fm.get("related") {
+    // 1. Frontmatter relations field
+    if let Some(Value::Array(related)) = fm.get("relations") {
         for val in related {
             if let Some(s) = val.as_str() {
-                let s = s.trim();
-                if std::path::Path::new(s)
+                let bare = wiki::parse_related_entry(s);
+                if std::path::Path::new(&bare)
                     .extension()
                     .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
                 {
-                    links.push(s.to_string());
+                    links.push(bare);
                 }
             }
         }
@@ -247,26 +247,28 @@ pub fn format_backlinks_section(
 /// boundaries.
 ///
 /// Priority:
-/// 1. After `## Relations` section end
-/// 2. After `## Details` section end
-/// 3. Before `## References` section start
+/// 1. After `## Details` section end
+/// 2. Before `## References` section start
+/// 3. (Legacy) After `## Relations` — kept as a fallback for pages not yet
+///    migrated; `## Relations` sections have been removed wiki-wide.
 ///
 /// Returns `None` if none of the anchors exist.
 #[must_use]
 pub fn find_insertion_point(content: &str) -> Option<usize> {
-    // Priority 1: after ## Relations
-    if let Some((_, end)) = find_section_pos(content, "Relations") {
-        return Some(end);
-    }
-
-    // Priority 2: after ## Details
+    // Priority 1: after ## Details
     if let Some((_, end)) = find_section_pos(content, "Details") {
         return Some(end);
     }
 
-    // Priority 3: before ## References
+    // Priority 2: before ## References
     if let Some((start, _)) = find_section_pos(content, "References") {
         return Some(start);
+    }
+
+    // Legacy fallback: after ## Relations (removed wiki-wide; kept in case
+    // a page was not migrated or is rolled back from history).
+    if let Some((_, end)) = find_section_pos(content, "Relations") {
+        return Some(end);
     }
 
     None
@@ -279,8 +281,8 @@ pub fn find_insertion_point(content: &str) -> Option<usize> {
 /// Write `## Backlinks` sections into each wiki page.
 ///
 /// For each page that has inbound links, adds or updates a `## Backlinks`
-/// section. The section is placed after `## Relations` (if it exists),
-/// after `## Details`, or before `## References`.
+/// section. The section is placed after `## Details`, or before
+/// `## References` (legacy `## Relations` fallback kept for unmigrated pages).
 ///
 /// Pages with no inbound links that still carry a `## Backlinks` section
 /// (e.g. from a previous run) will have it removed to keep pages clean.
@@ -628,7 +630,7 @@ mod tests {
     #[test]
     fn test_extract_links_from_related_frontmatter() {
         let content =
-            "---\ntitle: Test\nrelated: [foo.md, bar.md]\n---\n\nBody.";
+            "---\ntitle: Test\nrelations: [foo.md, bar.md]\n---\n\nBody.";
         let dir = temp_dir("extract_related");
         write(&dir.join("foo.md"), "# Foo");
         write(&dir.join("bar.md"), "# Bar");
@@ -683,7 +685,7 @@ mod tests {
     #[test]
     fn test_extract_links_deduplicates() {
         let content =
-            "---\nrelated: [foo.md]\n---\n\nSee [Foo](foo.md) and `foo.md`.";
+            "---\nrelations: [foo.md]\n---\n\nSee [Foo](foo.md) and `foo.md`.";
         let dir = temp_dir("extract_dedup");
         write(&dir.join("foo.md"), "# Foo");
         let result = extract_links(&dir, content);
@@ -711,7 +713,7 @@ mod tests {
             make_page(
                 &dir,
                 "concepts/a.md",
-                "---\nrelated: [b.md]\n---\n\n# A\n\nSee [B](b.md).",
+                "---\nrelations: [b.md]\n---\n\n# A\n\nSee [B](b.md).",
             ),
             make_page(&dir, "concepts/b.md", "# B\n\nNo links."),
         ];

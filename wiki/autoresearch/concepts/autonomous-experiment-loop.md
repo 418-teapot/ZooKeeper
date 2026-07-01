@@ -4,15 +4,15 @@ description: AI agent 自主进行小规模 LLM 训练实验的闭环机制：�
 type: concept
 timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, ai-agent, experiment-loop, automation]
-related:
-  - autoresearch/concepts/fixed-time-budget-evaluation.md
-  - autoresearch/concepts/single-file-modification.md
-  - shared/concepts/npc.md
-  - autoresearch/concepts/experiment-versioning.md
-  - autoresearch/concepts/autoresearch-extension-loop.md
-  - autoresearch/entities/autoresearch-train-py.md
-  - autoresearch/entities/autoresearch-program-md.md
-  - autoresearch/sources/notes/autoresearch.md
+relations:
+  - "[固定时间预算评估](autoresearch/concepts/fixed-time-budget-evaluation.md)"
+  - "[单文件修改原则](autoresearch/concepts/single-file-modification.md)"
+  - "[NPC 式分工](shared/concepts/npc.md)"
+  - "[实验版本管理](autoresearch/concepts/experiment-versioning.md)"
+  - "[autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md)"
+  - "[train.py](autoresearch/entities/autoresearch-train-py.md)"
+  - "[program.md](autoresearch/entities/autoresearch-program-md.md)"
+  - "[autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)"
 status: stable
 ---
 
@@ -54,16 +54,6 @@ oh-my-pi 的 [autoresearch 扩展循环](autoresearch/concepts/autoresearch-exte
 | 实验记录 | 手动笔记 | 自动 git commit + `results.tsv` |
 | 失败处理 | 人工调试 | 自动回退，继续下一实验 |
 | 规模 | 受人类时间限制 | 受算力限制（可并行多 GPU） |
-
-## Relations
-
-- [固定时间预算评估](autoresearch/concepts/fixed-time-budget-evaluation.md) — 循环的时间控制机制
-- [单文件修改原则](autoresearch/concepts/single-file-modification.md) — 循环的代码修改范围约束
-- [NPC 式分工](shared/concepts/npc.md) — 循环中人类与 agent 的职责划分
-- [实验版本管理](autoresearch/concepts/experiment-versioning.md) — 循环的版本控制机制
-- [train.py](autoresearch/entities/autoresearch-train-py.md) — 循环中唯一被修改的文件
-- [program.md](autoresearch/entities/autoresearch-program-md.md) — 循环中 agent 读取的指令文件
-- [autoresearch 项目](autoresearch/sources/notes/autoresearch.md) — 本概念的来源项目
 
 ## Backlinks
 

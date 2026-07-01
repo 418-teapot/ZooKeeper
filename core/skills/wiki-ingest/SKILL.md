@@ -69,7 +69,7 @@ description: 用于将外部源文档或对话知识 ingest 到项目 wiki 中�
 返回一份结构化分析，描述：
   - 要创建/更新的页面路径、完整 frontmatter、完整页面内容（遵循 SCHEMA.md 规范）
   - 要在相关**域**的 `index.md`（如 `wiki/<domain>/index.md`）中添加的索引条目（根 index.md 只列域，新建域时才改）
-   - 需要更新的交叉引用（更新哪些已有页面的 `related` 字段；反向链接由 `zwiki backlinks` 自动维护，kiwi 无需处理）
+   - 需要更新的交叉引用（更新哪些已有页面的 `relations` 字段；反向链接由 `zwiki backlinks` 自动维护，kiwi 无需处理）
    - 关于 `overview.md` 是否需要更新的建议
    - 要通过 `zwiki log` 追加的日志条目
 ```
@@ -112,7 +112,7 @@ kiwi 返回分析后，由调用方 agent 执行写入：
         --action <create|edit> --note "<简短说明>"
     ```
 6. **更新 overview.md** — 如果 kiwi 的分析建议更新，则执行
-7. **更新交叉引用** — 按照 kiwi 的建议，在已有页面的 `related` 字段中添加新引用（使用域前缀路径，如 `<domain>/concepts/<file>.md`）。反向链接由 `zwiki check` 自动同步
+7. **更新交叉引用** — 按照 kiwi 的建议，在已有页面的 `relations` 字段中添加新引用（使用域前缀路径，如 `<domain>/concepts/<file>.md`）。反向链接由 `zwiki check` 自动同步
 8. **同步反向链接** — `zwiki check` 已自动执行，无需手动调用
 
 ---

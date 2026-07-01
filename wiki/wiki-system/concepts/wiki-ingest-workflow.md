@@ -5,11 +5,11 @@ resource: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
 type: concept
 timestamp: 2026-06-18T00:00:00Z
 tags: [wiki, workflow, ingest]
-related:
-  - wiki-system/concepts/compounding-knowledge.md
-  - wiki-system/concepts/wiki-query-synthesis.md
-  - wiki-system/concepts/wiki-health-check.md
-  - wiki-system/sources/notes/llm-wiki-karpathy.md
+relations:
+  - "[复利知识 — 持久化知识库的核心价值](wiki-system/concepts/compounding-knowledge.md)"
+  - "[Query → Synthesis → 归档 — 查询即知识生产](wiki-system/concepts/wiki-query-synthesis.md)"
+  - "[Wiki 健康检查 — 知识库的持续质量维护](wiki-system/concepts/wiki-health-check.md)"
+  - "[LLM Wiki — 用 LLM 构建个人知识库的模式](wiki-system/sources/notes/llm-wiki-karpathy.md)"
 status: stable
 ---
 
@@ -36,13 +36,6 @@ status: stable
 - **触碰多页面是预期行为** — 一个源材料的知识分布在多个概念域中是常态，不是过度工程
 - **调用方参与度可变** — 从"LLM 全自动"到"每步审查"，取决于调用方偏好
 - **复杂源材料委派蒸馏专家** — 非结构化或复杂的源材料应委派专门的蒸馏 agent（如 ZooKeeper 的 kiwi）处理，而非由调用方 agent 直接写入。详见 `wiki-system/sources/notes/llm-wiki-karpathy.md`
-
-## Relations
-
-- [复利知识 — 持久化知识库的核心价值](wiki-system/concepts/compounding-knowledge.md) — ingest 是复利积累的主要执行机制
-- [Query → Synthesis → 归档 — 查询即知识生产](wiki-system/concepts/wiki-query-synthesis.md) — query 的结果也可以触发类似 ingest 的归档操作
-- [Wiki 健康检查 — 知识库的持续质量维护](wiki-system/concepts/wiki-health-check.md) — [lint](wiki-system/concepts/wiki-health-check.md) 是 ingest 质量的事后验证
-
 
 ## Backlinks
 

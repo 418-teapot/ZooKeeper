@@ -22,7 +22,7 @@ use crate::wiki::Page;
 /// is considered a stub rather than having real content.
 const DEFAULT_STUB_THRESHOLD: usize = 100;
 
-/// System files that should not be referenced in `related` fields or
+/// System files that should not be referenced in `relations` fields or
 /// markdown links.
 ///
 /// `overview.md` is excluded from this list — it is a synthesis page
@@ -49,8 +49,7 @@ const VALID_TYPES: &[&str] =
 const VALID_STATUSES: &[&str] = &["draft", "review", "stable", "deprecated"];
 
 /// Sections to skip when checking body text for inline links.
-const SKIP_LINK_CHECK_SECTIONS: &[&str] =
-    &["relations", "backlinks", "references", "notes"];
+const SKIP_LINK_CHECK_SECTIONS: &[&str] = &["backlinks", "references", "notes"];
 
 // ---------------------------------------------------------------------------
 // Path utilities
@@ -401,10 +400,10 @@ pub fn check_frontmatter(pages: &[Page]) -> Vec<Issue> {
 }
 
 // ---------------------------------------------------------------------------
-// 5. check_related_field
+// 5. check_relations_field
 // ---------------------------------------------------------------------------
 
-/// Check that `related` frontmatter fields and markdown links don't point
+/// Check that `relations` frontmatter fields and markdown links don't point
 /// to system files (index.md, log.md, SCHEMA.md, etc.).
 pub fn check_related_field(pages: &[Page]) -> Vec<Issue> {
     let system_names: HashSet<&str> = SYSTEM_FILES.iter().copied().collect();
@@ -412,8 +411,8 @@ pub fn check_related_field(pages: &[Page]) -> Vec<Issue> {
     let mut results: Vec<Issue> = Vec::new();
 
     for page in pages {
-        // 1. Check frontmatter `related` field.
-        if let Some(related) = page.frontmatter.get("related") {
+        // 1. Check frontmatter `relations` field.
+        if let Some(related) = page.frontmatter.get("relations") {
             let items: Vec<&str> = match related {
                 Value::String(s) => vec![s.as_str()],
                 Value::Array(arr) => {
@@ -422,7 +421,9 @@ pub fn check_related_field(pages: &[Page]) -> Vec<Issue> {
                 _ => Vec::new(),
             };
             for target in items {
-                let fname = Path::new(target)
+                // Parse markdown-link wrapper to extract target path.
+                let bare_target = wiki::parse_related_entry(target);
+                let fname = Path::new(&bare_target)
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("");
@@ -431,7 +432,7 @@ pub fn check_related_field(pages: &[Page]) -> Vec<Issue> {
                         page: page.rel.clone(),
                         kind: "related_to_system_file".to_string(),
                         details: format!(
-                            "Frontmatter 'related' field points to system file '{target}' — \
+                            "Frontmatter 'relations' field points to system file '{target}' — \
                              this is not allowed"
                         ),
                     });
@@ -468,16 +469,16 @@ pub fn check_related_field(pages: &[Page]) -> Vec<Issue> {
 // 6. check_related_body_consistency — bidirectional consistency
 // ---------------------------------------------------------------------------
 
-/// Verify that each page's `related` frontmatter entries and inline wiki
-/// links in the body (excluding Relations/Backlinks/References/Notes
-/// sections) are mutually consistent.
+/// Verify that each page's `relations` frontmatter entries and inline wiki
+/// links in the body (excluding Backlinks/References/Notes sections) are
+/// mutually consistent.
 ///
 /// Two types of issues are reported:
 ///
 /// - **`related_redundant`** (direction A): a page listed in `related` but
 ///   no inline link points to it.
 /// - **`related_omission`** (direction B): an inline wiki link pointing to a
-///   page that is not listed in `related`.
+///   page that is not listed in `relations`.
 ///
 /// Only wiki-internal `.md` targets are compared.  External URLs, system
 /// files, and `raw/` paths are skipped.
@@ -490,10 +491,10 @@ pub fn check_related_body_consistency(
     let mut results: Vec<Issue> = Vec::new();
 
     for page in pages {
-        // --- Extract related entries from frontmatter ---
+        // --- Extract relations entries from frontmatter ---
         let raw_related: Vec<String> = page
             .frontmatter
-            .get("related")
+            .get("relations")
             .map(|v| match v {
                 Value::String(s) => vec![s.clone()],
                 Value::Array(arr) => arr
@@ -504,10 +505,11 @@ pub fn check_related_body_consistency(
             })
             .unwrap_or_default();
 
-        // Resolve each related entry to a wiki-relative path.
+        // Resolve each relations entry to a wiki-relative path.
         let resolved_related: HashSet<String> = raw_related
             .iter()
-            .filter_map(|entry| resolve_wiki_link(entry, wiki_dir))
+            .map(|entry| wiki::parse_related_entry(entry))
+            .filter_map(|entry| resolve_wiki_link(&entry, wiki_dir))
             .collect();
 
         // --- Extract inline links from body (excl special sections) ---
@@ -538,10 +540,12 @@ pub fn check_related_body_consistency(
             resolved_links.insert(rel_target);
         }
 
-        // --- Direction A: related entries with no matching inline link ---
+        // --- Direction A: relations entries with no matching inline link ---
         for entry in &raw_related {
+            let bare_entry = wiki::parse_related_entry(entry);
             // Only check entries that resolved successfully.
-            let Some(rel_entry) = resolve_wiki_link(entry, wiki_dir) else {
+            let Some(rel_entry) = resolve_wiki_link(&bare_entry, wiki_dir)
+            else {
                 continue;
             };
             // Skip system files and raw/ paths.
@@ -557,13 +561,13 @@ pub fn check_related_body_consistency(
                     page: page.rel.clone(),
                     kind: "related_redundant".to_string(),
                     details: format!(
-                        "related 字段包含 {entry}，但正文中无内联链接指向该页面"
+                        "relations 字段包含 {entry}，但正文中无内联链接指向该页面"
                     ),
                 });
             }
         }
 
-        // --- Direction B: inline links not listed in related ---
+        // --- Direction B: inline links not listed in relations ---
         for cap in link_re.captures_iter(&check_body) {
             let target = cap[2].trim().to_string();
             // Skip non-.md targets.
@@ -589,7 +593,7 @@ pub fn check_related_body_consistency(
                     page: page.rel.clone(),
                     kind: "related_omission".to_string(),
                     details: format!(
-                        "正文包含指向 {rel_target} 的内联链接，但 related 字段未收录该页面"
+                        "正文包含指向 {rel_target} 的内联链接，但 relations 字段未收录该页面"
                     ),
                 });
             }
@@ -742,7 +746,7 @@ pub fn expand_anchor_prefixes(map: &mut HashMap<String, HashSet<String>>) {
     map.extend(new_entries);
 }
 
-/// Return body text with Relations/Backlinks/References/Notes sections removed.
+/// Return body text with Backlinks/References/Notes sections removed.
 ///
 /// These sections contain explicit, structured links — checking them for
 /// missing inline links would produce noise.
@@ -1002,7 +1006,7 @@ pub fn check_missing_inline_links(
 // ---------------------------------------------------------------------------
 
 /// Find pages that link to the same wiki target multiple times in prose
-/// sections (Relations/Backlinks/References/Notes excluded).
+/// sections (Backlinks/References/Notes excluded).
 pub fn check_duplicate_inline_links(
     pages: &[Page],
     wiki_dir: &Path,
@@ -1628,7 +1632,7 @@ mod tests {
     fn test_related_field_valid() {
         let pages = vec![make_page(
             "concepts/valid.md",
-            "---\ntitle: Valid\ntype: concept\nrelated: [concepts/other.md]\n---\nSee [other](concepts/other.md).\n",
+            "---\ntitle: Valid\ntype: concept\nrelations: [concepts/other.md]\n---\nSee [other](concepts/other.md).\n",
         )];
         let issues = check_related_field(&pages);
         assert!(issues.is_empty());
@@ -1638,12 +1642,12 @@ mod tests {
     fn test_related_field_related_to_system_file() {
         let pages = vec![make_page(
             "concepts/bad.md",
-            "---\ntitle: Bad\ntype: concept\nrelated: [log.md, concepts/foo.md]\n---\nBody.\n",
+            "---\ntitle: Bad\ntype: concept\nrelations: [log.md, concepts/foo.md]\n---\nBody.\n",
         )];
         let issues = check_related_field(&pages);
         assert!(
             issues.iter().any(|i| i.kind == "related_to_system_file"),
-            "should detect related field pointing to system file"
+            "should detect relations field pointing to system file"
         );
     }
 
@@ -1888,20 +1892,12 @@ mod tests {
     }
 
     #[test]
-    fn test_body_sections_to_check_removes_relations() {
-        let body = "Intro.\n\n## Relations\nRelated stuff.\n\n## Details\nReal content.\n";
-        let result = body_sections_to_check(body);
-        assert!(!result.contains("## Relations"));
-        assert!(result.contains("## Details"));
-        assert!(result.contains("Intro"));
-    }
-
-    #[test]
     fn test_body_sections_to_check_keeps_first_section() {
         let body = "## Overview\nContent.\n\n## Relations\nRelated.\n";
         let result = body_sections_to_check(body);
         assert!(result.contains("## Overview"));
-        assert!(!result.contains("## Relations"));
+        // Relations is no longer in SKIP_LINK_CHECK_SECTIONS, so it is kept.
+        assert!(result.contains("## Relations"));
     }
 
     #[test]
@@ -1934,7 +1930,7 @@ mod tests {
         let dir = temp_dir("consistency_a");
         let pages = vec![make_page(
             "concepts/foo.md",
-            "---\ntitle: Foo\nrelated:\n- concepts/bar.md\n---\n\nBody text with no link to bar.\n",
+            "---\ntitle: Foo\nrelations:\n- concepts/bar.md\n---\n\nBody text with no link to bar.\n",
         )];
         let issues = check_related_body_consistency(&pages, &dir);
         let redundant: Vec<&Issue> =
@@ -1978,7 +1974,7 @@ mod tests {
         let dir = temp_dir("consistency_both");
         let pages = vec![make_page(
             "concepts/foo.md",
-            "---\ntitle: Foo\nrelated:\n- concepts/bar.md\n- concepts/baz.md\n---\n\
+            "---\ntitle: Foo\nrelations:\n- concepts/bar.md\n- concepts/baz.md\n---\n\
              \nSee [bar](concepts/bar.md) for details.\n\
              Also see [qux](concepts/qux.md).\n",
         )];
@@ -1998,7 +1994,7 @@ mod tests {
         let dir = temp_dir("consistency_ok");
         let pages = vec![make_page(
             "concepts/foo.md",
-            "---\ntitle: Foo\nrelated:\n- concepts/bar.md\n---\n\
+            "---\ntitle: Foo\nrelations:\n- concepts/bar.md\n---\n\
              \nSee [bar](concepts/bar.md) for details.\n",
         )];
         let issues = check_related_body_consistency(&pages, &dir);
@@ -2013,7 +2009,7 @@ mod tests {
         let dir = temp_dir("consistency_system");
         let pages = vec![make_page(
             "concepts/foo.md",
-            "---\ntitle: Foo\nrelated:\n- index.md\n---\n\
+            "---\ntitle: Foo\nrelations:\n- index.md\n---\n\
              \nSee [log](log.md) for details.\n",
         )];
         let issues = check_related_body_consistency(&pages, &dir);
@@ -2029,7 +2025,7 @@ mod tests {
         let dir = temp_dir("consistency_raw");
         let pages = vec![make_page(
             "concepts/foo.md",
-            "---\ntitle: Foo\nrelated:\n- raw/notes/meeting.txt\n---\n\
+            "---\ntitle: Foo\nrelations:\n- raw/notes/meeting.txt\n---\n\
              \nSee [raw notes](raw/notes/meeting.txt) for details.\n",
         )];
         let issues = check_related_body_consistency(&pages, &dir);
@@ -2038,19 +2034,48 @@ mod tests {
     }
 
     #[test]
-    fn test_related_body_consistency_skips_relations_section() {
-        let dir = temp_dir("consistency_relations");
+    fn test_related_body_consistency_markdown_link_entry() {
+        // Relations entry in markdown-link format should resolve correctly.
+        let dir = temp_dir("consistency_mdlink");
         let pages = vec![make_page(
             "concepts/foo.md",
-            "---\ntitle: Foo\nrelated:\n- concepts/bar.md\n---\n\
-             \nBody text.\n\n## Relations\n[bar](concepts/bar.md)\n",
+            "---\ntitle: Foo\nrelations:\n- \"[Bar](concepts/bar.md)\"\n---\n\
+             \nSee [bar](concepts/bar.md) for details.\n",
         )];
         let issues = check_related_body_consistency(&pages, &dir);
-        // Link in Relations section is not counted, so related entry is redundant.
-        assert_eq!(
-            issues.iter().filter(|i| i.kind == "related_redundant").count(),
-            1,
-            "link in Relations section should not satisfy related: {issues:?}"
+        assert!(
+            issues.is_empty(),
+            "markdown-link relations entry should resolve: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn test_related_body_consistency_markdown_link_entry_redundant() {
+        // Markdown-link relations entry with no matching inline link.
+        let dir = temp_dir("consistency_mdlink_redun");
+        let pages = vec![make_page(
+            "concepts/foo.md",
+            "---\ntitle: Foo\nrelations:\n- \"[Bar](concepts/bar.md)\"\n---\n\
+             \nBody text with no link to bar.\n",
+        )];
+        let issues = check_related_body_consistency(&pages, &dir);
+        let redundant_count =
+            issues.iter().filter(|i| i.kind == "related_redundant").count();
+        assert_eq!(redundant_count, 1);
+    }
+
+    #[test]
+    fn test_related_field_markdown_link_format() {
+        // Markdown-link format entries should have path extracted for
+        // system-file checking.
+        let pages = vec![make_page(
+            "concepts/foo.md",
+            "---\ntitle: Foo\nrelations:\n- \"[Log](log.md)\"\n---\nBody.\n",
+        )];
+        let issues = check_related_field(&pages);
+        assert!(
+            issues.iter().any(|i| i.kind == "related_to_system_file"),
+            "should detect system file even inside markdown-link wrapper"
         );
     }
 }

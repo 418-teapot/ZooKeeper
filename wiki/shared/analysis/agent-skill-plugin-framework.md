@@ -6,8 +6,8 @@ timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, architecture, agent-design, extension-design]
 sources:
   - autoresearch/sources/rfc/autoresearch-design.md
-related:
-  - autoresearch/sources/rfc/autoresearch-design.md
+relations:
+  - "[autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)"
 status: stable
 ---
 
@@ -64,12 +64,6 @@ perf-tuner (agent)           ← 权限、模型、身份、执行能力
     ↓ 使用工具
 autoresearch (plugin)        ← 4 个工具、SQLite、segment、auto-resume、dashboard
 ```
-
-## Relations
-
-- [autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md) — 插件提供的循环基础设施
-- [ZooKeeper 移植路线图](autoresearch/analysis/autoresearch-porting-roadmap.md) — 将该框架应用于 ZooKeeper 的设计
-- [autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md) — 完整来源
 
 ## Backlinks
 

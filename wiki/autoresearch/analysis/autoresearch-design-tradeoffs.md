@@ -6,15 +6,15 @@ timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, design, tradeoff, analysis]
 sources:
   - autoresearch/sources/notes/autoresearch.md
-related:
-  - autoresearch/concepts/fixed-time-budget-evaluation.md
-  - autoresearch/concepts/single-file-modification.md
-  - shared/concepts/npc.md
-  - shared/concepts/simplicity-criterion.md
-  - autoresearch/sources/notes/autoresearch.md
-  - autoresearch/sources/rfc/autoresearch-design.md
-  - autoresearch/entities/autoresearch-train-py.md
-  - autoresearch/entities/autoresearch-program-md.md
+relations:
+  - "[固定时间预算评估](autoresearch/concepts/fixed-time-budget-evaluation.md)"
+  - "[单文件修改原则](autoresearch/concepts/single-file-modification.md)"
+  - "[NPC 式分工](shared/concepts/npc.md)"
+  - "[简约准则](shared/concepts/simplicity-criterion.md)"
+  - "[autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)"
+  - "[autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)"
+  - "[train.py](autoresearch/entities/autoresearch-train-py.md)"
+  - "[program.md](autoresearch/entities/autoresearch-program-md.md)"
 status: stable
 ---
 
@@ -71,14 +71,6 @@ autoresearch 的设计不是"最优解"，而是"在约束下的合理选择"。
 | **适用时长** | 长时间（overnight） | 短时间（单次会话） |
 
 **结论：** NPC 式分工是"委托模式"，适合长时间自主运行。协作编程是"伙伴模式"，适合复杂问题求解。
-
-## Relations
-
-- [固定时间预算评估](autoresearch/concepts/fixed-time-budget-evaluation.md) — 被分析的设计决策之一
-- [单文件修改原则](autoresearch/concepts/single-file-modification.md) — 被分析的设计决策之一
-- [NPC 式分工](shared/concepts/npc.md) — 被分析的设计决策之一
-- [简约准则](shared/concepts/simplicity-criterion.md) — 被分析的设计决策之一
-- [autoresearch 项目](autoresearch/sources/notes/autoresearch.md) — 被分析的来源项目
 
 ## Backlinks
 

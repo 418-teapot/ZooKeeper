@@ -7,10 +7,10 @@ timestamp: 2026-06-18T00:00:00Z
 tags: [wiki, rag, comparison, knowledge-management]
 sources:
   - wiki-system/sources/notes/llm-wiki-karpathy.md
-related:
-  - wiki-system/concepts/compounding-knowledge.md
-  - wiki-system/sources/notes/llm-wiki-karpathy.md
-  - wiki-system/concepts/wiki-ingest-workflow.md
+relations:
+  - "[复利知识 — 持久化知识库的核心价值](wiki-system/concepts/compounding-knowledge.md)"
+  - "[LLM Wiki — 用 LLM 构建个人知识库的模式](wiki-system/sources/notes/llm-wiki-karpathy.md)"
+  - "[Wiki Ingest 工作流 — 源材料的增量整合](wiki-system/concepts/wiki-ingest-workflow.md)"
 status: stable
 ---
 
@@ -39,11 +39,6 @@ status: stable
 
 - RAG 可在 LLM Wiki 中作为**补充检索层**使用（如用全文搜索引擎辅助 index 导航）
 - 两种模式并非互斥 — LLM Wiki 是"预编译 + 推理"，RAG 是"检索 + 推理"，可以组合
-
-## Relations
-
-- [复利知识 — 持久化知识库的核心价值](wiki-system/concepts/compounding-knowledge.md) — "复利知识"是 LLM Wiki 模式区别于 RAG 的核心哲学
-
 
 ## Backlinks
 

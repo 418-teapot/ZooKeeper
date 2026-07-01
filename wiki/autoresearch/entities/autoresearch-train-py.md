@@ -4,13 +4,13 @@ description: autoresearch 中唯一由 AI agent 修改的文件，包含 GPT 模
 type: entity
 timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, file, model, training]
-related:
-  - autoresearch/concepts/autonomous-experiment-loop.md
-  - autoresearch/concepts/single-file-modification.md
-  - shared/concepts/npc.md
-  - autoresearch/entities/autoresearch-prepare-py.md
-  - autoresearch/entities/autoresearch-program-md.md
-  - autoresearch/sources/notes/autoresearch.md
+relations:
+  - "[自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md)"
+  - "[单文件修改原则](autoresearch/concepts/single-file-modification.md)"
+  - "[NPC 式分工](shared/concepts/npc.md)"
+  - "[prepare.py](autoresearch/entities/autoresearch-prepare-py.md)"
+  - "[program.md](autoresearch/entities/autoresearch-program-md.md)"
+  - "[autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)"
 status: stable
 ---
 
@@ -43,15 +43,6 @@ train.py 是 [autoresearch](autoresearch/sources/notes/autoresearch.md) 的核�
 - **输出** — 训练日志 + `val_bpb` 评估结果
 - **副作用** — 修改 GPU 内存状态、写入 `run.log`
 - **约束** — 必须在 5 分钟内完成，VRAM 不能剧烈膨胀
-
-## Relations
-
-- [自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md) — 本文件是循环的核心操作对象
-- [单文件修改原则](autoresearch/concepts/single-file-modification.md) — 本文件是"单文件"约束中的唯一可改文件
-- [NPC 式分工](shared/concepts/npc.md) — 本文件是 agent 的编辑领地
-- [prepare.py](autoresearch/entities/autoresearch-prepare-py.md) — 提供数据加载和评估函数
-- [program.md](autoresearch/entities/autoresearch-program-md.md) — 定义 agent 如何修改本文件
-- [autoresearch 项目](autoresearch/sources/notes/autoresearch.md) — 本文件的来源项目
 
 ## Backlinks
 

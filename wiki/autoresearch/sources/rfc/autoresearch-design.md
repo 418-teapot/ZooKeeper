@@ -5,14 +5,14 @@ type: source
 timestamp: 2026-06-19T00:00:00Z
 resource: raw/2026-06-19-autoresearch-design.md
 tags: [autoresearch, design, rfc, oh-my-pi]
-related:
-  - autoresearch/concepts/autoresearch-extension-loop.md
-  - autoresearch/concepts/mad-confidence.md
-  - autoresearch/concepts/metric-asi-protocol.md
-  - shared/concepts/post-hoc-accountability.md
-  - shared/analysis/agent-skill-plugin-framework.md
-  - autoresearch/analysis/performance-tuning-design-patterns.md
-  - autoresearch/analysis/autoresearch-porting-roadmap.md
+relations:
+  - "[autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md)"
+  - "[MAD 置信度算法](autoresearch/concepts/mad-confidence.md)"
+  - "[METRIC/ASI 文本协议](autoresearch/concepts/metric-asi-protocol.md)"
+  - "[后验问责制](shared/concepts/post-hoc-accountability.md)"
+  - "[Agent/Skill/Plugin 判断框架](shared/analysis/agent-skill-plugin-framework.md)"
+  - "[性能调优设计模式](autoresearch/analysis/performance-tuning-design-patterns.md)"
+  - "[autoresearch ZooKeeper 移植路线图](autoresearch/analysis/autoresearch-porting-roadmap.md)"
 status: stable
 ---
 
@@ -31,16 +31,6 @@ status: stable
 本文档共 19 个章节，核心可复用知识集中在：§2（行业调研与 6 个设计模式）、§3（[Agent/Skill/Plugin 判断框架](shared/analysis/agent-skill-plugin-framework.md)）、§5（两阶段循环与 auto-resume）、§7（[MAD 置信度算法](autoresearch/concepts/mad-confidence.md)）、§10（METRIC/ASI 协议）、§15（7 个关键设计决策）、§18（8 个已知局限）、§19（ZooKeeper 移植路线图）。
 
 实现层面细节（TypeScript 接口、行号引用、测试 fixture、模板变量清单）占约 60%，属于非核心知识。
-
-## Relations
-
-- [autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md) — §5 的蒸馏
-- [MAD 置信度算法](autoresearch/concepts/mad-confidence.md) — §7 的蒸馏
-- [METRIC/ASI 协议](autoresearch/concepts/metric-asi-protocol.md) — §10 的蒸馏
-- [后验问责制](shared/concepts/post-hoc-accountability.md) — §15.1 的蒸馏
-- [Agent/Skill/Plugin 判断框架](shared/analysis/agent-skill-plugin-framework.md) — §3 的蒸馏
-- [性能调优设计模式](autoresearch/analysis/performance-tuning-design-patterns.md) — §2 的蒸馏
-- [ZooKeeper 移植路线图](autoresearch/analysis/autoresearch-porting-roadmap.md) — §19 的蒸馏
 
 ## Backlinks
 

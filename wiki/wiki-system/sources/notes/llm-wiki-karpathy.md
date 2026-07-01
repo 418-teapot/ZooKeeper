@@ -5,12 +5,12 @@ type: source
 timestamp: 2026-06-18T00:00:00Z
 resource: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
 tags: [wiki, knowledge-base, llm, pattern]
-related:
-  - wiki-system/concepts/compounding-knowledge.md
-  - wiki-system/concepts/wiki-ingest-workflow.md
-  - wiki-system/concepts/wiki-query-synthesis.md
-  - wiki-system/concepts/wiki-health-check.md
-  - wiki-system/analysis/llm-wiki-vs-rag.md
+relations:
+  - "[复利知识 — 持久化知识库的核心价值](wiki-system/concepts/compounding-knowledge.md)"
+  - "[Wiki Ingest 工作流 — 源材料的增量整合](wiki-system/concepts/wiki-ingest-workflow.md)"
+  - "[Query → Synthesis → 归档 — 查询即知识生产](wiki-system/concepts/wiki-query-synthesis.md)"
+  - "[Wiki 健康检查 — 知识库的持续质量维护](wiki-system/concepts/wiki-health-check.md)"
+  - "[LLM Wiki vs RAG — 两种知识管理范式的对比](wiki-system/analysis/llm-wiki-vs-rag.md)"
 status: stable
 ---
 
@@ -24,15 +24,6 @@ status: stable
 - **三个核心操作：** [ingest](wiki-system/concepts/wiki-ingest-workflow.md)（摄入）→ [query](wiki-system/concepts/wiki-query-synthesis.md)（查询）→ [lint](wiki-system/concepts/wiki-health-check.md)（健康检查）
 - **三层架构：** 原始源材料（不可变）→ wiki（LLM 全权维护）→ schema（约定文档，人机共演进）
 - **与 ZooKeeper 的关系：** ZooKeeper 的 wiki 系统是该模式的独立实现。Karpathy 的文章可视为其设计理念的独立阐述，二者的差异见 LLM Wiki vs RAG
-
-## Relations
-
-- [复利知识 — 持久化知识库的核心价值](wiki-system/concepts/compounding-knowledge.md) — "复利知识"是该文的核心设计原则
-- [Wiki Ingest 工作流 — 源材料的增量整合](wiki-system/concepts/wiki-ingest-workflow.md) — ingest 是三个核心操作之一
-- [Query → Synthesis → 归档 — 查询即知识生产](wiki-system/concepts/wiki-query-synthesis.md) — query→归档的闭环
-- [Wiki 健康检查 — 知识库的持续质量维护](wiki-system/concepts/wiki-health-check.md) — lint 是持续质量维护机制
-- [LLM Wiki vs RAG — 两种知识管理范式的对比](wiki-system/analysis/llm-wiki-vs-rag.md) — 文中通过对比 RAG 来定义 LLM Wiki 模式
-
 
 ## Backlinks
 

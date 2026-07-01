@@ -4,11 +4,11 @@ description: 固定不变的基础设施文件，负责数据下载、BPE tokeni
 type: entity
 timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, file, data, evaluation]
-related:
-  - autoresearch/concepts/fixed-time-budget-evaluation.md
-  - autoresearch/concepts/single-file-modification.md
-  - autoresearch/entities/autoresearch-train-py.md
-  - autoresearch/sources/notes/autoresearch.md
+relations:
+  - "[固定时间预算评估](autoresearch/concepts/fixed-time-budget-evaluation.md)"
+  - "[单文件修改原则](autoresearch/concepts/single-file-modification.md)"
+  - "[train.py](autoresearch/entities/autoresearch-train-py.md)"
+  - "[autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)"
 status: stable
 ---
 
@@ -39,13 +39,6 @@ prepare.py 是 [autoresearch](autoresearch/sources/notes/autoresearch.md) 的固
 - **输入** — 命令行参数（`--num-shards`、`--download-workers`）
 - **输出** — `~/.cache/autoresearch/` 下的数据和 tokenizer
 - **被调用方** — [train.py](autoresearch/entities/autoresearch-train-py.md) 导入 `Tokenizer`、`make_dataloader`、`evaluate_bpb`、`MAX_SEQ_LEN`、`TIME_BUDGET`
-
-## Relations
-
-- [固定时间预算评估](autoresearch/concepts/fixed-time-budget-evaluation.md) — 本文件定义时间预算和评估函数
-- [单文件修改原则](autoresearch/concepts/single-file-modification.md) — 本文件是"不可修改"约束的核心
-- [train.py](autoresearch/entities/autoresearch-train-py.md) — 导入本文件的工具函数和常量
-- [autoresearch 项目](autoresearch/sources/notes/autoresearch.md) — 本文件的来源项目
 
 ## Backlinks
 

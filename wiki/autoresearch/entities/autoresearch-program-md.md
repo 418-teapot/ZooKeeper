@@ -4,13 +4,13 @@ description: 人类可编辑的 agent 指令文件，定义实验目标、约束
 type: entity
 timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, file, skill, prompt]
-related:
-  - autoresearch/concepts/autonomous-experiment-loop.md
-  - shared/concepts/npc.md
-  - shared/concepts/simplicity-criterion.md
-  - autoresearch/entities/autoresearch-train-py.md
-  - autoresearch/entities/autoresearch-prepare-py.md
-  - autoresearch/sources/notes/autoresearch.md
+relations:
+  - "[自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md)"
+  - "[NPC 式分工](shared/concepts/npc.md)"
+  - "[简约准则](shared/concepts/simplicity-criterion.md)"
+  - "[train.py](autoresearch/entities/autoresearch-train-py.md)"
+  - "[prepare.py](autoresearch/entities/autoresearch-prepare-py.md)"
+  - "[autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)"
 status: stable
 ---
 
@@ -44,14 +44,6 @@ program.md 是 [autoresearch](autoresearch/sources/notes/autoresearch.md) 的"�
 - **被读取方** — agent 在每次 session 开始时阅读
 - **被编辑方** — 人类根据实验策略迭代调整
 - **不执行** — 本身不是代码，是自然语言指令
-
-## Relations
-
-- [自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md) — 本文件定义循环的规则
-- [NPC 式分工](shared/concepts/npc.md) — 本文件是人类编写的"NPC 脚本"
-- [简约准则](shared/concepts/simplicity-criterion.md) — 本文件定义该准则
-- [train.py](autoresearch/entities/autoresearch-train-py.md) — 本文件约束 agent 如何修改 train.py
-- [autoresearch 项目](autoresearch/sources/notes/autoresearch.md) — 本文件的来源项目
 
 ## Backlinks
 

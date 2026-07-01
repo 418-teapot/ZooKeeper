@@ -7,8 +7,8 @@ tags: [tag1, tag2]
 sources:
   - adr-XXX
   - rfc-YYY
-related:
-  - autoresearch/concepts/foo.md
+relations:
+  - "[示例概念](autoresearch/concepts/foo.md)"
 status: draft|review|stable|deprecated
 ---
 
@@ -37,10 +37,6 @@ status: draft|review|stable|deprecated
 ## Conclusion
 
 最终结论及选择理由。如果未做决定，说明当前状态。
-
-## Relations
-
-- [相关页面](autoresearch/analysis/related.md) — 关联说明
 
 ## Backlinks
 

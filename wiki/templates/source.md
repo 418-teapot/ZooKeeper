@@ -5,8 +5,8 @@ type: source
 timestamp: YYYY-MM-DDTHH:mm:ssZ
 resource: <source-id>
 tags: [tag1, tag2]
-related:
-  - autoresearch/analysis/foo.md
+relations:
+  - "[示例分析](autoresearch/analysis/foo.md)"
 status: draft|review|stable|deprecated
 ---
 
@@ -33,10 +33,6 @@ status: draft|review|stable|deprecated
 ## Impact
 
 该源文档对项目产生的影响。
-
-## Relations
-
-- [相关页面](autoresearch/analysis/related.md) — 关联说明
 
 ## Backlinks
 

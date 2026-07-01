@@ -16,7 +16,7 @@ use walkdir::WalkDir;
 /// Meta / system filenames excluded from wiki page listings.
 ///
 /// `overview.md` is intentionally NOT listed here — it is a real
-/// synthesis page and must participate in health checks (related-field
+/// synthesis page and must participate in health checks (relations-field
 /// consistency, inline-link coverage, etc.).
 const META_FILES: &[&str] = &[
     "index.md",
@@ -256,6 +256,25 @@ fn relative_to(base: &Path, path: &Path) -> String {
         |_| path.to_string_lossy().to_string(),
         |p| p.to_string_lossy().to_string(),
     )
+}
+
+/// Extract the wiki-relative path from a `relations` markdown-link entry.
+///
+/// Expects the markdown-link format `"[title](path.md)"` and returns
+/// the path inside the parentheses.  If the entry does not contain a
+/// `](` pattern (malformed or unexpected input), the trimmed input is
+/// returned as-is as a fallback.
+#[must_use]
+pub fn parse_related_entry(entry: &str) -> String {
+    let entry = entry.trim();
+    if entry.contains("](")
+        && let Some(start) = entry.rfind('(')
+        && let Some(end) = entry.rfind(')')
+        && start < end
+    {
+        return entry[start + 1..end].to_string();
+    }
+    entry.to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -576,7 +595,7 @@ mod tests {
     #[test]
     fn test_parse_frontmatter_inline_list() {
         let content =
-            "---\ntags: [python, test]\nrelated: [foo.md, bar.md]\n---\n";
+            "---\ntags: [python, test]\nrelations: [foo.md, bar.md]\n---\n";
         let result = parse_frontmatter(content);
         assert_eq!(
             result.get("tags"),
@@ -586,7 +605,7 @@ mod tests {
             ]))
         );
         assert_eq!(
-            result.get("related"),
+            result.get("relations"),
             Some(&Value::Array(vec![
                 Value::String("foo.md".to_string()),
                 Value::String("bar.md".to_string()),
@@ -625,7 +644,7 @@ mod tests {
     #[test]
     fn test_parse_frontmatter_mixed_types() {
         let content = "---\ntitle: Mixed\ntype: concept\n\
-                        tags: [foo, bar]\nrelated:\n- a.md\n- b.md\n---\n";
+                        tags: [foo, bar]\nrelations:\n- a.md\n- b.md\n---\n";
         let result = parse_frontmatter(content);
         assert_eq!(
             result.get("title"),
@@ -643,7 +662,7 @@ mod tests {
             ]))
         );
         assert_eq!(
-            result.get("related"),
+            result.get("relations"),
             Some(&Value::Array(vec![
                 Value::String("a.md".to_string()),
                 Value::String("b.md".to_string()),
@@ -768,5 +787,34 @@ mod tests {
     #[test]
     fn test_parse_date_invalid_month() {
         assert_eq!(parse_date("2024-13-01"), None);
+    }
+
+    // -------------------------------------------------------------------
+    // 6. parse_related_entry
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_related_entry_markdown_link() {
+        let result = parse_related_entry("[title](concepts/foo.md)");
+        assert_eq!(result, "concepts/foo.md");
+    }
+
+    #[test]
+    fn test_parse_related_entry_markdown_link_nested() {
+        let result = parse_related_entry("[some [text]](concepts/foo.md)");
+        assert_eq!(result, "concepts/foo.md");
+    }
+
+    #[test]
+    fn test_parse_related_entry_non_markdown_fallback() {
+        // Non-markdown input is treated as malformed; trimmed input is returned.
+        let result = parse_related_entry("  concepts/foo.md  ");
+        assert_eq!(result, "concepts/foo.md");
+    }
+
+    #[test]
+    fn test_parse_related_entry_empty() {
+        let result = parse_related_entry("");
+        assert_eq!(result, "");
     }
 }

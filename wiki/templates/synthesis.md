@@ -8,8 +8,8 @@ sources:
   - wiki-system/concepts/foo.md
   - autoresearch/entities/bar.md
   - wiki-system/analysis/baz.md
-related:
-  - wiki-system/analysis/related.md
+relations:
+  - "[示例分析](wiki-system/analysis/related.md)"
 status: draft|review|stable|deprecated
 ---
 
@@ -29,10 +29,6 @@ status: draft|review|stable|deprecated
 
 - [概念](wiki-system/concepts/foo.md) — 使用方式与贡献
 - [实体](autoresearch/entities/bar.md) — 使用方式与贡献
-
-## Relations
-
-- [其他 synthesis](wiki-system/analysis/related.md) — 关联说明
 
 ## Backlinks
 

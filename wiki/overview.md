@@ -4,20 +4,20 @@ description: ZooKeeper wiki 系统的结构化概览，涵盖设计哲学、三�
 type: synthesis
 timestamp: 2026-07-01T00:00:00Z
 tags: [overview, wiki, knowledge-base]
-related:
-  - wiki-system/concepts/compounding-knowledge.md
-  - wiki-system/sources/notes/llm-wiki-karpathy.md
-  - wiki-system/analysis/llm-wiki-vs-rag.md
-  - wiki-system/concepts/wiki-ingest-workflow.md
-  - wiki-system/concepts/wiki-health-check.md
-  - wiki-system/concepts/wiki-query-synthesis.md
-  - autoresearch/sources/notes/autoresearch.md
-  - autoresearch/sources/rfc/autoresearch-design.md
-  - autoresearch/concepts/autoresearch-extension-loop.md
-  - autoresearch/concepts/mad-confidence.md
-  - autoresearch/concepts/metric-asi-protocol.md
-  - shared/concepts/npc.md
-  - shared/analysis/agent-skill-plugin-framework.md
+relations:
+  - "[复利知识 — 持久化知识库的核心价值](wiki-system/concepts/compounding-knowledge.md)"
+  - "[LLM Wiki — 用 LLM 构建个人知识库的模式](wiki-system/sources/notes/llm-wiki-karpathy.md)"
+  - "[LLM Wiki vs RAG — 两种知识管理范式的对比](wiki-system/analysis/llm-wiki-vs-rag.md)"
+  - "[Wiki Ingest 工作流 — 源材料的增量整合](wiki-system/concepts/wiki-ingest-workflow.md)"
+  - "[Wiki 健康检查 — 知识库的持续质量维护](wiki-system/concepts/wiki-health-check.md)"
+  - "[Query → Synthesis → 归档 — 查询即知识生产](wiki-system/concepts/wiki-query-synthesis.md)"
+  - "[autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)"
+  - "[autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)"
+  - "[autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md)"
+  - "[MAD 置信度算法](autoresearch/concepts/mad-confidence.md)"
+  - "[METRIC/ASI 文本协议](autoresearch/concepts/metric-asi-protocol.md)"
+  - "[NPC 式分工](shared/concepts/npc.md)"
+  - "[Agent/Skill/Plugin 判断框架](shared/analysis/agent-skill-plugin-framework.md)"
 status: stable
 ---
 
@@ -70,12 +70,6 @@ Wiki 按领域组织，每个领域独立维护 6 类页面（concepts/entities/
 - **LLM（kiwi 等蒸馏 agent）** 负责判断性工作：提取、分类、组织、建议链接方向
 - **工具脚本** 负责机械性工作：格式校验、关联对称性维护、孤立页面检测
 - 交叉引用的双向对称性不应由 agent 保证 — 确定性程序比 LLM 更适合重复性机械操作
-
-## Relations
-
-- `wiki-system/concepts/compounding-knowledge.md` — 本 wiki 遵循的核心设计哲学
-- `wiki-system/sources/notes/llm-wiki-karpathy.md` — 设计理念来源的原始材料
-- `wiki-system/analysis/llm-wiki-vs-rag.md` — 与其他知识管理范式的边界
 
 ## References
 

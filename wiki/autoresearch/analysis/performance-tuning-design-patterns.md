@@ -6,9 +6,9 @@ timestamp: 2026-06-19T00:00:00Z
 tags: [performance-tuning, design-pattern, linux-kernel, gpu, ai-agent]
 sources:
   - autoresearch/sources/rfc/autoresearch-design.md
-related:
-  - shared/analysis/agent-skill-plugin-framework.md
-  - autoresearch/analysis/autoresearch-porting-roadmap.md
+relations:
+  - "[Agent/Skill/Plugin 判断框架](shared/analysis/agent-skill-plugin-framework.md)"
+  - "[autoresearch ZooKeeper 移植路线图](autoresearch/analysis/autoresearch-porting-roadmap.md)"
 status: stable
 ---
 
@@ -54,11 +54,6 @@ NPU Agent 将人类 guided sessions 蒸馏为可复用 skill。渐进式自治�
 - 开源的"agent + profiler"完整 Linux 内核流水线
 
 现有系统均为参数调优（sysctl/Kconfig），非代码热点优化。
-
-## Relations
-
-- [Agent/Skill/Plugin 判断框架](shared/analysis/agent-skill-plugin-framework.md) — 架构选择的评估方法
-- [ZooKeeper 移植路线图](autoresearch/analysis/autoresearch-porting-roadmap.md) — 将这些模式应用于 ZooKeeper 内核调优的规划
 
 ## Backlinks
 

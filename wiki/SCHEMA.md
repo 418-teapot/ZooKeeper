@@ -82,7 +82,7 @@ wiki/
 | `resource` | 否 | string | 外部资产 URI |
 | `sources` | 否 | string[] | 参考的源文档标识列表（用于 analysis / synthesis 类型） |
 | `tags` | 是 | string[] | 标签列表，如 `[permission, config]` |
-| `related` | 否 | string[] | 相关 wiki 页面路径列表（相对 wiki 根目录），如 `["concepts/permission.md"]` |
+| `relations` | 否 | string[] | 相关 wiki 页面路径列表（相对 wiki 根目录），以 Markdown 链接格式，如 `- "[标题](concepts/permission.md)"` |
 | `status` | 是 | string | 状态：`draft` / `review` / `stable` / `deprecated` |
 
 示例：
@@ -94,23 +94,22 @@ description: <一句话摘要>。
 type: concept
 timestamp: 2026-06-17T00:00:00Z
 tags: [permission, security]
-related:
-  - autoresearch/entities/foo.md
-  - shared/concepts/bar.md
+relations:
+  - "[foo 实体](autoresearch/entities/foo.md)"
+  - "[bar 概念](shared/concepts/bar.md)"
 status: stable
 ---
 ```
 
 ### 节结构
 
-所有页面遵循统一的六段式结构（非必需段落可省略）：
+所有页面遵循统一的五段式结构（非必需段落可省略）：
 
 1. **Overview** — 一句话概括和一节概述（blockquote），说明该页面回答的核心问题
 2. **Details** — 详细展开，可使用二级/三级标题细分
-3. **Relations** — 与本页面相关的其他 wiki 页面列表，含简要关联说明
-4. **Backlinks** — 反向链接列表，由 `zwiki check` 自动维护，列出引用本页面的其他页面。
-5. **References** — 引用来源（外部链接、代码路径、文档路径）
-6. **Notes** — 补充说明、待确认事项、边缘情况
+3. **Backlinks** — 反向链接列表，由 `zwiki check` 自动维护，列出引用本页面的其他页面。
+4. **References** — 引用来源（外部链接、代码路径、文档路径）
+5. **Notes** — 补充说明、待确认事项、边缘情况
 
 每个段落用 `##` 二级标题开始。
 
@@ -123,16 +122,18 @@ status: stable
 
 ### 路径与交叉引用规则
 
-本页内交叉引用（Markdown 链接、frontmatter `related`/`sources`、log.md 的 `<path>` 字段）一律**相对 wiki 根目录**，不带 `wiki/` 或 `~/.zoo/wiki/` 前缀：
+本页内交叉引用（Markdown 链接、frontmatter `relations`/`sources`、log.md 的 `<path>` 字段）一律**相对 wiki 根目录**，不带 `wiki/` 或 `~/.zoo/wiki/` 前缀：
 
 - **内联链接：**
   ```
   [自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md)
   [train.py](autoresearch/entities/autoresearch-train-py.md)
   ```
-- **Frontmatter `related`：**
+- **Frontmatter `relations`：**
   ```yaml
-  related: [autoresearch/entities/foo.md, shared/concepts/bar.md]
+relations:
+  - "[foo 实体](autoresearch/entities/foo.md)"
+  - "[bar 概念](shared/concepts/bar.md)"
   ```
 - **Frontmatter `sources`（synthesis 页面）：**
   ```yaml
@@ -152,7 +153,7 @@ Agent 直接读写文件时（`read` / `write` / `edit` / `bash` 指令）使用
   > **待确认：** 此行为在 OpenCode 0.5.x 中可能有变化。
   ```
 - **代码引用：** 文件路径、函数名、配置项等使用行内代码 `` ` ``
-- **内联链接：** 页面正文中首次出现已被其他 wiki 页面定义的概念/实体/分析时，使用内联 Markdown 链接指向该页面。此外，当页面存在多个可通过搜索或目录独立进入的节时，每个节内首次出现该概念也应链接——原则是**每个独立阅读入口至少一个链接入口**。`## Relations` 节作为兜底，列出所有关联页面，确保无论从哪开始读都能发现交叉引用
+- **内联链接：** 页面正文中首次出现已被其他 wiki 页面定义的概念/实体/分析时，使用内联 Markdown 链接指向该页面。此外，当页面存在多个可通过搜索或目录独立进入的节时，每个节内首次出现该概念也应链接——原则是**每个独立阅读入口至少一个链接入口**。Frontmatter 的 `relations` 字段列出所有关联页面，确保无论从哪开始读都能发现交叉引用
 
 ### overview.md 规范
 

@@ -5,11 +5,11 @@ resource: https://github.com/karpathy/autoresearch
 type: concept
 timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, versioning, git, experiment-tracking]
-related:
-  - autoresearch/concepts/autonomous-experiment-loop.md
-  - autoresearch/concepts/autoresearch-extension-loop.md
-  - autoresearch/entities/autoresearch-train-py.md
-  - autoresearch/sources/notes/autoresearch.md
+relations:
+  - "[自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md)"
+  - "[autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md)"
+  - "[train.py](autoresearch/entities/autoresearch-train-py.md)"
+  - "[autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)"
 status: stable
 ---
 
@@ -59,12 +59,6 @@ commit  val_bpb  memory_gb  status  description
 - **零依赖** — 不需要外部实验跟踪平台
 - **可审计** — 每个结果对应一个可检查的代码版本
 - **离线可用** — 不依赖网络
-
-## Relations
-
-- [自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md) — 版本管理是循环的持久化机制
-- [train.py](autoresearch/entities/autoresearch-train-py.md) — 被版本控制的文件
-- [autoresearch 项目](autoresearch/sources/notes/autoresearch.md) — 本概念的来源项目
 
 ## Backlinks
 

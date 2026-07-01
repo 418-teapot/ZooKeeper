@@ -31,7 +31,7 @@ description: 从 ~/.zoo/wiki/ 中查询知识并合成答案。查询 wiki 覆�
 ## Phase 2 — 读取相关页面
 
 读取匹配的 wiki 页面（如 `~/.zoo/wiki/<domain>/concepts/<file>.md`，最多 10 个，防止上下文溢出）。
-如果页面有 `related` frontmatter 字段指向其他页面（使用域前缀路径），按需递归读取。
+如果页面有 `relations` frontmatter 字段指向其他页面（使用域前缀路径），按需递归读取。
 
 ---
 

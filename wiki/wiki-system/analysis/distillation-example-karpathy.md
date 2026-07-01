@@ -7,13 +7,13 @@ timestamp: 2026-06-18T00:00:00Z
 tags: [distillation, example, methodology]
 sources:
   - wiki-system/sources/notes/llm-wiki-karpathy.md
-related:
-  - wiki-system/concepts/compounding-knowledge.md
-  - wiki-system/concepts/wiki-ingest-workflow.md
-  - wiki-system/concepts/wiki-query-synthesis.md
-  - wiki-system/concepts/wiki-health-check.md
-  - wiki-system/analysis/llm-wiki-vs-rag.md
-  - wiki-system/sources/notes/llm-wiki-karpathy.md
+relations:
+  - "[复利知识 — 持久化知识库的核心价值](wiki-system/concepts/compounding-knowledge.md)"
+  - "[Wiki Ingest 工作流 — 源材料的增量整合](wiki-system/concepts/wiki-ingest-workflow.md)"
+  - "[Query → Synthesis → 归档 — 查询即知识生产](wiki-system/concepts/wiki-query-synthesis.md)"
+  - "[Wiki 健康检查 — 知识库的持续质量维护](wiki-system/concepts/wiki-health-check.md)"
+  - "[LLM Wiki vs RAG — 两种知识管理范式的对比](wiki-system/analysis/llm-wiki-vs-rag.md)"
+  - "[LLM Wiki — 用 LLM 构建个人知识库的模式](wiki-system/sources/notes/llm-wiki-karpathy.md)"
 status: stable
 ---
 
@@ -116,17 +116,8 @@ wiki-system/analysis/llm-wiki-vs-rag.md              ← 综合对比（消费 c
 - 原文全文（不可变副本）：`raw/2026-06-18-karpathy-llm-wiki.md`
 - 原文 URL：https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
 
-## Relations
-
-- [LLM Wiki — 用 LLM 构建个人知识库的模式](wiki-system/sources/notes/llm-wiki-karpathy.md) — 被蒸馏的原始材料
-- [复利知识 — 持久化知识库的核心价值](wiki-system/concepts/compounding-knowledge.md) — 蒸馏出的核心概念页面之一
-- [Wiki Ingest 工作流 — 源材料的增量整合](wiki-system/concepts/wiki-ingest-workflow.md) — 蒸馏出的操作页面之一
-- [Query → Synthesis → 归档 — 查询即知识生产](wiki-system/concepts/wiki-query-synthesis.md) — 蒸馏出的操作页面之一
-- [Wiki 健康检查 — 知识库的持续质量维护](wiki-system/concepts/wiki-health-check.md) — 蒸馏出的操作页面之一
-- [LLM Wiki vs RAG — 两种知识管理范式的对比](wiki-system/analysis/llm-wiki-vs-rag.md) — 蒸馏出的综合对比页面
-
 ## Notes
 
 > **蒸馏不是机械拆分。** 本文中"三层架构"没有独立成页、"索引日志格式"没有独立成页——这些是**有意识的合并而非遗漏**。蒸馏的判断标准是"这个知识单元是否在已有 wiki 中有更规范的表达？是否与其他已有页面高度重叠？"——如果答案是 yes，则不创建新页面，即使原文给了它独立的段落。
 >
-> **内联链接的首次 vs 重复：** 当前 wiki 页面都很短，因此"每个独立阅读入口至少一个链接"在表现上等价于"首次出现即链接"。随着页面增长（如 synthesis 页面可能达到数百行），规则的自然延伸是：每个二级标题下的节作为一个独立阅读入口，各自维护首次出现链接。`## Relations` 节保证无论读者从哪跳入都能发现交叉引用。
+> **内联链接的首次 vs 重复：** 当前 wiki 页面都很短，因此"每个独立阅读入口至少一个链接"在表现上等价于"首次出现即链接"。随着页面增长（如 synthesis 页面可能达到数百行），规则的自然延伸是：每个二级标题下的节作为一个独立阅读入口，各自维护首次出现链接。Frontmatter 的 `related` 字段列出所有关联页面，确保无论从哪开始读都能发现交叉引用。

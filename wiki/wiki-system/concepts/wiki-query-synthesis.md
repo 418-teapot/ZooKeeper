@@ -5,9 +5,9 @@ resource: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
 type: concept
 timestamp: 2026-06-18T00:00:00Z
 tags: [wiki, query, synthesis, knowledge-production]
-related:
-  - wiki-system/concepts/compounding-knowledge.md
-  - wiki-system/concepts/wiki-ingest-workflow.md
+relations:
+  - "[复利知识 — 持久化知识库的核心价值](wiki-system/concepts/compounding-knowledge.md)"
+  - "[Wiki Ingest 工作流 — 源材料的增量整合](wiki-system/concepts/wiki-ingest-workflow.md)"
 status: stable
 ---
 
@@ -43,12 +43,6 @@ status: stable
 - **归档决策权** — 不是所有查询都归档。LLM 或调用方判断回答是否有"超越当前会话的复用价值"
 - **引用溯源** — synthesis 通过 frontmatter `sources` 字段标注引用了哪些已有 wiki 页面
 - **格式多样性** — 回答可以是 markdown 页面、对比表、幻灯片、图表等，不同格式对应不同输出目标
-
-## Relations
-
-- [复利知识 — 持久化知识库的核心价值](wiki-system/concepts/compounding-knowledge.md) — 查询归档是复利机制的第二条增长曲线
-- [Wiki Ingest 工作流 — 源材料的增量整合](wiki-system/concepts/wiki-ingest-workflow.md) — 归档执行流程与 ingest 类似
-
 
 ## Backlinks
 

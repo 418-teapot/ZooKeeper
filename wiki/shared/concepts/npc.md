@@ -5,12 +5,12 @@ resource: https://github.com/karpathy/autoresearch
 type: concept
 timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, human-agent-division, skill-pattern]
-related:
-  - autoresearch/concepts/autonomous-experiment-loop.md
-  - autoresearch/concepts/single-file-modification.md
-  - autoresearch/entities/autoresearch-program-md.md
-  - autoresearch/entities/autoresearch-train-py.md
-  - autoresearch/sources/notes/autoresearch.md
+relations:
+  - "[自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md)"
+  - "[单文件修改原则](autoresearch/concepts/single-file-modification.md)"
+  - "[program.md](autoresearch/entities/autoresearch-program-md.md)"
+  - "[train.py](autoresearch/entities/autoresearch-train-py.md)"
+  - "[autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)"
 status: stable
 ---
 
@@ -44,14 +44,6 @@ NPC 式分工是 [autoresearch](autoresearch/sources/notes/autoresearch.md) 的�
 - 文件边界清晰（`program.md` vs `train.py`)
 - 决策层级分离（战略 vs 战术）
 - 运行时可无人值守（agent 不需要人类确认）
-
-## Relations
-
-- [自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md) — NPC 分工是循环的组织基础
-- [单文件修改原则](autoresearch/concepts/single-file-modification.md) — 文件边界是分工的技术实现
-- [program.md](autoresearch/entities/autoresearch-program-md.md) — 人类编辑的"NPC 脚本"
-- [train.py](autoresearch/entities/autoresearch-train-py.md) — agent 编辑的执行文件
-- [autoresearch 项目](autoresearch/sources/notes/autoresearch.md) — 本概念的来源项目
 
 ## Backlinks
 

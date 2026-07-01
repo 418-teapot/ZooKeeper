@@ -5,13 +5,13 @@ resource: https://github.com/karpathy/autoresearch
 type: concept
 timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, scope-management, agent-constraint]
-related:
-  - autoresearch/concepts/autonomous-experiment-loop.md
-  - shared/concepts/post-hoc-accountability.md
-  - shared/concepts/npc.md
-  - autoresearch/entities/autoresearch-train-py.md
-  - autoresearch/entities/autoresearch-prepare-py.md
-  - autoresearch/sources/notes/autoresearch.md
+relations:
+  - "[自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md)"
+  - "[后验问责制](shared/concepts/post-hoc-accountability.md)"
+  - "[NPC 式分工](shared/concepts/npc.md)"
+  - "[train.py](autoresearch/entities/autoresearch-train-py.md)"
+  - "[prepare.py](autoresearch/entities/autoresearch-prepare-py.md)"
+  - "[autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)"
 status: stable
 ---
 
@@ -41,14 +41,6 @@ status: stable
 ### 边界情况
 
 agent 在 `train.py` 内几乎拥有无限自由：可改架构、改优化器、改 batch size、甚至改模型尺寸。唯一的硬性约束是代码必须能在 5 分钟内跑完且不崩溃。这与[后验问责制](shared/concepts/post-hoc-accountability.md)的"允许越界编辑但在记录时捕获偏差"形成对比——本原则使用前置硬限制，而后验问责制使用后置透明记录。
-
-## Relations
-
-- [自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md) — 单文件约束是循环的执行规则
-- [NPC 式分工](shared/concepts/npc.md) — 单文件是分工的具体体现（agent 的领地）
-- [train.py](autoresearch/entities/autoresearch-train-py.md) — 唯一可修改的文件
-- [prepare.py](autoresearch/entities/autoresearch-prepare-py.md) — 不可修改的固定文件
-- [autoresearch 项目](autoresearch/sources/notes/autoresearch.md) — 本概念的来源项目
 
 ## Backlinks
 

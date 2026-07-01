@@ -109,12 +109,12 @@ fn extract_markdown_links(body: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Extract wiki-page links from the frontmatter `related` field.
+/// Extract wiki-page links from the frontmatter `relations` field.
 ///
 /// Only returns targets ending in `.md`.
 fn extract_related_links(frontmatter: &HashMap<String, Value>) -> Vec<String> {
     let mut links = Vec::new();
-    if let Some(related) = frontmatter.get("related") {
+    if let Some(related) = frontmatter.get("relations") {
         match related {
             Value::String(s) => {
                 if Path::new(s)
@@ -154,7 +154,7 @@ fn parse_index_links(content: &str) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 /// Scan each page's body for markdown links `[text](target.md)` and
-/// frontmatter `related` links.  For each resolved target that does not
+/// frontmatter `relations` links.  For each resolved target that does not
 /// exist in the page cache, report an issue.
 ///
 /// Skips external URLs (http/https) and anchor-only links (`#fragment`).
@@ -182,7 +182,7 @@ pub fn check_broken_links(
             }
         }
 
-        // 1b. Frontmatter `related` links.
+        // 1b. Frontmatter `relations` links.
         for related_target in extract_related_links(&page.frontmatter) {
             if let Some(resolved) = resolve_target(&related_target)
                 && !cache.contains_key(&resolved)
@@ -191,7 +191,7 @@ pub fn check_broken_links(
                     page: page.rel.clone(),
                     kind: "target_not_found".to_string(),
                     details: serde_json::json!({
-                        "link_text": "related",
+                        "link_text": "relations",
                         "target_path": resolved,
                     })
                     .to_string(),
@@ -213,7 +213,7 @@ pub fn check_broken_links(
 ///
 /// Inbound links are counted from:
 /// - Markdown body links (`[text](target.md)`)
-/// - Frontmatter `related` links
+/// - Frontmatter `relations` links
 ///
 /// Self-references are excluded from the inbound count.  Links from meta
 /// files (index.md, log.md, etc.) are naturally excluded because they are
@@ -231,7 +231,7 @@ pub fn check_orphan_pages(pages: &[Page], wiki_dir: &Path) -> Vec<Issue> {
                 *inbound.entry(resolved).or_insert(0) += 1;
             }
         }
-        // Frontmatter related links.
+        // Frontmatter relations links.
         for related_target in extract_related_links(&page.frontmatter) {
             if let Some(resolved) = resolve_target(&related_target)
                 && resolved != page.rel
@@ -545,19 +545,19 @@ mod tests {
 
     #[test]
     fn test_broken_links_related_broken() {
-        // Frontmatter `related` pointing to non-existent page.
+        // Frontmatter `relations` pointing to non-existent page.
         let (_, pages, cache) = setup_wiki(
             "broken_related",
             &[(
                 "concepts/page-a.md",
-                "---\ntitle: Page A\nrelated: [nonexistent.md]\n---\nBody.\n",
+                "---\ntitle: Page A\nrelations: [nonexistent.md]\n---\nBody.\n",
             )],
         );
         let issues = check_broken_links(&pages, &cache);
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].kind, "target_not_found");
         let details: Value = serde_json::from_str(&issues[0].details).unwrap();
-        assert_eq!(details["link_text"], "related");
+        assert_eq!(details["link_text"], "relations");
     }
 
     // =======================================================================
