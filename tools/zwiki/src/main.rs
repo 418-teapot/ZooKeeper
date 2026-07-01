@@ -116,6 +116,10 @@ enum Command {
 
     /// Create a new wiki page from template
     Create {
+        /// Domain: an existing wiki subdirectory (required)
+        #[arg(long)]
+        domain: String,
+
         /// Page type: concept, entity, source, analysis, synthesis
         #[arg(long)]
         r#type: String,
@@ -162,8 +166,9 @@ fn main() {
         Some(Command::Property { name, page, value, delete }) => {
             cmd_property(&name, &page, value.as_deref(), delete);
         }
-        Some(Command::Create { r#type, title, slug, source_type }) => {
+        Some(Command::Create { domain, r#type, title, slug, source_type }) => {
             cmd_create(
+                &domain,
                 &r#type,
                 &title,
                 slug.as_deref(),
@@ -257,6 +262,7 @@ const fn count_health_issues(r: &display::CheckResults) -> usize {
         + r.log_coverage.len()
         + r.frontmatter.len()
         + r.related_field.len()
+        + r.related_body_consistency.len()
         + r.source_field.len()
         + r.missing_inline_links.len()
         + r.duplicate_inline_links.len()
@@ -297,6 +303,9 @@ fn print_json_check_output(
             "log_coverage": fmt_issues(&health.log_coverage),
             "frontmatter": fmt_issues(&health.frontmatter),
             "related_field": fmt_issues(&health.related_field),
+            "related_body_consistency": fmt_issues(
+                &health.related_body_consistency,
+            ),
             "source_field": fmt_issues(&health.source_field),
             "missing_inline_links": fmt_issues(&health.missing_inline_links),
             "duplicate_inline_links": fmt_issues(&health.duplicate_inline_links),
@@ -360,6 +369,19 @@ fn print_markdown_check_output(
             }
         }
     }
+
+    // Global total across health + lint + diff, so the report ends
+    // with an unambiguous verdict instead of the lint-only footer.
+    let health_total = count_health_issues(health);
+    let lint_total = count_lint_issues(lint);
+    let diff_total = diff_results.len();
+    let grand_total = health_total + lint_total + diff_total;
+    println!();
+    println!("---");
+    println!();
+    println!(
+        "**全局总计：{grand_total} 个问题**（健康检查 {health_total} + lint {lint_total} + 增量 {diff_total}）"
+    );
 }
 
 fn cmd_backlinks(args: &Args, page: Option<&str>) {
@@ -487,12 +509,13 @@ fn cmd_property(
 }
 
 fn cmd_create(
+    domain: &str,
     r#type: &str,
     title: &str,
     slug: Option<&str>,
     source_type: Option<&str>,
 ) {
-    match page::create_page(r#type, title, slug, source_type) {
+    match page::create_page(domain, r#type, title, slug, source_type) {
         Ok(p) => println!("已创建页面: {}", p.display()),
         Err(e) => {
             eprintln!("{e}");
@@ -702,10 +725,13 @@ mod tests {
             "concept",
             "--title",
             "Test Page",
+            "--domain",
+            "autoresearch",
         ])
         .unwrap();
         match args.command {
-            Some(Command::Create { r#type, title, .. }) => {
+            Some(Command::Create { domain, r#type, title, .. }) => {
+                assert_eq!(domain, "autoresearch");
                 assert_eq!(r#type, "concept");
                 assert_eq!(title, "Test Page");
             }
@@ -722,6 +748,8 @@ mod tests {
             "source",
             "--title",
             "ADR-001",
+            "--domain",
+            "wiki-system",
             "--source-type",
             "adr",
             "--slug",
@@ -729,7 +757,14 @@ mod tests {
         ])
         .unwrap();
         match args.command {
-            Some(Command::Create { r#type, title, slug, source_type }) => {
+            Some(Command::Create {
+                domain,
+                r#type,
+                title,
+                slug,
+                source_type,
+            }) => {
+                assert_eq!(domain, "wiki-system");
                 assert_eq!(r#type, "source");
                 assert_eq!(title, "ADR-001");
                 assert_eq!(slug, Some("adr-001".to_string()));

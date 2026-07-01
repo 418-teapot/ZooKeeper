@@ -14,12 +14,15 @@ use walkdir::WalkDir;
 // ---------------------------------------------------------------------------
 
 /// Meta / system filenames excluded from wiki page listings.
+///
+/// `overview.md` is intentionally NOT listed here — it is a real
+/// synthesis page and must participate in health checks (related-field
+/// consistency, inline-link coverage, etc.).
 const META_FILES: &[&str] = &[
     "index.md",
     "log.md",
     "lint-report.md",
     "health-report.md",
-    "overview.md",
     "SCHEMA.md",
     ".gitkeep",
 ];
@@ -425,12 +428,12 @@ mod tests {
     fn test_all_wiki_pages_excludes_meta_files() {
         let dir = temp_dir("wiki_pages_meta");
         write(&dir.join("regular.md"), "# Regular");
+        write(&dir.join("overview.md"), "# Overview");
         for meta in &[
             "index.md",
             "log.md",
             "lint-report.md",
             "health-report.md",
-            "overview.md",
             "SCHEMA.md",
             ".gitkeep",
         ] {
@@ -442,7 +445,8 @@ mod tests {
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
             .collect();
-        assert_eq!(names, vec!["regular.md"]);
+        // overview.md is a real page, not a meta file.
+        assert_eq!(names, vec!["overview.md", "regular.md"]);
     }
 
     #[test]

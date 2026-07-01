@@ -5,11 +5,11 @@ type: synthesis
 timestamp: YYYY-MM-DDTHH:mm:ssZ
 tags: [tag1, tag2]
 sources:
-  - concepts/foo.md
-  - entities/bar.md
-  - analysis/baz.md
+  - wiki-system/concepts/foo.md
+  - autoresearch/entities/bar.md
+  - wiki-system/analysis/baz.md
 related:
-  - syntheses/other.md
+  - wiki-system/analysis/related.md
 status: draft|review|stable|deprecated
 ---
 
@@ -27,12 +27,12 @@ status: draft|review|stable|deprecated
 
 ## Sources Consulted
 
-- [概念](concepts/foo.md) — 使用方式与贡献
-- [实体](entities/bar.md) — 使用方式与贡献
+- [概念](wiki-system/concepts/foo.md) — 使用方式与贡献
+- [实体](autoresearch/entities/bar.md) — 使用方式与贡献
 
 ## Relations
 
-- [其他 synthesis](syntheses/other.md) — 关联说明
+- [其他 synthesis](wiki-system/analysis/related.md) — 关联说明
 
 ## Backlinks
 

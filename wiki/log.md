@@ -1,33 +1,46 @@
-## [2026-06-19] ingest | concepts/graph-link-prediction.md | create — 图链接预测理论知识蒸馏，作为健康检查拓扑互补路径
-## [2026-06-19] ingest | overview.md | edit — 更新知识版图与外部参考
-## [2026-06-19] ingest | concepts/autonomous-experiment-loop.md | edit — 添加扩展循环交叉引用
-## [2026-06-19] ingest | concepts/experiment-versioning.md | edit — 补充 segment 模型和扩展分支策略
-## [2026-06-19] ingest | sources/rfc/autoresearch-design.md | create — oh-my-pi autoresearch 扩展设计文档摘要
-## [2026-06-19] ingest | analysis/autoresearch-porting-roadmap.md | create — ZooKeeper 移植三阶段计划与路径分析
-## [2026-06-19] ingest | analysis/performance-tuning-design-patterns.md | create — 6 个 AI 调优系统的设计模式提炼
-## [2026-06-19] ingest | analysis/agent-skill-plugin-framework.md | create — Agent/Skill/Plugin 六维度判断框架
-## [2026-06-19] ingest | concepts/post-hoc-accountability.md | create — 后验问责制设计哲学
-## [2026-06-19] ingest | concepts/metric-asi-protocol.md | create — METRIC/ASI 零依赖文本协议
-## [2026-06-19] ingest | concepts/mad-confidence.md | create — MAD 置信度算法原理
-## [2026-06-19] ingest | concepts/autoresearch-extension-loop.md | create — 扩展的两阶段循环与自动恢复
-## [2026-06-19] ingest | overview.md | edit — 扩展知识版图，添加 autoresearch 参考
-## [2026-06-19] ingest | analysis/autoresearch-design-tradeoffs.md | create — 设计权衡结构化分析
-## [2026-06-19] ingest | entities/autoresearch-program-md.md | create — autoresearch agent 指令文件
-## [2026-06-19] ingest | entities/autoresearch-prepare-py.md | create — autoresearch 固定基础设施
-## [2026-06-19] ingest | entities/autoresearch-train-py.md | create — autoresearch 可修改文件
-## [2026-06-19] ingest | concepts/experiment-versioning.md | create — 实验版本管理
-## [2026-06-19] ingest | concepts/simplicity-criterion.md | create — 简约准则
-## [2026-06-19] ingest | concepts/npc.md | create — NPC 式分工模式
-## [2026-06-19] ingest | concepts/single-file-modification.md | create — 单文件修改原则
-## [2026-06-19] ingest | concepts/fixed-time-budget-evaluation.md | create — 固定时间预算评估机制
-## [2026-06-19] ingest | concepts/autonomous-experiment-loop.md | create — 自主实验循环核心概念
-## [2026-06-19] ingest | sources/notes/autoresearch.md | create — Karpathy autoresearch 项目源摘要
-## [2026-06-18] ingest | raw/2026-06-18-karpathy-llm-wiki.md | create — 原始 gist 全文副本（不可变）
-## [2026-06-18] ingest | analysis/distillation-example-karpathy.md | create — 蒸馏过程完整拆解（meta 示例）
-## [2026-06-18] ingest | overview.md | edit — 首次创建，综合 4 concepts + 1 analysis + 1 source
-## [2026-06-18] ingest | sources/notes/llm-wiki-karpathy.md | create — Karpathy LLM Wiki 设计模式提案
-## [2026-06-18] ingest | concepts/compounding-knowledge.md | create — RAG vs wiki 的核心差异：复利 vs 从零推导
-## [2026-06-18] ingest | concepts/wiki-ingest-workflow.md | create — ingest 流程步骤与设计考量
-## [2026-06-18] ingest | concepts/wiki-query-synthesis.md | create — 查询回答归档为知识的闭环机制
-## [2026-06-18] ingest | concepts/wiki-health-check.md | create — 定期 lint 检查维度与频率
-## [2026-06-18] ingest | analysis/llm-wiki-vs-rag.md | create — RAG 与 LLM Wiki 的结构化对比
+# 目录更新日志
+
+## 2026-07-01
+
+* **编辑**: overview.md — 知识版图改为按领域组织，补全 shared 域与 autoresearch analysis 的 related 引用
+* **编辑**: overview.md — 修复 related 字段与正文内联链接一致性
+* **编辑**: overview.md — 迁移 Relations 节链接到正文散文，补全 related 字段
+
+## 2026-06-19
+
+* **创建**: wiki-system/concepts/graph-link-prediction.md — 图链接预测理论知识蒸馏，作为健康检查拓扑互补路径
+* **编辑**: overview.md — 更新知识版图与外部参考
+* **编辑**: autoresearch/concepts/autonomous-experiment-loop.md — 添加扩展循环交叉引用
+* **编辑**: autoresearch/concepts/experiment-versioning.md — 补充 segment 模型和扩展分支策略
+* **创建**: autoresearch/sources/rfc/autoresearch-design.md — oh-my-pi autoresearch 扩展设计文档摘要
+* **创建**: autoresearch/analysis/autoresearch-porting-roadmap.md — ZooKeeper 移植三阶段计划与路径分析
+* **创建**: autoresearch/analysis/performance-tuning-design-patterns.md — 6 个 AI 调优系统的设计模式提炼
+* **创建**: shared/analysis/agent-skill-plugin-framework.md — Agent/Skill/Plugin 六维度判断框架
+* **创建**: shared/concepts/post-hoc-accountability.md — 后验问责制设计哲学
+* **创建**: autoresearch/concepts/metric-asi-protocol.md — METRIC/ASI 零依赖文本协议
+* **创建**: autoresearch/concepts/mad-confidence.md — MAD 置信度算法原理
+* **创建**: autoresearch/concepts/autoresearch-extension-loop.md — 扩展的两阶段循环与自动恢复
+* **编辑**: overview.md — 扩展知识版图，添加 autoresearch 参考
+* **创建**: autoresearch/analysis/autoresearch-design-tradeoffs.md — 设计权衡结构化分析
+* **创建**: autoresearch/entities/autoresearch-program-md.md — autoresearch agent 指令文件
+* **创建**: autoresearch/entities/autoresearch-prepare-py.md — autoresearch 固定基础设施
+* **创建**: autoresearch/entities/autoresearch-train-py.md — autoresearch 可修改文件
+* **创建**: autoresearch/concepts/experiment-versioning.md — 实验版本管理
+* **创建**: shared/concepts/simplicity-criterion.md — 简约准则
+* **创建**: shared/concepts/npc.md — NPC 式分工模式
+* **创建**: autoresearch/concepts/single-file-modification.md — 单文件修改原则
+* **创建**: autoresearch/concepts/fixed-time-budget-evaluation.md — 固定时间预算评估机制
+* **创建**: autoresearch/concepts/autonomous-experiment-loop.md — 自主实验循环核心概念
+* **创建**: autoresearch/sources/notes/autoresearch.md — Karpathy autoresearch 项目源摘要
+
+## 2026-06-18
+
+* **创建**: raw/2026-06-18-karpathy-llm-wiki.md — 原始 gist 全文副本（不可变）
+* **创建**: wiki-system/analysis/distillation-example-karpathy.md — 蒸馏过程完整拆解（meta 示例）
+* **编辑**: overview.md — 首次创建，综合 4 concepts + 1 analysis + 1 source
+* **创建**: wiki-system/sources/notes/llm-wiki-karpathy.md — Karpathy LLM Wiki 设计模式提案
+* **创建**: wiki-system/concepts/compounding-knowledge.md — RAG vs wiki 的核心差异：复利 vs 从零推导
+* **创建**: wiki-system/concepts/wiki-ingest-workflow.md — ingest 流程步骤与设计考量
+* **创建**: wiki-system/concepts/wiki-query-synthesis.md — 查询回答归档为知识的闭环机制
+* **创建**: wiki-system/concepts/wiki-health-check.md — 定期 lint 检查维度与频率
+* **创建**: wiki-system/analysis/llm-wiki-vs-rag.md — RAG 与 LLM Wiki 的结构化对比

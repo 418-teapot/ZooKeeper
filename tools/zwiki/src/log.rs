@@ -26,10 +26,98 @@ fn truncate_note(note: &str) -> String {
     format!("{truncated}…")
 }
 
-/// Format a single log entry line.
-fn format_entry(op: &str, path: &str, action: &str, note: &str) -> String {
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    format!("## [{today}] {op} | {path} | {action} — {note}")
+/// Map action names to Chinese verbs.
+fn action_to_chinese(action: &str) -> &str {
+    match action {
+        "create" => "创建",
+        "edit" => "编辑",
+        "ingest" => "摄入",
+        "pass" => "通过",
+        "fail" => "失败",
+        "update" => "更新",
+        "delete" => "删除",
+        other => other,
+    }
+}
+
+/// Format a single log entry line (OKF §7 prose style).
+///
+/// Returns a markdown bullet like `* **创建**: <path> — <note>`.
+/// The `op` parameter is accepted for API compatibility but is not
+/// included in the output (the action verb encodes the operation).
+fn format_entry(_op: &str, path: &str, action: &str, note: &str) -> String {
+    let verb = action_to_chinese(action);
+    if note.is_empty() {
+        format!("* **{verb}**: {path}")
+    } else {
+        format!("* **{verb}**: {path} — {note}")
+    }
+}
+
+/// Insert a new entry line into the log content under the right date group.
+///
+/// If a `## YYYY-MM-DD` section for `date` already exists the entry is
+/// appended to that section.  Otherwise a new section is created after the
+/// `# 目录更新日志` title (or at the top if the title is missing).
+fn insert_entry(content: &str, date: &str, entry_line: &str) -> String {
+    let title = "# 目录更新日志";
+    let date_header = format!("## {date}");
+
+    // Empty content → create fresh file structure
+    if content.trim().is_empty() {
+        return format!("{title}\n\n{date_header}\n\n{entry_line}\n");
+    }
+
+    let mut lines: Vec<&str> = content.lines().collect();
+
+    // Check if today's section already exists
+    if let Some(section_idx) = lines.iter().position(|l| *l == date_header) {
+        // Find where this section ends (next `## ` line or end of file)
+        let after_section = lines[section_idx + 1..]
+            .iter()
+            .position(|l| l.starts_with("## "))
+            .map_or(lines.len(), |i| section_idx + 1 + i);
+
+        // Append entry at the end of this section,
+        // skipping trailing blank lines so the entry
+        // stays with its group and the inter-group
+        // blank line separator is preserved.
+        let mut insert_at = after_section;
+        while insert_at > section_idx + 1 && lines[insert_at - 1].is_empty() {
+            insert_at -= 1;
+        }
+        lines.insert(insert_at, entry_line);
+    } else {
+        // New date section — insert after the title, before existing sections
+        let title_idx = lines.iter().position(|l| *l == title);
+
+        if let Some(idx) = title_idx {
+            // Find first existing `## ` section after the title
+            let first_section = lines[idx + 1..]
+                .iter()
+                .position(|l| l.starts_with("## "))
+                .map_or(lines.len(), |i| idx + 1 + i);
+
+            // Insert: blank line separator, entry, blank line after
+            // date header, then date header
+            // (reverse order because Vec::insert shifts right)
+            if first_section < lines.len() {
+                lines.insert(first_section, ""); // blank line before old sections
+            }
+            lines.insert(first_section, entry_line);
+            lines.insert(first_section, ""); // blank line after date header
+            lines.insert(first_section, &date_header);
+        } else {
+            // No title found — prepend everything
+            lines.insert(0, entry_line);
+            lines.insert(0, ""); // blank line after date header
+            lines.insert(0, &date_header);
+            lines.insert(0, "");
+            lines.insert(0, title);
+        }
+    }
+
+    lines.join("\n") + "\n"
 }
 
 /// Append a structured log entry to `wiki/log.md`.
@@ -68,6 +156,8 @@ pub fn add_entry_at(
     // Format entry
     let entry = format_entry(op, &path, action, &note);
 
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+
     // Create parent directory if needed
     if let Some(parent) = log_path.parent() {
         fs::create_dir_all(parent)
@@ -95,12 +185,14 @@ pub fn add_entry_at(
     file.read_to_string(&mut content)
         .map_err(|e| format!("无法读取日志文件: {e}"))?;
 
+    // Build new content with OKF §7 date grouping
+    let new_content = insert_entry(&content, &today, &entry);
+
     // Seek to beginning
     file.seek(std::io::SeekFrom::Start(0))
         .map_err(|e| format!("无法定位文件: {e}"))?;
 
-    // Prepend new entry
-    let new_content = format!("{entry}\n{content}");
+    // Write new content
     file.write_all(new_content.as_bytes())
         .map_err(|e| format!("无法写入日志文件: {e}"))?;
 
@@ -171,6 +263,116 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // action_to_chinese
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_action_to_chinese_known() {
+        assert_eq!(action_to_chinese("create"), "创建");
+        assert_eq!(action_to_chinese("edit"), "编辑");
+        assert_eq!(action_to_chinese("ingest"), "摄入");
+        assert_eq!(action_to_chinese("pass"), "通过");
+        assert_eq!(action_to_chinese("fail"), "失败");
+        assert_eq!(action_to_chinese("update"), "更新");
+        assert_eq!(action_to_chinese("delete"), "删除");
+    }
+
+    #[test]
+    fn test_action_to_chinese_unknown() {
+        assert_eq!(action_to_chinese("unknown"), "unknown");
+        assert_eq!(action_to_chinese("review"), "review");
+    }
+
+    // -------------------------------------------------------------------
+    // format_entry
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_format_entry_with_note() {
+        let result =
+            format_entry("ingest", "concepts/foo.md", "create", "test note");
+        assert_eq!(result, "* **创建**: concepts/foo.md — test note");
+    }
+
+    #[test]
+    fn test_format_entry_without_note() {
+        let result = format_entry("ingest", "concepts/foo.md", "create", "");
+        assert_eq!(result, "* **创建**: concepts/foo.md");
+    }
+
+    #[test]
+    fn test_format_entry_unknown_action() {
+        let result =
+            format_entry("ingest", "concepts/foo.md", "review", "needs review");
+        assert_eq!(result, "* **review**: concepts/foo.md — needs review");
+    }
+
+    // -------------------------------------------------------------------
+    // insert_entry
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_insert_entry_empty_content() {
+        let result = insert_entry("", "2026-06-19", "* **创建**: test.md");
+        assert_eq!(
+            result,
+            "# 目录更新日志\n\n## 2026-06-19\n\n* **创建**: test.md\n"
+        );
+    }
+
+    #[test]
+    fn test_insert_entry_appends_to_existing_section() {
+        let content =
+            "# 目录更新日志\n\n## 2026-06-19\n* **创建**: first.md — first\n";
+        let result = insert_entry(
+            content,
+            "2026-06-19",
+            "* **创建**: second.md — second",
+        );
+        assert_eq!(
+            result,
+            "# 目录更新日志\n\n## 2026-06-19\n* **创建**: first.md — first\n* **创建**: second.md — second\n"
+        );
+    }
+
+    #[test]
+    fn test_insert_entry_creates_new_section() {
+        let content =
+            "# 目录更新日志\n\n## 2026-06-18\n* **创建**: old.md — old\n";
+        let result =
+            insert_entry(content, "2026-06-19", "* **创建**: new.md — new");
+        assert_eq!(
+            result,
+            "# 目录更新日志\n\n## 2026-06-19\n\n* **创建**: new.md — new\n\n## 2026-06-18\n* **创建**: old.md — old\n"
+        );
+    }
+
+    #[test]
+    fn test_insert_entry_no_title() {
+        let content = "## 2026-06-18\n* **创建**: old.md\n";
+        let result = insert_entry(content, "2026-06-19", "* **创建**: new.md");
+        assert!(result.starts_with(
+            "# 目录更新日志\n\n## 2026-06-19\n\n* **创建**: new.md\n"
+        ));
+        assert!(result.contains("## 2026-06-18\n* **创建**: old.md"));
+    }
+
+    #[test]
+    fn test_insert_entry_append_with_trailing_blank_lines() {
+        // Existing section with trailing blank line before next section
+        let content = "# 目录更新日志\n\n## 2026-06-19\n* **创建**: first.md — first\n\n## 2026-06-18\n* **创建**: old.md — old\n";
+        let result = insert_entry(
+            content,
+            "2026-06-19",
+            "* **创建**: second.md — second",
+        );
+        // The new entry should be grouped with its date section,
+        // before the inter-group blank line
+        let expected = "# 目录更新日志\n\n## 2026-06-19\n* **创建**: first.md — first\n* **创建**: second.md — second\n\n## 2026-06-18\n* **创建**: old.md — old\n";
+        assert_eq!(result, expected);
+    }
+
+    // -------------------------------------------------------------------
     // add_entry
     // -------------------------------------------------------------------
 
@@ -192,7 +394,11 @@ mod tests {
 
         let content = fs::read_to_string(&log_path).unwrap();
         assert!(
-            content.contains("ingest | concepts/test.md | create — test note"),
+            content.contains("# 目录更新日志"),
+            "should contain title: {content}"
+        );
+        assert!(
+            content.contains("* **创建**: concepts/test.md — test note"),
             "log entry not found in: {content}"
         );
     }
@@ -211,14 +417,20 @@ mod tests {
         .unwrap();
 
         let content = fs::read_to_string(wiki.join("log.md")).unwrap();
+        // Should have the title
         assert!(
-            content.starts_with("## ["),
-            "should start with '## [date]': {content}"
+            content.starts_with("# 目录更新日志"),
+            "should start with title: {content}"
         );
+        // Should have a date group
         assert!(
-            content.contains(
-                "update | entities/foo.md | edit — updated description"
-            ),
+            content.contains("## "),
+            "should contain date group: {content}"
+        );
+        // Should have the entry with Chinese verb
+        assert!(
+            content
+                .contains("* **编辑**: entities/foo.md — updated description"),
             "entry content mismatch: {content}"
         );
     }
@@ -274,25 +486,36 @@ mod tests {
     }
 
     #[test]
-    fn test_add_entry_prepends() {
-        let wiki = temp_dir("prepends");
+    fn test_add_entry_same_day_grouping() {
+        let wiki = temp_dir("same_day_grouping");
 
         // First entry
         add_entry_at(&wiki, "ingest", "first.md", "create", Some("first"))
             .unwrap();
-        // Second entry — should be prepended
+        // Second entry — same day, should be in the same group
         add_entry_at(&wiki, "ingest", "second.md", "create", Some("second"))
             .unwrap();
 
         let content = fs::read_to_string(wiki.join("log.md")).unwrap();
-        let lines: Vec<&str> = content.lines().collect();
+        // Both entries should be present
         assert!(
-            lines[0].contains("second.md"),
-            "second entry should be first: {lines:?}"
+            content.contains("* **创建**: first.md — first"),
+            "first entry missing"
         );
         assert!(
-            lines[1].contains("first.md") || lines[2].contains("first.md"),
-            "first entry should be after second: {lines:?}"
+            content.contains("* **创建**: second.md — second"),
+            "second entry missing"
+        );
+        // Both should be under the same date section, second after first
+        let lines: Vec<&str> = content.lines().collect();
+        let date_idx = lines.iter().position(|l| l.starts_with("## ")).unwrap();
+        assert!(
+            lines[date_idx + 2].contains("first.md"),
+            "first entry should be first in group: {lines:?}"
+        );
+        assert!(
+            lines[date_idx + 3].contains("second.md"),
+            "second entry should be second in group: {lines:?}"
         );
     }
 }

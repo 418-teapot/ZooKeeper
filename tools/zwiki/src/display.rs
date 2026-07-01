@@ -14,6 +14,7 @@ pub struct CheckResults {
     pub log_coverage: Vec<Issue>,
     pub frontmatter: Vec<Issue>,
     pub related_field: Vec<Issue>,
+    pub related_body_consistency: Vec<Issue>,
     pub source_field: Vec<Issue>,
     pub missing_inline_links: Vec<Issue>,
     pub duplicate_inline_links: Vec<Issue>,
@@ -186,6 +187,32 @@ fn fmt_related_field(issues: &[Issue]) -> Vec<String> {
     lines
 }
 
+fn fmt_related_body_consistency(issues: &[Issue]) -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "## Related 与正文一致性（发现 {} 个问题）",
+        issues.len()
+    ));
+    lines.push(String::new());
+
+    if issues.is_empty() {
+        lines.push(
+            "所有页面的 related 字段与正文内联链接双向一致。✅".to_string(),
+        );
+    } else {
+        lines.push("| 页面 | 方向 | 详情 |".to_string());
+        lines.push("|---|---|---|".to_string());
+        for issue in issues {
+            lines.push(format!(
+                "| `{}` | {} | {} |",
+                issue.page, issue.kind, issue.details
+            ));
+        }
+    }
+    lines.push(String::new());
+    lines
+}
+
 fn fmt_source_field(issues: &[Issue]) -> Vec<String> {
     let mut lines = Vec::new();
     lines.push(format!("## Resource 字段验证（发现 {} 个问题）", issues.len()));
@@ -334,6 +361,9 @@ pub fn format_check_report(results: &CheckResults) -> String {
     lines.extend(fmt_log_coverage(&results.log_coverage));
     lines.extend(fmt_frontmatter(&results.frontmatter));
     lines.extend(fmt_related_field(&results.related_field));
+    lines.extend(fmt_related_body_consistency(
+        &results.related_body_consistency,
+    ));
     lines.extend(fmt_source_field(&results.source_field));
     lines.extend(fmt_missing_inline_links(&results.missing_inline_links));
     lines.extend(fmt_duplicate_inline_links(&results.duplicate_inline_links));
@@ -489,7 +519,7 @@ pub fn format_lint_report(results: &LintResults) -> String {
     // Footer
     lines.push("---".to_string());
     lines.push(String::new());
-    lines.push(format!("**总计：{total} 个问题**"));
+    lines.push(format!("**Lint 小计：{total} 个问题**"));
     lines.push(String::new());
 
     lines.join("\n")
@@ -582,6 +612,7 @@ mod tests {
             "## 日志覆盖",
             "## Frontmatter 完整性",
             "## Related 字段完整性",
+            "## Related 与正文一致性",
             "## Resource 字段验证",
             "## 缺失内联链接",
             "## 重复内联链接",

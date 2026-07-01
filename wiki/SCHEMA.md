@@ -9,19 +9,42 @@
 
 ```
 wiki/
-├── index.md               # 索引目录，按类别列出所有页面
-├── log.md                 # 变更日志，append-only，grep-parseable
+├── index.md               # 根索引，列出三个领域 + overview.md
+├── log.md                 # 变更日志，OKF §7 格式
 ├── overview.md            # 项目知识概览，living synthesis
 ├── SCHEMA.md              # 本文件，schema 定义
 ├── raw/                   # 原始源材料（不可变，LLM 只读，不在索引中）
-├── concepts/              # 概念页面：项目中的领域概念、术语、抽象
-├── entities/              # 实体页面：具体的模块、类、文件、角色
-├── sources/               # 源文档：原始材料的摘要与引用
-│   ├── adr/               # Architecture Decision Records
-│   ├── rfc/               # RFC / 设计文档
-│   └── notes/             # 会议纪要、调研笔记
-├── analysis/              # 分析页面：方案对比、利弊权衡
-└── syntheses/             # 合成页面：对 query 的结构化回答
+├── templates/             # 页面模板
+├── autoresearch/          # autoresearch 领域（AI agent 自主实验框架）
+│   ├── index.md           # 领域索引
+│   ├── concepts/          # 概念页面
+│   ├── entities/          # 实体页面
+│   ├── sources/           # 源文档
+│   │   ├── adr/           # Architecture Decision Records
+│   │   ├── rfc/           # RFC / 设计文档
+│   │   └── notes/         # 会议纪要、调研笔记
+│   ├── analysis/          # 分析页面
+│   └── syntheses/         # 合成页面
+├── wiki-system/           # wiki-system 领域（结构同上）
+│   ├── index.md           # 领域索引
+│   ├── concepts/          # 概念页面
+│   ├── entities/          # 实体页面
+│   ├── sources/           # 源文档
+│   │   ├── adr/           # Architecture Decision Records
+│   │   ├── rfc/           # RFC / 设计文档
+│   │   └── notes/         # 会议纪要、调研笔记
+│   ├── analysis/          # 分析页面
+│   └── syntheses/         # 合成页面
+└── shared/                # shared 领域（结构同上）
+    ├── index.md           # 领域索引
+    ├── concepts/          # 概念页面
+    ├── entities/          # 实体页面
+    ├── sources/           # 源文档
+    │   ├── adr/           # Architecture Decision Records
+    │   ├── rfc/           # RFC / 设计文档
+    │   └── notes/         # 会议纪要、调研笔记
+    ├── analysis/          # 分析页面
+    └── syntheses/         # 合成页面
 ```
 
 每个子目录下的文件使用 `.md` 扩展名。空目录含 `.gitkeep` 以纳入版本控制。
@@ -72,8 +95,8 @@ type: concept
 timestamp: 2026-06-17T00:00:00Z
 tags: [permission, security]
 related:
-  - entities/install-py.md
-  - concepts/deny-list.md
+  - autoresearch/entities/foo.md
+  - shared/concepts/bar.md
 status: stable
 ---
 ```
@@ -96,7 +119,7 @@ status: stable
 - **格式：** 全小写 kebab-case，如 `permission-system.md`、`deny-list.md`
 - **禁止：** 数字前缀（如 `01-permission.md`）、空格、大写字母
 - **语言：** 文件名必须是英文 kebab-case，禁止中文或非 ASCII 字符。中文标题需要用英文翻译或缩写作为文件名
-- **唯一性：** 同一 type 下文件名唯一。不同 type 之间可以重名（如 `concepts/plugin.md` 和 `entities/plugin.md` 含义不同）
+- **唯一性：** 同一 `<domain>/<type>/` 下文件名唯一。不同 `<domain>/<type>/` 之间可以重名（如 `autoresearch/concepts/plugin.md` 和 `autoresearch/entities/plugin.md` 含义不同）
 
 ### 路径与交叉引用规则
 
@@ -104,16 +127,16 @@ status: stable
 
 - **内联链接：**
   ```
-  [权限系统](concepts/permission.md)
-  [构建脚本](entities/build-script.md)
+  [自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md)
+  [train.py](autoresearch/entities/autoresearch-train-py.md)
   ```
 - **Frontmatter `related`：**
   ```yaml
-  related: [entities/install-py.md, concepts/deny-list.md]
+  related: [autoresearch/entities/foo.md, shared/concepts/bar.md]
   ```
 - **Frontmatter `sources`（synthesis 页面）：**
   ```yaml
-  sources: [concepts/foo.md, entities/bar.md]
+  sources: [autoresearch/concepts/foo.md, wiki-system/entities/bar.md]
   ```
 
 Agent 直接读写文件时（`read` / `write` / `edit` / `bash` 指令）使用绝对路径 `~/.zoo/wiki/<path>`。
@@ -162,52 +185,58 @@ Agent 直接读写文件时（`read` / `write` / `edit` / `bash` 指令）使用
 
 ### index.md 格式
 
-`~/.zoo/wiki/index.md` 是 wiki 的入口索引，按以下格式组织：
+`~/.zoo/wiki/index.md` 是 wiki 的入口索引。根目录 index.md 以 `#` 一级标题列出所有领域（wiki 根下的子目录，每个子目录是一个域）和 overview.md 的条目，每条指向领域子目录的 `index.md` 或页面。团队可通过在 wiki 根下新建子目录来增加域。
+
+各领域子目录也可有自己的 `index.md`，实现渐进式披露——读者从根 index 进入领域，再通过领域 index 找到具体页面。
+
+格式规范（OKF §6）：
 
 ```markdown
-## <Category>（<中文名称>）
+# <领域标题>
 
-- [页面标题](type/page.md) — 单行摘要（不超过 30 字）
-- [页面标题](type/page.md) — 单行摘要（不超过 30 字）
+## <分类标题>
+
+* [页面标题](相对路径.md) - 一行摘要（不超过 30 字）
+* [页面标题](相对路径.md) - 一行摘要（不超过 30 字）
 ```
 
-分类与目录的对应关系：
-
-| index 分类 | 对应目录 | type 值 |
-|------------|----------|---------|
-| Concepts | `concepts/` | `concept` |
-| Entities | `entities/` | `entity` |
-| Sources → ADR | `sources/adr/` | `source` |
-| Sources → RFC | `sources/rfc/` | `source` |
-| Sources → Notes | `sources/notes/` | `source` |
-| Analysis | `analysis/` | `analysis` |
-| Syntheses | `syntheses/` | `synthesis` |
-
-同一分类下的条目按添加时间倒序排列（最新在最上）。
+条目格式：
+- 使用星号 `*` 作为列表标记
+- 链接路径相对该 index.md 所在目录
+- 摘要与链接之间用 ` - `（空格 + 连字符 + 空格）分隔
+- 条目按主题相关性排列（非按时间）
 
 ### log.md 格式
 
-`~/.zoo/wiki/log.md` 是追加式变更日志，记录所有 wiki 页面的增删改和运维检查事件。
+`~/.zoo/wiki/log.md` 是追加式变更日志（OKF §7），记录所有 wiki 页面的增删改和运维检查事件。
 
-每条记录是一个 Markdown 二级标题，格式如下：
+格式规范：
 
-```
-## [<YYYY-MM-DD>] <op> | <path> | <action> — <note>
+```markdown
+# 目录更新日志
+
+## YYYY-MM-DD
+
+* **<动词>**: <路径> — <说明>
+* **<动词>**: <路径> — <说明>
 ```
 
 其中：
 
-- `<op>`：**触发操作**，即触发本次变更的上游流程。取值 `ingest` / `query` / `update` / `delete` / `health` / `lint` / `heal` / `refresh`
-- `<path>`：页面路径，相对 wiki 根目录（不带 `wiki/` 前缀），如 `concepts/permission.md`。非页面事件写 `—`
-- `<action>`：**变更结果**，即对页面的实际操作。取值 `create` / `edit` / `delete` / `pass` / `fail`
-- `<note>`：简短说明（不超过 60 字）
+- 标题：以 `# 目录更新日志` 开头
+- 日期分组：`## YYYY-MM-DD` 二级标题，按时间倒序排列（最新在前）
+- 条目：`* **动词**: 路径 — 说明`，每条占一行
+- `<动词>`：`创建` / `编辑` / `通过` / `失败`，对应旧格式的 `action` 字段
+- `<路径>`：被操作对象的路径，相对 wiki 根目录（含 wiki 页面与 `raw/` 原始源材料）。非文件事件写 `—`
+- `<说明>`：简短说明（不超过 60 字）
 
 示例：
 
 ```
-## [2026-06-17] ingest | concepts/prompt-injection.md | create — 摘要来自 ADR-003
-## [2026-06-18] update | concepts/prompt-injection.md | edit — 补充 Phase 2 实施方案
-## [2026-06-16] health | — | pass — 所有检查通过，无 orphan/missing
+## 2026-06-17
+
+* **创建**: autoresearch/concepts/autonomous-experiment-loop.md — 自主实验循环核心概念
+* **编辑**: overview.md — 更新知识版图与外部参考
 ```
 
 日志按时间倒序排列，最新记录在最上方。

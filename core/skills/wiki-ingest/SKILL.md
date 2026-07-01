@@ -13,20 +13,20 @@ description: 用于将外部源文档或对话知识 ingest 到项目 wiki 中�
 
 ## Phase 0 — 分类源材料
 
-根据源材料的性质确定目标目录和页面类型：
+根据源材料的性质确定页面类型：
 
-| 类型 | 特征 | 目标目录 | 页面类型 |
-|------|------|---------|---------|
-| 架构决策记录 | ADR、设计文档、RFC | `wiki/sources/adr/` | source |
-| 外部规范 | 第三方 API 文档、标准、指南 | `wiki/sources/rfc/` | source |
-| 会议记录 | 讨论总结、决策会议笔记 | `wiki/sources/notes/` | source |
-| 概念知识 | 关于某机制或原理的说明 | `wiki/concepts/` | concept |
-| 实体行为 | 某工具、agent、模块的行为 | `wiki/entities/` | entity |
-| 分析对比 | 多个选项的权衡、经验总结 | `wiki/analysis/` | analysis |
+| 类型 | 特征 | 页面类型 |
+|------|------|---------|
+| 架构决策记录 | ADR、设计文档、RFC | source(adr) |
+| 外部规范 | 第三方 API 文档、标准、指南 | source(rfc) |
+| 会议记录 | 讨论总结、决策会议笔记 | source(notes) |
+| 概念知识 | 关于某机制或原理的说明 | concept |
+| 实体行为 | 某工具、agent、模块的行为 | entity |
+| 分析对比 | 多个选项的权衡、经验总结 | analysis |
 
-如果源材料无法明确归入以上类型 → 归类为 `wiki/concepts/`，页面类型为 concept。
+如果源材料无法明确归入以上类型 → 归类为 concept 类型。
 
-该分类仅用于准入决策（确认材料值得摄入）。不传递给 kiwi，kiwi 会在其流程中基于源材料特征和 wiki 现状独立分类，传递分类结果会造成锚定效应，剥夺 kiwi 结合 wiki 全貌做决策的机会。
+该分类仅用于准入决策（确认材料值得摄入）。不传递给 kiwi，包括域分类也不传递。kiwi 会在其流程中基于源材料特征和 wiki 现状独立完成所有分类决策（归属域、页面类型、页面路径），传递任何分类结果会造成锚定效应，剥夺 kiwi 结合 wiki 全貌做决策的机会。
 
 ---
 
@@ -68,7 +68,7 @@ description: 用于将外部源文档或对话知识 ingest 到项目 wiki 中�
 **ACCEPTANCE:**
 返回一份结构化分析，描述：
   - 要创建/更新的页面路径、完整 frontmatter、完整页面内容（遵循 SCHEMA.md 规范）
-  - 要在 `wiki/index.md` 中添加的索引条目
+  - 要在相关**域**的 `index.md`（如 `wiki/<domain>/index.md`）中添加的索引条目（根 index.md 只列域，新建域时才改）
    - 需要更新的交叉引用（更新哪些已有页面的 `related` 字段；反向链接由 `zwiki backlinks` 自动维护，kiwi 无需处理）
    - 关于 `overview.md` 是否需要更新的建议
    - 要通过 `zwiki log` 追加的日志条目
@@ -88,10 +88,11 @@ kiwi 返回分析后，由调用方 agent 执行写入：
 1. **创建骨架** — 使用 `zwiki create`：
     ```bash
     zwiki create \
+        --domain <域名> \
         --type <concept|entity|analysis|synthesis> \
         --title "<页面标题>"
     ```
-    对于 source 类型追加 `--source-type <adr|rfc|notes>`；中文标题需加 `--slug <english-slug>`
+    域由 kiwi 的分析结果决定（kiwi 返回的页面路径含域前缀）。合法域由 wiki 根目录下实际存在的子目录决定（运行 `zwiki create --help` 或查看 `~/.zoo/wiki/` 下子目录）；团队可通过新建子目录扩展域。对于 source 类型追加 `--source-type <adr|rfc|notes>`；中文标题需加 `--slug <english-slug>`
 2. **填充内容** — 使用 `write` / `edit` 将 kiwi 提供的页面内容写入
 
 **更新已有页面时：**
@@ -103,15 +104,15 @@ kiwi 返回分析后，由调用方 agent 执行写入：
     ```bash
     curl -sL "<url>" -o ~/.zoo/wiki/raw/$(date +%F)-<slug>.md
     ```
-4. **更新索引** — 创建新页面时在 `~/.zoo/wiki/index.md` 对应类别下追加条目；更新已有页面时跳过
+4. **更新索引** — 创建新页面时在对应**域的 index.md**（`~/.zoo/wiki/<domain>/index.md`）对应类型节下追加条目；**根 index.md 只在新建域时才改动**（通常不需要）。更新已有页面时跳过此步
 5. **记录日志** — 调用 `zwiki log`，`--action` 用 `create` 或 `edit`：
     ```bash
     zwiki log \
-        --op ingest --path "concepts/<file>.md" \
+        --op ingest --path "<domain>/concepts/<file>.md" \
         --action <create|edit> --note "<简短说明>"
     ```
 6. **更新 overview.md** — 如果 kiwi 的分析建议更新，则执行
-7. **更新交叉引用** — 按照 kiwi 的建议，在已有页面的 `related` 字段中添加新引用。反向链接由 `zwiki check` 自动同步
+7. **更新交叉引用** — 按照 kiwi 的建议，在已有页面的 `related` 字段中添加新引用（使用域前缀路径，如 `<domain>/concepts/<file>.md`）。反向链接由 `zwiki check` 自动同步
 8. **同步反向链接** — `zwiki check` 已自动执行，无需手动调用
 
 ---
@@ -122,7 +123,7 @@ kiwi 返回分析后，由调用方 agent 执行写入：
 
 1. **路径确认** — 确认创建/更新的页面路径列表与预期一致
 2. **日志检查** — 确认 `~/.zoo/wiki/log.md` 中已有对应的日志条目
-3. **索引检查** — 确认 `~/.zoo/wiki/index.md` 的对应类别已更新
+3. **索引检查** — 确认对应**域的 index.md** 已更新；根 index.md 通常无需改动
 4. **反向链接检查** — `zwiki check` 已自动同步，二次运行应报告 0 更新
 5. **增量内联链接检查** — 扫描本次写入的新增文本：
     ```bash

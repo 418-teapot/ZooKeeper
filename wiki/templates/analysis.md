@@ -8,7 +8,7 @@ sources:
   - adr-XXX
   - rfc-YYY
 related:
-  - concepts/foo.md
+  - autoresearch/concepts/foo.md
 status: draft|review|stable|deprecated
 ---
 
@@ -40,7 +40,7 @@ status: draft|review|stable|deprecated
 
 ## Relations
 
-- [相关页面](analysis/related.md) — 关联说明
+- [相关页面](autoresearch/analysis/related.md) — 关联说明
 
 ## Backlinks
 

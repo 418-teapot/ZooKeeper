@@ -6,7 +6,7 @@ timestamp: YYYY-MM-DDTHH:mm:ssZ
 resource: <source-id>
 tags: [tag1, tag2]
 related:
-  - analysis/foo.md
+  - autoresearch/analysis/foo.md
 status: draft|review|stable|deprecated
 ---
 
@@ -36,7 +36,7 @@ status: draft|review|stable|deprecated
 
 ## Relations
 
-- [相关页面](analysis/related.md) — 关联说明
+- [相关页面](autoresearch/analysis/related.md) — 关联说明
 
 ## Backlinks
 

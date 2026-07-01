@@ -88,38 +88,124 @@ fn apply_template(content: &str, title: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Domain validation & scaffolding
+// ---------------------------------------------------------------------------
+
+/// Validate a domain name: non-empty, lowercase kebab-case, no path
+/// separators, not a reserved system directory.
+fn validate_domain_name(domain: &str) -> Result<(), String> {
+    if domain.is_empty() {
+        return Err("领域名不能为空".to_string());
+    }
+    if domain.contains("..") || domain.contains('/') || domain.contains('\\') {
+        return Err(format!(
+            "无效的领域名: {domain} — 不能包含 .. / \\ 等路径分隔符"
+        ));
+    }
+    // System directories are not domains.
+    match domain {
+        "templates" | "tools" | "raw" => {
+            return Err(format!(
+                "无效的领域名: {domain} — 这是系统目录，不能用作领域"
+            ));
+        }
+        _ => {}
+    }
+    if domain.starts_with('.') {
+        return Err(format!("无效的领域名: {domain} — 不能以 . 开头"));
+    }
+    // Lowercase kebab-case: letters, digits, hyphens only.
+    if !domain
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return Err(format!(
+            "无效的领域名: {domain} — 只允许小写字母、数字、连字符（kebab-case）"
+        ));
+    }
+    Ok(())
+}
+
+/// Create the full domain directory skeleton per SCHEMA.md:
+/// concepts/, entities/, sources/{adr,rfc,notes}/, analysis/,
+/// syntheses/, each with a .gitkeep placeholder.
+fn scaffold_domain(domain_root: &Path) -> Result<(), String> {
+    let subdirs = [
+        "concepts",
+        "entities",
+        "sources/adr",
+        "sources/rfc",
+        "sources/notes",
+        "analysis",
+        "syntheses",
+    ];
+    for subdir in &subdirs {
+        let dir = domain_root.join(subdir);
+        fs::create_dir_all(&dir)
+            .map_err(|e| format!("无法创建域目录 {}: {e}", dir.display()))?;
+        let gitkeep = dir.join(".gitkeep");
+        if !gitkeep.exists() {
+            fs::write(&gitkeep, "")
+                .map_err(|e| format!("无法创建 .gitkeep: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /// Create a new wiki page from a template.
 ///
-/// Writes the rendered content to `WIKI_DIR/{type}/{slug}.md` (or
-/// `WIKI_DIR/sources/{source_type}/{slug}.md` for source pages).
+/// Writes the rendered content to `WIKI_DIR/{domain}/{type}/{slug}.md` (or
+/// `WIKI_DIR/{domain}/sources/{source_type}/{slug}.md` for source pages).
 ///
 /// # Errors
 ///
 /// Returns an error string if:
 /// - The page type is unknown
+/// - The domain is unknown
 /// - The slug is empty, or contains `..`, `/`, `\`
 /// - The template file does not exist
 /// - File I/O fails
 pub fn create_page(
+    domain: &str,
     page_type: &str,
     title: &str,
     slug: Option<&str>,
     source_type: Option<&str>,
 ) -> Result<PathBuf, String> {
-    create_page_at(&wiki::wiki_dir(), page_type, title, slug, source_type)
+    create_page_at(
+        &wiki::wiki_dir(),
+        domain,
+        page_type,
+        title,
+        slug,
+        source_type,
+    )
 }
 
 /// Inner implementation: create a page under an explicit wiki root.
 pub fn create_page_at(
     wiki_root: &Path,
+    domain: &str,
     page_type: &str,
     title: &str,
     slug: Option<&str>,
     source_type: Option<&str>,
 ) -> Result<PathBuf, String> {
+    // Validate domain name format (kebab-case, no path traversal,
+    // not a system directory).
+    validate_domain_name(domain)?;
+
+    // Ensure the domain directory structure exists. Creating a page in
+    // a new domain auto-scaffolds the full domain layout per SCHEMA.md.
+    let domain_root = wiki_root.join(domain);
+    if !domain_root.exists() {
+        scaffold_domain(&domain_root)?;
+    }
+
     // Validate slug
     let slug = slug
         .map_or_else(|| to_kebab_case(title), std::borrow::ToOwned::to_owned);
@@ -153,11 +239,12 @@ pub fn create_page_at(
     // Compute output path
     let output_path = if page_type == "source" {
         wiki_root
+            .join(domain)
             .join("sources")
             .join(source_type.expect("already validated"))
             .join(format!("{slug}.md"))
     } else {
-        wiki_root.join(dir_name).join(format!("{slug}.md"))
+        wiki_root.join(domain).join(dir_name).join(format!("{slug}.md"))
     };
 
     // Create parent dirs
@@ -234,11 +321,26 @@ mod tests {
     }
 
     /// Run a closure with a temp directory that has a `templates/` subdirectory
-    /// with all known template files.
+    /// with all known template files, and domain subdirectory structure.
     fn with_wiki_dir(test_name: &str, f: impl FnOnce(PathBuf)) {
         let wiki = temp_dir(test_name);
         let templates = wiki.join("templates");
         fs::create_dir_all(&templates).expect("failed to create templates dir");
+        // Create domain subdirectory structure for all valid domains
+        for domain in &["autoresearch", "wiki-system", "shared"] {
+            for subdir in &[
+                "concepts",
+                "entities",
+                "analysis",
+                "syntheses",
+                "sources/adr",
+                "sources/rfc",
+                "sources/notes",
+            ] {
+                fs::create_dir_all(wiki.join(domain).join(subdir))
+                    .expect("failed to create domain subdir");
+            }
+        }
         // Write all known templates so create_page can find them.
         for ttype in &["concept", "entity", "source", "analysis", "synthesis"] {
             let tpl = match *ttype {
@@ -321,14 +423,20 @@ mod tests {
     #[test]
     fn test_create_page_concept() {
         with_wiki_dir("create_concept", |wiki| {
-            let result =
-                create_page_at(&wiki, "concept", "Test Concept", None, None);
+            let result = create_page_at(
+                &wiki,
+                "autoresearch",
+                "concept",
+                "Test Concept",
+                None,
+                None,
+            );
             assert!(result.is_ok(), "create_page failed: {:?}", result.err());
             let path = result.unwrap();
             assert!(path.exists(), "file should exist: {}", path.display());
             assert!(
-                path.starts_with(wiki.join("concepts")),
-                "path should be under concepts/"
+                path.starts_with(wiki.join("autoresearch").join("concepts")),
+                "path should be under autoresearch/concepts/"
             );
 
             let content = fs::read_to_string(&path).unwrap();
@@ -343,8 +451,14 @@ mod tests {
     #[test]
     fn test_create_page_entity() {
         with_wiki_dir("create_entity", |wiki| {
-            let result =
-                create_page_at(&wiki, "entity", "Test Entity", None, None);
+            let result = create_page_at(
+                &wiki,
+                "shared",
+                "entity",
+                "Test Entity",
+                None,
+                None,
+            );
             assert!(result.is_ok(), "create_page failed: {:?}", result.err());
             let path = result.unwrap();
             assert!(path.exists());
@@ -360,6 +474,7 @@ mod tests {
         with_wiki_dir("create_source_with_type", |wiki| {
             let result = create_page_at(
                 &wiki,
+                "autoresearch",
                 "source",
                 "ADR-001",
                 Some("adr-001"),
@@ -369,8 +484,10 @@ mod tests {
             let path = result.unwrap();
             assert!(path.exists());
             assert!(
-                path.starts_with(wiki.join("sources").join("adr")),
-                "path should be under sources/adr/"
+                path.starts_with(
+                    wiki.join("autoresearch").join("sources").join("adr")
+                ),
+                "path should be under autoresearch/sources/adr/"
             );
             let content = fs::read_to_string(&path).unwrap();
             assert!(content.contains("title: ADR-001"));
@@ -381,7 +498,14 @@ mod tests {
     #[test]
     fn test_create_page_source_without_source_type_error() {
         with_wiki_dir("create_source_no_type", |wiki| {
-            let result = create_page_at(&wiki, "source", "ADR-001", None, None);
+            let result = create_page_at(
+                &wiki,
+                "wiki-system",
+                "source",
+                "ADR-001",
+                None,
+                None,
+            );
             assert!(result.is_err(), "should fail without source_type");
             let err = result.unwrap_err();
             assert!(
@@ -396,6 +520,7 @@ mod tests {
         with_wiki_dir("create_slug_override", |wiki| {
             let result = create_page_at(
                 &wiki,
+                "autoresearch",
                 "concept",
                 "My Title",
                 Some("custom-slug"),
@@ -407,8 +532,8 @@ mod tests {
                 path.file_name().unwrap().to_string_lossy().to_string();
             assert_eq!(filename, "custom-slug.md");
             assert!(
-                path.starts_with(wiki.join("concepts")),
-                "path should be under concepts/"
+                path.starts_with(wiki.join("autoresearch").join("concepts")),
+                "path should be under autoresearch/concepts/"
             );
         });
     }
@@ -416,8 +541,14 @@ mod tests {
     #[test]
     fn test_create_page_chinese_title_without_slug_error() {
         with_wiki_dir("create_chinese_no_slug", |wiki| {
-            let result =
-                create_page_at(&wiki, "concept", "中文标题", None, None);
+            let result = create_page_at(
+                &wiki,
+                "autoresearch",
+                "concept",
+                "中文标题",
+                None,
+                None,
+            );
             assert!(
                 result.is_err(),
                 "should fail without slug for Chinese title"
@@ -430,6 +561,7 @@ mod tests {
         with_wiki_dir("create_chinese_with_slug", |wiki| {
             let result = create_page_at(
                 &wiki,
+                "autoresearch",
                 "concept",
                 "中文标题",
                 Some("chinese-title"),
@@ -437,6 +569,160 @@ mod tests {
             );
             assert!(result.is_ok(), "should succeed with slug");
         });
+    }
+
+    #[test]
+    fn test_create_page_invalid_domain_name() {
+        with_wiki_dir("create_invalid_domain", |wiki| {
+            // Uppercase / whitespace → not kebab-case
+            let err = create_page_at(
+                &wiki,
+                "Bad Domain",
+                "concept",
+                "Test",
+                None,
+                None,
+            )
+            .unwrap_err();
+            assert!(
+                err.contains("无效的领域名"),
+                "uppercase/space should be rejected: {err}"
+            );
+
+            // System directory name
+            let err = create_page_at(
+                &wiki,
+                "templates",
+                "concept",
+                "Test",
+                None,
+                None,
+            )
+            .unwrap_err();
+            assert!(
+                err.contains("无效的领域名"),
+                "templates should be rejected: {err}"
+            );
+
+            // Path traversal
+            let err = create_page_at(
+                &wiki,
+                "../escape",
+                "concept",
+                "Test",
+                None,
+                None,
+            )
+            .unwrap_err();
+            assert!(
+                err.contains("无效的领域名"),
+                "path traversal should be rejected: {err}"
+            );
+
+            // Hidden directory
+            let err =
+                create_page_at(&wiki, ".hidden", "concept", "Test", None, None)
+                    .unwrap_err();
+            assert!(
+                err.contains("无效的领域名"),
+                "hidden dir should be rejected: {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn test_create_page_dynamic_domain() {
+        with_wiki_dir("create_dynamic_domain", |wiki| {
+            // Domain is auto-scaffolded; no pre-creation needed.
+            let result = create_page_at(
+                &wiki,
+                "newproject",
+                "concept",
+                "Dynamic Domain",
+                None,
+                None,
+            );
+            assert!(
+                result.is_ok(),
+                "dynamic domain should work: {:?}",
+                result.err()
+            );
+            let path = result.unwrap();
+            assert!(
+                path.starts_with(wiki.join("newproject").join("concepts")),
+                "path should be under newproject/concepts/: {}",
+                path.display()
+            );
+            // Verify full skeleton was created.
+            assert!(
+                wiki.join("newproject")
+                    .join("entities")
+                    .join(".gitkeep")
+                    .exists(),
+                "entities/.gitkeep should exist from scaffolding"
+            );
+        });
+    }
+
+    #[test]
+    fn test_create_page_domain_in_path() {
+        with_wiki_dir("create_domain_in_path", |wiki| {
+            let result = create_page_at(
+                &wiki,
+                "autoresearch",
+                "concept",
+                "Domain Path",
+                None,
+                None,
+            );
+            assert!(result.is_ok(), "create_page failed: {:?}", result.err());
+            let path = result.unwrap();
+            assert!(
+                path.starts_with(wiki.join("autoresearch").join("concepts")),
+                "path should contain autoresearch/concepts/: {}",
+                path.display()
+            );
+            assert!(
+                path.ends_with("domain-path.md"),
+                "filename should be domain-path.md: {}",
+                path.display()
+            );
+        });
+    }
+
+    #[test]
+    fn test_create_page_scaffolds_full_domain() {
+        // Use a fresh temp dir with only templates/ (no domain dirs).
+        let wiki = temp_dir("scaffold_full_domain");
+        let templates = wiki.join("templates");
+        fs::create_dir_all(&templates).expect("failed to create templates dir");
+        fs::write(templates.join("concept.md"), "---\ntitle: <概念名称>\ntype: concept\ntimestamp: YYYY-MM-DDTHH:mm:ssZ\nstatus: draft|review|stable|deprecated\n---\n\n# <概念名称>\n")
+            .expect("write concept template");
+
+        let result =
+            create_page_at(&wiki, "freshdomain", "concept", "Test", None, None);
+        assert!(result.is_ok(), "create_page failed: {:?}", result.err());
+
+        // Verify all 7 subdirs exist with .gitkeep files.
+        let subdirs = [
+            "concepts",
+            "entities",
+            "sources/adr",
+            "sources/rfc",
+            "sources/notes",
+            "analysis",
+            "syntheses",
+        ];
+        for subdir in &subdirs {
+            let gitkeep =
+                wiki.join("freshdomain").join(subdir).join(".gitkeep");
+            assert!(
+                gitkeep.exists(),
+                "expected {}/.gitkeep to exist at {}",
+                subdir,
+                gitkeep.display()
+            );
+        }
     }
 
     // -------------------------------------------------------------------

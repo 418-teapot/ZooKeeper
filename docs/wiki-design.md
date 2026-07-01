@@ -2,7 +2,7 @@
 
 **版本:** 3.0（统一版）
 **日期:** 2026-07-01
-**状态:** 活动设计文档 — 单一权威版本，对齐当前实现并规划 OKF 完整合规路径
+**状态:** 活动设计文档 — 单一权威版本，对齐当前实现并规划后续路线
 
 ---
 
@@ -47,14 +47,14 @@
 
 | 组件 | 实现形态 | 位置 |
 |------|---------|------|
-| wiki 目录结构 | 当前类型优先（`concepts/`/`entities/`/`analysis/`/`sources/`/`syntheses/`）；目标迁至域优先 + 各领域 subdir `index.md`（见 §5.2.4、§16.2 `OKF-LOG`） | `wiki/` |
-| ⚠️ index.md / log.md 格式 | 文件存在但**未对齐 OKF §6/§7**（index 用 `##` 章节 + em-dash；log 用自定义 `## [date] op \| path \| action — note` 单行格式）——见 §5.2、§16.2 `OKF-LOG` | `wiki/index.md`、`wiki/log.md` |
+| wiki 目录结构 | **域优先**（`autoresearch/`、`wiki-system/`、`shared/`），每域含 `concepts/`/`entities/`/`sources/`/`analysis/`/`syntheses/` 子目录 + 独立 `index.md`（OKF §6 渐进式披露） | `wiki/` |
+| index.md / log.md 格式 | **已对齐 OKF §6/§7**：index 用 `#` 一级标题 + `* [title](path) - desc`；log 用 `# 目录更新日志` + `## YYYY-MM-DD` + `* **动词**: path — note` | `wiki/index.md`、`wiki/log.md` |
 | 页面模板 | 5 个模板（concept/entity/source/analysis/synthesis） | `wiki/templates/` |
-| SCHEMA.md | 内容页面字段集已 OKF 对齐；index/log 格式章节待重写（见 `OKF-LOG`） | `wiki/SCHEMA.md` |
+| SCHEMA.md | **已全面对齐 OKF**：内容页面字段集 + index/log 格式 + 域优先目录结构规范 | `wiki/SCHEMA.md` |
 | `okf_version` 标记 | 仅在 `index.md` frontmatter ✅（OKF §11 唯一允许 frontmatter 的位置） | `wiki/index.md` |
-| 实际页面前置元数据 | 一致使用 `title`/`type`/`description`/`timestamp`/`tags`/`related`/`status`，source 页用 `resource`，analysis/synthesis 用 `sources`（复数） | 抽查 wiki/concepts、entities、sources、analysis 全部对齐 |
-| zwiki CLI | **Rust 实现**，含 6 个子命令：`check`、`backlinks`、`log`、`page`、`property`、`create` | `tools/zwiki/`（构建产物 `tools/bin/zwiki`） |
-| 健康检查 | `zwiki check` 内含：empty files、index sync、log coverage、frontmatter、related field、source field、missing/duplicate inline links | `tools/zwiki/src/health.rs` |
+| 实际页面前置元数据 | 一致使用 `title`/`type`/`description`/`timestamp`/`tags`/`related`/`status`，source 页用 `resource`，analysis/synthesis 用 `sources`（复数） | 抽查 wiki/autoresearch、wiki-system、shared 全部对齐 |
+| zwiki CLI | **Rust 实现**，含 7 个子命令：`check`、`backlinks`、`log`、`page`、`property`、`create`（含 `--domain` 自动建域骨架） | `tools/zwiki/`（构建产物 `tools/bin/zwiki`） |
+| 健康检查 | `zwiki check` 内含：empty files、index sync（递归 + indexed_anywhere 跨层豁免）、log coverage、frontmatter、related field、**related-body consistency（双向，error 级）**、source field、missing/duplicate inline links | `tools/zwiki/src/health.rs` |
 | Lint 检查 | `zwiki check` 内含：broken links、orphan pages、sparse pages、**stale pages**（`timestamp` 超 90 天且非 deprecated） | `tools/zwiki/src/lint.rs` |
 | `--save` / `--ci` / `--diff` | check 子命令支持 `--save`（写 health-report.md）、`--ci`（按阈值退出码）、`--diff`（git diff 检查） | `tools/zwiki/src/main.rs` |
 | wiki-ingest skill | 4 阶段（Phase 0 分类 → Phase 1 委派 kiwi → Phase 2 通用写入 → Phase 3 验证） | `core/skills/wiki-ingest/SKILL.md` |
@@ -70,7 +70,7 @@
 | `last_validated` / `timeliness` / `supersedes` / `superseded_by` / `contradictions` 字段 | **未实现**。SCHEMA.md 无这些字段，lint.rs 无对应检查（`timeliness` 派生自 `last_validated`，由 `zwiki check --apply` 自动写入） |
 | `lint --apply` 自动标记 stale | **未实现**。stale 检测存在但仅报告，不自动标记 |
 | 三阶段级联检索（index → tag → grep） | **未实现**。wiki-query skill 仍是 index.md 单路径 + grep 提示 |
-| `zwiki search` / `move` / `ingest --idempotent` / `okf` 子命令 | **未实现**。zwiki 仅 6 个子命令 |
+| `zwiki search` / `move` / `ingest --idempotent` 子命令 | **未实现**。zwiki 当前 7 个子命令（check/backlinks/log/page/property/create） |
 | 四阶段分块蒸馏（大规模摄入） | **未实现** |
 | 六步增量同步 | **未实现** |
 | 协同 Layer 1（personal/.org/.teams/.upstream 五级覆盖） | **未实现**。无任何分层目录、无 `teams.toml` |
@@ -161,18 +161,18 @@
 
 ### 5.2 OKF 对齐状态
 
-当前实现对 **内容页面**（concepts/entities/sources/analysis/syntheses）已是 OKF v0.1 超集合规，但对**保留文件** `index.md` / `log.md` **未合规**——这是已知的待对齐项（见 §16 P0 项 `OKF-LOG`）。
+当前实现已是 OKF v0.1 超集合规——内容页面和保留文件（`index.md` / `log.md`）均已对齐。域优先目录结构已迁移完成，各领域含独立 `index.md`（OKF §6 渐进式披露）。
 
 #### 5.2.1 内容页面 — 已合规
 
 OKF v0.1 §9 一致性三要求：
 1. 每个非保留 `.md` 含可解析 YAML frontmatter ✅
 2. 每个 frontmatter 含非空 `type`（五值枚举，OKF type 的有效子集）✅
-3. 保留文件名遵循 §6/§7 结构 — ❌ **未合规**（见下）
+3. 保留文件名遵循 §6/§7 结构 — ✅ **已合规**
 
 扩展字段（`status`/`related`/`sources` 复数/`description`/`resource`/`tags`）均为 OKF §4.1 允许的扩展。`okf_version: "0.1"` 标记在 `index.md` frontmatter ✅（§11 唯一允许 frontmatter 的位置）。
 
-#### 5.2.2 index.md — 未合规，待对齐
+#### 5.2.2 index.md — 已合规
 
 **OKF §6 规定：**
 - 无 frontmatter（唯一例外：根 index.md 可含 `okf_version`，我们已满足）
@@ -181,15 +181,16 @@ OKF v0.1 §9 一致性三要求：
 - 条目应包含目标概念的 `description` frontmatter 字段
 - 推荐使用以 `/` 开头的 bundle-relative 链接（`/concepts/foo.md`）
 
-**当前实现（`wiki/index.md`）：**
+**当前实现（`wiki/index.md` + 各领域 `index.md`）：**
 - ✅ 根 index.md 含 `okf_version: "0.1"` frontmatter
-- ❌ 用 `##` 二级标题作为章节（OKF 要求 `#` 一级标题）
-- ❌ 条目用 `- [标题](path) — 描述`（em-dash `—`，OKF 用连字符 `-`）
+- ✅ 用 `#` 一级标题作为领域标题
+- ✅ 条目用 `* [标题](path) - 描述`（连字符 `-` 分隔）
+- ✅ 各领域子目录有独立 `index.md`，实现渐进式披露
 - ⚠️ 用相对路径 `concepts/foo.md`（OKF 推荐但非强制 `/concepts/foo.md`；两种均合法）
 
 **排序规则：** 同一章节内条目按**主题相关性**排列（最相关的在前），不按字母或日期——agent 扫索引时优先看到最可能相关的条目。
 
-#### 5.2.3 log.md — 未合规，待对齐
+#### 5.2.3 log.md — 已合规
 
 **OKF §7 规定：**
 - 文件以一个 `#` 一级标题开头（如 `# 目录更新日志`）
@@ -198,60 +199,33 @@ OKF v0.1 §9 一致性三要求：
 - 最新日期在前
 - 每条目为自由散文，以 `* ` 开头；开头的粗体词（`**更新**`、`**创建**`、`**弃用**` 等）是约定而非要求
 
-**OKF 示例：**
-```markdown
-# 目录更新日志
+**当前实现（`wiki/log.md`）：** ✅ **已对齐 OKF §7**：
+- ✅ 以 `# 目录更新日志` 一级标题开头
+- ✅ 无 frontmatter
+- ✅ 按日期分组 `## YYYY-MM-DD`，最新在前
+- ✅ 条目格式 `* **<中文动词>**: <path> — <note>`
+- ✅ `zwiki log` 的 `--op/--path/--action/--note` 接口保留，`--action` 映射为中文动词（create→创建，edit→编辑，pass→通过，fail→失败）
+- ✅ 解析器向后兼容旧格式（`## [date] ...` 单行），写入器只产新格式
 
-## 2026-05-22
-* **更新**：为[客户指标](/tables/customer-metrics.md)添加了新的 BigQuery 表引用。
-* **创建**：建立了[Dataplex Playbook](/playbooks/dataplex.md)。
-```
-
-**当前实现（`wiki/log.md`）：** 自定义 ZooKeeper 格式，**不符合 §7**：
-- ❌ 无 `#` 一级标题
-- ❌ 每条记录自成 `## [YYYY-MM-DD] op | path | action — note` 单行（日期带方括号，非裸 ISO 日期）
-- ❌ 无 `* **动词**: 描述` 散文条目结构
-- 单条信息密度高（op/path/action/note 四字段），但结构不属于 OKF
-
-**当前格式由 Rust 代码硬编码：**
-- `tools/zwiki/src/log.rs:32` `format_entry()` 输出 `## [{today}] {op} | {path} | {action} — {note}`
-- `tools/zwiki/src/health.rs:213-217` `parse_log_entries()` 正则 `^## \[\d{4}-\d{2}-\d{2}\] \w+ \| ([^|]+) \|` 解析该格式（注释明称 "ZooKeeper log format"）
-- `wiki/SCHEMA.md` §索引与日志 记录了该自定义格式
-- 现有 33 条历史日志条目（`wiki/log.md`）均为该格式
-
-**对齐方案（纳入 §16 P0 工作项 `OKF-LOG`）：** 见 §16.2。涉及 Rust `log.rs` 格式器重写、`health.rs` 解析器重写、SCHEMA.md 格式章节重写、历史 33 条日志条目迁移。`zwiki log` 的 `--op/--path/--action/--note` 四参数接口可保留，只是输出行改为 OKF `* **<action>**: <path> — <note>` 形式，归入当天 `## YYYY-MM-DD` 组下。
-
-#### 5.2.4 目录结构 — 类型优先 → 域优先（待迁移）
+#### 5.2.4 目录结构 — 域优先（已迁移）
 
 **OKF §6 关键能力：** `index.md` 可出现在**任意目录**，支持**渐进式披露**——agent 逐层深入，每层只面对少量条目。这天然倾向**域优先**结构。
 
-**当前实现（类型优先）：**
+**当前实现（域优先，已完成）：**
 ```
 wiki/
-├── index.md            ← 单一扁平索引，所有页面一屏列出
-├── concepts/  (15 页)
-├── entities/  (3 页)
-├── analysis/  (6 页)
-├── sources/   (3 页)
-└── syntheses/ (0 页)
-```
-
-当前 28 页一屏 index 够用。但页数接近 50 时扁平索引的收益会下降——agent 必须扫完全部 50 条才知道某领域有没有相关概念。
-
-**目标（域优先）：**
-```
-wiki/
-├── index.md                    ← 根索引：只列领域 + 跨领域共享概念
+├── index.md                    ← 根索引：只列领域 + overview.md
+├── overview.md                 ← 项目知识概览（living synthesis）
 ├── autoresearch/               ← 领域：自主 LLM 训练实验
-│   ├── index.md                ← 领域索引：仅列本领域 5-10 个条目
+│   ├── index.md                ← 领域索引：仅列本领域条目
 │   ├── concepts/
 │   │   ├── autonomous-experiment-loop.md
 │   │   ├── fixed-time-budget-evaluation.md
 │   │   └── ...
 │   ├── entities/
-│   │   ├── train-py.md
-│   │   ├── prepare-py.md
-│   │   └── program-md.md
+│   │   ├── autoresearch-train-py.md
+│   │   ├── autoresearch-prepare-py.md
+│   │   └── autoresearch-program-md.md
 │   ├── analysis/
 │   │   └── autoresearch-design-tradeoffs.md
 │   └── sources/
@@ -264,11 +238,17 @@ wiki/
 │   │   └── ...
 │   └── analysis/
 │       └── llm-wiki-vs-rag.md
-└── shared/                     ← 跨领域共享概念（不属于单一领域）
-    ├── npc.md
-    ├── simplicity-criterion.md
-    └── post-hoc-accountability.md
+└── shared/                     ← 跨领域共享概念
+    ├── index.md
+    ├── concepts/
+    │   ├── npc.md
+    │   ├── simplicity-criterion.md
+    │   └── post-hoc-accountability.md
+    └── analysis/
+        └── agent-skill-plugin-framework.md
 ```
+
+新增领域只需 `zwiki create --domain <name> ...`，自动创建完整域骨架（concepts/entities/sources/{adr,rfc,notes}/analysis/syntheses + .gitkeep）。域名动态发现，不硬编码。
 
 **为何域优先：**
 
@@ -687,7 +667,7 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 | `log` | 追加日志到 `wiki/log.md`（`--op`/`--path`/`--action`/`--note`） | ✅ |
 | `page` | 读页面（`--property`/`--outline`） | ✅ |
 | `property` | 读/写/删 frontmatter 属性（结构化，不手改 YAML） | ✅ |
-| `create` | 从模板创建骨架页（`--type`/`--title`/`--slug`/`--source-type`） | ✅ |
+| `create` | 从模板创建骨架页（`--domain`/`--type`/`--title`/`--slug`/`--source-type`）；新域自动建完整骨架 | ✅ |
 
 ### 12.2 目标扩展子命令（按路线图）
 
@@ -697,7 +677,7 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 
 **`check --fix` 修复行为：** 自动修复确定性可修的问题——index.md 缺失条目补齐、broken links（已知目标路径）重连、orphan 页面加入 index、frontmatter 必填字段缺失补默认值。**不修**需要语义判断的问题（矛盾、supersede、sparse 页面内容）。
 | `search "<query>"` | P0 |
-| `okf check` / `okf export <dir>` | P0 |
+| `okf export <dir>` | P0 |
 | `move <old> <new>` | P1 |
 | `ingest <source> --idempotent` | P1 |
 | `sync pull/push/status` | L2-P1 |
@@ -781,7 +761,7 @@ role = "advisory"
 
 - `install.py --wiki-repo <name> <url>`（可多次指定）管理多 remote
 - `zwiki sync pull/push/status` 遍历 teams.toml 中所有 team
-- `zwiki propose --team <name>`：personal → 指定团队走 PR + CI 门禁（`zwiki check --ci` + `zwiki okf check`）
+- `zwiki propose --team <name>`：personal → 指定团队走 PR + CI 门禁（`zwiki check --ci`）
 - `personal/` 始终 `.gitignore`；`.org/` 在 primary team repo 中版本管理，非 primary team 的 repo 中 `.gitignore`
 - **log.md 按月分文件**（`wiki/logs/2026-06.md`）避免高频 merge conflict
 - contributors frontmatter 字段自动维护（PR merge 时从 git log 提取）
@@ -891,19 +871,19 @@ blocked = ["deprecated-legacy-wiki"]
 
 | # | 改动 | 状态 |
 |---|------|------|
-| `OKF-LOG` | **index.md / log.md 对齐 OKF §6/§7**（见 §16.2） | ⬜ |
-| `OKF-IDX` | index.md：`##` 章节改 `#` 一级标题；条目分隔符 `—` 改 `-`；可选迁移到 `/bundle-relative` 链接 | ⬜ |
-| `OKF-DOMAIN` | **目录结构类型优先 → 域优先**（见 §5.2.4、§16.2）：各领域 subdir 新建 `index.md`，利用 OKF §6 渐进式披露 | ⬜ |
+| `OKF-LOG` | **index.md / log.md 对齐 OKF §6/§7**（见 §16.2） | ✅ 已完成 |
+| `OKF-IDX` | index.md：`##` 章节改 `#` 一级标题；条目分隔符 `—` 改 `-`；各领域 subdir `index.md` | ✅ 已完成 |
+| `OKF-DOMAIN` | **目录结构类型优先 → 域优先**（见 §5.2.4、§16.2）：各领域 subdir 新建 `index.md`，利用 OKF §6 渐进式披露 | ✅ 已完成 |
 | 1 | 新增 `last_validated`/`timeliness`/`supersedes`/`superseded_by`/`contradictions` 可选字段（详见 §5.3、§9.2） | ⬜ |
 | 2 | `zwiki check --apply` 自动标记 `timeliness: stale`（默认 180 天阈值，`source` 永不过期，frontmatter `freshness_days` 可覆写） | ⬜ |
 | 3 | wiki-query 三级短路（详见 §9.2）：`deprecated` 不出现 / `superseded_by` 非空指向取代者 / `stale` 加免责 / `review`/`draft` 加状态标注 | ⬜ |
 | 4 | 五个模板追加新字段（可选，默认兼容） | ⬜ |
 | 5 | 三阶段级联检索：index → tag → grep | ⬜ |
-| 6 | post-ingest 强制 backlinks + health（skill 强制调用 zwiki check） | ⬜ |
+| 6 | post-ingest 强制 backlinks + health（skill 强制调用 zwiki check） | ✅ 已完成（wiki-ingest skill Phase 3 已含 `zwiki check`） |
 | 7 | `zwiki search` CLI 化 | ⬜ |
-| 8 | `zwiki okf check` OKF 合规自检（含 §9 第 3 条：保留文件 §6/§7 结构校验） | ⬜ |
+| 8 | `zwiki check` 内置 OKF 合规自检（含 §9 第 3 条：保留文件 §6/§7 结构校验），默认最严格、无开关 | ✅ 已完成（OKF check 已合并入 `zwiki check`，默认严格，含 related-body 双向一致性检查） |
 
-#### 16.2 OKF-LOG 对齐方案
+#### 16.2 OKF-LOG / OKF-DOMAIN 对齐记录（✅ 已完成）
 
 **目标格式（OKF §7）：**
 
@@ -946,7 +926,7 @@ blocked = ["deprecated-legacy-wiki"]
 - 跨领域通用概念（NPC 分工、简约准则、后验问责、Agent/Skill/Plugin 框架等）→ `shared/`
 - 不确定时优先放 `shared/`，后续按引用密度移动
 
-**向后兼容：** 解析器可暂时容忍旧格式（`## [date] ...`）以避免迁移期间报错，但写入器只产新格式。`zwiki okf check`（P0 项 8）上线后可加严格校验。交叉引用在 `zwiki move`（P1 项 13）上线前，迁移脚本需自行处理路径重写。
+**向后兼容：** 解析器可暂时容忍旧格式（`## [date] ...`）以避免迁移期间报错，但写入器只产新格式。`zwiki check` 内置 OKF 合规自检（P0 项 8）上线后可加严格校验。交叉引用在 `zwiki move`（P1 项 13）上线前，迁移脚本需自行处理路径重写。
 
 **估算工作量：** Rust 改动 ~60 行 + 测试更新 ~40 行 + SCHEMA/index/log 文件迁移 ~80 行 + 域优先重构（目录移动 + 交叉引用重写 + 各领域 index.md 生成）~120 行 ≈ 300 行。
 

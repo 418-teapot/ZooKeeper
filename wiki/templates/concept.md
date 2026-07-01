@@ -5,7 +5,7 @@ type: concept
 timestamp: YYYY-MM-DDTHH:mm:ssZ
 tags: [tag1, tag2]
 related:
-  - entities/foo.md
+  - autoresearch/entities/foo.md
 status: draft|review|stable|deprecated
 ---
 
@@ -33,8 +33,8 @@ status: draft|review|stable|deprecated
 
 ## Relations
 
-- [相关页面](concepts/related.md) — 关联说明
-- [实体](entities/some-entity.md) — 实现该概念的实体
+- [相关页面](autoresearch/concepts/related.md) — 关联说明
+- [实体](autoresearch/entities/some-entity.md) — 实现该概念的实体
 
 ## Backlinks
 
