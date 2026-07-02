@@ -70,7 +70,7 @@
 | `last_validated` / `timeliness` / `supersedes` / `superseded_by` / `contradictions` / `freshness_days` 字段 | **字段已定义**。SCHEMA.md 已声明六字段；`last_validated`/`timeliness` 必选（含枚举校验），其余可选；28 现有页面已回填。stale 自动标记（`zwiki check --apply`）、三级短路、对账等逻辑属 P0 项 2/3，仍未实现 |
 | `lint --apply` 自动标记 stale | **未实现**。stale 检测存在但仅报告，不自动标记 |
 | 三阶段级联检索（index → tag → grep） | **未实现**。wiki-query skill 仍是 index.md 单路径 + grep 提示 |
-| `zwiki search` / `move` / `ingest --idempotent` 子命令 | **未实现**。zwiki 当前 7 个子命令（check/backlinks/log/page/property/create） |
+| `zwiki search` / `move` / `ingest --idempotent` 子命令 | **部分实现**。`zwiki search` 已实现（rg 候选预筛 + 进程内 fallback，四级评分 title/tag/heading/body，`--type`/`--tag`/`--domain` 过滤）；`move`/`ingest --idempotent` 仍未实现 |
 | 四阶段分块蒸馏（大规模摄入） | **未实现** |
 | 六步增量同步 | **未实现** |
 | 协同 Layer 1（personal/.org/.teams/.upstream 五级覆盖） | **未实现**。无任何分层目录、无 `teams.toml` |
@@ -485,9 +485,9 @@ OpenCode 框架不支持 OMP 的 `yield`/`shouldTerminate`，无法保证结构�
 | Phase 4 | 判断是否归档（结构化走简单路径，复杂走 kiwi） |
 | Phase 5 | 呈现答案 |
 
-### 8.2 目标：三阶段级联检索（未实现）
+### 8.2 三阶段级联检索
 
-当前只有 index.md 导航一条路。目标是加两道 fallback：
+`zwiki search`（P0 项 7，✅ 已实现）提供全文检索基础：rg 候选预筛 + 进程内 fallback，四级评分（title=4/tag=3/heading=2/body=1），支持 `--type`/`--tag`/`--domain` 过滤。三阶段级联（index → tag → grep 的 fallback 策略，P0 项 5）仍未实现——当前 `zwiki search` 是单层全文搜索，不包含 index.md 优先导航与 tag fallback 层级。目标级联如下：
 
 ```
 Phase 1: index.md 导航（现有，优先级最高）
@@ -506,7 +506,7 @@ Phase 3: 全文 grep（新增）
 
 排序规则：index 命中 > tag(title) > tag(body) > grep(heading) > grep(paragraph)
 
-零新基础设施——`zwiki search` 封装 `bash rg -l "关键词" ~/.zoo/wiki/`。
+`zwiki search` 已实现底层评分（title/tag/heading/body 四级），但级联 fallback 策略（index.md 优先 → tag fallback → grep fallback，结果 < 3 个时逐级降级）属 P0 项 5，尚未实现。rg 通过随包分发安装到 `~/.zoo/tools/bin/`（install.py，后续任务），无 rg 时自动降级为进程内扫描。
 
 ### 8.3 远期扩展（按规模触发）
 
@@ -677,17 +677,21 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 | 子命令 | 阶段 |
 |--------|------|
 | `check --fix` | P0 |
-
-**`check --fix` 修复行为：** 自动修复确定性可修的问题——index.md 缺失条目补齐、broken links（已知目标路径）重连、orphan 页面加入 index、frontmatter 必填字段缺失补默认值。**不修**需要语义判断的问题（矛盾、supersede、sparse 页面内容）。
-| `search "<query>"` | P0 |
+| `search "<query>"` | ✅ 已实现 |
 | `okf export <dir>` | P0 |
 | `move <old> <new>` | P1 |
+| `list [--tag] [--type] [--domain]` | P1 |
+| `status [--tag] [--type] [--domain]` | P1 |
 | `ingest <source> --idempotent` | P1 |
 | `sync pull/push/status` | L2-P1 |
 | `promote --team <name>` | L1-P1 |
 | `propose --team <name>` | L2-P2 |
 | `consensus` | L1-P2 |
 | `bundle publish/install/list/outdated/upgrade` | L3-P3 |
+
+**`check --fix` 修复行为：** 自动修复确定性可修的问题——index.md 缺失条目补齐、broken links（已知目标路径）重连、orphan 页面加入 index、frontmatter 必填字段缺失补默认值。**不修**需要语义判断的问题（矛盾、supersede、sparse 页面内容）。
+
+**`search "<query>"` 已实现行为：** rg 候选预筛（`--fixed-strings` 字面子串，`--ignore-case`）+ 进程内 fallback（无 rg 时扫描 `discover_pages` 结果）。四级评分：title=4、tag=3/个、heading=2/行、body=1/次，累加降序。过滤：`--type`（frontmatter type 子串）、`--tag`（tags 数组元素子串）、`--domain`（顶级目录精确匹配，不匹配时列出可用域）。输出：人读 `  {path} — {title} [score: {n}]` 或 `--json` 结构化数组。
 
 ### 12.3 内部架构原则
 
@@ -879,11 +883,11 @@ blocked = ["deprecated-legacy-wiki"]
 | `OKF-DOMAIN` | **目录结构类型优先 → 域优先**（见 §5.2.4、§16.2）：各领域 subdir 新建 `index.md`，利用 OKF §6 渐进式披露 | ✅ 已完成 |
 | 1 | 新增 `last_validated`/`timeliness`（必选）/`supersedes`/`superseded_by`/`contradictions`/`freshness_days`（可选）字段（详见 §5.3、§9.2）；28 现有页面已回填 | ✅ 已完成 |
 | 2 | `zwiki check --apply` 自动标记 `timeliness: stale`（默认 180 天阈值，`source` 永不过期，frontmatter `freshness_days` 可覆写） | ✅ 已完成 |
-| 3 | wiki-query 三级短路（详见 §9.2）：`deprecated` 不出现 / `superseded_by` 非空指向取代者 / `stale` 加免责 / `review`/`draft` 加状态标注 | ⬜ |
+| 3 | wiki-query skill 大改（生命周期三级短路 + 发现方式升级，详见 §9.2）：①发现层——`zwiki search` 作为首选发现工具（替代纯 index.md 手动定位），按问题类型加 `--type`/`--domain` 过滤缩小范围，index.md 导航降为补充/兜底；②短路层——读取页面后检查 `status: deprecated`（不出现）/`superseded_by` 非空（指向取代者）/`timeliness: stale`（附"N 天未验证"）/`status: review`/`draft`（附状态标注），规则见 §9.2 行为表；③合成层——基于过滤后页面合成答案，标注来源页面 + 生命周期状态 | ⬜ |
 | 4 | 五个模板追加新字段（`last_validated`/`timeliness` 必选默认值；其余可选注释示例） | ✅ 已完成 |
-| 5 | 三阶段级联检索：index → tag → grep | ⬜ |
+| 5 | 三阶段级联检索：index → tag → grep。skill 侧（wiki-query）调用 `zwiki search` 时按 index.md 导航 → tag 过滤（`--tag`）→ 全文 grep 逐级 fallback，结果 < 3 个时降级到下一层 | ⬜ |
 | 6 | post-ingest 强制 backlinks + health（skill 强制调用 zwiki check） | ✅ 已完成（wiki-ingest skill Phase 3 已含 `zwiki check`） |
-| 7 | `zwiki search` CLI 化 | ⬜ |
+| 7 | `zwiki search` CLI 化 | ✅ 已完成（rg 候选预筛 + 进程内 fallback，四级评分 title/tag/heading/body，`--type`/`--tag`/`--domain` 过滤，人读 + `--json` 输出） |
 | 8 | `zwiki check` 内置 OKF 合规自检（含 §9 第 3 条：保留文件 §6/§7 结构校验），默认最严格、无开关 | ✅ 已完成（OKF check 已合并入 `zwiki check`，默认严格，含 relations-body 双向一致性检查） |
 
 #### 16.2 OKF-LOG / OKF-DOMAIN 对齐记录（✅ 已完成）
@@ -944,6 +948,8 @@ blocked = ["deprecated-legacy-wiki"]
 | 13 | `zwiki move`：重命名 + 自动更新所有引用链接 |
 | 14 | `zwiki ingest --idempotent`：源身份匹配 + SHA-256 跳过 |
 | 15 | SCHEMA 自动注入到 agent prompt（config hook） |
+| 16 | `zwiki list`：按字段结构化浏览页面——`--tag <name>`/`--type <type>`/`--domain <domain>` 列匹配页面，无过滤时列全部页面路径 + 标题。与 `search`（全文检索）互补：`list` 是字段精确浏览，`search` 是内容子串匹配 + 评分排序 |
+| 17 | `zwiki status`：wiki 整体健康概览——页面总数、各 type/domain 分布、stale/deprecated 计数、最近 last_validated 范围。`--tag`/`--type`/`--domain` 可选切片统计 |
 
 ### P2：验证体系 + 协同 L1/L2 起步
 

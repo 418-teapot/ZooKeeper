@@ -57,9 +57,9 @@ pub fn read_file(path: &Path) -> String {
 // Page discovery
 // ---------------------------------------------------------------------------
 
-/// Internal: find all `*.md` files under `base`, excluding meta / system
+/// Find all `*.md` files under `base`, excluding meta / system
 /// files and directories named `templates/`, `tools/`, `raw/`.
-fn discover_pages(base: &Path) -> Vec<PathBuf> {
+pub fn discover_pages(base: &Path) -> Vec<PathBuf> {
     let mut pages: Vec<PathBuf> = WalkDir::new(base)
         .into_iter()
         .filter_map(Result::ok)
@@ -293,8 +293,8 @@ pub struct Page {
     pub body: String,
 }
 
-/// Internal: read and parse a wiki page given an explicit wiki base dir.
-fn read_page_at(path: &Path, wiki_base: &Path) -> Option<Page> {
+/// Read and parse a wiki page given an explicit wiki base dir.
+pub fn read_page_at(path: &Path, wiki_base: &Path) -> Option<Page> {
     let content = read_file(path);
     if content.is_empty() {
         return None;

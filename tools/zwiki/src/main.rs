@@ -12,6 +12,7 @@ mod lint;
 mod log;
 mod page;
 mod property;
+mod search;
 mod wiki;
 
 use clap::{Parser, Subcommand};
@@ -140,6 +141,24 @@ enum Command {
         #[arg(long)]
         source_type: Option<String>,
     },
+
+    /// Search wiki pages for a query
+    Search {
+        /// Literal substring to search for
+        query: String,
+
+        /// Filter by page type (concept, entity, source, analysis, synthesis)
+        #[arg(long)]
+        r#type: Option<String>,
+
+        /// Filter by tag (case-insensitive substring match)
+        #[arg(long)]
+        tag: Option<String>,
+
+        /// Filter by top-level domain (e.g. autoresearch, shared)
+        #[arg(long)]
+        domain: Option<String>,
+    },
 }
 
 fn main() {
@@ -189,6 +208,15 @@ fn main() {
                 &title,
                 slug.as_deref(),
                 source_type.as_deref(),
+            );
+        }
+        Some(Command::Search { query, r#type, tag, domain }) => {
+            cmd_search(
+                &query,
+                r#type.as_deref(),
+                tag.as_deref(),
+                domain.as_deref(),
+                args.json,
             );
         }
     }
@@ -576,6 +604,62 @@ fn cmd_create(
     }
 }
 
+fn cmd_search(
+    query: &str,
+    type_filter: Option<&str>,
+    tag_filter: Option<&str>,
+    domain_filter: Option<&str>,
+    json: bool,
+) {
+    let wiki_dir = wiki::wiki_dir();
+    let engine = search::SearchEngine::new(wiki_dir.clone());
+
+    // Validate --domain against actual top-level domains.
+    if let Some(df) = domain_filter {
+        let known: std::collections::BTreeSet<String> =
+            wiki::discover_pages(&wiki_dir)
+                .into_iter()
+                .filter_map(|p| {
+                    p.strip_prefix(&wiki_dir)
+                        .ok()
+                        .and_then(|r| r.to_str())
+                        .and_then(|r| {
+                            // Only count top-level directories as domains,
+                            // not root-level standalone files.
+                            r.split('/').next().filter(|_| r.contains('/'))
+                        })
+                        .map(String::from)
+                })
+                .collect();
+        let df_lower = df.to_lowercase();
+        if !known.iter().any(|d| d.to_lowercase() == df_lower) {
+            if json {
+                eprintln!(
+                    "未知的 domain '{}'，可用：{}",
+                    df,
+                    known.iter().cloned().collect::<Vec<_>>().join(", ")
+                );
+                println!("[]");
+            } else {
+                println!(
+                    "未知的 domain '{}'，可用：{}",
+                    df,
+                    known.iter().cloned().collect::<Vec<_>>().join(", ")
+                );
+            }
+            return;
+        }
+    }
+
+    let results = engine.search(query, type_filter, tag_filter, domain_filter);
+
+    if json {
+        println!("{}", search::format_results_json(&results));
+    } else {
+        println!("{}", search::format_results(&results));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -845,6 +929,72 @@ mod tests {
                 assert!(save);
             }
             _ => panic!("expected Check"),
+        }
+    }
+
+    #[test]
+    fn test_search_parses() {
+        let args =
+            Args::try_parse_from(["zwiki", "search", "permission"]).unwrap();
+        match args.command {
+            Some(Command::Search { query, r#type, tag, domain: _ }) => {
+                assert_eq!(query, "permission");
+                assert!(r#type.is_none());
+                assert!(tag.is_none());
+            }
+            _ => panic!("expected Search"),
+        }
+    }
+
+    #[test]
+    fn test_search_with_type_parses() {
+        let args = Args::try_parse_from([
+            "zwiki",
+            "search",
+            "permission",
+            "--type",
+            "concept",
+        ])
+        .unwrap();
+        match args.command {
+            Some(Command::Search { query, r#type, .. }) => {
+                assert_eq!(query, "permission");
+                assert_eq!(r#type, Some("concept".to_string()));
+            }
+            _ => panic!("expected Search"),
+        }
+    }
+
+    #[test]
+    fn test_search_with_tag_parses() {
+        let args = Args::try_parse_from([
+            "zwiki",
+            "search",
+            "permission",
+            "--tag",
+            "auth",
+        ])
+        .unwrap();
+        match args.command {
+            Some(Command::Search { query, tag, .. }) => {
+                assert_eq!(query, "permission");
+                assert_eq!(tag, Some("auth".to_string()));
+            }
+            _ => panic!("expected Search"),
+        }
+    }
+
+    #[test]
+    fn test_search_with_json_parses() {
+        let args =
+            Args::try_parse_from(["zwiki", "--json", "search", "permission"])
+                .unwrap();
+        assert!(args.json);
+        match args.command {
+            Some(Command::Search { query, .. }) => {
+                assert_eq!(query, "permission");
+            }
+            _ => panic!("expected Search"),
         }
     }
 }
