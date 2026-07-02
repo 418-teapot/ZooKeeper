@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use regex::Regex;
 use serde_json::Value;
@@ -1116,6 +1116,95 @@ pub fn check_duplicate_inline_links(
 }
 
 // ---------------------------------------------------------------------------
+// 9. mark_stale — timeliness staleness computation
+// ---------------------------------------------------------------------------
+
+/// Result of a timeliness staleness check — a page whose timeliness needs
+/// updating.
+#[derive(Debug, Clone)]
+pub struct StaleUpdate {
+    /// Absolute filesystem path.
+    pub path: PathBuf,
+    /// Path relative to `WIKI_DIR`.
+    pub rel: String,
+    /// The new timeliness value ("current" or "stale").
+    pub new_timeliness: String,
+}
+
+/// Recompute timeliness for all pages based on `last_validated` and
+/// `freshness_days` (or the default 180-day threshold).
+///
+/// Rules:
+/// - Source-type pages are never stale (always compute to "current").
+/// - Pages whose `last_validated` is missing or unparseable are skipped.
+/// - Pages whose computed value matches the existing `timeliness` are
+///   omitted (idempotent).
+/// - `freshness_days` overrides the default 180-day threshold.
+pub fn mark_stale(pages: &[Page]) -> Vec<StaleUpdate> {
+    use chrono::Utc;
+
+    let now = Utc::now().date_naive();
+    let default_threshold: i64 = 180;
+    let mut updates: Vec<StaleUpdate> = Vec::new();
+
+    for page in pages {
+        let fm = &page.frontmatter;
+
+        // Source-type pages never go stale.
+        if let Some(type_val) = fm.get("type").and_then(|v| v.as_str())
+            && type_val == "source"
+        {
+            let existing =
+                fm.get("timeliness").and_then(|v| v.as_str()).unwrap_or("");
+            if existing != "current" {
+                updates.push(StaleUpdate {
+                    path: page.path.clone(),
+                    rel: page.rel.clone(),
+                    new_timeliness: "current".to_string(),
+                });
+            }
+            continue;
+        }
+
+        // Parse last_validated — skip if missing or unparseable.
+        let Some(lv_str) = fm.get("last_validated").and_then(|v| v.as_str())
+        else {
+            continue;
+        };
+        let Some(lv_date) = wiki::parse_date(lv_str) else {
+            continue;
+        };
+
+        // Determine threshold: freshness_days or default 180.
+        let threshold = fm
+            .get("freshness_days")
+            .and_then(|v| {
+                v.as_i64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
+            })
+            .unwrap_or(default_threshold);
+
+        // Compute new timeliness.
+        let days_since = (now - lv_date).num_days();
+        let new_timeliness =
+            if days_since > threshold { "stale" } else { "current" };
+
+        // Only include if the value actually changes.
+        let existing =
+            fm.get("timeliness").and_then(|v| v.as_str()).unwrap_or("");
+        if existing != new_timeliness {
+            updates.push(StaleUpdate {
+                path: page.path.clone(),
+                rel: page.rel.clone(),
+                new_timeliness: new_timeliness.to_string(),
+            });
+        }
+    }
+
+    updates
+}
+
+// ---------------------------------------------------------------------------
 // Orchestrator
 // ---------------------------------------------------------------------------
 
@@ -1686,6 +1775,106 @@ mod tests {
         assert!(
             !issues.iter().any(|i| i.kind.starts_with("invalid_timeliness")),
             "absent timeliness should not produce invalid_timeliness"
+        );
+    }
+
+    #[test]
+    fn test_mark_stale_recent_page_stays_current() {
+        let today =
+            chrono::Utc::now().date_naive().format("%Y-%m-%d").to_string();
+        let content = format!(
+            "---\ntitle: Recent\ntype: concept\ntimestamp: 2024-06-01\n\
+             tags: [test]\nstatus: draft\ntimeliness: current\n\
+             last_validated: {today}\n---\nBody.\n"
+        );
+        let pages = vec![make_page("concepts/recent.md", &content)];
+        let updates = mark_stale(&pages);
+        assert!(
+            updates.is_empty(),
+            "recent page should stay current, got {updates:?}"
+        );
+    }
+
+    #[test]
+    fn test_mark_stale_old_page_becomes_stale() {
+        let content = "\
+---\ntitle: Old\ntype: concept\ntimestamp: 2024-06-01\n\
+tags: [test]\nstatus: draft\ntimeliness: current\n\
+last_validated: 2020-01-01T00:00:00Z\n---\nBody.\n";
+        let pages = vec![make_page("concepts/old.md", content)];
+        let updates = mark_stale(&pages);
+        assert_eq!(updates.len(), 1, "old page should become stale");
+        assert_eq!(updates[0].rel, "concepts/old.md");
+        assert_eq!(updates[0].new_timeliness, "stale");
+    }
+
+    #[test]
+    fn test_mark_stale_source_never_stale() {
+        let content = "\
+---\ntitle: Source Page\ntype: source\ntimestamp: 2024-06-01\n\
+tags: [test]\nstatus: draft\ntimeliness: current\n\
+last_validated: 2020-01-01\n---\nBody.\n";
+        let pages = vec![make_page("sources/ref.md", content)];
+        let updates = mark_stale(&pages);
+        assert!(
+            updates.is_empty(),
+            "source page should never become stale, got {updates:?}"
+        );
+    }
+
+    #[test]
+    fn test_mark_stale_freshness_days_override() {
+        let three_days_ago = chrono::Utc::now()
+            .date_naive()
+            .pred_opt()
+            .unwrap()
+            .pred_opt()
+            .unwrap()
+            .pred_opt()
+            .unwrap()
+            .format("%Y-%m-%d")
+            .to_string();
+        let content = format!(
+            "---\ntitle: Fresh\ntype: concept\ntimestamp: 2024-06-01\n\
+             tags: [test]\nstatus: draft\ntimeliness: current\n\
+             freshness_days: 1\nlast_validated: {three_days_ago}\n---\nBody.\n"
+        );
+        let pages = vec![make_page("concepts/fresh.md", &content)];
+        let updates = mark_stale(&pages);
+        assert_eq!(
+            updates.len(),
+            1,
+            "should become stale with freshness_days=1"
+        );
+        assert_eq!(updates[0].rel, "concepts/fresh.md");
+        assert_eq!(updates[0].new_timeliness, "stale");
+    }
+
+    #[test]
+    fn test_mark_stale_idempotent() {
+        let content = "\
+---\ntitle: Already Stale\ntype: concept\ntimestamp: 2024-06-01\n\
+tags: [test]\nstatus: draft\ntimeliness: stale\n\
+last_validated: 2020-01-01T00:00:00Z\n---\nBody.\n";
+        let pages = vec![make_page("concepts/stale.md", content)];
+        let updates = mark_stale(&pages);
+        assert!(
+            updates.is_empty(),
+            "already stale page should not produce update, got {updates:?}"
+        );
+    }
+
+    #[test]
+    fn test_mark_stale_invalid_last_validated_skipped() {
+        let content = "\
+---\ntitle: No Date\ntype: concept\ntimestamp: 2024-06-01\n\
+tags: [test]\nstatus: draft\ntimeliness: current\n\
+last_validated: not-a-date\n---\nBody.\n";
+        let pages = vec![make_page("concepts/no-date.md", content)];
+        let updates = mark_stale(&pages);
+        assert!(
+            updates.is_empty(),
+            "invalid last_validated should be skipped, got {updates:?}"
         );
     }
 

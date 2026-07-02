@@ -55,6 +55,10 @@ enum Command {
         /// Git ref to diff against (requires --diff)
         #[arg(long)]
         commit: Option<String>,
+
+        /// Apply timeliness updates (stale/current) based on staleness rules
+        #[arg(long)]
+        apply: bool,
     },
 
     /// Show backlinks
@@ -149,10 +153,22 @@ fn main() {
             println!();
             process::exit(1);
         }
-        Some(Command::Check { save, ci, diff, cached, commit }) => {
+        Some(Command::Check { save, ci, diff, cached, commit, apply }) => {
             let diff_check =
                 if diff { Some(DiffCheck { cached, commit }) } else { None };
-            cmd_check(&CheckOpts { save, ci, json: args.json, diff_check });
+            let mut write_actions = Vec::new();
+            if save {
+                write_actions.push(WriteAction::SaveReport);
+            }
+            if apply {
+                write_actions.push(WriteAction::ApplyTimeliness);
+            }
+            cmd_check(&CheckOpts {
+                ci,
+                json: args.json,
+                diff_check,
+                write_actions,
+            });
         }
         Some(Command::Backlinks { ref page }) => {
             cmd_backlinks(&args, page.as_deref());
@@ -178,11 +194,17 @@ fn main() {
     }
 }
 
+#[derive(Clone, PartialEq, Debug)]
+enum WriteAction {
+    SaveReport,
+    ApplyTimeliness,
+}
+
 struct CheckOpts {
-    save: bool,
     ci: bool,
     json: bool,
     diff_check: Option<DiffCheck>,
+    write_actions: Vec<WriteAction>,
 }
 
 struct DiffCheck {
@@ -229,7 +251,7 @@ fn cmd_check(opts: &CheckOpts) {
         );
     }
 
-    if opts.save {
+    if opts.write_actions.contains(&WriteAction::SaveReport) {
         let root = wiki::wiki_dir();
         let health_report = display::format_check_report(&health_results);
         let lint_report = display::format_lint_report(&lint_results);
@@ -248,6 +270,36 @@ fn cmd_check(opts: &CheckOpts) {
     let updated = backlinks::update_backlinks(&root, &bl_index, &all_pages);
     if updated > 0 {
         eprintln!("已同步 {updated} 个页面的反向链接");
+    }
+
+    // Apply timeliness updates if --apply is set.
+    if opts.write_actions.contains(&WriteAction::ApplyTimeliness) {
+        let stale_updates = health::mark_stale(&all_pages);
+        let stale_count = stale_updates
+            .iter()
+            .filter(|u| u.new_timeliness == "stale")
+            .count();
+        let current_count = stale_updates
+            .iter()
+            .filter(|u| u.new_timeliness == "current")
+            .count();
+        for update in &stale_updates {
+            if let Err(e) = property::set(
+                &update.path,
+                "timeliness",
+                &update.new_timeliness,
+            ) {
+                eprintln!("写入失败 {}: {e}", update.rel);
+            }
+        }
+        if !stale_updates.is_empty() {
+            eprintln!(
+                "已标记 {} 个页面的 timeliness（stale: {}, current: {}）",
+                stale_updates.len(),
+                stale_count,
+                current_count,
+            );
+        }
     }
 
     if opts.ci && (health_issues + lint_issues + diff_issues) > 0 {

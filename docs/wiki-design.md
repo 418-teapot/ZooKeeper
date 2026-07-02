@@ -665,7 +665,7 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 
 | 子命令 | 用途 | 状态 |
 |--------|------|------|
-| `check` | 运行 health + lint + 可选 diff；支持 `--save`/`--ci`/`--diff`/`--cached`/`--commit` | ✅ |
+| `check` | 运行 health + lint + 可选 diff；支持 `--save`/`--ci`/`--diff`/`--cached`/`--commit`/`--apply` | ✅ |
 | `backlinks` | 反向链接查询/写入 | ✅ |
 | `log` | 追加日志到 `wiki/log.md`（`--op`/`--path`/`--action`/`--note`） | ✅ |
 | `page` | 读页面（`--property`/`--outline`） | ✅ |
@@ -676,7 +676,7 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 
 | 子命令 | 阶段 |
 |--------|------|
-| `check --apply` / `--fix` | P0 |
+| `check --fix` | P0 |
 
 **`check --fix` 修复行为：** 自动修复确定性可修的问题——index.md 缺失条目补齐、broken links（已知目标路径）重连、orphan 页面加入 index、frontmatter 必填字段缺失补默认值。**不修**需要语义判断的问题（矛盾、supersede、sparse 页面内容）。
 | `search "<query>"` | P0 |
@@ -878,7 +878,7 @@ blocked = ["deprecated-legacy-wiki"]
 | `OKF-IDX` | index.md：`##` 章节改 `#` 一级标题；条目分隔符 `—` 改 `-`；各领域 subdir `index.md` | ✅ 已完成 |
 | `OKF-DOMAIN` | **目录结构类型优先 → 域优先**（见 §5.2.4、§16.2）：各领域 subdir 新建 `index.md`，利用 OKF §6 渐进式披露 | ✅ 已完成 |
 | 1 | 新增 `last_validated`/`timeliness`（必选）/`supersedes`/`superseded_by`/`contradictions`/`freshness_days`（可选）字段（详见 §5.3、§9.2）；28 现有页面已回填 | ✅ 已完成 |
-| 2 | `zwiki check --apply` 自动标记 `timeliness: stale`（默认 180 天阈值，`source` 永不过期，frontmatter `freshness_days` 可覆写） | ⬜ |
+| 2 | `zwiki check --apply` 自动标记 `timeliness: stale`（默认 180 天阈值，`source` 永不过期，frontmatter `freshness_days` 可覆写） | ✅ 已完成 |
 | 3 | wiki-query 三级短路（详见 §9.2）：`deprecated` 不出现 / `superseded_by` 非空指向取代者 / `stale` 加免责 / `review`/`draft` 加状态标注 | ⬜ |
 | 4 | 五个模板追加新字段（`last_validated`/`timeliness` 必选默认值；其余可选注释示例） | ✅ 已完成 |
 | 5 | 三阶段级联检索：index → tag → grep | ⬜ |
