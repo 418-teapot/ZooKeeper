@@ -14,6 +14,8 @@ relations:
   - "[program.md](autoresearch/entities/autoresearch-program-md.md)"
   - "[autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)"
 status: stable
+last_validated: 2026-06-19T00:00:00Z
+timeliness: current
 ---
 
 # 自主实验循环

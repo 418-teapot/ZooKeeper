@@ -9,6 +9,8 @@ relations:
   - "[单文件修改原则](autoresearch/concepts/single-file-modification.md)"
   - "[autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)"
 status: stable
+last_validated: 2026-06-19T00:00:00Z
+timeliness: current
 ---
 
 # 后验问责制

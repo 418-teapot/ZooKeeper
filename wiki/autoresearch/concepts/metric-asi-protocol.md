@@ -9,6 +9,8 @@ relations:
   - "[MAD 置信度算法](autoresearch/concepts/mad-confidence.md)"
   - "[autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)"
 status: stable
+last_validated: 2026-06-19T00:00:00Z
+timeliness: current
 ---
 
 # METRIC/ASI 文本协议

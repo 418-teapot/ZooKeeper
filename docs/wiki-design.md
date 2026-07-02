@@ -67,7 +67,7 @@
 | 组件 | 当前状态 |
 |------|---------|
 | SCHEMA 自动注入到 agent prompt | **未实现**。`src/index.ts` config hook 只做 `injectAgentPrompts` + `registerSkills`，无 SCHEMA 读取/注入 |
-| `last_validated` / `timeliness` / `supersedes` / `superseded_by` / `contradictions` 字段 | **未实现**。SCHEMA.md 无这些字段，lint.rs 无对应检查（`timeliness` 派生自 `last_validated`，由 `zwiki check --apply` 自动写入） |
+| `last_validated` / `timeliness` / `supersedes` / `superseded_by` / `contradictions` / `freshness_days` 字段 | **字段已定义**。SCHEMA.md 已声明六字段；`last_validated`/`timeliness` 必选（含枚举校验），其余可选；28 现有页面已回填。stale 自动标记（`zwiki check --apply`）、三级短路、对账等逻辑属 P0 项 2/3，仍未实现 |
 | `lint --apply` 自动标记 stale | **未实现**。stale 检测存在但仅报告，不自动标记 |
 | 三阶段级联检索（index → tag → grep） | **未实现**。wiki-query skill 仍是 index.md 单路径 + grep 提示 |
 | `zwiki search` / `move` / `ingest --idempotent` 子命令 | **未实现**。zwiki 当前 7 个子命令（check/backlinks/log/page/property/create） |
@@ -537,17 +537,17 @@ frontmatter 原始字段（人/工具直接写入）：
 
 | 字段 | 性质 | 取值 | 谁写 |
 |------|------|------|------|
-| `status` | 已有，置信度 | `draft\|review\|stable\|deprecated` | 人 / review 流程 |
-| `last_validated` | 时间戳，验证时间 | ISO 8601 datetime | 机械检查 / LLM / 人 |
-| `supersedes` | 关系，"我推翻谁" | `[path...]` | agent 写入 B |
-| `superseded_by` | 关系，"我被谁推翻" | `[path...]` | agent 写入 A |
-| `contradictions` | 关系，矛盾记录 | 见 §9.5 | 矛盾检测写入双方 |
+| `status` | 已有，必选，置信度 | `draft\|review\|stable\|deprecated` | 人 / review 流程 |
+| `last_validated` | 时间戳，必选，验证时间 | ISO 8601 datetime | 机械检查 / LLM / 人 |
+| `supersedes` | 关系，可选，"我推翻谁" | `[path...]` | agent 写入 B |
+| `superseded_by` | 关系，可选，"我被谁推翻" | `[path...]` | agent 写入 A |
+| `contradictions` | 关系，可选，矛盾记录 | 见 §9.5 | 矛盾检测写入双方 |
 
 `zwiki check --apply` 自动维护的派生标记（存 frontmatter 供 agent 一读即知）：
 
 | 字段 | 派生自 | 取值 |
 |------|--------|------|
-| `timeliness` | `now - last_validated > threshold` | `current\|stale`（仅两档） |
+| `timeliness` | 必选，`now - last_validated > threshold` | `current\|stale`（仅两档，新页面默认 `current`） |
 
 **`supersedes` ↔ `superseded_by` 双向对账：** 两个字段都是 agent 的合法写入入口——agent 可以只写 B 的 `supersedes: [A]`，也可以只写 A 的 `superseded_by: [B]`，zwiki 发现只写了一边就补齐另一边，保证两边互为镜像。不要求 agent 原子写两个文件，zwiki 保证最终一致。这与 backlinks 不同：backlinks 是多对多、频繁变、噪声关系，不值得在 frontmatter 列全；取代关系是一次性、语义重要、agent 必须一读即知的关系，值得物化到 frontmatter 两侧。
 
@@ -877,10 +877,10 @@ blocked = ["deprecated-legacy-wiki"]
 | `OKF-LOG` | **index.md / log.md 对齐 OKF §6/§7**（见 §16.2） | ✅ 已完成 |
 | `OKF-IDX` | index.md：`##` 章节改 `#` 一级标题；条目分隔符 `—` 改 `-`；各领域 subdir `index.md` | ✅ 已完成 |
 | `OKF-DOMAIN` | **目录结构类型优先 → 域优先**（见 §5.2.4、§16.2）：各领域 subdir 新建 `index.md`，利用 OKF §6 渐进式披露 | ✅ 已完成 |
-| 1 | 新增 `last_validated`/`timeliness`/`supersedes`/`superseded_by`/`contradictions` 可选字段（详见 §5.3、§9.2） | ⬜ |
+| 1 | 新增 `last_validated`/`timeliness`（必选）/`supersedes`/`superseded_by`/`contradictions`/`freshness_days`（可选）字段（详见 §5.3、§9.2）；28 现有页面已回填 | ✅ 已完成 |
 | 2 | `zwiki check --apply` 自动标记 `timeliness: stale`（默认 180 天阈值，`source` 永不过期，frontmatter `freshness_days` 可覆写） | ⬜ |
 | 3 | wiki-query 三级短路（详见 §9.2）：`deprecated` 不出现 / `superseded_by` 非空指向取代者 / `stale` 加免责 / `review`/`draft` 加状态标注 | ⬜ |
-| 4 | 五个模板追加新字段（可选，默认兼容） | ⬜ |
+| 4 | 五个模板追加新字段（`last_validated`/`timeliness` 必选默认值；其余可选注释示例） | ✅ 已完成 |
 | 5 | 三阶段级联检索：index → tag → grep | ⬜ |
 | 6 | post-ingest 强制 backlinks + health（skill 强制调用 zwiki check） | ✅ 已完成（wiki-ingest skill Phase 3 已含 `zwiki check`） |
 | 7 | `zwiki search` CLI 化 | ⬜ |

@@ -16,6 +16,8 @@ relations:
   - "[train.py](autoresearch/entities/autoresearch-train-py.md)"
   - "[program.md](autoresearch/entities/autoresearch-program-md.md)"
 status: stable
+last_validated: 2026-06-19T00:00:00Z
+timeliness: current
 ---
 
 # [autoresearch 设计](autoresearch/sources/rfc/autoresearch-design.md)权衡分析

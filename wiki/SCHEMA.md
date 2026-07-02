@@ -84,6 +84,12 @@ wiki/
 | `tags` | 是 | string[] | 标签列表，如 `[permission, config]` |
 | `relations` | 否 | string[] | 相关 wiki 页面路径列表（相对 wiki 根目录），以 Markdown 链接格式，如 `- "[标题](concepts/permission.md)"` |
 | `status` | 是 | string | 状态：`draft` / `review` / `stable` / `deprecated` |
+| `last_validated` | 是 | string | 验证时间，ISO 8601 datetime，区别于 timestamp（编辑≠验证） |
+| `timeliness` | 是 | string | 时效性标记：`current` / `stale`（仅两档，新页面默认 current） |
+| `supersedes` | 否 | object[] | 取代关系：本页推翻哪些页面，每项含 `path`（相对 wiki 根目录）和 `reason` |
+| `superseded_by` | 否 | object[] | 被取代关系：本页被哪些页面推翻，每项含 `path` 和 `reason` |
+| `contradictions` | 否 | object[] | 矛盾记录，每项含 `path`（冲突页面路径）、`claims`（冲突声明列表）、`detected`（发现日期）、`resolution`（`unresolved` 或具体解决说明） |
+| `freshness_days` | 否 | integer | 时效阈值覆写（天数），默认 180 天，`source` 类型永不过期 |
 
 示例：
 
@@ -98,6 +104,21 @@ relations:
   - "[foo 实体](autoresearch/entities/foo.md)"
   - "[bar 概念](shared/concepts/bar.md)"
 status: stable
+last_validated: 2026-06-19T00:00:00Z
+timeliness: current
+# 以下为可选字段
+supersedes:
+  - path: autoresearch/concepts/old-permission.md
+    reason: "新设计覆盖了旧的权限模型"
+superseded_by: []
+contradictions:
+  - path: shared/concepts/security-model.md
+    claims:
+      - "声称权限由 X 控制"
+      - "声称权限由 Y 控制"
+    detected: 2026-06-19
+    resolution: unresolved
+freshness_days: 90
 ---
 ```
 

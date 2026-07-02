@@ -9,6 +9,8 @@ relations:
   - "[复利知识 — 持久化知识库的核心价值](wiki-system/concepts/compounding-knowledge.md)"
   - "[LLM Wiki vs RAG — 两种知识管理范式的对比](wiki-system/analysis/llm-wiki-vs-rag.md)"
 status: stable
+last_validated: 2026-06-19T00:00:00Z
+timeliness: current
 ---
 
 # 图链接预测 — 基于拓扑结构的缺失链接推断

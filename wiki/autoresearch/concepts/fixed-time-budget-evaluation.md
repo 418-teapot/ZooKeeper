@@ -11,6 +11,8 @@ relations:
   - "[prepare.py](autoresearch/entities/autoresearch-prepare-py.md)"
   - "[autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)"
 status: stable
+last_validated: 2026-06-19T00:00:00Z
+timeliness: current
 ---
 
 # 固定时间预算评估

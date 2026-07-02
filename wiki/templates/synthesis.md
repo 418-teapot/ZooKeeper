@@ -11,6 +11,21 @@ sources:
 relations:
   - "[示例分析](wiki-system/analysis/related.md)"
 status: draft|review|stable|deprecated
+last_validated: YYYY-MM-DDTHH:mm:ssZ
+timeliness: current
+# 可选生命周期字段（按需取消注释填写，详见 SCHEMA.md）：
+# supersedes:
+#   - path: <domain>/concepts/old.md
+#     reason: "新来源确认此结论已被推翻"
+# superseded_by:
+#   - path: <domain>/concepts/new.md
+#     reason: "被新结论取代"
+# contradictions:
+#   - path: <domain>/concepts/other.md
+#     claims: ["声明 A", "声明 B"]
+#     detected: YYYY-MM-DD
+#     resolution: unresolved
+# freshness_days: 90
 ---
 
 # <问题标题>

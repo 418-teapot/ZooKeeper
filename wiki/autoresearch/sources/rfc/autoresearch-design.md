@@ -14,6 +14,8 @@ relations:
   - "[性能调优设计模式](autoresearch/analysis/performance-tuning-design-patterns.md)"
   - "[autoresearch ZooKeeper 移植路线图](autoresearch/analysis/autoresearch-porting-roadmap.md)"
 status: stable
+last_validated: 2026-06-19T00:00:00Z
+timeliness: current
 ---
 
 # autoresearch 设计文档

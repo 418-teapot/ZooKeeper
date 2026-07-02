@@ -39,7 +39,7 @@ const META_FILE_NAMES: &[&str] =
 
 /// Required frontmatter fields.
 const REQUIRED_FM_FIELDS: &[&str] =
-    &["title", "type", "timestamp", "tags", "status"];
+    &["title", "type", "timestamp", "tags", "status", "last_validated"];
 
 /// Valid page types.
 const VALID_TYPES: &[&str] =
@@ -47,6 +47,9 @@ const VALID_TYPES: &[&str] =
 
 /// Valid status values.
 const VALID_STATUSES: &[&str] = &["draft", "review", "stable", "deprecated"];
+
+/// Valid timeliness values (required field).
+const VALID_TIMELINESS: &[&str] = &["current", "stale"];
 
 /// Sections to skip when checking body text for inline links.
 const SKIP_LINK_CHECK_SECTIONS: &[&str] = &["backlinks", "references", "notes"];
@@ -318,14 +321,18 @@ pub fn check_log_coverage(pages: &[Page], wiki_dir: &Path) -> Vec<Issue> {
 /// Verify every page has required frontmatter fields with valid values.
 ///
 /// Checks:
-/// - Required fields: title, type, timestamp, tags, status
+/// - Required fields: title, type, timestamp, tags, status, `last_validated`
+/// - Required field: timeliness (checked separately for enum validation)
 /// - Valid type enum: concept/entity/source/analysis/synthesis
 /// - Valid status enum: draft/review/stable/deprecated
+/// - Valid timeliness enum: current/stale
 /// - Valid ISO 8601 date format for timestamp
 pub fn check_frontmatter(pages: &[Page]) -> Vec<Issue> {
     let valid_types: HashSet<&str> = VALID_TYPES.iter().copied().collect();
     let valid_statuses: HashSet<&str> =
         VALID_STATUSES.iter().copied().collect();
+    let valid_timeliness: HashSet<&str> =
+        VALID_TIMELINESS.iter().copied().collect();
     let mut results: Vec<Issue> = Vec::new();
 
     for page in pages {
@@ -377,6 +384,27 @@ pub fn check_frontmatter(pages: &[Page]) -> Vec<Issue> {
                 kind: format!("invalid_status:{val}"),
                 details: format!(
                     "Status '{val}' is not valid. Must be one of: {valid_list}"
+                ),
+            });
+        }
+
+        // Check timeliness presence (required field).
+        if !fm.contains_key("timeliness") {
+            results.push(Issue {
+                page: page.rel.clone(),
+                kind: "missing_field:timeliness".to_string(),
+                details: "Required frontmatter field 'timeliness' is missing"
+                    .to_string(),
+            });
+        } else if let Some(val) = fm.get("timeliness").and_then(|v| v.as_str())
+            && !valid_timeliness.contains(val)
+        {
+            results.push(Issue {
+                page: page.rel.clone(),
+                kind: format!("invalid_timeliness:{val}"),
+                details: format!(
+                    "Field 'timeliness' value '{val}' is not valid, must be \
+                     'current' or 'stale'"
                 ),
             });
         }
@@ -1533,7 +1561,9 @@ mod tests {
     fn test_frontmatter_valid_passes() {
         let pages = vec![make_page(
             "concepts/valid.md",
-            "---\ntitle: Valid\ntype: concept\ntimestamp: 2024-06-01\ntags: [test]\nstatus: draft\n---\nBody.\n",
+            "---\ntitle: Valid\ntype: concept\ntimestamp: 2024-06-01\n\
+             tags: [test]\nstatus: draft\nlast_validated: 2024-06-01\n\
+             timeliness: current\n---\nBody.\n",
         )];
         let issues = check_frontmatter(&pages);
         let field_issues: Vec<&Issue> = issues
@@ -1589,7 +1619,9 @@ mod tests {
     fn test_frontmatter_invalid_type() {
         let pages = vec![make_page(
             "concepts/badtype.md",
-            "---\ntitle: Bad\ntype: invalid_type_value\ntimestamp: 2024-06-01\ntags: [test]\nstatus: draft\n---\nBody.\n",
+            "---\ntitle: Bad\ntype: invalid_type_value\ntimestamp: 2024-06-01\n\
+             tags: [test]\nstatus: draft\nlast_validated: 2024-06-01\n\
+             timeliness: current\n---\nBody.\n",
         )];
         let issues = check_frontmatter(&pages);
         assert!(
@@ -1602,7 +1634,9 @@ mod tests {
     fn test_frontmatter_invalid_status() {
         let pages = vec![make_page(
             "concepts/badstatus.md",
-            "---\ntitle: Bad\ntype: concept\ntimestamp: 2024-06-01\ntags: [test]\nstatus: obsolete\n---\nBody.\n",
+            "---\ntitle: Bad\ntype: concept\ntimestamp: 2024-06-01\n\
+             tags: [test]\nstatus: obsolete\nlast_validated: 2024-06-01\n\
+             timeliness: current\n---\nBody.\n",
         )];
         let issues = check_frontmatter(&pages);
         assert!(
@@ -1612,10 +1646,56 @@ mod tests {
     }
 
     #[test]
+    fn test_frontmatter_timeliness_valid() {
+        let pages = vec![make_page(
+            "concepts/current.md",
+            "---\ntitle: Current\ntype: concept\ntimestamp: 2024-06-01\n\
+             tags: [test]\nstatus: draft\ntimeliness: current\n\
+             last_validated: 2024-06-01\n---\nBody.\n",
+        )];
+        let issues = check_frontmatter(&pages);
+        assert!(
+            !issues.iter().any(|i| i.kind.starts_with("invalid_timeliness")),
+            "valid timeliness 'current' should not produce invalid_timeliness"
+        );
+    }
+
+    #[test]
+    fn test_frontmatter_timeliness_invalid() {
+        let pages = vec![make_page(
+            "concepts/archived.md",
+            "---\ntitle: Archived\ntype: concept\ntimestamp: 2024-06-01\n\
+             tags: [test]\nstatus: draft\ntimeliness: archived\n\
+             last_validated: 2024-06-01\n---\nBody.\n",
+        )];
+        let issues = check_frontmatter(&pages);
+        assert!(
+            issues.iter().any(|i| i.kind == "invalid_timeliness:archived"),
+            "invalid timeliness 'archived' should be reported"
+        );
+    }
+
+    #[test]
+    fn test_frontmatter_timeliness_absent() {
+        let pages = vec![make_page(
+            "concepts/absent.md",
+            "---\ntitle: Absent\ntype: concept\ntimestamp: 2024-06-01\n\
+             tags: [test]\nstatus: draft\nlast_validated: 2024-06-01\n---\nBody.\n",
+        )];
+        let issues = check_frontmatter(&pages);
+        assert!(
+            !issues.iter().any(|i| i.kind.starts_with("invalid_timeliness")),
+            "absent timeliness should not produce invalid_timeliness"
+        );
+    }
+
+    #[test]
     fn test_frontmatter_invalid_date() {
         let pages = vec![make_page(
             "concepts/baddate.md",
-            "---\ntitle: Bad\ntype: concept\ntimestamp: not-a-date\ntags: [test]\nstatus: draft\n---\nBody.\n",
+            "---\ntitle: Bad\ntype: concept\ntimestamp: not-a-date\n\
+             tags: [test]\nstatus: draft\nlast_validated: 2024-06-01\n\
+             timeliness: current\n---\nBody.\n",
         )];
         let issues = check_frontmatter(&pages);
         assert!(

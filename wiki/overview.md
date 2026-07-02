@@ -19,6 +19,8 @@ relations:
   - "[NPC 式分工](shared/concepts/npc.md)"
   - "[Agent/Skill/Plugin 判断框架](shared/analysis/agent-skill-plugin-framework.md)"
 status: stable
+last_validated: 2026-07-01T00:00:00Z
+timeliness: current
 ---
 
 ## Overview

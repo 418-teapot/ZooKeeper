@@ -11,6 +11,8 @@ relations:
   - "[Wiki 健康检查 — 知识库的持续质量维护](wiki-system/concepts/wiki-health-check.md)"
   - "[LLM Wiki — 用 LLM 构建个人知识库的模式](wiki-system/sources/notes/llm-wiki-karpathy.md)"
 status: stable
+last_validated: 2026-06-18T00:00:00Z
+timeliness: current
 ---
 
 ## Overview

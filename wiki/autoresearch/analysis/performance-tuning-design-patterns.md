@@ -10,6 +10,8 @@ relations:
   - "[Agent/Skill/Plugin 判断框架](shared/analysis/agent-skill-plugin-framework.md)"
   - "[autoresearch ZooKeeper 移植路线图](autoresearch/analysis/autoresearch-porting-roadmap.md)"
 status: stable
+last_validated: 2026-06-19T00:00:00Z
+timeliness: current
 ---
 
 # 性能调优设计模式

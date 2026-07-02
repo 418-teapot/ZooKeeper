@@ -19,6 +19,8 @@ relations:
   - "[autoresearch 设计权衡分析](autoresearch/analysis/autoresearch-design-tradeoffs.md)"
   - "[autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)"
 status: stable
+last_validated: 2026-06-19T00:00:00Z
+timeliness: current
 ---
 
 # autoresearch — AI agent 自主 LLM 训练实验框架
