@@ -3,6 +3,22 @@
 use chrono::Local;
 
 // ---------------------------------------------------------------------------
+// Shared terminal line formatting
+// ---------------------------------------------------------------------------
+
+/// Format a value-count line for terminal output.
+///
+/// All count-style listings (tags, types, domains, status distributions)
+/// use this single format to guarantee visual consistency across
+/// commands.
+///
+/// Format: `  {value} — {count} 页` (2-space indent, em dash).
+#[must_use]
+pub fn count_line(value: &str, count: usize) -> String {
+    format!("  {value} — {count} 页")
+}
+
+// ---------------------------------------------------------------------------
 // Data structures
 // ---------------------------------------------------------------------------
 
@@ -534,6 +550,17 @@ pub fn format_lint_report(results: &LintResults) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_count_line_format() {
+        assert_eq!(count_line("auth", 3), "  auth — 3 页");
+        assert_eq!(count_line("autoresearch", 15), "  autoresearch — 15 页");
+    }
+
+    #[test]
+    fn test_count_line_zero() {
+        assert_eq!(count_line("empty", 0), "  empty — 0 页");
+    }
 
     #[test]
     fn test_format_check_report_contains_sections() {

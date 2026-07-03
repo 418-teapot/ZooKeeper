@@ -335,6 +335,122 @@ pub fn page_cache(pages: &[PathBuf]) -> HashMap<String, Page> {
 }
 
 // ---------------------------------------------------------------------------
+// Domain validation
+// ---------------------------------------------------------------------------
+
+/// Validate that a domain filter matches a known top-level directory.
+///
+/// Collects known domains from `discover_pages` by extracting the first path
+/// component of each page (directories only, not root-level files). Returns
+/// `Ok(())` if `domain` matches any known domain (case-insensitive), or
+/// `Err(message)` with a Chinese hint listing available domains.
+pub fn validate_domain(domain: &str, wiki_dir: &Path) -> Result<(), String> {
+    let known: std::collections::BTreeSet<String> = discover_pages(wiki_dir)
+        .into_iter()
+        .filter_map(|p| {
+            p.strip_prefix(wiki_dir)
+                .ok()
+                .and_then(|r| r.to_str())
+                .and_then(|r| {
+                    // Only count top-level directories as domains,
+                    // not root-level standalone files.
+                    r.split('/').next().filter(|_| r.contains('/'))
+                })
+                .map(String::from)
+        })
+        .collect();
+    let df_lower = domain.to_lowercase();
+    if !known.iter().any(|d| d.to_lowercase() == df_lower) {
+        return Err(format!(
+            "未知的 domain '{}'，可用：{}",
+            domain,
+            known.iter().cloned().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Slice filter (shared by aggregate, status, list)
+// ---------------------------------------------------------------------------
+
+/// Check whether a page matches all provided slice filters (AND semantics).
+///
+/// - `type_filter`: case-insensitive substring match on the `type`
+///   frontmatter field.
+/// - `tag_filter`: case-insensitive substring match on any element of
+///   the `tags` frontmatter field (handles both array and string).
+/// - `domain_filter`: case-insensitive exact match on the first path
+///   component of `page.rel`.
+///
+/// Returns `true` when the page passes all provided filters (or all
+/// filters are `None`).
+#[must_use]
+pub fn page_matches_slice(
+    page: &Page,
+    type_filter: Option<&str>,
+    tag_filter: Option<&str>,
+    domain_filter: Option<&str>,
+) -> bool {
+    // Type filter (case-insensitive substring).
+    if let Some(tf) = type_filter {
+        let tf_lower = tf.to_lowercase();
+        let page_type =
+            page.frontmatter.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if !page_type.to_lowercase().contains(&tf_lower) {
+            return false;
+        }
+    }
+
+    // Tag filter (case-insensitive substring on any tag).
+    if let Some(tf) = tag_filter {
+        let tf_lower = tf.to_lowercase();
+        let matches = match page.frontmatter.get("tags") {
+            Some(Value::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| v.as_str())
+                .any(|t| t.to_lowercase().contains(&tf_lower)),
+            Some(Value::String(s)) => s.to_lowercase().contains(&tf_lower),
+            _ => false,
+        };
+        if !matches {
+            return false;
+        }
+    }
+
+    // Domain filter (case-insensitive exact match on first component).
+    if let Some(df) = domain_filter {
+        let df_lower = df.to_lowercase();
+        let domain = page.rel.split('/').next().unwrap_or("");
+        if domain.to_lowercase() != df_lower {
+            return false;
+        }
+    }
+
+    true
+}
+
+// ---------------------------------------------------------------------------
+// Tag extraction (shared by aggregate, list, search)
+// ---------------------------------------------------------------------------
+
+/// Extract tag strings from parsed frontmatter.
+///
+/// Handles both `Value::Array` (inline `[a, b]` or block list) and
+/// `Value::String` (single non-empty tag).  Returns an empty vec for
+/// missing or empty fields.
+#[must_use]
+pub fn extract_tags(frontmatter: &HashMap<String, Value>) -> Vec<String> {
+    match frontmatter.get("tags") {
+        Some(Value::Array(arr)) => {
+            arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
+        }
+        Some(Value::String(s)) if !s.is_empty() => vec![s.clone()],
+        _ => Vec::new(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Date parsing
 // ---------------------------------------------------------------------------
 
@@ -816,5 +932,130 @@ mod tests {
     fn test_parse_related_entry_empty() {
         let result = parse_related_entry("");
         assert_eq!(result, "");
+    }
+
+    // -------------------------------------------------------------------
+    // 7. validate_domain
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_validate_domain_valid() {
+        let dir = temp_dir("validate_domain_valid");
+        write(
+            &dir.join("autoresearch").join("concepts").join("foo.md"),
+            "# Foo",
+        );
+        write(&dir.join("shared").join("concepts").join("bar.md"), "# Bar");
+        let result = validate_domain("autoresearch", &dir);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_domain_case_insensitive() {
+        let dir = temp_dir("validate_domain_ci");
+        write(&dir.join("AutoResearch").join("foo.md"), "# Foo");
+        let result = validate_domain("autoresearch", &dir);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_domain_invalid() {
+        let dir = temp_dir("validate_domain_invalid");
+        write(&dir.join("autoresearch").join("foo.md"), "# Foo");
+        let result = validate_domain("nonexistent", &dir);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("未知的 domain"));
+    }
+
+    #[test]
+    fn test_validate_domain_ignores_root_files() {
+        let dir = temp_dir("validate_domain_root");
+        write(&dir.join("root.md"), "# Root");
+        write(&dir.join("sub").join("page.md"), "# Page");
+        // "root" is not a domain — it's a root-level file.
+        let result = validate_domain("root", &dir);
+        assert!(result.is_err());
+        let result2 = validate_domain("sub", &dir);
+        assert!(result2.is_ok());
+    }
+
+    // -------------------------------------------------------------------
+    // 8. page_matches_slice
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_page_matches_slice_no_filters() {
+        let dir = temp_dir("slice_no_filters");
+        write(
+            &dir.join("shared").join("a.md"),
+            "---\ntype: concept\ntags: [auth]\n---\n",
+        );
+        let pages = discover_pages(&dir);
+        let page = read_page_at(&pages[0], &dir).unwrap();
+        assert!(page_matches_slice(&page, None, None, None));
+    }
+
+    #[test]
+    fn test_page_matches_slice_type_substring() {
+        let dir = temp_dir("slice_type");
+        write(&dir.join("a.md"), "---\ntype: concept\ntags: []\n---\n");
+        let page = read_page_at(&dir.join("a.md"), &dir).unwrap();
+        assert!(page_matches_slice(&page, Some("conc"), None, None));
+        assert!(!page_matches_slice(&page, Some("entity"), None, None));
+    }
+
+    #[test]
+    fn test_page_matches_slice_tag_substring() {
+        let dir = temp_dir("slice_tag");
+        write(
+            &dir.join("a.md"),
+            "---\ntype: concept\ntags: [access-control]\n---\n",
+        );
+        let page = read_page_at(&dir.join("a.md"), &dir).unwrap();
+        assert!(page_matches_slice(&page, None, Some("access"), None));
+        assert!(!page_matches_slice(&page, None, Some("auth"), None));
+    }
+
+    #[test]
+    fn test_page_matches_slice_domain_exact() {
+        let dir = temp_dir("slice_domain");
+        write(
+            &dir.join("shared").join("a.md"),
+            "---\ntype: concept\ntags: []\n---\n",
+        );
+        let page =
+            read_page_at(&dir.join("shared").join("a.md"), &dir).unwrap();
+        assert!(page_matches_slice(&page, None, None, Some("shared")));
+        assert!(!page_matches_slice(&page, None, None, Some("other")));
+    }
+
+    #[test]
+    fn test_page_matches_slice_combined_and() {
+        let dir = temp_dir("slice_combined");
+        write(
+            &dir.join("shared").join("a.md"),
+            "---\ntype: concept\ntags: [auth]\n---\n",
+        );
+        write(
+            &dir.join("shared").join("b.md"),
+            "---\ntype: entity\ntags: [auth]\n---\n",
+        );
+        let page_a =
+            read_page_at(&dir.join("shared").join("a.md"), &dir).unwrap();
+        let page_b =
+            read_page_at(&dir.join("shared").join("b.md"), &dir).unwrap();
+        // Both match domain+tag, only a matches type.
+        assert!(page_matches_slice(
+            &page_a,
+            Some("concept"),
+            Some("auth"),
+            Some("shared"),
+        ));
+        assert!(!page_matches_slice(
+            &page_b,
+            Some("concept"),
+            Some("auth"),
+            Some("shared"),
+        ));
     }
 }

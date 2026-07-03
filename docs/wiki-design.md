@@ -661,7 +661,7 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 
 ## 12. zwiki 统一 CLI
 
-### 12.1 当前实现（Rust，6 子命令）
+### 12.1 当前实现（Rust，12 子命令）
 
 | 子命令 | 用途 | 状态 |
 |--------|------|------|
@@ -671,6 +671,12 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 | `page` | 读页面（`--property`/`--outline`） | ✅ |
 | `property` | 读/写/删 frontmatter 属性（结构化，不手改 YAML） | ✅ |
 | `create` | 从模板创建骨架页（`--domain`/`--type`/`--title`/`--slug`/`--source-type`）；新域自动建完整骨架 | ✅ |
+| `search "<query>"` | 全文检索（rg 候选 + 进程内 fallback）；`--type`/`--tag`/`--domain` 过滤 | ✅ |
+| `list` | 字段结构化浏览（`--type`/`--tag`/`--domain` 过滤，无查询词，无评分） | ✅ |
+| `status` | wiki 健康概览（总数 + type/domain/status/timeliness 分布 + last_validated 范围）；`--type`/`--tag`/`--domain` 切片 | ✅ |
+| `tags` | 列出所有标签 + 页面数；`--type`/`--tag`/`--domain` 切片 | ✅ |
+| `types` | 列出所有类型 + 页面数；`--type`/`--tag`/`--domain` 切片 | ✅ |
+| `domains` | 列出所有领域 + 页面数；`--type`/`--tag`/`--domain` 切片 | ✅ |
 
 ### 12.2 目标扩展子命令（按路线图）
 
@@ -680,8 +686,8 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 | `search "<query>"` | ✅ 已实现 |
 | `okf export <dir>` | P0 |
 | `move <old> <new>` | P1 |
-| `list [--tag] [--type] [--domain]` | P1 |
-| `status [--tag] [--type] [--domain]` | P1 |
+| `list [--tag] [--type] [--domain]` | ✅ 已实现 |
+| `status [--tag] [--type] [--domain]` | ✅ 已实现 |
 | `ingest <source> --idempotent` | P1 |
 | `sync pull/push/status` | L2-P1 |
 | `promote --team <name>` | L1-P1 |
@@ -692,6 +698,12 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 **`check --fix` 修复行为：** 自动修复确定性可修的问题——index.md 缺失条目补齐、broken links（已知目标路径）重连、orphan 页面加入 index、frontmatter 必填字段缺失补默认值。**不修**需要语义判断的问题（矛盾、supersede、sparse 页面内容）。
 
 **`search "<query>"` 已实现行为：** rg 候选预筛（`--fixed-strings` 字面子串，`--ignore-case`）+ 进程内 fallback（无 rg 时扫描 `discover_pages` 结果）。四级评分：title=4、tag=3/个、heading=2/行、body=1/次，累加降序。过滤：`--type`（frontmatter type 子串）、`--tag`（tags 数组元素子串）、`--domain`（顶级目录精确匹配，不匹配时列出可用域）。输出：人读 `  {path} — {title} [score: {n}]` 或 `--json` 结构化数组。
+
+**`list` 已实现行为：** 字段结构化浏览，无查询词、无评分。`--type`/`--tag`/`--domain` 过滤（AND 语义，全部大小写不敏感子串匹配，domain 为顶级目录精确匹配）。无过滤时列全部页面，按 path 升序。输出：人读 `  {path} — {title}` 或 `--json` 数组 `[{path, title, type, tags}]`。与 `search` 互补：`list` 是字段精确浏览，`search` 是内容子串匹配 + 评分排序。
+
+**`status` 已实现行为：** wiki 健康概览。统计页面总数、type 分布、domain 分布（按顶级目录）、status 分布、timeliness 分布、last_validated 日期范围（最早 ~ 最近）。`--type`/`--tag`/`--domain` 切片统计（AND 语义），切片模式输出首行标注 `切片: type=X, domain=Y`。输出：人读分标签段落或 `--json` 对象 `{total, by_type, by_domain, by_status, by_timeliness, last_validated_range}`。
+
+**`tags`/`types`/`domains` 已实现行为：** 字段值聚合，列出某字段的所有值 + 每个值对应的页面数。`tags` 聚合 frontmatter `tags` 数组（每个 tag 单独计数）；`types` 聚合 `type` 字段；`domains` 聚合顶级目录（根级文件如 overview.md 不计入 domain）。三者均支持 `--type`/`--tag`/`--domain` 切片过滤（AND 语义，先过滤页面再聚合）。输出：人读 `  {value} — {count} 页`（按值升序）或 `--json` 数组 `[{value, count}]`。
 
 ### 12.3 内部架构原则
 
@@ -948,8 +960,8 @@ blocked = ["deprecated-legacy-wiki"]
 | 13 | `zwiki move`：重命名 + 自动更新所有引用链接 |
 | 14 | `zwiki ingest --idempotent`：源身份匹配 + SHA-256 跳过 |
 | 15 | SCHEMA 自动注入到 agent prompt（config hook） |
-| 16 | `zwiki list`：按字段结构化浏览页面——`--tag <name>`/`--type <type>`/`--domain <domain>` 列匹配页面，无过滤时列全部页面路径 + 标题。与 `search`（全文检索）互补：`list` 是字段精确浏览，`search` 是内容子串匹配 + 评分排序 |
-| 17 | `zwiki status`：wiki 整体健康概览——页面总数、各 type/domain 分布、stale/deprecated 计数、最近 last_validated 范围。`--tag`/`--type`/`--domain` 可选切片统计 |
+| 16 | ✅ `zwiki list`：按字段结构化浏览页面——`--tag <name>`/`--type <type>`/`--domain <domain>` 列匹配页面，无过滤时列全部页面路径 + 标题。与 `search`（全文检索）互补：`list` 是字段精确浏览，`search` 是内容子串匹配 + 评分排序 |
+| 17 | ✅ `zwiki status`：wiki 整体健康概览——页面总数、各 type/domain 分布、stale/deprecated 计数、最近 last_validated 范围。`--tag`/`--type`/`--domain` 可选切片统计 |
 
 ### P2：验证体系 + 协同 L1/L2 起步
 

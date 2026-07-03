@@ -237,19 +237,7 @@ fn score_page(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let tags = match page.frontmatter.get("tags") {
-        Some(Value::Array(arr)) => {
-            arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
-        }
-        Some(Value::String(s)) => {
-            if s.is_empty() {
-                Vec::new()
-            } else {
-                vec![s.clone()]
-            }
-        }
-        _ => Vec::new(),
-    };
+    let tags = wiki::extract_tags(&page.frontmatter);
 
     Some(SearchResult { path: page.rel, title, score, page_type, tags })
 }
