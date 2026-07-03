@@ -67,10 +67,10 @@
 | 组件 | 当前状态 |
 |------|---------|
 | SCHEMA 自动注入到 agent prompt | **未实现**。`src/index.ts` config hook 只做 `injectAgentPrompts` + `registerSkills`，无 SCHEMA 读取/注入 |
-| `last_validated` / `timeliness` / `supersedes` / `superseded_by` / `contradictions` / `freshness_days` 字段 | **字段已定义**。SCHEMA.md 已声明六字段；`last_validated`/`timeliness` 必选（含枚举校验），其余可选；28 现有页面已回填。stale 自动标记（`zwiki check --apply`）、三级短路、对账等逻辑属 P0 项 2/3，仍未实现 |
-| `lint --apply` 自动标记 stale | **未实现**。stale 检测存在但仅报告，不自动标记 |
+| `last_validated` / `timeliness` / `supersedes` / `superseded_by` / `contradictions` / `freshness_days` 字段 | **字段已定义并回填**。SCHEMA.md 已声明六字段；`last_validated`/`timeliness` 必选（含枚举校验），其余可选；28 现有页面已回填。stale 自动标记（`zwiki check --apply`，P0 项 2 ✅）、三级短路（P0 项 3 ✅）已实现；`supersedes`/`contradictions` 的自动化写入属 P1 项 9/11，仍未实现 |
+| `lint --apply` 自动标记 stale | **已实现**。`zwiki check --apply` 检测 `timestamp` 超 90 天且非 `deprecated` 的页面，自动写 `timeliness: stale`（P0 项 2 ✅） |
 | 三阶段级联检索（index → tag → grep） | **未实现**。wiki-query skill 仍是 index.md 单路径 + grep 提示 |
-| `zwiki search` / `move` / `ingest --idempotent` 子命令 | **部分实现**。`zwiki search` 已实现（rg 候选预筛 + 进程内 fallback，四级评分 title/tag/heading/body，`--type`/`--tag`/`--domain` 过滤）；`move`/`ingest --idempotent` 仍未实现 |
+| `zwiki search` / `move` 子命令 | **部分实现**。`zwiki search` 已实现（rg 候选预筛 + 进程内 fallback，四级评分 title/tag/heading/body，`--type`/`--tag`/`--domain` 过滤）；`move` 仍未实现 |
 | 四阶段分块蒸馏（大规模摄入） | **未实现** |
 | 六步增量同步 | **未实现** |
 | 协同 Layer 1（personal/.org/.teams/.upstream 五级覆盖） | **未实现**。无任何分层目录、无 `teams.toml` |
@@ -676,7 +676,6 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 | `move <old> <new>` | P1 |
 | `list [--tag] [--type] [--domain]` | ✅ 已实现 |
 | `status [--tag] [--type] [--domain]` | ✅ 已实现 |
-| `ingest <source> --idempotent` | P1 |
 | `sync pull/push/status` | L2-P1 |
 | `promote --team <name>` | L1-P1 |
 | `propose --team <name>` | L2-P2 |
@@ -941,42 +940,41 @@ blocked = ["deprecated-legacy-wiki"]
 
 | # | 改动 |
 |---|------|
-| 9 | kiwi 蒸馏时判断新源是否推翻旧结论，声明 `supersedes` |
+| 9 | kiwi 蒸馏时判断新源是否推翻旧结论，声明 `supersedes`；ingest 前先 `zwiki search` 同主题判重（相似源由 agent 决定补充更新还是新建，不做机械哈希跳过） |
 | 10 | `check_cascade_stale`：页面 superseded 后扫描引用者，生成候审列表 |
 | 11 | 矛盾检测：图拓扑预筛选 → LLM 声明提取 → contradictions 写入 |
 | 12 | wiki-query 矛盾感知 |
 | 13 | `zwiki move`：重命名 + 自动更新所有引用链接 |
-| 14 | `zwiki ingest --idempotent`：源身份匹配 + SHA-256 跳过 |
-| 15 | SCHEMA 自动注入到 agent prompt（config hook） |
-| 16 | ✅ `zwiki list`：按字段结构化浏览页面——`--tag <name>`/`--type <type>`/`--domain <domain>` 列匹配页面，无过滤时列全部页面路径 + 标题。与 `search`（全文检索）互补：`list` 是字段精确浏览，`search` 是内容子串匹配 + 评分排序 |
-| 17 | ✅ `zwiki status`：wiki 整体健康概览——页面总数、各 type/domain 分布、stale/deprecated 计数、最近 last_validated 范围。`--tag`/`--type`/`--domain` 可选切片统计 |
+| 14 | SCHEMA 自动注入到 agent prompt（config hook） |
+| 15 | ✅ `zwiki list`：按字段结构化浏览页面——`--tag <name>`/`--type <type>`/`--domain <domain>` 列匹配页面，无过滤时列全部页面路径 + 标题。与 `search`（全文检索）互补：`list` 是字段精确浏览，`search` 是内容子串匹配 + 评分排序 |
+| 16 | ✅ `zwiki status`：wiki 整体健康概览——页面总数、各 type/domain 分布、stale/deprecated 计数、最近 last_validated 范围。`--tag`/`--type`/`--domain` 可选切片统计 |
 
 ### P2：验证体系 + 协同 L1/L2 起步
 
 | # | 改动 |
 |---|------|
-| 16 | 交叉验证：ingest 新源时自动比对已有声明，一致则刷新 last_validated |
-| 17 | 来源回溯验证：source ↔ 衍生页面一致性比对 |
-| 18 | **L1-P0**：分层目录约定（personal/.org/.teams/.upstream 五级）+ teams.toml + `.org` consensus frontmatter |
-| 19 | **L1-P1**：`zwiki promote --team <name>` |
-| 20 | **L2-P0**：log.md 分月文件 |
-| 21 | **L2-P1**：`--wiki-repo <name> <url>` 多 repo + `zwiki sync pull/push/status` |
+| 17 | 交叉验证：ingest 新源时自动比对已有声明，一致则刷新 last_validated |
+| 18 | 来源回溯验证：source ↔ 衍生页面一致性比对 |
+| 19 | **L1-P0**：分层目录约定（personal/.org/.teams/.upstream 五级）+ teams.toml + `.org` consensus frontmatter |
+| 20 | **L1-P1**：`zwiki promote --team <name>` |
+| 21 | **L2-P0**：log.md 分月文件 |
+| 22 | **L2-P1**：`--wiki-repo <name> <url>` 多 repo + `zwiki sync pull/push/status` |
 
 ### P3：全自动维护 + 大规模摄入 + 协同 L1/L2 深化 + L3
 
 | # | 改动 |
 |---|------|
-| 22 | pre-query 自动 lint 注入（> 7 天触发） |
-| 23 | `zwiki check --ci` 阈值 YAML → exit code |
-| 24 | 结构扫描脚本（Phase 1，纯确定性） |
-| 25 | 哈希快照脚本（Step A，codemap 风格） |
-| 26 | kiwi 摘要表蒸馏模式（Phase 2） |
-| 27 | kiwi 差分蒸馏模式（Step D） |
-| 28 | `zwiki sync` 六步增量同步（Step A-F） |
-| 29 | **L1-P2**：`zwiki consensus` |
-| 30 | **L2-P2**：`zwiki propose --team <name>` + contributors 追踪 |
-| 31 | **L3-P2**：bundle.toml + `[federation]` 可信列表 + `zwiki okf export` |
-| 32 | **L3-P3**：`zwiki bundle publish/install` + `@name/path` 解析 + 分层联邦拓扑 |
+| 23 | pre-query 自动 lint 注入（> 7 天触发） |
+| 24 | `zwiki check --ci` 阈值 YAML → exit code |
+| 25 | 结构扫描脚本（Phase 1，纯确定性） |
+| 26 | 哈希快照脚本（Step A，codemap 风格） |
+| 27 | kiwi 摘要表蒸馏模式（Phase 2） |
+| 28 | kiwi 差分蒸馏模式（Step D） |
+| 29 | `zwiki sync` 六步增量同步（Step A-F） |
+| 30 | **L1-P2**：`zwiki consensus` |
+| 31 | **L2-P2**：`zwiki propose --team <name>` + contributors 追踪 |
+| 32 | **L3-P2**：bundle.toml + `[federation]` 可信列表 + `zwiki okf export` |
+| 33 | **L3-P3**：`zwiki bundle publish/install` + `@name/path` 解析 + 分层联邦拓扑 |
 
 ### 路线图原则
 
