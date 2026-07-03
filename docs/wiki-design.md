@@ -474,45 +474,33 @@ OpenCode 框架不支持 OMP 的 `yield`/`shouldTerminate`，无法保证结构�
 
 ## 8. Query 工作流
 
-### 8.1 当前实现（wiki-query skill，6 阶段）
+### 8.1 当前实现（wiki-query skill，5 阶段）
 
 | 阶段 | 职责 |
 |------|------|
-| Phase 0 | 判断问题类型（是否可能被 wiki 覆盖） |
-| Phase 1 | 读 `wiki/index.md` 导航 |
-| Phase 2 | 读相关页面（按需递归 `relations`） |
-| Phase 3 | 合成答案 |
-| Phase 4 | 判断是否归档（结构化走简单路径，复杂走 kiwi） |
-| Phase 5 | 呈现答案 |
+| Phase 0 | 覆盖判断（问题类型 → 建议 `--type` filter） |
+| Phase 1 | 定向（读 root index.md，从链接路径提取域名） |
+| Phase 2 | 检索（`zwiki search` 首选，3 级失败重试） |
+| Phase 3 | 短路 + 合成（lifecycle 检查 + 带标注合成） |
+| Phase 4 | 归档 + 呈现 |
 
-### 8.2 三阶段级联检索
+### 8.2 定向 → 检索 → 兜底三级流
 
-`zwiki search`（P0 项 7，✅ 已实现）提供全文检索基础：rg 候选预筛 + 进程内 fallback，四级评分（title=4/tag=3/heading=2/body=1），支持 `--type`/`--tag`/`--domain` 过滤。三阶段级联（index → tag → grep 的 fallback 策略，P0 项 5）仍未实现——当前 `zwiki search` 是单层全文搜索，不包含 index.md 优先导航与 tag fallback 层级。目标级联如下：
+`zwiki search`（P0 项 7，✅ 已实现）提供全文检索基础：rg 候选预筛 + 进程内 fallback，四级评分（title=4/tag=3/heading=2/body=1），支持 `--type`/`--tag`/`--domain` 过滤。三级流（定向→检索→兜底，P0 项 5）已在 skill 侧实现。流程如下：
 
-```
-Phase 1: index.md 导航（现有，优先级最高）
-  按类别定位 → 读匹配页面 → 沿 relations 递归
-  ↓ 如果结果 < 3 个页面
+1. **定向（always）**：读 root index.md，agent 拿到域名列表 + 域描述。域名从链接路径 `(autoresearch/index.md)` 提取（不是方括号文本）。这是前置步骤，不是失败兜底。
+2. **检索（primary）**：`zwiki search "<query>" --type X --domain Y` 是首选发现工具，替代手动 index.md 导航。
+3. **兜底（仅 < 3 结果时）**：
+   - 去掉 filter 重试（filter 过度收窄）
+   - 读域 `<domain>/index.md` 结构化导航找相邻主题
 
-Phase 2: 标签过滤（新增）
-  用户问题关键词匹配 frontmatter tags
-  title 中的 tag 命中 > 正文中的 tag 命中
-  ↓ 如果结果 < 3 个页面
-
-Phase 3: 全文 grep（新增）
-  ripgrep 扫全 wiki
-  heading 匹配 > 段落匹配
-```
-
-排序规则：index 命中 > tag(title) > tag(body) > grep(heading) > grep(paragraph)
-
-`zwiki search` 已实现底层评分（title/tag/heading/body 四级），但级联 fallback 策略（index.md 优先 → tag fallback → grep fallback，结果 < 3 个时逐级降级）属 P0 项 5，尚未实现。rg 通过随包分发安装到 `~/.zoo/tools/bin/`（install.py，后续任务），无 rg 时自动降级为进程内扫描。
+`zwiki search` 内置评分（title=4/tag=3/heading=2/body=1）是唯一评分规则，skill 侧不再定义额外的五级排序叠层。rg 通过随包分发安装到 `~/.zoo/tools/bin/`（install.py），无 rg 时自动降级为进程内扫描。
 
 ### 8.3 远期扩展（按规模触发）
 
 | 规模 | 功能 |
 |------|------|
-| 现在 | 三阶段级联 |
+| 现在 | 定向→检索→兜底 |
 | > 100 页 | backlinks 反向查询 |
 | > 200 页 | 轻量 embedding 向量搜索（不引入外部服务） |
 | > 500 页 | RRF 多路径融合 |
@@ -895,9 +883,9 @@ blocked = ["deprecated-legacy-wiki"]
 | `OKF-DOMAIN` | **目录结构类型优先 → 域优先**（见 §5.2.4、§16.2）：各领域 subdir 新建 `index.md`，利用 OKF §6 渐进式披露 | ✅ 已完成 |
 | 1 | 新增 `last_validated`/`timeliness`（必选）/`supersedes`/`superseded_by`/`contradictions`/`freshness_days`（可选）字段（详见 §5.3、§9.2）；28 现有页面已回填 | ✅ 已完成 |
 | 2 | `zwiki check --apply` 自动标记 `timeliness: stale`（默认 180 天阈值，`source` 永不过期，frontmatter `freshness_days` 可覆写） | ✅ 已完成 |
-| 3 | wiki-query skill 大改（生命周期三级短路 + 发现方式升级，详见 §9.2）：①发现层——`zwiki search` 作为首选发现工具（替代纯 index.md 手动定位），按问题类型加 `--type`/`--domain` 过滤缩小范围，index.md 导航降为补充/兜底；②短路层——读取页面后检查 `status: deprecated`（不出现）/`superseded_by` 非空（指向取代者）/`timeliness: stale`（附"N 天未验证"）/`status: review`/`draft`（附状态标注），规则见 §9.2 行为表；③合成层——基于过滤后页面合成答案，标注来源页面 + 生命周期状态 | ⬜ |
+| 3 | wiki-query skill 大改（生命周期三级短路 + 发现方式升级，详见 §9.2）：①发现层——`zwiki search` 作为首选发现工具（替代纯 index.md 手动定位），按问题类型加 `--type`/`--domain` 过滤缩小范围，index.md 导航降为补充/兜底；②短路层——读取页面后检查 `status: deprecated`（不出现）/`superseded_by` 非空（指向取代者）/`timeliness: stale`（附"N 天未验证"）/`status: review`/`draft`（附状态标注），规则见 §9.2 行为表；③合成层——基于过滤后页面合成答案，标注来源页面 + 生命周期状态 | ✅ |
 | 4 | 五个模板追加新字段（`last_validated`/`timeliness` 必选默认值；其余可选注释示例） | ✅ 已完成 |
-| 5 | 三阶段级联检索：index → tag → grep。skill 侧（wiki-query）调用 `zwiki search` 时按 index.md 导航 → tag 过滤（`--tag`）→ 全文 grep 逐级 fallback，结果 < 3 个时降级到下一层 | ⬜ |
+| 5 | 定向 → 检索 → 兜底三级流（详见 §8.2）。skill 侧（wiki-query）先读 root index.md 定向，再调用 `zwiki search` 检索，< 3 结果时去掉 filter 重试/换 tag 词/读域 index.md 兜底 | ✅ |
 | 6 | post-ingest 强制 backlinks + health（skill 强制调用 zwiki check） | ✅ 已完成（wiki-ingest skill Phase 3 已含 `zwiki check`） |
 | 7 | `zwiki search` CLI 化 | ✅ 已完成（rg 候选预筛 + 进程内 fallback，四级评分 title/tag/heading/body，`--type`/`--tag`/`--domain` 过滤，人读 + `--json` 输出） |
 | 8 | `zwiki check` 内置 OKF 合规自检（含 §9 第 3 条：保留文件 §6/§7 结构校验），默认最严格、无开关 | ✅ 已完成（OKF check 已合并入 `zwiki check`，默认严格，含 relations-body 双向一致性检查） |
