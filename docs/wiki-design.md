@@ -66,8 +66,7 @@
 
 | 组件 | 当前状态 |
 |------|---------|
-| SCHEMA 自动注入到 agent prompt | **未实现**。`src/index.ts` config hook 只做 `injectAgentPrompts` + `registerSkills`，无 SCHEMA 读取/注入 |
-| `last_validated` / `timeliness` / `supersedes` / `superseded_by` / `contradictions` / `freshness_days` 字段 | **字段已定义并回填**。SCHEMA.md 已声明六字段；`last_validated`/`timeliness` 必选（含枚举校验），其余可选；28 现有页面已回填。stale 自动标记（`zwiki check --apply`，P0 项 2 ✅）、三级短路（P0 项 3 ✅）已实现；`supersedes`/`contradictions` 的自动化写入属 P1 项 9/11，仍未实现 |
+| `last_validated` / `timeliness` / `supersedes` / `superseded_by` / `contradictions` / `freshness_days` 字段 | **字段已定义并回填**。SCHEMA.md 已声明六字段；`last_validated`/`timeliness` 必选（含枚举校验），其余可选；28 现有页面已回填。stale 自动标记（`zwiki check --apply`，P0 项 2 ✅）、三级短路（P0 项 3 ✅）、supersede 机制（`zwiki supersede` + kiwi 判断，P1 项 9 ✅）已实现；`contradictions` 的自动化写入属 P1 项 11，仍未实现 |
 | `lint --apply` 自动标记 stale | **已实现**。`zwiki check --apply` 检测 `timestamp` 超 90 天且非 `deprecated` 的页面，自动写 `timeliness: stale`（P0 项 2 ✅） |
 | 三阶段级联检索（index → tag → grep） | **未实现**。wiki-query skill 仍是 index.md 单路径 + grep 提示 |
 | `zwiki search` / `move` 子命令 | **已实现**。`zwiki search`（rg 候选预筛 + 进程内 fallback，四级评分 title/tag/heading/body，`--type`/`--tag`/`--domain` 过滤）；`zwiki move`（重命名 + 自动更新全部引用：frontmatter 四个路径型字段 + body 两类链接 + 域 index.md 条目，支持同域重命名与跨域移动） |
@@ -649,7 +648,7 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 
 ## 12. zwiki 统一 CLI
 
-### 12.1 当前实现（Rust，12 子命令）
+### 12.1 当前实现（Rust，13 子命令）
 
 | 子命令 | 用途 | 状态 |
 |--------|------|------|
@@ -666,6 +665,7 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 | `types` | 列出所有类型 + 页面数；`--tag`/`--domain` 切片 | ✅ |
 | `domains` | 列出所有领域 + 页面数；`--type`/`--tag` 切片 | ✅ |
 | `move <old> <new>` | 重命名/跨域移动页面 + 自动更新所有引用（frontmatter 四个路径型字段、body inline link、body backtick、域 index.md 条目）；同域原地替换 index 链接，跨域旧域删条目 + 新域按 type 节追加 | ✅ |
+| `supersede` | 建立取代关系：两侧 frontmatter 自动写入 `supersedes` / `superseded_by`（`--old`/`--new`/`--reason`） | ✅ |
 
 ### 12.2 目标扩展子命令（按路线图）
 
@@ -825,15 +825,9 @@ blocked = ["deprecated-legacy-wiki"]
 
 ### 15.1 当前状态
 
-**未实现。** `src/index.ts` 的 config hook 只做 `injectAgentPrompts`（注入 `src/agents/<name>.ts` 的 prompt）和 `registerSkills`（自动发现 `core/skills/`）。无 SCHEMA 读取/注入。
+**不需要 SCHEMA 注入。** 所有子 agent（lynx/beaver/spider/eagle/mola）已有 `wiki-query` skill 权限。`wiki-query` skill 的 description（`从 ~/.zoo/wiki/ 中查询知识并合成答案。查询 wiki 覆盖的项目知识时加载此技能，替代盲目委派 explore 或 spider。`）已在 available_skills 列表中告知 agent wiki 的存在和用法——无需额外 prompt 注入。P1 #14 已取消。
 
-### 15.2 目标：SCHEMA 缩略版注入（Phase 2）
-
-在 config hook 中为 build/explore/general/eagle 追加 SCHEMA 缩略版（目录结构 + index.md 导航 + 工具 vs kiwi 决策标准），kiwi 获得完整 SCHEMA.md。注入内容 < 1K tokens，成本可忽略。
-
-**为何不注入完整 wiki：** 上下文窗口有限、信息稀疏、按需读取更高效。SCHEMA 提供"元知识"（wiki 存在、如何用），具体页面由 agent 用 read/grep 按需读取。
-
-### 15.3 按需读取流程
+### 15.2 按需读取流程
 
 **集成点 — 规划前查 wiki：** 编排器（build）在 Phase 0（理解任务）和 Phase 1（规划/委派）之间插入一个 wiki 检查——先读 `wiki/index.md` 判断是否有相关已有知识，避免重复推导已有结论。这不是强制门禁（wiki 没有相关内容也正常推进），是"先查再规划"的习惯。
 
@@ -843,24 +837,6 @@ blocked = ["deprecated-legacy-wiki"]
 2. 从 index 找相关页面路径
 3. `read` 具体页面
 4. 按 `relations` 递归读取
-
-### 15.4 工具调用约定（注入内容应含）
-
-```
-何时用 zwiki CLI（直接操作）：
-- 结构化、已 wiki 格式化的内容
-- 简单 CRUD、维护性操作（check/backlinks/log）
-- 只需追加日志
-
-何时委派 kiwi（复杂蒸馏）：
-- 非结构化文本、聊天记录、会议转录
-- 需分类、摘要、要点提取
-- 需跨多目录组织
-- 需判断是否重写 overview.md
-
-注意：kiwi 是只读 agent，委派时 task() prompt 应要求返回结构化分析报告，
-所有写入（zwiki create/property/log、更新 index）由调用方执行。
-```
 
 ---
 
@@ -941,12 +917,12 @@ blocked = ["deprecated-legacy-wiki"]
 
 | # | 改动 |
 |---|------|
-| 9 | kiwi 蒸馏时判断新源是否推翻旧结论，声明 `supersedes`；ingest 前先 `zwiki search` 同主题判重（相似源由 agent 决定补充更新还是新建，不做机械哈希跳过） |
+| 9 | ✅ kiwi 蒸馏时判断新源是否推翻旧结论，声明 `supersedes`；ingest 前先 `zwiki search` 同主题判重（kiwi 在 Phase 1 自行搜索，主 agent 不预搜） |
 | 10 | `check_cascade_stale`：页面 superseded 后扫描引用者，生成候审列表 |
 | 11 | 矛盾检测：图拓扑预筛选 → LLM 声明提取 → contradictions 写入 |
 | 12 | wiki-query 矛盾感知 |
 | 13 | ✅ `zwiki move`：重命名 + 自动更新所有引用链接（frontmatter relations/supersedes/superseded_by/contradictions 四个路径型字段 + body inline link + body backtick；同域 index 原地替换，跨域旧域删条目 + 新域按 type 节追加；type→section 标题映射保障 OKF 合规；自引用页正确处理） |
-| 14 | SCHEMA 自动注入到 agent prompt（config hook） |
+| 14 | ~~SCHEMA 自动注入到 agent prompt（config hook）~~ — 已取消。`wiki-query` skill description 已告知 agent wiki 的存在和用法，注入冗余 |
 | 15 | ✅ `zwiki list`：按字段结构化浏览页面——`--tag <name>`/`--type <type>`/`--domain <domain>` 列匹配页面，无过滤时列全部页面路径 + 标题。与 `search`（全文检索）互补：`list` 是字段精确浏览，`search` 是内容子串匹配 + 评分排序 |
 | 16 | ✅ `zwiki status`：wiki 整体健康概览——页面总数、各 type/domain 分布、stale/deprecated 计数、最近 last_validated 范围。`--tag`/`--type`/`--domain` 可选切片统计 |
 

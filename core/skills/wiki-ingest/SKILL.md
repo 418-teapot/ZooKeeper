@@ -117,7 +117,37 @@ kiwi 返回分析后，由调用方 agent 执行写入：
 
 ---
 
-## Phase 3 — 验证
+## Phase 3 — Supersede 确认与写入
+
+如果 kiwi 的分析报告中包含 Supersede Proposals（非空的取代候选列表）：
+
+1. 向用户列出每个取代提议：
+   - 被取代的页面路径
+   - 旧声明（kiwi 摘录的原文）
+   - 新声明（新源中的原文）
+   - 取代理由
+
+2. 询问用户是否确认每个提议。用户可以：
+   - 全部确认
+   - 部分确认（指定哪些接受，哪些拒绝）
+   - 全部拒绝
+
+3. 只对用户确认的提议执行写入。kiwi 会在每个取代提议中标明哪个页面取代哪个页面。对每对取代关系，使用 `zwiki supersede` 一次性更新两侧 frontmatter：
+
+   ```bash
+   zwiki supersede \
+       --old <domain>/concepts/old-page.md \
+       --new <domain>/concepts/new-page.md \
+       --reason "<kiwi 提供的取代理由>"
+   ```
+
+   该命令会自动在取代页面（`--new`）的 frontmatter 中追加 `supersedes` 条目（含 `path` 和 `reason`），并在被取代页面（`--old`）的 frontmatter 中追加 `superseded_by` 条目。
+
+如果 kiwi 没有返回 Supersede Proposals，或列表为空 → 跳过此 Phase。
+
+---
+
+## Phase 4 — 验证
 
 写入完成后，执行以下验证：
 

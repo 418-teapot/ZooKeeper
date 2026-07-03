@@ -17,6 +17,7 @@ mod page;
 mod property;
 mod search;
 mod status;
+mod supersede;
 mod wiki;
 
 use clap::{Parser, Subcommand};
@@ -237,6 +238,21 @@ enum Command {
         /// New wiki-relative page path
         new: String,
     },
+
+    /// Record a supersede relationship between two pages
+    Supersede {
+        /// Wiki-relative path of the superseded (old) page
+        #[arg(long)]
+        old: String,
+
+        /// Wiki-relative path of the superseding (new) page
+        #[arg(long)]
+        new: String,
+
+        /// Reason for the supersede relationship
+        #[arg(long)]
+        reason: String,
+    },
 }
 
 fn main() {
@@ -351,6 +367,9 @@ fn dispatch(args: Args) {
         Some(Command::Move { old, new }) => {
             cmd_move(&old, &new, args.json);
         }
+        Some(Command::Supersede { old, new, reason }) => {
+            cmd_supersede(&old, &new, &reason);
+        }
     }
 }
 
@@ -395,6 +414,15 @@ fn cmd_move(old: &str, new: &str, json: bool) {
             process::exit(1);
         }
     }
+}
+
+/// Record a supersede relationship between two wiki pages.
+fn cmd_supersede(old: &str, new: &str, reason: &str) {
+    supersede::link_supersede(old, new, reason).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        process::exit(1);
+    });
+    println!("已记录取代关系: {old} ← {new}");
 }
 
 /// Validate `--domain` and emit the error output if invalid.
@@ -1631,6 +1659,46 @@ mod tests {
             }
             _ => panic!("expected Move"),
         }
+    }
+
+    // -------------------------------------------------------------------
+    // Supersede subcommand
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_supersede_parses() {
+        let args = Args::try_parse_from([
+            "zwiki",
+            "supersede",
+            "--old",
+            "old.md",
+            "--new",
+            "new.md",
+            "--reason",
+            "replaces old content",
+        ])
+        .unwrap();
+        match args.command {
+            Some(Command::Supersede { old, new, reason }) => {
+                assert_eq!(old, "old.md");
+                assert_eq!(new, "new.md");
+                assert_eq!(reason, "replaces old content");
+            }
+            _ => panic!("expected Supersede"),
+        }
+    }
+
+    #[test]
+    fn test_supersede_missing_reason_fails() {
+        let result = Args::try_parse_from([
+            "zwiki",
+            "supersede",
+            "--old",
+            "o.md",
+            "--new",
+            "n.md",
+        ]);
+        assert!(result.is_err());
     }
 
     #[test]

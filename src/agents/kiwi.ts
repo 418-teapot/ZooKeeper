@@ -32,15 +32,33 @@ Then read \`SCHEMA.md\` inside the wiki to confirm formatting and naming rules. 
 
 If your CONTEXT contains external URLs, use \`webfetch\`. For additional external sources, use \`websearch\`.
 
-## Phase 1: Load Existing State
+## Phase 1: Quick Scan → Search → Load
 
-Using the absolute path from Phase 0, read the wiki's \`index.md\` and any existing related pages to understand:
-- Where the new page fits in the category hierarchy
-- Whether a similar page already exists (dedup check)
-- What cross-references are already present
-- **The density patterns of existing wiki pages: typical line counts, number of Detail subsections, presence/absence of code blocks, table sizes** — this is your baseline for how much a wiki page should hold
+### 1.1: Quick Scan
+The source material is already in your CONTEXT (or was fetched via webfetch in Phase 0 if it was a URL). Extract 3-5 core topic terms from it. Topic terms should be substantive concept names from the source material — not generic words like "design", "system", "architecture" — but domain-specific terms like "permission model", "deny list", "prompt injection".
 
-If a similar page exists that already covers the same knowledge unit with sufficient authority, do NOT recommend creating a new page. Instead, recommend updating the existing page with any new information from the source, and adding cross-references from new pages to it. Explain this decision in your analysis return.
+### 1.2: Search
+For each topic term, run \`zwiki search "<term>" --json\`.
+Combine results from all searches into a single candidate list, keeping each unique path only once.
+Read the full content + frontmatter of each candidate page (pay special attention to \`last_validated\`, \`timeliness\`, \`supersedes\`, \`superseded_by\`, \`contradictions\` fields).
+
+### 1.3: Load Related Pages
+For each candidate page, read the pages listed in its frontmatter \`relations\` field (direct relations only, depth 1, no recursion). Also read their content + lifecycle fields.
+
+### 1.4: Establish Claim Map & Learn Density Patterns
+Compile an actionable claim map of all existing pages — what facts/principles/design decisions each existing page asserts.
+
+Extract density patterns from the pages you've already read: typical line counts, number of Detail subsections, presence/absence of code blocks, table sizes. This is your baseline for how much a wiki page should hold.
+
+### Fallback: If search returns no results
+Case 1: Candidate list is empty (zwiki search returned 0 results) → keywords didn't match any page.
+Case 2: Candidate list is non-empty but all pages are unrelated to the source material (same name, different concept; false match) → search hit but content is irrelevant.
+
+Both cases handled identically: read the root \`index.md\` → based on source material content, determine the domain → read that domain's \`index.md\` → get all page paths in that domain → read each page's content + lifecycle fields → return to Phase 1.4 to establish the claim map.
+
+---
+
+**Dedup vs Supersede distinction:** Dedup (covered above in Phase 1) is about whether the new source's knowledge unit is already recorded. If yes, recommend updating the existing page. Supersede (Phase 3.7) is different — it's about whether the new source's claim directly contradicts what the existing page asserts. Dedup leads to "update this page," supersede leads to "this new page replaces the old one."
 
 ## Phase 2: Analyze & Draft
 
@@ -113,6 +131,31 @@ Before moving to Phase 4, answer these three questions for EVERY recommended pag
 
 If any question exposes an issue, fix it before Phase 4.
 
+### 3.7 Supersede Check
+
+For each existing page from your Phase 1.4 claim map that is topically related to the new source:
+
+1. Extract the specific, identifiable claims from the existing page. A claim is a statement about how the system works, what design decision was made, or what principle applies. File paths, timestamps, line counts, and implementation trivia are NOT claims for supersede purposes — they don't change what's true about the system.
+2. Extract the specific, identifiable claims from the new source on the same topic.
+3. Compare: does the new source's claim directly contradict the old page's claim?
+
+Propose supersede ONLY when:
+- A specific, identifiable claim in the old page is contradicted by the new source
+- The contradiction is substantive — changes a decision, principle, or architecture, not cosmetic (renames, reformatting, rewording)
+- The contradiction cannot be reconciled as "both true in different contexts or at different times"
+
+Do NOT propose supersede when:
+- The new source adds information but doesn't contradict → recommend updating the old page instead
+- The new source covers a narrower or broader scope → both pages can coexist
+- You're uncertain → flag with \`> **待确认:**\` in the new page's Notes section
+- The new source is a different perspective on the same facts → note in the old page's Notes, don't supersede
+
+If supersede is warranted:
+- Record the old claim verbatim as written in the old page
+- Record the new claim verbatim as written in the new source
+- Document why the new claim supersedes the old one
+- This is a **proposal only** — the calling agent must confirm before writing
+
 ### If You Found Issues...
 Revise, then re-check. After 2 iterations, if a criterion still fails, flag it explicitly in your return:
 > ⚠️ 待确认: [specific issue description]
@@ -125,6 +168,22 @@ Explain to the calling agent what should be created/updated:
 - What cross-references to update (add new page to existing pages' \`related\` field)
 - Whether \`overview.md\` needs rewriting
 - What log entries to append via \`zwiki log\`
+
+### Supersede Proposals
+
+If supersede candidates were found (per 3.7):
+  List each affected old page. If a page has multiple contradicted claims, list each separately so the calling agent can confirm or reject each one individually:
+    - \`<old_page_path>\` → superseded by \`<superseding_page_path>\`:
+      - Old claim: "..." (exact quote from the old page)
+        New claim: "..." (exact quote from the new source)
+        Reason: [why this specific new claim supersedes the old one]
+      - Old claim: "..."  (if additional claims are contradicted)
+        New claim: "..."
+        Reason: [...]
+  **THESE ARE PROPOSALS ONLY. The calling agent must confirm with the user before writing \`supersedes\` / \`superseded_by\` to frontmatter.**
+
+If no supersede candidates:
+  No existing page claims are contradicted by this source.
 
 Do NOT perform any writes yourself. Return a complete, actionable analysis.
 </Workflow>
@@ -168,5 +227,9 @@ Before returning your analysis, confirm ALL of the following:
 ### Raw Source Awareness
 - [ ] Checked \`raw/\` directory for an existing full-text copy of the source. If found, read it directly instead of re-fetching
 - [ ] If the source has an external URL and no \`raw/\` copy exists, noted in the analysis that the calling agent should save a raw copy to \`raw/\`
+
+### Supersede Integrity
+- [ ] For every existing page in the Phase 1.4 claim map, checked whether any specific claim is contradicted by the new source — no claim assumed compatible without explicit comparison
+- [ ] Supersede proposals (if any) include verbatim old and new claims — no summaries, no paraphrasing
 </QualityGate>
 `;
