@@ -70,7 +70,7 @@
 | `last_validated` / `timeliness` / `supersedes` / `superseded_by` / `contradictions` / `freshness_days` 字段 | **字段已定义并回填**。SCHEMA.md 已声明六字段；`last_validated`/`timeliness` 必选（含枚举校验），其余可选；28 现有页面已回填。stale 自动标记（`zwiki check --apply`，P0 项 2 ✅）、三级短路（P0 项 3 ✅）已实现；`supersedes`/`contradictions` 的自动化写入属 P1 项 9/11，仍未实现 |
 | `lint --apply` 自动标记 stale | **已实现**。`zwiki check --apply` 检测 `timestamp` 超 90 天且非 `deprecated` 的页面，自动写 `timeliness: stale`（P0 项 2 ✅） |
 | 三阶段级联检索（index → tag → grep） | **未实现**。wiki-query skill 仍是 index.md 单路径 + grep 提示 |
-| `zwiki search` / `move` 子命令 | **部分实现**。`zwiki search` 已实现（rg 候选预筛 + 进程内 fallback，四级评分 title/tag/heading/body，`--type`/`--tag`/`--domain` 过滤）；`move` 仍未实现 |
+| `zwiki search` / `move` 子命令 | **已实现**。`zwiki search`（rg 候选预筛 + 进程内 fallback，四级评分 title/tag/heading/body，`--type`/`--tag`/`--domain` 过滤）；`zwiki move`（重命名 + 自动更新全部引用：frontmatter 四个路径型字段 + body 两类链接 + 域 index.md 条目，支持同域重命名与跨域移动） |
 | 四阶段分块蒸馏（大规模摄入） | **未实现** |
 | 六步增量同步 | **未实现** |
 | 协同 Layer 1（personal/.org/.teams/.upstream 五级覆盖） | **未实现**。无任何分层目录、无 `teams.toml` |
@@ -270,7 +270,7 @@ wiki/
 **页面类型语义：**
 - `sources/` 页面**不可变**——记录"某时某地说过什么"，历史事实不变；新版本以新页面追加，不修改旧页面。
 - `overview.md`（若存在）是**活的综合页**（living synthesis）——每次大规模摄入后由 kiwi 判断是否值得**重写**（非追加），是项目级知识快照。kiwi 在蒸馏分析报告里给出重写建议，调用方决定是否执行。
-- 交叉引用路径从 `concepts/foo.md` 改为 `autoresearch/concepts/foo.md`（批量 `zwiki move` 可处理，P1 项 13）
+- 交叉引用路径从 `concepts/foo.md` 改为 `autoresearch/concepts/foo.md`（批量 `zwiki move` 可处理，✅ P1 项 13 已实现）
 
 ### 5.3 目标扩展字段（未实现）
 
@@ -665,6 +665,7 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 | `tags` | 列出所有标签 + 页面数；`--type`/`--domain` 切片 | ✅ |
 | `types` | 列出所有类型 + 页面数；`--tag`/`--domain` 切片 | ✅ |
 | `domains` | 列出所有领域 + 页面数；`--type`/`--tag` 切片 | ✅ |
+| `move <old> <new>` | 重命名/跨域移动页面 + 自动更新所有引用（frontmatter 四个路径型字段、body inline link、body backtick、域 index.md 条目）；同域原地替换 index 链接，跨域旧域删条目 + 新域按 type 节追加 | ✅ |
 
 ### 12.2 目标扩展子命令（按路线图）
 
@@ -673,7 +674,7 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 | `check --fix` | P0 |
 | `search "<query>"` | ✅ 已实现 |
 | `okf export <dir>` | P0 |
-| `move <old> <new>` | P1 |
+| `move <old> <new>` | ✅ 已实现 |
 | `list [--tag] [--type] [--domain]` | ✅ 已实现 |
 | `status [--tag] [--type] [--domain]` | ✅ 已实现 |
 | `sync pull/push/status` | L2-P1 |
@@ -924,7 +925,7 @@ blocked = ["deprecated-legacy-wiki"]
 | 各领域子目录 | 领域内保留 `concepts/`/`entities/`/`analysis/`/`sources/` 二级类型目录 |
 | `tools/zwiki/src/wiki.rs` | `all_wiki_pages()` 已支持递归；`check_index_sync` 需扩展为校验各级 index.md 与对应子目录文件一致 |
 | `tools/zwiki/src/health.rs` | `check_index_sync` 递归化：对每个含 `index.md` 的子目录独立校验 |
-| 所有页面的交叉引用 | 路径从 `concepts/foo.md` 改为 `<domain>/concepts/foo.md`；可用 P1 项 13 `zwiki move` 批量更新（或在迁移脚本中一次性 `sed`） |
+| 所有页面的交叉引用 | 路径从 `concepts/foo.md` 改为 `<domain>/concepts/foo.md`；可用 `zwiki move`（✅ P1 项 13）批量更新（或在迁移脚本中一次性 `sed`） |
 
 **归类判定规则（迁移时）：**
 - 文件名或内容明确属于 autoresearch 项目 → `autoresearch/`
@@ -932,7 +933,7 @@ blocked = ["deprecated-legacy-wiki"]
 - 跨领域通用概念（NPC 分工、简约准则、后验问责、Agent/Skill/Plugin 框架等）→ `shared/`
 - 不确定时优先放 `shared/`，后续按引用密度移动
 
-**向后兼容：** 解析器可暂时容忍旧格式（`## [date] ...`）以避免迁移期间报错，但写入器只产新格式。`zwiki check` 内置 OKF 合规自检（P0 项 8）上线后可加严格校验。交叉引用在 `zwiki move`（P1 项 13）上线前，迁移脚本需自行处理路径重写。
+**向后兼容：** 解析器可暂时容忍旧格式（`## [date] ...`）以避免迁移期间报错，但写入器只产新格式。`zwiki check` 内置 OKF 合规自检（P0 项 8）上线后可加严格校验。交叉引用可用 `zwiki move`（✅ P1 项 13）批量重写路径。
 
 **估算工作量：** Rust 改动 ~60 行 + 测试更新 ~40 行 + SCHEMA/index/log 文件迁移 ~80 行 + 域优先重构（目录移动 + 交叉引用重写 + 各领域 index.md 生成）~120 行 ≈ 300 行。
 
@@ -944,7 +945,7 @@ blocked = ["deprecated-legacy-wiki"]
 | 10 | `check_cascade_stale`：页面 superseded 后扫描引用者，生成候审列表 |
 | 11 | 矛盾检测：图拓扑预筛选 → LLM 声明提取 → contradictions 写入 |
 | 12 | wiki-query 矛盾感知 |
-| 13 | `zwiki move`：重命名 + 自动更新所有引用链接 |
+| 13 | ✅ `zwiki move`：重命名 + 自动更新所有引用链接（frontmatter relations/supersedes/superseded_by/contradictions 四个路径型字段 + body inline link + body backtick；同域 index 原地替换，跨域旧域删条目 + 新域按 type 节追加；type→section 标题映射保障 OKF 合规；自引用页正确处理） |
 | 14 | SCHEMA 自动注入到 agent prompt（config hook） |
 | 15 | ✅ `zwiki list`：按字段结构化浏览页面——`--tag <name>`/`--type <type>`/`--domain <domain>` 列匹配页面，无过滤时列全部页面路径 + 标题。与 `search`（全文检索）互补：`list` 是字段精确浏览，`search` 是内容子串匹配 + 评分排序 |
 | 16 | ✅ `zwiki status`：wiki 整体健康概览——页面总数、各 type/domain 分布、stale/deprecated 计数、最近 last_validated 范围。`--tag`/`--type`/`--domain` 可选切片统计 |

@@ -12,6 +12,7 @@ mod health;
 mod lint;
 mod list;
 mod log;
+mod r#move;
 mod page;
 mod property;
 mod search;
@@ -226,11 +227,36 @@ enum Command {
         #[arg(long)]
         tag: Option<String>,
     },
+
+    /// Move / rename a wiki page, updating all references and index entries
+    #[command(name = "move")]
+    Move {
+        /// Current wiki-relative page path
+        old: String,
+
+        /// New wiki-relative page path
+        new: String,
+    },
 }
 
 fn main() {
     let args = Args::parse();
+    dispatch(args);
+}
 
+/// Build the write-action list for `check` from its boolean flags.
+fn check_write_actions(save: bool, apply: bool) -> Vec<WriteAction> {
+    let mut actions = Vec::new();
+    if save {
+        actions.push(WriteAction::SaveReport);
+    }
+    if apply {
+        actions.push(WriteAction::ApplyTimeliness);
+    }
+    actions
+}
+
+fn dispatch(args: Args) {
     match args.command {
         None => {
             use clap::CommandFactory;
@@ -242,18 +268,11 @@ fn main() {
         Some(Command::Check { save, ci, diff, cached, commit, apply }) => {
             let diff_check =
                 if diff { Some(DiffCheck { cached, commit }) } else { None };
-            let mut write_actions = Vec::new();
-            if save {
-                write_actions.push(WriteAction::SaveReport);
-            }
-            if apply {
-                write_actions.push(WriteAction::ApplyTimeliness);
-            }
             cmd_check(&CheckOpts {
                 ci,
                 json: args.json,
                 diff_check,
-                write_actions,
+                write_actions: check_write_actions(save, apply),
             });
         }
         Some(Command::Backlinks { ref page }) => {
@@ -328,6 +347,52 @@ fn main() {
                 None,
                 args.json,
             );
+        }
+        Some(Command::Move { old, new }) => {
+            cmd_move(&old, &new, args.json);
+        }
+    }
+}
+
+/// Move a wiki page, updating references and indexes.
+fn cmd_move(old: &str, new: &str, json: bool) {
+    let wiki_root = wiki::wiki_dir();
+    match r#move::execute_move(&wiki_root, old, new) {
+        Ok(result) => {
+            if json {
+                let output = serde_json::json!({
+                    "moved": result.moved,
+                    "updated_refs": result.updated_refs,
+                    "updated_indexes": result.updated_indexes,
+                });
+                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            } else {
+                println!("已移动: {}", result.moved);
+                if !result.updated_refs.is_empty() {
+                    println!(
+                        "已更新引用: {} 个页面",
+                        result.updated_refs.len()
+                    );
+                    for r in &result.updated_refs {
+                        println!("  {r}");
+                    }
+                }
+                if !result.updated_indexes.is_empty() {
+                    println!(
+                        "已更新索引: {} 个文件",
+                        result.updated_indexes.len()
+                    );
+                    for idx in &result.updated_indexes {
+                        println!("  {idx}");
+                    }
+                }
+                println!();
+                println!("运行 zwiki check 验证引用一致性");
+            }
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            process::exit(1);
         }
     }
 }
@@ -1548,6 +1613,43 @@ mod tests {
         match args.command {
             Some(Command::Domains { .. }) => {}
             _ => panic!("expected Domains"),
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Move subcommand
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_move_parses() {
+        let args = Args::try_parse_from(["zwiki", "move", "old.md", "new.md"])
+            .unwrap();
+        match args.command {
+            Some(Command::Move { old, new }) => {
+                assert_eq!(old, "old.md");
+                assert_eq!(new, "new.md");
+            }
+            _ => panic!("expected Move"),
+        }
+    }
+
+    #[test]
+    fn test_move_with_json_flag_parses() {
+        let args = Args::try_parse_from([
+            "zwiki",
+            "--json",
+            "move",
+            "concepts/foo.md",
+            "concepts/bar.md",
+        ])
+        .unwrap();
+        assert!(args.json);
+        match args.command {
+            Some(Command::Move { old, new }) => {
+                assert_eq!(old, "concepts/foo.md");
+                assert_eq!(new, "concepts/bar.md");
+            }
+            _ => panic!("expected Move"),
         }
     }
 }
