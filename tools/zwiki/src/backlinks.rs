@@ -110,6 +110,7 @@ pub fn strip_backlinks_section(body: &str) -> String {
 ///
 /// Sources (in order):
 /// 1. Frontmatter `relations` field
+///    1b. Frontmatter `supersedes`/`superseded_by`/`contradictions` fields
 /// 2. Inline markdown links `[text](path.md)` in body text
 ///    (excluding the `## Backlinks` section)
 /// 3. Backtick-wrapped paths `` `path.md` `` in body text
@@ -135,6 +136,35 @@ pub fn extract_links(wiki_root: &Path, content: &str) -> Vec<String> {
                     .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
                 {
                     links.push(bare);
+                }
+            }
+        }
+    }
+
+    // 1b. Frontmatter supersedes / superseded_by / contradictions fields
+    for field in ["supersedes", "superseded_by", "contradictions"] {
+        if let Some(Value::Array(items)) = fm.get(field) {
+            for item in items {
+                // Current parser stores block-list items as flat strings
+                // like "path: <value>". Try object first for forward compat.
+                let path = item.as_object().map_or_else(
+                    || {
+                        item.as_str()
+                            .and_then(|s| s.strip_prefix("path: "))
+                            .map(str::to_string)
+                    },
+                    |obj| {
+                        obj.get("path")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string)
+                    },
+                );
+                if let Some(p) = path
+                    && std::path::Path::new(&p)
+                        .extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+                {
+                    links.push(p);
                 }
             }
         }
@@ -700,6 +730,57 @@ mod tests {
         write(&dir.join("z.md"), "# Z");
         let result = extract_links(&dir, content);
         assert_eq!(result, vec!["a.md", "z.md"]);
+    }
+
+    // -------------------------------------------------------------------
+    // 3b. extract_links from supersedes / superseded_by / contradictions
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_links_from_supersedes_fields() {
+        let content = "\
+---\n\
+supersedes:\n\
+  - path: old.md\n\
+    reason: replaced by newer\n\
+superseded_by:\n\
+  - path: newer.md\n\
+    reason: successor\n\
+contradictions:\n\
+  - path: other.md\n\
+    claims:\n\
+      - something\n\
+    detected: 2026-07-01\n\
+    resolution: unresolved\n\
+---\n\n\
+Body.";
+        let dir = temp_dir("extract_supersedes");
+        write(&dir.join("old.md"), "# Old");
+        write(&dir.join("newer.md"), "# Newer");
+        write(&dir.join("other.md"), "# Other");
+        let result = extract_links(&dir, content);
+        assert_eq!(result, vec!["newer.md", "old.md", "other.md"]);
+    }
+
+    #[test]
+    fn test_extract_links_from_supersedes_missing_target_filtered() {
+        // Use inline-list syntax to test filtering of nonexistent targets.
+        // The parser stores each `path: <value>` string as-is.
+        let content = "---\nsupersedes: [path: existing.md, path: missing.md]\n---\n\nBody.";
+        let dir = temp_dir("extract_supersedes_filtered");
+        write(&dir.join("existing.md"), "# Existing");
+        let result = extract_links(&dir, content);
+        assert_eq!(result, vec!["existing.md"]);
+    }
+
+    #[test]
+    fn test_extract_links_from_supersedes_empty() {
+        let content = "---\nsupersedes: []\nsuperseded_by: []\ncontradictions: []\n---\n\nBody.";
+        let dir = temp_dir("extract_supersedes_empty");
+        write(&dir.join("dummy.md"), "# Dummy");
+        let result = extract_links(&dir, content);
+        let empty: Vec<String> = vec![];
+        assert_eq!(result, empty);
     }
 
     // -------------------------------------------------------------------
