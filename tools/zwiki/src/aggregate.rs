@@ -312,45 +312,6 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // Tags: self-referential --tag filter
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_tags_self_referential_filter() {
-        let dir = temp_dir("tags_self_ref");
-        write_page(
-            &dir,
-            "shared/concepts/a.md",
-            "---\ntitle: A\ntype: concept\ntags: [auth, authorization]\n---\n",
-        );
-        write_page(
-            &dir,
-            "shared/concepts/b.md",
-            "---\ntitle: B\ntype: concept\ntags: [auth, access]\n---\n",
-        );
-        write_page(
-            &dir,
-            "shared/concepts/c.md",
-            "---\ntitle: C\ntype: concept\ntags: [database]\n---\n",
-        );
-
-        // --tag "auth": filter pages whose tags contain "auth" (a, b),
-        // then aggregate all tags from those pages.
-        let counts = aggregate_field(
-            &dir,
-            AggregateField::Tags,
-            None,
-            Some("auth"),
-            None,
-        );
-        assert_eq!(counts.len(), 3);
-        assert_eq!(counts.get("auth"), Some(&2_usize));
-        assert_eq!(counts.get("authorization"), Some(&1_usize));
-        assert_eq!(counts.get("access"), Some(&1_usize));
-        assert!(!counts.contains_key("database"));
-    }
-
-    // -------------------------------------------------------------------
     // Tags: domain filter
     // -------------------------------------------------------------------
 
@@ -500,36 +461,6 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // Types: self-referential --type filter
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_types_self_referential_filter() {
-        let dir = temp_dir("types_self_ref");
-        write_page(
-            &dir,
-            "shared/a.md",
-            "---\ntitle: A\ntype: concept\ntags: []\n---\n",
-        );
-        write_page(
-            &dir,
-            "shared/b.md",
-            "---\ntitle: B\ntype: entity\ntags: []\n---\n",
-        );
-
-        let counts = aggregate_field(
-            &dir,
-            AggregateField::Types,
-            Some("concept"),
-            None,
-            None,
-        );
-        assert_eq!(counts.len(), 1);
-        assert_eq!(counts.get("concept"), Some(&1_usize));
-        assert!(!counts.contains_key("entity"));
-    }
-
-    // -------------------------------------------------------------------
     // Types: tag filter
     // -------------------------------------------------------------------
 
@@ -641,40 +572,6 @@ mod tests {
         assert_eq!(counts.len(), 1);
         assert_eq!(counts.get("shared"), Some(&1_usize));
         assert!(!counts.contains_key("overview"));
-    }
-
-    // -------------------------------------------------------------------
-    // Domains: self-referential --domain filter
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_domains_self_referential_filter() {
-        let dir = temp_dir("domains_self_ref");
-        write_page(
-            &dir,
-            "shared/concepts/a.md",
-            "---\ntitle: A\ntype: concept\ntags: []\n---\n",
-        );
-        write_page(
-            &dir,
-            "shared/concepts/b.md",
-            "---\ntitle: B\ntype: concept\ntags: []\n---\n",
-        );
-        write_page(
-            &dir,
-            "autoresearch/concepts/c.md",
-            "---\ntitle: C\ntype: concept\ntags: []\n---\n",
-        );
-
-        let counts = aggregate_field(
-            &dir,
-            AggregateField::Domains,
-            None,
-            None,
-            Some("shared"),
-        );
-        assert_eq!(counts.len(), 1);
-        assert_eq!(counts.get("shared"), Some(&2_usize));
     }
 
     // -------------------------------------------------------------------

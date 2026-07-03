@@ -674,9 +674,9 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 | `search "<query>"` | 全文检索（rg 候选 + 进程内 fallback）；`--type`/`--tag`/`--domain` 过滤 | ✅ |
 | `list` | 字段结构化浏览（`--type`/`--tag`/`--domain` 过滤，无查询词，无评分） | ✅ |
 | `status` | wiki 健康概览（总数 + type/domain/status/timeliness 分布 + last_validated 范围）；`--type`/`--tag`/`--domain` 切片 | ✅ |
-| `tags` | 列出所有标签 + 页面数；`--type`/`--tag`/`--domain` 切片 | ✅ |
-| `types` | 列出所有类型 + 页面数；`--type`/`--tag`/`--domain` 切片 | ✅ |
-| `domains` | 列出所有领域 + 页面数；`--type`/`--tag`/`--domain` 切片 | ✅ |
+| `tags` | 列出所有标签 + 页面数；`--type`/`--domain` 切片 | ✅ |
+| `types` | 列出所有类型 + 页面数；`--tag`/`--domain` 切片 | ✅ |
+| `domains` | 列出所有领域 + 页面数；`--type`/`--tag` 切片 | ✅ |
 
 ### 12.2 目标扩展子命令（按路线图）
 
@@ -703,7 +703,7 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 
 **`status` 已实现行为：** wiki 健康概览。统计页面总数、type 分布、domain 分布（按顶级目录）、status 分布、timeliness 分布、last_validated 日期范围（最早 ~ 最近）。`--type`/`--tag`/`--domain` 切片统计（AND 语义），切片模式输出首行标注 `切片: type=X, domain=Y`。输出：人读分标签段落或 `--json` 对象 `{total, by_type, by_domain, by_status, by_timeliness, last_validated_range}`。
 
-**`tags`/`types`/`domains` 已实现行为：** 字段值聚合，列出某字段的所有值 + 每个值对应的页面数。`tags` 聚合 frontmatter `tags` 数组（每个 tag 单独计数）；`types` 聚合 `type` 字段；`domains` 聚合顶级目录（根级文件如 overview.md 不计入 domain）。三者均支持 `--type`/`--tag`/`--domain` 切片过滤（AND 语义，先过滤页面再聚合）。输出：人读 `  {value} — {count} 页`（按值升序）或 `--json` 数组 `[{value, count}]`。
+**`tags`/`types`/`domains` 已实现行为：** 字段值聚合，列出某字段的所有值 + 每个值对应的页面数。`tags` 聚合 frontmatter `tags` 数组（每个 tag 单独计数）；`types` 聚合 `type` 字段；`domains` 聚合顶级目录（根级文件如 overview.md 不计入 domain）。`tags` 支持 `--type`/`--domain` 切片；`types` 支持 `--tag`/`--domain`；`domains` 支持 `--type`/`--tag`。自指 filter（如 `tags --tag`）已移除——自指过滤要么平凡要么产生混淆的共现结果。输出：人读 `  {value} — {count} 页`（按值升序）或 `--json` 数组 `[{value, count}]`。
 
 ### 12.3 内部架构原则
 

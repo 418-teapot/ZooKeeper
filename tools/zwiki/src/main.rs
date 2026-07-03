@@ -200,10 +200,6 @@ enum Command {
         #[arg(long)]
         r#type: Option<String>,
 
-        /// Filter by tag (case-insensitive substring match)
-        #[arg(long)]
-        tag: Option<String>,
-
         /// Filter by top-level domain (e.g. autoresearch, shared)
         #[arg(long)]
         domain: Option<String>,
@@ -211,10 +207,6 @@ enum Command {
 
     /// List all page types with page counts
     Types {
-        /// Filter by page type (substring, case-insensitive)
-        #[arg(long)]
-        r#type: Option<String>,
-
         /// Filter by tag (case-insensitive substring match)
         #[arg(long)]
         tag: Option<String>,
@@ -233,10 +225,6 @@ enum Command {
         /// Filter by tag (case-insensitive substring match)
         #[arg(long)]
         tag: Option<String>,
-
-        /// Filter by top-level domain (e.g. autoresearch, shared)
-        #[arg(long)]
-        domain: Option<String>,
     },
 }
 
@@ -314,30 +302,30 @@ fn main() {
                 args.json,
             );
         }
-        Some(Command::Tags { r#type, tag, domain }) => {
+        Some(Command::Tags { r#type, domain }) => {
             cmd_aggregate(
                 aggregate::AggregateField::Tags,
                 r#type.as_deref(),
-                tag.as_deref(),
+                None,
                 domain.as_deref(),
                 args.json,
             );
         }
-        Some(Command::Types { r#type, tag, domain }) => {
+        Some(Command::Types { tag, domain }) => {
             cmd_aggregate(
                 aggregate::AggregateField::Types,
-                r#type.as_deref(),
+                None,
                 tag.as_deref(),
                 domain.as_deref(),
                 args.json,
             );
         }
-        Some(Command::Domains { r#type, tag, domain }) => {
+        Some(Command::Domains { r#type, tag }) => {
             cmd_aggregate(
                 aggregate::AggregateField::Domains,
                 r#type.as_deref(),
                 tag.as_deref(),
-                domain.as_deref(),
+                None,
                 args.json,
             );
         }
@@ -1372,9 +1360,8 @@ mod tests {
     fn test_tags_parses() {
         let args = Args::try_parse_from(["zwiki", "tags"]).unwrap();
         match args.command {
-            Some(Command::Tags { r#type, tag, domain }) => {
+            Some(Command::Tags { r#type, domain }) => {
                 assert!(r#type.is_none());
-                assert!(tag.is_none());
                 assert!(domain.is_none());
             }
             _ => panic!("expected Tags"),
@@ -1388,18 +1375,6 @@ mod tests {
         match args.command {
             Some(Command::Tags { r#type, .. }) => {
                 assert_eq!(r#type, Some("concept".to_string()));
-            }
-            _ => panic!("expected Tags"),
-        }
-    }
-
-    #[test]
-    fn test_tags_with_tag_parses() {
-        let args =
-            Args::try_parse_from(["zwiki", "tags", "--tag", "auth"]).unwrap();
-        match args.command {
-            Some(Command::Tags { tag, .. }) => {
-                assert_eq!(tag, Some("auth".to_string()));
             }
             _ => panic!("expected Tags"),
         }
@@ -1421,14 +1396,12 @@ mod tests {
     #[test]
     fn test_tags_with_all_flags_parses() {
         let args = Args::try_parse_from([
-            "zwiki", "tags", "--type", "concept", "--tag", "auth", "--domain",
-            "shared",
+            "zwiki", "tags", "--type", "concept", "--domain", "shared",
         ])
         .unwrap();
         match args.command {
-            Some(Command::Tags { r#type, tag, domain }) => {
+            Some(Command::Tags { r#type, domain }) => {
                 assert_eq!(r#type, Some("concept".to_string()));
-                assert_eq!(tag, Some("auth".to_string()));
                 assert_eq!(domain, Some("shared".to_string()));
             }
             _ => panic!("expected Tags"),
@@ -1453,23 +1426,9 @@ mod tests {
     fn test_types_parses() {
         let args = Args::try_parse_from(["zwiki", "types"]).unwrap();
         match args.command {
-            Some(Command::Types { r#type, tag, domain }) => {
-                assert!(r#type.is_none());
+            Some(Command::Types { tag, domain }) => {
                 assert!(tag.is_none());
                 assert!(domain.is_none());
-            }
-            _ => panic!("expected Types"),
-        }
-    }
-
-    #[test]
-    fn test_types_with_type_parses() {
-        let args =
-            Args::try_parse_from(["zwiki", "types", "--type", "concept"])
-                .unwrap();
-        match args.command {
-            Some(Command::Types { r#type, .. }) => {
-                assert_eq!(r#type, Some("concept".to_string()));
             }
             _ => panic!("expected Types"),
         }
@@ -1503,13 +1462,11 @@ mod tests {
     #[test]
     fn test_types_with_all_flags_parses() {
         let args = Args::try_parse_from([
-            "zwiki", "types", "--type", "concept", "--tag", "auth", "--domain",
-            "shared",
+            "zwiki", "types", "--tag", "auth", "--domain", "shared",
         ])
         .unwrap();
         match args.command {
-            Some(Command::Types { r#type, tag, domain }) => {
-                assert_eq!(r#type, Some("concept".to_string()));
+            Some(Command::Types { tag, domain }) => {
                 assert_eq!(tag, Some("auth".to_string()));
                 assert_eq!(domain, Some("shared".to_string()));
             }
@@ -1535,10 +1492,9 @@ mod tests {
     fn test_domains_parses() {
         let args = Args::try_parse_from(["zwiki", "domains"]).unwrap();
         match args.command {
-            Some(Command::Domains { r#type, tag, domain }) => {
+            Some(Command::Domains { r#type, tag }) => {
                 assert!(r#type.is_none());
                 assert!(tag.is_none());
-                assert!(domain.is_none());
             }
             _ => panic!("expected Domains"),
         }
@@ -1570,30 +1526,15 @@ mod tests {
     }
 
     #[test]
-    fn test_domains_with_domain_parses() {
-        let args =
-            Args::try_parse_from(["zwiki", "domains", "--domain", "shared"])
-                .unwrap();
-        match args.command {
-            Some(Command::Domains { domain, .. }) => {
-                assert_eq!(domain, Some("shared".to_string()));
-            }
-            _ => panic!("expected Domains"),
-        }
-    }
-
-    #[test]
     fn test_domains_with_all_flags_parses() {
         let args = Args::try_parse_from([
             "zwiki", "domains", "--type", "concept", "--tag", "auth",
-            "--domain", "shared",
         ])
         .unwrap();
         match args.command {
-            Some(Command::Domains { r#type, tag, domain }) => {
+            Some(Command::Domains { r#type, tag }) => {
                 assert_eq!(r#type, Some("concept".to_string()));
                 assert_eq!(tag, Some("auth".to_string()));
-                assert_eq!(domain, Some("shared".to_string()));
             }
             _ => panic!("expected Domains"),
         }
