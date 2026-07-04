@@ -1,7 +1,7 @@
 # ZooKeeper Wiki — 终极设计文档
 
-**版本:** 3.0（统一版）
-**日期:** 2026-07-01
+**版本:** 3.2
+**日期:** 2026-07-04
 **状态:** 活动设计文档 — 单一权威版本，对齐当前实现并规划后续路线
 
 ---
@@ -74,7 +74,7 @@
 | 六步增量同步 | **未实现** |
 | 协同 Layer 1（personal/.org/.teams/.upstream 五级覆盖） | **未实现**。无任何分层目录、无 `teams.toml` |
 | 协同 Layer 2（git 多 repo / sync / propose / log 分月） | **未实现** |
-| 协同 Layer 3（bundle.toml / publish / install / @name/path） | **未实现** |
+| 协同 Layer 3（bundle.toml / export / install） | **未实现**。`[federation]` 和 registry 已从设计移除——Markdown 内容无可执行威胁面，知识验证由矛盾检测/取代链/来源回溯覆盖；`teams.toml` 即注册表，无需独立 registry 服务 |
 | `zwiki promote` / `consensus` / `bundle` / `sync` / `propose` 子命令 | **未实现** |
 
 ---
@@ -109,9 +109,9 @@
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│  Layer 3: OKF Bundle 联邦                                  │
-│  bundle.toml → publish → install → @name/path              │
-│  跨组织、跨项目知识分发；分层联邦拓扑                      │
+│  Layer 3: Bundle 分发                                      │
+│  bundle.toml → export → install → @name/path               │
+│  跨组织、跨项目知识分发                                    │
 ├────────────────────────────────────────────────────────────┤
 │  Layer 2: Git 团队同步                                     │
 │  teams.toml → 多 repo → push/pull → PR/CI 门禁             │
@@ -348,7 +348,7 @@ contributors:
 - source 页面：`sources/<type>/<short-title>.md`，`<type>` 为 `adr`/`rfc`/`notes`
 - 交叉引用用 **wiki 根目录相对路径**（不带 `wiki/` 前缀）：`[text](concepts/foo.md)`
 - frontmatter `relations` 用 Markdown 链接格式（YAML 需引号）：`- "[标题](concepts/foo.md)"`，链接文字取目标页 `title`
-- L3 引入 `@name/path` 跨命名空间引用（见 §14.4）
+- L3 引入 `@name/path` 跨团队/跨层引用：`@teamname/path` 解析为 `.teams/<teamname>/<path>`，`@upstream/path` 解析为 `.upstream/<path>`
 
 ### 5.7 写作风格
 
@@ -690,17 +690,18 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 
 | 子命令 | 阶段 |
 |--------|------|
-| `check --fix` | P0 |
+| `check --fix` | P4 |
 | `search "<query>"` | ✅ 已实现 |
-| `okf export <dir>` | P0 |
+| `bundle export <dir>` | P2 |
+| `bundle install <source>` | P2 |
 | `move <old> <new>` | ✅ 已实现 |
 | `list [--tag] [--type] [--domain]` | ✅ 已实现 |
 | `status [--tag] [--type] [--domain]` | ✅ 已实现 |
-| `sync pull/push/status` | L2-P1 |
-| `promote --team <name>` | L1-P1 |
-| `propose --team <name>` | L2-P2 |
-| `consensus` | L1-P2 |
-| `bundle publish/install/list/outdated/upgrade` | L3-P3 |
+| `sync pull/push/status` | P3 |
+| `promote --team <name>` | P3 |
+| `propose --team <name>` | P3 |
+| `consensus` | P3 |
+| `bundle list/outdated/upgrade` | 远期 |
 
 **`check --fix` 修复行为：** 自动修复确定性可修的问题——index.md 缺失条目补齐、broken links（已知目标路径）重连、orphan 页面加入 index、frontmatter 必填字段缺失补默认值。**不修**需要语义判断的问题（矛盾、supersede、sparse 页面内容）。
 
@@ -734,18 +735,18 @@ zwiki 是**薄路由层**，底层调用现有模块逻辑。新增能力以新�
 
 **核心矛盾：** 个人探索需要自由修改，团队知识需要稳定权威。借鉴 Docker overlay：上层覆盖下层，下层不变。
 
-**五级目录：**
+**五级目录（全部从 P3 第一天就存在，空目录不增复杂度）：**
 
 ```
-~/.zoo/wiki/
-├── personal/              ← 最优先：当前 agent/用户的个人理解（无点前缀，用户主工作区）
-├── .org/                  ← 组织级共识（跨团队 review 后合入，权威性最高）
-├── .teams/                ← 各团队知识（按 teams.toml 中 priority 排列）
-│   ├── core/              ← primary (priority=1)
-│   ├── security/          ← advisory (priority=2)
-│   └── infra/             ← supplementary (priority=3)
-├── .upstream/             ← 最低优先：外部 bundle 提供的基础知识
-├── index.md / logs/ / SCHEMA.md
+~/.zoo/wiki/                    ← 纯 OKF 知识库（自包含，拷贝即带走全部配置）
+├── teams.toml                 ← 团队配置
+├── personal/                  ← 最优先：用户个人覆盖（无点前缀，主工作区）
+├── .org/                      ← 组织级共识（跨团队 review 后合入，权威性最高）
+├── .teams/                    ← 各团队知识（teams.toml + sync 维护）
+│   └── core/                  ← primary — 当前基线内容搬入此处
+├── .upstream/                 ← 最低优先：外部 bundle 提供的基础知识
+├── index.md / SCHEMA.md
+└── logs/
 ```
 
 点前缀（`.org`/`.teams`/`.upstream`）暗示"框架维护，用户一般不直接操作"；`personal/` 无前缀是用户主工作区，与 dotfile 惯例一致。
@@ -755,15 +756,22 @@ zwiki 是**薄路由层**，底层调用现有模块逻辑。新增能力以新�
 ```toml
 [[teams]]
 name = "core"
-repo = "git@github.com:org/zookeeper-wiki.git"
+repo = [
+  "git@github.com:org/zookeeper-concepts.git",
+  "git@github.com:org/zookeeper-entities.git",
+]
 priority = 1
 role = "primary"
 
 [[teams]]
 name = "security"
+repo = ["git@github.com:org/security-wiki.git"]
 priority = 2
 role = "advisory"
 ```
+
+- `repo` 为数组——一个团队可有多个 git 仓库，`zwiki sync pull` 按顺序拉取到 `.teams/<name>/` 下，子目录名取 URL 路径末段
+- `priority` 决定同层内查询顺序；`role` 决定同名页面冲突行为
 
 **Team role 决定查询冲突行为：**
 
@@ -779,14 +787,13 @@ role = "advisory"
 - `zwiki promote --team <name>`：personal → team（本地复制，保留 personal 副本）
 - `zwiki consensus concepts/X.md --teams core,security`：多团队共识 → 写入 `.org/`，需指定团队 approve（frontmatter 记录 `consensus_of`），共识页固定 `status: stable`
 
-**L0 → L1 零中断迁移：** 创建 `.teams/default/` + `teams.toml`，现有内容搬入 `.teams/default/`，`personal/` 留空。查询语义完全一致。
+**L0 → L1 零中断迁移：** 现有 wiki 根内容搬入 `.teams/core/`（`mv wiki/{autoresearch,wiki-system,shared,overview.md} wiki/.teams/core/`），`personal/`、`.org/`、`.upstream/` 初始为空，根 `index.md` 改写为 team 层索引入口。查询语义完全一致。
 
 ### 14.3 Layer 2 — Git 团队同步（未实现）
 
 每个团队独立 git repo（独立版本历史、独立权限、独立 CI），`teams.toml` 统一管理。wiki 生命周期与项目代码不同——知识积累持续低频，代码迭代周期高频，独立 repo 让 wiki 历史不被代码提交冲散。
 
-- `install.py --wiki-repo <name> <url>`（可多次指定）管理多 remote
-- `zwiki sync pull/push/status` 遍历 teams.toml 中所有 team
+- `teams.toml`（`~/.zoo/wiki/teams.toml`）统一管理所有团队 repo，`zwiki sync pull/push/status` 遍历该文件
 - `zwiki propose --team <name>`：personal → 指定团队走 PR + CI 门禁（`zwiki check --ci`）
 - `personal/` 始终 `.gitignore`；`.org/` 在 primary team repo 中版本管理，非 primary team 的 repo 中 `.gitignore`
 - **log.md 按月分文件**（`wiki/logs/2026-06.md`）避免高频 merge conflict
@@ -794,35 +801,48 @@ role = "advisory"
 
 **跨团队冲突不在 git 层处理**——不同团队独立 repo，同名页面在不同命名空间，不触发 git conflict。冲突在**查询时**由 L1 role 逻辑处理。
 
-### 14.4 Layer 3 — OKF Bundle 联邦（未实现）
+### 14.4 Layer 3 — Bundle 分发（未实现）
 
-跨项目、跨组织知识分发。`bundle.toml` 声明包规格 + 依赖 + 导出范围 + `[federation]` 可信列表：
+跨项目、跨组织知识分发。`bundle.toml` 声明包身份与导出范围，`zwiki bundle export` 打包为 tar.gz，`zwiki bundle install` 按包内声明自动路由到对应层目录。
+
+**bundle.toml 最小字段集：**
 
 ```toml
 [package]
 name = "zookeeper-core"
 version = "1.2.0"
 okf_version = "0.1"
-
-[dependencies]
-opencode-plugin-system = ">=0.5"
+kind = "team"        # "team" → .teams/<team>/；"upstream" → .upstream/<name>/
+team = "core"        # kind="team" 时必填，指定目标团队名
 
 [export]
 include = ["concepts/", "entities/", "analysis/", "SCHEMA.md"]
 exclude = ["concepts/internal-*", "personal/"]
-
-[federation]
-trusted = ["opencode-plugin-system"]
-review_required = ["experimental-ml-wiki"]
-blocked = ["deprecated-legacy-wiki"]
 ```
 
-- `zwiki bundle publish/install/list/outdated/upgrade` 做分发
-- `@name/path` 统一命名空间：`@` 前缀后可是 team（从 teams.toml）或 bundle（从 registry），解析时 team 优先
-- 分层联邦拓扑：组织 registry → team bundles → shared consensus → external bundles（非扁平去中心化，信任可控）
-- 三种 registry 类型：`git` / `http` / `directory`（`ipfs` 远期）
+**设计决策：**
 
-**为何不用 `okf://` URI？** `@name/path` 是 npm 几十年的约定，agent 和开发者都熟悉，文件系统路径转写方便。
+- `kind` + `team` 由包自己声明归属，`zwiki bundle install <path>` 读 `bundle.toml` 自动决定目标路径——不需要用户传 `--layer`，不存在信息双写不一致的风险。
+- 不设 `[dependencies]`——wiki bundle 没有可执行依赖，跨包引用通过 `@name/path` 和 `relations` 字段表达，不需要包管理器级别的依赖解析。
+- 不设 `[federation]`——Markdown 内容无可执行威胁面，知识可靠性由矛盾检测/取代链/来源回溯在内容层保障。安装前静态信任检查对纯文本内容无效（你不读不知道它对不对）。
+- 不设独立 registry 服务——`teams.toml` 即注册表，文件即协议。非 team bundle 直接传 URL 或路径给 `install`。
+
+**`@name/path` 跨层引用：**
+
+- `@teamname/path` → `.teams/<teamname>/<path>`（从 `teams.toml` 解析 team 名）
+- `@upstream/path` → `.upstream/<path>`
+- 解析时 team 优先于 upstream——同一前缀在两个命名空间都存在时，`.teams/` 覆盖
+
+**CLI：**
+
+```bash
+# 打包
+zwiki bundle export <dir>                 # wiki → tar.gz + bundle.toml
+
+# 安装（自动路由：kind="team" + team="core" → .teams/core/）
+zwiki bundle install ./foo.tar.gz
+zwiki bundle install https://example.com/zoo-wiki.tar.gz
+```
 
 ### 14.5 协同层取舍
 
@@ -834,9 +854,8 @@ blocked = ["deprecated-legacy-wiki"]
 | ✅ promote/consensus 需人确认 | ❌ 自动 promote / 自动 consensus |
 | ✅ 每团队独立 git repo | ❌ 嵌入项目 repo |
 | ✅ `@name/path` 统一命名空间 | ❌ `okf://` URI |
-| ✅ 分层联邦 + 可信列表 | ❌ 扁平去中心化 / 中心注册中心 |
-| ✅ bundle 级 semver | ❌ 单页独立版本（远期考虑） |
-| ✅ CRDT/P2P / Wiki-as-a-Service / Pub/Sub 已评估并放弃 | — |
+| ✅ bundle 级 semver | ❌ 单页独立版本（远期） |
+| ✅ 文件即协议——teams.toml 即注册表 | ❌ 独立 registry 服务 / 中心注册中心 |
 
 ---
 
@@ -946,18 +965,39 @@ blocked = ["deprecated-legacy-wiki"]
 | 15 | ✅ `zwiki list`：按字段结构化浏览页面——`--tag <name>`/`--type <type>`/`--domain <domain>` 列匹配页面，无过滤时列全部页面路径 + 标题。与 `search`（全文检索）互补：`list` 是字段精确浏览，`search` 是内容子串匹配 + 评分排序 |
 | 16 | ✅ `zwiki status`：wiki 整体健康概览——页面总数、各 type/domain 分布、stale/deprecated 计数、最近 last_validated 范围。`--tag`/`--type`/`--domain` 可选切片统计 |
 
-### P2：验证体系 + 协同 L1/L2 起步
+### P1 收尾：验证体系（✅ 全部完成）
+
+#17、#18、#21 原属 P2「验证体系 + 协同 L1/L2 起步」中的验证部分，在 P1 矛盾检测/query 矛盾感知上线后已全部就绪，归纳于此：
 
 | # | 改动 |
 |---|------|
-| 17 | ✅ 交叉验证：ingest 新源时 kiwi 统一 Claim Reconciliation 自动比对已有声明，印证则提议刷新 `last_validated`；wiki-ingest Phase 5 经用户确认后执行写入（`zwiki property --set last_validated` + `zwiki log`） |
-| 18 | 来源回溯验证：source ↔ 衍生页面一致性比对 |
-| 19 | **L1-P0**：分层目录约定（personal/.org/.teams/.upstream 五级）+ teams.toml + `.org` consensus frontmatter |
-| 20 | **L1-P1**：`zwiki promote --team <name>` |
+| 17 | ✅ 交叉验证：ingest 新源时 kiwi 统一 Claim Reconciliation 自动比对已有声明，印证则提议刷新 `last_validated`；wiki-ingest Phase 5 经用户确认后执行写入 |
+| 18 | ✅ 来源回溯验证：source ↔ 衍生页面一致性比对（`zwiki verify` + `wiki-verify` skill + `kiwi-verify` skill） |
 | 21 | ✅ **L2-P0**：log.md 分月文件 |
-| 22 | **L2-P1**：`--wiki-repo <name> <url>` 多 repo + `zwiki sync pull/push/status` |
 
-### P3：全自动维护 + 大规模摄入 + 协同 L1/L2 深化 + L3
+### P2：Bundle 分发基础设施
+
+Bundle 是 L1 分层覆盖的**前置依赖**——先有知识包格式和安装机制，再建接收这些包的目录结构。先做最小可用版（`bundle.toml` + export + install），`[federation]` 和独立 registry 已从设计移除。
+
+| # | 改动 |
+|---|------|
+| 32 | **bundle.toml** 最小字段集定稿：`[package]`（name + version + okf_version）、`[export]`（include + exclude） |
+| 33a | `zwiki bundle export <dir>` — 将当前 wiki 导出为合法 OKF bundle（tar.gz + bundle.toml manifest） |
+| 33b | `zwiki bundle install <source>` — 读 bundle.toml 的 `kind`/`team` 自动路由到 `.teams/<name>/` 或 `.upstream/<name>/`，更新该层 index.md |
+
+### P3：协同 L1/L2
+
+Bundle 安装机制就位后，L1 分层目录 + 查询级联有实际内容可验证。L2 git 同步依赖 L1 团队目录结构。
+
+| # | 改动 |
+|---|------|
+| 19 | **L1-P0**：分层目录约定（personal/.org/.teams/.upstream 五级）+ teams.toml（priority/role）+ 查询级联 + `.org` consensus frontmatter |
+| 20 | **L1-P1**：`zwiki promote --team <name>` |
+| 22 | **L2-P1**：`--wiki-repo <name> <url>` 多 repo + `zwiki sync pull/push/status` |
+| 30 | **L1-P2**：`zwiki consensus` |
+| 31 | **L2-P2**：`zwiki propose --team <name>` + contributors 追踪 |
+
+### P4：全自动维护 + 大规模摄入 + L3 联邦深化
 
 | # | 改动 |
 |---|------|
@@ -968,17 +1008,15 @@ blocked = ["deprecated-legacy-wiki"]
 | 27 | kiwi 摘要表蒸馏模式（Phase 2） |
 | 28 | kiwi 差分蒸馏模式（Step D） |
 | 29 | `zwiki sync` 六步增量同步（Step A-F） |
-| 30 | **L1-P2**：`zwiki consensus` |
-| 31 | **L2-P2**：`zwiki propose --team <name>` + contributors 追踪 |
-| 32 | **L3-P2**：bundle.toml + `[federation]` 可信列表 + `zwiki okf export` |
-| 33 | **L3-P3**：`zwiki bundle publish/install` + `@name/path` 解析 + 分层联邦拓扑 |
+| 33c | **L3-P3**：`@name/path` 解析（`@teamname/path` → `.teams/<teamname>/<path>`，`@upstream/path` → `.upstream/<path>`） |
 
 ### 路线图原则
 
-- **L1-P0（分层目录 + teams.toml + log 分月）对现有系统完全无影响**，可从下一迭代立即开始
-- **L3-P3（bundle 联邦）复杂度最高、收益最不确定**，待 L2 稳定运行后评估
-- `zwiki consensus` 依赖多团队协作实际存在后再实施，前期可用手动协商替代
-- 已实现的 zwiki 6 子命令不再重写，新能力以新子命令挂载
+- **P2（bundle 分发）是 L1 的前置条件**——先有包可装，再建接收目录。bundle.toml 最小字段集（package + export）可独立验证，不依赖任何上层。
+- **P3（L1/L2 协同）在 bundle install 就位后立即可行**——`.teams/` 和 `.upstream/` 里有真实内容，查询级联有实际用例可测。
+- **P4 中大规模摄入（#25-29）和 `@name/path` 解析（#33c）可并行**，无相互依赖。
+- `zwiki consensus` 依赖多团队协作实际存在后再实施，前期可用手动协商替代。
+- 已实现的 zwiki 子命令不再重写，新能力以新子命令或新模块挂载。
 
 ---
 
@@ -1001,7 +1039,7 @@ blocked = ["deprecated-legacy-wiki"]
 | **自动化** | 机械活全自动（`--apply`/`--fix`），语义活半自动 | 事件驱动全自动、会话级自动加载/压缩 |
 | **协同冲突** | 覆盖不摧毁、role 决定冲突行为、检测不自动修 | 自动合并多版本、复杂权限矩阵 |
 | **git 协作** | 每团队独立 repo、personal gitignore、log 分月 | 嵌入项目 repo、CRDT 冲突解决、定时 cron |
-| **分发** | bundle.toml + semver + `@name/path` + 分层联邦 | `okf://` URI、扁平去中心化、自动信任、单页独立版本（远期） |
+| **分发** | bundle.toml + semver + `@name/path` | `okf://` URI、单页独立版本（远期） |
 | **大规模摄入** | 四阶段分块蒸馏、六步增量、哈希快照 | 机械切片、全量重蒸馏、自动应用 LLM 修改 |
 | **工具** | 统一 zwiki CLI（Rust，薄路由） | 重写已验证逻辑、工具脚本散落 |
 | **注入** | SCHEMA 缩略版 + 按需 read/grep | 完整 wiki 注入 prompt（上下文爆炸） |
