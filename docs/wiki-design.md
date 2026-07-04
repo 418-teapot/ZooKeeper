@@ -55,7 +55,7 @@
 | 实际页面前置元数据 | 一致使用 `title`/`type`/`description`/`timestamp`/`tags`/`relations`/`status`，source 页用 `resource`，analysis/synthesis 用 `sources`（复数） | 抽查 wiki/autoresearch、wiki-system、shared 全部对齐 |
 | zwiki CLI | **Rust 实现**，含 7 个子命令：`check`、`backlinks`、`log`、`page`、`property`、`create`（含 `--domain` 自动建域骨架） | `tools/zwiki/`（构建产物 `tools/bin/zwiki`） |
 | 健康检查 | `zwiki check` 内含：empty files、index sync（递归 + indexed_anywhere 跨层豁免）、log coverage、frontmatter、relations field、**relations-body consistency（双向，error 级）**、source field、missing/duplicate inline links | `tools/zwiki/src/health.rs` |
-| Lint 检查 | `zwiki check` 内含：broken links、orphan pages、sparse pages、**stale pages**（`timestamp` 超 90 天且非 deprecated） | `tools/zwiki/src/lint.rs` |
+| Lint 检查 | `zwiki check` 内含：broken links、orphan pages、sparse pages、**stale pages**（`timestamp` 超 90 天且非 deprecated）、**cascade stale**（被取代页面的引用者，以 `last_validated` 比较判断是否已审查） | `tools/zwiki/src/lint.rs` |
 | `--save` / `--ci` / `--diff` | check 子命令支持 `--save`（写 health-report.md）、`--ci`（按阈值退出码）、`--diff`（git diff 检查） | `tools/zwiki/src/main.rs` |
 | wiki-ingest skill | 4 阶段（Phase 0 分类 → Phase 1 委派 kiwi → Phase 2 通用写入 → Phase 3 验证） | `core/skills/wiki-ingest/SKILL.md` |
 | wiki-query skill | 6 阶段（Phase 0 判断问题类型 → 1 读 index → 2 读页面 → 3 合成 → 4 判断归档 → 5 呈现） | `core/skills/wiki-query/SKILL.md` |
@@ -403,6 +403,25 @@ edit = "deny"
 - **SLIM** Librarian：deny write/edit/bash/task
 
 OpenCode 框架不支持 OMP 的 `yield`/`shouldTerminate`，无法保证结构化 JSON 输出，故 kiwi 返回自由格式 Markdown 分析报告，由调用方执行写入。职责分离 + 最小权限 + 错误隔离。
+
+### 6.5 kiwi 系统 prompt 轻量化 + 技能化（✅ 已实现）
+
+**原问题：** kiwi 系统 prompt（`src/agents/kiwi.ts`）将身份定义（Role/Context/Contract）与蒸馏工作流（Phase 1-4 + QualityGate）耦合在 235 行 prompt 中。新增矛盾检测模式（#11）会导致 prompt 进一步膨胀。
+
+**实现架构：** 工作流从系统 prompt 剥离为独立 skill，kiwi 按需加载：
+
+```
+kiwi 系统 prompt（~40 行）          kiwi 技能
+  ├── Role: 只读知识分析引擎    ←──  kiwi-distill（蒸馏工作流，✅ 已实现）
+  ├── Context: 三段式格式      ←──  kiwi-contradiction（矛盾检测工作流，随 #11 新建）
+  └── Contract: 不写文件
+```
+
+**已实施改动：**
+- `src/agents/kiwi.ts`：235 行 → 40 行，保留身份壳 + 技能指引
+- `core/skills/kiwi-distill/SKILL.md`：新建，Phase 0-5 蒸馏工作流 + QualityGate
+- `config.toml`：kiwi 权限 `skill "kiwi-distill" = "allow"`；`zoo.skills` 注册该技能
+- `core/skills/wiki-ingest/SKILL.md`：Phase 1.3 委派 kiwi 时提示加载 `kiwi-distill`
 
 ---
 
@@ -918,7 +937,8 @@ blocked = ["deprecated-legacy-wiki"]
 | # | 改动 |
 |---|------|
 | 9 | ✅ kiwi 蒸馏时判断新源是否推翻旧结论，声明 `supersedes`；ingest 前先 `zwiki search` 同主题判重（kiwi 在 Phase 1 自行搜索，主 agent 不预搜） |
-| 10 | `check_cascade_stale`：页面 superseded 后扫描引用者，生成候审列表 |
+| 10 | ✅ `check_cascade_stale`：页面 superseded 后扫描引用者（backlinks），比较 `last_validated` 判断是否已审查，输出候审列表（`zwiki check` 中的级联过时警告）。实现用纯机械时间戳比较替代了设计原案的 LLM 引用性质判断，当前够用 |
+| — | ✅ **kiwi 系统 prompt 技能化重构**（详见 §6.5）。`src/agents/kiwi.ts` 轻量化（235 行 → 40 行），蒸馏工作流搬入 `core/skills/kiwi-distill/`（Phase 0-5），kiwi 按任务类型动态加载不同技能。这是 #11（矛盾检测）和未来新增 kiwi 分析模式的基础 |
 | 11 | 矛盾检测：图拓扑预筛选 → LLM 声明提取 → contradictions 写入 |
 | 12 | wiki-query 矛盾感知 |
 | 13 | ✅ `zwiki move`：重命名 + 自动更新所有引用链接（frontmatter relations/supersedes/superseded_by/contradictions 四个路径型字段 + body inline link + body backtick；同域 index 原地替换，跨域旧域删条目 + 新域按 type 节追加；type→section 标题映射保障 OKF 合规；自引用页正确处理） |
