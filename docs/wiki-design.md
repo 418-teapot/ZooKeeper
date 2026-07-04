@@ -940,7 +940,7 @@ blocked = ["deprecated-legacy-wiki"]
 | 10 | ✅ `check_cascade_stale`：页面 superseded 后扫描引用者（backlinks），比较 `last_validated` 判断是否已审查，输出候审列表（`zwiki check` 中的级联过时警告）。实现用纯机械时间戳比较替代了设计原案的 LLM 引用性质判断，当前够用 |
 | — | ✅ **kiwi 系统 prompt 技能化重构**（详见 §6.5）。`src/agents/kiwi.ts` 轻量化（235 行 → 40 行），蒸馏工作流搬入 `core/skills/kiwi-distill/`（Phase 0-5），kiwi 按任务类型动态加载不同技能。这为 #11（矛盾检测，现已 ✅ 完成）和未来新增 kiwi 分析模式奠定了基础 |
 | 11 | ✅ 矛盾检测：集成于 kiwi-distill Phase 4.8（与 supersede 检查共享 claim 提取，无独立预筛选）；`zwiki contradictions list`/`apply` 子命令完成记录写入与对称降级（stable→review, review→draft）；wiki-ingest Phase 4 管道 kiwi JSON 至 `zwiki contradictions apply` |
-| 12 | wiki-query 矛盾感知 |
+| 12 | ✅ wiki-query 矛盾感知：wiki-query Phase 3 新增"矛盾感知"正交检查（与生命周期表独立）；`zwiki search` 输出含 `contradictions` 字段（JSON 完整数据 + human `[!×N]` 标记）；query 合成答案时对矛盾页面附加"↯ 声明存在争议"标注 |
 | 13 | ✅ `zwiki move`：重命名 + 自动更新所有引用链接（frontmatter relations/supersedes/superseded_by/contradictions 四个路径型字段 + body inline link + body backtick；同域 index 原地替换，跨域旧域删条目 + 新域按 type 节追加；type→section 标题映射保障 OKF 合规；自引用页正确处理） |
 | 14 | ~~SCHEMA 自动注入到 agent prompt（config hook）~~ — 已取消。`wiki-query` skill description 已告知 agent wiki 的存在和用法，注入冗余 |
 | 15 | ✅ `zwiki list`：按字段结构化浏览页面——`--tag <name>`/`--type <type>`/`--domain <domain>` 列匹配页面，无过滤时列全部页面路径 + 标题。与 `search`（全文检索）互补：`list` 是字段精确浏览，`search` 是内容子串匹配 + 评分排序 |

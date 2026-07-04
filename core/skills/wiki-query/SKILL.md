@@ -58,8 +58,8 @@ zwiki search "<query>" [--type <type>] [--domain <domain>]
 ```
 
 - 过滤条件 AND 语义：`--type` 大小写不敏感子串匹配，`--domain` 精确匹配顶级目录
-- 输出格式：`  {path} — {title} [score: {n}]`
-- 支持 `--json` 输出结构化数组
+- 输出格式：`  {path} — {title} [score: {n}]`，存在矛盾的页面末尾附加 `[!×N]`（N = 矛盾页数）
+- 支持 `--json` 输出结构化数组（含 `contradictions` 字段）
 
 ### 三级失败重试级联
 
@@ -110,7 +110,7 @@ zwiki search "<query>" [--type <type>] [--domain <domain>]
 | 非空 | 引用时附加"↯ 声明存在争议（与 {target} 等 N 个页面矛盾）" |
 | 空 | 无额外标注 |
 
-> `zwiki search --json` 输出中每个结果的 `contradictions` 字段为 `[{target, claims, detected, resolution}]` 数组。矛盾不改变引用决策（不跳过页面），仅标注。
+> Phase 3 逐页读取时直接解析 frontmatter 中的 `contradictions` 字段（`[{path, claims, detected, resolution}]` 数组）。矛盾不改变引用决策（不跳过页面），仅标注。
 
 ### Relations 递归
 
