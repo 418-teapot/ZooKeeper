@@ -28,7 +28,7 @@ const DEFAULT_STUB_THRESHOLD: usize = 100;
 /// `overview.md` is excluded from this list — it is a synthesis page
 /// that other pages may legitimately reference.
 const SYSTEM_FILES: &[&str] =
-    &["index.md", "log.md", "lint-report.md", "health-report.md", "SCHEMA.md"];
+    &["index.md", "lint-report.md", "health-report.md", "SCHEMA.md"];
 
 /// Meta file names excluded from index-sync comparison.
 ///
@@ -1298,7 +1298,13 @@ mod tests {
         let path = wiki_dir.join(rel);
         let frontmatter = wiki::parse_frontmatter(content);
         let body = wiki::strip_frontmatter(content);
-        Page { path, rel: rel.to_string(), frontmatter, body }
+        Page {
+            path,
+            rel: rel.to_string(),
+            frontmatter,
+            body,
+            raw: content.to_string(),
+        }
     }
 
     fn page_paths_to_pages(paths: &[PathBuf], base: &Path) -> Vec<Page> {
@@ -1316,7 +1322,13 @@ mod tests {
                     .to_string();
                 let frontmatter = wiki::parse_frontmatter(&content);
                 let body = wiki::strip_frontmatter(&content);
-                Some(Page { path: p.clone(), rel, frontmatter, body })
+                Some(Page {
+                    path: p.clone(),
+                    rel,
+                    frontmatter,
+                    body,
+                    raw: content,
+                })
             })
             .collect()
     }

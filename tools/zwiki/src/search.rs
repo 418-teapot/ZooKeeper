@@ -223,9 +223,8 @@ fn score_page(
     let body_count = count_substrings(&body_lower, &query_lower);
     score += body_count;
 
-    // Extract contradiction entries.
-    let raw_content = wiki::read_file(path);
-    let contradictions = contradictions::parse_contradictions(&raw_content);
+    // Extract contradiction entries from the already-read raw content.
+    let contradictions = contradictions::parse_contradictions(&page.raw);
 
     // Extract display fields.
     let title =

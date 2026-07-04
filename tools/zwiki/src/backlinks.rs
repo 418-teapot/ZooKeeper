@@ -547,7 +547,13 @@ mod tests {
         let rel_str = rel.to_string();
         let frontmatter = wiki::parse_frontmatter(content);
         let body = wiki::strip_frontmatter(content);
-        wiki::Page { path, rel: rel_str, frontmatter, body }
+        wiki::Page {
+            path,
+            rel: rel_str,
+            frontmatter,
+            body,
+            raw: content.to_string(),
+        }
     }
 
     // -------------------------------------------------------------------

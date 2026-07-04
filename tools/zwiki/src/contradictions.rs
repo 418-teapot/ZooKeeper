@@ -405,8 +405,11 @@ fn build_contradiction_entry(
         let escaped = claim.replace('\\', "\\\\").replace('"', "\\\"");
         entry.push(format!("      - \"{escaped}\""));
     }
-    entry.push(format!("    detected: {detected}"));
-    entry.push(format!("    resolution: {resolution}"));
+    let escaped_detected = detected.replace('\\', "\\\\").replace('"', "\\\"");
+    entry.push(format!("    detected: {escaped_detected}"));
+    let escaped_resolution =
+        resolution.replace('\\', "\\\\").replace('"', "\\\"");
+    entry.push(format!("    resolution: {escaped_resolution}"));
     entry
 }
 

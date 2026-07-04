@@ -526,7 +526,13 @@ mod tests {
         let path = wiki_dir.join(rel);
         let frontmatter = wiki::parse_frontmatter(content);
         let body = wiki::strip_frontmatter(content);
-        Page { path, rel: rel.to_string(), frontmatter, body }
+        Page {
+            path,
+            rel: rel.to_string(),
+            frontmatter,
+            body,
+            raw: content.to_string(),
+        }
     }
 
     /// Create a temp wiki directory and return (`wiki_dir`, pages, cache).
@@ -552,7 +558,13 @@ mod tests {
             let frontmatter = wiki::parse_frontmatter(content);
             let body = wiki::strip_frontmatter(content);
             let rel = rel_path.to_string();
-            let page = Page { path, rel: rel.clone(), frontmatter, body };
+            let page = Page {
+                path,
+                rel: rel.clone(),
+                frontmatter,
+                body,
+                raw: content.to_string(),
+            };
             cache.insert(rel.clone(), page.clone());
             pages.push(page);
         }

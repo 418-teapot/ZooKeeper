@@ -74,7 +74,13 @@ fn read_page_at(path: &Path, wiki_base: &Path) -> Option<Page> {
         .to_string();
     let frontmatter = wiki::parse_frontmatter(&content);
     let body = wiki::strip_frontmatter(&content);
-    Some(Page { path: path.to_path_buf(), rel, frontmatter, body })
+    Some(Page {
+        path: path.to_path_buf(),
+        rel,
+        frontmatter,
+        body,
+        raw: content,
+    })
 }
 
 // ---------------------------------------------------------------------------

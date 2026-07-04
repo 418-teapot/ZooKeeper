@@ -290,6 +290,9 @@ pub struct Page {
     pub frontmatter: HashMap<String, Value>,
     /// Body content with frontmatter removed.
     pub body: String,
+    /// Raw file content including frontmatter (for consumers that need
+    /// the full text, e.g. contradiction parsing).
+    pub raw: String,
 }
 
 /// Read and parse a wiki page given an explicit wiki base dir.
@@ -301,7 +304,13 @@ pub fn read_page_at(path: &Path, wiki_base: &Path) -> Option<Page> {
     let rel = relative_to(wiki_base, path);
     let frontmatter = parse_frontmatter(&content);
     let body = strip_frontmatter(&content);
-    Some(Page { path: path.to_path_buf(), rel, frontmatter, body })
+    Some(Page {
+        path: path.to_path_buf(),
+        rel,
+        frontmatter,
+        body,
+        raw: content,
+    })
 }
 
 /// Read and parse a wiki page.

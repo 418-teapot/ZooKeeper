@@ -262,7 +262,7 @@ Before returning your analysis, confirm ALL of the following:
 ### Format Compliance (SCHEMA.md rules)
 - [ ] All recommended frontmatter includes: title, type, timestamp, tags, status
 - [ ] Cross-reference paths are wiki-root-relative and domain-prefixed (e.g. `foo/concepts/bar.md`)
-- [ ] No references to system files (index.md, log.md, overview.md, SCHEMA.md) in any page's `related` field
+- [ ] No references to system files (index.md, overview.md, SCHEMA.md) in any page's `related` field
 - [ ] Every recommended knowledge page has a corresponding `<domain>/sources/<type>/<slug>.md` entry recording the ingested raw material
 - [ ] Uncertainty is marked with `> **待确认:**` blockquote, not stated as fact
 
