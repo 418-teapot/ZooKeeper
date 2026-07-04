@@ -8,6 +8,9 @@
 use std::fs;
 use std::path::Path;
 
+use chrono::Utc;
+
+use crate::property;
 use crate::wiki;
 
 // ---------------------------------------------------------------------------
@@ -47,6 +50,13 @@ pub fn link_supersede(
     // Old page (superseded) gets a `superseded_by` entry pointing to the new
     // page.
     append_frontmatter_block(&old_abs, "superseded_by", new_rel, reason)?;
+
+    // Mark the old page as validated at the moment of supersedure so that
+    // `check_cascade_stale` can distinguish pages reviewed post-supersedure
+    // from those that still need attention.
+    let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    property::set(&old_abs, "last_validated", &now)
+        .map_err(|e| format!("写入 last_validated 失败: {e}"))?;
 
     Ok(())
 }
@@ -559,5 +569,59 @@ mod tests {
         assert!(new_content.contains("supersedes:"));
         assert!(new_content.contains("  - path: old.md"));
         assert!(new_content.contains("    reason: replaces old"));
+    }
+
+    // -------------------------------------------------------------------
+    // link_supersede — writes last_validated (success path)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_link_supersede_writes_last_validated() {
+        // Writes to the real wiki dir because link_supersede calls
+        // wiki::wiki_dir() internally.  Uses unique temp paths under
+        // zwiki-test/supersede/ to avoid collisions.
+        let wiki_root = wiki::wiki_dir();
+        let old_rel = "zwiki-test/supersede/lv-old.md";
+        let new_rel = "zwiki-test/supersede/lv-new.md";
+        let old_abs = wiki_root.join(old_rel);
+        let new_abs = wiki_root.join(new_rel);
+
+        // Ensure parent directory exists.
+        if let Some(parent) = old_abs.parent() {
+            fs::create_dir_all(parent).ok();
+        }
+
+        // Create two test page files.
+        fs::write(&old_abs, "---\ntitle: Old Page\n---\n\nBody.\n")
+            .expect("failed to write test old page");
+        fs::write(&new_abs, "---\ntitle: New Page\n---\n\nBody.\n")
+            .expect("failed to write test new page");
+
+        // Run link_supersede — this is the success path under test.
+        let result = link_supersede(old_rel, new_rel, "successor");
+        assert!(result.is_ok(), "link_supersede should succeed: {result:?}");
+
+        // Read old file and verify last_validated was written.
+        let old_content = fs::read_to_string(&old_abs)
+            .expect("failed to read old page after supersedure");
+        assert!(
+            old_content.contains("last_validated:"),
+            "old page should have last_validated after supersedure"
+        );
+
+        // Extract and validate the timestamp is a sensible ISO 8601 value.
+        let fm = wiki::parse_frontmatter(&old_content);
+        let lv = fm
+            .get("last_validated")
+            .and_then(|v| v.as_str())
+            .expect("last_validated should be a string");
+        assert!(
+            lv.contains('T') || lv.contains('-'),
+            "last_validated should be an ISO 8601 timestamp, got: {lv}"
+        );
+
+        // Clean up.
+        fs::remove_file(&old_abs).ok();
+        fs::remove_file(&new_abs).ok();
     }
 }

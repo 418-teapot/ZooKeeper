@@ -10,6 +10,7 @@ use chrono::NaiveDate;
 use regex::Regex;
 use serde_json::Value;
 
+use crate::backlinks;
 use crate::display::{Issue, LintResults};
 use crate::wiki::{self, Page};
 
@@ -365,6 +366,110 @@ pub fn check_stale_pages(
 }
 
 // ---------------------------------------------------------------------------
+// 5. check_cascade_stale
+// ---------------------------------------------------------------------------
+
+/// Find pages that reference a superseded page but have not been reviewed
+/// (i.e. their `last_validated` is older than or equal to the superseded
+/// page's `last_validated`).
+///
+/// Uses the backlinks reverse index to discover referrers.  Pages whose
+/// `last_validated` is *newer* than the superseded page's `last_validated`
+/// are considered already reviewed and are NOT flagged.
+///
+/// The superseding page itself (linked via `superseded_by`) is always
+/// excluded from results — its backlink to the old page is expected.
+pub fn check_cascade_stale(pages: &[Page], wiki_dir: &Path) -> Vec<Issue> {
+    let reverse_index = backlinks::build_reverse_index(wiki_dir, pages);
+
+    // Map rel → page for quick lookup.
+    let page_map: HashMap<String, &Page> =
+        pages.iter().map(|p| (p.rel.clone(), p)).collect();
+
+    let mut issues = Vec::new();
+
+    for page in pages {
+        // Find pages that have been superseded (superseded_by field).
+        let superseded_by_paths: Vec<String> =
+            match page.frontmatter.get("superseded_by") {
+                Some(Value::Array(arr)) => arr
+                    .iter()
+                    .filter_map(|item| {
+                        // Try object format first: {"path": "..."}
+                        item.as_object()
+                            .and_then(|obj| {
+                                obj.get("path").and_then(|v| v.as_str())
+                            })
+                            .map(str::to_string)
+                            // Fallback to string format: "path: <value>"
+                            .or_else(|| {
+                                item.as_str()
+                                    .and_then(|s| s.strip_prefix("path: "))
+                                    .map(str::to_string)
+                            })
+                    })
+                    .collect(),
+                _ => continue,
+            };
+
+        if superseded_by_paths.is_empty() {
+            continue;
+        }
+
+        // Collect all superseding-page paths for exclusion.
+        let superseding_paths: HashSet<&str> =
+            superseded_by_paths.iter().map(String::as_str).collect();
+
+        // Reference timestamp: the superseded page's last_validated
+        // string.  Compared as raw ISO 8601 strings (which sort
+        // correctly) because NaiveDate would lose time-of-day
+        // precision — two timestamps on the same calendar day would
+        // compare equal.
+        let sup_lv_str =
+            page.frontmatter.get("last_validated").and_then(|v| v.as_str());
+
+        // Look up referrers in the reverse index.
+        if let Some(referrers) = reverse_index.get(&page.rel) {
+            'referrer: for referrer_rel in referrers {
+                // Skip the superseding pages themselves.
+                if superseding_paths.contains(referrer_rel.as_str()) {
+                    continue;
+                }
+
+                // If the superseded page has a known last_validated,
+                // check whether the referrer was reviewed after that
+                // timestamp.
+                if let Some(sup_lv) = sup_lv_str
+                    && let Some(referrer_page) = page_map.get(referrer_rel)
+                    && let Some(r_lv) = referrer_page
+                        .frontmatter
+                        .get("last_validated")
+                        .and_then(|v| v.as_str())
+                    && r_lv > sup_lv
+                {
+                    // Referrer was already reviewed post-
+                    // supersedure — do not flag.
+                    continue 'referrer;
+                }
+
+                issues.push(Issue {
+                    page: referrer_rel.clone(),
+                    kind: "cascade_stale".to_string(),
+                    details: serde_json::json!({
+                        "superseded_page": page.rel,
+                        "superseded_by": superseded_by_paths.join(", "),
+                    })
+                    .to_string(),
+                });
+            }
+        }
+    }
+
+    issues.sort_by(|a, b| a.page.cmp(&b.page));
+    issues
+}
+
+// ---------------------------------------------------------------------------
 // Orchestrator
 // ---------------------------------------------------------------------------
 
@@ -382,6 +487,7 @@ pub fn run_all() -> LintResults {
         orphan_pages: check_orphan_pages(&pages, &wiki_dir),
         sparse_pages: check_sparse_pages(&pages),
         stale_pages: check_stale_pages(&pages, reference_date),
+        cascade_stale: check_cascade_stale(&pages, &wiki_dir),
     }
 }
 
@@ -767,5 +873,157 @@ mod tests {
         )];
         let issues = check_stale_pages(&pages, reference);
         assert!(issues.is_empty(), "page with invalid date should be skipped");
+    }
+
+    // =======================================================================
+    // 5. check_cascade_stale
+    // =======================================================================
+
+    #[test]
+    fn test_cascade_stale_referrer_flagged() {
+        // Superseded page with `last_validated`, referrer with older
+        // `last_validated` → 1 issue.
+        let (wiki_dir, pages, _) = setup_wiki(
+            "cascade_flagged",
+            &[
+                (
+                    "shared/concepts/old.md",
+                    "---\ntitle: Old\n\
+                     superseded_by: [path: shared/concepts/new.md]\n\
+                     last_validated: 2024-01-01T00:00:00Z\n---\n\
+                     # Old\n\nContent.\n",
+                ),
+                (
+                    "shared/concepts/referrer.md",
+                    "---\ntitle: Referrer\n\
+                     last_validated: 2023-12-01T00:00:00Z\n---\n\
+                     # Referrer\n\nSee [old](shared/concepts/old.md).\n",
+                ),
+                (
+                    "shared/concepts/new.md",
+                    "---\ntitle: New\n---\n# New\n\nContent.\n",
+                ),
+            ],
+        );
+        let issues = check_cascade_stale(&pages, &wiki_dir);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].page, "shared/concepts/referrer.md");
+        assert_eq!(issues[0].kind, "cascade_stale");
+        let details: Value = serde_json::from_str(&issues[0].details).unwrap();
+        assert_eq!(details["superseded_page"], "shared/concepts/old.md");
+        assert_eq!(details["superseded_by"], "shared/concepts/new.md");
+    }
+
+    #[test]
+    fn test_cascade_stale_reviewed_not_flagged() {
+        // Superseded page with `last_validated`, referrer with newer
+        // `last_validated` → 0 issues.
+        let (wiki_dir, pages, _) = setup_wiki(
+            "cascade_reviewed",
+            &[
+                (
+                    "shared/concepts/old.md",
+                    "---\ntitle: Old\n\
+                     superseded_by: [path: shared/concepts/new.md]\n\
+                     last_validated: 2024-01-01T00:00:00Z\n---\n\
+                     # Old\n\nContent.\n",
+                ),
+                (
+                    "shared/concepts/referrer.md",
+                    "---\ntitle: Referrer\n\
+                     last_validated: 2024-06-01T00:00:00Z\n---\n\
+                     # Referrer\n\nSee [old](shared/concepts/old.md).\n",
+                ),
+                (
+                    "shared/concepts/new.md",
+                    "---\ntitle: New\n---\n# New\n\nContent.\n",
+                ),
+            ],
+        );
+        let issues = check_cascade_stale(&pages, &wiki_dir);
+        assert!(
+            issues.is_empty(),
+            "referrer with newer last_validated should not be flagged"
+        );
+    }
+
+    #[test]
+    fn test_cascade_stale_superseding_page_excluded() {
+        // Superseding page itself references the old page → 0 issues
+        // (superseding page is always excluded from results).
+        let (wiki_dir, pages, _) = setup_wiki(
+            "cascade_excluded",
+            &[
+                (
+                    "shared/concepts/old.md",
+                    "---\ntitle: Old\n\
+                     superseded_by: [path: shared/concepts/new.md]\n\
+                     last_validated: 2024-01-01T00:00:00Z\n---\n\
+                     # Old\n\nContent.\n",
+                ),
+                (
+                    "shared/concepts/new.md",
+                    "---\ntitle: New\n---\n# New\n\n\
+                     See [old](shared/concepts/old.md).\n",
+                ),
+            ],
+        );
+        let issues = check_cascade_stale(&pages, &wiki_dir);
+        assert!(
+            issues.is_empty(),
+            "superseding page itself should be excluded"
+        );
+    }
+
+    #[test]
+    fn test_cascade_stale_no_last_validated_fallback() {
+        // Superseded page without `last_validated` → referrer still
+        // flagged (no timestamp to compare against).
+        let (wiki_dir, pages, _) = setup_wiki(
+            "cascade_no_lv",
+            &[
+                (
+                    "shared/concepts/old.md",
+                    "---\ntitle: Old\n\
+                     superseded_by: [path: shared/concepts/new.md]\n---\n\
+                     # Old\n\nContent.\n",
+                ),
+                (
+                    "shared/concepts/referrer.md",
+                    "---\ntitle: Referrer\n---\n# Referrer\n\n\
+                     See [old](shared/concepts/old.md).\n",
+                ),
+                (
+                    "shared/concepts/new.md",
+                    "---\ntitle: New\n---\n# New\n\nContent.\n",
+                ),
+            ],
+        );
+        let issues = check_cascade_stale(&pages, &wiki_dir);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].kind, "cascade_stale");
+    }
+
+    #[test]
+    fn test_cascade_stale_no_referrers() {
+        // No pages reference the superseded page → 0 issues.
+        let (wiki_dir, pages, _) = setup_wiki(
+            "cascade_no_refs",
+            &[
+                (
+                    "shared/concepts/old.md",
+                    "---\ntitle: Old\n\
+                     superseded_by: [path: shared/concepts/new.md]\n\
+                     last_validated: 2024-01-01T00:00:00Z\n---\n\
+                     # Old\n\nContent.\n",
+                ),
+                (
+                    "shared/concepts/new.md",
+                    "---\ntitle: New\n---\n# New\n\nContent.\n",
+                ),
+            ],
+        );
+        let issues = check_cascade_stale(&pages, &wiki_dir);
+        assert!(issues.is_empty(), "no referrers should produce no issues");
     }
 }

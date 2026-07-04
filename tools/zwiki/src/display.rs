@@ -100,6 +100,7 @@ fn fmt_empty_files(issues: &[Issue]) -> Vec<String> {
         }
     }
     lines.push(String::new());
+    lines.push(String::new());
     lines
 }
 
@@ -135,6 +136,7 @@ fn fmt_index_sync(result: &IndexSyncResult) -> Vec<String> {
         lines.push(String::new());
     }
 
+    lines.push(String::new());
     lines
 }
 
@@ -153,6 +155,7 @@ fn fmt_log_coverage(issues: &[Issue]) -> Vec<String> {
             lines.push(format!("- `{}` — {}", issue.page, issue.details));
         }
     }
+    lines.push(String::new());
     lines.push(String::new());
     lines
 }
@@ -175,6 +178,7 @@ fn fmt_frontmatter(issues: &[Issue]) -> Vec<String> {
             ));
         }
     }
+    lines.push(String::new());
     lines.push(String::new());
     lines
 }
@@ -202,6 +206,7 @@ fn fmt_related_field(issues: &[Issue]) -> Vec<String> {
         }
     }
     lines.push(String::new());
+    lines.push(String::new());
     lines
 }
 
@@ -228,6 +233,7 @@ fn fmt_related_body_consistency(issues: &[Issue]) -> Vec<String> {
         }
     }
     lines.push(String::new());
+    lines.push(String::new());
     lines
 }
 
@@ -249,6 +255,7 @@ fn fmt_source_field(issues: &[Issue]) -> Vec<String> {
             ));
         }
     }
+    lines.push(String::new());
     lines.push(String::new());
     lines
 }
@@ -300,6 +307,7 @@ fn fmt_missing_inline_links(issues: &[Issue]) -> Vec<String> {
             }
         }
     }
+    lines.push(String::new());
     lines.push(String::new());
     lines
 }
@@ -353,6 +361,7 @@ fn fmt_duplicate_inline_links(issues: &[Issue]) -> Vec<String> {
         }
     }
     lines.push(String::new());
+    lines.push(String::new());
     lines
 }
 
@@ -400,6 +409,7 @@ pub struct LintResults {
     pub orphan_pages: Vec<Issue>,
     pub sparse_pages: Vec<Issue>,
     pub stale_pages: Vec<Issue>,
+    pub cascade_stale: Vec<Issue>,
 }
 
 // ---------------------------------------------------------------------------
@@ -504,6 +514,31 @@ fn fmt_stale_pages(issues: &[Issue]) -> Vec<String> {
     lines
 }
 
+fn fmt_cascade_stale(issues: &[Issue]) -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.push("## 级联过时 (Cascade Stale)".to_string());
+    lines.push(String::new());
+    lines.push(format!("共发现 **{}** 个问题。", issues.len()));
+    lines.push(String::new());
+    if !issues.is_empty() {
+        lines.push("| 引用页面 | 被取代页面 | 取代为 |".to_string());
+        lines.push("|---|---|---|".to_string());
+        for issue in issues {
+            let details: serde_json::Value =
+                serde_json::from_str(&issue.details).unwrap_or_default();
+            let superseded_page =
+                details["superseded_page"].as_str().unwrap_or("");
+            let superseded_by = details["superseded_by"].as_str().unwrap_or("");
+            lines.push(format!(
+                "| `{}` | `{}` | `{}` |",
+                issue.page, superseded_page, superseded_by
+            ));
+        }
+    }
+    lines.push(String::new());
+    lines
+}
+
 /// Format lint check results as Chinese markdown.
 ///
 /// Sections:
@@ -511,21 +546,18 @@ fn fmt_stale_pages(issues: &[Issue]) -> Vec<String> {
 /// - 孤立页面 (Orphan Pages)
 /// - 稀疏页面 (Sparse Pages)
 /// - 过时页面 (Stale Pages)
+/// - 级联过时 (Cascade Stale)
 pub fn format_lint_report(results: &LintResults) -> String {
     let total = results.broken_links.len()
         + results.orphan_pages.len()
         + results.sparse_pages.len()
-        + results.stale_pages.len();
+        + results.stale_pages.len()
+        + results.cascade_stale.len();
 
     let mut lines: Vec<String> = Vec::new();
 
     // Header
-    lines.push("# Wiki Lint Report".to_string());
-    lines.push(String::new());
-    lines.push(format!(
-        "Generated: {}",
-        Local::now().format("%Y-%m-%d %H:%M:%S")
-    ));
+    lines.push(format!("# Wiki Lint 报告 — {}", today()));
     lines.push(String::new());
 
     // Sections
@@ -533,6 +565,7 @@ pub fn format_lint_report(results: &LintResults) -> String {
     lines.extend(fmt_orphan_pages(&results.orphan_pages));
     lines.extend(fmt_sparse_pages(&results.sparse_pages));
     lines.extend(fmt_stale_pages(&results.stale_pages));
+    lines.extend(fmt_cascade_stale(&results.cascade_stale));
 
     // Footer
     lines.push("---".to_string());
@@ -654,9 +687,13 @@ mod tests {
     fn test_format_lint_report_all_sections() {
         let results = LintResults::default();
         let report = format_lint_report(&results);
-        for section in
-            &["## 断裂链接", "## 孤立页面", "## 稀疏页面", "## 过时页面"]
-        {
+        for section in &[
+            "## 断裂链接",
+            "## 孤立页面",
+            "## 稀疏页面",
+            "## 过时页面",
+            "## 级联过时",
+        ] {
             assert!(report.contains(section), "missing section: {section}");
         }
     }

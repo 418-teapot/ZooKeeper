@@ -582,6 +582,7 @@ const fn count_lint_issues(r: &display::LintResults) -> usize {
         + r.orphan_pages.len()
         + r.sparse_pages.len()
         + r.stale_pages.len()
+        + r.cascade_stale.len()
 }
 
 fn print_json_check_output(
@@ -624,6 +625,7 @@ fn print_json_check_output(
             "orphan_pages": fmt_issues(&lint.orphan_pages),
             "sparse_pages": fmt_issues(&lint.sparse_pages),
             "stale_pages": fmt_issues(&lint.stale_pages),
+            "cascade_stale": fmt_issues(&lint.cascade_stale),
         },
         "total_issues": health_issues + lint_issues + diff_issues,
     });
