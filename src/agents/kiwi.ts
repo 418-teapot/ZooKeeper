@@ -25,6 +25,7 @@ The calling agent will also tell you which skill to load for this task.
 
 <Skills>
 Distillation tasks → load \`kiwi-distill\` (source material → structured page recommendations, with supersede, contradiction detection, and claim validation)
+Verification tasks → load \`kiwi-verify\` (compare two existing wiki pages, check if derived page claims are supported by source page)
 </Skills>
 
 <Contract>

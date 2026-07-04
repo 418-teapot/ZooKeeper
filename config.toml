@@ -310,7 +310,7 @@ task = "deny"
 edit = "deny"
 [agent.kiwi.permission.skill]
 "*" = "deny"
-"kiwi-distill" = "allow"
+"kiwi-*" = "allow"
 
 # 禁用内置 agent
 [agent.plan]
@@ -356,5 +356,7 @@ git-commit  = "enable"
 code-review = "enable"
 wiki-ingest = "enable"
 wiki-query  = "enable"
+wiki-verify  = "enable"
+mola-plan    = "enable"
 kiwi-distill = "enable"
-mola-plan   = "enable"
+kiwi-verify  = "enable"

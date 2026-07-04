@@ -1,12 +1,6 @@
 ---
 name: mola-plan
-description: "Used for all planning operations. Automatically adjusts interview depth
-  based on task clarity — clear tasks get fast-track decomposition, fuzzy requirements
-  trigger research-and-adopt defaults, and architecture-class tasks get deep
-  decision-tree grilling with scenario stress testing. Produces structured plan files
-  (and design specs for architecture tasks). Load this skill whenever the request
-  involves requirement clarification, task decomposition, design decisions, or
-  implementation planning."
+description: "Used for all planning operations. Automatically adjusts interview depth based on task clarity — clear tasks get fast-track decomposition, fuzzy requirements trigger research-and-adopt defaults, and architecture-class tasks get deep decision-tree grilling with scenario stress testing. Produces structured plan files (and design specs for architecture tasks). Load this skill whenever the request involves requirement clarification, task decomposition, design decisions, or implementation planning."
 ---
 
 # Planning — from ground-check to approved plan

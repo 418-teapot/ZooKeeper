@@ -171,6 +171,24 @@ pub fn delete(page: &Path, name: &str) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Status downgrade
+// ---------------------------------------------------------------------------
+
+/// Downgrade a status value by one confidence level.
+///
+/// Mapping: `stable` → `review` → `draft` → `draft`.
+/// `deprecated` and unknown values pass through unchanged.
+#[must_use]
+pub fn downgrade_status(status: &str) -> &str {
+    match status {
+        "stable" => "review",
+        "review" | "draft" => "draft",
+        "deprecated" => "deprecated",
+        other => other,
+    }
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -200,6 +218,35 @@ mod tests {
     // -------------------------------------------------------------------
     // get
     // -------------------------------------------------------------------
+
+    // -------------------------------------------------------------------
+    // downgrade_status
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_downgrade_stable_to_review() {
+        assert_eq!(downgrade_status("stable"), "review");
+    }
+
+    #[test]
+    fn test_downgrade_review_to_draft() {
+        assert_eq!(downgrade_status("review"), "draft");
+    }
+
+    #[test]
+    fn test_downgrade_draft_stays_draft() {
+        assert_eq!(downgrade_status("draft"), "draft");
+    }
+
+    #[test]
+    fn test_downgrade_deprecated_stays_deprecated() {
+        assert_eq!(downgrade_status("deprecated"), "deprecated");
+    }
+
+    #[test]
+    fn test_downgrade_unknown_status_passthrough() {
+        assert_eq!(downgrade_status("unknown"), "unknown");
+    }
 
     #[test]
     fn test_get_existing_field() {

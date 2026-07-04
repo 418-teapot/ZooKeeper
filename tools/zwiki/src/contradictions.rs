@@ -229,10 +229,6 @@ struct ApplyEntry {
     page_a: String,
     /// Wiki-relative path of page B.
     page_b: String,
-    /// Downgraded status of page A (None if status was absent/invalid).
-    status_a: Option<String>,
-    /// Downgraded status of page B (None if status was absent/invalid).
-    status_b: Option<String>,
     /// Contradictory claims.
     claims: Vec<String>,
 }
@@ -276,23 +272,7 @@ fn has_mutual_contradiction(
 // Status downgrade
 // ---------------------------------------------------------------------------
 
-/// Compute the downgraded status for a page that is in contradiction.
-///
-/// Mapping:
-/// - `stable` → `review`
-/// - `review` → `draft`
-/// - `draft` → `draft` (no change)
-/// - `deprecated` → `deprecated` (no change)
-/// - All other values are returned as-is.
-#[must_use]
-fn downgrade_status(status: &str) -> &str {
-    match status {
-        "stable" => "review",
-        "review" | "draft" => "draft",
-        "deprecated" => "deprecated",
-        other => other,
-    }
-}
+// The canonical `downgrade_status` implementation lives in `property::downgrade_status`.
 
 // ---------------------------------------------------------------------------
 // Frontmatter block manipulation
@@ -567,39 +547,9 @@ fn apply_one_pair(
         std::process::exit(1);
     }
 
-    // Read current status and compute downgrade.
-    let re_read_a = wiki::read_file(&abs_a);
-    let fm_a = wiki::parse_frontmatter(&re_read_a);
-    let status_a: Option<String> = fm_a
-        .get("status")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| downgrade_status(s).to_string());
-
-    let re_read_b = wiki::read_file(&abs_b);
-    let fm_b = wiki::parse_frontmatter(&re_read_b);
-    let status_b: Option<String> = fm_b
-        .get("status")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| downgrade_status(s).to_string());
-
-    // Write downgraded status and last_validated.
-    if let Some(ref new_status) = status_a
-        && let Err(e) = property::set(&abs_a, "status", new_status)
-    {
-        eprintln!("写入状态失败 {}: {e}", input.page_a);
-        std::process::exit(1);
-    }
+    // Update last_validated on both pages.
     if let Err(e) = property::set(&abs_a, "last_validated", today) {
         eprintln!("写入 last_validated 失败 {}: {e}", input.page_a);
-        std::process::exit(1);
-    }
-
-    if let Some(ref new_status) = status_b
-        && let Err(e) = property::set(&abs_b, "status", new_status)
-    {
-        eprintln!("写入状态失败 {}: {e}", input.page_b);
         std::process::exit(1);
     }
     if let Err(e) = property::set(&abs_b, "last_validated", today) {
@@ -610,8 +560,6 @@ fn apply_one_pair(
     Some(ApplyEntry {
         page_a: input.page_a.clone(),
         page_b: input.page_b.clone(),
-        status_a,
-        status_b,
         claims: input.claims.clone(),
     })
 }
@@ -620,8 +568,9 @@ fn apply_one_pair(
 ///
 /// Reads a JSON array of contradiction pairs from stdin, validates
 /// page existence, checks for duplicates, and writes contradiction
-/// frontmatter blocks with symmetric status downgrade and
-/// `last_validated` update.
+/// frontmatter blocks with `last_validated` update.
+/// Status downgrade is NOT performed — callers must explicitly use
+/// `zwiki property status --page <path> --downgrade` if desired.
 pub fn cmd_apply(json: bool) {
     let inputs = match input_from_stdin() {
         Ok(v) => v,
@@ -902,32 +851,32 @@ contradictions:
     }
 
     // -------------------------------------------------------------------
-    // downgrade_status
+    // downgrade_status (delegates to property::downgrade_status)
     // -------------------------------------------------------------------
 
     #[test]
     fn test_downgrade_stable_to_review() {
-        assert_eq!(downgrade_status("stable"), "review");
+        assert_eq!(property::downgrade_status("stable"), "review");
     }
 
     #[test]
     fn test_downgrade_review_to_draft() {
-        assert_eq!(downgrade_status("review"), "draft");
+        assert_eq!(property::downgrade_status("review"), "draft");
     }
 
     #[test]
     fn test_downgrade_draft_stays_draft() {
-        assert_eq!(downgrade_status("draft"), "draft");
+        assert_eq!(property::downgrade_status("draft"), "draft");
     }
 
     #[test]
     fn test_downgrade_deprecated_stays_deprecated() {
-        assert_eq!(downgrade_status("deprecated"), "deprecated");
+        assert_eq!(property::downgrade_status("deprecated"), "deprecated");
     }
 
     #[test]
     fn test_downgrade_unknown_status_passthrough() {
-        assert_eq!(downgrade_status("unknown"), "unknown");
+        assert_eq!(property::downgrade_status("unknown"), "unknown");
     }
 
     // -------------------------------------------------------------------

@@ -19,6 +19,7 @@ mod property;
 mod search;
 mod status;
 mod supersede;
+mod verify;
 mod wiki;
 
 use clap::{Parser, Subcommand};
@@ -120,7 +121,7 @@ enum Command {
         outline: bool,
     },
 
-    /// Read, set, or delete a frontmatter property
+    /// Read, set, downgrade, or delete a frontmatter property
     Property {
         /// Property name (e.g. timeliness, status, tags)
         name: String,
@@ -132,6 +133,10 @@ enum Command {
         /// Value to set
         #[arg(long)]
         value: Option<String>,
+
+        /// Downgrade the property value (status: stable→review→draft)
+        #[arg(long)]
+        downgrade: bool,
 
         /// Delete the property
         #[arg(long)]
@@ -205,6 +210,13 @@ enum Command {
         tag: Option<String>,
 
         /// Slice by top-level domain (e.g. autoresearch, shared)
+        #[arg(long)]
+        domain: Option<String>,
+    },
+
+    /// Check which derived pages have stale sources
+    Verify {
+        /// Filter by top-level domain (e.g. autoresearch, shared)
         #[arg(long)]
         domain: Option<String>,
     },
@@ -317,8 +329,8 @@ fn dispatch(args: Args) {
         Some(Command::Page { path, property, outline }) => {
             cmd_page(&path, property.as_deref(), outline);
         }
-        Some(Command::Property { name, page, value, delete }) => {
-            cmd_property(&name, &page, value.as_deref(), delete);
+        Some(Command::Property { name, page, value, downgrade, delete }) => {
+            cmd_property(&name, &page, value.as_deref(), downgrade, delete);
         }
         Some(Command::Create { domain, r#type, title, slug, source_type }) => {
             cmd_create(
@@ -354,7 +366,27 @@ fn dispatch(args: Args) {
                 args.json,
             );
         }
-        Some(Command::Tags { r#type, domain }) => {
+        ref cmd => dispatch_tail(&args, cmd.as_ref().unwrap()),
+    }
+}
+
+/// Dispatch the remaining subcommands (Verify through Contradictions)
+/// to keep the main `dispatch` function under the line limit.
+fn dispatch_tail(args: &Args, cmd: &Command) {
+    match cmd {
+        Command::Verify { domain } => {
+            let wiki_dir = wiki::wiki_dir();
+            if check_domain_or_print(
+                domain.as_deref(),
+                &wiki_dir,
+                args.json,
+                "[]",
+            ) {
+                return;
+            }
+            verify::cmd_verify(args.json, domain.as_deref());
+        }
+        Command::Tags { r#type, domain } => {
             cmd_aggregate(
                 aggregate::AggregateField::Tags,
                 r#type.as_deref(),
@@ -363,7 +395,7 @@ fn dispatch(args: Args) {
                 args.json,
             );
         }
-        Some(Command::Types { tag, domain }) => {
+        Command::Types { tag, domain } => {
             cmd_aggregate(
                 aggregate::AggregateField::Types,
                 None,
@@ -372,7 +404,7 @@ fn dispatch(args: Args) {
                 args.json,
             );
         }
-        Some(Command::Domains { r#type, tag }) => {
+        Command::Domains { r#type, tag } => {
             cmd_aggregate(
                 aggregate::AggregateField::Domains,
                 r#type.as_deref(),
@@ -381,13 +413,14 @@ fn dispatch(args: Args) {
                 args.json,
             );
         }
-        Some(Command::Move { old, new }) => cmd_move(&old, &new, args.json),
-        Some(Command::Supersede { old, new, reason }) => {
-            cmd_supersede(&old, &new, &reason);
+        Command::Move { old, new } => cmd_move(old, new, args.json),
+        Command::Supersede { old, new, reason } => {
+            cmd_supersede(old, new, reason);
         }
-        Some(Command::Contradictions(ref cmd)) => {
+        Command::Contradictions(cmd) => {
             contradictions::dispatch(cmd, args.json);
         }
+        _ => unreachable!(),
     }
 }
 
@@ -573,6 +606,24 @@ fn cmd_check(opts: &CheckOpts) {
                 stale_updates.len(),
                 stale_count,
                 current_count,
+            );
+        }
+
+        // Invalidate derived pages whose sources have changed.
+        let invalidated = health::invalidate_by_source(&all_pages);
+        for update in &invalidated {
+            if let Err(e) = property::set(
+                &update.path,
+                "last_validated",
+                &update.new_last_validated,
+            ) {
+                eprintln!("写入失败 {}: {e}", update.rel);
+            }
+        }
+        if !invalidated.is_empty() {
+            eprintln!(
+                "已重置 {} 个页面的 last_validated（来源页面已变更）",
+                invalidated.len()
             );
         }
     }
@@ -809,6 +860,7 @@ fn cmd_property(
     name: &str,
     page_path: &str,
     value: Option<&str>,
+    downgrade: bool,
     delete: bool,
 ) {
     let full = wiki::wiki_dir().join(page_path);
@@ -817,6 +869,23 @@ fn cmd_property(
             eprintln!("{e}");
             process::exit(1);
         });
+    } else if downgrade {
+        if name != "status" {
+            eprintln!("--downgrade 仅适用于 status 属性");
+            process::exit(1);
+        }
+        let current = property::get(&full, name)
+            .unwrap_or_else(|e| {
+                eprintln!("{e}");
+                process::exit(1);
+            })
+            .unwrap_or_default();
+        let new_val = property::downgrade_status(&current);
+        property::set(&full, name, new_val).unwrap_or_else(|e| {
+            eprintln!("{e}");
+            process::exit(1);
+        });
+        println!("{current} → {new_val}");
     } else if let Some(val) = value {
         property::set(&full, name, val).unwrap_or_else(|e| {
             eprintln!("{e}");
@@ -1127,7 +1196,7 @@ mod tests {
         ])
         .unwrap();
         match args.command {
-            Some(Command::Property { name, page, value, delete }) => {
+            Some(Command::Property { name, page, value, delete, .. }) => {
                 assert_eq!(name, "timeliness");
                 assert_eq!(page, "concepts/npc.md");
                 assert_eq!(value, Some("stale".to_string()));
@@ -1151,6 +1220,27 @@ mod tests {
         match args.command {
             Some(Command::Property { delete, .. }) => {
                 assert!(delete);
+            }
+            _ => panic!("expected Property"),
+        }
+    }
+
+    #[test]
+    fn test_property_downgrade_parses() {
+        let args = Args::try_parse_from([
+            "zwiki",
+            "property",
+            "status",
+            "--page",
+            "concepts/npc.md",
+            "--downgrade",
+        ])
+        .unwrap();
+        match args.command {
+            Some(Command::Property { name, page, downgrade, .. }) => {
+                assert_eq!(name, "status");
+                assert_eq!(page, "concepts/npc.md");
+                assert!(downgrade);
             }
             _ => panic!("expected Property"),
         }
@@ -1738,6 +1828,65 @@ mod tests {
                 assert_eq!(new, "concepts/bar.md");
             }
             _ => panic!("expected Move"),
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Verify subcommand
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_verify_parses() {
+        let args = Args::try_parse_from(["zwiki", "verify"]).unwrap();
+        match args.command {
+            Some(Command::Verify { domain }) => {
+                assert!(domain.is_none());
+            }
+            _ => panic!("expected Verify"),
+        }
+    }
+
+    #[test]
+    fn test_verify_with_json_parses() {
+        let args = Args::try_parse_from(["zwiki", "--json", "verify"]).unwrap();
+        assert!(args.json);
+        match args.command {
+            Some(Command::Verify { domain }) => {
+                assert!(domain.is_none());
+            }
+            _ => panic!("expected Verify with json"),
+        }
+    }
+
+    #[test]
+    fn test_verify_with_domain_parses() {
+        let args = Args::try_parse_from([
+            "zwiki",
+            "verify",
+            "--domain",
+            "autoresearch",
+        ])
+        .unwrap();
+        match args.command {
+            Some(Command::Verify { domain }) => {
+                assert_eq!(domain, Some("autoresearch".to_string()));
+            }
+            _ => panic!("expected Verify with domain"),
+        }
+    }
+
+    #[test]
+    fn test_verify_with_json_and_domain_parses() {
+        let args = Args::try_parse_from([
+            "zwiki", "--json", "verify", "--domain", "shared",
+        ])
+        .unwrap();
+        assert!(args.json);
+        match args.command {
+            Some(Command::Verify { domain }) => {
+                assert_eq!(domain, Some("shared".to_string()));
+            }
+            _ => panic!("expected Verify with json and domain"),
         }
     }
 }

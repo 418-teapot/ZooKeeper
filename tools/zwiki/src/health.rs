@@ -1235,6 +1235,124 @@ pub fn mark_stale(pages: &[Page]) -> Vec<StaleUpdate> {
 }
 
 // ---------------------------------------------------------------------------
+// Source-traceback invalidation
+// ---------------------------------------------------------------------------
+
+/// Result of a source-traceback invalidation — a derived (analysis or
+/// synthesis) page whose `last_validated` needs resetting because one or
+/// more of its source pages have a newer `timestamp`.
+#[derive(Debug, Clone)]
+pub struct InvalidateUpdate {
+    /// Absolute filesystem path.
+    pub path: PathBuf,
+    /// Path relative to `WIKI_DIR`.
+    pub rel: String,
+    /// The new `last_validated` value (the latest source timestamp).
+    pub new_last_validated: String,
+}
+
+/// Check every analysis and synthesis page: if any source page has a
+/// `timestamp` newer than the derived page's `last_validated`, the
+/// validation is stale and `last_validated` should be reset to the
+/// latest source timestamp.
+///
+/// Edge cases handled:
+/// - Missing `sources` field or empty array → skip.
+/// - Unresolvable source path (not in the page set) → skip.
+/// - Unparseable source `timestamp` → skip that source.
+/// - Missing or unparseable `last_validated` on the derived page → skip.
+pub fn invalidate_by_source(pages: &[Page]) -> Vec<InvalidateUpdate> {
+    use chrono::NaiveDate;
+
+    // Build a lookup map keyed by rel path for O(1) source resolution.
+    let by_rel: HashMap<&str, &Page> =
+        pages.iter().map(|p| (p.rel.as_str(), p)).collect();
+
+    let mut updates: Vec<InvalidateUpdate> = Vec::new();
+
+    for page in pages {
+        let fm = &page.frontmatter;
+
+        // Only analysis and synthesis pages have source-derived validity.
+        if !matches!(
+            fm.get("type").and_then(|v| v.as_str()),
+            Some("analysis" | "synthesis")
+        ) {
+            continue;
+        }
+
+        // Get the sources array — skip if missing or not an array.
+        let Value::Array(sources) = fm.get("sources").unwrap_or(&Value::Null)
+        else {
+            continue;
+        };
+        if sources.is_empty() {
+            continue;
+        }
+
+        // Parse the derived page's last_validated — skip if missing or
+        // unparseable so we never blindly overwrite.
+        let Some(derived_date) = fm
+            .get("last_validated")
+            .and_then(|v| v.as_str())
+            .and_then(wiki::parse_date)
+        else {
+            continue;
+        };
+
+        // Track the latest source timestamp that is newer than
+        // the derived page's last_validated.
+        let mut max_source_date: Option<NaiveDate> = None;
+
+        for source_val in sources {
+            let Some(source_rel_raw) = source_val.as_str() else {
+                continue;
+            };
+            // Normalize: ensure .md extension (match verify.rs behavior).
+            let source_rel = if std::path::Path::new(source_rel_raw)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+            {
+                source_rel_raw.to_string()
+            } else {
+                format!("{source_rel_raw}.md")
+            };
+
+            let Some(source_page) = by_rel.get(source_rel.as_str()) else {
+                continue;
+            };
+
+            let Some(source_date) = source_page
+                .frontmatter
+                .get("timestamp")
+                .and_then(|v| v.as_str())
+                .and_then(wiki::parse_date)
+            else {
+                continue;
+            };
+
+            if source_date > derived_date
+                && max_source_date.is_none_or(|m| source_date > m)
+            {
+                max_source_date = Some(source_date);
+            }
+        }
+
+        if let Some(latest_source) = max_source_date {
+            updates.push(InvalidateUpdate {
+                path: page.path.clone(),
+                rel: page.rel.clone(),
+                new_last_validated: latest_source
+                    .format("%Y-%m-%d")
+                    .to_string(),
+            });
+        }
+    }
+
+    updates
+}
+
+// ---------------------------------------------------------------------------
 // Orchestrator
 // ---------------------------------------------------------------------------
 
@@ -2387,6 +2505,201 @@ last_validated: not-a-date\n---\nBody.\n";
         assert!(
             issues.iter().any(|i| i.kind == "related_to_system_file"),
             "should detect system file even inside markdown-link wrapper"
+        );
+    }
+
+    // =======================================================================
+    // 10. invalidate_by_source
+    // =======================================================================
+
+    #[test]
+    fn test_invalidate_by_source_stale_detected() {
+        // Source timestamp newer than derived last_validated → update.
+        let analysis = make_page(
+            "shared/analysis/foo.md",
+            "---\ntitle: Foo\ntype: analysis\n\
+             sources: [shared/sources/bar.md]\n\
+             last_validated: 2024-01-01\n---\nBody.\n",
+        );
+        let source = make_page(
+            "shared/sources/bar.md",
+            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\n---\nBody.\n",
+        );
+        let updates = invalidate_by_source(&[analysis, source]);
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].rel, "shared/analysis/foo.md");
+        assert_eq!(updates[0].new_last_validated, "2024-06-01");
+    }
+
+    #[test]
+    fn test_invalidate_by_source_source_older() {
+        // Source timestamp older than derived last_validated → no update.
+        let analysis = make_page(
+            "shared/analysis/foo.md",
+            "---\ntitle: Foo\ntype: analysis\n\
+             sources: [shared/sources/bar.md]\n\
+             last_validated: 2024-06-01\n---\nBody.\n",
+        );
+        let source = make_page(
+            "shared/sources/bar.md",
+            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-01-01\n---\nBody.\n",
+        );
+        let updates = invalidate_by_source(&[analysis, source]);
+        assert!(updates.is_empty(), "older source should not trigger stale");
+    }
+
+    #[test]
+    fn test_invalidate_by_source_no_stale_when_timestamps_match() {
+        // Source timestamp same as derived last_validated → no update.
+        let analysis = make_page(
+            "shared/analysis/foo.md",
+            "---\ntitle: Foo\ntype: analysis\n\
+             sources: [shared/sources/bar.md]\n\
+             last_validated: 2024-06-01\n---\nBody.\n",
+        );
+        let source = make_page(
+            "shared/sources/bar.md",
+            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\n---\nBody.\n",
+        );
+        let updates = invalidate_by_source(&[analysis, source]);
+        assert!(
+            updates.is_empty(),
+            "equal timestamps should not trigger stale"
+        );
+    }
+
+    #[test]
+    fn test_invalidate_by_source_empty_sources() {
+        // Empty sources array → skip.
+        let analysis = make_page(
+            "shared/analysis/foo.md",
+            "---\ntitle: Foo\ntype: analysis\nsources: []\n\
+             last_validated: 2024-01-01\n---\nBody.\n",
+        );
+        let updates = invalidate_by_source(&[analysis]);
+        assert!(updates.is_empty(), "empty sources should be skipped");
+    }
+
+    #[test]
+    fn test_invalidate_by_source_missing_sources() {
+        // Missing sources field → skip.
+        let analysis = make_page(
+            "shared/analysis/foo.md",
+            "---\ntitle: Foo\ntype: analysis\n\
+             last_validated: 2024-01-01\n---\nBody.\n",
+        );
+        let updates = invalidate_by_source(&[analysis]);
+        assert!(updates.is_empty(), "missing sources should be skipped");
+    }
+
+    #[test]
+    fn test_invalidate_by_source_missing_last_validated() {
+        // Missing last_validated → skip (never blindly overwrite).
+        let analysis = make_page(
+            "shared/analysis/foo.md",
+            "---\ntitle: Foo\ntype: analysis\n\
+             sources: [shared/sources/bar.md]\n---\nBody.\n",
+        );
+        let source = make_page(
+            "shared/sources/bar.md",
+            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\n---\nBody.\n",
+        );
+        let updates = invalidate_by_source(&[analysis, source]);
+        assert!(updates.is_empty(), "missing last_validated should be skipped");
+    }
+
+    #[test]
+    fn test_invalidate_by_source_unresolvable_source() {
+        // Source path not in the page set → skip that source.
+        let analysis = make_page(
+            "shared/analysis/foo.md",
+            "---\ntitle: Foo\ntype: analysis\n\
+             sources: [shared/sources/bar.md]\n\
+             last_validated: 2024-01-01\n---\nBody.\n",
+        );
+        // Only the analysis page — bar.md is not in the set.
+        let updates = invalidate_by_source(&[analysis]);
+        assert!(
+            updates.is_empty(),
+            "unresolvable source path should be skipped"
+        );
+    }
+
+    #[test]
+    fn test_invalidate_by_source_non_analysis_skipped() {
+        // Pages that are not analysis/synthesis should be skipped.
+        let concept = make_page(
+            "shared/concepts/foo.md",
+            "---\ntitle: Foo\ntype: concept\n\
+             sources: [shared/sources/bar.md]\n\
+             last_validated: 2024-01-01\n---\nBody.\n",
+        );
+        let updates = invalidate_by_source(&[concept]);
+        assert!(
+            updates.is_empty(),
+            "non-analysis/synthesis pages should be skipped"
+        );
+    }
+
+    #[test]
+    fn test_invalidate_by_source_synthesis_type() {
+        // Synthesis pages also participate in invalidation.
+        let synthesis = make_page(
+            "shared/syntheses/overview.md",
+            "---\ntitle: Overview\ntype: synthesis\n\
+             sources: [shared/sources/bar.md]\n\
+             last_validated: 2024-01-01\n---\nBody.\n",
+        );
+        let source = make_page(
+            "shared/sources/bar.md",
+            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\n---\nBody.\n",
+        );
+        let updates = invalidate_by_source(&[synthesis, source]);
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].rel, "shared/syntheses/overview.md");
+        assert_eq!(updates[0].new_last_validated, "2024-06-01");
+    }
+
+    #[test]
+    fn test_invalidate_by_source_multiple_sources_one_stale() {
+        // Two sources: one newer, one older → detects stale.
+        let analysis = make_page(
+            "shared/analysis/foo.md",
+            "---\ntitle: Foo\ntype: analysis\n\
+             sources: [shared/sources/bar.md, shared/sources/baz.md]\n\
+             last_validated: 2024-01-01\n---\nBody.\n",
+        );
+        let bar = make_page(
+            "shared/sources/bar.md",
+            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\n---\nBody.\n",
+        );
+        let baz = make_page(
+            "shared/sources/baz.md",
+            "---\ntitle: Baz\ntype: source\ntimestamp: 2024-03-01\n---\nBody.\n",
+        );
+        let updates = invalidate_by_source(&[analysis, bar, baz]);
+        assert_eq!(updates.len(), 1);
+        // Should use the latest source timestamp.
+        assert_eq!(updates[0].new_last_validated, "2024-06-01");
+    }
+
+    #[test]
+    fn test_invalidate_by_source_unparseable_timestamp() {
+        // Source with unparseable timestamp → skip that source.
+        let analysis = make_page(
+            "shared/analysis/foo.md",
+            "---\ntitle: Foo\ntype: analysis\n\
+             sources: [shared/sources/bar.md]\n\
+             last_validated: 2024-01-01\n---\nBody.\n",
+        );
+        let source = make_page(
+            "shared/sources/bar.md",
+            "---\ntitle: Bar\ntype: source\ntimestamp: not-a-date\n---\nBody.\n",
+        );
+        let updates = invalidate_by_source(&[analysis, source]);
+        assert!(
+            updates.is_empty(),
+            "unparseable source timestamp should be skipped"
         );
     }
 }

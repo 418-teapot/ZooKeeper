@@ -163,14 +163,17 @@ kiwi 返回分析后，由调用方 agent 执行写入：
    ```json
    [{"page_a": "domain/existing.md", "page_b": "domain/new.md", "claims": ["冲突描述"], "detected": "YYYY-MM-DD", "resolution": "unresolved"}]
    ```
-   将该数组直接管道给 `zwiki contradictions apply`：
-   ```bash
-   echo '<JSON 数组>' | zwiki contradictions apply
-   ```
-   该命令会：
-   - 在矛盾双方页面的 frontmatter 中追加 `contradictions` 条目
-   - 对称降低双方 `status`（stable→review, review→draft）
-   - 更新双方的 `last_validated` 时间戳
+    将该数组直接管道给 `zwiki contradictions apply`：
+    ```bash
+    echo '<JSON 数组>' | zwiki contradictions apply
+    ```
+    该命令会追加 `contradictions` 条目并更新 `last_validated`。
+
+    然后对双方页面执行 status 降级：
+    ```bash
+    zwiki property status --page "domain/page_a.md" --downgrade
+    zwiki property status --page "domain/page_b.md" --downgrade
+    ```
 
 3. **验证写入** — 运行 `zwiki contradictions list` 确认矛盾已记录。
 
