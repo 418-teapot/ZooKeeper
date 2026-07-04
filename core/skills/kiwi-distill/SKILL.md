@@ -147,6 +147,38 @@ If supersede is warranted:
 - Document why the new claim supersedes the old one
 - This is a **proposal only** — the calling agent must confirm before writing
 
+### 4.8 Contradiction Check
+
+For each existing page from your Phase 2.4 claim map that is topically related to the new source:
+
+1. Extract the specific, identifiable claims from the existing page (same criteria as 4.7 — file paths, timestamps, line counts are NOT claims).
+2. Extract the specific, identifiable claims from the new source on the same topic.
+3. Compare: does the new source contradict the existing page on a specific claim, but the contradiction does NOT meet the supersede criteria?
+
+Propose a contradiction entry when:
+- A specific claim in the old page is contradicted by the new source (cannot both be simultaneously true)
+- BUT the new source is NOT clearly the authoritative replacement — both perspectives could be valid in different contexts, different schools of thought, or you cannot confidently determine which is correct
+- The contradiction is substantive — not cosmetic (renames, reformatting, rewording)
+- The old page remains useful and should NOT be superseded; both pages should coexist with a documented contradiction
+
+Do NOT propose contradiction when:
+- The new source adds information but doesn't contradict → recommend updating the old page or creating a complementary page
+- The new source clearly supersedes the old claim → use 4.7 Supersede Check instead
+- Both claims can be reconciled as true simultaneously without contradiction → note the nuance, don't flag as contradiction
+
+If contradiction is warranted:
+- Record the conflicting claim verbatim from the existing page
+- Record the conflicting claim verbatim from the new source
+- Describe the nature of the conflict (e.g., "different terminology for the same concept", "different approach to the same problem", "competing design philosophies")
+- Do NOT judge which claim is correct — the contradiction entry is a flag for future readers, not a resolution
+- Format the proposed entry as a JSON object following the `zwiki contradictions apply` format:
+
+  ```json
+  {"page_a": "<existing_page_path>", "page_b": "<proposed_new_page_path>", "claims": ["<conflicting claim description>"], "detected": "<YYYY-MM-DD>", "resolution": "unresolved"}
+  ```
+
+- These are **proposals only** — the calling agent will create the page first, then apply contradictions via `zwiki contradictions apply`
+
 ### If You Found Issues...
 
 Revise, then re-check. After 2 iterations, if a criterion still fails, flag it explicitly in your return:
@@ -176,6 +208,30 @@ If supersede candidates were found (per 4.7):
 
 If no supersede candidates:
   No existing page claims are contradicted by this source.
+
+### Contradiction Proposals
+
+If contradiction entries were identified (per 4.8):
+  Output a JSON array suitable for piping to `zwiki contradictions apply`:
+
+  ```json
+  [
+    {"page_a": "domain/existing.md", "page_b": "domain/proposed-new.md", "claims": ["描述冲突的具体声明"], "detected": "YYYY-MM-DD", "resolution": "unresolved"},
+    ...
+  ]
+  ```
+
+  **Each entry MUST include:**
+  - `page_a`: path of the existing wiki page (wiki-root-relative, domain-prefixed)
+  - `page_b`: path of the proposed new page (the page kiwi is drafting — does not exist yet)
+  - `claims`: array of human-readable descriptions of the conflicting claims (one per conflict, use multiple entries for distinct conflicts)
+  - `detected`: today's date in YYYY-MM-DD format
+  - `resolution`: always `"unresolved"` — 4.8 explicitly forbids resolving contradictions
+
+  **THESE ARE PROPOSALS ONLY. The calling agent creates the page first, then runs `zwiki contradictions apply` with this JSON.**
+
+If no contradiction entries:
+  No contradictions found between existing pages and the new source.
 
 Do NOT perform any writes yourself. Return a complete, actionable analysis.
 
@@ -217,3 +273,10 @@ Before returning your analysis, confirm ALL of the following:
 ### Supersede Integrity
 - [ ] For every existing page in the Phase 2.4 claim map, checked whether any specific claim is contradicted by the new source — no claim assumed compatible without explicit comparison
 - [ ] Supersede proposals (if any) include verbatim old and new claims — no summaries, no paraphrasing
+
+### Contradiction Integrity
+- [ ] For each existing page in the Phase 2.4 claim map where a contradiction was detected but supersede was NOT warranted, a contradiction entry is proposed
+- [ ] No contradiction proposed without explicit claim comparison (verbatim old claim vs. verbatim new claim)
+- [ ] All contradiction proposals include descriptions of the conflicting claims — not just "they disagree"
+- [ ] `resolution` is always `"unresolved"` — contradictions are flagged, never resolved
+- [ ] Every contradiction entry includes the exact `zwiki contradictions apply` JSON format with all required fields

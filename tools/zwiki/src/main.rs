@@ -6,6 +6,7 @@
 
 mod aggregate;
 mod backlinks;
+mod contradictions;
 mod diff;
 mod display;
 mod health;
@@ -37,6 +38,18 @@ struct Args {
 
     #[command(subcommand)]
     command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum ContradictionsCommand {
+    /// List known contradictions across all wiki pages.
+    List,
+    /// Apply/record contradictions from stdin JSON.
+    ///
+    /// Reads a JSON array of contradiction pairs from stdin and writes
+    /// `contradictions` frontmatter blocks to both conflicting pages
+    /// with symmetric status downgrade and `last_validated` update.
+    Apply,
 }
 
 #[derive(Subcommand)]
@@ -253,6 +266,10 @@ enum Command {
         #[arg(long)]
         reason: String,
     },
+
+    /// Find and manage contradictory claims between wiki pages
+    #[command(subcommand)]
+    Contradictions(ContradictionsCommand),
 }
 
 fn main() {
@@ -364,11 +381,12 @@ fn dispatch(args: Args) {
                 args.json,
             );
         }
-        Some(Command::Move { old, new }) => {
-            cmd_move(&old, &new, args.json);
-        }
+        Some(Command::Move { old, new }) => cmd_move(&old, &new, args.json),
         Some(Command::Supersede { old, new, reason }) => {
             cmd_supersede(&old, &new, &reason);
+        }
+        Some(Command::Contradictions(ref cmd)) => {
+            contradictions::dispatch(cmd, args.json);
         }
     }
 }

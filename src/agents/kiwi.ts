@@ -24,8 +24,7 @@ The calling agent will also tell you which skill to load for this task.
 </Context>
 
 <Skills>
-Distillation tasks → load \`kiwi-distill\` (ingest source material → structured page recommendations)
-Contradiction detection → load \`kiwi-contradiction\` (pairwise claim comparison — not yet implemented)
+Distillation tasks → load \`kiwi-distill\` (source material → structured page recommendations, with supersede and contradiction detection)
 </Skills>
 
 <Contract>

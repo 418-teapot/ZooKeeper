@@ -66,7 +66,7 @@
 
 | 组件 | 当前状态 |
 |------|---------|
-| `last_validated` / `timeliness` / `supersedes` / `superseded_by` / `contradictions` / `freshness_days` 字段 | **字段已定义并回填**。SCHEMA.md 已声明六字段；`last_validated`/`timeliness` 必选（含枚举校验），其余可选；28 现有页面已回填。stale 自动标记（`zwiki check --apply`，P0 项 2 ✅）、三级短路（P0 项 3 ✅）、supersede 机制（`zwiki supersede` + kiwi 判断，P1 项 9 ✅）已实现；`contradictions` 的自动化写入属 P1 项 11，仍未实现 |
+| `last_validated` / `timeliness` / `supersedes` / `superseded_by` / `contradictions` / `freshness_days` 字段 | **字段已定义并回填**。SCHEMA.md 已声明六字段；`last_validated`/`timeliness` 必选（含枚举校验），其余可选；28 现有页面已回填。stale 自动标记（`zwiki check --apply`，P0 项 2 ✅）、三级短路（P0 项 3 ✅）、supersede 机制（`zwiki supersede` + kiwi 判断，P1 项 9 ✅）已实现；`contradictions` 的自动化写入属 P1 项 11，已随矛盾检测实现（集成于 kiwi-distill，`zwiki contradictions apply` 执行写入与对称降级） |
 | `lint --apply` 自动标记 stale | **已实现**。`zwiki check --apply` 检测 `timestamp` 超 90 天且非 `deprecated` 的页面，自动写 `timeliness: stale`（P0 项 2 ✅） |
 | 三阶段级联检索（index → tag → grep） | **未实现**。wiki-query skill 仍是 index.md 单路径 + grep 提示 |
 | `zwiki search` / `move` 子命令 | **已实现**。`zwiki search`（rg 候选预筛 + 进程内 fallback，四级评分 title/tag/heading/body，`--type`/`--tag`/`--domain` 过滤）；`zwiki move`（重命名 + 自动更新全部引用：frontmatter 四个路径型字段 + body 两类链接 + 域 index.md 条目，支持同域重命名与跨域移动） |
@@ -408,20 +408,19 @@ OpenCode 框架不支持 OMP 的 `yield`/`shouldTerminate`，无法保证结构�
 
 **原问题：** kiwi 系统 prompt（`src/agents/kiwi.ts`）将身份定义（Role/Context/Contract）与蒸馏工作流（Phase 1-4 + QualityGate）耦合在 235 行 prompt 中。新增矛盾检测模式（#11）会导致 prompt 进一步膨胀。
 
-**实现架构：** 工作流从系统 prompt 剥离为独立 skill，kiwi 按需加载：
+**实现架构：** 工作流从系统 prompt 剥离为单一 kiwi-distill skill，kiwi 按需加载。矛盾检测（#11）不建独立 skill，而是作为 kiwi-distill 的 Phase 4.8 集成在蒸馏流程中——kiwi 在对比新旧声明时自然发现矛盾，与 supersede 检查（Phase 4.7）共享 claim 提取逻辑：
 
 ```
 kiwi 系统 prompt（~40 行）          kiwi 技能
-  ├── Role: 只读知识分析引擎    ←──  kiwi-distill（蒸馏工作流，✅ 已实现）
-  ├── Context: 三段式格式      ←──  kiwi-contradiction（矛盾检测工作流，随 #11 新建）
+  ├── Role: 只读知识分析引擎    ←──  kiwi-distill（蒸馏工作流，✅ 已实现，含 Phase 4.8 矛盾检测）
   └── Contract: 不写文件
 ```
 
 **已实施改动：**
 - `src/agents/kiwi.ts`：235 行 → 40 行，保留身份壳 + 技能指引
-- `core/skills/kiwi-distill/SKILL.md`：新建，Phase 0-5 蒸馏工作流 + QualityGate
+- `core/skills/kiwi-distill/SKILL.md`：新建，Phase 0-5 蒸馏工作流 + QualityGate（其中 Phase 4.7/4.8 分别为取代检查与矛盾检测）
 - `config.toml`：kiwi 权限 `skill "kiwi-distill" = "allow"`；`zoo.skills` 注册该技能
-- `core/skills/wiki-ingest/SKILL.md`：Phase 1.3 委派 kiwi 时提示加载 `kiwi-distill`
+- `core/skills/wiki-ingest/SKILL.md`：Phase 1.3 委派 kiwi 时提示加载 `kiwi-distill`；Phase 4 将 kiwi 返回的矛盾 JSON 管道给 `zwiki contradictions apply` 执行写入
 
 ---
 
@@ -618,7 +617,7 @@ else (stable + current):            直接引用，无免责
 ### 9.5 矛盾管理：发现不裁决
 
 三阶段分离：
-1. **发现**（半自动）— 图拓扑预筛选候选对 → LLM 提取冲突声明（只问"是否不一致"，不问"谁对"）
+1. **发现**（半自动）— 集成于 kiwi-distill Phase 4.8：蒸馏过程中 kiwi 对比新源声明与已有页面声明，当发现具体声明冲突且任一声明不明确构成取代时，输出矛盾提议（只问"是否不一致"，不问"谁对"）。**无独立预筛选 scanner**——矛盾发现依赖蒸馏过程中的语义理解，图拓扑机械预筛不足以替代
 2. **记录**（自动）— 双方写 `contradictions`，`status` 对称降一级（stable→review / review→draft / draft 不降）
 3. **呈现**（查询时）— 不采用任何一方结论，将矛盾本身作为知识呈现
 
@@ -648,7 +647,7 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 | index.md 条目追加 | ✅ 全自动 | 确定性，路径已知 |
 | post-ingest 强制 backlinks + health | ✅ 全自动 | 阻止后续错误 |
 | 断裂链接修复（目标改名） | ⚠️ 半自动 | 自动发现 + 建议修复 + 人确认 |
-| 图拓扑筛选矛盾候选对 | ⚠️ 半自动 | 自动发现，LLM 提取，人不裁决 |
+| 矛盾候选发现（kiwi-distill Phase 4.8 语义对比） | ⚠️ 半自动 | 蒸馏时对比新旧声明发现矛盾，人不裁决；`zwiki contradictions apply` 半自动写入 |
 | supersede 判断 | ❌ 需人确认 | 语义判断，LLM 提议 |
 | 矛盾裁决 | ❌ 人工 | LLM 不能当裁判 |
 | 级联过期标记 | ❌ 需人确认 | 需判断引用性质 |
@@ -667,7 +666,7 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 
 ## 12. zwiki 统一 CLI
 
-### 12.1 当前实现（Rust，13 子命令）
+### 12.1 当前实现（Rust，15 子命令）
 
 | 子命令 | 用途 | 状态 |
 |--------|------|------|
@@ -685,6 +684,7 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 | `domains` | 列出所有领域 + 页面数；`--type`/`--tag` 切片 | ✅ |
 | `move <old> <new>` | 重命名/跨域移动页面 + 自动更新所有引用（frontmatter 四个路径型字段、body inline link、body backtick、域 index.md 条目）；同域原地替换 index 链接，跨域旧域删条目 + 新域按 type 节追加 | ✅ |
 | `supersede` | 建立取代关系：两侧 frontmatter 自动写入 `supersedes` / `superseded_by`（`--old`/`--new`/`--reason`） | ✅ |
+| `contradictions` | 列出/写入矛盾记录：`list` 扫描全 wiki 展示 `contradictions` 条目；`apply` 从 stdin JSON 读取矛盾对，写入双方 frontmatter 并对称降级 `status`（stable→review, review→draft），更新 `last_validated` | ✅ |
 
 ### 12.2 目标扩展子命令（按路线图）
 
@@ -938,8 +938,8 @@ blocked = ["deprecated-legacy-wiki"]
 |---|------|
 | 9 | ✅ kiwi 蒸馏时判断新源是否推翻旧结论，声明 `supersedes`；ingest 前先 `zwiki search` 同主题判重（kiwi 在 Phase 1 自行搜索，主 agent 不预搜） |
 | 10 | ✅ `check_cascade_stale`：页面 superseded 后扫描引用者（backlinks），比较 `last_validated` 判断是否已审查，输出候审列表（`zwiki check` 中的级联过时警告）。实现用纯机械时间戳比较替代了设计原案的 LLM 引用性质判断，当前够用 |
-| — | ✅ **kiwi 系统 prompt 技能化重构**（详见 §6.5）。`src/agents/kiwi.ts` 轻量化（235 行 → 40 行），蒸馏工作流搬入 `core/skills/kiwi-distill/`（Phase 0-5），kiwi 按任务类型动态加载不同技能。这是 #11（矛盾检测）和未来新增 kiwi 分析模式的基础 |
-| 11 | 矛盾检测：图拓扑预筛选 → LLM 声明提取 → contradictions 写入 |
+| — | ✅ **kiwi 系统 prompt 技能化重构**（详见 §6.5）。`src/agents/kiwi.ts` 轻量化（235 行 → 40 行），蒸馏工作流搬入 `core/skills/kiwi-distill/`（Phase 0-5），kiwi 按任务类型动态加载不同技能。这为 #11（矛盾检测，现已 ✅ 完成）和未来新增 kiwi 分析模式奠定了基础 |
+| 11 | ✅ 矛盾检测：集成于 kiwi-distill Phase 4.8（与 supersede 检查共享 claim 提取，无独立预筛选）；`zwiki contradictions list`/`apply` 子命令完成记录写入与对称降级（stable→review, review→draft）；wiki-ingest Phase 4 管道 kiwi JSON 至 `zwiki contradictions apply` |
 | 12 | wiki-query 矛盾感知 |
 | 13 | ✅ `zwiki move`：重命名 + 自动更新所有引用链接（frontmatter relations/supersedes/superseded_by/contradictions 四个路径型字段 + body inline link + body backtick；同域 index 原地替换，跨域旧域删条目 + 新域按 type 节追加；type→section 标题映射保障 OKF 合规；自引用页正确处理） |
 | 14 | ~~SCHEMA 自动注入到 agent prompt（config hook）~~ — 已取消。`wiki-query` skill description 已告知 agent wiki 的存在和用法，注入冗余 |

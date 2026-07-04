@@ -318,7 +318,10 @@ pub fn read_page(path: &Path) -> Option<Page> {
 // ---------------------------------------------------------------------------
 
 /// Internal: build a page cache keyed by relative path.
-fn page_cache_at(pages: &[PathBuf], wiki_base: &Path) -> HashMap<String, Page> {
+pub fn page_cache_at(
+    pages: &[PathBuf],
+    wiki_base: &Path,
+) -> HashMap<String, Page> {
     let mut cache = HashMap::new();
     for path in pages {
         if let Some(page) = read_page_at(path, wiki_base) {

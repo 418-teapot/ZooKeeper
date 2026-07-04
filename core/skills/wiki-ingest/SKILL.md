@@ -151,7 +151,32 @@ kiwi 返回分析后，由调用方 agent 执行写入：
 
 ---
 
-## Phase 4 — 验证
+## Phase 4 — 矛盾写入
+
+如果 kiwi 的分析报告中包含 Contradiction Proposals（非空的 JSON 数组）：
+
+1. **前提条件** — 矛盾涉及的新页面（`page_b`）必须在 Phase 2 中已创建。确认 kiwi 输出的所有 `page_b` 路径均已存在。
+
+2. **执行写入** — kiwi 返回的 Contradiction Proposals 是一个 JSON 数组，每个元素格式为：
+   ```json
+   [{"page_a": "domain/existing.md", "page_b": "domain/new.md", "claims": ["冲突描述"], "detected": "YYYY-MM-DD", "resolution": "unresolved"}]
+   ```
+   将该数组直接管道给 `zwiki contradictions apply`：
+   ```bash
+   echo '<JSON 数组>' | zwiki contradictions apply
+   ```
+   该命令会：
+   - 在矛盾双方页面的 frontmatter 中追加 `contradictions` 条目
+   - 对称降低双方 `status`（stable→review, review→draft）
+   - 更新双方的 `last_validated` 时间戳
+
+3. **验证写入** — 运行 `zwiki contradictions list` 确认矛盾已记录。
+
+如果 kiwi 没有返回 Contradiction Proposals，或数组为空 → 跳过此 Phase。
+
+---
+
+## Phase 5 — 验证
 
 写入完成后，执行以下验证：
 
