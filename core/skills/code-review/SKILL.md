@@ -158,13 +158,13 @@ git diff --name-only {DIFF_BASE}
 ### 聚合问题清单
 
 #### 🔴 Must Fix（必须修复）
-每条：文件路径及行号、问题描述、推荐修复方式
+每条：文件路径及行号、问题描述、推荐修复方式，必须报告
 
 #### 🟡 Should Fix（建议修复）
-同 Must Fix 格式，可附带紧迫程度说明
+同 Must Fix 格式，可附带紧迫程度说明，必须报告
 
 #### 🔵 Could Fix（可选修复）
-同 Must Fix 格式，仅供记录
+同 Must Fix 格式，仅供记录，必须报告
 
 ### Ready to merge?
 [**Yes** | **No** | **With fixes**]

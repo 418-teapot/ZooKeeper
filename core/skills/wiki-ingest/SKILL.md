@@ -123,7 +123,9 @@ kiwi 返回分析后，由调用方 agent 执行写入：
 
 ## Phase 3 — Supersede 确认与写入
 
-如果 kiwi 的分析报告中包含 Supersede Proposals（非空的取代候选列表）：
+如果 kiwi 没有返回 Supersede Proposals，或列表为空 → 跳过此 Phase。
+
+否则，对每个取代提议执行以下步骤：
 
 1. 向用户列出每个取代提议：
    - 被取代的页面路径
@@ -145,15 +147,15 @@ kiwi 返回分析后，由调用方 agent 执行写入：
        --reason "<kiwi 提供的取代理由>"
    ```
 
-   该命令会自动在取代页面（`--new`）的 frontmatter 中追加 `supersedes` 条目（含 `path` 和 `reason`），并在被取代页面（`--old`）的 frontmatter 中追加 `superseded_by` 条目。
-
-如果 kiwi 没有返回 Supersede Proposals，或列表为空 → 跳过此 Phase。
+    该命令会自动在取代页面（`--new`）的 frontmatter 中追加 `supersedes` 条目（含 `path` 和 `reason`），并在被取代页面（`--old`）的 frontmatter 中追加 `superseded_by` 条目。
 
 ---
 
 ## Phase 4 — 矛盾写入
 
-如果 kiwi 的分析报告中包含 Contradiction Proposals（非空的 JSON 数组）：
+如果 kiwi 没有返回 Contradiction Proposals，或数组为空 → 跳过此 Phase。
+
+否则，对每个矛盾提议执行以下步骤：
 
 1. **前提条件** — 矛盾涉及的新页面（`page_b`）必须在 Phase 2 中已创建。确认 kiwi 输出的所有 `page_b` 路径均已存在。
 
@@ -172,11 +174,44 @@ kiwi 返回分析后，由调用方 agent 执行写入：
 
 3. **验证写入** — 运行 `zwiki contradictions list` 确认矛盾已记录。
 
-如果 kiwi 没有返回 Contradiction Proposals，或数组为空 → 跳过此 Phase。
+---
+
+## Phase 5 — Validation 确认与写入
+
+如果 kiwi 没有返回 Validation Proposals，或列表为空 → 跳过此 Phase。
+
+否则，对每个验证提议执行以下步骤：
+
+1. **向用户列出每个验证提议**：
+   - 被确认的页面路径
+   - 已确认的旧声明（kiwi 摘录的原文）
+   - 确认声明（新源中的原文）
+   - 说明：该操作仅刷新 `last_validated`，不改变 `status` 或 `timeliness`
+
+2. **询问用户是否确认每个提议**。用户可以：
+   - 全部确认
+   - 部分确认（指定哪些接受，哪些拒绝）
+   - 全部拒绝
+
+3. **只对用户确认的提议执行写入**。对每个要刷新的页面：
+    ```bash
+    zwiki property last_validated \
+      --page "<domain>/concepts/<page>.md" \
+      --value "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    ```
+    注意：`zwiki property` 会覆盖已有时间戳。多次确认同一页面时，只需执行一次（以最新时间为准）。
+
+4. **记录日志** — 对每个确认的验证，追加日志条目说明验证来源：
+    ```bash
+    zwiki log \
+      --op validate --path "<domain>/concepts/<page>.md" \
+      --action edit --note "新源确认声明「…」"
+    ```
+    `--note` 应包含被确认的声明摘要。
 
 ---
 
-## Phase 5 — 验证
+## Phase 6 — 验证
 
 写入完成后，执行以下验证：
 

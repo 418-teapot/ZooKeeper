@@ -122,18 +122,21 @@ Before moving to Phase 5, answer these three questions for EVERY recommended pag
 
 If any question exposes an issue, fix it before Phase 5.
 
-### 4.7 Supersede Check
+### 4.7 Claim Reconciliation
 
 For each existing page from your Phase 2.4 claim map that is topically related to the new source:
 
-1. Extract the specific, identifiable claims from the existing page. A claim is a statement about how the system works, what design decision was made, or what principle applies. File paths, timestamps, line counts, and implementation trivia are NOT claims for supersede purposes — they don't change what's true about the system.
-2. Extract the specific, identifiable claims from the new source on the same topic.
-3. Compare: does the new source's claim directly contradict the old page's claim?
+1. **Extract claims** from the existing page. A claim is a statement about how the system works, what design decision was made, or what principle applies. File paths, timestamps, line counts, and implementation trivia are NOT claims for reconciliation purposes — they don't change what's true about the system.
+2. **Extract claims** from the new source on the same topic.
+3. **Compare** each pair of claims covering the same subject. Classify the relationship into exactly one of three outcomes:
+
+#### Outcome A: Supersede
 
 Propose supersede ONLY when:
-- A specific, identifiable claim in the old page is contradicted by the new source
+- A specific, identifiable claim in the old page is directly contradicted by the new source
 - The contradiction is substantive — changes a decision, principle, or architecture, not cosmetic (renames, reformatting, rewording)
 - The contradiction cannot be reconciled as "both true in different contexts or at different times"
+- The new source is clearly the authoritative replacement
 
 Do NOT propose supersede when:
 - The new source adds information but doesn't contradict → recommend updating the old page instead
@@ -142,18 +145,12 @@ Do NOT propose supersede when:
 - The new source is a different perspective on the same facts → note in the old page's Notes, don't supersede
 
 If supersede is warranted:
-- Record the old claim verbatim as written in the old page
-- Record the new claim verbatim as written in the new source
+- Record the old claim **verbatim** as written in the old page
+- Record the new claim **verbatim** as written in the new source
 - Document why the new claim supersedes the old one
 - This is a **proposal only** — the calling agent must confirm before writing
 
-### 4.8 Contradiction Check
-
-For each existing page from your Phase 2.4 claim map that is topically related to the new source:
-
-1. Extract the specific, identifiable claims from the existing page (same criteria as 4.7 — file paths, timestamps, line counts are NOT claims).
-2. Extract the specific, identifiable claims from the new source on the same topic.
-3. Compare: does the new source contradict the existing page on a specific claim, but the contradiction does NOT meet the supersede criteria?
+#### Outcome B: Contradiction
 
 Propose a contradiction entry when:
 - A specific claim in the old page is contradicted by the new source (cannot both be simultaneously true)
@@ -163,8 +160,9 @@ Propose a contradiction entry when:
 
 Do NOT propose contradiction when:
 - The new source adds information but doesn't contradict → recommend updating the old page or creating a complementary page
-- The new source clearly supersedes the old claim → use 4.7 Supersede Check instead
+- The new source clearly supersedes the old claim → use Outcome A (Supersede) instead
 - Both claims can be reconciled as true simultaneously without contradiction → note the nuance, don't flag as contradiction
+- The new source confirms the existing claim without conflict → use Outcome C (Validation) instead
 
 If contradiction is warranted:
 - Record the conflicting claim verbatim from the existing page
@@ -178,6 +176,28 @@ If contradiction is warranted:
   ```
 
 - These are **proposals only** — the calling agent will create the page first, then apply contradictions via `zwiki contradictions apply`
+
+#### Outcome C: Validation
+
+Propose validation when:
+- A specific claim in the existing page is **independently confirmed** by the new source — both assert the same fact, design decision, or principle without contradiction
+- The new source provides additional supporting evidence, reasoning, or real-world confirmation for the same claim
+- The confirmation is substantive — not merely a citation or reference to the existing page itself, but an independent statement of the same knowledge
+- The existing claim remains accurate and up-to-date; no revision or replacement is needed
+
+Do NOT propose validation when:
+- The new source merely cites or references the existing page (loop citation — not independent confirmation)
+- The claims are similar but not identical in meaning — note the nuance instead
+- You're uncertain about whether the confirmation is genuine → do not flag
+- The new source not only confirms but also adds significant new information that changes the scope of the claim → recommend updating the page, not just validating it
+
+If validation is warranted:
+- Record the confirmed claim **verbatim** from the existing page
+- Record the confirming claim **verbatim** from the new source
+- State which page's `last_validated` would be refreshed (the existing page, not the new one)
+- Note that validation does NOT change `status` or `timeliness` — it only refreshes `last_validated`
+- Validation is scoped to the **specific confirmed claim**, not the entire page. Page-level `last_validated` means "at least one claim confirmed on this date"
+- This is a **proposal only** — the calling agent must confirm before writing `last_validated`
 
 ### If You Found Issues...
 
@@ -195,7 +215,7 @@ Explain to the calling agent what should be created/updated:
 
 ### Supersede Proposals
 
-If supersede candidates were found (per 4.7):
+If supersede candidates were found (per 4.7, Outcome A):
   List each affected old page. If a page has multiple contradicted claims, list each separately so the calling agent can confirm or reject each one individually:
     - `<old_page_path>` → superseded by `<superseding_page_path>`:
       - Old claim: "..." (exact quote from the old page)
@@ -211,7 +231,7 @@ If no supersede candidates:
 
 ### Contradiction Proposals
 
-If contradiction entries were identified (per 4.8):
+If contradiction entries were identified (per 4.7, Outcome B):
   Output a JSON array suitable for piping to `zwiki contradictions apply`:
 
   ```json
@@ -226,12 +246,25 @@ If contradiction entries were identified (per 4.8):
   - `page_b`: path of the proposed new page (the page kiwi is drafting — does not exist yet)
   - `claims`: array of human-readable descriptions of the conflicting claims (one per conflict, use multiple entries for distinct conflicts)
   - `detected`: today's date in YYYY-MM-DD format
-  - `resolution`: always `"unresolved"` — 4.8 explicitly forbids resolving contradictions
+  - `resolution`: always `"unresolved"` — Outcome B explicitly forbids resolving contradictions
 
   **THESE ARE PROPOSALS ONLY. The calling agent creates the page first, then runs `zwiki contradictions apply` with this JSON.**
 
 If no contradiction entries:
   No contradictions found between existing pages and the new source.
+
+### Validation Proposals
+
+If validation candidates were found (per 4.7, Outcome C):
+  List each confirmed claim:
+    - `<existing_page_path>` — confirmed by `<new_page_path>`:
+      - Existing claim: "..." (exact quote from the existing page)
+        Confirming claim: "..." (exact quote from the new source)
+        Status: proposal only — calling agent must confirm before refreshing `last_validated`
+  **THESE ARE PROPOSALS ONLY. The calling agent must confirm with the user before using `zwiki property last_validated --page <path> --value <value>` on any page.**
+
+If no validation candidates:
+  No existing page claims are independently confirmed by this source.
 
 Do NOT perform any writes yourself. Return a complete, actionable analysis.
 
@@ -280,3 +313,10 @@ Before returning your analysis, confirm ALL of the following:
 - [ ] All contradiction proposals include descriptions of the conflicting claims — not just "they disagree"
 - [ ] `resolution` is always `"unresolved"` — contradictions are flagged, never resolved
 - [ ] Every contradiction entry includes the exact `zwiki contradictions apply` JSON format with all required fields
+
+### Validation Integrity
+- [ ] For every existing page claim that is independently confirmed by the new source, a validation proposal exists — no confirmed claim silently skipped
+- [ ] Validation proposals include verbatim existing claim AND verbatim confirming claim — not summaries, not paraphrasing
+- [ ] The confirming claim is genuinely independent (not a citation or reference to the existing page itself)
+- [ ] Validation proposals clearly state which page's `last_validated` would be refreshed
+- [ ] No validation proposed for claims where the new source adds scope-changing information — those should be recommendations to update the page, not validation proposals
