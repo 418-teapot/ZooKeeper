@@ -35,7 +35,7 @@ const SYSTEM_FILES: &[&str] =
 /// `overview.md` is a real synthesis page listed in the root index,
 /// so it must participate in index-sync checks.
 const META_FILE_NAMES: &[&str] =
-    &["index.md", "log.md", "lint-report.md", "health-report.md", "SCHEMA.md"];
+    &["index.md", "lint-report.md", "health-report.md", "SCHEMA.md"];
 
 /// Required frontmatter fields.
 const REQUIRED_FM_FIELDS: &[&str] =
@@ -57,6 +57,11 @@ const SKIP_LINK_CHECK_SECTIONS: &[&str] = &["backlinks", "references", "notes"];
 // ---------------------------------------------------------------------------
 // Path utilities
 // ---------------------------------------------------------------------------
+
+/// Check if a path belongs to an excluded directory (`raw/` or `logs/`).
+fn is_excluded_dir(path: &str) -> bool {
+    path.starts_with("raw/") || path.starts_with("logs/")
+}
 
 /// Resolve a markdown link target to a wiki-relative path.
 ///
@@ -248,7 +253,7 @@ pub fn check_index_sync(pages: &[Page], wiki_dir: &Path) -> IndexSyncResult {
 // 3. check_log_coverage
 // ---------------------------------------------------------------------------
 
-/// Extract logged paths from `log.md` content.
+/// Extract logged paths from the concatenated content of `logs/` monthly files.
 ///
 /// Supports two formats:
 /// - Old format: `## [YYYY-MM-DD] op | path | action — note`
@@ -272,13 +277,35 @@ fn parse_log_entries(content: &str) -> HashSet<String> {
     paths
 }
 
-/// Find source pages that have no corresponding log entry in `log.md`.
+/// Find source pages that have no corresponding log entry in `logs/` files.
 ///
 /// Only checks pages under `<domain>/sources/` — entity/concept pages are created
 /// as side-effects and don't need their own log entry.
 pub fn check_log_coverage(pages: &[Page], wiki_dir: &Path) -> Vec<Issue> {
-    let log_path = wiki_dir.join("log.md");
-    let log_content = wiki::read_file(&log_path);
+    let logs_dir = wiki_dir.join("logs");
+    let log_content = if logs_dir.is_dir() {
+        let mut content = String::new();
+        if let Ok(entries) = std::fs::read_dir(&logs_dir) {
+            let mut md_files: Vec<PathBuf> = entries
+                .filter_map(Result::ok)
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.extension().and_then(|e| e.to_str()) == Some("md")
+                })
+                .collect();
+            md_files.sort();
+            for path in md_files {
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    content.push_str(&text);
+                    content.push('\n');
+                }
+            }
+        }
+        content
+    } else {
+        String::new()
+    };
     let logged_paths = parse_log_entries(&log_content);
 
     // Only check pages under <domain>/sources/.
@@ -432,7 +459,7 @@ pub fn check_frontmatter(pages: &[Page]) -> Vec<Issue> {
 // ---------------------------------------------------------------------------
 
 /// Check that `relations` frontmatter fields and markdown links don't point
-/// to system files (index.md, log.md, SCHEMA.md, etc.).
+/// to system files (index.md, SCHEMA.md, etc.).
 pub fn check_related_field(pages: &[Page]) -> Vec<Issue> {
     let system_names: HashSet<&str> = SYSTEM_FILES.iter().copied().collect();
     let link_re = Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").unwrap();
@@ -455,7 +482,9 @@ pub fn check_related_field(pages: &[Page]) -> Vec<Issue> {
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("");
-                if system_names.contains(fname) {
+                if system_names.contains(fname)
+                    || bare_target.starts_with("logs/")
+                {
                     results.push(Issue {
                         page: page.rel.clone(),
                         kind: "related_to_system_file".to_string(),
@@ -476,7 +505,8 @@ pub fn check_related_field(pages: &[Page]) -> Vec<Issue> {
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("");
-            if system_names.contains(fname) {
+            if system_names.contains(fname) || link_target.starts_with("logs/")
+            {
                 results.push(Issue {
                     page: page.rel.clone(),
                     kind: "markdown_link_to_system_file".to_string(),
@@ -562,7 +592,7 @@ pub fn check_related_body_consistency(
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("");
-            if system_names.contains(fname) || rel_target.starts_with("raw/") {
+            if system_names.contains(fname) || is_excluded_dir(&rel_target) {
                 continue;
             }
             resolved_links.insert(rel_target);
@@ -576,12 +606,12 @@ pub fn check_related_body_consistency(
             else {
                 continue;
             };
-            // Skip system files and raw/ paths.
+            // Skip system files, raw/ paths, and logs/ paths.
             let fname = Path::new(&rel_entry)
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("");
-            if system_names.contains(fname) || rel_entry.starts_with("raw/") {
+            if system_names.contains(fname) || is_excluded_dir(&rel_entry) {
                 continue;
             }
             if !resolved_links.contains(&rel_entry) {
@@ -613,7 +643,7 @@ pub fn check_related_body_consistency(
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("");
-            if system_names.contains(fname) || rel_target.starts_with("raw/") {
+            if system_names.contains(fname) || is_excluded_dir(&rel_target) {
                 continue;
             }
             if !resolved_related.contains(&rel_target) {
@@ -1529,7 +1559,7 @@ mod tests {
     fn test_log_coverage_covered() {
         let dir = temp_dir("log_covered");
         write(
-            &dir.join("log.md"),
+            &dir.join("logs").join("2026-06.md"),
             "## [2024-06-01] ingest | autoresearch/sources/adr/adr-001.md | create — New\n",
         );
         write(
@@ -1549,7 +1579,7 @@ mod tests {
     fn test_log_coverage_missing() {
         let dir = temp_dir("log_missing");
         write(
-            &dir.join("log.md"),
+            &dir.join("logs").join("2026-06.md"),
             "## [2024-06-01] ingest | autoresearch/sources/adr/other.md | create\n",
         );
         write(
@@ -1571,7 +1601,7 @@ mod tests {
     fn test_log_coverage_non_source_ignored() {
         let dir = temp_dir("log_non_source");
         write(
-            &dir.join("log.md"),
+            &dir.join("logs").join("2026-06.md"),
             "## [2024-06-01] ingest | concepts/foo.md | create\n",
         );
         write(
@@ -1588,7 +1618,7 @@ mod tests {
     fn test_log_coverage_empty_sources_dir() {
         let dir = temp_dir("log_empty_sources");
         write(
-            &dir.join("log.md"),
+            &dir.join("logs").join("2026-06.md"),
             "## [2024-06-01] ingest | concepts/foo.md | create\n",
         );
         // A non-domain sources/ dir with no source pages should not trigger
@@ -1604,7 +1634,7 @@ mod tests {
     fn test_log_coverage_title_from_fm() {
         let dir = temp_dir("log_title_fm");
         write(
-            &dir.join("log.md"),
+            &dir.join("logs").join("2026-06.md"),
             "## [2024-06-01] ingest | other.md | create\n",
         );
         write(
@@ -1625,7 +1655,7 @@ mod tests {
     fn test_log_coverage_slug_fallback() {
         let dir = temp_dir("log_slug_fallback");
         write(
-            &dir.join("log.md"),
+            &dir.join("logs").join("2026-06.md"),
             "## [2024-06-01] ingest | other.md | create\n",
         );
         write(
@@ -1911,7 +1941,7 @@ last_validated: not-a-date\n---\nBody.\n";
     fn test_related_field_related_to_system_file() {
         let pages = vec![make_page(
             "concepts/bad.md",
-            "---\ntitle: Bad\ntype: concept\nrelations: [log.md, concepts/foo.md]\n---\nBody.\n",
+            "---\ntitle: Bad\ntype: concept\nrelations: [lint-report.md, concepts/foo.md]\n---\nBody.\n",
         )];
         let issues = check_related_field(&pages);
         assert!(
@@ -1924,7 +1954,7 @@ last_validated: not-a-date\n---\nBody.\n";
     fn test_related_field_markdown_link_to_system_file() {
         let pages = vec![make_page(
             "concepts/badlink.md",
-            "---\ntitle: Bad\ntype: concept\n---\nSee [log](log.md) and [index](index.md).\n",
+            "---\ntitle: Bad\ntype: concept\n---\nSee [lint](lint-report.md) and [index](index.md).\n",
         )];
         let issues = check_related_field(&pages);
         assert!(
@@ -2279,7 +2309,7 @@ last_validated: not-a-date\n---\nBody.\n";
         let pages = vec![make_page(
             "concepts/foo.md",
             "---\ntitle: Foo\nrelations:\n- index.md\n---\n\
-             \nSee [log](log.md) for details.\n",
+             \nSee [lint](lint-report.md) for details.\n",
         )];
         let issues = check_related_body_consistency(&pages, &dir);
         // System files should be skipped entirely — no issues.
@@ -2339,7 +2369,7 @@ last_validated: not-a-date\n---\nBody.\n";
         // system-file checking.
         let pages = vec![make_page(
             "concepts/foo.md",
-            "---\ntitle: Foo\nrelations:\n- \"[Log](log.md)\"\n---\nBody.\n",
+            "---\ntitle: Foo\nrelations:\n- \"[Lint](lint-report.md)\"\n---\nBody.\n",
         )];
         let issues = check_related_field(&pages);
         assert!(

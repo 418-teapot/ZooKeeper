@@ -160,7 +160,7 @@
 
 ### 5.2 OKF 对齐状态
 
-当前实现已是 OKF v0.1 超集合规——内容页面和保留文件（`index.md` / `log.md`）均已对齐。域优先目录结构已迁移完成，各领域含独立 `index.md`（OKF §6 渐进式披露）。
+当前实现已是 OKF v0.1 超集合规——内容页面和保留文件（`index.md`）及日志目录（`logs/`）均已对齐。域优先目录结构已迁移完成，各领域含独立 `index.md`（OKF §6 渐进式披露）。
 
 #### 5.2.1 内容页面 — 已合规
 
@@ -189,7 +189,7 @@ OKF v0.1 §9 一致性三要求：
 
 **排序规则：** 同一章节内条目按**主题相关性**排列（最相关的在前），不按字母或日期——agent 扫索引时优先看到最可能相关的条目。
 
-#### 5.2.3 log.md — 已合规
+#### 5.2.3 日志（logs/）— 已合规
 
 **OKF §7 规定：**
 - 文件以一个 `#` 一级标题开头（如 `# 目录更新日志`）
@@ -198,7 +198,7 @@ OKF v0.1 §9 一致性三要求：
 - 最新日期在前
 - 每条目为自由散文，以 `* ` 开头；开头的粗体词（`**更新**`、`**创建**`、`**弃用**` 等）是约定而非要求
 
-**当前实现（`wiki/log.md`）：** ✅ **已对齐 OKF §7**：
+**当前实现（`wiki/logs/YYYY-MM.md` 月度文件）：** ✅ **已对齐 OKF §7**：
 - ✅ 以 `# 目录更新日志` 一级标题开头
 - ✅ 无 frontmatter
 - ✅ 按日期分组 `## YYYY-MM-DD`，最新在前
@@ -294,7 +294,7 @@ contradictions:                                          # 矛盾记录
 - `last_validated` + `timeliness`（两档）表达时效性——`timeliness` 由 `now - last_validated > threshold` 派生，`zwiki check --apply` 自动写入 frontmatter 供 agent 一读即知
 - `supersedes` / `superseded_by` 表达取代关系——两侧都是 agent 的合法写入入口，zwiki 对账补齐另一侧，保证互为镜像（详见 §9.2）
 - `contradictions` 表达矛盾记录
-- 不引入 `validation_level` 第三轴（验证层级作为 log.md 元数据，不进 frontmatter）
+- 不引入 `validation_level` 第三轴（验证层级作为日志元数据，不进 frontmatter）
 - 不把 `superseded` / `deprecated` 塞进 `timeliness`——前者由 `superseded_by` 非空表达，后者由 `status: deprecated` 表达
 
 **查询行为（三级短路，详见 §9.2 行为表）：**
@@ -612,7 +612,7 @@ else (stable + current):            直接引用，无免责
 | 2 | 来源回溯（source ↔ 衍生页比对） | `last_validated`，需 LLM |
 | 3 | 交叉验证（两独立源互相确认） | 双方 `last_validated`，需 LLM |
 
-验证层级不存为 frontmatter 字段——它是写入 `last_validated` 时的**元数据**（log.md 记录"此次验证由 level N 触发"），不进页面 frontmatter，避免第三根轴。
+验证层级不存为 frontmatter 字段——它是写入 `last_validated` 时的**元数据**（日志条目记录"此次验证由 level N 触发"），不进页面 frontmatter，避免第三根轴。
 
 ### 9.5 矛盾管理：发现不裁决
 
@@ -672,7 +672,7 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 |--------|------|------|
 | `check` | 运行 health + lint + 可选 diff；支持 `--save`/`--ci`/`--diff`/`--cached`/`--commit`/`--apply` | ✅ |
 | `backlinks` | 反向链接查询/写入 | ✅ |
-| `log` | 追加日志到 `wiki/log.md`（`--op`/`--path`/`--action`/`--note`） | ✅ |
+| `log` | 追加日志到 `wiki/logs/YYYY-MM.md`（`--op`/`--path`/`--action`/`--note`） | ✅ |
 | `page` | 读页面（`--property`/`--outline`） | ✅ |
 | `property` | 读/写/删 frontmatter 属性（结构化，不手改 YAML） | ✅ |
 | `create` | 从模板创建骨架页（`--domain`/`--type`/`--title`/`--slug`/`--source-type`）；新域自动建完整骨架 | ✅ |
@@ -745,7 +745,7 @@ zwiki 是**薄路由层**，底层调用现有模块逻辑。新增能力以新�
 │   ├── security/          ← advisory (priority=2)
 │   └── infra/             ← supplementary (priority=3)
 ├── .upstream/             ← 最低优先：外部 bundle 提供的基础知识
-├── index.md / log.md / SCHEMA.md
+├── index.md / logs/ / SCHEMA.md
 ```
 
 点前缀（`.org`/`.teams`/`.upstream`）暗示"框架维护，用户一般不直接操作"；`personal/` 无前缀是用户主工作区，与 dotfile 惯例一致。
@@ -954,7 +954,7 @@ blocked = ["deprecated-legacy-wiki"]
 | 18 | 来源回溯验证：source ↔ 衍生页面一致性比对 |
 | 19 | **L1-P0**：分层目录约定（personal/.org/.teams/.upstream 五级）+ teams.toml + `.org` consensus frontmatter |
 | 20 | **L1-P1**：`zwiki promote --team <name>` |
-| 21 | **L2-P0**：log.md 分月文件 |
+| 21 | ✅ **L2-P0**：log.md 分月文件 |
 | 22 | **L2-P1**：`--wiki-repo <name> <url>` 多 repo + `zwiki sync pull/push/status` |
 
 ### P3：全自动维护 + 大规模摄入 + 协同 L1/L2 深化 + L3

@@ -148,7 +148,7 @@ fn fmt_log_coverage(issues: &[Issue]) -> Vec<String> {
     if issues.is_empty() {
         lines.push("所有源页面都有对应的日志记录。✅".to_string());
     } else {
-        lines.push("以下源页面在 log.md 中没有对应的操作记录：".to_string());
+        lines.push("以下源页面在 logs/ 目录中没有对应的日志记录：".to_string());
         lines.push(String::new());
         for issue in issues {
             // details = title

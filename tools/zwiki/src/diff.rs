@@ -15,7 +15,6 @@ use crate::wiki::Page;
 /// Meta files whose diffs are skipped.
 const META_FILES: &[&str] = &[
     "index.md",
-    "log.md",
     "lint-report.md",
     "health-report.md",
     "overview.md",
@@ -23,7 +22,7 @@ const META_FILES: &[&str] = &[
 ];
 
 /// Directory name prefixes whose diffs are skipped.
-const SKIP_DIRS: &[&str] = &["raw", "templates", "tools"];
+const SKIP_DIRS: &[&str] = &["raw", "templates", "tools", "logs"];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -374,6 +373,11 @@ diff --git a/tools/helper.md b/tools/helper.md
 +++ b/tools/helper.md
 @@ -1 +1 @@
 +tool content
+diff --git a/logs/2026-07.md b/logs/2026-07.md
+--- a/logs/2026-07.md
++++ b/logs/2026-07.md
+@@ -1 +1 @@
++log content
 diff --git a/concepts/foo.md b/concepts/foo.md
 --- a/concepts/foo.md
 +++ b/concepts/foo.md

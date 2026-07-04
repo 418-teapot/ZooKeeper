@@ -10,7 +10,7 @@
 ```
 wiki/
 ├── index.md               # 根索引，列出三个领域 + overview.md
-├── log.md                 # 变更日志，OKF §7 格式
+├── logs/                  # 按月变更日志文件（logs/YYYY-MM.md）
 ├── overview.md            # 项目知识概览，living synthesis
 ├── SCHEMA.md              # 本文件，schema 定义
 ├── raw/                   # 原始源材料（不可变，LLM 只读，不在索引中）
@@ -143,7 +143,7 @@ freshness_days: 90
 
 ### 路径与交叉引用规则
 
-本页内交叉引用（Markdown 链接、frontmatter `relations`/`sources`、log.md 的 `<path>` 字段）一律**相对 wiki 根目录**，不带 `wiki/` 或 `~/.zoo/wiki/` 前缀：
+本页内交叉引用（Markdown 链接、frontmatter `relations`/`sources`、日志条目中的路径）一律**相对 wiki 根目录**，不带 `wiki/` 或 `~/.zoo/wiki/` 前缀：
 
 - **内联链接：**
   ```
@@ -228,11 +228,11 @@ Agent 直接读写文件时（`read` / `write` / `edit` / `bash` 指令）使用
 - 摘要与链接之间用 ` - `（空格 + 连字符 + 空格）分隔
 - 条目按主题相关性排列（非按时间）
 
-### log.md 格式
+### 日志格式（logs/ 目录）
 
-`~/.zoo/wiki/log.md` 是追加式变更日志（OKF §7），记录所有 wiki 页面的增删改和运维检查事件。
+变更日志按月份分割存储在 `~/.zoo/wiki/logs/YYYY-MM.md` 文件中（如 `logs/2026-06.md`），每个文件是一个独立月份的追加式变更日志（OKF §7），记录该月内所有 wiki 页面的增删改和运维检查事件。
 
-格式规范：
+格式规范（每个 `logs/YYYY-MM.md` 文件内部）：
 
 ```markdown
 # 目录更新日志
@@ -261,7 +261,7 @@ Agent 直接读写文件时（`read` / `write` / `edit` / `bash` 指令）使用
 * **编辑**: overview.md — 更新知识版图与外部参考
 ```
 
-日志按时间倒序排列，最新记录在最上方。
+日志按时间倒序排列，最新记录在最上方。查询日志时应读取当前月份及目标时间段对应的 `logs/YYYY-MM.md` 文件。
 
 ---
 

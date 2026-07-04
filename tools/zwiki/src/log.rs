@@ -120,7 +120,7 @@ fn insert_entry(content: &str, date: &str, entry_line: &str) -> String {
     lines.join("\n") + "\n"
 }
 
-/// Append a structured log entry to `wiki/log.md`.
+/// Append a structured log entry to `wiki/logs/YYYY-MM.md`.
 ///
 /// The entry is prepended to the file (most recent first).  File locking
 /// (`LOCK_EX`) prevents concurrent write interleaving.
@@ -145,7 +145,9 @@ pub fn add_entry_at(
     action: &str,
     note: Option<&str>,
 ) -> Result<(), String> {
-    let log_path: PathBuf = wiki_root.join("log.md");
+    let year_month = chrono::Local::now().format("%Y-%m").to_string();
+    let log_path: PathBuf =
+        wiki_root.join("logs").join(format!("{year_month}.md"));
 
     // Normalize path (strip wiki/ prefix)
     let path = normalize_path(path);
@@ -222,6 +224,12 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("failed to create temp dir");
         dir
+    }
+
+    /// Return the monthly log path expected by `add_entry_at`.
+    fn monthly_log_path(root: &Path) -> PathBuf {
+        let year_month = chrono::Local::now().format("%Y-%m").to_string();
+        root.join("logs").join(format!("{year_month}.md"))
     }
 
     // -------------------------------------------------------------------
@@ -389,8 +397,8 @@ mod tests {
         );
         assert!(result.is_ok());
 
-        let log_path = wiki.join("log.md");
-        assert!(log_path.exists(), "log.md should exist");
+        let log_path = monthly_log_path(&wiki);
+        assert!(log_path.exists(), "monthly log should exist");
 
         let content = fs::read_to_string(&log_path).unwrap();
         assert!(
@@ -416,7 +424,7 @@ mod tests {
         )
         .unwrap();
 
-        let content = fs::read_to_string(wiki.join("log.md")).unwrap();
+        let content = fs::read_to_string(monthly_log_path(&wiki)).unwrap();
         // Should have the title
         assert!(
             content.starts_with("# 目录更新日志"),
@@ -449,7 +457,7 @@ mod tests {
         )
         .unwrap();
 
-        let content = fs::read_to_string(wiki.join("log.md")).unwrap();
+        let content = fs::read_to_string(monthly_log_path(&wiki)).unwrap();
         let expected_note = truncate_note(&long_note);
         assert!(
             content.contains(&expected_note),
@@ -474,7 +482,7 @@ mod tests {
         )
         .unwrap();
 
-        let content = fs::read_to_string(wiki.join("log.md")).unwrap();
+        let content = fs::read_to_string(monthly_log_path(&wiki)).unwrap();
         assert!(
             content.contains("concepts/test.md"),
             "path should be normalized: {content}"
@@ -496,7 +504,7 @@ mod tests {
         add_entry_at(&wiki, "ingest", "second.md", "create", Some("second"))
             .unwrap();
 
-        let content = fs::read_to_string(wiki.join("log.md")).unwrap();
+        let content = fs::read_to_string(monthly_log_path(&wiki)).unwrap();
         // Both entries should be present
         assert!(
             content.contains("* **创建**: first.md — first"),

@@ -21,7 +21,6 @@ use crate::wiki;
 /// System files excluded from backlink targets.
 const SYSTEM_FILES: &[&str] = &[
     "index.md",
-    "log.md",
     "lint-report.md",
     "health-report.md",
     "overview.md",
@@ -30,7 +29,7 @@ const SYSTEM_FILES: &[&str] = &[
 ];
 
 /// Excluded directory names for backlink targets.
-const EXCLUDED_DIRS: &[&str] = &["templates", "tools", "raw"];
+const EXCLUDED_DIRS: &[&str] = &["templates", "tools", "raw", "logs"];
 
 // ---------------------------------------------------------------------------
 // 1. is_valid_wiki_target
@@ -606,6 +605,13 @@ mod tests {
         let dir = temp_dir("raw_dir");
         write(&dir.join("raw").join("notes.md"), "# Notes");
         assert!(!is_valid_wiki_target(&dir, "raw/notes.md"));
+    }
+
+    #[test]
+    fn test_is_valid_wiki_target_rejects_logs_dir() {
+        let dir = temp_dir("logs_dir");
+        write(&dir.join("logs").join("2026-07.md"), "# Log");
+        assert!(!is_valid_wiki_target(&dir, "logs/2026-07.md"));
     }
 
     #[test]

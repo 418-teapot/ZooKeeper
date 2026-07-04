@@ -87,7 +87,7 @@ enum Command {
         page: Option<String>,
     },
 
-    /// Append a log entry to wiki/log.md
+    /// Append a log entry to wiki/logs/YYYY-MM.md
     Log {
         /// Operation: ingest, update, delete, query, health, lint, refresh, tool
         #[arg(long)]

@@ -20,7 +20,6 @@ use walkdir::WalkDir;
 /// consistency, inline-link coverage, etc.).
 const META_FILES: &[&str] = &[
     "index.md",
-    "log.md",
     "lint-report.md",
     "health-report.md",
     "SCHEMA.md",
@@ -28,7 +27,7 @@ const META_FILES: &[&str] = &[
 ];
 
 /// Directory names excluded from page discovery.
-const EXCLUDED_DIRS: &[&str] = &["templates", "tools", "raw"];
+const EXCLUDED_DIRS: &[&str] = &["templates", "tools", "raw", "logs"];
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -93,9 +92,9 @@ pub fn discover_pages(base: &Path) -> Vec<PathBuf> {
 ///
 /// The following are excluded:
 ///
-/// * Meta files: `index.md`, `log.md`, `lint-report.md`,
+/// * Meta files: `index.md`, `lint-report.md`,
 ///   `health-report.md`, `overview.md`, `SCHEMA.md`, `.gitkeep`.
-/// * Files under the `templates/`, `tools/`, and `raw/` directories.
+/// * Files under the `templates/`, `tools/`, `raw/`, and `logs/` directories.
 #[must_use]
 pub fn all_wiki_pages() -> Vec<PathBuf> {
     discover_pages(&wiki_dir())
@@ -569,7 +568,6 @@ mod tests {
         write(&dir.join("overview.md"), "# Overview");
         for meta in &[
             "index.md",
-            "log.md",
             "lint-report.md",
             "health-report.md",
             "SCHEMA.md",
@@ -577,6 +575,8 @@ mod tests {
         ] {
             write(&dir.join(meta), &format!("# {meta}"));
         }
+        // logs/ is a directory excluded from page discovery
+        write(&dir.join("logs").join("2026-07.md"), "# Monthly log");
 
         let pages = discover_pages(&dir);
         let names: Vec<String> = pages
