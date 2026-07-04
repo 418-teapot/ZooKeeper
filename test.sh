@@ -45,21 +45,36 @@ else
   FAILED=1
 fi
 
-# Coverage requires cargo-llvm-cov (binary) and llvm-tools-preview (rustup component).
+# Coverage requires cargo-llvm-cov (binary) and LLVM tools.
+# LLVM tools can come from rustup (llvm-tools-preview) or system package manager.
 if ! command -v cargo-llvm-cov &>/dev/null; then
   echo ""
-  echo "📦 Installing cargo-llvm-cov..."
-  cargo install cargo-llvm-cov
+  echo "⏭️  cargo-llvm-cov not found, skip Rust coverage"
+  echo "   Install: cargo install cargo-llvm-cov"
+  HAS_CARGO_LLVM_COV=0
+else
+  HAS_CARGO_LLVM_COV=1
 fi
 
-if rustup component list 2>/dev/null | grep -q 'llvm-tools.*installed'; then
+has_llvm_tools() {
+  # rustup component
+  if rustup component list 2>/dev/null | grep -q 'llvm-tools.*installed'; then
+    return 0
+  fi
+  # System package manager (e.g. brew install llvm, apt install llvm)
+  if command -v llvm-profdata &>/dev/null && command -v llvm-cov &>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
+if [ "$HAS_CARGO_LLVM_COV" -eq 1 ] && has_llvm_tools; then
   section "Rust coverage"
   COV_OUTPUT=$(RUSTFLAGS="-D warnings" cargo llvm-cov --manifest-path tools/Cargo.toml --workspace --summary-only -- --test-threads=1 2>&1) || true
 
   if echo "$COV_OUTPUT" | grep -q "llvm-tools"; then
     echo ""
-    echo "⏭️  llvm-tools not installed, skip Rust coverage"
-    echo "   Install: rustup component add llvm-tools-preview"
+    echo "⏭️  llvm-tools not found at runtime, skip Rust coverage"
   else
     echo "$COV_OUTPUT"
 
@@ -116,8 +131,9 @@ if rustup component list 2>/dev/null | grep -q 'llvm-tools.*installed'; then
   fi
 else
   echo ""
-  echo "⏭️  llvm-tools-preview not installed, skip Rust coverage"
-  echo "   Install: rustup component add llvm-tools-preview"
+  echo "⏭️  LLVM tools not available, skip Rust coverage"
+  echo "   Option A: rustup component add llvm-tools-preview"
+  echo "   Option B: install llvm via system package manager (brew/apt/etc.)"
 fi
 
 # Temporarily skip dry-run tests (behavioral assertions depend on LLM model
