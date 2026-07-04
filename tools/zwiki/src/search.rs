@@ -8,9 +8,12 @@ use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
 use std::process;
 
+use std::fmt::Write;
+
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::contradictions::{self, ContradictionEntry};
 use crate::wiki;
 
 // ---------------------------------------------------------------------------
@@ -31,6 +34,8 @@ pub struct SearchResult {
     pub page_type: String,
     /// Tags from frontmatter.
     pub tags: Vec<String>,
+    /// Contradiction entries found on this page.
+    pub contradictions: Vec<ContradictionEntry>,
 }
 
 // ---------------------------------------------------------------------------
@@ -218,6 +223,10 @@ fn score_page(
     let body_count = count_substrings(&body_lower, &query_lower);
     score += body_count;
 
+    // Extract contradiction entries.
+    let raw_content = wiki::read_file(path);
+    let contradictions = contradictions::parse_contradictions(&raw_content);
+
     // Extract display fields.
     let title =
         page.frontmatter.get("title").and_then(|v| v.as_str()).map_or_else(
@@ -239,7 +248,14 @@ fn score_page(
         .to_string();
     let tags = wiki::extract_tags(&page.frontmatter);
 
-    Some(SearchResult { path: page.rel, title, score, page_type, tags })
+    Some(SearchResult {
+        path: page.rel,
+        title,
+        score,
+        page_type,
+        tags,
+        contradictions,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -274,7 +290,12 @@ pub fn format_results(results: &[SearchResult]) -> String {
     }
     let mut lines: Vec<String> = Vec::new();
     for r in results {
-        lines.push(format!("  {} — {} [score: {}]", r.path, r.title, r.score));
+        let mut line =
+            format!("  {} — {} [score: {}]", r.path, r.title, r.score);
+        if !r.contradictions.is_empty() {
+            let _ = write!(line, " [!×{}]", r.contradictions.len());
+        }
+        lines.push(line);
     }
     lines.join("\n")
 }
@@ -826,6 +847,7 @@ mod tests {
             score: 5,
             page_type: "concept".to_string(),
             tags: vec![],
+            contradictions: vec![],
         }];
         let output = format_results(&results);
         assert!(output.contains("concepts/test.md"));
@@ -848,6 +870,7 @@ mod tests {
             score: 4,
             page_type: "concept".to_string(),
             tags: vec!["a".to_string(), "b".to_string()],
+            contradictions: vec![],
         }];
         let output = format_results_json(&results);
         assert!(output.contains("\"path\": \"concepts/test.md\""));
@@ -909,5 +932,110 @@ mod tests {
         let results = engine.search("Target", None, None, None);
         assert_eq!(results.len(), 1);
         assert!(results[0].path.ends_with("concepts/a.md"));
+    }
+
+    // -------------------------------------------------------------------
+    // Contradictions metadata
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_search_result_contains_contradictions() {
+        // Build page content with contradictions frontmatter.
+        // Use a single-line string to avoid any escaping issues.
+        let page_a_content = concat!(
+            "---\n",
+            "title: Page A\n",
+            "type: concept\n",
+            "tags: []\n",
+            "contradictions:\n",
+            "  - path: shared/page-b.md\n",
+            "    claims:\n",
+            "      - claim one\n",
+            "    detected: 2026-07-01\n",
+            "    resolution: unresolved\n",
+            "---\n\nBody of page A."
+        );
+        // Verify parse_contradictions works on this content.
+        let parsed = contradictions::parse_contradictions(page_a_content);
+        assert_eq!(
+            parsed.len(),
+            1,
+            "parse_contradictions should find 1 entry, got {}. Content: {:?}",
+            parsed.len(),
+            page_a_content
+        );
+
+        let (engine, _) = setup_engine(
+            "search_contradictions",
+            &[
+                ("shared/page-a.md", page_a_content),
+                (
+                    "shared/page-b.md",
+                    "---\ntitle: Page B\ntype: concept\ntags: []\n---\n\nBody about page B.",
+                ),
+            ],
+        );
+        let results = engine.search("Body", None, None, None);
+        // Both pages match "Body".
+        assert_eq!(results.len(), 2);
+
+        // Find page-a result.
+        let page_a = results
+            .iter()
+            .find(|r| r.path.ends_with("shared/page-a.md"))
+            .expect("page-a should be in results");
+        assert_eq!(page_a.contradictions.len(), 1);
+        assert_eq!(page_a.contradictions[0].path, "shared/page-b.md");
+        assert_eq!(page_a.contradictions[0].claims, vec!["claim one"]);
+        assert_eq!(page_a.contradictions[0].detected, "2026-07-01");
+        assert_eq!(page_a.contradictions[0].resolution, "unresolved");
+
+        // page-b has no contradictions.
+        let page_b = results
+            .iter()
+            .find(|r| r.path.ends_with("shared/page-b.md"))
+            .expect("page-b should be in results");
+        assert!(page_b.contradictions.is_empty());
+    }
+
+    #[test]
+    fn test_format_results_shows_contradiction_indicator() {
+        let results = vec![
+            SearchResult {
+                path: "shared/a.md".to_string(),
+                title: "Page A".to_string(),
+                score: 3,
+                page_type: "concept".to_string(),
+                tags: vec![],
+                contradictions: vec![ContradictionEntry {
+                    path: "shared/b.md".to_string(),
+                    claims: vec!["claim".to_string()],
+                    detected: "2026-07-01".to_string(),
+                    resolution: "unresolved".to_string(),
+                }],
+            },
+            SearchResult {
+                path: "shared/c.md".to_string(),
+                title: "Page C".to_string(),
+                score: 1,
+                page_type: "concept".to_string(),
+                tags: vec![],
+                contradictions: vec![],
+            },
+        ];
+        let output = format_results(&results);
+        assert!(
+            output.contains("[!×1]"),
+            "should show [!×1] for page with 1 contradiction"
+        );
+        // The line for page c (no contradictions) should NOT contain [!×.
+        let line_c = output
+            .lines()
+            .find(|l| l.contains("shared/c.md"))
+            .expect("page c line should exist");
+        assert!(
+            !line_c.contains("[!×"),
+            "page without contradictions should not have [!× indicator"
+        );
     }
 }

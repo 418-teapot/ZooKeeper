@@ -101,6 +101,17 @@ zwiki search "<query>" [--type <type>] [--domain <domain>]
 
 **注意：** `superseded_by` 是短路守卫——只要非空，`timeliness` 和 `status` 不再参与判断，行为固定为指向取代者。
 
+### 矛盾感知（正交检查）
+
+`contradictions` 与生命周期表正交——无论 `status`/`timeliness` 如何，只要页面 `contradictions` 非空，引用时必须附加矛盾标注：
+
+| contradictions | 行为 |
+|----------------|------|
+| 非空 | 引用时附加"↯ 声明存在争议（与 {target} 等 N 个页面矛盾）" |
+| 空 | 无额外标注 |
+
+> `zwiki search --json` 输出中每个结果的 `contradictions` 字段为 `[{target, claims, detected, resolution}]` 数组。矛盾不改变引用决策（不跳过页面），仅标注。
+
 ### Relations 递归
 
 如果页面有 `relations` frontmatter（domain-prefixed 路径如 `shared/concepts/foo.md`），可递归读取。agent 根据上下文预算自行判断何时停止。
