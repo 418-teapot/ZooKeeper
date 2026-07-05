@@ -99,10 +99,7 @@ impl SearchEngine {
         if let Some(df) = domain_filter {
             let df_lower = df.to_lowercase();
             results.retain(|r| {
-                r.path
-                    .split('/')
-                    .next()
-                    .is_some_and(|d| d.to_lowercase() == df_lower)
+                wiki::domain_of(&r.path).to_lowercase() == df_lower
             });
         }
 
@@ -121,6 +118,7 @@ impl SearchEngine {
             .arg("--files-with-matches")
             .arg("--ignore-case")
             .arg("--fixed-strings")
+            .arg("--hidden")
             .arg(query)
             .arg(&self.wiki_root)
             .output()

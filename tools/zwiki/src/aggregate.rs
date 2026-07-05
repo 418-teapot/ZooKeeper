@@ -102,12 +102,11 @@ pub fn aggregate_field(
                 }
             }
             AggregateField::Domains => {
-                // Only count pages with a directory component (exclude
-                // root-level files like overview.md).
                 if page.rel.contains('/') {
-                    let domain =
-                        page.rel.split('/').next().unwrap_or("").to_string();
-                    *counts.entry(domain).or_insert(0) += 1;
+                    let domain = wiki::domain_of(&page.rel).to_string();
+                    if !domain.is_empty() {
+                        *counts.entry(domain).or_insert(0) += 1;
+                    }
                 }
             }
         }

@@ -6,6 +6,7 @@
 
 mod aggregate;
 mod backlinks;
+mod bundle;
 mod contradictions;
 mod diff;
 mod display;
@@ -87,6 +88,10 @@ enum Command {
         /// Specific page to show backlinks for
         page: Option<String>,
     },
+
+    /// Bundle distribution commands
+    #[command(subcommand)]
+    Bundle(bundle::BundleCommand),
 
     /// Append a log entry to wiki/logs/YYYY-MM.md
     Log {
@@ -416,6 +421,9 @@ fn dispatch_tail(args: &Args, cmd: &Command) {
         Command::Move { old, new } => cmd_move(old, new, args.json),
         Command::Supersede { old, new, reason } => {
             cmd_supersede(old, new, reason);
+        }
+        Command::Bundle(cmd) => {
+            bundle::dispatch(cmd, args.json);
         }
         Command::Contradictions(cmd) => {
             contradictions::dispatch(cmd, args.json);
@@ -1887,6 +1895,216 @@ mod tests {
                 assert_eq!(domain, Some("shared".to_string()));
             }
             _ => panic!("expected Verify with json and domain"),
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Bundle subcommand (CLI parsing only)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_bundle_init_parses() {
+        let args = Args::try_parse_from(["zwiki", "bundle", "init"]).unwrap();
+        match args.command {
+            Some(Command::Bundle(bundle::BundleCommand::Init(..))) => {}
+            _ => panic!("expected Bundle::Init"),
+        }
+    }
+
+    #[test]
+    fn test_bundle_init_with_name_parses() {
+        let args = Args::try_parse_from([
+            "zwiki",
+            "bundle",
+            "init",
+            "--name",
+            "my-bundle",
+        ])
+        .unwrap();
+        match args.command {
+            Some(Command::Bundle(bundle::BundleCommand::Init(ref a))) => {
+                assert_eq!(a.name, Some("my-bundle".to_string()));
+            }
+            _ => panic!("expected Bundle::Init"),
+        }
+    }
+
+    #[test]
+    fn test_bundle_init_with_all_flags_parses() {
+        let args = Args::try_parse_from([
+            "zwiki",
+            "bundle",
+            "init",
+            "--name",
+            "my-bundle",
+            "--version",
+            "1.0.0",
+            "--kind",
+            "team",
+            "--okf-version",
+            "0.2",
+            "--team",
+            "my-team",
+            "--registry",
+            "https://reg.example.com",
+            "--include",
+            "*.md",
+            "--include",
+            "assets/**",
+            "--exclude",
+            "drafts/**",
+            "--json",
+        ])
+        .unwrap();
+        match args.command {
+            Some(Command::Bundle(bundle::BundleCommand::Init(ref a))) => {
+                assert_eq!(a.name, Some("my-bundle".to_string()));
+                assert_eq!(a.version, "1.0.0");
+                assert_eq!(a.kind, "team");
+                assert_eq!(a.okf_version, "0.2");
+                assert_eq!(a.team, Some("my-team".to_string()));
+                assert_eq!(
+                    a.registry,
+                    Some("https://reg.example.com".to_string())
+                );
+                assert_eq!(a.include, vec!["*.md", "assets/**"]);
+                assert_eq!(a.exclude, vec!["drafts/**"]);
+                assert!(a.json);
+            }
+            _ => panic!("expected Bundle::Init"),
+        }
+    }
+
+    #[test]
+    fn test_bundle_export_parses() {
+        let args =
+            Args::try_parse_from(["zwiki", "bundle", "export", "/some/dir"])
+                .unwrap();
+        match args.command {
+            Some(Command::Bundle(bundle::BundleCommand::Export(_))) => {}
+            _ => panic!("expected Bundle::Export"),
+        }
+    }
+
+    #[test]
+    fn test_bundle_install_parses() {
+        let args =
+            Args::try_parse_from(["zwiki", "bundle", "install", "source"])
+                .unwrap();
+        match args.command {
+            Some(Command::Bundle(bundle::BundleCommand::Install(_))) => {}
+            _ => panic!("expected Bundle::Install"),
+        }
+    }
+
+    #[test]
+    fn test_bundle_list_parses() {
+        let args = Args::try_parse_from(["zwiki", "bundle", "list"]).unwrap();
+        match args.command {
+            Some(Command::Bundle(bundle::BundleCommand::List(..))) => {}
+            _ => panic!("expected Bundle::List"),
+        }
+    }
+
+    #[test]
+    fn test_bundle_list_with_json_parses() {
+        let args = Args::try_parse_from(["zwiki", "--json", "bundle", "list"])
+            .unwrap();
+        assert!(args.json);
+        match args.command {
+            Some(Command::Bundle(bundle::BundleCommand::List(..))) => {}
+            _ => panic!("expected Bundle::List with json"),
+        }
+    }
+
+    #[test]
+    fn test_bundle_check_parses() {
+        let args = Args::try_parse_from(["zwiki", "bundle", "check"]).unwrap();
+        match args.command {
+            Some(Command::Bundle(bundle::BundleCommand::Check(..))) => {}
+            _ => panic!("expected Bundle::Check"),
+        }
+    }
+
+    #[test]
+    fn test_bundle_check_with_json_parses() {
+        let args = Args::try_parse_from(["zwiki", "--json", "bundle", "check"])
+            .unwrap();
+        assert!(args.json);
+        match args.command {
+            Some(Command::Bundle(bundle::BundleCommand::Check(..))) => {}
+            _ => panic!("expected Bundle::Check with json"),
+        }
+    }
+
+    #[test]
+    fn test_bundle_update_parses() {
+        let args = Args::try_parse_from(["zwiki", "bundle", "update"]).unwrap();
+        match args.command {
+            Some(Command::Bundle(bundle::BundleCommand::Update(..))) => {}
+            _ => panic!("expected Bundle::Update"),
+        }
+    }
+
+    #[test]
+    fn test_bundle_update_with_name_parses() {
+        let args = Args::try_parse_from([
+            "zwiki",
+            "bundle",
+            "update",
+            "--name",
+            "my-bundle",
+        ])
+        .unwrap();
+        match args.command {
+            Some(Command::Bundle(bundle::BundleCommand::Update(ref a))) => {
+                assert_eq!(a.name, Some("my-bundle".to_string()));
+            }
+            _ => panic!("expected Bundle::Update with name"),
+        }
+    }
+
+    #[test]
+    fn test_bundle_update_with_json_parses() {
+        let args =
+            Args::try_parse_from(["zwiki", "--json", "bundle", "update"])
+                .unwrap();
+        assert!(args.json);
+        match args.command {
+            Some(Command::Bundle(bundle::BundleCommand::Update(..))) => {}
+            _ => panic!("expected Bundle::Update with json"),
+        }
+    }
+
+    #[test]
+    fn test_bundle_uninstall_parses() {
+        let args =
+            Args::try_parse_from(["zwiki", "bundle", "uninstall", "my-bundle"])
+                .unwrap();
+        match args.command {
+            Some(Command::Bundle(bundle::BundleCommand::Uninstall(ref a))) => {
+                assert_eq!(a.name, "my-bundle");
+            }
+            _ => panic!("expected Bundle::Uninstall"),
+        }
+    }
+
+    #[test]
+    fn test_bundle_uninstall_with_json_parses() {
+        let args = Args::try_parse_from([
+            "zwiki",
+            "--json",
+            "bundle",
+            "uninstall",
+            "my-bundle",
+        ])
+        .unwrap();
+        assert!(args.json);
+        match args.command {
+            Some(Command::Bundle(bundle::BundleCommand::Uninstall(ref a))) => {
+                assert_eq!(a.name, "my-bundle");
+            }
+            _ => panic!("expected Bundle::Uninstall with json"),
         }
     }
 }

@@ -349,12 +349,50 @@ pub fn page_cache(pages: &[PathBuf]) -> HashMap<String, Page> {
 // Domain validation
 // ---------------------------------------------------------------------------
 
-/// Validate that a domain filter matches a known top-level directory.
+/// Extract the logical domain from a wiki-relative path.
 ///
-/// Collects known domains from `discover_pages` by extracting the first path
-/// component of each page (directories only, not root-level files). Returns
-/// `Ok(())` if `domain` matches any known domain (case-insensitive), or
-/// `Err(message)` with a Chinese hint listing available domains.
+/// For bundle layers (`.teams/`, `.upstream/`, `.org/`), strips the layer
+/// prefix and the bundle name, then returns the first remaining directory
+/// component.  For `personal/`, strips the prefix and returns the first
+/// subdirectory.  Falls back to the first path component if no layer prefix
+/// matches.  Returns `""` when there is no domain (root-level file).
+#[must_use]
+pub fn domain_of(rel: &str) -> &str {
+    // Bundle layers: .teams/<bundle>/<domain>/...
+    for prefix in &[".teams/", ".upstream/", ".org/"] {
+        if let Some(rest) = rel.strip_prefix(prefix) {
+            // Skip the bundle name (next component).
+            if let Some(after_bundle) = rest.split_once('/').map(|(_, r)| r) {
+                let candidate = after_bundle.split('/').next().unwrap_or("");
+                if std::path::Path::new(candidate)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+                {
+                    return "";
+                }
+                return candidate;
+            }
+            return "";
+        }
+    }
+    // Personal space: personal/<domain>/...
+    if let Some(rest) = rel.strip_prefix("personal/") {
+        let candidate = rest.split('/').next().unwrap_or("");
+        if std::path::Path::new(candidate)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+        {
+            return "";
+        }
+        return candidate;
+    }
+    // No layer prefix — first component.
+    rel.split('/').next().unwrap_or(rel)
+}
+
+/// Collects unique parent directory paths from all wiki pages.  Returns
+/// `Ok(())` if `domain` appears as a case-insensitive substring of any
+/// known domain path, or `Err(message)` with available domains listed.
 pub fn validate_domain(domain: &str, wiki_dir: &Path) -> Result<(), String> {
     let known: std::collections::BTreeSet<String> = discover_pages(wiki_dir)
         .into_iter()
@@ -362,12 +400,8 @@ pub fn validate_domain(domain: &str, wiki_dir: &Path) -> Result<(), String> {
             p.strip_prefix(wiki_dir)
                 .ok()
                 .and_then(|r| r.to_str())
-                .and_then(|r| {
-                    // Only count top-level directories as domains,
-                    // not root-level standalone files.
-                    r.split('/').next().filter(|_| r.contains('/'))
-                })
-                .map(String::from)
+                .map(|r| domain_of(r).to_string())
+                .filter(|d| !d.is_empty())
         })
         .collect();
     let df_lower = domain.to_lowercase();
@@ -429,10 +463,10 @@ pub fn page_matches_slice(
         }
     }
 
-    // Domain filter (case-insensitive exact match on first component).
+    // Domain filter (case-insensitive exact match against `domain_of`).
     if let Some(df) = domain_filter {
         let df_lower = df.to_lowercase();
-        let domain = page.rel.split('/').next().unwrap_or("");
+        let domain = domain_of(&page.rel);
         if domain.to_lowercase() != df_lower {
             return false;
         }

@@ -80,11 +80,14 @@ if [ "$HAS_CARGO_LLVM_COV" -eq 1 ] && has_llvm_tools; then
 
     # Aggregate coverage across all source files under a crate prefix.
     crate_cov() {
-      # Sum Lines (col 8) and Missed Lines (col 9) across all files matching prefix.
+      # Sum instrumented lines (col 2) and missed lines (col 3) across
+      # all files matching prefix.  Columns: path, inst-lines, missed-lines,
+      # line-cov%, inst-funcs, missed-funcs, func-cov%, inst-regions,
+      # missed-regions, region-cov%, inst-branches, missed-branches, branch-cov%.
       echo "$COV_OUTPUT" | awk -v prefix="$1" '
         $1 ~ prefix {
-          lines += $8
-          missed += $9
+          lines += $2
+          missed += $3
         }
         END {
           if (lines > 0)
@@ -100,7 +103,7 @@ if [ "$HAS_CARGO_LLVM_COV" -eq 1 ] && has_llvm_tools; then
     COV_ZFIND=$(crate_cov 'zfind/src/')
     COV_ZINSPECT=$(crate_cov 'zinspect/src/')
     COV_ZTRACE=$(crate_cov 'ztrace/src/')
-    COV_TOTAL=$(echo "$COV_OUTPUT" | awk '/^TOTAL/ {print $10}' | tr -d '%')
+    COV_TOTAL=$(echo "$COV_OUTPUT" | awk '/^TOTAL/ {print $4}' | tr -d '%')
 
     check_cov() {
       local name="$1" cov="$2" thr="$3"

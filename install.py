@@ -190,26 +190,55 @@ def main() -> None:
     header("安装完成")
     info(f"✅ 配置已写入: {opencode_json}")
 
-    # ── Wiki symlink ────────────────────────────────────────────────
-    header("Wiki 软链接")
+    # ── Wiki bundle install ─────────────────────────────────────────
+    header("Wiki Bundle 安装")
     zoo_dir = os.path.join(os.path.expanduser("~"), ".zoo")
+    wiki_root = os.path.join(zoo_dir, "wiki")
+
+    # Pre-create wiki directory structure
+    for subdir in [
+        wiki_root,
+        os.path.join(wiki_root, ".upstream"),
+        os.path.join(wiki_root, ".teams"),
+        os.path.join(wiki_root, ".org"),
+        os.path.join(wiki_root, "personal"),
+    ]:
+        os.makedirs(subdir, exist_ok=True)
+
     source_wiki = os.path.join(SCRIPT_DIR, "wiki")
-    target_link = os.path.join(zoo_dir, "wiki")
+    zwiki_bin = os.path.join(SCRIPT_DIR, "tools", "bin", "zwiki")
 
     if not os.path.isdir(source_wiki):
-        warn(f"Wiki 源目录不存在，跳过软链接: {source_wiki}")
+        warn(f"Wiki 源目录不存在，跳过: {source_wiki}")
+    elif not os.path.isfile(zwiki_bin):
+        warn(
+            "zwiki 未编译，跳过 bundle 安装（运行 ./build.sh 后重新执行 install.py）"
+        )
     else:
-        os.makedirs(zoo_dir, exist_ok=True)
-        if os.path.islink(target_link):
-            os.unlink(target_link)
-        elif os.path.exists(target_link):
-            warn(f"路径已存在，将覆盖: {target_link}")
-            if os.path.isdir(target_link):
-                shutil.rmtree(target_link)
-            else:
-                os.remove(target_link)
-        os.symlink(source_wiki, target_link)
-        info(f"✓ Wiki 软链接: {target_link} → {source_wiki}")
+        import subprocess
+
+        result = subprocess.run(
+            [zwiki_bin, "bundle", "install", source_wiki, "--force"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            info(f"✓ Wiki bundle 已安装: {wiki_root}")
+            # Symlink infrastructure files to wiki root for direct access
+            core_dir = os.path.join(wiki_root, ".teams", "core")
+            for name in ["SCHEMA.md", "templates"]:
+                src = os.path.join(core_dir, name)
+                dst = os.path.join(wiki_root, name)
+                if os.path.islink(dst) or os.path.exists(dst):
+                    if os.path.isdir(dst) and not os.path.islink(dst):
+                        shutil.rmtree(dst)
+                    else:
+                        os.remove(dst)
+                os.symlink(src, dst)
+        else:
+            warn(
+                f"Wiki bundle 安装失败: {result.stderr.strip() or result.stdout.strip()}"
+            )
 
     # ── Tools symlink ───────────────────────────────────────────────
     header("Tools 软链接")
