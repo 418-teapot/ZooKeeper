@@ -41,6 +41,13 @@ import {
 } from "./hooks/task-prompt";
 import { initLogger, log, setSessionId } from "./utils/logger.js";
 
+// ---------------------------------------------------------------------------
+// Agent identity tracking — populated by message.updated event, queried by hooks
+// ---------------------------------------------------------------------------
+
+/** Maps session IDs to agent names reported by message.updated events. */
+const sessionAgentMap = new Map<string, string>();
+
 const AGENT_PROMPTS: Record<string, string> = {
   dolphin: DOLPHIN_PROMPT,
   beaver: BEAVER_PROMPT,
@@ -255,6 +262,30 @@ export async function zookeeper(input: any) {
       }
     },
 
+    async event(input: {
+      event: { type: string; properties?: Record<string, unknown> };
+    }) {
+      const { type, properties } = input.event;
+
+      // Track agent identity from message.updated events.
+      // Covers user messages, assistant responses, and system messages
+      // (e.g. /go handoff) — more comprehensive than chat.message alone.
+      if (type === "message.updated") {
+        const info = properties?.info as
+          | { agent?: string; sessionID?: string }
+          | undefined;
+        if (info?.agent && info.sessionID) {
+          sessionAgentMap.set(info.sessionID, info.agent);
+        }
+      }
+
+      // Clean up on session deletion.
+      if (type === "session.deleted") {
+        const info = properties?.info as { id?: string } | undefined;
+        if (info?.id) sessionAgentMap.delete(info.id);
+      }
+    },
+
     async "experimental.chat.messages.transform"(
       _input: Record<string, never>,
       output: ContextMetricsOutput,
@@ -291,8 +322,20 @@ export async function zookeeper(input: any) {
         },
         {
           name: "nudgeDirectWork",
-          fn: (i: AfterExecInput, o: AfterExecOutput) =>
-            nudgeDirectWork(client, i, o),
+          fn: (i: AfterExecInput, o: AfterExecOutput) => {
+            if (sessionAgentMap.get(i.sessionID) !== "dolphin") {
+              log(
+                "direct-work-nudge",
+                "nudge_skipped",
+                i.sessionID,
+                i.callID,
+                "debug",
+                { tool: i.tool, reason: "not_dolphin" },
+              );
+              return;
+            }
+            return nudgeDirectWork(i, o, { todoClient: client });
+          },
         },
         {
           name: "nudgePostTask",

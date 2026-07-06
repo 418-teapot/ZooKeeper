@@ -3,7 +3,9 @@
  *
  * Covers edit/write firing, non-matching tools, null/undefined output,
  * case-insensitivity, no path exemptions, consecutive calls, constants,
- * and integration via the plugin entry point.
+ * grep/glob search delegation, plan nudge scenarios, and integration
+ * via the plugin entry point (including event/message.updated →
+ * sessionAgentMap agent gating).
  */
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -33,31 +35,15 @@ const NON_EDIT_WRITE_TOOLS = [
 const SEARCH_TOOLS = ["grep", "glob"];
 
 /**
- * Create a mock client that returns the given agent name for any session.
- */
-function mockClient(agent: string) {
-  return { getSession: async () => ({ agent }) };
-}
-
-/** Pre-built mock build client used by most tests. */
-const BUILD_CLIENT = mockClient("dolphin");
-
-/**
- * Invoke nudgeDirectWork with the given tool, output, and optional client.
- *
- * Defaults to a mock build client.  Pass `null` to test the no-client path.
+ * Invoke nudgeDirectWork with the given tool, output, and optional options.
  */
 async function applyReminder(
   tool: string,
   text: string,
-  client?: Parameters<typeof nudgeDirectWork>[0],
+  options?: Parameters<typeof nudgeDirectWork>[2],
 ): Promise<{ output?: string }> {
   const result: { output?: string } = { output: text };
-  await nudgeDirectWork(
-    client ?? BUILD_CLIENT,
-    { tool, sessionID: "s1" },
-    result,
-  );
+  await nudgeDirectWork({ tool, sessionID: "s1" }, result, options);
   return result;
 }
 
@@ -82,6 +68,31 @@ function assertHasSearchReminder(
     obj.output?.includes("POTENTIAL DELEGATION OPPORTUNITY"),
     message ?? "expected output to contain search delegation nudge",
   );
+}
+
+/**
+ * Simulate a message.updated event that sets the agent in sessionAgentMap.
+ */
+function messageUpdatedEvent(
+  agent: string,
+  sessionID?: string,
+): Parameters<Awaited<ReturnType<typeof zookeeper>>["event"]>[0] {
+  const sid =
+    sessionID ?? `s_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  return {
+    event: {
+      type: "message.updated",
+      properties: {
+        info: { agent, sessionID: sid },
+      },
+    },
+  };
+}
+
+/** Generate a unique session ID for test isolation. */
+let _idCounter = 0;
+function uniqueSid(): string {
+  return `s_test_${Date.now()}_${_idCounter++}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -150,19 +161,19 @@ describe("non edit/write tools are skipped", () => {
 describe("null / undefined output", () => {
   it("does not modify when output is absent", async () => {
     const obj: { output?: string } = {};
-    await nudgeDirectWork(BUILD_CLIENT, { tool: "edit", sessionID: "s1" }, obj);
+    await nudgeDirectWork({ tool: "edit", sessionID: "s1" }, obj);
     assert.equal(obj.output, undefined);
   });
 
   it("does not modify when output is undefined", async () => {
     const obj: { output?: string } = { output: undefined };
-    await nudgeDirectWork(BUILD_CLIENT, { tool: "edit", sessionID: "s1" }, obj);
+    await nudgeDirectWork({ tool: "edit", sessionID: "s1" }, obj);
     assert.equal(obj.output, undefined);
   });
 
   it("does not modify when output is null", async () => {
     const obj: { output?: string } = { output: null as unknown as string };
-    await nudgeDirectWork(BUILD_CLIENT, { tool: "edit", sessionID: "s1" }, obj);
+    await nudgeDirectWork({ tool: "edit", sessionID: "s1" }, obj);
     assert.equal(obj.output, null);
   });
 });
@@ -195,19 +206,19 @@ describe("case-insensitive tool name matching", () => {
 describe("fires on any path (no path exemptions)", () => {
   it('fires on ".opencode/config.json"', async () => {
     const obj: { output?: string } = { output: "updated config" };
-    await nudgeDirectWork(BUILD_CLIENT, { tool: "edit", sessionID: "s1" }, obj);
+    await nudgeDirectWork({ tool: "edit", sessionID: "s1" }, obj);
     assertHasReminder(obj);
   });
 
   it('fires on "tests/scenarios/x.json"', async () => {
     const obj: { output?: string } = { output: "updated test data" };
-    await nudgeDirectWork(BUILD_CLIENT, { tool: "edit", sessionID: "s1" }, obj);
+    await nudgeDirectWork({ tool: "edit", sessionID: "s1" }, obj);
     assertHasReminder(obj);
   });
 
   it('fires on "src/foo.ts"', async () => {
     const obj: { output?: string } = { output: "changed source" };
-    await nudgeDirectWork(BUILD_CLIENT, { tool: "edit", sessionID: "s1" }, obj);
+    await nudgeDirectWork({ tool: "edit", sessionID: "s1" }, obj);
     assertHasReminder(obj);
   });
 });
@@ -223,13 +234,13 @@ describe("consecutive calls", () => {
     };
 
     // First call
-    await nudgeDirectWork(BUILD_CLIENT, { tool: "edit", sessionID: "s1" }, obj);
+    await nudgeDirectWork({ tool: "edit", sessionID: "s1" }, obj);
     const out1 = obj.output as string;
     const countAfterFirst = out1.split("DELEGATION REQUIRED").length - 1;
     assert.equal(countAfterFirst, 1);
 
     // Second call — reminder appended again
-    await nudgeDirectWork(BUILD_CLIENT, { tool: "edit", sessionID: "s1" }, obj);
+    await nudgeDirectWork({ tool: "edit", sessionID: "s1" }, obj);
     const out2 = obj.output as string;
     const countAfterSecond = out2.split("DELEGATION REQUIRED").length - 1;
     assert.equal(countAfterSecond, 2);
@@ -237,67 +248,20 @@ describe("consecutive calls", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Subagent filtering — only build gets the nudge
+// Agent gating: nudgeDirectWork is agent-agnostic — it always fires.
+// Agent filtering happens at the plugin entry point via sessionAgentMap.
 // ---------------------------------------------------------------------------
 
-describe("subagent filtering", () => {
-  const SUBAGENTS = ["lynx", "beaver", "spider"];
-
-  for (const agent of SUBAGENTS) {
-    it(`does not nudge "${agent}" agent`, async () => {
-      const c = mockClient(agent);
-      const obj: { output?: string } = {
-        output: "edited something as subagent",
-      };
-      await nudgeDirectWork(c, { tool: "edit", sessionID: "s1" }, obj);
-      assert.equal(obj.output, "edited something as subagent");
-    });
-  }
-
-  it("skips nudge when client is null (no client available)", async () => {
-    const obj: { output?: string } = { output: "edited something" };
-    await nudgeDirectWork(null, { tool: "edit", sessionID: "s1" }, obj);
-    assert.equal(obj.output, "edited something");
+describe("agent-agnostic: fires for any caller", () => {
+  it("nudges edit regardless of what may be in sessionAgentMap", async () => {
+    // nudgeDirectWork has no agent awareness. It always fires for edit/write.
+    const res = await applyReminder("edit", "some edit output");
+    assertHasReminder(res);
   });
 
-  it("nudges when getSession returns agent='dolphin'", async () => {
-    const obj: { output?: string } = { output: "edited something" };
-    await nudgeDirectWork(BUILD_CLIENT, { tool: "edit", sessionID: "s1" }, obj);
-    assertHasReminder(obj);
-  });
-
-  it("skips nudge when getSession throws", async () => {
-    const badClient = {
-      getSession: async () => {
-        throw new Error("fail");
-      },
-    };
-    const obj: { output?: string } = { output: "edited something" };
-    await nudgeDirectWork(badClient, { tool: "edit", sessionID: "s1" }, obj);
-    assert.equal(obj.output, "edited something");
-  });
-
-  for (const tool of SEARCH_TOOLS) {
-    it(`does not nudge "${tool}" for non-dolphin agent`, async () => {
-      const c = mockClient("lynx");
-      const obj: { output?: string } = {
-        output: "searched as subagent",
-      };
-      await nudgeDirectWork(c, { tool, sessionID: "s1" }, obj);
-      assert.equal(obj.output, "searched as subagent");
-    });
-  }
-
-  it("skips grep nudge when client is null", async () => {
-    const obj: { output?: string } = { output: "searched something" };
-    await nudgeDirectWork(null, { tool: "grep", sessionID: "s1" }, obj);
-    assert.equal(obj.output, "searched something");
-  });
-
-  it("nudges grep when agent is dolphin", async () => {
-    const obj: { output?: string } = { output: "searched something" };
-    await nudgeDirectWork(BUILD_CLIENT, { tool: "grep", sessionID: "s1" }, obj);
-    assertHasSearchReminder(obj);
+  it("nudges grep regardless of what may be in sessionAgentMap", async () => {
+    const res = await applyReminder("grep", "search results");
+    assertHasSearchReminder(res);
   });
 });
 
@@ -372,33 +336,167 @@ describe("barrel export", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Integration: via plugin entry point
+// Integration: via plugin entry point (agent-gated by sessionAgentMap)
+// Agent identity flows: event(message.updated) → sessionAgentMap →
+// tool.execute.after → nudgeDirectWork (if dolphin).
 // ---------------------------------------------------------------------------
 
 describe("integration: tool.execute.after via plugin", () => {
-  it("edit tool appends reminder via plugin", async () => {
-    const plugin = await zookeeper({ client: BUILD_CLIENT });
+  it("edit tool appends reminder when message.updated set dolphin", async () => {
+    const plugin = await zookeeper({ client: {} });
+    const sid = uniqueSid();
+    await plugin.event(messageUpdatedEvent("dolphin", sid));
     const output: { output?: string } = {
       output: "fixed formatting in index.ts",
     };
     await plugin["tool.execute.after"](
-      { tool: "edit", sessionID: "s1", callID: "c1" },
+      { tool: "edit", sessionID: sid, callID: "c1" },
       output,
     );
     assert.ok(output.output?.includes("DELEGATION REQUIRED"));
     assert.ok(output.output?.includes("Contract R1"));
   });
 
+  it("edit tool skips nudge when message.updated set beaver", async () => {
+    const plugin = await zookeeper({ client: {} });
+    const sid = uniqueSid();
+    await plugin.event(messageUpdatedEvent("beaver", sid));
+    const output: { output?: string } = {
+      output: "edited something as subagent",
+    };
+    await plugin["tool.execute.after"](
+      { tool: "edit", sessionID: sid, callID: "c1" },
+      output,
+    );
+    assert.equal(output.output, "edited something as subagent");
+  });
+
+  it("edit tool skips nudge when sessionAgentMap has no entry", async () => {
+    const plugin = await zookeeper({ client: {} });
+    const sid = uniqueSid();
+    const output: { output?: string } = {
+      output: "edited without known agent",
+    };
+    await plugin["tool.execute.after"](
+      { tool: "edit", sessionID: sid, callID: "c1" },
+      output,
+    );
+    assert.equal(output.output, "edited without known agent");
+  });
+
   it("bash tool remains unchanged via plugin", async () => {
-    const plugin = await zookeeper({ client: BUILD_CLIENT });
+    const plugin = await zookeeper({ client: {} });
+    const sid = uniqueSid();
+    await plugin.event(messageUpdatedEvent("dolphin", sid));
     const output: { output?: string } = {
       output: "ls output here",
     };
     await plugin["tool.execute.after"](
-      { tool: "bash", sessionID: "s1", callID: "c1" },
+      { tool: "bash", sessionID: sid, callID: "c1" },
       output,
     );
     assert.equal(output.output, "ls output here");
+  });
+
+  it("grep tool appends search nudge when message.updated set dolphin", async () => {
+    const plugin = await zookeeper({ client: {} });
+    const sid = uniqueSid();
+    await plugin.event(messageUpdatedEvent("dolphin", sid));
+    const output: { output?: string } = { output: "found matches" };
+    await plugin["tool.execute.after"](
+      { tool: "grep", sessionID: sid, callID: "c1" },
+      output,
+    );
+    assertHasSearchReminder(output);
+  });
+
+  it("grep tool skips nudge when message.updated set lynx", async () => {
+    const plugin = await zookeeper({ client: {} });
+    const sid = uniqueSid();
+    await plugin.event(messageUpdatedEvent("lynx", sid));
+    const output: { output?: string } = {
+      output: "searched as subagent",
+    };
+    await plugin["tool.execute.after"](
+      { tool: "grep", sessionID: sid, callID: "c1" },
+      output,
+    );
+    assert.equal(output.output, "searched as subagent");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sessionAgentMap lifecycle — event hook cleanup
+// ---------------------------------------------------------------------------
+
+describe("integration: sessionAgentMap lifecycle", () => {
+  it("session.deleted event clears the agent map entry", async () => {
+    const plugin = await zookeeper({ client: {} });
+    const sid = uniqueSid();
+    await plugin.event(messageUpdatedEvent("dolphin", sid));
+    // Verify populated — edit should nudge
+    let output: { output?: string } = { output: "first edit" };
+    await plugin["tool.execute.after"](
+      { tool: "edit", sessionID: sid, callID: "c1" },
+      output,
+    );
+    assertHasReminder(output);
+
+    // Simulate session.deleted
+    await plugin.event({
+      event: {
+        type: "session.deleted",
+        properties: { info: { id: sid } },
+      },
+    });
+
+    // After deletion, edit should NOT nudge (no agent info)
+    output = { output: "second edit" };
+    await plugin["tool.execute.after"](
+      { tool: "edit", sessionID: sid, callID: "c2" },
+      output,
+    );
+    assert.equal(output.output, "second edit");
+  });
+
+  it("message.updated overwrites previous agent for same session", async () => {
+    const plugin = await zookeeper({ client: {} });
+    const sid = uniqueSid();
+    // First: set as beaver
+    await plugin.event(messageUpdatedEvent("beaver", sid));
+    let output: { output?: string } = { output: "beaver edit" };
+    await plugin["tool.execute.after"](
+      { tool: "edit", sessionID: sid, callID: "c1" },
+      output,
+    );
+    assert.equal(output.output, "beaver edit");
+
+    // Then: overwrite as dolphin
+    await plugin.event(messageUpdatedEvent("dolphin", sid));
+    output = { output: "dolphin edit" };
+    await plugin["tool.execute.after"](
+      { tool: "edit", sessionID: sid, callID: "c2" },
+      output,
+    );
+    assertHasReminder(output);
+  });
+
+  it("non-message.updated events do not affect agent map", async () => {
+    const plugin = await zookeeper({ client: {} });
+    const sid = uniqueSid();
+    // Send an unrelated event
+    await plugin.event({
+      event: { type: "session.created", properties: {} },
+    });
+    // No agent should be set for this session
+    const output: { output?: string } = {
+      output: "edited without agent",
+    };
+    await plugin["tool.execute.after"](
+      { tool: "edit", sessionID: sid, callID: "c1" },
+      output,
+    );
+    assert.equal(output.output, "edited without agent");
   });
 });
 
@@ -441,7 +539,7 @@ function cleanupPlanDir(sessionID: string): void {
 let _planNudgeCounter = 0;
 
 describe("plan nudge scenarios", () => {
-  it("dolphin edit with executing plan (open TODOs) includes PLAN_PROGRESS_NUDGE", async () => {
+  it("edit with executing plan (open TODOs) includes PLAN_PROGRESS_NUDGE", async () => {
     const sessionID = `test-direct-nudge-${Date.now()}-${_planNudgeCounter++}`;
     try {
       writePlanFile(
@@ -451,7 +549,7 @@ describe("plan nudge scenarios", () => {
         "- [ ] Write tests\n- [x] Implement feature\n",
       );
       const result: { output?: string } = { output: "edited file" };
-      await nudgeDirectWork(BUILD_CLIENT, { tool: "edit", sessionID }, result);
+      await nudgeDirectWork({ tool: "edit", sessionID }, result);
       assert.ok(
         result.output?.includes("PLAN PROGRESS"),
         "expected PLAN PROGRESS nudge",
@@ -461,7 +559,7 @@ describe("plan nudge scenarios", () => {
     }
   });
 
-  it("dolphin edit with executing plan (all done) includes PLAN_DONE_NUDGE", async () => {
+  it("edit with executing plan (all done) includes PLAN_DONE_NUDGE", async () => {
     const sessionID = `test-direct-nudge-${Date.now()}-${_planNudgeCounter++}`;
     try {
       writePlanFile(
@@ -471,7 +569,7 @@ describe("plan nudge scenarios", () => {
         "- [x] Task A\n- [x] Task B\n",
       );
       const result: { output?: string } = { output: "edited file" };
-      await nudgeDirectWork(BUILD_CLIENT, { tool: "edit", sessionID }, result);
+      await nudgeDirectWork({ tool: "edit", sessionID }, result);
       assert.ok(
         result.output?.includes("PLAN COMPLETE"),
         "expected PLAN COMPLETE nudge",
@@ -481,7 +579,7 @@ describe("plan nudge scenarios", () => {
     }
   });
 
-  it("dolphin edit with done plan includes PLAN_RESUME_NUDGE", async () => {
+  it("edit with done plan includes PLAN_RESUME_NUDGE", async () => {
     const sessionID = `test-direct-nudge-${Date.now()}-${_planNudgeCounter++}`;
     try {
       writePlanFile(
@@ -491,7 +589,7 @@ describe("plan nudge scenarios", () => {
         "- [x] All done\n",
       );
       const result: { output?: string } = { output: "edited file" };
-      await nudgeDirectWork(BUILD_CLIENT, { tool: "edit", sessionID }, result);
+      await nudgeDirectWork({ tool: "edit", sessionID }, result);
       assert.ok(
         result.output?.includes("PLAN RESURRECTED"),
         "expected PLAN RESURRECTED nudge",
@@ -501,47 +599,12 @@ describe("plan nudge scenarios", () => {
     }
   });
 
-  it("beaver edit does not include plan nudge", async () => {
+  it("grep does not include plan nudge", async () => {
     const sessionID = `test-direct-nudge-${Date.now()}-${_planNudgeCounter++}`;
     try {
-      // No plan directory needed — beaver is not dolphin so the hook
-      // returns before checking plans.
-      cleanupPlanDir(sessionID);
-      const client = mockClient("beaver");
-      const result: { output?: string } = { output: "edited file" };
-      await nudgeDirectWork(client, { tool: "edit", sessionID }, result);
-      assert.equal(
-        result.output,
-        "edited file",
-        "beaver output should be unchanged",
-      );
-      assert.equal(
-        result.output?.includes("PLAN PROGRESS"),
-        false,
-        "should not contain PLAN PROGRESS",
-      );
-      assert.equal(
-        result.output?.includes("PLAN COMPLETE"),
-        false,
-        "should not contain PLAN COMPLETE",
-      );
-      assert.equal(
-        result.output?.includes("PLAN RESURRECTED"),
-        false,
-        "should not contain PLAN RESURRECTED",
-      );
-    } finally {
-      cleanupPlanDir(sessionID);
-    }
-  });
-
-  it("dolphin grep does not include plan nudge", async () => {
-    const sessionID = `test-direct-nudge-${Date.now()}-${_planNudgeCounter++}`;
-    try {
-      // Plan nudge only fires for edit/write, not search tools.
       cleanupPlanDir(sessionID);
       const result: { output?: string } = { output: "grep result" };
-      await nudgeDirectWork(BUILD_CLIENT, { tool: "grep", sessionID }, result);
+      await nudgeDirectWork({ tool: "grep", sessionID }, result);
       assert.ok(
         result.output?.includes("POTENTIAL DELEGATION OPPORTUNITY"),
         "grep should still include search delegation nudge",
