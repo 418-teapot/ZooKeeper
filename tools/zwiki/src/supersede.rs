@@ -28,11 +28,21 @@ pub fn link_supersede(
     new_rel: &str,
     reason: &str,
 ) -> Result<(), String> {
+    link_supersede_at(old_rel, new_rel, reason, &wiki::wiki_dir())
+}
+
+/// Testable variant of [`link_supersede`] that accepts an explicit
+/// `wiki_root` instead of reading the global wiki directory.
+pub fn link_supersede_at(
+    old_rel: &str,
+    new_rel: &str,
+    reason: &str,
+    wiki_root: &Path,
+) -> Result<(), String> {
     if old_rel == new_rel {
         return Err("--old 和 --new 不能指向同一个页面".to_string());
     }
 
-    let wiki_root = wiki::wiki_dir();
     let old_abs = wiki_root.join(old_rel);
     let new_abs = wiki_root.join(new_rel);
 
@@ -524,11 +534,13 @@ mod tests {
     // -------------------------------------------------------------------
 
     #[test]
-    fn test_link_supersede_missing_old() {
-        let result = link_supersede(
-            "zwiki-test/supersede/missing_old/nonexistent.md",
-            "nonexistent-new.md",
+    fn test_link_supersede_missing_pages() {
+        let dir = temp_dir("missing_pages");
+        let result = link_supersede_at(
+            "nonexistent.md",
+            "also-nonexistent.md",
             "reason",
+            &dir,
         );
         assert!(result.is_err());
     }
@@ -577,19 +589,13 @@ mod tests {
 
     #[test]
     fn test_link_supersede_writes_last_validated() {
-        // Writes to the real wiki dir because link_supersede calls
-        // wiki::wiki_dir() internally.  Uses unique temp paths under
-        // zwiki-test/supersede/ to avoid collisions.
-        let wiki_root = wiki::wiki_dir();
-        let old_rel = "zwiki-test/supersede/lv-old.md";
-        let new_rel = "zwiki-test/supersede/lv-new.md";
+        // Use an isolated temp dir as the wiki root — never touches the
+        // real ~/.zoo/wiki/.
+        let wiki_root = temp_dir("lv_root");
+        let old_rel = "lv-old.md";
+        let new_rel = "lv-new.md";
         let old_abs = wiki_root.join(old_rel);
         let new_abs = wiki_root.join(new_rel);
-
-        // Ensure parent directory exists.
-        if let Some(parent) = old_abs.parent() {
-            fs::create_dir_all(parent).ok();
-        }
 
         // Create two test page files.
         fs::write(&old_abs, "---\ntitle: Old Page\n---\n\nBody.\n")
@@ -597,8 +603,9 @@ mod tests {
         fs::write(&new_abs, "---\ntitle: New Page\n---\n\nBody.\n")
             .expect("failed to write test new page");
 
-        // Run link_supersede — this is the success path under test.
-        let result = link_supersede(old_rel, new_rel, "successor");
+        // Run link_supersede_at — this is the success path under test.
+        let result =
+            link_supersede_at(old_rel, new_rel, "successor", &wiki_root);
         assert!(result.is_ok(), "link_supersede should succeed: {result:?}");
 
         // Read old file and verify last_validated was written.
@@ -619,9 +626,5 @@ mod tests {
             lv.contains('T') || lv.contains('-'),
             "last_validated should be an ISO 8601 timestamp, got: {lv}"
         );
-
-        // Clean up.
-        fs::remove_file(&old_abs).ok();
-        fs::remove_file(&new_abs).ok();
     }
 }

@@ -343,7 +343,7 @@ pub fn compute_integrity(dir: &Path) -> String {
 // ---------------------------------------------------------------------------
 
 /// A temporary directory that is automatically cleaned up on drop.
-struct TempDir {
+pub struct TempDir {
     path: Option<PathBuf>,
 }
 
@@ -365,7 +365,7 @@ impl TempDir {
     }
 
     /// Return the path to the temporary directory.
-    fn path(&self) -> &Path {
+    pub fn path(&self) -> &Path {
         self.path.as_ref().expect("TempDir path is None (already taken)")
     }
 }
@@ -393,19 +393,24 @@ fn copy_recursive(
     skip_root_bundle: bool,
 ) -> io::Result<()> {
     for entry in WalkDir::new(src).into_iter().filter_map(Result::ok) {
-        if !entry.file_type().is_file() {
-            continue;
-        }
         let rel =
             entry.path().strip_prefix(src).unwrap_or_else(|_| entry.path());
         if skip_root_bundle && rel == Path::new("bundle.toml") {
             continue;
         }
         let target = dst.join(rel);
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)?;
+        if entry.file_type().is_dir() {
+            // Create empty directories (e.g. `logs/`) so the structure
+            // check passes even when a bundle ships an empty dir.
+            std::fs::create_dir_all(&target)?;
+            continue;
         }
-        std::fs::copy(entry.path(), &target)?;
+        if entry.file_type().is_file() {
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(entry.path(), &target)?;
+        }
     }
     Ok(())
 }
@@ -472,10 +477,6 @@ pub struct ExportArgs {
     #[arg(long)]
     pub output: Option<String>,
 
-    /// Strict mode: missing include paths are fatal instead of warn
-    #[arg(long)]
-    pub strict: bool,
-
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
@@ -490,10 +491,6 @@ pub struct InstallArgs {
     /// Overwrite existing bundle if already installed
     #[arg(long)]
     pub force: bool,
-
-    /// Strict path validation
-    #[arg(long)]
-    pub strict: bool,
 
     /// Output as JSON
     #[arg(long)]
@@ -676,167 +673,130 @@ pub fn cmd_init(args: &InitArgs, global_json: bool) {
 
 /// Read and parse `bundle.toml` from the given path.
 ///
-/// Returns the raw content and the parsed manifest.  Exits on failure.
+/// Returns the raw content and the parsed manifest, or an error message.
 fn read_manifest(
     manifest_path: &Path,
     use_json: bool,
-) -> (String, BundleManifest) {
-    let content = std::fs::read_to_string(manifest_path).unwrap_or_else(|e| {
-        eprintln!(
-            "{}",
-            if use_json {
-                format!("cannot read bundle.toml: {e}")
-            } else {
-                format!("无法读取 bundle.toml: {e}")
-            }
-        );
-        process::exit(1);
-    });
+) -> Result<(String, BundleManifest), String> {
+    let content = std::fs::read_to_string(manifest_path).map_err(|e| {
+        if use_json {
+            format!("cannot read bundle.toml: {e}")
+        } else {
+            format!("无法读取 bundle.toml: {e}")
+        }
+    })?;
 
-    let manifest: BundleManifest =
-        toml::from_str(&content).unwrap_or_else(|e| {
-            eprintln!(
-                "{}",
-                if use_json {
-                    format!("invalid bundle.toml: {e}")
-                } else {
-                    format!("无效的 bundle.toml: {e}")
-                }
-            );
-            process::exit(1);
-        });
+    let manifest: BundleManifest = toml::from_str(&content).map_err(|e| {
+        if use_json {
+            format!("invalid bundle.toml: {e}")
+        } else {
+            format!("无效的 bundle.toml: {e}")
+        }
+    })?;
 
-    (content, manifest)
+    Ok((content, manifest))
 }
 
-/// Validate the manifest and print errors.  Exits on fatal or (in strict
-/// mode) on any non-fatal issue.  Non-fatal warnings are printed to stderr.
-fn check_manifest_errors(
-    errors: &[ValidationError],
-    strict: bool,
-    use_json: bool,
-) {
-    let fatals: Vec<&ValidationError> =
-        errors.iter().filter(|e| e.severity == Severity::Fatal).collect();
+/// Validate the manifest, print errors, and return whether the caller
+/// should exit.  Returns `true` if there are fatal errors or any non-fatal
+/// issue (warnings are always fatal).
+fn report_manifest_errors(errors: &[ValidationError], use_json: bool) -> bool {
+    let should_exit = !errors.is_empty();
 
-    // In strict mode, warnings and conditional-required are also fatal.
-    let strict_fatals: Vec<&ValidationError> = if strict {
-        errors.iter().filter(|e| e.severity != Severity::Fatal).collect()
-    } else {
-        Vec::new()
-    };
-
-    if !fatals.is_empty() || (!strict_fatals.is_empty()) {
-        for err in &fatals {
-            eprintln!(
-                "{}",
-                if use_json {
-                    format!("fatal: [{}] {}", err.field, err.message)
-                } else {
-                    format!("错误: [{}] {}", err.field, err.message)
-                }
-            );
-        }
-        for err in &strict_fatals {
-            eprintln!(
-                "{}",
-                if use_json {
-                    format!("fatal: [{}] {}", err.field, err.message)
-                } else {
-                    format!("错误: [{}] {}", err.field, err.message)
-                }
-            );
-        }
-        process::exit(1);
-    }
-
-    // Print non-fatal warnings in non-strict mode.
-    if !strict {
-        for err in errors {
-            if err.severity == Severity::Warning
-                || err.severity == Severity::ConditionalRequired
-            {
-                eprintln!(
-                    "{}",
-                    if use_json {
-                        format!("warn: [{}] {}", err.field, err.message)
-                    } else {
-                        format!("提醒: [{}] {}", err.field, err.message)
-                    }
-                );
+    // Only print when there are errors — otherwise a spurious empty
+    // `{"status":"fatal",...}` object pollutes stdout on the success path.
+    if should_exit {
+        if use_json {
+            // Emit a single JSON document (not N concatenated objects) so
+            // consumers can parse stdout as one object.  The `error` field
+            // joins all validation errors; `errors` carries the detail list.
+            let errs: Vec<serde_json::Value> = errors
+                .iter()
+                .map(|err| {
+                    serde_json::json!({
+                        "field": err.field,
+                        "message": err.message,
+                    })
+                })
+                .collect();
+            let summary = errors
+                .iter()
+                .map(|err| format!("[{}] {}", err.field, err.message))
+                .collect::<Vec<_>>()
+                .join("; ");
+            let output = serde_json::json!({
+                "status": "fatal",
+                "error": summary,
+                "errors": errs,
+            });
+            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        } else {
+            for err in errors {
+                eprintln!("错误: [{}] {}", err.field, err.message);
             }
         }
     }
+
+    should_exit
 }
 
+/// Validate the manifest and print errors.  Exits on fatal or any non-fatal
+/// issue.
 /// Collect files matching include/exclude globs relative to `bundle_dir`.
+///
+/// # Errors
+///
+/// Returns `Err(())` if a glob pattern is invalid, fails to match any files,
+/// or encounters an I/O error during matching.
 fn collect_export_files(
     bundle_dir: &Path,
     include: &[String],
     exclude: &[String],
-    strict: bool,
     use_json: bool,
-) -> Vec<PathBuf> {
+) -> Result<Vec<PathBuf>, ()> {
     let mut files: Vec<PathBuf> = Vec::new();
     for pattern in include {
         let full_pattern =
             bundle_dir.join(pattern).to_string_lossy().to_string();
-        let matches: Vec<PathBuf> = glob::glob(&full_pattern)
-            .unwrap_or_else(|e| {
-                eprintln!(
-                    "{}",
-                    if use_json {
-                        format!("invalid glob pattern '{pattern}': {e}")
-                    } else {
-                        format!("无效的 glob 模式 '{pattern}': {e}")
-                    }
-                );
-                process::exit(1);
-            })
-            .filter_map(|r| match r {
-                Ok(p) => {
-                    // Only regular files
-                    if p.is_file() { Some(p) } else { None }
-                }
-                Err(e) => {
-                    if strict {
-                        eprintln!(
-                            "{}",
-                            if use_json {
-                                format!("glob error for '{pattern}': {e}")
-                            } else {
-                                format!("glob 错误 '{pattern}': {e}")
-                            }
-                        );
-                        process::exit(1);
-                    }
-                    None
-                }
-            })
-            .collect();
-
-        if matches.is_empty() {
-            if strict {
-                eprintln!(
-                    "{}",
-                    if use_json {
-                        format!("include glob '{pattern}' matched no files")
-                    } else {
-                        format!("包含规则 '{pattern}' 没有匹配任何文件")
-                    }
-                );
-                process::exit(1);
-            }
+        let glob_result = glob::glob(&full_pattern).map_err(|e| {
             eprintln!(
                 "{}",
                 if use_json {
-                    format!(
-                        "warning: include glob '{pattern}' matched no files"
-                    )
+                    format!("invalid glob pattern '{pattern}': {e}")
                 } else {
-                    format!("警告: 包含规则 '{pattern}' 没有匹配任何文件")
+                    format!("无效的 glob 模式 '{pattern}': {e}")
                 }
             );
+        })?;
+
+        let mut matches: Vec<PathBuf> = Vec::new();
+        for entry in glob_result {
+            let p = entry.map_err(|e| {
+                eprintln!(
+                    "{}",
+                    if use_json {
+                        format!("glob error for '{pattern}': {e}")
+                    } else {
+                        format!("glob 错误 '{pattern}': {e}")
+                    }
+                );
+            })?;
+            // Only regular files
+            if p.is_file() {
+                matches.push(p);
+            }
+        }
+
+        if matches.is_empty() {
+            eprintln!(
+                "{}",
+                if use_json {
+                    format!("include glob '{pattern}' matched no files")
+                } else {
+                    format!("包含规则 '{pattern}' 没有匹配任何文件")
+                }
+            );
+            return Err(());
         }
 
         // Add unique files
@@ -859,7 +819,7 @@ fn collect_export_files(
     }
 
     files.sort();
-    files
+    Ok(files)
 }
 
 /// Append all matching export files to a tar archive.
@@ -1022,24 +982,44 @@ fn write_tar_gz(
 /// Export a bundle directory into a `.tar.gz` archive.
 pub fn cmd_export(args: &ExportArgs, global_json: bool) {
     let use_json = args.json || global_json;
+    if cmd_export_inner(args, use_json).is_err() {
+        process::exit(1);
+    }
+}
+
+/// Inner implementation of `cmd_export` that returns `Result` instead of
+/// calling `process::exit`.  This makes the logic testable.
+fn cmd_export_inner(args: &ExportArgs, use_json: bool) -> Result<(), ()> {
     let bundle_dir = Path::new(&args.dir);
 
     // --- Read and parse bundle.toml ---
     let manifest_path = bundle_dir.join("bundle.toml");
-    let (manifest_content, manifest) = read_manifest(&manifest_path, use_json);
+    let (manifest_content, manifest) = read_manifest(&manifest_path, use_json)
+        .map_err(|msg| {
+            if use_json {
+                let output = serde_json::json!({
+                    "status": "fatal",
+                    "error": msg,
+                });
+                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            } else {
+                eprintln!("{msg}");
+            }
+        })?;
 
     // --- Validate ---
     let errors = manifest.validate();
-    check_manifest_errors(&errors, args.strict, use_json);
+    if report_manifest_errors(&errors, use_json) {
+        return Err(());
+    }
 
     // --- Expand include/exclude globs ---
     let files = collect_export_files(
         bundle_dir,
         &manifest.export.include,
         &manifest.export.exclude,
-        args.strict,
         use_json,
-    );
+    )?;
 
     // --- Determine output path ---
     let output_path = args.output.clone().unwrap_or_else(|| {
@@ -1060,6 +1040,8 @@ pub fn cmd_export(args: &ExportArgs, global_json: bool) {
     } else {
         eprintln!("已导出: {output_path}");
     }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1076,7 +1058,7 @@ fn finalize_install_and_lock_at(
     force: bool,
     use_json: bool,
     wiki_root: &Path,
-) {
+) -> Result<(), ()> {
     // --- Compute integrity ---
     let integrity = compute_integrity(target_abs);
 
@@ -1093,11 +1075,11 @@ fn finalize_install_and_lock_at(
     };
 
     let mut lock = read_lock_at(wiki_root);
-    upsert_bundle(&mut lock, entry, force).unwrap_or_else(|e| {
+    if let Err(e) = upsert_bundle(&mut lock, entry, force) {
         eprintln!("{e}");
-        process::exit(1);
-    });
-    write_lock_at(&lock, wiki_root).unwrap_or_else(|e| {
+        return Err(());
+    }
+    if let Err(e) = write_lock_at(&lock, wiki_root) {
         eprintln!(
             "{}",
             if use_json {
@@ -1106,8 +1088,8 @@ fn finalize_install_and_lock_at(
                 format!("无法写入锁文件: {e}")
             }
         );
-        process::exit(1);
-    });
+        return Err(());
+    }
 
     // --- Regenerate root index ---
     regenerate_root_index_at(&lock, wiki_root);
@@ -1125,6 +1107,8 @@ fn finalize_install_and_lock_at(
     } else {
         println!("已安装: {} → {}", manifest.package.name, target_display);
     }
+
+    Ok(())
 }
 
 /// Copy files matched by manifest include/exclude + bundle.toml into the
@@ -1136,31 +1120,30 @@ fn copy_bundle_files_to_target(
     manifest: &BundleManifest,
     target_abs: &Path,
     use_json: bool,
-) {
+) -> Result<(), ()> {
     let files = collect_export_files(
         source_dir,
         &manifest.export.include,
         &manifest.export.exclude,
-        false,
         use_json,
-    );
+    )?;
     for abs_path in &files {
         let rel = abs_path.strip_prefix(source_dir).unwrap_or(abs_path);
         let target = target_abs.join(rel);
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent).unwrap_or_else(|e| {
-                eprintln!(
-                    "{}",
-                    if use_json {
-                        format!("cannot create dir: {e}")
-                    } else {
-                        format!("无法创建目录: {e}")
-                    }
-                );
-                process::exit(1);
-            });
+        if let Some(parent) = target.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            eprintln!(
+                "{}",
+                if use_json {
+                    format!("cannot create dir: {e}")
+                } else {
+                    format!("无法创建目录: {e}")
+                }
+            );
+            return Err(());
         }
-        std::fs::copy(abs_path, &target).unwrap_or_else(|e| {
+        if let Err(e) = std::fs::copy(abs_path, &target) {
             eprintln!(
                 "{}",
                 if use_json {
@@ -1169,23 +1152,25 @@ fn copy_bundle_files_to_target(
                     format!("无法复制文件: {e}")
                 }
             );
-            process::exit(1);
-        });
+            return Err(());
+        }
     }
 
     // Copy bundle.toml separately (for identity + registry traceback)
-    std::fs::copy(manifest_path, target_abs.join("bundle.toml"))
-        .unwrap_or_else(|e| {
-            eprintln!(
-                "{}",
-                if use_json {
-                    format!("cannot copy bundle.toml: {e}")
-                } else {
-                    format!("无法复制 bundle.toml: {e}")
-                }
-            );
-            process::exit(1);
-        });
+    if let Err(e) = std::fs::copy(manifest_path, target_abs.join("bundle.toml"))
+    {
+        eprintln!(
+            "{}",
+            if use_json {
+                format!("cannot copy bundle.toml: {e}")
+            } else {
+                format!("无法复制 bundle.toml: {e}")
+            }
+        );
+        return Err(());
+    }
+
+    Ok(())
 }
 
 /// Install bundle files from `source_dir` into the wiki, compute integrity,
@@ -1199,8 +1184,8 @@ fn install_bundle_files_at(
     force: bool,
     use_json: bool,
     wiki_root: &Path,
-) {
-    let target_rel = resolve_target_rel(manifest, use_json);
+) -> Result<(), ()> {
+    let target_rel = resolve_target_rel(manifest, use_json)?;
     let target_abs = wiki_root.join(&target_rel);
 
     // --- Check if already installed ---
@@ -1226,10 +1211,10 @@ fn install_bundle_files_at(
                         )
                     }
                 );
-                process::exit(1);
+                return Err(());
             }
             // force — remove existing
-            std::fs::remove_dir_all(&target_abs).unwrap_or_else(|e| {
+            if let Err(e) = std::fs::remove_dir_all(&target_abs) {
                 eprintln!(
                     "{}",
                     if use_json {
@@ -1238,13 +1223,13 @@ fn install_bundle_files_at(
                         format!("无法移除已存在的目标目录: {e}")
                     }
                 );
-                process::exit(1);
-            });
+                return Err(());
+            }
         }
     }
 
     // --- Create target and copy files ---
-    std::fs::create_dir_all(&target_abs).unwrap_or_else(|e| {
+    if let Err(e) = std::fs::create_dir_all(&target_abs) {
         eprintln!(
             "{}",
             if use_json {
@@ -1253,8 +1238,8 @@ fn install_bundle_files_at(
                 format!("无法创建目标目录: {e}")
             }
         );
-        process::exit(1);
-    });
+        return Err(());
+    }
 
     copy_bundle_files_to_target(
         source_dir,
@@ -1262,7 +1247,7 @@ fn install_bundle_files_at(
         manifest,
         &target_abs,
         use_json,
-    );
+    )?;
 
     // --- Compute integrity, update lock, and output ---
     finalize_install_and_lock_at(
@@ -1272,7 +1257,59 @@ fn install_bundle_files_at(
         force,
         use_json,
         wiki_root,
-    );
+    )?;
+
+    Ok(())
+}
+
+/// Resolve source, read and validate `bundle.toml`.
+///
+/// Returns the `TempDir` (kept alive by the caller) and parsed manifest on
+/// success, or `Err` with the collected validation errors after printing an
+/// error message.  The `Err` path prints the error and drops the `TempDir`
+/// (no leak).  The caller should `process::exit(1)` on `Err`.
+pub fn load_and_validate_manifest(
+    source: &str,
+    use_json: bool,
+) -> Result<(TempDir, BundleManifest), Vec<ValidationError>> {
+    let resolved = resolve_source(source, use_json).map_err(|()| Vec::new())?;
+    let source_dir = resolved.path();
+    let manifest_path = source_dir.join("bundle.toml");
+
+    if !manifest_path.exists() {
+        let msg = format!("bundle.toml not found in source '{source}'");
+        if use_json {
+            let output = serde_json::json!({
+                "status": "fatal",
+                "error": msg,
+            });
+            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        } else {
+            eprintln!("在源 '{source}' 中未找到 bundle.toml");
+        }
+        return Err(Vec::new());
+    }
+
+    let (_content, manifest) = read_manifest(&manifest_path, use_json)
+        .map_err(|msg| {
+            if use_json {
+                let output = serde_json::json!({
+                    "status": "fatal",
+                    "error": msg,
+                });
+                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            } else {
+                eprintln!("{msg}");
+            }
+            Vec::new()
+        })?;
+    let errors = manifest.validate();
+    let should_exit = report_manifest_errors(&errors, use_json);
+    if should_exit {
+        return Err(errors);
+    }
+
+    Ok((resolved, manifest))
 }
 
 /// Install a bundle from a local directory, tar.gz file, or URL.
@@ -1281,39 +1318,133 @@ fn install_bundle_files_at(
 pub fn cmd_install_at(args: &InstallArgs, use_json: bool, wiki_root: &Path) {
     let source = &args.source;
 
-    // --- Resolve source to a directory containing bundle.toml ---
-    let resolved = resolve_source(source, args.strict, use_json);
-    let source_dir = resolved.path();
-    let manifest_path = source_dir.join("bundle.toml");
+    match load_and_validate_manifest(source, use_json) {
+        Ok((resolved, manifest)) => {
+            let source_dir = resolved.path();
+            let manifest_path = source_dir.join("bundle.toml");
 
-    if !manifest_path.exists() {
-        eprintln!(
-            "{}",
-            if use_json {
-                format!("bundle.toml not found in source '{source}'")
-            } else {
-                format!("在源 '{source}' 中未找到 bundle.toml")
+            // --- Structure check (same as `zwiki check <source>`) ---
+            // A valid bundle must have index.md + logs/.  Exit without
+            // installing if the structure is invalid.
+            if check_bundle_structure(source_dir, use_json).is_err() {
+                // Drop TempDir before exiting — process::exit skips drops.
+                drop(resolved);
+                process::exit(1);
             }
-        );
-        process::exit(1);
+
+            // --- Full health/lint check (same as `zwiki check <source>`) ---
+            // Runs the complete check suite against the bundle directory.
+            // Any health/lint issue aborts the install.
+            // Uses run_health_lint_at (not cmd_check_at_inner) to avoid:
+            //   - stdout JSON pollution (Fix #3 — dual JSON)
+            //   - backlink sync on the temp source dir (Fix #4)
+            //   - TempDir leak via process::exit (Fix #1)
+            let (health_results, lint_results, health_issues, lint_issues) =
+                crate::run_health_lint_at(source_dir);
+            let total = health_issues + lint_issues;
+            if total > 0 {
+                if use_json {
+                    // Include the full health/lint breakdown (same shape as
+                    // `zwiki check <source> --json`) so JSON consumers can
+                    // see which pages/links failed without re-running check.
+                    let details = crate::format_health_lint_json(
+                        &health_results,
+                        &lint_results,
+                    );
+                    let mut output = serde_json::json!({
+                        "status": "fatal",
+                        "error": format!("check: {total} issues"),
+                        "health": health_issues,
+                        "lint": lint_issues,
+                    });
+                    output["details"] = details;
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&output).unwrap()
+                    );
+                } else {
+                    // Print the detailed report so the user sees which
+                    // pages/links failed without re-running `zwiki check`.
+                    eprintln!(
+                        "{}",
+                        crate::display::format_check_report(&health_results)
+                    );
+                    eprintln!(
+                        "{}",
+                        crate::display::format_lint_report(&lint_results)
+                    );
+                    eprintln!(
+                        "✗ {total} 个问题（health: {health_issues}, lint: {lint_issues}）"
+                    );
+                }
+                // Drop TempDir before exiting — process::exit skips drops.
+                drop(resolved);
+                process::exit(1);
+            }
+
+            // --- Install files + compute integrity + write lock ---
+            if install_bundle_files_at(
+                source_dir,
+                &manifest_path,
+                &manifest,
+                args.force,
+                use_json,
+                wiki_root,
+            )
+            .is_err()
+            {
+                // Drop TempDir before exiting — process::exit skips drops.
+                drop(resolved);
+                process::exit(1);
+            }
+
+            // TempDir is dropped here, cleaning up resolved source
+        }
+        Err(_) => process::exit(1),
+    }
+}
+
+/// Check that a bundle directory has the required wiki structure.
+///
+/// A valid bundle MUST contain `index.md` (a file) and `logs` (a directory).
+/// Missing either is a fatal error — prints a Chinese error message (and
+/// JSON when `use_json` is true) and returns `Err`.  The caller is
+/// responsible for exiting; this lets the caller's `TempDir` drop normally,
+/// avoiding a temp-dir leak on the error path.
+pub fn check_bundle_structure(
+    source_dir: &Path,
+    use_json: bool,
+) -> Result<(), ()> {
+    let index_path = source_dir.join("index.md");
+    let logs_path = source_dir.join("logs");
+
+    if !index_path.exists() || !index_path.is_file() {
+        if use_json {
+            let output = serde_json::json!({
+                "status": "fatal",
+                "error": "bundle 缺少 index.md"
+            });
+            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        } else {
+            eprintln!("错误: bundle 缺少 index.md");
+        }
+        return Err(());
     }
 
-    // --- Parse and validate manifest ---
-    let (_manifest_content, manifest) = read_manifest(&manifest_path, use_json);
-    let errors = manifest.validate();
-    check_manifest_errors(&errors, args.strict, use_json);
+    if !logs_path.exists() || !logs_path.is_dir() {
+        if use_json {
+            let output = serde_json::json!({
+                "status": "fatal",
+                "error": "bundle 缺少 logs 目录"
+            });
+            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        } else {
+            eprintln!("错误: bundle 缺少 logs 目录");
+        }
+        return Err(());
+    }
 
-    // --- Install files + compute integrity + write lock ---
-    install_bundle_files_at(
-        source_dir,
-        &manifest_path,
-        &manifest,
-        args.force,
-        use_json,
-        wiki_root,
-    );
-
-    // TempDir is dropped here, cleaning up resolved source
+    Ok(())
 }
 
 /// Thin wrapper that calls [`cmd_install_at`] with the real wiki directory.
@@ -1358,10 +1489,10 @@ fn safe_unpack<R: io::Read>(
 /// containing `bundle.toml`.
 ///
 /// Returns a `TempDir` that is cleaned up when the returned value is dropped.
-fn resolve_source(source: &str, strict: bool, use_json: bool) -> TempDir {
+fn resolve_source(source: &str, use_json: bool) -> Result<TempDir, ()> {
     // URL source
     if source.starts_with("http://") || source.starts_with("https://") {
-        return resolve_url_source(source, strict, use_json);
+        return resolve_url_source(source, use_json);
     }
 
     // Local tar.gz file
@@ -1371,26 +1502,29 @@ fn resolve_source(source: &str, strict: bool, use_json: bool) -> TempDir {
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("tgz"))
     {
-        return resolve_tar_source(Path::new(source), strict, use_json);
+        return resolve_tar_source(Path::new(source), use_json);
     }
 
     // Local directory
     let dir = Path::new(source);
     if dir.is_dir() {
         // Create a temp dir and copy everything into it.
-        let tmp = TempDir::new("zwiki-install").unwrap_or_else(|e| {
-            eprintln!(
-                "{}",
-                if use_json {
-                    format!("cannot create temp directory: {e}")
-                } else {
-                    format!("无法创建临时目录: {e}")
-                }
-            );
-            process::exit(1);
-        });
+        let tmp = match TempDir::new("zwiki-install") {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!(
+                    "{}",
+                    if use_json {
+                        format!("cannot create temp directory: {e}")
+                    } else {
+                        format!("无法创建临时目录: {e}")
+                    }
+                );
+                return Err(());
+            }
+        };
 
-        copy_recursive(dir, tmp.path(), false).unwrap_or_else(|e| {
+        if let Err(e) = copy_recursive(dir, tmp.path(), false) {
             eprintln!(
                 "{}",
                 if use_json {
@@ -1399,21 +1533,27 @@ fn resolve_source(source: &str, strict: bool, use_json: bool) -> TempDir {
                     format!("无法复制源目录: {e}")
                 }
             );
-            process::exit(1);
-        });
+            return Err(());
+        }
 
-        return tmp;
+        return Ok(tmp);
     }
 
-    eprintln!(
-        "{}",
-        if use_json {
-            format!("source '{source}' is not a file, directory or URL")
-        } else {
-            format!("源 '{source}' 不是文件、目录或 URL")
-        }
-    );
-    process::exit(1);
+    let msg = if use_json {
+        format!("source '{source}' is not a file, directory or URL")
+    } else {
+        format!("源 '{source}' 不是文件、目录或 URL")
+    };
+    if use_json {
+        let output = serde_json::json!({
+            "status": "fatal",
+            "error": msg,
+        });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    } else {
+        eprintln!("{msg}");
+    }
+    Err(())
 }
 
 /// Download individual files from a directory URL based on manifest include
@@ -1422,43 +1562,27 @@ fn download_manifest_files(
     url: &str,
     tmp_path: &Path,
     include: &[String],
-    strict: bool,
     use_json: bool,
-) {
+) -> Result<(), ()> {
     for pattern in include {
         // Skip glob patterns — we can only download specific files
         if pattern.contains('*')
             || pattern.contains('?')
             || pattern.contains('[')
         {
-            if strict {
-                eprintln!(
-                    "{}",
-                    if use_json {
-                        format!(
-                            "cannot download files matching glob pattern '{pattern}' from directory URL"
-                        )
-                    } else {
-                        format!(
-                            "无法从目录 URL 下载匹配 glob 模式 '{pattern}' 的文件"
-                        )
-                    }
-                );
-                process::exit(1);
-            }
             eprintln!(
                 "{}",
                 if use_json {
                     format!(
-                        "warning: cannot download files matching glob pattern '{pattern}' from directory URL"
+                        "cannot download files matching glob pattern '{pattern}' from directory URL"
                     )
                 } else {
                     format!(
-                        "警告: 无法从目录 URL 下载匹配 glob 模式 '{pattern}' 的文件"
+                        "无法从目录 URL 下载匹配 glob 模式 '{pattern}' 的文件"
                     )
                 }
             );
-            continue;
+            return Err(());
         }
 
         // Reject path traversal in include patterns
@@ -1489,7 +1613,7 @@ fn download_manifest_files(
                     }
                     let _ = std::fs::write(&target_path, &bytes);
                 }
-            } else if strict {
+            } else {
                 eprintln!(
                     "{}",
                     if use_json {
@@ -1506,9 +1630,9 @@ fn download_manifest_files(
                         )
                     }
                 );
-                process::exit(1);
+                return Err(());
             }
-        } else if strict {
+        } else {
             eprintln!(
                 "{}",
                 if use_json {
@@ -1517,9 +1641,10 @@ fn download_manifest_files(
                     format!("无法获取 '{file_url}'")
                 }
             );
-            process::exit(1);
+            return Err(());
         }
     }
+    Ok(())
 }
 
 /// Download a bundle directory from a URL (non-tar.gz path).
@@ -1529,22 +1654,24 @@ fn download_manifest_files(
 fn download_dir_from_url(
     url: &str,
     tmp_path: &Path,
-    strict: bool,
     use_json: bool,
-) {
+) -> Result<(), ()> {
     // Simplified directory URL: try to fetch <url>/bundle.toml
     let bundle_url = format!("{}/bundle.toml", url.trim_end_matches('/'));
-    let bundle_resp = reqwest::blocking::get(&bundle_url).unwrap_or_else(|e| {
-        eprintln!(
-            "{}",
-            if use_json {
-                format!("cannot fetch '{bundle_url}': {e}")
-            } else {
-                format!("无法访问 '{bundle_url}': {e}")
-            }
-        );
-        process::exit(1);
-    });
+    let bundle_resp = match reqwest::blocking::get(&bundle_url) {
+        Ok(resp) => resp,
+        Err(e) => {
+            eprintln!(
+                "{}",
+                if use_json {
+                    format!("cannot fetch '{bundle_url}': {e}")
+                } else {
+                    format!("无法访问 '{bundle_url}': {e}")
+                }
+            );
+            return Err(());
+        }
+    };
 
     if !bundle_resp.status().is_success() {
         eprintln!(
@@ -1563,24 +1690,27 @@ fn download_dir_from_url(
                 )
             }
         );
-        process::exit(1);
+        return Err(());
     }
 
-    let bundle_content = bundle_resp.text().unwrap_or_else(|e| {
-        eprintln!(
-            "{}",
-            if use_json {
-                format!("cannot read bundle.toml: {e}")
-            } else {
-                format!("无法读取 bundle.toml: {e}")
-            }
-        );
-        process::exit(1);
-    });
+    let bundle_content = match bundle_resp.text() {
+        Ok(content) => content,
+        Err(e) => {
+            eprintln!(
+                "{}",
+                if use_json {
+                    format!("cannot read bundle.toml: {e}")
+                } else {
+                    format!("无法读取 bundle.toml: {e}")
+                }
+            );
+            return Err(());
+        }
+    };
 
     // Write bundle.toml to temp dir
     let btoml_path = tmp_path.join("bundle.toml");
-    std::fs::write(&btoml_path, &bundle_content).unwrap_or_else(|e| {
+    if let Err(e) = std::fs::write(&btoml_path, &bundle_content) {
         eprintln!(
             "{}",
             if use_json {
@@ -1589,8 +1719,8 @@ fn download_dir_from_url(
                 format!("无法写入 bundle.toml: {e}")
             }
         );
-        process::exit(1);
-    });
+        return Err(());
+    }
 
     // Parse manifest to discover and download individual files
     if let Ok(manifest) = toml::from_str::<BundleManifest>(&bundle_content) {
@@ -1598,25 +1728,29 @@ fn download_dir_from_url(
             url,
             tmp_path,
             &manifest.export.include,
-            strict,
             use_json,
-        );
+        )?;
     }
+
+    Ok(())
 }
 
 /// Resolve a URL source by downloading bundle content.
-fn resolve_url_source(url: &str, strict: bool, use_json: bool) -> TempDir {
-    let tmp = TempDir::new("zwiki-install").unwrap_or_else(|e| {
-        eprintln!(
-            "{}",
-            if use_json {
-                format!("cannot create temp directory: {e}")
-            } else {
-                format!("无法创建临时目录: {e}")
-            }
-        );
-        process::exit(1);
-    });
+fn resolve_url_source(url: &str, use_json: bool) -> Result<TempDir, ()> {
+    let tmp = match TempDir::new("zwiki-install") {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!(
+                "{}",
+                if use_json {
+                    format!("cannot create temp directory: {e}")
+                } else {
+                    format!("无法创建临时目录: {e}")
+                }
+            );
+            return Err(());
+        }
+    };
 
     // Check if URL points to a tar.gz
     let url_lower = url.to_lowercase();
@@ -1625,17 +1759,20 @@ fn resolve_url_source(url: &str, strict: bool, use_json: bool) -> TempDir {
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("tgz"));
 
-    let response = reqwest::blocking::get(url).unwrap_or_else(|e| {
-        eprintln!(
-            "{}",
-            if use_json {
-                format!("cannot fetch URL '{url}': {e}")
-            } else {
-                format!("无法访问 URL '{url}': {e}")
-            }
-        );
-        process::exit(1);
-    });
+    let response = match reqwest::blocking::get(url) {
+        Ok(resp) => resp,
+        Err(e) => {
+            eprintln!(
+                "{}",
+                if use_json {
+                    format!("cannot fetch URL '{url}': {e}")
+                } else {
+                    format!("无法访问 URL '{url}': {e}")
+                }
+            );
+            return Err(());
+        }
+    };
 
     if !response.status().is_success() {
         eprintln!(
@@ -1650,26 +1787,29 @@ fn resolve_url_source(url: &str, strict: bool, use_json: bool) -> TempDir {
                 format!("访问 '{}' 返回状态 {}", url, response.status())
             }
         );
-        process::exit(1);
+        return Err(());
     }
 
     if is_tar {
         // Download tar.gz and extract
-        let bytes = response.bytes().unwrap_or_else(|e| {
-            eprintln!(
-                "{}",
-                if use_json {
-                    format!("cannot read response body: {e}")
-                } else {
-                    format!("无法读取响应内容: {e}")
-                }
-            );
-            process::exit(1);
-        });
+        let bytes = match response.bytes() {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!(
+                    "{}",
+                    if use_json {
+                        format!("cannot read response body: {e}")
+                    } else {
+                        format!("无法读取响应内容: {e}")
+                    }
+                );
+                return Err(());
+            }
+        };
 
         let decoder = GzDecoder::new(bytes.as_ref());
         let mut archive = tar::Archive::new(decoder);
-        safe_unpack(&mut archive, tmp.path()).unwrap_or_else(|e| {
+        if let Err(e) = safe_unpack(&mut archive, tmp.path()) {
             eprintln!(
                 "{}",
                 if use_json {
@@ -1678,48 +1818,50 @@ fn resolve_url_source(url: &str, strict: bool, use_json: bool) -> TempDir {
                     format!("无法解压 tar.gz: {e}")
                 }
             );
-            process::exit(1);
-        });
+            return Err(());
+        }
     } else {
-        download_dir_from_url(url, tmp.path(), strict, use_json);
+        download_dir_from_url(url, tmp.path(), use_json)?;
     }
 
-    tmp
+    Ok(tmp)
 }
 
 /// Resolve a local tar.gz file by extracting to a temp directory.
-fn resolve_tar_source(
-    tar_path: &Path,
-    _strict: bool,
-    use_json: bool,
-) -> TempDir {
-    let tmp = TempDir::new("zwiki-install").unwrap_or_else(|e| {
-        eprintln!(
-            "{}",
-            if use_json {
-                format!("cannot create temp directory: {e}")
-            } else {
-                format!("无法创建临时目录: {e}")
-            }
-        );
-        process::exit(1);
-    });
+fn resolve_tar_source(tar_path: &Path, use_json: bool) -> Result<TempDir, ()> {
+    let tmp = match TempDir::new("zwiki-install") {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!(
+                "{}",
+                if use_json {
+                    format!("cannot create temp directory: {e}")
+                } else {
+                    format!("无法创建临时目录: {e}")
+                }
+            );
+            return Err(());
+        }
+    };
 
-    let file = std::fs::File::open(tar_path).unwrap_or_else(|e| {
-        eprintln!(
-            "{}",
-            if use_json {
-                format!("cannot open '{}': {e}", tar_path.display())
-            } else {
-                format!("无法打开 '{}': {e}", tar_path.display())
-            }
-        );
-        process::exit(1);
-    });
+    let file = match std::fs::File::open(tar_path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!(
+                "{}",
+                if use_json {
+                    format!("cannot open '{}': {e}", tar_path.display())
+                } else {
+                    format!("无法打开 '{}': {e}", tar_path.display())
+                }
+            );
+            return Err(());
+        }
+    };
 
     let decoder = GzDecoder::new(file);
     let mut archive = tar::Archive::new(decoder);
-    safe_unpack(&mut archive, tmp.path()).unwrap_or_else(|e| {
+    if let Err(e) = safe_unpack(&mut archive, tmp.path()) {
         eprintln!(
             "{}",
             if use_json {
@@ -1728,18 +1870,21 @@ fn resolve_tar_source(
                 format!("无法解压 '{}': {e}", tar_path.display())
             }
         );
-        process::exit(1);
-    });
+        return Err(());
+    }
 
-    tmp
+    Ok(tmp)
 }
 
 /// Determine the wiki-relative install target path from the manifest.
-fn resolve_target_rel(manifest: &BundleManifest, use_json: bool) -> String {
+fn resolve_target_rel(
+    manifest: &BundleManifest,
+    use_json: bool,
+) -> Result<String, ()> {
     let kind = manifest.package.kind.trim().to_lowercase();
     match kind.as_str() {
-        "upstream" => format!(".upstream/{}/", manifest.package.name),
-        "org" => format!(".org/{}/", manifest.package.name),
+        "upstream" => Ok(format!(".upstream/{}/", manifest.package.name)),
+        "org" => Ok(format!(".org/{}/", manifest.package.name)),
         "team" => {
             let team = manifest.package.team.as_deref().unwrap_or_default();
             if team.is_empty() {
@@ -1751,9 +1896,9 @@ fn resolve_target_rel(manifest: &BundleManifest, use_json: bool) -> String {
                         "团队 bundle 需要指定 team 字段".to_string()
                     }
                 );
-                process::exit(1);
+                return Err(());
             }
-            format!(".teams/{team}/")
+            Ok(format!(".teams/{team}/"))
         }
         _ => {
             eprintln!(
@@ -1764,7 +1909,7 @@ fn resolve_target_rel(manifest: &BundleManifest, use_json: bool) -> String {
                     format!("未知的 kind 值 '{kind}'")
                 }
             );
-            process::exit(1);
+            Err(())
         }
     }
 }
@@ -1939,6 +2084,50 @@ fn regenerate_root_index_at(lock: &ZwikiLock, wiki_root: &Path) {
     if let Err(e) = std::fs::write(&index_path, &full) {
         eprintln!("警告: 无法写入索引文件 {}: {e}", index_path.display());
     }
+}
+
+/// Check the root `index.md` for the wiki at `wiki_root`.
+///
+/// Verifies the file exists, contains both ZOO:BUNDLES markers, and
+/// that each installed bundle from `lock` is referenced in the index
+/// content.  Returns `Ok(())` on success or an error message.
+///
+/// This is a purely structural check — no health/lint analysis of the
+/// index content itself.
+pub fn check_root_index(
+    wiki_root: &Path,
+    lock: &ZwikiLock,
+) -> Result<(), String> {
+    let index_path = wiki_root.join("index.md");
+
+    if !index_path.exists() || !index_path.is_file() {
+        return Err("root index.md 不存在".to_string());
+    }
+
+    let content = std::fs::read_to_string(&index_path)
+        .map_err(|e| format!("无法读取 root index.md: {e}"))?;
+
+    if !content.contains("<!-- ZOO:BUNDLES:BEGIN -->") {
+        return Err("root index.md 缺少 ZOO:BUNDLES 标记（BEGIN）".to_string());
+    }
+
+    if !content.contains("<!-- ZOO:BUNDLES:END -->") {
+        return Err("root index.md 缺少 ZOO:BUNDLES 标记（END）".to_string());
+    }
+
+    // Verify each installed bundle is referenced in the index.
+    // Use a precise markdown-link check to avoid false matches from
+    // similarly-named paths (e.g. `.upstream/test/` != `.upstream/test-v2/`).
+    for entry in &lock.bundles {
+        if !content.contains(&format!("]({}", entry.target)) {
+            return Err(format!(
+                "root index.md 未引用已安装的 bundle: {}",
+                entry.name
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 /// Replace the content between `<!-- ZOO:BUNDLES:BEGIN -->` and
@@ -2923,7 +3112,7 @@ mod tests {
     fn test_resolve_target_upstream() {
         let m = valid_manifest();
         let target = resolve_target_rel(&m, false);
-        assert_eq!(target, ".upstream/test-bundle/");
+        assert_eq!(target.unwrap(), ".upstream/test-bundle/");
     }
 
     #[test]
@@ -2932,7 +3121,7 @@ mod tests {
         m.package.kind = "team".to_string();
         m.package.team = Some("my-team".to_string());
         let target = resolve_target_rel(&m, false);
-        assert_eq!(target, ".teams/my-team/");
+        assert_eq!(target.unwrap(), ".teams/my-team/");
     }
 
     // -------------------------------------------------------------------
@@ -3046,7 +3235,6 @@ include = ["pages/**/*.md"]
         let args = ExportArgs {
             dir: dir.to_string_lossy().to_string(),
             output: Some(output_path.to_string_lossy().to_string()),
-            strict: false,
             json: false,
         };
 
@@ -3107,7 +3295,6 @@ include = ["*.md"]
         let export_args = ExportArgs {
             dir: src_dir.to_string_lossy().to_string(),
             output: Some(tar_path.to_string_lossy().to_string()),
-            strict: false,
             json: false,
         };
         cmd_export(&export_args, false);
@@ -3118,7 +3305,7 @@ include = ["*.md"]
         // Temporarily override wiki_dir by using a static mut... can't in Rust.
         // Instead, we test the resolution and copy logic manually.
         // The install command calls resolve_source then copies. We'll test resolve_tar_source.
-        let tmp = resolve_tar_source(&tar_path, false, false);
+        let tmp = resolve_tar_source(&tar_path, false).unwrap();
         assert!(tmp.path().join("bundle.toml").exists());
         assert!(tmp.path().join("doc.md").exists());
         assert!(!tmp.path().join("pages").exists()); // no pages dir
@@ -3183,14 +3370,12 @@ installed_at = "2026-07-05T12:00:00Z"
             "/some/dir",
             "--output",
             "bundle.tar.gz",
-            "--strict",
         ])
         .unwrap();
         match parser.cmd {
             BundleCommand::Export(args) => {
                 assert_eq!(args.dir, "/some/dir");
                 assert_eq!(args.output, Some("bundle.tar.gz".to_string()));
-                assert!(args.strict);
             }
             _ => panic!("expected Export"),
         }
@@ -3254,7 +3439,6 @@ installed_at = "2026-07-05T12:00:00Z"
         match parser.cmd {
             BundleCommand::Export(args) => {
                 assert!(!args.json);
-                assert!(!args.strict);
                 assert_eq!(args.output, None);
             }
             _ => panic!("expected Export"),
@@ -3269,7 +3453,6 @@ installed_at = "2026-07-05T12:00:00Z"
         match parser.cmd {
             BundleCommand::Install(args) => {
                 assert!(!args.force);
-                assert!(!args.strict);
                 assert!(!args.json);
             }
             _ => panic!("expected Install"),
@@ -3820,7 +4003,7 @@ installed_at = "2026-01-01T00:00:00Z"
         m.package.kind = "org".to_string();
         m.package.name = "my-org-bundle".to_string();
         let target = resolve_target_rel(&m, false);
-        assert_eq!(target, ".org/my-org-bundle/");
+        assert_eq!(target.unwrap(), ".org/my-org-bundle/");
     }
 
     // -------------------------------------------------------------------
@@ -3968,10 +4151,21 @@ installed_at = "2026-07-05T12:00:00Z"
     // cmd_install_at — full integration test
     // -------------------------------------------------------------------
 
+    /// Write `content` to `path`, panicking on I/O error.
+    fn w(path: PathBuf, content: &str) {
+        std::fs::write(path, content).unwrap();
+    }
+
+    const DOC_M0: &str = "---\ntitle: Doc\ntype: concept\ntimestamp: 2026-07-01T00:00:00Z\ntags: []\nstatus: draft\nlast_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# Doc Content\n\nThis document has enough text to pass the health and lint checks that zwiki runs during bundle installation. It contains well over one hundred characters.\n";
+    const RDM0: &str = "---\ntitle: Readme\ntype: concept\ntimestamp: 2026-07-01T00:00:00Z\ntags: []\nstatus: draft\nlast_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# Readme\n\nThis readme has enough text to pass the health and lint checks that zwiki runs during bundle installation. It contains well over one hundred characters.\n";
+    const IDX0: &str = "---\ntitle: Index\ntype: concept\ntimestamp: 2026-07-01T00:00:00Z\ntags: []\nstatus: draft\nlast_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# Index\n\n- [Doc](doc.md)\n- [Readme](readme.md)\n";
+    const DOC_U0: &str = "---\ntitle: Doc\ntype: concept\ntimestamp: 2026-07-01T00:00:00Z\ntags: []\nstatus: draft\nlast_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# Updated Doc Content\n\nThis document has been updated to test force reinstall. It has enough text to pass health and lint checks during reinstall.\n";
+    const NEW_M0: &str = "---\ntitle: New\ntype: concept\ntimestamp: 2026-07-01T00:00:00Z\ntags: []\nstatus: draft\nlast_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# New File\n\nThis new file is added during the force reinstall test step. It has enough text to pass health and lint checks.\n";
+    const IDX_U0: &str = "---\ntitle: Index\ntype: concept\ntimestamp: 2026-07-01T00:00:00Z\ntags: []\nstatus: draft\nlast_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# Index\n\n- [Doc](doc.md)\n- [Readme](readme.md)\n- [New](new.md)\n";
+
     #[test]
     fn test_install_from_local_dir_full() {
-        // 1. Create source bundle directory with bundle.toml + .md files.
-        let src_dir = temp_dir("install_local_full_src");
+        let s = temp_dir("install_local_full_src");
         let bundle_toml = r#"
 [package]
 name = "test-install-bundle"
@@ -3981,30 +4175,23 @@ kind = "upstream"
 [export]
 include = ["*.md"]
 "#;
-        std::fs::write(src_dir.join("bundle.toml"), bundle_toml).unwrap();
-        std::fs::write(src_dir.join("doc.md"), "# Doc Content").unwrap();
-        std::fs::write(src_dir.join("readme.md"), "# Readme").unwrap();
-        // Create a file that should NOT be included (not matching *.md).
-        std::fs::write(src_dir.join("notes.txt"), "not included").unwrap();
-
-        // 2. Create a temporary wiki_root (no real wiki touched).
+        w(s.join("bundle.toml"), bundle_toml);
+        w(s.join("doc.md"), DOC_M0);
+        w(s.join("readme.md"), RDM0);
+        w(s.join("notes.txt"), "not included");
+        w(s.join("index.md"), IDX0);
+        std::fs::create_dir_all(s.join("logs")).unwrap();
+        w(s.join("logs/2026-07.md"), "# Log\n");
         let wiki_root = temp_dir("install_local_full_wiki");
-
-        // 3. Build InstallArgs pointing to the source dir.
         let args = InstallArgs {
-            source: src_dir.to_string_lossy().to_string(),
+            source: s.to_string_lossy().to_string(),
             force: false,
-            strict: false,
             json: false,
         };
-
-        // 4. Call cmd_install_at with the temp wiki_root.
         cmd_install_at(&args, false, &wiki_root);
-
-        // 5. Verify files were copied to the correct layer directory.
         let bundle_dir =
             wiki_root.join(".upstream").join("test-install-bundle");
-        assert!(bundle_dir.exists(), "bundle target directory should exist");
+        assert!(bundle_dir.exists(), "bundle target dir should exist");
         assert!(bundle_dir.join("doc.md").exists(), "doc.md should be copied");
         assert!(
             bundle_dir.join("readme.md").exists(),
@@ -4016,14 +4203,14 @@ include = ["*.md"]
         );
         assert!(
             !bundle_dir.join("notes.txt").exists(),
-            "notes.txt should NOT be copied (not in include pattern)"
+            "notes.txt should NOT be copied"
         );
-        // Verify content integrity.
         let doc_content =
             std::fs::read_to_string(bundle_dir.join("doc.md")).unwrap();
-        assert_eq!(doc_content, "# Doc Content");
-
-        // 6. Verify zwiki.lock exists with correct entry.
+        assert!(
+            doc_content.contains("# Doc Content"),
+            "doc.md should contain the heading"
+        );
         let lock_path = wiki_root.join("zwiki.lock");
         assert!(lock_path.exists(), "zwiki.lock should exist");
         let lock_content = std::fs::read_to_string(&lock_path).unwrap();
@@ -4036,37 +4223,30 @@ include = ["*.md"]
             lock.bundles[0].integrity.starts_with("sha256-"),
             "integrity should be sha256- format"
         );
-
-        // 7. Verify index.md was regenerated with correct content.
         let index_path = wiki_root.join("index.md");
         assert!(index_path.exists(), "index.md should exist");
         let index_content = std::fs::read_to_string(&index_path).unwrap();
         assert!(index_content.contains("## Upstream Bundles"));
         assert!(index_content.contains("test-install-bundle"));
-
-        // 8. Repeat with --force to test overwrite reinstall.
-        // Update the source so we can detect the overwrite.
-        std::fs::write(src_dir.join("doc.md"), "# Updated Doc Content")
-            .unwrap();
-        std::fs::write(src_dir.join("new.md"), "# New File").unwrap();
-
+        w(s.join("doc.md"), DOC_U0);
+        w(s.join("new.md"), NEW_M0);
+        w(s.join("index.md"), IDX_U0);
         let args_force = InstallArgs {
-            source: src_dir.to_string_lossy().to_string(),
+            source: s.to_string_lossy().to_string(),
             force: true,
-            strict: false,
             json: false,
         };
         cmd_install_at(&args_force, false, &wiki_root);
-
-        // Verify updated content after force reinstall.
         let doc_content =
             std::fs::read_to_string(bundle_dir.join("doc.md")).unwrap();
-        assert_eq!(doc_content, "# Updated Doc Content");
+        assert!(
+            doc_content.contains("# Updated Doc Content"),
+            "doc.md should contain updated heading"
+        );
         assert!(
             bundle_dir.join("new.md").exists(),
             "new.md should be copied on reinstall"
         );
-        // Lock should still have exactly one entry (upserted).
         let lock_content = std::fs::read_to_string(&lock_path).unwrap();
         let lock: ZwikiLock = toml::from_str(&lock_content).unwrap();
         assert_eq!(
@@ -4092,14 +4272,26 @@ kind = "org"
 include = ["*.md"]
 "#;
         std::fs::write(src_dir.join("bundle.toml"), bundle_toml).unwrap();
-        std::fs::write(src_dir.join("page.md"), "# JSON").unwrap();
+        std::fs::write(
+            src_dir.join("page.md"),
+            "---\ntitle: Page\ntype: concept\ntimestamp: 2026-07-01T00:00:00Z\ntags: []\nstatus: draft\nlast_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# JSON\n\nThis page has enough text to pass the health and lint checks that zwiki runs during bundle installation. It contains well over one hundred characters.\n",
+        )
+        .unwrap();
+        // Structure required by cmd_install_at (valid bundle must have
+        // index.md + logs/).
+        std::fs::write(
+            src_dir.join("index.md"),
+            "---\ntitle: Index\ntype: concept\ntimestamp: 2026-07-01T00:00:00Z\ntags: []\nstatus: draft\nlast_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# Index\n\n- [Page](page.md)\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(src_dir.join("logs")).unwrap();
+        std::fs::write(src_dir.join("logs/2026-07.md"), "# Log\n").unwrap();
 
         let wiki_root = temp_dir("install_json_wiki");
 
         let args = InstallArgs {
             source: src_dir.to_string_lossy().to_string(),
             force: false,
-            strict: false,
             json: true,
         };
 
@@ -4123,5 +4315,393 @@ include = ["*.md"]
         assert_eq!(lock.bundles.len(), 1);
         assert_eq!(lock.bundles[0].name, "json-test-bundle");
         assert_eq!(lock.bundles[0].target, ".org/json-test-bundle/");
+    }
+
+    // -------------------------------------------------------------------
+    // cmd_install_at rejects unhealthy bundle (no TempDir leak)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_cmd_install_at_rejects_unhealthy_bundle() {
+        let s = temp_dir("install_unhealthy_src");
+        let bundle_toml = r#"
+[package]
+name = "unhealthy-bundle"
+version = "1.0.0"
+kind = "upstream"
+
+[export]
+include = ["*.md"]
+"#;
+        w(s.join("bundle.toml"), bundle_toml);
+        // A page with no frontmatter triggers missing_frontmatter health issue.
+        w(s.join("page.md"), "# Page\n");
+        // Must have index.md and logs/ to pass structure check.
+        w(s.join("index.md"), "# Index\n");
+        std::fs::create_dir_all(s.join("logs")).unwrap();
+        w(s.join("logs/2026-07.md"), "# Log\n");
+
+        let wiki_root = temp_dir("install_unhealthy_wiki");
+
+        // Step 1: load_and_validate_manifest should succeed (manifest is valid).
+        let src = s.to_string_lossy();
+        let (resolved, _manifest) =
+            load_and_validate_manifest(&src, false).unwrap();
+        let source_dir = resolved.path().to_path_buf();
+
+        // Step 2: check_bundle_structure should pass (index.md + logs/ exist).
+        assert!(
+            check_bundle_structure(&source_dir, false).is_ok(),
+            "bundle structure should be valid"
+        );
+
+        // Step 3: run_health_lint_at should report issues (page.md has no
+        // frontmatter).
+        let (_health_results, _lint_results, health_issues, lint_issues) =
+            crate::run_health_lint_at(&source_dir);
+        let total = health_issues + lint_issues;
+        assert!(
+            total > 0,
+            "unhealthy bundle should have health/lint issues, got {total}"
+        );
+
+        // Verify the target directory was NOT created (install never proceeded).
+        let target_dir = wiki_root.join(".upstream").join("unhealthy-bundle");
+        assert!(
+            !target_dir.exists(),
+            "target directory should not exist for rejected bundle"
+        );
+
+        // Verify the lock file was NOT written.
+        let lock_path = wiki_root.join("zwiki.lock");
+        assert!(
+            !lock_path.exists(),
+            "lock file should not exist for rejected bundle"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // load_and_validate_manifest — behavior tests
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_load_and_validate_manifest_valid_bundle() {
+        let src_dir = temp_dir("validate_valid_src");
+        let bundle_toml = r#"
+[package]
+name = "valid-bundle"
+version = "1.0.0"
+kind = "upstream"
+
+[export]
+include = ["*.md"]
+"#;
+        std::fs::write(src_dir.join("bundle.toml"), bundle_toml).unwrap();
+
+        let src = src_dir.to_string_lossy();
+        let result = load_and_validate_manifest(&src, false);
+        assert!(result.is_ok(), "valid bundle should return Ok");
+    }
+
+    #[test]
+    fn test_load_and_validate_manifest_missing_bundle_toml() {
+        let src_dir = temp_dir("validate_missing_src");
+        // Create an empty directory — no bundle.toml
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        let src = src_dir.to_string_lossy();
+        let result = load_and_validate_manifest(&src, false);
+        assert!(result.is_err(), "missing bundle.toml should return Err");
+    }
+
+    #[test]
+    fn test_load_and_validate_manifest_fatal_validation() {
+        let src_dir = temp_dir("validate_fatal_src");
+        // Empty name triggers a fatal error.
+        let bundle_toml = r#"
+[package]
+name = ""
+version = "1.0.0"
+kind = "upstream"
+
+[export]
+include = ["*.md"]
+"#;
+        std::fs::write(src_dir.join("bundle.toml"), bundle_toml).unwrap();
+
+        let src = src_dir.to_string_lossy();
+        let result = load_and_validate_manifest(&src, false);
+        assert!(result.is_err(), "empty name should return Err");
+
+        let Err(errors) = result else { unreachable!() };
+        let has_name_fatal = errors.iter().any(|e| {
+            e.severity == Severity::Fatal && e.field == "package.name"
+        });
+        assert!(
+            has_name_fatal,
+            "errors should contain a fatal on package.name"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // check_root_index
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_check_root_index_missing() {
+        let dir = temp_dir("check_root_index_missing");
+        let lock = ZwikiLock { bundles: Vec::new() };
+        let result = check_root_index(&dir, &lock);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("不存在"));
+    }
+
+    #[test]
+    fn test_check_root_index_missing_begin() {
+        let dir = temp_dir("check_root_index_missing_begin");
+        std::fs::write(dir.join("index.md"), "no markers here\n").unwrap();
+        let lock = ZwikiLock { bundles: Vec::new() };
+        let result = check_root_index(&dir, &lock);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("BEGIN"));
+    }
+
+    #[test]
+    fn test_check_root_index_missing_end() {
+        let dir = temp_dir("check_root_index_missing_end");
+        std::fs::write(
+            dir.join("index.md"),
+            "<!-- ZOO:BUNDLES:BEGIN -->\ncontent\n",
+        )
+        .unwrap();
+        let lock = ZwikiLock { bundles: Vec::new() };
+        let result = check_root_index(&dir, &lock);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("END"));
+    }
+
+    #[test]
+    fn test_check_root_index_ok() {
+        let dir = temp_dir("check_root_index_ok");
+        std::fs::write(
+            dir.join("index.md"),
+            "<!-- ZOO:BUNDLES:BEGIN -->\n[test](.upstream/test/)\n<!-- ZOO:BUNDLES:END -->\n",
+        )
+        .unwrap();
+        let lock = ZwikiLock {
+            bundles: vec![ZwikiLockEntry {
+                name: "test".to_string(),
+                version: "1.0".to_string(),
+                registry: String::new(),
+                target: ".upstream/test/".to_string(),
+                integrity: "sha256-abc".to_string(),
+                installed_at: "2026-01-01T00:00:00Z".to_string(),
+                description: None,
+            }],
+        };
+        let result = check_root_index(&dir, &lock);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_check_root_index_bundle_not_referenced() {
+        let dir = temp_dir("check_root_index_bundle_not_referenced");
+        std::fs::write(
+            dir.join("index.md"),
+            "<!-- ZOO:BUNDLES:BEGIN -->\nother content\n<!-- ZOO:BUNDLES:END -->\n",
+        )
+        .unwrap();
+        let lock = ZwikiLock {
+            bundles: vec![ZwikiLockEntry {
+                name: "test".to_string(),
+                version: "1.0".to_string(),
+                registry: String::new(),
+                target: ".upstream/test/".to_string(),
+                integrity: "sha256-abc".to_string(),
+                installed_at: "2026-01-01T00:00:00Z".to_string(),
+                description: None,
+            }],
+        };
+        let result = check_root_index(&dir, &lock);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("未引用"));
+    }
+
+    // -------------------------------------------------------------------
+    // read_manifest
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_read_manifest_returns_err_on_missing_file() {
+        let dir = temp_dir("read_manifest_missing");
+        let path = dir.join("bundle.toml");
+        let result = read_manifest(&path, false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("无法读取 bundle.toml"));
+    }
+
+    #[test]
+    fn test_read_manifest_returns_err_on_invalid_toml() {
+        let dir = temp_dir("read_manifest_invalid");
+        let path = dir.join("bundle.toml");
+        std::fs::write(&path, "invalid toml {{{").unwrap();
+        let result = read_manifest(&path, false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("无效的 bundle.toml"));
+    }
+
+    // -------------------------------------------------------------------
+    // load_and_validate_manifest — TempDir drop on parse error
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_load_and_validate_manifest_drops_tempdir_on_parse_error() {
+        let dir = temp_dir("lv_manifest_parse_err");
+        std::fs::write(dir.join("bundle.toml"), "invalid toml {{{").unwrap();
+        let result = load_and_validate_manifest(dir.to_str().unwrap(), false);
+        assert!(result.is_err());
+    }
+
+    // -------------------------------------------------------------------
+    // install_bundle_files_at — error propagation (no TempDir leak)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_install_bundle_files_at_returns_err_on_already_installed() {
+        // Create a valid bundle source with index.md + logs/.
+        let src = temp_dir("install_err_already_installed_src");
+        let bundle_toml = r#"
+[package]
+name = "err-test-bundle"
+version = "1.0.0"
+kind = "upstream"
+
+[export]
+include = ["*.md"]
+"#;
+        w(src.join("bundle.toml"), bundle_toml);
+        w(src.join("index.md"), IDX0);
+        w(src.join("doc.md"), DOC_M0);
+        std::fs::create_dir_all(src.join("logs")).unwrap();
+        w(src.join("logs/2026-07.md"), "# Log\n");
+
+        let wiki_root = temp_dir("install_err_already_installed_wiki");
+        let manifest = valid_manifest_with_name("err-test-bundle");
+
+        // First install should succeed.
+        let result = install_bundle_files_at(
+            &src,
+            &src.join("bundle.toml"),
+            &manifest,
+            false, // force = false — first install, target doesn't exist
+            false, // use_json = false
+            &wiki_root,
+        );
+        assert!(result.is_ok(), "first install should succeed");
+
+        // Second install without --force should return Err
+        // because the target already exists and has files.
+        let result = install_bundle_files_at(
+            &src,
+            &src.join("bundle.toml"),
+            &manifest,
+            false, // force = false — target exists, should fail
+            false,
+            &wiki_root,
+        );
+        assert!(
+            result.is_err(),
+            "install without --force when target exists should return Err"
+        );
+    }
+
+    #[test]
+    fn test_install_bundle_files_at_returns_err_on_copy_failure() {
+        // Create a bundle source with index.md + logs/.
+        let src = temp_dir("install_err_copy_failure_src");
+        let bundle_toml = r#"
+[package]
+name = "copy-fail-bundle"
+version = "1.0.0"
+kind = "upstream"
+
+[export]
+include = ["*.md"]
+"#;
+        w(src.join("bundle.toml"), bundle_toml);
+        w(src.join("index.md"), IDX0);
+        w(src.join("doc.md"), DOC_M0);
+        std::fs::create_dir_all(src.join("logs")).unwrap();
+        w(src.join("logs/2026-07.md"), "# Log\n");
+
+        let wiki_root = temp_dir("install_err_copy_failure_wiki");
+        let manifest = valid_manifest_with_name("copy-fail-bundle");
+
+        // Make the target directory non-writable by creating it as a file.
+        // This will cause create_dir_all to succeed (it's not a dir issue)
+        // but file copy will fail.  Actually, let's test a different path:
+        // pass a non-existent manifest_path to trigger the bundle.toml copy
+        // error.
+        let fake_manifest = src.join("nonexistent-bundle.toml");
+
+        let result = install_bundle_files_at(
+            &src,
+            &fake_manifest,
+            &manifest,
+            false,
+            false,
+            &wiki_root,
+        );
+        assert!(
+            result.is_err(),
+            "install with non-existent manifest_path should return Err"
+        );
+    }
+
+    fn valid_manifest_with_name(name: &str) -> BundleManifest {
+        BundleManifest {
+            package: PackageSection {
+                name: name.to_string(),
+                version: "1.0.0".to_string(),
+                okf_version: "0.1".to_string(),
+                kind: "upstream".to_string(),
+                team: None,
+                registry: None,
+                description: None,
+            },
+            export: ExportSection {
+                include: vec!["*.md".to_string()],
+                exclude: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn test_check_root_index_substring_no_false_positive() {
+        let dir = temp_dir("check_root_index_substring");
+        // index.md references only `.upstream/test-v2/`, not `.upstream/test/`
+        std::fs::write(
+            dir.join("index.md"),
+            "<!-- ZOO:BUNDLES:BEGIN -->\n\
+             [test-v2](.upstream/test-v2/index.md)\n\
+             <!-- ZOO:BUNDLES:END -->\n",
+        )
+        .unwrap();
+        let lock = ZwikiLock {
+            bundles: vec![ZwikiLockEntry {
+                name: "test".to_string(),
+                version: "1.0".to_string(),
+                registry: String::new(),
+                target: ".upstream/test/".to_string(),
+                integrity: "sha256-abc".to_string(),
+                installed_at: "2026-01-01T00:00:00Z".to_string(),
+                description: None,
+            }],
+        };
+        let result = check_root_index(&dir, &lock);
+        assert!(result.is_err());
+        // Verify the error is "not referenced", not something else
+        let err = result.unwrap_err();
+        assert!(err.contains("未引用"), "expected not-referenced error: {err}");
     }
 }

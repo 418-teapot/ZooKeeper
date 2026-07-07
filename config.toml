@@ -47,8 +47,8 @@ id   = "aliyun/glm-5.2"
 [provider.Aliyun.models."glm-5.2".cost]
 input       = 6.8
 output      = 23.8
-cache_read  = 0.68
-cache_write = 8.5
+cache_read  = 0
+cache_write = 0
 
 [provider.Aliyun.models."qwen3.7-max"]
 name = "aliyun/qwen3.7-max"

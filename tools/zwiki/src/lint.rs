@@ -472,21 +472,20 @@ pub fn check_cascade_stale(pages: &[Page], wiki_dir: &Path) -> Vec<Issue> {
 // Orchestrator
 // ---------------------------------------------------------------------------
 
-/// Run all lint checks and return structured results.
-pub fn run_all() -> LintResults {
-    let wiki_dir = wiki::wiki_dir();
-    let paths = wiki::all_wiki_pages();
-    let cache = wiki::page_cache(&paths);
+/// Run all lint checks against a given root directory.
+pub fn run_all(root: &Path) -> LintResults {
+    let paths = wiki::all_wiki_pages_at(root);
+    let cache = wiki::page_cache_at(&paths, root);
     let pages: Vec<Page> = cache.values().cloned().collect();
 
     let reference_date = chrono::Local::now().date_naive();
 
     LintResults {
         broken_links: check_broken_links(&pages, &cache),
-        orphan_pages: check_orphan_pages(&pages, &wiki_dir),
+        orphan_pages: check_orphan_pages(&pages, root),
         sparse_pages: check_sparse_pages(&pages),
         stale_pages: check_stale_pages(&pages, reference_date),
-        cascade_stale: check_cascade_stale(&pages, &wiki_dir),
+        cascade_stale: check_cascade_stale(&pages, root),
     }
 }
 

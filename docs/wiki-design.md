@@ -56,7 +56,7 @@
 | zwiki CLI | **Rust 实现**，含 7 个子命令：`check`、`backlinks`、`log`、`page`、`property`、`create`（含 `--domain` 自动建域骨架） | `tools/zwiki/`（构建产物 `tools/bin/zwiki`） |
 | 健康检查 | `zwiki check` 内含：empty files、index sync（递归 + indexed_anywhere 跨层豁免）、log coverage、frontmatter、relations field、**relations-body consistency（双向，error 级）**、source field、missing/duplicate inline links | `tools/zwiki/src/health.rs` |
 | Lint 检查 | `zwiki check` 内含：broken links、orphan pages、sparse pages、**stale pages**（`timestamp` 超 90 天且非 deprecated）、**cascade stale**（被取代页面的引用者，以 `last_validated` 比较判断是否已审查） | `tools/zwiki/src/lint.rs` |
-| `--save` / `--ci` / `--diff` | check 子命令支持 `--save`（写 health-report.md）、`--ci`（按阈值退出码）、`--diff`（git diff 检查） | `tools/zwiki/src/main.rs` |
+| `--save` / `--diff` | check 子命令支持 `--save`（写 health-report.md）、默认严格模式（任何问题 exit(1)）、`--diff`（git diff 检查） | `tools/zwiki/src/main.rs` |
 | wiki-ingest skill | 4 阶段（Phase 0 分类 → Phase 1 委派 kiwi → Phase 2 通用写入 → Phase 3 验证） | `core/skills/wiki-ingest/SKILL.md` |
 | wiki-query skill | 6 阶段（Phase 0 判断问题类型 → 1 读 index → 2 读页面 → 3 合成 → 4 判断归档 → 5 呈现） | `core/skills/wiki-query/SKILL.md` |
 | kiwi agent | subagent，prompt 在 `src/agents/kiwi.ts`，明确"read-only"，5 阶段工作流 + QualityGate | `src/agents/kiwi.ts` |
@@ -670,7 +670,7 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 
 | 子命令 | 用途 | 状态 |
 |--------|------|------|
-| `check` | 运行 health + lint + 可选 diff；支持 `--save`/`--ci`/`--diff`/`--cached`/`--commit`/`--apply` | ✅ |
+| `check` | 运行 health + lint + 可选 diff；支持 `--save`/`--diff`/`--cached`/`--commit`/`--apply`；默认严格模式（任何问题 exit(1)） | ✅ |
 | `backlinks` | 反向链接查询/写入 | ✅ |
 | `log` | 追加日志到 `wiki/logs/YYYY-MM.md`（`--op`/`--path`/`--action`/`--note`） | ✅ |
 | `page` | 读页面（`--property`/`--outline`） | ✅ |
@@ -794,7 +794,7 @@ role = "advisory"
 每个团队独立 git repo（独立版本历史、独立权限、独立 CI），`teams.toml` 统一管理。wiki 生命周期与项目代码不同——知识积累持续低频，代码迭代周期高频，独立 repo 让 wiki 历史不被代码提交冲散。
 
 - `teams.toml`（`~/.zoo/wiki/teams.toml`）统一管理所有团队 repo，`zwiki sync pull/push/status` 遍历该文件
-- `zwiki propose --team <name>`：personal → 指定团队走 PR + CI 门禁（`zwiki check --ci`）
+- `zwiki propose --team <name>`：personal → 指定团队走 PR + CI 门禁（默认严格模式：任何问题 exit(1)）
 - `personal/` 始终 `.gitignore`；`.org/` 在 primary team repo 中版本管理，非 primary team 的 repo 中 `.gitignore`
 - **log.md 按月分文件**（`wiki/logs/2026-06.md`）避免高频 merge conflict
 - contributors frontmatter 字段自动维护（PR merge 时从 git log 提取）
@@ -1002,7 +1002,7 @@ Bundle 安装机制就位后，L1 分层目录 + 查询级联有实际内容可�
 | # | 改动 |
 |---|------|
 | 23 | pre-query 自动 lint 注入（> 7 天触发） |
-| 24 | `zwiki check --ci` 阈值 YAML → exit code |
+| 24 | `zwiki check` 默认严格模式（任何问题 exit(1)） |
 | 25 | 结构扫描脚本（Phase 1，纯确定性） |
 | 26 | 哈希快照脚本（Step A，codemap 风格） |
 | 27 | kiwi 摘要表蒸馏模式（Phase 2） |

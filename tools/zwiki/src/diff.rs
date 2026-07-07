@@ -136,20 +136,11 @@ fn flush_current(current: &mut Option<DiffFile>, files: &mut Vec<DiffFile>) {
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Run `git diff` on the wiki directory and check added lines for missing
+/// Run `git diff` on the given directory and check added lines for missing
 /// inline links.
 ///
 /// Returns `Ok(vec![])` when git fails or there are no changes (not an error).
 pub fn run_diff(
-    cached: bool,
-    commit: Option<&str>,
-) -> Result<Vec<Issue>, String> {
-    run_diff_at(&wiki::wiki_dir(), cached, commit)
-}
-
-/// Internal implementation that accepts an explicit wiki directory (for
-/// testing).
-fn run_diff_at(
     wiki_dir: &Path,
     cached: bool,
     commit: Option<&str>,
@@ -472,7 +463,7 @@ diff --git a/concepts/foo.md b/concepts/foo.md
             Command::new("git").args(["-C", &wiki_str, "add", "."]).output();
 
         let issues =
-            run_diff_at(&wiki, true, None).expect("run_diff should succeed");
+            run_diff(&wiki, true, None).expect("run_diff should succeed");
         assert!(
             !issues.is_empty(),
             "should find at least one missing link issue"

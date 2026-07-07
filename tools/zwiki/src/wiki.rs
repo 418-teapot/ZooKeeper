@@ -100,6 +100,15 @@ pub fn all_wiki_pages() -> Vec<PathBuf> {
     discover_pages(&wiki_dir())
 }
 
+/// Return all markdown files under a given root, excluding meta / system files.
+///
+/// Same exclusion rules as [`all_wiki_pages`] but operates on an arbitrary
+/// root directory instead of the default wiki directory.
+#[must_use]
+pub fn all_wiki_pages_at(root: &Path) -> Vec<PathBuf> {
+    discover_pages(root)
+}
+
 // ---------------------------------------------------------------------------
 // Frontmatter utilities
 // ---------------------------------------------------------------------------
@@ -311,14 +320,6 @@ pub fn read_page_at(path: &Path, wiki_base: &Path) -> Option<Page> {
         body,
         raw: content,
     })
-}
-
-/// Read and parse a wiki page.
-///
-/// Returns `None` if the path does not exist or cannot be read.
-#[must_use]
-pub fn read_page(path: &Path) -> Option<Page> {
-    read_page_at(path, &wiki_dir())
 }
 
 // ---------------------------------------------------------------------------

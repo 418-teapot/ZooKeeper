@@ -1356,11 +1356,10 @@ pub fn invalidate_by_source(pages: &[Page]) -> Vec<InvalidateUpdate> {
 // Orchestrator
 // ---------------------------------------------------------------------------
 
-/// Run all health checks and return structured results.
-pub fn run_all() -> CheckResults {
-    let wiki_dir = wiki::wiki_dir();
-    let paths = wiki::all_wiki_pages();
-    let cache = wiki::page_cache(&paths);
+/// Run all health checks against a given root directory.
+pub fn run_all(root: &Path) -> CheckResults {
+    let paths = wiki::all_wiki_pages_at(root);
+    let cache = wiki::page_cache_at(&paths, root);
     let pages: Vec<wiki::Page> = cache.into_values().collect();
 
     let total_pages = pages.len();
@@ -1368,16 +1367,14 @@ pub fn run_all() -> CheckResults {
     CheckResults {
         total_pages,
         empty_files: check_empty_files(&pages, DEFAULT_STUB_THRESHOLD),
-        index_sync: check_index_sync(&pages, &wiki_dir),
-        log_coverage: check_log_coverage(&pages, &wiki_dir),
+        index_sync: check_index_sync(&pages, root),
+        log_coverage: check_log_coverage(&pages, root),
         frontmatter: check_frontmatter(&pages),
         related_field: check_related_field(&pages),
-        related_body_consistency: check_related_body_consistency(
-            &pages, &wiki_dir,
-        ),
+        related_body_consistency: check_related_body_consistency(&pages, root),
         source_field: check_source_field(&pages),
-        missing_inline_links: check_missing_inline_links(&pages, &wiki_dir),
-        duplicate_inline_links: check_duplicate_inline_links(&pages, &wiki_dir),
+        missing_inline_links: check_missing_inline_links(&pages, root),
+        duplicate_inline_links: check_duplicate_inline_links(&pages, root),
     }
 }
 
