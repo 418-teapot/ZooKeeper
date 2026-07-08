@@ -40,11 +40,11 @@ output  = 384000
 input       = 0.98
 output      = 1.96
 
-[provider.Aliyun.models."glm-5.1"]
-name = "aliyun/glm-5.1"
-id   = "aliyun/glm-5.1"
+[provider.Aliyun.models."glm-5.2"]
+name = "aliyun/glm-5.2"
+id   = "aliyun/glm-5.2"
 
-[provider.Aliyun.models."glm-5.1".cost]
+[provider.Aliyun.models."glm-5.2".cost]
 input       = 6.8
 output      = 23.8
 cache_read  = 0.68
