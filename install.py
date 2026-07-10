@@ -224,17 +224,33 @@ def main() -> None:
         )
         if result.returncode == 0:
             info(f"✓ Wiki bundle 已安装: {wiki_root}")
-            # Symlink infrastructure files to wiki root for direct access
-            core_dir = os.path.join(wiki_root, ".teams", "core")
-            for name in ["SCHEMA.md", "templates"]:
-                src = os.path.join(core_dir, name)
-                dst = os.path.join(wiki_root, name)
-                if os.path.islink(dst) or os.path.exists(dst):
-                    if os.path.isdir(dst) and not os.path.islink(dst):
-                        shutil.rmtree(dst)
-                    else:
-                        os.remove(dst)
-                os.symlink(src, dst)
+            # Derive team-bundle directory from zwiki.lock instead of hardcoding
+            lock_path = os.path.join(wiki_root, "zwiki.lock")
+            core_dir = None
+            if not os.path.isfile(lock_path):
+                warn("zwiki.lock 不存在，跳过 SCHEMA.md/templates 软链接")
+            else:
+                try:
+                    lock_data = parse_toml(lock_path)
+                    for entry in lock_data.get("bundles", []):
+                        target = entry.get("target", "")
+                        if target.startswith(".teams/"):
+                            core_dir = os.path.join(wiki_root, target.rstrip("/"))
+                            break
+                    if core_dir is None:
+                        warn("zwiki.lock 中未找到团队 bundle 条目，跳过软链接")
+                except (tomllib.TOMLDecodeError, KeyError, TypeError) as e:
+                    warn(f"zwiki.lock 解析失败，跳过软链接: {e}")
+            if core_dir is not None:
+                for name in ["SCHEMA.md", "templates"]:
+                    src = os.path.join(core_dir, name)
+                    dst = os.path.join(wiki_root, name)
+                    if os.path.islink(dst) or os.path.exists(dst):
+                        if os.path.isdir(dst) and not os.path.islink(dst):
+                            shutil.rmtree(dst)
+                        else:
+                            os.remove(dst)
+                    os.symlink(src, dst)
         else:
             warn(
                 f"Wiki bundle 安装失败: {result.stderr.strip() or result.stdout.strip()}"

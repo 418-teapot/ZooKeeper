@@ -425,7 +425,12 @@ fn dispatch_tail(args: &Args, cmd: &Command) {
         Command::Contradictions(cmd) => {
             contradictions::dispatch(cmd, args.json);
         }
-        _ => unreachable!(),
+        _ => {
+            // Unknown subcommand variant — never panic at runtime.  New
+            // variants could be added without updating this catch-all.
+            eprintln!("未知子命令");
+            process::exit(1);
+        }
     }
 }
 

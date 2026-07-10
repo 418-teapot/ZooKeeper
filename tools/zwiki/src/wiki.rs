@@ -340,12 +340,6 @@ pub fn page_cache_at(
     cache
 }
 
-/// Preload all pages into a map keyed by relative path.
-#[must_use]
-pub fn page_cache(pages: &[PathBuf]) -> HashMap<String, Page> {
-    page_cache_at(pages, &wiki_dir())
-}
-
 // ---------------------------------------------------------------------------
 // Domain validation
 // ---------------------------------------------------------------------------
@@ -414,6 +408,99 @@ pub fn validate_domain(domain: &str, wiki_dir: &Path) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Index link parsing (shared by health, lint)
+// ---------------------------------------------------------------------------
+
+/// Parse markdown link targets from `index.md` content.
+///
+/// Matches `[text](path.md)` patterns.
+///
+/// Uses a `OnceLock<Regex>` to avoid recompiling the regex per call.
+pub fn parse_index_links(content: &str) -> Vec<String> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"\[.*?\]\(([^)]+\.md)\)").unwrap());
+    re.captures_iter(content).map(|c| c[1].to_string()).collect()
+}
+
+// ---------------------------------------------------------------------------
+// Stale-source detection (shared by verify, health)
+// ---------------------------------------------------------------------------
+
+/// Check a derived (analysis/synthesis) page for stale sources.
+///
+/// Returns all `(source_rel, source_date)` pairs where the source page's
+/// `timestamp` is newer than the derived page's `last_validated`.
+///
+/// Skips pages whose type is not `analysis` or `synthesis`, pages without
+/// a non-empty `sources` array, and pages without a parseable
+/// `last_validated` field.  Source entries with unresolvable paths or
+/// unparseable timestamps are silently skipped.
+pub fn stale_sources<'a>(
+    page: &'a Page,
+    by_rel: &HashMap<&'a str, &'a Page>,
+) -> Vec<(String, chrono::NaiveDate)> {
+    // Only analysis / synthesis pages have source-derived validity.
+    if !matches!(
+        page.frontmatter.get("type").and_then(|v| v.as_str()),
+        Some("analysis" | "synthesis")
+    ) {
+        return Vec::new();
+    }
+
+    // Must have non-empty sources array.
+    let sources = match page.frontmatter.get("sources") {
+        Some(Value::Array(arr)) if !arr.is_empty() => arr,
+        _ => return Vec::new(),
+    };
+
+    // Must have parseable last_validated.
+    let Some(lv_str) =
+        page.frontmatter.get("last_validated").and_then(|v| v.as_str())
+    else {
+        return Vec::new();
+    };
+    let Some(derived_date) = parse_date(lv_str) else {
+        return Vec::new();
+    };
+
+    let mut stale: Vec<(String, chrono::NaiveDate)> = Vec::new();
+
+    for source_val in sources {
+        let Some(source_rel_in) = source_val.as_str() else {
+            continue;
+        };
+        // Normalize: ensure .md extension.
+        let source_rel = if std::path::Path::new(source_rel_in)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+        {
+            source_rel_in.to_string()
+        } else {
+            format!("{source_rel_in}.md")
+        };
+
+        let Some(source_page) = by_rel.get(source_rel.as_str()) else {
+            continue;
+        };
+
+        let Some(ts_str) =
+            source_page.frontmatter.get("timestamp").and_then(|v| v.as_str())
+        else {
+            continue;
+        };
+        let Some(source_date) = parse_date(ts_str) else {
+            continue;
+        };
+
+        if source_date > derived_date {
+            stale.push((source_rel, source_date));
+        }
+    }
+
+    stale
 }
 
 // ---------------------------------------------------------------------------

@@ -5,16 +5,18 @@
 //! the derived page's `last_validated` — indicating the derived page
 //! may need re-validation against updated source material.
 
-use serde_json::Value;
+use std::collections::HashMap;
+use std::path::Path;
 
 use crate::wiki;
 
 /// A stale source–derived page pair.
-struct StalePair {
-    derived_page: String,
-    source_page: String,
-    source_timestamp: String,
-    derived_last_validated: String,
+#[derive(Debug, Clone)]
+pub struct StalePair {
+    pub(crate) derived_page: String,
+    pub(crate) source_page: String,
+    pub(crate) source_timestamp: String,
+    pub(crate) derived_last_validated: String,
 }
 
 /// Run the verify command.
@@ -24,91 +26,7 @@ struct StalePair {
 /// checked.
 pub fn cmd_verify(json: bool, domain: Option<&str>) {
     let root = wiki::wiki_dir();
-    let paths = wiki::discover_pages(&root);
-    let cache = wiki::page_cache(&paths);
-
-    let mut stale: Vec<StalePair> = Vec::new();
-
-    for page in cache.values() {
-        // Domain filter: skip pages whose top-level directory doesn't match.
-        if let Some(df) = domain {
-            let df_lower = df.to_lowercase();
-            let page_domain = page.rel.split('/').next().unwrap_or("");
-            if page_domain.to_lowercase() != df_lower {
-                continue;
-            }
-        }
-
-        // Only check analysis / synthesis pages.
-        if !matches!(
-            page.frontmatter.get("type").and_then(|v| v.as_str()),
-            Some("analysis" | "synthesis")
-        ) {
-            continue;
-        }
-
-        // Must have non-empty sources array.
-        let sources = match page.frontmatter.get("sources") {
-            Some(Value::Array(arr)) if !arr.is_empty() => arr,
-            _ => continue,
-        };
-
-        // Must have parseable last_validated.
-        let Some(lv_str) =
-            page.frontmatter.get("last_validated").and_then(|v| v.as_str())
-        else {
-            continue;
-        };
-        let Some(derived_date) = wiki::parse_date(lv_str) else {
-            continue;
-        };
-
-        for source_val in sources {
-            let Some(source_rel_in) = source_val.as_str() else {
-                continue;
-            };
-            // Normalize: ensure .md extension.
-            let source_rel = if std::path::Path::new(source_rel_in)
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
-            {
-                source_rel_in.to_string()
-            } else {
-                format!("{source_rel_in}.md")
-            };
-
-            let Some(source_page) = cache.get(&source_rel) else {
-                continue;
-            };
-
-            let Some(ts_str) = source_page
-                .frontmatter
-                .get("timestamp")
-                .and_then(|v| v.as_str())
-            else {
-                continue;
-            };
-            let Some(source_date) = wiki::parse_date(ts_str) else {
-                continue;
-            };
-
-            if source_date > derived_date {
-                stale.push(StalePair {
-                    derived_page: page.rel.clone(),
-                    source_page: source_rel,
-                    source_timestamp: ts_str.to_string(),
-                    derived_last_validated: lv_str.to_string(),
-                });
-            }
-        }
-    }
-
-    // Sort for deterministic output.
-    stale.sort_by(|a, b| {
-        a.derived_page
-            .cmp(&b.derived_page)
-            .then_with(|| a.source_page.cmp(&b.source_page))
-    });
+    let stale = collect_stale_pairs(&root, domain);
 
     if json {
         let output: Vec<serde_json::Value> = stale
@@ -138,6 +56,67 @@ pub fn cmd_verify(json: bool, domain: Option<&str>) {
     }
 }
 
+/// Collect stale source–derived pairs for a given wiki root and optional
+/// domain filter.
+///
+/// This is the domain-filter + sort + output logic extracted from
+/// `cmd_verify` so tests can exercise it without capturing stdout.
+/// The per-page stale-source scan is delegated to
+/// [`wiki::stale_sources`].
+pub fn collect_stale_pairs(
+    root: &Path,
+    domain: Option<&str>,
+) -> Vec<StalePair> {
+    let paths = wiki::discover_pages(root);
+    let cache = wiki::page_cache_at(&paths, root);
+    let by_rel: HashMap<&str, &wiki::Page> =
+        cache.iter().map(|(k, v)| (k.as_str(), v)).collect();
+
+    let mut stale: Vec<StalePair> = Vec::new();
+
+    for page in cache.values() {
+        // Domain filter: skip pages whose top-level directory doesn't match.
+        if let Some(df) = domain {
+            let df_lower = df.to_lowercase();
+            let page_domain = page.rel.split('/').next().unwrap_or("");
+            if page_domain.to_lowercase() != df_lower {
+                continue;
+            }
+        }
+
+        let pairs = wiki::stale_sources(page, &by_rel);
+        for (source_rel, _) in pairs {
+            let lv_str = page
+                .frontmatter
+                .get("last_validated")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let ts_str = by_rel
+                .get(source_rel.as_str())
+                .and_then(|p| p.frontmatter.get("timestamp"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            stale.push(StalePair {
+                derived_page: page.rel.clone(),
+                source_page: source_rel,
+                source_timestamp: ts_str,
+                derived_last_validated: lv_str,
+            });
+        }
+    }
+
+    // Sort for deterministic output.
+    stale.sort_by(|a, b| {
+        a.derived_page
+            .cmp(&b.derived_page)
+            .then_with(|| a.source_page.cmp(&b.source_page))
+    });
+
+    stale
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -147,6 +126,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
+    use super::*;
     use crate::health;
     use crate::wiki;
 
@@ -169,7 +149,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // cmd_verify core logic (tested via invalidate_by_source)
+    // 1. Stale detection via invalidate_by_source (preserved behavior)
     // -------------------------------------------------------------------
 
     #[test]
@@ -222,5 +202,128 @@ mod tests {
             updates.is_empty(),
             "matching timestamps should not produce stale pair"
         );
+    }
+
+    // -------------------------------------------------------------------
+    // 2. collect_stale_pairs — domain filter + output shape
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_collect_stale_pairs_basic() {
+        // Source newer than derived last_validated → one stale pair.
+        let dir = temp_dir("collect_basic");
+        write(
+            &dir.join("shared/sources/bar.md"),
+            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\n---\nBody.\n",
+        );
+        write(
+            &dir.join("shared/analysis/foo.md"),
+            "---\ntitle: Foo\ntype: analysis\n\
+             sources: [shared/sources/bar.md]\n\
+             last_validated: 2024-01-01\n---\nBody.\n",
+        );
+
+        let stale = collect_stale_pairs(&dir, None);
+        assert_eq!(stale.len(), 1, "should detect one stale pair");
+        assert_eq!(stale[0].derived_page, "shared/analysis/foo.md");
+        assert_eq!(stale[0].source_page, "shared/sources/bar.md");
+        assert_eq!(stale[0].source_timestamp, "2024-06-01");
+        assert_eq!(stale[0].derived_last_validated, "2024-01-01");
+    }
+
+    #[test]
+    fn test_collect_stale_pairs_domain_filter() {
+        // Pages in different domains; filter should exclude out-of-domain.
+        let dir = temp_dir("collect_domain");
+        write(
+            &dir.join("domain1/sources/bar.md"),
+            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\n---\nBody.\n",
+        );
+        write(
+            &dir.join("domain1/analysis/foo.md"),
+            "---\ntitle: Foo\ntype: analysis\n\
+             sources: [domain1/sources/bar.md]\n\
+             last_validated: 2024-01-01\n---\nBody.\n",
+        );
+        write(
+            &dir.join("domain2/sources/baz.md"),
+            "---\ntitle: Baz\ntype: source\ntimestamp: 2024-06-01\n---\nBody.\n",
+        );
+        write(
+            &dir.join("domain2/analysis/qux.md"),
+            "---\ntitle: Qux\ntype: analysis\n\
+             sources: [domain2/sources/baz.md]\n\
+             last_validated: 2024-01-01\n---\nBody.\n",
+        );
+
+        // Only domain1 should be included.
+        let stale = collect_stale_pairs(&dir, Some("domain1"));
+        assert_eq!(stale.len(), 1, "domain filter should exclude domain2");
+        assert_eq!(stale[0].derived_page, "domain1/analysis/foo.md");
+
+        // No domain filter → both domains.
+        let stale_all = collect_stale_pairs(&dir, None);
+        assert_eq!(stale_all.len(), 2, "no domain filter should include both");
+    }
+
+    #[test]
+    fn test_collect_stale_pairs_no_stale() {
+        // Source timestamp equals derived last_validated → no stale.
+        let dir = temp_dir("collect_none");
+        write(
+            &dir.join("shared/sources/bar.md"),
+            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-01-01\n---\nBody.\n",
+        );
+        write(
+            &dir.join("shared/analysis/foo.md"),
+            "---\ntitle: Foo\ntype: analysis\n\
+             sources: [shared/sources/bar.md]\n\
+             last_validated: 2024-06-01\n---\nBody.\n",
+        );
+
+        let stale = collect_stale_pairs(&dir, None);
+        assert!(stale.is_empty(), "no stale when source is older");
+    }
+
+    #[test]
+    fn test_collect_stale_pairs_json_shape() {
+        // Verify the JSON output structure is correct.
+        let dir = temp_dir("collect_json");
+        write(
+            &dir.join("shared/sources/bar.md"),
+            "---\ntitle: Bar\ntype: source\ntimestamp: 2024-06-01\n---\nBody.\n",
+        );
+        write(
+            &dir.join("shared/analysis/foo.md"),
+            "---\ntitle: Foo\ntype: analysis\n\
+             sources: [shared/sources/bar.md]\n\
+             last_validated: 2024-01-01\n---\nBody.\n",
+        );
+
+        let stale = collect_stale_pairs(&dir, None);
+        let json_output: Vec<serde_json::Value> = stale
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "derived_page": s.derived_page,
+                    "source_page": s.source_page,
+                    "source_timestamp": s.source_timestamp,
+                    "derived_last_validated": s.derived_last_validated,
+                })
+            })
+            .collect();
+
+        assert_eq!(json_output.len(), 1);
+        let obj = &json_output[0];
+        assert_eq!(obj["derived_page"], "shared/analysis/foo.md");
+        assert_eq!(obj["source_page"], "shared/sources/bar.md");
+        assert_eq!(obj["source_timestamp"], "2024-06-01");
+        assert_eq!(obj["derived_last_validated"], "2024-01-01");
+
+        // Verify pretty-print produces valid JSON.
+        let pretty = serde_json::to_string_pretty(&json_output).unwrap();
+        let parsed: Vec<serde_json::Value> =
+            serde_json::from_str(&pretty).unwrap();
+        assert_eq!(parsed.len(), 1);
     }
 }

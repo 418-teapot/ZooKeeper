@@ -228,15 +228,8 @@ fn rewrite_page_references(
     }
 
     // Atomically write the modified content (temp file + rename).
-    let temp_path =
-        page_abs.with_extension(format!("tmp-{}", std::process::id()));
-    fs::write(&temp_path, &new_content)
-        .map_err(|e| format!("写入临时文件失败: {e}"))?;
-    fs::rename(&temp_path, page_abs)
-        .inspect_err(|_| {
-            let _ = fs::remove_file(&temp_path);
-        })
-        .map_err(|e| format!("重命名文件失败: {e}"))?;
+    zutil::fileio::write_atomic(page_abs, &new_content)
+        .map_err(|e| format!("写入文件失败: {e}"))?;
 
     Ok(true)
 }
@@ -277,15 +270,8 @@ fn update_index_same_domain(
     }
 
     // Atomic write.
-    let temp_path =
-        index_abs.with_extension(format!("tmp-{}", std::process::id()));
-    fs::write(&temp_path, &new_content)
-        .map_err(|e| format!("写入临时文件失败: {e}"))?;
-    fs::rename(&temp_path, index_abs)
-        .inspect_err(|_| {
-            let _ = fs::remove_file(&temp_path);
-        })
-        .map_err(|e| format!("重命名文件失败: {e}"))?;
+    zutil::fileio::write_atomic(index_abs, &new_content)
+        .map_err(|e| format!("写入文件失败: {e}"))?;
 
     Ok(true)
 }
@@ -345,15 +331,8 @@ fn remove_index_entry(
     };
 
     // Atomic write.
-    let temp_path =
-        index_abs.with_extension(format!("tmp-{}", std::process::id()));
-    fs::write(&temp_path, &new_content)
-        .map_err(|e| format!("写入临时文件失败: {e}"))?;
-    fs::rename(&temp_path, index_abs)
-        .inspect_err(|_| {
-            let _ = fs::remove_file(&temp_path);
-        })
-        .map_err(|e| format!("重命名文件失败: {e}"))?;
+    zutil::fileio::write_atomic(index_abs, &new_content)
+        .map_err(|e| format!("写入文件失败: {e}"))?;
 
     Ok(true)
 }
@@ -458,15 +437,8 @@ fn add_index_entry(
     };
 
     // Atomic write.
-    let temp_path =
-        index_abs.with_extension(format!("tmp-{}", std::process::id()));
-    fs::write(&temp_path, &new_content)
-        .map_err(|e| format!("写入临时文件失败: {e}"))?;
-    fs::rename(&temp_path, index_abs)
-        .inspect_err(|_| {
-            let _ = fs::remove_file(&temp_path);
-        })
-        .map_err(|e| format!("重命名文件失败: {e}"))?;
+    zutil::fileio::write_atomic(index_abs, &new_content)
+        .map_err(|e| format!("写入文件失败: {e}"))?;
 
     Ok(true)
 }

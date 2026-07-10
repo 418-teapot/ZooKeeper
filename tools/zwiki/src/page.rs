@@ -253,15 +253,8 @@ pub fn create_page_at(
     }
 
     // Write atomically (temp file → rename)
-    let temp_path =
-        output_path.with_extension(format!("tmp-{}", std::process::id()));
-    fs::write(&temp_path, &processed)
-        .map_err(|e| format!("写入临时文件失败: {e}"))?;
-    fs::rename(&temp_path, &output_path)
-        .inspect_err(|_| {
-            let _ = fs::remove_file(&temp_path);
-        })
-        .map_err(|e| format!("重命名文件失败: {e}"))?;
+    zutil::fileio::write_atomic(&output_path, &processed)
+        .map_err(|e| format!("写入文件失败: {e}"))?;
 
     Ok(output_path)
 }

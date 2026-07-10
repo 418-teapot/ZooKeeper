@@ -141,14 +141,6 @@ fn extract_related_links(frontmatter: &HashMap<String, Value>) -> Vec<String> {
     links
 }
 
-/// Parse markdown link targets from `index.md` content.
-///
-/// Matches `[text](path.md)` patterns.
-fn parse_index_links(content: &str) -> Vec<String> {
-    let re = Regex::new(r"\[.*?\]\(([^)]+\.md)\)").unwrap();
-    re.captures_iter(content).map(|c| c[1].to_string()).collect()
-}
-
 // ---------------------------------------------------------------------------
 // 1. check_broken_links
 // ---------------------------------------------------------------------------
@@ -243,7 +235,7 @@ pub fn check_orphan_pages(pages: &[Page], wiki_dir: &Path) -> Vec<Issue> {
 
     // Parse index.md for listed page paths.
     let index_content = wiki::read_file(&wiki_dir.join("index.md"));
-    let index_links = parse_index_links(&index_content);
+    let index_links = wiki::parse_index_links(&index_content);
 
     // Resolve index links to wiki-relative paths.
     let index_rel_paths: HashSet<String> = index_links

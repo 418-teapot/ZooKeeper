@@ -14,6 +14,8 @@ pub mod color;
 #[cfg(feature = "db-helpers")]
 pub mod db_helpers;
 
+pub mod fileio;
+
 /// Return the `ZooKeeper` log directory, expanding `~` to the user home.
 #[must_use]
 pub fn get_zoo_log_dir() -> String {

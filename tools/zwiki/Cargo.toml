@@ -21,4 +21,4 @@ tar = "0.4"
 tempfile = "3"
 toml = "0.8"
 walkdir = "2"
-zutil = { path = "../zutil" }
+zutil = { path = "../zutil", features = ["file-lock"] }

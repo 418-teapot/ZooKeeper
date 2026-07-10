@@ -88,14 +88,8 @@ pub fn set(page: &Path, name: &str, value: &str) -> Result<(), String> {
     }
 
     // Atomic write
-    let temp_path = page.with_extension(format!("tmp-{}", std::process::id()));
-    fs::write(&temp_path, &new_content)
-        .map_err(|e| format!("写入临时文件失败: {e}"))?;
-    fs::rename(&temp_path, page)
-        .inspect_err(|_| {
-            let _ = fs::remove_file(&temp_path);
-        })
-        .map_err(|e| format!("重命名文件失败: {e}"))?;
+    zutil::fileio::write_atomic(page, &new_content)
+        .map_err(|e| format!("写入文件失败: {e}"))?;
 
     Ok(())
 }
@@ -159,14 +153,8 @@ pub fn delete(page: &Path, name: &str) -> Result<(), String> {
     }
 
     // Atomic write
-    let temp_path = page.with_extension(format!("tmp-{}", std::process::id()));
-    fs::write(&temp_path, &new_content)
-        .map_err(|e| format!("写入临时文件失败: {e}"))?;
-    fs::rename(&temp_path, page)
-        .inspect_err(|_| {
-            let _ = fs::remove_file(&temp_path);
-        })
-        .map_err(|e| format!("重命名文件失败: {e}"))?;
+    zutil::fileio::write_atomic(page, &new_content)
+        .map_err(|e| format!("写入文件失败: {e}"))?;
 
     Ok(())
 }

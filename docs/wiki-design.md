@@ -74,8 +74,8 @@
 | 六步增量同步 | **未实现** |
 | 协同 Layer 1（personal/.org/.teams/.upstream 五级覆盖） | **未实现**。无任何分层目录、无 `teams.toml` |
 | 协同 Layer 2（git 多 repo / sync / propose / log 分月） | **未实现** |
-| 协同 Layer 3（bundle.toml / export / install） | **未实现**。`[federation]` 和 registry 已从设计移除——Markdown 内容无可执行威胁面，知识验证由矛盾检测/取代链/来源回溯覆盖；`teams.toml` 即注册表，无需独立 registry 服务 |
-| `zwiki promote` / `consensus` / `bundle` / `sync` / `propose` 子命令 | **未实现** |
+| 协同 Layer 3（bundle.toml / export / install / list / check / update / uninstall / init） | ✅ **已实现（基础版）**（export/install/list/check/update/uninstall）。`[federation]` 和 registry 已从设计移除——Markdown 内容无可执行威胁面，知识验证由矛盾检测/取代链/来源回溯覆盖；`teams.toml` 即注册表，无需独立 registry 服务 |
+| `zwiki promote` / `consensus` / `sync` / `propose` 子命令 | **未实现** |
 
 ---
 
@@ -134,7 +134,7 @@
 | L0 | 1 人 | 本地读写 | 即时 | ✅ 已实现 |
 | L1 | 1-N 人试错 | 本地级联（五级） | 即时 | ⬜ 设计完成，未实现 |
 | L2 | 2-20 人 | git push/pull | 分钟级 | ⬜ 设计完成，未实现 |
-| L3 | 任意 | bundle publish/install | 小时级 | ⬜ 设计完成，未实现 |
+| L3 | 任意 | bundle publish/install | 小时级 | ✅ 已实现（基础版） |
 
 ---
 
@@ -692,8 +692,8 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 |--------|------|
 | `check --fix` | P4 |
 | `search "<query>"` | ✅ 已实现 |
-| `bundle export <dir>` | P2 |
-| `bundle install <source>` | P2 |
+| `bundle export <dir>` | ✅ 已实现 |
+| `bundle install <source>` | ✅ 已实现 |
 | `move <old> <new>` | ✅ 已实现 |
 | `list [--tag] [--type] [--domain]` | ✅ 已实现 |
 | `status [--tag] [--type] [--domain]` | ✅ 已实现 |
@@ -701,7 +701,8 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 | `promote --team <name>` | P3 |
 | `propose --team <name>` | P3 |
 | `consensus` | P3 |
-| `bundle list/outdated/upgrade` | 远期 |
+| `bundle list/check/update` | ✅ 已实现 |
+| `bundle outdated` | 远期 |
 
 **`check --fix` 修复行为：** 自动修复确定性可修的问题——index.md 缺失条目补齐、broken links（已知目标路径）重连、orphan 页面加入 index、frontmatter 必填字段缺失补默认值。**不修**需要语义判断的问题（矛盾、supersede、sparse 页面内容）。
 
@@ -801,9 +802,9 @@ role = "advisory"
 
 **跨团队冲突不在 git 层处理**——不同团队独立 repo，同名页面在不同命名空间，不触发 git conflict。冲突在**查询时**由 L1 role 逻辑处理。
 
-### 14.4 Layer 3 — Bundle 分发（未实现）
+### 14.4 Layer 3 — Bundle 分发（已实现，基础版）
 
-跨项目、跨组织知识分发。`bundle.toml` 声明包身份与导出范围，`zwiki bundle export` 打包为 tar.gz，`zwiki bundle install` 按包内声明自动路由到对应层目录。
+跨项目、跨组织知识分发。`bundle.toml` 声明包身份与导出范围，`zwiki bundle export` 打包为 tar.gz，`zwiki bundle install` 按包内声明自动路由到对应层目录。已实现 7 个子命令：`init`（初始化 bundle manifest）、`export`（打包）、`install`（安装）、`list`（列出已安装 bundles）、`check`（完整性校验）、`update`（更新）、`uninstall`（卸载）。
 
 **bundle.toml 最小字段集：**
 

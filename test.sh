@@ -57,12 +57,19 @@ else
 fi
 
 has_llvm_tools() {
-  # rustup component
+  # rustup component — cargo-llvm-cov locates these automatically.
   if rustup component list 2>/dev/null | grep -q 'llvm-tools.*installed'; then
     return 0
   fi
-  # System package manager (e.g. brew install llvm, apt install llvm)
-  if command -v llvm-profdata &>/dev/null && command -v llvm-cov &>/dev/null; then
+  # System LLVM tools (brew/apt/nix).  When the rustup llvm-tools-preview
+  # component is absent, cargo-llvm-cov needs LLVM_PROFDATA/LLVM_COV to
+  # point at the system binaries (else it errors "failed to find
+  # llvm-tools-preview").  Export them so the run below picks them up.
+  local profdata cov
+  if profdata="$(command -v llvm-profdata 2>/dev/null)" \
+     && cov="$(command -v llvm-cov 2>/dev/null)"; then
+    export LLVM_PROFDATA="$profdata"
+    export LLVM_COV="$cov"
     return 0
   fi
   return 1

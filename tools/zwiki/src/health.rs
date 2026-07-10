@@ -138,14 +138,6 @@ pub fn check_empty_files(pages: &[Page], threshold: usize) -> Vec<Issue> {
 // 2. check_index_sync
 // ---------------------------------------------------------------------------
 
-/// Extract markdown link targets from `index.md` content.
-///
-/// Matches patterns like `[Title](path.md)`.
-fn parse_index_links(content: &str) -> Vec<String> {
-    let re = Regex::new(r"\[.*?\]\(([^)]+\.md)\)").unwrap();
-    re.captures_iter(content).map(|c| c[1].to_string()).collect()
-}
-
 /// Compare all `index.md` files (root + subdirectories) against actual files
 /// on disk.
 ///
@@ -203,7 +195,7 @@ pub fn check_index_sync(pages: &[Page], wiki_dir: &Path) -> IndexSyncResult {
             rel_index.parent().unwrap_or_else(|| Path::new(""));
 
         let index_content = wiki::read_file(index_path);
-        let index_links = parse_index_links(&index_content);
+        let index_links = wiki::parse_index_links(&index_content);
 
         let mut index_rel_paths: HashSet<String> = HashSet::new();
         for link in &index_links {
@@ -1262,8 +1254,6 @@ pub struct InvalidateUpdate {
 /// - Unparseable source `timestamp` → skip that source.
 /// - Missing or unparseable `last_validated` on the derived page → skip.
 pub fn invalidate_by_source(pages: &[Page]) -> Vec<InvalidateUpdate> {
-    use chrono::NaiveDate;
-
     // Build a lookup map keyed by rel path for O(1) source resolution.
     let by_rel: HashMap<&str, &Page> =
         pages.iter().map(|p| (p.rel.as_str(), p)).collect();
@@ -1271,82 +1261,19 @@ pub fn invalidate_by_source(pages: &[Page]) -> Vec<InvalidateUpdate> {
     let mut updates: Vec<InvalidateUpdate> = Vec::new();
 
     for page in pages {
-        let fm = &page.frontmatter;
-
-        // Only analysis and synthesis pages have source-derived validity.
-        if !matches!(
-            fm.get("type").and_then(|v| v.as_str()),
-            Some("analysis" | "synthesis")
-        ) {
+        let pairs = wiki::stale_sources(page, &by_rel);
+        if pairs.is_empty() {
             continue;
         }
 
-        // Get the sources array — skip if missing or not an array.
-        let Value::Array(sources) = fm.get("sources").unwrap_or(&Value::Null)
-        else {
-            continue;
-        };
-        if sources.is_empty() {
-            continue;
-        }
-
-        // Parse the derived page's last_validated — skip if missing or
-        // unparseable so we never blindly overwrite.
-        let Some(derived_date) = fm
-            .get("last_validated")
-            .and_then(|v| v.as_str())
-            .and_then(wiki::parse_date)
-        else {
-            continue;
-        };
-
-        // Track the latest source timestamp that is newer than
-        // the derived page's last_validated.
-        let mut max_source_date: Option<NaiveDate> = None;
-
-        for source_val in sources {
-            let Some(source_rel_raw) = source_val.as_str() else {
-                continue;
-            };
-            // Normalize: ensure .md extension (match verify.rs behavior).
-            let source_rel = if std::path::Path::new(source_rel_raw)
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
-            {
-                source_rel_raw.to_string()
-            } else {
-                format!("{source_rel_raw}.md")
-            };
-
-            let Some(source_page) = by_rel.get(source_rel.as_str()) else {
-                continue;
-            };
-
-            let Some(source_date) = source_page
-                .frontmatter
-                .get("timestamp")
-                .and_then(|v| v.as_str())
-                .and_then(wiki::parse_date)
-            else {
-                continue;
-            };
-
-            if source_date > derived_date
-                && max_source_date.is_none_or(|m| source_date > m)
-            {
-                max_source_date = Some(source_date);
-            }
-        }
-
-        if let Some(latest_source) = max_source_date {
-            updates.push(InvalidateUpdate {
-                path: page.path.clone(),
-                rel: page.rel.clone(),
-                new_last_validated: latest_source
-                    .format("%Y-%m-%d")
-                    .to_string(),
-            });
-        }
+        // Collapse to the latest source timestamp (existing behavior).
+        let max_source_date =
+            pairs.iter().map(|(_, d)| d).max().copied().unwrap();
+        updates.push(InvalidateUpdate {
+            path: page.path.clone(),
+            rel: page.rel.clone(),
+            new_last_validated: max_source_date.format("%Y-%m-%d").to_string(),
+        });
     }
 
     updates
@@ -2239,7 +2166,7 @@ last_validated: not-a-date\n---\nBody.\n";
     fn test_parse_index_links_basic() {
         let content =
             "# Index\n\n[Foo](concepts/foo.md)\n[Bar](concepts/bar.md)\n";
-        let links = parse_index_links(content);
+        let links = wiki::parse_index_links(content);
         assert_eq!(links.len(), 2);
         assert!(links.contains(&"concepts/foo.md".to_string()));
         assert!(links.contains(&"concepts/bar.md".to_string()));
@@ -2248,7 +2175,7 @@ last_validated: not-a-date\n---\nBody.\n";
     #[test]
     fn test_parse_index_links_no_links() {
         let content = "# Index\n\nNo links here.\n";
-        let links = parse_index_links(content);
+        let links = wiki::parse_index_links(content);
         assert!(links.is_empty());
     }
 
