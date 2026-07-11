@@ -1102,7 +1102,7 @@ Step 6. 集成测试 + runner.py 场景               — ❌ 未实现
 
 **Step 4: mola-plan skill** (SKILL.md 241 + references 350 + templates 158 = 749 行) ✅ 已完成
 - `core/skills/mola-plan/SKILL.md` — 单一技能（6 phases: Ground Check → Classify → Interview → Present Design → Produce → Handoff Signal）
-- 3 个 reference 文件：`intent-clear.md`（83 行，明确路径）/ `intent-unclear.md`（105 行，调研默认值路径）/ `grill-protocol.md`（163 行，深度访谈 + 场景压力测试）
+- 3 个 reference 文件：`intent-clear.md`（83 行，明确路径）/ `intent-unclear.md`（105 行，调研默认值路径）/ `grill.md`（163 行，深度访谈 + 场景压力测试）
 - 2 个 template 文件：`plan-template.md`（94 行）/ `spec-template.md`（64 行）—— **设计文档原 "scaffold-plan.py / scaffold-spec.py 作为格式唯一权威" 未实现**，模板文件替代此角色
 - Classify 阶段根据 Ground 发现决定加载路径，支持 Graceful upgrade
 - 统一 YAML frontmatter（plan 初始 `status: planning`，完成时设为 `planning-done`）
@@ -1267,7 +1267,7 @@ interface BackgroundManager {
 | 51 | Contract 替代 Discipline | **Contract 标签(6 硬约束)取代旧 Discipline 段** | 旧结构: Role → Discipline → Workflow。新结构: Role → Contract → Workflow。Contract 将约束从"软纪律"升级为"硬协议"(输出格式、工具限制、每轮问题数、探索纪律等)，Workflow 专注于流程步骤 |
 | 52 | Spec→Plan 管道 | **通过 prompt 路由而非代码管道** | mola-spec 产出(深度设计文档)不经过代码层转换。spec 完成后用户批准，Workflow 引导进入 mola-plan 通道生成 plan 文件。两阶段共享同一 mola session，路由 = prompt 中的条件分支 |
 | 53 | Plan 模板 | **从 omo 扩展：新增 Scope/Execution strategy/Final verification/Commit strategy/Success criteria** | 旧模板(Context/Approach/Critical Files/Verification/TODOs/Risks)缺少范围界定和验证标准。omo 的 plan 模板基础上加入 Must/Must NOT have、依赖矩阵、F1-F4 验证波、commit 策略、成功标准，使 plan 即可执行又可审计 |
-| 54 | 两 skill 合并为一 skill | **mola-spec 整体合并进 mola-plan** | 路由判断（spec vs plan）下沉到 skill 内的 Classify 阶段。mola-spec 目录删除，grill-protocol.md + spec-template.md + scaffold-spec.py 全部迁移到 mola-plan。中途升级替代 prompt 层的重试（发现任务更重时追加加载 heavier reference，不需要回到 Workflow 重新路由）。试错成本极低 |
+| 54 | 两 skill 合并为一 skill | **mola-spec 整体合并进 mola-plan** | 路由判断（spec vs plan）下沉到 skill 内的 Classify 阶段。mola-spec 目录删除，grill.md + spec-template.md + scaffold-spec.py 全部迁移到 mola-plan。中途升级替代 prompt 层的重试（发现任务更重时追加加载 heavier reference，不需要回到 Workflow 重新路由）。试错成本极低 |
 | 55 | 路由全面下沉 skill | **mola.md Workflow 极简为 3 步（Load/Execute/Handoff），不再做路由决策** | 所有路由（Clear/Unclear/Architecture）和升级逻辑下沉到 mola-plan 的 Phase 2 Classify。prompt 不再承担 Ground/Interview/Design/Produce 等任何阶段的描述。prompt 只声明身份+硬约束+交接 |
 | 56 | 脚手架脚本作为格式唯一权威 | **scaffold-plan.py + scaffold-spec.py 是 plan/spec 格式的唯一事实来源** | 删除 `references/spec-template.md` 和 `SKILL.md` 中的 Plan/Spec File Output Format section。脚本生成的 YAML frontmatter + markdown body + 内联 `<!-- placeholder -->` 注释就是格式定义和填充指引。模型填充内容时看脚手架脚本生成的注释即可 |
 | 57 | 统一 YAML frontmatter | **plan 和 spec 的 frontmatter 都是 YAML `---` 格式** | plan 原本用 TOML `+++`，spec 用 YAML `---`。统一到 YAML 使两个文件解析逻辑一致，未来 plan-state.ts 只需实现一套 parser。脚手架脚本同步更新为统一格式 |
@@ -1469,9 +1469,9 @@ v1.3 中设计的 mola-plan + mola-spec 双 skill 架构在实际编写时发现
 - **Classify 阶段**（在 skill 内部）根据 Ground 发现决定加载哪些 reference：
   - Clear → `intent-clear.md`（明确路径）
   - Unclear → `intent-unclear.md`（调研默认值路径）
-  - Architecture → `grill-protocol.md`（深度访谈 + 场景压力测试）
+  - Architecture → `grill.md`（深度访谈 + 场景压力测试）
 - **Graceful upgrade**：访谈中途发现任务更重，可以追加加载 heavier reference，不需要回到 prompt Workflow
-- **mola-spec 已废弃**：目录删除，grill-protocol.md + spec-template.md + scaffold-spec.py 全部迁移到 mola-plan
+- **mola-spec 已废弃**：目录删除，grill.md + spec-template.md + scaffold-spec.py 全部迁移到 mola-plan
 
 **mola.md prompt 极简为 3 步 Workflow**：
 

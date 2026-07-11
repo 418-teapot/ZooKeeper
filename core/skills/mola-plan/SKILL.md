@@ -54,15 +54,15 @@ Based on Ground findings, determine the reference strategy:
 |---|---|
 | Files + approach + boundaries all clear, simple | `references/intent-clear.md` |
 | Standard task, intent fuzzy, defaults needed | `references/intent-unclear.md` |
-| Architecture-class, real tradeoffs, scope ambiguity | `references/grill-protocol.md` |
-| ON THE FENCE | default to `references/grill-protocol.md` |
+| Architecture-class, real tradeoffs, scope ambiguity | `grill` skill |
+| ON THE FENCE | default to `grill` skill |
 
 State the classification once: "Classification: [Clear|Unclear|Architecture]. Loading
 references: [...]."
 
 **Graceful upgrade:** If mid-flow you realize the task is heavier than classified,
-append-load heavier references. No need to restart or re-enter the Workflow. You can
-load grill-protocol.md mid-interview and continue.
+load the `grill` skill. No need to restart or re-enter the Workflow. You can
+load the skill mid-interview and continue.
 
 ### Phase 3 - Interview
 
@@ -78,9 +78,10 @@ Load the classified reference(s) and execute their protocol. All three reference
 **intent-clear.md:** Topology lock → decision-fork questions only → clearance check.
 **intent-unclear.md:** Research defaults → adopt → present assumptions ledger → minimal
 questions (0-2).
-**grill-protocol.md:** Decision-tree traversal → depth-first branch resolution → scenario
-stress testing → domain vocabulary refinement. This reference is the single source of
-truth for Architecture-class interview — do not duplicate its protocol here.
+**grill skill:** Decision-tree traversal → depth-first branch resolution →
+scenario stress testing → domain vocabulary refinement. The `grill` skill
+is the single source of truth for Architecture-class interview — do not duplicate
+its protocol here. Load it via the skill tool.
 
 Do NOT duplicate reference content in this SKILL. Each reference owns its protocol.
 

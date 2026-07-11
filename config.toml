@@ -251,9 +251,10 @@ websearch = "deny"
 [agent.mola.permission.edit]
 "~/.zoo/plans/**" = "allow"
 [agent.mola.permission.skill]
-"*"           = "deny"
-"mola-plan"   = "allow"
-"wiki-query"  = "allow"
+"*"          = "deny"
+"grill"      = "allow"
+"mola-plan"  = "allow"
+"wiki-query" = "allow"
 
 [agent.lynx]
 mode  = "subagent"
@@ -352,11 +353,12 @@ retention_days = 7
 # 可用值："enable"（启用）| "disable"（禁用）
 
 [zoo.skills]
-git-commit  = "enable"
-code-review = "enable"
-wiki-ingest = "enable"
-wiki-query  = "enable"
-wiki-verify  = "enable"
-mola-plan    = "enable"
+code-review  = "enable"
+git-commit   = "enable"
+grill        = "enable"
 kiwi-distill = "enable"
 kiwi-verify  = "enable"
+mola-plan    = "enable"
+wiki-ingest  = "enable"
+wiki-query   = "enable"
+wiki-verify  = "enable"
