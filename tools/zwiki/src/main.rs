@@ -840,6 +840,29 @@ fn run_save_actions(
     cmd_check_at_inner(&opts, wiki_root) != 0
 }
 
+/// Write health-report.md and lint-report.md to `root` atomically.
+/// Errors are printed to stderr but do not cause the check to fail.
+fn write_check_reports(
+    root: &Path,
+    health_results: &display::CheckResults,
+    lint_results: &display::LintResults,
+) {
+    let health_report = display::format_check_report(health_results);
+    let lint_report = display::format_lint_report(lint_results);
+    if let Err(e) = zutil::fileio::write_atomic(
+        &root.join("health-report.md"),
+        &health_report,
+    ) {
+        eprintln!("警告: 无法写入健康报告: {e}");
+    }
+    if let Err(e) =
+        zutil::fileio::write_atomic(&root.join("lint-report.md"), &lint_report)
+    {
+        eprintln!("警告: 无法写入 lint 报告: {e}");
+    }
+    eprintln!("已保存：{}", root.display());
+}
+
 /// Run health, lint, and optional diff checks against `root`.
 ///
 /// Output is printed to stdout (JSON or markdown) unless `quiet` is set.
@@ -891,11 +914,7 @@ pub(crate) fn cmd_check_at_inner(opts: &CheckOpts, root: &Path) -> i32 {
     }
 
     if opts.write_actions.contains(&WriteAction::SaveReport) {
-        let health_report = display::format_check_report(&health_results);
-        let lint_report = display::format_lint_report(&lint_results);
-        let _ = std::fs::write(root.join("health-report.md"), &health_report);
-        let _ = std::fs::write(root.join("lint-report.md"), &lint_report);
-        eprintln!("已保存：{}", root.display());
+        write_check_reports(root, &health_results, &lint_results);
     }
 
     // Sync backlinks automatically — check ensures cross-references are

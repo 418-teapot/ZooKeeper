@@ -144,6 +144,10 @@ pub struct UpdateArgs {
     #[arg(long)]
     pub name: Option<String>,
 
+    /// Allow downgrade when remote version is older than local
+    #[arg(long)]
+    pub force: bool,
+
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
@@ -249,8 +253,25 @@ fn cmd_init_inner(args: &InitArgs, use_json: bool) -> Result<(), ()> {
         .collect();
 
     if !fatals.is_empty() {
-        for err in &fatals {
-            eprintln!("错误: [{}] {}", err.field, err.message);
+        if use_json {
+            let errs: Vec<serde_json::Value> = fatals
+                .iter()
+                .map(|err| {
+                    serde_json::json!({
+                        "field": err.field,
+                        "message": err.message,
+                    })
+                })
+                .collect();
+            let output = serde_json::json!({
+                "status": "fatal",
+                "errors": errs,
+            });
+            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        } else {
+            for err in &fatals {
+                eprintln!("错误: [{}] {}", err.field, err.message);
+            }
         }
         return Err(());
     }
@@ -315,44 +336,59 @@ fn read_manifest(
 }
 
 /// Validate the manifest, print errors, and return whether the caller
-/// should exit.  Returns `true` if there are fatal errors or any non-fatal
-/// issue (warnings are always fatal).
+/// should exit.  Returns `true` when there are `Fatal` or
+/// `ConditionalRequired` errors (`Warning` alone does not cause exit).
 fn report_manifest_errors(
     errors: &[manifest::ValidationError],
     use_json: bool,
 ) -> bool {
-    let should_exit = !errors.is_empty();
+    let has_fatal = errors.iter().any(|e| {
+        matches!(
+            e.severity,
+            manifest::Severity::Fatal | manifest::Severity::ConditionalRequired
+        )
+    });
 
-    if should_exit {
+    if !errors.is_empty() {
         if use_json {
-            let errs: Vec<serde_json::Value> = errors
-                .iter()
-                .map(|err| {
-                    serde_json::json!({
-                        "field": err.field,
-                        "message": err.message,
+            if has_fatal {
+                let errs: Vec<serde_json::Value> = errors
+                    .iter()
+                    .map(|err| {
+                        serde_json::json!({
+                            "field": err.field,
+                            "message": err.message,
+                        })
                     })
-                })
-                .collect();
-            let summary = errors
-                .iter()
-                .map(|err| format!("[{}] {}", err.field, err.message))
-                .collect::<Vec<_>>()
-                .join("; ");
-            let output = serde_json::json!({
-                "status": "fatal",
-                "error": summary,
-                "errors": errs,
-            });
-            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                    .collect();
+                let summary = errors
+                    .iter()
+                    .map(|err| format!("[{}] {}", err.field, err.message))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                let output = serde_json::json!({
+                    "status": "fatal",
+                    "error": summary,
+                    "errors": errs,
+                });
+                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            }
         } else {
             for err in errors {
-                eprintln!("错误: [{}] {}", err.field, err.message);
+                match err.severity {
+                    manifest::Severity::Fatal
+                    | manifest::Severity::ConditionalRequired => {
+                        eprintln!("错误: [{}] {}", err.field, err.message);
+                    }
+                    manifest::Severity::Warning => {
+                        eprintln!("提醒: [{}] {}", err.field, err.message);
+                    }
+                }
             }
         }
     }
 
-    should_exit
+    has_fatal
 }
 
 // ---------------------------------------------------------------------------
@@ -430,6 +466,7 @@ fn cmd_export_inner(args: &ExportArgs, use_json: bool) -> Result<(), ()> {
 // ---------------------------------------------------------------------------
 
 /// Compute integrity, update the lock file, and print the install output.
+/// The caller MUST hold the `.zwiki.flock` before calling this function.
 fn finalize_install_and_lock_at(
     target_abs: &Path,
     target_rel: String,
@@ -438,19 +475,6 @@ fn finalize_install_and_lock_at(
     use_json: bool,
     wiki_root: &Path,
 ) -> Result<(), ()> {
-    let _flock =
-        zutil::fileio::acquire_file_lock(&wiki_root.join(".zwiki.flock"))
-            .map_err(|e| {
-                eprintln!(
-                    "{}",
-                    if use_json {
-                        format!("cannot acquire file lock: {e}")
-                    } else {
-                        format!("无法获取文件锁: {e}")
-                    }
-                );
-            })?;
-
     let integrity = lock::compute_integrity(target_abs);
 
     let installed_at = Utc::now().to_rfc3339();
@@ -561,44 +585,52 @@ fn copy_bundle_files_to_target(
 
 /// Install bundle files from `source_dir` into the wiki, compute integrity,
 /// and update the lock file.
-fn install_bundle_files_at(
+/// If `target_abs` exists and has files, either error (when `!force`) or
+/// replace it atomically via staging.  Returns `Ok(true)` when the target
+/// was force-replaced or had no files (caller should proceed), `Ok(false)`
+/// when target did not exist, and `Err(())` when not forced.
+fn force_replace_bundle_at(
+    target_abs: &Path,
     source_dir: &Path,
     manifest_path: &Path,
     manifest: &manifest::BundleManifest,
+    target_rel: &str,
     force: bool,
     use_json: bool,
-    wiki_root: &Path,
-) -> Result<(), ()> {
-    let target_rel = source::resolve_target_rel(manifest, use_json)?;
-    let target_abs = wiki_root.join(&target_rel);
+) -> Result<bool, ()> {
+    if !target_abs.exists() {
+        return Ok(false);
+    }
 
-    if target_abs.exists() {
-        let has_files = walkdir::WalkDir::new(&target_abs)
-            .into_iter()
-            .filter_map(Result::ok)
-            .any(|e| e.file_type().is_file());
+    let has_files = walkdir::WalkDir::new(target_abs)
+        .into_iter()
+        .filter_map(Result::ok)
+        .any(|e| e.file_type().is_file());
 
-        if has_files {
-            if !force {
-                eprintln!(
-                    "{}",
-                    if use_json {
-                        format!(
-                            "bundle '{}' already installed at '{}', use --force to overwrite",
-                            manifest.package.name, target_rel
-                        )
-                    } else {
-                        format!(
-                            "bundle '{}' 已安装到 '{}'，使用 --force 覆盖",
-                            manifest.package.name, target_rel
-                        )
-                    }
-                );
-                return Err(());
+    if !has_files {
+        return Ok(true);
+    }
+
+    if !force {
+        eprintln!(
+            "{}",
+            if use_json {
+                format!(
+                    "bundle '{}' already installed at '{}', use --force to overwrite",
+                    manifest.package.name, target_rel
+                )
+            } else {
+                format!(
+                    "bundle '{}' 已安装到 '{}'，使用 --force 覆盖",
+                    manifest.package.name, target_rel
+                )
             }
-            let staging = TempDir::new_in(
-                target_abs.parent().unwrap_or_else(|| Path::new(".")),
-            )
+        );
+        return Err(());
+    }
+
+    let staging =
+        TempDir::new_in(target_abs.parent().unwrap_or_else(|| Path::new(".")))
             .map_err(|e| {
                 eprintln!(
                     "{}",
@@ -610,37 +642,75 @@ fn install_bundle_files_at(
                 );
             })?;
 
-            copy_bundle_files_to_target(
-                source_dir,
-                manifest_path,
-                manifest,
-                staging.path(),
-                use_json,
-            )?;
+    copy_bundle_files_to_target(
+        source_dir,
+        manifest_path,
+        manifest,
+        staging.path(),
+        use_json,
+    )?;
 
-            if let Err(e) = std::fs::remove_dir_all(&target_abs) {
-                eprintln!(
-                    "{}",
-                    if use_json {
-                        format!("cannot remove existing target: {e}")
-                    } else {
-                        format!("无法移除已存在的目标目录: {e}")
-                    }
-                );
-                return Err(());
+    if let Err(e) = std::fs::remove_dir_all(target_abs) {
+        eprintln!(
+            "{}",
+            if use_json {
+                format!("cannot remove existing target: {e}")
+            } else {
+                format!("无法移除已存在的目标目录: {e}")
             }
-            std::fs::rename(staging.path(), &target_abs).map_err(|e| {
+        );
+        return Err(());
+    }
+    std::fs::rename(staging.path(), target_abs).map_err(|e| {
+        eprintln!(
+            "{}",
+            if use_json {
+                format!("cannot rename staging to target: {e}")
+            } else {
+                format!("无法重命名临时目录: {e}")
+            }
+        );
+    })?;
+    let _ = staging.keep();
+
+    Ok(true)
+}
+
+fn install_bundle_files_at(
+    source_dir: &Path,
+    manifest_path: &Path,
+    manifest: &manifest::BundleManifest,
+    force: bool,
+    use_json: bool,
+    wiki_root: &Path,
+) -> Result<(), ()> {
+    // Acquire file lock first to prevent races with other processes.
+    let _flock =
+        zutil::fileio::acquire_file_lock(&wiki_root.join(".zwiki.flock"))
+            .map_err(|e| {
                 eprintln!(
                     "{}",
                     if use_json {
-                        format!("cannot rename staging to target: {e}")
+                        format!("cannot acquire file lock: {e}")
                     } else {
-                        format!("无法重命名临时目录: {e}")
+                        format!("无法获取文件锁: {e}")
                     }
                 );
             })?;
-            let _ = staging.keep();
-        }
+
+    let target_rel = source::resolve_target_rel(manifest, use_json)?;
+    let target_abs = wiki_root.join(&target_rel);
+
+    if force_replace_bundle_at(
+        &target_abs,
+        source_dir,
+        manifest_path,
+        manifest,
+        &target_rel,
+        force,
+        use_json,
+    )? {
+        // target exists with files and was force-replaced (or already handled)
     }
 
     if !target_abs.exists() {
@@ -938,7 +1008,9 @@ fn regenerate_root_index_at(lock: &lock::ZwikiLock, wiki_root: &Path) {
         {
             match replace_marked_section(&existing, &generated_str) {
                 Ok(updated) => {
-                    if let Err(e) = std::fs::write(&index_path, &updated) {
+                    if let Err(e) =
+                        zutil::fileio::write_atomic(&index_path, &updated)
+                    {
                         eprintln!(
                             "警告: 无法写入索引文件 {}: {e}",
                             index_path.display()
@@ -959,7 +1031,7 @@ fn regenerate_root_index_at(lock: &lock::ZwikiLock, wiki_root: &Path) {
     let full = format!(
         "---\nokf_version: \"0.1\"\n---\n\n# Wiki Index\n\n{generated_str}\n"
     );
-    if let Err(e) = std::fs::write(&index_path, &full) {
+    if let Err(e) = zutil::fileio::write_atomic(&index_path, &full) {
         eprintln!("警告: 无法写入索引文件 {}: {e}", index_path.display());
     }
 }
@@ -987,7 +1059,7 @@ pub fn check_root_index(
     }
 
     for entry in &lock.bundles {
-        if !content.contains(&format!("]({}", entry.target)) {
+        if !link_contains_target(&content, &entry.target) {
             return Err(format!(
                 "root index.md 未引用已安装的 bundle: {}",
                 entry.name
@@ -996,6 +1068,35 @@ pub fn check_root_index(
     }
 
     Ok(())
+}
+
+/// Check whether `content` contains a markdown link `[text](url...)` whose URL
+/// starts with `target`.  When `target` ends with `/`, any URL under that
+/// directory is accepted; otherwise the URL must reach a boundary (`/`, `#`,
+/// `)`, or EOF) right after `target`.  This avoids false matches when `target`
+/// is a substring prefix of another path (e.g. `.upstream/foo` vs
+/// `.upstream/foo-v2/`).
+fn link_contains_target(content: &str, target: &str) -> bool {
+    let mut remaining = content;
+    while let Some(pos) = remaining.find("](") {
+        let url_start = pos + 2;
+        let rest = &remaining[url_start..];
+        // Find end of URL: `)`, `#`, or line break
+        let url_end = rest.find([')', '#', '\n', '\r']).unwrap_or(rest.len());
+        let url = &rest[..url_end];
+
+        if let Some(after) = url.strip_prefix(target)
+            && (after.is_empty()
+                || after.starts_with('/')
+                || after.starts_with('#')
+                || target.ends_with('/'))
+        {
+            return true;
+        }
+
+        remaining = &remaining[url_start + url_end..];
+    }
+    false
 }
 
 /// Replace the content between `<!-- ZOO:BUNDLES:BEGIN -->` and
@@ -1273,6 +1374,7 @@ fn fetch_remote_manifest(
     entry: &lock::ZwikiLockEntry,
     results: &mut Vec<serde_json::Value>,
     use_json: bool,
+    force: bool,
 ) -> Option<(String, String)> {
     if entry.registry.is_empty() {
         if use_json {
@@ -1360,17 +1462,28 @@ fn fetch_remote_manifest(
         }
     };
     let remote_version = remote.package.version;
-    check_remote_version(remote_version, entry, results, use_json, base_url)
+    check_remote_version(
+        remote_version,
+        entry,
+        results,
+        use_json,
+        base_url,
+        force,
+    )
 }
 
 /// Compare the remote version with the local entry version and emit
 /// appropriate result entries.
+///
+/// When `force` is false and the remote version is older than local, the
+/// update is skipped (status `"skipped"`) instead of auto-downgrading.
 fn check_remote_version(
     remote_version: String,
     entry: &lock::ZwikiLockEntry,
     results: &mut Vec<serde_json::Value>,
     use_json: bool,
     base_url: String,
+    force: bool,
 ) -> Option<(String, String)> {
     if remote_version == entry.version {
         if use_json {
@@ -1386,15 +1499,31 @@ fn check_remote_version(
     }
 
     if cmp_version(&remote_version, &entry.version) == Ordering::Less {
+        if !force {
+            if use_json {
+                results.push(serde_json::json!({
+                    "name": entry.name, "status": "skipped",
+                    "from": entry.version, "to": remote_version,
+                    "reason": "remote version is older than local, use --force to downgrade",
+                }));
+            } else {
+                eprintln!(
+                    "跳过 '{}'：远端版本 {} 低于本地版本 {}，使用 --force 降级",
+                    entry.name, remote_version, entry.version
+                );
+            }
+            return None;
+        }
+
         if use_json {
             results.push(serde_json::json!({
                 "name": entry.name, "status": "downgrade",
                 "from": entry.version, "to": remote_version,
-                "reason": "remote version is older than local, auto-downgrading",
+                "reason": "remote version is older than local, downgrading (--force)",
             }));
         } else {
             eprintln!(
-                "⚠️  远端版本 {} 低于本地版本 {}，将自动降级",
+                "⚠️  远端版本 {} 低于本地版本 {}，将强制降级",
                 remote_version, entry.version
             );
         }
@@ -1512,6 +1641,83 @@ fn download_and_extract_update_tar(
     Some((tmp, src_bundle_toml))
 }
 
+/// Copy updated bundle files into a staging directory, run validation,
+/// and compute integrity.  Returns the `TempDir` (kept alive) and integrity
+/// hash, or `Err(())` if validation or file operations fail.
+fn prepare_update_staging(
+    target_abs: &Path,
+    src_path: &Path,
+    src_bundle_toml: &Path,
+    use_json: bool,
+) -> Result<(TempDir, String), ()> {
+    let staging =
+        TempDir::new_in(target_abs.parent().unwrap_or_else(|| Path::new(".")))
+            .map_err(|e| {
+                let msg = format!("无法创建临时目录: {e}");
+                if use_json {
+                    eprintln!("{msg}");
+                } else {
+                    eprintln!("错误: {msg}");
+                }
+            })?;
+
+    tar::copy_recursive(src_path, staging.path(), true).map_err(|e| {
+        let msg = format!("无法复制文件: {e}");
+        if use_json {
+            eprintln!("{msg}");
+        } else {
+            eprintln!("错误: {msg}");
+        }
+    })?;
+
+    std::fs::copy(src_bundle_toml, staging.path().join("bundle.toml"))
+        .map_err(|e| {
+            let msg = format!("无法复制 bundle.toml: {e}");
+            if use_json {
+                eprintln!("{msg}");
+            } else {
+                eprintln!("错误: {msg}");
+            }
+        })?;
+
+    // Validate bundle structure before installing
+    if source::check_bundle_structure(staging.path(), use_json).is_err() {
+        return Err(());
+    }
+
+    // Run health + lint checks before installing
+    let (health_results, lint_results, health_issues, lint_issues) =
+        crate::run_health_lint_at(staging.path());
+    let total = health_issues + lint_issues;
+    if total > 0 {
+        if use_json {
+            let details =
+                crate::format_health_lint_json(&health_results, &lint_results);
+            let mut output = serde_json::json!({
+                "status": "fatal",
+                "error": format!("check: {total} issues"),
+                "health": health_issues,
+                "lint": lint_issues,
+            });
+            output["details"] = details;
+            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        } else {
+            eprintln!(
+                "{}",
+                crate::display::format_check_report(&health_results)
+            );
+            eprintln!("{}", crate::display::format_lint_report(&lint_results));
+            eprintln!(
+                "✗ {total} 个问题（health: {health_issues}, lint: {lint_issues}）"
+            );
+        }
+        return Err(());
+    }
+
+    let integrity = lock::compute_integrity(staging.path());
+    Ok((staging, integrity))
+}
+
 /// Update a single bundle entry from its configured registry.
 fn update_single_bundle_at(
     entry: &lock::ZwikiLockEntry,
@@ -1519,9 +1725,10 @@ fn update_single_bundle_at(
     results: &mut Vec<serde_json::Value>,
     use_json: bool,
     wiki_root: &Path,
+    force: bool,
 ) -> Result<(), ()> {
     let Some((base_url, remote_version)) =
-        fetch_remote_manifest(entry, results, use_json)
+        fetch_remote_manifest(entry, results, use_json, force)
     else {
         return Ok(());
     };
@@ -1539,37 +1746,28 @@ fn update_single_bundle_at(
 
     let target_abs = wiki_root.join(&entry.target);
 
-    let staging =
-        TempDir::new_in(target_abs.parent().unwrap_or_else(|| Path::new(".")))
-            .map_err(|e| {
-                let msg = format!("无法创建临时目录: {e}");
-                if use_json {
-                    eprintln!("{msg}");
-                } else {
-                    eprintln!("错误: {msg}");
-                }
-            })?;
+    let (staging, integrity) = prepare_update_staging(
+        &target_abs,
+        tmp.path(),
+        &src_bundle_toml,
+        use_json,
+    )?;
 
-    tar::copy_recursive(tmp.path(), staging.path(), true).map_err(|e| {
-        let msg = format!("无法复制文件: {e}");
+    // Atomic swap: rename staging to temp path, remove old, rename to target
+    let temp_path = target_abs.with_file_name(format!(
+        ".tmp_{}",
+        target_abs.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    let _ = std::fs::remove_dir_all(&temp_path);
+
+    std::fs::rename(staging.path(), &temp_path).map_err(|e| {
+        let msg = format!("无法移动暂存目录: {e}");
         if use_json {
             eprintln!("{msg}");
         } else {
             eprintln!("错误: {msg}");
         }
     })?;
-
-    std::fs::copy(&src_bundle_toml, staging.path().join("bundle.toml"))
-        .map_err(|e| {
-            let msg = format!("无法复制 bundle.toml: {e}");
-            if use_json {
-                eprintln!("{msg}");
-            } else {
-                eprintln!("错误: {msg}");
-            }
-        })?;
-
-    let integrity = lock::compute_integrity(staging.path());
 
     if target_abs.exists() {
         std::fs::remove_dir_all(&target_abs).map_err(|e| {
@@ -1581,7 +1779,8 @@ fn update_single_bundle_at(
             }
         })?;
     }
-    std::fs::rename(staging.path(), &target_abs).map_err(|e| {
+
+    std::fs::rename(&temp_path, &target_abs).map_err(|e| {
         let msg = format!("无法重命名临时目录: {e}");
         if use_json {
             eprintln!("{msg}");
@@ -1666,6 +1865,7 @@ pub fn cmd_update_at(args: &UpdateArgs, use_json: bool, wiki_root: &Path) {
             &mut results,
             use_json,
             wiki_root,
+            args.force,
         )
         .is_err()
         {
@@ -3074,6 +3274,7 @@ include = ["*.md"]
             &mut results,
             false,
             &wiki_root,
+            false,
         );
         assert!(
             result.is_err(),
@@ -3092,27 +3293,19 @@ include = ["*.md"]
     // cmd_update_at — partial lock persistence
     // -------------------------------------------------------------------
 
-    #[test]
-    fn test_cmd_update_at_persists_partial_lock_on_error() {
+    /// Start a local HTTP server that serves a static bundle manifest and
+    /// tar.gz for the duration of the test.  Returns `(port, join_handle)`.
+    fn serve_update_bundle(
+        bundle_toml: &'static [u8],
+        tar_gz: Vec<u8>,
+    ) -> (u16, std::thread::JoinHandle<()>) {
         use std::io::{Read, Write};
         use std::net::TcpListener;
-        use std::os::unix::fs::PermissionsExt;
-
-        let bundle_a_toml = br#"[package]
-name = "bundle-a"
-version = "2.0.0"
-kind = "upstream"
-
-[export]
-include = ["*.md"]
-"#;
-        let tar_a = tar::raw_tar_gz("bundle.toml", bundle_a_toml);
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let tar_a_shared = tar_a;
 
-        let server = std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             for mut stream in listener.incoming().take(4).flatten() {
                 let mut buf = [0u8; 4096];
                 if stream.read(&mut buf).is_err() {
@@ -3120,9 +3313,9 @@ include = ["*.md"]
                 }
                 let request = String::from_utf8_lossy(&buf);
                 let (body, content_type) = if request.contains("bundle.toml") {
-                    (bundle_a_toml.to_vec(), "text/plain")
+                    (bundle_toml.to_vec(), "text/plain")
                 } else {
-                    (tar_a_shared.clone(), "application/gzip")
+                    (tar_gz.clone(), "application/gzip")
                 };
                 let response = format!(
                     "HTTP/1.1 200 OK\r\n\
@@ -3137,6 +3330,31 @@ include = ["*.md"]
                 let _ = stream.flush();
             }
         });
+
+        (port, handle)
+    }
+
+    #[test]
+    fn test_cmd_update_at_persists_partial_lock_on_error() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let bundle_a_toml: &[u8] = br#"[package]
+name = "bundle-a"
+version = "2.0.0"
+kind = "upstream"
+
+[export]
+include = ["*.md"]
+"#;
+        let index_a = br"---\ntitle: Index\ntype: concept\ntimestamp: 2026-07-01T00:00:00Z\ntags: []\nstatus: draft\nlast_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# Index\n\nUpdated bundle-a index for health/lint pass.\n";
+        let log_a = br"# 2026-07\n\nAll good.\n";
+        let tar_a = tar::raw_multi_tar_gz(&[
+            ("bundle.toml", bundle_a_toml),
+            ("index.md", index_a),
+            ("logs/log.md", log_a),
+        ]);
+
+        let (port, server) = serve_update_bundle(bundle_a_toml, tar_a);
 
         let wiki_root = temp_dir("update_partial_lock");
 
@@ -3174,7 +3392,7 @@ include = ["*.md"]
         std::fs::set_permissions(&target_b, PermissionsExt::from_mode(0o444))
             .unwrap();
 
-        let args = UpdateArgs { name: None, json: false };
+        let args = UpdateArgs { name: None, force: false, json: false };
         let use_json = false;
 
         let result =
@@ -3280,8 +3498,11 @@ include = ["*.md"]
         )
         .unwrap();
 
-        let args =
-            UpdateArgs { name: Some("rollback-test".to_string()), json: false };
+        let args = UpdateArgs {
+            name: Some("rollback-test".to_string()),
+            force: false,
+            json: false,
+        };
         let result =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 cmd_update_at(&args, false, &wiki_root);
@@ -3406,11 +3627,11 @@ include = ["*.md"]
         };
 
         let mut results = Vec::new();
-        let result = fetch_remote_manifest(&entry, &mut results, true);
+        let result = fetch_remote_manifest(&entry, &mut results, true, true);
 
         assert!(
             result.is_some(),
-            "fetch_remote_manifest should return Some for downgrade"
+            "fetch_remote_manifest should return Some for forced downgrade"
         );
         let (_base_url, remote_version) = result.unwrap();
         assert_eq!(remote_version, "1.0.0");

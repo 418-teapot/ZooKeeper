@@ -9,6 +9,16 @@ use tar::Builder;
 use walkdir::WalkDir;
 
 // ---------------------------------------------------------------------------
+// Atomic write via temp-file + rename (same pattern as zutil::fileio)
+// ---------------------------------------------------------------------------
+
+/// Return the `.tmp` sibling path for `path`.
+fn tmp_path_for(path: &Path) -> PathBuf {
+    let ext = path.extension().map(|e| e.to_string_lossy()).unwrap_or_default();
+    path.with_extension(format!("{ext}.tmp"))
+}
+
+// ---------------------------------------------------------------------------
 // Safe tar extraction — prevents path traversal
 // ---------------------------------------------------------------------------
 
@@ -101,6 +111,18 @@ pub fn collect_export_files(
 ) -> Result<Vec<PathBuf>, ()> {
     let mut files: Vec<PathBuf> = Vec::new();
     let mut seen: HashSet<PathBuf> = HashSet::new();
+
+    let canonical_bundle = bundle_dir.canonicalize().map_err(|e| {
+        eprintln!(
+            "{}",
+            if use_json {
+                format!("cannot resolve bundle directory: {e}")
+            } else {
+                format!("无法解析 bundle 目录: {e}")
+            }
+        );
+    })?;
+
     for pattern in include {
         let full_pattern =
             bundle_dir.join(pattern).to_string_lossy().to_string();
@@ -146,6 +168,23 @@ pub fn collect_export_files(
 
         for p in matches {
             if seen.insert(p.clone()) {
+                // Reject files outside bundle_dir (path traversal defense)
+                if let Ok(canonical) = p.canonicalize()
+                    && !canonical.starts_with(&canonical_bundle)
+                {
+                    eprintln!(
+                        "{}",
+                        if use_json {
+                            format!(
+                                "skipping out-of-bounds file: {}",
+                                p.display()
+                            )
+                        } else {
+                            format!("跳过越界文件: {}", p.display())
+                        }
+                    );
+                    continue;
+                }
                 files.push(p);
             }
         }
@@ -245,6 +284,10 @@ fn add_files_to_tar_archive(
 
 /// Create a tar.gz archive at `output_path` containing `bundle.toml` and
 /// the given `files` (with paths relative to `bundle_dir`).
+///
+/// The tar.gz is written to a temporary file first then atomically renamed,
+/// so a process interruption cannot leave a half-written archive at the
+/// destination path.
 pub fn write_tar_gz(
     output_path: &str,
     bundle_dir: &Path,
@@ -252,13 +295,16 @@ pub fn write_tar_gz(
     files: &[PathBuf],
     use_json: bool,
 ) -> io::Result<()> {
-    let file = std::fs::File::create(output_path).map_err(|e| {
+    let final_path = Path::new(output_path);
+    let tmp_path = tmp_path_for(final_path);
+
+    let file = std::fs::File::create(&tmp_path).map_err(|e| {
         eprintln!(
             "{}",
             if use_json {
-                format!("cannot create output file: {e}")
+                format!("cannot create temp output file: {e}")
             } else {
-                format!("无法创建输出文件: {e}")
+                format!("无法创建临时输出文件: {e}")
             }
         );
         e
@@ -321,6 +367,11 @@ pub fn write_tar_gz(
             }
         );
         e
+    })?;
+
+    // Atomically rename temp file to final path
+    std::fs::rename(&tmp_path, final_path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp_path);
     })?;
 
     Ok(())
@@ -507,6 +558,63 @@ pub fn raw_tar_symlink_and_file_gz(
         raw.extend_from_slice(&hdr);
         raw.extend_from_slice(file_content);
         let pad = (512 - (file_content.len() % 512)) % 512;
+        raw.extend(std::iter::repeat_n(0u8, pad));
+    }
+
+    // End of archive
+    raw.extend(std::iter::repeat_n(0u8, 1024));
+
+    // Gzip compress
+    let mut compressed = Vec::new();
+    let mut encoder = GzEncoder::new(&mut compressed, Compression::default());
+    encoder.write_all(&raw).unwrap();
+    encoder.finish().unwrap();
+    compressed
+}
+
+/// Build raw tar.gz bytes with multiple file entries (paths limited to 99
+/// characters).  Each entry is a regular file (typeflag '0').  This is useful
+/// for creating valid bundle archives in integration tests.
+#[cfg(test)]
+pub fn raw_multi_tar_gz(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    use std::io::Write;
+
+    let mut raw = Vec::new();
+
+    for (path, content) in entries {
+        let content_size = content.len() as u64;
+        let mut hdr = [0u8; 512];
+
+        let name = path.as_bytes();
+        let n = name.len().min(99);
+        hdr[..n].copy_from_slice(&name[..n]);
+
+        hdr[100..108].copy_from_slice(b"0000644\0");
+        hdr[108..116].copy_from_slice(b"0000000\0");
+        hdr[116..124].copy_from_slice(b"0000000\0");
+
+        let size_str = format!("{content_size:011o}");
+        hdr[124..135].copy_from_slice(size_str.as_bytes());
+        hdr[135] = b'\0';
+
+        hdr[136..148].copy_from_slice(b"00000000000\0");
+
+        hdr[156] = b'0';
+
+        hdr[257..262].copy_from_slice(b"ustar");
+
+        for b in &mut hdr[148..156] {
+            *b = b' ';
+        }
+        let sum: u32 = hdr.iter().map(|&b| u32::from(b)).sum();
+        let chk = format!("{sum:06o}");
+        hdr[148..154].copy_from_slice(chk.as_bytes());
+        hdr[154] = b'\0';
+        hdr[155] = b' ';
+
+        raw.extend_from_slice(&hdr);
+        raw.extend_from_slice(content);
+        let pad = (512 - (content.len() % 512)) % 512;
         raw.extend(std::iter::repeat_n(0u8, pad));
     }
 

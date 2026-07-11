@@ -31,6 +31,14 @@ pub fn read_body_capped(
     capped
         .read_to_end(&mut body)
         .map_err(|e| format!("cannot read response body: {e}"))?;
+    let max_size = usize::try_from(MAX_BUNDLE_SIZE).unwrap_or(usize::MAX);
+    if body.len() > max_size {
+        return Err(format!(
+            "response body too large: {} bytes (max {})",
+            body.len(),
+            MAX_BUNDLE_SIZE
+        ));
+    }
     Ok(body)
 }
 

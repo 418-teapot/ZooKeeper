@@ -79,16 +79,133 @@ pub fn resolve_source(source: &str, use_json: bool) -> Result<TempDir, ()> {
     Err(())
 }
 
+/// Download a single file from a directory URL and write it to `tmp_path`.
+fn download_single_file(
+    url: &str,
+    pattern: &str,
+    tmp_path: &Path,
+    use_json: bool,
+) -> Result<(), ()> {
+    let file_url = format!("{}/{}", url.trim_end_matches('/'), pattern);
+    let file_resp = http::http_client().get(&file_url).send();
+    let resp = match file_resp {
+        Ok(r) if r.status().is_success() => r,
+        Ok(r) => {
+            eprintln!(
+                "{}",
+                if use_json {
+                    format!(
+                        "cannot fetch '{}' (status {})",
+                        file_url,
+                        r.status()
+                    )
+                } else {
+                    format!("无法获取 '{}' (状态 {})", file_url, r.status())
+                }
+            );
+            return Err(());
+        }
+        Err(e) => {
+            eprintln!(
+                "{}",
+                if use_json {
+                    format!("cannot fetch '{file_url}': {e}")
+                } else {
+                    format!("无法获取 '{file_url}': {e}")
+                }
+            );
+            return Err(());
+        }
+    };
+
+    if let Some(cl) = resp.content_length()
+        && cl > http::MAX_BUNDLE_SIZE
+    {
+        eprintln!(
+            "{}",
+            if use_json {
+                format!(
+                    "response too large for '{file_url}': {cl} bytes (max {})",
+                    http::MAX_BUNDLE_SIZE
+                )
+            } else {
+                format!(
+                    "响应过大 '{file_url}': {cl} 字节 (最大 {})",
+                    http::MAX_BUNDLE_SIZE
+                )
+            }
+        );
+        return Err(());
+    }
+
+    let bytes = http::read_body_capped(resp).map_err(|e| {
+        eprintln!(
+            "{}",
+            if use_json {
+                format!("cannot read '{file_url}': {e}")
+            } else {
+                format!("无法读取 '{file_url}': {e}")
+            }
+        );
+    })?;
+
+    let target_path = tmp_path.join(pattern);
+    if let Some(parent) = target_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            eprintln!(
+                "{}",
+                if use_json {
+                    format!(
+                        "cannot create directory '{}': {e}",
+                        parent.display()
+                    )
+                } else {
+                    format!("无法创建目录 '{}': {e}", parent.display())
+                }
+            );
+        })?;
+    }
+    std::fs::write(&target_path, &bytes).map_err(|e| {
+        eprintln!(
+            "{}",
+            if use_json {
+                format!("cannot write '{}': {e}", target_path.display())
+            } else {
+                format!("无法写入 '{}': {e}", target_path.display())
+            }
+        );
+    })?;
+
+    Ok(())
+}
+
+/// Check whether a literal `pattern` is excluded by the `exclude` list.
+///
+/// Only literal (non-glob) exclude patterns are matched — glob exclude
+/// patterns are silently skipped since they cannot be resolved without a
+/// directory listing.
+fn is_excluded_by(pattern: &str, exclude: &[String]) -> bool {
+    exclude.iter().any(|e| {
+        if e.contains('*') || e.contains('?') || e.contains('[') {
+            return false; // cannot match glob excludes without a listing
+        }
+        e == pattern
+    })
+}
+
 /// Download individual files from a directory URL based on manifest include
-/// patterns.
+/// patterns, applying exclude filtering where possible (literal paths only).
 fn download_manifest_files(
     url: &str,
     tmp_path: &Path,
     include: &[String],
+    exclude: &[String],
     use_json: bool,
 ) -> Result<(), ()> {
     for pattern in include {
-        // Skip glob patterns — we can only download specific files
+        // Skip glob patterns — we can only download specific files from a
+        // plain directory URL.  A tar.gz URL is required for glob-based
+        // includes.
         if pattern.contains('*')
             || pattern.contains('?')
             || pattern.contains('[')
@@ -97,15 +214,17 @@ fn download_manifest_files(
                 "{}",
                 if use_json {
                     format!(
-                        "cannot download files matching glob pattern '{pattern}' from directory URL"
+                        "warning: cannot download files matching glob pattern \
+                         '{pattern}' from directory URL — use a tar.gz URL instead"
                     )
                 } else {
                     format!(
-                        "无法从目录 URL 下载匹配 glob 模式 '{pattern}' 的文件"
+                        "警告: 无法从目录 URL 下载匹配 glob 模式 \
+                         '{pattern}' 的文件，请使用 tar.gz URL"
                     )
                 }
             );
-            return Err(());
+            continue;
         }
 
         // Reject path traversal in include patterns
@@ -124,67 +243,12 @@ fn download_manifest_files(
             continue;
         }
 
-        // Download individual file
-        let file_url = format!("{}/{}", url.trim_end_matches('/'), pattern);
-        let file_resp = http::http_client().get(&file_url).send();
-        if let Ok(resp) = file_resp {
-            if resp.status().is_success() {
-                if let Some(cl) = resp.content_length()
-                    && cl > http::MAX_BUNDLE_SIZE
-                {
-                    eprintln!(
-                        "{}",
-                        if use_json {
-                            format!(
-                                "response too large for '{file_url}': {cl} bytes (max {})",
-                                http::MAX_BUNDLE_SIZE
-                            )
-                        } else {
-                            format!(
-                                "响应过大 '{file_url}': {cl} 字节 (最大 {})",
-                                http::MAX_BUNDLE_SIZE
-                            )
-                        }
-                    );
-                    return Err(());
-                }
-                if let Ok(bytes) = http::read_body_capped(resp) {
-                    let target_path = tmp_path.join(pattern);
-                    if let Some(parent) = target_path.parent() {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
-                    let _ = std::fs::write(&target_path, &bytes);
-                }
-            } else {
-                eprintln!(
-                    "{}",
-                    if use_json {
-                        format!(
-                            "cannot fetch '{}' (status {})",
-                            file_url,
-                            resp.status()
-                        )
-                    } else {
-                        format!(
-                            "无法获取 '{}' (状态 {})",
-                            file_url,
-                            resp.status()
-                        )
-                    }
-                );
-                return Err(());
-            }
-        } else {
-            eprintln!(
-                "{}",
-                if use_json {
-                    format!("cannot fetch '{file_url}'")
-                } else {
-                    format!("无法获取 '{file_url}'")
-                }
-            );
-            return Err(());
+        // Apply exclude filtering (literal matches only)
+        if is_excluded_by(pattern, exclude) {
+            continue;
         }
+
+        download_single_file(url, pattern, tmp_path, use_json)?;
     }
     Ok(())
 }
@@ -287,6 +351,7 @@ fn download_dir_from_url(
             url,
             tmp_path,
             &manifest.export.include,
+            &manifest.export.exclude,
             use_json,
         )?;
     }

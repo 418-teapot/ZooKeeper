@@ -382,7 +382,14 @@ pub fn domain_of(rel: &str) -> &str {
         return candidate;
     }
     // No layer prefix — first component.
-    rel.split('/').next().unwrap_or(rel)
+    let candidate = rel.split('/').next().unwrap_or(rel);
+    if std::path::Path::new(candidate)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+    {
+        return "";
+    }
+    candidate
 }
 
 /// Collects unique parent directory paths from all wiki pages.  Returns

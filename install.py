@@ -235,7 +235,9 @@ def main() -> None:
                     for entry in lock_data.get("bundles", []):
                         target = entry.get("target", "")
                         if target.startswith(".teams/"):
-                            core_dir = os.path.join(wiki_root, target.rstrip("/"))
+                            core_dir = os.path.join(
+                                wiki_root, target.rstrip("/")
+                            )
                             break
                     if core_dir is None:
                         warn("zwiki.lock 中未找到团队 bundle 条目，跳过软链接")
@@ -245,6 +247,9 @@ def main() -> None:
                 for name in ["SCHEMA.md", "templates"]:
                     src = os.path.join(core_dir, name)
                     dst = os.path.join(wiki_root, name)
+                    if not os.path.exists(src):
+                        warn(f"源路径不存在，跳过: {src}")
+                        continue
                     if os.path.islink(dst) or os.path.exists(dst):
                         if os.path.isdir(dst) and not os.path.islink(dst):
                             shutil.rmtree(dst)
