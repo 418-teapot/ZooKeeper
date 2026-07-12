@@ -3,21 +3,25 @@
 //! Tracks installed bundles with integrity hashing under `~/.zoo/wiki/zwiki.lock`.
 
 use serde::{Deserialize, Serialize};
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 use sha2::{Digest, Sha256};
 
 /// The lock file tracking installed bundles under `~/.zoo/wiki/zwiki.lock`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ZwikiLock {
     #[serde(rename = "bundles")]
     pub bundles: Vec<ZwikiLockEntry>,
+    #[serde(default)]
+    pub lock_version: u32,
 }
 
 /// A single installed bundle entry in the lock file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ZwikiLockEntry {
     pub name: String,
     pub version: String,
@@ -33,13 +37,13 @@ pub struct ZwikiLockEntry {
 
 /// Read the lock file from a specific wiki root (testable variant).
 ///
-/// Returns `Ok(ZwikiLock { bundles: Vec::new() })` if the file does not exist
+/// Returns `Ok(ZwikiLock::default())` if the file does not exist
 /// (valid initial state).  Returns `Err(...)` if the file exists but cannot be
 /// read or parsed — the user must fix this corrupt state.
 pub fn read_lock_at(wiki_root: &Path) -> Result<ZwikiLock, String> {
     let path = wiki_root.join("zwiki.lock");
     if !path.exists() {
-        return Ok(ZwikiLock { bundles: Vec::new() });
+        return Ok(ZwikiLock::default());
     }
     let content = std::fs::read_to_string(&path)
         .map_err(|e| format!("无法读取 zwiki.lock: {e}"))?;
@@ -116,21 +120,36 @@ pub fn compute_integrity(dir: &Path) -> String {
             .unwrap_or(abs_path)
             .to_string_lossy()
             .to_string();
-        let content = match std::fs::read(abs_path) {
-            Ok(data) => data,
+
+        // Feed "path\0contents" — stream content in 8 KiB chunks
+        hasher.update(rel.as_bytes());
+        hasher.update(b"\0");
+
+        let mut file = match std::fs::File::open(abs_path) {
+            Ok(f) => f,
             Err(e) => {
                 eprintln!(
                     "警告: 无法读取文件用于完整性计算: {} ({e})",
                     abs_path.display()
                 );
-                Vec::new()
+                continue;
             }
         };
-
-        // Feed "path\0contents" to detect both content and path changes
-        hasher.update(rel.as_bytes());
-        hasher.update(b"\0");
-        hasher.update(&content);
+        let mut buf = [0u8; 8192];
+        loop {
+            let n = match file.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) => {
+                    eprintln!(
+                        "警告: 读取文件时出错: {} ({e})",
+                        abs_path.display()
+                    );
+                    break;
+                }
+            };
+            hasher.update(&buf[..n]);
+        }
     }
 
     let hash_bytes = hasher.finalize();
@@ -155,13 +174,13 @@ mod tests {
         let lock_path = dir.join("zwiki.lock");
         let exists = lock_path.exists();
         assert!(!exists, "lock file should not exist yet");
-        let lock = ZwikiLock { bundles: Vec::new() };
+        let lock = ZwikiLock::default();
         assert!(lock.bundles.is_empty());
     }
 
     #[test]
     fn test_upsert_bundle_new() {
-        let mut lock = ZwikiLock { bundles: Vec::new() };
+        let mut lock = ZwikiLock::default();
         let entry = ZwikiLockEntry {
             name: "test".to_string(),
             version: "1.0".to_string(),
@@ -178,7 +197,7 @@ mod tests {
 
     #[test]
     fn test_upsert_bundle_duplicate_no_force() {
-        let mut lock = ZwikiLock { bundles: Vec::new() };
+        let mut lock = ZwikiLock::default();
         let entry1 = ZwikiLockEntry {
             name: "test".to_string(),
             version: "1.0".to_string(),
@@ -206,7 +225,7 @@ mod tests {
 
     #[test]
     fn test_upsert_bundle_duplicate_force() {
-        let mut lock = ZwikiLock { bundles: Vec::new() };
+        let mut lock = ZwikiLock::default();
         let entry1 = ZwikiLockEntry {
             name: "test".to_string(),
             version: "1.0".to_string(),
@@ -295,7 +314,7 @@ mod tests {
             installed_at: "2026-06-01T12:00:00Z".to_string(),
             description: None,
         };
-        let lock = ZwikiLock { bundles: vec![entry] };
+        let lock = ZwikiLock { bundles: vec![entry], ..Default::default() };
 
         let toml_str = toml::to_string_pretty(&lock).unwrap();
         let lock_file = dir.join("zwiki.lock");
@@ -319,7 +338,7 @@ mod tests {
             installed_at: "2026-07-05T12:00:00Z".to_string(),
             description: None,
         };
-        let lock = ZwikiLock { bundles: vec![entry] };
+        let lock = ZwikiLock { bundles: vec![entry], ..Default::default() };
 
         let toml_str = toml::to_string_pretty(&lock).unwrap();
         assert!(
@@ -367,7 +386,7 @@ installed_at = "2026-07-05T12:00:00Z"
         let corrupt = "this is not valid toml {{{";
         let result: Result<ZwikiLock, _> = toml::from_str(corrupt);
         assert!(result.is_err(), "corrupt TOML should fail to parse");
-        let lock = result.unwrap_or(ZwikiLock { bundles: Vec::new() });
+        let lock = result.unwrap_or_else(|_| ZwikiLock::default());
         assert!(lock.bundles.is_empty());
     }
 
@@ -400,6 +419,7 @@ installed_at = "2026-01-01T00:00:00Z"
                 installed_at: "2026-01-01T00:00:00Z".to_string(),
                 description: None,
             }],
+            ..Default::default()
         };
 
         write_lock_at(&lock, &dir).unwrap();
@@ -440,6 +460,7 @@ installed_at = "2026-01-01T00:00:00Z"
                 installed_at: "2026-01-01T00:00:00Z".to_string(),
                 description: None,
             }],
+            ..Default::default()
         };
         write_lock_at(&lock, &dir).unwrap();
         let lock_path = dir.join("zwiki.lock");

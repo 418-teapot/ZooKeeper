@@ -172,7 +172,11 @@ def main() -> None:
     os.makedirs(opencode_dir, exist_ok=True)
 
     header("生成配置")
-    toml_data = parse_toml(toml_path)
+    try:
+        toml_data = parse_toml(toml_path)
+    except Exception as e:
+        error(f"无法解析 {toml_path}: {e}")
+        sys.exit(1)
     config = build_config(toml_data, SCRIPT_DIR)
     with open(opencode_json, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2, ensure_ascii=False)

@@ -2603,7 +2603,7 @@ satisfy the stub threshold check and other quality gates.\n";
     #[test]
     fn test_dispatch_check_no_arg_inner_empty_lock() {
         let dir = temp_dir("check_inner_empty");
-        let lock = bundle::ZwikiLock { bundles: Vec::new() };
+        let lock = bundle::ZwikiLock::default();
         let code =
             dispatch_check_no_arg_inner(&dir, &lock, None, false, Vec::new());
         assert_eq!(code, 0, "empty lock should return 0");
@@ -2630,6 +2630,7 @@ satisfy the stub threshold check and other quality gates.\n";
                 installed_at: "2026-01-01T00:00:00Z".to_string(),
                 description: None,
             }],
+            ..Default::default()
         };
         let code =
             dispatch_check_no_arg_inner(&dir, &lock, None, false, Vec::new());
@@ -2681,6 +2682,7 @@ title: Bundle Index
                 installed_at: "2026-01-01T00:00:00Z".to_string(),
                 description: None,
             }],
+            ..Default::default()
         };
         let code =
             dispatch_check_no_arg_inner(&dir, &lock, None, false, Vec::new());
@@ -2703,7 +2705,7 @@ title: Wiki Root
         )
         .unwrap();
 
-        let lock = bundle::ZwikiLock { bundles: Vec::new() };
+        let lock = bundle::ZwikiLock::default();
         let code = dispatch_check_no_arg_inner(
             &dir,
             &lock,
@@ -2767,6 +2769,7 @@ title: Bundle Index
                 installed_at: "2026-01-01T00:00:00Z".to_string(),
                 description: None,
             }],
+            ..Default::default()
         };
 
         let code = dispatch_check_no_arg_inner(
@@ -2814,6 +2817,7 @@ title: Bundle Index
                 installed_at: "2026-01-01T00:00:00Z".to_string(),
                 description: None,
             }],
+            ..Default::default()
         };
 
         let code = dispatch_check_no_arg_inner(

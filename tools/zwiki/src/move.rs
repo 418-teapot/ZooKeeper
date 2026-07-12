@@ -375,7 +375,7 @@ fn add_index_entry(
             fs::create_dir_all(parent)
                 .map_err(|e| format!("无法创建目录: {e}"))?;
         }
-        fs::write(index_abs, &content)
+        zutil::fileio::write_atomic(index_abs, &content)
             .map_err(|e| format!("写入 index.md 失败: {e}"))?;
         return Ok(true);
     }

@@ -11,15 +11,25 @@ use walkdir::WalkDir;
 use zutil::fileio;
 
 // ---------------------------------------------------------------------------
-// Safe tar extraction — prevents path traversal
+// Safe tar extraction — prevents path traversal, decompression bombs, and
+// unsupported entry types
 // ---------------------------------------------------------------------------
+
+/// Maximum cumulative unpacked bytes across all entries in a single archive.
+/// Set to 5× the compressed body limit (256 MiB) for a 1.25 GiB ceiling.
+const MAX_UNPACKED_SIZE: u64 = super::http::MAX_BUNDLE_SIZE * 5;
 
 /// Extract a tar archive safely, skipping entries with absolute paths or `..`
 /// components that would escape `dest`.
+///
+/// The cumulative `MAX_UNPACKED_SIZE` check also protects against Linux tmpfs
+/// exhaustion — `TempDir::new()` may use a RAM-backed `/tmp` with limited size.
 pub fn safe_unpack<R: io::Read>(
     archive: &mut tar::Archive<R>,
     dest: &Path,
 ) -> io::Result<()> {
+    let mut total_unpacked: u64 = 0;
+
     for entry in archive.entries()? {
         let mut entry = entry?;
         let path = entry.path()?;
@@ -33,8 +43,19 @@ pub fn safe_unpack<R: io::Read>(
             continue;
         }
 
-        // Deny symlinks and hardlinks with absolute or traversal targets
+        // Deny non-regular-file, non-directory entry types (FIFO, char/block
+        // devices, and implementation-defined continuous type).
         let entry_type = entry.header().entry_type();
+        if entry_type.is_fifo()
+            || entry_type.is_character_special()
+            || entry_type.is_block_special()
+            || entry_type == tar::EntryType::Continuous
+        {
+            eprintln!("警告: 跳过不支持的条目类型: {entry_type:?}");
+            continue;
+        }
+
+        // Deny symlinks and hardlinks with absolute or traversal targets
         if (entry_type.is_symlink() || entry_type.is_hard_link())
             && let Ok(Some(link_name)) = entry.link_name()
             && (link_name.is_absolute()
@@ -43,6 +64,15 @@ pub fn safe_unpack<R: io::Read>(
             let display = link_name.display().to_string();
             eprintln!("警告: 跳过可疑链接目标: {display}");
             continue;
+        }
+
+        // Decompression bomb defense: track cumulative unpacked size
+        let entry_size = entry.header().size()?;
+        if entry_size > 0 {
+            total_unpacked = total_unpacked.saturating_add(entry_size);
+            if total_unpacked > MAX_UNPACKED_SIZE {
+                return Err(io::Error::other("unpacked size exceeds limit"));
+            }
         }
 
         entry.unpack_in(dest)?;

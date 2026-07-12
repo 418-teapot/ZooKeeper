@@ -22,6 +22,7 @@ use chrono::Utc;
 use clap::{Args, Subcommand};
 use std::cmp::Ordering;
 use std::fmt::Write;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process;
 use tempfile::TempDir;
@@ -132,6 +133,10 @@ pub struct CheckArgs {
     /// Regenerate missing or stale root index.md
     #[arg(long)]
     pub fix: bool,
+
+    /// Preview what would be cleaned up without modifying files (with --fix)
+    #[arg(long = "dry-run")]
+    pub dry_run: bool,
 }
 
 /// Arguments for `zwiki bundle uninstall`.
@@ -215,6 +220,7 @@ fn derive_name() -> String {
         .and_then(Path::file_name)
         .map_or_else(
             || "bundle".to_string(),
+            // to_string_lossy replaces non-UTF-8 bytes with U+FFFD — acceptable for display
             |n| n.to_string_lossy().to_string(),
         )
 }
@@ -347,6 +353,21 @@ fn report_manifest_errors(
                     "status": "fatal",
                     "error": summary,
                     "errors": errs,
+                });
+                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            } else {
+                let warnings: Vec<serde_json::Value> = errors
+                    .iter()
+                    .map(|err| {
+                        serde_json::json!({
+                            "field": err.field,
+                            "message": err.message,
+                        })
+                    })
+                    .collect();
+                let output = serde_json::json!({
+                    "status": "ok",
+                    "warnings": warnings,
                 });
                 println!("{}", serde_json::to_string_pretty(&output).unwrap());
             }
@@ -548,6 +569,57 @@ fn copy_bundle_files_to_target(
     Ok(())
 }
 
+/// Atomically replace `target` with the contents of `staging`.
+///
+/// Rename staging to a `.tmp_*` temp name, remove the old target (if any),
+/// then rename the temp to the final target. At every crash point either the
+/// old bundle or the new bundle data survives (never both lost).
+fn atomic_dir_swap(
+    staging: tempfile::TempDir,
+    target_abs: &Path,
+    use_json: bool,
+) -> Result<(), String> {
+    let file_name =
+        target_abs.file_name().unwrap_or_default().to_string_lossy();
+    let temp_path = target_abs.with_file_name(format!(".tmp_{file_name}"));
+    let _ = std::fs::remove_dir_all(&temp_path);
+
+    std::fs::rename(staging.path(), &temp_path).map_err(|e| {
+        if use_json {
+            format!("cannot move staging to temp: {e}")
+        } else {
+            format!("无法移动暂存目录: {e}")
+        }
+    })?;
+
+    if target_abs.exists() {
+        let temp_display = temp_path.display();
+        std::fs::remove_dir_all(target_abs).map_err(|e| {
+            if use_json {
+                format!(
+                    "cannot remove existing target: {e}; new files left at: \
+                     {temp_display}; retry with --force to clean up",
+                )
+            } else {
+                format!(
+                    "无法移除已存在的目标目录: {e}；新文件保留在临时目录: \
+                     {temp_display}；重试时使用 --force 清理",
+                )
+            }
+        })?;
+    }
+
+    std::fs::rename(&temp_path, target_abs).map_err(|e| {
+        if use_json {
+            format!("cannot rename temp to target: {e}")
+        } else {
+            format!("无法重命名临时目录: {e}")
+        }
+    })?;
+    let _ = staging.keep();
+    Ok(())
+}
+
 /// Install bundle files from `source_dir` into the wiki, compute integrity,
 /// and update the lock file.
 /// If `target_abs` exists and has files, either error (when `!force`) or
@@ -590,15 +662,20 @@ fn force_replace_bundle_at(
         });
     }
 
-    let staging =
-        TempDir::new_in(target_abs.parent().unwrap_or_else(|| Path::new(".")))
-            .map_err(|e| {
-                if use_json {
-                    format!("cannot create staging directory: {e}")
-                } else {
-                    format!("无法创建临时目录: {e}")
-                }
-            })?;
+    let parent = target_abs.parent().ok_or_else(|| {
+        if use_json {
+            "target directory has no parent".to_string()
+        } else {
+            "目标目录没有父目录".to_string()
+        }
+    })?;
+    let staging = TempDir::new_in(parent).map_err(|e| {
+        if use_json {
+            format!("cannot create staging directory: {e}")
+        } else {
+            format!("无法创建临时目录: {e}")
+        }
+    })?;
 
     copy_bundle_files_to_target(
         source_dir,
@@ -608,46 +685,7 @@ fn force_replace_bundle_at(
         use_json,
     )?;
 
-    // Atomic swap: rename staging to temp path, remove old, rename to target.
-    // At every crash point either the old bundle or the new bundle data
-    // survives (never both lost).
-    let temp_path = target_abs.with_file_name(format!(
-        ".tmp_{}",
-        target_abs.file_name().unwrap_or_default().to_string_lossy()
-    ));
-    let _ = std::fs::remove_dir_all(&temp_path);
-
-    std::fs::rename(staging.path(), &temp_path).map_err(|e| {
-        if use_json {
-            format!("cannot move staging to temp: {e}")
-        } else {
-            format!("无法移动暂存目录: {e}")
-        }
-    })?;
-
-    if target_abs.exists() {
-        let temp_display = temp_path.display();
-        std::fs::remove_dir_all(target_abs).map_err(|e| {
-            if use_json {
-                format!(
-                    "cannot remove existing target: {e}; new files left at: {temp_display}; retry with --force to clean up",
-                )
-            } else {
-                format!(
-                    "无法移除已存在的目标目录: {e}；新文件保留在临时目录: {temp_display}；重试时使用 --force 清理",
-                )
-            }
-        })?;
-    }
-
-    std::fs::rename(&temp_path, target_abs).map_err(|e| {
-        if use_json {
-            format!("cannot rename temp to target: {e}")
-        } else {
-            format!("无法重命名临时目录: {e}")
-        }
-    })?;
-    let _ = staging.keep();
+    atomic_dir_swap(staging, target_abs, use_json)?;
 
     Ok(true)
 }
@@ -661,6 +699,8 @@ fn install_bundle_files_at(
     wiki_root: &Path,
 ) -> Result<(), String> {
     let lock_path = wiki_root.join(".zwiki.flock");
+    // NOTE: flock() / fcntl(F_SETLK) is advisory and does NOT work on NFS.
+    //       The wiki directory should not be on NFS.
     let result: std::io::Result<Result<(), String>> =
         zutil::fileio::with_file_lock(&lock_path, || {
             let inner: Result<(), String> = (|| {
@@ -731,8 +771,16 @@ pub fn load_and_validate_manifest(
     use_json: bool,
 ) -> Result<(TempDir, manifest::BundleManifest), Vec<manifest::ValidationError>>
 {
-    let resolved =
-        source::resolve_source(source, use_json).map_err(|_| Vec::new())?;
+    let resolved = source::resolve_source(source, use_json).map_err(|e| {
+        if !use_json {
+            eprintln!("解析源失败: {e}");
+        }
+        vec![manifest::ValidationError {
+            severity: manifest::Severity::Fatal,
+            field: "source".to_string(),
+            message: format!("解析源失败: {e}"),
+        }]
+    })?;
     let source_dir = resolved.path();
     let manifest_path = source_dir.join("bundle.toml");
 
@@ -740,11 +788,24 @@ pub fn load_and_validate_manifest(
         if !use_json {
             eprintln!("在源 '{source}' 中未找到 bundle.toml");
         }
-        return Err(Vec::new());
+        return Err(vec![manifest::ValidationError {
+            severity: manifest::Severity::Fatal,
+            field: "source".to_string(),
+            message: format!("在源 '{source}' 中未找到 bundle.toml"),
+        }]);
     }
 
-    let (_content, manifest) =
-        read_manifest(&manifest_path, use_json).map_err(|_| Vec::new())?;
+    let (_content, manifest) = read_manifest(&manifest_path, use_json)
+        .map_err(|e| {
+            if !use_json {
+                eprintln!("读取 bundle.toml 失败: {e}");
+            }
+            vec![manifest::ValidationError {
+                severity: manifest::Severity::Fatal,
+                field: "manifest".to_string(),
+                message: format!("读取 bundle.toml 失败: {e}"),
+            }]
+        })?;
     let errors = manifest.validate(use_json);
     let should_exit = report_manifest_errors(&errors, use_json);
     if should_exit {
@@ -1247,7 +1308,9 @@ fn cmd_list_installed_inner(
 /// Check integrity of installed bundles.
 pub fn cmd_check(args: &CheckArgs, global_json: bool) {
     let use_json = args.json || global_json;
-    if let Err(msg) = cmd_check_inner(use_json, &wiki::wiki_dir(), args.fix) {
+    if let Err(msg) =
+        cmd_check_inner(use_json, &wiki::wiki_dir(), args.fix, args.dry_run)
+    {
         if !use_json {
             eprintln!("错误: {msg}");
         }
@@ -1260,13 +1323,19 @@ pub fn cmd_check(args: &CheckArgs, global_json: bool) {
 /// (or no bundles are installed), and `Err(())` when issues are found.
 ///
 /// When `fix` is true, a missing or stale root index.md is automatically
-/// regenerated instead of returning an error.
+/// regenerated instead of returning an error, orphan directories are removed,
+/// and stale `.old_*` / `.tmp_*` directories from interrupted swaps are
+/// cleaned up.
+///
+/// When `dry_run` is true (implies `fix`-like preview), actions are printed but
+/// no files are modified.
 fn cmd_check_inner(
     use_json: bool,
     wiki_root: &Path,
     fix: bool,
+    dry_run: bool,
 ) -> Result<(), String> {
-    let l = lock::read_lock_at(wiki_root)?;
+    let mut l = lock::read_lock_at(wiki_root)?;
 
     if l.bundles.is_empty() {
         if use_json {
@@ -1349,6 +1418,13 @@ fn cmd_check_inner(
 
     scan_orphan_dirs_at(wiki_root, &l, &mut results, use_json);
 
+    // Collect orphan and stale paths for --fix / --dry-run.
+    if fix && !dry_run {
+        apply_check_fix_with_lock_at(wiki_root, use_json)?;
+    } else if dry_run {
+        apply_check_fix_cleanup_at(wiki_root, use_json, false, true, &mut l)?;
+    }
+
     if use_json {
         let output = serde_json::json!({
             "results": results,
@@ -1362,6 +1438,171 @@ fn cmd_check_inner(
     }
 
     if has_error { Err("检查发现错误".to_string()) } else { Ok(()) }
+}
+
+/// Apply `--fix` with file lock: re-read lock inside the lock to get fresh
+/// state, preventing races with concurrent install/update.
+fn apply_check_fix_with_lock_at(
+    wiki_root: &Path,
+    use_json: bool,
+) -> Result<(), String> {
+    let lock_path = wiki_root.join(".zwiki.flock");
+    // NOTE: flock() / fcntl(F_SETLK) is advisory and does NOT work on NFS.
+    let fix_result: io::Result<()> =
+        zutil::fileio::with_file_lock(&lock_path, || -> io::Result<()> {
+            let mut fresh_l =
+                lock::read_lock_at(wiki_root).map_err(io::Error::other)?;
+            apply_check_fix_cleanup_at(
+                wiki_root,
+                use_json,
+                true,
+                false,
+                &mut fresh_l,
+            )
+            .map_err(io::Error::other)?;
+            Ok(())
+        });
+    fix_result.map_err(|e| format!("文件锁操作失败: {e}"))
+}
+
+/// Apply `--fix` cleanup or `--dry-run` preview for orphan directories, stale
+/// temp directories, and orphan lock entries.
+fn apply_check_fix_cleanup_at(
+    wiki_root: &Path,
+    use_json: bool,
+    fix: bool,
+    dry_run: bool,
+    l: &mut lock::ZwikiLock,
+) -> Result<(), String> {
+    let orphan_paths = scan_orphan_paths_at(wiki_root, l);
+    let stale_temp_paths = scan_stale_temp_paths_at(wiki_root);
+
+    if dry_run {
+        for rel in &orphan_paths {
+            if !use_json {
+                println!("DRY RUN — would remove orphan directory: {rel}");
+            }
+        }
+        for p in &stale_temp_paths {
+            if !use_json {
+                println!(
+                    "DRY RUN — would remove stale temp directory: {}",
+                    p.display()
+                );
+            }
+        }
+    }
+
+    if fix && !dry_run {
+        for rel in &orphan_paths {
+            let abs = wiki_root.join(rel);
+            if abs.exists() {
+                if let Err(e) = std::fs::remove_dir_all(&abs) {
+                    if !use_json {
+                        eprintln!("无法移除孤儿目录 {rel}: {e}");
+                    }
+                } else if !use_json {
+                    eprintln!("已移除孤儿目录: {rel}");
+                }
+            }
+        }
+        for p in &stale_temp_paths {
+            if p.exists() {
+                if let Err(e) = std::fs::remove_dir_all(p) {
+                    if !use_json {
+                        eprintln!("无法移除临时目录 {}: {e}", p.display());
+                    }
+                } else if !use_json {
+                    eprintln!("已移除临时目录: {}", p.display());
+                }
+            }
+        }
+
+        // Prune orphan lock entries (target directory missing).
+        let pre_len = l.bundles.len();
+        l.bundles.retain(|entry| {
+            let keep = wiki_root.join(&entry.target).exists();
+            if !keep && !use_json {
+                eprintln!("已移除孤儿锁记录: {}（目标目录缺失）", entry.name);
+            }
+            keep
+        });
+        if l.bundles.len() != pre_len {
+            lock::write_lock_at(l, wiki_root)
+                .map_err(|e| format!("无法写入锁文件: {e}"))?;
+            regenerate_root_index_at(l, wiki_root);
+        }
+    }
+
+    Ok(())
+}
+
+/// Collect paths of directories under `.upstream/`, `.teams/`, `.org/` that
+/// have no matching lock entry (orphan directories).
+fn scan_orphan_paths_at(
+    wiki_root: &Path,
+    lock: &lock::ZwikiLock,
+) -> Vec<String> {
+    let lock_targets: std::collections::HashSet<&str> =
+        lock.bundles.iter().map(|b| b.target.as_str()).collect();
+    let mut paths = Vec::new();
+    for subdir in &[".upstream", ".teams", ".org"] {
+        let dir = wiki_root.join(subdir);
+        if !dir.exists() {
+            continue;
+        }
+        let Ok(mut read_dir) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        while let Some(Ok(entry)) = read_dir.next() {
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            if !ft.is_dir() {
+                continue;
+            }
+            let name = entry.file_name();
+            let rel = format!("{subdir}/{}/", name.to_string_lossy());
+            if !lock_targets.contains(rel.as_str()) {
+                paths.push(rel);
+            }
+        }
+    }
+    paths
+}
+
+/// Collect paths of `.old_*` and `.tmp_*` directories that remain from
+/// interrupted [`atomic_dir_swap`] operations (stale temporary directories).
+fn scan_stale_temp_paths_at(wiki_root: &Path) -> Vec<PathBuf> {
+    let prefixes = [".old_", ".tmp_"];
+    let scan_dirs = [
+        wiki_root.to_path_buf(),
+        wiki_root.join(".upstream"),
+        wiki_root.join(".teams"),
+        wiki_root.join(".org"),
+    ];
+    let mut paths = Vec::new();
+    for dir in &scan_dirs {
+        if !dir.exists() {
+            continue;
+        }
+        let Ok(mut read_dir) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        while let Some(Ok(entry)) = read_dir.next() {
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            if !ft.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if prefixes.iter().any(|p| name.starts_with(p)) {
+                paths.push(entry.path());
+            }
+        }
+    }
+    paths
 }
 
 /// Scan `.upstream/`, `.teams/`, `.org/` for directories that have no
@@ -1660,23 +1901,6 @@ fn download_and_extract_update_tar(
             return None;
         }
     };
-    if let Some(cl) = tar_resp.content_length()
-        && cl > http::MAX_BUNDLE_SIZE
-    {
-        push_err(
-            results,
-            name,
-            entry_version,
-            remote_version,
-            format!(
-                "tar.gz too large: {cl} bytes (max {})",
-                http::MAX_BUNDLE_SIZE
-            )
-            .as_str(),
-            use_json,
-        );
-        return None;
-    }
     let bytes = match http::read_body_capped(tar_resp) {
         Ok(b) => b,
         Err(e) => {
@@ -1774,90 +1998,6 @@ fn prepare_update_staging(
     Ok((staging, integrity))
 }
 
-/// Update a single bundle entry from its configured registry.
-fn update_single_bundle_at(
-    entry: &lock::ZwikiLockEntry,
-    l: &mut lock::ZwikiLock,
-    results: &mut Vec<serde_json::Value>,
-    use_json: bool,
-    wiki_root: &Path,
-    force: bool,
-) -> Result<(), String> {
-    let Some((base_url, remote_version, remote_description)) =
-        fetch_remote_manifest(entry, results, use_json, force)
-    else {
-        return Ok(());
-    };
-
-    let Some((tmp, src_bundle_toml)) = download_and_extract_update_tar(
-        &base_url,
-        &entry.name,
-        &remote_version,
-        &entry.version,
-        results,
-        use_json,
-    ) else {
-        return Ok(());
-    };
-
-    let target_abs = wiki_root.join(&entry.target);
-
-    let (staging, integrity) = prepare_update_staging(
-        &target_abs,
-        tmp.path(),
-        &src_bundle_toml,
-        use_json,
-    )?;
-
-    // Atomic swap: rename staging to temp path, remove old, rename to target
-    let temp_path = target_abs.with_file_name(format!(
-        ".tmp_{}",
-        target_abs.file_name().unwrap_or_default().to_string_lossy()
-    ));
-    let _ = std::fs::remove_dir_all(&temp_path);
-
-    std::fs::rename(staging.path(), &temp_path)
-        .map_err(|e| format!("无法移动暂存目录: {e}"))?;
-
-    if target_abs.exists() {
-        std::fs::remove_dir_all(&target_abs)
-            .map_err(|e| format!("无法移除已存在的目标目录: {e}"))?;
-    }
-
-    std::fs::rename(&temp_path, &target_abs)
-        .map_err(|e| format!("无法重命名临时目录: {e}"))?;
-    let _ = staging.keep();
-
-    let installed_at = Utc::now().to_rfc3339();
-    let updated_entry = lock::ZwikiLockEntry {
-        name: entry.name.clone(),
-        version: remote_version.clone(),
-        registry: entry.registry.clone(),
-        target: entry.target.clone(),
-        integrity,
-        installed_at,
-        description: remote_description.or_else(|| entry.description.clone()),
-    };
-
-    lock::upsert_bundle(l, updated_entry, true)?;
-
-    if use_json {
-        results.push(serde_json::json!({
-            "name": entry.name,
-            "status": "updated",
-            "from": entry.version,
-            "to": remote_version,
-            "reason": "ok",
-        }));
-    } else {
-        println!(
-            "已更新: {} {} → {}",
-            entry.name, entry.version, remote_version
-        );
-    }
-    Ok(())
-}
-
 /// Dry-run implementation for `cmd_update_at`: preview updates without
 /// downloading or modifying files.
 fn cmd_update_dry_run_at(
@@ -1899,117 +2039,285 @@ fn cmd_update_dry_run_at(
     0
 }
 
+/// A bundle that has been downloaded and validated (Phase 2), ready for
+/// atomic commit under the file lock in Phase 3.
+struct PendingUpdate {
+    entry: lock::ZwikiLockEntry,
+    staging: TempDir,
+    integrity: String,
+    remote_version: String,
+    remote_description: Option<String>,
+}
+
 /// Update installed bundles from their configured registry, using an explicit
 /// `wiki_root` so it can be tested without touching the real wiki directory.
+///
+/// Uses a 3-phase approach to minimise lock hold time:
+/// 1. Under lock: read the lock file and clone pending entries
+/// 2. Outside lock: download, extract and validate each bundle
+/// 3. Re-acquire lock: atomically swap staging → target, write lock, regenerate index
+// Phase 2: download, extract, and validate bundles outside file lock.
+// Returns `(prepared_updates, had_error)`. When `had_error` is `true` the
+// caller must not proceed to Phase 3.
+fn phase2_download_and_prepare(
+    pending: &[lock::ZwikiLockEntry],
+    results: &mut Vec<serde_json::Value>,
+    use_json: bool,
+    force: bool,
+    wiki_root: &Path,
+) -> (Vec<PendingUpdate>, bool) {
+    let mut prepared_updates: Vec<PendingUpdate> = Vec::new();
+
+    for entry in pending {
+        let Some((base_url, remote_version, remote_description)) =
+            fetch_remote_manifest(entry, results, use_json, force)
+        else {
+            continue;
+        };
+
+        let Some((tmp, src_bundle_toml)) = download_and_extract_update_tar(
+            &base_url,
+            &entry.name,
+            &remote_version,
+            &entry.version,
+            results,
+            use_json,
+        ) else {
+            continue;
+        };
+
+        let target_abs = wiki_root.join(&entry.target);
+
+        match prepare_update_staging(
+            &target_abs,
+            tmp.path(),
+            &src_bundle_toml,
+            use_json,
+        ) {
+            Ok((staging, integrity)) => {
+                prepared_updates.push(PendingUpdate {
+                    entry: entry.clone(),
+                    staging,
+                    integrity,
+                    remote_version,
+                    remote_description,
+                });
+            }
+            Err(msg) => {
+                if use_json {
+                    results.push(serde_json::json!({
+                        "name": entry.name,
+                        "status": "error",
+                        "from": entry.version,
+                        "to": entry.version,
+                        "reason": msg,
+                    }));
+                } else {
+                    eprintln!("错误: {}: {msg}", entry.name);
+                }
+                return (prepared_updates, true);
+            }
+        }
+    }
+
+    (prepared_updates, false)
+}
+
+/// Phase 3 of bundle update: re-acquire the file lock, atomically swap each
+/// staging directory into its target location, update the lock entries, write
+/// the lock, and regenerate the root index.
+///
+/// Returns `(json_success_entries, had_error)`.  On partial failure the lock
+/// is written with whatever succeeded (partial lock persistence).
+fn phase3_commit_updates(
+    prepared_updates: Vec<PendingUpdate>,
+    use_json: bool,
+    wiki_root: &Path,
+    lock_path: &Path,
+) -> (Vec<serde_json::Value>, bool) {
+    let mut commit_error = false;
+    let mut success_entries: Vec<serde_json::Value> = Vec::new();
+
+    let phase3_result: io::Result<()> =
+        zutil::fileio::with_file_lock(lock_path, || {
+            let mut l =
+                lock::read_lock_at(wiki_root).map_err(io::Error::other)?;
+
+            for PendingUpdate {
+                entry,
+                staging,
+                integrity,
+                remote_version,
+                remote_description,
+            } in prepared_updates
+            {
+                let target_abs = wiki_root.join(&entry.target);
+
+                if let Err(msg) =
+                    atomic_dir_swap(staging, &target_abs, use_json)
+                {
+                    commit_error = true;
+                    // Write partial lock with what we have committed so far
+                    let _ = lock::write_lock_at(&l, wiki_root);
+                    return Err(io::Error::other(msg));
+                }
+
+                let installed_at = Utc::now().to_rfc3339();
+                let updated_entry = lock::ZwikiLockEntry {
+                    name: entry.name.clone(),
+                    version: remote_version.clone(),
+                    registry: entry.registry.clone(),
+                    target: entry.target.clone(),
+                    integrity: integrity.clone(),
+                    installed_at,
+                    description: remote_description.or(entry.description),
+                };
+                lock::upsert_bundle(&mut l, updated_entry, true)
+                    .map_err(io::Error::other)?;
+
+                if use_json {
+                    success_entries.push(serde_json::json!({
+                        "name": entry.name,
+                        "status": "updated",
+                        "from": entry.version,
+                        "to": remote_version,
+                        "reason": "ok",
+                    }));
+                } else {
+                    println!(
+                        "已更新: {} {} → {}",
+                        entry.name, entry.version, remote_version
+                    );
+                }
+            }
+
+            lock::write_lock_at(&l, wiki_root)?;
+            regenerate_root_index_at(&l, wiki_root);
+            Ok(())
+        });
+
+    if let Err(ref e) = phase3_result
+        && !commit_error
+    {
+        let msg = format!("无法获取文件锁: {e}");
+        if use_json {
+            eprintln!("{msg}");
+        } else {
+            eprintln!("错误: {msg}");
+        }
+    }
+
+    (success_entries, commit_error || phase3_result.is_err())
+}
+
+/// Update installed bundles from their configured registry, using an explicit
+/// `wiki_root` so it can be tested without touching the real wiki directory.
+///
+/// Uses a 3-phase approach to minimise lock hold time:
+/// 1. Under lock: read the lock file and clone pending entries
+/// 2. Outside lock: download, extract and validate each bundle
+/// 3. Re-acquire lock: atomically swap staging → target, write lock, regenerate index
 pub fn cmd_update_at(args: &UpdateArgs, use_json: bool, wiki_root: &Path) {
     let lock_path = wiki_root.join(".zwiki.flock");
-    let result: std::io::Result<i32> = zutil::fileio::with_file_lock(
-        &lock_path,
-        || -> std::io::Result<i32> {
-            let mut l = match lock::read_lock_at(wiki_root) {
-                Ok(l) => l,
-                Err(msg) => {
-                    eprintln!("{msg}");
-                    return Ok(1);
-                }
-            };
+    // NOTE: flock() / fcntl(F_SETLK) is advisory and does NOT work on NFS.
 
-            let pending: Vec<lock::ZwikiLockEntry> = l
-                .bundles
+    // ------------------------------------------------------------------
+    // Phase 1 — Under lock: read + clone + drop
+    // ------------------------------------------------------------------
+    let pending: Vec<lock::ZwikiLockEntry> =
+        match zutil::fileio::with_file_lock(&lock_path, || {
+            let l = lock::read_lock_at(wiki_root).map_err(io::Error::other)?;
+            Ok(l.bundles
                 .iter()
                 .filter(|b| args.name.as_ref().is_none_or(|n| b.name == *n))
                 .cloned()
-                .collect();
-
-            if pending.is_empty() {
-                if use_json {
-                    if let Some(ref name) = args.name {
-                        let output = serde_json::json!({
-                            "status": "not-found",
-                            "name": name,
-                        });
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(&output).unwrap()
-                        );
-                    } else {
-                        println!("[]");
-                    }
-                } else if let Some(ref name) = args.name {
-                    eprintln!("bundle '{name}' 未找到");
-                } else {
-                    eprintln!("没有已安装的 bundle");
-                }
-                return Ok(0);
-            }
-
-            // Dry-run: preview updates without downloading or modifying files.
-            if args.dry_run {
-                return Ok(cmd_update_dry_run_at(
-                    &pending, use_json, args.force,
-                ));
-            }
-
-            let mut results: Vec<serde_json::Value> = Vec::new();
-            let mut had_error = false;
-
-            for entry in &pending {
-                if update_single_bundle_at(
-                    entry,
-                    &mut l,
-                    &mut results,
-                    use_json,
-                    wiki_root,
-                    args.force,
-                )
-                .is_err()
-                {
-                    had_error = true;
-                    let _ = lock::write_lock_at(&l, wiki_root);
-                    break;
-                }
-            }
-
-            if !had_error && let Err(e) = lock::write_lock_at(&l, wiki_root) {
-                let msg = format!("无法写入锁文件: {e}");
+                .collect())
+        }) {
+            Ok(p) => p,
+            Err(e) => {
+                let msg = format!("无法获取文件锁: {e}");
                 if use_json {
                     eprintln!("{msg}");
                 } else {
                     eprintln!("错误: {msg}");
                 }
-                return Ok(1);
+                process::exit(1);
             }
+        };
+    // Lock is DROPPED here — Phase 2 runs entirely outside the lock.
 
-            if use_json {
-                match serde_json::to_string_pretty(&results) {
-                    Ok(s) => println!("{s}"),
-                    Err(e) => {
-                        eprintln!("JSON 序列化失败: {e}");
-                        return Ok(1);
-                    }
-                }
+    // Handle empty pending
+    if pending.is_empty() {
+        if use_json {
+            if let Some(ref name) = args.name {
+                let output = serde_json::json!({
+                    "status": "not-found",
+                    "name": name,
+                });
+                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            } else {
+                println!("[]");
             }
+        } else if let Some(ref name) = args.name {
+            eprintln!("bundle '{name}' 未找到");
+        } else {
+            eprintln!("没有已安装的 bundle");
+        }
+        return;
+    }
 
-            if had_error {
-                return Ok(1);
-            }
+    // Dry-run: preview updates without downloading or modifying files.
+    if args.dry_run {
+        let code = cmd_update_dry_run_at(&pending, use_json, args.force);
+        if code != 0 {
+            process::exit(code);
+        }
+        return;
+    }
 
-            Ok(0)
-        },
+    // ------------------------------------------------------------------
+    // Phase 2 — Outside lock: download + extract + validate (no HTTP under lock)
+    // ------------------------------------------------------------------
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    let (prepared_updates, had_error) = phase2_download_and_prepare(
+        &pending,
+        &mut results,
+        use_json,
+        args.force,
+        wiki_root,
     );
 
-    match result {
-        Ok(code) if code != 0 => process::exit(code),
-        Err(e) => {
-            let msg = format!("无法获取文件锁: {e}");
-            if use_json {
-                eprintln!("{msg}");
-            } else {
-                eprintln!("错误: {msg}");
-            }
-            process::exit(1);
+    if had_error {
+        if use_json && let Ok(s) = serde_json::to_string_pretty(&results) {
+            println!("{s}");
         }
-        _ => {}
+        return;
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 3 — Re-acquire lock: atomic swaps → write lock → regenerate
+    // ------------------------------------------------------------------
+    if !prepared_updates.is_empty() {
+        let (success_entries, commit_error) = phase3_commit_updates(
+            prepared_updates,
+            use_json,
+            wiki_root,
+            &lock_path,
+        );
+
+        results.extend(success_entries);
+
+        if commit_error {
+            if use_json && let Ok(s) = serde_json::to_string_pretty(&results) {
+                println!("{s}");
+            }
+            return;
+        }
+    }
+
+    // All done — print JSON summary if needed (also handles up-to-date case)
+    if use_json && let Ok(s) = serde_json::to_string_pretty(&results) {
+        println!("{s}");
     }
 }
 
@@ -2044,6 +2352,7 @@ fn cmd_uninstall_inner(
     wiki_root: &Path,
 ) -> Result<(), String> {
     let lock_path = wiki_root.join(".zwiki.flock");
+    // NOTE: flock() / fcntl(F_SETLK) is advisory and does NOT work on NFS.
     let result: std::io::Result<Result<(), String>> =
         zutil::fileio::with_file_lock(&lock_path, || {
             let inner: Result<(), String> = (|| {
@@ -2343,7 +2652,7 @@ mod tests {
 
     #[test]
     fn test_list_empty_lock_reads_gracefully() {
-        let lock = lock::ZwikiLock { bundles: Vec::new() };
+        let lock = lock::ZwikiLock::default();
         let formatted = format_bundle_table(&lock);
         assert!(formatted.is_empty());
     }
@@ -2374,7 +2683,7 @@ mod tests {
                 description: None,
             },
         ];
-        let lock = lock::ZwikiLock { bundles: entries };
+        let lock = lock::ZwikiLock { bundles: entries, ..Default::default() };
         let table = format_bundle_table(&lock);
         assert!(table.contains("test-bundle"));
         assert!(table.contains("another-pkg"));
@@ -2389,7 +2698,7 @@ mod tests {
 
     #[test]
     fn test_format_bundle_table_empty() {
-        let lock = lock::ZwikiLock { bundles: Vec::new() };
+        let lock = lock::ZwikiLock::default();
         let table = format_bundle_table(&lock);
         assert!(table.is_empty());
     }
@@ -2404,7 +2713,7 @@ mod tests {
         let wiki_root = tmp.join(".zoo").join("wiki");
         std::fs::create_dir_all(&wiki_root).unwrap();
 
-        let lock = lock::ZwikiLock { bundles: Vec::new() };
+        let lock = lock::ZwikiLock::default();
         regenerate_root_index_at(&lock, &wiki_root);
 
         let index_path = wiki_root.join("index.md");
@@ -2457,6 +2766,7 @@ mod tests {
                     description: None,
                 },
             ],
+            ..Default::default()
         };
         regenerate_root_index_at(&lock, &wiki_root);
 
@@ -2496,6 +2806,7 @@ mod tests {
                 installed_at: "2026-03-01T00:00:00Z".to_string(),
                 description: Some("Org bundle".to_string()),
             }],
+            ..Default::default()
         };
         regenerate_root_index_at(&lock, &wiki_root);
 
@@ -2529,6 +2840,7 @@ mod tests {
                 installed_at: "2026-01-01T00:00:00Z".to_string(),
                 description: None,
             }],
+            ..Default::default()
         };
         regenerate_root_index_at(&lock1, &wiki_root);
 
@@ -2551,6 +2863,7 @@ mod tests {
                 installed_at: "2026-02-01T00:00:00Z".to_string(),
                 description: Some("Second bundle".to_string()),
             }],
+            ..Default::default()
         };
         regenerate_root_index_at(&lock2, &wiki_root);
 
@@ -2629,7 +2942,8 @@ mod tests {
             installed_at: "2026-01-01T00:00:00Z".to_string(),
             description: None,
         };
-        let mut l = lock::ZwikiLock { bundles: vec![entry] };
+        let mut l =
+            lock::ZwikiLock { bundles: vec![entry], ..Default::default() };
 
         let lock_path = wiki_root.join("zwiki.lock");
         let lock_toml = toml::to_string_pretty(&l).unwrap();
@@ -2970,7 +3284,7 @@ include = ["*.md"]
     #[test]
     fn test_check_root_index_missing() {
         let dir = temp_dir("check_root_index_missing");
-        let lock = lock::ZwikiLock { bundles: Vec::new() };
+        let lock = lock::ZwikiLock::default();
         let result = check_root_index(&dir, &lock);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("不存在"));
@@ -2980,7 +3294,7 @@ include = ["*.md"]
     fn test_check_root_index_missing_begin() {
         let dir = temp_dir("check_root_index_missing_begin");
         std::fs::write(dir.join("index.md"), "no markers here\n").unwrap();
-        let lock = lock::ZwikiLock { bundles: Vec::new() };
+        let lock = lock::ZwikiLock::default();
         let result = check_root_index(&dir, &lock);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("BEGIN"));
@@ -2994,7 +3308,7 @@ include = ["*.md"]
             "<!-- ZOO:BUNDLES:BEGIN -->\ncontent\n",
         )
         .unwrap();
-        let lock = lock::ZwikiLock { bundles: Vec::new() };
+        let lock = lock::ZwikiLock::default();
         let result = check_root_index(&dir, &lock);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("END"));
@@ -3018,6 +3332,7 @@ include = ["*.md"]
                 installed_at: "2026-01-01T00:00:00Z".to_string(),
                 description: None,
             }],
+            ..Default::default()
         };
         let result = check_root_index(&dir, &lock);
         assert!(result.is_ok());
@@ -3041,6 +3356,7 @@ include = ["*.md"]
                 installed_at: "2026-01-01T00:00:00Z".to_string(),
                 description: None,
             }],
+            ..Default::default()
         };
         let result = check_root_index(&dir, &lock);
         assert!(result.is_err());
@@ -3263,19 +3579,71 @@ include = ["*.md"]
             installed_at: "2026-01-01T00:00:00Z".to_string(),
             description: None,
         };
-        let l = lock::ZwikiLock { bundles: vec![entry] };
+        let l = lock::ZwikiLock { bundles: vec![entry], ..Default::default() };
         std::fs::write(
             wiki_root.join("zwiki.lock"),
             toml::to_string_pretty(&l).unwrap(),
         )
         .unwrap();
 
-        let result = cmd_check_inner(false, &wiki_root, false);
+        let result = cmd_check_inner(false, &wiki_root, false, false);
         assert!(result.is_err(), "mismatched integrity should return Err");
+    }
+
+    #[test]
+    fn test_cmd_check_inner_fix_cleans_orphans() {
+        let wiki_root = temp_dir("check_inner_fix_orphans");
+        let upstream = wiki_root.join(".upstream");
+        let bundle_dir = upstream.join("test-bundle");
+        std::fs::create_dir_all(&bundle_dir).unwrap();
+        std::fs::write(bundle_dir.join("test.md"), "content").unwrap();
+
+        // Valid lock entry for test-bundle.
+        let entry = lock::ZwikiLockEntry {
+            name: "test-bundle".to_string(),
+            version: "1.0.0".to_string(),
+            registry: String::new(),
+            target: ".upstream/test-bundle/".to_string(),
+            integrity: lock::compute_integrity(&bundle_dir),
+            installed_at: "2026-01-01T00:00:00Z".to_string(),
+            description: None,
+        };
+        let l = lock::ZwikiLock { bundles: vec![entry], ..Default::default() };
+        std::fs::write(
+            wiki_root.join("zwiki.lock"),
+            toml::to_string_pretty(&l).unwrap(),
+        )
+        .unwrap();
+
+        // Orphan directory — exists but no lock entry.
+        let orphan_dir = upstream.join("orphan-bundle");
+        std::fs::create_dir_all(&orphan_dir).unwrap();
+        std::fs::write(orphan_dir.join("orphan.md"), "orphan").unwrap();
+
+        // Stale temp directory from interrupted atomic_dir_swap.
+        let stale_temp = wiki_root.join(".old_stale");
+        std::fs::create_dir_all(&stale_temp).unwrap();
+        std::fs::write(stale_temp.join("data.md"), "stale").unwrap();
+
+        // Run fix.
+        let result = cmd_check_inner(false, &wiki_root, true, false);
+        assert!(result.is_ok(), "fix should succeed");
+
+        // Assert orphan directory removed.
+        assert!(!orphan_dir.exists(), "orphan directory should be removed");
+
+        // Assert stale temp directory removed.
+        assert!(!stale_temp.exists(), "stale temp directory should be removed");
+
+        // Assert lock still valid — entry intact.
+        let lock_after = lock::read_lock_at(&wiki_root).unwrap();
+        assert_eq!(lock_after.bundles.len(), 1);
+        assert_eq!(lock_after.bundles[0].name, "test-bundle");
     }
 
     // -------------------------------------------------------------------
     // cmd_uninstall_inner — error path returns Err (no process::exit)
+    // -------------------------------------------------------------------
     // -------------------------------------------------------------------
 
     #[test]
@@ -3310,6 +3678,7 @@ include = ["*.md"]
                 installed_at: "2026-01-01T00:00:00Z".to_string(),
                 description: None,
             }],
+            ..Default::default()
         };
         let result = check_root_index(&dir, &lock);
         assert!(result.is_err());
@@ -3318,11 +3687,11 @@ include = ["*.md"]
     }
 
     // -------------------------------------------------------------------
-    // update_single_bundle_at — error path returns Err (no process::exit)
+    // cmd_update_at — Phase 2 staging error is handled gracefully
     // -------------------------------------------------------------------
 
     #[test]
-    fn test_update_single_bundle_at_returns_err_on_copy_failure() {
+    fn test_cmd_update_at_handles_staging_error_gracefully() {
         use std::io::{Read, Write};
         use std::net::TcpListener;
         use std::os::unix::fs::PermissionsExt;
@@ -3369,7 +3738,6 @@ include = ["*.md"]
         });
 
         let wiki_root = temp_dir("update_err_copy");
-        let lock_path = wiki_root.join("zwiki.lock");
         let entry = lock::ZwikiLockEntry {
             name: "test-bundle".to_string(),
             version: "1.0.0".to_string(),
@@ -3379,37 +3747,53 @@ include = ["*.md"]
             installed_at: "2026-01-01T00:00:00Z".to_string(),
             description: None,
         };
-        let lock = lock::ZwikiLock { bundles: vec![entry.clone()] };
-        std::fs::write(&lock_path, toml::to_string_pretty(&lock).unwrap())
-            .unwrap();
+        let lock =
+            lock::ZwikiLock { bundles: vec![entry], ..Default::default() };
+        std::fs::write(
+            wiki_root.join("zwiki.lock"),
+            toml::to_string_pretty(&lock).unwrap(),
+        )
+        .unwrap();
 
         let upstream = wiki_root.join(".upstream");
         std::fs::create_dir_all(&upstream).unwrap();
         std::fs::set_permissions(&upstream, PermissionsExt::from_mode(0o444))
             .unwrap();
 
-        let mut lock_mut = lock::read_lock_at(&wiki_root).unwrap();
-        let mut results = Vec::new();
+        let args = UpdateArgs {
+            name: Some("test-bundle".to_string()),
+            force: false,
+            json: false,
+            dry_run: false,
+        };
 
-        let result = update_single_bundle_at(
-            &entry,
-            &mut lock_mut,
-            &mut results,
-            false,
-            &wiki_root,
-            false,
-        );
-        assert!(
-            result.is_err(),
-            "update should fail when target dir is non-writable"
-        );
-
-        server.join().unwrap();
+        let test_result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                cmd_update_at(&args, false, &wiki_root);
+            }));
 
         let _ = std::fs::set_permissions(
             &upstream,
             PermissionsExt::from_mode(0o755),
         );
+
+        assert!(
+            test_result.is_ok(),
+            "cmd_update_at should not panic on staging error"
+        );
+
+        // Lock file should be unchanged (Phase 3 is never reached)
+        let lock_content =
+            std::fs::read_to_string(wiki_root.join("zwiki.lock")).unwrap();
+        let updated_lock: lock::ZwikiLock =
+            toml::from_str(&lock_content).unwrap();
+        assert_eq!(updated_lock.bundles.len(), 1);
+        assert_eq!(
+            updated_lock.bundles[0].version, "1.0.0",
+            "lock should retain old version"
+        );
+
+        server.join().unwrap();
     }
 
     // -------------------------------------------------------------------
@@ -3499,7 +3883,10 @@ include = ["*.md"]
             installed_at: "2026-01-01T00:00:00Z".to_string(),
             description: None,
         };
-        let lock = lock::ZwikiLock { bundles: vec![entry_a, entry_b] };
+        let lock = lock::ZwikiLock {
+            bundles: vec![entry_a, entry_b],
+            ..Default::default()
+        };
         std::fs::write(
             wiki_root.join("zwiki.lock"),
             toml::to_string_pretty(&lock).unwrap(),
@@ -3523,9 +3910,10 @@ include = ["*.md"]
         };
         let use_json = false;
 
-        let result =
+        let test_result =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 cmd_update_at(&args, use_json, &wiki_root);
+                server.join().unwrap();
             }));
 
         let _ = std::fs::set_permissions(
@@ -3533,8 +3921,8 @@ include = ["*.md"]
             PermissionsExt::from_mode(0o755),
         );
 
-        if result.is_err() {
-            eprintln!("cmd_update_at panicked (not process::exit)");
+        if test_result.is_err() {
+            eprintln!("cmd_update_at or server panicked (not process::exit)");
         }
 
         let lock_path = wiki_root.join("zwiki.lock");
@@ -3551,7 +3939,9 @@ include = ["*.md"]
             "bundle-a should have been updated to 2.0.0"
         );
 
-        server.join().unwrap();
+        if let Err(e) = test_result {
+            std::panic::resume_unwind(e);
+        }
     }
 
     // -------------------------------------------------------------------
@@ -3619,7 +4009,8 @@ include = ["*.md"]
             installed_at: "2026-01-01T00:00:00Z".to_string(),
             description: None,
         };
-        let lock = lock::ZwikiLock { bundles: vec![entry] };
+        let lock =
+            lock::ZwikiLock { bundles: vec![entry], ..Default::default() };
         std::fs::write(
             wiki_root.join("zwiki.lock"),
             toml::to_string_pretty(&lock).unwrap(),

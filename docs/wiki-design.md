@@ -827,6 +827,7 @@ exclude = ["concepts/internal-*", "personal/"]
 - 不设 `[dependencies]`——wiki bundle 没有可执行依赖，跨包引用通过 `@name/path` 和 `relations` 字段表达，不需要包管理器级别的依赖解析。
 - 不设 `[federation]`——Markdown 内容无可执行威胁面，知识可靠性由矛盾检测/取代链/来源回溯在内容层保障。安装前静态信任检查对纯文本内容无效（你不读不知道它对不对）。
 - 不设独立 registry 服务——`teams.toml` 即注册表，文件即协议。非 team bundle 直接传 URL 或路径给 `install`。
+- 文件锁定使用 `flock()`（macOS）/ `fcntl(F_SETLK)`（Linux），两者均为 advisory 锁，**不适用于 NFS**。Wiki 目录不应放在 NFS 上。若需要在 NFS 上使用，需额外配置基于 `dotlock` 的互斥机制（未实现）。
 
 **`@name/path` 跨层引用：**
 

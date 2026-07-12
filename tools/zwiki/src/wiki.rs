@@ -1121,7 +1121,53 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // 8. page_matches_slice
+    // 8. domain_of
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_domain_of_teams_bundle() {
+        assert_eq!(
+            domain_of(".teams/my-team/autoresearch/concepts/foo.md"),
+            "autoresearch"
+        );
+    }
+
+    #[test]
+    fn test_domain_of_upstream_bundle() {
+        assert_eq!(domain_of(".upstream/some-bundle/domain/page.md"), "domain");
+    }
+
+    #[test]
+    fn test_domain_of_org_bundle() {
+        assert_eq!(
+            domain_of(".org/org-bundle/topic/subtopic/file.md"),
+            "topic"
+        );
+    }
+
+    #[test]
+    fn test_domain_of_bundle_md_file_no_subdir() {
+        // .md file at bundle root — no domain subdirectory.
+        assert_eq!(domain_of(".teams/team/readme.md"), "");
+    }
+
+    #[test]
+    fn test_domain_of_personal_space() {
+        assert_eq!(domain_of("personal/shared/concepts/bar.md"), "shared");
+    }
+
+    #[test]
+    fn test_domain_of_root_level_file() {
+        assert_eq!(domain_of("just-a-file.md"), "");
+    }
+
+    #[test]
+    fn test_domain_of_empty_string() {
+        assert_eq!(domain_of(""), "");
+    }
+
+    // -------------------------------------------------------------------
+    // 9. page_matches_slice
     // -------------------------------------------------------------------
 
     #[test]
