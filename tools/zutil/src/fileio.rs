@@ -44,12 +44,35 @@ pub fn write_atomic_bytes(path: &Path, content: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// Write to `path` atomically via a temporary sibling file, using a closure
+/// for streaming/binary data that is written to the temp file first, then
+/// atomically renamed to the target path.
+///
+/// This follows the same atomic-rename pattern as [`write_atomic`] but is
+/// suitable for binary data or streaming writers (e.g. gzip encoders).
+///
+/// # Errors
+///
+/// Returns an I/O error if the temporary file cannot be created, the closure
+/// fails, or the rename fails.
+pub fn write_atomic_stream(
+    path: &Path,
+    write_fn: impl FnOnce(&mut std::fs::File) -> io::Result<()>,
+) -> io::Result<()> {
+    let tmp = tmp_path_for(path);
+    let mut f = std::fs::File::create(&tmp)?;
+    write_fn(&mut f)?;
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
+}
+
 /// Return the `.tmp` sibling path for `path`.
 ///
 /// If `path` has an extension, the extension is suffixed with `.tmp`
 /// (e.g. `foo.lock` → `foo.lock.tmp`).  If `path` has no extension,
 /// `.tmp` is appended directly (e.g. `foo` → `foo.tmp`).
-fn tmp_path_for(path: &Path) -> std::path::PathBuf {
+pub(crate) fn tmp_path_for(path: &Path) -> std::path::PathBuf {
     let ext = path.extension().map(|e| e.to_string_lossy()).unwrap_or_default();
     path.with_extension(format!("{ext}.tmp"))
 }

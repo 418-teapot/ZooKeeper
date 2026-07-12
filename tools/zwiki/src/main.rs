@@ -595,7 +595,10 @@ fn dispatch_check_no_arg(
     write_actions: Vec<WriteAction>,
 ) {
     let wiki_root = wiki::wiki_dir();
-    let lock = bundle::read_lock();
+    let lock = bundle::read_lock_at(&wiki_root).unwrap_or_else(|msg| {
+        eprintln!("{msg}");
+        process::exit(1);
+    });
     let code = dispatch_check_no_arg_inner(
         &wiki_root,
         &lock,

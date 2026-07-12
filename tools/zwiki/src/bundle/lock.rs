@@ -9,8 +9,6 @@ use walkdir::WalkDir;
 
 use sha2::{Digest, Sha256};
 
-use crate::wiki;
-
 /// The lock file tracking installed bundles under `~/.zoo/wiki/zwiki.lock`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ZwikiLock {
@@ -33,50 +31,19 @@ pub struct ZwikiLockEntry {
     pub description: Option<String>,
 }
 
-/// Return the absolute path to the lock file.
-#[must_use]
-pub fn lock_path() -> PathBuf {
-    wiki::wiki_dir().join("zwiki.lock")
-}
-
-/// Read the lock file from disk, returning an empty lock if it doesn't exist.
-#[must_use]
-pub fn read_lock() -> ZwikiLock {
-    let path = lock_path();
-    if !path.exists() {
-        return ZwikiLock { bundles: Vec::new() };
-    }
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("警告: 无法读取 zwiki.lock ({e})，已重置");
-            return ZwikiLock { bundles: Vec::new() };
-        }
-    };
-    toml::from_str(&content).unwrap_or_else(|e| {
-        eprintln!("警告: zwiki.lock 损坏 ({e})，已重置");
-        ZwikiLock { bundles: Vec::new() }
-    })
-}
-
 /// Read the lock file from a specific wiki root (testable variant).
-#[must_use]
-pub fn read_lock_at(wiki_root: &Path) -> ZwikiLock {
+///
+/// Returns `Ok(ZwikiLock { bundles: Vec::new() })` if the file does not exist
+/// (valid initial state).  Returns `Err(...)` if the file exists but cannot be
+/// read or parsed — the user must fix this corrupt state.
+pub fn read_lock_at(wiki_root: &Path) -> Result<ZwikiLock, String> {
     let path = wiki_root.join("zwiki.lock");
     if !path.exists() {
-        return ZwikiLock { bundles: Vec::new() };
+        return Ok(ZwikiLock { bundles: Vec::new() });
     }
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("警告: 无法读取 zwiki.lock ({e})，已重置");
-            return ZwikiLock { bundles: Vec::new() };
-        }
-    };
-    toml::from_str(&content).unwrap_or_else(|e| {
-        eprintln!("警告: zwiki.lock 损坏 ({e})，已重置");
-        ZwikiLock { bundles: Vec::new() }
-    })
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("无法读取 zwiki.lock: {e}"))?;
+    toml::from_str(&content).map_err(|e| format!("zwiki.lock 损坏: {e}"))
 }
 
 /// Write the lock file to a specific wiki root (testable variant).

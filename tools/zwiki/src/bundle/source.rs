@@ -11,7 +11,7 @@ use crate::bundle::http;
 /// containing `bundle.toml`.
 ///
 /// Returns a `TempDir` that is cleaned up when the returned value is dropped.
-pub fn resolve_source(source: &str, use_json: bool) -> Result<TempDir, ()> {
+pub fn resolve_source(source: &str, use_json: bool) -> Result<TempDir, String> {
     // URL source
     if source.starts_with("http://") || source.starts_with("https://") {
         return resolve_url_source(source, use_json);
@@ -30,34 +30,23 @@ pub fn resolve_source(source: &str, use_json: bool) -> Result<TempDir, ()> {
     // Local directory
     let dir = Path::new(source);
     if dir.is_dir() {
-        let tmp = match TempDir::new() {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!(
-                    "{}",
-                    if use_json {
-                        format!("cannot create temp directory: {e}")
-                    } else {
-                        format!("无法创建临时目录: {e}")
-                    }
-                );
-                return Err(());
+        let tmp = TempDir::new().map_err(|e| {
+            if use_json {
+                format!("cannot create temp directory: {e}")
+            } else {
+                format!("无法创建临时目录: {e}")
             }
-        };
+        })?;
 
-        if let Err(e) =
-            crate::bundle::tar::copy_recursive(dir, tmp.path(), false)
-        {
-            eprintln!(
-                "{}",
+        crate::bundle::tar::copy_recursive(dir, tmp.path(), false).map_err(
+            |e| {
                 if use_json {
                     format!("cannot copy source directory: {e}")
                 } else {
                     format!("无法复制源目录: {e}")
                 }
-            );
-            return Err(());
-        }
+            },
+        )?;
 
         return Ok(tmp);
     }
@@ -67,16 +56,7 @@ pub fn resolve_source(source: &str, use_json: bool) -> Result<TempDir, ()> {
     } else {
         format!("源 '{source}' 不是文件、目录或 URL")
     };
-    if use_json {
-        let output = serde_json::json!({
-            "status": "fatal",
-            "error": msg,
-        });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
-    } else {
-        eprintln!("{msg}");
-    }
-    Err(())
+    Err(msg)
 }
 
 /// Download a single file from a directory URL and write it to `tmp_path`.
@@ -85,95 +65,69 @@ fn download_single_file(
     pattern: &str,
     tmp_path: &Path,
     use_json: bool,
-) -> Result<(), ()> {
+) -> Result<(), String> {
     let file_url = format!("{}/{}", url.trim_end_matches('/'), pattern);
     let file_resp = http::http_client().get(&file_url).send();
     let resp = match file_resp {
         Ok(r) if r.status().is_success() => r,
         Ok(r) => {
-            eprintln!(
-                "{}",
-                if use_json {
-                    format!(
-                        "cannot fetch '{}' (status {})",
-                        file_url,
-                        r.status()
-                    )
-                } else {
-                    format!("无法获取 '{}' (状态 {})", file_url, r.status())
-                }
-            );
-            return Err(());
+            let status = r.status();
+            let _ = r.text();
+            return Err(if use_json {
+                format!("cannot fetch '{file_url}' (status {status})")
+            } else {
+                format!("无法获取 '{file_url}' (状态 {status})")
+            });
         }
         Err(e) => {
-            eprintln!(
-                "{}",
-                if use_json {
-                    format!("cannot fetch '{file_url}': {e}")
-                } else {
-                    format!("无法获取 '{file_url}': {e}")
-                }
-            );
-            return Err(());
+            return Err(if use_json {
+                format!("cannot fetch '{file_url}': {e}")
+            } else {
+                format!("无法获取 '{file_url}': {e}")
+            });
         }
     };
 
     if let Some(cl) = resp.content_length()
         && cl > http::MAX_BUNDLE_SIZE
     {
-        eprintln!(
-            "{}",
-            if use_json {
-                format!(
-                    "response too large for '{file_url}': {cl} bytes (max {})",
-                    http::MAX_BUNDLE_SIZE
-                )
-            } else {
-                format!(
-                    "响应过大 '{file_url}': {cl} 字节 (最大 {})",
-                    http::MAX_BUNDLE_SIZE
-                )
-            }
-        );
-        return Err(());
+        return Err(if use_json {
+            format!(
+                "response too large for '{file_url}': {cl} bytes (max {})",
+                http::MAX_BUNDLE_SIZE
+            )
+        } else {
+            format!(
+                "响应过大 '{file_url}': {cl} 字节 (最大 {})",
+                http::MAX_BUNDLE_SIZE
+            )
+        });
     }
 
     let bytes = http::read_body_capped(resp).map_err(|e| {
-        eprintln!(
-            "{}",
-            if use_json {
-                format!("cannot read '{file_url}': {e}")
-            } else {
-                format!("无法读取 '{file_url}': {e}")
-            }
-        );
+        if use_json {
+            format!("cannot read '{file_url}': {e}")
+        } else {
+            format!("无法读取 '{file_url}': {e}")
+        }
     })?;
 
     let target_path = tmp_path.join(pattern);
     if let Some(parent) = target_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
-            eprintln!(
-                "{}",
-                if use_json {
-                    format!(
-                        "cannot create directory '{}': {e}",
-                        parent.display()
-                    )
-                } else {
-                    format!("无法创建目录 '{}': {e}", parent.display())
-                }
-            );
+            if use_json {
+                format!("cannot create directory '{}': {e}", parent.display())
+            } else {
+                format!("无法创建目录 '{}': {e}", parent.display())
+            }
         })?;
     }
     std::fs::write(&target_path, &bytes).map_err(|e| {
-        eprintln!(
-            "{}",
-            if use_json {
-                format!("cannot write '{}': {e}", target_path.display())
-            } else {
-                format!("无法写入 '{}': {e}", target_path.display())
-            }
-        );
+        if use_json {
+            format!("cannot write '{}': {e}", target_path.display())
+        } else {
+            format!("无法写入 '{}': {e}", target_path.display())
+        }
     })?;
 
     Ok(())
@@ -201,7 +155,7 @@ fn download_manifest_files(
     include: &[String],
     exclude: &[String],
     use_json: bool,
-) -> Result<(), ()> {
+) -> Result<(), String> {
     for pattern in include {
         // Skip glob patterns — we can only download specific files from a
         // plain directory URL.  A tar.gz URL is required for glob-based
@@ -210,20 +164,18 @@ fn download_manifest_files(
             || pattern.contains('?')
             || pattern.contains('[')
         {
-            eprintln!(
-                "{}",
-                if use_json {
-                    format!(
-                        "warning: cannot download files matching glob pattern \
-                         '{pattern}' from directory URL — use a tar.gz URL instead"
-                    )
-                } else {
-                    format!(
-                        "警告: 无法从目录 URL 下载匹配 glob 模式 \
-                         '{pattern}' 的文件，请使用 tar.gz URL"
-                    )
-                }
-            );
+            let msg = if use_json {
+                format!(
+                    "warning: cannot download files matching glob pattern \
+                     '{pattern}' from directory URL — use a tar.gz URL instead"
+                )
+            } else {
+                format!(
+                    "警告: 无法从目录 URL 下载匹配 glob 模式 \
+                     '{pattern}' 的文件，请使用 tar.gz URL"
+                )
+            };
+            eprintln!("{msg}");
             continue;
         }
 
@@ -232,14 +184,12 @@ fn download_manifest_files(
         if pattern_path.is_absolute()
             || pattern_path.components().any(|c| c == Component::ParentDir)
         {
-            eprintln!(
-                "{}",
-                if use_json {
-                    format!("warning: skipping out-of-bounds path '{pattern}'")
-                } else {
-                    format!("警告: 跳过越界路径: {pattern}")
-                }
-            );
+            let msg = if use_json {
+                format!("warning: skipping out-of-bounds path '{pattern}'")
+            } else {
+                format!("警告: 跳过越界路径: {pattern}")
+            };
+            eprintln!("{msg}");
             continue;
         }
 
@@ -261,87 +211,63 @@ fn download_dir_from_url(
     url: &str,
     tmp_path: &Path,
     use_json: bool,
-) -> Result<(), ()> {
+) -> Result<(), String> {
     let bundle_url = format!("{}/bundle.toml", url.trim_end_matches('/'));
     let bundle_resp = match http::http_client().get(&bundle_url).send() {
         Ok(resp) => resp,
         Err(e) => {
-            eprintln!(
-                "{}",
-                if use_json {
-                    format!("cannot fetch '{bundle_url}': {e}")
-                } else {
-                    format!("无法访问 '{bundle_url}': {e}")
-                }
-            );
-            return Err(());
+            return Err(if use_json {
+                format!("cannot fetch '{bundle_url}': {e}")
+            } else {
+                format!("无法访问 '{bundle_url}': {e}")
+            });
         }
     };
 
     if !bundle_resp.status().is_success() {
-        eprintln!(
-            "{}",
-            if use_json {
-                format!(
-                    "cannot find bundle.toml at '{}' (status {})",
-                    bundle_url,
-                    bundle_resp.status()
-                )
-            } else {
-                format!(
-                    "在 '{}' 未找到 bundle.toml (状态 {})",
-                    bundle_url,
-                    bundle_resp.status()
-                )
-            }
-        );
-        return Err(());
+        let status = bundle_resp.status();
+        let _ = bundle_resp.text();
+        return Err(if use_json {
+            format!(
+                "cannot find bundle.toml at '{bundle_url}' (status {status})",
+            )
+        } else {
+            format!("在 '{bundle_url}' 未找到 bundle.toml (状态 {status})")
+        });
     }
 
     if let Some(cl) = bundle_resp.content_length()
         && cl > http::MAX_BUNDLE_SIZE
     {
-        eprintln!(
-            "{}",
-            if use_json {
-                format!(
-                    "response too large for '{bundle_url}': {cl} bytes (max {})",
-                    http::MAX_BUNDLE_SIZE
-                )
-            } else {
-                format!("响应过大: {cl} 字节 (最大 {})", http::MAX_BUNDLE_SIZE)
-            }
-        );
-        return Err(());
+        return Err(if use_json {
+            format!(
+                "response too large for '{bundle_url}': {cl} bytes (max {})",
+                http::MAX_BUNDLE_SIZE
+            )
+        } else {
+            format!("响应过大: {cl} 字节 (最大 {})", http::MAX_BUNDLE_SIZE)
+        });
     }
 
     let bundle_content = match http::read_body_capped_string(bundle_resp) {
         Ok(content) => content,
         Err(e) => {
-            eprintln!(
-                "{}",
-                if use_json {
-                    format!("cannot read bundle.toml: {e}")
-                } else {
-                    format!("无法读取 bundle.toml: {e}")
-                }
-            );
-            return Err(());
+            return Err(if use_json {
+                format!("cannot read bundle.toml: {e}")
+            } else {
+                format!("无法读取 bundle.toml: {e}")
+            });
         }
     };
 
     let btoml_path = tmp_path.join("bundle.toml");
-    if let Err(e) = std::fs::write(&btoml_path, &bundle_content) {
-        eprintln!(
-            "{}",
-            if use_json {
-                format!("cannot write bundle.toml: {e}")
-            } else {
-                format!("无法写入 bundle.toml: {e}")
-            }
-        );
-        return Err(());
-    }
+    std::fs::write(&btoml_path, &bundle_content).map_err(|e| {
+        if use_json {
+            format!("cannot write bundle.toml: {e}")
+        } else {
+            format!("无法写入 bundle.toml: {e}")
+        }
+    })?;
 
     if let Ok(manifest) = toml::from_str::<
         crate::bundle::manifest::BundleManifest,
@@ -354,27 +280,29 @@ fn download_dir_from_url(
             &manifest.export.exclude,
             use_json,
         )?;
+    } else {
+        // Valid TOML but not a valid BundleManifest structure — warn but
+        // continue with what was already downloaded.
+        let msg = if use_json {
+            "warning: cannot parse remote bundle.toml structure, skipping file download".to_string()
+        } else {
+            "警告: 无法解析远程 bundle.toml 结构，跳过文件下载".to_string()
+        };
+        eprintln!("{msg}");
     }
 
     Ok(())
 }
 
 /// Resolve a URL source by downloading bundle content.
-fn resolve_url_source(url: &str, use_json: bool) -> Result<TempDir, ()> {
-    let tmp = match tempfile::tempdir() {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!(
-                "{}",
-                if use_json {
-                    format!("cannot create temp directory: {e}")
-                } else {
-                    format!("无法创建临时目录: {e}")
-                }
-            );
-            return Err(());
+fn resolve_url_source(url: &str, use_json: bool) -> Result<TempDir, String> {
+    let tmp = tempfile::tempdir().map_err(|e| {
+        if use_json {
+            format!("cannot create temp directory: {e}")
+        } else {
+            format!("无法创建临时目录: {e}")
         }
-    };
+    })?;
 
     let url_lower = url.to_lowercase();
     let is_tar = url_lower.ends_with(".tar.gz")
@@ -382,38 +310,28 @@ fn resolve_url_source(url: &str, use_json: bool) -> Result<TempDir, ()> {
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("tgz"));
 
-    let response = match http::http_client().get(url).send() {
-        Ok(resp) => resp,
-        Err(e) => {
-            eprintln!(
-                "{}",
-                if use_json {
+    if is_tar {
+        let response = match http::http_client().get(url).send() {
+            Ok(resp) => resp,
+            Err(e) => {
+                return Err(if use_json {
                     format!("cannot fetch URL '{url}': {e}")
                 } else {
                     format!("无法访问 URL '{url}': {e}")
-                }
-            );
-            return Err(());
-        }
-    };
-
-    if !response.status().is_success() {
-        eprintln!(
-            "{}",
-            if use_json {
-                format!(
-                    "fetching '{}' returned status {}",
-                    url,
-                    response.status()
-                )
-            } else {
-                format!("访问 '{}' 返回状态 {}", url, response.status())
+                });
             }
-        );
-        return Err(());
-    }
+        };
 
-    if is_tar {
+        if !response.status().is_success() {
+            let status = response.status();
+            let _ = response.text();
+            return Err(if use_json {
+                format!("fetching '{url}' returned status {status}")
+            } else {
+                format!("访问 '{url}' 返回状态 {status}")
+            });
+        }
+
         extract_tar_response(response, tmp.path(), use_json)?;
     } else {
         download_dir_from_url(url, tmp.path(), use_json)?;
@@ -427,99 +345,69 @@ fn extract_tar_response(
     response: reqwest::blocking::Response,
     tmp: &Path,
     use_json: bool,
-) -> Result<(), ()> {
+) -> Result<(), String> {
     if let Some(cl) = response.content_length()
         && cl > http::MAX_BUNDLE_SIZE
     {
-        eprintln!(
-            "{}",
-            if use_json {
-                format!(
-                    "response too large: {cl} bytes (max {})",
-                    http::MAX_BUNDLE_SIZE
-                )
-            } else {
-                format!("响应过大: {cl} 字节 (最大 {})", http::MAX_BUNDLE_SIZE)
-            }
-        );
-        return Err(());
+        return Err(if use_json {
+            format!(
+                "response too large: {cl} bytes (max {})",
+                http::MAX_BUNDLE_SIZE
+            )
+        } else {
+            format!("响应过大: {cl} 字节 (最大 {})", http::MAX_BUNDLE_SIZE)
+        });
     }
-    let bytes = match http::read_body_capped(response) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!(
-                "{}",
-                if use_json {
-                    format!("cannot read response body: {e}")
-                } else {
-                    format!("无法读取响应内容: {e}")
-                }
-            );
-            return Err(());
+    let bytes = http::read_body_capped(response).map_err(|e| {
+        if use_json {
+            format!("cannot read response body: {e}")
+        } else {
+            format!("无法读取响应内容: {e}")
         }
-    };
+    })?;
 
     let decoder = flate2::read::GzDecoder::new(std::io::Cursor::new(bytes));
     let mut archive = tar::Archive::new(decoder);
-    if let Err(e) = crate::bundle::tar::safe_unpack(&mut archive, tmp) {
-        eprintln!(
-            "{}",
-            if use_json {
-                format!("cannot extract tar.gz: {e}")
-            } else {
-                format!("无法解压 tar.gz: {e}")
-            }
-        );
-        return Err(());
-    }
+    crate::bundle::tar::safe_unpack(&mut archive, tmp).map_err(|e| {
+        if use_json {
+            format!("cannot extract tar.gz: {e}")
+        } else {
+            format!("无法解压 tar.gz: {e}")
+        }
+    })?;
     Ok(())
 }
 
 /// Resolve a local tar.gz file by extracting to a temp directory.
-fn resolve_tar_source(tar_path: &Path, use_json: bool) -> Result<TempDir, ()> {
-    let tmp = match tempfile::tempdir() {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!(
-                "{}",
-                if use_json {
-                    format!("cannot create temp directory: {e}")
-                } else {
-                    format!("无法创建临时目录: {e}")
-                }
-            );
-            return Err(());
+fn resolve_tar_source(
+    tar_path: &Path,
+    use_json: bool,
+) -> Result<TempDir, String> {
+    let tmp = tempfile::tempdir().map_err(|e| {
+        if use_json {
+            format!("cannot create temp directory: {e}")
+        } else {
+            format!("无法创建临时目录: {e}")
         }
-    };
+    })?;
 
-    let file = match std::fs::File::open(tar_path) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!(
-                "{}",
-                if use_json {
-                    format!("cannot open '{}': {e}", tar_path.display())
-                } else {
-                    format!("无法打开 '{}': {e}", tar_path.display())
-                }
-            );
-            return Err(());
+    let file = std::fs::File::open(tar_path).map_err(|e| {
+        if use_json {
+            format!("cannot open '{}': {e}", tar_path.display())
+        } else {
+            format!("无法打开 '{}': {e}", tar_path.display())
         }
-    };
+    })?;
 
     let decoder = flate2::read::GzDecoder::new(file);
     let mut archive = tar::Archive::new(decoder);
-    if let Err(e) = crate::bundle::tar::safe_unpack(&mut archive, tmp.path()) {
-        eprintln!(
-            "{}",
-            if use_json {
-                format!("cannot extract '{}': {e}", tar_path.display())
-            } else {
-                format!("无法解压 '{}': {e}", tar_path.display())
-            }
-        );
-        return Err(());
-    }
+    crate::bundle::tar::safe_unpack(&mut archive, tmp.path()).map_err(|e| {
+        if use_json {
+            format!("cannot extract '{}': {e}", tar_path.display())
+        } else {
+            format!("无法解压 '{}': {e}", tar_path.display())
+        }
+    })?;
 
     Ok(tmp)
 }
@@ -528,7 +416,7 @@ fn resolve_tar_source(tar_path: &Path, use_json: bool) -> Result<TempDir, ()> {
 pub fn resolve_target_rel(
     manifest: &crate::bundle::manifest::BundleManifest,
     use_json: bool,
-) -> Result<String, ()> {
+) -> Result<String, String> {
     let kind = manifest.package.kind.trim().to_lowercase();
     match kind.as_str() {
         "upstream" => Ok(format!(".upstream/{}/", manifest.package.name)),
@@ -536,29 +424,19 @@ pub fn resolve_target_rel(
         "team" => {
             let team = manifest.package.team.as_deref().unwrap_or_default();
             if team.is_empty() {
-                eprintln!(
-                    "{}",
-                    if use_json {
-                        "team bundles require a 'team' field".to_string()
-                    } else {
-                        "团队 bundle 需要指定 team 字段".to_string()
-                    }
-                );
-                return Err(());
+                return Err(if use_json {
+                    "team bundles require a 'team' field".to_string()
+                } else {
+                    "团队 bundle 需要指定 team 字段".to_string()
+                });
             }
             Ok(format!(".teams/{team}/"))
         }
-        _ => {
-            eprintln!(
-                "{}",
-                if use_json {
-                    format!("unknown kind '{kind}'")
-                } else {
-                    format!("未知的 kind 值 '{kind}'")
-                }
-            );
-            Err(())
-        }
+        _ => Err(if use_json {
+            format!("unknown kind '{kind}'")
+        } else {
+            format!("未知的 kind 值 '{kind}'")
+        }),
     }
 }
 
@@ -571,35 +449,17 @@ pub fn resolve_target_rel(
 /// avoiding a temp-dir leak on the error path.
 pub fn check_bundle_structure(
     source_dir: &Path,
-    use_json: bool,
-) -> Result<(), ()> {
+    _use_json: bool,
+) -> Result<(), String> {
     let index_path = source_dir.join("index.md");
     let logs_path = source_dir.join("logs");
 
     if !index_path.exists() || !index_path.is_file() {
-        if use_json {
-            let output = serde_json::json!({
-                "status": "fatal",
-                "error": "bundle 缺少 index.md"
-            });
-            println!("{}", serde_json::to_string_pretty(&output).unwrap());
-        } else {
-            eprintln!("错误: bundle 缺少 index.md");
-        }
-        return Err(());
+        return Err("bundle 缺少 index.md".to_string());
     }
 
     if !logs_path.exists() || !logs_path.is_dir() {
-        if use_json {
-            let output = serde_json::json!({
-                "status": "fatal",
-                "error": "bundle 缺少 logs 目录"
-            });
-            println!("{}", serde_json::to_string_pretty(&output).unwrap());
-        } else {
-            eprintln!("错误: bundle 缺少 logs 目录");
-        }
-        return Err(());
+        return Err("bundle 缺少 logs 目录".to_string());
     }
 
     Ok(())

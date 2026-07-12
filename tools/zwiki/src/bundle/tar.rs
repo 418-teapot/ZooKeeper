@@ -8,15 +8,7 @@ use flate2::{Compression, write::GzEncoder};
 use tar::Builder;
 use walkdir::WalkDir;
 
-// ---------------------------------------------------------------------------
-// Atomic write via temp-file + rename (same pattern as zutil::fileio)
-// ---------------------------------------------------------------------------
-
-/// Return the `.tmp` sibling path for `path`.
-fn tmp_path_for(path: &Path) -> PathBuf {
-    let ext = path.extension().map(|e| e.to_string_lossy()).unwrap_or_default();
-    path.with_extension(format!("{ext}.tmp"))
-}
+use zutil::fileio;
 
 // ---------------------------------------------------------------------------
 // Safe tar extraction — prevents path traversal
@@ -101,53 +93,37 @@ pub fn copy_recursive(
 ///
 /// # Errors
 ///
-/// Returns `Err(())` if a glob pattern is invalid, fails to match any files,
+/// Returns `Err(String)` if a glob pattern is invalid, fails to match any files,
 /// or encounters an I/O error during matching.
 pub fn collect_export_files(
     bundle_dir: &Path,
     include: &[String],
     exclude: &[String],
     use_json: bool,
-) -> Result<Vec<PathBuf>, ()> {
+) -> Result<Vec<PathBuf>, String> {
     let mut files: Vec<PathBuf> = Vec::new();
     let mut seen: HashSet<PathBuf> = HashSet::new();
 
-    let canonical_bundle = bundle_dir.canonicalize().map_err(|e| {
-        eprintln!(
-            "{}",
-            if use_json {
-                format!("cannot resolve bundle directory: {e}")
-            } else {
-                format!("无法解析 bundle 目录: {e}")
-            }
-        );
-    })?;
+    let canonical_bundle = bundle_dir
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve bundle directory: {e}"))?;
 
     for pattern in include {
         let full_pattern =
             bundle_dir.join(pattern).to_string_lossy().to_string();
-        let glob_result = glob::glob(&full_pattern).map_err(|e| {
-            eprintln!(
-                "{}",
-                if use_json {
-                    format!("invalid glob pattern '{pattern}': {e}")
-                } else {
-                    format!("无效的 glob 模式 '{pattern}': {e}")
-                }
-            );
-        })?;
+        let glob_result = glob::glob(&full_pattern)
+            .map_err(|e| format!("invalid glob pattern '{pattern}': {e}"))?;
 
         let mut matches: Vec<PathBuf> = Vec::new();
         for entry in glob_result {
             let p = entry.map_err(|e| {
-                eprintln!(
-                    "{}",
-                    if use_json {
-                        format!("glob error for '{pattern}': {e}")
-                    } else {
-                        format!("glob 错误 '{pattern}': {e}")
-                    }
-                );
+                let msg = if use_json {
+                    format!("glob error for '{pattern}': {e}")
+                } else {
+                    format!("glob 错误 '{pattern}': {e}")
+                };
+                eprintln!("{msg}");
+                msg
             })?;
             if p.is_file() {
                 matches.push(p);
@@ -155,15 +131,7 @@ pub fn collect_export_files(
         }
 
         if matches.is_empty() {
-            eprintln!(
-                "{}",
-                if use_json {
-                    format!("include glob '{pattern}' matched no files")
-                } else {
-                    format!("包含规则 '{pattern}' 没有匹配任何文件")
-                }
-            );
-            return Err(());
+            return Err(format!("include glob '{pattern}' matched no files"));
         }
 
         for p in matches {
@@ -191,15 +159,17 @@ pub fn collect_export_files(
     }
 
     // --- Apply exclude globs ---
+    let mut excluded: HashSet<PathBuf> = HashSet::new();
     for pattern in exclude {
         let full_pattern =
             bundle_dir.join(pattern).to_string_lossy().to_string();
         if let Ok(entries) = glob::glob(&full_pattern) {
             for entry in entries.flatten() {
-                files.retain(|f| *f != entry);
+                excluded.insert(entry);
             }
         }
     }
+    files.retain(|f| !excluded.contains(f));
 
     files.sort();
     Ok(files)
@@ -210,8 +180,8 @@ pub fn collect_export_files(
 // ---------------------------------------------------------------------------
 
 /// Append all matching export files to a tar archive.
-fn add_files_to_tar_archive(
-    tar: &mut Builder<GzEncoder<std::fs::File>>,
+fn add_files_to_tar_archive<W: std::io::Write>(
+    tar: &mut Builder<GzEncoder<W>>,
     bundle_dir: &Path,
     files: &[PathBuf],
     use_json: bool,
@@ -296,82 +266,79 @@ pub fn write_tar_gz(
     use_json: bool,
 ) -> io::Result<()> {
     let final_path = Path::new(output_path);
-    let tmp_path = tmp_path_for(final_path);
 
-    let file = std::fs::File::create(&tmp_path).map_err(|e| {
-        eprintln!(
-            "{}",
-            if use_json {
-                format!("cannot create temp output file: {e}")
-            } else {
-                format!("无法创建临时输出文件: {e}")
-            }
-        );
-        e
-    })?;
+    fileio::write_atomic_stream(final_path, |file| {
+        let encoder = GzEncoder::new(file, Compression::default());
+        let mut tar = Builder::new(encoder);
 
-    let encoder = GzEncoder::new(file, Compression::default());
-    let mut tar = Builder::new(encoder);
+        // Add bundle.toml first
+        {
+            let mut header = tar::Header::new_gnu();
+            header.set_path("bundle.toml").map_err(|e| {
+                eprintln!(
+                    "{}",
+                    if use_json {
+                        format!("tar header error: {e}")
+                    } else {
+                        format!("tar 头错误: {e}")
+                    }
+                );
+                e
+            })?;
+            header.set_size(manifest_content.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar.append(&header, manifest_content.as_bytes()).map_err(|e| {
+                eprintln!(
+                    "{}",
+                    if use_json {
+                        format!("tar append error: {e}")
+                    } else {
+                        format!("tar 添加错误: {e}")
+                    }
+                );
+                e
+            })?;
+        }
 
-    // Add bundle.toml first
-    {
-        let mut header = tar::Header::new_gnu();
-        header.set_path("bundle.toml").map_err(|e| {
+        // Add all collected files
+        add_files_to_tar_archive(&mut tar, bundle_dir, files, use_json)?;
+
+        let encoder = tar.into_inner().map_err(|e| {
             eprintln!(
                 "{}",
                 if use_json {
-                    format!("tar header error: {e}")
+                    format!("tar finalize error: {e}")
                 } else {
-                    format!("tar 头错误: {e}")
+                    format!("tar 完成错误: {e}")
                 }
             );
             e
         })?;
-        header.set_size(manifest_content.len() as u64);
-        header.set_mode(0o644);
-        header.set_cksum();
-        tar.append(&header, manifest_content.as_bytes()).map_err(|e| {
+        encoder.finish().map_err(|e| {
             eprintln!(
                 "{}",
                 if use_json {
-                    format!("tar append error: {e}")
+                    format!("gzip finalize error: {e}")
                 } else {
-                    format!("tar 添加错误: {e}")
+                    format!("gzip 完成错误: {e}")
                 }
             );
             e
         })?;
-    }
 
-    // Add all collected files
-    add_files_to_tar_archive(&mut tar, bundle_dir, files, use_json)?;
-
-    let encoder = tar.into_inner().map_err(|e| {
+        Ok(())
+    })
+    .map_err(|e| {
         eprintln!(
             "{}",
             if use_json {
-                format!("tar finalize error: {e}")
+                format!("cannot write output archive: {e}")
             } else {
-                format!("tar 完成错误: {e}")
+                format!("无法写入输出归档: {e}")
             }
         );
         e
-    })?;
-    encoder.finish().map_err(|e| {
-        eprintln!(
-            "{}",
-            if use_json {
-                format!("gzip finalize error: {e}")
-            } else {
-                format!("gzip 完成错误: {e}")
-            }
-        );
-        e
-    })?;
-
-    // Atomically rename temp file to final path
-    std::fs::rename(&tmp_path, final_path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&tmp_path);
     })?;
 
     Ok(())

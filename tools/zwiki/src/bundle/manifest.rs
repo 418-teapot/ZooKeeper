@@ -1,5 +1,7 @@
 //! Bundle manifest — `bundle.toml` data model and validation.
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -174,7 +176,44 @@ impl BundleManifest {
             });
         }
 
+        // --- Duplicate include patterns ---
+        append_duplicate_include_errors(
+            &self.export.include,
+            &mut errors,
+            use_json,
+        );
+
         errors
+    }
+}
+
+/// Check for duplicate entries in the `export.include` list and append
+/// warning-level errors to `errors`.
+fn append_duplicate_include_errors(
+    include: &[String],
+    errors: &mut Vec<ValidationError>,
+    use_json: bool,
+) {
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut duplicates: Vec<&str> = Vec::new();
+    for pattern in include {
+        if !seen.insert(pattern) {
+            duplicates.push(pattern);
+        }
+    }
+    if !duplicates.is_empty() {
+        let dup_list = duplicates.join(", ");
+        errors.push(ValidationError {
+            severity: Severity::Warning,
+            field: "export.include".to_string(),
+            message: if use_json {
+                format!(
+                    "export.include contains duplicate patterns: {dup_list}"
+                )
+            } else {
+                format!("export.include 包含重复的导出模式: {dup_list}")
+            },
+        });
     }
 }
 
@@ -296,5 +335,24 @@ mod tests {
     #[test]
     fn test_default_kind() {
         assert_eq!(default_kind(), "upstream");
+    }
+
+    #[test]
+    fn test_validate_duplicate_include_warning() {
+        let mut m = valid_manifest();
+        m.export.include = vec![
+            "*.md".to_string(),
+            "*.md".to_string(),
+            "pages/**".to_string(),
+        ];
+        let errors = m.validate(false);
+        let dup_warnings: Vec<&ValidationError> = errors
+            .iter()
+            .filter(|e| {
+                e.severity == Severity::Warning && e.field == "export.include"
+            })
+            .collect();
+        assert_eq!(dup_warnings.len(), 1);
+        assert!(dup_warnings[0].message.contains("重复"));
     }
 }
