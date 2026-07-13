@@ -61,7 +61,9 @@ pub fn write_atomic_stream(
 ) -> io::Result<()> {
     let tmp = tmp_path_for(path);
     let mut f = std::fs::File::create(&tmp)?;
-    write_fn(&mut f)?;
+    write_fn(&mut f).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })?;
     std::fs::rename(&tmp, path).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
     })
@@ -75,6 +77,16 @@ pub fn write_atomic_stream(
 pub(crate) fn tmp_path_for(path: &Path) -> std::path::PathBuf {
     let ext = path.extension().map(|e| e.to_string_lossy()).unwrap_or_default();
     path.with_extension(format!("{ext}.tmp"))
+}
+
+/// Sanitize a string for safe use as a filesystem path component.
+///
+/// Replaces `/` and `\` with `-` so the result cannot traverse
+/// directories.  Use for user-controlled fields (bundle name, version)
+/// that are interpolated into file paths.
+#[must_use]
+pub fn sanitize_path_component(s: &str) -> String {
+    s.replace(['/', '\\'], "-").replace("..", "-")
 }
 
 /// Acquire an exclusive cross-process file lock on `path`.
@@ -237,5 +249,14 @@ mod tests {
         assert!(flag, "closure should have been executed");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_sanitize_path_component() {
+        assert_eq!(sanitize_path_component("clean-name"), "clean-name");
+        assert_eq!(sanitize_path_component("a/b\\c"), "a-b-c");
+        assert_eq!(sanitize_path_component(".."), "-");
+        assert_eq!(sanitize_path_component("../etc"), "--etc");
+        assert_eq!(sanitize_path_component("1.0..0"), "1.0-0");
     }
 }

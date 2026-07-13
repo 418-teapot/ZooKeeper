@@ -443,23 +443,31 @@ pub fn resolve_target_rel(
 /// Check that a bundle directory has the required wiki structure.
 ///
 /// A valid bundle MUST contain `index.md` (a file) and `logs` (a directory).
-/// Missing either is a fatal error — prints a Chinese error message (and
-/// JSON when `use_json` is true) and returns `Err`.  The caller is
+/// Missing either is a fatal error — returns `Err` with a descriptive message
+/// (English when `use_json` is true, Chinese otherwise).  The caller is
 /// responsible for exiting; this lets the caller's `TempDir` drop normally,
 /// avoiding a temp-dir leak on the error path.
 pub fn check_bundle_structure(
     source_dir: &Path,
-    _use_json: bool,
+    use_json: bool,
 ) -> Result<(), String> {
     let index_path = source_dir.join("index.md");
     let logs_path = source_dir.join("logs");
 
     if !index_path.exists() || !index_path.is_file() {
-        return Err("bundle 缺少 index.md".to_string());
+        return Err(if use_json {
+            "bundle missing index.md".to_string()
+        } else {
+            "bundle 缺少 index.md".to_string()
+        });
     }
 
     if !logs_path.exists() || !logs_path.is_dir() {
-        return Err("bundle 缺少 logs 目录".to_string());
+        return Err(if use_json {
+            "bundle missing logs directory".to_string()
+        } else {
+            "bundle 缺少 logs 目录".to_string()
+        });
     }
 
     Ok(())

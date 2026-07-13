@@ -129,7 +129,7 @@ pub fn compute_integrity(dir: &Path) -> String {
             Ok(f) => f,
             Err(e) => {
                 eprintln!(
-                    "警告: 无法读取文件用于完整性计算: {} ({e})",
+                    "warning: cannot read file for integrity calculation: {} ({e})",
                     abs_path.display()
                 );
                 continue;
@@ -142,7 +142,7 @@ pub fn compute_integrity(dir: &Path) -> String {
                 Ok(n) => n,
                 Err(e) => {
                     eprintln!(
-                        "警告: 读取文件时出错: {} ({e})",
+                        "warning: error reading file: {} ({e})",
                         abs_path.display()
                     );
                     break;

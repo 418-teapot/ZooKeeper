@@ -331,8 +331,16 @@ pub fn write_tar_gz(
             })?;
         }
 
-        // Add all collected files
-        add_files_to_tar_archive(&mut tar, bundle_dir, files, use_json)?;
+        // Add all collected files (filter out bundle.toml — already added above)
+        let filtered: Vec<PathBuf> = files
+            .iter()
+            .filter(|f| {
+                f.strip_prefix(bundle_dir)
+                    .map_or(true, |rel| rel != Path::new("bundle.toml"))
+            })
+            .cloned()
+            .collect();
+        add_files_to_tar_archive(&mut tar, bundle_dir, &filtered, use_json)?;
 
         let encoder = tar.into_inner().map_err(|e| {
             eprintln!(
@@ -755,17 +763,39 @@ mod tests {
 
     #[test]
     fn test_safe_unpack_allows_symlink_with_safe_target() {
-        let bytes = raw_tar_gz("safe_link.txt", b"plain file content");
+        let bytes = raw_tar_symlink_and_file_gz(
+            "safe_link.txt",
+            "safe_target.txt",
+            "safe_target.txt",
+            b"target content",
+        );
 
         let dest = tempfile::tempdir().unwrap();
         let decoder = GzDecoder::new(bytes.as_slice());
         let mut archive = tar::Archive::new(decoder);
         safe_unpack(&mut archive, dest.path()).unwrap();
 
-        let safe_path = dest.path().join("safe_link.txt");
+        let symlink_path = dest.path().join("safe_link.txt");
         assert!(
-            safe_path.exists(),
-            "safe non-traversal file should be extracted"
+            symlink_path.exists(),
+            "symlink with safe target should be extracted"
+        );
+        assert!(
+            symlink_path.read_link().is_ok(),
+            "extracted entry should be a symlink"
+        );
+        assert_eq!(
+            symlink_path.read_link().unwrap(),
+            Path::new("safe_target.txt"),
+            "symlink target should match"
+        );
+
+        let target_path = dest.path().join("safe_target.txt");
+        assert!(target_path.exists(), "target file should be extracted");
+        assert_eq!(
+            std::fs::read_to_string(&target_path).unwrap(),
+            "target content",
+            "target file content should match"
         );
     }
 

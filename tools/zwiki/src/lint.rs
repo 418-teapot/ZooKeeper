@@ -70,6 +70,12 @@ fn resolve_target(target: &str) -> Option<String> {
         return None;
     }
 
+    // Cross-bundle @name/path references resolve to other installed bundles;
+    // the local linter cannot verify them so they are skipped.
+    if target.starts_with('@') {
+        return None;
+    }
+
     // Strip anchor fragment (e.g. `foo.md#section` → `foo.md`).
     let target = target.split('#').next().unwrap_or(target);
 
@@ -649,6 +655,25 @@ mod tests {
         );
         let issues = check_broken_links(&pages, &cache);
         assert!(issues.is_empty(), "anchor-only links should be ignored");
+    }
+
+    #[test]
+    fn test_broken_links_cross_bundle_skipped() {
+        // @name/path cross-bundle references should not be flagged.
+        let (_, pages, cache) = setup_wiki(
+            "broken_cross_bundle",
+            &[(
+                "concepts/page-a.md",
+                "---\ntitle: Page A\n---\n\
+                     See [core](@core/concepts/foo.md) and \
+                     [upstream](@upstream/bar.md).\n",
+            )],
+        );
+        let issues = check_broken_links(&pages, &cache);
+        assert!(
+            issues.is_empty(),
+            "@name/path cross-bundle references should be skipped"
+        );
     }
 
     #[test]

@@ -813,7 +813,7 @@ role = "advisory"
 name = "zookeeper-core"
 version = "1.2.0"
 okf_version = "0.1"
-kind = "team"        # "team" → .teams/<team>/；"upstream" → .upstream/<name>/
+kind = "team"        # "team" → .teams/<team>/；"upstream" → .upstream/<name>/；"org" → .org/<name>/
 team = "core"        # kind="team" 时必填，指定目标团队名
 
 [export]
@@ -833,6 +833,7 @@ exclude = ["concepts/internal-*", "personal/"]
 
 - `@teamname/path` → `.teams/<teamname>/<path>`（从 `teams.toml` 解析 team 名）
 - `@upstream/path` → `.upstream/<path>`
+- `@orgname/path` → `.org/<orgname>/<path>`（组织级共识覆盖）
 - 解析时 team 优先于 upstream——同一前缀在两个命名空间都存在时，`.teams/` 覆盖
 
 **CLI：**

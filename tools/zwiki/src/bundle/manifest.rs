@@ -34,6 +34,7 @@ pub struct ValidationError {
 
 /// The top-level bundle manifest.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BundleManifest {
     #[serde(rename = "package")]
     pub package: PackageSection,
@@ -43,6 +44,7 @@ pub struct BundleManifest {
 
 /// `[package]` section of the bundle manifest.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PackageSection {
     pub name: String,
     pub version: String,
@@ -59,6 +61,7 @@ pub struct PackageSection {
 
 /// `[export]` section of the bundle manifest.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExportSection {
     pub include: Vec<String>,
     #[serde(default)]
@@ -88,63 +91,9 @@ impl BundleManifest {
     pub fn validate(&self, use_json: bool) -> Vec<ValidationError> {
         let mut errors: Vec<ValidationError> = Vec::new();
 
-        // --- Fatal checks ---
-        if self.package.name.trim().is_empty() {
-            errors.push(ValidationError {
-                severity: Severity::Fatal,
-                field: "package.name".to_string(),
-                message: if use_json {
-                    "bundle name must not be empty".to_string()
-                } else {
-                    "包名称不能为空".to_string()
-                },
-            });
-        }
-
-        if self.package.version.trim().is_empty() {
-            errors.push(ValidationError {
-                severity: Severity::Fatal,
-                field: "package.version".to_string(),
-                message: if use_json {
-                    "bundle version must not be empty".to_string()
-                } else {
-                    "包版本不能为空".to_string()
-                },
-            });
-        }
-
-        if self.export.include.is_empty() {
-            errors.push(ValidationError {
-                severity: Severity::Fatal,
-                field: "export.include".to_string(),
-                message: if use_json {
-                    "export include patterns must not be empty".to_string()
-                } else {
-                    "导出包含规则不能为空".to_string()
-                },
-            });
-        }
+        check_fatal_errors(&self.package, &self.export, use_json, &mut errors);
 
         let kind = self.package.kind.trim().to_lowercase();
-        if kind != "upstream" && kind != "team" && kind != "org" {
-            errors.push(ValidationError {
-                severity: Severity::Fatal,
-                field: "package.kind".to_string(),
-                message: if use_json {
-                    format!(
-                        "invalid kind '{}', must be upstream, team, or org",
-                        self.package.kind
-                    )
-                } else {
-                    format!(
-                        "无效的 kind 值 '{}'，可选值为 upstream、team 或 org",
-                        self.package.kind
-                    )
-                },
-            });
-        }
-
-        // --- ConditionalRequired ---
         if kind == "team" && self.package.team.is_none() {
             errors.push(ValidationError {
                 severity: Severity::ConditionalRequired,
@@ -157,7 +106,6 @@ impl BundleManifest {
             });
         }
 
-        // --- Warning checks ---
         if self.package.okf_version.trim() != "0.1" {
             errors.push(ValidationError {
                 severity: Severity::Warning,
@@ -176,7 +124,6 @@ impl BundleManifest {
             });
         }
 
-        // --- Duplicate include patterns ---
         append_duplicate_include_errors(
             &self.export.include,
             &mut errors,
@@ -185,6 +132,122 @@ impl BundleManifest {
 
         errors
     }
+}
+
+/// Check fatal-level validation errors on the bundle manifest.
+fn check_fatal_errors(
+    package: &PackageSection,
+    export: &ExportSection,
+    use_json: bool,
+    errors: &mut Vec<ValidationError>,
+) {
+    if package.name.trim().is_empty() {
+        errors.push(ValidationError {
+            severity: Severity::Fatal,
+            field: "package.name".to_string(),
+            message: if use_json {
+                "bundle name must not be empty".to_string()
+            } else {
+                "包名称不能为空".to_string()
+            },
+        });
+    }
+
+    check_path_traversal(&package.name, "package.name", use_json, errors);
+
+    if package.version.trim().is_empty() {
+        errors.push(ValidationError {
+            severity: Severity::Fatal,
+            field: "package.version".to_string(),
+            message: if use_json {
+                "bundle version must not be empty".to_string()
+            } else {
+                "包版本不能为空".to_string()
+            },
+        });
+    }
+
+    check_path_traversal(&package.version, "package.version", use_json, errors);
+
+    if export.include.is_empty() {
+        errors.push(ValidationError {
+            severity: Severity::Fatal,
+            field: "export.include".to_string(),
+            message: if use_json {
+                "export include patterns must not be empty".to_string()
+            } else {
+                "导出包含规则不能为空".to_string()
+            },
+        });
+    }
+
+    let kind = package.kind.trim().to_lowercase();
+    if kind != "upstream" && kind != "team" && kind != "org" {
+        errors.push(ValidationError {
+            severity: Severity::Fatal,
+            field: "package.kind".to_string(),
+            message: if use_json {
+                format!(
+                    "invalid kind '{}', must be upstream, team, or org",
+                    package.kind
+                )
+            } else {
+                format!(
+                    "无效的 kind 值 '{}'，可选值为 upstream、team 或 org",
+                    package.kind
+                )
+            },
+        });
+    }
+
+    if let Some(ref team) = package.team {
+        let trimmed = team.trim();
+        if !trimmed.is_empty() {
+            check_path_traversal(trimmed, "package.team", use_json, errors);
+        }
+    }
+}
+
+/// Check a manifest field value for path traversal characters.
+/// Returns a Fatal `ValidationError` if the value contains path separators
+/// or `..` components.
+fn check_path_traversal(
+    value: &str,
+    field: &str,
+    use_json: bool,
+    errors: &mut Vec<ValidationError>,
+) {
+    // Check for path separators or `..` as a complete path component.
+    let has_traversal = value.contains('/')
+        || value.contains('\\')
+        || value.split('/').any(|c| c == "..")
+        || value.split('\\').any(|c| c == "..");
+    if !has_traversal {
+        return;
+    }
+    let (msg_en, msg_zh) = match field {
+        "package.name" => (
+            "bundle name must not contain path separators or '..'",
+            "包名称不能包含路径分隔符或 '..'",
+        ),
+        "package.version" => (
+            "bundle version must not contain path separators or '..'",
+            "包版本不能包含路径分隔符或 '..'",
+        ),
+        "package.team" => (
+            "team name must not contain path separators or '..'",
+            "团队名称不能包含路径分隔符或 '..'",
+        ),
+        _ => (
+            "value must not contain path separators or '..'",
+            "值不能包含路径分隔符或 '..'",
+        ),
+    };
+    errors.push(ValidationError {
+        severity: Severity::Fatal,
+        field: field.to_string(),
+        message: if use_json { msg_en.to_string() } else { msg_zh.to_string() },
+    });
 }
 
 /// Check for duplicate entries in the `export.include` list and append
@@ -354,5 +417,68 @@ mod tests {
             .collect();
         assert_eq!(dup_warnings.len(), 1);
         assert!(dup_warnings[0].message.contains("重复"));
+    }
+
+    #[test]
+    fn test_validate_name_with_slash_fatal() {
+        let mut m = valid_manifest();
+        m.package.name = "foo/bar".to_string();
+        let errors = m.validate(false);
+        assert!(errors.iter().any(
+            |e| e.severity == Severity::Fatal && e.field == "package.name"
+        ));
+    }
+
+    #[test]
+    fn test_validate_name_with_backslash_fatal() {
+        let mut m = valid_manifest();
+        m.package.name = "foo\\bar".to_string();
+        let errors = m.validate(false);
+        assert!(errors.iter().any(
+            |e| e.severity == Severity::Fatal && e.field == "package.name"
+        ));
+    }
+
+    #[test]
+    fn test_validate_name_with_dotdot_fatal() {
+        let mut m = valid_manifest();
+        m.package.name = "../foo".to_string();
+        let errors = m.validate(false);
+        assert!(errors.iter().any(
+            |e| e.severity == Severity::Fatal && e.field == "package.name"
+        ));
+    }
+
+    #[test]
+    fn test_validate_team_with_slash_fatal() {
+        let mut m = valid_manifest();
+        m.package.kind = "team".to_string();
+        m.package.team = Some("foo/bar".to_string());
+        let errors = m.validate(false);
+        assert!(errors.iter().any(
+            |e| e.severity == Severity::Fatal && e.field == "package.team"
+        ));
+    }
+
+    #[test]
+    fn test_validate_team_with_backslash_fatal() {
+        let mut m = valid_manifest();
+        m.package.kind = "team".to_string();
+        m.package.team = Some("foo\\bar".to_string());
+        let errors = m.validate(false);
+        assert!(errors.iter().any(
+            |e| e.severity == Severity::Fatal && e.field == "package.team"
+        ));
+    }
+
+    #[test]
+    fn test_validate_team_with_dotdot_fatal() {
+        let mut m = valid_manifest();
+        m.package.kind = "team".to_string();
+        m.package.team = Some("../foo".to_string());
+        let errors = m.validate(false);
+        assert!(errors.iter().any(
+            |e| e.severity == Severity::Fatal && e.field == "package.team"
+        ));
     }
 }
