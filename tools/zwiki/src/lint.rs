@@ -117,13 +117,12 @@ fn extract_related_links(frontmatter: &HashMap<String, Value>) -> Vec<String> {
     let mut links = Vec::new();
     if let Some(related) = frontmatter.get("relations") {
         match related {
-            Value::String(s) => {
+            Value::String(s)
                 if Path::new(s)
                     .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
-                {
-                    links.push(s.clone());
-                }
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("md")) =>
+            {
+                links.push(s.clone());
             }
             Value::Array(arr) => {
                 for v in arr {

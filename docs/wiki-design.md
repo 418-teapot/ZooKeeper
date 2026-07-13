@@ -60,7 +60,7 @@
 | wiki-ingest skill | 4 阶段（Phase 0 分类 → Phase 1 委派 kiwi → Phase 2 通用写入 → Phase 3 验证） | `core/skills/wiki-ingest/SKILL.md` |
 | wiki-query skill | 6 阶段（Phase 0 判断问题类型 → 1 读 index → 2 读页面 → 3 合成 → 4 判断归档 → 5 呈现） | `core/skills/wiki-query/SKILL.md` |
 | kiwi agent | subagent，prompt 在 `src/agents/kiwi.ts`，明确"read-only"，5 阶段工作流 + QualityGate | `src/agents/kiwi.ts` |
-| kiwi 权限 | `task=deny`、`edit=deny`、`skill "*"=deny`；用 `ZOO_MEDIUM_MODEL` | `config.toml` |
+| kiwi 权限 | `task=deny`、`edit=deny`、`skill "*"=deny`；用 `ZOO_HIPPO_MODEL` | `config.toml` |
 
 ### 2.2 未实现（目标）
 
@@ -375,7 +375,7 @@ Kiwi 是**只读知识蒸馏专家**，不是 wiki 管理器。它专注一件�
 ```toml
 [agent.kiwi]
 mode  = "subagent"
-model = "{env:ZOO_MEDIUM_MODEL}"
+model = "{env:ZOO_HIPPO_MODEL}"
 [agent.kiwi.permission]
 task = "deny"
 edit = "deny"

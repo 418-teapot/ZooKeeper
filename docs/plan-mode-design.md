@@ -1077,7 +1077,7 @@ Step 6. 集成测试 + runner.py 场景               — ❌ 未实现
 ### 14.2 每步的具体产出
 
 **Step 1: config.toml + install.py** (~15 行) ✅ 已完成
-- `[agent.mola]` 块：默认 `mode = "primary"`（不显式声明），`model = "{env:ZOO_MODEL}"`，`color = "#FFA500"`
+- `[agent.mola]` 块：默认 `mode = "primary"`（不显式声明），`model = "{env:ZOO_WHALE_MODEL}"`，`color = "#FFA500"`
 - 工具权限：`webfetch = "deny"`，`websearch = "deny"`。`task = "deny"` 为隐式（未列出，OpenCode 框架默认 deny）。`edit/write/read/grep/glob/bash/question` 默认 allow（hook 运行时路径约束至 `~/.zoo/**/*.md`）
 - Skill 授权：`"*" = "deny"`，`"mola-plan" = "allow"`，`"wiki-query" = "allow"`
 - `[agent.plan] disable = true`（内置 plan agent 禁用，mola 接管规划职责）
@@ -1498,7 +1498,7 @@ plan 原本用 TOML `+++`，spec 用 YAML `---`。v1.4 统一为 YAML `---`：�
 
 ```toml
 [agent.mola]
-model = "{env:ZOO_MODEL}"
+model = "{env:ZOO_WHALE_MODEL}"
 [agent.mola.permission]
 task      = "deny"    # P1 阶段不自委派
 webfetch  = "deny"

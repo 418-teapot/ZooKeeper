@@ -129,7 +129,7 @@ autoresearch 通过 Pi 的 **Extension Bridge API**（`ExtensionAPI.appendEntry`
 | 维度 | 评估 | 倾向 |
 |------|------|------|
 | 权限 | 和 general 几乎一样（read/write/edit/bash/grep/glob） | Skill |
-| 模型 | 热点分析、推理链、寄存器状态判断 — 需要 ZOO_MODEL 强模型 | Agent |
+| 模型 | 热点分析、推理链、寄存器状态判断 — 需要 ZOO_WHALE_MODEL 强模型 | Agent |
 | 上下文 | kernel 调优上下文很重（perf 火焰图、汇编片段、pipeline 分析），会严重污染主对话窗口 | **Agent** ✅ |
 | 并行 | 多策略并行很常见（A/B/C 三种调优方案同时测） | **Agent** ✅ |
 | 身份 | 有明确身份 — "调优专家"，不应在 general 实现其他功能时干扰 | **Agent** ✅ |
@@ -175,7 +175,7 @@ perf-tuning (skill)
 
 perf-tuner (agent)
 ├── 权限: 和 general 接近, deny task/webfetch/websearch
-├── 模型: ZOO_MODEL（推理要求高）
+├── 模型: ZOO_WHALE_MODEL（推理要求高）
 ├── prompt: 性能调优专家身份
 └── 使用: autoresearch plugin 的工具进入自主循环
 
@@ -3682,7 +3682,7 @@ ZooKeeper plugin 自身从不直接访问 `~/.local/share/opencode/` 下的 SQLi
 ```toml
 [agent.perf-tuner]
 mode  = "subagent"
-model = "{env:ZOO_MODEL}"       # 强模型
+model = "{env:ZOO_WHALE_MODEL}"       # 强模型
 [agent.perf-tuner.permission]
 task = "deny"                   # 不委派，专注执行
 webfetch = "deny"               # 不查 web

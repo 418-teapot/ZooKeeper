@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
-ZooKeeper — Read config.toml + .env → Generate ~/.config/opencode/opencode.json
+ZooKeeper — Read config.toml → Generate ~/.config/opencode/opencode.json
+
+{env:VAR} placeholders pass through as-is for opencode to resolve at runtime from the
+process environment. Ensure your env vars are exported before running opencode.
 
 Usage:
-    python3 install.py               # Use config.toml + .env
+    python3 install.py               # Use config.toml
     python3 install.py /path/to.toml # Specify a TOML file
 
 Only depends on Python standard library.
@@ -11,7 +14,6 @@ Only depends on Python standard library.
 
 import json
 import os
-import re
 import shutil
 import sys
 
@@ -98,127 +100,11 @@ def parse_toml(filepath: str) -> dict:
         return tomllib.load(f)
 
 
-def load_env_file(env_path: str) -> None:
-    """Read a .env file and inject variables into os.environ.
-
-    Format is KEY=VALUE, supports double/single-quoted values and trailing comments.
-    Does NOT overwrite variables already present in os.environ.
-
-    Args:
-        env_path: Path to the .env file. Silently returns if the file does not exist.
-    """
-    if not os.path.isfile(env_path):
-        return
-
-    loaded = 0
-    with open(env_path, encoding="utf-8") as f:
-        for lineno, line in enumerate(f, start=1):
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" not in line:
-                warn(f".env:{lineno}: 忽略无效行: {line}")
-                continue
-            key, _, value = line.partition("=")
-            key = key.strip()
-            if not key:
-                warn(f".env:{lineno}: 忽略空键名")
-                continue
-            value = value.strip()
-            if (
-                len(value) >= 2
-                and value[0] == value[-1]
-                and value[0] in ('"', "'")
-            ):
-                value = value[1:-1]
-            if key not in os.environ:
-                os.environ[key] = value
-                loaded += 1
-
-    if loaded:
-        info(f"✓ 已从 .env 加载 {loaded} 个变量")
-
-
-_ENV_REF_RE = re.compile(r"^\{env:([^}]+)\}$")
-
-
-def resolve_env_refs_deep(obj):
-    """Recursively resolve all {env:VAR} placeholders in dict/list to actual environment variable values.
-
-    If a referenced environment variable is not set, prints an error and exits.
-
-    Args:
-        obj: A dict/list/primitive value that may contain {env:VAR} placeholders.
-
-    Returns:
-        A copy of the object with all {env:VAR} placeholders replaced by their string values.
-
-    Raises:
-        SystemExit: When a referenced environment variable is not set.
-    """
-    if isinstance(obj, dict):
-        return {k: resolve_env_refs_deep(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [resolve_env_refs_deep(item) for item in obj]
-    elif isinstance(obj, str):
-        m = _ENV_REF_RE.match(obj.strip())
-        if not m:
-            return obj
-        var_name = m.group(1)
-        resolved = os.environ.get(var_name)
-        if resolved is None:
-            error(
-                f"环境变量 {var_name} 未设置！请创建 .env 文件（参考 .env.example）"
-            )
-            error(f'或 export {var_name}="..." 后再运行 install.py')
-            sys.exit(1)
-        return resolved
-    return obj
-
-
-def _filter_missing_providers(toml_data: dict) -> None:
-    """Remove provider entries whose credential env vars are not set.
-
-    Scans each ``provider.<name>.options`` sub-dict for ``{env:VAR}``
-    references.  If any referenced variable is missing from ``os.environ``,
-    the entire provider entry is removed from *toml_data* and a warning is
-    printed to stderr.
-
-    Args:
-        toml_data: The parsed TOML dictionary (mutated in-place).
-    """
-    providers = toml_data.get("provider")
-    if not isinstance(providers, dict):
-        return
-
-    to_remove: list[str] = []
-    for prov_name, prov_data in providers.items():
-        if not isinstance(prov_data, dict):
-            continue
-        options = prov_data.get("options")
-        if not isinstance(options, dict):
-            continue
-        missing: list[str] = []
-        for value in options.values():
-            if not isinstance(value, str):
-                continue
-            m = _ENV_REF_RE.match(value.strip())
-            if m is not None and m.group(1) not in os.environ:
-                missing.append(m.group(1))
-        if missing:
-            warn(f"provider.{prov_name} 的环境变量未配置，跳过")
-            to_remove.append(prov_name)
-
-    for prov_name in to_remove:
-        del providers[prov_name]
-
-
 def build_config(toml_data: dict, project_dir: str) -> dict:
     """Convert parsed TOML data into the OpenCode JSON configuration.
 
     Fields in the [defaults] section are promoted to the top-level of the config.
-    All {env:} placeholders are resolved to actual environment variable values.
-    Providers whose credential env vars are not set are silently skipped.
+    {env:VAR} placeholders pass through as-is for opencode to resolve at runtime.
 
     Args:
         toml_data: The dictionary returned by parse_toml().
@@ -245,9 +131,6 @@ def build_config(toml_data: dict, project_dir: str) -> dict:
         config["$schema"] = toml_data["$schema"]
     config["plugin"] = [plugin_uri]
     if "provider" in toml_data:
-        # Pre-filter: remove providers whose credential env vars are not set
-        # so that resolve_env_refs_deep only sees "real" (non-provider) refs.
-        _filter_missing_providers(toml_data)
         config["provider"] = toml_data["provider"]
     if "agent" in toml_data:
         config["agent"] = toml_data["agent"]
@@ -255,15 +138,12 @@ def build_config(toml_data: dict, project_dir: str) -> dict:
         for k, v in toml_data["defaults"].items():
             config[k] = v
 
-    return resolve_env_refs_deep(config)
+    return config
 
 
 def main() -> None:
     """Main entry point: load configuration, back up old file, generate new config, and validate."""
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-
-    # Load .env (must happen before {env:} resolution)
-    load_env_file(os.path.join(SCRIPT_DIR, ".env"))
 
     toml_path = os.path.abspath(
         sys.argv[1]
@@ -356,7 +236,7 @@ def main() -> None:
     print(f"  {bold('查看:')}  opencode config --path")
     print(f"  {bold('验证:')}  opencode config --json")
     print(
-        f"  {bold('.env:')}  参考 {os.path.join(SCRIPT_DIR, '.env.example')}"
+        f"  {bold('环境变量:')}  运行 opencode 前请确保所需变量已 export（参考 {os.path.join(SCRIPT_DIR, '.env.example')}）"
     )
     print("")
 

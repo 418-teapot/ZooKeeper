@@ -63,9 +63,9 @@ cp .env.example .env
 
 ```
 # 模型 ID（所有 Agent 共用）
-ZOO_MODEL=Cambricon/glm-5.1
-ZOO_MEDIUM_MODEL=Cambricon/glm-5.1
-ZOO_SMALL_MODEL=Cambricon/deepseek-v4-flash
+ZOO_WHALE_MODEL=Cambricon/glm-5.1
+ZOO_HIPPO_MODEL=Cambricon/glm-5.1
+ZOO_ANT_MODEL=Cambricon/deepseek-v4-flash
 
 # Provider 凭据 — 只需设置你实际使用的 Provider，其余可注释或留空
 CAMBRICON_API_KEY=your-api-key-here
@@ -80,7 +80,7 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com/anthropic
 python3 install.py
 ```
 
-安装脚本读取 `config.toml` + `.env`，解析 `{env:VAR}` 占位符，将编译后的配置写入 `~/.config/opencode/opencode.json`。已有配置会自动备份（带时间戳）。同时创建 Wiki 和 CLI 工具的软链接到 `~/.zoo/`。
+安装脚本读取 `config.toml`，将 `{env:VAR}` 占位符原样写入 `~/.config/opencode/opencode.json`。opencode 运行时从进程环境变量解析这些占位符，因此运行 opencode 前需 `source .env`（或 export 各变量）。已有配置会自动备份（带时间戳）。同时创建 Wiki 和 CLI 工具的软链接到 `~/.zoo/`。
 
 **4. 添加 CLI 工具到 PATH**
 
