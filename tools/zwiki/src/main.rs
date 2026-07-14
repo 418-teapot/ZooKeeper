@@ -2332,8 +2332,6 @@ mod tests {
             "team",
             "--okf-version",
             "0.2",
-            "--team",
-            "my-team",
             "--registry",
             "https://reg.example.com",
             "--include",
@@ -2351,7 +2349,6 @@ mod tests {
                 assert_eq!(a.version, "1.0.0");
                 assert_eq!(a.kind, "team");
                 assert_eq!(a.okf_version, "0.2");
-                assert_eq!(a.team, Some("my-team".to_string()));
                 assert_eq!(
                     a.registry,
                     Some("https://reg.example.com".to_string())

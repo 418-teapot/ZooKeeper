@@ -813,8 +813,7 @@ role = "advisory"
 name = "zookeeper-core"
 version = "1.2.0"
 okf_version = "0.1"
-kind = "team"        # "team" → .teams/<team>/；"upstream" → .upstream/<name>/；"org" → .org/<name>/
-team = "core"        # kind="team" 时必填，指定目标团队名
+kind = "team"        # "team" → .teams/<name>/；"upstream" → .upstream/<name>/；"org" → .org/<name>/
 
 [export]
 include = ["concepts/", "entities/", "analysis/", "SCHEMA.md"]
@@ -823,7 +822,7 @@ exclude = ["concepts/internal-*", "personal/"]
 
 **设计决策：**
 
-- `kind` + `team` 由包自己声明归属，`zwiki bundle install <path>` 读 `bundle.toml` 自动决定目标路径——不需要用户传 `--layer`，不存在信息双写不一致的风险。
+- `kind` + `name` 由包自己声明归属，`zwiki bundle install <path>` 读 `bundle.toml` 自动决定目标路径——不需要用户传 `--layer`，不存在信息双写不一致的风险。
 - 不设 `[dependencies]`——wiki bundle 没有可执行依赖，跨包引用通过 `@name/path` 和 `relations` 字段表达，不需要包管理器级别的依赖解析。
 - 不设 `[federation]`——Markdown 内容无可执行威胁面，知识可靠性由矛盾检测/取代链/来源回溯在内容层保障。安装前静态信任检查对纯文本内容无效（你不读不知道它对不对）。
 - 不设独立 registry 服务——`teams.toml` 即注册表，文件即协议。非 team bundle 直接传 URL 或路径给 `install`。
@@ -842,7 +841,7 @@ exclude = ["concepts/internal-*", "personal/"]
 # 打包
 zwiki bundle export <dir>                 # wiki → tar.gz + bundle.toml
 
-# 安装（自动路由：kind="team" + team="core" → .teams/core/）
+# 安装（自动路由：kind="team" + name="core" → .teams/core/）
 zwiki bundle install ./foo.tar.gz
 zwiki bundle install https://example.com/zoo-wiki.tar.gz
 ```
@@ -986,7 +985,7 @@ Bundle 是 L1 分层覆盖的**前置依赖**——先有知识包格式和安�
 |---|------|
 | 32 | **bundle.toml** 最小字段集定稿：`[package]`（name + version + okf_version）、`[export]`（include + exclude） |
 | 33a | `zwiki bundle export <dir>` — 将当前 wiki 导出为合法 OKF bundle（tar.gz + bundle.toml manifest） |
-| 33b | `zwiki bundle install <source>` — 读 bundle.toml 的 `kind`/`team` 自动路由到 `.teams/<name>/` 或 `.upstream/<name>/`，更新该层 index.md |
+| 33b | `zwiki bundle install <source>` — 读 bundle.toml 的 `kind`/`name` 自动路由到 `.teams/<name>/` 或 `.upstream/<name>/`，更新该层 index.md |
 
 ### P3：协同 L1/L2
 

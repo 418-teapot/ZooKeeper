@@ -97,7 +97,9 @@ fn uninstall_bundle_entry_inner(
         }
     })?;
 
-    index::regenerate_root_index_at(l, wiki_root);
+    if let Err(e) = index::regenerate_root_index_at(l, wiki_root) {
+        eprintln!("{e}");
+    }
 
     Ok(())
 }

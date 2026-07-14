@@ -62,7 +62,9 @@ pub fn finalize_install_and_lock_at(
         }
     })?;
 
-    index::regenerate_root_index_at(&l, wiki_root);
+    if let Err(e) = index::regenerate_root_index_at(&l, wiki_root) {
+        eprintln!("{e}");
+    }
 
     let target_display = target_abs.to_string_lossy().to_string();
     if use_json {

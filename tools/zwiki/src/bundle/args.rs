@@ -21,10 +21,6 @@ pub struct InitArgs {
     #[arg(long = "okf-version", default_value = "0.1")]
     pub okf_version: String,
 
-    /// Team name (required when kind=team)
-    #[arg(long)]
-    pub team: Option<String>,
-
     /// Registry URL
     #[arg(long)]
     pub registry: Option<String>,

@@ -38,7 +38,6 @@ pub fn valid_manifest_with_name(name: &str) -> manifest::BundleManifest {
             version: "1.0.0".to_string(),
             okf_version: "0.1".to_string(),
             kind: "upstream".to_string(),
-            team: None,
             registry: None,
             description: None,
         },

@@ -71,8 +71,12 @@ pub fn rewrite_link(line: &str, target: &str) -> String {
 pub const OKF_VERSION: &str = "0.1";
 
 /// Write a root `index.md` at the given wiki root that aggregates all installed
-/// bundles grouped by kind.
-pub fn regenerate_root_index_at(lock: &lock::ZwikiLock, wiki_root: &Path) {
+/// bundles grouped by kind.  Returns `Ok(())` on success or an error message
+/// describing which write operation failed.
+pub fn regenerate_root_index_at(
+    lock: &lock::ZwikiLock,
+    wiki_root: &Path,
+) -> Result<(), String> {
     let mut generated: Vec<String> =
         vec!["<!-- ZOO:BUNDLES:BEGIN -->".to_string(), String::new()];
 
@@ -136,15 +140,14 @@ pub fn regenerate_root_index_at(lock: &lock::ZwikiLock, wiki_root: &Path) {
         {
             match replace_marked_section(&existing, &generated_str) {
                 Ok(updated) => {
-                    if let Err(e) =
-                        zutil::fileio::write_atomic(&index_path, &updated)
-                    {
-                        eprintln!(
-                            "警告: 无法写入索引文件 {}: {e}",
-                            index_path.display()
-                        );
-                    }
-                    return;
+                    zutil::fileio::write_atomic(&index_path, &updated)
+                        .map_err(|e| {
+                            format!(
+                                "警告: 无法写入索引文件 {}: {e}",
+                                index_path.display()
+                            )
+                        })?;
+                    return Ok(());
                 }
                 Err(e) => {
                     eprintln!(
@@ -159,9 +162,9 @@ pub fn regenerate_root_index_at(lock: &lock::ZwikiLock, wiki_root: &Path) {
     let full = format!(
         "---\nokf_version: \"{OKF_VERSION}\"\n---\n\n# Wiki Index\n\n{generated_str}\n"
     );
-    if let Err(e) = zutil::fileio::write_atomic(&index_path, &full) {
-        eprintln!("警告: 无法写入索引文件 {}: {e}", index_path.display());
-    }
+    zutil::fileio::write_atomic(&index_path, &full).map_err(|e| {
+        format!("警告: 无法写入索引文件 {}: {e}", index_path.display())
+    })
 }
 
 /// Check the root `index.md` for the wiki at `wiki_root`.
@@ -274,7 +277,7 @@ mod tests {
         std::fs::create_dir_all(&wiki_root).unwrap();
 
         let lock = lock::ZwikiLock::default();
-        regenerate_root_index_at(&lock, &wiki_root);
+        regenerate_root_index_at(&lock, &wiki_root).unwrap();
 
         let index_path = wiki_root.join("index.md");
         assert!(index_path.exists(), "index.md should exist");
@@ -328,7 +331,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        regenerate_root_index_at(&lock, &wiki_root);
+        regenerate_root_index_at(&lock, &wiki_root).unwrap();
 
         let index_path = wiki_root.join("index.md");
         assert!(index_path.exists());
@@ -368,7 +371,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        regenerate_root_index_at(&lock, &wiki_root);
+        regenerate_root_index_at(&lock, &wiki_root).unwrap();
 
         let index_path = wiki_root.join("index.md");
         assert!(index_path.exists());
@@ -398,7 +401,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        regenerate_root_index_at(&lock1, &wiki_root);
+        regenerate_root_index_at(&lock1, &wiki_root).unwrap();
 
         let index_path = wiki_root.join("index.md");
         let content1 = std::fs::read_to_string(&index_path).unwrap();
@@ -421,7 +424,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        regenerate_root_index_at(&lock2, &wiki_root);
+        regenerate_root_index_at(&lock2, &wiki_root).unwrap();
 
         let content2 = std::fs::read_to_string(&index_path).unwrap();
         assert!(!content2.contains("bundle-a"));
@@ -544,5 +547,35 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("未引用"), "expected not-referenced error: {err}");
+    }
+
+    #[test]
+    fn test_regenerate_root_index_write_failure_returns_err() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = temp_dir("regenerate_write_fail");
+        let wiki_root = tmp.join(".zoo").join("wiki");
+        std::fs::create_dir_all(&wiki_root).unwrap();
+
+        let lock = lock::ZwikiLock::default();
+
+        // Make the directory read-only so write_atomic fails.
+        std::fs::set_permissions(&wiki_root, PermissionsExt::from_mode(0o444))
+            .unwrap();
+
+        let result = regenerate_root_index_at(&lock, &wiki_root);
+
+        // Restore permissions so cleanup can remove the temp dir.
+        std::fs::set_permissions(&wiki_root, PermissionsExt::from_mode(0o755))
+            .unwrap();
+
+        assert!(
+            result.is_err(),
+            "regenerate should fail on read-only directory"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("无法写入索引文件"),
+            "error should mention write failure: {err}"
+        );
     }
 }

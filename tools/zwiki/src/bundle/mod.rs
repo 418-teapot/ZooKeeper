@@ -5,7 +5,7 @@
 //!
 //! Bundles can be exported to `.tar.gz` archives and installed into the wiki
 //! directory under `.upstream/<name>/` (upstream bundles) or
-//! `.teams/<team>/` (team bundles).  A `zwiki.lock` file tracks installed
+//! `.teams/<name>/` (team bundles).  A `zwiki.lock` file tracks installed
 //! bundles with integrity hashing.
 
 pub mod args;
@@ -85,18 +85,14 @@ pub fn read_manifest(
 }
 
 /// Validate the manifest, print errors, and return whether the caller
-/// should exit.  Returns `true` when there are `Fatal` or
-/// `ConditionalRequired` errors (`Warning` alone does not cause exit).
+/// should exit.  Returns `true` when there are `Fatal` errors
+/// (`Warning` alone does not cause exit).
 pub fn report_manifest_errors(
     errors: &[manifest::ValidationError],
     use_json: bool,
 ) -> bool {
-    let has_fatal = errors.iter().any(|e| {
-        matches!(
-            e.severity,
-            manifest::Severity::Fatal | manifest::Severity::ConditionalRequired
-        )
-    });
+    let has_fatal =
+        errors.iter().any(|e| e.severity == manifest::Severity::Fatal);
 
     if !errors.is_empty() {
         if use_json {
@@ -140,8 +136,7 @@ pub fn report_manifest_errors(
         } else {
             for err in errors {
                 match err.severity {
-                    manifest::Severity::Fatal
-                    | manifest::Severity::ConditionalRequired => {
+                    manifest::Severity::Fatal => {
                         eprintln!("错误: [{}] {}", err.field, err.message);
                     }
                     manifest::Severity::Warning => {
@@ -190,7 +185,6 @@ mod tests {
             version: "1.0.0".to_string(),
             kind: "upstream".to_string(),
             okf_version: "0.1".to_string(),
-            team: None,
             registry: None,
             description: None,
             include: Vec::new(), // empty → triggers default

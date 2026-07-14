@@ -21,6 +21,61 @@ pub fn cmd_check(args: &CheckArgs, global_json: bool) {
     }
 }
 
+/// Check root index integrity, returning:
+/// - `Ok(None)` if the root index is valid.
+/// - `Ok(Some(msg))` if corrupt and `fix` is true (captured for dry-run
+///   signal).
+/// - `Err(msg)` if corrupt and `fix` is false (early exit).
+fn capture_root_index_error(
+    wiki_root: &Path,
+    l: &lock::ZwikiLock,
+    fix: bool,
+    dry_run: bool,
+    use_json: bool,
+) -> Result<Option<String>, String> {
+    if let Err(msg) = index::check_root_index(wiki_root, l) {
+        if !fix {
+            return Err(msg);
+        }
+        if dry_run && !use_json {
+            eprintln!("DRY RUN — would regenerate root index.md");
+        }
+        return Ok(Some(msg));
+    }
+    Ok(None)
+}
+
+/// Push a dry-run root index signal entry for JSON consumers.
+fn push_root_index_dry_run_signal(
+    results: &mut Vec<serde_json::Value>,
+    msg: Option<&str>,
+    dry_run: bool,
+    use_json: bool,
+) {
+    if dry_run
+        && let Some(msg) = msg
+        && use_json
+    {
+        results.push(serde_json::json!({
+            "name": "root_index",
+            "status": "would_regenerate",
+            "note": format!("root index.md 将重建: {msg}"),
+        }));
+    }
+}
+
+/// Format the check results as a pretty-printed JSON string.
+fn format_check_json(
+    results: &[serde_json::Value],
+    root_index_fixed: bool,
+) -> Result<String, String> {
+    let output = serde_json::json!({
+        "results": results, "root_index_fixed": root_index_fixed,
+    });
+    serde_json::to_string_pretty(&output)
+        .map_err(|e| format!("JSON 序列化失败: {e}"))
+}
+
 /// Inner implementation of `cmd_check` that returns `Result` instead of
 /// calling `process::exit`.  Returns `Ok(())` when all bundles are intact
 /// (or no bundles are installed), and `Err(())` when issues are found.
@@ -49,24 +104,17 @@ pub fn cmd_check_inner(
         return Ok(());
     }
 
-    // Check root index integrity.
-    let mut root_index_fixed = false;
-    if let Err(msg) = index::check_root_index(wiki_root, &l) {
-        if fix {
-            index::regenerate_root_index_at(&l, wiki_root);
-            root_index_fixed = true;
-            if use_json {
-                // Don't emit a separate message in JSON mode — the
-                // per-bundle results will follow.
-            } else {
-                eprintln!("提醒: root index.md 已重新生成");
-            }
-        } else {
-            return Err(msg);
-        }
-    }
+    let root_index_corrupt_msg =
+        capture_root_index_error(wiki_root, &l, fix, dry_run, use_json)?;
 
     let mut results: Vec<serde_json::Value> = Vec::new();
+
+    push_root_index_dry_run_signal(
+        &mut results,
+        root_index_corrupt_msg.as_deref(),
+        dry_run,
+        use_json,
+    );
     let mut has_error = false;
 
     for entry in &l.bundles {
@@ -119,15 +167,12 @@ pub fn cmd_check_inner(
         }
     }
 
-    // Orphan scan + fix / dry-run.
+    let mut root_index_fixed = false;
     if fix && !dry_run {
-        // Apply fix first (uses fresh lock inside flock).
-        apply_check_fix_with_lock_at(wiki_root, use_json)?;
-        // Then scan orphans with fresh lock state.
+        root_index_fixed = apply_check_fix_with_lock_at(wiki_root, use_json)?;
         let fresh_l = lock::read_lock_at(wiki_root)?;
         scan_orphan_dirs_at(wiki_root, &fresh_l, &mut results, use_json);
     } else if dry_run {
-        // Dry-run: scan and report but don't modify.
         apply_check_fix_cleanup_at(
             wiki_root,
             use_json,
@@ -137,20 +182,11 @@ pub fn cmd_check_inner(
             &mut results,
         )?;
     } else {
-        // Non-fix: scan orphans with original lock (read-only, acceptable).
         scan_orphan_dirs_at(wiki_root, &l, &mut results, use_json);
     }
 
     if use_json {
-        let output = serde_json::json!({
-            "results": results,
-            "root_index_fixed": root_index_fixed,
-        });
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&output)
-                .map_err(|e| { format!("JSON 序列化失败: {e}") })?
-        );
+        println!("{}", format_check_json(&results, root_index_fixed)?);
     }
 
     if has_error { Err("检查发现错误".to_string()) } else { Ok(()) }
@@ -161,11 +197,11 @@ pub fn cmd_check_inner(
 fn apply_check_fix_with_lock_at(
     wiki_root: &Path,
     use_json: bool,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let lock_path = wiki_root.join(".zwiki.flock");
     // NOTE: flock() / fcntl(F_SETLK) is advisory and does NOT work on NFS.
-    let fix_result: io::Result<()> =
-        zutil::fileio::with_file_lock(&lock_path, || -> io::Result<()> {
+    let fix_result: io::Result<bool> =
+        zutil::fileio::with_file_lock(&lock_path, || -> io::Result<bool> {
             let mut fresh_l =
                 lock::read_lock_at(wiki_root).map_err(io::Error::other)?;
             let mut dummy_results = Vec::new();
@@ -178,7 +214,18 @@ fn apply_check_fix_with_lock_at(
                 &mut dummy_results,
             )
             .map_err(io::Error::other)?;
-            Ok(())
+
+            // Re-check root index inside the lock with fresh state.
+            let mut root_index_fixed = false;
+            if index::check_root_index(wiki_root, &fresh_l).is_err()
+                && index::regenerate_root_index_at(&fresh_l, wiki_root).is_ok()
+            {
+                root_index_fixed = true;
+                if !use_json {
+                    eprintln!("提醒: root index.md 已重新生成");
+                }
+            }
+            Ok(root_index_fixed)
         });
     fix_result.map_err(|e| format!("文件锁操作失败: {e}"))
 }
@@ -259,7 +306,9 @@ fn apply_check_fix_cleanup_at(
         if l.bundles.len() != pre_len {
             lock::write_lock_at(l, wiki_root)
                 .map_err(|e| format!("无法写入锁文件: {e}"))?;
-            index::regenerate_root_index_at(l, wiki_root);
+            if let Err(e) = index::regenerate_root_index_at(l, wiki_root) {
+                eprintln!("{e}");
+            }
         }
     }
 
@@ -498,6 +547,141 @@ mod tests {
         assert!(
             stale_temp.exists(),
             "stale temp directory should still exist in dry-run",
+        );
+    }
+
+    #[test]
+    fn test_cmd_check_inner_dry_run_json_corrupt_root_index() {
+        // Verify that --fix --dry-run --json with a corrupt root index:
+        //   (1) returns Ok (no exit),
+        //   (2) does not modify files.
+        // The JSON "would_regenerate" signal is verified in
+        // test_push_root_index_dry_run_signal_would_regenerate.
+        let wiki_root = temp_dir("check_inner_dry_json_corrupt");
+        let upstream = wiki_root.join(".upstream");
+        let bundle_dir = upstream.join("test-bundle");
+        std::fs::create_dir_all(&bundle_dir).unwrap();
+        std::fs::write(bundle_dir.join("test.md"), "content").unwrap();
+
+        let entry = lock::ZwikiLockEntry {
+            name: "test-bundle".to_string(),
+            version: "1.0.0".to_string(),
+            registry: String::new(),
+            target: ".upstream/test-bundle/".to_string(),
+            integrity: lock::compute_integrity(&bundle_dir),
+            installed_at: "2026-01-01T00:00:00Z".to_string(),
+            description: None,
+        };
+        let l = lock::ZwikiLock { bundles: vec![entry], ..Default::default() };
+        std::fs::write(
+            wiki_root.join("zwiki.lock"),
+            toml::to_string_pretty(&l).unwrap(),
+        )
+        .unwrap();
+
+        // DO NOT create index.md — root index is missing (corrupt).
+
+        // Run dry-run with JSON output.
+        let result = cmd_check_inner(true, &wiki_root, true, true);
+        assert!(result.is_ok(), "dry-run with JSON and fix should succeed");
+
+        // Verify no files were modified (dry-run).
+        assert!(bundle_dir.join("test.md").exists());
+        // index.md was never created (dry-run does not generate it).
+        assert!(
+            !wiki_root.join("index.md").exists(),
+            "index.md should not be created in dry-run"
+        );
+    }
+
+    #[test]
+    fn test_push_root_index_dry_run_signal_would_regenerate() {
+        // Verify that push_root_index_dry_run_signal adds a "would_regenerate"
+        // entry to the results vec when dry_run and use_json are both true
+        // and a root-index error message is provided.
+        let mut results = Vec::new();
+        push_root_index_dry_run_signal(
+            &mut results,
+            Some("root index.md 不存在"),
+            true,
+            true,
+        );
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["name"], "root_index");
+        assert_eq!(results[0]["status"], "would_regenerate");
+        let note = results[0]["note"].as_str().unwrap();
+        assert!(note.contains("将重建"), "note should mention rebuild: {note}");
+
+        // Verify the full JSON output includes the signal.
+        let json_str = format_check_json(&results, false).unwrap();
+        assert!(json_str.contains("would_regenerate"));
+        assert!(json_str.contains("root_index"));
+    }
+
+    #[test]
+    fn test_push_root_index_dry_run_signal_skipped_when_not_dry_run() {
+        // When dry_run is false, no entry is pushed.
+        let mut results = Vec::new();
+        push_root_index_dry_run_signal(
+            &mut results,
+            Some("some error"),
+            false,
+            true,
+        );
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_push_root_index_dry_run_signal_skipped_when_msg_none() {
+        // When msg is None, no entry is pushed.
+        let mut results = Vec::new();
+        push_root_index_dry_run_signal(&mut results, None, true, true);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_cmd_check_inner_fix_regenerates_corrupt_index() {
+        // Verify that --fix mode regenerates a corrupt root index (no
+        // ZOO:BUNDLES markers) when the directory is writable.
+        // The fix path creates index.md from scratch with the expected
+        // markers and bundle references.
+        let wiki_root = temp_dir("check_inner_fix_regenerates");
+        let upstream = wiki_root.join(".upstream");
+        let bundle_dir = upstream.join("test-bundle");
+        std::fs::create_dir_all(&bundle_dir).unwrap();
+        std::fs::write(bundle_dir.join("test.md"), "content").unwrap();
+
+        let entry = lock::ZwikiLockEntry {
+            name: "test-bundle".to_string(),
+            version: "1.0.0".to_string(),
+            registry: String::new(),
+            target: ".upstream/test-bundle/".to_string(),
+            integrity: lock::compute_integrity(&bundle_dir),
+            installed_at: "2026-01-01T00:00:00Z".to_string(),
+            description: None,
+        };
+        let l = lock::ZwikiLock { bundles: vec![entry], ..Default::default() };
+        std::fs::write(
+            wiki_root.join("zwiki.lock"),
+            toml::to_string_pretty(&l).unwrap(),
+        )
+        .unwrap();
+
+        // Create a corrupt root index (no markers).
+        std::fs::write(wiki_root.join("index.md"), "corrupt no markers\n")
+            .unwrap();
+
+        // Run fix — the regenerate will succeed (directory is writable).
+        let result = cmd_check_inner(false, &wiki_root, true, false);
+        assert!(result.is_ok(), "fix should succeed for corrupt root index");
+
+        // After fix, index.md should exist and contain the bundle marker.
+        let index_content =
+            std::fs::read_to_string(wiki_root.join("index.md")).unwrap();
+        assert!(
+            index_content.contains("<!-- ZOO:BUNDLES:BEGIN -->"),
+            "fix should regenerate root index with markers"
         );
     }
 }

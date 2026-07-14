@@ -3,7 +3,6 @@ name = "core"
 version = "0.1.0"
 okf_version = "0.1"
 kind = "team"
-team = "core"
 description = "ZooKeeper 核心团队知识库 — 项目总体概览、设计文档、共享概念与分析"
 
 [export]

@@ -658,7 +658,9 @@ fn phase3_apply_updates(
             );
             *commit_error = true; // Write partial lock with what we have committed so far
             let _ = lock::write_lock_at(&l, wiki_root);
-            index::regenerate_root_index_at(&l, wiki_root);
+            if let Err(e) = index::regenerate_root_index_at(&l, wiki_root) {
+                eprintln!("{e}");
+            }
             return Err(std::io::Error::other(msg));
         }
 
@@ -684,7 +686,9 @@ fn phase3_apply_updates(
     }
 
     lock::write_lock_at(&l, wiki_root)?;
-    index::regenerate_root_index_at(&l, wiki_root);
+    if let Err(e) = index::regenerate_root_index_at(&l, wiki_root) {
+        eprintln!("{e}");
+    }
     Ok(())
 }
 /// Update installed bundles from their configured registry, using an explicit

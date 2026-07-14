@@ -421,17 +421,7 @@ pub fn resolve_target_rel(
     match kind.as_str() {
         "upstream" => Ok(format!(".upstream/{}/", manifest.package.name)),
         "org" => Ok(format!(".org/{}/", manifest.package.name)),
-        "team" => {
-            let team = manifest.package.team.as_deref().unwrap_or_default();
-            if team.is_empty() {
-                return Err(if use_json {
-                    "team bundles require a 'team' field".to_string()
-                } else {
-                    "团队 bundle 需要指定 team 字段".to_string()
-                });
-            }
-            Ok(format!(".teams/{team}/"))
-        }
+        "team" => Ok(format!(".teams/{}/", manifest.package.name)),
         _ => Err(if use_json {
             format!("unknown kind '{kind}'")
         } else {
@@ -488,7 +478,6 @@ mod tests {
                 version: "0.1.0".to_string(),
                 okf_version: "0.1".to_string(),
                 kind: "upstream".to_string(),
-                team: None,
                 registry: None,
                 description: None,
             },
@@ -517,9 +506,8 @@ mod tests {
     fn test_resolve_target_team() {
         let mut m = valid_manifest();
         m.package.kind = "team".to_string();
-        m.package.team = Some("my-team".to_string());
         let target = resolve_target_rel(&m, false);
-        assert_eq!(target.unwrap(), ".teams/my-team/");
+        assert_eq!(target.unwrap(), ".teams/test-bundle/");
     }
 
     #[test]
