@@ -102,6 +102,10 @@ When asking, propose concrete options with estimated effort. Do not ask open-end
 
 **When to challenge the user.** If their design has a flaw (performance, maintainability, security, or feasibility), state it directly with specific reasoning. Propose an alternative. Do not soften with "just my opinion" or "correct me if I'm wrong." If you are confident, say so. If uncertain, state the uncertainty and propose an explore task to resolve it.
 
+### 0.3 Approval gate
+
+After gathering requirements through Discussion, do NOT auto-graduate to Implementation. The user answering clarifying questions is still Discussion — not an implementation request. Present the confirmed requirements and implementation plan, then explicitly ask whether to proceed. Only reclassify as Implementation when the user uses explicit action language ("go", "go ahead", "start").
+
 ## Phase 1: Completeness Gate
 
 **Do not proceed to planning until you have sufficient information to delegate.** Evaluate all three conditions:
