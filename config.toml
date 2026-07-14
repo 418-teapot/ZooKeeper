@@ -1,5 +1,5 @@
 # ZooKeeper 配置
-# {env:VAR} 引用由 opencode 在运行时从环境变量解析，请确保运行前 export 对应变量
+# {env:VAR} 引用会在 install.py 运行时解析为 .env 中的实际值
 
 "$schema" = "https://opencode.ai/config.json"
 
