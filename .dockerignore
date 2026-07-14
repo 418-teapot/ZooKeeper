@@ -1,0 +1,23 @@
+# ——— Version control ———
+.git
+
+# ——— Secrets ———
+.env
+
+# ——— Rust build artifacts ———
+tools/target
+tools/bin
+
+# ——— Node dependencies ———
+node_modules
+
+# ——— Release output ———
+release
+
+# ——— Tests & docs (not needed in build) ———
+tests
+docs
+
+# ——— Archives & logs ———
+*.tar.gz
+*.jsonl

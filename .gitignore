@@ -23,6 +23,9 @@ tests/results/
 tools/target/
 tools/bin/
 
+# ——— Release ———
+release/
+
 # ——— OS & editors ———
 .DS_Store
 *~
