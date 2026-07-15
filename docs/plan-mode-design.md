@@ -2,9 +2,9 @@
 
 # ZooKeeper Plan Mode: 完整设计文档
 
-**Version: 1.7 — Date: 2026-06-27 — Classification: 设计方案**
+**Version: 1.8 — Date: 2026-07-15 — Classification: 设计方案**
 
-> **前置阅读**: [`plan-mode-research.md`](./plan-mode-research.md) 覆盖 6 月 10 日的早期调研（plan mode 检测与切换机制）。本文档 v1.0 在调研 omo/slim/omp 的基础上加入 ECC，深入探索了 session reuse、handoff、unreconciled 等具体机制。**v1.1** 对四项目约 20 个关键源文件进行代码级验证。**v1.3** P0 mola subagent 废弃，handoff 确认为正确方向。**v1.5** P1 Steps 2 & 6 完成实施。**v1.6** sessionID 正式采纳，project-id 方案废弃——plan 文件按 sessionID 分子目录，跨 session 发现用扫描方案替代索引文件。**v1.7** Plan progress nudge pipeline 统一——共享检查函数 + 6 个对称 nudge 常量 + 两端点注入覆盖所有代码变更。
+> **前置阅读**: [`plan-mode-research.md`](./plan-mode-research.md) 覆盖 6 月 10 日的早期调研（plan mode 检测与切换机制）。本文档 v1.0 在调研 omo/slim/omp 的基础上加入 ECC，深入探索了 session reuse、handoff、unreconciled 等具体机制。**v1.1** 对四项目约 20 个关键源文件进行代码级验证。**v1.3** P0 mola subagent 废弃，handoff 确认为正确方向。**v1.5** P1 Steps 2 & 6 完成实施。**v1.6** sessionID 正式采纳，project-id 方案废弃——plan 文件按 sessionID 分子目录，跨 session 发现用扫描方案替代索引文件。**v1.7** Plan progress nudge pipeline 统一——共享检查函数 + 6 个对称 nudge 常量 + 两端点注入覆盖所有代码变更。**v1.8** 路径模型重构：从 `~/.zoo/plans/<sessionID>/` 子目录模式迁移至 `<workspace>/.zoo/plans/` 扁平模式，路径重写 hook 删除，plan 发现由 sessionID 键改为 mtime 排序，`.zoo/` 不 gitignore（延迟），工作树隔离列为未来 skill。
 
 ---
 
@@ -45,7 +45,7 @@
 **最终设计要点**:
 
 - **Plan 作为 primary agent**（handoff 模式），通过新会话 handoff 与 build orchestrator 协作
-- **Plan 文件存储于 `~/.zoo/plans/<project-id>/<slug>-<YYYYMMDD>.md`** —— 用户级集中管理，按 git remote / basename 推导 project-id
+- **Plan 文件存储于 `<workspace>/.zoo/plans/<slug>-<YYYYMMDD>.md`** —— 扁平结构，无 sessionID 子目录，按文件 mtime 降序发现最新匹配状态的 plan
 - **YAML frontmatter + markdown body + checkboxes** —— 状态字段（`planning`/`planning-done`/`executing`/`done`）+ TODOs 列表
 - **新会话 handoff 为默认方案** —— 规划与执行 session 物理分离，`parentID` 关联保留可追溯性
 - **静态 deny + hook 路径约束**: mola 允许 `edit`/`write`（路径约束至 `~/.zoo/**/*.md`），禁止 `task`（P2 再开）；bash 靠 prompt 约束只跑诊断命令
@@ -350,9 +350,9 @@ omo 的规划 agent（Prometheus）是 `mode = "primary"`，与实现编排者�
 
 **验证结论：** P0 mola subagent 的失败恰好**证实了本文档自身的分析** —— subagent 模式是 handoff 不可用时的权宜方案，它无法满足规划任务对多轮深度对话的需求。subagent 能做的所有事情（单次 plan 生成 + 探索），handoff 都能做且做得更好。**mola agent prompt / config 条目已从代码库清除** —— 但 mola-plan skill 设计范式（分层加载、CLEAR/UNCLEAR 双路径、explore-before-ask 协议、两过滤器纪律、审批门）作为有效架构向前存活至 P1（详见 [§14.0](#140-p0-mola-subagent-尝试与废弃) 与 [§18 v1.3](#v13-2026-06-24--p0-mola-subagent-废弃与-p1-范围修订)）。完备性门控（四个自检 + reasoning）仅为本文档 §11 的设计规格，**从未在代码中实现**，需在 P1 中实现。
 
-**Handoff 确认为正确方向。** P1 中 mola 升级为 primary 后应**接管 plan 文件写入**（hook 路径约束至 `~/.zoo/**/*.md`），orchestrator 仅维护 `_projects.json` 索引等系统级状态，并保留 `executing` / `done` 的状态更新权（因为这些状态发生在规划之后）。subagent 角色在 P1 中应被完全取代。
+**Handoff 确认为正确方向。** P1 中 mola 升级为 primary 后应**接管 plan 文件写入**（hook 路径约束至 `<workspace>/.zoo/**/*.md`），orchestrator 仅维护 `_projects.json` 索引等系统级状态，并保留 `executing` / `done` 的状态更新权（因为这些状态发生在规划之后）。subagent 角色在 P1 中应被完全取代。
 
-**执行阶段 plan 修改规则：** 规划完成进入执行阶段后，对 plan 的中等/轻微调整无需 handoff 回 mola。build 可直接编辑 plan 文件（更新 TODOs、标记完成项、调整步骤顺序等），写入权通过 `~/.zoo/**/*.md` 路径约束控制。仅当需要**完整的重新规划**（架构重设计、方案全面推翻）时才触发新的 mola handoff 会话。此规则确保执行效率不受不必要的 agent 切换拖累。
+**执行阶段 plan 修改规则：** 规划完成进入执行阶段后，对 plan 的中等/轻微调整无需 handoff 回 mola。dolphin 可直接编辑 plan 文件（更新 TODOs、标记完成项、调整步骤顺序等），写入权通过 `.zoo/**/*.md` 路径约束控制。仅当需要**完整的重新规划**（架构重设计、方案全面推翻）时才触发新的 mola handoff 会话。此规则确保执行效率不受不必要的 agent 切换拖累。
 
 ### 5.8 Handoff 的上下文处理
 
@@ -472,7 +472,7 @@ function isReusable(job): boolean {
 
 ```
 P1 实施:
-├── mola 升级为 primary agent（hook 路径约束 ~/.zoo/**/*.md）
+├── mola 升级为 primary agent（hook 路径约束 <workspace>/.zoo/**/*.md）
 ├── 用户与 mola 直接对话（多轮采访得以实现）
 ├── mola 自己写 plan 文件 + durable draft
 ├── 完备性门控（待实现）触发 handoff — §11 设计规格的四个自检确定"缺方案" → handoff 到 mola（需在 build.md 中首次实现）
@@ -539,7 +539,7 @@ TUI 自动跳转到新会话
 执行阶段中 build 可直接编辑 plan 文件进行中等/轻微调整，无需 handoff 回 mola。仅完整重新规划（架构重设计、方案全面推翻）时触发新的 mola handoff。
 
 **设计为 handoff 预留的基础设施**：
-- **Plan 文件位置** —— `~/.zoo/plans/` 中 mola 和 build 都能读
+- **Plan 文件位置** —— `<workspace>/.zoo/plans/` 中 mola 和 dolphin 都能读
 - **Plan 状态机** —— `planning-done` 状态是 handoff 触发点
 - **`active_sessions`** —— handoff 时把 session ID 加入此列表
 - **完备性门控 + reasoning 输出** —— §11 设计规格定义了重度缺口 → handoff 的判定路径，需在 P1 实现
@@ -547,7 +547,7 @@ TUI 自动跳转到新会话
 
 ---
 
-> **v1.6 注：** 本节架构图保留设计意图。实际实现的 agent 命名为 "dolphin"（非 "build"），plan 文件路径为 `~/.zoo/plans/<sessionID>/`（§12 已更新为正式设计，非退化方案）。
+> **v1.8 注：** 本节架构图保留设计意图。实际实现的 agent 命名为 "dolphin"（非 "build"）。plan 文件路径已从 `~/.zoo/plans/<sessionID>/` 重构为 `<workspace>/.zoo/plans/` 扁平模式——无 sessionID 子目录，无路径重写 hook，plan 发现按 mtime 降序匹配最新状态。详见 §12 与 v1.8 修订记录。
 
 ## 8. 最终设计方案
 
@@ -588,10 +588,10 @@ TUI 自动跳转到新会话
                         ↓
 ┌──────────────────────────────────────────────────┐
 │  状态层                                           │
-│  ├── 文件: ~/.zoo/plans/<slug>.md                 │
+│  ├── 文件: <workspace>/.zoo/plans/<slug>.md          │
 │  │     YAML frontmatter + markdown body           │
-│  │     status / active_sessions / project         │
-│  │                                                │
+│  │     status / slug / project_root               │
+│  │     扁平结构，无 sessionID 子目录                │
 │  └── (P1 无内存 tracker — 暂缓至 P2)              │
 │        P2: PlanSessionTracker → BackgroundManager │
 └──────────────────────────────────────────────────┘
@@ -643,7 +643,7 @@ TUI 自动跳转到新会话
 ```
 
 - **两个共享检查函数**（`src/core/checks.ts`，133 行 + 7 测试）：
-  - `checkPlanProgress(sessionID)` — 同步文件系统读取，扫描 `~/.zoo/plans/<sessionID>/` 下的 plan 文件
+  - `checkPlanProgress(sessionID, planDir)` — 同步文件系统读取，扫描 `<planDir>/.zoo/plans/` 下的 plan 文件，按 mtime 降序查找最新匹配状态的 plan（sessionID 仅用于日志）
   - `checkTodoProgress(client, sessionID)` — 异步 API 调用，通过 OpenCode client 读取当前会话消息计算 checkbox 状态
 - **薄 hook 适配器**：将框架 (input, output) 解包后调用共享函数
   - `post-task-nudge/hook.ts` — 在 `VERIFY_REMINDER` 后注入
@@ -673,7 +673,7 @@ TUI 自动跳转到新会话
 
 > **v1.6 对比：** direct-work-nudge 原来只注入 plan nudge，缺失 todo 检查；post-task-nudge 的 todo 处理中 `TODO_RESUME_NUDGE` 场景（全部完成但仍在编辑）被静默跳过。v1.7 补全了两端点的 todo + plan 完整覆盖。
 
-**无 plan 文件 → 静默跳过：** 若 session 目录下无 plan 文件，两个检查函数均返回 `null`，不注入任何 nudge。
+**无 plan 文件 → 静默跳过：** 若 `.zoo/plans/` 下无 plan 文件，两个检查函数均返回 `null`，不注入任何 nudge。
 
 **错误处理：** 每个 nudge 独立执行。`checkPlanProgress()` 的文件 I/O 错误或 `checkTodoProgress()` 的 API 错误以 `warn` 级别记录日志，不影响其他 nudge 的注入。完整容错设计保证一个 nudge 失败不会阻断另一个。
 
@@ -702,7 +702,7 @@ planning → planning-done → executing → done
 
 **原地更新**: 同一文件，多次修改（planning-done → planning 回退是允许的）。
 
-**不做版本化**: 历史靠 git 跟踪（虽然 `~/.zoo/plans/` 默认 gitignore，用户可以手动 init git 仓库备份）。
+**不做版本化**: 历史靠 git 跟踪（`.zoo/` 目前不 gitignore——此决策已延迟，未来可能加入 gitignore 或由工作树 skill 管理）。
 
 ### 9.3 Plan 废弃
 
@@ -896,59 +896,55 @@ omo 的上下文完成门控（三条自问）→ ZooKeeper 的完备性门控�
 
 ## 12. Plan 文件管理与中断恢复
 
-### 12.1 目录结构
+### 12.1 目录结构（v1.8 扁平模型）
 
 ```
-~/.zoo/plans/
-├── ses_abc123/                         # 按 sessionID 分子目录
-│   ├── auth-middleware-20260115.md
-│   └── refactor-logging-20260120.md
-├── ses_def456/
-│   └── add-wiki-query-20260123.md
-└── ses_ghi789/                         # 已完成 plan 的 session（仍保留）
-    └── fix-typo-20260401.md
+<workspace>/.zoo/plans/
+├── auth-middleware-20260115.md          # 扁平存放，无 sessionID 子目录
+└── add-wiki-query-20260123.md
 ```
 
-Plan 文件以 **sessionID** 为子目录名分组，而非 project-id。理由：
+Plan 文件以 **扁平结构** 存放在工作区根目录的 `.zoo/plans/` 下，无 sessionID 或 project-id 子目录。理由：
 
-- **零索引依赖** — 不需要 `_projects.json` 或任何映射表，plan 天然归属创建它的 session
-- **无需 project-id 推导** — 省去 `deriveProjectId()`（git remote → basename → 冲突 hash）的整套逻辑
-- **删除会话即删除 plan** — 用户通过 OpenCode UI 删除 session 时，对应的 plan 子目录可一并清理
-- **简化 `rewritePlanPath()`** — 路径重写逻辑已在 sessionID 模式下运行（见 `src/core/plan.ts`）
+- **零路径重写** — mola 直接写入 `.zoo/plans/<slug>.md`（相对于 workspace 的路径），无需路径重写 hook 透明重定向。路径即是最终位置
+- **工作树就绪** — 当未来 skill 为每个 plan 创建独立 git worktree 时，mola 写入的相对路径 `.zoo/plans/` 保持不变——worktree 本身就是隔离的工作区，plan 文件自然落在 worktree 的 `.zoo/plans/` 中，无需路径模型变更
+- **简化存储** — 无子目录层级，免去 sessionID 与 plan 的物理耦合。plan 不因 session 删除而丢失
+- `.zoo/` **暂不 gitignore** — 此决策已延迟，未来可能加入 gitignore 或由工作树 skill 管理
 
-### 12.2 plan 发现：扫描方案（P2 实现）
+### 12.2 plan 发现：mtime 降序扫描
 
-config hook 在新 session 启动时注入 active plan 概况。发现方式：
+`findPlanByStatus(baseDir, targetStatus)` 在当前工作区目录下扫描 plan 文件：
 
-1. **遍历** `~/.zoo/plans/` 下所有子目录
-2. **mtime 过滤**：只扫描最近 30 天有修改的 session 子目录
-3. 解析每个 `.md` 的 frontmatter
-4. **状态过滤**：只保留 `status != done` 的 plan
-5. 注入到 system prompt 动态段
+1. 读取 `<baseDir>/.zoo/plans/` 下所有 `.md` 文件
+2. 按文件 **mtime 降序** 排序（最新修改的在前）
+3. 依次解析每个 `.md` 的 YAML frontmatter
+4. **返回第一个** `status` 匹配目标状态的 plan
+5. 若无一匹配，返回 `null`
 
-不建立索引文件，不归档已完成 plan——靠 mtime + status 两层过滤保持 prompt 注入精简。复杂度 O(子目录数)，plan 数量不可能大到遍历成为瓶颈。
+**语义**：当同一 workspace 中存在多个 plan（同一 session 多次规划，或用户手动创建多个），mtime 降序保证总是返回"最新修改的那个匹配状态的文件"。这自然处理了"用户刚修改了 plan→最新 mtime 的就是当前活跃 plan"的预期。
+
+**不建立索引文件**，不归档已完成 plan——靠 mtime 排序 + 状态匹配即可定位当前活跃 plan。复杂度的上限是 `.zoo/plans/` 下的 `.md` 文件数，远不可能成为瓶颈。
+
+**P2 增强**：config hook 可在新 session 启动时注入所有 active plan 概况（扫描所有 `*.md`，按 mtime 排序后过滤 `status != done` 的 plan）。
 
 ### 12.3 中断恢复
 
-**新 session 启动时**，system prompt 动态段自动注入所有 active plan 的概况：
+**工作树隔离（FUTURE — 计划作为 skill 实现）**：当前版本中，多个 plan 在同一个工作区内通过 "最新匹配状态（mtime）" 消歧。**未来** 计划实现一个 worktree skill，mola 可调用它为每个 plan 创建独立的 git worktree。届时：
 
-```
-[Active Plans]
-  auth-middleware-20260115 [executing] — 5 tasks (3 done, 2 pending)
-    Session: ses_abc123
-  refactor-logging-20260120 [planning] — 刚讨论完方案，未开始执行
-    Session: ses_def456
-```
+- 每个 plan 运行在自己的 worktree 中，互不干扰
+- plan 文件写入 worktree 的 `.zoo/plans/`（路径不变——扁平模型天然兼容）
+- worktree 间的切换由 skill 管理，不再依赖 mtime 消歧
+- 此 skill 尚未实现，属未来演进方向
 
-用户自然知道当前有哪些 active plan，可以继续或切换。
+**当前版本**：新 session 启动时，dolphin 通过 `findPlanByStatus(directory, "planning-done")` 定位待执行的 plan。用户也可自然语言切换关注点。plan 不因 session 创建/删除而影响。
 
 ### 12.4 多 plan 并存
 
-✅ 支持。`active_sessions` frontmatter 字段 + in-memory active_plan_id 指针。
+✅ 当前通过 mtime 消歧。同一 workspace 内可存在多个 plan 文件，mola 写入新文件时自动成为最新 mtime。
 
-用户可显式切换："我现在要做的是重构日志的那个 plan，不是 auth middleware 的" —— orchestrator 自然语言理解即可切换 active plan。
+未来工作树 skill 实现后：每个 plan 拥有独立 worktree，零名称冲突。
 
-已完成（`status: done`）的 plan 不做物理归档——留在原 session 子目录中，mtime 过滤自然排除。
+已完成（`status: done`）的 plan 不做物理归档——留在 `.zoo/plans/` 中，被发现时自然因状态过滤跳过。
 
 ---
 
@@ -967,7 +963,7 @@ task = "deny"
 
 **为什么混合**:
 - ZooKeeper 的 `config.toml` 已有每个 agent 的 permission deny 列表
-- mola 作为 primary agent 需要写入 plan 文件，但写权限必须路径受限——hook 在 `tool.execute.before` 中检查目标路径是否在 `~/.zoo/**/*.md` 范围内，超出则拒绝并提示
+- mola 作为 primary agent 需要写入 plan 文件，但写权限必须路径受限——hook 在 `tool.execute.before` 中检查目标路径是否在 `.zoo/**/*.md` 范围内（以 workspace 为根），超出则拒绝并提示
 - `task = "deny"` ：mola 在 P1 中不自委派叶子 agent（自己 read/grep/glob 探索），P2 再开（仅 explore/spider）
 - **2026-06-23 验证：** deny list 与现有 6 个 agent 风格一致。路径约束参考 omo 的 `prometheus-md-only` hook 模式，不引入白名单特例。ZooKeeper 的 deny 模型 + hook 级路径检查够用且一致。
 - **P2 预留：** `task` 从 `"deny"` 改为 `"allow"` 并加轻量委派通道（参考 omo `call_omo_agent`）
@@ -988,7 +984,7 @@ Bash Usage Rules:
 
 | 角色 | 职责 |
 |---|---|
-| **Mola**（primary）| **直接写 plan 文件**（edit/write 路径约束至 `~/.zoo/**/*.md`）|
+| **Mola**（primary）| **直接写 plan 文件**——写入 `.zoo/plans/<slug>.md`（相对于 workspace 的路径，扁平结构，无 sessionID 子目录；edit/write 路径约束至 `.zoo/**/*.md`）|
 | **Dolphin**（orchestrator）| 维护 `_projects.json` 索引；更新 `executing`/`done` 状态；执行阶段直接编辑 plan |
 
 **为什么这样**:
@@ -1067,7 +1063,7 @@ P0 还提供了以下过程验证（lessons learned，非前向携带）：
 
 ```
 Step 1. config.toml + install.py                 — ✅ mola primary agent 注册 + 内置 plan 禁用
-Step 2. src/core/plan.ts                         — ✅ plan 文件解析/写入/状态机（sessionID 子目录）
+Step 2. src/core/plan.ts                         — ✅ plan 文件解析/写入/状态机（扁平 `<baseDir>/.zoo/plans/`，无 sessionID 子目录）
 Step 3. core/prompts/mola.md                     — ✅ mola prompt (60 行，含 Agents 委派段)
 Step 4. core/skills/mola-plan/                   — ✅ plan skill (SKILL.md + 3 reference + 2 template)
 Step 5. src/hooks/plan-lifecycle/ + src/index.ts — ✅ handoff `/go` 命令 + 三段 API + plan 状态更新
@@ -1087,11 +1083,13 @@ Step 6. 集成测试 + runner.py 场景               — ❌ 未实现
 
 **Step 2: plan.ts** (263 行 + 379 测试) ✅ 已完成
 - 纯逻辑模块（零 OpenCode 依赖，可被 TS 运行时 import），文件名 `plan.ts`（设计文档原 `plan-state.ts`）
-- 函数: `plansDir(sessionID)`, `parseFrontmatter(content)`, `findPlanByStatus(sessionID, targetStatus)`, `updatePlanStatus(content, newStatus)`, `writePlan(planPath, content)`, `rewritePlanPath(tool, args, sessionID)`, `buildPlanReference(planPath)`, `buildConfirmText()`, `countOpenTodos(content)`, `allTodosDone(content)`
-- Plan 文件存储路径：`~/.zoo/plans/<sessionID>/<slug>.md`（详见 §12）
-- `rewritePlanPath()` 透明地将 mola 对 `~/.zoo/plans/<file>.md` 的写入重定向到 `~/.zoo/plans/<sessionID>/<file>.md`
+- 函数: `plansDir(baseDir)`, `parseFrontmatter(content)`, `findPlanByStatus(baseDir, targetStatus)`, `updatePlanStatus(content, newStatus)`, `writePlan(planPath, content)`, `buildPlanReference(planPath)`, `buildConfirmText()`, `countOpenTodos(content)`, `allTodosDone(content)`
+- Plan 文件存储路径：`<baseDir>/.zoo/plans/<slug>.md`（详见 §12）—— 扁平结构，无 sessionID 子目录
+- **路径重写函数已删除**（v1.8）— mola 直接写入 `.zoo/plans/<slug>.md`（相对于 workspace 的路径），无需透明重定向
+- `findPlanByStatus(baseDir, targetStatus)` 按 mtime 降序扫描 `<baseDir>/.zoo/plans/*.md`，返回最新修改的匹配 plan
+- `plansDir(baseDir)` 返回 `<baseDir>/.zoo/plans`（baseDir 必填，由调用方显式传入 workspace 目录，无默认值）
 - 状态机校验未显式实现——`updatePlanStatus()` 是自由字符串替换，不校验状态合法性
-- 测试覆盖：plansDir、parseFrontmatter（5 场景）、findPlanByStatus（5 场景）、updatePlanStatus（4 场景）、writePlan、rewritePlanPath（7 场景）、buildPlanReference、buildConfirmText、countOpenTodos、allTodosDone
+- 测试覆盖：plansDir、parseFrontmatter（5 场景）、findPlanByStatus（5 场景）、updatePlanStatus（4 场景）、writePlan、buildPlanReference、buildConfirmText、countOpenTodos、allTodosDone
 
 **Step 3: mola prompt** (60 行) ✅ 已完成
 - **Role** (~5 行): mola 规划顾问身份，plan mode sticky
@@ -1111,7 +1109,7 @@ Step 6. 集成测试 + runner.py 场景               — ❌ 未实现
 - `src/index.ts` 中注册 `/go` 命令（`config.command.go`）和 `command.execute.before` handler
 - `handleGoCommand()` 八步编排：查找 plan → 验证 client API → 创建 dolphin 子 session → 更新 plan status → navigate home + TUI publish → 注入 plan reference（promptAsync）→ 注入 silent confirmation（prompt + noReply）→ 可选删除旧 session
 - 使用 `tui.publish()` SSE 事件触发 TUI 切换（非 `tui.selectSession()`）
-- `rewritePlanPath()` 在 `tool.execute.before` 中注册，透明重定向 mola 的 plan 文件写入
+- **路径重写 hook 已删除**（v1.8）— 扁平路径模型下 mola 直接写入 `.zoo/plans/`，无需路径重写
 - **未实现：** config hook 的 active-plans 概况注入、chat.message hook 的自动 handoff 触发（`output.message["agent"] = "mola"`）——当前 handoff 仅通过用户显式 `/go` 命令触发
 - **测试覆盖：** 成功路径（5 场景）、错误处理（5 场景）、客户端 API 边界（5 场景）、plan 状态边界（2 场景）
 
@@ -1171,7 +1169,7 @@ P2 新增:
 ```
 
 **关键前置准备**（P1 已做的）:
-- Plan 文件位置 `~/.zoo/plans/`（handoff 时 plan agent 和 executor 都能读）
+- Plan 文件位置 `<workspace>/.zoo/plans/`（handoff 时 plan agent 和 executor 都能读）
 - Plan 状态机（`planning-done` 状态是 handoff 触发点）
 - active_sessions frontmatter 字段（handoff 时把 session ID 加入）
 
@@ -1214,11 +1212,11 @@ interface BackgroundManager {
 | # | 决策 | 选择 | 理由 |
 |---|---|---|---|
 | 1 | Plan 作为什么实现 | **primary agent**（handoff 模式，非 subagent） | skill 会污染 orchestrator context；agent 提供干净分离。subagent 模式（P0）尝试后废弃——无法满足多轮深度对话需求 |
-| 2 | Plan 文件位置 | `~/.zoo/plans/<sessionID>/<slug>-<YYYYMMDD>.md`（v1.6 修订：原 `<project-id>/` 已废弃） | sessionID 天然归属，零索引依赖 |
+| 2 | Plan 文件位置（v1.8 已废弃——扁平路径模型替代） | `~/.zoo/plans/<sessionID>/<slug>-<YYYYMMDD>.md`（v1.6 修订：原 `<project-id>/` 已废弃） | sessionID 天然归属，零索引依赖。v1.8 重构为 `<workspace>/.zoo/plans/` 扁平模型，无 sessionID 子目录 |
 | 3 | project-id 推导 | **废弃（v1.6）** | sessionID 方案消除了跨 session 映射需求，不需要 git remote / basename 推导 |
 | 4 | 索引文件 | **废弃（v1.6）** | `_projects.json` 随 project-id 一并废弃；plan 归属 session，无需映射表 |
 | 5 | Plan 格式 | YAML frontmatter + markdown body + checkboxes | 状态在 frontmatter，人类可读 body |
-| 6 | Git 管理 | 天然 gitignore（用户级） | 与 omo/slim/omp 一致 |
+| 6 | Git 管理（v1.8 已修订） | `.zoo/` 暂不 gitignore（延迟决策） | v1.0 采纳 omo/slim/omp 的"天然 gitignore"；v1.8 用户决定推迟，未来可能 gitignore 或由 worktree skill 管理 |
 | 7 | 输出协议 | 结构化 markdown sections | 4 个项目都用 markdown 不用 JSON |
 | 8 | Session resume | 透明显示 + 自动执行 | 用户可见但无需操作，omo 已验证可行 |
 | 9 | Unreconciled | 显式检测 + session.idle 自动解除 | slim 的精巧设计，plan→实现解耦的关键 |
@@ -1275,12 +1273,12 @@ interface BackgroundManager {
 | 59 | 禁用内置 plan agent | **`[agent.plan] disable = true`** | mola 接管规划职责后，OpenCode 内置 plan agent 会与 mola 冲突。禁用避免两个规划 agent 共存的歧义 |
 | 60 | mola-plan 注册到 skills | **`[zoo.skills] mola-plan = "enable"`** | 通过现有的 skill 注册机制把 mola-plan 加入可用技能列表。mola 的 permission.skill 仅允许 mola-plan + wiki-query，防止 skill 滥用 |
 | 61 | orchestrator 命名 | **"dolphin" 替代设计文档原 "build"** | 实施时最终确定 dolphin 为 orchestrator agent 名，语义更清晰（"海豚——海洋的编排者"）。`config.toml` 中为 `[agent.dolphin]`，prompt 文件为 `dolphin.md`。设计文档历史章节中 "build" 均应理解为 "dolphin" |
-| 62 | plan 文件路径退化方案 | **`~/.zoo/plans/<sessionID>/` 作为 `<project-id>/` 未实现时的临时方案** | project-id.ts（Step 3）未实现时，以 sessionID 作为 plan 子目录名。`rewritePlanPath()` 和 `findPlanByStatus()` 均适配此模式。project-id.ts 实现后切换 |
+| 62 | plan 文件路径退化方案 | **`~/.zoo/plans/<sessionID>/` 作为 `<project-id>/` 未实现时的临时方案（v1.8 已废弃——扁平路径模型替代）** | project-id.ts（Step 3）未实现时，以 sessionID 作为 plan 子目录名。路径重写函数和 `findPlanByStatus()` 均适配此模式。v1.8 被扁平 `<workspace>/.zoo/plans/` 模型替代 |
 | 63 | plan.ts 命名 | **`plan.ts` 替代设计原名 `plan-state.ts`** | 简化命名，state 隐含但非必需的限定词 |
 | 64 | scaffold 脚本 | **不实现 scaffold Python 脚本，template markdown 文件替代** | 决策 #56（脚手架作为格式唯一权威）未落地。模板文件（`templates/plan-template.md` + `spec-template.md`）同时作为生成模板和内联内容指引，mola-plan skill Phase 5 基于模板通过 `write`+`edit` 创建 plan/spec 文件 |
 | 65 | handoff 触发方式 | **仅 `/go` 命令手动触发，不实现 chat.message hook 自动触发** | chat.message hook 检测 `[完备性: ...]` 自动路由到 mola 的设计未实现。当前用户显式在 UI 下拉菜单切换到 mola 或 mola 输出后用户键入 `/go`。自动路由推迟至 P2 |
 | 66 | mola prompt 委派段 | **`<Agents>` 段声明 lynx/spider 委派能力** | 设计文档在 prompt 结构和 config.toml 中均未给 mola 委派子 agent 的能力描述。实际 mola.md 设 `<Agents>` 段声明 task() 委派探索能力。config.toml 中 `task` 未显式 deny 或 allow——存在 prompt-config 权限声明不一致，需在 P2 中对齐 |
-| 67 | plan 文件路径正式方案 | **`~/.zoo/plans/<sessionID>/` 正式替代 `<project-id>/`** | 零索引依赖，plan 天然归属创建 session；无需 `deriveProjectId()` 和 `_projects.json`；删除 session 时 plan 一并清理；`rewritePlanPath()` 已在 sessionID 模式运行 |
+| 67 | plan 文件路径正式方案（v1.8 已废弃——扁平路径模型替代） | **`~/.zoo/plans/<sessionID>/` 正式替代 `<project-id>/`** | sessionID 子目录方案被 v1.8 的扁平 `<workspace>/.zoo/plans/` 模型替代。新模型无需路径重写，plan 发现按 mtime 降序，`.zoo/` 不 gitignore（延迟），工作树隔离列为未来 skill |
 | 68 | project-id.ts 废弃 | **不实现 project-id.ts + `_projects.json`** | sessionID 方案消除了跨 session 映射需求；`_projects.json` 失去存在理由——plan 归属 session，不需要中间索引关联项目路径 |
 | 69 | plan 归档 | **不归档，靠 mtime + status 过滤** | 已完成 plan 留在原 session 子目录；mtime 过滤（30 天）自然排除僵尸 session；等效于物理归档，无路径变更 bug 风险 |
 | 70 | active-plans 概况注入 | **扫描方案：遍历所有 session 子目录 + mtime + status 两层过滤，P2 实现** | 不建索引文件；plan 数量不可能大到遍历成为瓶颈（每个 plan 是几十 KB markdown）；复杂度 O(子目录数)，约 40 行 |
@@ -1544,7 +1542,7 @@ mola-plan = "enable"
 | # | 设计文档（v1.4 及之前） | 实际实现 | 状态 |
 |---|---|---|---|
 | 1 | orchestrator 命名为 "build" | 命名为 "dolphin"（`[agent.dolphin]`） | 文档需更新：design doc 中 "build" 均应理解为 "dolphin" |
-| 2 | plan 文件路径 `~/.zoo/plans/<project-id>/` | `~/.zoo/plans/<sessionID>/` | project-id.ts 未实现时退化为 sessionID 子目录；`rewritePlanPath()` 已适配此模式 |
+| 2 | plan 文件路径 `~/.zoo/plans/<project-id>/` | `~/.zoo/plans/<sessionID>/` | project-id.ts 未实现时退化为 sessionID 子目录；路径重写函数已适配此模式。**v1.8 进一步重构**为扁平 `<workspace>/.zoo/plans/`，sessionID 子目录方案已废弃 |
 | 3 | Step 2 文件名 `plan-state.ts` | 实际为 `plan.ts` | 命名简化 |
 | 4 | scaffold-plan.py / scaffold-spec.py 作为格式唯一权威 | 不存在；`templates/plan-template.md` + `spec-template.md` 替代 | 脚本未实现 |
 | 5 | `task = "deny"` 显式声明 | config.toml 中隐式（未列出，框架默认 deny） | 效果等价，但设计文档描述不精确 |
@@ -1562,7 +1560,7 @@ mola-plan = "enable"
 
 **关于 plan 文件存储路径的说明：**
 
-设计 §12 计划使用 `~/.zoo/plans/<project-id>/<slug>.md`，由 `project-id.ts`（Step 3）推导 project-id。该组件尚未实现，当前以 sessionID 作为子目录名。`rewritePlanPath()` 和 `findPlanByStatus()` 均已在 sessionID 模式下正常工作。
+设计 §12 计划使用 `~/.zoo/plans/<project-id>/<slug>.md`，由 `project-id.ts`（Step 3）推导 project-id。该组件尚未实现，先以 sessionID 作为子目录名，后经 v1.6 升格为正式方案。**v1.8 再次重构**：废弃 sessionID 子目录，改为 `<workspace>/.zoo/plans/` 扁平模型，路径重写函数删除，plan 发现按 mtime 降序。
 
 **关于 scaffold 脚本的说明：**
 
@@ -1630,7 +1628,7 @@ mola-plan = "enable"
 
 | 原设计（v1.5 及之前） | 新决策 | 理由 |
 |---|---|---|
-| plan 文件路径 `~/.zoo/plans/<project-id>/` | `~/.zoo/plans/<sessionID>/` | 零索引依赖，无需 project-id 推导，天然归属 session |
+| plan 文件路径 `~/.zoo/plans/<project-id>/` | `~/.zoo/plans/<sessionID>/`（v1.8 已废弃——扁平路径模型替代） | 零索引依赖，无需 project-id 推导，天然归属 session。v1.8 重构为 `<workspace>/.zoo/plans/` 扁平模型 |
 | `deriveProjectId()` + `_projects.json` | 废弃，不实现 | sessionID 方案无需映射表 |
 | plan 归档（`_archived/` 子目录） | 不归档，mtime + status 过滤 | 等效效果，无路径变更风险 |
 | active-plans 注入依赖 project-id | 扫描方案（遍历 + mtime + status 过滤，~40 行） | 简洁，P2 实现 |
@@ -1679,6 +1677,37 @@ mola-plan = "enable"
 | §16 | 新增决策日志 #71 |
 
 **P1 剩余：** Step 6（集成测试, ~80 行）。
+
+### v1.8 (2026-07-15) — 扁平 workspace 路径模型重构
+
+**核心变更：**
+- **路径重写函数删除** — plan 文件从 `~/.zoo/plans/<sessionID>/<slug>.md` 子目录模式迁移至 `<workspace>/.zoo/plans/<slug>.md` 扁平模式。mola 直接写入 `.zoo/plans/`（相对于 workspace 的路径），无需路径重写 hook
+- **`findPlanByStatus` 签名变更** — 从 `findPlanByStatus(sessionID, targetStatus)` 改为 `findPlanByStatus(baseDir, targetStatus)`，扫描 `<baseDir>/.zoo/plans/*.md` 按文件 mtime 降序排序，返回最新匹配状态的 plan
+- **`plansDir` 签名变更** — 从 `plansDir(sessionID, baseDir?)` 改为 `plansDir(baseDir)`，返回 `<baseDir>/.zoo/plans`（baseDir 必填，调用方显式传入 workspace 目录，无默认值）
+- **`checkPlanProgress` 签名变更** — 从 `checkPlanProgress(sessionID)` 改为 `checkPlanProgress(sessionID, planDir)`，接收 workspace 目录用于 plan 查找（sessionID 保留用于日志）
+- **`/go` 手顺** — `handleGoCommand` 通过 `findPlanByStatus(directory, "planning-done")` 定位 plan（workspace 维度，无 sessionID）
+- **`.zoo/` 不 gitignore**（延迟）— 不声称 `.zoo/` 被 gitignore，此决策推迟
+- **工作树隔离列为未来 skill** — 当前同一 workspace 多个 plan 通过 mtime 消歧；未来 worktree-per-plan 隔离将作为 mola 可调用的 skill 实现
+
+**修改的设计文档章节：**
+
+| 章节 | 修订内容 |
+|------|----------|
+| **文档头** | 版本号 1.7→1.8，v1.8 修订摘要 |
+| **§1** 执行摘要 | Plan 文件位置更新为 workspace 扁平路径 |
+| **§5.7** | 路径约束从 `~/.zoo/**/*.md` 改为 `<workspace>/.zoo/**/*.md` |
+| **§7.4** | 路径约束、plan 文件位置更新；v1.6 注替换为 v1.8 注 |
+| **§8.1** 架构图 | 状态层路径改为 `<workspace>/.zoo/plans/<slug>.md` |
+| **§8.3** nudge 管道 | `checkPlanProgress` 签名更新，路径引用更新 |
+| **§9.2** | gitignore 说明修正为 `.zoo/` 不 gitignore（延迟） |
+| **§12** Plan 文件管理 | **完全重写**：扁平目录结构、mtime 降序发现、工作树隔离列为未来 skill、多 plan mtime 消歧 |
+| **§13** 权限与工具控制 | 路径约束更新为 workspace 根 |
+| **§14.2** Step 2 | 函数签名更新，路径重写函数删除说明 |
+| **§14.2** Step 5 | 删除路径重写注册说明 |
+| **§15.1** | plan 文件位置更新为 workspace 路径 |
+| **§16** 决策日志 | #2、#62、#67 标注 v1.8 废弃/替代 |
+| **v1.5 修订段** | 偏差 #2、存储路径说明标注 v1.8 重构 |
+| **v1.6 修订段** | 路径条目标注 v1.8 废弃 |
 
 ---
 

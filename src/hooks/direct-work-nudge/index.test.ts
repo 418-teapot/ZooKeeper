@@ -9,7 +9,7 @@
  */
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { zookeeper } from "../../index.js";
@@ -504,11 +504,22 @@ describe("integration: sessionAgentMap lifecycle", () => {
 // Plan nudge scenarios
 // ---------------------------------------------------------------------------
 
+let _planNudgeCounter = 0;
+
+function tmpDir(): string {
+  const dir = join(
+    tmpdir(),
+    `zoo-direct-nudge-test-${Date.now()}-${_planNudgeCounter++}`,
+  );
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 /**
- * Write a plan file under ~/.zoo/plans/<sessionID>/.
+ * Write a plan file under a baseDir's .zoo/plans/ (flat layout).
  */
 function writePlanFile(
-  sessionID: string,
+  baseDir: string,
   filename: string,
   frontmatter: Record<string, string>,
   body: string,
@@ -517,17 +528,17 @@ function writePlanFile(
     .map(([k, v]) => `${k}: ${v}`)
     .join("\n");
   const content = `---\n${fmLines}\n---\n\n${body}`;
-  const dir = join(homedir(), ".zoo", "plans", sessionID);
+  const dir = join(baseDir, ".zoo", "plans");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, filename), content, "utf-8");
 }
 
 /**
- * Remove a session's plan directory recursively.
+ * Remove a baseDir's .zoo/plans/ directory recursively.
  */
-function cleanupPlanDir(sessionID: string): void {
+function cleanupPlanDir(baseDir: string): void {
   try {
-    rmSync(join(homedir(), ".zoo", "plans", sessionID), {
+    rmSync(join(baseDir, ".zoo", "plans"), {
       recursive: true,
       force: true,
     });
@@ -536,75 +547,84 @@ function cleanupPlanDir(sessionID: string): void {
   }
 }
 
-let _planNudgeCounter = 0;
-
 describe("plan nudge scenarios", () => {
   it("edit with executing plan (open TODOs) includes PLAN_PROGRESS_NUDGE", async () => {
     const sessionID = `test-direct-nudge-${Date.now()}-${_planNudgeCounter++}`;
+    const baseDir = tmpDir();
     try {
       writePlanFile(
-        sessionID,
+        baseDir,
         "my-plan.md",
         { status: "executing", slug: "my-plan" },
         "- [ ] Write tests\n- [x] Implement feature\n",
       );
       const result: { output?: string } = { output: "edited file" };
-      await nudgeDirectWork({ tool: "edit", sessionID }, result);
+      await nudgeDirectWork({ tool: "edit", sessionID }, result, {
+        planDir: baseDir,
+      });
       assert.ok(
         result.output?.includes("PLAN PROGRESS"),
         "expected PLAN PROGRESS nudge",
       );
     } finally {
-      cleanupPlanDir(sessionID);
+      cleanupPlanDir(baseDir);
     }
   });
 
   it("edit with executing plan (all done) includes PLAN_DONE_NUDGE", async () => {
     const sessionID = `test-direct-nudge-${Date.now()}-${_planNudgeCounter++}`;
+    const baseDir = tmpDir();
     try {
       writePlanFile(
-        sessionID,
+        baseDir,
         "my-plan.md",
         { status: "executing", slug: "my-plan" },
         "- [x] Task A\n- [x] Task B\n",
       );
       const result: { output?: string } = { output: "edited file" };
-      await nudgeDirectWork({ tool: "edit", sessionID }, result);
+      await nudgeDirectWork({ tool: "edit", sessionID }, result, {
+        planDir: baseDir,
+      });
       assert.ok(
         result.output?.includes("PLAN COMPLETE"),
         "expected PLAN COMPLETE nudge",
       );
     } finally {
-      cleanupPlanDir(sessionID);
+      cleanupPlanDir(baseDir);
     }
   });
 
   it("edit with done plan includes PLAN_RESUME_NUDGE", async () => {
     const sessionID = `test-direct-nudge-${Date.now()}-${_planNudgeCounter++}`;
+    const baseDir = tmpDir();
     try {
       writePlanFile(
-        sessionID,
+        baseDir,
         "my-plan.md",
         { status: "done", slug: "my-plan" },
         "- [x] All done\n",
       );
       const result: { output?: string } = { output: "edited file" };
-      await nudgeDirectWork({ tool: "edit", sessionID }, result);
+      await nudgeDirectWork({ tool: "edit", sessionID }, result, {
+        planDir: baseDir,
+      });
       assert.ok(
         result.output?.includes("PLAN RESURRECTED"),
         "expected PLAN RESURRECTED nudge",
       );
     } finally {
-      cleanupPlanDir(sessionID);
+      cleanupPlanDir(baseDir);
     }
   });
 
   it("grep does not include plan nudge", async () => {
     const sessionID = `test-direct-nudge-${Date.now()}-${_planNudgeCounter++}`;
+    const baseDir = tmpDir();
     try {
-      cleanupPlanDir(sessionID);
       const result: { output?: string } = { output: "grep result" };
-      await nudgeDirectWork({ tool: "grep", sessionID }, result);
+      await nudgeDirectWork({ tool: "grep", sessionID }, result, {
+        planDir: baseDir,
+      });
       assert.ok(
         result.output?.includes("POTENTIAL DELEGATION OPPORTUNITY"),
         "grep should still include search delegation nudge",
@@ -625,7 +645,7 @@ describe("plan nudge scenarios", () => {
         "grep should not contain PLAN RESURRECTED",
       );
     } finally {
-      cleanupPlanDir(sessionID);
+      cleanupPlanDir(baseDir);
     }
   });
 });

@@ -30,11 +30,13 @@ import { log } from "../../utils/logger.js";
  * @param input.sessionID - Session identifier for todo/plan lookup.
  * @param output - Hook output object mutated in place.
  * @param output.output - Text output from the tool call.
+ * @param planDir - Workspace base directory containing `.zoo/plans/`.
  */
 export async function nudgePostTask(
   client: TinyClient | null | undefined,
   input: { tool: string; sessionID: string; callID?: string },
   output: { output?: string },
+  planDir: string,
 ): Promise<void> {
   // Skip non-task tools
   if (input.tool.toLowerCase() !== "task") return;
@@ -53,7 +55,7 @@ export async function nudgePostTask(
   if (todoNudge) suffix += `\n\n${todoNudge}`;
 
   // Plan progress check (sync — filesystem read)
-  const planNudge = checkPlanProgress(input.sessionID);
+  const planNudge = checkPlanProgress(input.sessionID, planDir);
   if (planNudge) suffix += `\n\n${planNudge}`;
 
   output.output += suffix;

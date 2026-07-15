@@ -246,10 +246,6 @@ color = "#FFA500"
 [agent.mola.permission]
 webfetch  = "deny"
 websearch = "deny"
-[agent.mola.permission.external_directory]
-"~/.zoo/plans/**" = "allow"
-[agent.mola.permission.edit]
-"~/.zoo/plans/**" = "allow"
 [agent.mola.permission.skill]
 "*"          = "deny"
 "grill"      = "allow"

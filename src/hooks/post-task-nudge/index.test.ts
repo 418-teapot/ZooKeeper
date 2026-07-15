@@ -7,7 +7,7 @@
  */
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
@@ -69,9 +69,10 @@ async function applyNudge(
   tool: string,
   sessionID: string,
   output?: string,
+  planDir?: string,
 ): Promise<{ output?: string }> {
   const result: { output?: string } = { output };
-  await nudgePostTask(client, { tool, sessionID }, result);
+  await nudgePostTask(client, { tool, sessionID }, result, planDir ?? "");
   return result;
 }
 
@@ -306,7 +307,7 @@ describe("null / undefined output is skipped", () => {
       { content: "Task", status: "in_progress", priority: "high", id: "1" },
     ]);
     const result: { output?: string } = { output: undefined };
-    await nudgePostTask(client, { tool: "task", sessionID: "s1" }, result);
+    await nudgePostTask(client, { tool: "task", sessionID: "s1" }, result, "");
     assert.equal(result.output, undefined);
   });
 
@@ -315,7 +316,7 @@ describe("null / undefined output is skipped", () => {
       { content: "Task", status: "in_progress", priority: "high", id: "1" },
     ]);
     const result: { output?: string } = { output: null as unknown as string };
-    await nudgePostTask(client, { tool: "task", sessionID: "s1" }, result);
+    await nudgePostTask(client, { tool: "task", sessionID: "s1" }, result, "");
     assert.equal(result.output, null);
   });
 
@@ -324,7 +325,7 @@ describe("null / undefined output is skipped", () => {
       { content: "Task", status: "in_progress", priority: "high", id: "1" },
     ]);
     const result: { output?: string } = {};
-    await nudgePostTask(client, { tool: "task", sessionID: "s1" }, result);
+    await nudgePostTask(client, { tool: "task", sessionID: "s1" }, result, "");
     assert.equal(result.output, undefined);
   });
 });
@@ -591,11 +592,22 @@ describe("integration via plugin (tool.execute.after)", () => {
 // Plan nudge scenarios
 // ---------------------------------------------------------------------------
 
+let _planNudgeCounter = 0;
+
+function tmpDir(): string {
+  const dir = join(
+    tmpdir(),
+    `zoo-post-nudge-test-${Date.now()}-${_planNudgeCounter++}`,
+  );
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 /**
- * Write a plan file under ~/.zoo/plans/<sessionID>/.
+ * Write a plan file under a baseDir's .zoo/plans/ (flat layout).
  */
 function writePlanFile(
-  sessionID: string,
+  baseDir: string,
   filename: string,
   frontmatter: Record<string, string>,
   body: string,
@@ -604,17 +616,17 @@ function writePlanFile(
     .map(([k, v]) => `${k}: ${v}`)
     .join("\n");
   const content = `---\n${fmLines}\n---\n\n${body}`;
-  const dir = join(homedir(), ".zoo", "plans", sessionID);
+  const dir = join(baseDir, ".zoo", "plans");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, filename), content, "utf-8");
 }
 
 /**
- * Remove a session's plan directory recursively.
+ * Remove a baseDir's .zoo/plans/ directory recursively.
  */
-function cleanupPlanDir(sessionID: string): void {
+function cleanupPlanDir(baseDir: string): void {
   try {
-    rmSync(join(homedir(), ".zoo", "plans", sessionID), {
+    rmSync(join(baseDir, ".zoo", "plans"), {
       recursive: true,
       force: true,
     });
@@ -623,14 +635,13 @@ function cleanupPlanDir(sessionID: string): void {
   }
 }
 
-let _planNudgeCounter = 0;
-
 describe("plan nudge scenarios", () => {
   it("executing plan with open TODOs includes PLAN_PROGRESS_NUDGE", async () => {
     const sessionID = `test-post-nudge-${Date.now()}-${_planNudgeCounter++}`;
+    const baseDir = tmpDir();
     try {
       writePlanFile(
-        sessionID,
+        baseDir,
         "my-plan.md",
         { status: "executing", slug: "my-plan" },
         "- [ ] Write tests\n- [x] Implement feature\n",
@@ -643,21 +654,28 @@ describe("plan nudge scenarios", () => {
           id: "1",
         },
       ]);
-      const result = await applyNudge(client, "task", sessionID, "Done");
+      const result = await applyNudge(
+        client,
+        "task",
+        sessionID,
+        "Done",
+        baseDir,
+      );
       assert.ok(
         result.output?.includes("PLAN PROGRESS"),
         "expected PLAN PROGRESS nudge",
       );
     } finally {
-      cleanupPlanDir(sessionID);
+      cleanupPlanDir(baseDir);
     }
   });
 
   it("executing plan with all TODOs done includes PLAN_DONE_NUDGE", async () => {
     const sessionID = `test-post-nudge-${Date.now()}-${_planNudgeCounter++}`;
+    const baseDir = tmpDir();
     try {
       writePlanFile(
-        sessionID,
+        baseDir,
         "my-plan.md",
         { status: "executing", slug: "my-plan" },
         "- [x] Task A\n- [x] Task B\n",
@@ -670,21 +688,28 @@ describe("plan nudge scenarios", () => {
           id: "1",
         },
       ]);
-      const result = await applyNudge(client, "task", sessionID, "Done");
+      const result = await applyNudge(
+        client,
+        "task",
+        sessionID,
+        "Done",
+        baseDir,
+      );
       assert.ok(
         result.output?.includes("PLAN COMPLETE"),
         "expected PLAN COMPLETE nudge",
       );
     } finally {
-      cleanupPlanDir(sessionID);
+      cleanupPlanDir(baseDir);
     }
   });
 
   it("done plan includes PLAN_RESUME_NUDGE", async () => {
     const sessionID = `test-post-nudge-${Date.now()}-${_planNudgeCounter++}`;
+    const baseDir = tmpDir();
     try {
       writePlanFile(
-        sessionID,
+        baseDir,
         "my-plan.md",
         { status: "done", slug: "my-plan" },
         "- [x] All done\n",
@@ -697,20 +722,26 @@ describe("plan nudge scenarios", () => {
           id: "1",
         },
       ]);
-      const result = await applyNudge(client, "task", sessionID, "Done");
+      const result = await applyNudge(
+        client,
+        "task",
+        sessionID,
+        "Done",
+        baseDir,
+      );
       assert.ok(
         result.output?.includes("PLAN RESURRECTED"),
         "expected PLAN RESURRECTED nudge",
       );
     } finally {
-      cleanupPlanDir(sessionID);
+      cleanupPlanDir(baseDir);
     }
   });
 
   it("no plan file does not include any plan nudge", async () => {
     const sessionID = `test-post-nudge-${Date.now()}-${_planNudgeCounter++}`;
+    const baseDir = tmpDir();
     try {
-      cleanupPlanDir(sessionID);
       const client = mockClient([
         {
           content: "Some task",
@@ -719,7 +750,13 @@ describe("plan nudge scenarios", () => {
           id: "1",
         },
       ]);
-      const result = await applyNudge(client, "task", sessionID, "Done");
+      const result = await applyNudge(
+        client,
+        "task",
+        sessionID,
+        "Done",
+        baseDir,
+      );
       assert.ok(result.output, "output should exist");
       assert.equal(
         result.output?.includes("PLAN PROGRESS"),
@@ -737,7 +774,7 @@ describe("plan nudge scenarios", () => {
         "should not contain PLAN RESURRECTED",
       );
     } finally {
-      cleanupPlanDir(sessionID);
+      cleanupPlanDir(baseDir);
     }
   });
 });

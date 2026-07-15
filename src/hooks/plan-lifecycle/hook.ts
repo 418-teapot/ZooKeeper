@@ -6,9 +6,6 @@
  * injecting the plan content, switching TUI focus, and updating
  * the plan file's frontmatter status.
  *
- * Also re-exports `rewritePlanPath` from the core module for use in
- * `tool.execute.before`.
- *
  * @module
  */
 
@@ -73,14 +70,16 @@ export interface PlanClient {
  * child session, inject plan content, switch TUI focus, and update the
  * plan's frontmatter status to `executing`.
  *
+ * Plans are found flat under `<directory>/.zoo/plans/` using the newest
+ * (latest mtime) file matching the target status.
+ *
  * Failures (no plan found, session creation failure, missing client API)
  * are surfaced via thrown Error with user-facing messages. The hook
  * adapter in `src/index.ts` converts these to `output.parts` entries.
  *
  * @param client - OpenCode client providing session and TUI APIs.
  * @param sessionID - The current session identifier.
- * @param directory - The workspace directory for the new session.
- * @param baseDir - Base directory for plan files (defaults to home dir).
+ * @param directory - The workspace directory for plan files and new session.
  * @throws Error when no `planning-done` plan exists, frontmatter is
  *   malformed, or a required client API is unavailable.
  */
@@ -88,10 +87,9 @@ export async function handleGoCommand(
   client: PlanClient | null | undefined,
   sessionID: string,
   directory: string,
-  baseDir?: string,
 ): Promise<void> {
   // --- 1. Locate the planning-done plan ---
-  const plan = findPlanByStatus(sessionID, "planning-done", baseDir);
+  const plan = findPlanByStatus(directory, "planning-done");
 
   if (!plan) {
     throw new Error(

@@ -13,9 +13,7 @@ At least one signal is present:
 
 ## Prime Directive: Resolve by Research, Not Questions
 
-Do NOT ask the user to make decisions you can make for them with defensible reasoning.
-Interrogation feels unhelpful: "what framework do you want?" when the codebase already
-uses Express and there's no reason to change.
+Do NOT ask the user to make decisions you can make for them with defensible reasoning. Interrogation feels unhelpful: "what framework do you want?" when the codebase already uses Express and there's no reason to change.
 
 Instead: **research the best defensible default, adopt it, record it, and inform the user.**
 
@@ -26,7 +24,7 @@ Instead: **research the best defensible default, adopt it, record it, and inform
 Gather evidence from three sources (parallel when independent):
 - **Codebase** — existing patterns, established conventions, prior decisions to reference
 - **External docs** — best practice for the domain via spider if needed
-- **User history** — prior plans under this project (check `~/.zoo/plans/<project-id>/`)
+- **User history** — prior plans under this project (check `.zoo/plans/` in the project root)
 
 ### 2. Default Adoption
 

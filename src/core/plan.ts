@@ -4,7 +4,6 @@
  * This module contains only framework-independent functions:
  * - Plan file discovery and frontmatter parsing
  * - Plan status transitions
- * - Plan path rewriting for tool interception
  *
  * All functions are pure or perform only filesystem I/O — no OpenCode
  * client dependencies, no TUI interactions, no logging.
@@ -12,8 +11,13 @@
  * @module
  */
 
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -37,14 +41,13 @@ export interface FoundPlan {
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve the plans directory for a given session ID.
+ * Resolve the plans directory under a workspace base directory.
  *
- * @param sessionID - The current session identifier.
- * @param baseDir - Base directory for plans (defaults to home directory).
- * @returns Absolute path to `<baseDir>/.zoo/plans/<sessionID>`.
+ * @param baseDir - Workspace base directory.
+ * @returns Absolute path to `<baseDir>/.zoo/plans`.
  */
-export function plansDir(sessionID: string, baseDir?: string): string {
-  return resolve(baseDir ?? homedir(), ".zoo", "plans", sessionID);
+export function plansDir(baseDir: string): string {
+  return resolve(baseDir, ".zoo", "plans");
 }
 
 /**
@@ -81,29 +84,55 @@ export function parseFrontmatter(
 // ---------------------------------------------------------------------------
 
 /**
- * Find a plan file with the given status in the session's plans directory.
+ * Find a plan file with the given status in the workspace's plans directory.
  *
- * Scans `~/.zoo/plans/<sessionID>/` for `.md` files and returns the first
- * whose frontmatter `status` matches the target status.
+ * Scans `<baseDir>/.zoo/plans/` for `.md` files, sorted by mtime
+ * DESCENDING (newest first), and returns the first whose frontmatter
+ * `status` matches the target status.
  *
- * @param sessionID - The current session identifier.
+ * @param baseDir - Workspace base directory.
  * @param targetStatus - The status to search for (e.g. `"planning-done"`).
  * @returns The found plan, or `null` if no matching plan exists.
  */
 export function findPlanByStatus(
-  sessionID: string,
+  baseDir: string,
   targetStatus: string,
-  baseDir?: string,
 ): FoundPlan | null {
-  const dir = plansDir(sessionID, baseDir);
+  // Guard: an empty/missing baseDir would make plansDir resolve against
+  // process.cwd(), a hidden indirection that breaks worktree-readiness.
+  // Treat it as "no plan directory" rather than scanning the cwd.
+  if (!baseDir) return null;
+  const dir = plansDir(baseDir);
   if (!existsSync(dir)) return null;
 
   const entries = readdirSync(dir, { encoding: "utf-8" });
   const mdFiles = entries.filter((e) => e.endsWith(".md"));
 
-  for (const file of mdFiles) {
+  // Pre-compute mtime for each file: one statSync per file (O(N)) instead
+  // of calling statSync inside the sort comparator (O(N log N) syscalls).
+  const filesWithMtime = mdFiles.map((file) => {
     const filePath = join(dir, file);
-    const content = readFileSync(filePath, "utf-8");
+    try {
+      const stat = statSync(filePath);
+      return { file, mtime: stat.mtimeMs };
+    } catch {
+      return { file, mtime: 0 };
+    }
+  });
+
+  // Sort by mtime DESCENDING (newest first).
+  filesWithMtime.sort((a, b) => b.mtime - a.mtime);
+
+  for (const { file } of filesWithMtime) {
+    const filePath = join(dir, file);
+    let content: string;
+    try {
+      content = readFileSync(filePath, "utf-8");
+    } catch {
+      // Skip unreadable entries (e.g. a directory named foo.md, or a
+      // file deleted between readdirSync and readFileSync).
+      continue;
+    }
     const fm = parseFrontmatter(content);
     if (fm?.status === targetStatus) {
       return {
@@ -143,56 +172,6 @@ export function updatePlanStatus(content: string, newStatus: string): string {
  */
 export function writePlan(planPath: string, content: string): void {
   writeFileSync(planPath, content, "utf-8");
-}
-
-// ---------------------------------------------------------------------------
-// Path rewriting
-// ---------------------------------------------------------------------------
-
-/**
- * Rewrite plan file paths to include the session ID subdirectory.
- *
- * When `edit` or `write` tools target a path directly under
- * `~/.zoo/plans/<name>.md` (no subdirectory), this function inserts
- * the session ID: `~/.zoo/plans/<name>.md` →
- * `~/.zoo/plans/<sessionID>/<name>.md`.
- *
- * mola writes to `~/.zoo/plans/<file>.md` without knowing the session
- * ID; this hook transparently redirects writes to the correct per-session
- * subdirectory. Paths that already contain a subdirectory (the relative
- * part includes `/`) are left untouched.
- *
- * @param tool - The tool name (`"edit"` or `"write"`).
- * @param args - The tool call arguments (mutated in place).
- *   Assumes `filePath` as the path key — this is OpenCode's standard
- *   argument name for edit/write tools.
- * @param sessionID - The current session identifier.
- */
-export function rewritePlanPath(
-  tool: string,
-  args: Record<string, unknown> | undefined,
-  sessionID: string,
-): void {
-  if (tool !== "edit" && tool !== "write") return;
-  if (!args) return;
-
-  const rawPath = args.filePath;
-  if (typeof rawPath !== "string") return;
-
-  const plansRoot = resolve(homedir(), ".zoo", "plans");
-
-  // Resolve tilde expansion so path comparison works correctly.
-  const resolved = resolve(rawPath.replace(/^~/, homedir()));
-
-  // Only rewrite if the target is under the plans root.
-  if (!resolved.startsWith(`${plansRoot}/`)) return;
-
-  // Already inside a session subdirectory? Skip.
-  const relative = resolved.slice(plansRoot.length + 1);
-  if (relative.includes("/")) return;
-
-  const rewritten = join(plansRoot, sessionID, relative);
-  args.filePath = rewritten;
 }
 
 // ---------------------------------------------------------------------------

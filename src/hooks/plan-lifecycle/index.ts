@@ -1,12 +1,10 @@
 /**
  * Plan lifecycle hook barrel export.
  *
- * Re-exports the `/go` command handler and the plan path rewriting
- * helper from the core module.
+ * Re-exports the `/go` command handler from the hook module.
  *
  * @module
  */
 
-export { rewritePlanPath } from "../../core/plan.js";
 export type { PlanClient } from "./hook.js";
 export { handleGoCommand } from "./hook.js";

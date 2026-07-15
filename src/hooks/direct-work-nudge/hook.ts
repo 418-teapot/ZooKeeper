@@ -43,11 +43,12 @@ import { log } from "../../utils/logger.js";
  * @param output.output - Text output from the tool call.
  * @param options - Optional configuration.
  * @param options.todoClient - Client for todo progress check (OpenCode SDK client at runtime).
+ * @param options.planDir - Workspace base directory for plan discovery.
  */
 export async function nudgeDirectWork(
   input: { tool: string; sessionID: string; callID?: string },
   output: { output?: string },
-  options?: { todoClient?: TinyClient | null },
+  options?: { todoClient?: TinyClient | null; planDir?: string },
 ): Promise<void> {
   const tool = input.tool.toLowerCase();
   const isDirectEdit = tool === "edit" || tool === "write";
@@ -77,7 +78,10 @@ export async function nudgeDirectWork(
     );
     if (todoNudge) output.output += `\n\n${todoNudge}`;
 
-    const planNudge = checkPlanProgress(input.sessionID);
+    const planNudge = checkPlanProgress(
+      input.sessionID,
+      options?.planDir ?? "",
+    );
     if (planNudge) output.output += `\n\n${planNudge}`;
 
     log(

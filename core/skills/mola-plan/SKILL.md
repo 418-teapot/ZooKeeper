@@ -10,15 +10,10 @@ For Architecture-class tasks, also produces a design spec before the plan.
 
 ## Anti-Patterns
 
-- **"This Is Too Simple To Need A Spec"** — The most expensive mistakes come from
-  unexamined assumptions on "simple" changes. A spec is 1-2 pages, not 50. Spec the
-  simple things; save the expensive surprises for later.
-- **Skipping ground before classify** — Ground reveals what is actually involved.
-  Classify without ground is guessing. Always explore first.
-- **Beginning implementation** — NEVER begin implementation (even "quick scaffolding"
-  or "just a skeleton"). Outputs are plan files (+ optional spec for Architecture).
-- **Skipping approval gates** — Present brief → wait for OK → write. Every section,
-  every artifact.
+- **"This Is Too Simple To Need A Spec"** — The most expensive mistakes come from unexamined assumptions on "simple" changes. A spec is 1-2 pages, not 50. Spec the simple things; save the expensive surprises for later.
+- **Skipping ground before classify** — Ground reveals what is actually involved. Classify without ground is guessing. Always explore first.
+- **Beginning implementation** — NEVER begin implementation (even "quick scaffolding" or "just a skeleton"). Outputs are plan files (+ optional spec for Architecture).
+- **Skipping approval gates** — Present brief → wait for OK → write. Every section, every artifact.
 - **Asking what the codebase can answer** — Explore first. User time is more expensive than search time.
 
 ## Workflow
@@ -32,11 +27,9 @@ Run these in parallel when independent. Delegate searches to explore (codebase) 
 
 1. **Search** — delegate to explore: affected files, entry points, call sites, dependency graph
 2. **Pattern discovery** — delegate to explore: existing implementations to reference, established conventions
-3. **Context gathering** — delegate to explore for codebase docs (`AGENTS.md`, README) or spider for external documentation, prior plans in `~/.zoo/plans/`
+3. **Context gathering** — delegate to explore for codebase docs (`AGENTS.md`, README) or spider for external documentation, prior plans in `.zoo/plans/`
 
-**Scope assessment:** If the work spans 2+ independent subsystems, stop and request
-decomposition: "Request decomposition needed: this spans [subsystems] which should be
-planned independently." Otherwise confirm scope coherent and proceed.
+**Scope assessment:** If the work spans 2+ independent subsystems, stop and request decomposition: "Request decomposition needed: this spans [subsystems] which should be planned independently." Otherwise confirm scope coherent and proceed.
 
 **Output of Ground:** A mental model answering four questions:
 - Where do changes go? (files, modules, entry points)
@@ -57,12 +50,9 @@ Based on Ground findings, determine the reference strategy:
 | Architecture-class, real tradeoffs, scope ambiguity | `grill` skill |
 | ON THE FENCE | default to `grill` skill |
 
-State the classification once: "Classification: [Clear|Unclear|Architecture]. Loading
-references: [...]."
+State the classification once: "Classification: [Clear|Unclear|Architecture]. Loading references: [...]."
 
-**Graceful upgrade:** If mid-flow you realize the task is heavier than classified,
-load the `grill` skill. No need to restart or re-enter the Workflow. You can
-load the skill mid-interview and continue.
+**Graceful upgrade:** If mid-flow you realize the task is heavier than classified, load the `grill` skill. No need to restart or re-enter the Workflow. You can load the skill mid-interview and continue.
 
 ### Phase 3 - Interview
 
@@ -76,19 +66,16 @@ Load the classified reference(s) and execute their protocol. All three reference
 - Adopt defaults, inform user — do not interrogate (C4)
 
 **intent-clear.md:** Topology lock → decision-fork questions only → clearance check.
-**intent-unclear.md:** Research defaults → adopt → present assumptions ledger → minimal
-questions (0-2).
+**intent-unclear.md:** Research defaults → adopt → present assumptions ledger → minimal questions (0-2).
 **grill skill:** Decision-tree traversal → depth-first branch resolution →
 scenario stress testing → domain vocabulary refinement. The `grill` skill
-is the single source of truth for Architecture-class interview — do not duplicate
-its protocol here. Load it via the skill tool.
+is the single source of truth for Architecture-class interview — do not duplicate its protocol here. Load it via the skill tool.
 
 Do NOT duplicate reference content in this SKILL. Each reference owns its protocol.
 
 ### Phase 4 - Present Design (Incremental)
 
-After the interview resolves, present the design one section at a time. Scale each
-section to its complexity:
+After the interview resolves, present the design one section at a time. Scale each section to its complexity:
 
 1. **Context** — what triggered this, code involved, user need
 2. **Goals** — specific, measurable design objectives
@@ -97,8 +84,7 @@ section to its complexity:
 5. **Risks** — known risks and mitigations
 6. **Success Criteria** — how we will know the design achieves its goals
 
-2-3 sentences if straightforward, up to 200-300 words if nuanced. After EACH section,
-ask for user approval. If the user requests revision, revise that section and continue.
+2-3 sentences if straightforward, up to 200-300 words if nuanced. After EACH section, ask for user approval. If the user requests revision, revise that section and continue.
 
 **Scale by classification:** Clear/Unclear → lightweight brief (Context/Approach/Scope/Risks in one pass). Architecture → section-by-section with full depth.
 
@@ -117,7 +103,7 @@ Read `templates/spec-template.md` and adapt it into a spec file:
 
 1. Derive the title from the slug (kebab-case → title case).
 2. Compute today's date as `YYYYMMDD`.
-3. Write the spec via the `write` tool to `~/.zoo/plans/<slug>-spec-<YYYYMMDD>.md`
+3. Write the spec via the `write` tool to `.zoo/plans/<slug>-spec-<YYYYMMDD>.md`
    with this frontmatter:
 
    ```yaml
@@ -130,26 +116,18 @@ Read `templates/spec-template.md` and adapt it into a spec file:
    ---
    ```
 
-   Then write the template body, replacing `{{TITLE}}` with the title and filling
-   placeholder sections from the design interview.
+   Then write the template body, replacing `{{TITLE}}` with the title and filling placeholder sections from the design interview.
 
-**Step 5b: Fill sections** — via edit tool, fill each section per the inline placeholder
-guidance. Each decision entry includes: Chosen option, Alternatives considered,
-Scenarios tested.
+**Step 5b: Fill sections** — via edit tool, fill each section per the inline placeholder guidance. Each decision entry includes: Chosen option, Alternatives considered, Scenarios tested.
 
 **Step 5c: Self-review** — run 4 checks, fix findings inline:
 
-1. **Placeholder scan** — no TBD / TODO / "decide later" / "needs discussion" /
-   "implement and see" in any section
-2. **Internal consistency** — Goals align with Success Criteria; Non-Goals do not
-   contradict Goals; decisions do not contradict each other
-3. **Scope check** — spec covers exactly what came out of interview + design
-   presentation; no silent additions or subtractions
-4. **Ambiguity check** — each decision specific, each success criterion measurable,
-   each non-goal has a clear reason
+1. **Placeholder scan** — no TBD / TODO / "decide later" / "needs discussion" / "implement and see" in any section
+2. **Internal consistency** — Goals align with Success Criteria; Non-Goals do not contradict Goals; decisions do not contradict each other
+3. **Scope check** — spec covers exactly what came out of interview + design presentation; no silent additions or subtractions
+4. **Ambiguity check** — each decision specific, each success criterion measurable, each non-goal has a clear reason
 
-**Step 5d: Adversarial review pass** — simulate an independent reviewer. Re-read the
-full spec and check five categories (completeness, consistency, clarity, scope, YAGNI).
+**Step 5d: Adversarial review pass** — simulate an independent reviewer. Re-read the full spec and check five categories (completeness, consistency, clarity, scope, YAGNI).
 Calibrate: only flag issues that would cause real problems during planning. Output:
 
 ```
@@ -161,12 +139,9 @@ Calibrate: only flag issues that would cause real problems during planning. Outp
 
 If Issues Found, fix inline and re-run the adversarial pass.
 
-**Step 5e: User review gate** — present the spec path and key decisions, wait for
-explicit OK. If changes requested, revise → re-run 5c + 5d → wait again. After approval,
-update frontmatter status to `approved`.
+**Step 5e: User review gate** — present the spec path and key decisions, wait for explicit OK. If changes requested, revise → re-run 5c + 5d → wait again. After approval, update frontmatter status to `approved`.
 
-Then load plan references (intent-clear.md or intent-unclear.md based on how much was
-clarified during the spec process) and continue to plan production below.
+Then load plan references (intent-clear.md or intent-unclear.md based on how much was clarified during the spec process) and continue to plan production below.
 
 #### Then — for ALL paths — produce the plan:
 
@@ -176,8 +151,7 @@ Read `templates/plan-template.md` and adapt it into a plan file:
 
 1. Derive the title from the slug (kebab-case → title case).
 2. Compute today's date as `YYYYMMDD`.
-3. Write the plan via the `write` tool to `~/.zoo/plans/<slug>-<YYYYMMDD>.md`
-   with this frontmatter:
+3. Write the plan via the `write` tool to `.zoo/plans/<slug>-<YYYYMMDD>.md` with this frontmatter:
 
    ```yaml
    ---
@@ -190,24 +164,16 @@ Read `templates/plan-template.md` and adapt it into a plan file:
    ---
    ```
 
-   Then write the template body, replacing `{{TITLE}}` with the title and filling
-   placeholder sections from the interview + design presentation.
+   Then write the template body, replacing `{{TITLE}}` with the title and filling placeholder sections from the interview + design presentation.
 
-The path is automatically redirected to a per-session subdirectory by the plugin,
-so mola does not need to know the session ID.
-
-If a spec was also produced, use it as input context: Decisions + Domain Notes from
-the spec flow into the plan's Approach section. Add an optional `## Domain Notes`
-section if vocabulary was sharpened during the spec process.
+If a spec was also produced, use it as input context: Decisions + Domain Notes from the spec flow into the plan's Approach section. Add an optional `## Domain Notes` section if vocabulary was sharpened during the spec process.
 
 **Step 5q: Fill sections** — via edit tool, fill each section using the inline
-placeholder guidance from the template. Do NOT hand-build the file from scratch
-— always use the template.
+placeholder guidance from the template. Do NOT hand-build the file from scratch — always use the template.
 
 **Step 5r: Self-review** — same 4 checks adapted for the plan file:
 1. **Placeholder scan** — no TBD / TODO-as-value / "implement later"
-2. **Internal consistency** — TODOs cover the Approach steps; Critical Files match
-   the TODOs
+2. **Internal consistency** — TODOs cover the Approach steps; Critical Files match the TODOs
 3. **Scope check** — TODOs align with Scope Must have; nothing leaks from Must NOT have
 4. **Ambiguity check** — each TODO has specific, verifiable acceptance criteria
 
@@ -222,15 +188,12 @@ After the plan file is written and self-review passes, output:
 [Plan approved and written. Ready for handoff to build orchestrator.]
 ```
 
-The plan-lifecycle hook detects this signal. Do NOT proceed further. Do NOT begin
-implementation.
+The plan-lifecycle hook detects this signal. Do NOT proceed further. Do NOT begin implementation.
 
 ## Hard Rules
 
 - NEVER begin implementation — even "quick scaffolding" or "just a skeleton"
 - NEVER skip the approval gate — present brief → wait for explicit OK → write
 - NEVER ask questions that the codebase can answer — check first
-- NEVER include "user manually tests" as acceptance — all criteria must be
-  agent-executable
-- NEVER invoke another skill or begin execution work — the only outputs are plan
-  files (+ optional spec file for Architecture tasks)
+- NEVER include "user manually tests" as acceptance — all criteria must be agent-executable
+- NEVER invoke another skill or begin execution work — the only outputs are plan files (+ optional spec file for Architecture tasks)

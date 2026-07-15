@@ -31,7 +31,7 @@ import type { ContextMetricsOutput } from "./hooks/context-metrics";
 import { measureContext } from "./hooks/context-metrics";
 import { nudgeDirectWork } from "./hooks/direct-work-nudge";
 import { recoverJsonError } from "./hooks/json-error-nudge";
-import { handleGoCommand, rewritePlanPath } from "./hooks/plan-lifecycle";
+import { handleGoCommand } from "./hooks/plan-lifecycle";
 import { nudgePostTask } from "./hooks/post-task-nudge";
 import { validateDelegationTarget } from "./hooks/task-delegation";
 import {
@@ -304,7 +304,6 @@ export async function zookeeper(input: any) {
       input: { tool: string; sessionID: string; callID: string },
       output: { args?: Record<string, unknown> },
     ) {
-      rewritePlanPath(input.tool, output.args, input.sessionID);
       validateBeforeExec(input, output, limits);
       await validateDelegationTarget(client, input, output);
     },
@@ -334,13 +333,16 @@ export async function zookeeper(input: any) {
               );
               return;
             }
-            return nudgeDirectWork(i, o, { todoClient: client });
+            return nudgeDirectWork(i, o, {
+              todoClient: client,
+              planDir: directory,
+            });
           },
         },
         {
           name: "nudgePostTask",
           fn: (i: AfterExecInput, o: AfterExecOutput) =>
-            nudgePostTask(client, i, o),
+            nudgePostTask(client, i, o, directory),
         },
       ];
       await runAfterHandlers(handlers, input, output);

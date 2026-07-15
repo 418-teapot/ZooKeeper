@@ -10,7 +10,6 @@ import { describe, expect, it } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { plansDir } from "../../core/plan.js";
 import { handleGoCommand, type PlanClient } from "./hook.js";
 
 // ---------------------------------------------------------------------------
@@ -25,12 +24,13 @@ function tmpDir(): string {
   return dir;
 }
 
-function createPlanFile(
-  sessionID: string,
-  status: string,
-): { planPath: string; baseDir: string } {
+/**
+ * Create a flat plan file under `<baseDir>/.zoo/plans/` (no sessionID
+ * subdirectory), matching the new workspace-relative path model.
+ */
+function createPlanFile(status: string): { planPath: string; baseDir: string } {
   const baseDir = tmpDir();
-  const dir = plansDir(sessionID, baseDir);
+  const dir = join(baseDir, ".zoo", "plans");
   mkdirSync(dir, { recursive: true });
   const planPath = join(dir, "test-plan.md");
   writeFileSync(
@@ -77,10 +77,10 @@ function createMockClient(overrides?: Partial<PlanClient>): PlanClient {
 describe("handleGoCommand — success path", () => {
   it("completes full handoff with all client APIs available", async () => {
     const sessionID = `test-success-${Date.now()}`;
-    const { planPath, baseDir } = createPlanFile(sessionID, "planning-done");
+    const { planPath, baseDir } = createPlanFile("planning-done");
 
     const client = createMockClient();
-    await handleGoCommand(client, sessionID, "/workspace", baseDir);
+    await handleGoCommand(client, sessionID, baseDir);
 
     // If no error thrown, the flow completed successfully
     cleanupPlan(planPath);
@@ -88,7 +88,7 @@ describe("handleGoCommand — success path", () => {
 
   it("creates session with correct title and agent", async () => {
     const sessionID = `test-create-${Date.now()}`;
-    const { planPath, baseDir } = createPlanFile(sessionID, "planning-done");
+    const { planPath, baseDir } = createPlanFile("planning-done");
 
     let createCall: any = null;
     const client = createMockClient({
@@ -104,19 +104,19 @@ describe("handleGoCommand — success path", () => {
       },
     });
 
-    await handleGoCommand(client, sessionID, "/workspace", baseDir);
+    await handleGoCommand(client, sessionID, baseDir);
 
     expect(createCall).not.toBeNull();
     expect(createCall.body.title).toBe("Execute: test-plan");
     expect(createCall.body.agent).toBe("dolphin");
-    expect(createCall.query.directory).toBe("/workspace");
+    expect(createCall.query.directory).toBe(baseDir);
 
     cleanupPlan(planPath);
   });
 
   it("navigates to home before switching session", async () => {
     const sessionID = `test-nav-${Date.now()}`;
-    const { planPath, baseDir } = createPlanFile(sessionID, "planning-done");
+    const { planPath, baseDir } = createPlanFile("planning-done");
 
     const navigations: string[] = [];
     const publishes: any[] = [];
@@ -133,7 +133,7 @@ describe("handleGoCommand — success path", () => {
       },
     });
 
-    await handleGoCommand(client, sessionID, "/workspace", baseDir);
+    await handleGoCommand(client, sessionID, baseDir);
 
     expect(navigations).toEqual(["home"]);
     expect(publishes.length).toBe(1);
@@ -144,7 +144,7 @@ describe("handleGoCommand — success path", () => {
 
   it("injects plan reference with correct path", async () => {
     const sessionID = `test-prompt-${Date.now()}`;
-    const { planPath, baseDir } = createPlanFile(sessionID, "planning-done");
+    const { planPath, baseDir } = createPlanFile("planning-done");
 
     let promptCall: any = null;
     const client = createMockClient({
@@ -158,7 +158,7 @@ describe("handleGoCommand — success path", () => {
       },
     });
 
-    await handleGoCommand(client, sessionID, "/workspace", baseDir);
+    await handleGoCommand(client, sessionID, baseDir);
 
     expect(promptCall).not.toBeNull();
     expect(promptCall.path.id).toBe("sess-789");
@@ -170,7 +170,7 @@ describe("handleGoCommand — success path", () => {
 
   it("injects silent confirmation with noReply and ignored", async () => {
     const sessionID = `test-confirm-${Date.now()}`;
-    const { planPath, baseDir } = createPlanFile(sessionID, "planning-done");
+    const { planPath, baseDir } = createPlanFile("planning-done");
 
     let promptCall: any = null;
     const client = createMockClient({
@@ -185,7 +185,7 @@ describe("handleGoCommand — success path", () => {
       },
     });
 
-    await handleGoCommand(client, sessionID, "/workspace", baseDir);
+    await handleGoCommand(client, sessionID, baseDir);
 
     expect(promptCall).not.toBeNull();
     expect(promptCall.path.id).toBe("sess-abc");
@@ -198,10 +198,10 @@ describe("handleGoCommand — success path", () => {
 
   it("updates plan status to executing", async () => {
     const sessionID = `test-status-${Date.now()}`;
-    const { planPath, baseDir } = createPlanFile(sessionID, "planning-done");
+    const { planPath, baseDir } = createPlanFile("planning-done");
 
     const client = createMockClient();
-    await handleGoCommand(client, sessionID, "/workspace", baseDir);
+    await handleGoCommand(client, sessionID, baseDir);
 
     const content = readFileSync(planPath, "utf-8");
     expect(content).toInclude("status: executing");
@@ -217,29 +217,36 @@ describe("handleGoCommand — success path", () => {
 describe("handleGoCommand — error handling", () => {
   it("throws when no planning-done plan exists", async () => {
     const sessionID = `test-no-plan-${Date.now()}`;
-    // No plan file created
+    // No plan file created — pass a tmp dir so plans directory is empty
+    const emptyDir = tmpDir();
 
     const client = createMockClient();
-    await expect(
-      handleGoCommand(client, sessionID, "/workspace"),
-    ).rejects.toThrow(/No plan with status "planning-done"/);
+    await expect(handleGoCommand(client, sessionID, emptyDir)).rejects.toThrow(
+      /No plan with status "planning-done"/,
+    );
+
+    try {
+      rmSync(emptyDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
   });
 
   it("throws when client has no session.create API", async () => {
     const sessionID = `test-no-api-${Date.now()}`;
-    const { planPath, baseDir } = createPlanFile(sessionID, "planning-done");
+    const { planPath, baseDir } = createPlanFile("planning-done");
 
     const client = createMockClient({ session: {} });
-    await expect(
-      handleGoCommand(client, sessionID, "/workspace", baseDir),
-    ).rejects.toThrow(/Session creation API is not available/);
+    await expect(handleGoCommand(client, sessionID, baseDir)).rejects.toThrow(
+      /Session creation API is not available/,
+    );
 
     cleanupPlan(planPath);
   });
 
   it("throws when session creation returns error", async () => {
     const sessionID = `test-create-err-${Date.now()}`;
-    const { planPath, baseDir } = createPlanFile(sessionID, "planning-done");
+    const { planPath, baseDir } = createPlanFile("planning-done");
 
     const client = createMockClient({
       session: {
@@ -248,16 +255,16 @@ describe("handleGoCommand — error handling", () => {
       },
     });
 
-    await expect(
-      handleGoCommand(client, sessionID, "/workspace", baseDir),
-    ).rejects.toThrow(/Failed to create dolphin session: rate limited/);
+    await expect(handleGoCommand(client, sessionID, baseDir)).rejects.toThrow(
+      /Failed to create dolphin session: rate limited/,
+    );
 
     cleanupPlan(planPath);
   });
 
   it("throws when session creation returns no ID", async () => {
     const sessionID = `test-no-id-${Date.now()}`;
-    const { planPath, baseDir } = createPlanFile(sessionID, "planning-done");
+    const { planPath, baseDir } = createPlanFile("planning-done");
 
     const client = createMockClient({
       session: {
@@ -265,9 +272,7 @@ describe("handleGoCommand — error handling", () => {
       },
     });
 
-    await expect(
-      handleGoCommand(client, sessionID, "/workspace", baseDir),
-    ).rejects.toThrow(
+    await expect(handleGoCommand(client, sessionID, baseDir)).rejects.toThrow(
       /Failed to create dolphin session: no session ID returned/,
     );
 
@@ -276,7 +281,7 @@ describe("handleGoCommand — error handling", () => {
 
   it("throws when promptAsync is unavailable", async () => {
     const sessionID = `test-no-prompt-${Date.now()}`;
-    const { planPath, baseDir } = createPlanFile(sessionID, "planning-done");
+    const { planPath, baseDir } = createPlanFile("planning-done");
 
     const client = createMockClient({
       session: {
@@ -286,9 +291,9 @@ describe("handleGoCommand — error handling", () => {
       },
     });
 
-    await expect(
-      handleGoCommand(client, sessionID, "/workspace", baseDir),
-    ).rejects.toThrow(/promptAsync is not available/);
+    await expect(handleGoCommand(client, sessionID, baseDir)).rejects.toThrow(
+      /promptAsync is not available/,
+    );
 
     cleanupPlan(planPath);
   });
@@ -301,27 +306,27 @@ describe("handleGoCommand — error handling", () => {
 describe("handleGoCommand — client API edge cases", () => {
   it("works when route.navigate is missing", async () => {
     const sessionID = `test-no-route-${Date.now()}`;
-    const { planPath, baseDir } = createPlanFile(sessionID, "planning-done");
+    const { planPath, baseDir } = createPlanFile("planning-done");
 
     const client = createMockClient({ route: undefined });
-    await handleGoCommand(client, sessionID, "/workspace", baseDir);
+    await handleGoCommand(client, sessionID, baseDir);
 
     cleanupPlan(planPath);
   });
 
   it("works when tui.publish is missing", async () => {
     const sessionID = `test-no-tui-${Date.now()}`;
-    const { planPath, baseDir } = createPlanFile(sessionID, "planning-done");
+    const { planPath, baseDir } = createPlanFile("planning-done");
 
     const client = createMockClient({ tui: undefined });
-    await handleGoCommand(client, sessionID, "/workspace", baseDir);
+    await handleGoCommand(client, sessionID, baseDir);
 
     cleanupPlan(planPath);
   });
 
   it("works when session.prompt is missing (no confirmation)", async () => {
     const sessionID = `test-no-confirm-${Date.now()}`;
-    const { planPath, baseDir } = createPlanFile(sessionID, "planning-done");
+    const { planPath, baseDir } = createPlanFile("planning-done");
 
     const client = createMockClient({
       session: {
@@ -331,14 +336,14 @@ describe("handleGoCommand — client API edge cases", () => {
         prompt: undefined,
       },
     });
-    await handleGoCommand(client, sessionID, "/workspace", baseDir);
+    await handleGoCommand(client, sessionID, baseDir);
 
     cleanupPlan(planPath);
   });
 
   it("continues when prompt throws (best-effort)", async () => {
     const sessionID = `test-prompt-err-${Date.now()}`;
-    const { planPath, baseDir } = createPlanFile(sessionID, "planning-done");
+    const { planPath, baseDir } = createPlanFile("planning-done");
 
     const client = createMockClient({
       session: {
@@ -350,18 +355,18 @@ describe("handleGoCommand — client API edge cases", () => {
     });
 
     // Should not throw — prompt error is caught and logged
-    await handleGoCommand(client, sessionID, "/workspace", baseDir);
+    await handleGoCommand(client, sessionID, baseDir);
 
     cleanupPlan(planPath);
   });
 
   it("handles null client gracefully (throws with clear message)", async () => {
     const sessionID = `test-null-client-${Date.now()}`;
-    const { planPath, baseDir } = createPlanFile(sessionID, "planning-done");
+    const { planPath, baseDir } = createPlanFile("planning-done");
 
-    await expect(
-      handleGoCommand(null, sessionID, "/workspace", baseDir),
-    ).rejects.toThrow(/Session creation API is not available/);
+    await expect(handleGoCommand(null, sessionID, baseDir)).rejects.toThrow(
+      /Session creation API is not available/,
+    );
 
     cleanupPlan(planPath);
   });
@@ -374,24 +379,24 @@ describe("handleGoCommand — client API edge cases", () => {
 describe("handleGoCommand — plan status edge cases", () => {
   it("throws when plan is already executing", async () => {
     const sessionID = `test-executing-${Date.now()}`;
-    const { planPath, baseDir } = createPlanFile(sessionID, "executing");
+    const { planPath, baseDir } = createPlanFile("executing");
 
     const client = createMockClient();
-    await expect(
-      handleGoCommand(client, sessionID, "/workspace", baseDir),
-    ).rejects.toThrow(/No plan with status "planning-done"/);
+    await expect(handleGoCommand(client, sessionID, baseDir)).rejects.toThrow(
+      /No plan with status "planning-done"/,
+    );
 
     cleanupPlan(planPath);
   });
 
   it("throws when plan is already done", async () => {
     const sessionID = `test-done-${Date.now()}`;
-    const { planPath, baseDir } = createPlanFile(sessionID, "done");
+    const { planPath, baseDir } = createPlanFile("done");
 
     const client = createMockClient();
-    await expect(
-      handleGoCommand(client, sessionID, "/workspace", baseDir),
-    ).rejects.toThrow(/No plan with status "planning-done"/);
+    await expect(handleGoCommand(client, sessionID, baseDir)).rejects.toThrow(
+      /No plan with status "planning-done"/,
+    );
 
     cleanupPlan(planPath);
   });

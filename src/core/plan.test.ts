@@ -2,7 +2,7 @@
  * Tests for src/core/plan.ts — pure plan lifecycle logic.
  *
  * All filesystem operations use temporary directories under os.tmpdir()
- * to avoid polluting the real ~/.zoo/plans/.
+ * to avoid polluting any real .zoo/plans directory.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -11,6 +11,7 @@ import {
   readFileSync,
   rmSync,
   unlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,7 +24,6 @@ import {
   findPlanByStatus,
   parseFrontmatter,
   plansDir,
-  rewritePlanPath,
   updatePlanStatus,
   writePlan,
 } from "./plan.js";
@@ -48,21 +48,39 @@ function cleanup(dir: string): void {
   }
 }
 
+/** Create a plan file under a baseDir's .zoo/plans/ directory. */
+function createPlanFile(
+  baseDir: string,
+  filename: string,
+  status: string,
+  slug?: string,
+): string {
+  const dir = join(baseDir, ".zoo", "plans");
+  mkdirSync(dir, { recursive: true });
+  const planPath = join(dir, filename);
+  writeFileSync(
+    planPath,
+    `---\nstatus: ${status}${slug ? `\nslug: ${slug}` : ""}\n---\n# ${filename}\n`,
+  );
+  return planPath;
+}
+
 // ---------------------------------------------------------------------------
 // plansDir
 // ---------------------------------------------------------------------------
 
 describe("plansDir", () => {
-  it("returns path under ~/.zoo/plans/<sessionID>", () => {
-    const dir = plansDir("sess-123");
-    expect(dir).toEndWith(".zoo/plans/sess-123");
-    expect(dir).toInclude("sess-123");
+  it("returns path under <baseDir>/.zoo/plans", () => {
+    const base = tmpDir();
+    const dir = plansDir(base);
+    expect(dir).toBe(join(base, ".zoo", "plans"));
+    cleanup(base);
   });
 
-  it("accepts custom baseDir", () => {
+  it("returns absolute path", () => {
     const base = tmpDir();
-    const dir = plansDir("sess-456", base);
-    expect(dir).toBe(join(base, ".zoo", "plans", "sess-456"));
+    const dir = plansDir(base);
+    expect(dir).toInclude(".zoo/plans");
     cleanup(base);
   });
 });
@@ -114,49 +132,74 @@ describe("parseFrontmatter", () => {
 describe("findPlanByStatus", () => {
   it("returns null when plans directory does not exist", () => {
     const base = tmpDir();
-    const plan = findPlanByStatus(
-      "nonexistent-session-xyz",
-      "planning-done",
-      base,
-    );
+    const plan = findPlanByStatus(base, "planning-done");
     expect(plan).toBeNull();
     cleanup(base);
   });
 
+  it("returns null when baseDir is empty (no hidden cwd scan)", () => {
+    // An empty baseDir must NOT fall back to process.cwd()/.zoo/plans —
+    // that would be a hidden indirection breaking worktree-readiness.
+    const plan = findPlanByStatus("", "planning-done");
+    expect(plan).toBeNull();
+  });
+
   it("finds a plan with matching status", () => {
     const base = tmpDir();
-    const sessionID = `test-${Date.now()}`;
-    const dir = plansDir(sessionID, base);
-    mkdirSync(dir, { recursive: true });
-
-    const planPath = join(dir, "my-plan.md");
-    writeFileSync(
-      planPath,
-      `---\nstatus: planning-done\nslug: my-plan\n---\n# My Plan\n`,
+    const planPath = createPlanFile(
+      base,
+      "my-plan.md",
+      "planning-done",
+      "my-plan",
     );
 
-    const plan = findPlanByStatus(sessionID, "planning-done", base);
+    const plan = findPlanByStatus(base, "planning-done");
     expect(plan).not.toBeNull();
     expect(plan?.path).toBe(planPath);
     expect(plan?.slug).toBe("my-plan");
-    expect(plan?.content).toInclude("# My Plan");
+    expect(plan?.content).toInclude("# my-plan.md");
+
+    cleanup(base);
+  });
+
+  it("returns the NEWEST plan when multiple match (mtime-desc)", () => {
+    const base = tmpDir();
+    const olderPath = createPlanFile(
+      base,
+      "older.md",
+      "planning-done",
+      "older",
+    );
+    const newerPath = createPlanFile(
+      base,
+      "newer.md",
+      "planning-done",
+      "newer",
+    );
+
+    // Set deterministic mtimes: older first, newer second.
+    const reference = Date.now();
+    utimesSync(
+      olderPath,
+      new Date(reference - 60000),
+      new Date(reference - 60000),
+    );
+    utimesSync(newerPath, new Date(reference), new Date(reference));
+
+    const plan = findPlanByStatus(base, "planning-done");
+    expect(plan).not.toBeNull();
+    // Newest plan should be returned first.
+    expect(plan?.path).toBe(newerPath);
+    expect(plan?.slug).toBe("newer");
 
     cleanup(base);
   });
 
   it("returns null when no plan matches the target status", () => {
     const base = tmpDir();
-    const sessionID = `test-${Date.now()}`;
-    const dir = plansDir(sessionID, base);
-    mkdirSync(dir, { recursive: true });
+    createPlanFile(base, "executing-plan.md", "executing", "exec-plan");
 
-    const planPath = join(dir, "executing-plan.md");
-    writeFileSync(
-      planPath,
-      `---\nstatus: executing\nslug: exec-plan\n---\n# Exec\n`,
-    );
-
-    const plan = findPlanByStatus(sessionID, "planning-done", base);
+    const plan = findPlanByStatus(base, "planning-done");
     expect(plan).toBeNull();
 
     cleanup(base);
@@ -164,14 +207,9 @@ describe("findPlanByStatus", () => {
 
   it("uses filename as slug fallback when frontmatter lacks slug", () => {
     const base = tmpDir();
-    const sessionID = `test-${Date.now()}`;
-    const dir = plansDir(sessionID, base);
-    mkdirSync(dir, { recursive: true });
+    const _planPath = createPlanFile(base, "fallback-slug.md", "planning-done");
 
-    const planPath = join(dir, "fallback-slug.md");
-    writeFileSync(planPath, `---\nstatus: planning-done\n---\n# No Slug\n`);
-
-    const plan = findPlanByStatus(sessionID, "planning-done", base);
+    const plan = findPlanByStatus(base, "planning-done");
     expect(plan).not.toBeNull();
     expect(plan?.slug).toBe("fallback-slug");
 
@@ -180,17 +218,35 @@ describe("findPlanByStatus", () => {
 
   it("ignores non-markdown files", () => {
     const base = tmpDir();
-    const sessionID = `test-${Date.now()}`;
-    const dir = plansDir(sessionID, base);
-    mkdirSync(dir, { recursive: true });
+    const plansDirPath = join(base, ".zoo", "plans");
+    mkdirSync(plansDirPath, { recursive: true });
+    writeFileSync(join(plansDirPath, "readme.txt"), "not a plan");
+    const planPath = createPlanFile(base, "real-plan.md", "planning-done");
 
-    writeFileSync(join(dir, "readme.txt"), "not a plan");
-    const planPath = join(dir, "real-plan.md");
-    writeFileSync(planPath, `---\nstatus: planning-done\n---\n# Real Plan\n`);
-
-    const plan = findPlanByStatus(sessionID, "planning-done", base);
+    const plan = findPlanByStatus(base, "planning-done");
     expect(plan).not.toBeNull();
     expect(plan?.path).toBe(planPath);
+
+    cleanup(base);
+  });
+
+  it("skips directories named .md instead of aborting the lookup", () => {
+    const base = tmpDir();
+    const plansDirPath = join(base, ".zoo", "plans");
+    mkdirSync(plansDirPath, { recursive: true });
+
+    // Create a directory named "bad.md" — readdirSync includes it (ends
+    // with ".md"), but readFileSync would throw. The per-file try/catch
+    // inside findPlanByStatus skips this entry rather than aborting.
+    mkdirSync(join(plansDirPath, "bad.md"), { recursive: true });
+
+    // Create a real readable plan with the target status.
+    const realPath = createPlanFile(base, "real.md", "planning-done", "real");
+
+    const plan = findPlanByStatus(base, "planning-done");
+    expect(plan).not.toBeNull();
+    expect(plan?.path).toBe(realPath);
+    expect(plan?.slug).toBe("real");
 
     cleanup(base);
   });
@@ -248,75 +304,13 @@ describe("writePlan", () => {
 });
 
 // ---------------------------------------------------------------------------
-// rewritePlanPath
-// ---------------------------------------------------------------------------
-
-describe("rewritePlanPath", () => {
-  it("skips non-edit/write tools", () => {
-    const args: Record<string, unknown> = { filePath: "~/.zoo/plans/test.md" };
-    rewritePlanPath("bash", args, "sess-123");
-    expect(args.filePath).toBe("~/.zoo/plans/test.md");
-  });
-
-  it("skips when args is undefined", () => {
-    // Should not throw
-    rewritePlanPath("edit", undefined, "sess-123");
-  });
-
-  it("skips when filePath is not a string", () => {
-    const args: Record<string, unknown> = { filePath: 123 };
-    rewritePlanPath("edit", args, "sess-123");
-    expect(args.filePath).toBe(123);
-  });
-
-  it("skips paths outside plans root", () => {
-    const args: Record<string, unknown> = { filePath: "/tmp/other.md" };
-    rewritePlanPath("edit", args, "sess-123");
-    expect(args.filePath).toBe("/tmp/other.md");
-  });
-
-  it("skips paths already inside a session subdirectory", () => {
-    const args: Record<string, unknown> = {
-      filePath: "~/.zoo/plans/sess-123/test.md",
-    };
-    rewritePlanPath("edit", args, "sess-456");
-    expect(args.filePath).toBe("~/.zoo/plans/sess-123/test.md");
-  });
-
-  it("rewrites path directly under plans root", () => {
-    const args: Record<string, unknown> = {
-      filePath: "~/.zoo/plans/test.md",
-    };
-    rewritePlanPath("edit", args, "sess-123");
-    expect(args.filePath).toEndWith(".zoo/plans/sess-123/test.md");
-  });
-
-  it("handles write tool the same as edit", () => {
-    const args: Record<string, unknown> = {
-      filePath: "~/.zoo/plans/another.md",
-    };
-    rewritePlanPath("write", args, "sess-abc");
-    expect(args.filePath).toEndWith(".zoo/plans/sess-abc/another.md");
-  });
-
-  it("expands tilde to home directory", () => {
-    const args: Record<string, unknown> = {
-      filePath: "~/.zoo/plans/plan.md",
-    };
-    rewritePlanPath("edit", args, "sess-789");
-    expect(args.filePath).not.toStartWith("~");
-    expect(args.filePath).toEndWith(".zoo/plans/sess-789/plan.md");
-  });
-});
-
-// ---------------------------------------------------------------------------
 // buildPlanReference
 // ---------------------------------------------------------------------------
 
 describe("buildPlanReference", () => {
   it("includes the plan file path", () => {
-    const ref = buildPlanReference("/home/user/.zoo/plans/sess-123/plan.md");
-    expect(ref).toInclude("Plan file: /home/user/.zoo/plans/sess-123/plan.md");
+    const ref = buildPlanReference("/workspace/.zoo/plans/my-plan.md");
+    expect(ref).toInclude("Plan file: /workspace/.zoo/plans/my-plan.md");
   });
 
   it("includes instructions to read and update the plan", () => {

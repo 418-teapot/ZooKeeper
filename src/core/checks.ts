@@ -35,15 +35,22 @@ import { getTodoState, type TinyClient } from "./todo.js";
  * 3. If no executing plan, look for a done plan and return a "resume" nudge.
  * 4. If nothing is found, return `null`.
  *
+ * Plans are discovered flat under `<planDir>/.zoo/plans/` by mtime-desc
+ * order (newest file matching the target status wins).
+ *
  * All filesystem errors are caught and logged at `"warn"` level. The function
  * never throws — it returns `null` on any failure.
  *
- * @param sessionID - The current session identifier.
+ * @param sessionID - The current session identifier (for logging).
+ * @param planDir - Workspace base directory containing `.zoo/plans/`.
  * @returns A nudge string, or `null` if no nudge is needed.
  */
-export function checkPlanProgress(sessionID: string): string | null {
+export function checkPlanProgress(
+  sessionID: string,
+  planDir: string,
+): string | null {
   try {
-    const executingPlan = findPlanByStatus(sessionID, "executing");
+    const executingPlan = findPlanByStatus(planDir, "executing");
 
     if (executingPlan) {
       const openTodos = countOpenTodos(executingPlan.content);
@@ -67,7 +74,7 @@ export function checkPlanProgress(sessionID: string): string | null {
       }
     }
 
-    const donePlan = findPlanByStatus(sessionID, "done");
+    const donePlan = findPlanByStatus(planDir, "done");
 
     if (donePlan) {
       return PLAN_RESUME_NUDGE.replace("{slug}", donePlan.slug).replace(
