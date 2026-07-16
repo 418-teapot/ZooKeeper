@@ -237,8 +237,9 @@ color = "#66CCFF"
 webfetch = "deny"
 websearch = "deny"
 [agent.dolphin.permission.skill]
-"kiwi-*" = "deny"
-"mola-*" = "deny"
+"beaver-*" = "deny"
+"kiwi-*"   = "deny"
+"mola-*"   = "deny"
 
 [agent.mola]
 model = "{env:ZOO_WHALE_MODEL}"
@@ -274,6 +275,7 @@ websearch = "deny"
 "*" = "deny"
 "git-commit" = "allow"
 "wiki-query" = "allow"
+"beaver-tdd" = "allow"
 
 [agent.spider]
 mode  = "subagent"
@@ -358,3 +360,4 @@ mola-plan    = "enable"
 wiki-ingest  = "enable"
 wiki-query   = "enable"
 wiki-verify  = "enable"
+beaver-tdd   = "enable"

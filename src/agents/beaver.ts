@@ -49,7 +49,7 @@ Before using any API, function, or type:
 
 ## Phase 2: Implement & Verify
 
-Implement the change, then run build/lint/test if bash is available. If errors occur, fix them and re-verify until all checks pass.
+Load beaver-tdd skill, implement the change, then run build/lint/test if bash is available. If errors occur, fix them and re-verify until all checks pass.
 
 ## Phase 3: Report
 
