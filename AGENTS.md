@@ -4,15 +4,15 @@
 
 ## 项目概览
 
-**ZooKeeper** — 一个 OpenCode 编排器插件，通过静态配置权限 + prompt 注入确保编排器不越权调用工具。基于 Python + TypeScript + Rust 构建。
+**ZooKeeper** — 一个编排器插件，通过静态配置权限 + prompt 注入确保编排器不越权调用工具。基于 Python + TypeScript + Rust 构建。同时适配 OpenCode 和 pi 两个宿主（双宿主，共享 `src/core/` 与 `src/agents/`，各自入口 `src/opencode.ts` 与 `src/pi.ts`）。
 
-核心机制：`config.toml` 中声明各 agent 的 `permission` deny 列表（**单一事实来源**）和 `[zoo.validation]` 阈值（上下文/提示词长度限制），install.py 编译 permission 部分后写入 OpenCode 配置；`[zoo.validation]` 阈值由 TS 插件在运行时直接读取；插件在 `config` hook 里注入 `src/agents/<name>.ts` 中定义的 prompt 常量作为各 agent 的 prompt。
+核心机制：`config.toml` 中声明各 agent 的 `permission` deny 列表（**单一事实来源**）和 `[zoo.validation]` 阈值（上下文/提示词长度限制），install.py 编译 permission 部分后写入 OpenCode 配置（`~/.config/opencode/opencode.json`）和 pi 配置（`~/.pi/agent/settings.json` + `models.json`）；install.py 用 `shutil.which` 检测 opencode/pi 是否安装，按检测结果控制各安装段（缺失则跳过）；`[zoo.validation]` 阈值由 TS 插件在运行时直接读取；OpenCode 插件在 `config` hook 注入 `src/agents/<name>.ts` 的 prompt 常量；pi 扩展在 `before_agent_start` 注入 `DOLPHIN_PROMPT`、`resources_discover` 贡献 `core/skills` 目录。
 
 ## 命令
 
 | 命令 | 说明 |
 |------|------|
-| `python3 install.py` | 安装/更新 OpenCode 配置（读取 config.toml + .env → 生成 ~/.config/opencode/opencode.json） |
+| `python3 install.py` | 安装/更新配置（读取 config.toml + .env → 检测 opencode/pi → 生成 OpenCode 的 opencode.json 和 pi 的 settings.json + models.json） |
 | `./check.sh` | 自动修复 + 严格 lint（Python + TS + Rust），禁止 `#[expect]`/`#[allow]` |
 | `./test.sh` | 统一测试入口（Python + Rust 测试 + 覆盖率 + TS 单元测试） |
 | `./build.sh` | Release 编译 Rust CLI 工具（zlog / zfind / ztrace / zinspect） |
@@ -65,7 +65,7 @@ ZooKeeper/
 ├── build.sh                 # Release 编译 Rust CLI 工具
 ├── core/
 │   └── skills/              # skill 定义目录
-├── src/                     # OpenCode 插件 TS 代码
+├── src/                     # 插件 TS 代码（OpenCode + pi 双宿主入口，共享 core/agents）
 │   ├── agents/              # 各 agent 的 prompt 常量文件
 │   │   ├── parts.ts         # 共享 prompt 片段（DELEGATION_FORMAT_TEXT、TASK_PROMPT_HINT）
 │   │   ├── dolphin.ts
@@ -75,7 +75,8 @@ ZooKeeper/
 │   │   ├── spider.ts
 │   │   ├── eagle.ts
 │   │   └── kiwi.ts
-│   ├── index.ts             # 插件入口 — 薄接线层，注册 6 个 hook
+│   ├── opencode.ts          # OpenCode 扩展入口
+│   ├── pi.ts                # pi 扩展入口
 │   ├── core/                # 框架无关纯逻辑（零 OpenCode 依赖）
 │   │   ├── validate.ts      # task prompt 校验（section 提取、词数限制、反模式检测）
 │   │   ├── metrics.ts       # 上下文 token 估算（混合策略：API 报告 + 启发式）
@@ -120,9 +121,10 @@ ZooKeeper/
 
 ## 关键文件
 
-- **`install.py`** — 安装脚本入口，读取 config.toml + .env → 生成 OpenCode 配置
+- **`install.py`** — 安装脚本入口，读取 config.toml + .env → 用 `shutil.which` 检测 opencode/pi 是否安装 → 按检测结果生成：OpenCode 的 `~/.config/opencode/opencode.json`、pi 的 `~/.pi/agent/settings.json`（extensions 整体替换为 `src/pi.ts`）+ `~/.pi/agent/models.json`（provider 转换：明文 apiKey、baseUrl 对 anthropic-messages 去 `/v1`、cost 补全四字段、idempotent prune 残留）。provider 跳过 warn 统一打一次。三阶段对称打印（备份/生成/验证/安装完成）。只依赖 Python 标准库。
 - **`config.toml`** — 用户配置模板（单一事实来源），所有 deny 权限和 agent 配置在此声明，`[zoo.validation]` 阈值由 TS 插件在运行时直接读取
-- **`src/index.ts`** — 插件入口，薄接线层，注册 6 个 hook
+- **`src/opencode.ts`** — 插件入口，薄接线层，注册 6 个 hook
+- **`src/pi.ts`** — pi 扩展入口，通过 `~/.pi/agent/settings.json` 的 `extensions` 数组被 pi 加载；注册 `before_agent_start`（prepend `DOLPHIN_PROMPT` 到 systemPrompt）和 `resources_discover`（贡献 `core/skills` 子目录）；用 `realpathSync` 跟随路径确保 `../core/skills` 解析正确
 - **`src/core/`** — 框架无关纯逻辑模块，零 OpenCode 依赖，可被任何 TS 运行时 import
 - **`src/agents/<name>.ts`** — 各 agent 的 prompt 常量文件，按 `{agent-name}.ts` 命名
 - **`src/agents/parts.ts`** — 共享 prompt 片段常量（`DELEGATION_FORMAT_TEXT`、`TASK_PROMPT_HINT`）

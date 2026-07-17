@@ -17,7 +17,7 @@ import {
   VERIFY_REMINDER,
 } from "../../core/prompts.js";
 import type { TinyClient } from "../../core/todo.js";
-import { zookeeper } from "../../index.js";
+import { zookeeper } from "../../opencode.js";
 import { nudgePostTask } from "./index.js";
 
 // ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { zookeeper } from "../../index.js";
+import { zookeeper } from "../../opencode.js";
 import {
   JSON_ERROR_PATTERNS,
   JSON_ERROR_REMINDER,

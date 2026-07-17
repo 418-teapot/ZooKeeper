@@ -13,7 +13,7 @@ import {
   parseSkillsConfig,
   registerSkills,
   runAfterHandlers,
-} from "./index.js";
+} from "./opencode.js";
 import { _resetForTesting } from "./utils/logger.js";
 
 // ---------------------------------------------------------------------------

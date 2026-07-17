@@ -75,7 +75,7 @@ export interface PlanClient {
  *
  * Failures (no plan found, session creation failure, missing client API)
  * are surfaced via thrown Error with user-facing messages. The hook
- * adapter in `src/index.ts` converts these to `output.parts` entries.
+ * adapter in `src/opencode.ts` converts these to `output.parts` entries.
  *
  * @param client - OpenCode client providing session and TUI APIs.
  * @param sessionID - The current session identifier.

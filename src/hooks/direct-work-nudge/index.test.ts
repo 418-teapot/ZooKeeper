@@ -12,7 +12,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { zookeeper } from "../../index.js";
+import { zookeeper } from "../../opencode.js";
 import {
   DIRECT_WORK_NUDGE,
   nudgeDirectWork,
