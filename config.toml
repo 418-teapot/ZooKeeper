@@ -187,6 +187,14 @@ reasoning = true
 context = 262144
 output  = 131072
 
+[provider.MoonShot.models.k3]
+name = "k3"
+id   = "k3"
+
+[provider.MoonShot.models.k3.limit]
+context = 1048576
+output  = 38400
+
 # ── OpenCodeGo ────────────────────────────────────────────────────────────────
 
 [provider.OpenCodeGo]
