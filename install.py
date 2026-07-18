@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import sys
+from typing import Optional
 
 try:
     import tomllib
@@ -265,7 +266,7 @@ def build_config(
     return resolve_env_refs_deep(config, env)
 
 
-def _npm_to_api_type(npm: str) -> str | None:
+def _npm_to_api_type(npm: str) -> Optional[str]:
     """Infer pi ``api`` type from the ``@ai-sdk/*`` npm package name.
 
     All ZooKeeper providers use ``@ai-sdk/*`` packages.  The mapping is:
@@ -292,7 +293,7 @@ def _npm_to_api_type(npm: str) -> str | None:
     return None
 
 
-def _convert_provider_to_pi(prov_name: str, prov_data: dict) -> dict | None:
+def _convert_provider_to_pi(prov_name: str, prov_data: dict) -> Optional[dict]:
     """Convert a single ZooKeeper provider entry to pi ``models.json`` format.
 
     Args:
@@ -472,6 +473,7 @@ def main() -> None:
 
     opencode_dir = os.path.join(os.path.expanduser("~"), ".config", "opencode")
     opencode_json = os.path.join(opencode_dir, "opencode.json")
+    tui_jsonc = os.path.join(opencode_dir, "tui.jsonc")
     pi_settings_path = os.path.join(
         os.path.expanduser("~"), ".pi", "agent", "settings.json"
     )
@@ -480,12 +482,18 @@ def main() -> None:
     )
 
     if has_opencode:
-        if os.path.isfile(opencode_json):
-            backup_path = f"{opencode_json}.bak.{datetime.now().strftime('%Y%m%d%H%M%S')}"
-            shutil.copy2(opencode_json, backup_path)
-            info(f"✓ 已备份: {backup_path}")
-        else:
-            info("✓ 无已有配置")
+        for cfg_path, label in [
+            (opencode_json, "opencode.json"),
+            (tui_jsonc, "tui.jsonc"),
+        ]:
+            if os.path.isfile(cfg_path):
+                backup_path = (
+                    f"{cfg_path}.bak.{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                )
+                shutil.copy2(cfg_path, backup_path)
+                info(f"✓ 已备份: {label} → {backup_path}")
+            else:
+                info(f"✓ 无已有 {label}")
 
     if has_pi:
         any_backup = False
@@ -515,6 +523,17 @@ def main() -> None:
         with open(opencode_json, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2, ensure_ascii=False)
             f.write("\n")
+
+        # ── TUI plugin — tui.jsonc (overwrite; ZooKeeper is the only
+        # TUI plugin in this setup) ─────────────────────────────────
+        tui_plugin_entry = "file://" + os.path.abspath(
+            os.path.join(SCRIPT_DIR, "src", "opentui.tsx")
+        )
+        tui_data = {"plugin": [tui_plugin_entry]}
+        with open(tui_jsonc, "w", encoding="utf-8") as f:
+            json.dump(tui_data, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        info("✓ TUI 扩展: src/opentui.tsx")
 
     if has_pi:
         # ── Pi extension — settings.json extensions array ────────────
@@ -585,13 +604,17 @@ def main() -> None:
     # ── Validate configs ─────────────────────────────────────────────
     header("验证配置")
     if has_opencode:
-        try:
-            with open(opencode_json, encoding="utf-8") as f:
-                json.load(f)
-            info("✓ opencode.json 格式校验通过")
-        except json.JSONDecodeError as e:
-            error(f"opencode.json 格式无效: {e}")
-            sys.exit(1)
+        for cfg_path, label in [
+            (opencode_json, "opencode.json"),
+            (tui_jsonc, "tui.jsonc"),
+        ]:
+            try:
+                with open(cfg_path, encoding="utf-8") as f:
+                    json.load(f)
+                info(f"✓ {label} 格式校验通过")
+            except json.JSONDecodeError as e:
+                error(f"{label} 格式无效: {e}")
+                sys.exit(1)
 
     if has_pi:
         for label, pi_path in [
@@ -610,6 +633,7 @@ def main() -> None:
     header("安装完成")
     if has_opencode:
         info(f"✅ 配置已写入: {opencode_json}")
+        info(f"✅ TUI 配置已写入: {tui_jsonc}")
     if has_pi:
         info(f"✅ 配置已写入: {pi_settings_path}, {pi_models_path}")
 

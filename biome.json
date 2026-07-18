@@ -15,7 +15,7 @@
     }
   },
   "files": {
-    "includes": ["src/**/*.ts"]
+    "includes": ["src/**/*.ts", "src/**/*.tsx"]
   },
   "javascript": {
     "formatter": {

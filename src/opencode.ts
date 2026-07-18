@@ -27,6 +27,7 @@ import { KIWI_PROMPT } from "./agents/kiwi.js";
 import { LYNX_PROMPT } from "./agents/lynx.js";
 import { MOLA_PROMPT } from "./agents/mola.js";
 import { SPIDER_PROMPT } from "./agents/spider.js";
+import { DCP_COMMAND_HANDLED, handleDcpCommand } from "./hooks/context-command";
 import type { ContextMetricsOutput } from "./hooks/context-metrics";
 import { measureContext } from "./hooks/context-metrics";
 import { nudgeDirectWork } from "./hooks/direct-work-nudge";
@@ -250,6 +251,12 @@ export async function zookeeper(input: any) {
         template: "",
         description: "Approve plan and handoff to dolphin",
       };
+
+      // Register /dcp slash command for context/cache observability.
+      config.command.dcp = {
+        template: "",
+        description: "显示上下文用量与缓存命中率",
+      };
     },
 
     async "chat.params"(
@@ -352,6 +359,35 @@ export async function zookeeper(input: any) {
       input: { command: string; sessionID: string; arguments: string },
       _output: { parts?: Array<{ type: string; text: string }> },
     ) {
+      if (input.command === "dcp") {
+        try {
+          await handleDcpCommand(client, input.sessionID, input.arguments);
+        } catch (err) {
+          // Inject error message silently — no LLM processing.
+          const msg = err instanceof Error ? err.message : String(err);
+          log(
+            "context-command",
+            "dcp_command_failed",
+            input.sessionID,
+            undefined,
+            "warn",
+            { error: msg },
+          );
+          try {
+            await client?.session?.prompt({
+              path: { id: input.sessionID },
+              body: {
+                noReply: true,
+                parts: [{ type: "text", text: msg, ignored: true }],
+              },
+            });
+          } catch {
+            // Best-effort notification
+          }
+        }
+        throw DCP_COMMAND_HANDLED;
+      }
+
       if (input.command !== "go") return;
       try {
         await handleGoCommand(client, input.sessionID, directory);

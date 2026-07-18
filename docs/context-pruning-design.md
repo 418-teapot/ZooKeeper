@@ -1,7 +1,7 @@
 # 上下文剪枝设计报告：从内置 Compaction 到框架无关的统一剪枝架构
 
-**版本:** 1.0  
-**日期:** 2026-06-13  
+**版本:** 1.2  
+**日期:** 2026-06-13（2026-07-18 追加 §11 第一步实现报告）  
 **分类:** 技术架构文档 / 上下文管理
 
 ---
@@ -62,6 +62,13 @@
      - 10.7 [V0 验证方法](#107-v0-验证方法)
      - 10.8 [后续增量路径](#108-后续增量路径)
      - 10.9 [关键认知收获](#109-关键认知收获)
+ 11. [第一步实现报告：观测层（命令 + TUI 面板）](#11-第一步实现报告观测层命令--tui-面板)
+     - 11.1 [范围：比 V0 更小的第一步](#111-范围比-v0-更小的第一步)
+     - 11.2 [交付清单](#112-交付清单)
+     - 11.3 [关键实现机制](#113-关键实现机制)
+     - 11.4 [新认知收获](#114-新认知收获)
+     - 11.5 [实测数据与结论](#115-实测数据与结论)
+     - 11.6 [对后续路线图的修正](#116-对后续路线图的修正)
 
 ---
 
@@ -2370,6 +2377,8 @@ ZooKeeper 剪枝 → 插件级，启发式策略，编排器专用
 
 **版本：** 1.1（2026-06-15，基于 `docs/dcp-architecture.md` 深度源码分析后的修正）
 
+> **⚠️ 实施注记（2026-07-18）：** 实际执行时第一步并未按本节 V0（含 dedup/purge/两阶段清理，~635 行）落地，而是进一步缩减为**纯观测层**（`/dcp context` 命令 + TUI 侧边栏，零剪枝逻辑）。实测数据（tool 占 43.8%）反过来验证了 V0 的剪枝目标优先级。本节的**两阶段标记-清理模型（§10.4）仍然是后续剪枝实现必须坚持的不变量**。详见 §11。
+
 ### 10.1 为什么要最小实现
 
 尝试直接复制 DCP 源码集成到 ZooKeeper 失败（`2026-06-14` 尝试）：
@@ -2571,4 +2580,103 @@ async "experimental.chat.messages.transform"(_input, output) {
 4. **命令注册用 config hook**：不要在 config.toml 静态声明——这是 OpenCode 的标准插件模式
 5. **`sendIgnoredMessage` 用 `ignored: true`**：命令输出不要变成新的上下文
 6. **hallucinations 清理是保护性步骤**：即使 V0 没有注入 `<zoo-dcp>` 标签，也要保留清理逻辑（防止 LLM 偶然生成）
+
+---
+
+## 11. 第一步实现报告：观测层（命令 + TUI 面板）
+
+**日期：** 2026-07-18
+**状态：** 已实现并验收（双 Eagle 代码审查 PASS，542 TS 测试 + lint 全绿）
+
+### 11.1 范围：比 V0 更小的第一步
+
+§10 的 V0（~635 行，含 dedup/purge/两阶段清理）在执行时被认为仍然过大。实际落地的第一步进一步缩减为**纯观测层**：
+
+- `/dcp context` 命令：聊天中显示上下文 token 用量、缓存命中率、分类占比
+- TUI 侧边栏：实时显示缓存命中率 + 分类占比条（常驻、可折叠）
+- **零剪枝逻辑**：不改任何消息，先解决"看得见"的问题
+
+实测证明这个顺序是对的：观测层一上线就用数据确认了剪枝的最大目标（见 §11.5）。
+
+### 11.2 交付清单
+
+| 文件 | 职责 |
+|------|------|
+| `src/core/metrics.ts` | **唯一上下文测量模块**：`findLastCompletedAssistant` / `findFirstCompletedAssistant`（共享 `_scanCompletedAssistant`）、`estimateMessageHeuristic`（tool-aware + CJK 分文字系统估算）、`computeContextReport`（5 类分类）、`measureContext`（hook 日志） |
+| `src/core/context-report.ts` | 纯展示层：`formatTokens` / `formatPercent` / `progressBar` / `formatContextReport` |
+| `src/hooks/context-command/index.ts` | `/dcp context` 命令适配层：取消息 → 计算 → ignored 消息输出；`DCP_COMMAND_HANDLED` sentinel |
+| `src/opentui.tsx` | TUI 侧边栏插件（`sidebar_content` slot）：`ZookeeperPanel` 组件、全量数据通道、折叠持久化 |
+| `src/opencode.ts` | 接线：config hook 注册 `dcp` 空模板命令 + `command.execute.before` 拦截 |
+| `install.py` | 生成 `~/.config/opencode/tui.jsonc`（直接覆盖：`{"plugin": ["file://.../src/opentui.tsx"]}`） |
+| `tsconfig.json` / `package.json` / `biome.json` | `jsx: react-jsx`、devDeps（solid-js/@opentui/*/@opencode-ai/plugin）、tsx lint 覆盖 |
+
+### 11.3 关键实现机制
+
+**命令链路**（`/dcp context`）：
+
+```
+TUI 输入 /dcp context
+  → 服务端查命令注册表（必须先注册，否则 Command not found，hook 不触发）
+  → command.execute.before 拦截（input.command === "dcp"）
+  → client.session.messages() 全量取消息 → computeContextReport
+  → client.session.prompt({ noReply: true, parts: [{ text, ignored: true }] }) 输出
+  → throw DCP_COMMAND_HANDLED 中止后续 prompt()（服务端映射为空 400，用户不可见）
+```
+
+**面板链路**（侧边栏）：
+
+```
+tui.jsonc 发现 file:// src/opentui.tsx（零构建，jsxImportSource pragma，Bun 直载）
+  → api.slots.register({ sidebar_content }) → 返回 <ZookeeperPanel/> 组件
+  → onMount: api.client.session.messages({ sessionID }) 全量获取
+  → computeContextReport → signals → 渲染
+  → 事件订阅（message/session 更新，按 sessionID 过滤）→ 2s debounce 重算
+  → 折叠状态 api.kv 持久化
+```
+
+**分类口径**（5 行）：`user`（CJK 启发式）、`asst`（**API 精确** `Σ tokens.output`，缺失回退启发式）、`tool`（CJK 启发式，input+output）、`sys`（DCP 式：首条 assistant 的 input+cache − 首条用户消息）、`misc`（残差，钳位 ≥0）。
+
+### 11.4 新认知收获
+
+1. **OpenCode 命令机制 = prompt 模板注入**：注册表查找在 hook 之前，未注册命令直接报 Command not found；所以拦截式命令必须先注册空模板拿入场券，再用 sentinel throw 中止默认的 LLM 调用（`noReply` 无法经 command 路径传入）。
+2. **DCP 的 `/dcp` 服务端命令是遗留代码**：它从未注册 `dcp` 命令（只注册了 `dcp-compress`），服务端分支在生产不可达（只有测试在调）；DCP 实际已迁移到 TUI 插件面板（`exports["./tui"]` 直接发布 tsx 源码）。
+3. **OpenCode 有双插件系统**：server（`opencode.json` 的 plugin）与 TUI（`tui.json`/`tui.jsonc` 的 plugin，经 `exports["./tui"]` 或 file 路径解析）；TUI 插件可零构建（pragma + Bun）；solid-js/@opentui 由宿主运行时提供，file:// 插件需本地 devDeps 可解析。
+4. **`api.state` 是截断的（limit 100）**：TUI 只同步最近 100 条消息（`sync.tsx:597`），任何"第一条消息"类推算（如 system 估算）在截断窗口里会被骗——sys 曾因此虚高至 200.8K（真实 ~17K）。**全量数据必须走 `api.client.session.messages()`**。
+5. **TUI 与 server 的 SDK 签名不同**：TUI 端 `session.messages({ sessionID, limit? })`（v2 风格），server 端 `session.messages({ path: { id } })`；且 SDK 默认 `throwOnError: false`，HTTP 错误以 `{ error }` 形式返回，必须显式检查否则静默渲染为零数据。
+6. **SolidJS slot 正确用法**：signals/订阅放 `tui()` 作用域，slot 函数返回**组件实例**（visual-cache 模式）；在 slot 函数体内直接建 signals 是脆弱的（宿主 memo 重估时会泄漏）。
+7. **`api.state` 数组在 streaming 过渡期含 undefined 元素**：所有遍历必须 falsy 防御；TUI 插件任何异常都要 try/catch 兜底（崩溃会拖垮整个 OpenCode 客户端）。
+8. **OpenTUI Yoga 布局陷阱**：无内容带 `border` 的 `<box>` 高度计算塌陷，可导致 scrollbox 布局错误、输入区被挤出可视区（表现为界面卡死）。分隔线用纯文本。
+9. **TUI 进程的 logger 需要显式 `setSessionId`** 才能落盘（`flushBuffer` 门控，logger.ts:187）。
+10. **分文字系统估算即可消除中文系统性低估**（CJK /1.5、其他 /4，零依赖），无需引入 tokenizer；`asst` 分类用 `Σ tokens.output` 直接变精确。
+
+### 11.5 实测数据与结论
+
+本会话（编排器真实工作负载，~333K 上下文）的稳定读数：
+
+| 分类 | 读数 | 占比 | 说明 |
+|------|------|------|------|
+| user | 19.2K | 5.8% | 用户输入 |
+| asst | 102.6K | 30.8% | 助手输出（API 精确） |
+| **tool** | **145.9K** | **43.8%** | **工具输入+输出——最大单一消费者** |
+| sys | 17.3K | 5.2% | 系统 prompt（与 ztrace 首调记录交叉验证一致） |
+| misc | 48.1K | 14.4% | 残差（估算误差 + reasoning 差额 + 非文本 part） |
+
+**核心结论**：
+
+1. **tool 输出是剪枝的第一目标**（43.8%）——直接验证了 §10 V0 把 dedup + purge-errors 作为首批策略的优先级判断。系统 prompt（5.2%）不是大头，无需优化。
+2. **sys 估算经数据库交叉验证准确**（ztrace 第一次调用 input 28.8K − 首条用户消息 ~11.5K ≈ 17.3K）。
+3. 观测层为后续每一步剪枝提供了**闭环验证手段**：策略上线后面板应直接显示 tool 分类下降。
+
+### 11.6 对后续路线图的修正
+
+§7 的 Phase 1-6 与 §10.8 的 V0-V5 增量表被实际路径取代。修正后的路线：
+
+| 版本 | 内容 | 状态 |
+|------|------|------|
+| **V0（实际）** | 观测层：`/dcp context` 命令 + TUI 面板 + 统一测量核心 | ✅ 已完成（本节） |
+| **V1** | 自动策略：dedup + purge-errors（两阶段标记-清理，§10.4 不变量不变），面板显示 pruned 统计 | 下一步 |
+| **V2** | `/dcp sweep` 手动剪枝 + 状态持久化 | 待规划 |
+| **V3+** | 压缩引擎（Range 模式）、nudge 系统、compress 工具注册 | 按 §10 演进 |
+
+V1 的前置条件已就绪：测量核心（`computeContextReport`）、命令通道（`/dcp` 命名空间 + sentinel 模式）、面板数据通道（全量 fetch）、TUI 插件骨架。剪枝策略只需操作 `state.prune.tools` 并扩展面板统计行，不再需要基础设施工作。
 

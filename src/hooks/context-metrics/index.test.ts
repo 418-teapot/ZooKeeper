@@ -268,12 +268,12 @@ describe("estimateMessageHeuristic", () => {
     const entry: ContextMessageEntry = {
       info: { role: "assistant", id: "a1" },
       parts: [
-        { type: "text", text: "Short" }, // 5 chars
-        { type: "text", text: "Longer text" }, // 11 chars
+        { type: "text", text: "Short" }, // 5 chars → ceil(5/4) = 2
+        { type: "text", text: "Longer text" }, // 11 chars → ceil(11/4) = 3
       ],
     };
-    // Total chars = 16 → 16 / 4 = 4 → ceil = 4
-    assert.equal(estimateMessageHeuristic(entry), 4);
+    // Per-part: 2 + 3 = 5
+    assert.equal(estimateMessageHeuristic(entry), 5);
   });
 
   it("ignores parts without text", () => {
