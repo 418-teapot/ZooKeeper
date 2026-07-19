@@ -70,7 +70,7 @@ const plugin: TuiPluginModule = {
         const resObj = res as { error?: { message?: string }; data?: unknown };
         if (resObj.error) {
           const msg = resObj.error.message ?? String(resObj.error);
-          log("opentui", "compute_error", sessionId, undefined, "error", {
+          log("opencode-tui", "compute_error", sessionId, undefined, "error", {
             error: msg,
           });
           setError(true);
@@ -111,7 +111,7 @@ const plugin: TuiPluginModule = {
         // Silently degrade — plugin crash must never escape to
         // the host process.  Log for diagnosability.
         if (seq !== requestSeq) return;
-        log("opentui", "compute_error", sessionId, undefined, "error", {
+        log("opencode-tui", "compute_error", sessionId, undefined, "error", {
           error: String(err),
         });
         setError(true);
@@ -134,7 +134,7 @@ const plugin: TuiPluginModule = {
         }
       } catch (err) {
         // Silently ignore — KV write failure must not crash.
-        log("opentui", "kv_write_failed", "", undefined, "debug", {
+        log("opencode-tui", "kv_write_failed", "", undefined, "debug", {
           error: String(err),
         });
       }
@@ -169,7 +169,7 @@ const plugin: TuiPluginModule = {
         } catch (err) {
           // Silently ignore — default to expanded.
           log(
-            "opentui",
+            "opencode-tui",
             "kv_read_failed",
             props.sessionId,
             undefined,
