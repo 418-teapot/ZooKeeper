@@ -93,7 +93,7 @@ function collectSkillPaths(): string[] {
 export default function zookeeperPi(pi: ExtensionAPI): void {
   pi.on("before_agent_start", async (evt, _ctx) => {
     return {
-      systemPrompt: DOLPHIN_PROMPT + "\n\n" + evt.systemPrompt,
+      systemPrompt: `${DOLPHIN_PROMPT}\n\n${evt.systemPrompt}`,
     };
   });
 
