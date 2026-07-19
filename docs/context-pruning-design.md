@@ -2605,9 +2605,9 @@ async "experimental.chat.messages.transform"(_input, output) {
 | `src/core/metrics.ts` | **唯一上下文测量模块**：`findLastCompletedAssistant` / `findFirstCompletedAssistant`（共享 `_scanCompletedAssistant`）、`estimateMessageHeuristic`（tool-aware + CJK 分文字系统估算）、`computeContextReport`（5 类分类）、`measureContext`（hook 日志） |
 | `src/core/context-report.ts` | 纯展示层：`formatTokens` / `formatPercent` / `progressBar` / `formatContextReport` |
 | `src/hooks/context-command/index.ts` | `/dcp context` 命令适配层：取消息 → 计算 → ignored 消息输出；`DCP_COMMAND_HANDLED` sentinel |
-| `src/opencode-tui.tsx` | TUI 侧边栏插件（`sidebar_content` slot）：`ZookeeperPanel` 组件、全量数据通道、折叠持久化 |
+| `src/tui.tsx` | TUI 侧边栏插件（`sidebar_content` slot）：`ZookeeperPanel` 组件、全量数据通道、折叠持久化 |
 | `src/opencode.ts` | 接线：config hook 注册 `dcp` 空模板命令 + `command.execute.before` 拦截 |
-| `install.py` | 生成 `~/.config/opencode/tui.jsonc`（直接覆盖：`{"plugin": ["file://.../src/opencode-tui.tsx"]}`） |
+| `install.py` | 生成 `~/.config/opencode/tui.jsonc`（直接覆盖：`{"plugin": ["file://.../src/tui.tsx"]}`） |
 | `tsconfig.json` / `package.json` / `biome.json` | `jsx: react-jsx`、devDeps（solid-js/@opentui/*/@opencode-ai/plugin）、tsx lint 覆盖 |
 
 ### 11.3 关键实现机制
@@ -2626,7 +2626,7 @@ TUI 输入 /dcp context
 **面板链路**（侧边栏）：
 
 ```
-tui.jsonc 发现 file:// src/opencode-tui.tsx（零构建，jsxImportSource pragma，Bun 直载）
+tui.jsonc 发现 file:// src/tui.tsx（零构建，jsxImportSource pragma，Bun 直载）
   → api.slots.register({ sidebar_content }) → 返回 <ZookeeperPanel/> 组件
   → onMount: api.client.session.messages({ sessionID }) 全量获取
   → computeContextReport → signals → 渲染

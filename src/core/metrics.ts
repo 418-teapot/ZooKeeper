@@ -564,3 +564,163 @@ export function computeContextReport(
     },
   };
 }
+
+// ---------------------------------------------------------------------------
+// Cache trend and cumulative
+// ---------------------------------------------------------------------------
+
+/**
+ * Result of comparing the last two assistant messages' cache hit rates.
+ */
+export interface CacheTrendResult {
+  /** Cache hit rate of the last completed assistant message (0–1), or null. */
+  lastRate: number | null;
+  /** Cache hit rate of the previous completed assistant message (0–1), or null. */
+  previousRate: number | null;
+  /**
+   * Trend delta in percentage points (positive = up, negative = down),
+   * or null when there is no previous assistant with valid data.
+   */
+  trend: number | null;
+  /** Whether both last and previous rates are available for trend display. */
+  hasTrendData: boolean;
+  /**
+   * Display label for the trend arrow.
+   *
+   * - `"↑X.X"` when trend > 0
+   * - `"↓X.X"` when trend < 0
+   * - `"-"` when trend is exactly 0
+   * - `null` when there is no previous assistant (`hasTrendData === false`)
+   */
+  trendLabel: string | null;
+}
+
+/**
+ * Cumulative cache hit rate derived from all assistant messages.
+ */
+export interface CumulativeCacheResult {
+  /** Cumulative cache hit rate (0–1), or null when unavailable. */
+  cumulativeRate: number | null;
+  /** Total cache read tokens across all assistants. */
+  totalRead: number;
+  /** Total denominator (sum of input + read + write) across all assistants. */
+  totalDenominator: number;
+}
+
+/**
+ * Compute the cache hit rate for a single message entry.
+ *
+ * This function does **not** validate the message's role; role filtering is
+ * the caller's responsibility.  It returns a rate for any entry that has
+ * token data.
+ *
+ * Uses the ZooKeeper convention:
+ * `rate = cache.read / (input + cache.read + cache.write)`.
+ *
+ * Returns `null` when the denominator is zero or the message has no token
+ * data.
+ *
+ * @param msg - A message entry (caller must filter by role as needed).
+ * @returns Cache hit rate (0–1), or null if not computable.
+ */
+export function computeAssistantCacheRate(
+  msg: ContextMessageEntry,
+): number | null {
+  if (!msg?.info?.tokens) return null;
+  const tokens = msg.info.tokens;
+  const cacheRead = tokens.cache?.read ?? 0;
+  const cacheWrite = tokens.cache?.write ?? 0;
+  const inputTokens = tokens.input ?? 0;
+  const denominator = inputTokens + cacheRead + cacheWrite;
+  if (denominator <= 0) return null;
+  return cacheRead / denominator;
+}
+
+/**
+ * Compare the last two assistant messages' cache hit rates.
+ *
+ * Scans the messages array from the end, identifying the last two assistant
+ * messages with valid token data.  Trend is the difference in percentage
+ * points: `(lastRate − previousRate) × 100`.
+ *
+ * The trend label is `"↑X.X"` / `"↓X.X"` / `"-"` (for zero) when two
+ * assistants are available, or `null` when only one or fewer exist.
+ *
+ * @param messages - Session messages array.
+ * @returns Trend result with last/previous rates and a display label.
+ */
+export function computeCacheTrend(
+  messages: ContextMessageEntry[],
+): CacheTrendResult {
+  let lastRate: number | null = null;
+  let previousRate: number | null = null;
+
+  // Scan in reverse to find the last two assistants with valid rates.
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg?.info?.role !== "assistant") continue;
+    const rate = computeAssistantCacheRate(msg);
+    if (rate === null) continue;
+    if (lastRate === null) {
+      lastRate = rate;
+    } else if (previousRate === null) {
+      previousRate = rate;
+      break;
+    }
+  }
+
+  const hasTrendData = lastRate !== null && previousRate !== null;
+  const trend =
+    hasTrendData && lastRate !== null && previousRate !== null
+      ? (lastRate - previousRate) * 100
+      : null;
+
+  let trendLabel: string | null = null;
+  if (hasTrendData && trend !== null) {
+    if (trend > 0) {
+      trendLabel = `\u2191${trend.toFixed(1)}`;
+    } else if (trend < 0) {
+      trendLabel = `\u2193${Math.abs(trend).toFixed(1)}`;
+    } else {
+      trendLabel = "-";
+    }
+  }
+
+  return { lastRate, previousRate, trend, hasTrendData, trendLabel };
+}
+
+/**
+ * Compute cumulative cache hit rate by summing all assistant messages'
+ * tokens.
+ *
+ * This is the **message-sum fallback** — prefer session-level aggregates
+ * (see `Session.tokens`) when available, since they reflect the full session
+ * without truncation.  The rate follows the ZooKeeper convention:
+ * `totalRead / (totalInput + totalRead + totalWrite)`.
+ *
+ * @param messages - Session messages array.
+ * @returns Cumulative cache result.
+ */
+export function computeCumulativeCacheRate(
+  messages: ContextMessageEntry[],
+): CumulativeCacheResult {
+  let totalInput = 0;
+  let totalRead = 0;
+  let totalWrite = 0;
+
+  for (const msg of messages) {
+    if (msg?.info?.role !== "assistant") continue;
+    const tokens = msg.info.tokens;
+    if (!tokens) continue;
+    totalInput += tokens.input ?? 0;
+    totalRead += tokens.cache?.read ?? 0;
+    totalWrite += tokens.cache?.write ?? 0;
+  }
+
+  const denominator = totalInput + totalRead + totalWrite;
+  return {
+    cumulativeRate: denominator > 0 ? totalRead / denominator : null,
+    totalRead,
+    totalDenominator: denominator,
+  };
+}

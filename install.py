@@ -527,13 +527,13 @@ def main() -> None:
         # ── TUI plugin — tui.jsonc (overwrite; ZooKeeper is the only
         # TUI plugin in this setup) ─────────────────────────────────
         tui_plugin_entry = "file://" + os.path.abspath(
-            os.path.join(SCRIPT_DIR, "src", "opencode-tui.tsx")
+            os.path.join(SCRIPT_DIR, "src", "tui.tsx")
         )
         tui_data = {"plugin": [tui_plugin_entry]}
         with open(tui_jsonc, "w", encoding="utf-8") as f:
             json.dump(tui_data, f, indent=2, ensure_ascii=False)
             f.write("\n")
-        info("✓ TUI 扩展: src/opencode-tui.tsx")
+        info("✓ TUI 扩展: src/tui.tsx")
 
     if has_pi:
         # ── Pi extension — settings.json extensions array ────────────

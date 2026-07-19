@@ -9,7 +9,11 @@ import {
   progressBar,
 } from "./core/context-report.js";
 import type { ContextMessageEntry } from "./core/metrics.js";
-import { computeContextReport } from "./core/metrics.js";
+import {
+  computeCacheTrend,
+  computeContextReport,
+  computeCumulativeCacheRate,
+} from "./core/metrics.js";
 import { log, setSessionId } from "./utils/logger.js";
 
 /** Category values for sidebar breakdown display. */
@@ -50,6 +54,9 @@ const plugin: TuiPluginModule = {
     );
     const [getCollapsed, setCollapsed] = createSignal(false);
     const [getError, setError] = createSignal(false);
+    const [getTrendLabel, setTrendLabel] = createSignal<string | null>(null);
+    const [getTrend, setTrend] = createSignal<number | null>(null);
+    const [getCumulative, setCumulative] = createSignal<string>("—");
 
     let debounceTimer: ReturnType<typeof setTimeout> | undefined;
     // Request sequence counter: prevents stale async responses from
@@ -90,12 +97,63 @@ const plugin: TuiPluginModule = {
             )?.role === "string",
         );
         const report = computeContextReport(mapped);
+
+        // ── Trend (last vs previous assistant) ──────────────────────
+        const trendResult = computeCacheTrend(mapped);
+
+        // ── Cumulative (session aggregates preferred, fallback to
+        // message-sum) ────────────────────────────────────────────
+        let cumulativeRate: number | null = null;
+        if (
+          typeof (api.state as Record<string, unknown>)?.session === "object" &&
+          typeof (
+            (api.state as Record<string, unknown>).session as Record<
+              string,
+              unknown
+            >
+          )?.get === "function"
+        ) {
+          const fn = (api.state as Record<string, unknown>).session as {
+            get: (id: string) =>
+              | {
+                  tokens?: {
+                    input?: number;
+                    cache?: { read?: number; write?: number };
+                  };
+                }
+              | undefined;
+          };
+          const session = fn.get(sessionId);
+          if (session?.tokens) {
+            const read = session.tokens.cache?.read ?? 0;
+            const write = session.tokens.cache?.write ?? 0;
+            const input = session.tokens.input ?? 0;
+            const denom = input + read + write;
+            cumulativeRate = denom > 0 ? read / denom : null;
+          } else {
+            // Session exists but has no tokens — fall back to message-sum.
+            cumulativeRate = computeCumulativeCacheRate(mapped).cumulativeRate;
+          }
+        } else {
+          cumulativeRate = computeCumulativeCacheRate(mapped).cumulativeRate;
+        }
+
         // Only apply if this is still the latest request.
         if (seq !== requestSeq) return;
         setCache(
           report.cacheHitRate !== null
             ? formatPercent(report.cacheHitRate)
             : "—",
+        );
+        if (trendResult.hasTrendData) {
+          setTrendLabel(trendResult.trendLabel);
+          setTrend(trendResult.trend);
+        } else {
+          setTrendLabel(null);
+          setTrend(null);
+        }
+        setCumulative(
+          cumulativeRate !== null ? formatPercent(cumulativeRate) : "—",
         );
         setCategories({
           user: report.categories.user,
@@ -150,6 +208,8 @@ const plugin: TuiPluginModule = {
         textMuted: RGBA;
         backgroundElement: RGBA;
         borderSubtle: RGBA;
+        success: RGBA;
+        error: RGBA;
       };
     }) {
       // ── Lifecycle ──────────────────────────────────────────────
@@ -246,9 +306,30 @@ const plugin: TuiPluginModule = {
               <text fg={props.theme.textMuted}>数据异常</text>
             ) : getLoaded() ? (
               <>
-                <text fg={props.theme.text}>
-                  {"缓存  "}
-                  {getCache()}
+                {/* Cache hit rate + trend arrow */}
+                <text>
+                  <span style={{ fg: props.theme.text }}>
+                    {`缓存  ${getCache()}`}
+                  </span>
+                  {(() => {
+                    const label = getTrendLabel();
+                    if (!label) return null;
+                    const trend = getTrend();
+                    let color: RGBA;
+                    if (trend !== null && trend > 0) {
+                      color = props.theme.success;
+                    } else if (trend !== null && trend < 0) {
+                      color = props.theme.error;
+                    } else {
+                      color = props.theme.textMuted;
+                    }
+                    return <span style={{ fg: color }}>{` ${label}`}</span>;
+                  })()}
+                </text>
+                {/* Cumulative cache hit rate */}
+                <text fg={props.theme.textMuted}>
+                  {"累计  "}
+                  {getCumulative()}
                 </text>
                 {/* Text separator (avoids Yoga border crash with empty box) */}
                 <text fg={props.theme.textMuted}>{"─".repeat(24)}</text>
@@ -289,6 +370,8 @@ const plugin: TuiPluginModule = {
                 textMuted: ctx.theme.current.textMuted,
                 backgroundElement: ctx.theme.current.backgroundElement,
                 borderSubtle: ctx.theme.current.borderSubtle,
+                success: ctx.theme.current.success,
+                error: ctx.theme.current.error,
               }}
             />
           );

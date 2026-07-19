@@ -16,7 +16,10 @@ import {
   type ContextMessageEntry,
   type ContextReport,
   type ContextTokenInfo,
+  computeAssistantCacheRate,
+  computeCacheTrend,
   computeContextReport,
+  computeCumulativeCacheRate,
   estimateMessageHeuristic,
   findFirstCompletedAssistant,
   findLastCompletedAssistant,
@@ -930,3 +933,375 @@ describe("ContextReport shape", () => {
     assert.ok("misc" in report.categories);
   });
 });
+
+// ---------------------------------------------------------------------------
+// computeCacheTrend
+// ---------------------------------------------------------------------------
+
+describe("computeCacheTrend", () => {
+  it("returns up trend when the last assistant has a higher hit rate", () => {
+    // previous: read 200 / (input 500 + read 200 + write 50) = 200/750 ≈ 0.2667
+    // last:     read 300 / (input 300 + read 300 + write 50) = 300/650 ≈ 0.4615
+    // trend: (0.4615 - 0.2667) * 100 ≈ +19.5 percentage points
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "First"),
+      msg(
+        "assistant",
+        { input: 500, output: 100, cache: { read: 200, write: 50 } },
+        "Reply A",
+      ),
+      msg("user", undefined, "Follow-up"),
+      msg(
+        "assistant",
+        { input: 300, output: 80, cache: { read: 300, write: 50 } },
+        "Reply B",
+      ),
+    ];
+    const result = computeCacheTrend(msgs);
+    assert.ok(result.hasTrendData);
+    assert.ok(result.trend !== null);
+    assert.ok(result.trend > 0, `expected positive trend, got ${result.trend}`);
+    assert.ok(
+      result.trendLabel?.startsWith("↑"),
+      `expected ↑ prefix, got ${result.trendLabel}`,
+    );
+    // Approximately 15–25 percentage points
+    assert.ok(
+      result.trend > 15 && result.trend < 25,
+      `trend ${result.trend} out of expected range`,
+    );
+  });
+
+  it("returns down trend when the last assistant has a lower hit rate", () => {
+    // previous: read 300 / (input 300 + read 300 + write 50) = 300/650 ≈ 0.4615
+    // last:     read 200 / (input 500 + read 200 + write 50) = 200/750 ≈ 0.2667
+    // trend: (0.2667 - 0.4615) * 100 ≈ -19.5 percentage points
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "First"),
+      msg(
+        "assistant",
+        { input: 300, output: 80, cache: { read: 300, write: 50 } },
+        "Reply A",
+      ),
+      msg("user", undefined, "Follow-up"),
+      msg(
+        "assistant",
+        { input: 500, output: 100, cache: { read: 200, write: 50 } },
+        "Reply B",
+      ),
+    ];
+    const result = computeCacheTrend(msgs);
+    assert.ok(result.hasTrendData);
+    assert.ok(result.trend !== null);
+    assert.ok(result.trend < 0, `expected negative trend, got ${result.trend}`);
+    assert.ok(
+      result.trendLabel?.startsWith("↓"),
+      `expected ↓ prefix, got ${result.trendLabel}`,
+    );
+  });
+
+  it("returns no trend data when only one assistant message exists", () => {
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hello"),
+      msg(
+        "assistant",
+        { input: 500, output: 100, cache: { read: 200 } },
+        "Reply",
+      ),
+    ];
+    const result = computeCacheTrend(msgs);
+    assert.equal(result.hasTrendData, false);
+    assert.equal(result.trend, null);
+    assert.equal(result.trendLabel, null);
+    assert.ok(result.lastRate !== null, "lastRate should still be available");
+    assert.equal(result.previousRate, null);
+  });
+
+  it("returns no trend data when no assistant has valid token data", () => {
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hello"),
+      msg("assistant", undefined, "No tokens"),
+      msg("user", undefined, "Again"),
+      msg(
+        "assistant",
+        { input: 0, output: 0, cache: { read: 0, write: 0 } },
+        "Zero tokens",
+      ),
+    ];
+    const result = computeCacheTrend(msgs);
+    assert.equal(result.hasTrendData, false);
+    assert.equal(result.lastRate, null);
+    assert.equal(result.previousRate, null);
+  });
+
+  it("returns dash label when trend is exactly zero", () => {
+    // Both messages have identical cache rates
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "First"),
+      msg(
+        "assistant",
+        { input: 500, output: 100, cache: { read: 200, write: 50 } },
+        "Reply A",
+      ),
+      msg("user", undefined, "Follow-up"),
+      msg(
+        "assistant",
+        { input: 500, output: 100, cache: { read: 200, write: 50 } },
+        "Reply B",
+      ),
+    ];
+    const result = computeCacheTrend(msgs);
+    assert.ok(result.hasTrendData);
+    assert.equal(result.trend, 0);
+    assert.equal(result.trendLabel, "-");
+  });
+
+  it("returns no trend data for empty messages array", () => {
+    const result = computeCacheTrend([]);
+    assert.equal(result.hasTrendData, false);
+    assert.equal(result.lastRate, null);
+    assert.equal(result.previousRate, null);
+    assert.equal(result.trend, null);
+    assert.equal(result.trendLabel, null);
+  });
+
+  it("skips assistants with zero denominator when computing trend", () => {
+    // Zero-denominator assistant should be skipped
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "First"),
+      msg(
+        "assistant",
+        { input: 500, output: 100, cache: { read: 200, write: 50 } },
+        "Reply A",
+      ),
+      msg("user", undefined, "Zero-denom"),
+      msg(
+        "assistant",
+        { input: 0, output: 0, cache: { read: 0, write: 0 } },
+        "Zero",
+      ),
+      msg("user", undefined, "Follow-up"),
+      msg(
+        "assistant",
+        { input: 300, output: 80, cache: { read: 300, write: 50 } },
+        "Reply B",
+      ),
+    ];
+    const result = computeCacheTrend(msgs);
+    assert.ok(result.hasTrendData);
+    assert.ok(
+      result.trendLabel !== null,
+      "should have trend data despite zero-denom assistant interleaved",
+    );
+  });
+
+  it("trend uses cache.write in denominator matching ZooKeeper convention", () => {
+    // Same rate but one has write tokens — in reference convention they'd differ
+    // Our convention: read / (input + read + write)
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "First"),
+      msg(
+        "assistant",
+        { input: 100, output: 50, cache: { read: 50, write: 0 } },
+        "No write",
+      ),
+      msg("user", undefined, "Follow-up"),
+      msg(
+        "assistant",
+        { input: 100, output: 50, cache: { read: 50, write: 50 } },
+        "With write",
+      ),
+    ];
+    const result = computeCacheTrend(msgs);
+    assert.ok(result.hasTrendData);
+    // No write: 50/(100+50+0)=0.333, With write: 50/(100+50+50)=0.25 → down
+    assert.ok(
+      (result.trend as number) < 0,
+      "adding write tokens should decrease hit rate",
+    );
+  });
+
+  it("ignores non-assistant messages even if they carry token data", () => {
+    // A "tool" role message with tokens must not be counted as an assistant.
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hello"),
+      msg(
+        "assistant",
+        { input: 500, output: 100, cache: { read: 200, write: 50 } },
+        "Reply A",
+      ),
+      msg("user", undefined, "Mid"),
+      // Non-assistant with token data — should be ignored.
+      {
+        info: {
+          role: "tool",
+          id: "t1",
+          tokens: { input: 999, output: 50, cache: { read: 500 } },
+        },
+        parts: [{ type: "text", text: "tool output" }],
+      },
+      msg("user", undefined, "Follow-up"),
+      msg(
+        "assistant",
+        { input: 300, output: 80, cache: { read: 300, write: 50 } },
+        "Reply B",
+      ),
+    ];
+    const result = computeCacheTrend(msgs);
+    assert.ok(result.hasTrendData);
+    // If the tool message were counted, there would be 3 valid entries
+    // and previousRate would be the tool's rate (500/1499 ≈ 0.334) instead
+    // of Reply A's rate (200/750 ≈ 0.267).  Verify the actual trend
+    // matches the assistants-only expectation.
+    // Reply A: 200/750 ≈ 0.2667, Reply B: 300/650 ≈ 0.4615 → trend up
+    assert.ok(
+      (result.trend as number) > 0,
+      "trend should be up (non-assistant ignored)",
+    );
+    assert.equal(
+      result.lastRate,
+      300 / (300 + 300 + 50),
+      "last rate should be from Reply B",
+    );
+    assert.equal(
+      result.previousRate,
+      200 / (500 + 200 + 50),
+      "previous rate should be from Reply A, not the tool message",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeCumulativeCacheRate
+// ---------------------------------------------------------------------------
+
+describe("computeCumulativeCacheRate", () => {
+  it("sums across all assistant messages", () => {
+    // msg1: input 500, read 200, write 50
+    // msg2: input 300, read 100, write 20
+    // total input=800, total read=300, total write=70
+    // denominator: 800+300+70 = 1170
+    // rate: 300 / 1170 ≈ 0.2564
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "First"),
+      msg("assistant", {
+        input: 500,
+        output: 100,
+        cache: { read: 200, write: 50 },
+      }),
+      msg("user", undefined, "Second"),
+      msg("assistant", {
+        input: 300,
+        output: 80,
+        cache: { read: 100, write: 20 },
+      }),
+    ];
+    const result = computeCumulativeCacheRate(msgs);
+    assert.ok(result.cumulativeRate !== null);
+    assert.equal(result.totalRead, 300);
+    assert.equal(result.totalDenominator, 1170);
+    assert.equal(Math.round(result.cumulativeRate * 1000), 256);
+  });
+
+  it("returns null when no assistant has tokens", () => {
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hello"),
+      msg("assistant", undefined, "No tokens"),
+    ];
+    const result = computeCumulativeCacheRate(msgs);
+    assert.equal(result.cumulativeRate, null);
+    assert.equal(result.totalRead, 0);
+    assert.equal(result.totalDenominator, 0);
+  });
+
+  it("returns null when all tokens are zero", () => {
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hi"),
+      msg("assistant", { input: 0, output: 0, cache: { read: 0, write: 0 } }),
+    ];
+    const result = computeCumulativeCacheRate(msgs);
+    assert.equal(result.cumulativeRate, null);
+  });
+
+  it("returns null for empty messages array", () => {
+    const result = computeCumulativeCacheRate([]);
+    assert.equal(result.cumulativeRate, null);
+    assert.equal(result.totalRead, 0);
+    assert.equal(result.totalDenominator, 0);
+  });
+
+  it("includes all assistants even if interleaved with non-token messages", () => {
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "First"),
+      msg("assistant", { input: 400, output: 80, cache: { read: 160 } }, "A"),
+      msg("user", undefined, "Mid"),
+      msg("assistant", undefined, "No tokens"),
+      msg("user", undefined, "Another"),
+      msg("assistant", { input: 200, output: 60, cache: { read: 80 } }, "B"),
+    ];
+    const result = computeCumulativeCacheRate(msgs);
+    assert.ok(result.cumulativeRate !== null);
+    // read: 160+80=240, input: 400+200=600
+    // denominator = 600+240+0 = 840
+    assert.equal(result.totalRead, 240);
+    assert.equal(result.totalDenominator, 840);
+  });
+
+  it("follows ZooKeeper denominator convention including cache.write", () => {
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hi"),
+      msg("assistant", {
+        input: 500,
+        output: 100,
+        cache: { read: 200, write: 50 },
+      }),
+      msg("user", undefined, "Again"),
+      msg("assistant", {
+        input: 300,
+        output: 80,
+        cache: { read: 100, write: 30 },
+      }),
+    ];
+    const result = computeCumulativeCacheRate(msgs);
+    assert.ok(result.cumulativeRate !== null);
+    // input: 800, read: 300, write: 80
+    // denominator: 800+300+80 = 1180
+    // rate: 300/1180 ≈ 0.2542
+    assert.equal(result.totalDenominator, 1180);
+    assert.ok(result.cumulativeRate < 0.3, "write tokens reduce the rate");
+  });
+});
+
+describe("computeAssistantCacheRate", () => {
+  it("computes correct rate including cache.write in denominator", () => {
+    // rate = read / (input + read + write) = 200 / (500 + 200 + 50) = 200/750 ≈ 0.2667
+    const entry = msg("assistant", {
+      input: 500,
+      output: 100,
+      cache: { read: 200, write: 50 },
+    });
+    const result = computeAssistantCacheRate(entry);
+    assert.ok(result !== null);
+    assert.equal(Math.round(result * 10000), 2667);
+  });
+
+  it("returns null when tokens are missing", () => {
+    const entry = msg("assistant", undefined);
+    const result = computeAssistantCacheRate(entry);
+    assert.equal(result, null);
+  });
+
+  it("returns null when all tokens are zero", () => {
+    const entry = msg("assistant", {
+      input: 0,
+      output: 0,
+      cache: { read: 0, write: 0 },
+    });
+    const result = computeAssistantCacheRate(entry);
+    assert.equal(result, null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Barrel export
+// ---------------------------------------------------------------------------
