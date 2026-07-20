@@ -45,6 +45,8 @@ export interface ContextMessageInfo {
   sessionID?: string;
   tokens?: ContextTokenInfo;
   agent?: string;
+  /** Whether this message is a compaction summary placeholder. */
+  summary?: boolean;
 }
 
 /**
@@ -271,13 +273,16 @@ export interface LastAssistantResult {
  * @param messages - The messages array.
  * @param reverse - When true, scan from the end (last); when false,
  *   scan from the beginning (first).
+ * @param startIdx - Start offset for forward scans (ignored when
+ *   `reverse` is true).
  * @returns Result with the found index, or index -1 if none found.
  */
 function _scanCompletedAssistant(
   messages: ContextMessageEntry[],
   reverse: boolean,
+  startIdx = 0,
 ): LastAssistantResult {
-  const start = reverse ? messages.length - 1 : 0;
+  const start = reverse ? messages.length - 1 : startIdx;
   const end = reverse ? -1 : messages.length;
   const step = reverse ? -1 : 1;
 
@@ -332,6 +337,29 @@ export function findFirstCompletedAssistant(
   messages: ContextMessageEntry[],
 ): LastAssistantResult {
   return _scanCompletedAssistant(messages, false);
+}
+
+/**
+ * Find the last compaction boundary message in a messages array.
+ *
+ * A compaction boundary is an assistant message with `summary === true`,
+ * inserted by the host after session compaction.  Messages before this
+ * boundary are historical and should be excluded from the category breakdown
+ * in `computeContextReport`.
+ *
+ * @param messages - The messages array.
+ * @returns Index of the last summary message, or -1 if none found.
+ */
+export function findCompactionBoundary(
+  messages: ContextMessageEntry[],
+): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg?.info?.summary === true) {
+      return i;
+    }
+  }
+  return -1;
 }
 
 // ---------------------------------------------------------------------------
@@ -443,6 +471,12 @@ export function computeContextReport(
 ): ContextReport {
   const messageCount = messages.length;
 
+  // ── Step 0: Find compaction boundary ──────────────────────────────
+  // After compaction, category statistics only reflect messages at/after
+  // the boundary; total (based on last completed assistant) is unchanged.
+  const boundaryIdx = findCompactionBoundary(messages);
+  const catStartIdx = boundaryIdx >= 0 ? boundaryIdx : 0;
+
   // ── Step 1: Find the last completed assistant ──────────────────────
   const {
     index: lastAssistantIdx,
@@ -472,15 +506,17 @@ export function computeContextReport(
 
   const total = exact + heuristic;
 
-  // ── Step 3: Category breakdown ─────────────────────────────────────
-  // User / tool  categories: part-level CJK-aware heuristic.
-  // Assistant category: API exact tokens.output when available,
-  // otherwise falls back to `estimateMessageHeuristic`.
+  // ── Step 3: Category breakdown (boundary-aware) ────────────────────
+  // Only count messages at/after the compaction boundary (or all when
+  // no boundary exists).  User / tool categories: part-level CJK-aware
+  // heuristic.  Assistant category: API exact tokens.output when
+  // available, otherwise falls back to `estimateMessageHeuristic`.
   let userTokens = 0;
   let assistantTokens = 0;
   let toolTokens = 0;
 
-  for (const msg of messages) {
+  for (let i = catStartIdx; i < messageCount; i++) {
+    const msg = messages[i];
     if (!msg?.parts) continue;
     const role = msg.info?.role ?? "";
     for (const part of msg.parts) {
@@ -498,7 +534,8 @@ export function computeContextReport(
   }
 
   // Assistant: prefer API-reported output, fall back to heuristic
-  for (const msg of messages) {
+  for (let i = catStartIdx; i < messageCount; i++) {
+    const msg = messages[i];
     if (msg?.info?.role !== "assistant") continue;
     const apiOutput = msg.info?.tokens?.output ?? 0;
     if (apiOutput > 0) {
@@ -519,22 +556,21 @@ export function computeContextReport(
     }
   }
 
-  // ── Step 4: System prompt estimation (DCP-style) ──────────────────
-  // First LLM invocation input ≈ system prompt + first user message
-  // (+ tool definitions).  system ≈ first completed assistant's
-  // (input + cache.read + cache.write) − first user message heuristic.
+  // ── Step 4: System prompt estimation (DCP-style, boundary-aware) ──
+  // After compaction, use the first completed assistant and first user
+  // message at or after the boundary for the DCP formula.
   let systemTokens = 0;
-  const firstAsst = findFirstCompletedAssistant(messages);
-  if (firstAsst.index >= 0 && firstAsst.tokens) {
+  const firstAsstAfter = _scanCompletedAssistant(messages, false, catStartIdx);
+  if (firstAsstAfter.index >= 0 && firstAsstAfter.tokens) {
     const firstAsstInput =
-      (firstAsst.tokens.input ?? 0) +
-      (firstAsst.tokens.cache?.read ?? 0) +
-      (firstAsst.tokens.cache?.write ?? 0);
-    // Find the first user message (if any).
+      (firstAsstAfter.tokens.input ?? 0) +
+      (firstAsstAfter.tokens.cache?.read ?? 0) +
+      (firstAsstAfter.tokens.cache?.write ?? 0);
+    // Find the first user message at or after the boundary.
     let firstUserMsg: ContextMessageEntry | undefined;
-    for (const msg of messages) {
-      if (msg?.info?.role === "user") {
-        firstUserMsg = msg;
+    for (let i = catStartIdx; i < messageCount; i++) {
+      if (messages[i]?.info?.role === "user") {
+        firstUserMsg = messages[i];
         break;
       }
     }
@@ -542,6 +578,20 @@ export function computeContextReport(
       const userHeuristic = estimateMessageHeuristic(firstUserMsg);
       systemTokens = Math.max(0, firstAsstInput - userHeuristic);
     }
+  }
+
+  // ── Step 5: Consistency scaling ────────────────────────────────────
+  // When the heuristic category sum exceeds total (possible due to
+  // overlap between category heuristics and API-reported tokens), scale
+  // each category proportionally so the sum equals total.  This ensures
+  // that every category percentage is ≤ 100% in the TUI display.
+  const catSum = userTokens + assistantTokens + toolTokens + systemTokens;
+  if (catSum > total && total > 0) {
+    const factor = total / catSum;
+    userTokens = userTokens * factor;
+    assistantTokens = assistantTokens * factor;
+    toolTokens = toolTokens * factor;
+    systemTokens = systemTokens * factor;
   }
 
   const misc = Math.max(
