@@ -12,19 +12,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::{CommandFactory, Parser, Subcommand};
 use zutil::color::COLOR;
-use zutil::{get_zoo_log_dir, resolve_session_path};
+use zutil::{get_zoo_log_dir, jq_path, resolve_session_path};
 
 // ── jq helpers -------------------------------------------------------------
-
-/// Return the path to the `jq` executable, preferring `/usr/bin/jq`
-/// when it exists (common on macOS) and falling back to `"jq"`.
-fn jq_path() -> String {
-    if Path::new("/usr/bin/jq").exists() {
-        "/usr/bin/jq".to_string()
-    } else {
-        "jq".to_string()
-    }
-}
 
 /// Escape a string for use inside a jq string literal (`"…"`).
 /// Escapes backslashes and double-quotes.
@@ -333,21 +323,19 @@ fn main() {
         eprintln!("Warning: could not set Ctrl-C handler");
     }
 
-    let log_dir = get_zoo_log_dir();
-
-    // Check log directory exists before dispatching subcommand
-    if !Path::new(&log_dir).is_dir() {
-        eprintln!("Error: log directory {log_dir} does not exist");
-        std::process::exit(2);
-    }
-
     let cli = Cli::parse();
+
+    let log_dir = get_zoo_log_dir();
 
     let colors_enabled = !cli.no_color;
     COLOR.store(colors_enabled, Ordering::SeqCst);
 
     match &cli.command {
         Some(Commands::Tail { session_id, hook, level, event, raw }) => {
+            if !Path::new(&log_dir).is_dir() {
+                eprintln!("Error: log directory {log_dir} does not exist");
+                std::process::exit(2);
+            }
             cmd_tail(
                 session_id,
                 *raw,
@@ -359,6 +347,10 @@ fn main() {
             );
         }
         Some(Commands::Show { session_id, hook, level, event, raw }) => {
+            if !Path::new(&log_dir).is_dir() {
+                eprintln!("Error: log directory {log_dir} does not exist");
+                std::process::exit(2);
+            }
             cmd_show(
                 session_id,
                 *raw,
@@ -481,24 +473,6 @@ mod tests {
             escape_jq_string("path\\to\\\"file\""),
             "path\\\\to\\\\\\\"file\\\""
         );
-    }
-
-    // ── jq_path ─────────────────────────────────────────────────────
-
-    #[test]
-    fn test_jq_path_non_empty() {
-        let path = jq_path();
-        assert!(!path.is_empty(), "jq_path should never be empty");
-    }
-
-    #[test]
-    fn test_jq_path_returns_existing_or_fallback() {
-        let path = jq_path();
-        if Path::new("/usr/bin/jq").exists() {
-            assert_eq!(path, "/usr/bin/jq");
-        } else {
-            assert_eq!(path, "jq");
-        }
     }
 
     // ── build_jq_filter with special characters ─────────────────────

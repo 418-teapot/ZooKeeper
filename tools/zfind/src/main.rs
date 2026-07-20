@@ -134,7 +134,7 @@ fn cmd_search(
         if json {
             print_json_sessions(&results, title);
         } else {
-            print_session_table(&results, false, Some(title));
+            print_session_table(&results, false, false, Some(title));
         }
     } else if let Some(kw) = keyword {
         let results = query_sessions(kw, db, session_list_limit)
@@ -151,7 +151,7 @@ fn cmd_search(
         if json {
             print_json_sessions(&results, kw);
         } else {
-            print_session_table(&results, false, Some(kw));
+            print_session_table(&results, false, false, Some(kw));
         }
     } else {
         eprintln!("Error: either a keyword or --exact must be provided.");
@@ -178,7 +178,7 @@ fn cmd_list(db: &str, json: bool, all: bool) {
     if json {
         print_json_sessions(&results, "");
     } else {
-        print_session_table(&results, true, None);
+        print_session_table(&results, true, all, None);
     }
 }
 

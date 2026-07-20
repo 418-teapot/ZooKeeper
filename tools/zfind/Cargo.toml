@@ -12,3 +12,6 @@ serde = { version = "1", features = ["derive"] }
 chrono = "0.4"
 zutil = { path = "../zutil", features = ["db-helpers"] }
 rich_rust = "0.2.2"
+
+[dev-dependencies]
+tempfile = "3"

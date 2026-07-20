@@ -2479,6 +2479,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
  "zutil",
 ]
 
@@ -2492,6 +2493,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
  "zutil",
 ]
 
@@ -2501,6 +2503,8 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "ctrlc",
+ "serde_json",
+ "tempfile",
  "zutil",
 ]
 
@@ -2522,6 +2526,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "shlex",
+ "tempfile",
  "zutil",
 ]
 

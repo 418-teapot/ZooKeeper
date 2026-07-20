@@ -73,6 +73,12 @@ pub fn cache_bar(pct: f64, width: usize) -> String {
 /// `step[N-1].time_created` and `step[N].time_created` (steps must have
 /// `_display_index` and `time_created` keys).  Returns a `HashMap` mapping
 /// `display_index` → list of hook names.
+///
+/// Timestamps from zoo logs may have no sub-second precision
+/// (e.g. `2024-05-06T12:53:30Z`) while DB step timestamps use 6-digit
+/// microsecond precision (`2024-05-06T12:53:30.000000Z`).  Both are
+/// normalised to epoch milliseconds via `iso_to_epoch_ms` before
+/// comparison to avoid string-ordering fence-post errors.
 #[must_use]
 pub fn match_hooks_to_steps(
     steps: &[Value],
@@ -86,6 +92,7 @@ pub fn match_hooks_to_steps(
             continue;
         }
         let ts = ev.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
+        let ts_ms = iso_to_epoch_ms(ts);
 
         let mut matched = false;
         for (i, step) in steps.iter().enumerate() {
@@ -95,9 +102,10 @@ pub fn match_hooks_to_steps(
                 .unwrap_or(0);
             let step_start =
                 step.get("time_created").and_then(|v| v.as_str()).unwrap_or("");
+            let step_start_ms = iso_to_epoch_ms(step_start);
 
             if i == 0 {
-                if ts <= step_start {
+                if ts_ms <= step_start_ms {
                     result.entry(di).or_default().push(hook.to_string());
                     matched = true;
                     break;
@@ -107,7 +115,8 @@ pub fn match_hooks_to_steps(
                     .get("time_created")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                if prev_end < ts && ts <= step_start {
+                let prev_end_ms = iso_to_epoch_ms(prev_end);
+                if prev_end_ms < ts_ms && ts_ms <= step_start_ms {
                     result.entry(di).or_default().push(hook.to_string());
                     matched = true;
                     break;
@@ -127,7 +136,8 @@ pub fn match_hooks_to_steps(
                 .last()
                 .and_then(|s| s.get("time_created").and_then(|v| v.as_str()))
                 .unwrap_or("");
-            if ts > last_ts {
+            let last_ts_ms = iso_to_epoch_ms(last_ts);
+            if ts_ms > last_ts_ms {
                 result.entry(last_di).or_default().push(hook.to_string());
             }
         }
@@ -757,6 +767,61 @@ mod tests {
         let hooks = result.get(&1);
         assert!(hooks.is_some());
         assert_eq!(hooks.unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_match_hooks_fence_post_same_second() {
+        // Hook timestamp is "2024-05-06T12:53:30Z" (no sub-second precision).
+        // Step 1 timestamp is "2024-05-06T12:53:30.000000Z" (6-digit microsecond).
+        // These represent the same moment, but string comparison would fail:
+        // 'Z'(0x5A) > '.'(0x2E) at position 19, making the hook appear AFTER.
+        let steps = vec![
+            make_step(1, "2024-05-06T12:53:30.000000Z"),
+            make_step(2, "2024-05-06T12:53:31.000000Z"),
+        ];
+        let events =
+            vec![make_hook_event("same-sec-hook", "2024-05-06T12:53:30Z")];
+
+        let result = match_hooks_to_steps(&steps, &events);
+        // Should match to step 1 (ts == step_start at same second)
+        let hooks = result.get(&1);
+        assert!(hooks.is_some(), "hook should match step 1");
+        assert_eq!(hooks.unwrap()[0], "same-sec-hook");
+        // Should NOT be in step 2
+        assert!(!result.contains_key(&2), "hook should NOT match step 2");
+    }
+
+    #[test]
+    fn test_match_hooks_fence_post_mixed_formats() {
+        // Hook ts = "2024-05-06T12:53:30Z" (second-only)
+        // Step 1: "2024-05-06T12:53:29.123456Z"
+        // Step 2: "2024-05-06T12:53:30.000000Z"
+        // Hook at 12:53:30 should match step 2 (prev_end < ts <= step_start).
+        // String compare would fail: "29.123456Z" > "30Z" because '9' > '0'.
+        let steps = vec![
+            make_step(1, "2024-05-06T12:53:29.123456Z"),
+            make_step(2, "2024-05-06T12:53:30.000000Z"),
+        ];
+        let events =
+            vec![make_hook_event("fence-hook", "2024-05-06T12:53:30Z")];
+
+        let result = match_hooks_to_steps(&steps, &events);
+        let hooks = result.get(&2);
+        assert!(hooks.is_some(), "hook should match step 2");
+        assert_eq!(hooks.unwrap()[0], "fence-hook");
+        assert!(!result.contains_key(&1), "hook should NOT match step 1");
+    }
+
+    #[test]
+    fn test_match_hooks_fence_post_after_last() {
+        // Hook after last step with mixed formats
+        let steps = vec![make_step(1, "2024-05-06T12:53:30.000000Z")];
+        let events = vec![make_hook_event("post-hook", "2024-05-06T12:53:31Z")];
+
+        let result = match_hooks_to_steps(&steps, &events);
+        let hooks = result.get(&1);
+        assert!(hooks.is_some(), "post-hook should match step 1");
+        assert_eq!(hooks.unwrap()[0], "post-hook");
     }
 
     // ── build_model_map ─────────────────────────────────────────────────

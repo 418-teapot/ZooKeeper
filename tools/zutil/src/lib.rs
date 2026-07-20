@@ -22,6 +22,17 @@ pub fn get_zoo_log_dir() -> String {
     expand_tilde("~/.zoo/log")
 }
 
+/// Return the path to the `jq` executable, preferring `/usr/bin/jq`
+/// when it exists (common on macOS) and falling back to `"jq"`.
+#[must_use]
+pub fn jq_path() -> String {
+    if Path::new("/usr/bin/jq").exists() {
+        "/usr/bin/jq".to_string()
+    } else {
+        "jq".to_string()
+    }
+}
+
 /// Expand a leading `~` or `~/` to the user's home directory.
 #[must_use]
 pub fn expand_tilde(path: &str) -> String {
@@ -406,5 +417,23 @@ mod tests {
         assert!(safe_json_loads("{\"a\":1}").is_some());
         assert!(safe_json_loads("not json").is_none());
         assert!(safe_json_loads("").is_none());
+    }
+
+    // ── jq_path ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_jq_path_non_empty() {
+        let path = jq_path();
+        assert!(!path.is_empty(), "jq_path should never be empty");
+    }
+
+    #[test]
+    fn test_jq_path_returns_existing_or_fallback() {
+        let path = jq_path();
+        if Path::new("/usr/bin/jq").exists() {
+            assert_eq!(path, "/usr/bin/jq");
+        } else {
+            assert_eq!(path, "jq");
+        }
     }
 }

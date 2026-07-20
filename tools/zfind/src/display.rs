@@ -19,14 +19,17 @@ use zutil::color::msg_print;
 fn print_session_header(
     results: &[Value],
     is_all: bool,
+    include_sub_sessions: bool,
     keyword: Option<&str>,
 ) {
     let bold = Style::new().bold();
     if is_all {
-        println!(
-            "\n{}",
-            style_text("All main sessions (most recent first):", &bold)
-        );
+        let title = if include_sub_sessions {
+            "All sessions (including sub-sessions, most recent first):"
+        } else {
+            "All main sessions (most recent first):"
+        };
+        println!("\n{}", style_text(title, &bold));
     } else if let Some(kw) = keyword {
         println!(
             "\n{}",
@@ -124,6 +127,7 @@ fn populate_compact_table(
 pub fn print_session_table(
     results: &[Value],
     is_all: bool,
+    include_sub_sessions: bool,
     keyword: Option<&str>,
 ) {
     if results.is_empty() {
@@ -139,7 +143,7 @@ pub fn print_session_table(
     }
 
     // Multiple matches: render a table
-    print_session_header(results, is_all, keyword);
+    print_session_header(results, is_all, include_sub_sessions, keyword);
 
     let cyan = Style::new().color(Color::from_ansi(6));
     let green = Style::new().color(Color::from_ansi(2));
