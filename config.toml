@@ -298,7 +298,7 @@ task = "deny"
 
 [agent.eagle]
 mode  = "subagent"
-model = "{env:ZOO_WHALE_MODEL}"
+model = "{env:ZOO_HIPPO_MODEL}"
 color = "#961E32"
 [agent.eagle.permission]
 edit = "deny"
