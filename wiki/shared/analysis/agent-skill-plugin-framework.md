@@ -9,7 +9,7 @@ sources:
 relations:
   - "[autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)"
 status: stable
-last_validated: 2026-06-19T00:00:00Z
+last_validated: 2026-07-21T00:00:00Z
 timeliness: current
 ---
 
@@ -75,6 +75,7 @@ autoresearch (plugin)        ← 4 个工具、SQLite、segment、auto-resume、
 - [性能调优设计模式](autoresearch/analysis/performance-tuning-design-patterns.md)
 - [autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)
 - [ZooKeeper Wiki 概览](overview.md)
+- [长程任务的上下文管理](shared/analysis/long-horizon-context-management.md)
 
 ## References
 

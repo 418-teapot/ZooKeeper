@@ -10,6 +10,7 @@ relations:
   - "[Query → Synthesis → 归档 — 查询即知识生产](wiki-system/concepts/wiki-query-synthesis.md)"
   - "[LLM Wiki vs RAG — 两种知识管理范式的对比](wiki-system/analysis/llm-wiki-vs-rag.md)"
   - "[LLM Wiki — 用 LLM 构建个人知识库的模式](wiki-system/sources/notes/llm-wiki-karpathy.md)"
+  - "[即时上下文检索](shared/concepts/just-in-time-context-retrieval.md)"
 status: stable
 last_validated: 2026-06-18T00:00:00Z
 timeliness: current
@@ -35,7 +36,7 @@ timeliness: current
 LLM Wiki 在"源文档"和"查询"之间插入一个**持久化 wiki 层**：
 
 - 源摄入时：提取关键信息 → 创建/更新实体页 → 更新主题摘要 → 标记矛盾 → 追加变更日志
-- 查询时：直接导航已有结构（index → 相关页面 → 交叉引用），而非实时拼凑
+- 查询时：直接导航已有结构（index → 相关页面 → 交叉引用），而非实时拼凑；与运行时[即时上下文检索](shared/concepts/just-in-time-context-retrieval.md)形成预编译与动态加载的互补
 - 好查询的结果：归档为 wiki 新页面，成为后续查询的数据库
 
 ### 类比：编译 vs 解释
@@ -51,6 +52,8 @@ LLM Wiki 在"源文档"和"查询"之间插入一个**持久化 wiki 层**：
 > 此节由 zwiki 自动维护，请勿手动编辑。
 
 - [ZooKeeper Wiki 概览](overview.md)
+- [长程任务的上下文管理](shared/analysis/long-horizon-context-management.md)
+- [即时上下文检索](shared/concepts/just-in-time-context-retrieval.md)
 - [蒸馏示例 — Karpathy LLM Wiki 文章的摄入过程](wiki-system/analysis/distillation-example-karpathy.md)
 - [LLM Wiki vs RAG — 两种知识管理范式的对比](wiki-system/analysis/llm-wiki-vs-rag.md)
 - [图链接预测 — 基于拓扑结构的缺失链接推断](wiki-system/concepts/graph-link-prediction.md)

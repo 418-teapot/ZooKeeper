@@ -80,7 +80,7 @@ index.md 和 log.md 的格式约定也没有独立成页——它们属于 SCHEM
 
 - "LLM 不厌其烦"的论点 → 融入 `wiki-system/concepts/wiki-health-check.md` 的 Overview（"用 LLM 的不厌其烦对抗知识库的熵增"）
 - Memex 类比 → 保留在 `wiki-system/sources/notes/llm-wiki-karpathy.md` 的 References 中，不在 concept 页面展开（历史类比属于源材料的上下文，不是可操作的知识）
-- "人类的职责是策展、LLM 的职责是维护"——编辑性叙事，与第 1 段表达的核心主张重复，丢弃
+- "人类的职责是精选、LLM 的职责是维护"——编辑性叙事，与第 1 段表达的核心主张重复，丢弃
 
 ### 跨页结构设计
 
