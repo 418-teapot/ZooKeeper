@@ -26,6 +26,334 @@ interface CategoryInfo {
   total: number;
 }
 
+// ── Sub-agent types ─────────────────────────────────────────
+
+/** Status for a sub-agent entry tracked in the sidebar panel. */
+export type SubStatus = "running" | "done" | "error";
+
+/** A single sub-agent entry shown in the sub-agent section. */
+export interface SubEntry {
+  id: string;
+  title: string;
+  agent: string;
+  status: SubStatus;
+  sessionId?: string;
+  tokens?: number;
+  error?: string;
+  model?: string;
+  /** Epoch ms when the sub-agent started (from state.time.start). */
+  startedAt?: number;
+  /** Epoch ms when the sub-agent ended (from state.time.end). */
+  endedAt?: number;
+}
+
+/**
+ * Map a tool-part state status to the SubStatus enum.
+ *
+ * - "completed" → "done"
+ * - "error" → "error"
+ * - everything else (running, pending, unknown) → "running"
+ */
+export function subStatusFromState(stateStatus: string): SubStatus {
+  if (stateStatus === "completed") return "done";
+  if (stateStatus === "error") return "error";
+  return "running";
+}
+
+/**
+ * Extract the agent name from a task tool call state.
+ *
+ * Reads `state.input.subagent_type` and falls back to `"task"`.
+ */
+export function extractAgent(
+  input: Record<string, unknown> | undefined,
+): string {
+  const raw = input?.subagent_type;
+  return raw !== undefined ? String(raw) : "task";
+}
+
+/**
+ * Extract the model identifier from task call metadata.
+ *
+ * Reads `metadata.model.modelID` and returns it as a string.
+ * Returns `undefined` when the metadata is absent, the model field
+ * is not an object, or the modelID is missing / not a string.
+ */
+export function extractModel(
+  metadata: Record<string, unknown> | undefined,
+): string | undefined {
+  if (!metadata) return undefined;
+  const model = metadata.model;
+  if (typeof model !== "object" || model === null) return undefined;
+  const modelID = (model as Record<string, unknown>).modelID;
+  return typeof modelID === "string" ? modelID : undefined;
+}
+
+/**
+ * Extract timestamp fields from a task tool call state.
+ *
+ * Reads `state.time.start` and `state.time.end` (epoch ms).
+ * Only finite numbers are accepted — all other values yield
+ * undefined.  This mirrors the DB schema where running entries
+ * have `start` but no `end`.
+ */
+export function extractTimes(state: Record<string, unknown>): {
+  startedAt?: number;
+  endedAt?: number;
+} {
+  const time = state.time;
+  if (typeof time !== "object" || time === null) {
+    return { startedAt: undefined, endedAt: undefined };
+  }
+  const raw = time as Record<string, unknown>;
+  const start = raw.start;
+  const end = raw.end;
+  return {
+    startedAt:
+      typeof start === "number" && Number.isFinite(start) ? start : undefined,
+    endedAt: typeof end === "number" && Number.isFinite(end) ? end : undefined,
+  };
+}
+
+/**
+ * Extract the total context tokens (input + cache.read) from the last
+ * valid assistant message in a message list.
+ *
+ * Messages are expected in the {info, parts}[] shape returned by
+ * api.client.session.messages.  Traverses in reverse order and skips
+ * placeholder assistant messages where the token sum is zero (created
+ * at step start before actual tokens are recorded).
+ *
+ * Returns the token sum for the first valid assistant message found,
+ * or undefined when no assistant message has non-zero tokens.
+ *
+ * @param messages - Array of {info, parts} message objects.
+ * @returns Sum of input + cache.read tokens, or undefined.
+ */
+export function extractContextTokens(
+  messages: Record<string, unknown>[],
+): number | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    const info = m?.info as Record<string, unknown> | undefined;
+    if (info?.role !== "assistant") continue;
+    const t = info.tokens as
+      | { input?: unknown; cache?: { read?: unknown } }
+      | undefined;
+    // Skip messages with missing tokens field (no token data yet).
+    if (!t) continue;
+    // Defensive typeof checks (matches extractTimes): a non-numeric
+    // value must not poison the sum (e.g. string concatenation).
+    const input = typeof t.input === "number" ? t.input : 0;
+    const cacheRead = typeof t.cache?.read === "number" ? t.cache.read : 0;
+    const sum = input + cacheRead;
+    // Skip zero-sum placeholder messages created at step start.
+    if (sum === 0) continue;
+    return sum;
+  }
+  return undefined;
+}
+
+/**
+ * Format a duration in milliseconds to a human-readable string.
+ *
+ * - < 60 s  →  "12s"
+ * - ≥ 60 s  →  "2m05s" (seconds zero-padded)
+ * - negative, NaN, Infinity  →  "—"
+ */
+export function formatDuration(ms: number): string {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return "—";
+  const totalSec = Math.round(ms / 1000);
+  if (totalSec < 60) return `${totalSec}s`;
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return `${min}m${String(sec).padStart(2, "0")}s`;
+}
+
+/**
+ * Extract a human-readable title from a task tool call state.
+ *
+ * Priority: state.title → input.description → input.prompt (first 40 chars)
+ * → partId slice (first 8 chars) → empty string.
+ */
+export function extractTitle(
+  state: Record<string, unknown>,
+  partId?: string,
+): string {
+  const st = state.title;
+  if (typeof st === "string" && st.length > 0) return st;
+
+  const input = state.input as Record<string, unknown> | undefined;
+
+  const desc = input?.description;
+  if (typeof desc === "string" && desc.length > 0) return desc;
+
+  const prompt = input?.prompt;
+  if (typeof prompt === "string" && prompt.length > 0) {
+    return prompt.slice(0, 40);
+  }
+
+  if (partId) return partId.slice(0, 8);
+
+  return "";
+}
+
+/**
+ * Scan an array of message entries for completed/in-flight task tool
+ * calls and return the corresponding sub-agent entries.
+ *
+ * Only parts where `type === "tool"` and `tool === "task"` are
+ * considered.  Parts with `state.status === "pending"` are skipped
+ * (not yet started).  Entries are built using the same helper
+ * functions as the live event handler: `subStatusFromState`,
+ * `extractAgent`, and `extractTitle`.
+ */
+export function collectSubEntries(messages: ContextMessageEntry[]): SubEntry[] {
+  const entries: SubEntry[] = [];
+
+  for (const msg of messages) {
+    if (!msg.parts || !Array.isArray(msg.parts)) continue;
+
+    for (const partRaw of msg.parts) {
+      const part = partRaw as unknown as Record<string, unknown>;
+      if (part.type !== "tool" || part.tool !== "task") continue;
+
+      const state = part.state as Record<string, unknown> | undefined;
+      if (!state) continue;
+
+      const stateStatus = state.status as string;
+      // pending → not yet started, skip like the magazine does.
+      if (stateStatus === "pending") continue;
+
+      const partId = part.id as string | undefined;
+      if (!partId) continue;
+
+      const status = subStatusFromState(stateStatus);
+      const input = state.input as Record<string, unknown> | undefined;
+      const agent = extractAgent(input);
+      const title = extractTitle(state, partId);
+      const meta = state.metadata as Record<string, unknown> | undefined;
+      const sessionId = String(meta?.session_id ?? meta?.sessionId ?? "");
+      const model = extractModel(meta);
+      const error = status === "error" ? String(state.error ?? "") : undefined;
+      const { startedAt, endedAt } = extractTimes(state);
+
+      entries.push({
+        id: partId,
+        title,
+        agent,
+        status,
+        sessionId: sessionId || undefined,
+        model,
+        tokens: undefined,
+        error,
+        startedAt,
+        endedAt,
+      });
+    }
+  }
+
+  return entries;
+}
+
+// ── Scan-merge pure function ──────────────────────────────────
+
+/**
+ * Merge scanned sub-entries into the existing map.
+ *
+ * Rules (in priority order):
+ * 1. New entries (not in prev) are inserted as-is.
+ * 2. Existing entries in a terminal state (done/error) are never
+ *    overwritten — terminal is irreversible from a real-time event.
+ * 3. Existing "running" entries are overwritten when the scanned
+ *    entry is in a terminal state (done/error).  This fixes the
+ *    case where a sub-agent completed while the panel was unmounted
+ *    and the live event was missed.
+ * 4. In all other cases only the missing sessionId is patched;
+ *    status / tokens / error from the existing entry are preserved
+ *    (live events are fresher).
+ * 5. Tokens from scanned entries are never applied — token values
+ *    come from polling or one-shot reads, not from the scanned
+ *    message state (which always has `tokens: undefined`).
+ *
+ * Pure function — no side effects (no timer management).
+ */
+export function mergeScannedEntries(
+  prev: Map<string, SubEntry>,
+  scanned: SubEntry[],
+): Map<string, SubEntry> {
+  const next = new Map(prev);
+
+  for (const entry of scanned) {
+    const existing = next.get(entry.id);
+
+    if (!existing) {
+      // Rule 1: brand new entry → insert as-is.
+      next.set(entry.id, entry);
+      continue;
+    }
+
+    // Rule 2: existing terminal entry → never overwrite.
+    if (existing.status === "done" || existing.status === "error") {
+      // Still patch missing sessionId / model / startedAt / endedAt.
+      if (
+        (!existing.sessionId && entry.sessionId) ||
+        (!existing.model && entry.model) ||
+        (!existing.startedAt && entry.startedAt) ||
+        (!existing.endedAt && entry.endedAt)
+      ) {
+        next.set(entry.id, {
+          ...existing,
+          sessionId: entry.sessionId || existing.sessionId,
+          model: entry.model || existing.model,
+          startedAt: entry.startedAt ?? existing.startedAt,
+          endedAt: entry.endedAt ?? existing.endedAt,
+        });
+      }
+      continue;
+    }
+
+    // Rule 3: existing running + scanned terminal → overwrite status.
+    if (
+      existing.status === "running" &&
+      (entry.status === "done" || entry.status === "error")
+    ) {
+      next.set(entry.id, {
+        ...existing,
+        status: entry.status,
+        // Preserve existing tokens (they come from polling, not scan).
+        error: entry.status === "error" ? entry.error : existing.error,
+        // Patch model from scanned if existing doesn't have one yet.
+        model: existing.model || entry.model,
+        // Use scanned times — DB has authoritative start/end for
+        // terminal states (fixes missing endedAt from live events).
+        startedAt: entry.startedAt ?? existing.startedAt,
+        endedAt: entry.endedAt ?? existing.endedAt,
+      });
+      continue;
+    }
+
+    // Rule 4: fallback — only patch missing sessionId / model /
+    // startedAt / endedAt; never overwrite status / tokens / error.
+    if (
+      (!existing.sessionId && entry.sessionId) ||
+      (!existing.model && entry.model) ||
+      (!existing.startedAt && entry.startedAt) ||
+      (!existing.endedAt && entry.endedAt)
+    ) {
+      next.set(entry.id, {
+        ...existing,
+        sessionId: entry.sessionId || existing.sessionId,
+        model: entry.model || existing.model,
+        startedAt: entry.startedAt ?? existing.startedAt,
+        endedAt: entry.endedAt ?? existing.endedAt,
+      });
+    }
+  }
+
+  return next;
+}
+
 /**
  * ZooKeeper TUI — sidebar_content live data panel.
  *
@@ -35,9 +363,10 @@ interface CategoryInfo {
  * state is persisted via `api.kv`.
  *
  * Data flow:
- * 1. `onMount` — fire-and-forget full fetch via
- *    `api.client.session.messages()` (no limit), compute report,
- *    subscribe to three events with a 2-second debounce.
+ * 1. `onMount` — shared fetch via
+ *    `fetchSessionMessages()` (no limit, one API call),
+ *    compute report, subscribe to three events with a
+ *    2-second debounce.
  * 2. Each event triggers a debounced recalculation.
  *
  * @module
@@ -57,36 +386,49 @@ const plugin: TuiPluginModule = {
     const [getTrendLabel, setTrendLabel] = createSignal<string | null>(null);
     const [getTrend, setTrend] = createSignal<number | null>(null);
     const [getCumulative, setCumulative] = createSignal<string>("—");
+    const [getSubEntries, setSubEntries] = createSignal<Map<string, SubEntry>>(
+      new Map(),
+    );
+    const [getExpandedSubIds, setExpandedSubIds] = createSignal<Set<string>>(
+      new Set(),
+    );
+    const [getSubCollapsed, setSubCollapsed] = createSignal(false);
 
     let debounceTimer: ReturnType<typeof setTimeout> | undefined;
     // Request sequence counter: prevents stale async responses from
     // overwriting newer data (issue #6 — compute race).
     let requestSeq = 0;
 
+    // ── Shared fetch utility ────────────────────────────────────────
+    /**
+     * Fetch session messages via the client API and return the raw
+     * message array.  Handles defensive unwrap ({error, data} wrapper)
+     * and Array.isArray guard.  HTTP errors are thrown — callers handle
+     * them individually.
+     */
+    async function fetchSessionMessages(sessionId: string): Promise<unknown[]> {
+      const res = await api.client.session.messages({
+        sessionID: sessionId,
+      });
+      // Defensive unwrap: SDK may return { error, data } without throwing.
+      const resObj = res as { error?: { message?: string }; data?: unknown };
+      if (resObj.error) {
+        throw new Error(resObj.error.message ?? String(resObj.error));
+      }
+      // Some SDK versions wrap in { data: ... }
+      const rawMessages = resObj.data ?? res;
+      return Array.isArray(rawMessages) ? rawMessages : [];
+    }
+
     // ── Core computation (async, full fetch via client API) ─────────
-    async function compute(sessionId: string) {
+    async function compute(sessionId: string, preFetched?: Promise<unknown[]>) {
       const seq = ++requestSeq;
       try {
-        // Full message fetch — no limit, unlike api.state.session.messages
-        // which truncates at 100.  Returns { info, parts } shape
-        // compatible with ContextMessageEntry.
-        const res = await api.client.session.messages({
-          sessionID: sessionId,
-        });
-        // HTTP error check: SDK may return { error, data } without throwing.
-        const resObj = res as { error?: { message?: string }; data?: unknown };
-        if (resObj.error) {
-          const msg = resObj.error.message ?? String(resObj.error);
-          log("opencode-tui", "compute_error", sessionId, undefined, "error", {
-            error: msg,
-          });
-          setError(true);
-          return;
-        }
-        // Defensive: some SDK versions wrap in { data: ... }
-        const rawMessages = resObj.data ?? res;
-        const entries: Array<unknown> = Array.isArray(rawMessages)
-          ? rawMessages
+        const rawEntries = preFetched
+          ? await preFetched
+          : await fetchSessionMessages(sessionId);
+        const entries: Array<unknown> = Array.isArray(rawEntries)
+          ? rawEntries
           : [];
         const mapped: ContextMessageEntry[] = entries.filter(
           (m): m is ContextMessageEntry =>
@@ -198,6 +540,22 @@ const plugin: TuiPluginModule = {
       }
     }
 
+    // ── Sub-agent section collapse toggle with KV persistence ─────
+    function toggleSubCollapsed() {
+      const next = !getSubCollapsed();
+      setSubCollapsed(next);
+      try {
+        if (api.kv.ready) {
+          api.kv.set("zookeeper.subagent_panel.collapsed", next);
+        }
+      } catch (err) {
+        // Silently ignore — KV write failure must not crash.
+        log("opencode-tui", "kv_write_failed", "", undefined, "debug", {
+          error: String(err),
+        });
+      }
+    }
+
     // ── ZookeeperPanel component ───────────────────────────────────
     function ZookeeperPanel(props: {
       sessionId: string;
@@ -209,11 +567,34 @@ const plugin: TuiPluginModule = {
         backgroundElement: RGBA;
         borderSubtle: RGBA;
         success: RGBA;
+        warning: RGBA;
         error: RGBA;
       };
     }) {
+      // ── Real-time clock for running sub-agent durations ─────────
+      // A 1 s interval tick used to compute live "time elapsed" for
+      // running entries in renderSubEntry.  Kept always-active for
+      // simplicity — the overhead is negligible (< 1 μs per tick)
+      // and avoids the complexity of observing whether any running
+      // entry exists.
+      const [getNowTick, setNowTick] = createSignal(Date.now());
+      let clockTimer: ReturnType<typeof setInterval> | undefined;
+
       // ── Lifecycle ──────────────────────────────────────────────
       onMount(() => {
+        // Start the 1 s real-time clock.
+        clockTimer = setInterval(() => setNowTick(Date.now()), 1000);
+
+        // Reset sub-agent map and expand state on every mount.  The
+        // signal lives in the plugin scope (tui()) and would otherwise
+        // carry stale entries across panel remounts (e.g. session
+        // switches or mount/unmount cycles).  Clearing here provides
+        // per-session isolation and eliminates residual "running"
+        // entries left from a previous lifecycle.  Live events and the
+        // historical scan (scanSubEntries) re-populate the map.
+        setSubEntries(new Map());
+        setExpandedSubIds(new Set<string>());
+
         // Ensure TUI-process logs are flushed to disk (logger requires
         // _sessionId to be set; issue #1).
         setSessionId(props.sessionId);
@@ -225,6 +606,10 @@ const plugin: TuiPluginModule = {
               "zookeeper.context_panel.collapsed",
             );
             if (saved !== undefined) setCollapsed(saved);
+            const savedSub = api.kv.get<boolean>(
+              "zookeeper.subagent_panel.collapsed",
+            );
+            if (savedSub !== undefined) setSubCollapsed(savedSub);
           }
         } catch (err) {
           // Silently ignore — default to expanded.
@@ -240,8 +625,9 @@ const plugin: TuiPluginModule = {
           );
         }
 
-        // Fire-and-forget initial fetch (errors handled inside compute).
-        compute(props.sessionId);
+        // Shared fetch: one API call shared between compute and scan.
+        const messagesPromise = fetchSessionMessages(props.sessionId);
+        compute(props.sessionId, messagesPromise);
 
         // Helper: only refresh when the event belongs to the current
         // session, so child-subagent events don't trigger spurious
@@ -262,13 +648,440 @@ const plugin: TuiPluginModule = {
         const unsub2 = api.event.on("message.part.updated", onOwnEvent);
         const unsub3 = api.event.on("session.updated", onOwnEvent);
 
+        // ── Sub-agent tracking ────────────────────────────────────
+        // Poll timers keyed by part.id; cleared in onCleanup.
+        const pollTimers = new Map<string, ReturnType<typeof setInterval>>();
+        // In-flight guard: prevents overlapping HTTP fetches for the same
+        // partId in the polling loop (ensurePolling).
+        const pendingTokenFetches = new Set<string>();
+
+        /**
+         * Read the current context size (tokens.input + tokens.cache.read)
+         * of a child session from its last assistant message.
+         *
+         * We intentionally use the last assistant message here rather than
+         * session-level aggregation (which sums all LLM calls including
+         * cache re-reads).  The displayed value represents the sub-agent's
+         * current context size, not cumulative consumption — a deliberate
+         * semantic choice that differs from the cumulative cache rate formula.
+         *
+         * Uses api.client.session.messages (HTTP interface) with limit 20
+         * because the state-layer api.state.session.messages(sid) only
+         * syncs messages for sessions that have been opened in the TUI.
+         * Sessions created by sub-agents (task tool calls) are never
+         * opened in the TUI, so state.session.messages returns an empty
+         * array for them.  The HTTP client API works for any session.
+         *
+         * Returns undefined when the message list is unavailable or no
+         * assistant message is found; the caller treats this as "no data
+         * yet" and skips the round.  Silently returns undefined on any
+         * error — no log output — because this sits on a 500ms polling
+         * hot path and logging every failure would flood the log.
+         */
+        async function readContextTokens(
+          sessionId: string,
+        ): Promise<number | undefined> {
+          try {
+            const res = await api.client.session.messages({
+              sessionID: sessionId,
+              limit: 20,
+            });
+            // Defensive unwrap: SDK may return { error, data } without
+            // throwing — same pattern as fetchSessionMessages.
+            const resObj = res as {
+              error?: { message?: string };
+              data?: unknown;
+            };
+            if (resObj.error) return undefined;
+            // Some SDK versions wrap in { data: ... }
+            const rawMessages = (resObj.data ?? res) as Array<
+              Record<string, unknown>
+            >;
+            if (!Array.isArray(rawMessages)) return undefined;
+            // Delegate to the pure extractor — handles placeholder
+            // assistant messages with zero-sum tokens.
+            return extractContextTokens(rawMessages);
+          } catch {
+            return undefined;
+          }
+        }
+
+        function ensurePolling(partId: string, sessionId: string) {
+          if (pollTimers.has(partId)) return;
+          const timer = setInterval(() => {
+            // In-flight guard: skip if previous HTTP fetch for this
+            // partId is still outstanding — prevents slow requests
+            // from stacking (the 500ms interval could otherwise
+            // overlap with a pending HTTP call).
+            if (pendingTokenFetches.has(partId)) return;
+
+            try {
+              const stateApi = api.state as Record<string, unknown>;
+              const sessionApi = stateApi.session as Record<string, unknown>;
+              if (typeof sessionApi?.get !== "function") return;
+              const getFn = sessionApi.get as (
+                id: string,
+              ) => Record<string, unknown> | undefined;
+              const childSession = getFn(sessionId);
+              if (!childSession) return; // skip round, don't delete entry
+              if (childSession.parentID !== props.sessionId) {
+                // Not a child of current session anymore — stop polling.
+                stopPolling(partId);
+                return;
+              }
+
+              // Fire-and-forget async token read.  readContextTokens
+              // now uses api.client.session.messages (HTTP) instead of
+              // the state layer — the state layer does not sync messages
+              // for sessions that were never opened in the TUI.
+              pendingTokenFetches.add(partId);
+              readContextTokens(sessionId)
+                .then((tokens) => {
+                  if (tokens !== undefined) {
+                    setSubEntries((prev) => {
+                      const next = new Map(prev);
+                      const entry = next.get(partId);
+                      if (entry && entry.status === "running") {
+                        next.set(partId, { ...entry, tokens });
+                      }
+                      return next;
+                    });
+                  }
+                })
+                .catch((err) => {
+                  // Silently degrade — never throw from a timer.
+                  // Log so persistent API failures stay diagnosable.
+                  log(
+                    "opencode-tui",
+                    "sub_poll_error",
+                    props.sessionId,
+                    undefined,
+                    "warn",
+                    { error: String(err) },
+                  );
+                })
+                .finally(() => {
+                  pendingTokenFetches.delete(partId);
+                });
+            } catch (err) {
+              // Silently degrade — never throw from a timer.
+              // Log so persistent API failures stay diagnosable.
+              log(
+                "opencode-tui",
+                "sub_poll_error",
+                props.sessionId,
+                undefined,
+                "warn",
+                { error: String(err) },
+              );
+            }
+          }, 500);
+          pollTimers.set(partId, timer);
+        }
+
+        function stopPolling(partId: string) {
+          const timer = pollTimers.get(partId);
+          if (timer) {
+            clearInterval(timer);
+            pollTimers.delete(partId);
+          }
+        }
+
+        /**
+         * Fire-and-forget final token read for a terminated sub-agent
+         * entry.  Reads context tokens via readContextTokens and updates
+         * the entry's token value only if it still exists and its status
+         * is "done" or "error".  Overwrite semantics — the final read is
+         * authoritative and replaces any polling-residual value.
+         */
+        function finalizeTokens(partId: string, sessionId: string) {
+          readContextTokens(sessionId)
+            .then((tokens) => {
+              if (tokens === undefined) return;
+              setSubEntries((prev) => {
+                const entry = prev.get(partId);
+                if (
+                  !entry ||
+                  (entry.status !== "done" && entry.status !== "error")
+                ) {
+                  return prev;
+                }
+                const next = new Map(prev);
+                next.set(partId, { ...entry, tokens });
+                return next;
+              });
+            })
+            .catch(() => {
+              // Silently degrade — never throw from fire-and-forget.
+            });
+        }
+
+        // Detect task() tool calls from the current session.
+        function onToolPartUpdated(event: {
+          properties?: Record<string, unknown>;
+        }) {
+          const eid = event?.properties?.sessionID as string | undefined;
+          if (eid !== props.sessionId) return;
+
+          const part = event?.properties?.part as
+            | Record<string, unknown>
+            | undefined;
+          if (part?.type !== "tool" || part?.tool !== "task") return;
+
+          const state = part.state as Record<string, unknown> | undefined;
+          if (!state) return;
+
+          const partId = part.id as string | undefined;
+          // Guard: a part without id would collide with other entries
+          // in the Map under the "undefined" key.
+          if (!partId) return;
+          const stateStatus = state.status as string;
+          const status = subStatusFromState(stateStatus);
+          const input = state.input as Record<string, unknown> | undefined;
+          const agent = extractAgent(input);
+          const title = extractTitle(state, partId);
+          const meta = state.metadata as Record<string, unknown> | undefined;
+          const sessionId = String(meta?.session_id ?? meta?.sessionId ?? "");
+          const model = extractModel(meta);
+          const error =
+            status === "error" ? String(state.error ?? "") : undefined;
+
+          const { startedAt, endedAt } = extractTimes(state);
+
+          setSubEntries((prev) => {
+            const next = new Map(prev);
+            const existing = next.get(partId);
+            next.set(partId, {
+              id: partId,
+              title,
+              agent,
+              status,
+              sessionId: sessionId || existing?.sessionId,
+              model: model || existing?.model,
+              tokens: existing?.tokens,
+              error: error ?? existing?.error,
+              // Prefer fresh extraction, fallback to existing on
+              // partial updates (e.g. event fires with start only).
+              startedAt: startedAt ?? existing?.startedAt,
+              endedAt: endedAt ?? existing?.endedAt,
+            });
+            return next;
+          });
+
+          if (status === "running" && sessionId) {
+            ensurePolling(partId, sessionId);
+          } else if (status !== "running") {
+            stopPolling(partId);
+            if (sessionId) {
+              finalizeTokens(partId, sessionId);
+            }
+          }
+        }
+
+        // Mark child sessions as done when they go idle.
+        function onSessionIdle(event: {
+          properties?: Record<string, unknown>;
+        }) {
+          const sid = event?.properties?.sessionID as string | undefined;
+          if (!sid || sid === props.sessionId) return;
+
+          const toFinalize: string[] = [];
+
+          setSubEntries((prev) => {
+            let changed = false;
+            const next = new Map(prev);
+            for (const [id, entry] of next) {
+              if (entry.sessionId === sid && entry.status === "running") {
+                next.set(id, {
+                  ...entry,
+                  status: "done",
+                  endedAt: entry.endedAt ?? Date.now(),
+                });
+                changed = true;
+                stopPolling(id);
+                toFinalize.push(id);
+              }
+            }
+            return changed ? next : prev;
+          });
+
+          for (const id of toFinalize) {
+            finalizeTokens(id, sid);
+          }
+        }
+
+        // Mark child sessions as error when they error out.
+        function onSessionError(event: {
+          properties?: Record<string, unknown>;
+        }) {
+          const sid = event?.properties?.sessionID as string | undefined;
+          if (!sid || sid === props.sessionId) return;
+
+          // Error payload may be a string or a structured object with
+          // a message field — String(obj) would print "[object Object]".
+          const rawErr = event?.properties?.error as
+            | string
+            | { message?: unknown }
+            | undefined;
+          const errMsg =
+            typeof rawErr === "string"
+              ? rawErr
+              : typeof rawErr?.message === "string"
+                ? rawErr.message
+                : undefined;
+
+          const toFinalize: string[] = [];
+
+          setSubEntries((prev) => {
+            let changed = false;
+            const next = new Map(prev);
+            for (const [id, entry] of next) {
+              if (entry.sessionId === sid && entry.status === "running") {
+                next.set(id, {
+                  ...entry,
+                  status: "error",
+                  error: errMsg,
+                  endedAt: entry.endedAt ?? Date.now(),
+                });
+                changed = true;
+                stopPolling(id);
+                toFinalize.push(id);
+              }
+            }
+            return changed ? next : prev;
+          });
+
+          for (const id of toFinalize) {
+            finalizeTokens(id, sid);
+          }
+        }
+
+        const unsub4 = api.event.on("message.part.updated", onToolPartUpdated);
+        const unsub5 = api.event.on("session.idle", onSessionIdle);
+        const unsub6 = api.event.on("session.error", onSessionError);
+
+        // ── Historical scan ───────────────────────────────────────
+        // Scan existing messages on mount to recover sub-agent entries
+        // from earlier in the session (e.g. reopening a running session).
+        // Merges into the existing getSubEntries map, giving priority
+        // to entries already placed by live events (they are fresher).
+
+        async function scanSubEntries(
+          sessionId: string,
+          preFetched?: Promise<unknown[]>,
+        ) {
+          try {
+            const rawEntries = preFetched
+              ? await preFetched
+              : await fetchSessionMessages(sessionId);
+            const entries: Array<unknown> = Array.isArray(rawEntries)
+              ? rawEntries
+              : [];
+            // Lenient filter: only checks info is object, not role.
+            // Task tool part ownership does not depend on role.
+            const mapped: ContextMessageEntry[] = entries.filter(
+              (m): m is ContextMessageEntry =>
+                m != null &&
+                typeof (m as Record<string, unknown>)?.info === "object",
+            );
+            const scanned = collectSubEntries(mapped);
+
+            // Merge scanned entries into the live map using the pure
+            // mergeScannedEntries function.  Capture the previous map
+            // before the merge so we can detect running→terminal
+            // transitions and stop their polling timers.
+            const prevSubMap = getSubEntries();
+            const merged = mergeScannedEntries(prevSubMap, scanned);
+            setSubEntries(merged);
+
+            // Stop polling for entries that transitioned from running
+            // to a terminal state (done/error) during the merge.
+            // This prevents phantom timers when the panel missed
+            // live events due to unmount.
+            for (const [id, entry] of merged) {
+              const oldEntry = prevSubMap.get(id);
+              if (
+                oldEntry?.status === "running" &&
+                entry.status !== "running"
+              ) {
+                stopPolling(id);
+              }
+            }
+
+            // Start polling for running entries; one-shot token read
+            // for done/error entries.
+            for (const entry of scanned) {
+              if (!entry.sessionId) continue;
+
+              if (entry.status === "running") {
+                // Phantom timer guard: re-check status after async
+                // fetch — a concurrent session.idle/error event may
+                // have terminated this entry while we were scanning.
+                if (getSubEntries().get(entry.id)?.status === "running") {
+                  ensurePolling(entry.id, entry.sessionId);
+                }
+              } else {
+                // One-shot token read: context size from the last
+                // assistant message (tokens.input + tokens.cache.read).
+                // Matches the ensurePolling behaviour — current context
+                // size, not cumulative consumption.
+                const tokens = await readContextTokens(entry.sessionId);
+                if (tokens !== undefined) {
+                  setSubEntries((prev) => {
+                    const existing = prev.get(entry.id);
+                    // Skip if entry no longer exists or tokens already
+                    // set by live event.
+                    if (!existing || existing.tokens !== undefined) {
+                      return prev;
+                    }
+                    const next = new Map(prev);
+                    next.set(entry.id, { ...existing, tokens });
+                    return next;
+                  });
+                }
+              }
+            }
+          } catch (err) {
+            log(
+              "opencode-tui",
+              "sub_scan_error",
+              sessionId,
+              undefined,
+              "warn",
+              {
+                error: String(err),
+              },
+            );
+          }
+        }
+
+        scanSubEntries(props.sessionId, messagesPromise).catch(() => {});
+
         onCleanup(() => {
           unsub1();
           unsub2();
           unsub3();
+          unsub4();
+          unsub5();
+          unsub6();
           if (debounceTimer) clearTimeout(debounceTimer);
+          if (clockTimer) clearInterval(clockTimer);
+          for (const timer of pollTimers.values()) {
+            clearInterval(timer);
+          }
+          pollTimers.clear();
         });
       });
+
+      // ── Expand / collapse toggle ──────────────────────────────
+      function toggleExpand(id: string) {
+        setExpandedSubIds((prev) => {
+          const next = new Set(prev);
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+          return next;
+        });
+      }
 
       // ── Render helpers ─────────────────────────────────────────
       function renderCategoryRow(label: string, value: number, total: number) {
@@ -280,6 +1093,78 @@ const plugin: TuiPluginModule = {
           <text fg={props.theme.text}>
             {`${label.padEnd(4)} ${bar} ${tokenStr.padStart(6)} ${pctStr.padStart(5)}`}
           </text>
+        );
+      }
+
+      // Pad a detail label to a fixed terminal-cell width so values
+      // align — CJK characters occupy 2 cells, ASCII occupies 1.
+      function padLabel(label: string, width: number): string {
+        let cells = 0;
+        for (const ch of label) {
+          cells += ch.charCodeAt(0) > 0xff ? 2 : 1;
+        }
+        return label + " ".repeat(Math.max(0, width - cells));
+      }
+
+      function renderSubEntry(entry: SubEntry) {
+        const expanded = getExpandedSubIds().has(entry.id);
+        const chevron = expanded ? "▾" : "▸";
+        // Status is conveyed by the dot colour alone (running=primary,
+        // done=success, error=error) — no redundant status text.
+        const dotColor =
+          entry.status === "running"
+            ? props.theme.primary
+            : entry.status === "done"
+              ? props.theme.success
+              : props.theme.error;
+        const tokenStr =
+          entry.tokens !== undefined ? formatTokens(entry.tokens) : "";
+
+        // Compute duration string:
+        // - Running with startedAt → real-time elapsed (now - startedAt).
+        // - Terminal with both times → total duration (endedAt - startedAt).
+        // - Missing startedAt → "—".
+        let durationStr: string;
+        if (entry.startedAt === undefined) {
+          durationStr = "—";
+        } else if (entry.status === "running") {
+          durationStr = formatDuration(getNowTick() - entry.startedAt);
+        } else if (entry.endedAt !== undefined) {
+          durationStr = formatDuration(entry.endedAt - entry.startedAt);
+        } else {
+          durationStr = "—";
+        }
+
+        return (
+          <box flexDirection="column">
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: clickable sub-agent entry row */}
+            <text onMouseDown={() => toggleExpand(entry.id)}>
+              <span style={{ fg: props.theme.textMuted }}>{`${chevron} `}</span>
+              <span style={{ fg: dotColor }}>{"● "}</span>
+              <span style={{ fg: props.theme.text }}>{entry.title}</span>
+            </text>
+            {expanded ? (
+              <box paddingLeft={2} flexDirection="column">
+                <text fg={props.theme.textMuted}>
+                  {`${padLabel("agent:", 8)}${entry.agent}`}
+                </text>
+                <text fg={props.theme.textMuted}>
+                  {`${padLabel("模型:", 8)}${entry.model ?? "—"}`}
+                </text>
+                <text fg={props.theme.textMuted}>
+                  {`${padLabel("上下文:", 8)}${tokenStr || "—"}`}
+                </text>
+                <text fg={props.theme.textMuted}>
+                  {`${padLabel("耗时:", 8)}${durationStr}`}
+                </text>
+                {entry.status === "error" ? (
+                  <text fg={props.theme.textMuted}>
+                    {`${padLabel("错误:", 8)}${entry.error ?? "—"}`}
+                  </text>
+                ) : null}
+              </box>
+            ) : null}
+          </box>
         );
       }
 
@@ -332,7 +1217,7 @@ const plugin: TuiPluginModule = {
                   {getCumulative()}
                 </text>
                 {/* Text separator (avoids Yoga border crash with empty box) */}
-                <text fg={props.theme.textMuted}>{"─".repeat(24)}</text>
+                <text fg={props.theme.textMuted}>{"─".repeat(32)}</text>
                 {/* Category breakdown rows */}
                 {(() => {
                   const cats = getCategories();
@@ -345,6 +1230,63 @@ const plugin: TuiPluginModule = {
                       {renderCategoryRow("sys", cats.system, cats.total)}
                       {renderCategoryRow("misc", cats.misc, cats.total)}
                     </>
+                  );
+                })()}
+                {/* Sub-agent status section.  The Map is replaced on
+                    every update, so all rows re-render on any token
+                    change — acceptable for small entry counts (<10).
+                    The section header (chevron + name + status counts +
+                    total context) is clickable and collapses the whole
+                    section; the collapsed state is persisted via api.kv.
+                    A concrete <box> container (not a fragment) wraps the
+                    section so Yoga measures its height correctly — a
+                    fragment wrapper caused hit-test coordinates to drift
+                    several rows above the visual position. */}
+                {(() => {
+                  const entries = getSubEntries();
+                  if (entries.size === 0) return null;
+                  const subCollapsed = getSubCollapsed();
+                  let done = 0;
+                  let running = 0;
+                  let errored = 0;
+                  let totalTokens = 0;
+                  for (const entry of entries.values()) {
+                    if (entry.status === "done") done++;
+                    else if (entry.status === "running") running++;
+                    else errored++;
+                    totalTokens += entry.tokens ?? 0;
+                  }
+                  return (
+                    <box flexDirection="column">
+                      {/* biome-ignore lint/a11y/noStaticElementInteractions: clickable section header */}
+                      <text onMouseUp={() => toggleSubCollapsed()}>
+                        <span style={{ fg: props.theme.textMuted }}>
+                          {`${subCollapsed ? "▸" : "▾"} 子代理   `}
+                        </span>
+                        <span style={{ fg: props.theme.success }}>
+                          {`●${done} `}
+                        </span>
+                        <span style={{ fg: props.theme.warning }}>
+                          {`●${running} `}
+                        </span>
+                        <span style={{ fg: props.theme.error }}>
+                          {`●${errored} `}
+                        </span>
+                        <span style={{ fg: props.theme.textMuted }}>
+                          {totalTokens > 0 ? formatTokens(totalTokens) : "—"}
+                        </span>
+                      </text>
+                      {subCollapsed ? null : (
+                        <>
+                          <text fg={props.theme.textMuted}>
+                            {"─".repeat(32)}
+                          </text>
+                          {[...entries.values()].map((entry) =>
+                            renderSubEntry(entry),
+                          )}
+                        </>
+                      )}
+                    </box>
                   );
                 })()}
               </>
@@ -371,6 +1313,7 @@ const plugin: TuiPluginModule = {
                 backgroundElement: ctx.theme.current.backgroundElement,
                 borderSubtle: ctx.theme.current.borderSubtle,
                 success: ctx.theme.current.success,
+                warning: ctx.theme.current.warning,
                 error: ctx.theme.current.error,
               }}
             />
