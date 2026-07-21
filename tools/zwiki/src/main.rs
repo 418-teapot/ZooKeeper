@@ -571,10 +571,36 @@ fn dispatch_check_source_inner(source: &str, json: bool) -> i32 {
                 println!("{}", display::format_check_report(&health_results));
                 println!("{}", display::format_lint_report(&lint_results));
             }
+
+            // Drop the TempDir — from here on we only access the original
+            // source (which may be a local directory for backlinks sync).
+            drop(resolved);
+
+            // Sync backlinks if source is a local directory (can write back).
+            // For tar.gz or URL sources, this is skipped because the source
+            // is not a writable directory.
+            let source_path = Path::new(source);
+            if source_path.is_dir() {
+                let paths = wiki::all_wiki_pages_at(source_path);
+                let all_pages: Vec<wiki::Page> = paths
+                    .iter()
+                    .filter_map(|p| wiki::read_page_at(p, source_path))
+                    .collect();
+                if !all_pages.is_empty() {
+                    let bl_index =
+                        backlinks::build_reverse_index(source_path, &all_pages);
+                    let updated = backlinks::update_backlinks(
+                        source_path,
+                        &bl_index,
+                        &all_pages,
+                    );
+                    if updated > 0 {
+                        eprintln!("已同步 {updated} 个页面的反向链接");
+                    }
+                }
+            }
+
             if total > 0 {
-                // Drop TempDir before returning — the caller would
-                // process::exit, which skips destructors.
-                drop(resolved);
                 return 1;
             }
         }
@@ -2788,6 +2814,123 @@ title: Bundle Index
     /// `process::exit`.  Previously it called `cmd_check_at` (the exit-wrapping
     /// variant), making the failure path untestable and killing the test
     /// process.  Now it calls `cmd_check_at_inner` and returns the code.
+    // -------------------------------------------------------------------
+    // dispatch_check_source_inner — backlinks sync for directory sources
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_dispatch_check_source_inner_syncs_backlinks() {
+        // Verify that `zwiki check <dir>` with a local directory source
+        // syncs backlinks into the actual source directory (not the temp copy).
+        let dir = temp_dir("src_inner_backlinks");
+        let bundle_toml = r#"
+[package]
+name = "test-bundle"
+version = "0.1.0"
+okf_version = "0.1"
+kind = "upstream"
+
+[export]
+include = ["*.md"]
+"#;
+        std::fs::write(dir.join("bundle.toml"), bundle_toml).unwrap();
+        std::fs::write(
+            dir.join("index.md"),
+            "---
+title: Index
+---
+# Index
+
+- [Page A](page_a.md)
+- [Page B](page_b.md)
+",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("logs")).unwrap();
+        std::fs::write(dir.join("logs").join(".gitkeep"), "").unwrap();
+
+        // Page A links to page B via relations + inline link — after check,
+        // page B should get a Backlinks section with reference to Page A.
+        let page_a = format!(
+            "---
+title: Page A
+type: concept
+timestamp: 2026-07-01T00:00:00Z
+tags: []
+status: draft
+last_validated: 2026-07-01T00:00:00Z
+timeliness: current
+relations: [page_b.md]
+---
+
+# Page A
+
+See also [Page B](page_b.md) for related information.
+
+{}",
+            // 200+ chars of body text to pass health & lint checks
+            "This document has enough text to pass the health and lint checks that \
+             zwiki runs during validation. It contains well over one hundred characters \
+             to satisfy the stub threshold check and other quality gates required for \
+             the bundle validation process.\n"
+        );
+        std::fs::write(dir.join("page_a.md"), &page_a).unwrap();
+
+        // Page B needs a ## Details or ## References section so that
+        // backlinks::find_insertion_point has an anchor for the new section.
+        let page_b = format!(
+            "---
+title: Page B
+type: concept
+timestamp: 2026-07-01T00:00:00Z
+tags: []
+status: draft
+last_validated: 2026-07-01T00:00:00Z
+timeliness: current
+---
+
+# Page B
+
+{body}
+
+## Details
+
+Detailed information about page B goes here.
+",
+            body = "This document has enough text to pass the health and lint checks that \
+             zwiki runs during validation. It contains well over one hundred characters \
+             to satisfy the stub threshold check and other quality gates required for \
+             the bundle validation process."
+        );
+        std::fs::write(dir.join("page_b.md"), &page_b).unwrap();
+
+        let code = dispatch_check_source_inner(&dir.to_string_lossy(), false);
+        assert_eq!(code, 0, "valid bundle with backlinks should return 0");
+
+        // Verify backlinks were synced to the actual directory — page_b.md
+        // should now have a Backlinks section referencing Page A.
+        let content_b = std::fs::read_to_string(dir.join("page_b.md")).unwrap();
+        assert!(
+            content_b.contains("## Backlinks"),
+            "page_b.md should have a Backlinks section after check, got: {content_b:?}"
+        );
+        assert!(
+            content_b.contains("Page A"),
+            "page_b.md Backlinks should reference Page A, got: {content_b:?}"
+        );
+        assert!(
+            content_b.contains("(page_a.md)"),
+            "page_b.md Backlinks should link to page_a.md, got: {content_b:?}"
+        );
+
+        // Verify page_a.md was NOT modified (no pages link to it)
+        let content_a = std::fs::read_to_string(dir.join("page_a.md")).unwrap();
+        assert!(
+            !content_a.contains("## Backlinks"),
+            "page_a.md should NOT have a Backlinks section (no inbound links)"
+        );
+    }
+
     #[test]
     fn test_dispatch_check_no_arg_inner_save_propagates_failure() {
         let dir = temp_dir("check_inner_save_fail");

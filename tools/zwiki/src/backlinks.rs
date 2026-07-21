@@ -40,6 +40,10 @@ const EXCLUDED_DIRS: &[&str] = &["templates", "tools", "raw", "logs"];
 /// Must be a `.md` path that is not a system file, not under `templates/`,
 /// `tools/`, or `raw/`, and points to a file that actually exists.
 /// Paths containing `..` are rejected to prevent symlink traversal attacks.
+///
+/// For multi-team bundle wikis (`.teams/<name>/`, `.org/<name>/`,
+/// `.upstream/<name>/`), `target` is a bundle-relative path, so the
+/// function also searches inside bundle subdirectories for the file.
 #[must_use]
 pub fn is_valid_wiki_target(wiki_root: &Path, target: &str) -> bool {
     // Must end with .md
@@ -73,9 +77,56 @@ pub fn is_valid_wiki_target(wiki_root: &Path, target: &str) -> bool {
         }
     }
 
-    // Target file must exist on disk
+    // Target file must exist on disk — check direct path first, then
+    // bundle subdirectories (.teams/, .org/, .upstream/).
     let full_path = wiki_root.join(target);
-    full_path.exists()
+    full_path.exists() || target_exists_in_any_bundle(wiki_root, target)
+}
+
+/// Check if `target` exists inside any bundle subdirectory
+/// (`.teams/<name>/`, `.org/<name>/`, `.upstream/<name>/`) under
+/// `wiki_root`.
+///
+/// Links in the wiki are bundle-relative (e.g. `shared/concepts/foo.md`),
+/// so they must be resolved against each installed bundle's root.
+fn target_exists_in_any_bundle(wiki_root: &Path, target: &str) -> bool {
+    for bundle_type in &[".teams", ".org", ".upstream"] {
+        let bundle_root = wiki_root.join(bundle_type);
+        if !bundle_root.is_dir() {
+            continue;
+        }
+        if let Ok(entries) = std::fs::read_dir(&bundle_root) {
+            for entry in entries.flatten() {
+                let candidate = entry.path().join(target);
+                if candidate.exists() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Strip the bundle-layer prefix from a `page.rel` value.
+///
+/// Bundle-relative paths drop the `.teams/<name>/`, `.org/<name>/`, or
+/// `.upstream/<name>/` prefix.  For example:
+/// `.teams/core/shared/concepts/foo.md` → `shared/concepts/foo.md`.
+///
+/// Returns `None` when no bundle prefix is found (e.g. root-level files
+/// like `index.md` or `personal/` paths).
+fn strip_bundle_prefix(rel: &str) -> Option<&str> {
+    for prefix in &[".teams/", ".org/", ".upstream/"] {
+        if let Some(rest) = rel.strip_prefix(prefix) {
+            // rest is "<bundle-name>/<path>"; strip the bundle-name too.
+            if let Some((_, path)) = rest.split_once('/') {
+                return Some(path);
+            }
+            // rest is empty (e.g. ".teams/") or has no '/' after
+            // bundle-name — not a valid bundle-relative path.
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -207,11 +258,27 @@ pub fn extract_links(wiki_root: &Path, content: &str) -> Vec<String> {
 /// Returns a map from each target page (wiki-root-relative path) to a
 /// sorted, deduplicated list of source pages (wiki-root-relative paths)
 /// that link to it.
+///
+/// For multi-team bundle wikis, links are bundle-relative while
+/// page rels include a bundle prefix (`.teams/<name>/`).  This function
+/// normalises the index keys to use the full `page.rel` form so that
+/// [`update_backlinks`] can look them up directly.
 #[must_use]
 pub fn build_reverse_index(
     wiki_root: &Path,
     pages: &[wiki::Page],
 ) -> HashMap<String, Vec<String>> {
+    // Build a map from bundle-relative path → all matching page.rel values.
+    // e.g. "shared/concepts/foo.md" → [".teams/core/shared/concepts/foo.md", ...]
+    // Multiple bundles may share the same bundle-relative path, so we use
+    // a Vec to capture all matches.
+    let mut rel_map: HashMap<String, Vec<String>> = HashMap::new();
+    for p in pages {
+        if let Some(br) = strip_bundle_prefix(&p.rel) {
+            rel_map.entry(br.to_string()).or_default().push(p.rel.clone());
+        }
+    }
+
     let mut reverse: HashMap<String, Vec<String>> = HashMap::new();
 
     for page in pages {
@@ -222,7 +289,19 @@ pub fn build_reverse_index(
 
         let targets = extract_links(wiki_root, &content);
         for target in targets {
-            reverse.entry(target).or_default().push(page.rel.clone());
+            // Resolve bundle-relative target to the full page.rel(s).
+            // Multiple bundles may share the same bundle-relative path,
+            // so we add all matching page.rel values as reverse-index keys.
+            if let Some(rels) = rel_map.get(&target) {
+                for rel in rels {
+                    reverse
+                        .entry(rel.clone())
+                        .or_default()
+                        .push(page.rel.clone());
+                }
+            } else {
+                reverse.entry(target).or_default().push(page.rel.clone());
+            }
         }
     }
 
@@ -247,6 +326,9 @@ pub fn build_reverse_index(
 /// Page titles are resolved against `wiki_root`. The `_target_rel` parameter
 /// identifies the page being updated (used for display context). The section
 /// lists each source page with its title and a wiki-relative link.
+///
+/// Source paths are converted to bundle-relative form (stripping
+/// `.teams/<name>/` prefixes) since wiki links use bundle-relative paths.
 #[must_use]
 pub fn format_backlinks_section(
     wiki_root: &Path,
@@ -258,7 +340,9 @@ pub fn format_backlinks_section(
     lines.push(String::new());
     for src in sources {
         let title = page_title_from_path(&wiki_root.join(src));
-        lines.push(format!("- [{title}]({src})"));
+        // Use bundle-relative path for the link (strip .teams/<name>/ prefix).
+        let link_target = strip_bundle_prefix(src).unwrap_or(src).to_string();
+        lines.push(format!("- [{title}]({link_target})"));
     }
     lines.push(String::new());
     lines.join("\n")
@@ -370,17 +454,16 @@ pub fn update_backlinks(
             let pre = &content[..start];
             let post = &content[end..];
 
-            // Clean up surrounding blank lines
-            let pre = pre
-                .strip_suffix('\n')
-                .and_then(|s| s.strip_suffix('\n'))
-                .unwrap_or(pre);
+            // Clean up surrounding blank lines, then insert exactly one
+            // blank line to keep the separation before the next section
+            // (e.g. `## References`).
+            let pre = pre.trim_end_matches('\n');
             let post = post
                 .strip_prefix("\n\n")
                 .or_else(|| post.strip_prefix('\n'))
                 .unwrap_or(post);
 
-            new_content = format!("{pre}{post}");
+            new_content = format!("{pre}\n\n{post}");
         } else {
             continue;
         }
@@ -1038,6 +1121,268 @@ Body.";
         let report = format_report(&index);
         assert!(report.contains("# Wiki 反向链接报告"));
         assert!(report.contains("共 0 个页面有反向链接"));
+    }
+
+    // -------------------------------------------------------------------
+    // 9. Bundle path resolution
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_is_valid_wiki_target_finds_bundle_file() {
+        // Simulate a bundle structure: wiki_root/.teams/core/shared/concepts/foo.md
+        let dir = temp_dir("bundle_valid");
+        let bundle_page = dir
+            .join(".teams")
+            .join("core")
+            .join("shared")
+            .join("concepts")
+            .join("foo.md");
+        write(&bundle_page, "# Foo");
+        // Target is bundle-relative: "shared/concepts/foo.md"
+        assert!(is_valid_wiki_target(&dir, "shared/concepts/foo.md"));
+    }
+
+    #[test]
+    fn test_is_valid_wiki_target_finds_bundle_in_org() {
+        let dir = temp_dir("bundle_org");
+        let bundle_page =
+            dir.join(".org").join("myorg").join("shared").join("bar.md");
+        write(&bundle_page, "# Bar");
+        assert!(is_valid_wiki_target(&dir, "shared/bar.md"));
+    }
+
+    #[test]
+    fn test_is_valid_wiki_target_finds_bundle_in_upstream() {
+        let dir = temp_dir("bundle_upstream");
+        let bundle_page =
+            dir.join(".upstream").join("up").join("docs").join("baz.md");
+        write(&bundle_page, "# Baz");
+        assert!(is_valid_wiki_target(&dir, "docs/baz.md"));
+    }
+
+    #[test]
+    fn test_is_valid_wiki_target_bundle_nonexistent_rejected() {
+        let dir = temp_dir("bundle_nonexistent");
+        // No files at all
+        assert!(!is_valid_wiki_target(&dir, "shared/concepts/nonexistent.md"));
+    }
+
+    // -------------------------------------------------------------------
+    // 10. build_reverse_index with bundle structure
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_build_reverse_index_bundle_structure() {
+        let dir = temp_dir("rev_bundle");
+        // Create pages inside .teams/core/ bundle
+        let page_a = make_page(
+            &dir,
+            ".teams/core/shared/concepts/a.md",
+            "---\ntitle: Page A\n---\n# A\n\nSee [B](shared/concepts/b.md).",
+        );
+        let page_b = make_page(
+            &dir,
+            ".teams/core/shared/concepts/b.md",
+            "# B\n\nNo links.",
+        );
+        // Also create a non-bundle root page
+        write(&dir.join("shared").join("concepts").join("b.md"), "# B");
+        let pages = vec![page_a, page_b];
+        let index = build_reverse_index(&dir, &pages);
+        // Key should be the full page.rel, not bundle-relative
+        assert_eq!(
+            index.len(),
+            1,
+            "reverse index should have 1 entry (page b has 1 backlink from a)"
+        );
+        let key = ".teams/core/shared/concepts/b.md";
+        assert!(
+            index.contains_key(key),
+            "reverse index key should be full page.rel '{key}', got keys: {:?}",
+            index.keys().collect::<Vec<_>>(),
+        );
+        let sources = &index[key];
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0], ".teams/core/shared/concepts/a.md");
+    }
+
+    // -------------------------------------------------------------------
+    // 11. update_backlinks — newline handling
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_update_backlinks_remove_stale_preserves_references_newline() {
+        let dir = temp_dir("update_newline");
+        let page = make_page(
+            &dir,
+            "target.md",
+            "---\ntitle: Target\n---\n\
+             # Target\n\n\
+             ## Details\n\nContent here.\n\n\
+             ## Backlinks\n\n- [Old](old.md)\n\n\
+             ## References\n\n- bar.md",
+        );
+        let pages = vec![page];
+        let index: HashMap<String, Vec<String>> = HashMap::new();
+        let updated = update_backlinks(&dir, &index, &pages);
+        assert_eq!(updated, 1);
+
+        let content = fs::read_to_string(dir.join("target.md")).unwrap();
+        assert!(!content.contains("## Backlinks"));
+        // The blank line before ## References must be preserved
+        assert!(
+            content.contains("\n\n## References"),
+            "Expected blank line before ## References, got content: {content:?}",
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // 12. strip_bundle_prefix edge cases
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_strip_bundle_prefix_empty_team_name() {
+        // ".teams/" has no team name — should return None
+        assert_eq!(strip_bundle_prefix(".teams/"), None);
+        assert_eq!(strip_bundle_prefix(".org/"), None);
+        assert_eq!(strip_bundle_prefix(".upstream/"), None);
+    }
+
+    #[test]
+    fn test_strip_bundle_prefix_normal() {
+        assert_eq!(
+            strip_bundle_prefix(".teams/core/shared/concepts/foo.md"),
+            Some("shared/concepts/foo.md")
+        );
+        assert_eq!(
+            strip_bundle_prefix(".org/myorg/docs/bar.md"),
+            Some("docs/bar.md")
+        );
+        assert_eq!(
+            strip_bundle_prefix(".upstream/up/docs/baz.md"),
+            Some("docs/baz.md")
+        );
+    }
+
+    #[test]
+    fn test_strip_bundle_prefix_no_prefix() {
+        assert_eq!(strip_bundle_prefix("index.md"), None);
+        assert_eq!(strip_bundle_prefix("personal/notes.md"), None);
+    }
+
+    // -------------------------------------------------------------------
+    // 13. build_reverse_index — multi-bundle collision
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_build_reverse_index_multi_bundle_collision() {
+        // Two bundles with the same bundle-relative path:
+        //   .teams/core/shared/concepts/target.md
+        //   .teams/other/shared/concepts/target.md
+        // Both target.md pages are included in `pages`, so their
+        // bundle-relative paths are in rel_map.
+        // A page linking to "shared/concepts/target.md" should produce
+        // backlinks for BOTH full page.rel values.
+        let dir = temp_dir("rev_multi_bundle");
+        // Two target pages sharing the same bundle-relative path
+        let target_core = make_page(
+            &dir,
+            ".teams/core/shared/concepts/target.md",
+            "# Target Core\n\nNo links.",
+        );
+        let target_other = make_page(
+            &dir,
+            ".teams/other/shared/concepts/target.md",
+            "# Target Other\n\nNo links.",
+        );
+        // A linking page that references the shared path
+        let link_source = make_page(
+            &dir,
+            ".teams/core/docs/link_source.md",
+            "---\ntitle: Link Source\nrelations: [shared/concepts/target.md]\n---\n\n# Link Source\n\nLinks to [target](shared/concepts/target.md).",
+        );
+        let pages = vec![target_core, target_other, link_source];
+        let index = build_reverse_index(&dir, &pages);
+
+        // Both bundle-specific targets should have a backlink from link_source
+        let key_core = ".teams/core/shared/concepts/target.md";
+        let key_other = ".teams/other/shared/concepts/target.md";
+
+        assert!(
+            index.contains_key(key_core),
+            "expected key '{key_core}' in reverse index, got keys: {:?}",
+            index.keys().collect::<Vec<_>>(),
+        );
+        assert!(
+            index.contains_key(key_other),
+            "expected key '{key_other}' in reverse index, got keys: {:?}",
+            index.keys().collect::<Vec<_>>(),
+        );
+
+        let source_rel = ".teams/core/docs/link_source.md";
+        assert!(
+            index[key_core].contains(&source_rel.to_string()),
+            "expected {key_core} backlinks to include {source_rel}, got: {:?}",
+            index[key_core],
+        );
+        assert!(
+            index[key_other].contains(&source_rel.to_string()),
+            "expected {key_other} backlinks to include {source_rel}, got: {:?}",
+            index[key_other],
+        );
+
+        // Also verify neither target backlinks to itself
+        assert_eq!(
+            index[key_core].len(),
+            1,
+            "target_core should have 1 backlink"
+        );
+        assert_eq!(
+            index[key_other].len(),
+            1,
+            "target_other should have 1 backlink"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // 14. update_backlinks — single newline edge case
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_update_backlinks_remove_single_newline_pre() {
+        // When the content before ## Backlinks ends with a single \n
+        // (no blank line separator), the removal should still produce
+        // exactly 2 \n (1 blank line) before the next section — not 3 \n.
+        let dir = temp_dir("update_single_nl");
+        let page = make_page(
+            &dir,
+            "target.md",
+            "---\ntitle: Target\n---\n\
+             # Target\n\n\
+             ## Details\n\nContent here.\n\
+             ## Backlinks\n\n- [Old](old.md)\n\n\
+             ## References\n\n- bar.md",
+        );
+        let pages = vec![page];
+        let index: HashMap<String, Vec<String>> = HashMap::new();
+        let updated = update_backlinks(&dir, &index, &pages);
+        assert_eq!(updated, 1);
+
+        let content = fs::read_to_string(dir.join("target.md")).unwrap();
+        assert!(!content.contains("## Backlinks"));
+        // There should be exactly one blank line before ## References
+        // Content before Backlinks: "# Target\n\n## Details\n\nContent here.\n"
+        // After removal + trim: "# Target\n\n## Details\n\nContent here.\n\n## References\n\n- bar.md"
+        // That means 2 \n between "Content here." and "## References"
+        assert!(
+            content.contains("\n\n## References"),
+            "Expected single blank line before ## References, got content: {content:?}",
+        );
+        // Verify there are NOT 3 \n before ## References
+        assert!(
+            !content.contains("\n\n\n## References"),
+            "Expected NO double blank line before ## References, got content: {content:?}",
+        );
     }
 
     // -------------------------------------------------------------------
