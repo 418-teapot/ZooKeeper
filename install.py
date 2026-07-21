@@ -508,6 +508,19 @@ def main() -> None:
         if not any_backup:
             info("✓ 无已有配置")
 
+    # ── Clean OpenCode state cache ───────────────────────────────────
+    header("清理 OpenCode 状态缓存")
+
+    if has_opencode:
+        opencode_state_dir = os.path.join(
+            os.path.expanduser("~"), ".local", "state", "opencode"
+        )
+        if os.path.isdir(opencode_state_dir):
+            shutil.rmtree(opencode_state_dir)
+            info(f"✓ 已删除状态缓存: {opencode_state_dir}")
+        else:
+            info("✓ 无已有状态缓存")
+
     # ── Generate configs ─────────────────────────────────────────────
     header("生成配置")
 
@@ -735,6 +748,7 @@ def main() -> None:
     if has_opencode:
         print(f"  {bold('查看:')}  opencode config --path")
         print(f"  {bold('验证:')}  opencode config --json")
+        print(f"  {bold('状态:')}  状态缓存已清理，需重启 opencode")
     if has_pi:
         print(f"  {bold('验证:')}  pi --list-models")
     print(
