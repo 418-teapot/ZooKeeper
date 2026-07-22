@@ -8,11 +8,15 @@ import {
   formatTokens,
   progressBar,
 } from "./core/context-report.js";
-import type { ContextMessageEntry } from "./core/metrics.js";
+import type {
+  ContextMessageEntry,
+  TokenBreakdownResult,
+} from "./core/metrics.js";
 import {
   computeCacheTrend,
   computeContextReport,
   computeCumulativeCacheRate,
+  computeTokenBreakdown,
 } from "./core/metrics.js";
 import { log, setSessionId } from "./utils/logger.js";
 
@@ -22,7 +26,6 @@ interface CategoryInfo {
   assistant: number;
   tool: number;
   system: number;
-  misc: number;
   total: number;
 }
 
@@ -358,7 +361,7 @@ export function mergeScannedEntries(
  * ZooKeeper TUI — sidebar_content live data panel.
  *
  * Displays the current session's context token usage, cache hit rate,
- * and category breakdown (user/asst/tool/sys/misc).  The panel is
+ * and category breakdown (user/asst/tool/sys).  The panel is
  * collapsible — click the "ZooKeeper" title to toggle — and collapsed
  * state is persisted via `api.kv`.
  *
@@ -393,6 +396,12 @@ const plugin: TuiPluginModule = {
       new Set(),
     );
     const [getSubCollapsed, setSubCollapsed] = createSignal(false);
+    const [getCacheCollapsed, setCacheCollapsed] = createSignal(false);
+    const [getDistCollapsed, setDistCollapsed] = createSignal(false);
+    const [getDetailCollapsed, setDetailCollapsed] = createSignal(false);
+    const [getDetail, setDetail] = createSignal<TokenBreakdownResult | null>(
+      null,
+    );
 
     let debounceTimer: ReturnType<typeof setTimeout> | undefined;
     // Request sequence counter: prevents stale async responses from
@@ -480,8 +489,12 @@ const plugin: TuiPluginModule = {
           cumulativeRate = computeCumulativeCacheRate(mapped).cumulativeRate;
         }
 
+        // ── Token breakdown (cache read / uncached input / output) ──
+        const breakdown = computeTokenBreakdown(mapped);
+
         // Only apply if this is still the latest request.
         if (seq !== requestSeq) return;
+        setDetail(breakdown);
         setCache(
           report.cacheHitRate !== null
             ? formatPercent(report.cacheHitRate)
@@ -502,7 +515,6 @@ const plugin: TuiPluginModule = {
           assistant: report.categories.assistant,
           tool: report.categories.tool,
           system: report.categories.system,
-          misc: report.categories.misc,
           total: report.total,
         });
         setLoaded(true);
@@ -524,37 +536,61 @@ const plugin: TuiPluginModule = {
       debounceTimer = setTimeout(() => compute(sessionId), 2000);
     }
 
-    // ── Collapse toggle with KV persistence ────────────────────────
-    function toggleCollapsed() {
-      const next = !getCollapsed();
-      setCollapsed(next);
-      try {
-        if (api.kv.ready) {
-          api.kv.set("zookeeper.context_panel.collapsed", next);
+    // ── Collapse toggles with KV persistence ─────────────────────
+    const KV_PANEL = "zookeeper.context_panel.collapsed";
+    const KV_SUB = "zookeeper.subagent_panel.collapsed";
+    const KV_CACHE = "zookeeper.cache_section.collapsed";
+    const KV_DETAIL = "zookeeper.detail_section.collapsed";
+    const KV_DIST = "zookeeper.distribution_section.collapsed";
+
+    // Returns a toggle function that flips the given signal and
+    // persists the new state under the given KV key.  KV write
+    // failures are silently ignored (must never crash the host).
+    function makeCollapseToggle(
+      get: () => boolean,
+      set: (v: boolean) => void,
+      kvKey: string,
+    ): () => void {
+      return () => {
+        const next = !get();
+        set(next);
+        try {
+          if (api.kv.ready) {
+            api.kv.set(kvKey, next);
+          }
+        } catch (err) {
+          log("opencode-tui", "kv_write_failed", "", undefined, "debug", {
+            error: String(err),
+          });
         }
-      } catch (err) {
-        // Silently ignore — KV write failure must not crash.
-        log("opencode-tui", "kv_write_failed", "", undefined, "debug", {
-          error: String(err),
-        });
-      }
+      };
     }
 
-    // ── Sub-agent section collapse toggle with KV persistence ─────
-    function toggleSubCollapsed() {
-      const next = !getSubCollapsed();
-      setSubCollapsed(next);
-      try {
-        if (api.kv.ready) {
-          api.kv.set("zookeeper.subagent_panel.collapsed", next);
-        }
-      } catch (err) {
-        // Silently ignore — KV write failure must not crash.
-        log("opencode-tui", "kv_write_failed", "", undefined, "debug", {
-          error: String(err),
-        });
-      }
-    }
+    const toggleCollapsed = makeCollapseToggle(
+      getCollapsed,
+      setCollapsed,
+      KV_PANEL,
+    );
+    const toggleSubCollapsed = makeCollapseToggle(
+      getSubCollapsed,
+      setSubCollapsed,
+      KV_SUB,
+    );
+    const toggleCacheCollapsed = makeCollapseToggle(
+      getCacheCollapsed,
+      setCacheCollapsed,
+      KV_CACHE,
+    );
+    const toggleDetailCollapsed = makeCollapseToggle(
+      getDetailCollapsed,
+      setDetailCollapsed,
+      KV_DETAIL,
+    );
+    const toggleDistCollapsed = makeCollapseToggle(
+      getDistCollapsed,
+      setDistCollapsed,
+      KV_DIST,
+    );
 
     // ── ZookeeperPanel component ───────────────────────────────────
     function ZookeeperPanel(props: {
@@ -578,6 +614,16 @@ const plugin: TuiPluginModule = {
       // and avoids the complexity of observing whether any running
       // entry exists.
       const [getNowTick, setNowTick] = createSignal(Date.now());
+      // Hover state for the "enter session" button in expanded entries.
+      const [getHoveredOpenId, setHoveredOpenId] = createSignal<
+        string | undefined
+      >(undefined);
+      // Panel content width in terminal cells, tracked via the root
+      // box's onSizeChange.  Used to right-align header stats and to
+      // size separator lines.
+      const [getPanelWidth, setPanelWidth] = createSignal(28);
+      // opentui box element ref — untyped, matches magazine pattern.
+      let boxEl: any;
       let clockTimer: ReturnType<typeof setInterval> | undefined;
 
       // ── Lifecycle ──────────────────────────────────────────────
@@ -602,14 +648,15 @@ const plugin: TuiPluginModule = {
         // Restore collapsed state from persisted KV storage.
         try {
           if (api.kv.ready) {
-            const saved = api.kv.get<boolean>(
-              "zookeeper.context_panel.collapsed",
-            );
-            if (saved !== undefined) setCollapsed(saved);
-            const savedSub = api.kv.get<boolean>(
-              "zookeeper.subagent_panel.collapsed",
-            );
-            if (savedSub !== undefined) setSubCollapsed(savedSub);
+            const restore = (kvKey: string, set: (v: boolean) => void) => {
+              const saved = api.kv.get<boolean>(kvKey);
+              if (saved !== undefined) set(saved);
+            };
+            restore(KV_PANEL, setCollapsed);
+            restore(KV_SUB, setSubCollapsed);
+            restore(KV_CACHE, setCacheCollapsed);
+            restore(KV_DIST, setDistCollapsed);
+            restore(KV_DETAIL, setDetailCollapsed);
           }
         } catch (err) {
           // Silently ignore — default to expanded.
@@ -1086,37 +1133,79 @@ const plugin: TuiPluginModule = {
       // ── Render helpers ─────────────────────────────────────────
       function renderCategoryRow(label: string, value: number, total: number) {
         const ratio = total > 0 ? value / total : 0;
-        const bar = progressBar(ratio, 6);
-        const tokenStr = formatTokens(value);
-        const pctStr = formatPercent(ratio);
+        const bar = progressBar(ratio, 10);
+        // Two-child space-between (the only layout proven reliable in
+        // this opentui version — a three-child row glues the middle
+        // child to its neighbours).  The bar is merged into the right
+        // element ahead of the numbers; bar width is constant, so
+        // bars stay aligned across rows.  Token and percent columns
+        // use fixed-width padding for cross-row alignment.
+        const tokenStr = formatTokens(value).padStart(6);
+        const pctStr = formatPercent(ratio).padStart(5);
         return (
-          <text fg={props.theme.text}>
-            {`${label.padEnd(4)} ${bar} ${tokenStr.padStart(6)} ${pctStr.padStart(5)}`}
-          </text>
+          <box flexDirection="row" justifyContent="space-between">
+            <text fg={props.theme.textMuted}>{label}</text>
+            <text>
+              <span style={{ fg: props.theme.text }}>{bar}</span>
+              <span style={{ fg: props.theme.textMuted }}>
+                {` ${tokenStr} ${pctStr}`}
+              </span>
+            </text>
+          </box>
         );
       }
 
-      // Pad a detail label to a fixed terminal-cell width so values
-      // align — CJK characters occupy 2 cells, ASCII occupies 1.
-      function padLabel(label: string, width: number): string {
+      // Render a plain breakdown row (no bar) for the 明细 sub-section:
+      // muted label on the left, muted token + percent on the right.
+      function renderDetailRow(label: string, value: number, total: number) {
+        const ratio = total > 0 ? value / total : 0;
+        const tokenStr = formatTokens(value).padStart(6);
+        const pctStr = formatPercent(ratio).padStart(5);
+        return (
+          <box flexDirection="row" justifyContent="space-between">
+            <text fg={props.theme.textMuted}>{label}</text>
+            <text fg={props.theme.textMuted}>{`${tokenStr} ${pctStr}`}</text>
+          </box>
+        );
+      }
+
+      // Compute terminal-cell width.  Wide characters (Hangul jamo,
+      // CJK, full-width forms) occupy 2 cells; everything else —
+      // including box-drawing chars like ─ and chevrons ▾/▸ — is 1.
+      function cellWidth(s: string): number {
         let cells = 0;
-        for (const ch of label) {
-          cells += ch.charCodeAt(0) > 0xff ? 2 : 1;
+        for (const ch of s) {
+          const cp = ch.codePointAt(0) ?? 0;
+          const wide =
+            (cp >= 0x1100 && cp <= 0x115f) || // Hangul Jamo
+            cp >= 0x2e80; // CJK radicals .. full-width forms
+          cells += wide ? 2 : 1;
         }
-        return label + " ".repeat(Math.max(0, width - cells));
+        return cells;
+      }
+
+      // Pad a detail label to a fixed terminal-cell width so values align.
+      function padLabel(label: string, width: number): string {
+        return label + " ".repeat(Math.max(0, width - cellWidth(label)));
       }
 
       function renderSubEntry(entry: SubEntry) {
         const expanded = getExpandedSubIds().has(entry.id);
         const chevron = expanded ? "▾" : "▸";
-        // Status is conveyed by the dot colour alone (running=primary,
+        // Status is conveyed by the dot colour alone (running=warning,
         // done=success, error=error) — no redundant status text.
         const dotColor =
           entry.status === "running"
-            ? props.theme.primary
+            ? props.theme.warning
             : entry.status === "done"
               ? props.theme.success
               : props.theme.error;
+        // Running entries blink: alternate ● / ○ on the 1 s clock tick.
+        const dotChar =
+          entry.status === "running" &&
+          Math.floor(getNowTick() / 1000) % 2 === 1
+            ? "○"
+            : "●";
         const tokenStr =
           entry.tokens !== undefined ? formatTokens(entry.tokens) : "";
 
@@ -1138,9 +1227,9 @@ const plugin: TuiPluginModule = {
         return (
           <box flexDirection="column">
             {/* biome-ignore lint/a11y/noStaticElementInteractions: clickable sub-agent entry row */}
-            <text onMouseDown={() => toggleExpand(entry.id)}>
+            <text onMouseUp={() => toggleExpand(entry.id)}>
               <span style={{ fg: props.theme.textMuted }}>{`${chevron} `}</span>
-              <span style={{ fg: dotColor }}>{"● "}</span>
+              <span style={{ fg: dotColor }}>{`${dotChar} `}</span>
               <span style={{ fg: props.theme.text }}>{entry.title}</span>
             </text>
             {expanded ? (
@@ -1162,6 +1251,33 @@ const plugin: TuiPluginModule = {
                     {`${padLabel("错误:", 8)}${entry.error ?? "—"}`}
                   </text>
                 ) : null}
+                {/* Jump into the child session — same pattern as the
+                    subagent-magazine plugin: route.navigate("session"). */}
+                {entry.sessionId ? (
+                  // biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithMouseEvents: clickable enter-session link (TUI has no keyboard focus for this element)
+                  <text
+                    onMouseOver={() => setHoveredOpenId(entry.id)}
+                    onMouseOut={() => setHoveredOpenId(undefined)}
+                    onMouseUp={() => {
+                      if (entry.sessionId) {
+                        api.route.navigate("session", {
+                          sessionID: entry.sessionId,
+                        });
+                      }
+                    }}
+                  >
+                    <span
+                      style={{
+                        fg:
+                          getHoveredOpenId() === entry.id
+                            ? props.theme.primary
+                            : props.theme.textMuted,
+                      }}
+                    >
+                      {"→ 进入会话"}
+                    </span>
+                  </text>
+                ) : null}
               </box>
             ) : null}
           </box>
@@ -1178,12 +1294,27 @@ const plugin: TuiPluginModule = {
             backgroundColor={props.theme.backgroundElement}
             border={["left"]}
             borderColor={props.theme.primary}
+            // The opentui universal renderer calls props.ref(node) as
+            // a function — ref must be a callback, a plain variable
+            // binding would be evaluated as undefined at JSX creation.
+            ref={(el: any) => {
+              boxEl = el;
+            }}
+            onSizeChange={() => {
+              const raw = boxEl?.width as number | undefined;
+              // Guard against NaN/non-finite widths from the ref.
+              const w =
+                typeof raw === "number" && Number.isFinite(raw)
+                  ? Math.max(20, raw)
+                  : 28;
+              setPanelWidth((prev) => (prev === w ? prev : w));
+            }}
           >
             {/* biome-ignore lint/a11y/noStaticElementInteractions: clickable title for collapsible panel */}
             <text
               fg={props.theme.primary}
               attributes={TextAttributes.BOLD}
-              onMouseDown={toggleCollapsed}
+              onMouseUp={toggleCollapsed}
             >
               {getCollapsed() ? "▸" : "▾"} ZooKeeper
             </text>
@@ -1191,47 +1322,172 @@ const plugin: TuiPluginModule = {
               <text fg={props.theme.textMuted}>数据异常</text>
             ) : getLoaded() ? (
               <>
-                {/* Cache hit rate + trend arrow */}
-                <text>
-                  <span style={{ fg: props.theme.text }}>
-                    {`缓存  ${getCache()}`}
-                  </span>
-                  {(() => {
-                    const label = getTrendLabel();
-                    if (!label) return null;
-                    const trend = getTrend();
-                    let color: RGBA;
-                    if (trend !== null && trend > 0) {
-                      color = props.theme.success;
-                    } else if (trend !== null && trend < 0) {
-                      color = props.theme.error;
-                    } else {
-                      color = props.theme.textMuted;
-                    }
-                    return <span style={{ fg: color }}>{` ${label}`}</span>;
-                  })()}
-                </text>
-                {/* Cumulative cache hit rate */}
-                <text fg={props.theme.textMuted}>
-                  {"累计  "}
-                  {getCumulative()}
-                </text>
-                {/* Text separator (avoids Yoga border crash with empty box) */}
-                <text fg={props.theme.textMuted}>{"─".repeat(32)}</text>
-                {/* Category breakdown rows */}
-                {(() => {
-                  const cats = getCategories();
-                  if (!cats) return null;
-                  return (
+                {/* Cache statistics section — header is clickable and
+                    collapses the whole section; the collapsed state is
+                    persisted via api.kv (same pattern as the sub-agent
+                    section).  Wrapped in a concrete <box> (not a
+                    fragment) so Yoga measures its height correctly and
+                    mouse hit-test coordinates stay accurate. */}
+                <box
+                  flexDirection="column"
+                  border={["top", "bottom", "right"]}
+                  borderColor={props.theme.borderSubtle}
+                >
+                  {/* biome-ignore lint/a11y/noStaticElementInteractions: clickable section header */}
+                  <text onMouseUp={() => toggleCacheCollapsed()}>
+                    <span style={{ fg: props.theme.text }}>
+                      {`${getCacheCollapsed() ? "▸" : "▾"} 缓存统计`}
+                    </span>
+                  </text>
+                  {getCacheCollapsed() ? null : (
                     <>
-                      {renderCategoryRow("user", cats.user, cats.total)}
-                      {renderCategoryRow("asst", cats.assistant, cats.total)}
-                      {renderCategoryRow("tool", cats.tool, cats.total)}
-                      {renderCategoryRow("sys", cats.system, cats.total)}
-                      {renderCategoryRow("misc", cats.misc, cats.total)}
+                      {/* Separator under the section header.  Width
+                          subtracts the outer panel's border + padding
+                          (3) and this section's right border (1). */}
+                      <text fg={props.theme.textMuted}>
+                        {"─".repeat(Math.max(1, getPanelWidth() - 4))}
+                      </text>
+                      {/* Cache hit rate + trend arrow (right-aligned) */}
+                      <box flexDirection="row" justifyContent="space-between">
+                        <text fg={props.theme.text}>{"命中率"}</text>
+                        <text>
+                          <span style={{ fg: props.theme.text }}>
+                            {getCache()}
+                          </span>
+                          {(() => {
+                            const label = getTrendLabel();
+                            if (!label) return null;
+                            const trend = getTrend();
+                            let color: RGBA;
+                            if (trend !== null && trend > 0) {
+                              color = props.theme.success;
+                            } else if (trend !== null && trend < 0) {
+                              color = props.theme.error;
+                            } else {
+                              color = props.theme.textMuted;
+                            }
+                            return (
+                              <span style={{ fg: color }}>{` ${label}`}</span>
+                            );
+                          })()}
+                        </text>
+                      </box>
+                      {/* Cumulative cache hit rate (right-aligned) */}
+                      <box flexDirection="row" justifyContent="space-between">
+                        <text fg={props.theme.textMuted}>{"总命中"}</text>
+                        <text fg={props.theme.textMuted}>
+                          {getCumulative()}
+                        </text>
+                      </box>
+                      {/* Detail sub-section — clickable header with an
+                          inline separator fill on the same row; collapsed
+                          state persisted via api.kv.  Concrete <box>
+                          wrapper for correct Yoga height measurement
+                          (same reason as the distribution section). */}
+                      <box flexDirection="column">
+                        {/* biome-ignore lint/a11y/noStaticElementInteractions: clickable section header */}
+                        <text onMouseUp={() => toggleDetailCollapsed()}>
+                          <span style={{ fg: props.theme.text }}>
+                            {`${getDetailCollapsed() ? "▸" : "▾"} 明细 `}
+                          </span>
+                          <span style={{ fg: props.theme.textMuted }}>
+                            {"─".repeat(
+                              Math.max(
+                                1,
+                                getPanelWidth() -
+                                  4 -
+                                  cellWidth(
+                                    `${getDetailCollapsed() ? "▸" : "▾"} 明细 `,
+                                  ),
+                              ),
+                            )}
+                          </span>
+                        </text>
+                        {getDetailCollapsed()
+                          ? null
+                          : (() => {
+                              const detail = getDetail();
+                              if (!detail || detail.total === 0) return null;
+                              return (
+                                <>
+                                  {renderDetailRow(
+                                    "缓存读",
+                                    detail.cacheRead,
+                                    detail.total,
+                                  )}
+                                  {renderDetailRow(
+                                    "未命中",
+                                    detail.input,
+                                    detail.total,
+                                  )}
+                                  {renderDetailRow(
+                                    "输出",
+                                    detail.output,
+                                    detail.total,
+                                  )}
+                                </>
+                              );
+                            })()}
+                      </box>
+                      {/* Context distribution sub-section — clickable
+                          header with an inline separator fill on the
+                          same row; collapsed state persisted via api.kv.
+                          Concrete <box> wrapper for correct Yoga height
+                          measurement (same reason as the sub-agent
+                          section). */}
+                      <box flexDirection="column">
+                        {/* biome-ignore lint/a11y/noStaticElementInteractions: clickable section header */}
+                        <text onMouseUp={() => toggleDistCollapsed()}>
+                          <span style={{ fg: props.theme.text }}>
+                            {`${getDistCollapsed() ? "▸" : "▾"} 上下文分布 `}
+                          </span>
+                          <span style={{ fg: props.theme.textMuted }}>
+                            {"─".repeat(
+                              Math.max(
+                                1,
+                                getPanelWidth() -
+                                  4 -
+                                  cellWidth(
+                                    `${getDistCollapsed() ? "▸" : "▾"} 上下文分布 `,
+                                  ),
+                              ),
+                            )}
+                          </span>
+                        </text>
+                        {getDistCollapsed()
+                          ? null
+                          : (() => {
+                              const cats = getCategories();
+                              if (!cats) return null;
+                              return (
+                                <>
+                                  {renderCategoryRow(
+                                    "用户",
+                                    cats.user,
+                                    cats.total,
+                                  )}
+                                  {renderCategoryRow(
+                                    "agent",
+                                    cats.assistant,
+                                    cats.total,
+                                  )}
+                                  {renderCategoryRow(
+                                    "工具",
+                                    cats.tool,
+                                    cats.total,
+                                  )}
+                                  {renderCategoryRow(
+                                    "系统",
+                                    cats.system,
+                                    cats.total,
+                                  )}
+                                </>
+                              );
+                            })()}
+                      </box>
                     </>
-                  );
-                })()}
+                  )}
+                </box>
                 {/* Sub-agent status section.  The Map is replaced on
                     every update, so all rows re-render on any token
                     change — acceptable for small entry counts (<10).
@@ -1256,34 +1512,63 @@ const plugin: TuiPluginModule = {
                     else errored++;
                     totalTokens += entry.tokens ?? 0;
                   }
+                  const tokenStr =
+                    totalTokens > 0 ? formatTokens(totalTokens) : "—";
+                  const segLabel = `${subCollapsed ? "▸" : "▾"} 子代理`;
+                  const segDone = `● ${done} `;
+                  const segRunning = `● ${running} `;
+                  const segError = `● ${errored} `;
                   return (
-                    <box flexDirection="column">
-                      {/* biome-ignore lint/a11y/noStaticElementInteractions: clickable section header */}
-                      <text onMouseUp={() => toggleSubCollapsed()}>
-                        <span style={{ fg: props.theme.textMuted }}>
-                          {`${subCollapsed ? "▸" : "▾"} 子代理   `}
-                        </span>
-                        <span style={{ fg: props.theme.success }}>
-                          {`●${done} `}
-                        </span>
-                        <span style={{ fg: props.theme.warning }}>
-                          {`●${running} `}
-                        </span>
-                        <span style={{ fg: props.theme.error }}>
-                          {`●${errored} `}
-                        </span>
-                        <span style={{ fg: props.theme.textMuted }}>
-                          {totalTokens > 0 ? formatTokens(totalTokens) : "—"}
-                        </span>
-                      </text>
+                    <box
+                      flexDirection="column"
+                      border={["top", "bottom", "right"]}
+                      borderColor={props.theme.borderSubtle}
+                    >
+                      {/* Header row: label on the left, status counts
+                          and token total right-aligned via flexbox
+                          space-between (no manual spacer math). */}
+                      <box flexDirection="row" justifyContent="space-between">
+                        {/* biome-ignore lint/a11y/noStaticElementInteractions: clickable section header */}
+                        <text onMouseUp={() => toggleSubCollapsed()}>
+                          <span style={{ fg: props.theme.text }}>
+                            {segLabel}
+                          </span>
+                        </text>
+                        {/* biome-ignore lint/a11y/noStaticElementInteractions: clickable section header */}
+                        <text onMouseUp={() => toggleSubCollapsed()}>
+                          <span style={{ fg: props.theme.success }}>
+                            {segDone}
+                          </span>
+                          <span style={{ fg: props.theme.warning }}>
+                            {segRunning}
+                          </span>
+                          <span style={{ fg: props.theme.error }}>
+                            {segError}
+                          </span>
+                          <span style={{ fg: props.theme.text }}>
+                            {tokenStr}
+                          </span>
+                        </text>
+                      </box>
                       {subCollapsed ? null : (
                         <>
                           <text fg={props.theme.textMuted}>
-                            {"─".repeat(32)}
+                            {"─".repeat(Math.max(1, getPanelWidth() - 4))}
                           </text>
-                          {[...entries.values()].map((entry) =>
-                            renderSubEntry(entry),
-                          )}
+                          {/* Running entries first (newest started
+                              first); terminal entries keep insertion
+                              order (sort is stable). */}
+                          {[...entries.values()]
+                            .sort((a, b) => {
+                              const aRun = a.status === "running" ? 0 : 1;
+                              const bRun = b.status === "running" ? 0 : 1;
+                              if (aRun !== bRun) return aRun - bRun;
+                              if (aRun === 0) {
+                                return (b.startedAt ?? 0) - (a.startedAt ?? 0);
+                              }
+                              return 0;
+                            })
+                            .map((entry) => renderSubEntry(entry))}
                         </>
                       )}
                     </box>

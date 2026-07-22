@@ -616,6 +616,62 @@ export function computeContextReport(
 }
 
 // ---------------------------------------------------------------------------
+// Token breakdown
+// ---------------------------------------------------------------------------
+
+/**
+ * Result of token breakdown across assistant messages.
+ *
+ * Aggregates cache.read, input (uncached), and output from all
+ * assistant messages with valid token data.  The `total` field is
+ * the sum of the three components and serves as the denominator
+ * for percentage display.
+ */
+export interface TokenBreakdownResult {
+  /** Total cache read tokens across all assistants. */
+  cacheRead: number;
+  /** Total uncached input tokens across all assistants. */
+  input: number;
+  /** Total output tokens across all assistants. */
+  output: number;
+  /** Sum of cacheRead + input + output. */
+  total: number;
+}
+
+/**
+ * Compute a breakdown of token usage across all assistant messages.
+ *
+ * Sums cache.read, input, and output from each assistant message
+ * that has valid token data.  Non-assistant roles are ignored.
+ * Missing or undefined fields are treated as zero.
+ *
+ * Mirrors the defensive iteration pattern of
+ * `computeCumulativeCacheRate`.
+ *
+ * @param messages - Session messages array.
+ * @returns Token breakdown result with totals.
+ */
+export function computeTokenBreakdown(
+  messages: ContextMessageEntry[],
+): TokenBreakdownResult {
+  let cacheRead = 0;
+  let input = 0;
+  let output = 0;
+
+  for (const msg of messages) {
+    if (msg?.info?.role !== "assistant") continue;
+    const tokens = msg.info.tokens;
+    if (!tokens) continue;
+    cacheRead += tokens.cache?.read ?? 0;
+    input += tokens.input ?? 0;
+    output += tokens.output ?? 0;
+  }
+
+  const total = cacheRead + input + output;
+  return { cacheRead, input, output, total };
+}
+
+// ---------------------------------------------------------------------------
 // Cache trend and cumulative
 // ---------------------------------------------------------------------------
 
@@ -637,8 +693,8 @@ export interface CacheTrendResult {
   /**
    * Display label for the trend arrow.
    *
-   * - `"↑X.X"` when trend > 0
-   * - `"↓X.X"` when trend < 0
+   * - `"↑X.X%"` when trend > 0
+   * - `"↓X.X%"` when trend < 0
    * - `"-"` when trend is exactly 0
    * - `null` when there is no previous assistant (`hasTrendData === false`)
    */
@@ -693,7 +749,7 @@ export function computeAssistantCacheRate(
  * messages with valid token data.  Trend is the difference in percentage
  * points: `(lastRate − previousRate) × 100`.
  *
- * The trend label is `"↑X.X"` / `"↓X.X"` / `"-"` (for zero) when two
+ * The trend label is `"↑X.X%"` / `"↓X.X%"` / `"-"` (for zero) when two
  * assistants are available, or `null` when only one or fewer exist.
  *
  * @param messages - Session messages array.
@@ -728,9 +784,9 @@ export function computeCacheTrend(
   let trendLabel: string | null = null;
   if (hasTrendData && trend !== null) {
     if (trend > 0) {
-      trendLabel = `\u2191${trend.toFixed(1)}`;
+      trendLabel = `↑${trend.toFixed(1)}%`;
     } else if (trend < 0) {
-      trendLabel = `\u2193${Math.abs(trend).toFixed(1)}`;
+      trendLabel = `↓${Math.abs(trend).toFixed(1)}%`;
     } else {
       trendLabel = "-";
     }

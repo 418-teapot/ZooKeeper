@@ -20,6 +20,7 @@ import {
   computeCacheTrend,
   computeContextReport,
   computeCumulativeCacheRate,
+  computeTokenBreakdown,
   estimateMessageHeuristic,
   findCompactionBoundary,
   findFirstCompletedAssistant,
@@ -1183,6 +1184,10 @@ describe("computeCacheTrend", () => {
       result.trendLabel?.startsWith("↑"),
       `expected ↑ prefix, got ${result.trendLabel}`,
     );
+    assert.ok(
+      result.trendLabel?.endsWith("%"),
+      `expected % suffix, got ${result.trendLabel}`,
+    );
     // Approximately 15–25 percentage points
     assert.ok(
       result.trend > 15 && result.trend < 25,
@@ -1215,6 +1220,10 @@ describe("computeCacheTrend", () => {
     assert.ok(
       result.trendLabel?.startsWith("↓"),
       `expected ↓ prefix, got ${result.trendLabel}`,
+    );
+    assert.ok(
+      result.trendLabel?.endsWith("%"),
+      `expected % suffix, got ${result.trendLabel}`,
     );
   });
 
@@ -1487,6 +1496,109 @@ describe("computeCumulativeCacheRate", () => {
     // rate: 300/1180 ≈ 0.2542
     assert.equal(result.totalDenominator, 1180);
     assert.ok(result.cumulativeRate < 0.3, "write tokens reduce the rate");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeTokenBreakdown
+// ---------------------------------------------------------------------------
+
+describe("computeTokenBreakdown", () => {
+  it("sums cache.read, input, and output across assistant messages", () => {
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hello"),
+      msg("assistant", {
+        input: 500,
+        output: 100,
+        cache: { read: 200 },
+      }),
+      msg("user", undefined, "Follow-up"),
+      msg("assistant", {
+        input: 300,
+        output: 80,
+        cache: { read: 100, write: 20 },
+      }),
+    ];
+    const result = computeTokenBreakdown(msgs);
+    // cacheRead: 200 + 100 = 300
+    // input: 500 + 300 = 800
+    // output: 100 + 80 = 180
+    // total: 300 + 800 + 180 = 1280
+    assert.equal(result.cacheRead, 300);
+    assert.equal(result.input, 800);
+    assert.equal(result.output, 180);
+    assert.equal(result.total, 1280);
+  });
+
+  it("ignores non-assistant roles even if they carry token data", () => {
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hello"),
+      msg("assistant", { input: 400, output: 60, cache: { read: 150 } }),
+      // Tool role with token data — should be ignored.
+      {
+        info: {
+          role: "tool",
+          id: "t1",
+          tokens: { input: 999, output: 50, cache: { read: 500 } },
+        },
+        parts: [{ type: "text", text: "tool output" }],
+      },
+      msg("assistant", { input: 200, output: 40, cache: { read: 80 } }),
+    ];
+    const result = computeTokenBreakdown(msgs);
+    // cacheRead: 150 + 80 = 230
+    // input: 400 + 200 = 600
+    // output: 60 + 40 = 100
+    // total: 230 + 600 + 100 = 930
+    assert.equal(result.cacheRead, 230);
+    assert.equal(result.input, 600);
+    assert.equal(result.output, 100);
+    assert.equal(result.total, 930);
+  });
+
+  it("returns zeros when no assistant has tokens", () => {
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hello"),
+      msg("assistant", undefined, "No tokens"),
+    ];
+    const result = computeTokenBreakdown(msgs);
+    assert.equal(result.cacheRead, 0);
+    assert.equal(result.input, 0);
+    assert.equal(result.output, 0);
+    assert.equal(result.total, 0);
+  });
+
+  it("handles missing token fields gracefully", () => {
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hi"),
+      msg("assistant", { input: 100, output: 50 }),
+    ];
+    const result = computeTokenBreakdown(msgs);
+    // cacheRead defaults to 0 when cache field is missing
+    assert.equal(result.cacheRead, 0);
+    assert.equal(result.input, 100);
+    assert.equal(result.output, 50);
+    assert.equal(result.total, 150);
+  });
+
+  it("handles zero token fields", () => {
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hi"),
+      msg("assistant", { input: 0, output: 0, cache: { read: 0 } }),
+    ];
+    const result = computeTokenBreakdown(msgs);
+    assert.equal(result.cacheRead, 0);
+    assert.equal(result.input, 0);
+    assert.equal(result.output, 0);
+    assert.equal(result.total, 0);
+  });
+
+  it("returns zeros for empty messages array", () => {
+    const result = computeTokenBreakdown([]);
+    assert.equal(result.cacheRead, 0);
+    assert.equal(result.input, 0);
+    assert.equal(result.output, 0);
+    assert.equal(result.total, 0);
   });
 });
 
