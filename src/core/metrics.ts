@@ -18,6 +18,7 @@
  */
 
 import { log } from "../utils/logger.js";
+import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./pruning/types.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -130,10 +131,15 @@ export interface ContextReport {
 
 /**
  * Minimal tool part shape that may appear inside a message's parts array.
+ *
+ * `callID` and `callId` are both possible field names for the tool call
+ * identifier in the OpenCode SDK (mirrors `getCallId` in prune.ts).
  */
 interface PartWithToolState {
   type: string;
   text?: string;
+  callID?: string;
+  callId?: string;
   state?: {
     input?: unknown;
     output?: unknown;
@@ -177,7 +183,7 @@ function estimateStringTokens(text: string): number {
  * - string → `estimateStringTokens`
  * - other → JSON.stringify first, then `estimateStringTokens`
  */
-function estimateTokenCount(val: unknown): number {
+export function estimateTokenCount(val: unknown): number {
   if (val == null) return 0;
   const str = typeof val === "string" ? val : JSON.stringify(val);
   return estimateStringTokens(str);
@@ -463,11 +469,21 @@ export function measureContext(
  * input + cache) − first user message heuristic`; misc absorbs the
  * residual (reasoning gap, non-text parts, etc.).  No reasoning split.
  *
+ * When `prunedCallIDs` is provided, tool parts whose `callID` (or `callId`)
+ * is in the set contribute only `input + placeholder` tokens (instead of
+ * `input + output`) to the tool category.  This reflects post-prune reality:
+ * the LLM sees the original input plus the replacement placeholder, not the
+ * original output.  The `total` (exact + heuristic) is unaffected — only
+ * the breakdown's `tool` row uses the reduced (input + placeholder) value.
+ *
  * @param messages - Session messages (raw, straight from API).
+ * @param prunedCallIDs - Optional set of callIDs whose tool-output tokens
+ *   should be excluded from the tool category.
  * @returns A structured context report.
  */
 export function computeContextReport(
   messages: ContextMessageEntry[],
+  prunedCallIDs?: Set<string>,
 ): ContextReport {
   const messageCount = messages.length;
 
@@ -526,6 +542,20 @@ export function computeContextReport(
       if (category === "user") {
         userTokens += tokens;
       } else if (category === "tool") {
+        // Pruned tool parts: when prunedCallIDs is provided and this
+        // part's callID is in the set, contribute input + placeholder
+        // instead of input + output.  The LLM sees the original input
+        // and the PRUNED_TOOL_OUTPUT_REPLACEMENT placeholder, not the
+        // original output.
+        if (prunedCallIDs) {
+          const callId = extPart.callID ?? extPart.callId;
+          if (callId && prunedCallIDs.has(callId)) {
+            toolTokens +=
+              estimateTokenCount(extPart.state?.input) +
+              estimateTokenCount(PRUNED_TOOL_OUTPUT_REPLACEMENT);
+            continue;
+          }
+        }
         toolTokens += tokens;
       }
       // "assistant" and "none" categories from parts are absorbed
@@ -557,43 +587,51 @@ export function computeContextReport(
   }
 
   // ── Step 4: System prompt estimation (DCP-style, boundary-aware) ──
-  // After compaction, use the first completed assistant and first user
-  // message at or after the boundary for the DCP formula.
+  // Forward scan starts after the compaction boundary (boundaryIdx + 1)
+  // to skip the summary message itself, which may carry large tokens.input
+  // from the pre-compaction history.  The subtraction sum covers all
+  // non-ignored messages in [catStartIdx, firstAsstIdx) — this aligns
+  // with the semantic that firstAsstInput = system + boundary content +
+  // messages between boundary and first assistant.
   let systemTokens = 0;
-  const firstAsstAfter = _scanCompletedAssistant(messages, false, catStartIdx);
+  const scanStartIdx = boundaryIdx >= 0 ? boundaryIdx + 1 : 0;
+  const firstAsstAfter = _scanCompletedAssistant(messages, false, scanStartIdx);
   if (firstAsstAfter.index >= 0 && firstAsstAfter.tokens) {
     const firstAsstInput =
       (firstAsstAfter.tokens.input ?? 0) +
       (firstAsstAfter.tokens.cache?.read ?? 0) +
       (firstAsstAfter.tokens.cache?.write ?? 0);
-    // Find the first user message at or after the boundary.
-    let firstUserMsg: ContextMessageEntry | undefined;
-    for (let i = catStartIdx; i < messageCount; i++) {
-      if (messages[i]?.info?.role === "user") {
-        firstUserMsg = messages[i];
-        break;
-      }
+
+    // Sum heuristic for all non-ignored messages in [catStartIdx, firstAsstIdx).
+    // This includes the summary message itself (at boundaryIdx) and any
+    // user/system/tool messages before the first real assistant.
+    let subHeuristic = 0;
+    for (let i = catStartIdx; i < firstAsstAfter.index; i++) {
+      const msg = messages[i];
+      if (!msg) continue;
+      // Check message-level ignored flag (info.ignored).
+      const info = (msg.info ?? {}) as unknown as Record<string, unknown>;
+      if (info.ignored) continue;
+      // Check part-level ignored: skip if every part is individually
+      // marked as ignored (mirrors isMessageIgnored in prune.ts).
+      const parts = msg.parts;
+      if (!parts || parts.length === 0) continue;
+      const allPartsIgnored = parts.every((p) => {
+        const tp = p as { ignored?: boolean };
+        return tp.ignored === true;
+      });
+      if (allPartsIgnored) continue;
+
+      subHeuristic += estimateMessageHeuristic(msg);
     }
-    if (firstUserMsg) {
-      const userHeuristic = estimateMessageHeuristic(firstUserMsg);
-      systemTokens = Math.max(0, firstAsstInput - userHeuristic);
-    }
+
+    systemTokens = Math.max(0, firstAsstInput - subHeuristic);
   }
 
-  // ── Step 5: Consistency scaling ────────────────────────────────────
-  // When the heuristic category sum exceeds total (possible due to
-  // overlap between category heuristics and API-reported tokens), scale
-  // each category proportionally so the sum equals total.  This ensures
-  // that every category percentage is ≤ 100% in the TUI display.
-  const catSum = userTokens + assistantTokens + toolTokens + systemTokens;
-  if (catSum > total && total > 0) {
-    const factor = total / catSum;
-    userTokens = userTokens * factor;
-    assistantTokens = assistantTokens * factor;
-    toolTokens = toolTokens * factor;
-    systemTokens = systemTokens * factor;
-  }
-
+  // ── Step 5: Misc (residual) ────────────────────────────────────────
+  // No consistency scaling — categories show raw heuristic estimates.
+  // catSum may exceed total (heuristic overestimates).  misc absorbs
+  // the deficit when catSum < total; it is 0 when catSum ≥ total.
   const misc = Math.max(
     0,
     total - userTokens - assistantTokens - toolTokens - systemTokens,

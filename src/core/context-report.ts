@@ -72,10 +72,17 @@ export function formatPercent(ratio: number): string {
  * (user / asst / tool / sys / misc) with a header noting that asst
  * uses API exact tokens and the rest are heuristic estimates.
  *
+ * When `prunedTokens` is greater than 0, a "pruned" stat line is
+ * inserted before the category breakdown.
+ *
  * @param report - The computed context report.
+ * @param prunedTokens - Optional cumulative tokens reclaimed by pruning.
  * @returns Formatted string for display.
  */
-export function formatContextReport(report: ContextReport): string {
+export function formatContextReport(
+  report: ContextReport,
+  prunedTokens?: number,
+): string {
   const lines: string[] = [];
 
   lines.push("━━ 上下文报告 ━━");
@@ -94,6 +101,11 @@ export function formatContextReport(report: ContextReport): string {
     );
   } else {
     lines.push("缓存  —（无最近 LLM 调用数据）");
+  }
+
+  // ── Pruned (context pruning) ────────────────────────────────────────
+  if (prunedTokens && prunedTokens > 0) {
+    lines.push(`剪枝  ${formatTokens(prunedTokens)} tokens（累计回收）`);
   }
 
   // ── Category breakdown ──────────────────────────────────────────────

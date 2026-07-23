@@ -22,11 +22,13 @@ import {
   computeCumulativeCacheRate,
   computeTokenBreakdown,
   estimateMessageHeuristic,
+  estimateTokenCount,
   findCompactionBoundary,
   findFirstCompletedAssistant,
   findLastCompletedAssistant,
   measureContext,
 } from "./metrics.js";
+import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./pruning/types.js";
 
 // ---------------------------------------------------------------------------
 // Logger cleanup
@@ -531,26 +533,12 @@ describe("category breakdown", () => {
     const report = computeContextReport(msgs);
     // total = exact (150) + heuristic (0) = 150
     assert.equal(report.total, 150);
-    // Category heuristics overshoot total (3+50+5+97 = 155 > 150).
-    // Consistency scaling proportionally reduces each so sum = total.
-    // Scaled: user = 3 * 150/155 ≈ 2.90, asst ≈ 48.39, tool ≈ 4.84, sys ≈ 93.87
-    assert.ok(
-      Math.abs(report.categories.user - 2.903) < 0.01,
-      `user ${report.categories.user}`,
-    );
-    assert.ok(
-      Math.abs(report.categories.assistant - 48.387) < 0.01,
-      `assistant ${report.categories.assistant}`,
-    );
-    assert.ok(
-      Math.abs(report.categories.tool - 4.839) < 0.01,
-      `tool ${report.categories.tool}`,
-    );
-    assert.ok(
-      Math.abs(report.categories.system - 93.871) < 0.01,
-      `system ${report.categories.system}`,
-    );
-    // After scaling, categories sum to total exactly; misc = 0.
+    // Raw category heuristics (no scaling): user=3, asst=50, tool=5,
+    // sys=97.  catSum (155) exceeds total; misc = 0.
+    assert.equal(report.categories.user, 3);
+    assert.equal(report.categories.assistant, 50);
+    assert.equal(report.categories.tool, 5);
+    assert.equal(report.categories.system, 97);
     assert.equal(report.categories.misc, 0);
     assert.ok(
       report.categories.tool > 0,
@@ -571,25 +559,12 @@ describe("category breakdown", () => {
     const report = computeContextReport(msgs);
     // total = exact (600) + heuristic (0) = 600
     assert.equal(report.total, 600);
-    // Category heuristics overshoot total (1+100+15+499 = 615 > 600).
-    // Consistency scaling: factor = 600/615 ≈ 0.9756.
-    // user ≈ 0.98, asst ≈ 97.56, tool ≈ 14.63, sys ≈ 486.83
-    assert.ok(
-      Math.abs(report.categories.user - 0.976) < 0.01,
-      `user ${report.categories.user}`,
-    );
-    assert.ok(
-      Math.abs(report.categories.assistant - 97.561) < 0.01,
-      `assistant ${report.categories.assistant}`,
-    );
-    assert.ok(
-      Math.abs(report.categories.tool - 14.634) < 0.01,
-      `tool ${report.categories.tool}`,
-    );
-    assert.ok(
-      Math.abs(report.categories.system - 486.829) < 0.01,
-      `system ${report.categories.system}`,
-    );
+    // Raw category heuristics (no scaling): user=1, asst=100, tool=15,
+    // sys=499.  catSum (615) exceeds total; misc = 0.
+    assert.equal(report.categories.user, 1);
+    assert.equal(report.categories.assistant, 100);
+    assert.equal(report.categories.tool, 15);
+    assert.equal(report.categories.system, 499);
     assert.equal(report.categories.misc, 0);
     assert.ok(
       report.categories.tool > 0,
@@ -636,10 +611,14 @@ describe("category breakdown", () => {
     assert.equal(report.categories.user, 2);
     // asst = 50 (API exact output)
     assert.equal(report.categories.assistant, 50);
-    // system = first asst (input 200) − first user heuristic 2 = 198
-    assert.equal(report.categories.system, 198);
-    // misc = 250 − 2 − 50 − 0 − 198 = 0
-    assert.equal(report.categories.misc, 0);
+    // system = first asst (input 200) − sum of heuristic for all
+    // non-ignored messages in [0, firstAsstIdx=2):
+    //   system msg "System prompt here" = ceil(17/4)=5
+    //   user msg "Hello" = ceil(5/4)=2
+    // subtraction = 5 + 2 = 7, system = 200 − 7 = 193
+    assert.equal(report.categories.system, 193);
+    // misc = 250 − 2 − 50 − 0 − 193 = 5
+    assert.equal(report.categories.misc, 5);
     assertCategoriesMatchTotal(report);
   });
 
@@ -667,6 +646,172 @@ describe("category breakdown", () => {
     assert.equal(report.categories.system, 0);
     assert.equal(report.categories.misc, 0);
     assertCategoriesMatchTotal(report);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeContextReport — prunedCallIDs skip
+// ---------------------------------------------------------------------------
+
+describe("computeContextReport with prunedCallIDs", () => {
+  it("skips pruned tool parts in the tool category", () => {
+    // Two tool messages: one pruned, one not.  The pruned one's tokens
+    // must NOT appear in the tool category; the unpruned one's tokens
+    // must still appear.
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hi"), // user heuristic = 1
+      // Tool call that will be pruned.
+      {
+        info: {
+          role: "assistant",
+          id: "a1",
+          tokens: { input: 100, output: 50 },
+        },
+        parts: [
+          {
+            type: "tool",
+            callID: "call-pruned",
+            state: { input: "echo pruned", output: "pruned output\n" },
+          },
+        ],
+      } as unknown as ContextMessageEntry,
+      msg("user", undefined, "Again"), // user heuristic = 2
+      // Tool call that will NOT be pruned.
+      {
+        info: {
+          role: "assistant",
+          id: "a2",
+          tokens: { input: 80, output: 30 },
+        },
+        parts: [
+          {
+            type: "tool",
+            callID: "call-kept",
+            state: { input: "ls", output: "file1\nfile2\n" },
+          },
+        ],
+      } as unknown as ContextMessageEntry,
+    ];
+
+    const prunedCallIDs = new Set(["call-pruned"]);
+    const report = computeContextReport(msgs, prunedCallIDs);
+
+    // Total = exact from last asst (80+30=110) + heuristic for msgs after (0) = 110
+    assert.equal(report.total, 110);
+
+    // Pruned tools contribute input + placeholder.  Raw tool = 27
+    // (user=3, asst=80, sys=99).  catSum (209) exceeds total; no scaling.
+    const placeholderTokens = estimateTokenCount(
+      PRUNED_TOOL_OUTPUT_REPLACEMENT,
+    );
+    const prunedInputTokens = estimateTokenCount("echo pruned"); // 3
+    const keptInputTokens = estimateTokenCount("ls"); // 1
+    const keptOutputTokens = estimateTokenCount("file1\nfile2\n"); // 3
+    const expectedTool =
+      prunedInputTokens +
+      placeholderTokens +
+      keptInputTokens +
+      keptOutputTokens; // 27
+    assert.equal(report.categories.tool, expectedTool);
+    assert.equal(report.categories.user, 3);
+    assert.equal(report.categories.assistant, 80);
+    assert.ok(report.categories.misc >= 0);
+  });
+
+  it("leaves tool category unchanged when prunedCallIDs is empty or undefined", () => {
+    // When prunedCallIDs is not provided or empty, all tool parts are counted.
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Run"), // user heuristic = 1
+      {
+        info: { role: "tool", id: "t1" },
+        parts: [
+          {
+            type: "tool",
+            callID: "call-1",
+            state: { input: "cmd", output: "result\n" },
+          },
+        ],
+      } as unknown as ContextMessageEntry,
+    ];
+
+    // Without prunedCallIDs (undefined) — backward compatible.
+    const reportDefault = computeContextReport(msgs);
+    // tool: input "cmd" (3/4→1) + output "result\n" (7/4→2) = 3
+    assert.ok(
+      reportDefault.categories.tool > 0,
+      "tool should be > 0 when no prunedCallIDs",
+    );
+
+    // With empty set — same behavior as undefined.
+    const reportEmpty = computeContextReport(msgs, new Set());
+    assert.equal(
+      reportDefault.categories.tool,
+      reportEmpty.categories.tool,
+      "empty set should behave like undefined",
+    );
+  });
+
+  it("supports both callID and callId field names", () => {
+    // Verify that the `callId` field (lowercase d) is also recognized.
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Go"),
+      {
+        info: { role: "tool", id: "t1" },
+        parts: [
+          {
+            type: "tool",
+            callId: "call-lowercase",
+            state: { input: "echo test", output: "test\n" },
+          },
+        ],
+      } as unknown as ContextMessageEntry,
+    ];
+
+    // With prunedCallIDs containing the lowercase callId.
+    // Pruned tools now contribute input + placeholder (not 0).
+    const prunedCallIDs = new Set(["call-lowercase"]);
+    const report = computeContextReport(msgs, prunedCallIDs);
+    // Raw (no scaling): user "Go"=1, tool input "echo test"=3 +
+    // placeholder=20 = 23, asst=0, sys=0, misc=0.  total=6.
+    // catSum (24) exceeds total; no scaling.
+    const expectedTool =
+      estimateTokenCount("echo test") +
+      estimateTokenCount(PRUNED_TOOL_OUTPUT_REPLACEMENT); // 23
+    assert.equal(report.categories.tool, expectedTool);
+  });
+
+  it("total is unchanged when prunedCallIDs skips tool parts", () => {
+    // The `total` (exact + heuristic) must not change when prunedCallIDs
+    // is provided — only the category breakdown's tool row changes.
+    // Pruned tools now contribute input + placeholder (which may be
+    // larger than original output, so tool can increase after pruning).
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hi"),
+      {
+        info: { role: "tool", id: "t1" },
+        parts: [
+          {
+            type: "tool",
+            callID: "call-1",
+            state: { input: "cmd", output: "output\n" },
+          },
+        ],
+      } as unknown as ContextMessageEntry,
+    ];
+
+    const reportNoPrune = computeContextReport(msgs);
+    const reportPrune = computeContextReport(msgs, new Set(["call-1"]));
+
+    assert.equal(
+      reportNoPrune.total,
+      reportPrune.total,
+      "total must be the same with or without prunedCallIDs",
+    );
+    // Pruned tool contributes input + placeholder (not 0).
+    assert.ok(
+      reportPrune.categories.tool > 0,
+      "pruned tool should contribute input + placeholder tokens",
+    );
   });
 });
 
@@ -702,12 +847,14 @@ describe("system prompt estimation", () => {
     assertCategoriesMatchTotal(report);
   });
 
-  it("sets system to 0 when no user message exists", () => {
+  it("estimates system from first asst input when no messages precede it", () => {
+    // Only an assistant message — no messages before it to subtract.
+    // system = firstAsstInput (500) − 0 = 500.
     const msgs: ContextMessageEntry[] = [
       msg("assistant", { input: 500, output: 100 }, "Direct response"),
     ];
     const report = computeContextReport(msgs);
-    assert.equal(report.categories.system, 0);
+    assert.equal(report.categories.system, 500);
     assertCategoriesMatchTotal(report);
   });
 
@@ -815,31 +962,21 @@ describe("compaction boundary", () => {
     const report = computeContextReport(msgs);
     // total = last completed assistant (index 4): 300+60 = 360
     assert.equal(report.total, 360);
-    // Pre-scale categories: user=3, asst=8(summary)+60=68, tool=0, sys=297
-    // Sum = 368 > 360 → scale factor = 360/368 ≈ 0.97826
-    // Scaled: user ≈ 2.935, asst ≈ 66.522, sys ≈ 290.543
-    assert.ok(
-      Math.abs(report.categories.user - 2.935) < 0.01,
-      `user ${report.categories.user}`,
-    );
-    assert.ok(
-      Math.abs(report.categories.assistant - 66.522) < 0.01,
-      `assistant ${report.categories.assistant}`,
-    );
+    // Raw categories (no scaling): user=3, asst=8(summary)+60=68, tool=0.
+    // system = 300 − sum of heuristic for all non-ignored messages
+    // in [boundaryIdx=2, firstAsstIdx=4):
+    //   summary "Previous conversation condensed" = ceil(30/4)=8
+    //   user "New question" = ceil(12/4)=3
+    // subtraction = 8 + 3 = 11, system = 300 − 11 = 289
+    assert.equal(report.categories.user, 3);
+    assert.equal(report.categories.assistant, 68);
     assert.equal(report.categories.tool, 0);
-    assert.ok(
-      Math.abs(report.categories.system - 290.543) < 0.01,
-      `system ${report.categories.system}`,
-    );
-    assert.ok(
-      Math.abs(report.categories.misc) < 0.01,
-      `misc ${report.categories.misc}`,
-    );
-    assertCategoriesMatchTotal(report);
+    assert.equal(report.categories.system, 289);
+    assert.equal(report.categories.misc, 0);
   });
 
-  it("categories with tool/heuristic overshoot are scaled after boundary", () => {
-    // Post-boundary tool heuristic overshoots total → scaling kicks in.
+  it("categories with overshoot show raw values without scaling after boundary", () => {
+    // Post-boundary tool heuristic overshoots total → raw values, no scaling.
     const msgs: ContextMessageEntry[] = [
       msg("user", undefined, "Old message"),
       msg("assistant", { input: 2000, output: 500 }, "Old reply"),
@@ -851,35 +988,22 @@ describe("compaction boundary", () => {
     // total = last completed assistant (index 4): 150+30 = 180
     assert.equal(report.total, 180);
     // Boundary at index 2, catStartIdx = 2.
-    // Categories (pre-scaling):
+    // Raw categories (no scaling):
     //   user: "Run cmd" (7 chars) → ceil(7/4) = 2
     //   assistant: summary "Summary" heuristic ceil(7/4)=2 + API 30 = 32
     //   tool: "ls" (2/4→1) + "file1\nfile2\n" (12/4→3) = 4
     //   system: first completed asst after boundary (index 4: input 150)
-    //           − first user after boundary "Run cmd" (2) = 148
-    // Pre-scale sum = 2 + 32 + 4 + 148 = 186 > 180
-    // Scale factor = 180/186 ≈ 0.96774
-    // Scaled: user ≈ 1.935, asst ≈ 30.968, tool ≈ 3.871, sys ≈ 143.226
-    assert.ok(
-      Math.abs(report.categories.user - 1.935) < 0.01,
-      `user ${report.categories.user}`,
-    );
-    assert.ok(
-      Math.abs(report.categories.assistant - 30.968) < 0.01,
-      `assistant ${report.categories.assistant}`,
-    );
-    assert.ok(
-      Math.abs(report.categories.tool - 3.871) < 0.01,
-      `tool ${report.categories.tool}`,
-    );
-    assert.ok(
-      Math.abs(report.categories.system - 143.226) < 0.01,
-      `system ${report.categories.system}`,
-    );
-    assert.ok(
-      Math.abs(report.categories.misc) < 0.01,
-      `misc ${report.categories.misc}`,
-    );
+    //           − sum of heuristic for all non-ignored msgs in
+    //           [boundaryIdx=2, firstAsstIdx=4):
+    //             summary "Summary" = ceil(7/4)=2
+    //             user "Run cmd" = ceil(7/4)=2
+    //           subtraction = 4, system = 150 − 4 = 146
+    // catSum (184) exceeds total (180); misc = 0.
+    assert.equal(report.categories.user, 2);
+    assert.equal(report.categories.assistant, 32);
+    assert.equal(report.categories.tool, 4);
+    assert.equal(report.categories.system, 146);
+    assert.equal(report.categories.misc, 0);
     // Each category / total ≤ 1 (no percentage exceeds 100%).
     for (const [key, val] of Object.entries(report.categories)) {
       const pct = report.total > 0 ? val / report.total : 0;
@@ -928,6 +1052,62 @@ describe("compaction boundary", () => {
         `${key} percent ${pct} exceeds 100% (val=${val}, total=${report.total})`,
       );
     }
+  });
+
+  it("skips compaction summary with large input tokens when scanning for first assistant", () => {
+    // The summary message (compaction boundary) has large tokens.input
+    // representing the entire pre-compaction history.  The scan must
+    // skip this summary message so that the first assistant found is
+    // the real post-boundary assistant, whose input is small.
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Old pre-compaction question"),
+      msg(
+        "assistant",
+        { input: 8000, output: 1500 },
+        "Old pre-compaction answer",
+      ),
+      // Compaction summary at the boundary — large tokens.input
+      // reflects the full pre-compaction context fed to the summary LLM call.
+      {
+        info: {
+          role: "assistant",
+          id: "summary",
+          summary: true,
+          tokens: { input: 15000, output: 200 },
+        },
+        parts: [{ type: "text", text: "Summary of previous conversation" }],
+      } as unknown as ContextMessageEntry,
+      msg("user", undefined, "New question"),
+      msg("assistant", { input: 300, output: 60 }, "New answer"),
+    ];
+    const report = computeContextReport(msgs);
+    // total = last completed assistant (index 4): 300+60 = 360
+    assert.equal(report.total, 360);
+    // system = firstAsstInput (300) − sum of heuristic for all
+    // non-ignored messages in [boundaryIdx=2, firstAsstIdx=4):
+    //   summary text "Summary of previous conversation"
+    //     (32 chars) → ceil(32/4) = 8
+    //   user "New question" (11 chars) → ceil(11/4) = 3
+    // subtraction = 11, system = 300 − 11 = 289
+    assert.equal(
+      report.categories.system,
+      289,
+      "system must use real assistant input, not summary's large input",
+    );
+    // System should be a reasonable small value, not the huge
+    // pre-compaction history total.
+    assert.ok(
+      report.categories.system < 1000,
+      "system (%d) should not include summary's large input tokens (15000)",
+    );
+    assert.ok(
+      report.categories.system > 0,
+      "system (%d) should be non-zero (not degraded to 0)",
+    );
+    // Note: not asserting assertCategoriesMatchTotal here because the
+    // summary message carries real API-reported output (200) for the
+    // summary generation call, which inflates the assistant category
+    // beyond total — this is expected for this scenario.
   });
 
   it("no boundary — existing behavior unchanged", () => {

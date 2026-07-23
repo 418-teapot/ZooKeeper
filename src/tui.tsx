@@ -18,6 +18,7 @@ import {
   computeCumulativeCacheRate,
   computeTokenBreakdown,
 } from "./core/metrics.js";
+import { loadSessionState } from "./core/pruning/state.js";
 import { log, setSessionId } from "./utils/logger.js";
 
 /** Category values for sidebar breakdown display. */
@@ -447,7 +448,21 @@ const plugin: TuiPluginModule = {
               (m as Record<string, unknown>)?.info as Record<string, unknown>
             )?.role === "string",
         );
-        const report = computeContextReport(mapped);
+
+        // Load pruned callIDs for DCP visibility in category breakdown.
+        // Defensive: load failure results in empty set (tools fully counted).
+        let prunedCallIDs: Set<string> | undefined;
+        try {
+          const persisted = loadSessionState(sessionId);
+          if (persisted) {
+            prunedCallIDs = new Set(persisted.prune.tools.keys());
+          }
+        } catch {
+          // Non-fatal: TUI must never crash from persistence I/O.
+          prunedCallIDs = undefined;
+        }
+
+        const report = computeContextReport(mapped, prunedCallIDs);
 
         // ── Trend (last vs previous assistant) ──────────────────────
         const trendResult = computeCacheTrend(mapped);

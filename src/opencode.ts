@@ -27,9 +27,11 @@ import { KIWI_PROMPT } from "./agents/kiwi.js";
 import { LYNX_PROMPT } from "./agents/lynx.js";
 import { MOLA_PROMPT } from "./agents/mola.js";
 import { SPIDER_PROMPT } from "./agents/spider.js";
+import { deleteSessionState, removeSession } from "./core/pruning";
 import { DCP_COMMAND_HANDLED, handleDcpCommand } from "./hooks/context-command";
 import type { ContextMetricsOutput } from "./hooks/context-metrics";
 import { measureContext } from "./hooks/context-metrics";
+import { contextPruningTransformHandler } from "./hooks/context-pruning";
 import { nudgeDirectWork } from "./hooks/direct-work-nudge";
 import { recoverJsonError } from "./hooks/json-error-nudge";
 import { handleGoCommand } from "./hooks/plan-lifecycle";
@@ -196,6 +198,22 @@ function handleMessagesTransform(output: ContextMetricsOutput): void {
   }
 }
 
+/** Run context pruning on the messages transform output. */
+function handleContextPruning(output: ContextMetricsOutput): void {
+  try {
+    contextPruningTransformHandler(output.messages);
+  } catch (err) {
+    log(
+      "plugin",
+      "handler_crashed",
+      output.messages?.[0]?.info?.sessionID ?? "",
+      undefined,
+      "error",
+      { handler: "contextPruning", error: String(err) },
+    );
+  }
+}
+
 /** Run a list of after-exec handlers with per-handler error isolation. */
 async function runAfterHandlers(
   handlers: Array<{
@@ -289,7 +307,11 @@ export async function zookeeper(input: any) {
       // Clean up on session deletion.
       if (type === "session.deleted") {
         const info = properties?.info as { id?: string } | undefined;
-        if (info?.id) sessionAgentMap.delete(info.id);
+        if (info?.id) {
+          sessionAgentMap.delete(info.id);
+          removeSession(info.id);
+          deleteSessionState(info.id);
+        }
       }
     },
 
@@ -297,6 +319,8 @@ export async function zookeeper(input: any) {
       _input: Record<string, never>,
       output: ContextMetricsOutput,
     ) {
+      // Prune first so measureContext reflects post-prune token counts.
+      handleContextPruning(output);
       handleMessagesTransform(output);
     },
 
