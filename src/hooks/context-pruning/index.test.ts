@@ -8,12 +8,12 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import type { ContextMessageEntry } from "../../core/metrics.js";
 import {
-  _clearAllSessionsForTesting,
   deleteSessionState,
   getOrCreateSessionState,
   loadSessionState,
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
 } from "../../core/pruning/index.js";
+import { _clearAllSessionsForTesting } from "../../core/pruning/state.js";
 import type { SweepToolPart } from "../../core/pruning/types.js";
 import { _resetForTesting } from "../../utils/logger.js";
 import { contextPruningTransformHandler } from "./index.js";

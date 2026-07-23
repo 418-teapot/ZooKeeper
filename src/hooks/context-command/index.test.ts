@@ -9,11 +9,13 @@ import { afterEach, describe, it } from "node:test";
 import type { ContextMessageEntry } from "../../core/metrics.js";
 import { estimateTokenCount } from "../../core/metrics.js";
 import {
-  _clearAllSessionsForTesting,
+  deleteSessionState,
   getOrCreateSessionState,
+  loadSessionState,
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
   pruneToolOutputs,
 } from "../../core/pruning/index.js";
+import { _clearAllSessionsForTesting } from "../../core/pruning/state.js";
 import { _resetForTesting } from "../../utils/logger.js";
 import {
   DCP_COMMAND_HANDLED,
@@ -26,9 +28,21 @@ import {
 // Logger & state cleanup
 // ---------------------------------------------------------------------------
 
+/** Session IDs that persist to disk during tests (need file cleanup). */
+const SWEEP_TEST_SESSION_IDS = [
+  "sess-sweep-success",
+  "sess-short-output",
+  "sess-sweep-1",
+  "sess-no-double",
+  "sess-persist-after-sweep",
+];
+
 afterEach(() => {
   _resetForTesting();
   _clearAllSessionsForTesting();
+  for (const sid of SWEEP_TEST_SESSION_IDS) {
+    deleteSessionState(sid);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -90,16 +104,6 @@ function assertPromptContains(
     promptCalls[0].text.includes(keyword),
     message ?? `expected prompt to contain "${keyword}"`,
   );
-}
-
-/**
- * Format assertion helper: check that "user" label appears in prompt.
- */
-function assertPromptHasCategory(
-  promptCalls: Array<{ text: string }>,
-  label: string,
-): void {
-  assertPromptContains(promptCalls, label);
 }
 
 // ---------------------------------------------------------------------------
@@ -175,7 +179,7 @@ describe("/dcp context subcommand", () => {
     assertPromptContains(promptCalls, "26.7%");
   });
 
-  it("includes category breakdown", async () => {
+  it("omits category breakdown from compact report", async () => {
     const msgs: ContextMessageEntry[] = [
       {
         info: { role: "user", id: "m1" },
@@ -194,9 +198,19 @@ describe("/dcp context subcommand", () => {
 
     await handleDcpCommand(client, "sess-4", "context");
 
-    assertPromptHasCategory(promptCalls, "user");
-    assertPromptHasCategory(promptCalls, "asst");
-    assertPromptHasCategory(promptCalls, "sys");
+    // Compact report: summary lines only, no category breakdown.
+    assert.ok(
+      !promptCalls[0].text.includes("分类占比"),
+      "should not contain category breakdown intro",
+    );
+    assert.ok(
+      !promptCalls[0].text.includes("user "),
+      "should not contain category label",
+    );
+    assert.ok(
+      !promptCalls[0].text.includes("总计"),
+      "should not contain total footer",
+    );
   });
 });
 
@@ -375,13 +389,19 @@ describe("/dcp sweep subcommand — success path", () => {
           {
             type: "tool",
             callID: "call-1",
-            state: { output: "output 1 data" },
+            state: {
+              output:
+                "output 1 data with additional content to make the net token estimate positive after placeholder subtraction",
+            },
             tool: "bash",
           } as any,
           {
             type: "tool",
             callID: "call-2",
-            state: { output: "output 2 longer content here" },
+            state: {
+              output:
+                "output 2 longer content here with even more text to ensure a positive net reclaim estimate after subtracting the placeholder",
+            },
             tool: "bash",
           } as any,
         ],
@@ -431,12 +451,22 @@ describe("/dcp sweep subcommand — success path", () => {
     const est2 = state.prune.tools.get("call-2") ?? 0;
     assert.equal(
       est1,
-      estimateTokenCount("output 1 data") - placeholderTokens,
+      Math.max(
+        0,
+        estimateTokenCount(
+          "output 1 data with additional content to make the net token estimate positive after placeholder subtraction",
+        ) - placeholderTokens,
+      ),
       "unexpected net estimate for call-1",
     );
     assert.equal(
       est2,
-      estimateTokenCount("output 2 longer content here") - placeholderTokens,
+      Math.max(
+        0,
+        estimateTokenCount(
+          "output 2 longer content here with even more text to ensure a positive net reclaim estimate after subtracting the placeholder",
+        ) - placeholderTokens,
+      ),
       "unexpected net estimate for call-2",
     );
 
@@ -445,6 +475,69 @@ describe("/dcp sweep subcommand — success path", () => {
       state.stats.totalPruneTokens,
       est1 + est2,
       "totalPruneTokens should be accumulated at sweep (mark) time",
+    );
+  });
+
+  it("short tool output yields zero estimatedTokens and does not inflate totalPruneTokens", async () => {
+    // A very short output like "ok" (2 chars → 1 token) is shorter than
+    // the placeholder (83 chars → 21 tokens), so Math.max floors to 0.
+    const messages: ContextMessageEntry[] = [
+      {
+        info: { role: "user", id: "u1" },
+        parts: [{ type: "text", text: "run command" }],
+      },
+      {
+        info: { role: "assistant", id: "a1" },
+        parts: [
+          {
+            type: "tool",
+            callID: "call-short",
+            state: { output: "ok" },
+            tool: "bash",
+          } as any,
+        ],
+      },
+    ];
+
+    let promptText = "";
+    const client: DcpClient = {
+      session: {
+        messages: async () => ({ data: messages }),
+        prompt: async (input: {
+          path: { id: string };
+          body: {
+            noReply?: boolean;
+            parts: Array<{ type: string; text: string; ignored?: boolean }>;
+          };
+        }) => {
+          promptText = input.body.parts[0]?.text ?? "";
+        },
+      },
+    };
+
+    await handleDcpCommand(client, "sess-short-output", "sweep");
+
+    const state = getOrCreateSessionState("sess-short-output");
+    assert.equal(state.prune.tools.size, 1);
+    assert.ok(state.prune.tools.has("call-short"));
+
+    // estimatedTokens should be floored to 0 because "ok" (2 chars)
+    // yields fewer tokens than the placeholder.
+    const estValue = state.prune.tools.get("call-short") ?? -1;
+    assert.equal(estValue, 0, "short output should have 0 estimated tokens");
+
+    // totalPruneTokens should NOT be inflated by the negative estimate.
+    // Since estimatedTokens is 0, totalPruneTokens must stay at 0.
+    assert.equal(
+      state.stats.totalPruneTokens,
+      0,
+      "totalPruneTokens should not change when estimatedTokens is 0",
+    );
+
+    // The user-facing report confirms 1 tool marked with 0 tokens.
+    assert.ok(
+      promptText.includes("已标记 1 个工具输出"),
+      "report should confirm 1 marked tool",
     );
   });
 
@@ -504,7 +597,10 @@ describe("/dcp sweep subcommand — success path", () => {
           {
             type: "tool",
             callID: "call-1",
-            state: { output: "some tool output" },
+            state: {
+              output:
+                "some tool output with extra text to make net positive after subtracting the placeholder string fully",
+            },
             tool: "bash",
           } as any,
         ],
@@ -528,7 +624,12 @@ describe("/dcp sweep subcommand — success path", () => {
     );
     assert.equal(
       markTimeValue,
-      estimateTokenCount("some tool output") - placeholderTokens,
+      Math.max(
+        0,
+        estimateTokenCount(
+          "some tool output with extra text to make net positive after subtracting the placeholder string fully",
+        ) - placeholderTokens,
+      ),
       "totalPruneTokens should be net reclaim after sweep",
     );
 
@@ -556,7 +657,10 @@ describe("/dcp sweep subcommand — success path", () => {
             callID: "call-1",
             // DB original (not the placeholder) — simulates transform
             // reloading fresh from DB each turn.
-            state: { output: "some tool output" },
+            state: {
+              output:
+                "some tool output with extra text to make net positive after subtracting the placeholder string fully",
+            },
             tool: "bash",
           } as any,
         ],
@@ -568,6 +672,55 @@ describe("/dcp sweep subcommand — success path", () => {
       markTimeValue,
       "prune should NOT change totalPruneTokens across multiple turns",
     );
+  });
+
+  it("persists sweep marks to disk immediately via saveSessionState", async () => {
+    const sessionID = "sess-persist-after-sweep";
+    const messages: ContextMessageEntry[] = [
+      {
+        info: { role: "user", id: "u1" },
+        parts: [{ type: "text", text: "do something" }],
+      },
+      {
+        info: { role: "assistant", id: "a1" },
+        parts: [
+          {
+            type: "tool",
+            callID: "call-persist",
+            state: {
+              output:
+                "some tool output that is long enough to make net reclaim positive after subtracting the placeholder text here and there",
+            },
+            tool: "bash",
+          } as any,
+        ],
+      },
+    ];
+
+    const client: DcpClient = {
+      session: {
+        messages: async () => ({ data: messages }),
+        prompt: async () => {},
+      },
+    };
+
+    await handleDcpCommand(client, sessionID, "sweep");
+
+    // Verify marks survive via loadSessionState (disk persistence).
+    const persisted = loadSessionState(sessionID);
+    assert.ok(persisted, "state should be persisted to disk after sweep");
+    assert.ok(persisted.prune.tools.has("call-persist"));
+    assert.ok(
+      (persisted.prune.tools.get("call-persist") ?? 0) >= 0,
+      "persisted estimate must be non-negative",
+    );
+    assert.ok(
+      persisted.stats.totalPruneTokens >= 0,
+      "persisted totalPruneTokens must be non-negative",
+    );
+
+    // Clean up persisted file.
+    deleteSessionState(sessionID);
   });
 });
 

@@ -68,12 +68,10 @@ export function formatPercent(ratio: number): string {
  * Format a context report into a human-readable multi-line string.
  *
  * Output is in Chinese (user-facing), with a 60-character line width
- * constraint suitable for TUI chat windows.  Shows five category rows
- * (user / asst / tool / sys / misc) with a header noting that asst
- * uses API exact tokens and the rest are heuristic estimates.
- *
- * When `prunedTokens` is greater than 0, a "pruned" stat line is
- * inserted before the category breakdown.
+ * constraint suitable for TUI chat windows.  Only the compact summary
+ * lines are shown: 用量, 消息, 缓存 (and 剪枝 when prunedTokens > 0).
+ * The detailed category breakdown (user/asst/tool/sys/misc with progress
+ * bars) was dropped in favor of the TUI sidebar panel.
  *
  * @param report - The computed context report.
  * @param prunedTokens - Optional cumulative tokens reclaimed by pruning.
@@ -107,36 +105,6 @@ export function formatContextReport(
   if (prunedTokens && prunedTokens > 0) {
     lines.push(`剪枝  ${formatTokens(prunedTokens)} tokens（累计回收）`);
   }
-
-  // ── Category breakdown ──────────────────────────────────────────────
-  lines.push("");
-  lines.push("分类占比（asst 为 API 精确，其余为估算）：");
-
-  const catLabels: Array<[string, number]> = [
-    ["user", report.categories.user],
-    ["asst", report.categories.assistant],
-    ["tool", report.categories.tool],
-    ["sys", report.categories.system],
-    ["misc", report.categories.misc],
-  ];
-
-  const maxLabelLen = Math.max(...catLabels.map(([l]) => l.length));
-
-  for (const [label, value] of catLabels) {
-    const pct = report.total > 0 ? value / report.total : 0;
-    const paddedLabel = label.padEnd(maxLabelLen);
-    lines.push(
-      `${paddedLabel} ${progressBar(pct)} ${formatTokens(value).padStart(6)} ${formatPercent(pct).padStart(5)}`,
-    );
-  }
-
-  // ── Footnote ─────────────────────────────────────────────────────────
-  lines.push("注：sys 为系统 prompt 估算（含工具定义），misc 为其他残差");
-
-  // ── Total footer ────────────────────────────────────────────────────
-  lines.push("".padEnd(28, "━"));
-  const totalFmt = formatTokens(report.total);
-  lines.push(`总计 ${totalFmt.padStart(6)} ${formatPercent(1).padStart(5)}`);
 
   return lines.join("\n");
 }

@@ -15,8 +15,6 @@ export {
 } from "./prune.js";
 export type { SessionState } from "./state.js";
 export {
-  _clearAllSessionsForTesting,
-  _removeSessionForTesting,
   deleteSessionState,
   getOrCreateSessionState,
   loadSessionState,

@@ -178,33 +178,50 @@ describe("formatContextReport output", () => {
     assert.ok(output.includes("0 条"));
   });
 
-  it("includes category breakdown section with five labels", () => {
+  it("omits category breakdown section", () => {
     const msgs: ContextMessageEntry[] = [
       msg("user", undefined, "Hello"),
       msg("assistant", { input: 100, output: 50 }, "Response"),
     ];
     const report = computeContextReport(msgs);
     const output = formatContextReport(report);
-    assert.ok(output.includes("分类占比（asst 为 API 精确，其余为估算）"));
-    assert.ok(output.includes("user"));
-    assert.ok(output.includes("asst"));
-    assert.ok(output.includes("tool"));
-    assert.ok(output.includes("sys"));
-    assert.ok(output.includes("misc"));
+    assert.ok(!output.includes("分类占比"));
+    assert.ok(
+      !output.includes("user "),
+      "should not contain category label 'user'",
+    );
+    assert.ok(
+      !output.includes("asst "),
+      "should not contain category label 'asst'",
+    );
+    assert.ok(
+      !output.includes("tool "),
+      "should not contain category label 'tool'",
+    );
+    assert.ok(
+      !output.includes("sys "),
+      "should not contain category label 'sys'",
+    );
+    assert.ok(
+      !output.includes("misc "),
+      "should not contain category label 'misc'",
+    );
+    assert.ok(!output.includes("注：sys"));
+    assert.ok(!output.includes("总计"));
   });
 
-  it("includes progress bars in category lines", () => {
+  it("omits progress bar characters from report output", () => {
     const msgs: ContextMessageEntry[] = [
       msg("user", undefined, "Hello"),
       msg("assistant", { input: 100, output: 50 }, "Response"),
     ];
     const report = computeContextReport(msgs);
     const output = formatContextReport(report);
-    assert.ok(output.includes("█"));
-    assert.ok(output.includes("░"));
+    assert.ok(!output.includes("█"));
+    assert.ok(!output.includes("░"));
   });
 
-  it("shows total usage without detailed exact/heuristic split", () => {
+  it("shows total usage line", () => {
     const msgs: ContextMessageEntry[] = [
       msg("user", undefined, "User msg"),
       msg("assistant", { input: 1000, output: 200 }, "Assistant"),
@@ -213,8 +230,7 @@ describe("formatContextReport output", () => {
     const report = computeContextReport(msgs);
     const output = formatContextReport(report);
     assert.ok(output.includes("用量  ~"));
-    // The heading mentions "精确" for asst but there's no detailed
-    // exact-vs-heuristic break-down line.
+    // No detailed exact/heuristic breakdown row remains.
     assert.ok(!output.includes("精确    "));
   });
 
@@ -238,6 +254,59 @@ describe("formatContextReport output", () => {
         `line exceeds 60 chars (${line.length}): "${line}"`,
       );
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatContextReport — prunedTokens rendering
+// ---------------------------------------------------------------------------
+
+describe("formatContextReport with prunedTokens", () => {
+  it("renders prune stat line when prunedTokens > 0", () => {
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hello"),
+      msg("assistant", { input: 500, output: 100 }, "Response"),
+    ];
+    const report = computeContextReport(msgs);
+    const output = formatContextReport(report, 12345);
+    assert.ok(
+      output.includes("剪枝"),
+      "expected prune stat line when prunedTokens > 0",
+    );
+    assert.ok(
+      output.includes("12.3K"),
+      "expected formatted token value (12.3K for 12345)",
+    );
+    assert.ok(
+      output.includes("累计回收"),
+      "expected '累计回收' in prune stat line",
+    );
+  });
+
+  it("does NOT render prune stat line when prunedTokens = 0", () => {
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hello"),
+      msg("assistant", { input: 500, output: 100 }, "Response"),
+    ];
+    const report = computeContextReport(msgs);
+    const output = formatContextReport(report, 0);
+    assert.ok(
+      !output.includes("剪枝"),
+      "should NOT include prune stat line when prunedTokens = 0",
+    );
+  });
+
+  it("does NOT render prune stat line when prunedTokens is omitted", () => {
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hello"),
+      msg("assistant", { input: 500, output: 100 }, "Response"),
+    ];
+    const report = computeContextReport(msgs);
+    const output = formatContextReport(report);
+    assert.ok(
+      !output.includes("剪枝"),
+      "should NOT include prune stat line when prunedTokens is omitted",
+    );
   });
 });
 

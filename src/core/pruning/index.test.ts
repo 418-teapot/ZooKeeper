@@ -15,8 +15,6 @@ import { _resetForTesting } from "../../utils/logger.js";
 import type { ContextMessageEntry } from "../metrics.js";
 import { estimateTokenCount } from "../metrics.js";
 import {
-  _clearAllSessionsForTesting,
-  _removeSessionForTesting,
   collectSweepCallIDs,
   deleteSessionState,
   getOrCreateSessionState,
@@ -26,6 +24,10 @@ import {
   removeSession,
   saveSessionState,
 } from "./index.js";
+import {
+  _clearAllSessionsForTesting,
+  _removeSessionForTesting,
+} from "./state.js";
 import type { SweepToolPart } from "./types.js";
 
 // ---------------------------------------------------------------------------

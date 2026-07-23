@@ -18,7 +18,7 @@
  */
 
 import { log } from "../utils/logger.js";
-import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./pruning/types.js";
+import { getCallId, PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./pruning/types.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -133,7 +133,7 @@ export interface ContextReport {
  * Minimal tool part shape that may appear inside a message's parts array.
  *
  * `callID` and `callId` are both possible field names for the tool call
- * identifier in the OpenCode SDK (mirrors `getCallId` in prune.ts).
+ * identifier in the OpenCode SDK (use `getCallId` from pruning/types.ts).
  */
 interface PartWithToolState {
   type: string;
@@ -187,6 +187,33 @@ export function estimateTokenCount(val: unknown): number {
   if (val == null) return 0;
   const str = typeof val === "string" ? val : JSON.stringify(val);
   return estimateStringTokens(str);
+}
+
+/**
+ * Determine whether a message is an "ignored" user message.
+ *
+ * A user message is considered ignored when:
+ * - Its `info.ignored` field is truthy, OR
+ * - All of its parts have `ignored: true`
+ *
+ * Empty-parts messages are NOT considered ignored.
+ *
+ * @param msg - The message entry to check.
+ * @returns `true` if the message should be skipped.
+ */
+export function isMessageIgnored(msg: ContextMessageEntry): boolean {
+  if (!msg) return false;
+  if (msg.info) {
+    const info = msg.info as unknown as Record<string, unknown>;
+    if (info.ignored) return true;
+  }
+
+  const parts = msg.parts;
+  if (!parts || parts.length === 0) return false;
+  return parts.every((p) => {
+    const textPart = p as { ignored?: boolean };
+    return textPart.ignored === true;
+  });
 }
 
 /**
@@ -485,7 +512,9 @@ export function computeContextReport(
   messages: ContextMessageEntry[],
   prunedCallIDs?: Set<string>,
 ): ContextReport {
-  const messageCount = messages.length;
+  // Ignored messages (injected reports) are excluded from the count.
+  const messageCount = messages.filter((m) => !isMessageIgnored(m)).length;
+  const totalMessages = messages.length;
 
   // ── Step 0: Find compaction boundary ──────────────────────────────
   // After compaction, category statistics only reflect messages at/after
@@ -516,7 +545,8 @@ export function computeContextReport(
   // ── Step 2: Heuristic for messages after last assistant (or all) ──
   let heuristic = 0;
   const startIdx = lastAssistantIdx >= 0 ? lastAssistantIdx + 1 : 0;
-  for (let i = startIdx; i < messageCount; i++) {
+  for (let i = startIdx; i < totalMessages; i++) {
+    if (isMessageIgnored(messages[i])) continue;
     heuristic += estimateMessageHeuristic(messages[i]);
   }
 
@@ -531,9 +561,10 @@ export function computeContextReport(
   let assistantTokens = 0;
   let toolTokens = 0;
 
-  for (let i = catStartIdx; i < messageCount; i++) {
+  for (let i = catStartIdx; i < totalMessages; i++) {
     const msg = messages[i];
     if (!msg?.parts) continue;
+    if (isMessageIgnored(msg)) continue;
     const role = msg.info?.role ?? "";
     for (const part of msg.parts) {
       if (!part) continue;
@@ -548,7 +579,7 @@ export function computeContextReport(
         // and the PRUNED_TOOL_OUTPUT_REPLACEMENT placeholder, not the
         // original output.
         if (prunedCallIDs) {
-          const callId = extPart.callID ?? extPart.callId;
+          const callId = getCallId(extPart);
           if (callId && prunedCallIDs.has(callId)) {
             toolTokens +=
               estimateTokenCount(extPart.state?.input) +
@@ -564,9 +595,10 @@ export function computeContextReport(
   }
 
   // Assistant: prefer API-reported output, fall back to heuristic
-  for (let i = catStartIdx; i < messageCount; i++) {
+  for (let i = catStartIdx; i < totalMessages; i++) {
     const msg = messages[i];
     if (msg?.info?.role !== "assistant") continue;
+    if (isMessageIgnored(msg)) continue;
     const apiOutput = msg.info?.tokens?.output ?? 0;
     if (apiOutput > 0) {
       assistantTokens += apiOutput;
@@ -609,18 +641,7 @@ export function computeContextReport(
     for (let i = catStartIdx; i < firstAsstAfter.index; i++) {
       const msg = messages[i];
       if (!msg) continue;
-      // Check message-level ignored flag (info.ignored).
-      const info = (msg.info ?? {}) as unknown as Record<string, unknown>;
-      if (info.ignored) continue;
-      // Check part-level ignored: skip if every part is individually
-      // marked as ignored (mirrors isMessageIgnored in prune.ts).
-      const parts = msg.parts;
-      if (!parts || parts.length === 0) continue;
-      const allPartsIgnored = parts.every((p) => {
-        const tp = p as { ignored?: boolean };
-        return tp.ignored === true;
-      });
-      if (allPartsIgnored) continue;
+      if (isMessageIgnored(msg)) continue;
 
       subHeuristic += estimateMessageHeuristic(msg);
     }

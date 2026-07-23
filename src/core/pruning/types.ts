@@ -36,6 +36,19 @@ export interface SweepTextPart {
   ignored?: boolean;
 }
 
+/**
+ * Extract the callID from a part, checking multiple possible field names.
+ *
+ * OpenCode SDK may expose the call identifier as `callID` or `callId`.
+ *
+ * @param part - A message part.
+ * @returns The call identifier string, or undefined.
+ */
+export function getCallId(part: unknown): string | undefined {
+  const p = part as Record<string, unknown>;
+  return (p.callID as string) ?? (p.callId as string) ?? undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------

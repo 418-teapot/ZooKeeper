@@ -17,6 +17,7 @@ import {
   collectSweepCallIDs,
   getOrCreateSessionState,
   loadSessionState,
+  saveSessionState,
 } from "../../core/pruning/index.js";
 import { log } from "../../utils/logger.js";
 
@@ -325,6 +326,7 @@ async function handleSweepSubcommand(
   // repeatedly at prune-time transforms).
   state.stats.totalPruneTokens += totalEstimate;
   state.dirty = true;
+  saveSessionState(sessionID, state);
 
   log("context-command", "sweep_marked", sessionID, undefined, "info", {
     markedCount: marks.length,

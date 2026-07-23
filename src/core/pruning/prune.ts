@@ -9,10 +9,10 @@
  */
 
 import type { ContextMessageEntry } from "../metrics.js";
-import { estimateTokenCount } from "../metrics.js";
+import { estimateTokenCount, isMessageIgnored } from "../metrics.js";
 import type { SessionState } from "./state.js";
 import type { SweepToolPart } from "./types.js";
-import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./types.js";
+import { getCallId, PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Sweep (prune) callID collection
@@ -26,41 +26,6 @@ export interface SweepMark {
   callID: string;
   /** Estimated token count reclaimed by pruning this tool's output. */
   estimatedTokens: number;
-}
-
-/**
- * Determine whether a message is an "ignored" user message.
- *
- * A user message is considered ignored when:
- * - Its `info.ignored` field is truthy, OR
- * - All of its parts have `ignored: true`
- *
- * @param msg - The message entry to check.
- * @returns `true` if the message should be skipped.
- */
-function isMessageIgnored(msg: ContextMessageEntry): boolean {
-  const info = msg.info as unknown as Record<string, unknown>;
-  if (info.ignored) return true;
-
-  const parts = msg.parts;
-  if (!parts || parts.length === 0) return false;
-  return parts.every((p) => {
-    const textPart = p as { ignored?: boolean };
-    return textPart.ignored === true;
-  });
-}
-
-/**
- * Extract the callID from a part, checking multiple possible field names.
- *
- * OpenCode SDK may expose the call identifier as `callID` or `callId`.
- *
- * @param part - A message part.
- * @returns The call identifier string, or undefined.
- */
-function getCallId(part: unknown): string | undefined {
-  const p = part as Record<string, unknown>;
-  return (p.callID as string) ?? (p.callId as string) ?? undefined;
 }
 
 /**
@@ -113,9 +78,11 @@ export function collectSweepCallIDs(
         if (!callID || alreadyMarked.has(callID)) continue;
         result.push({
           callID,
-          estimatedTokens:
+          estimatedTokens: Math.max(
+            0,
             estimateTokenCount(toolPart.state?.output) -
-            estimateTokenCount(PRUNED_TOOL_OUTPUT_REPLACEMENT),
+              estimateTokenCount(PRUNED_TOOL_OUTPUT_REPLACEMENT),
+          ),
         });
       }
     }
@@ -137,9 +104,11 @@ export function collectSweepCallIDs(
         if (!callID || alreadyMarked.has(callID)) continue;
         result.push({
           callID,
-          estimatedTokens:
+          estimatedTokens: Math.max(
+            0,
             estimateTokenCount(toolPart.state?.output) -
-            estimateTokenCount(PRUNED_TOOL_OUTPUT_REPLACEMENT),
+              estimateTokenCount(PRUNED_TOOL_OUTPUT_REPLACEMENT),
+          ),
         });
       }
     }

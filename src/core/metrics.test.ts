@@ -650,6 +650,79 @@ describe("category breakdown", () => {
 });
 
 // ---------------------------------------------------------------------------
+// computeContextReport — ignored user messages
+// ---------------------------------------------------------------------------
+
+describe("computeContextReport with ignored user messages", () => {
+  /**
+   * Build a user message with all parts having `ignored: true`.
+   */
+  function ignoredMsg(text: string): ContextMessageEntry {
+    return {
+      info: { role: "user", id: "ignored" },
+      parts: [{ type: "text", text, ignored: true }],
+    } as unknown as ContextMessageEntry;
+  }
+
+  it("ignored user message contributes 0 to categories.user", () => {
+    // One normal user msg + ignored user msg + assistant.
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hello"), // normal user: 2
+      ignoredMsg("Ignored context report"), // ignored → 0
+      msg("assistant", { input: 500, output: 100 }, "Response"),
+    ];
+    const report = computeContextReport(msgs);
+    // user category should only include the normal message.
+    assert.equal(report.categories.user, 2);
+    // total = exact (600) + heuristic (0) = 600
+    assert.equal(report.total, 600);
+  });
+
+  it("ignored user message contributes 0 to heuristic tail", () => {
+    // Messages after last completed assistant: one ignored, one normal.
+    // The ignored message should NOT be counted in the heuristic tail.
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hello"), // before assistant
+      msg("assistant", { input: 500, output: 100 }, "Response"),
+      ignoredMsg("Ignored /dcp context report"), // after last asst → ignored
+      msg("user", undefined, "Normal follow-up"), // after last asst → counted
+    ];
+    const report = computeContextReport(msgs);
+    // exact = 600, heuristic = "Normal follow-up" (15 chars → ceil(15/4)=4)
+    assert.equal(report.exact, 600);
+    assert.equal(report.heuristic, 4);
+    assert.equal(report.total, 604);
+    // user category: "Hello"=2 + "Normal follow-up"=4 = 6
+    assert.equal(report.categories.user, 6);
+  });
+
+  it("normal user message is still counted (regression guard)", () => {
+    // Without any ignored messages, behavior is unchanged.
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hello"),
+      msg("assistant", { input: 500, output: 100 }, "Response"),
+    ];
+    const report = computeContextReport(msgs);
+    assert.equal(report.categories.user, 2);
+    assert.equal(report.heuristic, 0);
+    assert.equal(report.total, 600);
+  });
+
+  it("ignored messages are excluded from messageCount", () => {
+    // Each /dcp invocation injects an ignored report message; the
+    // message count must not grow because of them.
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hello"),
+      ignoredMsg("Ignored /dcp context report"),
+      ignoredMsg("Ignored sweep result"),
+      msg("assistant", { input: 500, output: 100 }, "Response"),
+    ];
+    const report = computeContextReport(msgs);
+    assert.equal(report.messageCount, 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // computeContextReport — prunedCallIDs skip
 // ---------------------------------------------------------------------------
 
