@@ -58,10 +58,6 @@ enum ContradictionsCommand {
 enum Command {
     /// Run all health and lint checks
     Check {
-        /// Apply timeliness updates (stale/current) based on staleness rules
-        #[arg(long, conflicts_with = "source")]
-        apply: bool,
-
         /// Optional bundle source (path/.tar.gz/URL) to validate instead of
         /// running health/lint checks
         source: Option<String>,
@@ -287,10 +283,10 @@ fn dispatch(args: Args) {
             println!();
             process::exit(1);
         }
-        Some(Command::Check { apply, source }) => {
+        Some(Command::Check { source }) => {
             if !dispatch_check_source(source.as_deref(), args.json) {
                 // No source — iterate all installed bundles from zwiki.lock.
-                dispatch_check_no_arg(args.json, apply);
+                dispatch_check_no_arg(args.json);
             }
         }
         Some(Command::Backlinks { ref page }) => {
@@ -483,12 +479,6 @@ fn check_domain_or_print(
     false
 }
 
-pub(crate) struct CheckOpts {
-    json: bool,
-    quiet: bool,
-    apply: bool,
-}
-
 /// Handle the bundle-source path of `zwiki check <source>`.
 ///
 /// Returns `true` when `source` was present and handled (either validated +
@@ -533,9 +523,9 @@ fn dispatch_check_source_inner(source: &str, json: bool) -> i32 {
             // source (which may be a local directory for backlinks sync).
             drop(resolved);
 
-            // Sync backlinks if source is a local directory (can write back).
-            // For tar.gz or URL sources, this is skipped because the source
-            // is not a writable directory.
+            // Sync backlinks and timeliness if source is a local
+            // directory (can write back).  For tar.gz or URL sources,
+            // this is skipped because the source is not writable.
             let source_path = Path::new(source);
             if source_path.is_dir() {
                 let paths = wiki::all_wiki_pages_at(source_path);
@@ -543,18 +533,7 @@ fn dispatch_check_source_inner(source: &str, json: bool) -> i32 {
                     .iter()
                     .filter_map(|p| wiki::read_page_at(p, source_path))
                     .collect();
-                if !all_pages.is_empty() {
-                    let bl_index =
-                        backlinks::build_reverse_index(source_path, &all_pages);
-                    let updated = backlinks::update_backlinks(
-                        source_path,
-                        &bl_index,
-                        &all_pages,
-                    );
-                    if updated > 0 {
-                        eprintln!("已同步 {updated} 个页面的反向链接");
-                    }
-                }
+                sync_derived_metadata(source_path, &all_pages, json);
             }
 
             if total > 0 {
@@ -566,19 +545,80 @@ fn dispatch_check_source_inner(source: &str, json: bool) -> i32 {
     0
 }
 
+/// Sync backlinks and apply timeliness updates (`mark_stale` +
+/// `invalidate_by_source`) across a set of pages under `root`.  When
+/// `suppress_eprint` is true, informational eprintln messages are suppressed
+/// (used in `json_mode` for the no-arg check path).
+fn sync_derived_metadata(
+    root: &Path,
+    all_pages: &[wiki::Page],
+    suppress_eprint: bool,
+) {
+    if all_pages.is_empty() {
+        return;
+    }
+
+    // Sync backlinks.
+    let bl_index = backlinks::build_reverse_index(root, all_pages);
+    let updated = backlinks::update_backlinks(root, &bl_index, all_pages);
+    if updated > 0 && !suppress_eprint {
+        eprintln!("已同步 {updated} 个页面的反向链接");
+    }
+
+    // Apply timeliness updates (mark_stale + invalidate_by_source).
+    let stale_updates = health::mark_stale(all_pages);
+    let stale_count =
+        stale_updates.iter().filter(|u| u.new_timeliness == "stale").count();
+    let current_count =
+        stale_updates.iter().filter(|u| u.new_timeliness == "current").count();
+    for update in &stale_updates {
+        if let Err(e) =
+            property::set(&update.path, "timeliness", &update.new_timeliness)
+        {
+            eprintln!("写入失败 {}: {e}", update.rel);
+        }
+    }
+    if !stale_updates.is_empty() && !suppress_eprint {
+        eprintln!(
+            "已标记 {} 个页面的 timeliness（stale: {}, current: {}）",
+            stale_updates.len(),
+            stale_count,
+            current_count,
+        );
+    }
+
+    // Invalidate derived pages whose sources have changed.
+    let invalidated = health::invalidate_by_source(all_pages);
+    for update in &invalidated {
+        if let Err(e) = property::set(
+            &update.path,
+            "last_validated",
+            &update.new_last_validated,
+        ) {
+            eprintln!("写入失败 {}: {e}", update.rel);
+        }
+    }
+    if !invalidated.is_empty() && !suppress_eprint {
+        eprintln!(
+            "已重置 {} 个页面的 last_validated（来源页面已变更）",
+            invalidated.len()
+        );
+    }
+}
+
 /// Handle the no-arg path of `zwiki check`.
 ///
 /// Reads the wiki root and `zwiki.lock`, then delegates to
 /// [`dispatch_check_no_arg_inner`] for root-index check, missing-bundle
 /// detection, and per-bundle health/lint checks.  Exits
 /// with the returned code.
-fn dispatch_check_no_arg(json_mode: bool, apply: bool) {
+fn dispatch_check_no_arg(json_mode: bool) {
     let wiki_root = wiki::wiki_dir();
     let lock = bundle::read_lock_at(&wiki_root).unwrap_or_else(|msg| {
         eprintln!("{msg}");
         process::exit(1);
     });
-    let code = dispatch_check_no_arg_inner(&wiki_root, &lock, json_mode, apply);
+    let code = dispatch_check_no_arg_inner(&wiki_root, &lock, json_mode);
     if code != 0 {
         process::exit(code);
     }
@@ -592,15 +632,11 @@ fn dispatch_check_no_arg_inner(
     wiki_root: &Path,
     lock: &ZwikiLock,
     json_mode: bool,
-    apply: bool,
 ) -> i32 {
     if lock.bundles.is_empty() {
-        // Run --apply FIRST so the JSON status reflects any failure.
-        let apply_failed = run_actions(wiki_root, json_mode, apply);
         if json_mode {
-            let status = if apply_failed { "error" } else { "ok" };
             let output = serde_json::json!({
-                "status": status,
+                "status": "ok",
                 "root_index": "ok",
                 "bundles": [],
                 "total_issues": 0,
@@ -610,7 +646,7 @@ fn dispatch_check_no_arg_inner(
         } else {
             println!("没有已安装的 bundle");
         }
-        return i32::from(apply_failed);
+        return 0;
     }
 
     // Root index check first — missing/corrupt index is fatal.
@@ -658,16 +694,16 @@ fn dispatch_check_no_arg_inner(
         total_issues += health_issues + lint_issues;
     }
 
-    // Run --apply BEFORE printing the JSON aggregate so the `status`
-    // field can reflect an --apply re-run failure.
-    let apply_failed = run_actions(wiki_root, json_mode, apply);
+    // Sync backlinks and apply timeliness updates across the entire
+    // wiki root before printing the aggregate output.
+    let paths = wiki::all_wiki_pages_at(wiki_root);
+    let all_pages: Vec<wiki::Page> =
+        paths.iter().filter_map(|p| wiki::read_page_at(p, wiki_root)).collect();
+    sync_derived_metadata(wiki_root, &all_pages, json_mode);
 
     if json_mode {
-        let status = if total_issues > 0 || had_missing || apply_failed {
-            "error"
-        } else {
-            "ok"
-        };
+        let status =
+            if total_issues > 0 || had_missing { "error" } else { "ok" };
         let final_output = serde_json::json!({
             "status": status,
             "root_index": "ok",
@@ -682,7 +718,7 @@ fn dispatch_check_no_arg_inner(
         println!("**全局总计：{total_issues} 个问题**");
     }
 
-    if total_issues > 0 || had_missing || apply_failed {
+    if total_issues > 0 || had_missing {
         return 1;
     }
     0
@@ -725,111 +761,6 @@ fn check_single_bundle(
     }
 
     (health_issues, lint_issues)
-}
-
-/// Run `--apply` actions against `wiki_root`.  Returns `true` if
-/// the re-run found issues (caller should treat as failure).  Uses
-/// `cmd_check_at_inner` with `quiet: true` so no stdout is emitted.
-fn run_actions(wiki_root: &Path, json_mode: bool, apply: bool) -> bool {
-    if !apply {
-        return false;
-    }
-    let opts = CheckOpts { json: json_mode, quiet: true, apply: true };
-    cmd_check_at_inner(&opts, wiki_root) != 0
-}
-
-/// Run health and lint checks against `root`.
-///
-/// Output is printed to stdout (JSON or markdown) unless `quiet` is set.
-/// Backlinks are synced automatically.  If `apply` is true, timeliness
-/// updates are applied to pages under `root`.
-///
-/// Returns `1` if any issues are found, `0` otherwise.  Callers decide
-/// whether to `process::exit` on non-zero.
-pub(crate) fn cmd_check_at_inner(opts: &CheckOpts, root: &Path) -> i32 {
-    if !opts.quiet {
-        eprintln!("注意：check 命令会同步所有页面的反向链接章节");
-    }
-
-    let (health_results, lint_results, health_issues, lint_issues) =
-        run_health_lint_at(root);
-
-    if !opts.quiet {
-        if opts.json {
-            print_json_check_output(
-                &health_results,
-                &lint_results,
-                health_issues,
-                lint_issues,
-            );
-        } else {
-            print_markdown_check_output(&health_results, &lint_results);
-        }
-    }
-
-    // Sync backlinks automatically — check ensures cross-references are
-    // always up-to-date.
-    let paths = wiki::all_wiki_pages_at(root);
-    let all_pages: Vec<wiki::Page> =
-        paths.iter().filter_map(|p| wiki::read_page_at(p, root)).collect();
-    let bl_index = backlinks::build_reverse_index(root, &all_pages);
-    let updated = backlinks::update_backlinks(root, &bl_index, &all_pages);
-    if updated > 0 {
-        eprintln!("已同步 {updated} 个页面的反向链接");
-    }
-
-    // Apply timeliness updates if --apply is set.
-    if opts.apply {
-        let stale_updates = health::mark_stale(&all_pages);
-        let stale_count = stale_updates
-            .iter()
-            .filter(|u| u.new_timeliness == "stale")
-            .count();
-        let current_count = stale_updates
-            .iter()
-            .filter(|u| u.new_timeliness == "current")
-            .count();
-        for update in &stale_updates {
-            if let Err(e) = property::set(
-                &update.path,
-                "timeliness",
-                &update.new_timeliness,
-            ) {
-                eprintln!("写入失败 {}: {e}", update.rel);
-            }
-        }
-        if !stale_updates.is_empty() {
-            eprintln!(
-                "已标记 {} 个页面的 timeliness（stale: {}, current: {}）",
-                stale_updates.len(),
-                stale_count,
-                current_count,
-            );
-        }
-
-        // Invalidate derived pages whose sources have changed.
-        let invalidated = health::invalidate_by_source(&all_pages);
-        for update in &invalidated {
-            if let Err(e) = property::set(
-                &update.path,
-                "last_validated",
-                &update.new_last_validated,
-            ) {
-                eprintln!("写入失败 {}: {e}", update.rel);
-            }
-        }
-        if !invalidated.is_empty() {
-            eprintln!(
-                "已重置 {} 个页面的 last_validated（来源页面已变更）",
-                invalidated.len()
-            );
-        }
-    }
-
-    if (health_issues + lint_issues) > 0 {
-        return 1;
-    }
-    0
 }
 
 const fn count_health_issues(r: &display::CheckResults) -> usize {
@@ -925,26 +856,6 @@ fn print_json_check_output(
     json_output["total_issues"] = serde_json::json!(total);
 
     println!("{}", serde_json::to_string_pretty(&json_output).unwrap());
-}
-
-fn print_markdown_check_output(
-    health: &display::CheckResults,
-    lint: &display::LintResults,
-) {
-    println!("{}", display::format_check_report(health));
-    println!("{}", display::format_lint_report(lint));
-
-    // Global total across health + lint, so the report ends
-    // with an unambiguous verdict instead of the lint-only footer.
-    let health_total = count_health_issues(health);
-    let lint_total = count_lint_issues(lint);
-    let grand_total = health_total + lint_total;
-    println!();
-    println!("---");
-    println!();
-    println!(
-        "**全局总计：{grand_total} 个问题**（健康检查 {health_total} + lint {lint_total}）"
-    );
 }
 
 fn cmd_backlinks(args: &Args, page: Option<&str>) {
@@ -2340,7 +2251,7 @@ satisfy the stub threshold check and other quality gates.\n";
     fn test_dispatch_check_no_arg_inner_empty_lock() {
         let dir = temp_dir("check_inner_empty");
         let lock = bundle::ZwikiLock::default();
-        let code = dispatch_check_no_arg_inner(&dir, &lock, false, false);
+        let code = dispatch_check_no_arg_inner(&dir, &lock, false);
         assert_eq!(code, 0, "empty lock should return 0");
     }
 
@@ -2367,7 +2278,7 @@ satisfy the stub threshold check and other quality gates.\n";
             }],
             ..Default::default()
         };
-        let code = dispatch_check_no_arg_inner(&dir, &lock, false, false);
+        let code = dispatch_check_no_arg_inner(&dir, &lock, false);
         assert_eq!(code, 1, "missing bundle should return 1");
     }
 
@@ -2418,17 +2329,12 @@ title: Bundle Index
             }],
             ..Default::default()
         };
-        let code = dispatch_check_no_arg_inner(&dir, &lock, false, false);
+        let code = dispatch_check_no_arg_inner(&dir, &lock, false);
         assert_eq!(code, 0, "valid bundle should return 0");
     }
 
-    /// #10 regression: the `--apply` path in `dispatch_check_no_arg_inner`
-    /// must propagate failure (return non-zero) instead of calling
-    /// `process::exit`.  Previously it called `cmd_check_at` (the exit-wrapping
-    /// variant), making the failure path untestable and killing the test
-    /// process.  Now it calls `cmd_check_at_inner` and returns the code.
     // -------------------------------------------------------------------
-    // dispatch_check_source_inner — backlinks sync for directory sources
+    // dispatch_check_source_inner — backlinks + timeliness for dir sources
     // -------------------------------------------------------------------
 
     #[test]
@@ -2545,8 +2451,140 @@ Detailed information about page B goes here.
     }
 
     #[test]
-    fn test_dispatch_check_no_arg_inner_apply_propagates_failure() {
-        let dir = temp_dir("check_inner_apply_fail");
+    fn test_dispatch_check_no_arg_inner_default_timeliness_writes() {
+        // Verify that `zwiki check` (no source) writes timeliness
+        // updates to page frontmatter by default.  The page has
+        // last_validated far enough in the past (>180d) that mark_stale
+        // marks it stale, changing timeliness from "current" to "stale".
+        let dir = temp_dir("check_inner_timeliness");
+        std::fs::write(
+            dir.join("index.md"),
+            "<!-- ZOO:BUNDLES:BEGIN -->\n\
+             [bundle](bundles/test)\n\
+             [doc](bundles/test/doc.md)\n\
+             <!-- ZOO:BUNDLES:END -->\n",
+        )
+        .unwrap();
+
+        let bundle_dir = dir.join("bundles").join("test");
+        std::fs::create_dir_all(&bundle_dir).unwrap();
+        std::fs::write(
+            bundle_dir.join("index.md"),
+            "---\ntitle: Index\n---\n\n# Index\n\n- [Doc](doc.md)\n",
+        )
+        .unwrap();
+
+        // Page with recent timestamp (within 90d lint threshold) but old
+        // last_validated (> 180d) → mark_stale will flag it but lint won't.
+        let page_content = "\
+---
+title: Timeliness Test
+type: concept
+timestamp: 2026-06-01T00:00:00Z
+tags: []
+status: draft
+last_validated: 2025-01-01T00:00:00Z
+timeliness: current
+---
+
+# Timeliness Test
+
+This page has enough text to pass the health and lint checks that zwiki
+runs during validation.  It contains well over one hundred characters to
+satisfy the stub threshold check and other quality gates required for the
+bundle validation process.\n";
+        std::fs::write(bundle_dir.join("doc.md"), page_content).unwrap();
+
+        let lock = bundle::ZwikiLock {
+            bundles: vec![bundle::ZwikiLockEntry {
+                name: "test".to_string(),
+                version: "1.0".to_string(),
+                registry: String::new(),
+                target: "bundles/test".to_string(),
+                integrity: "sha256-abc".to_string(),
+                installed_at: "2026-01-01T00:00:00Z".to_string(),
+                description: None,
+            }],
+            ..Default::default()
+        };
+
+        let code = dispatch_check_no_arg_inner(&dir, &lock, false);
+        assert_eq!(code, 0, "valid bundle with stale page should return 0");
+
+        // Verify timeliness was updated in the file content.
+        let content =
+            std::fs::read_to_string(bundle_dir.join("doc.md")).unwrap();
+        assert!(
+            content.contains("timeliness: stale"),
+            "doc.md should have timeliness: stale after check, got: {content:?}"
+        );
+    }
+
+    #[test]
+    fn test_dispatch_check_source_inner_default_timeliness_writes() {
+        // Verify that `zwiki check <dir>` with a local directory source
+        // writes timeliness updates to page frontmatter.
+        let dir = temp_dir("src_inner_timeliness");
+        let bundle_toml = r#"
+[package]
+name = "test-bundle"
+version = "0.1.0"
+okf_version = "0.1"
+kind = "upstream"
+
+[export]
+include = ["*.md"]
+"#;
+        std::fs::write(dir.join("bundle.toml"), bundle_toml).unwrap();
+        std::fs::write(
+            dir.join("index.md"),
+            "---
+title: Index
+---
+# Index
+
+- [Doc](doc.md)
+",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("logs")).unwrap();
+        std::fs::write(dir.join("logs").join(".gitkeep"), "").unwrap();
+
+        // Page with recent timestamp (within 90d lint threshold) but old
+        // last_validated (> 180d) → mark_stale will flag it but lint won't.
+        let page_content = "\
+---
+title: Timeliness Src
+type: concept
+timestamp: 2026-06-01T00:00:00Z
+tags: []
+status: draft
+last_validated: 2025-01-01T00:00:00Z
+timeliness: current
+---
+
+# Timeliness Src
+
+This page has enough text to pass the health and lint checks that zwiki
+runs during validation.  It contains well over one hundred characters to
+satisfy the stub threshold check and other quality gates required for the
+bundle validation process.\n";
+        std::fs::write(dir.join("doc.md"), page_content).unwrap();
+
+        let code = dispatch_check_source_inner(&dir.to_string_lossy(), false);
+        assert_eq!(code, 0, "valid source dir should return 0");
+
+        // Verify timeliness was updated in the file content.
+        let content = std::fs::read_to_string(dir.join("doc.md")).unwrap();
+        assert!(
+            content.contains("timeliness: stale"),
+            "doc.md should have timeliness: stale after check, got: {content:?}"
+        );
+    }
+
+    #[test]
+    fn test_dispatch_check_no_arg_inner_propagates_failure() {
+        let dir = temp_dir("check_inner_fail");
         std::fs::write(
             dir.join("index.md"),
             "<!-- ZOO:BUNDLES:BEGIN -->\n[bundle](bundles/test)\n<!-- ZOO:BUNDLES:END -->\n",
@@ -2573,10 +2611,10 @@ Detailed information about page B goes here.
             ..Default::default()
         };
 
-        let code = dispatch_check_no_arg_inner(&dir, &lock, false, true);
+        let code = dispatch_check_no_arg_inner(&dir, &lock, false);
         assert_eq!(
             code, 1,
-            "--apply path must propagate failure instead of exiting",
+            "check must propagate failure via return code instead of process::exit",
         );
     }
 }

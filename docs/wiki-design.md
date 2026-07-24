@@ -56,7 +56,7 @@
 | zwiki CLI | **Rust 实现**，含 7 个子命令：`check`、`backlinks`、`log`、`page`、`property`、`create`（含 `--domain` 自动建域骨架） | `tools/zwiki/`（构建产物 `tools/bin/zwiki`） |
 | 健康检查 | `zwiki check` 内含：empty files、index sync（递归 + indexed_anywhere 跨层豁免）、log coverage、frontmatter、relations field、**relations-body consistency（双向，error 级）**、source field、missing/duplicate inline links | `tools/zwiki/src/health.rs` |
 | Lint 检查 | `zwiki check` 内含：broken links、orphan pages、sparse pages、**stale pages**（`timestamp` 超 90 天且非 deprecated）、**cascade stale**（被取代页面的引用者，以 `last_validated` 比较判断是否已审查） | `tools/zwiki/src/lint.rs` |
-| `--apply` | check 子命令支持 `--apply`（时效性标注更新）、默认严格模式（任何问题 exit(1)） | `tools/zwiki/src/main.rs` |
+| 自动维护写入 | check 默认同步反向链接，并自动写入 `timeliness`/`last_validated`（幂等）；默认严格模式（任何问题 exit(1)） | `tools/zwiki/src/main.rs` |
 | wiki-ingest skill | 4 阶段（Phase 0 分类 → Phase 1 委派 kiwi → Phase 2 通用写入 → Phase 3 验证） | `core/skills/wiki-ingest/SKILL.md` |
 | wiki-query skill | 6 阶段（Phase 0 判断问题类型 → 1 读 index → 2 读页面 → 3 合成 → 4 判断归档 → 5 呈现） | `core/skills/wiki-query/SKILL.md` |
 | kiwi agent | subagent，prompt 在 `src/agents/kiwi.ts`，明确"read-only"，5 阶段工作流 + QualityGate | `src/agents/kiwi.ts` |
@@ -66,8 +66,8 @@
 
 | 组件 | 当前状态 |
 |------|---------|
-| `last_validated` / `timeliness` / `supersedes` / `superseded_by` / `contradictions` / `freshness_days` 字段 | **字段已定义并回填**。SCHEMA.md 已声明六字段；`last_validated`/`timeliness` 必选（含枚举校验），其余可选；28 现有页面已回填。stale 自动标记（`zwiki check --apply`，P0 项 2 ✅）、三级短路（P0 项 3 ✅）、supersede 机制（`zwiki supersede` + kiwi 判断，P1 项 9 ✅）已实现；`contradictions` 的自动化写入属 P1 项 11，已随矛盾检测实现（集成于 kiwi-distill，`zwiki contradictions apply` 执行写入与对称降级） |
-| `lint --apply` 自动标记 stale | **已实现**。`zwiki check --apply` 检测 `timestamp` 超 90 天且非 `deprecated` 的页面，自动写 `timeliness: stale`（P0 项 2 ✅） |
+| `last_validated` / `timeliness` / `supersedes` / `superseded_by` / `contradictions` / `freshness_days` 字段 | **字段已定义并回填**。SCHEMA.md 已声明六字段；`last_validated`/`timeliness` 必选（含枚举校验），其余可选；28 现有页面已回填。stale 自动标记（`zwiki check`，P0 项 2 ✅）、三级短路（P0 项 3 ✅）、supersede 机制（`zwiki supersede` + kiwi 判断，P1 项 9 ✅）已实现；`contradictions` 的自动化写入属 P1 项 11，已随矛盾检测实现（集成于 kiwi-distill，`zwiki contradictions apply` 执行写入与对称降级） |
+| 自动标记 stale | **已实现**。`zwiki check` 检测 `timestamp` 超 90 天且非 `deprecated` 的页面，自动写 `timeliness: stale`（P0 项 2 ✅） |
 | 三阶段级联检索（index → tag → grep） | **未实现**。wiki-query skill 仍是 index.md 单路径 + grep 提示 |
 | `zwiki search` / `move` 子命令 | **已实现**。`zwiki search`（rg 候选预筛 + 进程内 fallback，四级评分 title/tag/heading/body，`--type`/`--tag`/`--domain` 过滤）；`zwiki move`（重命名 + 自动更新全部引用：frontmatter 四个路径型字段 + body 两类链接 + 域 index.md 条目，支持同域重命名与跨域移动） |
 | 四阶段分块蒸馏（大规模摄入） | **未实现** |
@@ -92,7 +92,7 @@
 
 ### 3.2 机械活自动、判断活留人
 画一条清晰的线，决定什么自动化、什么不：
-- 确定性计算（时间戳比较、backlinks 重算、frontmatter 校验）→ 全自动（`--apply`/`--fix`）
+- 确定性计算（时间戳比较、backlinks 重算、frontmatter 校验）→ 全自动（zwiki check 默认写入/`--fix`）
 - 语义判断（supersede、矛盾裁决、级联标记）→ LLM 提议 + 人确认
 - **LLM 不能既当运动员又当裁判**——矛盾只发现不裁决，supersede 不自动应用
 
@@ -277,7 +277,7 @@ wiki/
 
 ```yaml
 last_validated: 2026-06-19T00:00:00Z                    # 验证时间，区别于 timestamp（编辑≠验证）
-timeliness: current | stale                             # 派生标记，由 zwiki check --apply 自动写入
+timeliness: current | stale                             # 派生标记，由 zwiki check 自动写入
 supersedes:                                              # 关系：我推翻谁（agent 写入 B）
   - path: autoresearch/concepts/old.md
     reason: "新来源确认此结论已被推翻"
@@ -291,7 +291,7 @@ contradictions:                                          # 矛盾记录
 ```
 
 **字段说明：**
-- `last_validated` + `timeliness`（两档）表达时效性——`timeliness` 由 `now - last_validated > threshold` 派生，`zwiki check --apply` 自动写入 frontmatter 供 agent 一读即知
+- `last_validated` + `timeliness`（两档）表达时效性——`timeliness` 由 `now - last_validated > threshold` 派生，`zwiki check` 自动写入 frontmatter 供 agent 一读即知
 - `supersedes` / `superseded_by` 表达取代关系——两侧都是 agent 的合法写入入口，zwiki 对账补齐另一侧，保证互为镜像（详见 §9.2）
 - `contradictions` 表达矛盾记录
 - 不引入 `validation_level` 第三轴（验证层级作为日志元数据，不进 frontmatter）
@@ -548,7 +548,7 @@ frontmatter 原始字段（人/工具直接写入）：
 | `superseded_by` | 关系，可选，"我被谁推翻" | `[path...]` | agent 写入 A |
 | `contradictions` | 关系，可选，矛盾记录 | 见 §9.5 | 矛盾检测写入双方 |
 
-`zwiki check --apply` 自动维护的派生标记（存 frontmatter 供 agent 一读即知）：
+`zwiki check` 自动维护的派生标记（存 frontmatter 供 agent 一读即知）：
 
 | 字段 | 派生自 | 取值 |
 |------|--------|------|
@@ -597,8 +597,8 @@ else (stable + current):            直接引用，无免责
 
 | 事件 | 触发 | 迁移 | 自动化 |
 |------|------|------|--------|
-| 时间流逝 | `zwiki check` 比较 `last_validated` | `timeliness: current → stale`（自动写 frontmatter） | ✅ 全自动（`--apply`） |
-| 新源摄入 | wiki-ingest | kiwi 提议取代关系（写 `supersedes` 或 `superseded_by` 任一侧）；`zwiki check --apply` 对账补齐另一侧 | ⚠️ 半自动（LLM 提议 + 人确认） |
+| 时间流逝 | `zwiki check` 比较 `last_validated` | `timeliness: current → stale`（自动写 frontmatter） | ✅ 全自动 |
+| 新源摄入 | wiki-ingest | kiwi 提议取代关系（写 `supersedes` 或 `superseded_by` 任一侧）；`zwiki check` 对账补齐另一侧 | ⚠️ 半自动（LLM 提议 + 人确认） |
 | 定期审查 | 人/agent 审查 stale 页 | 刷新 `last_validated`（→current）或 `status: deprecated` | ❌ 人工 |
 | 矛盾发现 | lint 语义检查 | 双方写 `contradictions`，`status` 对称降一级（stable→review / review→draft / draft 不降） | ⚠️ 半自动 |
 | 级联过期 | 页面 A 的 `superseded_by` 变非空 | 扫描引用 A 的页面，按引用性质标记 needs_review | ⚠️ 半自动（扫描自动，标记需 LLM） |
@@ -658,7 +658,7 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 | 优先级 | 动作 | 效果 |
 |--------|------|------|
 | 🔴 立即 | post-ingest 强制 backlinks + health（zwiki check 已支持，skill 需强制调用） | 消除"忘记跑 backlinks" |
-| 🔴 立即 | `zwiki check --apply` 自动标记 stale | lint 从报告变执行 |
+| 🔴 立即 | `zwiki check` 自动标记 stale | lint 从报告变执行 |
 | 🟡 之后 | wiki-query pre-query lint 注入（> 7 天自动触发） | 查询时自动感知时效性 |
 | 🟡 之后 | `zwiki check --fix` 自动修复 index 不一致 | 减少手工维护 |
 
@@ -670,7 +670,7 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 
 | 子命令 | 用途 | 状态 |
 |--------|------|------|
-| `check` | 运行 health + lint；支持 `--apply`；默认严格模式（任何问题 exit(1)） | ✅ |
+| `check` | 运行 health + lint；自动同步反向链接与 timeliness 标注；默认严格模式（任何问题 exit(1)） | ✅ |
 | `backlinks` | 反向链接查询/写入 | ✅ |
 | `log` | 追加日志到 `wiki/logs/YYYY-MM.md`（`--op`/`--path`/`--action`/`--note`） | ✅ |
 | `page` | 读页面（`--property`/`--outline`） | ✅ |
@@ -898,7 +898,7 @@ zwiki bundle install https://example.com/zoo-wiki.tar.gz
 | `OKF-IDX` | index.md：`##` 章节改 `#` 一级标题；条目分隔符 `—` 改 `-`；各领域 subdir `index.md` | ✅ 已完成 |
 | `OKF-DOMAIN` | **目录结构类型优先 → 域优先**（见 §5.2.4、§16.2）：各领域 subdir 新建 `index.md`，利用 OKF §6 渐进式披露 | ✅ 已完成 |
 | 1 | 新增 `last_validated`/`timeliness`（必选）/`supersedes`/`superseded_by`/`contradictions`/`freshness_days`（可选）字段（详见 §5.3、§9.2）；28 现有页面已回填 | ✅ 已完成 |
-| 2 | `zwiki check --apply` 自动标记 `timeliness: stale`（默认 180 天阈值，`source` 永不过期，frontmatter `freshness_days` 可覆写） | ✅ 已完成 |
+| 2 | `zwiki check` 自动标记 `timeliness: stale`（默认 180 天阈值，`source` 永不过期，frontmatter `freshness_days` 可覆写） | ✅ 已完成 |
 | 3 | wiki-query skill 大改（生命周期三级短路 + 发现方式升级，详见 §9.2）：①发现层——`zwiki search` 作为首选发现工具（替代纯 index.md 手动定位），按问题类型加 `--type`/`--domain` 过滤缩小范围，index.md 导航降为补充/兜底；②短路层——读取页面后检查 `status: deprecated`（不出现）/`superseded_by` 非空（指向取代者）/`timeliness: stale`（附"N 天未验证"）/`status: review`/`draft`（附状态标注），规则见 §9.2 行为表；③合成层——基于过滤后页面合成答案，标注来源页面 + 生命周期状态 | ✅ |
 | 4 | 五个模板追加新字段（`last_validated`/`timeliness` 必选默认值；其余可选注释示例） | ✅ 已完成 |
 | 5 | 定向 → 检索 → 兜底三级流（详见 §8.2）。skill 侧（wiki-query）先读 root index.md 定向，再调用 `zwiki search` 检索，< 3 结果时去掉 filter 重试/换 tag 词/读域 index.md 兜底 | ✅ |
@@ -1038,7 +1038,7 @@ Bundle 安装机制就位后，L1 分层目录 + 查询级联有实际内容可�
 | **矛盾** | 发现 + 记录 + 呈现，三阶段分离 | 自动修复矛盾、LLM 裁决 |
 | **级联过期** | 扫描自动，标记需 LLM/人 | 级联全自动标记 |
 | **检索** | 三阶段级联（index→tag→grep） | BM25 引擎、知识图谱、外部 embedding（当前规模） |
-| **自动化** | 机械活全自动（`--apply`/`--fix`），语义活半自动 | 事件驱动全自动、会话级自动加载/压缩 |
+| **自动化** | 机械活全自动（zwiki check 默认写入/`--fix`），语义活半自动 | 事件驱动全自动、会话级自动加载/压缩 |
 | **协同冲突** | 覆盖不摧毁、role 决定冲突行为、检测不自动修 | 自动合并多版本、复杂权限矩阵 |
 | **git 协作** | 每团队独立 repo、personal gitignore、log 分月 | 嵌入项目 repo、CRDT 冲突解决、定时 cron |
 | **分发** | bundle.toml + semver + `@name/path` | `okf://` URI、单页独立版本（远期） |
