@@ -458,11 +458,10 @@ pub fn cmd_install_at_inner(
         } else {
             eprintln!(
                 "{}",
-                crate::display::format_check_report(&health_results)
-            );
-            eprintln!("{}", crate::display::format_lint_report(&lint_results));
-            eprintln!(
-                "✗ {total} 个问题（health: {health_issues}, lint: {lint_issues}）"
+                crate::display::format_full_report(
+                    &health_results,
+                    &lint_results,
+                )
             );
         }
         return Err(format!("检查未通过: {total} 个问题"));

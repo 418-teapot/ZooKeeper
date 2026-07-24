@@ -515,8 +515,10 @@ fn dispatch_check_source_inner(source: &str, json: bool) -> i32 {
                     lint_issues,
                 );
             } else {
-                println!("{}", display::format_check_report(&health_results));
-                println!("{}", display::format_lint_report(&lint_results));
+                println!(
+                    "{}",
+                    display::format_full_report(&health_results, &lint_results,)
+                );
             }
 
             // Drop the TempDir — from here on we only access the original
@@ -736,8 +738,8 @@ fn check_single_bundle(
     let health_results = health::run_all(bundle_dir);
     let lint_results = lint::run_all(bundle_dir);
 
-    let health_issues = count_health_issues(&health_results);
-    let lint_issues = count_lint_issues(&lint_results);
+    let health_issues = display::count_health_issues(&health_results);
+    let lint_issues = display::count_lint_issues(&lint_results);
 
     if json_mode {
         let hl_json = format_health_lint_json(&health_results, &lint_results);
@@ -763,27 +765,6 @@ fn check_single_bundle(
     (health_issues, lint_issues)
 }
 
-const fn count_health_issues(r: &display::CheckResults) -> usize {
-    r.empty_files.len()
-        + r.index_sync.on_disk_not_in_index.len()
-        + r.index_sync.in_index_not_on_disk.len()
-        + r.log_coverage.len()
-        + r.frontmatter.len()
-        + r.related_field.len()
-        + r.related_body_consistency.len()
-        + r.source_field.len()
-        + r.missing_inline_links.len()
-        + r.duplicate_inline_links.len()
-}
-
-const fn count_lint_issues(r: &display::LintResults) -> usize {
-    r.broken_links.len()
-        + r.orphan_pages.len()
-        + r.sparse_pages.len()
-        + r.stale_pages.len()
-        + r.cascade_stale.len()
-}
-
 /// Run health + lint checks against `root`, return structured results
 /// and issue counts. Does NOT print, sync backlinks, write reports,
 /// apply timeliness, or exit. Pure detection only.
@@ -792,8 +773,8 @@ pub(crate) fn run_health_lint_at(
 ) -> (display::CheckResults, display::LintResults, usize, usize) {
     let health_results = health::run_all(root);
     let lint_results = lint::run_all(root);
-    let health_issues = count_health_issues(&health_results);
-    let lint_issues = count_lint_issues(&lint_results);
+    let health_issues = display::count_health_issues(&health_results);
+    let lint_issues = display::count_lint_issues(&lint_results);
     (health_results, lint_results, health_issues, lint_issues)
 }
 
