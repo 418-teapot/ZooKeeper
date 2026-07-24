@@ -8,7 +8,6 @@ mod aggregate;
 mod backlinks;
 mod bundle;
 mod contradictions;
-mod diff;
 mod display;
 mod health;
 mod lint;
@@ -62,18 +61,6 @@ enum Command {
         /// Save report to wiki/health-report.md
         #[arg(long, conflicts_with = "source")]
         save: bool,
-
-        /// Run incremental diff link check
-        #[arg(long, conflicts_with = "source")]
-        diff: bool,
-
-        /// Check staged changes (requires --diff)
-        #[arg(long, conflicts_with = "source")]
-        cached: bool,
-
-        /// Git ref to diff against (requires --diff)
-        #[arg(long, conflicts_with = "source")]
-        commit: Option<String>,
 
         /// Apply timeliness updates (stale/current) based on staleness rules
         #[arg(long, conflicts_with = "source")]
@@ -304,14 +291,9 @@ fn dispatch(args: Args) {
             println!();
             process::exit(1);
         }
-        Some(Command::Check { save, diff, cached, commit, apply, source }) => {
+        Some(Command::Check { save, apply, source }) => {
             if !dispatch_check_source(source.as_deref(), args.json) {
                 // No source — iterate all installed bundles from zwiki.lock.
-                let diff_check = if diff {
-                    Some(DiffCheck { cached, commit })
-                } else {
-                    None
-                };
                 let mut write_actions = Vec::new();
                 if save {
                     write_actions.push(WriteAction::SaveReport);
@@ -319,7 +301,7 @@ fn dispatch(args: Args) {
                 if apply {
                     write_actions.push(WriteAction::ApplyTimeliness);
                 }
-                dispatch_check_no_arg(diff_check, args.json, write_actions);
+                dispatch_check_no_arg(args.json, write_actions);
             }
         }
         Some(Command::Backlinks { ref page }) => {
@@ -521,13 +503,7 @@ enum WriteAction {
 pub(crate) struct CheckOpts {
     json: bool,
     quiet: bool,
-    diff_check: Option<DiffCheck>,
     write_actions: Vec<WriteAction>,
-}
-
-struct DiffCheck {
-    cached: bool,
-    commit: Option<String>,
 }
 
 /// Handle the bundle-source path of `zwiki check <source>`.
@@ -562,10 +538,8 @@ fn dispatch_check_source_inner(source: &str, json: bool) -> i32 {
                 print_json_check_output(
                     &health_results,
                     &lint_results,
-                    &[],
                     health_issues,
                     lint_issues,
-                    0,
                 );
             } else {
                 println!("{}", display::format_check_report(&health_results));
@@ -613,13 +587,9 @@ fn dispatch_check_source_inner(source: &str, json: bool) -> i32 {
 ///
 /// Reads the wiki root and `zwiki.lock`, then delegates to
 /// [`dispatch_check_no_arg_inner`] for root-index check, missing-bundle
-/// detection, per-bundle health/lint checks, and optional diff.  Exits
+/// detection, and per-bundle health/lint checks.  Exits
 /// with the returned code.
-fn dispatch_check_no_arg(
-    diff_check: Option<DiffCheck>,
-    json_mode: bool,
-    write_actions: Vec<WriteAction>,
-) {
+fn dispatch_check_no_arg(json_mode: bool, write_actions: Vec<WriteAction>) {
     let wiki_root = wiki::wiki_dir();
     let lock = bundle::read_lock_at(&wiki_root).unwrap_or_else(|msg| {
         eprintln!("{msg}");
@@ -628,7 +598,6 @@ fn dispatch_check_no_arg(
     let code = dispatch_check_no_arg_inner(
         &wiki_root,
         &lock,
-        diff_check,
         json_mode,
         write_actions,
     );
@@ -644,7 +613,6 @@ fn dispatch_check_no_arg(
 fn dispatch_check_no_arg_inner(
     wiki_root: &Path,
     lock: &ZwikiLock,
-    diff_check: Option<DiffCheck>,
     json_mode: bool,
     write_actions: Vec<WriteAction>,
 ) -> i32 {
@@ -710,12 +678,6 @@ fn dispatch_check_no_arg_inner(
             entry,
         );
         total_issues += health_issues + lint_issues;
-    }
-
-    // Diff is a whole-repo git operation — run on wiki root once.
-    if let Some(df) = diff_check {
-        total_issues +=
-            run_diff_check(wiki_root, &df, json_mode, &mut bundle_results);
     }
 
     // Run --save/--apply BEFORE printing the JSON aggregate so the `status`
@@ -787,68 +749,6 @@ fn check_single_bundle(
     (health_issues, lint_issues)
 }
 
-/// Run `diff::run_diff` on the whole wiki root, print results, and
-/// optionally push a pseudo-bundle JSON entry for the diff.
-/// Returns the number of diff issues found.
-fn run_diff_check(
-    wiki_root: &Path,
-    df: &DiffCheck,
-    json_mode: bool,
-    bundle_results: &mut Vec<serde_json::Value>,
-) -> usize {
-    let issues =
-        match diff::run_diff(wiki_root, df.cached, df.commit.as_deref()) {
-            Ok(issues) => issues,
-            Err(e) => {
-                eprintln!("diff check failed: {e}");
-                return 0;
-            }
-        };
-    let diff_count = issues.len();
-
-    if json_mode {
-        let diff_items: Vec<serde_json::Value> = issues
-            .iter()
-            .map(|d| serde_json::json!({"page": d.page, "details": d.details}))
-            .collect();
-        let diff_status = if diff_count == 0 { "ok" } else { "issues" };
-        bundle_results.push(serde_json::json!({
-            "name": "__diff__",
-            "status": diff_status,
-            "issues": diff_count,
-            "diff_issues": diff_items,
-        }));
-    } else if diff_count == 0 {
-        println!("## 增量内联链接（0 处缺失）\n\n✅");
-    } else {
-        println!("## 增量内联链接（{diff_count} 处缺失）");
-        for issue in &issues {
-            if let Ok(val) =
-                serde_json::from_str::<serde_json::Value>(&issue.details)
-            {
-                let term = val["term"].as_str().unwrap_or("");
-                let targets = val["targets"]
-                    .as_array()
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|t| t.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    })
-                    .unwrap_or_default();
-                println!(
-                    "- `{}`: **{}** → 建议链接到: {}",
-                    issue.page, term, targets
-                );
-            } else {
-                println!("- `{}`: {}", issue.page, issue.details);
-            }
-        }
-    }
-
-    diff_count
-}
-
 /// Run `--save`/`--apply` actions against `wiki_root`.  Returns `true` if
 /// the re-run found issues (caller should treat as failure).  Uses
 /// `cmd_check_at_inner` with `quiet: true` so no stdout is emitted.
@@ -860,12 +760,7 @@ fn run_save_actions(
     if write_actions.is_empty() {
         return false;
     }
-    let opts = CheckOpts {
-        json: json_mode,
-        quiet: true,
-        diff_check: None,
-        write_actions,
-    };
+    let opts = CheckOpts { json: json_mode, quiet: true, write_actions };
     cmd_check_at_inner(&opts, wiki_root) != 0
 }
 
@@ -892,7 +787,7 @@ fn write_check_reports(
     eprintln!("已保存：{}", root.display());
 }
 
-/// Run health, lint, and optional diff checks against `root`.
+/// Run health and lint checks against `root`.
 ///
 /// Output is printed to stdout (JSON or markdown) unless `quiet` is set.
 /// Backlinks are synced automatically.  If `write_actions` contains
@@ -910,35 +805,16 @@ pub(crate) fn cmd_check_at_inner(opts: &CheckOpts, root: &Path) -> i32 {
     let (health_results, lint_results, health_issues, lint_issues) =
         run_health_lint_at(root);
 
-    let mut diff_issues = 0;
-    let mut diff_results: Vec<display::Issue> = Vec::new();
-    if let Some(df) = &opts.diff_check {
-        match diff::run_diff(root, df.cached, df.commit.as_deref()) {
-            Ok(issues) => {
-                diff_results = issues;
-                diff_issues = diff_results.len();
-            }
-            Err(e) => eprintln!("diff check failed: {e}"),
-        }
-    }
-
     if !opts.quiet {
         if opts.json {
             print_json_check_output(
                 &health_results,
                 &lint_results,
-                &diff_results,
                 health_issues,
                 lint_issues,
-                diff_issues,
             );
         } else {
-            print_markdown_check_output(
-                &health_results,
-                &lint_results,
-                &diff_results,
-                opts,
-            );
+            print_markdown_check_output(&health_results, &lint_results);
         }
     }
 
@@ -1005,7 +881,7 @@ pub(crate) fn cmd_check_at_inner(opts: &CheckOpts, root: &Path) -> i32 {
         }
     }
 
-    if (health_issues + lint_issues + diff_issues) > 0 {
+    if (health_issues + lint_issues) > 0 {
         return 1;
     }
     0
@@ -1092,26 +968,16 @@ pub(crate) fn format_health_lint_json(
 fn print_json_check_output(
     health: &display::CheckResults,
     lint: &display::LintResults,
-    diff: &[display::Issue],
     health_issues: usize,
     lint_issues: usize,
-    diff_issues: usize,
 ) {
     let mut json_output = format_health_lint_json(health, lint);
-    let total = health_issues + lint_issues + diff_issues;
+    let total = health_issues + lint_issues;
     // `status` reflects whether the check passed — consumers rely on this
     // field (not just the exit code) to decide success/failure.
     json_output["status"] =
         serde_json::json!(if total == 0 { "ok" } else { "error" });
     json_output["total_issues"] = serde_json::json!(total);
-
-    if !diff.is_empty() {
-        let diff_items: Vec<serde_json::Value> = diff
-            .iter()
-            .map(|d| serde_json::json!({"page": d.page, "details": d.details}))
-            .collect();
-        json_output["diff"] = serde_json::json!({"issues": diff_items});
-    }
 
     println!("{}", serde_json::to_string_pretty(&json_output).unwrap());
 }
@@ -1119,54 +985,20 @@ fn print_json_check_output(
 fn print_markdown_check_output(
     health: &display::CheckResults,
     lint: &display::LintResults,
-    diff_results: &[display::Issue],
-    opts: &CheckOpts,
 ) {
     println!("{}", display::format_check_report(health));
     println!("{}", display::format_lint_report(lint));
 
-    if opts.diff_check.is_some() {
-        if diff_results.is_empty() {
-            println!("## 增量内联链接（0 处缺失）\n\n✅");
-        } else {
-            println!("## 增量内联链接（{} 处缺失）", diff_results.len());
-            println!();
-            for issue in diff_results {
-                if let Ok(val) =
-                    serde_json::from_str::<serde_json::Value>(&issue.details)
-                {
-                    let term = val["term"].as_str().unwrap_or("");
-                    let targets = val["targets"]
-                        .as_array()
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|t| t.as_str())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        })
-                        .unwrap_or_default();
-                    println!(
-                        "- `{}`: **{}** → 建议链接到: {}",
-                        issue.page, term, targets
-                    );
-                } else {
-                    println!("- `{}`: {}", issue.page, issue.details);
-                }
-            }
-        }
-    }
-
-    // Global total across health + lint + diff, so the report ends
+    // Global total across health + lint, so the report ends
     // with an unambiguous verdict instead of the lint-only footer.
     let health_total = count_health_issues(health);
     let lint_total = count_lint_issues(lint);
-    let diff_total = diff_results.len();
-    let grand_total = health_total + lint_total + diff_total;
+    let grand_total = health_total + lint_total;
     println!();
     println!("---");
     println!();
     println!(
-        "**全局总计：{grand_total} 个问题**（健康检查 {health_total} + lint {lint_total} + 增量 {diff_total}）"
+        "**全局总计：{grand_total} 个问题**（健康检查 {health_total} + lint {lint_total}）"
     );
 }
 
@@ -1470,46 +1302,6 @@ mod tests {
         match args.command {
             Some(Command::Check { save, .. }) => {
                 assert!(save);
-            }
-            _ => panic!("expected Check"),
-        }
-    }
-
-    #[test]
-    fn test_check_with_diff_parses() {
-        let args = Args::try_parse_from(["zwiki", "check", "--diff"]).unwrap();
-        match args.command {
-            Some(Command::Check { diff, .. }) => {
-                assert!(diff);
-            }
-            _ => panic!("expected Check"),
-        }
-    }
-
-    #[test]
-    fn test_check_with_cached_parses() {
-        let args =
-            Args::try_parse_from(["zwiki", "check", "--diff", "--cached"])
-                .unwrap();
-        match args.command {
-            Some(Command::Check { diff, cached, .. }) => {
-                assert!(diff);
-                assert!(cached);
-            }
-            _ => panic!("expected Check"),
-        }
-    }
-
-    #[test]
-    fn test_check_with_commit_parses() {
-        let args = Args::try_parse_from([
-            "zwiki", "check", "--diff", "--commit", "HEAD~1",
-        ])
-        .unwrap();
-        match args.command {
-            Some(Command::Check { diff, commit, .. }) => {
-                assert!(diff);
-                assert_eq!(commit, Some("HEAD~1".to_string()));
             }
             _ => panic!("expected Check"),
         }
@@ -2627,8 +2419,7 @@ satisfy the stub threshold check and other quality gates.\n";
     fn test_dispatch_check_no_arg_inner_empty_lock() {
         let dir = temp_dir("check_inner_empty");
         let lock = bundle::ZwikiLock::default();
-        let code =
-            dispatch_check_no_arg_inner(&dir, &lock, None, false, Vec::new());
+        let code = dispatch_check_no_arg_inner(&dir, &lock, false, Vec::new());
         assert_eq!(code, 0, "empty lock should return 0");
     }
 
@@ -2655,8 +2446,7 @@ satisfy the stub threshold check and other quality gates.\n";
             }],
             ..Default::default()
         };
-        let code =
-            dispatch_check_no_arg_inner(&dir, &lock, None, false, Vec::new());
+        let code = dispatch_check_no_arg_inner(&dir, &lock, false, Vec::new());
         assert_eq!(code, 1, "missing bundle should return 1");
     }
 
@@ -2707,8 +2497,7 @@ title: Bundle Index
             }],
             ..Default::default()
         };
-        let code =
-            dispatch_check_no_arg_inner(&dir, &lock, None, false, Vec::new());
+        let code = dispatch_check_no_arg_inner(&dir, &lock, false, Vec::new());
         assert_eq!(code, 0, "valid bundle should return 0");
     }
 
@@ -2732,7 +2521,6 @@ title: Wiki Root
         let code = dispatch_check_no_arg_inner(
             &dir,
             &lock,
-            None,
             false,
             vec![WriteAction::SaveReport],
         );
@@ -2798,7 +2586,6 @@ title: Bundle Index
         let code = dispatch_check_no_arg_inner(
             &dir,
             &lock,
-            None,
             true,
             vec![WriteAction::SaveReport],
         );
@@ -2963,7 +2750,6 @@ Detailed information about page B goes here.
         let code = dispatch_check_no_arg_inner(
             &dir,
             &lock,
-            None,
             false,
             vec![WriteAction::SaveReport],
         );
