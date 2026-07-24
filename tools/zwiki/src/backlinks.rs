@@ -19,14 +19,8 @@ use crate::wiki;
 // ---------------------------------------------------------------------------
 
 /// System files excluded from backlink targets.
-const SYSTEM_FILES: &[&str] = &[
-    "index.md",
-    "lint-report.md",
-    "health-report.md",
-    "overview.md",
-    "SCHEMA.md",
-    ".gitkeep",
-];
+const SYSTEM_FILES: &[&str] =
+    &["index.md", "overview.md", "SCHEMA.md", ".gitkeep"];
 
 /// Excluded directory names for backlink targets.
 const EXCLUDED_DIRS: &[&str] = &["templates", "tools", "raw", "logs"];

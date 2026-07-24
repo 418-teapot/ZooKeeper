@@ -27,15 +27,13 @@ const DEFAULT_STUB_THRESHOLD: usize = 100;
 ///
 /// `overview.md` is excluded from this list — it is a synthesis page
 /// that other pages may legitimately reference.
-const SYSTEM_FILES: &[&str] =
-    &["index.md", "lint-report.md", "health-report.md", "SCHEMA.md"];
+const SYSTEM_FILES: &[&str] = &["index.md", "SCHEMA.md"];
 
 /// Meta file names excluded from index-sync comparison.
 ///
 /// `overview.md` is a real synthesis page listed in the root index,
 /// so it must participate in index-sync checks.
-const META_FILE_NAMES: &[&str] =
-    &["index.md", "lint-report.md", "health-report.md", "SCHEMA.md"];
+const META_FILE_NAMES: &[&str] = &["index.md", "SCHEMA.md"];
 
 /// Required frontmatter fields.
 const REQUIRED_FM_FIELDS: &[&str] =
@@ -1995,7 +1993,7 @@ last_validated: not-a-date\n---\nBody.\n";
     fn test_related_field_related_to_system_file() {
         let pages = vec![make_page(
             "concepts/bad.md",
-            "---\ntitle: Bad\ntype: concept\nrelations: [lint-report.md, concepts/foo.md]\n---\nBody.\n",
+            "---\ntitle: Bad\ntype: concept\nrelations: [index.md, concepts/foo.md]\n---\nBody.\n",
         )];
         let issues = check_related_field(&pages);
         assert!(
@@ -2008,7 +2006,7 @@ last_validated: not-a-date\n---\nBody.\n";
     fn test_related_field_markdown_link_to_system_file() {
         let pages = vec![make_page(
             "concepts/badlink.md",
-            "---\ntitle: Bad\ntype: concept\n---\nSee [lint](lint-report.md) and [index](index.md).\n",
+            "---\ntitle: Bad\ntype: concept\n---\nSee [schema](SCHEMA.md) and [index](index.md).\n",
         )];
         let issues = check_related_field(&pages);
         assert!(
@@ -2363,7 +2361,7 @@ last_validated: not-a-date\n---\nBody.\n";
         let pages = vec![make_page(
             "concepts/foo.md",
             "---\ntitle: Foo\nrelations:\n- index.md\n---\n\
-             \nSee [lint](lint-report.md) for details.\n",
+             \nSee [schema](SCHEMA.md) for details.\n",
         )];
         let issues = check_related_body_consistency(&pages, &dir);
         // System files should be skipped entirely — no issues.
@@ -2423,7 +2421,7 @@ last_validated: not-a-date\n---\nBody.\n";
         // system-file checking.
         let pages = vec![make_page(
             "concepts/foo.md",
-            "---\ntitle: Foo\nrelations:\n- \"[Lint](lint-report.md)\"\n---\nBody.\n",
+            "---\ntitle: Foo\nrelations:\n- \"[Home](index.md)\"\n---\nBody.\n",
         )];
         let issues = check_related_field(&pages);
         assert!(

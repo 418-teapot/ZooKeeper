@@ -58,10 +58,6 @@ enum ContradictionsCommand {
 enum Command {
     /// Run all health and lint checks
     Check {
-        /// Save report to wiki/health-report.md
-        #[arg(long, conflicts_with = "source")]
-        save: bool,
-
         /// Apply timeliness updates (stale/current) based on staleness rules
         #[arg(long, conflicts_with = "source")]
         apply: bool,
@@ -291,17 +287,10 @@ fn dispatch(args: Args) {
             println!();
             process::exit(1);
         }
-        Some(Command::Check { save, apply, source }) => {
+        Some(Command::Check { apply, source }) => {
             if !dispatch_check_source(source.as_deref(), args.json) {
                 // No source — iterate all installed bundles from zwiki.lock.
-                let mut write_actions = Vec::new();
-                if save {
-                    write_actions.push(WriteAction::SaveReport);
-                }
-                if apply {
-                    write_actions.push(WriteAction::ApplyTimeliness);
-                }
-                dispatch_check_no_arg(args.json, write_actions);
+                dispatch_check_no_arg(args.json, apply);
             }
         }
         Some(Command::Backlinks { ref page }) => {
@@ -494,16 +483,10 @@ fn check_domain_or_print(
     false
 }
 
-#[derive(Clone, PartialEq, Debug)]
-enum WriteAction {
-    SaveReport,
-    ApplyTimeliness,
-}
-
 pub(crate) struct CheckOpts {
     json: bool,
     quiet: bool,
-    write_actions: Vec<WriteAction>,
+    apply: bool,
 }
 
 /// Handle the bundle-source path of `zwiki check <source>`.
@@ -589,18 +572,13 @@ fn dispatch_check_source_inner(source: &str, json: bool) -> i32 {
 /// [`dispatch_check_no_arg_inner`] for root-index check, missing-bundle
 /// detection, and per-bundle health/lint checks.  Exits
 /// with the returned code.
-fn dispatch_check_no_arg(json_mode: bool, write_actions: Vec<WriteAction>) {
+fn dispatch_check_no_arg(json_mode: bool, apply: bool) {
     let wiki_root = wiki::wiki_dir();
     let lock = bundle::read_lock_at(&wiki_root).unwrap_or_else(|msg| {
         eprintln!("{msg}");
         process::exit(1);
     });
-    let code = dispatch_check_no_arg_inner(
-        &wiki_root,
-        &lock,
-        json_mode,
-        write_actions,
-    );
+    let code = dispatch_check_no_arg_inner(&wiki_root, &lock, json_mode, apply);
     if code != 0 {
         process::exit(code);
     }
@@ -614,13 +592,13 @@ fn dispatch_check_no_arg_inner(
     wiki_root: &Path,
     lock: &ZwikiLock,
     json_mode: bool,
-    write_actions: Vec<WriteAction>,
+    apply: bool,
 ) -> i32 {
     if lock.bundles.is_empty() {
-        // Run --save/--apply FIRST so the JSON status reflects any failure.
-        let save_failed = run_save_actions(wiki_root, json_mode, write_actions);
+        // Run --apply FIRST so the JSON status reflects any failure.
+        let apply_failed = run_actions(wiki_root, json_mode, apply);
         if json_mode {
-            let status = if save_failed { "error" } else { "ok" };
+            let status = if apply_failed { "error" } else { "ok" };
             let output = serde_json::json!({
                 "status": status,
                 "root_index": "ok",
@@ -632,7 +610,7 @@ fn dispatch_check_no_arg_inner(
         } else {
             println!("没有已安装的 bundle");
         }
-        return i32::from(save_failed);
+        return i32::from(apply_failed);
     }
 
     // Root index check first — missing/corrupt index is fatal.
@@ -680,12 +658,12 @@ fn dispatch_check_no_arg_inner(
         total_issues += health_issues + lint_issues;
     }
 
-    // Run --save/--apply BEFORE printing the JSON aggregate so the `status`
-    // field can reflect a --save re-run failure.
-    let save_failed = run_save_actions(wiki_root, json_mode, write_actions);
+    // Run --apply BEFORE printing the JSON aggregate so the `status`
+    // field can reflect an --apply re-run failure.
+    let apply_failed = run_actions(wiki_root, json_mode, apply);
 
     if json_mode {
-        let status = if total_issues > 0 || had_missing || save_failed {
+        let status = if total_issues > 0 || had_missing || apply_failed {
             "error"
         } else {
             "ok"
@@ -704,7 +682,7 @@ fn dispatch_check_no_arg_inner(
         println!("**全局总计：{total_issues} 个问题**");
     }
 
-    if total_issues > 0 || had_missing || save_failed {
+    if total_issues > 0 || had_missing || apply_failed {
         return 1;
     }
     0
@@ -749,51 +727,22 @@ fn check_single_bundle(
     (health_issues, lint_issues)
 }
 
-/// Run `--save`/`--apply` actions against `wiki_root`.  Returns `true` if
+/// Run `--apply` actions against `wiki_root`.  Returns `true` if
 /// the re-run found issues (caller should treat as failure).  Uses
 /// `cmd_check_at_inner` with `quiet: true` so no stdout is emitted.
-fn run_save_actions(
-    wiki_root: &Path,
-    json_mode: bool,
-    write_actions: Vec<WriteAction>,
-) -> bool {
-    if write_actions.is_empty() {
+fn run_actions(wiki_root: &Path, json_mode: bool, apply: bool) -> bool {
+    if !apply {
         return false;
     }
-    let opts = CheckOpts { json: json_mode, quiet: true, write_actions };
+    let opts = CheckOpts { json: json_mode, quiet: true, apply: true };
     cmd_check_at_inner(&opts, wiki_root) != 0
-}
-
-/// Write health-report.md and lint-report.md to `root` atomically.
-/// Errors are printed to stderr but do not cause the check to fail.
-fn write_check_reports(
-    root: &Path,
-    health_results: &display::CheckResults,
-    lint_results: &display::LintResults,
-) {
-    let health_report = display::format_check_report(health_results);
-    let lint_report = display::format_lint_report(lint_results);
-    if let Err(e) = zutil::fileio::write_atomic(
-        &root.join("health-report.md"),
-        &health_report,
-    ) {
-        eprintln!("警告: 无法写入健康报告: {e}");
-    }
-    if let Err(e) =
-        zutil::fileio::write_atomic(&root.join("lint-report.md"), &lint_report)
-    {
-        eprintln!("警告: 无法写入 lint 报告: {e}");
-    }
-    eprintln!("已保存：{}", root.display());
 }
 
 /// Run health and lint checks against `root`.
 ///
 /// Output is printed to stdout (JSON or markdown) unless `quiet` is set.
-/// Backlinks are synced automatically.  If `write_actions` contains
-/// `SaveReport`, the reports are written to `root`.  If `write_actions`
-/// contains `ApplyTimeliness`, timeliness updates are applied to pages
-/// under `root`.
+/// Backlinks are synced automatically.  If `apply` is true, timeliness
+/// updates are applied to pages under `root`.
 ///
 /// Returns `1` if any issues are found, `0` otherwise.  Callers decide
 /// whether to `process::exit` on non-zero.
@@ -818,10 +767,6 @@ pub(crate) fn cmd_check_at_inner(opts: &CheckOpts, root: &Path) -> i32 {
         }
     }
 
-    if opts.write_actions.contains(&WriteAction::SaveReport) {
-        write_check_reports(root, &health_results, &lint_results);
-    }
-
     // Sync backlinks automatically — check ensures cross-references are
     // always up-to-date.
     let paths = wiki::all_wiki_pages_at(root);
@@ -834,7 +779,7 @@ pub(crate) fn cmd_check_at_inner(opts: &CheckOpts, root: &Path) -> i32 {
     }
 
     // Apply timeliness updates if --apply is set.
-    if opts.write_actions.contains(&WriteAction::ApplyTimeliness) {
+    if opts.apply {
         let stale_updates = health::mark_stale(&all_pages);
         let stale_count = stale_updates
             .iter()
@@ -1297,17 +1242,6 @@ mod tests {
     }
 
     #[test]
-    fn test_check_with_flags_parses() {
-        let args = Args::try_parse_from(["zwiki", "check", "--save"]).unwrap();
-        match args.command {
-            Some(Command::Check { save, .. }) => {
-                assert!(save);
-            }
-            _ => panic!("expected Check"),
-        }
-    }
-
-    #[test]
     fn test_check_with_source_parses() {
         let args = Args::try_parse_from(["zwiki", "check", "foo"]).unwrap();
         match args.command {
@@ -1526,19 +1460,6 @@ mod tests {
     fn test_global_json_flag() {
         let args = Args::try_parse_from(["zwiki", "--json", "check"]).unwrap();
         assert!(args.json);
-    }
-
-    #[test]
-    fn test_check_with_json_parses() {
-        let args = Args::try_parse_from(["zwiki", "--json", "check", "--save"])
-            .unwrap();
-        assert!(args.json);
-        match args.command {
-            Some(Command::Check { save, .. }) => {
-                assert!(save);
-            }
-            _ => panic!("expected Check"),
-        }
     }
 
     #[test]
@@ -2419,7 +2340,7 @@ satisfy the stub threshold check and other quality gates.\n";
     fn test_dispatch_check_no_arg_inner_empty_lock() {
         let dir = temp_dir("check_inner_empty");
         let lock = bundle::ZwikiLock::default();
-        let code = dispatch_check_no_arg_inner(&dir, &lock, false, Vec::new());
+        let code = dispatch_check_no_arg_inner(&dir, &lock, false, false);
         assert_eq!(code, 0, "empty lock should return 0");
     }
 
@@ -2446,7 +2367,7 @@ satisfy the stub threshold check and other quality gates.\n";
             }],
             ..Default::default()
         };
-        let code = dispatch_check_no_arg_inner(&dir, &lock, false, Vec::new());
+        let code = dispatch_check_no_arg_inner(&dir, &lock, false, false);
         assert_eq!(code, 1, "missing bundle should return 1");
     }
 
@@ -2497,106 +2418,11 @@ title: Bundle Index
             }],
             ..Default::default()
         };
-        let code = dispatch_check_no_arg_inner(&dir, &lock, false, Vec::new());
+        let code = dispatch_check_no_arg_inner(&dir, &lock, false, false);
         assert_eq!(code, 0, "valid bundle should return 0");
     }
 
-    #[test]
-    fn test_dispatch_check_no_arg_inner_empty_lock_with_save() {
-        // Fix #2: --save/--apply must be honored even when no bundles
-        // are installed — health-report.md should be written.
-        let dir = temp_dir("check_inner_empty_save");
-        std::fs::write(
-            dir.join("index.md"),
-            "---
-title: Wiki Root
----
-<!-- ZOO:BUNDLES:BEGIN -->
-<!-- ZOO:BUNDLES:END -->
-",
-        )
-        .unwrap();
-
-        let lock = bundle::ZwikiLock::default();
-        let code = dispatch_check_no_arg_inner(
-            &dir,
-            &lock,
-            false,
-            vec![WriteAction::SaveReport],
-        );
-        assert_eq!(code, 0, "empty lock with --save should return 0");
-        assert!(
-            dir.join("health-report.md").exists(),
-            "health-report.md should be written even with no bundles",
-        );
-    }
-
-    #[test]
-    fn test_dispatch_check_no_arg_inner_save_does_not_duplicate_json() {
-        // Fix #1: --json check --save must print exactly ONE JSON object.
-        // With the new design, cmd_check_at_inner (quiet: false) calls
-        // print_json_check_output which does exactly one println -- there
-        // is no separate aggregate JSON before it.  The structural guarantee
-        // (one println in the json path) replaces the old two-println layout.
-        let dir = temp_dir("check_inner_json_save");
-        // Reference the page in the root index so it is not flagged as
-        // on_disk_not_in_index or orphan.
-        std::fs::write(
-            dir.join("index.md"),
-            "<!-- ZOO:BUNDLES:BEGIN -->\n\
-             [bundle](bundles/test)\n\
-             [doc](bundles/test/doc.md)\n\
-             <!-- ZOO:BUNDLES:END -->\n",
-        )
-        .unwrap();
-
-        let bundle_dir = dir.join("bundles").join("test");
-        std::fs::create_dir_all(&bundle_dir).unwrap();
-        // Add bundle index.md referencing doc.md so index-sync and orphan
-        // checks pass under per-bundle checking.
-        std::fs::write(
-            bundle_dir.join("index.md"),
-            "---
-title: Bundle Index
----
-
-# Bundle
-
-- [Doc](doc.md)
-",
-        )
-        .unwrap();
-        // Add a discoverable page with full frontmatter + body so health
-        // check passes and cmd_check_at_inner produces a valid JSON report.
-        std::fs::write(bundle_dir.join("doc.md"), PAGE_OK).unwrap();
-
-        let lock = bundle::ZwikiLock {
-            bundles: vec![bundle::ZwikiLockEntry {
-                name: "test".to_string(),
-                version: "1.0".to_string(),
-                registry: String::new(),
-                target: "bundles/test".to_string(),
-                integrity: "sha256-abc".to_string(),
-                installed_at: "2026-01-01T00:00:00Z".to_string(),
-                description: None,
-            }],
-            ..Default::default()
-        };
-
-        let code = dispatch_check_no_arg_inner(
-            &dir,
-            &lock,
-            true,
-            vec![WriteAction::SaveReport],
-        );
-        assert_eq!(code, 0, "valid bundle with --json --save should return 0");
-        assert!(
-            dir.join("health-report.md").exists(),
-            "health-report.md should be written with --save",
-        );
-    }
-
-    /// #10 regression: the `--save`/`--apply` path in `dispatch_check_no_arg_inner`
+    /// #10 regression: the `--apply` path in `dispatch_check_no_arg_inner`
     /// must propagate failure (return non-zero) instead of calling
     /// `process::exit`.  Previously it called `cmd_check_at` (the exit-wrapping
     /// variant), making the failure path untestable and killing the test
@@ -2719,8 +2545,8 @@ Detailed information about page B goes here.
     }
 
     #[test]
-    fn test_dispatch_check_no_arg_inner_save_propagates_failure() {
-        let dir = temp_dir("check_inner_save_fail");
+    fn test_dispatch_check_no_arg_inner_apply_propagates_failure() {
+        let dir = temp_dir("check_inner_apply_fail");
         std::fs::write(
             dir.join("index.md"),
             "<!-- ZOO:BUNDLES:BEGIN -->\n[bundle](bundles/test)\n<!-- ZOO:BUNDLES:END -->\n",
@@ -2747,15 +2573,10 @@ Detailed information about page B goes here.
             ..Default::default()
         };
 
-        let code = dispatch_check_no_arg_inner(
-            &dir,
-            &lock,
-            false,
-            vec![WriteAction::SaveReport],
-        );
+        let code = dispatch_check_no_arg_inner(&dir, &lock, false, true);
         assert_eq!(
             code, 1,
-            "--save path must propagate failure instead of exiting",
+            "--apply path must propagate failure instead of exiting",
         );
     }
 }

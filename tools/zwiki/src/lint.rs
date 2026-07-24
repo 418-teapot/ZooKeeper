@@ -214,7 +214,7 @@ pub fn check_broken_links(
 /// - Frontmatter `relations` links
 ///
 /// Self-references are excluded from the inbound count.  Links from meta
-/// files (index.md, lint-report.md, etc.) are naturally excluded because they are
+/// files (index.md, SCHEMA.md, etc.) are naturally excluded because they are
 /// not part of the `pages` slice.
 pub fn check_orphan_pages(pages: &[Page], wiki_dir: &Path) -> Vec<Issue> {
     // Build inbound link count (excluding self-references).

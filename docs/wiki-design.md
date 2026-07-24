@@ -56,7 +56,7 @@
 | zwiki CLI | **Rust 实现**，含 7 个子命令：`check`、`backlinks`、`log`、`page`、`property`、`create`（含 `--domain` 自动建域骨架） | `tools/zwiki/`（构建产物 `tools/bin/zwiki`） |
 | 健康检查 | `zwiki check` 内含：empty files、index sync（递归 + indexed_anywhere 跨层豁免）、log coverage、frontmatter、relations field、**relations-body consistency（双向，error 级）**、source field、missing/duplicate inline links | `tools/zwiki/src/health.rs` |
 | Lint 检查 | `zwiki check` 内含：broken links、orphan pages、sparse pages、**stale pages**（`timestamp` 超 90 天且非 deprecated）、**cascade stale**（被取代页面的引用者，以 `last_validated` 比较判断是否已审查） | `tools/zwiki/src/lint.rs` |
-| `--save` / `--apply` | check 子命令支持 `--save`（写 health-report.md）、`--apply`（时效性标注更新）、默认严格模式（任何问题 exit(1)） | `tools/zwiki/src/main.rs` |
+| `--apply` | check 子命令支持 `--apply`（时效性标注更新）、默认严格模式（任何问题 exit(1)） | `tools/zwiki/src/main.rs` |
 | wiki-ingest skill | 4 阶段（Phase 0 分类 → Phase 1 委派 kiwi → Phase 2 通用写入 → Phase 3 验证） | `core/skills/wiki-ingest/SKILL.md` |
 | wiki-query skill | 6 阶段（Phase 0 判断问题类型 → 1 读 index → 2 读页面 → 3 合成 → 4 判断归档 → 5 呈现） | `core/skills/wiki-query/SKILL.md` |
 | kiwi agent | subagent，prompt 在 `src/agents/kiwi.ts`，明确"read-only"，5 阶段工作流 + QualityGate | `src/agents/kiwi.ts` |
@@ -670,7 +670,7 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 
 | 子命令 | 用途 | 状态 |
 |--------|------|------|
-| `check` | 运行 health + lint；支持 `--save`/`--apply`；默认严格模式（任何问题 exit(1)） | ✅ |
+| `check` | 运行 health + lint；支持 `--apply`；默认严格模式（任何问题 exit(1)） | ✅ |
 | `backlinks` | 反向链接查询/写入 | ✅ |
 | `log` | 追加日志到 `wiki/logs/YYYY-MM.md`（`--op`/`--path`/`--action`/`--note`） | ✅ |
 | `page` | 读页面（`--property`/`--outline`） | ✅ |

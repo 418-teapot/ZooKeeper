@@ -18,13 +18,7 @@ use walkdir::WalkDir;
 /// `overview.md` is intentionally NOT listed here — it is a real
 /// synthesis page and must participate in health checks (relations-field
 /// consistency, inline-link coverage, etc.).
-const META_FILES: &[&str] = &[
-    "index.md",
-    "lint-report.md",
-    "health-report.md",
-    "SCHEMA.md",
-    ".gitkeep",
-];
+const META_FILES: &[&str] = &["index.md", "SCHEMA.md", ".gitkeep"];
 
 /// Directory names excluded from page discovery.
 const EXCLUDED_DIRS: &[&str] = &["templates", "tools", "raw", "logs"];
@@ -92,8 +86,7 @@ pub fn discover_pages(base: &Path) -> Vec<PathBuf> {
 ///
 /// The following are excluded:
 ///
-/// * Meta files: `index.md`, `lint-report.md`,
-///   `health-report.md`, `overview.md`, `SCHEMA.md`, `.gitkeep`.
+/// * Meta files: `index.md`, `SCHEMA.md`, `.gitkeep`.
 /// * Files under the `templates/`, `tools/`, `raw/`, and `logs/` directories.
 #[must_use]
 pub fn all_wiki_pages() -> Vec<PathBuf> {
@@ -704,13 +697,11 @@ mod tests {
         let dir = temp_dir("wiki_pages_meta");
         write(&dir.join("regular.md"), "# Regular");
         write(&dir.join("overview.md"), "# Overview");
-        for meta in &[
-            "index.md",
-            "lint-report.md",
-            "health-report.md",
-            "SCHEMA.md",
-            ".gitkeep",
-        ] {
+        // health-report.md and lint-report.md are no longer meta files —
+        // they now appear as regular pages.
+        write(&dir.join("health-report.md"), "# Health Report");
+        write(&dir.join("lint-report.md"), "# Lint Report");
+        for meta in &["index.md", "SCHEMA.md", ".gitkeep"] {
             write(&dir.join(meta), &format!("# {meta}"));
         }
         // logs/ is a directory excluded from page discovery
@@ -722,7 +713,15 @@ mod tests {
             .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
             .collect();
         // overview.md is a real page, not a meta file.
-        assert_eq!(names, vec!["overview.md", "regular.md"]);
+        assert_eq!(
+            names,
+            vec![
+                "health-report.md",
+                "lint-report.md",
+                "overview.md",
+                "regular.md"
+            ]
+        );
     }
 
     #[test]
