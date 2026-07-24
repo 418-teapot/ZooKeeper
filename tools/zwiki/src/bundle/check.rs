@@ -6,13 +6,12 @@ use std::path::{Path, PathBuf};
 use crate::bundle::args::CheckArgs;
 use crate::bundle::index;
 use crate::bundle::lock;
-use crate::wiki;
 
 /// Check integrity of installed bundles.
-pub fn cmd_check(args: &CheckArgs, global_json: bool) {
+pub fn cmd_check(args: &CheckArgs, global_json: bool, wiki_root: &Path) {
     let use_json = args.json || global_json;
     if let Err(msg) =
-        cmd_check_inner(use_json, &wiki::wiki_dir(), args.fix, args.dry_run)
+        cmd_check_inner(use_json, wiki_root, args.fix, args.dry_run)
     {
         if !use_json {
             eprintln!("错误: {msg}");

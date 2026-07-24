@@ -24,8 +24,66 @@ mod wiki;
 
 use crate::bundle::ZwikiLock;
 use clap::{Parser, Subcommand};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
+use tempfile::TempDir;
+
+/// Resolved wiki root — either a writable local directory or a read-only
+/// temporary extraction (from tar.gz or URL).
+enum WikiRoot {
+    /// A local directory that can be written to.
+    Dir(PathBuf),
+    /// A temporary extraction (tar.gz or URL) that is read-only.
+    Temp(TempDir),
+}
+
+impl WikiRoot {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Dir(p) => p.as_path(),
+            Self::Temp(t) => t.path(),
+        }
+    }
+
+    const fn is_writable(&self) -> bool {
+        matches!(self, Self::Dir(_))
+    }
+}
+
+/// Guard: exit with an error when `root` is read-only (tar.gz/URL).
+fn guard_writable(root: &WikiRoot, cmd_desc: &str) {
+    if !root.is_writable() {
+        eprintln!(
+            "错误: 在 tar.gz/URL 形式的 wiki 根上不支持「{cmd_desc}」操作"
+        );
+        std::process::exit(1);
+    }
+}
+
+/// Resolve the `--root` argument to a [`WikiRoot`].
+///
+/// - `None` → default `~/.zoo/wiki/` directory (writable).
+/// - Existing directory → use in place (writable).
+/// - tar.gz path or URL → extract to `TempDir` (read-only).
+///
+/// `use_json` controls error message formatting.
+fn resolve_wiki_root(
+    root: Option<&str>,
+    use_json: bool,
+) -> Result<WikiRoot, String> {
+    let Some(root_str) = root else {
+        return Ok(WikiRoot::Dir(wiki::wiki_dir()));
+    };
+
+    let path = Path::new(root_str);
+    if path.is_dir() {
+        return Ok(WikiRoot::Dir(path.to_path_buf()));
+    }
+
+    // tar.gz or URL — resolve via bundle source resolution.
+    let tmp = crate::bundle::source::resolve_source(root_str, use_json)?;
+    Ok(WikiRoot::Temp(tmp))
+}
 
 #[derive(Parser)]
 #[command(
@@ -34,6 +92,10 @@ use std::process;
     disable_help_subcommand = true
 )]
 struct Args {
+    /// Wiki root directory, tar.gz path, or URL (default: ~/.zoo/wiki/)
+    #[arg(long, global = true)]
+    root: Option<String>,
+
     /// Output as JSON
     #[arg(long, global = true)]
     json: bool,
@@ -57,16 +119,12 @@ enum ContradictionsCommand {
 #[derive(Subcommand)]
 enum Command {
     /// Run all health and lint checks
-    Check {
-        /// Optional bundle source (path/.tar.gz/URL) to validate instead of
-        /// running health/lint checks
-        source: Option<String>,
-    },
+    Check,
 
-    /// Show backlinks
+    /// Show backlinks for a wiki page
     Backlinks {
-        /// Specific page to show backlinks for
-        page: Option<String>,
+        /// Wiki-relative page path (e.g. concepts/npc.md)
+        page: String,
     },
 
     /// Bundle distribution commands
@@ -275,6 +333,20 @@ fn main() {
 }
 
 fn dispatch(args: Args) {
+    let use_json = args.json;
+    let wiki_root = match resolve_wiki_root(args.root.as_deref(), use_json) {
+        Ok(r) => r,
+        Err(e) => {
+            if use_json {
+                let output = serde_json::json!({"status": "error", "error": e});
+                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            } else {
+                eprintln!("{e}");
+            }
+            process::exit(1);
+        }
+    };
+
     match args.command {
         None => {
             use clap::CommandFactory;
@@ -283,26 +355,34 @@ fn dispatch(args: Args) {
             println!();
             process::exit(1);
         }
-        Some(Command::Check { source }) => {
-            if !dispatch_check_source(source.as_deref(), args.json) {
-                // No source — iterate all installed bundles from zwiki.lock.
-                dispatch_check_no_arg(args.json);
-            }
+        Some(Command::Check) => {
+            dispatch_check(&wiki_root, args.json);
         }
         Some(Command::Backlinks { ref page }) => {
-            cmd_backlinks(&args, page.as_deref());
+            cmd_backlinks(&wiki_root, page, args.json);
         }
         Some(Command::Log { op, path, action, note }) => {
-            cmd_log(&op, &path, &action, note.as_deref());
+            guard_writable(&wiki_root, "log");
+            cmd_log(&wiki_root, &op, &path, &action, note.as_deref());
         }
         Some(Command::Page { path, property, outline }) => {
-            cmd_page(&path, property.as_deref(), outline);
+            cmd_page(&wiki_root, &path, property.as_deref(), outline);
         }
         Some(Command::Property { name, page, value, downgrade, delete }) => {
-            cmd_property(&name, &page, value.as_deref(), downgrade, delete);
+            guard_writable(&wiki_root, "property");
+            cmd_property(
+                &wiki_root,
+                &name,
+                &page,
+                value.as_deref(),
+                downgrade,
+                delete,
+            );
         }
         Some(Command::Create { domain, r#type, title, slug, source_type }) => {
+            guard_writable(&wiki_root, "create");
             cmd_create(
+                &wiki_root,
                 &domain,
                 &r#type,
                 &title,
@@ -312,6 +392,7 @@ fn dispatch(args: Args) {
         }
         Some(Command::Search { query, r#type, tag, domain }) => {
             cmd_search(
+                &wiki_root,
                 &query,
                 r#type.as_deref(),
                 tag.as_deref(),
@@ -321,6 +402,7 @@ fn dispatch(args: Args) {
         }
         Some(Command::List { r#type, tag, domain }) => {
             cmd_list(
+                &wiki_root,
                 r#type.as_deref(),
                 tag.as_deref(),
                 domain.as_deref(),
@@ -329,34 +411,35 @@ fn dispatch(args: Args) {
         }
         Some(Command::Status { r#type, tag, domain }) => {
             cmd_status(
+                &wiki_root,
                 r#type.as_deref(),
                 tag.as_deref(),
                 domain.as_deref(),
                 args.json,
             );
         }
-        ref cmd => dispatch_tail(&args, cmd.as_ref().unwrap()),
+        ref cmd => dispatch_tail(&wiki_root, &args, cmd.as_ref().unwrap()),
     }
 }
 
 /// Dispatch the remaining subcommands (Verify through Contradictions)
 /// to keep the main `dispatch` function under the line limit.
-fn dispatch_tail(args: &Args, cmd: &Command) {
+fn dispatch_tail(wiki_root: &WikiRoot, args: &Args, cmd: &Command) {
     match cmd {
         Command::Verify { domain } => {
-            let wiki_dir = wiki::wiki_dir();
             if check_domain_or_print(
                 domain.as_deref(),
-                &wiki_dir,
+                wiki_root.path(),
                 args.json,
                 "[]",
             ) {
                 return;
             }
-            verify::cmd_verify(args.json, domain.as_deref());
+            verify::cmd_verify(wiki_root.path(), args.json, domain.as_deref());
         }
         Command::Tags { r#type, domain } => {
             cmd_aggregate(
+                wiki_root,
                 aggregate::AggregateField::Tags,
                 r#type.as_deref(),
                 None,
@@ -366,6 +449,7 @@ fn dispatch_tail(args: &Args, cmd: &Command) {
         }
         Command::Types { tag, domain } => {
             cmd_aggregate(
+                wiki_root,
                 aggregate::AggregateField::Types,
                 None,
                 tag.as_deref(),
@@ -375,6 +459,7 @@ fn dispatch_tail(args: &Args, cmd: &Command) {
         }
         Command::Domains { r#type, tag } => {
             cmd_aggregate(
+                wiki_root,
                 aggregate::AggregateField::Domains,
                 r#type.as_deref(),
                 tag.as_deref(),
@@ -382,15 +467,40 @@ fn dispatch_tail(args: &Args, cmd: &Command) {
                 args.json,
             );
         }
-        Command::Move { old, new } => cmd_move(old, new, args.json),
+        Command::Move { old, new } => {
+            guard_writable(wiki_root, "move");
+            cmd_move(wiki_root, old, new, args.json);
+        }
         Command::Supersede { old, new, reason } => {
-            cmd_supersede(old, new, reason);
+            guard_writable(wiki_root, "supersede");
+            cmd_supersede(wiki_root, old, new, reason);
         }
         Command::Bundle(cmd) => {
-            bundle::dispatch(cmd, args.json);
+            // All bundle subcommands require a lock-based wiki root
+            // (installed bundles).  Temporary root (tar.gz/URL) cannot
+            // satisfy this — reject early with a targeted message.
+            if !wiki_root.is_writable() {
+                eprintln!(
+                    "错误: 在 tar.gz/URL 形式的 wiki 根上不支持 bundle \
+                     子命令。请直接使用「zwiki --root <制品> check」检查临时制品。"
+                );
+                process::exit(1);
+            }
+            match cmd {
+                bundle::BundleCommand::Install(_)
+                | bundle::BundleCommand::Uninstall(_)
+                | bundle::BundleCommand::Update(_) => {
+                    guard_writable(wiki_root, "bundle 写操作");
+                }
+                _ => {}
+            }
+            bundle::dispatch(cmd, args.json, wiki_root.path());
         }
         Command::Contradictions(cmd) => {
-            contradictions::dispatch(cmd, args.json);
+            if matches!(cmd, crate::ContradictionsCommand::Apply) {
+                guard_writable(wiki_root, "contradictions apply");
+            }
+            contradictions::dispatch(cmd, wiki_root.path(), args.json);
         }
         _ => {
             // Unknown subcommand variant — never panic at runtime.  New
@@ -402,9 +512,8 @@ fn dispatch_tail(args: &Args, cmd: &Command) {
 }
 
 /// Move a wiki page, updating references and indexes.
-fn cmd_move(old: &str, new: &str, json: bool) {
-    let wiki_root = wiki::wiki_dir();
-    match r#move::execute_move(&wiki_root, old, new) {
+fn cmd_move(wiki_root: &WikiRoot, old: &str, new: &str, json: bool) {
+    match r#move::execute_move(wiki_root.path(), old, new) {
         Ok(result) => {
             if json {
                 let output = serde_json::json!({
@@ -445,11 +554,12 @@ fn cmd_move(old: &str, new: &str, json: bool) {
 }
 
 /// Record a supersede relationship between two wiki pages.
-fn cmd_supersede(old: &str, new: &str, reason: &str) {
-    supersede::link_supersede(old, new, reason).unwrap_or_else(|e| {
-        eprintln!("{e}");
-        process::exit(1);
-    });
+fn cmd_supersede(wiki_root: &WikiRoot, old: &str, new: &str, reason: &str) {
+    supersede::link_supersede_at(old, new, reason, wiki_root.path())
+        .unwrap_or_else(|e| {
+            eprintln!("{e}");
+            process::exit(1);
+        });
     println!("已记录取代关系: {old} ← {new}");
 }
 
@@ -479,35 +589,84 @@ fn check_domain_or_print(
     false
 }
 
-/// Handle the bundle-source path of `zwiki check <source>`.
+/// Handle `zwiki check` — unified dispatch for Dir and Temp roots.
 ///
-/// Returns `true` when `source` was present and handled (either validated +
-/// checked, or exited with a fatal error).  Returns `false` when `source`
-/// is `None`, signalling the caller to run the regular health/lint path.
-fn dispatch_check_source(source: Option<&str>, json: bool) -> bool {
-    let Some(src) = source else { return false };
-    let code = dispatch_check_source_inner(src, json);
-    if code != 0 {
-        process::exit(code);
-    }
-    true
-}
-
-/// Inner implementation of `dispatch_check_source` that returns an exit code
-/// instead of calling `process::exit`.  Returns `0` on success, `1` on error.
-fn dispatch_check_source_inner(source: &str, json: bool) -> i32 {
-    match bundle::load_and_validate_manifest(source, json) {
-        Ok((resolved, _manifest)) => {
-            if bundle::check_bundle_structure(resolved.path(), json).is_err() {
-                // Explicitly drop the TempDir before returning —
-                // the caller would process::exit, which skips destructors.
-                drop(resolved);
-                return 1;
+/// - `Dir` root: per-bundle check + `sync_derived_metadata` (writable);
+///   when no lock bundles exist, runs health/lint on the root directly.
+/// - `Temp` root: manifest + structure + health/lint only (read-only).
+fn dispatch_check(root: &WikiRoot, json_mode: bool) {
+    match root {
+        WikiRoot::Dir(dir) => {
+            let lock = bundle::read_lock_at(dir).unwrap_or_else(|msg| {
+                eprintln!("{msg}");
+                process::exit(1);
+            });
+            if lock.bundles.is_empty() {
+                // No bundles — check the root directory directly so that
+                // `--root ./wiki` on a wiki without a lock still validates.
+                let code = dispatch_check_root_dir(dir, json_mode);
+                if code != 0 {
+                    process::exit(code);
+                }
+            } else {
+                let code = dispatch_check_no_arg_inner(dir, &lock, json_mode);
+                if code != 0 {
+                    process::exit(code);
+                }
             }
+        }
+        WikiRoot::Temp(tmp) => {
+            // Read bundle.toml directly (no double-copy via resolve_source).
+            let manifest_path = tmp.path().join("bundle.toml");
+            if !manifest_path.exists() {
+                if json_mode {
+                    let output = serde_json::json!({
+                        "status": "error",
+                        "error": "bundle.toml not found in wiki root",
+                    });
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&output).unwrap()
+                    );
+                } else {
+                    eprintln!("错误: 在 wiki 根中未找到 bundle.toml");
+                }
+                process::exit(1);
+            }
+            if let Err(e) = bundle::read_manifest(&manifest_path, json_mode) {
+                if json_mode {
+                    let output =
+                        serde_json::json!({"status": "error", "error": e});
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&output).unwrap()
+                    );
+                } else {
+                    eprintln!("{e}");
+                }
+                process::exit(1);
+            }
+            // Bundle structure check (index.md + logs/).
+            if let Err(e) =
+                bundle::check_bundle_structure(tmp.path(), json_mode)
+            {
+                if json_mode {
+                    let output =
+                        serde_json::json!({"status": "error", "error": e});
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&output).unwrap()
+                    );
+                } else {
+                    eprintln!("{e}");
+                }
+                process::exit(1);
+            }
+            // Health + lint checks.
             let (health_results, lint_results, health_issues, lint_issues) =
-                run_health_lint_at(resolved.path());
+                run_health_lint_at(tmp.path());
             let total = health_issues + lint_issues;
-            if json {
+            if json_mode {
                 print_json_check_output(
                     &health_results,
                     &lint_results,
@@ -517,34 +676,43 @@ fn dispatch_check_source_inner(source: &str, json: bool) -> i32 {
             } else {
                 println!(
                     "{}",
-                    display::format_full_report(&health_results, &lint_results,)
+                    display::format_full_report(&health_results, &lint_results)
                 );
             }
-
-            // Drop the TempDir — from here on we only access the original
-            // source (which may be a local directory for backlinks sync).
-            drop(resolved);
-
-            // Sync backlinks and timeliness if source is a local
-            // directory (can write back).  For tar.gz or URL sources,
-            // this is skipped because the source is not writable.
-            let source_path = Path::new(source);
-            if source_path.is_dir() {
-                let paths = wiki::all_wiki_pages_at(source_path);
-                let all_pages: Vec<wiki::Page> = paths
-                    .iter()
-                    .filter_map(|p| wiki::read_page_at(p, source_path))
-                    .collect();
-                sync_derived_metadata(source_path, &all_pages, json);
-            }
-
+            // Read-only: skip derived metadata writes.
+            eprintln!("只读模式：跳过派生元数据写入");
             if total > 0 {
-                return 1;
+                process::exit(1);
             }
         }
-        Err(_) => return 1,
     }
-    0
+}
+
+/// Check a directory root directly (no lock file) — run health/lint +
+/// `sync_derived_metadata`.  Returns exit code (0 = pass, 1 = issues found).
+fn dispatch_check_root_dir(dir: &Path, json_mode: bool) -> i32 {
+    let (health_results, lint_results, health_issues, lint_issues) =
+        run_health_lint_at(dir);
+    let total = health_issues + lint_issues;
+    if json_mode {
+        print_json_check_output(
+            &health_results,
+            &lint_results,
+            health_issues,
+            lint_issues,
+        );
+    } else {
+        println!(
+            "{}",
+            display::format_full_report(&health_results, &lint_results)
+        );
+    }
+    // Sync derived metadata (writable for Dir root).
+    let paths = wiki::all_wiki_pages_at(dir);
+    let all_pages: Vec<wiki::Page> =
+        paths.iter().filter_map(|p| wiki::read_page_at(p, dir)).collect();
+    sync_derived_metadata(dir, &all_pages, json_mode);
+    i32::from(total > 0)
 }
 
 /// Sync backlinks and apply timeliness updates (`mark_stale` +
@@ -608,24 +776,6 @@ fn sync_derived_metadata(
     }
 }
 
-/// Handle the no-arg path of `zwiki check`.
-///
-/// Reads the wiki root and `zwiki.lock`, then delegates to
-/// [`dispatch_check_no_arg_inner`] for root-index check, missing-bundle
-/// detection, and per-bundle health/lint checks.  Exits
-/// with the returned code.
-fn dispatch_check_no_arg(json_mode: bool) {
-    let wiki_root = wiki::wiki_dir();
-    let lock = bundle::read_lock_at(&wiki_root).unwrap_or_else(|msg| {
-        eprintln!("{msg}");
-        process::exit(1);
-    });
-    let code = dispatch_check_no_arg_inner(&wiki_root, &lock, json_mode);
-    if code != 0 {
-        process::exit(code);
-    }
-}
-
 /// Inner implementation of `dispatch_check_no_arg` that returns an exit code
 /// instead of calling `process::exit`.  Returns `0` for success, `1` for
 /// failures (issues found or missing bundles).  Takes `wiki_root` and `lock`
@@ -635,22 +785,6 @@ fn dispatch_check_no_arg_inner(
     lock: &ZwikiLock,
     json_mode: bool,
 ) -> i32 {
-    if lock.bundles.is_empty() {
-        if json_mode {
-            let output = serde_json::json!({
-                "status": "ok",
-                "root_index": "ok",
-                "bundles": [],
-                "total_issues": 0,
-                "missing": 0,
-            });
-            println!("{}", serde_json::to_string_pretty(&output).unwrap());
-        } else {
-            println!("没有已安装的 bundle");
-        }
-        return 0;
-    }
-
     // Root index check first — missing/corrupt index is fatal.
     if let Err(msg) = bundle::check_root_index(wiki_root, lock) {
         if json_mode {
@@ -839,43 +973,34 @@ fn print_json_check_output(
     println!("{}", serde_json::to_string_pretty(&json_output).unwrap());
 }
 
-fn cmd_backlinks(args: &Args, page: Option<&str>) {
-    let root = wiki::wiki_dir();
-    let paths = wiki::all_wiki_pages_at(&root);
+fn cmd_backlinks(wiki_root: &WikiRoot, page: &str, json: bool) {
+    let root = wiki_root.path();
+    let target = if std::path::Path::new(page)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+    {
+        page.to_string()
+    } else {
+        format!("{page}.md")
+    };
+
+    // Read all pages (required — any page might reference the target).
+    let paths = wiki::all_wiki_pages_at(root);
     let pages: Vec<wiki::Page> =
-        paths.iter().filter_map(|p| wiki::read_page_at(p, &root)).collect();
-    let index = backlinks::build_reverse_index(&root, &pages);
+        paths.iter().filter_map(|p| wiki::read_page_at(p, root)).collect();
+    // Use single-target reverse index instead of building a full HashMap.
+    let filtered_index = backlinks::build_backlinks_for(&target, root, &pages);
 
-    // Filter to a single page if specified
-    let filtered_index: std::collections::HashMap<String, Vec<String>> =
-        if let Some(p) = page {
-            let target = if std::path::Path::new(p)
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
-            {
-                p.to_string()
-            } else {
-                format!("{p}.md")
-            };
-            let mut map = std::collections::HashMap::new();
-            if let Some(sources) = index.get(&target) {
-                map.insert(target, sources.clone());
-            }
-            map
-        } else {
-            index
-        };
-
-    if args.json {
+    if json {
         let total = pages.len();
         let with_bl = filtered_index.len();
         let mut map = serde_json::Map::new();
         for (tgt, srcs) in &filtered_index {
-            let t = backlinks::page_title_from_rel(tgt);
+            let t = backlinks::page_title_from_rel(tgt, root);
             let s: Vec<_> = srcs
                 .iter()
                 .map(|s| {
-                    let st = backlinks::page_title_from_rel(s);
+                    let st = backlinks::page_title_from_rel(s, root);
                     serde_json::json!({"path": s, "title": st})
                 })
                 .collect();
@@ -887,19 +1012,32 @@ fn cmd_backlinks(args: &Args, page: Option<&str>) {
         let out = serde_json::json!({"total_pages": total, "pages_with_backlinks": with_bl, "backlinks": map});
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
     } else {
-        println!("{}", backlinks::format_report(&filtered_index));
+        println!("{}", backlinks::format_report(&filtered_index, root));
     }
 }
 
-fn cmd_log(op: &str, path: &str, action: &str, note: Option<&str>) {
-    log::add_entry(op, path, action, note).unwrap_or_else(|e| {
-        eprintln!("{e}");
-        process::exit(1);
-    });
+fn cmd_log(
+    wiki_root: &WikiRoot,
+    op: &str,
+    path: &str,
+    action: &str,
+    note: Option<&str>,
+) {
+    log::add_entry_at(wiki_root.path(), op, path, action, note).unwrap_or_else(
+        |e| {
+            eprintln!("{e}");
+            process::exit(1);
+        },
+    );
 }
 
-fn cmd_page(path: &str, property: Option<&str>, outline: bool) {
-    let full = wiki::wiki_dir().join(path);
+fn cmd_page(
+    wiki_root: &WikiRoot,
+    path: &str,
+    property: Option<&str>,
+    outline: bool,
+) {
+    let full = wiki_root.path().join(path);
     if let Some(prop) = property {
         match page::read_property(&full, prop) {
             Ok(Some(v)) => println!("{v}"),
@@ -932,13 +1070,14 @@ fn cmd_page(path: &str, property: Option<&str>, outline: bool) {
 }
 
 fn cmd_property(
+    wiki_root: &WikiRoot,
     name: &str,
     page_path: &str,
     value: Option<&str>,
     downgrade: bool,
     delete: bool,
 ) {
-    let full = wiki::wiki_dir().join(page_path);
+    let full = wiki_root.path().join(page_path);
     if delete {
         property::delete(&full, name).unwrap_or_else(|e| {
             eprintln!("{e}");
@@ -982,13 +1121,21 @@ fn cmd_property(
 }
 
 fn cmd_create(
+    wiki_root: &WikiRoot,
     domain: &str,
     r#type: &str,
     title: &str,
     slug: Option<&str>,
     source_type: Option<&str>,
 ) {
-    match page::create_page(domain, r#type, title, slug, source_type) {
+    match page::create_page_at(
+        wiki_root.path(),
+        domain,
+        r#type,
+        title,
+        slug,
+        source_type,
+    ) {
         Ok(p) => println!("已创建页面: {}", p.display()),
         Err(e) => {
             eprintln!("{e}");
@@ -998,13 +1145,14 @@ fn cmd_create(
 }
 
 fn cmd_search(
+    wiki_root: &WikiRoot,
     query: &str,
     type_filter: Option<&str>,
     tag_filter: Option<&str>,
     domain_filter: Option<&str>,
     json: bool,
 ) {
-    let wiki_dir = wiki::wiki_dir();
+    let wiki_dir = wiki_root.path().to_path_buf();
     let engine = search::SearchEngine::new(wiki_dir.clone());
 
     if check_domain_or_print(domain_filter, &wiki_dir, json, "[]") {
@@ -1021,12 +1169,13 @@ fn cmd_search(
 }
 
 fn cmd_list(
+    wiki_root: &WikiRoot,
     type_filter: Option<&str>,
     tag_filter: Option<&str>,
     domain_filter: Option<&str>,
     json: bool,
 ) {
-    let wiki_dir = wiki::wiki_dir();
+    let wiki_dir = wiki_root.path().to_path_buf();
 
     if check_domain_or_print(domain_filter, &wiki_dir, json, "[]") {
         return;
@@ -1043,12 +1192,13 @@ fn cmd_list(
 }
 
 fn cmd_status(
+    wiki_root: &WikiRoot,
     type_filter: Option<&str>,
     tag_filter: Option<&str>,
     domain_filter: Option<&str>,
     json: bool,
 ) {
-    let wiki_dir = wiki::wiki_dir();
+    let wiki_dir = wiki_root.path().to_path_buf();
 
     if check_domain_or_print(domain_filter, &wiki_dir, json, "{}") {
         return;
@@ -1081,13 +1231,14 @@ fn cmd_status(
 // ---------------------------------------------------------------------------
 
 fn cmd_aggregate(
+    wiki_root: &WikiRoot,
     field: aggregate::AggregateField,
     type_filter: Option<&str>,
     tag_filter: Option<&str>,
     domain_filter: Option<&str>,
     json: bool,
 ) {
-    let wiki_dir = wiki::wiki_dir();
+    let wiki_dir = wiki_root.path().to_path_buf();
 
     if check_domain_or_print(domain_filter, &wiki_dir, json, "[]") {
         return;
@@ -1130,35 +1281,35 @@ mod tests {
     #[test]
     fn test_check_parses() {
         let args = Args::try_parse_from(["zwiki", "check"]).unwrap();
-        assert!(matches!(args.command, Some(Command::Check { .. })));
+        assert!(matches!(args.command, Some(Command::Check)));
     }
 
     #[test]
-    fn test_check_with_source_parses() {
-        let args = Args::try_parse_from(["zwiki", "check", "foo"]).unwrap();
-        match args.command {
-            Some(Command::Check { source, .. }) => {
-                assert_eq!(source, Some("foo".to_string()));
-            }
-            _ => panic!("expected Check"),
-        }
-    }
-
-    #[test]
-    fn test_check_source_optional_parses() {
+    fn test_check_requires_no_args() {
         let args = Args::try_parse_from(["zwiki", "check"]).unwrap();
-        match args.command {
-            Some(Command::Check { source, .. }) => {
-                assert_eq!(source, None);
-            }
-            _ => panic!("expected Check"),
-        }
+        assert!(matches!(args.command, Some(Command::Check)));
     }
 
     #[test]
-    fn test_backlinks_parses() {
-        let args = Args::try_parse_from(["zwiki", "backlinks"]).unwrap();
-        assert!(matches!(args.command, Some(Command::Backlinks { .. })));
+    fn test_check_with_root_before() {
+        let args = Args::try_parse_from(["zwiki", "--root", "./wiki", "check"])
+            .unwrap();
+        assert_eq!(args.root, Some("./wiki".to_string()));
+        assert!(matches!(args.command, Some(Command::Check)));
+    }
+
+    #[test]
+    fn test_check_with_root_after() {
+        let args = Args::try_parse_from(["zwiki", "check", "--root", "./wiki"])
+            .unwrap();
+        assert_eq!(args.root, Some("./wiki".to_string()));
+        assert!(matches!(args.command, Some(Command::Check)));
+    }
+
+    #[test]
+    fn test_backlinks_requires_page() {
+        let result = Args::try_parse_from(["zwiki", "backlinks"]);
+        assert!(result.is_err(), "backlinks without page should fail");
     }
 
     #[test]
@@ -1168,7 +1319,26 @@ mod tests {
                 .unwrap();
         match args.command {
             Some(Command::Backlinks { page, .. }) => {
-                assert_eq!(page, Some("concepts/npc.md".to_string()));
+                assert_eq!(page, "concepts/npc.md");
+            }
+            _ => panic!("expected Backlinks"),
+        }
+    }
+
+    #[test]
+    fn test_backlinks_with_root_before() {
+        let args = Args::try_parse_from([
+            "zwiki",
+            "--root",
+            "./wiki",
+            "backlinks",
+            "concepts/npc.md",
+        ])
+        .unwrap();
+        assert_eq!(args.root, Some("./wiki".to_string()));
+        match args.command {
+            Some(Command::Backlinks { page, .. }) => {
+                assert_eq!(page, "concepts/npc.md");
             }
             _ => panic!("expected Backlinks"),
         }
@@ -2126,80 +2296,6 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // dispatch_check_source_inner
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_dispatch_check_source_inner_ok() {
-        let dir = temp_dir("src_inner_ok");
-        let bundle_toml = r#"
-[package]
-name = "test-bundle"
-version = "0.1.0"
-okf_version = "0.1"
-kind = "upstream"
-
-[export]
-include = ["*.md"]
-"#;
-        std::fs::write(dir.join("bundle.toml"), bundle_toml).unwrap();
-        std::fs::write(
-            dir.join("index.md"),
-            "---
-title: Index
----
-# Index\n",
-        )
-        .unwrap();
-        std::fs::create_dir_all(dir.join("logs")).unwrap();
-        // Add a file inside logs/ so copy_recursive creates the directory
-        std::fs::write(dir.join("logs").join(".gitkeep"), "").unwrap();
-
-        let code = dispatch_check_source_inner(&dir.to_string_lossy(), false);
-        assert_eq!(code, 0, "valid bundle should return 0");
-    }
-
-    #[test]
-    fn test_dispatch_check_source_inner_structure_fail() {
-        let dir = temp_dir("src_inner_struct_fail");
-        let bundle_toml = r#"
-[package]
-name = "test-bundle"
-version = "0.1.0"
-okf_version = "0.1"
-kind = "upstream"
-
-[export]
-include = ["*.md"]
-"#;
-        std::fs::write(dir.join("bundle.toml"), bundle_toml).unwrap();
-        // No index.md → check_bundle_structure fails
-        std::fs::create_dir_all(dir.join("logs")).unwrap();
-
-        let code = dispatch_check_source_inner(&dir.to_string_lossy(), false);
-        assert_eq!(code, 1, "missing index.md should return 1");
-    }
-
-    #[test]
-    fn test_dispatch_check_source_inner_manifest_error() {
-        let dir = temp_dir("src_inner_manifest_err");
-        // Empty name triggers fatal validation error
-        let bundle_toml = r#"
-[package]
-name = ""
-version = "0.1.0"
-kind = "upstream"
-
-[export]
-include = ["*.md"]
-"#;
-        std::fs::write(dir.join("bundle.toml"), bundle_toml).unwrap();
-
-        let code = dispatch_check_source_inner(&dir.to_string_lossy(), false);
-        assert_eq!(code, 1, "invalid manifest should return 1");
-    }
-
-    // -------------------------------------------------------------------
     // dispatch_check_no_arg_inner
     // -------------------------------------------------------------------
 
@@ -2229,11 +2325,12 @@ runs during validation.  It contains well over one hundred characters to
 satisfy the stub threshold check and other quality gates.\n";
 
     #[test]
-    fn test_dispatch_check_no_arg_inner_empty_lock() {
-        let dir = temp_dir("check_inner_empty");
-        let lock = bundle::ZwikiLock::default();
-        let code = dispatch_check_no_arg_inner(&dir, &lock, false);
-        assert_eq!(code, 0, "empty lock should return 0");
+    fn test_dispatch_check_root_dir_empty() {
+        // Verify dispatch_check_root_dir succeeds on an empty directory.
+        let dir = temp_dir("check_root_empty");
+        std::fs::create_dir_all(dir.join("logs")).unwrap();
+        let code = dispatch_check_root_dir(&dir, false);
+        assert_eq!(code, 0, "empty root dir should return 0");
     }
 
     #[test]
@@ -2314,123 +2411,6 @@ title: Bundle Index
         assert_eq!(code, 0, "valid bundle should return 0");
     }
 
-    // -------------------------------------------------------------------
-    // dispatch_check_source_inner — backlinks + timeliness for dir sources
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_dispatch_check_source_inner_syncs_backlinks() {
-        // Verify that `zwiki check <dir>` with a local directory source
-        // syncs backlinks into the actual source directory (not the temp copy).
-        let dir = temp_dir("src_inner_backlinks");
-        let bundle_toml = r#"
-[package]
-name = "test-bundle"
-version = "0.1.0"
-okf_version = "0.1"
-kind = "upstream"
-
-[export]
-include = ["*.md"]
-"#;
-        std::fs::write(dir.join("bundle.toml"), bundle_toml).unwrap();
-        std::fs::write(
-            dir.join("index.md"),
-            "---
-title: Index
----
-# Index
-
-- [Page A](page_a.md)
-- [Page B](page_b.md)
-",
-        )
-        .unwrap();
-        std::fs::create_dir_all(dir.join("logs")).unwrap();
-        std::fs::write(dir.join("logs").join(".gitkeep"), "").unwrap();
-
-        // Page A links to page B via relations + inline link — after check,
-        // page B should get a Backlinks section with reference to Page A.
-        let page_a = format!(
-            "---
-title: Page A
-type: concept
-timestamp: 2026-07-01T00:00:00Z
-tags: []
-status: draft
-last_validated: 2026-07-01T00:00:00Z
-timeliness: current
-relations: [page_b.md]
----
-
-# Page A
-
-See also [Page B](page_b.md) for related information.
-
-{}",
-            // 200+ chars of body text to pass health & lint checks
-            "This document has enough text to pass the health and lint checks that \
-             zwiki runs during validation. It contains well over one hundred characters \
-             to satisfy the stub threshold check and other quality gates required for \
-             the bundle validation process.\n"
-        );
-        std::fs::write(dir.join("page_a.md"), &page_a).unwrap();
-
-        // Page B needs a ## Details or ## References section so that
-        // backlinks::find_insertion_point has an anchor for the new section.
-        let page_b = format!(
-            "---
-title: Page B
-type: concept
-timestamp: 2026-07-01T00:00:00Z
-tags: []
-status: draft
-last_validated: 2026-07-01T00:00:00Z
-timeliness: current
----
-
-# Page B
-
-{body}
-
-## Details
-
-Detailed information about page B goes here.
-",
-            body = "This document has enough text to pass the health and lint checks that \
-             zwiki runs during validation. It contains well over one hundred characters \
-             to satisfy the stub threshold check and other quality gates required for \
-             the bundle validation process."
-        );
-        std::fs::write(dir.join("page_b.md"), &page_b).unwrap();
-
-        let code = dispatch_check_source_inner(&dir.to_string_lossy(), false);
-        assert_eq!(code, 0, "valid bundle with backlinks should return 0");
-
-        // Verify backlinks were synced to the actual directory — page_b.md
-        // should now have a Backlinks section referencing Page A.
-        let content_b = std::fs::read_to_string(dir.join("page_b.md")).unwrap();
-        assert!(
-            content_b.contains("## Backlinks"),
-            "page_b.md should have a Backlinks section after check, got: {content_b:?}"
-        );
-        assert!(
-            content_b.contains("Page A"),
-            "page_b.md Backlinks should reference Page A, got: {content_b:?}"
-        );
-        assert!(
-            content_b.contains("(page_a.md)"),
-            "page_b.md Backlinks should link to page_a.md, got: {content_b:?}"
-        );
-
-        // Verify page_a.md was NOT modified (no pages link to it)
-        let content_a = std::fs::read_to_string(dir.join("page_a.md")).unwrap();
-        assert!(
-            !content_a.contains("## Backlinks"),
-            "page_a.md should NOT have a Backlinks section (no inbound links)"
-        );
-    }
-
     #[test]
     fn test_dispatch_check_no_arg_inner_default_timeliness_writes() {
         // Verify that `zwiki check` (no source) writes timeliness
@@ -2502,68 +2482,6 @@ bundle validation process.\n";
     }
 
     #[test]
-    fn test_dispatch_check_source_inner_default_timeliness_writes() {
-        // Verify that `zwiki check <dir>` with a local directory source
-        // writes timeliness updates to page frontmatter.
-        let dir = temp_dir("src_inner_timeliness");
-        let bundle_toml = r#"
-[package]
-name = "test-bundle"
-version = "0.1.0"
-okf_version = "0.1"
-kind = "upstream"
-
-[export]
-include = ["*.md"]
-"#;
-        std::fs::write(dir.join("bundle.toml"), bundle_toml).unwrap();
-        std::fs::write(
-            dir.join("index.md"),
-            "---
-title: Index
----
-# Index
-
-- [Doc](doc.md)
-",
-        )
-        .unwrap();
-        std::fs::create_dir_all(dir.join("logs")).unwrap();
-        std::fs::write(dir.join("logs").join(".gitkeep"), "").unwrap();
-
-        // Page with recent timestamp (within 90d lint threshold) but old
-        // last_validated (> 180d) → mark_stale will flag it but lint won't.
-        let page_content = "\
----
-title: Timeliness Src
-type: concept
-timestamp: 2026-06-01T00:00:00Z
-tags: []
-status: draft
-last_validated: 2025-01-01T00:00:00Z
-timeliness: current
----
-
-# Timeliness Src
-
-This page has enough text to pass the health and lint checks that zwiki
-runs during validation.  It contains well over one hundred characters to
-satisfy the stub threshold check and other quality gates required for the
-bundle validation process.\n";
-        std::fs::write(dir.join("doc.md"), page_content).unwrap();
-
-        let code = dispatch_check_source_inner(&dir.to_string_lossy(), false);
-        assert_eq!(code, 0, "valid source dir should return 0");
-
-        // Verify timeliness was updated in the file content.
-        let content = std::fs::read_to_string(dir.join("doc.md")).unwrap();
-        assert!(
-            content.contains("timeliness: stale"),
-            "doc.md should have timeliness: stale after check, got: {content:?}"
-        );
-    }
-
-    #[test]
     fn test_dispatch_check_no_arg_inner_propagates_failure() {
         let dir = temp_dir("check_inner_fail");
         std::fs::write(
@@ -2597,5 +2515,99 @@ bundle validation process.\n";
             code, 1,
             "check must propagate failure via return code instead of process::exit",
         );
+    }
+
+    #[test]
+    fn test_sync_derived_metadata_writes_backlinks() {
+        // Verify that sync_derived_metadata writes backlinks into pages.
+        let dir = temp_dir("sync_bl");
+        std::fs::create_dir_all(dir.join("logs")).unwrap();
+        std::fs::write(dir.join("logs/.gitkeep"), "").unwrap();
+
+        // Page A links to page B via relations + inline link.
+        let page_a = format!(
+            "---
+title: Page A
+type: concept
+timestamp: 2026-07-01T00:00:00Z
+tags: []
+status: draft
+last_validated: 2026-07-01T00:00:00Z
+timeliness: current
+relations: [page_b.md]
+---
+
+# Page A
+
+See also [Page B](page_b.md) for related information.
+{}
+",
+            "This document has enough text to pass health and lint checks. \
+             It contains well over one hundred characters to satisfy stub \
+             thresholds and other quality gates for validation.\n"
+        );
+        std::fs::write(dir.join("page_a.md"), &page_a).unwrap();
+
+        let page_b = format!(
+            "---
+title: Page B
+type: concept
+timestamp: 2026-07-01T00:00:00Z
+tags: []
+status: draft
+last_validated: 2026-07-01T00:00:00Z
+timeliness: current
+---
+
+# Page B
+
+{body}
+
+## Details
+
+Detailed information about page B goes here.
+",
+            body = "This document has enough text to pass health and lint checks. \
+             It contains well over one hundred characters to satisfy stub \
+             thresholds and other quality gates for validation."
+        );
+        std::fs::write(dir.join("page_b.md"), &page_b).unwrap();
+
+        let paths = wiki::all_wiki_pages_at(&dir);
+        let all_pages: Vec<wiki::Page> =
+            paths.iter().filter_map(|p| wiki::read_page_at(p, &dir)).collect();
+        sync_derived_metadata(&dir, &all_pages, false);
+
+        // Verify backlinks were synced to page_b.md.
+        let content_b = std::fs::read_to_string(dir.join("page_b.md")).unwrap();
+        assert!(
+            content_b.contains("## Backlinks"),
+            "page_b.md should have Backlinks after check"
+        );
+        assert!(
+            content_b.contains("Page A"),
+            "page_b.md Backlinks should reference Page A"
+        );
+
+        // Verify page_a.md was NOT modified.
+        let content_a = std::fs::read_to_string(dir.join("page_a.md")).unwrap();
+        assert!(
+            !content_a.contains("## Backlinks"),
+            "page_a.md should NOT have Backlinks (no inbound links)"
+        );
+    }
+
+    #[test]
+    fn test_root_flag_before_and_after_check() {
+        // Verify --root is accepted both before and after subcommand.
+        let before =
+            Args::try_parse_from(["zwiki", "--root", "/tmp/test", "check"]);
+        assert!(before.is_ok());
+        assert_eq!(before.unwrap().root, Some("/tmp/test".to_string()));
+
+        let after =
+            Args::try_parse_from(["zwiki", "check", "--root", "/tmp/test"]);
+        assert!(after.is_ok());
+        assert_eq!(after.unwrap().root, Some("/tmp/test".to_string()));
     }
 }

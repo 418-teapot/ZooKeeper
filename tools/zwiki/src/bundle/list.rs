@@ -5,7 +5,6 @@ use std::path::Path;
 
 use crate::bundle::args::ListArgs;
 use crate::bundle::lock;
-use crate::wiki;
 
 /// Format the bundle lock contents as a human-readable table.
 #[must_use]
@@ -81,11 +80,13 @@ fn format_bundle_table(lock: &lock::ZwikiLock) -> String {
 }
 
 /// List installed bundles from the lock file.
-pub fn cmd_list_installed(args: &ListArgs, global_json: bool) {
+pub fn cmd_list_installed(
+    args: &ListArgs,
+    global_json: bool,
+    wiki_root: &Path,
+) {
     let use_json = args.json || global_json;
-    if let Err(msg) =
-        cmd_list_installed_inner(args, use_json, &wiki::wiki_dir())
-    {
+    if let Err(msg) = cmd_list_installed_inner(args, use_json, wiki_root) {
         if !use_json {
             eprintln!("错误: {msg}");
         }

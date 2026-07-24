@@ -5,14 +5,16 @@ use std::path::Path;
 use crate::bundle::args::UninstallArgs;
 use crate::bundle::index;
 use crate::bundle::lock;
-use crate::wiki;
 
 /// Uninstall a bundle by name: remove its directory, lock entry, and
 /// regenerate the root index.
-pub fn cmd_uninstall(args: &UninstallArgs, global_json: bool) {
+pub fn cmd_uninstall(
+    args: &UninstallArgs,
+    global_json: bool,
+    wiki_root: &Path,
+) {
     let use_json = args.json || global_json;
-    let wiki_root = wiki::wiki_dir();
-    if let Err(msg) = cmd_uninstall_inner(args, use_json, &wiki_root) {
+    if let Err(msg) = cmd_uninstall_inner(args, use_json, wiki_root) {
         if !use_json {
             eprintln!("错误: {msg}");
         }

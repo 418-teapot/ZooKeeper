@@ -28,7 +28,6 @@ pub mod update;
 // Re-export public API (what main.rs and tests import from bundle::).
 pub use args::BundleCommand;
 pub use index::check_root_index;
-pub use install::load_and_validate_manifest;
 pub use lock::{ZwikiLock, ZwikiLockEntry, read_lock_at};
 pub use source::check_bundle_structure;
 
@@ -39,18 +38,24 @@ use std::path::Path;
 // ---------------------------------------------------------------------------
 
 /// Dispatch a `BundleCommand` from the CLI.
-pub fn dispatch(cmd: &BundleCommand, global_json: bool) {
+pub fn dispatch(cmd: &BundleCommand, global_json: bool, wiki_root: &Path) {
     match cmd {
         BundleCommand::Init(args) => init::cmd_init(args.as_ref(), global_json),
         BundleCommand::Export(args) => export::cmd_export(args, global_json),
-        BundleCommand::Install(args) => install::cmd_install(args, global_json),
-        BundleCommand::List(args) => {
-            list::cmd_list_installed(args, global_json);
+        BundleCommand::Install(args) => {
+            install::cmd_install(args, global_json, wiki_root);
         }
-        BundleCommand::Check(args) => check::cmd_check(args, global_json),
-        BundleCommand::Update(args) => update::cmd_update(args, global_json),
+        BundleCommand::List(args) => {
+            list::cmd_list_installed(args, global_json, wiki_root);
+        }
+        BundleCommand::Check(args) => {
+            check::cmd_check(args, global_json, wiki_root);
+        }
+        BundleCommand::Update(args) => {
+            update::cmd_update(args, global_json, wiki_root);
+        }
         BundleCommand::Uninstall(args) => {
-            uninstall::cmd_uninstall(args, global_json);
+            uninstall::cmd_uninstall(args, global_json, wiki_root);
         }
     }
 }

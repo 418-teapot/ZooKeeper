@@ -12,7 +12,6 @@ use crate::bundle::manifest;
 use crate::bundle::source;
 use crate::bundle::tar;
 use crate::bundle::{read_manifest, report_manifest_errors};
-use crate::wiki;
 
 /// Compute integrity, update the lock file, and print the install output.
 /// The caller MUST hold the `.zwiki.flock` before calling this function.
@@ -480,9 +479,9 @@ pub fn cmd_install_at_inner(
 }
 
 /// Thin wrapper that calls [`cmd_install_at`] with the real wiki directory.
-pub fn cmd_install(args: &InstallArgs, global_json: bool) {
+pub fn cmd_install(args: &InstallArgs, global_json: bool, wiki_root: &Path) {
     let use_json = args.json || global_json;
-    cmd_install_at(args, use_json, &wiki::wiki_dir());
+    cmd_install_at(args, use_json, wiki_root);
 }
 
 #[cfg(test)]

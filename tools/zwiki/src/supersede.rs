@@ -11,28 +11,13 @@ use std::path::Path;
 use chrono::Utc;
 
 use crate::property;
-use crate::wiki;
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Establish a supersede relationship between two wiki pages.
-///
-/// * `old_rel` — wiki-root-relative path of the superseded page
-///   (e.g. `autoresearch/concepts/old.md`)
-/// * `new_rel` — wiki-root-relative path of the superseding page
-/// * `reason` — human-readable explanation
-pub fn link_supersede(
-    old_rel: &str,
-    new_rel: &str,
-    reason: &str,
-) -> Result<(), String> {
-    link_supersede_at(old_rel, new_rel, reason, &wiki::wiki_dir())
-}
-
-/// Testable variant of [`link_supersede`] that accepts an explicit
-/// `wiki_root` instead of reading the global wiki directory.
+/// Establish a supersede relationship between two wiki pages under an
+/// explicit wiki root.
 pub fn link_supersede_at(
     old_rel: &str,
     new_rel: &str,
@@ -267,6 +252,7 @@ fn append_frontmatter_block(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wiki;
     use std::fs;
     use std::path::PathBuf;
 
@@ -517,7 +503,8 @@ mod tests {
 
     #[test]
     fn test_link_supersede_same_path() {
-        let result = link_supersede("same.md", "same.md", "nope");
+        let dir = temp_dir("same_path");
+        let result = link_supersede_at("same.md", "same.md", "nope", &dir);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("不能指向同一个页面"));
     }

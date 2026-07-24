@@ -24,9 +24,8 @@ pub struct StalePair {
 /// Scans all wiki pages and outputs stale source–derived pairs.
 /// When `domain` is `Some`, only pages within that top-level directory are
 /// checked.
-pub fn cmd_verify(json: bool, domain: Option<&str>) {
-    let root = wiki::wiki_dir();
-    let stale = collect_stale_pairs(&root, domain);
+pub fn cmd_verify(root: &Path, json: bool, domain: Option<&str>) {
+    let stale = collect_stale_pairs(root, domain);
 
     if json {
         let output: Vec<serde_json::Value> = stale

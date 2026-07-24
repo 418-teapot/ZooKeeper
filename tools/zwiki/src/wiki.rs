@@ -82,21 +82,12 @@ pub fn discover_pages(base: &Path) -> Vec<PathBuf> {
     pages
 }
 
-/// Return all markdown files under `WIKI_DIR`, excluding meta / system files.
+/// Return all markdown files under a given root, excluding meta / system files.
 ///
 /// The following are excluded:
 ///
 /// * Meta files: `index.md`, `SCHEMA.md`, `.gitkeep`.
 /// * Files under the `templates/`, `tools/`, `raw/`, and `logs/` directories.
-#[must_use]
-pub fn all_wiki_pages() -> Vec<PathBuf> {
-    discover_pages(&wiki_dir())
-}
-
-/// Return all markdown files under a given root, excluding meta / system files.
-///
-/// Same exclusion rules as [`all_wiki_pages`] but operates on an arbitrary
-/// root directory instead of the default wiki directory.
 #[must_use]
 pub fn all_wiki_pages_at(root: &Path) -> Vec<PathBuf> {
     discover_pages(root)

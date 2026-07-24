@@ -6,8 +6,6 @@ use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
 
-use crate::wiki;
-
 /// Normalize a wiki path: strip the `wiki/` prefix if present.
 fn normalize_path(path: &str) -> String {
     path.strip_prefix("wiki/")
@@ -120,24 +118,7 @@ fn insert_entry(content: &str, date: &str, entry_line: &str) -> String {
     lines.join("\n") + "\n"
 }
 
-/// Append a structured log entry to `wiki/logs/YYYY-MM.md`.
-///
-/// The entry is prepended to the file (most recent first).  File locking
-/// (`LOCK_EX`) prevents concurrent write interleaving.
-///
-/// # Errors
-///
-/// Returns an error string if file I/O or locking fails.
-pub fn add_entry(
-    op: &str,
-    path: &str,
-    action: &str,
-    note: Option<&str>,
-) -> Result<(), String> {
-    add_entry_at(&wiki::wiki_dir(), op, path, action, note)
-}
-
-/// Inner implementation: append a log entry under an explicit wiki root.
+/// Append a structured log entry under an explicit wiki root.
 pub fn add_entry_at(
     wiki_root: &Path,
     op: &str,

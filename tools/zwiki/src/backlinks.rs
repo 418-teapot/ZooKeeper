@@ -311,6 +311,66 @@ pub fn build_reverse_index(
     sorted.into_iter().collect()
 }
 
+/// Build a reverse-index for a single target page.
+///
+/// Scans all `pages` for outbound links and returns only those that
+/// reference `target`.  The returned map has at most one entry (the
+/// target → sorted, deduplicated list of source `page.rel` values).
+///
+/// This is more efficient than [`build_reverse_index`] when only one
+/// target is needed — still does full I/O (every page must be read),
+/// but avoids constructing and sorting a global `HashMap`.
+///
+/// Bundle-relative paths (`.teams/<name>/...`) are resolved the same
+/// way as `build_reverse_index`.
+#[must_use]
+pub fn build_backlinks_for(
+    target: &str,
+    wiki_root: &Path,
+    pages: &[wiki::Page],
+) -> HashMap<String, Vec<String>> {
+    // Build rel_map for bundle-relative resolution.
+    let mut rel_map: HashMap<String, Vec<String>> = HashMap::new();
+    for p in pages {
+        if let Some(br) = strip_bundle_prefix(&p.rel) {
+            rel_map.entry(br.to_string()).or_default().push(p.rel.clone());
+        }
+    }
+
+    let mut sources: Vec<String> = Vec::new();
+
+    for page in pages {
+        let content = wiki::read_file(&page.path);
+        if content.is_empty() {
+            continue;
+        }
+
+        let links = extract_links(wiki_root, &content);
+        if links.iter().any(|ln| {
+            // Direct match.
+            if ln == target {
+                return true;
+            }
+            // Bundle-relative resolution.
+            if let Some(rels) = rel_map.get(ln) {
+                return rels.iter().any(|r| r == target);
+            }
+            false
+        }) {
+            sources.push(page.rel.clone());
+        }
+    }
+
+    sources.sort();
+    sources.dedup();
+
+    let mut result = HashMap::new();
+    if !sources.is_empty() {
+        result.insert(target.to_string(), sources);
+    }
+    result
+}
+
 // ---------------------------------------------------------------------------
 // 5. format_backlinks_section
 // ---------------------------------------------------------------------------
@@ -487,7 +547,10 @@ pub fn update_backlinks(
 ///
 /// Only pages that have at least one backlink are included.
 #[must_use]
-pub fn format_report(index: &HashMap<String, Vec<String>>) -> String {
+pub fn format_report(
+    index: &HashMap<String, Vec<String>>,
+    root: &Path,
+) -> String {
     let mut lines = vec![
         String::from("# Wiki 反向链接报告"),
         String::new(),
@@ -501,7 +564,7 @@ pub fn format_report(index: &HashMap<String, Vec<String>>) -> String {
 
     for target in sorted_targets {
         let sources = &index[target];
-        let title = page_title_from_rel(target);
+        let title = page_title_from_rel(target, root);
         lines.push(format!("## {title}"));
         lines.push(String::new());
         lines.push(format!("页面：`{target}`"));
@@ -509,7 +572,7 @@ pub fn format_report(index: &HashMap<String, Vec<String>>) -> String {
         lines.push(format!("被 {} 个页面引用：", sources.len()));
         lines.push(String::new());
         for src in sources {
-            let src_title = page_title_from_rel(src);
+            let src_title = page_title_from_rel(src, root);
             lines.push(format!("- [{src_title}]({src})"));
         }
         lines.push(String::new());
@@ -568,8 +631,8 @@ fn page_title_from_path(page_path: &Path) -> String {
 /// Returns the `title` field from frontmatter if present, otherwise
 /// title-cases the filename stem.
 #[must_use]
-pub fn page_title_from_rel(rel_path: &str) -> String {
-    page_title_from_path(&wiki::wiki_dir().join(rel_path))
+pub fn page_title_from_rel(rel_path: &str, root: &Path) -> String {
+    page_title_from_path(&root.join(rel_path))
 }
 
 /// Title-case a string: `"hello-world"` → `"Hello World"`.
@@ -1092,7 +1155,9 @@ Body.";
     fn test_format_report_correct_structure() {
         let mut index = HashMap::new();
         index.insert("target.md".to_string(), vec!["src.md".to_string()]);
-        let report = format_report(&index);
+        let root =
+            std::env::temp_dir().join("zwiki-backlinks-test-report-struct");
+        let report = format_report(&index, &root);
         assert!(report.contains("# Wiki 反向链接报告"));
         assert!(report.contains("共 1 个页面有反向链接"));
         assert!(report.contains("## "));
@@ -1104,7 +1169,9 @@ Body.";
         let mut index = HashMap::new();
         index.insert("a.md".to_string(), vec!["src1.md".to_string()]);
         index.insert("b.md".to_string(), vec!["src2.md".to_string()]);
-        let report = format_report(&index);
+        let root =
+            std::env::temp_dir().join("zwiki-backlinks-test-report-multi");
+        let report = format_report(&index, &root);
         assert!(report.contains("# Wiki 反向链接报告"));
         assert!(report.contains("共 2 个页面有反向链接"));
     }
@@ -1112,7 +1179,9 @@ Body.";
     #[test]
     fn test_format_report_empty_index() {
         let index: HashMap<String, Vec<String>> = HashMap::new();
-        let report = format_report(&index);
+        let root =
+            std::env::temp_dir().join("zwiki-backlinks-test-report-empty");
+        let report = format_report(&index, &root);
         assert!(report.contains("# Wiki 反向链接报告"));
         assert!(report.contains("共 0 个页面有反向链接"));
     }
@@ -1401,5 +1470,194 @@ Body.";
     #[test]
     fn test_title_case_empty() {
         assert_eq!(title_case(""), "");
+    }
+
+    // -------------------------------------------------------------------
+    // build_backlinks_for — equivalence with build_reverse_index + filter
+    // -------------------------------------------------------------------
+
+    fn setup_backlinks_pages(dir: &Path) -> Vec<PathBuf> {
+        // Page A links to target.md via relations + inline link.
+        write(
+            &dir.join("page_a.md"),
+            "---
+title: Page A
+type: concept
+timestamp: 2026-07-01T00:00:00Z
+tags: []
+status: draft
+last_validated: 2026-07-01T00:00:00Z
+timeliness: current
+relations: [target.md]
+---
+
+# Page A
+
+See also [Target](target.md) for details.",
+        );
+        // Page B links to target.md via backtick.
+        write(
+            &dir.join("page_b.md"),
+            "---
+title: Page B
+type: concept
+timestamp: 2026-07-01T00:00:00Z
+tags: []
+status: draft
+last_validated: 2026-07-01T00:00:00Z
+timeliness: current
+---
+
+# Page B
+
+Refer to `target.md` for the canonical definition.",
+        );
+        // Page C links to other.md (not target).
+        write(
+            &dir.join("page_c.md"),
+            "---
+title: Page C
+type: concept
+timestamp: 2026-07-01T00:00:00Z
+tags: []
+status: draft
+last_validated: 2026-07-01T00:00:00Z
+timeliness: current
+relations: [other.md]
+---
+
+# Page C
+
+See [Other](other.md).",
+        );
+        // target.md itself.
+        write(
+            &dir.join("target.md"),
+            "---
+title: Target
+type: concept
+timestamp: 2026-07-01T00:00:00Z
+tags: []
+status: draft
+last_validated: 2026-07-01T00:00:00Z
+timeliness: current
+---
+
+# Target
+
+Body.",
+        );
+        // other.md — referenced but no one links to target.
+        write(
+            &dir.join("other.md"),
+            "---
+title: Other
+type: concept
+timestamp: 2026-07-01T00:00:00Z
+tags: []
+status: draft
+last_validated: 2026-07-01T00:00:00Z
+timeliness: current
+---
+
+# Other
+
+Body.",
+        );
+
+        vec![
+            dir.join("page_a.md"),
+            dir.join("page_b.md"),
+            dir.join("page_c.md"),
+            dir.join("target.md"),
+            dir.join("other.md"),
+        ]
+    }
+
+    #[test]
+    fn test_build_backlinks_for_matches_full_index() {
+        let dir = temp_dir("backlinks_for");
+        setup_backlinks_pages(&dir);
+        let paths = discover_pages_backlinks(&dir);
+        let pages: Vec<wiki::Page> =
+            paths.iter().filter_map(|p| wiki::read_page_at(p, &dir)).collect();
+
+        // Full reverse index.
+        let full = build_reverse_index(&dir, &pages);
+
+        // Filtered: target.md
+        let filtered = {
+            let mut m = HashMap::new();
+            if let Some(srcs) = full.get("target.md") {
+                m.insert("target.md".to_string(), srcs.clone());
+            }
+            m
+        };
+
+        // Single-target function.
+        let single = build_backlinks_for("target.md", &dir, &pages);
+
+        assert_eq!(
+            filtered, single,
+            "build_backlinks_for should match filtered full index"
+        );
+
+        // Verify page C and other.md do NOT appear.
+        let sources = single.get("target.md");
+        assert!(sources.is_some(), "target.md should have sources");
+        let srcs = sources.unwrap();
+        assert!(srcs.contains(&"page_a.md".to_string()));
+        assert!(srcs.contains(&"page_b.md".to_string()));
+        assert!(!srcs.contains(&"page_c.md".to_string()));
+        assert!(!srcs.contains(&"other.md".to_string()));
+    }
+
+    fn discover_pages_backlinks(base: &Path) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = walkdir::WalkDir::new(base)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().is_file())
+            .filter(|e| {
+                e.path().extension().and_then(|ext| ext.to_str()) == Some("md")
+            })
+            .map(|e| e.path().to_path_buf())
+            .collect();
+        paths.sort();
+        paths
+    }
+
+    #[test]
+    fn test_build_backlinks_for_nonexistent_target() {
+        let dir = temp_dir("backlinks_for_nonexist");
+        setup_backlinks_pages(&dir);
+        let paths = discover_pages_backlinks(&dir);
+        let pages: Vec<wiki::Page> =
+            paths.iter().filter_map(|p| wiki::read_page_at(p, &dir)).collect();
+
+        let result = build_backlinks_for("nonexistent.md", &dir, &pages);
+        assert!(
+            result.is_empty(),
+            "nonexistent target should have no backlinks"
+        );
+    }
+
+    #[test]
+    fn test_build_backlinks_for_no_references() {
+        let dir = temp_dir("backlinks_for_noref");
+        // Only page A which links to target.md, but query other.md.
+        write(
+            &dir.join("page_a.md"),
+            "---
+title: Page A
+type: concept
+relations: [target.md]
+---",
+        );
+        let paths = discover_pages_backlinks(&dir);
+        let pages: Vec<wiki::Page> =
+            paths.iter().filter_map(|p| wiki::read_page_at(p, &dir)).collect();
+
+        let result = build_backlinks_for("other.md", &dir, &pages);
+        assert!(result.is_empty(), "other.md has no references");
     }
 }

@@ -156,37 +156,7 @@ fn scaffold_domain(domain_root: &Path) -> Result<(), String> {
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Create a new wiki page from a template.
-///
-/// Writes the rendered content to `WIKI_DIR/{domain}/{type}/{slug}.md` (or
-/// `WIKI_DIR/{domain}/sources/{source_type}/{slug}.md` for source pages).
-///
-/// # Errors
-///
-/// Returns an error string if:
-/// - The page type is unknown
-/// - The domain is unknown
-/// - The slug is empty, or contains `..`, `/`, `\`
-/// - The template file does not exist
-/// - File I/O fails
-pub fn create_page(
-    domain: &str,
-    page_type: &str,
-    title: &str,
-    slug: Option<&str>,
-    source_type: Option<&str>,
-) -> Result<PathBuf, String> {
-    create_page_at(
-        &wiki::wiki_dir(),
-        domain,
-        page_type,
-        title,
-        slug,
-        source_type,
-    )
-}
-
-/// Inner implementation: create a page under an explicit wiki root.
+/// Create a wiki page under an explicit wiki root.
 pub fn create_page_at(
     wiki_root: &Path,
     domain: &str,

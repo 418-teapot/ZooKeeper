@@ -107,9 +107,9 @@ pub fn parse_contradictions(content: &str) -> Vec<ContradictionEntry> {
 
 /// Iterate all wiki pages and collect those with `contradictions` entries.
 #[must_use]
-pub fn collect_all() -> Vec<PageContradictions> {
-    let wiki_root = wiki::wiki_dir();
-    let paths = wiki::all_wiki_pages();
+pub fn collect_all(root: &Path) -> Vec<PageContradictions> {
+    let wiki_root = root.to_path_buf();
+    let paths = wiki::all_wiki_pages_at(root);
     let mut results: Vec<PageContradictions> = Vec::new();
 
     for path in &paths {
@@ -178,10 +178,10 @@ pub fn format_human(results: &[PageContradictions]) -> String {
 }
 
 /// Dispatch a `ContradictionsCommand` from the CLI.
-pub fn dispatch(cmd: &crate::ContradictionsCommand, json: bool) {
+pub fn dispatch(cmd: &crate::ContradictionsCommand, root: &Path, json: bool) {
     match cmd {
-        crate::ContradictionsCommand::List => cmd_list(json),
-        crate::ContradictionsCommand::Apply => cmd_apply(json),
+        crate::ContradictionsCommand::List => cmd_list(root, json),
+        crate::ContradictionsCommand::Apply => cmd_apply(root, json),
     }
 }
 
@@ -189,8 +189,8 @@ pub fn dispatch(cmd: &crate::ContradictionsCommand, json: bool) {
 ///
 /// Collects all contradictions from every wiki page and prints them
 /// as JSON (with `--json`) or as a human-readable table.
-pub fn cmd_list(json: bool) {
-    let results = collect_all();
+pub fn cmd_list(root: &Path, json: bool) {
+    let results = collect_all(root);
 
     if json {
         println!("{}", format_json(&results));
@@ -571,7 +571,7 @@ fn apply_one_pair(
 /// frontmatter blocks with `last_validated` update.
 /// Status downgrade is NOT performed — callers must explicitly use
 /// `zwiki property status --page <path> --downgrade` if desired.
-pub fn cmd_apply(json: bool) {
+pub fn cmd_apply(root: &Path, json: bool) {
     let inputs = match input_from_stdin() {
         Ok(v) => v,
         Err(e) => {
@@ -580,7 +580,7 @@ pub fn cmd_apply(json: bool) {
         }
     };
 
-    let wiki_root = wiki::wiki_dir();
+    let wiki_root = root.to_path_buf();
 
     // Validate all referenced pages exist before writing anything.
     for input in &inputs {

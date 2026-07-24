@@ -53,7 +53,7 @@
 | SCHEMA.md | **已全面对齐 OKF**：内容页面字段集 + index/log 格式 + 域优先目录结构规范 | `wiki/SCHEMA.md` |
 | `okf_version` 标记 | 仅在 `index.md` frontmatter ✅（OKF §11 唯一允许 frontmatter 的位置） | `wiki/index.md` |
 | 实际页面前置元数据 | 一致使用 `title`/`type`/`description`/`timestamp`/`tags`/`relations`/`status`，source 页用 `resource`，analysis/synthesis 用 `sources`（复数） | 抽查 wiki/autoresearch、wiki-system、shared 全部对齐 |
-| zwiki CLI | **Rust 实现**，含 7 个子命令：`check`、`backlinks`、`log`、`page`、`property`、`create`（含 `--domain` 自动建域骨架） | `tools/zwiki/`（构建产物 `tools/bin/zwiki`） |
+| zwiki CLI | **Rust 实现**，2026-07 重新设计为 10 入口名词-动词体系（详见 §12.1）：`check`/`search`/`list`/`stats`/`verify`/`page`/`log`/`supersede`/`contradictions`/`bundle` | `tools/zwiki/`（构建产物 `tools/bin/zwiki`） |
 | 健康检查 | `zwiki check` 内含：empty files、index sync（递归 + indexed_anywhere 跨层豁免）、log coverage、frontmatter、relations field、**relations-body consistency（双向，error 级）**、source field、missing/duplicate inline links | `tools/zwiki/src/health.rs` |
 | Lint 检查 | `zwiki check` 内含：broken links、orphan pages、sparse pages、**stale pages**（`timestamp` 超 90 天且非 deprecated）、**cascade stale**（被取代页面的引用者，以 `last_validated` 比较判断是否已审查） | `tools/zwiki/src/lint.rs` |
 | 自动维护写入 | check 默认同步反向链接，并自动写入 `timeliness`/`last_validated`（幂等）；默认严格模式（任何问题 exit(1)） | `tools/zwiki/src/main.rs` |
@@ -336,7 +336,7 @@ contributors:
 正文按以下顺序（可省略不适用的）：
 1. **Overview** — 一句话说明本页内容
 2. **Details** / **Role** / **Key Points**（按 type 不同）— 主体内容
-3. **Backlinks** — 反向链接，由 `zwiki backlinks` 自动维护，勿手编
+3. **Backlinks** — 反向链接，由 `zwiki check` 自动维护，勿手编
 4. **References** — 外部引用
 5. **Notes** — 临时备注、待确认事项（用 `> **待确认：** ...`）
 
@@ -666,27 +666,64 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 
 ## 12. zwiki 统一 CLI
 
-### 12.1 当前实现（Rust，15 子命令）
+### 12.1 CLI 设计（2026-07 重新设计，实施中）
+
+**五条设计原则：**
+
+1. **名词-动词结构**：实体是命令，动作是子命令（与 `bundle install` 同构）
+2. **一个动作只有一个入口**：功能重叠在设计上即为非法
+3. **命令的主语 = 位置参数，其余一律 flag**
+4. **读是默认动作，写是显式动作**：裸命令永远只读；写操作是具名子命令（`set`/`unset`/`create`/`move`），写命令统一支持 `--dry-run`
+5. **横切维度全局化**：`--root`、`--json`、过滤器三件套 `--type`/`--tag`/`--domain` 为全局 flag
+
+**全局参数：** `--root <目录|tar.gz|URL>`（默认 `~/.zoo/wiki/`；目录形态就地可写，tar.gz/URL 解包临时目录只读并保留 bundle 制品校验，写命令被拒绝）、`--json`、`--type`/`--tag`/`--domain`（全局过滤器）。
+
+**目标命令体系（10 个入口）：**
+
+| 命令 | 用途 | 实施状态 |
+|------|------|---------|
+| `check` | 审计 + 自动维护派生元数据；可写 root 下同步反向链接与 timeliness；严格模式 exit(1) | ✅ 已实现 |
+| `search <query>` | 全文检索（评分排序） | ✅ 已实现 |
+| `list` | 字段结构化浏览（无评分） | ✅ 已实现 |
+| `stats [--by tag\|type\|domain]` | 维度分布统计（合并原 status/tags/types/domains） | 🚧 待实施 |
+| `verify [--domain]` | 来源回溯验证状态 | ✅ 已实现 |
+| `page <path>` | 读页面；投影：`--outline`/`--property <name>`/`--backlinks` | 🚧 待实施（`--backlinks` 新增，合并原 backlinks 命令） |
+| `page create <domain> --type --title [--slug/--source-type]` | 建页（合并原 create 命令） | 🚧 待实施 |
+| `page set <path> <prop> <value>` | 写属性（合并原 property 命令，含 status 降级语义） | 🚧 待实施 |
+| `page unset <path> <prop>` | 删属性 | 🚧 待实施 |
+| `page move <old> <new>` | 移动/重命名（合并原 move 命令） | 🚧 待实施 |
+| `log --op --path --action [--note]` | 追加日志 | ✅ 已实现 |
+| `supersede --old --new --reason` | 建立取代关系 | ✅ 已实现 |
+| `contradictions list\|apply` | 矛盾记录查询/写入 | ✅ 已实现 |
+| `bundle init\|export\|install\|list\|check\|update\|uninstall` | bundle 生命周期 | ✅ 已实现 |
+
+**合并映射（原则 2 的应用）：** `property` 命令并入 `page set/unset`（消灭 `page --property` 与 `property --page` 读属性双入口）；`create`/`move` 并入 `page`；`backlinks` 命令并入 `page --backlinks`（反向引用是页面投影，与 `--outline`/`--property` 同级；Backlinks 章节的写入维护仍归 `check`）；`status`/`tags`/`types`/`domains` 合并为 `stats --by`。
+
+**页面路径参数归一化（🚧 待实施）：** 所有接受已存在页面路径的参数（`page` 系各动作、`log --path`、`supersede --old/--new`）共用一个解析函数：剥离 `./` 前缀 → root 前缀/绝对路径转相对 → `.md` 补全 → 精确匹配 → 唯一后缀兜底（多候选报错列出）。
+
+### 12.1-legacy 当前实现（Rust，15 子命令，正按上表收敛）
 
 | 子命令 | 用途 | 状态 |
 |--------|------|------|
-| `check` | 运行 health + lint；自动同步反向链接与 timeliness 标注；默认严格模式（任何问题 exit(1)） | ✅ |
-| `backlinks` | 反向链接查询/写入 | ✅ |
+| `check` | 运行 health + lint；可写 root 下自动同步反向链接与 timeliness 标注；默认严格模式（任何问题 exit(1)） | ✅ |
+| `backlinks <page>` | 查询指定页面的反向链接（`page` 必填，`.md` 可省略） | 将并入 `page --backlinks` |
 | `log` | 追加日志到 `wiki/logs/YYYY-MM.md`（`--op`/`--path`/`--action`/`--note`） | ✅ |
-| `page` | 读页面（`--property`/`--outline`） | ✅ |
-| `property` | 读/写/删 frontmatter 属性（结构化，不手改 YAML） | ✅ |
-| `create` | 从模板创建骨架页（`--domain`/`--type`/`--title`/`--slug`/`--source-type`）；新域自动建完整骨架 | ✅ |
+| page | 读页面（`--property`/`--outline`） | 将扩展为 page 命令族 |
+| `property` | 读/写/删 frontmatter 属性（结构化，不手改 YAML） | 将并入 `page set/unset` |
+| `create` | 从模板创建骨架页（`--domain`/`--type`/`--title`/`--slug`/`--source-type`）；新域自动建完整骨架 | 将并入 `page create` |
 | `search "<query>"` | 全文检索（rg 候选 + 进程内 fallback）；`--type`/`--tag`/`--domain` 过滤 | ✅ |
 | `list` | 字段结构化浏览（`--type`/`--tag`/`--domain` 过滤，无查询词，无评分） | ✅ |
-| `status` | wiki 健康概览（总数 + type/domain/status/timeliness 分布 + last_validated 范围）；`--type`/`--tag`/`--domain` 切片 | ✅ |
-| `tags` | 列出所有标签 + 页面数；`--type`/`--domain` 切片 | ✅ |
-| `types` | 列出所有类型 + 页面数；`--tag`/`--domain` 切片 | ✅ |
-| `domains` | 列出所有领域 + 页面数；`--type`/`--tag` 切片 | ✅ |
-| `move <old> <new>` | 重命名/跨域移动页面 + 自动更新所有引用（frontmatter 四个路径型字段、body inline link、body backtick、域 index.md 条目）；同域原地替换 index 链接，跨域旧域删条目 + 新域按 type 节追加 | ✅ |
+| `status` | wiki 健康概览（总数 + type/domain/status/timeliness 分布 + last_validated 范围）；`--type`/`--tag`/`--domain` 切片 | 将并入 `stats` |
+| `tags` | 列出所有标签 + 页面数；`--type`/`--domain` 切片 | 将并入 `stats --by tag` |
+| `types` | 列出所有类型 + 页面数；`--tag`/`--domain` 切片 | 将并入 `stats --by type` |
+| `domains` | 列出所有领域 + 页面数；`--type`/`--tag` 切片 | 将并入 `stats --by domain` |
+| `move <old> <new>` | 重命名/跨域移动页面 + 自动更新所有引用（frontmatter 四个路径型字段、body inline link、body backtick、域 index.md 条目）；同域原地替换 index 链接，跨域旧域删条目 + 新域按 type 节追加 | 将并入 `page move` |
 | `supersede` | 建立取代关系：两侧 frontmatter 自动写入 `supersedes` / `superseded_by`（`--old`/`--new`/`--reason`） | ✅ |
 | `contradictions` | 列出/写入矛盾记录：`list` 扫描全 wiki 展示 `contradictions` 条目；`apply` 从 stdin JSON 读取矛盾对，写入双方 frontmatter 并对称降级 `status`（stable→review, review→draft），更新 `last_validated` | ✅ |
 
 ### 12.2 目标扩展子命令（按路线图）
+
+> 注：2026-07 重新设计（§12.1）后，`status`/`tags`/`types`/`domains` 将合并为 `stats [--by]`，`property`/`create`/`move`/`backlinks` 将并入 `page` 命令族；本节中这些命令的行为描述迁移到对应新命令下继续适用。
 
 | 子命令 | 阶段 |
 |--------|------|
@@ -694,9 +731,9 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 | `search "<query>"` | ✅ 已实现 |
 | `bundle export <dir>` | ✅ 已实现 |
 | `bundle install <source>` | ✅ 已实现 |
-| `move <old> <new>` | ✅ 已实现 |
 | `list [--tag] [--type] [--domain]` | ✅ 已实现 |
-| `status [--tag] [--type] [--domain]` | ✅ 已实现 |
+| `stats [--by tag\|type\|domain]`（原 status/tags/types/domains） | 🚧 待实施 |
+| `page` 命令族（合并 property/create/move/backlinks） | 🚧 待实施 |
 | `sync pull/push/status` | P3 |
 | `promote --team <name>` | P3 |
 | `propose --team <name>` | P3 |

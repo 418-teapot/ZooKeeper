@@ -14,7 +14,6 @@ use crate::bundle::lock;
 use crate::bundle::manifest;
 use crate::bundle::source;
 use crate::bundle::tar;
-use crate::wiki;
 
 /// Compare two version strings by splitting on `.` and comparing numeric
 /// components element-wise. Pre-release suffixes (e.g. `-beta`, `-rc1`) are
@@ -808,9 +807,9 @@ pub fn cmd_update_at(args: &UpdateArgs, use_json: bool, wiki_root: &Path) {
 }
 
 /// Update installed bundles from their configured registry.
-pub fn cmd_update(args: &UpdateArgs, global_json: bool) {
+pub fn cmd_update(args: &UpdateArgs, global_json: bool, wiki_root: &Path) {
     let use_json = args.json || global_json;
-    cmd_update_at(args, use_json, &wiki::wiki_dir());
+    cmd_update_at(args, use_json, wiki_root);
 }
 
 #[cfg(test)]

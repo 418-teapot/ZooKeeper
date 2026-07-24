@@ -750,10 +750,7 @@ mod tests {
     /// inconsistent constant updates, not forgotten renders.
     #[test]
     fn test_format_full_report_saturation_all_fields() {
-        let mut health = CheckResults {
-            total_pages: 14,
-            ..Default::default()
-        };
+        let mut health = CheckResults { total_pages: 14, ..Default::default() };
 
         // Health: 9 sections (index_sync has 2 sub-vecs → 1 section)
         health.empty_files.push(Issue {
@@ -762,10 +759,7 @@ mod tests {
             details: "0:0".into(),
         });
         health.index_sync.on_disk_not_in_index.push("disk-only.md".into());
-        health
-            .index_sync
-            .in_index_not_on_disk
-            .push("index-only.md".into());
+        health.index_sync.in_index_not_on_disk.push("index-only.md".into());
         health.log_coverage.push(Issue {
             page: "sources/s.md".into(),
             kind: "missing_log".into(),
@@ -809,20 +803,17 @@ mod tests {
         lint.broken_links.push(Issue {
             page: "broken.md".into(),
             kind: "target_not_found".into(),
-            details:
-                r#"{"link_text":"bad","target_path":"gone.md"}"#.into(),
+            details: r#"{"link_text":"bad","target_path":"gone.md"}"#.into(),
         });
         lint.orphan_pages.push(Issue {
             page: "orphan.md".into(),
             kind: "orphan".into(),
-            details:
-                r#"{"inbound_links":0,"in_index":false}"#.into(),
+            details: r#"{"inbound_links":0,"in_index":false}"#.into(),
         });
         lint.sparse_pages.push(Issue {
             page: "sparse.md".into(),
             kind: "sparse".into(),
-            details:
-                r#"{"body_length":10,"threshold":50}"#.into(),
+            details: r#"{"body_length":10,"threshold":50}"#.into(),
         });
         lint.stale_pages.push(Issue {
             page: "stale.md".into(),
@@ -833,17 +824,17 @@ mod tests {
         lint.cascade_stale.push(Issue {
             page: "cascade.md".into(),
             kind: "stale".into(),
-            details:
-                r#"{"superseded_page":"old.md","superseded_by":"new.md"}"#.into(),
+            details: r#"{"superseded_page":"old.md","superseded_by":"new.md"}"#
+                .into(),
         });
 
         let report = format_full_report(&health, &lint);
 
         // Count lines starting with "## " — each is a rendered section header.
-        let section_count = report.lines().filter(|l| l.starts_with("## ")).count();
+        let section_count =
+            report.lines().filter(|l| l.starts_with("## ")).count();
         assert_eq!(
-            section_count,
-            TOTAL_SECTION_COUNT,
+            section_count, TOTAL_SECTION_COUNT,
             "All {TOTAL_SECTION_COUNT} check sections should render when \
              every field has issues; got {section_count}",
         );
