@@ -188,7 +188,7 @@ Agent 直接读写文件时（`read` / `write` / `edit` / `bash` 指令）使用
 
 ## 页面模板
 
-每种页面类型有对应的模板文件位于 `~/.zoo/wiki/templates/`，由 `zwiki create` 命令
+每种页面类型有对应的模板文件位于 `~/.zoo/wiki/templates/`，由 `zwiki page create` 命令
 用于创建骨架页面。kiwi 在创建新页面时应使用脚本生成骨架，然后 `edit` 填充内容。
 
 | 类型 | 模板文件 | 用途 |
@@ -199,7 +199,7 @@ Agent 直接读写文件时（`read` / `write` / `edit` / `bash` 指令）使用
 | analysis | `~/.zoo/wiki/templates/analysis.md` | 分析页面：方案对比、利弊权衡 |
 | synthesis | `~/.zoo/wiki/templates/synthesis.md` | 合成页面：对 query 的结构化回答 |
 
-创建新页面时使用 `zwiki create` 生成骨架，然后 `edit` 填充内容。**禁止手动创建页面**以保证格式一致性。用法见 `zwiki create --help`。
+创建新页面时使用 `zwiki page create` 生成骨架，然后 `edit` 填充内容。**禁止手动创建页面**以保证格式一致性。用法见 `zwiki page create --help`。
 
 ---
 

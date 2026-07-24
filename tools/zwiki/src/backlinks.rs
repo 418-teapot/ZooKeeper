@@ -540,48 +540,6 @@ pub fn update_backlinks(
 }
 
 // ---------------------------------------------------------------------------
-// 8. format_report
-// ---------------------------------------------------------------------------
-
-/// Format the backlink index as a human-readable markdown report.
-///
-/// Only pages that have at least one backlink are included.
-#[must_use]
-pub fn format_report(
-    index: &HashMap<String, Vec<String>>,
-    root: &Path,
-) -> String {
-    let mut lines = vec![
-        String::from("# Wiki 反向链接报告"),
-        String::new(),
-        format!("共 {} 个页面有反向链接。", index.len()),
-        String::new(),
-    ];
-
-    // Sort for deterministic output
-    let mut sorted_targets: Vec<&String> = index.keys().collect();
-    sorted_targets.sort();
-
-    for target in sorted_targets {
-        let sources = &index[target];
-        let title = page_title_from_rel(target, root);
-        lines.push(format!("## {title}"));
-        lines.push(String::new());
-        lines.push(format!("页面：`{target}`"));
-        lines.push(String::new());
-        lines.push(format!("被 {} 个页面引用：", sources.len()));
-        lines.push(String::new());
-        for src in sources {
-            let src_title = page_title_from_rel(src, root);
-            lines.push(format!("- [{src_title}]({src})"));
-        }
-        lines.push(String::new());
-    }
-
-    lines.join("\n")
-}
-
-// ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
@@ -1145,45 +1103,6 @@ Body.";
         let index: HashMap<String, Vec<String>> = HashMap::new();
         let updated = update_backlinks(&dir, &index, &pages);
         assert_eq!(updated, 0);
-    }
-
-    // -------------------------------------------------------------------
-    // 8. format_report
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_format_report_correct_structure() {
-        let mut index = HashMap::new();
-        index.insert("target.md".to_string(), vec!["src.md".to_string()]);
-        let root =
-            std::env::temp_dir().join("zwiki-backlinks-test-report-struct");
-        let report = format_report(&index, &root);
-        assert!(report.contains("# Wiki 反向链接报告"));
-        assert!(report.contains("共 1 个页面有反向链接"));
-        assert!(report.contains("## "));
-        assert!(report.contains("被 1 个页面引用"));
-    }
-
-    #[test]
-    fn test_format_report_multiple_pages() {
-        let mut index = HashMap::new();
-        index.insert("a.md".to_string(), vec!["src1.md".to_string()]);
-        index.insert("b.md".to_string(), vec!["src2.md".to_string()]);
-        let root =
-            std::env::temp_dir().join("zwiki-backlinks-test-report-multi");
-        let report = format_report(&index, &root);
-        assert!(report.contains("# Wiki 反向链接报告"));
-        assert!(report.contains("共 2 个页面有反向链接"));
-    }
-
-    #[test]
-    fn test_format_report_empty_index() {
-        let index: HashMap<String, Vec<String>> = HashMap::new();
-        let root =
-            std::env::temp_dir().join("zwiki-backlinks-test-report-empty");
-        let report = format_report(&index, &root);
-        assert!(report.contains("# Wiki 反向链接报告"));
-        assert!(report.contains("共 0 个页面有反向链接"));
     }
 
     // -------------------------------------------------------------------

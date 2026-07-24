@@ -48,7 +48,7 @@ timeliness: current
 
 ### 当前知识版图
 
-Wiki 按领域组织，每个领域独立维护 6 类页面（concepts/entities/sources/analysis/syntheses 及 sources 的三个子类）。新增领域只需 `zwiki create --domain <name>` 即可自动创建骨架。
+Wiki 按领域组织，每个领域独立维护 6 类页面（concepts/entities/sources/analysis/syntheses 及 sources 的三个子类）。新增领域只需 `zwiki page create --domain <name>` 即可自动创建骨架。
 
 | 领域 | 页面数 | 核心内容 |
 |------|--------|----------|

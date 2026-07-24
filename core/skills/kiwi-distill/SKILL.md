@@ -261,7 +261,7 @@ If validation candidates were found (per 4.7, Outcome C):
       - Existing claim: "..." (exact quote from the existing page)
         Confirming claim: "..." (exact quote from the new source)
         Status: proposal only — calling agent must confirm before refreshing `last_validated`
-  **THESE ARE PROPOSALS ONLY. The calling agent must confirm with the user before using `zwiki property last_validated --page <path> --value <value>` on any page.**
+  **THESE ARE PROPOSALS ONLY. The calling agent must confirm with the user before using `zwiki page set <path> last_validated <value>` on any page.**
 
 If no validation candidates:
   No existing page claims are independently confirmed by this source.

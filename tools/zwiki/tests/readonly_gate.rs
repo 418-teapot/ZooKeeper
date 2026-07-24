@@ -107,23 +107,39 @@ fn test_readonly_root_rejects_write_commands() {
         "log",
     );
 
-    // --- property ---
+    // --- page set ---
     assert_write_rejected(
         &bin,
         &tar_path,
-        &["property", "status", "--page", "doc.md", "--value", "draft"],
-        "property",
+        &["page", "set", "doc.md", "status", "draft"],
+        "page set",
     );
 
-    // --- create ---
+    // --- page unset ---
+    assert_write_rejected(
+        &bin,
+        &tar_path,
+        &["page", "unset", "doc.md", "status"],
+        "page unset",
+    );
+
+    // --- page create ---
     assert_write_rejected(
         &bin,
         &tar_path,
         &[
-            "create", "--domain", "test", "--type", "concept", "--title",
-            "New Page",
+            "page", "create", "--domain", "test", "--type", "concept",
+            "--title", "New Page",
         ],
-        "create",
+        "page create",
+    );
+
+    // --- page move ---
+    assert_write_rejected(
+        &bin,
+        &tar_path,
+        &["page", "move", "doc.md", "doc-moved.md"],
+        "page move",
     );
 
     // --- verify tar content was NOT modified ---

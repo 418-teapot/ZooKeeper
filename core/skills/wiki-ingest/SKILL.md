@@ -69,7 +69,7 @@ description: 用于将外部源文档或对话知识 ingest 到项目 wiki 中�
 返回一份结构化分析，描述：
   - 要创建/更新的页面路径、完整 frontmatter、完整页面内容（遵循 SCHEMA.md 规范）
   - 要在相关**域**的 `index.md`（如 `wiki/<domain>/index.md`）中添加的索引条目（根 index.md 只列域，新建域时才改）
-   - 需要更新的交叉引用（更新哪些已有页面的 `relations` 字段；反向链接由 `zwiki backlinks` 自动维护，kiwi 无需处理）
+   - 需要更新的交叉引用（更新哪些已有页面的 `relations` 字段；反向链接由 `zwiki check` 自动维护，kiwi 无需处理）
    - 关于 `overview.md` 是否需要更新的建议
    - 要通过 `zwiki log` 追加的日志条目
 ```
@@ -89,14 +89,13 @@ description: 用于将外部源文档或对话知识 ingest 到项目 wiki 中�
 kiwi 返回分析后，由调用方 agent 执行写入：
 
 **创建新页面时：**
-1. **创建骨架** — 使用 `zwiki create`：
+1. **创建骨架** — 使用 `zwiki page create`：
     ```bash
-    zwiki create \
-        --domain <域名> \
+    zwiki page create --domain <域名> \
         --type <concept|entity|analysis|synthesis> \
         --title "<页面标题>"
     ```
-    域由 kiwi 的分析结果决定（kiwi 返回的页面路径含域前缀）。合法域由 wiki 根目录下实际存在的子目录决定（运行 `zwiki create --help` 或查看 `~/.zoo/wiki/` 下子目录）；团队可通过新建子目录扩展域。对于 source 类型追加 `--source-type <adr|rfc|notes>`；中文标题需加 `--slug <english-slug>`
+    域由 kiwi 的分析结果决定（kiwi 返回的页面路径含域前缀）。合法域由 wiki 根目录下实际存在的子目录决定（运行 `zwiki page create --help` 或查看 `~/.zoo/wiki/` 下子目录）；团队可通过新建子目录扩展域。对于 source 类型追加 `--source-type <adr|rfc|notes>`；中文标题需加 `--slug <english-slug>`
 2. **填充内容** — 使用 `write` / `edit` 将 kiwi 提供的页面内容写入
 
 **更新已有页面时：**
@@ -171,8 +170,8 @@ kiwi 返回分析后，由调用方 agent 执行写入：
 
     然后对双方页面执行 status 降级：
     ```bash
-    zwiki property status --page "domain/page_a.md" --downgrade
-    zwiki property status --page "domain/page_b.md" --downgrade
+    zwiki page set "domain/page_a.md" status --downgrade
+    zwiki page set "domain/page_b.md" status --downgrade
     ```
 
 3. **验证写入** — 运行 `zwiki contradictions list` 确认矛盾已记录。
@@ -198,11 +197,9 @@ kiwi 返回分析后，由调用方 agent 执行写入：
 
 3. **只对用户确认的提议执行写入**。对每个要刷新的页面：
     ```bash
-    zwiki property last_validated \
-      --page "<domain>/concepts/<page>.md" \
-      --value "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    zwiki page set <domain>/concepts/<page>.md last_validated "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     ```
-    注意：`zwiki property` 会覆盖已有时间戳。多次确认同一页面时，只需执行一次（以最新时间为准）。
+    注意：`zwiki page set` 会覆盖已有时间戳。多次确认同一页面时，只需执行一次（以最新时间为准）。
 
 4. **记录日志** — 对每个确认的验证，追加日志条目说明验证来源：
     ```bash

@@ -69,7 +69,7 @@
 | `last_validated` / `timeliness` / `supersedes` / `superseded_by` / `contradictions` / `freshness_days` 字段 | **字段已定义并回填**。SCHEMA.md 已声明六字段；`last_validated`/`timeliness` 必选（含枚举校验），其余可选；28 现有页面已回填。stale 自动标记（`zwiki check`，P0 项 2 ✅）、三级短路（P0 项 3 ✅）、supersede 机制（`zwiki supersede` + kiwi 判断，P1 项 9 ✅）已实现；`contradictions` 的自动化写入属 P1 项 11，已随矛盾检测实现（集成于 kiwi-distill，`zwiki contradictions apply` 执行写入与对称降级） |
 | 自动标记 stale | **已实现**。`zwiki check` 检测 `timestamp` 超 90 天且非 `deprecated` 的页面，自动写 `timeliness: stale`（P0 项 2 ✅） |
 | 三阶段级联检索（index → tag → grep） | **未实现**。wiki-query skill 仍是 index.md 单路径 + grep 提示 |
-| `zwiki search` / `move` 子命令 | **已实现**。`zwiki search`（rg 候选预筛 + 进程内 fallback，四级评分 title/tag/heading/body，`--type`/`--tag`/`--domain` 过滤）；`zwiki move`（重命名 + 自动更新全部引用：frontmatter 四个路径型字段 + body 两类链接 + 域 index.md 条目，支持同域重命名与跨域移动） |
+| `zwiki search` / `page move` 子命令 | **已实现**。`zwiki search`（rg 候选预筛 + 进程内 fallback，四级评分 title/tag/heading/body，`--type`/`--tag`/`--domain` 过滤）；`zwiki page move`（重命名 + 自动更新全部引用：frontmatter 四个路径型字段 + body 两类链接 + 域 index.md 条目，支持同域重命名与跨域移动） |
 | 四阶段分块蒸馏（大规模摄入） | **未实现** |
 | 六步增量同步 | **未实现** |
 | 协同 Layer 1（personal/.org/.teams/.upstream 五级覆盖） | **未实现**。无任何分层目录、无 `teams.toml` |
@@ -247,7 +247,7 @@ wiki/
         └── agent-skill-plugin-framework.md
 ```
 
-新增领域只需 `zwiki create --domain <name> ...`，自动创建完整域骨架（concepts/entities/sources/{adr,rfc,notes}/analysis/syntheses + .gitkeep）。域名动态发现，不硬编码。
+新增领域只需 `zwiki page create --domain <name> ...`，自动创建完整域骨架（concepts/entities/sources/{adr,rfc,notes}/analysis/syntheses + .gitkeep）。域名动态发现，不硬编码。
 
 **为何域优先：**
 
@@ -269,7 +269,7 @@ wiki/
 **页面类型语义：**
 - `sources/` 页面**不可变**——记录"某时某地说过什么"，历史事实不变；新版本以新页面追加，不修改旧页面。
 - `overview.md`（若存在）是**活的综合页**（living synthesis）——每次大规模摄入后由 kiwi 判断是否值得**重写**（非追加），是项目级知识快照。kiwi 在蒸馏分析报告里给出重写建议，调用方决定是否执行。
-- 交叉引用路径从 `concepts/foo.md` 改为 `autoresearch/concepts/foo.md`（批量 `zwiki move` 可处理，✅ P1 项 13 已实现）
+- 交叉引用路径从 `concepts/foo.md` 改为 `autoresearch/concepts/foo.md`（批量 `zwiki page move` 可处理，✅ P1 项 13 已实现）
 
 ### 5.3 目标扩展字段（未实现）
 
@@ -432,7 +432,7 @@ kiwi 系统 prompt（~40 行）          kiwi 技能
 源材料到达
      │
      ├── 结构化 / 已 wiki 格式化 ──→ 简单路径：任意 agent 直接调
-     │                              zwiki create / property / log
+     │                              zwiki page create / page set / log
      │
      └── 非结构化 / 复杂源材料 ──→ 复杂路径：委派 kiwi 蒸馏
                                      → kiwi 返回分析报告
@@ -443,8 +443,8 @@ kiwi 系统 prompt（~40 行）          kiwi 技能
 
 ### 7.2 简单路径（已实现）
 
-1. `zwiki create --type <type> --title "..."` 生成骨架（source 加 `--source-type`）
-2. `write`/`edit` 填充内容（或 `zwiki property` 改单个字段）
+1. `zwiki page create --domain <domain> --type <type> --title "..."` 生成骨架（source 加 `--source-type`）
+2. `write`/`edit` 填充内容（或 `zwiki page set` 改单个字段）
 3. 更新 `wiki/index.md`
 4. `zwiki log --op ingest --path <path> --action create --note "..."`
 5. （可选）更新相关页面 `relations` 字段
@@ -687,11 +687,11 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 | `list` | 字段结构化浏览（无评分） | ✅ 已实现 |
 | `stats [--by tag\|type\|domain]` | 维度分布统计（合并原 status/tags/types/domains） | 🚧 待实施 |
 | `verify [--domain]` | 来源回溯验证状态 | ✅ 已实现 |
-| `page <path>` | 读页面；投影：`--outline`/`--property <name>`/`--backlinks` | 🚧 待实施（`--backlinks` 新增，合并原 backlinks 命令） |
-| `page create <domain> --type --title [--slug/--source-type]` | 建页（合并原 create 命令） | 🚧 待实施 |
-| `page set <path> <prop> <value>` | 写属性（合并原 property 命令，含 status 降级语义） | 🚧 待实施 |
-| `page unset <path> <prop>` | 删属性 | 🚧 待实施 |
-| `page move <old> <new>` | 移动/重命名（合并原 move 命令） | 🚧 待实施 |
+| `page show <path>` | 读页面；投影：`--outline`/`--property <name>`/`--backlinks`（合并原 backlinks 命令） | ✅ 已实现 |
+| `page create --domain --type --title [--slug/--source-type]` | 建页（合并原 create 命令） | ✅ 已实现 |
+| `page set <path> <prop> <value>` | 写属性（合并原 property 命令，含 status 降级语义） | ✅ 已实现 |
+| `page unset <path> <prop>` | 删属性（合并原 property delete/unset） | ✅ 已实现 |
+| `page move <old> <new>` | 移动/重命名（合并原 move 命令） | ✅ 已实现 |
 | `log --op --path --action [--note]` | 追加日志 | ✅ 已实现 |
 | `supersede --old --new --reason` | 建立取代关系 | ✅ 已实现 |
 | `contradictions list\|apply` | 矛盾记录查询/写入 | ✅ 已实现 |
@@ -699,7 +699,7 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 
 **合并映射（原则 2 的应用）：** `property` 命令并入 `page set/unset`（消灭 `page --property` 与 `property --page` 读属性双入口）；`create`/`move` 并入 `page`；`backlinks` 命令并入 `page --backlinks`（反向引用是页面投影，与 `--outline`/`--property` 同级；Backlinks 章节的写入维护仍归 `check`）；`status`/`tags`/`types`/`domains` 合并为 `stats --by`。
 
-**页面路径参数归一化（🚧 待实施）：** 所有接受已存在页面路径的参数（`page` 系各动作、`log --path`、`supersede --old/--new`）共用一个解析函数：剥离 `./` 前缀 → root 前缀/绝对路径转相对 → `.md` 补全 → 精确匹配 → 唯一后缀兜底（多候选报错列出）。
+**页面路径参数归一化（✅ 已实施）：** 所有接受已存在页面路径的参数（`page` 系各动作、`log --path`、`supersede --old/--new`）共用一个解析函数：剥离 `./` 前缀 → root 前缀/绝对路径转相对 → `.md` 补全 → 精确匹配 → 组件边界唯一后缀兜底（多候选报错列出，拒绝 `..`，支持 `--root` 下 cwd 相对路径解析）。
 
 ### 12.1-legacy 当前实现（Rust，15 子命令，正按上表收敛）
 
@@ -925,7 +925,7 @@ zwiki bundle install https://example.com/zoo-wiki.tar.gz
 
 - ✅ `updated`→`timestamp`、`source`→`resource`、新增 `description`、`okf_version`、删除 `created`
 - ✅ zwiki CLI 骨架（Rust，6 子命令）
-- ✅ `zwiki property` 结构化读/写/删
+- ✅ `zwiki page set/unset` 结构化读/写/删
 
 ### P0：L0 地基（纯机械，零 LLM）
 
@@ -978,7 +978,7 @@ zwiki bundle install https://example.com/zoo-wiki.tar.gz
 | 各领域子目录 | 领域内保留 `concepts/`/`entities/`/`analysis/`/`sources/` 二级类型目录 |
 | `tools/zwiki/src/wiki.rs` | `all_wiki_pages()` 已支持递归；`check_index_sync` 需扩展为校验各级 index.md 与对应子目录文件一致 |
 | `tools/zwiki/src/health.rs` | `check_index_sync` 递归化：对每个含 `index.md` 的子目录独立校验 |
-| 所有页面的交叉引用 | 路径从 `concepts/foo.md` 改为 `<domain>/concepts/foo.md`；可用 `zwiki move`（✅ P1 项 13）批量更新（或在迁移脚本中一次性 `sed`） |
+| 所有页面的交叉引用 | 路径从 `concepts/foo.md` 改为 `<domain>/concepts/foo.md`；可用 `zwiki page move`（✅ P1 项 13）批量更新（或在迁移脚本中一次性 `sed`） |
 
 **归类判定规则（迁移时）：**
 - 文件名或内容明确属于 autoresearch 项目 → `autoresearch/`
@@ -986,7 +986,7 @@ zwiki bundle install https://example.com/zoo-wiki.tar.gz
 - 跨领域通用概念（NPC 分工、简约准则、后验问责、Agent/Skill/Plugin 框架等）→ `shared/`
 - 不确定时优先放 `shared/`，后续按引用密度移动
 
-**向后兼容：** 解析器可暂时容忍旧格式（`## [date] ...`）以避免迁移期间报错，但写入器只产新格式。`zwiki check` 内置 OKF 合规自检（P0 项 8）上线后可加严格校验。交叉引用可用 `zwiki move`（✅ P1 项 13）批量重写路径。
+**向后兼容：** 解析器可暂时容忍旧格式（`## [date] ...`）以避免迁移期间报错，但写入器只产新格式。`zwiki check` 内置 OKF 合规自检（P0 项 8）上线后可加严格校验。交叉引用可用 `zwiki page move`（✅ P1 项 13）批量重写路径。
 
 **估算工作量：** Rust 改动 ~60 行 + 测试更新 ~40 行 + SCHEMA/index/log 文件迁移 ~80 行 + 域优先重构（目录移动 + 交叉引用重写 + 各领域 index.md 生成）~120 行 ≈ 300 行。
 
@@ -999,7 +999,7 @@ zwiki bundle install https://example.com/zoo-wiki.tar.gz
 | — | ✅ **kiwi 系统 prompt 技能化重构**（详见 §6.5）。`src/agents/kiwi.ts` 轻量化（235 行 → 40 行），蒸馏工作流搬入 `core/skills/kiwi-distill/`（Phase 0-5），kiwi 按任务类型动态加载不同技能。这为 #11（矛盾检测，现已 ✅ 完成）和未来新增 kiwi 分析模式奠定了基础 |
 | 11 | ✅ 矛盾检测：集成于 kiwi-distill Phase 4.7 Claim Reconciliation（与 supersede 检查共享 claim 提取，无独立预筛选）；`zwiki contradictions list`/`apply` 子命令完成记录写入与对称降级（stable→review, review→draft）；wiki-ingest Phase 4 管道 kiwi JSON 至 `zwiki contradictions apply` |
 | 12 | ✅ wiki-query 矛盾感知：wiki-query Phase 3 新增"矛盾感知"正交检查（与生命周期表独立）；`zwiki search` 输出含 `contradictions` 字段（JSON 完整数据 + human `[!×N]` 标记）；query 合成答案时对矛盾页面附加"↯ 声明存在争议"标注 |
-| 13 | ✅ `zwiki move`：重命名 + 自动更新所有引用链接（frontmatter relations/supersedes/superseded_by/contradictions 四个路径型字段 + body inline link + body backtick；同域 index 原地替换，跨域旧域删条目 + 新域按 type 节追加；type→section 标题映射保障 OKF 合规；自引用页正确处理） |
+| 13 | ✅ `zwiki page move`：重命名 + 自动更新所有引用链接（frontmatter relations/supersedes/superseded_by/contradictions 四个路径型字段 + body inline link + body backtick；同域 index 原地替换，跨域旧域删条目 + 新域按 type 节追加；type→section 标题映射保障 OKF 合规；自引用页正确处理） |
 | 14 | ~~SCHEMA 自动注入到 agent prompt（config hook）~~ — 已取消。`wiki-query` skill description 已告知 agent wiki 的存在和用法，注入冗余 |
 | 15 | ✅ `zwiki list`：按字段结构化浏览页面——`--tag <name>`/`--type <type>`/`--domain <domain>` 列匹配页面，无过滤时列全部页面路径 + 标题。与 `search`（全文检索）互补：`list` 是字段精确浏览，`search` 是内容子串匹配 + 评分排序 |
 | 16 | ✅ `zwiki status`：wiki 整体健康概览——页面总数、各 type/domain 分布、stale/deprecated 计数、最近 last_validated 范围。`--tag`/`--type`/`--domain` 可选切片统计 |

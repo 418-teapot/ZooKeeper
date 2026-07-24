@@ -105,9 +105,7 @@ zwiki verify --json
 对每个裁定为 `validated` 的派生页，更新其 `last_validated` 为当前时间：
 
 ```bash
-zwiki property last_validated \
-  --page "<domain>/concepts/<page>.md" \
-  --value "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+zwiki page set <domain>/concepts/<page>.md last_validated "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ```
 
 ### drifted — 降级状态并追加待确认标记
@@ -115,9 +113,9 @@ zwiki property last_validated \
 对每个裁定为 `drifted` 的派生页：
 
 1. **降级 status**：
-   ```bash
-   zwiki property status --page "<path>" --downgrade
-   ```
+```bash
+zwiki page set <path> status --downgrade
+```
    zwiki 自动执行 `stable → review → draft` 映射，仅降派生页，源页不动。
 
 2. **追加待确认标记** — 在页面末尾的 Notes 节（如不存在则创建）逐条追加：

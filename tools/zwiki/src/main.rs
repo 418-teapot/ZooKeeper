@@ -23,7 +23,7 @@ mod verify;
 mod wiki;
 
 use crate::bundle::ZwikiLock;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use std::process;
 use tempfile::TempDir;
@@ -60,6 +60,118 @@ fn guard_writable(root: &WikiRoot, cmd_desc: &str) {
     }
 }
 
+/// Normalize a page path argument that should reference an **existing** page.
+///
+/// Pipeline (per §12.1 of the wiki design):
+/// 1. Strip leading `./` prefix.
+/// 2. Make relative to wiki root (strip root prefix or reject absolute paths).
+/// 3. Append `.md` if the path has no extension.
+/// 4. Exact match — if the file exists, return it.
+/// 5. Unique-suffix fallback — find all `.md` files whose relative path ends
+///    with the requested suffix.  Error if ambiguous (multiple matches) or
+///    no matches found.
+fn normalize_page_path(root: &Path, raw: &str) -> Result<String, String> {
+    // Step 1: strip all leading ./ prefixes
+    let mut cleaned = raw;
+    while let Some(stripped) = cleaned.strip_prefix("./") {
+        cleaned = stripped;
+    }
+
+    // Reject paths containing `..` components (path traversal guard).
+    if cleaned.contains("..") {
+        return Err("页面路径不能包含「..」".to_string());
+    }
+
+    // Step 2: make relative to wiki root
+    // If the path is absolute, try to make it relative to root.
+    let rel = if Path::new(cleaned).is_absolute() {
+        let root_canonical = root
+            .canonicalize()
+            .map_err(|e| format!("无法解析 wiki 根路径: {e}"))?;
+        let raw_path = Path::new(cleaned);
+        raw_path
+            .strip_prefix(&root_canonical)
+            .map_err(|_| {
+                format!("路径是绝对路径但不在 wiki 根目录下: {cleaned}")
+            })?
+            .to_string_lossy()
+            .to_string()
+    } else if let Some(stripped) = cleaned.strip_prefix('/') {
+        // Rooted path — treat as relative after the leading /
+        stripped.to_string()
+    } else {
+        // Step 2c: try resolving relative to cwd — if the path exists
+        // and its canonical form is under the canonical root, use the
+        // root-relative portion (handles paths like
+        // `wiki/concepts/page.md` with `--root ./wiki/`).
+        let root_rel = std::env::current_dir().ok().and_then(|cwd| {
+            let candidate = cwd.join(cleaned);
+            if !candidate.exists() {
+                return None;
+            }
+            let canon = candidate.canonicalize().ok()?;
+            let root_canon = root.canonicalize().ok()?;
+            canon
+                .strip_prefix(&root_canon)
+                .ok()
+                .map(|p| p.to_string_lossy().to_string())
+        });
+        root_rel.unwrap_or_else(|| cleaned.to_string())
+    };
+
+    // Step 3: append .md if missing
+    let with_ext =
+        if Path::new(&rel).extension().is_none_or(std::ffi::OsStr::is_empty) {
+            format!("{rel}.md")
+        } else {
+            rel
+        };
+
+    // Step 4: exact match
+    let abs = root.join(&with_ext);
+    if abs.exists() {
+        return Ok(with_ext);
+    }
+
+    // Step 5: unique-suffix fallback
+    let all = wiki::discover_pages(root);
+    let matches: Vec<PathBuf> = all
+        .into_iter()
+        .filter(|p| {
+            p.strip_prefix(root).ok().and_then(|r| r.to_str()).is_some_and(
+                |r| r == with_ext || r.ends_with(&format!("/{with_ext}")),
+            )
+        })
+        .collect();
+
+    match matches.len() {
+        0 => Err(format!("页面不存在: {raw}")),
+        1 => {
+            let found = matches[0]
+                .strip_prefix(root)
+                .unwrap_or(&matches[0])
+                .to_string_lossy()
+                .to_string();
+            Ok(found)
+        }
+        _ => {
+            let candidates: Vec<String> = matches
+                .iter()
+                .map(|p| {
+                    p.strip_prefix(root)
+                        .unwrap_or(p)
+                        .to_string_lossy()
+                        .to_string()
+                })
+                .collect();
+            Err(format!(
+                "页面路径不明确: {raw} — 找到多个匹配: {}",
+                candidates.join(", ")
+            ))
+        }
+    }
+}
+
 /// Resolve the `--root` argument to a [`WikiRoot`].
 ///
 /// - `None` → default `~/.zoo/wiki/` directory (writable).
@@ -91,7 +203,7 @@ fn resolve_wiki_root(
     about = "ZooKeeper wiki — manage ~/.zoo/wiki/ knowledge from the command line.",
     disable_help_subcommand = true
 )]
-struct Args {
+struct ZwikiArgs {
     /// Wiki root directory, tar.gz path, or URL (default: ~/.zoo/wiki/)
     #[arg(long, global = true)]
     root: Option<String>,
@@ -116,16 +228,119 @@ enum ContradictionsCommand {
     Apply,
 }
 
+// ---------------------------------------------------------------------------
+// Page command family — show, set, unset, create, move
+// ---------------------------------------------------------------------------
+
+/// Show a wiki page (full content, property, outline, or backlinks)
+#[derive(Args)]
+pub struct PageShowArgs {
+    /// Wiki-relative page path
+    pub path: String,
+
+    /// Print only a specific frontmatter property
+    #[arg(long)]
+    pub property: Option<String>,
+
+    /// Print heading tree (## headings only)
+    #[arg(long)]
+    pub outline: bool,
+
+    /// Show backlinks to this page
+    #[arg(long)]
+    pub backlinks: bool,
+}
+
+/// Set a frontmatter property on a page
+#[derive(Args)]
+pub struct PageSetArgs {
+    /// Wiki-relative page path
+    pub path: String,
+
+    /// Property name (e.g. timeliness, status, tags)
+    pub prop: String,
+
+    /// Value to set (required unless --downgrade is used)
+    pub value: Option<String>,
+
+    /// Downgrade the property value (status: stable→review→draft)
+    #[arg(long)]
+    pub downgrade: bool,
+}
+
+/// Delete a frontmatter property from a page
+#[derive(Args)]
+pub struct PageUnsetArgs {
+    /// Wiki-relative page path
+    pub path: String,
+    /// Property name to delete
+    pub prop: String,
+}
+
+/// Create a new wiki page from template
+#[derive(Args)]
+pub struct PageCreateArgs {
+    /// Domain: an existing wiki subdirectory (required)
+    #[arg(long)]
+    pub domain: String,
+
+    /// Page type: concept, entity, source, analysis, synthesis
+    #[arg(long)]
+    pub r#type: String,
+
+    /// Page title
+    #[arg(long)]
+    pub title: String,
+
+    /// Custom filename slug (required for non-Latin titles)
+    #[arg(long)]
+    pub slug: Option<String>,
+
+    /// Source sub-type: adr, rfc, notes (required when --type=source)
+    #[arg(long)]
+    pub source_type: Option<String>,
+}
+
+/// Move / rename a wiki page
+#[derive(Args)]
+pub struct PageMoveArgs {
+    /// Current wiki-relative page path
+    pub old: String,
+    /// New wiki-relative page path
+    pub new: String,
+}
+
+#[derive(Subcommand)]
+enum PageCommand {
+    /// Display a wiki page (full content, or with --property/--outline/--backlinks)
+    Show(PageShowArgs),
+
+    /// Set a frontmatter property on a page
+    Set(PageSetArgs),
+
+    /// Delete a frontmatter property from a page
+    Unset(PageUnsetArgs),
+
+    /// Create a new wiki page from template
+    Create(PageCreateArgs),
+
+    /// Move / rename a wiki page, updating all references and index entries
+    #[command(name = "move")]
+    Move(PageMoveArgs),
+}
+
+// ---------------------------------------------------------------------------
+// Top-level command enum
+// ---------------------------------------------------------------------------
+
 #[derive(Subcommand)]
 enum Command {
     /// Run all health and lint checks
     Check,
 
-    /// Show backlinks for a wiki page
-    Backlinks {
-        /// Wiki-relative page path (e.g. concepts/npc.md)
-        page: String,
-    },
+    /// Read a wiki page or manage page properties
+    #[command(subcommand)]
+    Page(PageCommand),
 
     /// Bundle distribution commands
     #[command(subcommand)]
@@ -148,65 +363,6 @@ enum Command {
         /// Free-text note (truncated to 60 chars)
         #[arg(long)]
         note: Option<String>,
-    },
-
-    /// Read a wiki page
-    Page {
-        /// Wiki-relative page path
-        path: String,
-
-        /// Print only a specific frontmatter property
-        #[arg(long)]
-        property: Option<String>,
-
-        /// Print heading tree (## headings only)
-        #[arg(long)]
-        outline: bool,
-    },
-
-    /// Read, set, downgrade, or delete a frontmatter property
-    Property {
-        /// Property name (e.g. timeliness, status, tags)
-        name: String,
-
-        /// Target page path
-        #[arg(long)]
-        page: String,
-
-        /// Value to set
-        #[arg(long)]
-        value: Option<String>,
-
-        /// Downgrade the property value (status: stable→review→draft)
-        #[arg(long)]
-        downgrade: bool,
-
-        /// Delete the property
-        #[arg(long)]
-        delete: bool,
-    },
-
-    /// Create a new wiki page from template
-    Create {
-        /// Domain: an existing wiki subdirectory (required)
-        #[arg(long)]
-        domain: String,
-
-        /// Page type: concept, entity, source, analysis, synthesis
-        #[arg(long)]
-        r#type: String,
-
-        /// Page title
-        #[arg(long)]
-        title: String,
-
-        /// Custom filename slug (required for non-Latin titles)
-        #[arg(long)]
-        slug: Option<String>,
-
-        /// Source sub-type: adr, rfc, notes (required when --type=source)
-        #[arg(long)]
-        source_type: Option<String>,
     },
 
     /// Search wiki pages for a query
@@ -297,16 +453,6 @@ enum Command {
         tag: Option<String>,
     },
 
-    /// Move / rename a wiki page, updating all references and index entries
-    #[command(name = "move")]
-    Move {
-        /// Current wiki-relative page path
-        old: String,
-
-        /// New wiki-relative page path
-        new: String,
-    },
-
     /// Record a supersede relationship between two pages
     Supersede {
         /// Wiki-relative path of the superseded (old) page
@@ -328,11 +474,11 @@ enum Command {
 }
 
 fn main() {
-    let args = Args::parse();
+    let args = ZwikiArgs::parse();
     dispatch(args);
 }
 
-fn dispatch(args: Args) {
+fn dispatch(args: ZwikiArgs) {
     let use_json = args.json;
     let wiki_root = match resolve_wiki_root(args.root.as_deref(), use_json) {
         Ok(r) => r,
@@ -350,7 +496,7 @@ fn dispatch(args: Args) {
     match args.command {
         None => {
             use clap::CommandFactory;
-            let mut cmd = Args::command();
+            let mut cmd = ZwikiArgs::command();
             let _ = cmd.print_help();
             println!();
             process::exit(1);
@@ -358,37 +504,20 @@ fn dispatch(args: Args) {
         Some(Command::Check) => {
             dispatch_check(&wiki_root, args.json);
         }
-        Some(Command::Backlinks { ref page }) => {
-            cmd_backlinks(&wiki_root, page, args.json);
+        Some(Command::Page(ref page_cmd)) => {
+            dispatch_page(&wiki_root, page_cmd, args.json);
         }
         Some(Command::Log { op, path, action, note }) => {
             guard_writable(&wiki_root, "log");
-            cmd_log(&wiki_root, &op, &path, &action, note.as_deref());
-        }
-        Some(Command::Page { path, property, outline }) => {
-            cmd_page(&wiki_root, &path, property.as_deref(), outline);
-        }
-        Some(Command::Property { name, page, value, downgrade, delete }) => {
-            guard_writable(&wiki_root, "property");
-            cmd_property(
-                &wiki_root,
-                &name,
-                &page,
-                value.as_deref(),
-                downgrade,
-                delete,
-            );
-        }
-        Some(Command::Create { domain, r#type, title, slug, source_type }) => {
-            guard_writable(&wiki_root, "create");
-            cmd_create(
-                &wiki_root,
-                &domain,
-                &r#type,
-                &title,
-                slug.as_deref(),
-                source_type.as_deref(),
-            );
+            // Intentional per blueprint §12.1: log --path normalizes first
+            // and rejects nonexistent pages with a clear error instead of
+            // silently proceeding (behavioral change from old code).
+            let normalized = normalize_page_path(wiki_root.path(), &path)
+                .unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    process::exit(1);
+                });
+            cmd_log(&wiki_root, &op, &normalized, &action, note.as_deref());
         }
         Some(Command::Search { query, r#type, tag, domain }) => {
             cmd_search(
@@ -424,7 +553,7 @@ fn dispatch(args: Args) {
 
 /// Dispatch the remaining subcommands (Verify through Contradictions)
 /// to keep the main `dispatch` function under the line limit.
-fn dispatch_tail(wiki_root: &WikiRoot, args: &Args, cmd: &Command) {
+fn dispatch_tail(wiki_root: &WikiRoot, args: &ZwikiArgs, cmd: &Command) {
     match cmd {
         Command::Verify { domain } => {
             if check_domain_or_print(
@@ -467,13 +596,20 @@ fn dispatch_tail(wiki_root: &WikiRoot, args: &Args, cmd: &Command) {
                 args.json,
             );
         }
-        Command::Move { old, new } => {
-            guard_writable(wiki_root, "move");
-            cmd_move(wiki_root, old, new, args.json);
-        }
         Command::Supersede { old, new, reason } => {
             guard_writable(wiki_root, "supersede");
-            cmd_supersede(wiki_root, old, new, reason);
+            // Normalize both old and new paths.
+            let old_norm = normalize_page_path(wiki_root.path(), old)
+                .unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    process::exit(1);
+                });
+            let new_norm = normalize_page_path(wiki_root.path(), new)
+                .unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    process::exit(1);
+                });
+            cmd_supersede(wiki_root, &old_norm, &new_norm, reason);
         }
         Command::Bundle(cmd) => {
             // All bundle subcommands require a lock-based wiki root
@@ -973,70 +1109,128 @@ fn print_json_check_output(
     println!("{}", serde_json::to_string_pretty(&json_output).unwrap());
 }
 
-fn cmd_backlinks(wiki_root: &WikiRoot, page: &str, json: bool) {
-    let root = wiki_root.path();
-    let target = if std::path::Path::new(page)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
-    {
-        page.to_string()
-    } else {
-        format!("{page}.md")
-    };
-
-    // Read all pages (required — any page might reference the target).
-    let paths = wiki::all_wiki_pages_at(root);
-    let pages: Vec<wiki::Page> =
-        paths.iter().filter_map(|p| wiki::read_page_at(p, root)).collect();
-    // Use single-target reverse index instead of building a full HashMap.
-    let filtered_index = backlinks::build_backlinks_for(&target, root, &pages);
-
-    if json {
-        let total = pages.len();
-        let with_bl = filtered_index.len();
-        let mut map = serde_json::Map::new();
-        for (tgt, srcs) in &filtered_index {
-            let t = backlinks::page_title_from_rel(tgt, root);
-            let s: Vec<_> = srcs
-                .iter()
-                .map(|s| {
-                    let st = backlinks::page_title_from_rel(s, root);
-                    serde_json::json!({"path": s, "title": st})
-                })
-                .collect();
-            map.insert(
-                tgt.clone(),
-                serde_json::json!({"title": t, "sources": s}),
+/// Dispatch all `page` subcommands — show, set, unset, create, move.
+fn dispatch_page(wiki_root: &WikiRoot, cmd: &PageCommand, json: bool) {
+    match cmd {
+        PageCommand::Show(args) => {
+            let normalized = normalize_page_path(wiki_root.path(), &args.path)
+                .unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    process::exit(1);
+                });
+            cmd_page_show(
+                wiki_root,
+                &normalized,
+                args.property.as_deref(),
+                args.outline,
+                args.backlinks,
+                json,
             );
         }
-        let out = serde_json::json!({"total_pages": total, "pages_with_backlinks": with_bl, "backlinks": map});
-        println!("{}", serde_json::to_string_pretty(&out).unwrap());
-    } else {
-        println!("{}", backlinks::format_report(&filtered_index, root));
+        PageCommand::Set(args) => {
+            guard_writable(wiki_root, "page set");
+            let normalized = normalize_page_path(wiki_root.path(), &args.path)
+                .unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    process::exit(1);
+                });
+            cmd_page_set(
+                wiki_root,
+                &normalized,
+                &args.prop,
+                args.value.as_deref(),
+                args.downgrade,
+            );
+        }
+        PageCommand::Unset(args) => {
+            guard_writable(wiki_root, "page unset");
+            let normalized = normalize_page_path(wiki_root.path(), &args.path)
+                .unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    process::exit(1);
+                });
+            cmd_page_unset(wiki_root, &normalized, &args.prop);
+        }
+        PageCommand::Create(args) => {
+            guard_writable(wiki_root, "page create");
+            cmd_create(
+                wiki_root,
+                &args.domain,
+                &args.r#type,
+                &args.title,
+                args.slug.as_deref(),
+                args.source_type.as_deref(),
+            );
+        }
+        PageCommand::Move(args) => {
+            guard_writable(wiki_root, "page move");
+            // Normalize only the old path (new path doesn't exist yet).
+            let old_norm = normalize_page_path(wiki_root.path(), &args.old)
+                .unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    process::exit(1);
+                });
+            cmd_move(wiki_root, &old_norm, &args.new, json);
+        }
     }
 }
 
-fn cmd_log(
-    wiki_root: &WikiRoot,
-    op: &str,
-    path: &str,
-    action: &str,
-    note: Option<&str>,
-) {
-    log::add_entry_at(wiki_root.path(), op, path, action, note).unwrap_or_else(
-        |e| {
-            eprintln!("{e}");
-            process::exit(1);
-        },
-    );
-}
-
-fn cmd_page(
+/// Show a page: read full content, or project property/outline/backlinks.
+fn cmd_page_show(
     wiki_root: &WikiRoot,
     path: &str,
     property: Option<&str>,
     outline: bool,
+    backlinks: bool,
+    json: bool,
 ) {
+    if backlinks {
+        let root = wiki_root.path();
+        let paths = wiki::all_wiki_pages_at(root);
+        let pages: Vec<wiki::Page> =
+            paths.iter().filter_map(|p| wiki::read_page_at(p, root)).collect();
+        let filtered_index = backlinks::build_backlinks_for(path, root, &pages);
+
+        if json {
+            let total = pages.len();
+            let with_bl = filtered_index.len();
+            let mut map = serde_json::Map::new();
+            for (tgt, srcs) in &filtered_index {
+                let t = backlinks::page_title_from_rel(tgt, root);
+                let s: Vec<_> = srcs
+                    .iter()
+                    .map(|s| {
+                        let st = backlinks::page_title_from_rel(s, root);
+                        serde_json::json!({"path": s, "title": st})
+                    })
+                    .collect();
+                map.insert(
+                    tgt.clone(),
+                    serde_json::json!({"title": t, "sources": s}),
+                );
+            }
+            let out = serde_json::json!({"total_pages": total, "pages_with_backlinks": with_bl, "backlinks": map});
+            println!("{}", serde_json::to_string_pretty(&out).unwrap());
+        } else {
+            // Compact single-page view — not the full-wiki report frame.
+            let title = backlinks::page_title_from_rel(path, root);
+            let sources: Vec<&String> = filtered_index
+                .get(path)
+                .map(|s| s.iter().collect())
+                .unwrap_or_default();
+            println!("## 反向链接 — {title}（{}）\n", sources.len());
+            if sources.is_empty() {
+                println!("无页面引用此页。");
+            } else {
+                for s in sources {
+                    let st = backlinks::page_title_from_rel(s, root);
+                    println!("- [{st}]({s})");
+                }
+            }
+        }
+        return;
+    }
+
     let full = wiki_root.path().join(path);
     if let Some(prop) = property {
         match page::read_property(&full, prop) {
@@ -1069,55 +1263,65 @@ fn cmd_page(
     }
 }
 
-fn cmd_property(
+/// Set a frontmatter property on a page (or downgrade status).
+fn cmd_page_set(
     wiki_root: &WikiRoot,
-    name: &str,
-    page_path: &str,
+    path: &str,
+    prop: &str,
     value: Option<&str>,
     downgrade: bool,
-    delete: bool,
 ) {
-    let full = wiki_root.path().join(page_path);
-    if delete {
-        property::delete(&full, name).unwrap_or_else(|e| {
-            eprintln!("{e}");
-            process::exit(1);
-        });
-    } else if downgrade {
-        if name != "status" {
+    let full = wiki_root.path().join(path);
+    if downgrade {
+        if prop != "status" {
             eprintln!("--downgrade 仅适用于 status 属性");
             process::exit(1);
         }
-        let current = property::get(&full, name)
+        let current = property::get(&full, prop)
             .unwrap_or_else(|e| {
                 eprintln!("{e}");
                 process::exit(1);
             })
             .unwrap_or_default();
         let new_val = property::downgrade_status(&current);
-        property::set(&full, name, new_val).unwrap_or_else(|e| {
+        property::set(&full, prop, new_val).unwrap_or_else(|e| {
             eprintln!("{e}");
             process::exit(1);
         });
         println!("{current} → {new_val}");
     } else if let Some(val) = value {
-        property::set(&full, name, val).unwrap_or_else(|e| {
+        property::set(&full, prop, val).unwrap_or_else(|e| {
             eprintln!("{e}");
             process::exit(1);
         });
     } else {
-        match property::get(&full, name) {
-            Ok(Some(v)) => println!("{v}"),
-            Ok(None) => {
-                eprintln!("属性未找到: {name}");
-                process::exit(1);
-            }
-            Err(e) => {
-                eprintln!("{e}");
-                process::exit(1);
-            }
-        }
+        eprintln!("需要设置值或 --downgrade");
+        process::exit(1);
     }
+}
+
+/// Unset (delete) a frontmatter property from a page.
+fn cmd_page_unset(wiki_root: &WikiRoot, path: &str, prop: &str) {
+    let full = wiki_root.path().join(path);
+    property::delete(&full, prop).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        process::exit(1);
+    });
+}
+
+fn cmd_log(
+    wiki_root: &WikiRoot,
+    op: &str,
+    path: &str,
+    action: &str,
+    note: Option<&str>,
+) {
+    log::add_entry_at(wiki_root.path(), op, path, action, note).unwrap_or_else(
+        |e| {
+            eprintln!("{e}");
+            process::exit(1);
+        },
+    );
 }
 
 fn cmd_create(
@@ -1265,14 +1469,14 @@ mod tests {
 
     #[test]
     fn test_help_exits_ok() {
-        let result = Args::try_parse_from(["zwiki", "--help"]);
+        let result = ZwikiArgs::try_parse_from(["zwiki", "--help"]);
         // --help short-circuits with an error that clap handles
         assert!(result.is_err());
     }
 
     #[test]
     fn test_no_subcommand_shows_help() {
-        let result = Args::try_parse_from(["zwiki"]);
+        let result = ZwikiArgs::try_parse_from(["zwiki"]);
         assert!(result.is_ok());
         let args = result.unwrap();
         assert!(args.command.is_none());
@@ -1280,73 +1484,37 @@ mod tests {
 
     #[test]
     fn test_check_parses() {
-        let args = Args::try_parse_from(["zwiki", "check"]).unwrap();
+        let args = ZwikiArgs::try_parse_from(["zwiki", "check"]).unwrap();
         assert!(matches!(args.command, Some(Command::Check)));
     }
 
     #[test]
     fn test_check_requires_no_args() {
-        let args = Args::try_parse_from(["zwiki", "check"]).unwrap();
+        let args = ZwikiArgs::try_parse_from(["zwiki", "check"]).unwrap();
         assert!(matches!(args.command, Some(Command::Check)));
     }
 
     #[test]
     fn test_check_with_root_before() {
-        let args = Args::try_parse_from(["zwiki", "--root", "./wiki", "check"])
-            .unwrap();
+        let args =
+            ZwikiArgs::try_parse_from(["zwiki", "--root", "./wiki", "check"])
+                .unwrap();
         assert_eq!(args.root, Some("./wiki".to_string()));
         assert!(matches!(args.command, Some(Command::Check)));
     }
 
     #[test]
     fn test_check_with_root_after() {
-        let args = Args::try_parse_from(["zwiki", "check", "--root", "./wiki"])
-            .unwrap();
+        let args =
+            ZwikiArgs::try_parse_from(["zwiki", "check", "--root", "./wiki"])
+                .unwrap();
         assert_eq!(args.root, Some("./wiki".to_string()));
         assert!(matches!(args.command, Some(Command::Check)));
     }
 
     #[test]
-    fn test_backlinks_requires_page() {
-        let result = Args::try_parse_from(["zwiki", "backlinks"]);
-        assert!(result.is_err(), "backlinks without page should fail");
-    }
-
-    #[test]
-    fn test_backlinks_with_page_parses() {
-        let args =
-            Args::try_parse_from(["zwiki", "backlinks", "concepts/npc.md"])
-                .unwrap();
-        match args.command {
-            Some(Command::Backlinks { page, .. }) => {
-                assert_eq!(page, "concepts/npc.md");
-            }
-            _ => panic!("expected Backlinks"),
-        }
-    }
-
-    #[test]
-    fn test_backlinks_with_root_before() {
-        let args = Args::try_parse_from([
-            "zwiki",
-            "--root",
-            "./wiki",
-            "backlinks",
-            "concepts/npc.md",
-        ])
-        .unwrap();
-        assert_eq!(args.root, Some("./wiki".to_string()));
-        match args.command {
-            Some(Command::Backlinks { page, .. }) => {
-                assert_eq!(page, "concepts/npc.md");
-            }
-            _ => panic!("expected Backlinks"),
-        }
-    }
-
-    #[test]
     fn test_log_parses() {
-        let args = Args::try_parse_from([
+        let args = ZwikiArgs::try_parse_from([
             "zwiki",
             "log",
             "--op",
@@ -1367,103 +1535,185 @@ mod tests {
         }
     }
 
+    // -------------------------------------------------------------------
+    // Page subcommand — show
+    // -------------------------------------------------------------------
+
     #[test]
-    fn test_page_parses() {
-        let args =
-            Args::try_parse_from(["zwiki", "page", "concepts/npc.md"]).unwrap();
+    fn test_page_show_parses() {
+        let args = ZwikiArgs::try_parse_from([
+            "zwiki",
+            "page",
+            "show",
+            "concepts/npc.md",
+        ])
+        .unwrap();
         match args.command {
-            Some(Command::Page { path, .. }) => {
-                assert_eq!(path, "concepts/npc.md");
+            Some(Command::Page(PageCommand::Show(ref s))) => {
+                assert_eq!(s.path, "concepts/npc.md");
+                assert!(!s.outline);
+                assert!(!s.backlinks);
+                assert!(s.property.is_none());
             }
-            _ => panic!("expected Page"),
+            _ => panic!("expected Page::Show"),
         }
     }
 
     #[test]
-    fn test_page_with_property_parses() {
-        let args = Args::try_parse_from([
+    fn test_page_show_with_property_parses() {
+        let args = ZwikiArgs::try_parse_from([
             "zwiki",
             "page",
+            "show",
             "concepts/npc.md",
             "--property",
             "status",
         ])
         .unwrap();
         match args.command {
-            Some(Command::Page { property, .. }) => {
-                assert_eq!(property, Some("status".to_string()));
+            Some(Command::Page(PageCommand::Show(ref s))) => {
+                assert_eq!(s.property, Some("status".to_string()));
             }
-            _ => panic!("expected Page"),
+            _ => panic!("expected Page::Show"),
         }
     }
 
     #[test]
-    fn test_property_set_parses() {
-        let args = Args::try_parse_from([
+    fn test_page_show_with_outline_parses() {
+        let args = ZwikiArgs::try_parse_from([
             "zwiki",
-            "property",
-            "timeliness",
-            "--page",
+            "page",
+            "show",
             "concepts/npc.md",
-            "--value",
+            "--outline",
+        ])
+        .unwrap();
+        match args.command {
+            Some(Command::Page(PageCommand::Show(ref s))) => {
+                assert!(s.outline);
+            }
+            _ => panic!("expected Page::Show with outline"),
+        }
+    }
+
+    #[test]
+    fn test_page_show_with_backlinks_parses() {
+        let args = ZwikiArgs::try_parse_from([
+            "zwiki",
+            "page",
+            "show",
+            "concepts/npc.md",
+            "--backlinks",
+        ])
+        .unwrap();
+        match args.command {
+            Some(Command::Page(PageCommand::Show(ref s))) => {
+                assert!(s.backlinks);
+            }
+            _ => panic!("expected Page::Show with backlinks"),
+        }
+    }
+
+    #[test]
+    fn test_page_show_with_root_before() {
+        let args = ZwikiArgs::try_parse_from([
+            "zwiki",
+            "--root",
+            "./wiki",
+            "page",
+            "show",
+            "concepts/npc.md",
+        ])
+        .unwrap();
+        assert_eq!(args.root, Some("./wiki".to_string()));
+        match args.command {
+            Some(Command::Page(PageCommand::Show(ref s))) => {
+                assert_eq!(s.path, "concepts/npc.md");
+            }
+            _ => panic!("expected Page::Show"),
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Page subcommand — set
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_page_set_parses() {
+        let args = ZwikiArgs::try_parse_from([
+            "zwiki",
+            "page",
+            "set",
+            "concepts/npc.md",
+            "timeliness",
             "stale",
         ])
         .unwrap();
         match args.command {
-            Some(Command::Property { name, page, value, delete, .. }) => {
-                assert_eq!(name, "timeliness");
-                assert_eq!(page, "concepts/npc.md");
-                assert_eq!(value, Some("stale".to_string()));
-                assert!(!delete);
+            Some(Command::Page(PageCommand::Set(ref a))) => {
+                assert_eq!(a.path, "concepts/npc.md");
+                assert_eq!(a.prop, "timeliness");
+                assert_eq!(a.value, Some("stale".to_string()));
+                assert!(!a.downgrade);
             }
-            _ => panic!("expected Property"),
+            _ => panic!("expected Page::Set"),
         }
     }
 
     #[test]
-    fn test_property_delete_parses() {
-        let args = Args::try_parse_from([
+    fn test_page_set_downgrade_parses() {
+        let args = ZwikiArgs::try_parse_from([
             "zwiki",
-            "property",
-            "timeliness",
-            "--page",
+            "page",
+            "set",
             "concepts/npc.md",
-            "--delete",
-        ])
-        .unwrap();
-        match args.command {
-            Some(Command::Property { delete, .. }) => {
-                assert!(delete);
-            }
-            _ => panic!("expected Property"),
-        }
-    }
-
-    #[test]
-    fn test_property_downgrade_parses() {
-        let args = Args::try_parse_from([
-            "zwiki",
-            "property",
             "status",
-            "--page",
-            "concepts/npc.md",
             "--downgrade",
         ])
         .unwrap();
         match args.command {
-            Some(Command::Property { name, page, downgrade, .. }) => {
-                assert_eq!(name, "status");
-                assert_eq!(page, "concepts/npc.md");
-                assert!(downgrade);
+            Some(Command::Page(PageCommand::Set(ref a))) => {
+                assert_eq!(a.path, "concepts/npc.md");
+                assert_eq!(a.prop, "status");
+                assert!(a.value.is_none());
+                assert!(a.downgrade);
             }
-            _ => panic!("expected Property"),
+            _ => panic!("expected Page::Set with downgrade"),
         }
     }
 
+    // -------------------------------------------------------------------
+    // Page subcommand — unset
+    // -------------------------------------------------------------------
+
     #[test]
-    fn test_create_parses() {
-        let args = Args::try_parse_from([
+    fn test_page_unset_parses() {
+        let args = ZwikiArgs::try_parse_from([
             "zwiki",
+            "page",
+            "unset",
+            "concepts/npc.md",
+            "timeliness",
+        ])
+        .unwrap();
+        match args.command {
+            Some(Command::Page(PageCommand::Unset(ref a))) => {
+                assert_eq!(a.path, "concepts/npc.md");
+                assert_eq!(a.prop, "timeliness");
+            }
+            _ => panic!("expected Page::Unset"),
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Page subcommand — create
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_page_create_parses() {
+        let args = ZwikiArgs::try_parse_from([
+            "zwiki",
+            "page",
             "create",
             "--type",
             "concept",
@@ -1474,19 +1724,20 @@ mod tests {
         ])
         .unwrap();
         match args.command {
-            Some(Command::Create { domain, r#type, title, .. }) => {
-                assert_eq!(domain, "autoresearch");
-                assert_eq!(r#type, "concept");
-                assert_eq!(title, "Test Page");
+            Some(Command::Page(PageCommand::Create(ref a))) => {
+                assert_eq!(a.domain, "autoresearch");
+                assert_eq!(a.r#type, "concept");
+                assert_eq!(a.title, "Test Page");
             }
-            _ => panic!("expected Create"),
+            _ => panic!("expected Page::Create"),
         }
     }
 
     #[test]
-    fn test_create_with_slug_parses() {
-        let args = Args::try_parse_from([
+    fn test_page_create_with_slug_parses() {
+        let args = ZwikiArgs::try_parse_from([
             "zwiki",
+            "page",
             "create",
             "--type",
             "source",
@@ -1501,33 +1752,68 @@ mod tests {
         ])
         .unwrap();
         match args.command {
-            Some(Command::Create {
-                domain,
-                r#type,
-                title,
-                slug,
-                source_type,
-            }) => {
-                assert_eq!(domain, "wiki-system");
-                assert_eq!(r#type, "source");
-                assert_eq!(title, "ADR-001");
-                assert_eq!(slug, Some("adr-001".to_string()));
-                assert_eq!(source_type, Some("adr".to_string()));
+            Some(Command::Page(PageCommand::Create(ref a))) => {
+                assert_eq!(a.domain, "wiki-system");
+                assert_eq!(a.r#type, "source");
+                assert_eq!(a.title, "ADR-001");
+                assert_eq!(a.slug, Some("adr-001".to_string()));
+                assert_eq!(a.source_type, Some("adr".to_string()));
             }
-            _ => panic!("expected Create"),
+            _ => panic!("expected Page::Create"),
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Page subcommand — move
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_page_move_parses() {
+        let args = ZwikiArgs::try_parse_from([
+            "zwiki", "page", "move", "old.md", "new.md",
+        ])
+        .unwrap();
+        match args.command {
+            Some(Command::Page(PageCommand::Move(ref a))) => {
+                assert_eq!(a.old, "old.md");
+                assert_eq!(a.new, "new.md");
+            }
+            _ => panic!("expected Page::Move"),
+        }
+    }
+
+    #[test]
+    fn test_page_move_with_json_flag_parses() {
+        let args = ZwikiArgs::try_parse_from([
+            "zwiki",
+            "--json",
+            "page",
+            "move",
+            "concepts/foo.md",
+            "concepts/bar.md",
+        ])
+        .unwrap();
+        assert!(args.json);
+        match args.command {
+            Some(Command::Page(PageCommand::Move(ref a))) => {
+                assert_eq!(a.old, "concepts/foo.md");
+                assert_eq!(a.new, "concepts/bar.md");
+            }
+            _ => panic!("expected Page::Move with json"),
         }
     }
 
     #[test]
     fn test_global_json_flag() {
-        let args = Args::try_parse_from(["zwiki", "--json", "check"]).unwrap();
+        let args =
+            ZwikiArgs::try_parse_from(["zwiki", "--json", "check"]).unwrap();
         assert!(args.json);
     }
 
     #[test]
     fn test_search_parses() {
-        let args =
-            Args::try_parse_from(["zwiki", "search", "permission"]).unwrap();
+        let args = ZwikiArgs::try_parse_from(["zwiki", "search", "permission"])
+            .unwrap();
         match args.command {
             Some(Command::Search { query, r#type, tag, domain: _ }) => {
                 assert_eq!(query, "permission");
@@ -1540,7 +1826,7 @@ mod tests {
 
     #[test]
     fn test_search_with_type_parses() {
-        let args = Args::try_parse_from([
+        let args = ZwikiArgs::try_parse_from([
             "zwiki",
             "search",
             "permission",
@@ -1559,7 +1845,7 @@ mod tests {
 
     #[test]
     fn test_search_with_tag_parses() {
-        let args = Args::try_parse_from([
+        let args = ZwikiArgs::try_parse_from([
             "zwiki",
             "search",
             "permission",
@@ -1578,9 +1864,13 @@ mod tests {
 
     #[test]
     fn test_search_with_json_parses() {
-        let args =
-            Args::try_parse_from(["zwiki", "--json", "search", "permission"])
-                .unwrap();
+        let args = ZwikiArgs::try_parse_from([
+            "zwiki",
+            "--json",
+            "search",
+            "permission",
+        ])
+        .unwrap();
         assert!(args.json);
         match args.command {
             Some(Command::Search { query, .. }) => {
@@ -1596,7 +1886,7 @@ mod tests {
 
     #[test]
     fn test_list_parses() {
-        let args = Args::try_parse_from(["zwiki", "list"]).unwrap();
+        let args = ZwikiArgs::try_parse_from(["zwiki", "list"]).unwrap();
         match args.command {
             Some(Command::List { r#type, tag, domain }) => {
                 assert!(r#type.is_none());
@@ -1609,8 +1899,9 @@ mod tests {
 
     #[test]
     fn test_list_with_type_parses() {
-        let args = Args::try_parse_from(["zwiki", "list", "--type", "concept"])
-            .unwrap();
+        let args =
+            ZwikiArgs::try_parse_from(["zwiki", "list", "--type", "concept"])
+                .unwrap();
         match args.command {
             Some(Command::List { r#type, .. }) => {
                 assert_eq!(r#type, Some("concept".to_string()));
@@ -1622,7 +1913,8 @@ mod tests {
     #[test]
     fn test_list_with_tag_parses() {
         let args =
-            Args::try_parse_from(["zwiki", "list", "--tag", "auth"]).unwrap();
+            ZwikiArgs::try_parse_from(["zwiki", "list", "--tag", "auth"])
+                .unwrap();
         match args.command {
             Some(Command::List { tag, .. }) => {
                 assert_eq!(tag, Some("auth".to_string()));
@@ -1634,7 +1926,7 @@ mod tests {
     #[test]
     fn test_list_with_domain_parses() {
         let args =
-            Args::try_parse_from(["zwiki", "list", "--domain", "shared"])
+            ZwikiArgs::try_parse_from(["zwiki", "list", "--domain", "shared"])
                 .unwrap();
         match args.command {
             Some(Command::List { domain, .. }) => {
@@ -1646,7 +1938,7 @@ mod tests {
 
     #[test]
     fn test_list_with_all_flags_parses() {
-        let args = Args::try_parse_from([
+        let args = ZwikiArgs::try_parse_from([
             "zwiki", "list", "--type", "concept", "--tag", "auth", "--domain",
             "shared",
         ])
@@ -1663,7 +1955,8 @@ mod tests {
 
     #[test]
     fn test_list_with_json_parses() {
-        let args = Args::try_parse_from(["zwiki", "--json", "list"]).unwrap();
+        let args =
+            ZwikiArgs::try_parse_from(["zwiki", "--json", "list"]).unwrap();
         assert!(args.json);
         match args.command {
             Some(Command::List { .. }) => {}
@@ -1677,7 +1970,7 @@ mod tests {
 
     #[test]
     fn test_status_parses() {
-        let args = Args::try_parse_from(["zwiki", "status"]).unwrap();
+        let args = ZwikiArgs::try_parse_from(["zwiki", "status"]).unwrap();
         match args.command {
             Some(Command::Status { r#type, tag, domain }) => {
                 assert!(r#type.is_none());
@@ -1691,7 +1984,7 @@ mod tests {
     #[test]
     fn test_status_with_type_parses() {
         let args =
-            Args::try_parse_from(["zwiki", "status", "--type", "concept"])
+            ZwikiArgs::try_parse_from(["zwiki", "status", "--type", "concept"])
                 .unwrap();
         match args.command {
             Some(Command::Status { r#type, .. }) => {
@@ -1704,7 +1997,8 @@ mod tests {
     #[test]
     fn test_status_with_tag_parses() {
         let args =
-            Args::try_parse_from(["zwiki", "status", "--tag", "auth"]).unwrap();
+            ZwikiArgs::try_parse_from(["zwiki", "status", "--tag", "auth"])
+                .unwrap();
         match args.command {
             Some(Command::Status { tag, .. }) => {
                 assert_eq!(tag, Some("auth".to_string()));
@@ -1715,9 +2009,10 @@ mod tests {
 
     #[test]
     fn test_status_with_domain_parses() {
-        let args =
-            Args::try_parse_from(["zwiki", "status", "--domain", "shared"])
-                .unwrap();
+        let args = ZwikiArgs::try_parse_from([
+            "zwiki", "status", "--domain", "shared",
+        ])
+        .unwrap();
         match args.command {
             Some(Command::Status { domain, .. }) => {
                 assert_eq!(domain, Some("shared".to_string()));
@@ -1728,7 +2023,7 @@ mod tests {
 
     #[test]
     fn test_status_with_all_flags_parses() {
-        let args = Args::try_parse_from([
+        let args = ZwikiArgs::try_parse_from([
             "zwiki", "status", "--type", "concept", "--tag", "auth",
             "--domain", "shared",
         ])
@@ -1745,7 +2040,8 @@ mod tests {
 
     #[test]
     fn test_status_with_json_parses() {
-        let args = Args::try_parse_from(["zwiki", "--json", "status"]).unwrap();
+        let args =
+            ZwikiArgs::try_parse_from(["zwiki", "--json", "status"]).unwrap();
         assert!(args.json);
         match args.command {
             Some(Command::Status { .. }) => {}
@@ -1759,7 +2055,7 @@ mod tests {
 
     #[test]
     fn test_tags_parses() {
-        let args = Args::try_parse_from(["zwiki", "tags"]).unwrap();
+        let args = ZwikiArgs::try_parse_from(["zwiki", "tags"]).unwrap();
         match args.command {
             Some(Command::Tags { r#type, domain }) => {
                 assert!(r#type.is_none());
@@ -1771,8 +2067,9 @@ mod tests {
 
     #[test]
     fn test_tags_with_type_parses() {
-        let args = Args::try_parse_from(["zwiki", "tags", "--type", "concept"])
-            .unwrap();
+        let args =
+            ZwikiArgs::try_parse_from(["zwiki", "tags", "--type", "concept"])
+                .unwrap();
         match args.command {
             Some(Command::Tags { r#type, .. }) => {
                 assert_eq!(r#type, Some("concept".to_string()));
@@ -1784,7 +2081,7 @@ mod tests {
     #[test]
     fn test_tags_with_domain_parses() {
         let args =
-            Args::try_parse_from(["zwiki", "tags", "--domain", "shared"])
+            ZwikiArgs::try_parse_from(["zwiki", "tags", "--domain", "shared"])
                 .unwrap();
         match args.command {
             Some(Command::Tags { domain, .. }) => {
@@ -1796,7 +2093,7 @@ mod tests {
 
     #[test]
     fn test_tags_with_all_flags_parses() {
-        let args = Args::try_parse_from([
+        let args = ZwikiArgs::try_parse_from([
             "zwiki", "tags", "--type", "concept", "--domain", "shared",
         ])
         .unwrap();
@@ -1811,7 +2108,8 @@ mod tests {
 
     #[test]
     fn test_tags_with_json_parses() {
-        let args = Args::try_parse_from(["zwiki", "--json", "tags"]).unwrap();
+        let args =
+            ZwikiArgs::try_parse_from(["zwiki", "--json", "tags"]).unwrap();
         assert!(args.json);
         match args.command {
             Some(Command::Tags { .. }) => {}
@@ -1825,7 +2123,7 @@ mod tests {
 
     #[test]
     fn test_types_parses() {
-        let args = Args::try_parse_from(["zwiki", "types"]).unwrap();
+        let args = ZwikiArgs::try_parse_from(["zwiki", "types"]).unwrap();
         match args.command {
             Some(Command::Types { tag, domain }) => {
                 assert!(tag.is_none());
@@ -1838,7 +2136,8 @@ mod tests {
     #[test]
     fn test_types_with_tag_parses() {
         let args =
-            Args::try_parse_from(["zwiki", "types", "--tag", "auth"]).unwrap();
+            ZwikiArgs::try_parse_from(["zwiki", "types", "--tag", "auth"])
+                .unwrap();
         match args.command {
             Some(Command::Types { tag, .. }) => {
                 assert_eq!(tag, Some("auth".to_string()));
@@ -1850,7 +2149,7 @@ mod tests {
     #[test]
     fn test_types_with_domain_parses() {
         let args =
-            Args::try_parse_from(["zwiki", "types", "--domain", "shared"])
+            ZwikiArgs::try_parse_from(["zwiki", "types", "--domain", "shared"])
                 .unwrap();
         match args.command {
             Some(Command::Types { domain, .. }) => {
@@ -1862,7 +2161,7 @@ mod tests {
 
     #[test]
     fn test_types_with_all_flags_parses() {
-        let args = Args::try_parse_from([
+        let args = ZwikiArgs::try_parse_from([
             "zwiki", "types", "--tag", "auth", "--domain", "shared",
         ])
         .unwrap();
@@ -1877,7 +2176,8 @@ mod tests {
 
     #[test]
     fn test_types_with_json_parses() {
-        let args = Args::try_parse_from(["zwiki", "--json", "types"]).unwrap();
+        let args =
+            ZwikiArgs::try_parse_from(["zwiki", "--json", "types"]).unwrap();
         assert!(args.json);
         match args.command {
             Some(Command::Types { .. }) => {}
@@ -1891,7 +2191,7 @@ mod tests {
 
     #[test]
     fn test_domains_parses() {
-        let args = Args::try_parse_from(["zwiki", "domains"]).unwrap();
+        let args = ZwikiArgs::try_parse_from(["zwiki", "domains"]).unwrap();
         match args.command {
             Some(Command::Domains { r#type, tag }) => {
                 assert!(r#type.is_none());
@@ -1903,9 +2203,10 @@ mod tests {
 
     #[test]
     fn test_domains_with_type_parses() {
-        let args =
-            Args::try_parse_from(["zwiki", "domains", "--type", "concept"])
-                .unwrap();
+        let args = ZwikiArgs::try_parse_from([
+            "zwiki", "domains", "--type", "concept",
+        ])
+        .unwrap();
         match args.command {
             Some(Command::Domains { r#type, .. }) => {
                 assert_eq!(r#type, Some("concept".to_string()));
@@ -1916,8 +2217,9 @@ mod tests {
 
     #[test]
     fn test_domains_with_tag_parses() {
-        let args = Args::try_parse_from(["zwiki", "domains", "--tag", "auth"])
-            .unwrap();
+        let args =
+            ZwikiArgs::try_parse_from(["zwiki", "domains", "--tag", "auth"])
+                .unwrap();
         match args.command {
             Some(Command::Domains { tag, .. }) => {
                 assert_eq!(tag, Some("auth".to_string()));
@@ -1928,7 +2230,7 @@ mod tests {
 
     #[test]
     fn test_domains_with_all_flags_parses() {
-        let args = Args::try_parse_from([
+        let args = ZwikiArgs::try_parse_from([
             "zwiki", "domains", "--type", "concept", "--tag", "auth",
         ])
         .unwrap();
@@ -1944,28 +2246,11 @@ mod tests {
     #[test]
     fn test_domains_with_json_parses() {
         let args =
-            Args::try_parse_from(["zwiki", "--json", "domains"]).unwrap();
+            ZwikiArgs::try_parse_from(["zwiki", "--json", "domains"]).unwrap();
         assert!(args.json);
         match args.command {
             Some(Command::Domains { .. }) => {}
             _ => panic!("expected Domains"),
-        }
-    }
-
-    // -------------------------------------------------------------------
-    // Move subcommand
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_move_parses() {
-        let args = Args::try_parse_from(["zwiki", "move", "old.md", "new.md"])
-            .unwrap();
-        match args.command {
-            Some(Command::Move { old, new }) => {
-                assert_eq!(old, "old.md");
-                assert_eq!(new, "new.md");
-            }
-            _ => panic!("expected Move"),
         }
     }
 
@@ -1975,7 +2260,7 @@ mod tests {
 
     #[test]
     fn test_supersede_parses() {
-        let args = Args::try_parse_from([
+        let args = ZwikiArgs::try_parse_from([
             "zwiki",
             "supersede",
             "--old",
@@ -1998,7 +2283,7 @@ mod tests {
 
     #[test]
     fn test_supersede_missing_reason_fails() {
-        let result = Args::try_parse_from([
+        let result = ZwikiArgs::try_parse_from([
             "zwiki",
             "supersede",
             "--old",
@@ -2009,33 +2294,13 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_move_with_json_flag_parses() {
-        let args = Args::try_parse_from([
-            "zwiki",
-            "--json",
-            "move",
-            "concepts/foo.md",
-            "concepts/bar.md",
-        ])
-        .unwrap();
-        assert!(args.json);
-        match args.command {
-            Some(Command::Move { old, new }) => {
-                assert_eq!(old, "concepts/foo.md");
-                assert_eq!(new, "concepts/bar.md");
-            }
-            _ => panic!("expected Move"),
-        }
-    }
-
     // -------------------------------------------------------------------
     // Verify subcommand
     // -------------------------------------------------------------------
 
     #[test]
     fn test_verify_parses() {
-        let args = Args::try_parse_from(["zwiki", "verify"]).unwrap();
+        let args = ZwikiArgs::try_parse_from(["zwiki", "verify"]).unwrap();
         match args.command {
             Some(Command::Verify { domain }) => {
                 assert!(domain.is_none());
@@ -2046,7 +2311,8 @@ mod tests {
 
     #[test]
     fn test_verify_with_json_parses() {
-        let args = Args::try_parse_from(["zwiki", "--json", "verify"]).unwrap();
+        let args =
+            ZwikiArgs::try_parse_from(["zwiki", "--json", "verify"]).unwrap();
         assert!(args.json);
         match args.command {
             Some(Command::Verify { domain }) => {
@@ -2058,7 +2324,7 @@ mod tests {
 
     #[test]
     fn test_verify_with_domain_parses() {
-        let args = Args::try_parse_from([
+        let args = ZwikiArgs::try_parse_from([
             "zwiki",
             "verify",
             "--domain",
@@ -2075,7 +2341,7 @@ mod tests {
 
     #[test]
     fn test_verify_with_json_and_domain_parses() {
-        let args = Args::try_parse_from([
+        let args = ZwikiArgs::try_parse_from([
             "zwiki", "--json", "verify", "--domain", "shared",
         ])
         .unwrap();
@@ -2094,7 +2360,8 @@ mod tests {
 
     #[test]
     fn test_bundle_init_parses() {
-        let args = Args::try_parse_from(["zwiki", "bundle", "init"]).unwrap();
+        let args =
+            ZwikiArgs::try_parse_from(["zwiki", "bundle", "init"]).unwrap();
         match args.command {
             Some(Command::Bundle(bundle::BundleCommand::Init(..))) => {}
             _ => panic!("expected Bundle::Init"),
@@ -2103,7 +2370,7 @@ mod tests {
 
     #[test]
     fn test_bundle_init_with_name_parses() {
-        let args = Args::try_parse_from([
+        let args = ZwikiArgs::try_parse_from([
             "zwiki",
             "bundle",
             "init",
@@ -2121,7 +2388,7 @@ mod tests {
 
     #[test]
     fn test_bundle_init_with_all_flags_parses() {
-        let args = Args::try_parse_from([
+        let args = ZwikiArgs::try_parse_from([
             "zwiki",
             "bundle",
             "init",
@@ -2164,9 +2431,13 @@ mod tests {
 
     #[test]
     fn test_bundle_export_parses() {
-        let args =
-            Args::try_parse_from(["zwiki", "bundle", "export", "/some/dir"])
-                .unwrap();
+        let args = ZwikiArgs::try_parse_from([
+            "zwiki",
+            "bundle",
+            "export",
+            "/some/dir",
+        ])
+        .unwrap();
         match args.command {
             Some(Command::Bundle(bundle::BundleCommand::Export(_))) => {}
             _ => panic!("expected Bundle::Export"),
@@ -2176,7 +2447,7 @@ mod tests {
     #[test]
     fn test_bundle_install_parses() {
         let args =
-            Args::try_parse_from(["zwiki", "bundle", "install", "source"])
+            ZwikiArgs::try_parse_from(["zwiki", "bundle", "install", "source"])
                 .unwrap();
         match args.command {
             Some(Command::Bundle(bundle::BundleCommand::Install(_))) => {}
@@ -2186,7 +2457,8 @@ mod tests {
 
     #[test]
     fn test_bundle_list_parses() {
-        let args = Args::try_parse_from(["zwiki", "bundle", "list"]).unwrap();
+        let args =
+            ZwikiArgs::try_parse_from(["zwiki", "bundle", "list"]).unwrap();
         match args.command {
             Some(Command::Bundle(bundle::BundleCommand::List(..))) => {}
             _ => panic!("expected Bundle::List"),
@@ -2195,8 +2467,9 @@ mod tests {
 
     #[test]
     fn test_bundle_list_with_json_parses() {
-        let args = Args::try_parse_from(["zwiki", "--json", "bundle", "list"])
-            .unwrap();
+        let args =
+            ZwikiArgs::try_parse_from(["zwiki", "--json", "bundle", "list"])
+                .unwrap();
         assert!(args.json);
         match args.command {
             Some(Command::Bundle(bundle::BundleCommand::List(..))) => {}
@@ -2206,7 +2479,8 @@ mod tests {
 
     #[test]
     fn test_bundle_check_parses() {
-        let args = Args::try_parse_from(["zwiki", "bundle", "check"]).unwrap();
+        let args =
+            ZwikiArgs::try_parse_from(["zwiki", "bundle", "check"]).unwrap();
         match args.command {
             Some(Command::Bundle(bundle::BundleCommand::Check(..))) => {}
             _ => panic!("expected Bundle::Check"),
@@ -2215,8 +2489,9 @@ mod tests {
 
     #[test]
     fn test_bundle_check_with_json_parses() {
-        let args = Args::try_parse_from(["zwiki", "--json", "bundle", "check"])
-            .unwrap();
+        let args =
+            ZwikiArgs::try_parse_from(["zwiki", "--json", "bundle", "check"])
+                .unwrap();
         assert!(args.json);
         match args.command {
             Some(Command::Bundle(bundle::BundleCommand::Check(..))) => {}
@@ -2226,7 +2501,8 @@ mod tests {
 
     #[test]
     fn test_bundle_update_parses() {
-        let args = Args::try_parse_from(["zwiki", "bundle", "update"]).unwrap();
+        let args =
+            ZwikiArgs::try_parse_from(["zwiki", "bundle", "update"]).unwrap();
         match args.command {
             Some(Command::Bundle(bundle::BundleCommand::Update(..))) => {}
             _ => panic!("expected Bundle::Update"),
@@ -2235,7 +2511,7 @@ mod tests {
 
     #[test]
     fn test_bundle_update_with_name_parses() {
-        let args = Args::try_parse_from([
+        let args = ZwikiArgs::try_parse_from([
             "zwiki",
             "bundle",
             "update",
@@ -2254,7 +2530,7 @@ mod tests {
     #[test]
     fn test_bundle_update_with_json_parses() {
         let args =
-            Args::try_parse_from(["zwiki", "--json", "bundle", "update"])
+            ZwikiArgs::try_parse_from(["zwiki", "--json", "bundle", "update"])
                 .unwrap();
         assert!(args.json);
         match args.command {
@@ -2265,9 +2541,13 @@ mod tests {
 
     #[test]
     fn test_bundle_uninstall_parses() {
-        let args =
-            Args::try_parse_from(["zwiki", "bundle", "uninstall", "my-bundle"])
-                .unwrap();
+        let args = ZwikiArgs::try_parse_from([
+            "zwiki",
+            "bundle",
+            "uninstall",
+            "my-bundle",
+        ])
+        .unwrap();
         match args.command {
             Some(Command::Bundle(bundle::BundleCommand::Uninstall(ref a))) => {
                 assert_eq!(a.name, "my-bundle");
@@ -2278,7 +2558,7 @@ mod tests {
 
     #[test]
     fn test_bundle_uninstall_with_json_parses() {
-        let args = Args::try_parse_from([
+        let args = ZwikiArgs::try_parse_from([
             "zwiki",
             "--json",
             "bundle",
@@ -2600,13 +2880,21 @@ Detailed information about page B goes here.
     #[test]
     fn test_root_flag_before_and_after_check() {
         // Verify --root is accepted both before and after subcommand.
-        let before =
-            Args::try_parse_from(["zwiki", "--root", "/tmp/test", "check"]);
+        let before = ZwikiArgs::try_parse_from([
+            "zwiki",
+            "--root",
+            "/tmp/test",
+            "check",
+        ]);
         assert!(before.is_ok());
         assert_eq!(before.unwrap().root, Some("/tmp/test".to_string()));
 
-        let after =
-            Args::try_parse_from(["zwiki", "check", "--root", "/tmp/test"]);
+        let after = ZwikiArgs::try_parse_from([
+            "zwiki",
+            "check",
+            "--root",
+            "/tmp/test",
+        ]);
         assert!(after.is_ok());
         assert_eq!(after.unwrap().root, Some("/tmp/test".to_string()));
     }

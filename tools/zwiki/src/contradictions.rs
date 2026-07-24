@@ -570,7 +570,7 @@ fn apply_one_pair(
 /// page existence, checks for duplicates, and writes contradiction
 /// frontmatter blocks with `last_validated` update.
 /// Status downgrade is NOT performed — callers must explicitly use
-/// `zwiki property status --page <path> --downgrade` if desired.
+/// `zwiki page set <path> status --downgrade` if desired.
 pub fn cmd_apply(root: &Path, json: bool) {
     let inputs = match input_from_stdin() {
         Ok(v) => v,

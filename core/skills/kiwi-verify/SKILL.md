@@ -50,5 +50,5 @@ description: 用于比较两个已有 wiki 页面，判断衍生页（analysis/s
 
 ### 约束
 
-- **切勿写入任何文件。** 不得调用 `write`、`edit` 或任何 `zwiki` 写入命令（`zwiki create`、`zwiki property`、`zwiki log`、`zwiki supersede`、`zwiki contradictions apply` 等）。
+- **切勿写入任何文件。** 不得调用 `write`、`edit` 或任何 `zwiki` 写入命令（`zwiki page create`、`zwiki page set`、`zwiki log`、`zwiki supersede`、`zwiki contradictions apply` 等）。
 - 源页面和衍生页面的路径由调用方在 CONTEXT 中提供，kiwi 不应自行搜索或猜测。
