@@ -178,22 +178,21 @@ npm = "@ai-sdk/anthropic"
 baseURL = "{env:MOONSHOT_BASE_URL}"
 apiKey  = "{env:MOONSHOT_API_KEY}"
 
-[provider.MoonShot.models.kimi-for-coding]
-name = "kimi-for-coding"
-id   = "kimi-for-coding"
-reasoning = true
-
-[provider.MoonShot.models.kimi-for-coding.limit]
-context = 262144
-output  = 131072
-
 [provider.MoonShot.models.k3]
 name = "k3"
 id   = "k3"
 
 [provider.MoonShot.models.k3.limit]
-context = 1048576
-output  = 38400
+context = 1000000
+output  = 128000
+
+[provider.MoonShot.models.k3-256k]
+name = "k3-256k"
+id   = "k3-256k"
+
+[provider.MoonShot.models.k3-256k.limit]
+context = 256000
+output  = 128000
 
 # ── OpenCodeGo ────────────────────────────────────────────────────────────────
 
@@ -228,13 +227,13 @@ id   = "deepseek-v4-flash"
 context = 1000000
 output  = 384000
 
-[provider.OpenCodeGo.models."mimo-v2.5-pro"]
-name = "mimo-v2.5-pro"
-id   = "mimo-v2.5-pro"
+[provider.OpenCodeGo.models."qwen3.7-plus"]
+name = "qwen3.7-plus"
+id   = "qwen3.7-plus"
 
-[provider.OpenCodeGo.models."mimo-v2.5-pro".limit]
+[provider.OpenCodeGo.models."qwen3.7-plus".limit]
 context = 1000000
-output  = 384000
+output  = 64000
 
 # ── Agents ────────────────────────────────────────────────────────────────────
 
