@@ -18,7 +18,7 @@ import {
   computeCumulativeCacheRate,
   computeTokenBreakdown,
 } from "./core/metrics.js";
-import { loadSessionState } from "./core/pruning/state.js";
+import { loadSessionState } from "./core/pruning/marks.js";
 import { log, setSessionId } from "./utils/logger.js";
 
 /** Category values for sidebar breakdown display. */
@@ -455,7 +455,11 @@ const plugin: TuiPluginModule = {
         try {
           const persisted = loadSessionState(sessionId);
           if (persisted) {
-            prunedCallIDs = new Set(persisted.prune.tools.keys());
+            prunedCallIDs = new Set(
+              [...persisted.marks.entries()]
+                .filter(([, mark]) => mark.effective)
+                .map(([callID]) => callID),
+            );
           }
         } catch {
           // Non-fatal: TUI must never crash from persistence I/O.

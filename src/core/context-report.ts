@@ -61,6 +61,25 @@ export function formatPercent(ratio: number): string {
 }
 
 // ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+/**
+ * Optional parameters for {@link formatContextReport}.
+ *
+ * All fields are optional — omitted fields are treated as absent/zero
+ * and their corresponding lines are omitted from the report.
+ */
+export interface FormatContextReportOptions {
+  /** Cumulative tokens reclaimed by pruning. */
+  prunedTokens?: number;
+  /** Count of marks still pending batch release. */
+  pendingCount?: number;
+  /** Total tokens still pending batch release. */
+  pendingTokens?: number;
+}
+
+// ---------------------------------------------------------------------------
 // Full report formatter
 // ---------------------------------------------------------------------------
 
@@ -69,18 +88,21 @@ export function formatPercent(ratio: number): string {
  *
  * Output is in Chinese (user-facing), with a 60-character line width
  * constraint suitable for TUI chat windows.  Only the compact summary
- * lines are shown: 用量, 消息, 缓存 (and 剪枝 when prunedTokens > 0).
+ * lines are shown: 用量, 消息, 缓存, 回收 (when prunedTokens > 0 or
+ * pendingCount > 0).
  * The detailed category breakdown (user/asst/tool/sys/misc with progress
  * bars) was dropped in favor of the TUI sidebar panel.
  *
  * @param report - The computed context report.
- * @param prunedTokens - Optional cumulative tokens reclaimed by pruning.
+ * @param opts - Optional display parameters.
  * @returns Formatted string for display.
  */
 export function formatContextReport(
   report: ContextReport,
-  prunedTokens?: number,
+  opts?: FormatContextReportOptions,
 ): string {
+  const { prunedTokens, pendingCount, pendingTokens } = opts ?? {};
+
   const lines: string[] = [];
 
   lines.push("━━ 上下文报告 ━━");
@@ -101,9 +123,24 @@ export function formatContextReport(
     lines.push("缓存  —（无最近 LLM 调用数据）");
   }
 
-  // ── Pruned (context pruning) ────────────────────────────────────────
-  if (prunedTokens && prunedTokens > 0) {
-    lines.push(`剪枝  ${formatTokens(prunedTokens)} tokens（累计回收）`);
+  // ── Reclaim (pruning + dedup release) ───────────────────────────────
+  const totalReclaimed = prunedTokens ?? 0;
+  const hasPending = pendingCount && pendingCount > 0;
+
+  if (totalReclaimed > 0 || hasPending) {
+    const parts: string[] = [];
+
+    if (totalReclaimed > 0) {
+      parts.push(`${formatTokens(totalReclaimed)} tokens（累计回收）`);
+    }
+
+    if (hasPending) {
+      parts.push(
+        `待生效 ${pendingCount} 个标记（约 ${formatTokens(pendingTokens ?? 0)} tokens）`,
+      );
+    }
+
+    lines.push(`回收  ${parts.join("，")}`);
   }
 
   return lines.join("\n");

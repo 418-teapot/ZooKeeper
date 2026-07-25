@@ -1,8 +1,21 @@
-# 上下文剪枝设计报告：从内置 Compaction 到框架无关的统一剪枝架构
+# 上下文剪枝设计文档：从内置 Compaction 到框架无关的统一剪枝架构
 
-**版本:** 1.2  
-**日期:** 2026-06-13（2026-07-18 追加 §11 第一步实现报告）  
+**版本:** 2.3
+**日期:** 2026-07-25
 **分类:** 技术架构文档 / 上下文管理
+
+> **2.3 更新说明：** §6 自动 dedup 已**实现并实测通过**（含统一 marks
+> 架构重写）：§4 更新为 as-built 实现；§6 保留设计定稿原文并标记完成，
+> 其中 §6.6/§6.7/§6.8 已按实际实现修订（ignored 通知、统一 marks 单
+> 集合替代双 Map、合并回收展示）；§3.5 补入新一轮源码核实（DCP README
+> 漂移两处、ACP pruneToolOutputs hotfix 与 Bug #20、DCP dedup 保护清单
+> 实际为空）；§7/§8/§9 同步进度。
+>
+> **2.2 重写说明：** 在 1.x 完整调研基础上重组：§1-§3、§7、§9 的调研内容
+> 全部保留（其中与 DCP 源码不符的描述已就地修正，修正点以"源码核实"
+> 标注）；1.x §4（实现前现状）、§5.4-5.10/5.13/5.16（被实际实现取代的
+> 设计）、§7（Phase 1-6 计划）、§10（V0 方案）、§11（实现报告）已移除或
+> 并入新的 §4（当前实现）与 §6（下一步定稿）。
 
 ---
 
@@ -10,65 +23,14 @@
 
 1. [背景与动机](#1-背景与动机)
 2. [OpenCode 内置 Compaction 机制](#2-opencode-内置-compaction-机制)
-   - 2.1 [V2 Core 层 Compaction](#21-v2-core-层-compaction)
-   - 2.2 [V1 Orchestration 层 Compaction](#22-v1-orchestration-层-compaction)
-   - 2.3 [Overflow 检测](#23-overflow-检测)
-   - 2.4 [配置参数](#24-配置参数)
-3. [DCP 插件架构分析](#3-dcp-插件架构分析)
-   - 3.1 [整体架构](#31-整体架构)
-   - 3.2 [16 步消息变换管道](#32-16-步消息变换管道)
-   - 3.3 [双模压缩引擎](#33-双模压缩引擎)
-   - 3.4 [自动策略：去重与错误清除](#34-自动策略去重与错误清除)
-   - 3.5 [Nudge 系统](#35-nudge-系统)
-   - 3.6 [状态模型与配置模式](#36-状态模型与配置模式)
-4. [ZooKeeper 现状分析](#4-zookeeper-现状分析)
-   - 4.1 [现有架构与 Hook 注册](#41-现有架构与-hook-注册)
-   - 4.2 [现有配置体系](#42-现有配置体系)
-   - 4.3 [框架无关性约束](#43-框架无关性约束)
-5. [内建上下文剪枝方案设计](#5-内建上下文剪枝方案设计)
-   - 5.1 [设计原则](#51-设计原则)
-   - 5.2 [架构总览](#52-架构总览)
-   - 5.3 [模块布局](#53-模块布局)
-   - 5.4 [核心类型定义](#54-核心类型定义)
-    - 5.5 [配置方案](#55-配置方案)
-    - 5.6 [Token 计数](#56-token-计数)
-   - 5.7 [会话状态管理](#57-会话状态管理)
-   - 5.8 [消息变换管道](#58-消息变换管道)
-   - 5.9 [去重策略](#59-去重策略)
-   - 5.10 [错误清除策略](#510-错误清除策略)
-   - 5.11 [压缩引擎（Range 模式）](#511-压缩引擎range-模式)
-   - 5.12 [Nudge 注入](#512-nudge-注入)
-   - 5.13 [整合到 ZooKeeper](#513-整合到-zookeeper)
-   - 5.14 [Scope 决策](#514-scope-决策)
-6. [与 DCP 的架构对比](#6-与-dcp-的架构对比)
-   - 6.1 [差异总览](#61-差异总览)
-   - 6.2 [为什么不在 ZooKeeper 中直接依赖 DCP](#62-为什么不在-zookeeper-中直接依赖-dcp)
-7. [实施计划](#7-实施计划)
-   - 7.1 [Phase 1：基础设施（Week 1-2）](#71-phase-1基础设施week-1-2)
-   - 7.2 [Phase 2：自动策略（Week 3-4）](#72-phase-2自动策略week-3-4)
-   - 7.3 [Phase 3：压缩引擎（Week 5-6）](#73-phase-3压缩引擎week-5-6)
-   - 7.4 [Phase 4：OpenCode 整合（Week 7-8）](#74-phase-4opencode-整合week-7-8)
-   - 7.5 [Phase 5：测试与调优（Week 9-10）](#75-phase-5测试与调优week-9-10)
-   - 7.6 [验证方法](#76-验证方法)
- 8. [已知风险与缓解措施](#8-已知风险与缓解措施)
- 9. [总结](#9-总结)
- 10. [最小实现方案（V0）](#10-最小实现方案v0)
-     - 10.1 [为什么要最小实现](#101-为什么要最小实现)
-     - 10.2 [文件清单与职责](#102-文件清单与职责)
-     - 10.3 [明确砍掉的部分](#103-明确砍掉的部分)
-     - 10.4 [两阶段标记-清理的精确实现](#104-两阶段标记-清理的精确实现)
-     - 10.5 [命令系统设计](#105-命令系统设计)
-     - 10.6 [src/index.ts 集成代码](#106-srcindexts-集成代码最小修改25-行)
-     - 10.7 [V0 验证方法](#107-v0-验证方法)
-     - 10.8 [后续增量路径](#108-后续增量路径)
-     - 10.9 [关键认知收获](#109-关键认知收获)
- 11. [第一步实现报告：观测层（命令 + TUI 面板）](#11-第一步实现报告观测层命令--tui-面板)
-     - 11.1 [范围：比 V0 更小的第一步](#111-范围比-v0-更小的第一步)
-     - 11.2 [交付清单](#112-交付清单)
-     - 11.3 [关键实现机制](#113-关键实现机制)
-     - 11.4 [新认知收获](#114-新认知收获)
-     - 11.5 [实测数据与结论](#115-实测数据与结论)
-     - 11.6 [对后续路线图的修正](#116-对后续路线图的修正)
+3. [DCP 插件架构分析（源码核实）](#3-dcp-插件架构分析源码核实)
+4. [ZooKeeper 当前实现](#4-zookeeper-当前实现)
+5. [长期方案设计参考（V3+）](#5-长期方案设计参考v3)
+6. [自动去重 dedup（✅ 已实现）](#6-自动去重-dedup-已实现2026-07-25)
+7. [与 DCP 的架构对比](#7-与-dcp-的架构对比)
+8. [后续路线](#8-后续路线)
+9. [已知风险与缓解措施](#9-已知风险与缓解措施)
+10. [总结](#10-总结)
 
 ---
 
@@ -101,23 +63,42 @@
 3. **委派记录需保留骨架**：谁做了什么、结果如何，但不需要完整回放
 4. **权限规则必须保留**：压缩不能干扰 ZooKeeper 注入的 prompt 和 deny list
 
-### 1.3 调研范围
+### 1.3 实测数据（2026-07-18，观测层上线后）
 
-本文档分析三个层面的上下文管理方案：
+编排器真实负载，~333K 上下文的稳定读数：
 
-| 层次 | 方案 | 分析章节 |
-|------|------|---------|
-| 平台内置 | OpenCode V2/V1 Compaction | §2 |
-| 第三方插件 | DCP (`@tarquinen/opencode-dcp`) | §3 |
-| 自研方案 | ZooKeeper 内建上下文剪枝 | §5 |
+| 分类 | 读数 | 占比 | 说明 |
+|------|------|------|------|
+| user | 19.2K | 5.8% | 用户输入 |
+| asst | 102.6K | 30.8% | 助手输出（API 精确） |
+| **tool** | **145.9K** | **43.8%** | **工具输入+输出——最大单一消费者** |
+| sys | 17.3K | 5.2% | 系统 prompt（与 ztrace 首调记录交叉验证一致） |
+| misc | 48.1K | 14.4% | 残差（估算误差 + reasoning 差额 + 非文本 part） |
 
-目标：设计一套**框架无关、可插拔、轻量级**的上下文剪枝方案，集成到 ZooKeeper 中，并预留 pi / oh-my-pi 适配器的接口。
+**结论**：tool 输出是剪枝的第一目标（43.8%），直接验证去重 + 错误清除
+作为首批自动策略的优先级；系统 prompt（5.2%）不是大头，无需优化。观测层
+为后续每一步剪枝提供了闭环验证手段：策略上线后面板应直接显示 tool 分类
+下降。
+
+### 1.4 设计原则
+
+1. **框架无关核心 + 框架适配器** — 剪枝算法与状态管理为纯 TypeScript，
+   不依赖宿主 SDK 类型；框架绑定通过薄适配层
+2. **两阶段标记-清理** — 策略只写 marks 集合，清理只读 effective 标记；
+   两阶段不在同一 pass 内闭合（见 §3.3）
+3. **轻量无依赖** — 不引入 tokenizer；API 上报 token 为主力，启发式仅
+   补充新增消息
+4. **不吃掉有意义的上下文** — 轮次保护、保护工具列表、阈值门控：上下文
+   充裕时不剪
+5. **渐进增强** — 观测 → 手动剪枝 → 自动策略 → LLM 驱动压缩，每步独立
+   可验证；nudge 优先于强制
+6. **可观测先行** — 每个策略上线后必须能通过面板/命令/日志看到效果
 
 ---
 
 ## 2. OpenCode 内置 Compaction 机制
 
-OpenCode 在核心平台层面提供了两层内置的 compaction（上下文压缩）机制，分别在 V2 Core 和 V1 Orchestration 层实现。
+OpenCode 在核心平台层面提供了两层内置的 compaction（上下文压缩）机制，分别在 V2 Core 和 V1 Orchestration 层实现。ZooKeeper 剪枝是其**补充**而非替代。
 
 ### 2.1 V2 Core 层 Compaction
 
@@ -243,9 +224,9 @@ reserved = min(20_000, max_output_tokens)
 
 ---
 
-## 3. DCP 插件架构分析
+## 3. DCP 插件架构分析（源码核实）
 
-DCP（`@tarquinen/opencode-dcp`，Dynamic Context Pruning）是一个 OpenCode 插件，用模型驱动的压缩替代了内置 compaction。以下分析基于源码 `opencode-dynamic-context-pruning/`。
+DCP（`@tarquinen/opencode-dcp`，Dynamic Context Pruning）是一个 OpenCode 插件，用模型驱动的压缩替代了内置 compaction。以下分析基于源码 `~/Code/Agent/opencode-dynamic-context-pruning/`，关键事实经源码核实（2026-07-23）。
 
 ### 3.1 整体架构
 
@@ -280,9 +261,9 @@ Step  4: stripHallucinations          — 移除模型幻觉生成的 DCP 标记
 Step  5: cacheSystemPromptTokens      — 缓存系统 prompt 的 token 量
 Step  6: assignMessageRefs            — 分配 mNNNN 格式引用 ID
 Step  7: syncCompressionBlocks        — 重算活跃压缩块
-Step  8: syncToolCache                — 缓存工具调用参数
+Step  8: syncToolCache                — 缓存工具调用参数（轮次保护在此生效）
 Step  9: buildToolIdList              — 构建全局工具调用 ID 列表
-Step 10: prune                        — 执行实际消息剪枝（4 种模式）
+Step 10: prune                        — 读 state.prune.tools 执行替换（4 种模式）
 Step 11: injectExtendedSubAgentResults— 替换 <task_result> 为完整文本
 Step 12: buildPriorityMap             — 计算消息 token 优先级
 Step 13: injectCompressNudges         — 基于阈值注入压力提示
@@ -302,7 +283,49 @@ prune 阶段提供 4 种剪枝模式：
 | `tool input prune` | 工具输入剪枝 — 擦除工具调用的输入参数 |
 | `tool error prune` | 错误剪枝 — 清理错误调用的输入字段 |
 
-### 3.3 双模压缩引擎
+> **源码核实修正**：`deduplicate` / `purgeErrors` 策略**不在这 16 步中**。
+> 它们只在 compress 工具执行的 `prepareSession()` 里被调用
+> （`lib/compress/pipeline.ts:72-73`）。1.x 文档将策略画在 transform
+> 管道内（`runDedup()` 在 `pruneToolOutputs()` 之前），与源码不符。
+
+### 3.3 两阶段标记-清理（核心机制，源码核实）
+
+**标记与清理在架构上是分离的代码路径**，不是靠同一 pass 内的调用顺序
+或快照实现的：
+
+- **清理**（每轮都跑）：transform 管道 Step 10
+  （`lib/hooks.ts:131` → `lib/messages/prune.ts:20-24`）只**读**
+  `state.prune.tools`，替换已标记工具的 output/input：
+
+```typescript
+// lib/messages/prune.ts:20-24
+filterCompressedRanges(state, logger, config, messages)
+pruneToolOutputs(state, logger, messages)
+pruneToolInputs(state, logger, messages)
+pruneToolErrors(state, logger, messages)
+```
+
+- **标记**（按需跑）：`deduplicate` / `purgeErrors` 只在 compress 工具的
+  `prepareSession()`（`lib/compress/pipeline.ts:72-73`）中运行：
+
+```typescript
+// lib/compress/pipeline.ts:72-73
+deduplicate(ctx.state, ctx.logger, ctx.config, rawMessages)
+purgeErrors(ctx.state, ctx.logger, ctx.config, rawMessages)
+```
+
+因此"turn N 标记、turn N+1 生效"天然成立：标记发生在 compress 工具
+执行路径，清理发生在下一次 transform。核心不变量：
+
+- `state.prune.tools`（`Map<callID, tokenCount>`）是策略与清理之间的
+  **唯一数据通路**；累积不清理（替换后不删条目），仅在会话删除/重置时
+  清空
+- token 记账发生在**标记时**，清理阶段不记账，避免跨轮重复计数
+- **推论**：若策略与清理必须同处一个 handler（我们的 dedup 如此，见 §6.2），
+  必须**先清后标**——清理只作用于历史标记，本轮新标记下一轮才生效，
+  与分离路径语义严格等价
+
+### 3.4 双模压缩引擎
 
 DCP 提供两种压缩模式：
 
@@ -328,11 +351,25 @@ DCP 提供两种压缩模式：
 
 模型提供 `topic` + `content[]`，每个 content 项包含 `{messageId, topic, summary}`。独立压缩每条消息，不依赖连续范围。更精确、更灵活，但模型理解成本更高。
 
-### 3.4 自动策略：去重与错误清除
+### 3.5 自动策略：去重与错误清除
 
 #### 去重（`lib/strategies/deduplication.ts`）
 
 按 `toolName + normalizedParameters` 签名对工具调用分组：
+
+```typescript
+// 源码核实（deduplication.ts:96-103）
+function createToolSignature(tool: string, parameters?: any): string {
+    if (!parameters) { return tool }
+    const normalized = normalizeParameters(parameters)  // 剔除 null/undefined
+    const sorted = sortObjectKeys(normalized)           // 键递归排序
+    return `${tool}::${JSON.stringify(sorted)}`
+}
+```
+
+策略（源码核实，`deduplication.ts:77-82`）：同一签名组中**保留最新的一
+次调用**（`ids.slice(0, -1)`），标记旧调用为待剪枝。保护工具列表与保护
+文件模式在签名构建前排除（`deduplication.ts:55-62`）。
 
 ```typescript
 interface DedupConfig {
@@ -342,22 +379,86 @@ interface DedupConfig {
 }
 ```
 
-策略：同一签名组中保留最新的一次调用，标记旧调用为待剪枝。
-
 #### 错误清除（`lib/strategies/purge-errors.ts`）
 
-在错误发生的 N 轮（默认 4 轮）后，标记失败的工具调用为待剪枝。剪枝时：
+在错误发生的 N 轮（默认 4 轮）后，标记失败的工具调用为待剪枝。剪枝时擦除 input、保留 error 消息：
 
 ```typescript
 interface PurgedToolCall {
-  // input 字段被擦除
-  input: {}  // 空对象
-  // 保留 error 消息
-  output: { error: string }
+  input: {}                  // 空对象
+  output: { error: string }  // 保留 error 消息
 }
 ```
 
-### 3.5 Nudge 系统
+#### 轮次口径与轮次保护（源码核实）
+
+DCP 的"轮"**不是用户消息轮次**，而是**助手步**：按消息 parts 中的
+`step-start` part 计数（`lib/state/utils.ts:76-93`）。编排器一个用户指令
+可含几十上百个助手步，按用户轮计保护窗会让保护范围大到策略永不触发。
+
+轮次保护在 **`syncToolCache` 入口处**生效（`lib/state/tool-cache.ts:39-52`）：
+
+```typescript
+// tool-cache.ts:39-44
+const isProtectedByTurn =
+    turnProtectionEnabled &&
+    turnProtectionTurns > 0 &&
+    state.currentTurn - turnCounter < turnProtectionTurns
+// tool-cache.ts:50-52 — 受保护的调用 continue，不进 state.toolParameters
+```
+
+受保护的调用根本不进签名缓存，策略永远看不到它——**事前过滤，非事后
+豁免**。默认值：`turns = 4` 且 `enabled = false`（`lib/config.ts:670-673`）。
+
+#### 可观测性（源码核实）
+
+- 标记时只写 debug 日志（`deduplication.ts:92`、`purge-errors.ts:84-86`）
+- 替换完全静默，仅留下占位符文本：
+
+```
+[Output removed to save context - information superseded or no longer needed]
+[input removed due to failed tool call]
+[questions removed - see output for user's answers]
+```
+
+- 用户可见通知只在 compress 工具触发时发出（toast 或 ignored chat
+  message，`lib/ui/notification.ts`）
+- `/dcp stats` 命令显示累计节省（读 `state.stats.totalPruneTokens` 与
+  `state.prune.tools.size`）
+
+#### 保护清单的真实结构（源码核实，2026-07-25，纠正 README 漂移）
+
+README（:216）称"默认保护 task/skill/todowrite/todoread/compress/batch/
+plan_enter/plan_exit/write/edit，且 commands 与 strategies 的数组都会
+叠加到该默认清单"。**源码事实与此不符**：
+
+- `DEFAULT_PROTECTED_TOOLS`（config.ts:78-89）只被 `commands.protectedTools`
+  （:664，保护 sweep）与 compress 配置消费
+- `strategies.deduplication.protectedTools` 默认 **`[]`**（:696），
+  `deduplication.ts:42` 只读此键——**dedup 策略实际零保护**，依赖签名
+  判等 + 保留最新 + 轮次保护
+- 设计含义：DCP 把保护给钝器（sweep 无差别标记），不给精密仪器
+  （dedup 精确重复）
+
+#### 通知机制的已知坑（源码核实，2026-07-25）
+
+- DCP 的 `sendIgnoredMessage`（`session.prompt({noReply, ignored})`）不仅
+  从命令处理器调用，还从 **compress 工具执行管线**（turn 在途）调用
+  （`pipeline.ts:97` → `notification.ts:304`，`pruneNotificationType:"chat"`
+  时）
+- ACP 的 devlog 将此路径记为 **Bug #20**：通知消息被其自身 lastUser
+  检测误拾 → 幽灵 LLM 调用反馈循环；ACP 的修复是**删除 chat 分支、
+  一律改用 `client.tui.showToast`**（`opencode-acp/lib/ui/notification.ts:313`）
+- ACP 同时 HOTFIX 注释掉了 `pruneToolOutputs/pruneToolInputs/
+  pruneToolErrors`（`opencode-acp/lib/messages/prune.ts:19-24`）——
+  原地修改历史消息打爆 GLM 前缀缓存（命中率 -89%，Bug 38）；此后
+  ACP 的 dedup 只标记不替换，实际减上下文靠模型 compress 整段移除
+- **对照核实**：opencode 源码中 ignored part 在构建 LLM 请求时被排除
+  （`packages/opencode/src/session/message-v2.ts:206`），
+  `session.prompt({noReply, ignored})` 在 turn 在途时也能正确持久化
+  （`prompt.ts:1069`）——机制本身安全，Bug #20 是 ACP 自身逻辑问题
+
+### 3.6 Nudge 系统
 
 三级压力提示系统，在上下文接近上限时引导模型主动压缩：
 
@@ -367,7 +468,7 @@ interface PurgedToolCall {
 | Turn nudge | 介于 min/max 之间 + 新用户轮次 | 每轮一次 | 温和——考虑压缩 |
 | Iteration nudge | 介于 min/max 之间 + 助手消息数超阈值 | 每轮一次 | 警告——对话过长在漂移 |
 
-### 3.6 状态模型与配置模式
+### 3.7 状态模型与配置模式
 
 #### CompressionBlock 状态
 
@@ -419,2264 +520,532 @@ interface CompressionBlock {
 | `compress.protectedTools` | string[] | `["task"]` | 不参与压缩的工具 |
 | `strategies.deduplication.enabled` | bool | `false` | 启用去重 |
 | `strategies.purgeErrors.enabled` | bool | `true` | 启用错误清除 |
-| `turnProtection` | number | `2` | 保护最近 N 轮用户交互 |
+| `turnProtection` | number | `4`（且 `enabled=false`） | 保护最近 N 个**助手步**（step-start 计数） |
 | `protectUserMessages` | bool | `true` | 保留用户消息原样 |
 | `protectTags` | string[] | — | 具有特定标签的消息不压缩 |
 
 ---
 
-## 4. ZooKeeper 现状分析
+## 4. ZooKeeper 当前实现
 
-### 4.1 现有架构与 Hook 注册
+已实现**观测层 + 统一 marks 剪枝核心（手动 sweep + 自动 dedup）+ 批量释放
++ 持久化**（截至 2026-07-25，TS 测试 820+ 全绿）。核心逻辑在
+`src/core/pruning/`（框架无关），OpenCode 适配在 `src/hooks/` 与
+`src/opencode.ts`。
 
-ZooKeeper 目前是一个 OpenCode orchestrator 插件，在 `src/index.ts` 中注册 5 个 hook：
+### 4.1 架构总览（统一 producer 模型）
 
-| Hook | 功能 | 实现位置 |
-|------|------|---------|
-| `config` | 注入 prompt 文件、注册 skills | inline |
-| `experimental.chat.messages.transform` | 上下文度量 | `src/hooks/context-metrics` |
-| `tool.definition` | 增强 task() prompt 参数描述 | `src/hooks/task-prompt/` |
-| `tool.execute.before` | 阻断式校验 task() prompt 结构 | `src/hooks/task-prompt/` |
-| `tool.execute.after` | 4 个 advisory handler 链式执行 | 多 handler 串联 |
+一切剪枝行为建模为 producer `{ selector, range, protection, release }`：
 
-当前 `tool.execute.after` 的 handler 链：
+```
+sweep  = { selector: all,        range: since-last-user|last-N,
+           protection: 0,        release: immediate }
+dedup  = { selector: duplicates, range: session,
+           protection: 5 步,     release: batch(release_threshold_percent) }
+```
+
+```
+每轮 experimental.chat.messages.transform (src/opencode.ts):
+  ├─ contextPruningTransformHandler (src/hooks/context-pruning/hook.ts)
+  │   Phase 1 清：pruneToolOutputs — 替换 effective 标记的输出
+  │   Phase 2 标：门控（prompt 侧总量 ≥ 100K）→ runDedup
+  │              → 新标记写入 marks（effective=false）
+  │              → 批量释放：pending ≥ promptTokens × N% → releaseBatch
+  │              → 释放时注入 ignored 通知（noReply，LLM 不可见）
+  │   Phase 3 持久化（dirty 时）  Phase 4 prune_completed 日志
+  └─ measureContext (src/core/metrics.ts)
+
+/dcp sweep [N]（command.execute.before）:
+  └─ runSweep → addMark(effective=true)（立即生效，用户主权）
+
+TUI 侧边栏 (src/tui.tsx): 全量 fetch → computeContextReport
+   （prunedCallIDs 只含 effective 标记）→ 渲染
+```
+
+### 4.2 marks 单集合状态（`src/core/pruning/marks.ts`）
 
 ```typescript
-const handlers = [
-  (i, o) => nudgeTaskOutput(i, o, limits),   // task prompt 内容 nudge
-  recoverJsonError,                            // JSON 解析错误恢复
-  (i, o) => nudgeDirectWork(client, i, o),     // 直接编辑警告
-  (i, o) => nudgePostTask(client, i, o),       // 验证 + todo 提醒
-];
+interface Mark { tokens: number; effective: boolean }
+interface SessionState {
+  sessionId: string;
+  marks: Map<string, Mark>;   // 单集合，取代旧双 Map + 5 累计字段
+  lastAccessedAt: number;
+  dirty: boolean;             // runtime-only
+}
 ```
 
-### 4.2 现有配置体系
+- **单集合 + 状态位**：生命周期是实体的属性而非位置；`addMark` 幂等
+  （先到先得）天然替代双查重；`releaseBatch` 只统计实际翻转
+- **stats 全派生**：`pendingCount/pendingTokens/reclaimedTokens/markedCount/
+  markedTokens` 均为 O(n) 纯函数，无累计器双写义务
+- **承重语义：marks 永不删除**——即使引用的消息已被压缩移除（悬空
+  mark 是无害历史记录；派生正确性依赖单调性）
+- **持久化**：`~/.zoo/storage/{sessionId}.json`，shape 为
+  `{ marks: Record<callID, {t, e}>, lastUpdated }`；旧 shape
+  （prune.tools/stats）加载为空（用户确认废弃，无迁移层）；原子写
+  （tmp + rename）；sessionId 安全正则防路径穿越
 
-配置通过 `config.toml` 加载，`[zoo.validation]` 段落提供验证阈值：
+### 4.3 观测层
 
-```toml
-[zoo.validation]
-context_word_limit = 200
-prompt_word_limit  = 500
-```
+| 文件 | 职责 |
+|------|------|
+| `src/core/metrics.ts` | 唯一测量模块（同 2.2：findLastCompletedAssistant、CJK 启发式、computeContextReport、缓存命中率） |
+| `src/core/context-report.ts` | 纯展示层：`formatContextReport(report, opts)`——合并回收行 `回收  X tokens（累计回收）`，pending 时追加 `，待生效 N 个标记（约 Y tokens）`；**不区分手动/自动**（release 后本质相同） |
+| `src/hooks/context-command/index.ts` | `/dcp` 命令分发：`context`/`sweep [N]`/`help`；报告数据源自内存态 `getOrCreateSessionState` |
+| `src/tui.tsx` | `ZookeeperPanel` 侧边栏；`prunedCallIDs` 只含 effective 标记（pending 不提前剔除 tool 分类） |
 
-插件在初始化时通过 `import config from "../config.toml" with { type: "toml" }` 读取，闭包捕获。
+### 4.4 手动剪枝（/dcp sweep）
 
-### 4.3 框架无关性约束
+- `/dcp sweep`：标记最后一条非 ignored 用户消息之后的所有工具输出
+- `/dcp sweep N`：回溯标记最近 N 个工具输出
+- 语义 = `{ selector: all, protection: 0, release: immediate }` 的
+  producer（`src/core/pruning/producers/sweep.ts`）；`addMark` 幂等跳过
+  已存在 callID（先到先得：若 dedup 已标 pending，sweep 不覆盖）
 
-`src/index.ts:16` 有一个关键 TODO：
+### 4.5 自动去重（dedup producer）
 
-```
-TODO: Add pi / oh-my-pi adapter (framework adapter).
-```
+`src/core/pruning/producers/dedup.ts`：
 
-这意味着所有新逻辑必须考虑**框架无关性**。OpenCode 使用 TypeScript + Hook API，pi / oh-my-pi 使用框架适配器机制。上下文剪枝的核心逻辑（token 估算、去重、错误清除、压缩引擎）必须与框架解耦，能够在两个插件系统中复用。
+- **签名** = `tool::JSON.stringify(归一化 input)`：键递归排序 +
+  剔除 null/undefined + 任意深度剔除易变字段（timestamp/ts/date）
+- **保护窗**：step-start 计步，最近 5 步事前过滤；无 step-start 回退为
+  "保护最近 5 个工具调用"
+- **跳过**：已存在 mark（单集合 `marks.has`）、protected_tools（默认仅
+  `question`，§6.5）、error/非 completed part、**零收益**（output 估算
+  ≤ 占位符估算时不标记——短输出被更长占位符替换会反增上下文）
+- **门控**：prompt 侧总量（`input + cache.read + cache.write`）≥ 100K
+  才扫描；缺失向安全方向失败
+- **批量释放**：`Σ pending ≥ promptTokens × release_threshold_percent%`
+  （默认 5%，0 = 每轮立即释放）时 `releaseBatch` 全部翻转，
+  下一轮 Phase 1 替换生效——破缓存从每轮降为低频批量事件
+- **通知**：仅释放时一条 `session.prompt({ noReply: true, ignored: true })`
+  消息（"去重：已折叠 N 个重复工具输出，约释放 X tokens"）——追加在
+  末尾不破前缀缓存；ignored part 在 `message-v2.ts:206` 被排除出 LLM
+  上下文（源码核实）；fire-and-forget，失败仅 warn
 
-**当前架构中已框架无关的部分**：
-- `src/hooks/utils/` 中的共享模块
-- 所有 hook 实现内部的纯函数核心逻辑
-- Config 通过 `config.toml` 声明式定义
+### 4.6 认知收获（仍然成立的）
 
-**需要框架无关的上下文剪枝逻辑**：
-- 类型定义（types）
-- Token 估算（estimator）
-- 状态管理（state）
-- 去重检测（dedup）
-- 错误清除（purge-errors）
-- 压缩引擎（compress）
-- Nudge 注入（nudge）
-- 管道编排（pipeline）
-
-**框架相关（需要适配器）**：
-- OpenCode 的 `experimental.chat.messages.transform` hook 绑定
-- pi / oh-my-pi 的适配器消息变换 hook
-- 会话 ID 获取方式差异
+1. **两阶段必须是分离的代码路径**（或在同一 handler 内严格先清后标），
+   否则标记-清理边界产生 off-by-one（§3.3）
+2. **marks 集合是唯一数据通路**，且永不删除——它同时是 TUI 的剪枝感知
+   数据源与全部派生统计的事实源
+3. **TUI `api.state` 截断到最近 100 条消息**（`sync.tsx:597`），"第一条
+   消息"类推算（如 system 估算）在截断窗口里会被骗——全量数据必须走
+   `api.client.session.messages()`
+4. **TUI 与 server 的 SDK 签名不同**（TUI 端 `session.messages({ sessionID })`，
+   server 端 `session.messages({ path: { id } })`）；SDK 默认
+   `throwOnError: false`，HTTP 错误以 `{ error }` 返回，必须显式检查
+5. **CJK 分文字系统估算**（/1.5）即可消除中文系统性低估，无需 tokenizer；
+   asst 分类用 `Σ tokens.output`（API 精确）
+6. **TUI 插件任何异常都要 try/catch 兜底**——崩溃会拖垮整个宿主客户端；
+   `api.state` 数组在 streaming 过渡期含 undefined 元素，遍历必须 falsy
+   防御；无内容带 border 的 box 会导致 Yoga 布局塌陷，分隔线用纯文本
+7. **命令/通知输出必须 `ignored: true`**，否则变成新上下文；ignored
+   消息在 TUI 渲染为普通用户气泡（TUI 不过滤 ignored），但 LLM 不可见
+   （`message-v2.ts:206`）
+8. TUI 进程的 logger 需要显式 `setSessionId` 才能落盘
+9. **`session.prompt` 可在 turn 在途时安全调用**（noReply + ignored 标志
+   会被正确持久化，源码核实 prompt.ts:1069）；ACP 的 Bug #20 反馈循环
+   源于其自身 lastUser 检测逻辑误拾通知消息，非 opencode 机制缺陷
 
 ---
 
-## 5. 内建上下文剪枝方案设计
+## 5. 长期方案设计参考（V3+）
 
-### 5.1 设计原则
+以下为 1.x 文档中仍然有效的长期设计，供压缩引擎（V3）及后续步骤参考。
+1.x §5.4-5.10（类型/配置/估算/状态/管道/去重/错误清除的具体代码）已被
+§4 的实际实现与 §6 的定稿取代，§5.13（src/index.ts 集成草图）与 §5.16
+（持久化设计）已被实际实现取代，不再保留。
 
-**原则一：框架无关核心 + 框架特定适配器**
-
-所有上下文剪枝算法和状态管理在纯 TypeScript 中实现，不依赖 OpenCode SDK 类型。框架绑定通过薄适配层实现。
-
-**原则二：轻量无依赖**
-
-不引入 `tiktoken` 或 `@anthropic-ai/tokenizer`。使用 OpenCode SDK 原生提供的 `AssistantMessage.tokens`（API 精确计费数据）作为主力，仅对新增的 in-progress 消息使用 `text.length / 4` 启发式补充。整体误差 < 5%。
-
-**原则三：渐进增强**
-
-从去重和错误清除等低成本策略开始，逐步引入 LLM 驱动的压缩。每个策略独立开关。
-
-**原则四：不吃掉有意义的上下文**
-
-- 保护最近 N 轮用户交互
-- 保护系统 prompt（ZooKeeper 注入的权限规则）
-- 保护 `task()`、`skill()` 等关键工具的输出
-- 保护配置文件中声明的 protected_tools
-
-**原则五：nudge 优先于强制**
-
-在上下文达到阈值时先注入友好的 nudge，引导模型主动管理。仅在超过紧急阈值时才自动触发压缩。
-
-### 5.2 架构总览
+### 5.1 目标架构
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    Framework Adapters                        │
 │  ┌──────────────────────┐  ┌──────────────────────────┐     │
-│  │  OpenCode Hook       │  │  pi / oh-my-pi Adapter    │     │
-│  │  (hook.ts)           │  │  (adapter.ts, P2)         │     │
+│  │  OpenCode Hook       │  │  pi Adapter               │     │
 │  └─────────┬────────────┘  └──────────┬───────────────┘     │
-│            │                           │                      │
 ├─ - - - - - - - - - - - - - - - - - - - - - - - - - - - - ┤  │  ← framework boundary
 │            ▼                           ▼                      │
 │  ┌──────────────────────────────────────────────────────┐    │
 │  │              Framework-Agnostic Core                  │    │
-│  │  src/context-pruning/                                 │    │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────────────┐    │    │
-│  │  │  dedup   │  │  purge   │  │   compress       │    │    │
-│  │  │  .ts     │  │  -errors │  │   (range/message)│    │    │
-│  │  │          │  │  .ts     │  │                  │    │    │
-│  │  └────┬─────┘  └────┬─────┘  └───────┬──────────┘    │    │
-│  │       │              │                │                │    │
-│  │       ▼              ▼                ▼                │    │
-│  │  ┌────────────────────────────────────────────────┐    │    │
-│  │  │              pipeline.ts                       │    │    │
-│  │  │  (orchestrates: dedup → purge → compress →     │    │    │
-│  │  │   injectNudge → injectIds)                    │    │    │
-│  │  └──────────────────────┬─────────────────────────┘    │    │
-│  │                         │                               │    │
-│  │  ┌──────────────────────▼─────────────────────────┐    │    │
-│  │  │           state.ts (SessionState)              │    │    │
-│  │  │  (compression blocks, dedup cache, error       │    │    │
-│  │  │   tracking, turn protection, persist)          │    │    │
-│  │  └───────────────────────────────────────────────┘    │    │
-│  │                                                       │    │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────────────┐    │    │
-│  │  │  types   │  │estimator │  │   nudge.ts       │    │    │
-│  │  │  .ts     │  │ .ts      │  │                  │    │    │
-│  │  └──────────┘  └──────────┘  └──────────────────┘    │    │
+│  │  dedup / purge-errors / compress (range/message)      │    │
+│  │  → pipeline → state (SessionState)                    │    │
+│  │  types / estimator / nudge                            │    │
 │  └──────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────┘
-  src/hooks/context-pruning/        src/context-pruning/
-  (adapters only)                   (core, framework-agnostic)
 ```
 
-### 5.3 模块布局
+当前实际布局：`src/core/pruning/`（框架无关）+ `src/hooks/context-*/`
+（OpenCode 适配）。随策略增多，可按 types / estimator / state / strategies /
+pipeline 进一步拆分。
 
-核心逻辑（框架无关）与框架适配器分离存放：
+### 5.2 压缩引擎（Range 模式）参考设计
 
-```
-src/context-pruning/             # ── 框架无关核心 ──
-├── index.ts                     # 桶导出（barrel export）
-├── types.ts                     # 框架无关的核心类型定义
-├── estimator.ts                 # Token 计数（API 上报 + 启发式补充）
-├── state.ts                     # 会话状态管理
-├── dedup.ts                     # 去重策略
-├── purge-errors.ts              # 错误清除策略
-├── compress.ts                  # 压缩引擎核心（Range / Message 模式）
-├── nudge.ts                     # Nudge 注入逻辑
-├── pipeline.ts                  # 消息变换管道编排器
-└── index.test.ts                # 单元测试（核心逻辑）
-
-src/hooks/context-pruning/       # ── OpenCode 框架适配器 ──
-├── index.ts                     # 桶导出（re-export + 适配）
-├── hook.ts                      # OpenCode 框架适配器
-└── index.test.ts                # 集成测试（适配层）
-```
-
-### 5.4 核心类型定义
+> 实施路线：先启发式 Range 压缩（无 LLM 调用）验证块生命周期，再注册
+> compress 工具切换为 LLM 驱动摘要（DCP 的模式，§3.4）。
 
 ```typescript
-// types.ts — framework-agnostic core types
-
-// ── Message model ──────────────────────────────────────────
-
-export interface MessageRef {
-  id: string;               // mNNNN 格式引用 ID
-  role: "user" | "assistant" | "system" | "tool";
-  content: string;
-  toolCalls?: ToolCallRef[];
-  toolResults?: ToolResultRef[];
-  metadata?: Record<string, unknown>;
+// 压缩触发：仅在总量超阈值时执行
+const totalTokens = estimateTotalTokens(working);
+if (config.compressEnabled && totalTokens > config.compressMaxTokens) {
+  const result = runCompression(working, state, config);
 }
 
-export interface ToolCallRef {
-  id: string;               // tNNNN 格式引用 ID
-  toolName: string;
-  parameters: Record<string, unknown>;
-}
-
-export interface ToolResultRef {
-  id: string;
-  toolCallId: string;
-  output: string;
-  isError?: boolean;
-  error?: string;
-}
-
-// ── Compression ────────────────────────────────────────────
-
-export type CompressionMode = "range" | "message";
-
-export interface CompressionBlock {
-  blockId: string;
-  runId: string;
-  active: boolean;
-
-  compressedTokens: number;
-  summaryTokens: number;
-
-  mode: CompressionMode;
-  topic: string;
-
-  startId: string;
-  endId: string;
-
-  directMessageIds: string[];
-  directToolIds: string[];
-  effectiveMessageIds: string[];
-  effectiveToolIds: string[];
-
-  summary: CompressionSummary;
-}
-
-export interface CompressionSummary {
-  goal: string;
-  progress: string;
-  decisions: string;
-  keyContext: string;
-  files: string[];
-}
-
-// ── Session State ──────────────────────────────────────────
-
-export interface SessionState {
-  sessionId: string;
-
-  // Compression blocks
-  blocksById: Map<string, CompressionBlock>;
-  byMessageId: Map<string, string[]>;  // messageId → blockId[]
-  activeBlockIds: Set<string>;
-
-  // Dedup cache
-  dedupCache: Map<string, DedupEntry>;
-
-  // Error tracking
-  errorTracking: Map<string, ErrorEntry>;
-
-  // Turn protection
-  protectedTurns: number;
-  turnCount: number;
-
-  // Stats
-  lastAccessedAt: number;
-  totalPrunedTokens: number;
-  totalCompressedTokens: number;
-}
-
-export interface DedupEntry {
-  toolName: string;
-  signature: string;
-  firstSeenAt: string;    // message ID
-  latestSeenAt: string;   // message ID
-  callCount: number;
-}
-
-export interface ErrorEntry {
-  toolCallId: string;
-  toolName: string;
-  turnNumber: number;
-  errorMessage: string;
-}
-
-// ── Config ─────────────────────────────────────────────────
-
-export interface ContextPruningConfig {
-  enabled: boolean;
-
-  // Thresholds (triggers use API-reported tokens + heuristic for new messages)
-  nudgeThresholdTokens: number;      // 70_000 — start gentle reminders
-  urgentThresholdTokens: number;     // 140_000 — urgent compression request
-
-  // Automatic strategies
-  dedupEnabled: boolean;
-  purgeErrorsEnabled: boolean;
-  purgeErrorsTurns: number;          // 3 — turns before error purge
-
-  // Compression
-  compressMode: CompressionMode;
-  compressEnabled: boolean;
-  compressMinTokens: number;         // 50_000
-  compressMaxTokens: number;         // 100_000
-  nudgeFrequency: number;            // 3 — how often context-limit nudge fires
-
-  // LLM-driven compression (Phase 4+)
-  compressLlmEnabled: boolean;       // register compress tool for model use
-  compressMessageModeEnabled: boolean; // enable Message mode (per-message LLM compression)
-
-  // Commands (Phase 5+)
-  commandsEnabled: boolean;          // enable /context, /stats, /sweep etc.
-
-  // Persistence (Phase 5+)
-  persistState: boolean;             // persist session state to disk
-
-  // Protection
-  protectedTools: string[];
-  protectUserMessages: boolean;
-  turnProtection: number;            // 2 — protect last N turns
-
-  // Dedup
-  dedupProtectedTools: string[];
-
-  // Purge errors
-  purgeErrorsProtectedTools: string[];
-}
-
-// ── Pipeline ───────────────────────────────────────────────
-
-export interface PipelineInput {
-  sessionId: string;
-  messages: MessageRef[];
-  config: ContextPruningConfig;
-}
-
-export interface PipelineOutput {
-  messages: MessageRef[];
-  nudges: string[];
-  stats: PipelineStats;
-}
-
-export interface PipelineStats {
-  dedupRemoved: number;
-  errorPurged: number;
-  compressedTokens: number;
-  summaryTokens: number;
-}
+// 可压缩范围识别（启发式）：
+//   - 已完成的 task() 交互轮次（task + tool results）
+//   - 已验证的工具输出（successful bash/read after verification）
+//   - 保护窗之外的旧历史
+// 块替换：范围消息 → 单条摘要消息（metadata.compressed = true，
+//   原始消息可通过 blockId 追溯，非破坏性）
 ```
 
-### 5.5 配置方案
-
-在 `config.toml` 中新增 `[zoo.context]` 段落：
-
-```toml
-# ── Context Pruning ─────────────────────────────────────────
-# 控制 ZooKeeper 内置的上下文剪枝行为。
-# 每个字段都有默认值，可选择性覆盖。
-
-[zoo.context]
-enabled = true
-
-# Token 计数：优先使用 API 上报的精确数据，仅在新增 in-progress 消息时回退启发式
-# 阈值设置以 1M context 窗口为参考
-nudge_threshold_tokens = 70000      # 开始温和提醒
-urgent_threshold_tokens = 140000    # 紧急压缩请求
-
-# 自动策略
-dedup_enabled = true                # 去重重复工具输出
-purge_errors_enabled = true         # 清除错误工具输入（N 轮后）
-purge_errors_turns = 3              # 错误清除前的等待轮数
-
-# 压缩（Phase 1-3：启发式范围压缩）
-compress_enabled = true
-compress_mode = "range"             # "range" | "message"
-compress_min_tokens = 70000         # 开始温和 nudge 的阈值
-compress_max_tokens = 140000        # 触发紧急 nudge 的阈值
-compress_nudge_frequency = 3        # context-limit nudge 的注入间隔
-
-# LLM 驱动压缩（Phase 4+）
-compress_llm_enabled = false        # 注册 compress 工具供模型调用
-compress_message_mode_enabled = false # 启用 Message 模式（单消息粒度的 LLM 压缩）
-
-# 命令系统（Phase 5+）
-commands_enabled = false            # 启用 /context、/stats、/sweep 等命令
-
-# 跨会话持久化（Phase 5+）
-persist_state = true                # 将会话剪枝状态持久化到磁盘
-
-# 保护规则 — 以下列表中的工具永不参与剪枝
-protected_tools = [
-  "task",
-  "skill",
-  "question",
-  "todowrite",
-  "todoread",
-]
-
-# 用户消息保护
-protect_user_messages = true
-
-# 最近 N 轮用户交互受保护（不参与压缩/剪枝）
-turn_protection = 2
-
-# 去重保护 — 列表中工具不参与去重
-dedup_protected_tools = [
-  "task",
-  "skill",
-  "read",
-]
-
-# 错误清除保护 — 列表中工具的错误不参与清除
-purge_errors_protected_tools = [
-  "task",
-  "skill",
-]
-```
-
-**配置加载逻辑**（与现有 `[zoo.validation]` 模式一致）：
-
-```typescript
-function loadContextConfig(zooConfig: Record<string, any>): ContextPruningConfig {
-  const ctx = zooConfig.context ?? {};
-  return {
-    enabled: ctx.enabled ?? true,
-    nudgeThresholdTokens: ctx.nudge_threshold_tokens ?? 70_000,
-    urgentThresholdTokens: ctx.urgent_threshold_tokens ?? 140_000,
-    dedupEnabled: ctx.dedup_enabled ?? true,
-    purgeErrorsEnabled: ctx.purge_errors_enabled ?? true,
-    purgeErrorsTurns: ctx.purge_errors_turns ?? 3,
-    compressEnabled: ctx.compress_enabled ?? true,
-    compressMode: ctx.compress_mode ?? "range",
-    compressMinTokens: ctx.compress_min_tokens ?? 70_000,
-    compressMaxTokens: ctx.compress_max_tokens ?? 140_000,
-    nudgeFrequency: ctx.compress_nudge_frequency ?? 3,
-
-    // LLM-driven compression (Phase 4+)
-    compressLlmEnabled: ctx.compress_llm_enabled ?? false,
-    compressMessageModeEnabled: ctx.compress_message_mode_enabled ?? false,
-
-    // Commands (Phase 5+)
-    commandsEnabled: ctx.commands_enabled ?? false,
-
-    // Persistence (Phase 5+)
-    persistState: ctx.persist_state ?? true,
-
-    protectedTools: ctx.protected_tools ?? ["task", "skill", "question"],
-    protectUserMessages: ctx.protect_user_messages ?? true,
-    turnProtection: ctx.turn_protection ?? 2,
-    dedupProtectedTools: ctx.dedup_protected_tools ?? ["task", "skill", "read"],
-    purgeErrorsProtectedTools: ctx.purge_errors_protected_tools ?? ["task", "skill"],
-  };
-}
-```
-
-### 5.6 Token 计数
-
-不使用纯启发式估算。OpenCode 插件 SDK 的 `AssistantMessage.tokens` 字段提供**API 上报的精确 token 数**，可直接使用。
-
-#### 5.6.1 数据来源
-
-在 `experimental.chat.messages.transform` hook 中，`output.messages[].info` 是 `Message` 类型（`UserMessage | AssistantMessage`）。完成后的 `AssistantMessage` 包含：
-
-```typescript
-// OpenCode SDK: packages/sdk/js/src/v2/gen/types.gen.ts
-export type AssistantMessage = {
-  role: "assistant"
-  tokens: {
-    total?: number      // v2 only
-    input: number       // 该次 LLM 调用消耗的输入 token（≈ 当前上下文填充量）
-    output: number
-    reasoning: number
-    cache: {
-      read: number      // prompt cache 命中的 token
-      write: number
-    }
-  }
-  // ...
-}
-```
-
-**关键洞察**：最后一条完成的 assistant 消息的 `tokens.input` 近似等于当前上下文窗口的 token 填充量（该次调用发送给模型的全部内容）。
-
-**pi / oh-my-pi 等价字段**（均已确认可用）：
-
-| 框架 | 字段路径 | 关键字段 |
-|------|---------|---------|
-| OpenCode | `AssistantMessage.tokens` | `input`, `output`, `reasoning`, `cache.read`, `cache.write` |
-| pi | `AssistantMessage.usage` | `input`, `output`, `cacheRead`, `cacheWrite`, `totalTokens` |
-| oh-my-pi | `AssistantMessage.usage` | 与 pi 相同 + `reasoningTokens`, `cttl`, `server` 子字段 |
-
-此外，pi/oh-my-pi 还提供 `ctx.getContextUsage()` 直接返回 `{ tokens, contextWindow, percent }`，可在不遍历消息的情况下快速获取上下文填充率。但考虑到需统一抽象，仍采用遍历消息取最后 assistant 的 tokens 方案（三框架均支持）。
-
-#### 5.6.2 混合计数策略
-
-```
-┌──────────────────────────────────────────────────────┐
-│  消息序列                                              │
-│  [user] [assistant ✓ tokens=50K] [tool] [user] ...   │
-│          ↑ 最后完成点           ↑ 新增消息（未计费）    │
-│                                                       │
-│  总 token ≈ 50K (API 上报) + 新消息估算 (启发式)       │
-└──────────────────────────────────────────────────────┘
-```
-
-```typescript
-// estimator.ts
-
-/**
- * Get total context token usage using a hybrid approach:
- * 1. Find the last completed assistant message → use its API-reported tokens
- * 2. Estimate tokens for any messages added after that point
- *
- * This mirrors DCP's getCurrentTokenUsage() strategy.
- */
-export function getContextTokens(
-  messages: Array<{ info: { role: string; tokens?: { input: number; output: number; reasoning: number; cache?: { read: number; write: number } } }; parts: Array<{ type: string; text?: string }> }>,
-): number {
-  // Step 1: Find last completed assistant message (tokens.output > 0 means completed)
-  let lastAssistantIndex = -1;
-  let reportedTokens = 0;
-
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg.info.role !== "assistant") continue;
-    const tokens = msg.info.tokens;
-    if (!tokens || (tokens.output ?? 0) <= 0) continue; // skip streaming/incomplete
-    lastAssistantIndex = i;
-    reportedTokens =
-      (tokens.input ?? 0) +
-      (tokens.output ?? 0) +
-      (tokens.reasoning ?? 0) +
-      (tokens.cache?.read ?? 0) +
-      (tokens.cache?.write ?? 0);
-    break;
-  }
-
-  // Step 2: Estimate tokens for messages after the last assistant
-  let estimatedNewTokens = 0;
-  for (let i = lastAssistantIndex + 1; i < messages.length; i++) {
-    estimatedNewTokens += estimateMessageHeuristic(messages[i]);
-  }
-
-  return reportedTokens + estimatedNewTokens;
-}
-
-/**
- * Fallback heuristic: text.length / 4.
- * Only used for in-progress messages that haven't been through an LLM call yet.
- */
-function estimateMessageHeuristic(
-  msg: { parts: Array<{ type: string; text?: string }> },
-): number {
-  let chars = 0;
-  for (const part of msg.parts) {
-    if (part.text) chars += part.text.length;
-  }
-  return Math.ceil(chars / 4);
-}
-```
-
-#### 5.6.3 与纯启发式的对比
-
-| 方案 | 精度 | 依赖 | 适用消息 |
-|------|------|------|---------|
-| API 上报 `AssistantMessage.tokens` | **精确**（API 计费数据） | 无额外依赖，OpenCode SDK 原生提供 | 已完成的 assistant 消息 |
-| `text.length / 4` 启发式 | 低（±30%） | 无 | 仅用于新增的 in-progress 消息 |
-
-**混合策略优势**：
-- 95%+ 的上下文 token 来自 API 精确数据（最后一条 assistant 消息的累计值）
-- 仅对最近新增的几条消息（通常 < 2K tokens）使用启发式
-- 整体误差 < 5%，远优于纯启发式的 ±30%
-- 无需引入 `tiktoken` 或 `@anthropic-ai/tokenizer` 等依赖
-- 框架无关：仅依赖 `AssistantMessage` 类型，该类型来自 OpenCode SDK，pi / oh-my-pi 适配器届时可使用对应框架的等价数据
-
-### 5.7 会话状态管理
-
-```typescript
-// state.ts
-
-import type { SessionState, CompressionBlock, DedupEntry, ErrorEntry } from "./types";
-
-const SESSION_TTL_MS = 30 * 60 * 1000;       // 30 minutes
-const SESSION_CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // every 5 minutes
-
-class ContextPruningState {
-  private sessions = new Map<string, SessionState>();
-  private cleanupTimer: ReturnType<typeof setInterval> | null = null;
-
-  constructor() {
-    this.startCleanupInterval();
-  }
-
-  getOrCreate(sessionId: string): SessionState {
-    let state = this.sessions.get(sessionId);
-    if (!state) {
-      state = {
-        sessionId,
-        blocksById: new Map(),
-        byMessageId: new Map(),
-        activeBlockIds: new Set(),
-        dedupCache: new Map(),
-        errorTracking: new Map(),
-        protectedTurns: 2,
-        turnCount: 0,
-        lastAccessedAt: Date.now(),
-        totalPrunedTokens: 0,
-        totalCompressedTokens: 0,
-      };
-      this.sessions.set(sessionId, state);
-    }
-    state.lastAccessedAt = Date.now();
-    return state;
-  }
-
-  get(sessionId: string): SessionState | undefined {
-    const state = this.sessions.get(sessionId);
-    if (state) state.lastAccessedAt = Date.now();
-    return state;
-  }
-
-  delete(sessionId: string): void {
-    this.sessions.delete(sessionId);
-  }
-
-  // Track tool call for dedup
-  trackToolCall(
-    sessionId: string,
-    toolName: string,
-    parameters: Record<string, unknown>,
-    messageId: string,
-  ): boolean {
-    const state = this.getOrCreate(sessionId);
-    const signature = this.buildSignature(toolName, parameters);
-    const existing = state.dedupCache.get(signature);
-
-    if (existing) {
-      existing.callCount++;
-      existing.latestSeenAt = messageId;
-      return true; // duplicate detected
-    }
-
-    state.dedupCache.set(signature, {
-      toolName,
-      signature,
-      firstSeenAt: messageId,
-      latestSeenAt: messageId,
-      callCount: 1,
-    });
-    return false; // not a duplicate
-  }
-
-  // Track error tool call
-  trackError(sessionId: string, toolCallId: string, toolName: string, errorMessage: string): void {
-    const state = this.getOrCreate(sessionId);
-    state.errorTracking.set(toolCallId, {
-      toolCallId,
-      toolName,
-      turnNumber: state.turnCount,
-      errorMessage,
-    });
-  }
-
-  // Mark a turn (for turn protection)
-  advanceTurn(sessionId: string): void {
-    const state = this.getOrCreate(sessionId);
-    state.turnCount++;
-  }
-
-  private buildSignature(toolName: string, parameters: Record<string, unknown>): string {
-    // Normalize parameters by sorting keys and removing timestamps/paths
-    const normalized = this.normalizeParams(parameters);
-    return `${toolName}::${JSON.stringify(normalized)}`;
-  }
-
-  private normalizeParams(params: Record<string, unknown>): Record<string, unknown> {
-    // Sort keys for deterministic ordering
-    const sorted: Record<string, unknown> = {};
-    for (const key of Object.keys(params).sort()) {
-      sorted[key] = params[key];
-    }
-    return sorted;
-  }
-
-  private startCleanupInterval(): void {
-    this.cleanupTimer = setInterval(() => {
-      const now = Date.now();
-      for (const [sessionId, state] of this.sessions.entries()) {
-        if (now - state.lastAccessedAt > SESSION_TTL_MS) {
-          this.sessions.delete(sessionId);
-        }
-      }
-    }, SESSION_CLEANUP_INTERVAL_MS);
-  }
-
-  destroy(): void {
-    if (this.cleanupTimer) {
-      clearInterval(this.cleanupTimer);
-      this.cleanupTimer = null;
-    }
-    this.sessions.clear();
-  }
-}
-
-// Singleton instance
-export const globalState = new ContextPruningState();
-```
-
-**状态清理策略**：
-- Session TTL：30 分钟无访问自动清理
-- 清理间隔：每 5 分钟执行一次
-- Session 删除时（如 `session.deleted` 事件）立即清理
-
-### 5.8 消息变换管道
-
-> **⚠️ 本节原始设计存在根本性缺陷（已废弃，参见 §10）。**
->
-> DCP 源码分析（`docs/dcp-architecture.md`）证明，正确的实现是**两阶段标记-清理模型**，而非本节描述的单遍 pipeline：
->
-> - **Turn N（标记阶段）**：策略扫描消息，识别剪枝目标，**写入** `state.prune.tools`（例如 `state.prune.tools.set(callID_A, tokens)`）。这一阶段**不直接修改消息**。
-> - **Turn N+1（清理阶段）**：`filterCompressedRanges` + `pruneToolOutputs` **读取** `state.prune.tools`，根据标记替换工具输出为占位符文本。
->
-> 本节下方的 `runPipeline()` 代码在同一个 turn 内同时**标记**和**执行**，会导致"本轮标记的 callID 在同一轮被替换"——这是错的。实际行为是错位的。
->
-> **正确设计的精确时序：**
->
-> ```
-> Turn N:
->   messages.transform 被调用
->     ├─ syncToolCache     缓存工具参数到 state.toolParameters
->     ├─ runDedup          发现重复签名 → state.prune.tools.set(oldCallID, tokens)
->     └─ pruneToolOutputs  检查 state.prune.tools → 仅替换上一轮标记的 callID
->                          ⚠️ 本轮标记的 callID 要到下一轮才被替换
->
-> Turn N+1:
->   messages.transform 被调用
->     └─ pruneToolOutputs  检查 state.prune.tools → 替换 Turn N 标记的 callID
-> ```
->
-> 两阶段模型是 DCP 的核心架构决策（详见 `docs/dcp-architecture.md §5`），也是最小实现（`§10`）必须坚持的不变量。
-
-```typescript
-// pipeline.ts（原始设计，已废弃 — 正确实现见 §10）
-
-import type { MessageRef, ContextPruningConfig, PipelineInput, PipelineOutput, PipelineStats } from "./types";
-import { estimateTotalTokens } from "./estimator";
-import { globalState } from "./state";
-import { runDedup } from "./dedup";
-import { runPurgeErrors } from "./purge-errors";
-import { runCompression } from "./compress";
-import { buildNudges } from "./nudge";
-
-/**
- * Run the context pruning pipeline on a set of messages.
- *
- * Pipeline order:
- *   1. Filter malformed messages
- *   2. Assign message references (mNNNN)
- *   3. Dedup tool calls (if enabled)
- *   4. Purge errors (if enabled)
- *   5. Compress (range mode, if enabled + threshold exceeded)
- *   6. Build nudges (based on token thresholds)
- *   7. Inject message IDs
- *   8. Strip stale metadata
- *
- * Each step operates on the message array in-place or returns
- * a filtered/reduced array.
- */
-export function runPipeline(input: PipelineInput): PipelineOutput {
-  const { sessionId, messages, config } = input;
-  let working = [...messages];
-  const stats: PipelineStats = {
-    dedupRemoved: 0,
-    errorPurged: 0,
-    compressedTokens: 0,
-    summaryTokens: 0,
-  };
-
-  const state = globalState.getOrCreate(sessionId);
-
-  // ── Step 1: Filter malformed ──────────────────────────
-  working = working.filter((m) => m.id && m.role && m.content !== undefined);
-
-  // ── Step 2: Assign message refs ───────────────────────
-  const messageRefs = new Map<string, number>();
-  working.forEach((m, i) => {
-    const ref = `m${String(i).padStart(4, "0")}`;
-    m.id = ref;
-    messageRefs.set(ref, i);
-  });
-
-  // ── Step 3: Dedup tool calls ──────────────────────────
-  if (config.dedupEnabled) {
-    const result = runDedup(working, state, config);
-    working = result.messages;
-    stats.dedupRemoved = result.removedCount;
-  }
-
-  // ── Step 4: Purge errors ─────────────────────────────
-  if (config.purgeErrorsEnabled) {
-    const result = runPurgeErrors(working, state, config);
-    working = result.messages;
-    stats.errorPurged = result.purgedCount;
-  }
-
-  // ── Step 5: Compress ─────────────────────────────────
-  const totalTokens = estimateTotalTokens(working);
-  if (config.compressEnabled && totalTokens > config.compressMaxTokens) {
-    const result = runCompression(working, state, config);
-    working = result.messages;
-    stats.compressedTokens = result.compressedTokens;
-    stats.summaryTokens = result.summaryTokens;
-  }
-
-  // ── Step 6: Build nudges ─────────────────────────────
-  const nudges = buildNudges(totalTokens, config);
-
-  // ── Step 7: Inject message IDs ───────────────────────
-  // (message IDs already assigned in step 2)
-
-  // ── Step 8: Strip stale metadata ─────────────────────
-  for (const msg of working) {
-    if (msg.metadata) {
-      // Remove cross-provider metadata fields
-      delete msg.metadata._provider;
-      delete msg.metadata._raw;
-    }
-  }
-
-  return { messages: working, nudges, stats };
-}
-```
-
-### 5.9 去重策略
-
-```typescript
-// dedup.ts
-
-import type { MessageRef, ContextPruningConfig } from "./types";
-import type { ContextPruningState } from "./state";
-
-interface DedupResult {
-  messages: MessageRef[];
-  removedCount: number;
-}
-
-/**
- * Remove duplicate tool calls based on tool name + normalized parameters.
- *
- * Strategy:
- * - Group tool calls by toolName + normalizedParameters
- * - Keep the latest occurrence, remove older duplicates
- * - Protected tools (config.dedupProtectedTools) are never deduped
- * - Tool calls from different protected turns are not deduped
- */
-export function runDedup(
-  messages: MessageRef[],
-  state: ContextPruningState,
-  config: ContextPruningConfig,
-): DedupResult {
-  const removed = new Set<string>();
-  const protectedSet = new Set(config.dedupProtectedTools);
-
-  // Track the latest occurrence of each signature
-  const latestBySignature = new Map<string, { messageIndex: number; toolIndex: number }>();
-
-  for (let mi = messages.length - 1; mi >= 0; mi--) {
-    const msg = messages[mi];
-    if (!msg.toolCalls || msg.toolCalls.length === 0) continue;
-
-    for (let ti = 0; ti < msg.toolCalls.length; ti++) {
-      const tc = msg.toolCalls[ti];
-      if (protectedSet.has(tc.toolName)) continue;
-
-      const signature = `${tc.toolName}::${JSON.stringify(normalizeParams(tc.parameters))}`;
-      const existing = latestBySignature.get(signature);
-
-      if (existing) {
-        // This is a duplicate — mark for removal
-        removed.add(tc.id);
-      } else {
-        // First occurrence from the end — keep it
-        latestBySignature.set(signature, { messageIndex: mi, toolIndex: ti });
-      }
-    }
-  }
-
-  if (removed.size === 0) {
-    return { messages, removedCount: 0 };
-  }
-
-  // Filter out duplicate tool calls from messages
-  const filtered: MessageRef[] = [];
-  let removedCount = 0;
-
-  for (const msg of messages) {
-    if (!msg.toolCalls || msg.toolCalls.length === 0) {
-      filtered.push(msg);
-      continue;
-    }
-
-    const filteredCalls = msg.toolCalls.filter((tc) => {
-      if (removed.has(tc.id)) {
-        removedCount++;
-        return false;
-      }
-      return true;
-    });
-
-    filtered.push({
-      ...msg,
-      toolCalls: filteredCalls,
-    });
-  }
-
-  return { messages: filtered, removedCount };
-}
-
-function normalizeParams(params: Record<string, unknown>): Record<string, unknown> {
-  const sorted: Record<string, unknown> = {};
-  for (const key of Object.keys(params).sort()) {
-    // Skip volatile fields that would prevent dedup
-    if (key === "timestamp" || key === "ts" || key === "date") continue;
-    sorted[key] = params[key];
-  }
-  return sorted;
-}
-```
-
-**去重目标示例**：
-
-| 原始调用序列 | 去重后保留 |
-|-------------|-----------|
-| `grep("foo.ts", "function")` → `grep("foo.ts", "function")` → `grep("foo.ts", "function")` | 仅保留最后一次 |
-| `read("src/a.ts")` → `read("src/b.ts")` → `read("src/a.ts")` | 仅保留最后的 `read("src/a.ts")` |
-| `bash("npm test")`（失败） → `bash("npm test")`（成功） | 保留成功结果 |
-| `task("...")`（protected） → `task("...")` | 不参与去重 |
-
-### 5.10 错误清除策略
-
-```typescript
-// purge-errors.ts
-
-import type { MessageRef, ContextPruningConfig } from "./types";
-import type { ContextPruningState } from "./state";
-
-interface PurgeResult {
-  messages: MessageRef[];
-  purgedCount: number;
-}
-
-/**
- * Purge error tool call inputs after N turns.
- *
- * Strategy:
- * - Track error tool calls in session state
- * - After `purgeErrorsTurns` additional turns, strip the input
- *   fields from the error tool call, keeping only the error message
- * - Protected tools (config.purgeErrorsProtectedTools) are never purged
- */
-export function runPurgeErrors(
-  messages: MessageRef[],
-  state: ContextPruningState,
-  config: ContextPruningConfig,
-): PurgeResult {
-  const protectedSet = new Set(config.purgeErrorsProtectedTools);
-  const sessionState = state.get(sessionId);
-  if (!sessionState) return { messages, purgedCount: 0 };
-
-  let purgedCount = 0;
-
-  const updated = messages.map((msg) => {
-    if (!msg.toolResults || msg.toolResults.length === 0) return msg;
-
-    const filteredResults = msg.toolResults.map((tr) => {
-      if (!tr.isError) return tr;
-      if (protectedSet.has(findToolName(tr.toolCallId, messages))) return tr;
-
-      const errorEntry = sessionState.errorTracking.get(tr.toolCallId);
-      if (!errorEntry) return tr;
-
-      const turnsSinceError = sessionState.turnCount - errorEntry.turnNumber;
-      if (turnsSinceError < config.purgeErrorsTurns) return tr;
-
-      // Strip input, keep error
-      purgedCount++;
-      return {
-        ...tr,
-        output: "",  // Clear successful output if any
-        // Keep error message
-        error: tr.error || errorEntry.errorMessage,
-      };
-    });
-
-    return { ...msg, toolResults: filteredResults };
-  });
-
-  return { messages: updated, purgedCount };
-}
-
-function findToolName(toolCallId: string, messages: MessageRef[]): string {
-  for (const msg of messages) {
-    if (msg.toolCalls) {
-      const tc = msg.toolCalls.find((t) => t.id === toolCallId);
-      if (tc) return tc.toolName;
-    }
-  }
-  return "";
-}
-```
-
-### 5.11 压缩引擎（Range + Message 模式）
-
-> **实施路线**：Phase 1-3 实现启发式 Range 模式压缩（无 LLM 调用）；Phase 4 增加 LLM 驱动的 compress 工具注册 + Message 模式压缩。compress 工具通过 `config hook` 注册（与 DCP 相同的模式），使模型可在上下文中主动调用压缩。
-
-```typescript
-// compress.ts
-
-import type { MessageRef, CompressionBlock, CompressionSummary, ContextPruningConfig } from "./types";
-import type { ContextPruningState } from "./state";
-import { estimateTokens, estimateTotalTokens } from "./estimator";
-
-interface CompressionResult {
-  messages: MessageRef[];
-  compressedTokens: number;
-  summaryTokens: number;
-}
-
-/**
- * Compress message ranges using the Range mode strategy.
- *
- * Range mode compresses continuous message spans into block summaries.
- * The compression prompt asks the LLM to generate a structured summary
- * covering: goal, progress, decisions, key context, files.
- *
- * Phase 1 (heuristic): identifies "compressible" spans without LLM:
- *   - Completed task() interaction rounds (task + tool results)
- *   - Verified tool outputs (successful bash/read after verification)
- *   - Old turn history beyond the protection window
- *   Creates placeholder blocks as stand-in summaries.
- *
- * Phase 4+ (LLM-driven): registers a `compress` tool that the model
- *   calls to trigger actual compression. The tool handler invokes
- *   the same pipeline but with LLM-generated summaries. Also adds
- *   Message mode — surgical per-message compression independent
- *   of contiguous ranges.
- */
-export function runCompression(
-  messages: MessageRef[],
-  state: ContextPruningState,
-  config: ContextPruningConfig,
-): CompressionResult {
-  const sessionState = state.get(state.sessionId);
-  if (!sessionState) return { messages, compressedTokens: 0, summaryTokens: 0 };
-
-  const protectedUntilIndex = Math.max(0, messages.length - config.turnProtection * 3);
-
-  // Identify compressible ranges (old + verified)
-  const compressibleRanges = findCompressibleRanges(messages, protectedUntilIndex, config);
-
-  if (compressibleRanges.length === 0) {
-    return { messages, compressedTokens: 0, summaryTokens: 0 };
-  }
-
-  // Build compression blocks (heuristic summaries for now)
-  let totalCompressed = 0;
-  let totalSummary = 0;
-  const blocks: CompressionBlock[] = [];
-
-  for (const range of compressibleRanges) {
-    const rangeMessages = messages.slice(range.start, range.end + 1);
-    const originalTokens = estimateTotalTokens(rangeMessages);
-
-    // Create a heuristic summary based on message types
-    const summary = buildHeuristicSummary(rangeMessages, range.topic);
-
-    const summaryTokens = estimateTokens(JSON.stringify(summary));
-
-    const block: CompressionBlock = {
-      blockId: `b${Date.now()}-${blocks.length}`,
-      runId: `r${Date.now()}`,
-      active: true,
-      compressedTokens: originalTokens,
-      summaryTokens,
-      mode: "range",
-      topic: range.topic,
-      startId: messages[range.start].id,
-      endId: messages[range.end].id,
-      directMessageIds: rangeMessages.map((m) => m.id),
-      directToolIds: [],
-      effectiveMessageIds: rangeMessages.map((m) => m.id),
-      effectiveToolIds: [],
-      summary,
-    };
-
-    blocks.push(block);
-    totalCompressed += originalTokens;
-    totalSummary += summaryTokens;
-  }
-
-  // Replace compressed ranges with summary messages
-  const result = applyCompressionBlocks(messages, compressibleRanges, blocks);
-
-  // Update session state
-  for (const block of blocks) {
-    sessionState.blocksById.set(block.blockId, block);
-    sessionState.activeBlockIds.add(block.blockId);
-    for (const mid of block.directMessageIds) {
-      const existing = sessionState.byMessageId.get(mid) || [];
-      existing.push(block.blockId);
-      sessionState.byMessageId.set(mid, existing);
-    }
-  }
-  sessionState.totalCompressedTokens += totalCompressed;
-
-  return {
-    messages: result,
-    compressedTokens: totalCompressed,
-    summaryTokens: totalSummary,
-  };
-}
-
-interface CompressibleRange {
-  start: number;
-  end: number;
-  topic: string;
-}
-
-function findCompressibleRanges(
-  messages: MessageRef[],
-  protectedUntilIndex: number,
-  config: ContextPruningConfig,
-): CompressibleRange[] {
-  const ranges: CompressibleRange[] = [];
-  const protectedTools = new Set(config.protectedTools);
-
-  let i = 0;
-  while (i < protectedUntilIndex) {
-    const msg = messages[i];
-
-    // Skip protected tool messages
-    if (msg.toolCalls?.some((tc) => protectedTools.has(tc.toolName))) {
-      i++;
-      continue;
-    }
-
-    // Look for user+assistant turn pairs that are compressible
-    if (msg.role === "user" && i + 1 < messages.length) {
-      const nextMsg = messages[i + 1];
-
-      // A user message followed by assistant tool results can be compressed
-      // if the tools involved are not protected
-      if (nextMsg.role === "assistant" || nextMsg.role === "tool") {
-        // Find end of this interaction round
-        let end = i + 1;
-        while (end + 1 < protectedUntilIndex && messages[end + 1].role !== "user") {
-          end++;
-        }
-
-        const topic = extractTopic(messages[i].content);
-        ranges.push({ start: i, end, topic });
-        i = end + 1;
-        continue;
-      }
-    }
-
-    i++;
-  }
-
-  return ranges;
-}
-
-function extractTopic(userContent: string): string {
-  // Simple heuristic: first line or first 80 chars
-  const firstLine = userContent.split("\n")[0].trim();
-  return firstLine.length > 80 ? firstLine.slice(0, 77) + "..." : firstLine;
-}
-
-function buildHeuristicSummary(
-  messages: MessageRef[],
-  topic: string,
-): CompressionSummary {
-  // Initial heuristic: extract key information without LLM
-  // Phase 2 will replace this with LLM-generated summaries
-  return {
-    goal: topic,
-    progress: `${messages.length} messages compressed`,
-    decisions: "(heuristic — will be replaced by LLM summary)",
-    keyContext: "",
-    files: [],
-  };
-}
-
-function applyCompressionBlocks(
-  messages: MessageRef[],
-  ranges: CompressibleRange[],
-  blocks: CompressionBlock[],
-): MessageRef[] {
-  // Build a set of indices to remove
-  const toRemove = new Set<number>();
-  for (const range of ranges) {
-    for (let i = range.start; i <= range.end; i++) {
-      toRemove.add(i);
-    }
-  }
-
-  // Build replacement summary messages
-  const summaryMessages: Array<{ index: number; msg: MessageRef }> = [];
-  for (let bi = 0; bi < blocks.length; bi++) {
-    const block = blocks[bi];
-    const range = ranges[bi];
-    summaryMessages.push({
-      index: range.start,
-      msg: {
-        id: `block-${block.blockId}`,
-        role: "assistant",
-        content: `[Compressed: ${block.topic}]\n${JSON.stringify(block.summary, null, 2)}`,
-        metadata: { compressed: true, blockId: block.blockId },
-      },
-    });
-  }
-
-  // Rebuild message list
-  const result: MessageRef[] = [];
-  const summaryByIndex = new Map(summaryMessages.map((s) => [s.index, s.msg]));
-
-  for (let i = 0; i < messages.length; i++) {
-    if (summaryByIndex.has(i)) {
-      result.push(summaryByIndex.get(i)!);
-    } else if (!toRemove.has(i)) {
-      result.push(messages[i]);
-    }
-  }
-
-  return result;
-}
-```
-
-### 5.12 Nudge 注入
-
-```typescript
-// nudge.ts
-
-import type { ContextPruningConfig } from "./types";
-import { estimateTokens } from "./estimator";
-
-interface NudgeResult {
-  nudges: string[];
-}
-
-/**
- * Build context management nudges based on current token totals.
- *
- * Three-tier nudge system:
- * 1. Context limit nudge (above max threshold) — urgent
- * 2. Turn nudge (between min and max, on new user turn) — gentle
- * 3. Iteration nudge (between min and max, many assistant msgs) — drift warning
- */
-export function buildNudges(
-  totalTokens: number,
-  config: ContextPruningConfig,
-  turnCount?: number,
-  iterationCount?: number,
-): string[] {
-  const nudges: string[] = [];
-
-  // Tier 1: Context limit (urgent)
-  if (totalTokens >= config.urgentThresholdTokens) {
-    nudges.push(buildUrgentNudge(totalTokens, config));
-  }
-
-  // Tier 2: Turn nudge (between min and max)
-  if (
-    totalTokens >= config.nudgeThresholdTokens &&
-    totalTokens < config.urgentThresholdTokens
-  ) {
-    nudges.push(buildGentleNudge(totalTokens, config));
-  }
-
-  // Tier 3: Iteration nudge (if many iterations)
-  if (iterationCount !== undefined && iterationCount > 10) {
-    nudges.push(buildIterationNudge(iterationCount));
-  }
-
-  return nudges;
-}
-
-function buildUrgentNudge(totalTokens: number, config: ContextPruningConfig): string {
-  return `[Context Warning] Token usage (${totalTokens.toLocaleString()}) exceeds urgent threshold (${config.urgentThresholdTokens.toLocaleString()}). Consider using the compress tool to reduce context or summarize completed task results.`;
-}
-
-function buildGentleNudge(totalTokens: number, config: ContextPruningConfig): string {
-  return `[Context Notice] Token usage is at ${totalTokens.toLocaleString()} (threshold: ${config.nudgeThresholdTokens.toLocaleString()}). Compress completed work to keep context manageable.`;
-}
-
-function buildIterationNudge(iterationCount: number): string {
-  return `[Iteration Notice] ${iterationCount} assistant messages in this session. Consider summarizing completed rounds to maintain focus.`;
-}
-```
-
-### 5.13 整合到 ZooKeeper
-
-#### 5.13.1 OpenCode 适配器（hook.ts）
-
-```typescript
-// hook.ts — OpenCode framework adapter
-// Import core types and logic from src/context-pruning/
-
-import type { ContextPruningConfig, PipelineInput, PipelineOutput } from "../context-pruning/types";
-import { runPipeline } from "../context-pruning/pipeline";
-import { globalState } from "../context-pruning/state";
-
-/**
- * OpenCode handler for experimental.chat.messages.transform.
- *
- * This is the primary hook that runs the context pruning pipeline
- * before each LLM turn.
- */
-export async function handleMessagesTransform(
-  config: ContextPruningConfig,
-  sessionId: string,
-  messages: any[], // OpenCode message format — will be mapped to MessageRef
-  output: { messages?: any[] },
-): Promise<void> {
-  if (!config.enabled) return;
-  if (!messages || messages.length === 0) return;
-
-  // Map OpenCode messages to framework-agnostic MessageRef[]
-  const pipelineInput: PipelineInput = {
-    sessionId,
-    messages: mapToMessageRefs(messages),
-    config,
-  };
-
-  // Run pipeline
-  const pipelineOutput: PipelineOutput = runPipeline(pipelineInput);
-
-  // Map back to OpenCode message format
-  output.messages = mapFromMessageRefs(pipelineOutput.messages);
-}
-
-/**
- * OpenCode handler for tool.execute.before (tool call tracking).
- */
-export function handleToolBefore(
-  config: ContextPruningConfig,
-  sessionId: string,
-  tool: string,
-  args: Record<string, unknown> | undefined,
-  callId: string,
-): void {
-  if (!config.enabled) return;
-  if (!config.dedupEnabled) return;
-  if (!args) return;
-
-  globalState.trackToolCall(sessionId, tool, args, callId);
-}
-
-/**
- * OpenCode handler for tool.execute.after (error tracking).
- */
-export function handleToolAfter(
-  config: ContextPruningConfig,
-  sessionId: string,
-  tool: string,
-  callId: string,
-  result: { isError?: boolean; error?: string } | undefined,
-): void {
-  if (!config.enabled) return;
-  if (!config.purgeErrorsEnabled) return;
-  if (!result?.isError) return;
-
-  globalState.trackError(sessionId, callId, tool, result.error || "Unknown error");
-}
-
-/**
- * OpenCode handler for event (session.deleted cleanup).
- */
-export function handleSessionEvent(sessionId: string, eventType: string): void {
-  if (eventType === "session.deleted") {
-    globalState.delete(sessionId);
-  }
-}
-
-function mapToMessageRefs(openCodeMessages: any[]): MessageRef[] {
-  // Map from OpenCode's message format to our MessageRef format
-  return openCodeMessages.map((m, i) => ({
-    id: m.id || `m${String(i).padStart(4, "0")}`,
-    role: m.role || "user",
-    content: m.content || "",
-    toolCalls: m.toolCalls?.map((tc: any, ti: number) => ({
-      id: tc.id || `t${String(ti).padStart(4, "0")}`,
-      toolName: tc.tool || tc.name || "",
-      parameters: tc.args || tc.parameters || {},
-    })),
-    toolResults: m.toolResults?.map((tr: any) => ({
-      id: tr.id || "",
-      toolCallId: tr.toolCallId || "",
-      output: tr.output || tr.content || "",
-      isError: tr.isError || false,
-      error: tr.error,
-    })),
-  }));
-}
-
-function mapFromMessageRefs(messageRefs: MessageRef[]): any[] {
-  // Map back to OpenCode message format
-  return messageRefs.map((m) => ({
-    id: m.id,
-    role: m.role,
-    content: m.content,
-    ...(m.toolCalls ? { toolCalls: m.toolCalls } : {}),
-    ...(m.toolResults ? { toolResults: m.toolResults } : {}),
-  }));
-}
-```
-
-#### 5.13.2 在 src/index.ts 中的注册
-
-在 `src/index.ts` 中添加以下集成点：
-
-```typescript
-// src/index.ts — 新增导入
-import { loadContextConfig } from "./context-pruning";           // 框架无关核心
-import {
-  handleMessagesTransform,
-  handleToolBefore,
-  handleToolAfter,
-  handleSessionEvent,
-} from "./hooks/context-pruning/hook";                           // OpenCode 适配器
-import {
-  handleMessagesTransform,
-  handleToolBefore,
-  handleToolAfter,
-  handleSessionEvent,
-} from "./hooks/context-pruning/hook";
-
-export async function zookeeper(input: any) {
-  const zooConfig = (config as any).zoo ?? {};
-  const contextConfig = loadContextConfig(zooConfig);
-  // ... existing code ...
-
-  return {
-    // existing hooks...
-
-    // 新增：context pruning in messages.transform
-    async "experimental.chat.messages.transform"(
-      _input: Record<string, never>,
-      output: { messages?: any[] },
-    ) {
-      try {
-        // Context pruning pipeline
-        if (contextConfig.enabled && output.messages?.length) {
-          const sessionId = output.messages[0]?.info?.sessionID || "";
-          if (sessionId) {
-            await handleMessagesTransform(contextConfig, sessionId, output.messages, output);
-          }
-        }
-      } catch {
-        // Swallow errors so pruning failure never disrupts LLM turn
-      }
-    },
-
-    // 修改：tool.execute.before — 加入工具调用追踪
-    async "tool.execute.before"(input, output) {
-      validateBeforeExec(input, output, limits);
-
-      if (contextConfig.enabled) {
-        handleToolBefore(
-          contextConfig,
-          input.sessionID,
-          input.tool,
-          input.args,
-          input.callID,
-        );
-      }
-    },
-
-    // 修改：tool.execute.after — 加入错误追踪
-    async "tool.execute.after"(input, output) {
-      const handlers = [
-        (i, o) => nudgeTaskOutput(i, o, limits),
-        recoverJsonError,
-        (i, o) => nudgeDirectWork(client, i, o),
-        (i, o) => nudgePostTask(client, i, o),
-      ] as const;
-
-      for (const handler of handlers) {
-        try {
-          await handler(input, output);
-        } catch {
-          // Swallow per-handler errors
-        }
-      }
-
-      // Context pruning: track errors for purge strategy
-      if (contextConfig.enabled) {
-        handleToolAfter(
-          contextConfig,
-          input.sessionID,
-          input.tool,
-          input.callID,
-          { isError: false, error: undefined }, // Simplified — needs actual result
-        );
-      }
-    },
-
-    // 新增：event hook for session cleanup
-    async event(event: any) {
-      if (contextConfig.enabled) {
-        handleSessionEvent(event.sessionID, event.type);
-      }
-    },
-  };
-}
-```
-
-### 5.14 Scope 决策
-
-| 功能 | 包含/推迟 | 理由 |
-|------|----------|------|
-| **Range 模式压缩** | ✅ Phase 3 | 核心功能，提供启发式摘要 |
-| **去重** | ✅ Phase 2 | 低成本高收益，默认启用 |
-| **错误清除** | ✅ Phase 2 | 清理失败调用，减少噪声 |
-| **Nudge 系统** | ✅ Phase 1 | 轻量，行为提醒 |
-| **状态管理** | ✅ Phase 1 | 基础设施，被所有策略依赖 |
-| **消息变换管道** | ✅ Phase 1 | 编排器，串联所有策略 |
-| **OpenCode 适配器** | ✅ Phase 4 | 框架绑定，最后实现 |
-| **LLM 驱动压缩（compress 工具）** | ✅ Phase 4 | 核心 DCP 创新，模型调用 compress 工具驱动压缩 |
-| **Message 模式压缩** | ✅ Phase 4 | 精准单消息压缩，与 Range 模式互补 |
-| **命令系统（/context、/stats、/sweep）** | ✅ Phase 5 | 用户手动干预上下文的手柄 |
-| **跨会话状态持久化** | ✅ Phase 5 | 磁盘存储，支持会话间恢复 |
-| 用户可覆盖提示词 | ❌ 推迟 | 增加复杂度，非必需 |
-| Toast 通知 | ❌ 推迟 | UI 层，框架相关 |
-| SubAgent 结果注入 | ❌ 推迟 | DCP 特有，非通用需求 |
-| 自动更新 | ❌ 推迟 | 插件自动升级机制，非核心 |
-
-### 5.15 命令系统
-
-> **⚠️ 命令注册机制的修正（原始描述有误）：**
->
-> OpenCode 插件可以在 `config` hook 中**动态注册**命令，不需要在 `config.toml` 或 `install.py` 中静态声明。源码证据：
->
-> ```typescript
-> // OpenCode 实际调用顺序：
-> // 1. 解析 opencode.json
-> // 2. 加载所有插件
-> // 3. 对每个插件调用 config hook，传入可修改的 config 对象
-> // 4. 最终合并 config（包含插件的修改）
-> // 5. 从 config.command 注册命令到 TUI 自动完成
-> //
-> // @opencode-ai/plugin/dist/index.d.ts
-> export interface Hooks {
->     config?: (input: Config) => Promise<void>;
-> }
-> // Config 类型包含 command 字段：
-> // command?: { [key: string]: { template: string; description?: string; ... } }
-> ```
->
-> DCP 的实际做法：在 `config` hook 中 mutate `opencodeConfig.command["dcp"] = {...}`。ZooKeeper 的调试命令应采用相同方式。
->
-> **结论**：不需要修改 `config.toml` 的 `[zoo.commands]` 段落，也不需要修改 `install.py`。命令注册完全在插件运行时完成。
-
-为提供手动上下文管理的交互入口，在 Phase 5 引入以下命令：
-
-| 命令 | 用途 | 实现方式 |
-|------|------|---------|
-| `/zoo context` | 查看当前上下文 token 使用统计（总量、压缩率、各策略贡献） | 在聊天窗口显示格式化输出 |
-| `/zoo stats` | 查看去重/错误清除/压缩的累计效果明细 | 从 `SessionState` 中读取累计指标 |
-| `/zoo sweep [n]` | 手动触发一次工具剪枝（标记目标到 `state.prune.tools`） | 扫描最近工具调用，写入剪枝标记 |
-| `/zoo decompress <n>` | 恢复指定 blockId 的原始消息 | 从 `SessionState.blocksById` 中查找并替换 |
-| `/zoo recompress <n>` | 用新策略重新压缩指定范围 | 移除旧 block，重新执行压缩 |
-
-**命令注册（通过 `config` hook）：**
-```typescript
-async config(config: any) {
-    // ... 现有 prompt 注入 + skills 注册逻辑 ...
-
-    // 注册 /zoo 命令
-    config.command ??= {};
-    config.command["zoo"] = {
-        template: "",
-        description: "Context pruning management",
-    };
-}
-```
-
-**命令处理（通过 `command.execute.before` hook）：**
-```typescript
-async "command.execute.before"(
-    input: { command: string; sessionID: string; arguments: string },
-    output: { parts: any[] },
-) {
-    if (input.command !== "zoo") return;
-    const args = (input.arguments || "").trim().split(/\s+/).filter(Boolean);
-    const subcommand = args[0]?.toLowerCase() || "";
-    // 分发到 context / stats / sweep handler...
-}
-```
-
-**命令输出**：通过 `client.session.prompt({ noReply: true, parts: [{ type: "text", text, ignored: true }] })` 显示在聊天窗口。`ignored: true` 防止模型把它当成用户指令重新处理。
-
-### 5.16 持久化
-
-跨会话状态持久化使上下文剪枝状态在会话重启、编辑器重启后保持连续。实现策略镜像 DCP 的模式：
-
-**存储路径**：
-```
-~/.local/share/opencode/storage/plugin/zookeeper/{sessionId}.json
-```
-
-**持久化内容**（`SessionState` 的子集，序列化为 JSON）：
-```typescript
-interface PersistedState {
-  sessionId: string;
-  blocksById: Record<string, CompressionBlock>;
-  byMessageId: Record<string, string[]>;
-  activeBlockIds: string[];
-  dedupCache: Record<string, DedupEntry>;
-  errorTracking: Record<string, ErrorEntry>;
-  turnCount: number;
-  totalPrunedTokens: number;
-  totalCompressedTokens: number;
-  lastAccessedAt: number;
-}
-```
-
-**存储策略**：
-- **写入时机**：每次 `messages.transform` 管道执行完毕后异步写入（debounce 1s）
-- **读取时机**：首次访问会话时（`getOrCreate` 检查磁盘）
-- **清理时机**：会话 TTL 到期时同步删除磁盘文件
-- **写入延迟**：使用 `setTimeout` 延后写入，避免阻塞管道主流程
-- **错误处理**：写入失败静默忽略（降级为 in-memory-only，不影响核心功能）
-
-**启用控制**：通过 `config.toml` 的 `[zoo.context]` 段落中的 `persist_state` 开关控制（默认开启）。
+摘要结构对齐 OpenCode V2 的七维度（§2.1）：goal / progress / decisions /
+keyContext / files。启发式阶段先生成占位摘要，LLM 阶段由 compress 工具
+的参数驱动。
+
+### 5.3 Nudge 注入参考
+
+三级体系对齐 DCP（§3.6）：紧急（超 urgent 阈值）/ 温和（min-max 之间新
+用户轮）/ 漂移（助手消息数过多）。nudge 是 soft guidance 而非硬约束；
+文本注入即可，不需要 compress 工具存在（但"建议调用 compress"类文案
+需在工具注册后才有意义）。
+
+### 5.4 命令机制与扩展
+
+命令通过 `config` hook 动态注册（**不要**在 config.toml/install.py 静态
+声明——OpenCode 在 config 最终化时读取 `config.command`），处理通过
+`command.execute.before` 分发，输出用 `sendIgnoredMessage`
+（`ignored: true`）。当前已实现 `context`/`sweep`/`help`；后续可扩展：
+
+| 命令 | 用途 | 依赖 |
+|------|------|------|
+| `/dcp stats` | 去重/错误清除/压缩的累计效果明细 | 自动策略上线后 |
+| `/dcp decompress <id>` | 恢复指定 blockId 的原始消息 | 压缩引擎（V3） |
+| `/dcp recompress <id>` | 用新策略重新压缩指定范围 | 压缩引擎（V3） |
 
 ---
 
-## 6. 与 DCP 的架构对比
+## 6. 自动去重 dedup（✅ 已实现，2026-07-25）
 
-### 6.1 差异总览
+> **完成状态**：本节设计已落地并经实测验证（>100K 会话中标记/批量释放/
+> ignored 通知/占位符替换全链路确认）。实现过程中发生一次重要架构升级：
+> 初版"双 Map + 累计器"被重写为**统一 producer 模型 + marks 单集合**
+> （§4.1/§4.2），§6.6/§6.7/§6.8 已按 as-built 修订，§6.2-§6.5 保留
+> 定稿原文（语义与实现一致）。
+
+决策记录（2026-07-23 与用户确认）：只做 dedup（purge-errors 下一步）；
+阈值门控触发，默认 100K 可配置；轮次保护默认 5 步（step-start 口径）。
+追加决策（2026-07-25）：门控口径改为 prompt 侧总量；批量释放
+（release_threshold_percent）；protected_tools 默认精简为 question；
+ignored 释放通知；展示层不区分手动/自动。
+
+### 6.1 目标
+
+编排器在跨委派轮次中重复 `read`/`grep`/`bash` 是最大冗余源（§1.3）。dedup
+自动发现重复工具调用并标记旧副本，复用现有两阶段通路，**零新基础设施**。
+算法对齐 DCP 去重策略（§3.5）。
+
+### 6.2 触发与两阶段时序
+
+DCP 把策略挂在 compress 工具上（§3.3）；我们没有 compress 工具，策略
+放进 transform 管道，因此必须**先清后标**。每次
+`experimental.chat.messages.transform`：
+
+```
+1. pruneToolOutputs        — 清理：替换【之前轮次】标记的 callID
+2. 门控判断                — enabled 且
+                              最后一条已完成 assistant 的 prompt 侧总量
+                              （input + cache.read + cache.write）≥ 100K
+3. runDedup                — 标记：扫描全量消息，新标记写入 state.marks
+                             （effective=false）【下一轮 transform 生效】
+```
+
+清理只作用于历史标记，本轮新标记必然下一轮生效，与 DCP 分离路径语义
+严格等价。去掉现有的"空 map 早退"（门控不满足时扫描本身不执行）。
+
+门控语义：
+
+- 阈值依据是**最后一条已完成 assistant 消息的 prompt 侧总量
+  （`input + cache.read + cache.write`）**（API 精确的上下文填充量），
+  不含启发式尾段——门控决策宁稳勿滥。`cache.read` 与 `cache.write` 纳入
+  总量是因为 prompt caching 开启后，大部分上下文计在 cache 字段而非
+  `input` 中（实测 `tokens.input` 仅 527 而上下文总量 109K），
+  单独依赖 `tokens.input` 会导致门控永远不触发
+- 缺失处理向安全方向失败：`input`、`cache.read`、`cache.write` 三项
+  全缺视为 0（不通过门控）
+- 剪枝是有损操作：上下文充裕时保留原始信息；且 dedup 是全量扫描，触发时
+  能补标所有历史重复，门控不会漏收
+
+### 6.3 签名与保留策略
+
+- 签名 = `tool::JSON.stringify(归一化参数)`；归一化 = 剔除 null/undefined +
+  键递归排序 + 剔除易变字段（timestamp/ts/date）
+- 同签名组**保留最新**，旧副本写入 `state.marks`（mark-time 估算 tokens
+  随标记固化，公式同 sweep：`estimate(output) − estimate(占位符)`，下限 0）
+- 跳过：已标记 callID、保护工具、错误状态的 part（留给 purge-errors）、
+  进行中的 part（无完整 output）
+- 参数来源：消息内 tool part 的 `state.input`（全量扫描自带参数，
+  无需 DCP 的独立 toolParameters 缓存）
+
+### 6.4 轮次保护（step-start，5 步）
+
+- 按 `step-start` part 计助手步（与 DCP 对齐，§3.5）
+- **最近 5 步内的工具调用完全不参与签名检测**（DCP 语义：新副本在保护
+  期内时，旧副本也不标记——事前过滤，非事后豁免）
+- 回退：会话中无 `step-start` part 时，退化为"保护最近 5 个工具调用"
+- `/dcp sweep` 维持用户消息锚点不变（手动命令语义不同，无需统一）
+
+### 6.5 配置
+
+`config.toml` 新增（运行时直读，同 `[zoo.validation]` 模式，不改
+install.py）：
+
+```toml
+[zoo.context]
+# 轮次保护：最近 N 个助手步（按 step-start 计数）内的工具调用不参与剪枝策略
+turn_protection = 5
+
+[zoo.context.dedup]
+# 自动去重开关
+enabled = true
+# 触发门控：最后一条已完成 assistant 消息的 prompt 侧总量达到该值才扫描去重
+threshold_tokens = 100000          # 门控：上下文 ≥ 此值才扫描标记
+# 受保护工具：仅保护输出不可再生的工具（用户提问）
+protected_tools = ["question"]
+# 批量释放阈值：待生效去重标记 token 总数达到当前 prompt 侧总量的此百分比才移入生效集合替换。默认 5（%）
+release_threshold_percent = 5
+```
+
+`turn_protection` 位于 `[zoo.context]` 顶层，因为它是剪枝策略共用的（未来
+`purge-errors` 等策略也要读它）；其余 4 键（`enabled`、`threshold_tokens`、
+`protected_tools`、`release_threshold_percent`）下沉到 `[zoo.context.dedup]`，
+是 dedup 专属配置。
+
+默认仅保护 `question`：剪枝只影响发给 LLM 的消息副本、不动会话存储，
+且在保留最新语义下 `read`/`bash`/`task`/`skill`/`todowrite`/`todoread`
+的精确重复被去重均安全；唯一需要保护的是 `question`（输出即用户输入、
+不可再生，同问题两次回答可能不同）。用户可自行加回其他工具。
+
+### 6.6 可观测性（as-built 修订）
+
+三层通道：
+
+1. **日志**：`dedup_marked`（标记）、`dedup_released`（批量释放，含
+   releasedTokens/promptTokens）、`prune_completed`（含
+   totalReclaimedTokens，sweep+dedup 合计）
+2. **`/dcp context`**：合并回收行 `回收  X tokens（累计回收）`，
+   pending 时追加 `，待生效 N 个标记（约 Y tokens）`——**不区分手动/
+   自动**（用户决策：release 后无本质区别；数据源自内存态）
+3. **聊天通知**：仅批量释放时一条 ignored 消息（noReply，LLM 不可见，
+   追加末尾不破前缀缓存）；marked 阶段不通知（每轮噪音）
+4. **TUI 面板**：tool 分类占比下降（prunedCallIDs 只含 effective 标记）
+
+### 6.7 批量释放语义（as-built：统一 marks 单集合）
+
+初版实现为双 Map（tools + pending），后重写为统一模型（§4.1/§4.2）：
+
+- **标记/替换解耦**：dedup 标记写入 marks（`effective=false`）；
+  sweep 标记写入 marks（`effective=true`，立即生效）
+- **批量释放**：每轮 transform 检查 `Σ pending（派生）≥ promptTokens ×
+  release_threshold_percent / 100`，满足则 `releaseBatch` 全部翻转
+  （只统计实际翻转），下一轮 Phase 1 替换
+- **破缓存成本锚定**：释放阈值用百分比而非固定 tokens——破一次缓存的
+  成本 ≈ 全量上下文重算，与上下文大小成正比，收益门槛也应同比
+- **0 是合法语义**：`release_threshold_percent = 0` → pending 非空即
+  释放，退化为每轮替换（缓存开销最大，注释明示）
+
+时序示例：
+
+```
+Turn N:   runDedup → 3 marks pending (500 tokens). 500 < 5% → 不释放
+Turn N+1: runDedup → 累计 8000 tokens ≥ 5% × 150000 → releaseBatch
+          → dedup_released 日志 + ignored 通知
+Turn N+2: Phase 1 替换已生效标记的输出
+```
+
+### 6.8 涉及文件（as-built）
+
+| 文件 | 变更 |
+|------|------|
+| `config.toml` | `[zoo.context]`（`turn_protection`）+ `[zoo.context.dedup]`（`enabled`/`threshold_tokens`/`protected_tools`/`release_threshold_percent`） |
+| `src/core/pruning/marks.ts` | 新建：marks 单集合 + addMark/releaseBatch + 派生 stats + 持久化（取代旧 state.ts，已删除） |
+| `src/core/pruning/producers/dedup.ts` | 新建：runDedup（签名归一化/保护窗/零收益跳过） |
+| `src/core/pruning/producers/sweep.ts` | 新建：runSweep（原 collectSweepCallIDs 迁移，锚点语义不变） |
+| `src/core/pruning/prune.ts` | pruneToolOutputs 只消费 effective 标记 |
+| `src/hooks/context-pruning/hook.ts` | 先清后标 + 门控 + 批量释放 + notify 回调 |
+| `src/opencode.ts` | parseContextConfig（两层读取 + 逐字段类型防御）+ notify 注入（fire-and-forget） |
+| `src/core/context-report.ts` | 合并回收行（FormatContextReportOptions） |
+| `src/hooks/context-command/index.ts` | sweep 走 producer；报告读内存态 |
+| `src/tui.tsx` | prunedCallIDs 只含 effective 标记 |
+| 测试 | marks/producers/hook/command/report 全套（820+ TS 测试） |
+
+### 6.9 测试与实测验证
+
+单测+集成测试覆盖（820+ TS 测试全绿）：签名归一化、保护窗边界与回退、
+门控两侧（含 cache.read 补门控回归）、批量两侧、先清后标时序、释放
+通知、旧 shape 加载为空、派生正确性、pending 不污染 prunedCallIDs
+回归。
+
+实测（2026-07-25，>100K 真实会话）：门控按 prompt 侧总量正确触发；
+release_threshold_percent=0 时当轮标记当轮释放；ignored 通知
+`role=user, ignored=1` 存储正确且 LLM 不可见；首轮全量扫描发现 8 个
+历史重复（2K tokens）并在下一轮替换为占位符。
+
+---
+
+## 7. 与 DCP 的架构对比
+
+### 7.1 差异总览
 
 | 维度 | DCP (`@tarquinen/opencode-dcp`) | ZooKeeper 内建方案 |
 |------|-------------------------------|-------------------|
 | **框架绑定** | 强（仅 OpenCode） | 弱（核心框架无关） |
 | **依赖** | OpenCode SDK, 文件系统存储 | 无外部依赖 |
 | **Token 计数** | 未开源具体实现 | API 上报（主力）+ 启发式（补充），误差 < 5% |
-| **压缩模式** | Range + Message（双模） | Range（初始启发式）→ Phase 4 双模（LLM 驱动） |
-| **LLM 驱动压缩** | ✅ 完整 | ✅ Phase 4（compress 工具注册） |
-| **去重** | ✅ 基于签名 | ✅ 基于签名 |
-| **错误清除** | ✅ 4 轮后 | ✅ 可配置轮数 |
-| **Nudge 系统** | 3 级阈值 | 3 级阈值 |
-| **状态持久化** | 磁盘 JSON 文件 | ✅ Phase 5（磁盘 JSON，同 DCP 存储路径模式） |
-| **Block 嵌套** | 支持 | 不支持（初始） |
+| **压缩模式** | Range + Message（双模） | 暂无 → V3 Range（LLM 驱动） |
+| **LLM 驱动压缩** | ✅ 完整 | ❌（V3 规划：compress 工具注册） |
+| **去重** | ✅ 基于签名（compress 时检测，零保护清单） | ✅ 基于签名（transform 每轮检测 + 批量释放，§4.5） |
+| **错误清除** | ✅ 4 轮后 | ⏳ dedup 之后（可配置轮数） |
+| **Nudge 系统** | 3 级阈值 | ❌（V3 规划，3 级阈值） |
+| **状态持久化** | 磁盘 JSON 文件 | ✅ 磁盘 JSON（`~/.zoo/storage/`） |
+| **Block 嵌套** | 支持 | 不支持（V3 也不做，扁平块） |
 | **配置层级** | 3 层级联 + JSONC | 单层 config.toml |
-| **消息引用** | mNNNN 格式 | mNNNN 格式 |
-| **命令系统** | `/dcp` 全套命令 | ✅ Phase 5（/context、/stats、/sweep、decompress、recompress） |
-| **代码规模** | ~3000+ 行（估算） | ~800 行（初始，不含测试）→ 扩展至 ~1500 行 |
-| **状态模型复杂度** | 高（8 种块间关系） | 中（扁平块，无嵌套） |
-| **Turn 保护** | 可配置 | 可配置 |
+| **消息引用** | mNNNN 格式 | ❌（V3 随 compress 工具引入） |
+| **命令系统** | `/dcp` 全套命令 | ✅ 部分（context/sweep/help） |
+| **轮次保护** | step-start 计数，默认 4（disabled） | step-start 计数，默认 5（§6.4） |
+| **状态模型复杂度** | 高（8 种块间关系） | 低（prune.tools 单通路） |
 
-### 6.2 为什么不在 ZooKeeper 中直接依赖 DCP
+### 7.2 为什么不在 ZooKeeper 中直接依赖 DCP
 
-**1. 框架绑定问题**
+**1. 框架绑定问题**：DCP 紧密耦合 OpenCode 的 hook API 和消息格式。
+ZooKeeper 双宿主（OpenCode + pi），上下文剪枝核心逻辑必须与框架解耦。
+DCP 无法被 pi 复用。
 
-DCP 是一个 OpenCode 插件，紧密耦合到 OpenCode 的 hook API 和消息格式。ZooKeeper 有明确的 TODO 要支持 pi / oh-my-pi（框架适配器机制），届时需要一套框架无关的上下文管理逻辑。
+**2. 复杂度与收益权衡**：DCP 在状态模型、块嵌套、跨会话持久化等方面的
+设计复杂度远超 ZooKeeper 的需求。作为编排器插件，ZooKeeper 的上下文剪枝
+是**补充性**的——辅助 OpenCode 内置 compaction，而非完全替代。
 
-```
-ZooKeeper 的长期架构:
-  ┌─────────────────────┐
-  │   OpenCode Plugin   │ ← 当前实现
-  │   (TypeScript)      │
-  └────────┬────────────┘
-           │ 框架相关
-  ┌────────▼────────────┐
-  │ ZooKeeper Core      │ ← 共享核心（含上下文剪枝）
-  │ (框架无关)           │
-  └────────┬────────────┘
-           │ 框架相关
-  ┌────────▼────────────┐
-  │   pi / oh-my-pi     │ ← TODO（framework adapter）
-  │   Adapter           │
-  └─────────────────────┘
-```
+**3. 配置单一事实来源**：ZooKeeper 的所有配置来自 `config.toml`。引入
+DCP 意味着增加 `dcp.jsonc`，破坏现有配置管理模型。
 
-DCP 无法被 pi / oh-my-pi 复用，因为它完全构建在 OpenCode SDK 之上。
+**4. 依赖管理**：引入 DCP 作为 npm 依赖会增加 `node_modules` 体积、引入
+版本兼容风险、需要跟进 DCP 更新。
 
-**2. 复杂度与收益权衡**
-
-DCP 在状态模型、块嵌套、跨会话持久化等方面的设计复杂度远超 ZooKeeper 的需求。作为一个编排器插件，ZooKeeper 的上下文剪枝需求是**补充性**的——辅助 OpenCode 内置 compaction，而非完全替代。
-
-**3. 配置单一事实来源**
-
-ZooKeeper 的所有配置来自 `config.toml`（单一事实来源）。引入 DCP 意味着增加 `dcp.jsonc` 配置文件，破坏现有的配置管理模型。
-
-**4. 依赖管理**
-
-引入 DCP 作为 npm 依赖会：
-- 增加 `node_modules` 体积
-- 引入版本兼容风险（DCP 可能随 OpenCode SDK 版本变化）
-- 需要额外的维护工作跟进 DCP 更新
-
-**结论**：不直接依赖 DCP，而是借鉴其设计（双模压缩、去重、错误清除、nudge 系统）实现 ZooKeeper 内建的轻量级上下文剪枝方案。
+**结论**：不直接依赖 DCP，而是借鉴其设计（两阶段标记-清理、签名去重、
+错误清除、nudge 系统、双模压缩）实现 ZooKeeper 内建的轻量级方案。
 
 ---
 
-## 7. 实施计划
+## 8. 后续路线
 
-### 7.1 Phase 1：基础设施（Week 1-2）
+| 步骤 | 内容 | 设计来源 | 前置 |
+|------|------|---------|------|
+| ~~当前~~ | 观测层 + 手动 sweep + 持久化 | — | ✅ 已完成（§4） |
+| ~~下一步~~ | 自动去重 dedup（统一 marks + 批量释放 + ignored 通知） | §3.5 | ✅ 已完成（§4.5/§6，2026-07-25） |
+| +1 | purge-errors：错误工具调用老化 N 步后标记清除 input | §3.5 | dedup 稳定；需 part 错误状态检测 + step-start 老化 |
+| V3 | compress 工具注册 + Range 压缩引擎 + mNNNN 引用 + 三级 nudge（用户确认：模型自主压缩为未来方向，统一 producer 模型已为其留位） | §3.3 / §3.4 / §3.6 / §5.2-5.3 | 自动策略稳定 |
+| V4 | Message 模式压缩、`/dcp stats`、decompress/recompress、子代理结果展开 | §3.4 / §5.4 | V3 |
+| 另行规划 | pi 宿主适配（核心已框架无关，缺 transform 接线） | — | pi 侧 hook 能力确认 |
 
-| 文件 | 操作 | 行数 |
-|------|------|------|
-| `src/context-pruning/types.ts` | 新建 | ~120 |
-| `src/context-pruning/estimator.ts` | 新建 | ~60 |
-| `src/context-pruning/state.ts` | 新建 | ~140 |
-| `src/context-pruning/nudge.ts` | 新建 | ~80 |
-| `src/context-pruning/pipeline.ts` | 新建 | ~130 |
-| `src/context-pruning/index.ts` | 新建 | ~10 |
-| `config.toml` | 新增 `[zoo.context]` | ~30 |
-| `src/context-pruning/index.test.ts` | 新建 | ~100 |
-| **总计** | | **~670** |
-
-**里程碑**：
-- [x] 类型定义完成，框架无关
-- [x] Token 估算器实现并测试
-- [x] 会话状态管理（in-memory + TTL 清理）
-- [x] Nudge 消息生成（3 级）
-- [x] 空管道（pass-through）可用
-- [x] `[zoo.context]` 配置段定义
-- [x] 核心单元测试覆盖
-
-### 7.2 Phase 2：自动策略（Week 3-4）
-
-| 文件 | 操作 | 行数 |
-|------|------|------|
-| `src/context-pruning/dedup.ts` | 新建 | ~100 |
-| `src/context-pruning/purge-errors.ts` | 新建 | ~90 |
-| `src/context-pruning/pipeline.ts` | 修改 | ~30 |
-| `src/context-pruning/index.test.ts` | 扩充 | ~200 |
-| **总计** | | **~420** |
-
-**里程碑**：
-- [x] 去重策略实现并测试
-- [x] 错误清除策略实现并测试
-- [x] 管道集成去重 + 错误清除
-- [x] 边界情况测试（protected tools、turn 保护、空输入）
-
-### 7.3 Phase 3：压缩引擎（启发式，Week 5-6）
-
-| 文件 | 操作 | 行数 |
-|------|------|------|
-| `src/context-pruning/compress.ts` | 新建 | ~200 |
-| `src/context-pruning/pipeline.ts` | 修改 | ~20 |
-| `src/context-pruning/index.test.ts` | 扩充 | ~300 |
-| **总计** | | **~520** |
-
-**里程碑**：
-- [x] Range 模式压缩（启发式摘要，无 LLM 调用）
-- [x] 可压缩范围识别（完成的任务轮次、已验证输出、旧历史）
-- [x] Compression block 状态管理
-- [x] 压缩后的消息重建与占位符注入
-- [x] 压缩阈值触发逻辑
-
-### 7.4 Phase 4：LLM 驱动压缩 + Message 模式（Week 7-8）
-
-| 文件 | 操作 | 行数 |
-|------|------|------|
-| `src/context-pruning/compress.ts` | 扩展 | ~150 |
-| `src/context-pruning/compress-message.ts` | 新建 | ~120 |
-| `src/context-pruning/pipeline.ts` | 修改 | ~30 |
-| `src/hooks/context-pruning/hook.ts` | 新建（适配器） | ~180 |
-| `src/hooks/context-pruning/index.ts` | 新建（桶导出） | ~20 |
-| `src/index.ts` | 修改 | ~50 |
-| `src/context-pruning/index.test.ts` | 扩充 | ~150 |
-| `src/hooks/context-pruning/index.test.ts` | 新建（集成测试） | ~200 |
-| **总计** | | **~900** |
-
-**里程碑**：
-- [x] `compress` 工具通过 `config` hook 注册（LLM 可调用）
-- [x] LLM 驱动摘要生成（替代 Phase 3 的启发式占位符）
-- [x] Message 模式压缩（单消息粒度，不依赖连续范围）
-- [x] 双模切换：`compress_mode = "range" | "message"`
-- [x] OpenCode 适配器（messages.transform）
-- [x] 工具调用追踪（tool.execute.before）与错误追踪（tool.execute.after）
-- [x] Session 清理（event hook）
-- [x] 集成测试（与现有 handler 链共存）
-- [x] 验证：现有功能不受影响
-
-### 7.5 Phase 5：命令系统 + 持久化（Week 9-10）
-
-| 文件 | 操作 | 行数 |
-|------|------|------|
-| `src/context-pruning/commands.ts` | 新建 | ~150 |
-| `src/context-pruning/persist.ts` | 新建 | ~120 |
-| `src/context-pruning/state.ts` | 修改（添加 persist hooks） | ~40 |
-| `src/hooks/context-pruning/hook.ts` | 修改（命令注册） | ~50 |
-| `src/index.ts` | 修改 | ~20 |
-| `src/context-pruning/index.test.ts` | 扩充 | ~200 |
-| `src/hooks/context-pruning/index.test.ts` | 扩充 | ~100 |
-| **总计** | | **~680** |
-
-**里程碑**：
-- [x] 命令系统：`/context`、`/stats`、`/sweep`、`decompress`、`recompress`
-- [x] 命令通过 `command.execute.before` 注册
-- [x] 跨会话状态持久化（磁盘 JSON，镜像 DCP 路径模式）
-- [x] 异步写入（debounce 1s），读取时自动恢复
-- [x] 会话 TTL 到期同步清理磁盘文件
-- [x] 写入失败静默降级
-
-### 7.6 Phase 6：测试与调优（Week 11-12）
-
-| 活动 | 内容 |
-|------|------|
-| 性能测试 | 100+ 消息会话下的管道延迟，含 compress 工具调用 |
-| 阈值调优 | 根据实际 token 消耗校准 nudge/urgent threshold |
-| Dry-run 测试 | 使用 `tests/runner.py --dry-run` 验证剪枝效果 |
-| LLM 行为观察 | 编排器收到 nudge 后是否主动调用 compress 工具 |
-| 持久化测试 | 会话重启后状态恢复正确性 |
-| 命令测试 | 各命令在边界情况下的行为验证 |
-| 文档更新 | 补充使用指南和配置说明 |
-
-**里程碑**：
-- [x] 管道 P50 延迟 < 5ms（1000 条消息，启发式模式）
-- [x] 管道 P50 延迟 < 50ms（LLM 驱动模式，含工具调用）
-- [x] 去重 + 错误清除 + 压缩组合测试覆盖全部边界
-- [x] LLM 压缩调用触发准确率 ≥ 80%（nudge 后 3 轮内）
-- [x] 持久化读写验证通过
-- [x] Dry-run 测试无回归
-- [x] 文档就绪
-
-### 7.7 验证方法
-
-```bash
-# 1. 单元测试
-./test.sh  # 包含新的 context-pruning 测试
-
-# 2. Lint + format
-./check.sh
-
-# 3. Dry-run（不调 LLM）
-python3 tests/runner.py --dry-run
-
-# 4. 端到端（需要真实 LLM）
-# 观察编排器行为：
-#   - 上下文不再无限膨胀
-#   - 重复工具调用被压缩
-#   - 错误工具在 N 轮后自动清除
-#   - Nudge 消息在阈值附近出现
-
-# 5. 日志验证
-ZOO_DEBUG=1 opencode  # 查看 context pruning 触发记录
-```
+**明确不做/推迟**：块嵌套（复杂度错配）、用户可覆盖提示词、Toast 通知、
+自动更新、per-agent 权限引擎。
 
 ---
 
-## 8. 已知风险与缓解措施
+## 9. 已知风险与缓解措施
 
-### 8.1 Token 计数精度
+### 9.1 Token 计数精度
 
-**风险**：对最后一次 assistant 消息之后新增的消息使用 `text.length / 4` 启发式，可能在中文（每字 ~2-3 token）或混合内容中产生偏差。
+**风险**：对最后一次 assistant 消息之后新增的消息使用启发式，在中文或
+混合内容中可能偏差。
 
-**缓解**：
-- 启发式仅用于最近几条新增消息（通常 < 2K tokens），整体误差 < 5%
-- 95%+ 的上下文 token 来自 API 精确数据（最后一条 assistant 的累计值）
-- 阈值留有余量（如 70K/140K，非精确边界值）
-- 可选的 `estimation_fallback_factor` 配置项（默认 4）允许用户针对内容语言调整启发式因子
+**缓解**：启发式仅用于最近几条新增消息（通常 < 2K tokens）；95%+ 的
+token 来自 API 精确数据；CJK /1.5 分文字系统估算；门控决策只用 API
+精确值（`input + cache.read + cache.write`），缺失时向安全方向失败。
 
-### 8.2 压缩误伤有效上下文
+### 9.2 去重误伤有效上下文
 
-**风险**：启发式范围识别可能压缩包含关键信息的消息（如子 Agent 正在使用中的中间结果）。
+**风险**：同签名但语义不同的输出被误标（如 `bash("git status")` 在不同
+时间点结果不同）。
 
-**缓解**：
-- Turn protection 保护最近 N 轮交互
-- Protected tools 列表确保 `task`/`skill` 不被压缩
-- 仅压缩 `protectedUntilIndex` 之外的消息
-- 压缩非破坏性（仅替换为摘要，原始消息可通过 blockId 追溯）
+**缓解**：保留最新副本（被清的只是陈旧副本）；5 步 step-start 保护窗
+（窗内调用完全不参与检测）；保护清单默认仅 `question`（输出即用户
+输入、不可再生；剪枝只影响 LLM 视图、不动会话存储，其余工具的精确
+重复去重均安全——源码核实 DCP dedup 亦零保护，§3.5）；100K 高默认
+门控（上下文充裕时不剪）；零收益跳过（短输出不替换）；剪枝非破坏性
+（占位符替换，callID 可追溯）。
 
-### 8.3 Nudge 对 LLM 行为影响不足
+### 9.3 step-start 缺失
 
-**风险**：LLM 可能忽略 nudge 消息，继续无节制使用上下文。
+**风险**：某些会话/provider 的消息中可能没有 `step-start` part，导致
+轮次保护失效。
 
-**缓解**：
-- 紧急 nudge（超过 urgentThresholdTokens）使用较强语气
-- 与 DCP 设计一致：nudge 是 soft guidance，而非硬约束
-- 未来可在 `tool.execute.before` 中增加硬限制（当上下文超过可用窗口时阻断非关键工具调用）
+**缓解**：单测用真实会话 fixture 覆盖；缺失时回退为"保护最近 5 个工具
+调用"。
 
-### 8.4 与内置 Compaction 冲突
+### 9.4 压缩误伤有效上下文（V3+）
 
-**风险**：ZooKeeper 进行消息压缩后，OpenCode 内置 compaction 可能基于已压缩的消息再次压缩，产生噪声。
+**风险**：启发式范围识别可能压缩包含关键信息的消息。
 
-**缓解**：
-- 在压缩消息中注入 `metadata.compressed = true` 标记
-- 内置 compaction 对已压缩消息的二次压缩效果有限（摘要已经很小）
-- 通过 `stripHallucinations` 风格的步骤处理标记冲突
+**缓解**：turn protection 保护最近 N 轮；protected tools 确保 `task`/`skill`
+不被压缩；压缩非破坏性（摘要 + blockId 可追溯）。
 
-### 8.5 性能开销
+### 9.5 Nudge 对 LLM 行为影响不足（V3+）
 
-**风险**：每轮 messages.transform 都运行管道可能引入延迟。
+**风险**：LLM 可能忽略 nudge 消息。
 
-**缓解**：
-- 空管道（strategies 全部关闭）仅做消息过滤和 ref 分配，~O(n)
-- 去重和错误清除仅扫描 tool calls，~O(k) where k << n
-- 压缩仅在超阈值时触发
-- 预估 P50 延迟 < 5ms（1000 条消息场景）
+**缓解**：紧急 nudge 用较强语气；nudge 是 soft guidance 而非硬约束；
+未来可在 `tool.execute.before` 中增加硬限制。
+
+### 9.6 与内置 Compaction 冲突
+
+**风险**：ZooKeeper 剪枝后，内置 compaction 基于已剪枝消息再次压缩。
+
+**缓解**：剪枝只替换 output 为占位符、不删消息；compaction 对占位符的
+二次摘要无危害；占位符文本本身标注了"已移除"语义。
+
+### 9.7 性能开销
+
+**风险**：每轮 transform 运行策略引入延迟。
+
+**缓解**：清理阶段是 Map 查找 O(k)；dedup 扫描仅在超 100K 阈值时触发；
+签名构建是 O(工具调用数)；持久化仅 dirty 时写入且失败静默。
 
 ---
 
-## 9. 总结
+## 10. 总结
 
-### 9.1 核心设计决策
+### 10.1 与 DCP 的关系
 
-| 决策 | 选择 | 理由 |
-|------|------|------|
-| 框架无关性 | 核心纯 TS，适配器分离 | 支持 pi / oh-my-pi + 未来框架 |
-| Token 计数 | 混合：API 上报（主力）+ `text.length / 4`（新增消息） | 95%+ 精确，零依赖 |
-| 状态管理 | In-memory + TTL | 简单可靠，无需文件系统 |
-| 压缩模式 | Range（初始，启发式摘要） | 简单，无需 LLM 调用 |
-| 去重 | 基于 toolName + 参数签名 | 低成本高收益 |
-| 错误清除 | N 轮后保留 error 擦除 input | 减少噪声，保留诊断信息 |
-| Nudge 系统 | 3 级（紧急/温和/迭代） | 软引导，不阻断执行 |
-| 配置 | config.toml 单一源头 | 与现有模型一致 |
+借鉴但不复制。**保留**：两阶段标记-清理（分离代码路径）、签名去重、
+错误清除、3 级 nudge、mNNNN 引用机制（V3）。**简化**：状态模型（无
+嵌套块）、配置层级（单层 config.toml）。**替换**：框架绑定 → 框架无关
+核心 + 适配器。**推迟**：提示词覆盖、Toast 通知、子代理结果展开、
+自动更新。
 
-### 9.2 与 DCP 的关系
-
-借鉴但不复制。ZooKeeper 内建方案：
-- **保留**：双模压缩思路、去重/错误清除策略、3 级 nudge、消息引用机制
-- **简化**：状态模型（无嵌套 block）、配置层级（单层）、摘要生成（启发式而非 LLM）
-- **替换**：框架绑定 → 框架无关核心 + 适配器
-- **推迟**：提示词覆盖、Toast 通知、SubAgent 结果注入、自动更新
-
-### 9.3 与 OpenCode 内置 Compaction 的关系
-
-ZooKeeper 上下文剪枝是 OpenCode 内置 compaction 的**补充**而非替代：
+### 10.2 与 OpenCode 内置 Compaction 的关系
 
 ```
 OpenCode 内置 → 平台级，LLM 驱动摘要，全局调度
-ZooKeeper 剪枝 → 插件级，启发式策略，编排器专用
+ZooKeeper 剪枝 → 插件级，启发式策略 + 手动控制，编排器专用
 
 互补关系：
-  - 去重+错误清除：在 compaction 之前减少无用内容
-  - 范围压缩：提供更细粒度的中间层
-  - Nudge：引导编排器主动管理上下文
+  - 去重 + 错误清除：在 compaction 之前减少无用内容
+  - 手动 sweep：用户主导的即时回收
+  - 范围压缩（V3）：更细粒度的中间层
+  - Nudge（V3）：引导编排器主动管理上下文
 ```
 
-### 9.4 未来方向
+### 10.3 实施路径
 
-| 方向 | 阶段 | 条件 |
-|------|------|------|
-| LLM 驱动摘要 | ✅ Phase 4 | 注册 `compress` 工具 + 观察编排器是否会主动调用 |
-| Message 模式压缩 | ✅ Phase 4 | Range 模式稳定后，用户需求驱动 |
-| 持久化状态 | ✅ Phase 5 | 磁盘存储，支持会话间恢复 |
-| 命令系统 | ✅ Phase 5 | `/context`、`/stats`、`/sweep`、decompress、recompress |
-| pi / oh-my-pi 适配器 | 另行规划 | 编号 #TBD，依赖框架无关核心就绪 |
-| 自适应 factor | Phase 6+ | 收集实际 token vs 估算偏差数据后 |
+观测 → 手动剪枝 → 自动策略（dedup → purge-errors）→ LLM 驱动压缩。
+每步独立可验证，每步都有面板/命令/日志三层可观测性闭环。
 
 ---
 
 **相关文档**：
-- `docs/task-prompt-validation-evolution.md` — 相近的"软约束先行"设计哲学
-- `docs/todo-nudge-research.md` — 类似的 nudge 系统设计和实施计划
+- `docs/dcp-architecture.md` — DCP 完整代码级分析
 - `docs/opencode-plugin-mechanism.md` — OpenCode 插件机制参考
-- `docs/dcp-architecture.md` — DCP v3.1.12 完整代码级分析（19 章，约 1200 行）
-
----
-
-## 10. 最小实现方案（V0）
-
-**版本：** 1.1（2026-06-15，基于 `docs/dcp-architecture.md` 深度源码分析后的修正）
-
-> **⚠️ 实施注记（2026-07-18）：** 实际执行时第一步并未按本节 V0（含 dedup/purge/两阶段清理，~635 行）落地，而是进一步缩减为**纯观测层**（`/dcp context` 命令 + TUI 侧边栏，零剪枝逻辑）。实测数据（tool 占 43.8%）反过来验证了 V0 的剪枝目标优先级。本节的**两阶段标记-清理模型（§10.4）仍然是后续剪枝实现必须坚持的不变量**。详见 §11。
-
-### 10.1 为什么要最小实现
-
-尝试直接复制 DCP 源码集成到 ZooKeeper 失败（`2026-06-14` 尝试）：
-- DCP 约 5000 行 TS 代码，模块间隐式依赖极多
-- 集成管道中的 4 个 bug：`install.py` 不输出 `command` 字段、适配器 try/catch 吞没 sentinel 错误、configHandler 写入错误的 `primaryTools` 路径、命令注册时机不明
-- 无法在不完整运行 DCP 全部功能的情况下验证部分功能
-- DCP 的压缩引擎（2000+ 行）依赖完整的 mNNNN 引用 + 占位符 + 边界解析 + 受保护内容，任何部分缺失都会崩溃
-
-§5 的原始自研设计也有根本性缺陷（单遍 pipeline 而非两阶段标记-清理）。
-
-最小实现的目标：**验证 DCP 最核心且最容易出错的两阶段标记-清理模型**，约 610 行（DCP 的 ~12%）。如果 V0 稳定运行，后续增量是确定性的；如果 V0 在标记-清理边界有 off-by-one 类 bug，可以在扩展前发现。
-
-### 10.2 文件清单与职责
-
-| 文件 | 路径 | 行估算 | 职责 | 对应 DCP 文件 |
-|------|------|--------|------|-------------|
-| `types.ts` | `src/hooks/context-pruning/types.ts` | ~50 | SessionState、Prune、PruneMessagesState、ToolParameterEntry | `lib/state/types.ts` |
-| `state.ts` | `src/hooks/context-pruning/state.ts` | ~40 | createSessionState、checkSession、ensureSessionInitialized | `lib/state/state.ts` |
-| `tool-cache.ts` | `src/hooks/context-pruning/tool-cache.ts` | ~60 | syncToolCache：按 callID 缓存工具参数 + token 数（FIFO 上限 1000） | `lib/state/tool-cache.ts` |
-| `strategies.ts` | `src/hooks/context-pruning/strategies.ts` | ~80 | runDedup + runPurgeErrors：**标记阶段**——只写 `state.prune.tools`，不直接改消息 | `lib/strategies/*.ts` |
-| `prune.ts` | `src/hooks/context-pruning/prune.ts` | ~80 | filterCompressedRanges + pruneToolOutputs + pruneToolErrors：**清理阶段** | `lib/messages/prune.ts` |
-| `strip.ts` | `src/hooks/context-pruning/strip.ts` | ~20 | stripHallucinations：移除 `<zoo-dcp>` 标签（保留机制，防止 LLM 幻觉污染） | `lib/messages/utils.ts` |
-| `hook.ts` | `src/hooks/context-pruning/hook.ts` | ~70 | 组装 transform handler（7 步顺序执行） | `lib/hooks.ts` 的 createChatMessageTransformHandler 简化版 |
-| `commands.ts` | `src/hooks/context-pruning/commands.ts` | ~120 | `/zoo context`、`/zoo stats`、`/zoo sweep [n]` 三个命令 handler + 分发 | `lib/commands/context.ts` + `stats.ts` + `sweep.ts` |
-| `notification.ts` | `src/hooks/context-pruning/notification.ts` | ~30 | sendIgnoredMessage：通过 `ignored: true` 输出命令结果 | `lib/ui/notification.ts` |
-| `format.ts` | `src/hooks/context-pruning/format.ts` | ~60 | formatTokenCount（1.2K/45K）、进度条（`█░⣿`）、表格对齐 | `lib/ui/utils.ts` |
-| **修改：`src/index.ts`** | `src/index.ts` | ~25 | import + config hook 注册命令 + 命令 handler 调用 + transform 串联 | — |
-| **总计** | | **~635** | | |
-
-### 10.3 明确砍掉的部分
-
-| 模块 | 砍掉原因 |
-|------|---------|
-| **compress/\*（压缩引擎，2000+ 行）** | 两阶段模型最复杂的体现：LLM 调用 compress 工具触发、需工具注册、prompt 注入、mNNNN 引用、占位符解析、边界解析、受保护内容保留、块嵌套、块生命周期管理 |
-| **CompressionBlock 状态模型** | 整个块状态（active/consumed/deactivated/nested）在 V0 不需要 |
-| **prompt system（6 模板 + PromptStore，~1000 行）** | 没有 compress 工具就不需要工具描述 prompt |
-| **nudge 系统（3 级 + 锚点，~500 行）** | 没有 compress 工具就没有注入目标 |
-| **message IDs（mNNNN/bN，~300 行）** | 只有 LLM 调 compress 工具时才需要引用系统 |
-| **commands/\*（7 个命令，~600 行）** | V0 只需 3 个命令，且通过 config hook 动态注册 |
-| **permissions（规则引擎，~300 行）** | V0 不需要 per-agent 权限 |
-| **persistence（~400 行）** | 磁盘序列化后加 |
-| **timing（压缩计时，~100 行）** | 没有 compress 就不需要 |
-| **auth/update** | DCP 特有 |
-| **subagents** | V0 不需要子代理结果展开 |
-
-### 10.4 两阶段标记-清理的精确实现
-
-核心不变量：**策略在 Turn N 标记，清理在 Turn N+1 执行**。
-
-```typescript
-// hook.ts — 最小 transform handler
-export async function contextPruningHandler(
-  state: SessionState,
-  messages: WithParts[],
-): Promise<void> {
-  // Step 0: 清理 LLM 幻觉标签（保护性机制，防止污染判断）
-  stripHallucinations(messages);
-
-  // Step 1: 检测会话切换 / 初始化状态
-  checkSession(state, messages);
-
-  // Step 2: 缓存工具参数到 state.toolParameters
-  syncToolCache(state, messages);
-
-  // ── 标记阶段（Turn N 写入，不修改消息）──
-  // Step 3: 去重策略 — state.prune.tools.set(旧 callID, tokens)
-  //         purge-errors — state.prune.tools.set(过期错误 callID, tokens)
-  runDedup(state);
-  runPurgeErrors(state);
-
-  // ── 清理阶段（Turn N+1 读取上一轮的标记，执行替换）──
-  // Step 4: 跳过被压缩块覆盖的消息（V0 无块，此步为 noop）
-  filterCompressedRanges(state, messages);
-
-  // Step 5: 替换已标记工具的输出为 "[Output removed...]"
-  pruneToolOutputs(state, messages);
-
-  // Step 6: 替换已标记错误工具的输入为 "[input removed...]"
-  pruneToolErrors(state, messages);
-}
-```
-
-**关键边界案例**（实现时必须测试）：
-
-1. **首次 turn**：`state.prune.tools` 为空，清理阶段全部跳过 ✓
-2. **同一工具的多次重复**：保留最新的，旧的才进 prune.tools ✓
-3. **Turn protection 保护期内的工具**：不加入 tool cache → 不会被标记 ✓
-4. **保护工具（task/skill/question/edit/write）**：即使有重复签名也不被标记 ✓
-5. **压缩消息中的工具**：`isMessageCompacted` 跳过，不参与任何处理 ✓
-
-### 10.5 命令系统设计
-
-| 命令 | 触发后行为 | 输出格式 |
-|------|----------|---------|
-| `/zoo context` | 读最后 assistant 的 tokens.input/output/reasoning/cache，分类估算 user/assistant/tools 占比 | 进度条 + 百分比表格 |
-| `/zoo stats` | 累加 `state.stats.totalPruneTokens`、`state.prune.tools.size`、去重/清理计数 | 紧凑统计面板 |
-| `/zoo sweep` | 自最后用户消息以来的工具标记为剪枝 | 列出被标记的工具名 + 路径参数 |
-| `/zoo sweep n` | 最后 n 个工具标记为剪枝 | 同上 |
-
-**命令注册（动态，无需改 config.toml）：**
-```typescript
-// src/index.ts — config hook 中
-async config(config: any) {
-    // ... 现有逻辑 ...
-
-    // 动态注册 /zoo 命令（OpenCode 在 config 最终化时会读取）
-    config.command ??= {};
-    config.command["zoo"] = {
-        template: "",
-        description: "Context pruning management",
-    };
-}
-```
-
-**命令输出**：通过 `sendIgnoredMessage` 注入到聊天窗口（`ignored: true`）：
-```typescript
-// notification.ts
-function sendIgnoredMessage(client: any, sessionId: string, text: string) {
-    client.session.prompt({
-        path: { id: sessionId },
-        body: {
-            noReply: true,                       // 不让 LLM 响应这条
-            parts: [{ type: "text", text, ignored: true }],
-        },
-    });
-}
-```
-
-### 10.6 src/index.ts 集成代码（最小修改，~25 行）
-
-```typescript
-import { contextPruningHandler } from "./hooks/context-pruning/hook";
-import { handleZooCommand } from "./hooks/context-pruning/commands";
-
-// config hook（追加）
-async config(config: any) {
-    // ... 现有 prompt + skills 逻辑 ...
-    config.command ??= {};
-    config.command["zoo"] = { template: "", description: "..." };
-}
-
-// command.execute.before（新增）
-async "command.execute.before"(
-    input: { command: string; sessionID: string; arguments: string },
-    output: { parts: any[] },
-) {
-    if (input.command === "zoo") {
-        await handleZooCommand(client, input.sessionID, input.arguments);
-        throw new Error("__ZOO_COMMAND_HANDLED__");
-    }
-}
-
-// experimental.chat.messages.transform（追加）
-async "experimental.chat.messages.transform"(_input, output) {
-    try { measureContext(output); }
-    catch (err) { log(...); }
-    try { await contextPruningHandler(cpState, output.messages); }
-    catch (err) { log(...); }
-}
-```
-
-### 10.7 V0 验证方法
-
-```bash
-# 会话内验证（手动）
-/zoo context          # 确认能看到 token 分布
-/zoo sweep            # 手动标记当前工具
-/zoo context          # 确认 pruned 数增加
-/zoo stats            # 确认累计统计
-
-# 自动验证
-# 等待几轮，观察 /zoo stats 中 dedup + purge 是否自动触发
-
-# 单元测试
-./test.sh             # 新增 context-pruning 相关测试
-./check.sh            # lint + format
-```
-
-### 10.8 后续增量路径
-
-| 版本 | 增量 | 行数 | 前置依赖 |
-|------|------|------|---------|
-| **V0**（本文） | dedup + purge + prune（两阶段）+ 3 个命令 | ~635 | — |
-| **V1** | + turn protection + nudge（纯文本注入，不需要 compress 工具） | +100 | V0 稳定 |
-| **V2** | + persistence（状态写入磁盘） | +200 | V1 |
-| **V3** | + compress 工具 + mNNNN 引用 + nudge 三级系统 | +500 | V2 |
-| **V4** | + commands 扩展（decompress/recompress） + 更多命令 | +200 | V3 |
-| **V5** | + Message 模式压缩、子代理结果展开 | +300 | V3 |
-
-每个版本都是可独立验证的。V3+ 才需要引入 `@anthropic-ai/tokenizer` 和修改配置体系。
-
-### 10.9 关键认知收获
-
-经过 DCP 全量源码分析，以下认知在最小实现中必须坚持：
-
-1. **两阶段是必须的**：单遍 pipeline 会在标记-清理边界产生 off-by-one 类 bug
-2. **`state.prune.tools` 是唯一的数据通路**：策略写，prune 读；不要绕过这层抽象
-3. **Turn protection 在 syncToolCache 时生效**：不在策略执行时检查（避免重复判断）
-4. **命令注册用 config hook**：不要在 config.toml 静态声明——这是 OpenCode 的标准插件模式
-5. **`sendIgnoredMessage` 用 `ignored: true`**：命令输出不要变成新的上下文
-6. **hallucinations 清理是保护性步骤**：即使 V0 没有注入 `<zoo-dcp>` 标签，也要保留清理逻辑（防止 LLM 偶然生成）
-
----
-
-## 11. 第一步实现报告：观测层（命令 + TUI 面板）
-
-**日期：** 2026-07-18
-**状态：** 已实现并验收（双 Eagle 代码审查 PASS，542 TS 测试 + lint 全绿）
-
-### 11.1 范围：比 V0 更小的第一步
-
-§10 的 V0（~635 行，含 dedup/purge/两阶段清理）在执行时被认为仍然过大。实际落地的第一步进一步缩减为**纯观测层**：
-
-- `/dcp context` 命令：聊天中显示上下文 token 用量、缓存命中率、分类占比
-- TUI 侧边栏：实时显示缓存命中率 + 分类占比条（常驻、可折叠）
-- **零剪枝逻辑**：不改任何消息，先解决"看得见"的问题
-
-实测证明这个顺序是对的：观测层一上线就用数据确认了剪枝的最大目标（见 §11.5）。
-
-### 11.2 交付清单
-
-| 文件 | 职责 |
-|------|------|
-| `src/core/metrics.ts` | **唯一上下文测量模块**：`findLastCompletedAssistant` / `findFirstCompletedAssistant`（共享 `_scanCompletedAssistant`）、`estimateMessageHeuristic`（tool-aware + CJK 分文字系统估算）、`computeContextReport`（5 类分类）、`measureContext`（hook 日志） |
-| `src/core/context-report.ts` | 纯展示层：`formatTokens` / `formatPercent` / `progressBar` / `formatContextReport` |
-| `src/hooks/context-command/index.ts` | `/dcp context` 命令适配层：取消息 → 计算 → ignored 消息输出；`DCP_COMMAND_HANDLED` sentinel |
-| `src/tui.tsx` | TUI 侧边栏插件（`sidebar_content` slot）：`ZookeeperPanel` 组件、全量数据通道、折叠持久化 |
-| `src/opencode.ts` | 接线：config hook 注册 `dcp` 空模板命令 + `command.execute.before` 拦截 |
-| `install.py` | 生成 `~/.config/opencode/tui.jsonc`（直接覆盖：`{"plugin": ["file://.../src/tui.tsx"]}`） |
-| `tsconfig.json` / `package.json` / `biome.json` | `jsx: react-jsx`、devDeps（solid-js/@opentui/*/@opencode-ai/plugin）、tsx lint 覆盖 |
-
-### 11.3 关键实现机制
-
-**命令链路**（`/dcp context`）：
-
-```
-TUI 输入 /dcp context
-  → 服务端查命令注册表（必须先注册，否则 Command not found，hook 不触发）
-  → command.execute.before 拦截（input.command === "dcp"）
-  → client.session.messages() 全量取消息 → computeContextReport
-  → client.session.prompt({ noReply: true, parts: [{ text, ignored: true }] }) 输出
-  → throw DCP_COMMAND_HANDLED 中止后续 prompt()（服务端映射为空 400，用户不可见）
-```
-
-**面板链路**（侧边栏）：
-
-```
-tui.jsonc 发现 file:// src/tui.tsx（零构建，jsxImportSource pragma，Bun 直载）
-  → api.slots.register({ sidebar_content }) → 返回 <ZookeeperPanel/> 组件
-  → onMount: api.client.session.messages({ sessionID }) 全量获取
-  → computeContextReport → signals → 渲染
-  → 事件订阅（message/session 更新，按 sessionID 过滤）→ 2s debounce 重算
-  → 折叠状态 api.kv 持久化
-```
-
-**分类口径**（5 行）：`user`（CJK 启发式）、`asst`（**API 精确** `Σ tokens.output`，缺失回退启发式）、`tool`（CJK 启发式，input+output）、`sys`（DCP 式：首条 assistant 的 input+cache − 首条用户消息）、`misc`（残差，钳位 ≥0）。
-
-### 11.4 新认知收获
-
-1. **OpenCode 命令机制 = prompt 模板注入**：注册表查找在 hook 之前，未注册命令直接报 Command not found；所以拦截式命令必须先注册空模板拿入场券，再用 sentinel throw 中止默认的 LLM 调用（`noReply` 无法经 command 路径传入）。
-2. **DCP 的 `/dcp` 服务端命令是遗留代码**：它从未注册 `dcp` 命令（只注册了 `dcp-compress`），服务端分支在生产不可达（只有测试在调）；DCP 实际已迁移到 TUI 插件面板（`exports["./tui"]` 直接发布 tsx 源码）。
-3. **OpenCode 有双插件系统**：server（`opencode.json` 的 plugin）与 TUI（`tui.json`/`tui.jsonc` 的 plugin，经 `exports["./tui"]` 或 file 路径解析）；TUI 插件可零构建（pragma + Bun）；solid-js/@opentui 由宿主运行时提供，file:// 插件需本地 devDeps 可解析。
-4. **`api.state` 是截断的（limit 100）**：TUI 只同步最近 100 条消息（`sync.tsx:597`），任何"第一条消息"类推算（如 system 估算）在截断窗口里会被骗——sys 曾因此虚高至 200.8K（真实 ~17K）。**全量数据必须走 `api.client.session.messages()`**。
-5. **TUI 与 server 的 SDK 签名不同**：TUI 端 `session.messages({ sessionID, limit? })`（v2 风格），server 端 `session.messages({ path: { id } })`；且 SDK 默认 `throwOnError: false`，HTTP 错误以 `{ error }` 形式返回，必须显式检查否则静默渲染为零数据。
-6. **SolidJS slot 正确用法**：signals/订阅放 `tui()` 作用域，slot 函数返回**组件实例**（visual-cache 模式）；在 slot 函数体内直接建 signals 是脆弱的（宿主 memo 重估时会泄漏）。
-7. **`api.state` 数组在 streaming 过渡期含 undefined 元素**：所有遍历必须 falsy 防御；TUI 插件任何异常都要 try/catch 兜底（崩溃会拖垮整个 OpenCode 客户端）。
-8. **OpenTUI Yoga 布局陷阱**：无内容带 `border` 的 `<box>` 高度计算塌陷，可导致 scrollbox 布局错误、输入区被挤出可视区（表现为界面卡死）。分隔线用纯文本。
-9. **TUI 进程的 logger 需要显式 `setSessionId`** 才能落盘（`flushBuffer` 门控，logger.ts:187）。
-10. **分文字系统估算即可消除中文系统性低估**（CJK /1.5、其他 /4，零依赖），无需引入 tokenizer；`asst` 分类用 `Σ tokens.output` 直接变精确。
-
-### 11.5 实测数据与结论
-
-本会话（编排器真实工作负载，~333K 上下文）的稳定读数：
-
-| 分类 | 读数 | 占比 | 说明 |
-|------|------|------|------|
-| user | 19.2K | 5.8% | 用户输入 |
-| asst | 102.6K | 30.8% | 助手输出（API 精确） |
-| **tool** | **145.9K** | **43.8%** | **工具输入+输出——最大单一消费者** |
-| sys | 17.3K | 5.2% | 系统 prompt（与 ztrace 首调记录交叉验证一致） |
-| misc | 48.1K | 14.4% | 残差（估算误差 + reasoning 差额 + 非文本 part） |
-
-**核心结论**：
-
-1. **tool 输出是剪枝的第一目标**（43.8%）——直接验证了 §10 V0 把 dedup + purge-errors 作为首批策略的优先级判断。系统 prompt（5.2%）不是大头，无需优化。
-2. **sys 估算经数据库交叉验证准确**（ztrace 第一次调用 input 28.8K − 首条用户消息 ~11.5K ≈ 17.3K）。
-3. 观测层为后续每一步剪枝提供了**闭环验证手段**：策略上线后面板应直接显示 tool 分类下降。
-
-### 11.6 对后续路线图的修正
-
-§7 的 Phase 1-6 与 §10.8 的 V0-V5 增量表被实际路径取代。修正后的路线：
-
-| 版本 | 内容 | 状态 |
-|------|------|------|
-| **V0（实际）** | 观测层：`/dcp context` 命令 + TUI 面板 + 统一测量核心 | ✅ 已完成（本节） |
-| **V1** | 自动策略：dedup + purge-errors（两阶段标记-清理，§10.4 不变量不变），面板显示 pruned 统计 | 下一步 |
-| **V2** | `/dcp sweep` 手动剪枝 + 状态持久化 | 待规划 |
-| **V3+** | 压缩引擎（Range 模式）、nudge 系统、compress 工具注册 | 按 §10 演进 |
-
-V1 的前置条件已就绪：测量核心（`computeContextReport`）、命令通道（`/dcp` 命名空间 + sentinel 模式）、面板数据通道（全量 fetch）、TUI 插件骨架。剪枝策略只需操作 `state.prune.tools` 并扩展面板统计行，不再需要基础设施工作。
-
+- `docs/task-prompt-validation-evolution.md` — 相近的"软约束先行"设计哲学
+- `docs/todo-nudge-research.md` — 类似的 nudge 系统设计

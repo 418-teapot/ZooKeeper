@@ -344,6 +344,22 @@ small_model = "{env:ZOO_ANT_MODEL}"
 context_word_limit = 200
 prompt_word_limit = 500
 
+# ── Context ───────────────────────────────────────────────────────────────────
+
+[zoo.context]
+# 轮次保护
+turn_protection = 5
+
+[zoo.context.dedup]
+# 自动去重开关
+enabled = true
+# 触发门控
+threshold_tokens = 100000
+# 受保护工具
+protected_tools = ["question"]
+# 去重释放阈值（百分比）
+release_threshold_percent = 5
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 
 [zoo.logging]

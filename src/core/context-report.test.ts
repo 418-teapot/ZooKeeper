@@ -258,45 +258,42 @@ describe("formatContextReport output", () => {
 });
 
 // ---------------------------------------------------------------------------
-// formatContextReport — prunedTokens rendering
+// formatContextReport — reclaim line (pruned + dedup released)
 // ---------------------------------------------------------------------------
 
-describe("formatContextReport with prunedTokens", () => {
-  it("renders prune stat line when prunedTokens > 0", () => {
+describe("formatContextReport with reclaim", () => {
+  it("renders reclaim line when prunedTokens > 0", () => {
     const msgs: ContextMessageEntry[] = [
       msg("user", undefined, "Hello"),
       msg("assistant", { input: 500, output: 100 }, "Response"),
     ];
     const report = computeContextReport(msgs);
-    const output = formatContextReport(report, 12345);
-    assert.ok(
-      output.includes("剪枝"),
-      "expected prune stat line when prunedTokens > 0",
-    );
+    const output = formatContextReport(report, { prunedTokens: 12345 });
+    assert.ok(output.includes("回收"), "expected reclaim line");
     assert.ok(
       output.includes("12.3K"),
       "expected formatted token value (12.3K for 12345)",
     );
     assert.ok(
       output.includes("累计回收"),
-      "expected '累计回收' in prune stat line",
+      "expected '累计回收' in reclaim line",
     );
   });
 
-  it("does NOT render prune stat line when prunedTokens = 0", () => {
+  it("does NOT render reclaim line when prunedTokens = 0", () => {
     const msgs: ContextMessageEntry[] = [
       msg("user", undefined, "Hello"),
       msg("assistant", { input: 500, output: 100 }, "Response"),
     ];
     const report = computeContextReport(msgs);
-    const output = formatContextReport(report, 0);
+    const output = formatContextReport(report, { prunedTokens: 0 });
     assert.ok(
-      !output.includes("剪枝"),
-      "should NOT include prune stat line when prunedTokens = 0",
+      !output.includes("回收"),
+      "should NOT include reclaim line when total = 0",
     );
   });
 
-  it("does NOT render prune stat line when prunedTokens is omitted", () => {
+  it("does NOT render reclaim line when both fields are omitted", () => {
     const msgs: ContextMessageEntry[] = [
       msg("user", undefined, "Hello"),
       msg("assistant", { input: 500, output: 100 }, "Response"),
@@ -304,9 +301,30 @@ describe("formatContextReport with prunedTokens", () => {
     const report = computeContextReport(msgs);
     const output = formatContextReport(report);
     assert.ok(
-      !output.includes("剪枝"),
-      "should NOT include prune stat line when prunedTokens is omitted",
+      !output.includes("回收"),
+      "should NOT include reclaim line when fields are omitted",
     );
+  });
+
+  it("renders reclaim line from prunedTokens", () => {
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hello"),
+      msg("assistant", { input: 500, output: 100 }, "Response"),
+    ];
+    const report = computeContextReport(msgs);
+    const output = formatContextReport(report, { prunedTokens: 13000 });
+    assert.ok(output.includes("回收"), "expected reclaim line");
+    assert.ok(
+      output.includes("13.0K"),
+      "expected formatted total (13.0K for 13000)",
+    );
+    assert.ok(
+      output.includes("累计回收"),
+      "expected '累计回收' in reclaim line",
+    );
+    // Should NOT contain "剪枝" or "去重" labels
+    assert.ok(!output.includes("剪枝"), "should not contain '剪枝' label");
+    assert.ok(!output.includes("去重"), "should not contain '去重' label");
   });
 });
 
@@ -329,5 +347,96 @@ describe("barrel export", () => {
 
   it("exports formatPercent as a function", () => {
     assert.equal(typeof formatPercent, "function");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatContextReport — pending / released reclaim info
+// ---------------------------------------------------------------------------
+
+describe("formatContextReport with pending/released reclaim", () => {
+  it("shows pending info when pendingCount > 0 (no reclaimed total)", () => {
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hello"),
+      msg("assistant", { input: 500, output: 100 }, "Response"),
+    ];
+    const report = computeContextReport(msgs);
+    const output = formatContextReport(report, {
+      pendingCount: 3,
+      pendingTokens: 1500,
+    });
+    assert.ok(output.includes("回收"), "expected reclaim line");
+    assert.ok(output.includes("待生效"), 'expected "待生效" in reclaim line');
+    assert.ok(
+      output.includes("3 个标记"),
+      "expected pending count in reclaim line",
+    );
+    assert.ok(
+      output.includes("1.5K"),
+      "expected formatted token value in pending info",
+    );
+    assert.ok(output.includes("约"), 'expected "约" in pending info');
+  });
+
+  it("shows reclaimed total when prunedTokens > 0", () => {
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hello"),
+      msg("assistant", { input: 500, output: 100 }, "Response"),
+    ];
+    const report = computeContextReport(msgs);
+    const output = formatContextReport(report, {
+      prunedTokens: 5000,
+    });
+    assert.ok(output.includes("回收"), "expected reclaim line");
+    assert.ok(output.includes("5.0K"), "expected formatted token value");
+    assert.ok(
+      output.includes("累计回收"),
+      'expected "累计回收" in reclaim line',
+    );
+    assert.ok(!output.includes("待生效"), "should not include pending info");
+  });
+
+  it("appends pending info after reclaimed total when both present", () => {
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hello"),
+      msg("assistant", { input: 500, output: 100 }, "Response"),
+    ];
+    const report = computeContextReport(msgs);
+    const output = formatContextReport(report, {
+      prunedTokens: 10000,
+      pendingCount: 2,
+      pendingTokens: 800,
+    });
+    assert.ok(output.includes("回收"), "expected reclaim line");
+    assert.ok(
+      output.includes("10.0K"),
+      "expected formatted reclaimed total (10.0K for 10000)",
+    );
+    assert.ok(
+      output.includes("累计回收"),
+      'expected "累计回收" in reclaim line',
+    );
+    assert.ok(output.includes("待生效 2 个标记"), "expected pending info");
+    assert.ok(
+      output.includes("，"),
+      "expected separator between reclaimed total and pending info",
+    );
+  });
+
+  it("does NOT show reclaim line when all fields are absent or zero", () => {
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hello"),
+      msg("assistant", { input: 500, output: 100 }, "Response"),
+    ];
+    const report = computeContextReport(msgs);
+    const output = formatContextReport(report, {
+      prunedTokens: 0,
+      pendingCount: 0,
+      pendingTokens: 0,
+    });
+    assert.ok(
+      !output.includes("回收"),
+      "should NOT include reclaim line when all zero",
+    );
   });
 });

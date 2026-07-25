@@ -15,7 +15,11 @@ import {
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
   pruneToolOutputs,
 } from "../../core/pruning/index.js";
-import { _clearAllSessionsForTesting } from "../../core/pruning/state.js";
+import {
+  _clearAllSessionsForTesting,
+  addMark,
+  reclaimedTokens,
+} from "../../core/pruning/marks.js";
 import { _resetForTesting } from "../../utils/logger.js";
 import {
   DCP_COMMAND_HANDLED,
@@ -439,16 +443,16 @@ describe("/dcp sweep subcommand — success path", () => {
 
     // Verify state was populated.
     const state = getOrCreateSessionState("sess-sweep-success");
-    assert.equal(state.prune.tools.size, 2);
-    assert.ok(state.prune.tools.has("call-1"));
-    assert.ok(state.prune.tools.has("call-2"));
+    assert.equal(state.marks.size, 2);
+    assert.ok(state.marks.has("call-1"));
+    assert.ok(state.marks.has("call-2"));
 
     // Token estimates reflect net reclaim (output - placeholder).
     const placeholderTokens = estimateTokenCount(
       PRUNED_TOOL_OUTPUT_REPLACEMENT,
     );
-    const est1 = state.prune.tools.get("call-1") ?? 0;
-    const est2 = state.prune.tools.get("call-2") ?? 0;
+    const est1 = state.marks.get("call-1")?.tokens ?? 0;
+    const est2 = state.marks.get("call-2")?.tokens ?? 0;
     assert.equal(
       est1,
       Math.max(
@@ -470,11 +474,11 @@ describe("/dcp sweep subcommand — success path", () => {
       "unexpected net estimate for call-2",
     );
 
-    // totalPruneTokens accumulates at mark time: should equal sum of estimates.
+    // reclaimedTokens is derived from effective marks.
     assert.equal(
-      state.stats.totalPruneTokens,
+      reclaimedTokens(state),
       est1 + est2,
-      "totalPruneTokens should be accumulated at sweep (mark) time",
+      "reclaimedTokens should reflect effective marks after sweep",
     );
   });
 
@@ -518,20 +522,20 @@ describe("/dcp sweep subcommand — success path", () => {
     await handleDcpCommand(client, "sess-short-output", "sweep");
 
     const state = getOrCreateSessionState("sess-short-output");
-    assert.equal(state.prune.tools.size, 1);
-    assert.ok(state.prune.tools.has("call-short"));
+    assert.equal(state.marks.size, 1);
+    assert.ok(state.marks.has("call-short"));
 
     // estimatedTokens should be floored to 0 because "ok" (2 chars)
     // yields fewer tokens than the placeholder.
-    const estValue = state.prune.tools.get("call-short") ?? -1;
+    const estValue = state.marks.get("call-short")?.tokens ?? -1;
     assert.equal(estValue, 0, "short output should have 0 estimated tokens");
 
-    // totalPruneTokens should NOT be inflated by the negative estimate.
-    // Since estimatedTokens is 0, totalPruneTokens must stay at 0.
+    // reclaimedTokens should NOT be inflated by the negative estimate.
+    // Since estimatedTokens is 0, reclaimedTokens must stay at 0.
     assert.equal(
-      state.stats.totalPruneTokens,
+      reclaimedTokens(state),
       0,
-      "totalPruneTokens should not change when estimatedTokens is 0",
+      "reclaimedTokens should not change when estimatedTokens is 0",
     );
 
     // The user-facing report confirms 1 tool marked with 0 tokens.
@@ -577,9 +581,9 @@ describe("/dcp sweep subcommand — success path", () => {
     await handleDcpCommand(client, "sess-sweep-1", "sweep 1");
 
     const state = getOrCreateSessionState("sess-sweep-1");
-    assert.equal(state.prune.tools.size, 1);
+    assert.equal(state.marks.size, 1);
     assert.ok(
-      state.prune.tools.has("call-recent"),
+      state.marks.has("call-recent"),
       "expected the most recent tool to be marked",
     );
   });
@@ -618,7 +622,7 @@ describe("/dcp sweep subcommand — success path", () => {
     await handleDcpCommand(client, "sess-no-double", "sweep");
 
     const state = getOrCreateSessionState("sess-no-double");
-    const markTimeValue = state.stats.totalPruneTokens;
+    const markTimeValue = reclaimedTokens(state);
     const placeholderTokens = estimateTokenCount(
       PRUNED_TOOL_OUTPUT_REPLACEMENT,
     );
@@ -630,20 +634,20 @@ describe("/dcp sweep subcommand — success path", () => {
           "some tool output with extra text to make net positive after subtracting the placeholder string fully",
         ) - placeholderTokens,
       ),
-      "totalPruneTokens should be net reclaim after sweep",
+      "reclaimedTokens should be net reclaim after sweep",
     );
 
     // Transform turn 1: pruneToolOutputs replaces output but does NOT
-    // touch totalPruneTokens.
+    // touch anything derived (read-only on state).
     pruneToolOutputs(state, messages);
     assert.equal(
-      state.stats.totalPruneTokens,
+      reclaimedTokens(state),
       markTimeValue,
-      "prune should NOT change totalPruneTokens (turn 1)",
+      "prune should NOT change reclaimedTokens (turn 1)",
     );
 
     // Transform turn 2: reloaded from DB (output reverted to original),
-    // prune runs again.  totalPruneTokens still unchanged.
+    // prune runs again.  reclaimedTokens still unchanged.
     const reloadedMessages: ContextMessageEntry[] = [
       {
         info: { role: "user", id: "u1" },
@@ -668,9 +672,9 @@ describe("/dcp sweep subcommand — success path", () => {
     ];
     pruneToolOutputs(state, reloadedMessages);
     assert.equal(
-      state.stats.totalPruneTokens,
+      reclaimedTokens(state),
       markTimeValue,
-      "prune should NOT change totalPruneTokens across multiple turns",
+      "prune should NOT change reclaimedTokens across multiple turns",
     );
   });
 
@@ -709,14 +713,10 @@ describe("/dcp sweep subcommand — success path", () => {
     // Verify marks survive via loadSessionState (disk persistence).
     const persisted = loadSessionState(sessionID);
     assert.ok(persisted, "state should be persisted to disk after sweep");
-    assert.ok(persisted.prune.tools.has("call-persist"));
+    assert.ok(persisted.marks.has("call-persist"));
     assert.ok(
-      (persisted.prune.tools.get("call-persist") ?? 0) >= 0,
+      (persisted.marks.get("call-persist")?.tokens ?? 0) >= 0,
       "persisted estimate must be non-negative",
-    );
-    assert.ok(
-      persisted.stats.totalPruneTokens >= 0,
-      "persisted totalPruneTokens must be non-negative",
     );
 
     // Clean up persisted file.
@@ -762,9 +762,9 @@ describe("/dcp sweep subcommand — no-marks path", () => {
       `expected "没有找到可标记的工具输出" in prompt, got: ${promptText}`,
     );
 
-    // State prune map should be empty.
+    // State marks should be empty.
     const state = getOrCreateSessionState("sess-no-tools");
-    assert.equal(state.prune.tools.size, 0);
+    assert.equal(state.marks.size, 0);
   });
 
   it("returns no-marks message when all tool outputs are already marked", async () => {
@@ -788,7 +788,7 @@ describe("/dcp sweep subcommand — no-marks path", () => {
 
     // Pre-mark call-only.
     const state = getOrCreateSessionState("sess-already-marked");
-    state.prune.tools.set("call-only", 100);
+    addMark(state, "call-only", 100, true);
 
     let promptText = "";
     const client: DcpClient = {

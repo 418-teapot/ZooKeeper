@@ -886,6 +886,97 @@ describe("computeContextReport with prunedCallIDs", () => {
       "pruned tool should contribute input + placeholder tokens",
     );
   });
+
+  it("regression: prunedCallIDs must not exclude pending (non-effective) call IDs", () => {
+    // Regression: when prunedCallIDs is constructed by callers (context-command,
+    // TUI), only effective marks should be included — pending marks have NOT
+    // been applied yet, so their tool output is still in the context and must
+    // be counted in the tool category.
+    //
+    // This test explicitly verifies the semantics: a call ID NOT in the set
+    // contributes its full output, while one IN the set contributes only
+    // input + placeholder.
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Start"),
+      // Effective (pruned) tool — output replaced by placeholder.
+      {
+        info: {
+          role: "assistant",
+          id: "a1",
+          tokens: { input: 100, output: 50 },
+        },
+        parts: [
+          {
+            type: "tool",
+            callID: "call-effective",
+            state: { input: "echo effective", output: "effective output\n" },
+          },
+        ],
+      } as unknown as ContextMessageEntry,
+      msg("user", undefined, "Again"),
+      // Pending (non-effective, NOT pruned) tool — output still in context.
+      // Use a long output (> placeholder tokens) so excluding it from the
+      // tool category would make the category appear smaller.
+      {
+        info: {
+          role: "assistant",
+          id: "a2",
+          tokens: { input: 80, output: 30 },
+        },
+        parts: [
+          {
+            type: "tool",
+            callID: "call-pending",
+            state: {
+              input: "ls -la",
+              output:
+                "pending output that is much longer than the placeholder replacement text here to make sure it exceeds the 20 token placeholder count",
+            },
+          },
+        ],
+      } as unknown as ContextMessageEntry,
+    ];
+
+    // Correct prunedCallIDs: only effective call ID.
+    const prunedCallIDs = new Set(["call-effective"]);
+    const report = computeContextReport(msgs, prunedCallIDs);
+
+    // The total (exact + heuristic) is computed independently.
+    // exact = 80 + 30 = 110 (from last completed assistant a2)
+    // heuristic = 0 (no messages after a2)
+    assert.equal(report.total, 110);
+
+    // Tool category: effective call → input + placeholder.
+    // Pending call → input + output (full count).
+    const placeholderTokens = estimateTokenCount(
+      PRUNED_TOOL_OUTPUT_REPLACEMENT,
+    );
+    const effectiveInputTokens = estimateTokenCount("echo effective"); // 4
+    const pendingInputTokens = estimateTokenCount("ls -la"); // 2
+    const pendingOutputTokens = estimateTokenCount(
+      "pending output that is much longer than the placeholder replacement text here to make sure it exceeds the 20 token placeholder count",
+    );
+    const expectedTool =
+      effectiveInputTokens +
+      placeholderTokens + // effective: input + placeholder
+      pendingInputTokens +
+      pendingOutputTokens; // pending: full input + output
+
+    assert.equal(
+      report.categories.tool,
+      expectedTool,
+      "pending call output must still be counted in tool category",
+    );
+
+    // If prunedCallIDs had incorrectly included call-pending, the tool
+    // category would be lower (pending output replaced by placeholder).
+    const wrongPrunedCallIDs = new Set(["call-effective", "call-pending"]);
+    const reportWrong = computeContextReport(msgs, wrongPrunedCallIDs);
+    assert.ok(
+      reportWrong.categories.tool < report.categories.tool,
+      "incorrectly including pending in prunedCallIDs must under-count tool category",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -14,11 +14,13 @@ import {
 import type { ContextMessageEntry } from "../../core/metrics.js";
 import { computeContextReport } from "../../core/metrics.js";
 import {
-  collectSweepCallIDs,
   getOrCreateSessionState,
-  loadSessionState,
+  pendingCount as pendingCountDerived,
+  pendingTokens as pendingTokensDerived,
+  reclaimedTokens as reclaimedTokensDerived,
   saveSessionState,
-} from "../../core/pruning/index.js";
+} from "../../core/pruning/marks.js";
+import { runSweep } from "../../core/pruning/producers/sweep.js";
 import { log } from "../../utils/logger.js";
 
 // ---------------------------------------------------------------------------
@@ -155,22 +157,34 @@ export async function handleDcpCommand(
   }
 
   // ── Compute & format report ───────────────────────────────────────
-  // Load pruned state so the tool category excludes pruned tools and
-  // the "pruned" stat line reflects persisted cumulative tokens.
+  // Use in-memory session state so the tool category excludes pruned
+  // tools and the unified "回收" stat line reflects the current
+  // in-process cumulative values (avoids the one-turn lag of reading
+  // from disk when the batch pipeline modifies state between transforms).
   let prunedCallIDs: Set<string> | undefined;
-  let totalPruneTokens = 0;
+  let totalEff = 0;
+  let curPendingCount = 0;
+  let curPendingTokens = 0;
   try {
-    const persisted = loadSessionState(sessionID);
-    if (persisted) {
-      prunedCallIDs = new Set(persisted.prune.tools.keys());
-      totalPruneTokens = persisted.stats.totalPruneTokens;
-    }
+    const state = getOrCreateSessionState(sessionID);
+    prunedCallIDs = new Set(
+      [...state.marks.entries()]
+        .filter(([, mark]) => mark.effective)
+        .map(([callID]) => callID),
+    );
+    totalEff = reclaimedTokensDerived(state);
+    curPendingCount = pendingCountDerived(state);
+    curPendingTokens = pendingTokensDerived(state);
   } catch {
     // Defensive: I/O failure is non-fatal — tools fully counted.
     prunedCallIDs = undefined;
   }
   const report = computeContextReport(messages, prunedCallIDs);
-  const formatted = formatContextReport(report, totalPruneTokens);
+  const formatted = formatContextReport(report, {
+    prunedTokens: totalEff,
+    pendingCount: curPendingCount,
+    pendingTokens: curPendingTokens,
+  });
 
   log("context-command", "report_computed", sessionID, undefined, "info", {
     total: report.total,
@@ -232,7 +246,7 @@ export function parseSweepCount(trimmed: string): number | undefined {
  * 1. Parses the count argument (optional).
  * 2. Fetches session messages.
  * 3. Collects tool call IDs for marking.
- * 4. Stores marks in `state.prune.tools`.
+ * 4. Stores marks via addMark (writes to `state.marks`).
  * 5. Injects an ignored message reporting how many tools were marked
  *    and the estimated token reclaim.
  * 6. Returns normally — the caller in opencode.ts handles the sentinel
@@ -295,10 +309,9 @@ async function handleSweepSubcommand(
     throw new Error("会话消息格式异常：期望数组");
   }
 
-  // ── Collect callIDs for marking ─────────────────────────────────
+  // ── Run sweep producer (collects + marks in one call) ────────────
   const state = getOrCreateSessionState(sessionID);
-  const alreadyMarked = new Set(state.prune.tools.keys());
-  const marks = collectSweepCallIDs(messages, alreadyMarked, count);
+  const marks = runSweep(state, messages, count);
 
   if (marks.length === 0) {
     // ── Nothing to mark ───────────────────────────────────────────
@@ -315,17 +328,9 @@ async function handleSweepSubcommand(
     return;
   }
 
-  // ── Store marks in state ────────────────────────────────────────
-  let totalEstimate = 0;
-  for (const mark of marks) {
-    state.prune.tools.set(mark.callID, mark.estimatedTokens);
-    totalEstimate += mark.estimatedTokens;
-  }
-
-  // Accumulate at mark time (DCP alignment: tally once at sweep, not
-  // repeatedly at prune-time transforms).
-  state.stats.totalPruneTokens += totalEstimate;
-  state.dirty = true;
+  // runSweep already wrote marks via addMark and set dirty.
+  // Total estimate from the new marks.
+  const totalEstimate = marks.reduce((sum, m) => sum + m.estimatedTokens, 0);
   saveSessionState(sessionID, state);
 
   log("context-command", "sweep_marked", sessionID, undefined, "info", {
