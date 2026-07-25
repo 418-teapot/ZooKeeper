@@ -788,7 +788,7 @@ describe("/dcp sweep subcommand — no-marks path", () => {
 
     // Pre-mark call-only.
     const state = getOrCreateSessionState("sess-already-marked");
-    addMark(state, "call-only", 100, true);
+    addMark(state, "call-only", 100, true, "tool-output");
 
     let promptText = "";
     const client: DcpClient = {

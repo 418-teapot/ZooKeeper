@@ -5,12 +5,15 @@
  * message has been compacted away.  Derived stats depend on monotonicity
  * (pendingCount, pendingTokens, reclaimedTokens, markedCount, markedTokens).
  *
- * Each mark is a `{ tokens, effective }` pair.  Producers (dedup/sweep)
- * write marks via `addMark`.  `releaseBatch` flips all ineffective marks
- * to effective.  `pruneToolOutputs` reads effective marks only.
+ * Each mark is a `{ tokens, effective, action }` triple.  Producers
+ * (dedup/sweep) write marks via `addMark`.  `releaseBatch` flips all
+ * ineffective marks to effective.  `pruneToolOutputs` reads effective
+ * marks only.
  *
- * Persisted shape: `{ marks: Record<callID, { t, e }>, lastUpdated }`.
- * Old shape (prune.tools / stats) is loaded as empty — no migration layer.
+ * Persisted shape:
+ * `{ marks: Record<callID, { tokens, effective, action }>, lastUpdated }`.
+ * Prior compact shapes (`{ t, e, a }` / `{ t, e }`) and the v1 shape
+ * (prune.tools / stats) are loaded as empty — no migration layer.
  *
  * @module
  */
@@ -25,10 +28,20 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { log } from "../../utils/logger.js";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+/**
+ * Prune action discriminator.
+ *
+ * - `"tool-output"` — replace the tool part's output with a placeholder.
+ * - `"tool-error-input"` — replace the error-status tool part's input
+ *   string with a placeholder (future use).
+ */
+export type PruneAction = "tool-output" | "tool-error-input";
 
 /**
  * A single pruning mark.
@@ -37,10 +50,12 @@ import { join } from "node:path";
  *   mark becomes effective.
  * - `effective` — `true` when this mark has been released (either
  *   immediately by sweep, or via batch release for dedup marks).
+ * - `action` — the type of pruning action this mark represents.
  */
 export interface Mark {
   tokens: number;
   effective: boolean;
+  action: PruneAction;
 }
 
 /**
@@ -98,18 +113,24 @@ function isSafeSessionId(id: string): boolean {
 }
 
 /**
- * Persisted mark shape.
+ * Persisted mark shape (full-word keys, with action discriminator).
+ *
+ * Fields: tokens, effective, action.  Prior compact-key shapes
+ * (`{ t, e, a }` / `{ t, e }`) fail strict validation and the whole
+ * file is loaded as empty — no migration layer.
  */
 interface PersistedMark {
-  t: number;
-  e: boolean;
+  tokens: number;
+  effective: boolean;
+  action: "tool-output" | "tool-error-input";
 }
 
 /**
- * Persisted state shape (v2 — unified marks collection).
+ * Persisted state shape (unified marks collection with action).
  *
- * Old shape (`{ prune: { tools, pending }, stats, lastUpdated }`) is
- * detected and loaded as empty state — the user confirmed no migration.
+ * Prior compact shapes (`{ t, e, a }`, `{ t, e }`) and the v1 shape
+ * (`{ prune: { tools, pending }, stats }`) are detected as obsolete
+ * and loaded as empty state — no migration layer.
  */
 interface PersistedState {
   marks: Record<string, PersistedMark>;
@@ -117,12 +138,24 @@ interface PersistedState {
 }
 
 /**
+ * The set of valid prune action values for persisted validation.
+ */
+const VALID_ACTIONS = new Set<string>(["tool-output", "tool-error-input"]);
+
+/**
  * Read the persisted session state for a session from disk.
  *
  * Reads `~/.zoo/storage/{sessionId}.json`.  Returns `null` when
  * the file is missing or corrupt (defensive — never throws).
- * Old-format files (with `prune.tools` / `stats`) are loaded as
- * empty state — no migration layer.
+ *
+ * **Strict validation:** every mark entry must have
+ * `{ tokens: number, effective: boolean,
+ * action: "tool-output"|"tool-error-input" }`.  If ANY entry
+ * is missing a field, has a wrong type, or has an invalid action
+ * value, the entire file is treated as empty and a warning is logged.
+ *
+ * Prior compact shapes (`{ t, e, a }`, `{ t, e }`) and the v1 shape
+ * (`prune.tools / stats`) are loaded as empty — no migration layer.
  *
  * @param sessionId - The session identifier.
  * @returns Parsed marks map, or `null` on any failure.
@@ -137,26 +170,53 @@ export function loadSessionState(sessionId: string): {
     const raw = readFileSync(filePath, "utf8");
     const parsed = JSON.parse(raw) as Record<string, unknown>;
 
-    // New shape: { marks: {...}, lastUpdated }
+    // Current shape: { marks: {...}, lastUpdated }
     if (
       parsed.marks &&
       typeof parsed.marks === "object" &&
       !Array.isArray(parsed.marks)
     ) {
       const marks = new Map<string, Mark>();
-      for (const [id, val] of Object.entries(
-        parsed.marks as Record<string, unknown>,
-      )) {
-        const v = val as { t?: number; e?: boolean };
+      const entries = Object.entries(parsed.marks as Record<string, unknown>);
+
+      for (const [id, val] of entries) {
+        const v = val as Record<string, unknown>;
+        // Strict validation: must have tokens (number),
+        // effective (boolean), action (valid action value).
+        const tokens = v.tokens;
+        const effective = v.effective;
+        const action = v.action;
+        if (
+          typeof tokens !== "number" ||
+          typeof effective !== "boolean" ||
+          typeof action !== "string" ||
+          !VALID_ACTIONS.has(action)
+        ) {
+          log("pruning", "load_invalid_entry", sessionId, undefined, "warn", {
+            entryId: id,
+            reason:
+              typeof tokens !== "number"
+                ? "tokens not a number"
+                : typeof effective !== "boolean"
+                  ? "effective not a boolean"
+                  : typeof action !== "string"
+                    ? "action not a string"
+                    : "action not a valid action",
+            filePath,
+          });
+          // Entire file treated as empty.
+          return { marks: new Map() };
+        }
         marks.set(id, {
-          tokens: typeof v.t === "number" ? v.t : 0,
-          effective: typeof v.e === "boolean" ? v.e : false,
+          tokens,
+          effective,
+          action: action as PruneAction,
         });
       }
       return { marks };
     }
 
-    // Old shape (prune.tools / stats) — return empty.
+    // Obsolete shapes (compact keys / v1 prune.tools/stats) — empty.
     return { marks: new Map() };
   } catch {
     // Defensive: missing / corrupt file → null, never throw.
@@ -172,7 +232,7 @@ export function loadSessionState(sessionId: string): {
  * are swallowed — persistence failure must never crash the caller.
  *
  * JSON shape:
- * `{ marks: Record<callID, { t: tokens, e: effective }>, lastUpdated }`
+ * `{ marks: Record<callID, { tokens, effective, action }>, lastUpdated }`
  *
  * @param sessionId - The session identifier.
  * @param state - The session state to persist.
@@ -185,7 +245,11 @@ export function saveSessionState(sessionId: string, state: SessionState): void {
     const tmpPath = join(STORAGE_DIR, `.${sessionId}.json.tmp`);
     const marksRecord: Record<string, PersistedMark> = {};
     for (const [id, mark] of state.marks) {
-      marksRecord[id] = { t: mark.tokens, e: mark.effective };
+      marksRecord[id] = {
+        tokens: mark.tokens,
+        effective: mark.effective,
+        action: mark.action,
+      };
     }
     const data: PersistedState = {
       marks: marksRecord,
@@ -287,6 +351,7 @@ export function removeSession(sessionId: string): void {
  *   applied.
  * @param effective - `true` for immediate-release marks (sweep),
  *   `false` for batch-release marks (dedup).
+ * @param action - The pruning action this mark represents.
  * @returns `true` if a new mark was added, `false` if the callID was
  *   already marked.
  */
@@ -295,9 +360,10 @@ export function addMark(
   callID: string,
   tokens: number,
   effective: boolean,
+  action: PruneAction,
 ): boolean {
   if (state.marks.has(callID)) return false;
-  state.marks.set(callID, { tokens, effective });
+  state.marks.set(callID, { tokens, effective, action });
   state.dirty = true;
   return true;
 }
@@ -307,32 +373,41 @@ export function addMark(
  *
  * Flips every mark with `effective === false` to `true`.  Returns the
  * count and total tokens of marks that were actually flipped (fixes
- * the old dual-map stats-inflation bug: only real flips are counted).
+ * the old dual-map stats-inflation bug: only real flips are counted),
+ * plus a per-action breakdown.
  *
- * Idempotent: calling when no pending marks exist returns `{0, 0}`
+ * Idempotent: calling when no pending marks exist returns `{0, 0, ...}`
  * and does NOT set `dirty`.
  *
  * @param state - The session state.
- * @returns `{ count, tokens }` — the number of marks flipped and their
- *   total estimated token count.  Both zero when nothing was pending.
+ * @returns `{ count, tokens, byAction }` — the number of marks flipped
+ *   and their total estimated token count, with per-action sub-totals.
+ *   All zero when nothing was pending.
  */
 export function releaseBatch(state: SessionState): {
   count: number;
   tokens: number;
+  byAction: Record<PruneAction, { count: number; tokens: number }>;
 } {
   let count = 0;
   let tokens = 0;
+  const byAction: Record<PruneAction, { count: number; tokens: number }> = {
+    "tool-output": { count: 0, tokens: 0 },
+    "tool-error-input": { count: 0, tokens: 0 },
+  };
   for (const [, mark] of state.marks) {
     if (!mark.effective) {
       mark.effective = true;
       count++;
       tokens += mark.tokens;
+      byAction[mark.action].count++;
+      byAction[mark.action].tokens += mark.tokens;
     }
   }
   if (count > 0) {
     state.dirty = true;
   }
-  return { count, tokens };
+  return { count, tokens, byAction };
 }
 
 // ---------------------------------------------------------------------------

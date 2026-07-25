@@ -11,7 +11,11 @@
 import type { ContextMessageEntry } from "../metrics.js";
 import type { SessionState } from "./marks.js";
 import type { SweepToolPart } from "./types.js";
-import { getCallId, PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./types.js";
+import {
+  getCallId,
+  PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
+  PRUNED_TOOL_OUTPUT_REPLACEMENT,
+} from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -75,6 +79,9 @@ export function pruneToolOutputs(
 
       const mark = state.marks.get(callID);
       if (!mark?.effective) continue;
+      // Only apply marks with the output action — error-input marks
+      // are handled by pruneToolErrors.
+      if (mark.action !== "tool-output") continue;
 
       const originalOutput = toolPart.state?.output;
 
@@ -105,4 +112,95 @@ export function pruneToolOutputs(
   // deleteSessionState (session.deleted) or compaction.
 
   return replacedOutputs;
+}
+
+// ---------------------------------------------------------------------------
+// Prune error inputs (sweep phase)
+// ---------------------------------------------------------------------------
+
+/**
+ * Prune inputs of failed tool calls that have been effective-marked with
+ * action `"tool-error-input"`.
+ *
+ * Walks each message's parts array.  For every tool part whose `callID`
+ * has an effective mark with action `"tool-error-input"`, its input
+ * string-value fields are replaced IN-PLACE with
+ * `PRUNED_TOOL_ERROR_INPUT_REPLACEMENT`.
+ *
+ * Non-string fields (numbers, booleans, arrays, nested objects) within
+ * the input object are left untouched.  If the input is a plain string,
+ * it is replaced entirely.  Null / undefined inputs are left unchanged.
+ *
+ * Non-effective (pending) marks and marks with other actions (e.g.
+ * `"tool-output"`) are NOT applied.
+ *
+ * This function mutates `messages` in place and reads `state.marks`.
+ * It does NOT mutate state or stats.
+ *
+ * @param state - The session state (must have `marks` map).
+ * @param messages - Array of session message entries (mutated in place).
+ * @returns Array of `PruneReplacement` objects describing each replaced
+ *   input (empty array when no effective error-input marks exist or
+ *   no matches found).
+ */
+export function pruneToolErrors(
+  state: SessionState,
+  messages: ContextMessageEntry[],
+): PruneReplacement[] {
+  if (state.marks.size === 0) return [];
+
+  const replacedInputs: PruneReplacement[] = [];
+
+  for (const msg of messages) {
+    if (!msg.parts) continue;
+    for (const part of msg.parts) {
+      const toolPart = part as SweepToolPart;
+      if (toolPart.type !== "tool") continue;
+      const callID = getCallId(toolPart);
+      if (!callID) continue;
+
+      const mark = state.marks.get(callID);
+      if (!mark?.effective) continue;
+
+      // Only apply marks with the error-input action.
+      if (mark.action !== "tool-error-input") continue;
+
+      const input = toolPart.state?.input;
+
+      // Skip null / undefined inputs.
+      if (input == null) continue;
+
+      // Compute beforeLen from string-value fields in the input.
+      let beforeLen = 0;
+      let stringFieldCount = 0;
+
+      if (typeof input === "string") {
+        beforeLen = input.length;
+        // When input is a string, we replace it wholesale with one
+        // placeholder. The state object is guaranteed to exist here
+        // because input is from toolPart.state?.input and is not null.
+        if (toolPart.state) {
+          toolPart.state.input = PRUNED_TOOL_ERROR_INPUT_REPLACEMENT;
+        }
+        stringFieldCount = 1;
+      } else if (typeof input === "object" && !Array.isArray(input)) {
+        const record = input as Record<string, unknown>;
+        for (const key of Object.keys(record)) {
+          if (typeof record[key] === "string") {
+            beforeLen += (record[key] as string).length;
+            record[key] = PRUNED_TOOL_ERROR_INPUT_REPLACEMENT;
+            stringFieldCount++;
+          }
+        }
+      }
+
+      if (stringFieldCount === 0) continue;
+
+      const afterLen =
+        PRUNED_TOOL_ERROR_INPUT_REPLACEMENT.length * stringFieldCount;
+      replacedInputs.push({ callID, beforeLen, afterLen });
+    }
+  }
+
+  return replacedInputs;
 }

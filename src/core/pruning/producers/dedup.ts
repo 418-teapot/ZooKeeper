@@ -12,38 +12,28 @@
  */
 
 import type { ContextMessageEntry } from "../../metrics.js";
-import { estimateTokenCount } from "../../metrics.js";
 import type { SessionState } from "../marks.js";
 import { addMark } from "../marks.js";
 import type { SweepToolPart } from "../types.js";
 import { getCallId, PRUNED_TOOL_OUTPUT_REPLACEMENT } from "../types.js";
+import { collectProtectedCallIDs, netReclaimTokens } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 /**
- * Options for the dedup strategy.
+ * Options for the dedup producer.
  *
- * `enabled`, `thresholdTokens`, and `releaseThresholdPercent` are consumed
- * by the hook for gating and batch release; `runDedup` only reads
- * `turnProtection` and `protectedTools`.
+ * `runDedup` only reads `turnProtection` and `protectedTools`.
+ * Hook-level gating (enabled, thresholdTokens) and batch-release
+ * (releaseThresholdPercent) are managed by the handler config.
  */
 export interface DedupOptions {
-  /** Hook-level gate — runDedup does not check this. */
-  enabled?: boolean;
-  /** Hook-level gate — minimum context tokens before scanning. */
-  thresholdTokens?: number;
   /** Number of most recent assistant steps to protect from dedup. */
   turnProtection?: number;
   /** Tool names that are excluded from dedup. */
   protectedTools?: string[];
-  /**
-   * Minimum percentage of prompt-side total tokens that pending dedup
-   * marks must reach before they are batch-released into effective marks
-   * and applied on the next turn.  Default 5 (%).
-   */
-  releaseThresholdPercent?: number;
 }
 
 /**
@@ -119,109 +109,6 @@ function normalizeInput(input: unknown): unknown {
  */
 function makeSignature(tool: string, input: unknown): string {
   return `${tool}::${JSON.stringify(normalizeInput(input))}`;
-}
-
-// ---------------------------------------------------------------------------
-// Turn protection
-// ---------------------------------------------------------------------------
-
-/**
- * Collect tool callIDs that fall within the protected window.
- *
- * When the messages array contains step-start parts, the most recent
- * `turnProtection` assistant steps (counted by messages containing a
- * `step-start` part) are protected from dedup.  When no step-start part
- * exists, falls back to protecting the last `turnProtection` tool calls.
- *
- * @param messages - The session messages array.
- * @param turnProtection - Number of steps / tool calls to protect.
- * @returns Set of protected callIDs.
- */
-function collectProtectedCallIDs(
-  messages: ContextMessageEntry[],
-  turnProtection: number,
-): Set<string> {
-  const protectedIDs = new Set<string>();
-  if (turnProtection <= 0) return protectedIDs;
-
-  // ── Step 1: detect step-start presence ──────────────────────────
-  let hasStepStart = false;
-  for (const msg of messages) {
-    if (!msg.parts) continue;
-    for (const part of msg.parts) {
-      const p = part as { type: string };
-      if (p.type === "step-start") {
-        hasStepStart = true;
-        break;
-      }
-    }
-    if (hasStepStart) break;
-  }
-
-  if (hasStepStart) {
-    // ── Step 2a: find all step-start indices ──────────────────────
-    const stepStartIndices: number[] = [];
-    for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i];
-      if (!msg.parts) continue;
-      for (const part of msg.parts) {
-        if ((part as { type: string }).type === "step-start") {
-          stepStartIndices.push(i);
-          break;
-        }
-      }
-    }
-
-    // ── Step 2b: compute protected zone start index ──────────────
-    let protectedFromIdx: number;
-    if (stepStartIndices.length > turnProtection) {
-      // There are more steps than the protection window.
-      // Protect from the (turnProtection)-th step from the end.
-      protectedFromIdx =
-        stepStartIndices[stepStartIndices.length - turnProtection];
-    } else {
-      // Fewer or equal steps than protection window → protect all.
-      protectedFromIdx = 0;
-    }
-
-    // ── Step 2c: collect tool callIDs in protected zone ──────────
-    for (let i = protectedFromIdx; i < messages.length; i++) {
-      const msg = messages[i];
-      if (!msg.parts) continue;
-      for (const part of msg.parts) {
-        const toolPart = part as SweepToolPart;
-        if (toolPart.type !== "tool") continue;
-        const callID = getCallId(toolPart);
-        if (callID) protectedIDs.add(callID);
-      }
-    }
-  } else {
-    // ── Step 3: fallback — protect last N tool calls ─────────────
-    let collected = 0;
-    for (
-      let i = messages.length - 1;
-      i >= 0 && collected < turnProtection;
-      i--
-    ) {
-      const msg = messages[i];
-      if (!msg.parts) continue;
-      for (
-        let p = msg.parts.length - 1;
-        p >= 0 && collected < turnProtection;
-        p--
-      ) {
-        const part = msg.parts[p] as SweepToolPart;
-        if (part.type !== "tool") continue;
-        const callID = getCallId(part);
-        if (callID) {
-          protectedIDs.add(callID);
-          collected++;
-        }
-      }
-    }
-  }
-
-  return protectedIDs;
 }
 
 // ---------------------------------------------------------------------------
@@ -303,7 +190,6 @@ export function runDedup(
       tool: string;
       messageIndex: number;
       partIndex: number;
-      rawDiff: number;
       estimatedTokens: number;
     }>
   >();
@@ -325,12 +211,10 @@ export function runDedup(
       if (!callID) continue;
 
       const signature = makeSignature(part.tool ?? "", part.state?.input);
-      const outputTokens = estimateTokenCount(part.state?.output);
-      const placeholderTokens = estimateTokenCount(
+      const estimatedTokens = netReclaimTokens(
+        part.state?.output,
         PRUNED_TOOL_OUTPUT_REPLACEMENT,
       );
-      const rawDiff = outputTokens - placeholderTokens;
-      const estimatedTokens = Math.max(0, rawDiff);
 
       let entries = sigMap.get(signature);
       if (!entries) {
@@ -342,7 +226,6 @@ export function runDedup(
         tool: part.tool ?? "",
         messageIndex: mi,
         partIndex: pi,
-        rawDiff,
         estimatedTokens,
       });
     }
@@ -368,11 +251,19 @@ export function runDedup(
 
       // Skip zero-benefit marks: when output is shorter than the
       // placeholder, replacement would increase context rather than save.
-      if (entry.rawDiff <= 0) continue;
+      if (entry.estimatedTokens <= 0) continue;
 
       // addMark is idempotent: already-marked callIDs return false.
       // This naturally prevents double-counting on re-runs.
-      if (!addMark(state, entry.callID, entry.estimatedTokens, false)) {
+      if (
+        !addMark(
+          state,
+          entry.callID,
+          entry.estimatedTokens,
+          false,
+          "tool-output",
+        )
+      ) {
         // Already marked — defensive check (should not happen since
         // Phase 2 filters for alreadyMarked, but handle gracefully).
         continue;

@@ -348,16 +348,18 @@ prompt_word_limit = 500
 [zoo.context]
 # 轮次保护
 turn_protection = 5
+# 批量释放阈值（百分比）：pending 标记合计达到上下文长度该百分比时统一批量释放
+release_threshold_percent = 5
 
 [zoo.context.dedup]
-# 自动去重开关
 enabled = true
-# 触发门控
 threshold_tokens = 100000
-# 受保护工具
 protected_tools = ["question"]
-# 去重释放阈值（百分比）
-release_threshold_percent = 5
+
+[zoo.context.purge_errors]
+enabled = true
+threshold_tokens = 100000
+protected_tools = ["question"]
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 

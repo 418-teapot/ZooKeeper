@@ -138,7 +138,7 @@ describe("runSweep (no-arg / default)", () => {
   it("skips already-marked callIDs (addMark idempotency)", () => {
     const state = getOrCreateSessionState("sess-already-marked");
     // Pre-mark call-2 (simulates previous sweep).
-    addMark(state, "call-2", 99, true);
+    addMark(state, "call-2", 99, true, "tool-output");
 
     const messages = [
       msg("user", "u1", [textPart("do it")]),
@@ -222,7 +222,7 @@ describe("runSweep (numeric arg)", () => {
 
   it("skips already-marked callIDs with numeric count", () => {
     const state = getOrCreateSessionState("sess-already-num");
-    addMark(state, "call-3", 99, true);
+    addMark(state, "call-3", 99, true, "tool-output");
 
     const messages = [
       msg("assistant", "a1", [toolPart("call-1", "r1")]),

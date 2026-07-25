@@ -14,7 +14,9 @@ import {
   _clearAllSessionsForTesting,
   addMark,
   getOrCreateSessionState,
+  PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
+  pruneToolErrors,
   pruneToolOutputs,
 } from "./index.js";
 import type { SweepToolPart } from "./types.js";
@@ -132,7 +134,7 @@ describe("pruneToolOutputs with empty state", () => {
   it("is a no-op when no effective marks match", () => {
     const state = getOrCreateSessionState("sess-nomatch");
     // Add a mark for a callID not in messages.
-    addMark(state, "call-other", 50, true);
+    addMark(state, "call-other", 50, true, "tool-output");
 
     const messages: ContextMessageEntry[] = [
       msg("assistant", "a1", [toolPart("call-1", "data")]),
@@ -151,7 +153,7 @@ describe("pruneToolOutputs with empty state", () => {
 
   it("does NOT replace non-effective (pending) marks", () => {
     const state = getOrCreateSessionState("sess-pending-only");
-    addMark(state, "call-1", 100, false); // Effective = false.
+    addMark(state, "call-1", 100, false, "tool-output"); // Effective = false.
 
     const messages: ContextMessageEntry[] = [
       msg("assistant", "a1", [toolPart("call-1", "data")]),
@@ -174,8 +176,8 @@ describe("pruneToolOutputs with empty state", () => {
 describe("pruneToolOutputs with pre-populated state", () => {
   it("replaces effective-marked tool outputs with placeholder", () => {
     const state = getOrCreateSessionState("sess-marked");
-    addMark(state, "call-1", 100, true);
-    addMark(state, "call-2", 200, true);
+    addMark(state, "call-1", 100, true, "tool-output");
+    addMark(state, "call-2", 200, true, "tool-output");
 
     const messages: ContextMessageEntry[] = [
       msg("user", "u1", [textPart("do something")]),
@@ -205,7 +207,7 @@ describe("pruneToolOutputs with pre-populated state", () => {
 
   it("handles tool parts without pre-existing state object", () => {
     const state = getOrCreateSessionState("sess-nostate");
-    addMark(state, "call-1", 50, true);
+    addMark(state, "call-1", 50, true, "tool-output");
 
     const messages: ContextMessageEntry[] = [
       msg("assistant", "a1", [
@@ -226,7 +228,7 @@ describe("pruneToolOutputs with pre-populated state", () => {
 
   it("only replaces tools with matching callID, skips others", () => {
     const state = getOrCreateSessionState("sess-skip");
-    addMark(state, "call-1", 100, true);
+    addMark(state, "call-1", 100, true, "tool-output");
 
     const messages: ContextMessageEntry[] = [
       msg("assistant", "a1", [
@@ -249,8 +251,8 @@ describe("pruneToolOutputs with pre-populated state", () => {
 
   it("does NOT clear marks after processing (accumulate)", () => {
     const state = getOrCreateSessionState("sess-accumulate");
-    addMark(state, "call-1", 100, true);
-    addMark(state, "call-2", 200, true);
+    addMark(state, "call-1", 100, true, "tool-output");
+    addMark(state, "call-2", 200, true, "tool-output");
 
     const messages: ContextMessageEntry[] = [
       msg("assistant", "a1", [
@@ -278,7 +280,7 @@ describe("pruneToolOutputs with pre-populated state", () => {
 describe("duplicate mark prevention", () => {
   it("pruneToolOutputs replaces both occurrences of same callID", () => {
     const state = getOrCreateSessionState("sess-dup-callid");
-    addMark(state, "call-1", 100, true);
+    addMark(state, "call-1", 100, true, "tool-output");
 
     const messages: ContextMessageEntry[] = [
       msg("assistant", "a1", [toolPart("call-1", "output A")]),
@@ -305,8 +307,8 @@ describe("duplicate mark prevention", () => {
 describe("pruneToolOutputs accumulation (no clear)", () => {
   it("marks.size stays unchanged after prune", () => {
     const state = getOrCreateSessionState("sess-no-clear");
-    addMark(state, "call-1", 100, true);
-    addMark(state, "call-2", 200, true);
+    addMark(state, "call-1", 100, true, "tool-output");
+    addMark(state, "call-2", 200, true, "tool-output");
 
     const messages: ContextMessageEntry[] = [
       msg("assistant", "a1", [
@@ -324,14 +326,14 @@ describe("pruneToolOutputs accumulation (no clear)", () => {
     const state = getOrCreateSessionState("sess-multi-turn");
 
     // Turn 1.
-    addMark(state, "call-1", 100, true);
+    addMark(state, "call-1", 100, true, "tool-output");
     pruneToolOutputs(state, [
       msg("assistant", "a1", [toolPart("call-1", "out1")]),
     ]);
     assert.equal(state.marks.size, 1);
 
     // Turn 2.
-    addMark(state, "call-2", 200, true);
+    addMark(state, "call-2", 200, true, "tool-output");
     assert.equal(state.marks.size, 2);
     pruneToolOutputs(state, [
       msg("assistant", "a2", [toolPart("call-2", "out2")]),
@@ -347,7 +349,7 @@ describe("pruneToolOutputs accumulation (no clear)", () => {
 describe("re-prune already-placeholder output", () => {
   it("is stable (no double-count issues)", () => {
     const state = getOrCreateSessionState("sess-reprune");
-    addMark(state, "call-1", 100, true);
+    addMark(state, "call-1", 100, true, "tool-output");
 
     const messages: ContextMessageEntry[] = [
       msg("assistant", "a1", [toolPart("call-1", "real output")]),
@@ -359,6 +361,280 @@ describe("re-prune already-placeholder output", () => {
     assert.equal(
       (messages[0].parts?.[0] as SweepToolPart).state?.output,
       PRUNED_TOOL_OUTPUT_REPLACEMENT,
+    );
+  });
+});
+
+// ===========================================================================
+// pruneToolErrors — error input placeholder replacement
+// ===========================================================================
+
+describe("pruneToolErrors", () => {
+  const PLACEHOLDER = PRUNED_TOOL_ERROR_INPUT_REPLACEMENT;
+
+  it("replaces string-value fields in input object, keeps non-string fields", () => {
+    const state = getOrCreateSessionState("sess-err-str");
+    addMark(state, "call-err", 50, true, "tool-error-input");
+
+    const messages = [
+      msg("assistant", "a1", [
+        {
+          type: "tool",
+          callID: "call-err",
+          state: {
+            input: { cmd: "ls", path: "/tmp", timeout: 30, verbose: true },
+            output: "some error output",
+          },
+          tool: "bash",
+        } as SweepToolPart,
+      ]),
+    ];
+
+    pruneToolErrors(state, messages);
+
+    const input = (messages[0].parts?.[0] as SweepToolPart).state
+      ?.input as Record<string, unknown>;
+    // String fields replaced.
+    assert.equal(input.cmd, PLACEHOLDER);
+    assert.equal(input.path, PLACEHOLDER);
+    // Non-string fields untouched.
+    assert.equal(input.timeout, 30);
+    assert.equal(input.verbose, true);
+    // output untouched.
+    assert.equal(
+      (messages[0].parts?.[0] as SweepToolPart).state?.output,
+      "some error output",
+    );
+  });
+
+  it("replaces a string-typed input entirely", () => {
+    const state = getOrCreateSessionState("sess-err-str-input");
+    addMark(state, "call-err", 50, true, "tool-error-input");
+
+    const messages = [
+      msg("assistant", "a1", [
+        {
+          type: "tool",
+          callID: "call-err",
+          state: {
+            input: "plain string input",
+            output: "error output",
+          },
+          tool: "bash",
+        } as SweepToolPart,
+      ]),
+    ];
+
+    pruneToolErrors(state, messages);
+
+    const part = messages[0].parts?.[0] as SweepToolPart;
+    assert.equal(part.state?.input, PLACEHOLDER);
+    assert.equal(part.state?.output, "error output");
+  });
+
+  it("does NOT replace when input is null/undefined", () => {
+    const state = getOrCreateSessionState("sess-err-null");
+    addMark(state, "call-err", 50, true, "tool-error-input");
+
+    const messages = [
+      msg("assistant", "a1", [
+        {
+          type: "tool",
+          callID: "call-err",
+          state: {
+            input: null,
+            output: "err",
+          },
+          tool: "bash",
+        } as SweepToolPart,
+      ]),
+    ];
+
+    const result = pruneToolErrors(state, messages);
+    assert.equal(result.length, 0);
+  });
+
+  it("leaves state.error untouched", () => {
+    const state = getOrCreateSessionState("sess-err-error-field");
+    addMark(state, "call-err", 50, true, "tool-error-input");
+
+    const messages = [
+      msg("assistant", "a1", [
+        {
+          type: "tool",
+          callID: "call-err",
+          state: {
+            input: { cmd: "ls" },
+            output: "out",
+            error: { message: "permission denied" },
+          },
+          tool: "bash",
+        } as SweepToolPart,
+      ]),
+    ];
+
+    pruneToolErrors(state, messages);
+    const st = messages[0].parts?.[0] as SweepToolPart;
+    assert.equal(
+      (st.state as { error?: { message: string } } | undefined)?.error
+        ?.message as string | undefined,
+      "permission denied",
+    );
+    assert.equal(
+      (st.state?.input as Record<string, unknown> | undefined)?.cmd as
+        | string
+        | undefined,
+      PLACEHOLDER,
+    );
+  });
+
+  it("skips pending (non-effective) marks", () => {
+    const state = getOrCreateSessionState("sess-err-pending");
+    addMark(state, "call-err", 50, false, "tool-error-input"); // Not effective.
+
+    const messages = [
+      msg("assistant", "a1", [
+        {
+          type: "tool",
+          callID: "call-err",
+          state: {
+            input: { cmd: "ls" },
+            output: "err output",
+          },
+          tool: "bash",
+        } as SweepToolPart,
+      ]),
+    ];
+
+    pruneToolErrors(state, messages);
+    const input = (messages[0].parts?.[0] as SweepToolPart).state
+      ?.input as Record<string, unknown>;
+    assert.equal(input.cmd, "ls");
+  });
+
+  it("skips marks with action='tool-output'", () => {
+    const state = getOrCreateSessionState("sess-err-skip-output");
+    addMark(state, "call-out", 100, true, "tool-output");
+
+    const messages = [
+      msg("assistant", "a1", [
+        {
+          type: "tool",
+          callID: "call-out",
+          state: {
+            input: { cmd: "ls" },
+            output: "output data",
+          },
+          tool: "bash",
+        } as SweepToolPart,
+      ]),
+    ];
+
+    pruneToolErrors(state, messages);
+    const input = (messages[0].parts?.[0] as SweepToolPart).state
+      ?.input as Record<string, unknown>;
+    // tool-output mark should NOT trigger input replacement.
+    assert.equal(input.cmd, "ls");
+  });
+
+  it("silently skips callIDs with no matching part in messages", () => {
+    const state = getOrCreateSessionState("sess-err-no-part");
+    addMark(state, "call-ghost", 50, true, "tool-error-input");
+
+    const messages = [
+      msg("assistant", "a1", [
+        {
+          type: "text",
+          text: "hello",
+        },
+      ]),
+    ];
+
+    // Should not throw.
+    const result = pruneToolErrors(state, messages);
+    assert.equal(result.length, 0);
+  });
+
+  it("returns beforeLen and afterLen for each replacement", () => {
+    const state = getOrCreateSessionState("sess-err-len");
+    addMark(state, "call-err", 50, true, "tool-error-input");
+
+    const messages = [
+      msg("assistant", "a1", [
+        {
+          type: "tool",
+          callID: "call-err",
+          state: {
+            input: { cmd: "ls", path: "/tmp/very/long/path" },
+            output: "some error",
+          },
+          tool: "bash",
+        } as SweepToolPart,
+      ]),
+    ];
+
+    const result = pruneToolErrors(state, messages);
+    assert.equal(result.length, 1);
+    assert.equal(result[0].callID, "call-err");
+    // beforeLen = "ls".length + "/tmp/very/long/path".length = 2 + 19 = 21
+    assert.equal(result[0].beforeLen, 21);
+    // afterLen = placeholder.length * 2 (two string fields replaced)
+    assert.equal(result[0].afterLen, PLACEHOLDER.length * 2);
+  });
+
+  it("returns empty array when no matching error-input marks exist", () => {
+    const state = getOrCreateSessionState("sess-err-empty");
+    // No marks at all.
+    const messages = [
+      msg("assistant", "a1", [
+        {
+          type: "tool",
+          callID: "call-1",
+          state: { input: { cmd: "ls" }, output: "ok" },
+          tool: "bash",
+        } as SweepToolPart,
+      ]),
+    ];
+
+    const result = pruneToolErrors(state, messages);
+    assert.equal(result.length, 0);
+  });
+
+  it("replaces top-level string fields but keeps nested objects/arrays unchanged", () => {
+    const state = getOrCreateSessionState("sess-err-nested");
+    addMark(state, "call-err", 50, true, "tool-error-input");
+
+    const messages = [
+      msg("assistant", "a1", [
+        {
+          type: "tool",
+          callID: "call-err",
+          state: {
+            input: {
+              cmd: "ls",
+              opts: { recursive: true, path: "/secret" },
+              items: ["deep string", "another"],
+            },
+            output: "error output",
+          },
+          tool: "bash",
+        } as SweepToolPart,
+      ]),
+    ];
+
+    pruneToolErrors(state, messages);
+
+    const input = (messages[0].parts?.[0] as SweepToolPart).state
+      ?.input as Record<string, unknown>;
+    // Top-level string replaced.
+    assert.equal(input.cmd, PRUNED_TOOL_ERROR_INPUT_REPLACEMENT);
+    // Nested object/array strings left untouched.
+    assert.deepEqual(input.opts, { recursive: true, path: "/secret" });
+    assert.deepEqual(input.items, ["deep string", "another"]);
+    // Output untouched.
+    assert.equal(
+      (messages[0].parts?.[0] as SweepToolPart).state?.output,
+      "error output",
     );
   });
 });

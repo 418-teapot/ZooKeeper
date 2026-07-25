@@ -1,9 +1,16 @@
 # 上下文剪枝设计文档：从内置 Compaction 到框架无关的统一剪枝架构
 
-**版本:** 2.3
+**版本:** 2.4
 **日期:** 2026-07-25
 **分类:** 技术架构文档 / 上下文管理
 
+> **2.4 更新说明：** purge-errors 功能完整实现（R1-R3 架构落地）：
+> §4 新增 purge-errors 实现小节（action 建模、R1 三层配置、R3 表驱动
+> producer 模型）；§6.5/§6.8 同步配置与文件清单变更；§7.1 对比表"错误清除"
+> 已标记完成；§8 路线图同步日期；附 2026-07-25 裸 SQL 实测修正注记
+> （error part 无 output 字段、全局 537K input chars ≈ 134K tokens、
+> 尾部风暴会话 1-11%、工具分布 edit 273K/write 127K/task 119K chars）。
+>
 > **2.3 更新说明：** §6 自动 dedup 已**实现并实测通过**（含统一 marks
 > 架构重写）：§4 更新为 as-built 实现；§6 保留设计定稿原文并标记完成，
 > 其中 §6.6/§6.7/§6.8 已按实际实现修订（ignored 通知、统一 marks 单
@@ -529,7 +536,7 @@ interface CompressionBlock {
 ## 4. ZooKeeper 当前实现
 
 已实现**观测层 + 统一 marks 剪枝核心（手动 sweep + 自动 dedup）+ 批量释放
-+ 持久化**（截至 2026-07-25，TS 测试 820+ 全绿）。核心逻辑在
++ 持久化**（截至 2026-07-25，TS 测试 879 全绿）。核心逻辑在
 `src/core/pruning/`（框架无关），OpenCode 适配在 `src/hooks/` 与
 `src/opencode.ts`。
 
@@ -581,9 +588,9 @@ interface SessionState {
 - **承重语义：marks 永不删除**——即使引用的消息已被压缩移除（悬空
   mark 是无害历史记录；派生正确性依赖单调性）
 - **持久化**：`~/.zoo/storage/{sessionId}.json`，shape 为
-  `{ marks: Record<callID, {t, e}>, lastUpdated }`；旧 shape
-  （prune.tools/stats）加载为空（用户确认废弃，无迁移层）；原子写
-  （tmp + rename）；sessionId 安全正则防路径穿越
+  `{ marks: Record<callID, {tokens, effective, action}>, lastUpdated }`；
+  旧 shape（紧凑键 `{t,e,a}`/`{t,e}` 及 prune.tools/stats）加载为空
+  （无迁移层）；原子写（tmp + rename）；sessionId 安全正则防路径穿越
 
 ### 4.3 观测层
 
@@ -623,7 +630,165 @@ interface SessionState {
   末尾不破前缀缓存；ignored part 在 `message-v2.ts:206` 被排除出 LLM
   上下文（源码核实）；fire-and-forget，失败仅 warn
 
-### 4.6 认知收获（仍然成立的）
+### 4.6 自动错误清除（purge-errors producer）
+
+`src/core/pruning/producers/purge-errors.ts` 实现第三个 producer，清理
+**失败（error 状态）工具调用的 input 字符串字段**。与 dedup 互补——
+
+| dedup | purge-errors |
+|-------|-------------|
+| 成功工具（completed）去重 | 失败工具（error）清 input |
+| 替换 output | 替换 input 字符串值字段 |
+| 保护窗+零收益跳过 | 保护窗+零收益跳过 |
+| action=`"tool-output"` | action=`"tool-error-input"` |
+
+#### Action 建模（`src/core/pruning/marks.ts`）
+
+单一 marks 集合通过 `action` 字段区分两类标记：
+
+```typescript
+type PruneAction = "tool-output" | "tool-error-input";
+interface Mark { tokens: number; effective: boolean; action: PruneAction; }
+```
+
+持久化 shape 为全单词键 `{tokens, effective, action}`（取代紧凑键
+`{t, e, a}`）。加载时严格校验：任一条目
+缺字段/类型错/action 非枚举值 → 整文件按空会话处理并记 warn 日志
+（禁止写旧 shape 推断默认值，无迁移层）。`releaseBatch` 返回新增
+`byAction: Record<PruneAction, {count, tokens}>` 供通知泛化计数。
+
+#### R1：三层配置拆分
+
+`config.toml` 改 `release_threshold_percent` 到 `[zoo.context]` 顶层
+（管道级共用，从旧 dedup 专属键移除），新增 `[zoo.context.purge_errors]`：
+
+```toml
+[zoo.context]
+turn_protection = 5
+release_threshold_percent = 5   # pending 合计达 prompt 侧总量此百分比时统一释放
+
+[zoo.context.dedup]
+enabled = true
+threshold_tokens = 100000
+protected_tools = ["question"]   # release_threshold_percent 已移走
+
+[zoo.context.purge_errors]       # 新增
+enabled = true                   # 默认开启（尾部保险，非每轮触发）
+threshold_tokens = 100000
+protected_tools = ["question"]
+```
+
+`src/hooks/context-pruning/hook.ts` 定义 `ContextPruningConfig` 三层接口：
+
+```typescript
+interface ProducerGateConfig {
+  enabled?: boolean;
+  thresholdTokens?: number;
+  protectedTools?: string[];
+}
+interface ContextPruningConfig {
+  turnProtection?: number;
+  releaseThresholdPercent?: number;
+  dedup: ProducerGateConfig;
+  purgeErrors: ProducerGateConfig;
+}
+```
+
+`src/opencode.ts` 中的 `parseContextConfig` 完成三层全量解析：
+`release_threshold_percent` 从 `[zoo.context]` 顶层读取（无旧键兜底）；
+逐字段类型防御（非期望类型落默认），未知键忽略。
+
+#### R3：表驱动 producer 循环
+
+Phase 2（标记阶段）从单一 `if (enabled) { runDedup }` 改为静态数组循环：
+
+```typescript
+const producers = [
+  { name: "dedup", gate: config.dedup,
+    run: () => runDedup(state, messages, {turnProtection, protectedTools}) },
+  { name: "purge-errors", gate: config.purgeErrors,
+    run: () => runPurgeErrors(state, messages, {turnProtection, protectedTools}) },
+];
+for (const {name, gate, run} of producers) {
+  if (gate.enabled === false) continue;
+  if (promptTokens < (gate.thresholdTokens ?? 100000)) continue;
+  const marks = run();
+  if (marks.length) log(`${name}_marked`, ...);
+}
+```
+
+每个 producer 独立评估自己的门控（`enabled` + `thresholdTokens`）；
+提示侧总量不足时向安全方向失败（不执行）。无注册表、无动态发现——
+静态数组即止。统一释放（循环外一次 `releaseBatch` 判断：全部 pending
+tokens ≥ promptTokens × release_threshold_percent% → 两类标记一起翻转）。
+通知文案改为按 action 计数的中性表述：
+
+```
+"上下文清理：已折叠 N 个工具调用，约释放 X tokens（tool-output M 组、tool-error-input K 组）"
+```
+
+#### Error 状态检测与跳过链
+
+`runPurgeErrors` 跳过链（短路于首次命中）：
+
+1. **非 tool part** → 跳过
+2. **非 error 状态**（`part.state.status !== "error"`）→ 跳过（只处理失败调用）
+3. **无 callID** → 跳过
+4. **callID 已在 `state.marks`** → 跳过（幂等）
+5. **在 step-start 保护窗内** → 跳过（共享 `collectProtectedCallIDs`）
+6. **工具名在 `protectedTools`** → 跳过（默认 `["question"]`）
+7. **零收益**（input 字符串值总长度 ≤ 占位符长度估算）→ 跳过
+8. **命中**：`addMark(state, callID, tokens, false, "tool-error-input")`
+
+#### Phase 1 清阶段分流
+
+`src/core/pruning/prune.ts` 两个清理函数各自过滤 action：
+
+```typescript
+pruneToolOutputs(state, messages)  // 只处理 mark.action === "tool-output"
+pruneToolErrors(state, messages)   // 只处理 mark.action === "tool-error-input"
+```
+
+`pruneToolErrors` 替换语义：
+
+- 整个 input 为字符串 → 替换整个字符串为 `PRUNED_TOOL_ERROR_INPUT_REPLACEMENT`
+- input 为对象 → 只替换字符串值字段（数字/布尔/嵌套对象/数组不动）
+- `state.error`、`state.output` 不动
+- null/undefined input → 跳过
+
+#### 文件清单
+
+| 文件 | 变更 |
+|------|------|
+| `config.toml` | `release_threshold_percent` 移入 `[zoo.context]` 顶层；`[zoo.context.dedup]` 移除该键；新增 `[zoo.context.purge_errors]` 三键 |
+| `src/core/pruning/types.ts` | 新增 `PRUNED_TOOL_ERROR_INPUT_REPLACEMENT` 常量 |
+| `src/core/pruning/marks.ts` | `PruneAction` 类型；`Mark.action`；持久化 `{tokens,effective,action}`；严格加载校验；`releaseBatch` 返回 `byAction` |
+| `src/core/pruning/prune.ts` | 新增 `pruneToolErrors`；`pruneToolOutputs` 加 action 判别 |
+| `src/core/pruning/producers/purge-errors.ts` | 新建：`runPurgeErrors`（error 扫描 + 跳过链） |
+| `src/core/pruning/producers/shared.ts` | 抽取 `collectProtectedCallIDs`/`netReclaimTokens` 共享辅助 |
+| `src/hooks/context-pruning/hook.ts` | `ContextPruningConfig` 三层；表驱动 producer 循环；双门控独立评估；统一释放；byAction 通知 |
+| `src/opencode.ts` | `parseContextConfig` 三层解析；`release_threshold_percent` 从顶层读取 |
+| 测试 | 全仓 879 TS 测试全绿 |
+
+> **实测修正注记（2026-07-25，裸 SQL 核实）**：
+>
+> 前设计假定 purge-errors 剪枝 output，经实测更正：
+>
+> 1. **error 状态 tool part 没有 `state.output` 字段**——全局 0 字符，
+>    剪枝 output 无意义。可剪目标是 input 字符串字段。
+> 2. **全局数据**：error part 的 input 字符串字段合计 537K chars
+>    （≈ 134K tokens，按 4 chars/token 估算），占全局输入约 0.3%。
+> 3. **尾部风暴**：错误风暴尾部会话（>500 条消息）中 error input 占比
+>    升至 1-11%，价值定位为**尾部保险**——靠 dedup 处理成功调用的大头，
+>    purge-errors 兜底失败调用累积。
+> 4. **工具分布**（按 input chars）：edit 273K / write 127K / task 119K
+>    chars——edit/write 高是失败时快速重试带满参数，task 是子代理出错时
+>    大段 intent 文本。
+> 5. **DCP 对齐核实**：DCP 的 `purgeToolErrors` 也是擦除 input 字段而非
+>    output（`lib/messages/prune.ts:24`），默认 4 步老化保护（默认关闭）。
+>    我们的实现保持该语义：清理 error input、保留 `state.error` 消息。
+
+### 4.7 认知收获（仍然成立的）
 
 1. **两阶段必须是分离的代码路径**（或在同一 handler 内严格先清后标），
    否则标记-清理边界产生 off-by-one（§3.3）
@@ -798,29 +963,35 @@ DCP 把策略挂在 compress 工具上（§3.3）；我们没有 compress 工具
 
 ### 6.5 配置
 
-`config.toml` 新增（运行时直读，同 `[zoo.validation]` 模式，不改
+`config.toml` 配置（运行时直读，同 `[zoo.validation]` 模式，不改
 install.py）：
 
 ```toml
 [zoo.context]
-# 轮次保护：最近 N 个助手步（按 step-start 计数）内的工具调用不参与剪枝策略
+# 轮次保护（管道级共用）
 turn_protection = 5
+# 批量释放阈值：pending 标记合计达到 prompt 侧总量该百分比时统一释放
+release_threshold_percent = 5
 
 [zoo.context.dedup]
 # 自动去重开关
 enabled = true
-# 触发门控：最后一条已完成 assistant 消息的 prompt 侧总量达到该值才扫描去重
-threshold_tokens = 100000          # 门控：上下文 ≥ 此值才扫描标记
-# 受保护工具：仅保护输出不可再生的工具（用户提问）
+# 触发门控：最后一条已完成 assistant 消息的 prompt 侧总量达到该值才扫描
+threshold_tokens = 100000
+# 受保护工具（输出不可再生的工具）
 protected_tools = ["question"]
-# 批量释放阈值：待生效去重标记 token 总数达到当前 prompt 侧总量的此百分比才移入生效集合替换。默认 5（%）
-release_threshold_percent = 5
+
+[zoo.context.purge_errors]
+# 错误清除开关（尾部保险）
+enabled = true
+# 触发门控
+threshold_tokens = 100000
+# 受保护工具
+protected_tools = ["question"]
 ```
 
-`turn_protection` 位于 `[zoo.context]` 顶层，因为它是剪枝策略共用的（未来
-`purge-errors` 等策略也要读它）；其余 4 键（`enabled`、`threshold_tokens`、
-`protected_tools`、`release_threshold_percent`）下沉到 `[zoo.context.dedup]`，
-是 dedup 专属配置。
+`turn_protection` 和 `release_threshold_percent` 位于 `[zoo.context]` 顶层
+（剪枝策略共用）。`dedup` 与 `purge_errors` 各自三键下沉到子节。
 
 默认仅保护 `question`：剪枝只影响发给 LLM 的消息副本、不动会话存储，
 且在保留最新语义下 `read`/`bash`/`task`/`skill`/`todowrite`/`todoread`
@@ -868,21 +1039,23 @@ Turn N+2: Phase 1 替换已生效标记的输出
 
 | 文件 | 变更 |
 |------|------|
-| `config.toml` | `[zoo.context]`（`turn_protection`）+ `[zoo.context.dedup]`（`enabled`/`threshold_tokens`/`protected_tools`/`release_threshold_percent`） |
-| `src/core/pruning/marks.ts` | 新建：marks 单集合 + addMark/releaseBatch + 派生 stats + 持久化（取代旧 state.ts，已删除） |
+| `config.toml` | `[zoo.context]`（`turn_protection` + `release_threshold_percent`）+ `[zoo.context.dedup]`（`enabled`/`threshold_tokens`/`protected_tools`）+ `[zoo.context.purge_errors]`（`enabled`/`threshold_tokens`/`protected_tools`） |
+| `src/core/pruning/marks.ts` | 新建：marks 单集合 + addMark/releaseBatch + 派生 stats + 持久化（取代旧 state.ts，已删除）；后增 `PruneAction`/`Mark.action`/`byAction`/`{tokens,effective,action}` 严格加载 |
 | `src/core/pruning/producers/dedup.ts` | 新建：runDedup（签名归一化/保护窗/零收益跳过） |
 | `src/core/pruning/producers/sweep.ts` | 新建：runSweep（原 collectSweepCallIDs 迁移，锚点语义不变） |
-| `src/core/pruning/prune.ts` | pruneToolOutputs 只消费 effective 标记 |
-| `src/hooks/context-pruning/hook.ts` | 先清后标 + 门控 + 批量释放 + notify 回调 |
-| `src/opencode.ts` | parseContextConfig（两层读取 + 逐字段类型防御）+ notify 注入（fire-and-forget） |
+| `src/core/pruning/producers/purge-errors.ts` | 新建：runPurgeErrors（错误状态扫描 + 跳过链） |
+| `src/core/pruning/producers/shared.ts` | 新建：collectProtectedCallIDs/netReclaimTokens 共享辅助 |
+| `src/core/pruning/prune.ts` | pruneToolOutputs 只消费 effective 标记；后增 action 判别 + pruneToolErrors |
+| `src/hooks/context-pruning/hook.ts` | 先清后标 + 门控 + 批量释放 + notify 回调；后增三层 Config 表驱动循环 + 双门控 |
+| `src/opencode.ts` | parseContextConfig（两层读取 + 逐字段类型防御）+ notify 注入（fire-and-forget）；后改为三层解析 + release_threshold_percent 顶层读取 |
 | `src/core/context-report.ts` | 合并回收行（FormatContextReportOptions） |
 | `src/hooks/context-command/index.ts` | sweep 走 producer；报告读内存态 |
 | `src/tui.tsx` | prunedCallIDs 只含 effective 标记 |
-| 测试 | marks/producers/hook/command/report 全套（820+ TS 测试） |
+| 测试 | marks/producers/hook/command/report 全套（879 TS 测试全绿） |
 
 ### 6.9 测试与实测验证
 
-单测+集成测试覆盖（820+ TS 测试全绿）：签名归一化、保护窗边界与回退、
+单测+集成测试覆盖（879 TS 测试全绿）：签名归一化、保护窗边界与回退、
 门控两侧（含 cache.read 补门控回归）、批量两侧、先清后标时序、释放
 通知、旧 shape 加载为空、派生正确性、pending 不污染 prunedCallIDs
 回归。
@@ -906,7 +1079,7 @@ release_threshold_percent=0 时当轮标记当轮释放；ignored 通知
 | **压缩模式** | Range + Message（双模） | 暂无 → V3 Range（LLM 驱动） |
 | **LLM 驱动压缩** | ✅ 完整 | ❌（V3 规划：compress 工具注册） |
 | **去重** | ✅ 基于签名（compress 时检测，零保护清单） | ✅ 基于签名（transform 每轮检测 + 批量释放，§4.5） |
-| **错误清除** | ✅ 4 轮后 | ⏳ dedup 之后（可配置轮数） |
+| **错误清除** | ✅ 4 轮后 | ✅ 基于 action 判别 + 表驱动 producer + 老化保护窗 + 零收益跳过（§4.6） |
 | **Nudge 系统** | 3 级阈值 | ❌（V3 规划，3 级阈值） |
 | **状态持久化** | 磁盘 JSON 文件 | ✅ 磁盘 JSON（`~/.zoo/storage/`） |
 | **Block 嵌套** | 支持 | 不支持（V3 也不做，扁平块） |
@@ -943,7 +1116,7 @@ DCP 意味着增加 `dcp.jsonc`，破坏现有配置管理模型。
 |------|------|---------|------|
 | ~~当前~~ | 观测层 + 手动 sweep + 持久化 | — | ✅ 已完成（§4） |
 | ~~下一步~~ | 自动去重 dedup（统一 marks + 批量释放 + ignored 通知） | §3.5 | ✅ 已完成（§4.5/§6，2026-07-25） |
-| +1 | purge-errors：错误工具调用老化 N 步后标记清除 input | §3.5 | dedup 稳定；需 part 错误状态检测 + step-start 老化 |
+| +1 | ~~purge-errors：错误工具调用老化 N 步后标记清除 input~~ | §3.5 / §4.6 | ✅ 已完成（R1-R3 架构落地，§4.6，2026-07-25） |
 | V3 | compress 工具注册 + Range 压缩引擎 + mNNNN 引用 + 三级 nudge（用户确认：模型自主压缩为未来方向，统一 producer 模型已为其留位） | §3.3 / §3.4 / §3.6 / §5.2-5.3 | 自动策略稳定 |
 | V4 | Message 模式压缩、`/dcp stats`、decompress/recompress、子代理结果展开 | §3.4 / §5.4 | V3 |
 | 另行规划 | pi 宿主适配（核心已框架无关，缺 transform 接线） | — | pi 侧 hook 能力确认 |

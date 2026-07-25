@@ -39,29 +39,30 @@ afterEach(() => {
 describe("addMark", () => {
   it("adds a new mark and returns true", () => {
     const state = getOrCreateSessionState("sess-add");
-    const result = addMark(state, "call-1", 100, true);
+    const result = addMark(state, "call-1", 100, true, "tool-output");
     assert.equal(result, true);
     assert.ok(state.marks.has("call-1"));
     assert.equal(state.marks.get("call-1")?.tokens, 100);
     assert.equal(state.marks.get("call-1")?.effective, true);
+    assert.equal(state.marks.get("call-1")?.action, "tool-output");
     assert.equal(state.dirty, true);
   });
 
   it("adds a non-effective mark", () => {
     const state = getOrCreateSessionState("sess-add-pending");
-    const result = addMark(state, "call-1", 50, false);
+    const result = addMark(state, "call-1", 50, false, "tool-output");
     assert.equal(result, true);
     assert.equal(state.marks.get("call-1")?.effective, false);
   });
 
   it("is idempotent — returns false for duplicate callID", () => {
     const state = getOrCreateSessionState("sess-idem");
-    assert.equal(addMark(state, "call-1", 100, true), true);
+    assert.equal(addMark(state, "call-1", 100, true, "tool-output"), true);
     assert.equal(state.dirty, true);
 
     // Reset dirty to verify second add does NOT set it.
     state.dirty = false;
-    assert.equal(addMark(state, "call-1", 200, false), false);
+    assert.equal(addMark(state, "call-1", 200, false, "tool-output"), false);
     // Original data preserved.
     assert.equal(state.marks.get("call-1")?.tokens, 100);
     assert.equal(state.marks.get("call-1")?.effective, true);
@@ -75,44 +76,68 @@ describe("addMark", () => {
 // ---------------------------------------------------------------------------
 
 describe("releaseBatch", () => {
-  it("flips all non-effective marks, returns count and tokens", () => {
+  it("flips all non-effective marks, returns count, tokens & byAction", () => {
     const state = getOrCreateSessionState("sess-release");
-    addMark(state, "call-1", 100, false);
-    addMark(state, "call-2", 200, false);
-    addMark(state, "call-3", 50, true); // Already effective — not flipped.
+    addMark(state, "call-1", 100, false, "tool-output");
+    addMark(state, "call-2", 200, false, "tool-output");
+    addMark(state, "call-3", 50, true, "tool-output"); // Already effective — not flipped.
 
-    const { count, tokens } = releaseBatch(state);
+    const { count, tokens, byAction } = releaseBatch(state);
     assert.equal(count, 2);
     assert.equal(tokens, 300);
+    assert.equal(byAction["tool-output"].count, 2);
+    assert.equal(byAction["tool-output"].tokens, 300);
+    assert.equal(byAction["tool-error-input"].count, 0);
+    assert.equal(byAction["tool-error-input"].tokens, 0);
     assert.equal(state.marks.get("call-1")?.effective, true);
     assert.equal(state.marks.get("call-2")?.effective, true);
     assert.equal(state.marks.get("call-3")?.effective, true);
     assert.equal(state.dirty, true);
   });
 
-  it("is idempotent on empty pending — returns {0,0} and does NOT set dirty", () => {
+  it("is idempotent on empty pending — returns zero fields and does NOT set dirty", () => {
     const state = getOrCreateSessionState("sess-release-empty");
     state.dirty = false;
-    const { count, tokens } = releaseBatch(state);
+    const { count, tokens, byAction } = releaseBatch(state);
     assert.equal(count, 0);
     assert.equal(tokens, 0);
+    assert.equal(byAction["tool-output"].count, 0);
+    assert.equal(byAction["tool-error-input"].count, 0);
     assert.equal(state.dirty, false);
+  });
+
+  it("byAction tracks token-output and token-error-input separately", () => {
+    const state = getOrCreateSessionState("sess-byaction");
+    addMark(state, "call-out-1", 100, false, "tool-output");
+    addMark(state, "call-out-2", 200, false, "tool-output");
+    addMark(state, "call-err-1", 50, false, "tool-error-input");
+
+    const { count, tokens, byAction } = releaseBatch(state);
+    assert.equal(count, 3);
+    assert.equal(tokens, 350);
+    assert.equal(byAction["tool-output"].count, 2);
+    assert.equal(byAction["tool-output"].tokens, 300);
+    assert.equal(byAction["tool-error-input"].count, 1);
+    assert.equal(byAction["tool-error-input"].tokens, 50);
   });
 
   it("only counts actually flipped marks (fixes stats inflation)", () => {
     const state = getOrCreateSessionState("sess-release-flip-only");
-    addMark(state, "call-1", 100, false);
-    addMark(state, "call-2", 50, true); // Already effective.
+    addMark(state, "call-1", 100, false, "tool-output");
+    addMark(state, "call-2", 50, true, "tool-output"); // Already effective.
 
     const r1 = releaseBatch(state);
     assert.equal(r1.count, 1);
     assert.equal(r1.tokens, 100);
+    assert.equal(r1.byAction["tool-output"].count, 1);
+    assert.equal(r1.byAction["tool-output"].tokens, 100);
 
     // Second release — nothing left to flip.
     state.dirty = false;
     const r2 = releaseBatch(state);
     assert.equal(r2.count, 0);
     assert.equal(r2.tokens, 0);
+    assert.equal(r2.byAction["tool-output"].count, 0);
     assert.equal(state.dirty, false);
   });
 });
@@ -125,27 +150,27 @@ describe("derived stats", () => {
   it("pendingCount returns number of non-effective marks", () => {
     const state = getOrCreateSessionState("sess-pc");
     assert.equal(pendingCount(state), 0);
-    addMark(state, "call-1", 100, false);
+    addMark(state, "call-1", 100, false, "tool-output");
     assert.equal(pendingCount(state), 1);
-    addMark(state, "call-2", 50, true);
+    addMark(state, "call-2", 50, true, "tool-output");
     assert.equal(pendingCount(state), 1);
-    addMark(state, "call-3", 30, false);
+    addMark(state, "call-3", 30, false, "tool-output");
     assert.equal(pendingCount(state), 2);
   });
 
   it("pendingTokens returns sum of non-effective marks' tokens", () => {
     const state = getOrCreateSessionState("sess-pt");
-    addMark(state, "call-1", 100, false);
-    addMark(state, "call-2", 50, true);
-    addMark(state, "call-3", 30, false);
+    addMark(state, "call-1", 100, false, "tool-output");
+    addMark(state, "call-2", 50, true, "tool-output");
+    addMark(state, "call-3", 30, false, "tool-output");
     assert.equal(pendingTokens(state), 130);
   });
 
   it("reclaimedTokens returns sum of effective marks' tokens", () => {
     const state = getOrCreateSessionState("sess-rt");
-    addMark(state, "call-1", 100, false);
-    addMark(state, "call-2", 50, true);
-    addMark(state, "call-3", 30, true);
+    addMark(state, "call-1", 100, false, "tool-output");
+    addMark(state, "call-2", 50, true, "tool-output");
+    addMark(state, "call-3", 30, true, "tool-output");
     assert.equal(reclaimedTokens(state), 80);
 
     // After release, all effective.
@@ -156,16 +181,16 @@ describe("derived stats", () => {
   it("markedCount returns total marks size", () => {
     const state = getOrCreateSessionState("sess-mc");
     assert.equal(markedCount(state), 0);
-    addMark(state, "call-1", 100, false);
+    addMark(state, "call-1", 100, false, "tool-output");
     assert.equal(markedCount(state), 1);
-    addMark(state, "call-2", 50, true);
+    addMark(state, "call-2", 50, true, "tool-output");
     assert.equal(markedCount(state), 2);
   });
 
   it("markedTokens returns sum of all marks' tokens", () => {
     const state = getOrCreateSessionState("sess-mt");
-    addMark(state, "call-1", 100, false);
-    addMark(state, "call-2", 50, true);
+    addMark(state, "call-1", 100, false, "tool-output");
+    addMark(state, "call-2", 50, true, "tool-output");
     assert.equal(markedTokens(state), 150);
   });
 });
@@ -185,7 +210,7 @@ describe("getOrCreateSessionState", () => {
 
   it("returns the same state for the same session ID", () => {
     const state1 = getOrCreateSessionState("sess-same");
-    addMark(state1, "call-1", 100, true);
+    addMark(state1, "call-1", 100, true, "tool-output");
 
     const state2 = getOrCreateSessionState("sess-same");
     assert.ok(state2.marks.has("call-1"));
@@ -227,11 +252,27 @@ describe("saveSessionState / loadSessionState", () => {
 
   it("round-trips marks via save+load", () => {
     const state = getOrCreateSessionState(TEST_SESSION_ID);
-    addMark(state, "call-1", 100, true);
-    addMark(state, "call-2", 200, false);
-    addMark(state, "call-3", 50, true);
+    addMark(state, "call-1", 100, true, "tool-output");
+    addMark(state, "call-2", 200, false, "tool-output");
+    addMark(state, "call-3", 50, true, "tool-output");
 
     saveSessionState(TEST_SESSION_ID, state);
+
+    // Raw file uses full-word keys.
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const os = require("node:os");
+    const raw = JSON.parse(
+      fs.readFileSync(
+        path.join(os.homedir(), ".zoo", "storage", `${TEST_SESSION_ID}.json`),
+        "utf8",
+      ),
+    );
+    assert.deepEqual(Object.keys(raw.marks["call-1"]).sort(), [
+      "action",
+      "effective",
+      "tokens",
+    ]);
 
     // Clear and reload from disk.
     removeSession(TEST_SESSION_ID);
@@ -241,10 +282,13 @@ describe("saveSessionState / loadSessionState", () => {
     assert.ok(loaded.marks.has("call-1"));
     assert.equal(loaded.marks.get("call-1")?.tokens, 100);
     assert.equal(loaded.marks.get("call-1")?.effective, true);
+    assert.equal(loaded.marks.get("call-1")?.action, "tool-output");
     assert.equal(loaded.marks.get("call-2")?.tokens, 200);
     assert.equal(loaded.marks.get("call-2")?.effective, false);
+    assert.equal(loaded.marks.get("call-2")?.action, "tool-output");
     assert.equal(loaded.marks.get("call-3")?.tokens, 50);
     assert.equal(loaded.marks.get("call-3")?.effective, true);
+    assert.equal(loaded.marks.get("call-3")?.action, "tool-output");
   });
 
   it("returns null when no file exists", () => {
@@ -286,9 +330,55 @@ describe("saveSessionState / loadSessionState", () => {
     assert.equal(loaded.marks.size, 0);
   });
 
+  it("loads v2 shape (missing `a`) as empty state — strict validation", () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const os = require("node:os");
+    const dir = path.join(os.homedir(), ".zoo", "storage");
+    fs.mkdirSync(dir, { recursive: true });
+    // v2 shape: { t, e } without `a`.
+    fs.writeFileSync(
+      path.join(dir, `${TEST_SESSION_ID}.json`),
+      JSON.stringify({
+        marks: { "call-1": { t: 100, e: true } },
+        lastUpdated: "2024-06-01T00:00:00Z",
+      }),
+      "utf8",
+    );
+
+    const loaded = loadSessionState(TEST_SESSION_ID);
+    // Strict validation: missing `a` → entire file treated as empty.
+    assert.ok(loaded !== null);
+    assert.equal(loaded.marks.size, 0);
+  });
+
+  it("loads entries with an invalid action value as empty state", () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const os = require("node:os");
+    const dir = path.join(os.homedir(), ".zoo", "storage");
+    fs.mkdirSync(dir, { recursive: true });
+    // Current full-word shape with an invalid action value.
+    fs.writeFileSync(
+      path.join(dir, `${TEST_SESSION_ID}.json`),
+      JSON.stringify({
+        marks: {
+          "call-1": { tokens: 100, effective: true, action: "bad-action" },
+        },
+        lastUpdated: "2024-06-01T00:00:00Z",
+      }),
+      "utf8",
+    );
+
+    const loaded = loadSessionState(TEST_SESSION_ID);
+    // Strict validation: invalid action → entire file treated as empty.
+    assert.ok(loaded !== null);
+    assert.equal(loaded.marks.size, 0);
+  });
+
   it("loads state on getOrCreateSessionState (restart recovery)", () => {
     const state = getOrCreateSessionState(TEST_SESSION_ID);
-    addMark(state, "call-restored", 75, true);
+    addMark(state, "call-restored", 75, true, "tool-output");
     saveSessionState(TEST_SESSION_ID, state);
 
     // Simulate restart.

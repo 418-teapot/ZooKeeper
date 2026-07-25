@@ -104,7 +104,7 @@ export function runSweep(
         );
 
         // addMark is idempotent: skips if already marked.
-        if (addMark(state, callID, estimatedTokens, true)) {
+        if (addMark(state, callID, estimatedTokens, true, "tool-output")) {
           result.push({ callID, estimatedTokens });
         }
       }
@@ -135,7 +135,7 @@ export function runSweep(
             estimateTokenCount(PRUNED_TOOL_OUTPUT_REPLACEMENT),
         );
 
-        if (addMark(state, callID, estimatedTokens, true)) {
+        if (addMark(state, callID, estimatedTokens, true, "tool-output")) {
           result.push({ callID, estimatedTokens });
         }
       }

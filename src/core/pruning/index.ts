@@ -8,7 +8,7 @@
  * @module
  */
 
-export type { Mark, SessionState } from "./marks.js";
+export type { Mark, PruneAction, SessionState } from "./marks.js";
 export {
   _clearAllSessionsForTesting,
   addMark,
@@ -26,9 +26,17 @@ export {
 } from "./marks.js";
 export type { DedupMark, DedupOptions } from "./producers/dedup.js";
 export { runDedup } from "./producers/dedup.js";
+export type {
+  PurgeErrorsMark,
+  PurgeErrorsOptions,
+} from "./producers/purge-errors.js";
+export { runPurgeErrors } from "./producers/purge-errors.js";
 export type { SweepMark } from "./producers/sweep.js";
 export { runSweep } from "./producers/sweep.js";
 export type { PruneReplacement } from "./prune.js";
-export { pruneToolOutputs } from "./prune.js";
+export { pruneToolErrors, pruneToolOutputs } from "./prune.js";
 export type { SweepToolPart } from "./types.js";
-export { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./types.js";
+export {
+  PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
+  PRUNED_TOOL_OUTPUT_REPLACEMENT,
+} from "./types.js";

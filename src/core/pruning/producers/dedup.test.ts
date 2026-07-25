@@ -348,7 +348,11 @@ describe("skip conditions", () => {
   it("skips already-marked callIDs", () => {
     const state = getOrCreateSessionState("sess-already");
     // Pre-mark call-A.
-    state.marks.set("call-A", { tokens: 10, effective: false });
+    state.marks.set("call-A", {
+      tokens: 10,
+      effective: false,
+      action: "tool-output",
+    });
 
     const messages = [
       msg("assistant", "a1", [

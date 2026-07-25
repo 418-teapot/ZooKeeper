@@ -28,11 +28,11 @@ import { LYNX_PROMPT } from "./agents/lynx.js";
 import { MOLA_PROMPT } from "./agents/mola.js";
 import { SPIDER_PROMPT } from "./agents/spider.js";
 import { deleteSessionState, removeSession } from "./core/pruning/marks.js";
-import type { DedupOptions } from "./core/pruning/producers/dedup.js";
 import { DCP_COMMAND_HANDLED, handleDcpCommand } from "./hooks/context-command";
 import type { ContextMetricsOutput } from "./hooks/context-metrics";
 import { measureContext } from "./hooks/context-metrics";
 import { contextPruningTransformHandler } from "./hooks/context-pruning";
+import type { ContextPruningConfig } from "./hooks/context-pruning/index.js";
 import { nudgeDirectWork } from "./hooks/direct-work-nudge";
 import { recoverJsonError } from "./hooks/json-error-nudge";
 import { handleGoCommand } from "./hooks/plan-lifecycle";
@@ -85,41 +85,62 @@ function parseSkillsConfig(zooConfig: any): Record<string, string> {
   return zooConfig.skills ?? {};
 }
 
-/** Extract context-pruning / dedup config from the [zoo.context] section.
+/** Extract context-pruning config from the [zoo.context] section.
  *
- *  `turn_protection` is read from the top-level `[zoo.context]` (shared
- *  across pruning strategies), while `enabled`, `threshold_tokens`,
- *  `protected_tools`, and `release_threshold_percent` are dedup-specific keys
- *  read from `[zoo.context.dedup]`.
+ *  `turn_protection` and `release_threshold_percent` are shared across
+ *  pruning strategies (read from `[zoo.context]` top-level).  `dedup.*`
+ *  and `purge_errors.*` are per-strategy gates read from their
+ *  respective sub-sections.
  *
- *  Each field is type-checked: unrecognised / wrong-type values fall back
- *  to the default so that e.g. `enabled = "false"` does NOT activate dedup. */
-function parseContextConfig(zooConfig: any): DedupOptions {
+ *  `[zoo.context.dedup].release_threshold_percent` (the old location)
+ *  is intentionally NOT read — no fallback, no migration.
+ *
+ *  Each field is type-checked: unrecognised / wrong-type values fall
+ *  back to the default so that e.g. `enabled = "false"` does NOT
+ *  activate a strategy.
+ */
+function parseContextConfig(zooConfig: any): ContextPruningConfig {
   const c = zooConfig.context ?? {};
   const d = c.dedup ?? {};
+  const pe = c.purge_errors ?? {};
   return {
-    enabled: typeof d.enabled === "boolean" ? d.enabled : true,
-    thresholdTokens:
-      typeof d.threshold_tokens === "number" &&
-      Number.isFinite(d.threshold_tokens)
-        ? d.threshold_tokens
-        : 100000,
     turnProtection:
       typeof c.turn_protection === "number" &&
       Number.isFinite(c.turn_protection)
         ? c.turn_protection
         : 5,
-    protectedTools:
-      Array.isArray(d.protected_tools) &&
-      d.protected_tools.every((t: unknown) => typeof t === "string")
-        ? d.protected_tools
-        : ["question"],
     releaseThresholdPercent:
-      typeof d.release_threshold_percent === "number" &&
-      Number.isFinite(d.release_threshold_percent) &&
-      d.release_threshold_percent >= 0
-        ? d.release_threshold_percent
+      typeof c.release_threshold_percent === "number" &&
+      Number.isFinite(c.release_threshold_percent) &&
+      c.release_threshold_percent >= 0
+        ? c.release_threshold_percent
         : 5,
+    dedup: {
+      enabled: typeof d.enabled === "boolean" ? d.enabled : true,
+      thresholdTokens:
+        typeof d.threshold_tokens === "number" &&
+        Number.isFinite(d.threshold_tokens)
+          ? d.threshold_tokens
+          : 100000,
+      protectedTools:
+        Array.isArray(d.protected_tools) &&
+        d.protected_tools.every((t: unknown) => typeof t === "string")
+          ? d.protected_tools
+          : ["question"],
+    },
+    purgeErrors: {
+      enabled: typeof pe.enabled === "boolean" ? pe.enabled : true,
+      thresholdTokens:
+        typeof pe.threshold_tokens === "number" &&
+        Number.isFinite(pe.threshold_tokens)
+          ? pe.threshold_tokens
+          : 100000,
+      protectedTools:
+        Array.isArray(pe.protected_tools) &&
+        pe.protected_tools.every((t: unknown) => typeof t === "string")
+          ? pe.protected_tools
+          : ["question"],
+    },
   };
 }
 
@@ -240,7 +261,7 @@ function handleMessagesTransform(output: ContextMetricsOutput): void {
 /** Run context pruning on the messages transform output. */
 function handleContextPruning(
   output: ContextMetricsOutput,
-  config: DedupOptions,
+  config: ContextPruningConfig,
   client: any,
 ): void {
   try {
