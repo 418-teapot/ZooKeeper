@@ -44,14 +44,14 @@ import { log } from "../../utils/logger.js";
  * Per-subsystem gate config for a pruning strategy (dedup / purge-errors).
  */
 export interface ProducerGateConfig {
-  /** Hook-level enable gate.  Default true. */
+  /** Hook-level enable gate.  Undefined → runs unless explicitly false. */
   enabled?: boolean;
   /**
    * Minimum prompt-side total tokens (input + cache.read + cache.write)
-   * before this producer runs.  Default 100000.
+   * before this producer runs.  Undefined → skip producer.
    */
   thresholdTokens?: number;
-  /** Tool names excluded from this strategy. */
+  /** Tool names excluded from this strategy.  Undefined → empty list (neutral). */
   protectedTools?: string[];
 }
 
@@ -66,15 +66,17 @@ export interface ContextPruningConfig {
   /**
    * Master enable switch.  When not explicitly true the entire
    * transform no-ops: no Phase 1/2/2.5, no batch release, no
-   * persistence.  Default false — pruning runs only when
-   * explicitly true.
+   * persistence.  Undefined → disabled.
    */
   enabled?: boolean;
-  /** Number of most recent assistant steps to protect (shared). */
+  /**
+   * Number of most recent assistant steps to protect (shared).
+   * Undefined → skip all producers (they early-return).
+   */
   turnProtection?: number;
   /**
    * Minimum percentage of prompt-side total that pending marks must
-   * reach before batch release.  Default 5 (%).
+   * reach before batch release.  Undefined → skip release check.
    */
   releaseThresholdPercent?: number;
   /** Dedup producer gate & options. */
@@ -189,8 +191,10 @@ export function contextPruningTransformHandler(
 
   for (const producer of producers) {
     // Evaluate gate: enabled (default true) and prompt threshold.
+    // undefined threshold → skip (no fallback).
     if (producer.gate.enabled === false) continue;
-    const threshold = producer.gate.thresholdTokens ?? 100000;
+    const threshold = producer.gate.thresholdTokens;
+    if (threshold === undefined) continue;
     if (lastAsst.index < 0 || promptTokens < threshold) continue;
 
     const { marks } = producer.run();
@@ -244,11 +248,12 @@ export function contextPruningTransformHandler(
   // ── Batch release check (unified) ──────────────────────────────
   // Release all pending marks into effective when the accumulated
   // token value reaches releaseThresholdPercent of prompt-side total.
-  // Only evaluate when prompt data is available (promptTokens > 0).
-  if (promptTokens > 0) {
+  // Only evaluate when prompt data is available (promptTokens > 0)
+  // and releaseThresholdPercent is configured (undefined → skip).
+  if (promptTokens > 0 && config.releaseThresholdPercent !== undefined) {
     const curPendingTokens = pendingTokensDerived(state);
     if (curPendingTokens > 0) {
-      const releasePct = config.releaseThresholdPercent ?? 5;
+      const releasePct = config.releaseThresholdPercent;
       const batchThreshold = (promptTokens * releasePct) / 100;
       if (curPendingTokens >= batchThreshold) {
         const released = releaseBatch(state);

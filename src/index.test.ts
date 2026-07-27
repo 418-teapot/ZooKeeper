@@ -10,6 +10,7 @@ import { afterEach, describe, it } from "node:test";
 import {
   handleDedupNotify,
   handleMessagesTransform,
+  initPluginLogger,
   injectAgentPrompts,
   parseLimits,
   parseSkillsConfig,
@@ -34,44 +35,95 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("parseLimits", () => {
-  it("returns defaults for empty config", () => {
-    assert.deepEqual(parseLimits({}), {
-      contextWordLimit: 200,
-      promptWordLimit: 500,
-    });
+  it("returns undefined fields for empty config", () => {
+    const result = parseLimits({});
+    assert.equal(result.contextWordLimit, undefined);
+    assert.equal(result.promptWordLimit, undefined);
   });
 
-  it("returns custom values when present", () => {
+  it("returns undefined fields when validation section is missing", () => {
+    const result = parseLimits({ zoo: {} });
+    assert.equal(result.contextWordLimit, undefined);
+    assert.equal(result.promptWordLimit, undefined);
+  });
+
+  it("returns valid number values when present", () => {
     const cfg = {
       validation: { context_word_limit: 100, prompt_word_limit: 300 },
     };
-    assert.deepEqual(parseLimits(cfg), {
-      contextWordLimit: 100,
-      promptWordLimit: 300,
-    });
+    const result = parseLimits(cfg);
+    assert.equal(result.contextWordLimit, 100);
+    assert.equal(result.promptWordLimit, 300);
   });
 
-  it("returns defaults when validation section is missing", () => {
-    assert.deepEqual(parseLimits({ zoo: {} }), {
-      contextWordLimit: 200,
-      promptWordLimit: 500,
-    });
-  });
-
-  it("supports partial overrides (only context_word_limit)", () => {
+  it("returns undefined for omitted field (partial — only context_word_limit)", () => {
     const cfg = { validation: { context_word_limit: 150 } };
-    assert.deepEqual(parseLimits(cfg), {
-      contextWordLimit: 150,
-      promptWordLimit: 500,
-    });
+    const result = parseLimits(cfg);
+    assert.equal(result.contextWordLimit, 150);
+    assert.equal(result.promptWordLimit, undefined);
   });
 
-  it("supports partial overrides (only prompt_word_limit)", () => {
+  it("returns undefined for omitted field (partial — only prompt_word_limit)", () => {
     const cfg = { validation: { prompt_word_limit: 800 } };
-    assert.deepEqual(parseLimits(cfg), {
-      contextWordLimit: 200,
-      promptWordLimit: 800,
-    });
+    const result = parseLimits(cfg);
+    assert.equal(result.contextWordLimit, undefined);
+    assert.equal(result.promptWordLimit, 800);
+  });
+
+  it("logs a warning and returns undefined for string value", () => {
+    const cfg = { validation: { context_word_limit: "abc" } };
+    const result = parseLimits(cfg);
+    assert.equal(result.contextWordLimit, undefined);
+
+    const buffer = _getBufferForTesting();
+    const entry = buffer.find((e) => e.event === "invalid_context_word_limit");
+    assert.ok(entry, "must log invalid_context_word_limit");
+    const ee = entry as Record<string, unknown>;
+    assert.equal(ee.key, "context_word_limit");
+    assert.equal(ee.value, "abc");
+  });
+
+  it("logs a warning and returns undefined for NaN", () => {
+    const cfg = { validation: { context_word_limit: NaN } };
+    const result = parseLimits(cfg);
+    assert.equal(result.contextWordLimit, undefined);
+
+    const buffer = _getBufferForTesting();
+    const entry = buffer.find((e) => e.event === "invalid_context_word_limit");
+    assert.ok(entry, "must log invalid_context_word_limit for NaN");
+  });
+
+  it("logs a warning and returns undefined for Infinity", () => {
+    const cfg = { validation: { prompt_word_limit: Infinity } };
+    const result = parseLimits(cfg);
+    assert.equal(result.promptWordLimit, undefined);
+
+    const buffer = _getBufferForTesting();
+    const entry = buffer.find((e) => e.event === "invalid_prompt_word_limit");
+    assert.ok(entry, "must log invalid_prompt_word_limit for Infinity");
+  });
+
+  it("accepts 0 as a valid finite number", () => {
+    const cfg = {
+      validation: {
+        context_word_limit: 0,
+        prompt_word_limit: 0,
+      },
+    };
+    const result = parseLimits(cfg);
+    assert.equal(result.contextWordLimit, 0);
+    assert.equal(result.promptWordLimit, 0);
+  });
+
+  it("does NOT log a warning when validation section is absent", () => {
+    parseLimits({});
+    const buffer = _getBufferForTesting();
+    const entries = buffer.filter(
+      (e) =>
+        e.event === "invalid_context_word_limit" ||
+        e.event === "invalid_prompt_word_limit",
+    );
+    assert.equal(entries.length, 0);
   });
 });
 
@@ -98,6 +150,186 @@ describe("parseSkillsConfig", () => {
 
   it("returns empty object when skills key is null", () => {
     assert.deepEqual(parseSkillsConfig({ skills: null }), {});
+  });
+});
+
+// ---------------------------------------------------------------------------
+// initPluginLogger
+// ---------------------------------------------------------------------------
+
+describe("initPluginLogger", () => {
+  it("passes valid values to initLogger (no warnings)", () => {
+    _resetForTesting();
+    const cfg = {
+      logging: {
+        max_file_size_mb: 10,
+        max_backups: 5,
+        retention_days: 30,
+      },
+    };
+    initPluginLogger(cfg);
+
+    const buffer = _getBufferForTesting();
+    const warns = buffer.filter((e) =>
+      (e.event as string)?.startsWith("invalid_"),
+    );
+    assert.equal(warns.length, 0, "no warnings for valid values");
+  });
+
+  it("logs warn and returns undefined for string max_file_size_mb", () => {
+    _resetForTesting();
+    const cfg = { logging: { max_file_size_mb: "abc" } };
+    initPluginLogger(cfg);
+
+    const buffer = _getBufferForTesting();
+    const entry = buffer.find((e) => e.event === "invalid_max_file_size_mb") as
+      | Record<string, unknown>
+      | undefined;
+    assert.ok(entry, "must log invalid_max_file_size_mb");
+    assert.equal(entry.key, "max_file_size_mb");
+    assert.equal(entry.value, "abc");
+  });
+
+  it("logs warn and returns undefined for NaN max_file_size_mb", () => {
+    _resetForTesting();
+    const cfg = { logging: { max_file_size_mb: NaN } };
+    initPluginLogger(cfg);
+
+    const buffer = _getBufferForTesting();
+    const entry = buffer.find((e) => e.event === "invalid_max_file_size_mb") as
+      | Record<string, unknown>
+      | undefined;
+    assert.ok(entry, "must log invalid_max_file_size_mb for NaN");
+  });
+
+  it("logs warn and returns undefined for Infinity max_backups", () => {
+    _resetForTesting();
+    const cfg = { logging: { max_backups: Infinity } };
+    initPluginLogger(cfg);
+
+    const buffer = _getBufferForTesting();
+    const entry = buffer.find((e) => e.event === "invalid_max_backups") as
+      | Record<string, unknown>
+      | undefined;
+    assert.ok(entry, "must log invalid_max_backups for Infinity");
+    assert.equal(entry.key, "max_backups");
+    assert.equal(entry.value, Infinity);
+  });
+
+  it("logs warn and returns undefined for string retention_days", () => {
+    _resetForTesting();
+    const cfg = { logging: { retention_days: "7" } };
+    initPluginLogger(cfg);
+
+    const buffer = _getBufferForTesting();
+    const entry = buffer.find((e) => e.event === "invalid_retention_days") as
+      | Record<string, unknown>
+      | undefined;
+    assert.ok(entry, "must log invalid_retention_days");
+    assert.equal(entry.key, "retention_days");
+    assert.equal(entry.value, "7");
+  });
+
+  it("does not log warnings when logging section is absent", () => {
+    _resetForTesting();
+    initPluginLogger({});
+
+    const buffer = _getBufferForTesting();
+    const warns = buffer.filter((e) =>
+      (e.event as string)?.startsWith("invalid_"),
+    );
+    assert.equal(warns.length, 0);
+  });
+
+  // -----------------------------------------------------------------------
+  // Range validation — values that pass type/finite checks but violate
+  // semantic bounds must still produce a warning and undefined.
+  // -----------------------------------------------------------------------
+
+  it("logs warn for max_file_size_mb = 0 (must be > 0)", () => {
+    _resetForTesting();
+    const cfg = { logging: { max_file_size_mb: 0 } };
+    initPluginLogger(cfg);
+
+    const buffer = _getBufferForTesting();
+    const entry = buffer.find((e) => e.event === "invalid_max_file_size_mb") as
+      | Record<string, unknown>
+      | undefined;
+    assert.ok(entry, "must log invalid_max_file_size_mb for 0");
+    assert.equal(entry.key, "max_file_size_mb");
+    assert.equal(entry.value, 0);
+  });
+
+  it("logs warn for max_file_size_mb = -5 (negative, must be > 0)", () => {
+    _resetForTesting();
+    const cfg = { logging: { max_file_size_mb: -5 } };
+    initPluginLogger(cfg);
+
+    const buffer = _getBufferForTesting();
+    const entry = buffer.find((e) => e.event === "invalid_max_file_size_mb") as
+      | Record<string, unknown>
+      | undefined;
+    assert.ok(entry, "must log invalid_max_file_size_mb for -5");
+    assert.equal(entry.key, "max_file_size_mb");
+    assert.equal(entry.value, -5);
+  });
+
+  it("logs warn for max_backups = -1 (negative, must be >= 0)", () => {
+    _resetForTesting();
+    const cfg = { logging: { max_backups: -1 } };
+    initPluginLogger(cfg);
+
+    const buffer = _getBufferForTesting();
+    const entry = buffer.find((e) => e.event === "invalid_max_backups") as
+      | Record<string, unknown>
+      | undefined;
+    assert.ok(entry, "must log invalid_max_backups for -1");
+    assert.equal(entry.key, "max_backups");
+    assert.equal(entry.value, -1);
+  });
+
+  it("accepts max_backups = 0 as valid (no warn)", () => {
+    _resetForTesting();
+    const cfg = { logging: { max_backups: 0 } };
+    initPluginLogger(cfg);
+
+    const buffer = _getBufferForTesting();
+    const warns = buffer.filter((e) =>
+      (e.event as string)?.startsWith("invalid_"),
+    );
+    assert.equal(
+      warns.length,
+      0,
+      "max_backups=0 must be accepted without warn",
+    );
+  });
+
+  it("logs warn for retention_days = 0 (must be > 0)", () => {
+    _resetForTesting();
+    const cfg = { logging: { retention_days: 0 } };
+    initPluginLogger(cfg);
+
+    const buffer = _getBufferForTesting();
+    const entry = buffer.find((e) => e.event === "invalid_retention_days") as
+      | Record<string, unknown>
+      | undefined;
+    assert.ok(entry, "must log invalid_retention_days for 0");
+    assert.equal(entry.key, "retention_days");
+    assert.equal(entry.value, 0);
+  });
+
+  it("logs warn for retention_days = -30 (negative, must be > 0)", () => {
+    _resetForTesting();
+    const cfg = { logging: { retention_days: -30 } };
+    initPluginLogger(cfg);
+
+    const buffer = _getBufferForTesting();
+    const entry = buffer.find((e) => e.event === "invalid_retention_days") as
+      | Record<string, unknown>
+      | undefined;
+    assert.ok(entry, "must log invalid_retention_days for -30");
+    assert.equal(entry.key, "retention_days");
+    assert.equal(entry.value, -30);
   });
 });
 

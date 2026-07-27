@@ -129,21 +129,20 @@ describe("extractSections (via validateTaskPrompt)", () => {
 // Word count limits → soft warnings
 // ---------------------------------------------------------------------------
 
-describe("CONTEXT word count limit (≤ 100) — soft warning", () => {
-  it("passes when CONTEXT is exactly 100 words", () => {
-    // Generate exactly 100 words
+describe("CONTEXT word count limit — soft warning", () => {
+  it("passes when CONTEXT is exactly at contextWordLimit", () => {
     const words = Array.from({ length: 100 }, (_, i) => `word${i + 1}`);
     const prompt = validPrompt({ context: words.join(" ") });
-    const result = validateTaskPrompt(prompt);
+    const result = validateTaskPrompt(prompt, { contextWordLimit: 100 });
     assert.equal(result.valid, true);
     assert.deepEqual(result.errors, []);
     assert.deepEqual(result.warnings, []);
   });
 
-  it("warns when CONTEXT exceeds 100 words", () => {
+  it("warns when CONTEXT exceeds contextWordLimit", () => {
     const words = Array.from({ length: 101 }, (_, i) => `word${i + 1}`);
     const prompt = validPrompt({ context: words.join(" ") });
-    const result = validateTaskPrompt(prompt);
+    const result = validateTaskPrompt(prompt, { contextWordLimit: 100 });
     assert.equal(result.valid, true);
     assert.deepEqual(result.errors, []);
     assert.ok(result.warnings.some((e) => e.includes("101 words")));
@@ -152,13 +151,13 @@ describe("CONTEXT word count limit (≤ 100) — soft warning", () => {
   it("reports the actual word count in the warning", () => {
     const words = Array.from({ length: 150 }, (_, i) => `word${i + 1}`);
     const prompt = validPrompt({ context: words.join(" ") });
-    const result = validateTaskPrompt(prompt);
+    const result = validateTaskPrompt(prompt, { contextWordLimit: 100 });
     assert.ok(result.warnings[0].includes("150"));
   });
 });
 
-describe("total prompt word count limit (≤ 250) — soft warning", () => {
-  it("passes when total is well under 250 and CONTEXT is under 100", () => {
+describe("total prompt word count limit — soft warning", () => {
+  it("passes when total is well under promptWordLimit", () => {
     const contextWords = Array.from({ length: 97 }, (_, i) => `word${i + 1}`);
     const prompt = validPrompt({
       summary: "Fix the bug",
@@ -166,12 +165,12 @@ describe("total prompt word count limit (≤ 250) — soft warning", () => {
       acceptance: "All tests pass",
     });
     // Total = 3 (headers) + 3 (summary) + 97 (context) + 3 (acceptance) = 106
-    const result = validateTaskPrompt(prompt);
+    const result = validateTaskPrompt(prompt, { promptWordLimit: 250 });
     assert.equal(result.valid, true);
     assert.deepEqual(result.warnings, []);
   });
 
-  it("passes when CONTEXT is exactly 100 and total is under 250", () => {
+  it("passes when total is under promptWordLimit with 100-word CONTEXT", () => {
     const contextWords = Array.from({ length: 100 }, (_, i) => `word${i + 1}`);
     const prompt = validPrompt({
       summary: "Fix",
@@ -179,15 +178,12 @@ describe("total prompt word count limit (≤ 250) — soft warning", () => {
       acceptance: "All pass",
     });
     // Total = 3 (headers) + 1 (summary) + 100 (context) + 2 (acceptance) = 106
-    const result = validateTaskPrompt(prompt);
+    const result = validateTaskPrompt(prompt, { promptWordLimit: 250 });
     assert.equal(result.valid, true);
     assert.deepEqual(result.warnings, []);
   });
 
-  it("warns when CONTEXT is moderate but total exceeds 250", () => {
-    // CONTEXT = 50 words (well under 100 limit)
-    // We need SUMMARY + ACCEPTANCE to push total over 250
-    // Total = 3 (headers) + S + 50 + A > 250  →  S + A > 197
+  it("warns when total exceeds promptWordLimit", () => {
     const summaryWords = Array.from({ length: 100 }, (_, i) => `word${i + 1}`);
     const contextWords = Array.from({ length: 50 }, (_, i) => `word${i + 1}`);
     const acceptanceWords = Array.from(
@@ -200,7 +196,7 @@ describe("total prompt word count limit (≤ 250) — soft warning", () => {
       `ACCEPTANCE: ${acceptanceWords.join(" ")}`,
     ].join("\n");
     // Total = 3 + 100 + 50 + 100 = 253 > 250
-    const result = validateTaskPrompt(prompt);
+    const result = validateTaskPrompt(prompt, { promptWordLimit: 250 });
     assert.equal(result.valid, true);
     assert.deepEqual(result.errors, []);
     assert.ok(
@@ -296,15 +292,18 @@ describe("validateTaskPrompt with custom limits", () => {
     );
   });
 
-  it("uses default for omitted limit when only one is provided (partial)", () => {
-    // Only override promptWordLimit; contextWordLimit stays at default 100
+  it("skips context word check when contextWordLimit is omitted (only promptWordLimit given)", () => {
+    // Only override promptWordLimit; contextWordLimit omitted → skip context check.
     const contextWords = Array.from({ length: 101 }, (_, i) => `word${i + 1}`);
     const prompt = validPrompt({ context: contextWords.join(" ") });
     const result = validateTaskPrompt(prompt, { promptWordLimit: 300 });
-    // contextWordLimit defaults to 100 → 101 > 100 should warn
+    // contextWordLimit is undefined → skip CONTEXT word count check
     assert.equal(result.valid, true);
     assert.deepEqual(result.errors, []);
-    assert.ok(result.warnings.some((e) => e.includes("101 words")));
+    assert.equal(
+      result.warnings.filter((w) => w.includes("CONTEXT is")).length,
+      0,
+    );
     // prompt is ~107 words, well under 300 → no total warning
     assert.equal(
       result.warnings.filter((w) => w.includes("concise")).length,
@@ -464,10 +463,13 @@ describe("edge cases", () => {
     assert.equal(result.valid, true);
   });
 
-  it("handles very long prompt gracefully", () => {
+  it("handles very long prompt gracefully with explicit limits", () => {
     const longContext = "word ".repeat(300).trim();
     const prompt = validPrompt({ context: longContext });
-    const result = validateTaskPrompt(prompt);
+    const result = validateTaskPrompt(prompt, {
+      contextWordLimit: 100,
+      promptWordLimit: 200,
+    });
     // Sections are present → valid, word count issues are soft warnings
     assert.equal(result.valid, true);
     assert.deepEqual(result.errors, []);

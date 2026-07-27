@@ -484,7 +484,7 @@ describe("logger", () => {
       assert.ok(fs.existsSync(testDir));
     });
 
-    it("sets defaults when opts are omitted", () => {
+    it("works when opts are omitted (no defaults, no rotation/cleanup)", () => {
       initLogger("some-session");
 
       const logPath = path.join(testDir, "defaults.log");
@@ -492,6 +492,96 @@ describe("logger", () => {
       log("h", "e", "s", undefined, "info");
       _flushForTesting();
       assert.ok(fs.existsSync(logPath));
+    });
+
+    it("does not rotate when maxFileSize is undefined", () => {
+      const logPath = path.join(testDir, "test.log");
+      _setLogPathForTesting(logPath);
+      initLogger("test", { logDir: testDir, maxBackups: 2 });
+
+      // Write enough data that would trigger rotation if maxFileSize were set
+      for (let i = 0; i < 10; i++) {
+        log("h", "e", "s", undefined, "info");
+      }
+      _flushForTesting();
+
+      assert.ok(fs.existsSync(logPath));
+      assert.equal(
+        fs.existsSync(`${logPath}.1`),
+        false,
+        "no rotation when maxFileSize is undefined",
+      );
+    });
+
+    it("does not rotate when maxFileSize is 0", () => {
+      const logPath = path.join(testDir, "test.log");
+      _setLogPathForTesting(logPath);
+      initLogger("test", { logDir: testDir, maxFileSize: 0, maxBackups: 2 });
+
+      for (let i = 0; i < 10; i++) {
+        log("h", "e", "s", undefined, "info");
+      }
+      _flushForTesting();
+
+      assert.equal(
+        fs.existsSync(`${logPath}.1`),
+        false,
+        "no rotation when maxFileSize=0",
+      );
+    });
+
+    it("does not rotate when maxFileSize is negative", () => {
+      const logPath = path.join(testDir, "test.log");
+      _setLogPathForTesting(logPath);
+      initLogger("test", { logDir: testDir, maxFileSize: -1, maxBackups: 2 });
+
+      for (let i = 0; i < 10; i++) {
+        log("h", "e", "s", undefined, "info");
+      }
+      _flushForTesting();
+
+      assert.equal(
+        fs.existsSync(`${logPath}.1`),
+        false,
+        "no rotation when maxFileSize is negative",
+      );
+    });
+
+    it("rotates with simple rename when maxBackups is undefined", () => {
+      const logPath = path.join(testDir, "test.log");
+      _setLogPathForTesting(logPath);
+      // maxBackups omitted → simple rotation (current → .1)
+      initLogger("test", { logDir: testDir, maxFileSize: 200 });
+
+      for (let i = 0; i < 3; i++) {
+        log("h", "e", "s", undefined, "info");
+      }
+      _flushForTesting();
+
+      assert.ok(
+        fs.existsSync(`${logPath}.1`),
+        "backup .1 should exist after rotation",
+      );
+      assert.equal(
+        fs.existsSync(`${logPath}.2`),
+        false,
+        ".2 should not exist without maxBackups cascade",
+      );
+    });
+
+    it("does not cleanup old files when retentionDays is undefined", () => {
+      const oldFile = path.join(testDir, "opencode-old.log");
+      fs.writeFileSync(oldFile, '{"ts":"old"}\n');
+      const past = new Date("2020-01-01").getTime() / 1000;
+      fs.utimesSync(oldFile, past, past);
+
+      // retentionDays omitted → no cleanup
+      initLogger("test", { logDir: testDir });
+
+      assert.ok(
+        fs.existsSync(oldFile),
+        "old file should not be deleted without retentionDays",
+      );
     });
   });
 
@@ -636,6 +726,30 @@ describe("logger", () => {
         fs.existsSync(`${logPath}.1`),
         false,
         "no rotation should happen for small file",
+      );
+    });
+
+    it("deletes current file on rotation when maxBackups=0", () => {
+      const logPath = path.join(testDir, "test.log");
+
+      _setLogPathForTesting(logPath);
+      initLogger("test", { logDir: testDir, maxFileSize: 200, maxBackups: 0 });
+
+      for (let i = 0; i < 3; i++) {
+        log("h", "e", "s", undefined, "info");
+      }
+      _flushForTesting();
+
+      // The current file should be deleted (rotation with maxBackups=0)
+      assert.equal(
+        fs.existsSync(logPath),
+        false,
+        "current file should be deleted when maxBackups=0",
+      );
+      assert.equal(
+        fs.existsSync(`${logPath}.1`),
+        false,
+        ".1 backup should not exist when maxBackups=0",
       );
     });
   });

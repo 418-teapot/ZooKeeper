@@ -546,6 +546,63 @@ describe("zero-benefit skip", () => {
 });
 
 // ===========================================================================
+// Undefined turnProtection → early-return (fail to skip)
+// ===========================================================================
+
+describe("undefined turnProtection → early-return", () => {
+  it("returns empty marks and writes nothing when turnProtection is undefined", () => {
+    // Input that would normally produce a dedup mark (2 identical calls).
+    const state = getOrCreateSessionState("sess-undef-tp");
+    const messages = [
+      msg("assistant", "a1", [toolPart("call-A", LONG_OUTPUT, { cmd: "ls" })]),
+      msg("assistant", "a2", [toolPart("call-B", LONG_OUTPUT, { cmd: "ls" })]),
+    ];
+
+    // turnProtection undefined → early return.
+    const marks = runDedup(state, messages, {});
+
+    assert.equal(marks.length, 0, "must return empty marks");
+    assert.equal(state.marks.size, 0, "must not write any marks");
+    assert.equal(state.dirty, false, "must not mark state as dirty");
+  });
+
+  it("returns empty marks when options omits turnProtection entirely", () => {
+    const state = getOrCreateSessionState("sess-undef-tp-omit");
+    const messages = [
+      msg("assistant", "a1", [toolPart("call-A", LONG_OUTPUT, { cmd: "ls" })]),
+      msg("assistant", "a2", [toolPart("call-B", LONG_OUTPUT, { cmd: "ls" })]),
+    ];
+
+    // Explicit undefined — same as omission.
+    const marks = runDedup(state, messages, { turnProtection: undefined });
+
+    assert.equal(marks.length, 0, "must return empty marks");
+    assert.equal(state.marks.size, 0, "must not write any marks");
+  });
+
+  it("does not affect state when turnProtection is undefined (no side effects)", () => {
+    const state = getOrCreateSessionState("sess-undef-tp-noside");
+    // Pre-populate a mark to verify it is not mutated.
+    state.marks.set("existing", {
+      tokens: 10,
+      effective: true,
+      action: "tool-output",
+    });
+
+    const messages = [
+      msg("assistant", "a1", [toolPart("call-A", LONG_OUTPUT, { cmd: "ls" })]),
+      msg("assistant", "a2", [toolPart("call-B", LONG_OUTPUT, { cmd: "ls" })]),
+    ];
+
+    runDedup(state, messages, {});
+
+    assert.equal(state.marks.size, 1, "pre-existing mark must survive");
+    assert.equal(state.marks.get("existing")?.tokens, 10);
+    assert.equal(state.dirty, false, "must not set dirty flag");
+  });
+});
+
+// ===========================================================================
 // Array normalisation
 // ===========================================================================
 

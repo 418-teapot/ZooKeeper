@@ -34,7 +34,7 @@ import { collectProtectedCallIDs } from "./shared.js";
 export interface PurgeErrorsOptions {
   /** Number of most recent assistant steps to protect from purge. */
   turnProtection?: number;
-  /** Tool names that are excluded from purge (default `["question"]`). */
+  /** Tool names that are excluded from purge.  Undefined → empty list (neutral). */
   protectedTools?: string[];
 }
 
@@ -122,8 +122,10 @@ export function runPurgeErrors(
   messages: ContextMessageEntry[],
   options: PurgeErrorsOptions,
 ): PurgeErrorsMark[] {
-  const turnProtection = options.turnProtection ?? 5;
-  const protectedTools = options.protectedTools ?? ["question"];
+  // Undefined turnProtection → skip (no fallback — "fail to skip").
+  if (options.turnProtection === undefined) return [];
+  const turnProtection = options.turnProtection;
+  const protectedTools = options.protectedTools;
   const protectedCallIDs = collectProtectedCallIDs(messages, turnProtection);
   const newMarks: PurgeErrorsMark[] = [];
 
@@ -153,7 +155,7 @@ export function runPurgeErrors(
 
       // ── Skip chain 4: protected tool ────────────────────────────
       const toolName = part.tool ?? "";
-      if (protectedTools.includes(toolName)) continue;
+      if (protectedTools?.includes(toolName)) continue;
 
       // ── Skip chain 5: zero benefit ──────────────────────────────
       const fields = collectTopLevelStringFields(part.state?.input);

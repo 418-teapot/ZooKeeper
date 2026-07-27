@@ -52,6 +52,8 @@ const TEST_SESSION_IDS = [
   "sess-refs-phase2",
   "sess-refs-det",
   "sess-refs-boundary",
+  "sess-gate-threshold-undef",
+  "sess-release-pct-undef",
 ];
 
 afterEach(() => {
@@ -777,17 +779,110 @@ describe("contextPruningTransformHandler", () => {
     assert.equal(state.marks.size, 1); // Only the pre-existing sweep mark.
   });
 
+  it("gate: thresholdTokens undefined skips the producer entirely", () => {
+    // Regression: when thresholdTokens is undefined (not configured),
+    // the producer gate must skip the producer — no marks created.
+    const sessionID = "sess-gate-threshold-undef";
+    const state = getOrCreateSessionState(sessionID);
+
+    const messages = [
+      msg("user", "u1", [textPart("hi")], sessionID),
+      msg(
+        "assistant",
+        "a1",
+        [
+          toolPart("call-1", LONG_OUTPUT, { cmd: "echo hello" }),
+          toolPart("call-2", LONG_OUTPUT, { cmd: "echo hello" }),
+        ],
+        undefined,
+        { input: 100000, output: 100 },
+      ),
+    ];
+
+    contextPruningTransformHandler(messages, {
+      enabled: true,
+      turnProtection: 0,
+      dedup: {
+        enabled: true,
+        // thresholdTokens is undefined → gate closes, producer skipped.
+      },
+      purgeErrors: {},
+    });
+
+    // No dedup marks created — producer was skipped due to undefined threshold.
+    assert.equal(state.marks.size, 0);
+    // Outputs untouched.
+    assert.ok(
+      (messages[1].parts?.[0] as SweepToolPart).state?.output?.startsWith(
+        LONG_OUTPUT,
+      ),
+    );
+    assert.ok(
+      (messages[1].parts?.[1] as SweepToolPart).state?.output?.startsWith(
+        LONG_OUTPUT,
+      ),
+    );
+  });
+
+  it("gate: releaseThresholdPercent undefined skips batch release", () => {
+    // Regression: when releaseThresholdPercent is undefined, the batch
+    // release check must be skipped entirely.  Marks remain pending.
+    const sessionID = "sess-release-pct-undef";
+    const state = getOrCreateSessionState(sessionID);
+
+    const messages = [
+      msg("user", "u1", [textPart("do it")], sessionID),
+      msg(
+        "assistant",
+        "a1",
+        [
+          toolPart("call-1", LONG_OUTPUT, { cmd: "echo hello" }),
+          toolPart("call-2", LONG_OUTPUT, { cmd: "echo hello" }),
+        ],
+        undefined,
+        { input: 100000, output: 200 },
+      ),
+    ];
+
+    contextPruningTransformHandler(messages, {
+      enabled: true,
+      turnProtection: 0,
+      // releaseThresholdPercent is undefined → release check skipped.
+      releaseThresholdPercent: undefined,
+      dedup: {
+        enabled: true,
+        thresholdTokens: 100000,
+      },
+      purgeErrors: {},
+    });
+
+    // Dedup ran → mark is pending (non-effective).
+    assert.ok(pendingCount(state) > 0, "must have pending marks");
+    // No effective marks — batch release did NOT fire.
+    assert.equal(reclaimedTokens(state), 0, "must not release marks");
+    // Outputs untouched (marks are pending, not effective).
+    assert.ok(
+      (messages[1].parts?.[0] as SweepToolPart).state?.output?.startsWith(
+        LONG_OUTPUT,
+      ),
+    );
+  });
+
   // ===========================================================================
-  // parseContextConfig defaults
+  // parseContextConfig — no defaults (fail to skip)
   // ===========================================================================
 
-  it("parseContextConfig returns defaults when [zoo.context] is absent", () => {
+  it("parseContextConfig returns undefined fields when [zoo.context] is absent", () => {
     const config = parseContextConfig({});
-    assert.equal(config.enabled, false);
-    assert.equal(config.dedup.enabled, true);
-    assert.equal(config.dedup.thresholdTokens, 100000);
-    assert.equal(config.turnProtection, 5);
-    assert.deepEqual(config.dedup.protectedTools, []);
+    assert.equal(config.enabled, undefined);
+    assert.equal(config.turnProtection, undefined);
+    assert.equal(config.releaseThresholdPercent, undefined);
+    assert.equal(config.dedup.enabled, undefined);
+    assert.equal(config.dedup.thresholdTokens, undefined);
+    assert.equal(config.dedup.protectedTools, undefined);
+    assert.equal(config.purgeErrors.enabled, undefined);
+    assert.equal(config.purgeErrors.thresholdTokens, undefined);
+    assert.equal(config.purgeErrors.protectedTools, undefined);
   });
 
   it("parseContextConfig reads [zoo.context] section with two-layer structure", () => {
@@ -805,71 +900,92 @@ describe("contextPruningTransformHandler", () => {
     assert.equal(config.dedup.thresholdTokens, 64000);
     assert.equal(config.turnProtection, 3);
     assert.deepEqual(config.dedup.protectedTools, ["task", "read"]);
+    // Absent fields yield undefined.
+    assert.equal(config.releaseThresholdPercent, undefined);
+    assert.equal(config.purgeErrors.enabled, undefined);
+    assert.equal(config.purgeErrors.thresholdTokens, undefined);
+    assert.equal(config.purgeErrors.protectedTools, undefined);
   });
 
-  it("parseContextConfig falls back to defaults for non-boolean enabled", () => {
+  it("parseContextConfig returns undefined for non-boolean dedup.enabled (warns)", () => {
     const config = parseContextConfig({
       context: { dedup: { enabled: "false" } },
     });
-    // "false" is not boolean -> fallback to true.
-    assert.equal(config.dedup.enabled, true);
+    // "false" is not boolean → undefined (no default).
+    assert.equal(config.dedup.enabled, undefined);
+
+    const buffer = _getBufferForTesting();
+    const entry = buffer.find((e) => e.event === "invalid_dedup_enabled");
+    assert.ok(entry, "must log invalid_dedup_enabled");
   });
 
-  it("parseContextConfig falls back to defaults for non-finite threshold_tokens", () => {
+  it("parseContextConfig returns undefined for non-finite threshold_tokens (warns)", () => {
     const config = parseContextConfig({
       context: { dedup: { threshold_tokens: Infinity } },
     });
-    assert.equal(config.dedup.thresholdTokens, 100000);
+    assert.equal(config.dedup.thresholdTokens, undefined);
 
     const config2 = parseContextConfig({
       context: { dedup: { threshold_tokens: NaN } },
     });
-    assert.equal(config2.dedup.thresholdTokens, 100000);
+    assert.equal(config2.dedup.thresholdTokens, undefined);
 
     const config3 = parseContextConfig({
       context: { dedup: { threshold_tokens: "100000" } },
     });
-    assert.equal(config3.dedup.thresholdTokens, 100000);
+    assert.equal(config3.dedup.thresholdTokens, undefined);
+
+    const buffer = _getBufferForTesting();
+    const entries = buffer.filter(
+      (e) => e.event === "invalid_dedup_threshold_tokens",
+    );
+    assert.equal(entries.length, 3);
   });
 
-  it("parseContextConfig falls back to defaults for non-finite turn_protection", () => {
+  it("parseContextConfig returns undefined for non-finite turn_protection (warns)", () => {
     const config = parseContextConfig({
       context: { turn_protection: NaN },
     });
-    assert.equal(config.turnProtection, 5);
+    assert.equal(config.turnProtection, undefined);
 
     const config2 = parseContextConfig({
       context: { turn_protection: Infinity },
     });
-    assert.equal(config2.turnProtection, 5);
+    assert.equal(config2.turnProtection, undefined);
 
     const config3 = parseContextConfig({
       context: { turn_protection: "3" },
     });
-    assert.equal(config3.turnProtection, 5);
+    assert.equal(config3.turnProtection, undefined);
+
+    const buffer = _getBufferForTesting();
+    const entries = buffer.filter((e) => e.event === "invalid_turn_protection");
+    assert.equal(entries.length, 3);
   });
 
-  it("parseContextConfig falls back to defaults for non-string-array protected_tools", () => {
+  it("parseContextConfig returns undefined for non-string-array protected_tools", () => {
     const config = parseContextConfig({
       context: { dedup: { protected_tools: "task" } },
     });
-    assert.deepEqual(config.dedup.protectedTools, []);
+    assert.equal(config.dedup.protectedTools, undefined);
 
     const config2 = parseContextConfig({
       context: { dedup: { protected_tools: [123, "read"] } },
     });
-    assert.deepEqual(config2.dedup.protectedTools, []);
+    assert.equal(config2.dedup.protectedTools, undefined);
 
+    // Empty array is valid — preserved.
     const config3 = parseContextConfig({
       context: { dedup: { protected_tools: [] } },
     });
     assert.deepEqual(config3.dedup.protectedTools, []);
   });
 
-  it("parseContextConfig preserves valid zero and negative values", () => {
+  it("parseContextConfig preserves valid zero values", () => {
     const config = parseContextConfig({
       context: {
         turn_protection: 0,
+        release_threshold_percent: 0,
         dedup: {
           enabled: false,
           threshold_tokens: 0,
@@ -880,6 +996,7 @@ describe("contextPruningTransformHandler", () => {
     assert.equal(config.dedup.enabled, false);
     assert.equal(config.dedup.thresholdTokens, 0);
     assert.equal(config.turnProtection, 0);
+    assert.equal(config.releaseThresholdPercent, 0);
     assert.deepEqual(config.dedup.protectedTools, []);
   });
 
@@ -894,23 +1011,35 @@ describe("contextPruningTransformHandler", () => {
     assert.equal(config.releaseThresholdPercent, 10);
   });
 
-  it("parseContextConfig defaults releaseThresholdPercent to 5 for non-number types", () => {
+  it("parseContextConfig returns undefined for non-number release_threshold_percent (warns)", () => {
     const config = parseContextConfig({
       context: { release_threshold_percent: "10" },
     });
-    assert.equal(config.releaseThresholdPercent, 5);
+    assert.equal(config.releaseThresholdPercent, undefined);
+
+    const buffer = _getBufferForTesting();
+    const entry = buffer.find(
+      (e) => e.event === "invalid_release_threshold_percent",
+    );
+    assert.ok(entry, "must log invalid_release_threshold_percent");
   });
 
-  it("parseContextConfig defaults releaseThresholdPercent to 5 for Infinity/NaN", () => {
+  it("parseContextConfig returns undefined for Infinity/NaN release_threshold_percent (warns)", () => {
     const config1 = parseContextConfig({
       context: { release_threshold_percent: Infinity },
     });
-    assert.equal(config1.releaseThresholdPercent, 5);
+    assert.equal(config1.releaseThresholdPercent, undefined);
 
     const config2 = parseContextConfig({
       context: { release_threshold_percent: NaN },
     });
-    assert.equal(config2.releaseThresholdPercent, 5);
+    assert.equal(config2.releaseThresholdPercent, undefined);
+
+    const buffer = _getBufferForTesting();
+    const entries = buffer.filter(
+      (e) => e.event === "invalid_release_threshold_percent",
+    );
+    assert.equal(entries.length, 2);
   });
 
   it("parseContextConfig accepts 0 as valid releaseThresholdPercent (no batching)", () => {
@@ -920,16 +1049,22 @@ describe("contextPruningTransformHandler", () => {
     assert.equal(config.releaseThresholdPercent, 0);
   });
 
-  it("parseContextConfig defaults releaseThresholdPercent to 5 for negative values", () => {
+  it("parseContextConfig returns undefined for negative release_threshold_percent (warns)", () => {
     const config = parseContextConfig({
       context: { release_threshold_percent: -1 },
     });
-    assert.equal(config.releaseThresholdPercent, 5);
+    assert.equal(config.releaseThresholdPercent, undefined);
+
+    const buffer = _getBufferForTesting();
+    const entry = buffer.find(
+      (e) => e.event === "invalid_release_threshold_percent",
+    );
+    assert.ok(entry, "must log invalid_release_threshold_percent");
   });
 
-  it("parseContextConfig defaults releaseThresholdPercent to 5 when absent", () => {
+  it("parseContextConfig returns undefined for release_threshold_percent when absent", () => {
     const config = parseContextConfig({});
-    assert.equal(config.releaseThresholdPercent, 5);
+    assert.equal(config.releaseThresholdPercent, undefined);
   });
 
   it("parseContextConfig ignores dedup.release_threshold_percent (old location)", () => {
@@ -944,11 +1079,11 @@ describe("contextPruningTransformHandler", () => {
     // Top-level value takes precedence (99 in dedup is ignored).
     assert.equal(config.releaseThresholdPercent, 10);
 
-    // When only dedup.release_threshold_percent exists (no top-level), fall to default.
+    // When only dedup.release_threshold_percent exists (no top-level) → undefined.
     const config2 = parseContextConfig({
       context: { dedup: { release_threshold_percent: 99 } },
     });
-    assert.equal(config2.releaseThresholdPercent, 5);
+    assert.equal(config2.releaseThresholdPercent, undefined);
   });
 
   // ===========================================================================
@@ -970,18 +1105,24 @@ describe("contextPruningTransformHandler", () => {
     assert.deepEqual(config.purgeErrors.protectedTools, ["bash"]);
   });
 
-  it("parseContextConfig defaults purgeErrors fields when section is absent", () => {
+  it("parseContextConfig returns undefined for purgeErrors fields when section is absent", () => {
     const config = parseContextConfig({});
-    assert.equal(config.purgeErrors.enabled, true);
-    assert.equal(config.purgeErrors.thresholdTokens, 100000);
-    assert.deepEqual(config.purgeErrors.protectedTools, []);
+    assert.equal(config.purgeErrors.enabled, undefined);
+    assert.equal(config.purgeErrors.thresholdTokens, undefined);
+    assert.equal(config.purgeErrors.protectedTools, undefined);
   });
 
-  it("parseContextConfig falls back to defaults for non-boolean purge_errors enabled", () => {
+  it("parseContextConfig returns undefined for non-boolean purge_errors enabled (warns)", () => {
     const config = parseContextConfig({
       context: { purge_errors: { enabled: "false" } },
     });
-    assert.equal(config.purgeErrors.enabled, true);
+    assert.equal(config.purgeErrors.enabled, undefined);
+
+    const buffer = _getBufferForTesting();
+    const entry = buffer.find(
+      (e) => e.event === "invalid_purge_errors_enabled",
+    );
+    assert.ok(entry, "must log invalid_purge_errors_enabled");
   });
 
   it("parseContextConfig reads enabled: false from [zoo.context]", () => {
@@ -991,24 +1132,30 @@ describe("contextPruningTransformHandler", () => {
     assert.equal(config.enabled, false);
   });
 
-  it("parseContextConfig defaults enabled to false when absent", () => {
+  it("parseContextConfig returns undefined for enabled when absent", () => {
     const config = parseContextConfig({});
-    assert.equal(config.enabled, false);
+    assert.equal(config.enabled, undefined);
   });
 
-  it("parseContextConfig defaults enabled to false for non-boolean values", () => {
+  it("parseContextConfig returns undefined for non-boolean enabled (warns)", () => {
     const config1 = parseContextConfig({
       context: { enabled: "false" },
     });
-    assert.equal(config1.enabled, false);
+    assert.equal(config1.enabled, undefined);
 
     const config2 = parseContextConfig({
       context: { enabled: 0 },
     });
-    assert.equal(config2.enabled, false);
+    assert.equal(config2.enabled, undefined);
+
+    const buffer = _getBufferForTesting();
+    const entries = buffer.filter(
+      (e) => e.event === "invalid_context_pruning_enabled",
+    );
+    assert.equal(entries.length, 2);
   });
 
-  it("parseContextConfig ignores unknown keys in context config", () => {
+  it("parseContextConfig returns undefined for unknown keys in context config", () => {
     const config = parseContextConfig({
       context: {
         unknown_key: true,
@@ -1016,11 +1163,16 @@ describe("contextPruningTransformHandler", () => {
         purge_errors: { unknown_pe_key: true },
       },
     });
-    // Unknown keys ignored — defaults preserved.
-    assert.equal(config.turnProtection, 5);
-    assert.equal(config.releaseThresholdPercent, 5);
-    assert.equal(config.dedup.enabled, true);
-    assert.equal(config.purgeErrors.enabled, true);
+    // Unknown keys ignored — all fields are undefined.
+    assert.equal(config.enabled, undefined);
+    assert.equal(config.turnProtection, undefined);
+    assert.equal(config.releaseThresholdPercent, undefined);
+    assert.equal(config.dedup.enabled, undefined);
+    assert.equal(config.dedup.thresholdTokens, undefined);
+    assert.equal(config.dedup.protectedTools, undefined);
+    assert.equal(config.purgeErrors.enabled, undefined);
+    assert.equal(config.purgeErrors.thresholdTokens, undefined);
+    assert.equal(config.purgeErrors.protectedTools, undefined);
   });
 
   // ===========================================================================

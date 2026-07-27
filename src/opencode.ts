@@ -83,13 +83,38 @@ let _sessionIdSet = false;
 // Config helpers
 // ---------------------------------------------------------------------------
 
-/** Extract word-count limits from zoo config. */
+/** Extract word-count limits from zoo config.
+ *
+ *  Each field is type-checked: only finite numbers are accepted.  Missing or
+ *  invalid values produce `undefined` (no fallback), and invalid values emit
+ *  a warning log.
+ */
 function parseLimits(zooConfig: any) {
   const v = zooConfig.validation ?? {};
-  return {
-    contextWordLimit: v.context_word_limit ?? 200,
-    promptWordLimit: v.prompt_word_limit ?? 500,
-  };
+
+  const ctxRaw = v.context_word_limit;
+  let contextWordLimit: number | undefined;
+  if (typeof ctxRaw === "number" && Number.isFinite(ctxRaw)) {
+    contextWordLimit = ctxRaw;
+  } else if (ctxRaw !== undefined) {
+    log("config", "invalid_context_word_limit", "", undefined, "warn", {
+      key: "context_word_limit",
+      value: ctxRaw,
+    });
+  }
+
+  const promptRaw = v.prompt_word_limit;
+  let promptWordLimit: number | undefined;
+  if (typeof promptRaw === "number" && Number.isFinite(promptRaw)) {
+    promptWordLimit = promptRaw;
+  } else if (promptRaw !== undefined) {
+    log("config", "invalid_prompt_word_limit", "", undefined, "warn", {
+      key: "prompt_word_limit",
+      value: promptRaw,
+    });
+  }
+
+  return { contextWordLimit, promptWordLimit };
 }
 
 /** Extract skills config map from zoo config. */
@@ -107,73 +132,214 @@ function parseSkillsConfig(zooConfig: any): Record<string, string> {
  *  `[zoo.context.dedup].release_threshold_percent` (the old location)
  *  is intentionally NOT read — no fallback, no migration.
  *
- *  Each field is type-checked: unrecognised / wrong-type values fall
- *  back to the default so that e.g. `enabled = "false"` does NOT
- *  activate a strategy.
+ *  Each field is type-checked: unrecognised / wrong-type values produce
+ *  `undefined` (no fallback — "fail to skip"), and invalid values emit
+ *  a warning log.  Missing fields produce `undefined` silently.
  */
 function parseContextConfig(zooConfig: any): ContextPruningConfig {
   const c = zooConfig.context ?? {};
   const d = c.dedup ?? {};
   const pe = c.purge_errors ?? {};
+
+  let enabled: boolean | undefined;
+  if (typeof c.enabled === "boolean") {
+    enabled = c.enabled;
+  } else if (c.enabled !== undefined) {
+    log("config", "invalid_context_pruning_enabled", "", undefined, "warn", {
+      key: "enabled",
+      value: c.enabled,
+    });
+  }
+
+  let turnProtection: number | undefined;
+  if (
+    typeof c.turn_protection === "number" &&
+    Number.isFinite(c.turn_protection)
+  ) {
+    turnProtection = c.turn_protection;
+  } else if (c.turn_protection !== undefined) {
+    log("config", "invalid_turn_protection", "", undefined, "warn", {
+      key: "turn_protection",
+      value: c.turn_protection,
+    });
+  }
+
+  let releaseThresholdPercent: number | undefined;
+  if (
+    typeof c.release_threshold_percent === "number" &&
+    Number.isFinite(c.release_threshold_percent) &&
+    c.release_threshold_percent >= 0
+  ) {
+    releaseThresholdPercent = c.release_threshold_percent;
+  } else if (c.release_threshold_percent !== undefined) {
+    log("config", "invalid_release_threshold_percent", "", undefined, "warn", {
+      key: "release_threshold_percent",
+      value: c.release_threshold_percent,
+    });
+  }
+
+  let dedupEnabled: boolean | undefined;
+  if (typeof d.enabled === "boolean") {
+    dedupEnabled = d.enabled;
+  } else if (d.enabled !== undefined) {
+    log("config", "invalid_dedup_enabled", "", undefined, "warn", {
+      key: "dedup.enabled",
+      value: d.enabled,
+    });
+  }
+
+  let dedupThresholdTokens: number | undefined;
+  if (
+    typeof d.threshold_tokens === "number" &&
+    Number.isFinite(d.threshold_tokens)
+  ) {
+    dedupThresholdTokens = d.threshold_tokens;
+  } else if (d.threshold_tokens !== undefined) {
+    log("config", "invalid_dedup_threshold_tokens", "", undefined, "warn", {
+      key: "dedup.threshold_tokens",
+      value: d.threshold_tokens,
+    });
+  }
+
+  let dedupProtectedTools: string[] | undefined;
+  if (
+    Array.isArray(d.protected_tools) &&
+    d.protected_tools.every((t: unknown) => typeof t === "string")
+  ) {
+    dedupProtectedTools = d.protected_tools;
+  } else if (d.protected_tools !== undefined) {
+    log("config", "invalid_dedup_protected_tools", "", undefined, "warn", {
+      key: "dedup.protected_tools",
+      value: d.protected_tools,
+    });
+  }
+
+  let peEnabled: boolean | undefined;
+  if (typeof pe.enabled === "boolean") {
+    peEnabled = pe.enabled;
+  } else if (pe.enabled !== undefined) {
+    log("config", "invalid_purge_errors_enabled", "", undefined, "warn", {
+      key: "purge_errors.enabled",
+      value: pe.enabled,
+    });
+  }
+
+  let peThresholdTokens: number | undefined;
+  if (
+    typeof pe.threshold_tokens === "number" &&
+    Number.isFinite(pe.threshold_tokens)
+  ) {
+    peThresholdTokens = pe.threshold_tokens;
+  } else if (pe.threshold_tokens !== undefined) {
+    log(
+      "config",
+      "invalid_purge_errors_threshold_tokens",
+      "",
+      undefined,
+      "warn",
+      {
+        key: "purge_errors.threshold_tokens",
+        value: pe.threshold_tokens,
+      },
+    );
+  }
+
+  let peProtectedTools: string[] | undefined;
+  if (
+    Array.isArray(pe.protected_tools) &&
+    pe.protected_tools.every((t: unknown) => typeof t === "string")
+  ) {
+    peProtectedTools = pe.protected_tools;
+  } else if (pe.protected_tools !== undefined) {
+    log(
+      "config",
+      "invalid_purge_errors_protected_tools",
+      "",
+      undefined,
+      "warn",
+      {
+        key: "purge_errors.protected_tools",
+        value: pe.protected_tools,
+      },
+    );
+  }
+
   return {
-    enabled: typeof c.enabled === "boolean" ? c.enabled : false,
-    turnProtection:
-      typeof c.turn_protection === "number" &&
-      Number.isFinite(c.turn_protection)
-        ? c.turn_protection
-        : 5,
-    releaseThresholdPercent:
-      typeof c.release_threshold_percent === "number" &&
-      Number.isFinite(c.release_threshold_percent) &&
-      c.release_threshold_percent >= 0
-        ? c.release_threshold_percent
-        : 5,
+    enabled,
+    turnProtection,
+    releaseThresholdPercent,
     dedup: {
-      enabled: typeof d.enabled === "boolean" ? d.enabled : true,
-      thresholdTokens:
-        typeof d.threshold_tokens === "number" &&
-        Number.isFinite(d.threshold_tokens)
-          ? d.threshold_tokens
-          : 100000,
-      protectedTools:
-        Array.isArray(d.protected_tools) &&
-        d.protected_tools.every((t: unknown) => typeof t === "string")
-          ? d.protected_tools
-          : [],
+      enabled: dedupEnabled,
+      thresholdTokens: dedupThresholdTokens,
+      protectedTools: dedupProtectedTools,
     },
     purgeErrors: {
-      enabled: typeof pe.enabled === "boolean" ? pe.enabled : true,
-      thresholdTokens:
-        typeof pe.threshold_tokens === "number" &&
-        Number.isFinite(pe.threshold_tokens)
-          ? pe.threshold_tokens
-          : 100000,
-      protectedTools:
-        Array.isArray(pe.protected_tools) &&
-        pe.protected_tools.every((t: unknown) => typeof t === "string")
-          ? pe.protected_tools
-          : [],
+      enabled: peEnabled,
+      thresholdTokens: peThresholdTokens,
+      protectedTools: peProtectedTools,
     },
   };
 }
 
-/** Initialize file-based logger from [zoo.logging] config. */
+/** Initialize file-based logger from [zoo.logging] config.
+ *
+ *  Each field is type-checked and range-checked:
+ *   - `max_file_size_mb`: must be > 0 (file-rotation threshold).
+ *   - `max_backups`: must be >= 0 (0 disables backups; negative is invalid).
+ *   - `retention_days`: must be > 0 (negative would delete all logs).
+ *
+ *  Values that fail the check produce `undefined` (no fallback) and emit a
+ *  warning log with the same pattern as `parseLimits`.
+ */
 function initPluginLogger(zooConfig: any): void {
   const logConfig = zooConfig.logging ?? {};
-  initLogger("", {
-    maxFileSize:
-      typeof logConfig.max_file_size_mb === "number"
-        ? logConfig.max_file_size_mb * 1024 * 1024
-        : undefined,
-    maxBackups:
-      typeof logConfig.max_backups === "number"
-        ? logConfig.max_backups
-        : undefined,
-    retentionDays:
-      typeof logConfig.retention_days === "number"
-        ? logConfig.retention_days
-        : undefined,
-  });
+
+  const maxSizeRaw = logConfig.max_file_size_mb;
+  let maxFileSize: number | undefined;
+  if (
+    typeof maxSizeRaw === "number" &&
+    Number.isFinite(maxSizeRaw) &&
+    maxSizeRaw > 0
+  ) {
+    maxFileSize = maxSizeRaw * 1024 * 1024;
+  } else if (maxSizeRaw !== undefined) {
+    log("config", "invalid_max_file_size_mb", "", undefined, "warn", {
+      key: "max_file_size_mb",
+      value: maxSizeRaw,
+    });
+  }
+
+  const maxBackupsRaw = logConfig.max_backups;
+  let maxBackups: number | undefined;
+  if (
+    typeof maxBackupsRaw === "number" &&
+    Number.isFinite(maxBackupsRaw) &&
+    maxBackupsRaw >= 0
+  ) {
+    maxBackups = maxBackupsRaw;
+  } else if (maxBackupsRaw !== undefined) {
+    log("config", "invalid_max_backups", "", undefined, "warn", {
+      key: "max_backups",
+      value: maxBackupsRaw,
+    });
+  }
+
+  const retentionDaysRaw = logConfig.retention_days;
+  let retentionDays: number | undefined;
+  if (
+    typeof retentionDaysRaw === "number" &&
+    Number.isFinite(retentionDaysRaw) &&
+    retentionDaysRaw > 0
+  ) {
+    retentionDays = retentionDaysRaw;
+  } else if (retentionDaysRaw !== undefined) {
+    log("config", "invalid_retention_days", "", undefined, "warn", {
+      key: "retention_days",
+      value: retentionDaysRaw,
+    });
+  }
+
+  initLogger("", { maxFileSize, maxBackups, retentionDays });
 }
 
 // ---------------------------------------------------------------------------
@@ -726,6 +892,7 @@ export default { id: "zookeeper", server: zookeeper };
 export {
   handleContextPruning,
   handleMessagesTransform,
+  initPluginLogger,
   injectAgentPrompts,
   parseContextConfig,
   parseLimits,

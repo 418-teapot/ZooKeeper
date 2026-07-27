@@ -30,9 +30,9 @@ import { collectProtectedCallIDs, netReclaimTokens } from "./shared.js";
  * (releaseThresholdPercent) are managed by the handler config.
  */
 export interface DedupOptions {
-  /** Number of most recent assistant steps to protect from dedup. */
+  /** Number of most recent assistant steps to protect from dedup.  Undefined → skip producer. */
   turnProtection?: number;
-  /** Tool names that are excluded from dedup. */
+  /** Tool names that are excluded from dedup.  Undefined → empty list (neutral). */
   protectedTools?: string[];
 }
 
@@ -128,7 +128,7 @@ function shouldSkipPart(
   part: SweepToolPart,
   alreadyMarked: Set<string>,
   protectedCallIDs: Set<string>,
-  protectedTools: string[],
+  protectedTools: string[] | undefined,
 ): boolean {
   const callID = getCallId(part);
   if (!callID) return true;
@@ -136,7 +136,7 @@ function shouldSkipPart(
   if (alreadyMarked.has(callID)) return true;
   if (protectedCallIDs.has(callID)) return true;
 
-  if (part.tool && protectedTools.includes(part.tool)) return true;
+  if (part.tool && protectedTools?.includes(part.tool)) return true;
 
   // Skip non-completed parts (error / running / pending).
   // Error parts are left for purge-errors strategy.
@@ -173,8 +173,10 @@ export function runDedup(
   messages: ContextMessageEntry[],
   options: DedupOptions,
 ): DedupMark[] {
-  const turnProtection = options.turnProtection ?? 5;
-  const protectedTools = options.protectedTools ?? [];
+  // Undefined turnProtection → skip (no fallback — "fail to skip").
+  if (options.turnProtection === undefined) return [];
+  const turnProtection = options.turnProtection;
+  const protectedTools = options.protectedTools;
 
   // ── Phase 1: collect protected callIDs ───────────────────────────
   // Single marks.has() check covers both effective and pending marks.

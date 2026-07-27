@@ -26,9 +26,12 @@ import { join, resolve } from "node:path";
 
 export interface LoggerOptions {
   logDir: string;
-  maxFileSize: number;
-  maxBackups: number;
-  retentionDays: number;
+  /** When undefined, file rotation is disabled. */
+  maxFileSize?: number;
+  /** When undefined, backup count trimming is disabled. */
+  maxBackups?: number;
+  /** When undefined, old-log cleanup is disabled. */
+  retentionDays?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -36,15 +39,15 @@ export interface LoggerOptions {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_LOG_DIR = join(homedir(), ".zoo", "log");
-const DEFAULT_MAX_FILE_SIZE = 5 * 1024 * 1024;
-const DEFAULT_MAX_BACKUPS = 2;
-const DEFAULT_RETENTION_DAYS = 7;
 
 let _sessionId = "";
 let _logDir = DEFAULT_LOG_DIR;
-let _maxFileSize = DEFAULT_MAX_FILE_SIZE;
-let _maxBackups = DEFAULT_MAX_BACKUPS;
-let _retentionDays = DEFAULT_RETENTION_DAYS;
+/** Undefined = rotation disabled. */
+let _maxFileSize: number | undefined;
+/** Undefined = backup count trimming disabled. */
+let _maxBackups: number | undefined;
+/** Undefined = old-log cleanup disabled. */
+let _retentionDays: number | undefined;
 const _buffer: Array<Record<string, unknown>> = [];
 let _flushTimer: ReturnType<typeof setInterval> | null = null;
 let _testLogPathOverride: string | null = null;
@@ -128,10 +131,11 @@ function ensureDir(dir: string): void {
 /**
  * Rotate the current log file.
  *
- * Strategy (with `maxBackups = 2`):
- *   1. Delete `.2` (oldest backup) if it exists.
- *   2. Rename `.1` → `.2`.
- *   3. Rename the current file → `.1`.
+ * Behaviour depends on `_maxBackups`:
+ *   - `undefined` → simple rotation (rename current → `.1`, no limit).
+ *   - `<= 0` → delete current file (rotation disabled).
+ *   - `> 0` → cascade shift (`.n-1` → `.n` for `n = maxBackups`) and
+ *     delete the oldest backup (`.maxBackups`).
  *
  * All errors are silently swallowed.
  *
@@ -139,6 +143,18 @@ function ensureDir(dir: string): void {
  */
 function rotateLogFile(filePath: string): void {
   try {
+    // _maxBackups undefined: simple rotation without cascade or limit.
+    if (_maxBackups === undefined) {
+      const backupPath = `${filePath}.1`;
+      if (existsSync(backupPath)) {
+        unlinkSync(backupPath);
+      }
+      if (existsSync(filePath)) {
+        renameSync(filePath, backupPath);
+      }
+      return;
+    }
+
     // When backups are disabled, simply delete the current file
     if (_maxBackups <= 0) {
       if (existsSync(filePath)) {
@@ -176,7 +192,8 @@ function rotateLogFile(filePath: string): void {
  *
  * All buffered entries are serialised as JSON Lines and appended to the log
  * file synchronously.  After the write, the file size is checked and
- * rotation triggered if the file exceeds `_maxFileSize`.
+ * rotation triggered if the file exceeds `_maxFileSize` (only when
+ * `_maxFileSize` is configured).
  *
  * All I/O errors are silently swallowed so a logging failure never
  * interrupts the main flow.
@@ -196,13 +213,15 @@ function flushBuffer(): void {
     appendFileSync(filePath, lines, "utf-8");
 
     // Check if rotation is needed
-    try {
-      const size = statSync(filePath).size;
-      if (size >= _maxFileSize) {
-        rotateLogFile(filePath);
+    if (_maxFileSize !== undefined) {
+      try {
+        const size = statSync(filePath).size;
+        if (size >= _maxFileSize) {
+          rotateLogFile(filePath);
+        }
+      } catch {
+        // stat may fail if the file was deleted between write and stat
       }
-    } catch {
-      // stat may fail if the file was deleted between write and stat
     }
   } catch {
     // Silently swallow all I/O errors
@@ -214,11 +233,13 @@ function flushBuffer(): void {
  *
  * Scans `_logDir` for files matching `opencode-*.log*` or
  * `opencode-*.log.*` and removes those whose mtime exceeds the retention
- * threshold.
+ * threshold.  When `_retentionDays` is `undefined` the cleanup is skipped.
  *
  * All errors are silently swallowed.
  */
 function cleanupOldLogs(): void {
+  if (_retentionDays === undefined) return;
+
   try {
     const dir = _logDir;
     if (!existsSync(dir)) return;
@@ -277,6 +298,11 @@ function startFlushTimer(): void {
  * Must be called once before `log()`.  Sets up the log
  * directory, cleans old log files, and starts the flush timer.
  *
+ * When a config field is omitted the corresponding behaviour is skipped
+ * (no file rotation, no backup trimming, no old-log cleanup).  A
+ * `maxFileSize` value of 0 or negative is treated as if it were
+ * `undefined` (rotation disabled).
+ *
  * @param sessionId - The session identifier for the current run.
  * @param opts - Optional overrides for log directory, file size, backups,
  *   and retention.
@@ -291,8 +317,7 @@ export function initLogger(
     _logDir = resolve(opts.logDir.replace(/^~/, homedir()));
   }
   if (opts?.maxFileSize !== undefined) {
-    _maxFileSize =
-      opts.maxFileSize <= 0 ? DEFAULT_MAX_FILE_SIZE : opts.maxFileSize;
+    _maxFileSize = opts.maxFileSize <= 0 ? undefined : opts.maxFileSize;
   }
   if (opts?.maxBackups !== undefined) {
     _maxBackups = opts.maxBackups;
@@ -425,9 +450,9 @@ export function _resetForTesting(): void {
   _buffer.length = 0;
   _sessionId = "";
   _logDir = DEFAULT_LOG_DIR;
-  _maxFileSize = DEFAULT_MAX_FILE_SIZE;
-  _maxBackups = DEFAULT_MAX_BACKUPS;
-  _retentionDays = DEFAULT_RETENTION_DAYS;
+  _maxFileSize = undefined;
+  _maxBackups = undefined;
+  _retentionDays = undefined;
   if (_flushTimer) {
     clearInterval(_flushTimer);
     _flushTimer = null;

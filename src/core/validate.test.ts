@@ -92,20 +92,18 @@ describe("missing sections", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Default limits
+// Word-count limits (explicit)
 // ---------------------------------------------------------------------------
 
-describe("default word-count limits", () => {
-  it("defaults to contextWordLimit=100", () => {
-    // 101 words → warning
+describe("word-count limits (explicit)", () => {
+  it("contextWordLimit=100 warns at 101 words", () => {
     const words = Array.from({ length: 101 }, (_, i) => `w${i + 1}`);
     const prompt = validPrompt({ context: words.join(" ") });
-    const result = validateTaskPrompt(prompt);
+    const result = validateTaskPrompt(prompt, { contextWordLimit: 100 });
     assert.ok(result.warnings.some((e) => e.includes("CONTEXT is")));
   });
 
-  it("defaults to promptWordLimit=250", () => {
-    // Build a prompt > 250 words with CONTEXT still under 100
+  it("promptWordLimit=250 warns above threshold", () => {
     const contextWords = Array.from({ length: 50 }, (_, i) => `w${i + 1}`);
     const summaryWords = Array.from({ length: 100 }, (_, i) => `w${i + 1}`);
     const acceptanceWords = Array.from({ length: 100 }, (_, i) => `w${i + 1}`);
@@ -114,7 +112,7 @@ describe("default word-count limits", () => {
       `CONTEXT: ${contextWords.join(" ")}`,
       `ACCEPTANCE: ${acceptanceWords.join(" ")}`,
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateTaskPrompt(prompt, { promptWordLimit: 250 });
     assert.ok(result.warnings.some((e) => e.includes("concise")));
   });
 
@@ -152,8 +150,8 @@ describe("custom limits via Partial<ValidationLimits>", () => {
     assert.ok(result.warnings.some((e) => e.includes("concise")));
   });
 
-  it("applies default for omitted limit fields (partial)", () => {
-    // Only set contextWordLimit, promptWordLimit should stay default 250
+  it("skips total word check when promptWordLimit is omitted", () => {
+    // Only set contextWordLimit; promptWordLimit omitted → skip total check.
     const words = Array.from({ length: 101 }, (_, i) => `w${i + 1}`);
     const prompt = validPrompt({ context: words.join(" ") });
     const result = validateTaskPrompt(prompt, { contextWordLimit: 200 });
@@ -162,13 +160,19 @@ describe("custom limits via Partial<ValidationLimits>", () => {
       result.warnings.filter((w) => w.includes("CONTEXT is")).length,
       0,
     );
+    // total_words check skipped because promptWordLimit is undefined
+    assert.equal(
+      result.warnings.filter((w) => w.includes("concise")).length,
+      0,
+    );
   });
 
-  it("accepts empty limits object (all defaults)", () => {
+  it("skips all soft checks when limits object is empty", () => {
     const words = Array.from({ length: 101 }, (_, i) => `w${i + 1}`);
     const prompt = validPrompt({ context: words.join(" ") });
     const result = validateTaskPrompt(prompt, {});
-    assert.ok(result.warnings.some((e) => e.includes("CONTEXT is")));
+    // Both limits undefined → both soft checks skipped
+    assert.equal(result.warnings.length, 0);
   });
 });
 
@@ -180,14 +184,14 @@ describe("CONTEXT word count warnings", () => {
   it("warns when CONTEXT equals limit + 1 (boundary)", () => {
     const words = Array.from({ length: 101 }, (_, i) => `w${i + 1}`);
     const prompt = validPrompt({ context: words.join(" ") });
-    const result = validateTaskPrompt(prompt);
+    const result = validateTaskPrompt(prompt, { contextWordLimit: 100 });
     assert.ok(result.warnings.some((e) => e.includes("101 words")));
   });
 
   it("does not warn when CONTEXT is exactly at limit", () => {
     const words = Array.from({ length: 100 }, (_, i) => `w${i + 1}`);
     const prompt = validPrompt({ context: words.join(" ") });
-    const result = validateTaskPrompt(prompt);
+    const result = validateTaskPrompt(prompt, { contextWordLimit: 100 });
     assert.equal(
       result.warnings.filter((w) => w.includes("CONTEXT is")).length,
       0,
@@ -207,7 +211,7 @@ describe("CONTEXT word count warnings", () => {
 // ---------------------------------------------------------------------------
 
 describe("total prompt word count warnings", () => {
-  it("warns when total exceeds promptWordLimit (default 250)", () => {
+  it("warns when total exceeds promptWordLimit=250", () => {
     // Total = 3 header words + 250 summary + 2 context + 1 acceptance = 256 > 250
     const longSummary = Array.from({ length: 250 }, (_, i) => `w${i + 1}`);
     const prompt = [
@@ -215,17 +219,71 @@ describe("total prompt word count warnings", () => {
       "CONTEXT: Short context",
       "ACCEPTANCE: Pass",
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateTaskPrompt(prompt, { promptWordLimit: 250 });
     assert.ok(result.warnings.some((e) => e.includes("concise")));
   });
 
   it("does not warn when total is under the limit", () => {
     const prompt = validPrompt();
-    const result = validateTaskPrompt(prompt);
+    const result = validateTaskPrompt(prompt, { promptWordLimit: 250 });
     assert.equal(
       result.warnings.filter((w) => w.includes("concise")).length,
       0,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Skip behavior when limits are undefined
+// ---------------------------------------------------------------------------
+
+describe("skip behavior when limits are undefined", () => {
+  it("skips CONTENT word count check when contextWordLimit is undefined", () => {
+    const words = Array.from({ length: 999 }, (_, i) => `w${i + 1}`);
+    const prompt = validPrompt({ context: words.join(" ") });
+    const result = validateTaskPrompt(prompt, {
+      contextWordLimit: undefined,
+      promptWordLimit: 5000,
+    });
+    // No CONTEXT word warning despite 999 words
+    const ctxWarnings = result.warnings.filter((w) => w.includes("CONTEXT is"));
+    assert.equal(ctxWarnings.length, 0);
+  });
+
+  it("skips total word count check when promptWordLimit is undefined", () => {
+    const longSummary = Array.from({ length: 999 }, (_, i) => `w${i + 1}`);
+    const prompt = [
+      `SUMMARY: ${longSummary.join(" ")}`,
+      "CONTEXT: Short context",
+      "ACCEPTANCE: Pass",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt, {
+      contextWordLimit: 5000,
+      promptWordLimit: undefined,
+    });
+    // No total word warning despite ~1002 words
+    const totalWarnings = result.warnings.filter((w) => w.includes("concise"));
+    assert.equal(totalWarnings.length, 0);
+  });
+
+  it("pattern nudges still fire when both limits are undefined", () => {
+    const prompt = validPrompt({
+      context:
+        "The bug is at src/db.py line 42. Code:\n```\ndef foo()\n```\nFix the issue.",
+    });
+    const result = validateTaskPrompt(prompt, {});
+    // Hard checks still pass (sections present)
+    assert.equal(result.valid, true);
+    // Pattern nudges still fire (code blocks + line refs)
+    assert.ok(result.warnings.some((w) => w.includes("code blocks")));
+    assert.ok(result.warnings.some((w) => w.includes("line references")));
+  });
+
+  it("hard section checks still fire when both limits are undefined", () => {
+    const prompt = "CONTEXT: Some context\nACCEPTANCE: Tests pass";
+    const result = validateTaskPrompt(prompt, {});
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((e) => e.includes("SUMMARY")));
   });
 });
 

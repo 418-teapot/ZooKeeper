@@ -127,10 +127,13 @@ function buildContextNudges(context: string): string[] {
 /**
  * Configurable word-count limits for task prompt validation,
  * loaded from `config.toml` at plugin initialization.
+ *
+ * Each field is optional — when `undefined` the corresponding soft check
+ * is skipped.
  */
 export interface ValidationLimits {
-  contextWordLimit: number;
-  promptWordLimit: number;
+  contextWordLimit?: number;
+  promptWordLimit?: number;
 }
 
 /**
@@ -141,11 +144,14 @@ export interface ValidationLimits {
  *
  * Soft checks (advisory nudges, not blocking):
  *   2. CONTEXT ≤ `limits.contextWordLimit` words — nudge to split or condense.
+ *      Skip when `contextWordLimit` is `undefined`.
  *   3. Total prompt ≤ `limits.promptWordLimit` words — nudge toward conciseness.
+ *      Skip when `promptWordLimit` is `undefined`.
  *   4. CONTEXT contains code blocks or line references — nudge toward intent.
  *
  * @param prompt - The `prompt` argument passed to the `task()` tool.
- * @param limits - Optional thresholds; defaults to 100 (context) and 250 (total).
+ * @param limits - Optional word-count thresholds.  Fields can be `undefined`
+ *   to skip the corresponding soft check (no internal defaults).
  * @returns Validation result with `valid` flag, hard `errors`, and soft `warnings`.
  */
 export function validateTaskPrompt(
@@ -161,8 +167,8 @@ export function validateTaskPrompt(
   const errors: string[] = [];
   const warnings: string[] = [];
 
-  const contextWordLimit = limits?.contextWordLimit ?? 100;
-  const promptWordLimit = limits?.promptWordLimit ?? 250;
+  const contextWordLimit = limits?.contextWordLimit;
+  const promptWordLimit = limits?.promptWordLimit;
 
   // --- 1. Extract sections (hard check) ---
   const sections = extractSections(prompt);
@@ -185,25 +191,25 @@ export function validateTaskPrompt(
     };
   }
 
-  // --- 2. CONTEXT word count (soft) ---
+  // --- 2. CONTEXT word count (soft, skip when undefined) ---
   const cw = wordCount(sections.CONTEXT);
-  if (cw > contextWordLimit) {
+  if (contextWordLimit !== undefined && cw > contextWordLimit) {
     warnings.push(
       `CONTEXT is ${cw} words — consider splitting into multiple` +
         " task() calls if subagent struggles with this much context.",
     );
   }
 
-  // --- 3. Total prompt word count (soft) ---
+  // --- 3. Total prompt word count (soft, skip when undefined) ---
   const tw = wordCount(prompt);
-  if (tw > promptWordLimit) {
+  if (promptWordLimit !== undefined && tw > promptWordLimit) {
     warnings.push(
       `Total prompt is ${tw} words — subagents work best with` +
         " concise task descriptions.",
     );
   }
 
-  // --- 4. Pattern nudges in CONTEXT (soft) ---
+  // --- 4. Pattern nudges in CONTEXT (soft, always on) ---
   warnings.push(...buildContextNudges(sections.CONTEXT));
 
   return {
