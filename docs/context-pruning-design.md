@@ -1,9 +1,15 @@
 # 上下文剪枝设计文档：从内置 Compaction 到框架无关的统一剪枝架构
 
-**版本:** 2.4
-**日期:** 2026-07-25
+**版本:** 2.5
+**日期:** 2026-07-27
 **分类:** 技术架构文档 / 上下文管理
 
+> **2.5 更新说明：** ACP（DCP fork）源码调研（2026-07-27）：
+> §3.8 新增 ACP 架构分析（T1/T2/T3 三层压缩、范围保护三件套、幻影
+> 门禁、nudge 防刷屏基线、GC 安全网、模型工具面）；§5.2/§5.3 吸收
+> 保护口径与防刷屏基线；§8 路线图 V3 行细化并增列 T2 候选；§9 新增
+> 摘要累积风险；§10.1 保留清单同步。
+>
 > **2.4 更新说明：** purge-errors 功能完整实现（R1-R3 架构落地）：
 > §4 新增 purge-errors 实现小节（action 建模、R1 三层配置、R3 表驱动
 > producer 模型）；§6.5/§6.8 同步配置与文件清单变更；§7.1 对比表"错误清除"
@@ -531,6 +537,82 @@ interface CompressionBlock {
 | `protectUserMessages` | bool | `true` | 保留用户消息原样 |
 | `protectTags` | string[] | — | 具有特定标签的消息不压缩 |
 
+### 3.8 ACP（DCP fork）架构分析（源码核实，2026-07-27）
+
+ACP（`~/Code/Agent/opencode-acp`）是 DCP 的 fork，修复 39 个 bug，
+核心增量是**模型自主的三层 LSM 式压缩**与一系列缓存/防刷工程修正。
+自述实测：30,000+ API 调用中 p97 < 200K tokens（1M 窗口）、91%
+前缀缓存命中率、会话寿命从 ~0.2 天延至 259 天。与 DCP 相同的机制
+（dedup、purge-errors、mNNNN、16 步管道的删减版）不再重复；§3.5
+已记载的 pruneToolOutputs hotfix（Bug #38）与通知 Bug #20 此处不
+重述，只记 DCP 没有的增量。
+
+#### 3.8.1 三层压缩 T1/T2/T3（LSM 类比）
+
+针对"摘要自身无限累积"问题——扁平 T1 摘要数量随会话增长，最终摘要
+本身成为新膨胀源。ACP 的对策是对**平级摘要再压缩**（非块嵌套）：
+
+| 层 | 输入 | 输出 | 压缩比 | 触发 |
+|----|------|------|--------|------|
+| T1 捕获 | 原始消息段 | 详细摘要（含过程） | ~45× | 原始上下文 > `maxContextLimit`（默认窗口 55%） |
+| T2 提炼 | 多个相邻 T1 摘要 | 决策级摘要（只留结论） | ~10× | T1 摘要合计 > `nudgeGrowthTokens`（默认窗口 5%） |
+| T3 精简 | 多个 T2 摘要 | 事实级摘要 | ~5× | 同 T2 阈值 |
+
+- **层级提升自动检测**：新块记录 `deactivatedByBlockId` 链，被消费
+  的旧块自动失效并从上下文移除；模型无需理解层级概念
+- **hideConsumedCompressCalls**：被消费块对应的 compress 工具调用
+  part 也一并移除（保留消息外壳）
+- **与本文档"扁平块不嵌套"决策的关系**：T2 不是 DCP 式的块套块
+  （8 种块间关系），数据模型只需 `tier` 字段 + `deactivatedBy`
+  指针；可作为后续增量而非推翻扁平 MVP
+
+#### 3.8.2 压缩范围保护三件套
+
+`preserveRecentMessages`（20）+ `preserveRecentTokens`（20K）+
+`preserveLastUserMessage`（true）。`computeProtectedRawIds`
+（`lib/compress/pipeline.ts:243-296`）算出受保护消息 ID 集合，
+`checkProtectedRange` 拒绝与保护区重叠的模型压缩范围。
+
+> **对照**：我们的 step-start 保护窗只覆盖工具输出策略（dedup/
+> purge-errors），不覆盖范围压缩——compress 引擎落地时需单独引入
+> 此口径。
+
+#### 3.8.3 幻影门禁与质量门禁
+
+- `minCompressRange`（默认 5000 字符）：`checkPhantomBlock` 拒绝
+  零收益压缩范围——与我们 dedup 的"零收益跳过"同源（§4.5）
+- `lib/compress/quality-gate/`：可插拔提交前质量评估（L1 长度下限 +
+  L2 ROUGE-1 关键字召回），默认关闭
+
+#### 3.8.4 Nudge 防刷屏基线
+
+跟踪 `lastPerMessageNudgeTokens`（未提示基线）与
+`lastNudgeShownTokens`（提示后基线）；再次提示要求 token 增长 ≥
+`growthFloor = max(5000, 0.45 × nudgeGrowthTokens)`；压缩后按
+压缩比例调整基线，避免"上下文略降 → 立即再提示"的抖动
+（`lib/messages/inject/inject.ts:126-153`）。
+
+#### 3.8.5 GC 安全网与缓存纪律
+
+- 仅在 100% 上下文时触发的硬回退：`runMajorGC` 截断旧摘要
+  （`maxOldGenSummaryLength` = 3000 字符）、`runBatchCleanup`
+  合并相邻旧块
+- 缓存纪律：compress 只做**整段移除 + 锚点合成摘要消息 + 尾部
+  追加**，不原地编辑历史消息（原地替换打爆 GLM 前缀缓存的教训，
+  §3.5 Bug #38）；`filterCompressedRanges` 强制保留第一条用户
+  消息（修零用户冻结）
+
+#### 3.8.6 模型工具面
+
+`compress` / `decompress`（支持 `toFile` 写文件避免恢复内容膨胀
+上下文、`full` 完全恢复）/ `search_context`（按关键字搜压缩块
+摘要）/ `acp_status`（token 分解 + 块明细 + 可压缩范围）/ `prune`。
+
+#### 3.8.7 其他工程细节
+
+- `SessionStateRegistry`：per-session 状态隔离，32 会话软上限逐出
+- `resetOnCompaction`：检测到内置 compaction 运行时清空陈旧块状态
+
 ---
 
 ## 4. ZooKeeper 当前实现
@@ -869,12 +951,26 @@ if (config.compressEnabled && totalTokens > config.compressMaxTokens) {
 keyContext / files。启发式阶段先生成占位摘要，LLM 阶段由 compress 工具
 的参数驱动。
 
+ACP 经验吸收（§3.8，2026-07-27 调研）：
+
+- **范围保护三件套**：preserveRecentMessages=20 / preserveRecentTokens=
+  20K / 保留最后一条用户消息；模型提交范围与保护区重叠时拒绝或裁剪
+- **幻影门禁**：minCompressRange（默认 5000 字符）拒绝零收益范围，
+  与 dedup 零收益跳过同源
+- **替换语义**：整段移除 + 锚点合成摘要消息，不原地编辑历史消息
+  （前缀缓存纪律，§3.8.5）；被消费块的 compress 调用 part 一并隐藏
+- **手动触发先行**：`/dcp compress` 走 DCP 的 pendingManualTrigger
+  模式（改写为合成用户消息，模型自主调 compress 工具），不做旁路
+  API 调用；nudge 系统可晚于 compress 工具交付
+
 ### 5.3 Nudge 注入参考
 
 三级体系对齐 DCP（§3.6）：紧急（超 urgent 阈值）/ 温和（min-max 之间新
 用户轮）/ 漂移（助手消息数过多）。nudge 是 soft guidance 而非硬约束；
 文本注入即可，不需要 compress 工具存在（但"建议调用 compress"类文案
-需在工具注册后才有意义）。
+需在工具注册后才有意义）。防刷屏基线吸收 ACP（§3.8.4）：记录上次
+nudge 时 token 基线，增长未达 floor（max(5000, 0.45 ×
+nudgeGrowthTokens)）不再提示；压缩后按比例调整基线。
 
 ### 5.4 命令机制与扩展
 
@@ -885,9 +981,15 @@ keyContext / files。启发式阶段先生成占位摘要，LLM 阶段由 compre
 
 | 命令 | 用途 | 依赖 |
 |------|------|------|
-| `/dcp stats` | 去重/错误清除/压缩的累计效果明细 | 自动策略上线后 |
+| `/dcp compress [focus]` | 手动触发一次压缩（pendingManualTrigger 模式，§5.2） | compress 工具（V3） |
 | `/dcp decompress <id>` | 恢复指定 blockId 的原始消息 | 压缩引擎（V3） |
 | `/dcp recompress <id>` | 用新策略重新压缩指定范围 | 压缩引擎（V3） |
+
+> 跨会话累计回收统计**不做聊天命令**（2026-07-27 决策）：归 `zinspect`
+> （Rust CLI），作为 `stats` 的新 section（无剪枝事件时不显示；加
+> `--pruning` 标志与 `--tokens`/`--hooks` 同构可单独查看），数据源为
+> JSONL hook 日志中的 `prune_completed` / `*_marked` / `*_released`
+> 事件——zinspect 已是 hook 观测的统一入口，聊天侧不新增命令噪音。
 
 ---
 
@@ -1117,8 +1219,10 @@ DCP 意味着增加 `dcp.jsonc`，破坏现有配置管理模型。
 | ~~当前~~ | 观测层 + 手动 sweep + 持久化 | — | ✅ 已完成（§4） |
 | ~~下一步~~ | 自动去重 dedup（统一 marks + 批量释放 + ignored 通知） | §3.5 | ✅ 已完成（§4.5/§6，2026-07-25） |
 | +1 | ~~purge-errors：错误工具调用老化 N 步后标记清除 input~~ | §3.5 / §4.6 | ✅ 已完成（R1-R3 架构落地，§4.6，2026-07-25） |
-| V3 | compress 工具注册 + Range 压缩引擎 + mNNNN 引用 + 三级 nudge（用户确认：模型自主压缩为未来方向，统一 producer 模型已为其留位） | §3.3 / §3.4 / §3.6 / §5.2-5.3 | 自动策略稳定 |
-| V4 | Message 模式压缩、`/dcp stats`、decompress/recompress、子代理结果展开 | §3.4 / §5.4 | V3 |
+| +2 | zinspect `stats` 新增剪枝回收 section（`--pruning` 标志与 `--tokens`/`--hooks` 同构；读 JSONL 日志的 `prune_completed`/`*_marked`/`*_released` 事件；2026-07-27 决策：不做 `/dcp stats` 聊天命令、不加独立子命令） | — | 即刻可做 |
+| V3 | compress 工具注册 + Range 压缩引擎 + mNNNN 引用 + 范围保护三件套 + 幻影门禁（手动 `/dcp compress` 触发先行，nudge 随后；用户确认：模型自主压缩为未来方向，统一 producer 模型已为其留位） | §3.3 / §3.4 / §3.6 / §3.8 / §5.2-5.3 | 自动策略稳定 |
+| V3.5（候选） | T2 摘要再压缩（应对摘要累积；视 V3 实测决定，§9.8） | §3.8.1 | V3 实测数据 |
+| V4 | Message 模式压缩、decompress/recompress、子代理结果展开 | §3.4 / §5.4 | V3 |
 | 另行规划 | pi 宿主适配（核心已框架无关，缺 transform 接线） | — | pi 侧 hook 能力确认 |
 
 **明确不做/推迟**：块嵌套（复杂度错配）、用户可覆盖提示词、Toast 通知、
@@ -1185,6 +1289,15 @@ token 来自 API 精确数据；CJK /1.5 分文字系统估算；门控决策只
 **缓解**：清理阶段是 Map 查找 O(k)；dedup 扫描仅在超 100K 阈值时触发；
 签名构建是 O(工具调用数)；持久化仅 dirty 时写入且失败静默。
 
+### 9.8 摘要累积（V3+）
+
+**风险**：扁平块方案下 T1 摘要数量随会话无限增长，摘要自身成为新的
+膨胀源（ACP 实测需 T2/T3 分层应对，§3.8.1）。
+
+**缓解**：数据模型预留 `tier` + `deactivatedBy` 字段（扁平 MVP 不实
+现层级逻辑，后续升级不推倒重来）；V3 上线后通过面板/命令观测摘要
+占比，确认真实累积后再做 T2 再压缩（§8 V3.5 候选）。
+
 ---
 
 ## 10. 总结
@@ -1192,7 +1305,8 @@ token 来自 API 精确数据；CJK /1.5 分文字系统估算；门控决策只
 ### 10.1 与 DCP 的关系
 
 借鉴但不复制。**保留**：两阶段标记-清理（分离代码路径）、签名去重、
-错误清除、3 级 nudge、mNNNN 引用机制（V3）。**简化**：状态模型（无
+错误清除、3 级 nudge、mNNNN 引用机制（V3）、范围保护三件套与幻影
+门禁（ACP §3.8.2/§3.8.3）、nudge 防刷屏基线（ACP §3.8.4）。**简化**：状态模型（无
 嵌套块）、配置层级（单层 config.toml）。**替换**：框架绑定 → 框架无关
 核心 + 适配器。**推迟**：提示词覆盖、Toast 通知、子代理结果展开、
 自动更新。
