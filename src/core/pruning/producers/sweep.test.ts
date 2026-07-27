@@ -38,7 +38,7 @@ function textPart(
 
 function toolPart(
   callID: string,
-  output: unknown,
+  output: string,
   input?: unknown,
 ): SweepToolPart {
   return {

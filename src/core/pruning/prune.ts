@@ -13,7 +13,9 @@ import type { SessionState } from "./marks.js";
 import type { SweepToolPart } from "./types.js";
 import {
   getCallId,
+  INPUT_HEAVY_TOOLS,
   PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
+  PRUNED_TOOL_INPUT_REPLACEMENT,
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
 } from "./types.js";
 
@@ -83,26 +85,98 @@ export function pruneToolOutputs(
       // are handled by pruneToolErrors.
       if (mark.action !== "tool-output") continue;
 
-      const originalOutput = toolPart.state?.output;
+      const toolName = toolPart.tool ?? "";
 
-      // Capture before-length for diagnostic logging.
-      const beforeLen =
-        originalOutput != null
-          ? typeof originalOutput === "string"
-            ? originalOutput.length
-            : JSON.stringify(originalOutput).length
-          : 0;
-      const afterLen = PRUNED_TOOL_OUTPUT_REPLACEMENT.length;
-      replacedOutputs.push({ callID, beforeLen, afterLen });
+      if (INPUT_HEAVY_TOOLS.has(toolName)) {
+        // Input-heavy tool — trim input instead of replacing output.
+        // Output is NEVER touched — it is small and precious.
+        const input = toolPart.state?.input;
 
-      // Replace output in place.
-      if (toolPart.state) {
-        toolPart.state.output = PRUNED_TOOL_OUTPUT_REPLACEMENT;
+        // Null / undefined: nothing to trim. Silently skip (output
+        // must never be touched for trio tools).
+        if (input == null) continue;
+
+        // String input: replace entire input (mirrors pruneToolErrors).
+        if (typeof input === "string") {
+          const beforeLen = input.length;
+          const afterLen = PRUNED_TOOL_INPUT_REPLACEMENT.length;
+          replacedOutputs.push({ callID, beforeLen, afterLen });
+          if (toolPart.state) {
+            toolPart.state.input = PRUNED_TOOL_INPUT_REPLACEMENT;
+          }
+          continue;
+        }
+
+        // Array input: replace entirely (no filePath to preserve).
+        if (Array.isArray(input)) {
+          const beforeLen = JSON.stringify(input).length;
+          const afterLen = PRUNED_TOOL_INPUT_REPLACEMENT.length;
+          replacedOutputs.push({ callID, beforeLen, afterLen });
+          if (toolPart.state) {
+            toolPart.state.input = PRUNED_TOOL_INPUT_REPLACEMENT;
+          }
+          continue;
+        }
+
+        // Plain object input: preserve filePath, replace other fields.
+        if (typeof input === "object") {
+          const record = input as Record<string, unknown>;
+          const originalKeys = Object.keys(record);
+          if (originalKeys.length === 0) continue;
+
+          // Compute beforeLen: sum of all field lengths (stringified for
+          // non-string values).
+          let beforeLen = 0;
+          for (const key of originalKeys) {
+            const val = record[key];
+            beforeLen +=
+              typeof val === "string" ? val.length : JSON.stringify(val).length;
+          }
+
+          // Keep filePath, replace every other top-level field.
+          // Non-string fields (e.g. questions array) also get replaced
+          // with the placeholder string.
+          const hasFilePath = "filePath" in record;
+          for (const key of originalKeys) {
+            if (key !== "filePath") {
+              record[key] = PRUNED_TOOL_INPUT_REPLACEMENT;
+            }
+          }
+
+          const replacedCount = hasFilePath
+            ? originalKeys.length - 1
+            : originalKeys.length;
+          const afterLen = PRUNED_TOOL_INPUT_REPLACEMENT.length * replacedCount;
+          replacedOutputs.push({ callID, beforeLen, afterLen });
+        }
+
+        // Non-object, non-string, non-null (e.g. number, boolean):
+        // nothing to trim. Silently skip.
       } else {
-        // Ensure state object exists even if it was absent.
-        (toolPart as unknown as Record<string, unknown>).state = {
-          output: PRUNED_TOOL_OUTPUT_REPLACEMENT,
-        };
+        // Non-input-heavy tool: replace output with placeholder (original
+        // behavior).
+        const originalOutput = toolPart.state?.output;
+
+        // Runtime safety: TS types say string but JS host data may not
+        // always conform. JSON.stringify fallback handles the non-string
+        // case gracefully without crashing or reporting beforeLen as 0.
+        const out = originalOutput as unknown;
+        const beforeLen =
+          typeof out === "string"
+            ? out.length
+            : out != null
+              ? JSON.stringify(out).length
+              : 0;
+        const afterLen = PRUNED_TOOL_OUTPUT_REPLACEMENT.length;
+        replacedOutputs.push({ callID, beforeLen, afterLen });
+
+        if (toolPart.state) {
+          toolPart.state.output = PRUNED_TOOL_OUTPUT_REPLACEMENT;
+        } else {
+          (toolPart as unknown as Record<string, unknown>).state = {
+            output: PRUNED_TOOL_OUTPUT_REPLACEMENT,
+          };
+        }
       }
     }
   }
@@ -170,15 +244,57 @@ export function pruneToolErrors(
       // Skip null / undefined inputs.
       if (input == null) continue;
 
-      // Compute beforeLen from string-value fields in the input.
+      const toolName = toolPart.tool ?? "";
+      const isInputHeavy = INPUT_HEAVY_TOOLS.has(toolName);
+
+      if (isInputHeavy) {
+        // Input-heavy tool — keep filePath, replace all other
+        // top-level fields with the error placeholder.
+        if (typeof input === "string") {
+          if (toolPart.state) {
+            toolPart.state.input = PRUNED_TOOL_ERROR_INPUT_REPLACEMENT;
+          }
+          const afterLen = PRUNED_TOOL_ERROR_INPUT_REPLACEMENT.length;
+          replacedInputs.push({ callID, beforeLen: input.length, afterLen });
+          continue;
+        }
+
+        if (typeof input !== "object" || Array.isArray(input)) continue;
+
+        const record = input as Record<string, unknown>;
+        const originalKeys = Object.keys(record);
+        if (originalKeys.length === 0) continue;
+
+        let beforeLen = 0;
+        for (const key of originalKeys) {
+          const val = record[key];
+          beforeLen +=
+            typeof val === "string" ? val.length : JSON.stringify(val).length;
+        }
+
+        const hasFilePath = "filePath" in record;
+        for (const key of originalKeys) {
+          if (key !== "filePath") {
+            record[key] = PRUNED_TOOL_ERROR_INPUT_REPLACEMENT;
+          }
+        }
+
+        const replacedCount = hasFilePath
+          ? originalKeys.length - 1
+          : originalKeys.length;
+        const afterLen =
+          PRUNED_TOOL_ERROR_INPUT_REPLACEMENT.length * replacedCount;
+        replacedInputs.push({ callID, beforeLen, afterLen });
+        continue;
+      }
+
+      // Non-input-heavy tool: replace string-value fields only (original
+      // behavior).
       let beforeLen = 0;
       let stringFieldCount = 0;
 
       if (typeof input === "string") {
         beforeLen = input.length;
-        // When input is a string, we replace it wholesale with one
-        // placeholder. The state object is guaranteed to exist here
-        // because input is from toolPart.state?.input and is not null.
         if (toolPart.state) {
           toolPart.state.input = PRUNED_TOOL_ERROR_INPUT_REPLACEMENT;
         }

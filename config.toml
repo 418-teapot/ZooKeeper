@@ -346,6 +346,7 @@ prompt_word_limit = 500
 # ── Context ───────────────────────────────────────────────────────────────────
 
 [zoo.context]
+enabled = true
 # 轮次保护
 turn_protection = 5
 # 批量释放阈值（百分比）：pending 标记合计达到上下文长度该百分比时统一批量释放
@@ -354,12 +355,12 @@ release_threshold_percent = 5
 [zoo.context.dedup]
 enabled = true
 threshold_tokens = 100000
-protected_tools = ["question"]
+protected_tools = []
 
 [zoo.context.purge_errors]
 enabled = true
 threshold_tokens = 100000
-protected_tools = ["question"]
+protected_tools = []
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 

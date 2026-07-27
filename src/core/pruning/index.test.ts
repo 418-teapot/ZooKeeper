@@ -15,6 +15,7 @@ import {
   addMark,
   getOrCreateSessionState,
   PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
+  PRUNED_TOOL_INPUT_REPLACEMENT,
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
   pruneToolErrors,
   pruneToolOutputs,
@@ -43,14 +44,15 @@ function textPart(
 
 function toolPart(
   callID: string,
-  output: unknown,
+  output: string,
   input?: unknown,
+  tool?: string,
 ): SweepToolPart {
   return {
     type: "tool",
     callID,
     state: { input: input ?? "", output },
-    tool: "bash",
+    tool: tool ?? "bash",
   };
 }
 
@@ -365,6 +367,47 @@ describe("re-prune already-placeholder output", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Non-string output at runtime
+// ---------------------------------------------------------------------------
+
+describe("pruneToolOutputs — non-string output at runtime", () => {
+  it("uses JSON.stringify length for non-string tool output", () => {
+    const state = getOrCreateSessionState("sess-nonstr");
+    addMark(state, "call-1", 100, true, "tool-output");
+
+    const nonStringOutput = [1, 2, 3];
+    const messages: ContextMessageEntry[] = [
+      msg("assistant", "a1", [
+        {
+          type: "tool",
+          callID: "call-1",
+          state: {
+            output: nonStringOutput as unknown as string,
+            input: "",
+          },
+          tool: "bash",
+        } as SweepToolPart,
+      ]),
+    ];
+
+    const result = pruneToolOutputs(state, messages);
+
+    assert.equal(result.length, 1);
+    // JSON.stringify([1,2,3]) = "[1,2,3]" = 8 chars
+    assert.equal(
+      result[0].beforeLen,
+      JSON.stringify(nonStringOutput).length,
+      "beforeLen must use JSON.stringify length for non-string runtime output",
+    );
+    // Output replaced with placeholder.
+    assert.equal(
+      (messages[0].parts?.[0] as SweepToolPart).state?.output,
+      PRUNED_TOOL_OUTPUT_REPLACEMENT,
+    );
+  });
+});
+
 // ===========================================================================
 // pruneToolErrors — error input placeholder replacement
 // ===========================================================================
@@ -636,5 +679,345 @@ describe("pruneToolErrors", () => {
       (messages[0].parts?.[0] as SweepToolPart).state?.output,
       "error output",
     );
+  });
+});
+
+// ===========================================================================
+// Input-heavy tool pruning (question/edit/write)
+// ===========================================================================
+
+describe("pruneToolOutputs with input-heavy tools", () => {
+  const INPUT_PLACEHOLDER = PRUNED_TOOL_INPUT_REPLACEMENT;
+
+  it("question tool: replaces input.questions array, leaves output intact", () => {
+    const state = getOrCreateSessionState("sess-c2-question");
+    addMark(state, "call-q", 100, true, "tool-output");
+
+    const messages = [
+      msg("assistant", "a1", [
+        toolPart(
+          "call-q",
+          "user answered: yes",
+          {
+            questions: [
+              { text: "Should I use feature X?", options: ["yes", "no"] },
+            ],
+          },
+          "question",
+        ),
+      ]),
+    ];
+
+    pruneToolOutputs(state, messages);
+
+    const part = messages[0].parts?.[0] as SweepToolPart;
+    const input = part.state?.input as Record<string, unknown>;
+
+    // Input fields replaced with placeholder.
+    assert.equal(input.questions, INPUT_PLACEHOLDER);
+    // Output untouched.
+    assert.equal(part.state?.output, "user answered: yes");
+  });
+
+  it("write tool: replaces input.content, keeps input.filePath, output intact", () => {
+    const state = getOrCreateSessionState("sess-c2-write");
+    addMark(state, "call-w", 100, true, "tool-output");
+
+    const messages = [
+      msg("assistant", "a1", [
+        toolPart(
+          "call-w",
+          "wrote 42 lines",
+          {
+            filePath: "/home/user/file.ts",
+            content: "console.log('hello world');\n".repeat(200),
+          },
+          "write",
+        ),
+      ]),
+    ];
+
+    pruneToolOutputs(state, messages);
+
+    const part = messages[0].parts?.[0] as SweepToolPart;
+    const input = part.state?.input as Record<string, unknown>;
+
+    // Content replaced, filePath kept.
+    assert.equal(input.filePath, "/home/user/file.ts");
+    assert.equal(input.content, INPUT_PLACEHOLDER);
+    // Output untouched.
+    assert.equal(part.state?.output, "wrote 42 lines");
+  });
+
+  it("edit tool: replaces input.oldString/newString, keeps input.filePath, output intact", () => {
+    const state = getOrCreateSessionState("sess-c2-edit");
+    addMark(state, "call-e", 100, true, "tool-output");
+
+    const messages = [
+      msg("assistant", "a1", [
+        toolPart(
+          "call-e",
+          "applied edit",
+          {
+            filePath: "/home/user/file.ts",
+            oldString: "console.log('old');",
+            newString: "console.log('new');",
+          },
+          "edit",
+        ),
+      ]),
+    ];
+
+    pruneToolOutputs(state, messages);
+
+    const part = messages[0].parts?.[0] as SweepToolPart;
+    const input = part.state?.input as Record<string, unknown>;
+
+    // oldString and newString replaced, filePath kept.
+    assert.equal(input.filePath, "/home/user/file.ts");
+    assert.equal(input.oldString, INPUT_PLACEHOLDER);
+    assert.equal(input.newString, INPUT_PLACEHOLDER);
+    // Output untouched.
+    assert.equal(part.state?.output, "applied edit");
+  });
+
+  it("bash tool (non-trio): output replaced as before (unchanged behavior)", () => {
+    const state = getOrCreateSessionState("sess-c2-bash-unchanged");
+    addMark(state, "call-b", 100, true, "tool-output");
+
+    const messages = [
+      msg("assistant", "a1", [
+        toolPart("call-b", "ls output\nfile1\nfile2", {
+          cmd: "ls",
+          path: "/tmp",
+        }),
+      ]),
+    ];
+
+    pruneToolOutputs(state, messages);
+
+    const part = messages[0].parts?.[0] as SweepToolPart;
+
+    // Output replaced with standard placeholder.
+    assert.equal(part.state?.output, PRUNED_TOOL_OUTPUT_REPLACEMENT);
+    // Input untouched.
+    const input = part.state?.input as Record<string, unknown>;
+    assert.equal(input.cmd, "ls");
+    assert.equal(input.path, "/tmp");
+  });
+
+  it("edit tool without filePath: all fields replaced", () => {
+    const state = getOrCreateSessionState("sess-c2-edit-nopath");
+    addMark(state, "call-e", 100, true, "tool-output");
+
+    const messages = [
+      msg("assistant", "a1", [
+        toolPart(
+          "call-e",
+          "applied edit",
+          {
+            oldString: "old code",
+            newString: "new code",
+          },
+          "edit",
+        ),
+      ]),
+    ];
+
+    pruneToolOutputs(state, messages);
+
+    const part = messages[0].parts?.[0] as SweepToolPart;
+    const input = part.state?.input as Record<string, unknown>;
+
+    // All fields replaced (no filePath to preserve).
+    assert.equal(input.oldString, INPUT_PLACEHOLDER);
+    assert.equal(input.newString, INPUT_PLACEHOLDER);
+  });
+
+  it("question tool: string input replaced entirely, output intact", () => {
+    const state = getOrCreateSessionState("sess-c2-string-input");
+    addMark(state, "call-s", 100, true, "tool-output");
+
+    const messages = [
+      msg("assistant", "a1", [
+        toolPart("call-s", "asked question", "should I use X?", "question"),
+      ]),
+    ];
+
+    pruneToolOutputs(state, messages);
+
+    const part = messages[0].parts?.[0] as SweepToolPart;
+    // Input replaced entirely.
+    assert.equal(
+      part.state?.input,
+      PRUNED_TOOL_INPUT_REPLACEMENT,
+      "string input replaced with placeholder",
+    );
+    // Output untouched.
+    assert.equal(part.state?.output, "asked question");
+  });
+
+  it("question tool: array input replaced entirely, output intact", () => {
+    const state = getOrCreateSessionState("sess-c2-array-input");
+    addMark(state, "call-a", 100, true, "tool-output");
+
+    const messages = [
+      msg("assistant", "a1", [
+        toolPart("call-a", "asked question", ["opt1", "opt2"], "question"),
+      ]),
+    ];
+
+    pruneToolOutputs(state, messages);
+
+    const part = messages[0].parts?.[0] as SweepToolPart;
+    // Input replaced entirely.
+    assert.equal(
+      part.state?.input,
+      PRUNED_TOOL_INPUT_REPLACEMENT,
+      "array input replaced with placeholder",
+    );
+    // Output untouched.
+    assert.equal(part.state?.output, "asked question");
+  });
+
+  it("question tool: null input silently skipped, output intact", () => {
+    const state = getOrCreateSessionState("sess-c2-null-input");
+    addMark(state, "call-n", 100, true, "tool-output");
+
+    // Must craft inline — toolPart helper defaults null to "".
+    const messages: ContextMessageEntry[] = [
+      msg(
+        "assistant",
+        "a1",
+        [
+          {
+            type: "tool",
+            callID: "call-n",
+            state: { input: null, output: "question without input" },
+            tool: "question",
+          } as unknown as { type: string; text?: string },
+        ],
+        "sess-c2-null-input",
+      ),
+    ];
+
+    const result = pruneToolOutputs(state, messages);
+    assert.equal(result.length, 0, "null input skips replacement");
+
+    const part = messages[0].parts?.[0] as SweepToolPart;
+    // Output untouched (null input → nothing to trim, skip).
+    assert.equal(
+      part.state?.output,
+      "question without input",
+      "output intact for null input",
+    );
+  });
+});
+
+describe("pruneToolErrors with input-heavy tools", () => {
+  const ERR_PLACEHOLDER = PRUNED_TOOL_ERROR_INPUT_REPLACEMENT;
+
+  it("failed edit tool: keeps filePath, replaces oldString/newString with error placeholder", () => {
+    const state = getOrCreateSessionState("sess-c2-err-edit");
+    addMark(state, "call-err-e", 50, true, "tool-error-input");
+
+    const messages = [
+      msg("assistant", "a1", [
+        {
+          type: "tool",
+          callID: "call-err-e",
+          state: {
+            input: {
+              filePath: "/home/user/file.ts",
+              oldString: "some old content that is long enough",
+              newString: "some new content that is even longer to save tokens",
+            },
+            output: "edit failed: permission denied",
+            status: "error",
+          },
+          tool: "edit",
+        } as SweepToolPart,
+      ]),
+    ];
+
+    pruneToolErrors(state, messages);
+
+    const part = messages[0].parts?.[0] as SweepToolPart;
+    const input = part.state?.input as Record<string, unknown>;
+
+    // filePath kept, other fields replaced.
+    assert.equal(input.filePath, "/home/user/file.ts");
+    assert.equal(input.oldString, ERR_PLACEHOLDER);
+    assert.equal(input.newString, ERR_PLACEHOLDER);
+    // Output untouched.
+    assert.equal(part.state?.output, "edit failed: permission denied");
+  });
+
+  it("failed question tool: all input fields (except filePath) replaced with error placeholder", () => {
+    const state = getOrCreateSessionState("sess-c2-err-question");
+    addMark(state, "call-err-q", 50, true, "tool-error-input");
+
+    const messages = [
+      msg("assistant", "a1", [
+        {
+          type: "tool",
+          callID: "call-err-q",
+          state: {
+            input: {
+              questions: [{ text: "Proceed?", options: ["yes", "no"] }],
+            },
+            output: "question failed",
+            status: "error",
+          },
+          tool: "question",
+        } as SweepToolPart,
+      ]),
+    ];
+
+    pruneToolErrors(state, messages);
+
+    const part = messages[0].parts?.[0] as SweepToolPart;
+    const input = part.state?.input as Record<string, unknown>;
+
+    // Array field replaced with placeholder string (non-string fields also get replaced).
+    assert.equal(input.questions, ERR_PLACEHOLDER);
+    // Output untouched.
+    assert.equal(part.state?.output, "question failed");
+  });
+
+  it("failed bash tool (non-trio): string fields replaced as before (unchanged behavior)", () => {
+    const state = getOrCreateSessionState("sess-c2-err-bash-unchanged");
+    addMark(state, "call-err-b", 50, true, "tool-error-input");
+
+    const messages = [
+      msg("assistant", "a1", [
+        {
+          type: "tool",
+          callID: "call-err-b",
+          state: {
+            input: {
+              cmd: "long command ".repeat(30),
+              path: "/tmp/long/path",
+              timeout: 30,
+              verbose: true,
+            },
+            output: "bash: command not found",
+            status: "error",
+          },
+          tool: "bash",
+        } as SweepToolPart,
+      ]),
+    ];
+
+    pruneToolErrors(state, messages);
+
+    const part = messages[0].parts?.[0] as SweepToolPart;
+    const input = part.state?.input as Record<string, unknown>;
+
+    // String fields replaced (unchanged), non-string fields untouched.
+    assert.equal(input.cmd, ERR_PLACEHOLDER);
+    assert.equal(input.path, ERR_PLACEHOLDER);
+    assert.equal(input.timeout, 30);
+    assert.equal(input.verbose, true);
   });
 });

@@ -24,6 +24,17 @@ export {
   removeSession,
   saveSessionState,
 } from "./marks.js";
+export {
+  _clearAllRefsForTesting,
+  _setNextRefForTesting,
+  assignMessageRefs,
+  getLastCompactionBoundaryId,
+  injectMessageRefs,
+  resetMessageRefs,
+  setLastCompactionBoundaryId,
+  stripHallucinatedRefs,
+  stripRefsFromString,
+} from "./message-refs.js";
 export type { DedupMark, DedupOptions } from "./producers/dedup.js";
 export { runDedup } from "./producers/dedup.js";
 export type {
@@ -37,6 +48,12 @@ export type { PruneReplacement } from "./prune.js";
 export { pruneToolErrors, pruneToolOutputs } from "./prune.js";
 export type { SweepToolPart } from "./types.js";
 export {
+  INPUT_HEAVY_TOOLS,
+  MAX_INDEX,
   PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
+  PRUNED_TOOL_INPUT_REPLACEMENT,
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
+  ZOO_MSG_ID_ORPHAN_REGEX,
+  ZOO_MSG_ID_REGEX,
+  ZOO_MSG_ID_TAG,
 } from "./types.js";

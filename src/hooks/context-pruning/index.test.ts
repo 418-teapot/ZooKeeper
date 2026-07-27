@@ -12,7 +12,6 @@ import type {
 } from "../../core/metrics.js";
 import {
   deleteSessionState,
-  getOrCreateSessionState,
   loadSessionState,
   PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
@@ -20,6 +19,7 @@ import {
 import {
   _clearAllSessionsForTesting,
   addMark,
+  getOrCreateSessionState,
   pendingCount,
   reclaimedTokens,
 } from "../../core/pruning/marks.js";
@@ -42,11 +42,16 @@ const TEST_SESSION_IDS = [
   "sess-gate-below",
   "sess-gate-at",
   "sess-gate-missing",
+  "sess-enabled-absent",
   "sess-enabled-false",
+  "sess-disabled",
   "sess-gate-cache-read-at",
   "sess-gate-cache-read-below",
   "sess-gate-cache-read-write-at",
   "sess-log-mixed",
+  "sess-refs-phase2",
+  "sess-refs-det",
+  "sess-refs-boundary",
 ];
 
 afterEach(() => {
@@ -76,7 +81,7 @@ function textPart(
  */
 function toolPart(
   callID: string,
-  output: unknown,
+  output: string,
   input?: unknown,
 ): SweepToolPart {
   return {
@@ -174,19 +179,43 @@ describe("contextPruningTransformHandler", () => {
       ]),
     ];
 
-    contextPruningTransformHandler(messages);
+    contextPruningTransformHandler(messages, {
+      enabled: true,
+      dedup: {},
+      purgeErrors: {},
+    });
 
     const parts = messages[1].parts ?? [];
-    assert.equal(
-      (parts[0] as SweepToolPart).state?.output,
-      PRUNED_TOOL_OUTPUT_REPLACEMENT,
+    assert.ok(
+      (parts[0] as SweepToolPart).state?.output?.startsWith(
+        PRUNED_TOOL_OUTPUT_REPLACEMENT,
+      ),
+      "call-1 output pruned",
     );
-    assert.equal(
-      (parts[2] as SweepToolPart).state?.output,
-      PRUNED_TOOL_OUTPUT_REPLACEMENT,
+    assert.ok(
+      (parts[2] as SweepToolPart).state?.output?.startsWith(
+        PRUNED_TOOL_OUTPUT_REPLACEMENT,
+      ),
+      "call-2 output pruned",
     );
-    // Text part unchanged.
-    assert.equal((parts[1] as { text?: string }).text, "interleaved text");
+    // Text part unchanged (ref tags go into tool outputs, not text).
+    assert.ok(
+      (parts[1] as { text?: string }).text?.startsWith("interleaved text"),
+      "text part content preserved",
+    );
+    // injectMessageRefs adds a ref tag to every completed tool output.
+    assert.ok(
+      (parts[0] as SweepToolPart).state?.output?.includes(
+        "<zoo-msg-id>m0002</zoo-msg-id>",
+      ),
+      "call-1 tool output should carry a message ref",
+    );
+    assert.ok(
+      (parts[2] as SweepToolPart).state?.output?.includes(
+        "<zoo-msg-id>m0002</zoo-msg-id>",
+      ),
+      "call-2 tool output should carry a message ref",
+    );
     // Map NOT cleared after processing (DCP accumulate).
     assert.equal(state.marks.size, 2);
     // reclaimedTokens reflects the effective marks (100 + 200).
@@ -203,12 +232,18 @@ describe("contextPruningTransformHandler", () => {
       msg("assistant", "a1", [toolPart("call-1", "data")]),
     ];
 
-    contextPruningTransformHandler(messages);
+    contextPruningTransformHandler(messages, {
+      enabled: true,
+      dedup: {},
+      purgeErrors: {},
+    });
 
     // First call: output replaced.
-    assert.equal(
-      (messages[1].parts?.[0] as SweepToolPart).state?.output,
-      PRUNED_TOOL_OUTPUT_REPLACEMENT,
+    assert.ok(
+      (messages[1].parts?.[0] as SweepToolPart).state?.output?.startsWith(
+        PRUNED_TOOL_OUTPUT_REPLACEMENT,
+      ),
+      "call-1 output pruned",
     );
     // reclaimedTokens reflects the effective mark.
     assert.equal(reclaimedTokens(state), 50);
@@ -220,11 +255,17 @@ describe("contextPruningTransformHandler", () => {
       msg("assistant", "a2", [toolPart("call-2", "new data")]),
     ];
 
-    contextPruningTransformHandler(moreMessages);
+    contextPruningTransformHandler(moreMessages, {
+      enabled: true,
+      dedup: {},
+      purgeErrors: {},
+    });
 
-    assert.equal(
-      (moreMessages[1].parts?.[0] as SweepToolPart).state?.output,
-      PRUNED_TOOL_OUTPUT_REPLACEMENT,
+    assert.ok(
+      (moreMessages[1].parts?.[0] as SweepToolPart).state?.output?.startsWith(
+        PRUNED_TOOL_OUTPUT_REPLACEMENT,
+      ),
+      "call-2 output pruned",
     );
     // reclaimedTokens accumulates across marks.
     assert.equal(reclaimedTokens(state), 80);
@@ -240,7 +281,11 @@ describe("contextPruningTransformHandler", () => {
       msg("assistant", "a1", [toolPart("call-1", "original output")]),
     ];
 
-    contextPruningTransformHandler(messages);
+    contextPruningTransformHandler(messages, {
+      enabled: true,
+      dedup: {},
+      purgeErrors: {},
+    });
 
     // Verify disk persistence.
     const persisted = loadSessionState(sessionID);
@@ -288,6 +333,7 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages, {
+      enabled: true,
       turnProtection: 0,
       releaseThresholdPercent: 0, // Always release pending immediately for test.
       dedup: {
@@ -298,9 +344,11 @@ describe("contextPruningTransformHandler", () => {
     });
 
     // Phase 1 (clean) — pre-existing marks ARE replaced.
-    assert.equal(
-      (messages[1].parts?.[0] as SweepToolPart).state?.output,
-      PRUNED_TOOL_OUTPUT_REPLACEMENT,
+    assert.ok(
+      (messages[1].parts?.[0] as SweepToolPart).state?.output?.startsWith(
+        PRUNED_TOOL_OUTPUT_REPLACEMENT,
+      ),
+      "call-sweep-1 output pruned",
     );
 
     // Phase 2 (mark) — dedup ran; older duplicate is marked.
@@ -309,13 +357,17 @@ describe("contextPruningTransformHandler", () => {
     assert.ok(state.marks.size > 0);
 
     // But the newly-marked outputs are NOT yet replaced in this turn.
-    assert.equal(
-      (messages[1].parts?.[2] as SweepToolPart).state?.output,
-      LONG_OUTPUT,
+    assert.ok(
+      (messages[1].parts?.[2] as SweepToolPart).state?.output?.startsWith(
+        LONG_OUTPUT,
+      ),
+      "call-dedup-1 output not pruned yet",
     );
-    assert.equal(
-      (messages[1].parts?.[3] as SweepToolPart).state?.output,
-      LONG_OUTPUT,
+    assert.ok(
+      (messages[1].parts?.[3] as SweepToolPart).state?.output?.startsWith(
+        LONG_OUTPUT,
+      ),
+      "call-dedup-2 output not pruned yet",
     );
 
     // --- Turn N+1: marks from turn N should now take effect ---
@@ -328,6 +380,7 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages2, {
+      enabled: true,
       releaseThresholdPercent: 0,
       dedup: {
         enabled: true,
@@ -338,12 +391,17 @@ describe("contextPruningTransformHandler", () => {
 
     // The older duplicate (call-dedup-1) is now pruned.
     const parts2 = messages2[1].parts ?? [];
-    assert.equal(
-      (parts2[0] as SweepToolPart).state?.output,
-      PRUNED_TOOL_OUTPUT_REPLACEMENT,
+    assert.ok(
+      (parts2[0] as SweepToolPart).state?.output?.startsWith(
+        PRUNED_TOOL_OUTPUT_REPLACEMENT,
+      ),
+      "call-dedup-1 pruned on turn N+1",
     );
     // The newer duplicate (call-dedup-2) is not marked — it's the keeper.
-    assert.equal((parts2[1] as SweepToolPart).state?.output, LONG_OUTPUT);
+    assert.ok(
+      (parts2[1] as SweepToolPart).state?.output?.startsWith(LONG_OUTPUT),
+      "call-dedup-2 is the keeper",
+    );
   });
 
   // ===========================================================================
@@ -369,6 +427,7 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages, {
+      enabled: true,
       dedup: {
         enabled: true,
         thresholdTokens: 100000,
@@ -379,13 +438,15 @@ describe("contextPruningTransformHandler", () => {
     // Gate closed — no dedup marks created.
     assert.equal(state.marks.size, 0);
     // Outputs untouched.
-    assert.equal(
-      (messages[1].parts?.[0] as SweepToolPart).state?.output,
-      LONG_OUTPUT,
+    assert.ok(
+      (messages[1].parts?.[0] as SweepToolPart).state?.output?.startsWith(
+        LONG_OUTPUT,
+      ),
     );
-    assert.equal(
-      (messages[1].parts?.[1] as SweepToolPart).state?.output,
-      LONG_OUTPUT,
+    assert.ok(
+      (messages[1].parts?.[1] as SweepToolPart).state?.output?.startsWith(
+        LONG_OUTPUT,
+      ),
     );
   });
 
@@ -408,6 +469,7 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages, {
+      enabled: true,
       turnProtection: 0,
       dedup: {
         enabled: true,
@@ -419,13 +481,15 @@ describe("contextPruningTransformHandler", () => {
     // Gate open — dedup runs, older duplicate marked (non-effective).
     assert.ok(pendingCount(state) > 0);
     // Outputs NOT replaced (marks fresh for next turn).
-    assert.equal(
-      (messages[1].parts?.[0] as SweepToolPart).state?.output,
-      LONG_OUTPUT,
+    assert.ok(
+      (messages[1].parts?.[0] as SweepToolPart).state?.output?.startsWith(
+        LONG_OUTPUT,
+      ),
     );
-    assert.equal(
-      (messages[1].parts?.[1] as SweepToolPart).state?.output,
-      LONG_OUTPUT,
+    assert.ok(
+      (messages[1].parts?.[1] as SweepToolPart).state?.output?.startsWith(
+        LONG_OUTPUT,
+      ),
     );
   });
 
@@ -448,6 +512,7 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages, {
+      enabled: true,
       dedup: {
         enabled: true,
         thresholdTokens: 100000,
@@ -482,6 +547,7 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages, {
+      enabled: true,
       turnProtection: 0,
       dedup: {
         enabled: true,
@@ -492,9 +558,10 @@ describe("contextPruningTransformHandler", () => {
 
     // Gate open — total = 500 + 99500 = 100000 >= threshold.
     assert.ok(pendingCount(state) > 0);
-    assert.equal(
-      (messages[1].parts?.[0] as SweepToolPart).state?.output,
-      LONG_OUTPUT,
+    assert.ok(
+      (messages[1].parts?.[0] as SweepToolPart).state?.output?.startsWith(
+        LONG_OUTPUT,
+      ),
     );
   });
 
@@ -517,6 +584,7 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages, {
+      enabled: true,
       dedup: {
         enabled: true,
         thresholdTokens: 100000,
@@ -526,9 +594,10 @@ describe("contextPruningTransformHandler", () => {
 
     // Gate closed — total = 500 + 99499 = 99999 < threshold.
     assert.equal(state.marks.size, 0);
-    assert.equal(
-      (messages[1].parts?.[0] as SweepToolPart).state?.output,
-      LONG_OUTPUT,
+    assert.ok(
+      (messages[1].parts?.[0] as SweepToolPart).state?.output?.startsWith(
+        LONG_OUTPUT,
+      ),
     );
   });
 
@@ -551,6 +620,7 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages, {
+      enabled: true,
       turnProtection: 0,
       dedup: {
         enabled: true,
@@ -561,10 +631,108 @@ describe("contextPruningTransformHandler", () => {
 
     // Gate open — total = 50000 + 40000 + 10000 = 100000 >= threshold.
     assert.ok(pendingCount(state) > 0);
-    assert.equal(
-      (messages[1].parts?.[0] as SweepToolPart).state?.output,
-      LONG_OUTPUT,
+    assert.ok(
+      (messages[1].parts?.[0] as SweepToolPart).state?.output?.startsWith(
+        LONG_OUTPUT,
+      ),
     );
+  });
+
+  it("master enabled=false leaves messages completely untouched", () => {
+    // When config.enabled === false, nothing happens — no Phase 1/2/2.5,
+    // no persistence, no state mutations.
+    const sessionID = "sess-disabled";
+    const state = getOrCreateSessionState(sessionID);
+    const LONG_OUTPUT = "x".repeat(500);
+
+    // Pre-populate an effective mark so Phase 1 would normally prune.
+    addMark(state, "call-sweep-1", 50, true, "tool-output");
+
+    const messages = [
+      msg("user", "u1", [textPart("do it")], sessionID),
+      msg(
+        "assistant",
+        "a1",
+        [
+          toolPart("call-sweep-1", "original output", { cmd: "ls" }),
+          toolPart("call-dedup-1", LONG_OUTPUT, { cmd: "echo hello" }),
+          toolPart("call-dedup-2", LONG_OUTPUT, { cmd: "echo hello" }),
+        ],
+        undefined,
+        { input: 100000, output: 200 },
+      ),
+    ];
+
+    // Deep-clone the original messages for comparison.
+    const original = JSON.parse(JSON.stringify(messages));
+
+    contextPruningTransformHandler(messages, {
+      enabled: false,
+      turnProtection: 0,
+      releaseThresholdPercent: 0,
+      dedup: { enabled: true, thresholdTokens: 100000 },
+      purgeErrors: { enabled: true, thresholdTokens: 0 },
+    });
+
+    // Messages completely untouched — byte-identical to original.
+    assert.equal(JSON.stringify(messages), JSON.stringify(original));
+
+    // No state mutations (marks untouched, no persistence).
+    assert.equal(state.marks.size, 1, "pre-existing marks not modified");
+    assert.equal(
+      state.marks.get("call-sweep-1")?.effective,
+      true,
+      "mark effective flag unchanged",
+    );
+    // dirty was set to true by addMark() before the handler call;
+    // the early-return must not have cleared it (no saveSessionState).
+    assert.equal(
+      state.dirty,
+      true,
+      "state dirty flag untouched by early return",
+    );
+  });
+
+  it("handler no-ops when enabled field is absent (default-off)", () => {
+    // With the master switch defaulting to off, passing a config without
+    // `enabled` must cause the handler to no-op entirely.
+    const sessionID = "sess-enabled-absent";
+    const state = getOrCreateSessionState(sessionID);
+
+    // Pre-populate an effective mark so Phase 1 would normally prune.
+    addMark(state, "call-sweep-1", 50, true, "tool-output");
+
+    const messages = [
+      msg("user", "u1", [textPart("do it")], sessionID),
+      msg(
+        "assistant",
+        "a1",
+        [
+          toolPart("call-sweep-1", "original output", { cmd: "ls" }),
+          toolPart("call-dedup-1", LONG_OUTPUT, { cmd: "echo hello" }),
+          toolPart("call-dedup-2", LONG_OUTPUT, { cmd: "echo hello" }),
+        ],
+        undefined,
+        { input: 100000, output: 200 },
+      ),
+    ];
+
+    // Deep-clone the original messages for comparison.
+    const original = JSON.parse(JSON.stringify(messages));
+
+    // Config without `enabled` field — uses default (false).
+    contextPruningTransformHandler(messages, {
+      dedup: { enabled: true, thresholdTokens: 100000 },
+      purgeErrors: { enabled: true, thresholdTokens: 0 },
+    });
+
+    // Messages completely untouched.
+    assert.equal(JSON.stringify(messages), JSON.stringify(original));
+
+    // No state mutations — pre-existing marks unchanged.
+    assert.equal(state.marks.size, 1);
+    assert.equal(state.marks.get("call-sweep-1")?.effective, true);
+    assert.equal(state.dirty, true, "dirty flag preserved (no save)");
   });
 
   it("gate: enabled=false skips dedup but prune still runs", () => {
@@ -590,6 +758,7 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages, {
+      enabled: true,
       dedup: {
         enabled: false,
         thresholdTokens: 100000,
@@ -598,9 +767,10 @@ describe("contextPruningTransformHandler", () => {
     });
 
     // Prune still runs — pre-existing mark replaced.
-    assert.equal(
-      (messages[1].parts?.[0] as SweepToolPart).state?.output,
-      PRUNED_TOOL_OUTPUT_REPLACEMENT,
+    assert.ok(
+      (messages[1].parts?.[0] as SweepToolPart).state?.output?.startsWith(
+        PRUNED_TOOL_OUTPUT_REPLACEMENT,
+      ),
     );
 
     // Dedup skipped — no new marks.
@@ -613,10 +783,11 @@ describe("contextPruningTransformHandler", () => {
 
   it("parseContextConfig returns defaults when [zoo.context] is absent", () => {
     const config = parseContextConfig({});
+    assert.equal(config.enabled, false);
     assert.equal(config.dedup.enabled, true);
     assert.equal(config.dedup.thresholdTokens, 100000);
     assert.equal(config.turnProtection, 5);
-    assert.deepEqual(config.dedup.protectedTools, ["question"]);
+    assert.deepEqual(config.dedup.protectedTools, []);
   });
 
   it("parseContextConfig reads [zoo.context] section with two-layer structure", () => {
@@ -682,12 +853,12 @@ describe("contextPruningTransformHandler", () => {
     const config = parseContextConfig({
       context: { dedup: { protected_tools: "task" } },
     });
-    assert.deepEqual(config.dedup.protectedTools, ["question"]);
+    assert.deepEqual(config.dedup.protectedTools, []);
 
     const config2 = parseContextConfig({
       context: { dedup: { protected_tools: [123, "read"] } },
     });
-    assert.deepEqual(config2.dedup.protectedTools, ["question"]);
+    assert.deepEqual(config2.dedup.protectedTools, []);
 
     const config3 = parseContextConfig({
       context: { dedup: { protected_tools: [] } },
@@ -803,7 +974,7 @@ describe("contextPruningTransformHandler", () => {
     const config = parseContextConfig({});
     assert.equal(config.purgeErrors.enabled, true);
     assert.equal(config.purgeErrors.thresholdTokens, 100000);
-    assert.deepEqual(config.purgeErrors.protectedTools, ["question"]);
+    assert.deepEqual(config.purgeErrors.protectedTools, []);
   });
 
   it("parseContextConfig falls back to defaults for non-boolean purge_errors enabled", () => {
@@ -811,6 +982,30 @@ describe("contextPruningTransformHandler", () => {
       context: { purge_errors: { enabled: "false" } },
     });
     assert.equal(config.purgeErrors.enabled, true);
+  });
+
+  it("parseContextConfig reads enabled: false from [zoo.context]", () => {
+    const config = parseContextConfig({
+      context: { enabled: false },
+    });
+    assert.equal(config.enabled, false);
+  });
+
+  it("parseContextConfig defaults enabled to false when absent", () => {
+    const config = parseContextConfig({});
+    assert.equal(config.enabled, false);
+  });
+
+  it("parseContextConfig defaults enabled to false for non-boolean values", () => {
+    const config1 = parseContextConfig({
+      context: { enabled: "false" },
+    });
+    assert.equal(config1.enabled, false);
+
+    const config2 = parseContextConfig({
+      context: { enabled: 0 },
+    });
+    assert.equal(config2.enabled, false);
   });
 
   it("parseContextConfig ignores unknown keys in context config", () => {
@@ -870,6 +1065,7 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages, {
+      enabled: true,
       turnProtection: 0,
       releaseThresholdPercent: 5,
       dedup: {
@@ -884,9 +1080,10 @@ describe("contextPruningTransformHandler", () => {
     // No effective marks yet (not released).
     assert.equal(reclaimedTokens(state), 0);
     // Outputs not replaced.
-    assert.equal(
-      (messages[1].parts?.[0] as SweepToolPart).state?.output,
-      LONG_OUTPUT,
+    assert.ok(
+      (messages[1].parts?.[0] as SweepToolPart).state?.output?.startsWith(
+        LONG_OUTPUT,
+      ),
     );
 
     // Turn N+1: same messages (no new marks, no release needed).
@@ -905,6 +1102,7 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages2, {
+      enabled: true,
       turnProtection: 0,
       releaseThresholdPercent: 5,
       dedup: {
@@ -946,6 +1144,7 @@ describe("contextPruningTransformHandler", () => {
 
     // With releaseThresholdPercent=0, any positive pending triggers immediate release.
     contextPruningTransformHandler(messages, {
+      enabled: true,
       turnProtection: 0,
       releaseThresholdPercent: 0,
       dedup: {
@@ -968,9 +1167,10 @@ describe("contextPruningTransformHandler", () => {
     );
 
     // But this turn's outputs are NOT replaced yet (Phase 1 ran before release).
-    assert.equal(
-      (messages[1].parts?.[0] as SweepToolPart).state?.output,
-      lotOfOutput,
+    assert.ok(
+      (messages[1].parts?.[0] as SweepToolPart).state?.output?.startsWith(
+        lotOfOutput,
+      ),
     );
 
     // Turn N+1: now marks should take effect.
@@ -983,6 +1183,7 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages2, {
+      enabled: true,
       turnProtection: 0,
       releaseThresholdPercent: 0,
       dedup: {
@@ -994,12 +1195,15 @@ describe("contextPruningTransformHandler", () => {
 
     const parts2 = messages2[1].parts ?? [];
     // call-1 (older duplicate) should now be pruned.
-    assert.equal(
-      (parts2[0] as SweepToolPart).state?.output,
-      PRUNED_TOOL_OUTPUT_REPLACEMENT,
+    assert.ok(
+      (parts2[0] as SweepToolPart).state?.output?.startsWith(
+        PRUNED_TOOL_OUTPUT_REPLACEMENT,
+      ),
     );
     // call-2 (keeper) unchanged.
-    assert.equal((parts2[1] as SweepToolPart).state?.output, lotOfOutput);
+    assert.ok(
+      (parts2[1] as SweepToolPart).state?.output?.startsWith(lotOfOutput),
+    );
   });
 
   it("batch: accumulation across multiple turns before release", () => {
@@ -1028,6 +1232,7 @@ describe("contextPruningTransformHandler", () => {
       ),
     ];
     contextPruningTransformHandler(messages, {
+      enabled: true,
       turnProtection: 0,
       releaseThresholdPercent: 0.8,
       dedup: {
@@ -1058,6 +1263,7 @@ describe("contextPruningTransformHandler", () => {
       ),
     ];
     contextPruningTransformHandler(messages, {
+      enabled: true,
       turnProtection: 0,
       releaseThresholdPercent: 0.8,
       dedup: {
@@ -1088,6 +1294,7 @@ describe("contextPruningTransformHandler", () => {
       ),
     ];
     contextPruningTransformHandler(messages, {
+      enabled: true,
       turnProtection: 0,
       releaseThresholdPercent: 0.8,
       dedup: {
@@ -1125,6 +1332,7 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages, {
+      enabled: true,
       turnProtection: 0,
       releaseThresholdPercent: 5, // Normal threshold
       dedup: {
@@ -1135,9 +1343,10 @@ describe("contextPruningTransformHandler", () => {
     });
 
     // Sweep mark is in tools and should be pruned.
-    assert.equal(
-      (messages[1].parts?.[0] as SweepToolPart).state?.output,
-      PRUNED_TOOL_OUTPUT_REPLACEMENT,
+    assert.ok(
+      (messages[1].parts?.[0] as SweepToolPart).state?.output?.startsWith(
+        PRUNED_TOOL_OUTPUT_REPLACEMENT,
+      ),
     );
     // No pending marks for sweep marks.
     assert.equal(pendingCount(state), 0);
@@ -1172,6 +1381,7 @@ describe("contextPruningTransformHandler", () => {
     contextPruningTransformHandler(
       messages,
       {
+        enabled: true,
         turnProtection: 0,
         releaseThresholdPercent: 0,
         dedup: { enabled: true, thresholdTokens: 100000 },
@@ -1213,6 +1423,7 @@ describe("contextPruningTransformHandler", () => {
 
     // No notify parameter — should not throw.
     contextPruningTransformHandler(messages, {
+      enabled: true,
       turnProtection: 0,
       releaseThresholdPercent: 0,
       dedup: {
@@ -1250,6 +1461,7 @@ describe("contextPruningTransformHandler", () => {
     contextPruningTransformHandler(
       messages,
       {
+        enabled: true,
         turnProtection: 0,
         releaseThresholdPercent: 0,
         dedup: { enabled: true, thresholdTokens: 100000 },
@@ -1291,6 +1503,7 @@ describe("contextPruningTransformHandler", () => {
     contextPruningTransformHandler(
       messages,
       {
+        enabled: true,
         turnProtection: 0,
         releaseThresholdPercent: 0,
         dedup: { enabled: true, thresholdTokens: 100000 },
@@ -1341,7 +1554,11 @@ describe("contextPruningTransformHandler", () => {
       ]),
     ];
 
-    contextPruningTransformHandler(messages);
+    contextPruningTransformHandler(messages, {
+      enabled: true,
+      dedup: {},
+      purgeErrors: {},
+    });
 
     // Capture the prune_completed log event.
     const entries = _getBufferForTesting();
@@ -1405,6 +1622,7 @@ describe("contextPruningTransformHandler", () => {
     // Handler with dedup enabled (won't touch error parts) and
     // purge-errors enabled.
     contextPruningTransformHandler(turnN, {
+      enabled: true,
       turnProtection: 0,
       releaseThresholdPercent: 0,
       dedup: { enabled: true, thresholdTokens: 0 },
@@ -1458,6 +1676,7 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(turnN1, {
+      enabled: true,
       turnProtection: 0,
       releaseThresholdPercent: 0,
       dedup: { enabled: true, thresholdTokens: 0 },
@@ -1465,7 +1684,9 @@ describe("contextPruningTransformHandler", () => {
     });
 
     // Turn N+1 Phase 1: pruneToolErrors replaces the input.
-    const partN1 = turnN1[1].parts?.[1] as SweepToolPart;
+    // Note: injectMessageRefs inserts a synthetic text part
+    // before the first tool part, shifting tool part index from 1 to 2.
+    const partN1 = turnN1[1].parts?.[2] as SweepToolPart;
     assert.equal(
       (partN1.state?.input as Record<string, unknown>).cmd,
       PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
@@ -1473,10 +1694,189 @@ describe("contextPruningTransformHandler", () => {
     );
     // state.error and output remain untouched.
     // Note: status is a separate field from error message.
-    assert.equal(
-      partN1.state?.output,
-      "process terminated",
+    assert.ok(
+      partN1.state?.output?.startsWith("process terminated"),
       "output should remain unchanged",
     );
+  });
+
+  // ===========================================================================
+  // message-refs integration
+  // ===========================================================================
+
+  describe("message-refs integration", () => {
+    const P25_SESSION_IDS = [
+      "sess-refs-phase2",
+      "sess-refs-det",
+      "sess-refs-boundary",
+    ];
+    TEST_SESSION_IDS.push(...P25_SESSION_IDS);
+
+    it("(a) refs injected into all non-ignored messages with text parts", () => {
+      const sessionID = "sess-refs-phase2";
+      const messages: ContextMessageEntry[] = [
+        msg("user", "u1", [textPart("hello")], sessionID),
+        msg("assistant", "a1", [textPart("world")]),
+        msg("user", "u2", [textPart("ignored-msg", true)], sessionID),
+        msg("assistant", "a2", [
+          {
+            type: "tool",
+            tool: "bash",
+            callID: "c1",
+            state: { input: "", output: "" },
+          } as unknown as {
+            type: string;
+            text?: string;
+          },
+        ]),
+        msg("user", "u3", [textPart("bar")], sessionID, {
+          input: 100000,
+          output: 200,
+        }),
+      ];
+
+      contextPruningTransformHandler(messages, {
+        enabled: true,
+        dedup: { enabled: false },
+        purgeErrors: { enabled: false },
+      });
+
+      // u1 (user, non-ignored, text part) → has exactly one tag.
+      const u1Text = (messages[0].parts?.[0] as { text?: string }).text;
+      assert.ok(u1Text?.includes("m0001"), "u1 should have ref m0001");
+
+      // a1 (assistant, non-ignored, text part) → has a tag.
+      const a1Text = (messages[1].parts?.[0] as { text?: string }).text;
+      assert.ok(a1Text?.includes("m0002"), "a1 should have ref m0002");
+
+      // u2 (user, ignored) → no tag, text unchanged.
+      const u2Text = (messages[2].parts?.[0] as { text?: string }).text;
+      assert.equal(u2Text, "ignored-msg");
+
+      // a2 (assistant, tool only) → tool output carries the tag.
+      const a2Part0 = messages[3].parts?.[0] as unknown as Record<
+        string,
+        unknown
+      >;
+      const a2State = a2Part0.state as Record<string, unknown>;
+      assert.ok(
+        (a2State.output as string).includes("m0003"),
+        "a2 tool output should have ref m0003",
+      );
+
+      // u3 (user, non-ignored, text part) → has a tag.
+      const u3Text = (messages[4].parts?.[0] as { text?: string }).text;
+      // a2 gets m0003 (assigned, injected into tool output),
+      // so u3 gets m0004.
+      assert.ok(u3Text?.includes("m0004"), "u3 should have ref m0004");
+
+      // Exactly 4 tag-bearing messages (u1, a1, a2 via tool output, u3).
+      const allText = JSON.stringify(messages);
+      const tagMatches = allText.match(/<zoo-msg-id>m\d{4}<\/zoo-msg-id>/g);
+      assert.equal(tagMatches?.length ?? 0, 4);
+    });
+
+    it("(b) two handler runs over equivalent fresh input produce byte-identical output", () => {
+      const sessionID = "sess-refs-det";
+      const baseInput: ContextMessageEntry[] = [
+        msg("user", "u1", [textPart("Hello")], sessionID),
+        msg("assistant", "a1", [textPart("World")]),
+      ];
+
+      // Round 1 — fresh copy.
+      const input1: ContextMessageEntry[] = JSON.parse(
+        JSON.stringify(baseInput),
+      );
+      contextPruningTransformHandler(input1, {
+        enabled: true,
+        dedup: { enabled: false },
+        purgeErrors: { enabled: false },
+      });
+      const snapshot1 = JSON.stringify(input1);
+
+      // Round 2 — fresh copy of the same base.
+      const input2: ContextMessageEntry[] = JSON.parse(
+        JSON.stringify(baseInput),
+      );
+      contextPruningTransformHandler(input2, {
+        enabled: true,
+        dedup: { enabled: false },
+        purgeErrors: { enabled: false },
+      });
+      const snapshot2 = JSON.stringify(input2);
+
+      assert.equal(snapshot1, snapshot2);
+    });
+
+    it("(c) boundary change causes refs to renumber from m0001 with no duplicates", () => {
+      const sessionID = "sess-refs-boundary";
+
+      // Turn N: messages start with a summary boundary (boundary_1).
+      // The summary message is marked ignored (system-injected bookkeeping)
+      // so it does not consume a ref.
+      const turn1: ContextMessageEntry[] = [
+        {
+          info: {
+            role: "assistant",
+            id: "boundary_1",
+            sessionID,
+            summary: true,
+            ignored: true,
+          } as unknown as ContextMessageEntry["info"],
+          parts: [{ type: "text", text: "compaction summary" }],
+        },
+        msg("user", "u1", [textPart("hello")], sessionID),
+        msg("assistant", "a1", [textPart("response")]),
+      ];
+
+      contextPruningTransformHandler(turn1, {
+        enabled: true,
+        dedup: { enabled: false },
+        purgeErrors: { enabled: false },
+      });
+
+      // u1 → m0001, a1 → m0002 (boundary summary skipped)
+      assert.ok(
+        (turn1[1].parts?.[0] as { text?: string }).text?.includes("m0001"),
+        "u1 should have m0001",
+      );
+      assert.ok(
+        (turn1[2].parts?.[0] as { text?: string }).text?.includes("m0002"),
+        "a1 should have m0002",
+      );
+
+      // Turn N+1: boundary changes to boundary_2 — refs must renumber.
+      const turn2: ContextMessageEntry[] = [
+        {
+          info: {
+            role: "assistant",
+            id: "boundary_2",
+            sessionID,
+            summary: true,
+            ignored: true,
+          } as unknown as ContextMessageEntry["info"],
+          parts: [{ type: "text", text: "new compaction summary" }],
+        },
+        msg("user", "u2", [textPart("again")], sessionID),
+        msg("assistant", "a2", [textPart("ok")]),
+      ];
+
+      contextPruningTransformHandler(turn2, {
+        enabled: true,
+        dedup: { enabled: false },
+        purgeErrors: { enabled: false },
+      });
+
+      // Refs renumbered: u2 → m0001, a2 → m0002 (NOT m0003/m0004).
+      const u2Text = (turn2[1].parts?.[0] as { text?: string }).text;
+      const a2Text = (turn2[2].parts?.[0] as { text?: string }).text;
+      assert.ok(u2Text?.includes("m0001"), "u2 should have m0001 after reset");
+      assert.ok(a2Text?.includes("m0002"), "a2 should have m0002 after reset");
+
+      // Verify distinct refs (no duplicates).
+      const refsU2 = u2Text?.match(/m\d{4}/)?.[0];
+      const refsA2 = a2Text?.match(/m\d{4}/)?.[0];
+      assert.notEqual(refsU2, refsA2, "u2 and a2 must have different refs");
+    });
   });
 });

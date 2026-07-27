@@ -27,6 +27,7 @@ import { KIWI_PROMPT } from "./agents/kiwi.js";
 import { LYNX_PROMPT } from "./agents/lynx.js";
 import { MOLA_PROMPT } from "./agents/mola.js";
 import { SPIDER_PROMPT } from "./agents/spider.js";
+import { stripRefsFromString } from "./core/pruning/index.js";
 import { deleteSessionState, removeSession } from "./core/pruning/marks.js";
 import { DCP_COMMAND_HANDLED, handleDcpCommand } from "./hooks/context-command";
 import type { ContextMetricsOutput } from "./hooks/context-metrics";
@@ -51,6 +52,17 @@ import { initLogger, log, setSessionId } from "./utils/logger.js";
 
 /** Maps session IDs to agent names reported by message.updated events. */
 const sessionAgentMap = new Map<string, string>();
+
+/**
+ * Cache of sub-agent status per session ID.
+ *
+ * Populated on first access during `experimental.chat.messages.transform`
+ * by calling `client.session.get()`.  Cleared on `session.deleted`.
+ *
+ * Sub-agent sessions (created via the `task` tool) have a `parentID` set
+ * on the session info; main sessions do not.
+ */
+const subAgentCache = new Map<string, boolean>();
 
 const AGENT_PROMPTS: Record<string, string> = {
   dolphin: DOLPHIN_PROMPT,
@@ -104,6 +116,7 @@ function parseContextConfig(zooConfig: any): ContextPruningConfig {
   const d = c.dedup ?? {};
   const pe = c.purge_errors ?? {};
   return {
+    enabled: typeof c.enabled === "boolean" ? c.enabled : false,
     turnProtection:
       typeof c.turn_protection === "number" &&
       Number.isFinite(c.turn_protection)
@@ -126,7 +139,7 @@ function parseContextConfig(zooConfig: any): ContextPruningConfig {
         Array.isArray(d.protected_tools) &&
         d.protected_tools.every((t: unknown) => typeof t === "string")
           ? d.protected_tools
-          : ["question"],
+          : [],
     },
     purgeErrors: {
       enabled: typeof pe.enabled === "boolean" ? pe.enabled : true,
@@ -139,7 +152,7 @@ function parseContextConfig(zooConfig: any): ContextPruningConfig {
         Array.isArray(pe.protected_tools) &&
         pe.protected_tools.every((t: unknown) => typeof t === "string")
           ? pe.protected_tools
-          : ["question"],
+          : [],
     },
   };
 }
@@ -242,6 +255,154 @@ interface AfterExecOutput {
   output?: string;
 }
 
+/**
+ * Resolve the current agent for a session.
+ *
+ * Resolution order:
+ *   (a) `agentMap` (in-memory map populated solely by the message.updated
+ *       handler — single source of truth)
+ *   (b) `client.session.get()` API call — per-call fallback WITHOUT
+ *       write-back to the map, so a mid-session agent change is reflected
+ *       as soon as either the next message.updated or the next resolution
+ *       happens.
+ *   (c) `undefined` — current behavior preserved, debug log entry
+ *
+ * Exported for unit testing.
+ */
+export async function resolveSessionAgent(
+  sessionID: string,
+  client: any,
+  agentMap: Map<string, string>,
+): Promise<string | undefined> {
+  // (a) Check in-memory map first (fast, no I/O).
+  const mapped = agentMap.get(sessionID);
+  if (mapped) return mapped;
+
+  // (b) Fallback to session API — read the agent from the session object.
+  //     The OpenCode Session type (both v1 and v2 SDKs) carries an
+  //     optional `agent` field (verified in @opencode-ai/sdk types:
+  //     SessionPromptData.body.agent and Session.agent).
+  //     No write-back to agentMap: the map has a single writer
+  //     (message.updated handler) to avoid stale-agent windows.
+  if (client?.session?.get) {
+    try {
+      const sessionInfo = await client.session.get({
+        path: { id: sessionID },
+      });
+      if (sessionInfo?.agent) {
+        return sessionInfo.agent;
+      }
+    } catch {
+      // Session not found — fall through to (c).
+    }
+  }
+
+  // (c) Unknown — log debug entry and return undefined (preserves current
+  //     behaviour where the notify message carries no agent).
+  log(
+    "context-pruning",
+    "dedup_notify_no_agent",
+    sessionID,
+    undefined,
+    "debug",
+    {},
+  );
+  return undefined;
+}
+
+/**
+ * Fire-and-forget notification for dedup batch release.
+ *
+ * Sends a silent (noReply + ignored) message to the session chat when the
+ * agent is known; suppresses the notification entirely when the agent
+ * cannot be resolved, logging the drop at warn level.
+ *
+ * Resolution order:
+ *   (a) In-memory agentMap (fast, synchronous)
+ *   (b) client.session.get() fallback (async)
+ *   (c) Suppressed — agent unresolved
+ *
+ * Exported for unit testing.
+ */
+export function handleDedupNotify(
+  sessionID: string,
+  client: any,
+  agentMap: Map<string, string>,
+  text: string,
+): void {
+  const body: Record<string, unknown> = {
+    noReply: true,
+    parts: [{ type: "text", text, ignored: true }],
+  };
+
+  const send = () => {
+    try {
+      client?.session
+        ?.prompt({
+          path: { id: sessionID },
+          body,
+        })
+        .catch((err: Error) => {
+          log(
+            "context-pruning",
+            "dedup_notify_failed",
+            sessionID,
+            undefined,
+            "warn",
+            { error: String(err) },
+          );
+        });
+    } catch (err) {
+      log(
+        "context-pruning",
+        "dedup_notify_failed",
+        sessionID,
+        undefined,
+        "warn",
+        { error: String(err) },
+      );
+    }
+  };
+
+  // (a) Agent known from in-memory map — send immediately.
+  const agent = agentMap.get(sessionID);
+  if (agent) {
+    body.agent = agent;
+    send();
+    return;
+  }
+
+  // (b)/(c) Agent not in map — try async fallback.
+  // The promise chain is never awaited by the transform hook.
+  resolveSessionAgent(sessionID, client, agentMap)
+    .then((resolvedAgent) => {
+      if (resolvedAgent) {
+        body.agent = resolvedAgent;
+        send();
+        return;
+      }
+      // (c) Agent unresolved — suppress notification.
+      log(
+        "context-pruning",
+        "dedup_notify_suppressed",
+        sessionID,
+        undefined,
+        "warn",
+        { reason: "agent unresolved" },
+      );
+    })
+    .catch((err) => {
+      log(
+        "context-pruning",
+        "dedup_notify_suppressed",
+        sessionID,
+        undefined,
+        "warn",
+        { reason: "agent unresolved", error: String(err) },
+      );
+    });
+}
+
 /** Track context metrics with error isolation. */
 function handleMessagesTransform(output: ContextMetricsOutput): void {
   try {
@@ -263,36 +424,19 @@ function handleContextPruning(
   output: ContextMetricsOutput,
   config: ContextPruningConfig,
   client: any,
+  isSubAgent?: boolean,
 ): void {
   try {
+    const sessionID = output.messages?.[0]?.info?.sessionID ?? "";
+
     contextPruningTransformHandler(
       output.messages,
       config,
       // Fire-and-forget: notify the session chat with dedup release info.
       // Must NOT await — the transform hook must never block.
-      (text: string) => {
-        const sessionID = output.messages?.[0]?.info?.sessionID ?? "";
-        client?.session
-          ?.prompt({
-            path: { id: sessionID },
-            body: {
-              noReply: true,
-              parts: [{ type: "text", text, ignored: true }],
-            },
-          })
-          .catch((err: Error) => {
-            log(
-              "context-pruning",
-              "dedup_notify_failed",
-              sessionID,
-              undefined,
-              "warn",
-              {
-                error: String(err),
-              },
-            );
-          });
-      },
+      (text: string) =>
+        handleDedupNotify(sessionID, client, sessionAgentMap, text),
+      isSubAgent,
     );
   } catch (err) {
     log(
@@ -402,6 +546,7 @@ export async function zookeeper(input: any) {
         const info = properties?.info as { id?: string } | undefined;
         if (info?.id) {
           sessionAgentMap.delete(info.id);
+          subAgentCache.delete(info.id);
           removeSession(info.id);
           deleteSessionState(info.id);
         }
@@ -412,9 +557,45 @@ export async function zookeeper(input: any) {
       _input: Record<string, never>,
       output: ContextMetricsOutput,
     ) {
+      // ── Detect sub-agent status ──────────────────────────────
+      // Sub-agent sessions (created by the `task` tool) have
+      // `parentID` set on the session info.  Cache the result so we
+      // don't query the session API on every transform tick.
+      let isSubAgent = false;
+      const sessionId = output.messages?.[0]?.info?.sessionID;
+      if (sessionId) {
+        const cached = subAgentCache.get(sessionId);
+        if (cached !== undefined) {
+          isSubAgent = cached;
+        } else {
+          try {
+            const sessionInfo = await client.session.get({
+              path: { id: sessionId },
+            });
+            isSubAgent = !!sessionInfo.parentID;
+          } catch {
+            // Could not determine — default to false.
+          }
+          subAgentCache.set(sessionId, isSubAgent);
+        }
+      }
+
       // Prune first so measureContext reflects post-prune token counts.
-      handleContextPruning(output, contextConfig, client);
+      handleContextPruning(output, contextConfig, client, isSubAgent);
       handleMessagesTransform(output);
+    },
+
+    async "experimental.text.complete"(
+      _input: {
+        sessionID: string;
+        messageID: string;
+        partID: string;
+      },
+      output: { text: string },
+    ) {
+      // Strip zoo-msg-id tags from outbound assistant text so model
+      // echoes never reach the user-visible transcript.
+      output.text = stripRefsFromString(output.text);
     },
 
     async "tool.definition"(
@@ -543,6 +724,7 @@ export default { id: "zookeeper", server: zookeeper };
 // Test-only exports — exposed for unit testing
 // ---------------------------------------------------------------------------
 export {
+  handleContextPruning,
   handleMessagesTransform,
   injectAgentPrompts,
   parseContextConfig,
@@ -550,4 +732,5 @@ export {
   parseSkillsConfig,
   registerSkills,
   runAfterHandlers,
+  sessionAgentMap,
 };

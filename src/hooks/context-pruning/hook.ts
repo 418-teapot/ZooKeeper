@@ -10,7 +10,18 @@
 
 import { formatTokens } from "../../core/context-report.js";
 import type { ContextMessageEntry } from "../../core/metrics.js";
-import { findLastCompletedAssistant } from "../../core/metrics.js";
+import {
+  findCompactionBoundary,
+  findLastCompletedAssistant,
+} from "../../core/metrics.js";
+import {
+  assignMessageRefs,
+  getLastCompactionBoundaryId,
+  injectMessageRefs,
+  resetMessageRefs,
+  setLastCompactionBoundaryId,
+  stripHallucinatedRefs,
+} from "../../core/pruning/index.js";
 import {
   getOrCreateSessionState,
   pendingTokens as pendingTokensDerived,
@@ -52,6 +63,13 @@ export interface ProducerGateConfig {
  * `turnProtection` and `releaseThresholdPercent` remain shared.
  */
 export interface ContextPruningConfig {
+  /**
+   * Master enable switch.  When not explicitly true the entire
+   * transform no-ops: no Phase 1/2/2.5, no batch release, no
+   * persistence.  Default false — pruning runs only when
+   * explicitly true.
+   */
+  enabled?: boolean;
   /** Number of most recent assistant steps to protect (shared). */
   turnProtection?: number;
   /**
@@ -95,6 +113,9 @@ export interface ContextPruningConfig {
  * @param messages - The session messages array from the transform output.
  * @param config - Unified context-pruning configuration.
  * @param notify - Optional callback for user-visible release notification.
+ * @param isSubAgent - When true, the first non-ignored user message in
+ *   the session gets no message ref (positional semantics for
+ *   sub-agent/task sessions — the first user message is skipped).
  */
 export function contextPruningTransformHandler(
   messages: ContextMessageEntry[] | null | undefined,
@@ -103,8 +124,13 @@ export function contextPruningTransformHandler(
     purgeErrors: {},
   },
   notify?: (text: string) => void,
+  isSubAgent?: boolean,
 ): void {
   if (!messages || messages.length === 0) return;
+
+  // Master enable switch — entire transform no-ops unless
+  // explicitly enabled (default false).
+  if (config.enabled !== true) return;
 
   // Extract session ID from the first message.
   const firstMsg = messages[0];
@@ -186,6 +212,33 @@ export function contextPruningTransformHandler(
         },
       );
     }
+  }
+
+  // ── Phase 3: Message refs (strip → compaction check → assign → inject) ──
+  stripHallucinatedRefs(messages);
+
+  // Detect compaction boundary changes so refs renumber from m0001 when
+  // the session history is compacted.
+  const boundaryIdx = findCompactionBoundary(messages);
+  const currentBoundaryId =
+    boundaryIdx >= 0 ? (messages[boundaryIdx]?.info?.id ?? null) : null;
+  const prevBoundaryId = getLastCompactionBoundaryId(sessionId);
+  let boundaryReset = false;
+  if (currentBoundaryId !== prevBoundaryId) {
+    resetMessageRefs(sessionId);
+    setLastCompactionBoundaryId(sessionId, currentBoundaryId);
+    boundaryReset = true;
+  }
+
+  const assigned = assignMessageRefs(sessionId, messages, isSubAgent);
+  const injected = injectMessageRefs(sessionId, messages);
+
+  if (assigned > 0 || boundaryReset) {
+    log("context-pruning", "refs_assigned", sessionId, undefined, "info", {
+      assigned,
+      injected,
+      boundaryReset,
+    });
   }
 
   // ── Batch release check (unified) ──────────────────────────────

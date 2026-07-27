@@ -2,25 +2,30 @@
  * Tests for helper functions in the ZooKeeper plugin entry point.
  *
  * Covers: parseLimits, parseSkillsConfig, injectAgentPrompts,
- * handleMessagesTransform, runAfterHandlers, registerSkills.
+ * handleMessagesTransform, runAfterHandlers, registerSkills,
+ * resolveSessionAgent.
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import {
+  handleDedupNotify,
   handleMessagesTransform,
   injectAgentPrompts,
   parseLimits,
   parseSkillsConfig,
   registerSkills,
+  resolveSessionAgent,
   runAfterHandlers,
+  sessionAgentMap,
 } from "./opencode.js";
-import { _resetForTesting } from "./utils/logger.js";
+import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
 
 // ---------------------------------------------------------------------------
 // Logger cleanup
 // ---------------------------------------------------------------------------
 
 afterEach(() => {
+  sessionAgentMap.clear();
   _resetForTesting();
 });
 
@@ -346,8 +351,305 @@ describe("runAfterHandlers", () => {
 });
 
 // ---------------------------------------------------------------------------
-// registerSkills
+// resolveSessionAgent
 // ---------------------------------------------------------------------------
+
+describe("resolveSessionAgent", () => {
+  it("(a) returns agent from in-memory map when present", async () => {
+    const map = new Map<string, string>([["ses_test", "beaver"]]);
+    const client = {
+      session: {
+        get: () => {
+          throw new Error("should not be called");
+        },
+      },
+    };
+
+    const result = await resolveSessionAgent("ses_test", client, map);
+    assert.equal(result, "beaver");
+  });
+
+  it("(b) falls back to client.session.get when map has no entry", async () => {
+    const map = new Map<string, string>();
+    let getCalled = false;
+    const client = {
+      session: {
+        get: async (_opts: { path: { id: string } }) => {
+          getCalled = true;
+          return { agent: "lynx" };
+        },
+      },
+    };
+
+    const result = await resolveSessionAgent("ses_unknown", client, map);
+    assert.equal(result, "lynx");
+    assert.equal(getCalled, true);
+  });
+
+  it("(b) does NOT cache the agent in the map after session.get fallback", async () => {
+    const map = new Map<string, string>();
+    const client = {
+      session: {
+        get: async (_opts: { path: { id: string } }) => {
+          return { agent: "mola" };
+        },
+      },
+    };
+
+    await resolveSessionAgent("ses_cache", client, map);
+    assert.equal(
+      map.has("ses_cache"),
+      false,
+      "agentMap must NOT be written by resolveSessionAgent — single writer is message.updated handler",
+    );
+  });
+
+  it("reflects mid-session agent change when map is later updated", async () => {
+    const map = new Map<string, string>();
+    let getCount = 0;
+    const client = {
+      session: {
+        get: async (_opts: { path: { id: string } }) => {
+          getCount++;
+          return { agent: "lynx" };
+        },
+      },
+    };
+
+    // First call — no map entry, falls to session.get, but does NOT write map
+    const result1 = await resolveSessionAgent("ses_change", client, map);
+    assert.equal(result1, "lynx");
+    assert.equal(getCount, 1);
+    assert.equal(
+      map.has("ses_change"),
+      false,
+      "map must NOT be written by resolveSessionAgent",
+    );
+
+    // Simulate message.updated setting the agent
+    map.set("ses_change", "beaver");
+
+    // Second call — map has entry; returns it without calling session.get
+    const result2 = await resolveSessionAgent("ses_change", client, map);
+    assert.equal(result2, "beaver");
+    assert.equal(getCount, 1, "session.get must not be called again");
+  });
+
+  it("(b) returns undefined when session.get returns no agent field", async () => {
+    const map = new Map<string, string>();
+    const client = {
+      session: {
+        get: async (_opts: { path: { id: string } }) => {
+          return { id: "ses_noagent", title: "test" };
+        },
+      },
+    };
+
+    const result = await resolveSessionAgent("ses_noagent", client, map);
+    assert.equal(result, undefined);
+  });
+
+  it("(b) returns undefined when session.get throws", async () => {
+    const map = new Map<string, string>();
+    const client = {
+      session: {
+        get: async (_opts: { path: { id: string } }) => {
+          throw new Error("session not found");
+        },
+      },
+    };
+
+    const result = await resolveSessionAgent("ses_err", client, map);
+    assert.equal(result, undefined);
+  });
+
+  it("(c) returns undefined when no source has the agent", async () => {
+    const map = new Map<string, string>();
+    const client = {};
+
+    const result = await resolveSessionAgent("ses_none", client, map);
+    assert.equal(result, undefined);
+  });
+
+  it("(c) returns undefined when client has no session.get method", async () => {
+    const map = new Map<string, string>();
+    const client = { session: {} };
+
+    const result = await resolveSessionAgent("ses_noget", client, map);
+    assert.equal(result, undefined);
+  });
+
+  it("(a) takes priority over client.session.get", async () => {
+    const map = new Map<string, string>([["ses_priority", "kiwi"]]);
+    let getCalled = false;
+    const client = {
+      session: {
+        get: async (_opts: { path: { id: string } }) => {
+          getCalled = true;
+          return { agent: "eagle" };
+        },
+      },
+    };
+
+    const result = await resolveSessionAgent("ses_priority", client, map);
+    assert.equal(result, "kiwi");
+    assert.equal(
+      getCalled,
+      false,
+      "session.get must not be called when map has entry",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// handleDedupNotify
+// ---------------------------------------------------------------------------
+
+describe("handleDedupNotify", () => {
+  it("(a) sends immediately with agent from in-memory map", () => {
+    const map = new Map<string, string>([["ses_map", "beaver"]]);
+    let promptCalled = false;
+    let promptBody: Record<string, unknown> | null = null;
+    const client = {
+      session: {
+        prompt: async (opts: {
+          path: { id: string };
+          body: Record<string, unknown>;
+        }) => {
+          promptCalled = true;
+          promptBody = opts.body;
+        },
+      },
+    };
+
+    handleDedupNotify("ses_map", client, map, "test notification");
+
+    // Sync path — agent is in map, so send() is called synchronously.
+    assert.equal(promptCalled, true);
+    const pb = promptBody as unknown as Record<string, unknown>;
+    assert.equal(pb.agent, "beaver");
+    assert.equal(pb.noReply, true);
+    assert.equal(
+      (pb.parts as Array<{ type: string; text: string }>)[0].text,
+      "test notification",
+    );
+  });
+
+  it("(b) sends with resolved agent via session.get fallback", async () => {
+    const map = new Map<string, string>();
+    let promptCalled = false;
+    let promptBody: Record<string, unknown> | null = null;
+    const client = {
+      session: {
+        get: async () => ({ agent: "lynx" }),
+        prompt: async (opts: {
+          path: { id: string };
+          body: Record<string, unknown>;
+        }) => {
+          promptCalled = true;
+          promptBody = opts.body;
+        },
+      },
+    };
+
+    handleDedupNotify("ses_fallback", client, map, "test");
+
+    // Async path — wait for microtask queue to drain.
+    await new Promise((r) => setTimeout(r, 0));
+
+    assert.equal(
+      promptCalled,
+      true,
+      "prompt must be called for resolved agent",
+    );
+    const pb = promptBody as unknown as Record<string, unknown>;
+    assert.equal(pb.agent, "lynx");
+  });
+
+  it("(c) suppresses notification when session.get returns no agent", async () => {
+    const map = new Map<string, string>();
+    let promptCalled = false;
+    const client = {
+      session: {
+        get: async () => ({ id: "ses_noagent", title: "test" }),
+        prompt: async () => {
+          promptCalled = true;
+        },
+      },
+    };
+
+    handleDedupNotify("ses_noagent", client, map, "test");
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    assert.equal(
+      promptCalled,
+      false,
+      "prompt must NOT be called when agent unresolved",
+    );
+
+    const buffer = _getBufferForTesting();
+    const suppressEntry = buffer.find(
+      (e) => e.event === "dedup_notify_suppressed",
+    );
+    assert.ok(suppressEntry, "dedup_notify_suppressed must be logged");
+    const se = suppressEntry as unknown as Record<string, unknown>;
+    assert.equal(se.reason, "agent unresolved");
+  });
+
+  it("(c) suppresses notification when session.get throws (resolveSessionAgent catches internally)", async () => {
+    const map = new Map<string, string>();
+    let promptCalled = false;
+    const client = {
+      session: {
+        get: async () => {
+          throw new Error("session not found");
+        },
+        prompt: async () => {
+          promptCalled = true;
+        },
+      },
+    };
+
+    handleDedupNotify("ses_err", client, map, "test");
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    assert.equal(
+      promptCalled,
+      false,
+      "prompt must NOT be called when agent resolution fails",
+    );
+
+    const buffer = _getBufferForTesting();
+    const suppressEntry = buffer.find(
+      (e) => e.event === "dedup_notify_suppressed",
+    );
+    assert.ok(suppressEntry, "dedup_notify_suppressed must be logged");
+    const se = suppressEntry as Record<string, unknown>;
+    assert.equal(se.reason, "agent unresolved");
+  });
+
+  it("does not throw when session exists but prompt method is undefined", () => {
+    // Regression: synchronous throw path in send() when client.session
+    // exists but prompt is undefined.
+    const map = new Map<string, string>([["ses_noprompt", "beaver"]]);
+    const client = {
+      session: {} as { prompt?: any },
+    };
+
+    // Must not throw — synchronous throw from undefined({...}) is
+    // caught by try/catch inside send().
+    handleDedupNotify("ses_noprompt", client, map, "test");
+
+    const buffer = _getBufferForTesting();
+    const failEntry = buffer.find((e) => e.event === "dedup_notify_failed");
+    assert.ok(
+      failEntry,
+      "dedup_notify_failed must be logged when prompt is undefined",
+    );
+  });
+});
 
 describe("registerSkills", () => {
   it("registers all skills when none are disabled", () => {
