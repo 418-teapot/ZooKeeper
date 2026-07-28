@@ -1524,13 +1524,31 @@ const plugin: TuiPluginModule = {
                   let done = 0;
                   let running = 0;
                   let errored = 0;
-                  let totalTokens = 0;
                   for (const entry of entries.values()) {
                     if (entry.status === "done") done++;
                     else if (entry.status === "running") running++;
                     else errored++;
-                    totalTokens += entry.tokens ?? 0;
                   }
+                  // Aggregate token snapshots per child session: a resumed
+                  // task() call creates a new partId entry that shares the
+                  // same sessionId, so keep only the latest (max) snapshot
+                  // per session before summing. Entries without a sessionId
+                  // fall back to their own partId and count individually.
+                  const tokensBySession = new Map<string, number>();
+                  for (const entry of entries.values()) {
+                    const key = entry.sessionId ?? entry.id;
+                    tokensBySession.set(
+                      key,
+                      Math.max(
+                        tokensBySession.get(key) ?? 0,
+                        entry.tokens ?? 0,
+                      ),
+                    );
+                  }
+                  const totalTokens = [...tokensBySession.values()].reduce(
+                    (a, b) => a + b,
+                    0,
+                  );
                   const tokenStr =
                     totalTokens > 0 ? formatTokens(totalTokens) : "—";
                   const segLabel = `${subCollapsed ? "▸" : "▾"} 子代理`;
