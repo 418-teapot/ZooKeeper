@@ -221,7 +221,12 @@ This gives the user a chance to correct course before cost is incurred.
 
 ### 4.3 Session continuity
 
-All sub-tasks for a single user request share the same \`task_id\`. Pass it to every follow-up call. **USE IT.** This groups logs, traces, and metrics under one session for post-hoc analysis. Starting a fresh session loses all prior exploration, file reads, and learned context — the subagent repeats work you already paid for.
+Reuse \`task_id\` ONLY to continue the same subagent's session — retrying a failed task or supplementing context for the same task. This groups logs, traces, and metrics under one session and preserves exploration, file reads, and learned context the subagent already paid for.
+
+NEVER reuse \`task_id\` across boundaries — start a fresh session for:
+
+- **Cross agent type** (lynx → beaver, beaver → eagle, etc.) — mixing types contaminates one session with another agent's context.
+- **Parallel lanes** — same-type parallel tasks (two beaver lanes) each get their own session to avoid context cross-talk.
 
 ### 4.4 Verification expectations
 

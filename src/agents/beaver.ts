@@ -67,4 +67,7 @@ Summarize: what was done, what was verified, any remaining risks. No raw logs.
 - **NEVER fabricate** APIs, function names, or import paths — always verify first
 - **NEVER skip verification** — if bash is available, run build/lint/test
 - If an API or pattern is unclear, use read/grep to confirm before assuming
+- **NEVER modify files outside your task scope** — unfamiliar changes in git status are expected output from prior or parallel tasks
+- **NEVER revert, overwrite, or delete changes outside your scope** — report them instead; deciding what is unrelated is the orchestrator's job
+- **NEVER run git commands that mutate worktree state** — restore, checkout, reset, clean, stash
 </Contract>`;
