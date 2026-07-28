@@ -243,6 +243,12 @@ color = "#66CCFF"
 [agent.dolphin.permission]
 webfetch = "deny"
 websearch = "deny"
+[agent.dolphin.permission.bash]
+"git checkout *" = "ask"
+"git commit *"   = "ask"
+"git reset *"    = "ask"
+"git stash"      = "ask"
+"rm *"           = "ask"
 [agent.dolphin.permission.skill]
 "beaver-*" = "deny"
 "kiwi-*"   = "deny"
@@ -254,6 +260,15 @@ color = "#FFA500"
 [agent.mola.permission]
 webfetch  = "deny"
 websearch = "deny"
+[agent.mola.permission.bash]
+"git checkout *" = "ask"
+"git commit *"   = "deny"
+"git reset *"    = "deny"
+"git stash"      = "ask"
+"rm *"           = "deny"
+[agent.mola.permission.edit]
+"*"       = "deny"
+"**/*.md" = "allow"
 [agent.mola.permission.skill]
 "*"          = "deny"
 "grill"      = "allow"
@@ -267,6 +282,12 @@ color = "#FFE211"
 [agent.lynx.permission]
 edit = "deny"
 task = "deny"
+[agent.lynx.permission.bash]
+"git checkout *" = "ask"
+"git commit *"   = "deny"
+"git reset *"    = "deny"
+"git stash"      = "ask"
+"rm *"           = "deny"
 [agent.lynx.permission.skill]
 "*" = "deny"
 "wiki-query" = "allow"
@@ -278,6 +299,12 @@ color = "#39C5BB"
 [agent.beaver.permission]
 webfetch = "deny"
 websearch = "deny"
+[agent.beaver.permission.bash]
+"git checkout *" = "ask"
+"git commit *"   = "ask"
+"git reset *"    = "ask"
+"git stash"      = "ask"
+"rm *"           = "ask"
 [agent.beaver.permission.skill]
 "*" = "deny"
 "git-commit" = "allow"
@@ -304,6 +331,12 @@ edit = "deny"
 task = "deny"
 webfetch = "deny"
 websearch = "deny"
+[agent.eagle.permission.bash]
+"git checkout *" = "ask"
+"git commit *"   = "deny"
+"git reset *"    = "deny"
+"git stash"      = "ask"
+"rm *"           = "deny"
 [agent.eagle.permission.skill]
 "*" = "deny"
 "wiki-query" = "allow"
@@ -314,6 +347,12 @@ model = "{env:ZOO_HIPPO_MODEL}"
 [agent.kiwi.permission]
 task = "deny"
 edit = "deny"
+[agent.kiwi.permission.bash]
+"git checkout *" = "deny"
+"git commit *"   = "deny"
+"git reset *"    = "deny"
+"git stash"      = "deny"
+"rm *"           = "deny"
 [agent.kiwi.permission.skill]
 "*" = "deny"
 "kiwi-*" = "allow"
@@ -377,6 +416,7 @@ retention_days = 7
 # 可用值："enable"（启用）| "disable"（禁用）
 
 [zoo.skills]
+beaver-tdd   = "enable"
 code-review  = "enable"
 git-commit   = "enable"
 grill        = "enable"
@@ -386,4 +426,3 @@ mola-plan    = "enable"
 wiki-ingest  = "enable"
 wiki-query   = "enable"
 wiki-verify  = "enable"
-beaver-tdd   = "enable"
