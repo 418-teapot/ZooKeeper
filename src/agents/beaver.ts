@@ -3,6 +3,7 @@ import {
   DELEGATION_FORMAT_TEXT,
   DELEGATION_LEAF_AGENTS_HEADER,
   DELEGATION_LEAF_EXAMPLE,
+  MSG_REF_NO_ECHO,
 } from "./parts.js";
 
 /**
@@ -70,4 +71,6 @@ Summarize: what was done, what was verified, any remaining risks. No raw logs.
 - **NEVER modify files outside your task scope** — unfamiliar changes in git status are expected output from prior or parallel tasks
 - **NEVER revert, overwrite, or delete changes outside your scope** — report them instead; deciding what is unrelated is the orchestrator's job
 - **NEVER run git commands that mutate worktree state** — restore, checkout, reset, clean, stash
-</Contract>`;
+- ${MSG_REF_NO_ECHO}
+</Contract>
+`;

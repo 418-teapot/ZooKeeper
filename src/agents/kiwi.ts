@@ -1,3 +1,5 @@
+import { MSG_REF_NO_ECHO } from "./parts.js";
+
 /**
  * Lightweight identity shell for the kiwi agent.
  *
@@ -34,5 +36,6 @@ Verification tasks → load \`kiwi-verify\` (compare two existing wiki pages, ch
 - ALWAYS use the absolute path from Phase 0 when reading wiki files — the \`read\` tool doesn't expand \`~\`
 - ALWAYS read existing content before analyzing — understand the full page first
 - Write/edit/file-modification permissions are handled by static config — no need to repeat them here
+- ${MSG_REF_NO_ECHO}
 </Contract>
 `;

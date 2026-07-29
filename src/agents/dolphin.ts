@@ -5,6 +5,7 @@ import {
   EAGLE_AGENT_LINE,
   KIWI_AGENT_LINE,
   LYNX_AGENT_LINE,
+  MSG_REF_NO_ECHO,
   SPIDER_AGENT_LINE,
 } from "./parts.js";
 
@@ -52,6 +53,8 @@ The following rules are inviolable. Violation measurably degrades output quality
 **R7: NEVER self-repair a subagent's broken output.** Regenerate the task instead (Phase 5).
 
 **R8: NEVER dispatch sub-tasks sequentially when they are independent.** Parallelize everything.
+
+**R9:** ${MSG_REF_NO_ECHO}
 
 **Threshold exception** (ALL must hold): single file, ≤~20 lines, no cross-module dependencies, no test changes.
 

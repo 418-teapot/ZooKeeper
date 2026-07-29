@@ -21,6 +21,8 @@ import {
   resetMessageRefs,
   setLastCompactionBoundaryId,
   stripHallucinatedRefs,
+  stripRefsFromString,
+  ZOO_MSG_ID_CANONICAL_END_REGEX,
 } from "../../core/pruning/index.js";
 import {
   getOrCreateSessionState,
@@ -219,7 +221,50 @@ export function contextPruningTransformHandler(
   }
 
   // ── Phase 3: Message refs (strip → compaction check → assign → inject) ──
-  stripHallucinatedRefs(messages);
+
+  // Detect non-canonical (fuzzy) tag stripping by comparing
+  // each text/tool-output string before vs after stripHallucinatedRefs.
+  // Only warn when something was stripped that was NOT the exact canonical
+  // trailing tag.  At most one warn per call.
+  if (sessionId) {
+    const saved: string[] = [];
+    for (const msg of messages) {
+      if (!msg.parts) continue;
+      for (const part of msg.parts) {
+        const p = part as unknown as Record<string, unknown>;
+        if (part?.type === "text" && typeof p.text === "string") {
+          saved.push(p.text);
+        }
+        if (part?.type === "tool") {
+          const state = p.state as Record<string, unknown> | undefined;
+          if (state && typeof state.output === "string") {
+            saved.push(state.output);
+          }
+        }
+      }
+    }
+
+    stripHallucinatedRefs(messages);
+
+    for (const original of saved) {
+      if (
+        stripRefsFromString(original) !== original &&
+        !ZOO_MSG_ID_CANONICAL_END_REGEX.test(original)
+      ) {
+        log(
+          "context-pruning",
+          "fuzzy_ref_stripped",
+          sessionId,
+          undefined,
+          "warn",
+          { fragment: original.slice(-200) },
+        );
+        break;
+      }
+    }
+  } else {
+    stripHallucinatedRefs(messages);
+  }
 
   // Detect compaction boundary changes so refs renumber from m0001 when
   // the session history is compacted.

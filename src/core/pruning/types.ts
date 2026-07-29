@@ -97,23 +97,51 @@ export const PRUNED_TOOL_ERROR_INPUT_REPLACEMENT =
 export const ZOO_MSG_ID_TAG = "zoo-msg-id";
 
 /**
- * Regex matching a `<zoo-msg-id>mNNNN</zoo-msg-id>` tag, optionally
- * preceded by a newline.
+ * End-anchored regex matching a trailing message ref `mNNNN` followed
+ * by an optional tag-name fragment (tolerates misspelled tag names,
+ * missing `<`, missing `/`, missing `>`, wrong case).
  *
- * The preceding `\n` is consumed so that round-trip strip→inject
- * is deterministic (prefix-cache neutral).  Captures only the tag
- * itself — the leading newline is a convenience for clean removal.
+ * An optional `<` before the ref (like `<m0001`) is consumed so that
+ * the preceding `\n` is also consumed via `\n?` when both are present.
+ *
+ * Applied repeatedly (loop-until-stable) so that stacked trailing
+ * fragments are stripped one per pass.  The preceding `\n` is consumed
+ * so that round-trip strip→inject is deterministic (prefix-cache neutral).
+ *
+ * Deliberately NOT matched: bare/standalone refs, inline mentions,
+ * refs separated from tag fragments by spaces without angle brackets,
+ * and any tag/ref in the middle of text.
  */
-export const ZOO_MSG_ID_REGEX = /\n?<zoo-msg-id>m\d{4}<\/zoo-msg-id>/g;
+export const ZOO_MSG_ID_REGEX =
+  /\n?(?:<)?m\d{4}(?:(?:<\/?\s*)?\/?)?zoo[-\w]*\s*>?\s*$/gi;
 
 /**
- * Regex matching an orphan (unpaired) `<zoo-msg-id>` or `</zoo-msg-id>`
- * tag, including any attributes (e.g. `<zoo-msg-id foo="bar">`).
+ * End-anchored regex matching a trailing orphan (unpaired) zoo-* tag
+ * fragment, optionally followed by a ref `mNNNN` separated by whitespace.
  *
- * Applied *after* `ZOO_MSG_ID_REGEX` so that properly-paired tags are
- * removed first; this catches any leftovers such as forged unpaired tags.
+ * Applied *after* `ZOO_MSG_ID_REGEX` (in each loop pass) so that
+ * properly-paired tags are removed first; this catches any leftovers
+ * such as forged unpaired tags or open/close tag fragments.
+ *
+ * Tolerates misspelled tag names, missing `<`, missing `/`, missing `>`,
+ * and wrong case via the `i` flag.
+ *
+ * The `\n?` prefix consumes the trailing newline left after Rule 1
+ * removes a ref+closing-tag from a well-formed `<tag>ref</tag>`.
  */
-export const ZOO_MSG_ID_ORPHAN_REGEX = /<\/?zoo-msg-id[^>]*>/g;
+export const ZOO_MSG_ID_ORPHAN_REGEX =
+  /\n?<\/?\s*zoo[-\w]*[^>\n]*>?(?:\s*m\d{4})?\s*$/gi;
+
+/**
+ * Regex matching exactly the canonical (well-formed) trailing tag,
+ * case-insensitive.
+ *
+ * Used by fuzzy-variant detection at call sites: a stripped trailing
+ * fragment that matches this is the normal injected form and must NOT
+ * trigger a fuzzy-variant warning.  The `i` flag mirrors the strip
+ * regexes so uppercase canonical echoes are not falsely flagged.
+ */
+export const ZOO_MSG_ID_CANONICAL_END_REGEX = /\n?m\d{4}<\/zoo-msg-id>\s*$/i;
 
 /**
  * Maximum assignable message ref index.

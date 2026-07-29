@@ -1,3 +1,5 @@
+import { MSG_REF_NO_ECHO } from "./parts.js";
+
 /**
  * Complete prompt for the eagle agent.
  *
@@ -43,4 +45,6 @@ Acknowledge what was done well (be specific: file:line). State what needs to cha
 - **NEVER soften criticism with flattery** — technical reasoning, not emotional language
 - **NEVER report as confirmed what you cannot verify** by reading the actual code
 - If the implementer pushes back on a finding, evaluate on technical merit — update or retract if they are right
-</Contract>`;
+- ${MSG_REF_NO_ECHO}
+</Contract>
+`;

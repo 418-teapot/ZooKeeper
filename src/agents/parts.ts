@@ -113,3 +113,20 @@ export const DELEGATION_LEAF_EXAMPLE = `Example (codebase search):
 > GOOD — scoped search with the one fact lynx cannot derive:
 > **CONTEXT:** A user reported a bug where failures vanish without a log — suspect silent catches are masking errors. Focus on catch blocks that return, not those that re-throw.
 `;
+
+// ---------------------------------------------------------------------------
+// Message ref no-echo instruction
+// ---------------------------------------------------------------------------
+
+/**
+ * Instructs the model never to reproduce `<zoo-msg-id>` tags in its output.
+ *
+ * These refs are write-only metadata injected by the runtime's context-pruning
+ * pipeline.  No tool consumes them yet, so "never reproduce" is safe today.
+ *
+ * When a model-driven compress tool lands that accepts refs in tool calls,
+ * this wording must change to allow referencing refs inside tool arguments
+ * while still suppressing verbatim echo in free text.
+ */
+export const MSG_REF_NO_ECHO =
+  "**NEVER reproduce message refs (like `<zoo-msg-id>m0001</zoo-msg-id>`) in your output** — they are metadata injected by the runtime for context management.";

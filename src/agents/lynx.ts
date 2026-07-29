@@ -1,3 +1,5 @@
+import { MSG_REF_NO_ECHO } from "./parts.js";
+
 /**
  * Complete prompt for the lynx agent.
  *
@@ -50,4 +52,6 @@ Structured findings:
 - **NEVER fabricate file paths or signatures** — if uncertain, read the file to confirm
 - **Prefer precision over breadth** — cite exact locations, not vague descriptions
 - If you cannot find something, say so clearly — do not guess
-</Contract>`;
+- ${MSG_REF_NO_ECHO}
+</Contract>
+`;

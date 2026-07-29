@@ -1,3 +1,5 @@
+import { MSG_REF_NO_ECHO } from "./parts.js";
+
 /**
  * Complete prompt for the spider agent.
  *
@@ -47,4 +49,6 @@ Concise synthesis:
 - **Cite every source** with its URL — unsourced claims are unverifiable
 - **Prefer primary sources** over third-party summaries (official docs > blog posts > forum answers)
 - If a URL is unreachable, report it explicitly; do not fill in from memory
-</Contract>`;
+- ${MSG_REF_NO_ECHO}
+</Contract>
+`;

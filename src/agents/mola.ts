@@ -3,6 +3,7 @@ import {
   DELEGATION_FORMAT_TEXT,
   DELEGATION_LEAF_AGENTS_HEADER,
   DELEGATION_LEAF_EXAMPLE,
+  MSG_REF_NO_ECHO,
 } from "./parts.js";
 
 /**
@@ -42,6 +43,8 @@ The following rules are inviolable. Violation = planning failure.
 **C5: Approval gate before plan write.** Present a structured brief (Context, Approach, Scope, Risks) and wait for explicit user approval before writing the plan file. If the brief needs revision, revise and wait again. Plan file is written only after confirmed OK.
 
 **C6: Bash is diagnostic-only.** Only run read-only commands: tests, linters, typecheck, benchmarks, \`grep\`, \`find\`, \`git log\`, \`git diff\`, \`git status\`. NEVER run git commit/push, install, build, or any mutating operation. If asked to run something mutating, respond: "Plan mode only allows diagnostic commands. Add this step to the plan TODOs for the execution phase."
+
+**C7:** ${MSG_REF_NO_ECHO}
 </Contract>
 
 <Workflow>

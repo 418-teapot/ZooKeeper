@@ -27,7 +27,10 @@ import { KIWI_PROMPT } from "./agents/kiwi.js";
 import { LYNX_PROMPT } from "./agents/lynx.js";
 import { MOLA_PROMPT } from "./agents/mola.js";
 import { SPIDER_PROMPT } from "./agents/spider.js";
-import { stripRefsFromString } from "./core/pruning/index.js";
+import {
+  stripRefsFromString,
+  ZOO_MSG_ID_CANONICAL_END_REGEX,
+} from "./core/pruning/index.js";
 import { deleteSessionState, removeSession } from "./core/pruning/marks.js";
 import { DCP_COMMAND_HANDLED, handleDcpCommand } from "./hooks/context-command";
 import type { ContextMetricsOutput } from "./hooks/context-metrics";
@@ -761,7 +764,25 @@ export async function zookeeper(input: any) {
     ) {
       // Strip zoo-msg-id tags from outbound assistant text so model
       // echoes never reach the user-visible transcript.
+      const before = output.text;
       output.text = stripRefsFromString(output.text);
+
+      // Detect fuzzy (non-canonical) tag stripping.
+      // If the text changed and didn't just end with the exact
+      // canonical well-formed tag, log a warning.
+      if (
+        before !== output.text &&
+        !ZOO_MSG_ID_CANONICAL_END_REGEX.test(before)
+      ) {
+        log(
+          "text.complete",
+          "fuzzy_ref_stripped",
+          _input.sessionID,
+          undefined,
+          "warn",
+          { fragment: before.slice(-200) },
+        );
+      }
     },
 
     async "tool.definition"(

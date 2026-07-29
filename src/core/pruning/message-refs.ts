@@ -15,8 +15,9 @@
  * stripHallucinatedRefs → assignMessageRefs → injectMessageRefs
  * ```
  * Running this pipeline twice over the same input produces byte-identical
- * output because strip removes the injected tag (with optional preceding
- * newline) before re-injection.
+ * output because strip removes trailing (end-anchored) injected tags
+ * before re-injection.  Only trailing fragments are stripped; mid-text
+ * occurrences and bare refs are preserved.
  *
  * @module
  */
@@ -306,34 +307,54 @@ export function injectMessageRefs(
 }
 
 /**
- * Strip helper: apply paired-tag regex then orphan-tag regex to a string.
+ * Strip helper: apply Rule 1 then Rule 2 REPEATEDLY until the string
+ * stops changing.
+ *
+ * With `$`-anchored regexes only one trailing fragment is exposed per
+ * pass.  Looping handles stacked trailing fragments like
+ * `m0001...</zoo-msg-id>m0002...</zoo-msg-id>` by stripping the
+ * outermost first, then exposing the next.
  */
 function stripFromString(text: string): string {
-  return text
-    .replace(ZOO_MSG_ID_REGEX, "")
-    .replace(ZOO_MSG_ID_ORPHAN_REGEX, "");
+  let prev: string;
+  let result = text;
+  do {
+    prev = result;
+    result = result
+      .replace(ZOO_MSG_ID_REGEX, "")
+      .replace(ZOO_MSG_ID_ORPHAN_REGEX, "");
+  } while (result !== prev);
+  return result;
 }
 
 /**
- * Strip ALL `<zoo-msg-id>` tags (paired + orphan) from a string.
+ * Strip trailing (end-anchored) zoo-msg-id tags and refs from a string.
+ *
+ * Only trailing fragments (at end-of-string) are removed; mid-text
+ * occurrences and bare/standalone refs are preserved.  Stacked
+ * trailing fragments are handled via loop-until-stable.
  *
  * Exported so the `text.complete` streaming hook can reuse the same
  * logic without logging or message-array overhead.
  *
  * @param text - Raw text potentially containing zoo-msg-id tags.
- * @returns The cleaned text with all tags removed.
+ * @returns The cleaned text with trailing tags/refs removed.
  */
 export function stripRefsFromString(text: string): string {
   return stripFromString(text);
 }
 
 /**
- * Remove ALL `<zoo-msg-id>mNNNN</zoo-msg-id>` occurrences (paired +
- * orphan) from text parts **and** completed-tool-part outputs of every
- * message regardless of role.
+ * Strip trailing (end-anchored) zoo-msg-id tags and refs from text parts
+ * **and** completed-tool-part outputs of every message regardless of role.
  *
- * Previously restricted to assistant text parts.  Now universal:
- * - Text parts (any role): regex-replace with paired then orphan regex.
+ * Only trailing fragments (at end-of-string) are removed; mid-text
+ * occurrences and bare/standalone refs are preserved.  Stacked trailing
+ * fragments are handled via loop-until-stable (the per-string helper
+ * applies Rule 1 then Rule 2 repeatedly until no further change).
+ *
+ * Applied to:
+ * - Text parts (any role): stripped via stripFromString.
  * - Tool parts with string `state.output`: same treatment applied to
  *   the output string.
  *

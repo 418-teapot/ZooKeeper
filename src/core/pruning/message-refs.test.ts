@@ -21,7 +21,11 @@ import {
   stripHallucinatedRefs,
   stripRefsFromString,
 } from "./message-refs.js";
-import { MAX_INDEX, ZOO_MSG_ID_TAG } from "./types.js";
+import {
+  MAX_INDEX,
+  ZOO_MSG_ID_CANONICAL_END_REGEX,
+  ZOO_MSG_ID_TAG,
+} from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Teardown
@@ -204,13 +208,12 @@ describe("restart consistency", () => {
 // ---------------------------------------------------------------------------
 
 describe("stripHallucinatedRefs", () => {
-  it("removes forged tag from assistant text", () => {
+  // --- End-position tags ARE stripped ---
+
+  it("strips end-position well-formed tag from assistant text", () => {
     const messages: ContextMessageEntry[] = [
       msg("assistant", "a1", [
-        textPart("Result is\n<zoo-msg-id>m9999</zoo-msg-id> done"),
-      ]),
-      msg("assistant", "a2", [
-        textPart("See <zoo-msg-id>m0001</zoo-msg-id> for details"),
+        textPart("Some text\n<zoo-msg-id>m0001</zoo-msg-id>"),
       ]),
     ];
 
@@ -218,86 +221,50 @@ describe("stripHallucinatedRefs", () => {
 
     assert.equal(
       (messages[0].parts?.[0] as { text?: string }).text,
-      "Result is done",
-    );
-    assert.equal(
-      (messages[1].parts?.[0] as { text?: string }).text,
-      "See  for details",
+      "Some text",
     );
   });
 
-  it("strips forged tag from user message text (universal strip)", () => {
+  it("strips end-position tag from user message text (universal strip)", () => {
     const messages: ContextMessageEntry[] = [
       msg("user", "u1", [
-        textPart("See <zoo-msg-id>m0001</zoo-msg-id> for reference"),
+        textPart("Some text\n<zoo-msg-id>m0001</zoo-msg-id>"),
       ]),
     ];
 
     stripHallucinatedRefs(messages);
 
-    // User message IS now stripped (universal strip, no role gate).
     assert.equal(
       (messages[0].parts?.[0] as { text?: string }).text,
-      "See  for reference",
+      "Some text",
     );
   });
 
-  it("removes multiple tag occurrences in the same assistant text part", () => {
+  it("strips end-position fuzzy tag (misspelled tag name)", () => {
+    const messages: ContextMessageEntry[] = [
+      msg("assistant", "a1", [textPart("text\n<zoo-msg-id>m0001</zoomsgid>")]),
+    ];
+
+    stripHallucinatedRefs(messages);
+
+    assert.equal((messages[0].parts?.[0] as { text?: string }).text, "text");
+  });
+
+  it("strips end-position stacked trailing fragments (loop)", () => {
     const messages: ContextMessageEntry[] = [
       msg("assistant", "a1", [
         textPart(
-          "<zoo-msg-id>m0001</zoo-msg-id> and <zoo-msg-id>m0002</zoo-msg-id>",
+          "text\n<zoo-msg-id>m0001</zoo-msg-id>\n<zoo-msg-id>m0002</zoomsgid>",
         ),
       ]),
     ];
 
     stripHallucinatedRefs(messages);
 
-    assert.equal((messages[0].parts?.[0] as { text?: string }).text, " and ");
+    assert.equal((messages[0].parts?.[0] as { text?: string }).text, "text");
   });
 
-  it("strips forged tag from tool output", () => {
-    const messages: ContextMessageEntry[] = [
-      msg("assistant", "a1", [
-        {
-          type: "tool",
-          state: {
-            input: "",
-            output: "some result\n<zoo-msg-id>m9999</zoo-msg-id>\nmore result",
-          },
-        } as unknown as {
-          type: string;
-          text?: string;
-        },
-      ]),
-    ];
-
-    stripHallucinatedRefs(messages);
-
-    const part = messages[0].parts?.[0] as unknown as Record<string, unknown>;
-    const state = part.state as Record<string, unknown>;
-    assert.equal(state.output, "some result\nmore result");
-  });
-
-  it("strips orphan <zoo-msg-id> tag from text", () => {
-    const messages: ContextMessageEntry[] = [
-      msg("assistant", "a1", [textPart("orphan open <zoo-msg-id> here")]),
-      msg("user", "u1", [textPart("orphan close </zoo-msg-id> here")]),
-    ];
-
-    stripHallucinatedRefs(messages);
-
-    assert.equal(
-      (messages[0].parts?.[0] as { text?: string }).text,
-      "orphan open  here",
-    );
-    assert.equal(
-      (messages[1].parts?.[0] as { text?: string }).text,
-      "orphan close  here",
-    );
-  });
-
-  it("strips orphan tag from tool output", () => {
+  it("strips end-position orphan close tag from tool output", () => {
     const messages: ContextMessageEntry[] = [
       msg("assistant", "a1", [
         {
@@ -319,8 +286,140 @@ describe("stripHallucinatedRefs", () => {
     const state = part.state as Record<string, unknown>;
     assert.equal(state.output, "data");
   });
-});
 
+  it("strips end-position orphan open tag from text", () => {
+    const messages: ContextMessageEntry[] = [
+      msg("assistant", "a1", [textPart("text\n<zoo-msg-id>")]),
+    ];
+
+    stripHallucinatedRefs(messages);
+
+    assert.equal((messages[0].parts?.[0] as { text?: string }).text, "text");
+  });
+
+  // --- Mid-text tags are PRESERVED (new semantics) ---
+
+  it("preserves mid-text forged tag in assistant text", () => {
+    const messages: ContextMessageEntry[] = [
+      msg("assistant", "a1", [
+        textPart("Result is\n<zoo-msg-id>m9999</zoo-msg-id> done"),
+      ]),
+    ];
+
+    stripHallucinatedRefs(messages);
+
+    // Tag NOT at end --- must be preserved.
+    assert.equal(
+      (messages[0].parts?.[0] as { text?: string }).text,
+      "Result is\n<zoo-msg-id>m9999</zoo-msg-id> done",
+    );
+  });
+
+  it("preserves mid-text forged tag in user text", () => {
+    const messages: ContextMessageEntry[] = [
+      msg("user", "u1", [
+        textPart("See <zoo-msg-id>m9999</zoo-msg-id> for reference"),
+      ]),
+    ];
+
+    stripHallucinatedRefs(messages);
+
+    assert.equal(
+      (messages[0].parts?.[0] as { text?: string }).text,
+      "See <zoo-msg-id>m9999</zoo-msg-id> for reference",
+    );
+  });
+
+  it("preserves multiple mid-text tag occurrences in the same part", () => {
+    const messages: ContextMessageEntry[] = [
+      msg("assistant", "a1", [
+        textPart(
+          "<zoo-msg-id>m9999</zoo-msg-id> and <zoo-msg-id>m9998</zoo-msg-id> trailing",
+        ),
+      ]),
+    ];
+
+    stripHallucinatedRefs(messages);
+
+    assert.equal(
+      (messages[0].parts?.[0] as { text?: string }).text,
+      "<zoo-msg-id>m9999</zoo-msg-id> and <zoo-msg-id>m9998</zoo-msg-id> trailing",
+    );
+  });
+
+  it("preserves mid-text tags in tool output", () => {
+    const messages: ContextMessageEntry[] = [
+      msg("assistant", "a1", [
+        {
+          type: "tool",
+          state: {
+            input: "",
+            output:
+              "some result\n<zoo-msg-id>m9999</zoo-msg-id>\n<zoo-msg-id>m9998</zoo-msg-id>more result",
+          },
+        } as unknown as {
+          type: string;
+          text?: string;
+        },
+      ]),
+    ];
+
+    stripHallucinatedRefs(messages);
+
+    const part = messages[0].parts?.[0] as unknown as Record<string, unknown>;
+    const state = part.state as Record<string, unknown>;
+    assert.equal(
+      state.output,
+      "some result\n<zoo-msg-id>m9999</zoo-msg-id>\n<zoo-msg-id>m9998</zoo-msg-id>more result",
+    );
+  });
+
+  it("preserves mid-text orphan tags in text parts", () => {
+    const messages: ContextMessageEntry[] = [
+      msg("assistant", "a1", [textPart("orphan open <zoo-msg-id> here")]),
+      msg("user", "u1", [textPart("orphan close </zoo-msg-id> here")]),
+    ];
+
+    stripHallucinatedRefs(messages);
+
+    assert.equal(
+      (messages[0].parts?.[0] as { text?: string }).text,
+      "orphan open <zoo-msg-id> here",
+    );
+    assert.equal(
+      (messages[1].parts?.[0] as { text?: string }).text,
+      "orphan close </zoo-msg-id> here",
+    );
+  });
+
+  // --- Bare / standalone refs not stripped ---
+
+  it("preserves bare standalone ref not preceded by tag name", () => {
+    const messages: ContextMessageEntry[] = [
+      msg("assistant", "a1", [textPart("some text m0001")]),
+    ];
+
+    stripHallucinatedRefs(messages);
+
+    assert.equal(
+      (messages[0].parts?.[0] as { text?: string }).text,
+      "some text m0001",
+    );
+  });
+
+  it("preserves ref separated from tag fragment by space (no angle brackets)", () => {
+    const messages: ContextMessageEntry[] = [
+      msg("assistant", "a1", [textPart("some text m0001 zoo-msg-id")]),
+    ];
+
+    stripHallucinatedRefs(messages);
+
+    assert.equal(
+      (messages[0].parts?.[0] as { text?: string }).text,
+      "some text m0001 zoo-msg-id",
+    );
+  });
+});
 // ---------------------------------------------------------------------------
 // Injection placement
 // ---------------------------------------------------------------------------
@@ -890,35 +989,137 @@ describe("non-destructiveness", () => {
 // ---------------------------------------------------------------------------
 // stripRefsFromString
 // ---------------------------------------------------------------------------
-
 describe("stripRefsFromString", () => {
-  it("strips paired zoo-msg-id tag", () => {
+  // --- End-position tags ARE stripped ---
+
+  it("strips end-position well-formed tag", () => {
     const result = stripRefsFromString(
-      "some text\n<zoo-msg-id>m0001</zoo-msg-id> more",
+      "some text\n<zoo-msg-id>m0001</zoo-msg-id>",
     );
-    assert.equal(result, "some text more");
+    assert.equal(result, "some text");
   });
 
-  it("strips orphan open tag", () => {
+  it("strips end-position misspelled tag name", () => {
+    const result = stripRefsFromString("text\n<zoo-msg-id>m0001</zoomsgid>");
+    assert.equal(result, "text");
+  });
+
+  it("strips end-position missing closing angle bracket", () => {
+    const result = stripRefsFromString("text\n<zoo-msg-id>m0001</zoo-msg-id");
+    assert.equal(result, "text");
+  });
+
+  it("strips end-position missing closing slash", () => {
+    const result = stripRefsFromString("text\n<zoo-msg-id>m0001<zoo-msg-id>");
+    assert.equal(result, "text");
+  });
+
+  it("strips end-position mixed case variant", () => {
+    const result = stripRefsFromString("text\n<ZOO-MSG-ID>M0001</ZOO-MSG-ID>");
+    assert.equal(result, "text");
+  });
+
+  it("strips end-position orphan close tag", () => {
+    const result = stripRefsFromString("text\n</zoo-msg-id>");
+    assert.equal(result, "text");
+  });
+
+  it("strips end-position orphan open tag", () => {
+    const result = stripRefsFromString("text\n<zoo-msg-id>");
+    assert.equal(result, "text");
+  });
+
+  it("strips end-position stacked trailing fragments (loop)", () => {
+    const result = stripRefsFromString(
+      "text\n<zoo-msg-id>m0001</zoo-msg-id>\n<zoo-msg-id>m0002</zoomsgid>",
+    );
+    assert.equal(result, "text");
+  });
+
+  it("strips multiple stacked occurrences via loop", () => {
+    const result = stripRefsFromString(
+      "text\n<zoo-msg-id>m0001</zoo-msg-id>\n<zoo-msg-id>m0002</zoo-msg-id>",
+    );
+    assert.equal(result, "text");
+  });
+
+  it("handles empty string", () => {
+    assert.equal(stripRefsFromString(""), "");
+  });
+
+  // --- Rule 1 (?:<\/?\s*)? optional closing-fragment branch — missing `<` ---
+
+  it("strips end-position closing fragment missing opening angle bracket (slash prefix)", () => {
+    const result = stripRefsFromString("text\nm0001/zoo-msg-id>");
+    assert.equal(result, "text");
+  });
+
+  it("strips end-position closing fragment missing opening angle bracket (no slash prefix)", () => {
+    const result = stripRefsFromString("text\nm0001zoo-msg-id>");
+    assert.equal(result, "text");
+  });
+
+  // --- Rule 1 (?:<)? pre-ref branch — stray `<` before ref ---
+
+  it("strips end-position stray angle bracket before ref with closing residue", () => {
+    const result = stripRefsFromString("text\n<m0001</zoo-msg-id>");
+    assert.equal(result, "text");
+  });
+
+  // --- Rule 2 (?:\s*m\d{4})? trailing-ref branch — open tag glued to ref ---
+
+  it("strips end-position orphan open tag glued to ref (misspelled tag name)", () => {
+    const result = stripRefsFromString("text\n<zoo-msgid>m0001");
+    assert.equal(result, "text");
+  });
+
+  it("strips end-position orphan open tag glued to ref (well-formed tag name)", () => {
+    const result = stripRefsFromString("text\n<zoo-msg-id>m0001");
+    assert.equal(result, "text");
+  });
+
+  // --- Mid-text tags are PRESERVED (new semantics) ---
+
+  it("preserves mid-text well-formed tag", () => {
+    const result = stripRefsFromString(
+      "some text\n<zoo-msg-id>m9999</zoo-msg-id> more",
+    );
+    assert.equal(result, "some text\n<zoo-msg-id>m9999</zoo-msg-id> more");
+  });
+
+  it("preserves mid-text orphan open tag", () => {
     const result = stripRefsFromString("text <zoo-msg-id> here");
-    assert.equal(result, "text  here");
+    assert.equal(result, "text <zoo-msg-id> here");
   });
 
-  it("strips orphan close tag", () => {
+  it("preserves mid-text orphan close tag", () => {
     const result = stripRefsFromString("text </zoo-msg-id> here");
-    assert.equal(result, "text  here");
+    assert.equal(result, "text </zoo-msg-id> here");
   });
 
-  it("strips orphan tag with attributes", () => {
-    const result = stripRefsFromString('text <zoo-msg-id class="foo"> here');
-    assert.equal(result, "text  here");
+  it("preserves mid-text orphan tag with attributes", () => {
+    const result = stripRefsFromString('text <zoo-msg-id attr="v"> here');
+    assert.equal(result, 'text <zoo-msg-id attr="v"> here');
   });
 
-  it("strips mixed paired and orphan tags", () => {
+  it("preserves mid-text mixed paired and orphan tags", () => {
     const result = stripRefsFromString(
-      "<zoo-msg-id>m0001</zoo-msg-id> and <zoo-msg-id>",
+      "<zoo-msg-id>m9999</zoo-msg-id> and </zoo-msg-id> trailing",
     );
-    assert.equal(result, " and ");
+    assert.equal(
+      result,
+      "<zoo-msg-id>m9999</zoo-msg-id> and </zoo-msg-id> trailing",
+    );
+  });
+
+  it("preserves mid-text multiple paired occurrences", () => {
+    const result = stripRefsFromString(
+      "<zoo-msg-id>m9999</zoo-msg-id><zoo-msg-id>m9998</zoo-msg-id>abc",
+    );
+    assert.equal(
+      result,
+      "<zoo-msg-id>m9999</zoo-msg-id><zoo-msg-id>m9998</zoo-msg-id>abc",
+    );
   });
 
   it("leaves clean text untouched", () => {
@@ -926,21 +1127,40 @@ describe("stripRefsFromString", () => {
     assert.equal(stripRefsFromString(input), input);
   });
 
-  it("strips multiple paired occurrences", () => {
-    const result = stripRefsFromString(
-      "a<zoo-msg-id>m0001</zoo-msg-id>b<zoo-msg-id>m0002</zoo-msg-id>c",
-    );
-    assert.equal(result, "abc");
+  it("preserves bare standalone ref (not preceded by tag fragment)", () => {
+    const input = "some text m0001";
+    assert.equal(stripRefsFromString(input), input);
   });
 
-  it("handles empty string", () => {
-    assert.equal(stripRefsFromString(""), "");
+  it("preserves ref separated from tag name by space (no angle brackets)", () => {
+    const input = "m0001 zoo-msg-id";
+    assert.equal(stripRefsFromString(input), input);
   });
 });
 
 // ---------------------------------------------------------------------------
-// assignMessageRefs — isSubAgent (sub-agent first-user skip)
+// ZOO_MSG_ID_CANONICAL_END_REGEX (fuzzy-variant detection guard)
 // ---------------------------------------------------------------------------
+describe("ZOO_MSG_ID_CANONICAL_END_REGEX", () => {
+  it("matches canonical lowercase trailing tag", () => {
+    assert.ok(ZOO_MSG_ID_CANONICAL_END_REGEX.test("\nm0001</zoo-msg-id>"));
+  });
+
+  it("matches UPPERCASE canonical trailing tag (i-flag regression guard)", () => {
+    assert.ok(ZOO_MSG_ID_CANONICAL_END_REGEX.test("\nM0001</ZOO-MSG-ID>"));
+  });
+
+  it("does NOT match misspelled tag name (non-canonical)", () => {
+    assert.equal(
+      ZOO_MSG_ID_CANONICAL_END_REGEX.test("\nm0001</zoomsgid>"),
+      false,
+    );
+  });
+
+  it("does NOT match bare trailing ref (no tag fragment)", () => {
+    assert.equal(ZOO_MSG_ID_CANONICAL_END_REGEX.test(" m0001"), false);
+  });
+});
 
 describe("assignMessageRefs with isSubAgent", () => {
   it("skips first user message in sub-agent session", () => {
