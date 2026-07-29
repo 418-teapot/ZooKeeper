@@ -194,6 +194,60 @@ id   = "k3-256k"
 context = 256000
 output  = 128000
 
+# ── OpenAI ────────────────────────────────────────────────────────────────────
+
+[provider.OpenAI]
+npm = "@ai-sdk/openai"
+
+[provider.OpenAI.options]
+baseURL = "{env:OPENAI_BASE_URL}"
+apiKey  = "{env:OPENAI_API_KEY}"
+
+[provider.OpenAI.models."gpt-5.6-sol"]
+name = "gpt-5.6-sol"
+id   = "gpt-5.6-sol"
+reasoning = true
+
+[provider.OpenAI.models."gpt-5.6-sol".limit]
+context = 272000
+output  = 128000
+
+[provider.OpenAI.models."gpt-5.6-sol".cost]
+input       = 5
+output      = 30
+cache_read  = 0.5
+cache_write = 6.25
+
+[provider.OpenAI.models."gpt-5.6-terra"]
+name = "gpt-5.6-terra"
+id   = "gpt-5.6-terra"
+reasoning = true
+
+[provider.OpenAI.models."gpt-5.6-terra".limit]
+context = 272000
+output  = 128000
+
+[provider.OpenAI.models."gpt-5.6-terra".cost]
+input       = 2.5
+output      = 15
+cache_read  = 0.25
+cache_write = 3.125
+
+[provider.OpenAI.models."gpt-5.6-luna"]
+name = "gpt-5.6-luna"
+id   = "gpt-5.6-luna"
+reasoning = true
+
+[provider.OpenAI.models."gpt-5.6-luna".limit]
+context = 272000
+output  = 128000
+
+[provider.OpenAI.models."gpt-5.6-luna".cost]
+input       = 1
+output      = 6
+cache_read  = 0.1
+cache_write = 1.25
+
 # ── OpenCodeGo ────────────────────────────────────────────────────────────────
 
 [provider.OpenCodeGo]
