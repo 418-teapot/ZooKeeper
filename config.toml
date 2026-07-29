@@ -16,8 +16,9 @@ apiKey  = "{env:CAMBRICON_API_KEY}"
 x-project = "personal"
 
 [provider.Aliyun.models."deepseek-v4-pro"]
-name = "aliyun/deepseek-v4-pro"
-id   = "aliyun/deepseek-v4-pro"
+name      = "aliyun/deepseek-v4-pro"
+id        = "aliyun/deepseek-v4-pro"
+reasoning = true
 
 [provider.Aliyun.models."deepseek-v4-pro".limit]
 context = 1000000
@@ -41,8 +42,9 @@ input       = 0.98
 output      = 1.96
 
 [provider.Aliyun.models."glm-5.2"]
-name = "aliyun/glm-5.2"
-id   = "aliyun/glm-5.2"
+name      = "aliyun/glm-5.2"
+id        = "aliyun/glm-5.2"
+reasoning = true
 
 [provider.Aliyun.models."glm-5.2".cost]
 input       = 6.8
@@ -51,8 +53,9 @@ cache_read  = 0
 cache_write = 0
 
 [provider.Aliyun.models."qwen3.7-max"]
-name = "aliyun/qwen3.7-max"
-id   = "aliyun/qwen3.7-max"
+name      = "aliyun/qwen3.7-max"
+id        = "aliyun/qwen3.7-max"
+reasoning = true
 
 [provider.Aliyun.models."qwen3.7-max".cost]
 input       = 6.0
@@ -73,8 +76,9 @@ apiKey  = "{env:CAMBRICON_API_KEY}"
 x-project = "personal"
 
 [provider.Volces.models."glm-5.1"]
-name = "volces/glm-5.1"
-id   = "volces/glm-5.1"
+name      = "volces/glm-5.1"
+id        = "volces/glm-5.1"
+reasoning = true
 
 [provider.Volces.models."glm-5.1".cost]
 input       = 6.8
@@ -83,8 +87,9 @@ cache_read  = 1.6
 cache_write = 0.017
 
 [provider.Volces.models."doubao-seed-2.0-code"]
-name = "volces/doubao-seed-2.0-code"
-id   = "volces/doubao-seed-2.0-code"
+name      = "volces/doubao-seed-2.0-code"
+id        = "volces/doubao-seed-2.0-code"
+reasoning = true
 
 [provider.Volces.models."doubao-seed-2.0-code".cost]
 input       = 3.6
@@ -93,8 +98,9 @@ cache_read  = 0.96
 cache_write = 0.017
 
 [provider.Volces.models."deepseek-v4-pro"]
-name = "volces/deepseek-v4-pro"
-id   = "volces/deepseek-v4-pro"
+name      = "volces/deepseek-v4-pro"
+id        = "volces/deepseek-v4-pro"
+reasoning = true
 
 [provider.Volces.models."deepseek-v4-pro".cost]
 input       = 10.2
@@ -119,16 +125,18 @@ apiKey  = "{env:CAMBRICON_API_KEY}"
 x-project = "personal"
 
 [provider.Cambricon.models."glm-5.2"]
-name = "glm-5.2"
-id   = "glm-5.2"
+name      = "glm-5.2"
+id        = "glm-5.2"
+reasoning = true
 
 [provider.Cambricon.models."glm-5.2".limit]
 context = 200000
 output  = 128000
 
 [provider.Cambricon.models."MiniMax-M2.7"]
-name = "MiniMax-M2.7"
-id   = "MiniMax-M2.7"
+name      = "MiniMax-M2.7"
+id        = "MiniMax-M2.7"
+reasoning = true
 
 # ── DeepSeek ──────────────────────────────────────────────────────────────────
 
@@ -140,8 +148,8 @@ baseURL = "{env:DEEPSEEK_BASE_URL}"
 apiKey  = "{env:DEEPSEEK_API_KEY}"
 
 [provider.DeepSeek.models.deepseek-v4-pro]
-name = "deepseek-v4-pro"
-id   = "deepseek-v4-pro"
+name      = "deepseek-v4-pro"
+id        = "deepseek-v4-pro"
 reasoning = true
 
 [provider.DeepSeek.models.deepseek-v4-pro.limit]
@@ -155,8 +163,8 @@ cache_read  = 0.145
 cache_write = 0
 
 [provider.DeepSeek.models.deepseek-v4-flash]
-name = "deepseek-v4-flash"
-id   = "deepseek-v4-flash"
+name      = "deepseek-v4-flash"
+id        = "deepseek-v4-flash"
 reasoning = true
 
 [provider.DeepSeek.models.deepseek-v4-flash.limit]
@@ -179,16 +187,18 @@ baseURL = "{env:MOONSHOT_BASE_URL}"
 apiKey  = "{env:MOONSHOT_API_KEY}"
 
 [provider.MoonShot.models.k3]
-name = "k3"
-id   = "k3"
+name      = "k3"
+id        = "k3"
+reasoning = true
 
 [provider.MoonShot.models.k3.limit]
 context = 1000000
 output  = 128000
 
 [provider.MoonShot.models.k3-256k]
-name = "k3-256k"
-id   = "k3-256k"
+name      = "k3-256k"
+id        = "k3-256k"
+reasoning = true
 
 [provider.MoonShot.models.k3-256k.limit]
 context = 256000
@@ -204,8 +214,8 @@ baseURL = "{env:OPENAI_BASE_URL}"
 apiKey  = "{env:OPENAI_API_KEY}"
 
 [provider.OpenAI.models."gpt-5.6-sol"]
-name = "gpt-5.6-sol"
-id   = "gpt-5.6-sol"
+name      = "gpt-5.6-sol"
+id        = "gpt-5.6-sol"
 reasoning = true
 
 [provider.OpenAI.models."gpt-5.6-sol".limit]
@@ -219,8 +229,8 @@ cache_read  = 0.5
 cache_write = 6.25
 
 [provider.OpenAI.models."gpt-5.6-terra"]
-name = "gpt-5.6-terra"
-id   = "gpt-5.6-terra"
+name      = "gpt-5.6-terra"
+id        = "gpt-5.6-terra"
 reasoning = true
 
 [provider.OpenAI.models."gpt-5.6-terra".limit]
@@ -234,8 +244,8 @@ cache_read  = 0.25
 cache_write = 3.125
 
 [provider.OpenAI.models."gpt-5.6-luna"]
-name = "gpt-5.6-luna"
-id   = "gpt-5.6-luna"
+name      = "gpt-5.6-luna"
+id        = "gpt-5.6-luna"
 reasoning = true
 
 [provider.OpenAI.models."gpt-5.6-luna".limit]
@@ -258,32 +268,36 @@ baseURL = "{env:OPENCODEGO_BASE_URL}"
 apiKey  = "{env:OPENCODEGO_API_KEY}"
 
 [provider.OpenCodeGo.models."glm-5.2"]
-name = "glm-5.2"
-id   = "glm-5.2"
+name      = "glm-5.2"
+id        = "glm-5.2"
+reasoning = true
 
 [provider.OpenCodeGo.models."glm-5.2".limit]
 context = 1000000
 output  = 128000
 
 [provider.OpenCodeGo.models."deepseek-v4-pro"]
-name = "deepseek-v4-pro"
-id   = "deepseek-v4-pro"
+name      = "deepseek-v4-pro"
+id        = "deepseek-v4-pro"
+reasoning = true
 
 [provider.OpenCodeGo.models."deepseek-v4-pro".limit]
 context = 1000000
 output  = 384000
 
 [provider.OpenCodeGo.models."deepseek-v4-flash"]
-name = "deepseek-v4-flash"
-id   = "deepseek-v4-flash"
+name      = "deepseek-v4-flash"
+id        = "deepseek-v4-flash"
+reasoning = true
 
 [provider.OpenCodeGo.models."deepseek-v4-flash".limit]
 context = 1000000
 output  = 384000
 
 [provider.OpenCodeGo.models."qwen3.7-plus"]
-name = "qwen3.7-plus"
-id   = "qwen3.7-plus"
+name      = "qwen3.7-plus"
+id        = "qwen3.7-plus"
+reasoning = true
 
 [provider.OpenCodeGo.models."qwen3.7-plus".limit]
 context = 1000000
