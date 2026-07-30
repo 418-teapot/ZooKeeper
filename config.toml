@@ -456,6 +456,31 @@ disable = true
 model       = "{env:ZOO_WHALE_MODEL}"
 small_model = "{env:ZOO_ANT_MODEL}"
 
+# ── MCP ───────────────────────────────────────────────────────────────────────
+[mcp.gitlab]
+type = "remote"
+url  = "{env:GITLAB_MCP_URL}"
+[mcp.gitlab.headers]
+Private-Token = "{env:GITLAB_ACCESS_TOKEN}"
+
+[mcp.jira]
+type = "remote"
+url  = "{env:JIRA_MCP_URL}"
+[mcp.jira.headers]
+Authorization = "Token {env:JIRA_ACCESS_TOKEN}"
+
+[mcp.wiki]
+type = "remote"
+url  = "{env:WIKI_MCP_URL}"
+[mcp.wiki.headers]
+Authorization = "Basic {env:WIKI_BASIC_AUTH}"
+
+[mcp.jsd]
+type = "remote"
+url  = "{env:JSD_MCP_URL}"
+[mcp.jsd.headers]
+Authorization = "Basic {env:JSD_BASIC_AUTH}"
+
 # ── Validation ────────────────────────────────────────────────────────────────
 
 [zoo.validation]

@@ -146,6 +146,7 @@ def parse_env_file(env_path: str) -> dict[str, str]:
 
 
 _ENV_REF_RE = re.compile(r"^\{env:([^}]+)\}$")
+_ENV_REF_SEARCH_RE = re.compile(r"\{env:([^}]+)\}")
 
 
 def resolve_env_refs_deep(obj, env: dict[str, str]):
@@ -169,56 +170,110 @@ def resolve_env_refs_deep(obj, env: dict[str, str]):
         return [resolve_env_refs_deep(item, env) for item in obj]
     elif isinstance(obj, str):
         m = _ENV_REF_RE.match(obj.strip())
-        if not m:
+        if m:
+            var_name = m.group(1)
+            resolved = env.get(var_name)
+            if resolved is None:
+                error(
+                    f"变量 {var_name} 未在 .env 中设置！"
+                    f'请在 .env 文件中添加 {var_name}="..."（参考 .env.example）'
+                )
+                sys.exit(1)
+            return resolved
+
+        # Check for embedded {env:VAR} references (e.g. "Token {env:JIRA_ACCESS_TOKEN}")
+        refs = _ENV_REF_SEARCH_RE.findall(obj)
+        if not refs:
             return obj
-        var_name = m.group(1)
-        resolved = env.get(var_name)
-        if resolved is None:
-            error(
-                f"变量 {var_name} 未在 .env 中设置！"
-                f'请在 .env 文件中添加 {var_name}="..."（参考 .env.example）'
-            )
-            sys.exit(1)
-        return resolved
+
+        result = obj
+        for var_name in refs:
+            resolved = env.get(var_name)
+            if resolved is None:
+                error(
+                    f"变量 {var_name} 未在 .env 中设置！"
+                    f'请在 .env 文件中添加 {var_name}="..."（参考 .env.example）'
+                )
+                sys.exit(1)
+            result = result.replace(f"{{env:{var_name}}}", resolved)
+        return result
     return obj
 
 
-def _filter_missing_providers(toml_data: dict, env: dict[str, str]) -> None:
-    """Remove provider entries whose credential env vars are not set.
+def _gather_env_vars(obj) -> set[str]:
+    """Recursively collect all {env:VAR} variable names from nested structures.
 
-    Scans each ``provider.<name>.options`` sub-dict for ``{env:VAR}``
-    references.  If any referenced variable is missing from *env*,
-    the entire provider entry is removed from *toml_data* and a warning is
-    printed to stderr.
+    Walks dicts, lists, and string values to find every ``{env:VAR}``
+    reference that ``_ENV_REF_RE`` can match.
+
+    Args:
+        obj: A dict, list, string, or primitive value.
+
+    Returns:
+        A set of environment variable names referenced in the object.
+    """
+    vars_set: set[str] = set()
+    if isinstance(obj, dict):
+        for v in obj.values():
+            vars_set |= _gather_env_vars(v)
+    elif isinstance(obj, list):
+        for item in obj:
+            vars_set |= _gather_env_vars(item)
+    elif isinstance(obj, str):
+        vars_set.update(_ENV_REF_SEARCH_RE.findall(obj))
+    return vars_set
+
+
+def _filter_missing_entries(
+    toml_data: dict,
+    section_key: str,
+    label: str,
+    env: dict[str, str],
+    scope_key: str | None = None,
+) -> None:
+    """Remove entries whose credential env vars are not set.
+
+    Scans each entry in ``toml_data[section_key]`` for ``{env:VAR}``
+    references.  If ``scope_key`` is provided, only the sub-dict at
+    ``entry[scope_key]`` is scanned (e.g. ``"options"`` for providers);
+    otherwise the entire entry dict is scanned.  Entries with missing
+    variables are removed from *toml_data* with a Chinese warning.
 
     Args:
         toml_data: The parsed TOML dictionary (mutated in-place).
-        env: The environment variable dictionary (from parse_env_file).
+        section_key: Top-level key in toml_data (e.g. ``"provider"`` or ``"mcp"``).
+        label: Chinese label for warning messages (e.g. ``"provider"``
+            or ``"MCP 服务器"``).
+        env: The environment variable dictionary (from ``parse_env_file``).
+        scope_key: Optional sub-key within each entry to restrict scanning.
     """
-    providers = toml_data.get("provider")
-    if not isinstance(providers, dict):
+    section = toml_data.get(section_key)
+    if not isinstance(section, dict):
         return
 
     to_remove: list[str] = []
-    for prov_name, prov_data in providers.items():
-        if not isinstance(prov_data, dict):
+    for name, entry in section.items():
+        if not isinstance(entry, dict):
             continue
-        options = prov_data.get("options")
-        if not isinstance(options, dict):
-            continue
-        missing: list[str] = []
-        for value in options.values():
-            if not isinstance(value, str):
-                continue
-            m = _ENV_REF_RE.match(value.strip())
-            if m is not None and m.group(1) not in env:
-                missing.append(m.group(1))
-        if missing:
-            warn(f"provider.{prov_name} 的环境变量未配置，跳过")
-            to_remove.append(prov_name)
 
-    for prov_name in to_remove:
-        del providers[prov_name]
+        if scope_key is not None:
+            target = entry.get(scope_key)
+            if not isinstance(target, dict):
+                continue
+        else:
+            target = entry
+
+        refs = _gather_env_vars(target)
+        missing = [v for v in refs if v not in env]
+        if missing:
+            warn(
+                f"{label} {name} 的环境变量未配置"
+                f"（{', '.join(sorted(missing))}），跳过"
+            )
+            to_remove.append(name)
+
+    for name in to_remove:
+        del section[name]
 
 
 def build_config(
@@ -262,6 +317,8 @@ def build_config(
     if "defaults" in toml_data:
         for k, v in toml_data["defaults"].items():
             config[k] = v
+    if "mcp" in toml_data and toml_data["mcp"]:
+        config["mcp"] = toml_data["mcp"]
 
     return resolve_env_refs_deep(config, env)
 
@@ -395,7 +452,7 @@ def build_pi_models_config(toml_data: dict, env: dict[str, str]) -> dict:
     """Build the pi ``models.json`` configuration from ZooKeeper provider definitions.
 
     Providers whose credential env vars are not set are already filtered out
-    by ``_filter_missing_providers``.  Any remaining ``{env:VAR}`` placeholders
+    by ``_filter_missing_entries``.  Any remaining ``{env:VAR}`` placeholders
     are resolved to plaintext values from *env*.
 
     Args:
@@ -464,7 +521,7 @@ def main() -> None:
         error(f"无法解析 {toml_path}: {e}")
         sys.exit(1)
     # Snapshot the full set of provider names from config.toml before
-    # _filter_missing_providers mutates toml_data (called below in the
+    # _filter_missing_entries mutates toml_data (called below in the
     # 生成配置 section).  Used later for idempotent prune of Pi models.
     all_provider_names = list(toml_data.get("provider", {}).keys())
 
@@ -528,7 +585,10 @@ def main() -> None:
     # regardless of which host tools are available.  warn messages
     # appear inside this section; both OpenCode and Pi use the filtered
     # toml_data.
-    _filter_missing_providers(toml_data, env)
+    _filter_missing_entries(
+        toml_data, "provider", "provider", env, scope_key="options"
+    )
+    _filter_missing_entries(toml_data, "mcp", "MCP 服务器", env)
 
     if has_opencode:
         os.makedirs(opencode_dir, exist_ok=True)
