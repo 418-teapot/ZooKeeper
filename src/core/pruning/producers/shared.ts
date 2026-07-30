@@ -8,24 +8,60 @@
  */
 
 import type { ContextMessageEntry } from "../../metrics.js";
-import { estimateTokenCount } from "../../metrics.js";
+import { estimateTokenCount, isMessageIgnored } from "../../metrics.js";
 import type { SweepToolPart } from "../types.js";
 import { getCallId } from "../types.js";
 
 // ---------------------------------------------------------------------------
-// Turn protection
+// Message-count protection boundary
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute the start index of the protection window by counting back N
+ * non-ignored messages from the end of the array.
+ *
+ * Messages whose `isMessageIgnored` returns true are skipped — they do
+ * not count toward the window.  This ensures that system-injected (ignored)
+ * messages never consume protection slots.
+ *
+ * The returned index is inclusive: messages at `[boundary, messages.length)`
+ * are inside the protected window.
+ *
+ * @param messages - The session messages array.
+ * @param n - Number of messages to protect.  When <= 0 the boundary is at
+ *   `messages.length` (empty window).  When N exceeds the available
+ *   non-ignored messages the boundary is 0 (protect everything).
+ * @returns Start index of the protected window (inclusive).
+ */
+export function protectedBoundary(
+  messages: ContextMessageEntry[],
+  n: number,
+): number {
+  if (n <= 0) return messages.length;
+
+  let count = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (!isMessageIgnored(messages[i])) {
+      count++;
+      if (count >= n) return i;
+    }
+  }
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Protected callIDs (shared across producers)
 // ---------------------------------------------------------------------------
 
 /**
  * Collect tool callIDs that fall within the protected window.
  *
- * When the messages array contains step-start parts, the most recent
- * `turnProtection` assistant steps (counted by messages containing a
- * `step-start` part) are protected from dedup.  When no step-start part
- * exists, falls back to protecting the last `turnProtection` tool calls.
+ * The window is computed by counting back `turnProtection` non-ignored
+ * messages from the end of the array (via `protectedBoundary`).  Every
+ * tool callID found at or after the boundary is added to the returned set.
  *
  * @param messages - The session messages array.
- * @param turnProtection - Number of steps / tool calls to protect.
+ * @param turnProtection - Number of messages to protect.
  * @returns Set of protected callIDs.
  */
 export function collectProtectedCallIDs(
@@ -35,80 +71,16 @@ export function collectProtectedCallIDs(
   const protectedIDs = new Set<string>();
   if (turnProtection <= 0) return protectedIDs;
 
-  // ── Step 1: detect step-start presence ──────────────────────────
-  let hasStepStart = false;
-  for (const msg of messages) {
+  const boundaryIdx = protectedBoundary(messages, turnProtection);
+
+  for (let i = boundaryIdx; i < messages.length; i++) {
+    const msg = messages[i];
     if (!msg.parts) continue;
     for (const part of msg.parts) {
-      const p = part as { type: string };
-      if (p.type === "step-start") {
-        hasStepStart = true;
-        break;
-      }
-    }
-    if (hasStepStart) break;
-  }
-
-  if (hasStepStart) {
-    // ── Step 2a: find all step-start indices ──────────────────────
-    const stepStartIndices: number[] = [];
-    for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i];
-      if (!msg.parts) continue;
-      for (const part of msg.parts) {
-        if ((part as { type: string }).type === "step-start") {
-          stepStartIndices.push(i);
-          break;
-        }
-      }
-    }
-
-    // ── Step 2b: compute protected zone start index ──────────────
-    let protectedFromIdx: number;
-    if (stepStartIndices.length > turnProtection) {
-      // There are more steps than the protection window.
-      // Protect from the (turnProtection)-th step from the end.
-      protectedFromIdx =
-        stepStartIndices[stepStartIndices.length - turnProtection];
-    } else {
-      // Fewer or equal steps than protection window → protect all.
-      protectedFromIdx = 0;
-    }
-
-    // ── Step 2c: collect tool callIDs in protected zone ──────────
-    for (let i = protectedFromIdx; i < messages.length; i++) {
-      const msg = messages[i];
-      if (!msg.parts) continue;
-      for (const part of msg.parts) {
-        const toolPart = part as SweepToolPart;
-        if (toolPart.type !== "tool") continue;
-        const callID = getCallId(toolPart);
-        if (callID) protectedIDs.add(callID);
-      }
-    }
-  } else {
-    // ── Step 3: fallback — protect last N tool calls ─────────────
-    let collected = 0;
-    for (
-      let i = messages.length - 1;
-      i >= 0 && collected < turnProtection;
-      i--
-    ) {
-      const msg = messages[i];
-      if (!msg.parts) continue;
-      for (
-        let p = msg.parts.length - 1;
-        p >= 0 && collected < turnProtection;
-        p--
-      ) {
-        const part = msg.parts[p] as SweepToolPart;
-        if (part.type !== "tool") continue;
-        const callID = getCallId(part);
-        if (callID) {
-          protectedIDs.add(callID);
-          collected++;
-        }
-      }
+      const toolPart = part as SweepToolPart;
+      if (toolPart.type !== "tool") continue;
+      const callID = getCallId(toolPart);
+      if (callID) protectedIDs.add(callID);
     }
   }
 

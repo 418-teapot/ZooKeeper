@@ -491,20 +491,27 @@ prompt_word_limit = 500
 
 [zoo.context]
 enabled = true
-# 轮次保护
-turn_protection = 5
+# 消息条数保护：从末尾倒数 N 条非 ignored 消息计入保护区
+protected_messages = 20
 # 批量释放阈值（百分比）：pending 标记合计达到上下文长度该百分比时统一批量释放
-release_threshold_percent = 5
+released_percent = 10
 
 [zoo.context.dedup]
 enabled = true
-threshold_tokens = 100000
+threshold_context = 100000
 protected_tools = []
 
 [zoo.context.purge_errors]
 enabled = true
-threshold_tokens = 100000
+threshold_context = 100000
 protected_tools = []
+
+[zoo.context.compress]
+enabled = true
+# 压缩阈值（tokens）：小于此值的段跳过压缩（幻影门禁）
+threshold_tokens = 2000
+# 压缩保护区（tokens）：末尾累计达到此值后不压缩
+protected_tokens = 20000
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 

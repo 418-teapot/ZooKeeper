@@ -2,8 +2,8 @@
  * Tests for the purge-errors producer.
  *
  * Covers: error-status marked successfully, already-marked skip,
- * protection window (step-start & fallback paths), protected tool skip,
- * zero-benefit skip, non-error status ignored, idempotent re-run.
+ * message-count protection, protected tool skip, zero-benefit skip,
+ * non-error status ignored, idempotent re-run.
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
@@ -62,10 +62,6 @@ function toolPart(
     state,
     tool: "bash",
   };
-}
-
-function stepStartPart(): { type: string } {
-  return { type: "step-start" };
 }
 
 function msg(
@@ -216,91 +212,37 @@ describe("runPurgeErrors — already-marked skip", () => {
 });
 
 // ===========================================================================
-// Protection window skip (step-start)
+// Protection window skip (message-count)
 // ===========================================================================
 
-describe("runPurgeErrors — protection window (step-start)", () => {
-  it("skips error parts within the last turnProtection steps", () => {
-    const state = getOrCreateSessionState("sess-step-prot");
-    const messages = [
-      msg("assistant", "a1", [
-        stepStartPart(),
-        toolPart("call-A", "err", LONG_INPUT, "error"),
-      ]),
-      msg("assistant", "a2", [
-        stepStartPart(),
-        toolPart("call-B", "err", LONG_INPUT, "error"),
-      ]),
-      msg("assistant", "a3", [
-        stepStartPart(),
-        toolPart("call-C", "err", LONG_INPUT, "error"),
-      ]),
-    ];
-
-    // turnProtection=2 protects the last 2 steps (call-B, call-C).
-    const marks = runPurgeErrors(state, messages, { turnProtection: 2 });
-    assert.equal(marks.length, 1);
-    assert.equal(marks[0].callID, "call-A");
-  });
-
-  it("protects all steps when fewer than turnProtection", () => {
-    const state = getOrCreateSessionState("sess-few-steps");
-    const messages = [
-      msg("assistant", "a1", [
-        stepStartPart(),
-        toolPart("call-A", "err", LONG_INPUT, "error"),
-      ]),
-    ];
-
-    const marks = runPurgeErrors(state, messages, { turnProtection: 5 });
-    assert.equal(marks.length, 0);
-  });
-
-  it("protects tool calls in messages after the last step-start", () => {
-    const state = getOrCreateSessionState("sess-step-trailing");
-    const messages = [
-      msg("assistant", "a1", [
-        stepStartPart(),
-        toolPart("call-A", "err", LONG_INPUT, "error"),
-      ]),
-      msg("assistant", "a2", [toolPart("call-B", "err", LONG_INPUT, "error")]),
-      msg("assistant", "a3", [
-        stepStartPart(),
-        toolPart("call-C", "err", LONG_INPUT, "error"),
-      ]),
-    ];
-
-    // turnProtection=1 protects the last step (index 2: call-C) and all
-    // after it.  Messages at indexes 0 (call-A) and 1 (call-B) are
-    // unprotected — both have error status.
-    const marks = runPurgeErrors(state, messages, { turnProtection: 1 });
-    assert.equal(marks.length, 2);
-    assert.equal(marks[0].callID, "call-A");
-    assert.equal(marks[1].callID, "call-B");
-  });
-});
-
-// ===========================================================================
-// Protection window fallback (no step-start)
-// ===========================================================================
-
-describe("runPurgeErrors — protection window fallback (no step-start)", () => {
-  it("protects last N tool calls when no step-start exists", () => {
-    const state = getOrCreateSessionState("sess-fallback");
+describe("runPurgeErrors — protection window (message-count)", () => {
+  it("skips error parts within the last N messages", () => {
+    // 3 messages, protect=2 → last 2 messages (call-B, call-C) protected,
+    // only call-A is outside the window.
+    const state = getOrCreateSessionState("sess-msg-prot");
     const messages = [
       msg("assistant", "a1", [toolPart("call-A", "err", LONG_INPUT, "error")]),
       msg("assistant", "a2", [toolPart("call-B", "err", LONG_INPUT, "error")]),
       msg("assistant", "a3", [toolPart("call-C", "err", LONG_INPUT, "error")]),
     ];
 
-    // turnProtection=2 protects the last 2 tool calls (call-B, call-C).
     const marks = runPurgeErrors(state, messages, { turnProtection: 2 });
     assert.equal(marks.length, 1);
     assert.equal(marks[0].callID, "call-A");
   });
 
+  it("protects all messages when N exceeds message count", () => {
+    const state = getOrCreateSessionState("sess-msg-few");
+    const messages = [
+      msg("assistant", "a1", [toolPart("call-A", "err", LONG_INPUT, "error")]),
+    ];
+
+    const marks = runPurgeErrors(state, messages, { turnProtection: 5 });
+    assert.equal(marks.length, 0);
+  });
+
   it("turnProtection=0 disables protection", () => {
-    const state = getOrCreateSessionState("sess-no-prot");
+    const state = getOrCreateSessionState("sess-msg-no-prot");
     const messages = [
       msg("assistant", "a1", [toolPart("call-A", "err", LONG_INPUT, "error")]),
     ];

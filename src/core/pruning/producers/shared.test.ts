@@ -1,7 +1,8 @@
 /**
  * Tests for the shared pruning producer utilities.
  *
- * Covers: `collectProtectedCallIDs` (step-start & fallback paths) and
+ * Covers: `protectedBoundary` (zero/high-water/ignored-message cases),
+ * `collectProtectedCallIDs` (message-count window), and
  * `netReclaimTokens` (positive, zero, null bounds).
  */
 import assert from "node:assert/strict";
@@ -9,7 +10,11 @@ import { describe, it } from "node:test";
 import type { ContextMessageEntry } from "../../metrics.js";
 import type { SweepToolPart } from "../types.js";
 import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "../types.js";
-import { collectProtectedCallIDs, netReclaimTokens } from "./shared.js";
+import {
+  collectProtectedCallIDs,
+  netReclaimTokens,
+  protectedBoundary,
+} from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -19,18 +24,67 @@ function toolPart(callID: string): SweepToolPart {
   return { type: "tool", callID, tool: "bash" };
 }
 
-function stepStartPart(): { type: string } {
-  return { type: "step-start" };
-}
-
 function msg(
   parts: Array<SweepToolPart | { type: string }>,
+  ignored = false,
 ): ContextMessageEntry {
+  const info: Record<string, unknown> = { role: "assistant", id: "id" };
+  if (ignored) info.ignored = true;
   return {
-    info: { role: "assistant", id: "id" },
+    info: info as unknown as ContextMessageEntry["info"],
     parts: parts as ContextMessageEntry["parts"],
   };
 }
+
+// ===========================================================================
+// protectedBoundary
+// ===========================================================================
+
+describe("protectedBoundary", () => {
+  it("returns messages.length when n <= 0", () => {
+    const messages = [msg([toolPart("call-1")]), msg([toolPart("call-2")])];
+    assert.equal(protectedBoundary(messages, 0), 2);
+    assert.equal(protectedBoundary(messages, -1), 2);
+  });
+
+  it("returns 0 when n exceeds available non-ignored messages", () => {
+    const messages = [msg([toolPart("call-1")]), msg([toolPart("call-2")])];
+    assert.equal(protectedBoundary(messages, 5), 0);
+  });
+
+  it("returns exact boundary when n matches message count", () => {
+    const messages = [
+      msg([toolPart("call-A")]),
+      msg([toolPart("call-B")]),
+      msg([toolPart("call-C")]),
+    ];
+    // count back 2 non-ignored → start at index 1 (call-B)
+    assert.equal(protectedBoundary(messages, 2), 1);
+    // count back 3 → start at index 0
+    assert.equal(protectedBoundary(messages, 3), 0);
+  });
+
+  it("skips ignored messages when counting the boundary", () => {
+    // 5 messages: idx 0 normal, idx 1 ignored, idx 2 normal, idx 3 ignored,
+    // idx 4 normal.  Counting back 2 non-ignored from the end:
+    //   idx 4 (normal)  → count 1
+    //   idx 3 (ignored)  → skip
+    //   idx 2 (normal)  → count 2 → boundary = 2
+    const messages = [
+      msg([toolPart("call-A")], false),
+      msg([toolPart("call-B")], true),
+      msg([toolPart("call-C")], false),
+      msg([toolPart("call-D")], true),
+      msg([toolPart("call-E")], false),
+    ];
+    assert.equal(protectedBoundary(messages, 2), 2);
+  });
+
+  it("handles empty messages array", () => {
+    assert.equal(protectedBoundary([], 5), 0);
+    assert.equal(protectedBoundary([], 0), 0);
+  });
+});
 
 // ===========================================================================
 // collectProtectedCallIDs
@@ -43,47 +97,8 @@ describe("collectProtectedCallIDs", () => {
     assert.equal(collectProtectedCallIDs(messages, -1).size, 0);
   });
 
-  it("protects last N steps when step-start exists and exceeds window", () => {
-    // 4 steps, turnProtection=2 → protect last 2 steps (indices 2, 3)
-    const messages = [
-      msg([stepStartPart(), toolPart("call-A")]),
-      msg([stepStartPart(), toolPart("call-B")]),
-      msg([stepStartPart(), toolPart("call-C")]),
-      msg([stepStartPart(), toolPart("call-D")]),
-    ];
-    const ids = collectProtectedCallIDs(messages, 2);
-    assert.equal(ids.size, 2);
-    assert.ok(ids.has("call-C"));
-    assert.ok(ids.has("call-D"));
-  });
-
-  it("protects all steps when fewer steps than protection window", () => {
-    const messages = [
-      msg([stepStartPart(), toolPart("call-A")]),
-      msg([stepStartPart(), toolPart("call-B")]),
-    ];
-    const ids = collectProtectedCallIDs(messages, 5);
-    assert.equal(ids.size, 2);
-    assert.ok(ids.has("call-A"));
-    assert.ok(ids.has("call-B"));
-  });
-
-  it("protects tool calls in messages after the last step-start", () => {
-    const messages = [
-      msg([stepStartPart(), toolPart("call-A")]),
-      msg([toolPart("call-B")]),
-      msg([stepStartPart(), toolPart("call-C")]),
-      msg([toolPart("call-D")]),
-    ];
-    // 2 step-start steps, turnProtection=1 → protect step starting at
-    // the last step-start (index 2) and all after it.
-    const ids = collectProtectedCallIDs(messages, 1);
-    assert.equal(ids.size, 2);
-    assert.ok(ids.has("call-C"));
-    assert.ok(ids.has("call-D"));
-  });
-
-  it("falls back to protecting last N tool calls when no step-start", () => {
+  it("protects tool calls in the last N messages", () => {
+    // 4 messages, protect=2 → last 2 messages (call-C, call-D) are protected.
     const messages = [
       msg([toolPart("call-A")]),
       msg([toolPart("call-B")]),
@@ -96,7 +111,7 @@ describe("collectProtectedCallIDs", () => {
     assert.ok(ids.has("call-D"));
   });
 
-  it("protects fewer tool calls than turnProtection fallback when not enough", () => {
+  it("protects all messages when N >= message count", () => {
     const messages = [msg([toolPart("call-A")]), msg([toolPart("call-B")])];
     const ids = collectProtectedCallIDs(messages, 5);
     assert.equal(ids.size, 2);
@@ -104,12 +119,14 @@ describe("collectProtectedCallIDs", () => {
     assert.ok(ids.has("call-B"));
   });
 
-  it("skips non-tool parts in fallback path", () => {
-    const messages = [msg([toolPart("call-A"), toolPart("call-B")])];
+  it("collects tool calls across multiple parts in one message", () => {
+    const messages = [
+      msg([toolPart("call-A"), toolPart("call-B")]),
+      msg([toolPart("call-C")]),
+    ];
     const ids = collectProtectedCallIDs(messages, 1);
     assert.equal(ids.size, 1);
-    // Iteration is reverse, so call-B (last) should be collected first.
-    assert.ok(ids.has("call-B"));
+    assert.ok(ids.has("call-C"));
   });
 });
 

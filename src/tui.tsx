@@ -18,6 +18,8 @@ import {
   computeCumulativeCacheRate,
   computeTokenBreakdown,
 } from "./core/metrics.js";
+import { liveBlocks } from "./core/pruning/blocks.js";
+import { previewFold } from "./core/pruning/fold.js";
 import { loadSessionState } from "./core/pruning/marks.js";
 import { log, setSessionId } from "./utils/logger.js";
 
@@ -452,6 +454,10 @@ const plugin: TuiPluginModule = {
         // Load pruned callIDs for DCP visibility in category breakdown.
         // Defensive: load failure results in empty set (tools fully counted).
         let prunedCallIDs: Set<string> | undefined;
+        // Folded message array after applying compression blocks.
+        // When set, the category breakdown reflects the model-visible
+        // (compression-folded) view instead of the raw message list.
+        let foldMessages: ContextMessageEntry[] | undefined;
         try {
           const persisted = loadSessionState(sessionId);
           if (persisted) {
@@ -460,13 +466,30 @@ const plugin: TuiPluginModule = {
                 .filter(([, mark]) => mark.effective)
                 .map(([callID]) => callID),
             );
+            // Apply compression-block folding so the category breakdown
+            // shows the model-visible (folded) numbers.  Pure read-only
+            // — never calls syncBlocks or saveSessionState from the TUI.
+            try {
+              const blockArray = [...persisted.blocks.values()];
+              if (blockArray.length > 0) {
+                const live = liveBlocks(blockArray, mapped);
+                if (live.length > 0) {
+                  foldMessages = previewFold(mapped, live);
+                }
+              }
+            } catch {
+              // Non-fatal: fold failure falls back to raw mapped array.
+            }
           }
         } catch {
           // Non-fatal: TUI must never crash from persistence I/O.
           prunedCallIDs = undefined;
         }
 
-        const report = computeContextReport(mapped, prunedCallIDs);
+        const report = computeContextReport(
+          foldMessages ?? mapped,
+          prunedCallIDs,
+        );
 
         // ── Trend (last vs previous assistant) ──────────────────────
         const trendResult = computeCacheTrend(mapped);

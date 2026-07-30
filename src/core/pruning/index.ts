@@ -8,6 +8,26 @@
  * @module
  */
 
+export type { CompressionBlock, CompressionPlan } from "./blocks.js";
+export {
+  activeBlockCount,
+  activeReclaimedTokens,
+  createBlock,
+  cumulativeReclaimedTokens,
+  liveBlocks,
+  syncBlocks,
+} from "./blocks.js";
+export type { CompressionPlanResult, CompressionSegment } from "./compress.js";
+export {
+  BLOCK_HEADER_TEMPLATE,
+  buildBlockSummary,
+  planCompression,
+  segmentInOutTokens,
+} from "./compress.js";
+export {
+  foldCompressedBlocks,
+  previewFold,
+} from "./fold.js";
 export type { Mark, PruneAction, SessionState } from "./marks.js";
 export {
   _clearAllSessionsForTesting,

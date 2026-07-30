@@ -2,8 +2,8 @@
  * Tests for the dedup producer.
  *
  * Covers: signature normalisation, basic dedup (keep newest, mark older),
- * turn protection via step-start and fallback, skip conditions, idempotent
- * re-runs (naturally ensured by addMark), zero-benefit skip.
+ * message-count protection, skip conditions, idempotent re-runs (naturally
+ * ensured by addMark), zero-benefit skip.
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
@@ -67,10 +67,6 @@ function msg(
     info: { role, id, ...(sessionID ? { sessionID } : {}) },
     parts: parts as unknown as ContextMessageEntry["parts"],
   };
-}
-
-function stepStartPart(): { type: string } {
-  return { type: "step-start" };
 }
 
 // ===========================================================================
@@ -239,82 +235,15 @@ describe("basic dedup", () => {
 });
 
 // ===========================================================================
-// Turn protection (step-start)
+// Message-count protection
 // ===========================================================================
 
-describe("turn protection with step-start", () => {
-  it("protects the last turnProtection steps from dedup", () => {
-    const state = getOrCreateSessionState("sess-step-proto");
-    const messages = [
-      msg("assistant", "a1", [
-        stepStartPart(),
-        toolPart("call-A", LONG_OUTPUT, { cmd: "ls" }),
-      ]),
-      msg("assistant", "a2", [
-        stepStartPart(),
-        toolPart("call-B", LONG_OUTPUT, { cmd: "ls" }),
-      ]),
-      msg("assistant", "a3", [
-        stepStartPart(),
-        toolPart("call-C", LONG_OUTPUT, { cmd: "ls" }),
-      ]),
-    ];
-
-    const marks = runDedup(state, messages, { turnProtection: 2 });
-    assert.equal(marks.length, 0);
-
-    // Boundary: protection=1 → protect last 1 step.
-    const state2 = getOrCreateSessionState("sess-step-boundary");
-    const marks2 = runDedup(state2, messages, { turnProtection: 1 });
-    assert.equal(marks2.length, 1);
-    assert.equal(marks2[0].callID, "call-A");
-  });
-
-  it("protects tool calls in messages after the last step-start", () => {
-    const state = getOrCreateSessionState("sess-step-trailing");
-    const messages = [
-      msg("assistant", "a1", [
-        stepStartPart(),
-        toolPart("call-A", LONG_OUTPUT, { cmd: "ls" }),
-      ]),
-      msg("assistant", "a2", [toolPart("call-B", LONG_OUTPUT, { cmd: "ls" })]),
-      msg("assistant", "a3", [
-        stepStartPart(),
-        toolPart("call-C", LONG_OUTPUT, { cmd: "ls" }),
-      ]),
-      msg("assistant", "a4", [toolPart("call-D", LONG_OUTPUT, { cmd: "ls" })]),
-    ];
-
-    const marks = runDedup(state, messages, { turnProtection: 1 });
-    assert.equal(marks.length, 1);
-    assert.equal(marks[0].callID, "call-A");
-  });
-
-  it("does not protect beyond available steps (fewer than turnProtection)", () => {
-    const state = getOrCreateSessionState("sess-few-steps");
-    const messages = [
-      msg("assistant", "a1", [
-        stepStartPart(),
-        toolPart("call-A", LONG_OUTPUT, { cmd: "ls" }),
-      ]),
-      msg("assistant", "a2", [
-        stepStartPart(),
-        toolPart("call-B", LONG_OUTPUT, { cmd: "ls" }),
-      ]),
-    ];
-
-    const marks = runDedup(state, messages, { turnProtection: 5 });
-    assert.equal(marks.length, 0);
-  });
-});
-
-// ===========================================================================
-// Turn protection fallback (no step-start)
-// ===========================================================================
-
-describe("turn protection fallback (no step-start)", () => {
-  it("protects the last N tool calls when no step-start exists", () => {
-    const state = getOrCreateSessionState("sess-no-step");
+describe("message-count protection", () => {
+  it("protects the last N messages from dedup", () => {
+    // 4 messages, protect=2 → last 2 (call-C, call-D) protected,
+    // call-A and call-B are outside the window and share a signature,
+    // so call-A (older) is marked.
+    const state = getOrCreateSessionState("sess-msg-proto");
     const messages = [
       msg("assistant", "a1", [toolPart("call-A", LONG_OUTPUT, { cmd: "ls" })]),
       msg("assistant", "a2", [toolPart("call-B", LONG_OUTPUT, { cmd: "ls" })]),
@@ -327,8 +256,19 @@ describe("turn protection fallback (no step-start)", () => {
     assert.equal(marks[0].callID, "call-A");
   });
 
+  it("protects all messages when N exceeds message count", () => {
+    const state = getOrCreateSessionState("sess-msg-all");
+    const messages = [
+      msg("assistant", "a1", [toolPart("call-A", LONG_OUTPUT, { cmd: "ls" })]),
+      msg("assistant", "a2", [toolPart("call-B", LONG_OUTPUT, { cmd: "ls" })]),
+    ];
+
+    const marks = runDedup(state, messages, { turnProtection: 5 });
+    assert.equal(marks.length, 0);
+  });
+
   it("turnProtection=0 disables protection", () => {
-    const state = getOrCreateSessionState("sess-no-prot");
+    const state = getOrCreateSessionState("sess-msg-no-prot");
     const messages = [
       msg("assistant", "a1", [toolPart("call-A", LONG_OUTPUT, { cmd: "ls" })]),
       msg("assistant", "a2", [toolPart("call-B", LONG_OUTPUT, { cmd: "ls" })]),

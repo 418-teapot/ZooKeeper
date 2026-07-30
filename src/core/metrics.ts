@@ -48,6 +48,8 @@ export interface ContextMessageInfo {
   agent?: string;
   /** Whether this message is a compaction summary placeholder. */
   summary?: boolean;
+  /** Whether this message is a synthetic compression block summary. */
+  synthetic?: boolean;
 }
 
 /**
@@ -94,17 +96,14 @@ export interface ContextMetricsResult {
  * - user / tool — CJK-aware part-level heuristic (CJK /1.5, other /4).
  * - assistant — API-reported `tokens.output` when available, else
  *   part-level heuristic fallback.
- * - system — DCP-style estimate of the system prompt and tool
- *   definitions: (first assistant (input + cache)) − first user heuristic.
- * - misc — residual that absorbs non-text parts, reasoning gap,
- *   estimation noise, etc.
+ * - system — everything not attributable to messages (system prompt +
+ *   tool definitions + estimation slack): `total − user − assistant − tool`.
  */
 export interface ContextCategoryBreakdown {
   user: number;
   assistant: number;
   tool: number;
   system: number;
-  misc: number;
 }
 
 /**
@@ -358,21 +357,6 @@ export function findLastCompletedAssistant(
 }
 
 /**
- * Find the first **completed** assistant message in a messages array.
- *
- * Delegates to `_scanCompletedAssistant` (forward scan).
- * Used by `computeContextReport` for DCP-style system prompt estimation.
- *
- * @param messages - Non-empty messages array.
- * @returns Result object with index (-1 if not found) and token info.
- */
-export function findFirstCompletedAssistant(
-  messages: ContextMessageEntry[],
-): LastAssistantResult {
-  return _scanCompletedAssistant(messages, false);
-}
-
-/**
  * Find the last compaction boundary message in a messages array.
  *
  * A compaction boundary is an assistant message with `summary === true`,
@@ -492,9 +476,13 @@ export function measureContext(
  * Uses the shared `findLastCompletedAssistant` skeleton.
  * Category breakdown: user / tool use a CJK-aware part-level heuristic;
  * assistant uses API-reported `tokens.output` (with heuristic fallback);
- * system is estimated via the DCP formula: `(first completed assistant's
- * input + cache) − first user message heuristic`; misc absorbs the
- * residual (reasoning gap, non-text parts, etc.).  No reasoning split.
+ * system is the residual `total − user − assistant − tool`, covering
+ * everything not attributable to messages (system prompt, tool definitions,
+ * estimation slack).  No reasoning split.
+ *
+ * This is view-consistent: `total` (API-actual last request + tail heuristic)
+ * and the three counted categories derive from the same message view, so
+ * the residual is correct on any view (folded, raw, post-compaction).
  *
  * When `prunedCallIDs` is provided, tool parts whose `callID` (or `callId`)
  * is in the set contribute only `input + placeholder` tokens (instead of
@@ -589,8 +577,9 @@ export function computeContextReport(
         }
         toolTokens += tokens;
       }
-      // "assistant" and "none" categories from parts are absorbed
-      // by misc — assistant is handled via API exact below.
+      // "assistant" and "none" categories from parts are not counted
+      // here — assistant is handled via API exact below, and "none"
+      // content flows into the system residual (Step 4).
     }
   }
 
@@ -618,44 +607,14 @@ export function computeContextReport(
     }
   }
 
-  // ── Step 4: System prompt estimation (DCP-style, boundary-aware) ──
-  // Forward scan starts after the compaction boundary (boundaryIdx + 1)
-  // to skip the summary message itself, which may carry large tokens.input
-  // from the pre-compaction history.  The subtraction sum covers all
-  // non-ignored messages in [catStartIdx, firstAsstIdx) — this aligns
-  // with the semantic that firstAsstInput = system + boundary content +
-  // messages between boundary and first assistant.
-  let systemTokens = 0;
-  const scanStartIdx = boundaryIdx >= 0 ? boundaryIdx + 1 : 0;
-  const firstAsstAfter = _scanCompletedAssistant(messages, false, scanStartIdx);
-  if (firstAsstAfter.index >= 0 && firstAsstAfter.tokens) {
-    const firstAsstInput =
-      (firstAsstAfter.tokens.input ?? 0) +
-      (firstAsstAfter.tokens.cache?.read ?? 0) +
-      (firstAsstAfter.tokens.cache?.write ?? 0);
-
-    // Sum heuristic for all non-ignored messages in [catStartIdx, firstAsstIdx).
-    // This includes the summary message itself (at boundaryIdx) and any
-    // user/system/tool messages before the first real assistant.
-    let subHeuristic = 0;
-    for (let i = catStartIdx; i < firstAsstAfter.index; i++) {
-      const msg = messages[i];
-      if (!msg) continue;
-      if (isMessageIgnored(msg)) continue;
-
-      subHeuristic += estimateMessageHeuristic(msg);
-    }
-
-    systemTokens = Math.max(0, firstAsstInput - subHeuristic);
-  }
-
-  // ── Step 5: Misc (residual) ────────────────────────────────────────
-  // No consistency scaling — categories show raw heuristic estimates.
-  // catSum may exceed total (heuristic overestimates).  misc absorbs
-  // the deficit when catSum < total; it is 0 when catSum ≥ total.
-  const misc = Math.max(
+  // ── Step 4: System (residual) ───────────────────────────────────────
+  // View-consistent: total, user, assistant, and tool all derive from the
+  // same message view.  The residual covers everything not attributable
+  // to counted messages: system prompt, tool definitions, estimation
+  // slack.  No forward scan needed — no DCP subtraction formula.
+  const systemTokens = Math.max(
     0,
-    total - userTokens - assistantTokens - toolTokens - systemTokens,
+    total - userTokens - assistantTokens - toolTokens,
   );
 
   return {
@@ -669,7 +628,6 @@ export function computeContextReport(
       assistant: assistantTokens,
       tool: toolTokens,
       system: systemTokens,
-      misc,
     },
   };
 }

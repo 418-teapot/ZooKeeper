@@ -11,6 +11,8 @@ import type {
   ContextTokenInfo,
 } from "../../core/metrics.js";
 import {
+  activeBlockCount,
+  createBlock,
   deleteSessionState,
   loadSessionState,
   PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
@@ -54,6 +56,13 @@ const TEST_SESSION_IDS = [
   "sess-refs-boundary",
   "sess-gate-threshold-undef",
   "sess-release-pct-undef",
+  "sess-fold-integration",
+  "sess-fold-refs",
+  "sess-lifecycle",
+  "sess-forced-compress",
+  "sess-forced-batched",
+  "sess-forced-deactivate",
+  "sess-forced-clear",
 ];
 
 afterEach(() => {
@@ -316,7 +325,7 @@ describe("contextPruningTransformHandler", () => {
 
     // Turn N messages: one pre-marked call + duplicate tool calls that
     // will be deduped.  The last assistant has tokens.input >= 100K to
-    // pass the gate.  releaseThresholdPercent=0 ensures pending is always
+    // pass the gate.  releasedPercent=0 ensures pending is always
     // released immediately so marks take effect next turn.
     const messages = [
       msg("user", "u1", [textPart("do it")], sessionID),
@@ -336,16 +345,16 @@ describe("contextPruningTransformHandler", () => {
 
     contextPruningTransformHandler(messages, {
       enabled: true,
-      turnProtection: 0,
-      releaseThresholdPercent: 0, // Always release pending immediately for test.
+      protectedMessages: 0,
+      releasedPercent: 0, // Always release pending immediately for test.
       dedup: {
         enabled: true,
-        thresholdTokens: 100000,
+        thresholdContext: 100000,
       },
       purgeErrors: {},
     });
 
-    // Phase 1 (clean) — pre-existing marks ARE replaced.
+    // Phase 2 (clean) — pre-existing marks ARE replaced.
     assert.ok(
       (messages[1].parts?.[0] as SweepToolPart).state?.output?.startsWith(
         PRUNED_TOOL_OUTPUT_REPLACEMENT,
@@ -353,8 +362,8 @@ describe("contextPruningTransformHandler", () => {
       "call-sweep-1 output pruned",
     );
 
-    // Phase 2 (mark) — dedup ran; older duplicate is marked.
-    // With releaseThresholdPercent=0, releaseBatch fires immediately, flipping
+    // Phase 3 (mark) — dedup ran; older duplicate is marked.
+    // With releasedPercent=0, releaseBatch fires immediately, flipping
     // the dedup mark to effective=true (pendingCount becomes 0).
     assert.ok(state.marks.size > 0);
 
@@ -383,10 +392,10 @@ describe("contextPruningTransformHandler", () => {
 
     contextPruningTransformHandler(messages2, {
       enabled: true,
-      releaseThresholdPercent: 0,
+      releasedPercent: 0,
       dedup: {
         enabled: true,
-        thresholdTokens: 100000,
+        thresholdContext: 100000,
       },
       purgeErrors: {},
     });
@@ -432,7 +441,7 @@ describe("contextPruningTransformHandler", () => {
       enabled: true,
       dedup: {
         enabled: true,
-        thresholdTokens: 100000,
+        thresholdContext: 100000,
       },
       purgeErrors: {},
     });
@@ -472,10 +481,10 @@ describe("contextPruningTransformHandler", () => {
 
     contextPruningTransformHandler(messages, {
       enabled: true,
-      turnProtection: 0,
+      protectedMessages: 0,
       dedup: {
         enabled: true,
-        thresholdTokens: 100000,
+        thresholdContext: 100000,
       },
       purgeErrors: {},
     });
@@ -517,7 +526,7 @@ describe("contextPruningTransformHandler", () => {
       enabled: true,
       dedup: {
         enabled: true,
-        thresholdTokens: 100000,
+        thresholdContext: 100000,
       },
       purgeErrors: {},
     });
@@ -550,10 +559,10 @@ describe("contextPruningTransformHandler", () => {
 
     contextPruningTransformHandler(messages, {
       enabled: true,
-      turnProtection: 0,
+      protectedMessages: 0,
       dedup: {
         enabled: true,
-        thresholdTokens: 100000,
+        thresholdContext: 100000,
       },
       purgeErrors: {},
     });
@@ -589,7 +598,7 @@ describe("contextPruningTransformHandler", () => {
       enabled: true,
       dedup: {
         enabled: true,
-        thresholdTokens: 100000,
+        thresholdContext: 100000,
       },
       purgeErrors: {},
     });
@@ -623,10 +632,10 @@ describe("contextPruningTransformHandler", () => {
 
     contextPruningTransformHandler(messages, {
       enabled: true,
-      turnProtection: 0,
+      protectedMessages: 0,
       dedup: {
         enabled: true,
-        thresholdTokens: 100000,
+        thresholdContext: 100000,
       },
       purgeErrors: {},
     });
@@ -641,7 +650,7 @@ describe("contextPruningTransformHandler", () => {
   });
 
   it("master enabled=false leaves messages completely untouched", () => {
-    // When config.enabled === false, nothing happens — no Phase 1/2/2.5,
+    // When config.enabled === false, nothing happens — no Phases 1–6,
     // no persistence, no state mutations.
     const sessionID = "sess-disabled";
     const state = getOrCreateSessionState(sessionID);
@@ -670,10 +679,10 @@ describe("contextPruningTransformHandler", () => {
 
     contextPruningTransformHandler(messages, {
       enabled: false,
-      turnProtection: 0,
-      releaseThresholdPercent: 0,
-      dedup: { enabled: true, thresholdTokens: 100000 },
-      purgeErrors: { enabled: true, thresholdTokens: 0 },
+      protectedMessages: 0,
+      releasedPercent: 0,
+      dedup: { enabled: true, thresholdContext: 100000 },
+      purgeErrors: { enabled: true, thresholdContext: 0 },
     });
 
     // Messages completely untouched — byte-identical to original.
@@ -701,7 +710,7 @@ describe("contextPruningTransformHandler", () => {
     const sessionID = "sess-enabled-absent";
     const state = getOrCreateSessionState(sessionID);
 
-    // Pre-populate an effective mark so Phase 1 would normally prune.
+    // Pre-populate an effective mark so Phase 2 would normally prune.
     addMark(state, "call-sweep-1", 50, true, "tool-output");
 
     const messages = [
@@ -724,8 +733,8 @@ describe("contextPruningTransformHandler", () => {
 
     // Config without `enabled` field — uses default (false).
     contextPruningTransformHandler(messages, {
-      dedup: { enabled: true, thresholdTokens: 100000 },
-      purgeErrors: { enabled: true, thresholdTokens: 0 },
+      dedup: { enabled: true, thresholdContext: 100000 },
+      purgeErrors: { enabled: true, thresholdContext: 0 },
     });
 
     // Messages completely untouched.
@@ -763,7 +772,7 @@ describe("contextPruningTransformHandler", () => {
       enabled: true,
       dedup: {
         enabled: false,
-        thresholdTokens: 100000,
+        thresholdContext: 100000,
       },
       purgeErrors: {},
     });
@@ -779,8 +788,8 @@ describe("contextPruningTransformHandler", () => {
     assert.equal(state.marks.size, 1); // Only the pre-existing sweep mark.
   });
 
-  it("gate: thresholdTokens undefined skips the producer entirely", () => {
-    // Regression: when thresholdTokens is undefined (not configured),
+  it("gate: thresholdContext undefined skips the producer entirely", () => {
+    // Regression: when thresholdContext is undefined (not configured),
     // the producer gate must skip the producer — no marks created.
     const sessionID = "sess-gate-threshold-undef";
     const state = getOrCreateSessionState(sessionID);
@@ -801,10 +810,10 @@ describe("contextPruningTransformHandler", () => {
 
     contextPruningTransformHandler(messages, {
       enabled: true,
-      turnProtection: 0,
+      protectedMessages: 0,
       dedup: {
         enabled: true,
-        // thresholdTokens is undefined → gate closes, producer skipped.
+        // thresholdContext is undefined → gate closes, producer skipped.
       },
       purgeErrors: {},
     });
@@ -824,8 +833,8 @@ describe("contextPruningTransformHandler", () => {
     );
   });
 
-  it("gate: releaseThresholdPercent undefined skips batch release", () => {
-    // Regression: when releaseThresholdPercent is undefined, the batch
+  it("gate: releasedPercent undefined skips batch release", () => {
+    // Regression: when releasedPercent is undefined, the batch
     // release check must be skipped entirely.  Marks remain pending.
     const sessionID = "sess-release-pct-undef";
     const state = getOrCreateSessionState(sessionID);
@@ -846,12 +855,12 @@ describe("contextPruningTransformHandler", () => {
 
     contextPruningTransformHandler(messages, {
       enabled: true,
-      turnProtection: 0,
-      // releaseThresholdPercent is undefined → release check skipped.
-      releaseThresholdPercent: undefined,
+      protectedMessages: 0,
+      // releasedPercent is undefined → release check skipped.
+      releasedPercent: undefined,
       dedup: {
         enabled: true,
-        thresholdTokens: 100000,
+        thresholdContext: 100000,
       },
       purgeErrors: {},
     });
@@ -875,35 +884,35 @@ describe("contextPruningTransformHandler", () => {
   it("parseContextConfig returns undefined fields when [zoo.context] is absent", () => {
     const config = parseContextConfig({});
     assert.equal(config.enabled, undefined);
-    assert.equal(config.turnProtection, undefined);
-    assert.equal(config.releaseThresholdPercent, undefined);
+    assert.equal(config.protectedMessages, undefined);
+    assert.equal(config.releasedPercent, undefined);
     assert.equal(config.dedup.enabled, undefined);
-    assert.equal(config.dedup.thresholdTokens, undefined);
+    assert.equal(config.dedup.thresholdContext, undefined);
     assert.equal(config.dedup.protectedTools, undefined);
     assert.equal(config.purgeErrors.enabled, undefined);
-    assert.equal(config.purgeErrors.thresholdTokens, undefined);
+    assert.equal(config.purgeErrors.thresholdContext, undefined);
     assert.equal(config.purgeErrors.protectedTools, undefined);
   });
 
   it("parseContextConfig reads [zoo.context] section with two-layer structure", () => {
     const config = parseContextConfig({
       context: {
-        turn_protection: 3,
+        protected_messages: 3,
         dedup: {
           enabled: false,
-          threshold_tokens: 64000,
+          threshold_context: 64000,
           protected_tools: ["task", "read"],
         },
       },
     });
     assert.equal(config.dedup.enabled, false);
-    assert.equal(config.dedup.thresholdTokens, 64000);
-    assert.equal(config.turnProtection, 3);
+    assert.equal(config.dedup.thresholdContext, 64000);
+    assert.equal(config.protectedMessages, 3);
     assert.deepEqual(config.dedup.protectedTools, ["task", "read"]);
     // Absent fields yield undefined.
-    assert.equal(config.releaseThresholdPercent, undefined);
+    assert.equal(config.releasedPercent, undefined);
     assert.equal(config.purgeErrors.enabled, undefined);
-    assert.equal(config.purgeErrors.thresholdTokens, undefined);
+    assert.equal(config.purgeErrors.thresholdContext, undefined);
     assert.equal(config.purgeErrors.protectedTools, undefined);
   });
 
@@ -919,47 +928,49 @@ describe("contextPruningTransformHandler", () => {
     assert.ok(entry, "must log invalid_dedup_enabled");
   });
 
-  it("parseContextConfig returns undefined for non-finite threshold_tokens (warns)", () => {
+  it("parseContextConfig returns undefined for non-finite threshold_context (warns)", () => {
     const config = parseContextConfig({
-      context: { dedup: { threshold_tokens: Infinity } },
+      context: { dedup: { threshold_context: Infinity } },
     });
-    assert.equal(config.dedup.thresholdTokens, undefined);
+    assert.equal(config.dedup.thresholdContext, undefined);
 
     const config2 = parseContextConfig({
-      context: { dedup: { threshold_tokens: NaN } },
+      context: { dedup: { threshold_context: NaN } },
     });
-    assert.equal(config2.dedup.thresholdTokens, undefined);
+    assert.equal(config2.dedup.thresholdContext, undefined);
 
     const config3 = parseContextConfig({
-      context: { dedup: { threshold_tokens: "100000" } },
+      context: { dedup: { threshold_context: "100000" } },
     });
-    assert.equal(config3.dedup.thresholdTokens, undefined);
+    assert.equal(config3.dedup.thresholdContext, undefined);
 
     const buffer = _getBufferForTesting();
     const entries = buffer.filter(
-      (e) => e.event === "invalid_dedup_threshold_tokens",
+      (e) => e.event === "invalid_dedup_threshold_context",
     );
     assert.equal(entries.length, 3);
   });
 
-  it("parseContextConfig returns undefined for non-finite turn_protection (warns)", () => {
+  it("parseContextConfig returns undefined for non-finite protected_messages (warns)", () => {
     const config = parseContextConfig({
-      context: { turn_protection: NaN },
+      context: { protected_messages: NaN },
     });
-    assert.equal(config.turnProtection, undefined);
+    assert.equal(config.protectedMessages, undefined);
 
     const config2 = parseContextConfig({
-      context: { turn_protection: Infinity },
+      context: { protected_messages: Infinity },
     });
-    assert.equal(config2.turnProtection, undefined);
+    assert.equal(config2.protectedMessages, undefined);
 
     const config3 = parseContextConfig({
-      context: { turn_protection: "3" },
+      context: { protected_messages: "3" },
     });
-    assert.equal(config3.turnProtection, undefined);
+    assert.equal(config3.protectedMessages, undefined);
 
     const buffer = _getBufferForTesting();
-    const entries = buffer.filter((e) => e.event === "invalid_turn_protection");
+    const entries = buffer.filter(
+      (e) => e.event === "invalid_protected_messages",
+    );
     assert.equal(entries.length, 3);
   });
 
@@ -984,106 +995,102 @@ describe("contextPruningTransformHandler", () => {
   it("parseContextConfig preserves valid zero values", () => {
     const config = parseContextConfig({
       context: {
-        turn_protection: 0,
-        release_threshold_percent: 0,
+        protected_messages: 0,
+        released_percent: 0,
         dedup: {
           enabled: false,
-          threshold_tokens: 0,
+          threshold_context: 0,
           protected_tools: [],
         },
       },
     });
     assert.equal(config.dedup.enabled, false);
-    assert.equal(config.dedup.thresholdTokens, 0);
-    assert.equal(config.turnProtection, 0);
-    assert.equal(config.releaseThresholdPercent, 0);
+    assert.equal(config.dedup.thresholdContext, 0);
+    assert.equal(config.protectedMessages, 0);
+    assert.equal(config.releasedPercent, 0);
     assert.deepEqual(config.dedup.protectedTools, []);
   });
 
   // ===========================================================================
-  // parseContextConfig — releaseThresholdPercent (top-level [zoo.context])
+  // parseContextConfig — releasedPercent (top-level [zoo.context])
   // ===========================================================================
 
-  it("parseContextConfig reads release_threshold_percent from top-level [zoo.context]", () => {
+  it("parseContextConfig reads released_percent from top-level [zoo.context]", () => {
     const config = parseContextConfig({
-      context: { release_threshold_percent: 10 },
+      context: { released_percent: 10 },
     });
-    assert.equal(config.releaseThresholdPercent, 10);
+    assert.equal(config.releasedPercent, 10);
   });
 
-  it("parseContextConfig returns undefined for non-number release_threshold_percent (warns)", () => {
+  it("parseContextConfig returns undefined for non-number released_percent (warns)", () => {
     const config = parseContextConfig({
-      context: { release_threshold_percent: "10" },
+      context: { released_percent: "10" },
     });
-    assert.equal(config.releaseThresholdPercent, undefined);
+    assert.equal(config.releasedPercent, undefined);
 
     const buffer = _getBufferForTesting();
-    const entry = buffer.find(
-      (e) => e.event === "invalid_release_threshold_percent",
-    );
-    assert.ok(entry, "must log invalid_release_threshold_percent");
+    const entry = buffer.find((e) => e.event === "invalid_released_percent");
+    assert.ok(entry, "must log invalid_released_percent");
   });
 
-  it("parseContextConfig returns undefined for Infinity/NaN release_threshold_percent (warns)", () => {
+  it("parseContextConfig returns undefined for Infinity/NaN released_percent (warns)", () => {
     const config1 = parseContextConfig({
-      context: { release_threshold_percent: Infinity },
+      context: { released_percent: Infinity },
     });
-    assert.equal(config1.releaseThresholdPercent, undefined);
+    assert.equal(config1.releasedPercent, undefined);
 
     const config2 = parseContextConfig({
-      context: { release_threshold_percent: NaN },
+      context: { released_percent: NaN },
     });
-    assert.equal(config2.releaseThresholdPercent, undefined);
+    assert.equal(config2.releasedPercent, undefined);
 
     const buffer = _getBufferForTesting();
     const entries = buffer.filter(
-      (e) => e.event === "invalid_release_threshold_percent",
+      (e) => e.event === "invalid_released_percent",
     );
     assert.equal(entries.length, 2);
   });
 
-  it("parseContextConfig accepts 0 as valid releaseThresholdPercent (no batching)", () => {
+  it("parseContextConfig accepts 0 as valid releasedPercent (no batching)", () => {
     const config = parseContextConfig({
-      context: { release_threshold_percent: 0 },
+      context: { released_percent: 0 },
     });
-    assert.equal(config.releaseThresholdPercent, 0);
+    assert.equal(config.releasedPercent, 0);
   });
 
-  it("parseContextConfig returns undefined for negative release_threshold_percent (warns)", () => {
+  it("parseContextConfig returns undefined for negative released_percent (warns)", () => {
     const config = parseContextConfig({
-      context: { release_threshold_percent: -1 },
+      context: { released_percent: -1 },
     });
-    assert.equal(config.releaseThresholdPercent, undefined);
+    assert.equal(config.releasedPercent, undefined);
 
     const buffer = _getBufferForTesting();
-    const entry = buffer.find(
-      (e) => e.event === "invalid_release_threshold_percent",
-    );
-    assert.ok(entry, "must log invalid_release_threshold_percent");
+    const entry = buffer.find((e) => e.event === "invalid_released_percent");
+    assert.ok(entry, "must log invalid_released_percent");
   });
 
-  it("parseContextConfig returns undefined for release_threshold_percent when absent", () => {
+  it("parseContextConfig returns undefined for released_percent when absent", () => {
     const config = parseContextConfig({});
-    assert.equal(config.releaseThresholdPercent, undefined);
+    assert.equal(config.releasedPercent, undefined);
   });
 
-  it("parseContextConfig ignores dedup.release_threshold_percent (old location)", () => {
-    // Old location [zoo.context.dedup].release_threshold_percent is
+  it("parseContextConfig ignores dedup.released_percent (old location)", () => {
+    // Old location [zoo.context.dedup].released_percent is
     // intentionally NOT read — the new location is [zoo.context] top-level.
     const config = parseContextConfig({
       context: {
-        release_threshold_percent: 10,
-        dedup: { release_threshold_percent: 99 },
+        released_percent: 10,
+        dedup: { released_percent: 99 },
       },
     });
     // Top-level value takes precedence (99 in dedup is ignored).
-    assert.equal(config.releaseThresholdPercent, 10);
+    assert.equal(config.releasedPercent, 10);
 
-    // When only dedup.release_threshold_percent exists (no top-level) → undefined.
+    // When only dedup.released_percent exists (no top-level) → undefined.
     const config2 = parseContextConfig({
-      context: { dedup: { release_threshold_percent: 99 } },
+      context: { dedup: { released_percent: 99 } },
     });
-    assert.equal(config2.releaseThresholdPercent, undefined);
+    assert.equal(config2.releasedPercent, undefined);
   });
 
   // ===========================================================================
@@ -1095,20 +1102,20 @@ describe("contextPruningTransformHandler", () => {
       context: {
         purge_errors: {
           enabled: false,
-          threshold_tokens: 50000,
+          threshold_context: 50000,
           protected_tools: ["bash"],
         },
       },
     });
     assert.equal(config.purgeErrors.enabled, false);
-    assert.equal(config.purgeErrors.thresholdTokens, 50000);
+    assert.equal(config.purgeErrors.thresholdContext, 50000);
     assert.deepEqual(config.purgeErrors.protectedTools, ["bash"]);
   });
 
   it("parseContextConfig returns undefined for purgeErrors fields when section is absent", () => {
     const config = parseContextConfig({});
     assert.equal(config.purgeErrors.enabled, undefined);
-    assert.equal(config.purgeErrors.thresholdTokens, undefined);
+    assert.equal(config.purgeErrors.thresholdContext, undefined);
     assert.equal(config.purgeErrors.protectedTools, undefined);
   });
 
@@ -1165,14 +1172,117 @@ describe("contextPruningTransformHandler", () => {
     });
     // Unknown keys ignored — all fields are undefined.
     assert.equal(config.enabled, undefined);
-    assert.equal(config.turnProtection, undefined);
-    assert.equal(config.releaseThresholdPercent, undefined);
+    assert.equal(config.protectedMessages, undefined);
+    assert.equal(config.releasedPercent, undefined);
     assert.equal(config.dedup.enabled, undefined);
-    assert.equal(config.dedup.thresholdTokens, undefined);
+    assert.equal(config.dedup.thresholdContext, undefined);
     assert.equal(config.dedup.protectedTools, undefined);
     assert.equal(config.purgeErrors.enabled, undefined);
-    assert.equal(config.purgeErrors.thresholdTokens, undefined);
+    assert.equal(config.purgeErrors.thresholdContext, undefined);
     assert.equal(config.purgeErrors.protectedTools, undefined);
+  });
+
+  it("parseContextConfig ignores unrecognized keys", () => {
+    // Unknown keys are silently ignored — they do not map to config fields.
+    const config = parseContextConfig({
+      context: {
+        turn_protection: 3,
+        release_threshold_percent: 10,
+        dedup: { threshold_tokens: 50000 },
+        purge_errors: { threshold_tokens: 25000 },
+      },
+    });
+    assert.equal(config.protectedMessages, undefined);
+    assert.equal(config.releasedPercent, undefined);
+    assert.equal(config.dedup.thresholdContext, undefined);
+    assert.equal(config.purgeErrors.thresholdContext, undefined);
+    // Other config fields are also undefined by default.
+    assert.equal(config.enabled, undefined);
+  });
+
+  // ===========================================================================
+  // parseContextConfig — compress section
+  // ===========================================================================
+
+  it("parseContextConfig reads [zoo.context.compress] section with three keys", () => {
+    const config = parseContextConfig({
+      context: {
+        compress: {
+          enabled: true,
+          threshold_tokens: 2000,
+          protected_tokens: 20000,
+        },
+      },
+    });
+    assert.equal(config.compress?.enabled, true);
+    assert.equal(config.compress?.thresholdTokens, 2000);
+    assert.equal(config.compress?.protectedTokens, 20000);
+  });
+
+  it("parseContextConfig returns undefined compress fields when section is absent", () => {
+    const config = parseContextConfig({});
+    assert.equal(config.compress?.enabled, undefined);
+    assert.equal(config.compress?.thresholdTokens, undefined);
+    assert.equal(config.compress?.protectedTokens, undefined);
+  });
+
+  it("parseContextConfig returns undefined for non-boolean compress.enabled (warns)", () => {
+    const config = parseContextConfig({
+      context: { compress: { enabled: "true" } },
+    });
+    assert.equal(config.compress?.enabled, undefined);
+
+    const buffer = _getBufferForTesting();
+    const entry = buffer.find((e) => e.event === "invalid_compress_enabled");
+    assert.ok(entry, "must log invalid_compress_enabled");
+  });
+
+  it("parseContextConfig returns undefined for non-finite compress.threshold_tokens (warns)", () => {
+    const config = parseContextConfig({
+      context: { compress: { threshold_tokens: Infinity } },
+    });
+    assert.equal(config.compress?.thresholdTokens, undefined);
+
+    const config2 = parseContextConfig({
+      context: { compress: { threshold_tokens: NaN } },
+    });
+    assert.equal(config2.compress?.thresholdTokens, undefined);
+
+    const config3 = parseContextConfig({
+      context: { compress: { threshold_tokens: "2000" } },
+    });
+    assert.equal(config3.compress?.thresholdTokens, undefined);
+
+    const buffer = _getBufferForTesting();
+    const entries = buffer.filter(
+      (e) => e.event === "invalid_compress_threshold_tokens",
+    );
+    assert.equal(entries.length, 3);
+  });
+
+  it("parseContextConfig returns undefined for non-finite compress.protected_tokens (warns)", () => {
+    const config = parseContextConfig({
+      context: { compress: { protected_tokens: Infinity } },
+    });
+    assert.equal(config.compress?.protectedTokens, undefined);
+
+    const config2 = parseContextConfig({
+      context: { compress: { protected_tokens: "20000" } },
+    });
+    assert.equal(config2.compress?.protectedTokens, undefined);
+
+    const buffer = _getBufferForTesting();
+    const entries = buffer.filter(
+      (e) => e.event === "invalid_compress_protected_tokens",
+    );
+    assert.equal(entries.length, 2);
+  });
+
+  it("parseContextConfig reads compress.enabled: false", () => {
+    const config = parseContextConfig({
+      context: { compress: { enabled: false } },
+    });
+    assert.equal(config.compress?.enabled, false);
   });
 
   // ===========================================================================
@@ -1201,7 +1311,7 @@ describe("contextPruningTransformHandler", () => {
 
     // Turn N: 2 duplicate calls -> dedup marks call-1 (older).
     // Each mark ~125 tokens, total ~125, promptTokens=100000,
-    // releaseThresholdPercent=5 -> threshold=5000. 125 < 5000 -> no release.
+    // releasedPercent=5 -> threshold=5000. 125 < 5000 -> no release.
     const messages = [
       msg("user", "u1", [textPart("do it")], sessionID),
       msg(
@@ -1218,11 +1328,11 @@ describe("contextPruningTransformHandler", () => {
 
     contextPruningTransformHandler(messages, {
       enabled: true,
-      turnProtection: 0,
-      releaseThresholdPercent: 5,
+      protectedMessages: 0,
+      releasedPercent: 5,
       dedup: {
         enabled: true,
-        thresholdTokens: 100000,
+        thresholdContext: 100000,
       },
       purgeErrors: {},
     });
@@ -1255,11 +1365,11 @@ describe("contextPruningTransformHandler", () => {
 
     contextPruningTransformHandler(messages2, {
       enabled: true,
-      turnProtection: 0,
-      releaseThresholdPercent: 5,
+      protectedMessages: 0,
+      releasedPercent: 5,
       dedup: {
         enabled: true,
-        thresholdTokens: 100000,
+        thresholdContext: 100000,
       },
       purgeErrors: {},
     });
@@ -1273,13 +1383,13 @@ describe("contextPruningTransformHandler", () => {
     const sessionID = "sess-batch-at";
     const state = getOrCreateSessionState(sessionID);
 
-    // Use a very low releaseThresholdPercent to trigger immediate release.
-    // promptTokens=100000, releaseThresholdPercent=0.001 -> threshold=1
+    // Use a very low releasedPercent to trigger immediate release.
+    // promptTokens=100000, releasedPercent=0.001 -> threshold=1
     // Any positive pending tokens will trigger release.
     const lotOfOutput = "x".repeat(2000); // ~500 tokens
 
     // Turn N: 20 duplicate calls so pending sum is large.
-    // Actually simpler: set releaseThresholdPercent=0 so 0 >= threshold always.
+    // Actually simpler: set releasedPercent=0 so 0 >= threshold always.
     const messages = [
       msg("user", "u1", [textPart("do it")], sessionID),
       msg(
@@ -1294,14 +1404,14 @@ describe("contextPruningTransformHandler", () => {
       ),
     ];
 
-    // With releaseThresholdPercent=0, any positive pending triggers immediate release.
+    // With releasedPercent=0, any positive pending triggers immediate release.
     contextPruningTransformHandler(messages, {
       enabled: true,
-      turnProtection: 0,
-      releaseThresholdPercent: 0,
+      protectedMessages: 0,
+      releasedPercent: 0,
       dedup: {
         enabled: true,
-        thresholdTokens: 100000,
+        thresholdContext: 100000,
       },
       purgeErrors: {},
     });
@@ -1318,7 +1428,7 @@ describe("contextPruningTransformHandler", () => {
       "pending should be empty after release",
     );
 
-    // But this turn's outputs are NOT replaced yet (Phase 1 ran before release).
+    // But this turn's outputs are NOT replaced yet (Phase 2 ran before release).
     assert.ok(
       (messages[1].parts?.[0] as SweepToolPart).state?.output?.startsWith(
         lotOfOutput,
@@ -1336,11 +1446,11 @@ describe("contextPruningTransformHandler", () => {
 
     contextPruningTransformHandler(messages2, {
       enabled: true,
-      turnProtection: 0,
-      releaseThresholdPercent: 0,
+      protectedMessages: 0,
+      releasedPercent: 0,
       dedup: {
         enabled: true,
-        thresholdTokens: 100000,
+        thresholdContext: 100000,
       },
       purgeErrors: {},
     });
@@ -1364,7 +1474,7 @@ describe("contextPruningTransformHandler", () => {
 
     // Each mark ~104 tokens (LONG_OUTPUT=500 chars ~125 tokens,
     // placeholder ~21 tokens, diff=104). With promptTokens=100000,
-    // releaseThresholdPercent=0.8, threshold=800. Need ~8 marks to trigger.
+    // releasedPercent=0.8, threshold=800. Need ~8 marks to trigger.
     // We'll create marks spread across multiple turns.
 
     // Turn 1: 4 identical calls -> 3 marks (~312 tokens).
@@ -1385,11 +1495,11 @@ describe("contextPruningTransformHandler", () => {
     ];
     contextPruningTransformHandler(messages, {
       enabled: true,
-      turnProtection: 0,
-      releaseThresholdPercent: 0.8,
+      protectedMessages: 0,
+      releasedPercent: 0.8,
       dedup: {
         enabled: true,
-        thresholdTokens: 100000,
+        thresholdContext: 100000,
       },
       purgeErrors: {},
     });
@@ -1416,11 +1526,11 @@ describe("contextPruningTransformHandler", () => {
     ];
     contextPruningTransformHandler(messages, {
       enabled: true,
-      turnProtection: 0,
-      releaseThresholdPercent: 0.8,
+      protectedMessages: 0,
+      releasedPercent: 0.8,
       dedup: {
         enabled: true,
-        thresholdTokens: 100000,
+        thresholdContext: 100000,
       },
       purgeErrors: {},
     });
@@ -1447,11 +1557,11 @@ describe("contextPruningTransformHandler", () => {
     ];
     contextPruningTransformHandler(messages, {
       enabled: true,
-      turnProtection: 0,
-      releaseThresholdPercent: 0.8,
+      protectedMessages: 0,
+      releasedPercent: 0.8,
       dedup: {
         enabled: true,
-        thresholdTokens: 100000,
+        thresholdContext: 100000,
       },
       purgeErrors: {},
     });
@@ -1485,11 +1595,11 @@ describe("contextPruningTransformHandler", () => {
 
     contextPruningTransformHandler(messages, {
       enabled: true,
-      turnProtection: 0,
-      releaseThresholdPercent: 5, // Normal threshold
+      protectedMessages: 0,
+      releasedPercent: 5, // Normal threshold
       dedup: {
         enabled: true,
-        thresholdTokens: 100000,
+        thresholdContext: 100000,
       },
       purgeErrors: {},
     });
@@ -1534,9 +1644,9 @@ describe("contextPruningTransformHandler", () => {
       messages,
       {
         enabled: true,
-        turnProtection: 0,
-        releaseThresholdPercent: 0,
-        dedup: { enabled: true, thresholdTokens: 100000 },
+        protectedMessages: 0,
+        releasedPercent: 0,
+        dedup: { enabled: true, thresholdContext: 100000 },
         purgeErrors: {},
       },
       notify,
@@ -1576,11 +1686,11 @@ describe("contextPruningTransformHandler", () => {
     // No notify parameter — should not throw.
     contextPruningTransformHandler(messages, {
       enabled: true,
-      turnProtection: 0,
-      releaseThresholdPercent: 0,
+      protectedMessages: 0,
+      releasedPercent: 0,
       dedup: {
         enabled: true,
-        thresholdTokens: 100000,
+        thresholdContext: 100000,
       },
       purgeErrors: {},
     });
@@ -1614,9 +1724,9 @@ describe("contextPruningTransformHandler", () => {
       messages,
       {
         enabled: true,
-        turnProtection: 0,
-        releaseThresholdPercent: 0,
-        dedup: { enabled: true, thresholdTokens: 100000 },
+        protectedMessages: 0,
+        releasedPercent: 0,
+        dedup: { enabled: true, thresholdContext: 100000 },
         purgeErrors: {},
       },
       notify,
@@ -1630,7 +1740,7 @@ describe("contextPruningTransformHandler", () => {
   it("notify: not called when pending tokens below batch threshold", () => {
     const sessionID = "sess-batch-notify-below";
 
-    // With releaseThresholdPercent=5 and promptTokens=100000, threshold is 5000.
+    // With releasedPercent=5 and promptTokens=100000, threshold is 5000.
     // A single short duplicate will produce a very small mark.
     const SHORT_OUTPUT = "x".repeat(20); // ~5 tokens
     const messages = [
@@ -1656,9 +1766,9 @@ describe("contextPruningTransformHandler", () => {
       messages,
       {
         enabled: true,
-        turnProtection: 0,
-        releaseThresholdPercent: 0,
-        dedup: { enabled: true, thresholdTokens: 100000 },
+        protectedMessages: 0,
+        releasedPercent: 0,
+        dedup: { enabled: true, thresholdContext: 100000 },
         purgeErrors: {},
       },
       notify,
@@ -1674,8 +1784,8 @@ describe("contextPruningTransformHandler", () => {
   // ===========================================================================
 
   it("prune_completed log: prunedToolCount counts only effective marks, totalReclaimedTokens excludes pending", () => {
-    // Regression: Phase 4 log must report effective-only counts, not
-    // total marks (which would inflate both prunedToolCount and
+    // Regression: the prune_completed log must report effective-only counts,
+    // not total marks (which would inflate both prunedToolCount and
     // totalReclaimedTokens with pending marks not yet applied).
     const sessionID = "sess-log-mixed";
     const state = getOrCreateSessionState(sessionID);
@@ -1734,7 +1844,7 @@ describe("contextPruningTransformHandler", () => {
       "totalReclaimedTokens must exclude pending tokens",
     );
 
-    // totalPruneTokens is a compatibility alias — same value.
+    // totalPruneTokens has the same value as totalReclaimedTokens.
     assert.equal(
       pruneCompleted.totalPruneTokens,
       500,
@@ -1775,14 +1885,14 @@ describe("contextPruningTransformHandler", () => {
     // purge-errors enabled.
     contextPruningTransformHandler(turnN, {
       enabled: true,
-      turnProtection: 0,
-      releaseThresholdPercent: 0,
-      dedup: { enabled: true, thresholdTokens: 0 },
-      purgeErrors: { enabled: true, thresholdTokens: 0 },
+      protectedMessages: 0,
+      releasedPercent: 0,
+      dedup: { enabled: true, thresholdContext: 0 },
+      purgeErrors: { enabled: true, thresholdContext: 0 },
     });
 
     // Turn N: purge-errors marks call-err-1 as pending and releaseBatch
-    // flips it immediately (releaseThresholdPercent=0).
+    // flips it immediately (releasedPercent=0).
     assert.ok(state.marks.has("call-err-1"), "error part should be marked");
     const mark = state.marks.get("call-err-1");
     assert.ok(mark, "mark should exist");
@@ -1797,13 +1907,13 @@ describe("contextPruningTransformHandler", () => {
       "mark action should be tool-error-input",
     );
 
-    // Turn N Phase 1 already ran before Phase 2 (mark), so the
+    // Turn N Phase 2 already ran before Phase 3 (mark), so the
     // just-released mark did NOT get cleaned in this turn.
     // (The two-turn effect is verified by checking that the next turn's
-    // Phase 1 applies the replacement.)
+    // Phase 2 applies the replacement.)
 
     // Simulate Turn N+1: new messages arrive.  The effective mark for
-    // call-err-1 should now be cleaned by Phase 1 pruneToolErrors.
+    // call-err-1 should now be cleaned by Phase 2 pruneToolErrors.
     const turnN1 = [
       msg("user", "u2", [textPart("again")], sessionID),
       msg(
@@ -1829,13 +1939,13 @@ describe("contextPruningTransformHandler", () => {
 
     contextPruningTransformHandler(turnN1, {
       enabled: true,
-      turnProtection: 0,
-      releaseThresholdPercent: 0,
-      dedup: { enabled: true, thresholdTokens: 0 },
-      purgeErrors: { enabled: true, thresholdTokens: 0 },
+      protectedMessages: 0,
+      releasedPercent: 0,
+      dedup: { enabled: true, thresholdContext: 0 },
+      purgeErrors: { enabled: true, thresholdContext: 0 },
     });
 
-    // Turn N+1 Phase 1: pruneToolErrors replaces the input.
+    // Turn N+1 Phase 2: pruneToolErrors replaces the input.
     // Note: injectMessageRefs inserts a synthetic text part
     // before the first tool part, shifting tool part index from 1 to 2.
     const partN1 = turnN1[1].parts?.[2] as SweepToolPart;
@@ -2029,6 +2139,553 @@ describe("contextPruningTransformHandler", () => {
       const refsU2 = u2Text?.match(/m\d{4}/)?.[0];
       const refsA2 = a2Text?.match(/m\d{4}/)?.[0];
       assert.notEqual(refsU2, refsA2, "u2 and a2 must have different refs");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Phase 1: Compression block folding integration
+  // -------------------------------------------------------------------------
+
+  describe("Phase 1 compression block folding", () => {
+    it("folded synthetic summary receives an mNNNN ref from Phase 4", () => {
+      const sessionID = "sess-fold-integration";
+      const state = getOrCreateSessionState(sessionID);
+
+      // Block covers u1..u2, anchor = u2 (so u1 is covered but NOT anchor).
+      // First user (u1) is force-kept by fold; summary injected at u2.
+      createBlock(state, {
+        anchorMessageId: "u2",
+        messageIds: ["u1", "a1", "u2"],
+        summary: "test summary.",
+        compressedTokens: 1500,
+        summaryTokens: 80,
+      });
+
+      const messages = [
+        msg("user", "u1", [textPart("hello")], sessionID),
+        msg("assistant", "a1", [toolPart("call-1", "data")]),
+        msg("user", "u2", [textPart("again")], sessionID),
+        msg("assistant", "a2", [toolPart("call-2", "done")]),
+      ];
+
+      contextPruningTransformHandler(messages, {
+        enabled: true,
+        dedup: { enabled: false },
+        purgeErrors: { enabled: false },
+      });
+
+      // After folding: u1 (force-kept) → m0001, summary(b1) → m0002,
+      // a2 → m0003.  a1 and u2 are folded away and get NO ref.
+      const u1Text = (messages[0].parts?.[0] as { text?: string }).text;
+      assert.ok(u1Text?.includes("m0001"), "u1 should have ref m0001");
+
+      const synthText = (messages[1].parts?.[0] as { text?: string }).text;
+      assert.ok(synthText?.includes("m0002"), "summary should have ref m0002");
+
+      const a2Part0 = messages[2].parts?.[0] as unknown as Record<
+        string,
+        unknown
+      >;
+      const a2State = a2Part0.state as Record<string, unknown>;
+      assert.ok(
+        (a2State.output as string).includes("m0003"),
+        "a2 should have ref m0003",
+      );
+
+      // Only 3 tag-bearing messages (u1, summary, a2).
+      const allText = JSON.stringify(messages);
+      const tagMatches = allText.match(/<zoo-msg-id>m\d{4}<\/zoo-msg-id>/g);
+      assert.equal(tagMatches?.length ?? 0, 3);
+    });
+
+    it("full lifecycle: create → fold → deactivate → restore", () => {
+      const sessionID = "sess-lifecycle";
+      const state = getOrCreateSessionState(sessionID);
+
+      // ── Phase 1: Turn N — no blocks ──────────────────────────────
+      const messages = [
+        msg("user", "u1", [textPart("hello")], sessionID),
+        msg("assistant", "a1", [toolPart("call-1", "data")]),
+        msg("user", "u2", [textPart("again")], sessionID),
+        msg("assistant", "a2", [toolPart("call-2", "done")]),
+      ];
+
+      contextPruningTransformHandler(messages, {
+        enabled: true,
+        dedup: { enabled: false },
+        purgeErrors: { enabled: false },
+      });
+
+      // No blocks — no folding; messages keep their structure.
+      assert.equal(messages.length, 4, "no messages removed without blocks");
+      assert.equal(messages[0].info.id, "u1");
+      assert.equal(messages[1].info.id, "a1");
+      assert.equal(messages[2].info.id, "u2");
+      assert.equal(messages[3].info.id, "a2");
+      // No synthetic message injected.
+      for (const m of messages) {
+        const marker = (m.info as unknown as Record<string, unknown>).synthetic;
+        assert.equal(marker, undefined, "no synthetic message without blocks");
+      }
+      // Block state is empty.
+      assert.equal(state.blocks.size, 0);
+
+      // ── Phase 2: Turn N+1 — create block, run handler ──────────
+      createBlock(state, {
+        anchorMessageId: "u2",
+        messageIds: ["a1", "u2"],
+        summary: "test summary.",
+        compressedTokens: 1500,
+        summaryTokens: 80,
+      });
+
+      const messages2 = [
+        msg("user", "u1", [textPart("hello")], sessionID),
+        msg("assistant", "a1", [toolPart("call-1", "data")]),
+        msg("user", "u2", [textPart("again")], sessionID),
+        msg("assistant", "a2", [toolPart("call-2", "done")]),
+      ];
+
+      contextPruningTransformHandler(messages2, {
+        enabled: true,
+        dedup: { enabled: false },
+        purgeErrors: { enabled: false },
+      });
+
+      // After folding: u1 kept (force-kept), a1+u2 removed,
+      // summary injected at u2's original position, a2 kept.
+      // Result: [u1, summary(b1), a2]
+      assert.equal(messages2.length, 3, "folded from 4 to 3 messages");
+      assert.equal(messages2[0].info.id, "u1", "u1 preserved");
+
+      // messages2[1] is the synthetic summary.
+      assert.equal(
+        (messages2[1].info as unknown as Record<string, unknown>).synthetic,
+        true,
+        "summary message has synthetic marker",
+      );
+      const summaryText =
+        (messages2[1].parts?.[0] as { text?: string }).text ?? "";
+      assert.ok(
+        summaryText.startsWith("[压缩块 b1"),
+        "summary starts with b1 prefix",
+      );
+
+      // messages2[2] is a2 (kept).
+      assert.equal(messages2[2].info.id, "a2", "a2 preserved");
+
+      // Block remains active (anchor still in message list).
+      const blocks = [...state.blocks.values()];
+      assert.equal(blocks.length, 1);
+      assert.equal(blocks[0].active, true, "block still active");
+
+      // ── Phase 3: Turn N+2 — anchor physically deleted ──────────
+      // Simulate built-in compaction removing the anchor message u2.
+      const messages3 = [
+        msg("user", "u1", [textPart("hello")], sessionID),
+        // a1 was covered by the block — should reappear after deactivation.
+        msg("assistant", "a1", [toolPart("call-1", "data")]),
+        // u2 is GONE (compacted away)
+        msg("assistant", "a2", [toolPart("call-2", "done")]),
+      ];
+
+      contextPruningTransformHandler(messages3, {
+        enabled: true,
+        dedup: { enabled: false },
+        purgeErrors: { enabled: false },
+      });
+
+      // Block was deactivated (anchor u2 not in messages3).
+      assert.equal(
+        blocks[0].active,
+        false,
+        "block deactivated after anchor removal",
+      );
+
+      // No folding occurs (inactive blocks are skipped).
+      // a1 reappears (was covered by now-inactive block).
+      // Result: [u1, a1, a2] (3 messages, same as input).
+      assert.equal(messages3.length, 3, "still 3 messages after deactivation");
+      assert.equal(messages3[0].info.id, "u1", "u1 preserved");
+      assert.equal(
+        messages3[1].info.id,
+        "a1",
+        "a1 reappears (no longer folded)",
+      );
+      assert.equal(messages3[2].info.id, "a2", "a2 preserved");
+
+      // a1's content is intact (ref appended by Phase 3).
+      const a1Part = messages3[1].parts?.[0] as SweepToolPart;
+      assert.ok(
+        (a1Part.state?.output as string)?.startsWith("data"),
+        "a1 content preserved",
+      );
+
+      // No synthetic message present.
+      for (const m of messages3) {
+        const marker = (m.info as unknown as Record<string, unknown>).synthetic;
+        assert.equal(
+          marker,
+          undefined,
+          "no synthetic message after deactivation",
+        );
+      }
+    });
+  });
+
+  // ===========================================================================
+  // Forced flush (pendingViewChange flag) integration tests
+  // ===========================================================================
+
+  describe("forced flush (pendingViewChange flag)", () => {
+    const FORCED_SESSION_IDS = [
+      "sess-forced-compress",
+      "sess-forced-batched",
+      "sess-forced-deactivate",
+      "sess-forced-clear",
+      "sess-forced-zerotokens",
+    ];
+    TEST_SESSION_IDS.push(...FORCED_SESSION_IDS);
+
+    it("(a) below-threshold pending marks + pendingViewChange=true → flushes with forced reason", () => {
+      const sessionID = "sess-forced-compress";
+      const state = getOrCreateSessionState(sessionID);
+
+      // Pre-populate pending marks below typical threshold.
+      // Each mark ~100 tokens, total ~300.
+      const LONG_OUTPUT = "x".repeat(500);
+      addMark(state, "call-pending-1", 100, false, "tool-output");
+      addMark(state, "call-pending-2", 200, false, "tool-output");
+
+      // Simulate compress command: set the view-change flag.
+      state.pendingViewChange = true;
+
+      const messages = [
+        msg("user", "u1", [textPart("do it")], sessionID),
+        msg(
+          "assistant",
+          "a1",
+          [
+            toolPart("call-pending-1", LONG_OUTPUT, { cmd: "echo hi" }),
+            toolPart("call-pending-2", LONG_OUTPUT, { cmd: "echo hi" }),
+          ],
+          undefined,
+          { input: 100000, output: 200 },
+        ),
+      ];
+
+      contextPruningTransformHandler(messages, {
+        enabled: true,
+        protectedMessages: 0,
+        releasedPercent: 5, // 5% of 100000 = 5000 threshold
+        dedup: { enabled: true, thresholdContext: 0 },
+        purgeErrors: {},
+      });
+
+      // Marks should be released despite being below threshold.
+      assert.equal(
+        pendingCount(state),
+        0,
+        "all pending marks released by forced flush",
+      );
+      assert.equal(reclaimedTokens(state), 300, "all pending tokens reclaimed");
+
+      // Flag cleared.
+      assert.equal(
+        state.pendingViewChange,
+        false,
+        "flag cleared at end of phase",
+      );
+
+      // Log event should carry forced reason.
+      const entries = _getBufferForTesting();
+      const releaseLog = entries.find((e) => e.event === "marks_released") as
+        | Record<string, unknown>
+        | undefined;
+      assert.ok(releaseLog, "expected marks_released log event");
+      assert.equal(
+        releaseLog.forced,
+        "view_change",
+        "log event carries forced reason",
+      );
+    });
+
+    it("(b) below-threshold pending marks without view change → still batched (no forced field)", () => {
+      const sessionID = "sess-forced-batched";
+      const state = getOrCreateSessionState(sessionID);
+
+      // Pre-populate pending marks below threshold (same as test a).
+      addMark(state, "call-pending-1", 100, false, "tool-output");
+      addMark(state, "call-pending-2", 200, false, "tool-output");
+
+      // NO pendingViewChange flag — normal batching.
+
+      const messages = [
+        msg("user", "u1", [textPart("do it")], sessionID),
+        msg(
+          "assistant",
+          "a1",
+          [
+            toolPart("call-pending-1", "output 1", { cmd: "echo hi" }),
+            toolPart("call-pending-2", "output 2", { cmd: "echo hi" }),
+          ],
+          undefined,
+          { input: 100000, output: 200 },
+        ),
+      ];
+
+      contextPruningTransformHandler(messages, {
+        enabled: true,
+        protectedMessages: 0,
+        releasedPercent: 5, // threshold = 5000, pending = 300, below
+        dedup: { enabled: true, thresholdContext: 0 },
+        purgeErrors: {},
+      });
+
+      // Marks stay pending.
+      assert.ok(
+        pendingCount(state) > 0,
+        "pending marks remain pending below threshold",
+      );
+      assert.equal(
+        reclaimedTokens(state),
+        0,
+        "no marks released below threshold",
+      );
+
+      // No marks_released event emitted (or if it is, no forced field).
+      const entries = _getBufferForTesting();
+      const releaseLog = entries.find((e) => e.event === "marks_released") as
+        | Record<string, unknown>
+        | undefined;
+      if (releaseLog) {
+        assert.equal(
+          releaseLog.forced,
+          undefined,
+          "no forced field in normal batch log",
+        );
+      }
+
+      // Flag remains false (was never set).
+      assert.equal(state.pendingViewChange, false, "flag stays false");
+    });
+
+    it("(c) block deactivation turn flushes pending marks with forced reason", () => {
+      const sessionID = "sess-forced-deactivate";
+      const state = getOrCreateSessionState(sessionID);
+
+      // Create an active block whose anchor is NOT in the message list.
+      createBlock(state, {
+        anchorMessageId: "u2",
+        messageIds: ["a1", "u2"],
+        summary: "test summary.",
+        compressedTokens: 1500,
+        summaryTokens: 80,
+      });
+      assert.equal(
+        activeBlockCount(state),
+        1,
+        "block is active before transform",
+      );
+
+      // Add pending marks below threshold.
+      addMark(state, "call-pending-1", 150, false, "tool-output");
+
+      // Messages WITHOUT the anchor u2 — will trigger deactivation.
+      const messages = [
+        msg("user", "u1", [textPart("hello")], sessionID),
+        msg("assistant", "a1", [toolPart("call-pending-1", "data")]),
+        // u2 is absent → anchor missing
+        msg("assistant", "a2", [toolPart("call-2", "done")], undefined, {
+          input: 100000,
+          output: 200,
+        }),
+      ];
+
+      contextPruningTransformHandler(messages, {
+        enabled: true,
+        protectedMessages: 0,
+        releasedPercent: 5, // pending=150 far below 5000 threshold
+        dedup: { enabled: true, thresholdContext: 0 },
+        purgeErrors: {},
+      });
+
+      // Block should be deactivated.
+      assert.equal(
+        activeBlockCount(state),
+        0,
+        "block deactivated by missing anchor",
+      );
+
+      // Pending marks should be released (forced by deactivation).
+      assert.equal(
+        pendingCount(state),
+        0,
+        "pending marks flushed after deactivation",
+      );
+      assert.ok(
+        reclaimedTokens(state) >= 150,
+        "marks reclaimed after deactivation",
+      );
+
+      // Log event should carry forced reason.
+      const entries = _getBufferForTesting();
+      const releaseLog = entries.find((e) => e.event === "marks_released") as
+        | Record<string, unknown>
+        | undefined;
+      assert.ok(releaseLog, "expected marks_released log event");
+      assert.equal(
+        releaseLog.forced,
+        "view_change",
+        "log event carries forced reason from deactivation",
+      );
+
+      // Flag cleared.
+      assert.equal(state.pendingViewChange, false, "flag cleared");
+    });
+
+    it("(d) flag cleared after flush turn; subsequent turns batch normally", () => {
+      const sessionID = "sess-forced-clear";
+      const state = getOrCreateSessionState(sessionID);
+
+      // ── Turn 1: forced flush ──────────────────────────────────
+      state.pendingViewChange = true;
+      addMark(state, "call-turn1", 100, false, "tool-output");
+
+      const turn1 = [
+        msg("user", "u1", [textPart("turn 1")], sessionID),
+        msg(
+          "assistant",
+          "a1",
+          [toolPart("call-turn1", "output 1", { cmd: "echo hi" })],
+          undefined,
+          { input: 100000, output: 200 },
+        ),
+      ];
+
+      contextPruningTransformHandler(turn1, {
+        enabled: true,
+        protectedMessages: 0,
+        releasedPercent: 5,
+        dedup: { enabled: true, thresholdContext: 0 },
+        purgeErrors: {},
+      });
+
+      // Turn 1: marks released (forced flush).
+      assert.equal(pendingCount(state), 0, "turn 1: marks flushed");
+      assert.equal(reclaimedTokens(state), 100, "turn 1: marks reclaimed");
+      assert.equal(state.pendingViewChange, false, "turn 1: flag cleared");
+
+      // ── Turn 2: no view change, add new pending marks ────────
+      addMark(state, "call-turn2", 200, false, "tool-output");
+      // Pending now 200, threshold 5000 — well below.
+
+      const turn2 = [
+        msg("user", "u2", [textPart("turn 2")], sessionID),
+        msg(
+          "assistant",
+          "a2",
+          [toolPart("call-turn2", "output 2", { cmd: "echo hi" })],
+          undefined,
+          { input: 100000, output: 200 },
+        ),
+      ];
+
+      contextPruningTransformHandler(turn2, {
+        enabled: true,
+        protectedMessages: 0,
+        releasedPercent: 5,
+        dedup: { enabled: true, thresholdContext: 0 },
+        purgeErrors: {},
+      });
+
+      // Turn 2: marks NOT released (normal batching).
+      assert.ok(
+        pendingCount(state) > 0,
+        "turn 2: pending marks stay pending (normal batching)",
+      );
+      // reclaimedTokens from turn 1 (100) + still-pending turn 2 (0)
+      assert.equal(
+        reclaimedTokens(state),
+        100,
+        "turn 2: only turn 1 marks reclaimed so far",
+      );
+
+      // No forced field in any marks_released event for this turn.
+      const entries = _getBufferForTesting();
+      const releaseEvents = entries.filter((e) => e.event === "marks_released");
+      // There should be exactly 1 marks_released event (from turn 1).
+      assert.equal(
+        releaseEvents.length,
+        1,
+        "only one marks_released event across both turns",
+      );
+
+      // Flag remains false.
+      assert.equal(state.pendingViewChange, false, "flag stays false");
+    });
+
+    it("(e) pendingViewChange=true + promptTokens=0 flushes marks with forced reason", () => {
+      const sessionID = "sess-forced-zerotokens";
+      const state = getOrCreateSessionState(sessionID);
+
+      // Pre-populate pending marks below typical threshold.
+      addMark(state, "call-pending-1", 100, false, "tool-output");
+      addMark(state, "call-pending-2", 200, false, "tool-output");
+
+      // Simulate a view-change event (compress fold debut / block
+      // deactivation) without a completed assistant message in the
+      // current turn → promptTokens === 0.
+      state.pendingViewChange = true;
+
+      // No assistant message with output tokens → promptTokens = 0.
+      // findLastCompletedAssistant skips the assistant text-only
+      // message, so lastAsst.index < 0 and tokens is null.
+      const messages = [
+        msg("user", "u1", [textPart("do it")], sessionID),
+        msg("assistant", "a1", [textPart("thinking...")]),
+      ];
+
+      // Verify pre-conditions before calling the handler.
+      assert.equal(pendingCount(state), 2, "two pending marks before handler");
+      assert.equal(state.pendingViewChange, true, "flag set before handler");
+
+      contextPruningTransformHandler(messages, {
+        enabled: true,
+        protectedMessages: 0,
+        releasedPercent: 5,
+        dedup: { enabled: false },
+        purgeErrors: {},
+      });
+
+      // Marks should be released despite promptTokens === 0.
+      assert.equal(
+        pendingCount(state),
+        0,
+        "all pending marks released by forced flush",
+      );
+      assert.equal(reclaimedTokens(state), 300, "all pending tokens reclaimed");
+
+      // Flag cleared at end of phase.
+      assert.equal(
+        state.pendingViewChange,
+        false,
+        "flag cleared at end of phase",
+      );
+
+      // Log event should carry forced reason.
+      const entries = _getBufferForTesting();
+      const releaseLog = entries.find((e) => e.event === "marks_released") as
+        | Record<string, unknown>
+        | undefined;
+      assert.ok(releaseLog, "expected marks_released log event");
+      assert.equal(
+        releaseLog.forced,
+        "view_change",
+        "log event carries forced reason",
+      );
+      // promptTokens field is logged as 0 — sensible even when zero.
+      assert.equal(releaseLog.promptTokens, 0, "promptTokens is zero");
     });
   });
 });

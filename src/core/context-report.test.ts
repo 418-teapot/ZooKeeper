@@ -1,5 +1,5 @@
 /**
- * Tests for `src/core/context-report.ts` — pure format layer.
+ * Tests for `src/core/context-report.ts` -- pure format layer.
  *
  * Covers: formatTokens, formatPercent, progressBar, formatContextReport
  * output.  Computation logic is tested in `src/core/metrics.test.ts`.
@@ -142,7 +142,7 @@ describe("progressBar", () => {
 });
 
 // ---------------------------------------------------------------------------
-// formatContextReport output — uses computeContextReport from metrics
+// formatContextReport output -- uses computeContextReport from metrics
 // ---------------------------------------------------------------------------
 
 describe("formatContextReport output", () => {
@@ -159,7 +159,8 @@ describe("formatContextReport output", () => {
     const output = formatContextReport(report);
     assert.ok(output.includes("缓存"));
     assert.ok(output.includes("26.7%"));
-    assert.ok(output.includes("基于最近一次 LLM 调用"));
+    // No parenthetical note.
+    assert.ok(!output.includes("（"));
   });
 
   it("shows em dash for unavailable cache", () => {
@@ -168,7 +169,8 @@ describe("formatContextReport output", () => {
     const output = formatContextReport(report);
     assert.ok(output.includes("缓存"));
     assert.ok(output.includes("—"));
-    assert.ok(output.includes("无最近 LLM 调用数据"));
+    // No parenthetical explanation.
+    assert.ok(!output.includes("（"));
   });
 
   it("shows all-zero state for empty messages", () => {
@@ -229,12 +231,12 @@ describe("formatContextReport output", () => {
     ];
     const report = computeContextReport(msgs);
     const output = formatContextReport(report);
-    assert.ok(output.includes("用量  ~"));
+    assert.ok(output.includes("用量    ~"));
     // No detailed exact/heuristic breakdown row remains.
     assert.ok(!output.includes("精确    "));
   });
 
-  it("every line is ≤ 60 characters wide", () => {
+  it("every line is <= 60 characters wide", () => {
     const msgs: ContextMessageEntry[] = [
       msg("user", undefined, "Hello"),
       msg("assistant", {
@@ -258,29 +260,30 @@ describe("formatContextReport output", () => {
 });
 
 // ---------------------------------------------------------------------------
-// formatContextReport — reclaim line (pruned + dedup released)
+// formatContextReport -- reclaim section
 // ---------------------------------------------------------------------------
 
 describe("formatContextReport with reclaim", () => {
-  it("renders reclaim line when prunedTokens > 0", () => {
+  it("renders reclaim section when prunedTokens > 0", () => {
     const msgs: ContextMessageEntry[] = [
       msg("user", undefined, "Hello"),
       msg("assistant", { input: 500, output: 100 }, "Response"),
     ];
     const report = computeContextReport(msgs);
     const output = formatContextReport(report, { prunedTokens: 12345 });
-    assert.ok(output.includes("回收"), "expected reclaim line");
+    assert.ok(output.includes("回收"), "expected reclaim section");
+    assert.ok(output.includes("已生效"), "expected 已生效 in reclaim section");
     assert.ok(
       output.includes("12.3K"),
       "expected formatted token value (12.3K for 12345)",
     );
     assert.ok(
-      output.includes("累计回收"),
-      "expected '累计回收' in reclaim line",
+      output.includes("累计剪枝"),
+      "expected 累计剪枝 in reclaim section",
     );
   });
 
-  it("does NOT render reclaim line when prunedTokens = 0", () => {
+  it("does NOT render reclaim section when prunedTokens = 0", () => {
     const msgs: ContextMessageEntry[] = [
       msg("user", undefined, "Hello"),
       msg("assistant", { input: 500, output: 100 }, "Response"),
@@ -289,11 +292,11 @@ describe("formatContextReport with reclaim", () => {
     const output = formatContextReport(report, { prunedTokens: 0 });
     assert.ok(
       !output.includes("回收"),
-      "should NOT include reclaim line when total = 0",
+      "should NOT include reclaim section when total = 0",
     );
   });
 
-  it("does NOT render reclaim line when both fields are omitted", () => {
+  it("does NOT render reclaim section when both fields are omitted", () => {
     const msgs: ContextMessageEntry[] = [
       msg("user", undefined, "Hello"),
       msg("assistant", { input: 500, output: 100 }, "Response"),
@@ -302,29 +305,31 @@ describe("formatContextReport with reclaim", () => {
     const output = formatContextReport(report);
     assert.ok(
       !output.includes("回收"),
-      "should NOT include reclaim line when fields are omitted",
+      "should NOT include reclaim section when fields are omitted",
     );
   });
 
-  it("renders reclaim line from prunedTokens", () => {
+  it("renders reclaim section from prunedTokens with cumulative-prune parenthetical", () => {
     const msgs: ContextMessageEntry[] = [
       msg("user", undefined, "Hello"),
       msg("assistant", { input: 500, output: 100 }, "Response"),
     ];
     const report = computeContextReport(msgs);
     const output = formatContextReport(report, { prunedTokens: 13000 });
-    assert.ok(output.includes("回收"), "expected reclaim line");
+    assert.ok(output.includes("回收"), "expected reclaim section");
+    assert.ok(output.includes("已生效"), "expected 已生效");
+    assert.ok(output.includes("13.0K"), "expected formatted total");
     assert.ok(
-      output.includes("13.0K"),
-      "expected formatted total (13.0K for 13000)",
+      output.includes("累计剪枝"),
+      "expected 累计剪枝 in parenthetical",
     );
+    // Should NOT contain old labels.
+    assert.ok(!output.includes("剪枝标记"), "should not contain 剪枝标记");
+    // No separate 压缩块 line.
     assert.ok(
-      output.includes("累计回收"),
-      "expected '累计回收' in reclaim line",
+      !output.includes("压缩块："),
+      "should not contain old block line",
     );
-    // Should NOT contain "剪枝" or "去重" labels
-    assert.ok(!output.includes("剪枝"), "should not contain '剪枝' label");
-    assert.ok(!output.includes("去重"), "should not contain '去重' label");
   });
 });
 
@@ -351,11 +356,11 @@ describe("barrel export", () => {
 });
 
 // ---------------------------------------------------------------------------
-// formatContextReport — pending / released reclaim info
+// formatContextReport -- pending / released reclaim info
 // ---------------------------------------------------------------------------
 
 describe("formatContextReport with pending/released reclaim", () => {
-  it("shows pending info when pendingCount > 0 (no reclaimed total)", () => {
+  it("shows pending line when pendingCount > 0 (no reclaimed total)", () => {
     const msgs: ContextMessageEntry[] = [
       msg("user", undefined, "Hello"),
       msg("assistant", { input: 500, output: 100 }, "Response"),
@@ -365,17 +370,21 @@ describe("formatContextReport with pending/released reclaim", () => {
       pendingCount: 3,
       pendingTokens: 1500,
     });
-    assert.ok(output.includes("回收"), "expected reclaim line");
-    assert.ok(output.includes("待生效"), 'expected "待生效" in reclaim line');
+    assert.ok(output.includes("回收"), "expected reclaim section");
+    assert.ok(output.includes("待生效"), 'expected "待生效"');
     assert.ok(
-      output.includes("3 个标记"),
-      "expected pending count in reclaim line",
+      output.includes("3 个剪枝标记"),
+      "expected pending count in reclaim section",
     );
     assert.ok(
       output.includes("1.5K"),
       "expected formatted token value in pending info",
     );
-    assert.ok(output.includes("约"), 'expected "约" in pending info');
+    // 已生效 shows 0 when only pending exists.
+    assert.ok(
+      output.includes("已生效"),
+      "expected 已生效 line even when total is 0",
+    );
   });
 
   it("shows reclaimed total when prunedTokens > 0", () => {
@@ -387,16 +396,17 @@ describe("formatContextReport with pending/released reclaim", () => {
     const output = formatContextReport(report, {
       prunedTokens: 5000,
     });
-    assert.ok(output.includes("回收"), "expected reclaim line");
+    assert.ok(output.includes("回收"), "expected reclaim section");
+    assert.ok(output.includes("已生效"), "expected 已生效");
     assert.ok(output.includes("5.0K"), "expected formatted token value");
     assert.ok(
-      output.includes("累计回收"),
-      'expected "累计回收" in reclaim line',
+      output.includes("累计剪枝"),
+      'expected "累计剪枝" in reclaim section',
     );
     assert.ok(!output.includes("待生效"), "should not include pending info");
   });
 
-  it("appends pending info after reclaimed total when both present", () => {
+  it("shows both 已生效 and 待生效 lines when both present", () => {
     const msgs: ContextMessageEntry[] = [
       msg("user", undefined, "Hello"),
       msg("assistant", { input: 500, output: 100 }, "Response"),
@@ -407,23 +417,141 @@ describe("formatContextReport with pending/released reclaim", () => {
       pendingCount: 2,
       pendingTokens: 800,
     });
-    assert.ok(output.includes("回收"), "expected reclaim line");
+    assert.ok(output.includes("回收"), "expected reclaim section");
+    assert.ok(output.includes("已生效"), "expected 已生效 in reclaim section");
+    assert.ok(output.includes("待生效"), "expected 待生效 in reclaim section");
     assert.ok(
       output.includes("10.0K"),
-      "expected formatted reclaimed total (10.0K for 10000)",
+      "expected formatted 已生效 total (10.0K for 10000)",
     );
     assert.ok(
-      output.includes("累计回收"),
-      'expected "累计回收" in reclaim line',
+      output.includes("800"),
+      "expected pending tokens value (800 < 1000, bare number)",
     );
-    assert.ok(output.includes("待生效 2 个标记"), "expected pending info");
     assert.ok(
-      output.includes("，"),
-      "expected separator between reclaimed total and pending info",
+      output.includes("2 个剪枝标记"),
+      "expected pending count in pending line",
+    );
+    // Two lines under 回收: first is 已生效, second is 待生效 with indent.
+    const lines = output.split("\n");
+    // 已生效 line starts with 回收, 待生效 is continuation (no 回收 prefix)
+    assert.ok(
+      lines.some((l) => l.startsWith("回收")),
+      "line should start with 回收",
     );
   });
 
-  it("does NOT show reclaim line when all fields are absent or zero", () => {
+  it("shows active blocks in 已生效 parenthetical when state has active blocks", () => {
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hello"),
+      msg("assistant", { input: 500, output: 100 }, "Response"),
+    ];
+    const report = computeContextReport(msgs);
+
+    // Create a minimal SessionState with one active block.
+    const state = {
+      sessionId: "test-sess",
+      marks: new Map(),
+      blocks: new Map([
+        [
+          "1",
+          {
+            blockId: 1,
+            active: true,
+            anchorMessageId: "m1",
+            messageIds: ["m1", "a1", "m2", "a2"],
+            summary: "block summary",
+            compressedTokens: 10000,
+            summaryTokens: 500,
+            tier: 1 as const,
+            createdAt: Date.now(),
+          },
+        ],
+      ]),
+      lastAccessedAt: Date.now(),
+      dirty: false,
+    };
+
+    const output = formatContextReport(report, {
+      state: state as any,
+    });
+    // No separate block line; block info lives in 已生效 parenthetical.
+    assert.ok(
+      !output.includes("压缩块："),
+      "should not contain old block line",
+    );
+    assert.ok(output.includes("已生效"), "expected 已生效 line");
+    // Net reclaimed = 10000 - 500 = 9500 -> 9.5K
+    assert.ok(
+      output.includes("9.5K"),
+      `expected "9.5K" in output, got: ${output}`,
+    );
+    // Parenthetical: "1 个压缩块，折叠 4 条"
+    assert.ok(
+      output.includes("1 个压缩块"),
+      `expected "1 个压缩块" in output, got: ${output}`,
+    );
+    assert.ok(
+      output.includes("折叠 4 条"),
+      `expected "折叠 4 条" in output, got: ${output}`,
+    );
+  });
+
+  it("hides block parenthetical when state has 0 active blocks", () => {
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hello"),
+      msg("assistant", { input: 500, output: 100 }, "Response"),
+    ];
+    const report = computeContextReport(msgs);
+
+    // State with only inactive blocks.
+    const state = {
+      sessionId: "test-sess",
+      marks: new Map(),
+      blocks: new Map([
+        [
+          "1",
+          {
+            blockId: 1,
+            active: false,
+            anchorMessageId: "m1",
+            messageIds: ["m1"],
+            summary: "block summary",
+            compressedTokens: 1000,
+            summaryTokens: 100,
+            tier: 1 as const,
+            createdAt: Date.now(),
+          },
+        ],
+      ]),
+      lastAccessedAt: Date.now(),
+      dirty: false,
+    };
+
+    const output = formatContextReport(report, {
+      state: state as any,
+    });
+    // No reclaim section when all totals are zero.
+    assert.ok(
+      !output.includes("回收"),
+      "should NOT contain reclaim section when no active blocks and no prunedTokens",
+    );
+  });
+
+  it("hides block parenthetical when state is omitted", () => {
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hello"),
+      msg("assistant", { input: 500, output: 100 }, "Response"),
+    ];
+    const report = computeContextReport(msgs);
+    const output = formatContextReport(report);
+    assert.ok(
+      !output.includes("压缩块"),
+      "should NOT contain block info when state is omitted",
+    );
+  });
+
+  it("does NOT show reclaim section when all fields are absent or zero", () => {
     const msgs: ContextMessageEntry[] = [
       msg("user", undefined, "Hello"),
       msg("assistant", { input: 500, output: 100 }, "Response"),
@@ -436,7 +564,85 @@ describe("formatContextReport with pending/released reclaim", () => {
     });
     assert.ok(
       !output.includes("回收"),
-      "should NOT include reclaim line when all zero",
+      "should NOT include reclaim section when all zero",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatContextReport -- dual-scope message count
+// ---------------------------------------------------------------------------
+
+describe("formatContextReport dual-scope message count", () => {
+  it("shows single-count form when folded = storage", () => {
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hello"),
+      msg("assistant", { input: 500, output: 100 }, "Response"),
+    ];
+    const report = computeContextReport(msgs);
+    const output = formatContextReport(report, {
+      foldedMessageCount: 2,
+      storageMessageCount: 2,
+    });
+    assert.ok(output.includes("消息    "));
+    assert.ok(output.includes("2 条"));
+    assert.ok(!output.includes("模型可见"));
+    assert.ok(!output.includes("存储"));
+  });
+
+  it("shows dual-scope form when folded differs from storage", () => {
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hello"),
+      msg("assistant", { input: 500, output: 100 }, "Response"),
+    ];
+    const report = computeContextReport(msgs);
+    const output = formatContextReport(report, {
+      foldedMessageCount: 2,
+      storageMessageCount: 5,
+    });
+    assert.ok(output.includes("模型可见 2 条"));
+    assert.ok(output.includes("存储 5 条"));
+  });
+
+  it("falls back to single-count when opts omit message counts", () => {
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hello"),
+      msg("assistant", { input: 500, output: 100 }, "Response"),
+    ];
+    const report = computeContextReport(msgs);
+    const output = formatContextReport(report);
+    assert.ok(output.includes("消息    "));
+    assert.ok(output.includes("2 条"));
+    assert.ok(!output.includes("模型可见"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// No trailing spaces
+// ---------------------------------------------------------------------------
+
+describe("no trailing spaces", () => {
+  it("every line has no trailing whitespace", () => {
+    const msgs: ContextMessageEntry[] = [
+      msg("user", undefined, "Hello"),
+      msg("assistant", {
+        input: 5000,
+        output: 1000,
+        cache: { read: 3000, write: 500 },
+      }),
+    ];
+    const report = computeContextReport(msgs);
+    const output = formatContextReport(report, {
+      prunedTokens: 12345,
+      pendingCount: 2,
+      pendingTokens: 500,
+    });
+    for (const line of output.split("\n")) {
+      assert.equal(
+        line,
+        line.trimEnd(),
+        `line has trailing whitespace: "${line}"`,
+      );
+    }
   });
 });

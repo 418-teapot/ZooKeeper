@@ -1,9 +1,21 @@
 # 上下文剪枝设计文档：从内置 Compaction 到框架无关的统一剪枝架构
 
-**版本:** 2.5
-**日期:** 2026-07-27
+**版本:** 2.6
+**日期:** 2026-07-30
 **分类:** 技术架构文档 / 上下文管理
 
+> **2.6 更新说明：** 手动压缩功能完整实现（2026-07-30，1560 TS 测试
+> 全绿，三轮双路 Eagle 审查闭环）：§4.7 新增手动压缩 as-built 小节
+> （`/dcp compress` 无参命令、blocks/compress/fold 三模块、机械摘要、
+> 三重保护、幻影门+负收益门、视图变化强制释放）；§4.1/§4.2/§4.3/§4.6
+> 同步 Phase 1 折叠、blocks 状态、观测层折叠视图接线与配置键改名
+> （`protected_messages`/`released_percent`/`threshold_context`，新增
+> `[zoo.context.compress]`）；系统类估算改残差法（§4.3），恒 0 且零
+> 消费方的第五类 `misc` 一并删除；transform 管道重编号为 Phase 1-6
+> （折→清→标→refs→放→收尾）；原 §4.7
+> 认知收获顺延为 §4.8 并新增两条；§5.2/§7.1/§8/§9.4/§9.8/§10.1 同步
+> 进度。LLM 驱动摘要仍属 V3。
+>
 > **2.5 更新说明：** ACP（DCP fork）源码调研（2026-07-27）：
 > §3.8 新增 ACP 架构分析（T1/T2/T3 三层压缩、范围保护三件套、幻影
 > 门禁、nudge 防刷屏基线、GC 安全网、模型工具面）；§5.2/§5.3 吸收
@@ -573,9 +585,10 @@ ACP（`~/Code/Agent/opencode-acp`）是 DCP 的 fork，修复 39 个 bug，
 （`lib/compress/pipeline.ts:243-296`）算出受保护消息 ID 集合，
 `checkProtectedRange` 拒绝与保护区重叠的模型压缩范围。
 
-> **对照**：我们的 step-start 保护窗只覆盖工具输出策略（dedup/
-> purge-errors），不覆盖范围压缩——compress 引擎落地时需单独引入
-> 此口径。
+> **对照（2026-07-30 更新）**：compress 落地时已引入同口径保护——
+> 消息条数（`protected_messages` 20，与 dedup 共用 `protectedBoundary`）
+> + token 预算（`protected_tokens` 20K）+ 末条用户消息，三重取最保守
+> 边界（§4.7）；原 step-start 保护窗已统一为消息条数口径。
 
 #### 3.8.3 幻影门禁与质量门禁
 
@@ -618,7 +631,8 @@ ACP（`~/Code/Agent/opencode-acp`）是 DCP 的 fork，修复 39 个 bug，
 ## 4. ZooKeeper 当前实现
 
 已实现**观测层 + 统一 marks 剪枝核心（手动 sweep + 自动 dedup）+ 批量释放
-+ 持久化**（截至 2026-07-25，TS 测试 879 全绿）。核心逻辑在
++ 持久化 + 手动压缩（/dcp compress，机械摘要 MVP）+ 折叠视图观测接线**
+（截至 2026-07-30，TS 测试 1560 全绿）。核心逻辑在
 `src/core/pruning/`（框架无关），OpenCode 适配在 `src/hooks/` 与
 `src/opencode.ts`。
 
@@ -630,36 +644,48 @@ ACP（`~/Code/Agent/opencode-acp`）是 DCP 的 fork，修复 39 个 bug，
 sweep  = { selector: all,        range: since-last-user|last-N,
            protection: 0,        release: immediate }
 dedup  = { selector: duplicates, range: session,
-           protection: 5 步,     release: batch(release_threshold_percent) }
+           protection: 20 条,   release: batch(released_percent) }
 ```
 
 ```
 每轮 experimental.chat.messages.transform (src/opencode.ts):
   ├─ contextPruningTransformHandler (src/hooks/context-pruning/hook.ts)
-  │   Phase 1 清：pruneToolOutputs — 替换 effective 标记的输出
-  │   Phase 2 标：门控（prompt 侧总量 ≥ 100K）→ runDedup
+  │   Phase 1 折：syncBlocks（失效检测 → pendingViewChange）
+  │              → foldCompressedBlocks（折叠视图替换消息数组）
+  │   Phase 2 清：pruneToolOutputs — 替换 effective 标记的输出
+  │   Phase 3 标：门控（prompt 侧总量 ≥ threshold_context）→ producer 循环
   │              → 新标记写入 marks（effective=false）
-  │              → 批量释放：pending ≥ promptTokens × N% → releaseBatch
+  │   Phase 4 refs（strip → compaction 检测 → 分配 → 注入）
+  │   Phase 5 放：批量释放 pending ≥ promptTokens × released_percent%
+  │              或 pendingViewChange（视图变化强制释放，无视门槛）
   │              → 释放时注入 ignored 通知（noReply，LLM 不可见）
-  │   Phase 3 持久化（dirty 时）  Phase 4 prune_completed 日志
+  │   Phase 6 收尾：清 pendingViewChange + 持久化（dirty 时）
+  │              + prune_completed 日志
   └─ measureContext (src/core/metrics.ts)
 
 /dcp sweep [N]（command.execute.before）:
   └─ runSweep → addMark(effective=true)（立即生效，用户主权）
 
-TUI 侧边栏 (src/tui.tsx): 全量 fetch → computeContextReport
+/dcp compress（command.execute.before）:
+  └─ planCompression → 用户确认 → buildBlockSummary（机械摘要）
+     → createBlock 持久化 → 下轮 Phase 0.5 折叠生效
+
+TUI 侧边栏 (src/tui.tsx): 全量 fetch → 读盘 loadSessionState（纯只读）
+   → liveBlocks + previewFold 折叠 → computeContextReport
    （prunedCallIDs 只含 effective 标记）→ 渲染
 ```
 
 ### 4.2 marks 单集合状态（`src/core/pruning/marks.ts`）
 
 ```typescript
-interface Mark { tokens: number; effective: boolean }
+interface Mark { tokens: number; effective: boolean; action: PruneAction }
 interface SessionState {
   sessionId: string;
-  marks: Map<string, Mark>;   // 单集合，取代旧双 Map + 5 累计字段
+  marks: Map<string, Mark>;     // 单集合，取代旧双 Map + 5 累计字段
+  blocks: Map<string, CompressionBlock>;  // 压缩块（§4.7）
+  pendingViewChange: boolean;   // 视图变化标志，in-memory only 不落盘
   lastAccessedAt: number;
-  dirty: boolean;             // runtime-only
+  dirty: boolean;               // runtime-only
 }
 ```
 
@@ -669,19 +695,33 @@ interface SessionState {
   markedTokens` 均为 O(n) 纯函数，无累计器双写义务
 - **承重语义：marks 永不删除**——即使引用的消息已被压缩移除（悬空
   mark 是无害历史记录；派生正确性依赖单调性）
+- **`pendingViewChange` 不落盘**：视图变化强制释放是当轮事件，持久化
+  只会在崩溃恢复后误触发一次无意义的全量释放
 - **持久化**：`~/.zoo/storage/{sessionId}.json`，shape 为
-  `{ marks: Record<callID, {tokens, effective, action}>, lastUpdated }`；
+  `{ marks: Record<callID, {tokens, effective, action}>,
+    blocks: Record<blockId, CompressionBlock>, lastUpdated }`；
   旧 shape（紧凑键 `{t,e,a}`/`{t,e}` 及 prune.tools/stats）加载为空
-  （无迁移层）；原子写（tmp + rename）；sessionId 安全正则防路径穿越
+  （无迁移层）；marks 与 blocks 各自全字段严格校验（含 `tier === 1`
+  枚举），任一损坏即空载；原子写（tmp + rename）；sessionId 安全正则
+  防路径穿越
 
 ### 4.3 观测层
 
 | 文件 | 职责 |
 |------|------|
-| `src/core/metrics.ts` | 唯一测量模块（同 2.2：findLastCompletedAssistant、CJK 启发式、computeContextReport、缓存命中率） |
-| `src/core/context-report.ts` | 纯展示层：`formatContextReport(report, opts)`——合并回收行 `回收  X tokens（累计回收）`，pending 时追加 `，待生效 N 个标记（约 Y tokens）`；**不区分手动/自动**（release 后本质相同） |
-| `src/hooks/context-command/index.ts` | `/dcp` 命令分发：`context`/`sweep [N]`/`help`；报告数据源自内存态 `getOrCreateSessionState` |
-| `src/tui.tsx` | `ZookeeperPanel` 侧边栏；`prunedCallIDs` 只含 effective 标记（pending 不提前剔除 tool 分类） |
+| `src/core/metrics.ts` | 唯一测量模块（findLastCompletedAssistant、CJK 启发式、computeContextReport、缓存命中率）；**系统类为残差法** `max(0, total − user − asst − tool)`（见下方注） |
+| `src/core/context-report.ts` | 纯展示层：`formatContextReport(report, opts)`——**双口径消息数**（`模型可见 X 条 · 存储 Y 条`，相等时单行）；回收两态（`已生效` / `待生效` 分行）；**不区分手动/自动**（release 后本质相同） |
+| `src/hooks/context-command/index.ts` | `/dcp` 命令分发：`context`/`sweep [N]`/`compress`/`help`；报告数据源自内存态 `getOrCreateSessionState`，消息计数经 `liveBlocks` 折算 |
+| `src/tui.tsx` | `ZookeeperPanel` 侧边栏；**分类分布跑在折叠视图上**（读盘 `loadSessionState` → `liveBlocks` + `previewFold`，纯只读不写状态）；`prunedCallIDs` 只含 effective 标记 |
+
+> **系统类残差法（2026-07-30 修正）**：旧实现用 DCP 式减法（首条已完成
+> assistant 的 API `input+cache` − 之前消息的启发式和）估算系统 prompt。
+> TUI 接折叠视图后，被压消息替换为小摘要导致减数缩水、残差爆炸
+> （实测系统类 135.6K / 86.7%，四类合计 148%）。改为残差法后 total
+> （末条 assistant 的 API 上报，本身即折叠口径）与三类计数天然同视图，
+> 任何视图（折叠/原始/compaction 后）自洽；原第五类 `misc` 已删除
+> （恒 0 且零消费方，"none" 类 part 流入系统残差）；
+> `findFirstCompletedAssistant` 随之删除。
 
 ### 4.4 手动剪枝（/dcp sweep）
 
@@ -697,16 +737,18 @@ interface SessionState {
 
 - **签名** = `tool::JSON.stringify(归一化 input)`：键递归排序 +
   剔除 null/undefined + 任意深度剔除易变字段（timestamp/ts/date）
-- **保护窗**：step-start 计步，最近 5 步事前过滤；无 step-start 回退为
-  "保护最近 5 个工具调用"
+- **保护窗**：消息条数口径，末尾 `protected_messages`（默认 20）条非
+  ignored 消息内的调用事前过滤（`protectedBoundary`，producers/
+  shared.ts；2026-07-30 从 step-start 计步统一改名，被 compress 复用）
 - **跳过**：已存在 mark（单集合 `marks.has`）、protected_tools（默认仅
   `question`，§6.5）、error/非 completed part、**零收益**（output 估算
   ≤ 占位符估算时不标记——短输出被更长占位符替换会反增上下文）
-- **门控**：prompt 侧总量（`input + cache.read + cache.write`）≥ 100K
-  才扫描；缺失向安全方向失败
-- **批量释放**：`Σ pending ≥ promptTokens × release_threshold_percent%`
-  （默认 5%，0 = 每轮立即释放）时 `releaseBatch` 全部翻转，
-  下一轮 Phase 1 替换生效——破缓存从每轮降为低频批量事件
+- **门控**：prompt 侧总量（`input + cache.read + cache.write`）≥
+  `threshold_context`（默认 100K）才扫描；缺失向安全方向失败
+- **批量释放**：`Σ pending ≥ promptTokens × released_percent%`
+  （默认 10%，0 = 每轮立即释放）时 `releaseBatch` 全部翻转，
+  下一轮 Phase 1 替换生效——破缓存从每轮降为低频批量事件；
+  **视图变化轮（折叠首秀/块失效）无视门槛强制释放**（§4.7）
 - **通知**：仅释放时一条 `session.prompt({ noReply: true, ignored: true })`
   消息（"去重：已折叠 N 个重复工具输出，约释放 X tokens"）——追加在
   末尾不破前缀缓存；ignored part 在 `message-v2.ts:206` 被排除出 LLM
@@ -741,23 +783,31 @@ interface Mark { tokens: number; effective: boolean; action: PruneAction; }
 
 #### R1：三层配置拆分
 
-`config.toml` 改 `release_threshold_percent` 到 `[zoo.context]` 顶层
-（管道级共用，从旧 dedup 专属键移除），新增 `[zoo.context.purge_errors]`：
+`config.toml` 管道级共用键位于 `[zoo.context]` 顶层（2026-07-30 改名：
+`turn_protection` → `protected_messages`、`release_threshold_percent` →
+`released_percent`、各 producer 的 `threshold_tokens` →
+`threshold_context`，旧键不再读取），新增 `[zoo.context.compress]`：
 
 ```toml
 [zoo.context]
-turn_protection = 5
-release_threshold_percent = 5   # pending 合计达 prompt 侧总量此百分比时统一释放
+enabled = true
+protected_messages = 20      # 消息条数保护：末尾 N 条非 ignored 消息计入保护区
+released_percent = 10        # pending 合计达上下文长度此百分比时统一释放
 
 [zoo.context.dedup]
 enabled = true
-threshold_tokens = 100000
-protected_tools = ["question"]   # release_threshold_percent 已移走
+threshold_context = 100000
+protected_tools = []
 
-[zoo.context.purge_errors]       # 新增
-enabled = true                   # 默认开启（尾部保险，非每轮触发）
-threshold_tokens = 100000
-protected_tools = ["question"]
+[zoo.context.purge_errors]
+enabled = true
+threshold_context = 100000
+protected_tools = []
+
+[zoo.context.compress]       # 新增（§4.7）
+enabled = true
+threshold_tokens = 2000      # 幻影门禁：小于此收益的段跳过压缩
+protected_tokens = 20000     # 末尾累计达此值后不压缩（token 保护窗）
 ```
 
 `src/hooks/context-pruning/hook.ts` 定义 `ContextPruningConfig` 三层接口：
@@ -765,20 +815,20 @@ protected_tools = ["question"]
 ```typescript
 interface ProducerGateConfig {
   enabled?: boolean;
-  thresholdTokens?: number;
+  thresholdContext?: number;
   protectedTools?: string[];
 }
 interface ContextPruningConfig {
-  turnProtection?: number;
-  releaseThresholdPercent?: number;
+  protectedMessages?: number;      // 管道级保护窗（消息条数口径）
+  releasedPercent?: number;        // 管道级批量释放阈值
   dedup: ProducerGateConfig;
   purgeErrors: ProducerGateConfig;
+  compress?: CompressionGateConfig; // enabled/thresholdTokens/protectedTokens
 }
 ```
 
 `src/opencode.ts` 中的 `parseContextConfig` 完成三层全量解析：
-`release_threshold_percent` 从 `[zoo.context]` 顶层读取（无旧键兜底）；
-逐字段类型防御（非期望类型落默认），未知键忽略。
+逐字段类型防御（非期望类型落默认），未知键忽略，旧键不兜底。
 
 #### R3：表驱动 producer 循环
 
@@ -799,10 +849,11 @@ for (const {name, gate, run} of producers) {
 }
 ```
 
-每个 producer 独立评估自己的门控（`enabled` + `thresholdTokens`）；
+每个 producer 独立评估自己的门控（`enabled` + `thresholdContext`）；
 提示侧总量不足时向安全方向失败（不执行）。无注册表、无动态发现——
 静态数组即止。统一释放（循环外一次 `releaseBatch` 判断：全部 pending
-tokens ≥ promptTokens × release_threshold_percent% → 两类标记一起翻转）。
+tokens ≥ promptTokens × released_percent% → 两类标记一起翻转；
+`pendingViewChange` 置位时无视门槛强制释放，§4.7）。
 通知文案改为按 action 计数的中性表述：
 
 ```
@@ -817,7 +868,8 @@ tokens ≥ promptTokens × release_threshold_percent% → 两类标记一起翻�
 2. **非 error 状态**（`part.state.status !== "error"`）→ 跳过（只处理失败调用）
 3. **无 callID** → 跳过
 4. **callID 已在 `state.marks`** → 跳过（幂等）
-5. **在 step-start 保护窗内** → 跳过（共享 `collectProtectedCallIDs`）
+5. **在消息条数保护窗内**（末尾 `protected_messages` 条非 ignored 消息，
+   共享 `collectProtectedCallIDs`）→ 跳过
 6. **工具名在 `protectedTools`** → 跳过（默认 `["question"]`）
 7. **零收益**（input 字符串值总长度 ≤ 占位符长度估算）→ 跳过
 8. **命中**：`addMark(state, callID, tokens, false, "tool-error-input")`
@@ -842,15 +894,15 @@ pruneToolErrors(state, messages)   // 只处理 mark.action === "tool-error-inpu
 
 | 文件 | 变更 |
 |------|------|
-| `config.toml` | `release_threshold_percent` 移入 `[zoo.context]` 顶层；`[zoo.context.dedup]` 移除该键；新增 `[zoo.context.purge_errors]` 三键 |
+| `config.toml` | `[zoo.context]` 顶层管道级键；`[zoo.context.purge_errors]` 三键（2.6 改名：`protected_messages`/`released_percent`/`threshold_context`，新增 `[zoo.context.compress]`，见 §4.6 配置节） |
 | `src/core/pruning/types.ts` | 新增 `PRUNED_TOOL_ERROR_INPUT_REPLACEMENT` 常量 |
 | `src/core/pruning/marks.ts` | `PruneAction` 类型；`Mark.action`；持久化 `{tokens,effective,action}`；严格加载校验；`releaseBatch` 返回 `byAction` |
 | `src/core/pruning/prune.ts` | 新增 `pruneToolErrors`；`pruneToolOutputs` 加 action 判别 |
 | `src/core/pruning/producers/purge-errors.ts` | 新建：`runPurgeErrors`（error 扫描 + 跳过链） |
 | `src/core/pruning/producers/shared.ts` | 抽取 `collectProtectedCallIDs`/`netReclaimTokens` 共享辅助 |
 | `src/hooks/context-pruning/hook.ts` | `ContextPruningConfig` 三层；表驱动 producer 循环；双门控独立评估；统一释放；byAction 通知 |
-| `src/opencode.ts` | `parseContextConfig` 三层解析；`release_threshold_percent` 从顶层读取 |
-| 测试 | 全仓 879 TS 测试全绿 |
+| `src/opencode.ts` | `parseContextConfig` 三层解析；管道级键从顶层读取（2.6 改名后旧键不兜底） |
+| 测试 | 全仓 TS 测试全绿（2.6 时点 1560） |
 
 > **实测修正注记（2026-07-25，裸 SQL 核实）**：
 >
@@ -870,7 +922,90 @@ pruneToolErrors(state, messages)   // 只处理 mark.action === "tool-error-inpu
 >    output（`lib/messages/prune.ts:24`），默认 4 步老化保护（默认关闭）。
 >    我们的实现保持该语义：清理 error input、保留 `state.error` 消息。
 
-### 4.7 认知收获（仍然成立的）
+### 4.7 手动压缩（/dcp compress，✅ 已实现 2026-07-30）
+
+范围压缩的机械摘要 MVP：用户一条命令把保护窗外的旧历史折叠为结构化
+摘要块，LLM 驱动摘要留给 V3（§5.2）。设计决策（2026-07-30 用户确认）：
+**无参命令**（压缩范围由三重保护 + 阈值自动确定，优于手动百分比）；
+**机械摘要**（确定性、零 API 成本、可测试；非 LLM 生成——这是与
+§5.2 原定"启发式占位摘要→LLM 摘要"路线的有意演进）。
+
+#### 四阶段流水线
+
+```
+/dcp compress（command.execute.before，context-command/index.ts）:
+  1. planCompression（compress.ts）→ 通知计划（段数/消息数/预估回收）
+  2. 用户确认（下一条消息 y/yes）
+  3. buildBlockSummary（机械摘要）→ createBlock 持久化（blocks.ts）
+     → 锚点幂等检查 → BLOCK_HEADER_TEMPLATE 占位符回填（b<N> → bN）
+     → 完成通知（含累计回收）
+  4. 下一轮 transform Phase 1：foldCompressedBlocks 折叠生效
+     → pendingViewChange → Phase 5 强制释放全部 pending 剪枝标记
+```
+
+#### 三重保护与双门禁（compress.ts `planCompression`）
+
+压缩段末端取三者最保守边界（`Math.min`）：
+
+1. **消息条数保护**：末尾 `protected_messages`（默认 20）条非 ignored
+   消息不压（`protectedBoundary`，producers/shared.ts，与 dedup 共用）
+2. **token 保护**：从末尾累积启发式估算达 `protected_tokens`
+   （默认 20K）后的内容不压（ACP 范围保护三件套的口径，§3.8.2）
+3. **末条用户消息保护**：最后一条用户消息及其后内容不压
+
+双门禁（与 dedup 零收益跳过同源，§3.8.3）：**幻影门**
+（`threshold_tokens` 默认 2000，段收益不足则跳过）与**负收益门**
+（摘要估算 ≥ 原文估算时不压）。
+
+#### 块状态层（blocks.ts）与折叠通路（fold.ts）
+
+- `CompressionBlock`：`blockId`（b1/b2/...）、`anchorMessageId`（锚点 =
+  段内首条消息，幂等键）、`messageIds`、`summary`、`compressedTokens`/
+  `summaryTokens`、`active`、`tier`（恒 1，为 T2 再压缩预留，§9.8）、
+  `deactivatedAt`
+- **两阶段纪律**：blocks.ts 只写状态，fold.ts 只读状态做变换；
+  `previewFold`/`liveBlocks` 为纯函数（TUI/命令/测试复用），
+  `foldCompressedBlocks` 是应用其结果的薄壳
+- **折叠语义**：整段移除 + 锚点位置插入合成摘要消息（`role=user`，
+  header `[Compression Block bN]`），不原地编辑历史消息
+  （前缀缓存纪律，§3.8.5）；段内工具输出同时替换为占位符
+- **首条用户消息 force-keep** 三分支：锚点即首用户 → 合成消息与原
+  消息都保留；首用户被压但非锚点 → 原消息保留；其余 → 正常透传
+  （修零用户冻结，同 ACP §3.8.5）
+- **块失效**：锚点/成员消息从存储消失（如内置 compaction）时块自动
+  失效（`syncBlocks`），原始内容若仍在存储则恢复显示
+
+#### 视图变化强制释放（hook.ts）
+
+用户洞察（2026-07-30）：**压缩必破前缀缓存，此刻释放全部 pending
+剪枝标记是零成本搭车**——即使未达 `released_percent` 门槛。
+
+- `pendingViewChange`：in-memory 标志（不落盘），折叠首秀轮与块失效轮
+  由 Phase 1 置位
+- 批量释放门槛化简为 `pendingViewChange || (promptTokens > 0 &&
+  releasedPercent !== undefined)`；强制路径旁路阈值，日志带
+  `forced: "view_change"`；标志在释放检查后无条件清除（稳态轮绝不
+  误触发）；`promptTokens === 0` 时强制路径不被外层门槛跳过
+  （审查发现的边界洞，有回归测试）
+
+#### 观测接线
+
+- **TUI 面板**：分类分布跑在折叠视图上（模型实际所见），TUI 进程
+  纯只读（只 `loadSessionState` + 纯函数，不 `syncBlocks`/
+  `saveSessionState`；磁盘最多滞后服务端一轮 transform，2 秒防抖
+  自愈，这是两进程只读架构的固有延迟而非缺陷）
+- **`/dcp context`**：双口径消息数（`模型可见 X 条 · 存储 Y 条`，
+  相等时单行）；回收栏已生效/待生效两态分行
+
+#### 端到端验证（2026-07-30）
+
+本会话（实现会话自身）被连续压缩 3 次（b1：48 条 / b2：20 条 /
+b3：40 条），编排器以被测对象身份确认：机械摘要的信息密度足够支撑
+后续协作（跨块引用审查结论、修复历史无记忆断层）；三轮双路 Eagle
+审查全部发现闭环（3 Should Fix + 14 Could Fix：真实项全部修复并
+回归，误报/非缺陷项附代码证据驳回）。
+
+### 4.8 认知收获（仍然成立的）
 
 1. **两阶段必须是分离的代码路径**（或在同一 handler 内严格先清后标），
    否则标记-清理边界产生 off-by-one（§3.3）
@@ -894,6 +1029,13 @@ pruneToolErrors(state, messages)   // 只处理 mark.action === "tool-error-inpu
 9. **`session.prompt` 可在 turn 在途时安全调用**（noReply + ignored 标志
    会被正确持久化，源码核实 prompt.ts:1069）；ACP 的 Bug #20 反馈循环
    源于其自身 lastUser 检测逻辑误拾通知消息，非 opencode 机制缺陷
+10. **跨视图相减必爆炸**：任何"A 视图的 API 精确值 − B 视图的启发式和"
+    的估算，在两个视图可能不同源（折叠/截断/compaction）时必然失真——
+    系统类残差法的教训（§4.3）；估算要么全分量同视图，要么用
+    `max(0, total − 同视图分量)` 的残差构造
+11. **视图变化轮是释放剪枝标记的免费搭车点**：折叠/失效本就打破前缀
+    缓存，强制释放零额外成本；用 in-memory 标志（不落盘）把"视图变化"
+    事件从 Phase 1 传到释放检查（Phase 5），比持久化状态机简单且崩溃安全
 
 ---
 
@@ -929,7 +1071,13 @@ pipeline 进一步拆分。
 
 ### 5.2 压缩引擎（Range 模式）参考设计
 
-> 实施路线：先启发式 Range 压缩（无 LLM 调用）验证块生命周期，再注册
+> **进度（2026-07-30）**：启发式/机械摘要 MVP 已落地（§4.7）——三重
+> 保护、幻影门、整段移除 + 锚点合成摘要、缓存纪律均已按本节设计实现，
+> 摘要从"占位"演进为确定性机械摘要（非 LLM）。剩余 V3 工作：注册
+> compress 工具切换为 LLM 驱动摘要（DCP 的模式，§3.4）、mNNNN 引用、
+> nudge 系统。
+>
+> 原实施路线：先启发式 Range 压缩（无 LLM 调用）验证块生命周期，再注册
 > compress 工具切换为 LLM 驱动摘要（DCP 的模式，§3.4）。
 
 ```typescript
@@ -977,11 +1125,12 @@ nudgeGrowthTokens)）不再提示；压缩后按比例调整基线。
 命令通过 `config` hook 动态注册（**不要**在 config.toml/install.py 静态
 声明——OpenCode 在 config 最终化时读取 `config.command`），处理通过
 `command.execute.before` 分发，输出用 `sendIgnoredMessage`
-（`ignored: true`）。当前已实现 `context`/`sweep`/`help`；后续可扩展：
+（`ignored: true`）。当前已实现 `context`/`sweep`/`compress`/`help`；
+后续可扩展：
 
 | 命令 | 用途 | 依赖 |
 |------|------|------|
-| `/dcp compress [focus]` | 手动触发一次压缩（pendingManualTrigger 模式，§5.2） | compress 工具（V3） |
+| ~~`/dcp compress`~~ | ✅ 已实现（无参，机械摘要 MVP，§4.7）；V3 演进为 LLM 驱动摘要 | compress 工具（V3） |
 | `/dcp decompress <id>` | 恢复指定 blockId 的原始消息 | 压缩引擎（V3） |
 | `/dcp recompress <id>` | 用新策略重新压缩指定范围 | 压缩引擎（V3） |
 
@@ -1000,6 +1149,13 @@ nudgeGrowthTokens)）不再提示；压缩后按比例调整基线。
 > 初版"双 Map + 累计器"被重写为**统一 producer 模型 + marks 单集合**
 > （§4.1/§4.2），§6.6/§6.7/§6.8 已按 as-built 修订，§6.2-§6.5 保留
 > 定稿原文（语义与实现一致）。
+>
+> **2.6 注记（2026-07-30）**：配置键已改名（`turn_protection` →
+> `protected_messages`、`release_threshold_percent` → `released_percent`、
+> `threshold_tokens` → `threshold_context`，见 §4.6）；保护窗从
+> step-start 计步（5 步）统一为**消息条数口径**（默认 20 条非 ignored
+> 消息，`protectedBoundary`），与 compress 共用；`protected_tools`
+> 默认已从 `["question"]` 改为 `[]`。本节下文保留历史定稿原文。
 
 决策记录（2026-07-23 与用户确认）：只做 dedup（purge-errors 下一步）；
 阈值门控触发，默认 100K 可配置；轮次保护默认 5 步（step-start 口径）。
@@ -1178,8 +1334,8 @@ release_threshold_percent=0 时当轮标记当轮释放；ignored 通知
 | **框架绑定** | 强（仅 OpenCode） | 弱（核心框架无关） |
 | **依赖** | OpenCode SDK, 文件系统存储 | 无外部依赖 |
 | **Token 计数** | 未开源具体实现 | API 上报（主力）+ 启发式（补充），误差 < 5% |
-| **压缩模式** | Range + Message（双模） | 暂无 → V3 Range（LLM 驱动） |
-| **LLM 驱动压缩** | ✅ 完整 | ❌（V3 规划：compress 工具注册） |
+| **压缩模式** | Range + Message（双模） | ✅ Range 手动压缩（机械摘要 MVP，§4.7）；LLM 驱动 → V3 |
+| **LLM 驱动压缩** | ✅ 完整 | ❌（V3 规划：compress 工具注册；机械摘要已先行，§4.7） |
 | **去重** | ✅ 基于签名（compress 时检测，零保护清单） | ✅ 基于签名（transform 每轮检测 + 批量释放，§4.5） |
 | **错误清除** | ✅ 4 轮后 | ✅ 基于 action 判别 + 表驱动 producer + 老化保护窗 + 零收益跳过（§4.6） |
 | **Nudge 系统** | 3 级阈值 | ❌（V3 规划，3 级阈值） |
@@ -1187,8 +1343,8 @@ release_threshold_percent=0 时当轮标记当轮释放；ignored 通知
 | **Block 嵌套** | 支持 | 不支持（V3 也不做，扁平块） |
 | **配置层级** | 3 层级联 + JSONC | 单层 config.toml |
 | **消息引用** | mNNNN 格式 | ❌（V3 随 compress 工具引入） |
-| **命令系统** | `/dcp` 全套命令 | ✅ 部分（context/sweep/help） |
-| **轮次保护** | step-start 计数，默认 4（disabled） | step-start 计数，默认 5（§6.4） |
+| **命令系统** | `/dcp` 全套命令 | ✅ 部分（context/sweep/compress/help） |
+| **轮次保护** | step-start 计数，默认 4（disabled） | 消息条数口径，默认 20 条（`protected_messages`，2026-07-30 统一） |
 | **状态模型复杂度** | 高（8 种块间关系） | 低（prune.tools 单通路） |
 
 ### 7.2 为什么不在 ZooKeeper 中直接依赖 DCP
@@ -1219,8 +1375,9 @@ DCP 意味着增加 `dcp.jsonc`，破坏现有配置管理模型。
 | ~~当前~~ | 观测层 + 手动 sweep + 持久化 | — | ✅ 已完成（§4） |
 | ~~下一步~~ | 自动去重 dedup（统一 marks + 批量释放 + ignored 通知） | §3.5 | ✅ 已完成（§4.5/§6，2026-07-25） |
 | +1 | ~~purge-errors：错误工具调用老化 N 步后标记清除 input~~ | §3.5 / §4.6 | ✅ 已完成（R1-R3 架构落地，§4.6，2026-07-25） |
+| +1.5 | ~~手动压缩 `/dcp compress`：机械摘要 MVP + 三重保护 + 幻影门 + 折叠通路 + 视图变化强制释放 + TUI/报告折叠视图接线 + 系统类残差法~~ | §3.8 / §5.2 | ✅ 已完成（§4.7，2026-07-30） |
 | +2 | zinspect `stats` 新增剪枝回收 section（`--pruning` 标志与 `--tokens`/`--hooks` 同构；读 JSONL 日志的 `prune_completed`/`*_marked`/`*_released` 事件；2026-07-27 决策：不做 `/dcp stats` 聊天命令、不加独立子命令） | — | 即刻可做 |
-| V3 | compress 工具注册 + Range 压缩引擎 + mNNNN 引用 + 范围保护三件套 + 幻影门禁（手动 `/dcp compress` 触发先行，nudge 随后；用户确认：模型自主压缩为未来方向，统一 producer 模型已为其留位） | §3.3 / §3.4 / §3.6 / §3.8 / §5.2-5.3 | 自动策略稳定 |
+| V3 | compress 工具注册 + LLM 驱动摘要替换机械摘要 + mNNNN 引用 + nudge 系统（用户确认：模型自主压缩为未来方向，统一 producer 模型与 CompressionBlock.tier 已为其留位） | §3.3 / §3.4 / §3.6 / §5.2-5.3 | 手动压缩实测稳定 |
 | V3.5（候选） | T2 摘要再压缩（应对摘要累积；视 V3 实测决定，§9.8） | §3.8.1 | V3 实测数据 |
 | V4 | Message 模式压缩、decompress/recompress、子代理结果展开 | §3.4 / §5.4 | V3 |
 | 另行规划 | pi 宿主适配（核心已框架无关，缺 transform 接线） | — | pi 侧 hook 能力确认 |
@@ -1246,27 +1403,31 @@ token 来自 API 精确数据；CJK /1.5 分文字系统估算；门控决策只
 **风险**：同签名但语义不同的输出被误标（如 `bash("git status")` 在不同
 时间点结果不同）。
 
-**缓解**：保留最新副本（被清的只是陈旧副本）；5 步 step-start 保护窗
-（窗内调用完全不参与检测）；保护清单默认仅 `question`（输出即用户
-输入、不可再生；剪枝只影响 LLM 视图、不动会话存储，其余工具的精确
-重复去重均安全——源码核实 DCP dedup 亦零保护，§3.5）；100K 高默认
+**缓解**：保留最新副本（被清的只是陈旧副本）；20 条消息保护窗
+（窗内调用完全不参与检测，2.6 统一为消息条数口径）；保护清单默认为空
+（剪枝只影响 LLM 视图、不动会话存储，精确重复去重均安全——源码核实
+DCP dedup 亦零保护，§3.5）；100K 高默认
 门控（上下文充裕时不剪）；零收益跳过（短输出不替换）；剪枝非破坏性
 （占位符替换，callID 可追溯）。
 
-### 9.3 step-start 缺失
+### 9.3 step-start 缺失（✅ 已消解，2026-07-30）
 
-**风险**：某些会话/provider 的消息中可能没有 `step-start` part，导致
+**原风险**：某些会话/provider 的消息中可能没有 `step-start` part，导致
 轮次保护失效。
 
-**缓解**：单测用真实会话 fixture 覆盖；缺失时回退为"保护最近 5 个工具
-调用"。
+**消解**：2.6 保护窗统一为**消息条数口径**（`protectedBoundary` 从末尾
+倒数 N 条非 ignored 消息），不再依赖 step-start part，该风险消失；
+ignored 消息不占保护槽（系统注入消息不会压缩实际保护范围）。
 
-### 9.4 压缩误伤有效上下文（V3+）
+### 9.4 压缩误伤有效上下文
 
-**风险**：启发式范围识别可能压缩包含关键信息的消息。
+**风险**：范围压缩可能折叠包含关键信息的消息。
 
-**缓解**：turn protection 保护最近 N 轮；protected tools 确保 `task`/`skill`
-不被压缩；压缩非破坏性（摘要 + blockId 可追溯）。
+**缓解**（as-built，§4.7）：三重保护取最保守边界（`protected_messages`
+20 条 + `protected_tokens` 20K + 末条用户消息）；幻影门拒绝低收益段；
+负收益门拒绝摘要 ≥ 原文的段；压缩非破坏性（存储不动，摘要 + blockId
+可追溯，块失效自动恢复）；机械摘要保留用户请求/任务委托/涉及文件/
+最终进度骨架；首条用户消息 force-keep。
 
 ### 9.5 Nudge 对 LLM 行为影响不足（V3+）
 
@@ -1294,9 +1455,10 @@ token 来自 API 精确数据；CJK /1.5 分文字系统估算；门控决策只
 **风险**：扁平块方案下 T1 摘要数量随会话无限增长，摘要自身成为新的
 膨胀源（ACP 实测需 T2/T3 分层应对，§3.8.1）。
 
-**缓解**：数据模型预留 `tier` + `deactivatedBy` 字段（扁平 MVP 不实
-现层级逻辑，后续升级不推倒重来）；V3 上线后通过面板/命令观测摘要
-占比，确认真实累积后再做 T2 再压缩（§8 V3.5 候选）。
+**缓解**：数据模型已落地 `tier` 字段（恒 1，持久化严格校验枚举）+
+`deactivatedAt`，扁平 MVP 不实现层级逻辑，后续升级不推倒重来；
+通过面板/命令观测摘要占比，确认真实累积后再做 T2 再压缩
+（§8 V3.5 候选）。
 
 ---
 
@@ -1306,8 +1468,10 @@ token 来自 API 精确数据；CJK /1.5 分文字系统估算；门控决策只
 
 借鉴但不复制。**保留**：两阶段标记-清理（分离代码路径）、签名去重、
 错误清除、3 级 nudge、mNNNN 引用机制（V3）、范围保护三件套与幻影
-门禁（ACP §3.8.2/§3.8.3）、nudge 防刷屏基线（ACP §3.8.4）。**简化**：状态模型（无
-嵌套块）、配置层级（单层 config.toml）。**替换**：框架绑定 → 框架无关
+门禁（ACP §3.8.2/§3.8.3，已落地 §4.7）、nudge 防刷屏基线（ACP §3.8.4）、
+整段移除 + 锚点合成摘要的缓存纪律（ACP §3.8.5，已落地 §4.7）。**简化**：状态模型（无
+嵌套块）、配置层级（单层 config.toml）、摘要生成（机械摘要 MVP，
+LLM 驱动留 V3）。**替换**：框架绑定 → 框架无关
 核心 + 适配器。**推迟**：提示词覆盖、Toast 通知、子代理结果展开、
 自动更新。
 
@@ -1320,13 +1484,14 @@ ZooKeeper 剪枝 → 插件级，启发式策略 + 手动控制，编排器专�
 互补关系：
   - 去重 + 错误清除：在 compaction 之前减少无用内容
   - 手动 sweep：用户主导的即时回收
-  - 范围压缩（V3）：更细粒度的中间层
+  - 手动压缩（§4.7）：用户主导的整段折叠（机械摘要 MVP；LLM 驱动 V3）
   - Nudge（V3）：引导编排器主动管理上下文
 ```
 
 ### 10.3 实施路径
 
-观测 → 手动剪枝 → 自动策略（dedup → purge-errors）→ LLM 驱动压缩。
+观测 → 手动剪枝 → 自动策略（dedup → purge-errors）→ 手动压缩
+（机械摘要）→ LLM 驱动压缩。
 每步独立可验证，每步都有面板/命令/日志三层可观测性闭环。
 
 ---

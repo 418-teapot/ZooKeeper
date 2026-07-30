@@ -12,15 +12,25 @@ import {
   formatTokens,
 } from "../../core/context-report.js";
 import type { ContextMessageEntry } from "../../core/metrics.js";
-import { computeContextReport } from "../../core/metrics.js";
 import {
+  computeContextReport,
+  estimateTokenCount,
+  isMessageIgnored,
+} from "../../core/metrics.js";
+import {
+  BLOCK_HEADER_TEMPLATE,
+  createBlock,
   getOrCreateSessionState,
+  liveBlocks,
   pendingCount as pendingCountDerived,
   pendingTokens as pendingTokensDerived,
+  planCompression,
+  previewFold,
   reclaimedTokens as reclaimedTokensDerived,
   saveSessionState,
-} from "../../core/pruning/marks.js";
+} from "../../core/pruning/index.js";
 import { runSweep } from "../../core/pruning/producers/sweep.js";
+import type { ContextPruningConfig } from "../../hooks/context-pruning/index.js";
 import { log } from "../../utils/logger.js";
 
 // ---------------------------------------------------------------------------
@@ -68,17 +78,22 @@ export interface DcpClient {
  *
  * - `""` or `"context"` → fetches session messages, computes a context
  *   report, and injects it as an ignored (LLM-invisible) message.
+ * - `"compress"` → compresses historical messages that pass the phantom
+ *   gate and protection zone.
  * - Any other argument → shows a short help listing available subcommands.
  *
  * @param client - OpenCode client providing session APIs.
  * @param sessionID - The current session identifier.
  * @param args - The raw arguments string after `/dcp`.
+ * @param contextConfig - Optional context pruning config (needed for
+ *   compress subcommand).  When absent, compress is skipped.
  * @throws Error when the messages API or prompt API is unavailable.
  */
 export async function handleDcpCommand(
   client: DcpClient | null | undefined,
   sessionID: string,
   args: string,
+  contextConfig?: ContextPruningConfig,
 ): Promise<void> {
   const trimmed = args.trim();
 
@@ -88,15 +103,26 @@ export async function handleDcpCommand(
     return;
   }
 
+  // ── Compress subcommand ──────────────────────────────────────────
+  if (trimmed === "compress") {
+    await handleCompressSubcommand(
+      client,
+      sessionID,
+      contextConfig ?? { dedup: {}, purgeErrors: {} },
+    );
+    return;
+  }
+
   // ── Unknown subcommand → show help ────────────────────────────────
   if (trimmed !== "" && trimmed !== "context") {
     const help = [
       "━━  用法 ━━",
       "",
-      "/dcp context   — 显示上下文用量与缓存命中率",
-      "/dcp           — 同上（默认）",
-      "/dcp sweep     — 标记所有工具输出以在下一轮回收",
-      "/dcp sweep N   — 标记最近 N 个工具输出",
+      "/dcp context    — 显示上下文用量与缓存命中率",
+      "/dcp            — 同上（默认）",
+      "/dcp sweep      — 标记所有工具输出以在下一轮回收",
+      "/dcp sweep N    — 标记最近 N 个工具输出",
+      "/dcp compress   — 压缩历史消息以释放上下文空间",
     ].join("\n");
 
     if (client?.session?.prompt) {
@@ -165,8 +191,9 @@ export async function handleDcpCommand(
   let totalEff = 0;
   let curPendingCount = 0;
   let curPendingTokens = 0;
+  let state: ReturnType<typeof getOrCreateSessionState> | undefined;
   try {
-    const state = getOrCreateSessionState(sessionID);
+    state = getOrCreateSessionState(sessionID);
     prunedCallIDs = new Set(
       [...state.marks.entries()]
         .filter(([, mark]) => mark.effective)
@@ -179,11 +206,33 @@ export async function handleDcpCommand(
     // Defensive: I/O failure is non-fatal — tools fully counted.
     prunedCallIDs = undefined;
   }
+  // ── Compute dual-scope message counts (folded view vs storage) ──────
+  let foldedCount: number | undefined;
+  let storageCount: number | undefined;
+  try {
+    if (state) {
+      const stateBlocks: import("../../core/pruning/blocks.js").CompressionBlock[] =
+        [];
+      for (const [, block] of state.blocks) {
+        stateBlocks.push(block);
+      }
+      const live = liveBlocks(stateBlocks, messages);
+      const folded = previewFold(messages, live);
+      foldedCount = folded.filter((m) => !isMessageIgnored(m)).length;
+      storageCount = messages.filter((m) => !isMessageIgnored(m)).length;
+    }
+  } catch {
+    // Defensive: error is non-fatal, fall back to single-count line.
+  }
+
   const report = computeContextReport(messages, prunedCallIDs);
   const formatted = formatContextReport(report, {
     prunedTokens: totalEff,
     pendingCount: curPendingCount,
     pendingTokens: curPendingTokens,
+    state,
+    foldedMessageCount: foldedCount,
+    storageMessageCount: storageCount,
   });
 
   log("context-command", "report_computed", sessionID, undefined, "info", {
@@ -369,4 +418,242 @@ async function handleSweepSubcommand(
   }
 
   return;
+}
+
+// ---------------------------------------------------------------------------
+// Compress subcommand handler
+// ---------------------------------------------------------------------------
+
+/**
+ * Handle the `/dcp compress` subcommand.
+ *
+ * 1. Checks the master enable gate — disabled config skips with a notice.
+ * 2. Fetches session messages.
+ * 3. Builds the already-compressed index set from active blocks (maps
+ *    block messageIds to current message indices).
+ * 4. Calls planCompression — empty plan replies "无可压缩内容".
+ * 5. For each eligible segment:
+ *    a. Computes anchorMessageId (first message id in segment).
+ *    b. Reuses the precomputed mechanical summary from planCompression.
+ *    c. Creates the block via createBlock.
+ *    d. Substitutes `b<N>` placeholder in the summary header with the
+ *       real block id.
+ *    e. Logs a `compress_created` event.
+ * 6. Saves state to disk.
+ * 7. Sends a single ignored notification.
+ *
+ * Two-phase discipline: this function only writes state (blocks).  The
+ * current turn's message list is unchanged — folding happens on the
+ * NEXT turn's transform (Phase 1).
+ *
+ * @param client - OpenCode client providing session APIs.
+ * @param sessionID - The current session identifier.
+ * @param contextConfig - The parsed context pruning config (needed for
+ *   compress sections).
+ * @throws Error on API failures or invalid config.
+ */
+async function handleCompressSubcommand(
+  client: DcpClient | null | undefined,
+  sessionID: string,
+  contextConfig: ContextPruningConfig,
+): Promise<void> {
+  // ── Master enable gate ──────────────────────────────────────────
+  const compressCfg = contextConfig.compress;
+  if (!compressCfg || compressCfg.enabled === false) {
+    const msg = "压缩功能未启用（[zoo.context.compress].enabled = false）";
+    if (client?.session?.prompt) {
+      await client.session.prompt({
+        path: { id: sessionID },
+        body: {
+          noReply: true,
+          parts: [{ type: "text", text: msg, ignored: true }],
+        },
+      });
+    }
+    return;
+  }
+
+  const protectedMessages = contextConfig.protectedMessages ?? 20;
+  const protectedTokens = compressCfg.protectedTokens ?? 20000;
+  const thresholdTokens = compressCfg.thresholdTokens ?? 2000;
+
+  // ── Fetch messages ──────────────────────────────────────────────
+  if (!client?.session?.messages) {
+    throw new Error("无法获取会话消息：会话消息 API 不可用");
+  }
+
+  let rawMessages: unknown;
+  try {
+    const res = await client.session.messages({
+      path: { id: sessionID },
+    });
+    rawMessages = res;
+  } catch (err) {
+    log(
+      "context-command",
+      "compress_fetch_failed",
+      sessionID,
+      undefined,
+      "error",
+      { error: String(err) },
+    );
+    throw new Error(
+      `无法获取会话消息：${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  if (!rawMessages) {
+    throw new Error("会话消息 API 返回空结果");
+  }
+
+  const rawObj = rawMessages as {
+    data?: unknown;
+    error?: { message?: string };
+  };
+  if (rawObj.error) {
+    const msg = rawObj.error.message ?? String(rawObj.error);
+    throw new Error(`获取会话消息失败：${msg}`);
+  }
+  const messages = (rawObj.data ?? rawMessages) as ContextMessageEntry[];
+
+  if (!Array.isArray(messages)) {
+    throw new Error("会话消息格式异常：期望数组");
+  }
+
+  // ── Build already-compressed index set from active blocks ────────
+  const state = getOrCreateSessionState(sessionID);
+  const alreadyCompressedIds = new Set<number>();
+  for (const [, block] of state.blocks) {
+    if (!block.active) continue;
+    for (const mid of block.messageIds) {
+      const idx = messages.findIndex((m) => m.info.id === mid);
+      if (idx >= 0) alreadyCompressedIds.add(idx);
+    }
+  }
+
+  // ── Run compression planner ─────────────────────────────────────
+  const plan = planCompression(
+    messages,
+    {
+      protectedMessages,
+      protectedTokens,
+      thresholdTokens,
+    },
+    alreadyCompressedIds,
+  );
+
+  // ── Empty plan → nothing to compress ────────────────────────────
+  if (plan.segments.length === 0) {
+    const msg = "无可压缩内容";
+    if (client?.session?.prompt) {
+      await client.session.prompt({
+        path: { id: sessionID },
+        body: {
+          noReply: true,
+          parts: [{ type: "text", text: msg, ignored: true }],
+        },
+      });
+    }
+    return;
+  }
+
+  // ── Create blocks for each segment ──────────────────────────────
+  let totalCompressedMessages = 0;
+  let totalInTokens = 0;
+  let totalOutTokens = 0;
+
+  for (const seg of plan.segments) {
+    // Collect message IDs for this segment.
+    const messageIds: string[] = [];
+    for (let i = seg.startIndex; i < seg.endIndex; i++) {
+      messageIds.push(messages[i].info.id);
+    }
+    const anchorMessageId = messageIds[0];
+
+    // Use precomputed values from planCompression (avoids recomputing
+    // buildBlockSummary and segmentInOutTokens).
+    // planCompression always sets these for accepted segments.
+    const summary = seg.summary;
+    const inTokens = seg.inTokens ?? 0;
+    const outTokens = seg.outTokens ?? 0;
+    if (summary === undefined) {
+      throw new Error(
+        `压缩段 [${seg.startIndex}, ${seg.endIndex}) 缺少预计算的摘要`,
+      );
+    }
+    const compressedTokens = inTokens + outTokens;
+    const summaryTokens = estimateTokenCount(summary);
+
+    // Create the block.
+    const block = createBlock(state, {
+      anchorMessageId,
+      messageIds,
+      summary,
+      compressedTokens,
+      summaryTokens,
+    });
+
+    if (!block) {
+      // Idempotency: anchor already exists — skip (should not happen
+      // since we already built alreadyCompressedIds from active blocks).
+      continue;
+    }
+
+    // Fix up the `b<N>` placeholder with the real block id (anchor to
+    // header to avoid corrupting user text that might contain `b<N>`).
+    block.summary = block.summary.replace(
+      BLOCK_HEADER_TEMPLATE,
+      `[Compression Block b${block.blockId}]`,
+    );
+
+    // Accumulate stats for the notification.
+    const segMsgCount = seg.endIndex - seg.startIndex;
+    totalCompressedMessages += segMsgCount;
+    totalInTokens += inTokens;
+    totalOutTokens += outTokens;
+
+    // Log per-block.
+    log("context-command", "compress_created", sessionID, undefined, "info", {
+      blockId: block.blockId,
+      messageCount: segMsgCount,
+      inTokens,
+      outTokens,
+    });
+  }
+
+  // ── Set view-change flag ───────────────────────────────────────
+  // The new block will change the folded view on the next transform
+  // (breaking the prompt prefix cache), so pending prune marks should
+  // ride along without requiring the released_percent threshold.
+  state.pendingViewChange = true;
+
+  // ── Persist state ──────────────────────────────────────────────
+  saveSessionState(sessionID, state);
+
+  // ── Notification ───────────────────────────────────────────────
+  const notifyMsg = `已压缩 ${totalCompressedMessages} 条消息，约 ${formatTokens(totalInTokens + totalOutTokens)} tokens`;
+
+  if (client?.session?.prompt) {
+    try {
+      await client.session.prompt({
+        path: { id: sessionID },
+        body: {
+          noReply: true,
+          parts: [{ type: "text", text: notifyMsg, ignored: true }],
+        },
+      });
+    } catch (err) {
+      log(
+        "context-command",
+        "compress_notify_failed",
+        sessionID,
+        undefined,
+        "warn",
+        { error: String(err) },
+      );
+      throw new Error(
+        `压缩已完成但通知失败：${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 }

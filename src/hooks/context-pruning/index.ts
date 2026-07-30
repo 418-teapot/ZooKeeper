@@ -8,5 +8,9 @@
  * @module
  */
 
-export type { ContextPruningConfig, ProducerGateConfig } from "./hook.js";
+export type {
+  CompressConfig,
+  ContextPruningConfig,
+  ProducerGateConfig,
+} from "./hook.js";
 export { contextPruningTransformHandler } from "./hook.js";

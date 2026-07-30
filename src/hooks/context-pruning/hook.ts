@@ -15,13 +15,16 @@ import {
   findLastCompletedAssistant,
 } from "../../core/metrics.js";
 import {
+  activeBlockCount,
   assignMessageRefs,
+  foldCompressedBlocks,
   getLastCompactionBoundaryId,
   injectMessageRefs,
   resetMessageRefs,
   setLastCompactionBoundaryId,
   stripHallucinatedRefs,
   stripRefsFromString,
+  syncBlocks,
   ZOO_MSG_ID_CANONICAL_END_REGEX,
 } from "../../core/pruning/index.js";
 import {
@@ -52,9 +55,27 @@ export interface ProducerGateConfig {
    * Minimum prompt-side total tokens (input + cache.read + cache.write)
    * before this producer runs.  Undefined → skip producer.
    */
-  thresholdTokens?: number;
+  thresholdContext?: number;
   /** Tool names excluded from this strategy.  Undefined → empty list (neutral). */
   protectedTools?: string[];
+}
+
+/**
+ * Per-subsystem gate config for the compression strategy.
+ */
+export interface CompressConfig {
+  /** Hook-level enable gate.  Undefined → runs unless explicitly false. */
+  enabled?: boolean;
+  /**
+   * Minimum estimated tokens a segment must have to bypass the phantom
+   * gate.  Undefined → skip compression.
+   */
+  thresholdTokens?: number;
+  /**
+   * Token budget to protect from the end of the session (CJK heuristic).
+   * Undefined → skip compression.
+   */
+  protectedTokens?: number;
 }
 
 /**
@@ -67,24 +88,25 @@ export interface ProducerGateConfig {
 export interface ContextPruningConfig {
   /**
    * Master enable switch.  When not explicitly true the entire
-   * transform no-ops: no Phase 1/2/2.5, no batch release, no
-   * persistence.  Undefined → disabled.
+   * transform no-ops: the entire pipeline (Phases 1–6) is skipped.  Undefined → disabled.
    */
   enabled?: boolean;
   /**
-   * Number of most recent assistant steps to protect (shared).
+   * Number of most recent non-ignored messages to protect (shared).
    * Undefined → skip all producers (they early-return).
    */
-  turnProtection?: number;
+  protectedMessages?: number;
   /**
    * Minimum percentage of prompt-side total that pending marks must
    * reach before batch release.  Undefined → skip release check.
    */
-  releaseThresholdPercent?: number;
+  releasedPercent?: number;
   /** Dedup producer gate & options. */
   dedup: ProducerGateConfig;
   /** Purge-errors producer gate & options. */
   purgeErrors: ProducerGateConfig;
+  /** Compress strategy gate & options. */
+  compress?: CompressConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -94,19 +116,28 @@ export interface ContextPruningConfig {
 /**
  * Handle the messages.transform hook for context pruning.
  *
- * Two-phase clean-then-mark:
+ * Six-phase transform pipeline:
  *
- * **Phase 1 (Clean):** prune previously-marked tool outputs (`tool-output`
+ * **Phase 1 (Fold):** sync and fold compression blocks so downstream
+ * phases see a folded view.
+ *
+ * **Phase 2 (Clean):** prune previously-marked tool outputs (`tool-output`
  * action) and tool error inputs (`tool-error-input` action) from the last
  * turn.  Marks from previous rounds take effect now.
  *
- * **Phase 2 (Mark / Gate + Producer Loop):** evaluate each producer's
- * gate independently (enabled + prompt-side threshold).  Producers whose
- * gate passes create pending marks for the *next* turn.
+ * **Phase 3 (Gate + Mark):** evaluate each producer's gate independently
+ * (enabled + prompt-side threshold).  Producers whose gate passes create
+ * pending marks for the *next* turn.
  *
- * **Batch release:** after all producers run, if the accumulated pending
- * tokens reach `releaseThresholdPercent` of the prompt-side total, all
- * pending marks are flipped to effective at once.
+ * **Phase 4 (Message refs):** strip hallucinated refs, detect compaction
+ * boundary changes, assign and inject message references.
+ *
+ * **Phase 5 (Batch release):** after all producers run, if the accumulated
+ * pending tokens reach `releaseThresholdPercent` of the prompt-side total,
+ * all pending marks are flipped to effective at once.
+ *
+ * **Phase 6 (Finalize):** clear the view-change flag and persist state to
+ * disk when dirty.
  *
  * The two-turn effect ("turn N marks apply on turn N+1") means that
  * marks produced by the current turn are NOT pruned during the same turn.
@@ -144,7 +175,33 @@ export function contextPruningTransformHandler(
   // Get or create state — new session ID naturally creates fresh state.
   const state = getOrCreateSessionState(sessionId);
 
-  // ── Phase 1: Clean — prune previously marked parts ─────────────
+  // ── Phase 1: Sync and fold compression blocks ──────────────
+  // Runs before Phase 2 so downstream phases see the folded view
+  // (compressed segments removed, synthetic summary injected).  The
+  // two-step sequence ensures syncBlocks always evaluates on the raw
+  // (pre-fold) message list so anchor-missing detection is accurate.
+  if (state.blocks.size > 0) {
+    const activeBefore = activeBlockCount(state);
+    syncBlocks(state, messages);
+    const activeAfter = activeBlockCount(state);
+    if (activeBefore > activeAfter) {
+      log(
+        "context-pruning",
+        "compress_deactivated",
+        sessionId,
+        undefined,
+        "info",
+        { deactivatedCount: activeBefore - activeAfter },
+      );
+      // Deactivation changes the folded view (prefix changes, cache
+      // breaks), so pending prune marks should flush immediately
+      // without waiting for the released_percent threshold.
+      state.pendingViewChange = true;
+    }
+    foldCompressedBlocks(state, messages);
+  }
+
+  // ── Phase 2: Clean — prune previously marked parts ─────────────
   // Marks from previous dedup / sweep / purge-errors rounds take
   // effect now.  Both output pruning and error-input pruning run
   // unconditionally — they only touch effective marks.
@@ -154,7 +211,7 @@ export function contextPruningTransformHandler(
   const replacedOutputs = pruneToolOutputs(state, messages);
   const replacedInputs = pruneToolErrors(state, messages);
 
-  // ── Phase 2: Gate + Mark (table-driven) ────────────────────────
+  // ── Phase 3: Gate + Mark (table-driven) ────────────────────────
   // New marks will apply starting from the *next* turn.
   const lastAsst = findLastCompletedAssistant(messages);
   const promptTokens =
@@ -172,7 +229,7 @@ export function contextPruningTransformHandler(
       gate: config.dedup ?? {},
       run: () => {
         const marks = runDedup(state, messages, {
-          turnProtection: config.turnProtection,
+          turnProtection: config.protectedMessages,
           protectedTools: config.dedup?.protectedTools,
         } satisfies DedupOptions);
         return { marks };
@@ -183,7 +240,7 @@ export function contextPruningTransformHandler(
       gate: config.purgeErrors ?? {},
       run: () => {
         const marks = runPurgeErrors(state, messages, {
-          turnProtection: config.turnProtection,
+          turnProtection: config.protectedMessages,
           protectedTools: config.purgeErrors?.protectedTools,
         } satisfies PurgeErrorsOptions);
         return { marks };
@@ -195,7 +252,7 @@ export function contextPruningTransformHandler(
     // Evaluate gate: enabled (default true) and prompt threshold.
     // undefined threshold → skip (no fallback).
     if (producer.gate.enabled === false) continue;
-    const threshold = producer.gate.thresholdTokens;
+    const threshold = producer.gate.thresholdContext;
     if (threshold === undefined) continue;
     if (lastAsst.index < 0 || promptTokens < threshold) continue;
 
@@ -220,7 +277,7 @@ export function contextPruningTransformHandler(
     }
   }
 
-  // ── Phase 3: Message refs (strip → compaction check → assign → inject) ──
+  // ── Phase 4: Message refs (strip → compaction check → assign → inject) ──
 
   // Detect non-canonical (fuzzy) tag stripping by comparing
   // each text/tool-output string before vs after stripHallucinatedRefs.
@@ -290,24 +347,36 @@ export function contextPruningTransformHandler(
     });
   }
 
-  // ── Batch release check (unified) ──────────────────────────────
+  // ── Phase 5: Batch release (unified) ───────────────────────────
   // Release all pending marks into effective when the accumulated
   // token value reaches releaseThresholdPercent of prompt-side total.
-  // Only evaluate when prompt data is available (promptTokens > 0)
-  // and releaseThresholdPercent is configured (undefined → skip).
-  if (promptTokens > 0 && config.releaseThresholdPercent !== undefined) {
+  // When pendingViewChange is set, bypass the threshold gate and
+  // flush immediately (the view is changing anyway — cache is
+  // already broken from the fold / deactivation / new block).
+  // Simplified from: (promptTokens>0 || pendingViewChange) &&
+  //   (releasedPercent!==undefined || pendingViewChange) =>
+  //   pendingViewChange || (promptTokens>0 && releasedPercent!==undefined)
+  if (
+    state.pendingViewChange ||
+    (promptTokens > 0 && config.releasedPercent !== undefined)
+  ) {
     const curPendingTokens = pendingTokensDerived(state);
     if (curPendingTokens > 0) {
-      const releasePct = config.releaseThresholdPercent;
-      const batchThreshold = (promptTokens * releasePct) / 100;
-      if (curPendingTokens >= batchThreshold) {
+      const releasePct = config.releasedPercent;
+      const batchThreshold =
+        releasePct !== undefined ? (promptTokens * releasePct) / 100 : 0;
+      if (state.pendingViewChange || curPendingTokens >= batchThreshold) {
         const released = releaseBatch(state);
+        const forcedReason = state.pendingViewChange
+          ? "view_change"
+          : undefined;
         log("context-pruning", "marks_released", sessionId, undefined, "info", {
           releasedCount: released.count,
           releasedTokens: released.tokens,
           byAction: released.byAction,
           pendingTokensBefore: curPendingTokens,
           promptTokens,
+          ...(forcedReason ? { forced: forcedReason } : {}),
         });
 
         // Notify the session chat with a user-visible ignored message.
@@ -328,7 +397,11 @@ export function contextPruningTransformHandler(
     }
   }
 
-  // ── Persist to disk when dirty ──────────────────────────────
+  // ── Phase 6: Finalize — clear view-change flag + persist ────────
+  // Always cleared after the release check phase, regardless of
+  // whether any marks were flushed.
+  state.pendingViewChange = false;
+
   if (state.dirty) {
     saveSessionState(sessionId, state);
     state.dirty = false;

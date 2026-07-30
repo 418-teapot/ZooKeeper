@@ -36,7 +36,10 @@ import { DCP_COMMAND_HANDLED, handleDcpCommand } from "./hooks/context-command";
 import type { ContextMetricsOutput } from "./hooks/context-metrics";
 import { measureContext } from "./hooks/context-metrics";
 import { contextPruningTransformHandler } from "./hooks/context-pruning";
-import type { ContextPruningConfig } from "./hooks/context-pruning/index.js";
+import type {
+  CompressConfig,
+  ContextPruningConfig,
+} from "./hooks/context-pruning/index.js";
 import { nudgeDirectWork } from "./hooks/direct-work-nudge";
 import { recoverJsonError } from "./hooks/json-error-nudge";
 import { handleGoCommand } from "./hooks/plan-lifecycle";
@@ -127,13 +130,12 @@ function parseSkillsConfig(zooConfig: any): Record<string, string> {
 
 /** Extract context-pruning config from the [zoo.context] section.
  *
- *  `turn_protection` and `release_threshold_percent` are shared across
+ *  `protected_messages` and `released_percent` are shared across
  *  pruning strategies (read from `[zoo.context]` top-level).  `dedup.*`
  *  and `purge_errors.*` are per-strategy gates read from their
  *  respective sub-sections.
  *
- *  `[zoo.context.dedup].release_threshold_percent` (the old location)
- *  is intentionally NOT read — no fallback, no migration.
+ *  Unknown keys are silently ignored.
  *
  *  Each field is type-checked: unrecognised / wrong-type values produce
  *  `undefined` (no fallback — "fail to skip"), and invalid values emit
@@ -154,30 +156,30 @@ function parseContextConfig(zooConfig: any): ContextPruningConfig {
     });
   }
 
-  let turnProtection: number | undefined;
+  let protectedMessages: number | undefined;
   if (
-    typeof c.turn_protection === "number" &&
-    Number.isFinite(c.turn_protection)
+    typeof c.protected_messages === "number" &&
+    Number.isFinite(c.protected_messages)
   ) {
-    turnProtection = c.turn_protection;
-  } else if (c.turn_protection !== undefined) {
-    log("config", "invalid_turn_protection", "", undefined, "warn", {
-      key: "turn_protection",
-      value: c.turn_protection,
+    protectedMessages = c.protected_messages;
+  } else if (c.protected_messages !== undefined) {
+    log("config", "invalid_protected_messages", "", undefined, "warn", {
+      key: "protected_messages",
+      value: c.protected_messages,
     });
   }
 
-  let releaseThresholdPercent: number | undefined;
+  let releasedPercent: number | undefined;
   if (
-    typeof c.release_threshold_percent === "number" &&
-    Number.isFinite(c.release_threshold_percent) &&
-    c.release_threshold_percent >= 0
+    typeof c.released_percent === "number" &&
+    Number.isFinite(c.released_percent) &&
+    c.released_percent >= 0
   ) {
-    releaseThresholdPercent = c.release_threshold_percent;
-  } else if (c.release_threshold_percent !== undefined) {
-    log("config", "invalid_release_threshold_percent", "", undefined, "warn", {
-      key: "release_threshold_percent",
-      value: c.release_threshold_percent,
+    releasedPercent = c.released_percent;
+  } else if (c.released_percent !== undefined) {
+    log("config", "invalid_released_percent", "", undefined, "warn", {
+      key: "released_percent",
+      value: c.released_percent,
     });
   }
 
@@ -191,16 +193,16 @@ function parseContextConfig(zooConfig: any): ContextPruningConfig {
     });
   }
 
-  let dedupThresholdTokens: number | undefined;
+  let dedupThresholdContext: number | undefined;
   if (
-    typeof d.threshold_tokens === "number" &&
-    Number.isFinite(d.threshold_tokens)
+    typeof d.threshold_context === "number" &&
+    Number.isFinite(d.threshold_context)
   ) {
-    dedupThresholdTokens = d.threshold_tokens;
-  } else if (d.threshold_tokens !== undefined) {
-    log("config", "invalid_dedup_threshold_tokens", "", undefined, "warn", {
-      key: "dedup.threshold_tokens",
-      value: d.threshold_tokens,
+    dedupThresholdContext = d.threshold_context;
+  } else if (d.threshold_context !== undefined) {
+    log("config", "invalid_dedup_threshold_context", "", undefined, "warn", {
+      key: "dedup.threshold_context",
+      value: d.threshold_context,
     });
   }
 
@@ -227,22 +229,22 @@ function parseContextConfig(zooConfig: any): ContextPruningConfig {
     });
   }
 
-  let peThresholdTokens: number | undefined;
+  let peThresholdContext: number | undefined;
   if (
-    typeof pe.threshold_tokens === "number" &&
-    Number.isFinite(pe.threshold_tokens)
+    typeof pe.threshold_context === "number" &&
+    Number.isFinite(pe.threshold_context)
   ) {
-    peThresholdTokens = pe.threshold_tokens;
-  } else if (pe.threshold_tokens !== undefined) {
+    peThresholdContext = pe.threshold_context;
+  } else if (pe.threshold_context !== undefined) {
     log(
       "config",
-      "invalid_purge_errors_threshold_tokens",
+      "invalid_purge_errors_threshold_context",
       "",
       undefined,
       "warn",
       {
-        key: "purge_errors.threshold_tokens",
-        value: pe.threshold_tokens,
+        key: "purge_errors.threshold_context",
+        value: pe.threshold_context,
       },
     );
   }
@@ -267,20 +269,66 @@ function parseContextConfig(zooConfig: any): ContextPruningConfig {
     );
   }
 
+  // ── Parse compress section ──────────────────────────────────────────
+  const cm = c.compress ?? {};
+
+  let compressEnabled: boolean | undefined;
+  if (typeof cm.enabled === "boolean") {
+    compressEnabled = cm.enabled;
+  } else if (cm.enabled !== undefined) {
+    log("config", "invalid_compress_enabled", "", undefined, "warn", {
+      key: "compress.enabled",
+      value: cm.enabled,
+    });
+  }
+
+  let compressThresholdTokens: number | undefined;
+  if (
+    typeof cm.threshold_tokens === "number" &&
+    Number.isFinite(cm.threshold_tokens)
+  ) {
+    compressThresholdTokens = cm.threshold_tokens;
+  } else if (cm.threshold_tokens !== undefined) {
+    log("config", "invalid_compress_threshold_tokens", "", undefined, "warn", {
+      key: "compress.threshold_tokens",
+      value: cm.threshold_tokens,
+    });
+  }
+
+  let compressProtectedTokens: number | undefined;
+  if (
+    typeof cm.protected_tokens === "number" &&
+    Number.isFinite(cm.protected_tokens)
+  ) {
+    compressProtectedTokens = cm.protected_tokens;
+  } else if (cm.protected_tokens !== undefined) {
+    log("config", "invalid_compress_protected_tokens", "", undefined, "warn", {
+      key: "compress.protected_tokens",
+      value: cm.protected_tokens,
+    });
+  }
+
+  const compress: CompressConfig = {
+    enabled: compressEnabled,
+    thresholdTokens: compressThresholdTokens,
+    protectedTokens: compressProtectedTokens,
+  };
+
   return {
     enabled,
-    turnProtection,
-    releaseThresholdPercent,
+    protectedMessages,
+    releasedPercent,
     dedup: {
       enabled: dedupEnabled,
-      thresholdTokens: dedupThresholdTokens,
+      thresholdContext: dedupThresholdContext,
       protectedTools: dedupProtectedTools,
     },
     purgeErrors: {
       enabled: peEnabled,
-      thresholdTokens: peThresholdTokens,
+      thresholdContext: peThresholdContext,
       protectedTools: peProtectedTools,
     },
+    compress,
   };
 }
 
@@ -846,7 +894,12 @@ export async function zookeeper(input: any) {
     ) {
       if (input.command === "dcp") {
         try {
-          await handleDcpCommand(client, input.sessionID, input.arguments);
+          await handleDcpCommand(
+            client,
+            input.sessionID,
+            input.arguments,
+            contextConfig,
+          );
         } catch (err) {
           // Inject error message silently — no LLM processing.
           const msg = err instanceof Error ? err.message : String(err);

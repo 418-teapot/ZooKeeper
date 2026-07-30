@@ -3,11 +3,12 @@
  *
  * Covers: addMark idempotency, releaseBatch only counts real flips,
  * derived stats (pendingCount/pendingTokens/reclaimedTokens/markedCount/
- * markedTokens), persistence round-trip, old-shape loaded as empty,
+ * markedTokens), persistence round-trip, unrecognized-shape loaded as empty,
  * state management (get-or-create, remove, TTL cleanup).
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import { createBlock } from "./blocks.js";
 import {
   _clearAllSessionsForTesting,
   addMark,
@@ -307,8 +308,8 @@ describe("saveSessionState / loadSessionState", () => {
     assert.equal(loaded, null);
   });
 
-  it("loads old shape (prune.tools/stats) as empty state", () => {
-    // Write old-format JSON.
+  it("loads unrecognized shape as empty state", () => {
+    // Write an unrecognized JSON shape.
     const fs = require("node:fs");
     const path = require("node:path");
     const os = require("node:os");
@@ -326,7 +327,7 @@ describe("saveSessionState / loadSessionState", () => {
 
     const loaded = loadSessionState(TEST_SESSION_ID);
     assert.ok(loaded !== null);
-    // Old shape treated as empty — no migration.
+    // Unrecognized shape treated as empty.
     assert.equal(loaded.marks.size, 0);
   });
 
@@ -403,6 +404,211 @@ describe("saveSessionState / loadSessionState", () => {
   it("deleteSessionState does not throw for non-existent session", () => {
     deleteSessionState("sess-no-file");
     assert.ok(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Persistence — blocks
+// ---------------------------------------------------------------------------
+
+describe("persistence with blocks", () => {
+  const B_SESSION_ID = "sess-blocks-persist";
+
+  afterEach(() => {
+    deleteSessionState(B_SESSION_ID);
+    removeSession(B_SESSION_ID);
+  });
+
+  function makePlan(anchor: string) {
+    return {
+      anchorMessageId: anchor,
+      messageIds: ["m1", "m2", anchor],
+      summary: "test summary",
+      compressedTokens: 1000,
+      summaryTokens: 60,
+    };
+  }
+
+  it("round-trips blocks via save+load", () => {
+    const state = getOrCreateSessionState(B_SESSION_ID);
+    createBlock(state, makePlan("m3"));
+    createBlock(state, makePlan("m7"));
+
+    saveSessionState(B_SESSION_ID, state);
+
+    // Clear and reload from disk.
+    removeSession(B_SESSION_ID);
+    _clearAllSessionsForTesting();
+
+    const loaded = loadSessionState(B_SESSION_ID);
+    assert.ok(loaded !== null);
+    assert.equal(loaded.blocks.size, 2);
+
+    const b1 = loaded.blocks.get("1");
+    assert.ok(b1 !== undefined);
+    assert.equal(b1.blockId, 1);
+    assert.equal(b1.active, true);
+    assert.equal(b1.anchorMessageId, "m3");
+    assert.deepEqual(b1.messageIds, ["m1", "m2", "m3"]);
+    assert.equal(b1.tier, 1);
+    assert.equal(b1.compressedTokens, 1000);
+    assert.equal(b1.summaryTokens, 60);
+    assert.ok(typeof b1.createdAt === "number");
+
+    const b2 = loaded.blocks.get("2");
+    assert.ok(b2 !== undefined);
+    assert.equal(b2.blockId, 2);
+    assert.equal(b2.anchorMessageId, "m7");
+  });
+
+  it("restores state with blocks on getOrCreateSessionState", () => {
+    const state = getOrCreateSessionState(B_SESSION_ID);
+    createBlock(state, makePlan("m3"));
+    saveSessionState(B_SESSION_ID, state);
+
+    // Simulate restart.
+    removeSession(B_SESSION_ID);
+    _clearAllSessionsForTesting();
+
+    const restored = getOrCreateSessionState(B_SESSION_ID);
+    assert.equal(restored.blocks.size, 1);
+    assert.ok(restored.blocks.has("1"));
+    assert.equal(restored.blocks.get("1")?.anchorMessageId, "m3");
+  });
+
+  it("loads file without blocks key as empty block set", () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const os = require("node:os");
+    const dir = path.join(os.homedir(), ".zoo", "storage");
+    fs.mkdirSync(dir, { recursive: true });
+    // File without `blocks` key.
+    fs.writeFileSync(
+      path.join(dir, `${B_SESSION_ID}.json`),
+      JSON.stringify({
+        marks: {
+          "call-1": { tokens: 100, effective: true, action: "tool-output" },
+        },
+        lastUpdated: "2024-06-01T00:00:00Z",
+      }),
+      "utf8",
+    );
+
+    const loaded = loadSessionState(B_SESSION_ID);
+    assert.ok(loaded !== null);
+    // Marks from old file still load.
+    assert.equal(loaded.marks.size, 1);
+    // Blocks is empty set (not null, not error).
+    assert.ok(loaded.blocks instanceof Map);
+    assert.equal(loaded.blocks.size, 0);
+  });
+
+  it("treats malformed block entry as whole file empty + warn", () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const os = require("node:os");
+    const dir = path.join(os.homedir(), ".zoo", "storage");
+    fs.mkdirSync(dir, { recursive: true });
+    // Blocks present but one entry is missing `anchorMessageId`.
+    fs.writeFileSync(
+      path.join(dir, `${B_SESSION_ID}.json`),
+      JSON.stringify({
+        marks: {
+          "call-1": { tokens: 100, effective: true, action: "tool-output" },
+        },
+        blocks: {
+          "1": {
+            blockId: 1,
+            active: true,
+            // anchorMessageId MISSING
+            messageIds: ["m1"],
+            summary: "bad",
+            compressedTokens: 500,
+            summaryTokens: 30,
+            tier: 1,
+            createdAt: 123456789,
+          },
+        },
+        lastUpdated: "2024-06-01T00:00:00Z",
+      }),
+      "utf8",
+    );
+
+    const loaded = loadSessionState(B_SESSION_ID);
+    assert.ok(loaded !== null);
+    // Both marks AND blocks should be empty — whole file treated as empty.
+    assert.equal(loaded.marks.size, 0);
+    assert.equal(loaded.blocks.size, 0);
+  });
+
+  it("treats blocks with wrong tier as whole file empty", () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const os = require("node:os");
+    const dir = path.join(os.homedir(), ".zoo", "storage");
+    fs.mkdirSync(dir, { recursive: true });
+    // Block with tier=2 (invalid for V3).
+    fs.writeFileSync(
+      path.join(dir, `${B_SESSION_ID}.json`),
+      JSON.stringify({
+        marks: {},
+        blocks: {
+          "1": {
+            blockId: 1,
+            active: true,
+            anchorMessageId: "m3",
+            messageIds: ["m1", "m2", "m3"],
+            summary: "test",
+            compressedTokens: 500,
+            summaryTokens: 30,
+            tier: 2, // Invalid.
+            createdAt: 123456789,
+          },
+        },
+        lastUpdated: "2024-06-01T00:00:00Z",
+      }),
+      "utf8",
+    );
+
+    const loaded = loadSessionState(B_SESSION_ID);
+    assert.ok(loaded !== null);
+    assert.equal(loaded.marks.size, 0);
+    assert.equal(loaded.blocks.size, 0);
+  });
+
+  it("treats blocks with non-array messageIds as whole file empty", () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const os = require("node:os");
+    const dir = path.join(os.homedir(), ".zoo", "storage");
+    fs.mkdirSync(dir, { recursive: true });
+    // Block with messageIds as string instead of array.
+    fs.writeFileSync(
+      path.join(dir, `${B_SESSION_ID}.json`),
+      JSON.stringify({
+        marks: {},
+        blocks: {
+          "1": {
+            blockId: 1,
+            active: true,
+            anchorMessageId: "m3",
+            messageIds: "not-an-array", // Invalid.
+            summary: "test",
+            compressedTokens: 500,
+            summaryTokens: 30,
+            tier: 1,
+            createdAt: 123456789,
+          },
+        },
+        lastUpdated: "2024-06-01T00:00:00Z",
+      }),
+      "utf8",
+    );
+
+    const loaded = loadSessionState(B_SESSION_ID);
+    assert.ok(loaded !== null);
+    assert.equal(loaded.marks.size, 0);
+    assert.equal(loaded.blocks.size, 0);
   });
 });
 
