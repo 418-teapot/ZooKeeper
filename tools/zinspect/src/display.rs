@@ -162,6 +162,183 @@ pub fn build_json_hook_breakdown(events: &[Value], session_id: &str) -> Value {
     })
 }
 
+// ── Pruning reclamation ───────────────────────────────────────────────────────
+
+/// Convert a JSON number (integer or float) to `i64`.
+///
+/// Float values are rounded to whole numbers via string formatting to avoid
+/// integer-cast lints.
+fn value_to_i64(v: &Value) -> i64 {
+    v.as_i64().unwrap_or_else(|| {
+        v.as_f64().map_or(0, |f| format!("{f:.0}").parse().unwrap_or(0))
+    })
+}
+
+/// Read a numeric field from an event as `i64` (missing fields → 0).
+fn field_i64(event: &Value, key: &str) -> i64 {
+    event.get(key).map_or(0, value_to_i64)
+}
+
+/// Convert a non-negative `i64` token count to `f64` via `u32`.
+///
+/// Goes through `u32` first (safe for in-memory token counts that never
+/// exceed 4B), matching the `count_as_f64` strategy.
+fn tokens_to_f64(v: i64) -> f64 {
+    f64::from(u32::try_from(v.max(0)).unwrap_or(0))
+}
+
+/// Accumulators for the pruning reclamation summary.
+#[derive(Default)]
+struct PruningAccum {
+    reclaimed_tokens: i64,
+    reclaimed_tools: i64,
+    marked: BTreeMap<String, (i64, i64)>,
+    released_batches: i64,
+    released_count: i64,
+    released_tokens: i64,
+    released_forced: i64,
+    block_count: i64,
+    block_messages: i64,
+    block_in_tokens: i64,
+    block_out_tokens: i64,
+    found: bool,
+}
+
+impl PruningAccum {
+    /// Fold a single event into the accumulators.
+    fn accumulate(&mut self, event: &Value) {
+        let Some(evt) = event.get("event").and_then(serde_json::Value::as_str)
+        else {
+            return;
+        };
+        match evt {
+            "prune_completed" => {
+                self.reclaimed_tokens =
+                    field_i64(event, "totalReclaimedTokens");
+                self.reclaimed_tools = field_i64(event, "prunedToolCount");
+                self.found = true;
+            }
+            "marks_released" => {
+                self.released_batches += 1;
+                self.released_count += field_i64(event, "releasedCount");
+                self.released_tokens += field_i64(event, "releasedTokens");
+                if event.get("forced").is_some() {
+                    self.released_forced += 1;
+                }
+                self.found = true;
+            }
+            "compress_created" => {
+                self.block_count += 1;
+                self.block_messages += field_i64(event, "messageCount");
+                self.block_in_tokens += field_i64(event, "inTokens");
+                self.block_out_tokens += field_i64(event, "outTokens");
+                self.found = true;
+            }
+            _ => {
+                let Some(producer) =
+                    evt.strip_suffix("_marked").filter(|p| !p.is_empty())
+                else {
+                    return;
+                };
+                let count = field_i64(event, "markedCount");
+                let tokens = event
+                    .get("markedTokens")
+                    .or_else(|| event.get("totalEstimatedTokens"))
+                    .map_or(0, value_to_i64);
+                let entry =
+                    self.marked.entry(producer.to_string()).or_default();
+                entry.0 += count;
+                entry.1 += tokens;
+                self.found = true;
+            }
+        }
+    }
+
+    /// Build the final JSON value (only meaningful when `found`).
+    fn into_json(self) -> Value {
+        let total_marked_count: i64 =
+            self.marked.values().map(|(count, _)| *count).sum();
+        let total_marked_tokens: i64 =
+            self.marked.values().map(|(_, tokens)| *tokens).sum();
+        let mut by_producer = serde_json::Map::new();
+        for (name, (count, tokens)) in self.marked {
+            by_producer
+                .insert(name, json!({ "count": count, "tokens": tokens }));
+        }
+
+        let ratio = if self.block_out_tokens > 0 {
+            (tokens_to_f64(self.block_in_tokens)
+                / tokens_to_f64(self.block_out_tokens)
+                * 100.0)
+                .round()
+                / 100.0
+        } else {
+            0.0
+        };
+        let reduction_pct = if self.block_in_tokens > 0 {
+            let in_f = tokens_to_f64(self.block_in_tokens);
+            let out_f = tokens_to_f64(self.block_out_tokens);
+            ((1.0 - out_f / in_f) * 100.0 * 10.0).round() / 10.0
+        } else {
+            0.0
+        };
+
+        json!({
+            "reclaimed": {
+                "tokens": self.reclaimed_tokens,
+                "tools": self.reclaimed_tools,
+            },
+            "marked": {
+                "by_producer": Value::Object(by_producer),
+                "total_count": total_marked_count,
+                "total_tokens": total_marked_tokens,
+            },
+            "released": {
+                "batches": self.released_batches,
+                "count": self.released_count,
+                "tokens": self.released_tokens,
+                "forced": self.released_forced,
+            },
+            "compress_blocks": {
+                "blocks": self.block_count,
+                "messages": self.block_messages,
+                "in_tokens": self.block_in_tokens,
+                "out_tokens": self.block_out_tokens,
+                "ratio": ratio,
+                "reduction_pct": reduction_pct,
+            },
+        })
+    }
+}
+
+/// Build a pruning reclamation summary from zoo log events (pure, no I/O).
+///
+/// Consumes five event families:
+/// - `prune_completed` (sent every transform round): a cumulative snapshot —
+///   only the LAST occurrence is kept (`totalReclaimedTokens`/`prunedToolCount`).
+/// - `*_marked` (`dedup_marked`/`purge-errors_marked`/`sweep_marked`): grouped
+///   by producer (event name minus the `_marked` suffix); the token key is
+///   `markedTokens` or `totalEstimatedTokens`, whichever exists.
+/// - `marks_released`: accumulates `releasedCount`/`releasedTokens`, counts
+///   batches, and counts forced releases (events carrying a `forced` field).
+/// - `compress_created`: block count plus accumulated `messageCount`/
+///   `inTokens`/`outTokens` and derived compression ratios.
+///
+/// Unknown events are ignored. The log is time-ordered, so the last
+/// `prune_completed` entry is the newest cumulative snapshot.
+///
+/// Returns `None` when the event stream contains no pruning events.
+pub fn build_pruning_summary(events: &[Value]) -> Option<Value> {
+    let mut accum = PruningAccum::default();
+    for event in events {
+        accum.accumulate(event);
+    }
+    if !accum.found {
+        return None;
+    }
+    Some(accum.into_json())
+}
+
 /// Compute token summary JSON (assumes steps is non-empty).
 fn compute_token_summary_json(steps: &[Value]) -> Value {
     let total_input: f64 = steps
@@ -288,7 +465,7 @@ pub fn build_json_full_stats(
         "error": level_counts.get("error").copied().unwrap_or(0),
     });
 
-    json!({
+    let mut result = json!({
         "session_id": session_id,
         "file": path,
         "total_events": total,
@@ -297,7 +474,11 @@ pub fn build_json_full_stats(
         "level_distribution": json_levels,
         "hook_breakdown": breakdown,
         "token_summary": token_summary,
-    })
+    });
+    if let Some(pruning) = build_pruning_summary(events) {
+        result["pruning"] = pruning;
+    }
+    result
 }
 
 /// Build cross-session token summary as a JSON value (pure, no I/O).
@@ -371,49 +552,27 @@ fn render_table(width: usize, table: &Table) {
 
 // ── Single-session Stats ───────────────────────────────────────────────────────
 
-/// Print token summary as JSON.
-pub fn print_json_token_summary(steps: &[Value]) {
-    print_json(&build_json_token_summary(steps));
+/// Print a token summary as JSON.
+///
+/// `summary` is the precomputed `build_json_token_summary` value.
+pub fn print_json_token_summary(summary: &Value) {
+    print_json(summary);
 }
 
-/// Print token summary as a rich table.
-pub fn print_token_summary_table(steps: &[Value]) {
-    if steps.is_empty() {
-        msg_print("");
-        msg_print("[yellow]No step data found for this session.[/yellow]");
-        return;
-    }
-
-    let total_input: f64 = steps
-        .iter()
-        .filter_map(|s| {
-            s.get("input_tokens").and_then(serde_json::Value::as_f64)
-        })
-        .sum();
-    let total_output: f64 = steps
-        .iter()
-        .filter_map(|s| {
-            s.get("output_tokens").and_then(serde_json::Value::as_f64)
-        })
-        .sum();
-    let total_cache_read: f64 = steps
-        .iter()
-        .filter_map(|s| s.get("cache_read").and_then(serde_json::Value::as_f64))
-        .sum();
-    let total_cache_write: f64 = steps
-        .iter()
-        .filter_map(|s| {
-            s.get("cache_write").and_then(serde_json::Value::as_f64)
-        })
-        .sum();
-    let total_cost: f64 = steps
-        .iter()
-        .filter_map(|s| s.get("cost").and_then(serde_json::Value::as_f64))
-        .sum();
-    let n = steps.len();
-    let n_f64 = count_as_f64(n);
-    let avg_input = if n > 0 { total_input / n_f64 } else { 0.0 };
-    let avg_output = if n > 0 { total_output / n_f64 } else { 0.0 };
+/// Print a token summary as a rich table.
+///
+/// `summary` is the precomputed `build_json_token_summary` value. The
+/// caller handles the empty-steps case (the build function returns an
+/// error marker for empty input, which this function does not render).
+pub fn print_token_summary_table(summary: &Value) {
+    let total_input = summary["total_input"].as_f64().unwrap_or(0.0);
+    let total_output = summary["total_output"].as_f64().unwrap_or(0.0);
+    let total_cache_read = summary["total_cache_read"].as_f64().unwrap_or(0.0);
+    let total_cache_write =
+        summary["total_cache_write"].as_f64().unwrap_or(0.0);
+    let avg_input = summary["avg_input_per_turn"].as_f64().unwrap_or(0.0);
+    let avg_output = summary["avg_output_per_turn"].as_f64().unwrap_or(0.0);
+    let est_cost = summary["est_cost"].as_f64().unwrap_or(0.0);
     let hit_rate = cache_hit_rate(total_cache_read, total_input);
     let denom = f64_display_as_u64(total_input + total_cache_read);
 
@@ -433,7 +592,7 @@ pub fn print_token_summary_table(steps: &[Value]) {
             "Cache hit rate",
             format!("{hit_rate:.2}% ({total_cache_read} / {denom})"),
         ),
-        ("Est. cost", format!("${total_cost:.4}")),
+        ("Est. cost", format!("${est_cost:.4}")),
     ];
     for (metric, value) in &rows {
         table.add_row(Row::new(vec![
@@ -445,29 +604,22 @@ pub fn print_token_summary_table(steps: &[Value]) {
     render_table(width, &table);
 }
 
-/// Print hook breakdown as JSON.
-pub fn print_json_hook_breakdown(events: &[Value], session_id: &str) {
-    print_json(&build_json_hook_breakdown(events, session_id));
+/// Print a hook breakdown as JSON.
+///
+/// `summary` is the precomputed `build_json_hook_breakdown` value.
+pub fn print_json_hook_breakdown(summary: &Value) {
+    print_json(summary);
 }
 
-/// Print hook breakdown as a rich table.
-pub fn print_hook_breakdown_table(events: &[Value], _session_id: &str) {
-    let mut hook_counts: HashMap<&str, i64> = HashMap::new();
-    let mut hook_event_map: HashMap<&str, HashMap<&str, i64>> = HashMap::new();
-
-    for event in events {
-        let hook =
-            event.get("hook").and_then(|v| v.as_str()).unwrap_or("unknown");
-        let evt =
-            event.get("event").and_then(|v| v.as_str()).unwrap_or("unknown");
-        *hook_counts.entry(hook).or_insert(0) += 1;
-        hook_event_map
-            .entry(hook)
-            .or_default()
-            .entry(evt)
-            .and_modify(|c| *c += 1)
-            .or_insert(1);
-    }
+/// Print a hook breakdown as a rich table.
+///
+/// `summary` is the precomputed `build_json_hook_breakdown` value. Hooks
+/// are ordered by descending event count (ties break by hook name),
+/// mirroring the build function's count ordering.
+pub fn print_hook_breakdown_table(summary: &Value) {
+    let Some(breakdown) = summary["hook_breakdown"].as_object() else {
+        return;
+    };
 
     let width = terminal::get_terminal_width();
     let mut table =
@@ -476,23 +628,132 @@ pub fn print_hook_breakdown_table(events: &[Value], _session_id: &str) {
     table.add_column(Column::new("Count").justify(JustifyMethod::Right));
     table.add_column(Column::new("Events"));
 
-    let mut hook_order: Vec<&str> = hook_counts.keys().copied().collect();
-    hook_order.sort_by(|a, b| hook_counts[b].cmp(&hook_counts[a]));
+    let mut hook_order: Vec<(&str, i64)> = breakdown
+        .iter()
+        .map(|(hook, entry)| {
+            (hook.as_str(), entry["count"].as_i64().unwrap_or(0))
+        })
+        .collect();
+    hook_order.sort_by_key(|entry| std::cmp::Reverse(entry.1));
 
-    for hook in hook_order {
-        let count = hook_counts[hook];
-        let evt_map = &hook_event_map[hook];
-        let mut evt_order: Vec<&str> = evt_map.keys().copied().collect();
-        evt_order.sort_by(|a, b| evt_map[b].cmp(&evt_map[a]));
-        let detail: Vec<String> = evt_order
-            .iter()
-            .map(|evt| format!("{}:{}", evt, evt_map[evt]))
-            .collect();
+    for (hook, count) in hook_order {
+        let detail: Vec<String> = breakdown[hook]["events"]
+            .as_object()
+            .map_or_else(Vec::new, |evt_map| {
+                let mut evt_order: Vec<(&str, i64)> = evt_map
+                    .iter()
+                    .map(|(evt, count)| {
+                        (evt.as_str(), count.as_i64().unwrap_or(0))
+                    })
+                    .collect();
+                evt_order.sort_by_key(|entry| std::cmp::Reverse(entry.1));
+                evt_order
+                    .iter()
+                    .map(|(evt, count)| format!("{evt}:{count}"))
+                    .collect()
+            });
         let detail_str = detail.join(", ");
         table.add_row(Row::new(vec![
             Cell::new(hook),
             Cell::new(count.to_string()),
             Cell::new(detail_str),
+        ]));
+    }
+
+    render_table(width, &table);
+}
+
+/// Print a pruning reclamation summary as JSON.
+///
+/// Standalone JSON output for the `stats --pruning --json` CLI branch.
+/// `summary` is the precomputed `build_pruning_summary` value; the
+/// caller handles the `None` (no pruning events) case.
+pub fn print_json_pruning(summary: &Value) {
+    print_json(summary);
+}
+
+/// Print a pruning reclamation summary as a rich table.
+///
+/// Four groups mirror the `build_pruning_summary` JSON shape: reclaimed
+/// (last cumulative snapshot), marked by producer, released batches
+/// (including forced), and compression blocks (including ratio).
+/// `summary` is the precomputed `build_pruning_summary` value; the
+/// caller only invokes this function when the summary exists.
+pub fn print_pruning_table(summary: &Value) {
+    let reclaimed = &summary["reclaimed"];
+    let marked = &summary["marked"];
+    let released = &summary["released"];
+    let compress = &summary["compress_blocks"];
+
+    let width = terminal::get_terminal_width();
+    let mut table = Table::new()
+        .title("Pruning Reclamation")
+        .title_justify(JustifyMethod::Left)
+        .show_header(true)
+        .show_edge(true)
+        .show_lines(false);
+    table.add_column(Column::new("Metric"));
+    table.add_column(Column::new("Value").justify(JustifyMethod::Right));
+
+    let mut rows: Vec<(String, String)> = Vec::new();
+    rows.push((
+        "Reclaimed tokens".to_string(),
+        reclaimed["tokens"].to_string(),
+    ));
+    rows.push(("Pruned tools".to_string(), reclaimed["tools"].to_string()));
+
+    if let Some(by_producer) = marked["by_producer"].as_object() {
+        let mut producer_names: Vec<&String> = by_producer.keys().collect();
+        producer_names.sort();
+        for name in producer_names {
+            let producer = &by_producer[name];
+            rows.push((
+                format!("Marked count ({name})"),
+                producer["count"].to_string(),
+            ));
+            rows.push((
+                format!("Marked tokens ({name})"),
+                producer["tokens"].to_string(),
+            ));
+        }
+    }
+    rows.push((
+        "Marked total count".to_string(),
+        marked["total_count"].to_string(),
+    ));
+    rows.push((
+        "Marked total tokens".to_string(),
+        marked["total_tokens"].to_string(),
+    ));
+    rows.push(("Release batches".to_string(), released["batches"].to_string()));
+    rows.push(("Released tools".to_string(), released["count"].to_string()));
+    rows.push(("Released tokens".to_string(), released["tokens"].to_string()));
+    rows.push(("Forced batches".to_string(), released["forced"].to_string()));
+    rows.push(("Compress blocks".to_string(), compress["blocks"].to_string()));
+    rows.push((
+        "Compressed messages".to_string(),
+        compress["messages"].to_string(),
+    ));
+    rows.push((
+        "Compressed in tokens".to_string(),
+        compress["in_tokens"].to_string(),
+    ));
+    rows.push((
+        "Compressed out tokens".to_string(),
+        compress["out_tokens"].to_string(),
+    ));
+    let ratio = compress["ratio"].as_f64().unwrap_or(0.0);
+    let reduction = compress["reduction_pct"].as_f64().unwrap_or(0.0);
+    rows.push(("Compression ratio".to_string(), format!("{ratio:.2}x")));
+    rows.push((
+        "Compression reduction".to_string(),
+        format!("{reduction:.1}%"),
+    ));
+
+    for (metric, value) in &rows {
+        table.add_row(Row::new(vec![
+            Cell::new(metric.as_str()),
+            Cell::new(value.as_str()),
         ]));
     }
 
@@ -538,6 +799,9 @@ fn print_level_distribution_table(events: &[Value]) {
 }
 
 /// Print full session stats as rich output.
+///
+/// Each section summary is computed exactly once and passed to the
+/// section printers.
 pub fn print_full_stats(
     events: &[Value],
     steps: &[Value],
@@ -573,14 +837,22 @@ pub fn print_full_stats(
 
     // ── Token Summary ──────────────────────────────────────────────────
     if !steps.is_empty() {
-        print_token_summary_table(steps);
+        let summary = build_json_token_summary(steps);
+        print_token_summary_table(&summary);
     }
 
     // ── Level Distribution ─────────────────────────────────────────────
     print_level_distribution_table(events);
 
     // ── Hook Breakdown ─────────────────────────────────────────────────
-    print_hook_breakdown_table(events, session_id);
+    let hook_summary = build_json_hook_breakdown(events, session_id);
+    print_hook_breakdown_table(&hook_summary);
+
+    // ── Pruning Reclamation ─────────────────────────────────────────────
+    // Only rendered when the session contains pruning events.
+    if let Some(summary) = build_pruning_summary(events) {
+        print_pruning_table(&summary);
+    }
 }
 
 // ── Multi-session Stats ────────────────────────────────────────────────────────
@@ -714,6 +986,159 @@ pub fn print_multi_stats_table(
     render_table(width, &table);
 }
 
+// ── Multi-session Pruning ─────────────────────────────────────────────────────
+
+/// Aggregate pruning totals across per-session summaries (pure, no I/O).
+///
+/// Sums the numeric fields of each session's pruning summary across all
+/// sessions. Sessions without pruning events (`None`) are skipped.
+fn sum_pruning_totals(summaries: &[(String, Option<Value>)]) -> Value {
+    let mut reclaimed_tokens: i64 = 0;
+    let mut marked_count: i64 = 0;
+    let mut marked_tokens: i64 = 0;
+    let mut released_count: i64 = 0;
+    let mut released_tokens: i64 = 0;
+    let mut blocks: i64 = 0;
+
+    for (_, summary) in summaries {
+        let Some(s) = summary else {
+            continue;
+        };
+        reclaimed_tokens += s["reclaimed"]["tokens"].as_i64().unwrap_or(0);
+        marked_count += s["marked"]["total_count"].as_i64().unwrap_or(0);
+        marked_tokens += s["marked"]["total_tokens"].as_i64().unwrap_or(0);
+        released_count += s["released"]["count"].as_i64().unwrap_or(0);
+        released_tokens += s["released"]["tokens"].as_i64().unwrap_or(0);
+        blocks += s["compress_blocks"]["blocks"].as_i64().unwrap_or(0);
+    }
+
+    json!({
+        "reclaimed_tokens": reclaimed_tokens,
+        "marked_count": marked_count,
+        "marked_tokens": marked_tokens,
+        "released_count": released_count,
+        "released_tokens": released_tokens,
+        "blocks": blocks,
+    })
+}
+
+/// Build JSON for multi-session pruning reclamation (pure, no I/O).
+///
+/// Each session gets its own pruning summary (`null` when the session has
+/// no pruning events); a `total` object aggregates numeric fields across
+/// all sessions.
+pub fn build_json_multi_pruning(
+    summaries: &[(String, Option<Value>)],
+) -> Value {
+    let sessions: Vec<Value> = summaries
+        .iter()
+        .map(|(sid, summary)| {
+            json!({
+                "id": sid,
+                "summary": summary.clone().unwrap_or(Value::Null),
+            })
+        })
+        .collect();
+
+    json!({
+        "pruning": {
+            "sessions": sessions,
+            "total": sum_pruning_totals(summaries),
+        },
+    })
+}
+
+/// Print multi-session pruning reclamation as JSON.
+pub fn print_json_multi_pruning(summaries: &[(String, Option<Value>)]) {
+    print_json(&build_json_multi_pruning(summaries));
+}
+
+/// Print a multi-session pruning reclamation table.
+///
+/// `summaries` maps each session ID to its pruning summary (`None` when the
+/// session has no pruning events). A bold totals row sums the numeric
+/// fields across all sessions.
+pub fn print_multi_pruning_table(
+    summaries: &[(String, Option<Value>)],
+    n: i64,
+) {
+    let bold = Style::new().bold();
+    let totals = sum_pruning_totals(summaries);
+
+    let width = terminal::get_terminal_width();
+    let mut table = Table::new()
+        .title(format!("Cross-Session Pruning Reclamation (last {n} sessions)"))
+        .title_justify(JustifyMethod::Left)
+        .show_header(true)
+        .show_edge(true)
+        .show_lines(false);
+    table.add_column(
+        Column::new("Session ID").no_wrap().overflow(OverflowMethod::Ellipsis),
+    );
+    table.add_column(
+        Column::new("Reclaimed Tokens")
+            .justify(JustifyMethod::Right)
+            .no_wrap()
+            .overflow(OverflowMethod::Ellipsis),
+    );
+    table.add_column(
+        Column::new("Marked Count")
+            .justify(JustifyMethod::Right)
+            .no_wrap()
+            .overflow(OverflowMethod::Ellipsis),
+    );
+    table.add_column(
+        Column::new("Marked Tokens")
+            .justify(JustifyMethod::Right)
+            .no_wrap()
+            .overflow(OverflowMethod::Ellipsis),
+    );
+    table.add_column(
+        Column::new("Released Tools")
+            .justify(JustifyMethod::Right)
+            .no_wrap()
+            .overflow(OverflowMethod::Ellipsis),
+    );
+    table.add_column(
+        Column::new("Blocks")
+            .justify(JustifyMethod::Right)
+            .no_wrap()
+            .overflow(OverflowMethod::Ellipsis),
+    );
+
+    for (sid, summary) in summaries {
+        let (reclaimed, marked_count, marked_tokens, released, blocks) =
+            summary.as_ref().map_or((0, 0, 0, 0, 0), |s| {
+                (
+                    s["reclaimed"]["tokens"].as_i64().unwrap_or(0),
+                    s["marked"]["total_count"].as_i64().unwrap_or(0),
+                    s["marked"]["total_tokens"].as_i64().unwrap_or(0),
+                    s["released"]["count"].as_i64().unwrap_or(0),
+                    s["compress_blocks"]["blocks"].as_i64().unwrap_or(0),
+                )
+            });
+        table.add_row(Row::new(vec![
+            Cell::new(sid.as_str()),
+            Cell::new(reclaimed.to_string()),
+            Cell::new(marked_count.to_string()),
+            Cell::new(marked_tokens.to_string()),
+            Cell::new(released.to_string()),
+            Cell::new(blocks.to_string()),
+        ]));
+    }
+
+    table.add_row(Row::new(vec![
+        Cell::new(Text::styled("Total".to_string(), bold)),
+        Cell::new(totals["reclaimed_tokens"].to_string()),
+        Cell::new(totals["marked_count"].to_string()),
+        Cell::new(totals["marked_tokens"].to_string()),
+        Cell::new(totals["released_count"].to_string()),
+        Cell::new(totals["blocks"].to_string()),
+    ]));
+
+    render_table(width, &table);
+}
+
 // ── Timeline ───────────────────────────────────────────────────────────────────
 
 /// Print a timeline table of events for a session.
@@ -792,14 +1217,15 @@ pub fn print_json_impact(result: &Value) {
 
 /// Print the hook-by-hook aggregation table.
 ///
-/// `analysis` maps hook names to per-trigger entries, where each entry contains
-/// `session_id`, `timestamp`, `before`, `after`, `n_before`, `n_after`.
+/// `analysis` maps `hook:event` composite keys to per-trigger entries, where
+/// each entry contains `session_id`, `timestamp`, `before`, `after`,
+/// `n_before`, `n_after`.
 pub fn print_impact_aggregation(analysis: &HashMap<String, Vec<Value>>) {
     let width = terminal::get_terminal_width();
     let mut table =
         Table::new().show_header(true).show_edge(true).show_lines(false);
     table.add_column(
-        Column::new("Hook").no_wrap().overflow(OverflowMethod::Ellipsis),
+        Column::new("Hook:Event").no_wrap().overflow(OverflowMethod::Ellipsis),
     );
     table.add_column(
         Column::new("Triggers")
@@ -929,11 +1355,13 @@ pub struct CostData {
 }
 
 /// Print the cost impact table.
+///
+/// Keys are `hook:event` composite keys, mirroring the impact aggregation.
 pub fn print_cost_impact(data: &HashMap<String, CostData>) {
     let width = terminal::get_terminal_width();
     let mut table =
         Table::new().show_header(true).show_edge(true).show_lines(false);
-    table.add_column(Column::new("Hook"));
+    table.add_column(Column::new("Hook:Event"));
     table.add_column(Column::new("Before Cost").justify(JustifyMethod::Right));
     table.add_column(Column::new("After Cost").justify(JustifyMethod::Right));
     table.add_column(Column::new("Ratio").justify(JustifyMethod::Right));
@@ -962,9 +1390,9 @@ pub fn print_cost_impact(data: &HashMap<String, CostData>) {
 
 /// Print verbose per-trigger impact detail.
 ///
-/// Each row in `rows` is a Value with fields: `session_id`, `hook`,
-/// `timestamp`, `avg_before`, `avg_after`, `delta`, `before_steps`,
-/// `after_steps`.
+/// Each row in `rows` is a Value with fields: `session_id`, `hook`
+/// (a `hook:event` composite key), `timestamp`, `avg_before`, `avg_after`,
+/// `delta`, `before_steps`, `after_steps`.
 pub fn print_impact_verbose(rows: &[Value]) {
     for row in rows {
         let sid = row.get("session_id").and_then(|v| v.as_str()).unwrap_or("?");
@@ -1236,6 +1664,84 @@ mod tests {
         assert_eq!(ids.len(), 2);
     }
 
+    // ── build_json_multi_pruning ─────────────────────────────────────────────
+
+    #[test]
+    fn test_sum_pruning_totals_basic() {
+        let summaries = vec![
+            (
+                "ses-001".to_string(),
+                Some(json!({
+                    "reclaimed": {"tokens": 1500, "tools": 3},
+                    "marked": {"total_count": 6, "total_tokens": 1200},
+                    "released": {"count": 8, "tokens": 1500},
+                    "compress_blocks": {"blocks": 2},
+                })),
+            ),
+            (
+                "ses-002".to_string(),
+                Some(json!({
+                    "reclaimed": {"tokens": 500, "tools": 1},
+                    "marked": {"total_count": 4, "total_tokens": 800},
+                    "released": {"count": 3, "tokens": 600},
+                    "compress_blocks": {"blocks": 1},
+                })),
+            ),
+            ("ses-003".to_string(), None),
+        ];
+        let totals = sum_pruning_totals(&summaries);
+        assert_eq!(totals["reclaimed_tokens"], 2000);
+        assert_eq!(totals["marked_count"], 10);
+        assert_eq!(totals["marked_tokens"], 2000);
+        assert_eq!(totals["released_count"], 11);
+        assert_eq!(totals["released_tokens"], 2100);
+        assert_eq!(totals["blocks"], 3);
+    }
+
+    #[test]
+    fn test_sum_pruning_totals_empty() {
+        let totals = sum_pruning_totals(&[]);
+        assert_eq!(totals["reclaimed_tokens"], 0);
+        assert_eq!(totals["marked_count"], 0);
+        assert_eq!(totals["marked_tokens"], 0);
+        assert_eq!(totals["released_count"], 0);
+        assert_eq!(totals["released_tokens"], 0);
+        assert_eq!(totals["blocks"], 0);
+    }
+
+    #[test]
+    fn test_build_json_multi_pruning_shape() {
+        let summaries = vec![
+            (
+                "ses-001".to_string(),
+                Some(json!({"reclaimed": {"tokens": 100}})),
+            ),
+            ("ses-002".to_string(), None),
+        ];
+        let result = build_json_multi_pruning(&summaries);
+        let pruning = &result["pruning"];
+        let sessions = pruning["sessions"].as_array().unwrap();
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0]["id"], "ses-001");
+        assert!(sessions[0]["summary"].is_object());
+        assert_eq!(sessions[1]["id"], "ses-002");
+        assert_eq!(sessions[1]["summary"], Value::Null);
+        assert_eq!(pruning["total"]["reclaimed_tokens"], 100);
+    }
+
+    #[test]
+    fn test_build_json_multi_pruning_roundtrip() {
+        let summaries = vec![(
+            "ses-001".to_string(),
+            Some(json!({"reclaimed": {"tokens": 100}})),
+        )];
+        let value = build_json_multi_pruning(&summaries);
+        let json_str = serde_json::to_string_pretty(&value)
+            .expect("build_json_multi_pruning should serialize");
+        let _parsed: Value = serde_json::from_str(&json_str)
+            .expect("serialized output must be valid JSON");
+    }
+
     // ── build_json_multi_stats ───────────────────────────────────────────────
 
     #[test]
@@ -1326,6 +1832,162 @@ mod tests {
         let span = compute_time_span(&events);
         // Only 1 valid timestamp → should return ""
         assert_eq!(span, "");
+    }
+
+    // ── build_pruning_summary ─────────────────────────────────────────
+
+    #[test]
+    fn test_build_pruning_summary_mixed_stream() {
+        let events = vec![
+            json!({"event": "prune_completed", "prunedToolCount": 3, "totalReclaimedTokens": 1500}),
+            json!({"event": "dedup_marked", "markedCount": 4, "markedTokens": 800}),
+            json!({"event": "dedup_marked", "markedCount": 2, "markedTokens": 400}),
+            json!({"event": "purge-errors_marked", "markedCount": 3, "markedTokens": 600}),
+            json!({"event": "sweep_marked", "markedCount": 5, "totalEstimatedTokens": 1000}),
+            json!({"event": "marks_released", "releasedCount": 6, "releasedTokens": 1200}),
+            json!({"event": "marks_released", "releasedCount": 2, "releasedTokens": 300, "forced": "view_change"}),
+            json!({"event": "compress_created", "blockId": 1, "messageCount": 10, "inTokens": 2000, "outTokens": 500}),
+            json!({"event": "compress_created", "blockId": 2, "messageCount": 20, "inTokens": 3000, "outTokens": 1000}),
+            json!({"event": "some_unknown_event", "foo": 1}),
+        ];
+        let summary =
+            build_pruning_summary(&events).expect("summary should exist");
+
+        // Reclaimed: last prune_completed snapshot.
+        assert_eq!(summary["reclaimed"]["tokens"], 1500);
+        assert_eq!(summary["reclaimed"]["tools"], 3);
+
+        // Marked by producer (dedup = 4+2, purge-errors = 3, sweep = 5).
+        let marked = &summary["marked"];
+        assert_eq!(marked["by_producer"]["dedup"]["count"], 6);
+        assert_eq!(marked["by_producer"]["dedup"]["tokens"], 1200);
+        assert_eq!(marked["by_producer"]["purge-errors"]["count"], 3);
+        assert_eq!(marked["by_producer"]["purge-errors"]["tokens"], 600);
+        assert_eq!(marked["by_producer"]["sweep"]["count"], 5);
+        assert_eq!(marked["by_producer"]["sweep"]["tokens"], 1000);
+        assert_eq!(marked["total_count"], 14);
+        assert_eq!(marked["total_tokens"], 2800);
+
+        // Released: 2 batches, one forced.
+        assert_eq!(summary["released"]["batches"], 2);
+        assert_eq!(summary["released"]["count"], 8);
+        assert_eq!(summary["released"]["tokens"], 1500);
+        assert_eq!(summary["released"]["forced"], 1);
+
+        // Compress blocks: 5000 in → 1500 out → ratio ≈ 3.33, reduction 70%.
+        let compress = &summary["compress_blocks"];
+        assert_eq!(compress["blocks"], 2);
+        assert_eq!(compress["messages"], 30);
+        assert_eq!(compress["in_tokens"], 5000);
+        assert_eq!(compress["out_tokens"], 1500);
+        let ratio = compress["ratio"].as_f64().unwrap();
+        assert!((ratio - 3.33).abs() < 0.01);
+        let reduction = compress["reduction_pct"].as_f64().unwrap();
+        assert!((reduction - 70.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_build_pruning_summary_keeps_last_prune_completed() {
+        // prune_completed is emitted every transform round; only the last
+        // occurrence is the cumulative snapshot.
+        let events = vec![
+            json!({"event": "prune_completed", "prunedToolCount": 1, "totalReclaimedTokens": 100}),
+            json!({"event": "prune_completed", "prunedToolCount": 4, "totalReclaimedTokens": 900}),
+        ];
+        let summary =
+            build_pruning_summary(&events).expect("summary should exist");
+        assert_eq!(summary["reclaimed"]["tokens"], 900);
+        assert_eq!(summary["reclaimed"]["tools"], 4);
+    }
+
+    #[test]
+    fn test_build_pruning_summary_sweep_total_estimated_tokens_only() {
+        // sweep_marked writes totalEstimatedTokens instead of markedTokens.
+        let events = vec![
+            json!({"event": "sweep_marked", "markedCount": 3, "totalEstimatedTokens": 2400}),
+            json!({"event": "sweep_marked", "markedCount": 2, "totalEstimatedTokens": 600}),
+        ];
+        let summary =
+            build_pruning_summary(&events).expect("summary should exist");
+        let sweep = &summary["marked"]["by_producer"]["sweep"];
+        assert_eq!(sweep["count"], 5);
+        assert_eq!(sweep["tokens"], 3000);
+        assert_eq!(summary["marked"]["total_tokens"], 3000);
+    }
+
+    #[test]
+    fn test_build_pruning_summary_none_without_pruning_events() {
+        assert!(build_pruning_summary(&[]).is_none());
+        let events = vec![
+            json!({"event": "validate", "hook": "task-prompt"}),
+            json!({"event": "trigger", "hook": "json-error-nudge"}),
+        ];
+        assert!(build_pruning_summary(&events).is_none());
+    }
+
+    #[test]
+    fn test_build_pruning_summary_forced_counting() {
+        let events = vec![
+            json!({"event": "marks_released", "releasedCount": 2, "releasedTokens": 100, "forced": "view_change"}),
+            json!({"event": "marks_released", "releasedCount": 1, "releasedTokens": 50}),
+        ];
+        let summary =
+            build_pruning_summary(&events).expect("summary should exist");
+        assert_eq!(summary["released"]["batches"], 2);
+        assert_eq!(summary["released"]["count"], 3);
+        assert_eq!(summary["released"]["tokens"], 150);
+        assert_eq!(summary["released"]["forced"], 1);
+    }
+
+    #[test]
+    fn test_build_pruning_summary_compress_ratio_fields() {
+        let events = vec![
+            json!({"event": "compress_created", "blockId": 1, "messageCount": 12, "inTokens": 4000, "outTokens": 1000}),
+        ];
+        let summary =
+            build_pruning_summary(&events).expect("summary should exist");
+        let compress = &summary["compress_blocks"];
+        assert_eq!(compress["blocks"], 1);
+        assert_eq!(compress["messages"], 12);
+        assert_eq!(compress["in_tokens"], 4000);
+        assert_eq!(compress["out_tokens"], 1000);
+        let ratio = compress["ratio"].as_f64().unwrap();
+        assert!((ratio - 4.0).abs() < 0.01);
+        let reduction = compress["reduction_pct"].as_f64().unwrap();
+        assert!((reduction - 75.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_print_json_pruning_serializes() {
+        // Smoke test for the standalone JSON printer: emits valid JSON for
+        // a pruning event stream (output is captured by the test harness).
+        let events = vec![
+            json!({"event": "marks_released", "releasedCount": 2, "releasedTokens": 100}),
+        ];
+        let summary =
+            build_pruning_summary(&events).expect("summary should exist");
+        print_json_pruning(&summary);
+    }
+
+    #[test]
+    fn test_build_json_full_stats_pruning_key_conditional() {
+        // No pruning events → no pruning key in full stats.
+        let events = vec![
+            json!({"level": "info", "hook": "task-prompt", "event": "validate"}),
+        ];
+        let result =
+            build_json_full_stats(&events, &[], "/tmp/t.log", "ses-001");
+        assert!(result.get("pruning").is_none());
+
+        // With pruning events → conditional pruning key present.
+        let events = vec![
+            json!({"event": "marks_released", "releasedCount": 2, "releasedTokens": 100}),
+        ];
+        let result =
+            build_json_full_stats(&events, &[], "/tmp/t.log", "ses-001");
+        assert!(result.get("pruning").is_some());
+        assert_eq!(result["pruning"]["released"]["count"], 2);
+        assert_eq!(result["pruning"]["released"]["tokens"], 100);
     }
 
     // ── build_json roundtrip (verify output is valid JSON) ─────────────────

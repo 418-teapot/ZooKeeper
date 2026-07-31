@@ -1139,6 +1139,15 @@ nudgeGrowthTokens)）不再提示；压缩后按比例调整基线。
 > `--pruning` 标志与 `--tokens`/`--hooks` 同构可单独查看），数据源为
 > JSONL hook 日志中的 `prune_completed` / `*_marked` / `*_released`
 > 事件——zinspect 已是 hook 观测的统一入口，聊天侧不新增命令噪音。
+>
+> ✅ 已实现（2026-07-31）：`zinspect stats <id> --pruning` 单会话输出
+> 四组（回收/按 producer 标记/释放批次含 forced/压缩块含压缩比），
+> `--sessions N --pruning` 输出 per-session 行 + totals，JSON/表格双
+> 口径；全量 stats 报告在有剪枝事件时自动附条件 section。聚合集中在
+> 纯函数 `build_pruning_summary`（`prune_completed` 取最后一条快照、
+> sweep 兼容 `totalEstimatedTokens` 键）。同批增量：`zinspect impact`
+> 聚合分组键从 hook 级改为 `hook:event` 复合键（修复 `prune_completed`
+> 每轮频发稀释 `marks_released` 信号的问题）。
 
 ---
 
@@ -1376,7 +1385,7 @@ DCP 意味着增加 `dcp.jsonc`，破坏现有配置管理模型。
 | ~~下一步~~ | 自动去重 dedup（统一 marks + 批量释放 + ignored 通知） | §3.5 | ✅ 已完成（§4.5/§6，2026-07-25） |
 | +1 | ~~purge-errors：错误工具调用老化 N 步后标记清除 input~~ | §3.5 / §4.6 | ✅ 已完成（R1-R3 架构落地，§4.6，2026-07-25） |
 | +1.5 | ~~手动压缩 `/dcp compress`：机械摘要 MVP + 三重保护 + 幻影门 + 折叠通路 + 视图变化强制释放 + TUI/报告折叠视图接线 + 系统类残差法~~ | §3.8 / §5.2 | ✅ 已完成（§4.7，2026-07-30） |
-| +2 | zinspect `stats` 新增剪枝回收 section（`--pruning` 标志与 `--tokens`/`--hooks` 同构；读 JSONL 日志的 `prune_completed`/`*_marked`/`*_released` 事件；2026-07-27 决策：不做 `/dcp stats` 聊天命令、不加独立子命令） | — | 即刻可做 |
+| +2 | ~~zinspect `stats` 新增剪枝回收 section（`--pruning` 标志与 `--tokens`/`--hooks` 同构；读 JSONL 日志的 `prune_completed`/`*_marked`/`*_released` 事件）+ `impact` 聚合改 `hook:event` 复合键消除信号稀释~~（2026-07-27 决策：不做 `/dcp stats` 聊天命令、不加独立子命令） | §5.4 | ✅ 已完成（2026-07-31） |
 | V3 | compress 工具注册 + LLM 驱动摘要替换机械摘要 + mNNNN 引用 + nudge 系统（用户确认：模型自主压缩为未来方向，统一 producer 模型与 CompressionBlock.tier 已为其留位） | §3.3 / §3.4 / §3.6 / §5.2-5.3 | 手动压缩实测稳定 |
 | V3.5（候选） | T2 摘要再压缩（应对摘要累积；视 V3 实测决定，§9.8） | §3.8.1 | V3 实测数据 |
 | V4 | Message 模式压缩、decompress/recompress、子代理结果展开 | §3.4 / §5.4 | V3 |

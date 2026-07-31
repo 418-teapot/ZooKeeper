@@ -49,6 +49,7 @@ impl TestFixture {
         Self::create_db(&db_path);
         Self::create_log_file(&log_dir.join("opencode-ses-001.log"), "ses-001");
         Self::create_log_file(&log_dir.join("opencode-ses-002.log"), "ses-002");
+        Self::create_log_file(&log_dir.join("opencode-ses-003.log"), "ses-003");
 
         Self {
             _db_dir: db_dir,
@@ -246,6 +247,55 @@ impl TestFixture {
             ],
         ).expect("insert part-005 (step-finish)");
 
+        // ── ses-003 (pruning-heavy session) ────────────────────────────────
+        conn.execute(
+            "INSERT INTO session VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+            rusqlite::params![
+                "ses-003",
+                Option::<&str>::None,
+                "context pruning reclamation",
+                "context-pruning",
+                "beaver",
+                "/app",
+                r#"{"name":"deepseek-v4"}"#,
+                1_715_000_400_000_i64,  // time_created
+                1_715_000_500_000_i64,  // time_updated (newest → first in multi-session ordering)
+                0.02,                   // cost
+                400.0,                  // tokens_input
+                200.0,                  // tokens_output
+                0.0,                    // tokens_reasoning
+                0.0,                    // tokens_cache_read
+                0.0,                    // tokens_cache_write
+            ],
+        )
+        .expect("insert ses-003");
+
+        // Message for ses-003
+        conn.execute(
+            "INSERT INTO message VALUES (?1,?2,?3,?4)",
+            rusqlite::params![
+                "msg-004",
+                "ses-003",
+                1_715_000_410_000_i64,
+                r#"{"role":"user","agent":"beaver"}"#,
+            ],
+        )
+        .expect("insert msg-004");
+
+        // Part: step-finish for msg-004. Gives ses-003 step data so the
+        // single-session pruning branch does not print the "No step-finish
+        // records" warning (which would pollute JSON stdout).
+        conn.execute(
+            "INSERT INTO part (id, message_id, session_id, time_created, \
+             time_updated, data) \
+             VALUES (?1,?2,?3,?4,?5,?6)",
+            rusqlite::params![
+                "part-006", "msg-004", "ses-003",
+                1_715_000_410_000_i64, 1_715_000_415_000_i64,
+                r#"{"type":"step-finish","tokens":{"input":300,"output":150,"cache":{"read":100,"write":30}},"cost":0.009,"reason":"completed"}"#,
+            ],
+        ).expect("insert part-006 (step-finish)");
+
         conn.close().expect("close test db");
     }
 
@@ -264,6 +314,20 @@ impl TestFixture {
             ],
             "ses-002" => vec![
                 r#"{"hook":"task-prompt","event":"validate","level":"info","timestamp":"2025-01-09T14:00:00Z","sessionId":"ses-002","warnings":0,"errors":0}"#,
+            ],
+            // Pruning fixture: covers all five event families consumed by
+            // `build_pruning_summary`. Two `prune_completed` events verify
+            // last-wins snapshot semantics; `sweep_marked` uses the
+            // `totalEstimatedTokens` key; one `marks_released` is forced.
+            "ses-003" => vec![
+                r#"{"hook":"context-pruning","event":"prune_completed","level":"info","timestamp":"2025-01-09T16:00:00Z","sessionId":"ses-003","totalReclaimedTokens":5000,"prunedToolCount":5}"#,
+                r#"{"hook":"context-pruning","event":"dedup_marked","level":"info","timestamp":"2025-01-09T16:01:00Z","sessionId":"ses-003","markedCount":40,"markedTokens":4000}"#,
+                r#"{"hook":"context-pruning","event":"sweep_marked","level":"info","timestamp":"2025-01-09T16:02:00Z","sessionId":"ses-003","markedCount":60,"totalEstimatedTokens":6000}"#,
+                r#"{"hook":"context-pruning","event":"purge-errors_marked","level":"warn","timestamp":"2025-01-09T16:03:00Z","sessionId":"ses-003","markedCount":20,"markedTokens":2000}"#,
+                r#"{"hook":"context-pruning","event":"marks_released","level":"info","timestamp":"2025-01-09T16:04:00Z","sessionId":"ses-003","releasedCount":30,"releasedTokens":3000}"#,
+                r#"{"hook":"context-pruning","event":"marks_released","level":"info","timestamp":"2025-01-09T16:05:00Z","sessionId":"ses-003","releasedCount":20,"releasedTokens":2000,"forced":"view_change"}"#,
+                r#"{"hook":"context-pruning","event":"prune_completed","level":"info","timestamp":"2025-01-09T16:06:00Z","sessionId":"ses-003","totalReclaimedTokens":12000,"prunedToolCount":12}"#,
+                r#"{"hook":"context-pruning","event":"compress_created","level":"info","timestamp":"2025-01-09T16:07:00Z","sessionId":"ses-003","blockId":"blk-1","messageCount":10,"inTokens":10000,"outTokens":2000}"#,
             ],
             _ => vec![],
         };
@@ -649,11 +713,13 @@ fn test_impact_single_session_table() {
         output.status.code()
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Table output should contain hook names and analysis data
+    // Table output should contain hook names and analysis data. The
+    // aggregation now groups by `hook:event` composite keys, so the header
+    // reads "Hook:Event" (rendered in full at the default 80-col width).
     assert!(stdout.contains("task-prompt"), "output should contain hook name");
     assert!(
-        stdout.contains("Triggers"),
-        "output should contain Triggers column"
+        stdout.contains("Hook:Event"),
+        "output should contain Hook:Event column header"
     );
 }
 
@@ -736,8 +802,16 @@ fn test_impact_with_hook_filter() {
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .expect("output should be valid JSON");
     let agg = parsed["hook_aggregation"].as_object().unwrap();
-    // Only task-prompt hooks should be in the aggregation
-    assert!(agg.contains_key("task-prompt"));
+    // Aggregation keys are `hook:event` composite keys, so assert on the
+    // composite form instead of the bare hook name.
+    assert!(agg.contains_key("task-prompt:validate"));
+    assert!(agg.contains_key("task-prompt:trigger"));
+    // Every key must carry the filtered hook prefix — nothing from other
+    // hooks should survive the filter.
+    assert!(
+        agg.keys().all(|k| k.starts_with("task-prompt:")),
+        "all keys should start with the filtered hook prefix, got: {agg:?}"
+    );
     assert!(!agg.contains_key("json-error-nudge"));
 }
 
@@ -890,4 +964,259 @@ fn test_impact_no_hooks_empty_db_table() {
         stdout.contains("No sessions"),
         "output should contain 'No sessions' warning"
     );
+}
+
+// ── Pruning stats integration tests ───────────────────────────────────────────
+
+/// Run `stats <id> --pruning --json` on the pruning fixture session and
+/// return the parsed JSON.
+fn run_pruning_json(fix: &TestFixture, session_id: &str) -> serde_json::Value {
+    let output = fix
+        .zinspect()
+        .args(["stats", session_id, "--pruning", "--json", "--no-color"])
+        .output()
+        .expect("failed to run zinspect stats <id> --pruning --json");
+    assert!(
+        output.status.success(),
+        "should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(stdout.trim()).expect("output should be valid JSON")
+}
+
+#[test]
+fn test_stats_single_session_pruning_json() {
+    let fix = TestFixture::new();
+    let parsed = run_pruning_json(&fix, "ses-003");
+
+    // Reclaimed: last prune_completed snapshot wins (5000 → 12000).
+    assert_eq!(parsed["reclaimed"]["tokens"], 12000);
+    assert_eq!(parsed["reclaimed"]["tools"], 12);
+
+    // Marked: dedup (markedTokens), sweep (totalEstimatedTokens),
+    // purge-errors (markedTokens) grouped by producer.
+    let marked = &parsed["marked"];
+    assert_eq!(marked["by_producer"]["dedup"]["count"], 40);
+    assert_eq!(marked["by_producer"]["dedup"]["tokens"], 4000);
+    assert_eq!(marked["by_producer"]["sweep"]["count"], 60);
+    assert_eq!(marked["by_producer"]["sweep"]["tokens"], 6000);
+    assert_eq!(marked["by_producer"]["purge-errors"]["count"], 20);
+    assert_eq!(marked["by_producer"]["purge-errors"]["tokens"], 2000);
+    assert_eq!(marked["total_count"], 120);
+    assert_eq!(marked["total_tokens"], 12000);
+
+    // Released: 2 batches, 50 tools / 5000 tokens, one forced.
+    assert_eq!(parsed["released"]["batches"], 2);
+    assert_eq!(parsed["released"]["count"], 50);
+    assert_eq!(parsed["released"]["tokens"], 5000);
+    assert_eq!(parsed["released"]["forced"], 1);
+
+    // Compress blocks: 10000 in → 2000 out → 5.0x ratio, 80% reduction.
+    let compress = &parsed["compress_blocks"];
+    assert_eq!(compress["blocks"], 1);
+    assert_eq!(compress["messages"], 10);
+    assert_eq!(compress["in_tokens"], 10000);
+    assert_eq!(compress["out_tokens"], 2000);
+    assert_eq!(compress["ratio"].as_f64().unwrap(), 5.0);
+    assert_eq!(compress["reduction_pct"].as_f64().unwrap(), 80.0);
+}
+
+#[test]
+fn test_stats_single_session_pruning_table() {
+    let fix = TestFixture::new();
+    let output = fix
+        .zinspect()
+        .args(["stats", "ses-003", "--pruning", "--no-color"])
+        .output()
+        .expect("failed to run zinspect stats ses-003 --pruning --no-color");
+    assert!(
+        output.status.success(),
+        "should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // All four groups must be rendered: reclaimed / marked / released /
+    // compress blocks.
+    assert!(
+        stdout.contains("Pruning Reclamation"),
+        "output should contain section title"
+    );
+    assert!(stdout.contains("Reclaimed tokens"));
+    assert!(stdout.contains("Pruned tools"));
+    assert!(stdout.contains("Marked count (dedup)"));
+    assert!(stdout.contains("Marked count (sweep)"));
+    assert!(stdout.contains("Marked total count"));
+    assert!(stdout.contains("Release batches"));
+    assert!(stdout.contains("Forced batches"));
+    assert!(stdout.contains("Compress blocks"));
+    assert!(stdout.contains("Compression ratio"));
+}
+
+#[test]
+fn test_stats_single_session_pruning_no_events_hint() {
+    // `--pruning` on a session without pruning events prints a hint
+    // instead of an empty table.
+    let fix = TestFixture::new();
+    let output = fix
+        .zinspect()
+        .args(["stats", "ses-001", "--pruning", "--no-color"])
+        .output()
+        .expect("failed to run zinspect stats ses-001 --pruning --no-color");
+    assert!(
+        output.status.success(),
+        "should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("No pruning events found"),
+        "output should contain the no-pruning hint"
+    );
+}
+
+#[test]
+fn test_stats_pruning_tokens_fallthrough_full_report() {
+    // `--pruning --tokens` selects two sections, so the single-section
+    // branches are skipped and the command falls back to the full report.
+    let fix = TestFixture::new();
+    let output = fix
+        .zinspect()
+        .args(["stats", "ses-003", "--pruning", "--tokens", "--no-color"])
+        .output()
+        .expect("failed to run zinspect stats ses-003 --pruning --tokens");
+    assert!(
+        output.status.success(),
+        "should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Stats for session"),
+        "multi-flag stats should render the full report header"
+    );
+    assert!(
+        stdout.contains("Total input tokens"),
+        "full report should include the token summary section"
+    );
+    assert!(
+        stdout.contains("Pruning Reclamation"),
+        "full report for a pruning session should include the pruning section"
+    );
+}
+
+#[test]
+fn test_stats_full_report_includes_pruning_section() {
+    // No flag → full report; the pruning section appears only for sessions
+    // that contain pruning events.
+    let fix = TestFixture::new();
+    let output = fix
+        .zinspect()
+        .args(["stats", "ses-003", "--no-color"])
+        .output()
+        .expect("failed to run zinspect stats ses-003 --no-color");
+    assert!(
+        output.status.success(),
+        "should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Pruning Reclamation"),
+        "full report for a pruning session should include the pruning section"
+    );
+}
+
+#[test]
+fn test_stats_full_report_excludes_pruning_section() {
+    // ses-001 has no pruning events → the full report must not render the
+    // pruning section at all.
+    let fix = TestFixture::new();
+    let output = fix
+        .zinspect()
+        .args(["stats", "ses-001", "--no-color"])
+        .output()
+        .expect("failed to run zinspect stats ses-001 --no-color");
+    assert!(
+        output.status.success(),
+        "should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("Pruning Reclamation"),
+        "full report for a non-pruning session should omit the pruning section"
+    );
+}
+
+#[test]
+fn test_stats_multi_session_pruning_json() {
+    // Multi-session mode queries sessions from the DB (ordered by
+    // time_updated DESC) and parses each session's JSONL once.
+    let fix = TestFixture::new();
+    let output = fix
+        .zinspect()
+        .args(["stats", "--sessions", "3", "--pruning", "--json", "--no-color"])
+        .output()
+        .expect("failed to run zinspect stats --sessions 3 --pruning --json");
+    assert!(
+        output.status.success(),
+        "should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .expect("output should be valid JSON");
+    let sessions = parsed["pruning"]["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 3, "one row per session in the DB");
+
+    // ses-003 is the newest session and the only one with pruning events.
+    let s3 = sessions
+        .iter()
+        .find(|s| s.get("id").and_then(|v| v.as_str()) == Some("ses-003"))
+        .expect("should contain a ses-003 row");
+    assert_eq!(s3["summary"]["reclaimed"]["tokens"], 12000);
+    assert_eq!(s3["summary"]["released"]["count"], 50);
+
+    // Sessions without pruning events get a null summary.
+    for sid in ["ses-001", "ses-002"] {
+        let row = sessions
+            .iter()
+            .find(|s| s.get("id").and_then(|v| v.as_str()) == Some(sid))
+            .unwrap_or_else(|| panic!("should contain a {sid} row"));
+        assert_eq!(row["summary"], serde_json::Value::Null);
+    }
+
+    // Totals aggregate numeric fields across all sessions.
+    let total = &parsed["pruning"]["total"];
+    assert_eq!(total["reclaimed_tokens"], 12000);
+    assert_eq!(total["marked_count"], 120);
+    assert_eq!(total["marked_tokens"], 12000);
+    assert_eq!(total["released_count"], 50);
+    assert_eq!(total["released_tokens"], 5000);
+    assert_eq!(total["blocks"], 1);
+}
+
+#[test]
+fn test_stats_multi_session_pruning_table() {
+    let fix = TestFixture::new();
+    let output = fix
+        .zinspect()
+        .args(["stats", "--sessions", "3", "--pruning", "--no-color"])
+        .output()
+        .expect(
+            "failed to run zinspect stats --sessions 3 --pruning --no-color",
+        );
+    assert!(
+        output.status.success(),
+        "should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Cross-Session Pruning Reclamation"),
+        "output should contain the cross-session pruning title"
+    );
+    assert!(stdout.contains("ses-003"), "output should list ses-003");
+    assert!(stdout.contains("Total"), "output should contain totals row");
 }

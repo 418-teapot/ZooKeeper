@@ -70,6 +70,10 @@ enum Command {
         /// Show only the hook breakdown section
         #[arg(long)]
         hooks: bool,
+
+        /// Show only the pruning reclamation section
+        #[arg(long)]
+        pruning: bool,
     },
     /// Show event timeline for a session
     Timeline {
@@ -120,7 +124,78 @@ fn count_as_f64(n: usize) -> f64 {
 
 // ── Command Handlers ─────────────────────────────────────────────────────────
 
-fn cmd_stats_multi(args: &Args, n: i64, all: bool) {
+/// Section filters for the `stats` subcommand.
+///
+/// When exactly one section is selected, only that section is printed;
+/// multiple selections fall back to the full report.
+#[derive(Clone, Copy, Default)]
+struct StatsSections {
+    tokens: bool,
+    hooks: bool,
+    pruning: bool,
+}
+
+/// Print the pruning reclamation section for a single session, or a hint
+/// when the session has no pruning events.
+///
+/// Builds the summary exactly once and passes it down to the printers.
+fn print_single_pruning(args: &Args, events: &[Value]) {
+    let Some(summary) = display::build_pruning_summary(events) else {
+        if args.json {
+            let warning = json!({
+                "warning": "No pruning events found in session log."
+            });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&warning)
+                    .expect("JSON serialization")
+            );
+        } else {
+            msg_print(
+                "[yellow]No pruning events found in session log.[/yellow]",
+            );
+        }
+        return;
+    };
+    if args.json {
+        display::print_json_pruning(&summary);
+    } else {
+        display::print_pruning_table(&summary);
+    }
+}
+
+/// Print the multi-session pruning section, or a hint when no session
+/// has pruning events.
+fn print_multi_pruning(
+    args: &Args,
+    pruning_rows: &[(String, Option<Value>)],
+    n: i64,
+) {
+    if pruning_rows.iter().all(|(_, summary)| summary.is_none()) {
+        if args.json {
+            let warning = json!({
+                "warning": "No pruning events found in session logs."
+            });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&warning)
+                    .expect("JSON serialization")
+            );
+        } else {
+            msg_print(
+                "[yellow]No pruning events found in session logs.[/yellow]",
+            );
+        }
+        return;
+    }
+    if args.json {
+        display::print_json_multi_pruning(pruning_rows);
+    } else {
+        display::print_multi_pruning_table(pruning_rows, n);
+    }
+}
+
+fn cmd_stats_multi(args: &Args, n: i64, all: bool, pruning_only: bool) {
     let log_dir = zutil::get_zoo_log_dir();
     let sessions = match db::query_recent_sessions(n, &args.db, all) {
         Ok(s) => s,
@@ -141,6 +216,7 @@ fn cmd_stats_multi(args: &Args, n: i64, all: bool) {
     let mut total_cache_read = 0.0_f64;
     let mut total_cost = 0.0_f64;
     let mut total_hook_events = 0.0_f64;
+    let mut pruning_rows: Vec<(String, Option<Value>)> = Vec::new();
 
     for s in &sessions {
         let sid = s.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -159,16 +235,20 @@ fn cmd_stats_multi(args: &Args, n: i64, all: bool) {
         let cost =
             s.get("cost").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
 
-        // Hook event count requires parsing the JSONL log — the DB
-        // doesn't store hook-level aggregates. Each session is parsed
-        // at most once.
-        let hook_count =
-            zutil::resolve_session_path(sid, &log_dir).map_or(0.0, |path| {
-                let events = helpers::parse_zoo_log(&path);
-                count_as_f64(
-                    events.iter().filter(|e| e.get("hook").is_some()).count(),
-                )
-            });
+        // Hook event count and the pruning summary require parsing the
+        // JSONL log — the DB doesn't store hook-level aggregates. Each
+        // session is parsed at most once.
+        let events: Vec<Value> = zutil::resolve_session_path(sid, &log_dir)
+            .map_or_else(Vec::new, |path| helpers::parse_zoo_log(&path));
+        let hook_count = count_as_f64(
+            events.iter().filter(|e| e.get("hook").is_some()).count(),
+        );
+        if pruning_only {
+            pruning_rows.push((
+                sid.to_string(),
+                display::build_pruning_summary(&events),
+            ));
+        }
 
         let hit_rate = helpers::cache_hit_rate(cache_read, inp);
 
@@ -198,6 +278,11 @@ fn cmd_stats_multi(args: &Args, n: i64, all: bool) {
         "hook_events": total_hook_events,
     });
 
+    if pruning_only {
+        print_multi_pruning(args, &pruning_rows, n);
+        return;
+    }
+
     if args.json {
         display::print_json_multi_stats(&rows, &totals);
     } else {
@@ -210,8 +295,7 @@ fn cmd_stats(
     session_id: Option<&str>,
     sessions_n: Option<i64>,
     all: bool,
-    tokens_only: bool,
-    hooks_only: bool,
+    sections: StatsSections,
 ) {
     let log_dir = zutil::get_zoo_log_dir();
 
@@ -223,7 +307,7 @@ fn cmd_stats(
 
     // Multi-session mode
     if let Some(n) = sessions_n {
-        cmd_stats_multi(args, n, all);
+        cmd_stats_multi(args, n, all, sections.pruning);
         return;
     }
 
@@ -234,28 +318,44 @@ fn cmd_stats(
         let exact_sid = helpers::session_id_from_path(&path);
         let steps = db::query_step_data(&exact_sid, &args.db);
 
-        if steps.is_empty() && !hooks_only {
+        if steps.is_empty() && !sections.hooks {
             msg_print(
                 "[yellow]No step-finish records found in database \
                  for this session. Token summary will be empty.[/yellow]",
             );
         }
 
-        if tokens_only && !hooks_only {
+        if sections.tokens && !sections.hooks && !sections.pruning {
+            // Build the token summary exactly once; the empty-steps case
+            // keeps its existing hint/error output.
+            let summary = display::build_json_token_summary(&steps);
             if args.json {
-                display::print_json_token_summary(&steps);
+                display::print_json_token_summary(&summary);
+            } else if steps.is_empty() {
+                msg_print("");
+                msg_print(
+                    "[yellow]No step data found for this session.[/yellow]",
+                );
             } else {
-                display::print_token_summary_table(&steps);
+                display::print_token_summary_table(&summary);
             }
             return;
         }
 
-        if hooks_only && !tokens_only {
+        if sections.hooks && !sections.tokens && !sections.pruning {
+            // Build the hook breakdown exactly once and pass it down.
+            let summary =
+                display::build_json_hook_breakdown(&events, &exact_sid);
             if args.json {
-                display::print_json_hook_breakdown(&events, &exact_sid);
+                display::print_json_hook_breakdown(&summary);
             } else {
-                display::print_hook_breakdown_table(&events, &exact_sid);
+                display::print_hook_breakdown_table(&summary);
             }
+            return;
+        }
+
+        if sections.pruning && !sections.tokens && !sections.hooks {
+            print_single_pruning(args, &events);
             return;
         }
 
@@ -318,11 +418,11 @@ fn process_hook_event(
     out: &mut HookOutput<'_>,
 ) {
     let hook_ts = hook.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
-    let hook_name = hook
-        .get("hook")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-        .to_string();
+    let hook_name =
+        hook.get("hook").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let hook_event =
+        hook.get("event").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let agg_key = format!("{hook_name}:{hook_event}");
 
     if hook_ts.is_empty() {
         return;
@@ -338,7 +438,7 @@ fn process_hook_event(
     let (avg_before, avg_after) =
         compute_window_averages(&before_steps, &after_steps);
 
-    out.hook_analysis.entry(hook_name.clone()).or_default().push(json!({
+    out.hook_analysis.entry(agg_key.clone()).or_default().push(json!({
         "session_id": ctx.sid,
         "timestamp": hook_ts,
         "before": avg_before,
@@ -356,7 +456,7 @@ fn process_hook_event(
     }
 
     // Cost data
-    let cd = out.cost_data.entry(hook_name.clone()).or_default();
+    let cd = out.cost_data.entry(agg_key.clone()).or_default();
     for (_, s) in &before_steps {
         cd.before += s.get("cost").and_then(Value::as_f64).unwrap_or(0.0);
     }
@@ -371,7 +471,7 @@ fn process_hook_event(
 
         out.verbose_rows.push(json!({
             "session_id": ctx.sid,
-            "hook": hook_name,
+            "hook": agg_key,
             "timestamp": hook_ts,
             "avg_before": avg_before,
             "avg_after": avg_after,
@@ -862,14 +962,24 @@ fn main() {
     COLOR.store(colors_enabled, Ordering::SeqCst);
 
     match &args.command {
-        Some(Command::Stats { session_id, sessions, all, tokens, hooks }) => {
+        Some(Command::Stats {
+            session_id,
+            sessions,
+            all,
+            tokens,
+            hooks,
+            pruning,
+        }) => {
             cmd_stats(
                 &args,
                 session_id.as_deref(),
                 *sessions,
                 *all,
-                *tokens,
-                *hooks,
+                StatsSections {
+                    tokens: *tokens,
+                    hooks: *hooks,
+                    pruning: *pruning,
+                },
             );
         }
         Some(Command::Timeline { session_id, all_events }) => {
@@ -923,6 +1033,7 @@ mod tests {
             all: _,
             tokens: _,
             hooks: _,
+            pruning: _,
         }) = &args.command
         {
             assert_eq!(session_id.as_deref(), Some("ses-001"));
@@ -955,6 +1066,18 @@ mod tests {
         if let Some(Command::Stats { tokens, hooks, .. }) = &args.command {
             assert!(*tokens);
             assert!(*hooks);
+        } else {
+            panic!("expected Stats command");
+        }
+    }
+
+    #[test]
+    fn test_args_stats_with_pruning_flag() {
+        let args =
+            Args::try_parse_from(["zinspect", "stats", "ses-001", "--pruning"])
+                .expect("stats with --pruning should parse");
+        if let Some(Command::Stats { pruning, .. }) = &args.command {
+            assert!(*pruning);
         } else {
             panic!("expected Stats command");
         }
