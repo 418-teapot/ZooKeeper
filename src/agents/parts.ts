@@ -19,9 +19,9 @@
  * Three required sections (SUMMARY / CONTEXT / ACCEPTANCE) with concise
  * structural guidance. Used by all agents that delegate via `task()`.
  */
-export const DELEGATION_FORMAT_TEXT = `- **SUMMARY** — 1 sentence: the desired outcome.
-- **CONTEXT** — facts the subagent CANNOT easily discover (user intent, non-obvious constraints, prior failures, runtime facts, approach hints). Skip code blocks, signatures, line numbers, prescribed implementation.
-- **ACCEPTANCE** — 1-2 verifiable outcomes (e.g. "test X passes", "build succeeds").
+export const DELEGATION_FORMAT_TEXT = `- **SUMMARY** - 1 sentence describing the single desired outcome.
+- **CONTEXT** - all facts needed to understand and correctly execute the focused task. Assume the subagent has no access to prior conversation. Include user intent, non-obvious semantics, failure mechanism, relevant prior discoveries, constraints, and worktree state. Do not require the subagent to reconstruct known context from the repository. EXCLUDE all irrelevant history, instructions, code blocks, line numbers and signatures that prescribe implementation.
+- **ACCEPTANCE** - 1-2 concrete, verifiable outcomes with the evidence required for completion (e.g. "test X passes", "build succeeds"). This limit controls task scope, not CONTEXT detail; split the task if it requires more independent outcomes.
 `;
 
 // ---------------------------------------------------------------------------
@@ -103,16 +103,22 @@ export const DELEGATION_DISCIPLINE_TEXT = `Key discipline:
  * background the subagent never asked for.
  */
 export const DELEGATION_LEAF_EXAMPLE = `Example (codebase search):
-**SUMMARY:** List every function in \`src/\` that catches an exception and silently returns a default value.
-**CONTEXT:** A user reported a bug where failures vanish without a log — suspect silent catches are masking errors. Focus on catch blocks that return, not those that re-throw.
-**ACCEPTANCE:** Each match as file:line; the catch block's return statement quoted.
 
-> BAD — turns a search into a consultation:
-> **CONTEXT:** We're improving observability across the codebase. Please investigate our error-handling strategy and look for places where exceptions might be swallowed. Consider logging, rethrowing, and error codes. Report on overall patterns.
+**SUMMARY:** List every function in \`src/\` that catches an exception and silently returns a default value.
+
+**CONTEXT:** A user reported that request failures disappear without logs and callers receive apparently valid fallback values. Existing investigation suggests the failure is caused by catch blocks that return defaults such as \`null\`, \`false\`, \`[]\`, \`{}\`, \`0\`, or an empty string without logging or rethrowing. Search all source files under \`src/\`, including callbacks and anonymous functions. Include catches whose return occurs through a local helper or conditional branch when the exception can still be silently converted into a default. Exclude catch blocks that always rethrow, return an explicit error/result object, or log and intentionally recover. This is a discovery task only: identify matching code and evidence; do not recommend an error-handling design or modify files.
+
+**ACCEPTANCE:**
+1. Report every match as \`file: line\`, with the catch statement and default return statement quoted.
+2. For indirect or conditional returns, briefly show why the caught exception can reach the default-return path.
+
+> BAD — underspecified because it makes the subagent reconstruct known intent:
+> **CONTEXT:** Find catch blocks that return defaults.
 >
-> GOOD — scoped search with the one fact lynx cannot derive:
-> **CONTEXT:** A user reported a bug where failures vanish without a log — suspect silent catches are masking errors. Focus on catch blocks that return, not those that re-throw.
-`;
+> BAD — turns a scoped search into an open-ended consultation:
+> **CONTEXT:** We're improving observability across the codebase. Investigate our error-handling strategy and recommend where to add logging, rethrow exceptions, introduce error codes, or redesign fallback behavior.
+>
+> GOOD — self-contained but still limited to one searchable outcome`;
 
 // ---------------------------------------------------------------------------
 // Message ref no-echo instruction

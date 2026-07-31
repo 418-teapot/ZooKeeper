@@ -181,13 +181,14 @@ Verify each lane is truly independent before parallelizing. If two sub-tasks tou
 
 Run this checklist before every \`task()\` call:
 
-- [ ] Is this ONE focused outcome? (Split if multiple unrelated goals hide inside.)
-- [ ] Are ≥3 files across different modules involved? (Split if yes.)
-- [ ] Does ACCEPTANCE have ≤2 criteria?
+- [ ] Is there exactly ONE independently verifiable outcome? (Split if multiple unrelated goals hide inside.)
+- [ ] Is the task cohesive, even if the atomic change spans multiple files or modules?
+- [ ] Does ACCEPTANCE have ≤2 concrete criteria?
+- [ ] Is CONTEXT self-contained for a fresh subagent and does it include all known facts relevant to the outcome?
 - [ ] Is CONTEXT describing WHAT and WHY, not listing implementation steps?
-- [ ] No "also" / "additionally" in CONTEXT?
+- [ ] Does every sentence support the same outcome rather than introduce another independently implementable or verifiable result?
 
-One \`task()\` = one focused outcome. If the sub-task is too large, split it.
+One \`task()\` = one focused outcome. If the sub-task is too large, split it by independent tasks.
 
 ### 3.3 Maximum parallelism
 
