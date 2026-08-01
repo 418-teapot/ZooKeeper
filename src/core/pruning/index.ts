@@ -21,14 +21,24 @@ export type { CompressionPlanResult, CompressionSegment } from "./compress.js";
 export {
   BLOCK_HEADER_TEMPLATE,
   buildBlockSummary,
+  deriveBlockTitle,
+  estimateSegmentTokens,
+  firstUserMessageIndex,
+  lastUserMessageIndex,
   planCompression,
   segmentInOutTokens,
+  tokenBoundary,
 } from "./compress.js";
 export {
   foldCompressedBlocks,
   previewFold,
 } from "./fold.js";
-export type { Mark, PruneAction, SessionState } from "./marks.js";
+export type {
+  Mark,
+  PersistedRefs,
+  PruneAction,
+  SessionState,
+} from "./marks.js";
 export {
   _clearAllSessionsForTesting,
   addMark,
@@ -39,6 +49,7 @@ export {
   markedTokens,
   pendingCount,
   pendingTokens,
+  readPersistedRefs,
   reclaimedTokens,
   releaseBatch,
   removeSession,
@@ -49,9 +60,11 @@ export {
   _setNextRefForTesting,
   assignMessageRefs,
   getLastCompactionBoundaryId,
+  getMessageIdByRef,
   injectMessageRefs,
   resetMessageRefs,
   setLastCompactionBoundaryId,
+  snapshotRefs,
   stripHallucinatedRefs,
   stripRefsFromString,
 } from "./message-refs.js";

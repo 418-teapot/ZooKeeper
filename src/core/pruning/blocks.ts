@@ -31,10 +31,16 @@ import type { SessionState } from "./marks.js";
  *   that replaces the compressed segment.
  * - `messageIds` — ordered list of message IDs that this block covers.
  * - `summary` — deterministic text summary of the compressed segment.
+ * - `title` — one-line topic label shown in the block header and used as
+ *   the index entry when a wider recompression consumes this block.
+ *   Required at creation (the `CompressionPlan` always carries one) but
+ *   optional on read: dev-era persisted files predate the field, so a
+ *   loaded block may have an undefined title.
  * - `compressedTokens` — estimated token count of the original messages.
  * - `summaryTokens` — estimated token count of the summary text.
- * - `tier` — reserved for future T2 tiering; always `1` for V3.
  * - `deactivatedBy` — reserved for future use; zero logic.
+ * - `deactivatedAt` — Unix timestamp (ms) of deactivation.  Set when the
+ *   block is consumed by a range-mode recompression.
  * - `createdAt` — Unix timestamp (ms) of creation.
  */
 export interface CompressionBlock {
@@ -43,10 +49,12 @@ export interface CompressionBlock {
   anchorMessageId: string;
   messageIds: string[];
   summary: string;
+  /** Required at creation (CompressionPlan); optional on read (dev-era files). */
+  title?: string;
   compressedTokens: number;
   summaryTokens: number;
-  tier: 1;
   deactivatedBy?: string;
+  deactivatedAt?: number;
   createdAt: number;
 }
 
@@ -63,6 +71,8 @@ export interface CompressionPlan {
   messageIds: string[];
   /** Deterministic summary text. */
   summary: string;
+  /** One-line topic label for the block header / consumption index entry. */
+  title: string;
   /** Estimated token count of the original messages. */
   compressedTokens: number;
   /** Estimated token count of the summary. */
@@ -97,19 +107,29 @@ function nextBlockId(blocks: Map<string, CompressionBlock>): number {
  * map contents.  The new block is immediately `active`.
  *
  * Idempotent: if a block already exists with the same `anchorMessageId`
- * (same segment), does nothing and returns `null`.
+ * (same segment), does nothing and returns `null` — unless that block's
+ * id is listed in `excludeBlockIds`.  Callers that create a replacement
+ * for a block they are about to consume (create-before-consume order)
+ * pass the consumed block ids so the re-creation at the same anchor is
+ * not mistaken for a duplicate.
  *
  * @param state - The session state (must have a `blocks` map).
  * @param plan - The compression plan describing the segment.
+ * @param excludeBlockIds - Block ids to skip in the anchor-idempotency
+ *   check (blocks scheduled for consumption by the caller).
  * @returns The created block, or `null` if a block for the same anchor
  *   already exists.
  */
 export function createBlock(
   state: SessionState,
   plan: CompressionPlan,
+  excludeBlockIds?: ReadonlySet<number> | readonly number[],
 ): CompressionBlock | null {
-  // Idempotency: check if a block already exists for this anchor.
+  // Idempotency: check if a block already exists for this anchor,
+  // skipping blocks the caller is about to consume.
+  const excluded = new Set(excludeBlockIds ?? []);
   for (const [, block] of state.blocks) {
+    if (excluded.has(block.blockId)) continue;
     if (block.anchorMessageId === plan.anchorMessageId) {
       return null;
     }
@@ -125,9 +145,9 @@ export function createBlock(
     anchorMessageId: plan.anchorMessageId,
     messageIds: [...plan.messageIds],
     summary: plan.summary,
+    title: plan.title,
     compressedTokens: plan.compressedTokens,
     summaryTokens: plan.summaryTokens,
-    tier: 1,
     createdAt: now,
   };
 

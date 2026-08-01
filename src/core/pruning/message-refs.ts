@@ -7,8 +7,16 @@
  * model-driven compress tool so the LLM can address messages by a
  * visible stable identifier.
  *
- * **No disk I/O** — restart determinism comes from re-walking the same
- * message array in the same order (the registry is rebuilt from scratch).
+ * **Restart persistence:** the registry is snapshotted into the session
+ * state file (`~/.zoo/storage/{sessionId}.json`) at `saveSessionState`
+ * call sites (piggyback — never per-turn writes).  On process restart
+ * `ensureRegistry` hydrates from the persisted snapshot, so refs stay
+ * stable even after compression has folded messages away (a folded view
+ * would otherwise renumber every ref after the folded region and
+ * invalidate the provider prompt cache).  Messages assigned refs after
+ * the last snapshot re-derive identical numbers from the restored
+ * `nextRef` in identical view order.  Folded-away messages keep stale
+ * entries in `byRef` — harmless, never queried.
  *
  * Pipeline invariant (prefix-cache neutral):
  * ```
@@ -25,6 +33,8 @@
 import { log } from "../../utils/logger.js";
 import type { ContextMessageEntry } from "../metrics.js";
 import { isMessageIgnored } from "../metrics.js";
+import type { PersistedRefs } from "./marks.js";
+import { clearPersistedRefs, readPersistedRefs } from "./marks.js";
 import {
   MAX_INDEX,
   ZOO_MSG_ID_ORPHAN_REGEX,
@@ -37,7 +47,11 @@ import {
 // ---------------------------------------------------------------------------
 
 /**
- * Per-session ref registry stored in memory only.
+ * Per-session ref registry stored in memory.
+ *
+ * The registry is snapshotted to disk at `saveSessionState` call sites
+ * (`snapshotRefs`) and hydrated on first use after a restart
+ * (`ensureRegistry`).
  */
 interface SessionRefRegistry {
   /** OpenCode message ID → ref string (e.g. `"msg_abc123"` → `"m0001"`). */
@@ -55,8 +69,56 @@ interface SessionRefRegistry {
   warnedCapacity: boolean;
 }
 
-/** Map of session ID → ref registry (module-scoped, no persistence). */
+/** Map of session ID → ref registry (module-scoped). */
 const registries = new Map<string, SessionRefRegistry>();
+
+// ---------------------------------------------------------------------------
+// Registry lifecycle
+// ---------------------------------------------------------------------------
+
+/**
+ * Get (or create + hydrate) the runtime registry for a session.
+ *
+ * On first creation, tries to hydrate from the persisted refs snapshot
+ * (`readPersistedRefs`) so refs survive a process restart without
+ * renumbering.  When no snapshot exists, starts fresh from `m0001`.
+ * The persisted `byRef` (ref → message ID) is inverted into `byRawId`
+ * (message ID → ref) on restore — only the forward map is persisted.
+ *
+ * @param sessionId - The session identifier.
+ * @returns The per-session ref registry.
+ */
+function ensureRegistry(sessionId: string): SessionRefRegistry {
+  const existing = registries.get(sessionId);
+  if (existing) return existing;
+
+  const persisted = readPersistedRefs(sessionId);
+  let registry: SessionRefRegistry;
+  if (persisted) {
+    registry = {
+      byRawId: new Map(),
+      byRef: new Map(Object.entries(persisted.byRef)),
+      nextRef: persisted.nextRef,
+      lastCompactionBoundaryId: null,
+      warnedCapacity: false,
+    };
+    // Derive the inverse map (message ID → ref) from the persisted
+    // ref → message ID entries.
+    for (const [ref, rawId] of registry.byRef) {
+      registry.byRawId.set(rawId, ref);
+    }
+  } else {
+    registry = {
+      byRawId: new Map(),
+      byRef: new Map(),
+      nextRef: 1,
+      lastCompactionBoundaryId: null,
+      warnedCapacity: false,
+    };
+  }
+  registries.set(sessionId, registry);
+  return registry;
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -90,17 +152,7 @@ export function assignMessageRefs(
   messages: ContextMessageEntry[],
   isSubAgent?: boolean,
 ): number {
-  let registry = registries.get(sessionId);
-  if (!registry) {
-    registry = {
-      byRawId: new Map(),
-      byRef: new Map(),
-      nextRef: 1,
-      lastCompactionBoundaryId: null,
-      warnedCapacity: false,
-    };
-    registries.set(sessionId, registry);
-  }
+  const registry = ensureRegistry(sessionId);
 
   let newAssignments = 0;
 
@@ -148,6 +200,30 @@ export function assignMessageRefs(
   }
 
   return newAssignments;
+}
+
+/**
+ * Reverse-lookup the OpenCode message ID for a ref string.
+ *
+ * Reads the per-session `byRef` registry directly.  Returns `undefined`
+ * when the session has no registry entry or the ref is unknown.
+ *
+ * **Does NOT trigger hydration:** unlike `ensureRegistry`, this function
+ * only reads the in-memory registry — on a fresh process it returns
+ * `undefined` even when a persisted snapshot exists, until some other
+ * call (`assignMessageRefs` / `setLastCompactionBoundaryId`) has created
+ * the runtime registry.
+ *
+ * @param sessionId - The session identifier.
+ * @param ref - The ref string (e.g. `"m0001"`).
+ * @returns The assigned message ID, or `undefined` if unknown.
+ */
+export function getMessageIdByRef(
+  sessionId: string,
+  ref: string,
+): string | undefined {
+  const registry = registries.get(sessionId);
+  return registry ? registry.byRef.get(ref) : undefined;
 }
 
 /**
@@ -389,10 +465,18 @@ export function stripHallucinatedRefs(messages: ContextMessageEntry[]): void {
  * Used on compaction boundary change so that refs are renumbered from
  * `m0001` when the session history is compacted.
  *
+ * Also invalidates the persisted refs snapshot (`clearPersistedRefs`):
+ * without this, the next `ensureRegistry` would re-hydrate the stale
+ * nextRef/byRef from disk and silently defeat the renumber semantics.
+ *
  * @param sessionId - The session identifier to clear.
  */
 export function resetMessageRefs(sessionId: string): void {
   registries.delete(sessionId);
+  // Drop the persisted snapshot too — otherwise the very next
+  // ensureRegistry would re-hydrate the stale counter from disk and
+  // refs would continue from the old state instead of restarting at m0001.
+  clearPersistedRefs(sessionId);
 }
 
 /**
@@ -422,17 +506,7 @@ export function setLastCompactionBoundaryId(
   sessionId: string,
   boundaryId: string | null,
 ): void {
-  let registry = registries.get(sessionId);
-  if (!registry) {
-    registry = {
-      byRawId: new Map(),
-      byRef: new Map(),
-      nextRef: 1,
-      lastCompactionBoundaryId: null,
-      warnedCapacity: false,
-    };
-    registries.set(sessionId, registry);
-  }
+  const registry = ensureRegistry(sessionId);
   registry.lastCompactionBoundaryId = boundaryId;
 }
 
@@ -462,16 +536,26 @@ export function _setNextRefForTesting(
   sessionId: string,
   nextRef: number,
 ): void {
-  let registry = registries.get(sessionId);
-  if (!registry) {
-    registry = {
-      byRawId: new Map(),
-      byRef: new Map(),
-      nextRef: 1,
-      lastCompactionBoundaryId: null,
-      warnedCapacity: false,
-    };
-    registries.set(sessionId, registry);
-  }
+  const registry = ensureRegistry(sessionId);
   registry.nextRef = nextRef;
+}
+
+/**
+ * Snapshot the runtime ref registry for persistence.
+ *
+ * Returns a plain-object copy of the registry (ref string → message ID)
+ * plus the next-ref counter.  Returns `null` when the session has no
+ * runtime registry (nothing to persist).  Called at `saveSessionState`
+ * call sites; the snapshot is written into `state.refs` before saving.
+ *
+ * @param sessionId - The session identifier.
+ * @returns The persisted refs snapshot, or `null`.
+ */
+export function snapshotRefs(sessionId: string): PersistedRefs | null {
+  const registry = registries.get(sessionId);
+  if (!registry) return null;
+  return {
+    nextRef: registry.nextRef,
+    byRef: Object.fromEntries(registry.byRef),
+  };
 }

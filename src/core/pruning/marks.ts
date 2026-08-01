@@ -11,7 +11,9 @@
  * marks only.
  *
  * Persisted shape:
- * `{ marks: Record<callID, { tokens, effective, action }>, lastUpdated }`.
+ * `{ marks: Record<callID, { tokens, effective, action }>, lastUpdated }`,
+ * plus optional `blocks` and `refs` (the message-ref registry snapshot —
+ * see `PersistedRefs`).
  * Any malformed or unrecognized entry causes the file to load as empty
  * (strict per-field validation).
  *
@@ -81,6 +83,13 @@ export interface SessionState {
   lastAccessedAt: number;
   dirty: boolean;
   pendingViewChange: boolean;
+  /**
+   * Ref registry snapshot (message-refs.ts writes this before save;
+   * serialised to disk).  `undefined` when no snapshot has been taken.
+   * Seeded from the persisted file on restart so a save that happens
+   * before the ref pipeline runs (e.g. a `/dcp` command) preserves it.
+   */
+  refs?: PersistedRefs;
 }
 
 // ---------------------------------------------------------------------------
@@ -136,8 +145,10 @@ interface PersistedMark {
 /**
  * Persisted compression block shape.
  *
- * Mirrors `CompressionBlock` fields.  `deactivatedBy` is optional;
- * all other fields are required.  `tier` must be `1`.
+ * Mirrors `CompressionBlock` fields.  `deactivatedBy` and `deactivatedAt`
+ * are optional; `title` is optional ON READ (dev-era state files predate
+ * the field) but required at creation time.  All other fields are
+ * required.
  */
 interface PersistedBlock {
   blockId: number;
@@ -145,11 +156,29 @@ interface PersistedBlock {
   anchorMessageId: string;
   messageIds: string[];
   summary: string;
+  title?: string;
   compressedTokens: number;
   summaryTokens: number;
-  tier: number;
   deactivatedBy?: string;
+  deactivatedAt?: number;
   createdAt: number;
+}
+
+/**
+ * Persisted message-ref registry snapshot.
+ *
+ * Written by the message-refs module (via `state.refs`) at
+ * `saveSessionState` call sites so refs survive a process restart
+ * without renumbering.  `byRef` maps ref string → message ID; the
+ * inverse map (message ID → ref) is derived on restore and NOT
+ * persisted.  Optional — legacy state files without `refs` load
+ * cleanly (no schema version bump).
+ */
+export interface PersistedRefs {
+  /** Next ref index (1-based); the next assignment will be `mNNNN`. */
+  nextRef: number;
+  /** Ref string → OpenCode message ID. */
+  byRef: Record<string, string>;
 }
 
 /**
@@ -164,6 +193,7 @@ interface PersistedBlock {
 interface PersistedState {
   marks: Record<string, PersistedMark>;
   blocks?: Record<string, PersistedBlock>;
+  refs?: PersistedRefs;
   lastUpdated: string;
 }
 
@@ -173,10 +203,49 @@ interface PersistedState {
 const VALID_ACTIONS = new Set<string>(["tool-output", "tool-error-input"]);
 
 /**
- * The set of valid tier values for persisted block validation.
- * Only tier `1` is valid for V3.
+ * Regex for valid persisted ref keys — refs are zero-padded four-digit
+ * `mNNNN` (`m0001` … `m9999`), matching the generator in message-refs.ts.
  */
-const VALID_TIER = new Set<number>([1]);
+const PERSISTED_REF_KEY_RE = /^m\d{4}$/;
+
+/**
+ * Validate and extract the optional persisted refs snapshot.
+ *
+ * Returns `null` when the `refs` key is absent or malformed (defensive —
+ * never throws).  Malformed refs do NOT invalidate marks/blocks: the
+ * snapshot is auxiliary and its loss is benign (refs re-derive).
+ *
+ * `nextRef` must be a positive integer (`Number.isInteger(nextRef) &&
+ * nextRef >= 1`) and every `byRef` key must match `/^m\d{4}$/` — anything
+ * else means the whole snapshot is treated as absent.
+ *
+ * @param parsed - The parsed state file object.
+ * @returns The validated refs snapshot, or `null`.
+ */
+function parsePersistedRefs(
+  parsed: Record<string, unknown>,
+): PersistedRefs | null {
+  const refs = parsed.refs;
+  if (!refs || typeof refs !== "object" || Array.isArray(refs)) return null;
+  const r = refs as Record<string, unknown>;
+  const nextRef = r.nextRef;
+  const byRef = r.byRef;
+  if (
+    typeof nextRef !== "number" ||
+    !Number.isInteger(nextRef) ||
+    nextRef < 1 ||
+    !byRef ||
+    typeof byRef !== "object" ||
+    Array.isArray(byRef) ||
+    !Object.entries(byRef as Record<string, unknown>).every(
+      ([key, value]) =>
+        PERSISTED_REF_KEY_RE.test(key) && typeof value === "string",
+    )
+  ) {
+    return null;
+  }
+  return { nextRef, byRef: byRef as Record<string, string> };
+}
 
 /**
  * Read the persisted session state for a session from disk.
@@ -192,9 +261,11 @@ const VALID_TIER = new Set<number>([1]);
  *
  * The same strict validation applies to block entries.  Every block
  * must have all required fields (`blockId`, `active`, `anchorMessageId`,
- * `messageIds`, `summary`, `compressedTokens`, `summaryTokens`, `tier`,
- * `createdAt`) with correct types and `tier === 1`.  If ANY block entry
- * is malformed, the entire file is treated as empty and a warning is
+ * `messageIds`, `summary`, `compressedTokens`, `summaryTokens`,
+ * `createdAt`) with correct types.  `title` is optional on read
+ * (dev-era state files may lack it) — when absent or non-string the
+ * block still loads with an undefined title.  If ANY block entry is
+ * malformed, the entire file is treated as empty and a warning is
  * logged.
  *
  * The `blocks` key is optional.  When absent, blocks are loaded as an
@@ -209,6 +280,7 @@ const VALID_TIER = new Set<number>([1]);
 export function loadSessionState(sessionId: string): {
   marks: Map<string, Mark>;
   blocks: Map<string, CompressionBlock>;
+  refs?: PersistedRefs;
 } | null {
   try {
     if (!isSafeSessionId(sessionId)) return null;
@@ -282,9 +354,9 @@ export function loadSessionState(sessionId: string): {
           const anchorMessageId = b.anchorMessageId;
           const messageIds = b.messageIds;
           const summary = b.summary;
+          const title = b.title;
           const compressedTokens = b.compressedTokens;
           const summaryTokens = b.summaryTokens;
-          const tier = b.tier;
           const createdAt = b.createdAt;
 
           if (
@@ -296,8 +368,6 @@ export function loadSessionState(sessionId: string): {
             typeof summary !== "string" ||
             typeof compressedTokens !== "number" ||
             typeof summaryTokens !== "number" ||
-            typeof tier !== "number" ||
-            !VALID_TIER.has(tier) ||
             typeof createdAt !== "number"
           ) {
             log(
@@ -324,18 +394,25 @@ export function loadSessionState(sessionId: string): {
             summary,
             compressedTokens,
             summaryTokens,
-            tier: 1,
+            // Title passes through only when it is a string; a dev-era
+            // block without the field loads with an undefined title.
+            title: typeof title === "string" ? title : undefined,
             createdAt,
           };
-          // deactivatedBy is optional — only set when present.
+          // deactivatedBy / deactivatedAt are optional — only set when present.
           if (b.deactivatedBy !== undefined) {
             block.deactivatedBy = b.deactivatedBy as string;
+          }
+          if (b.deactivatedAt !== undefined) {
+            block.deactivatedAt = b.deactivatedAt as number;
           }
           blocks.set(key, block);
         }
       }
 
-      return { marks, blocks };
+      // Optional refs snapshot — absent/malformed means no persisted refs.
+      const refs = parsePersistedRefs(parsed);
+      return { marks, blocks, ...(refs ? { refs } : {}) };
     }
 
     // Obsolete shapes (compact keys / v1 prune.tools/stats) — empty.
@@ -381,13 +458,16 @@ export function saveSessionState(sessionId: string, state: SessionState): void {
         anchorMessageId: block.anchorMessageId,
         messageIds: [...block.messageIds],
         summary: block.summary,
+        title: block.title,
         compressedTokens: block.compressedTokens,
         summaryTokens: block.summaryTokens,
-        tier: block.tier,
         createdAt: block.createdAt,
       };
       if (block.deactivatedBy !== undefined) {
         entry.deactivatedBy = block.deactivatedBy;
+      }
+      if (block.deactivatedAt !== undefined) {
+        entry.deactivatedAt = block.deactivatedAt;
       }
       blocksRecord[key] = entry;
     }
@@ -396,10 +476,78 @@ export function saveSessionState(sessionId: string, state: SessionState): void {
       blocks: blocksRecord,
       lastUpdated: new Date().toISOString(),
     };
-    writeFileSync(tmpPath, JSON.stringify(data), "utf8");
+    if (state.refs !== undefined) {
+      data.refs = state.refs;
+    }
+    writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf8");
     renameSync(tmpPath, filePath);
   } catch {
     // Defensive: persistence failure must never crash the caller.
+  }
+}
+
+/**
+ * Narrow read of the persisted refs snapshot for a session.
+ *
+ * Reads `~/.zoo/storage/{sessionId}.json` and extracts only the `refs`
+ * field.  Returns `null` when the file is missing, corrupt, the `refs`
+ * key is absent, or the snapshot is malformed (defensive — never
+ * throws).
+ *
+ * Used by the message-refs module to hydrate the runtime registry on
+ * process restart.  Kept separate from `loadSessionState` so the ref
+ * registry can restore without paying for marks/blocks parsing.
+ *
+ * @param sessionId - The session identifier.
+ * @returns The persisted refs snapshot, or `null`.
+ */
+export function readPersistedRefs(sessionId: string): PersistedRefs | null {
+  try {
+    if (!isSafeSessionId(sessionId)) return null;
+    const filePath = join(STORAGE_DIR, `${sessionId}.json`);
+    if (!existsSync(filePath)) return null;
+    const raw = readFileSync(filePath, "utf8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return parsePersistedRefs(parsed);
+  } catch {
+    // Defensive: missing / corrupt file → null, never throw.
+    return null;
+  }
+}
+
+/**
+ * Remove only the persisted `refs` snapshot from the session state file.
+ *
+ * Loads `~/.zoo/storage/{sessionId}.json`, deletes the `refs` field, and
+ * rewrites the file atomically.  No-op when the file is missing or has no
+ * `refs` field.  Marks and blocks are left intact.  Also clears the
+ * in-memory `state.refs` so a later `saveSessionState` cannot re-persist
+ * the stale snapshot.  Defensive — never throws.
+ *
+ * Used by the message-refs module on compaction-boundary reset so the
+ * stale snapshot cannot re-hydrate old refs on the next `ensureRegistry`
+ * (which would defeat the renumber-from-`m0001` reset semantics).
+ *
+ * @param sessionId - The session identifier.
+ */
+export function clearPersistedRefs(sessionId: string): void {
+  try {
+    if (!isSafeSessionId(sessionId)) return;
+    const filePath = join(STORAGE_DIR, `${sessionId}.json`);
+    if (!existsSync(filePath)) return;
+    const raw = readFileSync(filePath, "utf8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (typeof parsed.refs === "undefined") return;
+    delete parsed.refs;
+    const tmpPath = join(STORAGE_DIR, `.${sessionId}.json.tmp`);
+    writeFileSync(tmpPath, JSON.stringify(parsed, null, 2), "utf8");
+    renameSync(tmpPath, filePath);
+    // Drop the in-memory snapshot too, so a save before the next ref
+    // pipeline run cannot write the stale refs back to disk.
+    const state = sessions.get(sessionId);
+    if (state) state.refs = undefined;
+  } catch {
+    // Defensive: never throw.
   }
 }
 
@@ -451,6 +599,7 @@ export function getOrCreateSessionState(sessionId: string): SessionState {
       lastAccessedAt: Date.now(),
       dirty: false,
       pendingViewChange: false,
+      refs: persisted?.refs,
     };
     sessions.set(sessionId, state);
   }

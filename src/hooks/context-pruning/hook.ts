@@ -22,6 +22,7 @@ import {
   injectMessageRefs,
   resetMessageRefs,
   setLastCompactionBoundaryId,
+  snapshotRefs,
   stripHallucinatedRefs,
   stripRefsFromString,
   syncBlocks,
@@ -390,7 +391,7 @@ export function contextPruningTransformHandler(
             }
           }
           notify(
-            `上下文清理：已折叠 ${released.count} 个工具调用，约释放 ${formatTokens(released.tokens)} tokens（${actionParts.join("、")}）`,
+            `上下文清理：已折叠 ${released.count} 个工具调用，约回收 ${formatTokens(released.tokens)} tokens（${actionParts.join("、")}）`,
           );
         }
       }
@@ -403,6 +404,11 @@ export function contextPruningTransformHandler(
   state.pendingViewChange = false;
 
   if (state.dirty) {
+    // Refresh the ref snapshot (piggyback — never per-turn writes) so
+    // the persist keeps refs stable across a restart.  Phase 4 above
+    // always leaves a runtime registry when the session has refs.
+    const refsSnapshot = snapshotRefs(sessionId);
+    if (refsSnapshot) state.refs = refsSnapshot;
     saveSessionState(sessionId, state);
     state.dirty = false;
   }

@@ -11,13 +11,23 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import type { ContextMessageEntry } from "../metrics.js";
 import {
+  _clearAllSessionsForTesting,
+  deleteSessionState,
+  getOrCreateSessionState,
+  readPersistedRefs,
+  removeSession,
+  saveSessionState,
+} from "./marks.js";
+import {
   _clearAllRefsForTesting,
   _setNextRefForTesting,
   assignMessageRefs,
   getLastCompactionBoundaryId,
+  getMessageIdByRef,
   injectMessageRefs,
   resetMessageRefs,
   setLastCompactionBoundaryId,
+  snapshotRefs,
   stripHallucinatedRefs,
   stripRefsFromString,
 } from "./message-refs.js";
@@ -38,7 +48,24 @@ beforeEach(() => {
 afterEach(() => {
   _resetForTesting();
   _clearAllRefsForTesting();
+  for (const sid of PERSISTED_SESSION_IDS) {
+    deleteSessionState(sid);
+    removeSession(sid);
+  }
+  _clearAllSessionsForTesting();
 });
+
+/**
+ * Session IDs used by the persistence tests — their state files must be
+ * cleaned up in teardown so a stale snapshot never leaks into another
+ * test's registry hydration.
+ */
+const PERSISTED_SESSION_IDS = [
+  "sess-persist-hydrate",
+  "sess-persist-restart",
+  "sess-persist-fresh",
+  "sess-persist-reset",
+];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -200,6 +227,123 @@ describe("restart consistency", () => {
         tag("m0003"),
       ),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Persisted ref registry (snapshot + restore across simulated restart)
+// ---------------------------------------------------------------------------
+
+describe("persisted ref registry", () => {
+  it("hydrates from persisted refs when the runtime registry is absent", () => {
+    const sessionId = "sess-persist-hydrate";
+    const round1: ContextMessageEntry[] = [
+      msg("user", "u1", [textPart("q1")]),
+      msg("assistant", "a1", [textPart("r1")]),
+      msg("user", "u2", [textPart("q2")]),
+    ];
+
+    // Round 1: assign refs, then snapshot into state.refs and persist
+    // (mirrors the compress-save path).
+    const count1 = assignMessageRefs(sessionId, round1);
+    assert.equal(count1, 3);
+    const state = getOrCreateSessionState(sessionId);
+    const refsSnapshot = snapshotRefs(sessionId);
+    if (refsSnapshot) state.refs = refsSnapshot;
+    saveSessionState(sessionId, state);
+
+    // Simulated restart: wipe the runtime registry (and session state).
+    _clearAllRefsForTesting();
+    removeSession(sessionId);
+    _clearAllSessionsForTesting();
+
+    // Same messages re-assigned — refs must come from the snapshot,
+    // so the same message keeps the same ref as before.
+    const count2 = assignMessageRefs(sessionId, round1);
+    assert.equal(count2, 0, "snapshot refs must not be re-assigned");
+    assert.equal(getMessageIdByRef(sessionId, "m0001"), "u1");
+    assert.equal(getMessageIdByRef(sessionId, "m0002"), "a1");
+    assert.equal(getMessageIdByRef(sessionId, "m0003"), "u2");
+
+    // A NEW message continues from the restored nextRef (m0004).
+    const more: ContextMessageEntry[] = [
+      msg("assistant", "a2", [textPart("r2")]),
+    ];
+    const count3 = assignMessageRefs(sessionId, more);
+    assert.equal(count3, 1);
+    assert.equal(getMessageIdByRef(sessionId, "m0004"), "a2");
+  });
+
+  it("keeps refs identical across a fold + restart (cache-stability invariant)", () => {
+    const sessionId = "sess-persist-restart";
+    const full: ContextMessageEntry[] = [
+      msg("user", "u1", [textPart("q1")]),
+      msg("assistant", "a1", [textPart("r1")]),
+      msg("user", "u2", [textPart("q2")]),
+      msg("assistant", "a2", [textPart("r2")]),
+      msg("user", "u3", [textPart("q3")]),
+      msg("assistant", "a3", [textPart("r3")]),
+      msg("user", "u4", [textPart("q4")]),
+    ];
+
+    // Round 1: assign over the full (unfolded) list → m0001..m0007.
+    assert.equal(assignMessageRefs(sessionId, full), 7);
+    assert.equal(getMessageIdByRef(sessionId, "m0001"), "u1");
+    assert.equal(getMessageIdByRef(sessionId, "m0007"), "u4");
+
+    // Snapshot at the last save (pre-fold — mirrors the compress save).
+    const state = getOrCreateSessionState(sessionId);
+    const refsSnapshot = snapshotRefs(sessionId);
+    if (refsSnapshot) state.refs = refsSnapshot;
+    saveSessionState(sessionId, state);
+
+    // Runtime continuation over a FOLDED-style list: u2/a2/u3 removed,
+    // one synthetic `zoo-fold-b1` inserted at the anchor position, plus
+    // one brand-new message (u5).
+    const folded: ContextMessageEntry[] = [
+      msg("user", "u1", [textPart("q1")]),
+      msg("assistant", "a1", [textPart("r1")]),
+      msg("user", "zoo-fold-b1", [textPart("[压缩块 b1 summary")]),
+      msg("assistant", "a3", [textPart("r3")]),
+      msg("user", "u4", [textPart("q4")]),
+      msg("user", "u5", [textPart("q5")]),
+    ];
+    const count2 = assignMessageRefs(sessionId, folded);
+    assert.equal(count2, 2, "zoo-fold-b1 and u5 are the only new messages");
+    assert.equal(getMessageIdByRef(sessionId, "m0008"), "zoo-fold-b1");
+    assert.equal(getMessageIdByRef(sessionId, "m0009"), "u5");
+
+    // Simulated restart: only the disk snapshot survives.
+    _clearAllRefsForTesting();
+    removeSession(sessionId);
+    _clearAllSessionsForTesting();
+
+    // Post-restart: hydrate from the snapshot, then assign over the same
+    // folded view.  Every message present in both rounds must keep its
+    // exact pre-restart ref; synthetic/new messages re-derive the same
+    // numbers from the restored nextRef.
+    const count3 = assignMessageRefs(sessionId, folded);
+    assert.equal(count3, 2, "hydrated refs are not re-assigned");
+    assert.equal(getMessageIdByRef(sessionId, "m0001"), "u1");
+    assert.equal(getMessageIdByRef(sessionId, "m0002"), "a1");
+    assert.equal(getMessageIdByRef(sessionId, "m0006"), "a3");
+    assert.equal(getMessageIdByRef(sessionId, "m0007"), "u4");
+    assert.equal(getMessageIdByRef(sessionId, "m0008"), "zoo-fold-b1");
+    assert.equal(getMessageIdByRef(sessionId, "m0009"), "u5");
+  });
+
+  it("no persisted refs → fresh numbering from m0001 (unchanged behavior)", () => {
+    const sessionId = "sess-persist-fresh";
+    deleteSessionState(sessionId); // ensure no stale file on disk
+    const messages: ContextMessageEntry[] = [
+      msg("user", "u1", [textPart("q1")]),
+      msg("assistant", "a1", [textPart("r1")]),
+    ];
+
+    const count = assignMessageRefs(sessionId, messages);
+    assert.equal(count, 2);
+    assert.equal(getMessageIdByRef(sessionId, "m0001"), "u1");
+    assert.equal(getMessageIdByRef(sessionId, "m0002"), "a1");
   });
 });
 
@@ -902,6 +1046,50 @@ describe("compaction reset", () => {
     resetMessageRefs("sess-nonexistent");
     assert.ok(true);
   });
+
+  it("reset after a persisted snapshot renumbers fresh messages from m0001", () => {
+    const sessionId = "sess-persist-reset";
+    const round1: ContextMessageEntry[] = [
+      msg("user", "u1", [textPart("q1")]),
+      msg("assistant", "a1", [textPart("r1")]),
+      msg("user", "u2", [textPart("q2")]),
+    ];
+
+    // Round 1: assign refs, then persist a snapshot (mirrors the
+    // compress-save path — snapshotRefs → state.refs → saveSessionState).
+    assert.equal(assignMessageRefs(sessionId, round1), 3);
+    const state = getOrCreateSessionState(sessionId);
+    const refsSnapshot = snapshotRefs(sessionId);
+    if (refsSnapshot) state.refs = refsSnapshot;
+    saveSessionState(sessionId, state);
+
+    // Sanity: the stale snapshot really is on disk.
+    assert.ok(readPersistedRefs(sessionId) !== null);
+
+    // Compaction reset must invalidate BOTH the runtime registry and the
+    // persisted snapshot — otherwise the next ensureRegistry would
+    // re-hydrate the stale counter and refs would NOT renumber.
+    resetMessageRefs(sessionId);
+    assert.equal(
+      readPersistedRefs(sessionId),
+      null,
+      "stale persisted snapshot must be cleared",
+    );
+
+    // Fresh (post-compaction) messages re-assigned — must start from
+    // m0001, NOT continue from the stale nextRef (which was 4).
+    const fresh: ContextMessageEntry[] = [
+      msg("assistant", "n1", [textPart("post-compact")]),
+      msg("user", "n2", [textPart("post-compact q")]),
+    ];
+    const assigned = assignMessageRefs(sessionId, fresh);
+    assert.equal(assigned, 2);
+    assert.equal(getMessageIdByRef(sessionId, "m0001"), "n1");
+    assert.equal(getMessageIdByRef(sessionId, "m0002"), "n2");
+    // The stale counter must not leak through — a continuation would
+    // have assigned n1 → m0004.
+    assert.equal(getMessageIdByRef(sessionId, "m0004"), undefined);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -943,6 +1131,48 @@ describe("compaction boundary ID", () => {
     setLastCompactionBoundaryId(sessionId, "msg_boundary_999");
     resetMessageRefs(sessionId);
     assert.equal(getLastCompactionBoundaryId(sessionId), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reverse ref lookup (getMessageIdByRef)
+// ---------------------------------------------------------------------------
+
+describe("getMessageIdByRef", () => {
+  it("returns the message ID for a ref assigned by assignMessageRefs", () => {
+    const sessionId = "sess-ref-lookup-hit";
+    const messages: ContextMessageEntry[] = [
+      msg("user", "u1", [textPart("hello")]),
+      msg("assistant", "a1", [textPart("reply")]),
+      msg("user", "u2", [textPart("follow-up")]),
+    ];
+
+    assignMessageRefs(sessionId, messages);
+
+    assert.equal(getMessageIdByRef(sessionId, "m0001"), "u1");
+    assert.equal(getMessageIdByRef(sessionId, "m0002"), "a1");
+    assert.equal(getMessageIdByRef(sessionId, "m0003"), "u2");
+  });
+
+  it("returns undefined for an unknown ref on a known session", () => {
+    const sessionId = "sess-ref-lookup-miss";
+    const messages: ContextMessageEntry[] = [
+      msg("user", "u1", [textPart("hello")]),
+    ];
+
+    assignMessageRefs(sessionId, messages);
+
+    // "m0002" was never assigned; "m9999" is far outside the range.
+    assert.equal(getMessageIdByRef(sessionId, "m0002"), undefined);
+    assert.equal(getMessageIdByRef(sessionId, "m9999"), undefined);
+  });
+
+  it("returns undefined for a session with no registry", () => {
+    // No assign / set was ever called for this session.
+    assert.equal(
+      getMessageIdByRef("sess-ref-lookup-empty", "m0001"),
+      undefined,
+    );
   });
 });
 

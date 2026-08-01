@@ -1657,6 +1657,7 @@ describe("contextPruningTransformHandler", () => {
     // Text contains count and token info.
     const text = notifyCalls[0];
     assert.ok(text.includes("上下文清理"), "should contain action keyword");
+    assert.ok(text.includes("约回收"), "should use the 回收 verb");
     assert.ok(text.includes("1"), "should mention mark count");
     assert.ok(
       text.includes("K") || text.includes("token"),
@@ -2157,6 +2158,7 @@ describe("contextPruningTransformHandler", () => {
         anchorMessageId: "u2",
         messageIds: ["u1", "a1", "u2"],
         summary: "test summary.",
+        title: "test",
         compressedTokens: 1500,
         summaryTokens: 80,
       });
@@ -2235,6 +2237,7 @@ describe("contextPruningTransformHandler", () => {
         anchorMessageId: "u2",
         messageIds: ["a1", "u2"],
         summary: "test summary.",
+        title: "test",
         compressedTokens: 1500,
         summaryTokens: 80,
       });
@@ -2479,6 +2482,7 @@ describe("contextPruningTransformHandler", () => {
         anchorMessageId: "u2",
         messageIds: ["a1", "u2"],
         summary: "test summary.",
+        title: "test",
         compressedTokens: 1500,
         summaryTokens: 80,
       });

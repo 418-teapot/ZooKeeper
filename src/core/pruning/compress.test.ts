@@ -13,6 +13,7 @@ import type { CompressionConfig } from "./compress.js";
 import {
   BLOCK_HEADER_TEMPLATE,
   buildBlockSummary,
+  deriveBlockTitle,
   planCompression,
 } from "./compress.js";
 
@@ -881,5 +882,88 @@ describe("CompressionSegment — precomputed fields", () => {
         "precomputed summary must match buildBlockSummary output",
       );
     }
+  });
+});
+
+// ===========================================================================
+// deriveBlockTitle
+// ===========================================================================
+
+describe("deriveBlockTitle", () => {
+  it("returns the first non-empty line", () => {
+    assert.equal(deriveBlockTitle("first line\nsecond line"), "first line");
+    assert.equal(deriveBlockTitle(""), "");
+    assert.equal(deriveBlockTitle("\n\n  \n内容"), "内容");
+  });
+
+  it("skips the mechanical block header line", () => {
+    const summary = [
+      `${BLOCK_HEADER_TEMPLATE} — 10 messages, ~35 in, ~815 out`,
+      "",
+      "=== User Requests ===",
+      "- 实现登录功能",
+    ].join("\n");
+    assert.equal(deriveBlockTitle(summary), "- 实现登录功能");
+  });
+
+  it("skips section markers and returns the first real content line", () => {
+    const summary = [
+      "=== User Requests ===",
+      "- 实现登录功能",
+      "=== Final Progress ===",
+      "完成",
+    ].join("\n");
+    assert.equal(deriveBlockTitle(summary), "- 实现登录功能");
+  });
+
+  it("returns an empty string when only markers remain", () => {
+    assert.equal(deriveBlockTitle("=== User Requests ==="), "");
+    assert.equal(
+      deriveBlockTitle("=== User Requests ===\n=== Final Progress ==="),
+      "",
+    );
+  });
+
+  it("truncates the title to 80 characters", () => {
+    const longLine = "a".repeat(120);
+    const result = deriveBlockTitle(longLine);
+    assert.equal(result.length, 80);
+    assert.equal(result, "a".repeat(80));
+  });
+
+  it("never splits a surrogate pair when truncating to 80 code units", () => {
+    // 79 ASCII chars + emoji: the emoji's high surrogate lands exactly at
+    // code unit 79, so slicing at 80 would leave an unpaired high
+    // surrogate.  The result must end at 79 with no lone surrogate.
+    const title = `${"a".repeat(79)}😀`;
+    const result = deriveBlockTitle(title);
+    assert.equal(result.length, 79);
+    assert.equal(result, "a".repeat(79));
+
+    // Companion: a pair fully inside the 80-unit window is preserved
+    // (truncation must not over-trim when the cut is not on a boundary).
+    const inWindow = `${"a".repeat(78)}😀a`;
+    const result2 = deriveBlockTitle(inWindow);
+    assert.equal(result2.length, 80);
+    assert.equal(result2, `${"a".repeat(78)}😀`);
+  });
+
+  it("skips the header even when it is the only non-empty line", () => {
+    const summary = `${BLOCK_HEADER_TEMPLATE} — 5 messages, ~10 in, ~20 out`;
+    assert.equal(deriveBlockTitle(summary), "");
+  });
+
+  it("sanitizes runs of three or more hyphens into a single em dash", () => {
+    // Runs of 3+ hyphens would collide with the `--- b<N>: <title> ---`
+    // index-line separators, so they collapse into one em dash.
+    assert.equal(deriveBlockTitle("fix---the---bug"), "fix—the—bug");
+    assert.equal(deriveBlockTitle("a-----b"), "a—b");
+    assert.equal(deriveBlockTitle("---"), "—");
+    // Shorter hyphen runs and single hyphens pass through untouched.
+    assert.equal(deriveBlockTitle("a--b"), "a--b");
+    assert.equal(
+      deriveBlockTitle("- Step 1: implement"),
+      "- Step 1: implement",
+    );
   });
 });

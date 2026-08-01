@@ -20,6 +20,7 @@ import {
 import {
   BLOCK_HEADER_TEMPLATE,
   createBlock,
+  deriveBlockTitle,
   getOrCreateSessionState,
   liveBlocks,
   pendingCount as pendingCountDerived,
@@ -28,6 +29,7 @@ import {
   previewFold,
   reclaimedTokens as reclaimedTokensDerived,
   saveSessionState,
+  snapshotRefs,
 } from "../../core/pruning/index.js";
 import { runSweep } from "../../core/pruning/producers/sweep.js";
 import type { ContextPruningConfig } from "../../hooks/context-pruning/index.js";
@@ -379,7 +381,11 @@ async function handleSweepSubcommand(
 
   // runSweep already wrote marks via addMark and set dirty.
   // Total estimate from the new marks.
+  // Refresh the ref snapshot (piggyback — never per-turn writes) so the
+  // persist below keeps refs stable across a restart.
   const totalEstimate = marks.reduce((sum, m) => sum + m.estimatedTokens, 0);
+  const sweepRefsSnapshot = snapshotRefs(sessionID);
+  if (sweepRefsSnapshot) state.refs = sweepRefsSnapshot;
   saveSessionState(sessionID, state);
 
   log("context-command", "sweep_marked", sessionID, undefined, "info", {
@@ -435,10 +441,12 @@ async function handleSweepSubcommand(
  * 5. For each eligible segment:
  *    a. Computes anchorMessageId (first message id in segment).
  *    b. Reuses the precomputed mechanical summary from planCompression.
- *    c. Creates the block via createBlock.
- *    d. Substitutes `b<N>` placeholder in the summary header with the
- *       real block id.
- *    e. Logs a `compress_created` event.
+ *    c. Derives the one-line block title from the summary's first
+ *       non-empty content line (truncated to 80 chars).
+ *    d. Creates the block via createBlock.
+ *    e. Substitutes `b<N>` placeholder in the summary header with the
+ *       real block id + derived title.
+ *    f. Logs a `compress_created` event.
  * 6. Saves state to disk.
  * 7. Sends a single ignored notification.
  *
@@ -584,11 +592,19 @@ async function handleCompressSubcommand(
     const compressedTokens = inTokens + outTokens;
     const summaryTokens = estimateTokenCount(summary);
 
+    // Derive the one-line block title mechanically from the summary's
+    // first non-empty content line (the block header line is rebuilt by
+    // the backfill below, so it is skipped), truncated to 80 characters.
+    // Falls back to a fixed label when the summary has no content beyond
+    // its header line — title is required at creation time.
+    const title = deriveBlockTitle(summary) || "压缩段摘要";
+
     // Create the block.
     const block = createBlock(state, {
       anchorMessageId,
       messageIds,
       summary,
+      title,
       compressedTokens,
       summaryTokens,
     });
@@ -599,11 +615,12 @@ async function handleCompressSubcommand(
       continue;
     }
 
-    // Fix up the `b<N>` placeholder with the real block id (anchor to
-    // header to avoid corrupting user text that might contain `b<N>`).
+    // Fix up the `b<N>` placeholder with the real block id and the
+    // derived title (anchor to header to avoid corrupting user text that
+    // might contain `b<N>`).
     block.summary = block.summary.replace(
       BLOCK_HEADER_TEMPLATE,
-      `[Compression Block b${block.blockId}]`,
+      `[Compression Block b${block.blockId}] ${title}`,
     );
 
     // Accumulate stats for the notification.
@@ -618,6 +635,7 @@ async function handleCompressSubcommand(
       messageCount: segMsgCount,
       inTokens,
       outTokens,
+      title,
     });
   }
 
@@ -628,10 +646,16 @@ async function handleCompressSubcommand(
   state.pendingViewChange = true;
 
   // ── Persist state ──────────────────────────────────────────────
+  // Snapshot the ref registry (piggyback — never per-turn writes) so the
+  // refs covering the now-folded-away messages survive a restart without
+  // renumbering (the next transform's folded view would shift every ref
+  // after the folded region).
+  const compressRefsSnapshot = snapshotRefs(sessionID);
+  if (compressRefsSnapshot) state.refs = compressRefsSnapshot;
   saveSessionState(sessionID, state);
 
   // ── Notification ───────────────────────────────────────────────
-  const notifyMsg = `已压缩 ${totalCompressedMessages} 条消息，约 ${formatTokens(totalInTokens + totalOutTokens)} tokens`;
+  const notifyMsg = `上下文压缩：已压缩 ${totalCompressedMessages} 条消息，约回收 ${formatTokens(totalInTokens + totalOutTokens)} tokens`;
 
   if (client?.session?.prompt) {
     try {

@@ -16,9 +16,11 @@
  *
  * TODO: Add pi / oh-my-pi adapter (framework adapter).
  */
+
 import { readdirSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ToolDefinition } from "@opencode-ai/plugin";
 import config from "../config.toml" with { type: "toml" };
 import { BEAVER_PROMPT } from "./agents/beaver.js";
 import { DOLPHIN_PROMPT } from "./agents/dolphin.js";
@@ -50,6 +52,7 @@ import {
   nudgeTaskOutput,
   validateBeforeExec,
 } from "./hooks/task-prompt";
+import { createCompressTool } from "./tools/compress";
 import { initLogger, log, setSessionId } from "./utils/logger.js";
 
 // ---------------------------------------------------------------------------
@@ -689,6 +692,56 @@ async function runAfterHandlers(
 }
 
 // ---------------------------------------------------------------------------
+// Compress tool hooks
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the tool-hooks map registered on the plugin.
+ *
+ * The range-mode compress tool is registered only when
+ * `[zoo.context.compress].enabled` is not explicitly `false`.  Returns
+ * `undefined` when disabled so the `tool` hook key stays absent.
+ *
+ * Exported for unit testing (the imported config cannot be overridden
+ * per-test, so the gate is decided from the passed config here).
+ *
+ * @param client - The OpenCode client (captured by the factory closure).
+ * @param contextConfig - The parsed context-pruning config.
+ * @returns The tool-hooks map, or `undefined` when compress is disabled.
+ */
+function buildToolHooks(
+  client: any,
+  contextConfig: ContextPruningConfig,
+): Record<string, ToolDefinition> | undefined {
+  if (contextConfig.compress?.enabled === false) return undefined;
+  return { compress: createCompressTool(client, contextConfig) };
+}
+
+/**
+ * Append the compress tool to `experimental.primary_tools`.
+ *
+ * Preserves pre-existing entries and appends `"compress"` only when
+ * `[zoo.context.compress].enabled` is not explicitly `false` (same gate as
+ * `buildToolHooks`).
+ *
+ * Exported for unit testing.
+ *
+ * @param config - The config object being mutated by the `config` hook.
+ * @param contextConfig - The parsed context-pruning config.
+ */
+function registerCompressToolInConfig(
+  config: any,
+  contextConfig: ContextPruningConfig,
+): void {
+  if (contextConfig.compress?.enabled === false) return;
+  config.experimental ??= {};
+  config.experimental.primary_tools ??= [];
+  if (!config.experimental.primary_tools.includes("compress")) {
+    config.experimental.primary_tools.push("compress");
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Plugin entry point
 // ---------------------------------------------------------------------------
 
@@ -709,12 +762,19 @@ export async function zookeeper(input: any) {
 
   initPluginLogger(zooConfig);
 
+  // Register the range-mode compress tool (gated on compress.enabled).
+  // When disabled, the `tool` key is absent from the hooks object.
+  const toolHooks = buildToolHooks(client, contextConfig);
+
   return {
+    ...(toolHooks ? { tool: toolHooks } : {}),
+
     async config(config: any) {
       const agents = config.agent ?? {};
       logPluginInit(agents, limits, skillsConfig);
       injectAgentPrompts(agents);
       registerSkills(config, skillsConfig);
+      registerCompressToolInConfig(config, contextConfig);
 
       // Register /go slash command for plan-to-execution handoff.
       // Handoff is handled entirely in command.execute.before.
@@ -964,6 +1024,7 @@ export default { id: "zookeeper", server: zookeeper };
 // Test-only exports — exposed for unit testing
 // ---------------------------------------------------------------------------
 export {
+  buildToolHooks,
   handleContextPruning,
   handleMessagesTransform,
   initPluginLogger,
@@ -971,6 +1032,7 @@ export {
   parseContextConfig,
   parseLimits,
   parseSkillsConfig,
+  registerCompressToolInConfig,
   registerSkills,
   runAfterHandlers,
   sessionAgentMap,

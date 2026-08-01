@@ -1030,9 +1030,50 @@ describe("/dcp compress subcommand", () => {
       `expected "已压缩" in prompt, got: ${promptText}`,
     );
     assert.ok(
+      promptText.includes("上下文压缩："),
+      `expected "上下文压缩：" prefix in prompt, got: ${promptText}`,
+    );
+    assert.ok(
+      promptText.includes("约回收"),
+      `expected "约回收" in prompt, got: ${promptText}`,
+    );
+    assert.ok(
       promptText.includes("tokens"),
       `expected "tokens" in prompt, got: ${promptText}`,
     );
+  });
+
+  it("embeds a mechanically derived title in the block header", async () => {
+    const messages = makeMessages();
+    const client: DcpClient = {
+      session: {
+        messages: async () => ({ data: messages }),
+        prompt: async () => {},
+      },
+    };
+
+    await handleDcpCommand(client, SESSION_ID, "compress", {
+      dedup: {},
+      purgeErrors: {},
+      protectedMessages: 2,
+      compress: { enabled: true, thresholdTokens: 1, protectedTokens: 1 },
+    });
+
+    const state = getOrCreateSessionState(SESSION_ID);
+    assert.ok(state.blocks.size > 0, "expected at least one block");
+    const block = [...state.blocks.values()][0];
+    // Title is derived from the summary's first real content line (the
+    // mechanical header line and section markers are skipped).
+    assert.equal(block.title, "- Step 1: implement feature");
+    // Header format: [Compression Block b<N>] <title> — N messages, ...
+    const headerLine = block.summary.split("\n")[0];
+    assert.ok(
+      headerLine.startsWith(
+        "[Compression Block b1] - Step 1: implement feature — ",
+      ),
+      `unexpected header: ${headerLine}`,
+    );
+    assert.match(headerLine, / \d+ messages, ~\d+ in, ~\d+ out$/);
   });
 
   it("repeat execution is idempotent (already-compressed messages excluded)", async () => {
@@ -1132,6 +1173,10 @@ describe("/dcp compress subcommand", () => {
       assert.ok(
         typeof e.outTokens === "number",
         "outTokens should be a number",
+      );
+      assert.ok(
+        typeof e.title === "string" && (e.title as string).length > 0,
+        "title should be a non-empty string",
       );
     }
   });

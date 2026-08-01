@@ -37,6 +37,7 @@ function makePlan(overrides?: Partial<CompressionPlan>): CompressionPlan {
     anchorMessageId: "msg-3",
     messageIds: ["msg-1", "msg-2", "msg-3"],
     summary: "Summary: user asked about X, assistant answered Y.",
+    title: "auth middleware investigation",
     compressedTokens: 1500,
     summaryTokens: 80,
     ...overrides,
@@ -75,9 +76,9 @@ describe("createBlock", () => {
       block.summary,
       "Summary: user asked about X, assistant answered Y.",
     );
+    assert.equal(block.title, "auth middleware investigation");
     assert.equal(block.compressedTokens, 1500);
     assert.equal(block.summaryTokens, 80);
-    assert.equal(block.tier, 1);
     assert.equal(block.deactivatedBy, undefined);
     assert.ok(typeof block.createdAt === "number");
     assert.equal(state.dirty, true);
@@ -118,6 +119,42 @@ describe("createBlock", () => {
     // Block count unchanged.
     assert.equal(state.blocks.size, 1);
     // dirty NOT set.
+    assert.equal(state.dirty, false);
+  });
+
+  it("creates a block when the anchor-occupying block is excluded by id", () => {
+    const state = getOrCreateSessionState(TEST_SESSION_ID);
+
+    const b1 = createBlock(state, makePlan()); // anchor msg-3, blockId 1
+    assert.ok(b1 !== null);
+
+    // The same anchor re-created with block 1 excluded succeeds (the
+    // caller is about to consume block 1 — create-before-consume order).
+    const b2 = createBlock(
+      state,
+      makePlan({ messageIds: ["msg-1", "msg-2", "msg-3", "msg-4"] }),
+      [b1.blockId],
+    );
+    assert.ok(b2 !== null);
+    assert.equal(b2.blockId, 2);
+    assert.equal(b2.anchorMessageId, "msg-3");
+    assert.deepEqual(b2.messageIds, ["msg-1", "msg-2", "msg-3", "msg-4"]);
+    assert.equal(state.blocks.size, 2);
+    assert.equal(state.dirty, true);
+  });
+
+  it("returns null when a non-excluded block occupies the anchor (genuine conflict)", () => {
+    const state = getOrCreateSessionState(TEST_SESSION_ID);
+
+    const b1 = createBlock(state, makePlan()); // anchor msg-3, blockId 1
+    assert.ok(b1 !== null);
+
+    // Exclude a DIFFERENT block id — block 1 still occupies the anchor.
+    state.dirty = false;
+    const b2 = createBlock(state, makePlan(), [999]);
+    assert.equal(b2, null);
+    // Block count unchanged and dirty NOT set.
+    assert.equal(state.blocks.size, 1);
     assert.equal(state.dirty, false);
   });
 
@@ -359,9 +396,9 @@ describe("liveBlocks", () => {
       anchorMessageId: "msg-3",
       messageIds: ["msg-1", "msg-2", "msg-3"],
       summary: "summary.",
+      title: "test block",
       compressedTokens: 500,
       summaryTokens: 50,
-      tier: 1,
       createdAt: 1000,
       ...overrides,
     };

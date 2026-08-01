@@ -12,6 +12,7 @@ import { createBlock } from "./blocks.js";
 import {
   _clearAllSessionsForTesting,
   addMark,
+  clearPersistedRefs,
   deleteSessionState,
   getOrCreateSessionState,
   loadSessionState,
@@ -19,6 +20,7 @@ import {
   markedTokens,
   pendingCount,
   pendingTokens,
+  readPersistedRefs,
   reclaimedTokens,
   releaseBatch,
   removeSession,
@@ -392,6 +394,156 @@ describe("saveSessionState / loadSessionState", () => {
     assert.equal(restored.marks.get("call-restored")?.effective, true);
   });
 
+  it("round-trips refs via save+load", () => {
+    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    state.refs = {
+      nextRef: 3,
+      byRef: { m0001: "u1", m0002: "a1" },
+    };
+    saveSessionState(TEST_SESSION_ID, state);
+
+    // Simulate restart.
+    removeSession(TEST_SESSION_ID);
+    _clearAllSessionsForTesting();
+
+    const loaded = loadSessionState(TEST_SESSION_ID);
+    assert.ok(loaded !== null);
+    assert.deepEqual(loaded.refs, {
+      nextRef: 3,
+      byRef: { m0001: "u1", m0002: "a1" },
+    });
+  });
+
+  it("loads old state file without refs key — refs undefined", () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const os = require("node:os");
+    const dir = path.join(os.homedir(), ".zoo", "storage");
+    fs.mkdirSync(dir, { recursive: true });
+    // Legacy file written before the refs field existed (no schema bump).
+    fs.writeFileSync(
+      path.join(dir, `${TEST_SESSION_ID}.json`),
+      JSON.stringify({
+        marks: {
+          "call-1": { tokens: 100, effective: true, action: "tool-output" },
+        },
+        lastUpdated: "2024-06-01T00:00:00Z",
+      }),
+      "utf8",
+    );
+
+    const loaded = loadSessionState(TEST_SESSION_ID);
+    assert.ok(loaded !== null);
+    // Marks still load from the legacy file.
+    assert.equal(loaded.marks.size, 1);
+    // No refs snapshot — field is absent, not error.
+    assert.equal(loaded.refs, undefined);
+  });
+
+  it("readPersistedRefs returns null for missing/corrupt state", () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const os = require("node:os");
+    const dir = path.join(os.homedir(), ".zoo", "storage");
+
+    // Missing file → null.
+    assert.equal(readPersistedRefs("sess-nonexistent-12345"), null);
+
+    // Corrupt JSON → null.
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${TEST_SESSION_ID}.json`), "not json{{{");
+    assert.equal(readPersistedRefs(TEST_SESSION_ID), null);
+
+    // Valid file without a refs key → null.
+    fs.writeFileSync(
+      path.join(dir, `${TEST_SESSION_ID}.json`),
+      JSON.stringify({
+        marks: {},
+        lastUpdated: "2024-01-01T00:00:00Z",
+      }),
+      "utf8",
+    );
+    assert.equal(readPersistedRefs(TEST_SESSION_ID), null);
+  });
+
+  it("readPersistedRefs returns null for malformed refs shape", () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const os = require("node:os");
+    const dir = path.join(os.homedir(), ".zoo", "storage");
+    fs.mkdirSync(dir, { recursive: true });
+    // Malformed refs: byRef values are numbers, not strings.
+    fs.writeFileSync(
+      path.join(dir, `${TEST_SESSION_ID}.json`),
+      JSON.stringify({
+        marks: {},
+        refs: { nextRef: 3, byRef: { m0001: 123 } },
+        lastUpdated: "2024-01-01T00:00:00Z",
+      }),
+      "utf8",
+    );
+    assert.equal(readPersistedRefs(TEST_SESSION_ID), null);
+  });
+
+  it("readPersistedRefs rejects a non-positive-integer nextRef", () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const os = require("node:os");
+    const dir = path.join(os.homedir(), ".zoo", "storage");
+    fs.mkdirSync(dir, { recursive: true });
+    // nextRef must be a positive integer (Number.isInteger && >= 1) —
+    // zero would otherwise renumber from m0000 on restore.
+    fs.writeFileSync(
+      path.join(dir, `${TEST_SESSION_ID}.json`),
+      JSON.stringify({
+        marks: {},
+        refs: { nextRef: 0, byRef: { m0001: "u1" } },
+        lastUpdated: "2024-01-01T00:00:00Z",
+      }),
+      "utf8",
+    );
+    assert.equal(readPersistedRefs(TEST_SESSION_ID), null);
+  });
+
+  it("readPersistedRefs rejects byRef keys not matching /^m\\d{4}$/", () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const os = require("node:os");
+    const dir = path.join(os.homedir(), ".zoo", "storage");
+    fs.mkdirSync(dir, { recursive: true });
+    // byRef keys must be zero-padded four-digit refs (m0001…m9999) —
+    // a malformed key would break the reverse-lookup on restore.
+    fs.writeFileSync(
+      path.join(dir, `${TEST_SESSION_ID}.json`),
+      JSON.stringify({
+        marks: {},
+        refs: { nextRef: 2, byRef: { m01: "u1" } },
+        lastUpdated: "2024-01-01T00:00:00Z",
+      }),
+      "utf8",
+    );
+    assert.equal(readPersistedRefs(TEST_SESSION_ID), null);
+  });
+
+  it("getOrCreateSessionState seeds refs from the persisted snapshot", () => {
+    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    state.refs = {
+      nextRef: 5,
+      byRef: { m0001: "u1", m0002: "a1", m0003: "u2", m0004: "a2" },
+    };
+    saveSessionState(TEST_SESSION_ID, state);
+
+    // Simulate restart.
+    removeSession(TEST_SESSION_ID);
+    _clearAllSessionsForTesting();
+
+    const restored = getOrCreateSessionState(TEST_SESSION_ID);
+    assert.deepEqual(restored.refs, {
+      nextRef: 5,
+      byRef: { m0001: "u1", m0002: "a1", m0003: "u2", m0004: "a2" },
+    });
+  });
+
   it("deleteSessionState removes the persisted file", () => {
     const state = getOrCreateSessionState(TEST_SESSION_ID);
     saveSessionState(TEST_SESSION_ID, state);
@@ -404,6 +556,35 @@ describe("saveSessionState / loadSessionState", () => {
   it("deleteSessionState does not throw for non-existent session", () => {
     deleteSessionState("sess-no-file");
     assert.ok(true);
+  });
+
+  it("clearPersistedRefs removes only the refs field, keeping marks intact", () => {
+    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    addMark(state, "call-1", 100, true, "tool-output");
+    state.refs = { nextRef: 3, byRef: { m0001: "u1", m0002: "a1" } };
+    saveSessionState(TEST_SESSION_ID, state);
+
+    clearPersistedRefs(TEST_SESSION_ID);
+
+    // Refs snapshot gone — narrow read returns null.
+    assert.equal(readPersistedRefs(TEST_SESSION_ID), null);
+    // Marks survive (the file is rewritten, not deleted).
+    removeSession(TEST_SESSION_ID);
+    _clearAllSessionsForTesting();
+    const loaded = loadSessionState(TEST_SESSION_ID);
+    assert.ok(loaded !== null);
+    assert.equal(loaded.marks.size, 1);
+    assert.equal(loaded.marks.get("call-1")?.tokens, 100);
+  });
+
+  it("clearPersistedRefs is a no-op when the file or refs field is absent", () => {
+    deleteSessionState(TEST_SESSION_ID);
+    clearPersistedRefs(TEST_SESSION_ID); // no file
+    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    saveSessionState(TEST_SESSION_ID, state); // file without refs
+    clearPersistedRefs(TEST_SESSION_ID); // refs field absent
+    assert.equal(readPersistedRefs(TEST_SESSION_ID), null);
+    assert.ok(loadSessionState(TEST_SESSION_ID) !== null);
   });
 });
 
@@ -419,11 +600,12 @@ describe("persistence with blocks", () => {
     removeSession(B_SESSION_ID);
   });
 
-  function makePlan(anchor: string) {
+  function makePlan(anchor: string, title = "测试主题") {
     return {
       anchorMessageId: anchor,
       messageIds: ["m1", "m2", anchor],
       summary: "test summary",
+      title,
       compressedTokens: 1000,
       summaryTokens: 60,
     };
@@ -431,8 +613,8 @@ describe("persistence with blocks", () => {
 
   it("round-trips blocks via save+load", () => {
     const state = getOrCreateSessionState(B_SESSION_ID);
-    createBlock(state, makePlan("m3"));
-    createBlock(state, makePlan("m7"));
+    createBlock(state, makePlan("m3", "第一个主题"));
+    createBlock(state, makePlan("m7", "第二个主题"));
 
     saveSessionState(B_SESSION_ID, state);
 
@@ -450,7 +632,7 @@ describe("persistence with blocks", () => {
     assert.equal(b1.active, true);
     assert.equal(b1.anchorMessageId, "m3");
     assert.deepEqual(b1.messageIds, ["m1", "m2", "m3"]);
-    assert.equal(b1.tier, 1);
+    assert.equal(b1.title, "第一个主题");
     assert.equal(b1.compressedTokens, 1000);
     assert.equal(b1.summaryTokens, 60);
     assert.ok(typeof b1.createdAt === "number");
@@ -459,6 +641,92 @@ describe("persistence with blocks", () => {
     assert.ok(b2 !== undefined);
     assert.equal(b2.blockId, 2);
     assert.equal(b2.anchorMessageId, "m7");
+    assert.equal(b2.title, "第二个主题");
+  });
+
+  it("writes pretty-printed JSON that still round-trips", () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const os = require("node:os");
+
+    const state = getOrCreateSessionState(B_SESSION_ID);
+    addMark(state, "call-1", 100, true, "tool-output");
+    createBlock(state, makePlan("m3", "漂亮打印主题"));
+    saveSessionState(B_SESSION_ID, state);
+
+    const filePath = path.join(
+      os.homedir(),
+      ".zoo",
+      "storage",
+      `${B_SESSION_ID}.json`,
+    );
+    const raw = fs.readFileSync(filePath, "utf8");
+    // Pretty-printed: newlines and 2-space indentation inside objects.
+    assert.ok(raw.includes('\n  "marks"'), "expected indented marks key");
+    assert.ok(raw.includes('\n      "title"'), "expected indented title key");
+    // Parses cleanly and round-trips the title.
+    const parsed = JSON.parse(raw);
+    assert.equal(parsed.blocks["1"].title, "漂亮打印主题");
+
+    removeSession(B_SESSION_ID);
+    _clearAllSessionsForTesting();
+    const loaded = loadSessionState(B_SESSION_ID);
+    assert.ok(loaded !== null);
+    assert.equal(loaded.blocks.get("1")?.title, "漂亮打印主题");
+  });
+
+  it("loads a dev-era block without a title (title undefined, not rejected)", () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const os = require("node:os");
+    const dir = path.join(os.homedir(), ".zoo", "storage");
+    fs.mkdirSync(dir, { recursive: true });
+    // Block entry written before the title field existed — no title key.
+    fs.writeFileSync(
+      path.join(dir, `${B_SESSION_ID}.json`),
+      JSON.stringify({
+        marks: {
+          "call-1": { tokens: 100, effective: true, action: "tool-output" },
+        },
+        blocks: {
+          "1": {
+            blockId: 1,
+            active: true,
+            anchorMessageId: "m3",
+            messageIds: ["m1", "m2", "m3"],
+            summary: "test",
+            compressedTokens: 500,
+            summaryTokens: 30,
+            createdAt: 123456789,
+          },
+        },
+        lastUpdated: "2024-06-01T00:00:00Z",
+      }),
+      "utf8",
+    );
+
+    const loaded = loadSessionState(B_SESSION_ID);
+    assert.ok(loaded !== null, "block without title must not reject the file");
+    assert.equal(loaded.blocks.size, 1);
+    assert.equal(loaded.blocks.get("1")?.title, undefined);
+  });
+
+  it("round-trips an absent title through save+load as undefined", () => {
+    const state = getOrCreateSessionState(B_SESSION_ID);
+    const block = createBlock(state, makePlan("m3", "初始主题"));
+    assert.ok(block !== null);
+    // Simulate a dev-era block whose title was never persisted: the title
+    // is dropped at save time and reloads as undefined (no assertion).
+    block.title = undefined;
+    saveSessionState(B_SESSION_ID, state);
+
+    removeSession(B_SESSION_ID);
+    _clearAllSessionsForTesting();
+
+    const loaded = loadSessionState(B_SESSION_ID);
+    assert.ok(loaded !== null);
+    assert.equal(loaded.blocks.size, 1);
+    assert.equal(loaded.blocks.get("1")?.title, undefined);
   });
 
   it("restores state with blocks on getOrCreateSessionState", () => {
@@ -525,7 +793,6 @@ describe("persistence with blocks", () => {
             summary: "bad",
             compressedTokens: 500,
             summaryTokens: 30,
-            tier: 1,
             createdAt: 123456789,
           },
         },
@@ -541,13 +808,14 @@ describe("persistence with blocks", () => {
     assert.equal(loaded.blocks.size, 0);
   });
 
-  it("treats blocks with wrong tier as whole file empty", () => {
+  it("ignores unknown key tier in an old block entry (forward tolerance)", () => {
     const fs = require("node:fs");
     const path = require("node:path");
     const os = require("node:os");
     const dir = path.join(os.homedir(), ".zoo", "storage");
     fs.mkdirSync(dir, { recursive: true });
-    // Block with tier=2 (invalid for V3).
+    // Dev-era file still carries the removed `tier` key.  The loader
+    // ignores unknown keys per-field — the block loads cleanly.
     fs.writeFileSync(
       path.join(dir, `${B_SESSION_ID}.json`),
       JSON.stringify({
@@ -561,7 +829,7 @@ describe("persistence with blocks", () => {
             summary: "test",
             compressedTokens: 500,
             summaryTokens: 30,
-            tier: 2, // Invalid.
+            tier: 2, // Unknown key — must be ignored.
             createdAt: 123456789,
           },
         },
@@ -572,8 +840,11 @@ describe("persistence with blocks", () => {
 
     const loaded = loadSessionState(B_SESSION_ID);
     assert.ok(loaded !== null);
-    assert.equal(loaded.marks.size, 0);
-    assert.equal(loaded.blocks.size, 0);
+    assert.equal(loaded.blocks.size, 1);
+    const block = loaded.blocks.get("1");
+    assert.ok(block !== undefined);
+    assert.equal(block.blockId, 1);
+    assert.equal(block.anchorMessageId, "m3");
   });
 
   it("treats blocks with non-array messageIds as whole file empty", () => {
@@ -596,7 +867,6 @@ describe("persistence with blocks", () => {
             summary: "test",
             compressedTokens: 500,
             summaryTokens: 30,
-            tier: 1,
             createdAt: 123456789,
           },
         },

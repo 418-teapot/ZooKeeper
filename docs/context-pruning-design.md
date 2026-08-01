@@ -1,9 +1,30 @@
 # 上下文剪枝设计文档：从内置 Compaction 到框架无关的统一剪枝架构
 
-**版本:** 2.6
-**日期:** 2026-07-30
+**版本:** 2.8
+**日期:** 2026-08-01
 **分类:** 技术架构文档 / 上下文管理
 
+> **2.8 更新说明：** V4 压缩块索引与工具重定义（2026-08-01，1179 TS
+> 测试全绿）：工具参数 `{startId, endId, summary}` →
+> `{fromRef, toRef, title, summary}`（字母序与位置语义一致 + title
+> 一行主题必填）；被消费块的机械全文附加降级为**索引行**（
+> `=== Superseded Blocks ===` + `--- b<N>: <title> ---`），设计原则
+> 从"逐字内联"转为"存储与视图分离"（state 全量保留正文、视图有界
+> O(代数)，召回机制留待 decompress 设计）；title 进块头行使块自描述，
+> 命令路径机械派生（跳过节标记取首个内容行）；ref 注册表跨重启持久化
+> （marks `refs` 可选字段 + 捎带快照 + ensureRegistry 水合）；
+> 状态文件 JSON 美化输出。§4.8 同步更新。
+
+> **2.7 更新说明：** Range 模式 compress 工具完整交付（2026-07-31，
+> 全仓 1148 TS 测试全绿，check.sh / test.sh / build.sh 三脚本通过）：
+> §4.8 新增 as-built 小节（mNNNN 单一寻址、位置语义 + 终点独占、
+> 跨块消费、三重保护 + 首条用户消息拒绝 + 幻影/负收益双门、token
+> 不重复记账、工具注册 + `experimental.primary_tools` 接线）；§7.1
+> 对比表"压缩模式/LLM 驱动压缩/消息引用"三行更新；§8 路线图 V3 行
+> 标记部分完成（compress 工具注册 ✅、mNNNN 引用 ✅、LLM 摘要经工具
+> 参数承载 ✅，2026-07-31；剩余 pendingManualTrigger 手动触发路径、
+> nudge 系统）；原 §4.8 认知收获顺延为 §4.9；§5.2 剩余 V3 工作同步。
+>
 > **2.6 更新说明：** 手动压缩功能完整实现（2026-07-30，1560 TS 测试
 > 全绿，三轮双路 Eagle 审查闭环）：§4.7 新增手动压缩 as-built 小节
 > （`/dcp compress` 无参命令、blocks/compress/fold 三模块、机械摘要、
@@ -574,9 +595,11 @@ ACP（`~/Code/Agent/opencode-acp`）是 DCP 的 fork，修复 39 个 bug，
   的旧块自动失效并从上下文移除；模型无需理解层级概念
 - **hideConsumedCompressCalls**：被消费块对应的 compress 工具调用
   part 也一并移除（保留消息外壳）
-- **与本文档"扁平块不嵌套"决策的关系**：T2 不是 DCP 式的块套块
-  （8 种块间关系），数据模型只需 `tier` 字段 + `deactivatedBy`
-  指针；可作为后续增量而非推翻扁平 MVP
+ - **与本文档"扁平块不嵌套"决策的关系**：T2 不是 DCP 式的块套块
+  （8 种块间关系）。（2026-08-01 定稿：不追求分层——保真度需求是
+  断崖而非斜坡，中间密度层无真实消费者；老化降级为索引行指针 +
+  state 全量保留 + 召回，长期记忆归 wiki 层而非压缩 tier；原预留的
+  `tier` 桩字段已删除）
 
 #### 3.8.2 压缩范围保护三件套
 
@@ -631,10 +654,10 @@ ACP（`~/Code/Agent/opencode-acp`）是 DCP 的 fork，修复 39 个 bug，
 ## 4. ZooKeeper 当前实现
 
 已实现**观测层 + 统一 marks 剪枝核心（手动 sweep + 自动 dedup）+ 批量释放
-+ 持久化 + 手动压缩（/dcp compress，机械摘要 MVP）+ 折叠视图观测接线**
-（截至 2026-07-30，TS 测试 1560 全绿）。核心逻辑在
-`src/core/pruning/`（框架无关），OpenCode 适配在 `src/hooks/` 与
-`src/opencode.ts`。
++ 持久化 + 手动压缩（/dcp compress，机械摘要 MVP）+ 折叠视图观测接线 +
+range 模式 compress 工具（LLM 驱动，§4.8）**（截至 2026-07-31，TS 测试
+1148 全绿）。核心逻辑在 `src/core/pruning/`（框架无关），OpenCode 适配
+在 `src/hooks/`、`src/tools/` 与 `src/opencode.ts`。
 
 ### 4.1 架构总览（统一 producer 模型）
 
@@ -701,9 +724,9 @@ interface SessionState {
   `{ marks: Record<callID, {tokens, effective, action}>,
     blocks: Record<blockId, CompressionBlock>, lastUpdated }`；
   旧 shape（紧凑键 `{t,e,a}`/`{t,e}` 及 prune.tools/stats）加载为空
-  （无迁移层）；marks 与 blocks 各自全字段严格校验（含 `tier === 1`
-  枚举），任一损坏即空载；原子写（tmp + rename）；sessionId 安全正则
-  防路径穿越
+  （无迁移层）；marks 与 blocks 各自全字段严格校验（`tier` 字段已于
+  2026-08-01 删除，旧文件中的 tier 键按未知键忽略），任一损坏即
+  空载；原子写（tmp + rename）；sessionId 安全正则防路径穿越
 
 ### 4.3 观测层
 
@@ -749,8 +772,8 @@ interface SessionState {
   （默认 10%，0 = 每轮立即释放）时 `releaseBatch` 全部翻转，
   下一轮 Phase 1 替换生效——破缓存从每轮降为低频批量事件；
   **视图变化轮（折叠首秀/块失效）无视门槛强制释放**（§4.7）
-- **通知**：仅释放时一条 `session.prompt({ noReply: true, ignored: true })`
-  消息（"去重：已折叠 N 个重复工具输出，约释放 X tokens"）——追加在
+ - **通知**：仅释放时一条 `session.prompt({ noReply: true, ignored: true })`
+  消息（`上下文清理：已折叠 N 个工具调用，约回收 X tokens`）——追加在
   末尾不破前缀缓存；ignored part 在 `message-v2.ts:206` 被排除出 LLM
   上下文（源码核实）；fire-and-forget，失败仅 warn
 
@@ -857,7 +880,7 @@ tokens ≥ promptTokens × released_percent% → 两类标记一起翻转；
 通知文案改为按 action 计数的中性表述：
 
 ```
-"上下文清理：已折叠 N 个工具调用，约释放 X tokens（tool-output M 组、tool-error-input K 组）"
+"上下文清理：已折叠 N 个工具调用，约回收 X tokens（tool-output M 组、tool-error-input K 组）"
 ```
 
 #### Error 状态检测与跳过链
@@ -961,8 +984,8 @@ pruneToolErrors(state, messages)   // 只处理 mark.action === "tool-error-inpu
 
 - `CompressionBlock`：`blockId`（b1/b2/...）、`anchorMessageId`（锚点 =
   段内首条消息，幂等键）、`messageIds`、`summary`、`compressedTokens`/
-  `summaryTokens`、`active`、`tier`（恒 1，为 T2 再压缩预留，§9.8）、
-  `deactivatedAt`
+  `summaryTokens`、`active`、`title`（一行主题，V4）、`deactivatedAt`
+  （原 `tier` 桩字段已于 2026-08-01 删除，§9.8）
 - **两阶段纪律**：blocks.ts 只写状态，fold.ts 只读状态做变换；
   `previewFold`/`liveBlocks` 为纯函数（TUI/命令/测试复用），
   `foldCompressedBlocks` 是应用其结果的薄壳
@@ -1005,7 +1028,83 @@ b3：40 条），编排器以被测对象身份确认：机械摘要的信息密
 审查全部发现闭环（3 Should Fix + 14 Could Fix：真实项全部修复并
 回归，误报/非缺陷项附代码证据驳回）。
 
-### 4.8 认知收获（仍然成立的）
+### 4.8 Range 模式 compress 工具（LLM 驱动压缩，✅ 已实现 2026-07-31）
+
+模型自主压缩：注册 OpenCode `compress` 工具，模型提交
+`{fromRef, toRef, title, summary}` 四元组把一段连续可见历史替换为单条
+摘要，LLM 摘要经工具 `summary` 参数直接承载——**零额外 API 调用**。
+`title`（必填，≤80 字符）是一行主题说明：嵌入块头行使块自描述，
+并在此块日后被更大范围消费时作为索引行展示。核心逻辑
+在 `src/core/pruning/range.ts`（纯函数、框架无关，`resolveSpan` /
+`validateRange` / `applyRange` 三段管道），OpenCode 适配在
+`src/tools/compress.ts`（`tool()` 定义薄壳）；保护边界与门禁素材复用
+命令路径导出（`tokenBoundary`/`lastUserMessageIndex`/段 token 估算），
+`/dcp compress` 命令路径行为不变。
+
+#### 寻址模型（mNNNN 单一寻址）
+
+- **ref 反查**：端点经 `getMessageIdByRef`（message-refs.ts 新增导出）
+  解析为原始消息 ID；摘要消息正常分配 ref（非 ignored），bN 退居内部
+  存储/展示身份，模型无需学习 bN 语法
+- **跨块消费**：ref 指向合成摘要消息 `zoo-fold-b<N>` 时解析为该块覆盖
+  的**原始消息跨度**（起点 = 首条覆盖消息下标，终点 = 末条 + 1），块
+  记入 `touchedBlocks`；块已失效（内容已被重新压缩）→ 过期 ref 报错
+- **位置语义**：端点 ref → 原始消息数组下标，范围 = 下标间一切消息
+  （ignored 消息按位置参与）；ref 是**地址而非序号**，数值可能不连续，
+  选反了顺序颠倒报错自愈
+
+#### 校验规则（validateRange）
+
+- **顺序**：起点下标 ≥ 终点下标（选反）→ 响亮报错，指导按阅读顺序重选
+- **保护**：与命令路径同一套三重边界（`protected_messages` +
+  `protected_tokens` + 末条用户消息，取最保守 `Math.min`）；范围含会话
+  **第一条用户消息**显式拒绝
+- **整块消费 / 部分重叠**：整块消费要求范围完整覆盖该块全部消息（锚点在内
+  但块超出范围同样视为部分重叠）→ 否则响亮报错
+  （有意偏离 DCP 的静默双认领）
+- **幻影门**：段估算 token < `threshold_tokens`（默认 2000）→ 报错
+
+#### 消费与记账（applyRange）
+
+- **存储与视图分离（V4）**：新摘要 = 头行（含 title）+ 模型摘要 +
+  被消费块的**索引行**（`=== Superseded Blocks ===` + 每块一行
+  `--- b<N>: <title> ---`，按 blockId 排序）。被消费块的完整正文保留
+  在 state 块记录中（记录永不删除），但不再逐字内联进视图——视图
+  增长从 O(历史总量) 降为 O(代数 × 一行)，召回机制留待 decompress
+  设计（索引行含块 id，前向兼容）。替代了初版的机械全文附加
+  （`=== Previously Compressed Blocks ===` + 逐字正文，已移除）
+- **title 来源**：工具路径由模型显式填写（zod 必填 + ≤80 字符，超限
+  响亮报错）；`/dcp compress` 命令路径无模型 title，建块时
+  `deriveBlockTitle` 机械派生（摘要首个非空内容行，跳过块头行与
+  `=== ... ===` 节标记，截断 80 字符）
+- **负收益门**：在**合并后**摘要上评估（模型摘要 + 索引行），摘要
+  token ≥ 内容 token 时报错；先校验后变更，失败不动状态
+- **token 不重复记账**：`compressedTokens` 只计此前未被任何活跃块覆盖
+  的消息（段 in+out 估算 − 被消费块 `compressedTokens` 之和）
+- **消费语义**：被消费块 `active=false` + 新增可选 `deactivatedAt`
+  （持久化，记录永不删除）；`createBlock` 先于消费（锚点冲突在消费前
+  抛错，状态保持干净）；`b<N>` 占位符回填同命令路径
+- **错误全部响亮**：ref 不存在/顺序颠倒/保护区越界/部分重叠/低收益/
+  过期 ref → throw 中文指导文案，模型自我纠正，无静默路径
+
+#### 工具注册与执行（src/tools/compress.ts + src/opencode.ts）
+
+- **注册**：`tool` hook 注册 `compress`（`[zoo.context.compress]
+  .enabled === false` 时整个 hook 缺席）；config hook 将 `"compress"`
+  **追加**到 `experimental.primary_tools`（保留既有条目，同一门控）
+- **execute 全流程**：取全量消息 → 注册表空时幂等 `assignMessageRefs`
+  兜底 → 核心管道 → `pendingViewChange = true` + `saveSessionState`
+  → ignored 通知（best-effort，`上下文压缩：已压缩 N 条消息为压缩块
+  bN：<title>，约回收 X tokens`）→ 单行 ToolResult（同文案，**永不返回
+  摘要正文**）
+- **边界**：无 permission 条目、install.py 未动；pendingManualTrigger
+  手动触发路径、nudge 系统仍属剩余 V3 工作（§8）
+- **测试**：19 个核心单测（range.test.ts，解析/校验/消费/记账/保护/
+  门禁/过期 ref）+ 9 个集成测试（tools/compress.test.ts，mockClient
+  断言建块/持久化/通知，enabled=false 时无 compress 键）；全仓 1148
+  TS 测试全绿，check.sh / test.sh / build.sh 三脚本通过
+
+### 4.9 认知收获（仍然成立的）
 
 1. **两阶段必须是分离的代码路径**（或在同一 handler 内严格先清后标），
    否则标记-清理边界产生 off-by-one（§3.3）
@@ -1071,11 +1170,12 @@ pipeline 进一步拆分。
 
 ### 5.2 压缩引擎（Range 模式）参考设计
 
-> **进度（2026-07-30）**：启发式/机械摘要 MVP 已落地（§4.7）——三重
-> 保护、幻影门、整段移除 + 锚点合成摘要、缓存纪律均已按本节设计实现，
-> 摘要从"占位"演进为确定性机械摘要（非 LLM）。剩余 V3 工作：注册
-> compress 工具切换为 LLM 驱动摘要（DCP 的模式，§3.4）、mNNNN 引用、
-> nudge 系统。
+> **进度（2026-07-30；2026-07-31 更新）**：启发式/机械摘要 MVP 已落地
+> （§4.7）——三重保护、幻影门、整段移除 + 锚点合成摘要、缓存纪律均已
+> 按本节设计实现，摘要从"占位"演进为确定性机械摘要（非 LLM）。
+> 2026-07-31 compress 工具已按本节设计注册落地（§4.8）：range 模式
+> 压缩 + mNNNN 引用 + LLM 摘要经工具参数承载均已交付。剩余 V3 工作：
+> pendingManualTrigger 手动触发路径、nudge 系统。
 >
 > 原实施路线：先启发式 Range 压缩（无 LLM 调用）验证块生命周期，再注册
 > compress 工具切换为 LLM 驱动摘要（DCP 的模式，§3.4）。
@@ -1343,15 +1443,15 @@ release_threshold_percent=0 时当轮标记当轮释放；ignored 通知
 | **框架绑定** | 强（仅 OpenCode） | 弱（核心框架无关） |
 | **依赖** | OpenCode SDK, 文件系统存储 | 无外部依赖 |
 | **Token 计数** | 未开源具体实现 | API 上报（主力）+ 启发式（补充），误差 < 5% |
-| **压缩模式** | Range + Message（双模） | ✅ Range 手动压缩（机械摘要 MVP，§4.7）；LLM 驱动 → V3 |
-| **LLM 驱动压缩** | ✅ 完整 | ❌（V3 规划：compress 工具注册；机械摘要已先行，§4.7） |
+| **压缩模式** | Range + Message（双模） | ✅ Range 双轨：手动压缩（机械摘要 MVP，§4.7）+ range 模式 compress 工具（LLM 驱动，§4.8） |
+| **LLM 驱动压缩** | ✅ 完整 | ✅ range 模式 compress 工具（摘要经工具 `summary` 参数承载，零额外 API 调用，§4.8） |
 | **去重** | ✅ 基于签名（compress 时检测，零保护清单） | ✅ 基于签名（transform 每轮检测 + 批量释放，§4.5） |
 | **错误清除** | ✅ 4 轮后 | ✅ 基于 action 判别 + 表驱动 producer + 老化保护窗 + 零收益跳过（§4.6） |
 | **Nudge 系统** | 3 级阈值 | ❌（V3 规划，3 级阈值） |
 | **状态持久化** | 磁盘 JSON 文件 | ✅ 磁盘 JSON（`~/.zoo/storage/`） |
 | **Block 嵌套** | 支持 | 不支持（V3 也不做，扁平块） |
 | **配置层级** | 3 层级联 + JSONC | 单层 config.toml |
-| **消息引用** | mNNNN 格式 | ❌（V3 随 compress 工具引入） |
+| **消息引用** | mNNNN 格式 | ✅ mNNNN（随 compress 工具交付，§4.8） |
 | **命令系统** | `/dcp` 全套命令 | ✅ 部分（context/sweep/compress/help） |
 | **轮次保护** | step-start 计数，默认 4（disabled） | 消息条数口径，默认 20 条（`protected_messages`，2026-07-30 统一） |
 | **状态模型复杂度** | 高（8 种块间关系） | 低（prune.tools 单通路） |
@@ -1386,8 +1486,8 @@ DCP 意味着增加 `dcp.jsonc`，破坏现有配置管理模型。
 | +1 | ~~purge-errors：错误工具调用老化 N 步后标记清除 input~~ | §3.5 / §4.6 | ✅ 已完成（R1-R3 架构落地，§4.6，2026-07-25） |
 | +1.5 | ~~手动压缩 `/dcp compress`：机械摘要 MVP + 三重保护 + 幻影门 + 折叠通路 + 视图变化强制释放 + TUI/报告折叠视图接线 + 系统类残差法~~ | §3.8 / §5.2 | ✅ 已完成（§4.7，2026-07-30） |
 | +2 | ~~zinspect `stats` 新增剪枝回收 section（`--pruning` 标志与 `--tokens`/`--hooks` 同构；读 JSONL 日志的 `prune_completed`/`*_marked`/`*_released` 事件）+ `impact` 聚合改 `hook:event` 复合键消除信号稀释~~（2026-07-27 决策：不做 `/dcp stats` 聊天命令、不加独立子命令） | §5.4 | ✅ 已完成（2026-07-31） |
-| V3 | compress 工具注册 + LLM 驱动摘要替换机械摘要 + mNNNN 引用 + nudge 系统（用户确认：模型自主压缩为未来方向，统一 producer 模型与 CompressionBlock.tier 已为其留位） | §3.3 / §3.4 / §3.6 / §5.2-5.3 | 手动压缩实测稳定 |
-| V3.5（候选） | T2 摘要再压缩（应对摘要累积；视 V3 实测决定，§9.8） | §3.8.1 | V3 实测数据 |
+| V3 | ~~compress 工具注册~~ ✅、~~mNNNN 引用~~ ✅、~~LLM 驱动摘要（工具参数承载）~~ ✅（2026-07-31，§4.8）；剩余：pendingManualTrigger 手动触发路径、nudge 系统（用户确认：模型自主压缩为未来方向） | §3.3 / §3.4 / §3.6 / §5.2-5.3 | ✅ 部分完成（2026-07-31，§4.8）；剩余 pendingManualTrigger、nudge 系统 |
+| V3.5 | ~~T2 摘要再压缩~~ **已否决**（2026-08-01，§9.8：保真度需求是断崖，中间密度层无真实消费者；改为索引行 + 召回 + wiki 记忆三层） | §3.8.1 | ❌ 不做 |
 | V4 | Message 模式压缩、decompress/recompress、子代理结果展开 | §3.4 / §5.4 | V3 |
 | 另行规划 | pi 宿主适配（核心已框架无关，缺 transform 接线） | — | pi 侧 hook 能力确认 |
 
@@ -1464,9 +1564,15 @@ ignored 消息不占保护槽（系统注入消息不会压缩实际保护范围
 **风险**：扁平块方案下 T1 摘要数量随会话无限增长，摘要自身成为新的
 膨胀源（ACP 实测需 T2/T3 分层应对，§3.8.1）。
 
-**缓解**：数据模型已落地 `tier` 字段（恒 1，持久化严格校验枚举）+
-`deactivatedAt`，扁平 MVP 不实现层级逻辑，后续升级不推倒重来；
-通过面板/命令观测摘要占比，确认真实累积后再做 T2 再压缩
+**决策（2026-08-01，否决 T2 分层）**：保真度需求是断崖而非斜坡——
+模型对远古历史要么要正文（按需召回）要么要指针（索引行），
+"内联可读但高度压缩"的中间密度层无真实消费者；且 ACP 式蒸馏
+（摘要再摘要）逐代复利衰减、GC merge 会压平自身层级（内部矛盾）。
+采用三层替代：**索引行指针**（老化降级，机械无损）+ **state 全量
+保留 + decompress 召回**（正文按需取回）+ **wiki 层长期记忆**
+（刻意策展，非压缩副产品）。原预留的 `tier` 桩字段（恒 1，无任何
+行为消费者）已随本决策删除；极端规模下索引行堆积以有界窗口应对
+（最近 K 代可见，溢出落 state 由召回列表发现）。
 （§8 V3.5 候选）。
 
 ---

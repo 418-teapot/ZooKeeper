@@ -63,6 +63,51 @@ export interface CompressionSegment {
 export const BLOCK_HEADER_TEMPLATE = "[Compression Block b<N>]";
 
 /**
+ * Derive a one-line block title from a block summary.
+ *
+ * Mechanical derivation at creation time (used by the `/dcp compress`
+ * command path, which has no model-supplied title): the first real
+ * content line of the summary, truncated to 80 characters
+ * (surrogate-pair safe).  The block header line (the
+ * `[Compression Block b<N>]` prefix) and section-marker lines
+ * (`=== ... ===`, e.g. `=== User Requests ===`) are skipped — the header
+ * is rebuilt by the caller with the derived title, and markers are fixed
+ * boilerplate that would make every title identical.
+ *
+ * **Hyphen-run sanitization:** runs of three or more consecutive hyphens
+ * are replaced with a single em dash.  This is the command-path side of
+ * the title policy asymmetry — the tool path REJECTS such titles loudly
+ * so the model can retry with other punctuation, while the unattended
+ * command path cannot ask anyone to retry, so it SANITIZES instead (a
+ * `---` run in the title would visually merge with the `--- b<N>:
+ * <title> ---` separators of superseded index lines).
+ *
+ * Returns the empty string when the summary has no content beyond the
+ * header and markers; the caller is responsible for ensuring a non-empty
+ * title (title is required at block creation time).
+ *
+ * @param summary - The block summary text.
+ * @returns The derived title (may be empty).
+ */
+export function deriveBlockTitle(summary: string): string {
+  for (const line of summary.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    if (trimmed.startsWith(BLOCK_HEADER_TEMPLATE)) continue;
+    if (/^={3}.*={3}$/.test(trimmed)) continue;
+    const title = trimmed.replace(/-{3,}/g, "—");
+    if (title.length <= 80) return title;
+    // Avoid splitting a surrogate pair (emoji = 2 UTF-16 code units) when
+    // the 80th code unit is the high half of a pair — truncate to 79 then.
+    const atCut = title.charCodeAt(79);
+    return atCut >= 0xd800 && atCut <= 0xdbff
+      ? title.slice(0, 79)
+      : title.slice(0, 80);
+  }
+  return "";
+}
+
+/**
  * The output of `planCompression`.
  */
 export interface CompressionPlanResult {
@@ -86,7 +131,7 @@ export interface CompressionPlanResult {
  * @returns Inclusive start index of the protection window.  0 = all messages
  *   protected; `messages.length` = empty window.
  */
-function tokenBoundary(
+export function tokenBoundary(
   messages: ContextMessageEntry[],
   protectedTokens: number,
 ): number {
@@ -112,7 +157,7 @@ function tokenBoundary(
  * @param messages - The session messages array.
  * @returns Index, or `messages.length` if no non-ignored user message found.
  */
-function lastUserMessageIndex(messages: ContextMessageEntry[]): number {
+export function lastUserMessageIndex(messages: ContextMessageEntry[]): number {
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i]?.info?.role === "user" && !isMessageIgnored(messages[i])) {
       return i;
@@ -134,7 +179,7 @@ function lastUserMessageIndex(messages: ContextMessageEntry[]): number {
  * @param messages - The session messages array.
  * @returns Index, or -1 if no non-ignored user message found.
  */
-function firstUserMessageIndex(messages: ContextMessageEntry[]): number {
+export function firstUserMessageIndex(messages: ContextMessageEntry[]): number {
   for (let i = 0; i < messages.length; i++) {
     if (messages[i]?.info?.role === "user" && !isMessageIgnored(messages[i])) {
       return i;
@@ -416,7 +461,7 @@ export function segmentInOutTokens(
  * @param segment - The segment to estimate.
  * @returns Heuristic token count (sum of per-message estimates).
  */
-function estimateSegmentTokens(
+export function estimateSegmentTokens(
   messages: ContextMessageEntry[],
   segment: CompressionSegment,
 ): number {
