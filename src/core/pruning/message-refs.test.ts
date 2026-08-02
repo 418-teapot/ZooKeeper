@@ -24,6 +24,7 @@ import {
   assignMessageRefs,
   getLastCompactionBoundaryId,
   getMessageIdByRef,
+  getMessageRefById,
   injectMessageRefs,
   resetMessageRefs,
   setLastCompactionBoundaryId,
@@ -1173,6 +1174,44 @@ describe("getMessageIdByRef", () => {
       getMessageIdByRef("sess-ref-lookup-empty", "m0001"),
       undefined,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Forward ref lookup (getMessageRefById)
+// ---------------------------------------------------------------------------
+
+describe("getMessageRefById", () => {
+  it("returns the ref for a message ID assigned by assignMessageRefs", () => {
+    const sessionId = "sess-ref-fwd-hit";
+    const messages: ContextMessageEntry[] = [
+      msg("user", "u1", [textPart("hello")]),
+      msg("assistant", "a1", [textPart("reply")]),
+      msg("user", "u2", [textPart("follow-up")]),
+    ];
+
+    assignMessageRefs(sessionId, messages);
+
+    assert.equal(getMessageRefById(sessionId, "u1"), "m0001");
+    assert.equal(getMessageRefById(sessionId, "a1"), "m0002");
+    assert.equal(getMessageRefById(sessionId, "u2"), "m0003");
+  });
+
+  it("returns undefined for an unknown message ID on a known session", () => {
+    const sessionId = "sess-ref-fwd-miss";
+    const messages: ContextMessageEntry[] = [
+      msg("user", "u1", [textPart("hello")]),
+    ];
+
+    assignMessageRefs(sessionId, messages);
+
+    // "u2" was never assigned a ref.
+    assert.equal(getMessageRefById(sessionId, "u2"), undefined);
+  });
+
+  it("returns undefined for a session with no registry", () => {
+    // No assign / set was ever called for this session.
+    assert.equal(getMessageRefById("sess-ref-fwd-empty", "u1"), undefined);
   });
 });
 

@@ -513,12 +513,25 @@ threshold_tokens = 2000
 # 压缩保护区（tokens）：末尾累计达到此值后不压缩
 protected_tokens = 20000
 
+[zoo.context.nudge]
+enabled = true
+# 温和提醒阈值
+min_context = "60%"
+min_context_cap = 200000
+# 紧急提醒阈值：达到后提醒升级为紧急级（完成当前原子步骤后立即 compress）
+max_context = "80%"
+max_context_cap = 300000
+# 提醒节奏（tokens 或百分比）
+growth_tokens = "5%"
+
+# 示例：[zoo.context.nudge.models."<modelID>"] 下的键会覆盖上方同名阈值
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 
 [zoo.logging]
 # 单文件上限 (MB)
 max_file_size_mb = 5
-# 保留的轮转备份数，设为 0 不轮转
+# 保留的轮转备份数
 max_backups = 2
 # 自动清理多少天前的日志
 retention_days = 7
@@ -526,7 +539,6 @@ retention_days = 7
 # ── Skills ────────────────────────────────────────────────────────────────────
 # 每个 core/skills/ 下的子目录对应一个内建技能。
 # 可用值："enable"（启用）| "disable"（禁用）
-
 [zoo.skills]
 beaver-tdd   = "enable"
 code-review  = "enable"

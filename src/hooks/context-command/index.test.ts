@@ -942,6 +942,38 @@ describe("/dcp compress subcommand", () => {
     assert.equal(state.blocks.size, 0);
   });
 
+  it("compress section absent → command refuses with notice, no state writes", async () => {
+    let promptText = "";
+    const promptClient: DcpClient = {
+      session: {
+        messages: async () => ({ data: [] }),
+        prompt: async (input: {
+          path: { id: string };
+          body: {
+            noReply?: boolean;
+            parts: Array<{ type: string; text: string; ignored?: boolean }>;
+          };
+        }) => {
+          promptText = input.body.parts[0]?.text ?? "";
+        },
+      },
+    };
+
+    await handleDcpCommand(promptClient, "sess-compress-absent", "compress", {
+      dedup: {},
+      purgeErrors: {},
+    });
+
+    assert.ok(
+      promptText.includes("压缩功能未启用"),
+      `expected "压缩功能未启用" in prompt, got: ${promptText}`,
+    );
+
+    // State should be empty (no writes).
+    const state = getOrCreateSessionState("sess-compress-absent");
+    assert.equal(state.blocks.size, 0);
+  });
+
   it("empty plan → replies 无可压缩内容, no state writes", async () => {
     let promptText = "";
     const promptClient: DcpClient = {

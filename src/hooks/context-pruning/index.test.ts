@@ -11,6 +11,10 @@ import type {
   ContextTokenInfo,
 } from "../../core/metrics.js";
 import {
+  _resetForTesting as _resetModelLimitsForTesting,
+  setModelLimit,
+} from "../../core/model-limits.js";
+import {
   activeBlockCount,
   createBlock,
   deleteSessionState,
@@ -67,6 +71,7 @@ const TEST_SESSION_IDS = [
 
 afterEach(() => {
   _resetForTesting();
+  _resetModelLimitsForTesting();
   _clearAllSessionsForTesting();
   for (const sid of TEST_SESSION_IDS) {
     deleteSessionState(sid);
@@ -951,6 +956,24 @@ describe("contextPruningTransformHandler", () => {
     assert.equal(entries.length, 3);
   });
 
+  it("parseContextConfig returns undefined for non-positive dedup threshold_context (warns)", () => {
+    const config = parseContextConfig({
+      context: { dedup: { threshold_context: 0 } },
+    });
+    assert.equal(config.dedup.thresholdContext, undefined);
+
+    const config2 = parseContextConfig({
+      context: { dedup: { threshold_context: -100 } },
+    });
+    assert.equal(config2.dedup.thresholdContext, undefined);
+
+    const buffer = _getBufferForTesting();
+    const entries = buffer.filter(
+      (e) => e.event === "invalid_dedup_threshold_context",
+    );
+    assert.equal(entries.length, 2);
+  });
+
   it("parseContextConfig returns undefined for non-finite protected_messages (warns)", () => {
     const config = parseContextConfig({
       context: { protected_messages: NaN },
@@ -972,6 +995,26 @@ describe("contextPruningTransformHandler", () => {
       (e) => e.event === "invalid_protected_messages",
     );
     assert.equal(entries.length, 3);
+  });
+
+  it("parseContextConfig returns undefined for negative protected_messages (warns)", () => {
+    // 0 remains legal (explicitly disables the protection layer);
+    // only negative values are rejected.
+    const config = parseContextConfig({
+      context: { protected_messages: -1 },
+    });
+    assert.equal(config.protectedMessages, undefined);
+
+    const config2 = parseContextConfig({
+      context: { protected_messages: -10 },
+    });
+    assert.equal(config2.protectedMessages, undefined);
+
+    const buffer = _getBufferForTesting();
+    const entries = buffer.filter(
+      (e) => e.event === "invalid_protected_messages",
+    );
+    assert.equal(entries.length, 2);
   });
 
   it("parseContextConfig returns undefined for non-string-array protected_tools", () => {
@@ -999,13 +1042,13 @@ describe("contextPruningTransformHandler", () => {
         released_percent: 0,
         dedup: {
           enabled: false,
-          threshold_context: 0,
+          threshold_context: 64000,
           protected_tools: [],
         },
       },
     });
     assert.equal(config.dedup.enabled, false);
-    assert.equal(config.dedup.thresholdContext, 0);
+    assert.equal(config.dedup.thresholdContext, 64000);
     assert.equal(config.protectedMessages, 0);
     assert.equal(config.releasedPercent, 0);
     assert.deepEqual(config.dedup.protectedTools, []);
@@ -1069,6 +1112,24 @@ describe("contextPruningTransformHandler", () => {
     assert.ok(entry, "must log invalid_released_percent");
   });
 
+  it("parseContextConfig returns undefined for released_percent above 100 (warns)", () => {
+    const config = parseContextConfig({
+      context: { released_percent: 101 },
+    });
+    assert.equal(config.releasedPercent, undefined);
+
+    const config2 = parseContextConfig({
+      context: { released_percent: 150 },
+    });
+    assert.equal(config2.releasedPercent, undefined);
+
+    const buffer = _getBufferForTesting();
+    const entries = buffer.filter(
+      (e) => e.event === "invalid_released_percent",
+    );
+    assert.equal(entries.length, 2);
+  });
+
   it("parseContextConfig returns undefined for released_percent when absent", () => {
     const config = parseContextConfig({});
     assert.equal(config.releasedPercent, undefined);
@@ -1130,6 +1191,24 @@ describe("contextPruningTransformHandler", () => {
       (e) => e.event === "invalid_purge_errors_enabled",
     );
     assert.ok(entry, "must log invalid_purge_errors_enabled");
+  });
+
+  it("parseContextConfig returns undefined for non-positive purge_errors threshold_context (warns)", () => {
+    const config = parseContextConfig({
+      context: { purge_errors: { threshold_context: 0 } },
+    });
+    assert.equal(config.purgeErrors.thresholdContext, undefined);
+
+    const config2 = parseContextConfig({
+      context: { purge_errors: { threshold_context: -500 } },
+    });
+    assert.equal(config2.purgeErrors.thresholdContext, undefined);
+
+    const buffer = _getBufferForTesting();
+    const entries = buffer.filter(
+      (e) => e.event === "invalid_purge_errors_threshold_context",
+    );
+    assert.equal(entries.length, 2);
   });
 
   it("parseContextConfig reads enabled: false from [zoo.context]", () => {
@@ -1219,70 +1298,216 @@ describe("contextPruningTransformHandler", () => {
     assert.equal(config.compress?.protectedTokens, 20000);
   });
 
-  it("parseContextConfig returns undefined compress fields when section is absent", () => {
+  it("parseContextConfig returns undefined when the compress section is absent (no warn)", () => {
     const config = parseContextConfig({});
-    assert.equal(config.compress?.enabled, undefined);
-    assert.equal(config.compress?.thresholdTokens, undefined);
-    assert.equal(config.compress?.protectedTokens, undefined);
+    assert.equal(config.compress, undefined);
+
+    const config2 = parseContextConfig({ context: { enabled: true } });
+    assert.equal(config2.compress, undefined);
+
+    const buffer = _getBufferForTesting();
+    assert.ok(
+      !buffer.some((e) => e.event === "compress_config_invalid"),
+      "absent section must not warn",
+    );
   });
 
-  it("parseContextConfig returns undefined for non-boolean compress.enabled (warns)", () => {
+  it("parseContextConfig drops the whole section on a bad compress.enabled (warn once)", () => {
     const config = parseContextConfig({
       context: { compress: { enabled: "true" } },
     });
-    assert.equal(config.compress?.enabled, undefined);
+    assert.equal(config.compress, undefined, "whole section dropped");
 
     const buffer = _getBufferForTesting();
-    const entry = buffer.find((e) => e.event === "invalid_compress_enabled");
-    assert.ok(entry, "must log invalid_compress_enabled");
+    const entries = buffer.filter((e) => e.event === "compress_config_invalid");
+    assert.equal(entries.length, 1, "exactly one warn");
+    assert.equal(entries[0].key, "enabled");
   });
 
-  it("parseContextConfig returns undefined for non-finite compress.threshold_tokens (warns)", () => {
+  it("parseContextConfig drops the whole section on bad compress.threshold_tokens (warn once each)", () => {
     const config = parseContextConfig({
       context: { compress: { threshold_tokens: Infinity } },
     });
-    assert.equal(config.compress?.thresholdTokens, undefined);
+    assert.equal(config.compress, undefined, "whole section dropped");
 
     const config2 = parseContextConfig({
       context: { compress: { threshold_tokens: NaN } },
     });
-    assert.equal(config2.compress?.thresholdTokens, undefined);
+    assert.equal(config2.compress, undefined, "whole section dropped");
 
     const config3 = parseContextConfig({
       context: { compress: { threshold_tokens: "2000" } },
     });
-    assert.equal(config3.compress?.thresholdTokens, undefined);
+    assert.equal(config3.compress, undefined, "whole section dropped");
 
     const buffer = _getBufferForTesting();
-    const entries = buffer.filter(
-      (e) => e.event === "invalid_compress_threshold_tokens",
-    );
+    const entries = buffer.filter((e) => e.event === "compress_config_invalid");
     assert.equal(entries.length, 3);
   });
 
-  it("parseContextConfig returns undefined for non-finite compress.protected_tokens (warns)", () => {
+  it("parseContextConfig drops the whole section on bad compress.protected_tokens (warn once each)", () => {
     const config = parseContextConfig({
       context: { compress: { protected_tokens: Infinity } },
     });
-    assert.equal(config.compress?.protectedTokens, undefined);
+    assert.equal(config.compress, undefined, "whole section dropped");
 
     const config2 = parseContextConfig({
       context: { compress: { protected_tokens: "20000" } },
     });
-    assert.equal(config2.compress?.protectedTokens, undefined);
+    assert.equal(config2.compress, undefined, "whole section dropped");
 
     const buffer = _getBufferForTesting();
-    const entries = buffer.filter(
-      (e) => e.event === "invalid_compress_protected_tokens",
-    );
+    const entries = buffer.filter((e) => e.event === "compress_config_invalid");
     assert.equal(entries.length, 2);
   });
 
-  it("parseContextConfig reads compress.enabled: false", () => {
+  it("parseContextConfig accepts compress.enabled: false with all keys (present but disabled)", () => {
     const config = parseContextConfig({
-      context: { compress: { enabled: false } },
+      context: {
+        compress: {
+          enabled: false,
+          threshold_tokens: 2000,
+          protected_tokens: 20000,
+        },
+      },
     });
     assert.equal(config.compress?.enabled, false);
+    assert.equal(config.compress?.thresholdTokens, 2000);
+    assert.equal(config.compress?.protectedTokens, 20000);
+
+    const buffer = _getBufferForTesting();
+    assert.ok(
+      !buffer.some((e) => e.event === "compress_config_invalid"),
+      "enabled=false must not warn",
+    );
+  });
+
+  // ===========================================================================
+  // parseContextConfig — [zoo.context.compress] section (strict whole-section)
+  // ===========================================================================
+
+  describe("parseContextConfig compress section", () => {
+    const fullCompress = {
+      enabled: true,
+      threshold_tokens: 2000,
+      protected_tokens: 20000,
+    };
+
+    it("returns undefined when the section is absent (no warn)", () => {
+      const config = parseContextConfig({});
+      assert.equal(config.compress, undefined);
+
+      const config2 = parseContextConfig({ context: { enabled: true } });
+      assert.equal(config2.compress, undefined);
+
+      const buffer = _getBufferForTesting();
+      assert.ok(
+        !buffer.some((e) => e.event === "compress_config_invalid"),
+        "absent section must not warn",
+      );
+    });
+
+    it("reads the full [zoo.context.compress] section", () => {
+      const config = parseContextConfig({
+        context: { compress: fullCompress },
+      });
+      assert.deepEqual(config.compress, {
+        enabled: true,
+        thresholdTokens: 2000,
+        protectedTokens: 20000,
+      });
+    });
+
+    it("accepts zero values for the token thresholds", () => {
+      const config = parseContextConfig({
+        context: {
+          compress: {
+            enabled: true,
+            threshold_tokens: 0,
+            protected_tokens: 0,
+          },
+        },
+      });
+      assert.equal(config.compress?.enabled, true);
+      assert.equal(config.compress?.thresholdTokens, 0);
+      assert.equal(config.compress?.protectedTokens, 0);
+    });
+
+    it("missing key invalidates the whole section (warn once)", () => {
+      const config = parseContextConfig({
+        context: {
+          compress: {
+            enabled: true,
+            threshold_tokens: 2000,
+            // protected_tokens missing
+          },
+        },
+      });
+      assert.equal(config.compress, undefined, "whole section dropped");
+
+      const buffer = _getBufferForTesting();
+      const entries = buffer.filter(
+        (e) => e.event === "compress_config_invalid",
+      );
+      assert.equal(entries.length, 1, "exactly one warn");
+      assert.equal(entries[0].key, "protected_tokens");
+    });
+
+    it("negative or non-finite values invalidate the whole section (warn once)", () => {
+      const config = parseContextConfig({
+        context: { compress: { ...fullCompress, threshold_tokens: -1 } },
+      });
+      assert.equal(config.compress, undefined);
+
+      const config2 = parseContextConfig({
+        context: { compress: { ...fullCompress, protected_tokens: Infinity } },
+      });
+      assert.equal(config2.compress, undefined);
+
+      const config3 = parseContextConfig({
+        context: { compress: { ...fullCompress, threshold_tokens: NaN } },
+      });
+      assert.equal(config3.compress, undefined);
+
+      const buffer = _getBufferForTesting();
+      const entries = buffer.filter(
+        (e) => e.event === "compress_config_invalid",
+      );
+      assert.equal(entries.length, 3);
+    });
+
+    it("wrong-typed values invalidate the whole section (warn once)", () => {
+      const config = parseContextConfig({
+        context: { compress: { ...fullCompress, enabled: "false" } },
+      });
+      assert.equal(config.compress, undefined);
+
+      const config2 = parseContextConfig({
+        context: { compress: { ...fullCompress, threshold_tokens: "2000" } },
+      });
+      assert.equal(config2.compress, undefined);
+
+      const buffer = _getBufferForTesting();
+      const entries = buffer.filter(
+        (e) => e.event === "compress_config_invalid",
+      );
+      assert.equal(entries.length, 2);
+    });
+
+    it("enabled=false is valid (present but disabled)", () => {
+      const config = parseContextConfig({
+        context: { compress: { ...fullCompress, enabled: false } },
+      });
+      assert.equal(config.compress?.enabled, false);
+      assert.equal(config.compress?.thresholdTokens, 2000);
+      assert.equal(config.compress?.protectedTokens, 20000);
+
+      const buffer = _getBufferForTesting();
+      assert.ok(
+        !buffer.some((e) => e.event === "compress_config_invalid"),
+        "enabled=false must not warn",
+      );
+    });
   });
 
   // ===========================================================================
@@ -2690,6 +2915,572 @@ describe("contextPruningTransformHandler", () => {
       );
       // promptTokens field is logged as 0 — sensible even when zero.
       assert.equal(releaseLog.promptTokens, 0, "promptTokens is zero");
+    });
+  });
+
+  // ===========================================================================
+  // Context-nudge (Phase 6) integration tests
+  // ===========================================================================
+
+  describe("context-nudge (Phase 6)", () => {
+    const NUDGE_SESSION_IDS = [
+      "sess-nudge-basic",
+      "sess-nudge-once",
+      "sess-nudge-ratchet",
+      "sess-nudge-subagent",
+      "sess-nudge-no-limit",
+      "sess-nudge-no-asst",
+      "sess-nudge-urgent",
+      "sess-nudge-no-config",
+      "sess-nudge-disabled",
+      "sess-nudge-no-eligible",
+    ];
+    TEST_SESSION_IDS.push(...NUDGE_SESSION_IDS);
+
+    // Resolves against a 200K window: min 120K, max 160K,
+    // growth 10K (gentle) / 5K (urgent).
+    const NUDGE_LIMIT = 200000;
+    const nudgeConfig = {
+      enabled: true,
+      minContext: "60%",
+      minContextCap: 200000,
+      maxContext: "80%",
+      maxContextCap: 300000,
+      growthTokens: "5%",
+    };
+
+    /**
+     * Build a transform config with the nudge section attached.
+     *
+     * The token/threshold protections are EXPLICITLY disabled (0) — the
+     * fixtures' tiny views would otherwise fall inside the shared
+     * protection window and nothing would be eligible.  These tests
+     * exercise the message-count protection only.
+     */
+    function nudgeTransformConfig(protectedMessages: number) {
+      return {
+        enabled: true,
+        protectedMessages,
+        nudge: nudgeConfig,
+        compress: { enabled: true, protectedTokens: 0, thresholdTokens: 0 },
+        dedup: { enabled: false },
+        purgeErrors: { enabled: false },
+      };
+    }
+
+    /**
+     * Build a two-turn message view.  Only a1 carries tokens (output > 0)
+     * so findLastCompletedAssistant resolves a1 → promptTokens = input.
+     * With protectedMessages=2 the eligible history is [u1, a1], whose
+     * refs are m0001 / m0002.
+     */
+    function nudgeMessages(
+      sessionID: string,
+      inputTokens: number,
+    ): ContextMessageEntry[] {
+      return [
+        msg("user", "u1", [textPart("hello")], sessionID),
+        msg("assistant", "a1", [toolPart("call-1", "data one")], undefined, {
+          input: inputTokens,
+          output: 100,
+        }),
+        msg("user", "u2", [textPart("again")], sessionID),
+        msg("assistant", "a2", [toolPart("call-2", "data two")]),
+      ];
+    }
+
+    it("injects a gentle nudge message at the END of the array", () => {
+      const sessionID = "sess-nudge-basic";
+      setModelLimit(sessionID, NUDGE_LIMIT, "test-model");
+
+      // Baseline eval: 140K prompt — establishes the anchor silently.
+      let messages = nudgeMessages(sessionID, 140000);
+      contextPruningTransformHandler(messages, nudgeTransformConfig(2));
+      assert.equal(messages.length, 4, "baseline injects nothing");
+
+      // Growth past the gentle interval: 150K (delta 10K >= 10K).
+      messages = nudgeMessages(sessionID, 150000);
+      contextPruningTransformHandler(messages, nudgeTransformConfig(2));
+
+      // Synthetic nudge appended at the very END.
+      assert.equal(messages.length, 5, "nudge message appended");
+      const last = messages[messages.length - 1];
+      assert.equal(last.info.id, "zoo-nudge");
+      assert.equal(last.info.role, "user");
+      assert.equal(last.info.sessionID, sessionID);
+      const text = (last.parts?.[0] as { text?: string }).text ?? "";
+      assert.ok(text.startsWith("<internal-reminder>"), "wrapper opens");
+      assert.ok(text.endsWith("</internal-reminder>"), "wrapper closes");
+      assert.ok(
+        text.includes("**CONTEXT GROWING — 150000 (75% of 200000 window)**"),
+        "header filled from gentle slots",
+      );
+      // protectedMessages=2 + first-user exclusion → the window is the
+      // single message a1, so both refs resolve to m0002.
+      assert.ok(
+        text.includes("Compressible window: m0002–m0002"),
+        "window refs placed in text",
+      );
+      assert.ok(
+        text.includes("pass the ref after a message to include it"),
+        "exclusive toRef semantics conveyed without a ref pointer",
+      );
+      assert.ok(!text.includes("{endRef}"), "no placeholder leaks");
+      assert.ok(
+        text.includes("both refs inclusive"),
+        "window inclusivity conveyed",
+      );
+      assert.ok(
+        text.includes("compressing everything is optional"),
+        "sub-range choice conveyed",
+      );
+      assert.ok(/\(~\d+ tokens\)/.test(text), "reclaim estimate present");
+      assert.ok(
+        text.includes(
+          "At your next natural pause, compress a closed range with the `compress` tool. Timing is your call.",
+        ),
+        "gentle action copy",
+      );
+      assert.ok(
+        text.includes(
+          "UNCOMPRESSED HISTORY = GROWING CONTEXT = SHRINKING HEADROOM.",
+        ),
+        "gentle equation copy",
+      );
+      // The nudge runs after Phase 4 — it never carries an injected tag.
+      assert.ok(!text.includes("<zoo-msg-id>"), "no injected ref tag");
+
+      // nudge_injected log carries the evaluation payload.
+      const entries = _getBufferForTesting();
+      const nudgeLog = entries.find((e) => e.event === "nudge_injected") as
+        | Record<string, unknown>
+        | undefined;
+      assert.ok(nudgeLog, "expected nudge_injected log event");
+      assert.equal(nudgeLog.nudgeLevel, "gentle");
+      assert.equal(nudgeLog.tokens, 150000);
+      assert.equal(nudgeLog.anchor, 150000);
+      assert.equal(nudgeLog.startRef, "m0002");
+      assert.equal(nudgeLog.endRef, "m0002");
+    });
+
+    it("does not re-inject while the anchor sits at the current tokens", () => {
+      const sessionID = "sess-nudge-once";
+      setModelLimit(sessionID, NUDGE_LIMIT, "test-model");
+
+      // Baseline, then trigger.
+      let messages = nudgeMessages(sessionID, 140000);
+      contextPruningTransformHandler(messages, nudgeTransformConfig(2));
+      messages = nudgeMessages(sessionID, 150000);
+      contextPruningTransformHandler(messages, nudgeTransformConfig(2));
+      assert.equal(
+        messages[messages.length - 1].info.id,
+        "zoo-nudge",
+        "first trigger injects",
+      );
+
+      // Same tokens again — delta 0 → anchor already moved → silent.
+      const messages2 = nudgeMessages(sessionID, 150000);
+      contextPruningTransformHandler(messages2, nudgeTransformConfig(2));
+      assert.equal(messages2.length, 4, "no second injection");
+      assert.equal(messages2[messages2.length - 1].info.id, "a2");
+    });
+
+    it("ratchets the anchor down after compression and re-triggers", () => {
+      const sessionID = "sess-nudge-ratchet";
+      setModelLimit(sessionID, NUDGE_LIMIT, "test-model");
+
+      // Baseline 140K → anchor 140K.
+      let messages = nudgeMessages(sessionID, 140000);
+      contextPruningTransformHandler(messages, nudgeTransformConfig(2));
+
+      // Trigger gentle at 150K → anchor 150K.
+      messages = nudgeMessages(sessionID, 150000);
+      contextPruningTransformHandler(messages, nudgeTransformConfig(2));
+      assert.equal(messages[messages.length - 1].info.id, "zoo-nudge");
+
+      // Compression drops to 100K — below min; anchor follows down.
+      messages = nudgeMessages(sessionID, 100000);
+      contextPruningTransformHandler(messages, nudgeTransformConfig(2));
+      assert.equal(messages[messages.length - 1].info.id, "a2");
+      assert.equal(messages.length, 4, "below-min eval stays silent");
+
+      // Rebound to 135K — distance re-accumulated from 100K → triggers.
+      messages = nudgeMessages(sessionID, 135000);
+      contextPruningTransformHandler(messages, nudgeTransformConfig(2));
+      assert.equal(
+        messages[messages.length - 1].info.id,
+        "zoo-nudge",
+        "re-triggers after downward ratchet",
+      );
+
+      const entries = _getBufferForTesting();
+      const nudgeLogs = entries.filter((e) => e.event === "nudge_injected");
+      assert.equal(nudgeLogs.length, 2, "exactly two injections");
+      assert.equal((nudgeLogs[1] as Record<string, unknown>).anchor, 135000);
+    });
+
+    it("injects the urgent level with CONTEXT LIMIT copy", () => {
+      const sessionID = "sess-nudge-urgent";
+      setModelLimit(sessionID, NUDGE_LIMIT, "test-model");
+
+      // Baseline at 130K (silent), then 165K: past max with a large delta.
+      let messages = nudgeMessages(sessionID, 130000);
+      contextPruningTransformHandler(messages, nudgeTransformConfig(2));
+      messages = nudgeMessages(sessionID, 165000);
+      contextPruningTransformHandler(messages, nudgeTransformConfig(2));
+
+      const last = messages[messages.length - 1];
+      assert.equal(last.info.id, "zoo-nudge");
+      const text = (last.parts?.[0] as { text?: string }).text ?? "";
+      assert.ok(
+        text.includes("**CONTEXT LIMIT — 165000 (83% of 200000 window)**"),
+        "urgent header",
+      );
+      assert.ok(
+        text.includes(
+          "Finish your current atomic step, then call the `compress` tool IMMEDIATELY.",
+        ),
+        "urgent action line 1",
+      );
+      assert.ok(
+        text.includes(
+          "DO NOT start new exploration. DO NOT delegate new tasks. Compress first.",
+        ),
+        "triple DO NOT action",
+      );
+      assert.ok(
+        text.includes("FULL CONTEXT = TERMINATED SESSION = LOST WORK."),
+        "urgent equation",
+      );
+    });
+
+    it("skips injection when evaluation fires but nothing is eligible, anchor still persisted", () => {
+      const sessionID = "sess-nudge-no-eligible";
+      setModelLimit(sessionID, NUDGE_LIMIT, "test-model");
+
+      // protectedMessages=4 covers ALL messages → the protected window
+      // spans the entire view (boundary 0) → computeEligibility returns
+      // null no matter which messages hold refs.  Mirrors the F3 live
+      // session: evaluation fired but injection stayed gated until the
+      // message count passed protected_messages.
+      // Baseline eval: 140K prompt — establishes the anchor silently.
+      let messages = nudgeMessages(sessionID, 140000);
+      contextPruningTransformHandler(messages, nudgeTransformConfig(4));
+      assert.equal(messages.length, 4, "baseline injects nothing");
+
+      // Growth past the gentle interval: 150K (delta 10K >= 10K) → the
+      // evaluation fires, but with everything protected there is no
+      // eligible ref → injection is skipped.
+      messages = nudgeMessages(sessionID, 150000);
+      contextPruningTransformHandler(messages, nudgeTransformConfig(4));
+      assert.equal(messages.length, 4, "no nudge appended");
+      assert.equal(messages[messages.length - 1].info.id, "a2");
+
+      // The anchor WAS still persisted on the eligibility-null pass —
+      // the ratchet kept following the watermark.
+      const state = getOrCreateSessionState(sessionID);
+      assert.equal(
+        state.nudges?.lastNudgeTokens,
+        150000,
+        "anchor moved on the eligibility-null pass",
+      );
+
+      // A re-run at the same tokens stays silent (delta 0) — and once
+      // the protected window shrinks below the message count the gate
+      // opens, but the already-moved anchor still blocks an immediate
+      // re-nudge (a stale anchor at 140K would fire here).
+      const messages2 = nudgeMessages(sessionID, 150000);
+      contextPruningTransformHandler(messages2, nudgeTransformConfig(4));
+      assert.equal(messages2.length, 4, "same-token re-run stays silent");
+
+      const messages3 = nudgeMessages(sessionID, 150000);
+      contextPruningTransformHandler(messages3, nudgeTransformConfig(2));
+      assert.equal(messages3.length, 4, "gate open but anchor already moved");
+      assert.equal(messages3[messages3.length - 1].info.id, "a2");
+    });
+
+    it("skips nudge injection for sub-agent sessions", () => {
+      const sessionID = "sess-nudge-subagent";
+      setModelLimit(sessionID, NUDGE_LIMIT, "test-model");
+
+      let messages = nudgeMessages(sessionID, 140000);
+      contextPruningTransformHandler(
+        messages,
+        nudgeTransformConfig(2),
+        undefined,
+        true,
+      );
+      messages = nudgeMessages(sessionID, 150000);
+      contextPruningTransformHandler(
+        messages,
+        nudgeTransformConfig(2),
+        undefined,
+        true,
+      );
+
+      assert.equal(messages.length, 4, "no nudge for sub-agents");
+      assert.equal(messages[messages.length - 1].info.id, "a2");
+      const state = getOrCreateSessionState(sessionID);
+      assert.equal(state.nudges, undefined, "anchor never touched");
+    });
+
+    it("skips nudge injection when no model limit was captured", () => {
+      const sessionID = "sess-nudge-no-limit";
+      // No setModelLimit call for this session.
+
+      let messages = nudgeMessages(sessionID, 140000);
+      contextPruningTransformHandler(messages, nudgeTransformConfig(2));
+      messages = nudgeMessages(sessionID, 150000);
+      contextPruningTransformHandler(messages, nudgeTransformConfig(2));
+
+      assert.equal(messages.length, 4, "no nudge without a captured limit");
+      const state = getOrCreateSessionState(sessionID);
+      assert.equal(state.nudges, undefined);
+    });
+
+    it("skips nudge injection when no completed assistant exists", () => {
+      const sessionID = "sess-nudge-no-asst";
+      setModelLimit(sessionID, NUDGE_LIMIT, "test-model");
+
+      // Text-only assistant (no tokens) → lastAsst.index = -1.
+      const messages = [
+        msg("user", "u1", [textPart("hello")], sessionID),
+        msg("assistant", "a1", [textPart("thinking...")]),
+      ];
+      contextPruningTransformHandler(messages, nudgeTransformConfig(2));
+
+      assert.equal(messages.length, 2, "no nudge without completed assistant");
+      const state = getOrCreateSessionState(sessionID);
+      assert.equal(state.nudges, undefined);
+    });
+
+    it("nudge.enabled=false → parsed config but injection skipped", () => {
+      const sessionID = "sess-nudge-disabled";
+      setModelLimit(sessionID, NUDGE_LIMIT, "test-model");
+
+      const messages = nudgeMessages(sessionID, 150000);
+      contextPruningTransformHandler(messages, {
+        enabled: true,
+        protectedMessages: 2,
+        nudge: { ...nudgeConfig, enabled: false },
+        dedup: { enabled: false },
+        purgeErrors: { enabled: false },
+      });
+
+      assert.equal(messages.length, 4, "no nudge when disabled");
+      const state = getOrCreateSessionState(sessionID);
+      assert.equal(state.nudges, undefined);
+    });
+
+    it("nudge section absent → silently skipped, other phases unaffected", () => {
+      const sessionID = "sess-nudge-no-config";
+      const state = getOrCreateSessionState(sessionID);
+      addMark(state, "call-sweep-1", 50, true, "tool-output");
+      setModelLimit(sessionID, NUDGE_LIMIT, "test-model");
+
+      const messages = [
+        msg("user", "u1", [textPart("do it")], sessionID),
+        msg(
+          "assistant",
+          "a1",
+          [toolPart("call-sweep-1", "original output", { cmd: "ls" })],
+          undefined,
+          { input: 150000, output: 100 },
+        ),
+      ];
+
+      // Config WITHOUT the nudge key — the pruning phases still run.
+      contextPruningTransformHandler(messages, {
+        enabled: true,
+        dedup: { enabled: false },
+        purgeErrors: { enabled: false },
+      });
+
+      // Sweep mark still applied (Phase 2 unaffected).
+      assert.ok(
+        (messages[1].parts?.[0] as SweepToolPart).state?.output?.startsWith(
+          PRUNED_TOOL_OUTPUT_REPLACEMENT,
+        ),
+        "pruning unaffected by absent nudge section",
+      );
+      assert.equal(messages.length, 2, "no nudge message");
+      // No config warn for an absent section.
+      const buffer = _getBufferForTesting();
+      assert.ok(
+        !buffer.some((e) => e.event === "nudge_config_invalid"),
+        "no nudge_config_invalid warn when section is absent",
+      );
+    });
+  });
+
+  // ===========================================================================
+  // parseContextConfig — [zoo.context.nudge] section
+  // ===========================================================================
+
+  describe("parseContextConfig nudge section", () => {
+    const fullNudge = {
+      enabled: true,
+      min_context: "60%",
+      min_context_cap: 200000,
+      max_context: "80%",
+      max_context_cap: 300000,
+      growth_tokens: "5%",
+    };
+
+    it("returns undefined when the section is absent (no warn)", () => {
+      const config = parseContextConfig({});
+      assert.equal(config.nudge, undefined);
+
+      const config2 = parseContextConfig({ context: { enabled: true } });
+      assert.equal(config2.nudge, undefined);
+
+      const buffer = _getBufferForTesting();
+      assert.ok(
+        !buffer.some((e) => e.event === "nudge_config_invalid"),
+        "absent section must not warn",
+      );
+    });
+
+    it("reads the full [zoo.context.nudge] section", () => {
+      const config = parseContextConfig({ context: { nudge: fullNudge } });
+      assert.deepEqual(config.nudge, {
+        enabled: true,
+        minContext: "60%",
+        minContextCap: 200000,
+        maxContext: "80%",
+        maxContextCap: 300000,
+        growthTokens: "5%",
+      });
+    });
+
+    it("accepts absolute token numbers for thresholds", () => {
+      const config = parseContextConfig({
+        context: {
+          nudge: {
+            enabled: true,
+            min_context: 100000,
+            min_context_cap: 200000,
+            max_context: 250000,
+            max_context_cap: 300000,
+            growth_tokens: 8000,
+          },
+        },
+      });
+      assert.equal(config.nudge?.minContext, 100000);
+      assert.equal(config.nudge?.maxContext, 250000);
+      assert.equal(config.nudge?.growthTokens, 8000);
+    });
+
+    it("missing key invalidates the whole section (warn once)", () => {
+      const config = parseContextConfig({
+        context: {
+          nudge: {
+            enabled: true,
+            min_context: "60%",
+            // min_context_cap missing
+            max_context: "80%",
+            max_context_cap: 300000,
+            growth_tokens: "5%",
+          },
+        },
+      });
+      assert.equal(config.nudge, undefined, "whole section dropped");
+
+      const buffer = _getBufferForTesting();
+      const entries = buffer.filter((e) => e.event === "nudge_config_invalid");
+      assert.equal(entries.length, 1, "exactly one warn");
+      assert.equal(entries[0].key, "min_context_cap");
+    });
+
+    it("malformed percentage invalidates the whole section (warn once)", () => {
+      const config = parseContextConfig({
+        context: {
+          nudge: { ...fullNudge, min_context: "60" },
+        },
+      });
+      assert.equal(config.nudge, undefined);
+
+      const config2 = parseContextConfig({
+        context: {
+          nudge: { ...fullNudge, growth_tokens: "5" },
+        },
+      });
+      assert.equal(config2.nudge, undefined);
+
+      const buffer = _getBufferForTesting();
+      const entries = buffer.filter((e) => e.event === "nudge_config_invalid");
+      assert.equal(entries.length, 2);
+    });
+
+    it("wrong-typed values invalidate the whole section (warn once)", () => {
+      const config = parseContextConfig({
+        context: {
+          nudge: { ...fullNudge, enabled: "false" },
+        },
+      });
+      assert.equal(config.nudge, undefined);
+
+      const config2 = parseContextConfig({
+        context: {
+          nudge: { ...fullNudge, min_context_cap: NaN },
+        },
+      });
+      assert.equal(config2.nudge, undefined);
+
+      const buffer = _getBufferForTesting();
+      const entries = buffer.filter((e) => e.event === "nudge_config_invalid");
+      assert.equal(entries.length, 2);
+    });
+
+    it("negative caps invalidate the whole section (warn once)", () => {
+      const config = parseContextConfig({
+        context: {
+          nudge: { ...fullNudge, min_context_cap: -1 },
+        },
+      });
+      assert.equal(config.nudge, undefined, "whole section dropped");
+
+      const buffer = _getBufferForTesting();
+      const entries = buffer.filter((e) => e.event === "nudge_config_invalid");
+      assert.equal(entries.length, 1, "exactly one warn");
+      assert.equal(entries[0].key, "min_context_cap");
+    });
+
+    it("non-positive thresholds invalidate the whole section (warn once)", () => {
+      // Thresholds have no "disable" meaning — enabled=false covers that,
+      // so 0, negatives, and "0%" are all invalid.
+      const config = parseContextConfig({
+        context: { nudge: { ...fullNudge, min_context: 0 } },
+      });
+      assert.equal(config.nudge, undefined, "number 0 dropped");
+
+      const config2 = parseContextConfig({
+        context: { nudge: { ...fullNudge, growth_tokens: -5 } },
+      });
+      assert.equal(config2.nudge, undefined, "negative number dropped");
+
+      const config3 = parseContextConfig({
+        context: { nudge: { ...fullNudge, max_context: "0%" } },
+      });
+      assert.equal(config3.nudge, undefined, "0% dropped");
+
+      const buffer = _getBufferForTesting();
+      const entries = buffer.filter((e) => e.event === "nudge_config_invalid");
+      assert.equal(entries.length, 3, "one warn per invalid value");
+    });
+
+    it("enabled=false is valid (present but disabled)", () => {
+      const config = parseContextConfig({
+        context: { nudge: { ...fullNudge, enabled: false } },
+      });
+      assert.equal(config.nudge?.enabled, false);
+      assert.equal(config.nudge?.minContext, "60%");
+
+      const buffer = _getBufferForTesting();
+      assert.ok(
+        !buffer.some((e) => e.event === "nudge_config_invalid"),
+        "enabled=false must not warn",
+      );
     });
   });
 });

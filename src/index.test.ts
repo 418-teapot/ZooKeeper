@@ -103,7 +103,7 @@ describe("parseLimits", () => {
     assert.ok(entry, "must log invalid_prompt_word_limit for Infinity");
   });
 
-  it("accepts 0 as a valid finite number", () => {
+  it("logs a warning and returns undefined for 0 word limits (must be > 0)", () => {
     const cfg = {
       validation: {
         context_word_limit: 0,
@@ -111,8 +111,34 @@ describe("parseLimits", () => {
       },
     };
     const result = parseLimits(cfg);
-    assert.equal(result.contextWordLimit, 0);
-    assert.equal(result.promptWordLimit, 0);
+    assert.equal(result.contextWordLimit, undefined);
+    assert.equal(result.promptWordLimit, undefined);
+
+    const buffer = _getBufferForTesting();
+    const ctx = buffer.find((e) => e.event === "invalid_context_word_limit");
+    const prompt = buffer.find((e) => e.event === "invalid_prompt_word_limit");
+    assert.ok(ctx, "must log invalid_context_word_limit for 0");
+    assert.ok(prompt, "must log invalid_prompt_word_limit for 0");
+  });
+
+  it("logs a warning and returns undefined for negative word limits", () => {
+    const cfg = {
+      validation: {
+        context_word_limit: -1,
+        prompt_word_limit: -300,
+      },
+    };
+    const result = parseLimits(cfg);
+    assert.equal(result.contextWordLimit, undefined);
+    assert.equal(result.promptWordLimit, undefined);
+
+    const buffer = _getBufferForTesting();
+    const entries = buffer.filter(
+      (e) =>
+        e.event === "invalid_context_word_limit" ||
+        e.event === "invalid_prompt_word_limit",
+    );
+    assert.equal(entries.length, 2);
   });
 
   it("does NOT log a warning when validation section is absent", () => {
@@ -884,45 +910,83 @@ describe("handleDedupNotify", () => {
 });
 
 describe("registerSkills", () => {
-  it("registers all skills when none are disabled", () => {
+  // Fail-closed: a skill registers only when its [zoo.skills] entry is
+  // exactly "enable".  Absent keys, typos, and junk values all disable
+  // the skill silently — config.toml lists every skill explicitly.
+  const allEnabled = {
+    "beaver-tdd": "enable",
+    "code-review": "enable",
+    "git-commit": "enable",
+    grill: "enable",
+    "kiwi-distill": "enable",
+    "kiwi-verify": "enable",
+    "mola-plan": "enable",
+    "wiki-ingest": "enable",
+    "wiki-query": "enable",
+    "wiki-verify": "enable",
+  };
+
+  it("registers every skill whose entry is exactly 'enable'", () => {
     const pluginConfig: Record<string, any> = {};
-    registerSkills(pluginConfig, {});
+    registerSkills(pluginConfig, { ...allEnabled });
 
     assert.ok(pluginConfig.skills);
     assert.ok(Array.isArray(pluginConfig.skills.paths));
-    // core/skills has at least 4 directories (code-review, git-commit,
-    // wiki-ingest, wiki-query)
-    assert.ok(pluginConfig.skills.paths.length >= 4);
+    assert.equal(pluginConfig.skills.paths.length, 10);
   });
 
-  it("skips a disabled skill", () => {
+  it("skips a disabled skill ('disable' is not 'enable')", () => {
     const pluginConfig: Record<string, any> = {};
-    registerSkills(pluginConfig, { "git-commit": "disable" });
+    registerSkills(pluginConfig, { ...allEnabled, "git-commit": "disable" });
 
     const paths = pluginConfig.skills.paths as string[];
-    const hasDisabled = paths.some((p: string) => p.endsWith("git-commit"));
-    assert.equal(hasDisabled, false);
-  });
-
-  it("skips multiple disabled skills", () => {
-    const pluginConfig: Record<string, any> = {};
-    registerSkills(pluginConfig, {
-      "git-commit": "disable",
-      "wiki-query": "disable",
-    });
-
-    const paths = pluginConfig.skills.paths as string[];
-    const hasGitCommit = paths.some((p: string) => p.endsWith("git-commit"));
-    const hasWikiQuery = paths.some((p: string) => p.endsWith("wiki-query"));
-    assert.equal(hasGitCommit, false);
-    assert.equal(hasWikiQuery, false);
-    // Non-disabled skills are still registered
+    assert.equal(
+      paths.some((p: string) => p.endsWith("git-commit")),
+      false,
+    );
+    // Other skills with "enable" still register.
     assert.ok(paths.some((p: string) => p.endsWith("code-review")));
+  });
+
+  it("skips a skill with a junk value (fail-closed)", () => {
+    const pluginConfig: Record<string, any> = {};
+    registerSkills(pluginConfig, { ...allEnabled, "git-commit": "junk" });
+
+    const paths = pluginConfig.skills.paths as string[];
+    assert.equal(
+      paths.some((p: string) => p.endsWith("git-commit")),
+      false,
+      "junk value must not register the skill",
+    );
+    assert.ok(paths.some((p: string) => p.endsWith("code-review")));
+  });
+
+  it("skips a skill with an absent key (fail-closed)", () => {
+    const withoutGitCommit: Record<string, string> = { ...allEnabled };
+    delete withoutGitCommit["git-commit"];
+    const pluginConfig: Record<string, any> = {};
+    registerSkills(pluginConfig, withoutGitCommit);
+
+    const paths = pluginConfig.skills.paths as string[];
+    assert.equal(
+      paths.some((p: string) => p.endsWith("git-commit")),
+      false,
+      "absent key must not register the skill",
+    );
+    assert.ok(paths.some((p: string) => p.endsWith("code-review")));
+  });
+
+  it("registers no skills when the config map is empty (fail-closed)", () => {
+    const pluginConfig: Record<string, any> = {};
+    registerSkills(pluginConfig, {});
+
+    const paths = pluginConfig.skills.paths as string[];
+    assert.equal(paths.length, 0, "no 'enable' entries → nothing registers");
   });
 
   it("initialises skills config object when missing from pluginConfig", () => {
     const pluginConfig: Record<string, any> = {};
-    registerSkills(pluginConfig, {});
+    registerSkills(pluginConfig, { ...allEnabled });
     assert.ok(pluginConfig.skills);
     assert.ok(Array.isArray(pluginConfig.skills.paths));
   });
@@ -932,7 +996,7 @@ describe("registerSkills", () => {
     const pluginConfig: Record<string, any> = {
       skills: { paths: [existingPath] },
     };
-    registerSkills(pluginConfig, {});
+    registerSkills(pluginConfig, { ...allEnabled });
 
     const paths = pluginConfig.skills.paths as string[];
     assert.ok(paths.includes(existingPath));
@@ -947,7 +1011,7 @@ describe("registerSkills", () => {
     //   - Other errors are logged as warnings (never thrown)
     // The real core/skills directory exists, so readdirSync succeeds.
     const pluginConfig: Record<string, any> = {};
-    registerSkills(pluginConfig, {});
+    registerSkills(pluginConfig, { ...allEnabled });
     assert.ok(pluginConfig.skills.paths.length >= 4);
   });
 });

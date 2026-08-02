@@ -1,9 +1,23 @@
 # 上下文剪枝设计文档：从内置 Compaction 到框架无关的统一剪枝架构
 
-**版本:** 2.8
-**日期:** 2026-08-01
+**版本:** 2.9
+**日期:** 2026-08-02
 **分类:** 技术架构文档 / 上下文管理
 
+> **2.9 更新说明：** 上下文压力提醒系统（nudge）交付（2026-08-02，
+> 1246 TS 测试全绿，覆盖率 96.54%）：§4 新增 §4.9 as-built 小节——
+> **单锚点水位计**（全部持久化状态为一个数字 `lastNudgeTokens`，
+> `anchor = min(last ?? tokens, tokens)` 下行跟尺使压缩恢复/冻结静默/
+> 剧烈波动全部无特殊分支）、阈值按窗口解析 `min(cap, ratio × limit)`
+> （温和 60%/200K cap、紧急 80%/300K cap、节奏 5%，紧急间隔减半）、
+> transform 管道重编号 Phase 1-7（Phase 6 nudge 注入合成 user 消息，
+> 固定 ID `zoo-nudge`、不落盘、不进 ref 分配、跳过子代理）、
+> `experimental.chat.system.transform` 捕获 `model.limit.context`、
+> `[zoo.context.nudge]` 严格解析（缺键/非法 → 单次 warn + 整体跳过，
+> 代码零默认值零兜底）；§4.1 管道图同步 Phase 1-7；§7.1 对比表
+> Nudge 行翻 ✅；§8 路线图 V3 行收尾（仅余 pendingManualTrigger）；
+> §9.5 更新为 as-built。原 §4.9 认知收获顺延为 §4.10。
+>
 > **2.8 更新说明：** V4 压缩块索引与工具重定义（2026-08-01，1179 TS
 > 测试全绿）：工具参数 `{startId, endId, summary}` →
 > `{fromRef, toRef, title, summary}`（字母序与位置语义一致 + title
@@ -655,8 +669,9 @@ ACP（`~/Code/Agent/opencode-acp`）是 DCP 的 fork，修复 39 个 bug，
 
 已实现**观测层 + 统一 marks 剪枝核心（手动 sweep + 自动 dedup）+ 批量释放
 + 持久化 + 手动压缩（/dcp compress，机械摘要 MVP）+ 折叠视图观测接线 +
-range 模式 compress 工具（LLM 驱动，§4.8）**（截至 2026-07-31，TS 测试
-1148 全绿）。核心逻辑在 `src/core/pruning/`（框架无关），OpenCode 适配
+range 模式 compress 工具（LLM 驱动，§4.8）+ 上下文压力提醒（单锚点
+水位计 nudge，§4.9）**（截至 2026-08-02，TS 测试
+1246 全绿）。核心逻辑在 `src/core/pruning/`（框架无关），OpenCode 适配
 在 `src/hooks/`、`src/tools/` 与 `src/opencode.ts`。
 
 ### 4.1 架构总览（统一 producer 模型）
@@ -682,7 +697,10 @@ dedup  = { selector: duplicates, range: session,
   │   Phase 5 放：批量释放 pending ≥ promptTokens × released_percent%
   │              或 pendingViewChange（视图变化强制释放，无视门槛）
   │              → 释放时注入 ignored 通知（noReply，LLM 不可见）
-  │   Phase 6 收尾：清 pendingViewChange + 持久化（dirty 时）
+  │   Phase 6 nudge：单锚点水位计评估（§4.9）→ 触发时末尾追加
+  │              合成 user 消息（id=zoo-nudge，transform-only，
+  │              不落盘、不进 ref 分配、跳过子代理）
+  │   Phase 7 收尾：清 pendingViewChange + 持久化（dirty 时）
   │              + prune_completed 日志
   └─ measureContext (src/core/metrics.ts)
 
@@ -1104,7 +1122,116 @@ b3：40 条），编排器以被测对象身份确认：机械摘要的信息密
   断言建块/持久化/通知，enabled=false 时无 compress 键）；全仓 1148
   TS 测试全绿，check.sh / test.sh / build.sh 三脚本通过
 
-### 4.9 认知收获（仍然成立的）
+### 4.9 上下文压力提醒（nudge，✅ 已实现 2026-08-02）
+
+compress 工具（§4.8）交付后模型没有主动使用它的动机——nudge 是 V3 主线
+最后一块：上下文压力提醒系统。DCP/ACP 源码核实（§3.6/§3.8.4）确认其
+nudge 机制存在可简化的复杂度（DCP 按消息帧计数、ACP 双基线 + 锁 +
+比例公式共 12 个状态字段），经逐分支质询后定稿为**单锚点水位计**。
+
+#### 单锚点水位计（`src/core/pruning/nudge.ts`，纯函数层）
+
+全部持久化状态为**一个数字** `lastNudgeTokens`。每轮评估：
+
+```
+anchor = min(last ?? tokens, tokens)     # 下行跟尺：压缩回落后锚点自动下移
+level  = tokens >= max ? "urgent"
+       : tokens >= min ? "gentle" : null
+触发   = level 非空 且 tokens - anchor >= interval(level)
+         interval(gentle) = growthTokens
+         interval(urgent)  = floor(growthTokens / 2)   # 紧急级节奏减半
+触发时 newAnchor = tokens，否则 newAnchor = anchor
+```
+
+- **压缩恢复无特殊分支**：压缩使 tokens 跌破 anchor 时 `min()` 自动把
+  锚点拉到新水位，距离重新累计——不需要压缩事件检测、双基线或锁
+- **冻结静默**：tokens 不变则距离为 0，永不重复刷屏
+- **首评静默**：`last` 缺失时 anchor = tokens，存量会话首轮只建基线
+  不提示
+- **调用纪律**：`evaluateNudge` 每轮都返回 `newAnchor`，调用方**每轮
+  持久化**（无论是否触发）——这是跟尺在评估间保持单调的前提
+
+#### 阈值解析（窗口适配 + cap）
+
+`resolveThresholds(config, contextLimit)`：阈值接受绝对 token 数或
+`"NN%"` 百分比字符串（乘 `contextLimit` 取整），随后按
+`min(cap, value)` 封顶——温和 `min_context`/`min_context_cap`、紧急
+`max_context`/`max_context_cap`，`growth_tokens` 不封顶。适配 200K /
+256K / 1M 混合模型池：小窗口按比例、大窗口被 cap 截断。**任一值非法
+（类型错/百分比畸形/非正数/`min >= max`）→ 返回 null，子系统整体
+跳过**；代码零默认值、零 clamp、零兜底（config.toml 唯一事实来源）。
+
+#### Phase 6 注入（`src/hooks/context-pruning/hook.ts`）
+
+管道重编号为 Phase 1-7，nudge 为 Phase 6（Batch release 之后、
+Finalize 之前），复用 Phase 3 已算好的 `promptTokens`（同视图纪律）。
+跳过条件（任一即跳过）：`isSubAgent`（子代理无 compress 工具）/
+nudge 配置缺席或 `enabled = false` / 本会话未捕获 context limit /
+`lastAsst.index < 0` / `resolveThresholds` 返回 null。
+
+触发时经 `computeEligibility`（跑在折叠视图上）取资格载荷。**窗口与
+compress 执行端完全同构**：终点 = `min(protectedBoundary,
+tokenBoundary, lastUserMessageIndex)` 三重保护取最保守，起点 =
+`firstUserMessageIndex + 1`（首条用户消息 force-keep）；窗口内首/末
+持 ref 消息为 `startRef`/`endRef`（均含），`[startIdx, endIdx)` 段
+估算为 `~reclaim`，且 `< thresholdTokens` 视为 phantom 不提醒。
+**零兜底（2026-08-02 严格化）**：`[zoo.context.compress]` 严格整段
+解析——节缺席静默关闭；任一键缺失/非法 → 单次 `compress_config_invalid`
+warn + 整节失效（工具不注册、/dcp 拒绝、nudge 跳过）；`enabled = false`
+合法关闭。原 `DEFAULT_PROTECTED_*` 常量与 /dcp 路径硬编码字面量已全部
+删除，三值无 `??` 回退直达 `computeEligibility`；顶层
+`protected_messages` 保持 per-key 宽松（缺失时 compress 执行端响亮中文
+报错引导配置）。`0` 为合法显式值（关闭对应保护层）。随后填充模板
+（`src/core/prompts.ts` 单骨架 +
+温和/紧急两级槽位，占位符 `{tokens}/{percent}/{limit}/{startRef}/
+{endRef}/{reclaim}` 注入时替换），文案明确**模型在窗口内自选连续子段**
+（不要求整窗压缩，`toRef` 终点独占语义一并提示），**末尾追加**合成
+user 消息：
+
+```typescript
+{ info: { id: "zoo-nudge", role: "user", sessionID },
+  parts: [{ type: "text", text }] }
+```
+
+可见性矩阵：
+
+| 维度 | 行为 |
+|------|------|
+| 会话存储 | **不落盘**（transform 层追加，不调 session.prompt） |
+| ref 分配 | **不参与**（Phase 6 在 Phase 4 之后，天然无 mNNNN） |
+| TUI | 不可见（存储零接触） |
+| 子代理 | 跳过（无 compress 工具的会话不收到无效提醒） |
+| 缓存 | 仅末尾追加，分歧点在尾部，重算有界（对照 ACP Bug #38 原地编辑教训）；固定 ID `zoo-nudge` |
+| 末条用户消息保护/轮次检测/标题生成 | 不受影响（不劫持 user 语义） |
+
+#### 配置与捕获
+
+`config.toml` 新增 `[zoo.context.nudge]`（六键全配，中文注释）：
+`enabled` / `min_context = "60%"` / `min_context_cap = 200000` /
+`max_context = "80%"` / `max_context_cap = 300000` / `growth_tokens = "5%"`。
+**严格解析**（`parseContextConfig`，src/opencode.ts）：整节缺席 → nudge
+静默缺席，其余剪枝功能不受影响；节在而任一键缺失/类型错/百分比畸形
+→ `nudge_config_invalid` warn（每次插件启动一次，即每次 zookeeper() 解析）+ 整节置 undefined。
+`enabled = false` 合法（已解析但停用）。
+
+模型窗口捕获：新注册 `experimental.chat.system.transform` hook，把
+`input.model.limit.context`（+ `model.id`）写入 per-session 内存注册表
+（`src/core/model-limits.ts`，内存 only，`session.deleted` 时清除）；
+provider 不上报 limit 时缺失即跳过（§9 风险 R2）。
+
+#### 可观测性与测试
+
+- `nudge_injected`（info，extra 含 `nudgeLevel`——`level` 键与 logger
+  保留字段冲突）/ `nudge_config_invalid`（warn）经 JSONL 日志接入
+  zinspect `hook:event` 聚合（无需 zinspect 改动）
+- 测试：nudge.test.ts 22 例（三窗口解析表/非法输入/首评静默/温和触发/
+  紧急减半/冻结静默/下行跟尺/剧烈波动/资格载荷）+ marks.test.ts 增补
+  （nudges roundtrip/畸形不连坐/旧文件兼容）+ model-limits.test.ts +
+  index.test.ts 增补 16 例（注入形态/锚点移动/下行重新计距/子代理跳过/
+  limit 缺失/非法配置单次 warn/两级文案替换）；全仓 1246 TS 测试全绿，
+  TS 覆盖率 96.54%
+
+### 4.10 认知收获（仍然成立的）
 
 1. **两阶段必须是分离的代码路径**（或在同一 handler 内严格先清后标），
    否则标记-清理边界产生 off-by-one（§3.3）
@@ -1447,7 +1574,7 @@ release_threshold_percent=0 时当轮标记当轮释放；ignored 通知
 | **LLM 驱动压缩** | ✅ 完整 | ✅ range 模式 compress 工具（摘要经工具 `summary` 参数承载，零额外 API 调用，§4.8） |
 | **去重** | ✅ 基于签名（compress 时检测，零保护清单） | ✅ 基于签名（transform 每轮检测 + 批量释放，§4.5） |
 | **错误清除** | ✅ 4 轮后 | ✅ 基于 action 判别 + 表驱动 producer + 老化保护窗 + 零收益跳过（§4.6） |
-| **Nudge 系统** | 3 级阈值 | ❌（V3 规划，3 级阈值） |
+| **Nudge 系统** | 3 级阈值（紧急/温和/漂移，帧计数防刷屏） | ✅ 单锚点水位计（温和/紧急两级 + 下行跟尺，§4.9） |
 | **状态持久化** | 磁盘 JSON 文件 | ✅ 磁盘 JSON（`~/.zoo/storage/`） |
 | **Block 嵌套** | 支持 | 不支持（V3 也不做，扁平块） |
 | **配置层级** | 3 层级联 + JSONC | 单层 config.toml |
@@ -1486,7 +1613,7 @@ DCP 意味着增加 `dcp.jsonc`，破坏现有配置管理模型。
 | +1 | ~~purge-errors：错误工具调用老化 N 步后标记清除 input~~ | §3.5 / §4.6 | ✅ 已完成（R1-R3 架构落地，§4.6，2026-07-25） |
 | +1.5 | ~~手动压缩 `/dcp compress`：机械摘要 MVP + 三重保护 + 幻影门 + 折叠通路 + 视图变化强制释放 + TUI/报告折叠视图接线 + 系统类残差法~~ | §3.8 / §5.2 | ✅ 已完成（§4.7，2026-07-30） |
 | +2 | ~~zinspect `stats` 新增剪枝回收 section（`--pruning` 标志与 `--tokens`/`--hooks` 同构；读 JSONL 日志的 `prune_completed`/`*_marked`/`*_released` 事件）+ `impact` 聚合改 `hook:event` 复合键消除信号稀释~~（2026-07-27 决策：不做 `/dcp stats` 聊天命令、不加独立子命令） | §5.4 | ✅ 已完成（2026-07-31） |
-| V3 | ~~compress 工具注册~~ ✅、~~mNNNN 引用~~ ✅、~~LLM 驱动摘要（工具参数承载）~~ ✅（2026-07-31，§4.8）；剩余：pendingManualTrigger 手动触发路径、nudge 系统（用户确认：模型自主压缩为未来方向） | §3.3 / §3.4 / §3.6 / §5.2-5.3 | ✅ 部分完成（2026-07-31，§4.8）；剩余 pendingManualTrigger、nudge 系统 |
+| V3 | ~~compress 工具注册~~ ✅、~~mNNNN 引用~~ ✅、~~LLM 驱动摘要（工具参数承载）~~ ✅（2026-07-31，§4.8）、~~nudge 系统~~ ✅（单锚点水位计，2026-08-02，§4.9）；剩余：pendingManualTrigger 手动触发路径 | §3.3 / §3.4 / §3.6 / §5.2-5.3 | ✅ 大部分完成；剩余 pendingManualTrigger |
 | V3.5 | ~~T2 摘要再压缩~~ **已否决**（2026-08-01，§9.8：保真度需求是断崖，中间密度层无真实消费者；改为索引行 + 召回 + wiki 记忆三层） | §3.8.1 | ❌ 不做 |
 | V4 | Message 模式压缩、decompress/recompress、子代理结果展开 | §3.4 / §5.4 | V3 |
 | 另行规划 | pi 宿主适配（核心已框架无关，缺 transform 接线） | — | pi 侧 hook 能力确认 |
@@ -1538,12 +1665,16 @@ ignored 消息不占保护槽（系统注入消息不会压缩实际保护范围
 可追溯，块失效自动恢复）；机械摘要保留用户请求/任务委托/涉及文件/
 最终进度骨架；首条用户消息 force-keep。
 
-### 9.5 Nudge 对 LLM 行为影响不足（V3+）
+### 9.5 Nudge 对 LLM 行为影响不足（as-built，§4.9）
 
 **风险**：LLM 可能忽略 nudge 消息。
 
-**缓解**：紧急 nudge 用较强语气；nudge 是 soft guidance 而非硬约束；
-未来可在 `tool.execute.before` 中增加硬限制。
+**缓解**（as-built，2026-08-02）：恒定节奏重提示——温和级按
+`growth_tokens` 间隔、紧急级间隔自动减半（`floor(growth/2)`），冻结
+静默不刷屏；紧急级文案三连 DO NOT 强硬语气（完成当前原子步骤后立即
+compress，禁止新探索/新委托）；nudge 是 soft guidance 而非硬约束，
+OpenCode 内置 compaction 为最终兜底；未来可在 `tool.execute.before`
+中增加硬限制。
 
 ### 9.6 与内置 Compaction 冲突
 

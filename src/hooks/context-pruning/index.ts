@@ -10,6 +10,7 @@
 
 export type {
   CompressConfig,
+  ContextNudgeConfig,
   ContextPruningConfig,
   ProducerGateConfig,
 } from "./hook.js";

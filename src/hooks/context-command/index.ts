@@ -465,10 +465,22 @@ async function handleCompressSubcommand(
   sessionID: string,
   contextConfig: ContextPruningConfig,
 ): Promise<void> {
-  // ── Master enable gate ──────────────────────────────────────────
+  // ── Enable gate ──────────────────────────────────────────────────
+  // The compress section must be strictly parsed AND enabled.  Absent
+  // section, an invalid section (config parse dropped it), or an explicit
+  // `enabled = false` all refuse (the config parse already warned once
+  // for bad keys).  Strict parsing guarantees the token thresholds are
+  // present whenever the section is enabled; `protectedMessages` is a
+  // lenient top-level key that may still be missing → loud config error
+  // (same as the compress tool).
   const compressCfg = contextConfig.compress;
-  if (!compressCfg || compressCfg.enabled === false) {
-    const msg = "压缩功能未启用（[zoo.context.compress].enabled = false）";
+  if (
+    compressCfg?.enabled !== true ||
+    compressCfg.protectedTokens === undefined ||
+    compressCfg.thresholdTokens === undefined
+  ) {
+    const msg =
+      "压缩功能未启用（[zoo.context.compress].enabled 未配置为 true）";
     if (client?.session?.prompt) {
       await client.session.prompt({
         path: { id: sessionID },
@@ -481,9 +493,15 @@ async function handleCompressSubcommand(
     return;
   }
 
-  const protectedMessages = contextConfig.protectedMessages ?? 20;
-  const protectedTokens = compressCfg.protectedTokens ?? 20000;
-  const thresholdTokens = compressCfg.thresholdTokens ?? 2000;
+  if (contextConfig.protectedMessages === undefined) {
+    throw new Error(
+      "[zoo.context] protected_messages 缺失或非法：请在 config.toml 的 [zoo.context] 段配置 protected_messages（非负整数）后重试。",
+    );
+  }
+
+  const protectedMessages = contextConfig.protectedMessages;
+  const protectedTokens = compressCfg.protectedTokens;
+  const thresholdTokens = compressCfg.thresholdTokens;
 
   // ── Fetch messages ──────────────────────────────────────────────
   if (!client?.session?.messages) {

@@ -8,6 +8,7 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import { createBlock } from "./blocks.js";
 import {
   _clearAllSessionsForTesting,
@@ -32,6 +33,7 @@ import {
 // ---------------------------------------------------------------------------
 
 afterEach(() => {
+  _resetForTesting();
   _clearAllSessionsForTesting();
 });
 
@@ -412,6 +414,184 @@ describe("saveSessionState / loadSessionState", () => {
       nextRef: 3,
       byRef: { m0001: "u1", m0002: "a1" },
     });
+  });
+
+  it("round-trips nudges via save+load", () => {
+    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    state.nudges = { lastNudgeTokens: 150000 };
+    saveSessionState(TEST_SESSION_ID, state);
+
+    // Simulate restart.
+    removeSession(TEST_SESSION_ID);
+    _clearAllSessionsForTesting();
+
+    const loaded = loadSessionState(TEST_SESSION_ID);
+    assert.ok(loaded !== null);
+    assert.deepEqual(loaded.nudges, { lastNudgeTokens: 150000 });
+  });
+
+  it("omits nudges from the persisted file when the field is absent", () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const os = require("node:os");
+    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    addMark(state, "call-1", 100, true, "tool-output");
+    saveSessionState(TEST_SESSION_ID, state);
+
+    const raw = JSON.parse(
+      fs.readFileSync(
+        path.join(os.homedir(), ".zoo", "storage", `${TEST_SESSION_ID}.json`),
+        "utf8",
+      ),
+    );
+    assert.equal("nudges" in raw, false);
+
+    // Loads with nudges undefined and marks intact.
+    removeSession(TEST_SESSION_ID);
+    _clearAllSessionsForTesting();
+    const loaded = loadSessionState(TEST_SESSION_ID);
+    assert.ok(loaded !== null);
+    assert.equal(loaded.nudges, undefined);
+    assert.equal(loaded.marks.size, 1);
+  });
+
+  it("seeds nudges from the persisted snapshot on getOrCreateSessionState", () => {
+    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    state.nudges = { lastNudgeTokens: 123456 };
+    saveSessionState(TEST_SESSION_ID, state);
+
+    // Simulate restart.
+    removeSession(TEST_SESSION_ID);
+    _clearAllSessionsForTesting();
+
+    const restored = getOrCreateSessionState(TEST_SESSION_ID);
+    assert.deepEqual(restored.nudges, { lastNudgeTokens: 123456 });
+  });
+
+  it("loads a legacy file without nudges — field absent, marks intact", () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const os = require("node:os");
+    const dir = path.join(os.homedir(), ".zoo", "storage");
+    fs.mkdirSync(dir, { recursive: true });
+    // Legacy file written before the nudges field existed.
+    fs.writeFileSync(
+      path.join(dir, `${TEST_SESSION_ID}.json`),
+      JSON.stringify({
+        marks: {
+          "call-1": { tokens: 100, effective: true, action: "tool-output" },
+        },
+        lastUpdated: "2024-06-01T00:00:00Z",
+      }),
+      "utf8",
+    );
+
+    const loaded = loadSessionState(TEST_SESSION_ID);
+    assert.ok(loaded !== null);
+    assert.equal(loaded.marks.size, 1);
+    assert.equal(loaded.nudges, undefined);
+  });
+
+  it("loads a valid empty nudges object", () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const os = require("node:os");
+    const dir = path.join(os.homedir(), ".zoo", "storage");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, `${TEST_SESSION_ID}.json`),
+      JSON.stringify({
+        marks: {},
+        nudges: {},
+        lastUpdated: "2024-06-01T00:00:00Z",
+      }),
+      "utf8",
+    );
+
+    const loaded = loadSessionState(TEST_SESSION_ID);
+    assert.ok(loaded !== null);
+    assert.deepEqual(loaded.nudges, {});
+  });
+
+  it("accepts lastNudgeTokens = 0 as a valid watermark", () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const os = require("node:os");
+    const dir = path.join(os.homedir(), ".zoo", "storage");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, `${TEST_SESSION_ID}.json`),
+      JSON.stringify({
+        marks: {},
+        nudges: { lastNudgeTokens: 0 },
+        lastUpdated: "2024-06-01T00:00:00Z",
+      }),
+      "utf8",
+    );
+
+    const loaded = loadSessionState(TEST_SESSION_ID);
+    assert.ok(loaded !== null);
+    assert.deepEqual(loaded.nudges, { lastNudgeTokens: 0 });
+  });
+
+  it("ignores a malformed nudges field, keeping marks/blocks intact + warn", () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const os = require("node:os");
+    const dir = path.join(os.homedir(), ".zoo", "storage");
+
+    const badNudges = [
+      { lastNudgeTokens: -1 },
+      { lastNudgeTokens: 1.5 },
+      { lastNudgeTokens: "100" },
+      { lastNudgeTokens: null },
+      [],
+      "abc",
+      42,
+    ];
+
+    for (const bad of badNudges) {
+      fs.writeFileSync(
+        path.join(dir, `${TEST_SESSION_ID}.json`),
+        JSON.stringify({
+          marks: {
+            "call-1": { tokens: 100, effective: true, action: "tool-output" },
+          },
+          blocks: {
+            "1": {
+              blockId: 1,
+              active: true,
+              anchorMessageId: "m3",
+              messageIds: ["m1", "m2", "m3"],
+              summary: "test",
+              compressedTokens: 500,
+              summaryTokens: 30,
+              createdAt: 123456789,
+            },
+          },
+          nudges: bad,
+          lastUpdated: "2024-06-01T00:00:00Z",
+        }),
+        "utf8",
+      );
+
+      const loaded = loadSessionState(TEST_SESSION_ID);
+      assert.ok(loaded !== null, "malformed nudges must not reject the file");
+      // Marks and blocks survive (no cascade invalidation).
+      assert.equal(loaded.marks.size, 1);
+      assert.equal(loaded.blocks.size, 1);
+      // The nudges field is ignored.
+      assert.equal(loaded.nudges, undefined);
+    }
+
+    // One warn per malformed load with the expected event name.
+    const warnEntries = _getBufferForTesting().filter(
+      (e) =>
+        e.hook === "pruning" &&
+        e.event === "load_invalid_nudges" &&
+        e.level === "warn",
+    );
+    assert.equal(warnEntries.length, badNudges.length);
   });
 
   it("loads old state file without refs key — refs undefined", () => {

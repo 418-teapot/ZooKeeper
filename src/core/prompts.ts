@@ -178,6 +178,57 @@ RESURRECTED PLAN = BROKEN TRACKING = LOST PROGRESS.
 </internal-reminder>`;
 
 // ---------------------------------------------------------------------------
+// Context nudge (context-pressure reminders)
+// ---------------------------------------------------------------------------
+
+/**
+ * Skeleton for the context-pressure reminder injected by the pruning
+ * nudge phase.
+ *
+ * Placeholders `{HEADER}`, `{tokens}`, `{percent}`, `{limit}`,
+ * `{startRef}`, `{endRef}`, `{reclaim}`, `{ACTION}` and `{EQUATION}`
+ * are replaced at injection time from the evaluated level's copy slots
+ * (see CONTEXT_NUDGE_LEVELS).
+ *
+ * The window line conveys the SAME boundaries the `compress` tool
+ * enforces — both refs are INCLUSIVE bounds and the model picks its own
+ * contiguous sub-range inside them.  `compress`'s `toRef` is exclusive,
+ * so a message is included only when the ref after it is passed —
+ * stopping inside the window is always fine.
+ */
+export const CONTEXT_NUDGE_TEMPLATE = `<internal-reminder>
+**{HEADER} — {tokens} ({percent} of {limit} window)**
+
+Compressible window: {startRef}–{endRef} (~{reclaim} tokens), both refs inclusive.
+Pick your own contiguous sub-range inside — compressing everything is optional.
+\`compress\` \`toRef\` is exclusive — pass the ref after a message to include it.
+
+{ACTION}
+
+{EQUATION}
+</internal-reminder>`;
+
+/**
+ * Level-specific copy slots filled into CONTEXT_NUDGE_TEMPLATE at
+ * injection time, keyed by the nudge level returned by the decision
+ * layer (`"gentle" | "urgent"`).
+ */
+export const CONTEXT_NUDGE_LEVELS = {
+  gentle: {
+    header: "CONTEXT GROWING",
+    action:
+      "At your next natural pause, compress a closed range with the `compress` tool. Timing is your call.",
+    equation: "UNCOMPRESSED HISTORY = GROWING CONTEXT = SHRINKING HEADROOM.",
+  },
+  urgent: {
+    header: "CONTEXT LIMIT",
+    action:
+      "Finish your current atomic step, then call the `compress` tool IMMEDIATELY.\nDO NOT start new exploration. DO NOT delegate new tasks. Compress first.",
+    equation: "FULL CONTEXT = TERMINATED SESSION = LOST WORK.",
+  },
+};
+
+// ---------------------------------------------------------------------------
 // JSON error recovery
 // ---------------------------------------------------------------------------
 

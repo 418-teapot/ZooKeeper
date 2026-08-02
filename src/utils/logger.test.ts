@@ -513,39 +513,10 @@ describe("logger", () => {
       );
     });
 
-    it("does not rotate when maxFileSize is 0", () => {
-      const logPath = path.join(testDir, "test.log");
-      _setLogPathForTesting(logPath);
-      initLogger("test", { logDir: testDir, maxFileSize: 0, maxBackups: 2 });
-
-      for (let i = 0; i < 10; i++) {
-        log("h", "e", "s", undefined, "info");
-      }
-      _flushForTesting();
-
-      assert.equal(
-        fs.existsSync(`${logPath}.1`),
-        false,
-        "no rotation when maxFileSize=0",
-      );
-    });
-
-    it("does not rotate when maxFileSize is negative", () => {
-      const logPath = path.join(testDir, "test.log");
-      _setLogPathForTesting(logPath);
-      initLogger("test", { logDir: testDir, maxFileSize: -1, maxBackups: 2 });
-
-      for (let i = 0; i < 10; i++) {
-        log("h", "e", "s", undefined, "info");
-      }
-      _flushForTesting();
-
-      assert.equal(
-        fs.existsSync(`${logPath}.1`),
-        false,
-        "no rotation when maxFileSize is negative",
-      );
-    });
+    // No tests for zero/negative maxFileSize here: initLogger assigns the
+    // value directly (no defensive clamp — the config-parse layer already
+    // rejects non-positive values with a warn), so the low-level logger
+    // only ever receives positive values.
 
     it("rotates with simple rename when maxBackups is undefined", () => {
       const logPath = path.join(testDir, "test.log");

@@ -12,10 +12,13 @@
  *
  * Persisted shape:
  * `{ marks: Record<callID, { tokens, effective, action }>, lastUpdated }`,
- * plus optional `blocks` and `refs` (the message-ref registry snapshot —
- * see `PersistedRefs`).
+ * plus optional `blocks`, `refs` (the message-ref registry snapshot —
+ * see `PersistedRefs`) and `nudges` (the nudge watermark snapshot —
+ * see `PersistedNudges`).
  * Any malformed or unrecognized entry causes the file to load as empty
- * (strict per-field validation).
+ * (strict per-field validation).  The optional `refs` and `nudges`
+ * snapshots are exceptions: when malformed they are ignored with a
+ * warning instead of invalidating marks/blocks.
  *
  * @module
  */
@@ -90,6 +93,12 @@ export interface SessionState {
    * before the ref pipeline runs (e.g. a `/dcp` command) preserves it.
    */
   refs?: PersistedRefs;
+  /**
+   * Nudge watermark state (context-nudge subsystem).  Written by the
+   * caller before save; serialised to disk.  `undefined` when the
+   * nudge subsystem is not in use or no snapshot has been taken.
+   */
+  nudges?: PersistedNudges;
 }
 
 // ---------------------------------------------------------------------------
@@ -182,6 +191,20 @@ export interface PersistedRefs {
 }
 
 /**
+ * Persisted nudge watermark snapshot.
+ *
+ * Written by the context-nudge subsystem at `saveSessionState` call
+ * sites.  `lastNudgeTokens` is the single-anchor watermark — the token
+ * count at the last trigger / baseline.  Optional — legacy state files
+ * without `nudges` load cleanly (no schema version bump), and a
+ * malformed field is ignored with a warning (refs precedent).
+ */
+export interface PersistedNudges {
+  /** Single-anchor watermark token count. */
+  lastNudgeTokens?: number;
+}
+
+/**
  * Persisted state shape (unified marks collection with action, plus
  * compression blocks).
  *
@@ -194,6 +217,7 @@ interface PersistedState {
   marks: Record<string, PersistedMark>;
   blocks?: Record<string, PersistedBlock>;
   refs?: PersistedRefs;
+  nudges?: PersistedNudges;
   lastUpdated: string;
 }
 
@@ -248,6 +272,38 @@ function parsePersistedRefs(
 }
 
 /**
+ * Validate and extract the optional persisted nudge watermark.
+ *
+ * Returns `null` when the `nudges` key is absent or malformed (defensive
+ * — never throws).  Malformed nudges do NOT invalidate marks/blocks:
+ * the watermark is auxiliary and its loss is benign (the nudge subsystem
+ * re-baselines on the next evaluation).
+ *
+ * `lastNudgeTokens` must be a non-negative integer when present
+ * (`Number.isInteger(last) && last >= 0`); anything else means the whole
+ * snapshot is treated as absent.  An empty object (`nudges: {}`) is
+ * valid — the field is optional.
+ *
+ * @param parsed - The parsed state file object.
+ * @returns The validated nudges snapshot, or `null`.
+ */
+function parsePersistedNudges(
+  parsed: Record<string, unknown>,
+): PersistedNudges | null {
+  const nudges = parsed.nudges;
+  if (!nudges || typeof nudges !== "object" || Array.isArray(nudges)) {
+    return null;
+  }
+  const n = nudges as Record<string, unknown>;
+  const last = n.lastNudgeTokens;
+  if (last === undefined) return {};
+  if (typeof last !== "number" || !Number.isInteger(last) || last < 0) {
+    return null;
+  }
+  return { lastNudgeTokens: last };
+}
+
+/**
  * Read the persisted session state for a session from disk.
  *
  * Reads `~/.zoo/storage/{sessionId}.json`.  Returns `null` when
@@ -271,6 +327,9 @@ function parsePersistedRefs(
  * The `blocks` key is optional.  When absent, blocks are loaded as an
  * empty map.
  *
+ * The `refs` and `nudges` keys are optional.  When malformed they are
+ * ignored with a warning and do NOT invalidate marks/blocks.
+ *
  * Any malformed or unrecognized entry causes the file to load as
  * empty (strict per-field validation).
  *
@@ -281,6 +340,7 @@ export function loadSessionState(sessionId: string): {
   marks: Map<string, Mark>;
   blocks: Map<string, CompressionBlock>;
   refs?: PersistedRefs;
+  nudges?: PersistedNudges;
 } | null {
   try {
     if (!isSafeSessionId(sessionId)) return null;
@@ -412,7 +472,25 @@ export function loadSessionState(sessionId: string): {
 
       // Optional refs snapshot — absent/malformed means no persisted refs.
       const refs = parsePersistedRefs(parsed);
-      return { marks, blocks, ...(refs ? { refs } : {}) };
+      // Optional nudge watermark — malformed is warned and ignored and
+      // does NOT cascade-invalidate marks/blocks (refs precedent).
+      let nudges: PersistedNudges | undefined;
+      if (parsed.nudges !== undefined) {
+        const parsedNudges = parsePersistedNudges(parsed);
+        if (parsedNudges === null) {
+          log("pruning", "load_invalid_nudges", sessionId, undefined, "warn", {
+            filePath,
+          });
+        } else {
+          nudges = parsedNudges;
+        }
+      }
+      return {
+        marks,
+        blocks,
+        ...(refs ? { refs } : {}),
+        ...(nudges ? { nudges } : {}),
+      };
     }
 
     // Obsolete shapes (compact keys / v1 prune.tools/stats) — empty.
@@ -432,6 +510,8 @@ export function loadSessionState(sessionId: string): {
  *
  * JSON shape:
  * `{ marks: Record<callID, { tokens, effective, action }>, lastUpdated }`
+ * plus optional `blocks`, `refs`, and `nudges` (written only when
+ * present on the state).
  *
  * @param sessionId - The session identifier.
  * @param state - The session state to persist.
@@ -478,6 +558,9 @@ export function saveSessionState(sessionId: string, state: SessionState): void {
     };
     if (state.refs !== undefined) {
       data.refs = state.refs;
+    }
+    if (state.nudges !== undefined) {
+      data.nudges = state.nudges;
     }
     writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf8");
     renameSync(tmpPath, filePath);
@@ -600,6 +683,7 @@ export function getOrCreateSessionState(sessionId: string): SessionState {
       dirty: false,
       pendingViewChange: false,
       refs: persisted?.refs,
+      nudges: persisted?.nudges,
     };
     sessions.set(sessionId, state);
   }

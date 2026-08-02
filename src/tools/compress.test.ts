@@ -460,6 +460,18 @@ describe("compress tool registration gate", () => {
     assert.equal(hooks, undefined);
   });
 
+  it("compress section absent → no compress tool registered", () => {
+    const { client } = mockClient([]);
+    const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} });
+    assert.equal(hooks, undefined);
+  });
+
+  it("compress section absent → primary_tools untouched", () => {
+    const config = { experimental: { primary_tools: ["bash"] } };
+    registerCompressToolInConfig(config, { dedup: {}, purgeErrors: {} });
+    assert.deepEqual(config.experimental.primary_tools, ["bash"]);
+  });
+
   it("enabled=false → primary_tools untouched", () => {
     const config = { experimental: { primary_tools: ["bash"] } };
     registerCompressToolInConfig(config, DISABLED_CONFIG);

@@ -299,9 +299,7 @@ function startFlushTimer(): void {
  * directory, cleans old log files, and starts the flush timer.
  *
  * When a config field is omitted the corresponding behaviour is skipped
- * (no file rotation, no backup trimming, no old-log cleanup).  A
- * `maxFileSize` value of 0 or negative is treated as if it were
- * `undefined` (rotation disabled).
+ * (no file rotation, no backup trimming, no old-log cleanup).
  *
  * @param sessionId - The session identifier for the current run.
  * @param opts - Optional overrides for log directory, file size, backups,
@@ -317,7 +315,7 @@ export function initLogger(
     _logDir = resolve(opts.logDir.replace(/^~/, homedir()));
   }
   if (opts?.maxFileSize !== undefined) {
-    _maxFileSize = opts.maxFileSize <= 0 ? undefined : opts.maxFileSize;
+    _maxFileSize = opts.maxFileSize;
   }
   if (opts?.maxBackups !== undefined) {
     _maxBackups = opts.maxBackups;

@@ -46,18 +46,6 @@ import type { ContextPruningConfig } from "../hooks/context-pruning/index.js";
 import { log } from "../utils/logger.js";
 
 // ---------------------------------------------------------------------------
-// Defaults
-// ---------------------------------------------------------------------------
-
-/**
- * Default protection / threshold values shared with the `/dcp compress`
- * command path (used when the parsed config omits a field).
- */
-const DEFAULT_PROTECTED_MESSAGES = 20;
-const DEFAULT_PROTECTED_TOKENS = 20000;
-const DEFAULT_THRESHOLD_TOKENS = 2000;
-
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -247,15 +235,32 @@ export function createCompressTool(
       const messages = await fetchSessionMessages(client, sessionID);
       assignMessageRefs(sessionID, messages);
 
-      // Build the compression config from the parsed context config using
-      // the same defaults as the /dcp compress command path.
+      // Build the compression config from the parsed context config with
+      // NO fallbacks — config.toml is the single source of truth.  The
+      // registration gate only registers the tool when the compress
+      // section was strictly parsed with `enabled: true`, so the token
+      // thresholds are guaranteed present; `protectedMessages` is a
+      // lenient top-level key and may still be missing → loud config
+      // guidance error.
+      const compressCfg = contextConfig.compress;
+      if (
+        !compressCfg ||
+        compressCfg.protectedTokens === undefined ||
+        compressCfg.thresholdTokens === undefined
+      ) {
+        throw new Error(
+          "压缩功能未启用：请在 config.toml 的 [zoo.context.compress] 段配置 enabled = true、threshold_tokens 与 protected_tokens（非负整数）后重试。",
+        );
+      }
+      if (contextConfig.protectedMessages === undefined) {
+        throw new Error(
+          "[zoo.context] protected_messages 缺失或非法：请在 config.toml 的 [zoo.context] 段配置 protected_messages（非负整数）后重试。",
+        );
+      }
       const config: CompressionConfig = {
-        protectedMessages:
-          contextConfig.protectedMessages ?? DEFAULT_PROTECTED_MESSAGES,
-        protectedTokens:
-          contextConfig.compress?.protectedTokens ?? DEFAULT_PROTECTED_TOKENS,
-        thresholdTokens:
-          contextConfig.compress?.thresholdTokens ?? DEFAULT_THRESHOLD_TOKENS,
+        protectedMessages: contextConfig.protectedMessages,
+        protectedTokens: compressCfg.protectedTokens,
+        thresholdTokens: compressCfg.thresholdTokens,
       };
 
       // Core pipeline: loud Chinese guidance errors propagate unchanged.

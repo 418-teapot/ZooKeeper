@@ -227,6 +227,31 @@ export function getMessageIdByRef(
 }
 
 /**
+ * Look up the assigned ref for an OpenCode message ID.
+ *
+ * Reads the per-session `byRawId` registry directly.  Returns
+ * `undefined` when the session has no registry entry or the message ID
+ * is unknown.
+ *
+ * **Does NOT trigger hydration:** like `getMessageIdByRef`, this
+ * function only reads the in-memory registry — on a fresh process it
+ * returns `undefined` even when a persisted snapshot exists, until some
+ * other call (`assignMessageRefs` / `setLastCompactionBoundaryId`) has
+ * created the runtime registry.
+ *
+ * @param sessionId - The session identifier.
+ * @param messageId - The OpenCode message ID.
+ * @returns The assigned ref string (e.g. `"m0001"`), or `undefined`.
+ */
+export function getMessageRefById(
+  sessionId: string,
+  messageId: string,
+): string | undefined {
+  const registry = registries.get(sessionId);
+  return registry ? registry.byRawId.get(messageId) : undefined;
+}
+
+/**
  * Build the formatted tag string for a given ref.
  */
 function formatTag(ref: string): string {

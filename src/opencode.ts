@@ -29,17 +29,20 @@ import { KIWI_PROMPT } from "./agents/kiwi.js";
 import { LYNX_PROMPT } from "./agents/lynx.js";
 import { MOLA_PROMPT } from "./agents/mola.js";
 import { SPIDER_PROMPT } from "./agents/spider.js";
+import { clearModelLimit, setModelLimit } from "./core/model-limits.js";
 import {
   stripRefsFromString,
   ZOO_MSG_ID_CANONICAL_END_REGEX,
 } from "./core/pruning/index.js";
 import { deleteSessionState, removeSession } from "./core/pruning/marks.js";
+import { NUDGE_PERCENT_RE } from "./core/pruning/nudge.js";
 import { DCP_COMMAND_HANDLED, handleDcpCommand } from "./hooks/context-command";
 import type { ContextMetricsOutput } from "./hooks/context-metrics";
 import { measureContext } from "./hooks/context-metrics";
 import { contextPruningTransformHandler } from "./hooks/context-pruning";
 import type {
   CompressConfig,
+  ContextNudgeConfig,
   ContextPruningConfig,
 } from "./hooks/context-pruning/index.js";
 import { nudgeDirectWork } from "./hooks/direct-work-nudge";
@@ -94,16 +97,16 @@ let _sessionIdSet = false;
 
 /** Extract word-count limits from zoo config.
  *
- *  Each field is type-checked: only finite numbers are accepted.  Missing or
- *  invalid values produce `undefined` (no fallback), and invalid values emit
- *  a warning log.
+ *  Each field is type-checked: only finite numbers greater than zero are
+ *  accepted.  Missing or invalid values produce `undefined` (no fallback),
+ *  and invalid values emit a warning log.
  */
 function parseLimits(zooConfig: any) {
   const v = zooConfig.validation ?? {};
 
   const ctxRaw = v.context_word_limit;
   let contextWordLimit: number | undefined;
-  if (typeof ctxRaw === "number" && Number.isFinite(ctxRaw)) {
+  if (typeof ctxRaw === "number" && Number.isFinite(ctxRaw) && ctxRaw > 0) {
     contextWordLimit = ctxRaw;
   } else if (ctxRaw !== undefined) {
     log("config", "invalid_context_word_limit", "", undefined, "warn", {
@@ -114,7 +117,11 @@ function parseLimits(zooConfig: any) {
 
   const promptRaw = v.prompt_word_limit;
   let promptWordLimit: number | undefined;
-  if (typeof promptRaw === "number" && Number.isFinite(promptRaw)) {
+  if (
+    typeof promptRaw === "number" &&
+    Number.isFinite(promptRaw) &&
+    promptRaw > 0
+  ) {
     promptWordLimit = promptRaw;
   } else if (promptRaw !== undefined) {
     log("config", "invalid_prompt_word_limit", "", undefined, "warn", {
@@ -129,6 +136,24 @@ function parseLimits(zooConfig: any) {
 /** Extract skills config map from zoo config. */
 function parseSkillsConfig(zooConfig: any): Record<string, string> {
   return zooConfig.skills ?? {};
+}
+
+/**
+ * Accept a nudge threshold value: a positive finite number (absolute
+ * tokens) or a non-zero percentage string (`"NN%"`).  Zero, negative,
+ * and malformed values are rejected — thresholds have no "disable"
+ * meaning (enabled=false covers that).
+ *
+ * @param v - The raw config value.
+ * @returns `true` when the value is a valid threshold.
+ */
+function isValidNudgeThreshold(v: unknown): boolean {
+  if (typeof v === "number") return Number.isFinite(v) && v > 0;
+  if (typeof v === "string") {
+    const match = NUDGE_PERCENT_RE.exec(v);
+    return match !== null && Number(match[1]) > 0;
+  }
+  return false;
 }
 
 /** Extract context-pruning config from the [zoo.context] section.
@@ -162,7 +187,8 @@ function parseContextConfig(zooConfig: any): ContextPruningConfig {
   let protectedMessages: number | undefined;
   if (
     typeof c.protected_messages === "number" &&
-    Number.isFinite(c.protected_messages)
+    Number.isFinite(c.protected_messages) &&
+    c.protected_messages >= 0
   ) {
     protectedMessages = c.protected_messages;
   } else if (c.protected_messages !== undefined) {
@@ -176,7 +202,8 @@ function parseContextConfig(zooConfig: any): ContextPruningConfig {
   if (
     typeof c.released_percent === "number" &&
     Number.isFinite(c.released_percent) &&
-    c.released_percent >= 0
+    c.released_percent >= 0 &&
+    c.released_percent <= 100
   ) {
     releasedPercent = c.released_percent;
   } else if (c.released_percent !== undefined) {
@@ -199,7 +226,8 @@ function parseContextConfig(zooConfig: any): ContextPruningConfig {
   let dedupThresholdContext: number | undefined;
   if (
     typeof d.threshold_context === "number" &&
-    Number.isFinite(d.threshold_context)
+    Number.isFinite(d.threshold_context) &&
+    d.threshold_context > 0
   ) {
     dedupThresholdContext = d.threshold_context;
   } else if (d.threshold_context !== undefined) {
@@ -235,7 +263,8 @@ function parseContextConfig(zooConfig: any): ContextPruningConfig {
   let peThresholdContext: number | undefined;
   if (
     typeof pe.threshold_context === "number" &&
-    Number.isFinite(pe.threshold_context)
+    Number.isFinite(pe.threshold_context) &&
+    pe.threshold_context > 0
   ) {
     peThresholdContext = pe.threshold_context;
   } else if (pe.threshold_context !== undefined) {
@@ -272,55 +301,89 @@ function parseContextConfig(zooConfig: any): ContextPruningConfig {
     );
   }
 
-  // ── Parse compress section ──────────────────────────────────────────
-  const cm = c.compress ?? {};
-
-  let compressEnabled: boolean | undefined;
-  if (typeof cm.enabled === "boolean") {
-    compressEnabled = cm.enabled;
-  } else if (cm.enabled !== undefined) {
-    log("config", "invalid_compress_enabled", "", undefined, "warn", {
-      key: "compress.enabled",
-      value: cm.enabled,
-    });
+  // ── Parse nudge section ──────────────────────────────────────────
+  // All six keys are required when the section is present.  Any missing,
+  // wrong-typed, or malformed value invalidates the WHOLE section
+  // (fail to skip — the subsystem is silently absent) and logs exactly
+  // one warn.  `enabled: false` is valid — present but disabled.
+  let nudge: ContextNudgeConfig | undefined;
+  if (c.nudge !== undefined) {
+    const n = c.nudge as Record<string, unknown>;
+    const keyChecks: Array<[string, unknown, (v: unknown) => boolean]> = [
+      ["enabled", n.enabled, (v) => typeof v === "boolean"],
+      ["min_context", n.min_context, isValidNudgeThreshold],
+      [
+        "min_context_cap",
+        n.min_context_cap,
+        (v) => typeof v === "number" && Number.isFinite(v) && v >= 0,
+      ],
+      ["max_context", n.max_context, isValidNudgeThreshold],
+      [
+        "max_context_cap",
+        n.max_context_cap,
+        (v) => typeof v === "number" && Number.isFinite(v) && v >= 0,
+      ],
+      ["growth_tokens", n.growth_tokens, isValidNudgeThreshold],
+    ];
+    const bad = keyChecks.find(([, value, check]) => !check(value));
+    if (bad) {
+      log("config", "nudge_config_invalid", "", undefined, "warn", {
+        key: bad[0],
+        value: bad[1],
+      });
+    } else {
+      nudge = {
+        enabled: n.enabled as boolean,
+        minContext: n.min_context as number | string,
+        minContextCap: n.min_context_cap as number,
+        maxContext: n.max_context as number | string,
+        maxContextCap: n.max_context_cap as number,
+        growthTokens: n.growth_tokens as number | string,
+      };
+    }
   }
 
-  let compressThresholdTokens: number | undefined;
-  if (
-    typeof cm.threshold_tokens === "number" &&
-    Number.isFinite(cm.threshold_tokens)
-  ) {
-    compressThresholdTokens = cm.threshold_tokens;
-  } else if (cm.threshold_tokens !== undefined) {
-    log("config", "invalid_compress_threshold_tokens", "", undefined, "warn", {
-      key: "compress.threshold_tokens",
-      value: cm.threshold_tokens,
-    });
+  // ── Parse compress section ──────────────────────────────────────
+  // All three keys are required when the section is present.  Any missing,
+  // wrong-typed, or malformed value invalidates the WHOLE section
+  // (fail to skip — the subsystem is silently absent) and logs exactly
+  // one warn.  `enabled: false` is valid — present but disabled.
+  let compress: CompressConfig | undefined;
+  if (c.compress !== undefined) {
+    const cm = c.compress as Record<string, unknown>;
+    const keyChecks: Array<[string, unknown, (v: unknown) => boolean]> = [
+      ["enabled", cm.enabled, (v) => typeof v === "boolean"],
+      [
+        "threshold_tokens",
+        cm.threshold_tokens,
+        (v) => typeof v === "number" && Number.isFinite(v) && v >= 0,
+      ],
+      [
+        "protected_tokens",
+        cm.protected_tokens,
+        (v) => typeof v === "number" && Number.isFinite(v) && v >= 0,
+      ],
+    ];
+    const bad = keyChecks.find(([, value, check]) => !check(value));
+    if (bad) {
+      log("config", "compress_config_invalid", "", undefined, "warn", {
+        key: bad[0],
+        value: bad[1],
+      });
+    } else {
+      compress = {
+        enabled: cm.enabled as boolean,
+        thresholdTokens: cm.threshold_tokens as number,
+        protectedTokens: cm.protected_tokens as number,
+      };
+    }
   }
-
-  let compressProtectedTokens: number | undefined;
-  if (
-    typeof cm.protected_tokens === "number" &&
-    Number.isFinite(cm.protected_tokens)
-  ) {
-    compressProtectedTokens = cm.protected_tokens;
-  } else if (cm.protected_tokens !== undefined) {
-    log("config", "invalid_compress_protected_tokens", "", undefined, "warn", {
-      key: "compress.protected_tokens",
-      value: cm.protected_tokens,
-    });
-  }
-
-  const compress: CompressConfig = {
-    enabled: compressEnabled,
-    thresholdTokens: compressThresholdTokens,
-    protectedTokens: compressProtectedTokens,
-  };
 
   return {
     enabled,
     protectedMessages,
     releasedPercent,
+    nudge,
     dedup: {
       enabled: dedupEnabled,
       thresholdContext: dedupThresholdContext,
@@ -410,7 +473,7 @@ function logPluginInit(
     agents: Object.keys(agents),
     limits,
     skills: Object.keys(skillsConfig).filter(
-      (k) => skillsConfig[k] !== "disable",
+      (k) => skillsConfig[k] === "enable",
     ),
   });
 }
@@ -430,7 +493,14 @@ function injectAgentPrompts(agents: Record<string, any>): void {
   }
 }
 
-/** Register enabled skills from the core/skills/ directory. */
+/** Register enabled skills from the core/skills/ directory.
+ *
+ *  Fail-closed: a skill registers only when its `[zoo.skills]` entry is
+ *  exactly `"enable"`.  Absent keys, typos, and junk values all disable
+ *  the skill silently — no warn, because config.toml (the single source
+ *  of truth) lists every skill explicitly and any deviation is
+ *  intentional.
+ */
 function registerSkills(
   pluginConfig: any,
   skillsConfig: Record<string, string>,
@@ -442,7 +512,7 @@ function registerSkills(
     for (const entry of readdirSync(skillsDir)) {
       const skillPath = resolve(skillsDir, entry);
       if (!statSync(skillPath).isDirectory()) continue;
-      if (skillsConfig[entry] === "disable") continue;
+      if (skillsConfig[entry] !== "enable") continue;
       pluginConfig.skills.paths.push(skillPath);
       log("plugin", "skill_registered", "", undefined, "debug", {
         skill: entry,
@@ -699,8 +769,10 @@ async function runAfterHandlers(
  * Build the tool-hooks map registered on the plugin.
  *
  * The range-mode compress tool is registered only when
- * `[zoo.context.compress].enabled` is not explicitly `false`.  Returns
- * `undefined` when disabled so the `tool` hook key stays absent.
+ * `[zoo.context.compress].enabled` is explicitly `true`.  An absent
+ * section, an invalid section (config parse dropped it), or an explicit
+ * `false` all mean the tool stays unregistered.  Returns `undefined` when
+ * disabled so the `tool` hook key stays absent.
  *
  * Exported for unit testing (the imported config cannot be overridden
  * per-test, so the gate is decided from the passed config here).
@@ -713,7 +785,7 @@ function buildToolHooks(
   client: any,
   contextConfig: ContextPruningConfig,
 ): Record<string, ToolDefinition> | undefined {
-  if (contextConfig.compress?.enabled === false) return undefined;
+  if (contextConfig.compress?.enabled !== true) return undefined;
   return { compress: createCompressTool(client, contextConfig) };
 }
 
@@ -721,8 +793,8 @@ function buildToolHooks(
  * Append the compress tool to `experimental.primary_tools`.
  *
  * Preserves pre-existing entries and appends `"compress"` only when
- * `[zoo.context.compress].enabled` is not explicitly `false` (same gate as
- * `buildToolHooks`).
+ * `[zoo.context.compress].enabled` is explicitly `true` (same gate as
+ * `buildToolHooks` — absent/invalid section or explicit `false` skip).
  *
  * Exported for unit testing.
  *
@@ -733,7 +805,7 @@ function registerCompressToolInConfig(
   config: any,
   contextConfig: ContextPruningConfig,
 ): void {
-  if (contextConfig.compress?.enabled === false) return;
+  if (contextConfig.compress?.enabled !== true) return;
   config.experimental ??= {};
   config.experimental.primary_tools ??= [];
   if (!config.experimental.primary_tools.includes("compress")) {
@@ -824,6 +896,7 @@ export async function zookeeper(input: any) {
         if (info?.id) {
           sessionAgentMap.delete(info.id);
           subAgentCache.delete(info.id);
+          clearModelLimit(info.id);
           removeSession(info.id);
           deleteSessionState(info.id);
         }
@@ -860,6 +933,26 @@ export async function zookeeper(input: any) {
       // Prune first so measureContext reflects post-prune token counts.
       handleContextPruning(output, contextConfig, client, isSubAgent);
       handleMessagesTransform(output);
+    },
+
+    async "experimental.chat.system.transform"(
+      input: {
+        sessionID?: string;
+        model: { id: string; limit: { context: number; output: number } };
+      },
+      _output: { system: string[] },
+    ) {
+      // Capture the active model's context window per session so the
+      // pruning nudge phase can resolve percentage thresholds against
+      // the real limit.  Missing session IDs / limits are ignored by
+      // the registry itself.
+      if (input.model?.limit?.context !== undefined) {
+        setModelLimit(
+          input.sessionID ?? "",
+          input.model.limit.context,
+          input.model.id,
+        );
+      }
     },
 
     async "experimental.text.complete"(

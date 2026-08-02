@@ -14,6 +14,11 @@ import {
   findCompactionBoundary,
   findLastCompletedAssistant,
 } from "../../core/metrics.js";
+import { getModelLimit } from "../../core/model-limits.js";
+import {
+  CONTEXT_NUDGE_LEVELS,
+  CONTEXT_NUDGE_TEMPLATE,
+} from "../../core/prompts.js";
 import {
   activeBlockCount,
   assignMessageRefs,
@@ -35,6 +40,13 @@ import {
   releaseBatch,
   saveSessionState,
 } from "../../core/pruning/marks.js";
+import { getMessageRefById } from "../../core/pruning/message-refs.js";
+import type { NudgeConfig } from "../../core/pruning/nudge.js";
+import {
+  computeEligibility,
+  evaluateNudge,
+  resolveThresholds,
+} from "../../core/pruning/nudge.js";
 import type { DedupOptions } from "../../core/pruning/producers/dedup.js";
 import { runDedup } from "../../core/pruning/producers/dedup.js";
 import type { PurgeErrorsOptions } from "../../core/pruning/producers/purge-errors.js";
@@ -63,20 +75,39 @@ export interface ProducerGateConfig {
 
 /**
  * Per-subsystem gate config for the compression strategy.
+ *
+ * Strictly parsed: the section is absent (`undefined`) unless all three
+ * keys are present and valid.  `enabled` is the hook-level gate —
+ * `false` is parsed but disabled (no tool registration, no nudge).
+ * The token thresholds are defined whenever the section is returned.
  */
 export interface CompressConfig {
-  /** Hook-level enable gate.  Undefined → runs unless explicitly false. */
+  /** Hook-level enable gate.  `false` → parsed but disabled. */
   enabled?: boolean;
   /**
    * Minimum estimated tokens a segment must have to bypass the phantom
-   * gate.  Undefined → skip compression.
+   * gate.  Present whenever the section is returned.
    */
   thresholdTokens?: number;
   /**
    * Token budget to protect from the end of the session (CJK heuristic).
-   * Undefined → skip compression.
+   * Present whenever the section is returned.
    */
   protectedTokens?: number;
+}
+
+/**
+ * Context-nudge subsystem configuration (`[zoo.context.nudge]`).
+ *
+ * Extends the pure decision-layer `NudgeConfig` with a hook-level
+ * enable gate.  When the section is absent the field is `undefined`
+ * and the subsystem is silently absent; when present all six keys are
+ * required — any missing, wrong-typed, or malformed value invalidates
+ * the whole section (no fallbacks; the config parse already warned).
+ */
+export interface ContextNudgeConfig extends NudgeConfig {
+  /** Hook-level enable gate.  `false` → parsed but disabled (no injection). */
+  enabled?: boolean;
 }
 
 /**
@@ -89,7 +120,7 @@ export interface CompressConfig {
 export interface ContextPruningConfig {
   /**
    * Master enable switch.  When not explicitly true the entire
-   * transform no-ops: the entire pipeline (Phases 1–6) is skipped.  Undefined → disabled.
+   * transform no-ops: the entire pipeline (Phases 1–7) is skipped.  Undefined → disabled.
    */
   enabled?: boolean;
   /**
@@ -102,11 +133,19 @@ export interface ContextPruningConfig {
    * reach before batch release.  Undefined → skip release check.
    */
   releasedPercent?: number;
+  /**
+   * Context-nudge subsystem config (`[zoo.context.nudge]`).  Undefined
+   * → the subsystem is silently absent (no reminders injected).
+   */
+  nudge?: ContextNudgeConfig;
   /** Dedup producer gate & options. */
   dedup: ProducerGateConfig;
   /** Purge-errors producer gate & options. */
   purgeErrors: ProducerGateConfig;
-  /** Compress strategy gate & options. */
+  /**
+   * Compress strategy gate & options (`[zoo.context.compress]`).
+   * Undefined → the subsystem is silently absent (no tool, no nudge).
+   */
   compress?: CompressConfig;
 }
 
@@ -117,7 +156,7 @@ export interface ContextPruningConfig {
 /**
  * Handle the messages.transform hook for context pruning.
  *
- * Six-phase transform pipeline:
+ * Seven-phase transform pipeline:
  *
  * **Phase 1 (Fold):** sync and fold compression blocks so downstream
  * phases see a folded view.
@@ -137,7 +176,13 @@ export interface ContextPruningConfig {
  * pending tokens reach `releaseThresholdPercent` of the prompt-side total,
  * all pending marks are flipped to effective at once.
  *
- * **Phase 6 (Finalize):** clear the view-change flag and persist state to
+ * **Phase 6 (Nudge):** inject a context-pressure reminder when the prompt
+ * is past the configured thresholds and has grown past the re-nudge
+ * interval since the last anchor (`state.nudges`, persisted via the
+ * normal dirty flag).  The synthetic message is transform-only — never
+ * persisted, never ref-assigned (Phase 6 runs after Phase 4).
+ *
+ * **Phase 7 (Finalize):** clear the view-change flag and persist state to
  * disk when dirty.
  *
  * The two-turn effect ("turn N marks apply on turn N+1") means that
@@ -398,7 +443,125 @@ export function contextPruningTransformHandler(
     }
   }
 
-  // ── Phase 6: Finalize — clear view-change flag + persist ────────
+  // ── Phase 6: Nudge — context-pressure reminders ────────────────
+  // Injects a synthetic reminder when the prompt is past the configured
+  // thresholds AND has grown past the re-nudge interval since the last
+  // anchor.  Runs only when every gate holds: not a sub-agent session,
+  // the compress tool available (strictly-parsed compress section with
+  // `enabled: true` — the nudge advertises compressible windows the tool
+  // would accept), nudge config present with `enabled: true` (the
+  // strict parser guarantees a boolean here), a model context limit
+  // captured for this session, and a completed assistant message
+  // (promptTokens is real — same-view discipline as Phase 3).
+  const compressCfg = config.compress;
+  const nudgeConfig = config.nudge;
+  if (
+    !isSubAgent &&
+    compressCfg?.enabled === true &&
+    nudgeConfig?.enabled === true &&
+    lastAsst.index >= 0
+  ) {
+    const modelLimit = getModelLimit(sessionId);
+    if (modelLimit) {
+      // Null thresholds → subsystem disabled (the config parse already
+      // warned once) — skip evaluation silently.
+      const thresholds = resolveThresholds(nudgeConfig, modelLimit.context);
+      if (thresholds) {
+        const evaluation = evaluateNudge(
+          state.nudges?.lastNudgeTokens,
+          promptTokens,
+          thresholds,
+        );
+
+        // Persist the anchor on EVERY evaluation (the ratchet follows
+        // context downward between triggers); mark dirty only when the
+        // value actually changed.
+        const prevAnchor = state.nudges?.lastNudgeTokens;
+        state.nudges = {
+          ...(state.nudges ?? {}),
+          lastNudgeTokens: evaluation.newAnchor,
+        };
+        if (prevAnchor !== evaluation.newAnchor) {
+          state.dirty = true;
+        }
+
+        if (evaluation.level !== null) {
+          // `protectedMessages` is a lenient top-level key and the token
+          // thresholds exist only when the compress section was strictly
+          // parsed — any of them missing means there is no compressible
+          // window to advertise; treat eligibility as null (no injection,
+          // the anchor is still persisted above).
+          const eligibility =
+            config.protectedMessages === undefined ||
+            compressCfg.protectedTokens === undefined ||
+            compressCfg.thresholdTokens === undefined
+              ? null
+              : computeEligibility(
+                  messages,
+                  {
+                    protectedMessages: config.protectedMessages,
+                    protectedTokens: compressCfg.protectedTokens,
+                    thresholdTokens: compressCfg.thresholdTokens,
+                  },
+                  (messageId) => getMessageRefById(sessionId, messageId),
+                );
+          // No eligible window (all protected / no refs / phantom) → skip
+          // injection; the anchor is already persisted above.
+          if (eligibility) {
+            const copy = CONTEXT_NUDGE_LEVELS[evaluation.level];
+            const percent = Math.round(
+              (promptTokens / modelLimit.context) * 100,
+            );
+            // replaceAll: {endRef} appears twice in the template.
+            const text = CONTEXT_NUDGE_TEMPLATE.replaceAll(
+              "{HEADER}",
+              copy.header,
+            )
+              .replaceAll("{tokens}", String(promptTokens))
+              .replaceAll("{percent}", `${percent}%`)
+              .replaceAll("{limit}", String(modelLimit.context))
+              .replaceAll("{startRef}", eligibility.startRef)
+              .replaceAll("{endRef}", eligibility.endRef)
+              .replaceAll("{reclaim}", String(eligibility.reclaimTokens))
+              .replaceAll("{ACTION}", copy.action)
+              .replaceAll("{EQUATION}", copy.equation);
+
+            // Transform-only synthetic message: appended at the END after
+            // Phase 4 (so it never enters ref assignment) and never
+            // persisted (no session.prompt call — invisible in storage).
+            messages.push({
+              info: {
+                id: "zoo-nudge",
+                role: "user",
+                sessionID: sessionId,
+              },
+              parts: [{ type: "text", text }],
+            });
+
+            log(
+              "context-pruning",
+              "nudge_injected",
+              sessionId,
+              undefined,
+              "info",
+              {
+                // `nudgeLevel` instead of `level` — the logger reserves
+                // `level` for the entry's log level.
+                nudgeLevel: evaluation.level,
+                tokens: promptTokens,
+                anchor: evaluation.newAnchor,
+                startRef: eligibility.startRef,
+                endRef: eligibility.endRef,
+                reclaimTokens: eligibility.reclaimTokens,
+              },
+            );
+          }
+        }
+      }
+    }
+  }
+
+  // ── Phase 7: Finalize — clear view-change flag + persist ────────
   // Always cleared after the release check phase, regardless of
   // whether any marks were flushed.
   state.pendingViewChange = false;
