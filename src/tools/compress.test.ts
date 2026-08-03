@@ -441,6 +441,62 @@ describe("compress tool execute — error paths", () => {
       assert.equal(state.blocks.size, 0);
     }
   });
+
+  it("rejects non-string required args before title and core validation", async () => {
+    const messages = makeMessages();
+    const { client } = mockClient(messages);
+    const plugin = (await zookeeper({ client })) as any;
+    const cases: Array<{ name: string; args: Record<string, unknown> }> = [
+      {
+        name: "fromRef",
+        args: {
+          fromRef: 1,
+          toRef: refFor(9),
+          summary: "摘要",
+          title: "主题",
+        },
+      },
+      {
+        name: "toRef",
+        args: {
+          fromRef: refFor(1),
+          toRef: null,
+          summary: "摘要",
+          title: "主题",
+        },
+      },
+      {
+        name: "title",
+        args: {
+          fromRef: refFor(1),
+          toRef: refFor(9),
+          summary: "摘要",
+          title: { text: "主题" },
+        },
+      },
+      {
+        name: "summary",
+        args: {
+          fromRef: refFor(1),
+          toRef: refFor(9),
+          summary: false,
+          title: "主题",
+        },
+      },
+    ];
+
+    for (const item of cases) {
+      await assert.rejects(
+        () => plugin.tool.compress.execute(item.args, mockToolContext),
+        (err: unknown) =>
+          err instanceof Error &&
+          err.message.includes(item.name) &&
+          /字符串/.test(err.message),
+      );
+      const state = getOrCreateSessionState(TEST_SESSION_ID);
+      assert.equal(state.blocks.size, 0);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -488,6 +544,39 @@ describe("compress tool registration gate", () => {
     assert.ok(hooks !== undefined);
     assert.ok(hooks.compress);
     assert.equal(typeof hooks.compress.execute, "function");
+  });
+
+  it("registers plain JSON Schema args for OpenCode native tool loading", () => {
+    const { client } = mockClient([]);
+    const hooks = buildToolHooks(client, {
+      dedup: {},
+      purgeErrors: {},
+      compress: { enabled: true },
+    });
+
+    assert.ok(hooks?.compress);
+    assert.deepEqual(hooks.compress.args, {
+      fromRef: {
+        type: "string",
+        description:
+          '范围起点消息的 ref（如 "m0001"，对应消息上的 <zoo-msg-id> 标签）。该消息及其之后的内容将被压缩。ref 是地址而非序号，数值上可能不连续。',
+      },
+      toRef: {
+        type: "string",
+        description:
+          "范围终点消息的 ref，压缩范围到该消息之前为止（该消息本身不压缩）。请选择位置在起点之后的可见消息。",
+      },
+      title: {
+        type: "string",
+        description:
+          "一行主题说明（必填，不超过 80 字符）：概括这段被压缩内容，将来此块被更大范围压缩时作为索引行展示。",
+      },
+      summary: {
+        type: "string",
+        description:
+          "块正文总结：替换整个压缩范围的完整摘要文本。请保留关键决策、结论与文件路径，确保后续工作无需回看原文。",
+      },
+    });
   });
 });
 

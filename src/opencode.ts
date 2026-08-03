@@ -20,7 +20,6 @@
 import { readdirSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ToolDefinition } from "@opencode-ai/plugin";
 import config from "../config.toml" with { type: "toml" };
 import { BEAVER_PROMPT } from "./agents/beaver.js";
 import { DOLPHIN_PROMPT } from "./agents/dolphin.js";
@@ -55,7 +54,10 @@ import {
   nudgeTaskOutput,
   validateBeforeExec,
 } from "./hooks/task-prompt";
-import { createCompressTool } from "./tools/compress";
+import {
+  type CompressToolDefinition,
+  createCompressTool,
+} from "./tools/compress";
 import { initLogger, log, setSessionId } from "./utils/logger.js";
 
 // ---------------------------------------------------------------------------
@@ -784,7 +786,7 @@ async function runAfterHandlers(
 function buildToolHooks(
   client: any,
   contextConfig: ContextPruningConfig,
-): Record<string, ToolDefinition> | undefined {
+): Record<string, CompressToolDefinition> | undefined {
   if (contextConfig.compress?.enabled !== true) return undefined;
   return { compress: createCompressTool(client, contextConfig) };
 }

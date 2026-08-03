@@ -26,7 +26,6 @@
  * @module
  */
 
-import { tool } from "@opencode-ai/plugin";
 import { formatTokens } from "../core/context-report.js";
 import type { ContextMessageEntry } from "../core/metrics.js";
 import type { CompressionConfig } from "../core/pruning/compress.js";
@@ -44,6 +43,31 @@ import {
 import type { DcpClient } from "../hooks/context-command/index.js";
 import type { ContextPruningConfig } from "../hooks/context-pruning/index.js";
 import { log } from "../utils/logger.js";
+
+type JsonSchemaStringArg = {
+  type: "string";
+  description: string;
+};
+
+type CompressToolArgs = {
+  fromRef: JsonSchemaStringArg;
+  toRef: JsonSchemaStringArg;
+  title: JsonSchemaStringArg;
+  summary: JsonSchemaStringArg;
+};
+
+type CompressToolInput = {
+  fromRef: string;
+  toRef: string;
+  title: string;
+  summary: string;
+};
+
+export type CompressToolDefinition = {
+  description: string;
+  args: CompressToolArgs;
+  execute(args: unknown, toolCtx: unknown): Promise<string>;
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -84,6 +108,35 @@ function resolveSessionId(toolCtx: unknown): string {
     throw new Error("无法确定会话 ID：工具上下文缺少 sessionID。");
   }
   return id;
+}
+
+function requireStringArg(
+  args: Record<string, unknown>,
+  name: keyof CompressToolInput,
+): string {
+  const value = args[name];
+  if (typeof value !== "string") {
+    throw new Error(
+      `${name} 参数必须是字符串：请按工具参数说明提供 fromRef、toRef、title、summary 四个必填字符串后重试。`,
+    );
+  }
+  return value;
+}
+
+function validateCompressArgs(args: unknown): CompressToolInput {
+  if (args === null || typeof args !== "object" || Array.isArray(args)) {
+    throw new Error(
+      "压缩工具参数格式错误：请提供包含 fromRef、toRef、title、summary 四个必填字符串的对象后重试。",
+    );
+  }
+
+  const input = args as Record<string, unknown>;
+  return {
+    fromRef: requireStringArg(input, "fromRef"),
+    toRef: requireStringArg(input, "toRef"),
+    title: requireStringArg(input, "title"),
+    summary: requireStringArg(input, "summary"),
+  };
 }
 
 /**
@@ -160,8 +213,8 @@ async function fetchSessionMessages(
 export function createCompressTool(
   client: DcpClient,
   contextConfig: ContextPruningConfig,
-): ReturnType<typeof tool> {
-  return tool({
+): CompressToolDefinition {
+  return {
     description: [
       "压缩一段连续可见历史为一条摘要（该范围将被你的摘要替换）。",
       'fromRef / toRef 是消息 ref（如 "m0001"），对应可见消息上的 <zoo-msg-id> 标签。',
@@ -170,35 +223,30 @@ export function createCompressTool(
       "选择失败会返回响亮的中文错误指导——请根据提示重新选择 ref 后重试。",
     ].join(" "),
     args: {
-      fromRef: tool.schema
-        .string()
-        .describe(
+      fromRef: {
+        type: "string",
+        description:
           '范围起点消息的 ref（如 "m0001"，对应消息上的 <zoo-msg-id> 标签）。该消息及其之后的内容将被压缩。ref 是地址而非序号，数值上可能不连续。',
-        ),
-      toRef: tool.schema
-        .string()
-        .describe(
+      },
+      toRef: {
+        type: "string",
+        description:
           "范围终点消息的 ref，压缩范围到该消息之前为止（该消息本身不压缩）。请选择位置在起点之后的可见消息。",
-        ),
-      title: tool.schema
-        .string()
-        .describe(
+      },
+      title: {
+        type: "string",
+        description:
           "一行主题说明（必填，不超过 80 字符）：概括这段被压缩内容，将来此块被更大范围压缩时作为索引行展示。",
-        ),
-      summary: tool.schema
-        .string()
-        .describe(
+      },
+      summary: {
+        type: "string",
+        description:
           "块正文总结：替换整个压缩范围的完整摘要文本。请保留关键决策、结论与文件路径，确保后续工作无需回看原文。",
-        ),
+      },
     },
     async execute(args, toolCtx) {
       const sessionID = resolveSessionId(toolCtx);
-      const input = args as {
-        fromRef: string;
-        toRef: string;
-        summary: string;
-        title: string;
-      };
+      const input = validateCompressArgs(args);
 
       // ── Title validation (loud Chinese guidance) ───────────────────
       // The title becomes the block's one-line index entry when a wider
@@ -314,5 +362,5 @@ export function createCompressTool(
       // Single-line short ToolResult — never the summary body.
       return notifyMsg;
     },
-  });
+  };
 }
