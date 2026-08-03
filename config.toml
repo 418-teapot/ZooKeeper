@@ -507,6 +507,10 @@ prompt_word_limit = 500
 [zoo.variants]
 "Cambricon/glm-5.2"            = "high"
 "OpenCodeGo/deepseek-v4-flash" = "max"
+"OpenAI/gpt-5.5"               = "high"
+
+[zoo.variants.beaver]
+"OpenAI/gpt-5.5" = "low"
 
 # ── Context ───────────────────────────────────────────────────────────────────
 

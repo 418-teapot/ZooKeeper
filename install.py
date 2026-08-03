@@ -320,7 +320,32 @@ def build_config(
     if "mcp" in toml_data and toml_data["mcp"]:
         config["mcp"] = toml_data["mcp"]
 
-    return resolve_env_refs_deep(config, env)
+    config = resolve_env_refs_deep(config, env)
+
+    # Inject per-agent variants from [zoo.variants.<agent>] subtables.  The
+    # variant is set on an agent's dict only when the agent declares a model
+    # field and that resolved model matches a key in the subtable.  A model
+    # without a configured variant is a normal case, so no warning is emitted
+    # and the agent is left untouched.  This runs after env resolution, so the
+    # model value is already the final "Provider/model" string.
+    agent_variants = collect_agent_variants(toml_data)
+    if agent_variants:
+        agents = config.get("agent")
+        if isinstance(agents, dict):
+            for agent_name, agent_data in agents.items():
+                if not isinstance(agent_data, dict):
+                    continue
+                model = agent_data.get("model")
+                if not isinstance(model, str):
+                    continue
+                subtable = agent_variants.get(agent_name)
+                if not subtable:
+                    continue
+                variant = subtable.get(model)
+                if variant:
+                    agent_data["variant"] = variant
+
+    return config
 
 
 def _npm_to_api_type(npm: str) -> Optional[str]:
@@ -508,6 +533,13 @@ def collect_variants(toml_data: dict) -> dict[str, str]:
 
     valid: dict[str, str] = {}
     for key, variant_name in variants.items():
+        if isinstance(variant_name, dict):
+            # Per-agent subtable ([zoo.variants.<agent>]); collected
+            # separately by collect_agent_variants for the per-agent channel.
+            continue
+        if not isinstance(variant_name, str):
+            warn(f"zoo.variants 条目 {key} 的值既非字符串也非子表，跳过")
+            continue
         parts = key.split("/") if isinstance(key, str) else []
         if len(parts) != 2 or not parts[0] or not parts[1]:
             warn(
@@ -527,6 +559,80 @@ def collect_variants(toml_data: dict) -> dict[str, str]:
             warn(f"zoo.variants 的 variant 名为空或非字符串（{key}），跳过")
             continue
         valid[key] = variant_name
+    return valid
+
+
+def collect_agent_variants(toml_data: dict) -> dict[str, dict[str, str]]:
+    """Collect and validate per-agent ``[zoo.variants.<agent>]`` subtables.
+
+    Each subtable name must match a declared ``[agent.*]`` section; an
+    unknown agent name skips the whole subtable with a warning.  Within a
+    subtable, every model key must have the form ``"Provider/model"`` where
+    *Provider* matches a declared ``[provider.*]`` section and *model*
+    matches one of that provider's declared models; the variant value must
+    be a non-empty string.  Invalid entries are skipped with a warning.
+    Flat ``"Provider/model" = variant`` entries belong to the global channel
+    (``collect_variants``) and are ignored here.
+
+    Args:
+        toml_data: The parsed TOML dictionary from ``parse_toml``.
+
+    Returns:
+        A dict mapping agent name → validated ``"Provider/model"`` →
+        variant name mappings.
+    """
+    zoo = toml_data.get("zoo")
+    if not isinstance(zoo, dict):
+        return {}
+    variants = zoo.get("variants")
+    if not isinstance(variants, dict):
+        return {}
+    agents = toml_data.get("agent")
+    if not isinstance(agents, dict):
+        return {}
+    providers = toml_data.get("provider")
+    if not isinstance(providers, dict):
+        return {}
+
+    valid: dict[str, dict[str, str]] = {}
+    for agent_name, subtable in variants.items():
+        if not isinstance(subtable, dict):
+            continue
+        if agent_name not in agents:
+            warn(f"zoo.variants.{agent_name} 不是已声明的 agent，跳过整个子表")
+            continue
+        valid_sub: dict[str, str] = {}
+        for key, variant_name in subtable.items():
+            parts = key.split("/") if isinstance(key, str) else []
+            if len(parts) != 2 or not parts[0] or not parts[1]:
+                warn(
+                    f"zoo.variants.{agent_name} 键格式无效"
+                    f'（应为 "Provider/model"）: {key}，跳过'
+                )
+                continue
+            provider, model = parts
+            prov_data = providers.get(provider)
+            if not isinstance(prov_data, dict):
+                warn(
+                    f"zoo.variants.{agent_name} 中 provider 不存在:"
+                    f" {provider}（{key}），跳过"
+                )
+                continue
+            models = prov_data.get("models")
+            if not isinstance(models, dict) or model not in models:
+                warn(
+                    f"zoo.variants.{agent_name} 中模型不存在: {model}"
+                    f"（{key}），跳过"
+                )
+                continue
+            if not isinstance(variant_name, str) or not variant_name:
+                warn(
+                    f"zoo.variants.{agent_name} 的 variant 名为空或非字符串"
+                    f"（{key}），跳过"
+                )
+                continue
+            valid_sub[key] = variant_name
+        valid[agent_name] = valid_sub
     return valid
 
 
