@@ -482,6 +482,54 @@ def build_pi_models_config(toml_data: dict, env: dict[str, str]) -> dict:
     return {"providers": pi_providers}
 
 
+def collect_variants(toml_data: dict) -> dict[str, str]:
+    """Collect and validate the ``[zoo.variants]`` mapping for opencode model.json.
+
+    Each key must have the form ``"Provider/model"`` where *Provider* matches
+    a declared ``[provider.*]`` section and *model* matches one of that
+    provider's declared models.  Invalid entries are skipped with a warning.
+
+    Args:
+        toml_data: The parsed TOML dictionary from ``parse_toml``.
+
+    Returns:
+        A dict of validated ``"Provider/model"`` → variant name mappings.
+    """
+    zoo = toml_data.get("zoo")
+    if not isinstance(zoo, dict):
+        return {}
+    variants = zoo.get("variants")
+    if not isinstance(variants, dict):
+        return {}
+
+    providers = toml_data.get("provider", {})
+    if not isinstance(providers, dict):
+        return {}
+
+    valid: dict[str, str] = {}
+    for key, variant_name in variants.items():
+        parts = key.split("/") if isinstance(key, str) else []
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            warn(
+                f'zoo.variants 键格式无效（应为 "Provider/model"）: {key}，跳过'
+            )
+            continue
+        provider, model = parts
+        prov_data = providers.get(provider)
+        if not isinstance(prov_data, dict):
+            warn(f"zoo.variants 中 provider 不存在: {provider}（{key}），跳过")
+            continue
+        models = prov_data.get("models")
+        if not isinstance(models, dict) or model not in models:
+            warn(f"zoo.variants 中模型不存在: {model}（{key}），跳过")
+            continue
+        if not isinstance(variant_name, str) or not variant_name:
+            warn(f"zoo.variants 的 variant 名为空或非字符串（{key}），跳过")
+            continue
+        valid[key] = variant_name
+    return valid
+
+
 def main() -> None:
     """Main entry point: load configuration, back up existing files, generate configs, validate, and install."""
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -568,6 +616,7 @@ def main() -> None:
     # ── Clean OpenCode state cache ───────────────────────────────────
     header("清理 OpenCode 状态缓存")
 
+    variant_model_json: str | None = None
     if has_opencode:
         opencode_state_dir = os.path.join(
             os.path.expanduser("~"), ".local", "state", "opencode"
@@ -577,6 +626,22 @@ def main() -> None:
             info(f"✓ 已删除状态缓存: {opencode_state_dir}")
         else:
             info("✓ 无已有状态缓存")
+
+        # Recreate the state dir and write model.json with the variants
+        # declared in [zoo.variants], so the TUI/CLI restores the default
+        # model variant after the cache wipe.
+        variants = collect_variants(toml_data)
+        if variants:
+            os.makedirs(opencode_state_dir, exist_ok=True)
+            variant_model_json = os.path.join(opencode_state_dir, "model.json")
+            model_data = {
+                "recent": [],
+                "favorite": [],
+                "variant": variants,
+            }
+            with open(variant_model_json, "w", encoding="utf-8") as f:
+                json.dump(model_data, f, indent=2, ensure_ascii=False)
+                f.write("\n")
 
     # ── Generate configs ─────────────────────────────────────────────
     header("生成配置")
@@ -707,6 +772,8 @@ def main() -> None:
     if has_opencode:
         info(f"✅ 配置已写入: {opencode_json}")
         info(f"✅ TUI 配置已写入: {tui_jsonc}")
+        if variant_model_json:
+            info(f"✅ 模型 variants 已写入: {variant_model_json}")
     if has_pi:
         info(f"✅ 配置已写入: {pi_settings_path}, {pi_models_path}")
 

@@ -502,6 +502,12 @@ Authorization = "Basic {env:JSD_BASIC_AUTH}"
 context_word_limit = 200
 prompt_word_limit = 500
 
+# ── Variants ──────────────────────────────────────────────────────────────────
+
+[zoo.variants]
+"Cambricon/glm-5.2"            = "high"
+"OpenCodeGo/deepseek-v4-flash" = "max"
+
 # ── Context ───────────────────────────────────────────────────────────────────
 
 [zoo.context]
