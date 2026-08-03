@@ -258,6 +258,21 @@ output      = 1.2
 cache_read  = 0.02
 cache_write = 0.25
 
+[provider.OpenAI.models."gpt-5.5"]
+name      = "gpt-5.5"
+id        = "gpt-5.5"
+reasoning = true
+
+[provider.OpenAI.models."gpt-5.5".limit]
+context = 272000
+output  = 128000
+
+[provider.OpenAI.models."gpt-5.5".cost]
+input       = 5
+output      = 30
+cache_read  = 0.5
+cache_write = 0
+
 # ── OpenCodeGo ────────────────────────────────────────────────────────────────
 
 [provider.OpenCodeGo]
