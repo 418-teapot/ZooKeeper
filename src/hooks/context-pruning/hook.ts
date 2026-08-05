@@ -111,6 +111,26 @@ export interface ContextNudgeConfig extends NudgeConfig {
 }
 
 /**
+ * Per-subsystem gate config for the decompression strategy.
+ *
+ * Strictly parsed: the section is absent (`undefined`) unless both
+ * keys are present and valid.  `enabled` is the hook-level gate —
+ * `false` is parsed but disabled (no tool registration).
+ * `rejectPercent` is defined whenever the section is returned.
+ */
+export interface DecompressConfig {
+  /** Hook-level enable gate.  `false` → parsed but disabled. */
+  enabled?: boolean;
+  /**
+   * Rejection threshold (percent): restore of an active compression
+   * block is rejected when the estimated post-restore tokens exceed
+   * context_limit × rejectPercent / 100.  Present whenever the
+   * section is returned.
+   */
+  rejectPercent?: number;
+}
+
+/**
  * Unified context-pruning configuration.
  *
  * Replaces the old flat `DedupOptions` used by the hook.  Each
@@ -147,6 +167,11 @@ export interface ContextPruningConfig {
    * Undefined → the subsystem is silently absent (no tool, no nudge).
    */
   compress?: CompressConfig;
+  /**
+   * Decompress strategy gate & options (`[zoo.context.decompress]`).
+   * Undefined → the subsystem is silently absent (no tool).
+   */
+  decompress?: DecompressConfig;
 }
 
 // ---------------------------------------------------------------------------

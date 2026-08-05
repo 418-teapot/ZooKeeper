@@ -1,9 +1,26 @@
 # 上下文剪枝设计文档：从内置 Compaction 到框架无关的统一剪枝架构
 
-**版本:** 2.9
-**日期:** 2026-08-02
+**版本:** 3.0
+**日期:** 2026-08-05
 **分类:** 技术架构文档 / 上下文管理
 
+> **3.0 更新说明：** decompress 召回工具交付（2026-08-05，decompress
+> 新增 39 例 TS 测试——核心 12 + 工具集成 18 + 配置解析 8 + compress
+> 文案 1）：§4 新增 §4.10 as-built 小节——**压缩块召回闭环**（按块寻址
+> `b<N>` 双结果分流：`active=true` → restore 失活块下轮原位重现（视图
+> 操作，原文从未离开存储）；`active=false` → recall 只读幂等立即返回
+> 持久化摘要正文，零状态变更零视图影响）、`deactivatedBy` 区分失活原因
+> （未设置 = 被更大块消费 / `"user"` = 工具主动恢复，记录永不删除）、
+> 回胀门禁 `after = currentPromptTokens + (compressedTokens −
+> summaryTokens)` 超 `contextLimit × reject_percent / 100` 拒绝（边界
+> 放行、limit 缺失跳过）、`[zoo.context.decompress]` 严格解析（缺键/
+> 非法 → 单次 warn + 整节缺席，零默认值零兜底）、工具薄壳镜像 compress
+> 工厂（restore 单行 ToolResult 永不含原文、recall 截断 16000 字符
+> ≈4K tokens）、tool/config 双 hook 与 compress 并列注册；§8 路线图
+> V4 行 decompress 标记 ✅；§9.8 三层记忆架构（索引行指针 + state 全量
+> 保留 + decompress 召回 + wiki 记忆）召回端闭环。原 §4.10 认知收获
+> 顺延为 §4.11。
+>
 > **2.9 更新说明：** 上下文压力提醒系统（nudge）交付（2026-08-02，
 > 1246 TS 测试全绿，覆盖率 96.54%）：§4 新增 §4.9 as-built 小节——
 > **单锚点水位计**（全部持久化状态为一个数字 `lastNudgeTokens`，
@@ -670,8 +687,9 @@ ACP（`~/Code/Agent/opencode-acp`）是 DCP 的 fork，修复 39 个 bug，
 已实现**观测层 + 统一 marks 剪枝核心（手动 sweep + 自动 dedup）+ 批量释放
 + 持久化 + 手动压缩（/dcp compress，机械摘要 MVP）+ 折叠视图观测接线 +
 range 模式 compress 工具（LLM 驱动，§4.8）+ 上下文压力提醒（单锚点
-水位计 nudge，§4.9）**（截至 2026-08-02，TS 测试
-1246 全绿）。核心逻辑在 `src/core/pruning/`（框架无关），OpenCode 适配
+水位计 nudge，§4.9）+ decompress 召回工具（restore/recall，§4.10）**
+（截至 2026-08-05，TS 测试全绿，decompress 新增 39 例）。核心逻辑在
+`src/core/pruning/`（框架无关），OpenCode 适配
 在 `src/hooks/`、`src/tools/` 与 `src/opencode.ts`。
 
 ### 4.1 架构总览（统一 producer 模型）
@@ -1231,7 +1249,101 @@ provider 不上报 limit 时缺失即跳过（§9 风险 R2）。
   limit 缺失/非法配置单次 warn/两级文案替换）；全仓 1246 TS 测试全绿，
   TS 覆盖率 96.54%
 
-### 4.10 认知收获（仍然成立的）
+### 4.10 decompress 召回工具（压缩块恢复 + 摘要召回，✅ 已实现 2026-08-05）
+
+compress 的反向操作：模型按块寻址（`b<N>`，如 `b3`）把压缩块的内容取回。
+核心逻辑在 `src/core/pruning/decompress.ts`（纯函数、框架无关），OpenCode
+适配在 `src/tools/decompress.ts`（镜像 compress.ts 工厂模式）。`resolveTarget`
+按块 `active` 状态分流两种结果：
+
+- **restore**（`active=true`，失活块）：`applyDecompress` 置
+  `active=false` + `deactivatedBy="user"`，下轮 transform 停止折叠，
+  原始消息**原位重现**。视图操作——原文从未离开会话存储，恢复只是停止
+  遮挡，无复制无迁移
+- **recall**（`active=false`，被更大块消费/锚点失效/曾恢复）：只读幂等，
+  立即返回 state 保留的完整摘要正文，**零状态变更零视图影响**，重复
+  调用不报错
+
+#### deactivatedBy 语义（失活原因区分）
+
+可选字段区分失活原因：**未设置** = 被更大块消费（range.ts 消费路径，
+§4.8）；`"user"` = decompress 工具主动恢复。持久化 roundtrip 完备
+（marks.ts 读写两侧），**记录永不删除**——失活原因是实体属性，与
+marks/块"永不删除"纪律一致；`syncBlocks` 永不复活已失活块，失活即
+恢复。
+
+#### 回胀门禁（evaluateGate，仅 restore 路径）
+
+```
+after = currentPromptTokens + (compressedTokens − summaryTokens)
+after > contextLimit × rejectPercent / 100 → 拒绝（throw 响亮中文指导）
+```
+
+- 拒绝文案含预估回胀量（`原内容 − 摘要`）、阈值（`rejectPercent% ×
+  contextLimit`）、替代方案（**先压缩其他段腾出空间**再恢复）；边界
+  `after == threshold` 放行
+- `contextLimit` 缺失（provider 不上报 `model.limit.context`）→ 跳过
+  门禁（对齐 nudge R2 缺失即跳过，§4.9）
+- **同视图纪律**：API 总量为折叠口径，delta 恰为该块视图净占用；已剪枝
+  输出仍是占位符使门禁保守高估（向安全方向偏）
+- `currentPromptTokens` 复用 metrics.ts 的 `findLastCompletedAssistant`
+  + 启发式尾段估算（`computePromptTokens`，工具薄壳内）
+
+#### 配置严格解析（[zoo.context.decompress]）
+
+`config.toml` 两键：`enabled`（boolean）+ `reject_percent`（整数
+1-100）。镜像 §4.9 严格化（`parseContextConfig`，src/opencode.ts）：
+
+- 节缺席 → undefined（工具静默缺席）
+- 任一键缺失/类型错/越界 → 单次 `decompress_config_invalid` warn +
+  整节 undefined
+- `enabled = false` 合法关闭；代码零默认值零兜底，config.toml 唯一
+  事实来源
+- 兜底（防御陈旧配置）：`rejectPercent` 缺失时工具 execute 抛响亮配置
+  引导报错（提示补配 `enabled = true` 与 `reject_percent`）
+
+#### 工具薄壳与执行（src/tools/decompress.ts）
+
+镜像 compress.ts 工厂模式（client + config 闭包捕获）。execute 流程：
+`resolveSessionId` → 参数防御（单字符串 `blockId`）→ 配置检查 →
+`resolveTarget` 分流：
+
+- **restore 成功路径**：`fetchSessionMessages` → 算
+  `currentPromptTokens` → `evaluateGate`（拒绝 → throw，状态不动）→
+  `applyDecompress` → `pendingViewChange = true` + `snapshotRefs` +
+  `saveSessionState` → `decompress_restored` 日志 + ignored 通知
+  （best-effort）→ 单行 ToolResult（`已恢复压缩块 bN 的 N 条原始消息，
+  约回胀 X tokens，下一轮上下文生效`，**永不含原文**）
+- **recall 路径**：返回截断摘要——`RECALL_MAX_CHARS = 16000` 字符
+  （≈4K tokens），超限截断尾部注明省略字符数；发 `decompress_recalled`
+  日志但**不发 ignored 通知**（零视图变化，零噪音）
+
+#### 注册接线（src/opencode.ts）
+
+- tool hook 内与 compress **并列注册**（`decompress.enabled === true`
+  才出席；节缺席/非法/`false` 均不注册）
+- config hook 将 `"decompress"` **追加**到 `experimental.primary_tools`
+  （保留既有条目、幂等去重，同一门控）
+
+#### 观测
+
+`decompress_restored` / `decompress_recalled`（info，extra 含
+`blockId`/`kind`/回胀量）经 JSONL 日志接入 zinspect `hook:event`
+聚合，无需改 zinspect。
+
+#### 后续杠杆（本期未做）
+
+- 块头/索引行召回提示文案与系统 prompt 教学
+  （`experimental.chat.system.transform` 通道现成，可参考 ACP
+  `DECOMPRESS_SYSTEM_EXTENSION`）
+- token 量级展示；recompress / 子代理结果展开（独立计划）
+
+#### 已知边界
+
+内置 compaction **物理删除消息**后 restore 只能部分恢复（固有边界，
+ToolResult 文案不承诺完整性）；recall 不受影响（摘要自持久化）。
+
+### 4.11 认知收获（仍然成立的）
 
 1. **两阶段必须是分离的代码路径**（或在同一 handler 内严格先清后标），
    否则标记-清理边界产生 off-by-one（§3.3）
@@ -1615,7 +1727,7 @@ DCP 意味着增加 `dcp.jsonc`，破坏现有配置管理模型。
 | +2 | ~~zinspect `stats` 新增剪枝回收 section（`--pruning` 标志与 `--tokens`/`--hooks` 同构；读 JSONL 日志的 `prune_completed`/`*_marked`/`*_released` 事件）+ `impact` 聚合改 `hook:event` 复合键消除信号稀释~~（2026-07-27 决策：不做 `/dcp stats` 聊天命令、不加独立子命令） | §5.4 | ✅ 已完成（2026-07-31） |
 | V3 | ~~compress 工具注册~~ ✅、~~mNNNN 引用~~ ✅、~~LLM 驱动摘要（工具参数承载）~~ ✅（2026-07-31，§4.8）、~~nudge 系统~~ ✅（单锚点水位计，2026-08-02，§4.9）；剩余：pendingManualTrigger 手动触发路径 | §3.3 / §3.4 / §3.6 / §5.2-5.3 | ✅ 大部分完成；剩余 pendingManualTrigger |
 | V3.5 | ~~T2 摘要再压缩~~ **已否决**（2026-08-01，§9.8：保真度需求是断崖，中间密度层无真实消费者；改为索引行 + 召回 + wiki 记忆三层） | §3.8.1 | ❌ 不做 |
-| V4 | Message 模式压缩、decompress/recompress、子代理结果展开 | §3.4 / §5.4 | V3 |
+| V4 | Message 模式压缩、~~decompress 工具~~ ✅（restore/recall，2026-08-05，§4.10）、recompress、子代理结果展开 | §3.4 / §5.4 | V3 |
 | 另行规划 | pi 宿主适配（核心已框架无关，缺 transform 接线） | — | pi 侧 hook 能力确认 |
 
 **明确不做/推迟**：块嵌套（复杂度错配）、用户可覆盖提示词、Toast 通知、

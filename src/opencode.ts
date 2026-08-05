@@ -43,6 +43,7 @@ import type {
   CompressConfig,
   ContextNudgeConfig,
   ContextPruningConfig,
+  DecompressConfig,
 } from "./hooks/context-pruning/index.js";
 import { nudgeDirectWork } from "./hooks/direct-work-nudge";
 import { recoverJsonError } from "./hooks/json-error-nudge";
@@ -58,6 +59,10 @@ import {
   type CompressToolDefinition,
   createCompressTool,
 } from "./tools/compress";
+import {
+  createDecompressTool,
+  type DecompressToolDefinition,
+} from "./tools/decompress";
 import { initLogger, log, setSessionId } from "./utils/logger.js";
 
 // ---------------------------------------------------------------------------
@@ -381,6 +386,37 @@ function parseContextConfig(zooConfig: any): ContextPruningConfig {
     }
   }
 
+  // ── Parse decompress section ────────────────────────────────────
+  // Both keys are required when the section is present.  Any missing,
+  // wrong-typed, or out-of-range value invalidates the WHOLE section
+  // (fail to skip — the subsystem is silently absent) and logs exactly
+  // one warn.  `enabled: false` is valid — present but disabled.
+  let decompress: DecompressConfig | undefined;
+  if (c.decompress !== undefined) {
+    const dm = c.decompress as Record<string, unknown>;
+    const keyChecks: Array<[string, unknown, (v: unknown) => boolean]> = [
+      ["enabled", dm.enabled, (v) => typeof v === "boolean"],
+      [
+        "reject_percent",
+        dm.reject_percent,
+        (v) =>
+          typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 100,
+      ],
+    ];
+    const bad = keyChecks.find(([, value, check]) => !check(value));
+    if (bad) {
+      log("config", "decompress_config_invalid", "", undefined, "warn", {
+        key: bad[0],
+        value: bad[1],
+      });
+    } else {
+      decompress = {
+        enabled: dm.enabled as boolean,
+        rejectPercent: dm.reject_percent as number,
+      };
+    }
+  }
+
   return {
     enabled,
     protectedMessages,
@@ -397,6 +433,7 @@ function parseContextConfig(zooConfig: any): ContextPruningConfig {
       protectedTools: peProtectedTools,
     },
     compress,
+    decompress,
   };
 }
 
@@ -764,31 +801,44 @@ async function runAfterHandlers(
 }
 
 // ---------------------------------------------------------------------------
-// Compress tool hooks
+// Compress / decompress tool hooks
 // ---------------------------------------------------------------------------
 
 /**
  * Build the tool-hooks map registered on the plugin.
  *
  * The range-mode compress tool is registered only when
- * `[zoo.context.compress].enabled` is explicitly `true`.  An absent
- * section, an invalid section (config parse dropped it), or an explicit
- * `false` all mean the tool stays unregistered.  Returns `undefined` when
- * disabled so the `tool` hook key stays absent.
+ * `[zoo.context.compress].enabled` is explicitly `true`; the decompress
+ * tool only when `[zoo.context.decompress].enabled` is explicitly `true`.
+ * An absent section, an invalid section (config parse dropped it), or an
+ * explicit `false` all mean the corresponding tool stays unregistered.
+ * Returns `undefined` when NO tool is enabled so the `tool` hook key stays
+ * absent.
  *
  * Exported for unit testing (the imported config cannot be overridden
  * per-test, so the gate is decided from the passed config here).
  *
  * @param client - The OpenCode client (captured by the factory closure).
  * @param contextConfig - The parsed context-pruning config.
- * @returns The tool-hooks map, or `undefined` when compress is disabled.
+ * @returns The tool-hooks map, or `undefined` when no tool is enabled.
  */
 function buildToolHooks(
   client: any,
   contextConfig: ContextPruningConfig,
-): Record<string, CompressToolDefinition> | undefined {
-  if (contextConfig.compress?.enabled !== true) return undefined;
-  return { compress: createCompressTool(client, contextConfig) };
+):
+  | Record<string, CompressToolDefinition | DecompressToolDefinition>
+  | undefined {
+  const hooks: Record<
+    string,
+    CompressToolDefinition | DecompressToolDefinition
+  > = {};
+  if (contextConfig.compress?.enabled === true) {
+    hooks.compress = createCompressTool(client, contextConfig);
+  }
+  if (contextConfig.decompress?.enabled === true) {
+    hooks.decompress = createDecompressTool(client, contextConfig);
+  }
+  return Object.keys(hooks).length === 0 ? undefined : hooks;
 }
 
 /**
@@ -812,6 +862,30 @@ function registerCompressToolInConfig(
   config.experimental.primary_tools ??= [];
   if (!config.experimental.primary_tools.includes("compress")) {
     config.experimental.primary_tools.push("compress");
+  }
+}
+
+/**
+ * Append the decompress tool to `experimental.primary_tools`.
+ *
+ * Preserves pre-existing entries and appends `"decompress"` only when
+ * `[zoo.context.decompress].enabled` is explicitly `true` (same gate as
+ * `buildToolHooks` — absent/invalid section or explicit `false` skip).
+ *
+ * Exported for unit testing.
+ *
+ * @param config - The config object being mutated by the `config` hook.
+ * @param contextConfig - The parsed context-pruning config.
+ */
+function registerDecompressToolInConfig(
+  config: any,
+  contextConfig: ContextPruningConfig,
+): void {
+  if (contextConfig.decompress?.enabled !== true) return;
+  config.experimental ??= {};
+  config.experimental.primary_tools ??= [];
+  if (!config.experimental.primary_tools.includes("decompress")) {
+    config.experimental.primary_tools.push("decompress");
   }
 }
 
@@ -849,6 +923,7 @@ export async function zookeeper(input: any) {
       injectAgentPrompts(agents);
       registerSkills(config, skillsConfig);
       registerCompressToolInConfig(config, contextConfig);
+      registerDecompressToolInConfig(config, contextConfig);
 
       // Register /go slash command for plan-to-execution handoff.
       // Handoff is handled entirely in command.execute.before.
@@ -1128,6 +1203,7 @@ export {
   parseLimits,
   parseSkillsConfig,
   registerCompressToolInConfig,
+  registerDecompressToolInConfig,
   registerSkills,
   runAfterHandlers,
   sessionAgentMap,

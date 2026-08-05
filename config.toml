@@ -538,6 +538,11 @@ threshold_tokens = 2000
 # 压缩保护区（tokens）：末尾累计达到此值后不压缩
 protected_tokens = 20000
 
+[zoo.context.decompress]
+enabled = true
+# 解压拒绝阈值（百分比）
+reject_percent = 90
+
 [zoo.context.nudge]
 enabled = true
 # 温和提醒阈值

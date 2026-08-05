@@ -1511,6 +1511,150 @@ describe("contextPruningTransformHandler", () => {
   });
 
   // ===========================================================================
+  // parseContextConfig — decompress section
+  // ===========================================================================
+
+  it("parseContextConfig reads [zoo.context.decompress] section with two keys", () => {
+    const config = parseContextConfig({
+      context: {
+        decompress: {
+          enabled: true,
+          reject_percent: 90,
+        },
+      },
+    });
+    assert.equal(config.decompress?.enabled, true);
+    assert.equal(config.decompress?.rejectPercent, 90);
+  });
+
+  // ===========================================================================
+  // parseContextConfig — [zoo.context.decompress] section (strict whole-section)
+  // ===========================================================================
+
+  describe("parseContextConfig decompress section", () => {
+    const fullDecompress = {
+      enabled: true,
+      reject_percent: 90,
+    };
+
+    it("returns undefined when the section is absent (no warn)", () => {
+      const config = parseContextConfig({});
+      assert.equal(config.decompress, undefined);
+
+      const config2 = parseContextConfig({ context: { enabled: true } });
+      assert.equal(config2.decompress, undefined);
+
+      const buffer = _getBufferForTesting();
+      assert.ok(
+        !buffer.some((e) => e.event === "decompress_config_invalid"),
+        "absent section must not warn",
+      );
+    });
+
+    it("reads the full [zoo.context.decompress] section", () => {
+      const config = parseContextConfig({
+        context: { decompress: fullDecompress },
+      });
+      assert.deepEqual(config.decompress, {
+        enabled: true,
+        rejectPercent: 90,
+      });
+    });
+
+    it("missing key invalidates the whole section (warn once)", () => {
+      const config = parseContextConfig({
+        context: {
+          decompress: {
+            enabled: true,
+            // reject_percent missing
+          },
+        },
+      });
+      assert.equal(config.decompress, undefined, "whole section dropped");
+
+      const buffer = _getBufferForTesting();
+      const entries = buffer.filter(
+        (e) => e.event === "decompress_config_invalid",
+      );
+      assert.equal(entries.length, 1, "exactly one warn");
+      assert.equal(entries[0].key, "reject_percent");
+    });
+
+    it("wrong-typed values invalidate the whole section (warn once)", () => {
+      const config = parseContextConfig({
+        context: { decompress: { ...fullDecompress, enabled: "false" } },
+      });
+      assert.equal(config.decompress, undefined);
+
+      const config2 = parseContextConfig({
+        context: { decompress: { ...fullDecompress, reject_percent: "90" } },
+      });
+      assert.equal(config2.decompress, undefined);
+
+      const buffer = _getBufferForTesting();
+      const entries = buffer.filter(
+        (e) => e.event === "decompress_config_invalid",
+      );
+      assert.equal(entries.length, 2);
+    });
+
+    it("reject_percent accepts integer boundaries 1 and 100", () => {
+      const config = parseContextConfig({
+        context: { decompress: { ...fullDecompress, reject_percent: 1 } },
+      });
+      assert.equal(config.decompress?.rejectPercent, 1);
+
+      const config2 = parseContextConfig({
+        context: { decompress: { ...fullDecompress, reject_percent: 100 } },
+      });
+      assert.equal(config2.decompress?.rejectPercent, 100);
+
+      const buffer = _getBufferForTesting();
+      assert.ok(
+        !buffer.some((e) => e.event === "decompress_config_invalid"),
+        "boundary values must not warn",
+      );
+    });
+
+    it("reject_percent rejects 0, 101, and non-integers (warn once each)", () => {
+      const config = parseContextConfig({
+        context: { decompress: { ...fullDecompress, reject_percent: 0 } },
+      });
+      assert.equal(config.decompress, undefined, "0 is out of range");
+
+      const config2 = parseContextConfig({
+        context: { decompress: { ...fullDecompress, reject_percent: 101 } },
+      });
+      assert.equal(config2.decompress, undefined, "101 is out of range");
+
+      const config3 = parseContextConfig({
+        context: { decompress: { ...fullDecompress, reject_percent: 90.5 } },
+      });
+      assert.equal(config3.decompress, undefined, "non-integer is invalid");
+
+      const buffer = _getBufferForTesting();
+      const entries = buffer.filter(
+        (e) => e.event === "decompress_config_invalid",
+      );
+      assert.equal(entries.length, 3);
+    });
+
+    it("enabled=false is valid (present but disabled)", () => {
+      const config = parseContextConfig({
+        context: { decompress: { ...fullDecompress, enabled: false } },
+      });
+      assert.equal(config.decompress?.enabled, false);
+      assert.equal(config.decompress?.rejectPercent, 90);
+
+      const buffer = _getBufferForTesting();
+      assert.ok(
+        !buffer.some((e) => e.event === "decompress_config_invalid"),
+        "enabled=false must not warn",
+      );
+    });
+  });
+
+  // ===========================================================================
   // Batch release integration tests
   // ===========================================================================
 

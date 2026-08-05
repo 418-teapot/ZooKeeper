@@ -12,6 +12,7 @@ export type {
   CompressConfig,
   ContextNudgeConfig,
   ContextPruningConfig,
+  DecompressConfig,
   ProducerGateConfig,
 } from "./hook.js";
 export { contextPruningTransformHandler } from "./hook.js";

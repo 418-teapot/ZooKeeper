@@ -585,7 +585,7 @@ describe("compress tool registration gate", () => {
 // ---------------------------------------------------------------------------
 
 describe("config hook — primary_tools", () => {
-  it("appends compress preserving pre-existing entries", async () => {
+  it("appends compress + decompress preserving pre-existing entries", async () => {
     const plugin = (await zookeeper({})) as any;
     const config = { experimental: { primary_tools: ["bash", "edit"] } };
 
@@ -595,6 +595,7 @@ describe("config hook — primary_tools", () => {
       "bash",
       "edit",
       "compress",
+      "decompress",
     ]);
   });
 
@@ -604,6 +605,9 @@ describe("config hook — primary_tools", () => {
 
     await plugin.config(config);
 
-    assert.deepEqual(config.experimental?.primary_tools, ["compress"]);
+    assert.deepEqual(config.experimental?.primary_tools, [
+      "compress",
+      "decompress",
+    ]);
   });
 });
