@@ -304,7 +304,7 @@ describe("persisted ref registry", () => {
     const folded: ContextMessageEntry[] = [
       msg("user", "u1", [textPart("q1")]),
       msg("assistant", "a1", [textPart("r1")]),
-      msg("user", "zoo-fold-b1", [textPart("[压缩块 b1 summary")]),
+      msg("user", "zoo-fold-b1", [textPart("[Compression Block b1] summary")]),
       msg("assistant", "a3", [textPart("r3")]),
       msg("user", "u4", [textPart("q4")]),
       msg("user", "u5", [textPart("q5")]),

@@ -26,7 +26,6 @@ import {
   getOrCreateSessionState,
   loadSessionState,
   removeSession,
-  type SessionState,
   saveSessionState,
 } from "./marks.js";
 import {
@@ -40,6 +39,7 @@ import {
   SUPERSEDED_BLOCKS_LEAD_IN,
   validateRange,
 } from "./range.js";
+import type { SessionState } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Constants & helpers

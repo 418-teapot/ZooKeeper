@@ -19,8 +19,8 @@ import {
   createBlock,
   deleteSessionState,
   loadSessionState,
-  PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
+  type SweepToolPart,
 } from "../../core/pruning/index.js";
 import {
   _clearAllSessionsForTesting,
@@ -29,7 +29,7 @@ import {
   pendingCount,
   reclaimedTokens,
 } from "../../core/pruning/marks.js";
-import type { SweepToolPart } from "../../core/pruning/types.js";
+import { PRUNED_TOOL_ERROR_INPUT_REPLACEMENT } from "../../core/pruning/types.js";
 import { parseContextConfig } from "../../opencode.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import { contextPruningTransformHandler } from "./index.js";
@@ -2638,9 +2638,10 @@ describe("contextPruningTransformHandler", () => {
       );
       const summaryText =
         (messages2[1].parts?.[0] as { text?: string }).text ?? "";
+      // Synthetic text IS the block summary (only a ref tag may follow).
       assert.ok(
-        summaryText.startsWith("[压缩块 b1"),
-        "summary starts with b1 prefix",
+        summaryText.startsWith("test summary."),
+        "summary text is the block summary",
       );
 
       // messages2[2] is a2 (kept).

@@ -31,13 +31,11 @@ import { getModelLimit } from "../core/model-limits.js";
 import {
   applyDecompress,
   evaluateGate,
-  resolveTarget,
-  truncateRecallSummary,
-} from "../core/pruning/decompress.js";
-import {
   getOrCreateSessionState,
+  resolveTarget,
   saveSessionState,
   snapshotRefs,
+  truncateRecallSummary,
 } from "../core/pruning/index.js";
 import type { DcpClient } from "../hooks/context-command/index.js";
 import type { ContextPruningConfig } from "../hooks/context-pruning/index.js";

@@ -1,5 +1,6 @@
 /**
- * Tests for the context-pruning barrel — pruneToolOutputs.
+ * Tests for the context-pruning prune module (`src/core/pruning/prune.ts`)
+ * — `pruneToolOutputs` / `pruneToolErrors`.
  *
  * Covers: empty state → noop, pre-populated effective marks → output
  * replaced, non-effective (pending) marks NOT replaced, placeholder
@@ -11,16 +12,18 @@ import { _resetForTesting } from "../../utils/logger.js";
 import type { ContextMessageEntry } from "../metrics.js";
 import { estimateTokenCount } from "../metrics.js";
 import {
-  _clearAllSessionsForTesting,
   addMark,
   getOrCreateSessionState,
-  PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
-  PRUNED_TOOL_INPUT_REPLACEMENT,
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
   pruneToolErrors,
   pruneToolOutputs,
 } from "./index.js";
-import type { SweepToolPart } from "./types.js";
+import { _clearAllSessionsForTesting } from "./marks.js";
+import {
+  PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
+  PRUNED_TOOL_INPUT_REPLACEMENT,
+  type SweepToolPart,
+} from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Teardown
@@ -857,7 +860,7 @@ describe("pruneToolOutputs with input-heavy tools", () => {
     assert.equal(part.state?.output, "asked question");
   });
 
-  it("question tool: array input replaced entirely, output intact", () => {
+  it("question tool: top-level array input skipped, output intact", () => {
     const state = getOrCreateSessionState("sess-c2-array-input");
     addMark(state, "call-a", 100, true, "tool-output");
 
@@ -867,15 +870,15 @@ describe("pruneToolOutputs with input-heavy tools", () => {
       ]),
     ];
 
-    pruneToolOutputs(state, messages);
+    const result = pruneToolOutputs(state, messages);
+
+    // Top-level array inputs are skipped — the trim branch only handles
+    // plain objects (unified with pruneToolErrors).
+    assert.equal(result.length, 0, "top-level array input is skipped");
 
     const part = messages[0].parts?.[0] as SweepToolPart;
-    // Input replaced entirely.
-    assert.equal(
-      part.state?.input,
-      PRUNED_TOOL_INPUT_REPLACEMENT,
-      "array input replaced with placeholder",
-    );
+    // Input untouched (array skipped, not replaced).
+    assert.deepEqual(part.state?.input, ["opt1", "opt2"]);
     // Output untouched.
     assert.equal(part.state?.output, "asked question");
   });

@@ -28,10 +28,10 @@ import {
   planCompression,
   previewFold,
   reclaimedTokens as reclaimedTokensDerived,
+  runSweep,
   saveSessionState,
   snapshotRefs,
 } from "../../core/pruning/index.js";
-import { runSweep } from "../../core/pruning/producers/sweep.js";
 import type { ContextPruningConfig } from "../../hooks/context-pruning/index.js";
 import { log } from "../../utils/logger.js";
 
@@ -213,7 +213,7 @@ export async function handleDcpCommand(
   let storageCount: number | undefined;
   try {
     if (state) {
-      const stateBlocks: import("../../core/pruning/blocks.js").CompressionBlock[] =
+      const stateBlocks: import("../../core/pruning/index.js").CompressionBlock[] =
         [];
       for (const [, block] of state.blocks) {
         stateBlocks.push(block);
@@ -362,7 +362,7 @@ async function handleSweepSubcommand(
 
   // ── Run sweep producer (collects + marks in one call) ────────────
   const state = getOrCreateSessionState(sessionID);
-  const marks = runSweep(state, messages, count);
+  const marks = runSweep(state, messages, { count });
 
   if (marks.length === 0) {
     // ── Nothing to mark ───────────────────────────────────────────

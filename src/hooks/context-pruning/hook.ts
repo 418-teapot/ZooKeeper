@@ -22,10 +22,26 @@ import {
 import {
   activeBlockCount,
   assignMessageRefs,
+  computeEligibility,
+  type DedupOptions,
+  evaluateNudge,
   foldCompressedBlocks,
   getLastCompactionBoundaryId,
+  getMessageRefById,
+  getOrCreateSessionState,
   injectMessageRefs,
+  type NudgeConfig,
+  type PurgeErrorsOptions,
+  pendingTokens as pendingTokensDerived,
+  pruneToolErrors,
+  pruneToolOutputs,
+  reclaimedTokens as reclaimedTokensDerived,
+  releaseBatch,
   resetMessageRefs,
+  resolveThresholds,
+  runDedup,
+  runPurgeErrors,
+  saveSessionState,
   setLastCompactionBoundaryId,
   snapshotRefs,
   stripHallucinatedRefs,
@@ -33,25 +49,6 @@ import {
   syncBlocks,
   ZOO_MSG_ID_CANONICAL_END_REGEX,
 } from "../../core/pruning/index.js";
-import {
-  getOrCreateSessionState,
-  pendingTokens as pendingTokensDerived,
-  reclaimedTokens as reclaimedTokensDerived,
-  releaseBatch,
-  saveSessionState,
-} from "../../core/pruning/marks.js";
-import { getMessageRefById } from "../../core/pruning/message-refs.js";
-import type { NudgeConfig } from "../../core/pruning/nudge.js";
-import {
-  computeEligibility,
-  evaluateNudge,
-  resolveThresholds,
-} from "../../core/pruning/nudge.js";
-import type { DedupOptions } from "../../core/pruning/producers/dedup.js";
-import { runDedup } from "../../core/pruning/producers/dedup.js";
-import type { PurgeErrorsOptions } from "../../core/pruning/producers/purge-errors.js";
-import { runPurgeErrors } from "../../core/pruning/producers/purge-errors.js";
-import { pruneToolErrors, pruneToolOutputs } from "../../core/pruning/prune.js";
 import { log } from "../../utils/logger.js";
 
 // ---------------------------------------------------------------------------

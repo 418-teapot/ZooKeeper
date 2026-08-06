@@ -25,9 +25,9 @@ import {
   getOrCreateSessionState,
   loadSessionState,
   removeSession,
-  type SessionState,
   saveSessionState,
 } from "./marks.js";
+import type { SessionState } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Constants & helpers

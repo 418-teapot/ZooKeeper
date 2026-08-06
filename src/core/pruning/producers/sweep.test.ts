@@ -153,6 +153,30 @@ describe("runSweep (no-arg / default)", () => {
     assert.equal(marks.length, 1);
     assert.equal(marks[0].callID, "call-1");
   });
+
+  it("treats `{ count: undefined }` as no-count mode", () => {
+    const state = getOrCreateSessionState("sess-opt-undef");
+    const messages = [
+      msg("user", "u1", [textPart("do it")]),
+      msg("assistant", "a1", [toolPart("call-1", "r1")]),
+    ];
+
+    const marks = runSweep(state, messages, { count: undefined });
+    assert.equal(marks.length, 1);
+    assert.equal(marks[0].callID, "call-1");
+  });
+
+  it("treats a negative count as no-count mode", () => {
+    const state = getOrCreateSessionState("sess-opt-negative");
+    const messages = [
+      msg("user", "u1", [textPart("do it")]),
+      msg("assistant", "a1", [toolPart("call-1", "r1")]),
+    ];
+
+    const marks = runSweep(state, messages, { count: -1 });
+    assert.equal(marks.length, 1);
+    assert.equal(marks[0].callID, "call-1");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -168,7 +192,7 @@ describe("runSweep (numeric arg)", () => {
       msg("assistant", "a3", [toolPart("call-3", "result 3")]),
     ];
 
-    const marks = runSweep(state, messages, 2);
+    const marks = runSweep(state, messages, { count: 2 });
     assert.equal(marks.length, 2);
     assert.equal(marks[0].callID, "call-3");
     assert.equal(marks[1].callID, "call-2");
@@ -182,7 +206,7 @@ describe("runSweep (numeric arg)", () => {
       msg("assistant", "a3", [toolPart("call-3", "r3")]),
     ];
 
-    const marks = runSweep(state, messages, 1);
+    const marks = runSweep(state, messages, { count: 1 });
     assert.equal(marks.length, 1);
     assert.equal(marks[0].callID, "call-3");
   });
@@ -197,7 +221,7 @@ describe("runSweep (numeric arg)", () => {
       ]),
     ];
 
-    const marks = runSweep(state, messages, 2);
+    const marks = runSweep(state, messages, { count: 2 });
     assert.equal(marks.length, 2);
     assert.equal(marks[0].callID, "call-3");
     assert.equal(marks[1].callID, "call-2");
@@ -207,7 +231,7 @@ describe("runSweep (numeric arg)", () => {
     const state = getOrCreateSessionState("sess-fewer");
     const messages = [msg("assistant", "a1", [toolPart("call-1", "r1")])];
 
-    const marks = runSweep(state, messages, 5);
+    const marks = runSweep(state, messages, { count: 5 });
     assert.equal(marks.length, 1);
     assert.equal(marks[0].callID, "call-1");
   });
@@ -216,7 +240,7 @@ describe("runSweep (numeric arg)", () => {
     const state = getOrCreateSessionState("sess-zero");
     const messages = [msg("assistant", "a1", [toolPart("call-1", "r1")])];
 
-    const marks = runSweep(state, messages, 0);
+    const marks = runSweep(state, messages, { count: 0 });
     assert.equal(marks.length, 0);
   });
 
@@ -230,7 +254,7 @@ describe("runSweep (numeric arg)", () => {
       msg("assistant", "a3", [toolPart("call-3", "r3")]),
     ];
 
-    const marks = runSweep(state, messages, 1);
+    const marks = runSweep(state, messages, { count: 1 });
     // Walk backward: call-3 (skip), call-2 (collect).
     assert.equal(marks.length, 1);
     assert.equal(marks[0].callID, "call-2");
@@ -240,7 +264,7 @@ describe("runSweep (numeric arg)", () => {
     const state = getOrCreateSessionState("sess-effective");
     const messages = [msg("assistant", "a1", [toolPart("call-1", "output")])];
 
-    runSweep(state, messages, 1);
+    runSweep(state, messages, { count: 1 });
     assert.ok(state.marks.get("call-1")?.effective);
     assert.equal(reclaimedTokens(state), state.marks.get("call-1")?.tokens);
   });

@@ -1,16 +1,36 @@
 /**
- * Shared utilities for pruning producers.
+ * Shared utilities for the context-pruning module.
  *
- * Provides turn‑protection logic and token‑reclaim estimation that are
- * common across multiple producers (dedup, purge-errors, …).
+ * Provides turn-protection logic, user-message boundary scans, and
+ * token-reclaim estimation common to the compression planner, the
+ * nudge subsystem, and the pruning producers (dedup, purge-errors,
+ * sweep).
  *
  * @module
  */
 
-import type { ContextMessageEntry } from "../../metrics.js";
-import { estimateTokenCount, isMessageIgnored } from "../../metrics.js";
-import type { SweepToolPart } from "../types.js";
-import { getCallId } from "../types.js";
+import type { ContextMessageEntry } from "../metrics.js";
+import { estimateTokenCount, isMessageIgnored } from "../metrics.js";
+import type { SweepToolPart } from "./types.js";
+import { getCallId } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Shared producer options
+// ---------------------------------------------------------------------------
+
+/**
+ * Options common to the pruning producers (dedup, purge-errors).
+ *
+ * Both producers read `turnProtection` and `protectedTools`; hook-level
+ * gating (enabled, thresholdTokens) and batch-release settings are
+ * managed by the handler config.
+ */
+export interface ProducerOptions {
+  /** Number of most recent assistant steps to protect from the strategy. */
+  turnProtection?: number;
+  /** Tool names that are excluded from the strategy.  Undefined → empty list (neutral). */
+  protectedTools?: string[];
+}
 
 // ---------------------------------------------------------------------------
 // Message-count protection boundary
@@ -47,6 +67,43 @@ export function protectedBoundary(
     }
   }
   return 0;
+}
+
+// ---------------------------------------------------------------------------
+// User-message boundary helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Find the index of the last non-ignored user message.
+ *
+ * @param messages - The session messages array.
+ * @returns Index, or `messages.length` if no non-ignored user message found.
+ */
+export function lastUserMessageIndex(messages: ContextMessageEntry[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.info?.role === "user" && !isMessageIgnored(messages[i])) {
+      return i;
+    }
+  }
+  return messages.length;
+}
+
+/**
+ * Find the index of the first non-ignored user message in the session.
+ *
+ * Ignored messages are skipped to avoid treating injected /dcp reports
+ * or other synthetic user-role messages as the "real" first user message.
+ *
+ * @param messages - The session messages array.
+ * @returns Index, or -1 if no non-ignored user message found.
+ */
+export function firstUserMessageIndex(messages: ContextMessageEntry[]): number {
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i]?.info?.role === "user" && !isMessageIgnored(messages[i])) {
+      return i;
+    }
+  }
+  return -1;
 }
 
 // ---------------------------------------------------------------------------

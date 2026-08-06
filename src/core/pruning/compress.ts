@@ -17,7 +17,15 @@ import {
   estimateTokenCount,
   isMessageIgnored,
 } from "../metrics.js";
-import { protectedBoundary } from "./producers/shared.js";
+import {
+  firstUserMessageIndex,
+  lastUserMessageIndex,
+  protectedBoundary,
+} from "./shared.js";
+
+// Re-exported here so the barrel and existing consumers (range.ts,
+// nudge.ts) that import these from ./compress.js keep working.
+export { firstUserMessageIndex, lastUserMessageIndex };
 
 // ---------------------------------------------------------------------------
 // Types
@@ -145,47 +153,6 @@ export function tokenBoundary(
     }
   }
   return 0;
-}
-
-// ---------------------------------------------------------------------------
-// Last user message
-// ---------------------------------------------------------------------------
-
-/**
- * Find the index of the last non-ignored user message.
- *
- * @param messages - The session messages array.
- * @returns Index, or `messages.length` if no non-ignored user message found.
- */
-export function lastUserMessageIndex(messages: ContextMessageEntry[]): number {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i]?.info?.role === "user" && !isMessageIgnored(messages[i])) {
-      return i;
-    }
-  }
-  return messages.length;
-}
-
-// ---------------------------------------------------------------------------
-// First user message
-// ---------------------------------------------------------------------------
-
-/**
- * Find the index of the first non-ignored user message in the session.
- *
- * Ignored messages are skipped to avoid treating injected /dcp reports
- * or other synthetic user-role messages as the "real" first user message.
- *
- * @param messages - The session messages array.
- * @returns Index, or -1 if no non-ignored user message found.
- */
-export function firstUserMessageIndex(messages: ContextMessageEntry[]): number {
-  for (let i = 0; i < messages.length; i++) {
-    if (messages[i]?.info?.role === "user" && !isMessageIgnored(messages[i])) {
-      return i;
-    }
-  }
-  return -1;
 }
 
 // ---------------------------------------------------------------------------

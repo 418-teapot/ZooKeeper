@@ -16,8 +16,11 @@ import {
   _resetForTesting as _resetModelLimitsForTesting,
   setModelLimit,
 } from "../core/model-limits.js";
-import { RECALL_MAX_CHARS } from "../core/pruning/decompress.js";
-import { assignMessageRefs, createBlock } from "../core/pruning/index.js";
+import {
+  assignMessageRefs,
+  createBlock,
+  RECALL_MAX_CHARS,
+} from "../core/pruning/index.js";
 import {
   _clearAllSessionsForTesting,
   deleteSessionState,

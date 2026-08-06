@@ -23,7 +23,7 @@
  */
 
 import type { CompressionBlock } from "./blocks.js";
-import type { SessionState } from "./marks.js";
+import type { SessionState } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Constants

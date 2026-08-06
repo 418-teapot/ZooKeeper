@@ -2,10 +2,14 @@
  * Types for the context-pruning module.
  *
  * Defines message entry and part shapes used by the mark-sweep
- * two-phase pruning mechanism.
+ * two-phase pruning mechanism, plus the shared per-session state shape
+ * (consumed by the marks and blocks state layers).
  *
  * @module
  */
+
+import type { CompressionBlock } from "./blocks.js";
+import type { Mark, PersistedNudges, PersistedRefs } from "./marks.js";
 
 // ---------------------------------------------------------------------------
 // Part & message shapes (OpenCode wire format)
@@ -29,15 +33,6 @@ export interface SweepToolPart {
 }
 
 /**
- * A text part in a session message.
- */
-export interface SweepTextPart {
-  type: string;
-  text?: string;
-  ignored?: boolean;
-}
-
-/**
  * Extract the callID from a part, checking multiple possible field names.
  *
  * OpenCode SDK may expose the call identifier as `callID` or `callId`.
@@ -48,6 +43,47 @@ export interface SweepTextPart {
 export function getCallId(part: unknown): string | undefined {
   const p = part as Record<string, unknown>;
   return (p.callID as string) ?? (p.callId as string) ?? undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Session state shape
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-session state for the unified mark-sweep pruning mechanism.
+ *
+ * - `sessionId` — the current session identifier.
+ * - `marks` — single collection of all marks (replaces old dual-map
+ *   `prune.tools` + `prune.pending`).
+ * - `lastAccessedAt` — timestamp of the last state access.
+ * - `dirty` — runtime-only flag; `true` when state was mutated since
+ *   the last persist.  NOT serialised to disk.
+ * - `pendingViewChange` — in-memory-only flag; set when a view-changing
+ *   event (compress block creation or block deactivation) occurs.
+ *   When true, the next transform bypasses the released_percent batching
+ *   gate and flushes ALL pending prune marks immediately.  NOT persisted
+ *   — loss on restart is benign.
+ */
+export interface SessionState {
+  sessionId: string;
+  marks: Map<string, Mark>;
+  blocks: Map<string, CompressionBlock>;
+  lastAccessedAt: number;
+  dirty: boolean;
+  pendingViewChange: boolean;
+  /**
+   * Ref registry snapshot (message-refs.ts writes this before save;
+   * serialised to disk).  `undefined` when no snapshot has been taken.
+   * Seeded from the persisted file on restart so a save that happens
+   * before the ref pipeline runs (e.g. a `/dcp` command) preserves it.
+   */
+  refs?: PersistedRefs;
+  /**
+   * Nudge watermark state (context-nudge subsystem).  Written by the
+   * caller before save; serialised to disk.  `undefined` when the
+   * nudge subsystem is not in use or no snapshot has been taken.
+   */
+  nudges?: PersistedNudges;
 }
 
 // ---------------------------------------------------------------------------

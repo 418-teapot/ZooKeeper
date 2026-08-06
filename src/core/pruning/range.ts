@@ -39,9 +39,9 @@ import {
   segmentInOutTokens,
   tokenBoundary,
 } from "./compress.js";
-import type { SessionState } from "./marks.js";
 import { getMessageIdByRef } from "./message-refs.js";
-import { protectedBoundary } from "./producers/shared.js";
+import { protectedBoundary } from "./shared.js";
+import type { SessionState } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Constants

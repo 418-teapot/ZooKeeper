@@ -27,7 +27,7 @@ import {
   findLastCompletedAssistant,
   measureContext,
 } from "./metrics.js";
-import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./pruning/types.js";
+import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./pruning/index.js";
 
 // ---------------------------------------------------------------------------
 // Logger cleanup

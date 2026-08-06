@@ -1,5 +1,5 @@
 /**
- * Tests for the shared pruning producer utilities.
+ * Tests for the shared context-pruning utilities.
  *
  * Covers: `protectedBoundary` (zero/high-water/ignored-message cases),
  * `collectProtectedCallIDs` (message-count window), and
@@ -7,14 +7,14 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { ContextMessageEntry } from "../../metrics.js";
-import type { SweepToolPart } from "../types.js";
-import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "../types.js";
+import type { ContextMessageEntry } from "../metrics.js";
 import {
   collectProtectedCallIDs,
   netReclaimTokens,
   protectedBoundary,
 } from "./shared.js";
+import type { SweepToolPart } from "./types.js";
+import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers

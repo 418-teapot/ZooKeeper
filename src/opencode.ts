@@ -30,11 +30,12 @@ import { MOLA_PROMPT } from "./agents/mola.js";
 import { SPIDER_PROMPT } from "./agents/spider.js";
 import { clearModelLimit, setModelLimit } from "./core/model-limits.js";
 import {
+  deleteSessionState,
+  NUDGE_PERCENT_RE,
+  removeSession,
   stripRefsFromString,
   ZOO_MSG_ID_CANONICAL_END_REGEX,
 } from "./core/pruning/index.js";
-import { deleteSessionState, removeSession } from "./core/pruning/marks.js";
-import { NUDGE_PERCENT_RE } from "./core/pruning/nudge.js";
 import { DCP_COMMAND_HANDLED, handleDcpCommand } from "./hooks/context-command";
 import type { ContextMetricsOutput } from "./hooks/context-metrics";
 import { measureContext } from "./hooks/context-metrics";

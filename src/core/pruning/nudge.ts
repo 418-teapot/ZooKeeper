@@ -22,13 +22,14 @@
  */
 
 import type { ContextMessageEntry } from "../metrics.js";
+import type { CompressionConfig } from "./compress.js";
 import {
   estimateSegmentTokens,
   firstUserMessageIndex,
   lastUserMessageIndex,
   tokenBoundary,
 } from "./compress.js";
-import { protectedBoundary } from "./producers/shared.js";
+import { protectedBoundary } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -84,19 +85,13 @@ export interface NudgeEvaluation {
 /**
  * Configuration for the compressible-window computation.
  *
- * Mirrors the compression planner's `CompressionConfig` — the nudge
+ * Alias of the compression planner's `CompressionConfig` — the nudge
  * advertises exactly the window the compress path would accept, so it
  * consumes the same triple-protection inputs (message-count, token
- * budget, phantom threshold).
+ * budget, phantom threshold).  The alias is kept so call sites read as
+ * "prune-fold configuration" without duplicating the interface body.
  */
-export interface PruneFoldConfig {
-  /** Number of most recent non-ignored messages to protect. */
-  protectedMessages: number;
-  /** Token budget to protect from the end of the session. */
-  protectedTokens: number;
-  /** Minimum estimated tokens a window must have to bypass the phantom gate. */
-  thresholdTokens: number;
-}
+export type PruneFoldConfig = CompressionConfig;
 
 /**
  * Eligibility payload for a nudge message.

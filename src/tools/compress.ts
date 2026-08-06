@@ -28,18 +28,16 @@
 
 import { formatTokens } from "../core/context-report.js";
 import type { ContextMessageEntry } from "../core/metrics.js";
-import type { CompressionConfig } from "../core/pruning/compress.js";
-import {
-  assignMessageRefs,
-  getOrCreateSessionState,
-  saveSessionState,
-  snapshotRefs,
-} from "../core/pruning/index.js";
 import {
   applyRange,
+  assignMessageRefs,
+  type CompressionConfig,
+  getOrCreateSessionState,
   resolveSpan,
+  saveSessionState,
+  snapshotRefs,
   validateRange,
-} from "../core/pruning/range.js";
+} from "../core/pruning/index.js";
 import type { DcpClient } from "../hooks/context-command/index.js";
 import type { ContextPruningConfig } from "../hooks/context-pruning/index.js";
 import { log } from "../utils/logger.js";

@@ -12,11 +12,11 @@
  */
 
 import type { ContextMessageEntry } from "../../metrics.js";
-import type { SessionState } from "../marks.js";
 import { addMark } from "../marks.js";
-import type { SweepToolPart } from "../types.js";
+import type { ProducerOptions } from "../shared.js";
+import { collectProtectedCallIDs, netReclaimTokens } from "../shared.js";
+import type { SessionState, SweepToolPart } from "../types.js";
 import { getCallId, PRUNED_TOOL_OUTPUT_REPLACEMENT } from "../types.js";
-import { collectProtectedCallIDs, netReclaimTokens } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -25,16 +25,12 @@ import { collectProtectedCallIDs, netReclaimTokens } from "./shared.js";
 /**
  * Options for the dedup producer.
  *
- * `runDedup` only reads `turnProtection` and `protectedTools`.
- * Hook-level gating (enabled, thresholdTokens) and batch-release
- * (releaseThresholdPercent) are managed by the handler config.
+ * Alias of the shared `ProducerOptions` — `runDedup` only reads
+ * `turnProtection` and `protectedTools`.  Hook-level gating (enabled,
+ * thresholdTokens) and batch-release (releaseThresholdPercent) are
+ * managed by the handler config.
  */
-export interface DedupOptions {
-  /** Number of most recent assistant steps to protect from dedup.  Undefined → skip producer. */
-  turnProtection?: number;
-  /** Tool names that are excluded from dedup.  Undefined → empty list (neutral). */
-  protectedTools?: string[];
-}
+export type DedupOptions = ProducerOptions;
 
 /**
  * A single dedup mark produced by `runDedup`.

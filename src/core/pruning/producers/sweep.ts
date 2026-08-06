@@ -22,15 +22,22 @@
  */
 
 import type { ContextMessageEntry } from "../../metrics.js";
-import { estimateTokenCount, isMessageIgnored } from "../../metrics.js";
-import type { SessionState } from "../marks.js";
 import { addMark } from "../marks.js";
-import type { SweepToolPart } from "../types.js";
+import { lastUserMessageIndex, netReclaimTokens } from "../shared.js";
+import type { SessionState, SweepToolPart } from "../types.js";
 import { getCallId, PRUNED_TOOL_OUTPUT_REPLACEMENT } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+/**
+ * Options for the sweep producer.
+ */
+export interface SweepOptions {
+  /** Maximum number of tool outputs to mark.  Undefined or negative → "no count" mode (mark all tool parts after the last user message). */
+  count?: number;
+}
 
 /**
  * A single sweep mark produced by `runSweep`.
@@ -62,30 +69,25 @@ export interface SweepMark {
  *
  * @param state - The session state (must have `marks` map).
  * @param messages - The session messages array.
- * @param count - Optional maximum number of tool outputs to mark.
+ * @param options - Optional sweep options (`count`).  `undefined`
+ *   options or a missing/negative `count` selects the no-count mode.
  * @returns Array of SweepMark items describing what was newly marked.
  */
 export function runSweep(
   state: SessionState,
   messages: ContextMessageEntry[],
-  count?: number,
+  options?: SweepOptions,
 ): SweepMark[] {
   const result: SweepMark[] = [];
+  const count = options?.count;
 
   if (count === undefined || count < 0) {
     // ── No count: mark all tool callIDs after last user message ──
     // Find the last non-ignored user message.
-    let lastUserIdx = -1;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
-      if (msg.info.role === "user" && !isMessageIgnored(msg)) {
-        lastUserIdx = i;
-        break;
-      }
-    }
+    const lastUserIdx = lastUserMessageIndex(messages);
 
     // If no user message found, there is nothing to mark.
-    if (lastUserIdx < 0) return result;
+    if (lastUserIdx >= messages.length) return result;
 
     // Mark tool parts after lastUserIdx.
     for (let i = lastUserIdx + 1; i < messages.length; i++) {
@@ -97,10 +99,9 @@ export function runSweep(
         const callID = getCallId(toolPart);
         if (!callID) continue;
 
-        const estimatedTokens = Math.max(
-          0,
-          estimateTokenCount(toolPart.state?.output) -
-            estimateTokenCount(PRUNED_TOOL_OUTPUT_REPLACEMENT),
+        const estimatedTokens = netReclaimTokens(
+          toolPart.state?.output,
+          PRUNED_TOOL_OUTPUT_REPLACEMENT,
         );
 
         // addMark is idempotent: skips if already marked.
@@ -129,10 +130,9 @@ export function runSweep(
         // Skip if already marked.
         if (state.marks.has(callID)) continue;
 
-        const estimatedTokens = Math.max(
-          0,
-          estimateTokenCount(toolPart.state?.output) -
-            estimateTokenCount(PRUNED_TOOL_OUTPUT_REPLACEMENT),
+        const estimatedTokens = netReclaimTokens(
+          toolPart.state?.output,
+          PRUNED_TOOL_OUTPUT_REPLACEMENT,
         );
 
         if (addMark(state, callID, estimatedTokens, true, "tool-output")) {

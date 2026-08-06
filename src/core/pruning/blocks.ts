@@ -15,7 +15,7 @@
  * @module
  */
 
-import type { SessionState } from "./marks.js";
+import type { SessionState } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Types

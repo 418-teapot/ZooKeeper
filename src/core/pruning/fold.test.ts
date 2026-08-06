@@ -2,7 +2,7 @@
  * Tests for the compression block fold consumer.
  *
  * Covers: basic fold (covered messages removed, summary injected at anchor),
- * first-user force-keep, synthetic marker and prefix, no-active op,
+ * first-user force-keep, synthetic marker and summary text, no-active op,
  * empty-blocks no-op, multiple blocks, deactivated blocks ignored,
  * and edge cases (anchor equals first user).
  */
@@ -89,8 +89,8 @@ describe("foldCompressedBlocks", () => {
     assert.equal(info1.id, "zoo-fold-b1");
 
     const text1 = messages[1].parts?.[0] as { text?: string };
-    assert.ok(text1?.text?.startsWith("[压缩块 b1"));
-    assert.ok(text1?.text?.includes("user asked about X"));
+    // Synthetic text is exactly the block summary (no extra prefix).
+    assert.equal(text1?.text, "user asked about X, assistant answered Y.");
 
     // msg-4 is preserved unchanged.
     assert.equal(messages[2].info.id, "msg-4");
@@ -150,7 +150,7 @@ describe("foldCompressedBlocks", () => {
     assert.equal(messages[2].info.id, "msg-4");
   });
 
-  it("creates synthetic message with correct marker and prefix", () => {
+  it("creates synthetic message with correct marker and summary text", () => {
     const state = getOrCreateSessionState(TEST_SESSION_ID);
     createBlock(
       state,
@@ -177,7 +177,8 @@ describe("foldCompressedBlocks", () => {
     assert.equal(info3.id, "zoo-fold-b1");
 
     const text3 = messages[3].parts?.[0] as { text?: string };
-    assert.ok(text3?.text?.startsWith("[压缩块 b1"));
+    // Synthetic text is exactly the block summary (no extra prefix).
+    assert.equal(text3?.text, "user asked about X, assistant answered Y.");
   });
 
   it("no active blocks → message list is byte-identical", () => {

@@ -9,8 +9,11 @@
  */
 
 import type { ContextReport } from "./metrics.js";
-import { activeBlockCount, activeReclaimedTokens } from "./pruning/blocks.js";
-import type { SessionState } from "./pruning/marks.js";
+import {
+  activeBlockCount,
+  activeReclaimedTokens,
+  type SessionState,
+} from "./pruning/index.js";
 
 // ---------------------------------------------------------------------------
 // Formatting helpers

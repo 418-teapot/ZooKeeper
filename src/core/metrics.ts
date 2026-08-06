@@ -18,7 +18,7 @@
  */
 
 import { log } from "../utils/logger.js";
-import { getCallId, PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./pruning/types.js";
+import { getCallId, PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./pruning/index.js";
 
 // ---------------------------------------------------------------------------
 // Types

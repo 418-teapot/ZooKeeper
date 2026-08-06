@@ -15,11 +15,11 @@
 
 import type { ContextMessageEntry } from "../../metrics.js";
 import { estimateTokenCount } from "../../metrics.js";
-import type { SessionState } from "../marks.js";
 import { addMark } from "../marks.js";
-import type { SweepToolPart } from "../types.js";
+import type { ProducerOptions } from "../shared.js";
+import { collectProtectedCallIDs } from "../shared.js";
+import type { SessionState, SweepToolPart } from "../types.js";
 import { getCallId, PRUNED_TOOL_ERROR_INPUT_REPLACEMENT } from "../types.js";
-import { collectProtectedCallIDs } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -28,15 +28,11 @@ import { collectProtectedCallIDs } from "./shared.js";
 /**
  * Options for the purge-errors strategy.
  *
- * `turnProtection` and `protectedTools` are read by `runPurgeErrors`;
- * gating fields (enabled, thresholdTokens) are consumed by the hook.
+ * Alias of the shared `ProducerOptions` — `runPurgeErrors` reads
+ * `turnProtection` and `protectedTools`; gating fields (enabled,
+ * thresholdTokens) are consumed by the hook.
  */
-export interface PurgeErrorsOptions {
-  /** Number of most recent assistant steps to protect from purge. */
-  turnProtection?: number;
-  /** Tool names that are excluded from purge.  Undefined → empty list (neutral). */
-  protectedTools?: string[];
-}
+export type PurgeErrorsOptions = ProducerOptions;
 
 /**
  * A single purge-errors mark produced by `runPurgeErrors`.

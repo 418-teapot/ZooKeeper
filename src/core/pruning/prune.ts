@@ -9,8 +9,7 @@
  */
 
 import type { ContextMessageEntry } from "../metrics.js";
-import type { SessionState } from "./marks.js";
-import type { SweepToolPart } from "./types.js";
+import type { SessionState, SweepToolPart } from "./types.js";
 import {
   getCallId,
   INPUT_HEAVY_TOOLS,
@@ -33,6 +32,87 @@ export interface PruneReplacement {
   beforeLen: number;
   /** Length of the placeholder replacement. */
   afterLen: number;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Length accounting for a single trimmed input-heavy tool input.
+ */
+interface TrimResult {
+  /** Length of the original input (string len or sum of field lengths). */
+  beforeLen: number;
+  /** Length of the replacement placeholder(s). */
+  afterLen: number;
+}
+
+/**
+ * Compute trim accounting for a string-typed input-heavy tool input.
+ *
+ * The caller replaces the entire input with the placeholder.  Returns
+ * null when the input is not a string.
+ *
+ * @param input - The tool input.
+ * @param placeholder - Replacement constant for this prune path.
+ * @returns Length accounting, or null when the input is not a string.
+ */
+function trimStringInput(
+  input: unknown,
+  placeholder: string,
+): TrimResult | null {
+  if (typeof input !== "string") return null;
+  return { beforeLen: input.length, afterLen: placeholder.length };
+}
+
+/**
+ * Trim a plain-object input-heavy tool input IN-PLACE: keep `filePath`,
+ * replace every other top-level field with the placeholder.
+ *
+ * Top-level arrays and non-object inputs are skipped (return null) — this
+ * branch is meant for plain records; array-valued FIELDS inside the record
+ * are replaced like any other field.
+ *
+ * @param input - The tool input (mutated in place when trimmed).
+ * @param placeholder - Replacement constant for this prune path.
+ * @returns Length accounting, or null when the input is not a non-empty
+ *   plain object.
+ */
+function trimInputHeavyObject(
+  input: unknown,
+  placeholder: string,
+): TrimResult | null {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    return null;
+  }
+
+  const record = input as Record<string, unknown>;
+  const originalKeys = Object.keys(record);
+  if (originalKeys.length === 0) return null;
+
+  // Compute beforeLen: sum of all field lengths (stringified for
+  // non-string values).
+  let beforeLen = 0;
+  for (const key of originalKeys) {
+    const val = record[key];
+    beforeLen +=
+      typeof val === "string" ? val.length : JSON.stringify(val).length;
+  }
+
+  // Keep filePath, replace every other top-level field.  Non-string
+  // fields (e.g. questions array) also get replaced with the placeholder.
+  const hasFilePath = "filePath" in record;
+  for (const key of originalKeys) {
+    if (key !== "filePath") {
+      record[key] = placeholder;
+    }
+  }
+
+  const replacedCount = hasFilePath
+    ? originalKeys.length - 1
+    : originalKeys.length;
+  return { beforeLen, afterLen: placeholder.length * replacedCount };
 }
 
 // ---------------------------------------------------------------------------
@@ -97,57 +177,27 @@ export function pruneToolOutputs(
         if (input == null) continue;
 
         // String input: replace entire input (mirrors pruneToolErrors).
-        if (typeof input === "string") {
-          const beforeLen = input.length;
-          const afterLen = PRUNED_TOOL_INPUT_REPLACEMENT.length;
-          replacedOutputs.push({ callID, beforeLen, afterLen });
+        const stringTrim = trimStringInput(
+          input,
+          PRUNED_TOOL_INPUT_REPLACEMENT,
+        );
+        if (stringTrim) {
           if (toolPart.state) {
             toolPart.state.input = PRUNED_TOOL_INPUT_REPLACEMENT;
           }
-          continue;
-        }
-
-        // Array input: replace entirely (no filePath to preserve).
-        if (Array.isArray(input)) {
-          const beforeLen = JSON.stringify(input).length;
-          const afterLen = PRUNED_TOOL_INPUT_REPLACEMENT.length;
-          replacedOutputs.push({ callID, beforeLen, afterLen });
-          if (toolPart.state) {
-            toolPart.state.input = PRUNED_TOOL_INPUT_REPLACEMENT;
-          }
+          replacedOutputs.push({ callID, ...stringTrim });
           continue;
         }
 
         // Plain object input: preserve filePath, replace other fields.
-        if (typeof input === "object") {
-          const record = input as Record<string, unknown>;
-          const originalKeys = Object.keys(record);
-          if (originalKeys.length === 0) continue;
-
-          // Compute beforeLen: sum of all field lengths (stringified for
-          // non-string values).
-          let beforeLen = 0;
-          for (const key of originalKeys) {
-            const val = record[key];
-            beforeLen +=
-              typeof val === "string" ? val.length : JSON.stringify(val).length;
-          }
-
-          // Keep filePath, replace every other top-level field.
-          // Non-string fields (e.g. questions array) also get replaced
-          // with the placeholder string.
-          const hasFilePath = "filePath" in record;
-          for (const key of originalKeys) {
-            if (key !== "filePath") {
-              record[key] = PRUNED_TOOL_INPUT_REPLACEMENT;
-            }
-          }
-
-          const replacedCount = hasFilePath
-            ? originalKeys.length - 1
-            : originalKeys.length;
-          const afterLen = PRUNED_TOOL_INPUT_REPLACEMENT.length * replacedCount;
-          replacedOutputs.push({ callID, beforeLen, afterLen });
+        // Top-level arrays and non-object inputs are skipped by the
+        // shared helper (consistent with pruneToolErrors).
+        const objectTrim = trimInputHeavyObject(
+          input,
+          PRUNED_TOOL_INPUT_REPLACEMENT,
+        );
+        if (objectTrim) {
+          replacedOutputs.push({ callID, ...objectTrim });
         }
 
         // Non-object, non-string, non-null (e.g. number, boolean):
@@ -250,41 +300,28 @@ export function pruneToolErrors(
       if (isInputHeavy) {
         // Input-heavy tool — keep filePath, replace all other
         // top-level fields with the error placeholder.
-        if (typeof input === "string") {
+        const stringTrim = trimStringInput(
+          input,
+          PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
+        );
+        if (stringTrim) {
           if (toolPart.state) {
             toolPart.state.input = PRUNED_TOOL_ERROR_INPUT_REPLACEMENT;
           }
-          const afterLen = PRUNED_TOOL_ERROR_INPUT_REPLACEMENT.length;
-          replacedInputs.push({ callID, beforeLen: input.length, afterLen });
+          replacedInputs.push({ callID, ...stringTrim });
           continue;
         }
 
-        if (typeof input !== "object" || Array.isArray(input)) continue;
-
-        const record = input as Record<string, unknown>;
-        const originalKeys = Object.keys(record);
-        if (originalKeys.length === 0) continue;
-
-        let beforeLen = 0;
-        for (const key of originalKeys) {
-          const val = record[key];
-          beforeLen +=
-            typeof val === "string" ? val.length : JSON.stringify(val).length;
+        // Plain object input: preserve filePath, replace other fields.
+        // Top-level arrays and non-object inputs are skipped by the
+        // shared helper.
+        const objectTrim = trimInputHeavyObject(
+          input,
+          PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
+        );
+        if (objectTrim) {
+          replacedInputs.push({ callID, ...objectTrim });
         }
-
-        const hasFilePath = "filePath" in record;
-        for (const key of originalKeys) {
-          if (key !== "filePath") {
-            record[key] = PRUNED_TOOL_ERROR_INPUT_REPLACEMENT;
-          }
-        }
-
-        const replacedCount = hasFilePath
-          ? originalKeys.length - 1
-          : originalKeys.length;
-        const afterLen =
-          PRUNED_TOOL_ERROR_INPUT_REPLACEMENT.length * replacedCount;
-        replacedInputs.push({ callID, beforeLen, afterLen });
         continue;
       }
 

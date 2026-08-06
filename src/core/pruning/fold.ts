@@ -11,9 +11,10 @@
  * @module
  */
 
-import { type ContextMessageEntry, isMessageIgnored } from "../metrics.js";
+import type { ContextMessageEntry } from "../metrics.js";
 import type { CompressionBlock } from "./blocks.js";
-import type { SessionState } from "./marks.js";
+import { firstUserMessageIndex } from "./shared.js";
+import type { SessionState } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -64,14 +65,7 @@ export function previewFold(
   }
 
   // Find the index of the first non-ignored user message for force-keep.
-  let firstUserIdx = -1;
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i];
-    if (msg?.info?.role !== "user") continue;
-    if (isMessageIgnored(msg)) continue;
-    firstUserIdx = i;
-    break;
-  }
+  const firstUserIdx = firstUserMessageIndex(messages);
 
   // Build the folded message list by iterating the original messages.
   const folded: ContextMessageEntry[] = [];
@@ -160,8 +154,9 @@ export function foldCompressedBlocks(
  * Build a synthetic summary message for an active compression block.
  *
  * The message carries a `synthetic: true` marker at the info level so
- * downstream code can identify it, and its text starts with the fixed
- * prefix `[压缩块 bN` followed by the block summary.
+ * downstream code can identify it.  Its text IS the block summary, which
+ * production summaries already start with — the canonical
+ * `[Compression Block bN]` header — so no extra prefix is added.
  *
  * @param block - The active compression block.
  * @returns A synthetic user message entry.
@@ -173,8 +168,6 @@ function buildSyntheticMessage(block: CompressionBlock): ContextMessageEntry {
       id: `zoo-fold-b${block.blockId}`,
       synthetic: true,
     },
-    parts: [
-      { type: "text", text: `[压缩块 b${block.blockId} ${block.summary}` },
-    ],
+    parts: [{ type: "text", text: block.summary }],
   };
 }
