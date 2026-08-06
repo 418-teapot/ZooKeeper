@@ -113,7 +113,7 @@ export function resolveTarget(
  *
  * - `contextLimit === undefined` skips the gate (allowed) — mirrors the
  *   nudge subsystem's missing-limit behavior.
- * - `after > contextLimit × rejectPercent / 100` is rejected with a
+ * - `after > contextLimit × maxFillPercent / 100` is rejected with a
  *   Chinese reason quoting the estimated post-restore tokens, the
  *   limit×percent threshold, the delta, and guidance to compress other
  *   segments first.  The boundary `after == threshold` passes.
@@ -122,23 +122,23 @@ export function resolveTarget(
  * @param block - The block being restored.
  * @param contextLimit - The model context window in tokens, or undefined
  *   to skip the gate.
- * @param rejectPercent - Reject threshold as a percentage of the limit.
+ * @param maxFillPercent - Max fill threshold as a percentage of the limit.
  * @returns The gate verdict.
  */
 export function evaluateGate(
   currentPromptTokens: number,
   block: CompressionBlock,
   contextLimit: number | undefined,
-  rejectPercent: number,
+  maxFillPercent: number,
 ): GateResult {
   if (contextLimit === undefined) return { allowed: true };
   const delta = block.compressedTokens - block.summaryTokens;
   const after = currentPromptTokens + delta;
-  const threshold = (contextLimit * rejectPercent) / 100;
+  const threshold = (contextLimit * maxFillPercent) / 100;
   if (after > threshold) {
     return {
       allowed: false,
-      reason: `恢复压缩块 b${block.blockId} 后预计上下文约 ${after} tokens，超过解压阈值 ${threshold} tokens（${rejectPercent}% × ${contextLimit}）。本次解压将回胀约 ${delta} tokens（原内容 ${block.compressedTokens} - 摘要 ${block.summaryTokens}）。请先压缩其他片段腾出空间后，再恢复该压缩块。`,
+      reason: `恢复压缩块 b${block.blockId} 后预计上下文约 ${after} tokens，超过解压阈值 ${threshold} tokens（${maxFillPercent}% × ${contextLimit}）。本次解压将回胀约 ${delta} tokens（原内容 ${block.compressedTokens} - 摘要 ${block.summaryTokens}）。请先压缩其他片段腾出空间后，再恢复该压缩块。`,
     };
   }
   return { allowed: true };

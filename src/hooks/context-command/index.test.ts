@@ -20,7 +20,7 @@ import {
   addMark,
   reclaimedTokens,
 } from "../../core/pruning/marks.js";
-import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
+import { _resetForTesting } from "../../utils/logger.js";
 import {
   DCP_COMMAND_HANDLED,
   type DcpClient,
@@ -859,55 +859,13 @@ describe("/dcp compress subcommand", () => {
     deleteSessionState(SESSION_ID);
   });
 
-  /**
-   * Create a message fixture where some segments are definitely
-   * compressible (long messages far from the protection zone).
-   *
-   * Each assistant response is long enough that the segment token
-   * estimate exceeds the summary token estimate (negative-benefit
-   * gate must pass).
-   */
-  function makeMessages(): ContextMessageEntry[] {
-    const msgs: ContextMessageEntry[] = [];
-
-    // First user message (always protected from compression).
-    msgs.push({
-      info: { role: "user", id: "u0" },
-      parts: [{ type: "text", text: "First message in session" }],
-    });
-
-    // Add 5 compressible user/assistant exchanges.  Each assistant
-    // response is a repetitive block that is long enough to beat
-    // the summary both ways (phantom gate + negative-benefit gate).
-    for (let i = 1; i <= 5; i++) {
-      msgs.push({
-        info: { role: "user", id: `u${i}` },
-        parts: [{ type: "text", text: `Step ${i}: implement feature` }],
-      });
-      // Long assistant response (~200 chars) so estimateMessageHeuristic
-      // returns many tokens per message (~50 tokens each).
-      const longText =
-        `Here are the detailed implementation steps for feature number ${i}. `.repeat(
-          10,
-        );
-      msgs.push({
-        info: { role: "assistant", id: `a${i}` },
-        parts: [{ type: "text", text: longText }],
-      });
-    }
-
-    // Protected zone messages.
-    msgs.push({
-      info: { role: "user", id: "u-last" },
-      parts: [{ type: "text", text: "Final request" }],
-    });
-    msgs.push({
-      info: { role: "assistant", id: "a-last" },
-      parts: [{ type: "text", text: "Final response" }],
-    });
-
-    return msgs;
-  }
+  /** Enable gate config — compress section strictly parsed and enabled. */
+  const enabledConfig: Parameters<typeof handleDcpCommand>[3] = {
+    dedup: {},
+    purgeErrors: {},
+    protectedMessages: 2,
+    compress: { enabled: true, thresholdTokens: 1, protectedTokens: 1 },
+  };
 
   it("enabled=false → command refuses with notice, no state writes", async () => {
     let promptText = "";
@@ -937,9 +895,10 @@ describe("/dcp compress subcommand", () => {
       `expected "压缩功能未启用" in prompt, got: ${promptText}`,
     );
 
-    // State should be empty (no writes).
+    // State should be empty (no flag, no writes).
     const state = getOrCreateSessionState("sess-compress-disabled");
     assert.equal(state.blocks.size, 0);
+    assert.equal(state.pendingManualTrigger, false);
   });
 
   it("compress section absent → command refuses with notice, no state writes", async () => {
@@ -969,60 +928,20 @@ describe("/dcp compress subcommand", () => {
       `expected "压缩功能未启用" in prompt, got: ${promptText}`,
     );
 
-    // State should be empty (no writes).
+    // State should be empty (no flag, no writes).
     const state = getOrCreateSessionState("sess-compress-absent");
     assert.equal(state.blocks.size, 0);
+    assert.equal(state.pendingManualTrigger, false);
   });
 
-  it("empty plan → replies 无可压缩内容, no state writes", async () => {
-    let promptText = "";
-    const promptClient: DcpClient = {
-      session: {
-        messages: async () => ({
-          data: [
-            {
-              info: { role: "user", id: "only-msg" },
-              parts: [{ type: "text", text: "hi" }],
-            },
-          ],
-        }),
-        prompt: async (input: {
-          path: { id: string };
-          body: {
-            noReply?: boolean;
-            parts: Array<{ type: string; text: string; ignored?: boolean }>;
-          };
-        }) => {
-          promptText = input.body.parts[0]?.text ?? "";
-        },
-      },
-    };
-
-    await handleDcpCommand(promptClient, "sess-empty-plan", "compress", {
-      dedup: {},
-      purgeErrors: {},
-      protectedMessages: 2,
-      compress: { enabled: true, thresholdTokens: 1, protectedTokens: 1 },
-    });
-
-    assert.ok(
-      promptText.includes("无可压缩内容"),
-      `expected "无可压缩内容" in prompt, got: ${promptText}`,
-    );
-
-    const state = getOrCreateSessionState("sess-empty-plan");
-    assert.equal(state.blocks.size, 0);
-  });
-
-  it("creates blocks for compressible segments, does NOT modify message list", async () => {
-    const messages = makeMessages();
-    let promptText = "";
+  it("arms the one-shot trigger and notifies; creates no blocks, fetches no messages", async () => {
+    // The client deliberately has NO session.messages — arming the trigger
+    // must not fetch the message list (the mechanical pipeline is gone).
     let promptNoReply: boolean | undefined;
     let promptIgnored: boolean | undefined;
-
+    let promptText = "";
     const client: DcpClient = {
       session: {
-        messages: async () => ({ data: messages }),
         prompt: async (input: {
           path: { id: string };
           body: {
@@ -1037,179 +956,34 @@ describe("/dcp compress subcommand", () => {
       },
     };
 
-    await handleDcpCommand(client, SESSION_ID, "compress", {
-      dedup: {},
-      purgeErrors: {},
-      protectedMessages: 2,
-      compress: { enabled: true, thresholdTokens: 1, protectedTokens: 1 },
-    });
+    await handleDcpCommand(client, SESSION_ID, "compress", enabledConfig);
 
-    // State should have blocks.
-    const state = getOrCreateSessionState(SESSION_ID);
-    assert.ok(
-      state.blocks.size > 0,
-      "expected at least one block to be created",
-    );
-
-    // Message list unchanged (two-phase discipline).
-    assert.equal(messages.length, makeMessages().length);
-
-    // Notification is ignored + noReply.
+    // Notification is ignored + noReply and tells the user about the
+    // next-turn trigger.
     assert.equal(promptNoReply, true);
     assert.equal(promptIgnored, true);
     assert.ok(
-      promptText.includes("已压缩"),
-      `expected "已压缩" in prompt, got: ${promptText}`,
+      promptText.includes("下一轮"),
+      `expected next-turn trigger notice, got: ${promptText}`,
     );
-    assert.ok(
-      promptText.includes("上下文压缩："),
-      `expected "上下文压缩：" prefix in prompt, got: ${promptText}`,
-    );
-    assert.ok(
-      promptText.includes("约回收"),
-      `expected "约回收" in prompt, got: ${promptText}`,
-    );
-    assert.ok(
-      promptText.includes("tokens"),
-      `expected "tokens" in prompt, got: ${promptText}`,
-    );
+
+    // One-shot in-memory flag set; no blocks; nothing needs persisting.
+    const state = getOrCreateSessionState(SESSION_ID);
+    assert.equal(state.pendingManualTrigger, true, "one-shot flag set");
+    assert.equal(state.blocks.size, 0, "no blocks created");
+    assert.equal(state.dirty, false, "flag is in-memory only");
   });
 
-  it("embeds a mechanically derived title in the block header", async () => {
-    const messages = makeMessages();
+  it("repeat /dcp compress keeps the flag armed (idempotent)", async () => {
     const client: DcpClient = {
-      session: {
-        messages: async () => ({ data: messages }),
-        prompt: async () => {},
-      },
+      session: { prompt: async () => {} },
     };
 
-    await handleDcpCommand(client, SESSION_ID, "compress", {
-      dedup: {},
-      purgeErrors: {},
-      protectedMessages: 2,
-      compress: { enabled: true, thresholdTokens: 1, protectedTokens: 1 },
-    });
+    await handleDcpCommand(client, SESSION_ID, "compress", enabledConfig);
+    await handleDcpCommand(client, SESSION_ID, "compress", enabledConfig);
 
     const state = getOrCreateSessionState(SESSION_ID);
-    assert.ok(state.blocks.size > 0, "expected at least one block");
-    const block = [...state.blocks.values()][0];
-    // Title is derived from the summary's first real content line (the
-    // mechanical header line and section markers are skipped).
-    assert.equal(block.title, "- Step 1: implement feature");
-    // Header format: [Compression Block b<N>] <title> — N messages, ...
-    const headerLine = block.summary.split("\n")[0];
-    assert.ok(
-      headerLine.startsWith(
-        "[Compression Block b1] - Step 1: implement feature — ",
-      ),
-      `unexpected header: ${headerLine}`,
-    );
-    assert.match(headerLine, / \d+ messages, ~\d+ in, ~\d+ out$/);
-  });
-
-  it("repeat execution is idempotent (already-compressed messages excluded)", async () => {
-    const messages = makeMessages();
-
-    const client: DcpClient = {
-      session: {
-        messages: async () => ({ data: messages }),
-        prompt: async () => {
-          // noop — first execution
-        },
-      },
-    };
-
-    // First execution — creates blocks.
-    await handleDcpCommand(client, SESSION_ID, "compress", {
-      dedup: {},
-      purgeErrors: {},
-      protectedMessages: 2,
-      compress: { enabled: true, thresholdTokens: 1, protectedTokens: 1 },
-    });
-
-    const stateAfterFirst = getOrCreateSessionState(SESSION_ID);
-    const firstBlockCount = stateAfterFirst.blocks.size;
-    assert.ok(firstBlockCount > 0, "first execution should create blocks");
-
-    // Second execution — should find nothing new to compress.
-    let secondPromptText = "";
-    const secondClient: DcpClient = {
-      session: {
-        messages: async () => ({ data: messages }),
-        prompt: async (input: {
-          path: { id: string };
-          body: {
-            noReply?: boolean;
-            parts: Array<{ type: string; text: string; ignored?: boolean }>;
-          };
-        }) => {
-          secondPromptText = input.body.parts[0]?.text ?? "";
-        },
-      },
-    };
-
-    await handleDcpCommand(secondClient, SESSION_ID, "compress", {
-      dedup: {},
-      purgeErrors: {},
-      protectedMessages: 2,
-      compress: { enabled: true, thresholdTokens: 1, protectedTokens: 1 },
-    });
-
-    const stateAfterSecond = getOrCreateSessionState(SESSION_ID);
-    assert.equal(
-      stateAfterSecond.blocks.size,
-      firstBlockCount,
-      "block count should not increase on second execution",
-    );
-
-    assert.ok(
-      secondPromptText.includes("无可压缩内容"),
-      `expected "无可压缩内容" on repeat, got: ${secondPromptText}`,
-    );
-  });
-
-  it("log includes compress_created with blockId/message count/in-out tokens", async () => {
-    const messages = makeMessages();
-    _resetForTesting();
-
-    const client: DcpClient = {
-      session: {
-        messages: async () => ({ data: messages }),
-        prompt: async () => {},
-      },
-    };
-
-    await handleDcpCommand(client, SESSION_ID, "compress", {
-      dedup: {},
-      purgeErrors: {},
-      protectedMessages: 2,
-      compress: { enabled: true, thresholdTokens: 1, protectedTokens: 1 },
-    });
-
-    const buffer = _getBufferForTesting();
-    const logEntries = buffer.filter((e) => e.event === "compress_created");
-    assert.ok(
-      logEntries.length > 0,
-      "expected at least one compress_created log entry",
-    );
-
-    for (const entry of logEntries) {
-      const e = entry as Record<string, unknown>;
-      assert.ok(typeof e.blockId === "number", "blockId should be a number");
-      assert.ok(
-        typeof e.messageCount === "number",
-        "messageCount should be a number",
-      );
-      assert.ok(typeof e.inTokens === "number", "inTokens should be a number");
-      assert.ok(
-        typeof e.outTokens === "number",
-        "outTokens should be a number",
-      );
-      assert.ok(
-        typeof e.title === "string" && (e.title as string).length > 0,
-        "title should be a non-empty string",
-      );
-    }
+    assert.equal(state.pendingManualTrigger, true, "flag stays armed");
+    assert.equal(state.blocks.size, 0);
   });
 });

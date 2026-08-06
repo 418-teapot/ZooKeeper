@@ -178,6 +178,44 @@ RESURRECTED PLAN = BROKEN TRACKING = LOST PROGRESS.
 </internal-reminder>`;
 
 // ---------------------------------------------------------------------------
+// Compress guidance (batch range segmentation teaching)
+// ---------------------------------------------------------------------------
+
+/**
+ * Teaching skeleton for batch range compression — single source of truth.
+ *
+ * Injected verbatim into the `compress` tool description and into both
+ * nudge levels via the `{TEACHING}` slot of CONTEXT_NUDGE_TEMPLATE, so
+ * the model sees the same segmentation rules at every touch point.
+ * Written in Chinese to match the compress tool description language.
+ */
+export const COMPRESS_GUIDANCE = `**压缩分段要点：**
+
+1. 重要信息不压缩：当前任务、关键决策与约束、文件路径、未完成验证的结论，都应排除在压缩范围之外。
+2. 按用户请求与任务委派边界分段：一个范围只覆盖一个主题，每块单独设 title。
+3. 保留当前任务相关的最近上下文：与当前工作紧密相关的最近对话不要压缩。
+4. 一次调用批量提交多范围：用 ranges 数组一次提交多段，减少工具往返。`;
+
+/**
+ * Template for the synthetic user message injected by the transform one
+ * turn after a `/dcp compress` command (pendingManualTrigger one-shot
+ * flag).
+ *
+ * Written in a user-instruction tone (not a reminder) — the model treats
+ * it as a direct command to call the `compress` tool.  The `{WINDOW}`
+ * placeholder is replaced at injection time with the compressible-window
+ * line (from `computeEligibility`) or a fallback line when no eligible
+ * window exists.
+ */
+export const MANUAL_COMPRESS_TEMPLATE = `请立即使用 compress 工具压缩历史上下文：
+
+{WINDOW}
+
+${COMPRESS_GUIDANCE}
+
+请现在执行：按上述要点选择一个或多个连续范围，调用 compress 工具一次性批量提交（每块一个主题、保留关键决策与文件路径）。`;
+
+// ---------------------------------------------------------------------------
 // Context nudge (context-pressure reminders)
 // ---------------------------------------------------------------------------
 
@@ -186,9 +224,9 @@ RESURRECTED PLAN = BROKEN TRACKING = LOST PROGRESS.
  * nudge phase.
  *
  * Placeholders `{HEADER}`, `{tokens}`, `{percent}`, `{limit}`,
- * `{startRef}`, `{endRef}`, `{reclaim}`, `{ACTION}` and `{EQUATION}`
- * are replaced at injection time from the evaluated level's copy slots
- * (see CONTEXT_NUDGE_LEVELS).
+ * `{startRef}`, `{endRef}`, `{reclaim}`, `{ACTION}`, `{TEACHING}` and
+ * `{EQUATION}` are replaced at injection time from the evaluated level's
+ * copy slots (see CONTEXT_NUDGE_LEVELS).
  *
  * The window line conveys the SAME boundaries the `compress` tool
  * enforces — both refs are INCLUSIVE bounds and the model picks its own
@@ -205,6 +243,8 @@ Pick your own contiguous sub-range inside — compressing everything is optional
 
 {ACTION}
 
+{TEACHING}
+
 {EQUATION}
 </internal-reminder>`;
 
@@ -219,12 +259,14 @@ export const CONTEXT_NUDGE_LEVELS = {
     action:
       "At your next natural pause, compress a closed range with the `compress` tool. Timing is your call.",
     equation: "UNCOMPRESSED HISTORY = GROWING CONTEXT = SHRINKING HEADROOM.",
+    teaching: COMPRESS_GUIDANCE,
   },
   urgent: {
     header: "CONTEXT LIMIT",
     action:
       "Finish your current atomic step, then call the `compress` tool IMMEDIATELY.\nDO NOT start new exploration. DO NOT delegate new tasks. Compress first.",
     equation: "FULL CONTEXT = TERMINATED SESSION = LOST WORK.",
+    teaching: COMPRESS_GUIDANCE,
   },
 };
 

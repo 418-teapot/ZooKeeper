@@ -8,7 +8,7 @@
  * - **restore** — the block is active: deactivate it (`deactivatedBy =
  *   "user"`) so the next transform round stops folding it and the original
  *   messages reappear in the view.  A context-limit gate rejects restores
- *   that would push the estimated prompt over `rejectPercent` of the model
+ *   that would push the estimated prompt over `maxFillPercent` of the model
  *   window.  The ToolResult is a single-line confirmation carrying the
  *   expansion amount — never the original message content.
  * - **recall** — the block is inactive (consumed, anchor invalidated, or
@@ -226,9 +226,9 @@ export function createDecompressTool(
       // config hook handed the tool a stale config — guide the user to fix
       // config.toml.
       const decompressCfg = contextConfig.decompress;
-      if (!decompressCfg || decompressCfg.rejectPercent === undefined) {
+      if (!decompressCfg || decompressCfg.maxFillPercent === undefined) {
         throw new Error(
-          "解压功能未启用：请在 config.toml 的 [zoo.context.decompress] 段配置 enabled = true 与 reject_percent（1-100 的整数）后重试。",
+          "解压功能未启用：请在 config.toml 的 [zoo.context.decompress] 段配置 enabled = true 与 max_fill_percent（1-100 的整数）后重试。",
         );
       }
 
@@ -263,7 +263,7 @@ export function createDecompressTool(
         currentPromptTokens,
         block,
         contextLimit,
-        decompressCfg.rejectPercent,
+        decompressCfg.maxFillPercent,
       );
       if (!gate.allowed) {
         // State untouched — the block stays active and nothing is saved.

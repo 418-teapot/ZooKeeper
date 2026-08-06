@@ -12,20 +12,12 @@ import {
   formatTokens,
 } from "../../core/context-report.js";
 import type { ContextMessageEntry } from "../../core/metrics.js";
+import { computeContextReport, isMessageIgnored } from "../../core/metrics.js";
 import {
-  computeContextReport,
-  estimateTokenCount,
-  isMessageIgnored,
-} from "../../core/metrics.js";
-import {
-  BLOCK_HEADER_TEMPLATE,
-  createBlock,
-  deriveBlockTitle,
   getOrCreateSessionState,
   liveBlocks,
   pendingCount as pendingCountDerived,
   pendingTokens as pendingTokensDerived,
-  planCompression,
   previewFold,
   reclaimedTokens as reclaimedTokensDerived,
   runSweep,
@@ -80,15 +72,16 @@ export interface DcpClient {
  *
  * - `""` or `"context"` → fetches session messages, computes a context
  *   report, and injects it as an ignored (LLM-invisible) message.
- * - `"compress"` → compresses historical messages that pass the phantom
- *   gate and protection zone.
+ * - `"compress"` → arms a one-shot in-memory trigger; the next transform
+ *   injects a synthetic user message driving the model to call the
+ *   `compress` tool.
  * - Any other argument → shows a short help listing available subcommands.
  *
  * @param client - OpenCode client providing session APIs.
  * @param sessionID - The current session identifier.
  * @param args - The raw arguments string after `/dcp`.
  * @param contextConfig - Optional context pruning config (needed for
- *   compress subcommand).  When absent, compress is skipped.
+ *   the compress enable gate).  When absent, compress is skipped.
  * @throws Error when the messages API or prompt API is unavailable.
  */
 export async function handleDcpCommand(
@@ -124,7 +117,7 @@ export async function handleDcpCommand(
       "/dcp            — 同上（默认）",
       "/dcp sweep      — 标记所有工具输出以在下一轮回收",
       "/dcp sweep N    — 标记最近 N 个工具输出",
-      "/dcp compress   — 压缩历史消息以释放上下文空间",
+      "/dcp compress   — 在下一轮触发模型驱动的历史压缩",
     ].join("\n");
 
     if (client?.session?.prompt) {
@@ -433,31 +426,26 @@ async function handleSweepSubcommand(
 /**
  * Handle the `/dcp compress` subcommand.
  *
- * 1. Checks the master enable gate — disabled config skips with a notice.
- * 2. Fetches session messages.
- * 3. Builds the already-compressed index set from active blocks (maps
- *    block messageIds to current message indices).
- * 4. Calls planCompression — empty plan replies "无可压缩内容".
- * 5. For each eligible segment:
- *    a. Computes anchorMessageId (first message id in segment).
- *    b. Reuses the precomputed mechanical summary from planCompression.
- *    c. Derives the one-line block title from the summary's first
- *       non-empty content line (truncated to 80 chars).
- *    d. Creates the block via createBlock.
- *    e. Substitutes `b<N>` placeholder in the summary header with the
- *       real block id + derived title.
- *    f. Logs a `compress_created` event.
- * 6. Saves state to disk.
- * 7. Sends a single ignored notification.
+ * The command no longer runs a mechanical compression pipeline.  It arms
+ * a per-session one-shot in-memory flag (`state.pendingManualTrigger`),
+ * then the NEXT transform appends a synthetic user message
+ * (`zoo-manual-compress`) that drives the model to call the `compress`
+ * tool — command and tool now share a single model-driven path.
  *
- * Two-phase discipline: this function only writes state (blocks).  The
- * current turn's message list is unchanged — folding happens on the
- * NEXT turn's transform (Phase 1).
+ * 1. Checks the master enable gate — disabled config skips with a notice.
+ * 2. Sets `state.pendingManualTrigger = true` (in-memory only, never
+ *    persisted — same discipline as `pendingViewChange`; loss on restart
+ *    is benign).
+ * 3. Sends a single ignored notification telling the user the trigger
+ *    will fire on the next turn.
+ *
+ * No message fetch, no blocks, no plan — the flag is consumed by the
+ * transform's injection phase (context-pruning hook, Phase 6b).
  *
  * @param client - OpenCode client providing session APIs.
  * @param sessionID - The current session identifier.
  * @param contextConfig - The parsed context pruning config (needed for
- *   compress sections).
+ *   the compress enable gate).
  * @throws Error on API failures or invalid config.
  */
 async function handleCompressSubcommand(
@@ -469,10 +457,7 @@ async function handleCompressSubcommand(
   // The compress section must be strictly parsed AND enabled.  Absent
   // section, an invalid section (config parse dropped it), or an explicit
   // `enabled = false` all refuse (the config parse already warned once
-  // for bad keys).  Strict parsing guarantees the token thresholds are
-  // present whenever the section is enabled; `protectedMessages` is a
-  // lenient top-level key that may still be missing → loud config error
-  // (same as the compress tool).
+  // for bad keys).
   const compressCfg = contextConfig.compress;
   if (
     compressCfg?.enabled !== true ||
@@ -493,187 +478,19 @@ async function handleCompressSubcommand(
     return;
   }
 
-  if (contextConfig.protectedMessages === undefined) {
-    throw new Error(
-      "[zoo.context] protected_messages 缺失或非法：请在 config.toml 的 [zoo.context] 段配置 protected_messages（非负整数）后重试。",
-    );
-  }
-
-  const protectedMessages = contextConfig.protectedMessages;
-  const protectedTokens = compressCfg.protectedTokens;
-  const thresholdTokens = compressCfg.thresholdTokens;
-
-  // ── Fetch messages ──────────────────────────────────────────────
-  if (!client?.session?.messages) {
-    throw new Error("无法获取会话消息：会话消息 API 不可用");
-  }
-
-  let rawMessages: unknown;
-  try {
-    const res = await client.session.messages({
-      path: { id: sessionID },
-    });
-    rawMessages = res;
-  } catch (err) {
-    log(
-      "context-command",
-      "compress_fetch_failed",
-      sessionID,
-      undefined,
-      "error",
-      { error: String(err) },
-    );
-    throw new Error(
-      `无法获取会话消息：${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-
-  if (!rawMessages) {
-    throw new Error("会话消息 API 返回空结果");
-  }
-
-  const rawObj = rawMessages as {
-    data?: unknown;
-    error?: { message?: string };
-  };
-  if (rawObj.error) {
-    const msg = rawObj.error.message ?? String(rawObj.error);
-    throw new Error(`获取会话消息失败：${msg}`);
-  }
-  const messages = (rawObj.data ?? rawMessages) as ContextMessageEntry[];
-
-  if (!Array.isArray(messages)) {
-    throw new Error("会话消息格式异常：期望数组");
-  }
-
-  // ── Build already-compressed index set from active blocks ────────
+  // ── Arm the one-shot manual trigger ─────────────────────────────
+  // In-memory only: never persisted, never fetched.  The next transform
+  // consumes the flag and injects the synthetic user command.
   const state = getOrCreateSessionState(sessionID);
-  const alreadyCompressedIds = new Set<number>();
-  for (const [, block] of state.blocks) {
-    if (!block.active) continue;
-    for (const mid of block.messageIds) {
-      const idx = messages.findIndex((m) => m.info.id === mid);
-      if (idx >= 0) alreadyCompressedIds.add(idx);
-    }
-  }
+  state.pendingManualTrigger = true;
 
-  // ── Run compression planner ─────────────────────────────────────
-  const plan = planCompression(
-    messages,
-    {
-      protectedMessages,
-      protectedTokens,
-      thresholdTokens,
-    },
-    alreadyCompressedIds,
-  );
-
-  // ── Empty plan → nothing to compress ────────────────────────────
-  if (plan.segments.length === 0) {
-    const msg = "无可压缩内容";
-    if (client?.session?.prompt) {
-      await client.session.prompt({
-        path: { id: sessionID },
-        body: {
-          noReply: true,
-          parts: [{ type: "text", text: msg, ignored: true }],
-        },
-      });
-    }
-    return;
-  }
-
-  // ── Create blocks for each segment ──────────────────────────────
-  let totalCompressedMessages = 0;
-  let totalInTokens = 0;
-  let totalOutTokens = 0;
-
-  for (const seg of plan.segments) {
-    // Collect message IDs for this segment.
-    const messageIds: string[] = [];
-    for (let i = seg.startIndex; i < seg.endIndex; i++) {
-      messageIds.push(messages[i].info.id);
-    }
-    const anchorMessageId = messageIds[0];
-
-    // Use precomputed values from planCompression (avoids recomputing
-    // buildBlockSummary and segmentInOutTokens).
-    // planCompression always sets these for accepted segments.
-    const summary = seg.summary;
-    const inTokens = seg.inTokens ?? 0;
-    const outTokens = seg.outTokens ?? 0;
-    if (summary === undefined) {
-      throw new Error(
-        `压缩段 [${seg.startIndex}, ${seg.endIndex}) 缺少预计算的摘要`,
-      );
-    }
-    const compressedTokens = inTokens + outTokens;
-    const summaryTokens = estimateTokenCount(summary);
-
-    // Derive the one-line block title mechanically from the summary's
-    // first non-empty content line (the block header line is rebuilt by
-    // the backfill below, so it is skipped), truncated to 80 characters.
-    // Falls back to a fixed label when the summary has no content beyond
-    // its header line — title is required at creation time.
-    const title = deriveBlockTitle(summary) || "压缩段摘要";
-
-    // Create the block.
-    const block = createBlock(state, {
-      anchorMessageId,
-      messageIds,
-      summary,
-      title,
-      compressedTokens,
-      summaryTokens,
-    });
-
-    if (!block) {
-      // Idempotency: anchor already exists — skip (should not happen
-      // since we already built alreadyCompressedIds from active blocks).
-      continue;
-    }
-
-    // Fix up the `b<N>` placeholder with the real block id and the
-    // derived title (anchor to header to avoid corrupting user text that
-    // might contain `b<N>`).
-    block.summary = block.summary.replace(
-      BLOCK_HEADER_TEMPLATE,
-      `[Compression Block b${block.blockId}] ${title}`,
-    );
-
-    // Accumulate stats for the notification.
-    const segMsgCount = seg.endIndex - seg.startIndex;
-    totalCompressedMessages += segMsgCount;
-    totalInTokens += inTokens;
-    totalOutTokens += outTokens;
-
-    // Log per-block.
-    log("context-command", "compress_created", sessionID, undefined, "info", {
-      blockId: block.blockId,
-      messageCount: segMsgCount,
-      inTokens,
-      outTokens,
-      title,
-    });
-  }
-
-  // ── Set view-change flag ───────────────────────────────────────
-  // The new block will change the folded view on the next transform
-  // (breaking the prompt prefix cache), so pending prune marks should
-  // ride along without requiring the released_percent threshold.
-  state.pendingViewChange = true;
-
-  // ── Persist state ──────────────────────────────────────────────
-  // Snapshot the ref registry (piggyback — never per-turn writes) so the
-  // refs covering the now-folded-away messages survive a restart without
-  // renumbering (the next transform's folded view would shift every ref
-  // after the folded region).
-  const compressRefsSnapshot = snapshotRefs(sessionID);
-  if (compressRefsSnapshot) state.refs = compressRefsSnapshot;
-  saveSessionState(sessionID, state);
+  log("context-command", "compress_armed", sessionID, undefined, "info", {
+    trigger: "pendingManualTrigger",
+  });
 
   // ── Notification ───────────────────────────────────────────────
-  const notifyMsg = `上下文压缩：已压缩 ${totalCompressedMessages} 条消息，约回收 ${formatTokens(totalInTokens + totalOutTokens)} tokens`;
+  const notifyMsg =
+    "已标记手动压缩：将在下一轮对话自动触发。届时会注入压缩指令，由模型调用 compress 工具执行。";
 
   if (client?.session?.prompt) {
     try {
@@ -694,7 +511,7 @@ async function handleCompressSubcommand(
         { error: String(err) },
       );
       throw new Error(
-        `压缩已完成但通知失败：${err instanceof Error ? err.message : String(err)}`,
+        `压缩触发已标记但通知失败：${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }

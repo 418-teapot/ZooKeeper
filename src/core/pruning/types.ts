@@ -63,6 +63,11 @@ export function getCallId(part: unknown): string | undefined {
  *   When true, the next transform bypasses the released_percent batching
  *   gate and flushes ALL pending prune marks immediately.  NOT persisted
  *   — loss on restart is benign.
+ * - `pendingManualTrigger` — in-memory-only one-shot flag; set by the
+ *   `/dcp compress` command.  The next transform appends a synthetic
+ *   user message (`zoo-manual-compress`) driving the model to call the
+ *   `compress` tool, then clears the flag.  NOT persisted — loss on
+ *   restart is benign.
  */
 export interface SessionState {
   sessionId: string;
@@ -71,6 +76,7 @@ export interface SessionState {
   lastAccessedAt: number;
   dirty: boolean;
   pendingViewChange: boolean;
+  pendingManualTrigger: boolean;
   /**
    * Ref registry snapshot (message-refs.ts writes this before save;
    * serialised to disk).  `undefined` when no snapshot has been taken.

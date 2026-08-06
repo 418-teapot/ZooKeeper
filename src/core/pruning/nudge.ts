@@ -23,13 +23,12 @@
 
 import type { ContextMessageEntry } from "../metrics.js";
 import type { CompressionConfig } from "./compress.js";
+import { estimateSegmentTokens, tokenBoundary } from "./compress.js";
 import {
-  estimateSegmentTokens,
   firstUserMessageIndex,
   lastUserMessageIndex,
-  tokenBoundary,
-} from "./compress.js";
-import { protectedBoundary } from "./shared.js";
+  protectedBoundary,
+} from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Types

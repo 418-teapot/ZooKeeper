@@ -19,17 +19,11 @@ export {
 } from "./blocks.js";
 export type {
   CompressionConfig,
-  CompressionPlanResult,
   CompressionSegment,
 } from "./compress.js";
 export {
   BLOCK_HEADER_TEMPLATE,
-  buildBlockSummary,
-  deriveBlockTitle,
   estimateSegmentTokens,
-  firstUserMessageIndex,
-  lastUserMessageIndex,
-  planCompression,
   segmentInOutTokens,
   tokenBoundary,
 } from "./compress.js";
@@ -94,12 +88,18 @@ export type { SweepMark, SweepOptions } from "./producers/sweep.js";
 export { runSweep } from "./producers/sweep.js";
 export type { PruneReplacement } from "./prune.js";
 export { pruneToolErrors, pruneToolOutputs } from "./prune.js";
+export type { CompressRangeInput } from "./range.js";
 export {
   applyRange,
+  compressRanges,
   resolveSpan,
   validateRange,
 } from "./range.js";
 export type { ProducerOptions } from "./shared.js";
+export {
+  firstUserMessageIndex,
+  lastUserMessageIndex,
+} from "./shared.js";
 export type { SessionState, SweepToolPart } from "./types.js";
 export {
   getCallId,

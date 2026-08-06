@@ -14,6 +14,7 @@ import {
   _resetForTesting as _resetModelLimitsForTesting,
   setModelLimit,
 } from "../../core/model-limits.js";
+import { COMPRESS_GUIDANCE } from "../../core/prompts.js";
 import {
   activeBlockCount,
   createBlock,
@@ -1283,19 +1284,21 @@ describe("contextPruningTransformHandler", () => {
   // parseContextConfig — compress section
   // ===========================================================================
 
-  it("parseContextConfig reads [zoo.context.compress] section with three keys", () => {
+  it("parseContextConfig reads [zoo.context.compress] section with four keys", () => {
     const config = parseContextConfig({
       context: {
         compress: {
           enabled: true,
           threshold_tokens: 2000,
           protected_tokens: 20000,
+          max_ranges: 8,
         },
       },
     });
     assert.equal(config.compress?.enabled, true);
     assert.equal(config.compress?.thresholdTokens, 2000);
     assert.equal(config.compress?.protectedTokens, 20000);
+    assert.equal(config.compress?.maxRanges, 8);
   });
 
   it("parseContextConfig returns undefined when the compress section is absent (no warn)", () => {
@@ -1368,12 +1371,14 @@ describe("contextPruningTransformHandler", () => {
           enabled: false,
           threshold_tokens: 2000,
           protected_tokens: 20000,
+          max_ranges: 8,
         },
       },
     });
     assert.equal(config.compress?.enabled, false);
     assert.equal(config.compress?.thresholdTokens, 2000);
     assert.equal(config.compress?.protectedTokens, 20000);
+    assert.equal(config.compress?.maxRanges, 8);
 
     const buffer = _getBufferForTesting();
     assert.ok(
@@ -1391,6 +1396,7 @@ describe("contextPruningTransformHandler", () => {
       enabled: true,
       threshold_tokens: 2000,
       protected_tokens: 20000,
+      max_ranges: 8,
     };
 
     it("returns undefined when the section is absent (no warn)", () => {
@@ -1415,6 +1421,7 @@ describe("contextPruningTransformHandler", () => {
         enabled: true,
         thresholdTokens: 2000,
         protectedTokens: 20000,
+        maxRanges: 8,
       });
     });
 
@@ -1425,12 +1432,14 @@ describe("contextPruningTransformHandler", () => {
             enabled: true,
             threshold_tokens: 0,
             protected_tokens: 0,
+            max_ranges: 8,
           },
         },
       });
       assert.equal(config.compress?.enabled, true);
       assert.equal(config.compress?.thresholdTokens, 0);
       assert.equal(config.compress?.protectedTokens, 0);
+      assert.equal(config.compress?.maxRanges, 8);
     });
 
     it("missing key invalidates the whole section (warn once)", () => {
@@ -1501,12 +1510,70 @@ describe("contextPruningTransformHandler", () => {
       assert.equal(config.compress?.enabled, false);
       assert.equal(config.compress?.thresholdTokens, 2000);
       assert.equal(config.compress?.protectedTokens, 20000);
+      assert.equal(config.compress?.maxRanges, 8);
 
       const buffer = _getBufferForTesting();
       assert.ok(
         !buffer.some((e) => e.event === "compress_config_invalid"),
         "enabled=false must not warn",
       );
+    });
+
+    it("missing max_ranges invalidates the whole section (warn once)", () => {
+      const config = parseContextConfig({
+        context: {
+          compress: {
+            enabled: true,
+            threshold_tokens: 2000,
+            protected_tokens: 20000,
+            // max_ranges missing
+          },
+        },
+      });
+      assert.equal(config.compress, undefined, "whole section dropped");
+
+      const buffer = _getBufferForTesting();
+      const entries = buffer.filter(
+        (e) => e.event === "compress_config_invalid",
+      );
+      assert.equal(entries.length, 1, "exactly one warn");
+      assert.equal(entries[0].key, "max_ranges");
+    });
+
+    it("non-positive, non-integer, or wrong-typed max_ranges invalidates the whole section (warn once each)", () => {
+      const config = parseContextConfig({
+        context: { compress: { ...fullCompress, max_ranges: 0 } },
+      });
+      assert.equal(config.compress, undefined);
+
+      const config2 = parseContextConfig({
+        context: { compress: { ...fullCompress, max_ranges: -1 } },
+      });
+      assert.equal(config2.compress, undefined);
+
+      const config3 = parseContextConfig({
+        context: { compress: { ...fullCompress, max_ranges: 8.5 } },
+      });
+      assert.equal(config3.compress, undefined);
+
+      const config4 = parseContextConfig({
+        context: { compress: { ...fullCompress, max_ranges: Infinity } },
+      });
+      assert.equal(config4.compress, undefined);
+
+      const config5 = parseContextConfig({
+        context: { compress: { ...fullCompress, max_ranges: "8" } },
+      });
+      assert.equal(config5.compress, undefined);
+
+      const buffer = _getBufferForTesting();
+      const entries = buffer.filter(
+        (e) => e.event === "compress_config_invalid",
+      );
+      assert.equal(entries.length, 5);
+      for (const entry of entries) {
+        assert.equal(entry.key, "max_ranges");
+      }
     });
   });
 
@@ -1519,12 +1586,12 @@ describe("contextPruningTransformHandler", () => {
       context: {
         decompress: {
           enabled: true,
-          reject_percent: 90,
+          max_fill_percent: 90,
         },
       },
     });
     assert.equal(config.decompress?.enabled, true);
-    assert.equal(config.decompress?.rejectPercent, 90);
+    assert.equal(config.decompress?.maxFillPercent, 90);
   });
 
   // ===========================================================================
@@ -1534,7 +1601,7 @@ describe("contextPruningTransformHandler", () => {
   describe("parseContextConfig decompress section", () => {
     const fullDecompress = {
       enabled: true,
-      reject_percent: 90,
+      max_fill_percent: 90,
     };
 
     it("returns undefined when the section is absent (no warn)", () => {
@@ -1557,7 +1624,7 @@ describe("contextPruningTransformHandler", () => {
       });
       assert.deepEqual(config.decompress, {
         enabled: true,
-        rejectPercent: 90,
+        maxFillPercent: 90,
       });
     });
 
@@ -1566,7 +1633,7 @@ describe("contextPruningTransformHandler", () => {
         context: {
           decompress: {
             enabled: true,
-            // reject_percent missing
+            // max_fill_percent missing
           },
         },
       });
@@ -1577,7 +1644,26 @@ describe("contextPruningTransformHandler", () => {
         (e) => e.event === "decompress_config_invalid",
       );
       assert.equal(entries.length, 1, "exactly one warn");
-      assert.equal(entries[0].key, "reject_percent");
+      assert.equal(entries[0].key, "max_fill_percent");
+    });
+
+    it("old key reject_percent alone is ignored → whole section invalidated (warn once)", () => {
+      const config = parseContextConfig({
+        context: {
+          decompress: {
+            enabled: true,
+            reject_percent: 90, // old key — treated as unknown, ignored
+          },
+        },
+      });
+      assert.equal(config.decompress, undefined, "whole section dropped");
+
+      const buffer = _getBufferForTesting();
+      const entries = buffer.filter(
+        (e) => e.event === "decompress_config_invalid",
+      );
+      assert.equal(entries.length, 1, "exactly one warn");
+      assert.equal(entries[0].key, "max_fill_percent");
     });
 
     it("wrong-typed values invalidate the whole section (warn once)", () => {
@@ -1587,7 +1673,7 @@ describe("contextPruningTransformHandler", () => {
       assert.equal(config.decompress, undefined);
 
       const config2 = parseContextConfig({
-        context: { decompress: { ...fullDecompress, reject_percent: "90" } },
+        context: { decompress: { ...fullDecompress, max_fill_percent: "90" } },
       });
       assert.equal(config2.decompress, undefined);
 
@@ -1598,16 +1684,16 @@ describe("contextPruningTransformHandler", () => {
       assert.equal(entries.length, 2);
     });
 
-    it("reject_percent accepts integer boundaries 1 and 100", () => {
+    it("max_fill_percent accepts integer boundaries 1 and 100", () => {
       const config = parseContextConfig({
-        context: { decompress: { ...fullDecompress, reject_percent: 1 } },
+        context: { decompress: { ...fullDecompress, max_fill_percent: 1 } },
       });
-      assert.equal(config.decompress?.rejectPercent, 1);
+      assert.equal(config.decompress?.maxFillPercent, 1);
 
       const config2 = parseContextConfig({
-        context: { decompress: { ...fullDecompress, reject_percent: 100 } },
+        context: { decompress: { ...fullDecompress, max_fill_percent: 100 } },
       });
-      assert.equal(config2.decompress?.rejectPercent, 100);
+      assert.equal(config2.decompress?.maxFillPercent, 100);
 
       const buffer = _getBufferForTesting();
       assert.ok(
@@ -1616,19 +1702,19 @@ describe("contextPruningTransformHandler", () => {
       );
     });
 
-    it("reject_percent rejects 0, 101, and non-integers (warn once each)", () => {
+    it("max_fill_percent rejects 0, 101, and non-integers (warn once each)", () => {
       const config = parseContextConfig({
-        context: { decompress: { ...fullDecompress, reject_percent: 0 } },
+        context: { decompress: { ...fullDecompress, max_fill_percent: 0 } },
       });
       assert.equal(config.decompress, undefined, "0 is out of range");
 
       const config2 = parseContextConfig({
-        context: { decompress: { ...fullDecompress, reject_percent: 101 } },
+        context: { decompress: { ...fullDecompress, max_fill_percent: 101 } },
       });
       assert.equal(config2.decompress, undefined, "101 is out of range");
 
       const config3 = parseContextConfig({
-        context: { decompress: { ...fullDecompress, reject_percent: 90.5 } },
+        context: { decompress: { ...fullDecompress, max_fill_percent: 90.5 } },
       });
       assert.equal(config3.decompress, undefined, "non-integer is invalid");
 
@@ -1644,7 +1730,7 @@ describe("contextPruningTransformHandler", () => {
         context: { decompress: { ...fullDecompress, enabled: false } },
       });
       assert.equal(config.decompress?.enabled, false);
-      assert.equal(config.decompress?.rejectPercent, 90);
+      assert.equal(config.decompress?.maxFillPercent, 90);
 
       const buffer = _getBufferForTesting();
       assert.ok(
@@ -3192,6 +3278,10 @@ describe("contextPruningTransformHandler", () => {
         ),
         "gentle equation copy",
       );
+      assert.ok(
+        text.includes(COMPRESS_GUIDANCE),
+        "gentle teaching slot carries the skeleton",
+      );
       // The nudge runs after Phase 4 — it never carries an injected tag.
       assert.ok(!text.includes("<zoo-msg-id>"), "no injected ref tag");
 
@@ -3296,6 +3386,10 @@ describe("contextPruningTransformHandler", () => {
       assert.ok(
         text.includes("FULL CONTEXT = TERMINATED SESSION = LOST WORK."),
         "urgent equation",
+      );
+      assert.ok(
+        text.includes(COMPRESS_GUIDANCE),
+        "urgent teaching slot carries the skeleton",
       );
     });
 
@@ -3454,6 +3548,214 @@ describe("contextPruningTransformHandler", () => {
       assert.ok(
         !buffer.some((e) => e.event === "nudge_config_invalid"),
         "no nudge_config_invalid warn when section is absent",
+      );
+    });
+  });
+
+  // ===========================================================================
+  // Manual compress trigger (Phase 6b — pendingManualTrigger)
+  // ===========================================================================
+
+  describe("manual compress trigger (Phase 6b)", () => {
+    const MANUAL_SESSION_IDS = [
+      "sess-manual-basic",
+      "sess-manual-once",
+      "sess-manual-subagent",
+      "sess-manual-no-eligible",
+      "sess-manual-not-persisted",
+      "sess-manual-disabled",
+    ];
+    TEST_SESSION_IDS.push(...MANUAL_SESSION_IDS);
+
+    /**
+     * Build a transform config with the compress section enabled and the
+     * token/threshold protections disabled (0) so the tiny fixtures stay
+     * eligible — same pattern as the nudge tests.
+     */
+    function manualTransformConfig(protectedMessages: number) {
+      return {
+        enabled: true,
+        protectedMessages,
+        compress: {
+          enabled: true,
+          protectedTokens: 0,
+          thresholdTokens: 0,
+        },
+        dedup: { enabled: false },
+        purgeErrors: { enabled: false },
+      };
+    }
+
+    /**
+     * Build a two-turn message view.  Refs are assigned by Phase 4:
+     * u1→m0001, a1→m0002, u2→m0003, a2→m0004.
+     */
+    function manualMessages(sessionID: string): ContextMessageEntry[] {
+      return [
+        msg("user", "u1", [textPart("hello")], sessionID),
+        msg("assistant", "a1", [toolPart("call-1", "data one")], undefined, {
+          input: 150000,
+          output: 100,
+        }),
+        msg("user", "u2", [textPart("again")], sessionID),
+        msg("assistant", "a2", [toolPart("call-2", "data two")]),
+      ];
+    }
+
+    it("injects the synthetic user message at the END when the flag is set", () => {
+      const sessionID = "sess-manual-basic";
+      getOrCreateSessionState(sessionID).pendingManualTrigger = true;
+
+      const messages = manualMessages(sessionID);
+      contextPruningTransformHandler(messages, manualTransformConfig(2));
+
+      // Synthetic command appended at the very END.
+      assert.equal(messages.length, 5, "synthetic message appended");
+      const last = messages[messages.length - 1];
+      assert.equal(last.info.id, "zoo-manual-compress");
+      assert.equal(last.info.role, "user");
+      assert.equal(last.info.sessionID, sessionID);
+      const text = (last.parts?.[0] as { text?: string }).text ?? "";
+      assert.ok(
+        text.startsWith("请立即使用 compress 工具压缩历史上下文"),
+        "user-instruction tone opener",
+      );
+      assert.ok(text.includes(COMPRESS_GUIDANCE), "teaching skeleton embedded");
+      // protectedMessages=2 + first-user exclusion → window is a1 only.
+      assert.ok(
+        text.includes("可压缩窗口：m0002–m0002"),
+        "window payload attached",
+      );
+      // Appended after Phase 4 — the message never carries an injected tag.
+      assert.ok(!text.includes("<zoo-msg-id>"), "no injected ref tag");
+
+      // One-shot: the flag is cleared after injection.
+      const state = getOrCreateSessionState(sessionID);
+      assert.equal(state.pendingManualTrigger, false, "flag cleared");
+
+      // manual_compress_injected log carries the eligibility payload.
+      const entries = _getBufferForTesting();
+      const manualLog = entries.find(
+        (e) => e.event === "manual_compress_injected",
+      ) as Record<string, unknown> | undefined;
+      assert.ok(manualLog, "expected manual_compress_injected log event");
+      assert.equal(manualLog.startRef, "m0002");
+      assert.equal(manualLog.endRef, "m0002");
+      assert.equal(typeof manualLog.reclaimTokens, "number");
+    });
+
+    it("does not re-inject on the next turn (one-shot)", () => {
+      const sessionID = "sess-manual-once";
+      getOrCreateSessionState(sessionID).pendingManualTrigger = true;
+
+      // Turn 1: flag set → injected + cleared.
+      const messages = manualMessages(sessionID);
+      contextPruningTransformHandler(messages, manualTransformConfig(2));
+      assert.equal(
+        messages[messages.length - 1].info.id,
+        "zoo-manual-compress",
+      );
+
+      // Turn 2: fresh view, flag already cleared → no injection.
+      const messages2 = manualMessages(sessionID);
+      contextPruningTransformHandler(messages2, manualTransformConfig(2));
+      assert.equal(messages2.length, 4, "no second injection");
+      assert.equal(messages2[messages2.length - 1].info.id, "a2");
+    });
+
+    it("skips injection for sub-agent sessions", () => {
+      const sessionID = "sess-manual-subagent";
+      getOrCreateSessionState(sessionID).pendingManualTrigger = true;
+
+      const messages = manualMessages(sessionID);
+      contextPruningTransformHandler(
+        messages,
+        manualTransformConfig(2),
+        undefined,
+        true,
+      );
+
+      assert.equal(messages.length, 4, "no injection for sub-agents");
+      assert.equal(messages[messages.length - 1].info.id, "a2");
+      const state = getOrCreateSessionState(sessionID);
+      assert.equal(
+        state.pendingManualTrigger,
+        true,
+        "flag untouched (skip semantics)",
+      );
+    });
+
+    it("injects the guidance even when nothing is eligible (window fallback)", () => {
+      const sessionID = "sess-manual-no-eligible";
+      getOrCreateSessionState(sessionID).pendingManualTrigger = true;
+
+      // protectedMessages=100 covers everything → computeEligibility is
+      // null, but the explicit user command still fires with a fallback
+      // window line and the flag is consumed.
+      const messages = manualMessages(sessionID);
+      contextPruningTransformHandler(messages, manualTransformConfig(100));
+
+      assert.equal(messages.length, 5, "fallback message still appended");
+      const last = messages[messages.length - 1];
+      assert.equal(last.info.id, "zoo-manual-compress");
+      const text = (last.parts?.[0] as { text?: string }).text ?? "";
+      assert.ok(
+        text.includes("未检测到明确的可压缩窗口"),
+        "fallback window line",
+      );
+      const state = getOrCreateSessionState(sessionID);
+      assert.equal(state.pendingManualTrigger, false, "flag consumed");
+    });
+
+    it("clears the flag without injecting when the compress section is disabled", () => {
+      const sessionID = "sess-manual-disabled";
+      getOrCreateSessionState(sessionID).pendingManualTrigger = true;
+
+      const messages = manualMessages(sessionID);
+      contextPruningTransformHandler(messages, {
+        enabled: true,
+        protectedMessages: 2,
+        compress: { enabled: false },
+        dedup: { enabled: false },
+        purgeErrors: { enabled: false },
+      });
+
+      assert.equal(messages.length, 4, "no injection when disabled");
+      const state = getOrCreateSessionState(sessionID);
+      assert.equal(
+        state.pendingManualTrigger,
+        false,
+        "stale flag cleared defensively",
+      );
+    });
+
+    it("never persists the flag to disk", () => {
+      const sessionID = "sess-manual-not-persisted";
+      const state = getOrCreateSessionState(sessionID);
+      state.pendingManualTrigger = true;
+      // Make the state dirty so Phase 7 actually persists this turn.
+      addMark(state, "call-dirty-1", 50, true, "tool-output");
+
+      const messages = [
+        msg("user", "u1", [textPart("do it")], sessionID),
+        msg(
+          "assistant",
+          "a1",
+          [toolPart("call-dirty-1", "original output", { cmd: "ls" })],
+          undefined,
+          { input: 150000, output: 100 },
+        ),
+      ];
+      contextPruningTransformHandler(messages, manualTransformConfig(1));
+
+      const persisted = loadSessionState(sessionID) as unknown as Record<
+        string,
+        unknown
+      >;
+      assert.ok(persisted, "state persisted (dirty)");
+      assert.ok(
+        !("pendingManualTrigger" in persisted),
+        "flag is in-memory only — absent from the persisted shape",
       );
     });
   });

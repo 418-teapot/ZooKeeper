@@ -160,7 +160,7 @@ const ENABLED_CONFIG: ContextPruningConfig = {
   dedup: {},
   purgeErrors: {},
   compress: { enabled: true },
-  decompress: { enabled: true, rejectPercent: 90 },
+  decompress: { enabled: true, maxFillPercent: 90 },
 };
 
 // ---------------------------------------------------------------------------
@@ -320,7 +320,7 @@ describe("decompress tool execute — recall path", () => {
 // ---------------------------------------------------------------------------
 
 describe("decompress tool execute — gate rejection", () => {
-  it("rejects a restore that would exceed rejectPercent, state untouched", async () => {
+  it("rejects a restore that would exceed maxFillPercent, state untouched", async () => {
     const { client, promptCalls } = mockClient([]);
     createActiveBlock();
     // Tiny window: after = 0 + 19500 > 1000 × 90% = 900 → rejected.

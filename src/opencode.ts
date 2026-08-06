@@ -352,7 +352,7 @@ function parseContextConfig(zooConfig: any): ContextPruningConfig {
   }
 
   // ── Parse compress section ──────────────────────────────────────
-  // All three keys are required when the section is present.  Any missing,
+  // All four keys are required when the section is present.  Any missing,
   // wrong-typed, or malformed value invalidates the WHOLE section
   // (fail to skip — the subsystem is silently absent) and logs exactly
   // one warn.  `enabled: false` is valid — present but disabled.
@@ -371,6 +371,11 @@ function parseContextConfig(zooConfig: any): ContextPruningConfig {
         cm.protected_tokens,
         (v) => typeof v === "number" && Number.isFinite(v) && v >= 0,
       ],
+      [
+        "max_ranges",
+        cm.max_ranges,
+        (v) => typeof v === "number" && Number.isInteger(v) && v >= 1,
+      ],
     ];
     const bad = keyChecks.find(([, value, check]) => !check(value));
     if (bad) {
@@ -383,6 +388,7 @@ function parseContextConfig(zooConfig: any): ContextPruningConfig {
         enabled: cm.enabled as boolean,
         thresholdTokens: cm.threshold_tokens as number,
         protectedTokens: cm.protected_tokens as number,
+        maxRanges: cm.max_ranges as number,
       };
     }
   }
@@ -398,8 +404,8 @@ function parseContextConfig(zooConfig: any): ContextPruningConfig {
     const keyChecks: Array<[string, unknown, (v: unknown) => boolean]> = [
       ["enabled", dm.enabled, (v) => typeof v === "boolean"],
       [
-        "reject_percent",
-        dm.reject_percent,
+        "max_fill_percent",
+        dm.max_fill_percent,
         (v) =>
           typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 100,
       ],
@@ -413,7 +419,7 @@ function parseContextConfig(zooConfig: any): ContextPruningConfig {
     } else {
       decompress = {
         enabled: dm.enabled as boolean,
-        rejectPercent: dm.reject_percent as number,
+        maxFillPercent: dm.max_fill_percent as number,
       };
     }
   }

@@ -4,6 +4,19 @@
 **日期:** 2026-08-05
 **分类:** 技术架构文档 / 上下文管理
 
+> **3.1 更新说明：** pendingManualTrigger 手动触发 + 机械摘要管线退役
+> （2026-08-06）：`/dcp compress` 不再直接建块——改为置 per-session
+> 一次性 in-memory 标志（`pendingManualTrigger`，同 `pendingViewChange`
+> 纪律：不落盘不持久化）+ ignored 通知告知下一轮触发；transform 管道
+> 在 nudge Phase 之后新增 Phase 6b 注入合成 user 指令消息
+> （id=`zoo-manual-compress`、不落盘、不进 ref 分配、跳过子代理会话、
+> 文案 = `MANUAL_COMPRESS_TEMPLATE` 教学骨架 + `computeEligibility`
+> 资格载荷、注入后立即清标志）；机械 planner / 机械摘要 / 机械 title
+> 派生命令路径及 y/yes 确认流程全部删除（命令与工具统一为一条通路），
+> 保留 `tokenBoundary`/`lastUserMessageIndex`/段估算边界素材导出；
+> §4.1 管道图、§4.2 状态形状、§4.7 重写、§4.8 边界注记、§8 V3 行
+> 同步更新。
+>
 > **3.0 更新说明：** decompress 召回工具交付（2026-08-05，decompress
 > 新增 39 例 TS 测试——核心 12 + 工具集成 18 + 配置解析 8 + compress
 > 文案 1）：§4 新增 §4.10 as-built 小节——**压缩块召回闭环**（按块寻址
@@ -12,7 +25,7 @@
 > 持久化摘要正文，零状态变更零视图影响）、`deactivatedBy` 区分失活原因
 > （未设置 = 被更大块消费 / `"user"` = 工具主动恢复，记录永不删除）、
 > 回胀门禁 `after = currentPromptTokens + (compressedTokens −
-> summaryTokens)` 超 `contextLimit × reject_percent / 100` 拒绝（边界
+> summaryTokens)` 超 `contextLimit × max_fill_percent / 100` 拒绝（边界
 > 放行、limit 缺失跳过）、`[zoo.context.decompress]` 严格解析（缺键/
 > 非法 → 单次 warn + 整节缺席，零默认值零兜底）、工具薄壳镜像 compress
 > 工厂（restore 单行 ToolResult 永不含原文、recall 截断 16000 字符
@@ -32,7 +45,8 @@
 > `experimental.chat.system.transform` 捕获 `model.limit.context`、
 > `[zoo.context.nudge]` 严格解析（缺键/非法 → 单次 warn + 整体跳过，
 > 代码零默认值零兜底）；§4.1 管道图同步 Phase 1-7；§7.1 对比表
-> Nudge 行翻 ✅；§8 路线图 V3 行收尾（仅余 pendingManualTrigger）；
+> Nudge 行翻 ✅；§8 路线图 V3 行收尾（仅余 pendingManualTrigger，已于
+> 2026-08-06 交付）；
 > §9.5 更新为 as-built。原 §4.9 认知收获顺延为 §4.10。
 >
 > **2.8 更新说明：** V4 压缩块索引与工具重定义（2026-08-01，1179 TS
@@ -41,9 +55,9 @@
 > 一行主题必填）；被消费块的机械全文附加降级为**索引行**（
 > `=== Superseded Blocks ===` + `--- b<N>: <title> ---`），设计原则
 > 从"逐字内联"转为"存储与视图分离"（state 全量保留正文、视图有界
-> O(代数)，召回机制留待 decompress 设计）；title 进块头行使块自描述，
-> 命令路径机械派生（跳过节标记取首个内容行）；ref 注册表跨重启持久化
-> （marks `refs` 可选字段 + 捎带快照 + ensureRegistry 水合）；
+> O(代数)，召回机制留待 decompress 设计）；title 进块头行使块自描述
+> （命令路径机械派生已于 3.1 随机械管线退役，§4.7）；ref 注册表跨重启
+> 持久化（marks `refs` 可选字段 + 捎带快照 + ensureRegistry 水合）；
 > 状态文件 JSON 美化输出。§4.8 同步更新。
 
 > **2.7 更新说明：** Range 模式 compress 工具完整交付（2026-07-31，
@@ -55,6 +69,7 @@
 > 标记部分完成（compress 工具注册 ✅、mNNNN 引用 ✅、LLM 摘要经工具
 > 参数承载 ✅，2026-07-31；剩余 pendingManualTrigger 手动触发路径、
 > nudge 系统）；原 §4.8 认知收获顺延为 §4.9；§5.2 剩余 V3 工作同步。
+> pendingManualTrigger 与机械管线退役已于 3.1（2026-08-06）收尾。
 >
 > **2.6 更新说明：** 手动压缩功能完整实现（2026-07-30，1560 TS 测试
 > 全绿，三轮双路 Eagle 审查闭环）：§4.7 新增手动压缩 as-built 小节
@@ -718,6 +733,9 @@ dedup  = { selector: duplicates, range: session,
   │   Phase 6 nudge：单锚点水位计评估（§4.9）→ 触发时末尾追加
   │              合成 user 消息（id=zoo-nudge，transform-only，
   │              不落盘、不进 ref 分配、跳过子代理）
+  │   Phase 6b 手动压缩：pendingManualTrigger 置位时末尾追加合成
+  │              user 指令消息（id=zoo-manual-compress，§4.7，
+  │              transform-only、不落盘、不进 ref 分配、跳过子代理）
   │   Phase 7 收尾：清 pendingViewChange + 持久化（dirty 时）
   │              + prune_completed 日志
   └─ measureContext (src/core/metrics.ts)
@@ -726,8 +744,10 @@ dedup  = { selector: duplicates, range: session,
   └─ runSweep → addMark(effective=true)（立即生效，用户主权）
 
 /dcp compress（command.execute.before）:
-  └─ planCompression → 用户确认 → buildBlockSummary（机械摘要）
-     → createBlock 持久化 → 下轮 Phase 0.5 折叠生效
+  └─ 置 state.pendingManualTrigger（in-memory 一次性标志，不落盘）
+     + ignored 通知告知下一轮触发
+     → 下轮 transform Phase 6b 注入合成 user 指令
+     → 模型调用 compress 工具建块 → 再下轮 Phase 1 折叠生效
 
 TUI 侧边栏 (src/tui.tsx): 全量 fetch → 读盘 loadSessionState（纯只读）
    → liveBlocks + previewFold 折叠 → computeContextReport
@@ -743,6 +763,8 @@ interface SessionState {
   marks: Map<string, Mark>;     // 单集合，取代旧双 Map + 5 累计字段
   blocks: Map<string, CompressionBlock>;  // 压缩块（§4.7）
   pendingViewChange: boolean;   // 视图变化标志，in-memory only 不落盘
+  pendingManualTrigger: boolean; // /dcp compress 一次性手动触发标志，
+                                // in-memory only 不落盘（§4.7）
   lastAccessedAt: number;
   dirty: boolean;               // runtime-only
 }
@@ -981,28 +1003,35 @@ pruneToolErrors(state, messages)   // 只处理 mark.action === "tool-error-inpu
 >    output（`lib/messages/prune.ts:24`），默认 4 步老化保护（默认关闭）。
 >    我们的实现保持该语义：清理 error input、保留 `state.error` 消息。
 
-### 4.7 手动压缩（/dcp compress，✅ 已实现 2026-07-30）
+### 4.7 手动压缩（/dcp compress，✅ 已实现 2026-07-30；V3 改走 pendingManualTrigger，2026-08-06）
 
-范围压缩的机械摘要 MVP：用户一条命令把保护窗外的旧历史折叠为结构化
-摘要块，LLM 驱动摘要留给 V3（§5.2）。设计决策（2026-07-30 用户确认）：
-**无参命令**（压缩范围由三重保护 + 阈值自动确定，优于手动百分比）；
-**机械摘要**（确定性、零 API 成本、可测试；非 LLM 生成——这是与
-§5.2 原定"启发式占位摘要→LLM 摘要"路线的有意演进）。
+**历史**：初版是范围压缩的机械摘要 MVP（2026-07-30）——用户一条命令把
+保护窗外的旧历史折叠为结构化摘要块。V3 收尾（2026-08-06）后**机械管线
+退役**：命令与工具统一为一条通路——`/dcp compress` 只置一次性
+in-memory 标志，下一轮 transform 注入合成 user 指令消息，由模型自主
+调用 compress 工具（§4.8）完成压缩。机械 planner / 机械摘要 /
+`deriveBlockTitle` 命令路径及其 y/yes 确认流程全部删除；被工具/nudge
+复用的边界素材（`tokenBoundary`/`lastUserMessageIndex`/段估算）保留。
 
-#### 四阶段流水线
+#### pendingManualTrigger 两段式流程
 
 ```
 /dcp compress（command.execute.before，context-command/index.ts）:
-  1. planCompression（compress.ts）→ 通知计划（段数/消息数/预估回收）
-  2. 用户确认（下一条消息 y/yes）
-  3. buildBlockSummary（机械摘要）→ createBlock 持久化（blocks.ts）
-     → 锚点幂等检查 → BLOCK_HEADER_TEMPLATE 占位符回填（b<N> → bN）
-     → 完成通知（含累计回收）
-  4. 下一轮 transform Phase 1：foldCompressedBlocks 折叠生效
-     → pendingViewChange → Phase 5 强制释放全部 pending 剪枝标记
+  1. 启用门检查（compress 段严格解析且 enabled=true，否则 ignored 通知拒绝）
+  2. 置 state.pendingManualTrigger = true（in-memory 一次性标志，
+     同 pendingViewChange 纪律：不落盘、不持久化，重启丢失无害）
+  3. ignored 通知告知"将在下一轮触发压缩"（不 fetch 消息、不建块）
+
+下一轮 transform（context-pruning hook Phase 6b，nudge 之后）:
+  1. !isSubAgent && pendingManualTrigger 置位 → 末尾追加合成 user 指令
+     消息（固定 id=zoo-manual-compress、不落盘、不进 ref 分配）
+  2. 文案 = MANUAL_COMPRESS_TEMPLATE（用户指令口吻，非提醒）
+     + COMPRESS_GUIDANCE 教学骨架 + computeEligibility 资格载荷
+     （startRef/endRef/reclaim；无可压缩窗口时用兜底文案）
+  3. 注入后立即清标志（一次性：再下轮不再出现）
 ```
 
-#### 三重保护与双门禁（compress.ts `planCompression`）
+#### 三重保护与双门禁（模型驱动路径共用）
 
 压缩段末端取三者最保守边界（`Math.min`）：
 
@@ -1014,7 +1043,9 @@ pruneToolErrors(state, messages)   // 只处理 mark.action === "tool-error-inpu
 
 双门禁（与 dedup 零收益跳过同源，§3.8.3）：**幻影门**
 （`threshold_tokens` 默认 2000，段收益不足则跳过）与**负收益门**
-（摘要估算 ≥ 原文估算时不压）。
+（合并摘要估算 ≥ 原文估算时不压）。这些边界同时被 nudge 资格载荷
+（`computeEligibility`）与工具校验（`validateRange`）复用，保证三条
+通路（命令注入 / nudge / 工具）广告与执行的是同一套可压窗口。
 
 #### 块状态层（blocks.ts）与折叠通路（fold.ts）
 
@@ -1056,13 +1087,14 @@ pruneToolErrors(state, messages)   // 只处理 mark.action === "tool-error-inpu
 - **`/dcp context`**：双口径消息数（`模型可见 X 条 · 存储 Y 条`，
   相等时单行）；回收栏已生效/待生效两态分行
 
-#### 端到端验证（2026-07-30）
+#### 端到端验证（2026-07-30，机械管线时代）
 
 本会话（实现会话自身）被连续压缩 3 次（b1：48 条 / b2：20 条 /
 b3：40 条），编排器以被测对象身份确认：机械摘要的信息密度足够支撑
 后续协作（跨块引用审查结论、修复历史无记忆断层）；三轮双路 Eagle
 审查全部发现闭环（3 Should Fix + 14 Could Fix：真实项全部修复并
-回归，误报/非缺陷项附代码证据驳回）。
+回归，误报/非缺陷项附代码证据驳回）。该管线已于 2026-08-06 退役
+（改为模型驱动，见本节开头）。
 
 ### 4.8 Range 模式 compress 工具（LLM 驱动压缩，✅ 已实现 2026-07-31）
 
@@ -1073,9 +1105,11 @@ b3：40 条），编排器以被测对象身份确认：机械摘要的信息密
 并在此块日后被更大范围消费时作为索引行展示。核心逻辑
 在 `src/core/pruning/range.ts`（纯函数、框架无关，`resolveSpan` /
 `validateRange` / `applyRange` 三段管道），OpenCode 适配在
-`src/tools/compress.ts`（`tool()` 定义薄壳）；保护边界与门禁素材复用
-命令路径导出（`tokenBoundary`/`lastUserMessageIndex`/段 token 估算），
-`/dcp compress` 命令路径行为不变。
+`src/tools/compress.ts`（`tool()` 定义薄壳）；保护边界与门禁素材
+（`tokenBoundary`/`lastUserMessageIndex`/段 token 估算）为工具与 nudge
+共用导出；`/dcp compress` 命令自 V3 起不再直接建块——它通过
+pendingManualTrigger 驱动模型调用本工具（§4.7），命令与工具统一为一条
+通路。
 
 #### 寻址模型（mNNNN 单一寻址）
 
@@ -1110,9 +1144,7 @@ b3：40 条），编排器以被测对象身份确认：机械摘要的信息密
   设计（索引行含块 id，前向兼容）。替代了初版的机械全文附加
   （`=== Previously Compressed Blocks ===` + 逐字正文，已移除）
 - **title 来源**：工具路径由模型显式填写（zod 必填 + ≤80 字符，超限
-  响亮报错）；`/dcp compress` 命令路径无模型 title，建块时
-  `deriveBlockTitle` 机械派生（摘要首个非空内容行，跳过块头行与
-  `=== ... ===` 节标记，截断 80 字符）
+  响亮报错）——唯一的 title 来源（命令路径已随机械管线退役，§4.7）
 - **负收益门**：在**合并后**摘要上评估（模型摘要 + 索引行），摘要
   token ≥ 内容 token 时报错；先校验后变更，失败不动状态
 - **token 不重复记账**：`compressedTokens` 只计此前未被任何活跃块覆盖
@@ -1133,8 +1165,8 @@ b3：40 条），编排器以被测对象身份确认：机械摘要的信息密
   → ignored 通知（best-effort，`上下文压缩：已压缩 N 条消息为压缩块
   bN：<title>，约回收 X tokens`）→ 单行 ToolResult（同文案，**永不返回
   摘要正文**）
-- **边界**：无 permission 条目、install.py 未动；pendingManualTrigger
-  手动触发路径、nudge 系统仍属剩余 V3 工作（§8）
+- **边界**：无 permission 条目、install.py 未动；命令侧机械管线已退役
+  （§4.7），pendingManualTrigger 手动触发路径已交付（2026-08-06）
 - **测试**：19 个核心单测（range.test.ts，解析/校验/消费/记账/保护/
   门禁/过期 ref）+ 9 个集成测试（tools/compress.test.ts，mockClient
   断言建块/持久化/通知，enabled=false 时无 compress 键）；全仓 1148
@@ -1276,10 +1308,10 @@ marks/块"永不删除"纪律一致；`syncBlocks` 永不复活已失活块，�
 
 ```
 after = currentPromptTokens + (compressedTokens − summaryTokens)
-after > contextLimit × rejectPercent / 100 → 拒绝（throw 响亮中文指导）
+after > contextLimit × maxFillPercent / 100 → 拒绝（throw 响亮中文指导）
 ```
 
-- 拒绝文案含预估回胀量（`原内容 − 摘要`）、阈值（`rejectPercent% ×
+- 拒绝文案含预估回胀量（`原内容 − 摘要`）、阈值（`maxFillPercent% ×
   contextLimit`）、替代方案（**先压缩其他段腾出空间**再恢复）；边界
   `after == threshold` 放行
 - `contextLimit` 缺失（provider 不上报 `model.limit.context`）→ 跳过
@@ -1291,7 +1323,7 @@ after > contextLimit × rejectPercent / 100 → 拒绝（throw 响亮中文指�
 
 #### 配置严格解析（[zoo.context.decompress]）
 
-`config.toml` 两键：`enabled`（boolean）+ `reject_percent`（整数
+`config.toml` 两键：`enabled`（boolean）+ `max_fill_percent`（整数
 1-100）。镜像 §4.9 严格化（`parseContextConfig`，src/opencode.ts）：
 
 - 节缺席 → undefined（工具静默缺席）
@@ -1299,8 +1331,15 @@ after > contextLimit × rejectPercent / 100 → 拒绝（throw 响亮中文指�
   整节 undefined
 - `enabled = false` 合法关闭；代码零默认值零兜底，config.toml 唯一
   事实来源
-- 兜底（防御陈旧配置）：`rejectPercent` 缺失时工具 execute 抛响亮配置
-  引导报错（提示补配 `enabled = true` 与 `reject_percent`）
+- 兜底（防御陈旧配置）：`maxFillPercent` 缺失时工具 execute 抛响亮配置
+  引导报错（提示补配 `enabled = true` 与 `max_fill_percent`）
+
+> **改名注记（2026-08-06）：** `reject_percent` 已改名
+> `max_fill_percent`（上界门统一 `max_` 前缀家族，与 `max_ranges` 同族；
+> 门禁公式语义不变，仅键名）。旧键 `reject_percent` 不再读取——按未知
+> 键忽略，因此仅含旧键的配置会被视为 `max_fill_percent` 缺失 → 单次
+> `decompress_config_invalid` warn + 整节失效（零兜底纪律的自然结果）。
+> 存量配置需手动改键名。
 
 #### 工具薄壳与执行（src/tools/decompress.ts）
 
@@ -1413,8 +1452,9 @@ pipeline 进一步拆分。
 > （§4.7）——三重保护、幻影门、整段移除 + 锚点合成摘要、缓存纪律均已
 > 按本节设计实现，摘要从"占位"演进为确定性机械摘要（非 LLM）。
 > 2026-07-31 compress 工具已按本节设计注册落地（§4.8）：range 模式
-> 压缩 + mNNNN 引用 + LLM 摘要经工具参数承载均已交付。剩余 V3 工作：
-> pendingManualTrigger 手动触发路径、nudge 系统。
+> 压缩 + mNNNN 引用 + LLM 摘要经工具参数承载均已交付；nudge 系统
+> （§4.9，2026-08-02）与 pendingManualTrigger 手动触发 + 机械管线退役
+> （§4.7，2026-08-06）收尾，V3 全部完成。
 >
 > 原实施路线：先启发式 Range 压缩（无 LLM 调用）验证块生命周期，再注册
 > compress 工具切换为 LLM 驱动摘要（DCP 的模式，§3.4）。
@@ -1725,7 +1765,7 @@ DCP 意味着增加 `dcp.jsonc`，破坏现有配置管理模型。
 | +1 | ~~purge-errors：错误工具调用老化 N 步后标记清除 input~~ | §3.5 / §4.6 | ✅ 已完成（R1-R3 架构落地，§4.6，2026-07-25） |
 | +1.5 | ~~手动压缩 `/dcp compress`：机械摘要 MVP + 三重保护 + 幻影门 + 折叠通路 + 视图变化强制释放 + TUI/报告折叠视图接线 + 系统类残差法~~ | §3.8 / §5.2 | ✅ 已完成（§4.7，2026-07-30） |
 | +2 | ~~zinspect `stats` 新增剪枝回收 section（`--pruning` 标志与 `--tokens`/`--hooks` 同构；读 JSONL 日志的 `prune_completed`/`*_marked`/`*_released` 事件）+ `impact` 聚合改 `hook:event` 复合键消除信号稀释~~（2026-07-27 决策：不做 `/dcp stats` 聊天命令、不加独立子命令） | §5.4 | ✅ 已完成（2026-07-31） |
-| V3 | ~~compress 工具注册~~ ✅、~~mNNNN 引用~~ ✅、~~LLM 驱动摘要（工具参数承载）~~ ✅（2026-07-31，§4.8）、~~nudge 系统~~ ✅（单锚点水位计，2026-08-02，§4.9）；剩余：pendingManualTrigger 手动触发路径 | §3.3 / §3.4 / §3.6 / §5.2-5.3 | ✅ 大部分完成；剩余 pendingManualTrigger |
+| V3 | ~~compress 工具注册~~ ✅、~~mNNNN 引用~~ ✅、~~LLM 驱动摘要（工具参数承载）~~ ✅（2026-07-31，§4.8）、~~nudge 系统~~ ✅（单锚点水位计，2026-08-02，§4.9）、~~pendingManualTrigger 手动触发~~ ✅（机械管线退役，2026-08-06，§4.7） | §3.3 / §3.4 / §3.6 / §5.2-5.3 | ✅ 全部完成 |
 | V3.5 | ~~T2 摘要再压缩~~ **已否决**（2026-08-01，§9.8：保真度需求是断崖，中间密度层无真实消费者；改为索引行 + 召回 + wiki 记忆三层） | §3.8.1 | ❌ 不做 |
 | V4 | Message 模式压缩、~~decompress 工具~~ ✅（restore/recall，2026-08-05，§4.10）、recompress、子代理结果展开 | §3.4 / §5.4 | V3 |
 | 另行规划 | pi 宿主适配（核心已框架无关，缺 transform 接线） | — | pi 侧 hook 能力确认 |

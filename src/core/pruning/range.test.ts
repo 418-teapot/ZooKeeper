@@ -35,6 +35,7 @@ import {
 } from "./message-refs.js";
 import {
   applyRange,
+  compressRanges,
   resolveSpan,
   SUPERSEDED_BLOCKS_LEAD_IN,
   validateRange,
@@ -1449,5 +1450,311 @@ describe("deactivatedAt persistence", () => {
     assert.equal(b2.active, true);
     assert.equal(b2.deactivatedAt, undefined);
     assert.equal(b2.title, "更宽主题");
+  });
+});
+
+// ===========================================================================
+// compressRanges — batch compression
+// ===========================================================================
+
+/**
+ * Two non-overlapping, individually valid ranges on the standard
+ * conversation: [1, 4) and [4, 8).  Both stay inside the protection
+ * boundary (8) and clear the 50-token phantom gate via LONG_OUTPUT.
+ */
+function validBatchRanges(): Array<{
+  fromRef: string;
+  toRef: string;
+  title: string;
+  summary: string;
+}> {
+  return [
+    {
+      fromRef: refFor(1),
+      toRef: refFor(4),
+      title: "主题A",
+      summary: "摘要A。",
+    },
+    {
+      fromRef: refFor(4),
+      toRef: refFor(8),
+      title: "主题B",
+      summary: "摘要B。",
+    },
+  ];
+}
+
+describe("compressRanges — batch compression", () => {
+  it("creates N blocks for N valid non-overlapping ranges in one pass", () => {
+    const messages = standardConversation();
+    assignMessageRefs(TEST_SESSION_ID, messages);
+    const state = getOrCreateSessionState(TEST_SESSION_ID);
+
+    const created = compressRanges(
+      TEST_SESSION_ID,
+      messages,
+      state,
+      CONFIG,
+      validBatchRanges(),
+    );
+
+    assert.equal(created.length, 2);
+    assert.equal(state.blocks.size, 2);
+    assert.equal(created[0].blockId, 1);
+    assert.equal(created[1].blockId, 2);
+    assert.equal(state.blocks.get("1")?.title, "主题A");
+    assert.equal(state.blocks.get("2")?.title, "主题B");
+    assert.deepEqual(state.blocks.get("1")?.messageIds, ["a1", "u2", "a3"]);
+    assert.deepEqual(state.blocks.get("2")?.messageIds, [
+      "u4",
+      "a5",
+      "u6",
+      "a7",
+    ]);
+    assert.equal(state.dirty, true);
+  });
+
+  it("supports a single range (length-1 array) as the unit case", () => {
+    const messages = standardConversation();
+    assignMessageRefs(TEST_SESSION_ID, messages);
+    const state = getOrCreateSessionState(TEST_SESSION_ID);
+
+    const created = compressRanges(TEST_SESSION_ID, messages, state, CONFIG, [
+      {
+        fromRef: refFor(1),
+        toRef: refFor(4),
+        title: "主题A",
+        summary: "摘要A。",
+      },
+    ]);
+
+    assert.equal(created.length, 1);
+    assert.equal(state.blocks.size, 1);
+    assert.equal(state.blocks.get("1")?.title, "主题A");
+  });
+
+  it("rejects the whole batch when a later range is invalid — error names the range, zero state change", () => {
+    const messages = standardConversation();
+    assignMessageRefs(TEST_SESSION_ID, messages);
+    const state = getOrCreateSessionState(TEST_SESSION_ID);
+
+    // Range 1 valid; range 2 reversed ([8, 4)).
+    assert.throws(
+      () =>
+        compressRanges(TEST_SESSION_ID, messages, state, CONFIG, [
+          {
+            fromRef: refFor(1),
+            toRef: refFor(4),
+            title: "主题A",
+            summary: "摘要A。",
+          },
+          {
+            fromRef: refFor(8),
+            toRef: refFor(4),
+            title: "主题B",
+            summary: "摘要B。",
+          },
+        ]),
+      (err: unknown) =>
+        err instanceof Error &&
+        /第 2 个范围/.test(err.message) &&
+        /顺序颠倒/.test(err.message),
+    );
+
+    // Atomicity: nothing was created, nothing was touched.
+    assert.equal(state.blocks.size, 0);
+    assert.equal(state.dirty, false);
+  });
+
+  it("rejects the whole batch when an EARLIER range is invalid — error names the first bad range", () => {
+    const messages = standardConversation();
+    assignMessageRefs(TEST_SESSION_ID, messages);
+    const state = getOrCreateSessionState(TEST_SESSION_ID);
+
+    // Range 1 reaches into the protection zone; range 2 is valid.
+    assert.throws(
+      () =>
+        compressRanges(TEST_SESSION_ID, messages, state, CONFIG, [
+          {
+            fromRef: refFor(1),
+            toRef: refFor(9),
+            title: "主题A",
+            summary: "摘要A。",
+          },
+          {
+            fromRef: refFor(4),
+            toRef: refFor(8),
+            title: "主题B",
+            summary: "摘要B。",
+          },
+        ]),
+      (err: unknown) =>
+        err instanceof Error &&
+        /第 1 个范围/.test(err.message) &&
+        /保护区域/.test(err.message),
+    );
+    assert.equal(state.blocks.size, 0);
+  });
+
+  it("rejects overlapping ranges with both indices and zero state change", () => {
+    const messages = standardConversation();
+    assignMessageRefs(TEST_SESSION_ID, messages);
+    const state = getOrCreateSessionState(TEST_SESSION_ID);
+
+    // [1, 6) and [4, 8) overlap on [4, 6).
+    assert.throws(
+      () =>
+        compressRanges(TEST_SESSION_ID, messages, state, CONFIG, [
+          {
+            fromRef: refFor(1),
+            toRef: refFor(6),
+            title: "主题A",
+            summary: "摘要A。",
+          },
+          {
+            fromRef: refFor(4),
+            toRef: refFor(8),
+            title: "主题B",
+            summary: "摘要B。",
+          },
+        ]),
+      (err: unknown) =>
+        err instanceof Error &&
+        /第 2 个范围/.test(err.message) &&
+        /第 1 个范围/.test(err.message) &&
+        /重叠/.test(err.message),
+    );
+    assert.equal(state.blocks.size, 0);
+  });
+
+  it("rejects a range that would consume a block created by the same call (zero state change)", () => {
+    const messages = standardConversation();
+    assignMessageRefs(TEST_SESSION_ID, messages);
+    const state = getOrCreateSessionState(TEST_SESSION_ID);
+
+    // Range 1 [1, 4); range 2 [1, 8) fully covers range 1's span — it
+    // would consume the block range 1 just created.
+    assert.throws(
+      () =>
+        compressRanges(TEST_SESSION_ID, messages, state, CONFIG, [
+          {
+            fromRef: refFor(1),
+            toRef: refFor(4),
+            title: "主题A",
+            summary: "摘要A。",
+          },
+          {
+            fromRef: refFor(1),
+            toRef: refFor(8),
+            title: "主题B",
+            summary: "摘要B。",
+          },
+        ]),
+      (err: unknown) =>
+        err instanceof Error &&
+        /第 2 个范围/.test(err.message) &&
+        /第 1 个范围/.test(err.message) &&
+        /消费/.test(err.message),
+    );
+    assert.equal(state.blocks.size, 0);
+  });
+
+  it("leaves state untouched when a later range fails an apply-time gate (no-new-content)", () => {
+    const messages = standardConversation();
+    assignMessageRefs(TEST_SESSION_ID, messages);
+    const state = getOrCreateSessionState(TEST_SESSION_ID);
+
+    // Pre-create block 1 covering exactly [1, 4).
+    compressRange(
+      TEST_SESSION_ID,
+      messages,
+      state,
+      refFor(1),
+      refFor(4),
+      "第一段压缩摘要。",
+      "第一段主题",
+    );
+    const b1 = state.blocks.get("1");
+    assert.ok(b1 !== undefined);
+    const b1Tokens = b1.compressedTokens;
+
+    // Batch: range 1 [4, 8) is fine; range 2 [1, 4) is exactly block 1's
+    // span → the no-new-content gate fires on the SECOND range.
+    assert.throws(
+      () =>
+        compressRanges(TEST_SESSION_ID, messages, state, CONFIG, [
+          {
+            fromRef: refFor(4),
+            toRef: refFor(8),
+            title: "主题B",
+            summary: "摘要B。",
+          },
+          {
+            fromRef: refFor(1),
+            toRef: refFor(4),
+            title: "主题C",
+            summary: "摘要C。",
+          },
+        ]),
+      (err: unknown) =>
+        err instanceof Error &&
+        /第 2 个范围/.test(err.message) &&
+        /没有带来新的可压缩内容/.test(err.message),
+    );
+
+    // Atomicity: range 1 must NOT have been applied either.
+    assert.equal(state.blocks.size, 1);
+    assert.equal(b1.active, true);
+    assert.equal(b1.deactivatedAt, undefined);
+    assert.equal(b1.compressedTokens, b1Tokens);
+  });
+
+  it("consumes a pre-existing block inside a batch range (single mutation pass)", () => {
+    const messages = standardConversation();
+    assignMessageRefs(TEST_SESSION_ID, messages);
+    const state = getOrCreateSessionState(TEST_SESSION_ID);
+
+    // Block 1 covers [2, 6) anchored at u2.
+    compressRange(
+      TEST_SESSION_ID,
+      messages,
+      state,
+      refFor(2),
+      refFor(6),
+      "第一段压缩摘要。",
+      "第一段主题",
+    );
+
+    // Batch: range 1 [1, 6) fully consumes block 1 (new content a1);
+    // range 2 [6, 8) creates an independent block.  Adjacent, no overlap.
+    const created = compressRanges(TEST_SESSION_ID, messages, state, CONFIG, [
+      {
+        fromRef: refFor(1),
+        toRef: refFor(6),
+        title: "主题A",
+        summary: "摘要A。",
+      },
+      {
+        fromRef: refFor(6),
+        toRef: refFor(8),
+        title: "主题B",
+        summary: "摘要B。",
+      },
+    ]);
+
+    assert.equal(created.length, 2);
+    assert.equal(state.blocks.size, 3);
+    // Block 1 consumed; block 2 (range 1) unions its messages.
+    assert.equal(state.blocks.get("1")?.active, false);
+    assert.equal(typeof state.blocks.get("1")?.deactivatedAt, "number");
+    const b2 = state.blocks.get("2");
+    assert.ok(b2 !== undefined);
+    assert.deepEqual(b2.messageIds, ["a1", "u2", "a3", "u4", "a5"]);
+    assert.ok(b2.summary.includes("--- b1: 第一段主题 ---"));
+    // Block 3 (range 2) independent.
+    const b3 = state.blocks.get("3");
+    assert.ok(b3 !== undefined);
+    assert.deepEqual(b3.messageIds, ["u6", "a7"]);
+    assert.equal(b3.active, true);
   });
 });

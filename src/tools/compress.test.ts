@@ -1,15 +1,18 @@
 /**
- * Integration tests for the range-mode compress tool adapter.
+ * Integration tests for the batch compress tool adapter.
  *
  * Covers: the full execute flow (fetch → ref fallback → core → persist →
- * notify → ToolResult) against the real imported config, loud guidance
- * error propagation (unknown ref, reversed order), the `enabled === false`
- * registration gate (tool hooks + primary_tools), and the config-hook
- * primary_tools append preserving existing entries.
+ * notify → ToolResult) against the real imported config with the `ranges`
+ * array parameter, multi-range batch creation with a single persistence and
+ * a single notification, the `max_ranges` overflow gate (loud batch
+ * guidance), per-range validation errors naming the range index, the
+ * `enabled === false` registration gate (tool hooks + primary_tools), and
+ * the config-hook primary_tools append preserving existing entries.
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import type { ContextMessageEntry } from "../core/metrics.js";
+import { COMPRESS_GUIDANCE } from "../core/prompts.js";
 import {
   _clearAllSessionsForTesting,
   deleteSessionState,
@@ -25,6 +28,7 @@ import {
   zookeeper,
 } from "../opencode.js";
 import { _resetForTesting } from "../utils/logger.js";
+import type { CompressToolDefinition } from "./compress.js";
 
 // ---------------------------------------------------------------------------
 // Session ids & teardown
@@ -87,8 +91,9 @@ function makeToolMsg(id: string): ContextMessageEntry {
  * (protectedMessages=20, protectedTokens=20000, thresholdTokens=2000).
  *
  * Indices: u0 (first user) + 28 tool-heavy exchanges + last user + final
- * assistant.  Range [1, 9) covers 8 tool messages (~16000 tokens), well
- * inside the protection boundary.
+ * assistant.  The protection boundary lands at index 11, so valid ranges
+ * live inside [1, 11).  Range [1, 6) covers 5 tool messages (~10000 tokens)
+ * and range [6, 10) covers 4 more — both comfortably over the threshold.
  */
 function makeMessages(): ContextMessageEntry[] {
   const msgs: ContextMessageEntry[] = [makeUserMsg("u0", "开场问题")];
@@ -98,6 +103,21 @@ function makeMessages(): ContextMessageEntry[] {
   msgs.push(makeUserMsg("u29", "最后一个问题"));
   msgs.push(makeAssistantMsg("a30", "回答完毕"));
   return msgs;
+}
+
+/** A single valid range on `makeMessages()` output. */
+function makeRange(
+  fromIndex: number,
+  toIndex: number,
+  title = "执行命令主题",
+  summary = "用户请求执行命令，助手完成了操作。",
+): { fromRef: string; toRef: string; title: string; summary: string } {
+  return {
+    fromRef: refFor(fromIndex),
+    toRef: refFor(toIndex),
+    title,
+    summary,
+  };
 }
 
 /** Mock client that returns the given messages and captures prompt calls. */
@@ -155,7 +175,7 @@ const mockToolContext = {
 // ---------------------------------------------------------------------------
 
 describe("compress tool execute — happy path", () => {
-  it("creates a block, persists state, and sends an ignored notification", async () => {
+  it("creates a block for a single range, persists state, and sends an ignored notification", async () => {
     const messages = makeMessages();
     const { client, promptCalls } = mockClient(messages);
 
@@ -164,12 +184,7 @@ describe("compress tool execute — happy path", () => {
     assert.ok(plugin.tool.compress, "compress tool must be registered");
 
     const result = await plugin.tool.compress.execute(
-      {
-        fromRef: refFor(1),
-        toRef: refFor(9),
-        summary: "用户请求执行命令，助手完成了操作。",
-        title: "执行命令主题",
-      },
+      { ranges: [makeRange(1, 9)] },
       mockToolContext,
     );
 
@@ -232,18 +247,52 @@ describe("compress tool execute — happy path", () => {
     );
   });
 
+  it("creates N blocks for N ranges in one call — single persist, single notify", async () => {
+    const messages = makeMessages();
+    const { client, promptCalls } = mockClient(messages);
+
+    const plugin = (await zookeeper({ client })) as any;
+
+    const result = await plugin.tool.compress.execute(
+      { ranges: [makeRange(1, 6, "主题一"), makeRange(6, 10, "主题二")] },
+      mockToolContext,
+    );
+
+    // (1) Two blocks created in order.
+    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    assert.equal(state.blocks.size, 2);
+    assert.equal(state.blocks.get("1")?.title, "主题一");
+    assert.equal(state.blocks.get("1")?.messageIds.length, 5);
+    assert.equal(state.blocks.get("2")?.title, "主题二");
+    assert.equal(state.blocks.get("2")?.messageIds.length, 4);
+    assert.equal(state.pendingViewChange, true);
+
+    // (2) Persisted exactly once (both blocks on disk).
+    const persisted = loadSessionState(TEST_SESSION_ID);
+    assert.ok(persisted !== null);
+    assert.equal(persisted.blocks.size, 2);
+    assert.equal(persisted.blocks.get("2")?.active, true);
+
+    // (3) ONE ignored notification covering both blocks.
+    assert.equal(promptCalls.length, 1, "single notification for the batch");
+    assert.ok(promptCalls[0].text.includes("已压缩 2 个范围"));
+    assert.ok(promptCalls[0].text.includes("b1、b2"));
+
+    // ToolResult: single-line, mentions both blocks, no summary body.
+    assert.equal(typeof result, "string");
+    assert.ok(!result.includes("\n"));
+    assert.ok(result.includes("已压缩 2 个范围"));
+    assert.ok(result.includes("b1、b2"));
+    assert.ok(!result.includes("用户请求执行命令"));
+  });
+
   it("accepts a sessionId-shaped tool context (defensive)", async () => {
     const messages = makeMessages();
     const { client } = mockClient(messages);
     const plugin = (await zookeeper({ client })) as any;
 
     const result = await plugin.tool.compress.execute(
-      {
-        fromRef: refFor(1),
-        toRef: refFor(9),
-        summary: "用户请求执行命令，助手完成了操作。",
-        title: "执行命令主题",
-      },
+      { ranges: [makeRange(1, 9)] },
       { ...mockToolContext, sessionID: undefined, sessionId: TEST_SESSION_ID },
     );
 
@@ -264,12 +313,7 @@ describe("compress tool execute — happy path", () => {
 
     const title = "超".repeat(80);
     const result = await plugin.tool.compress.execute(
-      {
-        fromRef: refFor(1),
-        toRef: refFor(9),
-        summary: "摘要",
-        title,
-      },
+      { ranges: [makeRange(1, 9, title)] },
       mockToolContext,
     );
 
@@ -286,47 +330,63 @@ describe("compress tool execute — happy path", () => {
 // ---------------------------------------------------------------------------
 
 describe("compress tool execute — error paths", () => {
-  it("propagates the unknown-ref guidance error", async () => {
+  it("rejects more ranges than max_ranges with a loud batch-guidance error", async () => {
     const messages = makeMessages();
     const { client } = mockClient(messages);
     const plugin = (await zookeeper({ client })) as any;
 
+    // Real config.toml sets max_ranges = 8; 9 ranges must be rejected
+    // BEFORE any core validation (refs are dummy on purpose).
+    const ranges = Array.from({ length: 9 }, () => makeRange(1, 2));
     await assert.rejects(
-      () =>
-        plugin.tool.compress.execute(
-          {
-            fromRef: "m9999",
-            toRef: refFor(9),
-            summary: "摘要",
-            title: "主题",
-          },
-          mockToolContext,
-        ),
-      /不存在/,
+      () => plugin.tool.compress.execute({ ranges }, mockToolContext),
+      (err: unknown) =>
+        err instanceof Error &&
+        /9/.test(err.message) &&
+        /8/.test(err.message) &&
+        /分批/.test(err.message),
     );
+
+    // Nothing was created.
+    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    assert.equal(state.blocks.size, 0);
   });
 
-  it("propagates the reversed-order guidance error", async () => {
+  it("rejects an empty ranges array", async () => {
     const messages = makeMessages();
     const { client } = mockClient(messages);
     const plugin = (await zookeeper({ client })) as any;
 
     await assert.rejects(
-      () =>
-        plugin.tool.compress.execute(
-          {
-            fromRef: refFor(9),
-            toRef: refFor(1),
-            summary: "摘要",
-            title: "主题",
-          },
-          mockToolContext,
-        ),
-      /顺序颠倒/,
+      () => plugin.tool.compress.execute({ ranges: [] }, mockToolContext),
+      /不能为空/,
     );
+    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    assert.equal(state.blocks.size, 0);
   });
 
-  it("rejects an empty title with a loud Chinese guidance error", async () => {
+  it("rejects a missing or non-array ranges argument", async () => {
+    const messages = makeMessages();
+    const { client } = mockClient(messages);
+    const plugin = (await zookeeper({ client })) as any;
+
+    await assert.rejects(
+      () => plugin.tool.compress.execute({}, mockToolContext),
+      /ranges/,
+    );
+    await assert.rejects(
+      () => plugin.tool.compress.execute({ ranges: "m0001" }, mockToolContext),
+      /ranges/,
+    );
+    await assert.rejects(
+      () => plugin.tool.compress.execute(null, mockToolContext),
+      /ranges/,
+    );
+    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    assert.equal(state.blocks.size, 0);
+  });
+
+  it("propagates the unknown-ref guidance error naming the range index", async () => {
     const messages = makeMessages();
     const { client } = mockClient(messages);
     const plugin = (await zookeeper({ client })) as any;
@@ -335,15 +395,82 @@ describe("compress tool execute — error paths", () => {
       () =>
         plugin.tool.compress.execute(
           {
-            fromRef: refFor(1),
-            toRef: refFor(9),
-            summary: "摘要",
-            title: "  ",
+            ranges: [makeRange(1, 6), { ...makeRange(6, 9), fromRef: "m9999" }],
           },
           mockToolContext,
         ),
       (err: unknown) =>
         err instanceof Error &&
+        /第 2 个范围/.test(err.message) &&
+        /不存在/.test(err.message),
+    );
+  });
+
+  it("propagates the reversed-order guidance error naming the range index", async () => {
+    const messages = makeMessages();
+    const { client } = mockClient(messages);
+    const plugin = (await zookeeper({ client })) as any;
+
+    await assert.rejects(
+      () =>
+        plugin.tool.compress.execute(
+          {
+            ranges: [
+              makeRange(1, 6),
+              {
+                fromRef: refFor(9),
+                toRef: refFor(1),
+                title: "主题",
+                summary: "摘要",
+              },
+            ],
+          },
+          mockToolContext,
+        ),
+      (err: unknown) =>
+        err instanceof Error &&
+        /第 2 个范围/.test(err.message) &&
+        /顺序颠倒/.test(err.message),
+    );
+  });
+
+  it("rejects overlapping ranges naming both indices", async () => {
+    const messages = makeMessages();
+    const { client } = mockClient(messages);
+    const plugin = (await zookeeper({ client })) as any;
+
+    await assert.rejects(
+      () =>
+        plugin.tool.compress.execute(
+          { ranges: [makeRange(1, 6), makeRange(4, 9)] },
+          mockToolContext,
+        ),
+      (err: unknown) =>
+        err instanceof Error &&
+        /第 2 个范围/.test(err.message) &&
+        /第 1 个范围/.test(err.message) &&
+        /重叠/.test(err.message),
+    );
+    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    assert.equal(state.blocks.size, 0);
+  });
+
+  it("rejects an empty title in a specific range naming that range", async () => {
+    const messages = makeMessages();
+    const { client } = mockClient(messages);
+    const plugin = (await zookeeper({ client })) as any;
+
+    await assert.rejects(
+      () =>
+        plugin.tool.compress.execute(
+          {
+            ranges: [makeRange(1, 6), makeRange(6, 9, "   ")],
+          },
+          mockToolContext,
+        ),
+      (err: unknown) =>
+        err instanceof Error &&
+        /第 2 个范围/.test(err.message) &&
         /不能为空/.test(err.message) &&
         /80/.test(err.message),
     );
@@ -361,12 +488,7 @@ describe("compress tool execute — error paths", () => {
     await assert.rejects(
       () =>
         plugin.tool.compress.execute(
-          {
-            fromRef: refFor(1),
-            toRef: refFor(9),
-            summary: "摘要",
-            title: longTitle,
-          },
+          { ranges: [makeRange(1, 9, longTitle)] },
           mockToolContext,
         ),
       (err: unknown) =>
@@ -394,12 +516,7 @@ describe("compress tool execute — error paths", () => {
       await assert.rejects(
         () =>
           plugin.tool.compress.execute(
-            {
-              fromRef: refFor(1),
-              toRef: refFor(9),
-              summary: "摘要",
-              title,
-            },
+            { ranges: [makeRange(1, 9, title)] },
             mockToolContext,
           ),
         (err: unknown) =>
@@ -423,12 +540,7 @@ describe("compress tool execute — error paths", () => {
       await assert.rejects(
         () =>
           plugin.tool.compress.execute(
-            {
-              fromRef: refFor(1),
-              toRef: refFor(9),
-              summary: "摘要",
-              title,
-            },
+            { ranges: [makeRange(1, 9, title)] },
             mockToolContext,
           ),
         (err: unknown) =>
@@ -442,52 +554,51 @@ describe("compress tool execute — error paths", () => {
     }
   });
 
-  it("rejects non-string required args before title and core validation", async () => {
+  it("rejects non-string fields inside a range item before core validation", async () => {
     const messages = makeMessages();
     const { client } = mockClient(messages);
     const plugin = (await zookeeper({ client })) as any;
-    const cases: Array<{ name: string; args: Record<string, unknown> }> = [
+    const cases: Array<{ name: string; item: Record<string, unknown> }> = [
       {
         name: "fromRef",
-        args: {
-          fromRef: 1,
-          toRef: refFor(9),
-          summary: "摘要",
-          title: "主题",
-        },
+        item: { fromRef: 1, toRef: refFor(9), title: "主题", summary: "摘要" },
       },
       {
         name: "toRef",
-        args: {
+        item: {
           fromRef: refFor(1),
           toRef: null,
-          summary: "摘要",
           title: "主题",
+          summary: "摘要",
         },
       },
       {
         name: "title",
-        args: {
+        item: {
           fromRef: refFor(1),
           toRef: refFor(9),
-          summary: "摘要",
           title: { text: "主题" },
+          summary: "摘要",
         },
       },
       {
         name: "summary",
-        args: {
+        item: {
           fromRef: refFor(1),
           toRef: refFor(9),
-          summary: false,
           title: "主题",
+          summary: false,
         },
       },
     ];
 
     for (const item of cases) {
       await assert.rejects(
-        () => plugin.tool.compress.execute(item.args, mockToolContext),
+        () =>
+          plugin.tool.compress.execute(
+            { ranges: [item.item] },
+            mockToolContext,
+          ),
         (err: unknown) =>
           err instanceof Error &&
           err.message.includes(item.name) &&
@@ -496,6 +607,102 @@ describe("compress tool execute — error paths", () => {
       const state = getOrCreateSessionState(TEST_SESSION_ID);
       assert.equal(state.blocks.size, 0);
     }
+  });
+
+  it("rejects a non-object range item naming the range index", async () => {
+    const messages = makeMessages();
+    const { client } = mockClient(messages);
+    const plugin = (await zookeeper({ client })) as any;
+
+    await assert.rejects(
+      () =>
+        plugin.tool.compress.execute({ ranges: ["m0001"] }, mockToolContext),
+      (err: unknown) =>
+        err instanceof Error &&
+        /第 1 个范围/.test(err.message) &&
+        /格式错误/.test(err.message),
+    );
+    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    assert.equal(state.blocks.size, 0);
+  });
+
+  it("throws a loud error when the tool context lacks a session id", async () => {
+    const messages = makeMessages();
+    const { client } = mockClient(messages);
+    const plugin = (await zookeeper({ client })) as any;
+
+    await assert.rejects(
+      () =>
+        plugin.tool.compress.execute(
+          { ranges: [makeRange(1, 9)] },
+          { ...mockToolContext, sessionID: undefined, sessionId: undefined },
+        ),
+      /sessionID/,
+    );
+  });
+
+  it("throws a loud config error when the compress section parsed without thresholds (defensive)", async () => {
+    // Registration only happens with a strictly parsed section, so this
+    // config shape is unreachable in production — the check is defense.
+    const { client } = mockClient(makeMessages());
+    const hooks = buildToolHooks(client, {
+      dedup: {},
+      purgeErrors: {},
+      compress: { enabled: true },
+    });
+    assert.ok(hooks?.compress);
+
+    await assert.rejects(
+      () =>
+        hooks.compress.execute({ ranges: [makeRange(1, 9)] }, mockToolContext),
+      /压缩功能未启用/,
+    );
+  });
+
+  it("throws a loud config error when protected_messages is missing (defensive)", async () => {
+    const { client } = mockClient(makeMessages());
+    const hooks = buildToolHooks(client, {
+      dedup: {},
+      purgeErrors: {},
+      compress: {
+        enabled: true,
+        thresholdTokens: 2000,
+        protectedTokens: 20000,
+        maxRanges: 8,
+      },
+    });
+    assert.ok(hooks?.compress);
+
+    await assert.rejects(
+      () =>
+        hooks.compress.execute({ ranges: [makeRange(1, 9)] }, mockToolContext),
+      /protected_messages/,
+    );
+  });
+
+  it("still returns the result when the ignored notification fails (best-effort)", async () => {
+    const messages = makeMessages();
+    const { client } = mockClient(messages);
+    // Make the prompt call reject — the notify failure must be swallowed.
+    const failingClient = {
+      session: {
+        ...client.session,
+        prompt: async () => {
+          throw new Error("prompt rejected");
+        },
+      },
+    };
+    const plugin = (await zookeeper({ client: failingClient })) as any;
+
+    const result = await plugin.tool.compress.execute(
+      { ranges: [makeRange(1, 9)] },
+      mockToolContext,
+    );
+
+    // Compression still succeeded and returned a ToolResult.
+    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    assert.equal(state.blocks.size, 1);
+    assert.ok(result.includes("已压缩"));
   });
 });
 
@@ -546,7 +753,7 @@ describe("compress tool registration gate", () => {
     assert.equal(typeof hooks.compress.execute, "function");
   });
 
-  it("registers plain JSON Schema args for OpenCode native tool loading", () => {
+  it("registers the ranges-array JSON Schema for OpenCode native tool loading", () => {
     const { client } = mockClient([]);
     const hooks = buildToolHooks(client, {
       dedup: {},
@@ -555,28 +762,35 @@ describe("compress tool registration gate", () => {
     });
 
     assert.ok(hooks?.compress);
-    assert.deepEqual(hooks.compress.args, {
-      fromRef: {
-        type: "string",
-        description:
-          '范围起点消息的 ref（如 "m0001"，对应消息上的 <zoo-msg-id> 标签）。该消息及其之后的内容将被压缩。ref 是地址而非序号，数值上可能不连续。',
-      },
-      toRef: {
-        type: "string",
-        description:
-          "范围终点消息的 ref，压缩范围到该消息之前为止（该消息本身不压缩）。请选择位置在起点之后的可见消息。",
-      },
-      title: {
-        type: "string",
-        description:
-          "一行主题说明（必填，不超过 80 字符）：概括这段被压缩内容，将来此块被更大范围压缩时作为索引行展示。",
-      },
-      summary: {
-        type: "string",
-        description:
-          "块正文总结：替换整个压缩范围的完整摘要文本。请保留关键决策、结论与文件路径，确保后续工作无需回看原文。",
-      },
+    const compressArgs = (hooks.compress as CompressToolDefinition).args;
+    assert.ok(compressArgs.ranges, "ranges arg must be present");
+    assert.equal(compressArgs.ranges.type, "array");
+    assert.equal(compressArgs.ranges.items.type, "object");
+    assert.deepEqual(compressArgs.ranges.items.required, [
+      "fromRef",
+      "toRef",
+      "title",
+      "summary",
+    ]);
+    for (const field of ["fromRef", "toRef", "title", "summary"] as const) {
+      assert.equal(compressArgs.ranges.items.properties[field].type, "string");
+    }
+  });
+
+  it("injects the teaching skeleton into the tool description", () => {
+    const { client } = mockClient([]);
+    const hooks = buildToolHooks(client, {
+      dedup: {},
+      purgeErrors: {},
+      compress: { enabled: true },
     });
+
+    assert.ok(hooks?.compress);
+    const description = (hooks.compress as CompressToolDefinition).description;
+    assert.ok(
+      description.includes(COMPRESS_GUIDANCE),
+      "description must carry the full teaching skeleton (all four points)",
+    );
   });
 });
 

@@ -646,6 +646,7 @@ export function getOrCreateSessionState(sessionId: string): SessionState {
       lastAccessedAt: Date.now(),
       dirty: false,
       pendingViewChange: false,
+      pendingManualTrigger: false,
       refs: persisted?.refs,
       nudges: persisted?.nudges,
     };

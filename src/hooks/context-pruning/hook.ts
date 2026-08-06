@@ -18,6 +18,7 @@ import { getModelLimit } from "../../core/model-limits.js";
 import {
   CONTEXT_NUDGE_LEVELS,
   CONTEXT_NUDGE_TEMPLATE,
+  MANUAL_COMPRESS_TEMPLATE,
 } from "../../core/prompts.js";
 import {
   activeBlockCount,
@@ -91,6 +92,12 @@ export interface CompressConfig {
    * Present whenever the section is returned.
    */
   protectedTokens?: number;
+  /**
+   * Upper bound on the number of ranges accepted per compress tool call
+   * (strictly parsed positive integer).  Present whenever the section is
+   * returned — missing or invalid `max_ranges` drops the whole section.
+   */
+  maxRanges?: number;
 }
 
 /**
@@ -113,18 +120,18 @@ export interface ContextNudgeConfig extends NudgeConfig {
  * Strictly parsed: the section is absent (`undefined`) unless both
  * keys are present and valid.  `enabled` is the hook-level gate —
  * `false` is parsed but disabled (no tool registration).
- * `rejectPercent` is defined whenever the section is returned.
+ * `maxFillPercent` is defined whenever the section is returned.
  */
 export interface DecompressConfig {
   /** Hook-level enable gate.  `false` → parsed but disabled. */
   enabled?: boolean;
   /**
-   * Rejection threshold (percent): restore of an active compression
+   * Max fill threshold (percent): restore of an active compression
    * block is rejected when the estimated post-restore tokens exceed
-   * context_limit × rejectPercent / 100.  Present whenever the
+   * context_limit × maxFillPercent / 100.  Present whenever the
    * section is returned.
    */
-  rejectPercent?: number;
+  maxFillPercent?: number;
 }
 
 /**
@@ -203,6 +210,12 @@ export interface ContextPruningConfig {
  * interval since the last anchor (`state.nudges`, persisted via the
  * normal dirty flag).  The synthetic message is transform-only — never
  * persisted, never ref-assigned (Phase 6 runs after Phase 4).
+ *
+ * **Phase 6b (Manual compress trigger):** when `/dcp compress` armed the
+ * one-shot `pendingManualTrigger` flag, append a synthetic user message
+ * (`zoo-manual-compress`) driving the model to call the `compress` tool.
+ * Transform-only (never persisted, never ref-assigned), skipped for
+ * sub-agent sessions, and the flag is cleared after injection.
  *
  * **Phase 7 (Finalize):** clear the view-change flag and persist state to
  * disk when dirty.
@@ -546,6 +559,7 @@ export function contextPruningTransformHandler(
               .replaceAll("{endRef}", eligibility.endRef)
               .replaceAll("{reclaim}", String(eligibility.reclaimTokens))
               .replaceAll("{ACTION}", copy.action)
+              .replaceAll("{TEACHING}", copy.teaching)
               .replaceAll("{EQUATION}", copy.equation);
 
             // Transform-only synthetic message: appended at the END after
@@ -580,6 +594,82 @@ export function contextPruningTransformHandler(
           }
         }
       }
+    }
+  }
+
+  // ── Phase 6b: Manual compress trigger — synthetic user command ───
+  // `/dcp compress` sets a one-shot in-memory flag; the NEXT transform
+  // appends a synthetic user message (id `zoo-manual-compress`) that the
+  // model treats as a direct instruction to call the `compress` tool.
+  // Runs after Phase 4 so the message never enters ref assignment, and
+  // never calls session.prompt (transform-only, invisible in storage).
+  // Sub-agent sessions are skipped entirely.  The flag is cleared after
+  // the phase — one-shot, never re-injected on later turns.
+  const manualCfg = config.compress;
+  if (state.pendingManualTrigger && !isSubAgent) {
+    if (
+      manualCfg?.enabled === true &&
+      manualCfg.protectedTokens !== undefined &&
+      manualCfg.thresholdTokens !== undefined
+    ) {
+      const eligibility =
+        config.protectedMessages === undefined
+          ? null
+          : computeEligibility(
+              messages,
+              {
+                protectedMessages: config.protectedMessages,
+                protectedTokens: manualCfg.protectedTokens,
+                thresholdTokens: manualCfg.thresholdTokens,
+              },
+              (messageId) => getMessageRefById(sessionId, messageId),
+            );
+      const windowLine = eligibility
+        ? `可压缩窗口：${eligibility.startRef}–${eligibility.endRef}（约 ${eligibility.reclaimTokens} tokens，两端 ref 均为包含边界）。你可以在此窗口内选择连续子范围；compress 的 toRef 为排他边界——传入某条消息之后的 ref 才会包含该消息。`
+        : "未检测到明确的可压缩窗口（全部内容均在保护区内）。如你判断仍有已完成且无需逐字保留的历史，请自行选择合适的范围压缩。";
+      const text = MANUAL_COMPRESS_TEMPLATE.replace("{WINDOW}", windowLine);
+
+      // Synthetic user command appended at the very END — never
+      // persisted, never ref-assigned.
+      messages.push({
+        info: {
+          id: "zoo-manual-compress",
+          role: "user",
+          sessionID: sessionId,
+        },
+        parts: [{ type: "text", text }],
+      });
+      state.pendingManualTrigger = false;
+
+      log(
+        "context-pruning",
+        "manual_compress_injected",
+        sessionId,
+        undefined,
+        "info",
+        {
+          ...(eligibility
+            ? {
+                startRef: eligibility.startRef,
+                endRef: eligibility.endRef,
+                reclaimTokens: eligibility.reclaimTokens,
+              }
+            : { eligibility: null }),
+        },
+      );
+    } else {
+      // Compress section unavailable — a stale trigger can never produce
+      // a meaningful command.  Clear the flag so it never fires later
+      // (the /dcp compress enable gate normally prevents this state).
+      state.pendingManualTrigger = false;
+      log(
+        "context-pruning",
+        "manual_compress_skipped",
+        sessionId,
+        undefined,
+        "warn",
+        { reason: "compress section disabled or missing" },
+      );
     }
   }
 
