@@ -1,19 +1,22 @@
 /**
  * Tests for helper functions in the ZooKeeper plugin entry point.
  *
- * Covers: parseLimits, parseSkillsConfig, injectAgentPrompts,
+ * Covers: parseLimits, parseSkillsConfig, initPluginLogger (from
+ * `src/core/config-parse.ts`), injectAgentPrompts,
  * handleMessagesTransform, runAfterHandlers, registerSkills,
  * resolveSessionAgent.
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import {
-  handleDedupNotify,
-  handleMessagesTransform,
   initPluginLogger,
-  injectAgentPrompts,
   parseLimits,
   parseSkillsConfig,
+} from "./core/config-parse.js";
+import {
+  handleDedupNotify,
+  handleMessagesTransform,
+  injectAgentPrompts,
   registerSkills,
   resolveSessionAgent,
   runAfterHandlers,
@@ -70,40 +73,45 @@ describe("parseLimits", () => {
     assert.equal(result.promptWordLimit, 800);
   });
 
-  it("logs a warning and returns undefined for string value", () => {
+  it("logs a warning and drops the whole section for string value", () => {
     const cfg = { validation: { context_word_limit: "abc" } };
     const result = parseLimits(cfg);
     assert.equal(result.contextWordLimit, undefined);
+    assert.equal(result.promptWordLimit, undefined);
 
     const buffer = _getBufferForTesting();
-    const entry = buffer.find((e) => e.event === "invalid_context_word_limit");
-    assert.ok(entry, "must log invalid_context_word_limit");
+    const entry = buffer.find((e) => e.event === "validation_config_invalid");
+    assert.ok(entry, "must log validation_config_invalid");
     const ee = entry as Record<string, unknown>;
     assert.equal(ee.key, "context_word_limit");
     assert.equal(ee.value, "abc");
   });
 
-  it("logs a warning and returns undefined for NaN", () => {
+  it("logs a warning and drops the whole section for NaN", () => {
     const cfg = { validation: { context_word_limit: NaN } };
     const result = parseLimits(cfg);
     assert.equal(result.contextWordLimit, undefined);
-
-    const buffer = _getBufferForTesting();
-    const entry = buffer.find((e) => e.event === "invalid_context_word_limit");
-    assert.ok(entry, "must log invalid_context_word_limit for NaN");
-  });
-
-  it("logs a warning and returns undefined for Infinity", () => {
-    const cfg = { validation: { prompt_word_limit: Infinity } };
-    const result = parseLimits(cfg);
     assert.equal(result.promptWordLimit, undefined);
 
     const buffer = _getBufferForTesting();
-    const entry = buffer.find((e) => e.event === "invalid_prompt_word_limit");
-    assert.ok(entry, "must log invalid_prompt_word_limit for Infinity");
+    const entry = buffer.find((e) => e.event === "validation_config_invalid");
+    assert.ok(entry, "must log validation_config_invalid for NaN");
+    assert.equal((entry as Record<string, unknown>).key, "context_word_limit");
   });
 
-  it("logs a warning and returns undefined for 0 word limits (must be > 0)", () => {
+  it("logs a warning and drops the whole section for Infinity", () => {
+    const cfg = { validation: { prompt_word_limit: Infinity } };
+    const result = parseLimits(cfg);
+    assert.equal(result.contextWordLimit, undefined);
+    assert.equal(result.promptWordLimit, undefined);
+
+    const buffer = _getBufferForTesting();
+    const entry = buffer.find((e) => e.event === "validation_config_invalid");
+    assert.ok(entry, "must log validation_config_invalid for Infinity");
+    assert.equal((entry as Record<string, unknown>).key, "prompt_word_limit");
+  });
+
+  it("drops the whole section with a single warn for 0 word limits (must be > 0)", () => {
     const cfg = {
       validation: {
         context_word_limit: 0,
@@ -115,13 +123,21 @@ describe("parseLimits", () => {
     assert.equal(result.promptWordLimit, undefined);
 
     const buffer = _getBufferForTesting();
-    const ctx = buffer.find((e) => e.event === "invalid_context_word_limit");
-    const prompt = buffer.find((e) => e.event === "invalid_prompt_word_limit");
-    assert.ok(ctx, "must log invalid_context_word_limit for 0");
-    assert.ok(prompt, "must log invalid_prompt_word_limit for 0");
+    const entries = buffer.filter(
+      (e) => e.event === "validation_config_invalid",
+    );
+    assert.equal(
+      entries.length,
+      1,
+      "whole-section discard logs exactly one warn",
+    );
+    assert.equal(
+      (entries[0] as Record<string, unknown>).key,
+      "context_word_limit",
+    );
   });
 
-  it("logs a warning and returns undefined for negative word limits", () => {
+  it("drops the whole section with a single warn for negative word limits", () => {
     const cfg = {
       validation: {
         context_word_limit: -1,
@@ -134,20 +150,16 @@ describe("parseLimits", () => {
 
     const buffer = _getBufferForTesting();
     const entries = buffer.filter(
-      (e) =>
-        e.event === "invalid_context_word_limit" ||
-        e.event === "invalid_prompt_word_limit",
+      (e) => e.event === "validation_config_invalid",
     );
-    assert.equal(entries.length, 2);
+    assert.equal(entries.length, 1, "one warn for the whole section");
   });
 
   it("does NOT log a warning when validation section is absent", () => {
     parseLimits({});
     const buffer = _getBufferForTesting();
     const entries = buffer.filter(
-      (e) =>
-        e.event === "invalid_context_word_limit" ||
-        e.event === "invalid_prompt_word_limit",
+      (e) => e.event === "validation_config_invalid",
     );
     assert.equal(entries.length, 0);
   });
@@ -177,6 +189,73 @@ describe("parseSkillsConfig", () => {
   it("returns empty object when skills key is null", () => {
     assert.deepEqual(parseSkillsConfig({ skills: null }), {});
   });
+
+  it("does NOT log a warning when skills section is absent", () => {
+    parseSkillsConfig({});
+    const buffer = _getBufferForTesting();
+    const entries = buffer.filter((e) => e.event === "skills_config_invalid");
+    assert.equal(entries.length, 0);
+  });
+
+  it("does NOT log a warning for a valid skills map", () => {
+    parseSkillsConfig({ skills: { git: "enable" } });
+    const buffer = _getBufferForTesting();
+    const entries = buffer.filter((e) => e.event === "skills_config_invalid");
+    assert.equal(entries.length, 0);
+  });
+
+  it("logs a warning and drops the whole section for a non-string value", () => {
+    const cfg = { skills: { git: "enable", dolphin: 42 } };
+    const result = parseSkillsConfig(cfg);
+    assert.deepEqual(result, {});
+
+    const buffer = _getBufferForTesting();
+    const entries = buffer.filter((e) => e.event === "skills_config_invalid");
+    assert.equal(
+      entries.length,
+      1,
+      "whole-section discard logs exactly one warn",
+    );
+    const ee = entries[0] as Record<string, unknown>;
+    assert.equal(ee.key, "dolphin");
+    assert.equal(ee.value, 42);
+  });
+
+  it("logs a warning and drops the whole section for an empty skill key", () => {
+    const cfg = { skills: { "": "core/skills/foo", git: "enable" } };
+    const result = parseSkillsConfig(cfg);
+    assert.deepEqual(result, {});
+
+    const buffer = _getBufferForTesting();
+    const entries = buffer.filter((e) => e.event === "skills_config_invalid");
+    assert.equal(entries.length, 1, "one warn for the whole section");
+    const ee = entries[0] as Record<string, unknown>;
+    assert.equal(ee.key, "");
+    assert.equal(ee.value, "core/skills/foo");
+  });
+
+  it("logs a warning and drops the whole section when skills is not an object", () => {
+    const cfg = { skills: "not-a-map" };
+    const result = parseSkillsConfig(cfg);
+    assert.deepEqual(result, {});
+
+    const buffer = _getBufferForTesting();
+    const entries = buffer.filter((e) => e.event === "skills_config_invalid");
+    assert.equal(entries.length, 1, "one warn for the whole section");
+    const ee = entries[0] as Record<string, unknown>;
+    assert.equal(ee.key, "skills");
+    assert.equal(ee.value, "not-a-map");
+  });
+
+  it("logs a warning and drops the whole section when skills is an array", () => {
+    const cfg = { skills: ["git"] };
+    const result = parseSkillsConfig(cfg);
+    assert.deepEqual(result, {});
+
+    const buffer = _getBufferForTesting();
+    const entries = buffer.filter((e) => e.event === "skills_config_invalid");
+    assert.equal(entries.length, 1, "one warn for the whole section");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -196,62 +275,61 @@ describe("initPluginLogger", () => {
     initPluginLogger(cfg);
 
     const buffer = _getBufferForTesting();
-    const warns = buffer.filter((e) =>
-      (e.event as string)?.startsWith("invalid_"),
-    );
+    const warns = buffer.filter((e) => e.event === "logging_config_invalid");
     assert.equal(warns.length, 0, "no warnings for valid values");
   });
 
-  it("logs warn and returns undefined for string max_file_size_mb", () => {
+  it("logs warn and drops the whole section for string max_file_size_mb", () => {
     _resetForTesting();
     const cfg = { logging: { max_file_size_mb: "abc" } };
     initPluginLogger(cfg);
 
     const buffer = _getBufferForTesting();
-    const entry = buffer.find((e) => e.event === "invalid_max_file_size_mb") as
+    const entry = buffer.find((e) => e.event === "logging_config_invalid") as
       | Record<string, unknown>
       | undefined;
-    assert.ok(entry, "must log invalid_max_file_size_mb");
+    assert.ok(entry, "must log logging_config_invalid");
     assert.equal(entry.key, "max_file_size_mb");
     assert.equal(entry.value, "abc");
   });
 
-  it("logs warn and returns undefined for NaN max_file_size_mb", () => {
+  it("logs warn and drops the whole section for NaN max_file_size_mb", () => {
     _resetForTesting();
     const cfg = { logging: { max_file_size_mb: NaN } };
     initPluginLogger(cfg);
 
     const buffer = _getBufferForTesting();
-    const entry = buffer.find((e) => e.event === "invalid_max_file_size_mb") as
+    const entry = buffer.find((e) => e.event === "logging_config_invalid") as
       | Record<string, unknown>
       | undefined;
-    assert.ok(entry, "must log invalid_max_file_size_mb for NaN");
+    assert.ok(entry, "must log logging_config_invalid for NaN");
+    assert.equal(entry.key, "max_file_size_mb");
   });
 
-  it("logs warn and returns undefined for Infinity max_backups", () => {
+  it("logs warn and drops the whole section for Infinity max_backups", () => {
     _resetForTesting();
     const cfg = { logging: { max_backups: Infinity } };
     initPluginLogger(cfg);
 
     const buffer = _getBufferForTesting();
-    const entry = buffer.find((e) => e.event === "invalid_max_backups") as
+    const entry = buffer.find((e) => e.event === "logging_config_invalid") as
       | Record<string, unknown>
       | undefined;
-    assert.ok(entry, "must log invalid_max_backups for Infinity");
+    assert.ok(entry, "must log logging_config_invalid for Infinity");
     assert.equal(entry.key, "max_backups");
     assert.equal(entry.value, Infinity);
   });
 
-  it("logs warn and returns undefined for string retention_days", () => {
+  it("logs warn and drops the whole section for string retention_days", () => {
     _resetForTesting();
     const cfg = { logging: { retention_days: "7" } };
     initPluginLogger(cfg);
 
     const buffer = _getBufferForTesting();
-    const entry = buffer.find((e) => e.event === "invalid_retention_days") as
+    const entry = buffer.find((e) => e.event === "logging_config_invalid") as
       | Record<string, unknown>
       | undefined;
-    assert.ok(entry, "must log invalid_retention_days");
+    assert.ok(entry, "must log logging_config_invalid");
     assert.equal(entry.key, "retention_days");
     assert.equal(entry.value, "7");
   });
@@ -261,9 +339,7 @@ describe("initPluginLogger", () => {
     initPluginLogger({});
 
     const buffer = _getBufferForTesting();
-    const warns = buffer.filter((e) =>
-      (e.event as string)?.startsWith("invalid_"),
-    );
+    const warns = buffer.filter((e) => e.event === "logging_config_invalid");
     assert.equal(warns.length, 0);
   });
 
@@ -278,10 +354,10 @@ describe("initPluginLogger", () => {
     initPluginLogger(cfg);
 
     const buffer = _getBufferForTesting();
-    const entry = buffer.find((e) => e.event === "invalid_max_file_size_mb") as
+    const entry = buffer.find((e) => e.event === "logging_config_invalid") as
       | Record<string, unknown>
       | undefined;
-    assert.ok(entry, "must log invalid_max_file_size_mb for 0");
+    assert.ok(entry, "must log logging_config_invalid for 0");
     assert.equal(entry.key, "max_file_size_mb");
     assert.equal(entry.value, 0);
   });
@@ -292,10 +368,10 @@ describe("initPluginLogger", () => {
     initPluginLogger(cfg);
 
     const buffer = _getBufferForTesting();
-    const entry = buffer.find((e) => e.event === "invalid_max_file_size_mb") as
+    const entry = buffer.find((e) => e.event === "logging_config_invalid") as
       | Record<string, unknown>
       | undefined;
-    assert.ok(entry, "must log invalid_max_file_size_mb for -5");
+    assert.ok(entry, "must log logging_config_invalid for -5");
     assert.equal(entry.key, "max_file_size_mb");
     assert.equal(entry.value, -5);
   });
@@ -306,10 +382,10 @@ describe("initPluginLogger", () => {
     initPluginLogger(cfg);
 
     const buffer = _getBufferForTesting();
-    const entry = buffer.find((e) => e.event === "invalid_max_backups") as
+    const entry = buffer.find((e) => e.event === "logging_config_invalid") as
       | Record<string, unknown>
       | undefined;
-    assert.ok(entry, "must log invalid_max_backups for -1");
+    assert.ok(entry, "must log logging_config_invalid for -1");
     assert.equal(entry.key, "max_backups");
     assert.equal(entry.value, -1);
   });
@@ -336,10 +412,10 @@ describe("initPluginLogger", () => {
     initPluginLogger(cfg);
 
     const buffer = _getBufferForTesting();
-    const entry = buffer.find((e) => e.event === "invalid_retention_days") as
+    const entry = buffer.find((e) => e.event === "logging_config_invalid") as
       | Record<string, unknown>
       | undefined;
-    assert.ok(entry, "must log invalid_retention_days for 0");
+    assert.ok(entry, "must log logging_config_invalid for 0");
     assert.equal(entry.key, "retention_days");
     assert.equal(entry.value, 0);
   });
@@ -350,10 +426,10 @@ describe("initPluginLogger", () => {
     initPluginLogger(cfg);
 
     const buffer = _getBufferForTesting();
-    const entry = buffer.find((e) => e.event === "invalid_retention_days") as
+    const entry = buffer.find((e) => e.event === "logging_config_invalid") as
       | Record<string, unknown>
       | undefined;
-    assert.ok(entry, "must log invalid_retention_days for -30");
+    assert.ok(entry, "must log logging_config_invalid for -30");
     assert.equal(entry.key, "retention_days");
     assert.equal(entry.value, -30);
   });

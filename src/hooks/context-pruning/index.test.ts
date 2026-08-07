@@ -6,6 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import { parseContextConfig } from "../../core/config-parse.js";
 import type {
   ContextMessageEntry,
   ContextTokenInfo,
@@ -31,7 +32,6 @@ import {
   reclaimedTokens,
 } from "../../core/pruning/marks.js";
 import { PRUNED_TOOL_ERROR_INPUT_REPLACEMENT } from "../../core/pruning/types.js";
-import { parseContextConfig } from "../../opencode.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import { contextPruningTransformHandler } from "./index.js";
 
@@ -892,12 +892,8 @@ describe("contextPruningTransformHandler", () => {
     assert.equal(config.enabled, undefined);
     assert.equal(config.protectedMessages, undefined);
     assert.equal(config.releasedPercent, undefined);
-    assert.equal(config.dedup.enabled, undefined);
-    assert.equal(config.dedup.thresholdContext, undefined);
-    assert.equal(config.dedup.protectedTools, undefined);
-    assert.equal(config.purgeErrors.enabled, undefined);
-    assert.equal(config.purgeErrors.thresholdContext, undefined);
-    assert.equal(config.purgeErrors.protectedTools, undefined);
+    assert.equal(config.dedup, undefined);
+    assert.equal(config.purgeErrors, undefined);
   });
 
   it("parseContextConfig reads [zoo.context] section with two-layer structure", () => {
@@ -911,71 +907,67 @@ describe("contextPruningTransformHandler", () => {
         },
       },
     });
+    assert.ok(config.dedup, "dedup section must parse");
     assert.equal(config.dedup.enabled, false);
     assert.equal(config.dedup.thresholdContext, 64000);
     assert.equal(config.protectedMessages, 3);
     assert.deepEqual(config.dedup.protectedTools, ["task", "read"]);
     // Absent fields yield undefined.
     assert.equal(config.releasedPercent, undefined);
-    assert.equal(config.purgeErrors.enabled, undefined);
-    assert.equal(config.purgeErrors.thresholdContext, undefined);
-    assert.equal(config.purgeErrors.protectedTools, undefined);
+    assert.equal(config.purgeErrors, undefined);
   });
 
-  it("parseContextConfig returns undefined for non-boolean dedup.enabled (warns)", () => {
+  it("parseContextConfig drops the whole dedup section for non-boolean dedup.enabled (warn once)", () => {
     const config = parseContextConfig({
       context: { dedup: { enabled: "false" } },
     });
-    // "false" is not boolean → undefined (no default).
-    assert.equal(config.dedup.enabled, undefined);
+    // "false" is not boolean → whole dedup section is dropped.
+    assert.equal(config.dedup, undefined);
 
     const buffer = _getBufferForTesting();
-    const entry = buffer.find((e) => e.event === "invalid_dedup_enabled");
-    assert.ok(entry, "must log invalid_dedup_enabled");
+    const entry = buffer.find((e) => e.event === "dedup_config_invalid");
+    assert.ok(entry, "must log dedup_config_invalid");
+    assert.equal((entry as Record<string, unknown>).key, "enabled");
   });
 
-  it("parseContextConfig returns undefined for non-finite threshold_context (warns)", () => {
+  it("parseContextConfig drops the whole dedup section for non-finite threshold_context (warn once each)", () => {
     const config = parseContextConfig({
       context: { dedup: { threshold_context: Infinity } },
     });
-    assert.equal(config.dedup.thresholdContext, undefined);
+    assert.equal(config.dedup, undefined);
 
     const config2 = parseContextConfig({
       context: { dedup: { threshold_context: NaN } },
     });
-    assert.equal(config2.dedup.thresholdContext, undefined);
+    assert.equal(config2.dedup, undefined);
 
     const config3 = parseContextConfig({
       context: { dedup: { threshold_context: "100000" } },
     });
-    assert.equal(config3.dedup.thresholdContext, undefined);
+    assert.equal(config3.dedup, undefined);
 
     const buffer = _getBufferForTesting();
-    const entries = buffer.filter(
-      (e) => e.event === "invalid_dedup_threshold_context",
-    );
+    const entries = buffer.filter((e) => e.event === "dedup_config_invalid");
     assert.equal(entries.length, 3);
   });
 
-  it("parseContextConfig returns undefined for non-positive dedup threshold_context (warns)", () => {
+  it("parseContextConfig drops the whole dedup section for non-positive threshold_context (warn once each)", () => {
     const config = parseContextConfig({
       context: { dedup: { threshold_context: 0 } },
     });
-    assert.equal(config.dedup.thresholdContext, undefined);
+    assert.equal(config.dedup, undefined);
 
     const config2 = parseContextConfig({
       context: { dedup: { threshold_context: -100 } },
     });
-    assert.equal(config2.dedup.thresholdContext, undefined);
+    assert.equal(config2.dedup, undefined);
 
     const buffer = _getBufferForTesting();
-    const entries = buffer.filter(
-      (e) => e.event === "invalid_dedup_threshold_context",
-    );
+    const entries = buffer.filter((e) => e.event === "dedup_config_invalid");
     assert.equal(entries.length, 2);
   });
 
-  it("parseContextConfig returns undefined for non-finite protected_messages (warns)", () => {
+  it("parseContextConfig drops the whole [zoo.context] core group for non-finite protected_messages (warn once each)", () => {
     const config = parseContextConfig({
       context: { protected_messages: NaN },
     });
@@ -992,13 +984,11 @@ describe("contextPruningTransformHandler", () => {
     assert.equal(config3.protectedMessages, undefined);
 
     const buffer = _getBufferForTesting();
-    const entries = buffer.filter(
-      (e) => e.event === "invalid_protected_messages",
-    );
+    const entries = buffer.filter((e) => e.event === "context_config_invalid");
     assert.equal(entries.length, 3);
   });
 
-  it("parseContextConfig returns undefined for negative protected_messages (warns)", () => {
+  it("parseContextConfig drops the whole [zoo.context] core group for negative protected_messages (warn once each)", () => {
     // 0 remains legal (explicitly disables the protection layer);
     // only negative values are rejected.
     const config = parseContextConfig({
@@ -1012,27 +1002,26 @@ describe("contextPruningTransformHandler", () => {
     assert.equal(config2.protectedMessages, undefined);
 
     const buffer = _getBufferForTesting();
-    const entries = buffer.filter(
-      (e) => e.event === "invalid_protected_messages",
-    );
+    const entries = buffer.filter((e) => e.event === "context_config_invalid");
     assert.equal(entries.length, 2);
   });
 
-  it("parseContextConfig returns undefined for non-string-array protected_tools", () => {
+  it("parseContextConfig drops the whole dedup section for non-string-array protected_tools", () => {
     const config = parseContextConfig({
       context: { dedup: { protected_tools: "task" } },
     });
-    assert.equal(config.dedup.protectedTools, undefined);
+    assert.equal(config.dedup, undefined);
 
     const config2 = parseContextConfig({
       context: { dedup: { protected_tools: [123, "read"] } },
     });
-    assert.equal(config2.dedup.protectedTools, undefined);
+    assert.equal(config2.dedup, undefined);
 
     // Empty array is valid — preserved.
     const config3 = parseContextConfig({
       context: { dedup: { protected_tools: [] } },
     });
+    assert.ok(config3.dedup, "empty protected_tools must keep the section");
     assert.deepEqual(config3.dedup.protectedTools, []);
   });
 
@@ -1048,6 +1037,7 @@ describe("contextPruningTransformHandler", () => {
         },
       },
     });
+    assert.ok(config.dedup, "dedup section must parse");
     assert.equal(config.dedup.enabled, false);
     assert.equal(config.dedup.thresholdContext, 64000);
     assert.equal(config.protectedMessages, 0);
@@ -1066,18 +1056,19 @@ describe("contextPruningTransformHandler", () => {
     assert.equal(config.releasedPercent, 10);
   });
 
-  it("parseContextConfig returns undefined for non-number released_percent (warns)", () => {
+  it("parseContextConfig drops the whole core group for non-number released_percent (warn once)", () => {
     const config = parseContextConfig({
       context: { released_percent: "10" },
     });
     assert.equal(config.releasedPercent, undefined);
 
     const buffer = _getBufferForTesting();
-    const entry = buffer.find((e) => e.event === "invalid_released_percent");
-    assert.ok(entry, "must log invalid_released_percent");
+    const entry = buffer.find((e) => e.event === "context_config_invalid");
+    assert.ok(entry, "must log context_config_invalid");
+    assert.equal((entry as Record<string, unknown>).key, "released_percent");
   });
 
-  it("parseContextConfig returns undefined for Infinity/NaN released_percent (warns)", () => {
+  it("parseContextConfig drops the whole core group for Infinity/NaN released_percent (warn once each)", () => {
     const config1 = parseContextConfig({
       context: { released_percent: Infinity },
     });
@@ -1089,9 +1080,7 @@ describe("contextPruningTransformHandler", () => {
     assert.equal(config2.releasedPercent, undefined);
 
     const buffer = _getBufferForTesting();
-    const entries = buffer.filter(
-      (e) => e.event === "invalid_released_percent",
-    );
+    const entries = buffer.filter((e) => e.event === "context_config_invalid");
     assert.equal(entries.length, 2);
   });
 
@@ -1102,18 +1091,18 @@ describe("contextPruningTransformHandler", () => {
     assert.equal(config.releasedPercent, 0);
   });
 
-  it("parseContextConfig returns undefined for negative released_percent (warns)", () => {
+  it("parseContextConfig drops the whole core group for negative released_percent (warn once)", () => {
     const config = parseContextConfig({
       context: { released_percent: -1 },
     });
     assert.equal(config.releasedPercent, undefined);
 
     const buffer = _getBufferForTesting();
-    const entry = buffer.find((e) => e.event === "invalid_released_percent");
-    assert.ok(entry, "must log invalid_released_percent");
+    const entry = buffer.find((e) => e.event === "context_config_invalid");
+    assert.ok(entry, "must log context_config_invalid");
   });
 
-  it("parseContextConfig returns undefined for released_percent above 100 (warns)", () => {
+  it("parseContextConfig drops the whole core group for released_percent above 100 (warn once each)", () => {
     const config = parseContextConfig({
       context: { released_percent: 101 },
     });
@@ -1125,9 +1114,7 @@ describe("contextPruningTransformHandler", () => {
     assert.equal(config2.releasedPercent, undefined);
 
     const buffer = _getBufferForTesting();
-    const entries = buffer.filter(
-      (e) => e.event === "invalid_released_percent",
-    );
+    const entries = buffer.filter((e) => e.event === "context_config_invalid");
     assert.equal(entries.length, 2);
   });
 
@@ -1169,45 +1156,43 @@ describe("contextPruningTransformHandler", () => {
         },
       },
     });
+    assert.ok(config.purgeErrors, "purge_errors section must parse");
     assert.equal(config.purgeErrors.enabled, false);
     assert.equal(config.purgeErrors.thresholdContext, 50000);
     assert.deepEqual(config.purgeErrors.protectedTools, ["bash"]);
   });
 
-  it("parseContextConfig returns undefined for purgeErrors fields when section is absent", () => {
+  it("parseContextConfig drops purge_errors when section is absent", () => {
     const config = parseContextConfig({});
-    assert.equal(config.purgeErrors.enabled, undefined);
-    assert.equal(config.purgeErrors.thresholdContext, undefined);
-    assert.equal(config.purgeErrors.protectedTools, undefined);
+    assert.equal(config.purgeErrors, undefined);
   });
 
-  it("parseContextConfig returns undefined for non-boolean purge_errors enabled (warns)", () => {
+  it("parseContextConfig drops the whole purge_errors section for non-boolean enabled (warn once)", () => {
     const config = parseContextConfig({
       context: { purge_errors: { enabled: "false" } },
     });
-    assert.equal(config.purgeErrors.enabled, undefined);
+    assert.equal(config.purgeErrors, undefined);
 
     const buffer = _getBufferForTesting();
-    const entry = buffer.find(
-      (e) => e.event === "invalid_purge_errors_enabled",
-    );
-    assert.ok(entry, "must log invalid_purge_errors_enabled");
+    const entry = buffer.find((e) => e.event === "purge_errors_config_invalid");
+    assert.ok(entry, "must log purge_errors_config_invalid");
+    assert.equal((entry as Record<string, unknown>).key, "enabled");
   });
 
-  it("parseContextConfig returns undefined for non-positive purge_errors threshold_context (warns)", () => {
+  it("parseContextConfig drops the whole purge_errors section for non-positive threshold_context (warn once each)", () => {
     const config = parseContextConfig({
       context: { purge_errors: { threshold_context: 0 } },
     });
-    assert.equal(config.purgeErrors.thresholdContext, undefined);
+    assert.equal(config.purgeErrors, undefined);
 
     const config2 = parseContextConfig({
       context: { purge_errors: { threshold_context: -500 } },
     });
-    assert.equal(config2.purgeErrors.thresholdContext, undefined);
+    assert.equal(config2.purgeErrors, undefined);
 
     const buffer = _getBufferForTesting();
     const entries = buffer.filter(
-      (e) => e.event === "invalid_purge_errors_threshold_context",
+      (e) => e.event === "purge_errors_config_invalid",
     );
     assert.equal(entries.length, 2);
   });
@@ -1224,7 +1209,7 @@ describe("contextPruningTransformHandler", () => {
     assert.equal(config.enabled, undefined);
   });
 
-  it("parseContextConfig returns undefined for non-boolean enabled (warns)", () => {
+  it("parseContextConfig drops the whole core group for non-boolean enabled (warn once each)", () => {
     const config1 = parseContextConfig({
       context: { enabled: "false" },
     });
@@ -1236,10 +1221,9 @@ describe("contextPruningTransformHandler", () => {
     assert.equal(config2.enabled, undefined);
 
     const buffer = _getBufferForTesting();
-    const entries = buffer.filter(
-      (e) => e.event === "invalid_context_pruning_enabled",
-    );
+    const entries = buffer.filter((e) => e.event === "context_config_invalid");
     assert.equal(entries.length, 2);
+    assert.equal((entries[0] as Record<string, unknown>).key, "enabled");
   });
 
   it("parseContextConfig returns undefined for unknown keys in context config", () => {
@@ -1254,12 +1238,12 @@ describe("contextPruningTransformHandler", () => {
     assert.equal(config.enabled, undefined);
     assert.equal(config.protectedMessages, undefined);
     assert.equal(config.releasedPercent, undefined);
-    assert.equal(config.dedup.enabled, undefined);
-    assert.equal(config.dedup.thresholdContext, undefined);
-    assert.equal(config.dedup.protectedTools, undefined);
-    assert.equal(config.purgeErrors.enabled, undefined);
-    assert.equal(config.purgeErrors.thresholdContext, undefined);
-    assert.equal(config.purgeErrors.protectedTools, undefined);
+    assert.equal(config.dedup?.enabled, undefined);
+    assert.equal(config.dedup?.thresholdContext, undefined);
+    assert.equal(config.dedup?.protectedTools, undefined);
+    assert.equal(config.purgeErrors?.enabled, undefined);
+    assert.equal(config.purgeErrors?.thresholdContext, undefined);
+    assert.equal(config.purgeErrors?.protectedTools, undefined);
   });
 
   it("parseContextConfig ignores unrecognized keys", () => {
@@ -1274,8 +1258,8 @@ describe("contextPruningTransformHandler", () => {
     });
     assert.equal(config.protectedMessages, undefined);
     assert.equal(config.releasedPercent, undefined);
-    assert.equal(config.dedup.thresholdContext, undefined);
-    assert.equal(config.purgeErrors.thresholdContext, undefined);
+    assert.equal(config.dedup?.thresholdContext, undefined);
+    assert.equal(config.purgeErrors?.thresholdContext, undefined);
     // Other config fields are also undefined by default.
     assert.equal(config.enabled, undefined);
   });

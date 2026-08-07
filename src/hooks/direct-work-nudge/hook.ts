@@ -6,9 +6,9 @@
  * Also injects todo progress and plan progress nudges for edit/write tools.
  * The prompt constants live in `src/core/prompts.ts`.
  *
- * Agent gating is handled by the caller — this function fires for any agent.
- * The plugin entry point wraps this with a `sessionID → agent` check before
- * invoking it, so only the dolphin orchestrator receives the nudge.
+ * `nudgeDirectWork` is agent-agnostic — it fires for any agent.  The
+ * agent-gated wrapper `nudgeDirectWorkForAgent` (used by the plugin entry
+ * point) applies the dolphin-only filter before delegating.
  *
  * @module
  */
@@ -111,4 +111,50 @@ export async function nudgeDirectWork(
       },
     );
   }
+}
+
+/**
+ * Agent-gated wrapper around `nudgeDirectWork` (dolphin only).
+ *
+ * The plugin entry point resolves the session's agent from its
+ * `sessionAgentMap` (populated by `message.updated` events) and passes it
+ * here.  When the agent is not `"dolphin"` (including unknown), the nudge
+ * is skipped and one debug entry (`nudge_skipped` / `not_dolphin`) is
+ * logged — mirroring the historical entry-point guard.  Other agents keep
+ * receiving no protocol reminder: sub-agents must not be told to delegate.
+ *
+ * @param input - Input containing the tool name, session ID, and optional call ID.
+ * @param output - Output object mutated in place.
+ * @param options - Optional configuration.
+ * @param options.todoClient - Client for todo progress check (OpenCode SDK client at runtime).
+ * @param options.planDir - Workspace base directory for plan discovery.
+ * @param options.agent - The session's resolved agent name (`undefined` when unknown).
+ */
+export async function nudgeDirectWorkForAgent(
+  input: { tool: string; sessionID: string; callID?: string },
+  output: { output?: string },
+  options: {
+    todoClient?: TinyClient | null;
+    planDir?: string;
+    agent?: string;
+  },
+): Promise<void> {
+  if (options.agent !== "dolphin") {
+    log(
+      "direct-work-nudge",
+      "nudge_skipped",
+      input.sessionID,
+      input.callID,
+      "debug",
+      {
+        tool: input.tool,
+        reason: "not_dolphin",
+      },
+    );
+    return;
+  }
+  return nudgeDirectWork(input, output, {
+    todoClient: options.todoClient,
+    planDir: options.planDir,
+  });
 }

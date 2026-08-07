@@ -908,8 +908,8 @@ interface ContextPruningConfig {
 }
 ```
 
-`src/opencode.ts` 中的 `parseContextConfig` 完成三层全量解析：
-逐字段类型防御（非期望类型落默认），未知键忽略，旧键不兜底。
+`src/core/config-parse.ts` 中的 `parseContextConfig` 完成三层全量解析：
+逐字段类型防御（非期望类型整段作废），未知键忽略，旧键不兜底。
 
 #### R3：表驱动 producer 循环
 
@@ -982,7 +982,7 @@ pruneToolErrors(state, messages)   // 只处理 mark.action === "tool-error-inpu
 | `src/core/pruning/producers/purge-errors.ts` | 新建：`runPurgeErrors`（error 扫描 + 跳过链） |
 | `src/core/pruning/producers/shared.ts` | 抽取 `collectProtectedCallIDs`/`netReclaimTokens` 共享辅助 |
 | `src/hooks/context-pruning/hook.ts` | `ContextPruningConfig` 三层；表驱动 producer 循环；双门控独立评估；统一释放；byAction 通知 |
-| `src/opencode.ts` | `parseContextConfig` 三层解析；管道级键从顶层读取（2.6 改名后旧键不兜底） |
+| `src/core/config-parse.ts` | `parseContextConfig` 三层解析；管道级键从顶层读取（2.6 改名后旧键不兜底） |
 | 测试 | 全仓 TS 测试全绿（2.6 时点 1560） |
 
 > **实测修正注记（2026-07-25，裸 SQL 核实）**：
@@ -1259,7 +1259,7 @@ user 消息：
 `config.toml` 新增 `[zoo.context.nudge]`（六键全配，中文注释）：
 `enabled` / `min_context = "60%"` / `min_context_cap = 200000` /
 `max_context = "80%"` / `max_context_cap = 300000` / `growth_tokens = "5%"`。
-**严格解析**（`parseContextConfig`，src/opencode.ts）：整节缺席 → nudge
+**严格解析**（`parseContextConfig`，src/core/config-parse.ts）：整节缺席 → nudge
 静默缺席，其余剪枝功能不受影响；节在而任一键缺失/类型错/百分比畸形
 → `nudge_config_invalid` warn（每次插件启动一次，即每次 zookeeper() 解析）+ 整节置 undefined。
 `enabled = false` 合法（已解析但停用）。
@@ -1324,7 +1324,7 @@ after > contextLimit × maxFillPercent / 100 → 拒绝（throw 响亮中文指�
 #### 配置严格解析（[zoo.context.decompress]）
 
 `config.toml` 两键：`enabled`（boolean）+ `max_fill_percent`（整数
-1-100）。镜像 §4.9 严格化（`parseContextConfig`，src/opencode.ts）：
+1-100）。镜像 §4.9 严格化（`parseContextConfig`，src/core/config-parse.ts）：
 
 - 节缺席 → undefined（工具静默缺席）
 - 任一键缺失/类型错/越界 → 单次 `decompress_config_invalid` warn +
@@ -1693,7 +1693,7 @@ Turn N+2: Phase 1 替换已生效标记的输出
 | `src/core/pruning/producers/shared.ts` | 新建：collectProtectedCallIDs/netReclaimTokens 共享辅助 |
 | `src/core/pruning/prune.ts` | pruneToolOutputs 只消费 effective 标记；后增 action 判别 + pruneToolErrors |
 | `src/hooks/context-pruning/hook.ts` | 先清后标 + 门控 + 批量释放 + notify 回调；后增三层 Config 表驱动循环 + 双门控 |
-| `src/opencode.ts` | parseContextConfig（两层读取 + 逐字段类型防御）+ notify 注入（fire-and-forget）；后改为三层解析 + release_threshold_percent 顶层读取 |
+| `src/core/config-parse.ts` | parseContextConfig（两层读取 + 逐字段类型防御）+ notify 注入（fire-and-forget）；后改为三层解析 + release_threshold_percent 顶层读取 |
 | `src/core/context-report.ts` | 合并回收行（FormatContextReportOptions） |
 | `src/hooks/context-command/index.ts` | sweep 走 producer；报告读内存态 |
 | `src/tui.tsx` | prunedCallIDs 只含 effective 标记 |

@@ -10,4 +10,4 @@ export {
   DIRECT_WORK_NUDGE,
   SEARCH_DELEGATE_NUDGE,
 } from "../../core/prompts.js";
-export { nudgeDirectWork } from "./hook";
+export { nudgeDirectWork, nudgeDirectWorkForAgent } from "./hook";

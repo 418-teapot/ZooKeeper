@@ -162,10 +162,18 @@ export interface ContextPruningConfig {
    * → the subsystem is silently absent (no reminders injected).
    */
   nudge?: ContextNudgeConfig;
-  /** Dedup producer gate & options. */
-  dedup: ProducerGateConfig;
-  /** Purge-errors producer gate & options. */
-  purgeErrors: ProducerGateConfig;
+  /**
+   * Dedup producer gate & options (`[zoo.context.dedup]`).  Undefined →
+   * the section is absent or was invalidated by the config parse
+   * (whole-section discard) — the producer is silently absent.
+   */
+  dedup?: ProducerGateConfig;
+  /**
+   * Purge-errors producer gate & options (`[zoo.context.purge_errors]`).
+   * Undefined → the section is absent or was invalidated by the config
+   * parse (whole-section discard) — the producer is silently absent.
+   */
+  purgeErrors?: ProducerGateConfig;
   /**
    * Compress strategy gate & options (`[zoo.context.compress]`).
    * Undefined → the subsystem is silently absent (no tool, no nudge).

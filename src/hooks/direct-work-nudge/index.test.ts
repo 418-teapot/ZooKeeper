@@ -3,7 +3,8 @@
  *
  * Covers edit/write firing, non-matching tools, null/undefined output,
  * case-insensitivity, no path exemptions, consecutive calls, constants,
- * grep/glob search delegation, plan nudge scenarios, and integration
+ * grep/glob search delegation, plan nudge scenarios, the dolphin-gated
+ * `nudgeDirectWorkForAgent` wrapper (skip + delegate paths), and integration
  * via the plugin entry point (including event/message.updated →
  * sessionAgentMap agent gating).
  */
@@ -11,13 +12,23 @@ import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import { zookeeper } from "../../opencode.js";
+import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import {
   DIRECT_WORK_NUDGE,
   nudgeDirectWork,
+  nudgeDirectWorkForAgent,
   SEARCH_DELEGATE_NUDGE,
 } from "./index.js";
+
+// ---------------------------------------------------------------------------
+// Logger cleanup
+// ---------------------------------------------------------------------------
+
+afterEach(() => {
+  _resetForTesting();
+});
 
 // ---------------------------------------------------------------------------
 // Constants / helpers
@@ -262,6 +273,131 @@ describe("agent-agnostic: fires for any caller", () => {
   it("nudges grep regardless of what may be in sessionAgentMap", async () => {
     const res = await applyReminder("grep", "search results");
     assertHasSearchReminder(res);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Agent-gated wrapper: nudgeDirectWorkForAgent (dolphin only)
+// ---------------------------------------------------------------------------
+
+describe("nudgeDirectWorkForAgent (dolphin-gated wrapper)", () => {
+  let origZooDebug: string | undefined;
+
+  beforeEach(() => {
+    // Capture debug-level entries for the nudge_skipped assertions.
+    origZooDebug = process.env.ZOO_DEBUG;
+    process.env.ZOO_DEBUG = "1";
+  });
+
+  afterEach(() => {
+    if (origZooDebug !== undefined) {
+      process.env.ZOO_DEBUG = origZooDebug;
+    } else {
+      delete process.env.ZOO_DEBUG;
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // Non-dolphin path: skip without touching output
+  // -----------------------------------------------------------------------
+
+  it('skips the nudge for agent="beaver" without touching output', async () => {
+    const output: { output?: string } = { output: "beaver edited a file" };
+    await nudgeDirectWorkForAgent(
+      { tool: "edit", sessionID: "s1", callID: "c1" },
+      output,
+      { agent: "beaver" },
+    );
+    assert.equal(output.output, "beaver edited a file");
+    assert.ok(!output.output?.includes("DELEGATION REQUIRED"));
+  });
+
+  it("skips the nudge when agent is undefined (unknown session)", async () => {
+    const output: { output?: string } = {
+      output: "edited without known agent",
+    };
+    await nudgeDirectWorkForAgent(
+      { tool: "edit", sessionID: "s1" },
+      output,
+      {},
+    );
+    assert.equal(output.output, "edited without known agent");
+    assert.ok(!output.output?.includes("DELEGATION REQUIRED"));
+  });
+
+  it('logs nudge_skipped with reason "not_dolphin" for non-dolphin agents', async () => {
+    await nudgeDirectWorkForAgent(
+      { tool: "edit", sessionID: "s-gate", callID: "c1" },
+      { output: "beaver edit" },
+      { agent: "beaver" },
+    );
+    const entry = _getBufferForTesting().find(
+      (e) => e.event === "nudge_skipped" && e.reason === "not_dolphin",
+    );
+    assert.ok(entry, "expected nudge_skipped/not_dolphin log entry");
+    const ee = entry as Record<string, unknown>;
+    assert.equal(ee.hook, "direct-work-nudge");
+    assert.equal(ee.level, "debug");
+    assert.equal(ee.sessionId, "s-gate");
+    assert.equal(ee.callId, "c1");
+    assert.equal(ee.tool, "edit");
+  });
+
+  it("logs nudge_skipped when agent is undefined too", async () => {
+    await nudgeDirectWorkForAgent(
+      { tool: "edit", sessionID: "s-gate", callID: "c1" },
+      { output: "unknown edit" },
+      {},
+    );
+    const entry = _getBufferForTesting().find(
+      (e) => e.event === "nudge_skipped" && e.reason === "not_dolphin",
+    );
+    assert.ok(entry, "expected nudge_skipped/not_dolphin log entry");
+  });
+
+  // -----------------------------------------------------------------------
+  // Dolphin path: delegates to nudgeDirectWork
+  // -----------------------------------------------------------------------
+
+  it('appends the direct-work nudge for agent="dolphin" (edit)', async () => {
+    const output: { output?: string } = { output: "dolphin edited file" };
+    await nudgeDirectWorkForAgent({ tool: "edit", sessionID: "s1" }, output, {
+      agent: "dolphin",
+    });
+    assertHasReminder(output);
+  });
+
+  it('appends the search delegation nudge for agent="dolphin" (grep)', async () => {
+    const output: { output?: string } = { output: "dolphin searched" };
+    await nudgeDirectWorkForAgent({ tool: "grep", sessionID: "s1" }, output, {
+      agent: "dolphin",
+    });
+    assertHasSearchReminder(output);
+  });
+
+  it("passes todoClient/planDir through to nudgeDirectWork (plan nudge appears)", async () => {
+    const sessionID = `test-for-agent-${Date.now()}-${_planNudgeCounter++}`;
+    const baseDir = tmpDir();
+    try {
+      writePlanFile(
+        baseDir,
+        "my-plan.md",
+        { status: "executing", slug: "my-plan" },
+        "- [ ] Write tests\n- [x] Implement feature\n",
+      );
+      const output: { output?: string } = { output: "dolphin edited" };
+      await nudgeDirectWorkForAgent({ tool: "edit", sessionID }, output, {
+        agent: "dolphin",
+        planDir: baseDir,
+      });
+      assertHasReminder(output);
+      assert.ok(
+        output.output?.includes("PLAN PROGRESS"),
+        "expected PLAN PROGRESS nudge",
+      );
+    } finally {
+      cleanupPlanDir(baseDir);
+    }
   });
 });
 

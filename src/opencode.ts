@@ -28,10 +28,15 @@ import { KIWI_PROMPT } from "./agents/kiwi.js";
 import { LYNX_PROMPT } from "./agents/lynx.js";
 import { MOLA_PROMPT } from "./agents/mola.js";
 import { SPIDER_PROMPT } from "./agents/spider.js";
+import {
+  initPluginLogger,
+  parseContextConfig,
+  parseLimits,
+  parseSkillsConfig,
+} from "./core/config-parse.js";
 import { clearModelLimit, setModelLimit } from "./core/model-limits.js";
 import {
   deleteSessionState,
-  NUDGE_PERCENT_RE,
   removeSession,
   stripRefsFromString,
   ZOO_MSG_ID_CANONICAL_END_REGEX,
@@ -40,13 +45,8 @@ import { DCP_COMMAND_HANDLED, handleDcpCommand } from "./hooks/context-command";
 import type { ContextMetricsOutput } from "./hooks/context-metrics";
 import { measureContext } from "./hooks/context-metrics";
 import { contextPruningTransformHandler } from "./hooks/context-pruning";
-import type {
-  CompressConfig,
-  ContextNudgeConfig,
-  ContextPruningConfig,
-  DecompressConfig,
-} from "./hooks/context-pruning/index.js";
-import { nudgeDirectWork } from "./hooks/direct-work-nudge";
+import type { ContextPruningConfig } from "./hooks/context-pruning/index.js";
+import { nudgeDirectWorkForAgent } from "./hooks/direct-work-nudge";
 import { recoverJsonError } from "./hooks/json-error-nudge";
 import { handleGoCommand } from "./hooks/plan-lifecycle";
 import { nudgePostTask } from "./hooks/post-task-nudge";
@@ -64,7 +64,7 @@ import {
   createDecompressTool,
   type DecompressToolDefinition,
 } from "./tools/decompress";
-import { initLogger, log, setSessionId } from "./utils/logger.js";
+import { log, setSessionId } from "./utils/logger.js";
 
 // ---------------------------------------------------------------------------
 // Agent identity tracking — populated by message.updated event, queried by hooks
@@ -98,412 +98,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const CORE_DIR = resolve(__dirname, "../core");
 
 let _sessionIdSet = false;
-
-// ---------------------------------------------------------------------------
-// Config helpers
-// ---------------------------------------------------------------------------
-
-/** Extract word-count limits from zoo config.
- *
- *  Each field is type-checked: only finite numbers greater than zero are
- *  accepted.  Missing or invalid values produce `undefined` (no fallback),
- *  and invalid values emit a warning log.
- */
-function parseLimits(zooConfig: any) {
-  const v = zooConfig.validation ?? {};
-
-  const ctxRaw = v.context_word_limit;
-  let contextWordLimit: number | undefined;
-  if (typeof ctxRaw === "number" && Number.isFinite(ctxRaw) && ctxRaw > 0) {
-    contextWordLimit = ctxRaw;
-  } else if (ctxRaw !== undefined) {
-    log("config", "invalid_context_word_limit", "", undefined, "warn", {
-      key: "context_word_limit",
-      value: ctxRaw,
-    });
-  }
-
-  const promptRaw = v.prompt_word_limit;
-  let promptWordLimit: number | undefined;
-  if (
-    typeof promptRaw === "number" &&
-    Number.isFinite(promptRaw) &&
-    promptRaw > 0
-  ) {
-    promptWordLimit = promptRaw;
-  } else if (promptRaw !== undefined) {
-    log("config", "invalid_prompt_word_limit", "", undefined, "warn", {
-      key: "prompt_word_limit",
-      value: promptRaw,
-    });
-  }
-
-  return { contextWordLimit, promptWordLimit };
-}
-
-/** Extract skills config map from zoo config. */
-function parseSkillsConfig(zooConfig: any): Record<string, string> {
-  return zooConfig.skills ?? {};
-}
-
-/**
- * Accept a nudge threshold value: a positive finite number (absolute
- * tokens) or a non-zero percentage string (`"NN%"`).  Zero, negative,
- * and malformed values are rejected — thresholds have no "disable"
- * meaning (enabled=false covers that).
- *
- * @param v - The raw config value.
- * @returns `true` when the value is a valid threshold.
- */
-function isValidNudgeThreshold(v: unknown): boolean {
-  if (typeof v === "number") return Number.isFinite(v) && v > 0;
-  if (typeof v === "string") {
-    const match = NUDGE_PERCENT_RE.exec(v);
-    return match !== null && Number(match[1]) > 0;
-  }
-  return false;
-}
-
-/** Extract context-pruning config from the [zoo.context] section.
- *
- *  `protected_messages` and `released_percent` are shared across
- *  pruning strategies (read from `[zoo.context]` top-level).  `dedup.*`
- *  and `purge_errors.*` are per-strategy gates read from their
- *  respective sub-sections.
- *
- *  Unknown keys are silently ignored.
- *
- *  Each field is type-checked: unrecognised / wrong-type values produce
- *  `undefined` (no fallback — "fail to skip"), and invalid values emit
- *  a warning log.  Missing fields produce `undefined` silently.
- */
-function parseContextConfig(zooConfig: any): ContextPruningConfig {
-  const c = zooConfig.context ?? {};
-  const d = c.dedup ?? {};
-  const pe = c.purge_errors ?? {};
-
-  let enabled: boolean | undefined;
-  if (typeof c.enabled === "boolean") {
-    enabled = c.enabled;
-  } else if (c.enabled !== undefined) {
-    log("config", "invalid_context_pruning_enabled", "", undefined, "warn", {
-      key: "enabled",
-      value: c.enabled,
-    });
-  }
-
-  let protectedMessages: number | undefined;
-  if (
-    typeof c.protected_messages === "number" &&
-    Number.isFinite(c.protected_messages) &&
-    c.protected_messages >= 0
-  ) {
-    protectedMessages = c.protected_messages;
-  } else if (c.protected_messages !== undefined) {
-    log("config", "invalid_protected_messages", "", undefined, "warn", {
-      key: "protected_messages",
-      value: c.protected_messages,
-    });
-  }
-
-  let releasedPercent: number | undefined;
-  if (
-    typeof c.released_percent === "number" &&
-    Number.isFinite(c.released_percent) &&
-    c.released_percent >= 0 &&
-    c.released_percent <= 100
-  ) {
-    releasedPercent = c.released_percent;
-  } else if (c.released_percent !== undefined) {
-    log("config", "invalid_released_percent", "", undefined, "warn", {
-      key: "released_percent",
-      value: c.released_percent,
-    });
-  }
-
-  let dedupEnabled: boolean | undefined;
-  if (typeof d.enabled === "boolean") {
-    dedupEnabled = d.enabled;
-  } else if (d.enabled !== undefined) {
-    log("config", "invalid_dedup_enabled", "", undefined, "warn", {
-      key: "dedup.enabled",
-      value: d.enabled,
-    });
-  }
-
-  let dedupThresholdContext: number | undefined;
-  if (
-    typeof d.threshold_context === "number" &&
-    Number.isFinite(d.threshold_context) &&
-    d.threshold_context > 0
-  ) {
-    dedupThresholdContext = d.threshold_context;
-  } else if (d.threshold_context !== undefined) {
-    log("config", "invalid_dedup_threshold_context", "", undefined, "warn", {
-      key: "dedup.threshold_context",
-      value: d.threshold_context,
-    });
-  }
-
-  let dedupProtectedTools: string[] | undefined;
-  if (
-    Array.isArray(d.protected_tools) &&
-    d.protected_tools.every((t: unknown) => typeof t === "string")
-  ) {
-    dedupProtectedTools = d.protected_tools;
-  } else if (d.protected_tools !== undefined) {
-    log("config", "invalid_dedup_protected_tools", "", undefined, "warn", {
-      key: "dedup.protected_tools",
-      value: d.protected_tools,
-    });
-  }
-
-  let peEnabled: boolean | undefined;
-  if (typeof pe.enabled === "boolean") {
-    peEnabled = pe.enabled;
-  } else if (pe.enabled !== undefined) {
-    log("config", "invalid_purge_errors_enabled", "", undefined, "warn", {
-      key: "purge_errors.enabled",
-      value: pe.enabled,
-    });
-  }
-
-  let peThresholdContext: number | undefined;
-  if (
-    typeof pe.threshold_context === "number" &&
-    Number.isFinite(pe.threshold_context) &&
-    pe.threshold_context > 0
-  ) {
-    peThresholdContext = pe.threshold_context;
-  } else if (pe.threshold_context !== undefined) {
-    log(
-      "config",
-      "invalid_purge_errors_threshold_context",
-      "",
-      undefined,
-      "warn",
-      {
-        key: "purge_errors.threshold_context",
-        value: pe.threshold_context,
-      },
-    );
-  }
-
-  let peProtectedTools: string[] | undefined;
-  if (
-    Array.isArray(pe.protected_tools) &&
-    pe.protected_tools.every((t: unknown) => typeof t === "string")
-  ) {
-    peProtectedTools = pe.protected_tools;
-  } else if (pe.protected_tools !== undefined) {
-    log(
-      "config",
-      "invalid_purge_errors_protected_tools",
-      "",
-      undefined,
-      "warn",
-      {
-        key: "purge_errors.protected_tools",
-        value: pe.protected_tools,
-      },
-    );
-  }
-
-  // ── Parse nudge section ──────────────────────────────────────────
-  // All six keys are required when the section is present.  Any missing,
-  // wrong-typed, or malformed value invalidates the WHOLE section
-  // (fail to skip — the subsystem is silently absent) and logs exactly
-  // one warn.  `enabled: false` is valid — present but disabled.
-  let nudge: ContextNudgeConfig | undefined;
-  if (c.nudge !== undefined) {
-    const n = c.nudge as Record<string, unknown>;
-    const keyChecks: Array<[string, unknown, (v: unknown) => boolean]> = [
-      ["enabled", n.enabled, (v) => typeof v === "boolean"],
-      ["min_context", n.min_context, isValidNudgeThreshold],
-      [
-        "min_context_cap",
-        n.min_context_cap,
-        (v) => typeof v === "number" && Number.isFinite(v) && v >= 0,
-      ],
-      ["max_context", n.max_context, isValidNudgeThreshold],
-      [
-        "max_context_cap",
-        n.max_context_cap,
-        (v) => typeof v === "number" && Number.isFinite(v) && v >= 0,
-      ],
-      ["growth_tokens", n.growth_tokens, isValidNudgeThreshold],
-    ];
-    const bad = keyChecks.find(([, value, check]) => !check(value));
-    if (bad) {
-      log("config", "nudge_config_invalid", "", undefined, "warn", {
-        key: bad[0],
-        value: bad[1],
-      });
-    } else {
-      nudge = {
-        enabled: n.enabled as boolean,
-        minContext: n.min_context as number | string,
-        minContextCap: n.min_context_cap as number,
-        maxContext: n.max_context as number | string,
-        maxContextCap: n.max_context_cap as number,
-        growthTokens: n.growth_tokens as number | string,
-      };
-    }
-  }
-
-  // ── Parse compress section ──────────────────────────────────────
-  // All four keys are required when the section is present.  Any missing,
-  // wrong-typed, or malformed value invalidates the WHOLE section
-  // (fail to skip — the subsystem is silently absent) and logs exactly
-  // one warn.  `enabled: false` is valid — present but disabled.
-  let compress: CompressConfig | undefined;
-  if (c.compress !== undefined) {
-    const cm = c.compress as Record<string, unknown>;
-    const keyChecks: Array<[string, unknown, (v: unknown) => boolean]> = [
-      ["enabled", cm.enabled, (v) => typeof v === "boolean"],
-      [
-        "threshold_tokens",
-        cm.threshold_tokens,
-        (v) => typeof v === "number" && Number.isFinite(v) && v >= 0,
-      ],
-      [
-        "protected_tokens",
-        cm.protected_tokens,
-        (v) => typeof v === "number" && Number.isFinite(v) && v >= 0,
-      ],
-      [
-        "max_ranges",
-        cm.max_ranges,
-        (v) => typeof v === "number" && Number.isInteger(v) && v >= 1,
-      ],
-    ];
-    const bad = keyChecks.find(([, value, check]) => !check(value));
-    if (bad) {
-      log("config", "compress_config_invalid", "", undefined, "warn", {
-        key: bad[0],
-        value: bad[1],
-      });
-    } else {
-      compress = {
-        enabled: cm.enabled as boolean,
-        thresholdTokens: cm.threshold_tokens as number,
-        protectedTokens: cm.protected_tokens as number,
-        maxRanges: cm.max_ranges as number,
-      };
-    }
-  }
-
-  // ── Parse decompress section ────────────────────────────────────
-  // Both keys are required when the section is present.  Any missing,
-  // wrong-typed, or out-of-range value invalidates the WHOLE section
-  // (fail to skip — the subsystem is silently absent) and logs exactly
-  // one warn.  `enabled: false` is valid — present but disabled.
-  let decompress: DecompressConfig | undefined;
-  if (c.decompress !== undefined) {
-    const dm = c.decompress as Record<string, unknown>;
-    const keyChecks: Array<[string, unknown, (v: unknown) => boolean]> = [
-      ["enabled", dm.enabled, (v) => typeof v === "boolean"],
-      [
-        "max_fill_percent",
-        dm.max_fill_percent,
-        (v) =>
-          typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 100,
-      ],
-    ];
-    const bad = keyChecks.find(([, value, check]) => !check(value));
-    if (bad) {
-      log("config", "decompress_config_invalid", "", undefined, "warn", {
-        key: bad[0],
-        value: bad[1],
-      });
-    } else {
-      decompress = {
-        enabled: dm.enabled as boolean,
-        maxFillPercent: dm.max_fill_percent as number,
-      };
-    }
-  }
-
-  return {
-    enabled,
-    protectedMessages,
-    releasedPercent,
-    nudge,
-    dedup: {
-      enabled: dedupEnabled,
-      thresholdContext: dedupThresholdContext,
-      protectedTools: dedupProtectedTools,
-    },
-    purgeErrors: {
-      enabled: peEnabled,
-      thresholdContext: peThresholdContext,
-      protectedTools: peProtectedTools,
-    },
-    compress,
-    decompress,
-  };
-}
-
-/** Initialize file-based logger from [zoo.logging] config.
- *
- *  Each field is type-checked and range-checked:
- *   - `max_file_size_mb`: must be > 0 (file-rotation threshold).
- *   - `max_backups`: must be >= 0 (0 disables backups; negative is invalid).
- *   - `retention_days`: must be > 0 (negative would delete all logs).
- *
- *  Values that fail the check produce `undefined` (no fallback) and emit a
- *  warning log with the same pattern as `parseLimits`.
- */
-function initPluginLogger(zooConfig: any): void {
-  const logConfig = zooConfig.logging ?? {};
-
-  const maxSizeRaw = logConfig.max_file_size_mb;
-  let maxFileSize: number | undefined;
-  if (
-    typeof maxSizeRaw === "number" &&
-    Number.isFinite(maxSizeRaw) &&
-    maxSizeRaw > 0
-  ) {
-    maxFileSize = maxSizeRaw * 1024 * 1024;
-  } else if (maxSizeRaw !== undefined) {
-    log("config", "invalid_max_file_size_mb", "", undefined, "warn", {
-      key: "max_file_size_mb",
-      value: maxSizeRaw,
-    });
-  }
-
-  const maxBackupsRaw = logConfig.max_backups;
-  let maxBackups: number | undefined;
-  if (
-    typeof maxBackupsRaw === "number" &&
-    Number.isFinite(maxBackupsRaw) &&
-    maxBackupsRaw >= 0
-  ) {
-    maxBackups = maxBackupsRaw;
-  } else if (maxBackupsRaw !== undefined) {
-    log("config", "invalid_max_backups", "", undefined, "warn", {
-      key: "max_backups",
-      value: maxBackupsRaw,
-    });
-  }
-
-  const retentionDaysRaw = logConfig.retention_days;
-  let retentionDays: number | undefined;
-  if (
-    typeof retentionDaysRaw === "number" &&
-    Number.isFinite(retentionDaysRaw) &&
-    retentionDaysRaw > 0
-  ) {
-    retentionDays = retentionDaysRaw;
-  } else if (retentionDaysRaw !== undefined) {
-    log("config", "invalid_retention_days", "", undefined, "warn", {
-      key: "retention_days",
-      value: retentionDaysRaw,
-    });
-  }
-
-  initLogger("", { maxFileSize, maxBackups, retentionDays });
-}
 
 // ---------------------------------------------------------------------------
 // Config hook helpers
@@ -807,6 +401,90 @@ async function runAfterHandlers(
   }
 }
 
+/** Per-plugin-instance dependencies captured by `buildAfterHandlers`. */
+interface AfterHandlerDeps {
+  limits: ReturnType<typeof parseLimits>;
+  client: any;
+  directory: string;
+}
+
+/**
+ * Build the fixed `tool.execute.after` handler table.
+ *
+ * Defined once per plugin instance (module-level factory) so the hook body
+ * stays a one-line dispatch.  Handler order is significant: task-output
+ * nudges, JSON-error recovery, direct-work (dolphin-gated) nudges, then
+ * post-task nudges.
+ *
+ * @param deps - The per-plugin-instance dependencies (limits, client, directory).
+ * @returns The ordered handler table consumed by `runAfterHandlers`.
+ */
+function buildAfterHandlers(deps: AfterHandlerDeps): Array<{
+  name: string;
+  fn: (i: AfterExecInput, o: AfterExecOutput) => void | Promise<void>;
+}> {
+  return [
+    {
+      name: "nudgeTaskOutput",
+      fn: (i: AfterExecInput, o: AfterExecOutput) =>
+        nudgeTaskOutput(i, o, deps.limits),
+    },
+    {
+      name: "recoverJsonError",
+      fn: (i: AfterExecInput, o: AfterExecOutput) => recoverJsonError(i, o),
+    },
+    {
+      name: "nudgeDirectWork",
+      fn: (i: AfterExecInput, o: AfterExecOutput) =>
+        nudgeDirectWorkForAgent(i, o, {
+          todoClient: deps.client,
+          planDir: deps.directory,
+          agent: sessionAgentMap.get(i.sessionID),
+        }),
+    },
+    {
+      name: "nudgePostTask",
+      fn: (i: AfterExecInput, o: AfterExecOutput) =>
+        nudgePostTask(deps.client, i, o, deps.directory),
+    },
+  ];
+}
+
+/**
+ * Inject a failed slash-command error into the session chat (silently).
+ *
+ * Logs the failure at warn level, then sends a `noReply` + `ignored` text
+ * part so the user sees the error without triggering LLM processing.
+ * Notification is best-effort — a failed `session.prompt` is swallowed.
+ *
+ * @param client - The OpenCode client.
+ * @param sessionID - The session receiving the error message.
+ * @param error - The thrown error (message text is extracted).
+ * @param logHook - Logger hook module name (e.g. `"context-command"`).
+ * @param logEvent - Logger event name (e.g. `"dcp_command_failed"`).
+ */
+async function notifySessionError(
+  client: any,
+  sessionID: string,
+  error: unknown,
+  logHook: string,
+  logEvent: string,
+): Promise<void> {
+  const msg = error instanceof Error ? error.message : String(error);
+  log(logHook, logEvent, sessionID, undefined, "warn", { error: msg });
+  try {
+    await client?.session?.prompt({
+      path: { id: sessionID },
+      body: {
+        noReply: true,
+        parts: [{ type: "text", text: msg, ignored: true }],
+      },
+    });
+  } catch {
+    // Best-effort notification
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Compress / decompress tool hooks
 // ---------------------------------------------------------------------------
@@ -920,6 +598,9 @@ export async function zookeeper(input: any) {
   // Register the range-mode compress tool (gated on compress.enabled).
   // When disabled, the `tool` key is absent from the hooks object.
   const toolHooks = buildToolHooks(client, contextConfig);
+
+  // Fixed table of `tool.execute.after` handlers (per-plugin deps captured).
+  const afterHandlers = buildAfterHandlers({ limits, client, directory });
 
   return {
     ...(toolHooks ? { tool: toolHooks } : {}),
@@ -1086,43 +767,7 @@ export async function zookeeper(input: any) {
     },
 
     async "tool.execute.after"(input: AfterExecInput, output: AfterExecOutput) {
-      const handlers = [
-        {
-          name: "nudgeTaskOutput",
-          fn: (i: AfterExecInput, o: AfterExecOutput) =>
-            nudgeTaskOutput(i, o, limits),
-        },
-        {
-          name: "recoverJsonError",
-          fn: (i: AfterExecInput, o: AfterExecOutput) => recoverJsonError(i, o),
-        },
-        {
-          name: "nudgeDirectWork",
-          fn: (i: AfterExecInput, o: AfterExecOutput) => {
-            if (sessionAgentMap.get(i.sessionID) !== "dolphin") {
-              log(
-                "direct-work-nudge",
-                "nudge_skipped",
-                i.sessionID,
-                i.callID,
-                "debug",
-                { tool: i.tool, reason: "not_dolphin" },
-              );
-              return;
-            }
-            return nudgeDirectWork(i, o, {
-              todoClient: client,
-              planDir: directory,
-            });
-          },
-        },
-        {
-          name: "nudgePostTask",
-          fn: (i: AfterExecInput, o: AfterExecOutput) =>
-            nudgePostTask(client, i, o, directory),
-        },
-      ];
-      await runAfterHandlers(handlers, input, output);
+      await runAfterHandlers(afterHandlers, input, output);
     },
 
     async "command.execute.before"(
@@ -1138,27 +783,13 @@ export async function zookeeper(input: any) {
             contextConfig,
           );
         } catch (err) {
-          // Inject error message silently — no LLM processing.
-          const msg = err instanceof Error ? err.message : String(err);
-          log(
+          await notifySessionError(
+            client,
+            input.sessionID,
+            err,
             "context-command",
             "dcp_command_failed",
-            input.sessionID,
-            undefined,
-            "warn",
-            { error: msg },
           );
-          try {
-            await client?.session?.prompt({
-              path: { id: input.sessionID },
-              body: {
-                noReply: true,
-                parts: [{ type: "text", text: msg, ignored: true }],
-              },
-            });
-          } catch {
-            // Best-effort notification
-          }
         }
         throw DCP_COMMAND_HANDLED;
       }
@@ -1167,27 +798,13 @@ export async function zookeeper(input: any) {
       try {
         await handleGoCommand(client, input.sessionID, directory);
       } catch (err) {
-        // Inject error message silently — no LLM processing.
-        const msg = err instanceof Error ? err.message : String(err);
-        log(
+        await notifySessionError(
+          client,
+          input.sessionID,
+          err,
           "plan-lifecycle",
           "go_command_failed",
-          input.sessionID,
-          undefined,
-          "warn",
-          { error: msg },
         );
-        try {
-          await client?.session?.prompt({
-            path: { id: input.sessionID },
-            body: {
-              noReply: true,
-              parts: [{ type: "text", text: msg, ignored: true }],
-            },
-          });
-        } catch {
-          // Best-effort notification
-        }
         throw GO_HANDLED;
       }
       throw GO_HANDLED;
@@ -1204,11 +821,7 @@ export {
   buildToolHooks,
   handleContextPruning,
   handleMessagesTransform,
-  initPluginLogger,
   injectAgentPrompts,
-  parseContextConfig,
-  parseLimits,
-  parseSkillsConfig,
   registerCompressToolInConfig,
   registerDecompressToolInConfig,
   registerSkills,

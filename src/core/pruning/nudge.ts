@@ -116,8 +116,8 @@ export interface NudgeEligibility {
 
 /**
  * Matches a percentage string: one optional decimal fraction + one `%`.
- * Exported — the config parser in `src/opencode.ts` validates nudge
- * thresholds with the same syntax, so the pattern lives here only.
+ * Exported — the config parser in `src/core/config-parse.ts` validates
+ * nudge thresholds with the same syntax, so the pattern lives here only.
  */
 export const NUDGE_PERCENT_RE = /^(\d+(?:\.\d+)?)%$/;
 
