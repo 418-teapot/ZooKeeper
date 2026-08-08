@@ -30,7 +30,7 @@
  * @module
  */
 
-import { log } from "../../utils/logger.js";
+import { log } from "../../../utils/logger.js";
 import type { ContextMessageEntry } from "../metrics.js";
 import { isMessageIgnored } from "../metrics.js";
 import type { PersistedRefs } from "./marks.js";

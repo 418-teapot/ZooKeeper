@@ -1,7 +1,7 @@
 /**
  * Context report formatting for the `/dcp context` command.
  *
- * Pure display layer -- all computation lives in `src/core/metrics.ts`.
+ * Pure display layer -- all computation lives in `src/core/context/metrics.ts`.
  * Provides token/cache/percentage formatting helpers and the final
  * multi-line report string in Chinese (user-facing).
  *

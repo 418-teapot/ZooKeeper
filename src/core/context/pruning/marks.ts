@@ -33,7 +33,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { log } from "../../utils/logger.js";
+import { log } from "../../../utils/logger.js";
 import type { CompressionBlock } from "./blocks.js";
 import type { SessionState } from "./types.js";
 

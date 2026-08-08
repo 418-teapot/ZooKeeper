@@ -21,6 +21,7 @@ import {
   resolveSessionAgent,
   runAfterHandlers,
   sessionAgentMap,
+  zookeeper,
 } from "./opencode.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
 
@@ -1089,5 +1090,36 @@ describe("registerSkills", () => {
     const pluginConfig: Record<string, any> = {};
     registerSkills(pluginConfig, { ...allEnabled });
     assert.ok(pluginConfig.skills.paths.length >= 4);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plugin wiring smoke test — hook handlers exist on the plugin object.
+// Existence only; the behavior of each handler is covered by the hook tests
+// (which drive the hook-directory adapters directly).
+// ---------------------------------------------------------------------------
+
+describe("plugin wiring", () => {
+  it("exposes all 10 hook handlers as functions", async () => {
+    const plugin = await zookeeper({ client: {} });
+    const handlerNames = [
+      "config",
+      "chat.params",
+      "event",
+      "experimental.chat.messages.transform",
+      "experimental.chat.system.transform",
+      "experimental.text.complete",
+      "tool.definition",
+      "tool.execute.before",
+      "tool.execute.after",
+      "command.execute.before",
+    ];
+    for (const name of handlerNames) {
+      assert.equal(
+        typeof (plugin as Record<string, unknown>)[name],
+        "function",
+        `expected hook handler "${name}" to be a function`,
+      );
+    }
   });
 });

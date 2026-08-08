@@ -13,13 +13,16 @@
  * @module
  */
 
+import {
+  getCallId,
+  PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
+} from "../../message-parts.js";
 import type { ContextMessageEntry } from "../../metrics.js";
 import { estimateTokenCount } from "../../metrics.js";
 import { addMark } from "../marks.js";
 import type { ProducerOptions } from "../shared.js";
 import { collectProtectedCallIDs } from "../shared.js";
 import type { SessionState, SweepToolPart } from "../types.js";
-import { getCallId, PRUNED_TOOL_ERROR_INPUT_REPLACEMENT } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Types

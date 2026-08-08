@@ -17,8 +17,8 @@
  * @module
  */
 
-import { log } from "../utils/logger.js";
-import { getCallId, PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./pruning/index.js";
+import { log } from "../../utils/logger.js";
+import { getCallId, PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./message-parts.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -132,7 +132,7 @@ export interface ContextReport {
  * Minimal tool part shape that may appear inside a message's parts array.
  *
  * `callID` and `callId` are both possible field names for the tool call
- * identifier in the OpenCode SDK (use `getCallId` from pruning/types.ts).
+ * identifier in the OpenCode SDK (use `getCallId` from message-parts.ts).
  */
 interface PartWithToolState {
   type: string;

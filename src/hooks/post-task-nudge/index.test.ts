@@ -17,7 +17,6 @@ import {
   VERIFY_REMINDER,
 } from "../../core/prompts.js";
 import type { TinyClient } from "../../core/todo.js";
-import { zookeeper } from "../../opencode.js";
 import { nudgePostTask } from "./index.js";
 
 // ---------------------------------------------------------------------------
@@ -483,105 +482,108 @@ describe("constants", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Integration via plugin entry point
+// Integration: tool.execute.after mapping (direct adapter)
+// The plugin entry point passes its captured client and workspace directory
+// to nudgePostTask via the tool.execute.after handler. Here the adapter is
+// invoked directly with the same arguments the handler would unwrap.
 // ---------------------------------------------------------------------------
 
-describe("integration via plugin (tool.execute.after)", () => {
-  it("appends VERIFY + GENERAL via plugin for task tool", async () => {
-    const plugin = await zookeeper({
-      client: mockClient([
-        {
-          content: "Active task",
-          status: "in_progress",
-          priority: "high",
-          id: "1",
-        },
-        {
-          content: "Pending task",
-          status: "pending",
-          priority: "medium",
-          id: "2",
-        },
-      ]),
-    });
+describe("integration: tool.execute.after → nudgePostTask", () => {
+  it("appends VERIFY + GENERAL for task tool", async () => {
+    const client = mockClient([
+      {
+        content: "Active task",
+        status: "in_progress",
+        priority: "high",
+        id: "1",
+      },
+      {
+        content: "Pending task",
+        status: "pending",
+        priority: "medium",
+        id: "2",
+      },
+    ]);
     const output: { output?: string } = { output: "Task completed" };
-    await plugin["tool.execute.after"](
+    await nudgePostTask(
+      client,
       { tool: "task", sessionID: "s1", callID: "c1" },
       output,
+      "",
     );
     assertHasVerify(output);
     assertHasGeneral(output);
     assert.ok(output.output?.startsWith("Task completed"));
   });
 
-  it("appends VERIFY + TODO_RESUME_NUDGE via plugin when todo API returns all completed", async () => {
-    const plugin = await zookeeper({
-      client: mockClient([
-        {
-          content: "Done",
-          status: "completed",
-          priority: "high",
-          id: "1",
-        },
-      ]),
-    });
+  it("appends VERIFY + TODO_RESUME_NUDGE when todo API returns all completed", async () => {
+    const client = mockClient([
+      {
+        content: "Done",
+        status: "completed",
+        priority: "high",
+        id: "1",
+      },
+    ]);
     const output: { output?: string } = { output: "Task completed" };
-    await plugin["tool.execute.after"](
+    await nudgePostTask(
+      client,
       { tool: "task", sessionID: "s1", callID: "c1" },
       output,
+      "",
     );
     assertHasVerify(output);
     assertHasDoneNudge(output);
   });
 
-  it("does not modify non-task tool output via plugin", async () => {
-    const plugin = await zookeeper({
-      client: mockClient([
-        {
-          content: "Active",
-          status: "in_progress",
-          priority: "high",
-          id: "1",
-        },
-      ]),
-    });
+  it("does not modify non-task tool output", async () => {
+    const client = mockClient([
+      {
+        content: "Active",
+        status: "in_progress",
+        priority: "high",
+        id: "1",
+      },
+    ]);
     const output: { output?: string } = { output: "grep result" };
-    await plugin["tool.execute.after"](
+    await nudgePostTask(
+      client,
       { tool: "grep", sessionID: "s1", callID: "c1" },
       output,
+      "",
     );
     assert.equal(output.output, "grep result");
   });
 
-  it("does not modify output when output is null via plugin", async () => {
-    const plugin = await zookeeper({
-      client: mockClient([
-        {
-          content: "Active",
-          status: "in_progress",
-          priority: "high",
-          id: "1",
-        },
-      ]),
-    });
+  it("does not modify output when output is null", async () => {
+    const client = mockClient([
+      {
+        content: "Active",
+        status: "in_progress",
+        priority: "high",
+        id: "1",
+      },
+    ]);
     const output: { output?: string } = {
       output: null as unknown as string,
     };
-    await plugin["tool.execute.after"](
+    await nudgePostTask(
+      client,
       { tool: "task", sessionID: "s1", callID: "c1" },
       output,
+      "",
     );
     assert.equal(output.output, null);
   });
 
-  it("handles todo API failure gracefully via plugin (VERIFY+GENERAL)", async () => {
-    const plugin = await zookeeper({
-      client: failingClient(),
-    });
+  it("handles todo API failure gracefully (VERIFY+GENERAL)", async () => {
+    const client = failingClient();
     const output: { output?: string } = { output: "Task ran" };
-    await plugin["tool.execute.after"](
+    await nudgePostTask(
+      client,
       { tool: "task", sessionID: "s1", callID: "c1" },
       output,
+      "",
     );
     assertHasVerify(output);
     assertHasGeneral(output);

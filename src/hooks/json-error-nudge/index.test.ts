@@ -6,7 +6,10 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { zookeeper } from "../../opencode.js";
+import {
+  nudgeTaskOutput,
+  type ValidationLimits,
+} from "../task-prompt/index.js";
 import {
   JSON_ERROR_PATTERNS,
   JSON_ERROR_REMINDER,
@@ -15,6 +18,13 @@ import {
   JSON_ERROR_TOOL_EXCLUDES,
   recoverJsonError,
 } from "./index.js";
+
+// Limits mirror `[zoo.validation]` in config.toml — needed to drive the
+// task-prompt nudge adapter when simulating the plugin's after pipeline.
+const limits: ValidationLimits = {
+  contextWordLimit: 200,
+  promptWordLimit: 500,
+};
 
 // ---------------------------------------------------------------------------
 // Constants / helpers
@@ -255,32 +265,26 @@ function validPrompt(overrides?: {
 }
 
 // ---------------------------------------------------------------------------
-// Integration: via plugin entry point
+// Integration: tool.execute.after mapping (direct adapter)
+// The plugin's tool.execute.after handler runs a pipeline of adapters;
+// recoverJsonError is invoked here directly with the unwrapped input.
 // ---------------------------------------------------------------------------
 
-describe("integration: tool.execute.after via plugin", () => {
-  it("non-task tool with JSON parse error appends reminder via plugin", async () => {
-    const plugin = await zookeeper({});
+describe("integration: tool.execute.after → recoverJsonError", () => {
+  it("non-task tool with JSON parse error appends reminder", () => {
     const output: { output?: string } = {
       output: "json parse error: unexpected token at position 42",
     };
-    await plugin["tool.execute.after"](
-      { tool: "write", sessionID: "s1", callID: "c1" },
-      output,
-    );
+    recoverJsonError({ tool: "write", sessionID: "s1", callID: "c1" }, output);
     assert.ok(output.output?.includes(JSON_ERROR_REMINDER_MARKER));
     assert.ok(output.output?.includes("You sent invalid JSON arguments"));
   });
 
-  it("non-task tool with normal output — no JSON reminder appended via plugin", async () => {
-    const plugin = await zookeeper({});
+  it("non-task tool with normal output — no JSON reminder appended", () => {
     const output: { output?: string } = {
       output: "File written successfully",
     };
-    await plugin["tool.execute.after"](
-      { tool: "write", sessionID: "s1", callID: "c1" },
-      output,
-    );
+    recoverJsonError({ tool: "write", sessionID: "s1", callID: "c1" }, output);
     // JSON error recovery must NOT have appended — no JSON error detected.
     // Other handlers (e.g. nudgeDirectWork) may append, so check absence
     // of JSON marker rather than strict equality.
@@ -291,45 +295,40 @@ describe("integration: tool.execute.after via plugin", () => {
     );
   });
 
-  it("excluded tool (bash) with JSON error NOT appended via plugin", async () => {
-    const plugin = await zookeeper({});
+  it("excluded tool (bash) with JSON error NOT appended", () => {
     const output: { output?: string } = {
       output: "json parse error in bash output",
     };
-    await plugin["tool.execute.after"](
-      { tool: "bash", sessionID: "s1", callID: "c1" },
-      output,
-    );
+    recoverJsonError({ tool: "bash", sessionID: "s1", callID: "c1" }, output);
     assert.equal(output.output, "json parse error in bash output");
   });
 
-  it("task tool (excluded for JSON recovery) with JSON error NOT appended via plugin", async () => {
-    const plugin = await zookeeper({});
+  it("task tool (excluded for JSON recovery) with JSON error NOT appended", () => {
     const output: { output?: string } = {
       output: "I encountered a json parse error in the response",
     };
-    await plugin["tool.execute.after"](
-      { tool: "task", sessionID: "s1", callID: "c1" },
-      output,
-    );
+    recoverJsonError({ tool: "task", sessionID: "s1", callID: "c1" }, output);
     assert.equal(
       output.output,
       "I encountered a json parse error in the response",
     );
   });
 
-  it("task tool with nudge-worthy prompt + JSON error: only nudge, no JSON reminder", async () => {
-    const plugin = await zookeeper({});
+  it("task tool with nudge-worthy prompt + JSON error: only nudge, no JSON reminder", () => {
     const prompt = validPrompt({
       context: "The bug is at src/db.py line 42. Fix it.",
     });
     const output: { output?: string } = {
       output: "Task finished with a json parse error in subagent output",
     };
-    await plugin["tool.execute.after"](
+    // Simulate the plugin's after-handler pipeline order: task-prompt nudge
+    // first, then JSON recovery (task tool is excluded from JSON recovery).
+    nudgeTaskOutput(
       { tool: "task", sessionID: "s1", callID: "c1", args: { prompt } },
       output,
+      limits,
     );
+    recoverJsonError({ tool: "task", sessionID: "s1", callID: "c1" }, output);
     assert.equal(
       output.output?.includes(JSON_ERROR_REMINDER_MARKER),
       false,
@@ -342,15 +341,11 @@ describe("integration: tool.execute.after via plugin", () => {
     assert.ok(output.output?.includes("line references"));
   });
 
-  it("non-task tool with SyntaxError appends reminder via plugin", async () => {
-    const plugin = await zookeeper({});
+  it("non-task tool with SyntaxError appends reminder", () => {
     const output: { output?: string } = {
       output: "SyntaxError: unexpected token in JSON at position 42",
     };
-    await plugin["tool.execute.after"](
-      { tool: "write", sessionID: "s1", callID: "c1" },
-      output,
-    );
+    recoverJsonError({ tool: "write", sessionID: "s1", callID: "c1" }, output);
     assert.ok(output.output?.includes(JSON_ERROR_REMINDER_MARKER));
     assert.ok(output.output?.includes("You sent invalid JSON arguments"));
   });

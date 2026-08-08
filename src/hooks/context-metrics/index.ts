@@ -1,7 +1,7 @@
 /**
  * Context Metrics barrel export.
  *
- * Thin re-export — all logic lives in `src/core/metrics.ts`.
+ * Thin re-export — all logic lives in `src/core/context/metrics.ts`.
  *
  * @module
  */
@@ -13,8 +13,8 @@ export type {
   ContextMetricsResult,
   ContextTextPart,
   ContextTokenInfo,
-} from "../../core/metrics.js";
+} from "../../core/context/metrics.js";
 export {
   estimateMessageHeuristic,
   measureContext,
-} from "../../core/metrics.js";
+} from "../../core/context/metrics.js";

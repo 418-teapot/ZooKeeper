@@ -5,7 +5,7 @@
  * to avoid polluting any real .zoo/plans directory.
  */
 
-import { describe, expect, it } from "bun:test";
+import assert from "node:assert/strict";
 import {
   mkdirSync,
   readFileSync,
@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { describe, it } from "node:test";
 import {
   allTodosDone,
   buildConfirmText,
@@ -73,14 +74,14 @@ describe("plansDir", () => {
   it("returns path under <baseDir>/.zoo/plans", () => {
     const base = tmpDir();
     const dir = plansDir(base);
-    expect(dir).toBe(join(base, ".zoo", "plans"));
+    assert.strictEqual(dir, join(base, ".zoo", "plans"));
     cleanup(base);
   });
 
   it("returns absolute path", () => {
     const base = tmpDir();
     const dir = plansDir(base);
-    expect(dir).toInclude(".zoo/plans");
+    assert.ok(dir.includes(".zoo/plans"));
     cleanup(base);
   });
 });
@@ -93,35 +94,35 @@ describe("parseFrontmatter", () => {
   it("parses basic frontmatter", () => {
     const content = `---\nstatus: planning-done\nslug: my-plan\n---\n# Title\n`;
     const fm = parseFrontmatter(content);
-    expect(fm).toEqual({ status: "planning-done", slug: "my-plan" });
+    assert.deepEqual(fm, { status: "planning-done", slug: "my-plan" });
   });
 
   it("strips quotes from values", () => {
     const content = `---\nstatus: "executing"\nslug: 'test-plan'\n---\n`;
     const fm = parseFrontmatter(content);
-    expect(fm).toEqual({ status: "executing", slug: "test-plan" });
+    assert.deepEqual(fm, { status: "executing", slug: "test-plan" });
   });
 
   it("returns null when no frontmatter exists", () => {
     const fm = parseFrontmatter("# Just a title\n");
-    expect(fm).toBeNull();
+    assert.strictEqual(fm, null);
   });
 
   it("returns empty object for empty frontmatter block", () => {
     const fm = parseFrontmatter("---\n\n---\n# Title\n");
-    expect(fm).toEqual({});
+    assert.deepEqual(fm, {});
   });
 
   it("ignores lines that do not match key: value", () => {
     const content = `---\nstatus: done\n# This is a comment\n---\n`;
     const fm = parseFrontmatter(content);
-    expect(fm).toEqual({ status: "done" });
+    assert.deepEqual(fm, { status: "done" });
   });
 
   it("supports hyphenated keys", () => {
     const content = `---\nplan-status: ready\n---\n`;
     const fm = parseFrontmatter(content);
-    expect(fm).toEqual({ "plan-status": "ready" });
+    assert.deepEqual(fm, { "plan-status": "ready" });
   });
 });
 
@@ -133,7 +134,7 @@ describe("findPlanByStatus", () => {
   it("returns null when plans directory does not exist", () => {
     const base = tmpDir();
     const plan = findPlanByStatus(base, "planning-done");
-    expect(plan).toBeNull();
+    assert.strictEqual(plan, null);
     cleanup(base);
   });
 
@@ -141,7 +142,7 @@ describe("findPlanByStatus", () => {
     // An empty baseDir must NOT fall back to process.cwd()/.zoo/plans —
     // that would be a hidden indirection breaking worktree-readiness.
     const plan = findPlanByStatus("", "planning-done");
-    expect(plan).toBeNull();
+    assert.strictEqual(plan, null);
   });
 
   it("finds a plan with matching status", () => {
@@ -154,10 +155,10 @@ describe("findPlanByStatus", () => {
     );
 
     const plan = findPlanByStatus(base, "planning-done");
-    expect(plan).not.toBeNull();
-    expect(plan?.path).toBe(planPath);
-    expect(plan?.slug).toBe("my-plan");
-    expect(plan?.content).toInclude("# my-plan.md");
+    assert.notStrictEqual(plan, null);
+    assert.strictEqual(plan?.path, planPath);
+    assert.strictEqual(plan?.slug, "my-plan");
+    assert.ok(plan?.content.includes("# my-plan.md"));
 
     cleanup(base);
   });
@@ -187,10 +188,10 @@ describe("findPlanByStatus", () => {
     utimesSync(newerPath, new Date(reference), new Date(reference));
 
     const plan = findPlanByStatus(base, "planning-done");
-    expect(plan).not.toBeNull();
+    assert.notStrictEqual(plan, null);
     // Newest plan should be returned first.
-    expect(plan?.path).toBe(newerPath);
-    expect(plan?.slug).toBe("newer");
+    assert.strictEqual(plan?.path, newerPath);
+    assert.strictEqual(plan?.slug, "newer");
 
     cleanup(base);
   });
@@ -200,7 +201,7 @@ describe("findPlanByStatus", () => {
     createPlanFile(base, "executing-plan.md", "executing", "exec-plan");
 
     const plan = findPlanByStatus(base, "planning-done");
-    expect(plan).toBeNull();
+    assert.strictEqual(plan, null);
 
     cleanup(base);
   });
@@ -210,8 +211,8 @@ describe("findPlanByStatus", () => {
     const _planPath = createPlanFile(base, "fallback-slug.md", "planning-done");
 
     const plan = findPlanByStatus(base, "planning-done");
-    expect(plan).not.toBeNull();
-    expect(plan?.slug).toBe("fallback-slug");
+    assert.notStrictEqual(plan, null);
+    assert.strictEqual(plan?.slug, "fallback-slug");
 
     cleanup(base);
   });
@@ -224,8 +225,8 @@ describe("findPlanByStatus", () => {
     const planPath = createPlanFile(base, "real-plan.md", "planning-done");
 
     const plan = findPlanByStatus(base, "planning-done");
-    expect(plan).not.toBeNull();
-    expect(plan?.path).toBe(planPath);
+    assert.notStrictEqual(plan, null);
+    assert.strictEqual(plan?.path, planPath);
 
     cleanup(base);
   });
@@ -244,9 +245,9 @@ describe("findPlanByStatus", () => {
     const realPath = createPlanFile(base, "real.md", "planning-done", "real");
 
     const plan = findPlanByStatus(base, "planning-done");
-    expect(plan).not.toBeNull();
-    expect(plan?.path).toBe(realPath);
-    expect(plan?.slug).toBe("real");
+    assert.notStrictEqual(plan, null);
+    assert.strictEqual(plan?.path, realPath);
+    assert.strictEqual(plan?.slug, "real");
 
     cleanup(base);
   });
@@ -260,26 +261,26 @@ describe("updatePlanStatus", () => {
   it("replaces status in frontmatter", () => {
     const content = `---\nstatus: planning-done\n---\n# Plan\n`;
     const updated = updatePlanStatus(content, "executing");
-    expect(updated).toBe(`---\nstatus: executing\n---\n# Plan\n`);
+    assert.strictEqual(updated, `---\nstatus: executing\n---\n# Plan\n`);
   });
 
   it("replaces status with different values", () => {
     const content = `---\nstatus: draft\n---\n# Plan\n`;
     const updated = updatePlanStatus(content, "done");
-    expect(updated).toBe(`---\nstatus: done\n---\n# Plan\n`);
+    assert.strictEqual(updated, `---\nstatus: done\n---\n# Plan\n`);
   });
 
   it("does not modify other frontmatter fields", () => {
     const content = `---\nstatus: planning-done\nslug: my-plan\n---\n# Plan\n`;
     const updated = updatePlanStatus(content, "executing");
-    expect(updated).toInclude("slug: my-plan");
-    expect(updated).toInclude("status: executing");
+    assert.ok(updated.includes("slug: my-plan"));
+    assert.ok(updated.includes("status: executing"));
   });
 
   it("returns unchanged content when no status line exists", () => {
     const content = `---\nslug: my-plan\n---\n# Plan\n`;
     const updated = updatePlanStatus(content, "executing");
-    expect(updated).toBe(content);
+    assert.strictEqual(updated, content);
   });
 });
 
@@ -295,7 +296,7 @@ describe("writePlan", () => {
     writePlan(planPath, "# Test Plan\n");
 
     const readBack = readFileSync(planPath, "utf-8");
-    expect(readBack).toBe("# Test Plan\n");
+    assert.strictEqual(readBack, "# Test Plan\n");
 
     // Cleanup
     unlinkSync(planPath);
@@ -310,14 +311,16 @@ describe("writePlan", () => {
 describe("buildPlanReference", () => {
   it("includes the plan file path", () => {
     const ref = buildPlanReference("/workspace/.zoo/plans/my-plan.md");
-    expect(ref).toInclude("Plan file: /workspace/.zoo/plans/my-plan.md");
+    assert.ok(ref.includes("Plan file: /workspace/.zoo/plans/my-plan.md"));
   });
 
   it("includes instructions to read and update the plan", () => {
     const ref = buildPlanReference("/path/to/plan.md");
-    expect(ref).toInclude("Read this file at the start of execution");
-    expect(ref).toInclude("Update the plan's TODO checkboxes");
-    expect(ref).toInclude("When all TODOs are finished, update status to done");
+    assert.ok(ref.includes("Read this file at the start of execution"));
+    assert.ok(ref.includes("Update the plan's TODO checkboxes"));
+    assert.ok(
+      ref.includes("When all TODOs are finished, update status to done"),
+    );
   });
 });
 
@@ -328,7 +331,7 @@ describe("buildPlanReference", () => {
 describe("buildConfirmText", () => {
   it("returns the expected confirmation text", () => {
     const text = buildConfirmText();
-    expect(text).toBe("Plan handed off to dolphin.");
+    assert.strictEqual(text, "Plan handed off to dolphin.");
   });
 });
 
@@ -338,36 +341,36 @@ describe("buildConfirmText", () => {
 
 describe("countOpenTodos", () => {
   it("returns 0 for empty string", () => {
-    expect(countOpenTodos("")).toBe(0);
+    assert.strictEqual(countOpenTodos(""), 0);
   });
 
   it("returns 1 for one open and one checked task", () => {
-    expect(countOpenTodos("- [ ] task\n- [x] done")).toBe(1);
+    assert.strictEqual(countOpenTodos("- [ ] task\n- [x] done"), 1);
   });
 
   it("returns 0 when all tasks are checked", () => {
-    expect(countOpenTodos("- [x] a\n- [x] b")).toBe(0);
+    assert.strictEqual(countOpenTodos("- [x] a\n- [x] b"), 0);
   });
 
   it("returns 2 for multiple open tasks", () => {
-    expect(countOpenTodos("- [ ] a\n- [ ] b\n- [x] c")).toBe(2);
+    assert.strictEqual(countOpenTodos("- [ ] a\n- [ ] b\n- [x] c"), 2);
   });
 });
 
 describe("allTodosDone", () => {
   it("returns true when all tasks are checked", () => {
-    expect(allTodosDone("- [x] a\n- [x] b")).toBe(true);
+    assert.strictEqual(allTodosDone("- [x] a\n- [x] b"), true);
   });
 
   it("returns false when a task is open", () => {
-    expect(allTodosDone("- [ ] a\n- [x] b")).toBe(false);
+    assert.strictEqual(allTodosDone("- [ ] a\n- [x] b"), false);
   });
 
   it("returns true for content with no checkboxes (vacuously true)", () => {
-    expect(allTodosDone("no checkboxes here")).toBe(true);
+    assert.strictEqual(allTodosDone("no checkboxes here"), true);
   });
 
   it("returns true for empty string", () => {
-    expect(allTodosDone("")).toBe(true);
+    assert.strictEqual(allTodosDone(""), true);
   });
 });

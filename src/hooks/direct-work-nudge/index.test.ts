@@ -4,16 +4,15 @@
  * Covers edit/write firing, non-matching tools, null/undefined output,
  * case-insensitivity, no path exemptions, consecutive calls, constants,
  * grep/glob search delegation, plan nudge scenarios, the dolphin-gated
- * `nudgeDirectWorkForAgent` wrapper (skip + delegate paths), and integration
- * via the plugin entry point (including event/message.updated →
- * sessionAgentMap agent gating).
+ * `nudgeDirectWorkForAgent` wrapper (skip + delegate paths), and the
+ * tool.execute.after agent-gating states (message.updated / session.deleted)
+ * driven directly through `nudgeDirectWorkForAgent`.
  */
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { zookeeper } from "../../opencode.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import {
   DIRECT_WORK_NUDGE,
@@ -79,25 +78,6 @@ function assertHasSearchReminder(
     obj.output?.includes("POTENTIAL DELEGATION OPPORTUNITY"),
     message ?? "expected output to contain search delegation nudge",
   );
-}
-
-/**
- * Simulate a message.updated event that sets the agent in sessionAgentMap.
- */
-function messageUpdatedEvent(
-  agent: string,
-  sessionID?: string,
-): Parameters<Awaited<ReturnType<typeof zookeeper>>["event"]>[0] {
-  const sid =
-    sessionID ?? `s_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-  return {
-    event: {
-      type: "message.updated",
-      properties: {
-        info: { agent, sessionID: sid },
-      },
-    },
-  };
 }
 
 /** Generate a unique session ID for test isolation. */
@@ -472,165 +452,151 @@ describe("barrel export", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Integration: via plugin entry point (agent-gated by sessionAgentMap)
-// Agent identity flows: event(message.updated) → sessionAgentMap →
-// tool.execute.after → nudgeDirectWork (if dolphin).
+// Integration: tool.execute.after mapping (direct adapter)
+// The plugin entry point resolves the session agent from its sessionAgentMap
+// (populated by message.updated events) and passes it to
+// nudgeDirectWorkForAgent via the tool.execute.after handler. Here the
+// resolved agent is passed directly to the adapter.
 // ---------------------------------------------------------------------------
 
-describe("integration: tool.execute.after via plugin", () => {
+describe("integration: tool.execute.after → nudgeDirectWorkForAgent", () => {
   it("edit tool appends reminder when message.updated set dolphin", async () => {
-    const plugin = await zookeeper({ client: {} });
     const sid = uniqueSid();
-    await plugin.event(messageUpdatedEvent("dolphin", sid));
     const output: { output?: string } = {
       output: "fixed formatting in index.ts",
     };
-    await plugin["tool.execute.after"](
+    await nudgeDirectWorkForAgent(
       { tool: "edit", sessionID: sid, callID: "c1" },
       output,
+      { agent: "dolphin" },
     );
     assert.ok(output.output?.includes("DELEGATION REQUIRED"));
     assert.ok(output.output?.includes("Contract R1"));
   });
 
   it("edit tool skips nudge when message.updated set beaver", async () => {
-    const plugin = await zookeeper({ client: {} });
     const sid = uniqueSid();
-    await plugin.event(messageUpdatedEvent("beaver", sid));
     const output: { output?: string } = {
       output: "edited something as subagent",
     };
-    await plugin["tool.execute.after"](
+    await nudgeDirectWorkForAgent(
       { tool: "edit", sessionID: sid, callID: "c1" },
       output,
+      { agent: "beaver" },
     );
     assert.equal(output.output, "edited something as subagent");
   });
 
   it("edit tool skips nudge when sessionAgentMap has no entry", async () => {
-    const plugin = await zookeeper({ client: {} });
     const sid = uniqueSid();
     const output: { output?: string } = {
       output: "edited without known agent",
     };
-    await plugin["tool.execute.after"](
+    await nudgeDirectWorkForAgent(
       { tool: "edit", sessionID: sid, callID: "c1" },
       output,
+      {},
     );
     assert.equal(output.output, "edited without known agent");
   });
 
-  it("bash tool remains unchanged via plugin", async () => {
-    const plugin = await zookeeper({ client: {} });
+  it("bash tool remains unchanged", async () => {
     const sid = uniqueSid();
-    await plugin.event(messageUpdatedEvent("dolphin", sid));
     const output: { output?: string } = {
       output: "ls output here",
     };
-    await plugin["tool.execute.after"](
+    await nudgeDirectWorkForAgent(
       { tool: "bash", sessionID: sid, callID: "c1" },
       output,
+      { agent: "dolphin" },
     );
     assert.equal(output.output, "ls output here");
   });
 
   it("grep tool appends search nudge when message.updated set dolphin", async () => {
-    const plugin = await zookeeper({ client: {} });
     const sid = uniqueSid();
-    await plugin.event(messageUpdatedEvent("dolphin", sid));
     const output: { output?: string } = { output: "found matches" };
-    await plugin["tool.execute.after"](
+    await nudgeDirectWorkForAgent(
       { tool: "grep", sessionID: sid, callID: "c1" },
       output,
+      { agent: "dolphin" },
     );
     assertHasSearchReminder(output);
   });
 
   it("grep tool skips nudge when message.updated set lynx", async () => {
-    const plugin = await zookeeper({ client: {} });
     const sid = uniqueSid();
-    await plugin.event(messageUpdatedEvent("lynx", sid));
     const output: { output?: string } = {
       output: "searched as subagent",
     };
-    await plugin["tool.execute.after"](
+    await nudgeDirectWorkForAgent(
       { tool: "grep", sessionID: sid, callID: "c1" },
       output,
+      { agent: "lynx" },
     );
     assert.equal(output.output, "searched as subagent");
   });
 });
 
 // ---------------------------------------------------------------------------
-// sessionAgentMap lifecycle — event hook cleanup
+// Agent-gating state transitions (message.updated / session.deleted)
+// The plugin's event hook maintains sessionAgentMap; the adapter receives
+// the agent value the plugin would resolve for each event-driven state.
 // ---------------------------------------------------------------------------
 
-describe("integration: sessionAgentMap lifecycle", () => {
+describe("integration: agent-gating states via nudgeDirectWorkForAgent", () => {
   it("session.deleted event clears the agent map entry", async () => {
-    const plugin = await zookeeper({ client: {} });
     const sid = uniqueSid();
-    await plugin.event(messageUpdatedEvent("dolphin", sid));
-    // Verify populated — edit should nudge
+    // Agent known (message.updated dolphin) — edit should nudge
     let output: { output?: string } = { output: "first edit" };
-    await plugin["tool.execute.after"](
+    await nudgeDirectWorkForAgent(
       { tool: "edit", sessionID: sid, callID: "c1" },
       output,
+      { agent: "dolphin" },
     );
     assertHasReminder(output);
 
-    // Simulate session.deleted
-    await plugin.event({
-      event: {
-        type: "session.deleted",
-        properties: { info: { id: sid } },
-      },
-    });
-
-    // After deletion, edit should NOT nudge (no agent info)
+    // After session.deleted — no agent info, edit should NOT nudge
     output = { output: "second edit" };
-    await plugin["tool.execute.after"](
+    await nudgeDirectWorkForAgent(
       { tool: "edit", sessionID: sid, callID: "c2" },
       output,
+      {},
     );
     assert.equal(output.output, "second edit");
   });
 
   it("message.updated overwrites previous agent for same session", async () => {
-    const plugin = await zookeeper({ client: {} });
     const sid = uniqueSid();
     // First: set as beaver
-    await plugin.event(messageUpdatedEvent("beaver", sid));
     let output: { output?: string } = { output: "beaver edit" };
-    await plugin["tool.execute.after"](
+    await nudgeDirectWorkForAgent(
       { tool: "edit", sessionID: sid, callID: "c1" },
       output,
+      { agent: "beaver" },
     );
     assert.equal(output.output, "beaver edit");
 
     // Then: overwrite as dolphin
-    await plugin.event(messageUpdatedEvent("dolphin", sid));
     output = { output: "dolphin edit" };
-    await plugin["tool.execute.after"](
+    await nudgeDirectWorkForAgent(
       { tool: "edit", sessionID: sid, callID: "c2" },
       output,
+      { agent: "dolphin" },
     );
     assertHasReminder(output);
   });
 
   it("non-message.updated events do not affect agent map", async () => {
-    const plugin = await zookeeper({ client: {} });
     const sid = uniqueSid();
-    // Send an unrelated event
-    await plugin.event({
-      event: { type: "session.created", properties: {} },
-    });
     // No agent should be set for this session
     const output: { output?: string } = {
       output: "edited without agent",
     };
-    await plugin["tool.execute.after"](
+    await nudgeDirectWorkForAgent(
       { tool: "edit", sessionID: sid, callID: "c1" },
       output,
+      {},
     );
     assert.equal(output.output, "edited without agent");
   });

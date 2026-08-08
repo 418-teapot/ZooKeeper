@@ -8,7 +8,10 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
+import {
+  _getBufferForTesting,
+  _resetForTesting,
+} from "../../../utils/logger.js";
 import { createBlock } from "./blocks.js";
 import {
   _clearAllSessionsForTesting,

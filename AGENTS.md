@@ -75,21 +75,39 @@ ZooKeeper/
 │   │   ├── spider.ts
 │   │   ├── eagle.ts
 │   │   └── kiwi.ts
-│   ├── opencode.ts          # OpenCode 扩展入口
+│   ├── opencode.ts          # OpenCode 扩展入口（注册 10 个 hook + compress/decompress 2 个 tool）
 │   ├── pi.ts                # pi 扩展入口
+│   ├── tui.tsx              # TUI 侧边栏插件（OpenCode 专属，solid-js）
 │   ├── core/                # 框架无关纯逻辑（零 OpenCode 依赖）
+│   │   ├── context/         # 上下文管理域
+│   │   │   ├── metrics.ts       # 上下文 token 估算（混合策略：API 报告 + 启发式）
+│   │   │   ├── context-report.ts# 上下文报告格式化
+│   │   │   ├── model-limits.ts  # 模型上下文上限注册表
+│   │   │   ├── message-parts.ts # 消息 part 内省 + pruning 占位符契约（最低层，零 import）
+│   │   │   ├── dcp-client.ts    # /dcp 命令最小客户端接口
+│   │   │   ├── dcp-command.ts   # /dcp 命令处理逻辑（自 hooks 层下沉）
+│   │   │   └── pruning/         # mark-sweep 裁剪子域（含 producers/）
+│   │   ├── config-types.ts  # [zoo.context] 配置 schema 类型（纯类型）
+│   │   ├── config-parse.ts  # config.toml 解析
 │   │   ├── validate.ts      # task prompt 校验（section 提取、词数限制、反模式检测）
-│   │   ├── metrics.ts       # 上下文 token 估算（混合策略：API 报告 + 启发式）
 │   │   ├── recovery.ts      # JSON 解析错误检测与恢复
+│   │   ├── plan.ts          # 计划文件读写（frontmatter 解析、状态更新）
+│   │   ├── checks.ts        # 计划/todo 进度检查
 │   │   ├── agent.ts         # Agent 类型检测（Clientish 接口 + getAgentName）
 │   │   ├── todo.ts          # Todo 状态查询（TinyClient 接口 + getTodoState）
-│   │   └── prompts.ts       # 所有 prompt 文本常量（单一事实来源）
+│   │   ├── delegation.ts    # task() 委派权限判定
+│   │   └── prompts.ts       # hook/tool 注入的 nudge 文本（agent 片段见 agents/parts.ts）
 │   ├── hooks/               # 薄适配层 — 解包框架 (input, output) → 调 core 函数
-│   │   ├── task-prompt/     # task prompt 校验 + nudge（3 个适配器函数）
-│   │   ├── json-error-nudge/# JSON 解析错误恢复（重导出，hook.ts 已删除）
-│   │   ├── context-metrics/ # 上下文指标（重导出，hook.ts 已删除）
+│   │   ├── context-command/ # /dcp 斜杠命令（薄 barrel，逻辑在 core/context/dcp-command）
+│   │   ├── context-metrics/ # 上下文指标（重导出 core/context/metrics）
+│   │   ├── context-pruning/ # 上下文裁剪 transform（mark-sweep + compress）
 │   │   ├── direct-work-nudge/# 直接编辑提醒（nudgeDirectWork 适配器）
-│   │   └── post-task-nudge/ # task() 返回后验证+todo 提醒（nudgePostTask 适配器）
+│   │   ├── json-error-nudge/# JSON 解析错误恢复（重导出 core/recovery）
+│   │   ├── plan-lifecycle/  # 计划生命周期（/go 命令）
+│   │   ├── post-task-nudge/ # task() 返回后验证+todo 提醒（nudgePostTask 适配器）
+│   │   ├── task-delegation/ # task() 委派权限拦截
+│   │   └── task-prompt/     # task prompt 校验 + nudge（3 个适配器函数）
+│   ├── tools/               # OpenCode 工具适配器（compress / decompress 工具工厂）
 │   └── utils/
 │       └── logger.ts        # JSON Lines 文件日志（旋转 + 保留策略）
 ├── tests/                   # Prompt 评估测试框架（Phase 1: dolphin.md）
@@ -123,7 +141,7 @@ ZooKeeper/
 
 - **`install.py`** — 安装脚本入口，读取 config.toml + .env → 用 `shutil.which` 检测 opencode/pi 是否安装 → 按检测结果生成：OpenCode 的 `~/.config/opencode/opencode.json`、pi 的 `~/.pi/agent/settings.json`（extensions 整体替换为 `src/pi.ts`）+ `~/.pi/agent/models.json`（provider 转换：明文 apiKey、baseUrl 对 anthropic-messages 去 `/v1`、cost 补全四字段、idempotent prune 残留）。provider 跳过 warn 统一打一次。三阶段对称打印（备份/生成/验证/安装完成）。只依赖 Python 标准库。
 - **`config.toml`** — 用户配置模板（单一事实来源），所有 deny 权限和 agent 配置在此声明，`[zoo.validation]` 阈值由 TS 插件在运行时直接读取
-- **`src/opencode.ts`** — 插件入口，薄接线层，注册 6 个 hook
+- **`src/opencode.ts`** — 插件入口，薄接线层，注册 10 个 hook + compress/decompress 2 个 tool
 - **`src/pi.ts`** — pi 扩展入口，通过 `~/.pi/agent/settings.json` 的 `extensions` 数组被 pi 加载；注册 `before_agent_start`（prepend `DOLPHIN_PROMPT` 到 systemPrompt）和 `resources_discover`（贡献 `core/skills` 子目录）；用 `realpathSync` 跟随路径确保 `../core/skills` 解析正确
 - **`src/core/`** — 框架无关纯逻辑模块，零 OpenCode 依赖，可被任何 TS 运行时 import
 - **`src/agents/<name>.ts`** — 各 agent 的 prompt 常量文件，按 `{agent-name}.ts` 命名

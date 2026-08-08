@@ -1,5 +1,5 @@
 /**
- * Tests for `src/core/metrics.ts`.
+ * Tests for `src/core/context/metrics.ts`.
  *
  * Covers: findLastCompletedAssistant, estimateMessageHeuristic
  * (text + tool parts), cache hit rate, exact + heuristic total,
@@ -11,7 +11,8 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { _resetForTesting } from "../utils/logger.js";
+import { _resetForTesting } from "../../utils/logger.js";
+import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./message-parts.js";
 import {
   type ContextMessageEntry,
   type ContextReport,
@@ -27,7 +28,6 @@ import {
   findLastCompletedAssistant,
   measureContext,
 } from "./metrics.js";
-import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./pruning/index.js";
 
 // ---------------------------------------------------------------------------
 // Logger cleanup

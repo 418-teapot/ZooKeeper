@@ -9,10 +9,10 @@
  * @module
  */
 
+import { getCallId } from "../message-parts.js";
 import type { ContextMessageEntry } from "../metrics.js";
 import { estimateTokenCount, isMessageIgnored } from "../metrics.js";
 import type { SweepToolPart } from "./types.js";
-import { getCallId } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Shared producer options

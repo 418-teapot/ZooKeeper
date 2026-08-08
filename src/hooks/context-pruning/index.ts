@@ -1,18 +1,11 @@
 /**
  * Context pruning hook barrel export.
  *
- * Re-exports the OpenCode framework adapter and the unified
- * config type.  Pure logic (types, state, prune) is at
- * `src/core/pruning/`.
+ * Exports the OpenCode framework adapter.  Config schema types are at
+ * `src/core/config-types.ts`; pure logic (types, state, prune) is at
+ * `src/core/context/pruning/`.
  *
  * @module
  */
 
-export type {
-  CompressConfig,
-  ContextNudgeConfig,
-  ContextPruningConfig,
-  DecompressConfig,
-  ProducerGateConfig,
-} from "./hook.js";
 export { contextPruningTransformHandler } from "./hook.js";

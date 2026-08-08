@@ -6,10 +6,11 @@
  * and client API edge cases.
  */
 
-import { describe, expect, it } from "bun:test";
+import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { describe, it } from "node:test";
 import { handleGoCommand, type PlanClient } from "./hook.js";
 
 // ---------------------------------------------------------------------------
@@ -106,10 +107,10 @@ describe("handleGoCommand — success path", () => {
 
     await handleGoCommand(client, sessionID, baseDir);
 
-    expect(createCall).not.toBeNull();
-    expect(createCall.body.title).toBe("Execute: test-plan");
-    expect(createCall.body.agent).toBe("dolphin");
-    expect(createCall.query.directory).toBe(baseDir);
+    assert.notStrictEqual(createCall, null);
+    assert.strictEqual(createCall.body.title, "Execute: test-plan");
+    assert.strictEqual(createCall.body.agent, "dolphin");
+    assert.strictEqual(createCall.query.directory, baseDir);
 
     cleanupPlan(planPath);
   });
@@ -135,9 +136,9 @@ describe("handleGoCommand — success path", () => {
 
     await handleGoCommand(client, sessionID, baseDir);
 
-    expect(navigations).toEqual(["home"]);
-    expect(publishes.length).toBe(1);
-    expect(publishes[0].body.type).toBe("tui.session.select");
+    assert.deepEqual(navigations, ["home"]);
+    assert.strictEqual(publishes.length, 1);
+    assert.strictEqual(publishes[0].body.type, "tui.session.select");
 
     cleanupPlan(planPath);
   });
@@ -160,10 +161,10 @@ describe("handleGoCommand — success path", () => {
 
     await handleGoCommand(client, sessionID, baseDir);
 
-    expect(promptCall).not.toBeNull();
-    expect(promptCall.path.id).toBe("sess-789");
-    expect(promptCall.body.agent).toBe("dolphin");
-    expect(promptCall.body.parts[0].text).toInclude(planPath);
+    assert.notStrictEqual(promptCall, null);
+    assert.strictEqual(promptCall.path.id, "sess-789");
+    assert.strictEqual(promptCall.body.agent, "dolphin");
+    assert.ok(promptCall.body.parts[0].text.includes(planPath));
 
     cleanupPlan(planPath);
   });
@@ -187,11 +188,14 @@ describe("handleGoCommand — success path", () => {
 
     await handleGoCommand(client, sessionID, baseDir);
 
-    expect(promptCall).not.toBeNull();
-    expect(promptCall.path.id).toBe("sess-abc");
-    expect(promptCall.body.noReply).toBe(true);
-    expect(promptCall.body.parts[0].ignored).toBe(true);
-    expect(promptCall.body.parts[0].text).toBe("Plan handed off to dolphin.");
+    assert.notStrictEqual(promptCall, null);
+    assert.strictEqual(promptCall.path.id, "sess-abc");
+    assert.strictEqual(promptCall.body.noReply, true);
+    assert.strictEqual(promptCall.body.parts[0].ignored, true);
+    assert.strictEqual(
+      promptCall.body.parts[0].text,
+      "Plan handed off to dolphin.",
+    );
 
     cleanupPlan(planPath);
   });
@@ -204,7 +208,7 @@ describe("handleGoCommand — success path", () => {
     await handleGoCommand(client, sessionID, baseDir);
 
     const content = readFileSync(planPath, "utf-8");
-    expect(content).toInclude("status: executing");
+    assert.ok(content.includes("status: executing"));
 
     cleanupPlan(planPath);
   });
@@ -221,7 +225,8 @@ describe("handleGoCommand — error handling", () => {
     const emptyDir = tmpDir();
 
     const client = createMockClient();
-    await expect(handleGoCommand(client, sessionID, emptyDir)).rejects.toThrow(
+    await assert.rejects(
+      () => handleGoCommand(client, sessionID, emptyDir),
       /No plan with status "planning-done"/,
     );
 
@@ -237,7 +242,8 @@ describe("handleGoCommand — error handling", () => {
     const { planPath, baseDir } = createPlanFile("planning-done");
 
     const client = createMockClient({ session: {} });
-    await expect(handleGoCommand(client, sessionID, baseDir)).rejects.toThrow(
+    await assert.rejects(
+      () => handleGoCommand(client, sessionID, baseDir),
       /Session creation API is not available/,
     );
 
@@ -255,7 +261,8 @@ describe("handleGoCommand — error handling", () => {
       },
     });
 
-    await expect(handleGoCommand(client, sessionID, baseDir)).rejects.toThrow(
+    await assert.rejects(
+      () => handleGoCommand(client, sessionID, baseDir),
       /Failed to create dolphin session: rate limited/,
     );
 
@@ -272,7 +279,8 @@ describe("handleGoCommand — error handling", () => {
       },
     });
 
-    await expect(handleGoCommand(client, sessionID, baseDir)).rejects.toThrow(
+    await assert.rejects(
+      () => handleGoCommand(client, sessionID, baseDir),
       /Failed to create dolphin session: no session ID returned/,
     );
 
@@ -291,7 +299,8 @@ describe("handleGoCommand — error handling", () => {
       },
     });
 
-    await expect(handleGoCommand(client, sessionID, baseDir)).rejects.toThrow(
+    await assert.rejects(
+      () => handleGoCommand(client, sessionID, baseDir),
       /promptAsync is not available/,
     );
 
@@ -364,7 +373,8 @@ describe("handleGoCommand — client API edge cases", () => {
     const sessionID = `test-null-client-${Date.now()}`;
     const { planPath, baseDir } = createPlanFile("planning-done");
 
-    await expect(handleGoCommand(null, sessionID, baseDir)).rejects.toThrow(
+    await assert.rejects(
+      () => handleGoCommand(null, sessionID, baseDir),
       /Session creation API is not available/,
     );
 
@@ -382,7 +392,8 @@ describe("handleGoCommand — plan status edge cases", () => {
     const { planPath, baseDir } = createPlanFile("executing");
 
     const client = createMockClient();
-    await expect(handleGoCommand(client, sessionID, baseDir)).rejects.toThrow(
+    await assert.rejects(
+      () => handleGoCommand(client, sessionID, baseDir),
       /No plan with status "planning-done"/,
     );
 
@@ -394,7 +405,8 @@ describe("handleGoCommand — plan status edge cases", () => {
     const { planPath, baseDir } = createPlanFile("done");
 
     const client = createMockClient();
-    await expect(handleGoCommand(client, sessionID, baseDir)).rejects.toThrow(
+    await assert.rejects(
+      () => handleGoCommand(client, sessionID, baseDir),
       /No plan with status "planning-done"/,
     );
 

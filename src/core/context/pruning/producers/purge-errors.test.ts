@@ -7,6 +7,7 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import { PRUNED_TOOL_ERROR_INPUT_REPLACEMENT } from "../../message-parts.js";
 import { type ContextMessageEntry, estimateTokenCount } from "../../metrics.js";
 import {
   _clearAllSessionsForTesting,
@@ -15,7 +16,6 @@ import {
   pendingTokens,
 } from "../marks.js";
 import type { SweepToolPart } from "../types.js";
-import { PRUNED_TOOL_ERROR_INPUT_REPLACEMENT } from "../types.js";
 import { runPurgeErrors } from "./purge-errors.js";
 
 // ---------------------------------------------------------------------------

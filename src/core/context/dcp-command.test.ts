@@ -6,27 +6,27 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import type { ContextMessageEntry } from "../../core/metrics.js";
-import { estimateTokenCount } from "../../core/metrics.js";
+import { _resetForTesting } from "../../utils/logger.js";
+import type { DcpClient } from "./dcp-client.js";
+import {
+  DCP_COMMAND_HANDLED,
+  handleDcpCommand,
+  parseSweepCount,
+} from "./dcp-command.js";
+import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./message-parts.js";
+import type { ContextMessageEntry } from "./metrics.js";
+import { estimateTokenCount } from "./metrics.js";
 import {
   deleteSessionState,
   getOrCreateSessionState,
   loadSessionState,
-  PRUNED_TOOL_OUTPUT_REPLACEMENT,
   pruneToolOutputs,
-} from "../../core/pruning/index.js";
+} from "./pruning/index.js";
 import {
   _clearAllSessionsForTesting,
   addMark,
   reclaimedTokens,
-} from "../../core/pruning/marks.js";
-import { _resetForTesting } from "../../utils/logger.js";
-import {
-  DCP_COMMAND_HANDLED,
-  type DcpClient,
-  handleDcpCommand,
-  parseSweepCount,
-} from "./index.js";
+} from "./pruning/marks.js";
 
 // ---------------------------------------------------------------------------
 // Logger & state cleanup

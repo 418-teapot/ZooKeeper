@@ -7,31 +7,33 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { parseContextConfig } from "../../core/config-parse.js";
+import {
+  PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
+  PRUNED_TOOL_OUTPUT_REPLACEMENT,
+} from "../../core/context/message-parts.js";
 import type {
   ContextMessageEntry,
   ContextTokenInfo,
-} from "../../core/metrics.js";
+} from "../../core/context/metrics.js";
 import {
   _resetForTesting as _resetModelLimitsForTesting,
   setModelLimit,
-} from "../../core/model-limits.js";
-import { COMPRESS_GUIDANCE } from "../../core/prompts.js";
+} from "../../core/context/model-limits.js";
 import {
   activeBlockCount,
   createBlock,
   deleteSessionState,
   loadSessionState,
-  PRUNED_TOOL_OUTPUT_REPLACEMENT,
   type SweepToolPart,
-} from "../../core/pruning/index.js";
+} from "../../core/context/pruning/index.js";
 import {
   _clearAllSessionsForTesting,
   addMark,
   getOrCreateSessionState,
   pendingCount,
   reclaimedTokens,
-} from "../../core/pruning/marks.js";
-import { PRUNED_TOOL_ERROR_INPUT_REPLACEMENT } from "../../core/pruning/types.js";
+} from "../../core/context/pruning/marks.js";
+import { COMPRESS_GUIDANCE } from "../../core/prompts.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import { contextPruningTransformHandler } from "./index.js";
 

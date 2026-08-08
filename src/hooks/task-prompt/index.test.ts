@@ -6,8 +6,21 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { zookeeper } from "../../opencode.js";
-import { TASK_PROMPT_HINT, validateTaskPrompt } from "./index.js";
+import {
+  enhanceTaskDefinition,
+  nudgeTaskOutput,
+  TASK_PROMPT_HINT,
+  type ValidationLimits,
+  validateBeforeExec,
+  validateTaskPrompt,
+} from "./index.js";
+
+// Limits mirror `[zoo.validation]` in config.toml — the plugin entry point
+// derives them via parseLimits and passes them to the hook adapters.
+const limits: ValidationLimits = {
+  contextWordLimit: 200,
+  promptWordLimit: 500,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -483,12 +496,11 @@ describe("edge cases", () => {
 });
 
 // ---------------------------------------------------------------------------
-// tool.definition hook
+// tool.definition hook (enhanceTaskDefinition)
 // ---------------------------------------------------------------------------
 
 describe("tool.definition hook", () => {
-  it("appends hint to prompt parameter description when toolID is task", async () => {
-    const plugin = await zookeeper({});
+  it("appends hint to prompt parameter description when toolID is task", () => {
     const output = {
       description: "Run a task for the dolphin agent",
       parameters: {
@@ -501,15 +513,14 @@ describe("tool.definition hook", () => {
         },
       },
     };
-    await plugin["tool.definition"]({ toolID: "task" }, output);
+    enhanceTaskDefinition({ toolID: "task" }, output);
     assert.equal(
       output.parameters.properties.prompt.description,
       `The task prompt\n\n${TASK_PROMPT_HINT}`,
     );
   });
 
-  it("does NOT modify other tools (e.g. toolID is grep)", async () => {
-    const plugin = await zookeeper({});
+  it("does NOT modify other tools (e.g. toolID is grep)", () => {
     const output = {
       description: "Search file contents",
       parameters: {
@@ -524,7 +535,7 @@ describe("tool.definition hook", () => {
     };
     // Capture a snapshot before
     const originalDesc = output.parameters.properties.pattern.description;
-    await plugin["tool.definition"]({ toolID: "grep" }, output);
+    enhanceTaskDefinition({ toolID: "grep" }, output);
     // Should remain unchanged
     assert.equal(
       output.parameters.properties.pattern.description,
@@ -532,20 +543,18 @@ describe("tool.definition hook", () => {
     );
   });
 
-  it("handles missing parameters gracefully", async () => {
-    const plugin = await zookeeper({});
+  it("handles missing parameters gracefully", () => {
     const output = {
       description: "Run a task",
       // No parameters at all
     } as any;
     // Should not throw
-    await plugin["tool.definition"]({ toolID: "task" }, output);
+    enhanceTaskDefinition({ toolID: "task" }, output);
     // Output remains as-is
     assert.equal(output.description, "Run a task");
   });
 
-  it("handles missing prompt property gracefully", async () => {
-    const plugin = await zookeeper({});
+  it("handles missing prompt property gracefully", () => {
     const output = {
       description: "Run a task",
       parameters: {
@@ -560,12 +569,11 @@ describe("tool.definition hook", () => {
       },
     };
     // Should not throw
-    await plugin["tool.definition"]({ toolID: "task" }, output);
+    enhanceTaskDefinition({ toolID: "task" }, output);
     assert.equal(output.description, "Run a task");
   });
 
-  it("preserves existing description text (appends, doesn't replace)", async () => {
-    const plugin = await zookeeper({});
+  it("preserves existing description text (appends, doesn't replace)", () => {
     const existingDesc = "Original prompt description text";
     const output = {
       description: "Run a task",
@@ -579,7 +587,7 @@ describe("tool.definition hook", () => {
         },
       },
     };
-    await plugin["tool.definition"]({ toolID: "task" }, output);
+    enhanceTaskDefinition({ toolID: "task" }, output);
     // Existing text should be preserved, hint appended after double newline
     assert.ok(
       output.parameters.properties.prompt.description.startsWith(existingDesc),
@@ -597,28 +605,28 @@ describe("tool.definition hook", () => {
 });
 
 // ---------------------------------------------------------------------------
-// tool.execute.before hook
+// tool.execute.before hook (validateBeforeExec)
 // ---------------------------------------------------------------------------
 
 describe("tool.execute.before hook", () => {
-  it("valid prompt passes without throwing", async () => {
-    const plugin = await zookeeper({});
+  it("valid prompt passes without throwing", () => {
     const prompt = validPrompt();
-    await plugin["tool.execute.before"](
+    validateBeforeExec(
       { tool: "task", sessionID: "s1", callID: "c1" },
       { args: { prompt } },
+      limits,
     );
     // No throw means success
   });
 
   it("invalid prompt throws with format error", async () => {
-    const plugin = await zookeeper({});
     const prompt = "Some random text without any sections";
     await assert.rejects(
       async () =>
-        plugin["tool.execute.before"](
+        validateBeforeExec(
           { tool: "task", sessionID: "s1", callID: "c1" },
           { args: { prompt } },
+          limits,
         ),
       (err: unknown) => {
         assert.ok(err instanceof Error);
@@ -633,111 +641,113 @@ describe("tool.execute.before hook", () => {
     );
   });
 
-  it("does not throw on CONTEXT too long — nudge delivered via tool.execute.after", async () => {
-    const plugin = await zookeeper({});
+  it("does not throw on CONTEXT too long — nudge delivered via tool.execute.after", () => {
     const longContext = "word ".repeat(201).trim();
     const prompt = validPrompt({ context: longContext });
     // Must not throw — structural check passes, warnings are soft
-    await plugin["tool.execute.before"](
+    validateBeforeExec(
       { tool: "task", sessionID: "s1", callID: "c1" },
       { args: { prompt } },
+      limits,
     );
-    // Now verify the nudge is appended via tool.execute.after
+    // Now verify the nudge is appended via nudgeTaskOutput
     const afterOutput: { output?: string } = {
       output: "Task completed successfully",
     };
-    await plugin["tool.execute.after"](
+    nudgeTaskOutput(
       { tool: "task", sessionID: "s1", callID: "c1", args: { prompt } },
       afterOutput,
+      limits,
     );
     assert.ok(afterOutput.output?.includes("Guidance for next time"));
     assert.ok(afterOutput.output?.includes("201 words"));
   });
 
-  it("does not throw on line references — nudge delivered via tool.execute.after", async () => {
-    const plugin = await zookeeper({});
+  it("does not throw on line references — nudge delivered via tool.execute.after", () => {
     const prompt = validPrompt({
       context: "The bug is at src/db.py line 42. Fix it.",
     });
     // Must not throw — structural check passes, warnings are soft
-    await plugin["tool.execute.before"](
+    validateBeforeExec(
       { tool: "task", sessionID: "s1", callID: "c1" },
       { args: { prompt } },
+      limits,
     );
-    // Now verify the nudge is appended via tool.execute.after
+    // Now verify the nudge is appended via nudgeTaskOutput
     const afterOutput: { output?: string } = {
       output: "Task completed successfully",
     };
-    await plugin["tool.execute.after"](
+    nudgeTaskOutput(
       { tool: "task", sessionID: "s1", callID: "c1", args: { prompt } },
       afterOutput,
+      limits,
     );
     assert.ok(afterOutput.output?.includes("Guidance for next time"));
     assert.ok(afterOutput.output?.includes("line references"));
   });
 
-  it("non-task tools are skipped", async () => {
-    const plugin = await zookeeper({});
+  it("non-task tools are skipped", () => {
     // Even with an invalid prompt, non-task tools must not validate
-    await plugin["tool.execute.before"](
+    validateBeforeExec(
       { tool: "grep", sessionID: "s1", callID: "c1" },
       { args: { prompt: "no sections at all here" } },
+      limits,
     );
     // No throw means success
   });
 
-  it("missing args handled gracefully", async () => {
-    const plugin = await zookeeper({});
-    await plugin["tool.execute.before"](
+  it("missing args handled gracefully", () => {
+    validateBeforeExec(
       { tool: "task", sessionID: "s1", callID: "c1" },
       {}, // no args at all
+      limits,
     );
     // No throw means success
   });
 
-  it("missing prompt in args handled gracefully", async () => {
-    const plugin = await zookeeper({});
-    await plugin["tool.execute.before"](
+  it("missing prompt in args handled gracefully", () => {
+    validateBeforeExec(
       { tool: "task", sessionID: "s1", callID: "c1" },
       { args: { someOtherField: "value" } },
+      limits,
     );
     // No throw means success
   });
 
-  it("non-string prompt handled gracefully", async () => {
-    const plugin = await zookeeper({});
-    await plugin["tool.execute.before"](
+  it("non-string prompt handled gracefully", () => {
+    validateBeforeExec(
       { tool: "task", sessionID: "s1", callID: "c1" },
       { args: { prompt: 123 } },
+      limits,
     );
     // No throw means success
   });
 
-  it("null prompt handled gracefully", async () => {
-    const plugin = await zookeeper({});
-    await plugin["tool.execute.before"](
+  it("null prompt handled gracefully", () => {
+    validateBeforeExec(
       { tool: "task", sessionID: "s1", callID: "c1" },
       { args: { prompt: null } },
+      limits,
     );
     // No throw means success
   });
 });
 
 // ---------------------------------------------------------------------------
-// tool.execute.after hook (soft nudges)
+// tool.execute.after hook (nudgeTaskOutput — soft nudges)
 // ---------------------------------------------------------------------------
 
 describe("tool.execute.after hook (nudge delivery)", () => {
-  it("appends nudges when prompt has soft warnings", async () => {
-    const plugin = await zookeeper({});
+  it("appends nudges when prompt has soft warnings", () => {
     const longContext = "word ".repeat(201).trim();
     const prompt = validPrompt({ context: longContext });
     const output: { output?: string } = {
       output: "Task result here",
     };
-    await plugin["tool.execute.after"](
+    nudgeTaskOutput(
       { tool: "task", sessionID: "s1", callID: "c1", args: { prompt } },
       output,
+      limits,
     );
     assert.ok(output.output?.includes("Guidance for next time"));
     assert.ok(output.output?.includes("201 words"));
@@ -745,30 +755,30 @@ describe("tool.execute.after hook (nudge delivery)", () => {
     assert.ok(output.output?.startsWith("Task result here"));
   });
 
-  it("does NOT append nudges when prompt is clean", async () => {
-    const plugin = await zookeeper({});
+  it("does NOT append nudges when prompt is clean", () => {
     const prompt = validPrompt(); // short, no forbidden patterns
     const output: { output?: string } = {
       output: "Task completed",
     };
-    await plugin["tool.execute.after"](
+    nudgeTaskOutput(
       { tool: "task", sessionID: "s1", callID: "c1", args: { prompt } },
       output,
+      limits,
     );
     assert.equal(output.output, "Task completed");
   });
 
-  it("non-task tools are skipped", async () => {
-    const plugin = await zookeeper({});
+  it("non-task tools are skipped", () => {
     const prompt = validPrompt({
       context: "line 42 bug here", // would trigger nudge if this were task
     });
     const output: { output?: string } = {
       output: "grep result",
     };
-    await plugin["tool.execute.after"](
+    nudgeTaskOutput(
       { tool: "grep", sessionID: "s1", callID: "c1", args: { prompt } },
       output,
+      limits,
     );
     assert.equal(output.output, "grep result");
   });

@@ -7,20 +7,20 @@ import {
   formatPercent,
   formatTokens,
   progressBar,
-} from "./core/context-report.js";
+} from "./core/context/context-report.js";
 import type {
   ContextMessageEntry,
   TokenBreakdownResult,
-} from "./core/metrics.js";
+} from "./core/context/metrics.js";
 import {
   computeCacheTrend,
   computeContextReport,
   computeCumulativeCacheRate,
   computeTokenBreakdown,
-} from "./core/metrics.js";
-import { liveBlocks } from "./core/pruning/blocks.js";
-import { previewFold } from "./core/pruning/fold.js";
-import { loadSessionState } from "./core/pruning/marks.js";
+} from "./core/context/metrics.js";
+import { liveBlocks } from "./core/context/pruning/blocks.js";
+import { previewFold } from "./core/context/pruning/fold.js";
+import { loadSessionState } from "./core/context/pruning/marks.js";
 import { log, setSessionId } from "./utils/logger.js";
 
 /** Category values for sidebar breakdown display. */

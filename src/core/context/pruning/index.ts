@@ -9,6 +9,10 @@
  * @module
  */
 
+export {
+  getCallId,
+  PRUNED_TOOL_OUTPUT_REPLACEMENT,
+} from "../message-parts.js";
 export type { CompressionBlock, CompressionPlan } from "./blocks.js";
 export {
   activeBlockCount,
@@ -101,8 +105,4 @@ export {
   lastUserMessageIndex,
 } from "./shared.js";
 export type { SessionState, SweepToolPart } from "./types.js";
-export {
-  getCallId,
-  PRUNED_TOOL_OUTPUT_REPLACEMENT,
-  ZOO_MSG_ID_CANONICAL_END_REGEX,
-} from "./types.js";
+export { ZOO_MSG_ID_CANONICAL_END_REGEX } from "./types.js";

@@ -18,14 +18,14 @@
  * @module
  */
 
+import { initLogger, log } from "../utils/logger.js";
 import type {
   CompressConfig,
   ContextNudgeConfig,
   ContextPruningConfig,
   DecompressConfig,
-} from "../hooks/context-pruning/index.js";
-import { initLogger, log } from "../utils/logger.js";
-import { NUDGE_PERCENT_RE } from "./pruning/index.js";
+} from "./config-types.js";
+import { NUDGE_PERCENT_RE } from "./context/pruning/index.js";
 import type { ValidationLimits } from "./validate.js";
 
 // ---------------------------------------------------------------------------

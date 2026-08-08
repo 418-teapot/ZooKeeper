@@ -1,5 +1,5 @@
 /**
- * Tests for the context-pruning prune module (`src/core/pruning/prune.ts`)
+ * Tests for the context-pruning prune module (`src/core/context/pruning/prune.ts`)
  * — `pruneToolOutputs` / `pruneToolErrors`.
  *
  * Covers: empty state → noop, pre-populated effective marks → output
@@ -8,22 +8,22 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { _resetForTesting } from "../../utils/logger.js";
+import { _resetForTesting } from "../../../utils/logger.js";
+import {
+  PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
+  PRUNED_TOOL_INPUT_REPLACEMENT,
+  PRUNED_TOOL_OUTPUT_REPLACEMENT,
+} from "../message-parts.js";
 import type { ContextMessageEntry } from "../metrics.js";
 import { estimateTokenCount } from "../metrics.js";
 import {
   addMark,
   getOrCreateSessionState,
-  PRUNED_TOOL_OUTPUT_REPLACEMENT,
   pruneToolErrors,
   pruneToolOutputs,
 } from "./index.js";
 import { _clearAllSessionsForTesting } from "./marks.js";
-import {
-  PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
-  PRUNED_TOOL_INPUT_REPLACEMENT,
-  type SweepToolPart,
-} from "./types.js";
+import type { SweepToolPart } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Teardown

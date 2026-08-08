@@ -32,19 +32,6 @@ export interface SweepToolPart {
   tool?: string;
 }
 
-/**
- * Extract the callID from a part, checking multiple possible field names.
- *
- * OpenCode SDK may expose the call identifier as `callID` or `callId`.
- *
- * @param part - A message part.
- * @returns The call identifier string, or undefined.
- */
-export function getCallId(part: unknown): string | undefined {
-  const p = part as Record<string, unknown>;
-  return (p.callID as string) ?? (p.callId as string) ?? undefined;
-}
-
 // ---------------------------------------------------------------------------
 // Session state shape
 // ---------------------------------------------------------------------------
@@ -104,31 +91,6 @@ export interface SessionState {
  * Built-in constant — code-level knowledge of OpenCode tool shapes.
  */
 export const INPUT_HEAVY_TOOLS = new Set(["question", "edit", "write"]);
-
-/**
- * Placeholder text used in place of a pruned tool input field for
- * input-heavy tools.
- *
- * Must be used verbatim — never paraphrase.
- */
-export const PRUNED_TOOL_INPUT_REPLACEMENT =
-  "[Input removed to save context - information superseded or no longer needed]";
-
-/**
- * Placeholder text used in place of a pruned tool output.
- *
- * Must be used verbatim — never paraphrase.
- */
-export const PRUNED_TOOL_OUTPUT_REPLACEMENT =
-  "[Output removed to save context - information superseded or no longer needed]";
-
-/**
- * Placeholder text used in place of a failed tool call's input.
- *
- * Must be used verbatim — never paraphrase.
- */
-export const PRUNED_TOOL_ERROR_INPUT_REPLACEMENT =
-  "[Input removed due to failed tool call - information no longer relevant]";
 
 /**
  * XML-like tag name used to wrap a message ref in injected text.

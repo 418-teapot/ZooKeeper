@@ -8,7 +8,10 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
+import {
+  _getBufferForTesting,
+  _resetForTesting,
+} from "../../../utils/logger.js";
 import type { ContextMessageEntry } from "../metrics.js";
 import {
   _clearAllSessionsForTesting,

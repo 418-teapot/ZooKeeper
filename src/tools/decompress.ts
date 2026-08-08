@@ -1,7 +1,7 @@
 /**
  * Decompression tool adapter — the inverse of the range-mode compress tool.
  *
- * Exposes the decompression core (`src/core/pruning/decompress.ts`) as an
+ * Exposes the decompression core (`src/core/context/pruning/decompress.ts`) as an
  * OpenCode tool so the model can address a compression block by its `b<N>`
  * id and either restore it or recall its summary:
  *
@@ -24,10 +24,12 @@
  * @module
  */
 
-import { formatTokens } from "../core/context-report.js";
-import type { ContextMessageEntry } from "../core/metrics.js";
-import { measureContext } from "../core/metrics.js";
-import { getModelLimit } from "../core/model-limits.js";
+import type { ContextPruningConfig } from "../core/config-types.js";
+import { formatTokens } from "../core/context/context-report.js";
+import type { DcpClient } from "../core/context/dcp-client.js";
+import type { ContextMessageEntry } from "../core/context/metrics.js";
+import { measureContext } from "../core/context/metrics.js";
+import { getModelLimit } from "../core/context/model-limits.js";
 import {
   applyDecompress,
   evaluateGate,
@@ -36,9 +38,7 @@ import {
   saveSessionState,
   snapshotRefs,
   truncateRecallSummary,
-} from "../core/pruning/index.js";
-import type { DcpClient } from "../hooks/context-command/index.js";
-import type { ContextPruningConfig } from "../hooks/context-pruning/index.js";
+} from "../core/context/pruning/index.js";
 import { log } from "../utils/logger.js";
 
 type JsonSchemaStringArg = {

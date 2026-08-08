@@ -11,17 +11,17 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import type { ContextMessageEntry } from "../core/metrics.js";
-import { COMPRESS_GUIDANCE } from "../core/prompts.js";
+import type { ContextPruningConfig } from "../core/config-types.js";
+import type { DcpClient } from "../core/context/dcp-client.js";
+import type { ContextMessageEntry } from "../core/context/metrics.js";
 import {
   _clearAllSessionsForTesting,
   deleteSessionState,
   getOrCreateSessionState,
   loadSessionState,
-} from "../core/pruning/marks.js";
-import { _clearAllRefsForTesting } from "../core/pruning/message-refs.js";
-import type { DcpClient } from "../hooks/context-command/index.js";
-import type { ContextPruningConfig } from "../hooks/context-pruning/index.js";
+} from "../core/context/pruning/marks.js";
+import { _clearAllRefsForTesting } from "../core/context/pruning/message-refs.js";
+import { COMPRESS_GUIDANCE } from "../core/prompts.js";
 import {
   buildToolHooks,
   registerCompressToolInConfig,

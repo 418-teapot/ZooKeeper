@@ -34,18 +34,18 @@ import {
   parseLimits,
   parseSkillsConfig,
 } from "./core/config-parse.js";
-import { clearModelLimit, setModelLimit } from "./core/model-limits.js";
+import type { ContextPruningConfig } from "./core/config-types.js";
+import { clearModelLimit, setModelLimit } from "./core/context/model-limits.js";
 import {
   deleteSessionState,
   removeSession,
   stripRefsFromString,
   ZOO_MSG_ID_CANONICAL_END_REGEX,
-} from "./core/pruning/index.js";
+} from "./core/context/pruning/index.js";
 import { DCP_COMMAND_HANDLED, handleDcpCommand } from "./hooks/context-command";
 import type { ContextMetricsOutput } from "./hooks/context-metrics";
 import { measureContext } from "./hooks/context-metrics";
 import { contextPruningTransformHandler } from "./hooks/context-pruning";
-import type { ContextPruningConfig } from "./hooks/context-pruning/index.js";
 import { nudgeDirectWorkForAgent } from "./hooks/direct-work-nudge";
 import { recoverJsonError } from "./hooks/json-error-nudge";
 import { handleGoCommand } from "./hooks/plan-lifecycle";

@@ -7,6 +7,7 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "../message-parts.js";
 import type { ContextMessageEntry } from "../metrics.js";
 import {
   collectProtectedCallIDs,
@@ -14,7 +15,6 @@ import {
   protectedBoundary,
 } from "./shared.js";
 import type { SweepToolPart } from "./types.js";
-import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers

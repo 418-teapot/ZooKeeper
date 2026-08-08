@@ -21,11 +21,14 @@
  * @module
  */
 
+import {
+  getCallId,
+  PRUNED_TOOL_OUTPUT_REPLACEMENT,
+} from "../../message-parts.js";
 import type { ContextMessageEntry } from "../../metrics.js";
 import { addMark } from "../marks.js";
 import { lastUserMessageIndex, netReclaimTokens } from "../shared.js";
 import type { SessionState, SweepToolPart } from "../types.js";
-import { getCallId, PRUNED_TOOL_OUTPUT_REPLACEMENT } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Types

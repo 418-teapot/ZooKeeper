@@ -1,12 +1,12 @@
 /**
- * Tests for `src/core/context-report.ts` -- pure format layer.
+ * Tests for `src/core/context/context-report.ts` -- pure format layer.
  *
  * Covers: formatTokens, formatPercent, progressBar, formatContextReport
- * output.  Computation logic is tested in `src/core/metrics.test.ts`.
+ * output.  Computation logic is tested in `src/core/context/metrics.test.ts`.
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { _resetForTesting } from "../utils/logger.js";
+import { _resetForTesting } from "../../utils/logger.js";
 import {
   formatContextReport,
   formatPercent,

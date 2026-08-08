@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import type { ContextMessageEntry } from "./core/metrics.js";
+import type { ContextMessageEntry } from "./core/context/metrics.js";
 import type { SubEntry } from "./tui.js";
 import {
   collectSubEntries,

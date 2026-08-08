@@ -6,6 +6,9 @@
  * TASK_PROMPT_HINT — format guidance injected into the `task` tool's
  *   parameter description.
  *
+ * Scope: fragments composing agent prompts only. Hook/tool-injected nudge
+ * texts live in `src/core/prompts.ts`.
+ *
  * @module
  */
 

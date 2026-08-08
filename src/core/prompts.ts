@@ -1,8 +1,12 @@
 /**
- * All prompt-text constants used by ZooKeeper hooks.
+ * Prompt-text constants injected by ZooKeeper hooks and tools.
  *
  * These are static strings injected into tool output to guide the orchestrator
  * LLM's behavior. Each section groups related prompts by their hook origin.
+ *
+ * Scope: hook/tool-injected nudge and reminder texts only. Agent prompt
+ * fragments (DELEGATION_FORMAT_TEXT, TASK_PROMPT_HINT, ...) live in
+ * `src/agents/parts.ts`; full agent prompts live in `src/agents/<name>.ts`.
  *
  * Constants are framework-independent text only — no imports, no types,
  * no logic.

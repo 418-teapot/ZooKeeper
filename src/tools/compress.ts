@@ -2,7 +2,7 @@
  * Batch range-mode compress tool adapter.
  *
  * Exposes the batch range-compression core (`compressRanges` in
- * `src/core/pruning/range.ts`) as an OpenCode tool so the model can
+ * `src/core/context/pruning/range.ts`) as an OpenCode tool so the model can
  * compress N contiguous visible-history spans into N model-written
  * summaries in ONE call (zero extra API calls).
  *
@@ -33,9 +33,10 @@
  * @module
  */
 
-import { formatTokens } from "../core/context-report.js";
-import type { ContextMessageEntry } from "../core/metrics.js";
-import { COMPRESS_GUIDANCE } from "../core/prompts.js";
+import type { ContextPruningConfig } from "../core/config-types.js";
+import { formatTokens } from "../core/context/context-report.js";
+import type { DcpClient } from "../core/context/dcp-client.js";
+import type { ContextMessageEntry } from "../core/context/metrics.js";
 import {
   assignMessageRefs,
   type CompressionConfig,
@@ -44,9 +45,8 @@ import {
   getOrCreateSessionState,
   saveSessionState,
   snapshotRefs,
-} from "../core/pruning/index.js";
-import type { DcpClient } from "../hooks/context-command/index.js";
-import type { ContextPruningConfig } from "../hooks/context-pruning/index.js";
+} from "../core/context/pruning/index.js";
+import { COMPRESS_GUIDANCE } from "../core/prompts.js";
 import { log } from "../utils/logger.js";
 
 type JsonSchemaStringArg = {

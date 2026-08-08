@@ -8,15 +8,15 @@
  * @module
  */
 
-import type { ContextMessageEntry } from "../metrics.js";
-import type { SessionState, SweepToolPart } from "./types.js";
 import {
   getCallId,
-  INPUT_HEAVY_TOOLS,
   PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
   PRUNED_TOOL_INPUT_REPLACEMENT,
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
-} from "./types.js";
+} from "../message-parts.js";
+import type { ContextMessageEntry } from "../metrics.js";
+import type { SessionState, SweepToolPart } from "./types.js";
+import { INPUT_HEAVY_TOOLS } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Types
