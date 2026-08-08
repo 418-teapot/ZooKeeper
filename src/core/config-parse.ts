@@ -24,6 +24,7 @@ import type {
   ContextNudgeConfig,
   ContextPruningConfig,
   DecompressConfig,
+  ModeProfile,
 } from "./config-types.js";
 import { NUDGE_PERCENT_RE } from "./context/pruning/index.js";
 import type { ValidationLimits } from "./validate.js";
@@ -65,10 +66,6 @@ function warnSectionInvalid(section: string, bad: KeyCheck): void {
 // Shared validators (absent-OK semantics)
 // ---------------------------------------------------------------------------
 
-/** Accept `undefined` or a boolean. */
-const isOptionalBoolean = (v: unknown): boolean =>
-  v === undefined || typeof v === "boolean";
-
 /** Accept `undefined` or a finite number `>= 0`. */
 const isOptionalNonNegativeNumber = (v: unknown): boolean =>
   v === undefined || (typeof v === "number" && Number.isFinite(v) && v >= 0);
@@ -81,9 +78,6 @@ const isOptionalPositiveNumber = (v: unknown): boolean =>
 const isOptionalStringArray = (v: unknown): boolean =>
   v === undefined ||
   (Array.isArray(v) && v.every((t: unknown) => typeof t === "string"));
-
-/** Accept a string. */
-const isString = (v: unknown): boolean => typeof v === "string";
 
 /** Accept `undefined` or a finite number in `[0, 100]`. */
 const isOptionalPercent = (v: unknown): boolean =>
@@ -130,48 +124,83 @@ export function parseLimits(zooConfig: any): ValidationLimits {
 }
 
 /**
- * Extract the skills config map from the `[zoo.skills]` section.
+ * Extract the active mode profile from the `[zoo.mode.*]` section.
  *
- * Whole-section discard: the section is a `Record<string, string>` (skill
- * name → path).  When the section is present and it is not an object, or
- * ANY entry has an empty key or a non-string value, the whole section is
- * discarded (`{}`) and exactly one `skills_config_invalid` warn is logged
- * with the offending key/value.  An absent section returns `{}` silently.
+ * `zoo.mode` holds exactly one sub-table — the active profile — whose
+ * category lists (agents / skills / hooks / tools / commands) declare
+ * which loadable units the plugin registers.  Fail to skip: an absent,
+ * empty, ambiguous (multiple sub-tables), or malformed section yields
+ * `null` and every profile-driven registration is skipped — no default
+ * profile, no fallback to a full load.  Unknown keys inside the profile
+ * are ignored; an absent category becomes an empty list.
+ *
+ * Whole-section discard: a present-but-invalid category (non-array or
+ * non-string elements) invalidates the WHOLE profile with exactly one
+ * `mode_config_invalid` warn; the same warn fires for an empty or
+ * non-object `zoo.mode`, or for multiple profiles.
  *
  * @param zooConfig - The `zoo` section of the parsed config.toml.
- * @returns The parsed skills map (empty when not configured or invalid).
+ * @returns The active profile, or `null` when absent or invalid.
  */
-export function parseSkillsConfig(zooConfig: any): Record<string, string> {
-  const skills = zooConfig.skills as Record<string, unknown> | undefined;
-  if (skills == null) {
-    return {};
-  }
-  if (typeof skills !== "object" || Array.isArray(skills)) {
-    warnSectionInvalid("skills", ["skills", skills, () => false]);
-    return {};
+export function parseModeProfile(zooConfig: any): ModeProfile | null {
+  const mode = zooConfig.mode as unknown;
+  if (mode === undefined || mode === null) return null;
+  if (typeof mode !== "object" || Array.isArray(mode)) {
+    warnSectionInvalid("mode", ["mode", mode, () => false]);
+    return null;
   }
 
-  const entries = Object.entries(skills);
-  const emptyKey = entries.find(([key]) => key.length === 0);
-  if (emptyKey) {
-    warnSectionInvalid("skills", [emptyKey[0], emptyKey[1], () => false]);
-    return {};
+  const entries = Object.entries(mode as Record<string, unknown>);
+  if (entries.length === 0) {
+    warnSectionInvalid("mode", ["mode", mode, () => false]);
+    return null;
+  }
+  if (entries.length > 1) {
+    warnSectionInvalid("mode", [entries[1][0], entries[1][1], () => false]);
+    return null;
   }
 
-  const bad = findBadKey(entries.map(([key, value]) => [key, value, isString]));
-  if (bad) {
-    warnSectionInvalid("skills", bad);
-    return {};
+  const [name, profile] = entries[0];
+  if (
+    profile === null ||
+    typeof profile !== "object" ||
+    Array.isArray(profile)
+  ) {
+    warnSectionInvalid("mode", [name, profile, () => false]);
+    return null;
   }
 
-  return skills as Record<string, string>;
+  const p = profile as Record<string, unknown>;
+  const categories: ReadonlySet<string> = new Set([
+    "agents",
+    "skills",
+    "hooks",
+    "tools",
+    "commands",
+  ]);
+  for (const [key, value] of Object.entries(p)) {
+    if (!categories.has(key)) continue;
+    if (!isOptionalStringArray(value)) {
+      warnSectionInvalid("mode", [key, value, () => false]);
+      return null;
+    }
+  }
+
+  return {
+    name,
+    agents: (p.agents as string[] | undefined) ?? [],
+    skills: (p.skills as string[] | undefined) ?? [],
+    hooks: (p.hooks as string[] | undefined) ?? [],
+    tools: (p.tools as string[] | undefined) ?? [],
+    commands: (p.commands as string[] | undefined) ?? [],
+  };
 }
 
 /**
  * Accept a nudge threshold value: a positive finite number (absolute
  * tokens) or a non-zero percentage string (`"NN%"`).  Zero, negative,
  * and malformed values are rejected — thresholds have no "disable"
- * meaning (enabled=false covers that).
+ * meaning (enablement is decided by the mode profile).
  *
  * @param v - The raw config value.
  * @returns `true` when the value is a valid threshold.
@@ -189,11 +218,13 @@ function isValidNudgeThreshold(v: unknown): boolean {
  * Extract context-pruning config from the `[zoo.context]` section.
  *
  * The section is composed of independent sub-sections, each with its own
- * whole-section discard contract:
+ * whole-section discard contract.  Enablement is NOT part of this
+ * section — the mode profile decides whether the pruning pipeline and
+ * the compress / decompress tools load at all:
  *
- *  - The core group (`enabled`, `protected_messages`, `released_percent`)
- *    — keys are individually optional; any PRESENT invalid key invalidates
- *    the whole group (all three become `undefined`) with one
+ *  - The core group (`protected_messages`, `released_percent`) — keys
+ *    are individually optional; any PRESENT invalid key invalidates the
+ *    whole group (all become `undefined`) with one
  *    `context_config_invalid` warn.
  *  - `dedup` / `purge_errors` — keys individually optional; any present
  *    invalid key drops the whole sub-section (`undefined`) with one
@@ -211,15 +242,12 @@ function isValidNudgeThreshold(v: unknown): boolean {
 export function parseContextConfig(zooConfig: any): ContextPruningConfig {
   const c = (zooConfig.context ?? {}) as Record<string, unknown>;
 
-  // ── Core group (enabled / protected_messages / released_percent) ─────
+  // ── Core group (protected_messages / released_percent) ────────────
   // Keys are individually optional; a PRESENT invalid key invalidates the
-  // whole group (fail to skip — the pruning pipeline is silently absent)
-  // and logs exactly one warn.
-  let enabled: boolean | undefined;
+  // whole group (fail to skip) and logs exactly one warn.
   let protectedMessages: number | undefined;
   let releasedPercent: number | undefined;
   const coreChecks: KeyCheck[] = [
-    ["enabled", c.enabled, isOptionalBoolean],
     ["protected_messages", c.protected_messages, isOptionalNonNegativeNumber],
     ["released_percent", c.released_percent, isOptionalPercent],
   ];
@@ -227,7 +255,6 @@ export function parseContextConfig(zooConfig: any): ContextPruningConfig {
   if (badCore) {
     warnSectionInvalid("context", badCore);
   } else {
-    enabled = c.enabled as boolean | undefined;
     protectedMessages = c.protected_messages as number | undefined;
     releasedPercent = c.released_percent as number | undefined;
   }
@@ -239,7 +266,6 @@ export function parseContextConfig(zooConfig: any): ContextPruningConfig {
   const d = c.dedup as Record<string, unknown> | undefined;
   if (d != null) {
     const dedupChecks: KeyCheck[] = [
-      ["enabled", d.enabled, isOptionalBoolean],
       ["threshold_context", d.threshold_context, isOptionalPositiveNumber],
       ["protected_tools", d.protected_tools, isOptionalStringArray],
     ];
@@ -248,7 +274,6 @@ export function parseContextConfig(zooConfig: any): ContextPruningConfig {
       warnSectionInvalid("dedup", badDedup);
     } else {
       dedup = {
-        enabled: d.enabled as boolean | undefined,
         thresholdContext: d.threshold_context as number | undefined,
         protectedTools: d.protected_tools as string[] | undefined,
       };
@@ -261,7 +286,6 @@ export function parseContextConfig(zooConfig: any): ContextPruningConfig {
   const pe = c.purge_errors as Record<string, unknown> | undefined;
   if (pe != null) {
     const peChecks: KeyCheck[] = [
-      ["enabled", pe.enabled, isOptionalBoolean],
       ["threshold_context", pe.threshold_context, isOptionalPositiveNumber],
       ["protected_tools", pe.protected_tools, isOptionalStringArray],
     ];
@@ -270,7 +294,6 @@ export function parseContextConfig(zooConfig: any): ContextPruningConfig {
       warnSectionInvalid("purge_errors", badPe);
     } else {
       purgeErrors = {
-        enabled: pe.enabled as boolean | undefined,
         thresholdContext: pe.threshold_context as number | undefined,
         protectedTools: pe.protected_tools as string[] | undefined,
       };
@@ -278,15 +301,14 @@ export function parseContextConfig(zooConfig: any): ContextPruningConfig {
   }
 
   // ── Nudge section ─────────────────────────────────────────────────────
-  // Strict: all six keys are required when the section is present.  Any
+  // Strict: all five keys are required when the section is present.  Any
   // missing, wrong-typed, or malformed value invalidates the WHOLE section
   // (fail to skip — the subsystem is silently absent) and logs exactly
-  // one warn.  `enabled: false` is valid — present but disabled.
+  // one warn.
   let nudge: ContextNudgeConfig | undefined;
   if (c.nudge !== undefined) {
     const n = c.nudge as Record<string, unknown>;
     const nudgeChecks: KeyCheck[] = [
-      ["enabled", n.enabled, (v) => typeof v === "boolean"],
       ["min_context", n.min_context, isValidNudgeThreshold],
       [
         "min_context_cap",
@@ -306,7 +328,6 @@ export function parseContextConfig(zooConfig: any): ContextPruningConfig {
       warnSectionInvalid("nudge", badNudge);
     } else {
       nudge = {
-        enabled: n.enabled as boolean,
         minContext: n.min_context as number | string,
         minContextCap: n.min_context_cap as number,
         maxContext: n.max_context as number | string,
@@ -317,12 +338,11 @@ export function parseContextConfig(zooConfig: any): ContextPruningConfig {
   }
 
   // ── Compress section ──────────────────────────────────────────────────
-  // Strict: all four keys are required when the section is present.
+  // Strict: all three keys are required when the section is present.
   let compress: CompressConfig | undefined;
   if (c.compress !== undefined) {
     const cm = c.compress as Record<string, unknown>;
     const compressChecks: KeyCheck[] = [
-      ["enabled", cm.enabled, (v) => typeof v === "boolean"],
       [
         "threshold_tokens",
         cm.threshold_tokens,
@@ -344,7 +364,6 @@ export function parseContextConfig(zooConfig: any): ContextPruningConfig {
       warnSectionInvalid("compress", badCompress);
     } else {
       compress = {
-        enabled: cm.enabled as boolean,
         thresholdTokens: cm.threshold_tokens as number,
         protectedTokens: cm.protected_tokens as number,
         maxRanges: cm.max_ranges as number,
@@ -353,12 +372,11 @@ export function parseContextConfig(zooConfig: any): ContextPruningConfig {
   }
 
   // ── Decompress section ────────────────────────────────────────────────
-  // Strict: both keys are required when the section is present.
+  // Strict: `max_fill_percent` is required when the section is present.
   let decompress: DecompressConfig | undefined;
   if (c.decompress !== undefined) {
     const dm = c.decompress as Record<string, unknown>;
     const decompressChecks: KeyCheck[] = [
-      ["enabled", dm.enabled, (v) => typeof v === "boolean"],
       [
         "max_fill_percent",
         dm.max_fill_percent,
@@ -371,14 +389,12 @@ export function parseContextConfig(zooConfig: any): ContextPruningConfig {
       warnSectionInvalid("decompress", badDecompress);
     } else {
       decompress = {
-        enabled: dm.enabled as boolean,
         maxFillPercent: dm.max_fill_percent as number,
       };
     }
   }
 
   return {
-    enabled,
     protectedMessages,
     releasedPercent,
     nudge,

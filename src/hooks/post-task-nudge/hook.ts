@@ -9,8 +9,8 @@
  */
 
 import { checkPlanProgress, checkTodoProgress } from "../../core/checks.js";
+import type { TinyClient } from "../../core/client/todo.js";
 import { VERIFY_REMINDER } from "../../core/prompts.js";
-import type { TinyClient } from "../../core/todo.js";
 import { log } from "../../utils/logger.js";
 
 // ---------------------------------------------------------------------------

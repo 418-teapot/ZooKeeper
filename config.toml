@@ -515,24 +515,20 @@ prompt_word_limit = 500
 # ── Context ───────────────────────────────────────────────────────────────────
 
 [zoo.context]
-enabled = true
 # 消息条数保护：从末尾倒数 N 条非 ignored 消息计入保护区
 protected_messages = 20
 # 批量释放阈值（百分比）：pending 标记合计达到上下文长度该百分比时统一批量释放
 released_percent = 10
 
 [zoo.context.dedup]
-enabled = true
 threshold_context = 100000
 protected_tools = []
 
 [zoo.context.purge_errors]
-enabled = true
 threshold_context = 100000
 protected_tools = []
 
 [zoo.context.compress]
-enabled = true
 # 压缩阈值（tokens）：小于此值的段跳过压缩（幻影门禁）
 threshold_tokens = 2000
 # 压缩保护区（tokens）：末尾累计达到此值后不压缩
@@ -541,12 +537,10 @@ protected_tokens = 20000
 max_ranges = 8
 
 [zoo.context.decompress]
-enabled = true
 # 解压回填上界阈值（百分比）
 max_fill_percent = 90
 
 [zoo.context.nudge]
-enabled = true
 # 温和提醒阈值
 min_context = "60%"
 min_context_cap = 200000
@@ -568,17 +562,43 @@ max_backups = 2
 # 自动清理多少天前的日志
 retention_days = 7
 
-# ── Skills ────────────────────────────────────────────────────────────────────
-# 每个 core/skills/ 下的子目录对应一个内建技能。
-# 可用值："enable"（启用）| "disable"（禁用）
-[zoo.skills]
-beaver-tdd   = "enable"
-code-review  = "enable"
-git-commit   = "enable"
-grill        = "enable"
-kiwi-distill = "enable"
-kiwi-verify  = "enable"
-mola-plan    = "enable"
-wiki-ingest  = "enable"
-wiki-query   = "enable"
-wiki-verify  = "enable"
+# ── Mode 模式 ─────────────────────────────────────────────────────────────────
+[zoo.mode.poly]
+agents = [
+  "dolphin",
+  "mola",
+  "beaver",
+  "lynx",
+  "spider",
+  "eagle",
+  "kiwi",
+]
+skills = [
+  "beaver-tdd",
+  "code-review",
+  "git-commit",
+  "grill",
+  "kiwi-distill",
+  "kiwi-verify",
+  "mola-plan",
+  "wiki-ingest",
+  "wiki-query",
+  "wiki-verify",
+]
+hooks = [
+  "context-metrics",
+  "context-pruning",
+  "direct-work-nudge",
+  "json-error-nudge",
+  "post-task-nudge",
+  "task-delegation",
+  "task-prompt",
+]
+tools = [
+  "compress",
+  "decompress",
+]
+commands = [
+  "go",
+  "dcp",
+]

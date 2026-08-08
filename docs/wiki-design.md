@@ -419,7 +419,7 @@ kiwi 系统 prompt（~40 行）          kiwi 技能
 **已实施改动：**
 - `src/agents/kiwi.ts`：235 行 → 40 行，保留身份壳 + 技能指引
 - `core/skills/kiwi-distill/SKILL.md`：新建，Phase 0-5 蒸馏工作流 + QualityGate（其中 Phase 4.7 为统一 Claim Reconciliation，产出取代 / 矛盾 / 印证三路结果）
-- `config.toml`：kiwi 权限 `skill "kiwi-distill" = "allow"`；`zoo.skills` 注册该技能
+- `config.toml`：kiwi 权限 `skill "kiwi-distill" = "allow"`；`[zoo.mode.poly]` 的 `skills` 数组注册该技能
 - `core/skills/wiki-ingest/SKILL.md`：Phase 1.3 委派 kiwi 时提示加载 `kiwi-distill`；Phase 3/4/5 分别处理取代 / 矛盾 / 印证写入
 
 ---

@@ -1,3 +1,4 @@
+import type { AgentUnitDescriptor } from "../core/slots.js";
 import {
   DELEGATION_DISCIPLINE_TEXT,
   DELEGATION_FORMAT_TEXT,
@@ -74,3 +75,19 @@ Summarize: what was done, what was verified, any remaining risks. No raw logs.
 - ${MSG_REF_NO_ECHO}
 </Contract>
 `;
+
+/**
+ * Beaver agent unit descriptor.
+ *
+ * Contributes the implementation-agent prompt for prompt injection.
+ */
+export const unit: AgentUnitDescriptor = {
+  name: "beaver",
+  kind: "agent",
+  create() {
+    return {
+      kind: "agent",
+      agents: [{ name: "beaver", prompt: BEAVER_PROMPT }],
+    };
+  },
+};

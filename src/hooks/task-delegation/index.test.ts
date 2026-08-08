@@ -7,7 +7,7 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { Clientish } from "../../core/agent.js";
+import type { Clientish } from "../../core/client/agent.js";
 import { validateDelegationTarget } from "./index.js";
 
 // ---------------------------------------------------------------------------

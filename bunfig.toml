@@ -1,0 +1,5 @@
+# Bun test configuration.
+# Coverage excludes vendored upstream code (vendor/smol-toml/) — it must
+# never be counted against our thresholds.
+[test]
+coveragePathIgnorePatterns = ["vendor/**"]

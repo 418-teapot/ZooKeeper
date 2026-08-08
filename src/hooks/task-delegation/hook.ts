@@ -8,7 +8,7 @@
  * @module
  */
 
-import { type Clientish, getAgentName } from "../../core/agent.js";
+import { type Clientish, getAgentName } from "../../core/client/agent.js";
 import { isDelegationAllowed } from "../../core/delegation.js";
 import { log } from "../../utils/logger.js";
 

@@ -1,3 +1,4 @@
+import type { AgentUnitDescriptor } from "../core/slots.js";
 import {
   DELEGATION_DISCIPLINE_TEXT,
   DELEGATION_FORMAT_TEXT,
@@ -63,3 +64,19 @@ When the plan reaches \`status: planning-done\`, tell the user: **"Plan approved
 - **question** — structured user questions during Interview (C3)
 </Tools>
 `;
+
+/**
+ * Mola agent unit descriptor.
+ *
+ * Contributes the planning-agent prompt for prompt injection.
+ */
+export const unit: AgentUnitDescriptor = {
+  name: "mola",
+  kind: "agent",
+  create() {
+    return {
+      kind: "agent",
+      agents: [{ name: "mola", prompt: MOLA_PROMPT }],
+    };
+  },
+};

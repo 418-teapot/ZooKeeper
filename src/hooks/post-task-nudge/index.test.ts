@@ -10,13 +10,13 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import type { TinyClient } from "../../core/client/todo.js";
 import {
   TODO_DONE_NUDGE,
   TODO_PROGRESS_NUDGE,
   TODO_RESUME_NUDGE,
   VERIFY_REMINDER,
 } from "../../core/prompts.js";
-import type { TinyClient } from "../../core/todo.js";
 import { nudgePostTask } from "./index.js";
 
 // ---------------------------------------------------------------------------

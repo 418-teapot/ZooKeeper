@@ -13,7 +13,10 @@ import type {
   ProducerGateConfig,
 } from "../../core/config-types.js";
 import { formatTokens } from "../../core/context/context-report.js";
-import type { ContextMessageEntry } from "../../core/context/metrics.js";
+import type {
+  ContextMessageEntry,
+  ContextMetricsOutput,
+} from "../../core/context/metrics.js";
 import {
   findCompactionBoundary,
   findLastCompletedAssistant,
@@ -53,6 +56,7 @@ import {
   CONTEXT_NUDGE_TEMPLATE,
   MANUAL_COMPRESS_TEMPLATE,
 } from "../../core/prompts.js";
+import { sessionAgentMap, subAgentCache } from "../../core/session-state.js";
 import { log } from "../../utils/logger.js";
 
 // ---------------------------------------------------------------------------
@@ -72,8 +76,8 @@ import { log } from "../../utils/logger.js";
  * turn.  Marks from previous rounds take effect now.
  *
  * **Phase 3 (Gate + Mark):** evaluate each producer's gate independently
- * (enabled + prompt-side threshold).  Producers whose gate passes create
- * pending marks for the *next* turn.
+ * (prompt-side threshold).  Producers whose gate passes create pending
+ * marks for the *next* turn.
  *
  * **Phase 4 (Message refs):** strip hallucinated refs, detect compaction
  * boundary changes, assign and inject message references.
@@ -100,6 +104,12 @@ import { log } from "../../utils/logger.js";
  * The two-turn effect ("turn N marks apply on turn N+1") means that
  * marks produced by the current turn are NOT pruned during the same turn.
  *
+ * Enablement is decided by the caller (opencode.ts) from the mode
+ * profile: registering this hook unit runs the whole pipeline (Phases
+ * 1–7) with no master switch, and `hasCompressTool` gates the nudge and
+ * manual-compress phases (they advertise windows the registered
+ * `compress` tool would accept).
+ *
  * Does NOT catch errors — the caller (opencode.ts) wraps this in
  * try/catch so a pruning failure never disrupts the LLM turn.
  *
@@ -109,6 +119,9 @@ import { log } from "../../utils/logger.js";
  * @param isSubAgent - When true, the first non-ignored user message in
  *   the session gets no message ref (positional semantics for
  *   sub-agent/task sessions — the first user message is skipped).
+ * @param hasCompressTool - Whether the `compress` tool is registered in
+ *   the active mode profile.  Gates the nudge (Phase 6) and manual
+ *   compress (Phase 6b) phases.  Defaults to false.
  */
 export function contextPruningTransformHandler(
   messages: ContextMessageEntry[] | null | undefined,
@@ -118,12 +131,9 @@ export function contextPruningTransformHandler(
   },
   notify?: (text: string) => void,
   isSubAgent?: boolean,
+  hasCompressTool?: boolean,
 ): void {
   if (!messages || messages.length === 0) return;
-
-  // Master enable switch — entire transform no-ops unless
-  // explicitly enabled (default false).
-  if (config.enabled !== true) return;
 
   // Extract session ID from the first message.
   const firstMsg = messages[0];
@@ -207,9 +217,9 @@ export function contextPruningTransformHandler(
   ];
 
   for (const producer of producers) {
-    // Evaluate gate: enabled (default true) and prompt threshold.
+    // Evaluate gate: prompt threshold only (enablement comes from the
+    // mode profile, not per-producer switches).
     // undefined threshold → skip (no fallback).
-    if (producer.gate.enabled === false) continue;
     const threshold = producer.gate.thresholdContext;
     if (threshold === undefined) continue;
     if (lastAsst.index < 0 || promptTokens < threshold) continue;
@@ -359,18 +369,18 @@ export function contextPruningTransformHandler(
   // Injects a synthetic reminder when the prompt is past the configured
   // thresholds AND has grown past the re-nudge interval since the last
   // anchor.  Runs only when every gate holds: not a sub-agent session,
-  // the compress tool available (strictly-parsed compress section with
-  // `enabled: true` — the nudge advertises compressible windows the tool
-  // would accept), nudge config present with `enabled: true` (the
-  // strict parser guarantees a boolean here), a model context limit
-  // captured for this session, and a completed assistant message
-  // (promptTokens is real — same-view discipline as Phase 3).
+  // the compress tool registered in the active mode profile (the nudge
+  // advertises compressible windows the tool would accept), a strictly-
+  // parsed nudge section present (the strict parser guarantees a valid
+  // threshold set here), a model context limit captured for this
+  // session, and a completed assistant message (promptTokens is real —
+  // same-view discipline as Phase 3).
   const compressCfg = config.compress;
   const nudgeConfig = config.nudge;
   if (
     !isSubAgent &&
-    compressCfg?.enabled === true &&
-    nudgeConfig?.enabled === true &&
+    hasCompressTool &&
+    nudgeConfig !== undefined &&
     lastAsst.index >= 0
   ) {
     const modelLimit = getModelLimit(sessionId);
@@ -405,8 +415,8 @@ export function contextPruningTransformHandler(
           // the anchor is still persisted above).
           const eligibility =
             config.protectedMessages === undefined ||
-            compressCfg.protectedTokens === undefined ||
-            compressCfg.thresholdTokens === undefined
+            compressCfg?.protectedTokens === undefined ||
+            compressCfg?.thresholdTokens === undefined
               ? null
               : computeEligibility(
                   messages,
@@ -485,9 +495,9 @@ export function contextPruningTransformHandler(
   const manualCfg = config.compress;
   if (state.pendingManualTrigger && !isSubAgent) {
     if (
-      manualCfg?.enabled === true &&
-      manualCfg.protectedTokens !== undefined &&
-      manualCfg.thresholdTokens !== undefined
+      hasCompressTool &&
+      manualCfg?.protectedTokens !== undefined &&
+      manualCfg?.thresholdTokens !== undefined
     ) {
       const eligibility =
         config.protectedMessages === undefined
@@ -535,9 +545,10 @@ export function contextPruningTransformHandler(
         },
       );
     } else {
-      // Compress section unavailable — a stale trigger can never produce
-      // a meaningful command.  Clear the flag so it never fires later
-      // (the /dcp compress enable gate normally prevents this state).
+      // Compress tool / section unavailable — a stale trigger can never
+      // produce a meaningful command.  Clear the flag so it never fires
+      // later (the /dcp compress registration gate normally prevents
+      // this state).
       state.pendingManualTrigger = false;
       log(
         "context-pruning",
@@ -545,7 +556,7 @@ export function contextPruningTransformHandler(
         sessionId,
         undefined,
         "warn",
-        { reason: "compress section disabled or missing" },
+        { reason: "compress tool not registered or thresholds missing" },
       );
     }
   }
@@ -580,4 +591,230 @@ export function contextPruningTransformHandler(
       replacedInputs,
     });
   }
+}
+
+// ---------------------------------------------------------------------------
+// Transform wrapper (sunk from the host entry point)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the current agent for a session.
+ *
+ * Resolution order:
+ *   (a) `agentMap` (in-memory map populated solely by the message.updated
+ *       handler — single source of truth)
+ *   (b) `client.session.get()` API call — per-call fallback WITHOUT
+ *       write-back to the map, so a mid-session agent change is reflected
+ *       as soon as either the next message.updated or the next resolution
+ *       happens.
+ *   (c) `undefined` — current behavior preserved, debug log entry
+ *
+ * @param sessionID - The session identifier.
+ * @param client - The host client (session.get availability checked).
+ * @param agentMap - The in-memory session → agent map.
+ * @returns The resolved agent name, or `undefined` when unknown.
+ */
+export async function resolveSessionAgent(
+  sessionID: string,
+  client: any,
+  agentMap: Map<string, string>,
+): Promise<string | undefined> {
+  // (a) Check in-memory map first (fast, no I/O).
+  const mapped = agentMap.get(sessionID);
+  if (mapped) return mapped;
+
+  // (b) Fallback to session API — read the agent from the session object.
+  if (client?.session?.get) {
+    try {
+      const sessionInfo = await client.session.get({
+        path: { id: sessionID },
+      });
+      if (sessionInfo?.agent) {
+        return sessionInfo.agent;
+      }
+    } catch {
+      // Session not found — fall through to (c).
+    }
+  }
+
+  // (c) Unknown — log debug entry and return undefined.
+  log(
+    "context-pruning",
+    "dedup_notify_no_agent",
+    sessionID,
+    undefined,
+    "debug",
+    {},
+  );
+  return undefined;
+}
+
+/**
+ * Fire-and-forget notification for dedup batch release.
+ *
+ * Sends a silent (noReply + ignored) message to the session chat when the
+ * agent is known; suppresses the notification entirely when the agent
+ * cannot be resolved, logging the drop at warn level.
+ *
+ * @param sessionID - The session identifier.
+ * @param client - The host client (session.prompt availability checked).
+ * @param agentMap - The in-memory session → agent map.
+ * @param text - The notification text.
+ */
+export function handleDedupNotify(
+  sessionID: string,
+  client: any,
+  agentMap: Map<string, string>,
+  text: string,
+): void {
+  const body: Record<string, unknown> = {
+    noReply: true,
+    parts: [{ type: "text", text, ignored: true }],
+  };
+
+  const send = () => {
+    try {
+      client?.session
+        ?.prompt({
+          path: { id: sessionID },
+          body,
+        })
+        .catch((err: Error) => {
+          log(
+            "context-pruning",
+            "dedup_notify_failed",
+            sessionID,
+            undefined,
+            "warn",
+            { error: String(err) },
+          );
+        });
+    } catch (err) {
+      log(
+        "context-pruning",
+        "dedup_notify_failed",
+        sessionID,
+        undefined,
+        "warn",
+        { error: String(err) },
+      );
+    }
+  };
+
+  // (a) Agent known from in-memory map — send immediately.
+  const agent = agentMap.get(sessionID);
+  if (agent) {
+    body.agent = agent;
+    send();
+    return;
+  }
+
+  // (b)/(c) Agent not in map — try async fallback.
+  resolveSessionAgent(sessionID, client, agentMap)
+    .then((resolvedAgent) => {
+      if (resolvedAgent) {
+        body.agent = resolvedAgent;
+        send();
+        return;
+      }
+      // (c) Agent unresolved — suppress notification.
+      log(
+        "context-pruning",
+        "dedup_notify_suppressed",
+        sessionID,
+        undefined,
+        "warn",
+        { reason: "agent unresolved" },
+      );
+    })
+    .catch((err) => {
+      log(
+        "context-pruning",
+        "dedup_notify_suppressed",
+        sessionID,
+        undefined,
+        "warn",
+        { reason: "agent unresolved", error: String(err) },
+      );
+    });
+}
+
+/**
+ * Run context pruning on the messages transform output.
+ *
+ * Wraps `contextPruningTransformHandler` in try/catch so a pruning
+ * failure never disrupts the LLM turn, and wires the dedup-release
+ * notification to the shared `sessionAgentMap` (held by
+ * `core/session-state.ts`).
+ *
+ * @param output - The messages transform output.
+ * @param config - Unified context-pruning configuration.
+ * @param client - The host client.
+ * @param isSubAgent - Whether the session is a sub-agent session.
+ * @param hasCompressTool - Whether the `compress` tool is registered.
+ */
+export function handleContextPruning(
+  output: ContextMetricsOutput,
+  config: ContextPruningConfig,
+  client: any,
+  isSubAgent?: boolean,
+  hasCompressTool?: boolean,
+): void {
+  try {
+    const sessionID = output.messages?.[0]?.info?.sessionID ?? "";
+
+    contextPruningTransformHandler(
+      output.messages,
+      config,
+      // Fire-and-forget: notify the session chat with dedup release info.
+      // Must NOT await — the transform hook must never block.
+      (text: string) =>
+        handleDedupNotify(sessionID, client, sessionAgentMap, text),
+      isSubAgent,
+      hasCompressTool,
+    );
+  } catch (err) {
+    log(
+      "plugin",
+      "handler_crashed",
+      output.messages?.[0]?.info?.sessionID ?? "",
+      undefined,
+      "error",
+      { handler: "contextPruning", error: String(err) },
+    );
+  }
+}
+
+/**
+ * Resolve whether the session is a sub-agent session (has `parentID`).
+ *
+ * Cached per session ID in `subAgentCache` (held by
+ * `core/session-state.ts`); cleared on `session.deleted`.
+ * Errors (missing client API, unknown session) default to `false`.
+ *
+ * @param output - The messages transform output (session ID source).
+ * @param client - The host client.
+ * @returns `true` when the session has a parent session.
+ */
+export async function resolveSubAgentStatus(
+  output: ContextMetricsOutput,
+  client: any,
+): Promise<boolean> {
+  let isSubAgent = false;
+  const sessionId = output.messages?.[0]?.info?.sessionID;
+  if (!sessionId) return false;
+
+  const cached = subAgentCache.get(sessionId);
+  if (cached !== undefined) return cached;
+
+  try {
+    const sessionInfo = await client.session.get({
+      path: { id: sessionId },
+    });
+    isSubAgent = !!sessionInfo.parentID;
+  } catch {
+    // Could not determine — default to false.
+  }
+  subAgentCache.set(sessionId, isSubAgent);
+  return isSubAgent;
 }

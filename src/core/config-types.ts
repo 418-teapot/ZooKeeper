@@ -13,10 +13,13 @@ import type { NudgeConfig } from "./context/pruning/index.js";
 
 /**
  * Per-subsystem gate config for a pruning strategy (dedup / purge-errors).
+ *
+ * Enablement is decided exclusively by the mode profile — a producer
+ * registered via the `context-pruning` hook unit runs whenever its
+ * prompt-side threshold is configured.  Absent sections mean the
+ * producer is silently skipped.
  */
 export interface ProducerGateConfig {
-  /** Hook-level enable gate.  Undefined → runs unless explicitly false. */
-  enabled?: boolean;
   /**
    * Minimum prompt-side total tokens (input + cache.read + cache.write)
    * before this producer runs.  Undefined → skip producer.
@@ -30,13 +33,11 @@ export interface ProducerGateConfig {
  * Per-subsystem gate config for the compression strategy.
  *
  * Strictly parsed: the section is absent (`undefined`) unless all three
- * keys are present and valid.  `enabled` is the hook-level gate —
- * `false` is parsed but disabled (no tool registration, no nudge).
- * The token thresholds are defined whenever the section is returned.
+ * keys are present and valid.  Enablement is decided exclusively by the
+ * mode profile — the section itself carries no on/off switch.  The token
+ * thresholds are defined whenever the section is returned.
  */
 export interface CompressConfig {
-  /** Hook-level enable gate.  `false` → parsed but disabled. */
-  enabled?: boolean;
   /**
    * Minimum estimated tokens a segment must have to bypass the phantom
    * gate.  Present whenever the section is returned.
@@ -58,28 +59,26 @@ export interface CompressConfig {
 /**
  * Context-nudge subsystem configuration (`[zoo.context.nudge]`).
  *
- * Extends the pure decision-layer `NudgeConfig` with a hook-level
- * enable gate.  When the section is absent the field is `undefined`
- * and the subsystem is silently absent; when present all six keys are
- * required — any missing, wrong-typed, or malformed value invalidates
- * the whole section (no fallbacks; the config parse already warned).
+ * Alias of the pure decision-layer `NudgeConfig` — the hook-level
+ * enable gate is gone, enablement is decided exclusively by the mode
+ * profile (context-pruning hook + compress tool registered).  When the
+ * section is absent the field is `undefined` and the subsystem is
+ * silently absent; when present all five keys are required — any
+ * missing, wrong-typed, or malformed value invalidates the whole
+ * section (no fallbacks; the config parse already warned).
  */
-export interface ContextNudgeConfig extends NudgeConfig {
-  /** Hook-level enable gate.  `false` → parsed but disabled (no injection). */
-  enabled?: boolean;
-}
+export type ContextNudgeConfig = NudgeConfig;
 
 /**
  * Per-subsystem gate config for the decompression strategy.
  *
- * Strictly parsed: the section is absent (`undefined`) unless both
- * keys are present and valid.  `enabled` is the hook-level gate —
- * `false` is parsed but disabled (no tool registration).
- * `maxFillPercent` is defined whenever the section is returned.
+ * Strictly parsed: the section is absent (`undefined`) unless
+ * `maxFillPercent` is present and valid.  Enablement is decided
+ * exclusively by the mode profile — the section itself carries no
+ * on/off switch.  `maxFillPercent` is defined whenever the section is
+ * returned.
  */
 export interface DecompressConfig {
-  /** Hook-level enable gate.  `false` → parsed but disabled. */
-  enabled?: boolean;
   /**
    * Max fill threshold (percent): restore of an active compression
    * block is rejected when the estimated post-restore tokens exceed
@@ -90,18 +89,44 @@ export interface DecompressConfig {
 }
 
 /**
+ * Active mode profile (`[zoo.mode.<name>]`).
+ *
+ * The active profile is the single sub-table of `zoo.mode`; it declares
+ * which loadable units the plugin registers: agent prompt injection,
+ * skills, the seven switchable hook units, tools, and slash commands.
+ * Each list is a plain array of names; an absent category means none of
+ * that category load (no defaults).  The profile is `null` when the
+ * section is missing or fails validation — every profile-driven
+ * registration is then skipped while the remaining infrastructure hooks
+ * keep working.
+ */
+export interface ModeProfile {
+  /** Profile name (the single key under `zoo.mode`). */
+  name: string;
+  /** Agent names whose prompts are injected (subset of config.agent). */
+  agents: string[];
+  /** Skill directory names registered from core/skills/. */
+  skills: string[];
+  /** Hook unit names (task-prompt, task-delegation, ...). */
+  hooks: string[];
+  /** Tool names registered (compress, decompress). */
+  tools: string[];
+  /** Slash-command names registered (go, dcp). */
+  commands: string[];
+}
+
+/**
  * Unified context-pruning configuration.
  *
  * Replaces the old flat `DedupOptions` used by the hook.  Each
  * producer (dedup, purge-errors) has its own gate sub-config;
  * `turnProtection` and `releaseThresholdPercent` remain shared.
+ * Enablement is decided exclusively by the mode profile: registering
+ * the `context-pruning` hook unit runs the whole pipeline, and
+ * registering the `compress` tool gates the nudge / manual-compress
+ * phases.  There is no master `enabled` switch.
  */
 export interface ContextPruningConfig {
-  /**
-   * Master enable switch.  When not explicitly true the entire
-   * transform no-ops: the entire pipeline (Phases 1–7) is skipped.  Undefined → disabled.
-   */
-  enabled?: boolean;
   /**
    * Number of most recent non-ignored messages to protect (shared).
    * Undefined → skip all producers (they early-return).

@@ -6,13 +6,12 @@
  * array parameter, multi-range batch creation with a single persistence and
  * a single notification, the `max_ranges` overflow gate (loud batch
  * guidance), per-range validation errors naming the range index, the
- * `enabled === false` registration gate (tool hooks + primary_tools), and
+ * profile-tools registration gate (tool hooks + primary_tools), and
  * the config-hook primary_tools append preserving existing entries.
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import type { ContextPruningConfig } from "../core/config-types.js";
-import type { DcpClient } from "../core/context/dcp-client.js";
+import type { SessionClient } from "../core/client/session.js";
 import type { ContextMessageEntry } from "../core/context/metrics.js";
 import {
   _clearAllSessionsForTesting,
@@ -23,9 +22,9 @@ import {
 import { _clearAllRefsForTesting } from "../core/context/pruning/message-refs.js";
 import { COMPRESS_GUIDANCE } from "../core/prompts.js";
 import {
+  buildPlugin,
   buildToolHooks,
-  registerCompressToolInConfig,
-  zookeeper,
+  registerProfileToolsInConfig,
 } from "../opencode.js";
 import { _resetForTesting } from "../utils/logger.js";
 import type { CompressToolDefinition } from "./compress.js";
@@ -45,6 +44,44 @@ afterEach(() => {
     deleteSessionState(sid);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Poly profile fixture
+// ---------------------------------------------------------------------------
+
+/**
+ * A zoo config with the poly profile, mirroring config.toml's
+ * `[zoo.context.compress]` values so the flow tests keep their thresholds
+ * (protectedMessages=20, thresholdTokens=2000, protectedTokens=20000,
+ * maxRanges=8).
+ */
+const POLY_ZOO: Record<string, unknown> = {
+  context: {
+    protected_messages: 20,
+    released_percent: 10,
+    dedup: { threshold_context: 100000, protected_tools: [] },
+    purge_errors: {
+      threshold_context: 100000,
+      protected_tools: [],
+    },
+    compress: {
+      threshold_tokens: 2000,
+      protected_tokens: 20000,
+      max_ranges: 8,
+    },
+    decompress: { max_fill_percent: 90 },
+  },
+  mode: {
+    poly: {
+      tools: ["compress", "decompress"],
+    },
+  },
+};
+
+/** Build a plugin wired to the poly profile (tools: compress + decompress). */
+function makePlugin(client: unknown = {}): Promise<Record<string, any>> {
+  return buildPlugin({ client }, POLY_ZOO) as Promise<Record<string, any>>;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -122,7 +159,7 @@ function makeRange(
 
 /** Mock client that returns the given messages and captures prompt calls. */
 function mockClient(messages: ContextMessageEntry[]): {
-  client: DcpClient;
+  client: SessionClient;
   promptCalls: Array<{
     sessionID: string;
     text: string;
@@ -179,8 +216,11 @@ describe("compress tool execute — happy path", () => {
     const messages = makeMessages();
     const { client, promptCalls } = mockClient(messages);
 
-    const plugin = (await zookeeper({ client })) as any;
-    assert.ok(plugin.tool, "tool hooks must be registered (compress enabled)");
+    const plugin = (await makePlugin(client)) as any;
+    assert.ok(
+      plugin.tool,
+      "tool hooks must be registered (compress in profile tools)",
+    );
     assert.ok(plugin.tool.compress, "compress tool must be registered");
 
     const result = await plugin.tool.compress.execute(
@@ -251,7 +291,7 @@ describe("compress tool execute — happy path", () => {
     const messages = makeMessages();
     const { client, promptCalls } = mockClient(messages);
 
-    const plugin = (await zookeeper({ client })) as any;
+    const plugin = (await makePlugin(client)) as any;
 
     const result = await plugin.tool.compress.execute(
       { ranges: [makeRange(1, 6, "主题一"), makeRange(6, 10, "主题二")] },
@@ -289,7 +329,7 @@ describe("compress tool execute — happy path", () => {
   it("accepts a sessionId-shaped tool context (defensive)", async () => {
     const messages = makeMessages();
     const { client } = mockClient(messages);
-    const plugin = (await zookeeper({ client })) as any;
+    const plugin = (await makePlugin(client)) as any;
 
     const result = await plugin.tool.compress.execute(
       { ranges: [makeRange(1, 9)] },
@@ -309,7 +349,7 @@ describe("compress tool execute — happy path", () => {
   it("accepts a title of exactly 80 characters", async () => {
     const messages = makeMessages();
     const { client } = mockClient(messages);
-    const plugin = (await zookeeper({ client })) as any;
+    const plugin = (await makePlugin(client)) as any;
 
     const title = "超".repeat(80);
     const result = await plugin.tool.compress.execute(
@@ -333,7 +373,7 @@ describe("compress tool execute — error paths", () => {
   it("rejects more ranges than max_ranges with a loud batch-guidance error", async () => {
     const messages = makeMessages();
     const { client } = mockClient(messages);
-    const plugin = (await zookeeper({ client })) as any;
+    const plugin = (await makePlugin(client)) as any;
 
     // Real config.toml sets max_ranges = 8; 9 ranges must be rejected
     // BEFORE any core validation (refs are dummy on purpose).
@@ -355,7 +395,7 @@ describe("compress tool execute — error paths", () => {
   it("rejects an empty ranges array", async () => {
     const messages = makeMessages();
     const { client } = mockClient(messages);
-    const plugin = (await zookeeper({ client })) as any;
+    const plugin = (await makePlugin(client)) as any;
 
     await assert.rejects(
       () => plugin.tool.compress.execute({ ranges: [] }, mockToolContext),
@@ -368,7 +408,7 @@ describe("compress tool execute — error paths", () => {
   it("rejects a missing or non-array ranges argument", async () => {
     const messages = makeMessages();
     const { client } = mockClient(messages);
-    const plugin = (await zookeeper({ client })) as any;
+    const plugin = (await makePlugin(client)) as any;
 
     await assert.rejects(
       () => plugin.tool.compress.execute({}, mockToolContext),
@@ -389,7 +429,7 @@ describe("compress tool execute — error paths", () => {
   it("propagates the unknown-ref guidance error naming the range index", async () => {
     const messages = makeMessages();
     const { client } = mockClient(messages);
-    const plugin = (await zookeeper({ client })) as any;
+    const plugin = (await makePlugin(client)) as any;
 
     await assert.rejects(
       () =>
@@ -409,7 +449,7 @@ describe("compress tool execute — error paths", () => {
   it("propagates the reversed-order guidance error naming the range index", async () => {
     const messages = makeMessages();
     const { client } = mockClient(messages);
-    const plugin = (await zookeeper({ client })) as any;
+    const plugin = (await makePlugin(client)) as any;
 
     await assert.rejects(
       () =>
@@ -437,7 +477,7 @@ describe("compress tool execute — error paths", () => {
   it("rejects overlapping ranges naming both indices", async () => {
     const messages = makeMessages();
     const { client } = mockClient(messages);
-    const plugin = (await zookeeper({ client })) as any;
+    const plugin = (await makePlugin(client)) as any;
 
     await assert.rejects(
       () =>
@@ -458,7 +498,7 @@ describe("compress tool execute — error paths", () => {
   it("rejects an empty title in a specific range naming that range", async () => {
     const messages = makeMessages();
     const { client } = mockClient(messages);
-    const plugin = (await zookeeper({ client })) as any;
+    const plugin = (await makePlugin(client)) as any;
 
     await assert.rejects(
       () =>
@@ -482,7 +522,7 @@ describe("compress tool execute — error paths", () => {
   it("rejects a title longer than 80 characters with a loud Chinese guidance error", async () => {
     const messages = makeMessages();
     const { client } = mockClient(messages);
-    const plugin = (await zookeeper({ client })) as any;
+    const plugin = (await makePlugin(client)) as any;
 
     const longTitle = "超".repeat(81);
     await assert.rejects(
@@ -503,7 +543,7 @@ describe("compress tool execute — error paths", () => {
   it("rejects titles containing newlines or control characters with a loud single-line guidance error", async () => {
     const messages = makeMessages();
     const { client } = mockClient(messages);
-    const plugin = (await zookeeper({ client })) as any;
+    const plugin = (await makePlugin(client)) as any;
 
     const badTitles = [
       "foo\nbar",
@@ -533,7 +573,7 @@ describe("compress tool execute — error paths", () => {
   it("rejects titles containing three or more consecutive hyphens with a loud Chinese guidance error", async () => {
     const messages = makeMessages();
     const { client } = mockClient(messages);
-    const plugin = (await zookeeper({ client })) as any;
+    const plugin = (await makePlugin(client)) as any;
 
     const badTitles = ["foo---bar", "----", "a--b---c--d"];
     for (const title of badTitles) {
@@ -557,7 +597,7 @@ describe("compress tool execute — error paths", () => {
   it("rejects non-string fields inside a range item before core validation", async () => {
     const messages = makeMessages();
     const { client } = mockClient(messages);
-    const plugin = (await zookeeper({ client })) as any;
+    const plugin = (await makePlugin(client)) as any;
     const cases: Array<{ name: string; item: Record<string, unknown> }> = [
       {
         name: "fromRef",
@@ -612,7 +652,7 @@ describe("compress tool execute — error paths", () => {
   it("rejects a non-object range item naming the range index", async () => {
     const messages = makeMessages();
     const { client } = mockClient(messages);
-    const plugin = (await zookeeper({ client })) as any;
+    const plugin = (await makePlugin(client)) as any;
 
     await assert.rejects(
       () =>
@@ -629,7 +669,7 @@ describe("compress tool execute — error paths", () => {
   it("throws a loud error when the tool context lacks a session id", async () => {
     const messages = makeMessages();
     const { client } = mockClient(messages);
-    const plugin = (await zookeeper({ client })) as any;
+    const plugin = (await makePlugin(client)) as any;
 
     await assert.rejects(
       () =>
@@ -642,35 +682,39 @@ describe("compress tool execute — error paths", () => {
   });
 
   it("throws a loud config error when the compress section parsed without thresholds (defensive)", async () => {
-    // Registration only happens with a strictly parsed section, so this
-    // config shape is unreachable in production — the check is defense.
+    // Registration is profile-gated, so this config shape is reachable in
+    // production when [zoo.context.compress] is missing — the check guides
+    // the model to fix config.toml.
     const { client } = mockClient(makeMessages());
-    const hooks = buildToolHooks(client, {
-      dedup: {},
-      purgeErrors: {},
-      compress: { enabled: true },
-    });
+    const hooks = buildToolHooks(
+      client,
+      { dedup: {}, purgeErrors: {}, compress: {} },
+      ["compress"],
+    );
     assert.ok(hooks?.compress);
 
     await assert.rejects(
       () =>
         hooks.compress.execute({ ranges: [makeRange(1, 9)] }, mockToolContext),
-      /压缩功能未启用/,
+      /\[zoo\.context\.compress\] 段缺失或非法/,
     );
   });
 
   it("throws a loud config error when protected_messages is missing (defensive)", async () => {
     const { client } = mockClient(makeMessages());
-    const hooks = buildToolHooks(client, {
-      dedup: {},
-      purgeErrors: {},
-      compress: {
-        enabled: true,
-        thresholdTokens: 2000,
-        protectedTokens: 20000,
-        maxRanges: 8,
+    const hooks = buildToolHooks(
+      client,
+      {
+        dedup: {},
+        purgeErrors: {},
+        compress: {
+          thresholdTokens: 2000,
+          protectedTokens: 20000,
+          maxRanges: 8,
+        },
       },
-    });
+      ["compress"],
+    );
     assert.ok(hooks?.compress);
 
     await assert.rejects(
@@ -692,7 +736,7 @@ describe("compress tool execute — error paths", () => {
         },
       },
     };
-    const plugin = (await zookeeper({ client: failingClient })) as any;
+    const plugin = (await makePlugin(failingClient)) as any;
 
     const result = await plugin.tool.compress.execute(
       { ranges: [makeRange(1, 9)] },
@@ -707,47 +751,42 @@ describe("compress tool execute — error paths", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Registration gate (enabled === false)
+// Registration gate (profile tools list)
 // ---------------------------------------------------------------------------
 
 describe("compress tool registration gate", () => {
-  const DISABLED_CONFIG: ContextPruningConfig = {
-    dedup: {},
-    purgeErrors: {},
-    compress: { enabled: false },
-  };
-
-  it("enabled=false → no compress tool registered", () => {
+  it("compress absent from the profile tools list → no compress tool", () => {
     const { client } = mockClient([]);
-    const hooks = buildToolHooks(client, DISABLED_CONFIG);
+    const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} }, []);
     assert.equal(hooks, undefined);
   });
 
-  it("compress section absent → no compress tool registered", () => {
+  it("decompress only in the list → compress stays unregistered", () => {
     const { client } = mockClient([]);
-    const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} });
-    assert.equal(hooks, undefined);
+    const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} }, [
+      "decompress",
+    ]);
+    assert.ok(hooks !== undefined, "decompress tool registers");
+    assert.equal(hooks.compress, undefined);
   });
 
-  it("compress section absent → primary_tools untouched", () => {
+  it("compress absent from the profile tools list → primary_tools untouched", () => {
     const config = { experimental: { primary_tools: ["bash"] } };
-    registerCompressToolInConfig(config, { dedup: {}, purgeErrors: {} });
+    registerProfileToolsInConfig(config, []);
     assert.deepEqual(config.experimental.primary_tools, ["bash"]);
   });
 
-  it("enabled=false → primary_tools untouched", () => {
+  it("decompress only in the list → primary_tools gets no compress", () => {
     const config = { experimental: { primary_tools: ["bash"] } };
-    registerCompressToolInConfig(config, DISABLED_CONFIG);
-    assert.deepEqual(config.experimental.primary_tools, ["bash"]);
+    registerProfileToolsInConfig(config, ["decompress"]);
+    assert.deepEqual(config.experimental.primary_tools, ["bash", "decompress"]);
   });
 
-  it("enabled=true → compress tool registered with an executable", () => {
+  it("compress in the profile tools list → registered with an executable", () => {
     const { client } = mockClient([]);
-    const hooks = buildToolHooks(client, {
-      dedup: {},
-      purgeErrors: {},
-      compress: { enabled: true },
-    });
+    const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} }, [
+      "compress",
+    ]);
     assert.ok(hooks !== undefined);
     assert.ok(hooks.compress);
     assert.equal(typeof hooks.compress.execute, "function");
@@ -755,14 +794,13 @@ describe("compress tool registration gate", () => {
 
   it("registers the ranges-array JSON Schema for OpenCode native tool loading", () => {
     const { client } = mockClient([]);
-    const hooks = buildToolHooks(client, {
-      dedup: {},
-      purgeErrors: {},
-      compress: { enabled: true },
-    });
+    const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} }, [
+      "compress",
+    ]);
 
     assert.ok(hooks?.compress);
-    const compressArgs = (hooks.compress as CompressToolDefinition).args;
+    const compressArgs = (hooks.compress as unknown as CompressToolDefinition)
+      .args;
     assert.ok(compressArgs.ranges, "ranges arg must be present");
     assert.equal(compressArgs.ranges.type, "array");
     assert.equal(compressArgs.ranges.items.type, "object");
@@ -779,14 +817,13 @@ describe("compress tool registration gate", () => {
 
   it("injects the teaching skeleton into the tool description", () => {
     const { client } = mockClient([]);
-    const hooks = buildToolHooks(client, {
-      dedup: {},
-      purgeErrors: {},
-      compress: { enabled: true },
-    });
+    const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} }, [
+      "compress",
+    ]);
 
     assert.ok(hooks?.compress);
-    const description = (hooks.compress as CompressToolDefinition).description;
+    const description = (hooks.compress as unknown as CompressToolDefinition)
+      .description;
     assert.ok(
       description.includes(COMPRESS_GUIDANCE),
       "description must carry the full teaching skeleton (all four points)",
@@ -800,7 +837,7 @@ describe("compress tool registration gate", () => {
 
 describe("config hook — primary_tools", () => {
   it("appends compress + decompress preserving pre-existing entries", async () => {
-    const plugin = (await zookeeper({})) as any;
+    const plugin = (await makePlugin()) as any;
     const config = { experimental: { primary_tools: ["bash", "edit"] } };
 
     await plugin.config(config);
@@ -814,7 +851,7 @@ describe("config hook — primary_tools", () => {
   });
 
   it("creates experimental.primary_tools when absent", async () => {
-    const plugin = (await zookeeper({})) as any;
+    const plugin = (await makePlugin()) as any;
     const config: Record<string, any> = {};
 
     await plugin.config(config);

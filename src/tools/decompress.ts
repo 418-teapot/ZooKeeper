@@ -24,9 +24,9 @@
  * @module
  */
 
+import type { SessionClient } from "../core/client/session.js";
 import type { ContextPruningConfig } from "../core/config-types.js";
 import { formatTokens } from "../core/context/context-report.js";
-import type { DcpClient } from "../core/context/dcp-client.js";
 import type { ContextMessageEntry } from "../core/context/metrics.js";
 import { measureContext } from "../core/context/metrics.js";
 import { getModelLimit } from "../core/context/model-limits.js";
@@ -39,6 +39,7 @@ import {
   snapshotRefs,
   truncateRecallSummary,
 } from "../core/context/pruning/index.js";
+import type { ToolUnitDescriptor } from "../core/slots.js";
 import { log } from "../utils/logger.js";
 
 type JsonSchemaStringArg = {
@@ -120,7 +121,7 @@ function validateDecompressArgs(args: unknown): DecompressToolInput {
  * @returns The raw session messages array.
  */
 async function fetchSessionMessages(
-  client: DcpClient,
+  client: SessionClient,
   sessionID: string,
 ): Promise<ContextMessageEntry[]> {
   if (!client?.session?.messages) {
@@ -181,7 +182,7 @@ async function fetchSessionMessages(
  * @returns The OpenCode tool definition.
  */
 export function createDecompressTool(
-  client: DcpClient,
+  client: SessionClient,
   contextConfig: ContextPruningConfig,
 ): DecompressToolDefinition {
   return {
@@ -220,15 +221,14 @@ export function createDecompressTool(
       const input = validateDecompressArgs(args);
 
       // ── Config check (loud Chinese guidance) ─────────────────────
-      // The registration gate only registers the tool when the decompress
-      // section was strictly parsed with `enabled: true`, so reaching this
-      // branch with an undefined section (or missing threshold) means the
-      // config hook handed the tool a stale config — guide the user to fix
-      // config.toml.
+      // The registration gate only registers the tool when the profile's
+      // tools list names it, so reaching this branch with an undefined
+      // section (or missing threshold) means the config hook handed the
+      // tool a stale config — guide the user to fix config.toml.
       const decompressCfg = contextConfig.decompress;
       if (!decompressCfg || decompressCfg.maxFillPercent === undefined) {
         throw new Error(
-          "解压功能未启用：请在 config.toml 的 [zoo.context.decompress] 段配置 enabled = true 与 max_fill_percent（1-100 的整数）后重试。",
+          "[zoo.context.decompress] 段缺失或非法：请在 config.toml 配置 max_fill_percent（1-100 的整数）后重试。",
         );
       }
 
@@ -319,3 +319,25 @@ export function createDecompressTool(
     },
   };
 }
+
+/**
+ * Decompress tool unit descriptor.
+ *
+ * The tool contribution carries the decompression adapter; `name`
+ * doubles as the registry key and the tool key.
+ */
+export const unit: ToolUnitDescriptor = {
+  name: "decompress",
+  kind: "tool",
+  create(deps) {
+    return {
+      kind: "tool",
+      tools: [
+        {
+          name: "decompress",
+          ...createDecompressTool(deps.client, deps.contextConfig),
+        },
+      ],
+    };
+  },
+};

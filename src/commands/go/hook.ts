@@ -1,5 +1,5 @@
 /**
- * Plan lifecycle hook for ZooKeeper OpenCode plugin.
+ * `/go` command unit — plan handoff handler.
  *
  * Provides the `/go` command handler that transitions a plan from
  * `planning-done` to `executing` by creating a new dolphin session,
@@ -26,7 +26,7 @@ import { log } from "../../utils/logger.js";
  * Minimal client interface required for plan handoff.
  *
  * Only the APIs used by the `/go` handler are declared. The full
- * OpenCode client object is much larger; this interface keeps the hook
+ * OpenCode client object is much larger; this interface keeps the unit
  * thin while remaining trivially compatible.
  */
 export interface PlanClient {
@@ -74,7 +74,7 @@ export interface PlanClient {
  * (latest mtime) file matching the target status.
  *
  * Failures (no plan found, session creation failure, missing client API)
- * are surfaced via thrown Error with user-facing messages. The hook
+ * are surfaced via thrown Error with user-facing messages. The command
  * adapter in `src/opencode.ts` converts these to `output.parts` entries.
  *
  * @param client - OpenCode client providing session and TUI APIs.
@@ -99,7 +99,7 @@ export async function handleGoCommand(
     );
   }
 
-  log("plan-lifecycle", "plan_found", sessionID, undefined, "info", {
+  log("go-command", "plan_found", sessionID, undefined, "info", {
     path: plan.path,
     slug: plan.slug,
   });
@@ -121,19 +121,14 @@ export async function handleGoCommand(
 
   if (createResult.error || !createResult.data?.id) {
     const errMsg = createResult.error ?? "no session ID returned";
-    log(
-      "plan-lifecycle",
-      "session_create_failed",
-      sessionID,
-      undefined,
-      "error",
-      { error: String(errMsg) },
-    );
+    log("go-command", "session_create_failed", sessionID, undefined, "error", {
+      error: String(errMsg),
+    });
     throw new Error(`Failed to create dolphin session: ${errMsg}`);
   }
 
   const newSessionID = createResult.data.id;
-  log("plan-lifecycle", "session_created", sessionID, undefined, "info", {
+  log("go-command", "session_created", sessionID, undefined, "info", {
     newSessionID,
     title,
   });
@@ -144,7 +139,7 @@ export async function handleGoCommand(
   // if any subsequent step fails.
   const updatedContent = updatePlanStatus(plan.content, "executing");
   writePlan(plan.path, updatedContent);
-  log("plan-lifecycle", "status_updated", sessionID, undefined, "info", {
+  log("go-command", "status_updated", sessionID, undefined, "info", {
     path: plan.path,
     newStatus: "executing",
   });
@@ -164,7 +159,7 @@ export async function handleGoCommand(
   // (See docs/plan-mode-design.md §16 #42)
   if (client.route?.navigate) {
     client.route.navigate("home");
-    log("plan-lifecycle", "navigated_home", sessionID, undefined, "info");
+    log("go-command", "navigated_home", sessionID, undefined, "info");
   }
 
   if (client.tui?.publish) {
@@ -174,7 +169,7 @@ export async function handleGoCommand(
         properties: { sessionID: newSessionID },
       },
     });
-    log("plan-lifecycle", "tui_switched", sessionID, undefined, "info", {
+    log("go-command", "tui_switched", sessionID, undefined, "info", {
       newSessionID,
     });
   }
@@ -195,7 +190,7 @@ export async function handleGoCommand(
       parts: [{ type: "text", text: planReference }],
     },
   });
-  log("plan-lifecycle", "prompt_injected", sessionID, undefined, "info", {
+  log("go-command", "prompt_injected", sessionID, undefined, "info", {
     newSessionID,
   });
 
@@ -223,16 +218,11 @@ export async function handleGoCommand(
           ],
         },
       });
-      log("plan-lifecycle", "confirm_injected", sessionID, undefined, "info");
+      log("go-command", "confirm_injected", sessionID, undefined, "info");
     } catch (err) {
-      log(
-        "plan-lifecycle",
-        "confirm_inject_failed",
-        sessionID,
-        undefined,
-        "warn",
-        { error: String(err) },
-      );
+      log("go-command", "confirm_inject_failed", sessionID, undefined, "warn", {
+        error: String(err),
+      });
     }
   }
 
@@ -251,7 +241,7 @@ export async function handleGoCommand(
   //   try {
   //     await client.session.delete({ path: { id: sessionID } });
   //     log(
-  //       "plan-lifecycle",
+  //       "go-command",
   //       "old_session_deleted",
   //       sessionID,
   //       undefined,
@@ -259,7 +249,7 @@ export async function handleGoCommand(
   //     );
   //   } catch (err) {
   //     log(
-  //       "plan-lifecycle",
+  //       "go-command",
   //       "old_session_delete_failed",
   //       sessionID,
   //       undefined,

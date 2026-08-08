@@ -1,5 +1,5 @@
 /**
- * Tests for src/hooks/plan-lifecycle/hook.ts — /go command adapter.
+ * Tests for src/commands/go/hook.ts — /go command adapter.
  *
  * Uses in-memory mocks for the OpenCode client to avoid real
  * session creation. Tests focus on orchestration flow, error handling,

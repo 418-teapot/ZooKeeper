@@ -5,7 +5,7 @@
  * (text + tool parts), cache hit rate, exact + heuristic total,
  * category breakdown, computeContextReport.
  *
- * This is the canonical test file for all measurement logic;
+ * This is the primary test file for all measurement logic;
  * `src/hooks/context-metrics/index.test.ts` tests the barrel re-export
  * and `measureContext` logging contract.
  */

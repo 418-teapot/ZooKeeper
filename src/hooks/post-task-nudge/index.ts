@@ -13,4 +13,33 @@ export {
   TODO_RESUME_NUDGE,
   VERIFY_REMINDER,
 } from "../../core/prompts.js";
-export { nudgePostTask } from "./hook.js";
+
+import type { HookUnitDescriptor } from "../../core/slots.js";
+import { nudgePostTask } from "./hook.js";
+
+export { nudgePostTask };
+
+/**
+ * Post-task-nudge hook unit descriptor.
+ *
+ * Contributes the after-exec post-task verification and progress nudge.
+ */
+export const unit: HookUnitDescriptor = {
+  name: "post-task-nudge",
+  kind: "hook",
+  create(deps) {
+    return {
+      kind: "hook",
+      beforeExec: [],
+      afterExec: [
+        {
+          name: "nudgePostTask",
+          handle: (input, output) =>
+            nudgePostTask(deps.client, input, output, deps.directory),
+        },
+      ],
+      transform: [],
+      toolDefinition: [],
+    };
+  },
+};

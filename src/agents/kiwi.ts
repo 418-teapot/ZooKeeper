@@ -1,3 +1,4 @@
+import type { AgentUnitDescriptor } from "../core/slots.js";
 import { MSG_REF_NO_ECHO } from "./parts.js";
 
 /**
@@ -39,3 +40,19 @@ Verification tasks → load \`kiwi-verify\` (compare two existing wiki pages, ch
 - ${MSG_REF_NO_ECHO}
 </Contract>
 `;
+
+/**
+ * Kiwi agent unit descriptor.
+ *
+ * Contributes the analysis-agent prompt for prompt injection.
+ */
+export const unit: AgentUnitDescriptor = {
+  name: "kiwi",
+  kind: "agent",
+  create() {
+    return {
+      kind: "agent",
+      agents: [{ name: "kiwi", prompt: KIWI_PROMPT }],
+    };
+  },
+};

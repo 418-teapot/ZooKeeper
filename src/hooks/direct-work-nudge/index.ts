@@ -10,4 +10,38 @@ export {
   DIRECT_WORK_NUDGE,
   SEARCH_DELEGATE_NUDGE,
 } from "../../core/prompts.js";
-export { nudgeDirectWork, nudgeDirectWorkForAgent } from "./hook";
+
+import type { HookUnitDescriptor } from "../../core/slots.js";
+import { nudgeDirectWork, nudgeDirectWorkForAgent } from "./hook";
+
+export { nudgeDirectWork, nudgeDirectWorkForAgent };
+
+/**
+ * Direct-work-nudge hook unit descriptor.
+ *
+ * Contributes the after-exec nudge, gated on the session's resolved
+ * agent (dolphin only) from the entry-held `sessionAgentMap`.
+ */
+export const unit: HookUnitDescriptor = {
+  name: "direct-work-nudge",
+  kind: "hook",
+  create(deps) {
+    return {
+      kind: "hook",
+      beforeExec: [],
+      afterExec: [
+        {
+          name: "nudgeDirectWork",
+          handle: (input, output) =>
+            nudgeDirectWorkForAgent(input, output, {
+              todoClient: deps.client,
+              planDir: deps.directory,
+              agent: deps.sessionAgentMap.get(input.sessionID),
+            }),
+        },
+      ],
+      transform: [],
+      toolDefinition: [],
+    };
+  },
+};

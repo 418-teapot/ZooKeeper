@@ -1,5 +1,5 @@
 /**
- * Direct unit tests for core/todo.ts.
+ * Direct unit tests for core/client/todo.ts.
  *
  * Tests `getTodoState()` in isolation: empty lists, single in_progress items,
  * mixed statuses, and API failure. Verifies `inProgressCount` and

@@ -22,8 +22,8 @@ import type { SweepToolPart } from "./types.js";
  * Options common to the pruning producers (dedup, purge-errors).
  *
  * Both producers read `turnProtection` and `protectedTools`; hook-level
- * gating (enabled, thresholdTokens) and batch-release settings are
- * managed by the handler config.
+ * gating (thresholdContext) and batch-release settings are managed by
+ * the handler config.
  */
 export interface ProducerOptions {
   /** Number of most recent assistant steps to protect from the strategy. */

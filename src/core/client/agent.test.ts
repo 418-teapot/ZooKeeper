@@ -1,5 +1,5 @@
 /**
- * Direct unit tests for core/agent.ts.
+ * Direct unit tests for core/client/agent.ts.
  *
  * Tests `getAgentName()` and `isDolphinAgent()` in isolation, covering all edge
  * cases: valid clients, null/undefined clients, missing methods, and thrown

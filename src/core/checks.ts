@@ -9,6 +9,7 @@
  */
 
 import { log } from "../utils/logger.js";
+import { getTodoState, type TinyClient } from "./client/todo.js";
 import { allTodosDone, countOpenTodos, findPlanByStatus } from "./plan.js";
 import {
   PLAN_DONE_NUDGE,
@@ -18,7 +19,6 @@ import {
   TODO_PROGRESS_NUDGE,
   TODO_RESUME_NUDGE,
 } from "./prompts.js";
-import { getTodoState, type TinyClient } from "./todo.js";
 
 // ---------------------------------------------------------------------------
 // Plan progress check

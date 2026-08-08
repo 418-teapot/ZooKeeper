@@ -1,3 +1,4 @@
+import type { AgentUnitDescriptor } from "../core/slots.js";
 import {
   BEAVER_AGENT_LINE,
   DELEGATION_FORMAT_TEXT,
@@ -330,3 +331,19 @@ If verification fails, diagnose which sub-tasks caused the failure and re-delega
 - **Exploration as delegation dump:** sending explore to "figure out the approach" instead of specifying concrete, searchable targets.
 </Anti-Patterns>
 `;
+
+/**
+ * Dolphin agent unit descriptor.
+ *
+ * Contributes the orchestrator prompt for prompt injection.
+ */
+export const unit: AgentUnitDescriptor = {
+  name: "dolphin",
+  kind: "agent",
+  create() {
+    return {
+      kind: "agent",
+      agents: [{ name: "dolphin", prompt: DOLPHIN_PROMPT }],
+    };
+  },
+};

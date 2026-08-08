@@ -6,16 +6,17 @@
 
 **ZooKeeper** — 一个编排器插件，通过静态配置权限 + prompt 注入确保编排器不越权调用工具。基于 Python + TypeScript + Rust 构建。同时适配 OpenCode 和 pi 两个宿主（双宿主，共享 `src/core/` 与 `src/agents/`，各自入口 `src/opencode.ts` 与 `src/pi.ts`）。
 
-核心机制：`config.toml` 中声明各 agent 的 `permission` deny 列表（**单一事实来源**）和 `[zoo.validation]` 阈值（上下文/提示词长度限制），install.py 编译 permission 部分后写入 OpenCode 配置（`~/.config/opencode/opencode.json`）和 pi 配置（`~/.pi/agent/settings.json` + `models.json`）；install.py 用 `shutil.which` 检测 opencode/pi 是否安装，按检测结果控制各安装段（缺失则跳过）；`[zoo.validation]` 阈值由 TS 插件在运行时直接读取；OpenCode 插件在 `config` hook 注入 `src/agents/<name>.ts` 的 prompt 常量；pi 扩展在 `before_agent_start` 注入 `DOLPHIN_PROMPT`、`resources_discover` 贡献 `core/skills` 目录。
+核心机制：`config.toml` 中声明各 agent 的 `permission` deny 列表（**单一事实来源**）和 `[zoo.validation]` 阈值（上下文/提示词长度限制），install.py 编译 permission 部分后写入 OpenCode 配置（`~/.config/opencode/opencode.json`）和 pi 配置（`~/.pi/agent/settings.json` + `models.json`）；install.py 用 `shutil.which` 检测 opencode/pi 是否安装，按检测结果控制各安装段（缺失则跳过）；`[zoo.validation]` 阈值由 TS 插件在运行时直接读取。TS 插件采用单元化注册架构：`src/registry.ts` 声明唯一有序的加载单元名单，`src/core/compose.ts`（`composeProfile`）按 `[zoo.mode.<name>]` profile 选择并实例化启用单元，`src/compose-opencode.ts` 把结果组装成 OpenCode hook 注册；OpenCode 插件在 `config` hook 注入 `src/agents/<name>.ts` 的 prompt 常量；pi 扩展（profile 驱动，只消费 agent/skill 槽位）在 `before_agent_start` 注入 agent prompt、`resources_discover` 贡献 `core/skills` 目录。
 
 ## 命令
 
 | 命令 | 说明 |
 |------|------|
-| `python3 install.py` | 安装/更新配置（读取 config.toml + .env → 检测 opencode/pi → 生成 OpenCode 的 opencode.json 和 pi 的 settings.json + models.json） |
+| `uv run python install.py` | 安装/更新配置（读取 config.toml + .env → 检测 opencode/pi → 生成 OpenCode 的 opencode.json 和 pi 的 settings.json + models.json） |
 | `./check.sh` | 自动修复 + 严格 lint（Python + TS + Rust），禁止 `#[expect]`/`#[allow]` |
 | `./test.sh` | 统一测试入口（Python + Rust 测试 + 覆盖率 + TS 单元测试） |
 | `./build.sh` | Release 编译 Rust CLI 工具（zlog / zfind / ztrace / zinspect） |
+| `./release.sh` | 构建发布包（podman + Debian 10 容器编译 Rust 工具 + 打包 tarball） |
 | `python3 tests/runner.py --dry-run` | 干跑（不调用 LLM，回放 JSONL） |
 | `python3 tests/runner.py --scenario <name>` | 只跑指定场景 |
 | `python3 tests/runner.py --replay` | 从 JSONL 回放（不调 LLM，只跑断言+阈值） |
@@ -29,6 +30,7 @@
 ### 通用规则
 - **注释英文**，用户界面输出中文
 - **不使用项目内部术语当注释**：如"L1/L2"分层概念不出现在代码注释里，只用通用自解释描述
+- **注释描述代码"是什么"，不引用外部叙事**：禁止层级编号（Layer 1/2/3）、施工过程引用（round/phase/"the refactor"）、未在代码中定义的比喻性架构自称（如给架构起名字）。模块 docstring 直接描述自身职责；架构全景描述只保留一份（入口文件头部注释）
 
 ### Python
 - **Formatter/Linter:** ruff（lint + format）
@@ -61,12 +63,13 @@ ZooKeeper/
 ├── config.toml              # 用户可编辑的配置模板（{env:VAR} 占位符；含 [zoo.validation] 阈值）
 ├── .env / .env.example      # 环境变量（apiKey、baseURL、模型名）
 ├── check.sh                 # 统一 lint/format 脚本
+├── bunfig.toml              # Bun 测试配置（vendor/** 排除出覆盖率）
 ├── test.sh                  # 统一测试脚本（Python + Rust + TS）
 ├── build.sh                 # Release 编译 Rust CLI 工具
 ├── core/
 │   └── skills/              # skill 定义目录
 ├── src/                     # 插件 TS 代码（OpenCode + pi 双宿主入口，共享 core/agents）
-│   ├── agents/              # 各 agent 的 prompt 常量文件
+│   ├── agents/              # 各 agent 的 prompt 常量 + agent 单元（unit 描述符）
 │   │   ├── parts.ts         # 共享 prompt 片段（DELEGATION_FORMAT_TEXT、TASK_PROMPT_HINT）
 │   │   ├── dolphin.ts
 │   │   ├── beaver.ts
@@ -75,41 +78,51 @@ ZooKeeper/
 │   │   ├── spider.ts
 │   │   ├── eagle.ts
 │   │   └── kiwi.ts
-│   ├── opencode.ts          # OpenCode 扩展入口（注册 10 个 hook + compress/decompress 2 个 tool）
-│   ├── pi.ts                # pi 扩展入口
+│   ├── registry.ts          # 单元注册表 — 唯一有序的加载单元名单（单一事实来源）
+│   ├── opencode.ts          # OpenCode 扩展入口 + 底盘（profile 驱动的注册由 compose-opencode 组装）
+│   ├── compose-opencode.ts  # OpenCode 事件键适配器（组装 ComposedResult → hook 注册；统一 COMMAND_HANDLED 哨兵）
+│   ├── pi.ts                # pi 扩展入口（profile 驱动，只消费 agent/skill 槽位）
 │   ├── tui.tsx              # TUI 侧边栏插件（OpenCode 专属，solid-js）
 │   ├── core/                # 框架无关纯逻辑（零 OpenCode 依赖）
+│   │   ├── compose.ts       # 选择引擎（composeProfile：profile → 启用单元实例化 → ComposedResult）
+│   │   ├── slots.ts         # 槽位词汇（单元描述符、贡献类型、ComposedResult/Deps/ActiveSet）
 │   │   ├── context/         # 上下文管理域
 │   │   │   ├── metrics.ts       # 上下文 token 估算（混合策略：API 报告 + 启发式）
 │   │   │   ├── context-report.ts# 上下文报告格式化
 │   │   │   ├── model-limits.ts  # 模型上下文上限注册表
 │   │   │   ├── message-parts.ts # 消息 part 内省 + pruning 占位符契约（最低层，零 import）
-│   │   │   ├── dcp-client.ts    # /dcp 命令最小客户端接口
-│   │   │   ├── dcp-command.ts   # /dcp 命令处理逻辑（自 hooks 层下沉）
 │   │   │   └── pruning/         # mark-sweep 裁剪子域（含 producers/）
+│   │   ├── client/          # 宿主 client 类型切片（框架无关的 client 接口契约）
+│   │   │   ├── agent.ts         # Agent 类型检测（Clientish 接口 + getAgentName）
+│   │   │   ├── todo.ts          # Todo 状态查询（TinyClient 接口 + getTodoState）
+│   │   │   └── session.ts       # 会话 client 最小契约（SessionClient 接口）
 │   │   ├── config-types.ts  # [zoo.context] 配置 schema 类型（纯类型）
 │   │   ├── config-parse.ts  # config.toml 解析
 │   │   ├── validate.ts      # task prompt 校验（section 提取、词数限制、反模式检测）
 │   │   ├── recovery.ts      # JSON 解析错误检测与恢复
 │   │   ├── plan.ts          # 计划文件读写（frontmatter 解析、状态更新）
 │   │   ├── checks.ts        # 计划/todo 进度检查
-│   │   ├── agent.ts         # Agent 类型检测（Clientish 接口 + getAgentName）
-│   │   ├── todo.ts          # Todo 状态查询（TinyClient 接口 + getTodoState）
 │   │   ├── delegation.ts    # task() 委派权限判定
 │   │   └── prompts.ts       # hook/tool 注入的 nudge 文本（agent 片段见 agents/parts.ts）
-│   ├── hooks/               # 薄适配层 — 解包框架 (input, output) → 调 core 函数
-│   │   ├── context-command/ # /dcp 斜杠命令（薄 barrel，逻辑在 core/context/dcp-command）
+│   ├── hooks/               # 各 hook 单元的薄适配层（每目录一个单元：解包框架 (input, output) → 调 core 函数）
 │   │   ├── context-metrics/ # 上下文指标（重导出 core/context/metrics）
 │   │   ├── context-pruning/ # 上下文裁剪 transform（mark-sweep + compress）
 │   │   ├── direct-work-nudge/# 直接编辑提醒（nudgeDirectWork 适配器）
 │   │   ├── json-error-nudge/# JSON 解析错误恢复（重导出 core/recovery）
-│   │   ├── plan-lifecycle/  # 计划生命周期（/go 命令）
 │   │   ├── post-task-nudge/ # task() 返回后验证+todo 提醒（nudgePostTask 适配器）
 │   │   ├── task-delegation/ # task() 委派权限拦截
 │   │   └── task-prompt/     # task prompt 校验 + nudge（3 个适配器函数）
 │   ├── tools/               # OpenCode 工具适配器（compress / decompress 工具工厂）
+│   ├── commands/            # 斜杠命令单元（每目录一个命令单元：unit 描述符 + 处理器）
+│   │   ├── go/              # /go 命令（计划 handoff：planning-done → dolphin 子会话）
+│   │   ├── dcp/             # /dcp 命令（command.ts 处理器 + unit 描述符）
+│   │   └── notify.ts        # 命令失败通知（notifySessionError，go/dcp 共用）
 │   └── utils/
 │       └── logger.ts        # JSON Lines 文件日志（旋转 + 保留策略）
+├── vendor/
+│   └── smol-toml/           # 上游 TS 源码（v1.7.1 tag，零修改）：index.ts 等 9 个源文件 + LICENSE；
+│                            #   来源 https://github.com/squirrelchat/smol-toml（BSD-3-Clause）；
+│                            #   vendor 日期 2026-08-08；更新方式：按新 tag 重新拷贝上游 src/ + LICENSE
 ├── tests/                   # Prompt 评估测试框架（Phase 1: dolphin.md）
 │   └── runner.py            # 评估测试运行器
 ├── tools/                   # Rust CLI tools workspace
@@ -141,10 +154,12 @@ ZooKeeper/
 
 - **`install.py`** — 安装脚本入口，读取 config.toml + .env → 用 `shutil.which` 检测 opencode/pi 是否安装 → 按检测结果生成：OpenCode 的 `~/.config/opencode/opencode.json`、pi 的 `~/.pi/agent/settings.json`（extensions 整体替换为 `src/pi.ts`）+ `~/.pi/agent/models.json`（provider 转换：明文 apiKey、baseUrl 对 anthropic-messages 去 `/v1`、cost 补全四字段、idempotent prune 残留）。provider 跳过 warn 统一打一次。三阶段对称打印（备份/生成/验证/安装完成）。只依赖 Python 标准库。
 - **`config.toml`** — 用户配置模板（单一事实来源），所有 deny 权限和 agent 配置在此声明，`[zoo.validation]` 阈值由 TS 插件在运行时直接读取
-- **`src/opencode.ts`** — 插件入口，薄接线层，注册 10 个 hook + compress/decompress 2 个 tool
-- **`src/pi.ts`** — pi 扩展入口，通过 `~/.pi/agent/settings.json` 的 `extensions` 数组被 pi 加载；注册 `before_agent_start`（prepend `DOLPHIN_PROMPT` 到 systemPrompt）和 `resources_discover`（贡献 `core/skills` 子目录）；用 `realpathSync` 跟随路径确保 `../core/skills` 解析正确
-- **`src/core/`** — 框架无关纯逻辑模块，零 OpenCode 依赖，可被任何 TS 运行时 import
-- **`src/agents/<name>.ts`** — 各 agent 的 prompt 常量文件，按 `{agent-name}.ts` 命名
+- **`src/opencode.ts`** — 插件入口 + 底盘，薄接线层：解析配置、持有共享 session 映射（`sessionAgentMap`/`subAgentCache`），合并 `compose-opencode.ts` 组装的 profile 驱动 fragment 与常驻基础设施 hook
+- **`src/pi.ts`** — pi 扩展入口，通过 `~/.pi/agent/settings.json` 的 `extensions` 数组被 pi 加载；profile 驱动，只消费 agent/skill 两个槽位：注册 `before_agent_start`（prepend 组合后的 agent prompt 到 systemPrompt）和 `resources_discover`（贡献 `core/skills` 子目录）；用 `realpathSync` 跟随路径确保 `../config.toml` 与 `../core/skills` 解析正确；config.toml 经 `vendor/smol-toml` 的 `parse` 解析（pi 的 Node/jiti 运行时无法 import .toml）
+- **`src/registry.ts`** — 单元注册表，唯一有序的加载单元名单（单一事实来源），`composeProfile` 按此数组顺序实例化启用单元
+- **`src/compose-opencode.ts`** — OpenCode 事件键适配器：把 `ComposedResult` 组装成 hook 注册（config / tool / command / 三个 handler 槽位），统一抛出 `COMMAND_HANDLED` 哨兵短路已处理的斜杠命令
+- **`src/core/`** — 框架无关纯逻辑模块，零 OpenCode 依赖，可被任何 TS 运行时 import；含选择引擎 `compose.ts`（`composeProfile`）、槽位词汇 `slots.ts`
+- **`src/agents/<name>.ts`** — 各 agent 的 prompt 常量 + agent 单元（unit 描述符），按 `{agent-name}.ts` 命名
 - **`src/agents/parts.ts`** — 共享 prompt 片段常量（`DELEGATION_FORMAT_TEXT`、`TASK_PROMPT_HINT`）
 - **`tools/Cargo.toml`** — Rust workspace 根配置
 

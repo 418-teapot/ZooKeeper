@@ -1,19 +1,16 @@
 /**
  * Tests for helper functions in the ZooKeeper plugin entry point.
  *
- * Covers: parseLimits, parseSkillsConfig, initPluginLogger (from
+ * Covers: parseLimits, initPluginLogger (from
  * `src/core/config-parse.ts`), injectAgentPrompts,
  * handleMessagesTransform, runAfterHandlers, registerSkills,
  * resolveSessionAgent.
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import { initPluginLogger, parseLimits } from "./core/config-parse.js";
 import {
-  initPluginLogger,
-  parseLimits,
-  parseSkillsConfig,
-} from "./core/config-parse.js";
-import {
+  buildPlugin,
   handleDedupNotify,
   handleMessagesTransform,
   injectAgentPrompts,
@@ -21,7 +18,6 @@ import {
   resolveSessionAgent,
   runAfterHandlers,
   sessionAgentMap,
-  zookeeper,
 } from "./opencode.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
 
@@ -163,99 +159,6 @@ describe("parseLimits", () => {
       (e) => e.event === "validation_config_invalid",
     );
     assert.equal(entries.length, 0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// parseSkillsConfig
-// ---------------------------------------------------------------------------
-
-describe("parseSkillsConfig", () => {
-  it("returns empty object for empty config", () => {
-    assert.deepEqual(parseSkillsConfig({}), {});
-  });
-
-  it("returns skills map when defined", () => {
-    const cfg = { skills: { git: "enable", dolphin: "disable" } };
-    assert.deepEqual(parseSkillsConfig(cfg), {
-      git: "enable",
-      dolphin: "disable",
-    });
-  });
-
-  it("returns empty object when skills key is missing", () => {
-    assert.deepEqual(parseSkillsConfig({ zoo: {} }), {});
-  });
-
-  it("returns empty object when skills key is null", () => {
-    assert.deepEqual(parseSkillsConfig({ skills: null }), {});
-  });
-
-  it("does NOT log a warning when skills section is absent", () => {
-    parseSkillsConfig({});
-    const buffer = _getBufferForTesting();
-    const entries = buffer.filter((e) => e.event === "skills_config_invalid");
-    assert.equal(entries.length, 0);
-  });
-
-  it("does NOT log a warning for a valid skills map", () => {
-    parseSkillsConfig({ skills: { git: "enable" } });
-    const buffer = _getBufferForTesting();
-    const entries = buffer.filter((e) => e.event === "skills_config_invalid");
-    assert.equal(entries.length, 0);
-  });
-
-  it("logs a warning and drops the whole section for a non-string value", () => {
-    const cfg = { skills: { git: "enable", dolphin: 42 } };
-    const result = parseSkillsConfig(cfg);
-    assert.deepEqual(result, {});
-
-    const buffer = _getBufferForTesting();
-    const entries = buffer.filter((e) => e.event === "skills_config_invalid");
-    assert.equal(
-      entries.length,
-      1,
-      "whole-section discard logs exactly one warn",
-    );
-    const ee = entries[0] as Record<string, unknown>;
-    assert.equal(ee.key, "dolphin");
-    assert.equal(ee.value, 42);
-  });
-
-  it("logs a warning and drops the whole section for an empty skill key", () => {
-    const cfg = { skills: { "": "core/skills/foo", git: "enable" } };
-    const result = parseSkillsConfig(cfg);
-    assert.deepEqual(result, {});
-
-    const buffer = _getBufferForTesting();
-    const entries = buffer.filter((e) => e.event === "skills_config_invalid");
-    assert.equal(entries.length, 1, "one warn for the whole section");
-    const ee = entries[0] as Record<string, unknown>;
-    assert.equal(ee.key, "");
-    assert.equal(ee.value, "core/skills/foo");
-  });
-
-  it("logs a warning and drops the whole section when skills is not an object", () => {
-    const cfg = { skills: "not-a-map" };
-    const result = parseSkillsConfig(cfg);
-    assert.deepEqual(result, {});
-
-    const buffer = _getBufferForTesting();
-    const entries = buffer.filter((e) => e.event === "skills_config_invalid");
-    assert.equal(entries.length, 1, "one warn for the whole section");
-    const ee = entries[0] as Record<string, unknown>;
-    assert.equal(ee.key, "skills");
-    assert.equal(ee.value, "not-a-map");
-  });
-
-  it("logs a warning and drops the whole section when skills is an array", () => {
-    const cfg = { skills: ["git"] };
-    const result = parseSkillsConfig(cfg);
-    assert.deepEqual(result, {});
-
-    const buffer = _getBufferForTesting();
-    const entries = buffer.filter((e) => e.event === "skills_config_invalid");
-    assert.equal(entries.length, 1, "one warn for the whole section");
   });
 });
 
@@ -441,38 +344,46 @@ describe("initPluginLogger", () => {
 // ---------------------------------------------------------------------------
 
 describe("injectAgentPrompts", () => {
-  it("injects prompt for agent with a matching prompt file", () => {
+  it("injects prompt for agent in the profile list", () => {
     const agents: Record<string, any> = { dolphin: {} };
-    injectAgentPrompts(agents);
+    injectAgentPrompts(agents, ["dolphin"]);
     assert.ok(typeof agents.dolphin.prompt === "string");
     assert.ok(agents.dolphin.prompt.length > 0);
     // Verify actual prompt content is from the file
     assert.ok(agents.dolphin.prompt.includes("<Role>"));
   });
 
-  it("skips agents without a matching prompt file", () => {
-    const agents: Record<string, any> = { nonexistent: {} };
-    injectAgentPrompts(agents);
-    assert.equal(agents.nonexistent.prompt, undefined);
+  it("skips agents not in the profile list", () => {
+    const agents: Record<string, any> = { dolphin: {}, kiwi: {} };
+    injectAgentPrompts(agents, ["dolphin"]);
+    assert.ok(typeof agents.dolphin.prompt === "string");
+    assert.equal(agents.kiwi.prompt, undefined);
+  });
+
+  it("skips profile-listed agents missing from config.agent", () => {
+    const agents: Record<string, any> = { dolphin: {} };
+    injectAgentPrompts(agents, ["dolphin", "nonexistent"]);
+    assert.ok(typeof agents.dolphin.prompt === "string");
+    // No throw — missing agents are skipped.
   });
 
   it("skips null agents", () => {
     const agents: Record<string, any> = { dolphin: null };
-    injectAgentPrompts(agents);
+    injectAgentPrompts(agents, ["dolphin"]);
     // No throw — null agents are skipped
     assert.equal(agents.dolphin, null);
   });
 
   it("skips non-object (string) agents", () => {
     const agents: Record<string, any> = { dolphin: "string-value" };
-    injectAgentPrompts(agents);
+    injectAgentPrompts(agents, ["dolphin"]);
     // No throw — string agents are skipped
     assert.equal(agents.dolphin, "string-value");
   });
 
   it("skips array agents", () => {
     const agents: Record<string, any> = { dolphin: [] };
-    injectAgentPrompts(agents);
+    injectAgentPrompts(agents, ["dolphin"]);
     // No throw — arrays pass typeof check but are not mutated
     assert.ok(Array.isArray(agents.dolphin));
     assert.equal(agents.dolphin.length, 0);
@@ -480,7 +391,7 @@ describe("injectAgentPrompts", () => {
 
   it("handles empty agents object", () => {
     const agents: Record<string, any> = {};
-    injectAgentPrompts(agents);
+    injectAgentPrompts(agents, ["dolphin"]);
     assert.deepEqual(agents, {});
   });
 
@@ -488,15 +399,15 @@ describe("injectAgentPrompts", () => {
     const agents: Record<string, any> = {
       nonexistent: { existingField: true },
     };
-    injectAgentPrompts(agents);
+    injectAgentPrompts(agents, ["nonexistent"]);
     assert.deepEqual(agents, {
       nonexistent: { existingField: true },
     });
   });
 
-  it("injects prompts for multiple agents", () => {
+  it("injects prompts for multiple profile-listed agents", () => {
     const agents: Record<string, any> = { dolphin: {}, beaver: {} };
-    injectAgentPrompts(agents);
+    injectAgentPrompts(agents, ["dolphin", "beaver"]);
     assert.ok(typeof agents.dolphin.prompt === "string");
     assert.ok(agents.dolphin.prompt.length > 0);
     assert.ok(typeof agents.beaver.prompt === "string");
@@ -987,83 +898,58 @@ describe("handleDedupNotify", () => {
 });
 
 describe("registerSkills", () => {
-  // Fail-closed: a skill registers only when its [zoo.skills] entry is
-  // exactly "enable".  Absent keys, typos, and junk values all disable
-  // the skill silently — config.toml lists every skill explicitly.
-  const allEnabled = {
-    "beaver-tdd": "enable",
-    "code-review": "enable",
-    "git-commit": "enable",
-    grill: "enable",
-    "kiwi-distill": "enable",
-    "kiwi-verify": "enable",
-    "mola-plan": "enable",
-    "wiki-ingest": "enable",
-    "wiki-query": "enable",
-    "wiki-verify": "enable",
-  };
+  // Fail-closed: a skill registers only when its directory name appears in
+  // the profile skills list.  Absent names are skipped silently —
+  // config.toml (via the profile) lists every skill explicitly.
+  const ALL_SKILLS = [
+    "beaver-tdd",
+    "code-review",
+    "git-commit",
+    "grill",
+    "kiwi-distill",
+    "kiwi-verify",
+    "mola-plan",
+    "wiki-ingest",
+    "wiki-query",
+    "wiki-verify",
+  ];
 
-  it("registers every skill whose entry is exactly 'enable'", () => {
+  it("registers every skill in the profile list", () => {
     const pluginConfig: Record<string, any> = {};
-    registerSkills(pluginConfig, { ...allEnabled });
+    registerSkills(pluginConfig, [...ALL_SKILLS]);
 
     assert.ok(pluginConfig.skills);
     assert.ok(Array.isArray(pluginConfig.skills.paths));
     assert.equal(pluginConfig.skills.paths.length, 10);
   });
 
-  it("skips a disabled skill ('disable' is not 'enable')", () => {
+  it("skips a skill absent from the profile list", () => {
     const pluginConfig: Record<string, any> = {};
-    registerSkills(pluginConfig, { ...allEnabled, "git-commit": "disable" });
+    registerSkills(
+      pluginConfig,
+      ALL_SKILLS.filter((s) => s !== "git-commit"),
+    );
 
     const paths = pluginConfig.skills.paths as string[];
     assert.equal(
       paths.some((p: string) => p.endsWith("git-commit")),
       false,
     );
-    // Other skills with "enable" still register.
+    // Other listed skills still register.
     assert.ok(paths.some((p: string) => p.endsWith("code-review")));
   });
 
-  it("skips a skill with a junk value (fail-closed)", () => {
+  it("registers no skills when the profile list is empty (fail-closed)", () => {
     const pluginConfig: Record<string, any> = {};
-    registerSkills(pluginConfig, { ...allEnabled, "git-commit": "junk" });
+    registerSkills(pluginConfig, []);
 
     const paths = pluginConfig.skills.paths as string[];
-    assert.equal(
-      paths.some((p: string) => p.endsWith("git-commit")),
-      false,
-      "junk value must not register the skill",
-    );
-    assert.ok(paths.some((p: string) => p.endsWith("code-review")));
-  });
-
-  it("skips a skill with an absent key (fail-closed)", () => {
-    const withoutGitCommit: Record<string, string> = { ...allEnabled };
-    delete withoutGitCommit["git-commit"];
-    const pluginConfig: Record<string, any> = {};
-    registerSkills(pluginConfig, withoutGitCommit);
-
-    const paths = pluginConfig.skills.paths as string[];
-    assert.equal(
-      paths.some((p: string) => p.endsWith("git-commit")),
-      false,
-      "absent key must not register the skill",
-    );
-    assert.ok(paths.some((p: string) => p.endsWith("code-review")));
-  });
-
-  it("registers no skills when the config map is empty (fail-closed)", () => {
-    const pluginConfig: Record<string, any> = {};
-    registerSkills(pluginConfig, {});
-
-    const paths = pluginConfig.skills.paths as string[];
-    assert.equal(paths.length, 0, "no 'enable' entries → nothing registers");
+    assert.equal(paths.length, 0, "no listed skills → nothing registers");
   });
 
   it("initialises skills config object when missing from pluginConfig", () => {
     const pluginConfig: Record<string, any> = {};
-    registerSkills(pluginConfig, { ...allEnabled });
+    registerSkills(pluginConfig, [...ALL_SKILLS]);
     assert.ok(pluginConfig.skills);
     assert.ok(Array.isArray(pluginConfig.skills.paths));
   });
@@ -1073,7 +959,7 @@ describe("registerSkills", () => {
     const pluginConfig: Record<string, any> = {
       skills: { paths: [existingPath] },
     };
-    registerSkills(pluginConfig, { ...allEnabled });
+    registerSkills(pluginConfig, [...ALL_SKILLS]);
 
     const paths = pluginConfig.skills.paths as string[];
     assert.ok(paths.includes(existingPath));
@@ -1088,7 +974,7 @@ describe("registerSkills", () => {
     //   - Other errors are logged as warnings (never thrown)
     // The real core/skills directory exists, so readdirSync succeeds.
     const pluginConfig: Record<string, any> = {};
-    registerSkills(pluginConfig, { ...allEnabled });
+    registerSkills(pluginConfig, [...ALL_SKILLS]);
     assert.ok(pluginConfig.skills.paths.length >= 4);
   });
 });
@@ -1096,12 +982,37 @@ describe("registerSkills", () => {
 // ---------------------------------------------------------------------------
 // Plugin wiring smoke test — hook handlers exist on the plugin object.
 // Existence only; the behavior of each handler is covered by the hook tests
-// (which drive the hook-directory adapters directly).
+// (which drive the hook-directory adapters directly).  Profile-driven
+// registration is covered in `src/opencode.mode.test.ts`.
 // ---------------------------------------------------------------------------
 
 describe("plugin wiring", () => {
-  it("exposes all 10 hook handlers as functions", async () => {
-    const plugin = await zookeeper({ client: {} });
+  /** A minimal full-profile zoo config (mirrors [zoo.mode.poly]). */
+  const POLY_ZOO = {
+    mode: {
+      poly: {
+        agents: [],
+        skills: [],
+        hooks: [
+          "task-prompt",
+          "task-delegation",
+          "direct-work-nudge",
+          "post-task-nudge",
+          "json-error-nudge",
+          "context-pruning",
+          "context-metrics",
+        ],
+        tools: [],
+        commands: ["go", "dcp"],
+      },
+    },
+  };
+
+  it("exposes all profile-driven hook handlers when the poly profile is active", async () => {
+    const plugin = (await buildPlugin({ client: {} }, POLY_ZOO)) as Record<
+      string,
+      unknown
+    >;
     const handlerNames = [
       "config",
       "chat.params",
@@ -1116,10 +1027,39 @@ describe("plugin wiring", () => {
     ];
     for (const name of handlerNames) {
       assert.equal(
-        typeof (plugin as Record<string, unknown>)[name],
+        typeof plugin[name],
         "function",
         `expected hook handler "${name}" to be a function`,
       );
     }
+  });
+
+  it("exposes only the infrastructure hooks when the profile is null", async () => {
+    // An empty zoo config has no [zoo.mode.*] section — every
+    // profile-driven registration is skipped.
+    const plugin = (await buildPlugin({ client: {} }, {})) as Record<
+      string,
+      unknown
+    >;
+    const infrastructure = [
+      "config",
+      "chat.params",
+      "event",
+      "experimental.chat.system.transform",
+      "experimental.text.complete",
+    ];
+    for (const name of infrastructure) {
+      assert.equal(
+        typeof plugin[name],
+        "function",
+        `expected infrastructure hook "${name}" to be a function`,
+      );
+    }
+    assert.equal(plugin["tool.definition"], undefined);
+    assert.equal(plugin["tool.execute.before"], undefined);
+    assert.equal(plugin["tool.execute.after"], undefined);
+    assert.equal(plugin["experimental.chat.messages.transform"], undefined);
+    assert.equal(plugin["command.execute.before"], undefined);
+    assert.equal(plugin.tool, undefined);
   });
 });

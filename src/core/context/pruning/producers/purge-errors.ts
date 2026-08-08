@@ -32,8 +32,8 @@ import type { SessionState, SweepToolPart } from "../types.js";
  * Options for the purge-errors strategy.
  *
  * Alias of the shared `ProducerOptions` — `runPurgeErrors` reads
- * `turnProtection` and `protectedTools`; gating fields (enabled,
- * thresholdTokens) are consumed by the hook.
+ * `turnProtection` and `protectedTools`; gating fields
+ * (thresholdTokens) are consumed by the hook.
  */
 export type PurgeErrorsOptions = ProducerOptions;
 

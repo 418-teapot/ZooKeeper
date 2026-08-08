@@ -88,7 +88,7 @@ GITLAB_ACCESS_TOKEN=your-gitlab-private-token-here
 **3. 生成宿主配置**
 
 ```bash
-python3 install.py
+uv run python install.py
 ```
 
 **4. 添加 CLI 工具到 PATH**

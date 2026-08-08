@@ -792,7 +792,7 @@ interface SessionState {
 |------|------|
 | `src/core/metrics.ts` | 唯一测量模块（findLastCompletedAssistant、CJK 启发式、computeContextReport、缓存命中率）；**系统类为残差法** `max(0, total − user − asst − tool)`（见下方注） |
 | `src/core/context-report.ts` | 纯展示层：`formatContextReport(report, opts)`——**双口径消息数**（`模型可见 X 条 · 存储 Y 条`，相等时单行）；回收两态（`已生效` / `待生效` 分行）；**不区分手动/自动**（release 后本质相同） |
-| `src/hooks/context-command/index.ts` | `/dcp` 命令分发：`context`/`sweep [N]`/`compress`/`help`；报告数据源自内存态 `getOrCreateSessionState`，消息计数经 `liveBlocks` 折算 |
+| `src/commands/dcp/command.ts` | `/dcp` 命令分发：`context`/`sweep [N]`/`compress`/`help`；报告数据源自内存态 `getOrCreateSessionState`，消息计数经 `liveBlocks` 折算 |
 | `src/tui.tsx` | `ZookeeperPanel` 侧边栏；**分类分布跑在折叠视图上**（读盘 `loadSessionState` → `liveBlocks` + `previewFold`，纯只读不写状态）；`prunedCallIDs` 只含 effective 标记 |
 
 > **系统类残差法（2026-07-30 修正）**：旧实现用 DCP 式减法（首条已完成
@@ -871,22 +871,18 @@ interface Mark { tokens: number; effective: boolean; action: PruneAction; }
 
 ```toml
 [zoo.context]
-enabled = true
 protected_messages = 20      # 消息条数保护：末尾 N 条非 ignored 消息计入保护区
 released_percent = 10        # pending 合计达上下文长度此百分比时统一释放
 
 [zoo.context.dedup]
-enabled = true
 threshold_context = 100000
 protected_tools = []
 
 [zoo.context.purge_errors]
-enabled = true
 threshold_context = 100000
 protected_tools = []
 
 [zoo.context.compress]       # 新增（§4.7）
-enabled = true
 threshold_tokens = 2000      # 幻影门禁：小于此收益的段跳过压缩
 protected_tokens = 20000     # 末尾累计达此值后不压缩（token 保护窗）
 ```
@@ -895,7 +891,6 @@ protected_tokens = 20000     # 末尾累计达此值后不压缩（token 保护�
 
 ```typescript
 interface ProducerGateConfig {
-  enabled?: boolean;
   thresholdContext?: number;
   protectedTools?: string[];
 }
@@ -904,7 +899,7 @@ interface ContextPruningConfig {
   releasedPercent?: number;        // 管道级批量释放阈值
   dedup: ProducerGateConfig;
   purgeErrors: ProducerGateConfig;
-  compress?: CompressionGateConfig; // enabled/thresholdTokens/protectedTokens
+  compress?: CompressionGateConfig; // thresholdTokens/protectedTokens/maxRanges
 }
 ```
 
@@ -913,7 +908,9 @@ interface ContextPruningConfig {
 
 #### R3：表驱动 producer 循环
 
-Phase 2（标记阶段）从单一 `if (enabled) { runDedup }` 改为静态数组循环：
+Phase 2（标记阶段）为静态数组循环（每个 producer 以自身
+`thresholdContext` 门控、缺席即跳过；启停由 mode profile 的
+context-pruning hook 单元唯一决定，无独立开关）：
 
 ```typescript
 const producers = [
@@ -923,14 +920,15 @@ const producers = [
     run: () => runPurgeErrors(state, messages, {turnProtection, protectedTools}) },
 ];
 for (const {name, gate, run} of producers) {
-  if (gate.enabled === false) continue;
-  if (promptTokens < (gate.thresholdTokens ?? 100000)) continue;
+  const threshold = gate.thresholdContext;
+  if (threshold === undefined) continue;
+  if (promptTokens < threshold) continue;
   const marks = run();
   if (marks.length) log(`${name}_marked`, ...);
 }
 ```
 
-每个 producer 独立评估自己的门控（`enabled` + `thresholdContext`）；
+每个 producer 独立评估自己的门控（`thresholdContext` 缺席即跳过）；
 提示侧总量不足时向安全方向失败（不执行）。无注册表、无动态发现——
 静态数组即止。统一释放（循环外一次 `releaseBatch` 判断：全部 pending
 tokens ≥ promptTokens × released_percent% → 两类标记一起翻转；
@@ -1016,8 +1014,9 @@ in-memory 标志，下一轮 transform 注入合成 user 指令消息，由模�
 #### pendingManualTrigger 两段式流程
 
 ```
-/dcp compress（command.execute.before，context-command/index.ts）:
-  1. 启用门检查（compress 段严格解析且 enabled=true，否则 ignored 通知拒绝）
+/dcp compress（command.execute.before，src/commands/dcp/command.ts）:
+  1. 门检查（compress 工具已由 mode profile 的 tools 注册 且 段严格解析
+     通过，否则 ignored 通知拒绝）
   2. 置 state.pendingManualTrigger = true（in-memory 一次性标志，
      同 pendingViewChange 纪律：不落盘、不持久化，重启丢失无害）
   3. ignored 通知告知"将在下一轮触发压缩"（不 fetch 消息、不建块）
@@ -1157,8 +1156,8 @@ pendingManualTrigger 驱动模型调用本工具（§4.7），命令与工具统
 
 #### 工具注册与执行（src/tools/compress.ts + src/opencode.ts）
 
-- **注册**：`tool` hook 注册 `compress`（`[zoo.context.compress]
-  .enabled === false` 时整个 hook 缺席）；config hook 将 `"compress"`
+- **注册**：`tool` hook 注册 `compress`（compress 未在 mode profile 的
+  tools 列表时整个 hook 缺席）；config hook 将 `"compress"`
   **追加**到 `experimental.primary_tools`（保留既有条目，同一门控）
 - **execute 全流程**：取全量消息 → 注册表空时幂等 `assignMessageRefs`
   兜底 → 核心管道 → `pendingViewChange = true` + `saveSessionState`
@@ -1169,7 +1168,7 @@ pendingManualTrigger 驱动模型调用本工具（§4.7），命令与工具统
   （§4.7），pendingManualTrigger 手动触发路径已交付（2026-08-06）
 - **测试**：19 个核心单测（range.test.ts，解析/校验/消费/记账/保护/
   门禁/过期 ref）+ 9 个集成测试（tools/compress.test.ts，mockClient
-  断言建块/持久化/通知，enabled=false 时无 compress 键）；全仓 1148
+  断言建块/持久化/通知，profile tools 未含 compress 时无 compress 键）；全仓 1148
   TS 测试全绿，check.sh / test.sh / build.sh 三脚本通过
 
 ### 4.9 上下文压力提醒（nudge，✅ 已实现 2026-08-02）
@@ -1216,7 +1215,7 @@ level  = tokens >= max ? "urgent"
 管道重编号为 Phase 1-7，nudge 为 Phase 6（Batch release 之后、
 Finalize 之前），复用 Phase 3 已算好的 `promptTokens`（同视图纪律）。
 跳过条件（任一即跳过）：`isSubAgent`（子代理无 compress 工具）/
-nudge 配置缺席或 `enabled = false` / 本会话未捕获 context limit /
+nudge 配置缺席 / 本会话未捕获 context limit /
 `lastAsst.index < 0` / `resolveThresholds` 返回 null。
 
 触发时经 `computeEligibility`（跑在折叠视图上）取资格载荷。**窗口与
@@ -1227,8 +1226,8 @@ tokenBoundary, lastUserMessageIndex)` 三重保护取最保守，起点 =
 估算为 `~reclaim`，且 `< thresholdTokens` 视为 phantom 不提醒。
 **零兜底（2026-08-02 严格化）**：`[zoo.context.compress]` 严格整段
 解析——节缺席静默关闭；任一键缺失/非法 → 单次 `compress_config_invalid`
-warn + 整节失效（工具不注册、/dcp 拒绝、nudge 跳过）；`enabled = false`
-合法关闭。原 `DEFAULT_PROTECTED_*` 常量与 /dcp 路径硬编码字面量已全部
+warn + 整节失效（工具不注册、/dcp 拒绝、nudge 跳过）。原 `DEFAULT_PROTECTED_*`
+常量与 /dcp 路径硬编码字面量已全部
 删除，三值无 `??` 回退直达 `computeEligibility`；顶层
 `protected_messages` 保持 per-key 宽松（缺失时 compress 执行端响亮中文
 报错引导配置）。`0` 为合法显式值（关闭对应保护层）。随后填充模板
@@ -1256,13 +1255,14 @@ user 消息：
 
 #### 配置与捕获
 
-`config.toml` 新增 `[zoo.context.nudge]`（六键全配，中文注释）：
-`enabled` / `min_context = "60%"` / `min_context_cap = 200000` /
+`config.toml` 新增 `[zoo.context.nudge]`（五键全配，中文注释）：
+`min_context = "60%"` / `min_context_cap = 200000` /
 `max_context = "80%"` / `max_context_cap = 300000` / `growth_tokens = "5%"`。
 **严格解析**（`parseContextConfig`，src/core/config-parse.ts）：整节缺席 → nudge
 静默缺席，其余剪枝功能不受影响；节在而任一键缺失/类型错/百分比畸形
 → `nudge_config_invalid` warn（每次插件启动一次，即每次 zookeeper() 解析）+ 整节置 undefined。
-`enabled = false` 合法（已解析但停用）。
+启停由 mode profile 唯一决定（nudge 随 context-pruning hook 单元与
+compress 工具注册与否生效，段内无独立开关）。
 
 模型窗口捕获：新注册 `experimental.chat.system.transform` hook，把
 `input.model.limit.context`（+ `model.id`）写入 per-session 内存注册表
@@ -1323,16 +1323,16 @@ after > contextLimit × maxFillPercent / 100 → 拒绝（throw 响亮中文指�
 
 #### 配置严格解析（[zoo.context.decompress]）
 
-`config.toml` 两键：`enabled`（boolean）+ `max_fill_percent`（整数
+`config.toml` 一键：`max_fill_percent`（整数
 1-100）。镜像 §4.9 严格化（`parseContextConfig`，src/core/config-parse.ts）：
 
 - 节缺席 → undefined（工具静默缺席）
-- 任一键缺失/类型错/越界 → 单次 `decompress_config_invalid` warn +
+- 键缺失/类型错/越界 → 单次 `decompress_config_invalid` warn +
   整节 undefined
-- `enabled = false` 合法关闭；代码零默认值零兜底，config.toml 唯一
+- 代码零默认值零兜底，config.toml 唯一
   事实来源
 - 兜底（防御陈旧配置）：`maxFillPercent` 缺失时工具 execute 抛响亮配置
-  引导报错（提示补配 `enabled = true` 与 `max_fill_percent`）
+  引导报错（提示补配 `max_fill_percent`）
 
 > **改名注记（2026-08-06）：** `reject_percent` 已改名
 > `max_fill_percent`（上界门统一 `max_` 前缀家族，与 `max_ranges` 同族；
@@ -1359,8 +1359,8 @@ after > contextLimit × maxFillPercent / 100 → 拒绝（throw 响亮中文指�
 
 #### 注册接线（src/opencode.ts）
 
-- tool hook 内与 compress **并列注册**（`decompress.enabled === true`
-  才出席；节缺席/非法/`false` 均不注册）
+- tool hook 内与 compress **并列注册**（decompress 在 mode profile 的
+  tools 列表中即注册；节缺席/非法 → execute 抛配置引导报错）
 - config hook 将 `"decompress"` **追加**到 `experimental.primary_tools`
   （保留既有条目、幂等去重，同一门控）
 
@@ -1565,9 +1565,9 @@ DCP 把策略挂在 compress 工具上（§3.3）；我们没有 compress 工具
 
 ```
 1. pruneToolOutputs        — 清理：替换【之前轮次】标记的 callID
-2. 门控判断                — enabled 且
+2. 门控判断                — `threshold_context` 配置且
                               最后一条已完成 assistant 的 prompt 侧总量
-                              （input + cache.read + cache.write）≥ 100K
+                              （input + cache.read + cache.write）≥ 阈值
 3. runDedup                — 标记：扫描全量消息，新标记写入 state.marks
                              （effective=false）【下一轮 transform 生效】
 ```
@@ -1620,16 +1620,12 @@ turn_protection = 5
 release_threshold_percent = 5
 
 [zoo.context.dedup]
-# 自动去重开关
-enabled = true
 # 触发门控：最后一条已完成 assistant 消息的 prompt 侧总量达到该值才扫描
 threshold_tokens = 100000
 # 受保护工具（输出不可再生的工具）
 protected_tools = ["question"]
 
 [zoo.context.purge_errors]
-# 错误清除开关（尾部保险）
-enabled = true
 # 触发门控
 threshold_tokens = 100000
 # 受保护工具
@@ -1685,7 +1681,7 @@ Turn N+2: Phase 1 替换已生效标记的输出
 
 | 文件 | 变更 |
 |------|------|
-| `config.toml` | `[zoo.context]`（`turn_protection` + `release_threshold_percent`）+ `[zoo.context.dedup]`（`enabled`/`threshold_tokens`/`protected_tools`）+ `[zoo.context.purge_errors]`（`enabled`/`threshold_tokens`/`protected_tools`） |
+| `config.toml` | `[zoo.context]`（`turn_protection` + `release_threshold_percent`）+ `[zoo.context.dedup]`（`threshold_tokens`/`protected_tools`）+ `[zoo.context.purge_errors]`（`threshold_tokens`/`protected_tools`） |
 | `src/core/pruning/marks.ts` | 新建：marks 单集合 + addMark/releaseBatch + 派生 stats + 持久化（取代旧 state.ts，已删除）；后增 `PruneAction`/`Mark.action`/`byAction`/`{tokens,effective,action}` 严格加载 |
 | `src/core/pruning/producers/dedup.ts` | 新建：runDedup（签名归一化/保护窗/零收益跳过） |
 | `src/core/pruning/producers/sweep.ts` | 新建：runSweep（原 collectSweepCallIDs 迁移，锚点语义不变） |
@@ -1695,7 +1691,7 @@ Turn N+2: Phase 1 替换已生效标记的输出
 | `src/hooks/context-pruning/hook.ts` | 先清后标 + 门控 + 批量释放 + notify 回调；后增三层 Config 表驱动循环 + 双门控 |
 | `src/core/config-parse.ts` | parseContextConfig（两层读取 + 逐字段类型防御）+ notify 注入（fire-and-forget）；后改为三层解析 + release_threshold_percent 顶层读取 |
 | `src/core/context-report.ts` | 合并回收行（FormatContextReportOptions） |
-| `src/hooks/context-command/index.ts` | sweep 走 producer；报告读内存态 |
+| `src/core/context/dcp-command.ts` | sweep 走 producer；报告读内存态（2026-08-08 迁入 `src/commands/dcp/command.ts` 并删除，`notifySessionError` 移至 `src/commands/notify.ts`） |
 | `src/tui.tsx` | prunedCallIDs 只含 effective 标记 |
 | 测试 | marks/producers/hook/command/report 全套（879 TS 测试全绿） |
 

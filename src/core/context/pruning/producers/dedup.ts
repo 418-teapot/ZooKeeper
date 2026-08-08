@@ -29,8 +29,8 @@ import type { SessionState, SweepToolPart } from "../types.js";
  * Options for the dedup producer.
  *
  * Alias of the shared `ProducerOptions` — `runDedup` only reads
- * `turnProtection` and `protectedTools`.  Hook-level gating (enabled,
- * thresholdTokens) and batch-release (releaseThresholdPercent) are
+ * `turnProtection` and `protectedTools`.  Hook-level gating
+ * (thresholdTokens) and batch-release (releaseThresholdPercent) are
  * managed by the handler config.
  */
 export type DedupOptions = ProducerOptions;

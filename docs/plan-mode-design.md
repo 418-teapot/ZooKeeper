@@ -489,14 +489,14 @@ P1 实施:
 | 组件 | 决策 | 理由 |
 |------|------|------|
 | `session-tracker.ts` | **暂缓至 P2** | handoff 模式下规划与执行完全隔离，P1 不需要追踪 active sessions；与 Background Job Board 一起在 P2 实现 |
-| `plan-lifecycle hook` | **去掉 idle 检测** | handoff 替代了 idle 自动转 executing 的需求——执行 session 在 handoff 时显式创建，无需推测状态转换 |
+| `plan-lifecycle hook`（现为 go 命令单元，`src/commands/go/`） | **去掉 idle 检测** | handoff 替代了 idle 自动转 executing 的需求——执行 session 在 handoff 时显式创建，无需推测状态转换 |
 | `plan-state.ts` | **逻辑不变** | 读写 plan 文件、解析 frontmatter、状态校验仍必需；写入者由 orchestrator 代理写改为 mola 直接写 |
 | `project-id.ts` | **不变** | 无影响 |
 | Background Job Board | **暂缓至 P2** | handoff 模式下规划与执行物理分离，P1 不需要并行任务追踪；可独立实现 |
 
 **推荐方案：新会话 handoff**
 
-规划完成后（`status: ready`），plan-lifecycle hook 调用三段 API 创建干净的执行会话：
+规划完成后（`status: ready`），plan-lifecycle hook（现为 go 命令单元，`src/commands/go/`）调用三段 API 创建干净的执行会话：
 
 ```
 session.create(parentID=planSession, title="执行: X")                                → executionSession
@@ -531,7 +531,7 @@ chat.message hook → output.message["agent"] = "mola"
   ↓
 mola: 输出 plan → 用户批准 → 写文件 + status: ready
   ↓
-plan-lifecycle hook 检测 plan 完成，调用三段 API 创建 executionSession
+plan-lifecycle hook（现为 go 命令单元，`src/commands/go/`）检测 plan 完成，调用三段 API 创建 executionSession
 build 在新会话中读 plan 文件，按 TODOs 委派 general 执行
 TUI 自动跳转到新会话
 ```
@@ -567,7 +567,7 @@ TUI 自动跳转到新会话
 └──────────────────────────────────────────────────┘
                         ↓
 ┌──────────────────────────────────────────────────┐
-│  Handoff 通道 (plan-lifecycle hook)               │
+│  Handoff 通道 (plan-lifecycle hook，现为 go 命令单元)     │
 │  ├─ chat.message hook → output.message["agent"]   │
 │  │  = "mola"（同会话，短规划 <50k）               │
 │  └─ session.create + session.promptAsync          │
@@ -613,12 +613,12 @@ TUI 自动跳转到新会话
 | Plan state manager（countOpenTodos, allTodosDone） | `src/core/plan-state.ts` | `src/core/plan.ts` | ✅ 已实现 | 263 (+379 测试) |
 | Plan progress checks | `src/core/checks.ts` | 同左 | ✅ 已实现 | 133 (+7 测试) |
 | 完备性门控 | `core/prompts/build.md`（§11 规格） | `core/prompts/dolphin.md` Phase 1（简化版） | ⚠️ 简化版存在，§11 四问版本未实现 | ~10（简化版） |
-| Plan lifecycle hook | `src/hooks/plan-lifecycle/` | 同左 | ✅ 已实现 | 273 (+398 测试) |
+| Plan lifecycle hook | `src/commands/go/` | 同左 | ✅ 已实现 | 273 (+398 测试) |
 | `/go` 命令注册 | `src/index.ts` | 同左 | ✅ 已实现 | ~40（command.execute.before） |
 | mola-plan skill | `core/skills/mola-plan/` | 同左 | ✅ 已实现 | SKILL.md 241 + references 350 + templates 158 |
 | 集成测试 | `tests/runner.py` 场景 | — | ❌ 未实现 | 设计估 ~80 |
 
-**P1 核心已实现**: plan.ts + plan-lifecycle hook + mola.md + mola-plan skill + config.toml + `/go` 命令 ≈ 1,340 行代码 + 735 行测试。**未实现**: 完备性门控（§11 四问版）、集成测试场景。**设计变更**: project-id.ts + `_projects.json` 已废弃——sessionID 替代为正式方案（§12）。**已暂缓至 P2**: `session-tracker.ts`、Background Job Board、idle 检测、active-plans 概况注入。
+**P1 核心已实现**: plan.ts + plan-lifecycle hook（现为 go 命令单元，`src/commands/go/`）+ mola.md + mola-plan skill + config.toml + `/go` 命令 ≈ 1,340 行代码 + 735 行测试。**未实现**: 完备性门控（§11 四问版）、集成测试场景。**设计变更**: project-id.ts + `_projects.json` 已废弃——sessionID 替代为正式方案（§12）。**已暂缓至 P2**: `session-tracker.ts`、Background Job Board、idle 检测、active-plans 概况注入。
 
 ### 8.3 Plan Progress Nudge Pipeline
 
@@ -711,7 +711,7 @@ planning → planning-done → executing → done
 ### 9.4 Unreconciled 生命周期（P1 简化版）
 
 1. mola 完成多轮采访，产出 plan 并直接写入文件，状态设为 `planning-done`（`status: ready`）
-2. plan-lifecycle hook 检测到 `planning-done`，触发 handoff 三段 API（创建执行 session + 注入 plan + TUI 跳转）
+2. plan-lifecycle hook（现为 go 命令单元，`src/commands/go/`）检测到 `planning-done`，触发 handoff 三段 API（创建执行 session + 注入 plan + TUI 跳转）
 3. build 在新会话中读 plan 文件，委派第一个 subagent 时将状态改为 `executing`
 4. 如果用户在 executing 前要求修改 plan，mola 将状态改回 `planning` 并继续采访
 
@@ -1066,7 +1066,7 @@ Step 1. config.toml + install.py                 — ✅ mola primary agent 注�
 Step 2. src/core/plan.ts                         — ✅ plan 文件解析/写入/状态机（扁平 `<baseDir>/.zoo/plans/`，无 sessionID 子目录）
 Step 3. core/prompts/mola.md                     — ✅ mola prompt (60 行，含 Agents 委派段)
 Step 4. core/skills/mola-plan/                   — ✅ plan skill (SKILL.md + 3 reference + 2 template)
-Step 5. src/hooks/plan-lifecycle/ + src/index.ts — ✅ handoff `/go` 命令 + 三段 API + plan 状态更新
+Step 5. src/commands/go/ + src/index.ts — ✅ handoff `/go` 命令 + 三段 API + plan 状态更新
 Step 6. 集成测试 + runner.py 场景               — ❌ 未实现
 ```
 
@@ -1080,6 +1080,8 @@ Step 6. 集成测试 + runner.py 场景               — ❌ 未实现
 - `[agent.dolphin]`：orchestrator agent（设计文档原 "build" 最终命名为 "dolphin"）
 - `[zoo.skills]` 新增 `mola-plan = "enable"`
 - install.py 无需改动（直接透传 agent 配置，透传 `[zoo.skills]`）
+
+> 注：以上 `[zoo.skills]` 段已由 `[zoo.mode.*]` profile 机制的 `skills` 数组取代（见 config.toml `[zoo.mode.poly]`）。
 
 **Step 2: plan.ts** (263 行 + 379 测试) ✅ 已完成
 - 纯逻辑模块（零 OpenCode 依赖，可被 TS 运行时 import），文件名 `plan.ts`（设计文档原 `plan-state.ts`）
@@ -1105,7 +1107,7 @@ Step 6. 集成测试 + runner.py 场景               — ❌ 未实现
 - Classify 阶段根据 Ground 发现决定加载路径，支持 Graceful upgrade
 - 统一 YAML frontmatter（plan 初始 `status: planning`，完成时设为 `planning-done`）
 
-**Step 5: plan-lifecycle hook** (hook.ts 273 + index.ts 12 + src/index.ts 注册 ~40 = 325 行 + 398 测试) ✅ 已完成
+**Step 5: plan-lifecycle hook（现为 go 命令单元，`src/commands/go/`）** (hook.ts 273 + index.ts 12 + src/index.ts 注册 ~40 = 325 行 + 398 测试) ✅ 已完成
 - `src/index.ts` 中注册 `/go` 命令（`config.command.go`）和 `command.execute.before` handler
 - `handleGoCommand()` 八步编排：查找 plan → 验证 client API → 创建 dolphin 子 session → 更新 plan status → navigate home + TUI publish → 注入 plan reference（promptAsync）→ 注入 silent confirmation（prompt + noReply）→ 可选删除旧 session
 - 使用 `tui.publish()` SSE 事件触发 TUI 切换（非 `tui.selectSession()`）
@@ -1120,7 +1122,7 @@ Step 6. 集成测试 + runner.py 场景               — ❌ 未实现
 
 **暂缓至 P2 的组件：**
 - `session-tracker.ts` —— 与 Background Job Board 一起实现
-- `plan-lifecycle hook` 的 idle 检测 —— handoff 替代了此需求
+- `plan-lifecycle hook`（现为 go 命令单元，`src/commands/go/`）的 idle 检测 —— handoff 替代了此需求
 - `chat.message` hook 自动 handoff 触发 —— 当前仅 `/go` 命令方式
 - `config` hook active-plans 概况注入 —— 扫描方案（§12.2），约 40 行
 
@@ -1259,7 +1261,7 @@ interface BackgroundManager {
 | 45 | 执行阶段 plan 修改 | **build 直接编辑 plan 文件，无需 handoff 回 mola** | 中等/轻微调整（更新 TODOs、标记完成、调整步骤顺序）由 build 直接做，写入权通过 `~/.zoo/**/*.md` 路径约束控制。仅完整重新规划（架构重设计、方案全面推翻）触发新 mola handoff |
 | 46 | Background Job Board | **暂缓至 P2，非 handoff 前置** | handoff 模式下规划与执行物理分离，P1 不需要并行任务追踪。Job Board 在 P2 与 session-tracker 一起独立实现 |
 | 47 | session-tracker.ts | **暂缓至 P2** | handoff 模式下规划与执行完全隔离，P1 不需要追踪 active sessions。与 Background Job Board 一起在 P2 实现 |
-| 48 | plan-lifecycle idle 检测 | **去掉，handoff 替代此需求** | 原设计在 session.idle 时自动将 planning-done 转为 executing。handoff 显式创建执行 session，无需推测状态转换 |
+| 48 | plan-lifecycle idle 检测（现为 go 命令单元，`src/commands/go/`） | **去掉，handoff 替代此需求** | 原设计在 session.idle 时自动将 planning-done 转为 executing。handoff 显式创建执行 session，无需推测状态转换 |
 | 49 | 规划 skill 架构 | **两 skill 分离: mola-plan + mola-spec** | 继承 P0 分层设计但拆分用途：mola-plan 负责常规规划(CLEAR/UNCLEAR 双路径)，mola-spec 负责深度设计探索/grill。两 skill 通过 Workflow 路由选择，非 agent prompt 层判断 |
 | 50 | 路由位置 | **内嵌 Workflow 段，非独立 Intent Routing 段** | 旧版在 agent prompt 中设独立 `<Intent Routing>` 段。新版路由逻辑 = Workflow 第二步的子分支(Explore vs Interview)，减少 prompt 冗余 + 提升 token 密度 |
 | 51 | Contract 替代 Discipline | **Contract 标签(6 硬约束)取代旧 Discipline 段** | 旧结构: Role → Discipline → Workflow。新结构: Role → Contract → Workflow。Contract 将约束从"软纪律"升级为"硬协议"(输出格式、工具限制、每轮问题数、探索纪律等)，Workflow 专注于流程步骤 |
@@ -1271,7 +1273,7 @@ interface BackgroundManager {
 | 57 | 统一 YAML frontmatter | **plan 和 spec 的 frontmatter 都是 YAML `---` 格式** | plan 原本用 TOML `+++`，spec 用 YAML `---`。统一到 YAML 使两个文件解析逻辑一致，未来 plan-state.ts 只需实现一套 parser。脚手架脚本同步更新为统一格式 |
 | 58 | mola 工具权限具体配置 | **task=deny + webfetch=deny + websearch=deny；edit/write/read/grep/glob/bash/question 默认 allow** | mola 作为 primary 不委派子 agent（P1 阶段），hook 在运行时把 edit/write 路径约束到 `~/.zoo/**/*.md`。允许 bash 但 prompt 硬约束只跑诊断命令 |
 | 59 | 禁用内置 plan agent | **`[agent.plan] disable = true`** | mola 接管规划职责后，OpenCode 内置 plan agent 会与 mola 冲突。禁用避免两个规划 agent 共存的歧义 |
-| 60 | mola-plan 注册到 skills | **`[zoo.skills] mola-plan = "enable"`** | 通过现有的 skill 注册机制把 mola-plan 加入可用技能列表。mola 的 permission.skill 仅允许 mola-plan + wiki-query，防止 skill 滥用 |
+| 60 | mola-plan 注册到 skills | **`[zoo.skills] mola-plan = "enable"`**（注：已由 [zoo.mode.*] profile 机制取代） | 通过现有的 skill 注册机制把 mola-plan 加入可用技能列表。mola 的 permission.skill 仅允许 mola-plan + wiki-query，防止 skill 滥用 |
 | 61 | orchestrator 命名 | **"dolphin" 替代设计文档原 "build"** | 实施时最终确定 dolphin 为 orchestrator agent 名，语义更清晰（"海豚——海洋的编排者"）。`config.toml` 中为 `[agent.dolphin]`，prompt 文件为 `dolphin.md`。设计文档历史章节中 "build" 均应理解为 "dolphin" |
 | 62 | plan 文件路径退化方案 | **`~/.zoo/plans/<sessionID>/` 作为 `<project-id>/` 未实现时的临时方案（v1.8 已废弃——扁平路径模型替代）** | project-id.ts（Step 3）未实现时，以 sessionID 作为 plan 子目录名。路径重写函数和 `findPlanByStatus()` 均适配此模式。v1.8 被扁平 `<workspace>/.zoo/plans/` 模型替代 |
 | 63 | plan.ts 命名 | **`plan.ts` 替代设计原名 `plan-state.ts`** | 简化命名，state 隐含但非必需的限定词 |
@@ -1440,7 +1442,7 @@ P0 实施（详见 §14.0 与 [§16 #33-#38](#16-决策日志)）：mola agent p
 - **mola-plan skill 设计范式存活** —— 文件已删除，但 skill → reference 分层、CLEAR/UNCLEAR 双路径、explore-before-ask 协议、两过滤器纪律、审批门在 P1 中重建
 - **执行阶段 plan 修改** —— build 直接编辑 plan 文件（中等/轻微调整），仅完整重规划才 handoff 回 mola
 - **Background Job Board 和 session-tracker 暂缓至 P2** —— handoff 模式下规划与执行物理分离，P1 不需要并行追踪
-- **plan-lifecycle 去掉 idle 检测** —— handoff 显式创建执行 session，无需推测状态转换
+- **plan-lifecycle 去掉 idle 检测（现为 go 命令单元，`src/commands/go/`）** —— handoff 显式创建执行 session，无需推测状态转换
 - **plan-state.ts 逻辑不变，写入者从 orchestrator 改为 mola** —— hook 路径约束保证安全
 
 ---
@@ -1456,7 +1458,7 @@ P0 实施（详见 §14.0 与 [§16 #33-#38](#16-决策日志)）：mola agent p
 | 3 | project-id.ts | 待实施 | ~150 行 |
 | 4 | mola.md | ✅ 已完成 | ~50 行 |
 | 5 | mola-plan skill | ✅ 已完成 | SKILL.md + 3 reference + 2 scaffold 脚本 |
-| 6 | plan-lifecycle hook | 待实施 | ~250 行 |
+| 6 | plan-lifecycle hook（现为 go 命令单元，`src/commands/go/`） | 待实施 | ~250 行 |
 | 7 | 集成测试 | 待实施 | ~80 行 |
 
 **mola-plan 单一 skill 架构**：
@@ -1512,7 +1514,7 @@ websearch = "deny"
 disable = true  # mola 接管规划职责
 
 [zoo.skills]
-mola-plan = "enable"
+mola-plan = "enable"  # 注：已由 [zoo.mode.*] profile 机制取代
 ```
 
 **测试修复**：
@@ -1523,7 +1525,7 @@ mola-plan = "enable"
 **下一步（至 v1.5，已完成其中的 Steps 2、6）：**
 
 - Step 2：plan-state.ts ✅ → 以 `plan.ts` 文件名实现（231 行 + 337 测试）
-- Step 6：plan-lifecycle hook ✅ → 实现 `/go` 命令 + 八步 handoff 编排（273 行 + 398 测试）
+- Step 6：plan-lifecycle hook（现为 go 命令单元，`src/commands/go/`）✅ → 实现 `/go` 命令 + 八步 handoff 编排（273 行 + 398 测试）
 - Step 3：project-id.ts ❌ 仍待实施
 - Step 7：集成测试场景 ❌ 仍待实施
 
@@ -1534,7 +1536,7 @@ mola-plan = "enable"
 | Step | 组件 | 文件 | 规模 | 测试 |
 |------|------|------|------|------|
 | 2 | Plan state manager | `src/core/plan.ts` | 231 行 | `plan.test.ts` 337 行 |
-| 6 | Plan lifecycle hook | `src/hooks/plan-lifecycle/` | 285 行 | `hook.test.ts` 398 行 |
+| 6 | Plan lifecycle hook | `src/commands/go/` | 285 行 | `hook.test.ts` 398 行 |
 | — | `/go` 命令注册 | `src/index.ts` (command.execute.before) | ~40 行 | 由 hook.test.ts 间接覆盖 |
 
 **设计-实现校对与修正：**
@@ -1587,9 +1589,9 @@ mola-plan = "enable"
 | Step | 组件 | 文件 | 规模 | 测试 |
 |------|------|------|------|------|
 | 2 | Plan state manager | `src/core/plan.ts` | 231 行 | `plan.test.ts` 337 行 |
-| 6 | Plan lifecycle hook | `src/hooks/plan-lifecycle/hook.ts` | 273 行 | `hook.test.ts` 398 行 |
+| 6 | Plan lifecycle hook | `src/commands/go/hook.ts` | 273 行 | `hook.test.ts` 398 行 |
 | — | `/go` 命令 wiring | `src/index.ts` | ~40 行 | 由 hook.test.ts 间接覆盖 |
-| — | barrel export | `src/hooks/plan-lifecycle/index.ts` | 12 行 | — |
+| — | barrel export | `src/commands/go/index.ts` | 12 行 | — |
 
 **修改的设计文档章节：**
 

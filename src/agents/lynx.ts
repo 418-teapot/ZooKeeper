@@ -1,3 +1,4 @@
+import type { AgentUnitDescriptor } from "../core/slots.js";
 import { MSG_REF_NO_ECHO } from "./parts.js";
 
 /**
@@ -55,3 +56,19 @@ Structured findings:
 - ${MSG_REF_NO_ECHO}
 </Contract>
 `;
+
+/**
+ * Lynx agent unit descriptor.
+ *
+ * Contributes the exploration-agent prompt for prompt injection.
+ */
+export const unit: AgentUnitDescriptor = {
+  name: "lynx",
+  kind: "agent",
+  create() {
+    return {
+      kind: "agent",
+      agents: [{ name: "lynx", prompt: LYNX_PROMPT }],
+    };
+  },
+};

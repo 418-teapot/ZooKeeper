@@ -1,21 +1,27 @@
 /**
- * `/dcp` command handling logic (sunk from the hooks layer).
+ * `/dcp` command handling logic (self-contained command unit).
  *
- * Provides the sentinel error, the `/dcp context|sweep [N]|compress`
- * handler, and the synthetic-message injection used to surface results
- * to the user.  Framework-agnostic by design: the client parameter is
- * typed against `src/core/context/dcp-client.ts` instead of any host
- * SDK type.
+ * Provides the `/dcp context|sweep [N]|compress` handler and the
+ * synthetic-message injection used to surface results to the user.
+ * The client parameter is typed against `src/core/client/session.ts`
+ * instead of any host SDK type, so the handler stays framework-agnostic.
+ * Command-failure notification lives in `src/commands/notify.ts` and is
+ * shared with the `/go` command unit.
  *
  * @module
  */
 
-import { log } from "../../utils/logger.js";
-import type { ContextPruningConfig } from "../config-types.js";
-import { formatContextReport, formatTokens } from "./context-report.js";
-import type { DcpClient } from "./dcp-client.js";
-import type { ContextMessageEntry } from "./metrics.js";
-import { computeContextReport, isMessageIgnored } from "./metrics.js";
+import type { SessionClient } from "../../core/client/session.js";
+import type { ContextPruningConfig } from "../../core/config-types.js";
+import {
+  formatContextReport,
+  formatTokens,
+} from "../../core/context/context-report.js";
+import type { ContextMessageEntry } from "../../core/context/metrics.js";
+import {
+  computeContextReport,
+  isMessageIgnored,
+} from "../../core/context/metrics.js";
 import {
   getOrCreateSessionState,
   liveBlocks,
@@ -26,19 +32,8 @@ import {
   runSweep,
   saveSessionState,
   snapshotRefs,
-} from "./pruning/index.js";
-
-// ---------------------------------------------------------------------------
-// Sentinel
-// ---------------------------------------------------------------------------
-
-/**
- * Error thrown after a `/dcp` command is handled to short-circuit
- * the `command()` flow and prevent the LLM from processing it.
- */
-export const DCP_COMMAND_HANDLED = new Error(
-  "/dcp command handled — no user message needed",
-);
+} from "../../core/context/pruning/index.js";
+import { log } from "../../utils/logger.js";
 
 // ---------------------------------------------------------------------------
 // Handler
@@ -58,14 +53,18 @@ export const DCP_COMMAND_HANDLED = new Error(
  * @param sessionID - The current session identifier.
  * @param args - The raw arguments string after `/dcp`.
  * @param contextConfig - Optional context pruning config (needed for
- *   the compress enable gate).  When absent, compress is skipped.
+ *   the compress gate).  When absent, compress is skipped.
+ * @param hasCompressTool - Whether the `compress` tool is registered in
+ *   the active mode profile.  `/dcp compress` refuses to arm the trigger
+ *   when the tool is not registered.
  * @throws Error when the messages API or prompt API is unavailable.
  */
 export async function handleDcpCommand(
-  client: DcpClient | null | undefined,
+  client: SessionClient | null | undefined,
   sessionID: string,
   args: string,
   contextConfig?: ContextPruningConfig,
+  hasCompressTool = false,
 ): Promise<void> {
   const trimmed = args.trim();
 
@@ -81,6 +80,7 @@ export async function handleDcpCommand(
       client,
       sessionID,
       contextConfig ?? { dedup: {}, purgeErrors: {} },
+      hasCompressTool,
     );
     return;
   }
@@ -183,7 +183,8 @@ export async function handleDcpCommand(
   let storageCount: number | undefined;
   try {
     if (state) {
-      const stateBlocks: import("./pruning/index.js").CompressionBlock[] = [];
+      const stateBlocks: import("../../core/context/pruning/index.js").CompressionBlock[] =
+        [];
       for (const [, block] of state.blocks) {
         stateBlocks.push(block);
       }
@@ -269,8 +270,8 @@ export function parseSweepCount(trimmed: string): number | undefined {
  * 4. Stores marks via addMark (writes to `state.marks`).
  * 5. Injects an ignored message reporting how many tools were marked
  *    and the estimated token reclaim.
- * 6. Returns normally — the caller in opencode.ts handles the sentinel
- *    throw to short-circuit the command flow.
+ * 6. Returns normally — the OpenCode adapter throws the unified
+ *    `COMMAND_HANDLED` sentinel afterwards to short-circuit the flow.
  *
  * @param client - OpenCode client providing session APIs.
  * @param sessionID - The current session identifier.
@@ -278,7 +279,7 @@ export function parseSweepCount(trimmed: string): number | undefined {
  * @throws Error on API failures or invalid arguments.
  */
 async function handleSweepSubcommand(
-  client: DcpClient | null | undefined,
+  client: SessionClient | null | undefined,
   sessionID: string,
   trimmed: string,
 ): Promise<void> {
@@ -408,7 +409,9 @@ async function handleSweepSubcommand(
  * (`zoo-manual-compress`) that drives the model to call the `compress`
  * tool — command and tool now share a single model-driven path.
  *
- * 1. Checks the master enable gate — disabled config skips with a notice.
+ * 1. Checks the registration gate — the `compress` tool must be listed
+ *    in the active mode profile's tools and the compress section must
+ *    carry both token thresholds; otherwise it refuses with a notice.
  * 2. Sets `state.pendingManualTrigger = true` (in-memory only, never
  *    persisted — same discipline as `pendingViewChange`; loss on restart
  *    is benign).
@@ -421,27 +424,31 @@ async function handleSweepSubcommand(
  * @param client - OpenCode client providing session APIs.
  * @param sessionID - The current session identifier.
  * @param contextConfig - The parsed context pruning config (needed for
- *   the compress enable gate).
+ *   the compress gate).
+ * @param hasCompressTool - Whether the `compress` tool is registered in
+ *   the active mode profile.
  * @throws Error on API failures or invalid config.
  */
 async function handleCompressSubcommand(
-  client: DcpClient | null | undefined,
+  client: SessionClient | null | undefined,
   sessionID: string,
   contextConfig: ContextPruningConfig,
+  hasCompressTool: boolean,
 ): Promise<void> {
-  // ── Enable gate ──────────────────────────────────────────────────
-  // The compress section must be strictly parsed AND enabled.  Absent
-  // section, an invalid section (config parse dropped it), or an explicit
-  // `enabled = false` all refuse (the config parse already warned once
-  // for bad keys).
+  // ── Registration gate ────────────────────────────────────────────
+  // The compress section must be strictly parsed AND the `compress`
+  // tool must be listed in the active mode profile's tools.  Absent
+  // section, an invalid section (config parse dropped it), or a profile
+  // that does not register the tool all refuse (the config parse already
+  // warned once for bad keys).
   const compressCfg = contextConfig.compress;
   if (
-    compressCfg?.enabled !== true ||
-    compressCfg.protectedTokens === undefined ||
-    compressCfg.thresholdTokens === undefined
+    !hasCompressTool ||
+    compressCfg?.protectedTokens === undefined ||
+    compressCfg?.thresholdTokens === undefined
   ) {
     const msg =
-      "压缩功能未启用（[zoo.context.compress].enabled 未配置为 true）";
+      "压缩功能未启用：compress 工具未在当前 mode profile 的 tools 中注册，或 [zoo.context.compress] 段缺少 threshold_tokens / protected_tokens。";
     if (client?.session?.prompt) {
       await client.session.prompt({
         path: { id: sessionID },

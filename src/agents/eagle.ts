@@ -1,3 +1,4 @@
+import type { AgentUnitDescriptor } from "../core/slots.js";
 import { MSG_REF_NO_ECHO } from "./parts.js";
 
 /**
@@ -48,3 +49,19 @@ Acknowledge what was done well (be specific: file:line). State what needs to cha
 - ${MSG_REF_NO_ECHO}
 </Contract>
 `;
+
+/**
+ * Eagle agent unit descriptor.
+ *
+ * Contributes the review-agent prompt for prompt injection.
+ */
+export const unit: AgentUnitDescriptor = {
+  name: "eagle",
+  kind: "agent",
+  create() {
+    return {
+      kind: "agent",
+      agents: [{ name: "eagle", prompt: EAGLE_PROMPT }],
+    };
+  },
+};

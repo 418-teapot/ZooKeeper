@@ -33,9 +33,9 @@
  * @module
  */
 
+import type { SessionClient } from "../core/client/session.js";
 import type { ContextPruningConfig } from "../core/config-types.js";
 import { formatTokens } from "../core/context/context-report.js";
-import type { DcpClient } from "../core/context/dcp-client.js";
 import type { ContextMessageEntry } from "../core/context/metrics.js";
 import {
   assignMessageRefs,
@@ -47,6 +47,7 @@ import {
   snapshotRefs,
 } from "../core/context/pruning/index.js";
 import { COMPRESS_GUIDANCE } from "../core/prompts.js";
+import type { ToolUnitDescriptor } from "../core/slots.js";
 import { log } from "../utils/logger.js";
 
 type JsonSchemaStringArg = {
@@ -233,7 +234,7 @@ function validateRangeTitle(title: string, rangeIndex: number): string {
  * @returns The raw session messages array.
  */
 async function fetchSessionMessages(
-  client: DcpClient,
+  client: SessionClient,
   sessionID: string,
 ): Promise<ContextMessageEntry[]> {
   if (!client?.session?.messages) {
@@ -294,7 +295,7 @@ async function fetchSessionMessages(
  * @returns The OpenCode tool definition.
  */
 export function createCompressTool(
-  client: DcpClient,
+  client: SessionClient,
   contextConfig: ContextPruningConfig,
 ): CompressToolDefinition {
   return {
@@ -390,10 +391,11 @@ ${COMPRESS_GUIDANCE}
 
       // ── Build the compression config from the parsed context config
       // with NO fallbacks — config.toml is the single source of truth.
-      // The registration gate only registers the tool when the compress
-      // section was strictly parsed with `enabled: true`, so the token
-      // thresholds AND max_ranges are guaranteed present; `protectedMessages`
-      // is a lenient top-level key and may still be missing → loud config
+      // The registration gate only registers the tool when the profile's
+      // tools list names it, so reaching execute means the tool is
+      // enabled by the profile; the token thresholds AND max_ranges are
+      // guaranteed present by the strict parse.  `protectedMessages` is
+      // a lenient top-level key and may still be missing → loud config
       // guidance error.
       const compressCfg = contextConfig.compress;
       if (
@@ -403,7 +405,7 @@ ${COMPRESS_GUIDANCE}
         compressCfg.maxRanges === undefined
       ) {
         throw new Error(
-          "压缩功能未启用：请在 config.toml 的 [zoo.context.compress] 段配置 enabled = true、threshold_tokens、protected_tokens（非负整数）与 max_ranges（正整数）后重试。",
+          "[zoo.context.compress] 段缺失或非法：请在 config.toml 配置 threshold_tokens、protected_tokens（非负整数）与 max_ranges（正整数）后重试。",
         );
       }
       if (contextConfig.protectedMessages === undefined) {
@@ -495,3 +497,25 @@ ${COMPRESS_GUIDANCE}
     },
   };
 }
+
+/**
+ * Compress tool unit descriptor.
+ *
+ * The tool contribution carries the batch range-mode compress adapter;
+ * `name` doubles as the registry key and the tool key.
+ */
+export const unit: ToolUnitDescriptor = {
+  name: "compress",
+  kind: "tool",
+  create(deps) {
+    return {
+      kind: "tool",
+      tools: [
+        {
+          name: "compress",
+          ...createCompressTool(deps.client, deps.contextConfig),
+        },
+      ],
+    };
+  },
+};

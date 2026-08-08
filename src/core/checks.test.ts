@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { checkPlanProgress, checkTodoProgress } from "./checks.js";
-import type { TinyClient } from "./todo.js";
+import type { TinyClient } from "./client/todo.js";
 
 // ---------------------------------------------------------------------------
 // Counters for unique session IDs

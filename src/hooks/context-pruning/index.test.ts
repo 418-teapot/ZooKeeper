@@ -51,9 +51,6 @@ const TEST_SESSION_IDS = [
   "sess-gate-below",
   "sess-gate-at",
   "sess-gate-missing",
-  "sess-enabled-absent",
-  "sess-enabled-false",
-  "sess-disabled",
   "sess-gate-cache-read-at",
   "sess-gate-cache-read-below",
   "sess-gate-cache-read-write-at",
@@ -166,8 +163,10 @@ describe("contextPruningTransformHandler", () => {
     );
   });
 
-  it("is a no-op when prune map is empty", () => {
-    // Create state but don't add marks.
+  it("leaves tool outputs untouched when the prune map is empty", () => {
+    // Create state but don't add marks.  With the master switch gone,
+    // the pipeline runs on registration — an empty prune map means no
+    // output is replaced (only a ref tag is appended to the output).
     getOrCreateSessionState("sess-no-marks");
     const messages = [
       msg("user", "u1", [textPart("hello")], "sess-no-marks"),
@@ -176,10 +175,11 @@ describe("contextPruningTransformHandler", () => {
 
     contextPruningTransformHandler(messages);
 
-    // Output unchanged.
-    assert.equal(
-      (messages[1].parts?.[0] as SweepToolPart).state?.output,
-      "data",
+    // Output unchanged (refs are appended, never replace).
+    assert.ok(
+      (messages[1].parts?.[0] as SweepToolPart).state?.output?.startsWith(
+        "data",
+      ),
     );
   });
 
@@ -199,7 +199,6 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages, {
-      enabled: true,
       dedup: {},
       purgeErrors: {},
     });
@@ -252,7 +251,6 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages, {
-      enabled: true,
       dedup: {},
       purgeErrors: {},
     });
@@ -275,7 +273,6 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(moreMessages, {
-      enabled: true,
       dedup: {},
       purgeErrors: {},
     });
@@ -301,7 +298,6 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages, {
-      enabled: true,
       dedup: {},
       purgeErrors: {},
     });
@@ -352,11 +348,9 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages, {
-      enabled: true,
       protectedMessages: 0,
       releasedPercent: 0, // Always release pending immediately for test.
       dedup: {
-        enabled: true,
         thresholdContext: 100000,
       },
       purgeErrors: {},
@@ -399,10 +393,8 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages2, {
-      enabled: true,
       releasedPercent: 0,
       dedup: {
-        enabled: true,
         thresholdContext: 100000,
       },
       purgeErrors: {},
@@ -446,9 +438,7 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages, {
-      enabled: true,
       dedup: {
-        enabled: true,
         thresholdContext: 100000,
       },
       purgeErrors: {},
@@ -488,10 +478,8 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages, {
-      enabled: true,
       protectedMessages: 0,
       dedup: {
-        enabled: true,
         thresholdContext: 100000,
       },
       purgeErrors: {},
@@ -531,9 +519,7 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages, {
-      enabled: true,
       dedup: {
-        enabled: true,
         thresholdContext: 100000,
       },
       purgeErrors: {},
@@ -566,10 +552,8 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages, {
-      enabled: true,
       protectedMessages: 0,
       dedup: {
-        enabled: true,
         thresholdContext: 100000,
       },
       purgeErrors: {},
@@ -603,9 +587,7 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages, {
-      enabled: true,
       dedup: {
-        enabled: true,
         thresholdContext: 100000,
       },
       purgeErrors: {},
@@ -639,10 +621,8 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages, {
-      enabled: true,
       protectedMessages: 0,
       dedup: {
-        enabled: true,
         thresholdContext: 100000,
       },
       purgeErrors: {},
@@ -655,145 +635,6 @@ describe("contextPruningTransformHandler", () => {
         LONG_OUTPUT,
       ),
     );
-  });
-
-  it("master enabled=false leaves messages completely untouched", () => {
-    // When config.enabled === false, nothing happens — no Phases 1–6,
-    // no persistence, no state mutations.
-    const sessionID = "sess-disabled";
-    const state = getOrCreateSessionState(sessionID);
-    const LONG_OUTPUT = "x".repeat(500);
-
-    // Pre-populate an effective mark so Phase 1 would normally prune.
-    addMark(state, "call-sweep-1", 50, true, "tool-output");
-
-    const messages = [
-      msg("user", "u1", [textPart("do it")], sessionID),
-      msg(
-        "assistant",
-        "a1",
-        [
-          toolPart("call-sweep-1", "original output", { cmd: "ls" }),
-          toolPart("call-dedup-1", LONG_OUTPUT, { cmd: "echo hello" }),
-          toolPart("call-dedup-2", LONG_OUTPUT, { cmd: "echo hello" }),
-        ],
-        undefined,
-        { input: 100000, output: 200 },
-      ),
-    ];
-
-    // Deep-clone the original messages for comparison.
-    const original = JSON.parse(JSON.stringify(messages));
-
-    contextPruningTransformHandler(messages, {
-      enabled: false,
-      protectedMessages: 0,
-      releasedPercent: 0,
-      dedup: { enabled: true, thresholdContext: 100000 },
-      purgeErrors: { enabled: true, thresholdContext: 0 },
-    });
-
-    // Messages completely untouched — byte-identical to original.
-    assert.equal(JSON.stringify(messages), JSON.stringify(original));
-
-    // No state mutations (marks untouched, no persistence).
-    assert.equal(state.marks.size, 1, "pre-existing marks not modified");
-    assert.equal(
-      state.marks.get("call-sweep-1")?.effective,
-      true,
-      "mark effective flag unchanged",
-    );
-    // dirty was set to true by addMark() before the handler call;
-    // the early-return must not have cleared it (no saveSessionState).
-    assert.equal(
-      state.dirty,
-      true,
-      "state dirty flag untouched by early return",
-    );
-  });
-
-  it("handler no-ops when enabled field is absent (default-off)", () => {
-    // With the master switch defaulting to off, passing a config without
-    // `enabled` must cause the handler to no-op entirely.
-    const sessionID = "sess-enabled-absent";
-    const state = getOrCreateSessionState(sessionID);
-
-    // Pre-populate an effective mark so Phase 2 would normally prune.
-    addMark(state, "call-sweep-1", 50, true, "tool-output");
-
-    const messages = [
-      msg("user", "u1", [textPart("do it")], sessionID),
-      msg(
-        "assistant",
-        "a1",
-        [
-          toolPart("call-sweep-1", "original output", { cmd: "ls" }),
-          toolPart("call-dedup-1", LONG_OUTPUT, { cmd: "echo hello" }),
-          toolPart("call-dedup-2", LONG_OUTPUT, { cmd: "echo hello" }),
-        ],
-        undefined,
-        { input: 100000, output: 200 },
-      ),
-    ];
-
-    // Deep-clone the original messages for comparison.
-    const original = JSON.parse(JSON.stringify(messages));
-
-    // Config without `enabled` field — uses default (false).
-    contextPruningTransformHandler(messages, {
-      dedup: { enabled: true, thresholdContext: 100000 },
-      purgeErrors: { enabled: true, thresholdContext: 0 },
-    });
-
-    // Messages completely untouched.
-    assert.equal(JSON.stringify(messages), JSON.stringify(original));
-
-    // No state mutations — pre-existing marks unchanged.
-    assert.equal(state.marks.size, 1);
-    assert.equal(state.marks.get("call-sweep-1")?.effective, true);
-    assert.equal(state.dirty, true, "dirty flag preserved (no save)");
-  });
-
-  it("gate: enabled=false skips dedup but prune still runs", () => {
-    const sessionID = "sess-enabled-false";
-    const state = getOrCreateSessionState(sessionID);
-
-    // Pre-populate a mark to verify prune still runs.
-    addMark(state, "call-sweep-1", 50, true, "tool-output");
-
-    const messages = [
-      msg("user", "u1", [textPart("hi")], sessionID),
-      msg(
-        "assistant",
-        "a1",
-        [
-          toolPart("call-sweep-1", "original output", { cmd: "ls" }),
-          toolPart("call-1", LONG_OUTPUT, { cmd: "echo hello" }),
-          toolPart("call-2", LONG_OUTPUT, { cmd: "echo hello" }),
-        ],
-        undefined,
-        { input: 100000, output: 200 },
-      ),
-    ];
-
-    contextPruningTransformHandler(messages, {
-      enabled: true,
-      dedup: {
-        enabled: false,
-        thresholdContext: 100000,
-      },
-      purgeErrors: {},
-    });
-
-    // Prune still runs — pre-existing mark replaced.
-    assert.ok(
-      (messages[1].parts?.[0] as SweepToolPart).state?.output?.startsWith(
-        PRUNED_TOOL_OUTPUT_REPLACEMENT,
-      ),
-    );
-
-    // Dedup skipped — no new marks.
-    assert.equal(state.marks.size, 1); // Only the pre-existing sweep mark.
   });
 
   it("gate: thresholdContext undefined skips the producer entirely", () => {
@@ -817,10 +658,8 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages, {
-      enabled: true,
       protectedMessages: 0,
       dedup: {
-        enabled: true,
         // thresholdContext is undefined → gate closes, producer skipped.
       },
       purgeErrors: {},
@@ -862,12 +701,10 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages, {
-      enabled: true,
       protectedMessages: 0,
       // releasedPercent is undefined → release check skipped.
       releasedPercent: undefined,
       dedup: {
-        enabled: true,
         thresholdContext: 100000,
       },
       purgeErrors: {},
@@ -891,7 +728,6 @@ describe("contextPruningTransformHandler", () => {
 
   it("parseContextConfig returns undefined fields when [zoo.context] is absent", () => {
     const config = parseContextConfig({});
-    assert.equal(config.enabled, undefined);
     assert.equal(config.protectedMessages, undefined);
     assert.equal(config.releasedPercent, undefined);
     assert.equal(config.dedup, undefined);
@@ -903,33 +739,18 @@ describe("contextPruningTransformHandler", () => {
       context: {
         protected_messages: 3,
         dedup: {
-          enabled: false,
           threshold_context: 64000,
           protected_tools: ["task", "read"],
         },
       },
     });
     assert.ok(config.dedup, "dedup section must parse");
-    assert.equal(config.dedup.enabled, false);
     assert.equal(config.dedup.thresholdContext, 64000);
     assert.equal(config.protectedMessages, 3);
     assert.deepEqual(config.dedup.protectedTools, ["task", "read"]);
     // Absent fields yield undefined.
     assert.equal(config.releasedPercent, undefined);
     assert.equal(config.purgeErrors, undefined);
-  });
-
-  it("parseContextConfig drops the whole dedup section for non-boolean dedup.enabled (warn once)", () => {
-    const config = parseContextConfig({
-      context: { dedup: { enabled: "false" } },
-    });
-    // "false" is not boolean → whole dedup section is dropped.
-    assert.equal(config.dedup, undefined);
-
-    const buffer = _getBufferForTesting();
-    const entry = buffer.find((e) => e.event === "dedup_config_invalid");
-    assert.ok(entry, "must log dedup_config_invalid");
-    assert.equal((entry as Record<string, unknown>).key, "enabled");
   });
 
   it("parseContextConfig drops the whole dedup section for non-finite threshold_context (warn once each)", () => {
@@ -1033,14 +854,12 @@ describe("contextPruningTransformHandler", () => {
         protected_messages: 0,
         released_percent: 0,
         dedup: {
-          enabled: false,
           threshold_context: 64000,
           protected_tools: [],
         },
       },
     });
     assert.ok(config.dedup, "dedup section must parse");
-    assert.equal(config.dedup.enabled, false);
     assert.equal(config.dedup.thresholdContext, 64000);
     assert.equal(config.protectedMessages, 0);
     assert.equal(config.releasedPercent, 0);
@@ -1152,14 +971,12 @@ describe("contextPruningTransformHandler", () => {
     const config = parseContextConfig({
       context: {
         purge_errors: {
-          enabled: false,
           threshold_context: 50000,
           protected_tools: ["bash"],
         },
       },
     });
     assert.ok(config.purgeErrors, "purge_errors section must parse");
-    assert.equal(config.purgeErrors.enabled, false);
     assert.equal(config.purgeErrors.thresholdContext, 50000);
     assert.deepEqual(config.purgeErrors.protectedTools, ["bash"]);
   });
@@ -1167,18 +984,6 @@ describe("contextPruningTransformHandler", () => {
   it("parseContextConfig drops purge_errors when section is absent", () => {
     const config = parseContextConfig({});
     assert.equal(config.purgeErrors, undefined);
-  });
-
-  it("parseContextConfig drops the whole purge_errors section for non-boolean enabled (warn once)", () => {
-    const config = parseContextConfig({
-      context: { purge_errors: { enabled: "false" } },
-    });
-    assert.equal(config.purgeErrors, undefined);
-
-    const buffer = _getBufferForTesting();
-    const entry = buffer.find((e) => e.event === "purge_errors_config_invalid");
-    assert.ok(entry, "must log purge_errors_config_invalid");
-    assert.equal((entry as Record<string, unknown>).key, "enabled");
   });
 
   it("parseContextConfig drops the whole purge_errors section for non-positive threshold_context (warn once each)", () => {
@@ -1199,35 +1004,6 @@ describe("contextPruningTransformHandler", () => {
     assert.equal(entries.length, 2);
   });
 
-  it("parseContextConfig reads enabled: false from [zoo.context]", () => {
-    const config = parseContextConfig({
-      context: { enabled: false },
-    });
-    assert.equal(config.enabled, false);
-  });
-
-  it("parseContextConfig returns undefined for enabled when absent", () => {
-    const config = parseContextConfig({});
-    assert.equal(config.enabled, undefined);
-  });
-
-  it("parseContextConfig drops the whole core group for non-boolean enabled (warn once each)", () => {
-    const config1 = parseContextConfig({
-      context: { enabled: "false" },
-    });
-    assert.equal(config1.enabled, undefined);
-
-    const config2 = parseContextConfig({
-      context: { enabled: 0 },
-    });
-    assert.equal(config2.enabled, undefined);
-
-    const buffer = _getBufferForTesting();
-    const entries = buffer.filter((e) => e.event === "context_config_invalid");
-    assert.equal(entries.length, 2);
-    assert.equal((entries[0] as Record<string, unknown>).key, "enabled");
-  });
-
   it("parseContextConfig returns undefined for unknown keys in context config", () => {
     const config = parseContextConfig({
       context: {
@@ -1237,13 +1013,10 @@ describe("contextPruningTransformHandler", () => {
       },
     });
     // Unknown keys ignored — all fields are undefined.
-    assert.equal(config.enabled, undefined);
     assert.equal(config.protectedMessages, undefined);
     assert.equal(config.releasedPercent, undefined);
-    assert.equal(config.dedup?.enabled, undefined);
     assert.equal(config.dedup?.thresholdContext, undefined);
     assert.equal(config.dedup?.protectedTools, undefined);
-    assert.equal(config.purgeErrors?.enabled, undefined);
     assert.equal(config.purgeErrors?.thresholdContext, undefined);
     assert.equal(config.purgeErrors?.protectedTools, undefined);
   });
@@ -1263,25 +1036,22 @@ describe("contextPruningTransformHandler", () => {
     assert.equal(config.dedup?.thresholdContext, undefined);
     assert.equal(config.purgeErrors?.thresholdContext, undefined);
     // Other config fields are also undefined by default.
-    assert.equal(config.enabled, undefined);
   });
 
   // ===========================================================================
   // parseContextConfig — compress section
   // ===========================================================================
 
-  it("parseContextConfig reads [zoo.context.compress] section with four keys", () => {
+  it("parseContextConfig reads [zoo.context.compress] section with three keys", () => {
     const config = parseContextConfig({
       context: {
         compress: {
-          enabled: true,
           threshold_tokens: 2000,
           protected_tokens: 20000,
           max_ranges: 8,
         },
       },
     });
-    assert.equal(config.compress?.enabled, true);
     assert.equal(config.compress?.thresholdTokens, 2000);
     assert.equal(config.compress?.protectedTokens, 20000);
     assert.equal(config.compress?.maxRanges, 8);
@@ -1291,7 +1061,7 @@ describe("contextPruningTransformHandler", () => {
     const config = parseContextConfig({});
     assert.equal(config.compress, undefined);
 
-    const config2 = parseContextConfig({ context: { enabled: true } });
+    const config2 = parseContextConfig({ context: { protected_messages: 3 } });
     assert.equal(config2.compress, undefined);
 
     const buffer = _getBufferForTesting();
@@ -1299,18 +1069,6 @@ describe("contextPruningTransformHandler", () => {
       !buffer.some((e) => e.event === "compress_config_invalid"),
       "absent section must not warn",
     );
-  });
-
-  it("parseContextConfig drops the whole section on a bad compress.enabled (warn once)", () => {
-    const config = parseContextConfig({
-      context: { compress: { enabled: "true" } },
-    });
-    assert.equal(config.compress, undefined, "whole section dropped");
-
-    const buffer = _getBufferForTesting();
-    const entries = buffer.filter((e) => e.event === "compress_config_invalid");
-    assert.equal(entries.length, 1, "exactly one warn");
-    assert.equal(entries[0].key, "enabled");
   });
 
   it("parseContextConfig drops the whole section on bad compress.threshold_tokens (warn once each)", () => {
@@ -1350,36 +1108,12 @@ describe("contextPruningTransformHandler", () => {
     assert.equal(entries.length, 2);
   });
 
-  it("parseContextConfig accepts compress.enabled: false with all keys (present but disabled)", () => {
-    const config = parseContextConfig({
-      context: {
-        compress: {
-          enabled: false,
-          threshold_tokens: 2000,
-          protected_tokens: 20000,
-          max_ranges: 8,
-        },
-      },
-    });
-    assert.equal(config.compress?.enabled, false);
-    assert.equal(config.compress?.thresholdTokens, 2000);
-    assert.equal(config.compress?.protectedTokens, 20000);
-    assert.equal(config.compress?.maxRanges, 8);
-
-    const buffer = _getBufferForTesting();
-    assert.ok(
-      !buffer.some((e) => e.event === "compress_config_invalid"),
-      "enabled=false must not warn",
-    );
-  });
-
   // ===========================================================================
   // parseContextConfig — [zoo.context.compress] section (strict whole-section)
   // ===========================================================================
 
   describe("parseContextConfig compress section", () => {
     const fullCompress = {
-      enabled: true,
       threshold_tokens: 2000,
       protected_tokens: 20000,
       max_ranges: 8,
@@ -1389,7 +1123,9 @@ describe("contextPruningTransformHandler", () => {
       const config = parseContextConfig({});
       assert.equal(config.compress, undefined);
 
-      const config2 = parseContextConfig({ context: { enabled: true } });
+      const config2 = parseContextConfig({
+        context: { protected_messages: 3 },
+      });
       assert.equal(config2.compress, undefined);
 
       const buffer = _getBufferForTesting();
@@ -1404,7 +1140,6 @@ describe("contextPruningTransformHandler", () => {
         context: { compress: fullCompress },
       });
       assert.deepEqual(config.compress, {
-        enabled: true,
         thresholdTokens: 2000,
         protectedTokens: 20000,
         maxRanges: 8,
@@ -1415,14 +1150,12 @@ describe("contextPruningTransformHandler", () => {
       const config = parseContextConfig({
         context: {
           compress: {
-            enabled: true,
             threshold_tokens: 0,
             protected_tokens: 0,
             max_ranges: 8,
           },
         },
       });
-      assert.equal(config.compress?.enabled, true);
       assert.equal(config.compress?.thresholdTokens, 0);
       assert.equal(config.compress?.protectedTokens, 0);
       assert.equal(config.compress?.maxRanges, 8);
@@ -1432,7 +1165,6 @@ describe("contextPruningTransformHandler", () => {
       const config = parseContextConfig({
         context: {
           compress: {
-            enabled: true,
             threshold_tokens: 2000,
             // protected_tokens missing
           },
@@ -1473,43 +1205,21 @@ describe("contextPruningTransformHandler", () => {
 
     it("wrong-typed values invalidate the whole section (warn once)", () => {
       const config = parseContextConfig({
-        context: { compress: { ...fullCompress, enabled: "false" } },
-      });
-      assert.equal(config.compress, undefined);
-
-      const config2 = parseContextConfig({
         context: { compress: { ...fullCompress, threshold_tokens: "2000" } },
       });
-      assert.equal(config2.compress, undefined);
+      assert.equal(config.compress, undefined);
 
       const buffer = _getBufferForTesting();
       const entries = buffer.filter(
         (e) => e.event === "compress_config_invalid",
       );
-      assert.equal(entries.length, 2);
-    });
-
-    it("enabled=false is valid (present but disabled)", () => {
-      const config = parseContextConfig({
-        context: { compress: { ...fullCompress, enabled: false } },
-      });
-      assert.equal(config.compress?.enabled, false);
-      assert.equal(config.compress?.thresholdTokens, 2000);
-      assert.equal(config.compress?.protectedTokens, 20000);
-      assert.equal(config.compress?.maxRanges, 8);
-
-      const buffer = _getBufferForTesting();
-      assert.ok(
-        !buffer.some((e) => e.event === "compress_config_invalid"),
-        "enabled=false must not warn",
-      );
+      assert.equal(entries.length, 1);
     });
 
     it("missing max_ranges invalidates the whole section (warn once)", () => {
       const config = parseContextConfig({
         context: {
           compress: {
-            enabled: true,
             threshold_tokens: 2000,
             protected_tokens: 20000,
             // max_ranges missing
@@ -1567,16 +1277,14 @@ describe("contextPruningTransformHandler", () => {
   // parseContextConfig — decompress section
   // ===========================================================================
 
-  it("parseContextConfig reads [zoo.context.decompress] section with two keys", () => {
+  it("parseContextConfig reads [zoo.context.decompress] section with max_fill_percent", () => {
     const config = parseContextConfig({
       context: {
         decompress: {
-          enabled: true,
           max_fill_percent: 90,
         },
       },
     });
-    assert.equal(config.decompress?.enabled, true);
     assert.equal(config.decompress?.maxFillPercent, 90);
   });
 
@@ -1586,7 +1294,6 @@ describe("contextPruningTransformHandler", () => {
 
   describe("parseContextConfig decompress section", () => {
     const fullDecompress = {
-      enabled: true,
       max_fill_percent: 90,
     };
 
@@ -1594,7 +1301,9 @@ describe("contextPruningTransformHandler", () => {
       const config = parseContextConfig({});
       assert.equal(config.decompress, undefined);
 
-      const config2 = parseContextConfig({ context: { enabled: true } });
+      const config2 = parseContextConfig({
+        context: { protected_messages: 3 },
+      });
       assert.equal(config2.decompress, undefined);
 
       const buffer = _getBufferForTesting();
@@ -1609,7 +1318,6 @@ describe("contextPruningTransformHandler", () => {
         context: { decompress: fullDecompress },
       });
       assert.deepEqual(config.decompress, {
-        enabled: true,
         maxFillPercent: 90,
       });
     });
@@ -1618,7 +1326,6 @@ describe("contextPruningTransformHandler", () => {
       const config = parseContextConfig({
         context: {
           decompress: {
-            enabled: true,
             // max_fill_percent missing
           },
         },
@@ -1637,7 +1344,6 @@ describe("contextPruningTransformHandler", () => {
       const config = parseContextConfig({
         context: {
           decompress: {
-            enabled: true,
             reject_percent: 90, // old key — treated as unknown, ignored
           },
         },
@@ -1654,20 +1360,15 @@ describe("contextPruningTransformHandler", () => {
 
     it("wrong-typed values invalidate the whole section (warn once)", () => {
       const config = parseContextConfig({
-        context: { decompress: { ...fullDecompress, enabled: "false" } },
-      });
-      assert.equal(config.decompress, undefined);
-
-      const config2 = parseContextConfig({
         context: { decompress: { ...fullDecompress, max_fill_percent: "90" } },
       });
-      assert.equal(config2.decompress, undefined);
+      assert.equal(config.decompress, undefined);
 
       const buffer = _getBufferForTesting();
       const entries = buffer.filter(
         (e) => e.event === "decompress_config_invalid",
       );
-      assert.equal(entries.length, 2);
+      assert.equal(entries.length, 1);
     });
 
     it("max_fill_percent accepts integer boundaries 1 and 100", () => {
@@ -1709,20 +1410,6 @@ describe("contextPruningTransformHandler", () => {
         (e) => e.event === "decompress_config_invalid",
       );
       assert.equal(entries.length, 3);
-    });
-
-    it("enabled=false is valid (present but disabled)", () => {
-      const config = parseContextConfig({
-        context: { decompress: { ...fullDecompress, enabled: false } },
-      });
-      assert.equal(config.decompress?.enabled, false);
-      assert.equal(config.decompress?.maxFillPercent, 90);
-
-      const buffer = _getBufferForTesting();
-      assert.ok(
-        !buffer.some((e) => e.event === "decompress_config_invalid"),
-        "enabled=false must not warn",
-      );
     });
   });
 
@@ -1768,11 +1455,9 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages, {
-      enabled: true,
       protectedMessages: 0,
       releasedPercent: 5,
       dedup: {
-        enabled: true,
         thresholdContext: 100000,
       },
       purgeErrors: {},
@@ -1805,11 +1490,9 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages2, {
-      enabled: true,
       protectedMessages: 0,
       releasedPercent: 5,
       dedup: {
-        enabled: true,
         thresholdContext: 100000,
       },
       purgeErrors: {},
@@ -1847,11 +1530,9 @@ describe("contextPruningTransformHandler", () => {
 
     // With releasedPercent=0, any positive pending triggers immediate release.
     contextPruningTransformHandler(messages, {
-      enabled: true,
       protectedMessages: 0,
       releasedPercent: 0,
       dedup: {
-        enabled: true,
         thresholdContext: 100000,
       },
       purgeErrors: {},
@@ -1886,11 +1567,9 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages2, {
-      enabled: true,
       protectedMessages: 0,
       releasedPercent: 0,
       dedup: {
-        enabled: true,
         thresholdContext: 100000,
       },
       purgeErrors: {},
@@ -1935,11 +1614,9 @@ describe("contextPruningTransformHandler", () => {
       ),
     ];
     contextPruningTransformHandler(messages, {
-      enabled: true,
       protectedMessages: 0,
       releasedPercent: 0.8,
       dedup: {
-        enabled: true,
         thresholdContext: 100000,
       },
       purgeErrors: {},
@@ -1966,11 +1643,9 @@ describe("contextPruningTransformHandler", () => {
       ),
     ];
     contextPruningTransformHandler(messages, {
-      enabled: true,
       protectedMessages: 0,
       releasedPercent: 0.8,
       dedup: {
-        enabled: true,
         thresholdContext: 100000,
       },
       purgeErrors: {},
@@ -1997,11 +1672,9 @@ describe("contextPruningTransformHandler", () => {
       ),
     ];
     contextPruningTransformHandler(messages, {
-      enabled: true,
       protectedMessages: 0,
       releasedPercent: 0.8,
       dedup: {
-        enabled: true,
         thresholdContext: 100000,
       },
       purgeErrors: {},
@@ -2035,11 +1708,9 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages, {
-      enabled: true,
       protectedMessages: 0,
       releasedPercent: 5, // Normal threshold
       dedup: {
-        enabled: true,
         thresholdContext: 100000,
       },
       purgeErrors: {},
@@ -2084,10 +1755,9 @@ describe("contextPruningTransformHandler", () => {
     contextPruningTransformHandler(
       messages,
       {
-        enabled: true,
         protectedMessages: 0,
         releasedPercent: 0,
-        dedup: { enabled: true, thresholdContext: 100000 },
+        dedup: { thresholdContext: 100000 },
         purgeErrors: {},
       },
       notify,
@@ -2127,11 +1797,9 @@ describe("contextPruningTransformHandler", () => {
 
     // No notify parameter — should not throw.
     contextPruningTransformHandler(messages, {
-      enabled: true,
       protectedMessages: 0,
       releasedPercent: 0,
       dedup: {
-        enabled: true,
         thresholdContext: 100000,
       },
       purgeErrors: {},
@@ -2165,10 +1833,9 @@ describe("contextPruningTransformHandler", () => {
     contextPruningTransformHandler(
       messages,
       {
-        enabled: true,
         protectedMessages: 0,
         releasedPercent: 0,
-        dedup: { enabled: true, thresholdContext: 100000 },
+        dedup: { thresholdContext: 100000 },
         purgeErrors: {},
       },
       notify,
@@ -2207,10 +1874,9 @@ describe("contextPruningTransformHandler", () => {
     contextPruningTransformHandler(
       messages,
       {
-        enabled: true,
         protectedMessages: 0,
         releasedPercent: 0,
-        dedup: { enabled: true, thresholdContext: 100000 },
+        dedup: { thresholdContext: 100000 },
         purgeErrors: {},
       },
       notify,
@@ -2259,7 +1925,6 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(messages, {
-      enabled: true,
       dedup: {},
       purgeErrors: {},
     });
@@ -2323,14 +1988,13 @@ describe("contextPruningTransformHandler", () => {
       ),
     ];
 
-    // Handler with dedup enabled (won't touch error parts) and
-    // purge-errors enabled.
+    // Handler with dedup and purge-errors producers active
+    // (dedup won't touch error parts).
     contextPruningTransformHandler(turnN, {
-      enabled: true,
       protectedMessages: 0,
       releasedPercent: 0,
-      dedup: { enabled: true, thresholdContext: 0 },
-      purgeErrors: { enabled: true, thresholdContext: 0 },
+      dedup: { thresholdContext: 0 },
+      purgeErrors: { thresholdContext: 0 },
     });
 
     // Turn N: purge-errors marks call-err-1 as pending and releaseBatch
@@ -2380,11 +2044,10 @@ describe("contextPruningTransformHandler", () => {
     ];
 
     contextPruningTransformHandler(turnN1, {
-      enabled: true,
       protectedMessages: 0,
       releasedPercent: 0,
-      dedup: { enabled: true, thresholdContext: 0 },
-      purgeErrors: { enabled: true, thresholdContext: 0 },
+      dedup: { thresholdContext: 0 },
+      purgeErrors: { thresholdContext: 0 },
     });
 
     // Turn N+1 Phase 2: pruneToolErrors replaces the input.
@@ -2440,9 +2103,8 @@ describe("contextPruningTransformHandler", () => {
       ];
 
       contextPruningTransformHandler(messages, {
-        enabled: true,
-        dedup: { enabled: false },
-        purgeErrors: { enabled: false },
+        dedup: {},
+        purgeErrors: {},
       });
 
       // u1 (user, non-ignored, text part) → has exactly one tag.
@@ -2492,9 +2154,8 @@ describe("contextPruningTransformHandler", () => {
         JSON.stringify(baseInput),
       );
       contextPruningTransformHandler(input1, {
-        enabled: true,
-        dedup: { enabled: false },
-        purgeErrors: { enabled: false },
+        dedup: {},
+        purgeErrors: {},
       });
       const snapshot1 = JSON.stringify(input1);
 
@@ -2503,9 +2164,8 @@ describe("contextPruningTransformHandler", () => {
         JSON.stringify(baseInput),
       );
       contextPruningTransformHandler(input2, {
-        enabled: true,
-        dedup: { enabled: false },
-        purgeErrors: { enabled: false },
+        dedup: {},
+        purgeErrors: {},
       });
       const snapshot2 = JSON.stringify(input2);
 
@@ -2534,9 +2194,8 @@ describe("contextPruningTransformHandler", () => {
       ];
 
       contextPruningTransformHandler(turn1, {
-        enabled: true,
-        dedup: { enabled: false },
-        purgeErrors: { enabled: false },
+        dedup: {},
+        purgeErrors: {},
       });
 
       // u1 → m0001, a1 → m0002 (boundary summary skipped)
@@ -2566,9 +2225,8 @@ describe("contextPruningTransformHandler", () => {
       ];
 
       contextPruningTransformHandler(turn2, {
-        enabled: true,
-        dedup: { enabled: false },
-        purgeErrors: { enabled: false },
+        dedup: {},
+        purgeErrors: {},
       });
 
       // Refs renumbered: u2 → m0001, a2 → m0002 (NOT m0003/m0004).
@@ -2612,9 +2270,8 @@ describe("contextPruningTransformHandler", () => {
       ];
 
       contextPruningTransformHandler(messages, {
-        enabled: true,
-        dedup: { enabled: false },
-        purgeErrors: { enabled: false },
+        dedup: {},
+        purgeErrors: {},
       });
 
       // After folding: u1 (force-kept) → m0001, summary(b1) → m0002,
@@ -2654,9 +2311,8 @@ describe("contextPruningTransformHandler", () => {
       ];
 
       contextPruningTransformHandler(messages, {
-        enabled: true,
-        dedup: { enabled: false },
-        purgeErrors: { enabled: false },
+        dedup: {},
+        purgeErrors: {},
       });
 
       // No blocks — no folding; messages keep their structure.
@@ -2691,9 +2347,8 @@ describe("contextPruningTransformHandler", () => {
       ];
 
       contextPruningTransformHandler(messages2, {
-        enabled: true,
-        dedup: { enabled: false },
-        purgeErrors: { enabled: false },
+        dedup: {},
+        purgeErrors: {},
       });
 
       // After folding: u1 kept (force-kept), a1+u2 removed,
@@ -2735,9 +2390,8 @@ describe("contextPruningTransformHandler", () => {
       ];
 
       contextPruningTransformHandler(messages3, {
-        enabled: true,
-        dedup: { enabled: false },
-        purgeErrors: { enabled: false },
+        dedup: {},
+        purgeErrors: {},
       });
 
       // Block was deactivated (anchor u2 not in messages3).
@@ -2820,10 +2474,9 @@ describe("contextPruningTransformHandler", () => {
       ];
 
       contextPruningTransformHandler(messages, {
-        enabled: true,
         protectedMessages: 0,
         releasedPercent: 5, // 5% of 100000 = 5000 threshold
-        dedup: { enabled: true, thresholdContext: 0 },
+        dedup: { thresholdContext: 0 },
         purgeErrors: {},
       });
 
@@ -2880,10 +2533,9 @@ describe("contextPruningTransformHandler", () => {
       ];
 
       contextPruningTransformHandler(messages, {
-        enabled: true,
         protectedMessages: 0,
         releasedPercent: 5, // threshold = 5000, pending = 300, below
-        dedup: { enabled: true, thresholdContext: 0 },
+        dedup: { thresholdContext: 0 },
         purgeErrors: {},
       });
 
@@ -2949,10 +2601,9 @@ describe("contextPruningTransformHandler", () => {
       ];
 
       contextPruningTransformHandler(messages, {
-        enabled: true,
         protectedMessages: 0,
         releasedPercent: 5, // pending=150 far below 5000 threshold
-        dedup: { enabled: true, thresholdContext: 0 },
+        dedup: { thresholdContext: 0 },
         purgeErrors: {},
       });
 
@@ -3010,10 +2661,9 @@ describe("contextPruningTransformHandler", () => {
       ];
 
       contextPruningTransformHandler(turn1, {
-        enabled: true,
         protectedMessages: 0,
         releasedPercent: 5,
-        dedup: { enabled: true, thresholdContext: 0 },
+        dedup: { thresholdContext: 0 },
         purgeErrors: {},
       });
 
@@ -3038,10 +2688,9 @@ describe("contextPruningTransformHandler", () => {
       ];
 
       contextPruningTransformHandler(turn2, {
-        enabled: true,
         protectedMessages: 0,
         releasedPercent: 5,
-        dedup: { enabled: true, thresholdContext: 0 },
+        dedup: { thresholdContext: 0 },
         purgeErrors: {},
       });
 
@@ -3097,10 +2746,9 @@ describe("contextPruningTransformHandler", () => {
       assert.equal(state.pendingViewChange, true, "flag set before handler");
 
       contextPruningTransformHandler(messages, {
-        enabled: true,
         protectedMessages: 0,
         releasedPercent: 5,
-        dedup: { enabled: false },
+        dedup: {},
         purgeErrors: {},
       });
 
@@ -3158,7 +2806,6 @@ describe("contextPruningTransformHandler", () => {
     // growth 10K (gentle) / 5K (urgent).
     const NUDGE_LIMIT = 200000;
     const nudgeConfig = {
-      enabled: true,
       minContext: "60%",
       minContextCap: 200000,
       maxContext: "80%",
@@ -3176,12 +2823,11 @@ describe("contextPruningTransformHandler", () => {
      */
     function nudgeTransformConfig(protectedMessages: number) {
       return {
-        enabled: true,
         protectedMessages,
         nudge: nudgeConfig,
-        compress: { enabled: true, protectedTokens: 0, thresholdTokens: 0 },
-        dedup: { enabled: false },
-        purgeErrors: { enabled: false },
+        compress: { protectedTokens: 0, thresholdTokens: 0 },
+        dedup: {},
+        purgeErrors: {},
       };
     }
 
@@ -3212,12 +2858,24 @@ describe("contextPruningTransformHandler", () => {
 
       // Baseline eval: 140K prompt — establishes the anchor silently.
       let messages = nudgeMessages(sessionID, 140000);
-      contextPruningTransformHandler(messages, nudgeTransformConfig(2));
+      contextPruningTransformHandler(
+        messages,
+        nudgeTransformConfig(2),
+        undefined,
+        undefined,
+        true,
+      );
       assert.equal(messages.length, 4, "baseline injects nothing");
 
       // Growth past the gentle interval: 150K (delta 10K >= 10K).
       messages = nudgeMessages(sessionID, 150000);
-      contextPruningTransformHandler(messages, nudgeTransformConfig(2));
+      contextPruningTransformHandler(
+        messages,
+        nudgeTransformConfig(2),
+        undefined,
+        undefined,
+        true,
+      );
 
       // Synthetic nudge appended at the very END.
       assert.equal(messages.length, 5, "nudge message appended");
@@ -3290,9 +2948,21 @@ describe("contextPruningTransformHandler", () => {
 
       // Baseline, then trigger.
       let messages = nudgeMessages(sessionID, 140000);
-      contextPruningTransformHandler(messages, nudgeTransformConfig(2));
+      contextPruningTransformHandler(
+        messages,
+        nudgeTransformConfig(2),
+        undefined,
+        undefined,
+        true,
+      );
       messages = nudgeMessages(sessionID, 150000);
-      contextPruningTransformHandler(messages, nudgeTransformConfig(2));
+      contextPruningTransformHandler(
+        messages,
+        nudgeTransformConfig(2),
+        undefined,
+        undefined,
+        true,
+      );
       assert.equal(
         messages[messages.length - 1].info.id,
         "zoo-nudge",
@@ -3301,7 +2971,13 @@ describe("contextPruningTransformHandler", () => {
 
       // Same tokens again — delta 0 → anchor already moved → silent.
       const messages2 = nudgeMessages(sessionID, 150000);
-      contextPruningTransformHandler(messages2, nudgeTransformConfig(2));
+      contextPruningTransformHandler(
+        messages2,
+        nudgeTransformConfig(2),
+        undefined,
+        undefined,
+        true,
+      );
       assert.equal(messages2.length, 4, "no second injection");
       assert.equal(messages2[messages2.length - 1].info.id, "a2");
     });
@@ -3312,22 +2988,46 @@ describe("contextPruningTransformHandler", () => {
 
       // Baseline 140K → anchor 140K.
       let messages = nudgeMessages(sessionID, 140000);
-      contextPruningTransformHandler(messages, nudgeTransformConfig(2));
+      contextPruningTransformHandler(
+        messages,
+        nudgeTransformConfig(2),
+        undefined,
+        undefined,
+        true,
+      );
 
       // Trigger gentle at 150K → anchor 150K.
       messages = nudgeMessages(sessionID, 150000);
-      contextPruningTransformHandler(messages, nudgeTransformConfig(2));
+      contextPruningTransformHandler(
+        messages,
+        nudgeTransformConfig(2),
+        undefined,
+        undefined,
+        true,
+      );
       assert.equal(messages[messages.length - 1].info.id, "zoo-nudge");
 
       // Compression drops to 100K — below min; anchor follows down.
       messages = nudgeMessages(sessionID, 100000);
-      contextPruningTransformHandler(messages, nudgeTransformConfig(2));
+      contextPruningTransformHandler(
+        messages,
+        nudgeTransformConfig(2),
+        undefined,
+        undefined,
+        true,
+      );
       assert.equal(messages[messages.length - 1].info.id, "a2");
       assert.equal(messages.length, 4, "below-min eval stays silent");
 
       // Rebound to 135K — distance re-accumulated from 100K → triggers.
       messages = nudgeMessages(sessionID, 135000);
-      contextPruningTransformHandler(messages, nudgeTransformConfig(2));
+      contextPruningTransformHandler(
+        messages,
+        nudgeTransformConfig(2),
+        undefined,
+        undefined,
+        true,
+      );
       assert.equal(
         messages[messages.length - 1].info.id,
         "zoo-nudge",
@@ -3346,9 +3046,21 @@ describe("contextPruningTransformHandler", () => {
 
       // Baseline at 130K (silent), then 165K: past max with a large delta.
       let messages = nudgeMessages(sessionID, 130000);
-      contextPruningTransformHandler(messages, nudgeTransformConfig(2));
+      contextPruningTransformHandler(
+        messages,
+        nudgeTransformConfig(2),
+        undefined,
+        undefined,
+        true,
+      );
       messages = nudgeMessages(sessionID, 165000);
-      contextPruningTransformHandler(messages, nudgeTransformConfig(2));
+      contextPruningTransformHandler(
+        messages,
+        nudgeTransformConfig(2),
+        undefined,
+        undefined,
+        true,
+      );
 
       const last = messages[messages.length - 1];
       assert.equal(last.info.id, "zoo-nudge");
@@ -3390,14 +3102,26 @@ describe("contextPruningTransformHandler", () => {
       // message count passed protected_messages.
       // Baseline eval: 140K prompt — establishes the anchor silently.
       let messages = nudgeMessages(sessionID, 140000);
-      contextPruningTransformHandler(messages, nudgeTransformConfig(4));
+      contextPruningTransformHandler(
+        messages,
+        nudgeTransformConfig(4),
+        undefined,
+        undefined,
+        true,
+      );
       assert.equal(messages.length, 4, "baseline injects nothing");
 
       // Growth past the gentle interval: 150K (delta 10K >= 10K) → the
       // evaluation fires, but with everything protected there is no
       // eligible ref → injection is skipped.
       messages = nudgeMessages(sessionID, 150000);
-      contextPruningTransformHandler(messages, nudgeTransformConfig(4));
+      contextPruningTransformHandler(
+        messages,
+        nudgeTransformConfig(4),
+        undefined,
+        undefined,
+        true,
+      );
       assert.equal(messages.length, 4, "no nudge appended");
       assert.equal(messages[messages.length - 1].info.id, "a2");
 
@@ -3415,11 +3139,23 @@ describe("contextPruningTransformHandler", () => {
       // opens, but the already-moved anchor still blocks an immediate
       // re-nudge (a stale anchor at 140K would fire here).
       const messages2 = nudgeMessages(sessionID, 150000);
-      contextPruningTransformHandler(messages2, nudgeTransformConfig(4));
+      contextPruningTransformHandler(
+        messages2,
+        nudgeTransformConfig(4),
+        undefined,
+        undefined,
+        true,
+      );
       assert.equal(messages2.length, 4, "same-token re-run stays silent");
 
       const messages3 = nudgeMessages(sessionID, 150000);
-      contextPruningTransformHandler(messages3, nudgeTransformConfig(2));
+      contextPruningTransformHandler(
+        messages3,
+        nudgeTransformConfig(2),
+        undefined,
+        undefined,
+        true,
+      );
       assert.equal(messages3.length, 4, "gate open but anchor already moved");
       assert.equal(messages3[messages3.length - 1].info.id, "a2");
     });
@@ -3454,9 +3190,21 @@ describe("contextPruningTransformHandler", () => {
       // No setModelLimit call for this session.
 
       let messages = nudgeMessages(sessionID, 140000);
-      contextPruningTransformHandler(messages, nudgeTransformConfig(2));
+      contextPruningTransformHandler(
+        messages,
+        nudgeTransformConfig(2),
+        undefined,
+        undefined,
+        true,
+      );
       messages = nudgeMessages(sessionID, 150000);
-      contextPruningTransformHandler(messages, nudgeTransformConfig(2));
+      contextPruningTransformHandler(
+        messages,
+        nudgeTransformConfig(2),
+        undefined,
+        undefined,
+        true,
+      );
 
       assert.equal(messages.length, 4, "no nudge without a captured limit");
       const state = getOrCreateSessionState(sessionID);
@@ -3472,27 +3220,40 @@ describe("contextPruningTransformHandler", () => {
         msg("user", "u1", [textPart("hello")], sessionID),
         msg("assistant", "a1", [textPart("thinking...")]),
       ];
-      contextPruningTransformHandler(messages, nudgeTransformConfig(2));
+      contextPruningTransformHandler(
+        messages,
+        nudgeTransformConfig(2),
+        undefined,
+        undefined,
+        true,
+      );
 
       assert.equal(messages.length, 2, "no nudge without completed assistant");
       const state = getOrCreateSessionState(sessionID);
       assert.equal(state.nudges, undefined);
     });
 
-    it("nudge.enabled=false → parsed config but injection skipped", () => {
+    it("compress tool not registered → nudge injection skipped", () => {
       const sessionID = "sess-nudge-disabled";
       setModelLimit(sessionID, NUDGE_LIMIT, "test-model");
 
+      // Full nudge config, but the compress tool is NOT registered in the
+      // profile (hasCompressTool=false) → the nudge phase is gated off.
       const messages = nudgeMessages(sessionID, 150000);
-      contextPruningTransformHandler(messages, {
-        enabled: true,
-        protectedMessages: 2,
-        nudge: { ...nudgeConfig, enabled: false },
-        dedup: { enabled: false },
-        purgeErrors: { enabled: false },
-      });
+      contextPruningTransformHandler(
+        messages,
+        {
+          protectedMessages: 2,
+          nudge: nudgeConfig,
+          dedup: {},
+          purgeErrors: {},
+        },
+        undefined,
+        undefined,
+        false,
+      );
 
-      assert.equal(messages.length, 4, "no nudge when disabled");
+      assert.equal(messages.length, 4, "no nudge without the compress tool");
       const state = getOrCreateSessionState(sessionID);
       assert.equal(state.nudges, undefined);
     });
@@ -3515,11 +3276,18 @@ describe("contextPruningTransformHandler", () => {
       ];
 
       // Config WITHOUT the nudge key — the pruning phases still run.
-      contextPruningTransformHandler(messages, {
-        enabled: true,
-        dedup: { enabled: false },
-        purgeErrors: { enabled: false },
-      });
+      // hasCompressTool=true (tool registered) so the absence of the
+      // nudge section alone gates the nudge phase.
+      contextPruningTransformHandler(
+        messages,
+        {
+          dedup: {},
+          purgeErrors: {},
+        },
+        undefined,
+        undefined,
+        true,
+      );
 
       // Sweep mark still applied (Phase 2 unaffected).
       assert.ok(
@@ -3554,21 +3322,19 @@ describe("contextPruningTransformHandler", () => {
     TEST_SESSION_IDS.push(...MANUAL_SESSION_IDS);
 
     /**
-     * Build a transform config with the compress section enabled and the
-     * token/threshold protections disabled (0) so the tiny fixtures stay
-     * eligible — same pattern as the nudge tests.
+     * Build a transform config with the compress section thresholds
+     * present and the token/threshold protections disabled (0) so the
+     * tiny fixtures stay eligible — same pattern as the nudge tests.
      */
     function manualTransformConfig(protectedMessages: number) {
       return {
-        enabled: true,
         protectedMessages,
         compress: {
-          enabled: true,
           protectedTokens: 0,
           thresholdTokens: 0,
         },
-        dedup: { enabled: false },
-        purgeErrors: { enabled: false },
+        dedup: {},
+        purgeErrors: {},
       };
     }
 
@@ -3593,7 +3359,13 @@ describe("contextPruningTransformHandler", () => {
       getOrCreateSessionState(sessionID).pendingManualTrigger = true;
 
       const messages = manualMessages(sessionID);
-      contextPruningTransformHandler(messages, manualTransformConfig(2));
+      contextPruningTransformHandler(
+        messages,
+        manualTransformConfig(2),
+        undefined,
+        undefined,
+        true,
+      );
 
       // Synthetic command appended at the very END.
       assert.equal(messages.length, 5, "synthetic message appended");
@@ -3636,7 +3408,13 @@ describe("contextPruningTransformHandler", () => {
 
       // Turn 1: flag set → injected + cleared.
       const messages = manualMessages(sessionID);
-      contextPruningTransformHandler(messages, manualTransformConfig(2));
+      contextPruningTransformHandler(
+        messages,
+        manualTransformConfig(2),
+        undefined,
+        undefined,
+        true,
+      );
       assert.equal(
         messages[messages.length - 1].info.id,
         "zoo-manual-compress",
@@ -3644,7 +3422,13 @@ describe("contextPruningTransformHandler", () => {
 
       // Turn 2: fresh view, flag already cleared → no injection.
       const messages2 = manualMessages(sessionID);
-      contextPruningTransformHandler(messages2, manualTransformConfig(2));
+      contextPruningTransformHandler(
+        messages2,
+        manualTransformConfig(2),
+        undefined,
+        undefined,
+        true,
+      );
       assert.equal(messages2.length, 4, "no second injection");
       assert.equal(messages2[messages2.length - 1].info.id, "a2");
     });
@@ -3679,7 +3463,13 @@ describe("contextPruningTransformHandler", () => {
       // null, but the explicit user command still fires with a fallback
       // window line and the flag is consumed.
       const messages = manualMessages(sessionID);
-      contextPruningTransformHandler(messages, manualTransformConfig(100));
+      contextPruningTransformHandler(
+        messages,
+        manualTransformConfig(100),
+        undefined,
+        undefined,
+        true,
+      );
 
       assert.equal(messages.length, 5, "fallback message still appended");
       const last = messages[messages.length - 1];
@@ -3693,20 +3483,25 @@ describe("contextPruningTransformHandler", () => {
       assert.equal(state.pendingManualTrigger, false, "flag consumed");
     });
 
-    it("clears the flag without injecting when the compress section is disabled", () => {
+    it("clears the flag without injecting when the compress tool is not registered", () => {
       const sessionID = "sess-manual-disabled";
       getOrCreateSessionState(sessionID).pendingManualTrigger = true;
 
       const messages = manualMessages(sessionID);
-      contextPruningTransformHandler(messages, {
-        enabled: true,
-        protectedMessages: 2,
-        compress: { enabled: false },
-        dedup: { enabled: false },
-        purgeErrors: { enabled: false },
-      });
+      contextPruningTransformHandler(
+        messages,
+        {
+          protectedMessages: 2,
+          compress: { protectedTokens: 0, thresholdTokens: 0 },
+          dedup: {},
+          purgeErrors: {},
+        },
+        undefined,
+        undefined,
+        false,
+      );
 
-      assert.equal(messages.length, 4, "no injection when disabled");
+      assert.equal(messages.length, 4, "no injection without compress tool");
       const state = getOrCreateSessionState(sessionID);
       assert.equal(
         state.pendingManualTrigger,
@@ -3732,7 +3527,13 @@ describe("contextPruningTransformHandler", () => {
           { input: 150000, output: 100 },
         ),
       ];
-      contextPruningTransformHandler(messages, manualTransformConfig(1));
+      contextPruningTransformHandler(
+        messages,
+        manualTransformConfig(1),
+        undefined,
+        undefined,
+        true,
+      );
 
       const persisted = loadSessionState(sessionID) as unknown as Record<
         string,
@@ -3752,7 +3553,6 @@ describe("contextPruningTransformHandler", () => {
 
   describe("parseContextConfig nudge section", () => {
     const fullNudge = {
-      enabled: true,
       min_context: "60%",
       min_context_cap: 200000,
       max_context: "80%",
@@ -3764,7 +3564,9 @@ describe("contextPruningTransformHandler", () => {
       const config = parseContextConfig({});
       assert.equal(config.nudge, undefined);
 
-      const config2 = parseContextConfig({ context: { enabled: true } });
+      const config2 = parseContextConfig({
+        context: { protected_messages: 3 },
+      });
       assert.equal(config2.nudge, undefined);
 
       const buffer = _getBufferForTesting();
@@ -3777,7 +3579,6 @@ describe("contextPruningTransformHandler", () => {
     it("reads the full [zoo.context.nudge] section", () => {
       const config = parseContextConfig({ context: { nudge: fullNudge } });
       assert.deepEqual(config.nudge, {
-        enabled: true,
         minContext: "60%",
         minContextCap: 200000,
         maxContext: "80%",
@@ -3790,7 +3591,6 @@ describe("contextPruningTransformHandler", () => {
       const config = parseContextConfig({
         context: {
           nudge: {
-            enabled: true,
             min_context: 100000,
             min_context_cap: 200000,
             max_context: 250000,
@@ -3808,7 +3608,6 @@ describe("contextPruningTransformHandler", () => {
       const config = parseContextConfig({
         context: {
           nudge: {
-            enabled: true,
             min_context: "60%",
             // min_context_cap missing
             max_context: "80%",
@@ -3848,21 +3647,14 @@ describe("contextPruningTransformHandler", () => {
     it("wrong-typed values invalidate the whole section (warn once)", () => {
       const config = parseContextConfig({
         context: {
-          nudge: { ...fullNudge, enabled: "false" },
+          nudge: { ...fullNudge, min_context_cap: NaN },
         },
       });
       assert.equal(config.nudge, undefined);
 
-      const config2 = parseContextConfig({
-        context: {
-          nudge: { ...fullNudge, min_context_cap: NaN },
-        },
-      });
-      assert.equal(config2.nudge, undefined);
-
       const buffer = _getBufferForTesting();
       const entries = buffer.filter((e) => e.event === "nudge_config_invalid");
-      assert.equal(entries.length, 2);
+      assert.equal(entries.length, 1);
     });
 
     it("negative caps invalidate the whole section (warn once)", () => {
@@ -3880,8 +3672,8 @@ describe("contextPruningTransformHandler", () => {
     });
 
     it("non-positive thresholds invalidate the whole section (warn once)", () => {
-      // Thresholds have no "disable" meaning — enabled=false covers that,
-      // so 0, negatives, and "0%" are all invalid.
+      // Thresholds have no "disable" meaning — enablement comes from the
+      // mode profile, so 0, negatives, and "0%" are all invalid.
       const config = parseContextConfig({
         context: { nudge: { ...fullNudge, min_context: 0 } },
       });
@@ -3900,20 +3692,6 @@ describe("contextPruningTransformHandler", () => {
       const buffer = _getBufferForTesting();
       const entries = buffer.filter((e) => e.event === "nudge_config_invalid");
       assert.equal(entries.length, 3, "one warn per invalid value");
-    });
-
-    it("enabled=false is valid (present but disabled)", () => {
-      const config = parseContextConfig({
-        context: { nudge: { ...fullNudge, enabled: false } },
-      });
-      assert.equal(config.nudge?.enabled, false);
-      assert.equal(config.nudge?.minContext, "60%");
-
-      const buffer = _getBufferForTesting();
-      assert.ok(
-        !buffer.some((e) => e.event === "nudge_config_invalid"),
-        "enabled=false must not warn",
-      );
     });
   });
 });

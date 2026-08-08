@@ -6,13 +6,12 @@
  * body, zero state change, no notification), the context-limit gate
  * rejection (state untouched), the loud config-guidance error when the
  * `[zoo.context.decompress]` section is absent, and the registration gate
- * (`enabled === false` / absent section → no tool key, primary_tools
- * untouched).
+ * (absent section → no tool key, primary_tools untouched).
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import type { SessionClient } from "../core/client/session.js";
 import type { ContextPruningConfig } from "../core/config-types.js";
-import type { DcpClient } from "../core/context/dcp-client.js";
 import type { ContextMessageEntry } from "../core/context/metrics.js";
 import {
   _resetForTesting as _resetModelLimitsForTesting,
@@ -31,9 +30,9 @@ import {
 } from "../core/context/pruning/marks.js";
 import { _clearAllRefsForTesting } from "../core/context/pruning/message-refs.js";
 import {
+  buildPlugin,
   buildToolHooks,
-  registerDecompressToolInConfig,
-  zookeeper,
+  registerProfileToolsInConfig,
 } from "../opencode.js";
 import { _resetForTesting } from "../utils/logger.js";
 import { createDecompressTool } from "./decompress.js";
@@ -54,6 +53,43 @@ afterEach(() => {
     deleteSessionState(sid);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Poly profile fixture
+// ---------------------------------------------------------------------------
+
+/**
+ * A zoo config with the poly profile, mirroring config.toml's
+ * `[zoo.context.decompress]` values so the flow tests keep their
+ * `max_fill_percent = 90` gate.
+ */
+const POLY_ZOO: Record<string, unknown> = {
+  context: {
+    protected_messages: 20,
+    released_percent: 10,
+    dedup: { threshold_context: 100000, protected_tools: [] },
+    purge_errors: {
+      threshold_context: 100000,
+      protected_tools: [],
+    },
+    compress: {
+      threshold_tokens: 2000,
+      protected_tokens: 20000,
+      max_ranges: 8,
+    },
+    decompress: { max_fill_percent: 90 },
+  },
+  mode: {
+    poly: {
+      tools: ["compress", "decompress"],
+    },
+  },
+};
+
+/** Build a plugin wired to the poly profile (tools: compress + decompress). */
+function makePlugin(client: unknown = {}): Promise<Record<string, any>> {
+  return buildPlugin({ client }, POLY_ZOO) as Promise<Record<string, any>>;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -90,7 +126,7 @@ function makeMessages(): ContextMessageEntry[] {
 
 /** Mock client that returns the given messages and captures prompt calls. */
 function mockClient(messages: ContextMessageEntry[]): {
-  client: DcpClient;
+  client: SessionClient;
   promptCalls: Array<{
     sessionID: string;
     text: string;
@@ -155,12 +191,12 @@ function createActiveBlock(): void {
   assert.ok(block !== null, "block must be created");
 }
 
-/** Valid enabled decompress config (mirrors the parsed config.toml). */
+/** Valid decompress config (mirrors the parsed config.toml). */
 const ENABLED_CONFIG: ContextPruningConfig = {
   dedup: {},
   purgeErrors: {},
-  compress: { enabled: true },
-  decompress: { enabled: true, maxFillPercent: 90 },
+  compress: {},
+  decompress: { maxFillPercent: 90 },
 };
 
 // ---------------------------------------------------------------------------
@@ -175,7 +211,7 @@ describe("decompress tool execute — restore happy path", () => {
     // Populate the ref registry so the restore path snapshots it.
     assignMessageRefs(TEST_SESSION_ID, messages);
 
-    const plugin = (await zookeeper({ client })) as any;
+    const plugin = (await makePlugin(client)) as any;
     assert.ok(plugin.tool, "tool hooks must be registered");
     assert.ok(plugin.tool.decompress, "decompress tool must be registered");
 
@@ -261,7 +297,7 @@ describe("decompress tool execute — recall path", () => {
     block.active = false;
     const dirtyBefore = state.dirty;
 
-    const plugin = (await zookeeper({ client })) as any;
+    const plugin = (await makePlugin(client)) as any;
     const result = await plugin.tool.decompress.execute(
       { blockId: "b1" },
       mockToolContext,
@@ -297,7 +333,7 @@ describe("decompress tool execute — recall path", () => {
     assert.ok(block !== null);
     block.active = false;
 
-    const plugin = (await zookeeper({ client })) as any;
+    const plugin = (await makePlugin(client)) as any;
     const result = await plugin.tool.decompress.execute(
       { blockId: "b1" },
       mockToolContext,
@@ -326,7 +362,7 @@ describe("decompress tool execute — gate rejection", () => {
     // Tiny window: after = 0 + 19500 > 1000 × 90% = 900 → rejected.
     setModelLimit(TEST_SESSION_ID, 1000, "test-model");
 
-    const plugin = (await zookeeper({ client })) as any;
+    const plugin = (await makePlugin(client)) as any;
     await assert.rejects(
       () => plugin.tool.decompress.execute({ blockId: "b1" }, mockToolContext),
       (err: unknown) =>
@@ -350,7 +386,7 @@ describe("decompress tool execute — gate rejection", () => {
     createActiveBlock();
     // No setModelLimit call → getModelLimit returns undefined → gate skipped.
 
-    const plugin = (await zookeeper({ client })) as any;
+    const plugin = (await makePlugin(client)) as any;
     const result = await plugin.tool.decompress.execute(
       { blockId: "b1" },
       mockToolContext,
@@ -379,7 +415,7 @@ describe("decompress tool execute — config guidance error", () => {
       (err: unknown) =>
         err instanceof Error &&
         err.message.includes("[zoo.context.decompress]") &&
-        /enabled/.test(err.message),
+        /max_fill_percent/.test(err.message),
     );
 
     // No state was touched.
@@ -404,47 +440,42 @@ describe("decompress tool execute — config guidance error", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Registration gate (enabled === false / absent)
+// Registration gate (profile tools list)
 // ---------------------------------------------------------------------------
 
 describe("decompress tool registration gate", () => {
-  it("enabled=false → no decompress tool registered", () => {
+  it("decompress absent from the profile tools list → no decompress tool", () => {
     const { client } = mockClient([]);
-    const hooks = buildToolHooks(client, {
-      dedup: {},
-      purgeErrors: {},
-      decompress: { enabled: false },
-    });
+    const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} }, []);
     assert.equal(hooks, undefined);
   });
 
-  it("decompress section absent → no decompress tool registered", () => {
+  it("compress only in the list → decompress stays unregistered", () => {
     const { client } = mockClient([]);
-    const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} });
-    assert.equal(hooks, undefined);
+    const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} }, [
+      "compress",
+    ]);
+    assert.ok(hooks !== undefined, "compress tool registers");
+    assert.equal(hooks.decompress, undefined);
   });
 
-  it("compress disabled but decompress enabled → only decompress registered", () => {
+  it("decompress in the list → only decompress registered", () => {
     const { client } = mockClient([]);
-    const hooks = buildToolHooks(client, {
-      dedup: {},
-      purgeErrors: {},
-      decompress: { enabled: true },
-    });
+    const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} }, [
+      "decompress",
+    ]);
     assert.ok(hooks !== undefined);
     assert.equal(hooks.compress, undefined);
     assert.ok(hooks.decompress);
     assert.equal(typeof hooks.decompress.execute, "function");
   });
 
-  it("both enabled → both tools registered", () => {
+  it("both tools in the list → both tools registered", () => {
     const { client } = mockClient([]);
-    const hooks = buildToolHooks(client, {
-      dedup: {},
-      purgeErrors: {},
-      compress: { enabled: true },
-      decompress: { enabled: true },
-    });
+    const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} }, [
+      "compress",
+      "decompress",
+    ]);
     assert.ok(hooks !== undefined);
     assert.ok(hooks.compress);
     assert.ok(hooks.decompress);
@@ -452,11 +483,9 @@ describe("decompress tool registration gate", () => {
 
   it("registers plain JSON Schema args for OpenCode native tool loading", () => {
     const { client } = mockClient([]);
-    const hooks = buildToolHooks(client, {
-      dedup: {},
-      purgeErrors: {},
-      decompress: { enabled: true },
-    });
+    const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} }, [
+      "decompress",
+    ]);
 
     assert.ok(hooks?.decompress);
     assert.deepEqual(hooks.decompress.args, {
@@ -470,11 +499,9 @@ describe("decompress tool registration gate", () => {
 
   it("carries the verbatim decompress description", () => {
     const { client } = mockClient([]);
-    const hooks = buildToolHooks(client, {
-      dedup: {},
-      purgeErrors: {},
-      decompress: { enabled: true },
-    });
+    const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} }, [
+      "decompress",
+    ]);
 
     assert.ok(hooks?.decompress);
     assert.equal(
@@ -511,29 +538,21 @@ describe("decompress tool registration gate", () => {
 // ---------------------------------------------------------------------------
 
 describe("config hook — primary_tools", () => {
-  it("decompress section absent → primary_tools untouched", () => {
+  it("decompress absent from the profile tools list → primary_tools untouched", () => {
     const config = { experimental: { primary_tools: ["bash"] } };
-    registerDecompressToolInConfig(config, { dedup: {}, purgeErrors: {} });
+    registerProfileToolsInConfig(config, []);
     assert.deepEqual(config.experimental.primary_tools, ["bash"]);
   });
 
-  it("enabled=false → primary_tools untouched", () => {
+  it("compress only in the list → primary_tools gets no decompress", () => {
     const config = { experimental: { primary_tools: ["bash"] } };
-    registerDecompressToolInConfig(config, {
-      dedup: {},
-      purgeErrors: {},
-      decompress: { enabled: false },
-    });
-    assert.deepEqual(config.experimental.primary_tools, ["bash"]);
+    registerProfileToolsInConfig(config, ["compress"]);
+    assert.deepEqual(config.experimental.primary_tools, ["bash", "compress"]);
   });
 
-  it("enabled=true → appends decompress preserving pre-existing entries", () => {
+  it("decompress in the list → appends decompress preserving pre-existing entries", () => {
     const config = { experimental: { primary_tools: ["bash", "compress"] } };
-    registerDecompressToolInConfig(config, {
-      dedup: {},
-      purgeErrors: {},
-      decompress: { enabled: true },
-    });
+    registerProfileToolsInConfig(config, ["compress", "decompress"]);
     assert.deepEqual(config.experimental.primary_tools, [
       "bash",
       "compress",
@@ -543,16 +562,12 @@ describe("config hook — primary_tools", () => {
 
   it("is idempotent — never duplicates decompress", () => {
     const config = { experimental: { primary_tools: ["decompress"] } };
-    registerDecompressToolInConfig(config, {
-      dedup: {},
-      purgeErrors: {},
-      decompress: { enabled: true },
-    });
+    registerProfileToolsInConfig(config, ["decompress"]);
     assert.deepEqual(config.experimental.primary_tools, ["decompress"]);
   });
 
   it("plugin config hook appends both compress and decompress preserving entries", async () => {
-    const plugin = (await zookeeper({})) as any;
+    const plugin = (await makePlugin()) as any;
     const config = { experimental: { primary_tools: ["bash", "edit"] } };
 
     await plugin.config(config);

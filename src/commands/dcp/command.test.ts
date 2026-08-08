@@ -1,32 +1,28 @@
 /**
- * Tests for the `/dcp context` command hook adapter.
+ * Tests for the `/dcp` command handler (src/commands/dcp/command.ts).
  *
- * Covers: fetching messages, injecting ignored prompt, throwing sentinel,
- * unknown subcommand help, empty messages, unavailable client APIs.
+ * Covers: fetching messages, injecting ignored prompt, unknown
+ * subcommand help, empty messages, unavailable client APIs.
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { _resetForTesting } from "../../utils/logger.js";
-import type { DcpClient } from "./dcp-client.js";
-import {
-  DCP_COMMAND_HANDLED,
-  handleDcpCommand,
-  parseSweepCount,
-} from "./dcp-command.js";
-import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./message-parts.js";
-import type { ContextMessageEntry } from "./metrics.js";
-import { estimateTokenCount } from "./metrics.js";
+import type { SessionClient } from "../../core/client/session.js";
+import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "../../core/context/message-parts.js";
+import type { ContextMessageEntry } from "../../core/context/metrics.js";
+import { estimateTokenCount } from "../../core/context/metrics.js";
 import {
   deleteSessionState,
   getOrCreateSessionState,
   loadSessionState,
   pruneToolOutputs,
-} from "./pruning/index.js";
+} from "../../core/context/pruning/index.js";
 import {
   _clearAllSessionsForTesting,
   addMark,
   reclaimedTokens,
-} from "./pruning/marks.js";
+} from "../../core/context/pruning/marks.js";
+import { _resetForTesting } from "../../utils/logger.js";
+import { handleDcpCommand, parseSweepCount } from "./command.js";
 
 // ---------------------------------------------------------------------------
 // Logger & state cleanup
@@ -57,7 +53,7 @@ afterEach(() => {
  * Create a mock client that returns given messages and tracks prompt calls.
  */
 function mockClient(messages: ContextMessageEntry[]): {
-  client: DcpClient;
+  client: SessionClient;
   promptCalls: Array<{
     sessionID: string;
     text: string;
@@ -72,7 +68,7 @@ function mockClient(messages: ContextMessageEntry[]): {
     ignored?: boolean;
   }> = [];
 
-  const client: DcpClient = {
+  const client: SessionClient = {
     session: {
       messages: async () => ({ data: messages }),
       prompt: async (input: {
@@ -282,7 +278,7 @@ describe("missing client APIs", () => {
   });
 
   it("throws when session.messages is unavailable", async () => {
-    const client: DcpClient = {}; // no session at all
+    const client: SessionClient = {}; // no session at all
     await assert.rejects(
       () => handleDcpCommand(client, "sess-9", "context"),
       /无法获取/,
@@ -290,7 +286,7 @@ describe("missing client APIs", () => {
   });
 
   it("throws when response contains error object (HTTP error)", async () => {
-    const client: DcpClient = {
+    const client: SessionClient = {
       session: {
         messages: async () => ({
           data: undefined,
@@ -306,30 +302,12 @@ describe("missing client APIs", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Sentinel export
+// Module exports
 // ---------------------------------------------------------------------------
 
-describe("DCP_COMMAND_HANDLED sentinel", () => {
-  it("is an Error instance", () => {
-    assert.ok(DCP_COMMAND_HANDLED instanceof Error);
-  });
-
-  it("has descriptive message", () => {
-    assert.ok(DCP_COMMAND_HANDLED.message.includes("/dcp command handled"));
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Barrel export
-// ---------------------------------------------------------------------------
-
-describe("barrel export", () => {
+describe("module exports", () => {
   it("exports handleDcpCommand as a function", () => {
     assert.equal(typeof handleDcpCommand, "function");
-  });
-
-  it("exports DCP_COMMAND_HANDLED as an Error", () => {
-    assert.ok(DCP_COMMAND_HANDLED instanceof Error);
   });
 
   it("exports parseSweepCount as a function", () => {
@@ -413,7 +391,7 @@ describe("/dcp sweep subcommand — success path", () => {
     ];
 
     let promptText = "";
-    const client: DcpClient = {
+    const client: SessionClient = {
       session: {
         messages: async () => ({ data: messages }),
         prompt: async (input: {
@@ -504,7 +482,7 @@ describe("/dcp sweep subcommand — success path", () => {
     ];
 
     let promptText = "";
-    const client: DcpClient = {
+    const client: SessionClient = {
       session: {
         messages: async () => ({ data: messages }),
         prompt: async (input: {
@@ -571,7 +549,7 @@ describe("/dcp sweep subcommand — success path", () => {
       },
     ];
 
-    const client: DcpClient = {
+    const client: SessionClient = {
       session: {
         messages: async () => ({ data: messages }),
         prompt: async () => {},
@@ -611,7 +589,7 @@ describe("/dcp sweep subcommand — success path", () => {
       },
     ];
 
-    const client: DcpClient = {
+    const client: SessionClient = {
       session: {
         messages: async () => ({ data: messages }),
         prompt: async () => {},
@@ -701,7 +679,7 @@ describe("/dcp sweep subcommand — success path", () => {
       },
     ];
 
-    const client: DcpClient = {
+    const client: SessionClient = {
       session: {
         messages: async () => ({ data: messages }),
         prompt: async () => {},
@@ -738,7 +716,7 @@ describe("/dcp sweep subcommand — no-marks path", () => {
     ];
 
     let promptText = "";
-    const client: DcpClient = {
+    const client: SessionClient = {
       session: {
         messages: async () => ({ data: messages }),
         prompt: async (input: {
@@ -791,7 +769,7 @@ describe("/dcp sweep subcommand — no-marks path", () => {
     addMark(state, "call-only", 100, true, "tool-output");
 
     let promptText = "";
-    const client: DcpClient = {
+    const client: SessionClient = {
       session: {
         messages: async () => ({ data: messages }),
         prompt: async (input: {
@@ -819,7 +797,7 @@ describe("/dcp sweep subcommand — no-marks path", () => {
 
 describe("/dcp sweep subcommand — parse errors propagate", () => {
   it("throws for 'sweep 0' (not a positive integer)", async () => {
-    const client: DcpClient = {
+    const client: SessionClient = {
       session: {
         messages: async () => ({ data: [] }),
         prompt: async () => {},
@@ -833,7 +811,7 @@ describe("/dcp sweep subcommand — parse errors propagate", () => {
   });
 
   it("throws for 'sweep -1' (negative)", async () => {
-    const client: DcpClient = {
+    const client: SessionClient = {
       session: {
         messages: async () => ({ data: [] }),
         prompt: async () => {},
@@ -859,17 +837,17 @@ describe("/dcp compress subcommand", () => {
     deleteSessionState(SESSION_ID);
   });
 
-  /** Enable gate config — compress section strictly parsed and enabled. */
-  const enabledConfig: Parameters<typeof handleDcpCommand>[3] = {
+  /** Gate-open config — compress section strictly parsed. */
+  const compressConfig: Parameters<typeof handleDcpCommand>[3] = {
     dedup: {},
     purgeErrors: {},
     protectedMessages: 2,
-    compress: { enabled: true, thresholdTokens: 1, protectedTokens: 1 },
+    compress: { thresholdTokens: 1, protectedTokens: 1 },
   };
 
-  it("enabled=false → command refuses with notice, no state writes", async () => {
+  it("compress tool not registered → command refuses with notice, no state writes", async () => {
     let promptText = "";
-    const promptClient: DcpClient = {
+    const promptClient: SessionClient = {
       session: {
         messages: async () => ({ data: [] }),
         prompt: async (input: {
@@ -884,11 +862,18 @@ describe("/dcp compress subcommand", () => {
       },
     };
 
-    await handleDcpCommand(promptClient, "sess-compress-disabled", "compress", {
-      dedup: {},
-      purgeErrors: {},
-      compress: { enabled: false },
-    });
+    // Valid compress section, but the tool is NOT in the profile tools.
+    await handleDcpCommand(
+      promptClient,
+      "sess-compress-disabled",
+      "compress",
+      {
+        dedup: {},
+        purgeErrors: {},
+        compress: { thresholdTokens: 1, protectedTokens: 1 },
+      },
+      false,
+    );
 
     assert.ok(
       promptText.includes("压缩功能未启用"),
@@ -903,7 +888,7 @@ describe("/dcp compress subcommand", () => {
 
   it("compress section absent → command refuses with notice, no state writes", async () => {
     let promptText = "";
-    const promptClient: DcpClient = {
+    const promptClient: SessionClient = {
       session: {
         messages: async () => ({ data: [] }),
         prompt: async (input: {
@@ -918,10 +903,17 @@ describe("/dcp compress subcommand", () => {
       },
     };
 
-    await handleDcpCommand(promptClient, "sess-compress-absent", "compress", {
-      dedup: {},
-      purgeErrors: {},
-    });
+    // Tool registered in the profile, but the compress section is absent.
+    await handleDcpCommand(
+      promptClient,
+      "sess-compress-absent",
+      "compress",
+      {
+        dedup: {},
+        purgeErrors: {},
+      },
+      true,
+    );
 
     assert.ok(
       promptText.includes("压缩功能未启用"),
@@ -940,7 +932,7 @@ describe("/dcp compress subcommand", () => {
     let promptNoReply: boolean | undefined;
     let promptIgnored: boolean | undefined;
     let promptText = "";
-    const client: DcpClient = {
+    const client: SessionClient = {
       session: {
         prompt: async (input: {
           path: { id: string };
@@ -956,7 +948,13 @@ describe("/dcp compress subcommand", () => {
       },
     };
 
-    await handleDcpCommand(client, SESSION_ID, "compress", enabledConfig);
+    await handleDcpCommand(
+      client,
+      SESSION_ID,
+      "compress",
+      compressConfig,
+      true,
+    );
 
     // Notification is ignored + noReply and tells the user about the
     // next-turn trigger.
@@ -975,12 +973,24 @@ describe("/dcp compress subcommand", () => {
   });
 
   it("repeat /dcp compress keeps the flag armed (idempotent)", async () => {
-    const client: DcpClient = {
+    const client: SessionClient = {
       session: { prompt: async () => {} },
     };
 
-    await handleDcpCommand(client, SESSION_ID, "compress", enabledConfig);
-    await handleDcpCommand(client, SESSION_ID, "compress", enabledConfig);
+    await handleDcpCommand(
+      client,
+      SESSION_ID,
+      "compress",
+      compressConfig,
+      true,
+    );
+    await handleDcpCommand(
+      client,
+      SESSION_ID,
+      "compress",
+      compressConfig,
+      true,
+    );
 
     const state = getOrCreateSessionState(SESSION_ID);
     assert.equal(state.pendingManualTrigger, true, "flag stays armed");

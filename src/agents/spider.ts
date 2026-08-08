@@ -1,3 +1,4 @@
+import type { AgentUnitDescriptor } from "../core/slots.js";
 import { MSG_REF_NO_ECHO } from "./parts.js";
 
 /**
@@ -52,3 +53,19 @@ Concise synthesis:
 - ${MSG_REF_NO_ECHO}
 </Contract>
 `;
+
+/**
+ * Spider agent unit descriptor.
+ *
+ * Contributes the web-research-agent prompt for prompt injection.
+ */
+export const unit: AgentUnitDescriptor = {
+  name: "spider",
+  kind: "agent",
+  create() {
+    return {
+      kind: "agent",
+      agents: [{ name: "spider", prompt: SPIDER_PROMPT }],
+    };
+  },
+};
