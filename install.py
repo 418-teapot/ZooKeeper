@@ -3,12 +3,15 @@
 ZooKeeper — Read config.toml + .env → Generate ~/.config/opencode/opencode.json
 
 Usage:
-    python3 install.py               # Use config.toml + .env
-    python3 install.py /path/to.toml # Specify a TOML file
+    python3 install.py                    # Use config.toml + .env
+    python3 install.py /path/to.toml      # Specify a TOML file
+    python3 install.py --mono             # Select the mono mode profile
+    python3 install.py --poly             # Select the poly mode profile
 
 Only depends on Python standard library.
 """
 
+import argparse
 import json
 import os
 import shutil
@@ -22,6 +25,7 @@ from installer.envfile import (
     tomllib,
 )
 from installer.jsonio import load_json_or_empty, write_json
+from installer.mode import mode_state_path, write_mode_state
 from installer.opencode import build_config, parse_mode_profile
 from installer.output import bold, error, header, info, warn
 from installer.pi import build_pi_models_config
@@ -30,14 +34,42 @@ from installer.variants import collect_variants
 
 def main() -> None:
     """Main entry point: load configuration, back up existing files, generate configs, validate, and install."""
+    parser = argparse.ArgumentParser(
+        description="ZooKeeper 安装脚本：读取 config.toml + .env，生成 OpenCode/pi 配置"
+    )
+    parser.add_argument(
+        "toml_path",
+        nargs="?",
+        default=None,
+        help="配置文件路径（默认: 仓库根目录 config.toml）",
+    )
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--mono",
+        action="store_true",
+        help="使用 mono 模式 profile（单 agent）",
+    )
+    mode_group.add_argument(
+        "--poly",
+        action="store_true",
+        help="使用 poly 模式 profile（多 agent）",
+    )
+    args = parser.parse_args()
+
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+    # Resolve the requested mode before anything else: --mono selects
+    # the mono profile; everything else (including no flag) selects
+    # poly.  The mode state file is write-only for the installer —
+    # only the TS runtime reads it.
+    requested_mode = "mono" if args.mono else "poly"
 
     # Parse .env (must happen before {env:} resolution)
     env = parse_env_file(os.path.join(SCRIPT_DIR, ".env"))
 
     toml_path = os.path.abspath(
-        sys.argv[1]
-        if len(sys.argv) > 1
+        args.toml_path
+        if args.toml_path
         else os.path.join(SCRIPT_DIR, "config.toml")
     )
     header("检查环境")
@@ -151,15 +183,19 @@ def main() -> None:
     )
     _filter_missing_entries(toml_data, "mcp", "MCP 服务器", env)
 
+    # Parse the mode profile once, regardless of which hosts are present,
+    # so the selected mode is reported and persisted even when opencode
+    # or pi is not installed.
+    profile = parse_mode_profile(toml_data, selected=requested_mode)
+    if profile is not None:
+        info(
+            f"✓ 模式 profile: {profile['name']}"
+            f"（{len(profile['agents'])} 个 agent）"
+        )
+    profile_agents = profile["agents"] if profile is not None else None
+
     if has_opencode:
         os.makedirs(opencode_dir, exist_ok=True)
-        profile = parse_mode_profile(toml_data)
-        if profile is not None:
-            info(
-                f"✓ 模式 profile: {profile['name']}"
-                f"（{len(profile['agents'])} 个 agent）"
-            )
-        profile_agents = profile["agents"] if profile is not None else None
         config = build_config(toml_data, SCRIPT_DIR, env, profile_agents)
         write_json(opencode_json, config)
 
@@ -252,6 +288,10 @@ def main() -> None:
 
     # ── Installation complete ────────────────────────────────────────
     header("安装完成")
+    # Persist the final selected mode so the next flag-less run reuses
+    # it; a write failure warns but must not abort the installation.
+    if profile is not None and write_mode_state(profile["name"]):
+        info(f"✓ 模式状态已保存: {mode_state_path()} → {profile['name']}")
     if has_opencode:
         info(f"✅ 配置已写入: {opencode_json}")
         info(f"✅ TUI 配置已写入: {tui_jsonc}")

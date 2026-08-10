@@ -1,10 +1,10 @@
 """Tests for installer.opencode mode-profile parsing and agent filtering.
 
 Covers the two profile-driven behaviors introduced for ``[zoo.mode.*]``:
-extracting the single active profile (valid / absent / ambiguous /
-malformed), and ``build_config`` emitting the profile's agent list plus
-every explicitly disabled ``[agent.*]`` section, with no default
-fallback when the profile is missing.
+extracting the active profile (valid / absent / ambiguous / malformed /
+multi-profile with a ``selected`` name), and ``build_config`` emitting
+the profile's agent list plus every explicitly disabled ``[agent.*]``
+section, with no default fallback when the profile is missing.
 """
 
 from __future__ import annotations
@@ -65,6 +65,16 @@ EXPECTED_AGENTS = [
     "kiwi",
 ]
 
+# The mono profile: a minimal agent set (mirrors config.toml
+# [zoo.mode.mono]).
+MONO_PROFILE: dict[str, object] = {
+    "agents": ["dolphin", "mola"],
+    "skills": ["git-commit", "grill", "mola-plan", "wiki-query"],
+    "hooks": ["context-metrics", "context-pruning", "json-error-nudge"],
+    "tools": ["compress", "decompress"],
+    "commands": ["go", "dcp"],
+}
+
 # Built-in agents explicitly disabled with ``disable = true`` in
 # config.toml (lines 455-466).  They must survive profile filtering so
 # OpenCode's built-in agents stay disabled.
@@ -122,6 +132,52 @@ def test_parse_mode_profile_ambiguous_returns_none() -> None:
     """Multiple profiles under ``zoo.mode`` yield None."""
     toml_data = {"zoo": {"mode": {"poly": POLY_PROFILE, "lite": {}}}}
     assert parse_mode_profile(toml_data) is None
+
+
+def test_parse_mode_profile_multi_profile_missing_selection_warns(
+    capsys,
+) -> None:
+    """Multiple profiles without a selection yield None plus a warning."""
+    toml_data = {"zoo": {"mode": {"poly": POLY_PROFILE, "mono": MONO_PROFILE}}}
+    profile = parse_mode_profile(toml_data)
+    assert profile is None
+    assert "存在多个 profile" in capsys.readouterr().out
+
+
+def test_parse_mode_profile_multi_profile_valid_selection() -> None:
+    """Multiple profiles plus a known selection returns that profile."""
+    toml_data = {"zoo": {"mode": {"poly": POLY_PROFILE, "mono": MONO_PROFILE}}}
+    profile = parse_mode_profile(toml_data, selected="mono")
+    assert profile is not None
+    assert profile["name"] == "mono"
+    assert profile["agents"] == MONO_PROFILE["agents"]
+    assert profile["skills"] == MONO_PROFILE["skills"]
+    assert profile["hooks"] == MONO_PROFILE["hooks"]
+    assert profile["tools"] == MONO_PROFILE["tools"]
+    assert profile["commands"] == MONO_PROFILE["commands"]
+
+    profile = parse_mode_profile(toml_data, selected="poly")
+    assert profile is not None
+    assert profile["name"] == "poly"
+    assert profile["agents"] == POLY_PROFILE["agents"]
+
+
+def test_parse_mode_profile_multi_profile_unknown_selection_warns(
+    capsys,
+) -> None:
+    """Multiple profiles plus an unknown selection yield None plus a warning."""
+    toml_data = {"zoo": {"mode": {"poly": POLY_PROFILE, "mono": MONO_PROFILE}}}
+    assert parse_mode_profile(toml_data, selected="nope") is None
+    assert "nope" in capsys.readouterr().out
+
+
+def test_parse_mode_profile_single_profile_ignores_selection() -> None:
+    """A single profile wins regardless of the requested selection."""
+    toml_data = {"zoo": {"mode": {"mono": MONO_PROFILE}}}
+    profile = parse_mode_profile(toml_data, selected="poly")
+    assert profile is not None
+    assert profile["name"] == "mono"
+    assert profile["agents"] == MONO_PROFILE["agents"]
 
 
 def test_parse_mode_profile_non_object_returns_none() -> None:
@@ -190,7 +246,7 @@ def test_build_config_omits_agents_for_empty_profile(tmp_path) -> None:
 def test_real_config_poly_profile_filters_agents(tmp_path) -> None:
     """The shipped config.toml emits profile agents plus disabled ones."""
     toml_data = parse_toml(str(REPO_ROOT / "config.toml"))
-    profile = parse_mode_profile(toml_data)
+    profile = parse_mode_profile(toml_data, selected="poly")
     assert profile is not None
     assert profile["name"] == "poly"
     assert profile["agents"] == EXPECTED_AGENTS

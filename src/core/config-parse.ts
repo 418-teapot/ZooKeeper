@@ -12,12 +12,16 @@
  * `undefined` (fail to skip) and exactly one warn is logged with the
  * offending key/value.
  *
- * Zero OpenCode framework dependencies — only the shared logger and core
- * regexes are imported, so this module is importable from any TS runtime.
+ * Zero OpenCode framework dependencies — only the shared logger, core
+ * regexes, and the node stdlib (fs/os/path, for the mode state file) are
+ * imported, so this module is importable from any TS runtime.
  *
  * @module
  */
 
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { initLogger, log } from "../utils/logger.js";
 import type {
   CompressConfig,
@@ -60,6 +64,83 @@ function warnSectionInvalid(section: string, bad: KeyCheck): void {
     key: bad[0],
     value: bad[1],
   });
+}
+
+// ---------------------------------------------------------------------------
+// Mode state file (multi-profile selection)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the path of the mode state file.
+ *
+ * `ZOO_MODE_FILE` (an env var set by the installer or by tests) overrides
+ * the default `~/.zoo/mode.json`.  The override lets tests point the file
+ * at a temp path without touching the real home directory.
+ *
+ * @returns The absolute path of the mode state file.
+ */
+function resolveModeFilePath(): string {
+  const override = process.env.ZOO_MODE_FILE;
+  if (override) return override;
+  return join(homedir(), ".zoo", "mode.json");
+}
+
+/**
+ * Log the single "mode state file invalid" warn.
+ *
+ * Event name is `mode_file_invalid`, carrying the resolved path and the
+ * failure reason so the state file is easy to repair.
+ *
+ * @param reason - Why the state file failed to select a profile.
+ * @param extra - Additional fields (e.g. the requested mode name).
+ */
+function warnModeFileInvalid(
+  reason: string,
+  extra?: Record<string, unknown>,
+): void {
+  log("config", "mode_file_invalid", "", undefined, "warn", {
+    path: resolveModeFilePath(),
+    reason,
+    ...extra,
+  });
+}
+
+/**
+ * Read the active mode name from the mode state file.
+ *
+ * The file is JSON of the shape `{"mode": "<profile-name>"}`.  Fail
+ * closed: a missing/unreadable file, malformed JSON, a non-object root,
+ * or a non-string `mode` field yields `null` with exactly one warn.
+ *
+ * @returns The mode name, or `null` when the file cannot select one.
+ */
+function readModeFile(): string | null {
+  let text: string;
+  try {
+    text = readFileSync(resolveModeFilePath(), "utf-8");
+  } catch {
+    warnModeFileInvalid("unreadable");
+    return null;
+  }
+
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    warnModeFileInvalid("malformed");
+    return null;
+  }
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    warnModeFileInvalid("not-object");
+    return null;
+  }
+
+  const modeName = (data as Record<string, unknown>).mode;
+  if (typeof modeName !== "string" || modeName.length === 0) {
+    warnModeFileInvalid("mode-not-string");
+    return null;
+  }
+  return modeName;
 }
 
 // ---------------------------------------------------------------------------
@@ -124,43 +205,18 @@ export function parseLimits(zooConfig: any): ValidationLimits {
 }
 
 /**
- * Extract the active mode profile from the `[zoo.mode.*]` section.
- *
- * `zoo.mode` holds exactly one sub-table — the active profile — whose
- * category lists (agents / skills / hooks / tools / commands) declare
- * which loadable units the plugin registers.  Fail to skip: an absent,
- * empty, ambiguous (multiple sub-tables), or malformed section yields
- * `null` and every profile-driven registration is skipped — no default
- * profile, no fallback to a full load.  Unknown keys inside the profile
- * are ignored; an absent category becomes an empty list.
+ * Parse a single `[zoo.mode.<name>]` sub-table into a `ModeProfile`.
  *
  * Whole-section discard: a present-but-invalid category (non-array or
  * non-string elements) invalidates the WHOLE profile with exactly one
- * `mode_config_invalid` warn; the same warn fires for an empty or
- * non-object `zoo.mode`, or for multiple profiles.
+ * `mode_config_invalid` warn; a non-object profile value warns the same.
+ * Unknown keys are ignored; an absent category becomes an empty list.
  *
- * @param zooConfig - The `zoo` section of the parsed config.toml.
- * @returns The active profile, or `null` when absent or invalid.
+ * @param name - The profile name (the sub-table key).
+ * @param profile - The raw sub-table value.
+ * @returns The parsed profile, or `null` when invalid.
  */
-export function parseModeProfile(zooConfig: any): ModeProfile | null {
-  const mode = zooConfig.mode as unknown;
-  if (mode === undefined || mode === null) return null;
-  if (typeof mode !== "object" || Array.isArray(mode)) {
-    warnSectionInvalid("mode", ["mode", mode, () => false]);
-    return null;
-  }
-
-  const entries = Object.entries(mode as Record<string, unknown>);
-  if (entries.length === 0) {
-    warnSectionInvalid("mode", ["mode", mode, () => false]);
-    return null;
-  }
-  if (entries.length > 1) {
-    warnSectionInvalid("mode", [entries[1][0], entries[1][1], () => false]);
-    return null;
-  }
-
-  const [name, profile] = entries[0];
+function parseProfileEntry(name: string, profile: unknown): ModeProfile | null {
   if (
     profile === null ||
     typeof profile !== "object" ||
@@ -194,6 +250,67 @@ export function parseModeProfile(zooConfig: any): ModeProfile | null {
     tools: (p.tools as string[] | undefined) ?? [],
     commands: (p.commands as string[] | undefined) ?? [],
   };
+}
+
+/**
+ * Extract the active mode profile from the `[zoo.mode.*]` section.
+ *
+ * `zoo.mode` holds the declared profiles — `[zoo.mode.<name>]`
+ * sub-tables whose category lists (agents / skills / hooks / tools /
+ * commands) declare which loadable units the plugin registers.  A single
+ * sub-table is the active profile, used as-is (the mode state file is NOT
+ * consulted — backward compatible with existing single-profile
+ * installs).  With multiple sub-tables the active profile is read from
+ * the mode state file (`~/.zoo/mode.json`, overridable via
+ * `ZOO_MODE_FILE`): the file's `mode` field must name one of the
+ * declared profiles.  Fail to skip: an absent, empty, malformed section,
+ * or a multi-profile selection that fails (file missing/unreadable/
+ * malformed, or naming an unknown profile) yields `null` and every
+ * profile-driven registration is skipped — no default profile, no
+ * fallback to a full load.  Unknown keys inside the profile are ignored;
+ * an absent category becomes an empty list.
+ *
+ * Whole-section discard: a present-but-invalid category (non-array or
+ * non-string elements) invalidates the WHOLE profile with exactly one
+ * `mode_config_invalid` warn; the same warn fires for an empty or
+ * non-object `zoo.mode`.  A failed multi-profile selection logs exactly
+ * one `mode_file_invalid` warn instead.
+ *
+ * @param zooConfig - The `zoo` section of the parsed config.toml.
+ * @returns The active profile, or `null` when absent or invalid.
+ */
+export function parseModeProfile(zooConfig: any): ModeProfile | null {
+  const mode = zooConfig.mode as unknown;
+  if (mode === undefined || mode === null) return null;
+  if (typeof mode !== "object" || Array.isArray(mode)) {
+    warnSectionInvalid("mode", ["mode", mode, () => false]);
+    return null;
+  }
+
+  const entries = Object.entries(mode as Record<string, unknown>);
+  if (entries.length === 0) {
+    warnSectionInvalid("mode", ["mode", mode, () => false]);
+    return null;
+  }
+
+  // Multiple sub-tables: pick the active profile from the mode state
+  // file, consulted ONLY in this case so existing single-profile
+  // installs keep working untouched.  Fail closed — a missing/malformed
+  // file or an unknown profile name yields `null`, exactly like the
+  // pre-multi-profile rejection did.
+  if (entries.length > 1) {
+    const selected = readModeFile();
+    if (selected === null) return null;
+    const entry = entries.find(([name]) => name === selected);
+    if (entry === undefined) {
+      warnModeFileInvalid("unknown-mode", { mode: selected });
+      return null;
+    }
+    return parseProfileEntry(entry[0], entry[1]);
+  }
+
+  // Single sub-table: the active profile, mode state file ignored.
+  return parseProfileEntry(entries[0][0], entries[0][1]);
 }
 
 /**

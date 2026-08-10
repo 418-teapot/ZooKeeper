@@ -602,3 +602,28 @@ commands = [
   "go",
   "dcp",
 ]
+
+[zoo.mode.mono]
+agents = [
+  "dolphin",
+  "mola",
+]
+skills = [
+  "git-commit",
+  "grill",
+  "mola-plan",
+  "wiki-query",
+]
+hooks = [
+  "context-metrics",
+  "context-pruning",
+  "json-error-nudge",
+]
+tools = [
+  "compress",
+  "decompress",
+]
+commands = [
+  "go",
+  "dcp",
+]

@@ -10,21 +10,30 @@ from installer.variants import collect_agent_variants
 _MODE_CATEGORIES = ("agents", "skills", "hooks", "tools", "commands")
 
 
-def parse_mode_profile(toml_data: dict) -> Optional[dict]:
-    """Extract the single active mode profile from ``[zoo.mode.*]``.
+def parse_mode_profile(
+    toml_data: dict, selected: Optional[str] = None
+) -> Optional[dict]:
+    """Extract the active mode profile from ``[zoo.mode.*]``.
 
-    ``zoo.mode`` must hold exactly one sub-table — the active profile —
-    whose category lists (``agents`` / ``skills`` / ``hooks`` / ``tools``
-    / ``commands``) declare which loadable units are generated.  An
-    absent category becomes an empty list; unknown keys are ignored.
+    ``zoo.mode`` may hold one or more sub-tables.  With exactly one
+    sub-table it is the active profile and *selected* is ignored.  With
+    multiple sub-tables the caller must pass *selected* naming the
+    desired profile; a missing or unknown name yields ``None`` with a
+    Chinese warning (fail-closed, same as before).  Category lists
+    (``agents`` / ``skills`` / ``hooks`` / ``tools`` / ``commands``)
+    declare which loadable units are generated.  An absent category
+    becomes an empty list; unknown keys are ignored.
 
     There is no default profile: a missing, empty, ambiguous (multiple
-    sub-tables), or malformed section yields ``None`` with a Chinese
-    warning so the caller can skip the profile-driven generation step
-    instead of falling back to a full set.
+    sub-tables without a selection), or malformed section yields
+    ``None`` with a Chinese warning so the caller can skip the
+    profile-driven generation step instead of falling back to a full
+    set.
 
     Args:
         toml_data: The parsed TOML dictionary.
+        selected: Explicit profile name to use when ``zoo.mode`` holds
+            multiple sub-tables; ignored when a single sub-table exists.
 
     Returns:
         A dict with a ``name`` key plus the five category lists, or
@@ -39,12 +48,22 @@ def parse_mode_profile(toml_data: dict) -> Optional[dict]:
         warn("[zoo.mode.*] 未配置或为空，跳过 profile 相关生成")
         return None
     if len(mode) > 1:
-        warn(
-            f"[zoo.mode.*] 存在多个 profile"
-            f"（{', '.join(sorted(mode))}），只能出现一个，跳过"
-        )
-        return None
-    name, profile = next(iter(mode.items()))
+        if selected is None:
+            warn(
+                f"[zoo.mode.*] 存在多个 profile"
+                f"（{', '.join(sorted(mode))}），请用 --mono/--poly 指定，跳过"
+            )
+            return None
+        if selected not in mode:
+            warn(
+                f"[zoo.mode.{selected}] 不存在"
+                f"（可用: {', '.join(sorted(mode))}），跳过"
+            )
+            return None
+        name = selected
+    else:
+        name, _ = next(iter(mode.items()))
+    profile = mode[name]
     if not isinstance(profile, dict):
         warn(f"[zoo.mode.{name}] 不是子表，跳过 profile 相关生成")
         return None

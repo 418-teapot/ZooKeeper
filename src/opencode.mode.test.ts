@@ -18,6 +18,7 @@ import { JSON_ERROR_REMINDER } from "./hooks/json-error-nudge";
 import { VERIFY_REMINDER } from "./hooks/post-task-nudge";
 import { buildPlugin, sessionAgentMap, zookeeper } from "./opencode.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
+import { withModeFile } from "./utils/mode-file.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -126,6 +127,7 @@ afterEach(() => {
   sessionAgentMap.clear();
   _clearAllSessionsForTesting();
   _clearAllRefsForTesting();
+  delete process.env.ZOO_MODE_FILE;
 });
 
 function logEvents(): Array<Record<string, unknown>> {
@@ -261,27 +263,31 @@ describe("poly full profile — registration parity", () => {
   });
 
   it("zookeeper with the real config.toml registers the full poly profile", async () => {
-    // The real config.toml carries [zoo.mode.poly], so the plugin entry
-    // point must register every profile-driven unit — not stay
+    // The real config.toml carries [zoo.mode.poly] (and, once the mono
+    // profile lands, a second [zoo.mode.mono] sub-table).  Point the
+    // mode state file at poly so the plugin entry point selects the
+    // full profile and registers every profile-driven unit — not stay
     // infrastructure-only.
-    const plugin = (await zookeeper({ client: {} })) as Record<string, any>;
-    const handlerNames = [
-      "tool.definition",
-      "tool.execute.before",
-      "tool.execute.after",
-      "experimental.chat.messages.transform",
-      "command.execute.before",
-    ];
-    for (const name of handlerNames) {
-      assert.equal(
-        typeof plugin[name],
-        "function",
-        `expected hook handler "${name}" to be a function`,
-      );
-    }
-    assert.ok(plugin.tool, "tool key must be present");
-    assert.ok(plugin.tool.compress, "compress tool must be registered");
-    assert.ok(plugin.tool.decompress, "decompress tool must be registered");
+    await withModeFile(JSON.stringify({ mode: "poly" }), async () => {
+      const plugin = (await zookeeper({ client: {} })) as Record<string, any>;
+      const handlerNames = [
+        "tool.definition",
+        "tool.execute.before",
+        "tool.execute.after",
+        "experimental.chat.messages.transform",
+        "command.execute.before",
+      ];
+      for (const name of handlerNames) {
+        assert.equal(
+          typeof plugin[name],
+          "function",
+          `expected hook handler "${name}" to be a function`,
+        );
+      }
+      assert.ok(plugin.tool, "tool key must be present");
+      assert.ok(plugin.tool.compress, "compress tool must be registered");
+      assert.ok(plugin.tool.decompress, "decompress tool must be registered");
+    });
   });
 });
 

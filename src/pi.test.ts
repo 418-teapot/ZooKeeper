@@ -9,9 +9,12 @@
  */
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { buildPiContributions, buildPiHandlers, zookeeperPi } from "./pi.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
+import { withModeFile } from "./utils/mode-file.js";
 
 /** The poly profile (mirrors the `[zoo.mode.poly]` lists). */
 const POLY_PROFILE = {
@@ -64,6 +67,7 @@ function mockApi(): {
 
 afterEach(() => {
   _resetForTesting();
+  delete process.env.ZOO_MODE_FILE;
 });
 
 // ---------------------------------------------------------------------------
@@ -135,6 +139,11 @@ describe("buildPiContributions — profile-driven selection", () => {
   });
 
   it("ambiguous zoo.mode (two tables) → null profile, empty contributions", () => {
+    // No mode state file: multi-profile selection must fail closed.
+    process.env.ZOO_MODE_FILE = join(
+      tmpdir(),
+      "zoo-mode-test-nonexistent.json",
+    );
     const zoo = {
       mode: { poly: POLY_PROFILE, slim: { agents: [], skills: [] } },
     };
@@ -204,19 +213,24 @@ describe("buildPiHandlers — prompt injection + skill discovery", () => {
 
 describe("zookeeperPi — thin entry wiring", () => {
   it("registers both hooks against the real config.toml (poly full)", async () => {
-    const api = mockApi();
-    zookeeperPi(api as any);
-    assert.equal(typeof api.handlers.before_agent_start, "function");
-    assert.equal(typeof api.handlers.resources_discover, "function");
+    // The real config.toml carries [zoo.mode.poly] (and, once the mono
+    // profile lands, a second [zoo.mode.mono] sub-table).  Point the
+    // mode state file at poly so the entry selects the full profile.
+    await withModeFile(JSON.stringify({ mode: "poly" }), async () => {
+      const api = mockApi();
+      zookeeperPi(api as any);
+      assert.equal(typeof api.handlers.before_agent_start, "function");
+      assert.equal(typeof api.handlers.resources_discover, "function");
 
-    const prompt = (await api.handlers.before_agent_start({
-      systemPrompt: "base",
-    })) as { systemPrompt: string };
-    assert.ok(prompt.systemPrompt.startsWith("<Role>"));
+      const prompt = (await api.handlers.before_agent_start({
+        systemPrompt: "base",
+      })) as { systemPrompt: string };
+      assert.ok(prompt.systemPrompt.startsWith("<Role>"));
 
-    const resources = (await api.handlers.resources_discover()) as {
-      skillPaths: string[];
-    };
-    assert.equal(resources.skillPaths.length, 10);
+      const resources = (await api.handlers.resources_discover()) as {
+        skillPaths: string[];
+      };
+      assert.equal(resources.skillPaths.length, 10);
+    });
   });
 });

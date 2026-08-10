@@ -89,6 +89,7 @@ GITLAB_ACCESS_TOKEN=your-gitlab-private-token-here
 
 ```bash
 uv run python install.py
+uv run python install.py --mono  # 单智能体模式
 ```
 
 **4. 添加 CLI 工具到 PATH**
