@@ -5,7 +5,7 @@
 # Phase 2: strict lint check (any failure fails the script).
 set -euo pipefail
 
-PY_FILES="install.py tests/ tools/ core/skills/"
+PY_FILES="install.py installer/ tests/ tools/ core/skills/"
 TS_DIR="src/"
 ZOO_DIR="tools/"
 

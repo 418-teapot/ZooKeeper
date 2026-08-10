@@ -46,6 +46,10 @@ mkdir -p "$STAGING/zookeeper/tools/bin"
 cp "$SCRIPT_DIR/tools/bin/"{zwiki,zlog,zfind,zinspect,ztrace} \
    "$STAGING/zookeeper/tools/bin/"
 cp install.py           "$STAGING/zookeeper/"
+cp -r installer         "$STAGING/zookeeper/"
+# Drop bytecode caches copied along with installer/ from the package.
+find "$STAGING/zookeeper/installer" -type d -name __pycache__ \
+    -prune -exec rm -rf {} +
 cp config.toml          "$STAGING/zookeeper/"
 cp .env.example         "$STAGING/zookeeper/"
 cp AGENTS.md            "$STAGING/zookeeper/"

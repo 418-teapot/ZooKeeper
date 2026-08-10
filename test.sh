@@ -2,7 +2,7 @@
 # ZooKeeper — Run all tests (Python + TypeScript).
 set -euo pipefail
 
-PY_TEST_DIR="tests/"
+PY_TEST_DIRS=("tests/" "installer/tests/")
 RUNNER="tests/runner.py"
 
 # Auto-discover all *.test.ts files under the plugin source tree.
@@ -30,7 +30,7 @@ fail()    { printf "${RED}✖ %s${NC}\n" "$1"; }
 FAILED=0
 
 section "Python static tests"
-if uv run pytest "$PY_TEST_DIR" -v; then
+if uv run pytest "${PY_TEST_DIRS[@]}" -v; then
   ok "pytest all Python tests"
 else
   fail "pytest all Python tests"

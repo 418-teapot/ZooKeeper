@@ -1,4 +1,4 @@
-"""Tests for install.py mode-profile parsing and agent filtering.
+"""Tests for installer.opencode mode-profile parsing and agent filtering.
 
 Covers the two profile-driven behaviors introduced for ``[zoo.mode.*]``:
 extracting the single active profile (valid / absent / ambiguous /
@@ -9,13 +9,12 @@ fallback when the profile is missing.
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT))
+from installer.envfile import _gather_env_vars, parse_toml
+from installer.opencode import build_config, parse_mode_profile
 
-import install  # noqa: E402  # repo root must be on sys.path for this import
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # ── Test data ────────────────────────────────────────────────────────────
 
@@ -87,7 +86,7 @@ def _toml_with_agents(names: list[str]) -> dict:
 
 def test_parse_mode_profile_full_poly() -> None:
     """A fully populated profile parses with all five category lists."""
-    profile = install.parse_mode_profile(_zoo_with_mode(POLY_PROFILE))
+    profile = parse_mode_profile(_zoo_with_mode(POLY_PROFILE))
     assert profile is not None
     assert profile["name"] == "poly"
     assert profile["agents"] == POLY_PROFILE["agents"]
@@ -99,9 +98,7 @@ def test_parse_mode_profile_full_poly() -> None:
 
 def test_parse_mode_profile_absent_categories_default_to_empty() -> None:
     """A profile declaring only ``agents`` yields empty lists elsewhere."""
-    profile = install.parse_mode_profile(
-        _zoo_with_mode({"agents": ["dolphin"]})
-    )
+    profile = parse_mode_profile(_zoo_with_mode({"agents": ["dolphin"]}))
     assert profile is not None
     assert profile["name"] == "poly"
     assert profile["agents"] == ["dolphin"]
@@ -116,34 +113,34 @@ def test_parse_mode_profile_absent_categories_default_to_empty() -> None:
 
 def test_parse_mode_profile_absent_returns_none() -> None:
     """Missing ``zoo`` / ``zoo.mode`` yields None (skip, not full load)."""
-    assert install.parse_mode_profile({}) is None
-    assert install.parse_mode_profile({"zoo": {}}) is None
-    assert install.parse_mode_profile({"zoo": {"mode": {}}}) is None
+    assert parse_mode_profile({}) is None
+    assert parse_mode_profile({"zoo": {}}) is None
+    assert parse_mode_profile({"zoo": {"mode": {}}}) is None
 
 
 def test_parse_mode_profile_ambiguous_returns_none() -> None:
     """Multiple profiles under ``zoo.mode`` yield None."""
     toml_data = {"zoo": {"mode": {"poly": POLY_PROFILE, "lite": {}}}}
-    assert install.parse_mode_profile(toml_data) is None
+    assert parse_mode_profile(toml_data) is None
 
 
 def test_parse_mode_profile_non_object_returns_none() -> None:
     """A non-object ``zoo.mode`` or profile value yields None."""
-    assert install.parse_mode_profile({"zoo": {"mode": "poly"}}) is None
-    assert install.parse_mode_profile({"zoo": {"mode": ["poly"]}}) is None
-    assert install.parse_mode_profile(_zoo_with_mode("all")) is None
-    assert install.parse_mode_profile(_zoo_with_mode(None)) is None
+    assert parse_mode_profile({"zoo": {"mode": "poly"}}) is None
+    assert parse_mode_profile({"zoo": {"mode": ["poly"]}}) is None
+    assert parse_mode_profile(_zoo_with_mode("all")) is None
+    assert parse_mode_profile(_zoo_with_mode(None)) is None
 
 
 def test_parse_mode_profile_invalid_category_returns_none() -> None:
     """A category that is not a string array discards the whole profile."""
     bad: dict[str, object] = dict(POLY_PROFILE)
     bad["tools"] = "all"
-    assert install.parse_mode_profile(_zoo_with_mode(bad)) is None
+    assert parse_mode_profile(_zoo_with_mode(bad)) is None
 
     bad = dict(POLY_PROFILE)
     bad["agents"] = ["dolphin", 42]
-    assert install.parse_mode_profile(_zoo_with_mode(bad)) is None
+    assert parse_mode_profile(_zoo_with_mode(bad)) is None
 
 
 # ── build_config: agent filtering ────────────────────────────────────────
@@ -152,7 +149,7 @@ def test_parse_mode_profile_invalid_category_returns_none() -> None:
 def test_build_config_filters_agents_by_profile(tmp_path) -> None:
     """Only profile-listed ``[agent.*]`` sections are emitted."""
     toml_data = _toml_with_agents(["dolphin", "mola", "beaver"])
-    config = install.build_config(
+    config = build_config(
         toml_data, str(tmp_path), {}, profile_agents=["dolphin", "mola"]
     )
     assert set(config["agent"]) == {"dolphin", "mola"}
@@ -166,7 +163,7 @@ def test_build_config_keeps_disabled_agents(tmp_path) -> None:
             "plan": {"disable": True},
         }
     }
-    config = install.build_config(
+    config = build_config(
         toml_data, str(tmp_path), {}, profile_agents=["dolphin"]
     )
     assert set(config["agent"]) == {"dolphin", "plan"}
@@ -176,16 +173,14 @@ def test_build_config_keeps_disabled_agents(tmp_path) -> None:
 def test_build_config_omits_agents_without_profile(tmp_path) -> None:
     """Without a profile, agent sections are omitted (no default list)."""
     toml_data = _toml_with_agents(["dolphin", "mola"])
-    config = install.build_config(toml_data, str(tmp_path), {})
+    config = build_config(toml_data, str(tmp_path), {})
     assert "agent" not in config
 
 
 def test_build_config_omits_agents_for_empty_profile(tmp_path) -> None:
     """An empty profile agent list omits agent sections."""
     toml_data = _toml_with_agents(["dolphin"])
-    config = install.build_config(
-        toml_data, str(tmp_path), {}, profile_agents=[]
-    )
+    config = build_config(toml_data, str(tmp_path), {}, profile_agents=[])
     assert "agent" not in config
 
 
@@ -194,17 +189,17 @@ def test_build_config_omits_agents_for_empty_profile(tmp_path) -> None:
 
 def test_real_config_poly_profile_filters_agents(tmp_path) -> None:
     """The shipped config.toml emits profile agents plus disabled ones."""
-    toml_data = install.parse_toml(str(REPO_ROOT / "config.toml"))
-    profile = install.parse_mode_profile(toml_data)
+    toml_data = parse_toml(str(REPO_ROOT / "config.toml"))
+    profile = parse_mode_profile(toml_data)
     assert profile is not None
     assert profile["name"] == "poly"
     assert profile["agents"] == EXPECTED_AGENTS
 
     # Resolve every {env:VAR} reference with synthetic values so the
     # config build does not exit on missing variables.
-    refs = install._gather_env_vars(toml_data)
+    refs = _gather_env_vars(toml_data)
     env = {name: f"test-{name}" for name in refs}
-    config = install.build_config(
+    config = build_config(
         toml_data, str(tmp_path), env, profile_agents=profile["agents"]
     )
     # Profile agents are emitted alongside the explicitly disabled
