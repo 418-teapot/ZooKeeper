@@ -155,7 +155,7 @@ ZooKeeper/
 
 ## 关键文件
 
-- **`install.py`** — 安装脚本入口，读取 config.toml + .env → 用 `shutil.which` 检测 opencode/pi 是否安装 → 按检测结果生成：OpenCode 的 `~/.config/opencode/opencode.json`、pi 的 `~/.pi/agent/settings.json`（extensions 整体替换为 `src/pi.ts`）+ `~/.pi/agent/models.json`（provider 转换：明文 apiKey、baseUrl 对 anthropic-messages 去 `/v1`、cost 补全四字段、idempotent prune 残留）。provider 跳过 warn 统一打一次。三阶段对称打印（备份/生成/验证/安装完成）。只依赖 Python 标准库。
+- **`install.py`** — 安装脚本入口，读取 config.toml + .env → 用 `shutil.which` 检测 opencode/pi 是否安装 → 按检测结果生成：OpenCode 的 `~/.config/opencode/opencode.json`、pi 的 `~/.pi/agent/settings.json`（每次安装完整重建，只含 extensions + 从 `[defaults].model`（`{env:ZOO_WHALE_MODEL}`，`Provider/model` 格式）拆出的 defaultProvider/defaultModel，不读取旧文件）+ `~/.pi/agent/models.json`（provider 转换：明文 apiKey、baseUrl 对 anthropic-messages 去 `/v1`、cost 补全四字段、idempotent prune 残留）。provider 跳过 warn 统一打一次。三阶段对称打印（备份/生成/验证/安装完成）。只依赖 Python 标准库。
 - **`installer/`** — install.py 委托的安装逻辑包：`envfile.py`（.env 解析 + `{env:VAR}` 递归解析 + 凭据缺失条目剔除）、`variants.py`（`[zoo.variants]` 全局/按 agent 双通道校验收集）、`opencode.py`（mode profile 解析 + opencode.json 组装）、`pi.py`（provider → models.json 转换）、`jsonio.py`（JSON 读写 helper）、`output.py`（终端输出）。单元测试位于 `installer/tests/`。
 - **`config.toml`** — 用户配置模板（单一事实来源），所有 deny 权限和 agent 配置在此声明，`[zoo.validation]` 阈值由 TS 插件在运行时直接读取
 - **`src/opencode.ts`** — 插件入口 + 底盘，薄接线层：解析配置、持有共享 session 映射（`sessionAgentMap`/`subAgentCache`），合并 `compose-opencode.ts` 组装的 profile 驱动 fragment 与常驻基础设施 hook

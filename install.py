@@ -16,8 +16,8 @@ import json
 import os
 import shutil
 import sys
-from datetime import datetime
 
+from installer.backup import backup_file, prune_backups
 from installer.envfile import (
     _filter_missing_entries,
     parse_env_file,
@@ -28,7 +28,7 @@ from installer.jsonio import load_json_or_empty, write_json
 from installer.mode import mode_state_path, write_mode_state
 from installer.opencode import build_config, parse_mode_profile
 from installer.output import bold, error, header, info, warn
-from installer.pi import build_pi_models_config
+from installer.pi import build_pi_models_config, build_pi_settings
 from installer.variants import collect_variants
 
 
@@ -121,24 +121,20 @@ def main() -> None:
             (opencode_json, "opencode.json"),
             (tui_jsonc, "tui.jsonc"),
         ]:
-            if os.path.isfile(cfg_path):
-                backup_path = (
-                    f"{cfg_path}.bak.{datetime.now().strftime('%Y%m%d%H%M%S')}"
-                )
-                shutil.copy2(cfg_path, backup_path)
-                info(f"✓ 已备份: {label} → {backup_path}")
+            dest = backup_file(cfg_path, "opencode")
+            if dest is not None:
+                prune_backups(cfg_path, "opencode")
+                info(f"✓ 已备份: {label} → {dest}")
             else:
                 info(f"✓ 无已有 {label}")
 
     if has_pi:
         any_backup = False
         for pi_path in [pi_settings_path, pi_models_path]:
-            if os.path.isfile(pi_path):
-                backup_path = (
-                    f"{pi_path}.bak.{datetime.now().strftime('%Y%m%d%H%M%S')}"
-                )
-                shutil.copy2(pi_path, backup_path)
-                info(f"✓ 已备份: {backup_path}")
+            dest = backup_file(pi_path, "pi")
+            if dest is not None:
+                prune_backups(pi_path, "pi")
+                info(f"✓ 已备份: {dest}")
                 any_backup = True
         if not any_backup:
             info("✓ 无已有配置")
@@ -209,18 +205,33 @@ def main() -> None:
         info("✓ TUI 扩展: src/tui.tsx")
 
     if has_pi:
-        # ── Pi extension — settings.json extensions array ────────────
+        # ── Pi extension — settings.json (full rebuild) ──────────────
         pi_extension_path = os.path.abspath(
             os.path.join(SCRIPT_DIR, "src", "pi.ts")
         )
 
-        # Read existing settings.json (treat missing/invalid as empty dict)
-        pi_settings = load_json_or_empty(pi_settings_path, "读取 Pi 设置失败")
+        # Build the pi models config once; the provider names are reused
+        # to warn when the default provider was pruned, and the result is
+        # merged into models.json below.
+        zk_providers = build_pi_models_config(toml_data, env).get(
+            "providers", {}
+        )
 
-        # Overwrite extensions array with the single ZK extension path.
-        # This is a full replacement (not append/merge) to ensure a
-        # single canonical entry.  Other settings fields are preserved.
-        pi_settings["extensions"] = [pi_extension_path]
+        # Rebuild settings.json from scratch on every install: the old
+        # file is never read or merged, so runtime keys pi wrote back
+        # (theme, lastChangelogVersion, ...) are intentionally dropped.
+        # defaultProvider/defaultModel derive from [defaults].model
+        # ("Provider/model" format, typically {env:ZOO_WHALE_MODEL}).
+        defaults_model = None
+        defaults = toml_data.get("defaults")
+        if isinstance(defaults, dict):
+            defaults_model = defaults.get("model")
+        pi_settings = build_pi_settings(
+            pi_extension_path,
+            defaults_model,
+            env,
+            pi_provider_names=list(zk_providers),
+        )
         os.makedirs(os.path.dirname(pi_settings_path), exist_ok=True)
         try:
             write_json(pi_settings_path, pi_settings)
@@ -229,10 +240,6 @@ def main() -> None:
             warn(f"写入 Pi 设置失败: {e}")
 
         # ── Pi provider — models.json (silent generation, no success message) ─
-        zk_providers = build_pi_models_config(toml_data, env).get(
-            "providers", {}
-        )
-
         # Read existing models.json (treat missing/invalid as empty dict)
         pi_models = load_json_or_empty(
             pi_models_path, "读取 Pi models.json 失败"

@@ -2,7 +2,11 @@
 
 from typing import Optional
 
-from installer.envfile import resolve_env_refs_deep
+from installer.envfile import (
+    _ENV_REF_RE,
+    _ENV_REF_SEARCH_RE,
+    resolve_env_refs_deep,
+)
 from installer.output import warn
 
 
@@ -163,3 +167,124 @@ def build_pi_models_config(toml_data: dict, env: dict[str, str]) -> dict:
             pi_providers[prov_name] = converted
 
     return {"providers": pi_providers}
+
+
+def _resolve_default_model(raw: object, env: dict[str, str]) -> Optional[str]:
+    """Resolve a config.toml default-model value against the env dict.
+
+    Handles a bare ``{env:VAR}`` placeholder (e.g.
+    ``{env:ZOO_WHALE_MODEL}``), embedded references, and plain strings.
+    A missing referenced variable or an empty resolved value degrades to
+    ``None`` instead of aborting the install, so the caller can fall back
+    to extensions-only output.
+
+    Args:
+        raw: The raw ``[defaults].model`` value from the parsed TOML.
+        env: The environment variable dictionary (from ``parse_env_file``).
+
+    Returns:
+        The resolved model string, or ``None`` when the value is not a
+        string, resolves to an empty/blank string, or a referenced
+        variable is not set.
+    """
+    if not isinstance(raw, str):
+        return None
+    m = _ENV_REF_RE.match(raw.strip())
+    if m:
+        resolved = env.get(m.group(1))
+    else:
+        resolved = raw
+        for var_name in _ENV_REF_SEARCH_RE.findall(raw):
+            value = env.get(var_name)
+            if value is None:
+                return None
+            resolved = resolved.replace(f"{{env:{var_name}}}", value)
+    if resolved is None or not resolved.strip():
+        return None
+    return resolved
+
+
+def _split_model_reference(model: str) -> Optional[tuple[str, str]]:
+    """Split a ``Provider/model`` string on the first ``/``.
+
+    Args:
+        model: The resolved default-model string (e.g. ``Cambricon/glm-5.1``).
+
+    Returns:
+        A ``(provider, model_id)`` tuple with both parts stripped and
+        non-empty, or ``None`` when the string is empty or lacks a
+        ``/`` separator with non-empty halves.
+    """
+    if not model or "/" not in model:
+        return None
+    provider, _, model_id = model.partition("/")
+    provider = provider.strip()
+    model_id = model_id.strip()
+    if not provider or not model_id:
+        return None
+    return (provider, model_id)
+
+
+def build_pi_settings(
+    extension_path: str,
+    defaults_model: object,
+    env: dict[str, str],
+    pi_provider_names: Optional[list[str]] = None,
+) -> dict:
+    """Build the pi ``settings.json`` dictionary from scratch.
+
+    The settings file is fully rebuilt on every install: the previous file
+    is never read or merged, so only the ``extensions`` array plus the
+    derived ``defaultProvider``/``defaultModel`` keys are written.  Keys pi
+    writes back at runtime (theme, lastChangelogVersion, ...) are
+    intentionally not preserved.
+
+    The default provider/model derive from ``[defaults].model`` in
+    config.toml (format ``Provider/model``), resolved against *env*.
+    When the value is missing, unresolved, empty, or lacks a valid ``/``
+    separator, a Chinese warning is printed and only the ``extensions``
+    array is written — the install continues.  A provider that is absent
+    from this run's pi providers (e.g. pruned for missing credentials)
+    still gets written, with a warning.
+
+    Args:
+        extension_path: Absolute path to the pi extension (``src/pi.ts``).
+        defaults_model: Raw value of ``[defaults].model`` from the parsed
+            TOML (typically ``{env:ZOO_WHALE_MODEL}``).
+        env: The environment variable dictionary (from ``parse_env_file``).
+        pi_provider_names: Names of providers emitted in this run's
+            ``models.json``; used to warn when the default provider was
+            filtered out.
+
+    Returns:
+        The settings dictionary.  Always contains ``extensions``;
+        ``defaultProvider``/``defaultModel`` are added only when the
+        default model resolves and splits cleanly.
+    """
+    settings: dict[str, object] = {"extensions": [extension_path]}
+
+    resolved = _resolve_default_model(defaults_model, env)
+    if resolved is None:
+        warn(
+            "defaults.model 缺失、不是字符串、解析后为空"
+            "或引用的环境变量未设置，跳过 defaultProvider/defaultModel"
+        )
+        return settings
+
+    split = _split_model_reference(resolved)
+    if split is None:
+        warn(
+            f"defaults.model 值 '{resolved}' 无效"
+            "（空或缺少 '/' 分隔），跳过 defaultProvider/defaultModel"
+        )
+        return settings
+
+    provider, model_id = split
+    if pi_provider_names is not None and provider not in pi_provider_names:
+        warn(
+            f"默认模型 provider '{provider}' 不在本次生成的 pi providers 中"
+            "（可能因凭据缺失被跳过），仍写入 defaultProvider/defaultModel"
+        )
+    settings["defaultProvider"] = provider
+    settings["defaultModel"] = model_id
+    return settings

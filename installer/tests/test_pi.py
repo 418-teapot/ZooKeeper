@@ -6,6 +6,7 @@ from installer.pi import (
     _convert_provider_to_pi,
     _npm_to_api_type,
     build_pi_models_config,
+    build_pi_settings,
 )
 
 
@@ -200,3 +201,93 @@ def test_build_pi_models_config_non_dict_providers() -> None:
     assert build_pi_models_config({"provider": "nope"}, {}) == {
         "providers": {}
     }
+
+
+# ── build_pi_settings ─────────────────────────────────────────────────
+
+
+def test_build_pi_settings_env_ref_split() -> None:
+    """{env:VAR} default-model refs split into defaultProvider/defaultModel."""
+    settings = build_pi_settings(
+        "/abs/src/pi.ts",
+        "{env:ZOO_WHALE_MODEL}",
+        {"ZOO_WHALE_MODEL": "Cambricon/glm-5.1"},
+        ["Cambricon"],
+    )
+    assert settings == {
+        "extensions": ["/abs/src/pi.ts"],
+        "defaultProvider": "Cambricon",
+        "defaultModel": "glm-5.1",
+    }
+
+
+def test_build_pi_settings_plain_string_split() -> None:
+    """A hardcoded (non-placeholder) default model still splits."""
+    settings = build_pi_settings(
+        "/abs/src/pi.ts", "OpenCodeGo/deepseek-v4-flash", {}, ["OpenCodeGo"]
+    )
+    assert settings == {
+        "extensions": ["/abs/src/pi.ts"],
+        "defaultProvider": "OpenCodeGo",
+        "defaultModel": "deepseek-v4-flash",
+    }
+
+
+def test_build_pi_settings_missing_env_only_extensions(capsys) -> None:
+    """A missing env var degrades to extensions-only with a warning."""
+    settings = build_pi_settings(
+        "/abs/src/pi.ts", "{env:ZOO_WHALE_MODEL}", {}, []
+    )
+    assert settings == {"extensions": ["/abs/src/pi.ts"]}
+    assert "defaultProvider" not in settings
+    assert "defaultModel" not in settings
+    assert "环境变量" in capsys.readouterr().out
+
+
+def test_build_pi_settings_missing_defaults_section(capsys) -> None:
+    """A missing [defaults].model degrades to extensions-only with a warning."""
+    settings = build_pi_settings(
+        "/abs/src/pi.ts", None, {"ZOO_WHALE_MODEL": "x"}, []
+    )
+    assert settings == {"extensions": ["/abs/src/pi.ts"]}
+    assert "defaultProvider" not in settings
+    assert "环境变量" in capsys.readouterr().out
+
+
+def test_build_pi_settings_empty_env_value(capsys) -> None:
+    """An empty resolved value degrades to extensions-only with a warning."""
+    settings = build_pi_settings(
+        "/abs/src/pi.ts", "{env:ZOO_WHALE_MODEL}", {"ZOO_WHALE_MODEL": ""}, []
+    )
+    assert settings == {"extensions": ["/abs/src/pi.ts"]}
+    assert "defaultProvider" not in settings
+    assert "为空" in capsys.readouterr().out
+
+
+def test_build_pi_settings_no_slash(capsys) -> None:
+    """A value without '/' degrades to extensions-only with a warning."""
+    settings = build_pi_settings(
+        "/abs/src/pi.ts",
+        "{env:ZOO_WHALE_MODEL}",
+        {"ZOO_WHALE_MODEL": "glm-5.1"},
+        [],
+    )
+    assert settings == {"extensions": ["/abs/src/pi.ts"]}
+    assert "defaultProvider" not in settings
+    assert "分隔" in capsys.readouterr().out
+
+
+def test_build_pi_settings_pruned_provider_still_writes(capsys) -> None:
+    """A provider absent from this run's providers warns but still writes."""
+    settings = build_pi_settings(
+        "/abs/src/pi.ts",
+        "{env:ZOO_WHALE_MODEL}",
+        {"ZOO_WHALE_MODEL": "Foo/bar"},
+        ["Cambricon"],
+    )
+    assert settings == {
+        "extensions": ["/abs/src/pi.ts"],
+        "defaultProvider": "Foo",
+        "defaultModel": "bar",
+    }
+    assert "Foo" in capsys.readouterr().out
