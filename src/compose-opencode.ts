@@ -37,7 +37,7 @@ import type {
   ActiveSet,
   AfterExecInput,
   AfterExecOutput,
-  AgentUnitDescriptor,
+  AgentContribution,
   BeforeExecInput,
   BeforeExecOutput,
   CommandInput,
@@ -73,40 +73,9 @@ export const COMMAND_HANDLED = new Error(
 // Unit lookups (derived once from the registry)
 // ---------------------------------------------------------------------------
 
-/** Minimal deps used to instantiate pure-data units in helper functions. */
-const PURE_DEPS: Deps = {
-  limits: {},
-  contextConfig: {},
-  client: {},
-  directory: "",
-  sessionAgentMap: new Map(),
-};
-
-/** Empty active set for pure-data unit instantiation. */
-const EMPTY_ACTIVE_SET: ActiveSet = {
-  agents: new Set(),
-  skills: new Set(),
-  hooks: new Set(),
-  tools: new Set(),
-  commands: new Set(),
-};
-
-/** The agent units from the registry. */
-const AGENT_UNITS: AgentUnitDescriptor[] = REGISTRY.filter(
-  (unit): unit is AgentUnitDescriptor => unit.kind === "agent",
-);
-
 /** The tool units from the registry. */
 const TOOL_UNITS: ToolUnitDescriptor[] = REGISTRY.filter(
   (unit): unit is ToolUnitDescriptor => unit.kind === "tool",
-);
-
-/** Agent name → prompt text, derived once from the agent units. */
-const AGENT_PROMPTS: ReadonlyMap<string, string> = new Map(
-  AGENT_UNITS.map((unit) => [
-    unit.name,
-    unit.create(PURE_DEPS, EMPTY_ACTIVE_SET).agents[0]?.prompt ?? "",
-  ]),
 );
 
 // ---------------------------------------------------------------------------
@@ -127,29 +96,30 @@ function logPluginInit(
 }
 
 /**
- * Inject prompt files into the agents listed by `profileAgents`.
+ * Inject prompt files into the agents listed by the composed
+ * contributions.
  *
- * Only agents named in `profileAgents` (and present in the registry)
- * are considered; an agent absent from `config.agent` (or
- * without a prompt) is skipped silently.
+ * Only agents named by a contribution (and present in `config.agent`)
+ * are considered; an agent absent from `config.agent` (or with an
+ * empty prompt) is skipped silently.  The prompts come from the
+ * composed result — profile-aware, so agents whose prompt depends on
+ * the active mode profile (e.g. mola) receive the correct variant.
  *
  * @param agents - The `config.agent` map from the config hook.
- * @param profileAgents - Agent names declared by the active profile.
+ * @param agentContributions - The composed agent contributions.
  */
 export function injectAgentPrompts(
   agents: Record<string, any>,
-  profileAgents: string[],
+  agentContributions: AgentContribution[],
 ): void {
-  for (const unit of AGENT_UNITS) {
-    if (!profileAgents.includes(unit.name)) continue;
-    const agent = agents[unit.name];
+  for (const contribution of agentContributions) {
+    const agent = agents[contribution.name];
     if (typeof agent !== "object" || agent === null) continue;
-    const prompt = AGENT_PROMPTS.get(unit.name);
-    if (prompt) {
-      agent.prompt = prompt;
+    if (contribution.prompt) {
+      agent.prompt = contribution.prompt;
       log("plugin", "agent_loaded", "", undefined, "debug", {
-        agent: unit.name,
-        prompt_len: prompt.length,
+        agent: contribution.name,
+        prompt_len: contribution.prompt.length,
       });
     }
   }
@@ -343,10 +313,7 @@ export function assembleOpenCodeHooks(
       // No active profile → no profile-driven registration at all.
       if (profile === null) return;
 
-      injectAgentPrompts(
-        agents,
-        composed.agents.map((a) => a.name),
-      );
+      injectAgentPrompts(agents, composed.agents);
       registerSkills(
         config,
         composed.skills.map((s) => s.name),

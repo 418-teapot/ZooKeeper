@@ -262,6 +262,49 @@ describe("poly full profile — registration parity", () => {
     });
   });
 
+  it("config hook injects the mode-conditional mola prompt (poly)", async () => {
+    const plugin = await makePlugin();
+    const config: Record<string, any> = {
+      agent: { dolphin: {}, mola: {}, lynx: {}, spider: {} },
+    };
+    await plugin.config(config);
+    // Poly mode: lynx/spider present → delegation sections in the prompt.
+    assert.ok(
+      config.agent.mola.prompt.includes("Two subagents are available"),
+      "poly mola prompt must teach task() delegation",
+    );
+    assert.ok(
+      config.agent.mola.prompt.includes("- **task** — delegate information"),
+      "poly mola prompt must list the task tool",
+    );
+  });
+
+  it("config hook injects the mode-conditional mola prompt (mono)", async () => {
+    const plugin = await makePlugin({
+      ...POLY_ZOO,
+      mode: { mono: { ...POLY_PROFILE, agents: ["dolphin", "mola"] } },
+    });
+    const config: Record<string, any> = { agent: { dolphin: {}, mola: {} } };
+    await plugin.config(config);
+    // Mono mode: no lynx/spider → no <Agents> section + web tools.
+    assert.ok(
+      !config.agent.mola.prompt.includes("<Agents>"),
+      "mono mola prompt must not contain an <Agents> section",
+    );
+    assert.ok(
+      config.agent.mola.prompt.includes("- **websearch** — broad queries"),
+      "mono mola prompt must list the websearch tool",
+    );
+    assert.ok(
+      config.agent.mola.prompt.includes("- **webfetch** — read specific URLs"),
+      "mono mola prompt must list the webfetch tool",
+    );
+    assert.ok(
+      !config.agent.mola.prompt.includes("- **task** — delegate information"),
+      "mono mola prompt must not list the task tool",
+    );
+  });
+
   it("zookeeper with the real config.toml registers the full poly profile", async () => {
     // The real config.toml carries [zoo.mode.poly] (and, once the mono
     // profile lands, a second [zoo.mode.mono] sub-table).  Point the

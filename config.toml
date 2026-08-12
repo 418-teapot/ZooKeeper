@@ -343,8 +343,6 @@ websearch = "deny"
 model = "{env:ZOO_WHALE_MODEL}"
 color = "#FFA500"
 [agent.mola.permission]
-webfetch  = "deny"
-websearch = "deny"
 [agent.mola.permission.bash]
 "git checkout *" = "ask"
 "git clean *"    = "deny"

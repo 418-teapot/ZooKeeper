@@ -344,46 +344,59 @@ describe("initPluginLogger", () => {
 // ---------------------------------------------------------------------------
 
 describe("injectAgentPrompts", () => {
-  it("injects prompt for agent in the profile list", () => {
+  it("injects prompt for an agent in the contributions", () => {
     const agents: Record<string, any> = { dolphin: {} };
-    injectAgentPrompts(agents, ["dolphin"]);
+    injectAgentPrompts(agents, [
+      { name: "dolphin", prompt: "<Role>dolphin prompt</Role>" },
+    ]);
     assert.ok(typeof agents.dolphin.prompt === "string");
     assert.ok(agents.dolphin.prompt.length > 0);
-    // Verify actual prompt content is from the file
+    // Verify actual prompt content is injected verbatim
     assert.ok(agents.dolphin.prompt.includes("<Role>"));
   });
 
-  it("skips agents not in the profile list", () => {
+  it("skips agents not present in the contributions", () => {
     const agents: Record<string, any> = { dolphin: {}, kiwi: {} };
-    injectAgentPrompts(agents, ["dolphin"]);
+    injectAgentPrompts(agents, [
+      { name: "dolphin", prompt: "<Role>dolphin prompt</Role>" },
+    ]);
     assert.ok(typeof agents.dolphin.prompt === "string");
     assert.equal(agents.kiwi.prompt, undefined);
   });
 
-  it("skips profile-listed agents missing from config.agent", () => {
+  it("skips contributed agents missing from config.agent", () => {
     const agents: Record<string, any> = { dolphin: {} };
-    injectAgentPrompts(agents, ["dolphin", "nonexistent"]);
+    injectAgentPrompts(agents, [
+      { name: "dolphin", prompt: "<Role>dolphin prompt</Role>" },
+      { name: "nonexistent", prompt: "<Role>ghost</Role>" },
+    ]);
     assert.ok(typeof agents.dolphin.prompt === "string");
     // No throw — missing agents are skipped.
   });
 
   it("skips null agents", () => {
     const agents: Record<string, any> = { dolphin: null };
-    injectAgentPrompts(agents, ["dolphin"]);
+    injectAgentPrompts(agents, [
+      { name: "dolphin", prompt: "<Role>dolphin prompt</Role>" },
+    ]);
     // No throw — null agents are skipped
     assert.equal(agents.dolphin, null);
   });
 
   it("skips non-object (string) agents", () => {
     const agents: Record<string, any> = { dolphin: "string-value" };
-    injectAgentPrompts(agents, ["dolphin"]);
+    injectAgentPrompts(agents, [
+      { name: "dolphin", prompt: "<Role>dolphin prompt</Role>" },
+    ]);
     // No throw — string agents are skipped
     assert.equal(agents.dolphin, "string-value");
   });
 
   it("skips array agents", () => {
     const agents: Record<string, any> = { dolphin: [] };
-    injectAgentPrompts(agents, ["dolphin"]);
+    injectAgentPrompts(agents, [
+      { name: "dolphin", prompt: "<Role>dolphin prompt</Role>" },
+    ]);
     // No throw — arrays pass typeof check but are not mutated
     assert.ok(Array.isArray(agents.dolphin));
     assert.equal(agents.dolphin.length, 0);
@@ -391,27 +404,40 @@ describe("injectAgentPrompts", () => {
 
   it("handles empty agents object", () => {
     const agents: Record<string, any> = {};
-    injectAgentPrompts(agents, ["dolphin"]);
+    injectAgentPrompts(agents, [
+      { name: "dolphin", prompt: "<Role>dolphin prompt</Role>" },
+    ]);
     assert.deepEqual(agents, {});
   });
 
-  it("does not mutate unrelated fields on agents without a prompt file", () => {
+  it("does not mutate unrelated fields on agents without a contribution", () => {
     const agents: Record<string, any> = {
       nonexistent: { existingField: true },
     };
-    injectAgentPrompts(agents, ["nonexistent"]);
+    injectAgentPrompts(agents, [
+      { name: "other", prompt: "<Role>other prompt</Role>" },
+    ]);
     assert.deepEqual(agents, {
       nonexistent: { existingField: true },
     });
   });
 
-  it("injects prompts for multiple profile-listed agents", () => {
+  it("injects prompts for multiple contributed agents", () => {
     const agents: Record<string, any> = { dolphin: {}, beaver: {} };
-    injectAgentPrompts(agents, ["dolphin", "beaver"]);
+    injectAgentPrompts(agents, [
+      { name: "dolphin", prompt: "<Role>dolphin prompt</Role>" },
+      { name: "beaver", prompt: "<Role>beaver prompt</Role>" },
+    ]);
     assert.ok(typeof agents.dolphin.prompt === "string");
     assert.ok(agents.dolphin.prompt.length > 0);
     assert.ok(typeof agents.beaver.prompt === "string");
     assert.ok(agents.beaver.prompt.length > 0);
+  });
+
+  it("skips contributions with an empty prompt", () => {
+    const agents: Record<string, any> = { dolphin: {} };
+    injectAgentPrompts(agents, [{ name: "dolphin", prompt: "" }]);
+    assert.equal(agents.dolphin.prompt, undefined);
   });
 });
 

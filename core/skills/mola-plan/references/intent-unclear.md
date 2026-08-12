@@ -23,7 +23,7 @@ Instead: **research the best defensible default, adopt it, record it, and inform
 
 Gather evidence from three sources (parallel when independent):
 - **Codebase** — existing patterns, established conventions, prior decisions to reference
-- **External docs** — best practice for the domain via spider if needed
+- **External docs** — best practice for the domain, fetched from the web if needed
 - **User history** — prior plans under this project (check `.zoo/plans/` in the project root)
 
 ### 2. Default Adoption

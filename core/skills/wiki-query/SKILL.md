@@ -1,12 +1,12 @@
 ---
 name: wiki-query
-description: 从 ~/.zoo/wiki/ 中查询知识并合成答案。查询 wiki 覆盖的项目知识时加载此技能，替代盲目委派 explore 或 spider。
+description: 从 ~/.zoo/wiki/ 中查询知识并合成答案。查询 wiki 覆盖的项目知识时加载此技能，替代盲目的代码库或网络探索。
 ---
 
 # Wiki Query 技能
 
 从 `~/.zoo/wiki/` 中查询知识并合成答案。
-查询 wiki 覆盖的项目知识时加载此技能，替代盲目委派 explore 或 spider。
+查询 wiki 覆盖的项目知识时加载此技能，替代盲目的代码库或网络探索。
 
 ---
 
@@ -22,7 +22,7 @@ description: 从 ~/.zoo/wiki/ 中查询知识并合成答案。查询 wiki 覆�
 | 历史决策/分析 | "为什么选 ruff 而不是 eslint" | `analysis` |
 | 已归档问答 | "上次讨论的 lint 工具对比" | `synthesis` |
 | 跨类型混合 | "lint 工具的配置和对比" | 不加 `--type`，全量搜索 |
-| 明显不在 wiki 覆盖范围 | "今天的天气" | 不查 wiki，直接委派 explore/spider |
+| 明显不在 wiki 覆盖范围 | "今天的天气" | 不查 wiki，直接探索代码库或网络 |
 
 `--type` 对应 frontmatter `type` 字段的五值枚举：`concept` / `entity` / `source` / `analysis` / `synthesis`。
 
@@ -123,8 +123,8 @@ zwiki search "<query>" [--type <type>] [--domain <domain>]
 | 覆盖度 | 行为 |
 |--------|------|
 | **完整** | wiki 有完整答案 → 基于 wiki 内容直接回答，标注来源页面 |
-| **部分** | wiki 内容作为上下文，委派 explore 补充探索缺失部分 |
-| **无** | 委派 explore 或 spider 探索，必要时触发 ingest |
+| **部分** | wiki 内容作为上下文，直接探索补充缺失部分 |
+| **无** | 直接探索代码库或网络，必要时触发 ingest |
 
 ---
 
