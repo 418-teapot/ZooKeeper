@@ -5,10 +5,10 @@ use std::collections::HashMap;
 use rich_rust::color::Color;
 use rich_rust::renderables::table::{Cell, Column, Row, Table};
 use rich_rust::style::Style;
-use rich_rust::terminal;
 use rich_rust::text::{JustifyMethod, OverflowMethod, Text};
 use serde_json::Value;
 use zutil::color::msg_print;
+use zutil::get_terminal_width;
 
 use super::common::{fmt_float_int, render_table};
 
@@ -215,7 +215,7 @@ pub fn render_tokens_table(rows: &[Value]) {
         return;
     }
 
-    let wide = terminal::get_terminal_width() >= 110;
+    let wide = get_terminal_width() >= 110;
     let max_tokens = rows
         .iter()
         .filter_map(|r| r.get("tokens").and_then(serde_json::Value::as_f64))
@@ -231,7 +231,7 @@ pub fn render_tokens_table(rows: &[Value]) {
     .copied()
     .collect();
 
-    let width = terminal::get_terminal_width();
+    let width = get_terminal_width();
     let mut table = create_tokens_table(wide);
 
     for (idx, r) in rows.iter().enumerate() {

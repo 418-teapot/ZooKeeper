@@ -4,8 +4,8 @@ use rich_rust::color::Color;
 use rich_rust::markup;
 use rich_rust::renderables::panel::Panel;
 use rich_rust::style::Style;
-use rich_rust::terminal;
 use serde_json::Value;
+use zutil::get_terminal_width;
 
 use crate::helpers::find_session_info;
 
@@ -105,7 +105,7 @@ fn build_compact_session_panel(
     timeline: &[Value],
     stats: &Value,
 ) {
-    let width = terminal::get_terminal_width();
+    let width = get_terminal_width();
     let info = find_session_info(timeline);
     let slug = info
         .as_ref()
@@ -267,7 +267,7 @@ pub fn render_session_panel(
     stats: &Value,
     compact: bool,
 ) {
-    let width = terminal::get_terminal_width();
+    let width = get_terminal_width();
 
     if compact {
         build_compact_session_panel(session_id, timeline, stats);

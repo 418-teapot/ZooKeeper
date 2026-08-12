@@ -5,11 +5,11 @@ use std::collections::HashMap;
 use rich_rust::color::Color;
 use rich_rust::renderables::table::{Cell, Column, Row, Table};
 use rich_rust::style::Style;
-use rich_rust::terminal;
 use rich_rust::text::{OverflowMethod, Text};
 use serde_json::{Map, Number, Value};
 use zutil::color::{msg_print, style_text};
 use zutil::display_width;
+use zutil::get_terminal_width;
 
 use crate::helpers::build_model_map;
 use crate::trace_builder::{mark_block_boundaries, sort_ops_by_session};
@@ -162,7 +162,7 @@ pub fn render_timeline_rich(timeline: &[Value]) {
         return;
     }
 
-    let width = terminal::get_terminal_width();
+    let width = get_terminal_width();
     let mut table = create_timeline_table();
 
     for e in timeline {
@@ -864,7 +864,7 @@ pub fn render_ops_summary(timeline: &[Value], stats: &Value, verbose: bool) {
     let tag_width =
         tag_labels.iter().map(|t| display_width(t)).max().unwrap_or(8).min(14);
 
-    let term_width = terminal::get_terminal_width();
+    let term_width = get_terminal_width();
     let content_width = term_width.saturating_sub(33 + tag_width).max(20);
 
     let s_dim = Style::new().dim();

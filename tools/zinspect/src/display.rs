@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, HashMap};
 use rich_rust::color::Color;
 use rich_rust::renderables::table::{Cell, Column, Row, Table};
 use rich_rust::style::Style;
-use rich_rust::terminal;
 use rich_rust::text::{JustifyMethod, OverflowMethod, Text};
+use zutil::get_terminal_width;
 
 use serde_json::{Number, Value, json};
 
@@ -576,7 +576,7 @@ pub fn print_token_summary_table(summary: &Value) {
     let hit_rate = cache_hit_rate(total_cache_read, total_input);
     let denom = f64_display_as_u64(total_input + total_cache_read);
 
-    let width = terminal::get_terminal_width();
+    let width = get_terminal_width();
     let mut table =
         Table::new().show_header(true).show_edge(true).show_lines(false);
     table.add_column(Column::new("Metric"));
@@ -621,7 +621,7 @@ pub fn print_hook_breakdown_table(summary: &Value) {
         return;
     };
 
-    let width = terminal::get_terminal_width();
+    let width = get_terminal_width();
     let mut table =
         Table::new().show_header(true).show_edge(true).show_lines(false);
     table.add_column(Column::new("Hook"));
@@ -685,7 +685,7 @@ pub fn print_pruning_table(summary: &Value) {
     let released = &summary["released"];
     let compress = &summary["compress_blocks"];
 
-    let width = terminal::get_terminal_width();
+    let width = get_terminal_width();
     let mut table = Table::new()
         .title("Pruning Reclamation")
         .title_justify(JustifyMethod::Left)
@@ -779,7 +779,7 @@ fn print_level_distribution_table(events: &[Value]) {
         *level_counts.entry(level).or_insert(0) += 1;
     }
 
-    let width = terminal::get_terminal_width();
+    let width = get_terminal_width();
     let mut level_table =
         Table::new().show_header(true).show_edge(true).show_lines(false);
     level_table.add_column(Column::new("Level"));
@@ -902,7 +902,7 @@ pub fn print_multi_stats_table(
     let (total_hit_rate, totals_input, totals_output, totals_cost, totals_hook) =
         compute_totals(totals);
 
-    let width = terminal::get_terminal_width();
+    let width = get_terminal_width();
     let mut table = Table::new()
         .title(format!("Cross-Session Token Summary (last {n} sessions)"))
         .title_justify(JustifyMethod::Left)
@@ -1065,7 +1065,7 @@ pub fn print_multi_pruning_table(
     let bold = Style::new().bold();
     let totals = sum_pruning_totals(summaries);
 
-    let width = terminal::get_terminal_width();
+    let width = get_terminal_width();
     let mut table = Table::new()
         .title(format!("Cross-Session Pruning Reclamation (last {n} sessions)"))
         .title_justify(JustifyMethod::Left)
@@ -1163,7 +1163,7 @@ pub fn print_timeline_table(events: &[Value], session_id: &str, is_all: bool) {
 
     let cyan = Style::new().color(Color::from_ansi(6));
 
-    let width = terminal::get_terminal_width();
+    let width = get_terminal_width();
     let mut table = Table::new()
         .title(format!("Timeline: {session_id}"))
         .title_justify(JustifyMethod::Left)
@@ -1221,7 +1221,7 @@ pub fn print_json_impact(result: &Value) {
 /// each entry contains `session_id`, `timestamp`, `before`, `after`,
 /// `n_before`, `n_after`.
 pub fn print_impact_aggregation(analysis: &HashMap<String, Vec<Value>>) {
-    let width = terminal::get_terminal_width();
+    let width = get_terminal_width();
     let mut table =
         Table::new().show_header(true).show_edge(true).show_lines(false);
     table.add_column(
@@ -1318,7 +1318,7 @@ pub fn print_impact_aggregation(analysis: &HashMap<String, Vec<Value>>) {
 ///
 /// `data` maps step distance to a list of observed hit rates.
 pub fn print_recovery_curve(data: &BTreeMap<i64, Vec<f64>>) {
-    let width = terminal::get_terminal_width();
+    let width = get_terminal_width();
     let mut table =
         Table::new().show_header(true).show_edge(true).show_lines(false);
     table.add_column(Column::new("Distance").justify(JustifyMethod::Right));
@@ -1358,7 +1358,7 @@ pub struct CostData {
 ///
 /// Keys are `hook:event` composite keys, mirroring the impact aggregation.
 pub fn print_cost_impact(data: &HashMap<String, CostData>) {
-    let width = terminal::get_terminal_width();
+    let width = get_terminal_width();
     let mut table =
         Table::new().show_header(true).show_edge(true).show_lines(false);
     table.add_column(Column::new("Hook:Event"));

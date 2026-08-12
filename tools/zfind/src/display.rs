@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use rich_rust::color::Color;
 use rich_rust::renderables::table::{Cell, Column, Row, Table};
 use rich_rust::style::Style;
-use rich_rust::terminal;
 use rich_rust::text::{JustifyMethod, OverflowMethod, Text};
+use zutil::get_terminal_width;
 
 use serde_json::Value;
 
@@ -147,7 +147,7 @@ pub fn print_session_table(
 
     let cyan = Style::new().color(Color::from_ansi(6));
     let green = Style::new().color(Color::from_ansi(2));
-    let width = terminal::get_terminal_width();
+    let width = get_terminal_width();
 
     let mut table =
         Table::new().show_header(true).show_edge(true).show_lines(false);
@@ -333,7 +333,7 @@ pub fn print_session_messages_table(messages: &[Value], session_id: &str) {
         style_text(&messages.len().to_string(), &green),
     );
 
-    let width = terminal::get_terminal_width();
+    let width = get_terminal_width();
 
     // Estimate Preview column width (terminal minus fixed columns minus slack)
     let preview_width = width.saturating_sub(72).max(8);

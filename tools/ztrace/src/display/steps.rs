@@ -3,10 +3,10 @@
 use std::collections::HashMap;
 
 use rich_rust::renderables::table::{Cell, Column, Row, Table};
-use rich_rust::terminal;
 use rich_rust::text::{JustifyMethod, OverflowMethod};
 use serde_json::Value;
 use zutil::color::msg_print;
+use zutil::get_terminal_width;
 
 use crate::helpers::cache_bar;
 
@@ -273,7 +273,7 @@ pub fn render_steps_table(
         .collect();
     let show_session = unique_sids.len() > 1;
 
-    let width = terminal::get_terminal_width();
+    let width = get_terminal_width();
     let mut table = create_steps_table(show_session);
 
     for s in steps {

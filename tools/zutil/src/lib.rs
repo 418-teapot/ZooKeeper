@@ -257,6 +257,33 @@ pub fn truncate_chars(s: &str, max_chars: usize) -> String {
 #[cfg(feature = "db-helpers")]
 pub mod test_db;
 
+/// Resolve the terminal display width from a `COLUMNS` env value and the
+/// measured terminal width.
+///
+/// `columns` wins when it parses to a positive `u16`; otherwise
+/// `tty_width` is returned unchanged. A value of `0` for either is
+/// treated as "unknown" (no terminal size available).
+#[must_use]
+pub fn resolve_width(columns: Option<&str>, tty_width: u16) -> u16 {
+    columns
+        .and_then(|s| s.trim().parse::<u16>().ok())
+        .filter(|w| *w > 0)
+        .unwrap_or(tty_width)
+}
+
+/// Get the terminal display width in columns.
+///
+/// Prefers the `COLUMNS` environment variable (conventional CLI behavior,
+/// as respected by `less` etc.) and falls back to the controlling
+/// terminal's size reported by crossterm.
+#[must_use]
+pub fn get_terminal_width() -> usize {
+    let columns = std::env::var("COLUMNS").ok();
+    let tty_width = rich_rust::terminal::get_terminal_width();
+    let tty = u16::try_from(tty_width).unwrap_or(u16::MAX);
+    usize::from(resolve_width(columns.as_deref(), tty))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,6 +374,36 @@ mod tests {
         assert_eq!(truncate_chars("你好世界", 4), "你好世界");
         assert_eq!(truncate_chars("你好世界！", 4), "你好世界...");
         assert_eq!(truncate_chars("", 5), "");
+    }
+
+    #[test]
+    fn test_resolve_width_columns_honored() {
+        // COLUMNS set to a valid positive width wins over the tty size.
+        assert_eq!(resolve_width(Some("200"), 122), 200);
+        assert_eq!(resolve_width(Some("1"), 122), 1);
+    }
+
+    #[test]
+    fn test_resolve_width_unset_falls_back() {
+        // COLUMNS unset: fall back to the measured terminal width.
+        assert_eq!(resolve_width(None, 122), 122);
+        assert_eq!(resolve_width(None, 80), 80);
+    }
+
+    #[test]
+    fn test_resolve_width_invalid_columns_falls_back() {
+        // Non-numeric, zero, or negative COLUMNS are invalid → tty width.
+        assert_eq!(resolve_width(Some("abc"), 122), 122);
+        assert_eq!(resolve_width(Some(""), 122), 122);
+        assert_eq!(resolve_width(Some("0"), 122), 122);
+        assert_eq!(resolve_width(Some("-5"), 122), 122);
+        assert_eq!(resolve_width(Some("200.5"), 122), 122);
+    }
+
+    #[test]
+    fn test_resolve_width_trims_whitespace() {
+        assert_eq!(resolve_width(Some(" 200 "), 122), 200);
+        assert_eq!(resolve_width(Some("\t200\n"), 122), 200);
     }
 
     #[test]
