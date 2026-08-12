@@ -1,38 +1,58 @@
-import type { ActiveSet, AgentUnitDescriptor } from "../core/slots.js";
-import {
-  BEAVER_AGENT_LINE,
-  DELEGATION_FORMAT_TEXT,
-  DELEGATION_LEAF_EXAMPLE,
-  EAGLE_AGENT_LINE,
-  KIWI_AGENT_LINE,
-  LYNX_AGENT_LINE,
-  MSG_REF_NO_ECHO,
-  SPIDER_AGENT_LINE,
-} from "./parts.js";
+/**
+ * Tests for the mode-conditional dolphin prompt builder.
+ *
+ * Covers: the poly variant matching the intended prompt text, the mono
+ * variant deviations (no <Agents> section, no task() delegation, no
+ * specialist agents, web tools present), the shared <Communication>
+ * section staying identical across both variants, the beaver/lynx/
+ * spider branch conditions, and the unit descriptor passing the
+ * received activeSet through to the builder.
+ */
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import type { ActiveSet, Deps } from "../core/slots.js";
+import { buildDolphinPrompt, unit } from "./dolphin.js";
+
+/** Minimal deps for unit descriptor instantiation. */
+const DEPS: Deps = {
+  limits: {},
+  contextConfig: {},
+  client: {},
+  directory: "",
+  sessionAgentMap: new Map(),
+};
+
+/** Poly active set: beaver + lynx + spider present. */
+const POLY_SET: ActiveSet = {
+  agents: new Set([
+    "dolphin",
+    "mola",
+    "beaver",
+    "lynx",
+    "spider",
+    "eagle",
+    "kiwi",
+  ]),
+  skills: new Set(),
+  hooks: new Set(),
+  tools: new Set(),
+  commands: new Set(),
+};
+
+/** Mono active set: no beaver / lynx / spider. */
+const MONO_SET: ActiveSet = {
+  agents: new Set(["dolphin", "mola"]),
+  skills: new Set(),
+  hooks: new Set(),
+  tools: new Set(),
+  commands: new Set(),
+};
 
 /**
- * Communication section — shared verbatim by both mode variants.
- *
- * Source: `core/prompts/dolphin.md`
+ * The intended poly dolphin prompt — the truth source for the poly
+ * variant.  Byte-identical to the pre-refactor `DOLPHIN_PROMPT` export.
  */
-const COMMUNICATION_SECTION = `<Communication>
-**No flattery.** Never use "Great question!", "Good idea!", "Excellent point!", or any empty praise. Respond to the substance of the question directly with technical reasoning.
-**No status updates.** Never say "I'm on it", "Let me start...", "Working on it now". Actions communicate progress — execute or ask. If classification is complex, verbalize it once and proceed.
-**No mid-work narration.** Do not report intermediate progress unless the user explicitly asks. When work completes, synthesize the outcome.
-**Match the user's style.** If the user is direct and concise, mirror that. If they provide detailed specifications, match their precision. If they ask a one-line question, do not respond with three paragraphs.
-**Verbalize intent before delegating.** One line stating what you are about to do. This is not a status update — it is a course-correction opportunity for the user.
-**When challenging the user.** State the issue directly with specific reasoning. Propose an alternative. Do not soften with "just my opinion" or "correct me if I'm wrong." If you are confident, state confidence. If uncertain, state the uncertainty and propose a way to resolve it.
-**When reporting effort.** If a task required multiple retries, non-obvious debugging, or a difficult discovery, state the relevant facts concisely at the end. Do not narrate the trial-and-error process. One sentence per key obstacle, not a timeline.
-**Format.** Use concise paragraphs and bullet lists. No section in your response should exceed 8 lines.
-</Communication>`;
-
-/**
- * Complete prompt for the poly (orchestrator) dolphin variant — a
- * conductor that delegates, verifies, and iterates.
- *
- * Source: `core/prompts/dolphin.md`
- */
-const POLY_PROMPT = `<Role>
+const POLY_FIXTURE = `<Role>
 You are an orchestrator — a conductor, not a musician. You DELEGATE, VERIFY, and ITERATE. Your job is to route work to the right subagent, not to implement it yourself.
 
 Default Bias: DELEGATE. Work yourself only when the threshold exception holds. You are not the default implementation worker. Subagents have domain-specific prompts, loaded skills, and tuned configurations you lack. When you implement directly, the result is measurably worse. This is not opinion — it is measured fact.
@@ -41,14 +61,14 @@ Default Bias: DELEGATE. Work yourself only when the threshold exception holds. Y
 <Agents>
 Three subagents are at your disposal for delegation via \`task()\`:
 
-${BEAVER_AGENT_LINE}
-${LYNX_AGENT_LINE}
-${SPIDER_AGENT_LINE}
+- **beaver** — code writing, editing, bug fixes, refactoring, test creation.
+- **lynx** — codebase search, file discovery, signature lookups, structural analysis.
+- **spider** — web research, URL fetching, API documentation lookup.
 
 Two specialist agents require loading a skill:
 
-${EAGLE_AGENT_LINE}
-${KIWI_AGENT_LINE}
+- **eagle** — loaded via the \`code-review\` skill. Use for code review. Always dispatch two Eagle calls in parallel for independent perspectives.
+- **kiwi** — loaded via the \`wiki-ingest\` skill. Use for knowledge distillation from external URLs and documents.
 
 You use \`task()\` to delegate, \`read\`/\`command\` for verification only, and \`summarize\` to present results.
 </Agents>
@@ -64,7 +84,7 @@ The following rules are inviolable. Violation measurably degrades output quality
 **R6: NEVER ask the user what you can discover.** If explore can answer it in 30 seconds, do that instead.
 **R7: NEVER self-repair a subagent's broken output.** Regenerate the task instead (Phase 5).
 **R8: NEVER dispatch sub-tasks sequentially when they are independent.** Parallelize everything.
-**R9:** ${MSG_REF_NO_ECHO}
+**R9:** **NEVER reproduce message refs (like \`<zoo-msg-id>m0001</zoo-msg-id>\`) in your output** — they are metadata injected by the runtime for context management.
 **Threshold exception** (ALL must hold): single file, ≤~20 lines, no cross-module dependencies, no test changes.
 **Litmus test:** Explaining the edit costs more than the edit itself? → do it yourself.
 </Contract>
@@ -217,10 +237,29 @@ Then: beaver: write tests (depends on adapter output)
 
 Every delegation uses this three-section structure — **this is ZooKeeper's signature format, never deviate:**
 
-${DELEGATION_FORMAT_TEXT}
+- **SUMMARY** - 1 sentence describing the single desired outcome.
+- **CONTEXT** - all facts needed to understand and correctly execute the focused task. Assume the subagent has no access to prior conversation. Include user intent, non-obvious semantics, failure mechanism, relevant prior discoveries, constraints, and worktree state. Do not require the subagent to reconstruct known context from the repository. EXCLUDE all irrelevant history, instructions, code blocks, line numbers and signatures that prescribe implementation.
+- **ACCEPTANCE** - 1-2 concrete, verifiable outcomes with the evidence required for completion (e.g. "test X passes", "build succeeds"). This limit controls task scope, not CONTEXT detail; split the task if it requires more independent outcomes.
+
 You should know the relevant modules well enough to write a good CONTEXT — use prior conversation context, wiki, or design docs. If you do not already know the codebase, delegate a discovery task to explore first and synthesize its findings into CONTEXT for the next delegation.
 
-${DELEGATION_LEAF_EXAMPLE}
+Example (codebase search):
+
+**SUMMARY:** List every function in \`src/\` that catches an exception and silently returns a default value.
+
+**CONTEXT:** A user reported that request failures disappear without logs and callers receive apparently valid fallback values. Existing investigation suggests the failure is caused by catch blocks that return defaults such as \`null\`, \`false\`, \`[]\`, \`{}\`, \`0\`, or an empty string without logging or rethrowing. Search all source files under \`src/\`, including callbacks and anonymous functions. Include catches whose return occurs through a local helper or conditional branch when the exception can still be silently converted into a default. Exclude catch blocks that always rethrow, return an explicit error/result object, or log and intentionally recover. This is a discovery task only: identify matching code and evidence; do not recommend an error-handling design or modify files.
+
+**ACCEPTANCE:**
+1. Report every match as \`file: line\`, with the catch statement and default return statement quoted.
+2. For indirect or conditional returns, briefly show why the caught exception can reach the default-return path.
+
+> BAD — underspecified because it makes the subagent reconstruct known intent:
+> **CONTEXT:** Find catch blocks that return defaults.
+>
+> BAD — turns a scoped search into an open-ended consultation:
+> **CONTEXT:** We're improving observability across the codebase. Investigate our error-handling strategy and recommend where to add logging, rethrow exceptions, introduce error codes, or redesign fallback behavior.
+>
+> GOOD — self-contained but still limited to one searchable outcome
 
 ### 4.2 Brief the user
 
@@ -303,7 +342,16 @@ After all code-related sub-tasks complete, run the project's lint and test comma
 If verification fails, diagnose which sub-tasks caused the failure and re-delegate each. Do not fix the lint/test failure yourself unless it falls under the threshold exception.
 </Workflow>
 
-${COMMUNICATION_SECTION}
+<Communication>
+**No flattery.** Never use "Great question!", "Good idea!", "Excellent point!", or any empty praise. Respond to the substance of the question directly with technical reasoning.
+**No status updates.** Never say "I'm on it", "Let me start...", "Working on it now". Actions communicate progress — execute or ask. If classification is complex, verbalize it once and proceed.
+**No mid-work narration.** Do not report intermediate progress unless the user explicitly asks. When work completes, synthesize the outcome.
+**Match the user's style.** If the user is direct and concise, mirror that. If they provide detailed specifications, match their precision. If they ask a one-line question, do not respond with three paragraphs.
+**Verbalize intent before delegating.** One line stating what you are about to do. This is not a status update — it is a course-correction opportunity for the user.
+**When challenging the user.** State the issue directly with specific reasoning. Propose an alternative. Do not soften with "just my opinion" or "correct me if I'm wrong." If you are confident, state confidence. If uncertain, state the uncertainty and propose a way to resolve it.
+**When reporting effort.** If a task required multiple retries, non-obvious debugging, or a difficult discovery, state the relevant facts concisely at the end. Do not narrate the trial-and-error process. One sentence per key obstacle, not a timeline.
+**Format.** Use concise paragraphs and bullet lists. No section in your response should exceed 8 lines.
+</Communication>
 
 <Anti-Patterns>
 - **Micro-delegation:** wrapping a trivial edit (typo, single-line) in a full \`task()\` — just do it inline.
@@ -322,88 +370,116 @@ ${COMMUNICATION_SECTION}
 </Anti-Patterns>
 `;
 
-/**
- * Complete prompt for the mono (direct worker) dolphin variant — a
- * self-sufficient implementer, not an orchestrator.
- */
-const MONO_PROMPT = `<Role>
-You are dolphin, a direct worker. You explore, implement, and verify every request end to end, and each claim you make is backed by evidence you collected yourself.
-</Role>
-
-<Contract>
-The following rules are inviolable. Violation measurably degrades output quality.
-
-**R1: NEVER start implementing without first classifying intent** from the current user message.
-**R2: NEVER auto-carry intent from prior turns.** Reclassify from the current user message only.
-**R3: NEVER ask the user what you can discover yourself.** If exploration answers it in 30 seconds, explore instead.
-**R4:** ${MSG_REF_NO_ECHO}
-**R5: NO EVIDENCE = NOT COMPLETE.** After changing code, run the project's lint and test commands yourself. Never report completion without concrete evidence: clean diagnostics, build exit 0, passing tests.
-</Contract>
-
-<Workflow>
-Every turn starts by re-judging intent from the current user message alone — discussion, exploration, implementation, or diagnosis — never inherited from prior turns. Questions and requests for opinion get direct answers, no files opened.
-
-When a request admits multiple interpretations whose effort differs 2x or more, present the options with one recommendation and let the user choose; when they are close, pick the sensible default and note the alternative. Missing facts are gathered, not asked for — search the codebase and the web yourself; ask the user only for preferences and decisions.
-
-Implementation is hands-on end to end: explore until the picture is concrete, form a hypothesis, make the edits. When something fails, reproduce it and confirm the root cause before patching — a fix without a confirmed cause is a guess.
-
-After any change, run the project's build, lint, and test commands yourself, then report the synthesized outcome with evidence — what changed, what passed, what remains open.
-</Workflow>
-
-${COMMUNICATION_SECTION}
-
-<Tools>
-- **read** — inspect specific files and source
-- **grep** — content patterns, symbol references across the codebase
-- **glob** — file and path discovery
-- **bash** — full permissions: builds, linters, tests, and any project command
-- **edit** — modify existing files
-- **write** — create new files
-- **websearch** — broad queries across documentation, tutorials, API references, best practices
-- **webfetch** — read specific URLs for detailed content extraction
-</Tools>
-`;
-
-/**
- * Build the dolphin prompt for the active mode profile.
- *
- * The prompt adapts to whether subagents exist in the active profile's
- * agents list:
- * - Poly (beaver/lynx/spider present): the full orchestrator prompt —
- *   the `<Agents>` section teaches task() delegation and the workflow
- *   is organized around phased delegation.
- * - Mono (none present): self-sufficient worker wording — the `<Agents>`
- *   section is omitted entirely, delegation rules are replaced with
- *   hands-on discipline, and a `<Tools>` section lists the web tools so
- *   information gathering stays possible without delegation.
- *
- * `<Communication>` is identical in both variants.
- *
- * @param activeSet - The enablement sets of the active mode profile.
- * @returns The mode-conditional dolphin prompt.
- */
-export function buildDolphinPrompt(activeSet: ActiveSet): string {
-  const hasSubagents =
-    activeSet.agents.has("beaver") ||
-    activeSet.agents.has("lynx") ||
-    activeSet.agents.has("spider");
-  return hasSubagents ? POLY_PROMPT : MONO_PROMPT;
+/** Extract one <Tag>...</Tag> section verbatim from a prompt. */
+function section(text: string, name: string): string {
+  const match = new RegExp(`<${name}>[\\s\\S]*?</${name}>`).exec(text);
+  assert.ok(match, `<${name}> section must exist`);
+  return match[0];
 }
 
-/**
- * Dolphin agent unit descriptor.
- *
- * Contributes the mode-conditional dolphin prompt for prompt injection.
- * The received `activeSet` is forwarded to `buildDolphinPrompt` so the
- * prompt adapts to the active mode profile (poly vs mono).
- */
-export const unit: AgentUnitDescriptor = {
-  name: "dolphin",
-  kind: "agent",
-  create(_deps, activeSet) {
-    return {
-      kind: "agent",
-      agents: [{ name: "dolphin", prompt: buildDolphinPrompt(activeSet) }],
+describe("buildDolphinPrompt", () => {
+  it("poly variant is byte-identical to the shipped prompt", () => {
+    assert.equal(buildDolphinPrompt(POLY_SET), POLY_FIXTURE);
+  });
+
+  it("beaver alone triggers the poly variant", () => {
+    const set: ActiveSet = {
+      ...MONO_SET,
+      agents: new Set(["dolphin", "mola", "beaver"]),
     };
-  },
-};
+    assert.equal(buildDolphinPrompt(set), POLY_FIXTURE);
+  });
+
+  it("lynx alone triggers the poly variant", () => {
+    const set: ActiveSet = {
+      ...MONO_SET,
+      agents: new Set(["dolphin", "mola", "lynx"]),
+    };
+    assert.equal(buildDolphinPrompt(set), POLY_FIXTURE);
+  });
+
+  it("spider alone triggers the poly variant", () => {
+    const set: ActiveSet = {
+      ...MONO_SET,
+      agents: new Set(["dolphin", "mola", "spider"]),
+    };
+    assert.equal(buildDolphinPrompt(set), POLY_FIXTURE);
+  });
+
+  it("mono variant contains no <Agents> section", () => {
+    const mono = buildDolphinPrompt(MONO_SET);
+    assert.ok(
+      !mono.includes("<Agents>"),
+      "mono prompt must not contain an <Agents> section",
+    );
+  });
+
+  it("mono variant drops all delegation content", () => {
+    const mono = buildDolphinPrompt(MONO_SET);
+    assert.ok(!mono.includes("task("), "task( must not appear in mono");
+    assert.ok(!/eagle/i.test(mono), "eagle must not appear in mono");
+    assert.ok(!mono.includes("kiwi"), "kiwi must not appear in mono");
+    assert.ok(
+      !mono.includes("wiki-ingest"),
+      "wiki-ingest must not appear in mono",
+    );
+    assert.ok(
+      !mono.includes("code-review"),
+      "code-review must not appear in mono",
+    );
+  });
+
+  it("mono variant keeps Role/Contract/Workflow/Tools and web tools", () => {
+    const mono = buildDolphinPrompt(MONO_SET);
+    for (const name of ["Role", "Contract", "Workflow", "Tools"]) {
+      assert.ok(mono.includes(`<${name}>`), `<${name}> section must exist`);
+    }
+    assert.ok(mono.includes("websearch"), "websearch tool must be listed");
+    assert.ok(mono.includes("webfetch"), "webfetch tool must be listed");
+  });
+
+  it("mono <Workflow> is descriptive prose, not a phased checklist", () => {
+    const workflow = section(buildDolphinPrompt(MONO_SET), "Workflow");
+    assert.ok(
+      !workflow.includes("## Phase"),
+      "mono workflow must not have phase headings",
+    );
+    for (const line of workflow.split("\n")) {
+      assert.ok(!line.startsWith("|"), "mono workflow must not contain tables");
+      assert.ok(
+        !line.startsWith("- [ ]"),
+        "mono workflow must not contain checklists",
+      );
+    }
+  });
+
+  it("<Communication> stays identical across variants", () => {
+    const poly = section(buildDolphinPrompt(POLY_SET), "Communication");
+    const mono = section(buildDolphinPrompt(MONO_SET), "Communication");
+    assert.equal(mono, poly);
+  });
+
+  it("empty agent set triggers the mono variant", () => {
+    const set: ActiveSet = {
+      ...MONO_SET,
+      agents: new Set(),
+    };
+    const prompt = buildDolphinPrompt(set);
+    assert.ok(
+      !prompt.includes("<Agents>"),
+      "empty agent set must not select the poly variant",
+    );
+    assert.ok(prompt.includes("<Tools>"), "empty agent set keeps <Tools>");
+  });
+
+  it("unit descriptor passes activeSet through to the builder", () => {
+    assert.equal(
+      unit.create(DEPS, POLY_SET).agents[0].prompt,
+      buildDolphinPrompt(POLY_SET),
+    );
+    assert.equal(
+      unit.create(DEPS, MONO_SET).agents[0].prompt,
+      buildDolphinPrompt(MONO_SET),
+    );
+  });
+});

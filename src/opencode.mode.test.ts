@@ -305,6 +305,35 @@ describe("poly full profile — registration parity", () => {
     );
   });
 
+  it("config hook injects the mode-conditional dolphin prompt (mono)", async () => {
+    const plugin = await makePlugin({
+      ...POLY_ZOO,
+      mode: { mono: { ...POLY_PROFILE, agents: ["dolphin", "mola"] } },
+    });
+    const config: Record<string, any> = { agent: { dolphin: {}, mola: {} } };
+    await plugin.config(config);
+    // Mono mode: no lynx/spider → self-sufficient worker prompt: no
+    // <Agents> section, web tools listed, no task() delegation.
+    assert.ok(
+      !config.agent.dolphin.prompt.includes("<Agents>"),
+      "mono dolphin prompt must not contain an <Agents> section",
+    );
+    assert.ok(
+      config.agent.dolphin.prompt.includes("- **websearch** — broad queries"),
+      "mono dolphin prompt must list the websearch tool",
+    );
+    assert.ok(
+      config.agent.dolphin.prompt.includes(
+        "- **webfetch** — read specific URLs",
+      ),
+      "mono dolphin prompt must list the webfetch tool",
+    );
+    assert.ok(
+      !config.agent.dolphin.prompt.includes("task("),
+      "mono dolphin prompt must not teach task() delegation",
+    );
+  });
+
   it("zookeeper with the real config.toml registers the full poly profile", async () => {
     // The real config.toml carries [zoo.mode.poly] (and, once the mono
     // profile lands, a second [zoo.mode.mono] sub-table).  Point the
