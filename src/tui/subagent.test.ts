@@ -1,5 +1,5 @@
 /**
- * Tests for sub-agent tracking logic in `src/tui.tsx`.
+ * Tests for sub-agent tracking logic in `src/tui/subagent.ts`.
  *
  * Covers the pure helper functions exported from the module:
  * subStatusFromState, extractTitle, extractAgent, collectSubEntries,
@@ -11,8 +11,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import type { ContextMessageEntry } from "./core/context/metrics.js";
-import type { SubEntry } from "./tui.js";
+import type { ContextMessageEntry } from "../core/context/metrics.js";
+import type { SubEntry } from "./subagent.js";
 import {
   collectSubEntries,
   extractAgent,
@@ -23,7 +23,7 @@ import {
   formatDuration,
   mergeScannedEntries,
   subStatusFromState,
-} from "./tui.js";
+} from "./subagent.js";
 
 // ---------------------------------------------------------------------------
 // subStatusFromState

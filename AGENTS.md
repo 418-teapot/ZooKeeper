@@ -85,7 +85,7 @@ ZooKeeper/
 │   ├── opencode.ts          # OpenCode 扩展入口 + 底盘（profile 驱动的注册由 compose-opencode 组装）
 │   ├── compose-opencode.ts  # OpenCode 事件键适配器（组装 ComposedResult → hook 注册；统一 COMMAND_HANDLED 哨兵）
 │   ├── pi.ts                # pi 扩展入口（profile 驱动，只消费 agent/skill 槽位）
-│   ├── tui.tsx              # TUI 侧边栏插件（OpenCode 专属，solid-js）
+│   ├── tui/                 # TUI 侧边栏插件（OpenCode 专属，solid-js；index.tsx 入口 + subagent.ts 纯逻辑层）
 │   ├── core/                # 框架无关纯逻辑（零 OpenCode 依赖）
 │   │   ├── compose.ts       # 选择引擎（composeProfile：profile → 启用单元实例化 → ComposedResult）
 │   │   ├── slots.ts         # 槽位词汇（单元描述符、贡献类型、ComposedResult/Deps/ActiveSet）
