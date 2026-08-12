@@ -133,10 +133,14 @@ reasoning = true
 context = 200000
 output  = 128000
 
-[provider.Cambricon.models."MiniMax-M2.7"]
-name      = "MiniMax-M2.7"
-id        = "MiniMax-M2.7"
+[provider.Cambricon.models."deepseek-v4-flash"]
+name      = "deepseek-v4-flash"
+id        = "deepseek-v4-flash"
 reasoning = true
+
+[provider.Cambricon.models."deepseek-v4-flash".limit]
+context = 1000000
+output  = 384000
 
 # ── DeepSeek ──────────────────────────────────────────────────────────────────
 
