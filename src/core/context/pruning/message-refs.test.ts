@@ -1434,89 +1434,162 @@ describe("ZOO_MSG_ID_CANONICAL_END_REGEX", () => {
   });
 });
 
-describe("assignMessageRefs with isSubAgent", () => {
-  it("skips first user message in sub-agent session", () => {
-    const sessionId = "sess-subagent-skip";
+describe("assignMessageRefs anchor protection", () => {
+  // Token estimates use the CJK-aware heuristic shared with the metrics
+  // module: "hello" (5 ASCII chars) → Math.ceil(5 / 4) = 2 tokens.
+
+  it("skips ref assignment when the first user message fits the anchor threshold", () => {
+    const sessionId = "sess-anchor-within";
     const messages: ContextMessageEntry[] = [
-      msg("user", "u1", [textPart("first question")]),
+      msg("user", "u1", [textPart("hello")]),
       msg("assistant", "a1", [textPart("reply")]),
     ];
 
-    const assigned = assignMessageRefs(sessionId, messages, true);
-    // Only assistant gets a ref; first user skipped.
+    const assigned = assignMessageRefs(sessionId, messages, 2);
+    // u1 (2 tokens ≤ 2) is anchor-protected; only a1 gets a ref.
     assert.equal(assigned, 1);
-  });
-
-  it("subsequent messages number from m0001", () => {
-    const sessionId = "sess-subagent-numbering";
-    const messages: ContextMessageEntry[] = [
-      msg("user", "u1", [textPart("first")]),
-      msg("assistant", "a1", [textPart("reply")]),
-      msg("user", "u2", [textPart("second")]),
-      msg("assistant", "a2", [textPart("reply2")]),
-    ];
-
-    const assigned = assignMessageRefs(sessionId, messages, true);
-    // Three refs: a1=m0001, u2=m0002, a2=m0003
-    assert.equal(assigned, 3);
 
     injectMessageRefs(sessionId, messages);
 
-    // First user has NO tag
+    // u1 has NO tag
     assert.ok(
       !(messages[0].parts?.[0] as { text?: string }).text?.includes(
-        tag("m0001"),
+        "<zoo-msg-id>",
       ),
     );
-
     // a1 has m0001
     assert.ok(
       (messages[1].parts?.[0] as { text?: string }).text?.includes(
         tag("m0001"),
       ),
     );
+  });
 
-    // u2 has m0002
+  it("assigns a ref when the first user message exceeds the anchor threshold", () => {
+    const sessionId = "sess-anchor-over";
+    const messages: ContextMessageEntry[] = [
+      msg("user", "u1", [textPart("hello")]),
+      msg("assistant", "a1", [textPart("reply")]),
+    ];
+
+    // "hello" = 2 tokens > 1 → treated as an ordinary message.
+    const assigned = assignMessageRefs(sessionId, messages, 1);
+    assert.equal(assigned, 2);
+    assert.equal(getMessageIdByRef(sessionId, "m0001"), "u1");
+    assert.equal(getMessageIdByRef(sessionId, "m0002"), "a1");
+  });
+
+  it("anchorTokens 0 disables protection entirely", () => {
+    const sessionId = "sess-anchor-zero";
+    const messages: ContextMessageEntry[] = [
+      msg("user", "u1", [textPart("hello")]),
+      msg("assistant", "a1", [textPart("reply")]),
+    ];
+
+    const assigned = assignMessageRefs(sessionId, messages, 0);
+    assert.equal(assigned, 2);
+
+    injectMessageRefs(sessionId, messages);
     assert.ok(
-      (messages[2].parts?.[0] as { text?: string }).text?.includes(
-        tag("m0002"),
+      (messages[0].parts?.[0] as { text?: string }).text?.includes(
+        tag("m0001"),
       ),
     );
-
-    // a2 has m0003
     assert.ok(
-      (messages[3].parts?.[0] as { text?: string }).text?.includes(
-        tag("m0003"),
+      (messages[1].parts?.[0] as { text?: string }).text?.includes(
+        tag("m0002"),
       ),
     );
   });
 
-  it("two rounds stay consistent (resume semantics)", () => {
-    const sessionId = "sess-subagent-resume";
+  it("ignored messages before the first user message do not disrupt the anchor", () => {
+    const sessionId = "sess-anchor-ignored";
+    const messages: ContextMessageEntry[] = [
+      msg("user", "sys1", [textPart("injected report")], undefined, {
+        ignored: true,
+      }),
+      msg("user", "u1", [textPart("hello")]),
+      msg("assistant", "a1", [textPart("response")]),
+    ];
 
-    // Round 1: first user + assistant
+    const assigned = assignMessageRefs(sessionId, messages, 2);
+    // u1 (the first non-ignored user) is protected; only a1 gets a ref.
+    assert.equal(assigned, 1);
+
+    injectMessageRefs(sessionId, messages);
+
+    // u1 has no tag
+    assert.ok(
+      !(messages[1].parts?.[0] as { text?: string }).text?.includes(
+        "<zoo-msg-id>",
+      ),
+    );
+    // a1 has m0001
+    assert.ok(
+      (messages[2].parts?.[0] as { text?: string }).text?.includes(
+        tag("m0001"),
+      ),
+    );
+  });
+
+  it("protects the first user message when the session starts with assistant messages", () => {
+    const sessionId = "sess-anchor-asst-first";
+    const messages: ContextMessageEntry[] = [
+      msg("assistant", "a0", [textPart("continuation")]),
+      msg("user", "u1", [textPart("hello")]),
+      msg("assistant", "a1", [textPart("reply")]),
+    ];
+
+    const assigned = assignMessageRefs(sessionId, messages, 2);
+    // a0=m0001, u1 protected, a1=m0002.
+    assert.equal(assigned, 2);
+    assert.equal(getMessageIdByRef(sessionId, "m0001"), "a0");
+    assert.equal(getMessageIdByRef(sessionId, "m0002"), "a1");
+    assert.equal(getMessageIdByRef(sessionId, "u1"), undefined);
+  });
+
+  it("protects only the first user message; later user messages always get refs", () => {
+    const sessionId = "sess-anchor-only-first";
+    const messages: ContextMessageEntry[] = [
+      msg("user", "u1", [textPart("hello")]),
+      msg("assistant", "a1", [textPart("reply")]),
+      msg("user", "u2", [textPart("hi")]),
+    ];
+
+    const assigned = assignMessageRefs(sessionId, messages, 2);
+    // u1 protected; a1=m0001, u2=m0002 ("hi" = 1 token stays eligible).
+    assert.equal(assigned, 2);
+    assert.equal(getMessageIdByRef(sessionId, "m0001"), "a1");
+    assert.equal(getMessageIdByRef(sessionId, "m0002"), "u2");
+    assert.equal(getMessageIdByRef(sessionId, "u1"), undefined);
+  });
+
+  it("re-evaluates the first user message on every call (resume semantics)", () => {
+    const sessionId = "sess-anchor-resume";
+
+    // Round 1: first user + assistant — u1 protected.
     const msgs1: ContextMessageEntry[] = [
-      msg("user", "u1", [textPart("q1")]),
+      msg("user", "u1", [textPart("hello")]),
       msg("assistant", "a1", [textPart("r1")]),
     ];
-    const assigned1 = assignMessageRefs(sessionId, msgs1, true);
+    const assigned1 = assignMessageRefs(sessionId, msgs1, 2);
     assert.equal(assigned1, 1); // a1=m0001, u1 skipped
 
     // Round 2: full history + new messages.
     // The registry persists across calls (simulates real runtime).
     const msgs2: ContextMessageEntry[] = [
-      msg("user", "u1", [textPart("q1")]),
+      msg("user", "u1", [textPart("hello")]),
       msg("assistant", "a1", [textPart("r1")]),
       msg("user", "u2", [textPart("q2")]),
       msg("assistant", "a2", [textPart("r2")]),
     ];
-    const assigned2 = assignMessageRefs(sessionId, msgs2, true);
+    const assigned2 = assignMessageRefs(sessionId, msgs2, 2);
     // u2 and a2 are new — 2 more refs.
     assert.equal(assigned2, 2);
 
     injectMessageRefs(sessionId, msgs2);
 
-    // u1 has NO tag (skipped)
+    // u1 has NO tag (anchor-protected)
     assert.ok(
       !(msgs2[0].parts?.[0] as { text?: string }).text?.includes(
         "<zoo-msg-id>",
@@ -1537,77 +1610,5 @@ describe("assignMessageRefs with isSubAgent", () => {
     assert.ok(
       (msgs2[3].parts?.[0] as { text?: string }).text?.includes(tag("m0003")),
     );
-  });
-
-  it("ignored messages before first user do not disrupt skip", () => {
-    const sessionId = "sess-subagent-ignored";
-    const messages: ContextMessageEntry[] = [
-      msg("system", "s1", [textPart("system msg")], undefined, {
-        ignored: true,
-      }),
-      msg("user", "u1", [textPart("real question")]),
-      msg("assistant", "a1", [textPart("response")]),
-    ];
-
-    const assigned = assignMessageRefs(sessionId, messages, true);
-    // system ignored, u1 skipped, a1=m0001
-    assert.equal(assigned, 1);
-
-    injectMessageRefs(sessionId, messages);
-
-    // u1 has no tag
-    assert.ok(
-      !(messages[1].parts?.[0] as { text?: string }).text?.includes(
-        "<zoo-msg-id>",
-      ),
-    );
-    // a1 has m0001
-    assert.ok(
-      (messages[2].parts?.[0] as { text?: string }).text?.includes(
-        tag("m0001"),
-      ),
-    );
-  });
-
-  it("main session (isSubAgent=false) assigns all user messages refs", () => {
-    const sessionId = "sess-subagent-main";
-    const messages: ContextMessageEntry[] = [
-      msg("user", "u1", [textPart("first")]),
-      msg("assistant", "a1", [textPart("reply")]),
-      msg("user", "u2", [textPart("second")]),
-    ];
-
-    const assigned = assignMessageRefs(sessionId, messages, false);
-    // All 3 get refs.
-    assert.equal(assigned, 3);
-
-    injectMessageRefs(sessionId, messages);
-
-    assert.ok(
-      (messages[0].parts?.[0] as { text?: string }).text?.includes(
-        tag("m0001"),
-      ),
-    );
-    assert.ok(
-      (messages[1].parts?.[0] as { text?: string }).text?.includes(
-        tag("m0002"),
-      ),
-    );
-    assert.ok(
-      (messages[2].parts?.[0] as { text?: string }).text?.includes(
-        tag("m0003"),
-      ),
-    );
-  });
-
-  it("isSubAgent undefined behaves same as false (no skip)", () => {
-    const sessionId = "sess-subagent-undefined";
-    const messages: ContextMessageEntry[] = [
-      msg("user", "u1", [textPart("first")]),
-      msg("assistant", "a1", [textPart("reply")]),
-    ];
-
-    const assigned = assignMessageRefs(sessionId, messages); // undefined
-    assert.equal(assigned, 2); // Both assigned.
   });
 });

@@ -18,10 +18,8 @@
  *    `ContextMessageEntry[]` (see `toContextMessageEntries`) and handed
  *    to the transform contributions.  Measure-only: the handler always
  *    returns `undefined` because converting modified entries back to pi
- *    messages is not supported yet.  Contributions that rewrite
- *    messages (e.g. context pruning) are excluded by the unit's own
- *    capability check (pi passes an empty client object, so session
- *    introspection is unavailable) and never reach this handler.
+ *    messages is not supported yet — the pruning transform still runs
+ *    and stays measure-only on pi.
  *
  * pi event and message shapes (pi 0.84.x) are declared as local
  * duck-typed interfaces — the pi package is never imported.

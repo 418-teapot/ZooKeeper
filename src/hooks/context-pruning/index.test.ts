@@ -3,7 +3,7 @@
  *
  * Covers: null/undefined/empty input, missing sessionID, empty prune map,
  * pre-populated prune map, repeat calls on the same session, and the unit
- * factory's client capability gating.
+ * factory's unconditional enablement.
  */
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -734,6 +734,9 @@ describe("contextPruningTransformHandler", () => {
     assert.equal(config.releasedPercent, undefined);
     assert.equal(config.dedup, undefined);
     assert.equal(config.purgeErrors, undefined);
+    // The anchor threshold defaults to 0 (protection disabled) at the
+    // parse layer — the only missing-key default in the codebase.
+    assert.equal(config.anchorTokens, 0);
   });
 
   it("parseContextConfig reads [zoo.context] section with two-layer structure", () => {
@@ -866,6 +869,62 @@ describe("contextPruningTransformHandler", () => {
     assert.equal(config.protectedMessages, 0);
     assert.equal(config.releasedPercent, 0);
     assert.deepEqual(config.dedup.protectedTools, []);
+  });
+
+  // ===========================================================================
+  // parseContextConfig — anchorTokens (top-level [zoo.context])
+  // ===========================================================================
+
+  it("parseContextConfig reads anchor_tokens from top-level [zoo.context]", () => {
+    const config = parseContextConfig({
+      context: { anchor_tokens: 2000 },
+    });
+    assert.equal(config.anchorTokens, 2000);
+    // The core group is independent — other keys keep their values.
+    assert.equal(config.protectedMessages, undefined);
+  });
+
+  it("parseContextConfig maps a missing anchor_tokens key to 0", () => {
+    const config = parseContextConfig({
+      context: { protected_messages: 3 },
+    });
+    assert.equal(config.anchorTokens, 0, "missing key → protection disabled");
+  });
+
+  it("parseContextConfig accepts anchor_tokens 0 as valid (explicitly disabled)", () => {
+    const config = parseContextConfig({
+      context: { anchor_tokens: 0 },
+    });
+    assert.equal(config.anchorTokens, 0);
+  });
+
+  it("parseContextConfig drops the whole core group for negative anchor_tokens (warn once)", () => {
+    const config = parseContextConfig({
+      context: { anchor_tokens: -1 },
+    });
+    // Present-but-invalid key invalidates the whole core group (fail to
+    // skip): anchorTokens falls back to 0, the siblings go undefined.
+    assert.equal(config.anchorTokens, 0);
+    assert.equal(config.protectedMessages, undefined);
+    assert.equal(config.releasedPercent, undefined);
+
+    const buffer = _getBufferForTesting();
+    const entries = buffer.filter((e) => e.event === "context_config_invalid");
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].key, "anchor_tokens");
+  });
+
+  it("parseContextConfig drops the whole core group for non-number anchor_tokens (warn once)", () => {
+    const config = parseContextConfig({
+      context: { anchor_tokens: "2000" },
+    });
+    assert.equal(config.anchorTokens, 0);
+    assert.equal(config.protectedMessages, undefined);
+
+    const buffer = _getBufferForTesting();
+    const entries = buffer.filter((e) => e.event === "context_config_invalid");
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].key, "anchor_tokens");
   });
 
   // ===========================================================================
@@ -2864,7 +2923,6 @@ describe("contextPruningTransformHandler", () => {
         messages,
         nudgeTransformConfig(2),
         undefined,
-        undefined,
         true,
       );
       assert.equal(messages.length, 4, "baseline injects nothing");
@@ -2874,7 +2932,6 @@ describe("contextPruningTransformHandler", () => {
       contextPruningTransformHandler(
         messages,
         nudgeTransformConfig(2),
-        undefined,
         undefined,
         true,
       );
@@ -2954,14 +3011,12 @@ describe("contextPruningTransformHandler", () => {
         messages,
         nudgeTransformConfig(2),
         undefined,
-        undefined,
         true,
       );
       messages = nudgeMessages(sessionID, 150000);
       contextPruningTransformHandler(
         messages,
         nudgeTransformConfig(2),
-        undefined,
         undefined,
         true,
       );
@@ -2976,7 +3031,6 @@ describe("contextPruningTransformHandler", () => {
       contextPruningTransformHandler(
         messages2,
         nudgeTransformConfig(2),
-        undefined,
         undefined,
         true,
       );
@@ -2994,7 +3048,6 @@ describe("contextPruningTransformHandler", () => {
         messages,
         nudgeTransformConfig(2),
         undefined,
-        undefined,
         true,
       );
 
@@ -3003,7 +3056,6 @@ describe("contextPruningTransformHandler", () => {
       contextPruningTransformHandler(
         messages,
         nudgeTransformConfig(2),
-        undefined,
         undefined,
         true,
       );
@@ -3015,7 +3067,6 @@ describe("contextPruningTransformHandler", () => {
         messages,
         nudgeTransformConfig(2),
         undefined,
-        undefined,
         true,
       );
       assert.equal(messages[messages.length - 1].info.id, "a2");
@@ -3026,7 +3077,6 @@ describe("contextPruningTransformHandler", () => {
       contextPruningTransformHandler(
         messages,
         nudgeTransformConfig(2),
-        undefined,
         undefined,
         true,
       );
@@ -3052,14 +3102,12 @@ describe("contextPruningTransformHandler", () => {
         messages,
         nudgeTransformConfig(2),
         undefined,
-        undefined,
         true,
       );
       messages = nudgeMessages(sessionID, 165000);
       contextPruningTransformHandler(
         messages,
         nudgeTransformConfig(2),
-        undefined,
         undefined,
         true,
       );
@@ -3108,7 +3156,6 @@ describe("contextPruningTransformHandler", () => {
         messages,
         nudgeTransformConfig(4),
         undefined,
-        undefined,
         true,
       );
       assert.equal(messages.length, 4, "baseline injects nothing");
@@ -3120,7 +3167,6 @@ describe("contextPruningTransformHandler", () => {
       contextPruningTransformHandler(
         messages,
         nudgeTransformConfig(4),
-        undefined,
         undefined,
         true,
       );
@@ -3145,7 +3191,6 @@ describe("contextPruningTransformHandler", () => {
         messages2,
         nudgeTransformConfig(4),
         undefined,
-        undefined,
         true,
       );
       assert.equal(messages2.length, 4, "same-token re-run stays silent");
@@ -3155,36 +3200,10 @@ describe("contextPruningTransformHandler", () => {
         messages3,
         nudgeTransformConfig(2),
         undefined,
-        undefined,
         true,
       );
       assert.equal(messages3.length, 4, "gate open but anchor already moved");
       assert.equal(messages3[messages3.length - 1].info.id, "a2");
-    });
-
-    it("skips nudge injection for sub-agent sessions", () => {
-      const sessionID = "sess-nudge-subagent";
-      setModelLimit(sessionID, NUDGE_LIMIT, "test-model");
-
-      let messages = nudgeMessages(sessionID, 140000);
-      contextPruningTransformHandler(
-        messages,
-        nudgeTransformConfig(2),
-        undefined,
-        true,
-      );
-      messages = nudgeMessages(sessionID, 150000);
-      contextPruningTransformHandler(
-        messages,
-        nudgeTransformConfig(2),
-        undefined,
-        true,
-      );
-
-      assert.equal(messages.length, 4, "no nudge for sub-agents");
-      assert.equal(messages[messages.length - 1].info.id, "a2");
-      const state = getOrCreateSessionState(sessionID);
-      assert.equal(state.nudges, undefined, "anchor never touched");
     });
 
     it("skips nudge injection when no model limit was captured", () => {
@@ -3196,14 +3215,12 @@ describe("contextPruningTransformHandler", () => {
         messages,
         nudgeTransformConfig(2),
         undefined,
-        undefined,
         true,
       );
       messages = nudgeMessages(sessionID, 150000);
       contextPruningTransformHandler(
         messages,
         nudgeTransformConfig(2),
-        undefined,
         undefined,
         true,
       );
@@ -3225,7 +3242,6 @@ describe("contextPruningTransformHandler", () => {
       contextPruningTransformHandler(
         messages,
         nudgeTransformConfig(2),
-        undefined,
         undefined,
         true,
       );
@@ -3250,7 +3266,6 @@ describe("contextPruningTransformHandler", () => {
           dedup: {},
           purgeErrors: {},
         },
-        undefined,
         undefined,
         false,
       );
@@ -3286,7 +3301,6 @@ describe("contextPruningTransformHandler", () => {
           dedup: {},
           purgeErrors: {},
         },
-        undefined,
         undefined,
         true,
       );
@@ -3365,7 +3379,6 @@ describe("contextPruningTransformHandler", () => {
         messages,
         manualTransformConfig(2),
         undefined,
-        undefined,
         true,
       );
 
@@ -3414,7 +3427,6 @@ describe("contextPruningTransformHandler", () => {
         messages,
         manualTransformConfig(2),
         undefined,
-        undefined,
         true,
       );
       assert.equal(
@@ -3428,33 +3440,10 @@ describe("contextPruningTransformHandler", () => {
         messages2,
         manualTransformConfig(2),
         undefined,
-        undefined,
         true,
       );
       assert.equal(messages2.length, 4, "no second injection");
       assert.equal(messages2[messages2.length - 1].info.id, "a2");
-    });
-
-    it("skips injection for sub-agent sessions", () => {
-      const sessionID = "sess-manual-subagent";
-      getOrCreateSessionState(sessionID).pendingManualTrigger = true;
-
-      const messages = manualMessages(sessionID);
-      contextPruningTransformHandler(
-        messages,
-        manualTransformConfig(2),
-        undefined,
-        true,
-      );
-
-      assert.equal(messages.length, 4, "no injection for sub-agents");
-      assert.equal(messages[messages.length - 1].info.id, "a2");
-      const state = getOrCreateSessionState(sessionID);
-      assert.equal(
-        state.pendingManualTrigger,
-        true,
-        "flag untouched (skip semantics)",
-      );
     });
 
     it("injects the guidance even when nothing is eligible (window fallback)", () => {
@@ -3468,7 +3457,6 @@ describe("contextPruningTransformHandler", () => {
       contextPruningTransformHandler(
         messages,
         manualTransformConfig(100),
-        undefined,
         undefined,
         true,
       );
@@ -3498,7 +3486,6 @@ describe("contextPruningTransformHandler", () => {
           dedup: {},
           purgeErrors: {},
         },
-        undefined,
         undefined,
         false,
       );
@@ -3532,7 +3519,6 @@ describe("contextPruningTransformHandler", () => {
       contextPruningTransformHandler(
         messages,
         manualTransformConfig(1),
-        undefined,
         undefined,
         true,
       );
@@ -3699,14 +3685,15 @@ describe("contextPruningTransformHandler", () => {
 });
 
 // ---------------------------------------------------------------------------
-// unit.create — client capability gating
+// unit.create — unconditional enablement
 // ---------------------------------------------------------------------------
 
-describe("unit.create capability gating", () => {
+describe("unit.create enablement", () => {
   let origZooDebug: string | undefined;
 
   beforeEach(() => {
-    // Enable debug-level logging so `unit_disabled` entries reach the buffer.
+    // Enable debug-level logging so unexpected `unit_disabled` entries
+    // would reach the buffer.
     origZooDebug = process.env.ZOO_DEBUG;
     process.env.ZOO_DEBUG = "1";
   });
@@ -3727,7 +3714,7 @@ describe("unit.create capability gating", () => {
     commands: new Set(),
   };
 
-  it("returns empty contributions and logs unit_disabled when client lacks session.get", () => {
+  it("always contributes the transform handler, even with an empty client", () => {
     const deps: Deps = {
       limits: {},
       contextConfig: {},
@@ -3738,23 +3725,20 @@ describe("unit.create capability gating", () => {
 
     const contributions = unit.create(deps, activeSet);
 
-    assert.deepEqual(contributions, {
-      kind: "hook",
-      beforeExec: [],
-      afterExec: [],
-      transform: [],
-      toolDefinition: [],
-    });
-
-    const entries = _getBufferForTesting().filter(
-      (e) => e.event === "unit_disabled",
-    );
-    assert.equal(entries.length, 1);
-    assert.equal(entries[0].level, "debug");
-    assert.equal(entries[0].missing, "session introspection");
+    assert.equal(contributions.kind, "hook");
+    assert.deepEqual(contributions.beforeExec, []);
+    assert.deepEqual(contributions.afterExec, []);
+    assert.deepEqual(contributions.toolDefinition, []);
+    // The unit no longer gates on `client.session.get` — the pruning
+    // pipeline runs on every host (session introspection is optional;
+    // the dedup notify suppresses itself when the agent is unknown).
+    assert.equal(contributions.transform.length, 1);
+    assert.equal(contributions.transform[0].name, "contextPruning");
+    // No unit_disabled entry logged.
+    assert.ok(!_getBufferForTesting().some((e) => e.event === "unit_disabled"));
   });
 
-  it("returns normal contributions when client provides session.get", () => {
+  it("contributes the transform handler when the client provides session.get", () => {
     const deps: Deps = {
       limits: {},
       contextConfig: {},
@@ -3775,7 +3759,6 @@ describe("unit.create capability gating", () => {
     assert.deepEqual(contributions.toolDefinition, []);
     assert.equal(contributions.transform.length, 1);
     assert.equal(contributions.transform[0].name, "contextPruning");
-    // No unit_disabled entry logged.
     assert.ok(!_getBufferForTesting().some((e) => e.event === "unit_disabled"));
   });
 });

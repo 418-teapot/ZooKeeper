@@ -3,7 +3,7 @@
  *
  * Covers: `buildPiContributions` composing the full registry from the
  * active `[zoo.mode.*]` profile (agents/skills/hooks/tools/commands,
- * the empty-client pruning gate, dolphin Map gating, null/invalid
+ * unconditional pruning contribution, dolphin Map gating, null/invalid
  * profile → empty composition), `buildPiHandlers` wiring the four hook
  * handlers (dolphin prompt injection, skill discovery, compose-driven
  * `tool_result` nudge gating, measure-only `context` handler), and the
@@ -116,11 +116,12 @@ describe("buildPiContributions — profile-driven selection", () => {
         "nudgePostTask",
       ],
     );
-    // context-pruning self-disables via the empty-client capability
-    // gate; only the metrics measurement remains.
+    // context-pruning is no longer gated on client capabilities — the
+    // unit contributes unconditionally, so both transform handlers
+    // appear (registry order: pruning before metrics).
     assert.deepEqual(
       composed.transform.map((h) => h.name),
-      ["contextMetrics"],
+      ["contextPruning", "contextMetrics"],
     );
     assert.deepEqual(
       composed.beforeExec.map((h) => h.name),
@@ -407,10 +408,11 @@ describe("buildPiHandlers — compose-driven context handler", () => {
     assert.equal(result, undefined);
   });
 
-  it("context handler runs only the metrics measurement (pruning gated out)", async () => {
-    // context-pruning is in the poly hooks list, but pi's empty client
-    // object disables it via the unit's capability gate — the handler
-    // never sees a pruning contribution and stays measure-only.
+  it("context handler runs the pruning pipeline too (measure-only)", async () => {
+    // context-pruning is in the poly hooks list and the unit is no
+    // longer gated on client capabilities, so its transform handler
+    // runs on every pi context event.  The handler is measure-only —
+    // the result stays undefined either way.
     const handlers = buildPiHandlers(POLY_ZOO);
     const result = await handlers.contextMetrics(
       { type: "context", messages: [] },

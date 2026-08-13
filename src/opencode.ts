@@ -24,8 +24,8 @@
  * experimental.text.complete) keep working.
  *
  * This module is the entry + always-on infrastructure: it wires the
- * parsed config, consumes the shared session maps (`sessionAgentMap` /
- * `subAgentCache` held by `src/core/session-state.ts`), and merges
+ * parsed config, consumes the shared `sessionAgentMap` (held by
+ * `src/core/session-state.ts`), and merges
  * the adapter's profile-driven fragment with the always-on
  * infrastructure hooks.
  */

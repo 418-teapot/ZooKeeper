@@ -56,7 +56,7 @@ import {
   CONTEXT_NUDGE_TEMPLATE,
   MANUAL_COMPRESS_TEMPLATE,
 } from "../../core/prompts.js";
-import { sessionAgentMap, subAgentCache } from "../../core/session-state.js";
+import { sessionAgentMap } from "../../core/session-state.js";
 import { log } from "../../utils/logger.js";
 
 // ---------------------------------------------------------------------------
@@ -95,8 +95,8 @@ import { log } from "../../utils/logger.js";
  * **Phase 6b (Manual compress trigger):** when `/dcp compress` armed the
  * one-shot `pendingManualTrigger` flag, append a synthetic user message
  * (`zoo-manual-compress`) driving the model to call the `compress` tool.
- * Transform-only (never persisted, never ref-assigned), skipped for
- * sub-agent sessions, and the flag is cleared after injection.
+ * Transform-only (never persisted, never ref-assigned), and the flag is
+ * cleared after injection.
  *
  * **Phase 7 (Finalize):** clear the view-change flag and persist state to
  * disk when dirty.
@@ -116,9 +116,6 @@ import { log } from "../../utils/logger.js";
  * @param messages - The session messages array from the transform output.
  * @param config - Unified context-pruning configuration.
  * @param notify - Optional callback for user-visible release notification.
- * @param isSubAgent - When true, the first non-ignored user message in
- *   the session gets no message ref (positional semantics for
- *   sub-agent/task sessions — the first user message is skipped).
  * @param hasCompressTool - Whether the `compress` tool is registered in
  *   the active mode profile.  Gates the nudge (Phase 6) and manual
  *   compress (Phase 6b) phases.  Defaults to false.
@@ -130,7 +127,6 @@ export function contextPruningTransformHandler(
     purgeErrors: {},
   },
   notify?: (text: string) => void,
-  isSubAgent?: boolean,
   hasCompressTool?: boolean,
 ): void {
   if (!messages || messages.length === 0) return;
@@ -304,7 +300,7 @@ export function contextPruningTransformHandler(
     boundaryReset = true;
   }
 
-  const assigned = assignMessageRefs(sessionId, messages, isSubAgent);
+  const assigned = assignMessageRefs(sessionId, messages, config.anchorTokens);
   const injected = injectMessageRefs(sessionId, messages);
 
   if (assigned > 0 || boundaryReset) {
@@ -368,21 +364,16 @@ export function contextPruningTransformHandler(
   // ── Phase 6: Nudge — context-pressure reminders ────────────────
   // Injects a synthetic reminder when the prompt is past the configured
   // thresholds AND has grown past the re-nudge interval since the last
-  // anchor.  Runs only when every gate holds: not a sub-agent session,
-  // the compress tool registered in the active mode profile (the nudge
-  // advertises compressible windows the tool would accept), a strictly-
-  // parsed nudge section present (the strict parser guarantees a valid
+  // anchor.  Runs only when every gate holds: the compress tool
+  // registered in the active mode profile (the nudge advertises
+  // compressible windows the tool would accept), a strictly-parsed
+  // nudge section present (the strict parser guarantees a valid
   // threshold set here), a model context limit captured for this
   // session, and a completed assistant message (promptTokens is real —
   // same-view discipline as Phase 3).
   const compressCfg = config.compress;
   const nudgeConfig = config.nudge;
-  if (
-    !isSubAgent &&
-    hasCompressTool &&
-    nudgeConfig !== undefined &&
-    lastAsst.index >= 0
-  ) {
+  if (hasCompressTool && nudgeConfig !== undefined && lastAsst.index >= 0) {
     const modelLimit = getModelLimit(sessionId);
     if (modelLimit) {
       // Null thresholds → subsystem disabled (the config parse already
@@ -490,10 +481,10 @@ export function contextPruningTransformHandler(
   // model treats as a direct instruction to call the `compress` tool.
   // Runs after Phase 4 so the message never enters ref assignment, and
   // never calls session.prompt (transform-only, invisible in storage).
-  // Sub-agent sessions are skipped entirely.  The flag is cleared after
-  // the phase — one-shot, never re-injected on later turns.
+  // The flag is cleared after the phase — one-shot, never re-injected
+  // on later turns.
   const manualCfg = config.compress;
-  if (state.pendingManualTrigger && !isSubAgent) {
+  if (state.pendingManualTrigger) {
     if (
       hasCompressTool &&
       manualCfg?.protectedTokens !== undefined &&
@@ -750,14 +741,12 @@ export function handleDedupNotify(
  * @param output - The messages transform output.
  * @param config - Unified context-pruning configuration.
  * @param client - The host client.
- * @param isSubAgent - Whether the session is a sub-agent session.
  * @param hasCompressTool - Whether the `compress` tool is registered.
  */
 export function handleContextPruning(
   output: ContextMetricsOutput,
   config: ContextPruningConfig,
   client: any,
-  isSubAgent?: boolean,
   hasCompressTool?: boolean,
 ): void {
   try {
@@ -770,7 +759,6 @@ export function handleContextPruning(
       // Must NOT await — the transform hook must never block.
       (text: string) =>
         handleDedupNotify(sessionID, client, sessionAgentMap, text),
-      isSubAgent,
       hasCompressTool,
     );
   } catch (err) {
@@ -783,38 +771,4 @@ export function handleContextPruning(
       { handler: "contextPruning", error: String(err) },
     );
   }
-}
-
-/**
- * Resolve whether the session is a sub-agent session (has `parentID`).
- *
- * Cached per session ID in `subAgentCache` (held by
- * `core/session-state.ts`); cleared on `session.deleted`.
- * Errors (missing client API, unknown session) default to `false`.
- *
- * @param output - The messages transform output (session ID source).
- * @param client - The host client.
- * @returns `true` when the session has a parent session.
- */
-export async function resolveSubAgentStatus(
-  output: ContextMetricsOutput,
-  client: any,
-): Promise<boolean> {
-  let isSubAgent = false;
-  const sessionId = output.messages?.[0]?.info?.sessionID;
-  if (!sessionId) return false;
-
-  const cached = subAgentCache.get(sessionId);
-  if (cached !== undefined) return cached;
-
-  try {
-    const sessionInfo = await client.session.get({
-      path: { id: sessionId },
-    });
-    isSubAgent = !!sessionInfo.parentID;
-  } catch {
-    // Could not determine — default to false.
-  }
-  subAgentCache.set(sessionId, isSubAgent);
-  return isSubAgent;
 }

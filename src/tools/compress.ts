@@ -436,8 +436,11 @@ ${COMPRESS_GUIDANCE}
 
       // Fetch full messages, then ensure the ref registry is populated
       // (idempotent re-entry by design — covers the empty-registry case).
+      // `anchorTokens` is passed through so the first-user message stays
+      // anchor-protected here too; omitting it would let this re-entry
+      // assign the anchor a ref and silently bypass the protection.
       const messages = await fetchSessionMessages(client, sessionID);
-      assignMessageRefs(sessionID, messages);
+      assignMessageRefs(sessionID, messages, contextConfig.anchorTokens);
 
       // Core batch pipeline: loud Chinese guidance errors propagate
       // unchanged (already range-indexed by the core).

@@ -25,9 +25,11 @@
  * four hooks no-op — fail-closed, aligned with the OpenCode host.
  *
  * Capability gating: pi passes an empty client object (no SDK client),
- * so units that require session introspection disable themselves —
- * `context-pruning` contributes nothing and never reaches the `context`
- * handler.  The direct-work nudge's dolphin gate is satisfied by a
+ * so the dedup-release notification inside context-pruning resolves its
+ * agent from the session map but fails on the missing session-prompt
+ * API — the failure is caught and logged as `dedup_notify_failed`
+ * (warn).  The pruning transform still runs and stays measure-only on
+ * pi.  The direct-work nudge's dolphin gate is satisfied by a
  * `sessionAgentMap` whose lookups always resolve to "dolphin" (a pi
  * session is the orchestrator); without a dolphin-enabled profile the
  * map is empty and the nudge stays silent.
@@ -164,7 +166,10 @@ function sessionAgentMapFor(profile: ModeProfile | null): Map<string, string> {
  * slots (tool/command units instantiate but their slots stay unused;
  * the `unknown_unit` warning only fires when a profile name has no
  * matching registry unit).  `Deps` are adapted to the pi host:
- * `client` is empty (pruning therefore self-disables), `directory` is
+ * `client` is empty (the pruning transform runs but its dedup-release
+ * notification resolves the agent and then fails on the missing
+ * session-prompt API, logged as `dedup_notify_failed` warn; the
+ * transform itself stays measure-only), `directory` is
  * the process working directory (direct-work's plan discovery reads
  * `<directory>/.zoo/plans/`), and `sessionAgentMap` resolves to
  * "dolphin" when the profile enables dolphin (see
@@ -187,9 +192,11 @@ export function buildPiContributions(zooConfig: any): {
   const deps: Deps = {
     limits,
     contextConfig,
-    // pi has no SDK client — units that require session introspection
-    // (e.g. context-pruning) disable themselves via their capability
-    // gate instead of failing at runtime.
+    // pi has no SDK client — the context-pruning transform runs but its
+    // dedup-release notification resolves the agent ("dolphin") and then
+    // fails on the missing session-prompt API, logged as
+    // `dedup_notify_failed` (warn); the context handler never writes
+    // back anyway.
     client: {},
     directory: process.cwd(),
     sessionAgentMap: sessionAgentMapFor(modeProfile),

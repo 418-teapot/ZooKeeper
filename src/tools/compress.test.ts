@@ -19,7 +19,10 @@ import {
   getOrCreateSessionState,
   loadSessionState,
 } from "../core/context/pruning/marks.js";
-import { _clearAllRefsForTesting } from "../core/context/pruning/message-refs.js";
+import {
+  _clearAllRefsForTesting,
+  getMessageRefById,
+} from "../core/context/pruning/message-refs.js";
 import { COMPRESS_GUIDANCE } from "../core/prompts.js";
 import {
   buildPlugin,
@@ -362,6 +365,46 @@ describe("compress tool execute — happy path", () => {
     assert.equal(state.blocks.get("1")?.title, title);
     assert.equal(typeof result, "string");
     assert.ok(result.includes(title), "ToolResult should include the title");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Anchor protection pass-through
+// ---------------------------------------------------------------------------
+
+describe("compress tool execute — anchor protection pass-through", () => {
+  it("keeps the first user message ref-less when anchor_tokens covers it", async () => {
+    // anchor_tokens=10 protects u0 ("开场问题" = 4 CJK chars →
+    // ceil(4/1.5) = 3 heuristic tokens ≤ 10).  Without the pass-through
+    // the tool's assignMessageRefs re-entry would assign u0 a ref,
+    // silently bypassing the transform-side anchor protection.
+    const messages = makeMessages();
+    const { client } = mockClient(messages);
+    const anchoredZoo = {
+      ...POLY_ZOO,
+      context: {
+        ...(POLY_ZOO.context as Record<string, unknown>),
+        anchor_tokens: 10,
+      },
+    };
+    const plugin = (await buildPlugin({ client }, anchoredZoo)) as any;
+
+    const result = await plugin.tool.compress.execute(
+      { ranges: [makeRange(1, 9)] },
+      mockToolContext,
+    );
+
+    // Compression still succeeds; the anchor shifts refs by one but the
+    // range (m0002..m0010) still covers 8 messages.
+    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    assert.equal(state.blocks.size, 1);
+    assert.equal(state.blocks.get("1")?.messageIds.length, 8);
+    assert.ok(result.includes("已压缩"));
+
+    // The anchor survived the compress-tool re-entry: u0 has NO ref,
+    // while a1 (the first compressible message) holds m0001.
+    assert.equal(getMessageRefById(TEST_SESSION_ID, "u0"), undefined);
+    assert.equal(getMessageRefById(TEST_SESSION_ID, "a1"), "m0001");
   });
 });
 

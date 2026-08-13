@@ -32,7 +32,7 @@
 
 import { log } from "../../../utils/logger.js";
 import type { ContextMessageEntry } from "../metrics.js";
-import { isMessageIgnored } from "../metrics.js";
+import { estimateMessageHeuristic, isMessageIgnored } from "../metrics.js";
 import type { PersistedRefs } from "./marks.js";
 import { clearPersistedRefs, readPersistedRefs } from "./marks.js";
 import {
@@ -135,39 +135,50 @@ function ensureRegistry(sessionId: string): SessionRefRegistry {
  * When `nextRef` exceeds `MAX_INDEX`, assignment stops and a warning
  * is logged once per session (no throw).
  *
- * **Sub-agent sessions: skip ref assignment for the first user message (positional, resume-safe):** When `isSubAgent` is true, the
- * first non-ignored user message encountered in the array scan is
- * skipped (no ref assigned).  Uses a per-call local flag so the skip
- * applies fresh on every invocation — resume-safe because the task
- * prompt stays at the array head and the local flag resets each call.
+ * **Anchor protection (session-wide, resume-safe):** the first
+ * non-ignored user message in the current view is skipped (no ref
+ * assigned) when its heuristic token estimate does not exceed
+ * `anchorTokens`.  A larger estimate (or `anchorTokens` = 0, the
+ * disabled default) treats the message as ordinary — it receives a ref
+ * like any other.  Only the first user message is ever considered;
+ * later user messages are never anchored.  Uses a per-call local flag so
+ * the check applies fresh on every invocation — resume-safe because the
+ * protected message stays at the array head and the local flag resets
+ * each call.
  *
  * @param sessionId - The session identifier.
  * @param messages - The message array to scan (not mutated).
- * @param isSubAgent - When true, skip ref assignment for the first
- *   non-ignored user message (DCP positional semantics).
+ * @param anchorTokens - Token threshold for the first-user message
+ *   anchor protection.  `0` (and the missing-key default) disables the
+ *   protection.
  * @returns Count of newly assigned refs this call.
  */
 export function assignMessageRefs(
   sessionId: string,
   messages: ContextMessageEntry[],
-  isSubAgent?: boolean,
+  anchorTokens: number = 0,
 ): number {
   const registry = ensureRegistry(sessionId);
 
   let newAssignments = 0;
 
-  // Per-call local flag — skip the first non-ignored user message
-  // in a sub-agent session.  Resets every call so the flag is never
-  // persisted across transforms.
-  let skippedFirstUser = false;
+  // Per-call local flag — the first non-ignored user message in the
+  // current view is the anchor-protection candidate.  Resets every call
+  // so the flag is never persisted across transforms.
+  let firstUserSeen = false;
 
   for (const msg of messages) {
     if (isMessageIgnored(msg)) continue;
 
-    // Sub-agent sessions: skip ref assignment for the first user message (positional semantics).
-    if (isSubAgent && !skippedFirstUser && msg.info?.role === "user") {
-      skippedFirstUser = true;
-      continue;
+    // Anchor protection: skip ref assignment for the first non-ignored
+    // user message whose heuristic token estimate is at or below the
+    // threshold.  A larger estimate (or `anchorTokens` = 0) treats the
+    // message as ordinary — it is assigned a ref like any other.
+    if (msg.info?.role === "user" && !firstUserSeen) {
+      firstUserSeen = true;
+      if (anchorTokens > 0 && estimateMessageHeuristic(msg) <= anchorTokens) {
+        continue;
+      }
     }
 
     const msgId = msg.info?.id;

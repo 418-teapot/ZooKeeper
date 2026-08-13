@@ -521,6 +521,9 @@ prompt_word_limit = 500
 protected_messages = 20
 # 批量释放阈值（百分比）：pending 标记合计达到上下文长度该百分比时统一批量释放
 released_percent = 10
+# 首条 user 消息锚定阈值（tokens）：首条非 ignored user 消息的 token 估算不超过该值时
+# 跳过 ref 分配（受保护，永不裁剪）；超过则按普通消息处理；0 = 不锚定（缺键同义）
+anchor_tokens = 2000
 
 [zoo.context.dedup]
 threshold_context = 100000
