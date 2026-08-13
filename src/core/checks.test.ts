@@ -11,6 +11,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { _getBufferForTesting } from "../utils/logger.js";
 import { checkPlanProgress, checkTodoProgress } from "./checks.js";
 import type { TinyClient } from "./client/todo.js";
 
@@ -165,6 +166,48 @@ describe("checkTodoProgress", () => {
   it("returns null when client is null", async () => {
     const result = await checkTodoProgress(null, "test-session");
     assert.equal(result, null);
+  });
+
+  it("returns null when client lacks a callable session.todo method", async () => {
+    const sessionID = `test-checks-${Date.now()}-${_counter++}`;
+    // Hosts may pass an empty client object (e.g. pi) or a client whose
+    // session does not expose todo — both are truthy but lack the capability.
+    const capabilitylessClients = [
+      {} as unknown as TinyClient,
+      { session: {} } as unknown as TinyClient,
+    ];
+    for (const client of capabilitylessClients) {
+      const result = await checkTodoProgress(client, sessionID);
+      assert.equal(result, null, "expected null for capability-less client");
+    }
+    // The early return must not hit the catch fallback, so no
+    // todo_check_failed warning is logged for this session.
+    const failed = _getBufferForTesting().filter(
+      (e) =>
+        e.hook === "checks" &&
+        e.event === "todo_check_failed" &&
+        e.sessionId === sessionID,
+    );
+    assert.equal(failed.length, 0, "expected no todo_check_failed log entry");
+  });
+
+  it("returns a todo nudge when the client session.todo resolves", async () => {
+    const sessionID = `test-checks-${Date.now()}-${_counter++}`;
+    const workingClient: TinyClient = {
+      session: {
+        todo: async () => ({
+          data: [
+            { content: "Task A", status: "pending", priority: "high", id: "1" },
+          ],
+        }),
+      },
+    };
+    const result = await checkTodoProgress(workingClient, sessionID);
+    assert.ok(result !== null, "expected non-null result");
+    assert.ok(
+      result?.includes("TODO UPDATE REQUIRED"),
+      "expected TODO_PROGRESS_NUDGE containing TODO UPDATE REQUIRED",
+    );
   });
 
   it("returns TODO UPDATE REQUIRED fallback when client API fails", async () => {

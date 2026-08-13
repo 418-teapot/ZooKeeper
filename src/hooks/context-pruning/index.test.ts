@@ -2,10 +2,11 @@
  * Tests for the context-pruning hook adapter.
  *
  * Covers: null/undefined/empty input, missing sessionID, empty prune map,
- * pre-populated prune map, repeat calls on the same session.
+ * pre-populated prune map, repeat calls on the same session, and the unit
+ * factory's client capability gating.
  */
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import { parseContextConfig } from "../../core/config-parse.js";
 import {
   PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
@@ -34,8 +35,9 @@ import {
   reclaimedTokens,
 } from "../../core/context/pruning/marks.js";
 import { COMPRESS_GUIDANCE } from "../../core/prompts.js";
+import type { ActiveSet, Deps } from "../../core/slots.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
-import { contextPruningTransformHandler } from "./index.js";
+import { contextPruningTransformHandler, unit } from "./index.js";
 
 // ---------------------------------------------------------------------------
 // Teardown
@@ -3693,5 +3695,87 @@ describe("contextPruningTransformHandler", () => {
       const entries = buffer.filter((e) => e.event === "nudge_config_invalid");
       assert.equal(entries.length, 3, "one warn per invalid value");
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// unit.create — client capability gating
+// ---------------------------------------------------------------------------
+
+describe("unit.create capability gating", () => {
+  let origZooDebug: string | undefined;
+
+  beforeEach(() => {
+    // Enable debug-level logging so `unit_disabled` entries reach the buffer.
+    origZooDebug = process.env.ZOO_DEBUG;
+    process.env.ZOO_DEBUG = "1";
+  });
+
+  afterEach(() => {
+    if (origZooDebug !== undefined) {
+      process.env.ZOO_DEBUG = origZooDebug;
+    } else {
+      delete process.env.ZOO_DEBUG;
+    }
+  });
+
+  const activeSet: ActiveSet = {
+    agents: new Set(),
+    skills: new Set(),
+    hooks: new Set(),
+    tools: new Set(["compress"]),
+    commands: new Set(),
+  };
+
+  it("returns empty contributions and logs unit_disabled when client lacks session.get", () => {
+    const deps: Deps = {
+      limits: {},
+      contextConfig: {},
+      client: {},
+      directory: "/tmp/zoo",
+      sessionAgentMap: new Map(),
+    };
+
+    const contributions = unit.create(deps, activeSet);
+
+    assert.deepEqual(contributions, {
+      kind: "hook",
+      beforeExec: [],
+      afterExec: [],
+      transform: [],
+      toolDefinition: [],
+    });
+
+    const entries = _getBufferForTesting().filter(
+      (e) => e.event === "unit_disabled",
+    );
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].level, "debug");
+    assert.equal(entries[0].missing, "session introspection");
+  });
+
+  it("returns normal contributions when client provides session.get", () => {
+    const deps: Deps = {
+      limits: {},
+      contextConfig: {},
+      client: {
+        session: {
+          get: async () => ({}),
+        },
+      },
+      directory: "/tmp/zoo",
+      sessionAgentMap: new Map(),
+    };
+
+    const contributions = unit.create(deps, activeSet);
+
+    assert.equal(contributions.kind, "hook");
+    assert.deepEqual(contributions.beforeExec, []);
+    assert.deepEqual(contributions.afterExec, []);
+    assert.deepEqual(contributions.toolDefinition, []);
+    assert.equal(contributions.transform.length, 1);
+    assert.equal(contributions.transform[0].name, "contextPruning");
+    // No unit_disabled entry logged.
+    assert.ok(!_getBufferForTesting().some((e) => e.event === "unit_disabled"));
   });
 });

@@ -89,7 +89,12 @@ const POLY_ZOO: Record<string, unknown> = {
 /** Build a plugin with the given zoo config and input. */
 function makePlugin(
   zooConfig: Record<string, unknown> = POLY_ZOO,
-  input: Record<string, unknown> = { client: {} },
+  input: Record<string, unknown> = {
+    // The real OpenCode SDK client exposes `session.get`; the stub keeps
+    // the context-pruning unit's capability gate open in composition
+    // tests that exercise the messages.transform pipeline.
+    client: { session: { get: async () => ({}) } },
+  },
 ): Promise<Record<string, any>> {
   return buildPlugin(input, zooConfig) as Promise<Record<string, any>>;
 }

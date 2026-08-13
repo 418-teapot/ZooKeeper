@@ -1,23 +1,36 @@
 /**
- * ZooKeeper Pi extension — profile-driven prompt injection + skills.
+ * ZooKeeper Pi extension — profile-driven hooks composed from the unit
+ * registry.
  *
- * This extension registers two hooks, both driven by the active mode
+ * This extension registers four hooks, all driven by the active mode
  * profile (`[zoo.mode.<name>]`, parsed by `parseModeProfile`):
  * 1. `before_agent_start` — prepends the dolphin orchestrator prompt to
- *    the chainable system prompt, but only when the profile's agents
- *    list names `dolphin`.
+ *    the chainable system prompt when the profile's agents list names
+ *    `dolphin`.
  * 2. `resources_discover` — contributes the profile-listed skill
  *    directories from core/skills/ so pi can load them via
  *    loadSkillsFromDir; an empty profile skills list contributes none.
+ * 3. `tool_result` — runs the composed after-exec contributions against
+ *    the tool-result text (handler built by `buildPiToolResultHandler`).
+ * 4. `context` — runs the composed transform contributions against the
+ *    message list (handler built by `buildPiContextHandler`); measure-only.
  *
- * Profile selection reuses the host-agnostic composition engine:
- * `composeProfile` (in `src/core/compose.ts`) is fed the registry
- * (`src/registry.ts`) filtered to the agent and skill units —
- * the only two slot kinds pi consumes — together with a narrowed
- * profile carrying only the agents/skills lists (the hooks/tools/
- * commands categories are emptied; pi never declares them).  When the
- * profile is `null` (absent or invalid) both contributions are skipped
- * — no defaults, no fallback to a full load.
+ * Architecture: units contribute host-agnostic slots (`src/core/slots.ts`)
+ * and the pi contact layer (`src/compose-pi.ts`) is the only module that
+ * understands pi's event keys — it maps the `ComposedResult` to the two
+ * event handlers.  The composition feeds the full registry to
+ * `composeProfile`; tool and command units instantiate harmlessly but
+ * their slots are not consumed by pi.  Every hook is profile-driven: a
+ * `null` profile (absent or invalid) yields an empty composition, so all
+ * four hooks no-op — fail-closed, aligned with the OpenCode host.
+ *
+ * Capability gating: pi passes an empty client object (no SDK client),
+ * so units that require session introspection disable themselves —
+ * `context-pruning` contributes nothing and never reaches the `context`
+ * handler.  The direct-work nudge's dolphin gate is satisfied by a
+ * `sessionAgentMap` whose lookups always resolve to "dolphin" (a pi
+ * session is the orchestrator); without a dolphin-enabled profile the
+ * map is empty and the nudge stays silent.
  *
  * Config loading: the OpenCode entry imports config.toml directly with
  * Bun's `import ... with { type: "toml" }`.  pi's extension runtime is
@@ -34,6 +47,10 @@ import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "../vendor/smol-toml/index.js";
+import {
+  buildPiContextHandler,
+  buildPiToolResultHandler,
+} from "./compose-pi.js";
 import { composeProfile } from "./core/compose.js";
 import {
   parseContextConfig,
@@ -41,7 +58,7 @@ import {
   parseModeProfile,
 } from "./core/config-parse.js";
 import type { ModeProfile } from "./core/config-types.js";
-import type { ComposedResult, Deps, UnitDescriptor } from "./core/slots.js";
+import type { ComposedResult, Deps } from "./core/slots.js";
 import { REGISTRY } from "./registry.js";
 
 // ---------------------------------------------------------------------------
@@ -72,6 +89,13 @@ interface ExtensionAPI {
       _ctx: unknown,
     ) => { skillPaths: string[] } | Promise<{ skillPaths: string[] }>,
   ): void;
+  /** Register handler for `tool_result`. */
+  on(
+    event: "tool_result",
+    handler: ReturnType<typeof buildPiToolResultHandler>,
+  ): void;
+  /** Register handler for `context`. */
+  on(event: "context", handler: ReturnType<typeof buildPiContextHandler>): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -111,15 +135,40 @@ function loadZooConfig(): any {
 // ---------------------------------------------------------------------------
 
 /**
- * Compose the profile-driven agent/skill contributions for pi.
+ * Build the session → agent map for the pi host.
  *
- * Only the agent and skill units are composed — pi consumes exactly
- * those two slot kinds (`before_agent_start` prompt injection and
- * `resources_discover` skill paths).  The profile handed to the engine
- * is narrowed to the agents/skills lists (other categories emptied), so
- * the hooks/tools/commands names never reach the `unknown_unit` warning
- * path.  Fields of `Deps` that pi does not use are kept minimal:
- * `client` is an empty object and `sessionAgentMap` a fresh map.
+ * pi has no sub-agent sessions: the single session is the orchestrator,
+ * so when the profile enables dolphin the map resolves every lookup to
+ * "dolphin" (the direct-work nudge's gate).  A profile without dolphin
+ * yields an empty map and the nudge stays silent.
+ *
+ * @param profile - The active mode profile, or `null` when absent.
+ * @returns A map resolving to "dolphin", or an empty map.
+ */
+function sessionAgentMapFor(profile: ModeProfile | null): Map<string, string> {
+  if (profile?.agents?.includes("dolphin")) {
+    return new (class extends Map<string, string> {
+      get(_key: string): string {
+        return "dolphin";
+      }
+    })();
+  }
+  return new Map();
+}
+
+/**
+ * Compose the profile-driven contributions for pi.
+ *
+ * The full registry is fed to the selection engine — pi composes every
+ * category and consumes the agent, skill, after-exec, and transform
+ * slots (tool/command units instantiate but their slots stay unused;
+ * the `unknown_unit` warning only fires when a profile name has no
+ * matching registry unit).  `Deps` are adapted to the pi host:
+ * `client` is empty (pruning therefore self-disables), `directory` is
+ * the process working directory (direct-work's plan discovery reads
+ * `<directory>/.zoo/plans/`), and `sessionAgentMap` resolves to
+ * "dolphin" when the profile enables dolphin (see
+ * `sessionAgentMapFor`).
  *
  * Exported for unit testing — `zookeeperPi` wires this with the config
  * loaded from disk.
@@ -138,28 +187,14 @@ export function buildPiContributions(zooConfig: any): {
   const deps: Deps = {
     limits,
     contextConfig,
+    // pi has no SDK client — units that require session introspection
+    // (e.g. context-pruning) disable themselves via their capability
+    // gate instead of failing at runtime.
     client: {},
-    directory: "",
-    sessionAgentMap: new Map(),
+    directory: process.cwd(),
+    sessionAgentMap: sessionAgentMapFor(modeProfile),
   };
-  const units: UnitDescriptor[] = REGISTRY.filter(
-    (unit) => unit.kind === "agent" || unit.kind === "skill",
-  );
-  // pi consumes only the agent/skill slot kinds, so narrow the profile
-  // to those two lists — the other category names would otherwise
-  // trigger spurious `unknown_unit` warnings in composeProfile.
-  const narrowedProfile: ModeProfile | null =
-    modeProfile === null
-      ? null
-      : {
-          name: modeProfile.name,
-          agents: modeProfile.agents,
-          skills: modeProfile.skills,
-          hooks: [],
-          tools: [],
-          commands: [],
-        };
-  const composed = composeProfile(narrowedProfile, units, deps);
+  const composed = composeProfile(modeProfile, REGISTRY, deps);
 
   return { profile: modeProfile, composed };
 }
@@ -206,19 +241,24 @@ export function collectSkillPaths(profileSkills: string[]): string[] {
  * `before_agent_start` prepends the composed dolphin prompt when the
  * profile's agents list names `dolphin`; otherwise the system prompt is
  * returned untouched.  `resources_discover` returns the profile-listed
- * skill paths, an empty array when the profile has none.
+ * skill paths, an empty array when the profile has none.  `toolResult`
+ * and `contextMetrics` wrap the composed after-exec / transform
+ * contributions via the pi contact layer; with a null profile both are
+ * empty so the handlers no-op.
  *
  * Exported for unit testing — `zookeeperPi` wires this with the config
  * loaded from disk.
  *
  * @param zooConfig - The `zoo` section of config.toml.
- * @returns The two hook handlers.
+ * @returns The four hook handlers.
  */
 export function buildPiHandlers(zooConfig: any): {
   beforeAgentStart: (evt: {
     systemPrompt: string;
   }) => Promise<{ systemPrompt: string }>;
   resourcesDiscover: () => Promise<{ skillPaths: string[] }>;
+  toolResult: ReturnType<typeof buildPiToolResultHandler>;
+  contextMetrics: ReturnType<typeof buildPiContextHandler>;
 } {
   const { composed } = buildPiContributions(zooConfig);
 
@@ -239,6 +279,8 @@ export function buildPiHandlers(zooConfig: any): {
     async resourcesDiscover() {
       return { skillPaths: collectSkillPaths(profileSkills) };
     },
+    toolResult: buildPiToolResultHandler(composed.afterExec),
+    contextMetrics: buildPiContextHandler(composed.transform),
   };
 }
 
@@ -249,6 +291,13 @@ export function buildPiHandlers(zooConfig: any): {
 /**
  * Register ZooKeeper hooks with pi.
  *
+ * All four hooks are profile-driven: a `null` profile (absent or
+ * invalid) yields an empty composition, so every handler no-ops
+ * (fail-closed, aligned with the OpenCode host).  The `tool_result`
+ * and `context` handlers are always registered — their actual
+ * contributions come from the profile's hooks list (after-exec and
+ * transform units).
+ *
  * Strategy for `before_agent_start`:
  *   **Prepend** the dolphin prompt rather than replacing the chainable
  *   system prompt.  This keeps the orchestrator identity dominant while
@@ -256,15 +305,14 @@ export function buildPiHandlers(zooConfig: any): {
  *   descriptions.  Replacing outright would lose pi's tool-injection
  *   and built-in instructions.
  *
- * Both hooks are profile-driven: a `null` profile (absent or invalid)
- * skips prompt injection and skill contribution entirely.
- *
  * @param pi - pi ExtensionAPI instance (provided at runtime by pi).
  */
 export function zookeeperPi(pi: ExtensionAPI): void {
   const handlers = buildPiHandlers(loadZooConfig());
   pi.on("before_agent_start", handlers.beforeAgentStart);
   pi.on("resources_discover", handlers.resourcesDiscover);
+  pi.on("tool_result", handlers.toolResult);
+  pi.on("context", handlers.contextMetrics);
 }
 
 export default zookeeperPi;

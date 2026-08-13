@@ -101,7 +101,8 @@ export function checkPlanProgress(
  * needs a reminder about todo state.
  *
  * Logic:
- * 1. If no client is available, return `null` (skip silently).
+ * 1. If no client is available, or the client lacks a callable
+ *    `session.todo` method, return `null` (skip silently).
  * 2. Fetch the todo list via the client API.
  * 3. If zero items are active (in_progress or pending), return the done nudge.
  * 4. If exactly 1 item is in_progress and 0 are pending, return the final
@@ -117,7 +118,10 @@ export async function checkTodoProgress(
   client: TinyClient | null | undefined,
   sessionID: string,
 ): Promise<string | null> {
-  if (!client) return null;
+  // A client without a callable session.todo method cannot be queried.
+  // Some hosts pass an empty client object, so this check must not rely on
+  // truthiness alone — skip silently instead of falling back to the nudge.
+  if (!client || typeof client.session?.todo !== "function") return null;
 
   try {
     const state = await getTodoState(client, sessionID);

@@ -10,6 +10,7 @@
  */
 
 import type { HookUnitDescriptor } from "../../core/slots.js";
+import { log } from "../../utils/logger.js";
 import {
   contextPruningTransformHandler,
   handleContextPruning,
@@ -34,11 +35,29 @@ export {
  * runs; `hasCompressTool` is derived from the active set's tool
  * enablement so the nudge / manual-compress phases only advertise
  * windows the registered `compress` tool would accept.
+ *
+ * The pipeline requires session introspection: `client.session.get`
+ * resolves the sub-agent `parentID` and the dedup-release notification
+ * agent.  When the host client does not expose that capability (e.g. a
+ * host that passes an empty client object), the unit contributes nothing
+ * so it disables itself instead of failing at runtime.
  */
 export const unit: HookUnitDescriptor = {
   name: "context-pruning",
   kind: "hook",
   create(deps, activeSet) {
+    if (typeof deps.client?.session?.get !== "function") {
+      log("context-pruning", "unit_disabled", "", undefined, "debug", {
+        missing: "session introspection",
+      });
+      return {
+        kind: "hook",
+        beforeExec: [],
+        afterExec: [],
+        transform: [],
+        toolDefinition: [],
+      };
+    }
     return {
       kind: "hook",
       beforeExec: [],
