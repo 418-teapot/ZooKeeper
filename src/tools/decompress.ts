@@ -1,44 +1,47 @@
 /**
  * Decompression tool adapter — the inverse of the range-mode compress tool.
  *
- * Exposes the decompression core (`src/core/context/pruning/decompress.ts`) as an
- * OpenCode tool so the model can address a compression block by its `b<N>`
- * id and either restore it or recall its summary:
+ * Exposes the decompression core (`src/core/context/decompress.ts`) as an
+ * OpenCode tool so the model can address a compression block by its
+ * persistent `b<N>` id and either restore it or recall its summary:
  *
- * - **restore** — the block is active: deactivate it (`deactivatedBy =
- *   "user"`) so the next transform round stops folding it and the original
- *   messages reappear in the view.  A context-limit gate rejects restores
- *   that would push the estimated prompt over `maxFillPercent` of the model
+ * - **restore** — the block is active: deactivate it so the next
+ *   transform round stops folding its interval and the original messages
+ *   reappear in the view.  A context-limit gate rejects restores that
+ *   would push the estimated prompt over `maxFillPercent` of the model
  *   window.  The ToolResult is a single-line confirmation carrying the
  *   expansion amount — never the original message content.
- * - **recall** — the block is inactive (consumed, anchor invalidated, or
+ * - **recall** — the block is inactive (consumed, content invalidated, or
  *   previously restored): read-only and idempotent, returns the persisted
  *   summary body (truncated to `RECALL_MAX_CHARS`).  Zero state change,
  *   zero view impact, no notification.
  *
  * The client and the parsed context-pruning config are captured by the
  * factory closure.  Loud Chinese guidance errors from the core propagate to
- * the model unchanged — the model self-corrects by re-picking a valid block
- * id or freeing context first.
+ * the model unchanged — including the not-found error that lists the
+ * currently available block numbers — the model self-corrects by re-picking
+ * a valid block id or freeing context first.
  *
  * @module
  */
 
+import { history } from "../adapters/opencode/history.js";
+import type { ContextMessageEntry } from "../adapters/opencode/types.js";
 import type { SessionClient } from "../core/client/session.js";
 import type { ContextPruningConfig } from "../core/config-types.js";
 import { formatTokens } from "../core/context/context-report.js";
-import type { ContextMessageEntry } from "../core/context/metrics.js";
-import { measureContext } from "../core/context/metrics.js";
-import { getModelLimit } from "../core/context/model-limits.js";
 import {
   applyDecompress,
   evaluateGate,
-  getOrCreateSessionState,
   resolveTarget,
-  saveSessionState,
-  snapshotRefs,
   truncateRecallSummary,
-} from "../core/context/pruning/index.js";
+} from "../core/context/decompress.js";
+import { measureMessages } from "../core/context/measure.js";
+import { getModelLimit } from "../core/context/model-limits.js";
+import {
+  getContextStateManager,
+  setPendingViewChange,
+} from "../core/context/runtime.js";
 import type { ToolUnitDescriptor } from "../core/slots.js";
 import { log } from "../utils/logger.js";
 
@@ -192,28 +195,22 @@ export function createDecompressTool(
 
 两种结果：
 
-1. 活跃块（视图中带 [Compression Block bN] 块头）：块的原始消息在你的
-   下一轮上下文中完整恢复。ToolResult 只返回一行确认，不含原文——不要
-   在调用后的同一轮里引用原文内容。
-2. 已被更大压缩块消费的旧块（仅以索引行 --- bN: <title> --- 出现）：
-   立即返回该块保留的完整摘要正文，上下文不变。
+1. 活跃块（视图中带 [Block bN · K 条] 块头）：块的原始消息在你的下一轮上下文中完整恢复。ToolResult 只返回一行确认，不含原文——不要在调用后的同一轮里引用原文内容。
+2. 已被更大压缩块消费的旧块（仅以索引行 --- bN: <title> --- 出现）：立即返回该块保留的完整摘要正文，上下文不变。
 
 参数：
 
-- blockId: 要恢复的块 ID（如 "b3"）。取自块头 [Compression Block b3]
-  或索引行 --- bN: <title> ---，不要凭记忆编造。
+- blockId: 要恢复的块 ID（如 "b3"）。取自块头 [Block b3 · K 条] 或索引行 --- bN: <title> ---，不要凭记忆编造。
 
 重要：
 
-- 恢复活跃块会回胀上下文。预估恢复后超过上下文水位时调用会被拒绝，
-  错误信息会给出替代指导（先压缩其他段腾空间）。
+- 恢复活跃块会回胀上下文。预估恢复后超过上下文水位时调用会被拒绝，错误信息会给出替代指导（先压缩其他段腾空间）。
 - 不要与 compress 并行调用——两者都修改压缩状态，可能冲突。
-- 块不存在时会返回明确的错误指导，按提示修正后重试。`,
+- 块不存在时会返回明确的错误指导（列出当前可用块号），按提示修正后重试。`,
     args: {
       blockId: {
         type: "string",
-        description: `要恢复的块 ID（如 "b3"）。来源：块头 [Compression Block b3] 或索引行
---- bN: <title> ---。索引行指向的旧块返回摘要正文，活跃块恢复原始消息。`,
+        description: `要恢复的块 ID（如 "b3"）。来源：块头 [Block b3 · K 条] 或索引行 --- bN: <title> ---。索引行指向的旧块返回摘要正文，活跃块恢复原始消息。`,
       },
     },
     async execute(args, toolCtx) {
@@ -232,7 +229,8 @@ export function createDecompressTool(
         );
       }
 
-      const state = getOrCreateSessionState(sessionID);
+      const manager = getContextStateManager();
+      const state = manager.get(sessionID);
       const target = resolveTarget(state, input.blockId);
 
       // ── Recall path: read-only, idempotent, zero view impact ─────
@@ -245,7 +243,7 @@ export function createDecompressTool(
           undefined,
           "info",
           {
-            blockId: target.block.blockId,
+            blockId: target.blockId,
             kind: "recall",
           },
         );
@@ -253,15 +251,16 @@ export function createDecompressTool(
       }
 
       // ── Restore path ─────────────────────────────────────────────
-      const block = target.block;
       const messages = await fetchSessionMessages(client, sessionID);
-      const currentPromptTokens = measureContext({ messages }).estimated_tokens;
+      const view = history(messages);
+      const currentPromptTokens = measureMessages(view).total;
       const contextLimit = getModelLimit(sessionID)?.context;
 
       // Gate: undefined context limit skips the gate by design.
       const gate = evaluateGate(
         currentPromptTokens,
-        block,
+        target.block,
+        target.blockId,
         contextLimit,
         decompressCfg.maxFillPercent,
       );
@@ -270,18 +269,13 @@ export function createDecompressTool(
         throw new Error(gate.reason);
       }
 
-      applyDecompress(state, block);
-
-      const msgCount = block.messageIds.length;
-      const delta = block.compressedTokens - block.summaryTokens;
+      const restored = applyDecompress(state, target.blockId, view);
+      const delta = restored.restoredTokens;
 
       // Mark the view change and persist so the next transform stops
-      // folding the block (mirrors the compress tool).  Snapshot the ref
-      // registry so refs survive a restart without renumbering.
-      state.pendingViewChange = true;
-      const refsSnapshot = snapshotRefs(sessionID);
-      if (refsSnapshot) state.refs = refsSnapshot;
-      saveSessionState(sessionID, state);
+      // folding the block (mirrors the compress tool).
+      setPendingViewChange(sessionID);
+      manager.save(sessionID);
 
       log(
         "decompress-tool",
@@ -290,16 +284,16 @@ export function createDecompressTool(
         undefined,
         "info",
         {
-          blockId: block.blockId,
+          blockId: restored.blockId,
           kind: "restore",
-          messageCount: msgCount,
+          messageCount: restored.messageCount,
           deltaTokens: delta,
         },
       );
 
       // Ignored chat notification (best-effort — deactivation already
       // applied).  Same shape as the compress tool.
-      const notifyMsg = `上下文解压：已恢复压缩块 b${block.blockId} 的 ${msgCount} 条原始消息，约回胀 ${formatTokens(delta)} tokens，下一轮上下文生效`;
+      const notifyMsg = `上下文解压：已恢复压缩块 b${restored.blockId} 的 ${restored.messageCount} 条原始消息，约回胀 ${formatTokens(delta)} tokens，下一轮上下文生效`;
       try {
         await client?.session?.prompt?.({
           path: { id: sessionID },

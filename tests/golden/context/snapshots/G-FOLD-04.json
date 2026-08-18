@@ -1,0 +1,177 @@
+{
+  "scenario": "G-FOLD-04",
+  "rounds": [
+    {
+      "label": "baseline-refs",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "synthetic": true,
+          "sentinelId": "zoo-fold-b1",
+          "text": "[m2] [Block b1 · 4 条] compacted\nearly segment."
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] data five",
+              "pruned": false,
+              "input": "",
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "state": {
+        "blocks": [
+          {
+            "blockId": 1,
+            "active": true,
+            "title": "compacted",
+            "coveredMessages": 4,
+            "compressedTokens": 1200,
+            "summaryTokens": 60
+          }
+        ],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "compaction-deactivates-renumbers",
+      "view": [
+        {
+          "role": "assistant",
+          "toolParts": [],
+          "boundary": true,
+          "ignored": true,
+          "text": "compaction summary"
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] data five",
+              "pruned": false,
+              "input": "",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] again"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m4] data seven",
+              "pruned": false,
+              "input": "",
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "state": {
+        "blocks": [],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "compaction-stable-renumber-continues",
+      "view": [
+        {
+          "role": "assistant",
+          "toolParts": [],
+          "boundary": true,
+          "ignored": true,
+          "text": "compaction summary"
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] data five",
+              "pruned": false,
+              "input": "",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] again"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m4] data seven",
+              "pruned": false,
+              "input": "",
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "state": {
+        "blocks": [],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    }
+  ]
+}

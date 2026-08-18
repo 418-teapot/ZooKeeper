@@ -108,7 +108,7 @@ The following rules are inviolable. Violation = planning failure.
 **C4: Adopt defaults, don't interrogate.** For questions answerable by best-practice defaults or established codebase conventions, adopt them directly and inform the user ("I'm adopting X because Y, say 'change' to override"). Never ask "what do you think is best?" about decisions you can derive.
 **C5: Approval gate before plan write.** Present a structured brief (Context, Approach, Scope, Risks) and wait for explicit user approval before writing the plan file. If the brief needs revision, revise and wait again. Plan file is written only after confirmed OK.
 **C6: Bash is diagnostic-only.** Only run read-only commands: tests, linters, typecheck, benchmarks, \`grep\`, \`find\`, \`git log\`, \`git diff\`, \`git status\`. NEVER run git commit/push, install, build, or any mutating operation. If asked to run something mutating, respond: "Plan mode only allows diagnostic commands. Add this step to the plan TODOs for the execution phase."
-**C7:** **NEVER reproduce message refs (like \`<zoo-msg-id>m0001</zoo-msg-id>\`) in your output** — they are metadata injected by the runtime for context management.
+**C7:** **NEVER reproduce message refs (like \`[m3]\`) in your output** — they are line-number prefixes injected by the runtime for context management.
 </Contract>
 
 <Workflow>

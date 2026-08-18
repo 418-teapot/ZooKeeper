@@ -1,0 +1,193 @@
+{
+  "scenario": "G-REF-01",
+  "rounds": [
+    {
+      "label": "injection-branches",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] part-a\npart-b"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] tool-out",
+              "pruned": false,
+              "input": "",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [],
+          "text": "[m3] text-a\ntext-b"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m4] ",
+              "pruned": false,
+              "input": "x",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": []
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "ignored": true,
+          "text": "ignored"
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m6] note m0009 inline"
+        }
+      ],
+      "state": {
+        "blocks": [],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "strip-reinject-idempotent",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] part-a\npart-b"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] tool-out",
+              "pruned": false,
+              "input": "",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [],
+          "text": "[m3] text-a\ntext-b"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m4] ",
+              "pruned": false,
+              "input": "x",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": []
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "ignored": true,
+          "text": "ignored"
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m6] note m0009 inline"
+        }
+      ],
+      "state": {
+        "blocks": [],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "fold-renumbering-covered-messages-no-ref",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "synthetic": true,
+          "sentinelId": "zoo-fold-b1",
+          "text": "[m2] [Block b1 · 2 条] test\ntest summary."
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] done",
+              "pruned": false,
+              "input": "",
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "state": {
+        "blocks": [
+          {
+            "blockId": 1,
+            "active": true,
+            "title": "test",
+            "coveredMessages": 2,
+            "compressedTokens": 1500,
+            "summaryTokens": 80
+          }
+        ],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    }
+  ]
+}

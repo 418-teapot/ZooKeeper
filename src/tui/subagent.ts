@@ -1,4 +1,4 @@
-import type { ContextMessageEntry } from "../core/context/metrics.js";
+import type { ContextMessageEntry } from "../adapters/opencode/types.js";
 
 /** Category values for sidebar breakdown display. */
 export interface CategoryInfo {

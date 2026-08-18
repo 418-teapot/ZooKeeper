@@ -2,63 +2,43 @@
  * Tests for `src/core/context/context-report.ts` -- pure format layer.
  *
  * Covers: formatTokens, formatPercent, progressBar, formatContextReport
- * output.  Computation logic is tested in `src/core/context/metrics.test.ts`.
+ * output.  The `ContextReport` input is constructed directly as literals —
+ * computation logic (v1 message parsing, category breakdown) is the
+ * adapter's responsibility and is tested in the OpenCode adapter's
+ * `types.test.ts`.
  */
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
-import { _resetForTesting } from "../../utils/logger.js";
+import { describe, it } from "node:test";
+import type { ContextReport } from "./context-report.js";
 import {
   formatContextReport,
   formatPercent,
   formatTokens,
   progressBar,
 } from "./context-report.js";
-import type { ContextMessageEntry } from "./metrics.js";
-import { computeContextReport } from "./metrics.js";
-
-// ---------------------------------------------------------------------------
-// Logger cleanup
-// ---------------------------------------------------------------------------
-
-afterEach(() => {
-  _resetForTesting();
-});
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Build a minimal message entry with role, optional tokens, and text.
+ * Build a report literal with the minimum required fields.
+ *
+ * `cacheHitRate` drives the cache line; `total` / `messageCount` drive
+ * the usage and message lines.
  */
-function msg(
-  role: string,
-  tokens?: {
-    input?: number;
-    output?: number;
-    reasoning?: number;
-    cache?: { read?: number; write?: number };
-  },
-  text?: string,
-): ContextMessageEntry {
-  const parts = text !== undefined ? [{ type: "text" as const, text }] : [];
-  return { info: { role, id: "m1", tokens }, parts };
-}
-
-/**
- * Build a message with a tool part.
- */
-function toolMsg(
-  role: string,
-  tokens: Record<string, unknown> | undefined,
-  input: unknown,
-  output: unknown,
-): ContextMessageEntry {
+function report(
+  total: number,
+  messageCount: number,
+  cacheHitRate: number | null,
+): ContextReport {
   return {
-    info: { role, id: "m1", tokens: tokens as any },
-    parts: [
-      { type: "tool", tool: "bash", state: { input, output } },
-    ] as unknown as ContextMessageEntry["parts"],
+    total,
+    exact: 0,
+    heuristic: total,
+    messageCount,
+    cacheHitRate,
+    categories: { user: 0, assistant: 0, tool: 0, system: 0 },
   };
 }
 
@@ -142,21 +122,12 @@ describe("progressBar", () => {
 });
 
 // ---------------------------------------------------------------------------
-// formatContextReport output -- uses computeContextReport from metrics
+// formatContextReport output
 // ---------------------------------------------------------------------------
 
 describe("formatContextReport output", () => {
   it("includes cache hit rate when available", () => {
-    const msgs: ContextMessageEntry[] = [
-      msg("user", undefined, "Hello"),
-      msg("assistant", {
-        input: 500,
-        output: 100,
-        cache: { read: 200, write: 50 },
-      }),
-    ];
-    const report = computeContextReport(msgs);
-    const output = formatContextReport(report);
+    const output = formatContextReport(report(905, 2, 0.267));
     assert.ok(output.includes("缓存"));
     assert.ok(output.includes("26.7%"));
     // No parenthetical note.
@@ -164,29 +135,21 @@ describe("formatContextReport output", () => {
   });
 
   it("shows em dash for unavailable cache", () => {
-    const msgs: ContextMessageEntry[] = [msg("user", undefined, "Hello")];
-    const report = computeContextReport(msgs);
-    const output = formatContextReport(report);
+    const output = formatContextReport(report(5, 1, null));
     assert.ok(output.includes("缓存"));
     assert.ok(output.includes("—"));
     // No parenthetical explanation.
     assert.ok(!output.includes("（"));
   });
 
-  it("shows all-zero state for empty messages", () => {
-    const report = computeContextReport([]);
-    const output = formatContextReport(report);
+  it("shows all-zero state for an empty report", () => {
+    const output = formatContextReport(report(0, 0, null));
     assert.ok(output.includes("0 tokens"));
     assert.ok(output.includes("0 条"));
   });
 
   it("omits category breakdown section", () => {
-    const msgs: ContextMessageEntry[] = [
-      msg("user", undefined, "Hello"),
-      msg("assistant", { input: 100, output: 50 }, "Response"),
-    ];
-    const report = computeContextReport(msgs);
-    const output = formatContextReport(report);
+    const output = formatContextReport(report(150, 2, null));
     assert.ok(!output.includes("分类占比"));
     assert.ok(
       !output.includes("user "),
@@ -213,43 +176,20 @@ describe("formatContextReport output", () => {
   });
 
   it("omits progress bar characters from report output", () => {
-    const msgs: ContextMessageEntry[] = [
-      msg("user", undefined, "Hello"),
-      msg("assistant", { input: 100, output: 50 }, "Response"),
-    ];
-    const report = computeContextReport(msgs);
-    const output = formatContextReport(report);
+    const output = formatContextReport(report(150, 2, null));
     assert.ok(!output.includes("█"));
     assert.ok(!output.includes("░"));
   });
 
   it("shows total usage line", () => {
-    const msgs: ContextMessageEntry[] = [
-      msg("user", undefined, "User msg"),
-      msg("assistant", { input: 1000, output: 200 }, "Assistant"),
-      msg("user", undefined, "Follow up question here"),
-    ];
-    const report = computeContextReport(msgs);
-    const output = formatContextReport(report);
+    const output = formatContextReport(report(1212, 3, null));
     assert.ok(output.includes("用量    ~"));
     // No detailed exact/heuristic breakdown row remains.
     assert.ok(!output.includes("精确    "));
   });
 
   it("every line is <= 60 characters wide", () => {
-    const msgs: ContextMessageEntry[] = [
-      msg("user", undefined, "Hello"),
-      msg("assistant", {
-        input: 5000,
-        output: 1000,
-        reasoning: 200,
-        cache: { read: 3000, write: 500 },
-      }),
-      msg("user", undefined, "More text for context that goes on a bit longer"),
-      toolMsg("assistant", undefined, "ls -la", "file1\nfile2\nfile3\n"),
-    ];
-    const report = computeContextReport(msgs);
-    const output = formatContextReport(report);
+    const output = formatContextReport(report(50000, 8, 0.61));
     for (const line of output.split("\n")) {
       assert.ok(
         line.length <= 60,
@@ -265,12 +205,9 @@ describe("formatContextReport output", () => {
 
 describe("formatContextReport with reclaim", () => {
   it("renders reclaim section when prunedTokens > 0", () => {
-    const msgs: ContextMessageEntry[] = [
-      msg("user", undefined, "Hello"),
-      msg("assistant", { input: 500, output: 100 }, "Response"),
-    ];
-    const report = computeContextReport(msgs);
-    const output = formatContextReport(report, { prunedTokens: 12345 });
+    const output = formatContextReport(report(600, 2, null), {
+      prunedTokens: 12345,
+    });
     assert.ok(output.includes("回收"), "expected reclaim section");
     assert.ok(output.includes("已生效"), "expected 已生效 in reclaim section");
     assert.ok(
@@ -284,12 +221,9 @@ describe("formatContextReport with reclaim", () => {
   });
 
   it("does NOT render reclaim section when prunedTokens = 0", () => {
-    const msgs: ContextMessageEntry[] = [
-      msg("user", undefined, "Hello"),
-      msg("assistant", { input: 500, output: 100 }, "Response"),
-    ];
-    const report = computeContextReport(msgs);
-    const output = formatContextReport(report, { prunedTokens: 0 });
+    const output = formatContextReport(report(600, 2, null), {
+      prunedTokens: 0,
+    });
     assert.ok(
       !output.includes("回收"),
       "should NOT include reclaim section when total = 0",
@@ -297,12 +231,7 @@ describe("formatContextReport with reclaim", () => {
   });
 
   it("does NOT render reclaim section when both fields are omitted", () => {
-    const msgs: ContextMessageEntry[] = [
-      msg("user", undefined, "Hello"),
-      msg("assistant", { input: 500, output: 100 }, "Response"),
-    ];
-    const report = computeContextReport(msgs);
-    const output = formatContextReport(report);
+    const output = formatContextReport(report(600, 2, null));
     assert.ok(
       !output.includes("回收"),
       "should NOT include reclaim section when fields are omitted",
@@ -310,12 +239,9 @@ describe("formatContextReport with reclaim", () => {
   });
 
   it("renders reclaim section from prunedTokens with cumulative-prune parenthetical", () => {
-    const msgs: ContextMessageEntry[] = [
-      msg("user", undefined, "Hello"),
-      msg("assistant", { input: 500, output: 100 }, "Response"),
-    ];
-    const report = computeContextReport(msgs);
-    const output = formatContextReport(report, { prunedTokens: 13000 });
+    const output = formatContextReport(report(600, 2, null), {
+      prunedTokens: 13000,
+    });
     assert.ok(output.includes("回收"), "expected reclaim section");
     assert.ok(output.includes("已生效"), "expected 已生效");
     assert.ok(output.includes("13.0K"), "expected formatted total");
@@ -361,12 +287,7 @@ describe("barrel export", () => {
 
 describe("formatContextReport with pending/released reclaim", () => {
   it("shows pending line when pendingCount > 0 (no reclaimed total)", () => {
-    const msgs: ContextMessageEntry[] = [
-      msg("user", undefined, "Hello"),
-      msg("assistant", { input: 500, output: 100 }, "Response"),
-    ];
-    const report = computeContextReport(msgs);
-    const output = formatContextReport(report, {
+    const output = formatContextReport(report(600, 2, null), {
       pendingCount: 3,
       pendingTokens: 1500,
     });
@@ -388,12 +309,7 @@ describe("formatContextReport with pending/released reclaim", () => {
   });
 
   it("shows reclaimed total when prunedTokens > 0", () => {
-    const msgs: ContextMessageEntry[] = [
-      msg("user", undefined, "Hello"),
-      msg("assistant", { input: 500, output: 100 }, "Response"),
-    ];
-    const report = computeContextReport(msgs);
-    const output = formatContextReport(report, {
+    const output = formatContextReport(report(600, 2, null), {
       prunedTokens: 5000,
     });
     assert.ok(output.includes("回收"), "expected reclaim section");
@@ -407,12 +323,7 @@ describe("formatContextReport with pending/released reclaim", () => {
   });
 
   it("shows both 已生效 and 待生效 lines when both present", () => {
-    const msgs: ContextMessageEntry[] = [
-      msg("user", undefined, "Hello"),
-      msg("assistant", { input: 500, output: 100 }, "Response"),
-    ];
-    const report = computeContextReport(msgs);
-    const output = formatContextReport(report, {
+    const output = formatContextReport(report(600, 2, null), {
       prunedTokens: 10000,
       pendingCount: 2,
       pendingTokens: 800,
@@ -442,38 +353,26 @@ describe("formatContextReport with pending/released reclaim", () => {
   });
 
   it("shows active blocks in 已生效 parenthetical when state has active blocks", () => {
-    const msgs: ContextMessageEntry[] = [
-      msg("user", undefined, "Hello"),
-      msg("assistant", { input: 500, output: 100 }, "Response"),
-    ];
-    const report = computeContextReport(msgs);
-
-    // Create a minimal SessionState with one active block.
-    const state = {
-      sessionId: "test-sess",
-      marks: new Map(),
-      blocks: new Map([
-        [
-          "1",
-          {
-            blockId: 1,
-            active: true,
-            anchorMessageId: "m1",
-            messageIds: ["m1", "a1", "m2", "a2"],
-            summary: "block summary",
-            title: "test",
-            compressedTokens: 10000,
-            summaryTokens: 500,
-            createdAt: Date.now(),
-          },
-        ],
-      ]),
-      lastAccessedAt: Date.now(),
-      dirty: false,
-    };
-
-    const output = formatContextReport(report, {
-      state: state as any,
+    const output = formatContextReport(report(600, 2, null), {
+      state: {
+        blocks: new Map([
+          [
+            1,
+            {
+              start: 0,
+              end: 4,
+              active: true,
+              spanHash: "deadbeef",
+              summary: "block summary",
+              title: "test",
+              compressedTokens: 10000,
+              summaryTokens: 500,
+              createdAt: Date.now(),
+            },
+          ],
+        ]),
+        marks: new Map(),
+      },
     });
     // No separate block line; block info lives in 已生效 parenthetical.
     assert.ok(
@@ -498,38 +397,26 @@ describe("formatContextReport with pending/released reclaim", () => {
   });
 
   it("hides block parenthetical when state has 0 active blocks", () => {
-    const msgs: ContextMessageEntry[] = [
-      msg("user", undefined, "Hello"),
-      msg("assistant", { input: 500, output: 100 }, "Response"),
-    ];
-    const report = computeContextReport(msgs);
-
-    // State with only inactive blocks.
-    const state = {
-      sessionId: "test-sess",
-      marks: new Map(),
-      blocks: new Map([
-        [
-          "1",
-          {
-            blockId: 1,
-            active: false,
-            anchorMessageId: "m1",
-            messageIds: ["m1"],
-            summary: "block summary",
-            title: "test",
-            compressedTokens: 1000,
-            summaryTokens: 100,
-            createdAt: Date.now(),
-          },
-        ],
-      ]),
-      lastAccessedAt: Date.now(),
-      dirty: false,
-    };
-
-    const output = formatContextReport(report, {
-      state: state as any,
+    const output = formatContextReport(report(600, 2, null), {
+      state: {
+        blocks: new Map([
+          [
+            1,
+            {
+              start: 0,
+              end: 1,
+              active: false,
+              spanHash: "deadbeef",
+              summary: "block summary",
+              title: "test",
+              compressedTokens: 1000,
+              summaryTokens: 100,
+              createdAt: Date.now(),
+            },
+          ],
+        ]),
+        marks: new Map(),
+      },
     });
     // No reclaim section when all totals are zero.
     assert.ok(
@@ -539,12 +426,7 @@ describe("formatContextReport with pending/released reclaim", () => {
   });
 
   it("hides block parenthetical when state is omitted", () => {
-    const msgs: ContextMessageEntry[] = [
-      msg("user", undefined, "Hello"),
-      msg("assistant", { input: 500, output: 100 }, "Response"),
-    ];
-    const report = computeContextReport(msgs);
-    const output = formatContextReport(report);
+    const output = formatContextReport(report(600, 2, null));
     assert.ok(
       !output.includes("压缩块"),
       "should NOT contain block info when state is omitted",
@@ -552,12 +434,7 @@ describe("formatContextReport with pending/released reclaim", () => {
   });
 
   it("does NOT show reclaim section when all fields are absent or zero", () => {
-    const msgs: ContextMessageEntry[] = [
-      msg("user", undefined, "Hello"),
-      msg("assistant", { input: 500, output: 100 }, "Response"),
-    ];
-    const report = computeContextReport(msgs);
-    const output = formatContextReport(report, {
+    const output = formatContextReport(report(600, 2, null), {
       prunedTokens: 0,
       pendingCount: 0,
       pendingTokens: 0,
@@ -575,12 +452,7 @@ describe("formatContextReport with pending/released reclaim", () => {
 
 describe("formatContextReport dual-scope message count", () => {
   it("shows single-count form when folded = storage", () => {
-    const msgs: ContextMessageEntry[] = [
-      msg("user", undefined, "Hello"),
-      msg("assistant", { input: 500, output: 100 }, "Response"),
-    ];
-    const report = computeContextReport(msgs);
-    const output = formatContextReport(report, {
+    const output = formatContextReport(report(600, 2, null), {
       foldedMessageCount: 2,
       storageMessageCount: 2,
     });
@@ -591,12 +463,7 @@ describe("formatContextReport dual-scope message count", () => {
   });
 
   it("shows dual-scope form when folded differs from storage", () => {
-    const msgs: ContextMessageEntry[] = [
-      msg("user", undefined, "Hello"),
-      msg("assistant", { input: 500, output: 100 }, "Response"),
-    ];
-    const report = computeContextReport(msgs);
-    const output = formatContextReport(report, {
+    const output = formatContextReport(report(600, 2, null), {
       foldedMessageCount: 2,
       storageMessageCount: 5,
     });
@@ -605,12 +472,7 @@ describe("formatContextReport dual-scope message count", () => {
   });
 
   it("falls back to single-count when opts omit message counts", () => {
-    const msgs: ContextMessageEntry[] = [
-      msg("user", undefined, "Hello"),
-      msg("assistant", { input: 500, output: 100 }, "Response"),
-    ];
-    const report = computeContextReport(msgs);
-    const output = formatContextReport(report);
+    const output = formatContextReport(report(600, 2, null));
     assert.ok(output.includes("消息    "));
     assert.ok(output.includes("2 条"));
     assert.ok(!output.includes("模型可见"));
@@ -623,16 +485,7 @@ describe("formatContextReport dual-scope message count", () => {
 
 describe("no trailing spaces", () => {
   it("every line has no trailing whitespace", () => {
-    const msgs: ContextMessageEntry[] = [
-      msg("user", undefined, "Hello"),
-      msg("assistant", {
-        input: 5000,
-        output: 1000,
-        cache: { read: 3000, write: 500 },
-      }),
-    ];
-    const report = computeContextReport(msgs);
-    const output = formatContextReport(report, {
+    const output = formatContextReport(report(50000, 8, 0.61), {
       prunedTokens: 12345,
       pendingCount: 2,
       pendingTokens: 500,

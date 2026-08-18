@@ -2,25 +2,30 @@
  * Tests for the `/dcp` command handler (src/commands/dcp/command.ts).
  *
  * Covers: fetching messages, injecting ignored prompt, unknown
- * subcommand help, empty messages, unavailable client APIs.
+ * subcommand help, empty messages, unavailable client APIs, sweep
+ * selection semantics and the compress gate.  State is exercised through
+ * the new host-agnostic core: the shared session-state manager
+ * (`getContextStateManager`) and its store.
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import { history } from "../../adapters/opencode/history.js";
+import type { ContextMessageEntry } from "../../adapters/opencode/types.js";
 import type { SessionClient } from "../../core/client/session.js";
+import { estimateTokenCount } from "../../core/context/measure.js";
 import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "../../core/context/message-parts.js";
-import type { ContextMessageEntry } from "../../core/context/metrics.js";
-import { estimateTokenCount } from "../../core/context/metrics.js";
 import {
-  deleteSessionState,
-  getOrCreateSessionState,
-  loadSessionState,
-  pruneToolOutputs,
-} from "../../core/context/pruning/index.js";
-import {
-  _clearAllSessionsForTesting,
-  addMark,
+  pendingTokens,
   reclaimedTokens,
-} from "../../core/context/pruning/marks.js";
+  releaseMarks,
+} from "../../core/context/release.js";
+import {
+  _resetContextStateManagerForTesting,
+  consumePendingViewChange,
+  getContextStateManager,
+  getRuntimeFlaggedState,
+} from "../../core/context/runtime.js";
+import { markKey } from "../../core/context/state.js";
 import { _resetForTesting } from "../../utils/logger.js";
 import { handleDcpCommand, parseSweepCount } from "./command.js";
 
@@ -39,10 +44,11 @@ const SWEEP_TEST_SESSION_IDS = [
 
 afterEach(() => {
   _resetForTesting();
-  _clearAllSessionsForTesting();
+  const manager = getContextStateManager();
   for (const sid of SWEEP_TEST_SESSION_IDS) {
-    deleteSessionState(sid);
+    manager.store.delete(sid);
   }
+  _resetContextStateManagerForTesting();
 });
 
 // ---------------------------------------------------------------------------
@@ -419,18 +425,21 @@ describe("/dcp sweep subcommand — success path", () => {
       `expected "预计可回收" in prompt, got: ${promptText}`,
     );
 
-    // Verify state was populated.
-    const state = getOrCreateSessionState("sess-sweep-success");
+    // Verify state was populated.  New-core marks are keyed by
+    // `(ordinal, regionIndex)`: the assistant message is ordinal 1, and
+    // its two tool parts map to regions [0]=input, [1]=output for
+    // call-1 and [2]=input, [3]=output for call-2.
+    const state = getContextStateManager().get("sess-sweep-success");
     assert.equal(state.marks.size, 2);
-    assert.ok(state.marks.has("call-1"));
-    assert.ok(state.marks.has("call-2"));
+    assert.ok(state.marks.has(markKey(1, 1)));
+    assert.ok(state.marks.has(markKey(1, 3)));
 
     // Token estimates reflect net reclaim (output - placeholder).
     const placeholderTokens = estimateTokenCount(
       PRUNED_TOOL_OUTPUT_REPLACEMENT,
     );
-    const est1 = state.marks.get("call-1")?.tokens ?? 0;
-    const est2 = state.marks.get("call-2")?.tokens ?? 0;
+    const est1 = state.marks.get(markKey(1, 1))?.contentTokens ?? 0;
+    const est2 = state.marks.get(markKey(1, 3))?.contentTokens ?? 0;
     assert.equal(
       est1,
       Math.max(
@@ -452,11 +461,12 @@ describe("/dcp sweep subcommand — success path", () => {
       "unexpected net estimate for call-2",
     );
 
-    // reclaimedTokens is derived from effective marks.
+    // Sweep marks are pending; pendingTokens carries the reclaim total
+    // until the next transform release flips them effective.
     assert.equal(
-      reclaimedTokens(state),
+      pendingTokens(state),
       est1 + est2,
-      "reclaimedTokens should reflect effective marks after sweep",
+      "pendingTokens should reflect the sweep marks",
     );
   });
 
@@ -499,21 +509,21 @@ describe("/dcp sweep subcommand — success path", () => {
 
     await handleDcpCommand(client, "sess-short-output", "sweep");
 
-    const state = getOrCreateSessionState("sess-short-output");
+    const state = getContextStateManager().get("sess-short-output");
     assert.equal(state.marks.size, 1);
-    assert.ok(state.marks.has("call-short"));
+    assert.ok(state.marks.has(markKey(1, 1)));
 
-    // estimatedTokens should be floored to 0 because "ok" (2 chars)
+    // contentTokens should be floored to 0 because "ok" (2 chars)
     // yields fewer tokens than the placeholder.
-    const estValue = state.marks.get("call-short")?.tokens ?? -1;
+    const estValue = state.marks.get(markKey(1, 1))?.contentTokens ?? -1;
     assert.equal(estValue, 0, "short output should have 0 estimated tokens");
 
-    // reclaimedTokens should NOT be inflated by the negative estimate.
-    // Since estimatedTokens is 0, reclaimedTokens must stay at 0.
+    // pendingTokens should NOT be inflated by the negative estimate.
+    // Since contentTokens is 0, pendingTokens must stay at 0.
     assert.equal(
-      reclaimedTokens(state),
+      pendingTokens(state),
       0,
-      "reclaimedTokens should not change when estimatedTokens is 0",
+      "pendingTokens should not change when contentTokens is 0",
     );
 
     // The user-facing report confirms 1 tool marked with 0 tokens.
@@ -558,16 +568,20 @@ describe("/dcp sweep subcommand — success path", () => {
 
     await handleDcpCommand(client, "sess-sweep-1", "sweep 1");
 
-    const state = getOrCreateSessionState("sess-sweep-1");
+    const state = getContextStateManager().get("sess-sweep-1");
     assert.equal(state.marks.size, 1);
     assert.ok(
-      state.marks.has("call-recent"),
+      state.marks.has(markKey(1, 1)),
       "expected the most recent tool to be marked",
+    );
+    assert.ok(
+      !state.marks.has(markKey(0, 1)),
+      "expected the older tool to stay unmarked",
     );
   });
 
-  it("totalPruneTokens accumulates once at mark time, NOT doubled by pruneToolOutputs", async () => {
-    // Simulate a sweep followed by two transform turns (prune calls).
+  it("totalPruneTokens accumulates once at mark time, NOT doubled by the release pass", async () => {
+    // Simulate a sweep followed by two transform turns (release calls).
     const messages: ContextMessageEntry[] = [
       {
         info: { role: "user", id: "u1" },
@@ -596,11 +610,13 @@ describe("/dcp sweep subcommand — success path", () => {
       },
     };
 
-    // Sweep (mark time): totalPruneTokens accumulates here.
-    await handleDcpCommand(client, "sess-no-double", "sweep");
+    // Sweep (mark time): the reclaim total accumulates here; the sweep
+    // arms the pending-view-change flag consumed by the next release.
+    const sessionID = "sess-no-double";
+    await handleDcpCommand(client, sessionID, "sweep");
 
-    const state = getOrCreateSessionState("sess-no-double");
-    const markTimeValue = reclaimedTokens(state);
+    const state = getContextStateManager().get(sessionID);
+    const markTimeValue = pendingTokens(state);
     const placeholderTokens = estimateTokenCount(
       PRUNED_TOOL_OUTPUT_REPLACEMENT,
     );
@@ -612,20 +628,29 @@ describe("/dcp sweep subcommand — success path", () => {
           "some tool output with extra text to make net positive after subtracting the placeholder string fully",
         ) - placeholderTokens,
       ),
-      "reclaimedTokens should be net reclaim after sweep",
+      "pendingTokens should be net reclaim after sweep",
     );
 
-    // Transform turn 1: pruneToolOutputs replaces output but does NOT
-    // touch anything derived (read-only on state).
-    pruneToolOutputs(state, messages);
+    // Transform turn 1: the release pass consumes the view-change flag
+    // and flips the pending mark effective — the reclaim total moves to
+    // the effective side without doubling.
+    releaseMarks(state, history(messages), {
+      promptTokens: 0,
+      pendingViewChange: consumePendingViewChange(sessionID),
+    });
     assert.equal(
       reclaimedTokens(state),
       markTimeValue,
-      "prune should NOT change reclaimedTokens (turn 1)",
+      "release should move the reclaim total to effective, not double it (turn 1)",
+    );
+    assert.equal(
+      pendingTokens(state),
+      0,
+      "no pending tokens remain after the release (turn 1)",
     );
 
     // Transform turn 2: reloaded from DB (output reverted to original),
-    // prune runs again.  reclaimedTokens still unchanged.
+    // the release applies again.  reclaimedTokens still unchanged.
     const reloadedMessages: ContextMessageEntry[] = [
       {
         info: { role: "user", id: "u1" },
@@ -648,15 +673,18 @@ describe("/dcp sweep subcommand — success path", () => {
         ],
       },
     ];
-    pruneToolOutputs(state, reloadedMessages);
+    releaseMarks(state, history(reloadedMessages), {
+      promptTokens: 0,
+      pendingViewChange: false,
+    });
     assert.equal(
       reclaimedTokens(state),
       markTimeValue,
-      "prune should NOT change reclaimedTokens across multiple turns",
+      "release should NOT change reclaimedTokens across multiple turns",
     );
   });
 
-  it("persists sweep marks to disk immediately via saveSessionState", async () => {
+  it("persists sweep marks to disk immediately via the shared manager", async () => {
     const sessionID = "sess-persist-after-sweep";
     const messages: ContextMessageEntry[] = [
       {
@@ -688,17 +716,17 @@ describe("/dcp sweep subcommand — success path", () => {
 
     await handleDcpCommand(client, sessionID, "sweep");
 
-    // Verify marks survive via loadSessionState (disk persistence).
-    const persisted = loadSessionState(sessionID);
-    assert.ok(persisted, "state should be persisted to disk after sweep");
-    assert.ok(persisted.marks.has("call-persist"));
+    // Verify marks survive a store reload (disk persistence).
+    const manager = getContextStateManager();
+    const persisted = manager.store.load(sessionID);
+    assert.ok(persisted.marks.has(markKey(1, 1)), "mark persisted to disk");
     assert.ok(
-      (persisted.marks.get("call-persist")?.tokens ?? 0) >= 0,
+      (persisted.marks.get(markKey(1, 1))?.contentTokens ?? 0) >= 0,
       "persisted estimate must be non-negative",
     );
 
     // Clean up persisted file.
-    deleteSessionState(sessionID);
+    manager.store.delete(sessionID);
   });
 });
 
@@ -741,7 +769,7 @@ describe("/dcp sweep subcommand — no-marks path", () => {
     );
 
     // State marks should be empty.
-    const state = getOrCreateSessionState("sess-no-tools");
+    const state = getContextStateManager().get("sess-no-tools");
     assert.equal(state.marks.size, 0);
   });
 
@@ -764,9 +792,17 @@ describe("/dcp sweep subcommand — no-marks path", () => {
       },
     ];
 
-    // Pre-mark call-only.
-    const state = getOrCreateSessionState("sess-already-marked");
-    addMark(state, "call-only", 100, true, "tool-output");
+    // Pre-mark the position the sweep would claim (ordinal 1, tool-output
+    // region index 1).
+    const state = getContextStateManager().get("sess-already-marked");
+    state.marks.set(markKey(1, 1), {
+      anchorOrdinal: 1,
+      regionIndex: 1,
+      content: "only output",
+      contentTokens: 100,
+      effective: true,
+      markedAt: Date.now(),
+    });
 
     let promptText = "";
     const client: SessionClient = {
@@ -833,8 +869,9 @@ describe("/dcp compress subcommand", () => {
   const SESSION_ID = "sess-compress-test";
 
   afterEach(() => {
-    _clearAllSessionsForTesting();
-    deleteSessionState(SESSION_ID);
+    const manager = getContextStateManager();
+    manager.store.delete(SESSION_ID);
+    _resetContextStateManagerForTesting();
   });
 
   /** Gate-open config — compress section strictly parsed. */
@@ -881,9 +918,9 @@ describe("/dcp compress subcommand", () => {
     );
 
     // State should be empty (no flag, no writes).
-    const state = getOrCreateSessionState("sess-compress-disabled");
+    const state = getRuntimeFlaggedState("sess-compress-disabled");
     assert.equal(state.blocks.size, 0);
-    assert.equal(state.pendingManualTrigger, false);
+    assert.equal(state.pendingManualTrigger, undefined);
   });
 
   it("compress section absent → command refuses with notice, no state writes", async () => {
@@ -921,9 +958,9 @@ describe("/dcp compress subcommand", () => {
     );
 
     // State should be empty (no flag, no writes).
-    const state = getOrCreateSessionState("sess-compress-absent");
+    const state = getRuntimeFlaggedState("sess-compress-absent");
     assert.equal(state.blocks.size, 0);
-    assert.equal(state.pendingManualTrigger, false);
+    assert.equal(state.pendingManualTrigger, undefined);
   });
 
   it("arms the one-shot trigger and notifies; creates no blocks, fetches no messages", async () => {
@@ -965,11 +1002,11 @@ describe("/dcp compress subcommand", () => {
       `expected next-turn trigger notice, got: ${promptText}`,
     );
 
-    // One-shot in-memory flag set; no blocks; nothing needs persisting.
-    const state = getOrCreateSessionState(SESSION_ID);
+    // One-shot in-memory flag set; no blocks; the flag is never
+    // persisted (the state file stays absent).
+    const state = getRuntimeFlaggedState(SESSION_ID);
     assert.equal(state.pendingManualTrigger, true, "one-shot flag set");
     assert.equal(state.blocks.size, 0, "no blocks created");
-    assert.equal(state.dirty, false, "flag is in-memory only");
   });
 
   it("repeat /dcp compress keeps the flag armed (idempotent)", async () => {
@@ -992,7 +1029,7 @@ describe("/dcp compress subcommand", () => {
       true,
     );
 
-    const state = getOrCreateSessionState(SESSION_ID);
+    const state = getRuntimeFlaggedState(SESSION_ID);
     assert.equal(state.pendingManualTrigger, true, "flag stays armed");
     assert.equal(state.blocks.size, 0);
   });

@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import type { ContextMessageEntry } from "../core/context/metrics.js";
+import type { ContextMessageEntry } from "../adapters/opencode/types.js";
 import type { SubEntry } from "./subagent.js";
 import {
   collectSubEntries,

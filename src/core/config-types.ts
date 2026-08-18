@@ -9,7 +9,7 @@
  * @module
  */
 
-import type { NudgeConfig } from "./context/pruning/index.js";
+import type { NudgeConfig } from "./context/nudge.js";
 
 /**
  * Per-subsystem gate config for a pruning strategy (dedup / purge-errors).

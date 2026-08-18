@@ -30,7 +30,7 @@ import type {
   DecompressConfig,
   ModeProfile,
 } from "./config-types.js";
-import { NUDGE_PERCENT_RE } from "./context/pruning/index.js";
+import { NUDGE_PERCENT_RE } from "./context/nudge.js";
 import type { ValidationLimits } from "./validate.js";
 
 // ---------------------------------------------------------------------------

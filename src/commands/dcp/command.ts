@@ -8,32 +8,149 @@
  * Command-failure notification lives in `src/commands/notify.ts` and is
  * shared with the `/go` command unit.
  *
+ * State comes from the new host-agnostic context core: the shared
+ * process-wide session-state manager (`getContextStateManager`) supplies
+ * the session state, the v1 adapter (`history`) maps the fetched
+ * messages to lens messages, and the fold/measure/release layers drive
+ * the report and the sweep.  Effective prune marks are projected back
+ * to v1 tool call ids so the report's pruned-tool accounting keeps the
+ * previous contract verbatim.
+ *
  * @module
  */
 
+import { history } from "../../adapters/opencode/history.js";
+import {
+  effectiveCallIds,
+  foldedV1Messages,
+} from "../../adapters/opencode/projection.js";
+import {
+  type ContextMessageEntry,
+  computeContextReport,
+  isMessageIgnored,
+} from "../../adapters/opencode/types.js";
 import type { SessionClient } from "../../core/client/session.js";
 import type { ContextPruningConfig } from "../../core/config-types.js";
 import {
   formatContextReport,
   formatTokens,
 } from "../../core/context/context-report.js";
-import type { ContextMessageEntry } from "../../core/context/metrics.js";
+import { fold } from "../../core/context/fold.js";
+import type { HostMessage } from "../../core/context/lens.js";
+import { findLastUserOrdinal } from "../../core/context/lens.js";
+import { netReclaimTokens } from "../../core/context/measure.js";
+import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "../../core/context/message-parts.js";
 import {
-  computeContextReport,
-  isMessageIgnored,
-} from "../../core/context/metrics.js";
+  pendingCount,
+  pendingTokens,
+  reclaimedTokens,
+} from "../../core/context/release.js";
 import {
-  getOrCreateSessionState,
-  liveBlocks,
-  pendingCount as pendingCountDerived,
-  pendingTokens as pendingTokensDerived,
-  previewFold,
-  reclaimedTokens as reclaimedTokensDerived,
-  runSweep,
-  saveSessionState,
-  snapshotRefs,
-} from "../../core/context/pruning/index.js";
+  getContextStateManager,
+  getRuntimeFlaggedState,
+  setPendingViewChange,
+} from "../../core/context/runtime.js";
+import {
+  markKey,
+  RECALL_MAX_CHARS,
+  type SessionState,
+} from "../../core/context/state.js";
 import { log } from "../../utils/logger.js";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+/** One new pending mark written by the sweep selection. */
+interface SweepWrite {
+  /** Estimated reclaim tokens of the marked output. */
+  contentTokens: number;
+}
+
+// ---------------------------------------------------------------------------
+// Sweep selection
+// ---------------------------------------------------------------------------
+
+/**
+ * Select tool-output regions to mark and write pending marks.
+ *
+ * Migrated from the previous `/dcp sweep` producer with its marks
+ * semantics preserved: no-count mode marks every tool output after the
+ * last non-hidden user message; numeric mode walks backward collecting
+ * the N most recent tool outputs.  Positions already claimed by a mark
+ * are skipped (first-write-wins).  Marks are written pending — the
+ * caller arms `setPendingViewChange` so the next transform's release
+ * flips them unconditionally, preserving the previous immediate-release
+ * timing.
+ *
+ * @param state - The session state to write marks into.
+ * @param view - The lens transcript of the session messages.
+ * @param count - The sweep count; undefined selects the no-count mode.
+ * @returns The number of marks written and their total reclaim tokens.
+ */
+function sweepToolRegions(
+  state: SessionState,
+  view: HostMessage[],
+  count: number | undefined,
+): SweepWrite[] {
+  const writes: SweepWrite[] = [];
+  const now = Date.now();
+
+  const addMark = (ordinal: number, regionIndex: number, output: string) => {
+    const key = markKey(ordinal, regionIndex);
+    if (state.marks.has(key)) return;
+    const contentTokens = netReclaimTokens(
+      output,
+      PRUNED_TOOL_OUTPUT_REPLACEMENT,
+    );
+    state.marks.set(key, {
+      anchorOrdinal: ordinal,
+      regionIndex,
+      content: output.slice(0, RECALL_MAX_CHARS),
+      contentTokens,
+      effective: false,
+      markedAt: now,
+    });
+    writes.push({ contentTokens });
+  };
+
+  if (count === undefined) {
+    // No-count mode: mark all tool outputs after the last user message.
+    const lastUserOrdinal = findLastUserOrdinal(view);
+    if (lastUserOrdinal < 0) return writes;
+    for (let ordinal = lastUserOrdinal + 1; ordinal < view.length; ordinal++) {
+      const msg = view[ordinal];
+      if (!msg?.regions) continue;
+      for (
+        let regionIndex = 0;
+        regionIndex < msg.regions.length;
+        regionIndex++
+      ) {
+        const region = msg.regions[regionIndex];
+        if (region?.kind !== "tool-output") continue;
+        addMark(ordinal, regionIndex, region.get());
+      }
+    }
+  } else {
+    // Numeric mode: walk backward until N tool outputs are collected.
+    for (let ordinal = view.length - 1; ordinal >= 0; ordinal--) {
+      if (writes.length >= count) break;
+      const msg = view[ordinal];
+      if (!msg?.regions) continue;
+      for (
+        let regionIndex = msg.regions.length - 1;
+        regionIndex >= 0 && writes.length < count;
+        regionIndex--
+      ) {
+        const region = msg.regions[regionIndex];
+        if (region?.kind !== "tool-output") continue;
+        addMark(ordinal, regionIndex, region.get());
+      }
+    }
+  }
+
+  return writes;
+}
 
 // ---------------------------------------------------------------------------
 // Handler
@@ -154,43 +271,40 @@ export async function handleDcpCommand(
     throw new Error("会话消息格式异常：期望数组");
   }
 
-  // ── Compute & format report ───────────────────────────────────────
-  // Use in-memory session state so the tool category excludes pruned
-  // tools and the unified "回收" stat line reflects the current
-  // in-process cumulative values (avoids the one-turn lag of reading
-  // from disk when the batch pipeline modifies state between transforms).
+  // ── Read state from the shared manager ────────────────────────────
+  // The process-wide manager (shared with the hook and the tools) holds
+  // the live in-memory state, so the tool category excludes pruned tools
+  // and the unified "回收" stat line reflects the current in-process
+  // cumulative values (avoids the one-turn lag of reading from disk when
+  // the batch pipeline modifies state between transforms).
+  const manager = getContextStateManager();
+  let state: SessionState | undefined;
   let prunedCallIDs: Set<string> | undefined;
   let totalEff = 0;
   let curPendingCount = 0;
   let curPendingTokens = 0;
-  let state: ReturnType<typeof getOrCreateSessionState> | undefined;
   try {
-    state = getOrCreateSessionState(sessionID);
-    prunedCallIDs = new Set(
-      [...state.marks.entries()]
-        .filter(([, mark]) => mark.effective)
-        .map(([callID]) => callID),
-    );
-    totalEff = reclaimedTokensDerived(state);
-    curPendingCount = pendingCountDerived(state);
-    curPendingTokens = pendingTokensDerived(state);
+    state = manager.get(sessionID);
+    prunedCallIDs = effectiveCallIds(messages, state);
+    totalEff = reclaimedTokens(state);
+    curPendingCount = pendingCount(state);
+    curPendingTokens = pendingTokens(state);
   } catch {
     // Defensive: I/O failure is non-fatal — tools fully counted.
     prunedCallIDs = undefined;
   }
+
   // ── Compute dual-scope message counts (folded view vs storage) ──────
   let foldedCount: number | undefined;
   let storageCount: number | undefined;
   try {
     if (state) {
-      const stateBlocks: import("../../core/context/pruning/index.js").CompressionBlock[] =
-        [];
-      for (const [, block] of state.blocks) {
-        stateBlocks.push(block);
-      }
-      const live = liveBlocks(stateBlocks, messages);
-      const folded = previewFold(messages, live);
-      foldedCount = folded.filter((m) => !isMessageIgnored(m)).length;
+      const view = history(messages);
+      const { items } = fold(view, state);
+      const folded = foldedV1Messages(items, messages, state);
+      foldedCount =
+        folded?.filter((m) => !isMessageIgnored(m)).length ??
+        messages.filter((m) => !isMessageIgnored(m)).length;
       storageCount = messages.filter((m) => !isMessageIgnored(m)).length;
     }
   } catch {
@@ -265,9 +379,12 @@ export function parseSweepCount(trimmed: string): number | undefined {
  * Handle the `/dcp sweep` and `/dcp sweep N` subcommands.
  *
  * 1. Parses the count argument (optional).
- * 2. Fetches session messages.
- * 3. Collects tool call IDs for marking.
- * 4. Stores marks via addMark (writes to `state.marks`).
+ * 2. Fetches session messages and maps them to the lens transcript.
+ * 3. Selects tool-output regions for marking (the previous sweep semantics).
+ * 4. Writes pending marks into the shared session state, arms the
+ *    pending-view-change flag (the next transform's release flips them
+ *    unconditionally — the immediate-release timing the previous sweep had
+ *    with effective marks), and persists once.
  * 5. Injects an ignored message reporting how many tools were marked
  *    and the estimated token reclaim.
  * 6. Returns normally — the OpenCode adapter throws the unified
@@ -330,11 +447,13 @@ async function handleSweepSubcommand(
     throw new Error("会话消息格式异常：期望数组");
   }
 
-  // ── Run sweep producer (collects + marks in one call) ────────────
-  const state = getOrCreateSessionState(sessionID);
-  const marks = runSweep(state, messages, { count });
+  // ── Select regions and write pending marks ───────────────────────
+  const manager = getContextStateManager();
+  const state = manager.get(sessionID);
+  const view = history(messages);
+  const writes = sweepToolRegions(state, view, count);
 
-  if (marks.length === 0) {
+  if (writes.length === 0) {
     // ── Nothing to mark ───────────────────────────────────────────
     const msg = "没有找到可标记的工具输出";
     if (client?.session?.prompt) {
@@ -349,23 +468,24 @@ async function handleSweepSubcommand(
     return;
   }
 
-  // runSweep already wrote marks via addMark and set dirty.
-  // Total estimate from the new marks.
-  // Refresh the ref snapshot (piggyback — never per-turn writes) so the
-  // persist below keeps refs stable across a restart.
-  const totalEstimate = marks.reduce((sum, m) => sum + m.estimatedTokens, 0);
-  const sweepRefsSnapshot = snapshotRefs(sessionID);
-  if (sweepRefsSnapshot) state.refs = sweepRefsSnapshot;
-  saveSessionState(sessionID, state);
+  // Pending marks flip on the next transform's release.  The
+  // pending-view-change flag bypasses the release gate so the marks
+  // take effect in the same turn the view rolls over — the previous
+  // sweep wrote immediately-effective marks, which the next prune pass
+  // applied; the two behaviours coincide in timing.
+  setPendingViewChange(sessionID);
+  manager.save(sessionID);
+
+  const totalEstimate = writes.reduce((sum, m) => sum + m.contentTokens, 0);
 
   log("context-command", "sweep_marked", sessionID, undefined, "info", {
-    markedCount: marks.length,
+    markedCount: writes.length,
     totalEstimatedTokens: totalEstimate,
   });
 
   // ── Inject result message ───────────────────────────────────────
   const reportMsg = [
-    `已标记 ${marks.length} 个工具输出，预计可回收 ${formatTokens(totalEstimate)} tokens`,
+    `已标记 ${writes.length} 个工具输出，预计可回收 ${formatTokens(totalEstimate)} tokens`,
     "这些工具的输出将在下一轮 LLM 调用中被替换为占位文本。",
   ].join("\n");
 
@@ -412,9 +532,9 @@ async function handleSweepSubcommand(
  * 1. Checks the registration gate — the `compress` tool must be listed
  *    in the active mode profile's tools and the compress section must
  *    carry both token thresholds; otherwise it refuses with a notice.
- * 2. Sets `state.pendingManualTrigger = true` (in-memory only, never
- *    persisted — same discipline as `pendingViewChange`; loss on restart
- *    is benign).
+ * 2. Sets `state.pendingManualTrigger = true` on the shared state
+ *    (in-memory only, never persisted — same discipline as
+ *    `pendingViewChange`; loss on restart is benign).
  * 3. Sends a single ignored notification telling the user the trigger
  *    will fire on the next turn.
  *
@@ -464,7 +584,7 @@ async function handleCompressSubcommand(
   // ── Arm the one-shot manual trigger ─────────────────────────────
   // In-memory only: never persisted, never fetched.  The next transform
   // consumes the flag and injects the synthetic user command.
-  const state = getOrCreateSessionState(sessionID);
+  const state = getRuntimeFlaggedState(sessionID);
   state.pendingManualTrigger = true;
 
   log("context-command", "compress_armed", sessionID, undefined, "info", {

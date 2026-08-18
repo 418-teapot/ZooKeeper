@@ -3,12 +3,12 @@
 import type { TuiPluginModule } from "@opencode-ai/plugin/tui";
 import { type RGBA, TextAttributes } from "@opentui/core";
 import { createSignal, onCleanup, onMount } from "solid-js";
+import type { TokenBreakdownResult } from "../adapters/opencode/types.js";
 import {
   formatPercent,
   formatTokens,
   progressBar,
 } from "../core/context/context-report.js";
-import type { TokenBreakdownResult } from "../core/context/metrics.js";
 import { log, setSessionId } from "../utils/logger.js";
 import { createContextController } from "./controller.js";
 import type { CategoryInfo, SubEntry } from "./subagent.js";

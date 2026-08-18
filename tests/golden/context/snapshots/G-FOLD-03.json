@@ -1,0 +1,209 @@
+{
+  "scenario": "G-FOLD-03",
+  "rounds": [
+    {
+      "label": "create-block-fold",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "synthetic": true,
+          "sentinelId": "zoo-fold-b1",
+          "text": "[m2] [Block b1 · 2 条] test\ntest summary."
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] done",
+              "pruned": false,
+              "input": "",
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "state": {
+        "blocks": [
+          {
+            "blockId": 1,
+            "active": true,
+            "title": "test",
+            "coveredMessages": 2,
+            "compressedTokens": 1500,
+            "summaryTokens": 80
+          }
+        ],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "seed-pending-marks",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "synthetic": true,
+          "sentinelId": "zoo-fold-b1",
+          "text": "[m2] [Block b1 · 2 条] test\ntest summary."
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] done",
+              "pruned": false,
+              "input": "",
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "state": {
+        "blocks": [
+          {
+            "blockId": 1,
+            "active": true,
+            "title": "test",
+            "coveredMessages": 2,
+            "compressedTokens": 1500,
+            "summaryTokens": 80
+          }
+        ],
+        "marks": {
+          "pending": 1,
+          "pendingTokens": 100,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "seed-pending-mark-two",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "synthetic": true,
+          "sentinelId": "zoo-fold-b1",
+          "text": "[m2] [Block b1 · 2 条] test\ntest summary."
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] done",
+              "pruned": false,
+              "input": "",
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "state": {
+        "blocks": [
+          {
+            "blockId": 1,
+            "active": true,
+            "title": "test",
+            "coveredMessages": 2,
+            "compressedTokens": 1500,
+            "summaryTokens": 80
+          }
+        ],
+        "marks": {
+          "pending": 2,
+          "pendingTokens": 300,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "revert-anchor-deleted-deactivate-flush",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] data",
+              "pruned": false,
+              "input": "",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] done",
+              "pruned": false,
+              "input": "",
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "state": {
+        "blocks": [],
+        "marks": {
+          "pending": 2,
+          "pendingTokens": 300,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    }
+  ]
+}

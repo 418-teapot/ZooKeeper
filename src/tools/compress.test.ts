@@ -1,28 +1,29 @@
 /**
- * Integration tests for the batch compress tool adapter.
+ * Integration tests for the batch compress tool adapter against the new
+ * ordinal core.
  *
- * Covers: the full execute flow (fetch → ref fallback → core → persist →
- * notify → ToolResult) against the real imported config with the `ranges`
- * array parameter, multi-range batch creation with a single persistence and
- * a single notification, the `max_ranges` overflow gate (loud batch
- * guidance), per-range validation errors naming the range index, the
- * profile-tools registration gate (tool hooks + primary_tools), and
- * the config-hook primary_tools append preserving existing entries.
+ * Covers: the full execute flow (fetch → v1 history mapping → folded
+ * line-numbered view → core batch → pending view-change flag → persist →
+ * notify → ToolResult), multi-range batch creation with a single
+ * persistence and a single notification, the `max_ranges` overflow gate
+ * (loud batch guidance), every argument-validation branch with its
+ * G-TOOL-01 Chinese guidance text (missing/empty/non-array ranges,
+ * non-object items, non-string fields, empty/control/hyphen/overlong
+ * titles), core-gate rejections naming the 1-based range index (unknown
+ * ref, reversed order, overlap, first-user protection), the config
+ * guidance errors, the best-effort notify failure, and the registration
+ * gate (tool hooks + primary_tools).
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import type { ContextMessageEntry } from "../adapters/opencode/types.js";
 import type { SessionClient } from "../core/client/session.js";
-import type { ContextMessageEntry } from "../core/context/metrics.js";
 import {
-  _clearAllSessionsForTesting,
-  deleteSessionState,
-  getOrCreateSessionState,
-  loadSessionState,
-} from "../core/context/pruning/marks.js";
-import {
-  _clearAllRefsForTesting,
-  getMessageRefById,
-} from "../core/context/pruning/message-refs.js";
+  _resetContextStateManagerForTesting,
+  consumePendingViewChange,
+  getContextStateManager,
+} from "../core/context/runtime.js";
+import type { Block, SessionState } from "../core/context/state.js";
 import { COMPRESS_GUIDANCE } from "../core/prompts.js";
 import {
   buildPlugin,
@@ -37,15 +38,12 @@ import type { CompressToolDefinition } from "./compress.js";
 // ---------------------------------------------------------------------------
 
 const TEST_SESSION_ID = "sess-compress-tool";
-const PERSISTED_SESSION_IDS = [TEST_SESSION_ID];
 
 afterEach(() => {
+  const store = getContextStateManager().store;
+  store.delete(TEST_SESSION_ID);
+  _resetContextStateManagerForTesting();
   _resetForTesting();
-  _clearAllSessionsForTesting();
-  _clearAllRefsForTesting();
-  for (const sid of PERSISTED_SESSION_IDS) {
-    deleteSessionState(sid);
-  }
 });
 
 // ---------------------------------------------------------------------------
@@ -90,9 +88,14 @@ function makePlugin(client: unknown = {}): Promise<Record<string, any>> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Ref string for a zero-based message-array index (m0001 = index 0). */
+/**
+ * Line-number ref of the visible message at the given index.
+ *
+ * A fresh session (no blocks, no hidden messages) has a dense
+ * line-numbered view: message at index i carries line number i + 1.
+ */
 function refFor(index: number): string {
-  return `m${String(index + 1).padStart(4, "0")}`;
+  return `m${index + 1}`;
 }
 
 /** Long tool output (~2000 heuristic tokens) so the protection gates pass. */
@@ -132,8 +135,9 @@ function makeToolMsg(id: string): ContextMessageEntry {
  *
  * Indices: u0 (first user) + 28 tool-heavy exchanges + last user + final
  * assistant.  The protection boundary lands at index 11, so valid ranges
- * live inside [1, 11).  Range [1, 6) covers 5 tool messages (~10000 tokens)
- * and range [6, 10) covers 4 more — both comfortably over the threshold.
+ * live inside [1, 11).  Range [1, 6) covers ordinals 1..5 (5 tool
+ * messages) and range [6, 10) covers ordinals 6..9 (4 more) — both
+ * comfortably over the threshold.
  */
 function makeMessages(): ContextMessageEntry[] {
   const msgs: ContextMessageEntry[] = [makeUserMsg("u0", "开场问题")];
@@ -145,7 +149,7 @@ function makeMessages(): ContextMessageEntry[] {
   return msgs;
 }
 
-/** A single valid range on `makeMessages()` output. */
+/** A single valid range on `makeMessages()` output (inclusive endpoints). */
 function makeRange(
   fromIndex: number,
   toIndex: number,
@@ -210,12 +214,26 @@ const mockToolContext = {
   ask: async () => {},
 };
 
+/** The shared manager's live session state (same singleton the tool uses). */
+function sessionState(): SessionState {
+  return getContextStateManager().get(TEST_SESSION_ID);
+}
+
+/** The first (and only) block of the live session state. */
+function firstBlock(): Block {
+  const state = sessionState();
+  assert.equal(state.blocks.size, 1, "exactly one block expected");
+  const block = state.blocks.get(1);
+  assert.ok(block !== undefined);
+  return block;
+}
+
 // ---------------------------------------------------------------------------
 // Happy path
 // ---------------------------------------------------------------------------
 
 describe("compress tool execute — happy path", () => {
-  it("creates a block for a single range, persists state, and sends an ignored notification", async () => {
+  it("creates a block for a single range, flags the view change, persists, and notifies", async () => {
     const messages = makeMessages();
     const { client, promptCalls } = mockClient(messages);
 
@@ -231,25 +249,27 @@ describe("compress tool execute — happy path", () => {
       mockToolContext,
     );
 
-    // (1) Block created in session state.
-    const state = getOrCreateSessionState(TEST_SESSION_ID);
-    assert.equal(state.blocks.size, 1, "exactly one block expected");
-    const block = state.blocks.get("1");
-    assert.ok(block !== undefined);
+    // (1) Block created in the shared new-core session state.
+    const block = firstBlock();
     assert.equal(block.active, true);
-    assert.equal(block.blockId, 1);
     assert.equal(block.title, "执行命令主题");
-    assert.equal(block.messageIds.length, 8);
-    assert.equal(state.pendingViewChange, true);
+    assert.equal(block.end - block.start, 9, "range [1, 10) covers 9 ordinals");
 
-    // (2) State persisted to disk via saveSessionState.
-    const persisted = loadSessionState(TEST_SESSION_ID);
-    assert.ok(persisted !== null, "state must be persisted to disk");
+    // (2) Pending view change flagged (transient, consumed by the hook).
+    assert.equal(consumePendingViewChange(TEST_SESSION_ID), true);
+    assert.equal(
+      consumePendingViewChange(TEST_SESSION_ID),
+      false,
+      "flag is consumed and cleared",
+    );
+
+    // (3) State persisted to disk via the shared manager.
+    const persisted = getContextStateManager().store.load(TEST_SESSION_ID);
     assert.equal(persisted.blocks.size, 1);
-    assert.equal(persisted.blocks.get("1")?.active, true);
-    assert.equal(persisted.blocks.get("1")?.title, "执行命令主题");
+    assert.equal(persisted.blocks.get(1)?.active, true);
+    assert.equal(persisted.blocks.get(1)?.title, "执行命令主题");
 
-    // (3) Ignored notification sent.
+    // (4) Ignored notification sent.
     assert.equal(promptCalls.length, 1);
     assert.equal(promptCalls[0].sessionID, TEST_SESSION_ID);
     assert.equal(promptCalls[0].noReply, true);
@@ -297,24 +317,31 @@ describe("compress tool execute — happy path", () => {
     const plugin = (await makePlugin(client)) as any;
 
     const result = await plugin.tool.compress.execute(
-      { ranges: [makeRange(1, 6, "主题一"), makeRange(6, 10, "主题二")] },
+      {
+        ranges: [makeRange(1, 5, "主题一"), makeRange(6, 9, "主题二")],
+      },
       mockToolContext,
     );
 
     // (1) Two blocks created in order.
-    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    const state = sessionState();
     assert.equal(state.blocks.size, 2);
-    assert.equal(state.blocks.get("1")?.title, "主题一");
-    assert.equal(state.blocks.get("1")?.messageIds.length, 5);
-    assert.equal(state.blocks.get("2")?.title, "主题二");
-    assert.equal(state.blocks.get("2")?.messageIds.length, 4);
-    assert.equal(state.pendingViewChange, true);
+    assert.equal(state.blocks.get(1)?.title, "主题一");
+    assert.equal(
+      (state.blocks.get(1)?.end ?? 0) - (state.blocks.get(1)?.start ?? 0),
+      5,
+    );
+    assert.equal(state.blocks.get(2)?.title, "主题二");
+    assert.equal(
+      (state.blocks.get(2)?.end ?? 0) - (state.blocks.get(2)?.start ?? 0),
+      4,
+    );
+    assert.equal(consumePendingViewChange(TEST_SESSION_ID), true);
 
     // (2) Persisted exactly once (both blocks on disk).
-    const persisted = loadSessionState(TEST_SESSION_ID);
-    assert.ok(persisted !== null);
+    const persisted = getContextStateManager().store.load(TEST_SESSION_ID);
     assert.equal(persisted.blocks.size, 2);
-    assert.equal(persisted.blocks.get("2")?.active, true);
+    assert.equal(persisted.blocks.get(2)?.active, true);
 
     // (3) ONE ignored notification covering both blocks.
     assert.equal(promptCalls.length, 1, "single notification for the batch");
@@ -339,7 +366,7 @@ describe("compress tool execute — happy path", () => {
       { ...mockToolContext, sessionID: undefined, sessionId: TEST_SESSION_ID },
     );
 
-    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    const state = sessionState();
     assert.equal(state.blocks.size, 1);
     assert.equal(typeof result, "string");
     assert.ok(result.includes("已压缩"));
@@ -360,51 +387,35 @@ describe("compress tool execute — happy path", () => {
       mockToolContext,
     );
 
-    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    const state = sessionState();
     assert.equal(state.blocks.size, 1, "exactly one block expected");
-    assert.equal(state.blocks.get("1")?.title, title);
+    assert.equal(state.blocks.get(1)?.title, title);
     assert.equal(typeof result, "string");
     assert.ok(result.includes(title), "ToolResult should include the title");
   });
 });
 
 // ---------------------------------------------------------------------------
-// Anchor protection pass-through
+// Protection gates (core)
 // ---------------------------------------------------------------------------
 
-describe("compress tool execute — anchor protection pass-through", () => {
-  it("keeps the first user message ref-less when anchor_tokens covers it", async () => {
-    // anchor_tokens=10 protects u0 ("开场问题" = 4 CJK chars →
-    // ceil(4/1.5) = 3 heuristic tokens ≤ 10).  Without the pass-through
-    // the tool's assignMessageRefs re-entry would assign u0 a ref,
-    // silently bypassing the transform-side anchor protection.
+describe("compress tool execute — protection gates", () => {
+  it("rejects a range containing the session's first user message", async () => {
     const messages = makeMessages();
     const { client } = mockClient(messages);
-    const anchoredZoo = {
-      ...POLY_ZOO,
-      context: {
-        ...(POLY_ZOO.context as Record<string, unknown>),
-        anchor_tokens: 10,
-      },
-    };
-    const plugin = (await buildPlugin({ client }, anchoredZoo)) as any;
+    const plugin = (await makePlugin(client)) as any;
 
-    const result = await plugin.tool.compress.execute(
-      { ranges: [makeRange(1, 9)] },
-      mockToolContext,
+    await assert.rejects(
+      () =>
+        plugin.tool.compress.execute(
+          { ranges: [makeRange(0, 5)] },
+          mockToolContext,
+        ),
+      (err: unknown) =>
+        err instanceof Error && /第一条用户消息/.test(err.message),
     );
-
-    // Compression still succeeds; the anchor shifts refs by one but the
-    // range (m0002..m0010) still covers 8 messages.
-    const state = getOrCreateSessionState(TEST_SESSION_ID);
-    assert.equal(state.blocks.size, 1);
-    assert.equal(state.blocks.get("1")?.messageIds.length, 8);
-    assert.ok(result.includes("已压缩"));
-
-    // The anchor survived the compress-tool re-entry: u0 has NO ref,
-    // while a1 (the first compressible message) holds m0001.
-    assert.equal(getMessageRefById(TEST_SESSION_ID, "u0"), undefined);
-    assert.equal(getMessageRefById(TEST_SESSION_ID, "a1"), "m0001");
+    const state = sessionState();
+    assert.equal(state.blocks.size, 0);
   });
 });
 
@@ -419,7 +430,7 @@ describe("compress tool execute — error paths", () => {
     const plugin = (await makePlugin(client)) as any;
 
     // Real config.toml sets max_ranges = 8; 9 ranges must be rejected
-    // BEFORE any core validation (refs are dummy on purpose).
+    // BEFORE any ref resolution (refs are dummy on purpose).
     const ranges = Array.from({ length: 9 }, () => makeRange(1, 2));
     await assert.rejects(
       () => plugin.tool.compress.execute({ ranges }, mockToolContext),
@@ -431,7 +442,7 @@ describe("compress tool execute — error paths", () => {
     );
 
     // Nothing was created.
-    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    const state = sessionState();
     assert.equal(state.blocks.size, 0);
   });
 
@@ -444,7 +455,7 @@ describe("compress tool execute — error paths", () => {
       () => plugin.tool.compress.execute({ ranges: [] }, mockToolContext),
       /不能为空/,
     );
-    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    const state = sessionState();
     assert.equal(state.blocks.size, 0);
   });
 
@@ -458,14 +469,14 @@ describe("compress tool execute — error paths", () => {
       /ranges/,
     );
     await assert.rejects(
-      () => plugin.tool.compress.execute({ ranges: "m0001" }, mockToolContext),
+      () => plugin.tool.compress.execute({ ranges: "m1" }, mockToolContext),
       /ranges/,
     );
     await assert.rejects(
       () => plugin.tool.compress.execute(null, mockToolContext),
       /ranges/,
     );
-    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    const state = sessionState();
     assert.equal(state.blocks.size, 0);
   });
 
@@ -534,7 +545,7 @@ describe("compress tool execute — error paths", () => {
         /第 1 个范围/.test(err.message) &&
         /重叠/.test(err.message),
     );
-    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    const state = sessionState();
     assert.equal(state.blocks.size, 0);
   });
 
@@ -558,7 +569,7 @@ describe("compress tool execute — error paths", () => {
         /80/.test(err.message),
     );
     // Nothing was created.
-    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    const state = sessionState();
     assert.equal(state.blocks.size, 0);
   });
 
@@ -579,7 +590,7 @@ describe("compress tool execute — error paths", () => {
         /过长/.test(err.message) &&
         /80/.test(err.message),
     );
-    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    const state = sessionState();
     assert.equal(state.blocks.size, 0);
   });
 
@@ -608,7 +619,7 @@ describe("compress tool execute — error paths", () => {
           /控制字符/.test(err.message),
       );
       // Nothing was created for any rejected title.
-      const state = getOrCreateSessionState(TEST_SESSION_ID);
+      const state = sessionState();
       assert.equal(state.blocks.size, 0);
     }
   });
@@ -632,7 +643,7 @@ describe("compress tool execute — error paths", () => {
           /---/.test(err.message),
       );
       // Nothing was created for any rejected title.
-      const state = getOrCreateSessionState(TEST_SESSION_ID);
+      const state = sessionState();
       assert.equal(state.blocks.size, 0);
     }
   });
@@ -687,7 +698,7 @@ describe("compress tool execute — error paths", () => {
           err.message.includes(item.name) &&
           /字符串/.test(err.message),
       );
-      const state = getOrCreateSessionState(TEST_SESSION_ID);
+      const state = sessionState();
       assert.equal(state.blocks.size, 0);
     }
   });
@@ -698,14 +709,13 @@ describe("compress tool execute — error paths", () => {
     const plugin = (await makePlugin(client)) as any;
 
     await assert.rejects(
-      () =>
-        plugin.tool.compress.execute({ ranges: ["m0001"] }, mockToolContext),
+      () => plugin.tool.compress.execute({ ranges: ["m1"] }, mockToolContext),
       (err: unknown) =>
         err instanceof Error &&
         /第 1 个范围/.test(err.message) &&
         /格式错误/.test(err.message),
     );
-    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    const state = sessionState();
     assert.equal(state.blocks.size, 0);
   });
 
@@ -787,7 +797,7 @@ describe("compress tool execute — error paths", () => {
     );
 
     // Compression still succeeded and returned a ToolResult.
-    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    const state = sessionState();
     assert.equal(state.blocks.size, 1);
     assert.ok(result.includes("已压缩"));
   });
@@ -858,7 +868,7 @@ describe("compress tool registration gate", () => {
     }
   });
 
-  it("injects the teaching skeleton into the tool description", () => {
+  it("injects the teaching skeleton and the line-number model into the description", () => {
     const { client } = mockClient([]);
     const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} }, [
       "compress",
@@ -870,6 +880,26 @@ describe("compress tool registration gate", () => {
     assert.ok(
       description.includes(COMPRESS_GUIDANCE),
       "description must carry the full teaching skeleton (all four points)",
+    );
+    assert.ok(
+      description.includes("[mN]"),
+      "description must teach the per-round line-number addressing model",
+    );
+    assert.ok(
+      description.includes("每轮重新编号"),
+      "description must warn that line numbers are per-round addresses",
+    );
+    assert.ok(
+      description.includes("[Block bN · K 条]"),
+      "description must reference the new block header format",
+    );
+    assert.ok(
+      description.includes("已压入压缩块"),
+      "description must use the 已压入压缩块 wording",
+    );
+    assert.ok(
+      description.includes("max_ranges"),
+      "description must mention the max_ranges batch bound",
     );
   });
 });

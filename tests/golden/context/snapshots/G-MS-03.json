@@ -1,0 +1,201 @@
+{
+  "scenario": "G-MS-03",
+  "rounds": [
+    {
+      "label": "dcp-sweep-no-arg",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] do it"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": "",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] again"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m4] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": "",
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "state": {
+        "blocks": [],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 1,
+          "effectiveTokens": 105
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": [
+        "已标记 1 个工具输出，预计可回收 105 tokens\n这些工具的输出将在下一轮 LLM 调用中被替换为占位文本。",
+        "上下文清理：已折叠 1 个工具调用，约回收 105 tokens"
+      ]
+    },
+    {
+      "label": "dcp-sweep-numeric-two",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] do it"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": "",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] again"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m4] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": "",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m5] more"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m6] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": "",
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "state": {
+        "blocks": [],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 3,
+          "effectiveTokens": 315
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": [
+        "已标记 2 个工具输出，预计可回收 210 tokens\n这些工具的输出将在下一轮 LLM 调用中被替换为占位文本。",
+        "上下文清理：已折叠 2 个工具调用，约回收 210 tokens"
+      ]
+    },
+    {
+      "label": "dcp-sweep-nothing",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] do it"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [],
+          "text": "[m2] no tools"
+        }
+      ],
+      "state": {
+        "blocks": [],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 3,
+          "effectiveTokens": 315
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": [
+        "没有找到可标记的工具输出"
+      ]
+    },
+    {
+      "label": "dcp-sweep-invalid-count",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] do it"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m2] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": "",
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "state": {
+        "blocks": [],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 3,
+          "effectiveTokens": 315
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": null,
+      "toolError": "用法：/dcp sweep [N]，N 为要标记的工具输出数量（正整数）",
+      "notifications": []
+    }
+  ]
+}

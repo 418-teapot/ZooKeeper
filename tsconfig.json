@@ -11,5 +11,5 @@
     "outDir": "dist",
     "rootDir": "."
   },
-  "include": ["src", "vendor"]
+  "include": ["src", "vendor", "tests/golden"]
 }

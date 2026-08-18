@@ -31,8 +31,8 @@
 import { readdirSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ContextMetricsOutput } from "./adapters/opencode/types.js";
 import type { ContextPruningConfig, ModeProfile } from "./core/config-types.js";
-import type { ContextMetricsOutput } from "./core/context/metrics.js";
 import type {
   ActiveSet,
   AfterExecInput,

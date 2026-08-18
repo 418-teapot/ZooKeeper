@@ -1,0 +1,339 @@
+/**
+ * Golden scenarios — range-mode compress gates and lifecycle (C2).
+ *
+ * - G-COMP-01: full lifecycle — compress tool creates a block, the next
+ *   transform folds it, decompress restores it.
+ * - G-COMP-02: batch compress — two-range success plus atomic-reject
+ *   paths (cross-range overlap, same-call consumption, indexed range
+ *   validation failure) with zero state change.
+ * - G-COMP-03: nested consumption — a wider range consumes an active
+ *   block (index line + net token arithmetic), then a third generation
+ *   re-absorbs the inactive predecessor (covered-inactive netting).
+ * - G-COMP-04: every validation gate's negative path, each with its
+ *   captured error text and zero state change.
+ *
+ * @module
+ */
+
+import type { Scenario } from "../types.js";
+import {
+  longConversation,
+  makeRange,
+  shortConversation,
+} from "./conversation.js";
+
+const SID = "golden-g-comp-01";
+
+/** Shared compress/decompress config for the compress scenarios. */
+export function compressConfig() {
+  return {
+    protectedMessages: 20,
+    releasedPercent: 10,
+    dedup: {},
+    purgeErrors: {},
+    compress: {
+      thresholdTokens: 2000,
+      protectedTokens: 20000,
+      maxRanges: 8,
+    },
+    decompress: { maxFillPercent: 90 },
+  };
+}
+
+/**
+ * G-COMP-01 — compression lifecycle.
+ *
+ * Round 1 compresses [1, 9) via the tool (block b1, ToolResult + chat
+ * notification captured); the same round's transform folds the new
+ * block (C5-05 view-change timing).  Round 2 restores b1 via the
+ * decompress tool; the transform un-folds it (C3-02 two-round effect).
+ */
+export const G_COMP_01: Scenario = {
+  id: "G-COMP-01",
+  sessionID: SID,
+  config: compressConfig(),
+  rounds: [
+    {
+      label: "baseline-refs",
+      messages: longConversation(SID),
+    },
+    {
+      label: "compress-tool-create-block",
+      messages: longConversation(SID),
+      action: {
+        kind: "compress-tool",
+        ranges: [makeRange(1, 9, "执行命令主题")],
+      },
+    },
+    {
+      label: "decompress-restore",
+      messages: longConversation(SID),
+      action: { kind: "decompress-tool", blockId: "b1" },
+    },
+  ],
+};
+
+/**
+ * G-COMP-02 — batch compress: success + atomic rejections.
+ *
+ * All rejections run before any block exists so their zero-state-change
+ * property is directly observable; the success batch runs last.
+ */
+export const G_COMP_02: Scenario = {
+  id: "G-COMP-02",
+  sessionID: "golden-g-comp-02",
+  config: compressConfig(),
+  rounds: [
+    {
+      label: "baseline-refs",
+      messages: longConversation("golden-g-comp-02"),
+    },
+    {
+      label: "reject-cross-range-overlap",
+      messages: longConversation("golden-g-comp-02"),
+      action: {
+        kind: "compress-tool",
+        ranges: [makeRange(1, 4, "A"), makeRange(3, 6, "B")],
+      },
+    },
+    {
+      label: "reject-same-call-consumption",
+      messages: longConversation("golden-g-comp-02"),
+      action: {
+        kind: "compress-tool",
+        ranges: [makeRange(1, 4, "A"), makeRange(1, 8, "B")],
+      },
+    },
+    {
+      label: "reject-indexed-range-failure",
+      messages: longConversation("golden-g-comp-02"),
+      action: {
+        kind: "compress-tool",
+        ranges: [makeRange(1, 3, "ok"), makeRange(50, 55, "phantom")],
+      },
+    },
+    {
+      label: "reject-reversed-order",
+      messages: longConversation("golden-g-comp-02"),
+      action: {
+        kind: "compress-tool",
+        ranges: [
+          {
+            fromRef: "m0007",
+            toRef: "m0003",
+            title: "reversed",
+            summary: "reversed.",
+          },
+        ],
+      },
+    },
+    {
+      label: "batch-two-ranges-success",
+      messages: longConversation("golden-g-comp-02"),
+      action: {
+        kind: "compress-tool",
+        ranges: [makeRange(1, 6, "主题一"), makeRange(6, 10, "主题二")],
+      },
+    },
+  ],
+};
+
+/**
+ * G-COMP-03 — nested consumption (three generations).
+ *
+ * b1 = [1, 6).  A wider range [1, 9) consumes b1 (index line
+ * `--- b1: 第一段 ---`, net token header, b1 deactivated).  A third
+ * range [1, 9) again re-absorbs the now-inactive b1 (covered-inactive
+ * netting: tokens subtracted, index line listed, deactivatedAt
+ * untouched) into b3.
+ */
+export const G_COMP_03: Scenario = {
+  id: "G-COMP-03",
+  sessionID: "golden-g-comp-03",
+  config: compressConfig(),
+  rounds: [
+    {
+      label: "baseline-refs",
+      messages: longConversation("golden-g-comp-03"),
+    },
+    {
+      label: "compress-first-generation",
+      messages: longConversation("golden-g-comp-03"),
+      action: {
+        kind: "compress-tool",
+        ranges: [makeRange(1, 6, "第一段")],
+      },
+    },
+    {
+      label: "consume-b1-wider-range",
+      messages: longConversation("golden-g-comp-03"),
+      action: {
+        kind: "compress-tool",
+        ranges: [makeRange(1, 9, "第二段")],
+      },
+    },
+    {
+      label: "third-generation-reabsorbs-inactive",
+      messages: longConversation("golden-g-comp-03"),
+      action: {
+        kind: "compress-tool",
+        ranges: [makeRange(1, 11, "第三段")],
+      },
+    },
+  ],
+};
+
+/**
+ * G-COMP-04 — every validation gate's negative path.
+ *
+ * Uses a short-output conversation so the phantom gate and the
+ * negative-benefit gate fire on small ranges.  Rounds 1-5 reject with
+ * zero state change; round 6 creates b1; rounds 7-11 reject against
+ * the existing block (partial overlap, no-new-content, stale-ref,
+ * unknown-ref).
+ */
+export const G_COMP_04: Scenario = {
+  id: "G-COMP-04",
+  sessionID: "golden-g-comp-04",
+  config: {
+    protectedMessages: 20,
+    releasedPercent: 10,
+    dedup: {},
+    purgeErrors: {},
+    compress: {
+      // Short-output conversation (~28 tokens/msg): a 300-token budget
+      // still protects the tail while keeping the token boundary well
+      // above the message-count boundary (11).  The 80-token phantom
+      // threshold sits between [1,3) (~56, phantom) and [1,4) (~84,
+      // overlap/negative-benefit probes).
+      thresholdTokens: 80,
+      protectedTokens: 300,
+      maxRanges: 8,
+    },
+    decompress: { maxFillPercent: 90 },
+  },
+  rounds: [
+    {
+      label: "baseline-refs",
+      messages: shortConversation("golden-g-comp-04"),
+    },
+    {
+      label: "gate-reversed-order",
+      messages: shortConversation("golden-g-comp-04"),
+      action: {
+        kind: "compress-tool",
+        ranges: [
+          {
+            fromRef: "m0008",
+            toRef: "m0002",
+            title: "reversed",
+            summary: "reversed.",
+          },
+        ],
+      },
+    },
+    {
+      label: "gate-protection-zone",
+      messages: shortConversation("golden-g-comp-04"),
+      action: {
+        kind: "compress-tool",
+        ranges: [makeRange(1, 29, "protected")],
+      },
+    },
+    {
+      label: "gate-first-user",
+      messages: shortConversation("golden-g-comp-04"),
+      action: {
+        kind: "compress-tool",
+        ranges: [makeRange(0, 4, "first-user")],
+      },
+    },
+    {
+      label: "gate-phantom-low-benefit",
+      messages: shortConversation("golden-g-comp-04"),
+      action: {
+        kind: "compress-tool",
+        ranges: [makeRange(1, 3, "phantom")],
+      },
+    },
+    {
+      label: "gate-negative-benefit",
+      messages: shortConversation("golden-g-comp-04"),
+      action: {
+        kind: "compress-tool",
+        ranges: [
+          {
+            fromRef: "m0002",
+            toRef: "m0007",
+            title: "negative",
+            summary: "s".repeat(2000),
+          },
+        ],
+      },
+    },
+    {
+      label: "create-b1",
+      messages: shortConversation("golden-g-comp-04"),
+      action: {
+        kind: "compress-tool",
+        ranges: [makeRange(1, 6, "已有")],
+      },
+    },
+    {
+      label: "gate-partial-overlap-active",
+      messages: shortConversation("golden-g-comp-04"),
+      action: {
+        kind: "compress-tool",
+        ranges: [makeRange(1, 4, "overlap")],
+      },
+    },
+    {
+      label: "gate-no-new-content",
+      messages: shortConversation("golden-g-comp-04"),
+      action: {
+        kind: "compress-tool",
+        ranges: [makeRange(1, 6, "exact-again")],
+      },
+    },
+    {
+      label: "consume-b1-create-b2",
+      messages: shortConversation("golden-g-comp-04"),
+      action: {
+        kind: "compress-tool",
+        ranges: [makeRange(1, 9, "更宽")],
+      },
+    },
+    {
+      label: "gate-stale-summary-ref",
+      messages: shortConversation("golden-g-comp-04"),
+      action: {
+        kind: "compress-tool",
+        ranges: [
+          {
+            // m0032 is the ref assigned to b1's folded summary message
+            // (zoo-fold-b1) after b1 was created; b1 is now consumed.
+            fromRef: "m0032",
+            toRef: "m0006",
+            title: "stale",
+            summary: "stale.",
+          },
+        ],
+      },
+    },
+    {
+      label: "gate-unknown-ref",
+      messages: shortConversation("golden-g-comp-04"),
+      action: {
+        kind: "compress-tool",
+        ranges: [
+          {
+            fromRef: "m9999",
+            toRef: "m0006",
+            title: "unknown",
+            summary: "unknown.",
+          },
+        ],
+      },
+    },
+  ],
+};

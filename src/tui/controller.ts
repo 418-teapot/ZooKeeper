@@ -2,30 +2,40 @@
  * Context data controller for the ZooKeeper TUI sidebar panel.
  *
  * Owns the shared session-message fetch, the full context recompute
- * (fetch → pruning persistence read → metrics computation → panel
- * signal writes), and the 2-second debounced event refresh.  Created
- * once per plugin lifecycle via the `createContextController` factory; all
- * external dependencies (client slice, state slice, signal setters)
- * are injected through the options object so the module stays free
- * of host-plugin imports.
+ * (fetch → new-core state read → lens mapping → fold → metrics
+ * computation → panel signal writes), and the 2-second debounced event
+ * refresh.  Created once per plugin lifecycle via the
+ * `createContextController` factory; all external dependencies (client
+ * slice, state slice, signal setters) are injected through the options
+ * object so the module stays free of host-plugin imports.
+ *
+ * Session state is read through the new host-agnostic core's store
+ * (`createStateStore().load`) — a read-only disk load that never
+ * mutates or caches, matching the panel's display-only role; effective
+ * prune marks are projected back to v1 tool call ids so the category
+ * breakdown keeps the previous pruned-tool accounting.
  *
  * @module
  */
 
-import { formatPercent } from "../core/context/context-report.js";
+import { history } from "../adapters/opencode/history.js";
+import {
+  effectiveCallIds,
+  foldedV1Messages,
+} from "../adapters/opencode/projection.js";
 import type {
   ContextMessageEntry,
   TokenBreakdownResult,
-} from "../core/context/metrics.js";
+} from "../adapters/opencode/types.js";
 import {
   computeCacheTrend,
   computeContextReport,
   computeCumulativeCacheRate,
   computeTokenBreakdown,
-} from "../core/context/metrics.js";
-import { liveBlocks } from "../core/context/pruning/blocks.js";
-import { previewFold } from "../core/context/pruning/fold.js";
-import { loadSessionState } from "../core/context/pruning/marks.js";
+} from "../adapters/opencode/types.js";
+import { formatPercent } from "../core/context/context-report.js";
+import { fold } from "../core/context/fold.js";
+import { createStateStore } from "../core/context/store.js";
 import { log } from "../utils/logger.js";
 import type { CategoryInfo } from "./subagent.js";
 
@@ -75,6 +85,10 @@ export interface ContextController {
   dispose: () => void;
 }
 
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
+
 /**
  * Create the context data controller for the plugin lifecycle.
  *
@@ -104,6 +118,11 @@ export function createContextController(
   // Request sequence counter: prevents stale async responses from
   // overwriting newer data (issue #6 — compute race).
   let requestSeq = 0;
+
+  // Read-only state store for display loads — never mutates and never
+  // caches, so the panel always reflects the persisted state without
+  // touching the shared in-memory manager.
+  const store = createStateStore();
 
   // ── Shared fetch utility ────────────────────────────────────────
   /**
@@ -144,37 +163,25 @@ export function createContextController(
             (m as Record<string, unknown>)?.info as Record<string, unknown>
           )?.role === "string",
       );
+      const view = history(mapped);
 
-      // Load pruned callIDs for DCP visibility in category breakdown.
-      // Defensive: load failure results in empty set (tools fully counted).
+      // Load the new-core persisted state for DCP visibility in the
+      // category breakdown.  Read-only disk load — the display never
+      // mutates or persists.  Defensive: load failure results in an
+      // empty set (tools fully counted).
       let prunedCallIDs: Set<string> | undefined;
       // Folded message array after applying compression blocks.
       // When set, the category breakdown reflects the model-visible
       // (compression-folded) view instead of the raw message list.
       let foldMessages: ContextMessageEntry[] | undefined;
       try {
-        const persisted = loadSessionState(sessionId);
-        if (persisted) {
-          prunedCallIDs = new Set(
-            [...persisted.marks.entries()]
-              .filter(([, mark]) => mark.effective)
-              .map(([callID]) => callID),
-          );
-          // Apply compression-block folding so the category breakdown
-          // shows the model-visible (folded) numbers.  Pure read-only
-          // — never calls syncBlocks or saveSessionState from the TUI.
-          try {
-            const blockArray = [...persisted.blocks.values()];
-            if (blockArray.length > 0) {
-              const live = liveBlocks(blockArray, mapped);
-              if (live.length > 0) {
-                foldMessages = previewFold(mapped, live);
-              }
-            }
-          } catch {
-            // Non-fatal: fold failure falls back to raw mapped array.
-          }
-        }
+        const persisted = store.load(sessionId);
+        prunedCallIDs = effectiveCallIds(mapped, persisted);
+        // Apply compression-block folding so the category breakdown
+        // shows the model-visible (folded) numbers.  Pure read-only —
+        // fold never mutates the state or the transcript.
+        const { items } = fold(view, persisted);
+        foldMessages = foldedV1Messages(items, mapped, persisted);
       } catch {
         // Non-fatal: TUI must never crash from persistence I/O.
         prunedCallIDs = undefined;

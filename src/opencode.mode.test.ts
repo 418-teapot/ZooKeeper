@@ -11,8 +11,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { COMMAND_HANDLED } from "./compose-opencode.js";
-import { _clearAllSessionsForTesting } from "./core/context/pruning/marks.js";
-import { _clearAllRefsForTesting } from "./core/context/pruning/message-refs.js";
+import { _resetContextStateManagerForTesting } from "./core/context/runtime.js";
 import { DIRECT_WORK_NUDGE } from "./hooks/direct-work-nudge";
 import { JSON_ERROR_REMINDER } from "./hooks/json-error-nudge";
 import { VERIFY_REMINDER } from "./hooks/post-task-nudge";
@@ -130,8 +129,7 @@ function transformMessages(): Array<Record<string, any>> {
 afterEach(() => {
   _resetForTesting();
   sessionAgentMap.clear();
-  _clearAllSessionsForTesting();
-  _clearAllRefsForTesting();
+  _resetContextStateManagerForTesting();
   delete process.env.ZOO_MODE_FILE;
 });
 
@@ -155,7 +153,6 @@ describe("poly full profile — registration parity", () => {
         "event",
         "experimental.chat.messages.transform",
         "experimental.chat.system.transform",
-        "experimental.text.complete",
         "tool",
         "tool.definition",
         "tool.execute.after",
@@ -708,7 +705,6 @@ describe("null profile — skip profile-driven registration", () => {
         "config",
         "event",
         "experimental.chat.system.transform",
-        "experimental.text.complete",
       ].sort(),
     );
   });
@@ -725,14 +721,6 @@ describe("null profile — skip profile-driven registration", () => {
 
   it("infrastructure hooks keep working with a null profile", async () => {
     const plugin = await makePlugin({});
-
-    // experimental.text.complete strips zoo-msg-id refs.
-    const out = { text: "foo <zoo-msg-id>m0001</zoo-msg-id>" };
-    await plugin["experimental.text.complete"](
-      { sessionID: "s", messageID: "m", partID: "p" },
-      out,
-    );
-    assert.equal(out.text, "foo ");
 
     // experimental.chat.system.transform records the model limit.
     await plugin["experimental.chat.system.transform"](

@@ -128,14 +128,18 @@ export const DELEGATION_LEAF_EXAMPLE = `Example (codebase search):
 // ---------------------------------------------------------------------------
 
 /**
- * Instructs the model never to reproduce `<zoo-msg-id>` tags in its output.
+ * Instructs the model never to reproduce line-start `[mN] ` ref prefixes
+ * in its output.
  *
- * These refs are write-only metadata injected by the runtime's context-pruning
- * pipeline.  No tool consumes them yet, so "never reproduce" is safe today.
+ * These refs are line-number addresses injected by the render layer at
+ * line start of every visible view item; the model sees them in its
+ * input and could echo them back.  Reproducing them in free text is
+ * never useful — they are an addressing convention, not content — so
+ * "never reproduce" is safe across the whole prompt surface today.
  *
- * When a model-driven compress tool lands that accepts refs in tool calls,
- * this wording must change to allow referencing refs inside tool arguments
- * while still suppressing verbatim echo in free text.
+ * When a model-driven compress tool lands that accepts refs in tool
+ * calls, this wording must change to allow referencing refs inside tool
+ * arguments while still suppressing verbatim echo in free text.
  */
 export const MSG_REF_NO_ECHO =
-  "**NEVER reproduce message refs (like `<zoo-msg-id>m0001</zoo-msg-id>`) in your output** — they are metadata injected by the runtime for context management.";
+  "**NEVER reproduce message refs (like `[m3]`) in your output** — they are line-number prefixes injected by the runtime for context management.";

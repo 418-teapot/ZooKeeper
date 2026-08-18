@@ -1,34 +1,35 @@
 /**
- * Integration tests for the decompress tool adapter.
+ * Integration tests for the decompress tool adapter against the new
+ * ordinal core.
  *
- * Covers: the restore flow (deactivate → pendingViewChange → refs snapshot
- * → persist → notify → single-line ToolResult), the recall flow (summary
- * body, zero state change, no notification), the context-limit gate
- * rejection (state untouched), the loud config-guidance error when the
- * `[zoo.context.decompress]` section is absent, and the registration gate
- * (absent section → no tool key, primary_tools untouched).
+ * Covers: the restore flow (deactivate → pending view-change flag →
+ * persist → notify → single-line ToolResult), the recall flow (summary
+ * body, zero state change, no notification, RECALL_MAX_CHARS truncation
+ * with the Chinese tail note), the context-limit gate rejection (state
+ * untouched), the not-found error listing the available block numbers
+ * (new UX), the loud config-guidance error when the
+ * `[zoo.context.decompress]` section is absent, and the registration
+ * gate (absent section → no tool key, primary_tools untouched).
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import type { ContextMessageEntry } from "../adapters/opencode/types.js";
 import type { SessionClient } from "../core/client/session.js";
 import type { ContextPruningConfig } from "../core/config-types.js";
-import type { ContextMessageEntry } from "../core/context/metrics.js";
 import {
   _resetForTesting as _resetModelLimitsForTesting,
   setModelLimit,
 } from "../core/context/model-limits.js";
 import {
-  assignMessageRefs,
-  createBlock,
-  RECALL_MAX_CHARS,
-} from "../core/context/pruning/index.js";
+  _resetContextStateManagerForTesting,
+  consumePendingViewChange,
+  getContextStateManager,
+} from "../core/context/runtime.js";
 import {
-  _clearAllSessionsForTesting,
-  deleteSessionState,
-  getOrCreateSessionState,
-  loadSessionState,
-} from "../core/context/pruning/marks.js";
-import { _clearAllRefsForTesting } from "../core/context/pruning/message-refs.js";
+  type Block,
+  nextBlockId,
+  RECALL_MAX_CHARS,
+} from "../core/context/state.js";
 import {
   buildPlugin,
   buildToolHooks,
@@ -42,16 +43,13 @@ import { createDecompressTool } from "./decompress.js";
 // ---------------------------------------------------------------------------
 
 const TEST_SESSION_ID = "sess-decompress-tool";
-const PERSISTED_SESSION_IDS = [TEST_SESSION_ID];
 
 afterEach(() => {
-  _resetForTesting();
+  const store = getContextStateManager().store;
+  store.delete(TEST_SESSION_ID);
+  _resetContextStateManagerForTesting();
   _resetModelLimitsForTesting();
-  _clearAllSessionsForTesting();
-  _clearAllRefsForTesting();
-  for (const sid of PERSISTED_SESSION_IDS) {
-    deleteSessionState(sid);
-  }
+  _resetForTesting();
 });
 
 // ---------------------------------------------------------------------------
@@ -111,16 +109,12 @@ function makeAssistantMsg(id: string, text: string): ContextMessageEntry {
   };
 }
 
-/**
- * A small conversation whose messages are assigned refs so the restore path
- * can snapshot the ref registry.  The user message carries the original
- * content that the ToolResult must never echo.
- */
+/** A 3-message conversation whose restore would reveal the original content. */
 function makeMessages(): ContextMessageEntry[] {
   return [
     makeUserMsg("u0", "开场问题"),
     makeUserMsg("u1", ORIGINAL_CONTENT),
-    makeAssistantMsg("a1", "回答完毕"),
+    makeAssistantMsg("a2", "回答完毕"),
   ];
 }
 
@@ -174,23 +168,6 @@ const mockToolContext = {
   ask: async () => {},
 };
 
-/**
- * Create an active block b1 in the session state (compressedTokens 20000,
- * summaryTokens 500, net delta 19500).
- */
-function createActiveBlock(): void {
-  const state = getOrCreateSessionState(TEST_SESSION_ID);
-  const block = createBlock(state, {
-    anchorMessageId: "a1",
-    messageIds: ["u0", "u1", "a1"],
-    summary: "该段的摘要正文",
-    title: "测试块主题",
-    compressedTokens: 20000,
-    summaryTokens: 500,
-  });
-  assert.ok(block !== null, "block must be created");
-}
-
 /** Valid decompress config (mirrors the parsed config.toml). */
 const ENABLED_CONFIG: ContextPruningConfig = {
   dedup: {},
@@ -199,17 +176,50 @@ const ENABLED_CONFIG: ContextPruningConfig = {
   decompress: { maxFillPercent: 90 },
 };
 
+/**
+ * Seed a block in the shared manager's session state (b1 by default).
+ *
+ * The default span [0, 3) covers the 3-message transcript, with
+ * compressedTokens 20000 / summaryTokens 500 (net delta 19500) — the
+ * same accounting the legacy fixture used.
+ *
+ * @param overrides - Block field overrides.
+ * @returns The seeded block id.
+ */
+function seedBlock(overrides: Partial<Block> = {}): number {
+  const manager = getContextStateManager();
+  const state = manager.get(TEST_SESSION_ID);
+  const id = nextBlockId(state.blocks);
+  state.blocks.set(id, {
+    start: 0,
+    end: 3,
+    title: "测试块主题",
+    summary: "该段的摘要正文",
+    spanHash: "test-span-hash",
+    active: true,
+    compressedTokens: 20000,
+    summaryTokens: 500,
+    createdAt: Date.now(),
+    ...overrides,
+  });
+  assert.ok(state.blocks.get(id) !== undefined, "block must be seeded");
+  return id;
+}
+
+/** Seed an active block b1 with the default span. */
+function seedActiveBlock(): number {
+  return seedBlock();
+}
+
 // ---------------------------------------------------------------------------
 // Restore happy path
 // ---------------------------------------------------------------------------
 
 describe("decompress tool execute — restore happy path", () => {
-  it("deactivates the block, persists state, and sends an ignored notification", async () => {
+  it("deactivates the block, flags the view change, persists, and notifies", async () => {
     const messages = makeMessages();
     const { client, promptCalls } = mockClient(messages);
-    createActiveBlock();
-    // Populate the ref registry so the restore path snapshots it.
-    assignMessageRefs(TEST_SESSION_ID, messages);
+    seedActiveBlock();
 
     const plugin = (await makePlugin(client)) as any;
     assert.ok(plugin.tool, "tool hooks must be registered");
@@ -220,27 +230,19 @@ describe("decompress tool execute — restore happy path", () => {
       mockToolContext,
     );
 
-    // (1) Block deactivated with the user-requested deactivation cause.
-    const state = getOrCreateSessionState(TEST_SESSION_ID);
-    const block = state.blocks.get("1");
+    // (1) Block deactivated in the shared new-core session state.
+    const state = getContextStateManager().get(TEST_SESSION_ID);
+    const block = state.blocks.get(1);
     assert.ok(block !== undefined);
     assert.equal(block.active, false);
-    assert.equal(block.deactivatedBy, "user");
-    assert.equal(typeof block.deactivatedAt, "number");
-    assert.equal(state.pendingViewChange, true);
+    assert.equal(consumePendingViewChange(TEST_SESSION_ID), true);
 
-    // (2) Refs snapshot saved on the state.
-    assert.ok(state.refs !== undefined, "refs snapshot must be saved");
+    // (2) State persisted to disk via the shared manager.
+    const persisted = getContextStateManager().store.load(TEST_SESSION_ID);
+    assert.equal(persisted.blocks.size, 1);
+    assert.equal(persisted.blocks.get(1)?.active, false);
 
-    // (3) State persisted to disk via saveSessionState.
-    const persisted = loadSessionState(TEST_SESSION_ID);
-    assert.ok(persisted !== null, "state must be persisted to disk");
-    assert.equal(persisted.blocks.get("1")?.active, false);
-    assert.equal(persisted.blocks.get("1")?.deactivatedBy, "user");
-    assert.equal(typeof persisted.blocks.get("1")?.deactivatedAt, "number");
-    assert.ok(persisted.refs !== undefined, "refs snapshot must be persisted");
-
-    // (4) Ignored notification sent.
+    // (3) Ignored notification sent.
     assert.equal(promptCalls.length, 1);
     assert.equal(promptCalls[0].sessionID, TEST_SESSION_ID);
     assert.equal(promptCalls[0].noReply, true);
@@ -284,18 +286,11 @@ describe("decompress tool execute — recall path", () => {
     const { client, promptCalls } = mockClient(messages);
 
     // Build an inactive block (as if consumed by a wider recompression).
-    const state = getOrCreateSessionState(TEST_SESSION_ID);
-    const block = createBlock(state, {
-      anchorMessageId: "a1",
-      messageIds: ["u0", "u1", "a1"],
+    seedBlock({
+      active: false,
       summary: "被消费旧块的完整摘要正文",
       title: "旧块主题",
-      compressedTokens: 20000,
-      summaryTokens: 500,
     });
-    assert.ok(block !== null);
-    block.active = false;
-    const dirtyBefore = state.dirty;
 
     const plugin = (await makePlugin(client)) as any;
     const result = await plugin.tool.decompress.execute(
@@ -307,31 +302,24 @@ describe("decompress tool execute — recall path", () => {
     assert.equal(result, "被消费旧块的完整摘要正文");
 
     // Zero state change.
-    const after = getOrCreateSessionState(TEST_SESSION_ID);
-    assert.equal(after.blocks.get("1")?.active, false);
-    assert.equal(after.blocks.get("1")?.deactivatedBy, undefined);
-    assert.equal(after.dirty, dirtyBefore);
-    assert.equal(after.pendingViewChange, false);
+    const after = getContextStateManager().get(TEST_SESSION_ID);
+    assert.equal(after.blocks.get(1)?.active, false);
+    assert.equal(consumePendingViewChange(TEST_SESSION_ID), false);
 
     // No persistence, no notification.
-    assert.equal(loadSessionState(TEST_SESSION_ID), null);
+    const persisted = getContextStateManager().store.load(TEST_SESSION_ID);
+    assert.equal(persisted.blocks.size, 0);
     assert.equal(promptCalls.length, 0);
   });
 
   it("truncates an over-long summary with a Chinese tail note", async () => {
     const { client } = mockClient([]);
-    const state = getOrCreateSessionState(TEST_SESSION_ID);
     const longSummary = "长".repeat(RECALL_MAX_CHARS + 100);
-    const block = createBlock(state, {
-      anchorMessageId: "a1",
-      messageIds: ["u0"],
+    seedBlock({
+      active: false,
       summary: longSummary,
       title: "超长块主题",
-      compressedTokens: 20000,
-      summaryTokens: 500,
     });
-    assert.ok(block !== null);
-    block.active = false;
 
     const plugin = (await makePlugin(client)) as any;
     const result = await plugin.tool.decompress.execute(
@@ -358,7 +346,7 @@ describe("decompress tool execute — recall path", () => {
 describe("decompress tool execute — gate rejection", () => {
   it("rejects a restore that would exceed maxFillPercent, state untouched", async () => {
     const { client, promptCalls } = mockClient([]);
-    createActiveBlock();
+    seedActiveBlock();
     // Tiny window: after = 0 + 19500 > 1000 × 90% = 900 → rejected.
     setModelLimit(TEST_SESSION_ID, 1000, "test-model");
 
@@ -372,18 +360,20 @@ describe("decompress tool execute — gate rejection", () => {
     );
 
     // State untouched: block still active, nothing saved, no notification.
-    const state = getOrCreateSessionState(TEST_SESSION_ID);
-    assert.equal(state.blocks.get("1")?.active, true);
-    assert.equal(state.blocks.get("1")?.deactivatedBy, undefined);
-    assert.equal(state.pendingViewChange, false);
-    assert.equal(loadSessionState(TEST_SESSION_ID), null);
+    const state = getContextStateManager().get(TEST_SESSION_ID);
+    assert.equal(state.blocks.get(1)?.active, true);
+    assert.equal(consumePendingViewChange(TEST_SESSION_ID), false);
+    assert.equal(
+      getContextStateManager().store.load(TEST_SESSION_ID).blocks.size,
+      0,
+    );
     assert.equal(promptCalls.length, 0);
   });
 
   it("skips the gate when no model limit is captured (undefined context)", async () => {
     const messages = makeMessages();
     const { client, promptCalls } = mockClient(messages);
-    createActiveBlock();
+    seedActiveBlock();
     // No setModelLimit call → getModelLimit returns undefined → gate skipped.
 
     const plugin = (await makePlugin(client)) as any;
@@ -392,12 +382,61 @@ describe("decompress tool execute — gate rejection", () => {
       mockToolContext,
     );
 
-    const state = getOrCreateSessionState(TEST_SESSION_ID);
-    assert.equal(state.blocks.get("1")?.active, false);
-    assert.equal(state.blocks.get("1")?.deactivatedBy, "user");
+    const state = getContextStateManager().get(TEST_SESSION_ID);
+    assert.equal(state.blocks.get(1)?.active, false);
     assert.equal(typeof result, "string");
     assert.ok(result.includes("下一轮上下文生效"));
     assert.equal(promptCalls.length, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Target resolution errors (new UX — available block listing)
+// ---------------------------------------------------------------------------
+
+describe("decompress tool execute — target resolution errors", () => {
+  it("throws a not-found error listing the available block numbers", async () => {
+    const messages = makeMessages();
+    const { client } = mockClient(messages);
+    seedActiveBlock();
+    const plugin = (await makePlugin(client)) as any;
+
+    await assert.rejects(
+      () => plugin.tool.decompress.execute({ blockId: "b9" }, mockToolContext),
+      (err: unknown) =>
+        err instanceof Error &&
+        /b9 不存在/.test(err.message) &&
+        /1 个压缩块/.test(err.message) &&
+        /b1/.test(err.message) &&
+        /请勿凭记忆编造/.test(err.message),
+    );
+  });
+
+  it("rejects a malformed block id with format guidance", async () => {
+    const { client } = mockClient([]);
+    const plugin = (await makePlugin(client)) as any;
+
+    await assert.rejects(
+      () => plugin.tool.decompress.execute({ blockId: "9" }, mockToolContext),
+      (err: unknown) =>
+        err instanceof Error &&
+        /格式非法/.test(err.message) &&
+        /b<N>/.test(err.message) &&
+        /请勿凭记忆编造/.test(err.message),
+    );
+  });
+
+  it("reports the empty-session case when no block exists at all", async () => {
+    const { client } = mockClient([]);
+    const plugin = (await makePlugin(client)) as any;
+
+    await assert.rejects(
+      () => plugin.tool.decompress.execute({ blockId: "b1" }, mockToolContext),
+      (err: unknown) =>
+        err instanceof Error &&
+        /b1 不存在/.test(err.message) &&
+        /没有已创建的压缩块/.test(err.message),
+    );
   });
 });
 
@@ -419,7 +458,7 @@ describe("decompress tool execute — config guidance error", () => {
     );
 
     // No state was touched.
-    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    const state = getContextStateManager().get(TEST_SESSION_ID);
     assert.equal(state.blocks.size, 0);
   });
 
@@ -434,7 +473,7 @@ describe("decompress tool execute — config guidance error", () => {
         /blockId/.test(err.message) &&
         /字符串/.test(err.message),
     );
-    const state = getOrCreateSessionState(TEST_SESSION_ID);
+    const state = getContextStateManager().get(TEST_SESSION_ID);
     assert.equal(state.blocks.size, 0);
   });
 });
@@ -491,8 +530,7 @@ describe("decompress tool registration gate", () => {
     assert.deepEqual(hooks.decompress.args, {
       blockId: {
         type: "string",
-        description: `要恢复的块 ID（如 "b3"）。来源：块头 [Compression Block b3] 或索引行
---- bN: <title> ---。索引行指向的旧块返回摘要正文，活跃块恢复原始消息。`,
+        description: `要恢复的块 ID（如 "b3"）。来源：块头 [Block b3 · K 条] 或索引行 --- bN: <title> ---。索引行指向的旧块返回摘要正文，活跃块恢复原始消息。`,
       },
     });
   });
@@ -512,23 +550,18 @@ describe("decompress tool registration gate", () => {
 
 两种结果：
 
-1. 活跃块（视图中带 [Compression Block bN] 块头）：块的原始消息在你的
-   下一轮上下文中完整恢复。ToolResult 只返回一行确认，不含原文——不要
-   在调用后的同一轮里引用原文内容。
-2. 已被更大压缩块消费的旧块（仅以索引行 --- bN: <title> --- 出现）：
-   立即返回该块保留的完整摘要正文，上下文不变。
+1. 活跃块（视图中带 [Block bN · K 条] 块头）：块的原始消息在你的下一轮上下文中完整恢复。ToolResult 只返回一行确认，不含原文——不要在调用后的同一轮里引用原文内容。
+2. 已被更大压缩块消费的旧块（仅以索引行 --- bN: <title> --- 出现）：立即返回该块保留的完整摘要正文，上下文不变。
 
 参数：
 
-- blockId: 要恢复的块 ID（如 "b3"）。取自块头 [Compression Block b3]
-  或索引行 --- bN: <title> ---，不要凭记忆编造。
+- blockId: 要恢复的块 ID（如 "b3"）。取自块头 [Block b3 · K 条] 或索引行 --- bN: <title> ---，不要凭记忆编造。
 
 重要：
 
-- 恢复活跃块会回胀上下文。预估恢复后超过上下文水位时调用会被拒绝，
-  错误信息会给出替代指导（先压缩其他段腾空间）。
+- 恢复活跃块会回胀上下文。预估恢复后超过上下文水位时调用会被拒绝，错误信息会给出替代指导（先压缩其他段腾空间）。
 - 不要与 compress 并行调用——两者都修改压缩状态，可能冲突。
-- 块不存在时会返回明确的错误指导，按提示修正后重试。`,
+- 块不存在时会返回明确的错误指导（列出当前可用块号），按提示修正后重试。`,
     );
   });
 });

@@ -81,6 +81,7 @@ ZooKeeper/
 │   │   ├── spider.ts
 │   │   ├── eagle.ts
 │   │   └── kiwi.ts
+│   ├── adapters/            # 宿主适配层（opencode/ 为 HostAdapter 的 v1 实现；pi/ 待 F5）
 │   ├── registry.ts          # 单元注册表 — 唯一有序的加载单元名单（单一事实来源）
 │   ├── opencode.ts          # OpenCode 扩展入口 + 底盘（profile 驱动的注册由 compose-opencode 组装）
 │   ├── compose-opencode.ts  # OpenCode 事件键适配器（组装 ComposedResult → hook 注册；统一 COMMAND_HANDLED 哨兵）
@@ -90,12 +91,7 @@ ZooKeeper/
 │   ├── core/                # 框架无关纯逻辑（零 OpenCode 依赖）
 │   │   ├── compose.ts       # 选择引擎（composeProfile：profile → 启用单元实例化 → ComposedResult）
 │   │   ├── slots.ts         # 槽位词汇（单元描述符、贡献类型、ComposedResult/Deps/ActiveSet）
-│   │   ├── context/         # 上下文管理域
-│   │   │   ├── metrics.ts       # 上下文 token 估算（混合策略：API 报告 + 启发式）
-│   │   │   ├── context-report.ts# 上下文报告格式化
-│   │   │   ├── model-limits.ts  # 模型上下文上限注册表
-│   │   │   ├── message-parts.ts # 消息 part 内省 + pruning 占位符契约（最低层，零 import）
-│   │   │   └── pruning/         # mark-sweep 裁剪子域（含 producers/）
+│   │   ├── context/         # 上下文管理域（host 无关核心：透镜 → 状态 → 流水线原语；19 模块，职责见各文件 docstring）
 │   │   ├── client/          # 宿主 client 类型切片（框架无关的 client 接口契约）
 │   │   │   ├── agent.ts         # Agent 类型检测（Clientish 接口 + getAgentName）
 │   │   │   ├── todo.ts          # Todo 状态查询（TinyClient 接口 + getTodoState）
@@ -109,7 +105,7 @@ ZooKeeper/
 │   │   ├── delegation.ts    # task() 委派权限判定
 │   │   └── prompts.ts       # hook/tool 注入的 nudge 文本（agent 片段见 agents/parts.ts）
 │   ├── hooks/               # 各 hook 单元的薄适配层（每目录一个单元：解包框架 (input, output) → 调 core 函数）
-│   │   ├── context-metrics/ # 上下文指标（重导出 core/context/metrics）
+│   │   ├── context-metrics/ # 上下文指标（重导出 adapters/opencode/types 的 measureContext）
 │   │   ├── context-pruning/ # 上下文裁剪 transform（mark-sweep + compress）
 │   │   ├── direct-work-nudge/# 直接编辑提醒（nudgeDirectWork 适配器）
 │   │   ├── json-error-nudge/# JSON 解析错误恢复（重导出 core/recovery）

@@ -1,7 +1,7 @@
 /**
  * Context Metrics barrel export.
  *
- * Thin re-export — all logic lives in `src/core/context/metrics.ts`.
+ * Thin re-export — all logic lives in `src/adapters/opencode/types.ts`.
  *
  * @module
  */
@@ -15,7 +15,7 @@ import {
   type ContextTokenInfo,
   estimateMessageHeuristic,
   measureContext,
-} from "../../core/context/metrics.js";
+} from "../../adapters/opencode/types.js";
 import type { HookUnitDescriptor } from "../../core/slots.js";
 import { log } from "../../utils/logger.js";
 

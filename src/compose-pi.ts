@@ -33,7 +33,7 @@ import type {
   ContextMetricsOutput,
   ContextTextPart,
   ContextTokenInfo,
-} from "./core/context/metrics.js";
+} from "./adapters/opencode/types.js";
 import type {
   AfterExecInput,
   AfterExecOutput,

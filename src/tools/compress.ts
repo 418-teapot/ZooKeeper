@@ -1,10 +1,10 @@
 /**
  * Batch range-mode compress tool adapter.
  *
- * Exposes the batch range-compression core (`compressRanges` in
- * `src/core/context/pruning/range.ts`) as an OpenCode tool so the model can
- * compress N contiguous visible-history spans into N model-written
- * summaries in ONE call (zero extra API calls).
+ * Exposes the ordinal-based batch compression core
+ * (`compressRanges` in `src/core/context/compress.ts`) as an OpenCode
+ * tool so the model can compress N contiguous visible-history spans
+ * into N model-written summaries in ONE call (zero extra API calls).
  *
  * The client and the parsed context-pruning config are captured by the
  * factory closure.  Each execution:
@@ -12,17 +12,21 @@
  * 1. Resolves the session ID from the tool context (tolerates both
  *    `sessionID` and `sessionId` shapes).
  * 2. Validates the `ranges` argument (array of `{fromRef, toRef, title,
- *    summary}`) and enforces the `max_ranges` upper bound — an overflow
- *    fails loudly with batch guidance BEFORE any core work.
+ *    summary}`); per-range title rules and the `max_ranges` upper bound
+ *    are enforced by the core with loud batch guidance BEFORE any range
+ *    is applied.
  * 3. Fetches the full session messages (same unwrap + error check as the
- *    `/dcp` command path).
- * 4. Ensures the ref registry is populated (idempotent fallback — the
- *    transform pipeline normally does this).
- * 5. Drives the batch resolve → validate → apply pipeline.  Every range
- *    is validated against the same snapshot; any invalid range rejects
- *    the whole call naming the 1-based range index, leaving the state
- *    untouched.
- * 6. Persists the session state ONCE with `pendingViewChange`.
+ *    `/dcp` command path) and maps them to the host-agnostic transcript
+ *    through the v1 adapter (`history`).
+ * 4. Folds the transcript with the shared session state and numbers the
+ *    visible view — the per-round line-number address space the model
+ *    references (`mN` / `[mN]`).
+ * 5. Drives the core batch pipeline (resolve → validate → apply).  Every
+ *    range is validated against the same snapshot; any invalid range
+ *    rejects the whole call naming the 1-based range index, leaving the
+ *    state untouched.
+ * 6. Flags the pending view change and persists the session state ONCE
+ *    through the shared state manager.
  * 7. Injects a single ignored chat notification covering all blocks.
  *
  * Loud Chinese guidance errors from the core propagate to the model
@@ -33,19 +37,23 @@
  * @module
  */
 
+import { history } from "../adapters/opencode/history.js";
+import type { ContextMessageEntry } from "../adapters/opencode/types.js";
 import type { SessionClient } from "../core/client/session.js";
 import type { ContextPruningConfig } from "../core/config-types.js";
-import { formatTokens } from "../core/context/context-report.js";
-import type { ContextMessageEntry } from "../core/context/metrics.js";
 import {
-  assignMessageRefs,
-  type CompressionConfig,
+  type CompressOptions,
   type CompressRangeInput,
   compressRanges,
-  getOrCreateSessionState,
-  saveSessionState,
-  snapshotRefs,
-} from "../core/context/pruning/index.js";
+} from "../core/context/compress.js";
+import { formatTokens } from "../core/context/context-report.js";
+import { fold } from "../core/context/fold.js";
+import {
+  getContextStateManager,
+  setPendingViewChange,
+} from "../core/context/runtime.js";
+import type { Block, SessionState } from "../core/context/state.js";
+import { type NumberedItem, numberView } from "../core/context/view-refs.js";
 import { COMPRESS_GUIDANCE } from "../core/prompts.js";
 import type { ToolUnitDescriptor } from "../core/slots.js";
 import { log } from "../utils/logger.js";
@@ -88,24 +96,6 @@ export type CompressToolDefinition = {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Check whether a string contains any ASCII or C1 control character.
- *
- * Covers the C0 controls (NUL..US, i.e. `\x00`..`\x1F`) plus the full
- * C1 range — DEL (`\x7F`) and the C1 controls (`\x80`..`\x9F`) — the
- * set that would break the single-line block header / index lines.
- *
- * @param value - The string to inspect.
- * @returns `true` when the string contains a control character.
- */
-function hasControlCharacter(value: string): boolean {
-  for (let i = 0; i < value.length; i++) {
-    const code = value.charCodeAt(i);
-    if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) return true;
-  }
-  return false;
-}
 
 /**
  * Resolve the session ID from the OpenCode tool context.
@@ -186,44 +176,6 @@ function validateCompressArgs(args: unknown): CompressToolInput {
 }
 
 /**
- * Validate a single range's title (loud Chinese guidance, range-indexed).
- *
- * The title becomes the block's one-line index entry when a wider
- * recompression consumes this block, so it must be short and non-empty.
- * Control characters (newline, carriage return, tab, NUL, BEL, DEL, C1
- * controls, ...) would split the single-line block header / index lines,
- * and runs of 3+ hyphens would visually merge with the `--- b<N>: <title>
- * ---` separators — both rejected loudly so the model retries.
- *
- * @param title - The raw title string.
- * @param rangeIndex - The 1-based range index for the error message.
- */
-function validateRangeTitle(title: string, rangeIndex: number): string {
-  const trimmed = title.trim();
-  if (trimmed.length === 0) {
-    throw new Error(
-      `第 ${rangeIndex} 个范围：title 不能为空：请用一行不超过 80 字符的主题说明概括这段压缩内容（将来此块被更大范围压缩时，该主题会作为索引行展示）。`,
-    );
-  }
-  if (hasControlCharacter(trimmed)) {
-    throw new Error(
-      `第 ${rangeIndex} 个范围：title 必须用单行纯文本概括主题，不含换行或控制字符。`,
-    );
-  }
-  if (/-{3,}/.test(trimmed)) {
-    throw new Error(
-      `第 ${rangeIndex} 个范围：title 不能包含三个及以上连续连字符（---），否则会破坏压缩块索引行的分隔格式。请改用其他标点（如破折号 ——）或文字分隔。`,
-    );
-  }
-  if (trimmed.length > 80) {
-    throw new Error(
-      `第 ${rangeIndex} 个范围：title 过长（${trimmed.length} 字符，超过 80 字符上限）：请压缩到 80 字符以内后重试。一行主题足够，详细内容请放进 summary。`,
-    );
-  }
-  return trimmed;
-}
-
-/**
  * Fetch the full session messages array.
  *
  * Mirrors the `/dcp` command path: unwraps `res.data ?? res` and checks
@@ -279,6 +231,31 @@ async function fetchSessionMessages(
   return messages;
 }
 
+/**
+ * Map the created blocks to their persistent block ids.
+ *
+ * The core's `Block` records carry no id — the id is the block-map key
+ * (`bN`).  The created objects are the same references inserted into
+ * `state.blocks`, so identity matching recovers each id in request
+ * order.
+ *
+ * @param state - The session state (block map).
+ * @param created - The blocks created by the call, in request order.
+ * @returns The persistent block ids in the same order.
+ */
+function createdBlockIds(state: SessionState, created: Block[]): number[] {
+  const idByBlock = new Map<Block, number>();
+  for (const [id, block] of state.blocks) {
+    idByBlock.set(block, id);
+  }
+  const ids: number[] = [];
+  for (const block of created) {
+    const id = idByBlock.get(block);
+    if (id !== undefined) ids.push(id);
+  }
+  return ids;
+}
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -303,52 +280,40 @@ export function createCompressTool(
 
 何时使用：
 
-收到上下文压力提醒（nudge）建议压缩时，或你判断一段已完成的探索/
-委派历史不再需要逐字保留时。压缩是非破坏性的——原文保留在会话存储
-中，之后可用 decompress 工具按块召回。
+收到上下文压力提醒（nudge）建议压缩时，或你判断一段已完成的探索/委派历史不再需要逐字保留时。压缩是非破坏性的——原文保留在会话存储中，之后可用 decompress 工具按块召回。
 
 ${COMPRESS_GUIDANCE}
 
-消息寻址（REFS）：
+消息寻址（行号）：
 
-- 可见消息带有 <zoo-msg-id>mNNNN</zoo-msg-id> 标签，fromRef/toRef
-  使用此 ref（如 "m0001"）。
-- ref 是地址而非序号，数值可能不连续——按阅读顺序（位置先后）选择
-  起点与终点，不要按数字大小比较。
-- 两个端点都必须当前可见。压缩范围到 toRef 之前为止（toRef 本身
-  不压缩）。
-- 不要凭记忆编造 ref——只使用当前可见消息上的标签。
+- 每条可见消息以 [mN] 前缀编号（如 [m3]），fromRef/toRef 使用此编号（"m3" 或 "[m3]" 均可）。
+- 行号是当轮视图的地址而非序号，每轮重新编号——只引用当前可见消息行首的编号，不要凭记忆编造，也不要跨轮复用。
+- 两个端点都必须当前可见，起点须在终点之前。范围覆盖 fromRef 与 toRef 之间的全部连续消息（两端点均包含）；端点落在压缩块摘要上时覆盖整个块。
+- 压缩块覆盖的消息不再占用行号——引用已压入块内容的消息行号会得到"行号不存在"的指导，可先用 decompress 恢复该块再压缩。
 
 压缩块：
 
-- 已压缩的段显示为 [Compression Block bN] 块头加摘要。其上的 ref
-  指向整块——用它作端点将消费整个块；范围必须完整覆盖该块，部分
-  重叠会被拒绝并给出指导。
-- 被消费块的索引行（--- bN: <title> ---）会自动加入新块摘要，无需
-  手动提及。
+- 已压入压缩块的段显示为 [Block bN · K 条] 块头加摘要，其覆盖的消息不再占用行号。bN 是块在会话中的持久编号——用作端点将消费整个块；范围必须完整覆盖该块，部分重叠会被拒绝并给出指导。
+- 被消费块的索引行（--- bN: <title> ---）会自动加入新块摘要，无需手动提及。
 
 保护边界：
 
-- 末尾保护窗（最近若干条消息与 token 预算）与最后一条用户消息不可
-  压，越界会被拒绝并给出可压范围。
+- 末尾保护窗（最近若干条消息与 token 预算）与最后一条用户消息不可压，越界会被拒绝并给出可压范围。
 - 会话第一条用户消息永远不可压。
 - 收益不足的短段会被幻影门拒绝——选择更长的段。
 
 批量提交（ranges）：
 
-- 一次调用通过 ranges 数组提交多个范围，每个范围独立建块。先全校验
-  后统一生效——任一范围非法，整次调用被拒绝并指明第几个范围。
+- 一次调用通过 ranges 数组提交多个范围，每个范围独立建块。先全校验后统一生效——任一范围非法，整次调用被拒绝并指明第几个范围。
 - 范围必须互不重叠，且不得消费同一次调用内其他范围刚创建的块。
 - 单次调用最多提交 max_ranges 个范围，超限会被拒绝——请分批提交。
 
 参数：
 
 - ranges：数组，每项为 {fromRef, toRef, title, summary}。
-- fromRef / toRef：范围端点 ref（规则如上）。
-- title：一行主题（不超过 80 字符，单行纯文本，不含 "---"），此块
-  日后被更大范围消费时作为索引行展示。
-- summary：替换整个范围的完整摘要。保留关键决策、结论与文件路径，
-  确保后续工作无需回看原文。
+- fromRef / toRef：范围端点的当轮行号（"m3" 或 "[m3]"），规则如上。
+- title：一行主题（不超过 80 字符，单行纯文本，不含 "---"），此块日后被更大范围消费时作为索引行展示。
+- summary：替换整个范围的完整摘要。保留关键决策、结论与文件路径，确保后续工作无需回看原文。
 
 选择失败会返回响亮的中文错误指导——按提示重新选择后重试。`,
     args: {
@@ -363,12 +328,12 @@ ${COMPRESS_GUIDANCE}
             fromRef: {
               type: "string",
               description:
-                '范围起点消息的 ref（如 "m0001"，对应消息上的 <zoo-msg-id> 标签）。该消息及其之后的内容将被压缩。ref 是地址而非序号，数值上可能不连续。',
+                '范围起点消息的当轮行号（如 "m3" 或 "[m3]"，对应可见消息行首的 [mN] 前缀）。该消息及其之后的内容将被压缩。行号是地址而非序号，每轮重新编号——请从当前视图行首标记中取用。',
             },
             toRef: {
               type: "string",
               description:
-                "范围终点消息的 ref，压缩范围到该消息之前为止（该消息本身不压缩）。请选择位置在起点之后的可见消息。",
+                "范围终点消息的当轮行号，范围覆盖 fromRef 与 toRef 之间的全部连续消息（两端点均包含）。请选择位置在起点之后的可见消息行号。",
             },
             title: {
               type: "string",
@@ -389,7 +354,7 @@ ${COMPRESS_GUIDANCE}
       const sessionID = resolveSessionId(toolCtx);
       const { ranges } = validateCompressArgs(args);
 
-      // ── Build the compression config from the parsed context config
+      // ── Build the compression options from the parsed context config
       // with NO fallbacks — config.toml is the single source of truth.
       // The registration gate only registers the tool when the profile's
       // tools list names it, so reaching execute means the tool is
@@ -414,73 +379,76 @@ ${COMPRESS_GUIDANCE}
         );
       }
 
-      // ── max_ranges gate: loud overflow guidance BEFORE any core work ─
-      const maxRanges = compressCfg.maxRanges;
-      if (ranges.length > maxRanges) {
-        throw new Error(
-          `一次调用最多提交 ${maxRanges} 个压缩范围，本次提交了 ${ranges.length} 个。请分批提交：每批不超过 ${maxRanges} 个范围，分多次调用完成。`,
-        );
-      }
+      // Fetch full messages, then build the host-agnostic transcript and
+      // the folded, line-numbered view of the current round.
+      const messages = await fetchSessionMessages(client, sessionID);
+      const view = history(messages);
+      const manager = getContextStateManager();
+      const state = manager.get(sessionID);
+      const { items } = fold(view, state);
+      const numbered: NumberedItem[] = numberView(
+        items,
+        (ordinal) => view[ordinal].hidden,
+      );
 
-      // ── Per-range title validation (range-indexed) ─────────────────
-      const normalized = ranges.map((r, i) => ({
-        ...r,
-        title: validateRangeTitle(r.title, i + 1),
-      }));
-
-      const config: CompressionConfig = {
+      // Core batch pipeline: loud Chinese guidance errors come back as a
+      // whole-call error (max_ranges overflow) or per-range failures
+      // (already range-indexed by the core).
+      const options: CompressOptions = {
         protectedMessages: contextConfig.protectedMessages,
         protectedTokens: compressCfg.protectedTokens,
         thresholdTokens: compressCfg.thresholdTokens,
+        maxRanges: compressCfg.maxRanges,
       };
+      const result = compressRanges(view, numbered, state, options, ranges);
 
-      // Fetch full messages, then ensure the ref registry is populated
-      // (idempotent re-entry by design — covers the empty-registry case).
-      // `anchorTokens` is passed through so the first-user message stays
-      // anchor-protected here too; omitting it would let this re-entry
-      // assign the anchor a ref and silently bypass the protection.
-      const messages = await fetchSessionMessages(client, sessionID);
-      assignMessageRefs(sessionID, messages, contextConfig.anchorTokens);
+      if (result.error !== undefined) {
+        throw new Error(result.error);
+      }
+      if (result.failed.length > 0) {
+        const failure = result.failed[0];
+        // Core span-resolution errors are not range-indexed; prefix them
+        // with the range index the legacy contract exposed.  Title and
+        // cross-range errors already carry their range index verbatim.
+        const indexed = failure.error.startsWith(`第 ${failure.index} 个范围`);
+        throw new Error(
+          indexed
+            ? failure.error
+            : `第 ${failure.index} 个范围校验失败：${failure.error}`,
+        );
+      }
 
-      // Core batch pipeline: loud Chinese guidance errors propagate
-      // unchanged (already range-indexed by the core).
-      const state = getOrCreateSessionState(sessionID);
-      const created = compressRanges(
-        sessionID,
-        messages,
-        state,
-        config,
-        normalized,
+      const blockIds = createdBlockIds(state, result.created)
+        .map((id) => `b${id}`)
+        .join("、");
+      const msgCount = result.created.reduce(
+        (s, b) => s + (b.end - b.start),
+        0,
       );
-
-      const blockIds = created.map((b) => `b${b.blockId}`).join("、");
-      const msgCount = created.reduce((s, b) => s + b.messageIds.length, 0);
-      const reclaimed = created.reduce(
+      const reclaimed = result.created.reduce(
         (s, b) => s + (b.compressedTokens - b.summaryTokens),
         0,
       );
 
-      // Mark the view change and persist ONCE so the next transform folds
-      // the new blocks (mirrors the command path).  Snapshot the ref
-      // registry so refs survive a restart without renumbering.
-      state.pendingViewChange = true;
-      const refsSnapshot = snapshotRefs(sessionID);
-      if (refsSnapshot) state.refs = refsSnapshot;
-      saveSessionState(sessionID, state);
+      // The view differs next round (new fold blocks) — flag the view
+      // change and persist ONCE so the next transform folds the new
+      // blocks and its release phase flushes pending marks.
+      setPendingViewChange(sessionID);
+      manager.save(sessionID);
 
       log("compress-tool", "compress_created", sessionID, undefined, "info", {
-        blockIds: created.map((b) => b.blockId),
-        rangeCount: created.length,
+        blockIds: createdBlockIds(state, result.created),
+        rangeCount: result.created.length,
         messageCount: msgCount,
         reclaimedTokens: reclaimed,
-        titles: created.map((b) => b.title),
+        titles: result.created.map((b) => b.title),
       });
 
       // Ignored chat notification (best-effort — compression already done).
       const notifyMsg =
-        created.length === 1
-          ? `上下文压缩：已压缩 ${msgCount} 条消息为压缩块 ${blockIds}：${created[0].title}，约回收 ${formatTokens(reclaimed)} tokens`
-          : `上下文压缩：已压缩 ${created.length} 个范围，共 ${msgCount} 条消息（${blockIds}），约回收 ${formatTokens(reclaimed)} tokens`;
+        result.created.length === 1
+          ? `上下文压缩：已压缩 ${msgCount} 条消息为压缩块 ${blockIds}：${result.created[0].title}，约回收 ${formatTokens(reclaimed)} tokens`
+          : `上下文压缩：已压缩 ${result.created.length} 个范围，共 ${msgCount} 条消息（${blockIds}），约回收 ${formatTokens(reclaimed)} tokens`;
       try {
         await client?.session?.prompt?.({
           path: { id: sessionID },

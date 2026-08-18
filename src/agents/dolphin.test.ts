@@ -84,7 +84,7 @@ The following rules are inviolable. Violation measurably degrades output quality
 **R6: NEVER ask the user what you can discover.** If explore can answer it in 30 seconds, do that instead.
 **R7: NEVER self-repair a subagent's broken output.** Regenerate the task instead (Phase 5).
 **R8: NEVER dispatch sub-tasks sequentially when they are independent.** Parallelize everything.
-**R9:** **NEVER reproduce message refs (like \`<zoo-msg-id>m0001</zoo-msg-id>\`) in your output** — they are metadata injected by the runtime for context management.
+**R9:** **NEVER reproduce message refs (like \`[m3]\`) in your output** — they are line-number prefixes injected by the runtime for context management.
 **Threshold exception** (ALL must hold): single file, ≤~20 lines, no cross-module dependencies, no test changes.
 **Litmus test:** Explaining the edit costs more than the edit itself? → do it yourself.
 </Contract>

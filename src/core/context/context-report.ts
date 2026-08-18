@@ -1,19 +1,54 @@
 /**
- * Context report formatting for the `/dcp context` command.
+ * Context report data types and formatting for the `/dcp context` command.
  *
- * Pure display layer -- all computation lives in `src/core/context/metrics.ts`.
- * Provides token/cache/percentage formatting helpers and the final
- * multi-line report string in Chinese (user-facing).
+ * Declares the report data types (`ContextReport`,
+ * `ContextCategoryBreakdown`) and the pure display layer — all computation
+ * lives in the OpenCode v1 adapter module.  Provides token/cache/percentage
+ * formatting helpers and the final multi-line report string in Chinese
+ * (user-facing).
  *
  * @module
  */
 
-import type { ContextReport } from "./metrics.js";
-import {
-  activeBlockCount,
-  activeReclaimedTokens,
-  type SessionState,
-} from "./pruning/index.js";
+import type { SessionState } from "./state.js";
+
+// ---------------------------------------------------------------------------
+// Report types (display-agnostic — only data)
+// ---------------------------------------------------------------------------
+
+/**
+ * Heuristic category breakdown of token usage.
+ *
+ * - user / tool — CJK-aware part-level heuristic (CJK /1.5, other /4).
+ * - assistant — API-reported `tokens.output` when available, else
+ *   part-level heuristic fallback.
+ * - system — everything not attributable to messages (system prompt +
+ *   tool definitions + estimation slack): `total − user − assistant − tool`.
+ */
+export interface ContextCategoryBreakdown {
+  user: number;
+  assistant: number;
+  tool: number;
+  system: number;
+}
+
+/**
+ * Complete context report (computation result, no formatting).
+ */
+export interface ContextReport {
+  /** Total tokens (exact + heuristic). */
+  total: number;
+  /** API-reported tokens from the last completed assistant. */
+  exact: number;
+  /** Heuristic estimate for messages after the last assistant. */
+  heuristic: number;
+  /** Total message count. */
+  messageCount: number;
+  /** Cache hit ratio (0–1), or null when unavailable. */
+  cacheHitRate: number | null;
+  /** Heuristic category breakdown. */
+  categories: ContextCategoryBreakdown;
+}
 
 // ---------------------------------------------------------------------------
 // Formatting helpers
@@ -63,6 +98,48 @@ export function formatPercent(ratio: number): string {
   if (pct === 0) return "0%";
   if (pct === 100) return "100%";
   return `${pct.toFixed(1)}%`;
+}
+
+// ---------------------------------------------------------------------------
+// Block stats (derived from the new core's SessionState)
+// ---------------------------------------------------------------------------
+
+/**
+ * Count of compression blocks whose `active` flag is true.
+ *
+ * Drives the "N 个压缩块" parenthetical in the report's reclaim
+ * section.  Inactive blocks are excluded — the report's "active
+ * scope" semantics.
+ *
+ * @param state - The session state.
+ * @returns Number of active blocks.
+ */
+function activeBlockCount(state: SessionState): number {
+  let count = 0;
+  for (const block of state.blocks.values()) {
+    if (block.active) count++;
+  }
+  return count;
+}
+
+/**
+ * Net reclaimed tokens across all active blocks.
+ *
+ * Each active block contributes `compressedTokens - summaryTokens`
+ * (the count saved by folding the segment).  Inactive blocks are
+ * excluded.
+ *
+ * @param state - The session state.
+ * @returns Total net reclaimed tokens from active blocks.
+ */
+function activeReclaimedTokens(state: SessionState): number {
+  let sum = 0;
+  for (const block of state.blocks.values()) {
+    if (block.active) {
+      sum += block.compressedTokens - block.summaryTokens;
+    }
+  }
+  return sum;
 }
 
 // ---------------------------------------------------------------------------
@@ -157,9 +234,9 @@ export function formatContextReport(
   const blockReclaimed = state ? activeReclaimedTokens(state) : 0;
   let blockCovered = 0;
   if (state) {
-    for (const [, block] of state.blocks) {
+    for (const block of state.blocks.values()) {
       if (block.active) {
-        blockCovered += block.messageIds.length;
+        blockCovered += block.end - block.start;
       }
     }
   }

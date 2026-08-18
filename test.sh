@@ -5,14 +5,15 @@ set -euo pipefail
 PY_TEST_DIRS=("tests/" "installer/tests/")
 RUNNER="tests/runner.py"
 
-# Auto-discover all *.test.ts files under the plugin source tree.
+# Auto-discover all *.test.ts files under the plugin source tree plus the
+# golden behaviour baseline suite.
 TS_TEST_FILES=()
 while IFS= read -r -d '' f; do
   TS_TEST_FILES+=("$f")
-done < <(find src -type f -name '*.test.ts' -print0 | sort -z)
+done < <(find src tests/golden -type f -name '*.test.ts' -print0 | sort -z)
 
 if [ ${#TS_TEST_FILES[@]} -eq 0 ]; then
-  echo "ERROR: no *.test.ts files found under src/" >&2
+  echo "ERROR: no *.test.ts files found under src/ or tests/golden/" >&2
   exit 1
 fi
 

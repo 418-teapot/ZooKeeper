@@ -2,9 +2,11 @@
  * Context pruning hook barrel export.
  *
  * Exports the OpenCode framework adapter.  Config schema types are at
- * `src/core/config-types.ts`; pure logic (types, state, prune) is at
- * `src/core/context/pruning/`; the shared session maps and their
- * cleanup live in `src/core/session-state.ts`.
+ * `src/core/config-types.ts`; the host-agnostic pipeline core lives in
+ * `src/core/context/` (state, producers, fold, release, nudge) and is
+ * driven through the OpenCode adapter (`src/adapters/opencode/`); the
+ * shared session maps and their cleanup live in
+ * `src/core/context/runtime.ts`.
  *
  * @module
  */

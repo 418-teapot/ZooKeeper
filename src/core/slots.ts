@@ -20,8 +20,8 @@
  * @module
  */
 
+import type { ContextMetricsOutput } from "../adapters/opencode/types.js";
 import type { ContextPruningConfig } from "./config-types.js";
-import type { ContextMetricsOutput } from "./context/metrics.js";
 import type { ValidationLimits } from "./validate.js";
 
 // ---------------------------------------------------------------------------

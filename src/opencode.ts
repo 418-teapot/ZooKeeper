@@ -20,12 +20,11 @@
  * registrations.  When the profile is `null` (absent or invalid) every
  * profile-driven registration is skipped — no defaults, no fallback to a
  * full load — while the always-on infrastructure hooks (chat.params,
- * event, experimental.chat.system.transform,
- * experimental.text.complete) keep working.
+ * event, experimental.chat.system.transform) keep working.
  *
  * This module is the entry + always-on infrastructure: it wires the
  * parsed config, consumes the shared `sessionAgentMap` (held by
- * `src/core/session-state.ts`), and merges
+ * `src/core/context/runtime.ts`), and merges
  * the adapter's profile-driven fragment with the always-on
  * infrastructure hooks.
  */
@@ -41,14 +40,10 @@ import {
 } from "./core/config-parse.js";
 import type { ModeProfile } from "./core/config-types.js";
 import { setModelLimit } from "./core/context/model-limits.js";
-import {
-  stripRefsFromString,
-  ZOO_MSG_ID_CANONICAL_END_REGEX,
-} from "./core/context/pruning/index.js";
-import { cleanupSession, sessionAgentMap } from "./core/session-state.js";
+import { cleanupSession, sessionAgentMap } from "./core/context/runtime.js";
 import type { Deps } from "./core/slots.js";
 import { REGISTRY } from "./registry.js";
-import { log, setSessionId } from "./utils/logger.js";
+import { setSessionId } from "./utils/logger.js";
 
 let _sessionIdSet = false;
 
@@ -62,8 +57,7 @@ let _sessionIdSet = false;
  * Profile-driven registrations (agents, skills, hook units, tools, slash
  * commands) are composed from the active `[zoo.mode.*]` profile; when the
  * profile is null they are all skipped while the infrastructure hooks
- * (chat.params, event, experimental.chat.system.transform,
- * experimental.text.complete) keep working.
+ * (chat.params, event, experimental.chat.system.transform) keep working.
  *
  * Exported for unit testing — `zookeeper` wires this with the imported
  * config.toml.
@@ -83,8 +77,8 @@ export async function buildPlugin(input: any, zooConfig: any) {
 
   // ── Profile-driven composition ────────────────────────────────────
   // `sessionAgentMap` is the shared session → agent map held by
-  // session-state.ts; this entry populates it via `message.updated`
-  // events and the adapter's units read it.
+  // core/context/runtime.ts; this entry populates it via
+  // `message.updated` events and the adapter's units read it.
   const deps: Deps = {
     limits,
     contextConfig,
@@ -154,37 +148,6 @@ export async function buildPlugin(input: any, zooConfig: any) {
       }
     },
 
-    async "experimental.text.complete"(
-      _input: {
-        sessionID: string;
-        messageID: string;
-        partID: string;
-      },
-      output: { text: string },
-    ) {
-      // Strip zoo-msg-id tags from outbound assistant text so model
-      // echoes never reach the user-visible transcript.
-      const before = output.text;
-      output.text = stripRefsFromString(output.text);
-
-      // Detect fuzzy (non-canonical) tag stripping.
-      // If the text changed and didn't just end with the exact
-      // canonical well-formed tag, log a warning.
-      if (
-        before !== output.text &&
-        !ZOO_MSG_ID_CANONICAL_END_REGEX.test(before)
-      ) {
-        log(
-          "text.complete",
-          "fuzzy_ref_stripped",
-          _input.sessionID,
-          undefined,
-          "warn",
-          { fragment: before.slice(-200) },
-        );
-      }
-    },
-
     // ── Profile-driven registrations (from the adapter) ─────────────
     ...profileHooks,
   };
@@ -210,7 +173,7 @@ export {
   registerSkills,
   runAfterHandlers,
 } from "./compose-opencode.js";
-export { sessionAgentMap } from "./core/session-state.js";
+export { sessionAgentMap } from "./core/context/runtime.js";
 export { handleMessagesTransform } from "./hooks/context-metrics";
 export {
   handleDedupNotify,

@@ -1045,7 +1045,6 @@ describe("plugin wiring", () => {
       "event",
       "experimental.chat.messages.transform",
       "experimental.chat.system.transform",
-      "experimental.text.complete",
       "tool.definition",
       "tool.execute.before",
       "tool.execute.after",
@@ -1072,7 +1071,6 @@ describe("plugin wiring", () => {
       "chat.params",
       "event",
       "experimental.chat.system.transform",
-      "experimental.text.complete",
     ];
     for (const name of infrastructure) {
       assert.equal(

@@ -10,6 +10,7 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import type { ContextMetricsOutput } from "./adapters/opencode/types.js";
 import {
   buildPiContextHandler,
   buildPiToolResultHandler,
@@ -18,7 +19,6 @@ import {
   type PiToolResultEvent,
   toContextMessageEntries,
 } from "./compose-pi.js";
-import type { ContextMetricsOutput } from "./core/context/metrics.js";
 import type { AfterExecContribution, AfterExecInput } from "./core/slots.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
 
