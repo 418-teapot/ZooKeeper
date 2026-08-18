@@ -17,6 +17,7 @@ use std::sync::atomic::Ordering;
 
 use zutil::color::COLOR;
 use zutil::color::msg_print;
+use zutil::db_helpers::DbTarget;
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
@@ -32,13 +33,12 @@ struct Args {
     #[arg(short = 'j', long, global = true)]
     json: bool,
 
-    /// Path to the `OpenCode` `SQLite` database
-    #[arg(
-        long,
-        default_value = "~/.local/share/opencode/opencode.db",
-        global = true
-    )]
-    db: String,
+    /// Path to the `OpenCode` `SQLite` database. When omitted, every
+    /// `opencode*.db` file in the opencode data directory
+    /// (`~/.local/share/opencode`, or `$ZOO_OPENCODE_DATA_DIR` when set)
+    /// is aggregated into one view.
+    #[arg(long, global = true)]
+    db: Option<String>,
 
     /// Disable colored output
     #[arg(long, global = true)]
@@ -197,7 +197,8 @@ fn print_multi_pruning(
 
 fn cmd_stats_multi(args: &Args, n: i64, all: bool, pruning_only: bool) {
     let log_dir = zutil::get_zoo_log_dir();
-    let sessions = match db::query_recent_sessions(n, &args.db, all) {
+    let db = DbTarget::from_cli(args.db.clone());
+    let sessions = match db::query_recent_sessions(n, &db, all) {
         Ok(s) => s,
         Err(e) => {
             let msg = format!("[red]Database query failed: {e}[/red]");
@@ -316,7 +317,8 @@ fn cmd_stats(
         let path = helpers::resolve_session(sid, &log_dir);
         let events = helpers::parse_zoo_log(&path);
         let exact_sid = helpers::session_id_from_path(&path);
-        let steps = db::query_step_data(&exact_sid, &args.db);
+        let db = DbTarget::from_cli(args.db.clone());
+        let steps = db::query_step_data(&exact_sid, &db);
 
         if steps.is_empty() && !sections.hooks {
             msg_print(
@@ -590,7 +592,7 @@ fn build_step_details(steps: &[(i64, &Value)]) -> Vec<Value> {
 fn process_impact_session(
     sid: &str,
     log_dir: &str,
-    db_path: &str,
+    db: &DbTarget,
     hook_filter: Option<&str>,
     window: i64,
     verbose: bool,
@@ -619,7 +621,7 @@ fn process_impact_session(
     }
 
     // Get steps from DB
-    let mut steps: Vec<Value> = db::query_step_data(sid, db_path);
+    let mut steps: Vec<Value> = db::query_step_data(sid, db);
     steps.retain(|s| {
         s.get("time_created")
             .and_then(|v| v.as_str())
@@ -824,9 +826,10 @@ fn resolve_impact_multi_sessions(
     args: &Args,
     impact: &ImpactArgs<'_>,
 ) -> Option<Vec<String>> {
+    let db = DbTarget::from_cli(args.db.clone());
     let sessions = match db::query_recent_sessions(
         impact.sessions_n,
-        &args.db,
+        &db,
         impact.include_all,
     ) {
         Ok(s) => s,
@@ -894,11 +897,12 @@ fn cmd_impact(args: &Args, impact: &ImpactArgs<'_>) {
     let mut verbose_rows: Vec<Value> = Vec::new();
     let mut found_steps = false;
 
+    let db = DbTarget::from_cli(args.db.clone());
     for sid in &session_ids {
         let fs = process_impact_session(
             sid,
             &log_dir,
-            &args.db,
+            &db,
             impact.hook_filter,
             impact.window,
             impact.verbose,

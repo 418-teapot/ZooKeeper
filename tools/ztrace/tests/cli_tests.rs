@@ -1467,3 +1467,88 @@ fn test_export_ambiguous_prefix_exits_2() {
         "stderr should mention 'ambiguous session ID prefix', got: {stderr}"
     );
 }
+
+// ── Default aggregation across multiple databases ───────────────────────────
+
+/// Build a temp data dir with both fixture DBs and return it.
+fn two_db_data_dir() -> TempDir {
+    let dir = TempDir::new().expect("create temp data dir");
+    TestFixture::create_db(&dir.path().join("opencode.db"));
+    zutil::test_db::create_second_db(&dir.path().join("opencode-stable.db"));
+    dir
+}
+
+#[test]
+fn test_tokens_default_finds_session_in_second_db() {
+    let dir = two_db_data_dir();
+    let data_dir = dir.path().to_string_lossy().to_string();
+
+    // No --db: ses-900 lives only in the second DB, but the aggregate
+    // view resolves it and its message.
+    let output = Command::new(ZTRACE_BIN)
+        .env("ZOO_OPENCODE_DATA_DIR", &data_dir)
+        .args(["--no-color", "tokens", "ses-900"])
+        .output()
+        .expect("failed to run ztrace tokens ses-900 (default aggregation)");
+    assert!(
+        output.status.success(),
+        "default tokens should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("msg-900"),
+        "output should contain the second-DB message, got: {stdout}"
+    );
+}
+
+#[test]
+fn test_tokens_explicit_db_only_sees_that_db() {
+    let dir = two_db_data_dir();
+    let data_dir = dir.path().to_string_lossy().to_string();
+
+    // First DB only: ses-900 is invisible → exit 2.
+    let output = Command::new(ZTRACE_BIN)
+        .args([
+            "--db",
+            &format!("{data_dir}/opencode.db"),
+            "--no-color",
+            "tokens",
+            "ses-900",
+        ])
+        .output()
+        .expect("failed to run ztrace tokens ses-900 --db first.db");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "tokens ses-900 --db first.db should exit 2, got {:?}",
+        output.status.code()
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no session found matching"),
+        "stderr should mention 'no session found matching', got: {stderr}"
+    );
+
+    // Second DB only: ses-900 resolves and its message is listed.
+    let output = Command::new(ZTRACE_BIN)
+        .args([
+            "--db",
+            &format!("{data_dir}/opencode-stable.db"),
+            "--no-color",
+            "tokens",
+            "ses-900",
+        ])
+        .output()
+        .expect("failed to run ztrace tokens ses-900 --db stable.db");
+    assert!(
+        output.status.success(),
+        "tokens ses-900 --db stable.db should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("msg-900"),
+        "output should contain msg-900, got: {stdout}"
+    );
+}

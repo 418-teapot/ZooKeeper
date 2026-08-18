@@ -11,7 +11,7 @@ use clap::{Parser, Subcommand};
 
 use serde_json::Value;
 
-use zutil::db_helpers::resolve_session_id;
+use zutil::db_helpers::{DbTarget, resolve_session_id};
 use zutil::estimate_tokens;
 
 mod db;
@@ -50,13 +50,12 @@ struct Cli {
     #[arg(short = 'j', long, global = true)]
     json: bool,
 
-    /// Path to the `OpenCode` `SQLite` database
-    #[arg(
-        long,
-        default_value = "~/.local/share/opencode/opencode.db",
-        global = true
-    )]
-    db: String,
+    /// Path to the `OpenCode` `SQLite` database. When omitted, every
+    /// `opencode*.db` file in the opencode data directory
+    /// (`~/.local/share/opencode`, or `$ZOO_OPENCODE_DATA_DIR` when set)
+    /// is aggregated into one view.
+    #[arg(long, global = true)]
+    db: Option<String>,
 
     /// Disable colored output
     #[arg(long, global = true)]
@@ -115,7 +114,7 @@ enum Command {
 fn cmd_search(
     keyword: Option<&str>,
     exact: Option<&str>,
-    db: &str,
+    db: &DbTarget,
     json: bool,
     session_list_limit: usize,
 ) {
@@ -159,7 +158,7 @@ fn cmd_search(
     }
 }
 
-fn cmd_list(db: &str, json: bool, all: bool) {
+fn cmd_list(db: &DbTarget, json: bool, all: bool) {
     let results = if all {
         query_sessions_all_including_children(db, DEFAULT_LIST_LIMIT)
     } else {
@@ -182,7 +181,7 @@ fn cmd_list(db: &str, json: bool, all: bool) {
     }
 }
 
-fn cmd_show(session_id: &str, db: &str, json: bool) {
+fn cmd_show(session_id: &str, db: &DbTarget, json: bool) {
     let resolved = match resolve_session_id(session_id, db) {
         Ok(Some(id)) => id,
         Ok(None) => {
@@ -247,7 +246,7 @@ fn cmd_show(session_id: &str, db: &str, json: bool) {
 fn cmd_message(
     ids: &[String],
     session: Option<&str>,
-    db: &str,
+    db: &DbTarget,
     json: bool,
     scan: usize,
 ) {
@@ -292,22 +291,24 @@ fn main() {
     let colors_enabled = !args.no_color;
     COLOR.store(colors_enabled, Ordering::SeqCst);
 
+    let db = DbTarget::from_cli(args.db.clone());
+
     match &args.command {
         Some(Command::Search { keyword, exact, session_list_limit }) => {
             cmd_search(
                 keyword.as_deref(),
                 exact.as_deref(),
-                &args.db,
+                &db,
                 args.json,
                 *session_list_limit,
             );
         }
-        Some(Command::List { all }) => cmd_list(&args.db, args.json, *all),
+        Some(Command::List { all }) => cmd_list(&db, args.json, *all),
         Some(Command::Show { session_id }) => {
-            cmd_show(session_id, &args.db, args.json);
+            cmd_show(session_id, &db, args.json);
         }
         Some(Command::Message { ids, session, scan }) => {
-            cmd_message(ids, session.as_deref(), &args.db, args.json, *scan);
+            cmd_message(ids, session.as_deref(), &db, args.json, *scan);
         }
         None => {
             use clap::CommandFactory;

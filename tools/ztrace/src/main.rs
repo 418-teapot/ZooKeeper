@@ -12,7 +12,7 @@ use std::sync::atomic::Ordering;
 
 use zutil::color::COLOR;
 use zutil::color::msg_print;
-use zutil::db_helpers::resolve_session_id;
+use zutil::db_helpers::{DbTarget, resolve_session_id};
 
 mod db;
 mod display;
@@ -41,13 +41,12 @@ struct Args {
     #[arg(short = 'j', long, global = true)]
     json: bool,
 
-    /// Path to the `OpenCode` `SQLite` database
-    #[arg(
-        long,
-        default_value = "~/.local/share/opencode/opencode.db",
-        global = true
-    )]
-    db: String,
+    /// Path to the `OpenCode` `SQLite` database. When omitted, every
+    /// `opencode*.db` file in the opencode data directory
+    /// (`~/.local/share/opencode`, or `$ZOO_OPENCODE_DATA_DIR` when set)
+    /// is aggregated into one view.
+    #[arg(long, global = true)]
+    db: Option<String>,
 
     /// Disable colored output
     #[arg(long, global = true)]
@@ -125,9 +124,10 @@ enum Command {
 fn cmd_show(args: &Args, session_id: &str, all: bool, verbose: bool) {
     let opencode_path =
         zutil::expand_tilde("~/.local/share/opencode/log/opencode.log");
-    let db_path = zutil::expand_tilde(&args.db);
+    let db =
+        DbTarget::from_cli(args.db.as_ref().map(|p| zutil::expand_tilde(p)));
 
-    let resolved = match resolve_session_id(session_id, &db_path) {
+    let resolved = match resolve_session_id(session_id, &db) {
         Ok(Some(id)) => id,
         Ok(None) => {
             eprintln!("Error: no session found matching '{session_id}'");
@@ -150,7 +150,7 @@ fn cmd_show(args: &Args, session_id: &str, all: bool, verbose: bool) {
     let mut timeline = match trace_builder::build_timeline(
         session_id,
         &opencode_path,
-        &db_path,
+        &db,
         all,
     ) {
         Ok(t) => t,
@@ -182,7 +182,7 @@ fn cmd_show(args: &Args, session_id: &str, all: bool, verbose: bool) {
     };
     let all_sids_refs: Vec<&str> =
         all_sids.iter().map(std::string::String::as_str).collect();
-    helpers::attach_durations(&mut timeline, &all_sids_refs, &db_path);
+    helpers::attach_durations(&mut timeline, &all_sids_refs, &db);
 
     // --json output
     if args.json {
@@ -212,10 +212,11 @@ fn cmd_export(
 ) {
     let opencode_path =
         zutil::expand_tilde("~/.local/share/opencode/log/opencode.log");
-    let db_path = zutil::expand_tilde(&args.db);
+    let db =
+        DbTarget::from_cli(args.db.as_ref().map(|p| zutil::expand_tilde(p)));
     let output_path = zutil::expand_tilde(output);
 
-    let resolved = match resolve_session_id(session_id, &db_path) {
+    let resolved = match resolve_session_id(session_id, &db) {
         Ok(Some(id)) => id,
         Ok(None) => {
             eprintln!("Error: no session found matching '{session_id}'");
@@ -238,7 +239,7 @@ fn cmd_export(
     let timeline = match trace_builder::build_timeline(
         session_id,
         &opencode_path,
-        &db_path,
+        &db,
         all,
     ) {
         Ok(t) => t,
@@ -307,10 +308,10 @@ fn cmd_export(
 
 fn discover_and_merge_child_steps(
     session_id: &str,
-    db_path: &str,
+    db: &DbTarget,
     steps: &mut Vec<Value>,
 ) {
-    let child_results = helpers::discover_child_steps(session_id, db_path);
+    let child_results = helpers::discover_child_steps(session_id, db);
     for (child_sid, _depth, child_steps) in child_results {
         for mut step in child_steps {
             if let Some(obj) = step.as_object_mut() {
@@ -506,9 +507,10 @@ fn cmd_steps(
     all: bool,
     min_cache_drop: Option<i64>,
 ) {
-    let db_path = zutil::expand_tilde(&args.db);
+    let db =
+        DbTarget::from_cli(args.db.as_ref().map(|p| zutil::expand_tilde(p)));
 
-    let resolved = match resolve_session_id(session_id, &db_path) {
+    let resolved = match resolve_session_id(session_id, &db) {
         Ok(Some(id)) => id,
         Ok(None) => {
             eprintln!("Error: no session found matching '{session_id}'");
@@ -529,11 +531,11 @@ fn cmd_steps(
     let session_id = &resolved;
 
     // 1. Query steps from DB
-    let mut all_steps = db::query_step_data_batch(&[session_id], &db_path);
+    let mut all_steps = db::query_step_data_batch(&[session_id], &db);
 
     // 2. Child steps (stub — returns empty for now)
     if all {
-        discover_and_merge_child_steps(session_id, &db_path, &mut all_steps);
+        discover_and_merge_child_steps(session_id, &db, &mut all_steps);
     }
 
     // 3. Sort and index
@@ -571,9 +573,10 @@ fn cmd_steps(
 }
 
 fn cmd_tokens(args: &Args, session_id: &str) {
-    let db_path = zutil::expand_tilde(&args.db);
+    let db =
+        DbTarget::from_cli(args.db.as_ref().map(|p| zutil::expand_tilde(p)));
 
-    let resolved = match resolve_session_id(session_id, &db_path) {
+    let resolved = match resolve_session_id(session_id, &db) {
         Ok(Some(id)) => id,
         Ok(None) => {
             eprintln!("Error: no session found matching '{session_id}'");
@@ -593,7 +596,7 @@ fn cmd_tokens(args: &Args, session_id: &str) {
     };
     let session_id = &resolved;
 
-    let messages = db::query_message_parts(session_id, &db_path);
+    let messages = db::query_message_parts(session_id, &db);
 
     let mut rows: Vec<Value> = Vec::new();
     for msg in &messages {

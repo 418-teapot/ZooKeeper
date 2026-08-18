@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use rusqlite::{Connection, params};
 use serde_json::{Map, Number, Value};
 
-use zutil::db_helpers::{open_db, query_sessions_where};
+use zutil::db_helpers::{DbTarget, open_db_target, query_sessions_where};
 use zutil::{epoch_ms_to_iso, safe_json_loads};
 
 /// Get the *n* most recently updated sessions.
@@ -14,18 +14,18 @@ use zutil::{epoch_ms_to_iso, safe_json_loads};
 /// Returns a `rusqlite::Error` if the database query fails.
 pub fn query_recent_sessions(
     n: i64,
-    db_path: &str,
+    target: &DbTarget,
     include_children: bool,
 ) -> Result<Vec<Value>, rusqlite::Error> {
     if include_children {
         query_sessions_where(
-            db_path,
+            target,
             "ORDER BY time_updated DESC LIMIT ?",
             rusqlite::params![n],
         )
     } else {
         query_sessions_where(
-            db_path,
+            target,
             "WHERE parent_id IS NULL ORDER BY time_updated DESC LIMIT ?",
             rusqlite::params![n],
         )
@@ -97,14 +97,14 @@ struct StepRow {
 ///
 /// Queries step-finish parts and tool parts, then associates tool
 /// names with their corresponding step by matching `message_id`.
-pub fn query_step_data(session_id: &str, db_path: &str) -> Vec<Value> {
+pub fn query_step_data(session_id: &str, target: &DbTarget) -> Vec<Value> {
     #[derive(Clone)]
     struct ToolRow {
         message_id: String,
         data: Value,
     }
 
-    let Some(conn) = open_db(db_path) else {
+    let Some(conn) = open_db_target(target) else {
         return vec![];
     };
 
@@ -390,7 +390,9 @@ mod tests {
         let _lock =
             DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
-        let results = query_recent_sessions(10, &db_path, false).unwrap();
+        let results =
+            query_recent_sessions(10, &DbTarget::Path(db_path.clone()), false)
+                .unwrap();
         // 2 root sessions (ses-003 is a child)
         assert_eq!(results.len(), 2);
         assert_eq!(results[0]["id"], "ses-002");
@@ -403,7 +405,9 @@ mod tests {
         let _lock =
             DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
-        let results = query_recent_sessions(10, &db_path, true).unwrap();
+        let results =
+            query_recent_sessions(10, &DbTarget::Path(db_path.clone()), true)
+                .unwrap();
         // 3 sessions including child
         assert_eq!(results.len(), 3);
         let _ = fs::remove_file(&db_path);
@@ -414,7 +418,9 @@ mod tests {
         let _lock =
             DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
-        let results = query_recent_sessions(1, &db_path, false).unwrap();
+        let results =
+            query_recent_sessions(1, &DbTarget::Path(db_path.clone()), false)
+                .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["id"], "ses-002");
         let _ = fs::remove_file(&db_path);
@@ -425,7 +431,8 @@ mod tests {
         let _lock =
             DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
-        let results = query_step_data("ses-001", &db_path);
+        let results =
+            query_step_data("ses-001", &DbTarget::Path(db_path.clone()));
         // 1 step-finish for ses-001
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["step_index"], 1);
@@ -457,7 +464,10 @@ mod tests {
         let _lock =
             DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
-        let results = query_step_data("nonexistent-session", &db_path);
+        let results = query_step_data(
+            "nonexistent-session",
+            &DbTarget::Path(db_path.clone()),
+        );
         // No data for nonexistent session
         assert!(results.is_empty());
         let _ = fs::remove_file(&db_path);
@@ -465,8 +475,10 @@ mod tests {
 
     #[test]
     fn test_query_step_data_nonexistent_db() {
-        let results =
-            query_step_data("ses-001", "/tmp/nonexistent_db_file_12345.db");
+        let results = query_step_data(
+            "ses-001",
+            &DbTarget::Path("/tmp/nonexistent_db_file_12345.db".into()),
+        );
         assert!(results.is_empty());
     }
 
@@ -474,7 +486,7 @@ mod tests {
     fn test_query_recent_sessions_nonexistent_db() {
         let results = query_recent_sessions(
             10,
-            "/tmp/nonexistent_db_file_12345.db",
+            &DbTarget::Path("/tmp/nonexistent_db_file_12345.db".into()),
             false,
         )
         .unwrap();

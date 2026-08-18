@@ -1220,3 +1220,128 @@ fn test_stats_multi_session_pruning_table() {
     assert!(stdout.contains("ses-003"), "output should list ses-003");
     assert!(stdout.contains("Total"), "output should contain totals row");
 }
+
+// ── Default aggregation across multiple databases ───────────────────────────
+
+/// Build a temp data dir with both fixture DBs and a temp HOME, and
+/// return (dir, home_dir) so the test can set both env vars.
+fn two_db_env() -> (TempDir, String) {
+    let dir = TempDir::new().expect("create temp data dir");
+    let home = TempDir::new().expect("create temp home dir");
+    TestFixture::create_db(&dir.path().join("opencode.db"));
+    zutil::test_db::create_second_db(&dir.path().join("opencode-stable.db"));
+
+    // The aggregate fixture has no JSONL logs for ses-900; seed a log dir
+    // so log resolution returns empty events instead of globbing the real
+    // home directory.
+    let _ = fs::create_dir_all(home.path().join(".zoo").join("log"));
+
+    let home_dir = home.path().to_string_lossy().to_string();
+    (dir, home_dir)
+}
+
+#[test]
+fn test_stats_default_aggregates_two_databases() {
+    let (dir, home) = two_db_env();
+    let data_dir = dir.path().to_string_lossy().to_string();
+
+    // No --db: the session living only in the second DB must appear in
+    // the multi-session stats query.
+    let output = Command::new(ZINSPECT_BIN)
+        .env("ZOO_OPENCODE_DATA_DIR", &data_dir)
+        .env("HOME", &home)
+        .args(["stats", "--sessions", "5", "--json", "--no-color"])
+        .output()
+        .expect("failed to run zinspect stats --sessions 5 (default)");
+    assert!(
+        output.status.success(),
+        "default stats should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .expect("output should be valid JSON");
+    let ids: Vec<&str> = parsed["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s.get("id").and_then(|v| v.as_str()))
+        .collect();
+    assert!(
+        ids.contains(&"ses-900"),
+        "default stats must include the second-DB session, got: {ids:?}"
+    );
+    assert!(
+        ids.contains(&"ses-001"),
+        "first-DB sessions still included, got: {ids:?}"
+    );
+}
+
+#[test]
+fn test_stats_explicit_db_only_sees_that_db() {
+    let (dir, home) = two_db_env();
+    let data_dir = dir.path().to_string_lossy().to_string();
+
+    // First DB only: ses-900 must be absent from the stats query.
+    let output = Command::new(ZINSPECT_BIN)
+        .env("HOME", &home)
+        .args([
+            "--db",
+            &format!("{data_dir}/opencode.db"),
+            "stats",
+            "--sessions",
+            "5",
+            "--json",
+            "--no-color",
+        ])
+        .output()
+        .expect("failed to run zinspect stats --db first.db");
+    assert!(
+        output.status.success(),
+        "explicit --db stats should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .expect("output should be valid JSON");
+    let ids: Vec<&str> = parsed["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s.get("id").and_then(|v| v.as_str()))
+        .collect();
+    assert!(
+        !ids.contains(&"ses-900"),
+        "explicit --db must not aggregate, got: {ids:?}"
+    );
+
+    // Second DB only: exactly the ses-900 row.
+    let output = Command::new(ZINSPECT_BIN)
+        .env("HOME", &home)
+        .args([
+            "--db",
+            &format!("{data_dir}/opencode-stable.db"),
+            "stats",
+            "--sessions",
+            "5",
+            "--json",
+            "--no-color",
+        ])
+        .output()
+        .expect("failed to run zinspect stats --db stable.db");
+    assert!(
+        output.status.success(),
+        "explicit --db stable stats should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .expect("output should be valid JSON");
+    let ids: Vec<&str> = parsed["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s.get("id").and_then(|v| v.as_str()))
+        .collect();
+    assert_eq!(ids, vec!["ses-900"], "only the second-DB session visible");
+}

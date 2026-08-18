@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use serde_json::{Map, Number, Value};
 
-use zutil::db_helpers::open_db;
+use zutil::db_helpers::{DbTarget, open_db_target};
 use zutil::iso_to_epoch_ms;
 
 use crate::db::query_step_data_batch;
@@ -347,7 +347,7 @@ pub fn collect_child_sessions_info(
 /// (from opencode log), keep them.
 ///
 /// **Phase 2a**: For `tool_*` events WITHOUT duration, query
-/// `crate::db::query_tool_durations_batch(all_sids, db_path)`.  Match by
+/// `crate::db::query_tool_durations_batch(all_sids, db)`.  Match by
 /// `tool_name` + within 30 s time proximity **AND same `session_id`**.
 ///
 /// **Phase 3**: For `LLM`/`llm_stream` events, find `assistant_reply` events
@@ -357,10 +357,10 @@ pub fn collect_child_sessions_info(
 pub fn attach_durations(
     timeline: &mut [Value],
     all_sids: &[&str],
-    db_path: &str,
+    db: &DbTarget,
 ) {
     phase1_forward_durations(timeline);
-    phase2_match_tool_durations(timeline, all_sids, db_path);
+    phase2_match_tool_durations(timeline, all_sids, db);
     phase3_match_llm_durations(timeline);
 }
 
@@ -385,12 +385,12 @@ fn phase1_forward_durations(timeline: &mut [Value]) {
 fn phase2_match_tool_durations(
     timeline: &mut [Value],
     all_sids: &[&str],
-    db_path: &str,
+    db: &DbTarget,
 ) {
     if all_sids.is_empty() {
         return;
     }
-    let all_tool_durations = query_tool_durations_batch(all_sids, db_path);
+    let all_tool_durations = query_tool_durations_batch(all_sids, db);
     if all_tool_durations.is_empty() {
         return;
     }
@@ -552,9 +552,9 @@ fn phase3_match_llm_durations(timeline: &mut [Value]) {
 #[must_use]
 pub fn discover_child_steps(
     session_id: &str,
-    db_path: &str,
+    db: &DbTarget,
 ) -> Vec<(String, i64, Vec<Value>)> {
-    let Some(conn) = open_db(db_path) else {
+    let Some(conn) = open_db_target(db) else {
         return vec![];
     };
 
@@ -578,7 +578,7 @@ pub fn discover_child_steps(
 
     // Batch-query step data for all children
     let sid_refs: Vec<&str> = child_ids.iter().map(String::as_str).collect();
-    let all_steps = query_step_data_batch(&sid_refs, db_path);
+    let all_steps = query_step_data_batch(&sid_refs, db);
 
     // Group steps by session_id
     let mut grouped: HashMap<String, Vec<Value>> = HashMap::new();
@@ -1157,7 +1157,7 @@ mod tests {
         ev.insert("detail".to_string(), Value::Object(detail));
 
         let mut timeline = vec![Value::Object(ev)];
-        attach_durations(&mut timeline, &[], "");
+        attach_durations(&mut timeline, &[], &DbTarget::Path(String::new()));
 
         assert_eq!(
             timeline[0].get("duration_sec").and_then(serde_json::Value::as_f64),
@@ -1182,7 +1182,7 @@ mod tests {
         );
 
         let mut timeline = vec![Value::Object(ev)];
-        attach_durations(&mut timeline, &[], "");
+        attach_durations(&mut timeline, &[], &DbTarget::Path(String::new()));
 
         assert!(timeline[0].get("duration_sec").is_none());
     }
@@ -1213,7 +1213,7 @@ mod tests {
         );
 
         let mut timeline = vec![Value::Object(llm_ev), Value::Object(reply_ev)];
-        attach_durations(&mut timeline, &[], "");
+        attach_durations(&mut timeline, &[], &DbTarget::Path(String::new()));
 
         // ts_ms = 1715000001000 inside [1715000000000, 1715000005000]
         assert_eq!(
@@ -1248,7 +1248,7 @@ mod tests {
         );
 
         let mut timeline = vec![Value::Object(llm_ev), Value::Object(reply_ev)];
-        attach_durations(&mut timeline, &[], "");
+        attach_durations(&mut timeline, &[], &DbTarget::Path(String::new()));
 
         // ts_ms = 1715000003000 inside [1715000000000, 1715000005000]
         assert_eq!(
@@ -1285,7 +1285,7 @@ mod tests {
         );
 
         let mut timeline = vec![Value::Object(llm_ev), Value::Object(reply_ev)];
-        attach_durations(&mut timeline, &[], "");
+        attach_durations(&mut timeline, &[], &DbTarget::Path(String::new()));
 
         // ts_ms = 1715000006000
         // Not inside [1715000000000, 1715000002000]
@@ -1312,7 +1312,7 @@ mod tests {
         );
 
         let mut timeline = vec![Value::Object(llm_ev)];
-        attach_durations(&mut timeline, &[], "");
+        attach_durations(&mut timeline, &[], &DbTarget::Path(String::new()));
         assert!(timeline[0].get("duration_sec").is_none());
     }
 
@@ -1320,7 +1320,10 @@ mod tests {
 
     #[test]
     fn test_discover_child_steps_returns_empty() {
-        let result = discover_child_steps("ses-001", "/tmp/test.db");
+        let result = discover_child_steps(
+            "ses-001",
+            &DbTarget::Path("/tmp/test.db".into()),
+        );
         assert!(result.is_empty());
     }
 }

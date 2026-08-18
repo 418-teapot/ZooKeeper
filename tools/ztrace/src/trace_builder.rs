@@ -10,6 +10,7 @@ use std::path::Path;
 
 use serde_json::{Map, Number, Value};
 
+use zutil::db_helpers::DbTarget;
 use zutil::format_number;
 use zutil::get_zoo_log_dir;
 use zutil::iso_to_epoch_ms;
@@ -793,9 +794,9 @@ fn add_db_tool_call_events(
     timeline: &mut Vec<Value>,
     sid_vec: &[&str],
     session_depth_map: &HashMap<&str, i64>,
-    db_path: &str,
+    db: &DbTarget,
 ) {
-    let db_tool_events = db::query_db_tool_calls(sid_vec, db_path);
+    let db_tool_events = db::query_db_tool_calls(sid_vec, db);
     if db_tool_events.is_empty() {
         return;
     }
@@ -888,7 +889,7 @@ fn add_db_tool_call_events(
 pub fn build_timeline(
     session_id: &str,
     opencode_path: &str,
-    db_path: &str,
+    db: &DbTarget,
     include_children: bool,
 ) -> Result<Vec<Value>, String> {
     let oc_path = Path::new(opencode_path);
@@ -954,7 +955,7 @@ pub fn build_timeline(
     // ── Database messages (user / assistant) ──
     let sid_vec: Vec<&str> =
         all_sids.iter().map(std::string::String::as_str).collect();
-    let db_msg_events = db::query_db_messages(&sid_vec, db_path);
+    let db_msg_events = db::query_db_messages(&sid_vec, db);
     for mut ev in db_msg_events {
         if let Some(obj) = ev.as_object_mut() {
             let sid = obj
@@ -970,12 +971,7 @@ pub fn build_timeline(
     }
 
     // ── Database tool calls (from part table) ──
-    add_db_tool_call_events(
-        &mut timeline,
-        &sid_vec,
-        &session_depth_map,
-        db_path,
-    );
+    add_db_tool_call_events(&mut timeline, &sid_vec, &session_depth_map, db);
 
     // Attach session_agent label for child events
     for ev in &mut timeline {

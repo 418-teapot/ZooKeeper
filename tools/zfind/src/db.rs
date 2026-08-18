@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use rusqlite::{Connection, params};
 use serde_json::{Map, Value};
 
-use zutil::db_helpers::{open_db, query_sessions_where};
+use zutil::db_helpers::{DbTarget, open_db_target, query_sessions_where};
 use zutil::{epoch_ms_to_iso, safe_json_loads};
 
 /// Group of (`session_id`, `timestamp`, `msg_data`, `part_data`) for a message.
@@ -11,24 +11,24 @@ type MsgGroup = Vec<(String, Option<i64>, Value, Value)>;
 
 pub fn query_sessions(
     keyword: &str,
-    db_path: &str,
+    target: &DbTarget,
     limit: usize,
 ) -> Result<Vec<Value>, rusqlite::Error> {
     let pattern = format!("%{keyword}%");
     query_sessions_where(
-        db_path,
+        target,
         "WHERE parent_id IS NULL AND title LIKE ? ORDER BY time_updated DESC LIMIT ?",
         rusqlite::params![pattern, i64::try_from(limit).unwrap_or(i64::MAX)],
     )
 }
 
 pub fn query_sessions_all(
-    db_path: &str,
+    target: &DbTarget,
     limit: usize,
 ) -> Result<Vec<Value>, rusqlite::Error> {
     // Root sessions only (no parent_id)
     query_sessions_where(
-        db_path,
+        target,
         "WHERE parent_id IS NULL ORDER BY time_updated DESC LIMIT ?",
         rusqlite::params![i64::try_from(limit).unwrap_or(i64::MAX)],
     )
@@ -36,11 +36,11 @@ pub fn query_sessions_all(
 
 /// Query all sessions including sub-sessions. No `parent_id` filter.
 pub fn query_sessions_all_including_children(
-    db_path: &str,
+    target: &DbTarget,
     limit: usize,
 ) -> Result<Vec<Value>, rusqlite::Error> {
     query_sessions_where(
-        db_path,
+        target,
         "ORDER BY time_updated DESC LIMIT ?",
         rusqlite::params![i64::try_from(limit).unwrap_or(i64::MAX)],
     )
@@ -48,11 +48,11 @@ pub fn query_sessions_all_including_children(
 
 pub fn query_sessions_exact(
     title: &str,
-    db_path: &str,
+    target: &DbTarget,
     limit: usize,
 ) -> Result<Vec<Value>, rusqlite::Error> {
     query_sessions_where(
-        db_path,
+        target,
         "WHERE parent_id IS NULL AND title = ? ORDER BY time_updated DESC LIMIT ?",
         rusqlite::params![title, i64::try_from(limit).unwrap_or(i64::MAX)],
     )
@@ -200,14 +200,14 @@ fn build_message_results(grouped: &HashMap<String, MsgGroup>) -> Vec<Value> {
 pub fn query_message_by_ids(
     msg_ids: &[String],
     session_id: Option<&str>,
-    db_path: &str,
+    target: &DbTarget,
     scan_limit: usize,
 ) -> Vec<Value> {
     if msg_ids.is_empty() {
         return vec![];
     }
 
-    let Some(conn) = open_db(db_path) else {
+    let Some(conn) = open_db_target(target) else {
         return vec![];
     };
 
@@ -275,8 +275,8 @@ pub fn query_message_by_ids(
     build_message_results(&grouped)
 }
 
-pub fn query_message_parts(session_id: &str, db_path: &str) -> Vec<Value> {
-    let Some(conn) = open_db(db_path) else {
+pub fn query_message_parts(session_id: &str, target: &DbTarget) -> Vec<Value> {
+    let Some(conn) = open_db_target(target) else {
         return vec![];
     };
 
@@ -483,7 +483,8 @@ mod tests {
         let _lock =
             DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
-        let results = query_sessions_all(&db_path, 50).unwrap();
+        let results =
+            query_sessions_all(&DbTarget::Path(db_path.clone()), 50).unwrap();
         // Root sessions only (parent_id IS NULL) — ses-001 and ses-002
         assert_eq!(results.len(), 2, "expected 2 root sessions");
         // Most recent first: ses-002 (time_updated=1_715_000_300_000)
@@ -498,8 +499,11 @@ mod tests {
         let _lock =
             DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
-        let results =
-            query_sessions_all_including_children(&db_path, 50).unwrap();
+        let results = query_sessions_all_including_children(
+            &DbTarget::Path(db_path.clone()),
+            50,
+        )
+        .unwrap();
         // Should return all 3 sessions (includes sub-session ses-003)
         assert_eq!(results.len(), 3, "expected 3 sessions");
         // Most recent first: ses-003 (time_updated=1_715_000_500_000)
@@ -517,17 +521,23 @@ mod tests {
         let db_path = create_test_db();
 
         // Search for "auth" — should match ses-001
-        let results = query_sessions("auth", &db_path, 50).unwrap();
+        let results =
+            query_sessions("auth", &DbTarget::Path(db_path.clone()), 50)
+                .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["id"], "ses-001");
 
         // Search for "migration" — should match ses-002
-        let results = query_sessions("migration", &db_path, 50).unwrap();
+        let results =
+            query_sessions("migration", &DbTarget::Path(db_path.clone()), 50)
+                .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["id"], "ses-002");
 
         // Search for nothing — no match
-        let results = query_sessions("nonexistent", &db_path, 50).unwrap();
+        let results =
+            query_sessions("nonexistent", &DbTarget::Path(db_path.clone()), 50)
+                .unwrap();
         assert_eq!(results.len(), 0);
 
         let _ = fs::remove_file(&db_path);
@@ -539,14 +549,21 @@ mod tests {
             DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
 
-        let results =
-            query_sessions_exact("auth middleware debug", &db_path, 50)
-                .unwrap();
+        let results = query_sessions_exact(
+            "auth middleware debug",
+            &DbTarget::Path(db_path.clone()),
+            50,
+        )
+        .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["id"], "ses-001");
 
-        let results =
-            query_sessions_exact("nonexistent title", &db_path, 50).unwrap();
+        let results = query_sessions_exact(
+            "nonexistent title",
+            &DbTarget::Path(db_path.clone()),
+            50,
+        )
+        .unwrap();
         assert_eq!(results.len(), 0);
 
         let _ = fs::remove_file(&db_path);
@@ -558,14 +575,22 @@ mod tests {
             DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
 
-        let results =
-            query_message_by_ids(&["msg-001".into()], None, &db_path, 500);
+        let results = query_message_by_ids(
+            &["msg-001".into()],
+            None,
+            &DbTarget::Path(db_path.clone()),
+            500,
+        );
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["id"], "msg-001");
         assert_eq!(results[0]["role"], "user");
 
-        let results =
-            query_message_by_ids(&["msg-002".into()], None, &db_path, 500);
+        let results = query_message_by_ids(
+            &["msg-002".into()],
+            None,
+            &DbTarget::Path(db_path.clone()),
+            500,
+        );
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["id"], "msg-002");
         // role from message data (raw), not classify_role
@@ -586,7 +611,8 @@ mod tests {
             DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
 
-        let results = query_message_parts("ses-001", &db_path);
+        let results =
+            query_message_parts("ses-001", &DbTarget::Path(db_path.clone()));
         // 2 messages for ses-001
         assert_eq!(results.len(), 2);
 

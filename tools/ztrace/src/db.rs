@@ -1,13 +1,13 @@
 // Database query functions for the ztrace tool.
 //
-// Uses `serde_json::Value` for flexible dict construction and `zutil::db_helpers::open_db`
+// Uses `serde_json::Value` for flexible dict construction and `zutil::db_helpers::open_db_target`
 // for read-only SQLite access.
 
 use std::collections::HashMap;
 
 use serde_json::{Map, Number, Value};
 
-use zutil::db_helpers::open_db;
+use zutil::db_helpers::{DbTarget, open_db_target};
 use zutil::{epoch_ms_to_iso, safe_json_loads};
 
 use crate::parser::tool_type_and_icon;
@@ -439,13 +439,13 @@ fn duration_sec_from_ms(start_ms: i64, end_ms: i64) -> f64 {
 /// `msg_time_created` (epoch ms or null), `msg_time_completed`.
 pub fn query_step_data_batch(
     session_ids: &[&str],
-    db_path: &str,
+    target: &DbTarget,
 ) -> Vec<Value> {
     if session_ids.is_empty() {
         return vec![];
     }
 
-    let Some(conn) = open_db(db_path) else {
+    let Some(conn) = open_db_target(target) else {
         return vec![];
     };
 
@@ -478,13 +478,13 @@ pub fn query_step_data_batch(
 /// Only rows with both `state.time.start` and `state.time.end` are included.
 pub fn query_tool_durations_batch(
     session_ids: &[&str],
-    db_path: &str,
+    target: &DbTarget,
 ) -> Vec<Value> {
     if session_ids.is_empty() {
         return vec![];
     }
 
-    let Some(conn) = open_db(db_path) else {
+    let Some(conn) = open_db_target(target) else {
         return vec![];
     };
 
@@ -674,12 +674,15 @@ fn process_part_row(
     }));
 }
 
-pub fn query_db_messages(session_ids: &[&str], db_path: &str) -> Vec<Value> {
+pub fn query_db_messages(
+    session_ids: &[&str],
+    target: &DbTarget,
+) -> Vec<Value> {
     if session_ids.is_empty() {
         return vec![];
     }
 
-    let Some(conn) = open_db(db_path) else {
+    let Some(conn) = open_db_target(target) else {
         return vec![];
     };
 
@@ -763,12 +766,15 @@ pub fn query_db_messages(session_ids: &[&str], db_path: &str) -> Vec<Value> {
 /// Queries `part` where `type = 'tool'` and `status = 'completed'`.
 /// Uses `parser::tool_type_and_icon` to map tool names to event types and
 /// icons.
-pub fn query_db_tool_calls(session_ids: &[&str], db_path: &str) -> Vec<Value> {
+pub fn query_db_tool_calls(
+    session_ids: &[&str],
+    target: &DbTarget,
+) -> Vec<Value> {
     if session_ids.is_empty() {
         return vec![];
     }
 
-    let Some(conn) = open_db(db_path) else {
+    let Some(conn) = open_db_target(target) else {
         return vec![];
     };
 
@@ -883,7 +889,7 @@ pub fn query_db_tool_calls(session_ids: &[&str], db_path: &str) -> Vec<Value> {
 ///
 /// Each returned dict contains the parsed `message.data` JSON and a list
 /// of parsed `part.data` JSONs grouped by `message_id`.
-pub fn query_message_parts(session_id: &str, db_path: &str) -> Vec<Value> {
+pub fn query_message_parts(session_id: &str, target: &DbTarget) -> Vec<Value> {
     #[derive(Clone)]
     struct MsgRow {
         id: String,
@@ -898,7 +904,7 @@ pub fn query_message_parts(session_id: &str, db_path: &str) -> Vec<Value> {
         data: Value,
     }
 
-    let Some(conn) = open_db(db_path) else {
+    let Some(conn) = open_db_target(target) else {
         return vec![];
     };
 
@@ -1222,7 +1228,8 @@ mod tests {
             DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
 
-        let results = query_message_parts("ses-001", &db_path);
+        let results =
+            query_message_parts("ses-001", &DbTarget::Path(db_path.clone()));
 
         // ses-001 has 3 messages: msg-005 (user), msg-001 (user), msg-002 (assistant), msg-006 (assistant)
         // In order: msg-005, msg-001, msg-002, msg-006
@@ -1255,7 +1262,10 @@ mod tests {
             DB_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let db_path = create_test_db();
 
-        let results = query_message_parts("nonexistent", &db_path);
+        let results = query_message_parts(
+            "nonexistent",
+            &DbTarget::Path(db_path.clone()),
+        );
         assert!(results.is_empty());
 
         let _ = fs::remove_file(&db_path);
@@ -1263,8 +1273,10 @@ mod tests {
 
     #[test]
     fn test_query_message_parts_nonexistent_db() {
-        let results =
-            query_message_parts("ses-001", "/tmp/nonexistent_db_ztrace.db");
+        let results = query_message_parts(
+            "ses-001",
+            &DbTarget::Path("/tmp/nonexistent_db_ztrace.db".into()),
+        );
         assert!(results.is_empty());
     }
 
@@ -1277,7 +1289,10 @@ mod tests {
         let db_path = create_test_db();
 
         let session_ids = ["ses-001", "ses-002"];
-        let results = query_step_data_batch(&session_ids, &db_path);
+        let results = query_step_data_batch(
+            &session_ids,
+            &DbTarget::Path(db_path.clone()),
+        );
 
         // ses-001 has 1 step-finish (part-001), ses-002 has 1 (part-003)
         assert_eq!(results.len(), 2);
@@ -1332,7 +1347,10 @@ mod tests {
         let db_path = create_test_db();
 
         let session_ids: [&str; 0] = [];
-        let results = query_step_data_batch(&session_ids, &db_path);
+        let results = query_step_data_batch(
+            &session_ids,
+            &DbTarget::Path(db_path.clone()),
+        );
         assert!(results.is_empty());
 
         let _ = fs::remove_file(&db_path);
@@ -1343,7 +1361,7 @@ mod tests {
         let session_ids = ["ses-001"];
         let results = query_step_data_batch(
             &session_ids,
-            "/tmp/nonexistent_db_ztrace_step.db",
+            &DbTarget::Path("/tmp/nonexistent_db_ztrace_step.db".into()),
         );
         assert!(results.is_empty());
     }
@@ -1357,7 +1375,10 @@ mod tests {
         let db_path = create_test_db();
 
         let session_ids = ["ses-001", "ses-002"];
-        let results = query_tool_durations_batch(&session_ids, &db_path);
+        let results = query_tool_durations_batch(
+            &session_ids,
+            &DbTarget::Path(db_path.clone()),
+        );
 
         // ses-001 has 1 tool with both start/end (part-002)
         // ses-002 has 1 tool with both start/end (part-004)
@@ -1415,7 +1436,10 @@ mod tests {
         let db_path = create_test_db();
 
         let session_ids: [&str; 0] = [];
-        let results = query_tool_durations_batch(&session_ids, &db_path);
+        let results = query_tool_durations_batch(
+            &session_ids,
+            &DbTarget::Path(db_path.clone()),
+        );
         assert!(results.is_empty());
 
         let _ = fs::remove_file(&db_path);
@@ -1426,7 +1450,7 @@ mod tests {
         let session_ids = ["ses-001"];
         let results = query_tool_durations_batch(
             &session_ids,
-            "/tmp/nonexistent_db_ztrace_tool.db",
+            &DbTarget::Path("/tmp/nonexistent_db_ztrace_tool.db".into()),
         );
         assert!(results.is_empty());
     }
@@ -1440,7 +1464,8 @@ mod tests {
         let db_path = create_test_db();
 
         let session_ids = ["ses-001"];
-        let results = query_db_messages(&session_ids, &db_path);
+        let results =
+            query_db_messages(&session_ids, &DbTarget::Path(db_path.clone()));
 
         // ses-001 has: 1 user_msg (msg-005 part-005), 1 assistant_reply (msg-006 part-007),
         // 1 assistant_reasoning (msg-006 part-006)
@@ -1522,7 +1547,8 @@ mod tests {
         let db_path = create_test_db();
 
         let session_ids: [&str; 0] = [];
-        let results = query_db_messages(&session_ids, &db_path);
+        let results =
+            query_db_messages(&session_ids, &DbTarget::Path(db_path.clone()));
         assert!(results.is_empty());
 
         let _ = fs::remove_file(&db_path);
@@ -1533,7 +1559,7 @@ mod tests {
         let session_ids = ["ses-001"];
         let results = query_db_messages(
             &session_ids,
-            "/tmp/nonexistent_db_ztrace_msg.db",
+            &DbTarget::Path("/tmp/nonexistent_db_ztrace_msg.db".into()),
         );
         assert!(results.is_empty());
     }
@@ -1547,7 +1573,8 @@ mod tests {
         let db_path = create_test_db();
 
         let session_ids = ["ses-002"];
-        let results = query_db_tool_calls(&session_ids, &db_path);
+        let results =
+            query_db_tool_calls(&session_ids, &DbTarget::Path(db_path.clone()));
 
         // ses-002 has part-004 (tool bash, completed) and part-008 (tool read, running)
         // Only part-004 is completed
@@ -1593,7 +1620,8 @@ mod tests {
         let db_path = create_test_db();
 
         let session_ids: [&str; 0] = [];
-        let results = query_db_tool_calls(&session_ids, &db_path);
+        let results =
+            query_db_tool_calls(&session_ids, &DbTarget::Path(db_path.clone()));
         assert!(results.is_empty());
 
         let _ = fs::remove_file(&db_path);
@@ -1604,7 +1632,7 @@ mod tests {
         let session_ids = ["ses-001"];
         let results = query_db_tool_calls(
             &session_ids,
-            "/tmp/nonexistent_db_ztrace_tc.db",
+            &DbTarget::Path("/tmp/nonexistent_db_ztrace_tc.db".into()),
         );
         assert!(results.is_empty());
     }

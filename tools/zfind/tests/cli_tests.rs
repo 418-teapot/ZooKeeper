@@ -992,3 +992,150 @@ fn test_message_no_match() {
         "stderr should mention 'no messages found matching', got: {stderr}"
     );
 }
+
+// ── Default aggregation across multiple databases ───────────────────────────
+
+/// Build a temp data dir with both fixture DBs and return it.
+fn two_db_data_dir() -> TempDir {
+    let dir = TempDir::new().expect("create temp data dir");
+    TestFixture::create_db(&dir.path().join("opencode.db"));
+    zutil::test_db::create_second_db(&dir.path().join("opencode-stable.db"));
+    dir
+}
+
+#[test]
+fn test_default_no_db_list_aggregates_two_databases() {
+    let dir = two_db_data_dir();
+    let data_dir = dir.path().to_string_lossy().to_string();
+
+    let output = Command::new(ZFIND_BIN)
+        .env("ZOO_OPENCODE_DATA_DIR", &data_dir)
+        .args(["--no-color", "list", "--json"])
+        .output()
+        .expect("failed to run zfind list --json (default aggregation)");
+    assert!(
+        output.status.success(),
+        "default list should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .expect("output should be valid JSON");
+    // 2 root sessions from the first DB + 1 root session living only in
+    // the second (ses-003 is a child and excluded by `list`).
+    assert_eq!(parsed["matches"], 3, "expected all sessions from both DBs");
+    let ids: Vec<&str> = parsed["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s.get("id").and_then(|v| v.as_str()))
+        .collect();
+    assert!(
+        ids.contains(&"ses-900"),
+        "default invocation must list the second-DB session, got: {ids:?}"
+    );
+    assert!(ids.contains(&"ses-001"), "first-DB sessions still listed");
+}
+
+#[test]
+fn test_default_search_finds_session_only_in_second_db() {
+    let dir = two_db_data_dir();
+    let data_dir = dir.path().to_string_lossy().to_string();
+
+    // "archived" only appears in ses-900's title → single match → the
+    // command prints the session ID (pipe-friendly output).
+    let output = Command::new(ZFIND_BIN)
+        .env("ZOO_OPENCODE_DATA_DIR", &data_dir)
+        .args(["--no-color", "search", "archived"])
+        .output()
+        .expect("failed to run zfind search archived (default aggregation)");
+    assert!(
+        output.status.success(),
+        "default search should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.trim(),
+        "ses-900",
+        "search without --db must find the second-DB session"
+    );
+}
+
+#[test]
+fn test_explicit_db_preserves_single_db_behavior() {
+    let dir = two_db_data_dir();
+    let data_dir = dir.path().to_string_lossy().to_string();
+
+    // First DB only: root sessions ses-001/ses-002; ses-900 must be
+    // invisible (ses-003 is a child and excluded by `list`).
+    let output = Command::new(ZFIND_BIN)
+        .args([
+            "--db",
+            &format!("{data_dir}/opencode.db"),
+            "--no-color",
+            "list",
+            "--json",
+        ])
+        .output()
+        .expect("failed to run zfind --db opencode.db list --json");
+    assert!(
+        output.status.success(),
+        "explicit --db list should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .expect("output should be valid JSON");
+    assert_eq!(parsed["matches"], 2, "explicit DB must not aggregate");
+    let ids: Vec<&str> = parsed["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s.get("id").and_then(|v| v.as_str()))
+        .collect();
+    assert!(
+        !ids.contains(&"ses-900"),
+        "ses-900 must not appear when --db is the first DB, got: {ids:?}"
+    );
+
+    // Second DB only: ses-001 must be invisible, ses-900 visible.
+    let output = Command::new(ZFIND_BIN)
+        .args([
+            "--db",
+            &format!("{data_dir}/opencode-stable.db"),
+            "--no-color",
+            "list",
+            "--json",
+        ])
+        .output()
+        .expect("failed to run zfind --db stable.db list --json");
+    assert!(
+        output.status.success(),
+        "explicit --db stable list should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .expect("output should be valid JSON");
+    assert_eq!(parsed["matches"], 1);
+    assert_eq!(parsed["sessions"][0]["id"], "ses-900");
+
+    // Searching for the second-DB session against the first DB exits 2.
+    let output = Command::new(ZFIND_BIN)
+        .args([
+            "--db",
+            &format!("{data_dir}/opencode.db"),
+            "--no-color",
+            "search",
+            "archived",
+        ])
+        .output()
+        .expect("failed to run zfind --db opencode.db search archived");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "search archived --db first.db should exit 2, got {:?}",
+        output.status.code()
+    );
+}
