@@ -359,10 +359,11 @@ color = "#FFA500"
 "*"       = "deny"
 "**/*.md" = "allow"
 [agent.mola.permission.skill]
-"*"          = "deny"
-"grill"      = "allow"
-"mola-plan"  = "allow"
-"wiki-query" = "allow"
+"*"                = "deny"
+"first-principles" = "allow"
+"grill"            = "allow"
+"mola-plan"        = "allow"
+"wiki-query"       = "allow"
 
 [agent.lynx]
 mode  = "subagent"
@@ -581,6 +582,7 @@ agents = [
 skills = [
   "beaver-tdd",
   "code-review",
+  "first-principles",
   "git-commit",
   "grill",
   "kiwi-distill",
@@ -614,6 +616,7 @@ agents = [
   "mola",
 ]
 skills = [
+  "first-principles",
   "git-commit",
   "grill",
   "mola-plan",

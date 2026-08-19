@@ -28,6 +28,7 @@ const POLY_PROFILE = {
   skills: [
     "beaver-tdd",
     "code-review",
+    "first-principles",
     "git-commit",
     "grill",
     "kiwi-distill",
@@ -93,11 +94,11 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("buildPiContributions — profile-driven selection", () => {
-  it("poly full profile → 7 agents incl. dolphin prompt, 10 skills", () => {
+  it("poly full profile → 7 agents incl. dolphin prompt, 11 skills", () => {
     const { composed, profile } = buildPiContributions(POLY_ZOO);
     assert.equal(profile?.name, "poly");
     assert.equal(composed.agents.length, 7);
-    assert.equal(composed.skills.length, 10);
+    assert.equal(composed.skills.length, 11);
     const dolphin = composed.agents.find((a) => a.name === "dolphin");
     assert.ok(dolphin, "dolphin must be composed");
     assert.ok(dolphin.prompt.startsWith("<Role>"));
@@ -232,7 +233,7 @@ describe("buildPiContributions — profile-driven selection", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildPiHandlers — prompt injection + skill discovery", () => {
-  it("poly full → dolphin prompt prepended, all 10 skill dirs discovered", async () => {
+  it("poly full → dolphin prompt prepended, all 11 skill dirs discovered", async () => {
     const handlers = buildPiHandlers(POLY_ZOO);
     const result = await handlers.beforeAgentStart({
       systemPrompt: "base",
@@ -241,7 +242,7 @@ describe("buildPiHandlers — prompt injection + skill discovery", () => {
     assert.ok(result.systemPrompt.endsWith("base"));
 
     const resources = await handlers.resourcesDiscover();
-    assert.equal(resources.skillPaths.length, 10);
+    assert.equal(resources.skillPaths.length, 11);
     for (const path of resources.skillPaths) {
       assert.ok(existsSync(path), `${path} must exist`);
       assert.ok(
@@ -480,7 +481,7 @@ describe("zookeeperPi — thin entry wiring", () => {
       const resources = (await api.handlers.resources_discover()) as {
         skillPaths: string[];
       };
-      assert.equal(resources.skillPaths.length, 10);
+      assert.equal(resources.skillPaths.length, 11);
 
       // tool_result runs the real poly hooks: json-error-nudge is
       // enabled there, so a JSON parse error output gets the reminder.
