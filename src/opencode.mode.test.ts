@@ -153,6 +153,7 @@ describe("poly full profile — registration parity", () => {
         "event",
         "experimental.chat.messages.transform",
         "experimental.chat.system.transform",
+        "experimental.text.complete",
         "tool",
         "tool.definition",
         "tool.execute.after",
@@ -705,6 +706,7 @@ describe("null profile — skip profile-driven registration", () => {
         "config",
         "event",
         "experimental.chat.system.transform",
+        "experimental.text.complete",
       ].sort(),
     );
   });
@@ -739,5 +741,33 @@ describe("null profile — skip profile-driven registration", () => {
       },
     });
     assert.equal(sessionAgentMap.get("s3"), "dolphin");
+  });
+
+  it("text.complete strips leading [mN] echoes and logs the event", async () => {
+    const plugin = await makePlugin({});
+    const output: { text: string } = { text: "[m3] [m5] hello world" };
+    await plugin["experimental.text.complete"](
+      { sessionID: "s4", messageID: "m", partID: "p" },
+      output,
+    );
+    assert.equal(output.text, "hello world");
+
+    const events = logEvents().filter((e) => e.event === "reply_ref_stripped");
+    assert.equal(events.length, 1);
+    assert.equal(events[0].hook, "text.complete");
+    assert.equal(events[0].level, "warn");
+    assert.equal(events[0].sessionId, "s4");
+    assert.equal(events[0].fragment, "[m3] [m5] hello world");
+  });
+
+  it("text.complete leaves clean replies unchanged without logging", async () => {
+    const plugin = await makePlugin({});
+    const output: { text: string } = { text: "plain reply" };
+    await plugin["experimental.text.complete"](
+      { sessionID: "s5", messageID: "m", partID: "p" },
+      output,
+    );
+    assert.equal(output.text, "plain reply");
+    assert.equal(logEvents().length, 0);
   });
 });

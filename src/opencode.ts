@@ -20,7 +20,8 @@
  * registrations.  When the profile is `null` (absent or invalid) every
  * profile-driven registration is skipped — no defaults, no fallback to a
  * full load — while the always-on infrastructure hooks (chat.params,
- * event, experimental.chat.system.transform) keep working.
+ * event, experimental.chat.system.transform, experimental.text.complete)
+ * keep working.
  *
  * This module is the entry + always-on infrastructure: it wires the
  * parsed config, consumes the shared `sessionAgentMap` (held by
@@ -40,10 +41,11 @@ import {
 } from "./core/config-parse.js";
 import type { ModeProfile } from "./core/config-types.js";
 import { setModelLimit } from "./core/context/model-limits.js";
+import { stripLineStartRefs } from "./core/context/reply-strip.js";
 import { cleanupSession, sessionAgentMap } from "./core/context/runtime.js";
 import type { Deps } from "./core/slots.js";
 import { REGISTRY } from "./registry.js";
-import { setSessionId } from "./utils/logger.js";
+import { log, setSessionId } from "./utils/logger.js";
 
 let _sessionIdSet = false;
 
@@ -57,7 +59,8 @@ let _sessionIdSet = false;
  * Profile-driven registrations (agents, skills, hook units, tools, slash
  * commands) are composed from the active `[zoo.mode.*]` profile; when the
  * profile is null they are all skipped while the infrastructure hooks
- * (chat.params, event, experimental.chat.system.transform) keep working.
+ * (chat.params, event, experimental.chat.system.transform,
+ * experimental.text.complete) keep working.
  *
  * Exported for unit testing — `zookeeper` wires this with the imported
  * config.toml.
@@ -144,6 +147,34 @@ export async function buildPlugin(input: any, zooConfig: any) {
           input.sessionID ?? "",
           input.model.limit.context,
           input.model.id,
+        );
+      }
+    },
+
+    async "experimental.text.complete"(
+      input: {
+        sessionID: string;
+        messageID: string;
+        partID: string;
+      },
+      output: { text: string },
+    ) {
+      // Strip exact line-start `[mN] ` echoes from outbound assistant
+      // text so model-mimicked ref prefixes never reach the
+      // user-visible transcript.
+      const before = output.text;
+      output.text = stripLineStartRefs(output.text);
+
+      // Detect ref-prefix stripping: when the reply started with an
+      // exact `[mN] ` echo, log a warning with the stripped tail.
+      if (before !== output.text) {
+        log(
+          "text.complete",
+          "reply_ref_stripped",
+          input.sessionID,
+          undefined,
+          "warn",
+          { fragment: before.slice(0, 200) },
         );
       }
     },
