@@ -152,7 +152,9 @@ pub fn print_session_table(
     let mut table =
         Table::new().show_header(true).show_edge(true).show_lines(false);
 
-    table.add_column(Column::new("Title"));
+    table.add_column(
+        Column::new("Title").no_wrap().overflow(OverflowMethod::Ellipsis),
+    );
     if is_all {
         populate_all_table(&mut table, results, &cyan, &green);
     } else {

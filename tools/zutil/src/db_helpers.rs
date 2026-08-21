@@ -141,17 +141,89 @@ fn open_multi_db(paths: &[String]) -> Option<Connection> {
     Some(conn)
 }
 
+/// Return the column names of `table` in `schema`, in table order.
+///
+/// Uses `PRAGMA schema.table_info(table)`, whose result rows carry the
+/// column `name` at field index 1 (after `cid`).
+fn table_columns(
+    conn: &Connection,
+    schema: &str,
+    table: &str,
+) -> rusqlite::Result<Vec<String>> {
+    let sql = format!("PRAGMA {schema}.table_info({table})");
+    let mut stmt = conn.prepare(&sql)?;
+    let cols = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(cols)
+}
+
+/// Quote a `SQLite` identifier (column/table name) for interpolation into a
+/// generated statement, escaping any embedded double quotes by doubling.
+fn quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
 /// Create temp views shadowing `session`, `message`, and `part` with a
 /// UNION ALL over the main and all attached databases.
+///
+/// Each view exposes the union of column names across every database,
+/// ordered first by the main database's column order and then by any
+/// remaining columns that only appear in aux databases (in the first aux
+/// database's order in which they appear). In each branch's SELECT list,
+/// columns that branch lacks are emitted as `NULL AS <col>`, so every
+/// branch of the UNION ALL yields the same column set and rows stay aligned
+/// by name rather than by position. Databases whose tables declare their
+/// columns in a different order, or that are missing a column entirely,
+/// still merge correctly without dropping any column that any database has.
 fn create_merge_views(conn: &Connection, count: usize) -> rusqlite::Result<()> {
     for table in ["session", "message", "part"] {
+        let schema_cols: Vec<Vec<String>> = (0..count)
+            .map(|i| {
+                let schema = if i == 0 { "main" } else { &format!("aux{i}") };
+                table_columns(conn, schema, table)
+            })
+            .collect::<rusqlite::Result<_>>()?;
+
+        // Order the exposed columns: first the main database's columns in
+        // its order, then any column unique to aux databases (appended in
+        // the order of the first aux database that declares it).
+        let main_cols = &schema_cols[0];
+        let mut expose: Vec<&String> =
+            Vec::with_capacity(schema_cols.iter().map(Vec::len).sum());
+        for col in main_cols {
+            if !expose.contains(&col) {
+                expose.push(col);
+            }
+        }
+        for cols in schema_cols.iter().skip(1) {
+            for col in cols {
+                if !expose.contains(&col) {
+                    expose.push(col);
+                }
+            }
+        }
+
+        // The schema prefix lives only on the FROM clause; the SELECT list
+        // uses plain column names in an identical order across every branch
+        // so UNION ALL aligns by name. Schema names are not valid column
+        // qualifiers in the SELECT list.
         let sources: Vec<String> = (0..count)
             .map(|i| {
-                if i == 0 {
-                    format!("SELECT * FROM main.{table}")
-                } else {
-                    format!("SELECT * FROM aux{i}.{table}")
-                }
+                let schema = if i == 0 { "main" } else { &format!("aux{i}") };
+                let this_cols = &schema_cols[i];
+                let select: Vec<String> = expose
+                    .iter()
+                    .map(|col| {
+                        let quoted = quote_ident(col);
+                        if this_cols.contains(col) {
+                            quoted
+                        } else {
+                            format!("NULL AS {quoted}")
+                        }
+                    })
+                    .collect();
+                format!("SELECT {} FROM {schema}.{table}", select.join(", "))
             })
             .collect();
         let sql = format!(
@@ -596,6 +668,225 @@ mod tests {
         assert_eq!(ids.len(), 5, "both DBs must contribute sessions");
         assert!(ids.contains(&"ses-abc123"), "first DB row present");
         assert!(ids.contains(&"ses-xyz001"), "second DB row present");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Create a DB file whose `session` table declares its columns in
+    /// `col_order` (the listed names, in order). `message`/`part` tables
+    /// are created normally. Inserts one session row with the given
+    /// `title`/`agent`/`directory`/`time_updated` for verification.
+    fn create_reordered_session_db(
+        dir: &std::path::Path,
+        file: &str,
+        col_order: &[&str],
+        title: &str,
+        agent: &str,
+        directory: &str,
+    ) {
+        let path = dir.join(file);
+        let conn = Connection::open(&path).expect("open reordered test db");
+        conn.execute_batch(&format!(
+            "CREATE TABLE session ({})",
+            col_order
+                .iter()
+                .map(|c| format!("{c} TEXT"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+        .expect("create reordered session table");
+        // message/part must exist too so the merge views build.
+        conn.execute_batch(
+            "CREATE TABLE message (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                time_created INTEGER,
+                data TEXT
+            );
+            CREATE TABLE part (
+                id TEXT PRIMARY KEY,
+                message_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                time_created INTEGER,
+                time_updated INTEGER,
+                data TEXT
+            );",
+        )
+        .expect("create message/part tables");
+
+        let mut cols = String::new();
+        let mut vals: Vec<String> = Vec::new();
+        // Quote a string literal for SQL, escaping embedded quotes.
+        let q = |s: &str| format!("'{}'", s.replace('\'', "''"));
+        for c in col_order {
+            if !cols.is_empty() {
+                cols.push(',');
+            }
+            cols.push_str(c);
+            let v = match *c {
+                "id" => q("ses-order"),
+                "title" => q(title),
+                "agent" => q(agent),
+                "directory" => q(directory),
+                "time_updated" => "1715000999000".to_string(),
+                _ => "NULL".to_string(),
+            };
+            vals.push(v);
+        }
+        conn.execute(
+            &format!(
+                "INSERT INTO session ({cols}) VALUES ({})",
+                vals.join(", ")
+            ),
+            [],
+        )
+        .expect("insert reordered session");
+        conn.close().expect("close reordered test db");
+    }
+
+    #[test]
+    fn test_aggregate_merges_by_column_name_across_orders() {
+        let _lock = MULTIDB_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir()
+            .join(format!("zutil_order_{}.db", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create fixture dir");
+
+        // Main DB: modern order (title early, agent/directory near front).
+        create_reordered_session_db(
+            &dir,
+            "opencode.db",
+            &[
+                "id",
+                "parent_id",
+                "title",
+                "slug",
+                "agent",
+                "directory",
+                "model",
+                "time_created",
+                "time_updated",
+            ],
+            "main title",
+            "beaver",
+            "/main",
+        );
+        // Stable DB: a different physical column order (the real-world
+        // drift). title, agent, and time_updated all sit at DIFFERENT
+        // indices than in main, so a position-based merge would scramble
+        // title (rendering it as the directory) and null out time_updated.
+        create_reordered_session_db(
+            &dir,
+            "opencode-stable.db",
+            &[
+                "id",
+                "parent_id",
+                "agent",
+                "slug",
+                "time_updated",
+                "directory",
+                "title",
+                "model",
+                "time_created",
+            ],
+            "stable title",
+            "kiwi",
+            "/stable",
+        );
+
+        let target = DbTarget::Aggregate(dir.to_string_lossy().to_string());
+        let rows = query_sessions_where(&target, "ORDER BY id", &[])
+            .expect("aggregate query should succeed");
+        assert_eq!(rows.len(), 2, "both databases contribute a row");
+
+        let matching = rows
+            .iter()
+            .filter(|r| {
+                r.get("id").and_then(Value::as_str) == Some("ses-order")
+            })
+            .count();
+        assert_eq!(matching, 2, "same id present in both dbs");
+
+        for row in &rows {
+            let title = row.get("title").and_then(Value::as_str).unwrap_or("");
+            let agent = row.get("agent").and_then(Value::as_str).unwrap_or("");
+            let directory =
+                row.get("directory").and_then(Value::as_str).unwrap_or("");
+            // Each DB's row must show its own title/agent/directory and
+            // not a value from the other DB's mismatched position.
+            assert!(
+                (title == "main title"
+                    && agent == "beaver"
+                    && directory == "/main")
+                    || (title == "stable title"
+                        && agent == "kiwi"
+                        && directory == "/stable"),
+                "row scrambled: title={title:?} agent={agent:?} dir={directory:?}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_aggregate_merge_view_nulls_missing_aux_column() {
+        let _lock = MULTIDB_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir()
+            .join(format!("zutil_nullfill_{}.db", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create fixture dir");
+
+        // Main DB has the full session column set.
+        create_reordered_session_db(
+            &dir,
+            "opencode.db",
+            &["id", "parent_id", "title", "agent", "directory", "time_updated"],
+            "main title",
+            "beaver",
+            "/main",
+        );
+        // Aux DB is missing the `directory` column (future schema drift):
+        // the merged view must still expose it, NULL for the aux row.
+        create_reordered_session_db(
+            &dir,
+            "opencode-stable.db",
+            &["id", "parent_id", "title", "agent", "time_updated"],
+            "stable title",
+            "kiwi",
+            "/stable",
+        );
+
+        let target = DbTarget::Aggregate(dir.to_string_lossy().to_string());
+        let rows = query_sessions_where(&target, "ORDER BY id", &[])
+            .expect("aggregate query should succeed");
+        assert_eq!(rows.len(), 2, "both databases contribute a row");
+
+        for row in &rows {
+            let title = row.get("title").and_then(Value::as_str).unwrap_or("");
+            let agent = row.get("agent").and_then(Value::as_str).unwrap_or("");
+            let directory = row.get("directory");
+            if title == "main title" {
+                assert_eq!(agent, "beaver", "main agent");
+                assert_eq!(
+                    directory,
+                    Some(&Value::String("/main".to_string())),
+                    "main directory"
+                );
+            } else if title == "stable title" {
+                assert_eq!(agent, "kiwi", "aux agent");
+                assert_eq!(
+                    directory,
+                    Some(&Value::Null),
+                    "aux lacks `directory`, must be NULL-filled"
+                );
+            } else {
+                panic!("unexpected row: {row:?}");
+            }
+        }
 
         let _ = fs::remove_dir_all(&dir);
     }
