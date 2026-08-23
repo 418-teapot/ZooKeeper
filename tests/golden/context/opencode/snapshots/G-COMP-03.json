@@ -699,8 +699,8 @@
           "role": "user",
           "toolParts": [],
           "synthetic": true,
-          "sentinelId": "zoo-fold-b1",
-          "text": "[m2] [Block b1 · 6 条] 第一段\n用户请求执行命令，助手完成了操作。"
+          "sentinelId": "zoo-fold-b2",
+          "text": "[m2] [Block b2 · 14 条] 第二段\n用户请求执行命令，助手完成了操作。\n=== Superseded Blocks ===\n--- b1: 第一段 ---"
         },
         {
           "role": "assistant",
@@ -871,121 +871,25 @@
           ]
         },
         {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m17] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m18] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m19] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m20] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m21] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m22] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m23] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m24] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
           "role": "user",
           "toolParts": [],
-          "text": "[m25] 最后一个问题"
+          "text": "[m17] 最后一个问题"
         },
         {
           "role": "assistant",
           "toolParts": [],
-          "text": "[m26] 回答完毕"
+          "text": "[m18] 回答完毕"
         }
       ],
       "state": {
         "blocks": [
           {
-            "blockId": 1,
+            "blockId": 2,
             "active": true,
-            "title": "第一段",
-            "coveredMessages": 6,
-            "compressedTokens": 12018,
-            "summaryTokens": 12
+            "title": "第二段",
+            "coveredMessages": 14,
+            "compressedTokens": 16024,
+            "summaryTokens": 24
           }
         ],
         "marks": {
@@ -997,9 +901,11 @@
         "pendingViewChange": false,
         "nudgeAnchor": null
       },
-      "toolResult": null,
-      "toolError": "第 1 个范围校验失败：范围 [1, 15) 触及保护区域（边界 11）。最近的对话内容受到保护、不可压缩，请将终点往前调整。",
-      "notifications": []
+      "toolResult": "上下文压缩：已压缩 14 条消息为压缩块 b2：第二段，约回收 16.0K tokens",
+      "toolError": null,
+      "notifications": [
+        "上下文压缩：已压缩 14 条消息为压缩块 b2：第二段，约回收 16.0K tokens"
+      ]
     },
     {
       "label": "third-generation-reabsorbs-inactive",
@@ -1013,8 +919,8 @@
           "role": "user",
           "toolParts": [],
           "synthetic": true,
-          "sentinelId": "zoo-fold-b1",
-          "text": "[m2] [Block b1 · 6 条] 第一段\n用户请求执行命令，助手完成了操作。"
+          "sentinelId": "zoo-fold-b3",
+          "text": "[m2] [Block b3 · 15 条] 第三段\n第三段\n=== Superseded Blocks ===\n--- b2: 第二段 ---"
         },
         {
           "role": "assistant",
@@ -1173,133 +1079,25 @@
           ]
         },
         {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m16] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m17] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m18] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m19] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m20] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m21] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m22] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m23] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m24] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
           "role": "user",
           "toolParts": [],
-          "text": "[m25] 最后一个问题"
+          "text": "[m16] 最后一个问题"
         },
         {
           "role": "assistant",
           "toolParts": [],
-          "text": "[m26] 回答完毕"
+          "text": "[m17] 回答完毕"
         }
       ],
       "state": {
         "blocks": [
           {
-            "blockId": 1,
+            "blockId": 3,
             "active": true,
-            "title": "第一段",
-            "coveredMessages": 6,
-            "compressedTokens": 12018,
-            "summaryTokens": 12
+            "title": "第三段",
+            "coveredMessages": 15,
+            "compressedTokens": 14021,
+            "summaryTokens": 14
           }
         ],
         "marks": {
@@ -1311,9 +1109,11 @@
         "pendingViewChange": false,
         "nudgeAnchor": null
       },
-      "toolResult": null,
-      "toolError": "第 1 个范围校验失败：范围 [1, 17) 触及保护区域（边界 11）。最近的对话内容受到保护、不可压缩，请将终点往前调整。",
-      "notifications": []
+      "toolResult": "上下文压缩：已压缩 15 条消息为压缩块 b3：第三段，约回收 14.0K tokens",
+      "toolError": null,
+      "notifications": [
+        "上下文压缩：已压缩 15 条消息为压缩块 b3：第三段，约回收 14.0K tokens"
+      ]
     }
   ]
 }

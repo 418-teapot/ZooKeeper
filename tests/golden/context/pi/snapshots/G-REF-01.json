@@ -1,0 +1,215 @@
+{
+  "scenario": "G-REF-01",
+  "rounds": [
+    {
+      "label": "injection-branches",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] part-a\npart-b"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"input\":\"\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] tool-out",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [],
+          "text": "[m4] text-a\ntext-b"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"input\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": []
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m7] note m0009 inline"
+        }
+      ],
+      "state": {
+        "blocks": [],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "strip-reinject-idempotent",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] part-a\npart-b"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"input\":\"\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] tool-out",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [],
+          "text": "[m4] text-a\ntext-b"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"input\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": []
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m7] note m0009 inline"
+        }
+      ],
+      "state": {
+        "blocks": [],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "fold-renumbering-covered-messages-no-ref",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m2] [Block b1 · 3 条] test\ntest summary."
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m4] done",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "state": {
+        "blocks": [
+          {
+            "blockId": 1,
+            "active": true,
+            "title": "test",
+            "coveredMessages": 3,
+            "compressedTokens": 1500,
+            "summaryTokens": 80
+          }
+        ],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    }
+  ]
+}

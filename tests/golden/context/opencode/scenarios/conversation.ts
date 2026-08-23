@@ -8,8 +8,8 @@
  * @module
  */
 
-import type { ContextMessageEntry } from "../../../../src/adapters/opencode/types.js";
-import type { CompressRangeInput } from "../../../../src/core/context/compress.js";
+import type { ContextMessageEntry } from "../../../../../src/adapters/opencode/types.js";
+import type { CompressRangeInput } from "../../../../../src/core/context/compress.js";
 import { msg, textPart, toolPart } from "../messages.js";
 
 /** Long tool output (~2000 heuristic tokens) so protection gates pass. */

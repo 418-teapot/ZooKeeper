@@ -1,23 +1,22 @@
 /**
- * Snapshot capture — turns live messages / session state into the
- * semantic projections that get persisted as golden snapshots.
+ * Snapshot capture helpers — host-agnostic projections of core state and
+ * prune-placeholder strings.
  *
  * Three noise classes are excluded here (they never reach the JSON):
- * host message ids (only the sentinel zoo-* ids survive), refs (they
- * stay raw in text and are normalised at compare time), and compaction
- * boundary / anchor internals (blocks are projected to their semantic
- * subset, timestamps dropped).
+ * host message ids (only the sentinel zoo-* ids survive, enforced by the
+ * host lane's message projection), refs (they stay raw in text and are
+ * normalised at compare time), and compaction boundary / anchor
+ * internals (blocks are projected to their semantic subset, timestamps
+ * dropped).
  *
- * The capture source is the host-agnostic core
- * (`src/core/context/`): block and mark collections live on a
- * `SessionState` reached through the shared `SessionStateManager`.
+ * Everything here operates on core state (`SessionState`, `Block`) and
+ * plain strings — no host message shape is read.  The host-specific
+ * message projection lives in each lane's `capture.ts`, which composes
+ * these helpers.
  *
  * @module
  */
 
-import type { ContextMessageEntry } from "../../../src/adapters/opencode/types.js";
-import { isMessageIgnored } from "../../../src/adapters/opencode/types.js";
-import { LINE_START_REF_PREFIX } from "../../../src/core/context/canon.js";
 import {
   PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
@@ -28,18 +27,15 @@ import {
   reclaimedTokens,
 } from "../../../src/core/context/release.js";
 import type { Block, SessionState } from "../../../src/core/context/state.js";
+import { LINE_START_REF_PREFIX } from "../../../src/core/context/view-refs.js";
 import type {
   BlockProjection,
   StateCapture,
-  ViewMessageCapture,
   ViewToolPartCapture,
 } from "./types.js";
 
 /** Preview length for non-pruned tool outputs. */
 const TOOL_OUTPUT_PREVIEW = 80;
-
-/** Sentinel synthetic message id prefixes kept in the snapshot. */
-const SENTINEL_PREFIXES = ["zoo-fold-b", "zoo-nudge", "zoo-manual-compress"];
 
 /** All prune placeholder strings (output + error-input variant). */
 const PRUNE_PLACEHOLDERS = [
@@ -110,19 +106,20 @@ export function captureState(state: SessionState): StateCapture {
 /**
  * Capture the prune observables of a single tool output.
  *
- * The render layer (`apply-view.ts` → `injectLinePrefix`) prepends a
- * line-start `[mN] ` ref marker to every visible item's injection
- * region before the snapshot is read back, so a placeholder may arrive
- * with that prefix in front of it.  Strip one (and only one — the
- * marker is per-round and the capture sees the current round's
- * prefix) with the same `LINE_START_REF_PREFIX` rule the render layer
- * strips with `canon.stripTags`, so
- * the placeholder contract stays the single source of truth.
+ * The render layer (`injectLinePrefix` in the opencode / pi renderers)
+ * prepends a line-start `[mN] ` ref marker to every visible item's
+ * injection region, so a placeholder written as a whole region may
+ * arrive with that prefix in front of it.  Strip one line-start prefix
+ * with `LINE_START_REF_PREFIX` as snapshot hygiene — the marker is
+ * per-round and transient — so the placeholder contract stays the
+ * single source of truth.
  *
  * @param output - The tool output string.
  * @returns The preview capture.
  */
-function captureToolOutput(output: string | undefined): ViewToolPartCapture {
+export function captureToolOutput(
+  output: string | undefined,
+): ViewToolPartCapture {
   if (typeof output !== "string" || output.length === 0) {
     return { output: "", pruned: false, input: null, inputPruned: false };
   }
@@ -145,7 +142,7 @@ function captureToolOutput(output: string | undefined): ViewToolPartCapture {
  * @param input - The tool part input value.
  * @returns The input preview + pruned flag.
  */
-function captureToolInput(input: unknown): {
+export function captureToolInput(input: unknown): {
   input: string | null;
   inputPruned: boolean;
 } {
@@ -174,64 +171,4 @@ function captureToolInput(input: unknown): {
       ? input.slice(0, TOOL_OUTPUT_PREVIEW)
       : JSON.stringify(input).slice(0, TOOL_OUTPUT_PREVIEW);
   return { input: preview, inputPruned: false };
-}
-
-/**
- * Capture one message's observable view shape.
- *
- * @param entry - The (possibly mutated) message entry.
- * @returns The view capture.
- */
-export function captureMessage(entry: ContextMessageEntry): ViewMessageCapture {
-  const info = entry.info as unknown as Record<string, unknown>;
-  const capture: ViewMessageCapture = {
-    role: entry.info.role,
-    toolParts: [],
-  };
-  if (info.synthetic === true) capture.synthetic = true;
-  if (info.summary === true) capture.boundary = true;
-  if (isMessageIgnored(entry) || info.ignored === true) capture.ignored = true;
-
-  const sentinel = SENTINEL_PREFIXES.find((p) =>
-    String(entry.info.id).startsWith(p),
-  );
-  if (sentinel) {
-    // Keep the sentinel identity (the numeric suffix is the stable
-    // block id / a fixed marker) so the snapshot reader can tell
-    // synthetic messages apart from ordinary user text.
-    (capture as unknown as Record<string, unknown>).sentinelId = String(
-      entry.info.id,
-    );
-  }
-
-  const textParts: string[] = [];
-  const parts = entry.parts ?? [];
-  for (const part of parts) {
-    const p = part as unknown as Record<string, unknown>;
-    if (p.type === "text" && typeof p.text === "string") {
-      textParts.push(p.text);
-    } else if (p.type === "tool") {
-      const state = p.state as Record<string, unknown> | undefined;
-      const output = typeof state?.output === "string" ? state.output : "";
-      capture.toolParts.push({
-        tool: typeof p.tool === "string" ? p.tool : undefined,
-        ...captureToolOutput(output),
-        ...captureToolInput(state?.input),
-      });
-    }
-  }
-  if (textParts.length > 0) capture.text = textParts.join("\n");
-  return capture;
-}
-
-/**
- * Capture the final view structure of a (mutated) message array.
- *
- * @param messages - The messages after the transform ran.
- * @returns Ordered view captures.
- */
-export function captureView(
-  messages: ContextMessageEntry[],
-): ViewMessageCapture[] {
-  return messages.map(captureMessage);
 }

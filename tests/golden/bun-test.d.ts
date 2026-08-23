@@ -13,6 +13,13 @@ declare module "bun:test" {
     toBe(expected: unknown): void;
     toEqual(expected: unknown): void;
     toBeGreaterThan(expected: number): void;
+    toMatch(regexp: RegExp | string): void;
+    toBeNull(): void;
+    toBeUndefined(): void;
+    toThrow(expected?: string | RegExp): void;
+    readonly not: TestExpectation;
+    readonly rejects: TestExpectation;
+    readonly resolves: TestExpectation;
   }
 
   export function describe(name: string, fn: () => void): void;

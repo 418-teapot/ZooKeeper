@@ -1,0 +1,303 @@
+{
+  "scenario": "PI-PAIR-01",
+  "rounds": [
+    {
+      "label": "baseline",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] 开场问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"ls\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] data 1",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"find\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m5] data 2",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m6] 最后一个问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [],
+          "text": "[m7] 回答完毕"
+        }
+      ],
+      "state": {
+        "blocks": [],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "reject-half-pair-cut",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] 开场问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"ls\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] data 1",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"find\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m5] data 2",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m6] 最后一个问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [],
+          "text": "[m7] 回答完毕"
+        }
+      ],
+      "state": {
+        "blocks": [],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": null,
+      "toolError": "第 1 个范围校验失败：范围 [3, 4) 在工具调用对中间截断：区间内的工具调用 bash 链接的工具结果位于区间之外（序数 4）。工具调用与其结果必须成对压缩，请将范围扩展到包含该工具结果。",
+      "notifications": []
+    },
+    {
+      "label": "block-full-pair-accepted",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] 开场问题"
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m2] [Block b1 · 4 条] 双对\nboth pairs summary."
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] 最后一个问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [],
+          "text": "[m4] 回答完毕"
+        }
+      ],
+      "state": {
+        "blocks": [
+          {
+            "blockId": 1,
+            "active": true,
+            "title": "双对",
+            "coveredMessages": 4,
+            "compressedTokens": 11,
+            "summaryTokens": 5
+          }
+        ],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": "上下文压缩：已压缩 4 条消息为压缩块 b1：双对，约回收 6 tokens",
+      "toolError": null,
+      "notifications": [
+        "上下文压缩：已压缩 4 条消息为压缩块 b1：双对，约回收 6 tokens"
+      ]
+    },
+    {
+      "label": "decompress-restores-pair",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] 开场问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"ls\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] data 1",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"find\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m5] data 2",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m6] 最后一个问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [],
+          "text": "[m7] 回答完毕"
+        }
+      ],
+      "state": {
+        "blocks": [],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": "上下文解压：已恢复压缩块 b1 的 4 条原始消息，约回胀 6 tokens，下一轮上下文生效",
+      "toolError": null,
+      "notifications": [
+        "上下文解压：已恢复压缩块 b1 的 4 条原始消息，约回胀 6 tokens，下一轮上下文生效"
+      ]
+    }
+  ]
+}

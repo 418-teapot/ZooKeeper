@@ -1,14 +1,13 @@
 /**
  * Unit tests for the pruned-output classification in `capture.ts`.
  *
- * The render layer (`src/adapters/opencode/apply-view.ts` →
- * `injectLinePrefix`) prepends a line-start `[mN] ` ref marker to every
- * visible item's injection region before the snapshot is read back, so
- * a tool-output placeholder reaches the capture with that prefix still
- * attached.  The capture must still recognise the placeholder — its
+ * The render layer prepends a line-start `[mN] ` ref marker to every
+ * visible item's injection region, and a prune placeholder written as a
+ * whole region therefore reaches the capture with that prefix in front
+ * of it.  The capture must still recognise the placeholder — its
  * identity is the single source of truth in
- * `src/core/context/message-parts.ts` — by stripping the prefix with
- * the same `LINE_START_REF_PREFIX` rule the render layer strips with.
+ * `src/core/context/message-parts.ts` — by stripping the line-start
+ * prefix at capture time as snapshot hygiene.
  *
  * The classification is reached via the public `captureMessage`
  * surface: `captureToolOutput` is a private helper, but its only
@@ -19,11 +18,11 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { ContextMessageEntry } from "../../../src/adapters/opencode/types.js";
+import type { ContextMessageEntry } from "../../../../src/adapters/opencode/types.js";
 import {
   PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
-} from "../../../src/core/context/message-parts.js";
+} from "../../../../src/core/context/message-parts.js";
 import { captureMessage } from "./capture.js";
 
 /**
@@ -43,10 +42,10 @@ function toolEntry(output: string, input: unknown = "ls"): ContextMessageEntry {
 
 describe("captureMessage — pruned tool-output classification", () => {
   test("placeholder prefixed by `[mN] ` is classified as pruned", () => {
-    // Snapshot evidence: G-MS-03 round "dcp-sweep-no-arg" — apply-view's
-    // injectLinePrefix adds `[m4] ` before the placeholder in the live
-    // view; the capture must still flag the output as pruned even
-    // though the placeholder is no longer at index 0.  The capture
+    // Snapshot evidence: G-MS-03 round "dcp-sweep-no-arg" — the
+    // renderer's injectLinePrefix adds `[m4] ` before the placeholder in
+    // the live view; the capture must still flag the output as pruned
+    // even though the placeholder is no longer at index 0.  The capture
     // receives the full `state.output` (placeholder + prefix, 82 chars);
     // it preserves the full string in the pruned branch.
     const prefixed = `[m4] ${PRUNED_TOOL_OUTPUT_REPLACEMENT}`;

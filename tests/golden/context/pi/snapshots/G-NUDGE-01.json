@@ -1,0 +1,636 @@
+{
+  "scenario": "G-NUDGE-01",
+  "rounds": [
+    {
+      "label": "set-limit-baseline-silent",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] data one",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m4] again"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m6] data two",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "state": {
+        "blocks": [],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": 140000
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "gentle-trigger",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] data one",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m4] again"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m6] data two",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "<internal-reminder>\n**CONTEXT GROWING — 150000 (75% of 200000 window)**\n\nCompressible window: m2–m3 (~5 tokens), both refs inclusive.\nPick your own contiguous sub-range inside — compressing everything is optional.\n`compress` `toRef` is exclusive — pass the ref after a message to include it.\n\nAt your next natural pause, compress a closed range with the `compress` tool. Timing is your call.\n\n**压缩分段要点：**\n\n1. 重要信息不压缩：当前任务、关键决策与约束、文件路径、未完成验证的结论，都应排除在压缩范围之外。\n2. 按用户请求与任务委派边界分段：一个范围只覆盖一个主题，每块单独设 title。\n3. 保留当前任务相关的最近上下文：与当前工作紧密相关的最近对话不要压缩。\n4. 一次调用批量提交多范围：用 ranges 数组一次提交多段，减少工具往返。\n\nUNCOMPRESSED HISTORY = GROWING CONTEXT = SHRINKING HEADROOM.\n</internal-reminder>"
+        }
+      ],
+      "state": {
+        "blocks": [],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": 150000
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "frozen-silent",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] data one",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m4] again"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m6] data two",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "state": {
+        "blocks": [],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": 150000
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "ratchet-down-silent",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] data one",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m4] again"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m6] data two",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "state": {
+        "blocks": [],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": 100000
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "re-trigger-after-ratchet",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] data one",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m4] again"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m6] data two",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "<internal-reminder>\n**CONTEXT GROWING — 135000 (68% of 200000 window)**\n\nCompressible window: m2–m3 (~5 tokens), both refs inclusive.\nPick your own contiguous sub-range inside — compressing everything is optional.\n`compress` `toRef` is exclusive — pass the ref after a message to include it.\n\nAt your next natural pause, compress a closed range with the `compress` tool. Timing is your call.\n\n**压缩分段要点：**\n\n1. 重要信息不压缩：当前任务、关键决策与约束、文件路径、未完成验证的结论，都应排除在压缩范围之外。\n2. 按用户请求与任务委派边界分段：一个范围只覆盖一个主题，每块单独设 title。\n3. 保留当前任务相关的最近上下文：与当前工作紧密相关的最近对话不要压缩。\n4. 一次调用批量提交多范围：用 ranges 数组一次提交多段，减少工具往返。\n\nUNCOMPRESSED HISTORY = GROWING CONTEXT = SHRINKING HEADROOM.\n</internal-reminder>"
+        }
+      ],
+      "state": {
+        "blocks": [],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": 135000
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "urgent-trigger",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] data one",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m4] again"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m6] data two",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "<internal-reminder>\n**CONTEXT LIMIT — 165000 (83% of 200000 window)**\n\nCompressible window: m2–m3 (~5 tokens), both refs inclusive.\nPick your own contiguous sub-range inside — compressing everything is optional.\n`compress` `toRef` is exclusive — pass the ref after a message to include it.\n\nFinish your current atomic step, then call the `compress` tool IMMEDIATELY.\nDO NOT start new exploration. DO NOT delegate new tasks. Compress first.\n\n**压缩分段要点：**\n\n1. 重要信息不压缩：当前任务、关键决策与约束、文件路径、未完成验证的结论，都应排除在压缩范围之外。\n2. 按用户请求与任务委派边界分段：一个范围只覆盖一个主题，每块单独设 title。\n3. 保留当前任务相关的最近上下文：与当前工作紧密相关的最近对话不要压缩。\n4. 一次调用批量提交多范围：用 ranges 数组一次提交多段，减少工具往返。\n\nFULL CONTEXT = TERMINATED SESSION = LOST WORK.\n</internal-reminder>"
+        }
+      ],
+      "state": {
+        "blocks": [],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": 165000
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "gate-closed-no-compress-tool",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] data one",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m4] again"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m6] data two",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "state": {
+        "blocks": [],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": 165000
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "gate-closed-no-nudge-config",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] data one",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m4] again"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m6] data two",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        }
+      ],
+      "state": {
+        "blocks": [],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": 165000
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    }
+  ]
+}

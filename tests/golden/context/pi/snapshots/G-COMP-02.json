@@ -1,5 +1,5 @@
 {
-  "scenario": "G-COMP-04",
+  "scenario": "G-COMP-02",
   "rounds": [
     {
       "label": "baseline-refs",
@@ -14,9 +14,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m2] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -26,9 +38,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m3] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m5] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -38,9 +62,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m4] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m7] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -50,9 +86,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m5] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m9] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -62,9 +110,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m6] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m11] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -74,9 +134,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m7] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m13] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -86,9 +158,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m8] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m15] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -98,9 +182,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m9] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m17] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -110,9 +206,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m10] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m19] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -122,9 +230,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m11] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m21] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -134,9 +254,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m12] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m23] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -146,9 +278,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m13] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m25] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -158,9 +302,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m14] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m27] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -170,9 +326,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m15] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m29] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -182,9 +350,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m16] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m31] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -194,9 +374,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m17] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m33] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -206,9 +398,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m18] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m35] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -218,9 +422,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m19] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m37] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -230,9 +446,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m20] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m39] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -242,9 +470,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m21] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m41] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -254,9 +494,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m22] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m43] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -266,9 +518,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m23] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m45] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -278,9 +542,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m24] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m47] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -290,9 +566,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m25] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m49] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -302,9 +590,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m26] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m51] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -314,9 +614,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m27] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m53] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -326,9 +638,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m28] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m55] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -338,9 +662,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m29] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m57] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -348,12 +684,12 @@
         {
           "role": "user",
           "toolParts": [],
-          "text": "[m30] 最后一个问题"
+          "text": "[m58] 最后一个问题"
         },
         {
           "role": "assistant",
           "toolParts": [],
-          "text": "[m31] 回答完毕"
+          "text": "[m59] 回答完毕"
         }
       ],
       "state": {
@@ -372,7 +708,7 @@
       "notifications": []
     },
     {
-      "label": "gate-reversed-order",
+      "label": "reject-cross-range-overlap",
       "view": [
         {
           "role": "user",
@@ -384,9 +720,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m2] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -396,9 +744,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m3] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m5] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -408,9 +768,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m4] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m7] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -420,9 +792,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m5] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m9] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -432,9 +816,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m6] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m11] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -444,9 +840,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m7] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m13] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -456,9 +864,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m8] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m15] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -468,9 +888,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m9] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m17] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -480,9 +912,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m10] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m19] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -492,9 +936,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m11] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m21] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -504,9 +960,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m12] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m23] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -516,9 +984,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m13] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m25] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -528,9 +1008,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m14] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m27] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -540,9 +1032,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m15] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m29] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -552,9 +1056,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m16] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m31] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -564,9 +1080,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m17] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m33] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -576,9 +1104,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m18] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m35] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -588,9 +1128,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m19] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m37] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -600,9 +1152,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m20] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m39] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -612,9 +1176,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m21] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m41] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -624,9 +1200,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m22] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m43] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -636,9 +1224,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m23] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m45] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -648,9 +1248,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m24] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m47] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -660,9 +1272,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m25] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m49] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -672,9 +1296,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m26] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m51] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -684,9 +1320,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m27] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m53] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -696,9 +1344,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m28] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m55] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -708,9 +1368,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m29] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m57] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -718,12 +1390,12 @@
         {
           "role": "user",
           "toolParts": [],
-          "text": "[m30] 最后一个问题"
+          "text": "[m58] 最后一个问题"
         },
         {
           "role": "assistant",
           "toolParts": [],
-          "text": "[m31] 回答完毕"
+          "text": "[m59] 回答完毕"
         }
       ],
       "state": {
@@ -738,11 +1410,11 @@
         "nudgeAnchor": null
       },
       "toolResult": null,
-      "toolError": "第 1 个范围校验失败：范围起点与终点顺序颠倒（起点行号 m8 位于终点行号 m2 之后）。ref 是地址而非序号——请选择位置更早的 ref 作为起点、位置更晚的 ref 作为终点。",
+      "toolError": "第 2 个范围与第 1 个范围重叠（[5, 13) 与 [1, 9)）。ranges 必须互不重叠，请调整边界后重试。",
       "notifications": []
     },
     {
-      "label": "gate-protection-zone",
+      "label": "reject-same-call-consumption",
       "view": [
         {
           "role": "user",
@@ -754,9 +1426,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m2] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -766,9 +1450,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m3] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m5] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -778,9 +1474,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m4] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m7] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -790,9 +1498,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m5] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m9] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -802,9 +1522,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m6] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m11] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -814,9 +1546,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m7] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m13] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -826,9 +1570,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m8] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m15] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -838,9 +1594,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m9] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m17] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -850,9 +1618,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m10] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m19] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -862,9 +1642,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m11] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m21] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -874,9 +1666,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m12] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m23] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -886,9 +1690,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m13] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m25] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -898,9 +1714,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m14] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m27] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -910,9 +1738,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m15] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m29] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -922,9 +1762,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m16] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m31] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -934,9 +1786,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m17] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m33] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -946,9 +1810,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m18] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m35] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -958,9 +1834,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m19] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m37] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -970,9 +1858,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m20] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m39] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -982,9 +1882,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m21] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m41] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -994,9 +1906,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m22] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m43] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1006,9 +1930,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m23] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m45] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1018,9 +1954,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m24] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m47] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1030,9 +1978,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m25] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m49] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1042,9 +2002,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m26] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m51] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1054,9 +2026,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m27] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m53] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1066,9 +2050,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m28] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m55] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1078,9 +2074,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m29] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m57] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1088,12 +2096,12 @@
         {
           "role": "user",
           "toolParts": [],
-          "text": "[m30] 最后一个问题"
+          "text": "[m58] 最后一个问题"
         },
         {
           "role": "assistant",
           "toolParts": [],
-          "text": "[m31] 回答完毕"
+          "text": "[m59] 回答完毕"
         }
       ],
       "state": {
@@ -1108,11 +2116,11 @@
         "nudgeAnchor": null
       },
       "toolResult": null,
-      "toolError": "第 1 个范围校验失败：范围 [1, 30) 触及保护区域（边界 11）。最近的对话内容受到保护、不可压缩，请将终点往前调整。",
+      "toolError": "第 2 个范围将消费第 1 个范围刚创建的压缩块：同一调用内不允许消费本调用创建的块。请将这两个范围合并为一个更大的范围，或调整边界避免覆盖其他范围的消息。",
       "notifications": []
     },
     {
-      "label": "gate-first-user",
+      "label": "reject-indexed-range-failure",
       "view": [
         {
           "role": "user",
@@ -1124,9 +2132,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m2] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1136,9 +2156,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m3] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m5] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1148,9 +2180,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m4] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m7] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1160,9 +2204,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m5] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m9] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1172,9 +2228,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m6] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m11] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1184,9 +2252,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m7] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m13] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1196,9 +2276,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m8] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m15] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1208,9 +2300,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m9] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m17] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1220,9 +2324,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m10] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m19] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1232,9 +2348,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m11] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m21] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1244,9 +2372,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m12] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m23] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1256,9 +2396,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m13] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m25] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1268,9 +2420,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m14] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m27] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1280,9 +2444,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m15] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m29] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1292,9 +2468,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m16] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m31] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1304,9 +2492,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m17] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m33] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1316,9 +2516,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m18] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m35] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1328,9 +2540,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m19] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m37] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1340,9 +2564,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m20] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m39] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1352,9 +2588,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m21] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m41] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1364,9 +2612,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m22] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m43] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1376,9 +2636,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m23] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m45] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1388,9 +2660,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m24] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m47] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1400,9 +2684,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m25] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m49] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1412,9 +2708,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m26] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m51] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1424,9 +2732,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m27] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m53] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1436,9 +2756,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m28] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m55] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1448,9 +2780,21 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m29] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+              "output": "",
               "pruned": false,
               "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m57] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
               "inputPruned": false
             }
           ]
@@ -1458,12 +2802,12 @@
         {
           "role": "user",
           "toolParts": [],
-          "text": "[m30] 最后一个问题"
+          "text": "[m58] 最后一个问题"
         },
         {
           "role": "assistant",
           "toolParts": [],
-          "text": "[m31] 回答完毕"
+          "text": "[m59] 回答完毕"
         }
       ],
       "state": {
@@ -1478,11 +2822,11 @@
         "nudgeAnchor": null
       },
       "toolResult": null,
-      "toolError": "第 1 个范围校验失败：范围 [0, 5) 包含会话的第一条用户消息（序数 0）。第一条用户消息不可压缩，请调整起点。",
+      "toolError": "第 2 个范围校验失败：行号 m101 不存在：当轮视图共 59 行，有效 m1..m59",
       "notifications": []
     },
     {
-      "label": "gate-phantom-low-benefit",
+      "label": "reject-reversed-order",
       "view": [
         {
           "role": "user",
@@ -1490,686 +2834,690 @@
           "text": "[m1] 开场问题"
         },
         {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m5] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m7] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m9] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m11] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m13] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m15] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m17] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m19] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m21] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m23] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m25] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m27] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m29] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m31] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m33] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m35] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m37] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m39] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m41] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m43] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m45] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m47] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m49] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m51] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m53] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m55] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m57] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
           "role": "user",
           "toolParts": [],
-          "synthetic": true,
-          "sentinelId": "zoo-fold-b1",
-          "text": "[m2] [Block b1 · 3 条] phantom\n用户请求执行命令，助手完成了操作。"
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m3] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m4] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m5] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m6] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m7] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m8] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m9] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m10] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m11] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m12] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m13] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m14] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m15] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m16] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m17] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m18] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m19] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m20] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m21] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m22] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m23] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m24] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m25] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m26] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m27] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "user",
-          "toolParts": [],
-          "text": "[m28] 最后一个问题"
+          "text": "[m58] 最后一个问题"
         },
         {
           "role": "assistant",
           "toolParts": [],
-          "text": "[m29] 回答完毕"
+          "text": "[m59] 回答完毕"
         }
       ],
       "state": {
-        "blocks": [
-          {
-            "blockId": 1,
-            "active": true,
-            "title": "phantom",
-            "coveredMessages": 3,
-            "compressedTokens": 84,
-            "summaryTokens": 12
-          }
-        ],
-        "marks": {
-          "pending": 0,
-          "pendingTokens": 0,
-          "effective": 0,
-          "effectiveTokens": 0
-        },
-        "pendingViewChange": false,
-        "nudgeAnchor": null
-      },
-      "toolResult": "上下文压缩：已压缩 3 条消息为压缩块 b1：phantom，约回收 72 tokens",
-      "toolError": null,
-      "notifications": [
-        "上下文压缩：已压缩 3 条消息为压缩块 b1：phantom，约回收 72 tokens"
-      ]
-    },
-    {
-      "label": "gate-negative-benefit",
-      "view": [
-        {
-          "role": "user",
-          "toolParts": [],
-          "text": "[m1] 开场问题"
-        },
-        {
-          "role": "user",
-          "toolParts": [],
-          "synthetic": true,
-          "sentinelId": "zoo-fold-b1",
-          "text": "[m2] [Block b1 · 3 条] phantom\n用户请求执行命令，助手完成了操作。"
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m3] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m4] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m5] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m6] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m7] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m8] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m9] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m10] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m11] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m12] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m13] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m14] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m15] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m16] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m17] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m18] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m19] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m20] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m21] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m22] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m23] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m24] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m25] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m26] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m27] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "user",
-          "toolParts": [],
-          "text": "[m28] 最后一个问题"
-        },
-        {
-          "role": "assistant",
-          "toolParts": [],
-          "text": "[m29] 回答完毕"
-        }
-      ],
-      "state": {
-        "blocks": [
-          {
-            "blockId": 1,
-            "active": true,
-            "title": "phantom",
-            "coveredMessages": 3,
-            "compressedTokens": 84,
-            "summaryTokens": 12
-          }
-        ],
+        "blocks": [],
         "marks": {
           "pending": 0,
           "pendingTokens": 0,
@@ -2180,11 +3528,11 @@
         "nudgeAnchor": null
       },
       "toolResult": null,
-      "toolError": "第 1 个范围校验失败：压缩收益为负：合并后的摘要约 512 tokens，不低于待压缩内容约 140 tokens。请提供更精简的摘要或扩大压缩范围。",
+      "toolError": "第 1 个范围校验失败：范围起点与终点顺序颠倒（起点行号 m12 位于终点行号 m5 之后）。ref 是地址而非序号——请选择位置更早的 ref 作为起点、位置更晚的 ref 作为终点。",
       "notifications": []
     },
     {
-      "label": "create-b1",
+      "label": "batch-two-ranges-success",
       "view": [
         {
           "role": "user",
@@ -2192,566 +3540,690 @@
           "text": "[m1] 开场问题"
         },
         {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m5] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m7] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m9] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m11] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m13] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m15] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m17] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m19] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m21] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m23] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m25] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m27] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m29] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m31] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m33] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m35] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m37] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m39] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m41] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m43] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m45] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m47] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m49] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m51] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m53] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m55] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m57] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
           "role": "user",
           "toolParts": [],
-          "synthetic": true,
-          "sentinelId": "zoo-fold-b2",
-          "text": "[m2] [Block b2 · 8 条] 已有\n用户请求执行命令，助手完成了操作。\n=== Superseded Blocks ===\n--- b1: phantom ---"
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m3] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m4] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m5] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m6] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m7] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m8] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m9] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m10] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m11] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m12] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m13] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m14] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m15] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m16] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m17] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m18] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m19] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m20] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m21] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m22] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "user",
-          "toolParts": [],
-          "text": "[m23] 最后一个问题"
+          "text": "[m58] 最后一个问题"
         },
         {
           "role": "assistant",
           "toolParts": [],
-          "text": "[m24] 回答完毕"
+          "text": "[m59] 回答完毕"
         }
       ],
       "state": {
-        "blocks": [
-          {
-            "blockId": 2,
-            "active": true,
-            "title": "已有",
-            "coveredMessages": 8,
-            "compressedTokens": 140,
-            "summaryTokens": 23
-          }
-        ],
-        "marks": {
-          "pending": 0,
-          "pendingTokens": 0,
-          "effective": 0,
-          "effectiveTokens": 0
-        },
-        "pendingViewChange": false,
-        "nudgeAnchor": null
-      },
-      "toolResult": "上下文压缩：已压缩 8 条消息为压缩块 b2：已有，约回收 117 tokens",
-      "toolError": null,
-      "notifications": [
-        "上下文压缩：已压缩 8 条消息为压缩块 b2：已有，约回收 117 tokens"
-      ]
-    },
-    {
-      "label": "gate-partial-overlap-active",
-      "view": [
-        {
-          "role": "user",
-          "toolParts": [],
-          "text": "[m1] 开场问题"
-        },
-        {
-          "role": "user",
-          "toolParts": [],
-          "synthetic": true,
-          "sentinelId": "zoo-fold-b2",
-          "text": "[m2] [Block b2 · 8 条] 已有\n用户请求执行命令，助手完成了操作。\n=== Superseded Blocks ===\n--- b1: phantom ---"
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m3] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m4] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m5] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m6] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m7] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m8] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m9] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m10] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m11] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m12] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m13] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m14] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m15] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m16] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m17] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m18] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m19] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m20] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m21] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m22] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "user",
-          "toolParts": [],
-          "text": "[m23] 最后一个问题"
-        },
-        {
-          "role": "assistant",
-          "toolParts": [],
-          "text": "[m24] 回答完毕"
-        }
-      ],
-      "state": {
-        "blocks": [
-          {
-            "blockId": 2,
-            "active": true,
-            "title": "已有",
-            "coveredMessages": 8,
-            "compressedTokens": 140,
-            "summaryTokens": 23
-          }
-        ],
+        "blocks": [],
         "marks": {
           "pending": 0,
           "pendingTokens": 0,
@@ -2762,1167 +4234,7 @@
         "nudgeAnchor": null
       },
       "toolResult": null,
-      "toolError": "第 1 个范围校验失败：范围 [1, 12) 触及保护区域（边界 11）。最近的对话内容受到保护、不可压缩，请将终点往前调整。",
-      "notifications": []
-    },
-    {
-      "label": "gate-no-new-content",
-      "view": [
-        {
-          "role": "user",
-          "toolParts": [],
-          "text": "[m1] 开场问题"
-        },
-        {
-          "role": "user",
-          "toolParts": [],
-          "synthetic": true,
-          "sentinelId": "zoo-fold-b2",
-          "text": "[m2] [Block b2 · 8 条] 已有\n用户请求执行命令，助手完成了操作。\n=== Superseded Blocks ===\n--- b1: phantom ---"
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m3] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m4] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m5] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m6] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m7] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m8] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m9] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m10] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m11] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m12] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m13] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m14] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m15] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m16] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m17] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m18] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m19] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m20] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m21] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m22] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "user",
-          "toolParts": [],
-          "text": "[m23] 最后一个问题"
-        },
-        {
-          "role": "assistant",
-          "toolParts": [],
-          "text": "[m24] 回答完毕"
-        }
-      ],
-      "state": {
-        "blocks": [
-          {
-            "blockId": 2,
-            "active": true,
-            "title": "已有",
-            "coveredMessages": 8,
-            "compressedTokens": 140,
-            "summaryTokens": 23
-          }
-        ],
-        "marks": {
-          "pending": 0,
-          "pendingTokens": 0,
-          "effective": 0,
-          "effectiveTokens": 0
-        },
-        "pendingViewChange": false,
-        "nudgeAnchor": null
-      },
-      "toolResult": null,
-      "toolError": "第 1 个范围校验失败：范围 [1, 14) 触及保护区域（边界 11）。最近的对话内容受到保护、不可压缩，请将终点往前调整。",
-      "notifications": []
-    },
-    {
-      "label": "consume-b1-create-b2",
-      "view": [
-        {
-          "role": "user",
-          "toolParts": [],
-          "text": "[m1] 开场问题"
-        },
-        {
-          "role": "user",
-          "toolParts": [],
-          "synthetic": true,
-          "sentinelId": "zoo-fold-b2",
-          "text": "[m2] [Block b2 · 8 条] 已有\n用户请求执行命令，助手完成了操作。\n=== Superseded Blocks ===\n--- b1: phantom ---"
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m3] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m4] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m5] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m6] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m7] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m8] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m9] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m10] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m11] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m12] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m13] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m14] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m15] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m16] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m17] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m18] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m19] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m20] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m21] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m22] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "user",
-          "toolParts": [],
-          "text": "[m23] 最后一个问题"
-        },
-        {
-          "role": "assistant",
-          "toolParts": [],
-          "text": "[m24] 回答完毕"
-        }
-      ],
-      "state": {
-        "blocks": [
-          {
-            "blockId": 2,
-            "active": true,
-            "title": "已有",
-            "coveredMessages": 8,
-            "compressedTokens": 140,
-            "summaryTokens": 23
-          }
-        ],
-        "marks": {
-          "pending": 0,
-          "pendingTokens": 0,
-          "effective": 0,
-          "effectiveTokens": 0
-        },
-        "pendingViewChange": false,
-        "nudgeAnchor": null
-      },
-      "toolResult": null,
-      "toolError": "第 1 个范围校验失败：范围 [1, 17) 触及保护区域（边界 11）。最近的对话内容受到保护、不可压缩，请将终点往前调整。",
-      "notifications": []
-    },
-    {
-      "label": "gate-stale-summary-ref",
-      "view": [
-        {
-          "role": "user",
-          "toolParts": [],
-          "text": "[m1] 开场问题"
-        },
-        {
-          "role": "user",
-          "toolParts": [],
-          "synthetic": true,
-          "sentinelId": "zoo-fold-b2",
-          "text": "[m2] [Block b2 · 8 条] 已有\n用户请求执行命令，助手完成了操作。\n=== Superseded Blocks ===\n--- b1: phantom ---"
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m3] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m4] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m5] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m6] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m7] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m8] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m9] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m10] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m11] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m12] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m13] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m14] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m15] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m16] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m17] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m18] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m19] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m20] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m21] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m22] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "user",
-          "toolParts": [],
-          "text": "[m23] 最后一个问题"
-        },
-        {
-          "role": "assistant",
-          "toolParts": [],
-          "text": "[m24] 回答完毕"
-        }
-      ],
-      "state": {
-        "blocks": [
-          {
-            "blockId": 2,
-            "active": true,
-            "title": "已有",
-            "coveredMessages": 8,
-            "compressedTokens": 140,
-            "summaryTokens": 23
-          }
-        ],
-        "marks": {
-          "pending": 0,
-          "pendingTokens": 0,
-          "effective": 0,
-          "effectiveTokens": 0
-        },
-        "pendingViewChange": false,
-        "nudgeAnchor": null
-      },
-      "toolResult": null,
-      "toolError": "第 1 个范围校验失败：行号 m32 不存在：当轮视图共 24 行，有效 m1..m24 若目标内容已被压缩块（b2）覆盖而不再占行号，可先用 decompress 恢复该块后再压缩。",
-      "notifications": []
-    },
-    {
-      "label": "gate-unknown-ref",
-      "view": [
-        {
-          "role": "user",
-          "toolParts": [],
-          "text": "[m1] 开场问题"
-        },
-        {
-          "role": "user",
-          "toolParts": [],
-          "synthetic": true,
-          "sentinelId": "zoo-fold-b2",
-          "text": "[m2] [Block b2 · 8 条] 已有\n用户请求执行命令，助手完成了操作。\n=== Superseded Blocks ===\n--- b1: phantom ---"
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m3] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m4] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m5] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m6] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m7] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m8] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m9] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m10] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m11] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m12] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m13] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m14] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m15] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m16] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m17] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m18] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m19] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m20] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m21] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "assistant",
-          "toolParts": [
-            {
-              "tool": "bash",
-              "output": "[m22] yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-              "pruned": false,
-              "input": "{\"cmd\":\"x\"}",
-              "inputPruned": false
-            }
-          ]
-        },
-        {
-          "role": "user",
-          "toolParts": [],
-          "text": "[m23] 最后一个问题"
-        },
-        {
-          "role": "assistant",
-          "toolParts": [],
-          "text": "[m24] 回答完毕"
-        }
-      ],
-      "state": {
-        "blocks": [
-          {
-            "blockId": 2,
-            "active": true,
-            "title": "已有",
-            "coveredMessages": 8,
-            "compressedTokens": 140,
-            "summaryTokens": 23
-          }
-        ],
-        "marks": {
-          "pending": 0,
-          "pendingTokens": 0,
-          "effective": 0,
-          "effectiveTokens": 0
-        },
-        "pendingViewChange": false,
-        "nudgeAnchor": null
-      },
-      "toolResult": null,
-      "toolError": "第 1 个范围校验失败：行号 m9999 不存在：当轮视图共 24 行，有效 m1..m24 若目标内容已被压缩块（b2）覆盖而不再占行号，可先用 decompress 恢复该块后再压缩。",
+      "toolError": "第 2 个范围与第 1 个范围重叠（[11, 21) 与 [1, 13)）。ranges 必须互不重叠，请调整边界后重试。",
       "notifications": []
     }
   ]

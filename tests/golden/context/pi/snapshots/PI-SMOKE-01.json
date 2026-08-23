@@ -1,0 +1,232 @@
+{
+  "scenario": "PI-SMOKE-01",
+  "rounds": [
+    {
+      "label": "seed-pending-mark",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"ls\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] total 12",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [],
+          "text": "[m4] done"
+        }
+      ],
+      "state": {
+        "blocks": [],
+        "marks": {
+          "pending": 1,
+          "pendingTokens": 200,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "release-prune",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"ls\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [],
+          "text": "[m4] done"
+        }
+      ],
+      "state": {
+        "blocks": [],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 1,
+          "effectiveTokens": 200
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "nudge-baseline-silent",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"ls\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m4] again"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [],
+          "text": "[m5] done"
+        }
+      ],
+      "state": {
+        "blocks": [],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 1,
+          "effectiveTokens": 200
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": 140000
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "nudge-gentle-fires",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] hello"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"ls\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] [Output removed to save context - information superseded or no longer needed]",
+              "pruned": true,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m4] again"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [],
+          "text": "[m5] done"
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "<internal-reminder>\n**CONTEXT GROWING — 150000 (75% of 200000 window)**\n\nCompressible window: m2–m3 (~23 tokens), both refs inclusive.\nPick your own contiguous sub-range inside — compressing everything is optional.\n`compress` `toRef` is exclusive — pass the ref after a message to include it.\n\nAt your next natural pause, compress a closed range with the `compress` tool. Timing is your call.\n\n**压缩分段要点：**\n\n1. 重要信息不压缩：当前任务、关键决策与约束、文件路径、未完成验证的结论，都应排除在压缩范围之外。\n2. 按用户请求与任务委派边界分段：一个范围只覆盖一个主题，每块单独设 title。\n3. 保留当前任务相关的最近上下文：与当前工作紧密相关的最近对话不要压缩。\n4. 一次调用批量提交多范围：用 ranges 数组一次提交多段，减少工具往返。\n\nUNCOMPRESSED HISTORY = GROWING CONTEXT = SHRINKING HEADROOM.\n</internal-reminder>"
+        }
+      ],
+      "state": {
+        "blocks": [],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 1,
+          "effectiveTokens": 200
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": 150000
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    }
+  ]
+}

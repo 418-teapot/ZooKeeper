@@ -2072,7 +2072,7 @@
         "nudgeAnchor": null
       },
       "toolResult": null,
-      "toolError": "压缩块 b2 不存在。当前会话共有 1 个压缩块：b1。压缩块头形如 \"[Block bN · K 条]\"，请勿凭记忆编造编号。",
+      "toolError": "恢复压缩块 b1 后预计上下文约 64094 tokens（当前约 56094 tokens，填充率将由约 280% 升至约 320%），超过解压阈值 6000 tokens（30% × 20000）。本次解压将回胀约 8000 tokens（原内容 8012 - 摘要 12）。请先压缩其他片段腾出空间后，再恢复该压缩块。",
       "notifications": []
     },
     {
@@ -2482,11 +2482,16 @@
           ]
         },
         {
-          "role": "user",
-          "toolParts": [],
-          "synthetic": true,
-          "sentinelId": "zoo-fold-b1",
-          "text": "[m7] [Block b1 · 4 条] 第四段\n用户请求执行命令，助手完成了操作。"
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m7] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
         },
         {
           "role": "assistant",
@@ -2717,27 +2722,54 @@
           ]
         },
         {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m27] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m28] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m29] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "pruned": false,
+              "input": "{\"cmd\":\"x\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
           "role": "user",
           "toolParts": [],
-          "text": "[m27] 最后一个问题"
+          "text": "[m30] 最后一个问题"
         },
         {
           "role": "assistant",
           "toolParts": [],
-          "text": "[m28] 回答完毕"
+          "text": "[m31] 回答完毕"
         }
       ],
       "state": {
-        "blocks": [
-          {
-            "blockId": 1,
-            "active": true,
-            "title": "第四段",
-            "coveredMessages": 4,
-            "compressedTokens": 8012,
-            "summaryTokens": 12
-          }
-        ],
+        "blocks": [],
         "marks": {
           "pending": 0,
           "pendingTokens": 0,
@@ -2747,9 +2779,11 @@
         "pendingViewChange": false,
         "nudgeAnchor": null
       },
-      "toolResult": null,
-      "toolError": "压缩块 b2 不存在。当前会话共有 1 个压缩块：b1。压缩块头形如 \"[Block bN · K 条]\"，请勿凭记忆编造编号。",
-      "notifications": []
+      "toolResult": "上下文解压：已恢复压缩块 b1 的 4 条原始消息，约回胀 8.0K tokens，下一轮上下文生效",
+      "toolError": null,
+      "notifications": [
+        "上下文解压：已恢复压缩块 b1 的 4 条原始消息，约回胀 8.0K tokens，下一轮上下文生效"
+      ]
     }
   ]
 }

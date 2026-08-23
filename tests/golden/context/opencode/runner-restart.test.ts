@@ -24,9 +24,10 @@ import { join } from "node:path";
 import {
   _resetContextStateManagerForTesting,
   getContextStateManager,
-} from "../../../src/core/context/runtime.js";
+} from "../../../../src/core/context/runtime.js";
+import { runScenario } from "../runner-core.js";
+import { createV1GoldenHost } from "./host.js";
 import { msg, textPart, toolPart } from "./messages.js";
-import { runScenario } from "./runner.js";
 import type { Scenario } from "./types.js";
 
 /** Session id isolated from the golden scenario corpus. */
@@ -104,7 +105,7 @@ describe("golden runner restart round-trip", () => {
   test(
     "a simulated crash preserves the on-disk state so the next round reloads it",
     async () => {
-      await runScenario(SCENARIO);
+      await runScenario(SCENARIO, createV1GoldenHost());
 
       const manager = getContextStateManager();
       const filePath = join(manager.store.dir, `${TEST_SID}.json`);

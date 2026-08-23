@@ -12,7 +12,7 @@ import type {
   ContextMessageEntry,
   ContextTextPart,
   ContextTokenInfo,
-} from "../../../src/adapters/opencode/types.js";
+} from "../../../../src/adapters/opencode/types.js";
 
 /** A text part in the wire format. */
 export interface TextPart {

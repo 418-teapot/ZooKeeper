@@ -6,11 +6,13 @@
  * - G-COMP-02: batch compress — two-range success plus atomic-reject
  *   paths (cross-range overlap, same-call consumption, indexed range
  *   validation failure) with zero state change.
- * - G-COMP-03: nested consumption — a wider range consumes an active
+ * - G-COMP-03: nested consumption — a wider range swallows an active
  *   block (index line + net token arithmetic), then a third generation
- *   re-absorbs the inactive predecessor (covered-inactive netting).
+ *   swallows the second (the consumed predecessor is reclaimed by the
+ *   fold phase before the next action).
  * - G-COMP-04: every validation gate's negative path, each with its
- *   captured error text and zero state change.
+ *   captured error text and zero state change; the ref-based
+ *   partial-overlap gate is documented as structurally unreachable.
  *
  * @module
  */
@@ -141,16 +143,23 @@ export const G_COMP_02: Scenario = {
 /**
  * G-COMP-03 — nested consumption (three generations).
  *
- * b1 = [1, 6).  A wider range [1, 9) consumes b1 (index line
- * `--- b1: 第一段 ---`, net token header, b1 deactivated).  A third
- * range [1, 9) again re-absorbs the now-inactive b1 (covered-inactive
- * netting: tokens subtracted, index line listed, deactivatedAt
- * untouched) into b3.
+ * b1 = [1, 7).  A wider range swallows b1 (index line
+ * `--- b1: 第一段 ---`, net token arithmetic, b1 deactivated).  A third
+ * generation swallows b2 into b3.
+ *
+ * The scenario lowers `protectedMessages` from the shared 20 to 10 so
+ * the combined protection boundary lands at 18 instead of 11 — with
+ * boundary 11 the wider round and the third generation resolve past the
+ * window and are rejected, so the documented consumption never
+ * completes.  The covered-inactive netting branch (an inactive block
+ * still in the map when the action runs) is unreachable through the
+ * runner: the transform's fold phase always reclaims inactive blocks
+ * (`clearInactiveBlocks`) before the next action.
  */
 export const G_COMP_03: Scenario = {
   id: "G-COMP-03",
   sessionID: "golden-g-comp-03",
-  config: compressConfig(),
+  config: { ...compressConfig(), protectedMessages: 10 },
   rounds: [
     {
       label: "baseline-refs",
@@ -177,7 +186,17 @@ export const G_COMP_03: Scenario = {
       messages: longConversation("golden-g-comp-03"),
       action: {
         kind: "compress-tool",
-        ranges: [makeRange(1, 11, "第三段")],
+        // After b2 = [1, 15) the folded view numbers the first message
+        // after the block as line 3, so fromRef m2 (the b2 summary) +
+        // toRef m3 resolve to [1, 16) and swallow b2 → b3.
+        ranges: [
+          {
+            fromRef: "m0002",
+            toRef: "m0003",
+            title: "第三段",
+            summary: "第三段",
+          },
+        ],
       },
     },
   ],
@@ -187,10 +206,19 @@ export const G_COMP_03: Scenario = {
  * G-COMP-04 — every validation gate's negative path.
  *
  * Uses a short-output conversation so the phantom gate and the
- * negative-benefit gate fire on small ranges.  Rounds 1-5 reject with
- * zero state change; round 6 creates b1; rounds 7-11 reject against
- * the existing block (partial overlap, no-new-content, stale-ref,
- * unknown-ref).
+ * negative-benefit gate fire on small ranges.  Rounds 2-5 reject with
+ * zero state change (reversed order, protection zone, first user,
+ * phantom); round 6 creates b1; rounds 7-8 reject against b1
+ * (negative benefit, no-new-content); round 9 swallows b1 into b2;
+ * rounds 10-12 reject against b2 (protection, stale ref, unknown ref).
+ *
+ * The ref-based partial-overlap gate is structurally unreachable: a
+ * block's summary line resolves to its whole interval and covered
+ * ordinals occupy no lines, so a range can never stop inside a block —
+ * any range intersecting a block either fully covers it (swallow) or
+ * misses it.  Round 10 therefore registers the closest reachable
+ * behavior: a range anchored on the b2 summary line resolves past the
+ * protection boundary and is rejected there.
  */
 export const G_COMP_04: Scenario = {
   id: "G-COMP-04",
@@ -253,7 +281,18 @@ export const G_COMP_04: Scenario = {
       messages: shortConversation("golden-g-comp-04"),
       action: {
         kind: "compress-tool",
-        ranges: [makeRange(1, 3, "phantom")],
+        // [1, 3) is 2 messages ≈ 56 tokens < the 80-token threshold —
+        // the phantom gate fires (the previous [1, 4) range crossed the
+        // threshold and created a block).
+        ranges: [makeRange(1, 2, "phantom")],
+      },
+    },
+    {
+      label: "create-b1",
+      messages: shortConversation("golden-g-comp-04"),
+      action: {
+        kind: "compress-tool",
+        ranges: [makeRange(1, 3, "已有")],
       },
     },
     {
@@ -263,6 +302,10 @@ export const G_COMP_04: Scenario = {
         kind: "compress-tool",
         ranges: [
           {
+            // m2 is b1's folded summary → resolves to b1's interval
+            // [1, 4); m7 is a9 → end 9: [1, 9) swallows b1 and the
+            // 2000-char summary (~512 tokens) is not below the net
+            // content (~140 tokens).
             fromRef: "m0002",
             toRef: "m0007",
             title: "negative",
@@ -272,27 +315,23 @@ export const G_COMP_04: Scenario = {
       },
     },
     {
-      label: "create-b1",
-      messages: shortConversation("golden-g-comp-04"),
-      action: {
-        kind: "compress-tool",
-        ranges: [makeRange(1, 6, "已有")],
-      },
-    },
-    {
-      label: "gate-partial-overlap-active",
-      messages: shortConversation("golden-g-comp-04"),
-      action: {
-        kind: "compress-tool",
-        ranges: [makeRange(1, 4, "overlap")],
-      },
-    },
-    {
       label: "gate-no-new-content",
       messages: shortConversation("golden-g-comp-04"),
       action: {
         kind: "compress-tool",
-        ranges: [makeRange(1, 6, "exact-again")],
+        ranges: [
+          {
+            // fromRef m2 + toRef m2 both resolve to b1's whole interval
+            // [1, 4): re-covering the plain block nets zero new content,
+            // so the no-new-content gate fires (the previous fixture ran
+            // after the consume round, where the net is positive and the
+            // gate cannot fire).
+            fromRef: "m0002",
+            toRef: "m0002",
+            title: "exact-again",
+            summary: "exact.",
+          },
+        ],
       },
     },
     {
@@ -300,7 +339,28 @@ export const G_COMP_04: Scenario = {
       messages: shortConversation("golden-g-comp-04"),
       action: {
         kind: "compress-tool",
-        ranges: [makeRange(1, 9, "更宽")],
+        // m8 is a10 → end 10: [1, 10) swallows b1 → b2.  (The previous
+        // [1, 9] range resolved past the protection boundary 11.)
+        ranges: [makeRange(1, 7, "更宽")],
+      },
+    },
+    {
+      label: "gate-partial-overlap-unreachable",
+      messages: shortConversation("golden-g-comp-04"),
+      action: {
+        kind: "compress-tool",
+        ranges: [
+          {
+            // The ref-based partial-overlap gate is unreachable (see the
+            // docstring); this round registers the closest reachable
+            // behavior — m2 (b2's summary → [1, 10)) + m5 (a13 → end 13)
+            // resolve to [1, 13), which trips the protection gate.
+            fromRef: "m0002",
+            toRef: "m0005",
+            title: "overlap",
+            summary: "overlap.",
+          },
+        ],
       },
     },
     {
@@ -310,8 +370,8 @@ export const G_COMP_04: Scenario = {
         kind: "compress-tool",
         ranges: [
           {
-            // m0032 is the ref assigned to b1's folded summary message
-            // (zoo-fold-b1) after b1 was created; b1 is now consumed.
+            // m0032 is beyond the 23-line folded view (b2 covers
+            // [1, 10)); the error names b2 as the covered-content hint.
             fromRef: "m0032",
             toRef: "m0006",
             title: "stale",

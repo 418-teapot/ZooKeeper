@@ -1,0 +1,455 @@
+{
+  "scenario": "PI-SUMMARY-01",
+  "rounds": [
+    {
+      "label": "baseline",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] 开场问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"ls\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] data 1",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m4] 中间问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"find\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m6] data 2",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m7] 最后一个问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [],
+          "text": "[m8] 回答完毕"
+        }
+      ],
+      "state": {
+        "blocks": [],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "create-block-materializes-user-summary",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] 开场问题"
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m2] [Block b1 · 2 条] 第一段\nfirst summary."
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] 中间问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"find\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m5] data 2",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m6] 最后一个问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [],
+          "text": "[m7] 回答完毕"
+        }
+      ],
+      "state": {
+        "blocks": [
+          {
+            "blockId": 1,
+            "active": true,
+            "title": "第一段",
+            "coveredMessages": 2,
+            "compressedTokens": 400,
+            "summaryTokens": 20
+          }
+        ],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "validate-block-survives-round",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] 开场问题"
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m2] [Block b1 · 2 条] 第一段\nfirst summary."
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] 中间问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"find\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m5] data 2",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m6] 最后一个问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [],
+          "text": "[m7] 回答完毕"
+        }
+      ],
+      "state": {
+        "blocks": [
+          {
+            "blockId": 1,
+            "active": true,
+            "title": "第一段",
+            "coveredMessages": 2,
+            "compressedTokens": 400,
+            "summaryTokens": 20
+          }
+        ],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "add-second-block",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] 开场问题"
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m2] [Block b1 · 2 条] 第一段\nfirst summary."
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] 中间问题"
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m4] [Block b2 · 2 条] 第二段\nsecond summary."
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m5] 最后一个问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [],
+          "text": "[m6] 回答完毕"
+        }
+      ],
+      "state": {
+        "blocks": [
+          {
+            "blockId": 1,
+            "active": true,
+            "title": "第一段",
+            "coveredMessages": 2,
+            "compressedTokens": 400,
+            "summaryTokens": 20
+          },
+          {
+            "blockId": 2,
+            "active": true,
+            "title": "第二段",
+            "coveredMessages": 2,
+            "compressedTokens": 400,
+            "summaryTokens": 20
+          }
+        ],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "both-blocks-survive",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] 开场问题"
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m2] [Block b1 · 2 条] 第一段\nfirst summary."
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m3] 中间问题"
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m4] [Block b2 · 2 条] 第二段\nsecond summary."
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m5] 最后一个问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [],
+          "text": "[m6] 回答完毕"
+        }
+      ],
+      "state": {
+        "blocks": [
+          {
+            "blockId": 1,
+            "active": true,
+            "title": "第一段",
+            "coveredMessages": 2,
+            "compressedTokens": 400,
+            "summaryTokens": 20
+          },
+          {
+            "blockId": 2,
+            "active": true,
+            "title": "第二段",
+            "coveredMessages": 2,
+            "compressedTokens": 400,
+            "summaryTokens": 20
+          }
+        ],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    },
+    {
+      "label": "deactivate-first-unfolds-one",
+      "view": [
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m1] 开场问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "",
+              "pruned": false,
+              "input": "{\"cmd\":\"ls\"}",
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "toolResult",
+          "toolParts": [
+            {
+              "tool": "bash",
+              "output": "[m3] data 1",
+              "pruned": false,
+              "input": null,
+              "inputPruned": false
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m4] 中间问题"
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m5] [Block b2 · 2 条] 第二段\nsecond summary."
+        },
+        {
+          "role": "user",
+          "toolParts": [],
+          "text": "[m6] 最后一个问题"
+        },
+        {
+          "role": "assistant",
+          "toolParts": [],
+          "text": "[m7] 回答完毕"
+        }
+      ],
+      "state": {
+        "blocks": [
+          {
+            "blockId": 2,
+            "active": true,
+            "title": "第二段",
+            "coveredMessages": 2,
+            "compressedTokens": 400,
+            "summaryTokens": 20
+          }
+        ],
+        "marks": {
+          "pending": 0,
+          "pendingTokens": 0,
+          "effective": 0,
+          "effectiveTokens": 0
+        },
+        "pendingViewChange": false,
+        "nudgeAnchor": null
+      },
+      "toolResult": null,
+      "toolError": null,
+      "notifications": []
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 /**
- * Golden scenario framework — shared type definitions.
+ * Golden scenario framework — shared type definitions and the
+ * `GoldenHost` seam.
  *
  * A scenario is an ordered sequence of rounds.  Each round carries the
  * message view for that turn (the transform mutates it in place, so every
@@ -9,12 +10,20 @@
  * round: the final view structure, the projected session state, tool
  * results/errors, and notification texts.
  *
+ * The message shape is generic: `Scenario<M>` / `ScenarioRound<M>` are
+ * parameterised over the host's message entry type so each host lane
+ * (opencode, pi) reuses the same round vocabulary, runner and capture
+ * projections.  The `GoldenHost<M>` interface is the seam between the
+ * host-neutral runner (`runner-core.ts`) and a host lane: it exposes
+ * exactly the operations the runner drives that depend on the host's
+ * message shape / adapter.
+ *
  * @module
  */
 
-import type { ContextMessageEntry } from "../../../src/adapters/opencode/types.js";
 import type { ContextPruningConfig } from "../../../src/core/config-types.js";
 import type { CompressRangeInput } from "../../../src/core/context/compress.js";
+import type { SessionState } from "../../../src/core/context/state.js";
 
 /**
  * Plan describing a single compression block to land on the transcript.
@@ -22,8 +31,8 @@ import type { CompressRangeInput } from "../../../src/core/context/compress.js";
  * The runtime `Block` (in `src/core/context/state.ts`) is keyed by ordinal
  * intervals, but the golden fixtures are written in terms of message ids
  * (the ergonomics preserved from the pre-P2.4 golden fixture corpus).
- * The runner resolves message ids to ordinals at action time, so the
- * plan shape carries message ids verbatim and the runner bears the
+ * The host resolves message ids to ordinals at action time, so the
+ * plan shape carries message ids verbatim and the host bears the
  * translation.
  */
 export interface CompressionPlan {
@@ -42,16 +51,15 @@ export interface CompressionPlan {
 }
 
 /**
- * Programmatic step executed before the round's transform.
+ * The tool-execution action kinds, driven through the host's tool path.
  *
- * Each kind drives a public entry point of the context-pruning
- * pipeline: the compress/decompress tool factories, the /dcp command
- * handler, the marks/blocks state APIs, or a simulated process restart.
+ * Kept as a separate union so the `GoldenHost.runTool` seam only has to
+ * narrow these four kinds while the rest of the round vocabulary stays
+ * host-neutral in the runner.
  */
-export type RoundAction =
+export type ToolRoundAction =
   | { kind: "compress-tool"; ranges: CompressRangeInput[] }
   | { kind: "decompress-tool"; blockId: string }
-  | { kind: "dcp"; args: string }
   | {
       kind: "compress-tool-raw";
       args: unknown;
@@ -61,7 +69,18 @@ export type RoundAction =
       kind: "decompress-tool-raw";
       args: unknown;
       toolCtx?: unknown;
-    }
+    };
+
+/**
+ * Programmatic step executed before the round's transform.
+ *
+ * Each kind drives a public entry point of the context-pruning
+ * pipeline: the compress/decompress tool factories, the /dcp command
+ * handler, the marks/blocks state APIs, or a simulated process restart.
+ */
+export type RoundAction =
+  | ToolRoundAction
+  | { kind: "dcp"; args: string }
   | {
       kind: "add-mark";
       callID: string;
@@ -85,11 +104,11 @@ export type RoundAction =
  * constructing the view accordingly; the round label documents the
  * mutation for the snapshot reader.
  */
-export interface ScenarioRound {
+export interface ScenarioRound<M = unknown> {
   /** Stable identifier recorded in the snapshot. */
   label: string;
   /** The turn's message view. */
-  messages: ContextMessageEntry[];
+  messages: M[];
   /** Optional programmatic step run before the transform. */
   action?: RoundAction;
   /** Whether the transform handler runs this round (default true). */
@@ -108,7 +127,7 @@ export interface ScenarioRound {
  * A golden scenario: a session identity, the transform config for every
  * round, and the ordered rounds.
  */
-export interface Scenario {
+export interface Scenario<M = unknown> {
   /** Scenario id (e.g. `"G-FOLD-01"`). */
   id: string;
   /** Session id used for state isolation (unique per scenario). */
@@ -118,7 +137,7 @@ export interface Scenario {
   /** Default `hasCompressTool` for the transform (nudge/manual gates). */
   hasCompressTool?: boolean;
   /** The ordered rounds. */
-  rounds: ScenarioRound[];
+  rounds: ScenarioRound<M>[];
 }
 
 /**
@@ -212,4 +231,96 @@ export interface RoundCapture {
 export interface ScenarioCapture {
   scenario: string;
   rounds: RoundCapture[];
+}
+
+/**
+ * The host seam the host-neutral runner drives.
+ *
+ * Every member depends on the host's message shape or adapter and is
+ * therefore implemented per lane: the transform invocation, tool
+ * execution, /dcp handling, call-id → mark-target resolution, plan
+ * landing (span hashing over the host transcript), and the final view
+ * projection.
+ */
+export interface GoldenHost<M> {
+  /**
+   * Run the context-pruning transform over a message view, appending
+   * notification texts to the accumulator.
+   *
+   * May return a promise: the pi lane's production entry
+   * (`buildPiContextHandler`) is asynchronous, so the runner awaits the
+   * call before capturing the view.
+   *
+   * @param messages - The round's view (mutated in place).
+   * @param config - The merged (scenario + round) transform config.
+   * @param hasCompressTool - Whether the compress tool is available.
+   * @param notify - Notification-text accumulator (mutated).
+   */
+  runTransform(
+    messages: M[],
+    config: ContextPruningConfig,
+    hasCompressTool: boolean,
+    notify: (text: string) => void,
+  ): void | Promise<void>;
+  /**
+   * Execute one tool action and capture its tool result / error.
+   *
+   * @param action - The tool action to run.
+   * @param sessionID - The scenario session id.
+   * @param config - The merged transform config.
+   * @param messages - The round's message view.
+   * @param notifications - Notification accumulator (mutated).
+   * @returns `{ result, error }` — at most one is non-null.
+   */
+  runTool(
+    action: ToolRoundAction,
+    sessionID: string,
+    config: ContextPruningConfig,
+    messages: M[],
+    notifications: string[],
+  ): Promise<{ result: string | null; error: string | null }>;
+  /**
+   * Handle a /dcp command against the round's message view.
+   *
+   * @param sessionID - The scenario session id.
+   * @param args - The raw command argument string.
+   * @param config - The merged transform config.
+   * @param messages - The round's message view.
+   * @param notifications - Notification accumulator (mutated).
+   */
+  handleDcp(
+    sessionID: string,
+    args: string,
+    config: ContextPruningConfig,
+    messages: M[],
+    notifications: string[],
+  ): Promise<void>;
+  /**
+   * Resolve a tool call id to its mark-target key on the core state.
+   *
+   * @param messages - The round's message view.
+   * @param callID - The tool call identifier.
+   * @returns The `(ordinal, regionIndex)` pair, or null when no part
+   *   carries the call id.
+   */
+  resolveMarkTarget(
+    messages: M[],
+    callID: string,
+  ): { ordinal: number; regionIndex: number } | null;
+  /**
+   * Land a `CompressionPlan` (id-keyed) on the core state as an
+   * ordinal-keyed block.
+   *
+   * @param state - The session state (mutated).
+   * @param messages - The current transcript (for span hashing).
+   * @param plan - The id-shaped plan.
+   */
+  landPlan(state: SessionState, messages: M[], plan: CompressionPlan): void;
+  /**
+   * Project the final view structure of a (mutated) message array.
+   *
+   * @param messages - The messages after the transform ran.
+   * @returns Ordered view captures.
+   */
+  captureView(messages: M[]): ViewMessageCapture[];
 }
