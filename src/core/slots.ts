@@ -11,17 +11,19 @@
  * adapter (`src/compose-opencode.ts`)):
  *   - `beforeExec` contributions propagate exceptions (cancel
  *     execution).
- *   - `afterExec` contributions are isolated per handler (a throwing
+ *  - `afterExec` contributions are isolated per handler (a throwing
  *     handler never blocks the next).
- *   - `transform` contributions run in registration order.
- *   - Event keys appear only when they have contributions.
- *   - Command registration and handler are atomic (one record).
+ *  - `transform` and `textComplete` contributions run in registration
+ *    order.
+ *  - Event keys appear only when they have contributions.
+ *  - Command registration and handler are atomic (one record).
  *
  * @module
  */
 
-import type { ContextMetricsOutput } from "../adapters/opencode/types.js";
+import type { ToolHost } from "./client/tool-host.js";
 import type { ContextPruningConfig } from "./config-types.js";
+import type { HostAdapter } from "./context/lens.js";
 import type { ValidationLimits } from "./validate.js";
 
 // ---------------------------------------------------------------------------
@@ -48,6 +50,14 @@ export interface Deps {
    * `message.updated` events).  Read-only for units.
    */
   sessionAgentMap: Map<string, string>;
+  /** Host tool services used by tool adapters. */
+  toolHost?: ToolHost;
+  /**
+   * Host adapter for context-pruning.  Undefined when the host has no
+   * adapter wired; the pruning unit contributes no transform handler in
+   * that case (fail-closed).
+   */
+  adapter?: HostAdapter<unknown>;
 }
 
 /**
@@ -117,6 +127,18 @@ export interface CommandInput {
   arguments: string;
 }
 
+/**
+ * Minimal messages-transform output shape.
+ *
+ * Core-owned and deliberately opaque: the host payload carries a
+ * `messages` array whose entry shape the host adapter owns.  A core
+ * module reads it only by forwarding it to a v1-specific handler (the
+ * handler casts `messages` to its host entry type).
+ */
+export interface TransformOutput {
+  messages: unknown;
+}
+
 // ---------------------------------------------------------------------------
 // Contribution slot types
 // ---------------------------------------------------------------------------
@@ -156,7 +178,35 @@ export interface AfterExecContribution {
 export interface TransformContribution {
   /** Handler label used for logging. */
   name: string;
-  handle(output: ContextMetricsOutput): void | Promise<void>;
+  handle(output: TransformOutput): void | Promise<void>;
+}
+
+/** Input shape of the text-finalization hook. */
+export interface TextCompleteInput {
+  sessionID: string;
+  messageID: string;
+  partID: string;
+}
+
+/** Output shape of the text-finalization hook. */
+export interface TextCompleteOutput {
+  text: string;
+}
+
+/**
+ * One named text-finalization handler contributed by a hook unit.
+ *
+ * The handler mutates `output.text` (e.g. stripping model-imitated
+ * line-start ref echoes).  Handlers run in registration order, each
+ * isolating its own errors.
+ */
+export interface TextCompleteContribution {
+  /** Handler label used for logging. */
+  name: string;
+  handle(
+    input: TextCompleteInput,
+    output: TextCompleteOutput,
+  ): void | Promise<void>;
 }
 
 /**
@@ -183,6 +233,8 @@ export interface ToolContribution {
   description: string;
   /** JSON-schema-style argument description (optional). */
   args?: Record<string, unknown>;
+  /** Names of required top-level parameters within `args`. */
+  required?: string[];
   execute(args: unknown, toolCtx: unknown): Promise<string>;
 }
 
@@ -239,7 +291,7 @@ export interface SkillUnitContributions {
 /**
  * Contributions produced by a hook unit.
  *
- * All four handler slots are required arrays — a unit that does not
+ * All five handler slots are required arrays — a unit that does not
  * contribute to a slot returns an empty array.
  */
 export interface HookUnitContributions {
@@ -247,6 +299,7 @@ export interface HookUnitContributions {
   beforeExec: BeforeExecContribution[];
   afterExec: AfterExecContribution[];
   transform: TransformContribution[];
+  textComplete: TextCompleteContribution[];
   toolDefinition: ToolDefinitionContribution[];
 }
 
@@ -342,6 +395,8 @@ export interface ComposedResult {
   afterExec: AfterExecContribution[];
   /** Enabled messages-transform handlers. */
   transform: TransformContribution[];
+  /** Enabled text-finalization handlers. */
+  textComplete: TextCompleteContribution[];
   /** Enabled `tool.definition` enhancers. */
   toolDefinition: ToolDefinitionContribution[];
   /** Enabled tools, keyed by tool name. */

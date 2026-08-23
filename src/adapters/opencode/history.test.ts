@@ -10,11 +10,12 @@
  * 2. Parity — real v1 entries are mapped through `history()` and fed to
  *    the new estimators; the results must equal the legacy estimators
  *    applied to the same entries, per message and per transcript.
- * 3. Write-back — `region.set()` must mutate the v1 object in place:
- *    `part.text`, `state.output`, and `state.input` (JSON.parse
- *    round-trip for object inputs; non-parsing placeholder text is
- *    wrapped into an object so the outbound tool input stays
- *    schema-valid), matching the legacy prune semantics.
+ * 3. Write-back — the adapter's `WritableRegion` regions mutate the
+ *    v1 object in place: `part.text`, `state.output`, and
+ *    `state.input` (JSON.parse round-trip for object inputs;
+ *    non-parsing placeholder text is wrapped into an object so the
+ *    outbound tool input stays schema-valid), matching the prune
+ *    semantics.
  * 4. Null hardening — null/undefined v1 entries map to hidden empty
  *    messages that are safe through the whole core chain (canon, span
  *    hashing, fold, first-user search) and are skipped by estimation.
@@ -40,7 +41,7 @@ import {
 } from "../../core/context/message-parts.js";
 import { computeSpanHash } from "../../core/context/spanhash.js";
 import { _resetForTesting } from "../../utils/logger.js";
-import { history, isInjectableRegion } from "./history.js";
+import { history, isInjectableRegion, type WritableRegion } from "./history.js";
 import {
   type ContextMessageEntry,
   type ContextTokenInfo,
@@ -519,7 +520,7 @@ describe("parity: whole-session vs legacy", () => {
 describe("region set() write-back", () => {
   it("content region set rewrites part.text", () => {
     const entryToMap = entry("user", [textPart("before")]);
-    const region = history([entryToMap])[0].regions[0];
+    const region = history([entryToMap])[0].regions[0] as WritableRegion;
     region.set("after");
     const part = entryToMap.parts?.[0] as { text?: string };
     assert.equal(part.text, "after");
@@ -528,7 +529,7 @@ describe("region set() write-back", () => {
 
   it("thinking region set rewrites part.text", () => {
     const entryToMap = entry("assistant", [reasoningPart("thought")]);
-    const region = history([entryToMap])[0].regions[0];
+    const region = history([entryToMap])[0].regions[0] as WritableRegion;
     assert.equal(region.kind, "thinking");
     region.set("new thought");
     const part = entryToMap.parts?.[0] as { text?: string };
@@ -538,7 +539,7 @@ describe("region set() write-back", () => {
 
   it("tool-output region set writes state.output as a string", () => {
     const entryToMap = entry("assistant", [toolPart("bash", "ls", "out")]);
-    const region = history([entryToMap])[0].regions[1];
+    const region = history([entryToMap])[0].regions[1] as WritableRegion;
     region.set(PRUNED_TOOL_OUTPUT_REPLACEMENT);
     const part = entryToMap.parts?.[0] as ToolPartShape;
     assert.equal(part.state?.output, PRUNED_TOOL_OUTPUT_REPLACEMENT);
@@ -550,7 +551,7 @@ describe("region set() write-back", () => {
     const entryToMap = entry("assistant", [
       toolPart("bash", "a command", "out"),
     ]);
-    const region = history([entryToMap])[0].regions[0];
+    const region = history([entryToMap])[0].regions[0] as WritableRegion;
     region.set(PRUNED_TOOL_ERROR_INPUT_REPLACEMENT);
     const part = entryToMap.parts?.[0] as ToolPartShape;
     assert.equal(part.state?.input, PRUNED_TOOL_ERROR_INPUT_REPLACEMENT);
@@ -561,7 +562,7 @@ describe("region set() write-back", () => {
     const entryToMap = entry("assistant", [
       toolPart("bash", { cmd: "ls" }, "out"),
     ]);
-    const region = history([entryToMap])[0].regions[0];
+    const region = history([entryToMap])[0].regions[0] as WritableRegion;
     assert.equal(region.get(), '{"cmd":"ls"}');
     region.set('{"cmd":"pwd"}');
     const part = entryToMap.parts?.[0] as ToolPartShape;
@@ -578,7 +579,7 @@ describe("region set() write-back", () => {
     const entryToMap = entry("assistant", [
       toolPart("bash", { cmd: "ls" }, "out"),
     ]);
-    const region = history([entryToMap])[0].regions[0];
+    const region = history([entryToMap])[0].regions[0] as WritableRegion;
     region.set(PRUNED_TOOL_ERROR_INPUT_REPLACEMENT);
     const part = entryToMap.parts?.[0] as ToolPartShape;
     assert.equal(typeof part.state?.input, "object");

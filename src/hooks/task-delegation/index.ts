@@ -31,6 +31,7 @@ export const unit: HookUnitDescriptor = {
       ],
       afterExec: [],
       transform: [],
+      textComplete: [],
       toolDefinition: [],
     };
   },

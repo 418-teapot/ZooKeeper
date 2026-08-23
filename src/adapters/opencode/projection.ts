@@ -37,7 +37,7 @@ import { type ContextMessageEntry, getCallId } from "./types.js";
  * @param end - Last covered ordinal (exclusive).
  * @returns The block-map id, or undefined.
  */
-function blockIdOf(
+export function blockIdOf(
   state: SessionState,
   start: number,
   end: number,

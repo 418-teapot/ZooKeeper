@@ -448,7 +448,7 @@ describe("injectAgentPrompts", () => {
 describe("handleMessagesTransform", () => {
   it("does not throw with undefined messages field", () => {
     // messages key is absent — measureContext handles this
-    handleMessagesTransform({});
+    handleMessagesTransform({ messages: undefined });
     assert.ok(true);
   });
 
@@ -1027,6 +1027,7 @@ describe("plugin wiring", () => {
           "json-error-nudge",
           "context-pruning",
           "context-metrics",
+          "reply-strip",
         ],
         tools: [],
         commands: ["go", "dcp"],
@@ -1045,6 +1046,7 @@ describe("plugin wiring", () => {
       "event",
       "experimental.chat.messages.transform",
       "experimental.chat.system.transform",
+      "experimental.text.complete",
       "tool.definition",
       "tool.execute.before",
       "tool.execute.after",
@@ -1083,6 +1085,7 @@ describe("plugin wiring", () => {
     assert.equal(plugin["tool.execute.before"], undefined);
     assert.equal(plugin["tool.execute.after"], undefined);
     assert.equal(plugin["experimental.chat.messages.transform"], undefined);
+    assert.equal(plugin["experimental.text.complete"], undefined);
     assert.equal(plugin["command.execute.before"], undefined);
     assert.equal(plugin.tool, undefined);
   });

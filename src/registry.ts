@@ -3,8 +3,9 @@
  *
  * Every unit in the system is declared exactly once here, in
  * registration order.  The order is significant — it is the single
- * execution order for the three handler slots (`tool.execute.before`,
- * `tool.execute.after`, and `experimental.chat.messages.transform`).
+ * execution order for the four handler slots (`tool.execute.before`,
+ * `tool.execute.after`, `experimental.chat.messages.transform`, and
+ * `experimental.text.complete`).
  * The per-category profile lists in `config.toml` (`[zoo.mode.poly]`)
  * only declare which units are enabled; they never order execution —
  * load order is decided exclusively by this array:
@@ -12,7 +13,7 @@
  *   1. hook units — task-prompt → task-delegation (beforeExec),
  *      task-prompt → json-error-nudge → direct-work-nudge →
  *      post-task-nudge (afterExec), context-pruning → context-metrics
- *      (transform).
+ *      (transform), reply-strip (textComplete).
  *   2. tool units — compress, decompress.
  *   3. command units — go, dcp.
  *   4. agent units — the seven prompt-injection units.
@@ -44,6 +45,7 @@ import { unit as contextPruningUnit } from "./hooks/context-pruning/index.js";
 import { unit as directWorkNudgeUnit } from "./hooks/direct-work-nudge/index.js";
 import { unit as jsonErrorNudgeUnit } from "./hooks/json-error-nudge/index.js";
 import { unit as postTaskNudgeUnit } from "./hooks/post-task-nudge/index.js";
+import { unit as replyStripUnit } from "./hooks/reply-strip/index.js";
 import { unit as taskDelegationUnit } from "./hooks/task-delegation/index.js";
 import { unit as taskPromptUnit } from "./hooks/task-prompt/index.js";
 import { unit as compressToolUnit } from "./tools/compress.js";
@@ -153,6 +155,7 @@ export const REGISTRY: UnitDescriptor[] = [
   postTaskNudgeUnit,
   contextPruningUnit,
   contextMetricsUnit,
+  replyStripUnit,
   // ── Tool units ──────────────────────────────────────────────────
   compressToolUnit,
   decompressToolUnit,

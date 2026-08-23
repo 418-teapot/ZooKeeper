@@ -49,6 +49,7 @@ const POLY_PROFILE = {
     "json-error-nudge",
     "context-pruning",
     "context-metrics",
+    "reply-strip",
   ],
   tools: ["compress", "decompress"],
   commands: ["go", "dcp"],
@@ -229,6 +230,34 @@ describe("poly full profile — registration parity", () => {
     assert.ok(events.includes("context_measured"), "metrics handler must run");
   });
 
+  it("text.complete strips leading [mN] echoes and logs the event", async () => {
+    const plugin = await makePlugin();
+    const output: { text: string } = { text: "[m3] [m5] hello world" };
+    await plugin["experimental.text.complete"](
+      { sessionID: "s4", messageID: "m", partID: "p" },
+      output,
+    );
+    assert.equal(output.text, "hello world");
+
+    const events = logEvents().filter((e) => e.event === "reply_ref_stripped");
+    assert.equal(events.length, 1);
+    assert.equal(events[0].hook, "reply-strip");
+    assert.equal(events[0].level, "warn");
+    assert.equal(events[0].sessionId, "s4");
+    assert.equal(events[0].fragment, "[m3] [m5] hello world");
+  });
+
+  it("text.complete leaves clean replies unchanged without logging", async () => {
+    const plugin = await makePlugin();
+    const output: { text: string } = { text: "plain reply" };
+    await plugin["experimental.text.complete"](
+      { sessionID: "s5", messageID: "m", partID: "p" },
+      output,
+    );
+    assert.equal(output.text, "plain reply");
+    assert.equal(logEvents().length, 0);
+  });
+
   it("config hook injects all profile agents, skills, tools, and commands", async () => {
     const plugin = await makePlugin();
     const config: Record<string, any> = {
@@ -350,6 +379,7 @@ describe("poly full profile — registration parity", () => {
         "tool.execute.before",
         "tool.execute.after",
         "experimental.chat.messages.transform",
+        "experimental.text.complete",
         "command.execute.before",
       ];
       for (const name of handlerNames) {
@@ -384,8 +414,26 @@ describe("event-key composition by enabled hook set", () => {
     assert.equal(plugin["tool.execute.before"], undefined);
     assert.equal(plugin["tool.execute.after"], undefined);
     assert.equal(plugin["experimental.chat.messages.transform"], undefined);
+    assert.equal(plugin["experimental.text.complete"], undefined);
     // tools are gated by the tools list, not hooks — still present here.
     assert.ok(plugin.tool, "tool key gated by tools list, not hooks");
+  });
+
+  it("reply-strip only → text.complete present, no other shared keys", async () => {
+    const plugin = await pluginWithHooks(["reply-strip"]);
+    assert.equal(typeof plugin["experimental.text.complete"], "function");
+
+    const output: { text: string } = { text: "[m2] gated" };
+    await plugin["experimental.text.complete"](
+      { sessionID: "s", messageID: "m", partID: "p" },
+      output,
+    );
+    assert.equal(output.text, "gated");
+
+    assert.equal(plugin["tool.definition"], undefined);
+    assert.equal(plugin["tool.execute.before"], undefined);
+    assert.equal(plugin["tool.execute.after"], undefined);
+    assert.equal(plugin["experimental.chat.messages.transform"], undefined);
   });
 
   it("task-prompt only → definition + prompt validation, no delegation", async () => {
@@ -706,7 +754,6 @@ describe("null profile — skip profile-driven registration", () => {
         "config",
         "event",
         "experimental.chat.system.transform",
-        "experimental.text.complete",
       ].sort(),
     );
   });
@@ -743,31 +790,11 @@ describe("null profile — skip profile-driven registration", () => {
     assert.equal(sessionAgentMap.get("s3"), "dolphin");
   });
 
-  it("text.complete strips leading [mN] echoes and logs the event", async () => {
+  it("text.complete is absent — reply-strip is profile-gated", async () => {
+    // The ref-echo stripping guard is profile-driven: with no active
+    // profile no handler is contributed (fail-closed), so no event key
+    // appears at all.
     const plugin = await makePlugin({});
-    const output: { text: string } = { text: "[m3] [m5] hello world" };
-    await plugin["experimental.text.complete"](
-      { sessionID: "s4", messageID: "m", partID: "p" },
-      output,
-    );
-    assert.equal(output.text, "hello world");
-
-    const events = logEvents().filter((e) => e.event === "reply_ref_stripped");
-    assert.equal(events.length, 1);
-    assert.equal(events[0].hook, "text.complete");
-    assert.equal(events[0].level, "warn");
-    assert.equal(events[0].sessionId, "s4");
-    assert.equal(events[0].fragment, "[m3] [m5] hello world");
-  });
-
-  it("text.complete leaves clean replies unchanged without logging", async () => {
-    const plugin = await makePlugin({});
-    const output: { text: string } = { text: "plain reply" };
-    await plugin["experimental.text.complete"](
-      { sessionID: "s5", messageID: "m", partID: "p" },
-      output,
-    );
-    assert.equal(output.text, "plain reply");
-    assert.equal(logEvents().length, 0);
+    assert.equal(plugin["experimental.text.complete"], undefined);
   });
 });

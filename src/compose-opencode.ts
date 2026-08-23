@@ -12,6 +12,8 @@
  *    (cancel tool execution).
  *  - `tool.execute.after` — per-handler error isolation (`runAfterHandlers`).
  *  - `experimental.chat.messages.transform` — sequential handlers.
+ *  - `experimental.text.complete` — sequential handlers (text
+ *    finalization, e.g. ref-echo stripping).
  *  - `tool.definition` — sequential enhancers (one contributor today).
  *  - `command.execute.before` — routes by `input.command`, then throws
  *    the unified `COMMAND_HANDLED` sentinel to short-circuit the flow.
@@ -31,7 +33,7 @@
 import { readdirSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ContextMetricsOutput } from "./adapters/opencode/types.js";
+import { createV1ToolHost } from "./adapters/opencode/tool-host.js";
 import type { ContextPruningConfig, ModeProfile } from "./core/config-types.js";
 import type {
   ActiveSet,
@@ -43,10 +45,13 @@ import type {
   CommandInput,
   ComposedResult,
   Deps,
+  TextCompleteInput,
+  TextCompleteOutput,
   ToolContribution,
   ToolDefinitionInput,
   ToolDefinitionOutput,
   ToolUnitDescriptor,
+  TransformOutput,
 } from "./core/slots.js";
 import { REGISTRY } from "./registry.js";
 import { log } from "./utils/logger.js";
@@ -226,6 +231,7 @@ export function buildToolHooks(
     client,
     directory: "",
     sessionAgentMap: new Map(),
+    toolHost: createV1ToolHost(client),
   };
   const activeSet: ActiveSet = {
     agents: new Set(),
@@ -300,6 +306,10 @@ export function assembleOpenCodeHooks(
   deps: Deps,
   profile: ModeProfile | null,
 ): Record<string, any> {
+  const fullDeps: Deps = {
+    ...deps,
+    toolHost: deps.toolHost ?? createV1ToolHost(deps.client),
+  };
   return {
     ...(Object.keys(composed.tools).length > 0 ? { tool: composed.tools } : {}),
 
@@ -308,7 +318,7 @@ export function assembleOpenCodeHooks(
       logPluginInit(
         agents,
         composed.skills.map((s) => s.name),
-        deps.limits,
+        fullDeps.limits,
       );
       // No active profile → no profile-driven registration at all.
       if (profile === null) return;
@@ -334,10 +344,24 @@ export function assembleOpenCodeHooks(
       ? {
           async "experimental.chat.messages.transform"(
             _input: Record<string, never>,
-            output: ContextMetricsOutput,
+            output: TransformOutput,
           ) {
             for (const handler of composed.transform) {
               await handler.handle(output);
+            }
+          },
+        }
+      : {}),
+
+    // Present only when the reply-strip hook unit is enabled.
+    ...(composed.textComplete.length > 0
+      ? {
+          async "experimental.text.complete"(
+            input: TextCompleteInput,
+            output: TextCompleteOutput,
+          ) {
+            for (const handler of composed.textComplete) {
+              await handler.handle(input, output);
             }
           },
         }

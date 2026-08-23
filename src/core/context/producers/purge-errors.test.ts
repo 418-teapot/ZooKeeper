@@ -20,8 +20,13 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { canon } from "../canon.js";
 import type { HostMessage } from "../lens.js";
-import { regionsOfKind } from "../lens.js";
-import { makeAssistantMsg, makeMsg, makeToolMsg } from "../lens-testkit.js";
+import {
+  makeAssistantMsg,
+  makeMsg,
+  makeToolMsg,
+  makeToolResultMsg,
+  setRegionText,
+} from "../lens-testkit.js";
 import {
   estimateTokenCount,
   measureMessages,
@@ -92,6 +97,50 @@ function lensMsg(calls: CallSpec[]): HostMessage {
 /** A fresh empty lens session state. */
 function makeNewState(): SessionState {
   return { blocks: new Map(), marks: new Map() };
+}
+
+/**
+ * Pi-shaped lens transcript: the call's input and output live in
+ * different messages, linked by the input region's positional
+ * `ToolMeta.output` reference (see `adapters/pi/history.ts`).
+ *
+ * @returns The transcript: user, assistant tool-call, tool-result.
+ */
+function piLensPair(): HostMessage[] {
+  return [
+    makeMsg("user", ["do it"]),
+    makeAssistantMsg({
+      toolCalls: [
+        {
+          name: "bash",
+          input: LONG_INPUT,
+          output: "",
+          status: "error",
+          outputRef: { ordinal: 2, regionIndex: 0 },
+        },
+      ],
+    }),
+    makeToolResultMsg("bash", LONG_OUTPUT, { status: "error" }),
+  ];
+}
+
+/**
+ * Plant a pre-existing output-region mark (e.g. written by sweep/dedup)
+ * on the given state.
+ */
+function seedOutputMark(
+  state: SessionState,
+  ordinal: number,
+  regionIndex: number,
+): void {
+  state.marks.set(markKey(ordinal, regionIndex), {
+    anchorOrdinal: ordinal,
+    regionIndex,
+    content: "deduped",
+    contentTokens: 9,
+    effective: false,
+    markedAt: 1,
+  });
 }
 
 /**
@@ -542,6 +591,92 @@ describe("lens-specific skip and mark semantics", () => {
 });
 
 // ===========================================================================
+// Cross-message output lookup (pi-shaped lens)
+// ===========================================================================
+
+describe("cross-message output lookup via ToolMeta.output", () => {
+  it("marks the input region when the output lives in another message", () => {
+    const lens = piLensPair();
+    const { keys, tokens } = runOpen(lens);
+    assert.deepEqual(keys, [markKey(1, 0)]);
+    assert.equal(tokens, INPUT_MARK_TOKENS);
+    assert.equal(
+      lens[1].regions[0].tool?.output?.ordinal,
+      2,
+      "the reference addresses the tool-result message",
+    );
+  });
+
+  it("an existing mark on the referenced output region suppresses the call", () => {
+    // The dedup/sweep producers hold the output-region key of the
+    // linked tool-result message; purge-errors must see it through the
+    // cross-message reference (the same-message sibling lookup on pi
+    // would find nothing and re-mark the call).
+    const state = makeNewState();
+    seedOutputMark(state, 2, 0);
+    const lens = piLensPair();
+    const result = runPurgeErrors(state, lens, purgeOptions(lens));
+    assert.equal(result.created, 0);
+    assert.equal(result.tokens, 0);
+    assert.equal(state.marks.size, 1);
+  });
+
+  it("re-runs on pi-shaped input are idempotent", () => {
+    const lens = piLensPair();
+    const state = makeNewState();
+    assert.equal(runPurgeErrors(state, lens, purgeOptions(lens)).created, 1);
+    const second = runPurgeErrors(state, lens, purgeOptions(lens));
+    assert.equal(second.created, 0);
+    assert.equal(second.tokens, 0);
+    assert.equal(state.marks.size, 1);
+  });
+
+  it("an output reference without a region index defaults to 0", () => {
+    const state = makeNewState();
+    seedOutputMark(state, 2, 0);
+    const lens = [
+      makeMsg("user", ["do it"]),
+      makeAssistantMsg({
+        toolCalls: [
+          {
+            name: "bash",
+            input: LONG_INPUT,
+            output: "",
+            status: "error",
+            outputRef: { ordinal: 2 }, // regionIndex absent → 0
+          },
+        ],
+      }),
+      makeToolResultMsg("bash", LONG_OUTPUT, { status: "error" }),
+    ];
+    const result = runPurgeErrors(state, lens, purgeOptions(lens));
+    assert.equal(result.created, 0);
+  });
+
+  it("a dangling output reference (non tool-output region) has no output key", () => {
+    // The ref points at a content region — there is no output key to
+    // cross-check, so the call is still marked on its input key.
+    const lens = [
+      makeMsg("user", ["do it"]),
+      makeAssistantMsg({
+        toolCalls: [
+          {
+            name: "bash",
+            input: LONG_INPUT,
+            output: "",
+            status: "error",
+            outputRef: { ordinal: 0, regionIndex: 0 },
+          },
+        ],
+      }),
+      makeMsg("user", ["nope"]),
+    ];
+    const { keys } = runOpen(lens);
+    assert.deepEqual(keys, [markKey(1, 0)]);
+  });
+});
+
+// ===========================================================================
 // Canon invariance (acceptance: purge never changes the block hash input)
 // ===========================================================================
 
@@ -560,9 +695,7 @@ describe("canon invariance under purge-errors", () => {
       ],
     });
     const before = canon(msg);
-    regionsOfKind(msg, "tool-input")[0].set(
-      PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
-    );
+    setRegionText(msg, 2, PRUNED_TOOL_ERROR_INPUT_REPLACEMENT);
     assert.equal(canon(msg), before);
   });
 
@@ -581,7 +714,9 @@ describe("canon invariance under purge-errors", () => {
     // Simulate the release phase: replace every marked input region
     // with the error-input placeholder.
     for (const mark of state.marks.values()) {
-      lens[mark.anchorOrdinal].regions[mark.regionIndex ?? -1].set(
+      setRegionText(
+        lens[mark.anchorOrdinal],
+        mark.regionIndex ?? -1,
         PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
       );
     }

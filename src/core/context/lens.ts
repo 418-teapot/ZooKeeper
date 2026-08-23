@@ -2,7 +2,7 @@
  * Host-agnostic context lens types.
  *
  * A message is an opaque handle to the core: its content is reachable
- * only through `TextRegion` read/write lenses, never by unpacking host
+ * only through `TextRegion` read lenses, never by unpacking host
  * message structures.  Identity is positional (ordinal) only — no host
  * ids and no structural access.  This module is the lowest layer of the
  * new core: pure types plus pure helpers, zero imports.
@@ -30,33 +30,53 @@ export type Role = "user" | "assistant" | (string & {});
 export type RegionKind = "content" | "thinking" | "tool-input" | "tool-output";
 
 /**
+ * Positional address of the sibling tool-output region of a tool call.
+ *
+ * Carried on the tool-input region's metadata only; it points at the
+ * message ordinal and region index of the call's tool-output region, so
+ * a core gate can detect whether a message interval ends mid-pair
+ * (input inside the interval, its output outside).  The address uses
+ * the lens's own positional identity — no host ids, no host fields.
+ */
+export interface ToolOutputRef {
+  /** Ordinal of the message holding the sibling tool-output region. */
+  ordinal: number;
+  /** Index of the sibling tool-output region within that message. */
+  regionIndex?: number;
+}
+
+/**
  * Tool-call metadata attached to a region.
  *
  * Region-level text metadata, not structural access: the lens still
  * offers no message structure, no ids, and no host fields.  `status` is
  * the host's verbatim status string (e.g. "pending", "running",
  * "completed", "error"); the core does not enumerate the value space —
- * producers interpret the semantics themselves.
+ * producers interpret the semantics themselves.  `output` is the
+ * positional address of the call's tool-output region, present on the
+ * tool-input region only.
  */
 export interface ToolMeta {
   /** Tool name (e.g. "bash", "read"). */
   name: string;
   /** Host-verbatim call status string. */
   status?: string;
+  /** Positional address of this call's tool-output region. */
+  output?: ToolOutputRef;
 }
 
 /**
- * A read/write lens over one region's text.
+ * A read-only lens over one region's text.
  *
  * The lens exposes text only — no structure, no ids, no host fields.
- * `set()` mutates the underlying storage in place; a subsequent `get()`
- * on the same region observes the new text.  `tool` is present on
- * tool-input/tool-output regions only.
+ * Text replacement is expressed as `RegionEdit` data; writing edits
+ * into a conversation is the host adapter's job (`HostAdapter.render`),
+ * never a core capability.  `tool` is present on tool-input/tool-output
+ * regions only.
  */
 export interface TextRegion {
   kind: RegionKind;
   get(): string;
-  set(text: string): void;
   /** Tool-call metadata; undefined on non tool regions. */
   tool?: ToolMeta;
 }
@@ -124,32 +144,119 @@ export type ViewItem =
   | { type: "summary"; block: BlockSpan };
 
 /**
- * Host-adapter contract: the three methods every host must provide.
+ * One region text replacement in a host conversation.
  *
- * The core talks to a host only through this interface — the host
- * reports its transcript (`history`), renders a block's summary into a
- * synthetic message (`materializeSummary`), and materializes a folded
- * view into its own messages (`applyView`).  `View = fold(history,
- * blocks)` stays a pure function recomputed every round; the adapter
- * never caches a view.
- *
- * The signatures describe the contract, not the implementation: the
- * current OpenCode v1 adapter provides the building blocks with
- * signatures specialized to v1 in-place semantics — its
- * `applyView(messages, history, items, state)` additionally carries
- * the v1 message array and session state because v1 mutation is in
- * place, and its `materializeSummary(block, lineNumber)` renders from a
- * block span rather than a bare text.  A future pi adapter would return
- * a replacement messages array instead (`context` event `{messages}`
- * contract).
+ * Addresses a region by message ordinal and, when the message carries
+ * more than one region, the region index within the message.  `text` is
+ * the full replacement, not a delta.  Edits are pure data: applying
+ * them — writing the text into the addressed region — is the host
+ * adapter's job (`HostAdapter.render`).
  */
-export interface HostAdapter {
-  /** Report the host's transcript as lens messages (ordinals align 1:1). */
-  history(): HostMessage[];
-  /** Render a block's summary text into a synthetic host message. */
-  materializeSummary(text: string): HostMessage;
-  /** Materialize a folded view into the host's messages. */
-  applyView(items: ViewItem[]): void;
+export interface RegionEdit {
+  /** Ordinal of the message whose region text is replaced. */
+  messageOrdinal: number;
+  /** Index of the region within the message, for multi-region messages. */
+  regionIndex?: number;
+  /** The full replacement text. */
+  text: string;
+}
+
+/**
+ * Host-adapter contract over a host conversation type.
+ *
+ * The core talks to a host only through this interface: the host
+ * projects its conversation into lens messages (`history`) and renders a
+ * folded view plus the round's region edits back into the conversation
+ * (`render`).  Summary materialization is an internal detail of a host's
+ * render implementation, not a cross-host seam.  The view stays a pure
+ * function recomputed every round — the adapter never caches one.
+ *
+ * All mutating methods return the conversation after the operation.  The
+ * input may be mutated in place or replaced by a new value; callers must
+ * always use the returned object and must not rely on in-place mutation.
+ * Measurement of a conversation is a host-side concern and is not covered
+ * by this contract.
+ *
+ * `state` is typed as `unknown` because `SessionState` lives in
+ * `state.ts`, which imports `BlockSpan` from this module; importing
+ * `SessionState` here would create an import cycle.
+ */
+export interface HostAdapter<THostConversation> {
+  /** Project the host conversation into lens messages (ordinals align 1:1). */
+  history(conversation: THostConversation): HostMessage[];
+  /**
+   * Apply region edits to the host conversation.
+   *
+   * Runs before the producers and eligibility scan so placeholder text
+   * is observable through the lens.  The input may be mutated in place or
+   * replaced; callers must use the returned conversation.
+   *
+   * @param conversation - The host conversation before edits.
+   * @param edits - Region text replacements to apply.
+   * @returns The conversation after edits.
+   */
+  applyEdits(
+    conversation: THostConversation,
+    edits: RegionEdit[],
+  ): THostConversation;
+  /**
+   * Materialize the folded view into the host conversation.
+   *
+   * Runs after producers/fold so the final view replaces or restructures
+   * messages.  The input may be mutated in place or replaced; callers must
+   * use the returned conversation.
+   *
+   * @param conversation - The host conversation before rendering.
+   * @param items - The folded view items, in view order.
+   * @param state - The session state used for summary materialization.
+   * @returns The conversation after rendering.
+   */
+  renderView(
+    conversation: THostConversation,
+    items: ViewItem[],
+    state: unknown,
+  ): THostConversation;
+  /**
+   * Render the folded view and region edits into the host conversation.
+   *
+   * Equivalent to `applyEdits(conversation, edits)` followed by
+   * `renderView(conversation, items, state)`.  The input may be mutated in
+   * place or replaced; callers must use the returned conversation.
+   *
+   * @param conversation - The host conversation before rendering.
+   * @param items - The folded view items, in view order.
+   * @param edits - Region text replacements to apply.
+   * @param state - The session state used for summary materialization.
+   * @returns The conversation after rendering.
+   */
+  render(
+    conversation: THostConversation,
+    items: ViewItem[],
+    edits: RegionEdit[],
+    state: unknown,
+  ): THostConversation;
+  /** Extract the session identifier from the first message, if any. */
+  sessionId(conversation: THostConversation): string | undefined;
+  /**
+   * Append a synthetic user text message to the conversation.
+   *
+   * Used for context-pressure nudges and manual compress triggers.  The
+   * message is appended at the end and is not persisted by the host.  The
+   * input may be mutated in place or replaced; callers must use the
+   * returned conversation.
+   *
+   * @param conversation - The host conversation before appending.
+   * @param id - The synthetic message id.
+   * @param sessionId - The session identifier.
+   * @param text - The message text.
+   * @returns The conversation after appending.
+   */
+  appendUserMessage(
+    conversation: THostConversation,
+    id: string,
+    sessionId: string,
+    text: string,
+  ): THostConversation;
 }
 
 /**

@@ -15,9 +15,10 @@ import type { SessionClient } from "../../core/client/session.js";
 import { estimateTokenCount } from "../../core/context/measure.js";
 import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "../../core/context/message-parts.js";
 import {
+  computeEdits,
+  flipReleasedMarks,
   pendingTokens,
   reclaimedTokens,
-  releaseMarks,
 } from "../../core/context/release.js";
 import {
   _resetContextStateManagerForTesting,
@@ -633,10 +634,19 @@ describe("/dcp sweep subcommand — success path", () => {
 
     // Transform turn 1: the release pass consumes the view-change flag
     // and flips the pending mark effective — the reclaim total moves to
-    // the effective side without doubling.
-    releaseMarks(state, history(messages), {
+    // the effective side without doubling.  The edit selection confirms
+    // the release pass targets the pending sweep mark's region; the flip
+    // performs the state half.
+    const turn1View = history(messages);
+    const viewChange = consumePendingViewChange(sessionID);
+    const turn1Edits = computeEdits(state, turn1View, {
       promptTokens: 0,
-      pendingViewChange: consumePendingViewChange(sessionID),
+      pendingViewChange: viewChange,
+    });
+    assert.equal(turn1Edits.length, 1, "the pending sweep mark is released");
+    flipReleasedMarks(state, {
+      promptTokens: 0,
+      pendingViewChange: viewChange,
     });
     assert.equal(
       reclaimedTokens(state),
@@ -673,7 +683,14 @@ describe("/dcp sweep subcommand — success path", () => {
         ],
       },
     ];
-    releaseMarks(state, history(reloadedMessages), {
+    // The now-effective mark still selects an edit; the closed gate
+    // (promptTokens 0, no bypass) flips nothing.
+    const turn2Edits = computeEdits(state, history(reloadedMessages), {
+      promptTokens: 0,
+      pendingViewChange: false,
+    });
+    assert.equal(turn2Edits.length, 1, "the effective mark is re-applied");
+    flipReleasedMarks(state, {
       promptTokens: 0,
       pendingViewChange: false,
     });

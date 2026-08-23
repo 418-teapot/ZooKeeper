@@ -6,16 +6,16 @@
  * prefix-survival and out-of-bounds invalidation), hidden-message
  * participation in the hash (Decision 1), the concatenation-ambiguity
  * property of the rolling composition, hash determinism and output
- * format, range defense, and suicide-block protection — ref injection
- * plus the prune placeholders leave validation passing.  Fixtures
- * are built through the lens testkit.
+ * format, range defense, and suicide-block protection — the prune
+ * placeholders leave validation passing, while a line-start ref marker
+ * in content hashes verbatim and breaks it.  Fixtures are built through
+ * the lens testkit.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { canon } from "./canon.js";
 import type { HostMessage } from "./lens.js";
-import { regionsOfKind } from "./lens.js";
-import { makeAssistantMsg, makeMsg } from "./lens-testkit.js";
+import { makeAssistantMsg, makeMsg, setRegionText } from "./lens-testkit.js";
 import {
   PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
@@ -143,7 +143,7 @@ describe("fork prefix", () => {
 // ---------------------------------------------------------------------------
 
 describe("suicide block protection", () => {
-  it("ref injection and the prune placeholders keep validation passing", () => {
+  it("prune placeholder replacement keeps validation passing", () => {
     const history: HostMessage[] = [
       makeMsg("user", ["prompt"]),
       makeAssistantMsg({
@@ -161,25 +161,43 @@ describe("suicide block protection", () => {
     const mutated = history[1];
     const canonBefore = canon(mutated);
 
-    // Line-start ref injection into a content region.
-    regionsOfKind(mutated, "content")[0].set("[m2] let me check");
     // Tool-output prune (sweep/dedup).
-    regionsOfKind(mutated, "tool-output")[0].set(
-      PRUNED_TOOL_OUTPUT_REPLACEMENT,
-    );
+    setRegionText(mutated, 3, PRUNED_TOOL_OUTPUT_REPLACEMENT);
     // Input prune for input-heavy tools.
-    regionsOfKind(mutated, "tool-input")[1].set(
-      PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
-    );
+    setRegionText(mutated, 4, PRUNED_TOOL_ERROR_INPUT_REPLACEMENT);
     // Error-input prune (purge-errors).
-    regionsOfKind(mutated, "tool-input")[0].set(
-      PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
-    );
+    setRegionText(mutated, 2, PRUNED_TOOL_ERROR_INPUT_REPLACEMENT);
 
-    // canon is invariant under the core's own mutations, so the span hash
-    // is unchanged and the block still validates.
+    // canon is invariant under the placeholder mutations, so the span
+    // hash is unchanged and the block still validates.
     assert.equal(canon(mutated), canonBefore);
     assert.equal(validateBlock(history, block), true);
+  });
+
+  it("a line-start ref marker in content breaks validation (hashed verbatim)", () => {
+    const history: HostMessage[] = [
+      makeMsg("user", ["prompt"]),
+      makeAssistantMsg({
+        text: "let me check",
+        thinking: "reasoning",
+        toolCalls: [
+          { name: "bash", input: "ls -la", output: "files" },
+          { name: "edit", input: "big payload", output: "ok" },
+        ],
+      }),
+      makeMsg("user", ["question"]),
+      makeMsg("assistant", ["answer"]),
+    ];
+    const block = makeBlock(history, 1, 3);
+    // Line-start ref injection into a content region.
+    setRegionText(history[1], 0, "[m2] let me check");
+
+    // Content is hashed verbatim: an injected ref marker changes the
+    // projection, so the block no longer validates.  The pipeline never
+    // hits this — hashing runs before the injection phase on pristine
+    // text — but persisted text containing a line-start marker hashes
+    // verbatim (accepted consequence).
+    assert.equal(validateBlock(history, block), false);
   });
 });
 

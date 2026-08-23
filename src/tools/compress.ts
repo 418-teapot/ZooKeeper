@@ -2,22 +2,20 @@
  * Batch range-mode compress tool adapter.
  *
  * Exposes the ordinal-based batch compression core
- * (`compressRanges` in `src/core/context/compress.ts`) as an OpenCode
- * tool so the model can compress N contiguous visible-history spans
- * into N model-written summaries in ONE call (zero extra API calls).
+ * (`compressRanges` in `src/core/context/compress.ts`) as a host tool so
+ * the model can compress N contiguous visible-history spans into N
+ * model-written summaries in ONE call (zero extra API calls).
  *
- * The client and the parsed context-pruning config are captured by the
- * factory closure.  Each execution:
+ * The host tool services and the parsed context-pruning config are
+ * captured by the factory closure.  Each execution:
  *
- * 1. Resolves the session ID from the tool context (tolerates both
- *    `sessionID` and `sessionId` shapes).
+ * 1. Resolves the session ID from the tool context through the host.
  * 2. Validates the `ranges` argument (array of `{fromRef, toRef, title,
  *    summary}`); per-range title rules and the `max_ranges` upper bound
  *    are enforced by the core with loud batch guidance BEFORE any range
  *    is applied.
- * 3. Fetches the full session messages (same unwrap + error check as the
- *    `/dcp` command path) and maps them to the host-agnostic transcript
- *    through the v1 adapter (`history`).
+ * 3. Fetches the full session messages as a host-agnostic transcript
+ *    through the host.
  * 4. Folds the transcript with the shared session state and numbers the
  *    visible view — the per-round line-number address space the model
  *    references (`mN` / `[mN]`).
@@ -27,7 +25,7 @@
  *    state untouched.
  * 6. Flags the pending view change and persists the session state ONCE
  *    through the shared state manager.
- * 7. Injects a single ignored chat notification covering all blocks.
+ * 7. Posts a single ignored chat notification through the host.
  *
  * Loud Chinese guidance errors from the core propagate to the model
  * unchanged — the model self-corrects by re-picking refs and retrying.
@@ -37,9 +35,7 @@
  * @module
  */
 
-import { history } from "../adapters/opencode/history.js";
-import type { ContextMessageEntry } from "../adapters/opencode/types.js";
-import type { SessionClient } from "../core/client/session.js";
+import type { ToolHost } from "../core/client/tool-host.js";
 import type { ContextPruningConfig } from "../core/config-types.js";
 import {
   type CompressOptions,
@@ -90,31 +86,15 @@ type CompressToolInput = {
 export type CompressToolDefinition = {
   description: string;
   args: CompressToolArgs;
+  required?: string[];
   execute(args: unknown, toolCtx: unknown): Promise<string>;
 };
+
+export type CompressToolMetadata = Omit<CompressToolDefinition, "execute">;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Resolve the session ID from the OpenCode tool context.
- *
- * Defensive: the OpenCode SDK uses `sessionID`; tolerate a `sessionId`
- * variant so the tool survives host SDK shape changes.
- *
- * @param toolCtx - The tool execution context.
- * @returns The session identifier.
- * @throws A loud Chinese error when no session ID is present.
- */
-function resolveSessionId(toolCtx: unknown): string {
-  const ctx = toolCtx as { sessionID?: unknown; sessionId?: unknown };
-  const id = ctx.sessionID ?? ctx.sessionId;
-  if (typeof id !== "string" || id.length === 0) {
-    throw new Error("无法确定会话 ID：工具上下文缺少 sessionID。");
-  }
-  return id;
-}
 
 function requireStringArg(
   item: Record<string, unknown>,
@@ -139,7 +119,7 @@ function requireStringArg(
  * @param args - The raw tool arguments.
  * @returns The validated ranges.
  */
-function validateCompressArgs(args: unknown): CompressToolInput {
+export function validateCompressArgs(args: unknown): CompressToolInput {
   if (args === null || typeof args !== "object" || Array.isArray(args)) {
     throw new Error(
       "压缩工具参数格式错误：请提供包含 ranges 数组的对象（ranges 的每一项为 {fromRef, toRef, title, summary} 四个必填字符串）后重试。",
@@ -176,62 +156,6 @@ function validateCompressArgs(args: unknown): CompressToolInput {
 }
 
 /**
- * Fetch the full session messages array.
- *
- * Mirrors the `/dcp` command path: unwraps `res.data ?? res` and checks
- * `res.error`, throwing loud Chinese errors on API failure.
- *
- * @param client - The OpenCode client (may be partial in tests).
- * @param sessionID - The session identifier.
- * @returns The raw session messages array.
- */
-async function fetchSessionMessages(
-  client: SessionClient,
-  sessionID: string,
-): Promise<ContextMessageEntry[]> {
-  if (!client?.session?.messages) {
-    throw new Error("无法获取会话消息：会话消息 API 不可用");
-  }
-
-  let rawMessages: unknown;
-  try {
-    const res = await client.session.messages({ path: { id: sessionID } });
-    rawMessages = res;
-  } catch (err) {
-    log(
-      "compress-tool",
-      "fetch_messages_failed",
-      sessionID,
-      undefined,
-      "error",
-      { error: String(err) },
-    );
-    throw new Error(
-      `无法获取会话消息：${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-
-  if (!rawMessages) {
-    throw new Error("会话消息 API 返回空结果");
-  }
-
-  const rawObj = rawMessages as {
-    data?: unknown;
-    error?: { message?: string };
-  };
-  if (rawObj.error) {
-    const msg = rawObj.error.message ?? String(rawObj.error);
-    throw new Error(`获取会话消息失败：${msg}`);
-  }
-  const messages = (rawObj.data ?? rawMessages) as ContextMessageEntry[];
-
-  if (!Array.isArray(messages)) {
-    throw new Error("会话消息格式异常：期望数组");
-  }
-  return messages;
-}
-
-/**
  * Map the created blocks to their persistent block ids.
  *
  * The core's `Block` records carry no id — the id is the block-map key
@@ -261,20 +185,17 @@ function createdBlockIds(state: SessionState, created: Block[]): number[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Create the batch range-mode compress tool.
+ * Build the host-independent compress tool metadata.
  *
- * The client and the parsed context config are captured by the closure so
- * each `execute` call is self-contained.
+ * The description and JSON-schema args depend only on the parsed context
+ * config, not on host services.
  *
- * @param client - The OpenCode client (session.messages / session.prompt).
- * @param contextConfig - The parsed context-pruning config (compress gate
- *   + protection defaults + max_ranges).
- * @returns The OpenCode tool definition.
+ * @param _contextConfig - The parsed context-pruning config.
+ * @returns The tool description and args schema.
  */
-export function createCompressTool(
-  client: SessionClient,
-  contextConfig: ContextPruningConfig,
-): CompressToolDefinition {
+function buildCompressToolMetadata(
+  _contextConfig: ContextPruningConfig,
+): CompressToolMetadata {
   return {
     description: `压缩一段或多段连续可见历史为摘要（每个范围将被你的摘要替换）。
 
@@ -350,8 +271,33 @@ ${COMPRESS_GUIDANCE}
         },
       },
     },
+    required: ["ranges"],
+  };
+}
+
+/**
+ * Create the batch range-mode compress tool.
+ *
+ * The host and the parsed context config are captured by the closure so
+ * each `execute` call is self-contained.
+ *
+ * @param host - The host tool services (session resolution, history,
+ *   best-effort notification).
+ * @param contextConfig - The parsed context-pruning config (compress gate
+ *   + protection defaults + max_ranges).
+ * @returns The compress tool definition.
+ */
+export function createCompressTool(
+  host: ToolHost,
+  contextConfig: ContextPruningConfig,
+): CompressToolDefinition {
+  return {
+    ...buildCompressToolMetadata(contextConfig),
     async execute(args, toolCtx) {
-      const sessionID = resolveSessionId(toolCtx);
+      const sessionID = host.resolveSessionId(toolCtx);
+      if (sessionID === undefined) {
+        throw new Error("无法确定会话 ID：工具上下文缺少 sessionID。");
+      }
       const { ranges } = validateCompressArgs(args);
 
       // ── Build the compression options from the parsed context config
@@ -379,10 +325,9 @@ ${COMPRESS_GUIDANCE}
         );
       }
 
-      // Fetch full messages, then build the host-agnostic transcript and
-      // the folded, line-numbered view of the current round.
-      const messages = await fetchSessionMessages(client, sessionID);
-      const view = history(messages);
+      // Fetch full messages as the host-agnostic transcript and build the
+      // folded, line-numbered view of the current round.
+      const view = await host.fetchHistory(sessionID);
       const manager = getContextStateManager();
       const state = manager.get(sessionID);
       const { items } = fold(view, state);
@@ -450,13 +395,7 @@ ${COMPRESS_GUIDANCE}
           ? `上下文压缩：已压缩 ${msgCount} 条消息为压缩块 ${blockIds}：${result.created[0].title}，约回收 ${formatTokens(reclaimed)} tokens`
           : `上下文压缩：已压缩 ${result.created.length} 个范围，共 ${msgCount} 条消息（${blockIds}），约回收 ${formatTokens(reclaimed)} tokens`;
       try {
-        await client?.session?.prompt?.({
-          path: { id: sessionID },
-          body: {
-            noReply: true,
-            parts: [{ type: "text", text: notifyMsg, ignored: true }],
-          },
-        });
+        await host.notify(sessionID, notifyMsg);
       } catch (err) {
         log("compress-tool", "notify_failed", sessionID, undefined, "warn", {
           error: String(err),
@@ -479,13 +418,24 @@ export const unit: ToolUnitDescriptor = {
   name: "compress",
   kind: "tool",
   create(deps) {
+    const host = deps.toolHost;
+    const metadata = buildCompressToolMetadata(deps.contextConfig);
+    if (host === undefined) {
+      return {
+        kind: "tool",
+        tools: [
+          {
+            name: "compress",
+            ...metadata,
+            execute: async () => "此工具在当前 host 上不可用。",
+          },
+        ],
+      };
+    }
     return {
       kind: "tool",
       tools: [
-        {
-          name: "compress",
-          ...createCompressTool(deps.client, deps.contextConfig),
-        },
+        { name: "compress", ...createCompressTool(host, deps.contextConfig) },
       ],
     };
   },

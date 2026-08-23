@@ -7,12 +7,13 @@
  * whole block, reversed-range swap), actionable out-of-view errors, swallowed
  * blocks occupying no line, and restart-free reproducibility (no persistence
  * reconciliation).  The three-branch injection placement and the
- * strip→inject round cycle live in `apply-view.test.ts` against the v1
- * adapter (`applyView` owns the actual injection now).  Hidden messages
+ * pure-prefix injection semantics live in the adapter renderer tests
+ * (`src/adapters/opencode/apply-view.test.ts`, which owns the actual
+ * injection).  Hidden messages
  * (spec Decision 3 / checklist C7-02) stay visible in the view but occupy
  * no line number and receive no prefix, so the visible numbering stays
- * dense.  Fixtures are built through the lens testkit; the swallowed-block
- * view comes from `fold`.
+ * dense.  Fixtures are built through the lens testkit; the
+ * swallowed-block view comes from `fold`.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";

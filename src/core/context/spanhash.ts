@@ -4,10 +4,12 @@
  * A block declares a cover over a transcript interval `[start, end)` and
  * proves its validity by content alone: the span hash is recomputed each
  * round and compared against the value stored at creation.  Because the
- * input is the `canon` projection (see `canon.ts`), every core-side text
- * mutation — line-start ref injection, prune placeholder replacement —
- * leaves the hash stable, while any real content change anywhere in the
- * interval breaks it.
+ * input is the `canon` projection (see `canon.ts`), prune placeholder
+ * replacement — the one core-side text mutation that lands between the
+ * two hash observations — leaves the hash stable, while any real
+ * content change anywhere in the interval breaks it.  Line-number
+ * injection never reaches hashed text: both observations run before
+ * the injection phase.
  *
  * Hash selection (spec Q2): FNV-1a, 32-bit, non-cryptographic, ten-ish
  * lines of plain TypeScript.  Each message's canon string is hashed

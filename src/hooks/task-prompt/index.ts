@@ -50,6 +50,7 @@ export const unit: HookUnitDescriptor = {
         },
       ],
       transform: [],
+      textComplete: [],
       toolDefinition: [
         {
           name: "enhanceTaskDefinition",

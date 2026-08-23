@@ -347,7 +347,14 @@ function estimateIntervalTokens(
  *    overlap; a fully-covered inactive block is carried on
  *    `coveredInactive` for token netting, a partially-covered one is
  *    ignored entirely.
- * 4. **Phantom** — the interval's heuristic estimate must reach
+ * 4. **Mid-pair** — a tool call whose linked tool-output region sits
+ *    outside the interval is rejected: the pi lens addresses the linked
+ *    result on the tool-input region's metadata (`ToolMeta.output`), and
+ *    cutting between the halves would leave the render to widen the
+ *    summary, which loses the block-id label.  Hosts that never set the
+ *    linkage (v1, where both halves live in one message) are
+ *    structurally unaffected.
+ * 5. **Phantom** — the interval's heuristic estimate must reach
  *    `thresholdTokens`.
  *
  * Zero-mutation: the returned collections describe the apply, they do
@@ -423,6 +430,33 @@ export function validateRange(
       // tokens are netted and it gets an index line.  Partially covered
       // inactive blocks are ordinary content again and ignored entirely.
       coveredInactive.push({ id, block });
+    }
+  }
+
+  // ── Mid-pair gate ──────────────────────────────────────────────────
+  // A tool call and its result must fold as a pair: a range that covers
+  // the tool-input region but not its linked tool-output region would
+  // create a block whose summary interval the render would have to widen
+  // to swallow the orphaned result — which breaks the block-id label
+  // lookup for decompression.  The pi lens addresses the linked result
+  // on the tool-input region's metadata; hosts that never set the
+  // linkage (v1, where both halves of a call live in one message) are
+  // structurally unaffected.
+  for (let o = start; o < end; o++) {
+    for (const region of history[o].regions) {
+      if (region.kind !== "tool-input") continue;
+      const output = region.tool?.output;
+      if (
+        output !== undefined &&
+        (output.ordinal < start || output.ordinal >= end)
+      ) {
+        return failed(
+          `范围 [${start}, ${end}) 在工具调用对中间截断：区间内的工具调用 ` +
+            `${region.tool?.name ?? "未知工具"} 链接的工具结果位于区间之外` +
+            `（序数 ${output.ordinal}）。工具调用与其结果必须成对压缩，` +
+            `请将范围扩展到包含该工具结果。`,
+        );
+      }
     }
   }
 

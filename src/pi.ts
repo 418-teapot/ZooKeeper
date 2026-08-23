@@ -2,7 +2,7 @@
  * ZooKeeper Pi extension — profile-driven hooks composed from the unit
  * registry.
  *
- * This extension registers four hooks, all driven by the active mode
+ * This extension registers five hooks, all driven by the active mode
  * profile (`[zoo.mode.<name>]`, parsed by `parseModeProfile`):
  * 1. `before_agent_start` — prepends the dolphin orchestrator prompt to
  *    the chainable system prompt when the profile's agents list names
@@ -13,7 +13,10 @@
  * 3. `tool_result` — runs the composed after-exec contributions against
  *    the tool-result text (handler built by `buildPiToolResultHandler`).
  * 4. `context` — runs the composed transform contributions against the
- *    message list (handler built by `buildPiContextHandler`); measure-only.
+ *    native pi message list and returns the pruned replacement.
+ * 5. `message_end` — strips model-imitated `[mN] ` line-start ref
+ *    prefixes from finalized assistant text parts (handler built by
+ *    `buildPiMessageEndHandler`).
  *
  * Architecture: units contribute host-agnostic slots (`src/core/slots.ts`)
  * and the pi contact layer (`src/compose-pi.ts`) is the only module that
@@ -25,14 +28,16 @@
  * four hooks no-op — fail-closed, aligned with the OpenCode host.
  *
  * Capability gating: pi passes an empty client object (no SDK client),
- * so the dedup-release notification inside context-pruning resolves its
- * agent from the session map but fails on the missing session-prompt
- * API — the failure is caught and logged as `dedup_notify_failed`
- * (warn).  The pruning transform still runs and stays measure-only on
- * pi.  The direct-work nudge's dolphin gate is satisfied by a
- * `sessionAgentMap` whose lookups always resolve to "dolphin" (a pi
- * session is the orchestrator); without a dolphin-enabled profile the
- * map is empty and the nudge stays silent.
+ * so the dedup-release notification inside context-pruning cannot use
+ * the SDK session-prompt API.  With a dolphin-enabled profile the
+ * `sessionAgentMap` resolves the agent to "dolphin" and the missing
+ * API is caught and logged as `dedup_notify_failed` (warn); without
+ * dolphin the map is empty and the notification is suppressed as
+ * `dedup_notify_suppressed`.  The pruning transform runs and returns
+ * the pruned replacement to pi.  The direct-work nudge's dolphin gate
+ * is satisfied by a `sessionAgentMap` whose lookups always resolve to
+ * "dolphin" (a pi session is the orchestrator); without a
+ * dolphin-enabled profile the map is empty and the nudge stays silent.
  *
  * Config loading: the OpenCode entry imports config.toml directly with
  * Bun's `import ... with { type: "toml" }`.  pi's extension runtime is
@@ -49,10 +54,18 @@ import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "../vendor/smol-toml/index.js";
+import { createPiAdapter } from "./adapters/pi/adapter.js";
+import {
+  createPiToolHost,
+  type PiContextHolder,
+  type PiToolHostContext,
+} from "./adapters/pi/tool-host.js";
 import {
   buildPiContextHandler,
+  buildPiMessageEndHandler,
   buildPiToolResultHandler,
 } from "./compose-pi.js";
+import type { ToolHost } from "./core/client/tool-host.js";
 import { composeProfile } from "./core/compose.js";
 import {
   parseContextConfig,
@@ -60,6 +73,7 @@ import {
   parseModeProfile,
 } from "./core/config-parse.js";
 import type { ModeProfile } from "./core/config-types.js";
+import type { HostAdapter } from "./core/context/lens.js";
 import type { ComposedResult, Deps } from "./core/slots.js";
 import { REGISTRY } from "./registry.js";
 
@@ -75,6 +89,15 @@ import { REGISTRY } from "./registry.js";
  * ZooKeeper uses.  pi passes its real ExtensionAPI object at runtime.
  */
 interface ExtensionAPI {
+  /** Register a tool that the LLM can call. */
+  registerTool(tool: {
+    name: string;
+    label: string;
+    description: string;
+    parameters: unknown;
+    execute: (...args: unknown[]) => Promise<unknown>;
+  }): void;
+
   /** Register handler for `before_agent_start`. */
   on(
     event: "before_agent_start",
@@ -98,6 +121,11 @@ interface ExtensionAPI {
   ): void;
   /** Register handler for `context`. */
   on(event: "context", handler: ReturnType<typeof buildPiContextHandler>): void;
+  /** Register handler for `message_end`. */
+  on(
+    event: "message_end",
+    handler: ReturnType<typeof buildPiMessageEndHandler>,
+  ): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -166,10 +194,8 @@ function sessionAgentMapFor(profile: ModeProfile | null): Map<string, string> {
  * slots (tool/command units instantiate but their slots stay unused;
  * the `unknown_unit` warning only fires when a profile name has no
  * matching registry unit).  `Deps` are adapted to the pi host:
- * `client` is empty (the pruning transform runs but its dedup-release
- * notification resolves the agent and then fails on the missing
- * session-prompt API, logged as `dedup_notify_failed` warn; the
- * transform itself stays measure-only), `directory` is
+ * `client` is empty (the context-pruning transform runs and returns
+ * the pruned replacement to pi), `directory` is
  * the process working directory (direct-work's plan discovery reads
  * `<directory>/.zoo/plans/`), and `sessionAgentMap` resolves to
  * "dolphin" when the profile enables dolphin (see
@@ -181,7 +207,35 @@ function sessionAgentMapFor(profile: ModeProfile | null): Map<string, string> {
  * @param zooConfig - The `zoo` section of config.toml.
  * @returns The parsed profile (or `null`) and the composed result.
  */
-export function buildPiContributions(zooConfig: any): {
+/**
+ * Compose the profile-driven contributions for pi.
+ *
+ * The full registry is fed to the selection engine — pi composes every
+ * category and consumes the agent, skill, after-exec, and transform
+ * slots (tool/command units instantiate but their slots stay unused;
+ * the `unknown_unit` warning only fires when a profile name has no
+ * matching registry unit).  `Deps` are adapted to the pi host:
+ * `client` is empty, `directory` is the process working directory,
+ * `sessionAgentMap` resolves to "dolphin" when the profile enables
+ * dolphin, and the host adapter / tool host are taken from `hostDeps`
+ * when provided (the entry point supplies the live context holder so
+ * event handlers can update it).
+ *
+ * Exported for unit testing — `zookeeperPi` wires this with the config
+ * loaded from disk.
+ *
+ * @param zooConfig - The `zoo` section of config.toml.
+ * @param hostDeps - Optional host adapter and tool host (used by the entry
+ *   point to share the mutable context holder with handlers).
+ * @returns The parsed profile (or `null`) and the composed result.
+ */
+export function buildPiContributions(
+  zooConfig: any,
+  hostDeps?: {
+    adapter?: HostAdapter<unknown>;
+    toolHost?: ToolHost;
+  },
+): {
   profile: ModeProfile | null;
   composed: ComposedResult;
 } {
@@ -192,14 +246,20 @@ export function buildPiContributions(zooConfig: any): {
   const deps: Deps = {
     limits,
     contextConfig,
-    // pi has no SDK client — the context-pruning transform runs but its
-    // dedup-release notification resolves the agent ("dolphin") and then
-    // fails on the missing session-prompt API, logged as
-    // `dedup_notify_failed` (warn); the context handler never writes
-    // back anyway.
+    // pi has no SDK client — the context-pruning transform runs and
+    // returns the pruned replacement to pi.  With dolphin enabled the
+    // dedup-release notification resolves the agent ("dolphin") and fails
+    // on the missing session-prompt API as `dedup_notify_failed` (warn);
+    // without dolphin the empty map suppresses it as `dedup_notify_suppressed`.
     client: {},
     directory: process.cwd(),
     sessionAgentMap: sessionAgentMapFor(modeProfile),
+    toolHost: hostDeps?.toolHost,
+    // Native pi host adapter: the entry point shares a mutable context
+    // holder so the session id provider always reads the latest pi event
+    // context.  When no adapter is supplied (unit tests that only inspect
+    // the composed shape) a default no-op provider is used.
+    adapter: hostDeps?.adapter ?? createPiAdapter(() => undefined),
   };
   const composed = composeProfile(modeProfile, REGISTRY, deps);
 
@@ -251,31 +311,100 @@ export function collectSkillPaths(profileSkills: string[]): string[] {
  * skill paths, an empty array when the profile has none.  `toolResult`
  * and `contextMetrics` wrap the composed after-exec / transform
  * contributions via the pi contact layer; with a null profile both are
- * empty so the handlers no-op.
+ * empty so the handlers no-op.  When `piApi` is provided, the
+ * profile's tool contributions are registered natively through pi's
+ * `registerTool`.
+ *
+ * Every handler refreshes the shared mutable context holder with the
+ * latest pi `ExtensionContext` so the native adapter and tool host can
+ * resolve the current session.
  *
  * Exported for unit testing — `zookeeperPi` wires this with the config
  * loaded from disk.
  *
  * @param zooConfig - The `zoo` section of config.toml.
- * @returns The four hook handlers.
+ * @param piApi - Optional pi ExtensionAPI instance; when provided, the
+ *   active profile's tools are registered with `registerTool`.
+ * @returns The five hook handlers.
  */
-export function buildPiHandlers(zooConfig: any): {
-  beforeAgentStart: (evt: {
-    systemPrompt: string;
-  }) => Promise<{ systemPrompt: string }>;
-  resourcesDiscover: () => Promise<{ skillPaths: string[] }>;
+export function buildPiHandlers(
+  zooConfig: any,
+  piApi?: ExtensionAPI,
+): {
+  beforeAgentStart: (
+    evt: { systemPrompt: string },
+    ctx?: unknown,
+  ) => Promise<{ systemPrompt: string }>;
+  resourcesDiscover: (
+    evt?: unknown,
+    ctx?: unknown,
+  ) => Promise<{ skillPaths: string[] }>;
   toolResult: ReturnType<typeof buildPiToolResultHandler>;
   contextMetrics: ReturnType<typeof buildPiContextHandler>;
+  messageEnd: ReturnType<typeof buildPiMessageEndHandler>;
 } {
-  const { composed } = buildPiContributions(zooConfig);
+  // Mutable holder updated by every event handler so the pi adapter and
+  // tool host always see the latest ExtensionContext.
+  const contextHolder: PiContextHolder = { current: undefined };
+  const sessionIdProvider = () =>
+    contextHolder.current?.sessionManager?.getSessionId();
+  const adapter = createPiAdapter(sessionIdProvider);
+  const toolHost = createPiToolHost(contextHolder);
+  const { profile, composed } = buildPiContributions(zooConfig, {
+    adapter,
+    toolHost,
+  });
 
   const dolphinPrompt = composed.agents.find(
     (agent) => agent.name === "dolphin",
   )?.prompt;
   const profileSkills = composed.skills.map((skill) => skill.name);
 
+  // Register profile tools with pi when an API instance is supplied.
+  if (piApi?.registerTool) {
+    const registered = new Set<string>();
+    for (const tool of Object.values(composed.tools)) {
+      if (registered.has(tool.name)) continue;
+      registered.add(tool.name);
+      const args = tool.args ?? {};
+      const required = tool.required ?? Object.keys(args);
+      piApi.registerTool({
+        name: tool.name,
+        label: tool.name,
+        description: tool.description,
+        // pi's validateToolArguments accepts plain JSON-Schema parameters.
+        parameters: {
+          type: "object",
+          properties: args,
+          ...(required.length > 0 ? { required } : {}),
+        } as unknown as object,
+        execute: async (
+          _toolCallId: unknown,
+          params: unknown,
+          _signal: unknown,
+          _onUpdate: unknown,
+          ctx: unknown,
+        ) => {
+          const text = await tool.execute(params, ctx);
+          return {
+            content: [{ type: "text", text }],
+            details: {},
+          };
+        },
+      });
+    }
+  }
+
+  // The core handlers have no access to the mutable context holder, so
+  // every pi-facing handler is wrapped to refresh the holder with the
+  // current ExtensionContext before delegating to the core handler.
+  const toolResultHandler = buildPiToolResultHandler(composed.afterExec);
+  const contextHandler = buildPiContextHandler(composed.transform);
+  const messageEndHandler = buildPiMessageEndHandler();
+
   return {
-    async beforeAgentStart(evt) {
+    async beforeAgentStart(evt, ctx?) {
+      if (ctx) contextHolder.current = ctx as PiToolHostContext;
       return {
         systemPrompt:
           dolphinPrompt === undefined
@@ -283,11 +412,23 @@ export function buildPiHandlers(zooConfig: any): {
             : `${dolphinPrompt}\n\n${evt.systemPrompt}`,
       };
     },
-    async resourcesDiscover() {
+    async resourcesDiscover(_evt?, ctx?) {
+      if (ctx) contextHolder.current = ctx as PiToolHostContext;
       return { skillPaths: collectSkillPaths(profileSkills) };
     },
-    toolResult: buildPiToolResultHandler(composed.afterExec),
-    contextMetrics: buildPiContextHandler(composed.transform),
+    toolResult: async (event, ctx) => {
+      if (ctx) contextHolder.current = ctx as PiToolHostContext;
+      return toolResultHandler(event, ctx);
+    },
+    contextMetrics: async (event, ctx) => {
+      if (ctx) contextHolder.current = ctx as PiToolHostContext;
+      return contextHandler(event, ctx);
+    },
+    messageEnd: (event, ctx) => {
+      if (ctx) contextHolder.current = ctx as PiToolHostContext;
+      if (profile === null) return undefined;
+      return messageEndHandler(event, ctx);
+    },
   };
 }
 
@@ -298,12 +439,14 @@ export function buildPiHandlers(zooConfig: any): {
 /**
  * Register ZooKeeper hooks with pi.
  *
- * All four hooks are profile-driven: a `null` profile (absent or
+ * All five hooks are profile-driven: a `null` profile (absent or
  * invalid) yields an empty composition, so every handler no-ops
  * (fail-closed, aligned with the OpenCode host).  The `tool_result`
  * and `context` handlers are always registered — their actual
  * contributions come from the profile's hooks list (after-exec and
- * transform units).
+ * transform units).  The `message_end` handler is always registered
+ * and strips model-imitated line-start ref echoes from finalized
+ * assistant text when the profile is active.
  *
  * Strategy for `before_agent_start`:
  *   **Prepend** the dolphin prompt rather than replacing the chainable
@@ -315,11 +458,12 @@ export function buildPiHandlers(zooConfig: any): {
  * @param pi - pi ExtensionAPI instance (provided at runtime by pi).
  */
 export function zookeeperPi(pi: ExtensionAPI): void {
-  const handlers = buildPiHandlers(loadZooConfig());
+  const handlers = buildPiHandlers(loadZooConfig(), pi);
   pi.on("before_agent_start", handlers.beforeAgentStart);
   pi.on("resources_discover", handlers.resourcesDiscover);
   pi.on("tool_result", handlers.toolResult);
   pi.on("context", handlers.contextMetrics);
+  pi.on("message_end", handlers.messageEnd);
 }
 
 export default zookeeperPi;

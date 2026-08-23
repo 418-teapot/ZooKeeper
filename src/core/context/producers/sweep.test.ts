@@ -22,7 +22,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { HostMessage } from "../lens.js";
-import { makeAssistantMsg, makeMsg, makeToolMsg } from "../lens-testkit.js";
+import {
+  makeAssistantMsg,
+  makeMsg,
+  makeToolMsg,
+  setRegionText,
+} from "../lens-testkit.js";
 import { measureMessages } from "../measure.js";
 import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "../message-parts.js";
 import { computeSpanHash, validateBlock } from "../spanhash.js";
@@ -506,7 +511,7 @@ describe("spanhash linkage (in-block sweep)", () => {
 
     // Apply the release-phase replacement for the in-block outputs.
     for (const ordinal of [3, 4]) {
-      history[ordinal].regions[1].set(PRUNED_TOOL_OUTPUT_REPLACEMENT);
+      setRegionText(history[ordinal], 1, PRUNED_TOOL_OUTPUT_REPLACEMENT);
     }
     assert.equal(validateBlock(history, span), true);
   });
@@ -522,7 +527,7 @@ describe("spanhash linkage (in-block sweep)", () => {
       end: 3,
       spanHash: computeSpanHash(history, 0, 3),
     };
-    history[0].regions[0].set("changed content");
+    setRegionText(history[0], 0, "changed content");
     assert.equal(validateBlock(history, span), false);
   });
 

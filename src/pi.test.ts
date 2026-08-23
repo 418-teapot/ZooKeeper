@@ -4,10 +4,11 @@
  * Covers: `buildPiContributions` composing the full registry from the
  * active `[zoo.mode.*]` profile (agents/skills/hooks/tools/commands,
  * unconditional pruning contribution, dolphin Map gating, null/invalid
- * profile → empty composition), `buildPiHandlers` wiring the four hook
+ * profile → empty composition), `buildPiHandlers` wiring the five hook
  * handlers (dolphin prompt injection, skill discovery, compose-driven
- * `tool_result` nudge gating, measure-only `context` handler), and the
- * thin entry (`zookeeperPi`) against the real config.toml.
+ * `tool_result` nudge gating, native `context` handler returning the pruned
+ * replacement, `message_end` ref-stripping), and the thin entry
+ * (`zookeeperPi`) against the real config.toml.
  */
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
@@ -19,6 +20,7 @@ import {
   JSON_ERROR_REMINDER_MARKER,
 } from "./core/prompts.js";
 import { buildPiContributions, buildPiHandlers, zookeeperPi } from "./pi.js";
+import { validateCompressArgs } from "./tools/compress.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
 import { withModeFile } from "./utils/mode-file.js";
 
@@ -64,14 +66,21 @@ const SESSION_CTX = { sessionManager: { getSessionId: () => "sess-1" } };
 /** A minimal stand-in for pi's ExtensionAPI that records handlers. */
 function mockApi(): {
   handlers: Record<string, (...args: any[]) => unknown>;
+  tools: unknown[];
   on(event: string, handler: (...args: any[]) => unknown): void;
+  registerTool(tool: unknown): void;
 } {
   const handlers: Record<string, (...args: any[]) => unknown> = {};
+  const tools: unknown[] = [];
   return {
     on(event, handler) {
       handlers[event] = handler;
     },
+    registerTool(tool) {
+      tools.push(tool);
+    },
     handlers,
+    tools,
   };
 }
 
@@ -397,29 +406,129 @@ describe("buildPiHandlers — compose-driven tool_result", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildPiHandlers — compose-driven context handler", () => {
-  it("context handler is measure-only — always returns undefined", async () => {
+  it("returns the native pi messages, possibly modified by pruning", async () => {
     const handlers = buildPiHandlers(POLY_ZOO);
-    const result = await handlers.contextMetrics(
+    const result = (await handlers.contextMetrics(
       {
         type: "context",
         messages: [{ role: "user", content: "hello" }],
       },
       SESSION_CTX,
-    );
-    assert.equal(result, undefined);
+    )) as { messages: Array<{ role: string; content: string }> } | undefined;
+    assert.ok(result, "context handler must return a result");
+    assert.equal(result.messages.length, 1);
+    // The pruning pipeline injects the per-round line-number prefix on pi.
+    assert.equal(result.messages[0].content, "[m1] hello");
   });
 
-  it("context handler runs the pruning pipeline too (measure-only)", async () => {
-    // context-pruning is in the poly hooks list and the unit is no
-    // longer gated on client capabilities, so its transform handler
-    // runs on every pi context event.  The handler is measure-only —
-    // the result stays undefined either way.
+  it("returns an empty replacement for an empty message array", async () => {
     const handlers = buildPiHandlers(POLY_ZOO);
-    const result = await handlers.contextMetrics(
+    const result = (await handlers.contextMetrics(
       { type: "context", messages: [] },
       SESSION_CTX,
+    )) as { messages: unknown[] } | undefined;
+    assert.ok(result, "context handler must return a result");
+    assert.deepEqual(result.messages, []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tool registration
+// ---------------------------------------------------------------------------
+
+describe("buildPiHandlers — registerTool wiring", () => {
+  it("registers compress and decompress with pi when the profile enables them", () => {
+    const api = mockApi();
+    buildPiHandlers(POLY_ZOO, api as any);
+    const toolNames = api.tools.map((tool: any) => tool.name);
+    assert.deepEqual(toolNames.sort(), ["compress", "decompress"]);
+  });
+
+  it("sets label to the tool name and wraps parameters in an object schema", () => {
+    const api = mockApi();
+    buildPiHandlers(POLY_ZOO, api as any);
+    const compress = api.tools.find((tool: any) => tool.name === "compress");
+    assert.ok(compress);
+    assert.equal((compress as any).label, "compress");
+    assert.equal((compress as any).parameters.type, "object");
+    assert.deepEqual((compress as any).parameters.required, ["ranges"]);
+    assert.ok((compress as any).parameters.properties.ranges);
+  });
+
+  it("bridged compress schema accepts what validateCompressArgs accepts", () => {
+    const api = mockApi();
+    buildPiHandlers(POLY_ZOO, api as any);
+    const compress = api.tools.find((tool: any) => tool.name === "compress") as
+      | {
+          parameters: {
+            properties: Record<string, unknown>;
+            required: string[];
+          };
+        }
+      | undefined;
+    assert.ok(compress);
+
+    // Valid input must satisfy both the bridged schema and the tool's own
+    // validator.
+    const validArgs = {
+      ranges: [
+        {
+          fromRef: "m2",
+          toRef: "m3",
+          title: "summary",
+          summary: "body",
+        },
+      ],
+    };
+    assert.doesNotThrow(() => validateCompressArgs(validArgs));
+    assert.ok(
+      compress.parameters.required.includes("ranges"),
+      "schema must require ranges",
     );
-    assert.equal(result, undefined);
+    assert.ok(
+      "ranges" in compress.parameters.properties,
+      "schema must declare ranges",
+    );
+
+    // Malformed input is rejected by validateCompressArgs and is missing
+    // the required ranges field.
+    assert.throws(() => validateCompressArgs({}));
+    assert.equal(
+      (compress.parameters.required as string[]).includes("ranges"),
+      true,
+    );
+  });
+
+  it("execute wrapper delegates to the contribution and propagates errors", async () => {
+    const api = mockApi();
+    buildPiHandlers(
+      {
+        mode: {
+          poly: {
+            ...POLY_PROFILE,
+            tools: ["decompress"],
+            hooks: POLY_PROFILE.hooks.filter(
+              (h) => h !== "context-pruning" && h !== "context-metrics",
+            ),
+          },
+        },
+      },
+      api as any,
+    );
+    const decompress = api.tools.find(
+      (tool: any) => tool.name === "decompress",
+    );
+    assert.ok(decompress);
+
+    // Missing blockId is rejected by the tool's own validator; the pi
+    // execute wrapper does not swallow tool errors.
+    await assert.rejects(
+      async () =>
+        (decompress as any).execute("call-1", {}, undefined, undefined, {
+          sessionManager: { getSessionId: () => "sess-decompress" },
+        }),
+      /blockId/,
+    );
   });
 });
 
@@ -428,7 +537,7 @@ describe("buildPiHandlers — compose-driven context handler", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildPiHandlers — null profile fail-closed", () => {
-  it("all four handlers no-op with a null profile", async () => {
+  it("all five handlers no-op with a null profile", async () => {
     const handlers = buildPiHandlers({});
     const prompt = await handlers.beforeAgentStart({ systemPrompt: "base" });
     assert.equal(prompt.systemPrompt, "base");
@@ -446,9 +555,22 @@ describe("buildPiHandlers — null profile fail-closed", () => {
       ),
       undefined,
     );
+    const contextResult = await handlers.contextMetrics(
+      { type: "context", messages: [{ role: "user", content: "hi" }] },
+      SESSION_CTX,
+    );
+    assert.deepEqual(contextResult, {
+      messages: [{ role: "user", content: "hi" }],
+    });
     assert.equal(
-      await handlers.contextMetrics(
-        { type: "context", messages: [{ role: "user", content: "hi" }] },
+      await handlers.messageEnd(
+        {
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "[m3] hi" }],
+          },
+        },
         SESSION_CTX,
       ),
       undefined,
@@ -461,7 +583,7 @@ describe("buildPiHandlers — null profile fail-closed", () => {
 // ---------------------------------------------------------------------------
 
 describe("zookeeperPi — thin entry wiring", () => {
-  it("registers all four hooks against the real config.toml (poly full)", async () => {
+  it("registers all five hooks against the real config.toml (poly full)", async () => {
     // The real config.toml carries [zoo.mode.poly] (and a second
     // [zoo.mode.mono] sub-table).  Point the mode state file at poly so
     // the entry selects the full profile.
@@ -472,6 +594,7 @@ describe("zookeeperPi — thin entry wiring", () => {
       assert.equal(typeof api.handlers.resources_discover, "function");
       assert.equal(typeof api.handlers.tool_result, "function");
       assert.equal(typeof api.handlers.context, "function");
+      assert.equal(typeof api.handlers.message_end, "function");
 
       const prompt = (await api.handlers.before_agent_start({
         systemPrompt: "base",
@@ -505,6 +628,28 @@ describe("zookeeperPi — thin entry wiring", () => {
         joinedText(toolResult).includes(JSON_ERROR_REMINDER_MARKER),
         "output must carry the JSON reminder marker",
       );
+
+      // message_end strips model-imitated line-start ref echoes from
+      // finalized assistant text.
+      const messageEnd = (await api.handlers.message_end(
+        {
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "[m3] hello" }],
+          },
+        },
+        SESSION_CTX,
+      )) as
+        | {
+            message: {
+              role: string;
+              content: { type: string; text: string }[];
+            };
+          }
+        | undefined;
+      assert.ok(messageEnd);
+      assert.equal(messageEnd?.message?.content[0]?.text, "hello");
     });
   });
 });

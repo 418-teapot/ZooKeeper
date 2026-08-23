@@ -2,17 +2,21 @@
  * Tests for the mutation-invariant message projection (`canon.ts`).
  *
  * Covers the spec's R6 mitigation: every text mutation the core itself
- * performs (line-start ref injection, tool-output / tool-input
- * placeholder replacement) must leave `canon` unchanged, while real
- * content changes must always change it.  Also covers concatenation
- * boundary ambiguity, hidden-message behavior, and the exact strip
- * rules.  All fixtures are built through the lens testkit.
+ * performs (tool-output / tool-input placeholder replacement) must
+ * leave `canon` unchanged, while real content changes must always
+ * change it.  Also covers concatenation boundary ambiguity and
+ * hidden-message behavior.  All fixtures are built through the lens
+ * testkit.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { canon, stripTags } from "./canon.js";
-import { regionsOfKind } from "./lens.js";
-import { makeAssistantMsg, makeMsg, makeToolMsg } from "./lens-testkit.js";
+import { canon } from "./canon.js";
+import {
+  makeAssistantMsg,
+  makeMsg,
+  makeToolMsg,
+  setRegionText,
+} from "./lens-testkit.js";
 import {
   PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
@@ -23,26 +27,17 @@ import {
 // ---------------------------------------------------------------------------
 
 describe("mutation invariance", () => {
-  it("line-start ref prefix injection into content leaves canon unchanged", () => {
-    const msg = makeAssistantMsg({ text: "first line\nsecond line" });
-    const before = canon(msg);
-    regionsOfKind(msg, "content")[0].set(`[m12] ${msg.regions[0].get()}`);
-    assert.equal(canon(msg), before);
-  });
-
   it("tool-output placeholder replacement leaves canon unchanged", () => {
     const msg = makeToolMsg("bash", "ls -la", "some long output");
     const before = canon(msg);
-    regionsOfKind(msg, "tool-output")[0].set(PRUNED_TOOL_OUTPUT_REPLACEMENT);
+    setRegionText(msg, 1, PRUNED_TOOL_OUTPUT_REPLACEMENT);
     assert.equal(canon(msg), before);
   });
 
   it("tool-input placeholder replacement leaves canon unchanged", () => {
     const msg = makeToolMsg("edit", "large input payload", "ok");
     const before = canon(msg);
-    regionsOfKind(msg, "tool-input")[0].set(
-      PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
-    );
+    setRegionText(msg, 0, PRUNED_TOOL_ERROR_INPUT_REPLACEMENT);
     assert.equal(canon(msg), before);
   });
 
@@ -53,11 +48,8 @@ describe("mutation invariance", () => {
       toolCalls: [{ name: "bash", input: "ls", output: "files" }],
     });
     const before = canon(msg);
-    regionsOfKind(msg, "content")[0].set("[m3] let me check");
-    regionsOfKind(msg, "tool-input")[0].set(
-      PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
-    );
-    regionsOfKind(msg, "tool-output")[0].set(PRUNED_TOOL_OUTPUT_REPLACEMENT);
+    setRegionText(msg, 2, PRUNED_TOOL_ERROR_INPUT_REPLACEMENT);
+    setRegionText(msg, 3, PRUNED_TOOL_OUTPUT_REPLACEMENT);
     assert.equal(canon(msg), before);
   });
 });
@@ -92,6 +84,13 @@ describe("content change", () => {
     assert.notEqual(
       canon(makeMsg("user", ["hi"])),
       canon(makeMsg("assistant", ["hi"])),
+    );
+  });
+
+  it("a line-start ref marker in content changes canon (hashed verbatim)", () => {
+    assert.notEqual(
+      canon(makeMsg("user", ["hello"])),
+      canon(makeMsg("user", ["[m3] hello"])),
     );
   });
 
@@ -164,32 +163,5 @@ describe("hidden messages", () => {
     const visible = makeToolMsg("bash", "i", "o", { hidden: false });
     const hidden = makeToolMsg("bash", "i", "o", { hidden: true });
     assert.equal(canon(hidden), canon(visible));
-  });
-});
-
-// ---------------------------------------------------------------------------
-// stripTags exact rules
-// ---------------------------------------------------------------------------
-
-describe("stripTags", () => {
-  it("strips a line-start ref prefix including the trailing space", () => {
-    assert.equal(stripTags("[m12] hello\nworld"), "hello\nworld");
-  });
-
-  it("preserves a bare ref in mid-text", () => {
-    assert.equal(stripTags("see [m3] here"), "see [m3] here");
-  });
-
-  it("preserves a ref not at the start of a line", () => {
-    assert.equal(stripTags("a\nb [m5] c"), "a\nb [m5] c");
-  });
-
-  it("preserves a line-start ref without the trailing space", () => {
-    assert.equal(stripTags("[m3]here"), "[m3]here");
-  });
-
-  it("is idempotent", () => {
-    const input = "[m12] line1\nline2";
-    assert.equal(stripTags(stripTags(input)), stripTags(input));
   });
 });

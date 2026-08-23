@@ -53,6 +53,7 @@ describe("vendor smol-toml — config.toml zoo section", () => {
       "direct-work-nudge",
       "json-error-nudge",
       "post-task-nudge",
+      "reply-strip",
       "task-delegation",
       "task-prompt",
     ]);

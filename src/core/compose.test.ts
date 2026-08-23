@@ -66,6 +66,7 @@ function makeUnits(): { units: UnitDescriptor[]; calls: string[] } {
         beforeExec: [{ name: "validateBeforeExec", handle: async () => {} }],
         afterExec: [{ name: "nudgeTaskOutput", handle: async () => {} }],
         transform: [],
+        textComplete: [],
         toolDefinition: [
           { name: "enhanceTaskDefinition", handle: async () => {} },
         ],
@@ -78,6 +79,7 @@ function makeUnits(): { units: UnitDescriptor[]; calls: string[] } {
         beforeExec: [],
         afterExec: [],
         transform: [{ name: "contextPruning", handle: async () => {} }],
+        textComplete: [],
         toolDefinition: [],
       };
     }),
@@ -88,6 +90,7 @@ function makeUnits(): { units: UnitDescriptor[]; calls: string[] } {
         beforeExec: [],
         afterExec: [],
         transform: [{ name: "contextMetrics", handle: async () => {} }],
+        textComplete: [],
         toolDefinition: [],
       };
     }),
@@ -246,6 +249,7 @@ describe("composeProfile — full profile", () => {
       result.transform.map((h) => h.name),
       ["contextPruning", "contextMetrics"],
     );
+    assert.deepEqual(result.textComplete, []);
     assert.deepEqual(
       result.toolDefinition.map((h) => h.name),
       ["enhanceTaskDefinition"],
@@ -270,6 +274,7 @@ describe("composeProfile — null profile", () => {
       beforeExec: [],
       afterExec: [],
       transform: [],
+      textComplete: [],
       toolDefinition: [],
       tools: {},
       commands: {},
@@ -338,6 +343,7 @@ describe("composeProfile — empty category lists", () => {
       beforeExec: [],
       afterExec: [],
       transform: [],
+      textComplete: [],
       toolDefinition: [],
       tools: {},
       commands: {},
@@ -406,6 +412,7 @@ describe("composeProfile — active set", () => {
         beforeExec: [],
         afterExec: [],
         transform: [],
+        textComplete: [],
         toolDefinition: [],
       };
     });

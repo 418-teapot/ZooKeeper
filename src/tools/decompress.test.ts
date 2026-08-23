@@ -13,9 +13,10 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import type { ContextMessageEntry } from "../adapters/opencode/types.js";
-import type { SessionClient } from "../core/client/session.js";
+import type { ToolHost } from "../core/client/tool-host.js";
+import { parseContextConfig } from "../core/config-parse.js";
 import type { ContextPruningConfig } from "../core/config-types.js";
+import type { HostMessage } from "../core/context/lens.js";
 import {
   _resetForTesting as _resetModelLimitsForTesting,
   setModelLimit,
@@ -36,7 +37,7 @@ import {
   registerProfileToolsInConfig,
 } from "../opencode.js";
 import { _resetForTesting } from "../utils/logger.js";
-import { createDecompressTool } from "./decompress.js";
+import { createDecompressTool, unit as decompressUnit } from "./decompress.js";
 
 // ---------------------------------------------------------------------------
 // Session ids & teardown
@@ -95,32 +96,60 @@ function makePlugin(client: unknown = {}): Promise<Record<string, any>> {
 
 const ORIGINAL_CONTENT = "这是需要恢复的原始消息正文，不得出现在 ToolResult 中";
 
-function makeUserMsg(id: string, text: string): ContextMessageEntry {
+function makeUserLensMsg(text: string): HostMessage {
   return {
-    info: { role: "user", id } as ContextMessageEntry["info"],
-    parts: [{ type: "text", text }] as ContextMessageEntry["parts"],
+    role: "user",
+    hidden: false,
+    regions: [{ kind: "content", get: () => text }],
   };
 }
 
-function makeAssistantMsg(id: string, text: string): ContextMessageEntry {
+function makeAssistantLensMsg(text: string): HostMessage {
   return {
-    info: { role: "assistant", id } as ContextMessageEntry["info"],
-    parts: [{ type: "text", text }] as ContextMessageEntry["parts"],
+    role: "assistant",
+    hidden: false,
+    regions: [{ kind: "content", get: () => text }],
   };
 }
 
 /** A 3-message conversation whose restore would reveal the original content. */
-function makeMessages(): ContextMessageEntry[] {
+function makeMessages(): HostMessage[] {
   return [
-    makeUserMsg("u0", "开场问题"),
-    makeUserMsg("u1", ORIGINAL_CONTENT),
-    makeAssistantMsg("a2", "回答完毕"),
+    makeUserLensMsg("开场问题"),
+    makeUserLensMsg(ORIGINAL_CONTENT),
+    makeAssistantLensMsg("回答完毕"),
   ];
 }
 
-/** Mock client that returns the given messages and captures prompt calls. */
-function mockClient(messages: ContextMessageEntry[]): {
-  client: SessionClient;
+/** Build a fake ToolHost over the given lens messages. */
+function fakeHost(messages: HostMessage[]): {
+  host: ToolHost;
+  notifyCalls: Array<{ sessionID: string; text: string }>;
+} {
+  const notifyCalls: Array<{ sessionID: string; text: string }> = [];
+  const host: ToolHost = {
+    resolveSessionId(toolCtx: unknown): string | undefined {
+      const ctx = toolCtx as { sessionID?: unknown; sessionId?: unknown };
+      const id = ctx.sessionID ?? ctx.sessionId;
+      if (typeof id !== "string" || id.length === 0) return undefined;
+      return id;
+    },
+    async fetchHistory(_sessionId: string): Promise<HostMessage[]> {
+      return messages;
+    },
+    async notify(sessionID: string, text: string): Promise<void> {
+      notifyCalls.push({ sessionID, text });
+    },
+  };
+  return { host, notifyCalls };
+}
+
+/** Parsed context config from POLY_ZOO. */
+const PARSED_CONFIG = parseContextConfig(POLY_ZOO);
+
+/** Mock OpenCode client for plugin-level integration tests. */
+function mockClient(messages: any[]): {
+  client: any;
   promptCalls: Array<{
     sessionID: string;
     text: string;
@@ -218,17 +247,12 @@ function seedActiveBlock(): number {
 describe("decompress tool execute — restore happy path", () => {
   it("deactivates the block, flags the view change, persists, and notifies", async () => {
     const messages = makeMessages();
-    const { client, promptCalls } = mockClient(messages);
+    const { host, notifyCalls } = fakeHost(messages);
     seedActiveBlock();
 
-    const plugin = (await makePlugin(client)) as any;
-    assert.ok(plugin.tool, "tool hooks must be registered");
-    assert.ok(plugin.tool.decompress, "decompress tool must be registered");
+    const tool = createDecompressTool(host, PARSED_CONFIG);
 
-    const result = await plugin.tool.decompress.execute(
-      { blockId: "b1" },
-      mockToolContext,
-    );
+    const result = await tool.execute({ blockId: "b1" }, mockToolContext);
 
     // (1) Block deactivated in the shared new-core session state.
     const state = getContextStateManager().get(TEST_SESSION_ID);
@@ -243,13 +267,11 @@ describe("decompress tool execute — restore happy path", () => {
     assert.equal(persisted.blocks.get(1)?.active, false);
 
     // (3) Ignored notification sent.
-    assert.equal(promptCalls.length, 1);
-    assert.equal(promptCalls[0].sessionID, TEST_SESSION_ID);
-    assert.equal(promptCalls[0].noReply, true);
-    assert.equal(promptCalls[0].ignored, true);
+    assert.equal(notifyCalls.length, 1);
+    assert.equal(notifyCalls[0].sessionID, TEST_SESSION_ID);
     assert.ok(
-      promptCalls[0].text.includes("上下文解压："),
-      `expected "上下文解压：" prefix in prompt, got: ${promptCalls[0].text}`,
+      notifyCalls[0].text.includes("上下文解压："),
+      `expected "上下文解压：" prefix in prompt, got: ${notifyCalls[0].text}`,
     );
 
     // ToolResult: single-line confirmation with the expansion amount,
@@ -282,8 +304,7 @@ describe("decompress tool execute — restore happy path", () => {
 
 describe("decompress tool execute — recall path", () => {
   it("returns the summary body with zero state change and no notification", async () => {
-    const messages = makeMessages();
-    const { client, promptCalls } = mockClient(messages);
+    const { host, notifyCalls } = fakeHost([]);
 
     // Build an inactive block (as if consumed by a wider recompression).
     seedBlock({
@@ -292,11 +313,8 @@ describe("decompress tool execute — recall path", () => {
       title: "旧块主题",
     });
 
-    const plugin = (await makePlugin(client)) as any;
-    const result = await plugin.tool.decompress.execute(
-      { blockId: "b1" },
-      mockToolContext,
-    );
+    const tool = createDecompressTool(host, PARSED_CONFIG);
+    const result = await tool.execute({ blockId: "b1" }, mockToolContext);
 
     // Returns the full summary body (untruncated — short summary).
     assert.equal(result, "被消费旧块的完整摘要正文");
@@ -309,11 +327,11 @@ describe("decompress tool execute — recall path", () => {
     // No persistence, no notification.
     const persisted = getContextStateManager().store.load(TEST_SESSION_ID);
     assert.equal(persisted.blocks.size, 0);
-    assert.equal(promptCalls.length, 0);
+    assert.equal(notifyCalls.length, 0);
   });
 
   it("truncates an over-long summary with a Chinese tail note", async () => {
-    const { client } = mockClient([]);
+    const { host } = fakeHost([]);
     const longSummary = "长".repeat(RECALL_MAX_CHARS + 100);
     seedBlock({
       active: false,
@@ -321,11 +339,8 @@ describe("decompress tool execute — recall path", () => {
       title: "超长块主题",
     });
 
-    const plugin = (await makePlugin(client)) as any;
-    const result = await plugin.tool.decompress.execute(
-      { blockId: "b1" },
-      mockToolContext,
-    );
+    const tool = createDecompressTool(host, PARSED_CONFIG);
+    const result = await tool.execute({ blockId: "b1" }, mockToolContext);
 
     assert.ok(result.length <= RECALL_MAX_CHARS + 64);
     assert.ok(
@@ -345,14 +360,14 @@ describe("decompress tool execute — recall path", () => {
 
 describe("decompress tool execute — gate rejection", () => {
   it("rejects a restore that would exceed maxFillPercent, state untouched", async () => {
-    const { client, promptCalls } = mockClient([]);
+    const { host, notifyCalls } = fakeHost([]);
     seedActiveBlock();
     // Tiny window: after = 0 + 19500 > 1000 × 90% = 900 → rejected.
     setModelLimit(TEST_SESSION_ID, 1000, "test-model");
 
-    const plugin = (await makePlugin(client)) as any;
+    const tool = createDecompressTool(host, PARSED_CONFIG);
     await assert.rejects(
-      () => plugin.tool.decompress.execute({ blockId: "b1" }, mockToolContext),
+      () => tool.execute({ blockId: "b1" }, mockToolContext),
       (err: unknown) =>
         err instanceof Error &&
         /超过解压阈值/.test(err.message) &&
@@ -367,26 +382,23 @@ describe("decompress tool execute — gate rejection", () => {
       getContextStateManager().store.load(TEST_SESSION_ID).blocks.size,
       0,
     );
-    assert.equal(promptCalls.length, 0);
+    assert.equal(notifyCalls.length, 0);
   });
 
   it("skips the gate when no model limit is captured (undefined context)", async () => {
     const messages = makeMessages();
-    const { client, promptCalls } = mockClient(messages);
+    const { host, notifyCalls } = fakeHost(messages);
     seedActiveBlock();
     // No setModelLimit call → getModelLimit returns undefined → gate skipped.
 
-    const plugin = (await makePlugin(client)) as any;
-    const result = await plugin.tool.decompress.execute(
-      { blockId: "b1" },
-      mockToolContext,
-    );
+    const tool = createDecompressTool(host, PARSED_CONFIG);
+    const result = await tool.execute({ blockId: "b1" }, mockToolContext);
 
     const state = getContextStateManager().get(TEST_SESSION_ID);
     assert.equal(state.blocks.get(1)?.active, false);
     assert.equal(typeof result, "string");
     assert.ok(result.includes("下一轮上下文生效"));
-    assert.equal(promptCalls.length, 1);
+    assert.equal(notifyCalls.length, 1);
   });
 });
 
@@ -397,12 +409,12 @@ describe("decompress tool execute — gate rejection", () => {
 describe("decompress tool execute — target resolution errors", () => {
   it("throws a not-found error listing the available block numbers", async () => {
     const messages = makeMessages();
-    const { client } = mockClient(messages);
+    const { host } = fakeHost(messages);
     seedActiveBlock();
-    const plugin = (await makePlugin(client)) as any;
 
+    const tool = createDecompressTool(host, PARSED_CONFIG);
     await assert.rejects(
-      () => plugin.tool.decompress.execute({ blockId: "b9" }, mockToolContext),
+      () => tool.execute({ blockId: "b9" }, mockToolContext),
       (err: unknown) =>
         err instanceof Error &&
         /b9 不存在/.test(err.message) &&
@@ -413,11 +425,11 @@ describe("decompress tool execute — target resolution errors", () => {
   });
 
   it("rejects a malformed block id with format guidance", async () => {
-    const { client } = mockClient([]);
-    const plugin = (await makePlugin(client)) as any;
+    const { host } = fakeHost([]);
 
+    const tool = createDecompressTool(host, PARSED_CONFIG);
     await assert.rejects(
-      () => plugin.tool.decompress.execute({ blockId: "9" }, mockToolContext),
+      () => tool.execute({ blockId: "9" }, mockToolContext),
       (err: unknown) =>
         err instanceof Error &&
         /格式非法/.test(err.message) &&
@@ -427,11 +439,11 @@ describe("decompress tool execute — target resolution errors", () => {
   });
 
   it("reports the empty-session case when no block exists at all", async () => {
-    const { client } = mockClient([]);
-    const plugin = (await makePlugin(client)) as any;
+    const { host } = fakeHost([]);
 
+    const tool = createDecompressTool(host, PARSED_CONFIG);
     await assert.rejects(
-      () => plugin.tool.decompress.execute({ blockId: "b1" }, mockToolContext),
+      () => tool.execute({ blockId: "b1" }, mockToolContext),
       (err: unknown) =>
         err instanceof Error &&
         /b1 不存在/.test(err.message) &&
@@ -446,8 +458,8 @@ describe("decompress tool execute — target resolution errors", () => {
 
 describe("decompress tool execute — config guidance error", () => {
   it("throws a loud config-guidance error when the decompress section is absent", async () => {
-    const { client } = mockClient([]);
-    const tool = createDecompressTool(client, { dedup: {}, purgeErrors: {} });
+    const { host } = fakeHost([]);
+    const tool = createDecompressTool(host, { dedup: {}, purgeErrors: {} });
 
     await assert.rejects(
       () => tool.execute({ blockId: "b1" }, mockToolContext),
@@ -463,8 +475,8 @@ describe("decompress tool execute — config guidance error", () => {
   });
 
   it("rejects a non-string blockId with a loud Chinese argument error", async () => {
-    const { client } = mockClient([]);
-    const tool = createDecompressTool(client, ENABLED_CONFIG);
+    const { host } = fakeHost([]);
+    const tool = createDecompressTool(host, ENABLED_CONFIG);
 
     await assert.rejects(
       () => tool.execute({ blockId: 3 }, mockToolContext),
@@ -611,5 +623,29 @@ describe("config hook — primary_tools", () => {
       "compress",
       "decompress",
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unsupported host
+// ---------------------------------------------------------------------------
+
+describe("decompress tool unsupported host", () => {
+  it("returns a single-line Chinese message when the host has no tool services", async () => {
+    const result = await decompressUnit
+      .create(
+        {
+          limits: {},
+          contextConfig: ENABLED_CONFIG,
+          client: {},
+          directory: "",
+          sessionAgentMap: new Map(),
+          toolHost: undefined,
+        },
+        {} as any,
+      )
+      .tools[0].execute({ blockId: "b1" }, mockToolContext);
+
+    assert.equal(result, "此工具在当前 host 上不可用。");
   });
 });

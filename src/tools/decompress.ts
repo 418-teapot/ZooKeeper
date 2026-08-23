@@ -1,8 +1,8 @@
 /**
  * Decompression tool adapter — the inverse of the range-mode compress tool.
  *
- * Exposes the decompression core (`src/core/context/decompress.ts`) as an
- * OpenCode tool so the model can address a compression block by its
+ * Exposes the decompression core (`src/core/context/decompress.ts`) as a
+ * host tool so the model can address a compression block by its
  * persistent `b<N>` id and either restore it or recall its summary:
  *
  * - **restore** — the block is active: deactivate it so the next
@@ -16,18 +16,16 @@
  *   summary body (truncated to `RECALL_MAX_CHARS`).  Zero state change,
  *   zero view impact, no notification.
  *
- * The client and the parsed context-pruning config are captured by the
- * factory closure.  Loud Chinese guidance errors from the core propagate to
- * the model unchanged — including the not-found error that lists the
- * currently available block numbers — the model self-corrects by re-picking
- * a valid block id or freeing context first.
+ * The host tool services and the parsed context-pruning config are
+ * captured by the factory closure.  Loud Chinese guidance errors from the
+ * core propagate to the model unchanged — including the not-found error
+ * that lists the currently available block numbers — the model
+ * self-corrects by re-picking a valid block id or freeing context first.
  *
  * @module
  */
 
-import { history } from "../adapters/opencode/history.js";
-import type { ContextMessageEntry } from "../adapters/opencode/types.js";
-import type { SessionClient } from "../core/client/session.js";
+import type { ToolHost } from "../core/client/tool-host.js";
 import type { ContextPruningConfig } from "../core/config-types.js";
 import { formatTokens } from "../core/context/context-report.js";
 import {
@@ -61,31 +59,15 @@ type DecompressToolInput = {
 export type DecompressToolDefinition = {
   description: string;
   args: DecompressToolArgs;
+  required?: string[];
   execute(args: unknown, toolCtx: unknown): Promise<string>;
 };
+
+export type DecompressToolMetadata = Omit<DecompressToolDefinition, "execute">;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Resolve the session ID from the OpenCode tool context.
- *
- * Defensive: the OpenCode SDK uses `sessionID`; tolerate a `sessionId`
- * variant so the tool survives host SDK shape changes.
- *
- * @param toolCtx - The tool execution context.
- * @returns The session identifier.
- * @throws A loud Chinese error when no session ID is present.
- */
-function resolveSessionId(toolCtx: unknown): string {
-  const ctx = toolCtx as { sessionID?: unknown; sessionId?: unknown };
-  const id = ctx.sessionID ?? ctx.sessionId;
-  if (typeof id !== "string" || id.length === 0) {
-    throw new Error("无法确定会话 ID：工具上下文缺少 sessionID。");
-  }
-  return id;
-}
 
 /**
  * Validate the tool arguments: a single required string `blockId`.
@@ -112,82 +94,22 @@ function validateDecompressArgs(args: unknown): DecompressToolInput {
   return { blockId };
 }
 
-/**
- * Fetch the full session messages array.
- *
- * Mirrors the `/dcp` command path and the compress tool: unwraps
- * `res.data ?? res` and checks `res.error`, throwing loud Chinese errors
- * on API failure.
- *
- * @param client - The OpenCode client (may be partial in tests).
- * @param sessionID - The session identifier.
- * @returns The raw session messages array.
- */
-async function fetchSessionMessages(
-  client: SessionClient,
-  sessionID: string,
-): Promise<ContextMessageEntry[]> {
-  if (!client?.session?.messages) {
-    throw new Error("无法获取会话消息：会话消息 API 不可用");
-  }
-
-  let rawMessages: unknown;
-  try {
-    const res = await client.session.messages({ path: { id: sessionID } });
-    rawMessages = res;
-  } catch (err) {
-    log(
-      "decompress-tool",
-      "fetch_messages_failed",
-      sessionID,
-      undefined,
-      "error",
-      { error: String(err) },
-    );
-    throw new Error(
-      `无法获取会话消息：${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-
-  if (!rawMessages) {
-    throw new Error("会话消息 API 返回空结果");
-  }
-
-  const rawObj = rawMessages as {
-    data?: unknown;
-    error?: { message?: string };
-  };
-  if (rawObj.error) {
-    const msg = rawObj.error.message ?? String(rawObj.error);
-    throw new Error(`获取会话消息失败：${msg}`);
-  }
-  const messages = (rawObj.data ?? rawMessages) as ContextMessageEntry[];
-
-  if (!Array.isArray(messages)) {
-    throw new Error("会话消息格式异常：期望数组");
-  }
-  return messages;
-}
-
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
 /**
- * Create the decompression tool.
+ * Build the host-independent decompress tool metadata.
  *
- * The client and the parsed context config are captured by the closure so
- * each `execute` call is self-contained.
+ * The description and JSON-schema args depend only on the parsed context
+ * config, not on host services.
  *
- * @param client - The OpenCode client (session.messages / session.prompt).
- * @param contextConfig - The parsed context-pruning config (decompress
- *   gate).
- * @returns The OpenCode tool definition.
+ * @param _contextConfig - The parsed context-pruning config.
+ * @returns The tool description and args schema.
  */
-export function createDecompressTool(
-  client: SessionClient,
-  contextConfig: ContextPruningConfig,
-): DecompressToolDefinition {
+function buildDecompressToolMetadata(
+  _contextConfig: ContextPruningConfig,
+): DecompressToolMetadata {
   return {
     description: `恢复一个压缩块的内容（compress 的反向操作）。
 
@@ -213,8 +135,33 @@ export function createDecompressTool(
         description: `要恢复的块 ID（如 "b3"）。来源：块头 [Block b3 · K 条] 或索引行 --- bN: <title> ---。索引行指向的旧块返回摘要正文，活跃块恢复原始消息。`,
       },
     },
+    required: ["blockId"],
+  };
+}
+
+/**
+ * Create the decompression tool.
+ *
+ * The host and the parsed context config are captured by the closure so
+ * each `execute` call is self-contained.
+ *
+ * @param host - The host tool services (session resolution, history,
+ *   best-effort notification).
+ * @param contextConfig - The parsed context-pruning config (decompress
+ *   gate).
+ * @returns The decompress tool definition.
+ */
+export function createDecompressTool(
+  host: ToolHost,
+  contextConfig: ContextPruningConfig,
+): DecompressToolDefinition {
+  return {
+    ...buildDecompressToolMetadata(contextConfig),
     async execute(args, toolCtx) {
-      const sessionID = resolveSessionId(toolCtx);
+      const sessionID = host.resolveSessionId(toolCtx);
+      if (sessionID === undefined) {
+        throw new Error("无法确定会话 ID：工具上下文缺少 sessionID。");
+      }
       const input = validateDecompressArgs(args);
 
       // ── Config check (loud Chinese guidance) ─────────────────────
@@ -251,8 +198,7 @@ export function createDecompressTool(
       }
 
       // ── Restore path ─────────────────────────────────────────────
-      const messages = await fetchSessionMessages(client, sessionID);
-      const view = history(messages);
+      const view = await host.fetchHistory(sessionID);
       const currentPromptTokens = measureMessages(view).total;
       const contextLimit = getModelLimit(sessionID)?.context;
 
@@ -295,13 +241,7 @@ export function createDecompressTool(
       // applied).  Same shape as the compress tool.
       const notifyMsg = `上下文解压：已恢复压缩块 b${restored.blockId} 的 ${restored.messageCount} 条原始消息，约回胀 ${formatTokens(delta)} tokens，下一轮上下文生效`;
       try {
-        await client?.session?.prompt?.({
-          path: { id: sessionID },
-          body: {
-            noReply: true,
-            parts: [{ type: "text", text: notifyMsg, ignored: true }],
-          },
-        });
+        await host.notify(sessionID, notifyMsg);
       } catch (err) {
         log("decompress-tool", "notify_failed", sessionID, undefined, "warn", {
           error: String(err),
@@ -324,12 +264,26 @@ export const unit: ToolUnitDescriptor = {
   name: "decompress",
   kind: "tool",
   create(deps) {
+    const host = deps.toolHost;
+    const metadata = buildDecompressToolMetadata(deps.contextConfig);
+    if (host === undefined) {
+      return {
+        kind: "tool",
+        tools: [
+          {
+            name: "decompress",
+            ...metadata,
+            execute: async () => "此工具在当前 host 上不可用。",
+          },
+        ],
+      };
+    }
     return {
       kind: "tool",
       tools: [
         {
           name: "decompress",
-          ...createDecompressTool(deps.client, deps.contextConfig),
+          ...createDecompressTool(host, deps.contextConfig),
         },
       ],
     };

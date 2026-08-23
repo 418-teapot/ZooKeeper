@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { fold } from "./fold.js";
 import type { HostMessage } from "./lens.js";
-import { makeAssistantMsg, makeMsg } from "./lens-testkit.js";
+import { makeAssistantMsg, makeMsg, setRegionText } from "./lens-testkit.js";
 import { computeSpanHash } from "./spanhash.js";
 import type { Block, SessionState } from "./state.js";
 
@@ -167,7 +167,7 @@ describe("hash-invalid blocks silently expand", () => {
     state.blocks.set(7, makeBlock(history, 1, 4));
     // Rewrite the content of the message at ordinal 2 — the block's span
     // no longer hashes to the stored value.
-    history[2].regions[0].set("edited question");
+    setRegionText(history[2], 0, "edited question");
     const result = fold(history, state);
     assert.deepEqual(result.expiredBlockIds, [7]);
     assert.equal(result.viewChanged, true);
@@ -439,7 +439,7 @@ describe("fold is pure", () => {
     const history = makeTranscript(6);
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 1, 4));
-    history[2].regions[0].set("edited");
+    setRegionText(history[2], 0, "edited");
     const result = fold(history, state);
     assert.deepEqual(result.expiredBlockIds, [1]);
     // Deactivation is the caller's decision — fold only reports.

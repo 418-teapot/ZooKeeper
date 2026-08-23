@@ -46,6 +46,7 @@ function emptyResult(): ComposedResult {
     beforeExec: [],
     afterExec: [],
     transform: [],
+    textComplete: [],
     toolDefinition: [],
     tools: {},
     commands: {},
@@ -76,6 +77,7 @@ function collect(
       result.beforeExec.push(...contributions.beforeExec);
       result.afterExec.push(...contributions.afterExec);
       result.transform.push(...contributions.transform);
+      result.textComplete.push(...contributions.textComplete);
       result.toolDefinition.push(...contributions.toolDefinition);
       break;
     case "tool":

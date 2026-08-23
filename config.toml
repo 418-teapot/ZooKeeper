@@ -750,6 +750,7 @@ hooks = [
   "direct-work-nudge",
   "json-error-nudge",
   "post-task-nudge",
+  "reply-strip",
   "task-delegation",
   "task-prompt",
 ]
@@ -778,6 +779,7 @@ hooks = [
   "context-metrics",
   "context-pruning",
   "json-error-nudge",
+  "reply-strip",
 ]
 tools = [
   "compress",

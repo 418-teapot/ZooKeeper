@@ -25,7 +25,7 @@ import {
   validateRange,
 } from "./compress.js";
 import { fold } from "./fold.js";
-import type { HostMessage } from "./lens.js";
+import type { HostMessage, TextRegion, ToolOutputRef } from "./lens.js";
 import { makeAssistantMsg, makeMsg } from "./lens-testkit.js";
 import { estimateMessageHeuristic } from "./measure.js";
 import { computeSpanHash, validateBlock } from "./spanhash.js";
@@ -439,6 +439,160 @@ describe("validateRange — phantom gate", () => {
     const state = makeState();
     const result = validateRange(history, state, OPTIONS, 1, 3);
     assert.equal(result.error, null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7b. validateRange — mid-pair gate (ToolMeta.output linkage)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a pi-shaped tool-input region whose call links its result in a
+ * SEPARATE message — the pi lens maps a toolCall block and its
+ * toolResult message to two lens messages, and the tool-input region's
+ * metadata carries the positional address of the linked tool-output
+ * region (`ToolMeta.output`).
+ */
+function makeToolInputRegion(
+  input: string,
+  outputRef: ToolOutputRef | undefined,
+  name = "bash",
+): TextRegion {
+  return {
+    kind: "tool-input",
+    get: () => input,
+    tool: {
+      name,
+      status: "completed",
+      ...(outputRef === undefined ? {} : { output: outputRef }),
+    },
+  };
+}
+
+/** A pi-shaped tool-result message (the sibling of a tool-input). */
+function makePiToolResultMsg(output: string, name = "bash"): HostMessage {
+  return {
+    role: "toolResult",
+    hidden: false,
+    regions: [
+      {
+        kind: "tool-output",
+        get: () => output,
+        tool: { name, status: "completed" },
+      },
+    ],
+  };
+}
+
+/**
+ * Pi-shaped transcript: two tool pairs split across messages, plus a
+ * trailing user and assistant.  Ordinals: 0 user, 1 call-1, 2 result-1,
+ * 3 call-2, 4 result-2, 5 user, 6 assistant.
+ *
+ * With `linkOutput` the tool-input regions carry the positional address
+ * of their linked result (the pi lens shape); without it they carry no
+ * output metadata — the v1 metadata shape, where both halves of a call
+ * live in one message and `ToolMeta.output` is never set.
+ */
+function makePairTranscript(linkOutput: boolean): HostMessage[] {
+  const output = (ordinal: number): ToolOutputRef | undefined =>
+    linkOutput ? { ordinal, regionIndex: 0 } : undefined;
+  return [
+    makeMsg("user", ["开场问题"]),
+    {
+      role: "assistant",
+      hidden: false,
+      regions: [makeToolInputRegion('{"cmd":"ls"}', output(2))],
+    },
+    makePiToolResultMsg(`data 1 ${"x".repeat(40)}`),
+    {
+      role: "assistant",
+      hidden: false,
+      regions: [makeToolInputRegion('{"cmd":"find"}', output(4))],
+    },
+    makePiToolResultMsg(`data 2 ${"x".repeat(40)}`),
+    makeMsg("user", ["最后一个问题"]),
+    makeAssistantMsg({ text: "回答完毕" }),
+  ];
+}
+
+/**
+ * Gate options for the pair-transcript tests: no protection window and
+ * no phantom threshold, so the mid-pair gate is the only gate that can
+ * reject the small fixture ranges.
+ */
+const PAIR_OPTIONS: CompressOptions = {
+  protectedMessages: 0,
+  protectedTokens: 0,
+  thresholdTokens: 0,
+};
+
+describe("validateRange — mid-pair gate", () => {
+  it("rejects a range ending right after a toolCall whose result sits outside", () => {
+    const history = makePairTranscript(true);
+    const state = makeState();
+    const result = validateRange(history, state, PAIR_OPTIONS, 3, 4);
+    assert.ok(result.error !== null);
+    assert.ok(result.error.includes("工具调用对中间截断"));
+    assert.ok(result.error.includes("序数 4"));
+  });
+
+  it("accepts a range extended to include the linked toolResult", () => {
+    const history = makePairTranscript(true);
+    const state = makeState();
+    const result = validateRange(history, state, PAIR_OPTIONS, 3, 5);
+    assert.equal(result.error, null);
+  });
+
+  it("never fires on v1-shaped input (no output metadata)", () => {
+    const history = makePairTranscript(false);
+    const state = makeState();
+    // The same ordinal range that triggers the mid-pair gate when the
+    // output linkage is present passes untouched on the v1 metadata
+    // shape — the gate consumes only ToolMeta.output.
+    const result = validateRange(history, state, PAIR_OPTIONS, 3, 4);
+    assert.equal(result.error, null);
+  });
+});
+
+describe("compressRanges — mid-pair gate batch semantics", () => {
+  it("rejects the whole batch when any range cuts a pair, with zero state change", () => {
+    const history = makePairTranscript(true);
+    const state = makeState();
+    const items = numberedView(history, state);
+    const result = compressRanges(history, items, state, PAIR_OPTIONS, [
+      // [3, 4) covers only the a2 toolCall half of the second pair; its
+      // linked result (ordinal 4) sits outside → mid-pair rejection.
+      { fromRef: "m4", toRef: "m4", title: "对半", summary: "摘要。" },
+      // [1, 3) is a complete pair — valid on its own, but the batch is
+      // atomic: the mid-pair range rejects the whole call.
+      { fromRef: "m2", toRef: "m3", title: "整对", summary: "摘要。" },
+    ]);
+    assert.deepEqual(result.created, []);
+    assert.equal(result.failed.length, 1);
+    assert.equal(result.failed[0].index, 1);
+    assert.ok(result.failed[0].error.includes("工具调用对中间截断"));
+    assert.equal(state.blocks.size, 0);
+    assert.equal(state.marks.size, 0);
+  });
+
+  it("accepts a full-pair range end to end", () => {
+    const history = makePairTranscript(true);
+    const state = makeState();
+    const items = numberedView(history, state);
+    const result = compressRange(
+      history,
+      items,
+      state,
+      1,
+      4,
+      "双对",
+      "摘要。",
+      PAIR_OPTIONS,
+    );
+    assert.deepEqual(result.failed, []);
+    assert.equal(result.created.length, 1);
+    assert.deepEqual([result.created[0].start, result.created[0].end], [1, 5]);
   });
 });
 

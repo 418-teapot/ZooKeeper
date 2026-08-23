@@ -1,12 +1,11 @@
 /**
  * Context pruning hook barrel export.
  *
- * Exports the OpenCode framework adapter.  Config schema types are at
+ * Exports the host-agnostic handler functions.  Config schema types are at
  * `src/core/config-types.ts`; the host-agnostic pipeline core lives in
  * `src/core/context/` (state, producers, fold, release, nudge) and is
- * driven through the OpenCode adapter (`src/adapters/opencode/`); the
- * shared session maps and their cleanup live in
- * `src/core/context/runtime.ts`.
+ * driven through the host adapter injected via `Deps.adapter`; the shared
+ * session maps and their cleanup live in `src/core/context/runtime.ts`.
  *
  * @module
  */
@@ -29,19 +28,33 @@ export {
 /**
  * Context-pruning hook unit descriptor.
  *
- * Contributes the messages-transform pruning handler.  The unit is
- * unconditionally enabled: the whole pipeline runs on every host and
- * session kind (anchor protection covers the first-user message via
- * `anchorTokens`; session introspection is optional — the dedup-release
- * notification suppresses itself when the agent cannot be resolved).
- * `hasCompressTool` is derived from the active set's tool enablement so
- * the nudge / manual-compress phases only advertise windows the
- * registered `compress` tool would accept.
+ * Contributes the messages-transform pruning handler when `deps.adapter`
+ * is wired.  The unit is otherwise enabled unconditionally: the whole
+ * pipeline runs on every host and session kind (anchor protection covers
+ * the first-user message via `anchorTokens`; session introspection is
+ * optional — the dedup-release notification suppresses itself when the
+ * agent cannot be resolved).  `hasCompressTool` is derived from the active
+ * set's tool enablement so the nudge / manual-compress phases only
+ * advertise windows the registered `compress` tool would accept.
+ *
+ * Fail-closed: when `deps.adapter` is undefined the unit contributes no
+ * transform handler, consistent with the null-profile philosophy.
  */
 export const unit: HookUnitDescriptor = {
   name: "context-pruning",
   kind: "hook",
   create(deps, activeSet) {
+    const adapter = deps.adapter;
+    if (!adapter) {
+      return {
+        kind: "hook",
+        beforeExec: [],
+        afterExec: [],
+        transform: [],
+        textComplete: [],
+        toolDefinition: [],
+      };
+    }
     return {
       kind: "hook",
       beforeExec: [],
@@ -55,10 +68,12 @@ export const unit: HookUnitDescriptor = {
               deps.contextConfig,
               deps.client,
               activeSet.tools.has("compress"),
+              adapter,
             );
           },
         },
       ],
+      textComplete: [],
       toolDefinition: [],
     };
   },

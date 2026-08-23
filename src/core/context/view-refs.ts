@@ -16,8 +16,8 @@
  *
  * The module renders but never materializes: original items receive
  * their prefix through the lens; summary messages are the adapter's job
- * (`applyView`), and their first line is composed as
- * `refPrefix(n) + formatSummaryLabel(block)` followed by the summary
+ * (`src/adapters/opencode/render.ts`), and their first line is composed
+ * as `refPrefix(n) + formatSummaryLabel(block)` followed by the summary
  * text.
  *
  * Hidden messages (spec Decision 3) occupy an ordinal but are skipped by
@@ -83,6 +83,13 @@ export function numberView(
   }
   return numbered;
 }
+
+/**
+ * Line-start ref pattern matching a rendered line-number marker: `[mN] `
+ * — natural integer, no zero padding, trailing space included.  Matches
+ * only an exact line start; bare refs in prose are not matched.
+ */
+export const LINE_START_REF_PREFIX = /^\[m\d+\] /;
 
 /**
  * Build the line-number prefix `[mN] `.

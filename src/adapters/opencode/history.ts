@@ -5,9 +5,10 @@
  * This is the only layer allowed to know both the v1 message shape
  * (`ContextMessageEntry { info, parts }`) and the new core lens types
  * (`HostMessage`, `TextRegion`).  Every v1 part type maps to lens
- * regions with lossless text round-tripping: region `set()` writes back
- * into the v1 part object, so producers and the release phase mutate the
- * host structure through the lens while the core never unpacks it.
+ * regions with lossless text round-tripping: the adapter's `PartRegion`
+ * regions are writable (see `WritableRegion`), so edit application and
+ * line-prefix injection mutate the host structure through the lens
+ * while the core never unpacks it.
  *
  * Mapping table (v1 part → region kind):
  *
@@ -34,7 +35,7 @@
  * entries (the new core's canon/span-hash/fold/view-refs layers assume
  * non-null messages; only `measure` tolerates nulls defensively).
  *
- * Write-back semantics of `TextRegion.set()`:
+ * Write-back semantics of the adapter's writable regions:
  *
  * - content / thinking → rewrites `part.text`.
  * - tool-output → rewrites `part.state.output` as a plain string (the
@@ -96,18 +97,30 @@ type RegionProvenance = "text" | "reasoning" | "tool" | "other";
  * Provenance registry keyed by region instance.
  *
  * Kept out of the `TextRegion` interface — the lens contract stays
- * `{ kind, get, set, tool? }`; the adapter's own regions carry their
+ * `{ kind, get, tool? }`; the adapter's own regions carry their
  * provenance in this side table so `isInjectableRegion` can read it
  * without polluting the core types.
  */
 const regionProvenance = new WeakMap<TextRegion, RegionProvenance>();
 
 /**
+ * A lens region whose text the adapter may rewrite in place.
+ *
+ * The core `TextRegion` contract is read-only; this adapter-internal
+ * extension adds the write side used by edit application and line-ref
+ * injection.  Core modules never reference it.
+ */
+export interface WritableRegion extends TextRegion {
+  /** Rewrite the region's text in place. */
+  set(text: string): void;
+}
+
+/**
  * A lens region bound to a v1 part: reads serialize the current part
  * value, writes mutate the part in place.  The derivation source is
  * recorded in the provenance side table at construction.
  */
-class PartRegion implements TextRegion {
+class PartRegion implements WritableRegion {
   readonly tool: ToolMeta | undefined;
 
   constructor(

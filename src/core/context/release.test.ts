@@ -16,18 +16,24 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { HostMessage } from "./lens.js";
-import { makeAssistantMsg, makeToolMsg } from "./lens-testkit.js";
+import {
+  makeAssistantMsg,
+  makeToolMsg,
+  setRegionText,
+} from "./lens-testkit.js";
 import {
   PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
 } from "./message-parts.js";
 import { runDedup } from "./producers/dedup.js";
 import {
+  computeEdits,
+  flipReleasedMarks,
   pendingCount,
   pendingTokens,
+  type ReleaseOptions,
   type ReleaseResult,
   reclaimedTokens,
-  releaseMarks,
 } from "./release.js";
 import { type Mark, markKey, type SessionState } from "./state.js";
 
@@ -124,7 +130,7 @@ function newTurn(
   releasedPercent: number,
   pendingViewChange: boolean,
 ): void {
-  releaseMarks(state, messages, {
+  releasePhase(state, messages, {
     promptTokens,
     releasedPercent,
     pendingViewChange,
@@ -136,6 +142,27 @@ function newTurn(
     protectedStartOrdinal: messages.length,
     protectedTools: [],
   });
+}
+
+/**
+ * Run the release phase over a transcript.
+ *
+ * The full release contract: `computeEdits` selects the round's region
+ * edits, they are applied through the testkit backing (the pure
+ * counterpart of the adapter edit application), and `flipReleasedMarks`
+ * flips the released marks effective.  Returns the flip result.
+ */
+function releasePhase(
+  state: SessionState,
+  messages: HostMessage[],
+  options: ReleaseOptions,
+): ReleaseResult {
+  const edits = computeEdits(state, messages, options);
+  for (const edit of edits) {
+    if (edit.regionIndex === undefined) continue;
+    setRegionText(messages[edit.messageOrdinal], edit.regionIndex, edit.text);
+  }
+  return flipReleasedMarks(state, options);
 }
 
 // ===========================================================================
@@ -190,7 +217,7 @@ describe("release decisions (lens)", () => {
     const state = makeNewState();
     seedLensMark(state, 0, 0, "output", tokens[0], false);
     seedLensMark(state, 1, 0, "output", tokens[1], false);
-    const result = releaseMarks(state, lens, {
+    const result = releasePhase(state, lens, {
       promptTokens,
       releasedPercent,
       pendingViewChange,
@@ -284,7 +311,7 @@ describe("release decisions (lens)", () => {
     const lens = [lensMsg([bashCall("ls", LONG_OUTPUT)])];
     const state = makeNewState();
     seedLensMark(state, 0, 0, "output", 100, true);
-    releaseMarks(state, lens, {
+    releasePhase(state, lens, {
       promptTokens: 100_000,
       releasedPercent: 5,
       pendingViewChange: false,
@@ -296,7 +323,7 @@ describe("release decisions (lens)", () => {
     const lens = [lensMsg([bashCall("ls", "boom", "error")])];
     const state = makeNewState();
     seedLensMark(state, 0, 0, "input", 100, true);
-    releaseMarks(state, lens, {
+    releasePhase(state, lens, {
       promptTokens: 100_000,
       releasedPercent: 5,
       pendingViewChange: false,
@@ -334,7 +361,7 @@ describe("release decisions (lens)", () => {
 
     // Convergence: one more release flushes the last wave of pending
     // marks from the turn-2 dedup run.
-    releaseMarks(state, turn2, {
+    releasePhase(state, turn2, {
       promptTokens,
       releasedPercent,
       pendingViewChange: false,
@@ -360,7 +387,7 @@ describe("two-turn lifecycle", () => {
 
     // Turn N: the release phase runs before the producers, so nothing is
     // pending yet; the producers then write their pending marks.
-    const r1 = releaseMarks(state, lens, {
+    const r1 = releasePhase(state, lens, {
       promptTokens: 100_000,
       releasedPercent: 0,
       pendingViewChange: false,
@@ -375,7 +402,7 @@ describe("two-turn lifecycle", () => {
     assert.equal(state.marks.get(markKey(0, 1))?.effective, false);
 
     // Turn N+1: the release phase flips the pending mark and applies it.
-    const r2 = releaseMarks(state, lens, {
+    const r2 = releasePhase(state, lens, {
       promptTokens: 100_000,
       releasedPercent: 0,
       pendingViewChange: false,
@@ -393,7 +420,7 @@ describe("two-turn lifecycle", () => {
     rawSeed(state, 0, 1, 100, true);
     // promptTokens 0 and no bypass — the gate is closed, but the apply
     // phase still writes placeholders for every effective mark.
-    const r = releaseMarks(state, lens, {
+    const r = releasePhase(state, lens, {
       promptTokens: 0,
       releasedPercent: 5,
       pendingViewChange: false,
@@ -412,7 +439,7 @@ describe("releasedPercent gate", () => {
     const state = makeNewState();
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedLensMark(state, 0, 0, "output", 100, false);
-    const r = releaseMarks(state, lens, {
+    const r = releasePhase(state, lens, {
       promptTokens: 100_000,
       releasedPercent: undefined,
       pendingViewChange: false,
@@ -426,7 +453,7 @@ describe("releasedPercent gate", () => {
     const state = makeNewState();
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedLensMark(state, 0, 0, "output", 100, false);
-    const r = releaseMarks(state, lens, {
+    const r = releasePhase(state, lens, {
       promptTokens: 100_000,
       releasedPercent: 0,
       pendingViewChange: false,
@@ -440,7 +467,7 @@ describe("releasedPercent gate", () => {
     const state = makeNewState();
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedLensMark(state, 0, 0, "output", 100, false);
-    const r1 = releaseMarks(state, lens, {
+    const r1 = releasePhase(state, lens, {
       promptTokens: 100_000,
       releasedPercent: 5,
       pendingViewChange: false,
@@ -448,7 +475,7 @@ describe("releasedPercent gate", () => {
     assert.equal(r1.releasedCount, 0);
     seedLensMark(state, 0, 1, "output", 200, false);
     // Cumulative 300 still below the 5000 threshold.
-    const r2 = releaseMarks(state, lens, {
+    const r2 = releasePhase(state, lens, {
       promptTokens: 100_000,
       releasedPercent: 5,
       pendingViewChange: false,
@@ -462,7 +489,7 @@ describe("releasedPercent gate", () => {
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedLensMark(state, 0, 0, "output", 3000, false);
     seedLensMark(state, 0, 1, "output", 2000, false);
-    const r = releaseMarks(state, lens, {
+    const r = releasePhase(state, lens, {
       promptTokens: 100_000,
       releasedPercent: 5,
       pendingViewChange: false,
@@ -481,7 +508,7 @@ describe("pendingViewChange bypass", () => {
     const state = makeNewState();
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedLensMark(state, 0, 0, "output", 100, false);
-    const r = releaseMarks(state, lens, {
+    const r = releasePhase(state, lens, {
       promptTokens: 100_000,
       releasedPercent: 5,
       pendingViewChange: true,
@@ -496,7 +523,7 @@ describe("pendingViewChange bypass", () => {
     const state = makeNewState();
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedLensMark(state, 0, 0, "output", 100, false);
-    const r = releaseMarks(state, lens, {
+    const r = releasePhase(state, lens, {
       promptTokens: 100_000,
       releasedPercent: undefined,
       pendingViewChange: true,
@@ -509,7 +536,7 @@ describe("pendingViewChange bypass", () => {
     const state = makeNewState();
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     seedLensMark(state, 0, 0, "output", 100, false);
-    const r = releaseMarks(state, lens, {
+    const r = releasePhase(state, lens, {
       promptTokens: 0,
       releasedPercent: 5,
       pendingViewChange: true,
@@ -524,7 +551,7 @@ describe("pendingViewChange bypass", () => {
     seedLensMark(state, 0, 0, "output", 100, false);
 
     // Turn 1: forced flush.
-    const r1 = releaseMarks(state, lens, {
+    const r1 = releasePhase(state, lens, {
       promptTokens: 100_000,
       releasedPercent: 5,
       pendingViewChange: true,
@@ -534,7 +561,7 @@ describe("pendingViewChange bypass", () => {
 
     // Turn 2: flag cleared by the caller (legacy Phase 7) — normal batching.
     seedLensMark(state, 0, 1, "output", 200, false);
-    const r2 = releaseMarks(state, lens, {
+    const r2 = releasePhase(state, lens, {
       promptTokens: 100_000,
       releasedPercent: 5,
       pendingViewChange: false,
@@ -555,7 +582,7 @@ describe("defensive anchors", () => {
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     // Anchor ordinal 3 does not exist in a one-message transcript.
     rawSeed(state, 3, 1, 100, false);
-    const r = releaseMarks(state, lens, {
+    const r = releasePhase(state, lens, {
       promptTokens: 100_000,
       releasedPercent: 0,
       pendingViewChange: false,
@@ -571,7 +598,7 @@ describe("defensive anchors", () => {
     const lens = [makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT)];
     // The message has exactly two regions; region 5 does not exist.
     rawSeed(state, 0, 5, 100, false);
-    const r = releaseMarks(state, lens, {
+    const r = releasePhase(state, lens, {
       promptTokens: 100_000,
       releasedPercent: 0,
       pendingViewChange: false,
@@ -590,7 +617,7 @@ describe("defensive anchors", () => {
       effective: false,
       markedAt: 1,
     });
-    const r = releaseMarks(state, lens, {
+    const r = releasePhase(state, lens, {
       promptTokens: 100_000,
       releasedPercent: 0,
       pendingViewChange: false,
@@ -606,7 +633,7 @@ describe("defensive anchors", () => {
       makeToolMsg("bash", '{"cmd":"ls"}', PRUNED_TOOL_OUTPUT_REPLACEMENT),
     ];
     rawSeed(state, 0, 1, 100, true);
-    releaseMarks(state, lens, {
+    releasePhase(state, lens, {
       promptTokens: 100_000,
       releasedPercent: 5,
       pendingViewChange: false,
@@ -631,7 +658,7 @@ describe("defensive anchors", () => {
     seedLensMark(state, 0, 0, "output", 100, false);
     seedLensMark(state, 0, 1, "output", 200, false);
 
-    const r1 = releaseMarks(state, lens, {
+    const r1 = releasePhase(state, lens, {
       promptTokens: 100_000,
       releasedPercent: 0,
       pendingViewChange: false,
@@ -639,7 +666,7 @@ describe("defensive anchors", () => {
     assert.equal(r1.releasedCount, 2);
     assert.equal(r1.releasedTokens, 300);
 
-    const r2 = releaseMarks(state, lens, {
+    const r2 = releasePhase(state, lens, {
       promptTokens: 100_000,
       releasedPercent: 0,
       pendingViewChange: false,

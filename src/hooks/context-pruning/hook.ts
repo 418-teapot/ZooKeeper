@@ -1,23 +1,24 @@
 /**
  * Context pruning transform handler — the new-core pipeline entry point.
  *
- * Called from the `experimental.chat.messages.transform` hook.  The
- * legacy seven-phase pipeline is replaced by the host-agnostic context
- * core (`src/core/context/`) driven through the OpenCode v1 adapter
- * (`src/adapters/opencode/`):
+ * Called from the messages-transform hook.  The legacy seven-phase
+ * pipeline is replaced by the host-agnostic context core
+ * (`src/core/context/`) driven through an injected `HostAdapter`:
  *
  * 1. **State** — the process-wide shared `SessionStateManager`
  *    (`getContextStateManager`) yields the session state (shared with
  *    the compress/decompress tools and the /dcp command — never a
  *    private manager).
- * 2. **Read** — `history()` maps the v1 messages to lens messages;
- *    the prompt-side token total of the last completed assistant is
- *    extracted for the release gate.
- * 3. **Release** — `releaseMarks` applies effective marks and flips
- *    pending marks that pass the `releasedPercent` gate (or the
- *    `pendingViewChange` bypass).  Runs FIRST so marks written last
- *    turn take effect this turn (the two-turn lifecycle).  The notify
- *    callback and the `marks_released` log fire on a flip.
+ * 2. **Read** — `adapter.history()` maps the host messages to lens
+ *    messages; the prompt-side token total of the last completed
+ *    assistant is extracted for the release gate.
+ * 3. **Release** — `computeEdits` selects the round's region edits
+ *    (effective marks plus pending marks passing the `releasedPercent`
+ *    gate or the `pendingViewChange` bypass), `adapter.applyEdits`
+ *    writes them through the adapter lens, and `flipReleasedMarks`
+ *    flips the released marks effective.  Runs FIRST so marks written
+ *    last turn take effect this turn (the two-turn lifecycle).  The
+ *    notify callback and the `marks_released` log fire on a flip.
  * 4. **Producers** — dedup / purge-errors run only when their
  *    configured `thresholdContext` is defined (legacy gating); sweep
  *    always runs with the new core's defaults.  Marks are pending for
@@ -26,42 +27,37 @@
  *    invalidated) blocks are deactivated, inactive blocks reclaimed
  *    (`clearInactiveBlocks`), and a view change arms the per-session
  *    `pendingViewChange` flag that forces the next release.
- * 6. **Materialize** — `applyView` rebuilds the v1 messages in place
- *    (synthetic summary messages, per-round `[mN] ` line refs).
+ * 6. **Materialize** — `adapter.renderView` rebuilds the host messages in
+ *    place (synthetic summary messages, per-round `[mN] ` line refs).
  * 7. **Nudge / manual compress** — `evaluateNudge` decides and renders
  *    the context-pressure reminder (transform-only synthetic message
- *    appended at the END, never ref-assigned); the `/dcp compress`
- *    one-shot `pendingManualTrigger` flag injects the synthetic user
- *    command driving the `compress` tool.
+ *    appended at the END via `adapter.appendUserMessage`, never
+ *    ref-assigned); the `/dcp compress` one-shot
+ *    `pendingManualTrigger` flag injects the synthetic user command
+ *    driving the `compress` tool.
  * 8. **Save** — the session state is written back to the shared store.
  *
  * The two-turn effect ("turn N marks apply on turn N+1") means that
  * marks produced by the current turn are NOT pruned during the same
  * turn.
  *
- * Enablement is decided by the caller (opencode.ts) from the mode
- * profile: registering this hook unit runs the whole pipeline with no
- * master switch, and `hasCompressTool` gates the nudge and manual-
- * compress phases (they advertise windows the registered `compress`
- * tool would accept).
+ * Enablement is decided by the caller (opencode.ts / pi.ts) from the
+ * mode profile and by the unit's `create`: when `deps.adapter` is
+ * undefined the unit contributes no transform handler (fail-closed).
+ * `hasCompressTool` gates the nudge and manual-compress phases (they
+ * advertise windows the registered `compress` tool would accept).
  *
- * Does NOT catch errors — the caller (opencode.ts) wraps this in
- * try/catch so a pruning failure never disrupts the LLM turn.
+ * Does NOT catch errors — the caller (`handleContextPruning`) wraps
+ * this in try/catch so a pruning failure never disrupts the LLM turn.
  *
  * @module
  */
 
-import { applyView } from "../../adapters/opencode/apply-view.js";
-import { history } from "../../adapters/opencode/history.js";
-import type {
-  ContextMessageEntry,
-  ContextMetricsOutput,
-} from "../../adapters/opencode/types.js";
 import type { ContextPruningConfig } from "../../core/config-types.js";
 import { computeProtectedStartOrdinal } from "../../core/context/compress.js";
 import { formatTokens } from "../../core/context/context-report.js";
 import { fold } from "../../core/context/fold.js";
-import type { HostMessage } from "../../core/context/lens.js";
+import type { HostAdapter, HostMessage } from "../../core/context/lens.js";
 import { findLastCompletedAssistant } from "../../core/context/measure.js";
 import { getModelLimit } from "../../core/context/model-limits.js";
 import {
@@ -73,9 +69,11 @@ import { runDedup } from "../../core/context/producers/dedup.js";
 import { runPurgeErrors } from "../../core/context/producers/purge-errors.js";
 import { runSweep } from "../../core/context/producers/sweep.js";
 import {
+  computeEdits,
+  flipReleasedMarks,
   pendingTokens,
+  type ReleaseOptions,
   reclaimedTokens,
-  releaseMarks,
 } from "../../core/context/release.js";
 import {
   consumePendingViewChange,
@@ -90,6 +88,7 @@ import {
 } from "../../core/context/state.js";
 import { numberView } from "../../core/context/view-refs.js";
 import { MANUAL_COMPRESS_TEMPLATE } from "../../core/prompts.js";
+import type { TransformOutput } from "../../core/slots.js";
 import { log } from "../../utils/logger.js";
 
 // ---------------------------------------------------------------------------
@@ -183,44 +182,54 @@ function coveredOrdinalsOf(
 // ---------------------------------------------------------------------------
 
 /**
- * Handle the messages.transform hook for context pruning.
+ * Run the context-pruning pipeline over the turn's transcript.
  *
  * Runs the host-agnostic context core over the turn's transcript (see
- * the module docstring for the phase order).  `notify` fires exactly
- * once per batch release with a user-visible cleanup notice; the log
- * surface preserves the legacy event contracts (`prune_completed`
- * counts effective marks only, `marks_released` carries the forced
- * field, `nudge_injected` / `manual_compress_injected` carry their
- * payloads).
+ * the module docstring for the phase order).  All host-specific
+ * operations go through `adapter`; `messages` is treated as an opaque
+ * conversation.  `notify` fires exactly once per batch release with a
+ * user-visible cleanup notice; the log surface preserves the legacy
+ * event contracts (`prune_completed` counts effective marks only,
+ * `marks_released` carries the forced field, `nudge_injected` /
+ * `manual_compress_injected` carry their payloads).
  *
+ * The returned conversation may be the input array mutated in place or a
+ * replacement array produced by a pure adapter.  Callers must always use
+ * the returned value and must not rely on in-place mutation.
+ *
+ * @param adapter - The host adapter that projects and renders the host
+ *   conversation.
  * @param messages - The session messages array from the transform output.
  * @param config - Unified context-pruning configuration.
  * @param notify - Optional callback for user-visible release notification.
  * @param hasCompressTool - Whether the `compress` tool is registered in
  *   the active mode profile.  Gates the nudge and manual-compress
  *   phases.  Defaults to false.
+ * @returns The conversation after pruning.
  */
 export function contextPruningTransformHandler(
-  messages: ContextMessageEntry[] | null | undefined,
+  adapter: HostAdapter<unknown>,
+  messages: unknown,
   config: ContextPruningConfig = {
     dedup: {},
     purgeErrors: {},
   },
   notify?: (text: string) => void,
   hasCompressTool?: boolean,
-): void {
-  if (!messages || messages.length === 0) return;
+): unknown {
+  if (!messages || !Array.isArray(messages) || messages.length === 0) {
+    return messages;
+  }
 
-  // Extract session ID from the first message.
-  const firstMsg = messages[0];
-  const sessionId = firstMsg?.info?.sessionID;
-  if (!sessionId) return;
+  // Extract session ID from the first message through the adapter.
+  const sessionId = adapter.sessionId(messages);
+  if (!sessionId) return messages;
 
   // ── Phase 1: state + read ─────────────────────────────────────────
   // The process-wide shared manager (hook/tool/dcp single instance).
   const manager = getContextStateManager();
   const state = getRuntimeFlaggedState(sessionId);
-  const view = history(messages);
+  let view = adapter.history(messages);
   const promptTokens = promptSideTokens(view);
 
   // ── Phase 2: release — start of turn ──────────────────────────────
@@ -236,11 +245,19 @@ export function contextPruningTransformHandler(
   const releaseFlag = viewChangeFlags.get(sessionId) ?? false;
   const toolFlag = consumePendingViewChange(sessionId);
   const curPendingTokens = pendingTokens(state);
-  const released = releaseMarks(state, view, {
+  const releaseOptions: ReleaseOptions = {
     promptTokens,
     releasedPercent: config.releasedPercent,
     pendingViewChange: releaseFlag || toolFlag,
-  });
+  };
+  // The release edits are applied through the adapter lens NOW, before
+  // the producers and the nudge eligibility scan — those read region
+  // text (context gates, placeholder-prefixed skip, reclaim estimates)
+  // and must observe the placeholder text.
+  const releaseEdits = computeEdits(state, view, releaseOptions);
+  messages = adapter.applyEdits(messages, releaseEdits);
+  view = adapter.history(messages);
+  const released = flipReleasedMarks(state, releaseOptions);
   viewChangeFlags.delete(sessionId);
 
   if (released.releasedCount > 0) {
@@ -364,9 +381,11 @@ export function contextPruningTransformHandler(
   clearInactiveBlocks(state);
 
   // ── Phase 5: materialize the folded view ──────────────────────────
-  // Rebuilds the v1 messages in place (synthetic summary messages,
-  // per-round dense `[mN] ` line refs on the injectable regions).
-  applyView(messages, view, folded.items, state);
+  // Rebuilds the host messages through the adapter (synthetic summary
+  // messages, per-round dense `[mN] ` line refs on the injectable
+  // regions).  The returned array is threaded through every subsequent
+  // step.
+  messages = adapter.renderView(messages, folded.items, state);
 
   // Per-round line refs used by the nudge and manual-compress windows
   // (line numbers are transient — valid for this round only).
@@ -407,14 +426,12 @@ export function contextPruningTransformHandler(
       refForOrdinal,
     });
     if (nudgeText !== null) {
-      messages.push({
-        info: {
-          id: "zoo-nudge",
-          role: "user",
-          sessionID: sessionId,
-        },
-        parts: [{ type: "text", text: nudgeText }],
-      });
+      messages = adapter.appendUserMessage(
+        messages,
+        "zoo-nudge",
+        sessionId,
+        nudgeText,
+      );
 
       // Log the decision payload (the eligibility window is recomputed
       // here; it is pure over the same inputs the core just used).
@@ -455,8 +472,8 @@ export function contextPruningTransformHandler(
   // `/dcp compress` sets a one-shot in-memory flag on the shared state;
   // the NEXT transform appends a synthetic user message (id
   // `zoo-manual-compress`) that the model treats as a direct
-  // instruction to call the `compress` tool.  Runs after applyView so
-  // the message never enters ref numbering, and never calls
+  // instruction to call the `compress` tool.  Runs after the view
+  // render so the message never enters ref numbering, and never calls
   // session.prompt (transform-only, invisible in storage).  The flag
   // is cleared after the phase — one-shot, never re-injected on later
   // turns.
@@ -486,14 +503,12 @@ export function contextPruningTransformHandler(
 
       // Synthetic user command appended at the very END — never
       // persisted, never ref-assigned.
-      messages.push({
-        info: {
-          id: "zoo-manual-compress",
-          role: "user",
-          sessionID: sessionId,
-        },
-        parts: [{ type: "text", text }],
-      });
+      messages = adapter.appendUserMessage(
+        messages,
+        "zoo-manual-compress",
+        sessionId,
+        text,
+      );
       state.pendingManualTrigger = false;
 
       log(
@@ -545,6 +560,8 @@ export function contextPruningTransformHandler(
     totalPruneTokens: totalEff,
     totalReclaimedTokens: totalEff,
   });
+
+  return messages;
 }
 
 // ---------------------------------------------------------------------------
@@ -699,23 +716,30 @@ export function handleDedupNotify(
  * Wraps `contextPruningTransformHandler` in try/catch so a pruning
  * failure never disrupts the LLM turn, and wires the dedup-release
  * notification to the shared `sessionAgentMap` (held by
- * `core/context/runtime.ts`).
+ * `core/context/runtime.ts`).  The transform output arrives as the
+ * core `TransformOutput` shape; the host adapter owns the concrete
+ * `messages` type and may replace the array.  The returned conversation
+ * is written back into `output.messages` so downstream transform
+ * contributions observe the pruned view.
  *
  * @param output - The messages transform output.
  * @param config - Unified context-pruning configuration.
  * @param client - The host client.
  * @param hasCompressTool - Whether the `compress` tool is registered.
+ * @param adapter - The host adapter for projecting and mutating the
+ *   conversation.
  */
 export function handleContextPruning(
-  output: ContextMetricsOutput,
+  output: TransformOutput,
   config: ContextPruningConfig,
   client: any,
-  hasCompressTool?: boolean,
+  hasCompressTool: boolean | undefined,
+  adapter: HostAdapter<unknown>,
 ): void {
+  const sessionID = adapter.sessionId(output.messages) ?? "";
   try {
-    const sessionID = output.messages?.[0]?.info?.sessionID ?? "";
-
-    contextPruningTransformHandler(
+    output.messages = contextPruningTransformHandler(
+      adapter,
       output.messages,
       config,
       // Fire-and-forget: notify the session chat with dedup release info.
@@ -725,13 +749,9 @@ export function handleContextPruning(
       hasCompressTool,
     );
   } catch (err) {
-    log(
-      "plugin",
-      "handler_crashed",
-      output.messages?.[0]?.info?.sessionID ?? "",
-      undefined,
-      "error",
-      { handler: "contextPruning", error: String(err) },
-    );
+    log("plugin", "handler_crashed", sessionID, undefined, "error", {
+      handler: "contextPruning",
+      error: String(err),
+    });
   }
 }

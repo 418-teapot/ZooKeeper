@@ -2,10 +2,11 @@
  * Tests for the host-agnostic context lens (`lens.ts`) and its in-memory
  * testkit (`lens-testkit.ts`).
  *
- * Covers: region read/write semantics (set must mutate shared memory),
- * hidden/usage field shapes, ViewItem discriminated-union narrowing, the
- * three testkit constructors' region-kind layouts, the region helper, and
- * the first/last non-hidden user ordinal helpers.
+ * Covers: region read semantics (text replacement goes through the
+ * testkit `setRegionText` helper), hidden/usage field shapes, ViewItem
+ * discriminated-union narrowing, the three testkit constructors'
+ * region-kind layouts, the region helper, and the first/last
+ * non-hidden user ordinal helpers.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
@@ -15,7 +16,12 @@ import {
   findLastUserOrdinal,
   regionsOfKind,
 } from "./lens.js";
-import { makeAssistantMsg, makeMsg, makeToolMsg } from "./lens-testkit.js";
+import {
+  makeAssistantMsg,
+  makeMsg,
+  makeToolMsg,
+  setRegionText,
+} from "./lens-testkit.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -75,21 +81,27 @@ describe("makeMsg", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Region set semantics
+// Region text replacement
 // ---------------------------------------------------------------------------
 
-describe("region set", () => {
-  it("mutates shared memory so a later get reads back the new text", () => {
+describe("region text replacement", () => {
+  it("setRegionText rewrites the backing so a later get reads the new text", () => {
     const msg = makeMsg("user", ["before"]);
-    msg.regions[0].set("after");
+    setRegionText(msg, 0, "after");
     assert.equal(msg.regions[0].get(), "after");
   });
 
   it("keeps sibling regions independent", () => {
     const msg = makeMsg("user", ["a", "b"]);
-    msg.regions[0].set("a2");
+    setRegionText(msg, 0, "a2");
     assert.equal(msg.regions[0].get(), "a2");
     assert.equal(msg.regions[1].get(), "b");
+  });
+
+  it("skips out-of-range region indices defensively", () => {
+    const msg = makeMsg("user", ["a"]);
+    setRegionText(msg, 5, "x");
+    assert.equal(msg.regions[0].get(), "a");
   });
 });
 
@@ -192,13 +204,13 @@ describe("makeAssistantMsg", () => {
     assert.deepEqual(regionSurface(makeAssistantMsg()), []);
   });
 
-  it("writes through to tool regions via set", () => {
+  it("writes through to tool regions via setRegionText", () => {
     const msg = makeAssistantMsg({
       text: "t",
       toolCalls: [{ name: "bash", input: "i", output: "o" }],
     });
-    msg.regions[1].set("i2");
-    msg.regions[2].set("o2");
+    setRegionText(msg, 1, "i2");
+    setRegionText(msg, 2, "o2");
     assert.equal(msg.regions[1].get(), "i2");
     assert.equal(msg.regions[2].get(), "o2");
     assert.equal(msg.regions[0].get(), "t");

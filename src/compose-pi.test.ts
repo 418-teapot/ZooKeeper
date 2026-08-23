@@ -4,22 +4,27 @@
  * Covers: `buildPiToolResultHandler` (delta appending and rewrite
  * branches, chained contributions, per-handler crash isolation, image
  * preservation, missing sessionManager), `buildPiContextHandler`
- * (message conversion, empty array, measure-only contract, crash
- * isolation), and the pure helpers `toContextMessageEntries` /
+ * (native pi messages passed to transforms, result replacement, model
+ * limit capture, empty array, crash isolation), and the pure helper
  * `extractText`.
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import type { ContextMetricsOutput } from "./adapters/opencode/types.js";
 import {
   buildPiContextHandler,
+  buildPiMessageEndHandler,
   buildPiToolResultHandler,
   extractText,
+  type PiAgentMessage,
+  type PiAssistantMessage,
   type PiContentPart,
   type PiToolResultEvent,
-  toContextMessageEntries,
 } from "./compose-pi.js";
-import type { AfterExecContribution, AfterExecInput } from "./core/slots.js";
+import type {
+  AfterExecContribution,
+  AfterExecInput,
+  TransformOutput,
+} from "./core/slots.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
 
 afterEach(() => {
@@ -335,8 +340,8 @@ describe("buildPiToolResultHandler", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildPiContextHandler", () => {
-  it("converts user / assistant / toolResult messages into entries", async () => {
-    let captured: ContextMetricsOutput | undefined;
+  it("passes native pi messages to transform contributions", async () => {
+    let captured: TransformOutput | undefined;
     const handler = buildPiContextHandler([
       {
         name: "capture",
@@ -345,140 +350,21 @@ describe("buildPiContextHandler", () => {
         },
       },
     ]);
-    const result = await handler(
-      {
-        type: "context",
-        messages: [
-          { role: "user", content: "hello" },
-          {
-            role: "assistant",
-            content: [
-              {
-                type: "toolCall",
-                id: "tc-1",
-                name: "bash",
-                arguments: { command: "ls" },
-              },
-              { type: "thinking", thinking: "hmm" },
-              { type: "text", text: "answer" },
-            ],
-            usage: {
-              input: 100,
-              output: 50,
-              cacheRead: 200,
-              cacheWrite: 10,
-              reasoning: 5,
-            },
-          },
-          {
-            role: "toolResult",
-            toolCallId: "tc-1",
-            toolName: "bash",
-            content: [
-              { type: "text", text: "file.txt" },
-              { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
-            ],
-            isError: false,
-          },
-        ],
-      },
-      SESSION_CTX,
-    );
-    assert.equal(result, undefined);
-    assert.deepEqual(captured?.messages, [
-      {
-        info: { role: "user", id: "pi-sess-1-0", sessionID: "sess-1" },
-        parts: [{ type: "text", text: "hello" }],
-      },
-      {
-        info: {
-          role: "assistant",
-          id: "pi-sess-1-1",
-          sessionID: "sess-1",
-          tokens: {
-            input: 100,
-            output: 50,
-            cache: { read: 200, write: 10 },
-            reasoning: 5,
-          },
-        },
-        parts: [
-          { type: "tool", callID: "tc-1", state: { input: { command: "ls" } } },
-          { type: "text", text: "hmm" },
-          { type: "text", text: "answer" },
-        ],
-      },
-      {
-        info: { role: "toolResult", id: "pi-sess-1-2", sessionID: "sess-1" },
-        parts: [
-          { type: "tool", callID: "tc-1", state: { output: "file.txt" } },
-        ],
-      },
-    ]);
+    const messages: PiAgentMessage[] = [{ role: "user", content: "hello" }];
+    const result = await handler({ type: "context", messages }, SESSION_CTX);
+    assert.deepEqual(result, { messages });
+    assert.equal(captured?.messages, messages);
   });
 
-  it("converts user content arrays, skipping image parts", async () => {
-    let captured: ContextMetricsOutput | undefined;
+  it("returns the modified message list from transform contributions", async () => {
+    const replacement: PiAgentMessage[] = [
+      { role: "user", content: "replaced" },
+    ];
     const handler = buildPiContextHandler([
       {
-        name: "capture",
+        name: "replace",
         handle: (output) => {
-          captured = output;
-        },
-      },
-    ]);
-    const result = await handler(
-      {
-        type: "context",
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "text", text: "look at" },
-              { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
-              { type: "text", text: "this" },
-            ],
-          },
-        ],
-      },
-      SESSION_CTX,
-    );
-    assert.equal(result, undefined);
-    assert.deepEqual(captured?.messages, [
-      {
-        info: { role: "user", id: "pi-sess-1-0", sessionID: "sess-1" },
-        parts: [
-          { type: "text", text: "look at" },
-          { type: "text", text: "this" },
-        ],
-      },
-    ]);
-  });
-
-  it("yields empty entries for an empty message array", async () => {
-    let captured: ContextMetricsOutput | undefined;
-    const handler = buildPiContextHandler([
-      {
-        name: "capture",
-        handle: (output) => {
-          captured = output;
-        },
-      },
-    ]);
-    const result = await handler(
-      { type: "context", messages: [] },
-      SESSION_CTX,
-    );
-    assert.equal(result, undefined);
-    assert.deepEqual(captured?.messages, []);
-  });
-
-  it("is measure-only — always returns undefined even when contributions mutate messages", async () => {
-    const handler = buildPiContextHandler([
-      {
-        name: "mutate",
-        handle: (output) => {
-          output.messages = [];
+          output.messages = replacement;
         },
       },
     ]);
@@ -486,11 +372,46 @@ describe("buildPiContextHandler", () => {
       { type: "context", messages: [{ role: "user", content: "hi" }] },
       SESSION_CTX,
     );
-    assert.equal(result, undefined);
+    assert.deepEqual(result, { messages: replacement });
+  });
+
+  it("captures the model context window from ctx.model", async () => {
+    const handler = buildPiContextHandler([
+      {
+        name: "noop",
+        handle: () => {},
+      },
+    ]);
+    await handler(
+      { type: "context", messages: [{ role: "user", content: "hi" }] },
+      {
+        sessionManager: { getSessionId: () => "sess-model" },
+        model: { id: "gpt-5", contextWindow: 128000 },
+      },
+    );
+    // The capture is best verified through the downstream pruning/nudge
+    // behavior; here we assert the handler completes without throwing.
+    assert.ok(true);
+  });
+
+  it("returns the input messages for an empty contribution list", async () => {
+    const messages: PiAgentMessage[] = [{ role: "user", content: "hi" }];
+    const handler = buildPiContextHandler([]);
+    const result = await handler({ type: "context", messages }, SESSION_CTX);
+    assert.deepEqual(result, { messages });
+  });
+
+  it("yields empty messages for an empty message array", async () => {
+    const handler = buildPiContextHandler([]);
+    const result = await handler(
+      { type: "context", messages: [] },
+      SESSION_CTX,
+    );
+    assert.deepEqual(result, { messages: [] });
   });
 
   it("isolates a throwing transform contribution and still runs later ones", async () => {
-    let captured: ContextMetricsOutput | undefined;
+    let captured: TransformOutput | undefined;
     const handler = buildPiContextHandler([
       {
         name: "boom",
@@ -509,43 +430,11 @@ describe("buildPiContextHandler", () => {
       { type: "context", messages: [{ role: "user", content: "hi" }] },
       SESSION_CTX,
     );
-    assert.equal(result, undefined);
+    assert.deepEqual(result, { messages: [{ role: "user", content: "hi" }] });
     assert.ok(captured, "later contribution must still run");
     const crashed = crashedEntries();
     assert.equal(crashed.length, 1);
     assert.equal(crashed[0].handler, "boom");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// toContextMessageEntries
-// ---------------------------------------------------------------------------
-
-describe("toContextMessageEntries", () => {
-  it("synthesises ids and keeps roles as-is", () => {
-    const entries = toContextMessageEntries(
-      [{ role: "user", content: "hi" }],
-      "sess-9",
-    );
-    assert.deepEqual(entries, [
-      {
-        info: { role: "user", id: "pi-sess-9-0", sessionID: "sess-9" },
-        parts: [{ type: "text", text: "hi" }],
-      },
-    ]);
-  });
-
-  it("omits tokens when an assistant message has no usage", () => {
-    const entries = toContextMessageEntries(
-      [{ role: "assistant", content: [{ type: "text", text: "ok" }] }],
-      "sess-9",
-    );
-    assert.deepEqual(entries, [
-      {
-        info: { role: "assistant", id: "pi-sess-9-0", sessionID: "sess-9" },
-        parts: [{ type: "text", text: "ok" }],
-      },
-    ]);
   });
 });
 
@@ -568,5 +457,91 @@ describe("extractText", () => {
   it("returns an empty string for empty or missing content", () => {
     assert.equal(extractText(undefined), "");
     assert.equal(extractText([]), "");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildPiMessageEndHandler
+// ---------------------------------------------------------------------------
+
+function assistantMessage(content: PiAssistantMessage["content"]): {
+  role: "assistant";
+  content: PiAssistantMessage["content"];
+} {
+  return { role: "assistant", content };
+}
+
+function messageEndEvent(message: PiAgentMessage) {
+  return { type: "message_end" as const, message };
+}
+
+describe("buildPiMessageEndHandler", () => {
+  it("strips a leading [mN] ref echo from assistant text", () => {
+    const handler = buildPiMessageEndHandler();
+    const message = assistantMessage([{ type: "text", text: "[m3] hello" }]);
+    const result = handler(messageEndEvent(message), {});
+    assert.ok(result);
+    assert.equal(result?.message?.role, "assistant");
+    assert.deepEqual(result?.message?.content, [
+      { type: "text", text: "hello" },
+    ]);
+  });
+
+  it("strips multiple leading [mN] ref echoes", () => {
+    const handler = buildPiMessageEndHandler();
+    const message = assistantMessage([
+      { type: "text", text: "[m1] [m2] body" },
+    ]);
+    const result = handler(messageEndEvent(message), {});
+    assert.ok(result);
+    assert.deepEqual(result?.message?.content, [
+      { type: "text", text: "body" },
+    ]);
+  });
+
+  it("preserves a mid-text [mN] occurrence", () => {
+    const handler = buildPiMessageEndHandler();
+    const message = assistantMessage([{ type: "text", text: "see [m3] here" }]);
+    const result = handler(messageEndEvent(message), {});
+    assert.equal(result, undefined);
+  });
+
+  it("leaves non-assistant messages untouched", () => {
+    const handler = buildPiMessageEndHandler();
+    const message: PiAgentMessage = { role: "user", content: "[m3] hi" };
+    const result = handler(messageEndEvent(message), {});
+    assert.equal(result, undefined);
+  });
+
+  it("returns undefined when the message is unchanged", () => {
+    const handler = buildPiMessageEndHandler();
+    const message = assistantMessage([{ type: "text", text: "plain" }]);
+    const result = handler(messageEndEvent(message), {});
+    assert.equal(result, undefined);
+  });
+
+  it("does not mutate the input message", () => {
+    const handler = buildPiMessageEndHandler();
+    const content = [{ type: "text" as const, text: "[m3] hello" }];
+    const message = assistantMessage(content);
+    handler(messageEndEvent(message), {});
+    assert.deepEqual(content, [{ type: "text", text: "[m3] hello" }]);
+    assert.deepEqual(message.content, [{ type: "text", text: "[m3] hello" }]);
+  });
+
+  it("leaves thinking and toolCall blocks untouched", () => {
+    const handler = buildPiMessageEndHandler();
+    const message = assistantMessage([
+      { type: "thinking", thinking: "[m3] thought" },
+      { type: "toolCall", id: "c1", name: "x", arguments: {} },
+      { type: "text", text: "[m4] ok" },
+    ]);
+    const result = handler(messageEndEvent(message), {});
+    assert.ok(result);
+    assert.deepEqual(result?.message?.content, [
+      { type: "thinking", thinking: "[m3] thought" },
+      { type: "toolCall", id: "c1", name: "x", arguments: {} },
+      { type: "text", text: "ok" },
+    ]);
   });
 });

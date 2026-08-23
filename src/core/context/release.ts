@@ -9,8 +9,7 @@
  * re-applied on every call because the host reloads the transcript fresh
  * each turn; re-writing an already-replaced region is stable.
  *
- * The releasedPercent gate is migrated verbatim from the legacy hook's
- * Phase 5:
+ * The release gate decides whether pending marks flip this turn:
  *
  *   gate opens  = pendingViewChange || (promptTokens > 0 && releasedPercent !== undefined)
  *   threshold   = releasedPercent !== undefined ? promptTokens * releasedPercent / 100 : 0
@@ -23,21 +22,21 @@
  * decompress tool call) the cache is broken anyway, so every pending mark
  * flushes unconditionally, even with `promptTokens === 0` or an undefined
  * `releasedPercent`.  The flag is read here but owned by the caller, which
- * clears it after the phase (mirroring the legacy Phase 7 finalize).
+ * clears it after the phase.
  *
  * The module never touches `state.nudges`: the nudge watermark is updated
  * by the nudge phase independently, so release and nudge watermarks do not
- * interact (legacy Phase 5 vs Phase 6).
+ * interact.
  *
  * @module
  */
 
-import type { HostMessage, TextRegion } from "./lens.js";
+import type { HostMessage, RegionEdit, TextRegion } from "./lens.js";
 import {
   PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
 } from "./measure.js";
-import type { SessionState } from "./state.js";
+import type { Mark, SessionState } from "./state.js";
 
 // ---------------------------------------------------------------------------
 // Derived stats
@@ -117,9 +116,9 @@ export interface ReleaseOptions {
 /**
  * Result of one release call.
  *
- * Mirrors the legacy `releaseBatch` return semantics — the number of marks
- * actually flipped and their total estimated reclaim tokens — plus whether
- * the release was forced by the pendingViewChange bypass.
+ * Reports the number of marks flipped from pending to effective by this
+ * call, their total estimated reclaim tokens, and whether the release
+ * was forced by the pendingViewChange bypass.
  */
 export interface ReleaseResult {
   /** Marks flipped from pending to effective by this call. */
@@ -149,95 +148,151 @@ function placeholderFor(region: TextRegion): string {
 }
 
 /**
- * Write a mark's placeholder into its anchor region.
+ * Evaluate the releasedPercent gate.
  *
- * Defensive by construction: an out-of-range anchor ordinal (the message
- * was compacted or folded away), an out-of-range region index, or a mark
- * without a region index is skipped silently — matching the legacy apply,
- * which iterates the live transcript and never errors on vanished
- * messages.  Re-applying to an already-replaced region writes the same
- * placeholder again, which is stable.
+ * The gate formula, shared by the edit selection and the mark flip:
  *
- * @param messages - The transcript.
- * @param anchorOrdinal - The mark's message ordinal.
- * @param regionIndex - The mark's region index within the message.
+ *   gate opens  = pendingViewChange || (promptTokens > 0 && releasedPercent !== undefined)
+ *   threshold   = releasedPercent !== undefined ? promptTokens * releasedPercent / 100 : 0
+ *   release     = pendingViewChange || pendingTokens >= threshold
+ *
+ * A closed gate (no bypass, no releasedPercent, promptTokens 0, zero
+ * pending tokens, or pending tokens below the threshold) yields `null`.
+ *
+ * @param state - The session state; only the pending-token total is read.
+ * @param options - Gate inputs, as for `computeEdits`.
+ * @returns The forced flag, or null when the gate stays closed.
  */
-function applyMark(
-  messages: HostMessage[],
-  anchorOrdinal: number,
-  regionIndex: number | undefined,
-): void {
-  if (regionIndex === undefined) return;
-  const msg = messages[anchorOrdinal];
-  if (!msg?.regions) return;
-  const region = msg.regions[regionIndex];
-  if (!region) return;
-  region.set(placeholderFor(region));
+function gateDecision(
+  state: SessionState,
+  options: ReleaseOptions,
+): { forced: boolean } | null {
+  if (
+    !options.pendingViewChange &&
+    !(options.promptTokens > 0 && options.releasedPercent !== undefined)
+  ) {
+    return null;
+  }
+  const curPendingTokens = pendingTokens(state);
+  if (curPendingTokens <= 0) return null;
+  const batchThreshold =
+    options.releasedPercent !== undefined
+      ? (options.promptTokens * options.releasedPercent) / 100
+      : 0;
+  if (!options.pendingViewChange && curPendingTokens < batchThreshold) {
+    return null;
+  }
+  return { forced: options.pendingViewChange };
 }
 
 /**
- * Run the release phase: apply effective marks, then evaluate the
- * releasedPercent gate and flip pending marks that pass it.
+ * Build the edit one mark would write, or undefined when the anchor is
+ * not resolvable on the current transcript.
  *
- * Pipeline position: the start of a turn, before the producers.  The
- * phase is a no-op for an empty or nullish transcript (the legacy hook
- * returned before any phase), and a closed gate keeps pending marks
- * pending — they accumulate across turns until the threshold is reached,
- * the view-change bypass fires, or `releasedPercent: 0` opens the gate
- * for any positive pending total.
+ * A mark without a region index, a vanished anchor message, or an
+ * out-of-range region index produces no edit — the application site is
+ * gone, so nothing is written.
  *
- * @param state - The session state; marks are flipped in place.
- * @param messages - The transcript; effective marks write their
- *   placeholders into the anchor regions.
- * @param options - Gate inputs and the optional flip timestamp.
- * @returns The release result: flipped count, flipped tokens, forced flag.
+ * @param messages - The transcript.
+ * @param mark - The mark to translate.
+ * @returns The region edit, or undefined for an unresolvable anchor.
  */
-export function releaseMarks(
+function editFor(messages: HostMessage[], mark: Mark): RegionEdit | undefined {
+  if (mark.regionIndex === undefined) return undefined;
+  const region = messages[mark.anchorOrdinal]?.regions?.[mark.regionIndex];
+  if (!region) return undefined;
+  return {
+    messageOrdinal: mark.anchorOrdinal,
+    regionIndex: mark.regionIndex,
+    text: placeholderFor(region),
+  };
+}
+
+/**
+ * Compute the region edits the release phase would write, without
+ * applying them.
+ *
+ * Pure selection: for the given state, transcript, and options it
+ * returns every effective mark's placeholder plus every pending mark
+ * the releasedPercent gate would flip this call.  Unresolvable anchors
+ * produce no edit (see `editFor`).  The gate decision is shared with
+ * `flipReleasedMarks`, so the edit set and the flip set always agree on
+ * which pending marks are released.
+ *
+ * The function never mutates `state` or `messages`: it only reads them
+ * to select the edits; applying the result is the caller's job.
+ *
+ * @param state - The session state; only `marks` is read.
+ * @param messages - The transcript; only anchor regions are read.
+ * @param options - Gate inputs.
+ * @returns The edits the release phase would write.
+ */
+export function computeEdits(
   state: SessionState,
   messages: HostMessage[] | undefined | null,
   options: ReleaseOptions,
-): ReleaseResult {
-  if (!messages || messages.length === 0) {
-    return { releasedCount: 0, releasedTokens: 0, forced: false };
-  }
-  const now = options.now ?? Date.now();
+): RegionEdit[] {
+  if (!messages || messages.length === 0) return [];
+  const edits: RegionEdit[] = [];
 
-  // Apply phase: every effective mark (flipped in an earlier turn) writes
-  // its placeholder.  Host reloads restore the original text each turn,
-  // so this must run on every release call, not only on flips.
+  // Apply phase: every effective mark (flipped in an earlier turn)
+  // writes its placeholder.  Host reloads restore the original text
+  // each turn, so effective marks always participate.
   for (const mark of state.marks.values()) {
     if (!mark.effective) continue;
-    applyMark(messages, mark.anchorOrdinal, mark.regionIndex);
+    const edit = editFor(messages, mark);
+    if (edit !== undefined) edits.push(edit);
   }
 
-  // Release phase: the legacy hook's Phase 5 gate, verbatim.
-  let releasedCount = 0;
-  let releasedTokens = 0;
-  let forced = false;
-  if (
-    options.pendingViewChange ||
-    (options.promptTokens > 0 && options.releasedPercent !== undefined)
-  ) {
-    const curPendingTokens = pendingTokens(state);
-    if (curPendingTokens > 0) {
-      const batchThreshold =
-        options.releasedPercent !== undefined
-          ? (options.promptTokens * options.releasedPercent) / 100
-          : 0;
-      if (options.pendingViewChange || curPendingTokens >= batchThreshold) {
-        forced = options.pendingViewChange;
-        for (const mark of state.marks.values()) {
-          if (mark.effective) continue;
-          mark.effective = true;
-          mark.effectiveAt = now;
-          mark.releasedAt = now;
-          releasedCount++;
-          releasedTokens += mark.contentTokens ?? 0;
-          applyMark(messages, mark.anchorOrdinal, mark.regionIndex);
-        }
-      }
+  // Release phase: pending marks that the gate would flip this call
+  // join the edit batch.
+  if (gateDecision(state, options) !== null) {
+    for (const mark of state.marks.values()) {
+      if (mark.effective) continue;
+      const edit = editFor(messages, mark);
+      if (edit !== undefined) edits.push(edit);
     }
   }
 
-  return { releasedCount, releasedTokens, forced };
+  return edits;
+}
+
+/**
+ * Flip the pending marks the release gate releases, with no region
+ * writes.
+ *
+ * The state half of the release phase: every pending mark is marked
+ * effective (with `effectiveAt` / `releasedAt`) when the gate opens —
+ * even a mark whose anchor is unresolvable on the transcript, matching
+ * the two-turn lifecycle where the flip is independent of the write.
+ * The placeholder text for flipped marks is produced by `computeEdits`;
+ * applying those edits is the caller's job.
+ *
+ * The gate evaluation is shared with `computeEdits` (see
+ * `gateDecision`), so the flipped set and the edit set never diverge.
+ * A closed gate leaves every pending mark pending.
+ *
+ * @param state - The session state; pending marks are flipped in place.
+ * @param options - Gate inputs and the optional flip timestamp.
+ * @returns The release result: flipped count, flipped tokens, forced flag.
+ */
+export function flipReleasedMarks(
+  state: SessionState,
+  options: ReleaseOptions,
+): ReleaseResult {
+  if (gateDecision(state, options) === null) {
+    return { releasedCount: 0, releasedTokens: 0, forced: false };
+  }
+  const now = options.now ?? Date.now();
+  let releasedCount = 0;
+  let releasedTokens = 0;
+  for (const mark of state.marks.values()) {
+    if (mark.effective) continue;
+    mark.effective = true;
+    mark.effectiveAt = now;
+    mark.releasedAt = now;
+    releasedCount++;
+    releasedTokens += mark.contentTokens ?? 0;
+  }
+  return { releasedCount, releasedTokens, forced: options.pendingViewChange };
 }

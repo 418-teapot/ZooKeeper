@@ -23,8 +23,12 @@
  * already held a mark (the marks map is callID-scoped and shared with
  * the dedup/sweep producers).  The lens equivalent checks both region
  * keys of the call — the tool-input key this producer writes and the
- * sibling tool-output key the dedup/sweep producers write — so a call
- * claimed by any producer is never re-marked.
+ * linked tool-output key the dedup/sweep producers write — so a call
+ * claimed by any producer is never re-marked.  The output half is
+ * resolved through the input region's positional `ToolMeta.output`
+ * reference when the host supplies one (pi — the pair spans two
+ * messages) and falls back to the same-message sibling scan otherwise
+ * (v1 — both halves of a call live in one message).
  *
  * **Content accounting.**  Following the shared producer convention
  * (see `producers/dedup.ts`), a mark's `contentTokens` carries the net
@@ -35,7 +39,7 @@
  * @module
  */
 
-import type { HostMessage, TextRegion } from "../lens.js";
+import type { HostMessage } from "../lens.js";
 import { measureMessages, netReclaimTokens } from "../measure.js";
 import { PRUNED_TOOL_ERROR_INPUT_REPLACEMENT } from "../message-parts.js";
 import { markKey, RECALL_MAX_CHARS, type SessionState } from "../state.js";
@@ -112,33 +116,61 @@ export interface PurgeErrorsRunResult {
 /**
  * Find the tool-output region that belongs to a tool-input region.
  *
- * The lens carries no call identifiers, so pairing relies on the host
- * layout contract: each call's input/output pair is adjacent, and both
- * regions of a call share the same tool name and status.  The sibling
- * is the first region after the input whose kind is `tool-output` with
- * a matching tool name and an `"error"` status.
+ * Two host layouts are supported:
+ *
+ * - **Positional reference (pi).**  The input region's `ToolMeta.output`
+ *   carries the address of the linked tool-output region — the message
+ *   ordinal and region index of the tool-result half of the call, which
+ *   lives in its own message.  This is the host-agnostic core vocabulary
+ *   and is preferred whenever present.
+ * - **Same-message sibling (v1).**  The lens carries no call
+ *   identifiers, so pairing falls back on the v1 layout contract: each
+ *   call's input/output pair is adjacent, and both regions of a call
+ *   share the same tool name and status.  The sibling is the first
+ *   region after the input whose kind is `tool-output` with a matching
+ *   tool name and an `"error"` status.
  *
  * The output region itself is never marked — it is looked up only so
  * the call-level idempotency check can test the output-region mark key
  * (see `runPurgeErrors`).
  *
- * @param msg - The message holding the call.
- * @param inputIndex - Index of the tool-input region.
+ * @param messages - The transcript.
+ * @param inputOrdinal - Ordinal of the message holding the call.
+ * @param inputIndex - Index of the tool-input region within that message.
  * @param toolName - The call's tool name.
- * @returns The sibling output region, or undefined when none exists.
+ * @returns The output region's `(ordinal, regionIndex)`, or undefined
+ *   when none exists.
  */
 function findErrorOutputRegion(
-  msg: HostMessage,
+  messages: HostMessage[],
+  inputOrdinal: number,
   inputIndex: number,
   toolName: string,
-): TextRegion | undefined {
+): { ordinal: number; regionIndex: number } | undefined {
+  const inputRegion = messages[inputOrdinal]?.regions[inputIndex];
+
+  // Positional reference (pi): the address points at the linked
+  // tool-result message's tool-output region.  Defensive: the address
+  // must resolve to a real tool-output region of the same tool.
+  const ref = inputRegion?.tool?.output;
+  if (ref !== undefined) {
+    const regionIndex = ref.regionIndex ?? 0;
+    const region = messages[ref.ordinal]?.regions[regionIndex];
+    if (region?.kind === "tool-output" && region.tool?.name === toolName) {
+      return { ordinal: ref.ordinal, regionIndex };
+    }
+    return undefined;
+  }
+
+  // Same-message sibling (v1): scan forward for the adjacent output.
+  const msg = messages[inputOrdinal];
   for (let i = inputIndex + 1; i < msg.regions.length; i++) {
     const region = msg.regions[i];
     if (!region) continue;
     if (region.kind !== "tool-output") continue;
     if (region.tool?.name !== toolName) continue;
     if (region.tool?.status !== "error") continue;
-    return region;
+    return { ordinal: inputOrdinal, regionIndex: i };
   }
   return undefined;
 }
@@ -207,7 +239,7 @@ function addPendingMark(
  * 1. Protected window / already-folded-or-pruned ordinal → skip.
  * 2. Tool name in `protectedTools` → skip (no default list).
  * 3. A mark already held by either of the call's regions — its
- *    tool-input key or its sibling tool-output key — → skip the whole
+ *    tool-input key or its linked tool-output key — → skip the whole
  *    call (the legacy callID-scoped idempotency, migrated to region
  *    keys; the output-region key covers marks written by the dedup and
  *    sweep producers).
@@ -281,15 +313,19 @@ export function runPurgeErrors(
       // Call-level idempotency (legacy callID-scoped): an existing mark
       // on either region of the call suppresses the whole call.  The
       // output-region key is never written here, but the dedup/sweep
-      // producers may hold it.
-      const outputRegion = findErrorOutputRegion(msg, i, toolName);
-      const outputIndex = outputRegion
-        ? msg.regions.indexOf(outputRegion)
-        : undefined;
+      // producers may hold it — resolved through the positional
+      // reference on pi (cross-message) or the same-message sibling on
+      // v1.
+      const outputRegion = findErrorOutputRegion(
+        messages,
+        ordinal,
+        i,
+        toolName,
+      );
       if (state.marks.has(markKey(ordinal, i))) continue;
       if (
-        outputIndex !== undefined &&
-        state.marks.has(markKey(ordinal, outputIndex))
+        outputRegion !== undefined &&
+        state.marks.has(markKey(outputRegion.ordinal, outputRegion.regionIndex))
       ) {
         continue;
       }

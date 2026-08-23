@@ -3,7 +3,7 @@
  *
  * Focused suite covering the cut-over checklist C13 contracts and the
  * pipeline phase wiring (state → history → release → three producers →
- * fold + block maintenance → applyView → nudge / manual compress →
+ * fold + block maintenance → view render → nudge / manual compress →
  * save):
  *
  * - **C13-01** release notification exactly once, text carries the
@@ -19,18 +19,14 @@
  *   blocks folding and marks pruning), nudge injection + anchor
  *   persistence, and config gating combinations.
  *
- * Fixtures are v1 `ContextMessageEntry` arrays driven through the real
+ * Fixtures are v1-shaped message arrays driven through the real
  * handler; state and persistence go through the process-wide shared
  * manager (`getContextStateManager`), with session files cleaned up in
  * teardown.
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { history } from "../../adapters/opencode/history.js";
-import type {
-  ContextMessageEntry,
-  ContextTokenInfo,
-} from "../../adapters/opencode/types.js";
+import type { HostAdapter, HostMessage } from "../../core/context/lens.js";
 import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "../../core/context/message-parts.js";
 import {
   _resetForTesting as _resetModelLimitsForTesting,
@@ -46,12 +42,44 @@ import {
 import { computeSpanHash } from "../../core/context/spanhash.js";
 import { markKey } from "../../core/context/state.js";
 import type { ActiveSet, Deps } from "../../core/slots.js";
+import { createV1Adapter } from "../../opencode.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import {
   _resetViewChangeFlagsForTesting,
   contextPruningTransformHandler,
 } from "./hook.js";
 import { unit } from "./index.js";
+
+// ---------------------------------------------------------------------------
+// Local v1-shaped fixture types
+//
+// The handler is driven through the real v1 adapter, but the test fixtures
+// only need a structural subset of the full TestMessageEntry type.
+// ---------------------------------------------------------------------------
+
+/** Minimal v1-shaped message entry used by fixtures. */
+interface TestMessageEntry {
+  info: {
+    role: string;
+    id: string;
+    sessionID?: string;
+    tokens?: TestTokenInfo;
+    synthetic?: boolean;
+    ignored?: boolean;
+  };
+  parts: unknown[];
+}
+
+/** Minimal v1-shaped token report used by fixtures. */
+interface TestTokenInfo {
+  input?: number;
+  output?: number;
+  reasoning?: number;
+  cache?: { read?: number; write?: number };
+}
+
+/** Shared v1 adapter instance for the fixture-driven tests. */
+const adapter = createV1Adapter();
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -72,6 +100,7 @@ const TEST_SESSION_IDS = [
   "sess-dedup-marked",
   "sess-dedup-gated",
   "sess-dedup-pending",
+  "sess-pure-mock",
 ];
 
 afterEach(() => {
@@ -127,8 +156,8 @@ function msg(
   id: string,
   parts: unknown[],
   sessionID?: string,
-  tokens?: ContextTokenInfo,
-): ContextMessageEntry {
+  tokens?: TestTokenInfo,
+): TestMessageEntry {
   return {
     info: {
       role,
@@ -136,7 +165,7 @@ function msg(
       ...(sessionID ? { sessionID } : {}),
       ...(tokens ? { tokens } : {}),
     },
-    parts: parts as ContextMessageEntry["parts"],
+    parts: parts as TestMessageEntry["parts"],
   };
 }
 
@@ -152,21 +181,25 @@ const MODEL_LIMIT = 1_000_000;
 
 describe("robustness (C13-03)", () => {
   it("is a no-op for null messages", () => {
-    assert.doesNotThrow(() => contextPruningTransformHandler(null, {}));
+    assert.doesNotThrow(() =>
+      contextPruningTransformHandler(adapter, null, {}),
+    );
   });
 
   it("is a no-op for undefined messages", () => {
-    assert.doesNotThrow(() => contextPruningTransformHandler(undefined, {}));
+    assert.doesNotThrow(() =>
+      contextPruningTransformHandler(adapter, undefined, {}),
+    );
   });
 
   it("is a no-op for an empty array", () => {
-    assert.doesNotThrow(() => contextPruningTransformHandler([], {}));
+    assert.doesNotThrow(() => contextPruningTransformHandler(adapter, [], {}));
   });
 
   it("is a no-op when the first message has no sessionID", () => {
     const messages = [msg("user", "u1", [textPart("hi")])];
     assert.doesNotThrow(() =>
-      contextPruningTransformHandler(messages, {
+      contextPruningTransformHandler(adapter, messages, {
         dedup: { thresholdContext: 100000 },
         purgeErrors: { thresholdContext: 100000 },
         compress: { protectedTokens: 0, thresholdTokens: 0 },
@@ -179,7 +212,8 @@ describe("robustness (C13-03)", () => {
     const messages = [null, msg("user", "u2", [textPart("hi")])];
     assert.doesNotThrow(() =>
       contextPruningTransformHandler(
-        messages as unknown as ContextMessageEntry[],
+        adapter,
+        messages as unknown as TestMessageEntry[],
         {},
       ),
     );
@@ -192,12 +226,12 @@ describe("robustness (C13-03)", () => {
       {
         info: { role: "assistant", id: "a1", sessionID },
         parts: [null, { type: "tool" }, { type: "text", text: "ok" }],
-      } as unknown as ContextMessageEntry,
+      } as unknown as TestMessageEntry,
       msg("user", "u2", [null, textPart("again")], sessionID),
     ];
     // The pipeline must never throw on degenerate part shapes.
     assert.doesNotThrow(() =>
-      contextPruningTransformHandler(messages, {
+      contextPruningTransformHandler(adapter, messages, {
         dedup: { thresholdContext: 100000 },
         purgeErrors: {},
       }),
@@ -214,7 +248,7 @@ describe("persistence round-trip via the shared store", () => {
   it("restart keeps blocks folding and effective marks pruning", () => {
     const sessionID = "sess-persist-roundtrip";
 
-    const buildTurn = (): ContextMessageEntry[] => [
+    const buildTurn = (): TestMessageEntry[] => [
       msg("user", "u1", [textPart("hello")], sessionID),
       msg("assistant", "a1", [toolPart("first call output")], undefined, {
         input: 6000,
@@ -233,7 +267,7 @@ describe("persistence round-trip via the shared store", () => {
       start: 0,
       end: 2,
       summary: "packed",
-      spanHash: computeSpanHash(history(turnOne), 0, 2),
+      spanHash: computeSpanHash(adapter.history(turnOne), 0, 2),
       active: true,
       compressedTokens: 100,
       summaryTokens: 10,
@@ -250,7 +284,7 @@ describe("persistence round-trip via the shared store", () => {
 
     // Turn 1: effective mark applied + block folded + state saved.
     const turnOneMessages = buildTurn();
-    contextPruningTransformHandler(turnOneMessages, {
+    contextPruningTransformHandler(adapter, turnOneMessages, {
       dedup: {},
       purgeErrors: {},
     });
@@ -269,7 +303,7 @@ describe("persistence round-trip via the shared store", () => {
     // Turn 2: fresh transcript from the host — the reloaded state must
     // still fold the block and apply the effective mark.
     const turnTwoMessages = buildTurn();
-    contextPruningTransformHandler(turnTwoMessages, {
+    contextPruningTransformHandler(adapter, turnTwoMessages, {
       dedup: {},
       purgeErrors: {},
     });
@@ -300,7 +334,7 @@ describe("release notification (C13-01)", () => {
     const sessionID = "sess-sweep-notify";
     setModelLimit(sessionID, MODEL_LIMIT, "test-model");
 
-    const buildTurn = (): ContextMessageEntry[] => [
+    const buildTurn = (): TestMessageEntry[] => [
       msg("user", "u1", [textPart("do it")], sessionID),
       msg("assistant", "a1", [toolPart(LONG_OUTPUT)], undefined, {
         input: 800000,
@@ -318,7 +352,7 @@ describe("release notification (C13-01)", () => {
     };
 
     // Turn N: sweep marks the tool output as pending; nothing releases.
-    contextPruningTransformHandler(buildTurn(), config, notify);
+    contextPruningTransformHandler(adapter, buildTurn(), config, notify);
     assert.equal(notifyCalls.length, 0, "no release on the marking turn");
     const state = getContextStateManager().get(sessionID);
     assert.equal(state.marks.size, 1, "sweep wrote one pending mark");
@@ -330,7 +364,7 @@ describe("release notification (C13-01)", () => {
     );
 
     // Turn N+1: the pending mark flips and the notify fires exactly once.
-    contextPruningTransformHandler(buildTurn(), config, notify);
+    contextPruningTransformHandler(adapter, buildTurn(), config, notify);
     assert.equal(notifyCalls.length, 1, "notify called exactly once");
 
     // C13-01: the text carries the required wording and the mark count.
@@ -358,7 +392,7 @@ describe("release notification (C13-01)", () => {
   it("keeps marks pending while the releasedPercent gate is closed", () => {
     const sessionID = "sess-sweep-below";
     setModelLimit(sessionID, MODEL_LIMIT, "test-model");
-    const buildTurn = (): ContextMessageEntry[] => [
+    const buildTurn = (): TestMessageEntry[] => [
       msg("user", "u1", [textPart("do it")], sessionID),
       msg("assistant", "a1", [toolPart(LONG_OUTPUT)], undefined, {
         input: 800000,
@@ -371,7 +405,7 @@ describe("release notification (C13-01)", () => {
     const config = { protectedMessages: 0 };
     for (let turn = 0; turn < 2; turn++) {
       const notifyCalls: string[] = [];
-      contextPruningTransformHandler(buildTurn(), config, (t) =>
+      contextPruningTransformHandler(adapter, buildTurn(), config, (t) =>
         notifyCalls.push(t),
       );
       assert.equal(notifyCalls.length, 0, "no release without releasedPercent");
@@ -430,7 +464,7 @@ describe("log field sets (C13-02)", () => {
         toolPart("pending output"),
       ]),
     ];
-    contextPruningTransformHandler(messages, {
+    contextPruningTransformHandler(adapter, messages, {
       dedup: {},
       purgeErrors: {},
     });
@@ -469,6 +503,7 @@ describe("log field sets (C13-02)", () => {
     ];
     const notifyCalls: string[] = [];
     contextPruningTransformHandler(
+      adapter,
       messages,
       { dedup: {}, purgeErrors: {} },
       (t) => notifyCalls.push(t),
@@ -520,7 +555,7 @@ describe("context-nudge injection", () => {
   function nudgeMessages(
     sessionID: string,
     inputTokens: number,
-  ): ContextMessageEntry[] {
+  ): TestMessageEntry[] {
     return [
       msg("user", "u1", [textPart("hello")], sessionID),
       msg("assistant", "a1", [toolPart("data one")], undefined, {
@@ -539,6 +574,7 @@ describe("context-nudge injection", () => {
     // Baseline eval at 140K — establishes the anchor silently.
     let messages = nudgeMessages(sessionID, 140000);
     contextPruningTransformHandler(
+      adapter,
       messages,
       nudgeTransformConfig(2),
       undefined,
@@ -551,6 +587,7 @@ describe("context-nudge injection", () => {
     // Growth past the gentle interval: 150K (delta 10K >= 10K).
     messages = nudgeMessages(sessionID, 150000);
     contextPruningTransformHandler(
+      adapter,
       messages,
       nudgeTransformConfig(2),
       undefined,
@@ -601,6 +638,7 @@ describe("context-nudge injection", () => {
 
     let messages = nudgeMessages(sessionID, 140000);
     contextPruningTransformHandler(
+      adapter,
       messages,
       nudgeTransformConfig(2),
       undefined,
@@ -608,6 +646,7 @@ describe("context-nudge injection", () => {
     );
     messages = nudgeMessages(sessionID, 150000);
     contextPruningTransformHandler(
+      adapter,
       messages,
       nudgeTransformConfig(2),
       undefined,
@@ -618,6 +657,7 @@ describe("context-nudge injection", () => {
     // Same tokens again — delta 0 → the anchor already moved → silent.
     const messages2 = nudgeMessages(sessionID, 150000);
     contextPruningTransformHandler(
+      adapter,
       messages2,
       nudgeTransformConfig(2),
       undefined,
@@ -639,9 +679,21 @@ describe("context-nudge injection", () => {
       purgeErrors: {},
     };
     let messages = nudgeMessages(sessionID, 140000);
-    contextPruningTransformHandler(messages, noNudgeConfig, undefined, true);
+    contextPruningTransformHandler(
+      adapter,
+      messages,
+      noNudgeConfig,
+      undefined,
+      true,
+    );
     messages = nudgeMessages(sessionID, 150000);
-    contextPruningTransformHandler(messages, noNudgeConfig, undefined, true);
+    contextPruningTransformHandler(
+      adapter,
+      messages,
+      noNudgeConfig,
+      undefined,
+      true,
+    );
     assert.equal(messages.length, 4, "absent nudge section → silent");
 
     // Gate 2: nudge section present but the compress tool NOT registered.
@@ -649,6 +701,7 @@ describe("context-nudge injection", () => {
     setModelLimit(sessionID2, NUDGE_LIMIT, "test-model");
     messages = nudgeMessages(sessionID2, 140000);
     contextPruningTransformHandler(
+      adapter,
       messages,
       nudgeTransformConfig(2),
       undefined,
@@ -656,6 +709,7 @@ describe("context-nudge injection", () => {
     );
     messages = nudgeMessages(sessionID2, 150000);
     contextPruningTransformHandler(
+      adapter,
       messages,
       nudgeTransformConfig(2),
       undefined,
@@ -677,7 +731,7 @@ describe("context-nudge injection", () => {
 
 describe("manual compress trigger", () => {
   /** Two-turn view with the compress section thresholds disabled. */
-  function manualMessages(sessionID: string): ContextMessageEntry[] {
+  function manualMessages(sessionID: string): TestMessageEntry[] {
     return [
       msg("user", "u1", [textPart("hello")], sessionID),
       msg("assistant", "a1", [toolPart("data one")], undefined, {
@@ -704,7 +758,13 @@ describe("manual compress trigger", () => {
     state.pendingManualTrigger = true;
 
     const messages = manualMessages(sessionID);
-    contextPruningTransformHandler(messages, manualConfig(2), undefined, true);
+    contextPruningTransformHandler(
+      adapter,
+      messages,
+      manualConfig(2),
+      undefined,
+      true,
+    );
 
     assert.equal(messages.length, 5, "synthetic command appended");
     const last = messages[messages.length - 1];
@@ -737,7 +797,13 @@ describe("manual compress trigger", () => {
     state.pendingManualTrigger = true;
 
     const messages = manualMessages(sessionID);
-    contextPruningTransformHandler(messages, manualConfig(2), undefined, false);
+    contextPruningTransformHandler(
+      adapter,
+      messages,
+      manualConfig(2),
+      undefined,
+      false,
+    );
 
     assert.equal(messages.length, 4, "no injection without the compress tool");
     assert.equal(state.pendingManualTrigger, false, "stale flag cleared");
@@ -759,8 +825,8 @@ describe("config gating combinations", () => {
    * assistant carries two identical tool calls plus a completed token
    * report (input 100000 + output 200 = 100200 exact).
    */
-  function dedupTranscript(sessionID: string): ContextMessageEntry[] {
-    const messages: ContextMessageEntry[] = [];
+  function dedupTranscript(sessionID: string): TestMessageEntry[] {
+    const messages: TestMessageEntry[] = [];
     for (let i = 0; i < 22; i++) {
       const role = i % 2 === 0 ? "user" : "assistant";
       if (i === 21) {
@@ -789,7 +855,7 @@ describe("config gating combinations", () => {
 
   it("skips dedup entirely when thresholdContext is not configured", () => {
     const sessionID = "sess-dedup-gated";
-    contextPruningTransformHandler(dedupTranscript(sessionID), {
+    contextPruningTransformHandler(adapter, dedupTranscript(sessionID), {
       protectedMessages: 0,
     });
     const state = getContextStateManager().get(sessionID);
@@ -806,7 +872,7 @@ describe("config gating combinations", () => {
     setModelLimit(sessionID, MODEL_LIMIT, "test-model");
 
     // Turn N: dedup writes one pending mark; release gate is closed.
-    contextPruningTransformHandler(dedupTranscript(sessionID), {
+    contextPruningTransformHandler(adapter, dedupTranscript(sessionID), {
       protectedMessages: 0,
       dedup: { thresholdContext: 100000 },
       purgeErrors: {},
@@ -818,7 +884,7 @@ describe("config gating combinations", () => {
     // Turn N+1: the release gate is still closed and the position is
     // already claimed (first-write-wins), so the mark stays pending —
     // it never flips and is never re-marked.
-    contextPruningTransformHandler(dedupTranscript(sessionID), {
+    contextPruningTransformHandler(adapter, dedupTranscript(sessionID), {
       protectedMessages: 0,
       dedup: { thresholdContext: 100000 },
       purgeErrors: {},
@@ -844,14 +910,116 @@ describe("config gating combinations", () => {
       purgeErrors: {},
     };
 
-    contextPruningTransformHandler(dedupTranscript(sessionID), config);
+    contextPruningTransformHandler(adapter, dedupTranscript(sessionID), config);
     let state = getContextStateManager().get(sessionID);
     assert.equal(state.marks.size, 1, "pending after the marking turn");
     assert.equal(state.marks.get(markKey(21, 1))?.effective, false);
 
-    contextPruningTransformHandler(dedupTranscript(sessionID), config);
+    contextPruningTransformHandler(adapter, dedupTranscript(sessionID), config);
     state = getContextStateManager().get(sessionID);
     assert.equal(state.marks.get(markKey(21, 1))?.effective, true, "released");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mutation-agnostic pipeline with a strictly-pure mock adapter
+// ---------------------------------------------------------------------------
+
+describe("pure adapter pipeline support", () => {
+  /** Minimal message shape used only by the mock adapter. */
+  interface MockMessage {
+    id: string;
+    sessionId: string;
+    text: string;
+  }
+
+  /**
+   * Strictly pure mock adapter: every method returns a new array and never
+   * mutates its input.  The handler must produce output from these returned
+   * arrays rather than relying on in-place mutation.
+   */
+  const mockAdapter: HostAdapter<MockMessage[]> = {
+    history(messages) {
+      return messages.map(
+        (m): HostMessage => ({
+          role: "user",
+          hidden: false,
+          regions: [
+            {
+              kind: "content",
+              get: () => m.text,
+            },
+          ],
+        }),
+      );
+    },
+    applyEdits(messages, edits) {
+      const edited = messages.map((m) => ({ ...m }));
+      for (const edit of edits) {
+        const target = edited[edit.messageOrdinal];
+        if (target) {
+          target.text = `${target.text}[edit:${edit.text}]`;
+        }
+      }
+      return edited.map((m) => ({ ...m, text: `${m.text}(applied)` }));
+    },
+    renderView(messages) {
+      return messages.map((m) => ({ ...m, text: `${m.text}(view)` }));
+    },
+    render(messages, items, edits, state) {
+      return this.renderView(this.applyEdits(messages, edits), items, state);
+    },
+    sessionId(messages) {
+      return messages[0]?.sessionId;
+    },
+    appendUserMessage(messages, id, sessionId, text) {
+      return [...messages, { id, sessionId, text }];
+    },
+  };
+
+  it("returns the adapter's arrays instead of mutating in place", () => {
+    const sessionID = "sess-pure-mock";
+    const manager = getContextStateManager();
+    const state = manager.get(sessionID);
+    state.marks.set(markKey(1, 0), {
+      anchorOrdinal: 1,
+      regionIndex: 0,
+      content: "long output",
+      contentTokens: 100,
+      effective: true,
+      markedAt: 1000,
+    });
+
+    const original: MockMessage[] = [
+      { id: "u1", sessionId: sessionID, text: "hello" },
+      { id: "a1", sessionId: sessionID, text: "tool output" },
+    ];
+    const snapshot = structuredClone(original);
+
+    const result = contextPruningTransformHandler(
+      mockAdapter as HostAdapter<unknown>,
+      original,
+      { dedup: {}, purgeErrors: {} },
+    ) as MockMessage[];
+
+    assert.notEqual(result, original, "handler returned a new array");
+    assert.deepEqual(
+      original,
+      snapshot,
+      "input array was never mutated by the pure adapter",
+    );
+    assert.ok(
+      result[1].text.includes("[edit:"),
+      "release edit traveled through the adapter return",
+    );
+    assert.ok(
+      result[1].text.includes("(applied)"),
+      "applyEdits return was threaded to later phases",
+    );
+    assert.ok(
+      result[1].text.includes("(view)"),
+      "renderView return was threaded to the final output",
+    );
   });
 });
 
@@ -868,13 +1036,14 @@ describe("unit.create enablement (C13-04)", () => {
     commands: new Set(),
   };
 
-  it("always contributes the transform handler, even with an empty client", () => {
+  it("contributes the transform handler when an adapter is wired", () => {
     const deps: Deps = {
       limits: {},
       contextConfig: {},
       client: {},
       directory: "/tmp/zoo",
       sessionAgentMap: new Map(),
+      adapter,
     };
 
     const contributions = unit.create(deps, activeSet);
@@ -888,7 +1057,7 @@ describe("unit.create enablement (C13-04)", () => {
     assert.ok(!_getBufferForTesting().some((e) => e.event === "unit_disabled"));
   });
 
-  it("contributes the transform handler when the client provides session.get", () => {
+  it("contributes no transform handler when adapter is undefined (fail-closed)", () => {
     const deps: Deps = {
       limits: {},
       contextConfig: {},
@@ -904,8 +1073,9 @@ describe("unit.create enablement (C13-04)", () => {
     const contributions = unit.create(deps, activeSet);
 
     assert.equal(contributions.kind, "hook");
-    assert.equal(contributions.transform.length, 1);
-    assert.equal(contributions.transform[0].name, "contextPruning");
-    assert.ok(!_getBufferForTesting().some((e) => e.event === "unit_disabled"));
+    assert.equal(contributions.transform.length, 0);
+    assert.deepEqual(contributions.beforeExec, []);
+    assert.deepEqual(contributions.afterExec, []);
+    assert.deepEqual(contributions.toolDefinition, []);
   });
 });
