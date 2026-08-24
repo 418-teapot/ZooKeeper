@@ -11,7 +11,7 @@
  * (`zookeeperPi`) against the real config.toml.
  */
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
@@ -27,7 +27,13 @@ import {
   zookeeperPi,
 } from "./pi.js";
 import { validateCompressArgs } from "./tools/compress.js";
-import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
+import {
+  _flushForTesting,
+  _getBufferForTesting,
+  _resetForTesting,
+  initLogger,
+  log,
+} from "./utils/logger.js";
 import { withModeFile } from "./utils/mode-file.js";
 
 /** The poly profile (mirrors the `[zoo.mode.poly]` lists). */
@@ -355,7 +361,7 @@ describe("buildPiHandlers — prompt injection + skill discovery", () => {
     const resources = await handlers.resourcesDiscover();
     assert.equal(resources.skillPaths.length, 11);
     for (const path of resources.skillPaths) {
-      assert.ok(existsSync(path), `${path} must exist`);
+      assert.ok(fs.existsSync(path), `${path} must exist`);
       assert.ok(
         POLY_PROFILE.skills.some((name) => path.endsWith(name)),
         `${path} must match a profile skill`,
@@ -880,6 +886,120 @@ describe("buildPiHandlers — null profile fail-closed", () => {
 });
 
 // ---------------------------------------------------------------------------
+// plugin_init load-time event
+// ---------------------------------------------------------------------------
+
+describe("buildPiHandlers — plugin_init load-time event", () => {
+  it("emits plugin_init once at load with agents/skills/limits fields", () => {
+    // Init the logger so the load-time plugin_init is attributed to a
+    // temp log dir instead of tripping the one-time used-before-init
+    // warning (isolation pattern used across this file).
+    const logDir = fs.mkdtempSync(join(tmpdir(), "zoo-pi-log-"));
+    try {
+      initLogger("pi", { logDir });
+      buildPiHandlers(POLY_ZOO);
+      const inits = _getBufferForTesting().filter(
+        (entry) => entry.event === "plugin_init",
+      );
+      assert.equal(inits.length, 1, "exactly one plugin_init at load");
+      const init = inits[0];
+      assert.equal(init.hook, "plugin");
+      assert.equal(init.sessionId, "");
+      assert.equal(init.level, "info");
+      assert.deepEqual(
+        init.agents,
+        POLY_PROFILE.agents,
+        "agents must list the composed agent names",
+      );
+      assert.deepEqual(
+        init.skills,
+        POLY_PROFILE.skills,
+        "skills must list the composed skill names",
+      );
+      assert.deepEqual(init.limits, {
+        contextWordLimit: 200,
+        promptWordLimit: 500,
+      });
+    } finally {
+      try {
+        fs.rmSync(logDir, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
+    }
+  });
+
+  it("null profile → plugin_init with empty agents/skills", () => {
+    const logDir = fs.mkdtempSync(join(tmpdir(), "zoo-pi-log-"));
+    try {
+      initLogger("pi", { logDir });
+      buildPiHandlers({});
+      const inits = _getBufferForTesting().filter(
+        (entry) => entry.event === "plugin_init",
+      );
+      assert.equal(inits.length, 1);
+      assert.deepEqual(inits[0].agents, []);
+      assert.deepEqual(inits[0].skills, []);
+    } finally {
+      try {
+        fs.rmSync(logDir, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
+    }
+  });
+
+  it("buffers plugin_init sessionless; flush into the first pi session's file", () => {
+    const logDir = fs.mkdtempSync(join(tmpdir(), "zoo-pi-log-"));
+    try {
+      initLogger("pi", { logDir });
+      buildPiHandlers(POLY_ZOO);
+
+      // Load-time plugin_init is sessionless and no session exists yet:
+      // it stays buffered and no pi.log host-level file is created.
+      _flushForTesting();
+      assert.equal(
+        fs.existsSync(join(logDir, "pi.log")),
+        false,
+        "no host-level pi.log may be created",
+      );
+      assert.ok(
+        _getBufferForTesting().some((e) => e.event === "plugin_init"),
+        "plugin_init must remain buffered until a session exists",
+      );
+
+      // The first sessioned entry establishes the primary pi session;
+      // the buffered plugin_init now flushes into its file.
+      log("plugin", "handler", "pi-sess", undefined, "info");
+      _flushForTesting();
+
+      const primaryFile = join(logDir, "pi-pi-sess.log");
+      assert.ok(
+        fs.existsSync(primaryFile),
+        "primary pi session file must exist",
+      );
+      const lines = fs.readFileSync(primaryFile, "utf-8").trimEnd().split("\n");
+      const events = lines.map((line) => JSON.parse(line).event);
+      assert.ok(
+        events.includes("plugin_init"),
+        "buffered plugin_init must land in the first pi session's file",
+      );
+      assert.equal(
+        fs.existsSync(join(logDir, "pi.log")),
+        false,
+        "no host-level pi.log may be created",
+      );
+    } finally {
+      try {
+        fs.rmSync(logDir, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Thin entry wiring
 // ---------------------------------------------------------------------------
 
@@ -896,6 +1016,35 @@ describe("zookeeperPi — thin entry wiring", () => {
       assert.equal(typeof api.handlers.tool_result, "function");
       assert.equal(typeof api.handlers.context, "function");
       assert.equal(typeof api.handlers.message_end, "function");
+
+      // The extension load logs a single plugin_init startup anchor with
+      // the composed agents/skills/limits (mirrors the OpenCode host).
+      const inits = _getBufferForTesting().filter(
+        (entry) => entry.event === "plugin_init",
+      );
+      assert.equal(
+        inits.length,
+        1,
+        "exactly one plugin_init at extension load",
+      );
+      const init = inits[0];
+      assert.equal(init.hook, "plugin");
+      assert.equal(init.sessionId, "");
+      assert.equal(init.level, "info");
+      assert.equal(
+        (init.agents as string[]).length,
+        7,
+        "real poly profile composes 7 agents",
+      );
+      assert.equal(
+        (init.skills as string[]).length,
+        11,
+        "real poly profile composes 11 skills",
+      );
+      assert.deepEqual(init.limits, {
+        contextWordLimit: 200,
+        promptWordLimit: 500,
+      });
 
       // The zoo-dcp entry renderer is registered against the real
       // config.toml profile so dcp reports render in the TUI.

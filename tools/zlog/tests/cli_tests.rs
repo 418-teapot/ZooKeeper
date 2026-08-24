@@ -57,12 +57,14 @@ impl TestFixture {
         fs::write(log_dir.join("opencode-ses-001.log"), data_001)
             .expect("write ses-001 log");
 
-        // ses-002: single entry for prefix-uniqueness
+        // ses-002: single entry for prefix-uniqueness. Hosted on pi: the
+        // log lives in `pi-ses-002.log` and must be resolved via the pi
+        // prefix.
         let data_002 = concat!(
             r#"{"hook":"task-prompt-validate","level":"info","event":"trigger","ts":"2025-01-09T14:00:00Z","sessionId":"ses-002"}"#,
             "\n",
         );
-        fs::write(log_dir.join("opencode-ses-002.log"), data_002)
+        fs::write(log_dir.join("pi-ses-002.log"), data_002)
             .expect("write ses-002 log");
 
         Self {
@@ -497,6 +499,28 @@ fn test_show_jq_no_match_exits_0() {
 }
 
 // ── cmd_show: resolve_session_path edge cases ────────────────────────────────
+
+#[test]
+fn test_show_raw_pi_hosted_session() {
+    let fix = TestFixture::new();
+    // ses-002's log lives in `pi-ses-002.log`; `show` must resolve it
+    // through the pi prefix.
+    let output = fix
+        .zlog()
+        .args(["show", "ses-002", "--raw"])
+        .output()
+        .expect("failed to run zlog show ses-002 --raw");
+    assert!(
+        output.status.success(),
+        "show pi-hosted ses-002 should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("task-prompt-validate"),
+        "raw output should contain the pi-hosted entry"
+    );
+}
 
 #[test]
 fn test_show_ambiguous_prefix_exits_2() {

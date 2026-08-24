@@ -545,11 +545,12 @@ export function parseContextConfig(zooConfig: any): ContextPruningConfig {
  *  - `retention_days`: must be > 0 (negative would delete all logs).
  *
  * @param zooConfig - The `zoo` section of the parsed config.toml.
+ * @param host - The host name (e.g. `"opencode"`, `"pi"`).
  */
-export function initPluginLogger(zooConfig: any): void {
+export function initPluginLogger(zooConfig: any, host: string): void {
   const lc = zooConfig.logging as Record<string, unknown> | undefined;
   if (lc == null) {
-    initLogger("");
+    initLogger(host);
     return;
   }
 
@@ -561,12 +562,12 @@ export function initPluginLogger(zooConfig: any): void {
   const bad = findBadKey(keyChecks);
   if (bad) {
     warnSectionInvalid("logging", bad);
-    initLogger("");
+    initLogger(host);
     return;
   }
 
   const maxSizeRaw = lc.max_file_size_mb as number | undefined;
-  initLogger("", {
+  initLogger(host, {
     maxFileSize:
       maxSizeRaw === undefined ? undefined : maxSizeRaw * 1024 * 1024,
     maxBackups: lc.max_backups as number | undefined,

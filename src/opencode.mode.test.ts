@@ -147,7 +147,6 @@ describe("poly full profile — registration parity", () => {
     assert.deepEqual(
       Object.keys(plugin).sort(),
       [
-        "chat.params",
         "command.execute.before",
         "config",
         "event",
@@ -730,12 +729,7 @@ describe("null profile — skip profile-driven registration", () => {
     const plugin = await makePlugin({ validation: POLY_ZOO.validation });
     assert.deepEqual(
       Object.keys(plugin).sort(),
-      [
-        "chat.params",
-        "config",
-        "event",
-        "experimental.chat.system.transform",
-      ].sort(),
+      ["config", "event", "experimental.chat.system.transform"].sort(),
     );
   });
 

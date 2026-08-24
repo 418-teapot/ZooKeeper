@@ -19,8 +19,8 @@
  *  (`src/compose-opencode.ts`) turns the host-agnostic result into hook
  *  registrations.  When the profile is `null` (absent or invalid) every
  *  profile-driven registration is skipped — no defaults, no fallback to a
- *  full load — while the always-on infrastructure hooks (chat.params,
- *  event, experimental.chat.system.transform) keep working.
+ *  full load — while the always-on infrastructure hooks (event,
+ *  experimental.chat.system.transform) keep working.
  *
  *  This module is the entry + always-on infrastructure: it wires the
  *  parsed config, consumes the shared `sessionAgentMap` (held by
@@ -45,9 +45,6 @@ import { setModelLimit } from "./core/context/model-limits.js";
 import { cleanupSession, sessionAgentMap } from "./core/context/runtime.js";
 import type { Deps } from "./core/slots.js";
 import { REGISTRY } from "./registry.js";
-import { setSessionId } from "./utils/logger.js";
-
-let _sessionIdSet = false;
 
 // ---------------------------------------------------------------------------
 // Plugin entry point
@@ -59,7 +56,7 @@ let _sessionIdSet = false;
  * Profile-driven registrations (agents, skills, hook units, tools, slash
  * commands) are composed from the active `[zoo.mode.*]` profile; when the
  * profile is null they are all skipped while the infrastructure hooks
- * (chat.params, event, experimental.chat.system.transform) keep working.
+ * (event, experimental.chat.system.transform) keep working.
  *
  * Exported for unit testing — `zookeeper` wires this with the imported
  * config.toml.
@@ -75,7 +72,7 @@ export async function buildPlugin(input: any, zooConfig: any) {
   const client = input.client;
   const directory: string = (input as any).directory ?? "";
 
-  initPluginLogger(zooConfig);
+  initPluginLogger(zooConfig, "opencode");
 
   // ── Profile-driven composition ────────────────────────────────────
   // `sessionAgentMap` is the shared session → agent map held by
@@ -95,16 +92,6 @@ export async function buildPlugin(input: any, zooConfig: any) {
 
   return {
     // ── Always-on infrastructure hooks ────────────────────────────────
-    async "chat.params"(
-      input: { sessionID: string },
-      _output: Record<string, unknown>,
-    ) {
-      if (!_sessionIdSet && input.sessionID) {
-        setSessionId(input.sessionID);
-        _sessionIdSet = true;
-      }
-    },
-
     async event(input: {
       event: { type: string; properties?: Record<string, unknown> };
     }) {

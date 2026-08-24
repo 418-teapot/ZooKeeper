@@ -176,7 +176,7 @@ OpenCode 日志写入以下位置：
 
 ### 插件调试日志
 
-所有 hook 使用 `src/utils/logger.ts` 导出的 `log()` 函数输出触发记录，格式为 `[zookeeper:<hook-name>] trigger`。
+所有 hook 使用 `src/utils/logger.ts` 导出的 `log()` 函数输出 JSON Lines 触发记录。日志按宿主（host）+ 会话 ID 分片写入 `~/.zoo/log/` 目录：带会话 ID 的条目写入 `<host>-<sessionID>.log`（如 `opencode-<sessionID>.log`、`pi-<sessionID>.log`）；无会话 ID 的加载期条目（如 `plugin_init` 配置告警）缓冲后归入进程首个会话的文件，进程始终无会话则不落盘。每条 JSON 记录携带 `host` 字段，便于合并查看时归属宿主。
 
 - **info/warn/error 始终记录** — 即使不设置 `ZOO_DEBUG`，这三个级别也会写入日志文件
 - **debug 日志默认关闭** — 设置 `ZOO_DEBUG=1 opencode`（或在 shell 中 `export ZOO_DEBUG=1`）后额外启用 debug 级别

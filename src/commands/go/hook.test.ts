@@ -10,7 +10,8 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { _resetForTesting, initLogger } from "../../utils/logger.js";
 import { handleGoCommand, type PlanClient } from "./hook.js";
 
 // ---------------------------------------------------------------------------
@@ -24,6 +25,28 @@ function tmpDir(): string {
   mkdirSync(dir, { recursive: true });
   return dir;
 }
+
+// The /go handler logs every step with a session id (e.g.
+// `test-confirm-*`).  Without isolation those entries flush into the real
+// `~/.zoo/log/` directory as junk `-test-*.log` files.  Point the logger
+// at a temp dir for each test and reset module state in teardown so no
+// test run ever writes into the real log directory.
+let _loggerDir: string;
+
+beforeEach(() => {
+  _resetForTesting();
+  _loggerDir = tmpDir();
+  initLogger("opencode", { logDir: _loggerDir });
+});
+
+afterEach(() => {
+  _resetForTesting();
+  try {
+    rmSync(_loggerDir, { recursive: true, force: true });
+  } catch {
+    // ignore
+  }
+});
 
 /**
  * Create a flat plan file under `<baseDir>/.zoo/plans/` (no sessionID

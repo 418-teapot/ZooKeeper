@@ -175,7 +175,7 @@ describe("initPluginLogger", () => {
         retention_days: 30,
       },
     };
-    initPluginLogger(cfg);
+    initPluginLogger(cfg, "opencode");
 
     const buffer = _getBufferForTesting();
     const warns = buffer.filter((e) => e.event === "logging_config_invalid");
@@ -185,7 +185,7 @@ describe("initPluginLogger", () => {
   it("logs warn and drops the whole section for string max_file_size_mb", () => {
     _resetForTesting();
     const cfg = { logging: { max_file_size_mb: "abc" } };
-    initPluginLogger(cfg);
+    initPluginLogger(cfg, "opencode");
 
     const buffer = _getBufferForTesting();
     const entry = buffer.find((e) => e.event === "logging_config_invalid") as
@@ -199,7 +199,7 @@ describe("initPluginLogger", () => {
   it("logs warn and drops the whole section for NaN max_file_size_mb", () => {
     _resetForTesting();
     const cfg = { logging: { max_file_size_mb: NaN } };
-    initPluginLogger(cfg);
+    initPluginLogger(cfg, "opencode");
 
     const buffer = _getBufferForTesting();
     const entry = buffer.find((e) => e.event === "logging_config_invalid") as
@@ -212,7 +212,7 @@ describe("initPluginLogger", () => {
   it("logs warn and drops the whole section for Infinity max_backups", () => {
     _resetForTesting();
     const cfg = { logging: { max_backups: Infinity } };
-    initPluginLogger(cfg);
+    initPluginLogger(cfg, "opencode");
 
     const buffer = _getBufferForTesting();
     const entry = buffer.find((e) => e.event === "logging_config_invalid") as
@@ -226,7 +226,7 @@ describe("initPluginLogger", () => {
   it("logs warn and drops the whole section for string retention_days", () => {
     _resetForTesting();
     const cfg = { logging: { retention_days: "7" } };
-    initPluginLogger(cfg);
+    initPluginLogger(cfg, "opencode");
 
     const buffer = _getBufferForTesting();
     const entry = buffer.find((e) => e.event === "logging_config_invalid") as
@@ -239,7 +239,7 @@ describe("initPluginLogger", () => {
 
   it("does not log warnings when logging section is absent", () => {
     _resetForTesting();
-    initPluginLogger({});
+    initPluginLogger({}, "opencode");
 
     const buffer = _getBufferForTesting();
     const warns = buffer.filter((e) => e.event === "logging_config_invalid");
@@ -254,7 +254,7 @@ describe("initPluginLogger", () => {
   it("logs warn for max_file_size_mb = 0 (must be > 0)", () => {
     _resetForTesting();
     const cfg = { logging: { max_file_size_mb: 0 } };
-    initPluginLogger(cfg);
+    initPluginLogger(cfg, "opencode");
 
     const buffer = _getBufferForTesting();
     const entry = buffer.find((e) => e.event === "logging_config_invalid") as
@@ -268,7 +268,7 @@ describe("initPluginLogger", () => {
   it("logs warn for max_file_size_mb = -5 (negative, must be > 0)", () => {
     _resetForTesting();
     const cfg = { logging: { max_file_size_mb: -5 } };
-    initPluginLogger(cfg);
+    initPluginLogger(cfg, "opencode");
 
     const buffer = _getBufferForTesting();
     const entry = buffer.find((e) => e.event === "logging_config_invalid") as
@@ -282,7 +282,7 @@ describe("initPluginLogger", () => {
   it("logs warn for max_backups = -1 (negative, must be >= 0)", () => {
     _resetForTesting();
     const cfg = { logging: { max_backups: -1 } };
-    initPluginLogger(cfg);
+    initPluginLogger(cfg, "opencode");
 
     const buffer = _getBufferForTesting();
     const entry = buffer.find((e) => e.event === "logging_config_invalid") as
@@ -296,7 +296,7 @@ describe("initPluginLogger", () => {
   it("accepts max_backups = 0 as valid (no warn)", () => {
     _resetForTesting();
     const cfg = { logging: { max_backups: 0 } };
-    initPluginLogger(cfg);
+    initPluginLogger(cfg, "opencode");
 
     const buffer = _getBufferForTesting();
     const warns = buffer.filter((e) =>
@@ -312,7 +312,7 @@ describe("initPluginLogger", () => {
   it("logs warn for retention_days = 0 (must be > 0)", () => {
     _resetForTesting();
     const cfg = { logging: { retention_days: 0 } };
-    initPluginLogger(cfg);
+    initPluginLogger(cfg, "opencode");
 
     const buffer = _getBufferForTesting();
     const entry = buffer.find((e) => e.event === "logging_config_invalid") as
@@ -326,7 +326,7 @@ describe("initPluginLogger", () => {
   it("logs warn for retention_days = -30 (negative, must be > 0)", () => {
     _resetForTesting();
     const cfg = { logging: { retention_days: -30 } };
-    initPluginLogger(cfg);
+    initPluginLogger(cfg, "opencode");
 
     const buffer = _getBufferForTesting();
     const entry = buffer.find((e) => e.event === "logging_config_invalid") as
@@ -986,7 +986,6 @@ describe("plugin wiring", () => {
     >;
     const handlerNames = [
       "config",
-      "chat.params",
       "event",
       "experimental.chat.messages.transform",
       "experimental.chat.system.transform",
@@ -1014,7 +1013,6 @@ describe("plugin wiring", () => {
     >;
     const infrastructure = [
       "config",
-      "chat.params",
       "event",
       "experimental.chat.system.transform",
     ];

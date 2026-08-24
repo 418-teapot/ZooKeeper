@@ -1402,7 +1402,9 @@ ToolResult 文案不承诺完整性）；recall 不受影响（摘要自持久�
 7. **命令/通知输出必须 `ignored: true`**，否则变成新上下文；ignored
    消息在 TUI 渲染为普通用户气泡（TUI 不过滤 ignored），但 LLM 不可见
    （`message-v2.ts:206`）
-8. TUI 进程的 logger 需要显式 `setSessionId` 才能落盘
+8. TUI 进程的 logger 用一次性 `initLogger("opencode")` 初始化，按条目携带的
+   sessionId 分片落盘（`<host>-<sessionId>.log`），无会话 ID 的加载期条目
+   缓冲后归入进程首个会话的文件；无需显式 `setSessionId`
 9. **`session.prompt` 可在 turn 在途时安全调用**（noReply + ignored 标志
    会被正确持久化，源码核实 prompt.ts:1069）；ACP 的 Bug #20 反馈循环
    源于其自身 lastUser 检测逻辑误拾通知消息，非 opencode 机制缺陷

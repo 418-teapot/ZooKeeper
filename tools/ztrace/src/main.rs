@@ -494,8 +494,11 @@ fn apply_filter(
         }
     }
     if hook_overlays {
-        let log_path = parser::resolve_log_path(session_id);
-        let zoo_events = parser::parse_zoo_log(&log_path);
+        // Resolve the zoo log path first; when no unique log file exists for
+        // the session there is nothing to overlay, so skip parsing instead of
+        // round-tripping `None` through an empty path.
+        let zoo_events = parser::resolve_log_path(session_id)
+            .map_or_else(Vec::new, |log_path| parser::parse_zoo_log(&log_path));
         *hook_map = helpers::match_hooks_to_steps(all_steps, &zoo_events);
     }
 }
@@ -543,8 +546,11 @@ fn cmd_steps(
 
     // 4. Hook overlays
     let mut hook_map: HashMap<i64, Vec<String>> = if hook_overlays {
-        let log_path = parser::resolve_log_path(session_id);
-        let zoo_events = parser::parse_zoo_log(&log_path);
+        // Resolve the zoo log path first; when no unique log file exists for
+        // the session there is nothing to overlay, so skip parsing instead of
+        // round-tripping `None` through an empty path.
+        let zoo_events = parser::resolve_log_path(session_id)
+            .map_or_else(Vec::new, |log_path| parser::parse_zoo_log(&log_path));
         helpers::match_hooks_to_steps(&all_steps, &zoo_events)
     } else {
         HashMap::new()

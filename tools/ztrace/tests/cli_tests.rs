@@ -344,6 +344,36 @@ fn test_steps_hook_overlays_false() {
 }
 
 #[test]
+fn test_steps_pi_hosted_session_finds_zoo_log() {
+    let fix = TestFixture::new();
+    // ses-002 has no step-finish parts, but its zoo log lives in the
+    // `pi-ses-002.log` file. `show` must resolve the session log through
+    // the pi prefix and surface the zoo events in the timeline.
+    let output = fix
+        .ztrace()
+        .args(["show", "ses-002", "--json"])
+        .output()
+        .expect("failed to run ztrace show ses-002 --json");
+    assert!(
+        output.status.success(),
+        "show pi-hosted ses-002 should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .expect("output should be valid JSON");
+    let events = parsed.as_array().expect("JSON output should be an array");
+    let sources: Vec<&str> = events
+        .iter()
+        .filter_map(|ev| ev.get("source").and_then(|v| v.as_str()))
+        .collect();
+    assert!(
+        sources.contains(&"zoo"),
+        "pi-hosted session should surface zoo events, got: {sources:?}"
+    );
+}
+
+#[test]
 fn test_steps_min_cache_drop_no_steps_remaining() {
     let fix = TestFixture::new();
     // All steps have positive delta_cache (10 and 50), so no step satisfies
@@ -495,6 +525,9 @@ impl TestFixture {
 
         Self::create_db(&db_path);
         Self::create_log_file(&log_dir.join("opencode-ses-001.log"), "ses-001");
+        // A pi-hosted session log: resolution must find it via the `pi-`
+        // prefix even though it is not an opencode session.
+        Self::create_log_file(&log_dir.join("pi-ses-002.log"), "ses-002");
         Self::create_opencode_log_file(&opencode_log_dir.join("opencode.log"));
 
         Self {
@@ -786,6 +819,10 @@ impl TestFixture {
                 r#"{"hook":"json-error-nudge","event":"trigger","level":"warn","timestamp":"2024-05-06T12:53:36Z","sessionId":"ses-001","tool":"webfetch","pattern":"SyntaxError"}"#,
                 // After step 2 → matched to last step (step 2)
                 r#"{"hook":"context-metrics","event":"check","level":"info","timestamp":"2024-05-06T12:53:45Z","sessionId":"ses-001","estimated_tokens":1500}"#,
+            ],
+            // pi-hosted session: the log lives in `pi-ses-002.log`.
+            "ses-002" => vec![
+                r#"{"hook":"task-prompt-validate","event":"trigger","level":"info","timestamp":"2024-05-06T12:54:00Z","sessionId":"ses-002"}"#,
             ],
             _ => vec![],
         };

@@ -48,7 +48,9 @@ impl TestFixture {
 
         Self::create_db(&db_path);
         Self::create_log_file(&log_dir.join("opencode-ses-001.log"), "ses-001");
-        Self::create_log_file(&log_dir.join("opencode-ses-002.log"), "ses-002");
+        // ses-002 is a pi-hosted session: its log lives in `pi-ses-002.log`
+        // and must be found through the pi prefix.
+        Self::create_log_file(&log_dir.join("pi-ses-002.log"), "ses-002");
         Self::create_log_file(&log_dir.join("opencode-ses-003.log"), "ses-003");
 
         Self {
@@ -893,6 +895,28 @@ fn test_stats_single_session_hooks_table() {
         stdout.contains("Hook") || stdout.contains("task-prompt"),
         "table output should contain hook breakdown"
     );
+}
+
+#[test]
+fn test_stats_single_session_pi_hosted_json() {
+    let fix = TestFixture::new();
+    // ses-002's log lives in `pi-ses-002.log`; stats must resolve it
+    // through the pi prefix and surface the session's hook events.
+    let output = fix
+        .zinspect()
+        .args(["stats", "ses-002", "--json", "--no-color"])
+        .output()
+        .expect("failed to run zinspect stats ses-002 --json");
+    assert!(
+        output.status.success(),
+        "stats pi-hosted ses-002 should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .expect("output should be valid JSON");
+    assert_eq!(parsed["session_id"], "ses-002");
+    assert_eq!(parsed["total_events"], 1);
 }
 
 #[test]

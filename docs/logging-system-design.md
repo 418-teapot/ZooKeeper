@@ -98,8 +98,10 @@ ZooKeeper 作为 OpenCode 编排器插件，当前日志能力薄弱——仅有
 ### 3.1 日志路径
 
 ```
-~/.zoo/log/opencode-<sessionID>.log
+~/.zoo/log/<host>-<sessionID>.log      # 带 session 的条目（host ∈ {opencode, pi}）
 ```
+
+无会话 ID 的加载期条目（如 `plugin_init` 配置告警）缓冲后归入进程首个会话的文件 `<host>-<sessionID>.log`；进程始终无会话则不落盘。不产生 `<host>.log` 宿主级文件。
 
 与 opencode 日志同目录（`~/.local/share/opencode/log/`）优势：trace 工具一次 glob 同时扫到两条流。但用户要求独立目录 `~/.zoo/log/`。
 
@@ -234,7 +236,7 @@ TS 插件运行时通过 config hook 传入的配置对象读取这些值，与 
 
 ```
 ~/.local/share/opencode/log/opencode.log  ─┐
-~/.zoo/log/opencode-<sid>.log             ─┤
+~/.zoo/log/<host>-<sid>.log               ─┤
                                             ▼
                                  ┌─────────────────────┐
                                  │ log_parser.py        │

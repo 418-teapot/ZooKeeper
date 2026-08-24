@@ -80,6 +80,7 @@ import {
 import type { ToolHost } from "./core/client/tool-host.js";
 import { composeProfile } from "./core/compose.js";
 import {
+  initPluginLogger,
   parseContextConfig,
   parseLimits,
   parseModeProfile,
@@ -87,7 +88,9 @@ import {
 import type { ModeProfile } from "./core/config-types.js";
 import type { HostAdapter } from "./core/context/lens.js";
 import type { ComposedResult, Deps } from "./core/slots.js";
+import type { ValidationLimits } from "./core/validate.js";
 import { REGISTRY } from "./registry.js";
+import { log } from "./utils/logger.js";
 
 // ---------------------------------------------------------------------------
 // Local minimal interface — duck-type compatible with pi's ExtensionAPI.
@@ -232,7 +235,8 @@ function sessionAgentMapFor(profile: ModeProfile | null): Map<string, string> {
  * @param zooConfig - The `zoo` section of config.toml.
  * @param hostDeps - Optional host adapter and tool host (used by the entry
  *   point to share the mutable context holder with handlers).
- * @returns The parsed profile (or `null`) and the composed result.
+ * @returns The parsed profile (or `null`), the composed result, and the
+ *   parsed validation limits.
  */
 export function buildPiContributions(
   zooConfig: any,
@@ -244,6 +248,7 @@ export function buildPiContributions(
 ): {
   profile: ModeProfile | null;
   composed: ComposedResult;
+  limits: ValidationLimits;
 } {
   const limits = parseLimits(zooConfig);
   const contextConfig = parseContextConfig(zooConfig);
@@ -291,7 +296,7 @@ export function buildPiContributions(
     composed.commands = commandComposed.commands;
   }
 
-  return { profile: modeProfile, composed };
+  return { profile: modeProfile, composed, limits };
 }
 
 // ---------------------------------------------------------------------------
@@ -385,6 +390,10 @@ export function buildPiDcpEntryRenderer(): (
  * latest pi `ExtensionContext` so the native adapter and tool host can
  * resolve the current session.
  *
+ * On load the composed profile is recorded as a `plugin_init` log event
+ * (mirroring the OpenCode host), carrying the composed agents, skills,
+ * and validation limits.
+ *
  * Exported for unit testing — `zookeeperPi` wires this with the config
  * loaded from disk.
  *
@@ -430,10 +439,20 @@ export function buildPiHandlers(
       ? piApi.appendEntry.bind(piApi)
       : undefined;
   const commandToolHost = createPiCommandToolHost(toolHost, appendEntry);
-  const { profile, composed } = buildPiContributions(zooConfig, {
+  const { profile, composed, limits } = buildPiContributions(zooConfig, {
     adapter,
     toolHost,
     commandToolHost,
+  });
+
+  // Startup anchor: mirror the OpenCode host's `plugin_init` event so a
+  // pi log records which profile-driven composition was loaded.  Sessionless
+  // (load-time) entry: it buffers and flushes into the first pi session's
+  // file once that session materialises.
+  log("plugin", "plugin_init", "", undefined, "info", {
+    agents: composed.agents.map((agent) => agent.name),
+    skills: composed.skills.map((skill) => skill.name),
+    limits,
   });
 
   const dolphinPrompt = composed.agents.find(
@@ -567,7 +586,9 @@ export function buildPiHandlers(
  * @param pi - pi ExtensionAPI instance (provided at runtime by pi).
  */
 export function zookeeperPi(pi: ExtensionAPI): void {
-  const handlers = buildPiHandlers(loadZooConfig(), pi);
+  const zooConfig = loadZooConfig();
+  initPluginLogger(zooConfig, "pi");
+  const handlers = buildPiHandlers(zooConfig, pi);
   pi.on("before_agent_start", handlers.beforeAgentStart);
   pi.on("resources_discover", handlers.resourcesDiscover);
   pi.on("tool_result", handlers.toolResult);

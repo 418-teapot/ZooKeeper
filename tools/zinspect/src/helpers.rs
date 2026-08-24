@@ -98,14 +98,19 @@ pub fn hit_rate_bar(rate: f64) -> String {
     bar
 }
 
-/// Extract the session ID from an `opencode-<id>.log` path.
+/// Extract the session ID from a `<host>-<id>.log` path.
+///
+/// Strips either the `opencode-` or `pi-` host prefix. Returns the full
+/// basename when no known host prefix is present.
 pub fn session_id_from_path(path: &str) -> String {
     // os.path.basename equivalent
     let basename = path.rsplit('/').next().unwrap_or(path);
-    if let Some(stripped) =
-        basename.strip_prefix("opencode-").and_then(|s| s.strip_suffix(".log"))
-    {
-        return stripped.to_string();
+    for prefix in ["opencode-", "pi-"] {
+        if let Some(stripped) =
+            basename.strip_prefix(prefix).and_then(|s| s.strip_suffix(".log"))
+        {
+            return stripped.to_string();
+        }
     }
     basename.to_string()
 }
@@ -362,6 +367,12 @@ mod tests {
     fn test_session_id_from_path() {
         let path = "/home/user/.zoo/log/opencode-ses-001.log";
         assert_eq!(session_id_from_path(path), "ses-001");
+    }
+
+    #[test]
+    fn test_session_id_from_path_pi_prefix() {
+        let path = "/home/user/.zoo/log/pi-ses-002.log";
+        assert_eq!(session_id_from_path(path), "ses-002");
     }
 
     #[test]

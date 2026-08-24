@@ -14,6 +14,7 @@ use zutil::db_helpers::DbTarget;
 use zutil::format_number;
 use zutil::get_zoo_log_dir;
 use zutil::iso_to_epoch_ms;
+use zutil::resolve_session_path;
 
 use crate::db;
 use crate::parser::{self, tool_type_and_icon};
@@ -714,9 +715,9 @@ pub fn resolve_and_group_entries(
 
 /// Read `ZooKeeper` log events and add them to the timeline.
 ///
-/// The log file is named `opencode-{session_id}.log` in the zoo log dir.
-/// Each event is tagged with the session it belongs to (by sessionId or
-/// agent-name matching) and its depth in the session tree.
+/// The log file is named `<host>-{session_id}.log` (host ∈ {opencode, pi})
+/// in the zoo log dir. Each event is tagged with the session it belongs to
+/// (by sessionId or agent-name matching) and its depth in the session tree.
 fn add_zoo_log_events(
     session_id: &str,
     timeline: &mut Vec<Value>,
@@ -726,14 +727,11 @@ fn add_zoo_log_events(
     session_depth_map: &HashMap<&str, i64>,
 ) {
     let zoo_dir = get_zoo_log_dir();
-    let root_zoo_path =
-        Path::new(&zoo_dir).join(format!("opencode-{session_id}.log"));
-    if !root_zoo_path.exists() {
+    let Some(root_zoo_path) = resolve_session_path(session_id, &zoo_dir) else {
         return;
-    }
+    };
 
-    let zoo_events =
-        parser::parse_zoo_log(root_zoo_path.to_str().unwrap_or(""));
+    let zoo_events = parser::parse_zoo_log(&root_zoo_path);
     for zoo_ev in &zoo_events {
         // Determine which session this entry belongs to
         let mut target_sid: Option<String> = None;

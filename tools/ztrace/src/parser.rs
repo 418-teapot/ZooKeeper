@@ -5,11 +5,11 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
 
 use serde_json::Value;
 
 use zutil::get_zoo_log_dir;
+use zutil::resolve_session_path;
 
 /// Map a tool identifier string to a trace event type and icon.
 ///
@@ -126,16 +126,15 @@ pub fn parse_zoo_log(path: &str) -> Vec<Value> {
     events
 }
 
-/// Build the zoo log path for a given session ID.
+/// Resolve the zoo log path for a given session ID.
 ///
-/// Returns `{zoo_log_dir}/opencode-{session_id}.log`.
+/// Delegates to `zutil::resolve_session_path`, which finds
+/// `<host>-<session_id>.log` (host ∈ {opencode, pi}) in the zoo log dir.
+/// Returns `None` when no unique log file exists for the session.
 #[must_use]
-pub fn resolve_log_path(session_id: &str) -> String {
+pub fn resolve_log_path(session_id: &str) -> Option<String> {
     let dir = get_zoo_log_dir();
-    Path::new(&dir)
-        .join(format!("opencode-{session_id}.log"))
-        .to_string_lossy()
-        .to_string()
+    resolve_session_path(session_id, &dir)
 }
 
 #[cfg(test)]
@@ -339,9 +338,9 @@ not valid json
 
     #[test]
     fn test_resolve_log_path_format() {
+        // Resolves against the real ~/.zoo/log dir, which is absent in the
+        // test environment → the lookup returns None (no unique match).
         let path = resolve_log_path("ses-001");
-        assert!(path.contains("opencode-ses-001.log"));
-        // Should be an absolute path (since get_zoo_log_dir returns expanded ~)
-        assert!(path.starts_with('/'));
+        assert_eq!(path, None);
     }
 }

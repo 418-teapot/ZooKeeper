@@ -9,7 +9,7 @@ import {
   formatTokens,
   progressBar,
 } from "../core/context/context-report.js";
-import { log, setSessionId } from "../utils/logger.js";
+import { initLogger, log } from "../utils/logger.js";
 import { createContextController } from "./controller.js";
 import type { CategoryInfo, SubEntry } from "./subagent.js";
 import { formatDuration } from "./subagent.js";
@@ -36,6 +36,11 @@ import { createSubAgentTracker } from "./tracker.js";
 const plugin: TuiPluginModule = {
   id: "zookeeper-tui",
   tui: async (api) => {
+    // One-shot process init for the TUI process (part of the OpenCode
+    // host): entries carry their own session id per call, so the flush
+    // timer is the only process-level requirement here.
+    initLogger("opencode");
+
     // ── Shared panel signals (tui() scope) ──────────────────────────
     const [getCache, setCache] = createSignal<string>("—");
     const [getLoaded, setLoaded] = createSignal(false);
@@ -182,10 +187,6 @@ const plugin: TuiPluginModule = {
         // historical scan (scanSubEntries) re-populate the map.
         setSubEntries(new Map());
         setExpandedSubIds(new Set<string>());
-
-        // Ensure TUI-process logs are flushed to disk (logger requires
-        // _sessionId to be set; issue #1).
-        setSessionId(props.sessionId);
 
         // Restore collapsed state from persisted KV storage.
         try {
