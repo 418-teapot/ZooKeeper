@@ -255,7 +255,13 @@ export function createV1GoldenHost(): GoldenHost<ContextMessageEntry> {
     runTool,
     async handleDcp(sessionID, args, config, messages, notifications) {
       const client = makeClient(messages, notifications);
-      await handleDcpCommand(client, sessionID, args, config, true);
+      await handleDcpCommand(
+        createV1ToolHost(client),
+        sessionID,
+        args,
+        config,
+        true,
+      );
     },
     resolveMarkTarget,
     landPlan,

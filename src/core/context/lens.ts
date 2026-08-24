@@ -105,12 +105,18 @@ export interface TokenUsage {
  * `hidden` carries the v1 "ignored" semantics: the message still
  * occupies an ordinal in the transcript but is skipped by estimation
  * and numbering.  `usage` is the API exact token report when available.
+ * `compaction` marks a host-native compaction summary message: the
+ * transcript interval before the last such message is historical, so
+ * the report's category breakdown starts at (and includes) the last
+ * compaction-marked message.
  */
 export interface HostMessage {
   role: Role;
   hidden: boolean;
   regions: TextRegion[];
   usage?: TokenUsage;
+  /** True on host-native compaction summary messages (optional). */
+  compaction?: boolean;
 }
 
 /**

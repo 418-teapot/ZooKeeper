@@ -5,24 +5,30 @@
  * branches, chained contributions, per-handler crash isolation, image
  * preservation, missing sessionManager), `buildPiContextHandler`
  * (native pi messages passed to transforms, result replacement, model
- * limit capture, empty array, crash isolation), and the pure helper
- * `extractText`.
+ * limit capture, empty array, crash isolation), the pure helper
+ * `extractText`, and the command-slot assembly
+ * (`buildPiCommandRegistrationPlan` + `createPiCommandToolHost`).
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import {
+  buildPiCommandRegistrationPlan,
   buildPiContextHandler,
   buildPiMessageEndHandler,
   buildPiToolResultHandler,
+  createPiCommandToolHost,
   extractText,
   type PiAgentMessage,
   type PiAssistantMessage,
   type PiContentPart,
   type PiToolResultEvent,
 } from "./compose-pi.js";
+import type { ToolHost } from "./core/client/tool-host.js";
 import type {
   AfterExecContribution,
   AfterExecInput,
+  CommandInput,
+  ComposedResult,
   TransformOutput,
 } from "./core/slots.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
@@ -543,5 +549,138 @@ describe("buildPiMessageEndHandler", () => {
       { type: "toolCall", id: "c1", name: "x", arguments: {} },
       { type: "text", text: "ok" },
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildPiCommandRegistrationPlan
+// ---------------------------------------------------------------------------
+
+describe("buildPiCommandRegistrationPlan", () => {
+  it("produces one registration per composed command with description passthrough", () => {
+    const commands: ComposedResult["commands"] = {
+      dcp: {
+        name: "dcp",
+        description: "显示上下文用量与缓存命中率",
+        handle: async () => {},
+      },
+    };
+    const plan = buildPiCommandRegistrationPlan(commands);
+    assert.equal(plan.length, 1);
+    assert.equal(plan[0].name, "dcp");
+    assert.equal(plan[0].description, "显示上下文用量与缓存命中率");
+    assert.equal(typeof plan[0].handler, "function");
+  });
+
+  it("resolves the sessionID from ctx and passes arguments to the contribution", async () => {
+    let captured: CommandInput | undefined;
+    const commands: ComposedResult["commands"] = {
+      dcp: {
+        name: "dcp",
+        description: "desc",
+        handle: async (input) => {
+          captured = input;
+        },
+      },
+    };
+    const [reg] = buildPiCommandRegistrationPlan(commands);
+    await reg.handler("sweep 3", {
+      sessionManager: { getSessionId: () => "sess-pi" },
+    });
+    assert.deepEqual(captured, {
+      command: "dcp",
+      sessionID: "sess-pi",
+      arguments: "sweep 3",
+    });
+  });
+
+  it("falls back to an empty session id when the context has no sessionManager", async () => {
+    let captured: CommandInput | undefined;
+    const commands: ComposedResult["commands"] = {
+      dcp: {
+        name: "dcp",
+        description: "desc",
+        handle: async (input) => {
+          captured = input;
+        },
+      },
+    };
+    const [reg] = buildPiCommandRegistrationPlan(commands);
+    await reg.handler("context", {});
+    assert.equal(captured?.sessionID, "");
+    assert.equal(captured?.arguments, "context");
+  });
+
+  it("runs the refresh callback with the pi command context", async () => {
+    let refreshed: unknown;
+    const commands: ComposedResult["commands"] = {
+      dcp: {
+        name: "dcp",
+        description: "desc",
+        handle: async () => {},
+      },
+    };
+    const [reg] = buildPiCommandRegistrationPlan(commands, (ctx) => {
+      refreshed = ctx;
+    });
+    const ctx = { sessionManager: { getSessionId: () => "sess-r" } };
+    await reg.handler("context", ctx);
+    assert.equal(refreshed, ctx);
+  });
+
+  it("returns an empty plan for an empty commands map", () => {
+    assert.deepEqual(buildPiCommandRegistrationPlan({}), []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createPiCommandToolHost
+// ---------------------------------------------------------------------------
+
+describe("createPiCommandToolHost", () => {
+  it("routes notify to appendEntry with the zoo-dcp custom type", async () => {
+    const appended: Array<{ customType: string; data?: unknown }> = [];
+    const base: ToolHost = {
+      resolveSessionId: () => "sess",
+      fetchHistory: async () => [],
+      notify: async () => {},
+    };
+    const host = createPiCommandToolHost(base, (customType, data) => {
+      appended.push({ customType, data });
+    });
+    await host.notify("sess", "report text");
+    assert.deepEqual(appended, [
+      { customType: "zoo-dcp", data: { content: "report text" } },
+    ]);
+  });
+
+  it("keeps fetchHistory and resolveSessionId from the base tool host", async () => {
+    const fetched: string[] = [];
+    const base: ToolHost = {
+      resolveSessionId: () => "sess-x",
+      fetchHistory: async (sid) => {
+        fetched.push(sid);
+        return [];
+      },
+      notify: async () => {
+        throw new Error("must not be called");
+      },
+    };
+    const host = createPiCommandToolHost(base);
+    assert.equal(host.resolveSessionId({}), "sess-x");
+    await host.fetchHistory("sess-1");
+    assert.deepEqual(fetched, ["sess-1"]);
+  });
+
+  it("no-ops notify when no appendEntry is supplied", async () => {
+    const base: ToolHost = {
+      resolveSessionId: () => "sess",
+      fetchHistory: async () => [],
+      notify: async () => {
+        throw new Error("must not be called");
+      },
+    };
+    const host = createPiCommandToolHost(base);
+    await assert.doesNotReject(async () => host.notify("sess", "text"));
   });
 });

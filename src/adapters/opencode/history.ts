@@ -25,7 +25,10 @@
  * Message-level mapping: `info.role` → `role`, `info.tokens` → `usage`
  * (the nested `cache.read`/`cache.write` flatten to `cacheRead`/
  * `cacheWrite`), "ignored" (see `isHidden`) → `hidden` (the message
- * still occupies an ordinal but is skipped by estimation and numbering).
+ * still occupies an ordinal but is skipped by estimation and numbering),
+ * `info.summary === true` → `compaction` (the report's category-boundary
+ * signal).  `info.synthetic` — ZooKeeper's own fold-block summary — is
+ * a distinct concept and is deliberately not mapped.
  *
  * Null and undefined entries map to a hidden empty message: the ordinal
  * is preserved while every core path stays safe — hidden skips
@@ -296,6 +299,11 @@ function toHostMessage(entry: ContextMessageEntry): HostMessage {
     hidden: isHidden(entry),
     regions,
     usage: mapUsage(entry.info?.tokens),
+    // `info.summary === true` marks a host-native compaction summary
+    // message (the report's category-boundary signal).  `info.synthetic`
+    // — ZooKeeper's own fold-block summary — is a distinct concept and
+    // is deliberately not mapped.
+    ...(entry.info?.summary === true ? { compaction: true } : {}),
   };
 }
 

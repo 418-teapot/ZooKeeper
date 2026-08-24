@@ -17,15 +17,24 @@
  * 5. `message_end` — strips model-imitated `[mN] ` line-start ref
  *    prefixes from finalized assistant text parts (handler built by
  *    `buildPiMessageEndHandler`).
+ * 6. commands — the composed slash commands (e.g. `/dcp`) are registered
+ *    with pi via `registerCommand`; their chat notifications route
+ *    through pi's in-session `appendEntry` channel (persistent in the
+ *    session, rendered by the `zoo-dcp` entry renderer, never entering
+ *    the LLM context) instead of the tool toast.
  *
  * Architecture: units contribute host-agnostic slots (`src/core/slots.ts`)
  * and the pi contact layer (`src/compose-pi.ts`) is the only module that
- * understands pi's event keys — it maps the `ComposedResult` to the two
- * event handlers.  The composition feeds the full registry to
- * `composeProfile`; tool and command units instantiate harmlessly but
- * their slots are not consumed by pi.  Every hook is profile-driven: a
- * `null` profile (absent or invalid) yields an empty composition, so all
- * four hooks no-op — fail-closed, aligned with the OpenCode host.
+ * understands pi's event keys — it maps the `ComposedResult` to the
+ * event handlers and the command registrations.  The composition feeds
+ * the full registry to `composeProfile`; tool units instantiate
+ * harmlessly and their slots are not consumed by pi (the command slot
+ * is consumed — the command units are re-composed with the command tool
+ * host so their notifications route through pi's `appendEntry`
+ * channel).
+ * Every hook and command is profile-driven: a `null` profile (absent or
+ * invalid) yields an empty composition, so all hooks no-op and no
+ * command is registered — fail-closed, aligned with the OpenCode host.
  *
  * Capability gating: pi passes an empty client object (no SDK client),
  * so the dedup-release notification inside context-pruning cannot use
@@ -61,9 +70,12 @@ import {
   type PiToolHostContext,
 } from "./adapters/pi/tool-host.js";
 import {
+  buildPiCommandRegistrationPlan,
   buildPiContextHandler,
   buildPiMessageEndHandler,
   buildPiToolResultHandler,
+  createPiCommandToolHost,
+  type PiCommandContext,
 } from "./compose-pi.js";
 import type { ToolHost } from "./core/client/tool-host.js";
 import { composeProfile } from "./core/compose.js";
@@ -97,6 +109,21 @@ interface ExtensionAPI {
     parameters: unknown;
     execute: (...args: unknown[]) => Promise<unknown>;
   }): void;
+
+  /** Register a custom slash command with pi. */
+  registerCommand(
+    name: string,
+    options: {
+      description?: string;
+      handler: (args: string, ctx: PiCommandContext) => Promise<void>;
+    },
+  ): void;
+
+  /** Append a custom entry to the session (persists, no LLM context). */
+  appendEntry(customType: string, data?: unknown): void;
+
+  /** Register a chat-transcript renderer for a custom entry type. */
+  registerEntryRenderer(customType: string, renderer: unknown): void;
 
   /** Register handler for `before_agent_start`. */
   on(
@@ -190,31 +217,9 @@ function sessionAgentMapFor(profile: ModeProfile | null): Map<string, string> {
  * Compose the profile-driven contributions for pi.
  *
  * The full registry is fed to the selection engine — pi composes every
- * category and consumes the agent, skill, after-exec, and transform
- * slots (tool/command units instantiate but their slots stay unused;
- * the `unknown_unit` warning only fires when a profile name has no
- * matching registry unit).  `Deps` are adapted to the pi host:
- * `client` is empty (the context-pruning transform runs and returns
- * the pruned replacement to pi), `directory` is
- * the process working directory (direct-work's plan discovery reads
- * `<directory>/.zoo/plans/`), and `sessionAgentMap` resolves to
- * "dolphin" when the profile enables dolphin (see
- * `sessionAgentMapFor`).
- *
- * Exported for unit testing — `zookeeperPi` wires this with the config
- * loaded from disk.
- *
- * @param zooConfig - The `zoo` section of config.toml.
- * @returns The parsed profile (or `null`) and the composed result.
- */
-/**
- * Compose the profile-driven contributions for pi.
- *
- * The full registry is fed to the selection engine — pi composes every
- * category and consumes the agent, skill, after-exec, and transform
- * slots (tool/command units instantiate but their slots stay unused;
- * the `unknown_unit` warning only fires when a profile name has no
- * matching registry unit).  `Deps` are adapted to the pi host:
+ * category and consumes the agent, skill, after-exec, transform, and
+ * command slots (the `unknown_unit` warning fires when a profile name
+ * has no matching registry unit).  `Deps` are adapted to the pi host:
  * `client` is empty, `directory` is the process working directory,
  * `sessionAgentMap` resolves to "dolphin" when the profile enables
  * dolphin, and the host adapter / tool host are taken from `hostDeps`
@@ -234,6 +239,7 @@ export function buildPiContributions(
   hostDeps?: {
     adapter?: HostAdapter<unknown>;
     toolHost?: ToolHost;
+    commandToolHost?: ToolHost;
   },
 ): {
   profile: ModeProfile | null;
@@ -262,6 +268,28 @@ export function buildPiContributions(
     adapter: hostDeps?.adapter ?? createPiAdapter(() => undefined),
   };
   const composed = composeProfile(modeProfile, REGISTRY, deps);
+
+  // Command units are re-composed with the command-specific tool host
+  // so slash-command chat notifications (e.g. /dcp reports) route through
+  // pi's in-session `appendEntry` channel instead of the tool toast.  The
+  // command tool host shares history/session resolution with the base host
+  // but replaces `notify`; the tool units keep the base host's toast.
+  // `unit.create` is side-effect free (verified against every registry
+  // unit — the factories only return contribution objects), so a second
+  // `composeProfile` pass with the command host yields identical command
+  // contributions without re-implementing the profile filter/collect
+  // strategy.  Only the commands slot of the second pass is taken.
+  // The pass keeps the full profile (the active set handed to command
+  // factories must reflect the real enablement — e.g. `/dcp compress`
+  // reads `activeSet.tools`), so its `unknown_unit` warnings are
+  // suppressed to avoid duplicating the first pass's.
+  if (modeProfile !== null && hostDeps?.commandToolHost) {
+    const commandDeps: Deps = { ...deps, toolHost: hostDeps.commandToolHost };
+    const commandComposed = composeProfile(modeProfile, REGISTRY, commandDeps, {
+      warnUnknownUnits: false,
+    });
+    composed.commands = commandComposed.commands;
+  }
 
   return { profile: modeProfile, composed };
 }
@@ -301,6 +329,44 @@ export function collectSkillPaths(profileSkills: string[]): string[] {
 // ---------------------------------------------------------------------------
 // Handler factory
 // ---------------------------------------------------------------------------
+
+/**
+ * Build the chat-transcript renderer for `zoo-dcp` custom entries.
+ *
+ * pi invokes the renderer with the appended `CustomEntry` (the report
+ * text lives in `data.content`), the render options, and the active
+ * `Theme`.  The returned duck-typed `Component` (structurally
+ * `{ render(width): string[], invalidate() }`) is placed into the TUI
+ * chat transcript by pi's `CustomEntryComponent` — no pi package is
+ * imported, mirroring the duck-typing discipline of the rest of the
+ * module.  A missing or empty payload degrades to `undefined` so the
+ * entry renders as nothing.  Renderer errors are caught and surfaced
+ * by pi itself (an error box), so no defensive wrapping is needed here.
+ *
+ * @returns The `EntryRenderer` for the `zoo-dcp` custom type.
+ */
+export function buildPiDcpEntryRenderer(): (
+  entry: unknown,
+  _options: unknown,
+  theme: unknown,
+) => unknown {
+  return (entry, _options, theme) => {
+    const data = (entry as { data?: { content?: unknown } } | undefined)?.data;
+    const content = typeof data?.content === "string" ? data.content : "";
+    if (!content.trim()) return undefined;
+    const t = theme as
+      | { fg?: (color: string, text: string) => string }
+      | undefined;
+    const label = t?.fg ? t.fg("customMessageLabel", "[zoo-dcp]") : "[zoo-dcp]";
+    const text = `${label}\n${content}`;
+    return {
+      render(): string[] {
+        return text.split("\n");
+      },
+      invalidate(): void {},
+    };
+  };
+}
 
 /**
  * Build the pi hook handlers from an explicit zoo config.
@@ -350,9 +416,24 @@ export function buildPiHandlers(
     contextHolder.current?.sessionManager?.getSessionId();
   const adapter = createPiAdapter(sessionIdProvider);
   const toolHost = createPiToolHost(contextHolder);
+  // The command tool host shares the base host's history/session
+  // resolution but routes chat notifications through pi's in-session
+  // `appendEntry` channel (persistent, no LLM context) — the pi
+  // equivalent of v1's ignored noReply message.  The base toast notify
+  // stays for the tool units' runtime prompts.
+  // `appendEntry` is passed as a value to `createPiCommandToolHost`, so
+  // it is defensively bound to the API object when present (pi's current
+  // implementation is closure-based and works unbound, but a future
+  // `this`-dependent implementation would silently break otherwise).
+  const appendEntry =
+    typeof piApi?.appendEntry === "function"
+      ? piApi.appendEntry.bind(piApi)
+      : undefined;
+  const commandToolHost = createPiCommandToolHost(toolHost, appendEntry);
   const { profile, composed } = buildPiContributions(zooConfig, {
     adapter,
     toolHost,
+    commandToolHost,
   });
 
   const dolphinPrompt = composed.agents.find(
@@ -393,6 +474,32 @@ export function buildPiHandlers(
         },
       });
     }
+  }
+
+  // Register profile commands with pi when an API instance is supplied.
+  // The handler refreshes the shared context holder with pi's command
+  // context so the command tool host can resolve the session / history.
+  if (profile !== null && piApi?.registerCommand) {
+    const plan = buildPiCommandRegistrationPlan(composed.commands, (ctx) => {
+      contextHolder.current = ctx as PiToolHostContext;
+    });
+    for (const registration of plan) {
+      piApi.registerCommand(registration.name, {
+        description: registration.description,
+        handler: registration.handler,
+      });
+    }
+  }
+
+  // Register the `zoo-dcp` entry renderer so appended dcp reports draw
+  // a card in the TUI chat transcript.  Gated on the composed commands
+  // slot rather than the profile's nullness: the renderer is needed only
+  // when the `dcp` command is actually registered (fail-closed — a null
+  // profile or a profile without dcp in its commands list registers no
+  // renderer).  The renderer itself is duck-typed (no pi package import);
+  // absent API degrades to nothing.
+  if ("dcp" in composed.commands && piApi?.registerEntryRenderer) {
+    piApi.registerEntryRenderer("zoo-dcp", buildPiDcpEntryRenderer());
   }
 
   // The core handlers have no access to the mutable context holder, so
@@ -446,7 +553,9 @@ export function buildPiHandlers(
  * contributions come from the profile's hooks list (after-exec and
  * transform units).  The `message_end` handler is always registered
  * and strips model-imitated line-start ref echoes from finalized
- * assistant text when the profile is active.
+ * assistant text when the profile is active.  Profile commands (e.g.
+ * `/dcp`) are registered with pi and the `zoo-dcp` entry renderer is
+ * wired so appended reports draw a card in the TUI transcript.
  *
  * Strategy for `before_agent_start`:
  *   **Prepend** the dolphin prompt rather than replacing the chainable

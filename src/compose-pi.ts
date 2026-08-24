@@ -16,6 +16,12 @@
  *    parts are kept.
  *  - `context` — the native pi `AgentMessage` array is handed to the
  *    transform contributions; the pruned replacement is returned to pi.
+ *  - `commands` — the composed slash-command contributions become pi
+ *    `registerCommand` registrations (`buildPiCommandRegistrationPlan`),
+ *    and `createPiCommandToolHost` wraps the base pi tool host so a
+ *    command's chat notification goes through pi's in-session
+ *    `appendEntry` channel instead of the tool toast.  Custom entries
+ *    never participate in the LLM context.
  *
  * pi event and message shapes (pi 0.84.x) are declared as local
  * duck-typed interfaces — the pi package is never imported.
@@ -37,8 +43,11 @@ import type {
   PiToolResultEvent,
   PiToolResultResult,
 } from "./adapters/pi/types.js";
+import type { ToolHost } from "./core/client/tool-host.js";
 import { setModelLimit } from "./core/context/model-limits.js";
 import { stripLineStartRefs } from "./core/context/reply-strip.js";
+import type { ComposedResult } from "./core/slots.js";
+import { log } from "./utils/logger.js";
 
 // Re-export the duck types so callers (including tests) that previously
 // imported them from this module keep working.
@@ -64,10 +73,8 @@ export type {
 import type {
   AfterExecInput,
   AfterExecOutput,
-  ComposedResult,
   TransformOutput,
 } from "./core/slots.js";
-import { log } from "./utils/logger.js";
 
 // ---------------------------------------------------------------------------
 // Text extraction
@@ -340,5 +347,131 @@ export function buildPiMessageEndHandler(): (
         content: newContent,
       },
     };
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Command slot assembly
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal duck-type shape of the pi command-handler context.
+ *
+ * pi passes its `ExtensionCommandContext` (see
+ * `createCommandContext` in the pi runner) to a registered command
+ * handler; ZooKeeper only reads the session id off it.
+ */
+export interface PiCommandContext {
+  sessionManager?: { getSessionId(): string };
+}
+
+/** One pi `registerCommand` registration assembled from a contribution. */
+export interface PiCommandRegistration {
+  /** Command name (invocation name, e.g. `"dcp"`). */
+  name: string;
+  /** Command description surfaced by pi's command list. */
+  description: string;
+  /** The `(args, ctx)` handler pi invokes for the command. */
+  handler(args: string, ctx: PiCommandContext): Promise<void>;
+}
+
+/**
+ * Assemble the pi `registerCommand` registrations from the composed
+ * commands slot.
+ *
+ * The handler resolves the session id from pi's command context
+ * (`ctx.sessionManager.getSessionId()`) and forwards the raw arguments
+ * string into the host-agnostic `CommandInput`, mirroring the OpenCode
+ * adapter's command routing.  An optional `refresh` callback receives
+ * the pi context so the entry point can update its shared context
+ * holder before the command body runs (the command tool host reads the
+ * holder for history / notifications).
+ *
+ * @param commands - The composed command contributions, keyed by name.
+ * @param refresh - Optional callback receiving the raw pi command context.
+ * @returns The pi command registrations (empty for an empty slot).
+ */
+export function buildPiCommandRegistrationPlan(
+  commands: ComposedResult["commands"],
+  refresh?: (ctx: PiCommandContext) => void,
+): PiCommandRegistration[] {
+  return Object.values(commands).map((contribution) => ({
+    name: contribution.name,
+    description: contribution.description,
+    handler: async (args, ctx) => {
+      refresh?.(ctx);
+      const sessionID = ctx?.sessionManager?.getSessionId() ?? "";
+      await contribution.handle({
+        command: contribution.name,
+        sessionID,
+        arguments: args,
+      });
+    },
+  }));
+}
+
+/**
+ * Append a custom entry into the pi session.
+ *
+ * Structurally compatible with pi's `ExtensionAPI.appendEntry`: the
+ * entry persists as a `CustomEntry` (session-visible only when a
+ * renderer is registered for `customType`) and — unlike
+ * `CustomMessageEntry` — is ignored by `buildSessionContext`, so it
+ * never reaches the LLM context.  This is the pi-native equivalent of
+ * v1's `ignored` parts.
+ */
+export type PiAppendEntry = (customType: string, data?: unknown) => void;
+
+/**
+ * The data payload carried by a `zoo-dcp` custom entry.
+ *
+ * `content` holds the report text; the renderer reads it back to draw
+ * the chat-transcript card in the TUI.  Kept as a single string field
+ * so the payload stays minimal and the entry stays durable JSON.
+ */
+export interface PiDcpEntryData {
+  content: string;
+}
+
+/**
+ * Wrap the base pi tool host so a command's chat notification goes
+ * through pi's in-session `appendEntry` channel.
+ *
+ * The base host (toast notify) stays untouched and keeps serving the
+ * tool units' runtime prompts.  The command host reuses the base
+ * `resolveSessionId` / `fetchHistory` and replaces only `notify` with
+ * an `appendEntry`-backed implementation — the pi equivalent of v1's
+ * ignored `noReply` chat message: persistent in the session, rendered
+ * in the TUI by the `zoo-dcp` entry renderer, and never entering the
+ * LLM context.  When no `appendEntry` is supplied (e.g. headless or
+ * test-only host) the notification is dropped with a debug log,
+ * matching the base host's best-effort style.
+ *
+ * @param toolHost - The base pi tool host (history / session resolution).
+ * @param appendEntry - Optional pi `appendEntry` binding (extension API).
+ * @returns A tool host whose `notify` appends an in-session custom entry.
+ */
+export function createPiCommandToolHost(
+  toolHost: ToolHost,
+  appendEntry?: PiAppendEntry,
+): ToolHost {
+  return {
+    ...toolHost,
+    async notify(_sessionId: string, text: string): Promise<void> {
+      if (!appendEntry) {
+        log("tool-host", "notify_skipped", _sessionId, undefined, "debug", {
+          reason: "appendEntry unavailable",
+        });
+        return;
+      }
+      try {
+        const data: PiDcpEntryData = { content: text };
+        appendEntry("zoo-dcp", data);
+      } catch (err) {
+        log("tool-host", "notify_failed", _sessionId, undefined, "warn", {
+          error: String(err),
+        });
+      }
+    },
   };
 }

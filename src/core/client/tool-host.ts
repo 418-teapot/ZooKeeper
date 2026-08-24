@@ -21,6 +21,12 @@ export interface ToolHost {
   resolveSessionId(toolCtx: unknown): string | undefined;
   /** Fetch the session's full history as host-agnostic lens messages. */
   fetchHistory(sessionId: string): Promise<HostMessage[]>;
-  /** Post an ignored chat notification, swallowing failures. */
+  /**
+   * Post an ignored chat notification.
+   *
+   * Best-effort by contract: `notify` never rejects.  Implementations
+   * record failures (e.g. a warn log) and always resolve, so callers
+   * must not wrap the call in try/catch expecting a rejection.
+   */
   notify(sessionId: string, text: string): Promise<void>;
 }

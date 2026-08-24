@@ -327,7 +327,31 @@ describe("v1 part → region mapping", () => {
 
   it("empty parts are NOT hidden even with no ignored flags", () => {
     assert.equal(history([entry("user", [])])[0].hidden, false);
-    assert.equal(history([entry("user", [textPart("hi")])])[0].hidden, false);
+  });
+
+  it("info.summary === true maps to compaction (host-native boundary)", () => {
+    const [msg] = history([
+      {
+        info: { role: "assistant", id: "summary", summary: true },
+        parts: [textPart("Previous conversation condensed")],
+      } as unknown as ContextMessageEntry,
+    ]);
+    assert.equal(msg.compaction, true);
+  });
+
+  it("info.synthetic is NOT mapped to compaction (distinct concept)", () => {
+    const [msg] = history([
+      {
+        info: { role: "user", id: "synthetic", synthetic: true },
+        parts: [textPart("[Block b1 · 2 条] title\nbody")],
+      } as unknown as ContextMessageEntry,
+    ]);
+    assert.equal(msg.compaction, undefined);
+  });
+
+  it("compaction stays undefined when summary is absent", () => {
+    const [msg] = history([entry("assistant", [textPart("hi")])]);
+    assert.equal(msg.compaction, undefined);
   });
 });
 

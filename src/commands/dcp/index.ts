@@ -31,7 +31,7 @@ export const unit: CommandUnitDescriptor = {
           handle: async (input) => {
             try {
               await handleDcpCommand(
-                deps.client,
+                deps.toolHost,
                 input.sessionID,
                 input.arguments,
                 deps.contextConfig,
@@ -39,7 +39,7 @@ export const unit: CommandUnitDescriptor = {
               );
             } catch (err) {
               await notifySessionError(
-                deps.client,
+                deps.toolHost,
                 input.sessionID,
                 err,
                 "context-command",

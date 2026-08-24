@@ -3,38 +3,38 @@
  *
  * Provides the `/dcp context|sweep [N]|compress` handler and the
  * synthetic-message injection used to surface results to the user.
- * The client parameter is typed against `src/core/client/session.ts`
- * instead of any host SDK type, so the handler stays framework-agnostic.
- * Command-failure notification lives in `src/commands/notify.ts` and is
- * shared with the `/go` command unit.
+ * The host dependency is typed against the host-agnostic `ToolHost`
+ * port instead of any host SDK type, so the handler stays
+ * framework-agnostic: `fetchHistory` returns lens messages directly,
+ * `notify` posts the ignored noReply chat message, and the report is
+ * produced by the lens-based `computeContextReportLens` (field-level
+ * parity with the v1 adapter, including the placeholder-signal prune
+ * detection and the compaction boundary).  Command-failure
+ * notification lives in `src/commands/notify.ts` and is shared with
+ * the `/go` command unit.
  *
  * State comes from the new host-agnostic context core: the shared
- * process-wide session-state manager (`getContextStateManager`) supplies
- * the session state, the v1 adapter (`history`) maps the fetched
- * messages to lens messages, and the fold/measure/release layers drive
- * the report and the sweep.  Effective prune marks are projected back
- * to v1 tool call ids so the report's pruned-tool accounting keeps the
- * previous contract verbatim.
+ * process-wide session-state manager (`getContextStateManager`)
+ * supplies the session state, and the fold/measure/release layers
+ * drive the report and the sweep.  Effective prune marks are no
+ * longer projected back to v1 tool call ids — the lens report
+ * recognizes pruned tool calls by their placeholder text, so the
+ * report's pruned-tool accounting keeps the previous contract
+ * verbatim.
  *
  * @module
  */
 
-import { history } from "../../adapters/opencode/history.js";
-import {
-  effectiveCallIds,
-  foldedV1Messages,
-} from "../../adapters/opencode/projection.js";
-import {
-  type ContextMessageEntry,
-  computeContextReport,
-  isMessageIgnored,
-} from "../../adapters/opencode/types.js";
-import type { SessionClient } from "../../core/client/session.js";
+import type { ToolHost } from "../../core/client/tool-host.js";
 import type { ContextPruningConfig } from "../../core/config-types.js";
 import {
   formatContextReport,
   formatTokens,
 } from "../../core/context/context-report.js";
+import {
+  computeContextReportLens,
+  countFoldedMessages,
+} from "../../core/context/context-report-lens.js";
 import { fold } from "../../core/context/fold.js";
 import type { HostMessage } from "../../core/context/lens.js";
 import { findLastUserOrdinal } from "../../core/context/lens.js";
@@ -166,7 +166,7 @@ function sweepToolRegions(
  *   `compress` tool.
  * - Any other argument → shows a short help listing available subcommands.
  *
- * @param client - OpenCode client providing session APIs.
+ * @param toolHost - Host tool services (fetchHistory / notify).
  * @param sessionID - The current session identifier.
  * @param args - The raw arguments string after `/dcp`.
  * @param contextConfig - Optional context pruning config (needed for
@@ -174,10 +174,10 @@ function sweepToolRegions(
  * @param hasCompressTool - Whether the `compress` tool is registered in
  *   the active mode profile.  `/dcp compress` refuses to arm the trigger
  *   when the tool is not registered.
- * @throws Error when the messages API or prompt API is unavailable.
+ * @throws Error when the history API is unavailable.
  */
 export async function handleDcpCommand(
-  client: SessionClient | null | undefined,
+  toolHost: ToolHost | null | undefined,
   sessionID: string,
   args: string,
   contextConfig?: ContextPruningConfig,
@@ -187,14 +187,14 @@ export async function handleDcpCommand(
 
   // ── Sweep subcommand ──────────────────────────────────────────────
   if (trimmed === "sweep" || trimmed.startsWith("sweep ")) {
-    await handleSweepSubcommand(client, sessionID, trimmed);
+    await handleSweepSubcommand(toolHost, sessionID, trimmed);
     return;
   }
 
   // ── Compress subcommand ──────────────────────────────────────────
   if (trimmed === "compress") {
     await handleCompressSubcommand(
-      client,
+      toolHost,
       sessionID,
       contextConfig ?? { dedup: {}, purgeErrors: {} },
       hasCompressTool,
@@ -214,62 +214,20 @@ export async function handleDcpCommand(
       "/dcp compress   — 在下一轮触发模型驱动的历史压缩",
     ].join("\n");
 
-    if (client?.session?.prompt) {
-      await client.session.prompt({
-        path: { id: sessionID },
-        body: {
-          noReply: true,
-          parts: [{ type: "text", text: help, ignored: true }],
-        },
-      });
-    }
+    await toolHost?.notify(sessionID, help);
     return;
   }
 
   // ── Fetch messages ────────────────────────────────────────────────
-  if (!client?.session?.messages) {
+  // The host adapter's `fetchHistory` already unwraps the response,
+  // projects the lens transcript, and wraps every failure in a Chinese
+  // error (logged as `fetch_messages_failed`) — the handler propagates
+  // those errors verbatim.  A missing history API is treated the same
+  // way the previous inline fetch did.
+  if (!toolHost?.fetchHistory) {
     throw new Error("无法获取会话消息：会话消息 API 不可用");
   }
-
-  let rawMessages: unknown;
-  try {
-    const res = await client.session.messages({
-      path: { id: sessionID },
-    });
-    rawMessages = res;
-  } catch (err) {
-    log(
-      "context-command",
-      "fetch_messages_failed",
-      sessionID,
-      undefined,
-      "error",
-      { error: String(err) },
-    );
-    throw new Error(
-      `无法获取会话消息：${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-
-  if (!rawMessages) {
-    throw new Error("会话消息 API 返回空结果");
-  }
-
-  // Defensive: some SDKs wrap in { data: ..., error: ... }
-  const rawObj = rawMessages as {
-    data?: unknown;
-    error?: { message?: string };
-  };
-  if (rawObj.error) {
-    const msg = rawObj.error.message ?? String(rawObj.error);
-    throw new Error(`获取会话消息失败：${msg}`);
-  }
-  const messages: ContextMessageEntry[] = (rawObj.data ??
-    rawMessages) as ContextMessageEntry[];
-
-  if (!Array.isArray(messages)) {
-    throw new Error("会话消息格式异常：期望数组");
-  }
+  const view = await toolHost.fetchHistory(sessionID);
 
   // ── Read state from the shared manager ────────────────────────────
   // The process-wide manager (shared with the hook and the tools) holds
@@ -279,19 +237,17 @@ export async function handleDcpCommand(
   // the batch pipeline modifies state between transforms).
   const manager = getContextStateManager();
   let state: SessionState | undefined;
-  let prunedCallIDs: Set<string> | undefined;
   let totalEff = 0;
   let curPendingCount = 0;
   let curPendingTokens = 0;
   try {
     state = manager.get(sessionID);
-    prunedCallIDs = effectiveCallIds(messages, state);
     totalEff = reclaimedTokens(state);
     curPendingCount = pendingCount(state);
     curPendingTokens = pendingTokens(state);
   } catch {
     // Defensive: I/O failure is non-fatal — tools fully counted.
-    prunedCallIDs = undefined;
+    state = undefined;
   }
 
   // ── Compute dual-scope message counts (folded view vs storage) ──────
@@ -299,19 +255,16 @@ export async function handleDcpCommand(
   let storageCount: number | undefined;
   try {
     if (state) {
-      const view = history(messages);
       const { items } = fold(view, state);
-      const folded = foldedV1Messages(items, messages, state);
-      foldedCount =
-        folded?.filter((m) => !isMessageIgnored(m)).length ??
-        messages.filter((m) => !isMessageIgnored(m)).length;
-      storageCount = messages.filter((m) => !isMessageIgnored(m)).length;
+      const counts = countFoldedMessages(items, view);
+      foldedCount = counts.foldedMessageCount;
+      storageCount = counts.storageMessageCount;
     }
   } catch {
     // Defensive: error is non-fatal, fall back to single-count line.
   }
 
-  const report = computeContextReport(messages, prunedCallIDs);
+  const report = computeContextReportLens(view);
   const formatted = formatContextReport(report, {
     prunedTokens: totalEff,
     pendingCount: curPendingCount,
@@ -329,30 +282,9 @@ export async function handleDcpCommand(
   });
 
   // ── Inject as ignored message (chat-visible, LLM-invisible) ───────
-  if (client?.session?.prompt) {
-    try {
-      await client.session.prompt({
-        path: { id: sessionID },
-        body: {
-          noReply: true,
-          parts: [{ type: "text", text: formatted, ignored: true }],
-        },
-      });
-    } catch (err) {
-      log(
-        "context-command",
-        "prompt_inject_failed",
-        sessionID,
-        undefined,
-        "warn",
-        { error: String(err) },
-      );
-      // Non-fatal — the report was already computed, inform the user
-      throw new Error(
-        `报告已生成但注入聊天失败（不影响使用）：${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  }
+  // `notify` is best-effort by contract (never rejects, failures are
+  // logged and swallowed by the host), so no try/catch here.
+  await toolHost?.notify(sessionID, formatted);
 }
 
 // ---------------------------------------------------------------------------
@@ -379,7 +311,7 @@ export function parseSweepCount(trimmed: string): number | undefined {
  * Handle the `/dcp sweep` and `/dcp sweep N` subcommands.
  *
  * 1. Parses the count argument (optional).
- * 2. Fetches session messages and maps them to the lens transcript.
+ * 2. Fetches session messages (lens transcript directly).
  * 3. Selects tool-output regions for marking (the previous sweep semantics).
  * 4. Writes pending marks into the shared session state, arms the
  *    pending-view-change flag (the next transform's release flips them
@@ -390,81 +322,38 @@ export function parseSweepCount(trimmed: string): number | undefined {
  * 6. Returns normally — the OpenCode adapter throws the unified
  *    `COMMAND_HANDLED` sentinel afterwards to short-circuit the flow.
  *
- * @param client - OpenCode client providing session APIs.
+ * @param toolHost - Host tool services (fetchHistory / notify).
  * @param sessionID - The current session identifier.
  * @param trimmed - The full arguments string (e.g. `"sweep"`, `"sweep 3"`).
  * @throws Error on API failures or invalid arguments.
  */
 async function handleSweepSubcommand(
-  client: SessionClient | null | undefined,
+  toolHost: ToolHost | null | undefined,
   sessionID: string,
   trimmed: string,
 ): Promise<void> {
   const count = parseSweepCount(trimmed);
 
   // ── Fetch messages ──────────────────────────────────────────────
-  if (!client?.session?.messages) {
+  // The host adapter's `fetchHistory` already unwraps the response,
+  // projects the lens transcript, and wraps every failure in a Chinese
+  // error (logged as `fetch_messages_failed`) — the handler propagates
+  // those errors verbatim.  A missing history API is treated the same
+  // way the previous inline fetch did.
+  if (!toolHost?.fetchHistory) {
     throw new Error("无法获取会话消息：会话消息 API 不可用");
   }
-
-  let rawMessages: unknown;
-  try {
-    const res = await client.session.messages({
-      path: { id: sessionID },
-    });
-    rawMessages = res;
-  } catch (err) {
-    log(
-      "context-command",
-      "sweep_fetch_failed",
-      sessionID,
-      undefined,
-      "error",
-      {
-        error: String(err),
-      },
-    );
-    throw new Error(
-      `无法获取会话消息：${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-
-  if (!rawMessages) {
-    throw new Error("会话消息 API 返回空结果");
-  }
-
-  const rawObj = rawMessages as {
-    data?: unknown;
-    error?: { message?: string };
-  };
-  if (rawObj.error) {
-    const msg = rawObj.error.message ?? String(rawObj.error);
-    throw new Error(`获取会话消息失败：${msg}`);
-  }
-  const messages = (rawObj.data ?? rawMessages) as ContextMessageEntry[];
-
-  if (!Array.isArray(messages)) {
-    throw new Error("会话消息格式异常：期望数组");
-  }
+  const view = await toolHost.fetchHistory(sessionID);
 
   // ── Select regions and write pending marks ───────────────────────
   const manager = getContextStateManager();
   const state = manager.get(sessionID);
-  const view = history(messages);
   const writes = sweepToolRegions(state, view, count);
 
   if (writes.length === 0) {
     // ── Nothing to mark ───────────────────────────────────────────
     const msg = "没有找到可标记的工具输出";
-    if (client?.session?.prompt) {
-      await client.session.prompt({
-        path: { id: sessionID },
-        body: {
-          noReply: true,
-          parts: [{ type: "text", text: msg, ignored: true }],
-        },
-      });
-    }
+    await toolHost?.notify(sessionID, msg);
     return;
   }
 
@@ -489,29 +378,9 @@ async function handleSweepSubcommand(
     "这些工具的输出将在下一轮 LLM 调用中被替换为占位文本。",
   ].join("\n");
 
-  if (client?.session?.prompt) {
-    try {
-      await client.session.prompt({
-        path: { id: sessionID },
-        body: {
-          noReply: true,
-          parts: [{ type: "text", text: reportMsg, ignored: true }],
-        },
-      });
-    } catch (err) {
-      log(
-        "context-command",
-        "sweep_prompt_inject_failed",
-        sessionID,
-        undefined,
-        "warn",
-        { error: String(err) },
-      );
-      throw new Error(
-        `标记已完成但通知失败：${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  }
+  // `notify` is best-effort by contract (never rejects, failures are
+  // logged and swallowed by the host), so no try/catch here.
+  await toolHost?.notify(sessionID, reportMsg);
 
   return;
 }
@@ -541,7 +410,7 @@ async function handleSweepSubcommand(
  * No message fetch, no blocks, no plan — the flag is consumed by the
  * transform's injection phase (context-pruning hook, Phase 6b).
  *
- * @param client - OpenCode client providing session APIs.
+ * @param toolHost - Host tool services (notify).
  * @param sessionID - The current session identifier.
  * @param contextConfig - The parsed context pruning config (needed for
  *   the compress gate).
@@ -550,7 +419,7 @@ async function handleSweepSubcommand(
  * @throws Error on API failures or invalid config.
  */
 async function handleCompressSubcommand(
-  client: SessionClient | null | undefined,
+  toolHost: ToolHost | null | undefined,
   sessionID: string,
   contextConfig: ContextPruningConfig,
   hasCompressTool: boolean,
@@ -569,15 +438,7 @@ async function handleCompressSubcommand(
   ) {
     const msg =
       "压缩功能未启用：compress 工具未在当前 mode profile 的 tools 中注册，或 [zoo.context.compress] 段缺少 threshold_tokens / protected_tokens。";
-    if (client?.session?.prompt) {
-      await client.session.prompt({
-        path: { id: sessionID },
-        body: {
-          noReply: true,
-          parts: [{ type: "text", text: msg, ignored: true }],
-        },
-      });
-    }
+    await toolHost?.notify(sessionID, msg);
     return;
   }
 
@@ -595,27 +456,7 @@ async function handleCompressSubcommand(
   const notifyMsg =
     "已标记手动压缩：将在下一轮对话自动触发。届时会注入压缩指令，由模型调用 compress 工具执行。";
 
-  if (client?.session?.prompt) {
-    try {
-      await client.session.prompt({
-        path: { id: sessionID },
-        body: {
-          noReply: true,
-          parts: [{ type: "text", text: notifyMsg, ignored: true }],
-        },
-      });
-    } catch (err) {
-      log(
-        "context-command",
-        "compress_notify_failed",
-        sessionID,
-        undefined,
-        "warn",
-        { error: String(err) },
-      );
-      throw new Error(
-        `压缩触发已标记但通知失败：${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  }
+  // `notify` is best-effort by contract (never rejects, failures are
+  // logged and swallowed by the host), so no try/catch here.
+  await toolHost?.notify(sessionID, notifyMsg);
 }

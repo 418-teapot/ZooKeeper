@@ -94,6 +94,20 @@ function collect(
 }
 
 /**
+ * Options controlling a single `composeProfile` pass.
+ */
+export interface ComposeOptions {
+  /**
+   * Warn once per profile name absent from the unit array (`unknown_unit`
+   * event).  Default `true`.  A caller re-composing a pass for a single
+   * slot (e.g. the pi command host) disables it so the first pass's
+   * warnings are not repeated — the profile is unchanged, so the active
+   * set handed to factories stays correct.
+   */
+  warnUnknownUnits?: boolean;
+}
+
+/**
  * Select and instantiate the profile-enabled units.
  *
  * A `null` profile (absent or invalid) returns an empty result and
@@ -101,17 +115,21 @@ function collect(
  * Otherwise the enablement sets are derived from the profile lists and
  * each enabled unit's factory runs in the unit array's order.  Profile
  * names with no matching unit in the array are warned once via the
- * shared logger (`unknown_unit` event).
+ * shared logger (`unknown_unit` event), unless `warnUnknownUnits` is
+ * `false` (a re-composition pass that repeats the same profile for a
+ * single slot must not duplicate the first pass's warnings).
  *
  * @param profile - The active mode profile, or `null` when absent.
  * @param units - The unit array (caller-supplied).
  * @param deps - Per-plugin-instance dependencies.
+ * @param opts - Optional per-pass options.
  * @returns The composed host-agnostic contributions.
  */
 export function composeProfile(
   profile: ModeProfile | null,
   units: UnitDescriptor[],
   deps: Deps,
+  opts?: ComposeOptions,
 ): ComposedResult {
   if (profile === null) return emptyResult();
 
@@ -134,6 +152,7 @@ export function composeProfile(
   }
 
   for (const category of CATEGORIES) {
+    if (opts?.warnUnknownUnits === false) continue;
     for (const name of profile[category]) {
       if (!known.has(name)) {
         log("compose", "unknown_unit", "", undefined, "warn", {
