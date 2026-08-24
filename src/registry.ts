@@ -12,8 +12,8 @@
  *
  *   1. hook units — task-prompt → task-delegation (beforeExec),
  *      task-prompt → json-error-nudge → direct-work-nudge →
- *      post-task-nudge (afterExec), context-pruning → context-metrics
- *      (transform), reply-strip (textComplete).
+ *      post-task-nudge (afterExec), context-pruning (transform),
+ *      reply-strip (textComplete).
  *   2. tool units — compress, decompress.
  *   3. command units — go, dcp.
  *   4. agent units — the seven prompt-injection units.
@@ -40,7 +40,6 @@ import { unit as spiderUnit } from "./agents/spider.js";
 import { unit as dcpCommandUnit } from "./commands/dcp/index.js";
 import { unit as goCommandUnit } from "./commands/go/index.js";
 import type { SkillUnitDescriptor, UnitDescriptor } from "./core/slots.js";
-import { unit as contextMetricsUnit } from "./hooks/context-metrics/index.js";
 import { unit as contextPruningUnit } from "./hooks/context-pruning/index.js";
 import { unit as directWorkNudgeUnit } from "./hooks/direct-work-nudge/index.js";
 import { unit as jsonErrorNudgeUnit } from "./hooks/json-error-nudge/index.js";
@@ -154,7 +153,6 @@ export const REGISTRY: UnitDescriptor[] = [
   directWorkNudgeUnit,
   postTaskNudgeUnit,
   contextPruningUnit,
-  contextMetricsUnit,
   replyStripUnit,
   // ── Tool units ──────────────────────────────────────────────────
   compressToolUnit,

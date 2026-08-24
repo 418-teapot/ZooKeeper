@@ -48,7 +48,6 @@ describe("vendor smol-toml — config.toml zoo section", () => {
       "wiki-verify",
     ]);
     assert.deepEqual(poly.hooks, [
-      "context-metrics",
       "context-pruning",
       "direct-work-nudge",
       "json-error-nudge",

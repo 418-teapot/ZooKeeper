@@ -179,7 +179,6 @@ export {
   runAfterHandlers,
 } from "./compose-opencode.js";
 export { sessionAgentMap } from "./core/context/runtime.js";
-export { handleMessagesTransform } from "./hooks/context-metrics";
 export {
   handleDedupNotify,
   resolveSessionAgent,

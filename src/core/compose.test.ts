@@ -83,17 +83,6 @@ function makeUnits(): { units: UnitDescriptor[]; calls: string[] } {
         toolDefinition: [],
       };
     }),
-    mockUnit("context-metrics", "hook", () => {
-      calls.push("context-metrics");
-      return {
-        kind: "hook",
-        beforeExec: [],
-        afterExec: [],
-        transform: [{ name: "contextMetrics", handle: async () => {} }],
-        textComplete: [],
-        toolDefinition: [],
-      };
-    }),
     mockUnit("compress", "tool", () => {
       calls.push("compress");
       return {
@@ -155,7 +144,7 @@ const ALL_UNITS_PROFILE: ModeProfile = {
   name: "poly",
   agents: ["dolphin", "beaver", "mola"],
   skills: ["beaver-tdd", "wiki-query"],
-  hooks: ["task-prompt", "context-pruning", "context-metrics"],
+  hooks: ["task-prompt", "context-pruning"],
   tools: ["compress", "decompress"],
   commands: ["go", "dcp"],
 };
@@ -165,7 +154,7 @@ const SUBSET_PROFILE: ModeProfile = {
   name: "lite",
   agents: ["mola"],
   skills: [],
-  hooks: ["context-metrics"],
+  hooks: ["context-pruning"],
   tools: ["decompress"],
   commands: [],
 };
@@ -216,7 +205,6 @@ describe("composeProfile — full profile", () => {
       "wiki-query",
       "task-prompt",
       "context-pruning",
-      "context-metrics",
       "compress",
       "decompress",
       "go",
@@ -247,7 +235,7 @@ describe("composeProfile — full profile", () => {
     );
     assert.deepEqual(
       result.transform.map((h) => h.name),
-      ["contextPruning", "contextMetrics"],
+      ["contextPruning"],
     );
     assert.deepEqual(result.textComplete, []);
     assert.deepEqual(
@@ -291,12 +279,12 @@ describe("composeProfile — subset profile", () => {
     const { units, calls } = makeUnits();
     const result = composeProfile(SUBSET_PROFILE, units, DEPS);
 
-    assert.deepEqual(calls, ["mola", "context-metrics", "decompress"]);
+    assert.deepEqual(calls, ["mola", "context-pruning", "decompress"]);
     assert.deepEqual(result.agents, [{ name: "mola", prompt: "MOLA" }]);
     assert.deepEqual(result.skills, []);
     assert.deepEqual(
       result.transform.map((h) => h.name),
-      ["contextMetrics"],
+      ["contextPruning"],
     );
     assert.deepEqual(result.beforeExec, []);
     assert.deepEqual(result.afterExec, []);
@@ -421,10 +409,7 @@ describe("composeProfile — active set", () => {
     assert.ok(seen, "factory must receive the active set");
     assert.deepEqual([...seen.agents], ["dolphin", "beaver", "mola"]);
     assert.deepEqual([...seen.skills], ["beaver-tdd", "wiki-query"]);
-    assert.deepEqual(
-      [...seen.hooks],
-      ["task-prompt", "context-pruning", "context-metrics"],
-    );
+    assert.deepEqual([...seen.hooks], ["task-prompt", "context-pruning"]);
     assert.deepEqual([...seen.tools], ["compress", "decompress"]);
     assert.deepEqual([...seen.commands], ["go", "dcp"]);
   });

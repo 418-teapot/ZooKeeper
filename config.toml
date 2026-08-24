@@ -745,7 +745,6 @@ skills = [
   "wiki-verify",
 ]
 hooks = [
-  "context-metrics",
   "context-pruning",
   "direct-work-nudge",
   "json-error-nudge",
@@ -776,7 +775,6 @@ skills = [
   "wiki-query",
 ]
 hooks = [
-  "context-metrics",
   "context-pruning",
   "json-error-nudge",
   "reply-strip",

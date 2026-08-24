@@ -49,7 +49,6 @@ POLY_PROFILE: dict[str, object] = {
         "post-task-nudge",
         "json-error-nudge",
         "context-pruning",
-        "context-metrics",
     ],
     "tools": ["compress", "decompress"],
     "commands": ["go", "dcp"],
@@ -70,7 +69,7 @@ EXPECTED_AGENTS = [
 MONO_PROFILE: dict[str, object] = {
     "agents": ["dolphin", "mola"],
     "skills": ["git-commit", "grill", "mola-plan", "wiki-query"],
-    "hooks": ["context-metrics", "context-pruning", "json-error-nudge"],
+    "hooks": ["context-pruning", "json-error-nudge"],
     "tools": ["compress", "decompress"],
     "commands": ["go", "dcp"],
 }

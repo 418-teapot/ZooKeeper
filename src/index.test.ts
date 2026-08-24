@@ -3,7 +3,7 @@
  *
  * Covers: parseLimits, initPluginLogger (from
  * `src/core/config-parse.ts`), injectAgentPrompts,
- * handleMessagesTransform, runAfterHandlers, registerSkills,
+ * runAfterHandlers, registerSkills,
  * resolveSessionAgent.
  */
 import assert from "node:assert/strict";
@@ -12,7 +12,6 @@ import { initPluginLogger, parseLimits } from "./core/config-parse.js";
 import {
   buildPlugin,
   handleDedupNotify,
-  handleMessagesTransform,
   injectAgentPrompts,
   registerSkills,
   resolveSessionAgent,
@@ -438,60 +437,6 @@ describe("injectAgentPrompts", () => {
     const agents: Record<string, any> = { dolphin: {} };
     injectAgentPrompts(agents, [{ name: "dolphin", prompt: "" }]);
     assert.equal(agents.dolphin.prompt, undefined);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// handleMessagesTransform
-// ---------------------------------------------------------------------------
-
-describe("handleMessagesTransform", () => {
-  it("does not throw with undefined messages field", () => {
-    // messages key is absent — measureContext handles this
-    handleMessagesTransform({ messages: undefined });
-    assert.ok(true);
-  });
-
-  it("does not throw with empty messages array", () => {
-    handleMessagesTransform({ messages: [] });
-    assert.ok(true);
-  });
-
-  it("does not throw with null messages", () => {
-    handleMessagesTransform({ messages: null });
-    assert.ok(true);
-  });
-
-  it("does not throw with valid messages", () => {
-    handleMessagesTransform({
-      messages: [
-        {
-          info: { role: "user", id: "m1", sessionID: "test-session" },
-          parts: [{ type: "text", text: "Hello" }],
-        },
-      ],
-    });
-    assert.ok(true);
-  });
-
-  it("does not throw with complete assistant messages", () => {
-    handleMessagesTransform({
-      messages: [
-        {
-          info: { role: "user", id: "m1" },
-          parts: [{ type: "text", text: "Hello" }],
-        },
-        {
-          info: {
-            role: "assistant",
-            id: "m2",
-            tokens: { input: 100, output: 50 },
-          },
-          parts: [{ type: "text", text: "Response" }],
-        },
-      ],
-    });
-    assert.ok(true);
   });
 });
 
@@ -1026,7 +971,6 @@ describe("plugin wiring", () => {
           "post-task-nudge",
           "json-error-nudge",
           "context-pruning",
-          "context-metrics",
           "reply-strip",
         ],
         tools: [],

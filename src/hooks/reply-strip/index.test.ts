@@ -117,7 +117,7 @@ describe("reply-strip unit — profile gating", () => {
 
   it("profile without reply-strip contributes no textComplete handler", () => {
     const result = composeProfile(
-      hookProfile(["context-metrics"]),
+      hookProfile(["context-pruning"]),
       REGISTRY,
       DEPS,
     );

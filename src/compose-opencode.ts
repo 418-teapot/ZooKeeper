@@ -338,8 +338,7 @@ export function assembleOpenCodeHooks(
       }
     },
 
-    // Present only when at least one of context-pruning / context-metrics
-    // is enabled by the profile.
+    // Present only when the context-pruning hook unit is enabled.
     ...(composed.transform.length > 0
       ? {
           async "experimental.chat.messages.transform"(

@@ -44,7 +44,6 @@ const POLY_PROFILE = {
     "post-task-nudge",
     "json-error-nudge",
     "context-pruning",
-    "context-metrics",
   ],
   tools: ["compress", "decompress"],
   commands: ["go", "dcp"],

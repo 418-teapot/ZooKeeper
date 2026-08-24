@@ -48,7 +48,6 @@ const POLY_PROFILE = {
     "post-task-nudge",
     "json-error-nudge",
     "context-pruning",
-    "context-metrics",
     "reply-strip",
   ],
   tools: ["compress", "decompress"],
@@ -220,14 +219,13 @@ describe("poly full profile — registration parity", () => {
     );
   });
 
-  it("messages.transform runs context-pruning then context-metrics", async () => {
+  it("messages.transform runs context-pruning", async () => {
     const plugin = await makePlugin();
     const output = { messages: transformMessages() };
     await plugin["experimental.chat.messages.transform"]({}, output);
 
     const events = logEvents().map((e) => e.event);
     assert.ok(events.includes("refs_assigned"), "pruning handler must run");
-    assert.ok(events.includes("context_measured"), "metrics handler must run");
   });
 
   it("text.complete strips leading [mN] echoes and logs the event", async () => {
@@ -551,30 +549,13 @@ describe("event-key composition by enabled hook set", () => {
     assert.ok(output.output?.includes(JSON_ERROR_REMINDER));
   });
 
-  it("context-metrics only → transform measures but does not prune", async () => {
-    const plugin = await pluginWithHooks(["context-metrics"]);
-    const output = { messages: transformMessages() };
-    await plugin["experimental.chat.messages.transform"]({}, output);
-
-    const events = logEvents().map((e) => e.event);
-    assert.ok(events.includes("context_measured"), "metrics handler must run");
-    assert.ok(
-      !events.includes("refs_assigned"),
-      "pruning handler must not run",
-    );
-  });
-
-  it("context-pruning only → transform prunes but does not measure", async () => {
+  it("context-pruning only → transform prunes", async () => {
     const plugin = await pluginWithHooks(["context-pruning"]);
     const output = { messages: transformMessages() };
     await plugin["experimental.chat.messages.transform"]({}, output);
 
     const events = logEvents().map((e) => e.event);
     assert.ok(events.includes("refs_assigned"), "pruning handler must run");
-    assert.ok(
-      !events.includes("context_measured"),
-      "metrics handler must not run",
-    );
   });
 });
 

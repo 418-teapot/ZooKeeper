@@ -309,7 +309,7 @@ export function collectSkillPaths(profileSkills: string[]): string[] {
  * profile's agents list names `dolphin`; otherwise the system prompt is
  * returned untouched.  `resources_discover` returns the profile-listed
  * skill paths, an empty array when the profile has none.  `toolResult`
- * and `contextMetrics` wrap the composed after-exec / transform
+ * and `contextHandler` wrap the composed after-exec / transform
  * contributions via the pi contact layer; with a null profile both are
  * empty so the handlers no-op.  When `piApi` is provided, the
  * profile's tool contributions are registered natively through pi's
@@ -340,7 +340,7 @@ export function buildPiHandlers(
     ctx?: unknown,
   ) => Promise<{ skillPaths: string[] }>;
   toolResult: ReturnType<typeof buildPiToolResultHandler>;
-  contextMetrics: ReturnType<typeof buildPiContextHandler>;
+  contextHandler: ReturnType<typeof buildPiContextHandler>;
   messageEnd: ReturnType<typeof buildPiMessageEndHandler>;
 } {
   // Mutable holder updated by every event handler so the pi adapter and
@@ -420,7 +420,7 @@ export function buildPiHandlers(
       if (ctx) contextHolder.current = ctx as PiToolHostContext;
       return toolResultHandler(event, ctx);
     },
-    contextMetrics: async (event, ctx) => {
+    contextHandler: async (event, ctx) => {
       if (ctx) contextHolder.current = ctx as PiToolHostContext;
       return contextHandler(event, ctx);
     },
@@ -462,7 +462,7 @@ export function zookeeperPi(pi: ExtensionAPI): void {
   pi.on("before_agent_start", handlers.beforeAgentStart);
   pi.on("resources_discover", handlers.resourcesDiscover);
   pi.on("tool_result", handlers.toolResult);
-  pi.on("context", handlers.contextMetrics);
+  pi.on("context", handlers.contextHandler);
   pi.on("message_end", handlers.messageEnd);
 }
 

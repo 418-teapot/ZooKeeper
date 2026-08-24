@@ -6,8 +6,7 @@
  * category breakdown, computeContextReport.
  *
  * This is the primary test file for all v1 measurement logic;
- * `src/hooks/context-metrics/index.test.ts` tests the barrel re-export
- * and `measureContext` logging contract.
+ * `measureContext` logging contract is also covered here.
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";

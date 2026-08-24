@@ -47,7 +47,6 @@ const POLY_PROFILE = {
     "post-task-nudge",
     "json-error-nudge",
     "context-pruning",
-    "context-metrics",
   ],
   tools: ["compress", "decompress"],
   commands: ["go", "dcp"],
@@ -127,11 +126,11 @@ describe("buildPiContributions — profile-driven selection", () => {
       ],
     );
     // context-pruning is no longer gated on client capabilities — the
-    // unit contributes unconditionally, so both transform handlers
-    // appear (registry order: pruning before metrics).
+    // unit contributes unconditionally, so the transform handler
+    // appears.
     assert.deepEqual(
       composed.transform.map((h) => h.name),
-      ["contextPruning", "contextMetrics"],
+      ["contextPruning"],
     );
     assert.deepEqual(
       composed.beforeExec.map((h) => h.name),
@@ -408,7 +407,7 @@ describe("buildPiHandlers — compose-driven tool_result", () => {
 describe("buildPiHandlers — compose-driven context handler", () => {
   it("returns the native pi messages, possibly modified by pruning", async () => {
     const handlers = buildPiHandlers(POLY_ZOO);
-    const result = (await handlers.contextMetrics(
+    const result = (await handlers.contextHandler(
       {
         type: "context",
         messages: [{ role: "user", content: "hello" }],
@@ -423,7 +422,7 @@ describe("buildPiHandlers — compose-driven context handler", () => {
 
   it("returns an empty replacement for an empty message array", async () => {
     const handlers = buildPiHandlers(POLY_ZOO);
-    const result = (await handlers.contextMetrics(
+    const result = (await handlers.contextHandler(
       { type: "context", messages: [] },
       SESSION_CTX,
     )) as { messages: unknown[] } | undefined;
@@ -507,9 +506,7 @@ describe("buildPiHandlers — registerTool wiring", () => {
           poly: {
             ...POLY_PROFILE,
             tools: ["decompress"],
-            hooks: POLY_PROFILE.hooks.filter(
-              (h) => h !== "context-pruning" && h !== "context-metrics",
-            ),
+            hooks: POLY_PROFILE.hooks.filter((h) => h !== "context-pruning"),
           },
         },
       },
@@ -555,7 +552,7 @@ describe("buildPiHandlers — null profile fail-closed", () => {
       ),
       undefined,
     );
-    const contextResult = await handlers.contextMetrics(
+    const contextResult = await handlers.contextHandler(
       { type: "context", messages: [{ role: "user", content: "hi" }] },
       SESSION_CTX,
     );
