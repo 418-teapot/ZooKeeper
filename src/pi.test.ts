@@ -1038,8 +1038,8 @@ describe("zookeeperPi — thin entry wiring", () => {
       );
       assert.equal(
         (init.skills as string[]).length,
-        11,
-        "real poly profile composes 11 skills",
+        12,
+        "real poly profile composes 12 skills",
       );
       assert.deepEqual(init.limits, {
         contextWordLimit: 200,
@@ -1063,7 +1063,7 @@ describe("zookeeperPi — thin entry wiring", () => {
       const resources = (await api.handlers.resources_discover()) as {
         skillPaths: string[];
       };
-      assert.equal(resources.skillPaths.length, 11);
+      assert.equal(resources.skillPaths.length, 12);
 
       // tool_result runs the real poly hooks: json-error-nudge is
       // enabled there, so a JSON parse error output gets the reminder.

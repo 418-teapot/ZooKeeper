@@ -1,36 +1,27 @@
 /**
  * Text-assertion tests for the prompt-text constants in `prompts.ts`.
  *
- * Covers the compress teaching skeleton (single source of truth): all
- * four segmentation points are present in the skeleton itself, the nudge
- * template exposes the `{TEACHING}` slot, and both nudge levels embed
- * the EXACT skeleton through that slot (an inline copy would fail the
- * equality assertion).
+ * Covers the `compress-usage` skill pointer: both nudge levels
+ * carry the EXACT pointer (an inline copy would fail the equality
+ * assertion), the nudge template still exposes the `{TEACHING}` slot,
+ * and the manual compress template points at the `compress-usage`
+ * skill instead of embedding segmentation teaching inline.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  COMPRESS_GUIDANCE,
+  COMPRESS_USAGE_POINTER,
   CONTEXT_NUDGE_LEVELS,
   CONTEXT_NUDGE_TEMPLATE,
+  MANUAL_COMPRESS_TEMPLATE,
 } from "./prompts.js";
 
-/** Distinctive phrase per teaching point, in skeleton order. */
-const TEACHING_POINT_PHRASES = [
-  "重要信息不压缩",
-  "委派边界",
-  "最近上下文",
-  "批量提交多范围",
-];
-
-describe("compress teaching skeleton", () => {
-  it("defines all four teaching points in one place", () => {
-    for (const phrase of TEACHING_POINT_PHRASES) {
-      assert.ok(
-        COMPRESS_GUIDANCE.includes(phrase),
-        `skeleton must contain: ${phrase}`,
-      );
-    }
+describe("compress-usage skill pointer", () => {
+  it("defines the pointer text in one place", () => {
+    assert.ok(
+      COMPRESS_USAGE_POINTER.includes("compress-usage"),
+      "pointer must reference the compress-usage skill",
+    );
   });
 
   it("exposes the {TEACHING} slot in the nudge template", () => {
@@ -40,20 +31,20 @@ describe("compress teaching skeleton", () => {
     );
   });
 
-  it("embeds the exact skeleton into both gentle and urgent nudge levels", () => {
+  it("embeds the exact pointer into both gentle and urgent nudge levels", () => {
     for (const level of ["gentle", "urgent"] as const) {
-      const copy = CONTEXT_NUDGE_LEVELS[level];
       assert.equal(
-        copy.teaching,
-        COMPRESS_GUIDANCE,
-        `${level} teaching must reference the skeleton, not a copy`,
+        CONTEXT_NUDGE_LEVELS[level].teaching,
+        COMPRESS_USAGE_POINTER,
+        `${level} teaching must reference the pointer, not a copy`,
       );
-      for (const phrase of TEACHING_POINT_PHRASES) {
-        assert.ok(
-          copy.teaching.includes(phrase),
-          `${level} teaching must contain: ${phrase}`,
-        );
-      }
     }
+  });
+
+  it("points the manual compress template at the compress-usage skill", () => {
+    assert.ok(
+      MANUAL_COMPRESS_TEMPLATE.includes("compress-usage"),
+      "manual compress template must reference the compress-usage skill",
+    );
   });
 });

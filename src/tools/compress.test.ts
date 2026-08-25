@@ -25,7 +25,6 @@ import {
   getContextStateManager,
 } from "../core/context/runtime.js";
 import type { Block, SessionState } from "../core/context/state.js";
-import { COMPRESS_GUIDANCE } from "../core/prompts.js";
 import {
   buildPlugin,
   buildToolHooks,
@@ -862,38 +861,67 @@ describe("compress tool registration gate", () => {
     }
   });
 
-  it("injects the teaching skeleton and the line-number model into the description", () => {
+  it("carries the batch compress contract across description and args", () => {
     const { client } = mockClient([]);
     const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} }, [
       "compress",
     ]);
 
     assert.ok(hooks?.compress);
-    const description = (hooks.compress as unknown as CompressToolDefinition)
-      .description;
+    const tool = hooks.compress as unknown as CompressToolDefinition;
     assert.ok(
-      description.includes(COMPRESS_GUIDANCE),
-      "description must carry the full teaching skeleton (all four points)",
+      tool.description.includes("不再需要逐字保留"),
+      "description must state that verbatim retention is unnecessary for the compressed ranges",
     );
     assert.ok(
-      description.includes("[mN]"),
-      "description must teach the per-round line-number addressing model",
+      tool.description.includes("独立的主题"),
+      "description must require each range to be an independent topic",
     );
     assert.ok(
-      description.includes("每轮重新编号"),
-      "description must warn that line numbers are per-round addresses",
+      tool.description.includes("压缩范围不能有重叠"),
+      "description must forbid overlapping ranges",
     );
     assert.ok(
-      description.includes("[Block bN · K 条]"),
-      "description must reference the new block header format",
+      tool.args.ranges.description.includes("{fromRef, toRef, title, summary}"),
+      "ranges arg must state the per-item fields",
     );
     assert.ok(
-      description.includes("已压入压缩块"),
-      "description must use the 已压入压缩块 wording",
+      tool.args.ranges.items.description.includes("一段连续的历史消息"),
+      "items arg must describe a contiguous run of history",
     );
     assert.ok(
-      description.includes("max_ranges"),
-      "description must mention the max_ranges batch bound",
+      tool.args.ranges.items.properties.fromRef.description.includes(
+        "起点行号",
+      ),
+      "fromRef arg must point at the starting line number",
+    );
+    assert.ok(
+      tool.args.ranges.items.properties.fromRef.description.includes(
+        "该消息及其之后的内容会被压缩",
+      ),
+      "fromRef arg must state that the message and everything after it gets compressed",
+    );
+    assert.ok(
+      tool.args.ranges.items.properties.toRef.description.includes("终点行号"),
+      "toRef arg must point at the ending line number",
+    );
+    assert.ok(
+      tool.args.ranges.items.properties.toRef.description.includes(
+        "该消息之前的内容会被压缩",
+      ),
+      "toRef arg must state that everything before the message gets compressed",
+    );
+    assert.ok(
+      tool.args.ranges.items.properties.title.description.includes(
+        "不超过 80 字符的单行",
+      ),
+      "title arg must state the single-line 80-character limit",
+    );
+    assert.ok(
+      tool.args.ranges.items.properties.summary.description.includes(
+        "替换压缩范围内的原文",
+      ),
+      "summary arg must state the original-text replacement role",
     );
   });
 });

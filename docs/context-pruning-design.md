@@ -1025,7 +1025,7 @@ in-memory 标志，下一轮 transform 注入合成 user 指令消息，由模�
   1. !isSubAgent && pendingManualTrigger 置位 → 末尾追加合成 user 指令
      消息（固定 id=zoo-manual-compress、不落盘、不进 ref 分配）
   2. 文案 = MANUAL_COMPRESS_TEMPLATE（用户指令口吻，非提醒）
-     + COMPRESS_GUIDANCE 教学骨架 + computeEligibility 资格载荷
+     + compress-usage 技能指针 + computeEligibility 资格载荷
      （startRef/endRef/reclaim；无可压缩窗口时用兜底文案）
   3. 注入后立即清标志（一次性：再下轮不再出现）
 ```

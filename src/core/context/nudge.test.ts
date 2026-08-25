@@ -13,7 +13,7 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { COMPRESS_GUIDANCE } from "../prompts.js";
+import { COMPRESS_USAGE_POINTER } from "../prompts.js";
 import type { HostMessage } from "./lens.js";
 import { makeMsg } from "./lens-testkit.js";
 import {
@@ -226,7 +226,7 @@ describe("nudge text assembly (C6-03)", () => {
       ),
       "gentle equation copy",
     );
-    assert.ok(text.includes(COMPRESS_GUIDANCE), "teaching slot filled");
+    assert.ok(text.includes(COMPRESS_USAGE_POINTER), "teaching slot filled");
     assert.ok(!text.includes("{"), "no placeholder leaks");
   });
 

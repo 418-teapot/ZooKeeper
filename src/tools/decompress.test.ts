@@ -542,7 +542,7 @@ describe("decompress tool registration gate", () => {
     assert.deepEqual(hooks.decompress.args, {
       blockId: {
         type: "string",
-        description: `要恢复的块 ID（如 "b3"）。来源：块头 [Block b3 · K 条] 或索引行 --- bN: <title> ---。索引行指向的旧块返回摘要正文，活跃块恢复原始消息。`,
+        description: "要恢复的压缩块 id",
       },
     });
   });
@@ -556,24 +556,7 @@ describe("decompress tool registration gate", () => {
     assert.ok(hooks?.decompress);
     assert.equal(
       hooks.decompress.description,
-      `恢复一个压缩块的内容（compress 的反向操作）。
-
-当摘要提供不了你需要的确切细节（原始代码、完整报错、文件原文）时使用本工具。
-
-两种结果：
-
-1. 活跃块（视图中带 [Block bN · K 条] 块头）：块的原始消息在你的下一轮上下文中完整恢复。ToolResult 只返回一行确认，不含原文——不要在调用后的同一轮里引用原文内容。
-2. 已被更大压缩块消费的旧块（仅以索引行 --- bN: <title> --- 出现）：立即返回该块保留的完整摘要正文，上下文不变。
-
-参数：
-
-- blockId: 要恢复的块 ID（如 "b3"）。取自块头 [Block b3 · K 条] 或索引行 --- bN: <title> ---，不要凭记忆编造。
-
-重要：
-
-- 恢复活跃块会回胀上下文。预估恢复后超过上下文水位时调用会被拒绝，错误信息会给出替代指导（先压缩其他段腾空间）。
-- 不要与 compress 并行调用——两者都修改压缩状态，可能冲突。
-- 块不存在时会返回明确的错误指导（列出当前可用块号），按提示修正后重试。`,
+      `恢复被压缩成摘要的块中的内容。当原文过长时，会拒绝恢复。`,
     );
   });
 });

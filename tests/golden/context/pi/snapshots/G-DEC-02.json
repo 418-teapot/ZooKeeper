@@ -1987,10 +1987,10 @@
         "pendingViewChange": false,
         "nudgeAnchor": null
       },
-      "toolResult": "上下文解压：已恢复压缩块 b1 的 12 条原始消息，约回胀 12.0K tokens，下一轮上下文生效",
+      "toolResult": "上下文解压：已恢复压缩块 b1 的 12 条原始消息，约回胀 12.0K tokens，下一轮上下文生效——本轮请勿引用其原文。",
       "toolError": null,
       "notifications": [
-        "上下文解压：已恢复压缩块 b1 的 12 条原始消息，约回胀 12.0K tokens，下一轮上下文生效"
+        "上下文解压：已恢复压缩块 b1 的 12 条原始消息，约回胀 12.0K tokens，下一轮上下文生效——本轮请勿引用其原文。"
       ]
     },
     {

@@ -50,7 +50,6 @@ import {
 } from "../core/context/runtime.js";
 import type { Block, SessionState } from "../core/context/state.js";
 import { type NumberedItem, numberView } from "../core/context/view-refs.js";
-import { COMPRESS_GUIDANCE } from "../core/prompts.js";
 import type { ToolUnitDescriptor } from "../core/slots.js";
 import { log } from "../utils/logger.js";
 
@@ -197,74 +196,31 @@ function buildCompressToolMetadata(
   _contextConfig: ContextPruningConfig,
 ): CompressToolMetadata {
   return {
-    description: `压缩一段或多段连续可见历史为摘要（每个范围将被你的摘要替换）。
-
-何时使用：
-
-收到上下文压力提醒（nudge）建议压缩时，或你判断一段已完成的探索/委派历史不再需要逐字保留时。压缩是非破坏性的——原文保留在会话存储中，之后可用 decompress 工具按块召回。
-
-${COMPRESS_GUIDANCE}
-
-消息寻址（行号）：
-
-- 每条可见消息以 [mN] 前缀编号（如 [m3]），fromRef/toRef 使用此编号（"m3" 或 "[m3]" 均可）。
-- 行号是当轮视图的地址而非序号，每轮重新编号——只引用当前可见消息行首的编号，不要凭记忆编造，也不要跨轮复用。
-- 两个端点都必须当前可见，起点须在终点之前。范围覆盖 fromRef 与 toRef 之间的全部连续消息（两端点均包含）；端点落在压缩块摘要上时覆盖整个块。
-- 压缩块覆盖的消息不再占用行号——引用已压入块内容的消息行号会得到"行号不存在"的指导，可先用 decompress 恢复该块再压缩。
-
-压缩块：
-
-- 已压入压缩块的段显示为 [Block bN · K 条] 块头加摘要，其覆盖的消息不再占用行号。bN 是块在会话中的持久编号——用作端点将消费整个块；范围必须完整覆盖该块，部分重叠会被拒绝并给出指导。
-- 被消费块的索引行（--- bN: <title> ---）会自动加入新块摘要，无需手动提及。
-
-保护边界：
-
-- 末尾保护窗（最近若干条消息与 token 预算）与最后一条用户消息不可压，越界会被拒绝并给出可压范围。
-- 会话第一条用户消息永远不可压。
-- 收益不足的短段会被幻影门拒绝——选择更长的段。
-
-批量提交（ranges）：
-
-- 一次调用通过 ranges 数组提交多个范围，每个范围独立建块。先全校验后统一生效——任一范围非法，整次调用被拒绝并指明第几个范围。
-- 范围必须互不重叠，且不得消费同一次调用内其他范围刚创建的块。
-- 单次调用最多提交 max_ranges 个范围，超限会被拒绝——请分批提交。
-
-参数：
-
-- ranges：数组，每项为 {fromRef, toRef, title, summary}。
-- fromRef / toRef：范围端点的当轮行号（"m3" 或 "[m3]"），规则如上。
-- title：一行主题（不超过 80 字符，单行纯文本，不含 "---"），此块日后被更大范围消费时作为索引行展示。
-- summary：替换整个范围的完整摘要。保留关键决策、结论与文件路径，确保后续工作无需回看原文。
-
-选择失败会返回响亮的中文错误指导——按提示重新选择后重试。`,
+    description: `将一段或多段连续的、不再需要逐字保留的历史消息压缩为摘要。每一段的压缩范围不能有重叠，且都应是独立的主题。`,
     args: {
       ranges: {
         type: "array",
         description:
-          "要压缩的范围数组，每项为 {fromRef, toRef, title, summary}。所有范围先统一校验、任一非法整次拒绝；范围必须互不重叠；单次调用不超过 max_ranges 个。",
+          "要压缩的范围数组，每项 {fromRef, toRef, title, summary}。",
         items: {
           type: "object",
-          description: "一个压缩范围（一段连续可见历史）。",
+          description: "压缩范围（一段连续的历史消息）。",
           properties: {
             fromRef: {
               type: "string",
-              description:
-                '范围起点消息的当轮行号（如 "m3" 或 "[m3]"，对应可见消息行首的 [mN] 前缀）。该消息及其之后的内容将被压缩。行号是地址而非序号，每轮重新编号——请从当前视图行首标记中取用。',
+              description: "起点行号，该消息及其之后的内容会被压缩。",
             },
             toRef: {
               type: "string",
-              description:
-                "范围终点消息的当轮行号，范围覆盖 fromRef 与 toRef 之间的全部连续消息（两端点均包含）。请选择位置在起点之后的可见消息行号。",
+              description: "终点行号，该消息之前的内容会被压缩。",
             },
             title: {
               type: "string",
-              description:
-                "一行主题说明（必填，不超过 80 字符）：概括这段被压缩内容，将来此块被更大范围压缩时作为索引行展示。",
+              description: "标题，不超过 80 字符的单行。",
             },
             summary: {
               type: "string",
-              description:
-                "块正文总结：替换整个压缩范围的完整摘要文本。请保留关键决策、结论与文件路径，确保后续工作无需回看原文。",
+              description: "摘要，用于替换压缩范围内的原文。",
             },
           },
           required: ["fromRef", "toRef", "title", "summary"],

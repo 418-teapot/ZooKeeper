@@ -37,6 +37,7 @@ describe("vendor smol-toml — config.toml zoo section", () => {
     assert.deepEqual(poly.skills, [
       "beaver-tdd",
       "code-review",
+      "compress-usage",
       "first-principles",
       "git-commit",
       "grill",

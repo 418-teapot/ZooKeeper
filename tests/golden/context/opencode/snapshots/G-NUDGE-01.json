@@ -95,7 +95,7 @@
           "role": "user",
           "toolParts": [],
           "sentinelId": "zoo-nudge",
-          "text": "<internal-reminder>\n**CONTEXT GROWING — 150000 (75% of 200000 window)**\n\nCompressible window: m2–m2 (~4 tokens), both refs inclusive.\nPick your own contiguous sub-range inside — compressing everything is optional.\n`compress` `toRef` is exclusive — pass the ref after a message to include it.\n\nAt your next natural pause, compress a closed range with the `compress` tool. Timing is your call.\n\n**压缩分段要点：**\n\n1. 重要信息不压缩：当前任务、关键决策与约束、文件路径、未完成验证的结论，都应排除在压缩范围之外。\n2. 按用户请求与任务委派边界分段：一个范围只覆盖一个主题，每块单独设 title。\n3. 保留当前任务相关的最近上下文：与当前工作紧密相关的最近对话不要压缩。\n4. 一次调用批量提交多范围：用 ranges 数组一次提交多段，减少工具往返。\n\nUNCOMPRESSED HISTORY = GROWING CONTEXT = SHRINKING HEADROOM.\n</internal-reminder>"
+          "text": "<internal-reminder>\n**CONTEXT GROWING — 150000 (75% of 200000 window)**\n\nCompressible window: m2–m2 (~4 tokens), both refs inclusive.\nPick your own contiguous sub-range inside — compressing everything is optional.\n`compress` `toRef` is exclusive — pass the ref after a message to include it.\n\nAt your next natural pause, compress a closed range with the `compress` tool. Timing is your call.\n\nRange selection and segmentation: load the `compress-usage` skill.\n\nUNCOMPRESSED HISTORY = GROWING CONTEXT = SHRINKING HEADROOM.\n</internal-reminder>"
         }
       ],
       "state": {
@@ -260,7 +260,7 @@
           "role": "user",
           "toolParts": [],
           "sentinelId": "zoo-nudge",
-          "text": "<internal-reminder>\n**CONTEXT GROWING — 135000 (68% of 200000 window)**\n\nCompressible window: m2–m2 (~4 tokens), both refs inclusive.\nPick your own contiguous sub-range inside — compressing everything is optional.\n`compress` `toRef` is exclusive — pass the ref after a message to include it.\n\nAt your next natural pause, compress a closed range with the `compress` tool. Timing is your call.\n\n**压缩分段要点：**\n\n1. 重要信息不压缩：当前任务、关键决策与约束、文件路径、未完成验证的结论，都应排除在压缩范围之外。\n2. 按用户请求与任务委派边界分段：一个范围只覆盖一个主题，每块单独设 title。\n3. 保留当前任务相关的最近上下文：与当前工作紧密相关的最近对话不要压缩。\n4. 一次调用批量提交多范围：用 ranges 数组一次提交多段，减少工具往返。\n\nUNCOMPRESSED HISTORY = GROWING CONTEXT = SHRINKING HEADROOM.\n</internal-reminder>"
+          "text": "<internal-reminder>\n**CONTEXT GROWING — 135000 (68% of 200000 window)**\n\nCompressible window: m2–m2 (~4 tokens), both refs inclusive.\nPick your own contiguous sub-range inside — compressing everything is optional.\n`compress` `toRef` is exclusive — pass the ref after a message to include it.\n\nAt your next natural pause, compress a closed range with the `compress` tool. Timing is your call.\n\nRange selection and segmentation: load the `compress-usage` skill.\n\nUNCOMPRESSED HISTORY = GROWING CONTEXT = SHRINKING HEADROOM.\n</internal-reminder>"
         }
       ],
       "state": {
@@ -319,7 +319,7 @@
           "role": "user",
           "toolParts": [],
           "sentinelId": "zoo-nudge",
-          "text": "<internal-reminder>\n**CONTEXT LIMIT — 165000 (83% of 200000 window)**\n\nCompressible window: m2–m2 (~4 tokens), both refs inclusive.\nPick your own contiguous sub-range inside — compressing everything is optional.\n`compress` `toRef` is exclusive — pass the ref after a message to include it.\n\nFinish your current atomic step, then call the `compress` tool IMMEDIATELY.\nDO NOT start new exploration. DO NOT delegate new tasks. Compress first.\n\n**压缩分段要点：**\n\n1. 重要信息不压缩：当前任务、关键决策与约束、文件路径、未完成验证的结论，都应排除在压缩范围之外。\n2. 按用户请求与任务委派边界分段：一个范围只覆盖一个主题，每块单独设 title。\n3. 保留当前任务相关的最近上下文：与当前工作紧密相关的最近对话不要压缩。\n4. 一次调用批量提交多范围：用 ranges 数组一次提交多段，减少工具往返。\n\nFULL CONTEXT = TERMINATED SESSION = LOST WORK.\n</internal-reminder>"
+          "text": "<internal-reminder>\n**CONTEXT LIMIT — 165000 (83% of 200000 window)**\n\nCompressible window: m2–m2 (~4 tokens), both refs inclusive.\nPick your own contiguous sub-range inside — compressing everything is optional.\n`compress` `toRef` is exclusive — pass the ref after a message to include it.\n\nFinish your current atomic step, then call the `compress` tool IMMEDIATELY.\nDO NOT start new exploration. DO NOT delegate new tasks. Compress first.\n\nRange selection and segmentation: load the `compress-usage` skill.\n\nFULL CONTEXT = TERMINATED SESSION = LOST WORK.\n</internal-reminder>"
         }
       ],
       "state": {
