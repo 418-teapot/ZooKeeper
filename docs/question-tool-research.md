@@ -1,7 +1,7 @@
 # Question/Ask 工具调研报告：opencode2 与 oh-my-pi 的用户提问机制
 
 > 调研日期：2026-08-13
-> 关联文档：[subagent-mechanism-comparison.md](subagent-mechanism-comparison.md)、[todo-tool-design-research.md](todo-tool-design-research.md)
+> 关联文档：[pi-subagent.md](pi-subagent.md)、[todo-tool-design-research.md](todo-tool-design-research.md)
 
 ## 1. 调研范围
 

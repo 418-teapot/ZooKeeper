@@ -1,7 +1,7 @@
 # ZooKeeper 自建 Todo 工具调研报告
 
 > 调研日期：2026-08-13
-> 关联文档：[subagent-mechanism-comparison.md](subagent-mechanism-comparison.md)、[todo-nudge-research.md](todo-nudge-research.md)
+> 关联文档：[pi-subagent.md](pi-subagent.md)、[todo-nudge-research.md](todo-nudge-research.md)
 
 ## 1. 背景与动机
 
