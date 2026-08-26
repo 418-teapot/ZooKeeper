@@ -325,10 +325,6 @@ describe("poly full profile — registration parity", () => {
       config.agent.mola.prompt.includes("Two subagents are available"),
       "poly mola prompt must teach task() delegation",
     );
-    assert.ok(
-      config.agent.mola.prompt.includes("- **task** — delegate information"),
-      "poly mola prompt must list the task tool",
-    );
   });
 
   it("config hook injects the mode-conditional mola prompt (mono)", async () => {
@@ -338,18 +334,10 @@ describe("poly full profile — registration parity", () => {
     });
     const config: Record<string, any> = { agent: { dolphin: {}, mola: {} } };
     await plugin.config(config);
-    // Mono mode: no lynx/spider → no <Agents> section + web tools.
+    // Mono mode: no lynx/spider → no <Agents> section, no task tool.
     assert.ok(
       !config.agent.mola.prompt.includes("<Agents>"),
       "mono mola prompt must not contain an <Agents> section",
-    );
-    assert.ok(
-      config.agent.mola.prompt.includes("- **websearch** — broad queries"),
-      "mono mola prompt must list the websearch tool",
-    );
-    assert.ok(
-      config.agent.mola.prompt.includes("- **webfetch** — read specific URLs"),
-      "mono mola prompt must list the webfetch tool",
     );
     assert.ok(
       !config.agent.mola.prompt.includes("- **task** — delegate information"),
@@ -365,20 +353,10 @@ describe("poly full profile — registration parity", () => {
     const config: Record<string, any> = { agent: { dolphin: {}, mola: {} } };
     await plugin.config(config);
     // Mono mode: no lynx/spider → self-sufficient worker prompt: no
-    // <Agents> section, web tools listed, no task() delegation.
+    // <Agents> section, no task() delegation.
     assert.ok(
       !config.agent.dolphin.prompt.includes("<Agents>"),
       "mono dolphin prompt must not contain an <Agents> section",
-    );
-    assert.ok(
-      config.agent.dolphin.prompt.includes("- **websearch** — broad queries"),
-      "mono dolphin prompt must list the websearch tool",
-    );
-    assert.ok(
-      config.agent.dolphin.prompt.includes(
-        "- **webfetch** — read specific URLs",
-      ),
-      "mono dolphin prompt must list the webfetch tool",
     );
     assert.ok(
       !config.agent.dolphin.prompt.includes("task("),

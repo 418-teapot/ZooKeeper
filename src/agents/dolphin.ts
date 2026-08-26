@@ -351,17 +351,6 @@ After any change, run the project's build, lint, and test commands yourself, the
 </Workflow>
 
 ${COMMUNICATION_SECTION}
-
-<Tools>
-- **read** — inspect specific files and source
-- **grep** — content patterns, symbol references across the codebase
-- **glob** — file and path discovery
-- **bash** — full permissions: builds, linters, tests, and any project command
-- **edit** — modify existing files
-- **write** — create new files
-- **websearch** — broad queries across documentation, tutorials, API references, best practices
-- **webfetch** — read specific URLs for detailed content extraction
-</Tools>
 `;
 
 /**
@@ -374,8 +363,7 @@ ${COMMUNICATION_SECTION}
  *   is organized around phased delegation.
  * - Mono (none present): self-sufficient worker wording — the `<Agents>`
  *   section is omitted entirely, delegation rules are replaced with
- *   hands-on discipline, and a `<Tools>` section lists the web tools so
- *   information gathering stays possible without delegation.
+ *   hands-on discipline.
  *
  * `<Communication>` is identical in both variants.
  *

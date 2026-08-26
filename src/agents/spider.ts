@@ -32,11 +32,6 @@ Evaluate each URL before fetching: prefer primary/authoritative sources over blo
 Consolidate findings into a concise, actionable summary with source attribution.
 </Workflow>
 
-<Tools>
-- **websearch** — broad queries across documentation, tutorials, API references, best practices
-- **webfetch** — read specific URLs for detailed content extraction
-</Tools>
-
 <Output Format>
 Concise synthesis:
 - Key findings organized by relevance to the question

@@ -3,7 +3,7 @@
  *
  * Covers: the poly variant matching the intended prompt text, the mono
  * variant deviations (no <Agents> section, no task() delegation, no
- * specialist agents, web tools present), the shared <Communication>
+ * specialist agents, no <Tools> section), the shared <Communication>
  * section staying identical across both variants, the beaver/lynx/
  * spider branch conditions, and the unit descriptor passing the
  * received activeSet through to the builder.
@@ -429,13 +429,12 @@ describe("buildDolphinPrompt", () => {
     );
   });
 
-  it("mono variant keeps Role/Contract/Workflow/Tools and web tools", () => {
+  it("mono variant keeps Role/Contract/Workflow and no Tools section", () => {
     const mono = buildDolphinPrompt(MONO_SET);
-    for (const name of ["Role", "Contract", "Workflow", "Tools"]) {
+    for (const name of ["Role", "Contract", "Workflow"]) {
       assert.ok(mono.includes(`<${name}>`), `<${name}> section must exist`);
     }
-    assert.ok(mono.includes("websearch"), "websearch tool must be listed");
-    assert.ok(mono.includes("webfetch"), "webfetch tool must be listed");
+    assert.ok(!mono.includes("<Tools>"), "Tools section must be absent");
   });
 
   it("mono <Workflow> is descriptive prose, not a phased checklist", () => {
@@ -469,7 +468,6 @@ describe("buildDolphinPrompt", () => {
       !prompt.includes("<Agents>"),
       "empty agent set must not select the poly variant",
     );
-    assert.ok(prompt.includes("<Tools>"), "empty agent set keeps <Tools>");
   });
 
   it("unit descriptor passes activeSet through to the builder", () => {

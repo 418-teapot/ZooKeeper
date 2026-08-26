@@ -58,44 +58,14 @@ Mola remains a planner — delegation narrows the information gap, it does not r
 </Agents>`;
 
 /**
- * Local tool lines shared by both mode variants.
- */
-const SHARED_TOOL_LINES = `- **read** — inspect specific files, plan files, draft files
-- **grep** — content patterns, symbol references across the codebase
-- **glob** — file/path discovery
-- **bash** — diagnostic commands only (C6)
-- **edit / write** — plan/spec files under \`.zoo/**/*.md\` only
-- **question** — structured user questions during Interview (C3)`;
-
-/**
- * Tools section for the poly variant — delegation plus local tools.
- */
-const POLY_TOOLS_SECTION = `<Tools>
-- **task** — delegate information gathering to lynx/spider subagents (see &lt;Agents&gt;)
-${SHARED_TOOL_LINES}
-</Tools>`;
-
-/**
- * Tools section for the mono variant — web tools replace delegation.
- */
-const MONO_TOOLS_SECTION = `<Tools>
-- **websearch** — broad queries across documentation, tutorials, API references, best practices
-- **webfetch** — read specific URLs for detailed content extraction
-${SHARED_TOOL_LINES}
-</Tools>`;
-
-/**
  * Build the mola prompt for the active mode profile.
  *
  * The prompt adapts to whether leaf subagents exist in the active
  * profile's agents list:
  * - Poly (lynx or spider present): the full delegation sections — the
- *   `<Agents>` block teaches task() delegation to lynx/spider and the
- *   `<Tools>` list includes the `task` tool.
+ *   `<Agents>` block teaches task() delegation to lynx/spider.
  * - Mono (neither present): self-sufficient wording — the `<Agents>`
- *   section is omitted entirely, the `task` tool line is dropped, and
- *   the web tools (`websearch` / `webfetch`) are listed instead so
- *   information gathering stays possible without delegation.
+ *   section is omitted entirely.
  *
  * `<Role>`, `<Contract>`, and `<Workflow>` are identical in both
  * variants — handoff to dolphin, the mola-plan skill, and the `/go`
@@ -107,12 +77,11 @@ ${SHARED_TOOL_LINES}
 export function buildMolaPrompt(activeSet: ActiveSet): string {
   const hasSubagents =
     activeSet.agents.has("lynx") || activeSet.agents.has("spider");
-  const toolsSection = hasSubagents ? POLY_TOOLS_SECTION : MONO_TOOLS_SECTION;
   const sections = [ROLE_SECTION];
   if (hasSubagents) {
     sections.push(POLY_AGENTS_SECTION);
   }
-  sections.push(CONTRACT_SECTION, WORKFLOW_SECTION, toolsSection);
+  sections.push(CONTRACT_SECTION, WORKFLOW_SECTION);
   return `${sections.join("\n\n")}\n`;
 }
 

@@ -58,13 +58,6 @@ Load beaver-tdd skill, implement the change, then run build/lint/test if bash is
 Summarize: what was done, what was verified, any remaining risks. No raw logs.
 </Workflow>
 
-<Tools>
-- **read/grep/glob** — understand current code and verify APIs before writing
-- **edit/write** — make the change
-- **bash** — build, lint, test; mandatory verification step
-- **LSP** — check type definitions, references, and diagnostics
-</Tools>
-
 <Contract>
 - **NEVER fabricate** APIs, function names, or import paths — always verify first
 - **NEVER skip verification** — if bash is available, run build/lint/test

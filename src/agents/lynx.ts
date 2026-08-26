@@ -34,13 +34,6 @@ Fire multiple tool calls in parallel when search terms are independent. If a sea
 Return structured findings with exact file:line citations.
 </Workflow>
 
-<Tools>
-- **grep** — content patterns, symbol references, string occurrences across files
-- **glob** — file discovery by name/path pattern (e.g., \`**/*.ts\`, \`src/hooks/*/\`)
-- **read** — inspect specific files once located
-- **LSP** — type definitions, references, hover info, call hierarchy
-</Tools>
-
 <Output Format>
 Structured findings:
 - File path + line number for each finding

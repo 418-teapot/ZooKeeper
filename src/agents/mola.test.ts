@@ -2,11 +2,10 @@
  * Tests for the mode-conditional mola prompt builder.
  *
  * Covers: the poly variant matching the intended prompt text, the mono
- * variant deviations (no <Agents> section, task tool line removed, web
- * tools added), the shared Role/Contract/Workflow sections staying
- * identical across both variants, the lynx/spider condition, and the
- * unit descriptor passing the received activeSet through to the
- * builder.
+ * variant deviations (no <Agents> section, no <Tools> section), the
+ * shared Role/Contract/Workflow sections staying identical across both
+ * variants, the lynx/spider condition, and the unit descriptor passing
+ * the received activeSet through to the builder.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
@@ -116,16 +115,6 @@ Load the mola-plan skill. The skill owns everything — ground check, classifica
 
 When the plan reaches \`status: planning-done\`, tell the user: **"Plan approved. Type \`/go\` to handoff to dolphin."**
 </Workflow>
-
-<Tools>
-- **task** — delegate information gathering to lynx/spider subagents (see &lt;Agents&gt;)
-- **read** — inspect specific files, plan files, draft files
-- **grep** — content patterns, symbol references across the codebase
-- **glob** — file/path discovery
-- **bash** — diagnostic commands only (C6)
-- **edit / write** — plan/spec files under \`.zoo/**/*.md\` only
-- **question** — structured user questions during Interview (C3)
-</Tools>
 `;
 
 /** Extract one <Tag>...</Tag> section verbatim from a prompt. */
@@ -166,22 +155,13 @@ describe("buildMolaPrompt", () => {
     );
   });
 
-  it("mono variant drops the task tool line and adds the web tools", () => {
+  it("mono variant contains no <Tools> section", () => {
     const mono = buildMolaPrompt(MONO_SET);
+    assert.ok(
+      !mono.includes("<Tools>"),
+      "mono prompt must not contain a <Tools> section",
+    );
     assert.ok(!mono.includes("**task**"), "task tool line must be removed");
-    assert.ok(
-      mono.includes(
-        "- **websearch** — broad queries across documentation, tutorials, " +
-          "API references, best practices",
-      ),
-      "websearch tool line must be present",
-    );
-    assert.ok(
-      mono.includes(
-        "- **webfetch** — read specific URLs for detailed content extraction",
-      ),
-      "webfetch tool line must be present",
-    );
   });
 
   it("mono variant keeps Role/Contract/Workflow identical to poly", () => {
