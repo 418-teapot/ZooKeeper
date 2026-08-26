@@ -39,6 +39,7 @@ import { unit as molaUnit } from "./agents/mola.js";
 import { unit as spiderUnit } from "./agents/spider.js";
 import { unit as dcpCommandUnit } from "./commands/dcp/index.js";
 import { unit as goCommandUnit } from "./commands/go/index.js";
+import { unit as switchCommandUnit } from "./commands/switch/index.js";
 import type { SkillUnitDescriptor, UnitDescriptor } from "./core/slots.js";
 import { unit as contextPruningUnit } from "./hooks/context-pruning/index.js";
 import { unit as directWorkNudgeUnit } from "./hooks/direct-work-nudge/index.js";
@@ -160,6 +161,7 @@ export const REGISTRY: UnitDescriptor[] = [
   // ── Command units ───────────────────────────────────────────────
   goCommandUnit,
   dcpCommandUnit,
+  switchCommandUnit,
   // ── Agent units ─────────────────────────────────────────────────
   dolphinUnit,
   molaUnit,

@@ -32,10 +32,13 @@
 import config from "../config.toml" with { type: "toml" };
 import { createV1Adapter } from "./adapters/opencode/adapter.js";
 import { createV1ToolHost } from "./adapters/opencode/tool-host.js";
+import { createOpenCodeVenue } from "./commands/go/venue-opencode.js";
 import { assembleOpenCodeHooks } from "./compose-opencode.js";
 import { composeProfile } from "./core/compose.js";
 import {
   initPluginLogger,
+  parseAgentModes,
+  parseAgentPermissions,
   parseContextConfig,
   parseLimits,
   parseModeProfile,
@@ -44,6 +47,7 @@ import type { ModeProfile } from "./core/config-types.js";
 import { setModelLimit } from "./core/context/model-limits.js";
 import { cleanupSession, sessionAgentMap } from "./core/context/runtime.js";
 import type { Deps } from "./core/slots.js";
+import { derivePrimaries } from "./core/subagent/identity.js";
 import { REGISTRY } from "./registry.js";
 
 // ---------------------------------------------------------------------------
@@ -65,10 +69,18 @@ import { REGISTRY } from "./registry.js";
  * @param zooConfig - The `zoo` section of config.toml.
  * @returns Plugin hooks object.
  */
-export async function buildPlugin(input: any, zooConfig: any) {
+export async function buildPlugin(input: any, zooConfig: any, rawConfig?: any) {
   const limits = parseLimits(zooConfig);
   const contextConfig = parseContextConfig(zooConfig);
   const modeProfile: ModeProfile | null = parseModeProfile(zooConfig);
+  // The `agent` table lives at the top level of config.toml, so the
+  // fail-closed mode map is parsed from the whole parsed root (empty map
+  // when no raw config was supplied).
+  const agentModes = parseAgentModes(rawConfig ?? {});
+  // Tool-level deny map for the primary-switch unit.  Populated for
+  // parity with the pi host; OpenCode never provides `piSwitchHost`, so
+  // the switch unit contributes no commands there regardless.
+  const agentPermissions = parseAgentPermissions(rawConfig ?? {});
   const client = input.client;
   const directory: string = (input as any).directory ?? "";
 
@@ -81,11 +93,18 @@ export async function buildPlugin(input: any, zooConfig: any) {
   const deps: Deps = {
     limits,
     contextConfig,
+    agentModes,
+    agentPermissions,
     client,
     directory,
     sessionAgentMap,
     toolHost: createV1ToolHost(client),
     adapter: createV1Adapter(),
+    venue: createOpenCodeVenue(
+      client,
+      derivePrimaries(modeProfile?.agents ?? [], agentModes)[0],
+      directory,
+    ),
   };
   const composed = composeProfile(modeProfile, REGISTRY, deps);
   const profileHooks = assembleOpenCodeHooks(composed, deps, modeProfile);
@@ -149,7 +168,7 @@ export async function buildPlugin(input: any, zooConfig: any) {
  * @returns Plugin hooks object.
  */
 export async function zookeeper(input: any) {
-  return buildPlugin(input, (config as any).zoo ?? {});
+  return buildPlugin(input, (config as any).zoo ?? {}, config as any);
 }
 
 export default { id: "zookeeper", server: zookeeper };

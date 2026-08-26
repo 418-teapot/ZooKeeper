@@ -37,7 +37,12 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { _getBufferForTesting, _resetForTesting } from "../utils/logger.js";
-import { parseContextConfig } from "./config-parse.js";
+import {
+  parseAgentColors,
+  parseAgentModes,
+  parseAgentPermissions,
+  parseContextConfig,
+} from "./config-parse.js";
 
 afterEach(() => {
   _resetForTesting();
@@ -1233,5 +1238,287 @@ describe("parseContextConfig — fully valid config", () => {
       (e.event as string).endsWith("_config_invalid"),
     );
     assert.equal(sectionWarns.length, 0, "valid config must not log any warn");
+  });
+});
+
+// =============================================================================
+// parseAgentModes — `[agent.*].mode` fail-closed parsing.
+//
+// The top-level `[agent.<name>]` tables of config.toml declare each
+// agent's role via a `mode` field whose value is exactly `"primary"` or
+// `"subagent"`.  parseAgentModes reads the `agent` table from the whole
+// parsed config root (the table is a top-level sibling of `zoo`) and
+// maps every agent name whose mode is valid to its mode; a missing or
+// invalid `mode` value skips that agent and logs exactly one
+// `agent_mode_invalid` warn (fail-closed — never a default mode).  An
+// absent `agent` table is an empty map with no warn.
+// =============================================================================
+
+describe("parseAgentModes", () => {
+  it("parses explicit primary and subagent entries into the mode map", () => {
+    const result = parseAgentModes({
+      agent: {
+        dolphin: { model: "m", color: "#fff", mode: "primary" },
+        mola: { mode: "primary" },
+        beaver: { mode: "subagent" },
+        lynx: { mode: "subagent" },
+      },
+    });
+    assert.deepEqual(result, {
+      dolphin: "primary",
+      mola: "primary",
+      beaver: "subagent",
+      lynx: "subagent",
+    });
+    assert.equal(warnCount("agent_mode_invalid"), 0);
+  });
+
+  it("skips an agent with a missing mode and logs one warn", () => {
+    const result = parseAgentModes({
+      agent: {
+        dolphin: { model: "m", color: "#fff" }, // no mode
+        beaver: { mode: "subagent" },
+      },
+    });
+    assert.deepEqual(result, { beaver: "subagent" });
+    const warns = warnsOf("agent_mode_invalid");
+    assert.equal(warns.length, 1, "exactly one warn for the skipped agent");
+    assert.equal(warns[0].key, "dolphin");
+    assert.equal(warns[0].value, undefined);
+  });
+
+  it("skips an agent with an invalid mode value (e.g. primar) and logs one warn", () => {
+    const result = parseAgentModes({
+      agent: {
+        dolphin: { mode: "primar" },
+        mola: { mode: "primary" },
+      },
+    });
+    assert.deepEqual(result, { mola: "primary" });
+    const warns = warnsOf("agent_mode_invalid");
+    assert.equal(warns.length, 1, "exactly one warn for the invalid agent");
+    assert.equal(warns[0].key, "dolphin");
+    assert.equal(warns[0].value, "primar");
+  });
+
+  it("skips an agent with a non-string mode value and logs one warn", () => {
+    const result = parseAgentModes({
+      agent: { dolphin: { mode: 42 } },
+    });
+    assert.deepEqual(result, {});
+    const warns = warnsOf("agent_mode_invalid");
+    assert.equal(warns.length, 1);
+    assert.equal(warns[0].key, "dolphin");
+  });
+
+  it("all agents missing mode → empty primary set (empty map, no crash)", () => {
+    const result = parseAgentModes({
+      agent: {
+        dolphin: { model: "m" },
+        mola: { model: "m" },
+      },
+    });
+    assert.deepEqual(result, {});
+    // No crash, and the resulting primary set is empty (fail-closed).
+    assert.equal(Object.keys(result).length, 0);
+  });
+
+  it("absent agent table → empty map with no warn", () => {
+    const result = parseAgentModes({});
+    assert.deepEqual(result, {});
+    assert.equal(warnCount("agent_mode_invalid"), 0);
+  });
+
+  it("ignores non-object agent entries silently", () => {
+    const result = parseAgentModes({
+      agent: {
+        dolphin: "string-entry",
+        beaver: null,
+        lynx: { mode: "subagent" },
+      },
+    });
+    assert.deepEqual(result, { lynx: "subagent" });
+    // Non-object entries are ignored silently (no default mode invented).
+    assert.equal(warnCount("agent_mode_invalid"), 0);
+  });
+});
+
+// =============================================================================
+// parseAgentPermissions — `[agent.<name>].permission` tool-level deny
+// extraction.
+//
+// Reads the top-level `agent` table from the whole parsed config root
+// (sibling of `zoo`) and maps every agent with at least one tool-level
+// deny (a top-level `permission` key whose value is exactly `"deny"`) to
+// its sorted denied tool names.  Fine-grained sub-tables (`permission.bash`
+// / `permission.edit` / `permission.skill`) are NOT tool-level denies.
+// Fail-closed: an absent `agent` table or a malformed permission value
+// yields an empty map / empty list silently.
+// =============================================================================
+
+describe("parseAgentPermissions", () => {
+  it("maps top-level deny keys into sorted denied tool lists", () => {
+    const result = parseAgentPermissions({
+      agent: {
+        dolphin: {
+          permission: { webfetch: "deny", websearch: "deny", bash: {} },
+        },
+        mola: { permission: {} },
+      },
+    });
+    assert.deepEqual(result, { dolphin: ["webfetch", "websearch"] });
+  });
+
+  it("does not treat sub-tables or non-deny scalars as tool-level denies", () => {
+    const result = parseAgentPermissions({
+      agent: {
+        mola: {
+          permission: {
+            bash: { "git commit *": "deny", "rm *": "deny" },
+            edit: { "*": "deny", "**/*.md": "allow" },
+            skill: { "*": "deny" },
+          },
+        },
+        lynx: {
+          permission: { edit: "deny", task: "deny", bash: { "rm *": "deny" } },
+        },
+      },
+    });
+    assert.deepEqual(result, { lynx: ["edit", "task"] });
+  });
+
+  it("omits agents with no permission table (empty deny set)", () => {
+    const result = parseAgentPermissions({
+      agent: { dolphin: { model: "m" }, mola: { permission: {} } },
+    });
+    assert.deepEqual(result, {});
+  });
+
+  it("returns an empty map for an absent or non-object agent table", () => {
+    assert.deepEqual(parseAgentPermissions({}), {});
+    assert.deepEqual(parseAgentPermissions({ agent: "nope" }), {});
+    assert.deepEqual(parseAgentPermissions({ agent: null }), {});
+    assert.deepEqual(parseAgentPermissions({ agent: ["dolphin"] }), {});
+  });
+
+  it("skips non-object agent entries silently", () => {
+    const result = parseAgentPermissions({
+      agent: {
+        dolphin: "string-entry",
+        beaver: null,
+        lynx: { permission: { task: "deny" } },
+      },
+    });
+    assert.deepEqual(result, { lynx: ["task"] });
+  });
+});
+
+// =============================================================================
+// parseAgentColors — `[agent.<name>].color` fail-closed parsing.
+//
+// Reads the top-level `agent` table from the whole parsed config root
+// (sibling of `zoo`) and maps every agent whose `color` field is a valid
+// `#RRGGBB` / `#RGB` hex to that hex (normalized to `#RRGGBB`).  A
+// missing `color` or a malformed one (non-string, `red`, `#12`,
+// `123456`, ...) omits that agent from the map and logs exactly one
+// `agent_color_invalid` warn.  An absent `agent` table is an empty map
+// with no warn.
+// =============================================================================
+
+describe("parseAgentColors", () => {
+  it("parses explicit #RRGGBB colors into the name→hex map", () => {
+    const result = parseAgentColors({
+      agent: {
+        dolphin: { color: "#66CCFF" },
+        mola: { color: "#FFA500" },
+        beaver: { color: "#39C5BB" },
+        lynx: { color: "#FFE211" },
+        eagle: { color: "#961E32" },
+        spider: { mode: "subagent" }, // no color → absent
+      },
+    });
+    assert.deepEqual(result, {
+      dolphin: "#66CCFF",
+      mola: "#FFA500",
+      beaver: "#39C5BB",
+      lynx: "#FFE211",
+      eagle: "#961E32",
+    });
+    assert.equal(warnCount("agent_color_invalid"), 0);
+  });
+
+  it("accepts and normalizes lowercase and #RGB shorthand hex", () => {
+    const result = parseAgentColors({
+      agent: {
+        dolphin: { color: "#66ccff" },
+        mola: { color: "#fA5" },
+      },
+    });
+    assert.deepEqual(result, {
+      dolphin: "#66CCFF",
+      mola: "#FFAA55",
+    });
+    assert.equal(warnCount("agent_color_invalid"), 0);
+  });
+
+  it("omits an agent with a missing color silently (no warn)", () => {
+    const result = parseAgentColors({
+      agent: { dolphin: { mode: "primary" }, mola: { color: "#FFA500" } },
+    });
+    assert.deepEqual(result, { mola: "#FFA500" });
+    assert.equal(warnCount("agent_color_invalid"), 0);
+  });
+
+  it("omits an agent with a malformed color and logs one warn", () => {
+    const result = parseAgentColors({
+      agent: {
+        dolphin: { color: "red" },
+        mola: { color: "#12" },
+        beaver: { color: "123456" },
+        lynx: { color: "#66CCFF" },
+      },
+    });
+    assert.deepEqual(result, { lynx: "#66CCFF" });
+    const warns = warnsOf("agent_color_invalid");
+    assert.equal(warns.length, 3, "one warn per malformed agent");
+    assert.deepEqual(warns.map((w) => w.key).sort(), [
+      "beaver",
+      "dolphin",
+      "mola",
+    ]);
+  });
+
+  it("omits agents with non-string or non-object color entries and logs one warn each", () => {
+    const result = parseAgentColors({
+      agent: {
+        dolphin: { color: 123456 },
+        beaver: { color: null },
+        lynx: { color: "#66CCFF" },
+      },
+    });
+    assert.deepEqual(result, { lynx: "#66CCFF" });
+    const warns = warnsOf("agent_color_invalid");
+    assert.equal(warns.length, 2);
+    assert.deepEqual(warns.map((w) => w.key).sort(), ["beaver", "dolphin"]);
+  });
+
+  it("returns an empty map for an absent or non-object agent table", () => {
+    assert.deepEqual(parseAgentColors({}), {});
+    assert.deepEqual(parseAgentColors({ agent: "nope" }), {});
+    assert.deepEqual(parseAgentColors({ agent: null }), {});
+    assert.deepEqual(parseAgentColors({ agent: ["dolphin"] }), {});
+    assert.equal(warnCount("agent_color_invalid"), 0);
+  });
+
+  it("skips non-object agent entries silently (no warn)", () => {
+    const result = parseAgentColors({
+      agent: {
+        dolphin: "string-entry",
+        beaver: null,
+        lynx: { color: "#FFE211" },
+      },
+    });
+    assert.deepEqual(result, { lynx: "#FFE211" });
+    assert.equal(warnCount("agent_color_invalid"), 0);
   });
 });

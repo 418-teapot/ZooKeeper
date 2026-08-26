@@ -36,6 +36,7 @@ export interface PiToolHostContext {
   /** UI surface for best-effort notifications. */
   ui?: {
     notify(message: string, type?: "info" | "warning" | "error"): void;
+    setStatus?(key: string, text: string | undefined): void;
   };
 }
 

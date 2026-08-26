@@ -477,6 +477,7 @@ output  = 64000
 # ── Agents ────────────────────────────────────────────────────────────────────
 
 [agent.dolphin]
+mode  = "primary"
 model = "{env:ZOO_WHALE_MODEL}"
 color = "#66CCFF"
 [agent.dolphin.permission]
@@ -496,6 +497,7 @@ websearch = "deny"
 "mola-*"   = "deny"
 
 [agent.mola]
+mode  = "primary"
 model = "{env:ZOO_WHALE_MODEL}"
 color = "#FFA500"
 [agent.mola.permission]
@@ -761,6 +763,7 @@ tools = [
 commands = [
   "go",
   "dcp",
+  "switch",
 ]
 
 [zoo.mode.mono]
@@ -788,4 +791,5 @@ tools = [
 commands = [
   "go",
   "dcp",
+  "switch",
 ]

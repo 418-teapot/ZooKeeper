@@ -24,6 +24,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { initLogger, log } from "../utils/logger.js";
 import type {
+  AgentColorMap,
+  AgentModeMap,
   CompressConfig,
   ContextNudgeConfig,
   ContextPruningConfig,
@@ -31,6 +33,8 @@ import type {
   ModeProfile,
 } from "./config-types.js";
 import { NUDGE_PERCENT_RE } from "./context/nudge.js";
+import type { AgentPermissionMap } from "./subagent/deny-tools.js";
+import { extractDeniedTools } from "./subagent/deny-tools.js";
 import type { ValidationLimits } from "./validate.js";
 
 // ---------------------------------------------------------------------------
@@ -311,6 +315,201 @@ export function parseModeProfile(zooConfig: any): ModeProfile | null {
 
   // Single sub-table: the active profile, mode state file ignored.
   return parseProfileEntry(entries[0][0], entries[0][1]);
+}
+
+/**
+ * Extract the per-agent mode map from the top-level `[agent.*]` tables.
+ *
+ * The `agent` table lives at the TOP LEVEL of config.toml (sibling of
+ * `zoo`, not under it), but every other parser in this module receives
+ * the `zoo` section.  To keep the same single-argument contract, this
+ * function reads the `agent` table from the raw parsed config: callers
+ * pass the whole parsed TOML (which carries both `zoo` and top-level
+ * `agent`), and the `agent` section is looked up at the root.
+ *
+ * Value must be exactly `"primary"` or `"subagent"`.  Fail-closed:
+ * an agent whose `mode` is missing, non-string, or not one of the two
+ * allowed values is skipped (absent from the returned map) and exactly
+ * one `agent_mode_invalid` warn is logged with the offending key/value.
+ * No default mode is ever invented.  An absent or non-object `agent`
+ * table yields an empty map silently.
+ *
+ * @param rawConfig - The whole parsed config.toml (root object, carrying
+ *   the top-level `agent` table; the `zoo` section is not needed here).
+ * @returns A map of agent name → validated mode.  Agents with a missing
+ *   or invalid `mode` are absent; an empty map means no agent declared a
+ *   valid mode.
+ */
+export function parseAgentModes(rawConfig: any): AgentModeMap {
+  const agents = rawConfig.agent as Record<string, unknown> | undefined;
+  if (agents == null || typeof agents !== "object" || Array.isArray(agents)) {
+    return {};
+  }
+
+  const modes: AgentModeMap = {};
+  for (const [name, entry] of Object.entries(agents)) {
+    if (entry == null || typeof entry !== "object" || Array.isArray(entry)) {
+      continue;
+    }
+    const mode = (entry as Record<string, unknown>).mode;
+    if (mode !== "primary" && mode !== "subagent") {
+      warnAgentModeInvalid(name, mode);
+      continue;
+    }
+    modes[name] = mode;
+  }
+  return modes;
+}
+
+/**
+ * Log the single "agent mode invalid" warn for a skipped agent.
+ *
+ * Event name is `agent_mode_invalid`, carrying the offending agent name
+ * and its `mode` value so the config edit is actionable.
+ *
+ * @param agent - The agent name whose `mode` field was invalid.
+ * @param mode - The offending `mode` value (may be `undefined` when the
+ *   key is absent).
+ */
+function warnAgentModeInvalid(agent: string, mode: unknown): void {
+  log("config", "agent_mode_invalid", "", undefined, "warn", {
+    key: agent,
+    value: mode,
+  });
+}
+
+/**
+ * Accept a `#RRGGBB` / `#RGB` hex color string.
+ *
+ * The digits are not validated for hex-ness here (the caller's regex
+ * `#RRGGBB` / `#RGB` already bounds them) — this guard only rejects
+ * non-strings so the per-agent `color` value can be looked up safely.
+ *
+ * @param v - The raw config value.
+ * @returns `true` when the value is a non-empty string.
+ */
+function isHexColorString(v: unknown): boolean {
+  return typeof v === "string" && v.length > 0;
+}
+
+/**
+ * Parse the per-agent color map from the top-level `[agent.*]` tables.
+ *
+ * Like `parseAgentModes`, reads the top-level `agent` table (sibling of
+ * `zoo`) from the whole parsed config root.  For every agent entry the
+ * `[agent.<name>].color` scalar is validated: a `#RRGGBB` or `#RGB` hex
+ * string (case-insensitive) is accepted and normalized to uppercase
+ * `#RRGGBB`; a missing `color` or a malformed value (non-string,
+ * non-hex, wrong length) omits that agent from the map and logs exactly
+ * one `agent_color_invalid` warn — never a default color.  Fail-closed:
+ * an absent or non-object `agent` table yields an empty map silently, a
+ * non-object agent entry is skipped silently.
+ *
+ * @param rawConfig - The whole parsed config.toml (root object, carrying
+ *   the top-level `agent` table; the `zoo` section is not needed here).
+ * @returns A map of agent name → normalized `#RRGGBB` hex.  Agents with
+ *   no valid `color` are absent; an empty map means no agent declared a
+ *   usable color.
+ */
+export function parseAgentColors(rawConfig: any): AgentColorMap {
+  const agents = rawConfig.agent as Record<string, unknown> | undefined;
+  if (agents == null || typeof agents !== "object" || Array.isArray(agents)) {
+    return {};
+  }
+
+  const colors: AgentColorMap = {};
+  for (const [name, entry] of Object.entries(agents)) {
+    if (entry == null || typeof entry !== "object" || Array.isArray(entry)) {
+      continue;
+    }
+    const color = (entry as Record<string, unknown>).color;
+    if (color === undefined) continue;
+    const hex = parseHexColor(color);
+    if (hex === null) {
+      warnAgentColorInvalid(name, color);
+      continue;
+    }
+    colors[name] = hex;
+  }
+  return colors;
+}
+
+/**
+ * Parse and normalize a single hex color value.
+ *
+ * Accepts `#RRGGBB` (6 hex digits) and `#RGB` (3 hex digits, expanded to
+ * `#RRGGBB`), case-insensitive.  `#RGB` expands by doubling each digit
+ * (`#fA5` → `#FFAA55`), matching the CSS shorthand convention.  Anything
+ * else — non-strings, `red`, `#12`, bare `123456` — is rejected.
+ *
+ * @param value - The raw `color` scalar.
+ * @returns The normalized uppercase `#RRGGBB` hex, or `null` when
+ *   malformed.
+ */
+function parseHexColor(value: unknown): string | null {
+  if (!isHexColorString(value)) return null;
+  const text = (value as string).trim();
+  if (!/^#[0-9a-fA-F]{6}$/.test(text) && !/^#[0-9a-fA-F]{3}$/.test(text)) {
+    return null;
+  }
+  if (text.length === 4) {
+    const [, r, g, b] = text;
+    return `#${r}${r}${g}${g}${b}${b}`.toUpperCase();
+  }
+  return text.toUpperCase();
+}
+
+/**
+ * Log the single "agent color invalid" warn for a skipped agent.
+ *
+ * Event name is `agent_color_invalid`, carrying the offending agent name
+ * and its `color` value so the config edit is actionable.
+ *
+ * @param agent - The agent name whose `color` field was invalid.
+ * @param color - The offending `color` value (may be `undefined` when the
+ *   key is absent).
+ */
+function warnAgentColorInvalid(agent: string, color: unknown): void {
+  log("config", "agent_color_invalid", "", undefined, "warn", {
+    key: agent,
+    value: color,
+  });
+}
+
+/**
+ * Extract the per-agent tool-level deny map from the top-level
+ * `[agent.*]` tables.
+ *
+ * Like `parseAgentModes`, reads the top-level `agent` table (sibling of
+ * `zoo`) from the whole parsed config root.  For every agent entry the
+ * `[agent.<name>].permission` sub-table is fed to `extractDeniedTools`
+ * (tool-level denies only — the fine-grained bash / edit / skill rule
+ * sub-tables are not tool-level).  Fail-closed: an absent or non-object
+ * `agent` table yields an empty map silently, a non-object agent entry
+ * is skipped silently, and an agent without a tool-level deny is
+ * omitted (the active tool set is left untouched).
+ *
+ * @param rawConfig - The whole parsed config.toml (root object, carrying
+ *   the top-level `agent` table; the `zoo` section is not needed here).
+ * @returns A map of agent name → sorted tool-level denied tool names.
+ *   Agents with no tool-level denies are absent.
+ */
+export function parseAgentPermissions(rawConfig: any): AgentPermissionMap {
+  const agents = rawConfig.agent as Record<string, unknown> | undefined;
+  if (agents == null || typeof agents !== "object" || Array.isArray(agents)) {
+    return {};
+  }
+
+  const permissions: AgentPermissionMap = {};
+  for (const [name, entry] of Object.entries(agents)) {
+    if (entry == null || typeof entry !== "object" || Array.isArray(entry)) {
+      continue;
+    }
+    const permission = (entry as Record<string, unknown>).permission;
+    const denied = extractDeniedTools(permission);
+    if (denied.length > 0) permissions[name] = denied;
+  }
+  return permissions;
 }
 
 /**

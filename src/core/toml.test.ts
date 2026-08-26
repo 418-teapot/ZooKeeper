@@ -58,7 +58,7 @@ describe("vendor smol-toml — config.toml zoo section", () => {
       "task-prompt",
     ]);
     assert.deepEqual(poly.tools, ["compress", "decompress"]);
-    assert.deepEqual(poly.commands, ["go", "dcp"]);
+    assert.deepEqual(poly.commands, ["go", "dcp", "switch"]);
   });
 
   it("extracts the validation / context / logging sections", () => {

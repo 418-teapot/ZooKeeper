@@ -2,26 +2,39 @@
  * ZooKeeper Pi extension — profile-driven hooks composed from the unit
  * registry.
  *
- * This extension registers five hooks, all driven by the active mode
- * profile (`[zoo.mode.<name>]`, parsed by `parseModeProfile`):
- * 1. `before_agent_start` — prepends the dolphin orchestrator prompt to
- *    the chainable system prompt when the profile's agents list names
- *    `dolphin`.
- * 2. `resources_discover` — contributes the profile-listed skill
+ * This extension registers six event hooks plus slash commands, all
+ * driven by the active mode profile (`[zoo.mode.<name>]`, parsed by
+ * `parseModeProfile`):
+ * 1. `session_start` — seeds the bottom status-bar `zoo` indicator with
+ *    the current primary at session startup / resume, so it appears
+ *    immediately without waiting for the first LLM turn (a
+ *    `before_agent_start` fallback covers flows that skip it).
+ * 2. `before_agent_start` — resolves the current agent identity via the
+ *    identity core (`resolveIdentity`) and prepends the matching composed
+ *    agent prompt to the chainable system prompt; when no identity is
+ *    configured (no primary agent in the profile) the system prompt is
+ *    returned untouched (fail-closed).
+ * 3. `resources_discover` — contributes the profile-listed skill
  *    directories from core/skills/ so pi can load them via
- *    loadSkillsFromDir; an empty profile skills list contributes none.
- * 3. `tool_result` — runs the composed after-exec contributions against
+ *    loadSkillsFromDir; the list is filtered by the active primary's
+ *    `[agent.<name>].permission.skill` rules at session-bind time, and an
+ *    empty profile skills list contributes none.
+ * 4. `tool_result` — runs the composed after-exec contributions against
  *    the tool-result text (handler built by `buildPiToolResultHandler`).
- * 4. `context` — runs the composed transform contributions against the
+ * 5. `context` — runs the composed transform contributions against the
  *    native pi message list and returns the pruned replacement.
- * 5. `message_end` — strips model-imitated `[mN] ` line-start ref
+ * 6. `message_end` — strips model-imitated `[mN] ` line-start ref
  *    prefixes from finalized assistant text parts (handler built by
  *    `buildPiMessageEndHandler`).
- * 6. commands — the composed slash commands (e.g. `/dcp`) are registered
+ * 7. commands — the composed slash commands (e.g. `/dcp`) are registered
  *    with pi via `registerCommand`; their chat notifications route
  *    through pi's in-session `appendEntry` channel (persistent in the
  *    session, rendered by the `zoo-dcp` entry renderer, never entering
- *    the LLM context) instead of the tool toast.
+ *    the LLM context) instead of the tool toast.  The primary-switch
+ *    unit contributes one `/<agent>` command per configured primary;
+ *    each replaces the current session with a fresh one re-bound to the
+ *    target identity (setPrimary → newSession with the post-replacement
+ *    tool trim + status inside `withSession`).
  *
  * Architecture: units contribute host-agnostic slots (`src/core/slots.ts`)
  * and the pi contact layer (`src/compose-pi.ts`) is the only module that
@@ -38,15 +51,16 @@
  *
  * Capability gating: pi passes an empty client object (no SDK client),
  * so the dedup-release notification inside context-pruning cannot use
- * the SDK session-prompt API.  With a dolphin-enabled profile the
- * `sessionAgentMap` resolves the agent to "dolphin" and the missing
- * API is caught and logged as `dedup_notify_failed` (warn); without
- * dolphin the map is empty and the notification is suppressed as
+ * the SDK session-prompt API.  With a profile whose primary-agent set is
+ * non-empty the `sessionAgentMap` resolves the agent to the default
+ * primary (first in profile array order) and the missing API is caught
+ * and logged as `dedup_notify_failed` (warn); without a primary the map
+ * is empty and the notification is suppressed as
  * `dedup_notify_suppressed`.  The pruning transform runs and returns
- * the pruned replacement to pi.  The direct-work nudge's dolphin gate
- * is satisfied by a `sessionAgentMap` whose lookups always resolve to
- * "dolphin" (a pi session is the orchestrator); without a
- * dolphin-enabled profile the map is empty and the nudge stays silent.
+ * the pruned replacement to pi.  The direct-work nudge's primary-agent
+ * gate is satisfied by a `sessionAgentMap` whose lookups always resolve
+ * to the default primary (a pi session is the orchestrator); without a
+ * primary the map is empty and the nudge stays silent.
  *
  * Config loading: the OpenCode entry imports config.toml directly with
  * Bun's `import ... with { type: "toml" }`.  pi's extension runtime is
@@ -69,6 +83,7 @@ import {
   type PiContextHolder,
   type PiToolHostContext,
 } from "./adapters/pi/tool-host.js";
+import { createPiVenue, type PiCommandCtx } from "./commands/go/venue-pi.js";
 import {
   buildPiCommandRegistrationPlan,
   buildPiContextHandler,
@@ -81,13 +96,31 @@ import type { ToolHost } from "./core/client/tool-host.js";
 import { composeProfile } from "./core/compose.js";
 import {
   initPluginLogger,
+  parseAgentColors,
+  parseAgentModes,
+  parseAgentPermissions,
   parseContextConfig,
   parseLimits,
   parseModeProfile,
 } from "./core/config-parse.js";
-import type { ModeProfile } from "./core/config-types.js";
+import type { AgentModeMap, ModeProfile } from "./core/config-types.js";
 import type { HostAdapter } from "./core/context/lens.js";
-import type { ComposedResult, Deps } from "./core/slots.js";
+import type {
+  ComposedResult,
+  Deps,
+  PiSwitchHost,
+  PiSwitchNewSessionOps,
+} from "./core/slots.js";
+import {
+  derivePrimaries,
+  getPrimary,
+  resolveIdentity,
+  setPrimary,
+} from "./core/subagent/identity.js";
+import {
+  isSkillAllowed,
+  parseSkillPermissions,
+} from "./core/subagent/skill-permissions.js";
 import type { ValidationLimits } from "./core/validate.js";
 import { REGISTRY } from "./registry.js";
 import { log } from "./utils/logger.js";
@@ -125,6 +158,12 @@ interface ExtensionAPI {
   /** Append a custom entry to the session (persists, no LLM context). */
   appendEntry(customType: string, data?: unknown): void;
 
+  /** Get the list of currently active tool names. */
+  getActiveTools(): string[];
+
+  /** Set the active tools by name. */
+  setActiveTools(toolNames: string[]): void;
+
   /** Register a chat-transcript renderer for a custom entry type. */
   registerEntryRenderer(customType: string, renderer: unknown): void;
 
@@ -135,6 +174,11 @@ interface ExtensionAPI {
       evt: { systemPrompt: string },
       ctx: unknown,
     ) => { systemPrompt: string } | Promise<{ systemPrompt: string }>,
+  ): void;
+  /** Register handler for `session_start`. */
+  on(
+    event: "session_start",
+    handler: (evt: unknown, ctx: unknown) => void | Promise<void>,
   ): void;
   /** Register handler for `resources_discover`. */
   on(
@@ -171,21 +215,53 @@ const __dirname = dirname(realpathSync(fileURLToPath(import.meta.url)));
 const CONFIG_PATH = resolve(__dirname, "../config.toml");
 
 /**
- * Load the `zoo` section of config.toml.
+ * Pending post-replacement switch operations for the newest session.
+ *
+ * The extension factory re-runs on every pi session replacement, so this
+ * slot is module-level: the OLD closure (which handled the `/agent`
+ * command) writes it from inside `withSession`, and the NEW closure's
+ * first `before_agent_start` drains it with its fresh, non-stale API.
+ *
+ * Only one switch can be pending at a time (each switch creates its own
+ * new session; an abandoned intermediate session is simply not drained).
+ */
+export interface PendingSwitchOps {
+  /** The trimmed active tool set to apply in the new session. */
+  activeTools?: string[];
+}
+
+/** Module-level pending switch ops (shared across factory closures). */
+let pendingSwitchOps: PendingSwitchOps | undefined;
+
+/**
+ * Reset the module-level pending switch slot (test isolation).
+ *
+ * The slot is process-global and bun shares one isolate across test
+ * files, so tests must clear it deterministically.
+ */
+export function _resetPendingSwitchOpsForTesting(): void {
+  pendingSwitchOps = undefined;
+}
+
+/**
+ * Load the whole parsed config.toml.
  *
  * pi's Node/jiti runtime cannot import TOML (see module doc), so the
  * file is read and parsed with the vendored smol-toml `parse` parser.
- * A missing or unreadable file yields an empty zoo section, which every
- * profile-driven contribution skips (null profile).
+ * The whole root object is returned (it carries the top-level `agent`
+ * table alongside `zoo`) — callers extract the `zoo` section and the
+ * agent-mode map from it.  A missing or unreadable file yields an empty
+ * root object, which every profile-driven contribution skips (null
+ * profile) and which parses no agent modes.
  *
- * @returns The `zoo` section object (empty when absent/unreadable).
+ * @returns The whole parsed config.toml root (empty when absent).
  */
-function loadZooConfig(): any {
+function loadConfig(): any {
   try {
     const text = readFileSync(CONFIG_PATH, "utf-8");
-    return parse(text).zoo ?? {};
+    return parse(text);
   } catch {
-    // config.toml missing or unreadable — behave as an absent section.
+    // config.toml missing or unreadable — behave as an absent config.
     return {};
   }
 }
@@ -198,18 +274,27 @@ function loadZooConfig(): any {
  * Build the session → agent map for the pi host.
  *
  * pi has no sub-agent sessions: the single session is the orchestrator,
- * so when the profile enables dolphin the map resolves every lookup to
- * "dolphin" (the direct-work nudge's gate).  A profile without dolphin
- * yields an empty map and the nudge stays silent.
+ * so when the profile has a non-empty primary-agent set the map resolves
+ * every lookup to the default primary (the first primary in profile
+ * array order, derived from the agent modes map) — this satisfies the
+ * direct-work nudge's primary gate and the dedup-release notification.
+ * A profile with no primary yields an empty map and both stay silent.
  *
  * @param profile - The active mode profile, or `null` when absent.
- * @returns A map resolving to "dolphin", or an empty map.
+ * @param agentModes - Per-agent role map (`[agent.*].mode`), parsed
+ *   fail-closed by `parseAgentModes`.
+ * @returns A map resolving to the default primary, or an empty map.
  */
-function sessionAgentMapFor(profile: ModeProfile | null): Map<string, string> {
-  if (profile?.agents?.includes("dolphin")) {
+function sessionAgentMapFor(
+  profile: ModeProfile | null,
+  agentModes: AgentModeMap,
+): Map<string, string> {
+  const primaries = derivePrimaries(profile?.agents ?? [], agentModes);
+  if (primaries.length > 0) {
+    const defaultPrimary = primaries[0];
     return new (class extends Map<string, string> {
       get(_key: string): string {
-        return "dolphin";
+        return defaultPrimary;
       }
     })();
   }
@@ -224,10 +309,16 @@ function sessionAgentMapFor(profile: ModeProfile | null): Map<string, string> {
  * command slots (the `unknown_unit` warning fires when a profile name
  * has no matching registry unit).  `Deps` are adapted to the pi host:
  * `client` is empty, `directory` is the process working directory,
- * `sessionAgentMap` resolves to "dolphin" when the profile enables
- * dolphin, and the host adapter / tool host are taken from `hostDeps`
+ * `sessionAgentMap` resolves to the default primary (first in profile
+ * array order among the agent-modes-marked primaries) when the profile
+ * has any, and the host adapter / tool host are taken from `hostDeps`
  * when provided (the entry point supplies the live context holder so
  * event handlers can update it).
+ *
+ * When the primary set is non-empty the identity state is initialised
+ * with the default primary via `setPrimary`, so a `before_agent_start`
+ * event outside any sub-session scope resolves that primary; an empty
+ * primary set leaves the identity machinery off (fail-closed).
  *
  * Exported for unit testing — `zookeeperPi` wires this with the config
  * loaded from disk.
@@ -244,28 +335,56 @@ export function buildPiContributions(
     adapter?: HostAdapter<unknown>;
     toolHost?: ToolHost;
     commandToolHost?: ToolHost;
+    piSwitchHost?: PiSwitchHost;
+    getCommandCtx?: () => PiCommandCtx | null | undefined;
   },
+  rawConfig?: any,
 ): {
   profile: ModeProfile | null;
   composed: ComposedResult;
   limits: ValidationLimits;
+  agentModes: AgentModeMap;
+  agentPermissions: ReturnType<typeof parseAgentPermissions>;
 } {
   const limits = parseLimits(zooConfig);
   const contextConfig = parseContextConfig(zooConfig);
   const modeProfile = parseModeProfile(zooConfig);
+  // The `agent` table lives at the top level of config.toml, so the
+  // fail-closed mode map and tool-level deny map are parsed from the
+  // whole parsed root (empty maps when no raw config was supplied).
+  const agentModes = parseAgentModes(rawConfig ?? {});
+  const agentPermissions = parseAgentPermissions(rawConfig ?? {});
+
+  // The default primary (first in profile array order among the
+  // agent-modes-marked primaries), used to seed the identity machinery
+  // and to build the `/go` venue's executor agent.  An empty primary set
+  // leaves the venue's default primary undefined (fail-closed at handoff
+  // time).
+  const primaries = derivePrimaries(modeProfile?.agents ?? [], agentModes);
 
   const deps: Deps = {
     limits,
     contextConfig,
+    agentModes,
+    agentPermissions,
+    piSwitchHost: hostDeps?.piSwitchHost,
     // pi has no SDK client — the context-pruning transform runs and
-    // returns the pruned replacement to pi.  With dolphin enabled the
-    // dedup-release notification resolves the agent ("dolphin") and fails
-    // on the missing session-prompt API as `dedup_notify_failed` (warn);
-    // without dolphin the empty map suppresses it as `dedup_notify_suppressed`.
+    // returns the pruned replacement to pi.  With a non-empty primary
+    // set the dedup-release notification resolves the default primary
+    // and fails on the missing session-prompt API as
+    // `dedup_notify_failed` (warn); without a primary the empty map
+    // suppresses it as `dedup_notify_suppressed`.
     client: {},
     directory: process.cwd(),
-    sessionAgentMap: sessionAgentMapFor(modeProfile),
+    sessionAgentMap: sessionAgentMapFor(modeProfile, agentModes),
     toolHost: hostDeps?.toolHost,
+    // The `/go` handoff venue.  `getCommandCtx` reads the mutable pi
+    // command-context holder, refreshed by the command handler before
+    // the venue runs.
+    venue: createPiVenue({
+      getCommandCtx: hostDeps?.getCommandCtx ?? (() => undefined),
+      defaultPrimary: primaries[0],
+    }),
     // Native pi host adapter: the entry point shares a mutable context
     // holder so the session id provider always reads the latest pi event
     // context.  When no adapter is supplied (unit tests that only inspect
@@ -296,7 +415,27 @@ export function buildPiContributions(
     composed.commands = commandComposed.commands;
   }
 
-  return { profile: modeProfile, composed, limits };
+  // Seed the identity machinery with the default primary when the
+  // profile has any primary agents (first in profile array order).  An
+  // empty primary set leaves the identity state untouched (fail-closed
+  // — no `setPrimary` call), so `before_agent_start` stays silent.
+  // The seed only applies when NO primary is set yet: the extension
+  // factory re-runs on every pi session replacement (`newSession`), so
+  // an unconditional re-seed here would clobber a primary the switch
+  // just set before calling `newSession` (Bug B).  Seeding only the
+  // initial unset state keeps the switch's target primary intact for the
+  // replacement session's bind-time handlers.
+  if (primaries.length > 0 && getPrimary() === undefined) {
+    setPrimary(primaries[0]);
+  }
+
+  return {
+    profile: modeProfile,
+    composed,
+    limits,
+    agentModes,
+    agentPermissions,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -376,11 +515,14 @@ export function buildPiDcpEntryRenderer(): (
 /**
  * Build the pi hook handlers from an explicit zoo config.
  *
- * `before_agent_start` prepends the composed dolphin prompt when the
- * profile's agents list names `dolphin`; otherwise the system prompt is
- * returned untouched.  `resources_discover` returns the profile-listed
- * skill paths, an empty array when the profile has none.  `toolResult`
- * and `contextHandler` wrap the composed after-exec / transform
+ * `before_agent_start` resolves the current agent identity via the
+ * identity core (`resolveIdentity`) and prepends the matching composed
+ * agent's prompt; when no identity is resolved or the agent is not in
+ * the profile the system prompt is returned untouched (fail-closed).
+ * `resources_discover` returns the profile-listed skill paths (filtered
+ * by the active primary's `[agent.<name>].permission.skill` rules when it
+ * has any), an empty array when the profile has none.  `toolResult` and
+ * `contextHandler` wrap the composed after-exec / transform
  * contributions via the pi contact layer; with a null profile both are
  * empty so the handlers no-op.  When `piApi` is provided, the
  * profile's tool contributions are registered natively through pi's
@@ -400,11 +542,12 @@ export function buildPiDcpEntryRenderer(): (
  * @param zooConfig - The `zoo` section of config.toml.
  * @param piApi - Optional pi ExtensionAPI instance; when provided, the
  *   active profile's tools are registered with `registerTool`.
- * @returns The five hook handlers.
+ * @returns The hook handlers.
  */
 export function buildPiHandlers(
   zooConfig: any,
   piApi?: ExtensionAPI,
+  rawConfig?: any,
 ): {
   beforeAgentStart: (
     evt: { systemPrompt: string },
@@ -417,6 +560,8 @@ export function buildPiHandlers(
   toolResult: ReturnType<typeof buildPiToolResultHandler>;
   contextHandler: ReturnType<typeof buildPiContextHandler>;
   messageEnd: ReturnType<typeof buildPiMessageEndHandler>;
+  /** Seed the status-bar indicator at session startup / resume. */
+  sessionStart: (evt?: unknown, ctx?: unknown) => Promise<void>;
 } {
   // Mutable holder updated by every event handler so the pi adapter and
   // tool host always see the latest ExtensionContext.
@@ -439,11 +584,171 @@ export function buildPiHandlers(
       ? piApi.appendEntry.bind(piApi)
       : undefined;
   const commandToolHost = createPiCommandToolHost(toolHost, appendEntry);
-  const { profile, composed, limits } = buildPiContributions(zooConfig, {
-    adapter,
-    toolHost,
-    commandToolHost,
-  });
+  // The pi switch surfaces for the `/<agent>` commands.  Built ONLY when
+  // a pi API instance is supplied: without one (test-only or a host
+  // without the surfaces) the switch command unit contributes no
+  // commands (fail-closed).  `setStatus` reads the latest extension
+  // context's `ui` from the shared holder, which the command handler
+  // refreshes before running.
+  // The untrimmed tool BASELINE is captured ONCE before any switch can
+  // trim it, and held on the host: every switch computes
+  // `baseline minus deniedTools(target)` from this fixed set, so tool
+  // denies never accumulate across switches.  The capture is DEFERRED to
+  // the first switch (lazily, then cached) instead of running at
+  // extension-load time: pi forbids calling action methods (including
+  // `getActiveTools`) during extension loading — the runtime only binds
+  // real actions after the extension factory returns.  First switch is
+  // still pre-trim, so the lazily-captured set is the same untrimmed
+  // universe.  When the API reports no baseline the host returns
+  // `undefined` and switches skip the trim (fail-closed).
+  let toolBaseline: string[] | undefined;
+  // The per-agent status-bar colors (`[agent.<name>].color`), parsed
+  // fail-closed from the whole config root.  Only the `zoo` indicator is
+  // colorized below — the tool / command surfaces stay plain.
+  const agentColors = parseAgentColors(rawConfig ?? {});
+  // The per-agent skill permission rules (`[agent.<name>].permission.skill`),
+  // parsed fail-closed from the whole config root.  `resources_discover`
+  // filters the contributed skill directories by the active primary's
+  // rules; an agent absent from the map (or no primary) contributes
+  // unfiltered (default-allow, machinery-off unchanged).
+  const skillPermissions = parseSkillPermissions(rawConfig ?? {});
+
+  // Wrap a name in a truecolor ANSI foreground sequence when the agent
+  // has a configured color; otherwise return it unchanged (fail-closed).
+  // pi's status-bar sanitizer only strips `[\r\n\t]` and its width
+  // truncation is ANSI-aware, so the raw escape codes survive and render.
+  const colorizeAgent = (name: string): string => {
+    const hex = agentColors[name];
+    if (hex === undefined) return name;
+    const r = Number.parseInt(hex.slice(1, 3), 16);
+    const g = Number.parseInt(hex.slice(3, 5), 16);
+    const b = Number.parseInt(hex.slice(5, 7), 16);
+    return `\x1b[38;2;${r};${g};${b}m${name}\x1b[39m`;
+  };
+  const piSwitchHost: PiSwitchHost | undefined = piApi
+    ? {
+        getBaselineTools: () => {
+          // Capture once, on first call (which happens inside a command
+          // handler — always post-bind).  A `[]` report is cached too:
+          // callers treat it as "no baseline" and skip the trim rather
+          // than wiping every tool.
+          if (toolBaseline === undefined) {
+            toolBaseline = piApi.getActiveTools?.();
+          }
+          return toolBaseline;
+        },
+        setActiveTools: (names) => piApi.setActiveTools?.(names),
+        // Colorize ONLY the bottom status-bar `zoo` indicator (the
+        // active-primary label): every other key passes through plain.
+        // A name with no configured color stays plain (fail-closed).
+        setStatus: (key, text) =>
+          contextHolder.current?.ui?.setStatus?.(
+            key,
+            key === "zoo" && text !== undefined ? colorizeAgent(text) : text,
+          ),
+        // Replace the current session with a fresh one re-bound to the
+        // target identity.  Delegates to the pi command context's
+        // `newSession` (the same REPLACE operation the `/go` venue uses):
+        // the old session is torn down, the new one is created with the
+        // target as parent (so its bind-time `session_start`,
+        // `resources_discover`, and first `before_agent_start` already
+        // resolve the new primary), and the `withSession` callback runs
+        // against the fresh session's context.
+        //
+        // REGRESSION NOTE: pi invalidates the captured extension API and
+        // command context after `newSession` — calling the old `piApi`
+        // action methods inside `withSession` throws "This extension ctx
+        // is stale after session replacement or reload...".  The facade
+        // handed to `withSession` therefore binds every operation to the
+        // FRESH `ReplacedSessionContext` pi passes there (which
+        // structurally inherits the command-context surface):
+        //   - `setStatus` runs immediately via `newCtx.ui.setStatus`
+        //     (pi exposes `ui` on the replaced-session context).
+        //   - `setActiveTools` would touch the OLD session's action
+        //     bindings, which pi invalidates on replacement — so it is
+        //     deferred (stashed into the module-level pending slot) and
+        //     applied at the new session's first `before_agent_start`,
+        //     where the fresh closure's API is non-stale.
+        newSession: async (options) => {
+          const cmdCtx = contextHolder.current as PiCommandCtx | undefined;
+          if (!cmdCtx?.newSession) {
+            throw new Error(
+              "pi session replacement API is not available. " +
+                "Ensure the pi command context exposes newSession.",
+            );
+          }
+          // Clear any stale pending ops from a previous replacement so an
+          // abandoned intermediate session never leaks its trim into the
+          // next one.
+          pendingSwitchOps = undefined;
+          return cmdCtx.newSession({
+            parentSession: options.parentSession,
+            withSession: (newCtx) => {
+              // All post-replacement work must run against the fresh
+              // session's context — the old command context is stale once
+              // the session is replaced.
+              contextHolder.current = newCtx as PiToolHostContext;
+              const ops: PiSwitchNewSessionOps = {
+                // pi exposes `ui.setStatus` on the replaced-session
+                // context, so the status bar updates immediately.
+                setStatus: (key, text) =>
+                  newCtx.ui?.setStatus?.(
+                    key,
+                    key === "zoo" && text !== undefined
+                      ? colorizeAgent(text)
+                      : text,
+                  ),
+                // Applying the trim here would touch the stale action
+                // bindings that pi invalidates on replacement — defer it
+                // to the new session's first `before_agent_start`.
+                setActiveTools: (names) => {
+                  pendingSwitchOps = {
+                    ...(pendingSwitchOps ?? {}),
+                    activeTools: names,
+                  };
+                },
+              };
+              return options.withSession?.(ops);
+            },
+          });
+        },
+      }
+    : undefined;
+  const { profile, composed, limits } = buildPiContributions(
+    zooConfig,
+    {
+      adapter,
+      toolHost,
+      commandToolHost,
+      piSwitchHost,
+      // The `/go` venue reads the latest pi command context through
+      // this supplier: the command handler refreshes the shared holder
+      // immediately before the handler body runs.
+      getCommandCtx: () => contextHolder.current as PiCommandCtx | undefined,
+    },
+    rawConfig,
+  );
+
+  // Whether the bottom status-bar `zoo` indicator has been seeded for
+  // this session.  The seed runs once inside the first `session_start`
+  // event (see below), with a `before_agent_start` fallback; a flag keeps
+  // it from re-firing on later events within the same pi session.
+  let statusSeeded = false;
+
+  // Seed the bottom status-bar `zoo` indicator with the active primary.
+  // `setStatus` reads the latest extension context's `ui`, so it can only
+  // run inside an event handler (never at extension-load time — pi forbids
+  // action methods during load, and the `ui` surface is absent then).  Fails
+  // closed: no pi switch host, no active primary, or no `ui` surface all
+  // no-op silently.  Once seeded, later events do not overwrite the
+  // indicator.
+  const seedStatus = (): void => {
+    if (statusSeeded || !piSwitchHost) return;
+    const primary = getPrimary();
+    if (primary === undefined) return;
+    piSwitchHost.setStatus("zoo", primary);
+    statusSeeded = true;
+  };
 
   // Startup anchor: mirror the OpenCode host's `plugin_init` event so a
   // pi log records which profile-driven composition was loaded.  Sessionless
@@ -455,9 +760,6 @@ export function buildPiHandlers(
     limits,
   });
 
-  const dolphinPrompt = composed.agents.find(
-    (agent) => agent.name === "dolphin",
-  )?.prompt;
   const profileSkills = composed.skills.map((skill) => skill.name);
 
   // Register profile tools with pi when an API instance is supplied.
@@ -531,16 +833,79 @@ export function buildPiHandlers(
   return {
     async beforeAgentStart(evt, ctx?) {
       if (ctx) contextHolder.current = ctx as PiToolHostContext;
+      // Drain any pending post-replacement switch operations.  This
+      // handler runs in the NEW session's closure (the factory re-ran on
+      // `newSession`), so the `piApi` in scope here is the fresh,
+      // non-stale one — unlike the captured API that pi invalidated on
+      // replacement.  The tool trim was queued from `withSession`
+      // (the tool trim was deferred from `withSession` to avoid touching
+      // the stale action bindings) and is applied
+      // here exactly once at the new session's first turn.
+      if (pendingSwitchOps !== undefined) {
+        const ops = pendingSwitchOps;
+        pendingSwitchOps = undefined;
+        if (ops.activeTools !== undefined) {
+          piApi?.setActiveTools?.(ops.activeTools);
+        }
+      }
+      // Fallback seed: covers flows where `session_start` fires before the
+      // identity is set, or a session begins without a `session_start` in
+      // some flows.  The `statusSeeded` guard keeps it idempotent.
+      seedStatus();
+      // Resolve the current agent identity: the AsyncLocalStorage store
+      // first (a delegated sub-session), falling back to the active
+      // primary.  The composed agents list is looked up by the resolved
+      // identity's name; when the machinery is off (no primary) or the
+      // agent is not in the profile the system prompt is returned
+      // unchanged (silent fail-closed).
+      const identity = resolveIdentity();
+      const agentPrompt = identity
+        ? composed.agents.find((agent) => agent.name === identity.name)?.prompt
+        : undefined;
       return {
         systemPrompt:
-          dolphinPrompt === undefined
+          agentPrompt === undefined
             ? evt.systemPrompt
-            : `${dolphinPrompt}\n\n${evt.systemPrompt}`,
+            : `${agentPrompt}\n\n${evt.systemPrompt}`,
       };
+    },
+    async sessionStart(_evt?, ctx?) {
+      if (ctx) contextHolder.current = ctx as PiToolHostContext;
+      // Seed the indicator at session startup / resume (before any LLM
+      // turn), so the current primary shows immediately.  `before_agent_start`
+      // runs the same seed as a fallback.
+      seedStatus();
     },
     async resourcesDiscover(_evt?, ctx?) {
       if (ctx) contextHolder.current = ctx as PiToolHostContext;
-      return { skillPaths: collectSkillPaths(profileSkills) };
+      // Filter the contributed skill directories by the active primary's
+      // `[agent.<name>].permission.skill` rules.  The filter applies at
+      // session-bind time against the primary active AT THAT MOMENT — pi's
+      // `resources_discover` fires once per session bind and its results are
+      // merge-only (cannot be retracted mid-session), so a later runtime
+      // `/mola` switch does NOT re-filter the already-contributed skills
+      // (accepted pi limitation).  When no primary is configured, or the
+      // primary has no skill rules, the full profile list is contributed
+      // unfiltered (machinery-off behaviour unchanged, consistent with
+      // `before_agent_start`).
+      const primary = getPrimary();
+      const rules =
+        primary === undefined ? undefined : skillPermissions[primary];
+      if (rules === undefined) {
+        return { skillPaths: collectSkillPaths(profileSkills) };
+      }
+      const kept: string[] = [];
+      const dropped: string[] = [];
+      for (const name of profileSkills) {
+        if (isSkillAllowed(rules, name)) kept.push(name);
+        else dropped.push(name);
+      }
+      log("resources", "skills_filtered", "", undefined, "info", {
+        agent: primary,
+        kept: kept.length,
+        dropped: dropped.length,
+      });
+      return { skillPaths: collectSkillPaths(kept) };
     },
     toolResult: async (event, ctx) => {
       if (ctx) contextHolder.current = ctx as PiToolHostContext;
@@ -565,30 +930,35 @@ export function buildPiHandlers(
 /**
  * Register ZooKeeper hooks with pi.
  *
- * All five hooks are profile-driven: a `null` profile (absent or
- * invalid) yields an empty composition, so every handler no-ops
- * (fail-closed, aligned with the OpenCode host).  The `tool_result`
- * and `context` handlers are always registered — their actual
- * contributions come from the profile's hooks list (after-exec and
- * transform units).  The `message_end` handler is always registered
- * and strips model-imitated line-start ref echoes from finalized
- * assistant text when the profile is active.  Profile commands (e.g.
- * `/dcp`) are registered with pi and the `zoo-dcp` entry renderer is
- * wired so appended reports draw a card in the TUI transcript.
+ * All hooks are profile-driven: a `null` profile (absent or invalid)
+ * yields an empty composition, so every handler no-ops (fail-closed,
+ * aligned with the OpenCode host).  `session_start` seeds the bottom
+ * status-bar `zoo` indicator with the current primary at session startup
+ * / resume (the same seed runs as a `before_agent_start` fallback).  The
+ * `tool_result` and `context` handlers are always registered — their
+ * actual contributions come from the profile's hooks list (after-exec and
+ * transform units).  The `message_end` handler is always registered and
+ * strips model-imitated line-start ref echoes from finalized assistant
+ * text when the profile is active.  Profile commands (e.g. `/dcp` and the
+ * config-derived `/<agent>` primary-switch commands) are registered with
+ * pi and the `zoo-dcp` entry renderer is wired so appended reports draw
+ * cards in the TUI transcript.
  *
  * Strategy for `before_agent_start`:
- *   **Prepend** the dolphin prompt rather than replacing the chainable
- *   system prompt.  This keeps the orchestrator identity dominant while
- *   preserving pi's native coding-assistant prompt and tool
- *   descriptions.  Replacing outright would lose pi's tool-injection
- *   and built-in instructions.
+ *   **Prepend** the resolved identity's prompt rather than replacing the
+ *   chainable system prompt.  This keeps the orchestrator identity
+ *   dominant while preserving pi's native coding-assistant prompt and
+ *   tool descriptions.  Replacing outright would lose pi's
+ *   tool-injection and built-in instructions.
  *
  * @param pi - pi ExtensionAPI instance (provided at runtime by pi).
  */
 export function zookeeperPi(pi: ExtensionAPI): void {
-  const zooConfig = loadZooConfig();
+  const config = loadConfig();
+  const zooConfig = config.zoo ?? {};
   initPluginLogger(zooConfig, "pi");
-  const handlers = buildPiHandlers(zooConfig, pi);
+  const handlers = buildPiHandlers(zooConfig, pi, config);
+  pi.on("session_start", handlers.sessionStart);
   pi.on("before_agent_start", handlers.beforeAgentStart);
   pi.on("resources_discover", handlers.resourcesDiscover);
   pi.on("tool_result", handlers.toolResult);

@@ -116,6 +116,39 @@ export interface ModeProfile {
 }
 
 /**
+ * An agent's declared role in the orchestration topology.
+ *
+ * Mirrors the `mode` field of the top-level `[agent.<name>]` tables in
+ * config.toml.  `"primary"` agents are switchable orchestrators (e.g.
+ * dolphin, mola); `"subagent"` agents are delegated helpers.  The parse
+ * layer never invents a mode for an agent whose `mode` field is missing
+ * or invalid — such an agent is skipped entirely (fail-closed).
+ */
+export type AgentMode = "primary" | "subagent";
+
+/**
+ * Per-agent mode map (`[agent.<name>].mode`).
+ *
+ * Maps every agent name whose `mode` field parsed successfully to its
+ * declared mode.  Agents with a missing or invalid `mode` are absent
+ * (skipped + warned by the parse layer) — no default mode is ever
+ * injected.  An empty map means no primary agent is configured and the
+ * identity machinery stays disabled.
+ */
+export type AgentModeMap = Record<string, AgentMode>;
+
+/**
+ * Per-agent status-bar color map (`[agent.<name>].color`).
+ *
+ * Maps every agent name whose `color` field parsed successfully to its
+ * normalized uppercase `#RRGGBB` hex.  Agents with a missing or invalid
+ * `color` are absent (skipped + warned by the parse layer) — no default
+ * color is ever injected, and an absent entry means the agent's
+ * indicator renders in the plain terminal color.
+ */
+export type AgentColorMap = Record<string, string>;
+
+/**
  * Unified context-pruning configuration.
  *
  * Replaces the old flat `DedupOptions` used by the hook.  Each

@@ -50,6 +50,8 @@ subagent 的执行载体只有三种选择，各有代表实现：
 - **API 公开**：`src/index.ts:210` 导出 `createAgentSession`（工厂实现 `src/core/sdk.ts:169-398`，headless 无 TUI 依赖）；官方文档 `docs/sdk.md:11` 明列 "Build custom tools that spawn sub-agents" 为 SDK 典型场景
 - **扩展可达**：扩展加载器把 `@earendil-works/pi-coding-agent` 别名到包入口（Bun 模式 `src/core/extensions/loader.ts:27/66`，Node/jiti 模式 loader.ts:90/105/119），扩展代码可直接 import
 - **扩展 API 自带的会话原语不可用**：`ctx.newSession`（types.ts:361-365）仅 command context 且为替换语义——`agent-session-runtime.ts:226-260` 会先 abort+dispose 旧会话（167-178）；`pi.sendUserMessage`（types.ts:1312-1315）只作用于当前会话（agent-session.ts:1481-1511）。必须走 SDK 工厂而非扩展 API
+
+  > **修正注记（2026-08-26）**：上述"会话原语不可用"的结论只适用于**非 command-context 的工具执行路径**。随本报告落地并已随产品发布的 `/go` handoff（`src/core/handoff.ts` + `src/commands/go/venue-pi.ts`）与 `/<agent>` 主 agent 切换（`src/commands/switch/`）均直接使用 command context 的 `ctx.newSession` 做会话替换（含 `withSession` 回调投递 plan reference / 执行工具裁剪），运行可用；后续 spike 结论 4-7 亦验证了该路径。即：SDK 工厂（路线 C）对"子会话委派"仍是唯一选择，但 command-context 的 `newSession` 替换语义已被证明可用于主 agent 切换与 handoff 类需求。
 - **工具白名单可防递归**：`createAgentSession({ tools })` 统一过滤内置与扩展注册工具（sdk.ts:246；`agent-session.ts:2463-2478` 对 `_extensionRunner.getAllRegisteredTools()` 施加同一 isAllowedTool 过滤，2535-2539 只有名单内工具进 active 集合）——白名单不含委派工具名即关闭递归通道
 - **终止原语完备**：`AgentSession.abort()`（agent-session.ts:1550，stopReason 置 "aborted"，底层 `packages/agent/src/agent.ts:319/519`）+ `dispose()`（agent-session.ts:839-845，全量拆除含 bash 子进程）
 
@@ -209,6 +211,15 @@ pi 宿主侧的两处关键查证：**pi 不内置多主 agent 但非硬性限�
 1. **pi-subagents 的 ask 仲裁**：`ask` 由子进程内 watchdog 的单次 LLM 仲裁器裁决（fail-closed，watchdog.md:162），而非转发父会话批准
 2. **pi 的 prompt 替换能力**：pi 可整体替换主 agent prompt（agent-session.ts:1254-1256），此前误判为只能 append
 3. **oh-my-pi 的 per-agent 模型**：实为支持（discovery/helpers.ts:301 解析 frontmatter `model`；test/eval/agent-bridge-policy.test.ts:318 引 issue #6438 "agent's own frontmatter model applies"）——两条落地路线在 per-agent 模型上打平，子进程独有的是环境级异构（不同 provider 配置/API key/pi 版本）
+
+2026-08-25 对真实 pi 0.84.2（nix 安装，Node 24 / jiti 扩展加载，非 Bun 模式）跑了四个 spike 假设（`spikes/pi-subagent/`，已删除）。spike 复用 ZooKeeper 扩展形态：`DefaultResourceLoader` 加载一个注册 `before_agent_start`/`session_start`/自定义工具 `zoo_spike_probe` 的扩展，`createAgentSession` 起子会话；LLM 用配置的 Volces provider（`volces/deepseek-v4-flash`），每会话一条极短 prompt（"reply with the word ok"）。四假设全部 PASS，结论如下：
+
+4. **扩展模块单例成立（PASS）**：同一进程内两次 `createAgentSession` 后，扩展模块顶层只求值一次（`moduleEvalCount=1`）；换成两个独立的 `DefaultResourceLoader` 加载同一扩展路径仍只求值一次（factory 按 loader 各跑一次，模块作用域共享）。因此扩展模块级的 `AsyncLocalStorage` 在父子全部扩展调用间是同一个实例——身份分发的地基成立（与 §5 风险表第一行 "ALS 单例依赖 jiti 模块缓存行为" 对应，实测为模块级 `extensionCache`，非 jiti moduleCache）
+5. **ALS 穿透子会话成立（PASS）**：父侧 `als.run({agent:"X"}, () => session.prompt(...))` 包裹的 prompt，子会话 `before_agent_start` 读得到 X；并发第二个 `als.run({agent:"Y"}, ...)` 只读到 Y，无串扰（session→identity 一一对应）。§4.1 的 ALS 身份机制在 Node/jiti 模式实测可行
+6. **SDK 会话扩展事件行为（PASS）**：裸 SDK 会话（不调 `bindExtensions`）`before_agent_start` 照常触发（扩展随 `DefaultResourceLoader` 挂载，agent-session.ts:885 每次 prompt 发射），但 `session_start` 不触发（bindExtensions 内才 emit，agent-session.ts:1761）——与调研判断一致：SDK headless 会话与交互式启动的扩展事件面不同
+7. **工具白名单防递归成立（PASS）**：`createAgentSession({ tools: [...] })` 白名单同时过滤内置与扩展注册工具（agent-session.ts:1945-2000 对 `_extensionRunner.getAllRegisteredTools()` 施加同一 `isAllowedTool`）。`zoo_spike_probe`（委派工具替身）不在白名单时子会话 active 工具集不含它，在白名单时才出现——构造即生效，模型不可见被 deny 的工具
+
+补充：`getActiveToolNames()` 与 `getAllTools()` 均反映白名单过滤；in-memory 会话 id 用 uuidv7（时间序，前缀看似相同但全局唯一）。
 
 ---
 

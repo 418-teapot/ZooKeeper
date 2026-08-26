@@ -283,12 +283,35 @@ describe("poly full profile — registration parity", () => {
     ]);
     assert.deepEqual(config.command.go, {
       template: "",
-      description: "Approve plan and handoff to dolphin",
+      description: "Approve plan and handoff to execution",
     });
     assert.deepEqual(config.command.dcp, {
       template: "",
       description: "显示上下文用量与缓存命中率",
     });
+  });
+
+  it("registers no /<agent> primary-switch commands on OpenCode", async () => {
+    // The switch unit contributes a command per configured primary on
+    // the pi host only.  OpenCode never provides the pi switch surfaces
+    // (piSwitchHost), so even with primaries in the profile no `/<agent>`
+    // switch command may appear in the config hook (or be handled).
+    const plugin = await makePlugin();
+    const config: Record<string, any> = {};
+    await plugin.config(config);
+    assert.deepEqual(
+      Object.keys(config.command ?? {}).sort(),
+      ["dcp", "go"],
+      "no config-derived /<agent> switch command on OpenCode",
+    );
+
+    // The switch command name (an agent name) is not handled — the hook
+    // resolves without the COMMAND_HANDLED sentinel.
+    const result = await plugin["command.execute.before"](
+      { command: "dolphin", sessionID: "s", arguments: "" },
+      {},
+    );
+    assert.equal(result, undefined);
   });
 
   it("config hook injects the mode-conditional mola prompt (poly)", async () => {

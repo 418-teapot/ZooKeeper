@@ -22,13 +22,92 @@
  */
 
 import type { ToolHost } from "./client/tool-host.js";
-import type { ContextPruningConfig } from "./config-types.js";
+import type { AgentModeMap, ContextPruningConfig } from "./config-types.js";
 import type { HostAdapter } from "./context/lens.js";
+import type { Venue } from "./handoff.js";
+import type { AgentPermissionMap } from "./subagent/deny-tools.js";
 import type { ValidationLimits } from "./validate.js";
 
 // ---------------------------------------------------------------------------
 // Dependencies and enablement
 // ---------------------------------------------------------------------------
+
+/**
+ * pi host surfaces used by the primary-switch command.
+ *
+ * `getBaselineTools` / `setActiveTools` come from pi's `ExtensionAPI`;
+ * `setStatus` is read from the latest extension context's `ui` (the pi
+ * entry keeps a mutable context holder).  `newSession` delegates to the
+ * pi command context's `newSession` (the full re-bind: the new session
+ * re-resolves the primary's prompt, skill filter, tool trim, and status
+ * at bind time).  The switch command unit contributes no commands when
+ * this capability is absent (fail closed — OpenCode never provides it,
+ * so `/<agent>` commands never register there).
+ */
+export interface PiSwitchHost {
+  /**
+   * The full untrimmed tool baseline, captured ONCE before any switch.
+   *
+   * Every switch computes `baseline minus deniedTools(target)` from this
+   * fixed set, so tool denies never accumulate across switches.  The
+   * capture is deferred to the first `getBaselineTools` call (which
+   * always happens inside a switch handler — pi forbids calling action
+   * methods at extension-load time) and cached.  `undefined` when the
+   * baseline was unavailable — callers skip the trim then (fail-closed).
+   */
+  getBaselineTools(): string[] | undefined;
+  /** Replace the active tool set (used to trim denied tools). */
+  setActiveTools(toolNames: string[]): void;
+  /** Set a bottom status-bar indicator (e.g. the active primary). */
+  setStatus(key: string, text: string | undefined): void;
+  /**
+   * Replace the current session with a fresh one bound to the new
+   * primary identity.
+   *
+   * Mirrors pi's `ExtensionCommandContext.newSession` shape
+   * (`{ parentSession?, withSession? }`): the caller stashes the current
+   * session id as `parentSession`, and `withSession` runs against the
+   * fresh session once it is created.  All post-replacement work must be
+   * done through the `PiSwitchNewSessionOps` facade handed to
+   * `withSession` — never through this host's own methods, which close
+   * over the process-level (pre-replacement) API.  A `{ cancelled: true }`
+   * result means the replacement was aborted and no session was created.
+   * Absent on hosts without the replacement API — the switch fails
+   * closed.
+   */
+  newSession(options: {
+    parentSession?: string;
+    withSession?: (ops: PiSwitchNewSessionOps) => void | Promise<void>;
+  }): Promise<{ cancelled: boolean }>;
+}
+
+/**
+ * Per-fresh-session operations handed to a `newSession` `withSession`
+ * callback.
+ *
+ * REGRESSION NOTE: pi invalidates the captured extension API and command
+ * context after `ctx.newSession()` (the old runtime's action methods
+ * throw "This extension ctx is stale after session replacement or
+ * reload...").  Post-replacement work — status, tool trim — MUST
+ * therefore run through the handles provided here, which the host binds
+ * to the fresh session (via the real `ReplacedSessionContext` pi passes
+ * to `withSession`), never through a process-level `PiSwitchHost`
+ * captured before the switch.
+ *
+ * A host may not be able to execute every operation synchronously inside
+ * `withSession`: pi's `ReplacedSessionContext` structurally inherits the
+ * command-context surface, but the tool actions operate on the OLD
+ * session's bindings, which pi invalidates on replacement — calling them
+ * there throws the stale-context error.  The host therefore defers the
+ * trim and applies it at the new session's first `before_agent_start`
+ * (or other fresh-context event) where a non-stale API exists.
+ */
+export interface PiSwitchNewSessionOps {
+  /** Set a bottom status-bar indicator (e.g. the active primary). */
+  setStatus(key: string, text: string | undefined): void;
+  /** Replace the fresh session's active tool set (denied-tool trim). */
+  setActiveTools(toolNames: string[]): void;
+}
 
 /**
  * Per-plugin-instance dependencies captured by unit factories.
@@ -41,6 +120,41 @@ export interface Deps {
   limits: ValidationLimits;
   /** Unified context-pruning configuration (`[zoo.context]`). */
   contextConfig: ContextPruningConfig;
+  /**
+   * Per-agent mode map (`[agent.*].mode`), parsed fail-closed.
+   *
+   * Maps every agent whose `mode` field parsed successfully to
+   * `"primary"` / `"subagent"`; agents with a missing or invalid `mode`
+   * are absent.  Consumed by the identity layer (e.g. `derivePrimaries`)
+   * — an empty or absent map means no primary agent is configured and
+   * the identity machinery stays disabled.
+   */
+  agentModes?: AgentModeMap;
+  /**
+   * Per-agent tool-level deny map (`[agent.<name>].permission`), parsed
+   * fail-closed by `parseAgentPermissions`.
+   *
+   * Maps every agent with at least one tool-level deny to its sorted
+   * denied tool names; agents with none are absent.  Consumed by the
+   * primary-switch command to trim the pi active tool set — an empty or
+   * absent map leaves the active tool set untouched.
+   */
+  agentPermissions?: AgentPermissionMap;
+  /**
+   * pi-specific switch surfaces (only on the pi host).
+   *
+   * Undefined on hosts without them (OpenCode) — the switch command
+   * unit contributes no commands then (fail-closed, so no `/<agent>`
+   * command ever registers on OpenCode).
+   */
+  piSwitchHost?: PiSwitchHost;
+  /**
+   * The host-specific session handoff surface for the `/go` command.
+   *
+   * Undefined on hosts that do not wire a venue — the `/go` command
+   * unit then fails closed with the missing-client error.
+   */
+  venue?: Venue;
   /** The host client (OpenCode / pi), opaque to this layer. */
   client: any;
   /** The plugin working directory. */
