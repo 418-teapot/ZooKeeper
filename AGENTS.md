@@ -6,7 +6,7 @@
 
 **ZooKeeper** — 一个编排器插件，通过静态配置权限 + prompt 注入确保编排器不越权调用工具。基于 Python + TypeScript + Rust 构建。同时适配 OpenCode 和 pi 两个宿主（双宿主，共享 `src/core/` 与 `src/agents/`，各自入口 `src/opencode.ts` 与 `src/pi.ts`）。
 
-核心机制：`config.toml` 中声明各 agent 的 `permission` deny 列表（**单一事实来源**）和 `[zoo.validation]` 阈值（上下文/提示词长度限制），install.py 编译 permission 部分后写入 OpenCode 配置（`~/.config/opencode/opencode.json`）和 pi 配置（`~/.pi/agent/settings.json` + `models.json`）；install.py 用 `shutil.which` 检测 opencode/pi 是否安装，按检测结果控制各安装段（缺失则跳过）；`[zoo.validation]` 阈值由 TS 插件在运行时直接读取。TS 插件采用单元化注册架构：`src/registry.ts` 声明唯一有序的加载单元名单，`src/core/compose.ts`（`composeProfile`）按 `[zoo.mode.<name>]` profile 选择并实例化启用单元，`src/compose-opencode.ts` 把结果组装成 OpenCode hook 注册、`src/compose-pi.ts` 把结果组装成 pi 的 tool_result/context handler；OpenCode 插件在 `config` hook 注入 `src/agents/<name>.ts` 的 prompt 常量；pi 扩展（compose 驱动，经 `src/compose-pi.ts` 接触层映射事件）注册 `before_agent_start`（注入 agent prompt）、`resources_discover`（贡献 `core/skills` 目录）、`tool_result`（跑 profile.hooks 的 afterExec 贡献）与 `context`（跑 transform 贡献，measure-only）四事件，null profile 全部失效（fail-closed，与 OpenCode 对齐）。
+核心机制：`config.toml` 中声明各 agent 的 `permission` deny 列表（**单一事实来源**）和 `[zoo.validation]` 阈值（上下文/提示词长度限制），install.py 编译 permission 部分后写入 OpenCode 配置（`~/.config/opencode/opencode.json`）和 pi 配置（`~/.pi/agent/settings.json` + `models.json`）；install.py 用 `shutil.which` 检测 opencode/pi 是否安装，按检测结果控制各安装段（缺失则跳过）；`[zoo.validation]` 阈值由 TS 插件在运行时直接读取。TS 插件采用单元化注册架构：`src/registry.ts` 声明唯一有序的加载单元名单，`src/core/compose.ts`（`composeProfile`）按 `[zoo.mode.<name>]` profile 选择并实例化启用单元，`src/compose-opencode.ts` 把结果组装成 OpenCode hook 注册、`src/compose-pi.ts` 把结果组装成 pi 的 tool_result/context handler；OpenCode 插件在 `config` hook 注入 `src/agents/<name>.ts` 的 prompt 常量；pi 扩展（compose 驱动，经 `src/compose-pi.ts` 接触层映射事件）注册 `before_agent_start`（注入 agent prompt）、`resources_discover`（贡献 `core/skills` 目录）、`tool_result`（跑 profile.hooks 的 afterExec 贡献）与 `context`（跑 transform 贡献，写回裁剪后的消息视图）四事件，null profile 全部失效（fail-closed，与 OpenCode 对齐）。
 
 ## 命令
 
@@ -81,7 +81,7 @@ ZooKeeper/
 │   │   ├── spider.ts
 │   │   ├── eagle.ts
 │   │   └── kiwi.ts
-│   ├── adapters/            # 宿主适配层（opencode/ 为 HostAdapter 的 v1 实现；pi/ 待 F5）
+│   ├── adapters/            # 宿主适配层（opencode/ 与 pi/ 各自实现 HostAdapter 契约；pi 的单消费者 helper 内联于 render.ts）
 │   ├── registry.ts          # 单元注册表 — 唯一有序的加载单元名单（单一事实来源）
 │   ├── opencode.ts          # OpenCode 扩展入口 + 底盘（profile 驱动的注册由 compose-opencode 组装）
 │   ├── compose-opencode.ts  # OpenCode 事件键适配器（组装 ComposedResult → hook 注册；统一 COMMAND_HANDLED 哨兵）
@@ -156,10 +156,10 @@ ZooKeeper/
 - **`installer/`** — install.py 委托的安装逻辑包：`envfile.py`（.env 解析 + `{env:VAR}` 递归解析 + 凭据缺失条目剔除）、`variants.py`（`[zoo.variants]` 全局/按 agent 双通道校验收集）、`opencode.py`（mode profile 解析 + opencode.json 组装）、`pi.py`（provider → models.json 转换）、`jsonio.py`（JSON 读写 helper）、`output.py`（终端输出）。单元测试位于 `installer/tests/`。
 - **`config.toml`** — 用户配置模板（单一事实来源），所有 deny 权限和 agent 配置在此声明，`[zoo.validation]` 阈值由 TS 插件在运行时直接读取
 - **`src/opencode.ts`** — 插件入口 + 底盘，薄接线层：解析配置、持有共享 session 映射（`sessionAgentMap`），合并 `compose-opencode.ts` 组装的 profile 驱动 fragment 与常驻基础设施 hook
-- **`src/pi.ts`** — pi 扩展入口，通过 `~/.pi/agent/settings.json` 的 `extensions` 数组被 pi 加载；compose 驱动，把全量 REGISTRY 交给 `composeProfile`（tool/command 单元实例化但槽位不被消费）：注册 `before_agent_start`（prepend 组合后的 agent prompt 到 systemPrompt）、`resources_discover`（贡献 `core/skills` 子目录）、`tool_result`（跑 profile.hooks 的 afterExec 贡献）与 `context`（跑 transform 贡献，measure-only）四事件；deps 适配：`client: {}`（pruning transform 照常运行，dedup 通知因无 session prompt API 短路）、`directory: process.cwd()`、dolphin-enabled profile 时 `sessionAgentMap` 恒解析 "dolphin"（pi 会话即编排器）；null profile 四事件全部失效（fail-closed，与 OpenCode 对齐）；用 `realpathSync` 跟随路径确保 `../config.toml` 与 `../core/skills` 解析正确；config.toml 经 `vendor/smol-toml` 的 `parse` 解析（pi 的 Node/jiti 运行时无法 import .toml）
+- **`src/pi.ts`** — pi 扩展入口，通过 `~/.pi/agent/settings.json` 的 `extensions` 数组被 pi 加载；compose 驱动，把全量 REGISTRY 交给 `composeProfile`（tool/command 单元实例化但槽位不被消费）：注册 `before_agent_start`（prepend 组合后的 agent prompt 到 systemPrompt）、`resources_discover`（贡献 `core/skills` 子目录）、`tool_result`（跑 profile.hooks 的 afterExec 贡献）与 `context`（跑 transform 贡献，写回裁剪后的消息视图）四事件；deps 适配：`client: {}`（pruning transform 照常运行，dedup 通知因无 session prompt API 短路）、`directory: process.cwd()`、dolphin-enabled profile 时 `sessionAgentMap` 恒解析 "dolphin"（pi 会话即编排器）；null profile 四事件全部失效（fail-closed，与 OpenCode 对齐）；用 `realpathSync` 跟随路径确保 `../config.toml` 与 `../core/skills` 解析正确；config.toml 经 `vendor/smol-toml` 的 `parse` 解析（pi 的 Node/jiti 运行时无法 import .toml）
 - **`src/registry.ts`** — 单元注册表，唯一有序的加载单元名单（单一事实来源），`composeProfile` 按此数组顺序实例化启用单元
 - **`src/compose-opencode.ts`** — OpenCode 事件键适配器：把 `ComposedResult` 组装成 hook 注册（config / tool / command / 三个 handler 槽位），统一抛出 `COMMAND_HANDLED` 哨兵短路已处理的斜杠命令
-- **`src/compose-pi.ts`** — pi 事件键适配器：唯一理解 pi 事件键的模块，把 `ComposedResult` 组装成 `buildPiToolResultHandler(afterExec)`（tool_result handler：文本增量追加）与 `buildPiContextHandler(transform)`（context handler：消息转换 + measure-only 不写回）
+- **`src/compose-pi.ts`** — pi 事件键适配器：唯一理解 pi 事件键的模块，把 `ComposedResult` 组装成 `buildPiToolResultHandler(afterExec)`（tool_result handler：文本增量追加）与 `buildPiContextHandler(transform)`（context handler：消息转换，写回裁剪后的视图）
 - **`src/core/`** — 框架无关纯逻辑模块，零 OpenCode 依赖，可被任何 TS 运行时 import；含选择引擎 `compose.ts`（`composeProfile`）、槽位词汇 `slots.ts`
 - **`src/agents/<name>.ts`** — 各 agent 的 prompt 常量 + agent 单元（unit 描述符），按 `{agent-name}.ts` 命名
 - **`src/agents/parts.ts`** — 共享 prompt 片段常量（`DELEGATION_FORMAT_TEXT`、`TASK_PROMPT_HINT`）
