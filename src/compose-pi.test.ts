@@ -7,7 +7,7 @@
  * (native pi messages passed to transforms, result replacement, model
  * limit capture, empty array, crash isolation), the pure helper
  * `extractText`, and the command-slot assembly
- * (`buildPiCommandRegistrationPlan` + `createPiCommandToolHost`).
+ * (`buildPiCommandRegistrationPlan`).
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
@@ -16,14 +16,12 @@ import {
   buildPiContextHandler,
   buildPiMessageEndHandler,
   buildPiToolResultHandler,
-  createPiCommandToolHost,
   extractText,
   type PiAgentMessage,
   type PiAssistantMessage,
   type PiContentPart,
   type PiToolResultEvent,
 } from "./compose-pi.js";
-import type { ToolHost } from "./core/client/tool-host.js";
 import type {
   AfterExecContribution,
   AfterExecInput,
@@ -630,57 +628,5 @@ describe("buildPiCommandRegistrationPlan", () => {
 
   it("returns an empty plan for an empty commands map", () => {
     assert.deepEqual(buildPiCommandRegistrationPlan({}), []);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// createPiCommandToolHost
-// ---------------------------------------------------------------------------
-
-describe("createPiCommandToolHost", () => {
-  it("routes notify to appendEntry with the zoo-dcp custom type", async () => {
-    const appended: Array<{ customType: string; data?: unknown }> = [];
-    const base: ToolHost = {
-      resolveSessionId: () => "sess",
-      fetchHistory: async () => [],
-      notify: async () => {},
-    };
-    const host = createPiCommandToolHost(base, (customType, data) => {
-      appended.push({ customType, data });
-    });
-    await host.notify("sess", "report text");
-    assert.deepEqual(appended, [
-      { customType: "zoo-dcp", data: { content: "report text" } },
-    ]);
-  });
-
-  it("keeps fetchHistory and resolveSessionId from the base tool host", async () => {
-    const fetched: string[] = [];
-    const base: ToolHost = {
-      resolveSessionId: () => "sess-x",
-      fetchHistory: async (sid) => {
-        fetched.push(sid);
-        return [];
-      },
-      notify: async () => {
-        throw new Error("must not be called");
-      },
-    };
-    const host = createPiCommandToolHost(base);
-    assert.equal(host.resolveSessionId({}), "sess-x");
-    await host.fetchHistory("sess-1");
-    assert.deepEqual(fetched, ["sess-1"]);
-  });
-
-  it("no-ops notify when no appendEntry is supplied", async () => {
-    const base: ToolHost = {
-      resolveSessionId: () => "sess",
-      fetchHistory: async () => [],
-      notify: async () => {
-        throw new Error("must not be called");
-      },
-    };
-    const host = createPiCommandToolHost(base);
-    await assert.doesNotReject(async () => host.notify("sess", "text"));
   });
 });

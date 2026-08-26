@@ -98,7 +98,7 @@ export async function buildPlugin(input: any, zooConfig: any, rawConfig?: any) {
     client,
     directory,
     sessionAgentMap,
-    toolHost: createV1ToolHost(client),
+    toolHost: createV1ToolHost(client, sessionAgentMap),
     adapter: createV1Adapter(),
     handoffTarget: createOpenCodeHandoffTarget(
       client,
@@ -185,7 +185,3 @@ export {
   runAfterHandlers,
 } from "./compose-opencode.js";
 export { sessionAgentMap } from "./core/context/runtime.js";
-export {
-  handleDedupNotify,
-  resolveSessionAgent,
-} from "./hooks/context-pruning";

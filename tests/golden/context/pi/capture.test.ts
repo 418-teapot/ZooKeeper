@@ -109,7 +109,9 @@ describe("captureMessage — tool parts", () => {
 
   test("a toolCall whose arguments wrap the error placeholder is inputPruned", () => {
     const message = assistantMsg([
-      toolCallPart("c1", "bash", { pruned: PRUNED_TOOL_ERROR_INPUT_REPLACEMENT }),
+      toolCallPart("c1", "bash", {
+        pruned: PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
+      }),
     ]);
     const capture = captureMessage(message);
     expect(capture.toolParts[0]?.inputPruned).toBe(true);
@@ -127,9 +129,7 @@ describe("captureMessage — pi-specific flags", () => {
     const capture = captureMessage(
       toolResultMsg("c1", "bash", [textPart("boom")], { isError: true }),
     );
-    expect(
-      (capture as unknown as Record<string, unknown>).isError,
-    ).toBe(true);
+    expect((capture as unknown as Record<string, unknown>).isError).toBe(true);
   });
 
   test("a successful toolResult carries no isError flag", () => {

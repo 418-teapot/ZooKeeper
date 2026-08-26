@@ -66,7 +66,13 @@ describe("pi host — /dcp absence", () => {
   test("handleDcp throws the pi-specific absence error", async () => {
     const host = createPiGoldenHost("pi-host-dcp");
     await expect(
-      host.handleDcp("pi-host-dcp", "compress", { dedup: {}, purgeErrors: {} }, [], []),
+      host.handleDcp(
+        "pi-host-dcp",
+        "compress",
+        { dedup: {}, purgeErrors: {} },
+        [],
+        [],
+      ),
     ).rejects.toThrow("dcp is not available on pi");
   });
 });

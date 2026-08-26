@@ -59,8 +59,7 @@ describe("captureMessage — pruned tool-output classification", () => {
     // Plain `ls` output — not a placeholder.  The `[mN] ` prefix
     // carried over from the render layer must not flip the pruned
     // flag.  The preview is the first 80 chars verbatim.
-    const plain =
-      "[m2] total 12\ndrwxr-xr-x 2 root root 4096 Aug 17 .";
+    const plain = "[m2] total 12\ndrwxr-xr-x 2 root root 4096 Aug 17 .";
     const capture = captureMessage(toolEntry(plain));
     expect(capture.toolParts.length).toBe(1);
     expect(capture.toolParts[0].pruned).toBe(false);
@@ -71,9 +70,7 @@ describe("captureMessage — pruned tool-output classification", () => {
     // Defensive case: a fixture or older snapshot that reaches the
     // capture without the line-start prefix must still flag pruned —
     // the placeholder contract predates the render-layer prefix.
-    const capture = captureMessage(
-      toolEntry(PRUNED_TOOL_OUTPUT_REPLACEMENT),
-    );
+    const capture = captureMessage(toolEntry(PRUNED_TOOL_OUTPUT_REPLACEMENT));
     expect(capture.toolParts.length).toBe(1);
     expect(capture.toolParts[0].pruned).toBe(true);
     expect(capture.toolParts[0].output).toBe(PRUNED_TOOL_OUTPUT_REPLACEMENT);

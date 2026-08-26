@@ -25,8 +25,8 @@
  * @module
  */
 
-import { extractText } from "../../../../src/compose-pi.js";
 import type { PiAgentMessage } from "../../../../src/adapters/pi/types.js";
+import { extractText } from "../../../../src/compose-pi.js";
 import { captureToolInput, captureToolOutput } from "../capture-core.js";
 import type { ViewMessageCapture } from "../types.js";
 

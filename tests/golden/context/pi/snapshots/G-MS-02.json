@@ -445,7 +445,9 @@
       },
       "toolResult": null,
       "toolError": null,
-      "notifications": []
+      "notifications": [
+        "上下文清理：已折叠 1 个工具调用，约回收 110 tokens"
+      ]
     },
     {
       "label": "completed-parts-ignored",

@@ -20,8 +20,8 @@ import { notifySessionError } from "../notify.js";
  * command fails closed with the missing-client error.  Failures are
  * surfaced via `notifySessionError` through the host tool host (on
  * OpenCode the v1 tool host posts the identical ignored noReply message
- * — zero behavior change; on pi it routes through the command tool
- * host's appendEntry, making failures visible).  The handler returns
+ * — zero behavior change; on pi the unified tool host posts a
+ * `zoo-notice` appendEntry entry, making failures visible).  The handler returns
  * normally — the handled short-route sentinel is thrown by a later
  * adapter layer.
  */

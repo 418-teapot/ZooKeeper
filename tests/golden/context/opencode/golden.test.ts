@@ -70,12 +70,7 @@ afterEach(() => {
 describe("golden baseline (opencode)", () => {
   for (const scenario of ALL_SCENARIOS) {
     test(scenario.id, async () => {
-      await assertScenarioMatchesSnapshot(
-        scenario,
-        HOST,
-        SNAPSHOT_DIR,
-        UPDATE,
-      );
+      await assertScenarioMatchesSnapshot(scenario, HOST, SNAPSHOT_DIR, UPDATE);
     });
   }
 });

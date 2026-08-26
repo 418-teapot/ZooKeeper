@@ -4,7 +4,9 @@
  * Implements the host-free `ToolHost` contract against pi's
  * `ExtensionContext`: the session id comes from the tool execution context's
  * `sessionManager`, history is read from the session manager's context
- * entries, and notifications are best-effort via `ctx.ui.notify`.
+ * entries, and notifications are best-effort via pi's in-session
+ * `appendEntry` channel (a `zoo-notice` custom entry — persistent, never
+ * part of the LLM context).
  *
  * pi sessions are single-session, so the host keeps a mutable reference to
  * the latest `ExtensionContext` supplied by the pi event handlers; tool
@@ -33,11 +35,32 @@ export interface PiToolHostContext {
     getSessionId(): string;
     buildContextEntries?(): unknown[];
   };
-  /** UI surface for best-effort notifications. */
+  /** UI surface (status-bar updates from the pi entry point). */
   ui?: {
-    notify(message: string, type?: "info" | "warning" | "error"): void;
     setStatus?(key: string, text: string | undefined): void;
   };
+}
+
+/**
+ * Duck-type of pi's `ExtensionAPI.appendEntry`.
+ *
+ * The entry persists as a `CustomEntry` (session-visible only when a
+ * renderer is registered for `customType`) and — unlike
+ * `CustomMessageEntry` — is ignored by `buildSessionContext`, so it never
+ * reaches the LLM context.  This is the pi-native equivalent of v1's
+ * `ignored` parts.
+ */
+export type PiAppendEntry = (customType: string, data?: unknown) => void;
+
+/**
+ * The data payload carried by a `zoo-notice` custom entry.
+ *
+ * `content` holds the notification text; the renderer reads it back to
+ * draw the card in the TUI.  Kept as a single string field so the payload
+ * stays minimal and the entry stays durable JSON.
+ */
+export interface PiNoticeEntryData {
+  content: string;
 }
 
 /**
@@ -75,9 +98,15 @@ function isPiAgentMessage(value: unknown): value is PiAgentMessage {
  * retry), while notification failures are swallowed and logged.
  *
  * @param contextHolder - Mutable reference to the latest pi context.
+ * @param appendEntry - Optional pi `appendEntry` binding (extension API)
+ *   that `notify` uses to post an in-session `zoo-notice` custom entry.
+ *   Absent (e.g. headless mode) drops notifications with a debug log.
  * @returns The pi tool host.
  */
-export function createPiToolHost(contextHolder: PiContextHolder): ToolHost {
+export function createPiToolHost(
+  contextHolder: PiContextHolder,
+  appendEntry?: PiAppendEntry,
+): ToolHost {
   return {
     /**
      * Resolve the session id from the pi tool execution context.
@@ -155,27 +184,30 @@ export function createPiToolHost(contextHolder: PiContextHolder): ToolHost {
     },
 
     /**
-     * Show a best-effort notification through pi's UI.
+     * Post a best-effort in-session notification via `appendEntry`.
      *
-     * If `ctx.ui.notify` is not present (e.g. headless mode), the notification
-     * is dropped with a debug log.  Failures are swallowed and logged as
-     * warnings — tools already performed their work.
+     * The notification is appended as a `zoo-notice` custom entry:
+     * persistent in the session, rendered in the TUI by the registered
+     * renderer, and never entering the LLM context.  When no `appendEntry`
+     * is supplied (e.g. headless mode), the notification is dropped with a
+     * debug log.  Failures are swallowed and logged as warnings — tools
+     * already performed their work.
      *
      * @param _sessionId - The session identifier (logged but not used; pi
-     *   notifications target the active UI session).
+     *   appendEntry targets the active session).
      * @param text - The notification text.
      */
     async notify(_sessionId: string, text: string): Promise<void> {
-      const notify = contextHolder.current?.ui?.notify;
-      if (!notify) {
+      if (!appendEntry) {
         log("tool-host", "notify_skipped", _sessionId, undefined, "debug", {
-          reason: "ui.notify unavailable",
+          reason: "appendEntry unavailable",
         });
         return;
       }
 
       try {
-        notify(text, "info");
+        const data: PiNoticeEntryData = { content: text };
+        appendEntry("zoo-notice", data);
       } catch (err) {
         log("tool-host", "notify_failed", _sessionId, undefined, "warn", {
           error: String(err),

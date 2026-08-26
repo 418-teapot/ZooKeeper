@@ -14,16 +14,9 @@ import type { HookUnitDescriptor } from "../../core/slots.js";
 import {
   contextPruningTransformHandler,
   handleContextPruning,
-  handleDedupNotify,
-  resolveSessionAgent,
 } from "./hook.js";
 
-export {
-  contextPruningTransformHandler,
-  handleContextPruning,
-  handleDedupNotify,
-  resolveSessionAgent,
-};
+export { contextPruningTransformHandler, handleContextPruning };
 
 /**
  * Context-pruning hook unit descriptor.
@@ -31,11 +24,12 @@ export {
  * Contributes the messages-transform pruning handler when `deps.adapter`
  * is wired.  The unit is otherwise enabled unconditionally: the whole
  * pipeline runs on every host and session kind (anchor protection covers
- * the first-user message via `anchorTokens`; session introspection is
- * optional — the dedup-release notification suppresses itself when the
- * agent cannot be resolved).  `hasCompressTool` is derived from the active
- * set's tool enablement so the nudge / manual-compress phases only
- * advertise windows the registered `compress` tool would accept.
+ * the first-user message via `anchorTokens`; the release notification
+ * routes through `deps.toolHost` and is skipped when the host wires no
+ * tool host or the session agent cannot be resolved).  `hasCompressTool`
+ * is derived from the active set's tool enablement so the nudge /
+ * manual-compress phases only advertise windows the registered `compress`
+ * tool would accept.
  *
  * Fail-closed: when `deps.adapter` is undefined the unit contributes no
  * transform handler, consistent with the null-profile philosophy.
@@ -66,7 +60,7 @@ export const unit: HookUnitDescriptor = {
             handleContextPruning(
               output,
               deps.contextConfig,
-              deps.client,
+              deps.toolHost,
               activeSet.tools.has("compress"),
               adapter,
             );

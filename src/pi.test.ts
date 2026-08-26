@@ -16,7 +16,6 @@ import fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
-import type { ToolHost } from "./core/client/tool-host.js";
 import {
   DIRECT_WORK_NUDGE,
   JSON_ERROR_REMINDER_MARKER,
@@ -30,8 +29,8 @@ import {
 import {
   _resetPendingSwitchOpsForTesting,
   buildPiContributions,
-  buildPiDcpEntryRenderer,
   buildPiHandlers,
+  buildPiNoticeEntryRenderer,
   zookeeperPi,
 } from "./pi.js";
 import { validateCompressArgs } from "./tools/compress.js";
@@ -265,41 +264,6 @@ describe("buildPiContributions — profile-driven selection", () => {
     assert.deepEqual(Object.keys(composed.commands).sort(), ["dcp", "go"]);
   });
 
-  it("commandToolHost re-composes the commands slot with the command host", async () => {
-    // The entry point supplies a command-specific tool host so slash
-    // command chat notifications route through pi's `appendEntry`
-    // channel.  A second composition pass with that host must replace
-    // the commands slot while leaving the other slots untouched.
-    const baseToolHost: ToolHost = {
-      resolveSessionId: () => "sess",
-      fetchHistory: async () => [],
-      notify: async () => {},
-    };
-    let commandHostNotified = "";
-    const commandToolHost: ToolHost = {
-      ...baseToolHost,
-      notify: async (_sessionID, text) => {
-        commandHostNotified = text;
-      },
-    };
-    const { composed } = buildPiContributions(POLY_ZOO, {
-      toolHost: baseToolHost,
-      commandToolHost,
-    });
-
-    // Commands re-composed with the command host: /dcp help routes
-    // through the command host's notify.
-    await composed.commands.dcp.handle({
-      command: "dcp",
-      sessionID: "sess",
-      arguments: "foobar",
-    });
-    assert.ok(commandHostNotified.includes("用法"), "command host notify used");
-
-    // The non-command slots still carry the base host (tool toast path).
-    assert.deepEqual(Object.keys(composed.commands).sort(), ["dcp", "go"]);
-  });
-
   it("agents=[dolphin] → only dolphin, no skills", () => {
     const zoo = {
       ...POLY_ZOO,
@@ -373,38 +337,6 @@ describe("buildPiContributions — profile-driven selection", () => {
     assert.deepEqual(
       unknownUnits.map((u) => u.name),
       ["ghost-hook", "ghost-tool"],
-    );
-  });
-
-  it("command-host re-composition does not duplicate unknown_unit warnings", () => {
-    // The second composition pass (command tool host) only re-composes
-    // the commands slot.  An unknown non-command name must be warned
-    // exactly once by the first pass — the re-composition must not fire
-    // the same unknown_unit warnings again.
-    const host: ToolHost = {
-      resolveSessionId: () => "sess",
-      fetchHistory: async () => [],
-      notify: async () => {},
-    };
-    const zoo = {
-      mode: {
-        poly: {
-          ...POLY_PROFILE,
-          hooks: [...POLY_PROFILE.hooks, "ghost-hook"],
-        },
-      },
-    };
-    buildPiContributions(zoo, {
-      toolHost: host,
-      commandToolHost: host,
-    });
-    const unknownUnits = _getBufferForTesting().filter(
-      (entry) => entry.event === "unknown_unit",
-    );
-    assert.deepEqual(
-      unknownUnits.map((u) => u.name),
-      ["ghost-hook"],
-      "unknown name must be warned exactly once",
     );
   });
 
@@ -1005,7 +937,7 @@ describe("buildPiHandlers — registerCommand wiring", () => {
     assert.deepEqual(api.commands, []);
   });
 
-  it("/dcp context appends a zoo-dcp custom entry (persistent, no LLM context)", async () => {
+  it("/dcp context appends a zoo-notice custom entry (persistent, no LLM context)", async () => {
     const api = mockApi();
     buildPiHandlers(POLY_ZOO, api as any);
     const dcp = api.commands.find((c) => c.name === "dcp");
@@ -1028,8 +960,10 @@ describe("buildPiHandlers — registerCommand wiring", () => {
       api.appendedEntries.length >= 1,
       "dcp must append a custom entry",
     );
-    const entry = api.appendedEntries.find((e) => e.customType === "zoo-dcp");
-    assert.ok(entry, "dcp report must go through the zoo-dcp custom entry");
+    const entry = api.appendedEntries.find(
+      (e) => e.customType === "zoo-notice",
+    );
+    assert.ok(entry, "dcp report must go through the zoo-notice custom entry");
     assert.equal(typeof (entry.data as any)?.content, "string");
     assert.ok(String((entry.data as any)?.content).includes("上下文报告"));
   });
@@ -1047,36 +981,40 @@ describe("buildPiHandlers — registerCommand wiring", () => {
       { sessionManager: { getSessionId: () => "sess-dcp" } },
     );
 
-    const entry = api.appendedEntries.find((e) => e.customType === "zoo-dcp");
+    const entry = api.appendedEntries.find(
+      (e) => e.customType === "zoo-notice",
+    );
     assert.ok(entry, "dcp error must be surfaced via appendEntry");
     assert.ok(
       String((entry.data as any)?.content).includes("用法：/dcp sweep"),
     );
   });
 
-  it("commands use the toast notify for tools but appendEntry for /dcp reports", async () => {
+  it("registers tools over the unified host; registration itself appends nothing", async () => {
+    // The single pi tool host serves both tools and commands with the
+    // same appendEntry-backed notify (`zoo-notice`) — one unified
+    // in-session channel.  Registering a tool is side-effect free —
+    // entries only appear once the tool actually executes and notifies.
     const api = mockApi();
     buildPiHandlers(POLY_ZOO, api as any);
 
-    // The compress tool's runtime notification stays on the toast path —
-    // the pi tool host's ui.notify is untouched by the command wiring.
     const compress = api.tools.find((t: any) => t.name === "compress");
     assert.ok(compress, "compress tool must be registered");
     assert.equal(api.appendedEntries.length, 0, "no custom entry appended yet");
   });
 
-  it("registers a zoo-dcp entry renderer with pi", () => {
+  it("registers a zoo-notice entry renderer with pi", () => {
     const api = mockApi();
     buildPiHandlers(POLY_ZOO, api as any);
-    const renderer = api.renderers.find((r) => r.customType === "zoo-dcp");
-    assert.ok(renderer, "zoo-dcp entry renderer must be registered");
+    const renderer = api.renderers.find((r) => r.customType === "zoo-notice");
+    assert.ok(renderer, "zoo-notice entry renderer must be registered");
     assert.equal(typeof renderer.renderer, "function");
   });
 
-  it("non-null profile without dcp enabled registers no renderer", () => {
-    // The renderer gate must follow the composed commands slot, not the
-    // profile's nullness: a profile that enables no /dcp command needs no
-    // zoo-dcp entry renderer even though the profile itself is non-null.
+  it("registers the zoo-notice renderer even without dcp enabled", () => {
+    // The renderer is unconditional: every in-session notification is a
+    // zoo-notice entry, so a profile that enables no /dcp command still
+    // needs the renderer.
     const api = mockApi();
     buildPiHandlers(
       {
@@ -1086,16 +1024,18 @@ describe("buildPiHandlers — registerCommand wiring", () => {
       },
       api as any,
     );
-    assert.deepEqual(
-      api.renderers.filter((r) => r.customType === "zoo-dcp"),
-      [],
-      "no zoo-dcp renderer when /dcp is not registered",
+    assert.ok(
+      api.renderers.some(
+        (r) =>
+          r.customType === "zoo-notice" && typeof r.renderer === "function",
+      ),
+      "zoo-notice renderer must be registered even without /dcp",
     );
   });
 
   it("non-null profile with dcp enabled still registers the renderer", () => {
     // A profile that registers dcp (but no other command) must register
-    // the zoo-dcp entry renderer so reports draw a card in the TUI.
+    // the zoo-notice entry renderer so reports draw a card in the TUI.
     const api = mockApi();
     buildPiHandlers(
       {
@@ -1105,15 +1045,24 @@ describe("buildPiHandlers — registerCommand wiring", () => {
       },
       api as any,
     );
-    const renderer = api.renderers.find((r) => r.customType === "zoo-dcp");
-    assert.ok(renderer, "zoo-dcp entry renderer must be registered");
+    const renderer = api.renderers.find((r) => r.customType === "zoo-notice");
+    assert.ok(renderer, "zoo-notice entry renderer must be registered");
     assert.equal(typeof renderer.renderer, "function");
   });
 
-  it("null profile registers no renderers (fail-closed)", () => {
+  it("null profile still registers the zoo-notice renderer when the API supports it", () => {
+    // The renderer is a pure UI helper for any zoo-notice entry: it is
+    // registered regardless of the profile (a null profile merely yields
+    // no notifications to render).
     const api = mockApi();
     buildPiHandlers({}, api as any);
-    assert.deepEqual(api.renderers, []);
+    assert.ok(
+      api.renderers.some(
+        (r) =>
+          r.customType === "zoo-notice" && typeof r.renderer === "function",
+      ),
+      "zoo-notice renderer must be registered for a null profile",
+    );
   });
 });
 
@@ -1537,12 +1486,12 @@ describe("buildPiHandlers — primary-switch status colorization", () => {
 });
 
 // ---------------------------------------------------------------------------
-// zoo-dcp entry renderer
+// zoo-notice entry renderer
 // ---------------------------------------------------------------------------
 
-describe("buildPiDcpEntryRenderer", () => {
-  it("renders the report text from the entry data content", () => {
-    const renderer = buildPiDcpEntryRenderer();
+describe("buildPiNoticeEntryRenderer", () => {
+  it("renders the notification text from the entry data content", () => {
+    const renderer = buildPiNoticeEntryRenderer();
     const theme = { fg: (_color: string, text: string) => text };
     const component = renderer(
       { data: { content: "上下文报告\ntokens: 100" } },
@@ -1551,14 +1500,14 @@ describe("buildPiDcpEntryRenderer", () => {
     ) as { render(): string[] } | undefined;
     assert.ok(component, "a component must be returned");
     assert.deepEqual(component.render(), [
-      "[zoo-dcp]",
+      "[zoo]",
       "上下文报告",
       "tokens: 100",
     ]);
   });
 
   it("uses the themed label when the theme exposes fg", () => {
-    const renderer = buildPiDcpEntryRenderer();
+    const renderer = buildPiNoticeEntryRenderer();
     const theme = {
       fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
     };
@@ -1569,13 +1518,13 @@ describe("buildPiDcpEntryRenderer", () => {
     ) as { render(): string[] } | undefined;
     assert.ok(component);
     assert.deepEqual(component.render(), [
-      "<customMessageLabel>[zoo-dcp]</customMessageLabel>",
+      "<customMessageLabel>[zoo]</customMessageLabel>",
       "report",
     ]);
   });
 
   it("returns undefined for an empty or missing payload", () => {
-    const renderer = buildPiDcpEntryRenderer();
+    const renderer = buildPiNoticeEntryRenderer();
     assert.equal(renderer({ data: { content: "" } }, {}, undefined), undefined);
     assert.equal(renderer({ data: undefined }, {}, undefined), undefined);
     assert.equal(
@@ -1811,13 +1760,14 @@ describe("zookeeperPi — thin entry wiring", () => {
         promptWordLimit: 500,
       });
 
-      // The zoo-dcp entry renderer is registered against the real
-      // config.toml profile so dcp reports render in the TUI.
+      // The zoo-notice entry renderer is registered against the real
+      // config.toml profile so in-session notifications render in the TUI.
       assert.ok(
         api.renderers.some(
-          (r) => r.customType === "zoo-dcp" && typeof r.renderer === "function",
+          (r) =>
+            r.customType === "zoo-notice" && typeof r.renderer === "function",
         ),
-        "zoo-dcp renderer must be registered",
+        "zoo-notice renderer must be registered",
       );
 
       const prompt = (await api.handlers.before_agent_start({

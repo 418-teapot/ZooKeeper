@@ -99,7 +99,13 @@ async function runAction<M>(
           notifications,
         );
       case "dcp": {
-        await host.handleDcp(sessionID, action.args, config, messages, notifications);
+        await host.handleDcp(
+          sessionID,
+          action.args,
+          config,
+          messages,
+          notifications,
+        );
         return { result: null, error: null };
       }
       case "add-mark": {

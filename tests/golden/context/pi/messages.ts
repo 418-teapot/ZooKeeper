@@ -191,7 +191,9 @@ export function toolResultMsg(
  * @param messages - The messages to clone.
  * @returns A deep clone.
  */
-export function cloneMessages(messages: FixtureAgentMessage[]): FixtureAgentMessage[] {
+export function cloneMessages(
+  messages: FixtureAgentMessage[],
+): FixtureAgentMessage[] {
   return JSON.parse(JSON.stringify(messages)) as FixtureAgentMessage[];
 }
 

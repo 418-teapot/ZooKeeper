@@ -29,7 +29,6 @@
  */
 
 import type { PiAgentMessage } from "../../../../../src/adapters/pi/types.js";
-import type { Scenario } from "../types.js";
 import {
   assistantMsg,
   textPart,
@@ -37,6 +36,7 @@ import {
   toolResultMsg,
   userMsg,
 } from "../messages.js";
+import type { Scenario } from "../types.js";
 
 /** Output long enough to clear the zero-benefit gate (~125 tokens). */
 const LONG = "x".repeat(500);
@@ -169,38 +169,58 @@ export const G_MS_01: Scenario = {
   rounds: [
     {
       label: "gate-closed-below-threshold",
-      messages: dupView("golden-pi-g-ms-01", [
-        { id: "c1", args: { cmd: "echo hello" } },
-        { id: "c2", args: { cmd: "echo hello" } },
-      ], 99999),
+      messages: dupView(
+        "golden-pi-g-ms-01",
+        [
+          { id: "c1", args: { cmd: "echo hello" } },
+          { id: "c2", args: { cmd: "echo hello" } },
+        ],
+        99999,
+      ),
     },
     {
       label: "gate-open-marks-created-not-applied",
-      messages: dupView("golden-pi-g-ms-01", [
-        { id: "c1", args: { cmd: "echo hello" } },
-        { id: "c2", args: { cmd: "echo hello" } },
-      ], 100000),
+      messages: dupView(
+        "golden-pi-g-ms-01",
+        [
+          { id: "c1", args: { cmd: "echo hello" } },
+          { id: "c2", args: { cmd: "echo hello" } },
+        ],
+        100000,
+      ),
     },
     {
       label: "applies-next-turn",
-      messages: dupView("golden-pi-g-ms-01", [
-        { id: "c1", args: { cmd: "echo hello" } },
-        { id: "c2", args: { cmd: "echo hello" } },
-      ], 100000),
+      messages: dupView(
+        "golden-pi-g-ms-01",
+        [
+          { id: "c1", args: { cmd: "echo hello" } },
+          { id: "c2", args: { cmd: "echo hello" } },
+        ],
+        100000,
+      ),
     },
     {
       label: "zero-benefit-short-output",
-      messages: dupView("golden-pi-g-ms-01", [
-        { id: "c3", args: { cmd: "echo hi" } },
-        { id: "c4", args: { cmd: "echo hi" } },
-      ], 100000),
+      messages: dupView(
+        "golden-pi-g-ms-01",
+        [
+          { id: "c3", args: { cmd: "echo hi" } },
+          { id: "c4", args: { cmd: "echo hi" } },
+        ],
+        100000,
+      ),
     },
     {
       label: "idempotent-rerun-no-new-marks",
-      messages: dupView("golden-pi-g-ms-01", [
-        { id: "c1", args: { cmd: "echo hello" } },
-        { id: "c2", args: { cmd: "echo hello" } },
-      ], 100000),
+      messages: dupView(
+        "golden-pi-g-ms-01",
+        [
+          { id: "c1", args: { cmd: "echo hello" } },
+          { id: "c2", args: { cmd: "echo hello" } },
+        ],
+        100000,
+      ),
     },
     {
       label: "protected-window-skips",
@@ -360,24 +380,36 @@ export const G_MS_04: Scenario = {
   rounds: [
     {
       label: "accumulate-below-threshold",
-      messages: dupView("golden-pi-g-ms-04", [
-        { id: "c1", args: { cmd: "echo hello" } },
-        { id: "c2", args: { cmd: "echo hello" } },
-      ], 100000),
+      messages: dupView(
+        "golden-pi-g-ms-04",
+        [
+          { id: "c1", args: { cmd: "echo hello" } },
+          { id: "c2", args: { cmd: "echo hello" } },
+        ],
+        100000,
+      ),
     },
     {
       label: "accumulate-more",
-      messages: dupView("golden-pi-g-ms-04", [
-        { id: "c3", args: { cmd: "echo hello" } },
-        { id: "c4", args: { cmd: "echo hello" } },
-      ], 100000),
+      messages: dupView(
+        "golden-pi-g-ms-04",
+        [
+          { id: "c3", args: { cmd: "echo hello" } },
+          { id: "c4", args: { cmd: "echo hello" } },
+        ],
+        100000,
+      ),
     },
     {
       label: "seed-mark-toward-threshold",
-      messages: dupView("golden-pi-g-ms-04", [
-        { id: "c5", args: { cmd: "echo hello" } },
-        { id: "c6", args: { cmd: "echo hello" } },
-      ], 100000),
+      messages: dupView(
+        "golden-pi-g-ms-04",
+        [
+          { id: "c5", args: { cmd: "echo hello" } },
+          { id: "c6", args: { cmd: "echo hello" } },
+        ],
+        100000,
+      ),
       action: {
         kind: "add-mark",
         callID: "c5",
@@ -388,10 +420,14 @@ export const G_MS_04: Scenario = {
     },
     {
       label: "reach-threshold-release",
-      messages: dupView("golden-pi-g-ms-04", [
-        { id: "c7", args: { cmd: "echo hello" } },
-        { id: "c8", args: { cmd: "echo hello" } },
-      ], 100000),
+      messages: dupView(
+        "golden-pi-g-ms-04",
+        [
+          { id: "c7", args: { cmd: "echo hello" } },
+          { id: "c8", args: { cmd: "echo hello" } },
+        ],
+        100000,
+      ),
       action: {
         kind: "add-mark",
         callID: "c7",
@@ -402,10 +438,14 @@ export const G_MS_04: Scenario = {
     },
     {
       label: "seed-pending-below-threshold",
-      messages: dupView("golden-pi-g-ms-04", [
-        { id: "c9", args: { cmd: "echo hello" } },
-        { id: "c10", args: { cmd: "echo hello" } },
-      ], 100000),
+      messages: dupView(
+        "golden-pi-g-ms-04",
+        [
+          { id: "c9", args: { cmd: "echo hello" } },
+          { id: "c10", args: { cmd: "echo hello" } },
+        ],
+        100000,
+      ),
       action: {
         kind: "add-mark",
         callID: "c9",
@@ -427,10 +467,14 @@ export const G_MS_04: Scenario = {
     },
     {
       label: "no-pending-no-notification",
-      messages: dupView("golden-pi-g-ms-04", [
-        { id: "c12", args: { cmd: "echo hello" } },
-        { id: "c13", args: { cmd: "echo hello" } },
-      ], 100000),
+      messages: dupView(
+        "golden-pi-g-ms-04",
+        [
+          { id: "c12", args: { cmd: "echo hello" } },
+          { id: "c13", args: { cmd: "echo hello" } },
+        ],
+        100000,
+      ),
     },
   ],
 };

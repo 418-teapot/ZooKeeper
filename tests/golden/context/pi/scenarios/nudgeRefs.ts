@@ -18,7 +18,6 @@
  */
 
 import type { PiAgentMessage } from "../../../../../src/adapters/pi/types.js";
-import type { Scenario } from "../types.js";
 import {
   assistantMsg,
   textPart,
@@ -26,6 +25,7 @@ import {
   toolResultMsg,
   userMsg,
 } from "../messages.js";
+import type { Scenario } from "../types.js";
 
 const SID = "golden-pi-g-nudge-01";
 
@@ -35,7 +35,10 @@ const SID = "golden-pi-g-nudge-01";
  * Only a1 carries tokens (output > 0) so the last completed assistant
  * is a1 and `promptTokens` equals `inputTokens`.
  */
-function nudgeMessages(sessionID: string, inputTokens: number): PiAgentMessage[] {
+function nudgeMessages(
+  sessionID: string,
+  inputTokens: number,
+): PiAgentMessage[] {
   return [
     userMsg("hello", { id: "u1" }),
     assistantMsg([toolCallPart("call-1", "bash", { cmd: "x" })], {

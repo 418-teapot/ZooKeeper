@@ -225,13 +225,14 @@ export function buildToolHooks(
   contextConfig: ContextPruningConfig,
   profileTools: string[],
 ): Record<string, ToolContribution> | undefined {
+  const sessionAgentMap = new Map<string, string>();
   const deps: Deps = {
     limits: {},
     contextConfig,
     client,
     directory: "",
-    sessionAgentMap: new Map(),
-    toolHost: createV1ToolHost(client),
+    sessionAgentMap,
+    toolHost: createV1ToolHost(client, sessionAgentMap),
   };
   const activeSet: ActiveSet = {
     agents: new Set(),
@@ -308,7 +309,8 @@ export function assembleOpenCodeHooks(
 ): Record<string, any> {
   const fullDeps: Deps = {
     ...deps,
-    toolHost: deps.toolHost ?? createV1ToolHost(deps.client),
+    toolHost:
+      deps.toolHost ?? createV1ToolHost(deps.client, deps.sessionAgentMap),
   };
   return {
     ...(Object.keys(composed.tools).length > 0 ? { tool: composed.tools } : {}),

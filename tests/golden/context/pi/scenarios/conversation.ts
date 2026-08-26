@@ -20,7 +20,13 @@
 
 import type { PiAgentMessage } from "../../../../../src/adapters/pi/types.js";
 import type { CompressRangeInput } from "../../../../../src/core/context/compress.js";
-import { assistantMsg, textPart, toolCallPart, toolResultMsg, userMsg } from "../messages.js";
+import {
+  assistantMsg,
+  textPart,
+  toolCallPart,
+  toolResultMsg,
+  userMsg,
+} from "../messages.js";
 
 /** Long tool output (~2000 heuristic tokens) so protection gates pass. */
 export const LONG_OUTPUT = "x".repeat(8000);

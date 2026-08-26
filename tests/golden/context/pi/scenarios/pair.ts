@@ -18,7 +18,6 @@
  */
 
 import type { PiAgentMessage } from "../../../../../src/adapters/pi/types.js";
-import type { Scenario } from "../types.js";
 import {
   assistantMsg,
   textPart,
@@ -26,6 +25,7 @@ import {
   toolResultMsg,
   userMsg,
 } from "../messages.js";
+import type { Scenario } from "../types.js";
 
 const SID = "golden-pi-pair-01";
 

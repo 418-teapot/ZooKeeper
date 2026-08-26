@@ -40,10 +40,11 @@ export function getContextStateManager(): SessionStateManager {
 /**
  * Maps session IDs to agent names reported by message.updated events.
  *
- * Populated by the entry point's event handler; read by the pruning
- * hook's dedup notification to address the session chat.  Module-level
- * shared map (singleton lifetime) — the entry point holds the only
- * writer, hook units consult it through `Deps.sessionAgentMap`.
+ * Populated by the entry point's event handler; read by host tool hosts
+ * when posting chat notifications (the OpenCode v1 tool host resolves
+ * the session agent via this map before sending).  Module-level shared
+ * map (singleton lifetime) — the entry point holds the only writer,
+ * hook units consult it through `Deps.sessionAgentMap`.
  */
 export const sessionAgentMap = new Map<string, string>();
 

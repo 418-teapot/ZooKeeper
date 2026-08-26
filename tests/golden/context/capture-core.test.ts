@@ -42,8 +42,7 @@ describe("captureToolOutput — pruned tool-output classification", () => {
     // Plain `ls` output — not a placeholder.  The `[mN] ` prefix
     // carried over from the render layer must not flip the pruned
     // flag.  The preview is the first 80 chars verbatim.
-    const plain =
-      "[m2] total 12\ndrwxr-xr-x 2 root root 4096 Aug 17 .";
+    const plain = "[m2] total 12\ndrwxr-xr-x 2 root root 4096 Aug 17 .";
     const capture = captureToolOutput(plain);
     expect(capture.pruned).toBe(false);
     expect(capture.output).toBe(plain.slice(0, 80));

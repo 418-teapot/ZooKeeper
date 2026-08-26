@@ -363,7 +363,9 @@
       },
       "toolResult": null,
       "toolError": null,
-      "notifications": []
+      "notifications": [
+        "上下文清理：已折叠 1 个工具调用，约回收 2.4K tokens"
+      ]
     },
     {
       "label": "no-pending-no-notification",

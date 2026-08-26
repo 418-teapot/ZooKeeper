@@ -17,11 +17,11 @@
  *  - `context` — the native pi `AgentMessage` array is handed to the
  *    transform contributions; the pruned replacement is returned to pi.
  *  - `commands` — the composed slash-command contributions become pi
- *    `registerCommand` registrations (`buildPiCommandRegistrationPlan`),
- *    and `createPiCommandToolHost` wraps the base pi tool host so a
- *    command's chat notification goes through pi's in-session
- *    `appendEntry` channel instead of the tool toast.  Custom entries
- *    never participate in the LLM context.
+ *    `registerCommand` registrations (`buildPiCommandRegistrationPlan`).
+ *    Command chat notifications flow through the single base pi tool
+ *    host's in-session `appendEntry` channel (`zoo-notice` custom
+ *    entries) — persistent, rendered by the entry renderer, and never
+ *    part of the LLM context.
  *
  * pi event and message shapes (pi 0.84.x) are declared as local
  * duck-typed interfaces — the pi package is never imported.
@@ -43,7 +43,6 @@ import type {
   PiToolResultEvent,
   PiToolResultResult,
 } from "./adapters/pi/types.js";
-import type { ToolHost } from "./core/client/tool-host.js";
 import { setModelLimit } from "./core/context/model-limits.js";
 import { stripLineStartRefs } from "./core/context/reply-strip.js";
 import type { ComposedResult } from "./core/slots.js";
@@ -408,70 +407,4 @@ export function buildPiCommandRegistrationPlan(
       });
     },
   }));
-}
-
-/**
- * Append a custom entry into the pi session.
- *
- * Structurally compatible with pi's `ExtensionAPI.appendEntry`: the
- * entry persists as a `CustomEntry` (session-visible only when a
- * renderer is registered for `customType`) and — unlike
- * `CustomMessageEntry` — is ignored by `buildSessionContext`, so it
- * never reaches the LLM context.  This is the pi-native equivalent of
- * v1's `ignored` parts.
- */
-export type PiAppendEntry = (customType: string, data?: unknown) => void;
-
-/**
- * The data payload carried by a `zoo-dcp` custom entry.
- *
- * `content` holds the report text; the renderer reads it back to draw
- * the chat-transcript card in the TUI.  Kept as a single string field
- * so the payload stays minimal and the entry stays durable JSON.
- */
-export interface PiDcpEntryData {
-  content: string;
-}
-
-/**
- * Wrap the base pi tool host so a command's chat notification goes
- * through pi's in-session `appendEntry` channel.
- *
- * The base host (toast notify) stays untouched and keeps serving the
- * tool units' runtime prompts.  The command host reuses the base
- * `resolveSessionId` / `fetchHistory` and replaces only `notify` with
- * an `appendEntry`-backed implementation — the pi equivalent of v1's
- * ignored `noReply` chat message: persistent in the session, rendered
- * in the TUI by the `zoo-dcp` entry renderer, and never entering the
- * LLM context.  When no `appendEntry` is supplied (e.g. headless or
- * test-only host) the notification is dropped with a debug log,
- * matching the base host's best-effort style.
- *
- * @param toolHost - The base pi tool host (history / session resolution).
- * @param appendEntry - Optional pi `appendEntry` binding (extension API).
- * @returns A tool host whose `notify` appends an in-session custom entry.
- */
-export function createPiCommandToolHost(
-  toolHost: ToolHost,
-  appendEntry?: PiAppendEntry,
-): ToolHost {
-  return {
-    ...toolHost,
-    async notify(_sessionId: string, text: string): Promise<void> {
-      if (!appendEntry) {
-        log("tool-host", "notify_skipped", _sessionId, undefined, "debug", {
-          reason: "appendEntry unavailable",
-        });
-        return;
-      }
-      try {
-        const data: PiDcpEntryData = { content: text };
-        appendEntry("zoo-dcp", data);
-      } catch (err) {
-        log("tool-host", "notify_failed", _sessionId, undefined, "warn", {
-          error: String(err),
-        });
-      }
-    },
-  };
 }

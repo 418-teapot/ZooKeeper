@@ -53,6 +53,7 @@
  * @module
  */
 
+import type { ToolHost } from "../../core/client/tool-host.js";
 import type { ContextPruningConfig } from "../../core/config-types.js";
 import { computeProtectedStartOrdinal } from "../../core/context/compress.js";
 import { formatTokens } from "../../core/context/context-report.js";
@@ -79,7 +80,6 @@ import {
   consumePendingViewChange,
   getContextStateManager,
   getRuntimeFlaggedState,
-  sessionAgentMap,
 } from "../../core/context/runtime.js";
 import { validateBlock } from "../../core/context/spanhash.js";
 import {
@@ -569,162 +569,22 @@ export function contextPruningTransformHandler(
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve the current agent for a session.
- *
- * Resolution order:
- *   (a) `agentMap` (in-memory map populated solely by the message.updated
- *       handler — single source of truth)
- *   (b) `client.session.get()` API call — per-call fallback WITHOUT
- *       write-back to the map, so a mid-session agent change is reflected
- *       as soon as either the next message.updated or the next resolution
- *       happens.
- *   (c) `undefined` — current behavior preserved, debug log entry
- *
- * @param sessionID - The session identifier.
- * @param client - The host client (session.get availability checked).
- * @param agentMap - The in-memory session → agent map.
- * @returns The resolved agent name, or `undefined` when unknown.
- */
-export async function resolveSessionAgent(
-  sessionID: string,
-  client: any,
-  agentMap: Map<string, string>,
-): Promise<string | undefined> {
-  // (a) Check in-memory map first (fast, no I/O).
-  const mapped = agentMap.get(sessionID);
-  if (mapped) return mapped;
-
-  // (b) Fallback to session API — read the agent from the session object.
-  if (client?.session?.get) {
-    try {
-      const sessionInfo = await client.session.get({
-        path: { id: sessionID },
-      });
-      if (sessionInfo?.agent) {
-        return sessionInfo.agent;
-      }
-    } catch {
-      // Session not found — fall through to (c).
-    }
-  }
-
-  // (c) Unknown — log debug entry and return undefined.
-  log(
-    "context-pruning",
-    "dedup_notify_no_agent",
-    sessionID,
-    undefined,
-    "debug",
-    {},
-  );
-  return undefined;
-}
-
-/**
- * Fire-and-forget notification for dedup batch release.
- *
- * Sends a silent (noReply + ignored) message to the session chat when the
- * agent is known; suppresses the notification entirely when the agent
- * cannot be resolved, logging the drop at warn level.
- *
- * @param sessionID - The session identifier.
- * @param client - The host client (session.prompt availability checked).
- * @param agentMap - The in-memory session → agent map.
- * @param text - The notification text.
- */
-export function handleDedupNotify(
-  sessionID: string,
-  client: any,
-  agentMap: Map<string, string>,
-  text: string,
-): void {
-  const body: Record<string, unknown> = {
-    noReply: true,
-    parts: [{ type: "text", text, ignored: true }],
-  };
-
-  const send = () => {
-    try {
-      client?.session
-        ?.prompt({
-          path: { id: sessionID },
-          body,
-        })
-        .catch((err: Error) => {
-          log(
-            "context-pruning",
-            "dedup_notify_failed",
-            sessionID,
-            undefined,
-            "warn",
-            { error: String(err) },
-          );
-        });
-    } catch (err) {
-      log(
-        "context-pruning",
-        "dedup_notify_failed",
-        sessionID,
-        undefined,
-        "warn",
-        { error: String(err) },
-      );
-    }
-  };
-
-  // (a) Agent known from in-memory map — send immediately.
-  const agent = agentMap.get(sessionID);
-  if (agent) {
-    body.agent = agent;
-    send();
-    return;
-  }
-
-  // (b)/(c) Agent not in map — try async fallback.
-  resolveSessionAgent(sessionID, client, agentMap)
-    .then((resolvedAgent) => {
-      if (resolvedAgent) {
-        body.agent = resolvedAgent;
-        send();
-        return;
-      }
-      // (c) Agent unresolved — suppress notification.
-      log(
-        "context-pruning",
-        "dedup_notify_suppressed",
-        sessionID,
-        undefined,
-        "warn",
-        { reason: "agent unresolved" },
-      );
-    })
-    .catch((err) => {
-      log(
-        "context-pruning",
-        "dedup_notify_suppressed",
-        sessionID,
-        undefined,
-        "warn",
-        { reason: "agent unresolved", error: String(err) },
-      );
-    });
-}
-
-/**
  * Run context pruning on the messages transform output.
  *
  * Wraps `contextPruningTransformHandler` in try/catch so a pruning
- * failure never disrupts the LLM turn, and wires the dedup-release
- * notification to the shared `sessionAgentMap` (held by
- * `core/context/runtime.ts`).  The transform output arrives as the
- * core `TransformOutput` shape; the host adapter owns the concrete
- * `messages` type and may replace the array.  The returned conversation
- * is written back into `output.messages` so downstream transform
- * contributions observe the pruned view.
+ * failure never disrupts the LLM turn, and wires the release
+ * notification through the host tool host's `notify` port, which
+ * resolves the session agent before posting.  The transform output
+ * arrives as the core `TransformOutput` shape; the host adapter owns
+ * the concrete `messages` type and may replace the array.  The returned
+ * conversation is written back into `output.messages` so downstream
+ * transform contributions observe the pruned view.
  *
  * @param output - The messages transform output.
  * @param config - Unified context-pruning configuration.
- * @param client - The host client.
+ * @param toolHost - Host tool services used to post the release
+ *   notification.  Undefined when the host wires no tool host — the
+ *   notification is skipped.
  * @param hasCompressTool - Whether the `compress` tool is registered.
  * @param adapter - The host adapter for projecting and mutating the
  *   conversation.
@@ -732,7 +592,7 @@ export function handleDedupNotify(
 export function handleContextPruning(
   output: TransformOutput,
   config: ContextPruningConfig,
-  client: any,
+  toolHost: ToolHost | undefined,
   hasCompressTool: boolean | undefined,
   adapter: HostAdapter<unknown>,
 ): void {
@@ -742,10 +602,13 @@ export function handleContextPruning(
       adapter,
       output.messages,
       config,
-      // Fire-and-forget: notify the session chat with dedup release info.
-      // Must NOT await — the transform hook must never block.
-      (text: string) =>
-        handleDedupNotify(sessionID, client, sessionAgentMap, text),
+      // Fire-and-forget: post the release notice through the host tool
+      // host.  Must NOT await — the transform hook must never block.
+      toolHost
+        ? (text: string) => {
+            void toolHost.notify(sessionID, text);
+          }
+        : undefined,
       hasCompressTool,
     );
   } catch (err) {

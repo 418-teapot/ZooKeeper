@@ -3,8 +3,9 @@
  *
  * Covers: session id resolution from the tool execution context, history
  * fetching via `sessionManager.buildContextEntries` with custom-entry
- * filtering and role filtering, and best-effort notification via
- * `ctx.ui.notify` (including missing UI and thrown notifications).
+ * filtering and role filtering, and best-effort notification via pi's
+ * `appendEntry` channel (`zoo-notice` custom entries, including missing
+ * appendEntry and thrown appendEntry).
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
@@ -96,40 +97,27 @@ describe("createPiToolHost", () => {
     );
   });
 
-  it("notifies via ctx.ui.notify when available", async () => {
-    const notifications: Array<{ message: string; type?: string }> = [];
-    const holder = makeHolder({
-      sessionManager: { getSessionId: () => "sess-1" },
-      ui: {
-        notify(message, type) {
-          notifications.push({ message, type });
-        },
-      },
+  it("notifies by appending a zoo-notice custom entry when appendEntry is available", async () => {
+    const appended: Array<{ customType: string; data?: unknown }> = [];
+    const host = createPiToolHost(makeHolder(), (customType, data) => {
+      appended.push({ customType, data });
     });
-    const host = createPiToolHost(holder);
     await host.notify("sess-1", "上下文压缩完成");
 
-    assert.deepEqual(notifications, [
-      { message: "上下文压缩完成", type: "info" },
+    assert.deepEqual(appended, [
+      { customType: "zoo-notice", data: { content: "上下文压缩完成" } },
     ]);
   });
 
-  it("no-ops gracefully when ctx.ui.notify is absent", async () => {
-    const holder = makeHolder({ sessionManager: { getSessionId: () => "s" } });
-    const host = createPiToolHost(holder);
+  it("no-ops gracefully when appendEntry is absent", async () => {
+    const host = createPiToolHost(makeHolder());
     await assert.doesNotReject(async () => host.notify("s", "noop"));
   });
 
-  it("swallows notification failures and logs a warning", async () => {
-    const holder = makeHolder({
-      sessionManager: { getSessionId: () => "s" },
-      ui: {
-        notify: () => {
-          throw new Error("ui closed");
-        },
-      },
+  it("swallows appendEntry failures and logs a warning", async () => {
+    const host = createPiToolHost(makeHolder(), () => {
+      throw new Error("session gone");
     });
-    const host = createPiToolHost(holder);
     await host.notify("s", "boom"); // must not throw
 
     const logs = _getBufferForTesting().filter(

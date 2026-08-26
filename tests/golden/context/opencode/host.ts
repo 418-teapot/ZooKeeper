@@ -10,35 +10,32 @@
  * @module
  */
 
-import { history } from "../../../../src/adapters/opencode/history.js";
 import { createV1Adapter } from "../../../../src/adapters/opencode/adapter.js";
-import type { ContextMessageEntry } from "../../../../src/adapters/opencode/types.js";
+import { history } from "../../../../src/adapters/opencode/history.js";
 import { createV1ToolHost } from "../../../../src/adapters/opencode/tool-host.js";
+import type { ContextMessageEntry } from "../../../../src/adapters/opencode/types.js";
 import { handleDcpCommand } from "../../../../src/commands/dcp/command.js";
 import type { SessionClient } from "../../../../src/core/client/session.js";
 import type { ContextPruningConfig } from "../../../../src/core/config-types.js";
 import { computeSpanHash } from "../../../../src/core/context/spanhash.js";
 import {
   type Block,
-  type SessionState,
   nextBlockId,
+  type SessionState,
 } from "../../../../src/core/context/state.js";
 import { contextPruningTransformHandler } from "../../../../src/hooks/context-pruning/hook.js";
 import { createCompressTool } from "../../../../src/tools/compress.js";
 import { createDecompressTool } from "../../../../src/tools/decompress.js";
-import type {
-  CompressionPlan,
-  GoldenHost,
-  ToolRoundAction,
-} from "../types.js";
+import type { CompressionPlan, GoldenHost, ToolRoundAction } from "../types.js";
 import { captureView } from "./capture.js";
 
 /**
  * Build a minimal session client over a message view.
  *
  * `session.messages` returns the given view (the tool / command paths
- * fetch from "storage"); `session.prompt` appends the notification text
- * to the capture list.
+ * fetch from "storage"); `session.get` resolves a fixed agent so the
+ * v1 tool host's notify path (agent resolution) reaches `session.prompt`,
+ * which appends the notification text to the capture list.
  *
  * @param messages - The view the client serves.
  * @param notifications - Notification-text accumulator (mutated).
@@ -51,6 +48,9 @@ function makeClient(
   return {
     session: {
       messages: async () => ({ data: messages }),
+      get: async (_input: { path: { id: string } }) => ({
+        agent: "dolphin",
+      }),
       prompt: async (input: {
         path: { id: string };
         body: {
@@ -199,7 +199,10 @@ async function runTool(
   const client = makeClient(messages, notifications);
   switch (action.kind) {
     case "compress-tool": {
-      const tool = createCompressTool(createV1ToolHost(client), config);
+      const tool = createCompressTool(
+        createV1ToolHost(client, new Map()),
+        config,
+      );
       const result = await tool.execute(
         { ranges: action.ranges },
         { sessionID },
@@ -207,7 +210,10 @@ async function runTool(
       return { result, error: null };
     }
     case "decompress-tool": {
-      const tool = createDecompressTool(createV1ToolHost(client), config);
+      const tool = createDecompressTool(
+        createV1ToolHost(client, new Map()),
+        config,
+      );
       const result = await tool.execute(
         { blockId: action.blockId },
         { sessionID },
@@ -215,7 +221,10 @@ async function runTool(
       return { result, error: null };
     }
     case "compress-tool-raw": {
-      const tool = createCompressTool(createV1ToolHost(client), config);
+      const tool = createCompressTool(
+        createV1ToolHost(client, new Map()),
+        config,
+      );
       const result = await tool.execute(
         action.args,
         action.toolCtx ?? { sessionID },
@@ -223,7 +232,10 @@ async function runTool(
       return { result, error: null };
     }
     case "decompress-tool-raw": {
-      const tool = createDecompressTool(createV1ToolHost(client), config);
+      const tool = createDecompressTool(
+        createV1ToolHost(client, new Map()),
+        config,
+      );
       const result = await tool.execute(
         action.args,
         action.toolCtx ?? { sessionID },
@@ -256,7 +268,7 @@ export function createV1GoldenHost(): GoldenHost<ContextMessageEntry> {
     async handleDcp(sessionID, args, config, messages, notifications) {
       const client = makeClient(messages, notifications);
       await handleDcpCommand(
-        createV1ToolHost(client),
+        createV1ToolHost(client, new Map()),
         sessionID,
         args,
         config,

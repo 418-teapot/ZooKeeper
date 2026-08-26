@@ -8,6 +8,12 @@
  * `sessionId` context shapes, unwraps `res.data ?? res` with a
  * `res.error` rejection, and treats notifications as best-effort.
  *
+ * Notifications always resolve the session's agent before sending:
+ * OpenCode's `session.prompt` carries no `body.agent` and would switch
+ * the session agent to the default, so the notify path resolves the
+ * agent (in-memory map first, `session.get` fallback) and suppresses
+ * the message when it cannot be resolved.
+ *
  * @module
  */
 
@@ -21,13 +27,19 @@ import type { ContextMessageEntry } from "./types.js";
 /**
  * Create the v1 tool host backed by an OpenCode session client.
  *
- * The client is captured by the closure; it may be partial (missing
- * session APIs) in tests.
+ * The client and the session→agent map are captured by the closure; the
+ * client may be partial (missing session APIs) in tests.
  *
- * @param client - The OpenCode client (session.messages / session.prompt).
+ * @param client - The OpenCode client (session.messages / session.prompt /
+ *   session.get).
+ * @param sessionAgentMap - The in-memory session → agent map (populated by
+ *   the entry point's message.updated handler).
  * @returns The v1 tool host.
  */
-export function createV1ToolHost(client: SessionClient): ToolHost {
+export function createV1ToolHost(
+  client: SessionClient,
+  sessionAgentMap: Map<string, string>,
+): ToolHost {
   return {
     /**
      * Resolve the session id from the OpenCode tool context.
@@ -103,26 +115,107 @@ export function createV1ToolHost(client: SessionClient): ToolHost {
     /**
      * Post an ignored chat notification to the session.
      *
-     * Best-effort: failures are logged as warnings and swallowed, never
-     * propagated to the caller.
+     * Resolves the session agent first (in-memory map, then a
+     * `session.get` fallback) so the prompt never switches the session
+     * agent to the default; when the agent cannot be resolved the
+     * notification is suppressed with a warn entry.  Best-effort:
+     * failures are logged as warnings and swallowed, never propagated
+     * to the caller.
      *
      * @param sessionId - The session identifier.
      * @param text - The notification text.
      */
     async notify(sessionId: string, text: string): Promise<void> {
+      const body: {
+        noReply: boolean;
+        parts: Array<{ type: "text"; text: string; ignored: boolean }>;
+        agent?: string;
+      } = {
+        noReply: true,
+        parts: [{ type: "text", text, ignored: true }],
+      };
+
+      // Send the prompt; failures are logged and never propagate.
+      const send = async (): Promise<void> => {
+        try {
+          await client?.session?.prompt?.({
+            path: { id: sessionId },
+            body,
+          });
+        } catch (err) {
+          log("tool-host", "notify_failed", sessionId, undefined, "warn", {
+            error: String(err),
+          });
+        }
+      };
+
       try {
-        await client?.session?.prompt?.({
-          path: { id: sessionId },
-          body: {
-            noReply: true,
-            parts: [{ type: "text", text, ignored: true }],
-          },
+        // Resolve the agent (in-memory map first, `session.get`
+        // fallback); suppress the notification when unresolved.
+        const agent = await resolveSessionAgent(
+          sessionId,
+          client,
+          sessionAgentMap,
+        );
+        if (agent) {
+          body.agent = agent;
+          await send();
+          return;
+        }
+        log("tool-host", "notify_suppressed", sessionId, undefined, "warn", {
+          reason: "agent unresolved",
         });
       } catch (err) {
-        log("tool-host", "notify_failed", sessionId, undefined, "warn", {
+        log("tool-host", "notify_suppressed", sessionId, undefined, "warn", {
+          reason: "agent unresolved",
           error: String(err),
         });
       }
     },
   };
+}
+
+/**
+ * Resolve the current agent for a session.
+ *
+ * Resolution order:
+ *   (a) `agentMap` (in-memory map populated solely by the message.updated
+ *       handler — single source of truth)
+ *   (b) `client.session.get()` API call — per-call fallback WITHOUT
+ *       write-back to the map, so a mid-session agent change is reflected
+ *       as soon as either the next message.updated or the next resolution
+ *       happens.
+ *   (c) `undefined` — current behavior preserved, debug log entry
+ *
+ * @param sessionID - The session identifier.
+ * @param client - The host client (session.get availability checked).
+ * @param agentMap - The in-memory session → agent map.
+ * @returns The resolved agent name, or `undefined` when unknown.
+ */
+export async function resolveSessionAgent(
+  sessionID: string,
+  client: SessionClient,
+  agentMap: Map<string, string>,
+): Promise<string | undefined> {
+  // (a) Check in-memory map first (fast, no I/O).
+  const mapped = agentMap.get(sessionID);
+  if (mapped) return mapped;
+
+  // (b) Fallback to session API — read the agent from the session object.
+  if (client?.session?.get) {
+    try {
+      const sessionInfo = await client.session.get({
+        path: { id: sessionID },
+      });
+      if (sessionInfo?.agent) {
+        return sessionInfo.agent;
+      }
+    } catch {
+      // Session not found — fall through to (c).
+    }
+  }
+
+  // (c) Unknown — log debug entry and return undefined.
+  log("tool-host", "notify_no_agent", sessionID, undefined, "debug", {});
+  return undefined;
 }

@@ -102,38 +102,35 @@ afterEach(() => {
 });
 
 describe("golden runner restart round-trip", () => {
-  test(
-    "a simulated crash preserves the on-disk state so the next round reloads it",
-    async () => {
-      await runScenario(SCENARIO, createV1GoldenHost());
+  test("a simulated crash preserves the on-disk state so the next round reloads it", async () => {
+    await runScenario(SCENARIO, createV1GoldenHost());
 
-      const manager = getContextStateManager();
-      const filePath = join(manager.store.dir, `${TEST_SID}.json`);
+    const manager = getContextStateManager();
+    const filePath = join(manager.store.dir, `${TEST_SID}.json`);
 
-      // The transform in round 3 always persists the (post-transform)
-      // state to disk, so the file exists regardless of whether the
-      // restart branch preserved the round-1 save.
-      expect(existsSync(filePath)).toBe(true);
+    // The transform in round 3 always persists the (post-transform)
+    // state to disk, so the file exists regardless of whether the
+    // restart branch preserved the round-1 save.
+    expect(existsSync(filePath)).toBe(true);
 
-      const persisted = JSON.parse(readFileSync(filePath, "utf8")) as {
-        schema: number;
-        blocks: Record<string, { title?: string; summary: string }>;
-        marks: Record<string, unknown>;
-      };
-      expect(persisted.schema).toBe(2);
+    const persisted = JSON.parse(readFileSync(filePath, "utf8")) as {
+      schema: number;
+      blocks: Record<string, { title?: string; summary: string }>;
+      marks: Record<string, unknown>;
+    };
+    expect(persisted.schema).toBe(2);
 
-      // The critical assertion: the round-1 block must survive the
-      // simulated crash.  The buggy runner's restart branch called
-      // `manager.store.delete(sid)`, which wiped the on-disk file;
-      // round 3 then saved the (empty) cache state, so the persisted
-      // blocks map is empty here.  After the fix, the file survives
-      // and the persisted blocks map carries the round-1 entry.
-      const blockEntries = Object.values(persisted.blocks);
-      expect(blockEntries.length).toBeGreaterThan(0);
+    // The critical assertion: the round-1 block must survive the
+    // simulated crash.  The buggy runner's restart branch called
+    // `manager.store.delete(sid)`, which wiped the on-disk file;
+    // round 3 then saved the (empty) cache state, so the persisted
+    // blocks map is empty here.  After the fix, the file survives
+    // and the persisted blocks map carries the round-1 entry.
+    const blockEntries = Object.values(persisted.blocks);
+    expect(blockEntries.length).toBeGreaterThan(0);
 
-      const [firstBlock] = blockEntries;
-      expect(firstBlock?.title).toBe("survivor");
-      expect(firstBlock?.summary).toBe("should survive restart");
-    },
-  );
+    const [firstBlock] = blockEntries;
+    expect(firstBlock?.title).toBe("survivor");
+    expect(firstBlock?.summary).toBe("should survive restart");
+  });
 });

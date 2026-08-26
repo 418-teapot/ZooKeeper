@@ -22,11 +22,13 @@
  * splices the replacement back into the input array after the handler
  * resolves; the original message objects stay untouched.
  *
- * Notifications: pi's production release notification goes through
- * `handleDedupNotify` with the pi client (`{}` — no session-prompt API)
- * and an empty agent map, which suppresses it (logged as
- * `dedup_notify_suppressed`).  The runner's notification accumulator
- * therefore stays empty for the pi lane, matching production behaviour.
+ * Notifications: pi's production release notification goes through the
+ * unified pi tool host's `notify` port, which posts a `zoo-notice`
+ * custom entry via `appendEntry` (persistent, never part of the LLM
+ * context).  The tool host also serves the tool units' runtime prompts,
+ * so the runner's notification accumulator captures both the release
+ * notices and the tool notifications for the pi lane — the same
+ * behaviour the opencode lane exhibits.
  *
  * @module
  */
@@ -39,27 +41,27 @@ import {
 } from "../../../../src/adapters/pi/tool-host.js";
 import type { PiAgentMessage } from "../../../../src/adapters/pi/types.js";
 import { buildPiContextHandler } from "../../../../src/compose-pi.js";
+import type { ToolHost } from "../../../../src/core/client/tool-host.js";
+import { composeProfile } from "../../../../src/core/compose.js";
 import type {
   ContextPruningConfig,
   ModeProfile,
 } from "../../../../src/core/config-types.js";
-import { composeProfile } from "../../../../src/core/compose.js";
 import { getModelLimit } from "../../../../src/core/context/model-limits.js";
 import { computeSpanHash } from "../../../../src/core/context/spanhash.js";
 import {
   type Block,
-  type SessionState,
   nextBlockId,
+  type SessionState,
 } from "../../../../src/core/context/state.js";
-import type { Deps, TransformContribution } from "../../../../src/core/slots.js";
+import type {
+  Deps,
+  TransformContribution,
+} from "../../../../src/core/slots.js";
 import { REGISTRY } from "../../../../src/registry.js";
 import { createCompressTool } from "../../../../src/tools/compress.js";
 import { createDecompressTool } from "../../../../src/tools/decompress.js";
-import type {
-  CompressionPlan,
-  GoldenHost,
-  ToolRoundAction,
-} from "../types.js";
+import type { CompressionPlan, GoldenHost, ToolRoundAction } from "../types.js";
 import { captureView } from "./capture.js";
 
 /**
@@ -71,16 +73,21 @@ import { captureView } from "./capture.js";
  * manual-compress gates see `activeSet.tools.has("compress")` — the same
  * derivation production pi uses).  The per-round config is captured by
  * the contribution closure, so config overrides land on the right round.
+ * The round's pi tool host is placed into `deps.toolHost` so the
+ * release notification posts through the same `zoo-notice` appendEntry
+ * port production pi uses.
  *
  * @param sessionID - The scenario session id (the adapter's provider).
  * @param config - The merged (scenario + round) transform config.
  * @param hasCompressTool - Whether the compress tool is available.
+ * @param toolHost - The round's pi tool host (release notification port).
  * @returns The composed transform contributions.
  */
 function composePruningTransform(
   sessionID: string,
   config: ContextPruningConfig,
   hasCompressTool: boolean,
+  toolHost: ToolHost,
 ): TransformContribution[] {
   const profile: ModeProfile = {
     name: "golden-pi",
@@ -93,12 +100,15 @@ function composePruningTransform(
   const deps: Deps = {
     limits: {},
     contextConfig: config,
-    // pi has no SDK client — the dedup-release notification is suppressed
-    // (empty agent map + no session.prompt), matching production pi.
+    // pi has no SDK client — the dedup producer has no session-prompt
+    // API to notify through, so any dedup notification is skipped.  The
+    // release notification does not depend on the client: it goes
+    // through `toolHost.notify` below.
     client: {},
     directory: process.cwd(),
     sessionAgentMap: new Map(),
     adapter: createPiAdapter(() => sessionID),
+    toolHost,
   };
   const composed = composeProfile(profile, REGISTRY, deps);
   return composed.transform;
@@ -116,22 +126,30 @@ function composePruningTransform(
  * returns a fresh array; the splice keeps the runner's in-place-view
  * contract while the original message objects stay untouched.
  *
+ * The round's tool host is wired into the transform deps with an
+ * `appendEntry` binding that forwards every `zoo-notice` entry's
+ * `data.content` into the runner's notification accumulator — the
+ * release notice is captured exactly like the pi tool units' runtime
+ * prompts, symmetric with the opencode lane.
+ *
  * @param sessionID - The scenario session id.
  * @param messages - The round's view (spliced with the replacement).
  * @param config - The merged (scenario + round) transform config.
  * @param hasCompressTool - Whether the compress tool is available.
- * @param _notify - Unused: pi's production release notification goes
- *   through `handleDedupNotify` with the empty client and is suppressed.
+ * @param notify - Notification-text accumulator callback (fed by the
+ *   transform's release notification through the tool host).
  */
 async function runTransformFor(
   sessionID: string,
   messages: PiAgentMessage[],
   config: ContextPruningConfig,
   hasCompressTool: boolean,
-  _notify: (text: string) => void,
+  notify: (text: string) => void,
 ): Promise<void> {
+  const holder = makePiSession(sessionID, messages);
+  const host = createPiToolHost(holder, makeAppendEntry(notify));
   const handler = buildPiContextHandler(
-    composePruningTransform(sessionID, config, hasCompressTool),
+    composePruningTransform(sessionID, config, hasCompressTool, host),
   );
   const modelLimit = getModelLimit(sessionID);
   const result = await handler(
@@ -139,7 +157,12 @@ async function runTransformFor(
     {
       sessionManager: { getSessionId: () => sessionID },
       ...(modelLimit !== undefined
-        ? { model: { id: modelLimit.modelId, contextWindow: modelLimit.context } }
+        ? {
+            model: {
+              id: modelLimit.modelId,
+              contextWindow: modelLimit.context,
+            },
+          }
         : {}),
     },
   );
@@ -153,18 +176,18 @@ async function runTransformFor(
  * Build a stubbed pi session for the tool host.
  *
  * `buildContextEntries` serves the round's message array (the tool path
- * fetches from "storage"); `ui.notify` appends the notification text to
- * the capture list.
+ * fetches from "storage"); notifications flow through the production
+ * `appendEntry` channel — the tool host posts `zoo-notice` entries whose
+ * `data.content` text is captured into the list (the same channel the
+ * TUI renders).
  *
  * @param sessionID - The scenario session id.
  * @param messages - The view the session serves.
- * @param notifications - Notification-text accumulator (mutated).
  * @returns A context holder the pi tool host reads.
  */
 function makePiSession(
   sessionID: string,
   messages: PiAgentMessage[],
-  notifications: string[],
 ): PiContextHolder {
   return {
     current: {
@@ -173,12 +196,26 @@ function makePiSession(
         buildContextEntries: () =>
           messages.map((message) => ({ type: "message", message })),
       },
-      ui: {
-        notify: (text: string) => {
-          notifications.push(text);
-        },
-      },
     },
+  };
+}
+
+/**
+ * The pi `appendEntry` binding for the golden host.
+ *
+ * Forwards the `data.content` text of every appended `zoo-notice` entry
+ * into a text sink, mirroring the production entry point's bound
+ * `piApi.appendEntry` whose entries the TUI renders.
+ *
+ * @param sink - Receives the `content` text of each appended entry.
+ * @returns A `PiAppendEntry`-shaped function.
+ */
+function makeAppendEntry(
+  sink: (text: string) => void,
+): (customType: string, data?: unknown) => void {
+  return (_customType, data) => {
+    const content = (data as { content?: unknown } | undefined)?.content;
+    if (typeof content === "string") sink(content);
   };
 }
 
@@ -204,8 +241,11 @@ async function runTool(
   messages: PiAgentMessage[],
   notifications: string[],
 ): Promise<{ result: string | null; error: string | null }> {
-  const holder = makePiSession(sessionID, messages, notifications);
-  const host = createPiToolHost(holder);
+  const holder = makePiSession(sessionID, messages);
+  const host = createPiToolHost(
+    holder,
+    makeAppendEntry((text) => notifications.push(text)),
+  );
   const toolCtx = { sessionManager: { getSessionId: () => sessionID } };
   switch (action.kind) {
     case "compress-tool": {
@@ -368,7 +408,9 @@ function landPlan(
  * @param sessionID - The scenario's session id.
  * @returns The pi host implementation.
  */
-export function createPiGoldenHost(sessionID: string): GoldenHost<PiAgentMessage> {
+export function createPiGoldenHost(
+  sessionID: string,
+): GoldenHost<PiAgentMessage> {
   return {
     runTransform: (messages, config, hasCompressTool, notify) =>
       runTransformFor(sessionID, messages, config, hasCompressTool, notify),

@@ -127,12 +127,7 @@ function refMessages(sessionID: string) {
     // (6) ignored message — never numbered, never injected.
     msg("user", "u5", [textPart("ignored", true)], sessionID),
     // (7) a message whose text mentions a fake ref mid-line — preserved.
-    msg(
-      "user",
-      "u6",
-      [textPart("note m0009 inline")],
-      sessionID,
-    ),
+    msg("user", "u6", [textPart("note m0009 inline")], sessionID),
   ];
 }
 

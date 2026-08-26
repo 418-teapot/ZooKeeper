@@ -27,14 +27,14 @@
  *    prefixes from finalized assistant text parts (handler built by
  *    `buildPiMessageEndHandler`).
  * 7. commands — the composed slash commands (e.g. `/dcp`) are registered
- *    with pi via `registerCommand`; their chat notifications route
- *    through pi's in-session `appendEntry` channel (persistent in the
- *    session, rendered by the `zoo-dcp` entry renderer, never entering
- *    the LLM context) instead of the tool toast.  The primary-switch
- *    unit contributes one `/<agent>` command per configured primary;
- *    each replaces the current session with a fresh one re-bound to the
- *    target identity (setPrimary → newSession with the post-replacement
- *    tool trim + status inside `withSession`).
+ *    with pi via `registerCommand`; their chat notifications go through
+ *    the single pi tool host's in-session `appendEntry` channel
+ *    (`zoo-notice` custom entries — persistent in the session, rendered
+ *    by the `zoo-notice` entry renderer, never entering the LLM context).
+ *    The primary-switch unit contributes one `/<agent>` command per
+ *    configured primary; each replaces the current session with a fresh
+ *    one re-bound to the target identity (setPrimary → newSession with
+ *    the post-replacement tool trim + status inside `withSession`).
  *
  * Architecture: units contribute host-agnostic slots (`src/core/slots.ts`)
  * and the pi contact layer (`src/compose-pi.ts`) is the only module that
@@ -42,25 +42,23 @@
  * event handlers and the command registrations.  The composition feeds
  * the full registry to `composeProfile`; tool units instantiate
  * harmlessly and their slots are not consumed by pi (the command slot
- * is consumed — the command units are re-composed with the command tool
- * host so their notifications route through pi's `appendEntry`
- * channel).
+ * is consumed).  Every unit receives the same deps, so commands and
+ * tools share the single pi tool host whose `notify` posts in-session
+ * `zoo-notice` custom entries through pi's `appendEntry` channel.
  * Every hook and command is profile-driven: a `null` profile (absent or
  * invalid) yields an empty composition, so all hooks no-op and no
  * command is registered — fail-closed, aligned with the OpenCode host.
  *
  * Capability gating: pi passes an empty client object (no SDK client),
- * so the dedup-release notification inside context-pruning cannot use
- * the SDK session-prompt API.  With a profile whose primary-agent set is
- * non-empty the `sessionAgentMap` resolves the agent to the default
- * primary (first in profile array order) and the missing API is caught
- * and logged as `dedup_notify_failed` (warn); without a primary the map
- * is empty and the notification is suppressed as
- * `dedup_notify_suppressed`.  The pruning transform runs and returns
- * the pruned replacement to pi.  The direct-work nudge's primary-agent
- * gate is satisfied by a `sessionAgentMap` whose lookups always resolve
- * to the default primary (a pi session is the orchestrator); without a
- * primary the map is empty and the nudge stays silent.
+ * so context-pruning never touches the SDK session-prompt API.  The
+ * only user-visible pruning notification is the release notice, which
+ * posts through the unified pi tool host's `notify` port as a
+ * `zoo-notice` custom entry (persistent, never part of the LLM context).
+ * The pruning transform runs and returns the pruned replacement to pi.
+ * The direct-work nudge's primary-agent gate is satisfied by a
+ * `sessionAgentMap` whose lookups always resolve to the default primary
+ * (a pi session is the orchestrator); without a primary the map is
+ * empty and the nudge stays silent.
  *
  * Config loading: the OpenCode entry imports config.toml directly with
  * Bun's `import ... with { type: "toml" }`.  pi's extension runtime is
@@ -92,7 +90,6 @@ import {
   buildPiContextHandler,
   buildPiMessageEndHandler,
   buildPiToolResultHandler,
-  createPiCommandToolHost,
   type PiCommandContext,
 } from "./compose-pi.js";
 import type { ToolHost } from "./core/client/tool-host.js";
@@ -337,7 +334,6 @@ export function buildPiContributions(
   hostDeps?: {
     adapter?: HostAdapter<unknown>;
     toolHost?: ToolHost;
-    commandToolHost?: ToolHost;
     piSwitchHost?: PiSwitchHost;
     getCommandCtx?: () => PiCommandCtx | null | undefined;
   },
@@ -372,11 +368,11 @@ export function buildPiContributions(
     agentPermissions,
     piSwitchHost: hostDeps?.piSwitchHost,
     // pi has no SDK client — the context-pruning transform runs and
-    // returns the pruned replacement to pi.  With a non-empty primary
-    // set the dedup-release notification resolves the default primary
-    // and fails on the missing session-prompt API as
-    // `dedup_notify_failed` (warn); without a primary the empty map
-    // suppresses it as `dedup_notify_suppressed`.
+    // returns the pruned replacement to pi.  The release notification
+    // does not need the client: it posts through the unified pi tool
+    // host's `notify` port as a `zoo-notice` appendEntry entry.  The
+    // marking producers (dedup / purge-errors / sweep) have no
+    // user-visible notification on pi.
     client: {},
     directory: process.cwd(),
     sessionAgentMap: sessionAgentMapFor(modeProfile, agentModes),
@@ -395,28 +391,6 @@ export function buildPiContributions(
     adapter: hostDeps?.adapter ?? createPiAdapter(() => undefined),
   };
   const composed = composeProfile(modeProfile, REGISTRY, deps);
-
-  // Command units are re-composed with the command-specific tool host
-  // so slash-command chat notifications (e.g. /dcp reports) route through
-  // pi's in-session `appendEntry` channel instead of the tool toast.  The
-  // command tool host shares history/session resolution with the base host
-  // but replaces `notify`; the tool units keep the base host's toast.
-  // `unit.create` is side-effect free (verified against every registry
-  // unit — the factories only return contribution objects), so a second
-  // `composeProfile` pass with the command host yields identical command
-  // contributions without re-implementing the profile filter/collect
-  // strategy.  Only the commands slot of the second pass is taken.
-  // The pass keeps the full profile (the active set handed to command
-  // factories must reflect the real enablement — e.g. `/dcp compress`
-  // reads `activeSet.tools`), so its `unknown_unit` warnings are
-  // suppressed to avoid duplicating the first pass's.
-  if (modeProfile !== null && hostDeps?.commandToolHost) {
-    const commandDeps: Deps = { ...deps, toolHost: hostDeps.commandToolHost };
-    const commandComposed = composeProfile(modeProfile, REGISTRY, commandDeps, {
-      warnUnknownUnits: false,
-    });
-    composed.commands = commandComposed.commands;
-  }
 
   // Seed the identity machinery with the default primary when the
   // profile has any primary agents (first in profile array order).  An
@@ -478,11 +452,11 @@ export function collectSkillPaths(profileSkills: string[]): string[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Build the chat-transcript renderer for `zoo-dcp` custom entries.
+ * Build the chat-transcript renderer for `zoo-notice` custom entries.
  *
- * pi invokes the renderer with the appended `CustomEntry` (the report
- * text lives in `data.content`), the render options, and the active
- * `Theme`.  The returned duck-typed `Component` (structurally
+ * pi invokes the renderer with the appended `CustomEntry` (the
+ * notification text lives in `data.content`), the render options, and
+ * the active `Theme`.  The returned duck-typed `Component` (structurally
  * `{ render(width): string[], invalidate() }`) is placed into the TUI
  * chat transcript by pi's `CustomEntryComponent` — no pi package is
  * imported, mirroring the duck-typing discipline of the rest of the
@@ -490,9 +464,9 @@ export function collectSkillPaths(profileSkills: string[]): string[] {
  * entry renders as nothing.  Renderer errors are caught and surfaced
  * by pi itself (an error box), so no defensive wrapping is needed here.
  *
- * @returns The `EntryRenderer` for the `zoo-dcp` custom type.
+ * @returns The `EntryRenderer` for the `zoo-notice` custom type.
  */
-export function buildPiDcpEntryRenderer(): (
+export function buildPiNoticeEntryRenderer(): (
   entry: unknown,
   _options: unknown,
   theme: unknown,
@@ -504,7 +478,7 @@ export function buildPiDcpEntryRenderer(): (
     const t = theme as
       | { fg?: (color: string, text: string) => string }
       | undefined;
-    const label = t?.fg ? t.fg("customMessageLabel", "[zoo-dcp]") : "[zoo-dcp]";
+    const label = t?.fg ? t.fg("customMessageLabel", "[zoo]") : "[zoo]";
     const text = `${label}\n${content}`;
     return {
       render(): string[] {
@@ -572,21 +546,20 @@ export function buildPiHandlers(
   const sessionIdProvider = () =>
     contextHolder.current?.sessionManager?.getSessionId();
   const adapter = createPiAdapter(sessionIdProvider);
-  const toolHost = createPiToolHost(contextHolder);
-  // The command tool host shares the base host's history/session
-  // resolution but routes chat notifications through pi's in-session
-  // `appendEntry` channel (persistent, no LLM context) — the pi
-  // equivalent of v1's ignored noReply message.  The base toast notify
-  // stays for the tool units' runtime prompts.
-  // `appendEntry` is passed as a value to `createPiCommandToolHost`, so
-  // it is defensively bound to the API object when present (pi's current
-  // implementation is closure-based and works unbound, but a future
-  // `this`-dependent implementation would silently break otherwise).
+  // The single pi tool host routes every in-session chat notification
+  // (tool prompts, /dcp reports, command failures) through pi's
+  // `appendEntry` channel as a `zoo-notice` custom entry — persistent,
+  // rendered by the entry renderer, never part of the LLM context (the
+  // pi equivalent of v1's ignored noReply message).  `appendEntry` is
+  // passed as a value, so it is defensively bound to the API object when
+  // present (pi's current implementation is closure-based and works
+  // unbound, but a future `this`-dependent implementation would silently
+  // break otherwise).
   const appendEntry =
     typeof piApi?.appendEntry === "function"
       ? piApi.appendEntry.bind(piApi)
       : undefined;
-  const commandToolHost = createPiCommandToolHost(toolHost, appendEntry);
+  const toolHost = createPiToolHost(contextHolder, appendEntry);
   // The pi switch surfaces for the `/<agent>` commands.  Built ONLY when
   // a pi API instance is supplied: without one (test-only or a host
   // without the surfaces) the switch command unit contributes no
@@ -723,7 +696,6 @@ export function buildPiHandlers(
     {
       adapter,
       toolHost,
-      commandToolHost,
       piSwitchHost,
       // The `/go` handoff target reads the latest pi command context
       // through this supplier: the command handler refreshes the shared
@@ -803,7 +775,7 @@ export function buildPiHandlers(
 
   // Register profile commands with pi when an API instance is supplied.
   // The handler refreshes the shared context holder with pi's command
-  // context so the command tool host can resolve the session / history.
+  // context so the unified tool host can resolve the session / history.
   if (profile !== null && piApi?.registerCommand) {
     const plan = buildPiCommandRegistrationPlan(composed.commands, (ctx) => {
       contextHolder.current = ctx as PiToolHostContext;
@@ -816,15 +788,15 @@ export function buildPiHandlers(
     }
   }
 
-  // Register the `zoo-dcp` entry renderer so appended dcp reports draw
-  // a card in the TUI chat transcript.  Gated on the composed commands
-  // slot rather than the profile's nullness: the renderer is needed only
-  // when the `dcp` command is actually registered (fail-closed — a null
-  // profile or a profile without dcp in its commands list registers no
-  // renderer).  The renderer itself is duck-typed (no pi package import);
+  // Register the `zoo-notice` entry renderer so appended notification
+  // entries draw a card in the TUI chat transcript.  Registered
+  // unconditionally whenever the renderer API is present (independent of
+  // the profile / composed commands): every notify — tool prompts, /dcp
+  // reports, command failures — posts a `zoo-notice` entry that needs a
+  // renderer.  The renderer itself is duck-typed (no pi package import);
   // absent API degrades to nothing.
-  if ("dcp" in composed.commands && piApi?.registerEntryRenderer) {
-    piApi.registerEntryRenderer("zoo-dcp", buildPiDcpEntryRenderer());
+  if (piApi?.registerEntryRenderer) {
+    piApi.registerEntryRenderer("zoo-notice", buildPiNoticeEntryRenderer());
   }
 
   // The core handlers have no access to the mutable context holder, so
@@ -945,8 +917,8 @@ export function buildPiHandlers(
  * strips model-imitated line-start ref echoes from finalized assistant
  * text when the profile is active.  Profile commands (e.g. `/dcp` and the
  * config-derived `/<agent>` primary-switch commands) are registered with
- * pi and the `zoo-dcp` entry renderer is wired so appended reports draw
- * cards in the TUI transcript.
+ * pi and the `zoo-notice` entry renderer is wired so appended
+ * notification cards draw in the TUI transcript.
  *
  * Strategy for `before_agent_start`:
  *   **Prepend** the resolved identity's prompt rather than replacing the
