@@ -1,7 +1,7 @@
 /**
- * Tests for the pi venue (`src/commands/go/venue-pi.ts`).
+ * Tests for the pi handoff target (`src/adapters/pi/handoff-target.ts`).
  *
- * The venue is exercised through the full handoff protocol
+ * The handoff target is exercised through the full handoff protocol
  * (`executeHandoff`) with a fake pi command context: the parent session
  * id is passed into `newSession`, the plan reference is delivered via
  * the `withSession` callback's `sendUserMessage`, `setPrimary` is called
@@ -24,7 +24,7 @@ import {
   _resetForTesting,
   initLogger,
 } from "../../utils/logger.js";
-import { createPiVenue } from "./venue-pi.js";
+import { createPiHandoffTarget } from "./handoff-target.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -33,7 +33,10 @@ import { createPiVenue } from "./venue-pi.js";
 let _tmpCounter = 0;
 
 function tmpDir(): string {
-  const dir = join(tmpdir(), `zoo-venue-pi-${Date.now()}-${_tmpCounter++}`);
+  const dir = join(
+    tmpdir(),
+    `zoo-handoff-target-pi-${Date.now()}-${_tmpCounter++}`,
+  );
   mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -136,18 +139,18 @@ function fakeCommandCtx(overrides?: {
 // Create + install
 // ---------------------------------------------------------------------------
 
-describe("pi venue — create and install", () => {
-  it("createVenue validates newSession and stashes the parentage", async () => {
+describe("pi handoff target — create and install", () => {
+  it("create validates newSession and stashes the parentage", async () => {
     const sessionID = `test-create-${Date.now()}`;
     const { planPath, baseDir } = createPlanFile("planning-done");
     const { ctx, newSessionOptions, sentUserMessages } = fakeCommandCtx();
     const cmdCtx = ctx;
 
-    const venue = createPiVenue({
+    const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => cmdCtx,
       defaultPrimary: DEFAULT_PRIMARY,
     });
-    await executeHandoff({ venue, sessionID, directory: baseDir });
+    await executeHandoff({ handoffTarget, sessionID, directory: baseDir });
 
     // The parent session id flows into newSession.
     assert.equal(newSessionOptions.length, 1);
@@ -162,12 +165,12 @@ describe("pi venue — create and install", () => {
     const sessionID = `test-no-api-${Date.now()}`;
     const { planPath, baseDir } = createPlanFile("planning-done");
 
-    const venue = createPiVenue({
+    const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => ({}),
       defaultPrimary: DEFAULT_PRIMARY,
     });
     await assert.rejects(
-      () => executeHandoff({ venue, sessionID, directory: baseDir }),
+      () => executeHandoff({ handoffTarget, sessionID, directory: baseDir }),
       /newSession/,
     );
     // Plan untouched — nothing delivered or marked.
@@ -183,17 +186,17 @@ describe("pi venue — create and install", () => {
 // setPrimary
 // ---------------------------------------------------------------------------
 
-describe("pi venue — setPrimary", () => {
+describe("pi handoff target — setPrimary", () => {
   it("calls setPrimary with the fixture default primary", async () => {
     const sessionID = `test-primary-${Date.now()}`;
     const { planPath, baseDir } = createPlanFile("planning-done");
     const { ctx } = fakeCommandCtx();
 
-    const venue = createPiVenue({
+    const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => ctx,
       defaultPrimary: DEFAULT_PRIMARY,
     });
-    await executeHandoff({ venue, sessionID, directory: baseDir });
+    await executeHandoff({ handoffTarget, sessionID, directory: baseDir });
 
     assert.equal(getPrimary(), DEFAULT_PRIMARY);
 
@@ -205,17 +208,17 @@ describe("pi venue — setPrimary", () => {
 // Deliver — withSession and cancellation
 // ---------------------------------------------------------------------------
 
-describe("pi venue — deliver semantics", () => {
+describe("pi handoff target — deliver semantics", () => {
   it("delivers the plan reference through the withSession callback", async () => {
     const sessionID = `test-deliver-${Date.now()}`;
     const { planPath, baseDir } = createPlanFile("planning-done");
     const { ctx, sentUserMessages } = fakeCommandCtx();
 
-    const venue = createPiVenue({
+    const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => ctx,
       defaultPrimary: DEFAULT_PRIMARY,
     });
-    await executeHandoff({ venue, sessionID, directory: baseDir });
+    await executeHandoff({ handoffTarget, sessionID, directory: baseDir });
 
     // The reference must be sent into the fresh session context.
     assert.equal(sentUserMessages.length, 1);
@@ -241,12 +244,16 @@ describe("pi venue — deliver semantics", () => {
     });
 
     const { ctx, sentUserMessages } = fakeCommandCtx({ sendTurn: turn });
-    const venue = createPiVenue({
+    const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => ctx,
       defaultPrimary: DEFAULT_PRIMARY,
     });
 
-    const handoff = executeHandoff({ venue, sessionID, directory: baseDir });
+    const handoff = executeHandoff({
+      handoffTarget,
+      sessionID,
+      directory: baseDir,
+    });
     const settled = Promise.race([
       handoff.then(
         () => "resolved",
@@ -292,12 +299,12 @@ describe("pi venue — deliver semantics", () => {
     });
 
     const { ctx, sentUserMessages } = fakeCommandCtx({ sendTurn: turn });
-    const venue = createPiVenue({
+    const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => ctx,
       defaultPrimary: DEFAULT_PRIMARY,
     });
 
-    await executeHandoff({ venue, sessionID, directory: baseDir });
+    await executeHandoff({ handoffTarget, sessionID, directory: baseDir });
     assert.equal(sentUserMessages.length, 1);
 
     // Reject the turn after the handoff already succeeded.  `deliver` must
@@ -329,12 +336,12 @@ describe("pi venue — deliver semantics", () => {
     const { planPath, baseDir } = createPlanFile("planning-done");
     const { ctx } = fakeCommandCtx({ cancelled: true });
 
-    const venue = createPiVenue({
+    const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => ctx,
       defaultPrimary: DEFAULT_PRIMARY,
     });
     await assert.rejects(
-      () => executeHandoff({ venue, sessionID, directory: baseDir }),
+      () => executeHandoff({ handoffTarget, sessionID, directory: baseDir }),
       /cancelled/,
     );
     assert.ok(
@@ -353,8 +360,8 @@ describe("pi venue — deliver semantics", () => {
   // replacement is cancelled or throws, pi never created the session, yet
   // the primary is left pointing at the executor while the user is still
   // in their planning session — asymmetric with `applySwitch`'s
-  // cancelled-rollback.  The venue must restore the previous primary so
-  // identity state matches the session that actually survives.
+  // cancelled-rollback.  The handoff target must restore the previous
+  // primary so identity state matches the session that actually survives.
 
   it("cancelled replacement restores the previous primary", async () => {
     const sessionID = `test-cancel-rollback-${Date.now()}`;
@@ -364,12 +371,12 @@ describe("pi venue — deliver semantics", () => {
     setPrimary("mola");
     const { ctx } = fakeCommandCtx({ cancelled: true });
 
-    const venue = createPiVenue({
+    const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => ctx,
       defaultPrimary: DEFAULT_PRIMARY,
     });
     await assert.rejects(
-      () => executeHandoff({ venue, sessionID, directory: baseDir }),
+      () => executeHandoff({ handoffTarget, sessionID, directory: baseDir }),
       /cancelled/,
     );
     // No session was created, so the surviving planning session's primary
@@ -386,12 +393,12 @@ describe("pi venue — deliver semantics", () => {
     const boom = new Error("session runtime exploded");
     const { ctx } = fakeCommandCtx({ newSessionError: boom });
 
-    const venue = createPiVenue({
+    const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => ctx,
       defaultPrimary: DEFAULT_PRIMARY,
     });
     await assert.rejects(
-      () => executeHandoff({ venue, sessionID, directory: baseDir }),
+      () => executeHandoff({ handoffTarget, sessionID, directory: baseDir }),
       /session runtime exploded/,
     );
     // The session was never created — the primary must be rolled back.
@@ -406,11 +413,11 @@ describe("pi venue — deliver semantics", () => {
     setPrimary("mola");
     const { ctx } = fakeCommandCtx();
 
-    const venue = createPiVenue({
+    const handoffTarget = createPiHandoffTarget({
       getCommandCtx: () => ctx,
       defaultPrimary: DEFAULT_PRIMARY,
     });
-    await executeHandoff({ venue, sessionID, directory: baseDir });
+    await executeHandoff({ handoffTarget, sessionID, directory: baseDir });
     // The replacement succeeded — the handoff owns the new primary and
     // must NOT roll back to the planning session's identity.
     assert.equal(getPrimary(), DEFAULT_PRIMARY);

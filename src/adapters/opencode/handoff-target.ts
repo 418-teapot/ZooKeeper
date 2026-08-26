@@ -1,16 +1,17 @@
 /**
- * OpenCode venue for the plan handoff protocol.
+ * OpenCode handoff target for the plan handoff protocol.
  *
- * Adapts the OpenCode v1 client slice to the host-agnostic `Venue`
- * contract used by `executeHandoff` (in `src/core/handoff.ts`): session
- * creation with the executor agent set at create time, plan-reference
- * injection via `promptAsync` plus a silent `noReply` confirmation,
- * and TUI focus switching via `route.navigate` + `tui.publish`.
+ * Adapts the OpenCode v1 client slice to the host-agnostic
+ * `HandoffTarget` contract used by `executeHandoff` (in
+ * `src/core/handoff.ts`): session creation with the executor agent set
+ * at create time, plan-reference injection via `promptAsync` plus a
+ * silent `noReply` confirmation, and TUI focus switching via
+ * `route.navigate` + `tui.publish`.
  *
  * @module
  */
 
-import type { Venue } from "../../core/handoff.js";
+import type { HandoffTarget } from "../../core/handoff.js";
 import { buildConfirmText } from "../../core/plan.js";
 import { log } from "../../utils/logger.js";
 
@@ -19,11 +20,11 @@ import { log } from "../../utils/logger.js";
 // ---------------------------------------------------------------------------
 
 /**
- * Minimal client interface required for the OpenCode venue.
+ * Minimal client interface required for the OpenCode handoff target.
  *
- * Only the APIs used by the venue are declared.  The full OpenCode
- * client object is much larger; this interface keeps the venue thin
- * while remaining trivially compatible.
+ * Only the APIs used by the handoff target are declared.  The full
+ * OpenCode client object is much larger; this interface keeps the
+ * handoff target thin while remaining trivially compatible.
  */
 export interface PlanClient {
   session?: {
@@ -55,33 +56,35 @@ export interface PlanClient {
 }
 
 // ---------------------------------------------------------------------------
-// Venue factory
+// Handoff target factory
 // ---------------------------------------------------------------------------
 
 /**
- * Build the OpenCode venue from a v1 client and the default primary.
+ * Build the OpenCode handoff target from a v1 client and the default
+ * primary.
  *
- * The factory itself never throws — the plugin builds the venue even
- * when no primary is configured or the client is partial (e.g. a null
- * profile).  Validation happens at `createVenue` time, when `/go`
- * actually runs: the missing-client API and the undefined default
+ * The factory itself never throws — the plugin builds the handoff
+ * target even when no primary is configured or the client is partial
+ * (e.g. a null profile).  Validation happens at `create` time, when
+ * `/go` actually runs: the missing-client API and the undefined default
  * primary are fail-closed errors there.
  *
- * The workspace directory is captured at construction: the Venue
- * contract's `createVenue` receives only the parent session id, but the
- * OpenCode session-create API needs the directory in its query.
+ * The workspace directory is captured at construction: the
+ * `HandoffTarget` contract's `create` receives only the parent session
+ * id, but the OpenCode session-create API needs the directory in its
+ * query.
  *
  * @param client - The OpenCode v1 client slice (may be partial or absent).
  * @param defaultPrimary - The executor agent name for the new session,
  *   or `undefined` when no primary is configured.
  * @param directory - The workspace directory for the new session.
- * @returns The OpenCode venue.
+ * @returns The OpenCode handoff target.
  */
-export function createOpenCodeVenue(
+export function createOpenCodeHandoffTarget(
   client: PlanClient | null | undefined,
   defaultPrimary: string | undefined,
   directory: string,
-): Venue {
+): HandoffTarget {
   return {
     /**
      * Create the new session with the executor agent set at create time.
@@ -93,7 +96,7 @@ export function createOpenCodeVenue(
      *   closed, the missing-client behaviour) or the default primary is
      *   undefined.
      */
-    async createVenue(ctx) {
+    async create(ctx) {
       if (!client?.session?.create) {
         throw new Error(
           "Session creation API is not available. " +

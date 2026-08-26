@@ -31,8 +31,8 @@
 
 import config from "../config.toml" with { type: "toml" };
 import { createV1Adapter } from "./adapters/opencode/adapter.js";
+import { createOpenCodeHandoffTarget } from "./adapters/opencode/handoff-target.js";
 import { createV1ToolHost } from "./adapters/opencode/tool-host.js";
-import { createOpenCodeVenue } from "./commands/go/venue-opencode.js";
 import { assembleOpenCodeHooks } from "./compose-opencode.js";
 import { composeProfile } from "./core/compose.js";
 import {
@@ -100,7 +100,7 @@ export async function buildPlugin(input: any, zooConfig: any, rawConfig?: any) {
     sessionAgentMap,
     toolHost: createV1ToolHost(client),
     adapter: createV1Adapter(),
-    venue: createOpenCodeVenue(
+    handoffTarget: createOpenCodeHandoffTarget(
       client,
       derivePrimaries(modeProfile?.agents ?? [], agentModes)[0],
       directory,

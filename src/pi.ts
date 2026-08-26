@@ -79,11 +79,14 @@ import { fileURLToPath } from "node:url";
 import { parse } from "../vendor/smol-toml/index.js";
 import { createPiAdapter } from "./adapters/pi/adapter.js";
 import {
+  createPiHandoffTarget,
+  type PiCommandCtx,
+} from "./adapters/pi/handoff-target.js";
+import {
   createPiToolHost,
   type PiContextHolder,
   type PiToolHostContext,
 } from "./adapters/pi/tool-host.js";
-import { createPiVenue, type PiCommandCtx } from "./commands/go/venue-pi.js";
 import {
   buildPiCommandRegistrationPlan,
   buildPiContextHandler,
@@ -357,9 +360,9 @@ export function buildPiContributions(
 
   // The default primary (first in profile array order among the
   // agent-modes-marked primaries), used to seed the identity machinery
-  // and to build the `/go` venue's executor agent.  An empty primary set
-  // leaves the venue's default primary undefined (fail-closed at handoff
-  // time).
+  // and to build the `/go` handoff target's executor agent.  An empty
+  // primary set leaves the handoff target's default primary undefined
+  // (fail-closed at handoff time).
   const primaries = derivePrimaries(modeProfile?.agents ?? [], agentModes);
 
   const deps: Deps = {
@@ -378,10 +381,10 @@ export function buildPiContributions(
     directory: process.cwd(),
     sessionAgentMap: sessionAgentMapFor(modeProfile, agentModes),
     toolHost: hostDeps?.toolHost,
-    // The `/go` handoff venue.  `getCommandCtx` reads the mutable pi
+    // The `/go` handoff target.  `getCommandCtx` reads the mutable pi
     // command-context holder, refreshed by the command handler before
-    // the venue runs.
-    venue: createPiVenue({
+    // the handoff target runs.
+    handoffTarget: createPiHandoffTarget({
       getCommandCtx: hostDeps?.getCommandCtx ?? (() => undefined),
       defaultPrimary: primaries[0],
     }),
@@ -648,12 +651,13 @@ export function buildPiHandlers(
           ),
         // Replace the current session with a fresh one re-bound to the
         // target identity.  Delegates to the pi command context's
-        // `newSession` (the same REPLACE operation the `/go` venue uses):
-        // the old session is torn down, the new one is created with the
-        // target as parent (so its bind-time `session_start`,
-        // `resources_discover`, and first `before_agent_start` already
-        // resolve the new primary), and the `withSession` callback runs
-        // against the fresh session's context.
+        // `newSession` (the same REPLACE operation the `/go` handoff
+        // target uses): the old session is torn down, the new one is
+        // created with the target as parent (so its bind-time
+        // `session_start`, `resources_discover`, and first
+        // `before_agent_start` already resolve the new primary), and the
+        // `withSession` callback runs against the fresh session's
+        // context.
         //
         // REGRESSION NOTE: pi invalidates the captured extension API and
         // command context after `newSession` — calling the old `piApi`
@@ -721,9 +725,9 @@ export function buildPiHandlers(
       toolHost,
       commandToolHost,
       piSwitchHost,
-      // The `/go` venue reads the latest pi command context through
-      // this supplier: the command handler refreshes the shared holder
-      // immediately before the handler body runs.
+      // The `/go` handoff target reads the latest pi command context
+      // through this supplier: the command handler refreshes the shared
+      // holder immediately before the handler body runs.
       getCommandCtx: () => contextHolder.current as PiCommandCtx | undefined,
     },
     rawConfig,

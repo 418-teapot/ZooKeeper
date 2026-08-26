@@ -51,7 +51,7 @@ subagent 的执行载体只有三种选择，各有代表实现：
 - **扩展可达**：扩展加载器把 `@earendil-works/pi-coding-agent` 别名到包入口（Bun 模式 `src/core/extensions/loader.ts:27/66`，Node/jiti 模式 loader.ts:90/105/119），扩展代码可直接 import
 - **扩展 API 自带的会话原语不可用**：`ctx.newSession`（types.ts:361-365）仅 command context 且为替换语义——`agent-session-runtime.ts:226-260` 会先 abort+dispose 旧会话（167-178）；`pi.sendUserMessage`（types.ts:1312-1315）只作用于当前会话（agent-session.ts:1481-1511）。必须走 SDK 工厂而非扩展 API
 
-  > **修正注记（2026-08-26）**：上述"会话原语不可用"的结论只适用于**非 command-context 的工具执行路径**。随本报告落地并已随产品发布的 `/go` handoff（`src/core/handoff.ts` + `src/commands/go/venue-pi.ts`）与 `/<agent>` 主 agent 切换（`src/commands/switch/`）均直接使用 command context 的 `ctx.newSession` 做会话替换（含 `withSession` 回调投递 plan reference / 执行工具裁剪），运行可用；后续 spike 结论 4-7 亦验证了该路径。即：SDK 工厂（路线 C）对"子会话委派"仍是唯一选择，但 command-context 的 `newSession` 替换语义已被证明可用于主 agent 切换与 handoff 类需求。
+  > **修正注记（2026-08-26）**：上述"会话原语不可用"的结论只适用于**非 command-context 的工具执行路径**。随本报告落地并已随产品发布的 `/go` handoff（`src/core/handoff.ts` + `src/adapters/pi/handoff-target.ts`）与 `/<agent>` 主 agent 切换（`src/commands/switch/`）均直接使用 command context 的 `ctx.newSession` 做会话替换（含 `withSession` 回调投递 plan reference / 执行工具裁剪），运行可用；后续 spike 结论 4-7 亦验证了该路径。即：SDK 工厂（路线 C）对"子会话委派"仍是唯一选择，但 command-context 的 `newSession` 替换语义已被证明可用于主 agent 切换与 handoff 类需求。
 - **工具白名单可防递归**：`createAgentSession({ tools })` 统一过滤内置与扩展注册工具（sdk.ts:246；`agent-session.ts:2463-2478` 对 `_extensionRunner.getAllRegisteredTools()` 施加同一 isAllowedTool 过滤，2535-2539 只有名单内工具进 active 集合）——白名单不含委派工具名即关闭递归通道
 - **终止原语完备**：`AgentSession.abort()`（agent-session.ts:1550，stopReason 置 "aborted"，底层 `packages/agent/src/agent.ts:319/519`）+ `dispose()`（agent-session.ts:839-845，全量拆除含 bash 子进程）
 

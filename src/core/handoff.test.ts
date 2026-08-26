@@ -2,9 +2,9 @@
  * Tests for the host-agnostic handoff protocol (`src/core/handoff.ts`).
  *
  * Covers the exact six-step call order on success and the
- * deliver-failure atomicity guarantee: a throwing venue `deliver` must
- * NOT mark the plan `executing` (the plan file stays untouched), and the
- * handoff must be re-runnable afterwards.
+ * deliver-failure atomicity guarantee: a throwing handoff target
+ * `deliver` must NOT mark the plan `executing` (the plan file stays
+ * untouched), and the handoff must be re-runnable afterwards.
  */
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { _resetForTesting, initLogger } from "../utils/logger.js";
-import { executeHandoff, type Venue } from "./handoff.js";
+import { executeHandoff, type HandoffTarget } from "./handoff.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -67,12 +67,12 @@ function cleanupPlan(planPath: string): void {
   }
 }
 
-/** A fake venue recording the exact order of its method invocations. */
-function fakeVenue(overrides?: {
+/** A fake handoff target recording the exact order of its method calls. */
+function fakeHandoffTarget(overrides?: {
   deliverError?: Error;
   onDeliver?: (planReference: string) => void;
 }): {
-  venue: Venue;
+  handoffTarget: HandoffTarget;
   calls: string[];
   createArgs: Array<{ parentage: string; title: string }>;
   deliverArgs: Array<{ id: string; planReference: string }>;
@@ -83,8 +83,8 @@ function fakeVenue(overrides?: {
   const deliverArgs: Array<{ id: string; planReference: string }> = [];
   const focusArgs: Array<{ id: string }> = [];
   const failDeliver = false;
-  const venue: Venue = {
-    createVenue: async (ctx) => {
+  const handoffTarget: HandoffTarget = {
+    create: async (ctx) => {
       calls.push("create");
       createArgs.push(ctx);
       return { id: "new-session-1" };
@@ -105,7 +105,13 @@ function fakeVenue(overrides?: {
       focusArgs.push({ id: session.id });
     },
   };
-  return { venue, calls, createArgs, deliverArgs, focusArgs };
+  return {
+    handoffTarget,
+    calls,
+    createArgs,
+    deliverArgs,
+    focusArgs,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -116,14 +122,18 @@ describe("executeHandoff — success path step order", () => {
   it("runs resolve → create → install → deliver → markExecuting → focus in order", async () => {
     const sessionID = `test-order-${Date.now()}`;
     const { planPath, baseDir } = createPlanFile("planning-done");
-    const fake = fakeVenue();
+    const fake = fakeHandoffTarget();
 
-    await executeHandoff({ venue: fake.venue, sessionID, directory: baseDir });
+    await executeHandoff({
+      handoffTarget: fake.handoffTarget,
+      sessionID,
+      directory: baseDir,
+    });
 
     assert.deepEqual(fake.calls, ["create", "install", "deliver", "focus"]);
     // The plan file is marked executing AFTER deliver (the mark is not a
-    // venue call, but it must happen before focus — verified by the plan
-    // file content being "executing" when the handoff completes).
+    // handoff target call, but it must happen before focus — verified by
+    // the plan file content being "executing" when the handoff completes).
     assert.deepEqual(fake.createArgs, [
       { parentage: sessionID, title: "Execute: test-plan" },
     ]);
@@ -151,12 +161,14 @@ describe("executeHandoff — deliver-failure atomicity", () => {
     const sessionID = `test-deliver-fail-${Date.now()}`;
     const { planPath, baseDir } = createPlanFile("planning-done");
     const before = readFileSync(planPath, "utf-8");
-    const fake = fakeVenue({ deliverError: new Error("network down") });
+    const fake = fakeHandoffTarget({
+      deliverError: new Error("network down"),
+    });
 
     await assert.rejects(
       () =>
         executeHandoff({
-          venue: fake.venue,
+          handoffTarget: fake.handoffTarget,
           sessionID,
           directory: baseDir,
         }),
@@ -177,11 +189,11 @@ describe("executeHandoff — deliver-failure atomicity", () => {
     const { planPath, baseDir } = createPlanFile("planning-done");
 
     // First run: deliver fails.
-    const failFake = fakeVenue({ deliverError: new Error("boom") });
+    const failFake = fakeHandoffTarget({ deliverError: new Error("boom") });
     await assert.rejects(
       () =>
         executeHandoff({
-          venue: failFake.venue,
+          handoffTarget: failFake.handoffTarget,
           sessionID,
           directory: baseDir,
         }),
@@ -192,9 +204,9 @@ describe("executeHandoff — deliver-failure atomicity", () => {
     );
 
     // Second run (same plan still planning-done): succeeds and marks it.
-    const okFake = fakeVenue();
+    const okFake = fakeHandoffTarget();
     await executeHandoff({
-      venue: okFake.venue,
+      handoffTarget: okFake.handoffTarget,
       sessionID,
       directory: baseDir,
     });
@@ -213,15 +225,19 @@ describe("executeHandoff — plan resolution", () => {
   it("throws the user-facing message when no planning-done plan exists", async () => {
     const sessionID = `test-no-plan-${Date.now()}`;
     const emptyDir = tmpDir();
-    const fake = fakeVenue();
+    const fake = fakeHandoffTarget();
 
     await assert.rejects(
       () =>
-        executeHandoff({ venue: fake.venue, sessionID, directory: emptyDir }),
+        executeHandoff({
+          handoffTarget: fake.handoffTarget,
+          sessionID,
+          directory: emptyDir,
+        }),
       /No plan with status "planning-done"/,
     );
 
-    // No venue step runs without a resolved plan.
+    // No handoff target step runs without a resolved plan.
     assert.deepEqual(fake.calls, []);
     try {
       rmSync(emptyDir, { recursive: true, force: true });

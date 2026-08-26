@@ -1,8 +1,8 @@
 /**
- * pi venue for the plan handoff protocol.
+ * pi handoff target for the plan handoff protocol.
  *
  * Adapts pi's command-context session-replacement API to the
- * host-agnostic `Venue` contract used by `executeHandoff` (in
+ * host-agnostic `HandoffTarget` contract used by `executeHandoff` (in
  * `src/core/handoff.ts`).
  *
  * pi's `ctx.newSession` is a REPLACE operation that both creates the new
@@ -15,7 +15,7 @@
  * @module
  */
 
-import type { Venue } from "../../core/handoff.js";
+import type { HandoffTarget } from "../../core/handoff.js";
 import { getPrimary, setPrimary } from "../../core/subagent/identity.js";
 import { log } from "../../utils/logger.js";
 
@@ -24,16 +24,16 @@ import { log } from "../../utils/logger.js";
 // ---------------------------------------------------------------------------
 
 /**
- * The pi command-context surface the venue needs.
+ * The pi command-context surface the handoff target needs.
  *
  * Duck-typed against pi's `ExtensionCommandContext` (the command handler
  * context pi passes to a registered command): `newSession` replaces the
  * current session and runs the `withSession` callback against the fresh
- * `ReplacedSessionContext`.  The venue's `deliver` step uses the
- * callback's `sendUserMessage` to accept the plan reference as the new
- * session's first user message (the message is written into session state
- * before the first LLM turn runs; the turn itself is not part of the
- * venue's guarantee).
+ * `ReplacedSessionContext`.  The handoff target's `deliver` step uses
+ * the callback's `sendUserMessage` to accept the plan reference as the
+ * new session's first user message (the message is written into session
+ * state before the first LLM turn runs; the turn itself is not part of
+ * the handoff target's guarantee).
  * The pi package is never imported.
  */
 export interface PiCommandCtx {
@@ -48,25 +48,25 @@ export interface PiCommandCtx {
 }
 
 // ---------------------------------------------------------------------------
-// Venue factory
+// Handoff target factory
 // ---------------------------------------------------------------------------
 
 /**
- * Build the pi venue from a command-context provider and the default
- * primary.
+ * Build the pi handoff target from a command-context provider and the
+ * default primary.
  *
- * `getCommandCtx` is a supplier (not a value) so the venue always reads
- * the latest pi command context from the entry point's mutable holder —
- * the command handler refreshes that holder with pi's fresh command
- * context immediately before the venue runs.
+ * `getCommandCtx` is a supplier (not a value) so the handoff target
+ * always reads the latest pi command context from the entry point's
+ * mutable holder — the command handler refreshes that holder with pi's
+ * fresh command context immediately before the handoff target runs.
  *
  * @param opts - The context supplier and the default primary agent name.
- * @returns The pi venue.
+ * @returns The pi handoff target.
  */
-export function createPiVenue(opts: {
+export function createPiHandoffTarget(opts: {
   getCommandCtx: () => PiCommandCtx | null | undefined;
   defaultPrimary: string | undefined;
-}): Venue {
+}): HandoffTarget {
   const { getCommandCtx, defaultPrimary } = opts;
   /** The parent session id stashed at create time for the deliver step. */
   let parentage: string | undefined;
@@ -88,7 +88,7 @@ export function createPiVenue(opts: {
      * @throws Error when the command context is unavailable or lacks the
      *   `newSession` API (fail-closed).
      */
-    createVenue(ctx) {
+    create(ctx) {
       const cmdCtx = getCommandCtx();
       if (!cmdCtx?.newSession) {
         throw new Error(

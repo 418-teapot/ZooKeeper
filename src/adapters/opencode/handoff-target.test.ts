@@ -1,7 +1,8 @@
 /**
- * Tests for the OpenCode venue (`src/commands/go/venue-opencode.ts`).
+ * Tests for the OpenCode handoff target
+ * (`src/adapters/opencode/handoff-target.ts`).
  *
- * The venue is exercised through the full handoff protocol
+ * The handoff target is exercised through the full handoff protocol
  * (`executeHandoff`) with a fake PlanClient: session creation carries
  * the fixture default primary agent, the plan reference is delivered
  * via `promptAsync` BEFORE the plan file is marked `executing`, and a
@@ -15,7 +16,10 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { executeHandoff } from "../../core/handoff.js";
 import { buildConfirmText } from "../../core/plan.js";
 import { _resetForTesting, initLogger } from "../../utils/logger.js";
-import { createOpenCodeVenue, type PlanClient } from "./venue-opencode.js";
+import {
+  createOpenCodeHandoffTarget,
+  type PlanClient,
+} from "./handoff-target.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -24,7 +28,10 @@ import { createOpenCodeVenue, type PlanClient } from "./venue-opencode.js";
 let _tmpCounter = 0;
 
 function tmpDir(): string {
-  const dir = join(tmpdir(), `zoo-venue-oc-${Date.now()}-${_tmpCounter++}`);
+  const dir = join(
+    tmpdir(),
+    `zoo-handoff-target-oc-${Date.now()}-${_tmpCounter++}`,
+  );
   mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -115,14 +122,22 @@ function makeClient(overrides?: Partial<PlanClient>): {
 // Session creation
 // ---------------------------------------------------------------------------
 
-describe("OpenCode venue — session creation", () => {
+describe("OpenCode handoff target — session creation", () => {
   it("creates the session with the fixture default primary agent and the plan-slug title", async () => {
     const sessionID = `test-create-${Date.now()}`;
     const { planPath, baseDir } = createPlanFile("planning-done");
     const { client, createCalls } = makeClient();
 
-    const venue = createOpenCodeVenue(client, DEFAULT_PRIMARY, baseDir);
-    await executeHandoff({ venue, sessionID, directory: baseDir });
+    const handoffTarget = createOpenCodeHandoffTarget(
+      client,
+      DEFAULT_PRIMARY,
+      baseDir,
+    );
+    await executeHandoff({
+      handoffTarget,
+      sessionID,
+      directory: baseDir,
+    });
 
     assert.equal(createCalls.length, 1);
     assert.equal(createCalls[0].body.agent, DEFAULT_PRIMARY);
@@ -137,9 +152,13 @@ describe("OpenCode venue — session creation", () => {
     const { planPath, baseDir } = createPlanFile("planning-done");
     const { client } = makeClient();
 
-    const venue = createOpenCodeVenue(client, undefined, baseDir);
+    const handoffTarget = createOpenCodeHandoffTarget(
+      client,
+      undefined,
+      baseDir,
+    );
     await assert.rejects(
-      () => executeHandoff({ venue, sessionID, directory: baseDir }),
+      () => executeHandoff({ handoffTarget, sessionID, directory: baseDir }),
       /No default primary agent is configured/,
     );
     // The plan stays planning-done — nothing was delivered or marked.
@@ -155,9 +174,13 @@ describe("OpenCode venue — session creation", () => {
     const { planPath, baseDir } = createPlanFile("planning-done");
     const client: PlanClient = {};
 
-    const venue = createOpenCodeVenue(client, DEFAULT_PRIMARY, baseDir);
+    const handoffTarget = createOpenCodeHandoffTarget(
+      client,
+      DEFAULT_PRIMARY,
+      baseDir,
+    );
     await assert.rejects(
-      () => executeHandoff({ venue, sessionID, directory: baseDir }),
+      () => executeHandoff({ handoffTarget, sessionID, directory: baseDir }),
       /Session creation API is not available/,
     );
     assert.ok(
@@ -172,7 +195,7 @@ describe("OpenCode venue — session creation", () => {
 // Delivery ordering + atomicity
 // ---------------------------------------------------------------------------
 
-describe("OpenCode venue — delivery ordering and atomicity", () => {
+describe("OpenCode handoff target — delivery ordering and atomicity", () => {
   it("promptAsync runs BEFORE the plan is marked executing", async () => {
     const sessionID = `test-order-${Date.now()}`;
     const { planPath, baseDir } = createPlanFile("planning-done");
@@ -191,8 +214,12 @@ describe("OpenCode venue — delivery ordering and atomicity", () => {
       },
     });
 
-    const venue = createOpenCodeVenue(client, DEFAULT_PRIMARY, baseDir);
-    await executeHandoff({ venue, sessionID, directory: baseDir });
+    const handoffTarget = createOpenCodeHandoffTarget(
+      client,
+      DEFAULT_PRIMARY,
+      baseDir,
+    );
+    await executeHandoff({ handoffTarget, sessionID, directory: baseDir });
 
     // The plan must still be planning-done while the reference is being
     // delivered — the executing mark happens only after.
@@ -207,8 +234,12 @@ describe("OpenCode venue — delivery ordering and atomicity", () => {
     const { planPath, baseDir } = createPlanFile("planning-done");
     const { client, promptAsyncCalls } = makeClient();
 
-    const venue = createOpenCodeVenue(client, DEFAULT_PRIMARY, baseDir);
-    await executeHandoff({ venue, sessionID, directory: baseDir });
+    const handoffTarget = createOpenCodeHandoffTarget(
+      client,
+      DEFAULT_PRIMARY,
+      baseDir,
+    );
+    await executeHandoff({ handoffTarget, sessionID, directory: baseDir });
 
     assert.equal(promptAsyncCalls.length, 1);
     assert.equal(promptAsyncCalls[0].path.id, "new-session-456");
@@ -230,14 +261,18 @@ describe("OpenCode venue — delivery ordering and atomicity", () => {
         promptAsync: () => Promise.reject(new Error("delivery network error")),
       },
     });
-    const failingVenue = createOpenCodeVenue(
+    const failingHandoffTarget = createOpenCodeHandoffTarget(
       failing.client,
       DEFAULT_PRIMARY,
       baseDir,
     );
     await assert.rejects(
       () =>
-        executeHandoff({ venue: failingVenue, sessionID, directory: baseDir }),
+        executeHandoff({
+          handoffTarget: failingHandoffTarget,
+          sessionID,
+          directory: baseDir,
+        }),
       /delivery network error/,
     );
     // Byte-identical plan file — still planning-done.
@@ -245,8 +280,16 @@ describe("OpenCode venue — delivery ordering and atomicity", () => {
 
     // Re-run succeeds and marks the plan.
     const ok = makeClient();
-    const okVenue = createOpenCodeVenue(ok.client, DEFAULT_PRIMARY, baseDir);
-    await executeHandoff({ venue: okVenue, sessionID, directory: baseDir });
+    const okHandoffTarget = createOpenCodeHandoffTarget(
+      ok.client,
+      DEFAULT_PRIMARY,
+      baseDir,
+    );
+    await executeHandoff({
+      handoffTarget: okHandoffTarget,
+      sessionID,
+      directory: baseDir,
+    });
     assert.ok(readFileSync(planPath, "utf-8").includes("status: executing"));
 
     cleanupPlan(planPath);
@@ -257,8 +300,12 @@ describe("OpenCode venue — delivery ordering and atomicity", () => {
     const { planPath, baseDir } = createPlanFile("planning-done");
     const { client, promptCalls } = makeClient();
 
-    const venue = createOpenCodeVenue(client, DEFAULT_PRIMARY, baseDir);
-    await executeHandoff({ venue, sessionID, directory: baseDir });
+    const handoffTarget = createOpenCodeHandoffTarget(
+      client,
+      DEFAULT_PRIMARY,
+      baseDir,
+    );
+    await executeHandoff({ handoffTarget, sessionID, directory: baseDir });
 
     assert.equal(promptCalls.length, 1);
     assert.equal(promptCalls[0].path.id, "new-session-456");
@@ -274,7 +321,7 @@ describe("OpenCode venue — delivery ordering and atomicity", () => {
 // TUI focus
 // ---------------------------------------------------------------------------
 
-describe("OpenCode venue — TUI focus", () => {
+describe("OpenCode handoff target — TUI focus", () => {
   it("navigates home then publishes tui.session.select for the new session", async () => {
     const sessionID = `test-focus-${Date.now()}`;
     const { planPath, baseDir } = createPlanFile("planning-done");
@@ -291,8 +338,12 @@ describe("OpenCode venue — TUI focus", () => {
       },
     });
 
-    const venue = createOpenCodeVenue(client, DEFAULT_PRIMARY, baseDir);
-    await executeHandoff({ venue, sessionID, directory: baseDir });
+    const handoffTarget = createOpenCodeHandoffTarget(
+      client,
+      DEFAULT_PRIMARY,
+      baseDir,
+    );
+    await executeHandoff({ handoffTarget, sessionID, directory: baseDir });
 
     assert.deepEqual(navigations, ["home"]);
     assert.equal(publishes.length, 1);

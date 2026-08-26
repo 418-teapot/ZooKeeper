@@ -4,8 +4,8 @@
  * Coordinates the `/go` handoff as a fixed six-step sequence.  The plan
  * resolution and status transition live in `./plan.ts`; the session
  * creation, prompt delivery, and TUI focus are delegated to a
- * host-provided `Venue` so the same orchestration drives both the
- * OpenCode and pi hosts.
+ * host-provided `HandoffTarget` so the same orchestration drives both
+ * the OpenCode and pi hosts.
  *
  * The step order is deliberately chosen so that the plan file is only
  * marked `executing` AFTER the plan reference has been delivered into
@@ -25,7 +25,7 @@ import {
 } from "./plan.js";
 
 // ---------------------------------------------------------------------------
-// Venue contract
+// Handoff target contract
 // ---------------------------------------------------------------------------
 
 /**
@@ -36,7 +36,7 @@ import {
  * a throwing method aborts the handoff before the plan is marked
  * `executing`.
  */
-export interface Venue {
+export interface HandoffTarget {
   /**
    * Create the new session that will execute the plan.
    *
@@ -45,10 +45,7 @@ export interface Venue {
    * @returns The created session id (may be empty on hosts whose TUI
    *   binds the replacement session without an id).
    */
-  createVenue(ctx: {
-    parentage: string;
-    title: string;
-  }): Promise<{ id: string }>;
+  create(ctx: { parentage: string; title: string }): Promise<{ id: string }>;
   /**
    * Prepare the new session's agent identity.
    *
@@ -88,24 +85,25 @@ export interface Venue {
  *
  * Exact order: resolve (`findPlanByStatus(directory, "planning-done")`,
  * throwing with the user-facing message when none exists) →
- * `venue.createVenue({ parentage: sessionID, title })` →
- * `venue.installAgent()` → `venue.deliver(session, planReference)` →
- * mark `executing` (only after delivery succeeded — a deliver failure
- * leaves the plan file untouched so `/go` is re-runnable) →
- * `venue.focus(session)`.
+ * `handoffTarget.create({ parentage: sessionID, title })` →
+ * `handoffTarget.installAgent()` →
+ * `handoffTarget.deliver(session, planReference)` → mark `executing`
+ * (only after delivery succeeded — a deliver failure leaves the plan
+ * file untouched so `/go` is re-runnable) →
+ * `handoffTarget.focus(session)`.
  *
- * @param opts - The handoff inputs: the venue, the current session id
- *   (becomes the new session's parent), and the workspace directory
- *   where plan files live.
- * @throws Error when no `planning-done` plan exists, the venue fails at
- *   any step, or the plan file cannot be written.
+ * @param opts - The handoff inputs: the handoff target, the current
+ *   session id (becomes the new session's parent), and the workspace
+ *   directory where plan files live.
+ * @throws Error when no `planning-done` plan exists, the handoff target
+ *   fails at any step, or the plan file cannot be written.
  */
 export async function executeHandoff(opts: {
-  venue: Venue;
+  handoffTarget: HandoffTarget;
   sessionID: string;
   directory: string;
 }): Promise<void> {
-  const { venue, sessionID, directory } = opts;
+  const { handoffTarget, sessionID, directory } = opts;
 
   // --- 1. Resolve the planning-done plan ---
   const plan = findPlanByStatus(directory, "planning-done");
@@ -124,7 +122,7 @@ export async function executeHandoff(opts: {
   });
 
   // --- 2. Create the new session ---
-  const session = await venue.createVenue({
+  const session = await handoffTarget.create({
     parentage: sessionID,
     title: `Execute: ${plan.slug}`,
   });
@@ -133,7 +131,7 @@ export async function executeHandoff(opts: {
   });
 
   // --- 3. Prepare the session's agent identity ---
-  await venue.installAgent();
+  await handoffTarget.installAgent();
 
   // --- 4. Deliver the plan reference into the new session ---
   //
@@ -141,7 +139,7 @@ export async function executeHandoff(opts: {
   // `executing` ONLY after delivery succeeds, so a deliver failure
   // leaves the plan file untouched and `/go` can be re-run.
   const planReference = buildPlanReference(plan.path);
-  await venue.deliver(session, planReference);
+  await handoffTarget.deliver(session, planReference);
   log("go-command", "prompt_injected", sessionID, undefined, "info", {
     newSessionID: session.id,
   });
@@ -155,5 +153,5 @@ export async function executeHandoff(opts: {
   });
 
   // --- 6. Move the TUI focus to the new session ---
-  await venue.focus(session);
+  await handoffTarget.focus(session);
 }

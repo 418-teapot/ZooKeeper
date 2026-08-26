@@ -24,7 +24,7 @@
 import type { ToolHost } from "./client/tool-host.js";
 import type { AgentModeMap, ContextPruningConfig } from "./config-types.js";
 import type { HostAdapter } from "./context/lens.js";
-import type { Venue } from "./handoff.js";
+import type { HandoffTarget } from "./handoff.js";
 import type { AgentPermissionMap } from "./subagent/deny-tools.js";
 import type { ValidationLimits } from "./validate.js";
 
@@ -151,10 +151,10 @@ export interface Deps {
   /**
    * The host-specific session handoff surface for the `/go` command.
    *
-   * Undefined on hosts that do not wire a venue — the `/go` command
-   * unit then fails closed with the missing-client error.
+   * Undefined on hosts that do not wire a handoff target — the `/go`
+   * command unit then fails closed with the missing-client error.
    */
-  venue?: Venue;
+  handoffTarget?: HandoffTarget;
   /** The host client (OpenCode / pi), opaque to this layer. */
   client: any;
   /** The plugin working directory. */
