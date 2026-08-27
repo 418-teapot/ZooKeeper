@@ -36,9 +36,8 @@
  *    lifecycle orchestration (`runSubagent`), forwarding the parent abort
  *    signal when the tool context carries one.
  * 6. Maps the run outcome onto the tool's text return: an `ok` result is
- *    the subagent text verbatim; every failure variant (`timeout`,
- *    `aborted`, `error`) returns the partial text plus a short Chinese
- *    reason line.
+ *    the subagent text verbatim; every failure variant (`aborted`,
+ *    `error`) returns the partial text plus a short Chinese reason line.
  *
  * @module
  */
@@ -138,11 +137,6 @@ function formatSubagentResult(result: SubagentResult): string {
   switch (result.kind) {
     case "ok":
       return result.text;
-    case "timeout":
-      return appendReason(
-        result.text,
-        "子 agent 运行超时，未在限定时间内完成。",
-      );
     case "aborted":
       return appendReason(result.text, "子 agent 运行被中止。");
     case "error":

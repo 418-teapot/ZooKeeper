@@ -49,15 +49,12 @@ export interface SubagentProgress {
 /**
  * The outcome of a subagent run.
  *
- * A discriminated union covering exactly four outcomes — `ok`, `timeout`,
- * `aborted`, and `error`.  Every variant carries `text`: the assistant
- * text produced before the outcome, so even failures rescue whatever
- * partial output was generated.  `timeout` is produced by lifecycle
- * orchestration, not by a driver.
+ * A discriminated union covering the three outcomes — `ok`, `aborted`, and
+ * `error`.  Every variant carries `text`: the assistant text produced before
+ * the outcome, so even failures rescue whatever partial output was generated.
  */
 export type SubagentResult =
   | { kind: "ok"; text: string }
-  | { kind: "timeout"; text: string }
   | { kind: "aborted"; text: string }
   | { kind: "error"; text: string; errorMessage: string };
 

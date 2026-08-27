@@ -1,43 +1,27 @@
 /**
  * Tests for the lifecycle orchestration in `run.ts`.
  *
- * Covers every run outcome: normal passthrough, timeout collapse, parent
- * abort propagation (both to the driver signal and to the result), driver
- * throw collapse, progress pass-through, identity resolution inside the
- * driver callback, and the module-level concurrency semaphore (queuing a
- * 5th run and releasing a slot after a failure).
+ * Covers every remaining run outcome: normal passthrough, driver throw
+ * collapse, parent abort propagation (both to the driver signal and to the
+ * result), progress pass-through, and identity resolution inside the driver
+ * callback.  Concurrency and timeout behaviours were removed with the
+ * corresponding constraints and are no longer orchestrated here.
  */
 import assert from "node:assert/strict";
-import { afterEach, beforeEach, describe, it } from "node:test";
+import { describe, it } from "node:test";
 import type {
   SubagentDriver,
   SubagentProgress,
   SubagentResult,
 } from "./driver.js";
 import { type Identity, resolveIdentity } from "./identity.js";
-import {
-  _resetForTesting,
-  runSubagent,
-  SUBAGENT_MAX_CONCURRENCY,
-  SUBAGENT_TIMEOUT_MS,
-} from "./run.js";
-
-// The module-level semaphore state is process-global (bun shares one
-// isolate across every test file), so reset it between tests to keep the
-// concurrency assertions deterministic.
-beforeEach(() => {
-  _resetForTesting();
-});
-
-afterEach(() => {
-  _resetForTesting();
-});
+import { runSubagent } from "./run.js";
 
 /**
  * Flush pending microtasks and one macrotask turn.
  *
  * Lets promises queued by synchronous drivers settle before asserting on
- * observable side effects like start order.
+ * observable side effects like signal state.
  */
 function tick(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
@@ -52,20 +36,6 @@ function request(agent = "worker") {
 function freshSignal(): AbortSignal {
   return new AbortController().signal;
 }
-
-// ---------------------------------------------------------------------------
-// Module constants
-// ---------------------------------------------------------------------------
-
-describe("module constants", () => {
-  it("hardcodes concurrency to 4", () => {
-    assert.equal(SUBAGENT_MAX_CONCURRENCY, 4);
-  });
-
-  it("hardcodes the timeout to 30 minutes", () => {
-    assert.equal(SUBAGENT_TIMEOUT_MS, 30 * 60 * 1000);
-  });
-});
 
 // ---------------------------------------------------------------------------
 // Outcome mapping — passthrough
@@ -243,70 +213,6 @@ describe("runSubagent — parent abort", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Outcome mapping — timeout
-// ---------------------------------------------------------------------------
-
-describe("runSubagent — timeout", () => {
-  it("collapses a timeout into a timeout result, preserving the driver text", async () => {
-    const driver: SubagentDriver = {
-      async run(_req, ctx): Promise<SubagentResult> {
-        // A well-behaved driver stops promptly on abort.
-        return new Promise<SubagentResult>((resolve) => {
-          if (ctx.signal.aborted) {
-            resolve({ kind: "aborted", text: "partial work" });
-          } else {
-            ctx.signal.addEventListener(
-              "abort",
-              () => resolve({ kind: "aborted", text: "partial work" }),
-              { once: true },
-            );
-          }
-        });
-      },
-    };
-    const result = await runSubagent(
-      driver,
-      request(),
-      {
-        signal: freshSignal(),
-      },
-      { timeoutMs: 20 },
-    );
-    assert.deepEqual(result, { kind: "timeout", text: "partial work" });
-  });
-
-  it("fires the driver's received signal on timeout", async () => {
-    let received: AbortSignal | undefined;
-    const driver: SubagentDriver = {
-      async run(_req, ctx): Promise<SubagentResult> {
-        received = ctx.signal;
-        return new Promise<SubagentResult>((resolve) => {
-          if (ctx.signal.aborted) {
-            resolve({ kind: "aborted", text: "" });
-          } else {
-            ctx.signal.addEventListener(
-              "abort",
-              () => resolve({ kind: "aborted", text: "" }),
-              { once: true },
-            );
-          }
-        });
-      },
-    };
-    const result = await runSubagent(
-      driver,
-      request(),
-      {
-        signal: freshSignal(),
-      },
-      { timeoutMs: 20 },
-    );
-    assert.ok(received?.aborted);
-    assert.equal(result.kind, "timeout");
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Identity binding
 // ---------------------------------------------------------------------------
 
@@ -327,105 +233,5 @@ describe("runSubagent — identity binding", () => {
     });
     assert.deepEqual(seen, { kind: "subagent", name: "delegate" });
     assert.equal(result.kind, "ok");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Concurrency semaphore
-// ---------------------------------------------------------------------------
-
-describe("runSubagent — concurrency semaphore", () => {
-  it("queues a 5th concurrent run until a slot frees", async () => {
-    const starts: string[] = [];
-    const gates: Array<() => void> = [];
-
-    const driver: SubagentDriver = {
-      async run(req): Promise<SubagentResult> {
-        starts.push(req.agent);
-        return new Promise<SubagentResult>((resolve) => {
-          gates.push(() => resolve({ kind: "ok", text: "done" }));
-        });
-      },
-    };
-
-    const pending = Promise.all(
-      ["a", "b", "c", "d", "e"].map((agent) =>
-        runSubagent(driver, request(agent), { signal: freshSignal() }),
-      ),
-    );
-
-    // Only four runs start; the fifth waits for a slot.
-    await tick();
-    assert.equal(starts.length, 4);
-    assert.deepEqual(starts, ["a", "b", "c", "d"]);
-
-    // Freeing one slot lets the queued fifth run start.
-    gates[0]();
-    await tick();
-    assert.equal(starts.length, 5);
-    assert.equal(starts[4], "e");
-
-    // Release the rest so every run completes and nothing dangles.
-    for (let i = 1; i < gates.length; i++) {
-      gates[i]();
-    }
-    const results = await pending;
-    assert.equal(results.length, 5);
-    assert.ok(results.every((r) => r.kind === "ok"));
-  });
-
-  it("releases the semaphore after a driver failure", async () => {
-    const starts: string[] = [];
-    let rejectFailing: ((reason: Error) => void) | undefined;
-    const options = { concurrency: 1, timeoutMs: 1000 };
-
-    // The first driver holds its slot until explicitly rejected, so the
-    // second run is provably queued while the slot is still busy.
-    const failing = runSubagent(
-      {
-        async run(req): Promise<SubagentResult> {
-          starts.push(req.agent);
-          return new Promise<SubagentResult>((_, reject) => {
-            rejectFailing = reject;
-          });
-        },
-      },
-      request("failing"),
-      { signal: freshSignal() },
-      options,
-    );
-
-    await tick();
-    assert.deepEqual(starts, ["failing"]);
-
-    const after = runSubagent(
-      {
-        async run(req): Promise<SubagentResult> {
-          starts.push(req.agent);
-          return { kind: "ok", text: "ok" };
-        },
-      },
-      request("after"),
-      { signal: freshSignal() },
-      options,
-    );
-
-    // The second run is queued behind the still-held single slot.
-    await tick();
-    assert.deepEqual(starts, ["failing"]);
-
-    // Rejecting the first run collapses it to an error and frees the slot.
-    rejectFailing?.(new Error("boom"));
-    const failingResult = await failing;
-    assert.deepEqual(failingResult, {
-      kind: "error",
-      text: "",
-      errorMessage: "boom",
-    });
-
-    // The failure freed the slot; the queued run proceeds.
-    const afterResult = await after;
-    assert.deepEqual(afterResult, { kind: "ok", text: "ok" });
-    assert.deepEqual(starts, ["failing", "after"]);
   });
 });

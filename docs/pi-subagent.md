@@ -64,7 +64,7 @@ src/core/subagent/          纯逻辑：policy.ts（deny→tools 白名单）
                             identity.ts（ALS 身份）result.ts（事件流→结果）
     │
 src/adapters/pi/subagent.ts 薄适配：createAgentSession 调用、
-                            ALS.run 包裹、abort/超时接线
+                            ALS.run 包裹、abort 接线
     │
 新工具单元入 src/registry.ts → src/compose-pi.ts 新增 tool 槽位
                             → pi.registerTool
@@ -107,22 +107,19 @@ type Identity = { kind: "primary"; name: "dolphin" | "mola" }
 
 ### 4.5 终止与资源治理
 
-三个终止触发源汇聚到同一条路径：
+终止是协作式的：唯一触发源是父工具的 signal，直接传播到子会话：
 
 ```typescript
 // 用户 Ctrl+C：父工具的 signal 触发 → 传播子会话
 signal.addEventListener("abort", () => void session.abort());
-// 超时：同一路径
-const timer = setTimeout(() => void session.abort(), timeoutMs);
 try {
   await session.prompt(taskText);
 } finally {
-  clearTimeout(timer);
   session.dispose();   // 无论成败，物理拆除
 }
 ```
 
-对比路线 B 的 SIGTERM→SIGKILL 进程树升级（pi-subagents `OwnedProcessTreeController`），进程内终止无进程树残留，但属协作式——残余风险见 §5。并发信号量、超时、上下文大小预算 MVP 即内置，不事后补。
+对比路线 B 的 SIGTERM→SIGKILL 进程树升级（pi-subagents `OwnedProcessTreeController`），进程内终止无进程树残留，但属协作式——残余风险见 §5。运行无并发上限、无超时、无上下文大小预算：父信号未触发时，一次 run 只会因会话自然结束而终止，MVP 不引入额外资源治理，需时再补。
 
 ### 4.6 可观测性与续跑
 
@@ -138,10 +135,10 @@ pi TUI 绑定单会话、切换为替换语义，opencode 式"进入子会话围
 | 风险 | 影响 | 对策 |
 |---|---|---|
 | ALS 单例依赖 jiti 模块缓存行为 | 身份分发根基不成立 | **spike 先行验证**；退路：按 `SessionManager.inMemory()` 等特征识别子会话 |
-| 协作式 abort 无物理兜底 | 自定义工具无视 signal 时无法强杀 | 白名单只放受信工具；超时升级为 dispose |
+| 协作式 abort 无物理兜底 | 自定义工具无视 signal 时无法强杀 | 白名单只放受信工具；无超时升级兜底，需强杀时另加 dispose 路径 |
 | 子会话未捕获异常带走主会话 | 用户主会话现场丢失 | 子会话全程 try/catch + finally dispose，错误收敛为工具返回值 |
 | pi 升级改变包级 API/loader 行为 | 进程内假设悄悄失效 | 薄 adapter 封装：降级路线 B 只换 adapter 层，core/subagent 纯逻辑两路线共用 |
-| 内存/事件循环共享 | 大上下文子会话拖垮父会话 | 并发信号量 + 上下文预算配额 |
+| 内存/事件循环共享 | 大上下文子会话拖垮父会话 | 暂无内置治理；必要时引入上下文预算配额（当前明确不设限） |
 
 实施顺序：**① spike 验证 ALS 穿透与模块单例 → ② 身份/角色基础设施 + 双主切换 → ③ subagent 工具单元**。多主支持是前置依赖——身份机制是两者的共同地基。
 

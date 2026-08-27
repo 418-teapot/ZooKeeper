@@ -572,22 +572,6 @@ describe("subagent tool execute — result mapping", () => {
     );
   });
 
-  it("maps a timeout result to the partial text plus a reason line", async () => {
-    const { driver } = fakeDriver({ kind: "timeout", text: "partial output" });
-    setPrimary("dolphin");
-    const t = tool(makeDeps({ subagentDriver: driver }));
-    const result = await t.execute(
-      { agent: "beaver", description: "实现任务", prompt: "t" },
-      TOOL_CTX,
-    );
-
-    assert.ok(
-      result.includes("partial output"),
-      `missing partial text: ${result}`,
-    );
-    assert.ok(result.includes("超时"), `missing timeout reason: ${result}`);
-  });
-
   it("maps an aborted result to the partial text plus a reason line", async () => {
     const { driver } = fakeDriver({ kind: "aborted", text: "partial output" });
     setPrimary("dolphin");
