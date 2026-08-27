@@ -892,6 +892,77 @@ describe("buildPiHandlers — registerTool wiring", () => {
       /blockId/,
     );
   });
+
+  it("registers the subagent tool when the profile lists it and a driver is wired", () => {
+    const api = mockApi();
+    api.activeTools.push("bash", "edit", "subagent", "compress", "decompress");
+    buildPiHandlers(
+      {
+        mode: {
+          poly: {
+            ...POLY_PROFILE,
+            tools: ["compress", "decompress", "subagent"],
+          },
+        },
+      },
+      api as any,
+      MODES_RAW,
+    );
+    const names = api.tools.map((tool: any) => tool.name).sort();
+    assert.deepEqual(names, ["compress", "decompress", "subagent"]);
+    // The registered subagent tool forwards the pi signal into its execute
+    // bridge: the registered handler receives (callId, params, signal, ...).
+    const subagent = api.tools.find((tool: any) => tool.name === "subagent");
+    assert.ok(subagent, "subagent tool must be registered");
+    assert.equal(typeof (subagent as any).execute, "function");
+  });
+
+  it("forwards the pi signal and inherited model through the bridge to the tool execute", async () => {
+    const api = mockApi();
+    api.activeTools.push("bash", "edit", "subagent", "compress", "decompress");
+    // The profile enables only the subagent tool.
+    buildPiHandlers(
+      {
+        mode: {
+          poly: {
+            ...POLY_PROFILE,
+            tools: ["subagent"],
+            hooks: [],
+          },
+        },
+      },
+      api as any,
+      MODES_RAW,
+    );
+    const subagent = api.tools.find((tool: any) => tool.name === "subagent") as
+      | { execute: (...args: unknown[]) => Promise<unknown> }
+      | undefined;
+    assert.ok(subagent);
+
+    const controller = new AbortController();
+    // The bridge wraps the tool's string return into pi's result shape and
+    // forwards the signal / model into the tool execute; assert the wrapped
+    // shape (a pi tool result with a text part) is returned.
+    const result = await subagent.execute(
+      "call-1",
+      { agent: "beaver", description: "实现任务", prompt: "t" },
+      controller.signal,
+      undefined,
+      {
+        sessionManager: { getSessionId: () => "sess-1" },
+        model: { provider: "Volces", id: "deepseek-v4-flash" },
+      },
+    );
+    const wrapped = result as { content?: { type?: string; text?: string }[] };
+    assert.ok(
+      Array.isArray(wrapped.content),
+      "bridge must wrap in content parts",
+    );
+    assert.ok(
+      wrapped.content?.some((part) => part.type === "text"),
+      "bridge must produce a text part",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

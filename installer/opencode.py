@@ -9,6 +9,29 @@ from installer.variants import collect_agent_variants
 
 _MODE_CATEGORIES = ("agents", "skills", "hooks", "tools", "commands")
 
+# Permission-key dialect mapping: config.toml uses the canonical word
+# ``subagent``; the OpenCode host dialect calls the same tool ``task``.
+# The translation happens only when emitting opencode.json, never on the
+# parsed config in memory.
+_PERMISSION_KEY_DIALECT = {"subagent": "task"}
+
+
+def _translate_permission_keys(permission: dict) -> dict:
+    """Rename permission keys from the config dialect to the host dialect.
+
+    Args:
+        permission: An agent's ``[agent.<name>.permission]`` table as parsed
+            from config.toml (values may be scalars or nested tables).
+
+    Returns:
+        A new dict with every key renamed through ``_PERMISSION_KEY_DIALECT``;
+        unknown keys pass through unchanged.
+    """
+    return {
+        _PERMISSION_KEY_DIALECT.get(key, key): value
+        for key, value in permission.items()
+    }
+
 
 def parse_mode_profile(
     toml_data: dict, selected: Optional[str] = None
@@ -141,7 +164,22 @@ def build_config(
                 or (isinstance(data, dict) and data.get("disable") is True)
             }
             if filtered:
-                config["agent"] = filtered
+                # Translate permission keys to the OpenCode host dialect
+                # (``subagent`` -> ``task``) on the emitted copy only; the
+                # parsed config in memory keeps the canonical vocabulary.
+                emitted_agents: dict = {}
+                for name, data in filtered.items():
+                    if not isinstance(data, dict):
+                        emitted_agents[name] = data
+                        continue
+                    agent = dict(data)
+                    permission = agent.get("permission")
+                    if isinstance(permission, dict):
+                        agent["permission"] = _translate_permission_keys(
+                            permission
+                        )
+                    emitted_agents[name] = agent
+                config["agent"] = emitted_agents
     if "defaults" in toml_data:
         for k, v in toml_data["defaults"].items():
             config[k] = v

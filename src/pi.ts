@@ -80,6 +80,7 @@ import {
   createPiHandoffTarget,
   type PiCommandCtx,
 } from "./adapters/pi/handoff-target.js";
+import { createPiSubagentDriver } from "./adapters/pi/subagent.js";
 import {
   createPiToolHost,
   type PiContextHolder,
@@ -105,22 +106,23 @@ import {
 } from "./core/config-parse.js";
 import type { AgentModeMap, ModeProfile } from "./core/config-types.js";
 import type { HostAdapter } from "./core/context/lens.js";
+import {
+  isSkillAllowed,
+  parseSkillPermissions,
+} from "./core/permissions/skill-permissions.js";
 import type {
   ComposedResult,
   Deps,
   PiSwitchHost,
   PiSwitchNewSessionOps,
 } from "./core/slots.js";
+import type { SubagentDriver } from "./core/subagent/driver.js";
 import {
   derivePrimaries,
   getPrimary,
   resolveIdentity,
   setPrimary,
 } from "./core/subagent/identity.js";
-import {
-  isSkillAllowed,
-  parseSkillPermissions,
-} from "./core/subagent/skill-permissions.js";
 import type { ValidationLimits } from "./core/validate.js";
 import { REGISTRY } from "./registry.js";
 import { log } from "./utils/logger.js";
@@ -336,6 +338,19 @@ export function buildPiContributions(
     toolHost?: ToolHost;
     piSwitchHost?: PiSwitchHost;
     getCommandCtx?: () => PiCommandCtx | null | undefined;
+    /**
+     * Host subagent driver (only supplied by the real pi entry point).
+     * Undefined without it — the subagent tool unit then contributes no
+     * tools (fail-closed, matching OpenCode).
+     */
+    subagentDriver?: SubagentDriver;
+    /**
+     * Lazily supplies the host's full untrimmed tool-name baseline for
+     * subagent capability computation.  The baseline cannot be captured at
+     * extension-load time (pi forbids calling action methods then), so the
+     * supplier is invoked lazily on first subagent execution and cached.
+     */
+    subagentBaseline?: () => string[] | undefined;
   },
   rawConfig?: any,
 ): {
@@ -367,6 +382,19 @@ export function buildPiContributions(
     agentModes,
     agentPermissions,
     piSwitchHost: hostDeps?.piSwitchHost,
+    // The pi subagent driver (in-process SDK session execution).  Only the
+    // real pi entry point supplies one; unit tests and other hosts omit it
+    // so the subagent tool never registers (fail-closed).
+    subagentDriver: hostDeps?.subagentDriver,
+    // The full untrimmed tool baseline for subagent capability computation,
+    // read lazily: a getter so the supplier (pi's `getActiveTools`) runs at
+    // first subagent execution — which is always post-bind — never at
+    // extension-load time (pi forbids action methods then).  The tool unit
+    // reads this field only inside its `execute`, so composition itself
+    // never triggers the capture.
+    get subagentBaseline(): string[] | undefined {
+      return hostDeps?.subagentBaseline?.();
+    },
     // pi has no SDK client — the context-pruning transform runs and
     // returns the pruned replacement to pi.  The release notification
     // does not need the client: it posts through the unified pi tool
@@ -578,6 +606,9 @@ export function buildPiHandlers(
   // universe.  When the API reports no baseline the host returns
   // `undefined` and switches skip the trim (fail-closed).
   let toolBaseline: string[] | undefined;
+  // The subagent capability baseline, captured lazily once on the first
+  // subagent execution and cached (mirrors the switch baseline above).
+  let subagentToolBaseline: string[] | undefined;
   // The per-agent status-bar colors (`[agent.<name>].color`), parsed
   // fail-closed from the whole config root.  Only the `zoo` indicator is
   // colorized below — the tool / command surfaces stay plain.
@@ -701,6 +732,29 @@ export function buildPiHandlers(
       // through this supplier: the command handler refreshes the shared
       // holder immediately before the handler body runs.
       getCommandCtx: () => contextHolder.current as PiCommandCtx | undefined,
+      // The pi subagent driver — the in-process SDK session executor.  Only
+      // wired when a real pi API instance is present (the extension runs
+      // inside pi); test-only and driver-less compositions stay closed.
+      subagentDriver: piApi ? createPiSubagentDriver() : undefined,
+      // The subagent capability baseline: pi's full untrimmed active tool
+      // set, captured lazily on first subagent execution and cached —
+      // mirroring the switch command's baseline capture so tool denies
+      // never accumulate across either switches or subagent delegations.
+      // The capture is DEFERRED because pi forbids calling action methods
+      // (including `getActiveTools`) during extension loading; the first
+      // subagent execution always happens post-bind, so the lazily-captured
+      // set is the real untrimmed universe.  `undefined` when unavailable →
+      // capability computation yields an empty set (fail-closed).  A `[]`
+      // report is cached too: callers treat it as "no baseline" rather than
+      // shrinking the subagent tool face to nothing.
+      subagentBaseline: piApi
+        ? () => {
+            if (subagentToolBaseline === undefined) {
+              subagentToolBaseline = piApi.getActiveTools?.();
+            }
+            return subagentToolBaseline;
+          }
+        : undefined,
     },
     rawConfig,
   );
@@ -759,11 +813,40 @@ export function buildPiHandlers(
         execute: async (
           _toolCallId: unknown,
           params: unknown,
-          _signal: unknown,
-          _onUpdate: unknown,
+          signal: unknown,
+          onUpdate: unknown,
           ctx: unknown,
         ) => {
-          const text = await tool.execute(params, ctx);
+          // Forward the native execution surface to the contribution:
+          // the abort `signal`, the streaming `onUpdate` callback, and the
+          // inherited parent model (`ctx.model` is a pi `Model`; the
+          // `"provider/id"` string is what the subagent request carries).
+          // The signal and onUpdate are passed through the third hostCtx
+          // argument; compress / decompress ignore it and keep working
+          // unchanged.
+          const model =
+            ctx !== null &&
+            typeof ctx === "object" &&
+            (ctx as Record<string, unknown>).model !== undefined &&
+            typeof (ctx as { model?: unknown }).model === "object"
+              ? (() => {
+                  const m = (
+                    ctx as { model?: { provider?: string; id?: string } }
+                  ).model;
+                  if (
+                    typeof m?.provider === "string" &&
+                    typeof m?.id === "string"
+                  ) {
+                    return `${m.provider}/${m.id}`;
+                  }
+                  return undefined;
+                })()
+              : undefined;
+          const text = await tool.execute(params, ctx, {
+            ...(signal instanceof AbortSignal ? { signal } : {}),
+            ...(onUpdate !== undefined ? { onUpdate } : {}),
+            ...(model !== undefined ? { model } : {}),
+          });
           return {
             content: [{ type: "text", text }],
             details: {},

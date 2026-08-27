@@ -1,0 +1,704 @@
+/**
+ * Tests for the subagent delegation tool unit (`src/tools/subagent.ts`).
+ *
+ * Covers the full delegation flow of the contributed tool's `execute`:
+ * resolving the CALLER identity, allowlist judgment (a blocked delegation
+ * returns a reason text and never throws), capability-set computation for
+ * the TARGET agent (baseline minus the target's config.toml tool-level
+ * denies, fail-closed on a missing baseline), the `runSubagent` request
+ * shape (agent / task / tools / parentSession), and the `SubagentResult`
+ * → tool-text mapping (ok → text verbatim; failure variants → text plus a
+ * short reason line).  Also covers the fail-closed registration gate: with
+ * no `subagentDriver` in deps the unit contributes zero tools.
+ */
+import assert from "node:assert/strict";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import type { ToolHost } from "../core/client/tool-host.js";
+import type { Deps } from "../core/slots.js";
+import type {
+  SubagentDriver,
+  SubagentProgress,
+  SubagentRequest,
+  SubagentResult,
+} from "../core/subagent/driver.js";
+import {
+  _resetForTesting as _resetIdentityForTesting,
+  setPrimary,
+} from "../core/subagent/identity.js";
+import {
+  _getBufferForTesting,
+  _resetForTesting as _resetLoggerForTesting,
+} from "../utils/logger.js";
+import { unit } from "./subagent.js";
+
+// The identity core is process-global (bun shares one isolate across every
+// test file), so reset it between tests to keep the caller-resolution
+// assertions deterministic.
+beforeEach(() => {
+  _resetIdentityForTesting();
+});
+
+afterEach(() => {
+  _resetIdentityForTesting();
+  _resetLoggerForTesting();
+});
+
+/** A tool context carrying a session id and an abort signal. */
+const TOOL_CTX = {
+  sessionID: "sess-subagent",
+  abort: new AbortController().signal,
+};
+
+/** A minimal ToolHost that reads the session id from the tool context. */
+const TOOL_HOST: ToolHost = {
+  resolveSessionId(toolCtx: unknown): string | undefined {
+    const ctx = toolCtx as { sessionID?: unknown; sessionId?: unknown };
+    const id = ctx.sessionID ?? ctx.sessionId;
+    return typeof id === "string" && id.length > 0 ? id : undefined;
+  },
+  async fetchHistory(): Promise<never[]> {
+    return [];
+  },
+  async notify(): Promise<void> {},
+};
+
+/** A fake driver that records its request and returns a fixed result. */
+function fakeDriver(result: SubagentResult): {
+  driver: SubagentDriver;
+  calls: Array<{ request: SubagentRequest; signal: AbortSignal }>;
+} {
+  const calls: Array<{ request: SubagentRequest; signal: AbortSignal }> = [];
+  const driver: SubagentDriver = {
+    async run(request, ctx) {
+      calls.push({ request, signal: ctx.signal });
+      return result;
+    },
+  };
+  return { driver, calls };
+}
+
+/** Build a `create`-compatible Deps with the given overrides. */
+function makeDeps(overrides: Partial<Deps> = {}): Deps {
+  return {
+    limits: {},
+    contextConfig: {},
+    // The target-role guard reads the parsed agent modes; the default
+    // fixture declares beaver as a delegatable subagent so the existing
+    // happy-path cases keep running the driver.
+    agentModes: { beaver: "subagent", dolphin: "primary" },
+    client: {},
+    directory: "/tmp/zoo",
+    sessionAgentMap: new Map(),
+    toolHost: TOOL_HOST,
+    ...overrides,
+  };
+}
+
+/** The contributed subagent tool for a set of deps. */
+function tool(deps: Deps) {
+  const contributions = unit.create(deps, {
+    agents: new Set(),
+    skills: new Set(),
+    hooks: new Set(),
+    tools: new Set(),
+    commands: new Set(),
+  });
+  assert.equal(contributions.kind, "tool");
+  assert.equal(contributions.tools.length, 1, "exactly one tool contributed");
+  return contributions.tools[0];
+}
+
+// ---------------------------------------------------------------------------
+// Fail-closed registration
+// ---------------------------------------------------------------------------
+
+describe("subagent tool unit — fail-closed registration", () => {
+  it("contributes zero tools when no subagentDriver is in deps (OpenCode)", () => {
+    const contributions = unit.create(makeDeps(), {
+      agents: new Set(),
+      skills: new Set(),
+      hooks: new Set(),
+      tools: new Set(),
+      commands: new Set(),
+    });
+    assert.equal(contributions.kind, "tool");
+    assert.deepEqual(contributions.tools, []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Argument validation
+// ---------------------------------------------------------------------------
+
+describe("subagent tool execute — argument validation", () => {
+  it("rejects missing description and never runs the driver", async () => {
+    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
+    setPrimary("dolphin");
+    const t = tool(makeDeps({ subagentDriver: driver }));
+
+    await assert.rejects(
+      async () =>
+        t.execute({ agent: "beaver", prompt: "t" } as never, TOOL_CTX),
+      /description/,
+    );
+    assert.equal(calls.length, 0, "driver must not run for invalid args");
+  });
+
+  it("rejects an empty description and never runs the driver", async () => {
+    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
+    setPrimary("dolphin");
+    const t = tool(makeDeps({ subagentDriver: driver }));
+
+    await assert.rejects(
+      async () =>
+        t.execute(
+          { agent: "beaver", description: "", prompt: "t" } as never,
+          TOOL_CTX,
+        ),
+      /description/,
+    );
+    assert.equal(calls.length, 0, "driver must not run for invalid args");
+  });
+
+  it("rejects missing prompt and never runs the driver", async () => {
+    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
+    setPrimary("dolphin");
+    const t = tool(makeDeps({ subagentDriver: driver }));
+
+    await assert.rejects(
+      async () =>
+        t.execute(
+          { agent: "beaver", description: "实现任务" } as never,
+          TOOL_CTX,
+        ),
+      /prompt/,
+    );
+    assert.equal(calls.length, 0, "driver must not run for invalid args");
+  });
+
+  it("rejects an empty prompt and never runs the driver", async () => {
+    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
+    setPrimary("dolphin");
+    const t = tool(makeDeps({ subagentDriver: driver }));
+
+    await assert.rejects(
+      async () =>
+        t.execute(
+          { agent: "beaver", description: "实现任务", prompt: "" } as never,
+          TOOL_CTX,
+        ),
+      /prompt/,
+    );
+    assert.equal(calls.length, 0, "driver must not run for invalid args");
+  });
+
+  it("rejects non-object arguments and never runs the driver", async () => {
+    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
+    setPrimary("dolphin");
+    const t = tool(makeDeps({ subagentDriver: driver }));
+
+    await assert.rejects(
+      async () => t.execute(null as never, TOOL_CTX),
+      /参数格式错误/,
+    );
+    assert.equal(calls.length, 0, "driver must not run for invalid args");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Successful delegation (dolphin → beaver)
+// ---------------------------------------------------------------------------
+
+describe("subagent tool execute — successful delegation", () => {
+  it("dolphin → beaver runs the driver and returns the subagent text", async () => {
+    const { driver, calls } = fakeDriver({
+      kind: "ok",
+      text: "beaver finished the implementation",
+    });
+    setPrimary("dolphin");
+
+    const t = tool(
+      makeDeps({
+        subagentDriver: driver,
+        subagentBaseline: ["bash", "edit", "webfetch", "websearch"],
+        agentPermissions: { beaver: ["webfetch", "websearch"] },
+      }),
+    );
+
+    const result = await t.execute(
+      {
+        agent: "beaver",
+        description: "实现功能",
+        prompt: "Implement the feature",
+      },
+      TOOL_CTX,
+    );
+
+    assert.equal(result, "beaver finished the implementation");
+    assert.equal(calls.length, 1, "driver must run exactly once");
+    assert.deepEqual(calls[0].request, {
+      agent: "beaver",
+      prompt: "Implement the feature",
+      tools: ["bash", "edit"],
+      parentSession: "sess-subagent",
+    });
+  });
+
+  it("computes the target capability set as baseline minus the target's denied tools", async () => {
+    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
+    setPrimary("dolphin");
+
+    const t = tool(
+      makeDeps({
+        subagentDriver: driver,
+        subagentBaseline: ["edit", "webfetch", "bash", "subagent"],
+        agentPermissions: { beaver: ["webfetch", "websearch"] },
+      }),
+    );
+
+    await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "task" },
+      TOOL_CTX,
+    );
+
+    assert.deepEqual(calls[0].request.tools, ["bash", "edit", "subagent"]);
+  });
+
+  it("proceeds with an empty capability set when the baseline is missing (fail-closed)", async () => {
+    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
+    setPrimary("dolphin");
+
+    const t = tool(
+      makeDeps({
+        subagentDriver: driver,
+        agentPermissions: { beaver: ["webfetch"] },
+      }),
+    );
+
+    await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "task" },
+      TOOL_CTX,
+    );
+
+    // No baseline → computeCapabilitySet yields [] — the run still happens,
+    // but the driver receives no invented permissions.
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].request.tools, []);
+  });
+
+  it("drops the parentSession when the tool context has no session id", async () => {
+    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
+    setPrimary("dolphin");
+
+    const t = tool(makeDeps({ subagentDriver: driver }));
+    await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "task" },
+      { abort: TOOL_CTX.abort },
+    );
+
+    assert.equal(calls[0].request.parentSession, undefined);
+  });
+
+  it("forwards the host signal from the third hostCtx argument", async () => {
+    setPrimary("dolphin");
+
+    // A hanging driver that records the signal it observes and only resolves
+    // once the run is aborted.
+    let release: (() => void) | undefined;
+    let observedSignal: AbortSignal | undefined;
+    const driver: SubagentDriver = {
+      async run(_request, ctx) {
+        observedSignal = ctx.signal;
+        await new Promise<void>((resolve) => {
+          release = () => {
+            resolve();
+          };
+        });
+        return { kind: "aborted", text: "" };
+      },
+    };
+
+    const t = tool(makeDeps({ subagentDriver: driver }));
+    const hostController = new AbortController();
+    const runPromise = t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "task" },
+      TOOL_CTX,
+      {
+        signal: hostController.signal,
+      },
+    );
+    // Let the run reach the hanging driver, then abort the host signal.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    hostController.abort();
+    release?.();
+    await runPromise;
+
+    assert.ok(observedSignal, "driver must observe a signal");
+    assert.equal(observedSignal?.aborted, true);
+  });
+
+  it("forwards the inherited model from the hostCtx into the request", async () => {
+    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
+    setPrimary("dolphin");
+
+    const t = tool(makeDeps({ subagentDriver: driver }));
+    await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "task" },
+      TOOL_CTX,
+      {
+        model: "Volces/deepseek-v4-flash",
+      },
+    );
+
+    assert.equal(calls[0].request.model, "Volces/deepseek-v4-flash");
+  });
+
+  it("omits the model from the request when the hostCtx carries none", async () => {
+    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
+    setPrimary("dolphin");
+
+    const t = tool(makeDeps({ subagentDriver: driver }));
+    await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "task" },
+      TOOL_CTX,
+    );
+
+    assert.equal(calls[0].request.model, undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Allowlist rejection
+// ---------------------------------------------------------------------------
+
+describe("subagent tool execute — allowlist rejection", () => {
+  it("beaver → eagle is rejected with a reason text and the driver never runs", async () => {
+    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
+    setPrimary("beaver");
+
+    const t = tool(makeDeps({ subagentDriver: driver }));
+
+    const result = await t.execute(
+      { agent: "eagle", description: "查找缺陷", prompt: "Find the bug" },
+      TOOL_CTX,
+    );
+
+    // A blocked delegation must return a tool-level text explaining WHY,
+    // never throw and never invoke the driver.
+    assert.equal(
+      calls.length,
+      0,
+      "driver must not run for a blocked delegation",
+    );
+    assert.ok(
+      result.includes("can only delegate to"),
+      `reason missing: ${result}`,
+    );
+    assert.ok(result.includes("not allowed"), `reason missing: ${result}`);
+    assert.ok(
+      result.includes("eagle"),
+      `reason must name the target: ${result}`,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Target-role guard (fail-closed on non-subagent targets)
+// ---------------------------------------------------------------------------
+
+describe("subagent tool execute — target-role guard", () => {
+  it('rejects a target declared mode = "primary" with a reason text and never runs the driver', async () => {
+    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
+    setPrimary("dolphin");
+
+    const t = tool(
+      makeDeps({
+        subagentDriver: driver,
+        agentModes: { dolphin: "primary", beaver: "subagent", mola: "primary" },
+      }),
+    );
+
+    const result = await t.execute(
+      { agent: "mola", description: "实现任务", prompt: "task" },
+      TOOL_CTX,
+    );
+
+    assert.equal(calls.length, 0, "driver must not run for a primary target");
+    assert.ok(
+      result.includes("不是可委派的子 agent"),
+      `reason missing: ${result}`,
+    );
+    assert.ok(
+      result.includes("mola"),
+      `reason must name the target: ${result}`,
+    );
+  });
+
+  it("rejects an unknown target name with a reason text and never runs the driver", async () => {
+    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
+    setPrimary("dolphin");
+
+    const t = tool(
+      makeDeps({
+        subagentDriver: driver,
+        agentModes: { dolphin: "primary", beaver: "subagent" },
+      }),
+    );
+
+    const result = await t.execute(
+      { agent: "nonexistent", description: "实现任务", prompt: "task" },
+      TOOL_CTX,
+    );
+
+    assert.equal(calls.length, 0, "driver must not run for an unknown target");
+    assert.ok(
+      result.includes("不是可委派的子 agent"),
+      `reason missing: ${result}`,
+    );
+    assert.ok(
+      result.includes("nonexistent"),
+      `reason must name the target: ${result}`,
+    );
+  });
+
+  it("rejects every target when the modes map is absent (fail-closed)", async () => {
+    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
+    setPrimary("dolphin");
+
+    // No agentModes in deps → no target can be verified as a subagent.
+    const t = tool(makeDeps({ subagentDriver: driver, agentModes: undefined }));
+
+    const result = await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "task" },
+      TOOL_CTX,
+    );
+
+    assert.equal(
+      calls.length,
+      0,
+      "driver must not run when the modes map is missing",
+    );
+    assert.ok(
+      result.includes("不是可委派的子 agent"),
+      `reason missing: ${result}`,
+    );
+  });
+
+  it("logs a delegation_blocked warn entry for a rejected target", async () => {
+    const { driver } = fakeDriver({ kind: "ok", text: "done" });
+    setPrimary("dolphin");
+
+    const t = tool(
+      makeDeps({
+        subagentDriver: driver,
+        agentModes: { dolphin: "primary", beaver: "subagent", mola: "primary" },
+      }),
+    );
+
+    await t.execute(
+      { agent: "mola", description: "实现任务", prompt: "task" },
+      TOOL_CTX,
+    );
+
+    const blocked = _getBufferForTesting().filter(
+      (e) => e.event === "delegation_blocked",
+    );
+    assert.equal(blocked.length, 1, "one delegation_blocked entry expected");
+    assert.equal(blocked[0].target, "mola");
+    assert.equal(blocked[0].reason, "not-a-subagent");
+    assert.equal(blocked[0].level, "warn");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Caller resolution failures
+// ---------------------------------------------------------------------------
+
+describe("subagent tool execute — unresolved caller", () => {
+  it("fails closed with a text result when no caller identity resolves", async () => {
+    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
+    // No setPrimary → resolveIdentity() is undefined (fail-closed).
+
+    const t = tool(makeDeps({ subagentDriver: driver }));
+
+    const result = await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "task" },
+      TOOL_CTX,
+    );
+
+    assert.equal(calls.length, 0, "driver must not run without a caller");
+    assert.ok(result.length > 0, "must return an explanatory text");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Result mapping
+// ---------------------------------------------------------------------------
+
+describe("subagent tool execute — result mapping", () => {
+  it("maps an ok result to the subagent text verbatim", async () => {
+    const { driver } = fakeDriver({ kind: "ok", text: "result text" });
+    setPrimary("dolphin");
+    const t = tool(makeDeps({ subagentDriver: driver }));
+    assert.equal(
+      await t.execute(
+        { agent: "beaver", description: "实现任务", prompt: "t" },
+        TOOL_CTX,
+      ),
+      "result text",
+    );
+  });
+
+  it("maps an error result to the partial text plus a reason line", async () => {
+    const { driver } = fakeDriver({
+      kind: "error",
+      text: "partial output",
+      errorMessage: "session failed",
+    });
+    setPrimary("dolphin");
+    const t = tool(makeDeps({ subagentDriver: driver }));
+    const result = await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "t" },
+      TOOL_CTX,
+    );
+
+    assert.ok(
+      result.includes("partial output"),
+      `missing partial text: ${result}`,
+    );
+    assert.ok(
+      result.includes("session failed"),
+      `missing error message: ${result}`,
+    );
+  });
+
+  it("maps a timeout result to the partial text plus a reason line", async () => {
+    const { driver } = fakeDriver({ kind: "timeout", text: "partial output" });
+    setPrimary("dolphin");
+    const t = tool(makeDeps({ subagentDriver: driver }));
+    const result = await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "t" },
+      TOOL_CTX,
+    );
+
+    assert.ok(
+      result.includes("partial output"),
+      `missing partial text: ${result}`,
+    );
+    assert.ok(result.includes("超时"), `missing timeout reason: ${result}`);
+  });
+
+  it("maps an aborted result to the partial text plus a reason line", async () => {
+    const { driver } = fakeDriver({ kind: "aborted", text: "partial output" });
+    setPrimary("dolphin");
+    const t = tool(makeDeps({ subagentDriver: driver }));
+    const result = await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "t" },
+      TOOL_CTX,
+    );
+
+    assert.ok(
+      result.includes("partial output"),
+      `missing partial text: ${result}`,
+    );
+    assert.ok(result.includes("中止"), `missing abort reason: ${result}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Progress → onUpdate bridge
+// ---------------------------------------------------------------------------
+
+describe("subagent tool execute — progress bridge to onUpdate", () => {
+  it("streams compact progress snapshots into a pi onUpdate partial result", async () => {
+    setPrimary("dolphin");
+    // A driver that emits snapshots through its onProgress callback.
+    const snapshots: SubagentProgress[] = [
+      { currentTool: "bash", output: "", done: false },
+      { currentTool: "bash", output: "running", done: false },
+      { output: "finished", done: true },
+    ];
+    const driver: SubagentDriver = {
+      async run(_req, ctx) {
+        for (const snapshot of snapshots) ctx.onProgress?.(snapshot);
+        return { kind: "ok", text: "done" };
+      },
+    };
+
+    const partials: unknown[] = [];
+    const t = tool(makeDeps({ subagentDriver: driver }));
+
+    const result = await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "t" },
+      TOOL_CTX,
+      {
+        onUpdate: (partial: unknown) => {
+          partials.push(partial);
+        },
+      },
+    );
+
+    assert.equal(result, "done");
+    // Each snapshot reaches onUpdate as a pi-style partial result carrying
+    // the compact one-line text (prefixed by the description label) and an
+    // empty details object.
+    assert.equal(partials.length, 3);
+    assert.deepEqual(partials[0], {
+      content: [{ type: "text", text: "[实现任务] [bash] " }],
+      details: {},
+    });
+    assert.deepEqual(partials[1], {
+      content: [{ type: "text", text: "[实现任务] [bash] running" }],
+      details: {},
+    });
+    assert.deepEqual(partials[2], {
+      content: [{ type: "text", text: "[实现任务] finished" }],
+      details: {},
+    });
+  });
+
+  it("proceeds without streaming when no onUpdate is present (OpenCode path)", async () => {
+    setPrimary("dolphin");
+    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
+    const t = tool(makeDeps({ subagentDriver: driver }));
+
+    const result = await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "t" },
+      TOOL_CTX,
+    );
+
+    assert.equal(result, "done");
+    assert.equal(calls.length, 1, "driver must run even without onUpdate");
+  });
+
+  it("does not fail the run when onUpdate throws", async () => {
+    setPrimary("dolphin");
+    const driver: SubagentDriver = {
+      async run(_req, ctx) {
+        ctx.onProgress?.({
+          currentTool: "bash",
+          output: "working",
+          done: false,
+        });
+        ctx.onProgress?.({ output: "done", done: true });
+        return { kind: "ok", text: "done" };
+      },
+    };
+
+    const t = tool(makeDeps({ subagentDriver: driver }));
+    let threw = 0;
+    const result = await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "t" },
+      TOOL_CTX,
+      {
+        onUpdate: () => {
+          threw += 1;
+          throw new Error("ui exploded");
+        },
+      },
+    );
+
+    assert.equal(threw, 2, "onUpdate must be invoked for each snapshot");
+    assert.equal(result, "done", "a throwing onUpdate must not break the run");
+  });
+});

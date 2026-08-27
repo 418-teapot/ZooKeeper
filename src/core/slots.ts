@@ -25,7 +25,8 @@ import type { ToolHost } from "./client/tool-host.js";
 import type { AgentModeMap, ContextPruningConfig } from "./config-types.js";
 import type { HostAdapter } from "./context/lens.js";
 import type { HandoffTarget } from "./handoff.js";
-import type { AgentPermissionMap } from "./subagent/deny-tools.js";
+import type { AgentPermissionMap } from "./permissions/deny-tools.js";
+import type { SubagentDriver } from "./subagent/driver.js";
 import type { ValidationLimits } from "./validate.js";
 
 // ---------------------------------------------------------------------------
@@ -148,6 +149,24 @@ export interface Deps {
    * command ever registers on OpenCode).
    */
   piSwitchHost?: PiSwitchHost;
+  /**
+   * Host subagent driver (only on the pi host).
+   *
+   * Undefined on hosts without it (OpenCode) — the subagent tool unit
+   * then contributes no tools (fail-closed, so no `subagent` tool ever
+   * registers there; OpenCode keeps its native `task` tool).
+   */
+  subagentDriver?: SubagentDriver;
+  /**
+   * The host's full untrimmed tool-name baseline for subagent capability
+   * computation.
+   *
+   * Mirrors the switch command's baseline source (`piApi.getActiveTools`),
+   * captured once.  Undefined when the host cannot supply it — the
+   * subagent tool then runs with whatever `computeCapabilitySet` yields
+   * (an empty set, fail-closed; permissions are never invented).
+   */
+  subagentBaseline?: string[];
   /**
    * The host-specific session handoff surface for the `/go` command.
    *
@@ -349,7 +368,23 @@ export interface ToolContribution {
   args?: Record<string, unknown>;
   /** Names of required top-level parameters within `args`. */
   required?: string[];
-  execute(args: unknown, toolCtx: unknown): Promise<string>;
+  /**
+   * Execute the tool.
+   *
+   * `toolCtx` is the host tool execution context (an OpenCode tool context
+   * on OpenCode, a pi `ExtensionContext` on pi).  The optional `hostCtx`
+   * third argument carries the host-forwarded execution surface: the
+   * abort `signal`, the `onUpdate` streaming callback, and the inherited
+   * parent model as a `"provider/id"` string, all forwarded by the pi
+   * bridge from the native tool signature.  Hosts that do not forward
+   * these (OpenCode, which invokes tools natively) simply omit the third
+   * argument.
+   */
+  execute(
+    args: unknown,
+    toolCtx: unknown,
+    hostCtx?: { signal?: AbortSignal; onUpdate?: unknown; model?: string },
+  ): Promise<string>;
 }
 
 /**

@@ -33,8 +33,8 @@ import type {
   ModeProfile,
 } from "./config-types.js";
 import { NUDGE_PERCENT_RE } from "./context/nudge.js";
-import type { AgentPermissionMap } from "./subagent/deny-tools.js";
-import { extractDeniedTools } from "./subagent/deny-tools.js";
+import type { AgentPermissionMap } from "./permissions/deny-tools.js";
+import { extractDeniedTools } from "./permissions/deny-tools.js";
 import type { ValidationLimits } from "./validate.js";
 
 // ---------------------------------------------------------------------------

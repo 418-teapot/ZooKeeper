@@ -1,6 +1,6 @@
 /**
  * Tests for skill-permission parsing and evaluation
- * (`src/core/subagent/skill-permissions.ts`).
+ * (`src/core/permissions/skill-permissions.ts`).
  *
  * Covers the `[agent.<name>].permission.skill` extraction contract used by
  * the pi `resources_discover` handler to filter the contributed skill

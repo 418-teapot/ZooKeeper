@@ -1,5 +1,5 @@
 /**
- * Tests for `extractDeniedTools` in `src/core/subagent/deny-tools.ts`.
+ * Tests for `extractDeniedTools` in `src/core/permissions/deny-tools.ts`.
  *
  * Covers the tool-level deny extraction contract used by the
  * primary-switch command to trim the pi active tool set: a missing or

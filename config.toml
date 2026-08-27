@@ -525,7 +525,7 @@ model = "{env:ZOO_ANT_MODEL}"
 color = "#FFE211"
 [agent.lynx.permission]
 edit = "deny"
-task = "deny"
+subagent = "deny"
 [agent.lynx.permission.bash]
 "git checkout *" = "ask"
 "git clean *"    = "deny"
@@ -565,7 +565,7 @@ model = "{env:ZOO_ANT_MODEL}"
 [agent.spider.permission]
 edit = "deny"
 bash = "deny"
-task = "deny"
+subagent = "deny"
 [agent.spider.permission.skill]
 "*" = "deny"
 "wiki-query" = "allow"
@@ -576,7 +576,7 @@ model = "{env:ZOO_HIPPO_MODEL}"
 color = "#961E32"
 [agent.eagle.permission]
 edit = "deny"
-task = "deny"
+subagent = "deny"
 webfetch = "deny"
 websearch = "deny"
 [agent.eagle.permission.bash]
@@ -595,7 +595,7 @@ websearch = "deny"
 mode  = "subagent"
 model = "{env:ZOO_HIPPO_MODEL}"
 [agent.kiwi.permission]
-task = "deny"
+subagent = "deny"
 edit = "deny"
 [agent.kiwi.permission.bash]
 "git checkout *" = "deny"
@@ -759,6 +759,7 @@ hooks = [
 tools = [
   "compress",
   "decompress",
+  "subagent",
 ]
 commands = [
   "go",

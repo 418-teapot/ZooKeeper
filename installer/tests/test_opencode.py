@@ -265,3 +265,49 @@ def test_real_config_poly_profile_filters_agents(tmp_path) -> None:
     # Explicitly disabled sections are preserved verbatim.
     for name in DISABLED_AGENTS:
         assert config["agent"][name] == {"disable": True}
+
+
+# ── build_config: permission key dialect mapping ─────────────────────────
+
+
+def _toml_with_permission(permission: dict) -> dict:
+    """Build a minimal toml dict with one agent holding a permission table."""
+    return {"agent": {"lynx": {"permission": permission}}}
+
+
+def test_build_config_maps_subagent_key_to_task(tmp_path) -> None:
+    """A ``subagent = "deny"`` permission is emitted as ``task``."""
+    toml_data = _toml_with_permission({"edit": "deny", "subagent": "deny"})
+    config = build_config(
+        toml_data, str(tmp_path), {}, profile_agents=["lynx"]
+    )
+    emitted = config["agent"]["lynx"]["permission"]
+    assert emitted == {"edit": "deny", "task": "deny"}
+    assert "subagent" not in emitted
+    # The parsed in-memory data keeps the canonical vocabulary.
+    assert toml_data["agent"]["lynx"]["permission"] == {
+        "edit": "deny",
+        "subagent": "deny",
+    }
+
+
+def test_build_config_passes_unknown_permission_keys_through(tmp_path) -> None:
+    """Non-dialect permission keys are emitted unchanged."""
+    toml_data = _toml_with_permission(
+        {"subagent": "deny", "edit": "deny", "webfetch": "deny"}
+    )
+    config = build_config(
+        toml_data, str(tmp_path), {}, profile_agents=["lynx"]
+    )
+    emitted = config["agent"]["lynx"]["permission"]
+    assert emitted == {"edit": "deny", "webfetch": "deny", "task": "deny"}
+
+
+def test_build_config_unchanged_without_subagent_key(tmp_path) -> None:
+    """An agent with no ``subagent`` key is emitted verbatim."""
+    toml_data = _toml_with_permission({"edit": "deny", "webfetch": "deny"})
+    config = build_config(
+        toml_data, str(tmp_path), {}, profile_agents=["lynx"]
+    )
+    emitted = config["agent"]["lynx"]["permission"]
+    assert emitted == {"edit": "deny", "webfetch": "deny"}

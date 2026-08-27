@@ -57,7 +57,7 @@ describe("vendor smol-toml — config.toml zoo section", () => {
       "task-delegation",
       "task-prompt",
     ]);
-    assert.deepEqual(poly.tools, ["compress", "decompress"]);
+    assert.deepEqual(poly.tools, ["compress", "decompress", "subagent"]);
     assert.deepEqual(poly.commands, ["go", "dcp", "switch"]);
   });
 
