@@ -22,7 +22,7 @@ def _base_toml(
 def _providers() -> dict:
     """Two providers with a couple of models each."""
     return {
-        "Cambricon": {"npm": "@ai-sdk/anthropic", "models": {"glm-5.2": {}}},
+        "Dummy": {"npm": "@ai-sdk/anthropic", "models": {"dummy-small": {}}},
         "OpenAI": {
             "npm": "@ai-sdk/openai-compatible",
             "models": {"gpt-5.5": {}},
@@ -35,7 +35,7 @@ def _providers() -> dict:
 
 def test_collect_variants_valid_entries() -> None:
     """Valid \"Provider/model\" keys are returned as-is."""
-    variants = {"Cambricon/glm-5.2": "high", "OpenAI/gpt-5.5": "max"}
+    variants = {"Dummy/dummy-small": "high", "OpenAI/gpt-5.5": "max"}
     result = collect_variants(_base_toml(variants, providers=_providers()))
     assert result == variants
 
@@ -43,9 +43,9 @@ def test_collect_variants_valid_entries() -> None:
 def test_collect_variants_invalid_key_format_skipped(capsys) -> None:
     """Keys without Provider/model shape are skipped with a warning."""
     variants = {
-        "glm-5.2": "high",
-        "/glm-5.2": "high",
-        "Cambricon/glm-5.2/extra": "high",
+        "dummy-small": "high",
+        "/dummy-small": "high",
+        "Dummy/dummy-small/extra": "high",
     }
     result = collect_variants(_base_toml(variants, providers=_providers()))
     assert result == {}
@@ -55,7 +55,7 @@ def test_collect_variants_invalid_key_format_skipped(capsys) -> None:
 def test_collect_variants_unknown_provider_skipped(capsys) -> None:
     """Keys referencing an undeclared provider are skipped."""
     result = collect_variants(
-        _base_toml({"Nope/glm-5.2": "high"}, providers=_providers())
+        _base_toml({"Nope/dummy-small": "high"}, providers=_providers())
     )
     assert result == {}
     assert "provider 不存在" in capsys.readouterr().out
@@ -64,7 +64,7 @@ def test_collect_variants_unknown_provider_skipped(capsys) -> None:
 def test_collect_variants_unknown_model_skipped(capsys) -> None:
     """Keys referencing an undeclared model are skipped."""
     result = collect_variants(
-        _base_toml({"Cambricon/nope": "high"}, providers=_providers())
+        _base_toml({"Dummy/nope": "high"}, providers=_providers())
     )
     assert result == {}
     assert "模型不存在" in capsys.readouterr().out
@@ -73,7 +73,7 @@ def test_collect_variants_unknown_model_skipped(capsys) -> None:
 def test_collect_variants_empty_variant_name_skipped(capsys) -> None:
     """An empty or non-string variant name is skipped."""
     result = collect_variants(
-        _base_toml({"Cambricon/glm-5.2": ""}, providers=_providers())
+        _base_toml({"Dummy/dummy-small": ""}, providers=_providers())
     )
     assert result == {}
     assert "variant 名为空或非字符串" in capsys.readouterr().out
@@ -82,7 +82,7 @@ def test_collect_variants_empty_variant_name_skipped(capsys) -> None:
 def test_collect_variants_non_str_value_skipped(capsys) -> None:
     """A value that is neither a string nor a subtable is skipped."""
     result = collect_variants(
-        _base_toml({"Cambricon/glm-5.2": 42}, providers=_providers())
+        _base_toml({"Dummy/dummy-small": 42}, providers=_providers())
     )
     assert result == {}
     assert "既非字符串也非子表" in capsys.readouterr().out
@@ -140,7 +140,7 @@ def test_collect_agent_variants_mixed_valid_invalid(capsys) -> None:
                 "OpenAI/gpt-5.5": "low",
                 "Nope/gpt-5.5": "high",
                 "OpenAI/ghost": "high",
-                "Cambricon/glm-5.2": "",
+                "Dummy/dummy-small": "",
             }
         },
         providers=_providers(),
@@ -155,7 +155,7 @@ def test_collect_agent_variants_mixed_valid_invalid(capsys) -> None:
 def test_collect_agent_variants_ignores_flat_entries() -> None:
     """Flat \"Provider/model\" entries belong to the global channel."""
     toml_data = _base_toml(
-        {"Cambricon/glm-5.2": "high"},
+        {"Dummy/dummy-small": "high"},
         providers=_providers(),
         agents={"beaver": {}},
     )

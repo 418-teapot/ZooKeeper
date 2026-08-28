@@ -288,3 +288,93 @@ def build_pi_settings(
     settings["defaultProvider"] = provider
     settings["defaultModel"] = model_id
     return settings
+
+
+def build_pi_agents_config(toml_data: dict, env: dict[str, str]) -> dict:
+    """Build the pi ``agents.json`` per-agent resolved configuration.
+
+    Each ``[agent.<name>].model`` value is resolved against *env*: a bare
+    ``{env:VAR}`` placeholder or a plain literal is turned into a
+    ``Provider/model`` reference, then split on the first ``/``.  The
+    provider half names a ``[provider.*]`` table; the model half names a
+    key inside that provider's ``models`` table.  The registry id comes
+    from that model table's ``id`` field (the key pi's ``models.json``
+    uses), falling back to the model table key itself when no ``id``
+    field is present.  Each entry is emitted as a ``{"provider",
+    "model"}`` pair.
+
+    Semantics match the other pi artifacts (fail-closed): an agent is
+    omitted when its ``model`` field is absent, the resolved value is
+    empty/blank, the referenced environment variable is not set, the
+    provider is absent from ``[provider]``, the model key is absent from
+    that provider's ``models``, or the ``id`` field is not a string.
+    Omitted agents are reported with a Chinese warning.
+
+    Args:
+        toml_data: The parsed TOML dictionary.
+        env: The environment variable dictionary (from ``parse_env_file``).
+
+    Returns:
+        A dictionary with an ``agents`` key mapping each resolvable agent
+        name to ``{"provider": "<provider>", "model": "<registry-id>"}``.
+    """
+    agents = toml_data.get("agent")
+    if not isinstance(agents, dict):
+        return {"agents": {}}
+
+    providers = toml_data.get("provider")
+    if not isinstance(providers, dict):
+        providers = {}
+
+    resolved_agents: dict[str, dict[str, str]] = {}
+    for name, agent_data in agents.items():
+        if not isinstance(agent_data, dict):
+            continue
+        raw_model = agent_data.get("model")
+        if not isinstance(raw_model, str):
+            continue
+        resolved = _resolve_default_model(raw_model, env)
+        if resolved is None:
+            warn(f"agent.{name} 的 model 缺失或解析后为空，跳过")
+            continue
+        split = _split_model_reference(resolved)
+        if split is None:
+            warn(
+                f"agent.{name} 的 model 值 '{resolved}' 无效"
+                "（空或缺少 '/' 分隔），跳过"
+            )
+            continue
+
+        provider, model_key = split
+        provider_data = providers.get(provider)
+        if not isinstance(provider_data, dict):
+            warn(
+                f"agent.{name} 的 provider '{provider}' 不在 [provider] 中"
+                f"（来自 model 值 '{resolved}'），跳过"
+            )
+            continue
+        models = provider_data.get("models")
+        if not isinstance(models, dict):
+            warn(
+                f"agent.{name} 的 provider '{provider}' 没有 models 表"
+                f"（来自 model 值 '{resolved}'），跳过"
+            )
+            continue
+        model_data = models.get(model_key)
+        if not isinstance(model_data, dict):
+            warn(
+                f"agent.{name} 的模型 key '{model_key}' 不在 provider"
+                f" '{provider}' 的 models 下（来自 model 值 '{resolved}'），跳过"
+            )
+            continue
+
+        model_id = model_data.get("id", model_key)
+        if not isinstance(model_id, str):
+            warn(
+                f"agent.{name} 的模型 '{provider}/{model_key}' id 字段不是字符串，跳过"
+            )
+            continue
+
+        resolved_agents[name] = {"provider": provider, "model": model_id}
+
+    return {"agents": resolved_agents}

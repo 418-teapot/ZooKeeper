@@ -28,7 +28,11 @@ from installer.jsonio import load_json_or_empty, write_json
 from installer.mode import mode_state_path, write_mode_state
 from installer.opencode import build_config, parse_mode_profile
 from installer.output import bold, error, header, info, warn
-from installer.pi import build_pi_models_config, build_pi_settings
+from installer.pi import (
+    build_pi_agents_config,
+    build_pi_models_config,
+    build_pi_settings,
+)
 from installer.variants import collect_variants
 
 
@@ -115,6 +119,9 @@ def main() -> None:
     pi_models_path = os.path.join(
         os.path.expanduser("~"), ".pi", "agent", "models.json"
     )
+    pi_agents_path = os.path.join(
+        os.path.expanduser("~"), ".pi", "agent", "agents.json"
+    )
 
     if has_opencode:
         for cfg_path, label in [
@@ -130,7 +137,7 @@ def main() -> None:
 
     if has_pi:
         any_backup = False
-        for pi_path in [pi_settings_path, pi_models_path]:
+        for pi_path in [pi_settings_path, pi_models_path, pi_agents_path]:
             dest = backup_file(pi_path, "pi")
             if dest is not None:
                 prune_backups(pi_path, "pi")
@@ -267,6 +274,21 @@ def main() -> None:
         except OSError as e:
             warn(f"写入 Pi models.json 失败: {e}")
 
+        # ── Pi per-agent models — agents.json (full rebuild) ─────────
+        # Resolve every [agent.<name>].model against .env so the pi
+        # extension can read the plaintext per-agent model mapping at
+        # runtime without touching the environment itself.  The file is
+        # rebuilt from scratch on every install: the old file is never
+        # read or merged, so agents that lost their model (or whose env
+        # var went missing) disappear from the output (fail-closed).
+        # Skipped agents are warned inside build_pi_agents_config.
+        pi_agents = build_pi_agents_config(toml_data, env)
+        os.makedirs(os.path.dirname(pi_agents_path), exist_ok=True)
+        try:
+            write_json(pi_agents_path, pi_agents)
+        except OSError as e:
+            warn(f"写入 Pi agents.json 失败: {e}")
+
     # ── Validate configs ─────────────────────────────────────────────
     header("验证配置")
     if has_opencode:
@@ -286,6 +308,7 @@ def main() -> None:
         for label, pi_path in [
             ("settings.json", pi_settings_path),
             ("models.json", pi_models_path),
+            ("agents.json", pi_agents_path),
         ]:
             try:
                 with open(pi_path, encoding="utf-8") as f:
@@ -307,7 +330,9 @@ def main() -> None:
         if variant_model_json:
             info(f"✅ 模型 variants 已写入: {variant_model_json}")
     if has_pi:
-        info(f"✅ 配置已写入: {pi_settings_path}, {pi_models_path}")
+        info(
+            f"✅ 配置已写入: {pi_settings_path}, {pi_models_path}, {pi_agents_path}"
+        )
 
     # ── Wiki bundle install ─────────────────────────────────────────
     header("Wiki Bundle 安装")

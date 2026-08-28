@@ -1,10 +1,14 @@
-"""Tests for installer.pi: pi models.json configuration generation."""
+"""Tests for installer.pi: pi models.json/agents.json/settings configuration."""
 
 from __future__ import annotations
 
+import json
+
+from installer.jsonio import write_json
 from installer.pi import (
     _convert_provider_to_pi,
     _npm_to_api_type,
+    build_pi_agents_config,
     build_pi_models_config,
     build_pi_settings,
 )
@@ -20,9 +24,9 @@ def _anthropic_provider() -> dict:
             "headers": {"x-project": "personal"},
         },
         "models": {
-            "glm-5.2": {
-                "id": "glm-5.2",
-                "name": "glm-5.2",
+            "dummy-small": {
+                "id": "dummy-small",
+                "name": "dummy-small",
                 "reasoning": True,
                 "limit": {"context": 200000, "output": 128000},
                 "cost": {
@@ -62,15 +66,15 @@ def test_npm_to_api_type_unknown() -> None:
 
 def test_convert_provider_strips_v1_for_anthropic() -> None:
     """anthropic-messages baseUrl drops the trailing /v1 suffix."""
-    result = _convert_provider_to_pi("Aliyun", _anthropic_provider())
+    result = _convert_provider_to_pi("Dummy", _anthropic_provider())
     assert result is not None
     assert result["baseUrl"] == "https://api.example.com"
     assert result["api"] == "anthropic-messages"
     assert result["apiKey"] == "test-key"
     assert result["headers"] == {"x-project": "personal"}
     model = result["models"][0]
-    assert model["id"] == "glm-5.2"
-    assert model["name"] == "glm-5.2"
+    assert model["id"] == "dummy-small"
+    assert model["name"] == "dummy-small"
     assert model["reasoning"] is True
     assert model["contextWindow"] == 200000
     assert model["maxTokens"] == 128000
@@ -168,13 +172,13 @@ def test_build_pi_models_config_resolves_env_refs() -> None:
     """{env:VAR} refs resolve before conversion (including /v1 stripping)."""
     toml_data = {
         "provider": {
-            "Aliyun": {
+            "Dummy": {
                 "npm": "@ai-sdk/anthropic",
                 "options": {
                     "baseURL": "{env:CAMBRICON_BASE_URL}",
                     "apiKey": "{env:CAMBRICON_API_KEY}",
                 },
-                "models": {"glm-5.2": {"name": "glm-5.2"}},
+                "models": {"dummy-small": {"name": "dummy-small"}},
             }
         }
     }
@@ -184,12 +188,12 @@ def test_build_pi_models_config_resolves_env_refs() -> None:
     }
     assert build_pi_models_config(toml_data, env) == {
         "providers": {
-            "Aliyun": {
+            "Dummy": {
                 "baseUrl": "https://api.example.com",
                 "api": "anthropic-messages",
                 "apiKey": "secret",
                 "headers": {},
-                "models": [{"id": "glm-5.2", "name": "glm-5.2"}],
+                "models": [{"id": "dummy-small", "name": "dummy-small"}],
             }
         }
     }
@@ -211,25 +215,25 @@ def test_build_pi_settings_env_ref_split() -> None:
     settings = build_pi_settings(
         "/abs/src/pi.ts",
         "{env:ZOO_WHALE_MODEL}",
-        {"ZOO_WHALE_MODEL": "Cambricon/glm-5.1"},
-        ["Cambricon"],
+        {"ZOO_WHALE_MODEL": "Dummy/dummy-small"},
+        ["Dummy"],
     )
     assert settings == {
         "extensions": ["/abs/src/pi.ts"],
-        "defaultProvider": "Cambricon",
-        "defaultModel": "glm-5.1",
+        "defaultProvider": "Dummy",
+        "defaultModel": "dummy-small",
     }
 
 
 def test_build_pi_settings_plain_string_split() -> None:
     """A hardcoded (non-placeholder) default model still splits."""
     settings = build_pi_settings(
-        "/abs/src/pi.ts", "OpenCodeGo/deepseek-v4-flash", {}, ["OpenCodeGo"]
+        "/abs/src/pi.ts", "Dummy/dummy-small", {}, ["Dummy"]
     )
     assert settings == {
         "extensions": ["/abs/src/pi.ts"],
-        "defaultProvider": "OpenCodeGo",
-        "defaultModel": "deepseek-v4-flash",
+        "defaultProvider": "Dummy",
+        "defaultModel": "dummy-small",
     }
 
 
@@ -269,7 +273,7 @@ def test_build_pi_settings_no_slash(capsys) -> None:
     settings = build_pi_settings(
         "/abs/src/pi.ts",
         "{env:ZOO_WHALE_MODEL}",
-        {"ZOO_WHALE_MODEL": "glm-5.1"},
+        {"ZOO_WHALE_MODEL": "dummy-small"},
         [],
     )
     assert settings == {"extensions": ["/abs/src/pi.ts"]}
@@ -283,7 +287,7 @@ def test_build_pi_settings_pruned_provider_still_writes(capsys) -> None:
         "/abs/src/pi.ts",
         "{env:ZOO_WHALE_MODEL}",
         {"ZOO_WHALE_MODEL": "Foo/bar"},
-        ["Cambricon"],
+        ["Dummy"],
     )
     assert settings == {
         "extensions": ["/abs/src/pi.ts"],
@@ -291,3 +295,253 @@ def test_build_pi_settings_pruned_provider_still_writes(capsys) -> None:
         "defaultModel": "bar",
     }
     assert "Foo" in capsys.readouterr().out
+
+
+# ── build_pi_agents_config ──────────────────────────────────────────────
+
+
+def _agent_toml() -> dict:
+    """A minimal TOML map: providers plus ``[agent.*]`` model references."""
+    return {
+        "provider": {
+            "Dummy": {
+                "models": {
+                    "dummy-large": {
+                        "id": "dummy-large",
+                        "name": "dummy-large",
+                    },
+                    "dummy-small": {
+                        "id": "dummy-small",
+                        "name": "dummy-small",
+                    },
+                    # Table key differs from the registry id.
+                    "renamed-key": {"id": "dummy-renamed"},
+                    # No id field → falls back to the table key itself.
+                    "fallback-model": {"name": "fallback-model"},
+                    # id present but not a string → fail-closed.
+                    "bad-id": {"id": 42},
+                }
+            },
+            "StaticProvider": {
+                "models": {"static-model": {"id": "static-model"}},
+            },
+        },
+        "agent": {
+            "dolphin": {"model": "{env:ZOO_WHALE_MODEL}"},
+            "beaver": {"model": "{env:ZOO_ANT_MODEL}"},
+            "plain": {"model": "StaticProvider/static-model"},
+            "nolabel": {"color": "#FF0000"},
+            "disabled": {"disable": True},
+        },
+    }
+
+
+def test_build_pi_agents_config_resolves_all_models(capsys) -> None:
+    """Placeholders resolve to provider + registry model id (not env value)."""
+    env = {
+        "ZOO_WHALE_MODEL": "Dummy/dummy-large",
+        "ZOO_ANT_MODEL": "Dummy/dummy-small",
+    }
+    result = build_pi_agents_config(_agent_toml(), env)
+    assert result == {
+        "agents": {
+            "dolphin": {"provider": "Dummy", "model": "dummy-large"},
+            "beaver": {"provider": "Dummy", "model": "dummy-small"},
+            "plain": {"provider": "StaticProvider", "model": "static-model"},
+        }
+    }
+    # A plain literal model emits no warning.
+    assert capsys.readouterr().out == ""
+
+
+def test_build_pi_agents_config_uses_registry_id(capsys) -> None:
+    """The model id comes from the provider table's id field, not the key."""
+    toml_data = {
+        "provider": {
+            "Dummy": {
+                "models": {"dummy-prefixed": {"id": "dummy/prefixed-id"}}
+            }
+        },
+        "agent": {"beaver": {"model": "Dummy/dummy-prefixed"}},
+    }
+    result = build_pi_agents_config(toml_data, {})
+    assert result == {
+        "agents": {
+            "beaver": {"provider": "Dummy", "model": "dummy/prefixed-id"}
+        }
+    }
+    assert capsys.readouterr().out == ""
+
+
+def test_build_pi_agents_config_missing_id_falls_back_to_key(capsys) -> None:
+    """A model table without an id field falls back to the table key."""
+    result = build_pi_agents_config(
+        {"agent": {"plain": {"model": "Dummy/fallback-model"}}}
+        | {
+            "provider": {
+                "Dummy": {"models": {"fallback-model": {"name": "x"}}}
+            }
+        },
+        {},
+    )
+    assert result == {
+        "agents": {"plain": {"provider": "Dummy", "model": "fallback-model"}}
+    }
+    assert capsys.readouterr().out == ""
+
+
+def test_build_pi_agents_config_missing_provider_omits_agent(capsys) -> None:
+    """A provider absent from [provider] omits the agent (fail-closed)."""
+    toml_data = {
+        "provider": {"Dummy": {"models": {"m": {"id": "m"}}}},
+        "agent": {
+            "dolphin": {"model": "Missing/m"},
+            "beaver": {"model": "Dummy/m"},
+        },
+    }
+    result = build_pi_agents_config(toml_data, {})
+    assert "dolphin" not in result["agents"]
+    assert "beaver" in result["agents"]
+    assert "Missing" in capsys.readouterr().out
+
+
+def test_build_pi_agents_config_missing_model_key_omits_agent(capsys) -> None:
+    """A model key absent from the provider's models omits the agent."""
+    toml_data = {
+        "provider": {"Dummy": {"models": {"m": {"id": "m"}}}},
+        "agent": {"dolphin": {"model": "Dummy/ghost"}},
+    }
+    result = build_pi_agents_config(toml_data, {})
+    assert "dolphin" not in result["agents"]
+    assert "ghost" in capsys.readouterr().out
+
+
+def test_build_pi_agents_config_non_string_id_omits_agent(capsys) -> None:
+    """A non-string id field omits the agent (fail-closed)."""
+    result = build_pi_agents_config(
+        {"agent": {"plain": {"model": "Dummy/bad-id"}}}
+        | {"provider": {"Dummy": {"models": {"bad-id": {"id": 42}}}}},
+        {},
+    )
+    assert "plain" not in result["agents"]
+    assert "不是字符串" in capsys.readouterr().out
+
+
+def test_build_pi_agents_config_missing_env_omits_agent(capsys) -> None:
+    """An agent whose {env:VAR} model var is unset is omitted (fail-closed)."""
+    result = build_pi_agents_config(_agent_toml(), {})
+    assert result == {
+        "agents": {
+            "plain": {"provider": "StaticProvider", "model": "static-model"},
+        }
+    }
+    assert "dolphin" not in result["agents"]
+    assert "beaver" not in result["agents"]
+    out = capsys.readouterr().out
+    assert "dolphin" in out and "beaver" in out
+    assert "model" in out
+
+
+def test_build_pi_agents_config_missing_model_omits_agent() -> None:
+    """An agent with no model field is omitted entirely."""
+    result = build_pi_agents_config(_agent_toml(), {"ZOO_WHALE_MODEL": "x"})
+    assert "nolabel" not in result["agents"]
+    assert "disabled" not in result["agents"]
+    assert "plain" in result["agents"]
+
+
+def test_build_pi_agents_config_non_dict_section() -> None:
+    """A missing or non-dict agent section yields an empty agents map."""
+    assert build_pi_agents_config({}, {}) == {"agents": {}}
+    assert build_pi_agents_config({"agent": "nope"}, {}) == {"agents": {}}
+    assert build_pi_agents_config({"agent": {"bad": 42}}, {}) == {"agents": {}}
+
+
+def test_build_pi_agents_config_empty_env_value_omits_agent(capsys) -> None:
+    """An empty resolved model value omits the agent with a warning."""
+    result = build_pi_agents_config(
+        _agent_toml(),
+        {"ZOO_WHALE_MODEL": "", "ZOO_ANT_MODEL": "Dummy/dummy-small"},
+    )
+    assert "dolphin" not in result["agents"]
+    assert "beaver" in result["agents"]
+    assert "为空" in capsys.readouterr().out
+
+
+def test_build_pi_agents_config_invalid_model_omits_agent(capsys) -> None:
+    """A resolved value lacking '/' omits the agent with a warning."""
+    result = build_pi_agents_config(
+        _agent_toml(),
+        {
+            "ZOO_WHALE_MODEL": "no-slash",
+            "ZOO_ANT_MODEL": "Dummy/dummy-small",
+        },
+    )
+    assert "dolphin" not in result["agents"]
+    assert "beaver" in result["agents"]
+    assert "分隔" in capsys.readouterr().out
+
+
+# ── Full-rebuild semantics on disk ──────────────────────────────────────
+
+
+def test_build_pi_agents_config_rebuilds_and_overwrites(tmp_path) -> None:
+    """A stale agents.json from a prior run is fully overwritten."""
+    agents_path = tmp_path / "agents.json"
+    stale = {
+        "agents": {
+            "dolphin": {"model": "OldProvider/old"},
+            "retired": {"model": "RetiredProvider/retired"},
+        },
+        "extra": {"dolphin": "shape"},
+    }
+    write_json(str(agents_path), stale)
+
+    env = {"ZOO_WHALE_MODEL": "Dummy/dummy-large"}
+    write_json(str(agents_path), build_pi_agents_config(_agent_toml(), env))
+
+    with open(agents_path, encoding="utf-8") as f:
+        emitted = json.load(f)
+    # The stale "retired" entry and the "extra" key are gone: the file is
+    # rebuilt from scratch rather than merged.
+    assert emitted == {
+        "agents": {
+            "dolphin": {"provider": "Dummy", "model": "dummy-large"},
+            "plain": {"provider": "StaticProvider", "model": "static-model"},
+        }
+    }
+
+
+def test_build_pi_agents_config_rebuilds_even_when_empty(tmp_path) -> None:
+    """An agent section with only placeholder models still overwrites."""
+    agents_path = tmp_path / "agents.json"
+    write_json(str(agents_path), {"agents": {"stale": {"model": "x"}}})
+
+    # No env vars → every placeholder agent is omitted, but the stale
+    # entry must not survive either.
+    write_json(str(agents_path), build_pi_agents_config(_agent_toml(), {}))
+
+    with open(agents_path, encoding="utf-8") as f:
+        emitted = json.load(f)
+    assert emitted == {
+        "agents": {
+            "plain": {"provider": "StaticProvider", "model": "static-model"},
+        }
+    }
+
+
+def test_build_pi_agents_config_structure_reserved_shape() -> None:
+    """The entry shape is a provider + registry model id pair."""
+    result = build_pi_agents_config(
+        {
+            "provider": {
+                "Dummy": {"models": {"dummy-large": {"id": "dummy-large"}}}
+            },
+            "agent": {"dolphin": {"model": "Dummy/dummy-large"}},
+        },
+        {},
+    )
+    assert result["agents"]["dolphin"] == {
+        "provider": "Dummy",
+        "model": "dummy-large",
+    }
