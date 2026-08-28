@@ -41,7 +41,13 @@ export interface PiCommandCtx {
     parentSession?: string;
     withSession?: (ctx: {
       sendUserMessage(content: string): Promise<void>;
-      ui?: { setStatus?(key: string, text: string | undefined): void };
+      ui?: {
+        setWidget?(
+          key: string,
+          content: string[] | undefined,
+          options?: { placement?: "aboveEditor" | "belowEditor" },
+        ): void;
+      };
       sessionManager?: { getSessionId(): string };
     }) => Promise<void> | void;
   }): Promise<{ cancelled: boolean }>;

@@ -6,7 +6,7 @@
  * makes all four identity facets correct at bind time — prompt
  * (`before_agent_start` resolves the new primary), skills
  * (`resources_discover` filters by the new primary's permission.skill
- * rules), tools (extension-tool trim), and the status bar — because pi's
+ * rules), tools (extension-tool trim), and the widget — because pi's
  * skill filtering is merge-only and cannot be retracted mid-session.
  *
  * The order is deliberate: `setPrimary(target)` runs FIRST so the new
@@ -14,7 +14,7 @@
  * untrimmed tool baseline is captured BEFORE the replacement (the old
  * API is still valid up to `newSession`); then `newSession` replaces the
  * session with the target as parent.  All post-replacement work (tool
- * trim, status bar) runs inside the `withSession` callback through the
+ * trim, widget) runs inside the `withSession` callback through the
  * per-fresh-session facade — never through this module's host methods,
  * which close over the pre-replacement API that pi invalidates after
  * `newSession`.  No message is delivered: the user types into the fresh
@@ -52,10 +52,10 @@ export type { PiSwitchHost } from "../../core/slots.js";
  *    skipped (never guess — an empty filter would wipe every tool).
  * 3. `newSession` replaces the current session (parented to the current
  *    session id) with a fresh one bound to the target identity.  Inside
- *    the `withSession` callback the trim and the status bar are applied
+ *    the `withSession` callback the trim and the widget are applied
  *    through the per-fresh-session facade — the old API is stale by then,
- *    so no process-level host method may run there.  The status bar
- *    already shows the active primary immediately after the switch, so no
+ *    so no process-level host method may run there.  The widget already
+ *    shows the active primary immediately after the switch, so no
  *    confirmation entry is appended.
  *
  * Fail-closed behaviour: a missing `newSession` API throws before any
@@ -136,7 +136,9 @@ export async function applySwitch(
         if (nextTools !== undefined) {
           ops.setActiveTools(nextTools);
         }
-        ops.setStatus("zoo", name);
+        // The widget (rendered above the editor by the pi facade) shows
+        // the active primary immediately after the switch.
+        ops.setWidget("zoo", [name]);
       },
     });
   } catch (err) {

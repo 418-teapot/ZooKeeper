@@ -86,6 +86,10 @@ function makeDeps(overrides: Partial<Deps> = {}): Deps {
     // fixture declares beaver as a delegatable subagent so the existing
     // happy-path cases keep running the driver.
     agentModes: { beaver: "subagent", dolphin: "primary" },
+    // Strict model mode: agents.json is the sole model source, so the
+    // default fixture configures beaver (the usual delegation target) to
+    // keep the happy-path cases running the driver.
+    subagentModels: { beaver: "Dummy/dummy-small" },
     client: {},
     directory: "/tmp/zoo",
     sessionAgentMap: new Map(),
@@ -241,6 +245,8 @@ describe("subagent tool execute — successful delegation", () => {
       prompt: "Implement the feature",
       tools: ["bash", "edit"],
       parentSession: "sess-subagent",
+      // Strict mode: the agents.json configured model is the sole source.
+      model: "Dummy/dummy-small",
     });
   });
 
@@ -337,33 +343,155 @@ describe("subagent tool execute — successful delegation", () => {
     assert.equal(observedSignal?.aborted, true);
   });
 
-  it("forwards the inherited model from the hostCtx into the request", async () => {
+  it("uses the agents.json configured model (the sole source in strict mode)", async () => {
     const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
     setPrimary("dolphin");
 
-    const t = tool(makeDeps({ subagentDriver: driver }));
+    const t = tool(
+      makeDeps({
+        subagentDriver: driver,
+        subagentModels: { beaver: "Dummy/dummy-large" },
+      }),
+    );
     await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "task" },
       TOOL_CTX,
-      {
-        model: "Volces/deepseek-v4-flash",
-      },
+      // Strict mode ignores the parent model entirely — a host-forwarded
+      // model must NOT leak into the request.  The hostCtx type no longer
+      // exposes `model`, so the cast models a stale host that still sends
+      // it.
+      { model: "Dummy/dummy-small" } as never,
     );
 
-    assert.equal(calls[0].request.model, "Volces/deepseek-v4-flash");
+    assert.equal(calls[0].request.model, "Dummy/dummy-large");
   });
 
-  it("omits the model from the request when the hostCtx carries none", async () => {
+  it('passes a concatenated "provider/model" value through to the request (registry-prefixed id)', async () => {
     const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
     setPrimary("dolphin");
 
-    const t = tool(makeDeps({ subagentDriver: driver }));
+    // The loader maps `{provider: "Dummy", model: "dummy/prefixed-id"}`
+    // to the concatenated `"Dummy/dummy/prefixed-id"`; the tool must
+    // forward that string verbatim (resolveModel splits it on the first `/`
+    // back into provider + full registry id).
+    const t = tool(
+      makeDeps({
+        subagentDriver: driver,
+        subagentModels: { beaver: "Dummy/dummy/prefixed-id" },
+      }),
+    );
     await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "task" },
       TOOL_CTX,
     );
 
-    assert.equal(calls[0].request.model, undefined);
+    assert.equal(calls[0].request.model, "Dummy/dummy/prefixed-id");
+  });
+
+  it("reports an actionable error when agents.json has no entry for the target", async () => {
+    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
+    setPrimary("dolphin");
+
+    // The map exists but lacks the target agent.
+    const t = tool(
+      makeDeps({
+        subagentDriver: driver,
+        subagentModels: { lynx: "Dummy/dummy-large" },
+      }),
+    );
+    const result = await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "task" },
+      TOOL_CTX,
+    );
+
+    assert.equal(
+      calls.length,
+      0,
+      "driver must not run when the target has no configured model",
+    );
+    assert.ok(result.includes("未配置"), `missing error text: ${result}`);
+    assert.ok(
+      result.includes("beaver"),
+      `error must name the target: ${result}`,
+    );
+    assert.ok(
+      result.includes("install.py"),
+      `error must hint at re-running install.py: ${result}`,
+    );
+  });
+
+  it("reports an actionable error when agents.json is missing or invalid (empty map)", async () => {
+    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
+    setPrimary("dolphin");
+
+    // No subagentModels → the loader failed closed to an empty map.
+    const t = tool(
+      makeDeps({ subagentDriver: driver, subagentModels: undefined }),
+    );
+    const result = await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "task" },
+      TOOL_CTX,
+    );
+
+    assert.equal(
+      calls.length,
+      0,
+      "driver must not run when agents.json is unavailable",
+    );
+    assert.ok(
+      result.includes("agents.json"),
+      `error must name agents.json: ${result}`,
+    );
+    assert.ok(
+      result.includes("install.py"),
+      `error must hint at re-running install.py: ${result}`,
+    );
+  });
+
+  it("uses the configured model even without an inherited model", async () => {
+    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
+    setPrimary("dolphin");
+
+    const t = tool(
+      makeDeps({
+        subagentDriver: driver,
+        subagentModels: { beaver: "Dummy/dummy-large" },
+      }),
+    );
+    await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "task" },
+      TOOL_CTX,
+    );
+
+    assert.equal(calls[0].request.model, "Dummy/dummy-large");
+  });
+
+  it("ignores a hostCtx model when agents.json has no entry for the target (no inheritance)", async () => {
+    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
+    setPrimary("dolphin");
+
+    // No entry for beaver + a parent model in hostCtx: strict mode must
+    // NOT fall back to the parent — it errors instead.
+    const t = tool(
+      makeDeps({
+        subagentDriver: driver,
+        subagentModels: { lynx: "Dummy/dummy-large" },
+      }),
+    );
+    const result = await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "task" },
+      TOOL_CTX,
+      // A stale host forwarding a parent model — strict mode must ignore it
+      // (the type no longer exposes `model`, so the cast models it).
+      { model: "Dummy/dummy-small" } as never,
+    );
+
+    assert.equal(
+      calls.length,
+      0,
+      "driver must not run — a missing entry is an error, never an inheritance",
+    );
+    assert.ok(result.includes("未配置"), `missing error text: ${result}`);
   });
 });
 
@@ -624,20 +752,20 @@ describe("subagent tool execute — progress bridge to onUpdate", () => {
 
     assert.equal(result, "done");
     // Each snapshot reaches onUpdate as a pi-style partial result carrying
-    // the compact one-line text (prefixed by the description label) and an
-    // empty details object.
+    // the compact one-line text (prefixed by the description label) and the
+    // full structured progress in details (for the TUI card renderer).
     assert.equal(partials.length, 3);
     assert.deepEqual(partials[0], {
       content: [{ type: "text", text: "[实现任务] [bash] " }],
-      details: {},
+      details: { currentTool: "bash", output: "", done: false },
     });
     assert.deepEqual(partials[1], {
       content: [{ type: "text", text: "[实现任务] [bash] running" }],
-      details: {},
+      details: { currentTool: "bash", output: "running", done: false },
     });
     assert.deepEqual(partials[2], {
       content: [{ type: "text", text: "[实现任务] finished" }],
-      details: {},
+      details: { output: "finished", done: true },
     });
   });
 
@@ -684,5 +812,38 @@ describe("subagent tool execute — progress bridge to onUpdate", () => {
 
     assert.equal(threw, 2, "onUpdate must be invoked for each snapshot");
     assert.equal(result, "done", "a throwing onUpdate must not break the run");
+  });
+
+  it("attaches renderCall / renderResult when a renderer is present (pi)", () => {
+    setPrimary("dolphin");
+    const renderCall = () => ({ kind: "call" });
+    const renderResult = () => ({ kind: "result" });
+    const t = tool(
+      makeDeps({
+        subagentDriver: {
+          async run() {
+            return { kind: "ok", text: "done" };
+          },
+        },
+        subagentRenderer: { renderCall, renderResult },
+      }),
+    );
+    assert.equal(t.renderCall, renderCall);
+    assert.equal(t.renderResult, renderResult);
+  });
+
+  it("keeps the tool text-only when no renderer is present (OpenCode)", () => {
+    setPrimary("dolphin");
+    const t = tool(
+      makeDeps({
+        subagentDriver: {
+          async run() {
+            return { kind: "ok", text: "done" };
+          },
+        },
+      }),
+    );
+    assert.equal(t.renderCall, undefined);
+    assert.equal(t.renderResult, undefined);
   });
 });

@@ -5,7 +5,7 @@
  * configured primary, empty set / missing pi switch host → zero
  * commands), and the new-session switch semantics (`applySwitch`:
  * setPrimary FIRST → `newSession` with the current session id as parent
- * → post-replacement tool trim + status inside `withSession`), including
+ * → post-replacement tool trim + widget inside `withSession`), including
  * the same-agent no-op, cancelled-rollback, missing-API fail-closed, and
  * the round-trip non-accumulation property.
  */
@@ -64,7 +64,7 @@ afterEach(() => {
  * per-fresh-session facade (`PiSwitchNewSessionOps`), so tests can
  * observe exactly what the switch does inside `withSession`.
  *
- * The host's OWN `setActiveTools` / `setStatus` record into `hostCalls`
+ * The host's OWN `setActiveTools` / `setWidget` record into `hostCalls`
  * and are expected to stay EMPTY: switch.ts must touch only the facade
  * inside `withSession` — the process-level host API is stale (pi
  * invalidates it) after `newSession`, so calling it there is the crash
@@ -74,33 +74,33 @@ function mockHost(initialTools: string[] = []): {
   host: PiSwitchHost;
   calls: {
     newSession: Array<{ parentSession?: string }>;
-    /** Facade ops.setStatus calls inside withSession. */
-    withSessionStatus: Array<[string, string | undefined]>;
+    /** Facade ops.setWidget calls inside withSession. */
+    withSessionWidget: Array<[string, string[] | undefined]>;
     /** Facade ops.setActiveTools calls inside withSession. */
     setActiveTools: string[][];
   };
   hostCalls: {
     setActiveTools: string[][];
-    setStatus: Array<[string, string | undefined]>;
+    setWidget: Array<[string, string[] | undefined]>;
   };
   active: () => string[];
   newSessionCount: () => number;
 } {
   const calls: {
     newSession: Array<{ parentSession?: string }>;
-    withSessionStatus: Array<[string, string | undefined]>;
+    withSessionWidget: Array<[string, string[] | undefined]>;
     setActiveTools: string[][];
   } = {
     newSession: [],
-    withSessionStatus: [],
+    withSessionWidget: [],
     setActiveTools: [],
   };
   const hostCalls: {
     setActiveTools: string[][];
-    setStatus: Array<[string, string | undefined]>;
+    setWidget: Array<[string, string[] | undefined]>;
   } = {
     setActiveTools: [],
-    setStatus: [],
+    setWidget: [],
   };
   const baseline = [...initialTools];
   let active = [...initialTools];
@@ -111,8 +111,8 @@ function mockHost(initialTools: string[] = []): {
     setActiveTools: (names) => {
       hostCalls.setActiveTools.push(names);
     },
-    setStatus: (key, text) => {
-      hostCalls.setStatus.push([key, text]);
+    setWidget: (key, lines) => {
+      hostCalls.setWidget.push([key, lines]);
     },
     newSession: async (options) => {
       calls.newSession.push({ parentSession: options.parentSession });
@@ -121,7 +121,7 @@ function mockHost(initialTools: string[] = []): {
       // the trim (mirrors the deferred application at the new session's
       // first before_agent_start).
       await options.withSession?.({
-        setStatus: (key, text) => calls.withSessionStatus.push([key, text]),
+        setWidget: (key, lines) => calls.withSessionWidget.push([key, lines]),
         setActiveTools: (names) => {
           calls.setActiveTools.push(names);
           active = names;
@@ -290,9 +290,9 @@ describe("switch unit — new-session switch flow", () => {
     // Tool-level deny (webfetch) removed inside the new session; bash
     // (fine-grained sub-table) kept.
     assert.deepEqual(calls.setActiveTools, [["edit", "bash"]]);
-    // Status lands in the NEW session.  No confirmation card: the status
-    // bar already shows the active primary immediately after the switch.
-    assert.deepEqual(calls.withSessionStatus, [["zoo", "dolphin"]]);
+    // Widget lands in the NEW session.  No confirmation card: the widget
+    // already shows the active primary immediately after the switch.
+    assert.deepEqual(calls.withSessionWidget, [["zoo", ["dolphin"]]]);
   });
 
   it("leaves the active set unchanged when the target has no denies", async () => {
@@ -324,12 +324,12 @@ describe("switch unit — new-session switch flow", () => {
     const bareHost: PiSwitchHost = {
       getBaselineTools: () => undefined,
       setActiveTools: (names) => calls.setActiveTools.push(names),
-      setStatus: (key, text) => {
-        calls.withSessionStatus.push([key, text]);
+      setWidget: (key, lines) => {
+        calls.withSessionWidget.push([key, lines]);
       },
       newSession: async (options) => {
         await options.withSession?.({
-          setStatus: (key, text) => calls.withSessionStatus.push([key, text]),
+          setWidget: (key, lines) => calls.withSessionWidget.push([key, lines]),
           setActiveTools: (names) => calls.setActiveTools.push(names),
         });
         return { cancelled: false };
@@ -338,7 +338,7 @@ describe("switch unit — new-session switch flow", () => {
     setPrimary("mola");
     await applySwitch("dolphin", ["webfetch"], bareHost, "sess");
     assert.deepEqual(calls.setActiveTools, [], "trim must be skipped");
-    assert.deepEqual(calls.withSessionStatus, [["zoo", "dolphin"]]);
+    assert.deepEqual(calls.withSessionWidget, [["zoo", ["dolphin"]]]);
     assert.equal(getPrimary(), "dolphin");
   });
 
@@ -352,12 +352,12 @@ describe("switch unit — new-session switch flow", () => {
     const emptyBaselineHost: PiSwitchHost = {
       getBaselineTools: () => [],
       setActiveTools: (names) => calls.setActiveTools.push(names),
-      setStatus: (key, text) => {
-        calls.withSessionStatus.push([key, text]);
+      setWidget: (key, lines) => {
+        calls.withSessionWidget.push([key, lines]);
       },
       newSession: async (options) => {
         await options.withSession?.({
-          setStatus: (key, text) => calls.withSessionStatus.push([key, text]),
+          setWidget: (key, lines) => calls.withSessionWidget.push([key, lines]),
           setActiveTools: (names) => calls.setActiveTools.push(names),
         });
         return { cancelled: false };
@@ -366,7 +366,7 @@ describe("switch unit — new-session switch flow", () => {
     setPrimary("mola");
     await applySwitch("dolphin", ["webfetch"], emptyBaselineHost, "sess");
     assert.deepEqual(calls.setActiveTools, [], "trim must be skipped");
-    assert.deepEqual(calls.withSessionStatus, [["zoo", "dolphin"]]);
+    assert.deepEqual(calls.withSessionWidget, [["zoo", ["dolphin"]]]);
     assert.equal(getPrimary(), "dolphin");
   });
 
@@ -376,14 +376,14 @@ describe("switch unit — new-session switch flow", () => {
     await applySwitch("dolphin", ["webfetch"], host, "sess");
     assert.deepEqual(calls.newSession, [], "no replacement for the same agent");
     assert.deepEqual(calls.setActiveTools, []);
-    assert.deepEqual(calls.withSessionStatus, []);
+    assert.deepEqual(calls.withSessionWidget, []);
     assert.equal(getPrimary(), "dolphin");
   });
 
   it("withSession touches ONLY the facade ops, never the process-level host API", async () => {
     // The crash this design fixes: pi invalidates the captured extension
     // API after `newSession`, so calling the host's own
-    // `setActiveTools`/`setStatus` inside `withSession` would throw.
+    // `setActiveTools`/`setWidget` inside `withSession` would throw.
     // switch.ts must route every post-replacement operation through the
     // per-fresh-session facade instead.
     const { host, calls, hostCalls } = mockHost(["webfetch", "edit", "bash"]);
@@ -407,11 +407,11 @@ describe("switch unit — new-session switch flow", () => {
 
     // All post-replacement work went through the facade...
     assert.deepEqual(calls.setActiveTools, [["edit", "bash"]]);
-    assert.deepEqual(calls.withSessionStatus, [["zoo", "dolphin"]]);
+    assert.deepEqual(calls.withSessionWidget, [["zoo", ["dolphin"]]]);
     // ...and NONE of it touched the process-level host API (which pi
     // invalidates on replacement).
     assert.deepEqual(hostCalls.setActiveTools, []);
-    assert.deepEqual(hostCalls.setStatus, []);
+    assert.deepEqual(hostCalls.setWidget, []);
   });
 
   it("cancelled replacement → rolls back the primary and throws", async () => {
@@ -422,13 +422,13 @@ describe("switch unit — new-session switch flow", () => {
     const cancellingHost: PiSwitchHost = {
       getBaselineTools: () => [],
       setActiveTools: (names) => calls.setActiveTools.push(names),
-      setStatus: (key, text) => {
-        calls.withSessionStatus.push([key, text]);
+      setWidget: (key, lines) => {
+        calls.withSessionWidget.push([key, lines]);
       },
       newSession: async (options) => {
         withSessionRan = true;
         await options.withSession?.({
-          setStatus: (key, text) => calls.withSessionStatus.push([key, text]),
+          setWidget: (key, lines) => calls.withSessionWidget.push([key, lines]),
           setActiveTools: (names) => calls.setActiveTools.push(names),
         });
         return { cancelled: true };
@@ -454,8 +454,8 @@ describe("switch unit — new-session switch flow", () => {
     const bareHost = {
       getBaselineTools: () => ["webfetch", "edit"],
       setActiveTools: (names: string[]) => calls.setActiveTools.push(names),
-      setStatus: (key: string, text: string | undefined) => {
-        calls.withSessionStatus.push([key, text]);
+      setWidget: (key: string, lines: string[] | undefined) => {
+        calls.withSessionWidget.push([key, lines]);
       },
     } as unknown as PiSwitchHost;
     setPrimary("mola");
@@ -465,7 +465,7 @@ describe("switch unit — new-session switch flow", () => {
     );
     assert.equal(getPrimary(), "mola", "primary must not change");
     assert.deepEqual(calls.setActiveTools, [], "no trim before the check");
-    assert.deepEqual(calls.withSessionStatus, []);
+    assert.deepEqual(calls.withSessionWidget, []);
   });
 });
 
@@ -480,14 +480,14 @@ describe("applySwitch — new-session flow", () => {
     await applySwitch("mola", ["b", "d"], host, "sess");
     assert.deepEqual(calls.setActiveTools, [["a", "c"]]);
     assert.equal(getPrimary(), "mola");
-    assert.deepEqual(calls.withSessionStatus, [["zoo", "mola"]]);
+    assert.deepEqual(calls.withSessionWidget, [["zoo", ["mola"]]]);
   });
 
-  it("sets the status bar in the new session", async () => {
+  it("renders the widget with the active primary in the new session", async () => {
     const { host, calls } = mockHost([]);
     setPrimary("mola");
     await applySwitch("dolphin", [], host, "sess");
-    assert.deepEqual(calls.withSessionStatus, [["zoo", "dolphin"]]);
+    assert.deepEqual(calls.withSessionWidget, [["zoo", ["dolphin"]]]);
   });
 
   it("round-trips A→B→A→B creating two new sessions without accumulating denies", async () => {

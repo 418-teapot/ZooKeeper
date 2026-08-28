@@ -138,13 +138,13 @@ export type AgentMode = "primary" | "subagent";
 export type AgentModeMap = Record<string, AgentMode>;
 
 /**
- * Per-agent status-bar color map (`[agent.<name>].color`).
+ * Per-agent status color map (`[agent.<name>].color`).
  *
  * Maps every agent name whose `color` field parsed successfully to its
  * normalized uppercase `#RRGGBB` hex.  Agents with a missing or invalid
  * `color` are absent (skipped + warned by the parse layer) — no default
  * color is ever injected, and an absent entry means the agent's
- * indicator renders in the plain terminal color.
+ * display text renders in the plain terminal color.
  */
 export type AgentColorMap = Record<string, string>;
 

@@ -35,7 +35,13 @@
  *    channel when one is present (pi's `onUpdate`), and drives the
  *    lifecycle orchestration (`runSubagent`), forwarding the parent abort
  *    signal when the tool context carries one.
- * 6. Maps the run outcome onto the tool's text return: an `ok` result is
+ * 6. Resolves the sub-session model (strict mode): `deps.subagentModels`
+ *    (agents.json, whose mapped values are `"provider/model"` strings) is
+ *    the SOLE source.  A missing entry for the target
+ *    fails closed with an actionable Chinese error and never runs the
+ *    driver — there is no inheritance from the parent model and no
+ *    default fallback.
+ * 7. Maps the run outcome onto the tool's text return: an `ok` result is
  *    the subagent text verbatim; every failure variant (`aborted`,
  *    `error`) returns the partial text plus a short Chinese reason line.
  *
@@ -153,17 +159,18 @@ function formatSubagentResult(result: SubagentResult): string {
  */
 interface PiPartialResult {
   content: Array<{ type: "text"; text: string }>;
-  details: Record<string, never>;
+  details: SubagentProgress;
 }
 
 /**
  * Bridge one progress snapshot into the pi streaming partial-result channel.
  *
  * Renders the snapshot into a compact one-line text (prefixed by the
- * delegation's `description` label when present) and emits it as a `text`
- * content part inside pi's partial-result shape.  The call is defensive: a
- * throwing `onUpdate` is logged and swallowed so a UI callback can never
- * break the subagent run.
+ * delegation's `description` label when present) as a `text` content part,
+ * and carries the FULL structured progress in `details` so the pi TUI card
+ * renderer can draw the live transcript (spinner / current tool / recent
+ * output / stats).  The call is defensive: a throwing `onUpdate` is logged
+ * and swallowed so a UI callback can never break the subagent run.
  *
  * @param progress - The snapshot to stream.
  * @param sessionID - The parent session id for logging.
@@ -186,7 +193,7 @@ function emitProgressUpdate(
           text: formatProgressLine(progress, SNAPSHOT_OUTPUT_CAP, label),
         },
       ],
-      details: {},
+      details: progress,
     };
     (onUpdate as (partial: PiPartialResult) => void)(partial);
   } catch (err) {
@@ -211,24 +218,34 @@ function emitProgressUpdate(
 /**
  * Create the subagent delegation tool.
  *
- * The driver, the host tool services, the tool baseline, and the parsed
- * per-agent denies are captured by the closure so each `execute` call is
- * self-contained.
+ * The driver, the host tool services, the tool baseline, the parsed
+ * per-agent denies, and the optional transcript-card renderer are captured
+ * by the closure so each `execute` call is self-contained.  When a renderer
+ * is present (pi) the tool contribution carries `renderCall` / `renderResult`
+ * so pi's TUI draws the live transcript card; without one (OpenCode) the
+ * tool stays text-only.
  *
  * @param driver - The host driver that executes the subagent.
  * @param deps - The dependency surfaces the tool needs: `toolHost` for the
  *   parent session id, `subagentBaseline` for the capability baseline,
- *   `agentModes` for the declared subagent role of the target, and
- *   `agentPermissions` for the target's tool-level denies.
+ *   `agentModes` for the declared subagent role of the target,
+ *   `agentPermissions` for the target's tool-level denies, and
+ *   `subagentRenderer` for the optional pi TUI card renderer.
  * @returns The subagent tool definition.
  */
 export function createSubagentTool(
   driver: SubagentDriver,
   deps: Pick<
     Deps,
-    "toolHost" | "subagentBaseline" | "agentModes" | "agentPermissions"
+    | "toolHost"
+    | "subagentBaseline"
+    | "agentModes"
+    | "agentPermissions"
+    | "subagentRenderer"
+    | "subagentModels"
   >,
 ): ToolContribution {
+  const renderer = deps.subagentRenderer;
   return {
     name: "subagent",
     description:
@@ -248,6 +265,14 @@ export function createSubagentTool(
       },
     },
     required: ["agent", "description", "prompt"],
+    // Attach the pi TUI renderers only when the host supplied one.  A
+    // missing renderer (OpenCode) keeps the tool text-only.
+    ...(renderer !== undefined
+      ? {
+          renderCall: renderer.renderCall,
+          renderResult: renderer.renderResult,
+        }
+      : {}),
     async execute(args, toolCtx, hostCtx) {
       const input = validateSubagentArgs(args);
 
@@ -332,14 +357,25 @@ export function createSubagentTool(
             ? toolCtxSignal
             : new AbortController().signal;
 
-      // 6. Model inheritance: forward the parent's model (as a
-      // `"provider/id"` string) when the host carried it on the execution
-      // context.  The driver resolves it against the pi SDK when present;
-      // a missing model falls back to the sub-session's default.
-      const model =
-        typeof hostCtx?.model === "string" && hostCtx.model.length > 0
-          ? hostCtx.model
-          : undefined;
+      // 6. Model resolution for the sub-session (strict mode): the target's
+      //    `[agent.<name>].model` from agents.json (`deps.subagentModels`,
+      //    materialised by the installer as a `{provider, model}` pair whose
+      //    mapped value is the concatenated `"provider/model"` string — the
+      //    TS runtime never resolves `{env:}` tokens itself) is the SOLE
+      //    model source.  A missing agents.json (empty map), or an agent
+      //    absent from it, fails closed with an actionable Chinese error and
+      //    never runs the driver — there is no inheritance and no default
+      //    fallback.
+      const configuredModel = deps.subagentModels?.[input.agent];
+      if (typeof configuredModel !== "string" || configuredModel.length === 0) {
+        const sessionID = deps.toolHost?.resolveSessionId(toolCtx) ?? "";
+        log("subagent-tool", "model_missing", sessionID, undefined, "warn", {
+          caller,
+          target: input.agent,
+        });
+        return `"${input.agent}" 未配置子 agent 模型：仅从 ~/.pi/agent/agents.json 读取模型配置，未找到该 agent 的 provider/model 条目（文件缺失、JSON 非法或该 agent 未配置 provider/model 均会导致此错误）。请运行 \`uv run python install.py\` 重新生成 agents.json 后重试。`;
+      }
+      const model = configuredModel;
 
       // 7. Stream compact progress snapshots into the host's partial-result
       // channel when one is present (pi's `onUpdate`).  Each snapshot is
@@ -356,7 +392,10 @@ export function createSubagentTool(
           prompt: input.prompt,
           tools,
           parentSession,
-          ...(model !== undefined ? { model } : {}),
+          // Strict mode: the agents.json model is always present (the
+          // missing-entry guard above never lets the run reach the driver
+          // without one).
+          model,
         },
         {
           signal,

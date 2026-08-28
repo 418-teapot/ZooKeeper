@@ -3,7 +3,7 @@
  *
  * Implements the host-agnostic `SubagentDriver` contract against pi's SDK
  * factory (`createAgentSession`): a run creates a sub-session carrying the
- * request's tool allowlist and (when present) inherited model, subscribes
+ * request's tool allowlist and configured model, subscribes
  * to its events and reduces them into the host-neutral `AgentMessage` view,
  * calls the pi SDK `prompt(text)` with the request's prompt, and classifies
  * the outcome from the final assistant message's `stopReason`.  Termination
@@ -23,8 +23,20 @@
  * @module
  */
 
+import {
+  createStructuredProgress,
+  recordOutput,
+  recordTokens,
+  recordToolCall,
+  recordToolStart,
+  recordTurn,
+  type StructuredProgressState,
+  summarizeToolCall,
+  toSnapshot,
+} from "../../core/subagent/accumulate.js";
 import type {
   SubagentDriver,
+  SubagentProgress,
   SubagentResult,
 } from "../../core/subagent/driver.js";
 import { formatSnapshotOutput } from "../../core/subagent/progress.js";
@@ -49,15 +61,19 @@ export interface PiAgentSession {
 /**
  * Duck-type of pi's on-disk `SessionManager` (the default `create` result).
  *
- * The driver only reads the session id off it; lineage (the parent-session
- * pointer) is applied at construction time by the session-manager factory.
+ * The driver reads the session id and (when available) the on-disk session
+ * file path off it; lineage (the parent-session pointer) is applied at
+ * construction time by the session-manager factory.  `getSessionFile` is
+ * optional — an in-memory session manager reports no file, and the card
+ * then simply omits the session path line.
  */
 export interface PiSessionManager {
   getSessionId(): string;
+  getSessionFile?(): string | undefined;
 }
 
 /**
- * Duck-type of the pi `ModelRuntime` used to resolve an inherited model.
+ * Duck-type of the pi `ModelRuntime` used to resolve a configured model.
  *
  * Only `getModel` is needed: it maps a `provider` / `id` pair back to the
  * pi `Model` object that `createAgentSession` accepts.
@@ -67,7 +83,7 @@ export interface PiModelRuntimeLike {
 }
 
 /**
- * Duck-type of a resolved inherited model plus its owning runtime.
+ * Duck-type of a resolved configured model plus its owning runtime.
  *
  * Both are passed to `createAgentSession` together so the session reuses
  * the runtime the model was resolved from instead of building a second one.
@@ -81,21 +97,26 @@ export interface PiResolvedModel {
  * Duck-type of the pi `AgentSession` event stream.
  *
  * The driver reduces `message_end` events (the finalized message) into the
- * `AgentMessage` view, and reads `tool_execution_start` / `agent_end` for
- * progress snapshots.
+ * `AgentMessage` view, and reads `tool_execution_start` / `tool_execution_end`
+ * / `agent_end` for progress snapshots.
  */
 export interface PiSessionEvent {
   type: string;
   message?: unknown;
   toolName?: string;
+  toolCallId?: string;
+  args?: Record<string, unknown>;
+  result?: unknown;
+  toolResults?: unknown;
 }
 
 /**
  * Duck-type of a pi LLM message (`Message` from `@earendil-works/pi-ai`).
  *
  * Only the fields needed for result computation are read: role, content
- * parts, the assistant stop reason, the assistant error message, and the
- * tool-result error flag.
+ * parts, the assistant stop reason, the assistant error message, the
+ * tool-result error flag, and the assistant usage report (for token
+ * accumulation).
  */
 export interface PiDuckMessage {
   role?: string;
@@ -103,6 +124,7 @@ export interface PiDuckMessage {
   stopReason?: string;
   errorMessage?: string;
   isError?: boolean;
+  usage?: { input?: number; output?: number; totalTokens?: number };
 }
 
 /** One content part of a pi message (`TextContent | ThinkingContent | ...`). */
@@ -116,8 +138,9 @@ interface PiContentPart {
  *
  * `tools` is the capability allowlist the driver must forward (it is how
  * the sub-session's tool face is restricted).  `model` / `modelRuntime`
- * carry the inherited parent model when one was resolved.  `sessionManager`
- * is the constructed session manager (with the parent-session pointer).
+ * carry the resolved configured model (strict mode: the request always
+ * carries one).  `sessionManager` is the constructed session manager (with
+ * the parent-session pointer).
  */
 export interface PiCreateSessionOptions {
   cwd: string;
@@ -142,10 +165,13 @@ export type PiSessionManagerFactory = (
 ) => Promise<PiSessionManager>;
 
 /**
- * Resolves a `"provider/id"` model string to a pi `Model` object plus its
- * runtime.  Returns `undefined` when the model cannot be resolved — the run
- * then falls back to the session's default model (fail-open on inheritance,
- * never invented).
+ * Resolves a `"provider/model"` model string to a pi `Model` object plus its
+ * runtime.
+ *
+ * Strict mode: every subagent request carries a configured model (the tool
+ * layer guarantees it), so the driver resolves it against the pi model
+ * registry and an unresolvable value is an error — never a silent fallback
+ * to the sub-session default.
  */
 export type PiModelResolver = (
   model: string,
@@ -270,24 +296,31 @@ function lastAssistantStopReason(messages: AgentMessage[]): string | undefined {
 /**
  * Reduce one session event into the message view and progress snapshots.
  *
- * `message_end` events append the finalized message; `tool_execution_start`
- * and `agent_end` drive the progress snapshots (current tool, compact output
- * text, done flag).  Every snapshot output is the compact form — the last
- * non-empty line of the assistant message text (or the reduced run text),
- * capped by the compact-snapshot formatter — never the full transcript.
+ * `message_end` events append the finalized message; `tool_execution_start`,
+ * `tool_execution_end`, and `agent_end` drive the progress snapshots.  Every
+ * snapshot output is the compact form — the last non-empty line of the
+ * assistant message text (or the reduced run text), capped by the
+ * compact-snapshot formatter — never the full transcript.  The structured
+ * view (recent tool calls, recent output, turn/tool counters) is accumulated
+ * in `state` and merged into every snapshot so the transcript card can render
+ * live state.
  *
  * @param event - The pi session event.
  * @param messages - The accumulating message view.
+ * @param state - The structured progress accumulator.
+ * @param agent - The subagent (target) name.
  * @param onProgress - Optional progress callback (driver ctx).
+ * @param model - The resolved model id (the id part of a `"provider/model"`
+ *   string), carried on every snapshot so the transcript card's badge shows
+ *   the model actually in use.
  */
 function reduceEvent(
   event: PiSessionEvent,
   messages: AgentMessage[],
-  onProgress?: (progress: {
-    currentTool?: string;
-    output: string;
-    done: boolean;
-  }) => void,
+  state: StructuredProgressState,
+  agent: string,
+  onProgress?: (progress: SubagentProgress) => void,
+  model?: string,
 ): void {
   // Project the finalized message once; the push and the assistant progress
   // snapshot share the same projected view.
@@ -295,21 +328,83 @@ function reduceEvent(
     event.type === "message_end" ? projectMessage(event.message) : undefined;
   if (projected !== undefined) messages.push(projected);
   if (onProgress === undefined) return;
+  const modelField = model !== undefined ? { model } : {};
   if (event.type === "tool_execution_start") {
-    onProgress({ currentTool: event.toolName, output: "", done: false });
+    recordToolStart(state, event.args);
+    onProgress({
+      agent,
+      ...toSnapshot(state),
+      ...modelField,
+      currentTool: event.toolName,
+      output: "",
+      done: false,
+    });
+  } else if (event.type === "tool_execution_end") {
+    recordToolCall(
+      state,
+      event.toolName ?? "tool",
+      summarizeToolCall(event.toolName ?? "tool", state.lastToolArgs),
+    );
+    onProgress({
+      agent,
+      ...toSnapshot(state),
+      ...modelField,
+      output: "",
+      done: false,
+    });
   } else if (event.type === "message_end") {
     if (projected?.role === "assistant") {
+      recordTurn(state);
+      recordOutput(state, formatSnapshotOutput(projected.text));
+      // pi reports per-message usage on assistant messages (input+output+
+      // caches, with a totalTokens convenience field).  The total is
+      // accumulated so the transcript card can show a running token count;
+      // prefer the provider's totalTokens, falling back to input+output.
+      const raw = event.message as PiDuckMessage | undefined;
+      const usage = raw?.usage;
+      const total = usage?.totalTokens ?? 0;
+      const tokens =
+        total > 0 ? total : (usage?.input ?? 0) + (usage?.output ?? 0);
+      recordTokens(state, tokens);
       onProgress({
+        agent,
+        ...toSnapshot(state),
+        ...modelField,
         output: formatSnapshotOutput(projected.text),
         done: false,
       });
     }
   } else if (event.type === "agent_end") {
     onProgress({
+      agent,
+      ...toSnapshot(state),
+      ...modelField,
       output: formatSnapshotOutput(reduceMessages(messages)),
       done: true,
     });
   }
+}
+
+/**
+ * Extract the model id from a `"provider/model"` model string.
+ *
+ * The transcript badge shows only the id part (`deepseek-v4-flash`), never
+ * the full `provider/model` pair — the provider is implied by the session.
+ * A malformed string (no `/`, empty parts) yields `undefined` so the badge
+ * stays silent rather than showing a broken id.  For a concatenated value
+ * whose model half is a provider-prefixed registry id (e.g.
+ * `Volces/volces/deepseek-v4-flash`), the id part is the FULL registry id
+ * (`volces/deepseek-v4-flash`) — the badge shows the real id.
+ *
+ * @param model - The full `"provider/model"` model string.
+ * @returns The id part, or `undefined` when the string is malformed.
+ */
+function modelIdOf(model: string | undefined): string | undefined {
+  if (model === undefined) return undefined;
+  const slash = model.indexOf("/");
+  if (slash <= 0 || slash === model.length - 1) return undefined;
+  const id = model.slice(slash + 1);
+  return id.length > 0 ? id : undefined;
 }
 
 /**
@@ -327,7 +422,7 @@ export interface PiSubagentDriverOptions {
    */
   createSessionManager?: PiSessionManagerFactory;
   /**
-   * Resolve a `"provider/id"` model string to a pi model plus runtime.
+   * Resolve a `"provider/model"` model string to a pi model plus runtime.
    * Defaults to a lazy pi SDK resolution via `ModelRuntime`.
    */
   resolveModel?: PiModelResolver;
@@ -359,9 +454,9 @@ async function defaultCreateSessionManager(
  * `allowModelNetwork: false` keeps resolution local (no network model
  * refresh on every delegation).  The runtime is created once and cached —
  * it is a read-only model registry, so reuse across delegations is safe
- * and avoids re-reading `models.json` on every run that inherits a model.
+ * and avoids re-reading `models.json` on every run.
  *
- * @param model - The `"provider/id"` model string to resolve.
+ * @param model - The `"provider/model"` model string to resolve.
  * @returns The resolved model and runtime, or `undefined` when unresolvable.
  */
 async function defaultResolveModel(
@@ -411,15 +506,48 @@ export function createPiSubagentDriver(
     async run(request, ctx): Promise<SubagentResult> {
       const { signal, onProgress } = ctx;
       const messages: AgentMessage[] = [];
+      // Structured view accumulated for the transcript card; bounded by the
+      // accumulator's recency caps.
+      const structured = createStructuredProgress();
       // Carries the child session id for the failure log once the session
       // manager exists; stays empty when the failure predates its creation.
       let sessionId = "";
+      // The on-disk sub-session file path (pi persists sessions).  Read off
+      // the session manager once it exists; stays undefined on hosts without
+      // a session-file concept.
+      let sessionPath: string | undefined;
+      // The model id the sub-session actually runs on (the id part of a
+      // `"provider/model"` string).  Strict mode: every run carries a
+      // configured model, so the id is set once resolution succeeds.
+      let modelId: string | undefined;
       let session: PiAgentSession | undefined;
       let unsubscribe: (() => void) | undefined;
       let aborted = false;
       const onAbort = (): void => {
         aborted = true;
         void session?.abort();
+      };
+      // Emit the final done snapshot carrying the run result, so the
+      // transcript card transitions to its terminal state.  The compact
+      // text stays capped (never the full transcript); the structured
+      // `result` carries the full text for the card's terminal rendering.
+      // Defensive: a throwing onProgress must not break the run.
+      const emitDone = (result: SubagentResult): void => {
+        if (typeof onProgress !== "function") return;
+        try {
+          onProgress({
+            agent: request.agent,
+            ...toSnapshot(structured),
+            ...(modelId !== undefined ? { model: modelId } : {}),
+            ...(sessionPath !== undefined ? { sessionPath } : {}),
+            output: formatSnapshotOutput(result.text),
+            done: true,
+            result,
+          });
+        } catch {
+          // A throwing progress callback is logged and swallowed — live
+          // observability never breaks the run.
+        }
       };
 
       try {
@@ -429,25 +557,59 @@ export function createPiSubagentDriver(
           request.parentSession,
         );
         sessionId = sessionManager.getSessionId();
+        sessionPath =
+          typeof sessionManager.getSessionFile === "function"
+            ? sessionManager.getSessionFile()
+            : undefined;
         log("subagent-driver", "session_start", sessionId, undefined, "debug", {
           agent: request.agent,
+          ...(sessionPath !== undefined ? { sessionPath } : {}),
         });
 
-        const resolved =
-          request.model !== undefined
-            ? await resolveModel(request.model)
-            : undefined;
+        // Resolve the configured model against the pi model registry.  The
+        // tool layer guarantees `request.model` is present (strict mode:
+        // agents.json is the sole source); an unresolvable value is an
+        // error — never a silent fallback to the sub-session default.
+        const resolved = await resolveModel(request.model);
+        if (resolved === undefined) {
+          const errorMessage = `子 agent 模型解析失败：配置的模型 "${request.model}" 无法在 pi 模型注册表中解析（provider 或 id 不存在）。请检查 ~/.pi/agent/agents.json 中 "${request.agent}" 的 provider/model 配置后重试。`;
+          log(
+            "subagent-driver",
+            "model_resolution_failed",
+            sessionId,
+            undefined,
+            "warn",
+            {
+              agent: request.agent,
+              model: request.model,
+            },
+          );
+          const result: SubagentResult = {
+            kind: "error",
+            text: "",
+            errorMessage,
+          };
+          emitDone(result);
+          return result;
+        }
+        modelId = modelIdOf(request.model);
         const { session: created } = await createSession({
           cwd,
           tools: request.tools,
           sessionManager,
-          ...(resolved !== undefined
-            ? { model: resolved.model, modelRuntime: resolved.modelRuntime }
-            : {}),
+          model: resolved.model,
+          modelRuntime: resolved.modelRuntime,
         });
         session = created;
         unsubscribe = session.subscribe((event) => {
-          reduceEvent(event, messages, onProgress);
+          reduceEvent(
+            event,
+            messages,
+            structured,
+            request.agent,
+            onProgress,
+            modelId,
+          );
         });
 
         // The abort listener is attached only when the run has not already
@@ -462,22 +624,31 @@ export function createPiSubagentDriver(
           await session.prompt(request.prompt);
         }
         if (aborted) {
-          return { kind: "aborted", text: reduceMessages(messages) };
+          const result: SubagentResult = {
+            kind: "aborted",
+            text: reduceMessages(messages),
+          };
+          emitDone(result);
+          return result;
         }
 
         const stopReason = lastAssistantStopReason(messages);
-        return classifyOutcome({ stopReason, messages });
+        const result = classifyOutcome({ stopReason, messages });
+        emitDone(result);
+        return result;
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : String(err);
         log("subagent-driver", "sdk_error", sessionId, undefined, "warn", {
           agent: request.agent,
           error: errorMessage,
         });
-        return {
+        const result: SubagentResult = {
           kind: "error",
           text: reduceMessages(messages),
           errorMessage,
         };
+        emitDone(result);
+        return result;
       } finally {
         signal.removeEventListener("abort", onAbort);
         unsubscribe?.();

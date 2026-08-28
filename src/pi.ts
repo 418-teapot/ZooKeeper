@@ -5,9 +5,9 @@
  * This extension registers six event hooks plus slash commands, all
  * driven by the active mode profile (`[zoo.mode.<name>]`, parsed by
  * `parseModeProfile`):
- * 1. `session_start` — seeds the bottom status-bar `zoo` indicator with
- *    the current primary at session startup / resume, so it appears
- *    immediately without waiting for the first LLM turn (a
+ * 1. `session_start` — seeds the `zoo` widget (rendered above the
+ *    editor) with the current primary at session startup / resume, so it
+ *    appears immediately without waiting for the first LLM turn (a
  *    `before_agent_start` fallback covers flows that skip it).
  * 2. `before_agent_start` — resolves the current agent identity via the
  *    identity core (`resolveIdentity`) and prepends the matching composed
@@ -76,6 +76,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "../vendor/smol-toml/index.js";
 import { createPiAdapter } from "./adapters/pi/adapter.js";
+import { loadAgentsJson } from "./adapters/pi/agent-models.js";
 import {
   createPiHandoffTarget,
   type PiCommandCtx,
@@ -86,6 +87,7 @@ import {
   type PiContextHolder,
   type PiToolHostContext,
 } from "./adapters/pi/tool-host.js";
+import { buildSubagentCardRenderer } from "./adapters/pi/tui/index.js";
 import {
   buildPiCommandRegistrationPlan,
   buildPiContextHandler,
@@ -268,6 +270,43 @@ function loadConfig(): any {
   }
 }
 
+/**
+ * Wrap a pi `onUpdate` callback to capture the streamed progress details.
+ *
+ * The subagent tool streams each progress snapshot through the parent's
+ * `onUpdate` as a partial result carrying a structured `details` payload
+ * (agent, model, session path, tokens, result).  The wrapper forwards every
+ * partial to the original callback unchanged while also reporting the
+ * payload's `details` via `onDetails`, so the terminal tool result can
+ * forward the last (done) snapshot's details to the TUI card.
+ *
+ * Exported for unit testing; `buildPiHandlers` wires it into the tool's
+ * onUpdate bridge.
+ *
+ * @param onUpdate - The original pi `onUpdate` callback (may be absent).
+ * @param onDetails - Called with the streamed `details` object of every
+ *   partial that carries one.
+ * @returns The wrapped callback, or `undefined` when the original is not a
+ *   function (nothing to capture).
+ */
+export function withSubagentDetailsCapture(
+  onUpdate: unknown,
+  onDetails: (details: Record<string, unknown>) => void,
+): ((partial: unknown) => void) | undefined {
+  if (typeof onUpdate !== "function") return undefined;
+  return (partial: unknown) => {
+    const details = (partial as { details?: unknown } | undefined)?.details;
+    if (
+      details !== undefined &&
+      typeof details === "object" &&
+      details !== null
+    ) {
+      onDetails(details as Record<string, unknown>);
+    }
+    (onUpdate as (partial: unknown) => void)(partial);
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Profile-driven composition
 // ---------------------------------------------------------------------------
@@ -345,6 +384,12 @@ export function buildPiContributions(
      */
     subagentDriver?: SubagentDriver;
     /**
+     * Host subagent transcript-card renderer (only supplied by the real pi
+     * entry point).  Undefined without it — the subagent tool stays
+     * text-only.
+     */
+    subagentRenderer?: Deps["subagentRenderer"];
+    /**
      * Lazily supplies the host's full untrimmed tool-name baseline for
      * subagent capability computation.  The baseline cannot be captured at
      * extension-load time (pi forbids calling action methods then), so the
@@ -386,6 +431,9 @@ export function buildPiContributions(
     // real pi entry point supplies one; unit tests and other hosts omit it
     // so the subagent tool never registers (fail-closed).
     subagentDriver: hostDeps?.subagentDriver,
+    // The pi subagent transcript-card renderer.  Only the real pi entry
+    // point supplies one; without it the tool stays text-only.
+    subagentRenderer: hostDeps?.subagentRenderer,
     // The full untrimmed tool baseline for subagent capability computation,
     // read lazily: a getter so the supplier (pi's `getActiveTools`) runs at
     // first subagent execution — which is always post-bind — never at
@@ -395,6 +443,14 @@ export function buildPiContributions(
     get subagentBaseline(): string[] | undefined {
       return hostDeps?.subagentBaseline?.();
     },
+    // The per-agent model map for subagent sessions, materialised by the
+    // installer into `~/.pi/agent/agents.json` as `{provider, model}`
+    // pairs (mapped values are concatenated `"provider/model"` strings).
+    // Read once at extension-load time (fail-closed to empty when
+    // missing/invalid); strict mode: this map is the sole model source —
+    // the subagent tool errors (never inherits or falls back) when the
+    // target agent's entry is absent.
+    subagentModels: loadAgentsJson(),
     // pi has no SDK client — the context-pruning transform runs and
     // returns the pruned replacement to pi.  The release notification
     // does not need the client: it posts through the unified pi tool
@@ -565,7 +621,7 @@ export function buildPiHandlers(
   toolResult: ReturnType<typeof buildPiToolResultHandler>;
   contextHandler: ReturnType<typeof buildPiContextHandler>;
   messageEnd: ReturnType<typeof buildPiMessageEndHandler>;
-  /** Seed the status-bar indicator at session startup / resume. */
+  /** Seed the `zoo` widget at session startup / resume. */
   sessionStart: (evt?: unknown, ctx?: unknown) => Promise<void>;
 } {
   // Mutable holder updated by every event handler so the pi adapter and
@@ -591,7 +647,7 @@ export function buildPiHandlers(
   // The pi switch surfaces for the `/<agent>` commands.  Built ONLY when
   // a pi API instance is supplied: without one (test-only or a host
   // without the surfaces) the switch command unit contributes no
-  // commands (fail-closed).  `setStatus` reads the latest extension
+  // commands (fail-closed).  `setWidget` reads the latest extension
   // context's `ui` from the shared holder, which the command handler
   // refreshes before running.
   // The untrimmed tool BASELINE is captured ONCE before any switch can
@@ -610,8 +666,8 @@ export function buildPiHandlers(
   // subagent execution and cached (mirrors the switch baseline above).
   let subagentToolBaseline: string[] | undefined;
   // The per-agent status-bar colors (`[agent.<name>].color`), parsed
-  // fail-closed from the whole config root.  Only the `zoo` indicator is
-  // colorized below — the tool / command surfaces stay plain.
+  // fail-closed from the whole config root.  Only the `zoo` widget text
+  // is colorized below — the tool / command surfaces stay plain.
   const agentColors = parseAgentColors(rawConfig ?? {});
   // The per-agent skill permission rules (`[agent.<name>].permission.skill`),
   // parsed fail-closed from the whole config root.  `resources_discover`
@@ -622,8 +678,8 @@ export function buildPiHandlers(
 
   // Wrap a name in a truecolor ANSI foreground sequence when the agent
   // has a configured color; otherwise return it unchanged (fail-closed).
-  // pi's status-bar sanitizer only strips `[\r\n\t]` and its width
-  // truncation is ANSI-aware, so the raw escape codes survive and render.
+  // pi's widget Text component preserves ANSI codes and is
+  // ANSI-width-aware, so the raw escape sequences survive and render.
   const colorizeAgent = (name: string): string => {
     const hex = agentColors[name];
     if (hex === undefined) return name;
@@ -632,6 +688,10 @@ export function buildPiHandlers(
     const b = Number.parseInt(hex.slice(5, 7), 16);
     return `\x1b[38;2;${r};${g};${b}m${name}\x1b[39m`;
   };
+  // Render one `zoo` widget line: a `◆` marker followed by the agent
+  // name (colorized when configured).  Single-line so the widget stays
+  // compact above the editor.
+  const renderZooLine = (name: string): string => `◆ ${colorizeAgent(name)}`;
   const piSwitchHost: PiSwitchHost | undefined = piApi
     ? {
         getBaselineTools: () => {
@@ -645,13 +705,17 @@ export function buildPiHandlers(
           return toolBaseline;
         },
         setActiveTools: (names) => piApi.setActiveTools?.(names),
-        // Colorize ONLY the bottom status-bar `zoo` indicator (the
-        // active-primary label): every other key passes through plain.
-        // A name with no configured color stays plain (fail-closed).
-        setStatus: (key, text) =>
-          contextHolder.current?.ui?.setStatus?.(
+        // Render ONLY the `zoo` widget text (the active-primary label):
+        // every other key passes through plain.  A name with no
+        // configured color stays plain (fail-closed).  `undefined`
+        // content hides the widget.
+        setWidget: (key, lines) =>
+          contextHolder.current?.ui?.setWidget?.(
             key,
-            key === "zoo" && text !== undefined ? colorizeAgent(text) : text,
+            key === "zoo" && lines !== undefined
+              ? lines.map((name) => renderZooLine(name))
+              : lines,
+            { placement: "aboveEditor" },
           ),
         // Replace the current session with a fresh one re-bound to the
         // target identity.  Delegates to the pi command context's
@@ -670,7 +734,7 @@ export function buildPiHandlers(
         // handed to `withSession` therefore binds every operation to the
         // FRESH `ReplacedSessionContext` pi passes there (which
         // structurally inherits the command-context surface):
-        //   - `setStatus` runs immediately via `newCtx.ui.setStatus`
+        //   - `setWidget` runs immediately via `newCtx.ui.setWidget`
         //     (pi exposes `ui` on the replaced-session context).
         //   - `setActiveTools` would touch the OLD session's action
         //     bindings, which pi invalidates on replacement — so it is
@@ -697,14 +761,15 @@ export function buildPiHandlers(
               // the session is replaced.
               contextHolder.current = newCtx as PiToolHostContext;
               const ops: PiSwitchNewSessionOps = {
-                // pi exposes `ui.setStatus` on the replaced-session
-                // context, so the status bar updates immediately.
-                setStatus: (key, text) =>
-                  newCtx.ui?.setStatus?.(
+                // pi exposes `ui.setWidget` on the replaced-session
+                // context, so the widget updates immediately.
+                setWidget: (key, lines) =>
+                  newCtx.ui?.setWidget?.(
                     key,
-                    key === "zoo" && text !== undefined
-                      ? colorizeAgent(text)
-                      : text,
+                    key === "zoo" && lines !== undefined
+                      ? lines.map((name) => renderZooLine(name))
+                      : lines,
+                    { placement: "aboveEditor" },
                   ),
                 // Applying the trim here would touch the stale action
                 // bindings that pi invalidates on replacement — defer it
@@ -736,6 +801,13 @@ export function buildPiHandlers(
       // wired when a real pi API instance is present (the extension runs
       // inside pi); test-only and driver-less compositions stay closed.
       subagentDriver: piApi ? createPiSubagentDriver() : undefined,
+      // The pi subagent transcript-card renderer — translates the
+      // structured progress snapshots into pi TUI components.  Wired only
+      // when a real pi API instance is present; the tool contribution then
+      // carries renderCall / renderResult so the TUI draws the live card.
+      // Without it (OpenCode, test-only compositions) the tool stays
+      // text-only.
+      subagentRenderer: piApi ? buildSubagentCardRenderer() : undefined,
       // The subagent capability baseline: pi's full untrimmed active tool
       // set, captured lazily on first subagent execution and cached —
       // mirroring the switch command's baseline capture so tool denies
@@ -759,25 +831,25 @@ export function buildPiHandlers(
     rawConfig,
   );
 
-  // Whether the bottom status-bar `zoo` indicator has been seeded for
-  // this session.  The seed runs once inside the first `session_start`
-  // event (see below), with a `before_agent_start` fallback; a flag keeps
-  // it from re-firing on later events within the same pi session.
-  let statusSeeded = false;
+  // Whether the `zoo` widget has been seeded for this session.  The seed
+  // runs once inside the first `session_start` event (see below), with a
+  // `before_agent_start` fallback; a flag keeps it from re-firing on
+  // later events within the same pi session.
+  let widgetSeeded = false;
 
-  // Seed the bottom status-bar `zoo` indicator with the active primary.
-  // `setStatus` reads the latest extension context's `ui`, so it can only
-  // run inside an event handler (never at extension-load time — pi forbids
-  // action methods during load, and the `ui` surface is absent then).  Fails
-  // closed: no pi switch host, no active primary, or no `ui` surface all
-  // no-op silently.  Once seeded, later events do not overwrite the
-  // indicator.
-  const seedStatus = (): void => {
-    if (statusSeeded || !piSwitchHost) return;
+  // Seed the `zoo` widget (rendered above the editor) with the active
+  // primary.  `setWidget` reads the latest extension context's `ui`, so
+  // it can only run inside an event handler (never at extension-load time
+  // — pi forbids action methods during load, and the `ui` surface is
+  // absent then).  Fails closed: no pi switch host, no active primary, or
+  // no `ui` surface all no-op silently.  Once seeded, later events do not
+  // overwrite the widget.
+  const seedWidget = (): void => {
+    if (widgetSeeded || !piSwitchHost) return;
     const primary = getPrimary();
     if (primary === undefined) return;
-    piSwitchHost.setStatus("zoo", primary);
-    statusSeeded = true;
+    piSwitchHost.setWidget("zoo", [primary]);
+    widgetSeeded = true;
   };
 
   // Startup anchor: mirror the OpenCode host's `plugin_init` event so a
@@ -804,6 +876,15 @@ export function buildPiHandlers(
         name: tool.name,
         label: tool.name,
         description: tool.description,
+        // Forward the tool's custom TUI renderers (the subagent transcript
+        // card) so pi draws a live card instead of the plain text snapshot.
+        // Tools without renderers (compress / decompress) simply omit them.
+        ...(tool.renderCall !== undefined
+          ? { renderCall: tool.renderCall }
+          : {}),
+        ...(tool.renderResult !== undefined
+          ? { renderResult: tool.renderResult }
+          : {}),
         // pi's validateToolArguments accepts plain JSON-Schema parameters.
         parameters: {
           type: "object",
@@ -817,39 +898,39 @@ export function buildPiHandlers(
           onUpdate: unknown,
           ctx: unknown,
         ) => {
+          // The last streamed partial's structured progress, captured from
+          // the onUpdate bridge below and forwarded as the terminal tool
+          // result's `details` (see the return below).  Per-execution
+          // (closure-local), so concurrent subagent cards never cross-talk.
+          let lastSubagentDetails: Record<string, unknown> | undefined;
           // Forward the native execution surface to the contribution:
-          // the abort `signal`, the streaming `onUpdate` callback, and the
-          // inherited parent model (`ctx.model` is a pi `Model`; the
-          // `"provider/id"` string is what the subagent request carries).
-          // The signal and onUpdate are passed through the third hostCtx
-          // argument; compress / decompress ignore it and keep working
+          // the abort `signal` and the streaming `onUpdate` callback,
+          // passed through the third hostCtx argument.  The sub-session
+          // model is NOT forwarded — strict mode reads the agents.json
+          // configured model only (never the parent session's model).
+          // compress / decompress ignore the hostCtx and keep working
           // unchanged.
-          const model =
-            ctx !== null &&
-            typeof ctx === "object" &&
-            (ctx as Record<string, unknown>).model !== undefined &&
-            typeof (ctx as { model?: unknown }).model === "object"
-              ? (() => {
-                  const m = (
-                    ctx as { model?: { provider?: string; id?: string } }
-                  ).model;
-                  if (
-                    typeof m?.provider === "string" &&
-                    typeof m?.id === "string"
-                  ) {
-                    return `${m.provider}/${m.id}`;
-                  }
-                  return undefined;
-                })()
-              : undefined;
           const text = await tool.execute(params, ctx, {
             ...(signal instanceof AbortSignal ? { signal } : {}),
-            ...(onUpdate !== undefined ? { onUpdate } : {}),
-            ...(model !== undefined ? { model } : {}),
+            ...(onUpdate !== undefined
+              ? {
+                  onUpdate: withSubagentDetailsCapture(onUpdate, (details) => {
+                    lastSubagentDetails = details;
+                  }),
+                }
+              : {}),
           });
+          // The terminal tool result must carry the FULL structured progress
+          // so the TUI card can render its terminal state.  The tool streams
+          // each progress snapshot through `onUpdate` (whose partial carries
+          // `details`), so the LAST streamed partial — the `done` snapshot
+          // with the run result, session path, model, and token total — is
+          // forwarded as the terminal `details`.  Without it the terminal
+          // `renderResult` would fall back to plain text and lose the card
+          // (session line / model badge / markdown output).
           return {
             content: [{ type: "text", text }],
-            details: {},
+            details: lastSubagentDetails ?? {},
           };
         },
       });
@@ -909,8 +990,8 @@ export function buildPiHandlers(
       }
       // Fallback seed: covers flows where `session_start` fires before the
       // identity is set, or a session begins without a `session_start` in
-      // some flows.  The `statusSeeded` guard keeps it idempotent.
-      seedStatus();
+      // some flows.  The `widgetSeeded` guard keeps it idempotent.
+      seedWidget();
       // Resolve the current agent identity: the AsyncLocalStorage store
       // first (a delegated sub-session), falling back to the active
       // primary.  The composed agents list is looked up by the resolved
@@ -930,10 +1011,10 @@ export function buildPiHandlers(
     },
     async sessionStart(_evt?, ctx?) {
       if (ctx) contextHolder.current = ctx as PiToolHostContext;
-      // Seed the indicator at session startup / resume (before any LLM
+      // Seed the widget at session startup / resume (before any LLM
       // turn), so the current primary shows immediately.  `before_agent_start`
       // runs the same seed as a fallback.
-      seedStatus();
+      seedWidget();
     },
     async resourcesDiscover(_evt?, ctx?) {
       if (ctx) contextHolder.current = ctx as PiToolHostContext;
@@ -991,17 +1072,17 @@ export function buildPiHandlers(
  *
  * All hooks are profile-driven: a `null` profile (absent or invalid)
  * yields an empty composition, so every handler no-ops (fail-closed,
- * aligned with the OpenCode host).  `session_start` seeds the bottom
- * status-bar `zoo` indicator with the current primary at session startup
- * / resume (the same seed runs as a `before_agent_start` fallback).  The
- * `tool_result` and `context` handlers are always registered — their
- * actual contributions come from the profile's hooks list (after-exec and
- * transform units).  The `message_end` handler is always registered and
- * strips model-imitated line-start ref echoes from finalized assistant
- * text when the profile is active.  Profile commands (e.g. `/dcp` and the
- * config-derived `/<agent>` primary-switch commands) are registered with
- * pi and the `zoo-notice` entry renderer is wired so appended
- * notification cards draw in the TUI transcript.
+ * aligned with the OpenCode host).  `session_start` seeds the `zoo`
+ * widget (rendered above the editor) with the current primary at session
+ * startup / resume (the same seed runs as a `before_agent_start`
+ * fallback).  The `tool_result` and `context` handlers are always
+ * registered — their actual contributions come from the profile's hooks
+ * list (after-exec and transform units).  The `message_end` handler is
+ * always registered and strips model-imitated line-start ref echoes from
+ * finalized assistant text when the profile is active.  Profile commands
+ * (e.g. `/dcp` and the config-derived `/<agent>` primary-switch commands)
+ * are registered with pi and the `zoo-notice` entry renderer is wired so
+ * appended notification cards draw in the TUI transcript.
  *
  * Strategy for `before_agent_start`:
  *   **Prepend** the resolved identity's prompt rather than replacing the

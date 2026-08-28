@@ -35,9 +35,13 @@ export interface PiToolHostContext {
     getSessionId(): string;
     buildContextEntries?(): unknown[];
   };
-  /** UI surface (status-bar updates from the pi entry point). */
+  /** UI surface (widget updates from the pi entry point). */
   ui?: {
-    setStatus?(key: string, text: string | undefined): void;
+    setWidget?(
+      key: string,
+      content: string[] | undefined,
+      options?: { placement?: "aboveEditor" | "belowEditor" },
+    ): void;
   };
 }
 

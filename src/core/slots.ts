@@ -37,10 +37,10 @@ import type { ValidationLimits } from "./validate.js";
  * pi host surfaces used by the primary-switch command.
  *
  * `getBaselineTools` / `setActiveTools` come from pi's `ExtensionAPI`;
- * `setStatus` is read from the latest extension context's `ui` (the pi
+ * `setWidget` is read from the latest extension context's `ui` (the pi
  * entry keeps a mutable context holder).  `newSession` delegates to the
  * pi command context's `newSession` (the full re-bind: the new session
- * re-resolves the primary's prompt, skill filter, tool trim, and status
+ * re-resolves the primary's prompt, skill filter, tool trim, and widget
  * at bind time).  The switch command unit contributes no commands when
  * this capability is absent (fail closed — OpenCode never provides it,
  * so `/<agent>` commands never register there).
@@ -59,8 +59,14 @@ export interface PiSwitchHost {
   getBaselineTools(): string[] | undefined;
   /** Replace the active tool set (used to trim denied tools). */
   setActiveTools(toolNames: string[]): void;
-  /** Set a bottom status-bar indicator (e.g. the active primary). */
-  setStatus(key: string, text: string | undefined): void;
+  /**
+   * Render a widget above the editor (e.g. the active primary).
+   *
+   * Mirrors pi's `ExtensionUIContext.setWidget` shape: `lines` is the
+   * widget's single-line content rendered above the editor.  `undefined`
+   * hides the widget.
+   */
+  setWidget(key: string, lines: string[] | undefined): void;
   /**
    * Replace the current session with a fresh one bound to the new
    * primary identity.
@@ -89,7 +95,7 @@ export interface PiSwitchHost {
  * REGRESSION NOTE: pi invalidates the captured extension API and command
  * context after `ctx.newSession()` (the old runtime's action methods
  * throw "This extension ctx is stale after session replacement or
- * reload...").  Post-replacement work — status, tool trim — MUST
+ * reload...").  Post-replacement work — widget, tool trim — MUST
  * therefore run through the handles provided here, which the host binds
  * to the fresh session (via the real `ReplacedSessionContext` pi passes
  * to `withSession`), never through a process-level `PiSwitchHost`
@@ -104,8 +110,12 @@ export interface PiSwitchHost {
  * (or other fresh-context event) where a non-stale API exists.
  */
 export interface PiSwitchNewSessionOps {
-  /** Set a bottom status-bar indicator (e.g. the active primary). */
-  setStatus(key: string, text: string | undefined): void;
+  /**
+   * Render a widget above the editor (e.g. the active primary).
+   *
+   * `undefined` hides the widget.
+   */
+  setWidget(key: string, lines: string[] | undefined): void;
   /** Replace the fresh session's active tool set (denied-tool trim). */
   setActiveTools(toolNames: string[]): void;
 }
@@ -158,6 +168,26 @@ export interface Deps {
    */
   subagentDriver?: SubagentDriver;
   /**
+   * Optional host renderer for the subagent tool card (only on the pi
+   * host).
+   *
+   * Structurally loose (never importing pi types in core): when present
+   * the subagent tool unit attaches its `renderCall` / `renderResult`
+   * callbacks to the contributed tool, so pi's TUI draws a live
+   * transcript card instead of the plain text snapshot.  Undefined on
+   * hosts without a renderer (OpenCode) — the tool keeps its text-only
+   * behavior unchanged.
+   */
+  subagentRenderer?: {
+    renderCall(args: unknown, theme: unknown, context?: unknown): unknown;
+    renderResult(
+      result: unknown,
+      options: unknown,
+      theme: unknown,
+      context?: unknown,
+    ): unknown;
+  };
+  /**
    * The host's full untrimmed tool-name baseline for subagent capability
    * computation.
    *
@@ -167,6 +197,19 @@ export interface Deps {
    * (an empty set, fail-closed; permissions are never invented).
    */
   subagentBaseline?: string[];
+  /**
+   * Per-agent model map for subagent sessions (`~/.pi/agent/agents.json`).
+   *
+   * Materialised by the installer from `[agent.<name>].model` as a
+   * `{provider, model}` pair whose mapped value here is the concatenated
+   * `"provider/model"` string (the TS runtime never resolves `{env:}`
+   * tokens or reads environment variables).  Strict mode: this map is the
+   * SOLE model source — the subagent tool errors (never inherits or falls
+   * back) when the target agent's entry is absent.  Empty when the file is
+   * missing/invalid (fail-closed — every subagent delegation then reports
+   * an actionable error naming agents.json).
+   */
+  subagentModels?: Record<string, string>;
   /**
    * The host-specific session handoff surface for the `/go` command.
    *
@@ -374,17 +417,32 @@ export interface ToolContribution {
    * `toolCtx` is the host tool execution context (an OpenCode tool context
    * on OpenCode, a pi `ExtensionContext` on pi).  The optional `hostCtx`
    * third argument carries the host-forwarded execution surface: the
-   * abort `signal`, the `onUpdate` streaming callback, and the inherited
-   * parent model as a `"provider/id"` string, all forwarded by the pi
-   * bridge from the native tool signature.  Hosts that do not forward
-   * these (OpenCode, which invokes tools natively) simply omit the third
-   * argument.
+   * abort `signal` and the `onUpdate` streaming callback, both forwarded
+   * by the pi bridge from the native tool signature.  Hosts that do not
+   * forward these (OpenCode, which invokes tools natively) simply omit the
+   * third argument.
    */
   execute(
     args: unknown,
     toolCtx: unknown,
-    hostCtx?: { signal?: AbortSignal; onUpdate?: unknown; model?: string },
+    hostCtx?: { signal?: AbortSignal; onUpdate?: unknown },
   ): Promise<string>;
+  /**
+   * Optional host TUI renderers for the tool's transcript card.
+   *
+   * Present only on hosts that supply a renderer (pi): `renderCall` draws
+   * the initial tool-call card, `renderResult` draws the live partial /
+   * terminal card from the structured progress in the result `details`.
+   * Structurally loose (never importing pi types in core); hosts that do
+   * not render tools (OpenCode) simply omit them.
+   */
+  renderCall?(args: unknown, theme: unknown, context?: unknown): unknown;
+  renderResult?(
+    result: unknown,
+    options: unknown,
+    theme: unknown,
+    context?: unknown,
+  ): unknown;
 }
 
 /**

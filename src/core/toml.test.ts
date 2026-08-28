@@ -80,11 +80,22 @@ describe("vendor smol-toml — config.toml zoo section", () => {
   });
 
   it("extracts quoted provider model keys (dotted table segments)", () => {
-    const aliyun = (parsed.provider as any).Aliyun;
-    assert.equal(aliyun.npm, "@ai-sdk/anthropic");
-    const volces = (parsed.provider as any).Volces;
-    assert.equal(volces.models["deepseek-v4-pro"].limit.context, 1000000);
-    assert.equal(aliyun.models["deepseek-v4-flash"].reasoning, true);
+    const toml = [
+      '[provider.Dummy.models."dummy-small"]',
+      "reasoning = true",
+      "",
+      '[provider.Dummy.models."dummy-small".limit]',
+      "context = 1000000",
+      "",
+      '[provider.Other.models."dummy-large"]',
+      "reasoning = true",
+    ].join("\n");
+    const parsed = parse(toml);
+    const provider = (parsed.provider as any).Dummy;
+    const other = (parsed.provider as any).Other;
+    assert.equal(provider.models["dummy-small"].reasoning, true);
+    assert.equal(provider.models["dummy-small"].limit.context, 1000000);
+    assert.equal(other.models["dummy-large"].reasoning, true);
   });
 });
 

@@ -29,7 +29,13 @@ function tick(): Promise<void> {
 
 /** A fresh request for a named agent. */
 function request(agent = "worker") {
-  return { agent, prompt: "do the thing", tools: ["edit"] };
+  return {
+    agent,
+    prompt: "do the thing",
+    tools: ["edit"],
+    // Strict mode: a request always carries a configured model.
+    model: "Provider/model",
+  };
 }
 
 /** A never-aborted parent signal. */

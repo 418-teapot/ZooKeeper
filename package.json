@@ -6,8 +6,12 @@
     "format": "biome format --write src/",
     "check": "biome check --write src/"
   },
+  "peerDependencies": {
+    "@earendil-works/pi-tui": "*"
+  },
   "devDependencies": {
     "@biomejs/biome": "latest",
+    "@earendil-works/pi-tui": "0.84.2",
     "@opencode-ai/plugin": "^1.4.3",
     "@opentui/core": "^0.4.2",
     "@opentui/solid": "^0.4.2",

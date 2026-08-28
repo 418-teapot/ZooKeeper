@@ -10,7 +10,10 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import type { SubagentResult } from "../../core/subagent/driver.js";
+import type {
+  SubagentProgress,
+  SubagentResult,
+} from "../../core/subagent/driver.js";
 import { _resetForTesting as _resetLoggerForTesting } from "../../utils/logger.js";
 import {
   createPiSubagentDriver,
@@ -184,7 +187,6 @@ function harness(options: { parentSession?: string; model?: string } = {}) {
       return undefined;
     },
   });
-
   return { driver, s, factoryCalls, managerCalls };
 }
 
@@ -197,7 +199,12 @@ describe("pi subagent driver — factory wiring", () => {
     const h = harness();
     h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
     const result = await h.driver.run(
-      { agent: "beaver", prompt: "do it", tools: ["bash", "edit"] },
+      {
+        agent: "beaver",
+        prompt: "do it",
+        tools: ["bash", "edit"],
+        model: "p/m",
+      },
       { signal: new AbortController().signal },
     );
     assert.equal(result.kind, "ok");
@@ -213,6 +220,7 @@ describe("pi subagent driver — factory wiring", () => {
         agent: "beaver",
         prompt: "do it",
         tools: [],
+        model: "p/m",
         parentSession: "parent-1",
       },
       { signal: new AbortController().signal },
@@ -220,17 +228,6 @@ describe("pi subagent driver — factory wiring", () => {
     assert.equal(h.managerCalls.length, 1);
     assert.equal(h.managerCalls[0].cwd, process.cwd());
     assert.equal(h.managerCalls[0].parent, "parent-1");
-  });
-
-  it("passes no model when the request carries none", async () => {
-    const h = harness();
-    h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
-    await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [] },
-      { signal: new AbortController().signal },
-    );
-    assert.equal("model" in h.factoryCalls[0], false);
-    assert.equal("modelRuntime" in h.factoryCalls[0], false);
   });
 
   it("passes the resolved model and runtime when the request carries one", async () => {
@@ -243,6 +240,83 @@ describe("pi subagent driver — factory wiring", () => {
     assert.deepEqual(h.factoryCalls[0].model, { provider: "p", id: "m" });
     assert.equal(typeof h.factoryCalls[0].modelRuntime?.getModel, "function");
   });
+
+  it("splits a registry-prefixed concatenated model on the first slash", async () => {
+    const s = mockSession();
+    const factoryCalls: Array<PiCreateSessionOptions> = [];
+    const driver = createPiSubagentDriver({
+      createSession: async (opts) => {
+        factoryCalls.push(opts);
+        return { session: s.session };
+      },
+      createSessionManager: async () => mockSessionManager(),
+      resolveModel: async (model) => {
+        // The concatenated `"Dummy/dummy/prefixed-id"` must split on the
+        // FIRST `/`: provider `Dummy`, id `dummy/prefixed-id` (the full pi
+        // registry id, itself provider-prefixed).
+        const slash = model.indexOf("/");
+        const provider = model.slice(0, slash);
+        const id = model.slice(slash + 1);
+        const modelRuntime: PiModelRuntimeLike = {
+          getModel(prov, modelId) {
+            return prov === provider && modelId === id
+              ? { provider: prov, id: modelId }
+              : undefined;
+          },
+        };
+        return model === "Dummy/dummy/prefixed-id"
+          ? { model: { provider, id }, modelRuntime }
+          : undefined;
+      },
+    });
+    s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
+    await driver.run(
+      {
+        agent: "beaver",
+        prompt: "t",
+        tools: [],
+        model: "Dummy/dummy/prefixed-id",
+      },
+      { signal: new AbortController().signal },
+    );
+    assert.equal(factoryCalls.length, 1);
+    assert.deepEqual(factoryCalls[0].model, {
+      provider: "Dummy",
+      id: "dummy/prefixed-id",
+    });
+  });
+
+  it("fails the run when the request model cannot be resolved (strict)", async () => {
+    const h = harness({ model: "Dummy/dummy-small" });
+    h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
+    const result = await h.driver.run(
+      {
+        agent: "beaver",
+        prompt: "t",
+        tools: [],
+        model: "Dummy/dummy-small",
+      },
+      { signal: new AbortController().signal },
+    );
+    // Strict mode: an unresolvable configured model is an error — no
+    // fallback to the sub-session default model.
+    assert.equal(result.kind, "error");
+    if (result.kind === "error") {
+      assert.ok(
+        result.errorMessage.includes("Dummy/dummy-small"),
+        `error must name the configured model: ${result.errorMessage}`,
+      );
+      assert.ok(
+        result.errorMessage.includes("解析失败"),
+        `error must explain the resolution failure: ${result.errorMessage}`,
+      );
+    }
+    assert.equal(
+      h.factoryCalls.length,
+      0,
+      "no session factory call expected after a failed resolution",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -254,7 +328,7 @@ describe("pi subagent driver — prompt and outcome classification", () => {
     const h = harness();
     h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
     await h.driver.run(
-      { agent: "beaver", prompt: "the task", tools: [] },
+      { agent: "beaver", prompt: "the task", tools: [], model: "p/m" },
       { signal: new AbortController().signal },
     );
     assert.equal(h.s.prompts.length, 1);
@@ -268,7 +342,7 @@ describe("pi subagent driver — prompt and outcome classification", () => {
       emitOnPrompt: okEvents("the answer"),
     });
     const result = await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [] },
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
       { signal: new AbortController().signal },
     );
     assert.deepEqual(result, { kind: "ok", text: "the answer" });
@@ -290,7 +364,7 @@ describe("pi subagent driver — prompt and outcome classification", () => {
       ],
     });
     const result = await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [] },
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
       { signal: new AbortController().signal },
     );
     assert.deepEqual(result, { kind: "aborted", text: "partial" });
@@ -321,7 +395,7 @@ describe("pi subagent driver — prompt and outcome classification", () => {
       ],
     });
     const result = await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [] },
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
       { signal: new AbortController().signal },
     );
     assert.equal(result.kind, "error");
@@ -342,7 +416,7 @@ describe("pi subagent driver — abort wiring", () => {
     h.s.setPromptBehavior({ kind: "hang", emitOnPrompt: [] });
     const controller = new AbortController();
     const runPromise = h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [] },
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
       { signal: controller.signal },
     );
     // Let the run reach the hanging prompt, then abort the parent signal.
@@ -359,7 +433,7 @@ describe("pi subagent driver — abort wiring", () => {
     const controller = new AbortController();
     controller.abort();
     const result = await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [] },
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
       { signal: controller.signal },
     );
     assert.equal(h.s.prompts.length, 0, "prompt must be skipped");
@@ -371,7 +445,7 @@ describe("pi subagent driver — abort wiring", () => {
     h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
     const controller = new AbortController();
     await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [] },
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
       { signal: controller.signal },
     );
     // Aborting after completion must not re-abort the disposed session.
@@ -389,7 +463,7 @@ describe("pi subagent driver — dispose in finally", () => {
     const h = harness();
     h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
     await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [] },
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
       { signal: new AbortController().signal },
     );
     assert.equal(h.s.disposed, 1);
@@ -400,7 +474,7 @@ describe("pi subagent driver — dispose in finally", () => {
     h.s.setPromptBehavior({ kind: "hang", emitOnPrompt: [] });
     const controller = new AbortController();
     const runPromise = h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [] },
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
       { signal: controller.signal },
     );
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -413,7 +487,7 @@ describe("pi subagent driver — dispose in finally", () => {
     const h = harness();
     h.s.setPromptBehavior({ kind: "throw", message: "prompt exploded" });
     const result = await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [] },
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
       { signal: new AbortController().signal },
     );
     assert.equal(result.kind, "error");
@@ -432,9 +506,13 @@ describe("pi subagent driver — SDK exception collapse", () => {
         throw new Error("create failed");
       },
       createSessionManager: async () => mockSessionManager(),
+      resolveModel: async () => ({
+        model: { provider: "p", id: "m" },
+        modelRuntime: { getModel: () => ({ provider: "p", id: "m" }) },
+      }),
     });
     const result = await driver.run(
-      { agent: "beaver", prompt: "t", tools: [] },
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
       { signal: new AbortController().signal },
     );
     assert.equal(result.kind, "error");
@@ -451,9 +529,13 @@ describe("pi subagent driver — SDK exception collapse", () => {
       createSessionManager: async () => {
         throw new Error("manager failed");
       },
+      resolveModel: async () => ({
+        model: { provider: "p", id: "m" },
+        modelRuntime: { getModel: () => ({ provider: "p", id: "m" }) },
+      }),
     });
     const result = await driver.run(
-      { agent: "beaver", prompt: "t", tools: [] },
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
       { signal: new AbortController().signal },
     );
     assert.equal(result.kind, "error");
@@ -466,7 +548,7 @@ describe("pi subagent driver — SDK exception collapse", () => {
     const h = harness();
     h.s.setPromptBehavior({ kind: "throw", message: "prompt rejected" });
     const result = await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [] },
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
       { signal: new AbortController().signal },
     );
     assert.equal(result.kind, "error");
@@ -501,7 +583,7 @@ describe("pi subagent driver — progress snapshots", () => {
       done: boolean;
     }> = [];
     await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [] },
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
       {
         signal: new AbortController().signal,
         onProgress: (p) => snapshots.push(p),
@@ -539,7 +621,7 @@ describe("pi subagent driver — progress snapshots", () => {
       done: boolean;
     }> = [];
     await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [] },
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
       {
         signal: new AbortController().signal,
         onProgress: (p) => snapshots.push(p),
@@ -561,5 +643,202 @@ describe("pi subagent driver — progress snapshots", () => {
     const done = snapshots[snapshots.length - 1];
     assert.equal(done.done, true);
     assert.ok(done.output.length <= 200, "done snapshot exceeded cap");
+  });
+
+  it("accumulates structured tool calls, output, turns, and the result", async () => {
+    const h = harness();
+    h.s.setPromptBehavior({
+      kind: "resolves",
+      emitOnPrompt: [
+        {
+          type: "tool_execution_start",
+          toolName: "bash",
+          args: { command: "npm run build" },
+        },
+        {
+          type: "tool_execution_end",
+          toolName: "bash",
+          result: { command: "npm run build" },
+        },
+        {
+          type: "message_end",
+          message: rawMessage({
+            role: "assistant",
+            text: "building…",
+            stopReason: "stop",
+          }),
+        },
+        { type: "agent_end" },
+      ],
+    });
+    const snapshots: SubagentProgress[] = [];
+    await h.driver.run(
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      {
+        signal: new AbortController().signal,
+        onProgress: (p) => snapshots.push(p),
+      },
+    );
+
+    assert.ok(snapshots.length >= 4, `got ${snapshots.length} snapshots`);
+    // First snapshot: tool start carries the current tool and increments the
+    // tool-call counter.
+    assert.equal(snapshots[0].currentTool, "bash");
+    assert.equal(snapshots[0].toolCallCount, 1);
+    // Second: tool end records the args-based tool-call summary (the raw
+    // result JSON is never shown).
+    assert.deepEqual(snapshots[1].toolCalls, [
+      { name: "bash", summary: "$ npm run build" },
+    ]);
+    // Third: message_end records the turn and output line.
+    assert.equal(snapshots[2].turnCount, 1);
+    assert.deepEqual(snapshots[2].outputLines, ["building…"]);
+    // Final: agent_end + emitDone carry the ok result.
+    const done = snapshots[snapshots.length - 1];
+    assert.equal(done.done, true);
+    assert.deepEqual(done.result, { kind: "ok", text: "building…" });
+    assert.equal(done.agent, "beaver");
+  });
+
+  it("accumulates token usage from assistant message_end usage", async () => {
+    const h = harness();
+    h.s.setPromptBehavior({
+      kind: "resolves",
+      emitOnPrompt: [
+        {
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "first" }],
+            stopReason: "toolUse",
+            usage: { input: 1000, output: 500, totalTokens: 1500 },
+          },
+        },
+        {
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "second" }],
+            stopReason: "stop",
+            usage: { input: 200, output: 300, totalTokens: 500 },
+          },
+        },
+        { type: "agent_end" },
+      ],
+    });
+    const snapshots: SubagentProgress[] = [];
+    await h.driver.run(
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      {
+        signal: new AbortController().signal,
+        onProgress: (p) => snapshots.push(p),
+      },
+    );
+    // The final done snapshot carries the accumulated token total.
+    const done = snapshots[snapshots.length - 1];
+    assert.equal(done.tokens, 2000);
+  });
+
+  it("leaves tokens undefined when no assistant usage is reported", async () => {
+    const h = harness();
+    h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
+    const snapshots: SubagentProgress[] = [];
+    await h.driver.run(
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      {
+        signal: new AbortController().signal,
+        onProgress: (p) => snapshots.push(p),
+      },
+    );
+    const done = snapshots[snapshots.length - 1];
+    assert.equal(done.tokens, undefined);
+  });
+
+  it("carries the model id on every snapshot when one was resolved", async () => {
+    const h = harness({ model: "p/m" });
+    h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
+    const snapshots: SubagentProgress[] = [];
+    await h.driver.run(
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      {
+        signal: new AbortController().signal,
+        onProgress: (p) => snapshots.push(p),
+      },
+    );
+    assert.ok(snapshots.length > 0);
+    for (const snapshot of snapshots) {
+      assert.equal(
+        snapshot.model,
+        "m",
+        `model missing on snapshot: ${JSON.stringify(snapshot)}`,
+      );
+    }
+  });
+
+  it("carries the resolved model id on every snapshot (strict mode always resolves one)", async () => {
+    const h = harness();
+    h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
+    const snapshots: SubagentProgress[] = [];
+    await h.driver.run(
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      {
+        signal: new AbortController().signal,
+        onProgress: (p) => snapshots.push(p),
+      },
+    );
+    // Strict mode: the request always carries a model and it resolves, so
+    // every snapshot — including the terminal done one — carries the badge.
+    assert.ok(snapshots.length > 0);
+    for (const snapshot of snapshots) {
+      assert.equal(snapshot.model, "m", `model missing on snapshot`);
+    }
+  });
+
+  it("captures the session file path on the terminal snapshot", async () => {
+    const h = harness();
+    h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
+    // Override the mock session manager to also expose getSessionFile.
+    const manager: PiSessionManager & { getSessionFile(): string | undefined } =
+      {
+        getSessionId: () => "child-session",
+        getSessionFile: () => "/home/u/.pi/agent/sessions/x/s.jsonl",
+      };
+    const driver = createPiSubagentDriver({
+      createSession: async () => ({ session: h.s.session }),
+      createSessionManager: async () => manager,
+      // Strict mode: the configured model must resolve so the run proceeds
+      // to the session stage (where the session file path is captured).
+      resolveModel: async () => ({
+        model: { provider: "p", id: "m" },
+        modelRuntime: { getModel: () => ({ provider: "p", id: "m" }) },
+      }),
+    });
+    const snapshots: SubagentProgress[] = [];
+    await driver.run(
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      {
+        signal: new AbortController().signal,
+        onProgress: (p) => snapshots.push(p),
+      },
+    );
+    const done = snapshots[snapshots.length - 1];
+    assert.equal(done.done, true);
+    assert.equal(done.sessionPath, "/home/u/.pi/agent/sessions/x/s.jsonl");
+  });
+
+  it("leaves sessionPath undefined when the session manager has no file", async () => {
+    const h = harness();
+    h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
+    const snapshots: SubagentProgress[] = [];
+    await h.driver.run(
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      {
+        signal: new AbortController().signal,
+        onProgress: (p) => snapshots.push(p),
+      },
+    );
+    for (const snapshot of snapshots) {
+      assert.equal(snapshot.sessionPath, undefined);
+    }
   });
 });
