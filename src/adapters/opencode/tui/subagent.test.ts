@@ -1,5 +1,5 @@
 /**
- * Tests for sub-agent tracking logic in `src/tui/subagent.ts`.
+ * Tests for sub-agent tracking logic in `src/adapters/opencode/tui/subagent.ts`.
  *
  * Covers the pure helper functions exported from the module:
  * subStatusFromState, extractTitle, extractAgent, collectSubEntries,
@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import type { ContextMessageEntry } from "../adapters/opencode/types.js";
+import type { ContextMessageEntry } from "../types.js";
 import type { SubEntry } from "./subagent.js";
 import {
   collectSubEntries,
@@ -81,8 +81,8 @@ describe("extractAgent", () => {
 
 describe("extractModel", () => {
   it("extracts modelID from metadata.model", () => {
-    const meta = { model: { modelID: "deepseek-v4-flash" } };
-    assert.equal(extractModel(meta), "deepseek-v4-flash");
+    const meta = { model: { modelID: "dummy-small" } };
+    assert.equal(extractModel(meta), "dummy-small");
   });
 
   it("returns undefined when metadata is undefined", () => {
@@ -90,7 +90,7 @@ describe("extractModel", () => {
   });
 
   it("returns undefined when model field is not an object", () => {
-    const meta = { model: "deepseek-v4-flash" };
+    const meta = { model: "dummy-small" };
     assert.equal(extractModel(meta), undefined);
   });
 
@@ -702,12 +702,12 @@ describe("collectSubEntries", () => {
           id: "p1",
           state: {
             status: "completed",
-            metadata: { model: { modelID: "deepseek-v4-flash" } },
+            metadata: { model: { modelID: "dummy-small" } },
           },
         }),
       ]),
     ]);
-    assert.equal(result[0].model, "deepseek-v4-flash");
+    assert.equal(result[0].model, "dummy-small");
   });
 
   it("sets model to undefined when metadata lacks model field", () => {
@@ -1005,7 +1005,7 @@ describe("mergeScannedEntries", () => {
       entry({
         id: "p1",
         status: "running",
-        model: "deepseek-v4-flash",
+        model: "dummy-small",
         sessionId: "child_sid",
       }),
     ];
@@ -1013,7 +1013,7 @@ describe("mergeScannedEntries", () => {
 
     assert.equal(result.get("p1")?.status, "running");
     assert.equal(result.get("p1")?.tokens, 300); // existing tokens preserved
-    assert.equal(result.get("p1")?.model, "deepseek-v4-flash");
+    assert.equal(result.get("p1")?.model, "dummy-small");
   });
 
   it("does not overwrite existing model on running entry (rule 4 priority)", () => {
@@ -1030,7 +1030,7 @@ describe("mergeScannedEntries", () => {
       entry({
         id: "p1",
         status: "running",
-        model: "deepseek-v4-flash",
+        model: "dummy-small",
         sessionId: "child_sid",
       }),
     ];

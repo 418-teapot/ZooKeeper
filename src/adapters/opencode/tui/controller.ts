@@ -18,25 +18,19 @@
  * @module
  */
 
-import { history } from "../adapters/opencode/history.js";
-import {
-  effectiveCallIds,
-  foldedV1Messages,
-} from "../adapters/opencode/projection.js";
-import type {
-  ContextMessageEntry,
-  TokenBreakdownResult,
-} from "../adapters/opencode/types.js";
+import { formatPercent } from "../../../core/context/context-report.js";
+import { fold } from "../../../core/context/fold.js";
+import { createStateStore } from "../../../core/context/store.js";
+import { log } from "../../../utils/logger.js";
+import { history } from "../history.js";
+import { effectiveCallIds, foldedV1Messages } from "../projection.js";
+import type { ContextMessageEntry, TokenBreakdownResult } from "../types.js";
 import {
   computeCacheTrend,
   computeContextReport,
   computeCumulativeCacheRate,
   computeTokenBreakdown,
-} from "../adapters/opencode/types.js";
-import { formatPercent } from "../core/context/context-report.js";
-import { fold } from "../core/context/fold.js";
-import { createStateStore } from "../core/context/store.js";
-import { log } from "../utils/logger.js";
+} from "../types.js";
 import type { CategoryInfo } from "./subagent.js";
 
 /** Dependencies injected by the panel — the controller's only external surface. */

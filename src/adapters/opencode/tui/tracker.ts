@@ -11,8 +11,8 @@
  * @module
  */
 
-import type { ContextMessageEntry } from "../adapters/opencode/types.js";
-import { log } from "../utils/logger.js";
+import { log } from "../../../utils/logger.js";
+import type { ContextMessageEntry } from "../types.js";
 import type { SubEntry } from "./subagent.js";
 import {
   collectSubEntries,

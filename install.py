@@ -198,11 +198,13 @@ def main() -> None:
         # ── TUI plugin — tui.jsonc (overwrite; ZooKeeper is the only
         # TUI plugin in this setup) ─────────────────────────────────
         tui_plugin_entry = "file://" + os.path.abspath(
-            os.path.join(SCRIPT_DIR, "src", "tui", "index.tsx")
+            os.path.join(
+                SCRIPT_DIR, "src", "adapters", "opencode", "tui", "index.tsx"
+            )
         )
         tui_data = {"plugin": [tui_plugin_entry]}
         write_json(tui_jsonc, tui_data)
-        info("✓ TUI 扩展: src/tui/index.tsx")
+        info("✓ TUI 扩展: src/adapters/opencode/tui/index.tsx")
 
     if has_pi:
         # ── Pi extension — settings.json (full rebuild) ──────────────

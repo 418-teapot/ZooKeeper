@@ -1,6 +1,6 @@
 /**
- * Tests for `src/tui/controller.ts` — the TUI sidebar's context data
- * controller.
+ * Tests for `src/adapters/opencode/tui/controller.ts` — the TUI sidebar's
+ * context data controller.
  *
  * Boundary chosen: `createContextController()` (the public factory).
  * The factory closes over the shared fetch, compute pipeline, debounced
@@ -60,9 +60,9 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, beforeEach, describe, it } from "node:test";
-import { history } from "../adapters/opencode/history.js";
-import type { ContextMessageEntry } from "../adapters/opencode/types.js";
-import { computeSpanHash } from "../core/context/spanhash.js";
+import { computeSpanHash } from "../../../core/context/spanhash.js";
+import { history } from "../history.js";
+import type { ContextMessageEntry } from "../types.js";
 import {
   type ContextController,
   type ContextControllerDeps,
