@@ -2522,10 +2522,8 @@ dependencies = [
  "clap",
  "rich_rust",
  "rusqlite",
- "serde",
  "serde_json",
  "sha2",
- "shlex",
  "tempfile",
  "zutil",
 ]
@@ -2541,6 +2539,7 @@ dependencies = [
  "rich_rust",
  "rusqlite",
  "serde_json",
+ "shlex",
 ]
 
 [[package]]

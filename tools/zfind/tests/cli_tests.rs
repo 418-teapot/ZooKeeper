@@ -2,13 +2,16 @@
 //!
 //! These tests verify exit codes and basic CLI behavior by running
 //! the compiled binary as an external process.  Fixture-based tests
-//! use a temporary SQLite database to exercise the full command
-//! pipeline (search, list, show, message).
+//! use a temporary SQLite database (OpenCode) and/or temporary JSONL
+//! session files (pi) to exercise the full command pipeline (search,
+//! list, show, message).
 
+use std::fs;
 use std::path::Path;
 use std::process::Command;
 
 use rusqlite::Connection;
+use serde_json::{Value, json};
 use tempfile::TempDir;
 
 /// Path to the `zfind` binary, set by `cargo test`.
@@ -36,6 +39,10 @@ fn test_help_exits_0() {
     assert!(
         stdout.contains("message"),
         "help should show 'message' subcommand"
+    );
+    assert!(
+        stdout.contains("--host"),
+        "help should show the global '--host' flag"
     );
 }
 
@@ -363,14 +370,15 @@ impl TestFixture {
         )
         .expect("insert part msg-001");
 
-        // msg-002: assistant turn with reasoning + tool
+        // msg-002: assistant turn with reasoning + tool (its structured
+        // `model` decides the session-level model shown in the meta block)
         conn.execute(
             "INSERT INTO message VALUES (?1,?2,?3,?4)",
             rusqlite::params![
                 "msg-002",
                 "ses-001",
                 1_715_000_020_000_i64,
-                r#"{"role":"assistant","agent":"beaver"}"#,
+                r#"{"role":"assistant","agent":"beaver","model":{"providerID":"openai","modelID":"gpt-5"}}"#,
             ],
         )
         .expect("insert msg-002");
@@ -780,8 +788,8 @@ fn test_show_table() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Messages for session"),
-        "output should contain 'Messages for session', got: {stdout}"
+        stdout.contains("Events for session"),
+        "output should contain 'Events for session', got: {stdout}"
     );
     assert!(
         stdout.contains("ses-001"),
@@ -791,11 +799,54 @@ fn test_show_table() {
         stdout.contains("msg-001"),
         "output should contain msg-001, got: {stdout}"
     );
+    // The meta block shows the session-level model and agent, derived
+    // from the first assistant message of ses-001.
+    assert!(
+        stdout.contains("Model:"),
+        "meta block should show Model, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("openai/gpt-5"),
+        "meta block should show the session model, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Agent:"),
+        "meta block should show Agent, got: {stdout}"
+    );
+}
+
+#[test]
+fn test_show_table_hides_model_when_absent() {
+    let fix = TestFixture::new();
+    // ses-002's first assistant message records an agent but no model,
+    // so the meta block shows Agent but omits the Model line.
+    let output = fix
+        .zfind()
+        .args(["show", "ses-002"])
+        .output()
+        .expect("failed to run zfind show ses-002");
+    assert!(
+        output.status.success(),
+        "show ses-002 should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Agent: lynx"),
+        "meta block should show the agent, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Model:"),
+        "meta block should omit Model for a model-less session, got: \
+         {stdout}"
+    );
 }
 
 #[test]
 fn test_show_json() {
     let fix = TestFixture::new();
+    // ses-001 holds a user message, a reasoning part, a tool use, and its
+    // result — the show output is one row per event now, so 4 rows.
     let output = fix
         .zfind()
         .args(["show", "ses-001", "--json"])
@@ -810,11 +861,18 @@ fn test_show_json() {
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .expect("output should be valid JSON");
     assert_eq!(parsed["keyword"], "ses-001");
-    assert_eq!(parsed["matches"], 2);
+    assert_eq!(parsed["matches"], 4);
     let messages = parsed["messages"].as_array().unwrap();
-    assert_eq!(messages.len(), 2);
+    assert_eq!(messages.len(), 4);
     assert_eq!(messages[0]["id"], "msg-001");
-    assert_eq!(messages[1]["id"], "msg-002");
+    assert_eq!(messages[0]["role"], "user");
+    assert_eq!(messages[1]["id"], "part-002");
+    assert_eq!(messages[1]["role"], "reasoning");
+    assert_eq!(messages[2]["id"], "part-003");
+    assert_eq!(messages[2]["role"], "tool_use");
+    assert_eq!(messages[3]["id"], "part-003");
+    assert_eq!(messages[3]["role"], "tool_result");
+    assert_eq!(messages[3]["host"], "opencode");
 }
 
 #[test]
@@ -880,16 +938,20 @@ fn test_message_json() {
     assert_eq!(parsed["matches"], 1);
     assert_eq!(parsed["messages"][0]["id"], "msg-004");
     assert_eq!(parsed["messages"][0]["role"], "assistant");
-    // Should have agent field from message data
-    assert_eq!(parsed["messages"][0]["agent"], "lynx");
+    // The event model carries the host tag instead of the message agent.
+    assert_eq!(parsed["messages"][0]["host"], "opencode");
+    assert!(
+        parsed["messages"][0].get("agent").is_none(),
+        "message rows should not carry a per-message agent"
+    );
 }
 
 #[test]
 fn test_message_table() {
     let fix = TestFixture::new();
-    // msg-004 has: text, tool, step-finish, custom_event →
-    // exercises print_text_part, print_tool_part, step-finish skip,
-    // and print_unknown_part
+    // msg-004 is an assistant message with a single text part, so the
+    // detail renderer shows one text part (the old raw-part fixtures —
+    // agent, custom part types — are gone from the event model).
     let output = fix
         .zfind()
         .args(["message", "msg-004"])
@@ -919,11 +981,6 @@ fn test_message_table() {
         stdout.contains("Tokens:"),
         "output should contain 'Tokens:', got: {stdout}"
     );
-    // Agent should be shown (msg-004 has agent "lynx")
-    assert!(
-        stdout.contains("Agent: lynx"),
-        "output should contain 'Agent: lynx', got: {stdout}"
-    );
     // Timestamp should be shown (msg-004 has time_created)
     assert!(
         stdout.contains("Timestamp:"),
@@ -934,21 +991,31 @@ fn test_message_table() {
         stdout.contains("Part 1 (text):"),
         "output should contain text part, got: {stdout}"
     );
-    // Part rendering: tool part
+}
+
+#[test]
+fn test_message_tool_event_table() {
+    let fix = TestFixture::new();
+    // part-003 is the tool part of msg-002 (a `read` call): the event
+    // model matches it by its id and renders the tool part detail.
+    let output = fix
+        .zfind()
+        .args(["message", "part-003"])
+        .output()
+        .expect("failed to run zfind message part-003");
     assert!(
-        stdout.contains("Part 2 (tool:"),
+        output.status.success(),
+        "message part-003 should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Part 1 (tool: read):"),
         "output should contain tool part, got: {stdout}"
     );
-    // Part rendering: unknown part type (step-finish is skipped, so
-    // visible_idx goes text=1, tool=2, custom_event=3)
     assert!(
-        stdout.contains("Part 3 (custom_event):"),
-        "output should contain unknown part type, got: {stdout}"
-    );
-    // Step-finish should NOT appear
-    assert!(
-        !stdout.contains("step-finish"),
-        "output should NOT contain step-finish, got: {stdout}"
+        stdout.contains("Input:"),
+        "output should show tool input, got: {stdout}"
     );
 }
 
@@ -1007,9 +1074,14 @@ fn two_db_data_dir() -> TempDir {
 fn test_default_no_db_list_aggregates_two_databases() {
     let dir = two_db_data_dir();
     let data_dir = dir.path().to_string_lossy().to_string();
+    // A deterministic environment: no `--db` auto-detects both hosts, so
+    // pi must be pinned to an empty dir to keep the count exact (the real
+    // `~/.pi/agent` must not leak into the fixture run).
+    let empty_pi = TempDir::new().expect("create temp pi dir");
 
     let output = Command::new(ZFIND_BIN)
         .env("ZOO_OPENCODE_DATA_DIR", &data_dir)
+        .env("ZOO_PI_DATA_DIR", empty_pi.path())
         .args(["--no-color", "list", "--json"])
         .output()
         .expect("failed to run zfind list --json (default aggregation)");
@@ -1041,11 +1113,14 @@ fn test_default_no_db_list_aggregates_two_databases() {
 fn test_default_search_finds_session_only_in_second_db() {
     let dir = two_db_data_dir();
     let data_dir = dir.path().to_string_lossy().to_string();
+    // Same deterministic environment as the list test above.
+    let empty_pi = TempDir::new().expect("create temp pi dir");
 
     // "archived" only appears in ses-900's title → single match → the
     // command prints the session ID (pipe-friendly output).
     let output = Command::new(ZFIND_BIN)
         .env("ZOO_OPENCODE_DATA_DIR", &data_dir)
+        .env("ZOO_PI_DATA_DIR", empty_pi.path())
         .args(["--no-color", "search", "archived"])
         .output()
         .expect("failed to run zfind search archived (default aggregation)");
@@ -1137,5 +1212,459 @@ fn test_explicit_db_preserves_single_db_behavior() {
         Some(2),
         "search archived --db first.db should exit 2, got {:?}",
         output.status.code()
+    );
+}
+
+// ── pi host tests ───────────────────────────────────────────────────────────
+
+/// A pi session id with UUID shape.
+const PI_UUID: &str = "01a04bc0-fa14-76d5-95ec-a8d5ee80f706";
+
+/// Write one pi session file per entry under
+/// `<root>/sessions/<cwd-dir>/<name>.jsonl`, the layout the pi provider
+/// scans.
+fn pi_data_dir(root: &Path, sessions: &[(&str, &[String])]) {
+    for (name, lines) in sessions {
+        let cwd = root.join("sessions").join("--cwd--");
+        fs::create_dir_all(&cwd).expect("create pi cwd dir");
+        fs::write(cwd.join(format!("{name}.jsonl")), lines.join("\n"))
+            .expect("write pi session file");
+    }
+}
+
+/// One pi session file's JSONL lines: the session header plus message
+/// records (in stream order).
+fn pi_session_lines(
+    id: &str,
+    header_ts: i64,
+    messages: &[Value],
+) -> Vec<String> {
+    let mut lines = vec![
+        json!({
+            "type": "session", "version": 3, "id": id,
+            "timestamp": zutil::epoch_ms_to_iso(header_ts), "cwd": "/w",
+        })
+        .to_string(),
+    ];
+    for msg in messages {
+        lines.push(msg.to_string());
+    }
+    lines
+}
+
+/// A pi `message` record with a user role.
+fn user_message(id: &str, ts: i64, text: &str) -> Value {
+    json!({
+        "type": "message", "id": id, "timestamp": zutil::epoch_ms_to_iso(ts),
+        "message": {
+            "role": "user",
+            "content": [{"type": "text", "text": text}],
+        },
+    })
+}
+
+/// A pi `message` record with an assistant role carrying an optional tool
+/// call.
+fn assistant_message(
+    id: &str,
+    ts: i64,
+    text: &str,
+    tool: Option<(&str, &str)>,
+) -> Value {
+    let mut body = json!({
+        "role": "assistant",
+        "content": [{"type": "text", "text": text}],
+        "timestamp": ts,
+    });
+    if let Some((call_id, name)) = tool {
+        body["content"] = json!([
+            {"type": "text", "text": text},
+            {"type": "toolCall", "id": call_id, "name": name,
+             "arguments": {"command": "ls"}},
+        ]);
+    }
+    json!({
+        "type": "message", "id": id, "timestamp": zutil::epoch_ms_to_iso(ts),
+        "message": body,
+    })
+}
+
+/// A pi `message` record with a toolResult role.
+fn tool_result_message(
+    id: &str,
+    ts: i64,
+    call_id: &str,
+    name: &str,
+    text: &str,
+) -> Value {
+    json!({
+        "type": "message", "id": id, "timestamp": zutil::epoch_ms_to_iso(ts),
+        "message": {
+            "role": "toolResult", "toolCallId": call_id, "toolName": name,
+            "content": [{"type": "text", "text": text}],
+            "isError": false, "timestamp": ts,
+        },
+    })
+}
+
+/// Parse the command's stdout as JSON.
+fn parse_stdout_json(output: &std::process::Output) -> Value {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(stdout.trim()).expect("stdout should be valid JSON")
+}
+
+/// A pi fixture session with a user turn, an assistant tool call, and its
+/// result — the events `show`/`message` expose.
+fn pi_events_session_lines() -> Vec<String> {
+    pi_session_lines(
+        PI_UUID,
+        1_715_000_000_000,
+        &[
+            user_message("m1", 1_715_000_001_000, "refactor the parser module"),
+            assistant_message(
+                "m2",
+                1_715_000_010_000,
+                "calling bash",
+                Some(("call-1", "bash")),
+            ),
+            tool_result_message(
+                "m3",
+                1_715_000_015_000,
+                "call-1",
+                "bash",
+                "all tests passed",
+            ),
+        ],
+    )
+}
+
+#[test]
+fn test_pi_search_hits_session() {
+    let pi_root = TempDir::new().expect("temp pi root");
+    let lines = pi_events_session_lines();
+    pi_data_dir(pi_root.path(), &[(PI_UUID, &lines)]);
+
+    // Single match → pipe-friendly output: the bare session id.
+    let output = Command::new(ZFIND_BIN)
+        .env("ZOO_PI_DATA_DIR", pi_root.path())
+        .args(["--no-color", "--host", "pi", "search", "parser"])
+        .output()
+        .expect("failed to run zfind --host pi search parser");
+    assert!(
+        output.status.success(),
+        "pi search should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), PI_UUID);
+
+    // The provider search matches message text too, not just the label.
+    let output = Command::new(ZFIND_BIN)
+        .env("ZOO_PI_DATA_DIR", pi_root.path())
+        .args(["--no-color", "--host", "pi", "search", "tests passed"])
+        .output()
+        .expect("failed to run zfind --host pi search tests passed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), PI_UUID, "tool-result text must match");
+}
+
+#[test]
+fn test_pi_search_exact_matches_untruncated_long_title() {
+    let pi_root = TempDir::new().expect("temp pi root");
+    // Longer than the 60-character label truncation: --exact must match
+    // against the full first user message, not the shortened label.
+    let long_title = "refactor the entire authentication flow and add \
+                      integration tests for the new session model";
+    assert!(long_title.chars().count() > 60);
+    let lines = pi_session_lines(
+        PI_UUID,
+        1_715_000_000_000,
+        &[user_message("m1", 1_715_000_001_000, long_title)],
+    );
+    pi_data_dir(pi_root.path(), &[(PI_UUID, &lines)]);
+
+    let output = Command::new(ZFIND_BIN)
+        .env("ZOO_PI_DATA_DIR", pi_root.path())
+        .args(["--no-color", "--host", "pi", "search", "--exact", long_title])
+        .output()
+        .expect("failed to run zfind search --exact <long title>");
+    assert!(
+        output.status.success(),
+        "pi exact search should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), PI_UUID, "full title must exact-match");
+
+    // A truncated prefix must NOT match: exact compares the whole,
+    // untruncated first user message.
+    let truncated: String = long_title.chars().take(60).collect();
+    let output = Command::new(ZFIND_BIN)
+        .env("ZOO_PI_DATA_DIR", pi_root.path())
+        .args(["--no-color", "--host", "pi", "search", "--exact", &truncated])
+        .output()
+        .expect("failed to run zfind search --exact <prefix>");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "a truncated prefix must not be an exact title match"
+    );
+}
+
+#[test]
+fn test_pi_message_scan_hits_newest_across_cwd_dirs() {
+    let pi_root = TempDir::new().expect("temp pi root");
+    // The newer session sits in the alphabetically-first cwd directory;
+    // --scan 1 must consult it even though a full-path sort would scan
+    // the older `--z--` session first.
+    fs::create_dir_all(pi_root.path().join("sessions").join("--a--"))
+        .expect("create --a-- dir");
+    fs::create_dir_all(pi_root.path().join("sessions").join("--z--"))
+        .expect("create --z-- dir");
+    let new_lines = pi_session_lines(
+        "01a04bc0-fa14-76d5-95ec-222222222222",
+        1_715_000_100_000,
+        &[user_message("mnew", 1_715_000_101_000, "newest turn")],
+    );
+    fs::write(
+        pi_root
+            .path()
+            .join("sessions")
+            .join("--a--")
+            .join("2026-08-29T04-22-13-268Z_01a04bc0-fa14-76d5-95ec-222222222222.jsonl"),
+        new_lines.join("\n"),
+    )
+    .expect("write newer pi session");
+    let old_lines = pi_session_lines(
+        "01a04bc0-fa14-76d5-95ec-111111111111",
+        1_715_000_000_000,
+        &[user_message("mold", 1_715_000_001_000, "oldest turn")],
+    );
+    fs::write(
+        pi_root
+            .path()
+            .join("sessions")
+            .join("--z--")
+            .join("2026-08-01T00-00-00-000Z_01a04bc0-fa14-76d5-95ec-111111111111.jsonl"),
+        old_lines.join("\n"),
+    )
+    .expect("write older pi session");
+
+    let output = Command::new(ZFIND_BIN)
+        .env("ZOO_PI_DATA_DIR", pi_root.path())
+        .args(["--no-color", "--host", "pi", "message", "mnew", "--scan", "1"])
+        .output()
+        .expect("failed to run zfind message mnew --scan 1");
+    assert!(
+        output.status.success(),
+        "pi message --scan 1 should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("mnew"),
+        "scan 1 must find the message of the newest session, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("mold"),
+        "scan 1 must not reach the older decoy session, got: {stdout}"
+    );
+
+    // A scan budget of 1 also misses the older session's message.
+    let output = Command::new(ZFIND_BIN)
+        .env("ZOO_PI_DATA_DIR", pi_root.path())
+        .args(["--no-color", "--host", "pi", "message", "mold", "--scan", "1"])
+        .output()
+        .expect("failed to run zfind message mold --scan 1");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "the older session must be outside the --scan 1 budget"
+    );
+}
+
+#[test]
+fn test_pi_show_json() {
+    let pi_root = TempDir::new().expect("temp pi root");
+    let lines = pi_events_session_lines();
+    pi_data_dir(pi_root.path(), &[(PI_UUID, &lines)]);
+
+    let output = Command::new(ZFIND_BIN)
+        .env("ZOO_PI_DATA_DIR", pi_root.path())
+        .args(["show", PI_UUID, "--host", "pi", "--json"])
+        .output()
+        .expect("failed to run zfind show <pi> --json");
+    assert!(
+        output.status.success(),
+        "pi show should exit 0, got {:?}",
+        output.status.code()
+    );
+    let parsed = parse_stdout_json(&output);
+    assert_eq!(parsed["keyword"], PI_UUID);
+    // Events: user message, assistant message, tool use, tool result.
+    assert_eq!(parsed["matches"], 4);
+    let messages = parsed["messages"].as_array().unwrap();
+    assert_eq!(messages[0]["id"], "m1");
+    assert_eq!(messages[0]["role"], "user");
+    assert_eq!(messages[1]["id"], "m2");
+    assert_eq!(messages[1]["role"], "assistant");
+    assert_eq!(messages[2]["id"], "call-1");
+    assert_eq!(messages[2]["role"], "tool_use");
+    assert_eq!(messages[3]["id"], "call-1");
+    assert_eq!(messages[3]["role"], "tool_result");
+    assert_eq!(messages[3]["host"], "pi");
+}
+
+#[test]
+fn test_list_merges_both_hosts_with_markers() {
+    let oc_dir = TempDir::new().expect("temp oc dir");
+    let pi_root = TempDir::new().expect("temp pi root");
+    TestFixture::create_db(&oc_dir.path().join("opencode.db"));
+    let lines = pi_events_session_lines();
+    pi_data_dir(pi_root.path(), &[(PI_UUID, &lines)]);
+
+    // Auto (no --host/--db): both hosts merge; JSON rows carry the host
+    // tag.
+    let output = Command::new(ZFIND_BIN)
+        .env("ZOO_OPENCODE_DATA_DIR", oc_dir.path())
+        .env("ZOO_PI_DATA_DIR", pi_root.path())
+        .args(["--no-color", "list", "--json"])
+        .output()
+        .expect("failed to run zfind list --json (both hosts)");
+    assert!(
+        output.status.success(),
+        "merged list should exit 0, got {:?}",
+        output.status.code()
+    );
+    let parsed = parse_stdout_json(&output);
+    // 2 opencode root sessions + 1 pi session (ses-003 is a child).
+    assert_eq!(parsed["matches"], 3);
+    let sessions = parsed["sessions"].as_array().unwrap();
+    let ids: Vec<&str> = sessions
+        .iter()
+        .filter_map(|s| s.get("id").and_then(Value::as_str))
+        .collect();
+    for expected in ["ses-001", "ses-002", PI_UUID] {
+        assert!(ids.contains(&expected), "missing {expected}: {ids:?}");
+    }
+    let hosts: Vec<&str> = sessions
+        .iter()
+        .filter_map(|s| s.get("host").and_then(Value::as_str))
+        .collect();
+    assert!(hosts.contains(&"opencode"), "opencode rows present");
+    assert!(hosts.contains(&"pi"), "pi rows present");
+
+    // Human-readable mode shows the host column too (wide COLUMNS so the
+    // host names are not ellipsized).
+    let output = Command::new(ZFIND_BIN)
+        .env("ZOO_OPENCODE_DATA_DIR", oc_dir.path())
+        .env("ZOO_PI_DATA_DIR", pi_root.path())
+        .env("COLUMNS", "200")
+        .args(["--no-color", "list"])
+        .output()
+        .expect("failed to run zfind list (both hosts, table)");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("opencode"),
+        "table should contain the opencode host marker"
+    );
+    assert!(stdout.contains("pi"), "table should contain the pi host marker");
+}
+
+#[test]
+fn test_pi_list_host_restricted() {
+    let oc_dir = TempDir::new().expect("temp oc dir");
+    let pi_root = TempDir::new().expect("temp pi root");
+    TestFixture::create_db(&oc_dir.path().join("opencode.db"));
+    let lines = pi_events_session_lines();
+    pi_data_dir(pi_root.path(), &[(PI_UUID, &lines)]);
+
+    let output = Command::new(ZFIND_BIN)
+        .env("ZOO_OPENCODE_DATA_DIR", oc_dir.path())
+        .env("ZOO_PI_DATA_DIR", pi_root.path())
+        .args(["--no-color", "--host", "pi", "list", "--json"])
+        .output()
+        .expect("failed to run zfind --host pi list --json");
+    assert!(
+        output.status.success(),
+        "--host pi list should exit 0, got {:?}",
+        output.status.code()
+    );
+    let parsed = parse_stdout_json(&output);
+    assert_eq!(parsed["matches"], 1);
+    let sessions = parsed["sessions"].as_array().unwrap();
+    assert_eq!(sessions[0]["id"], PI_UUID);
+    assert_eq!(sessions[0]["host"], "pi");
+}
+
+#[test]
+fn test_pi_message_lookup() {
+    let pi_root = TempDir::new().expect("temp pi root");
+    let lines = pi_events_session_lines();
+    pi_data_dir(pi_root.path(), &[(PI_UUID, &lines)]);
+
+    // Message-id lookup returns the user message.
+    let output = Command::new(ZFIND_BIN)
+        .env("ZOO_PI_DATA_DIR", pi_root.path())
+        .args(["message", "m1", "--host", "pi", "--json"])
+        .output()
+        .expect("failed to run zfind message m1 --host pi --json");
+    assert!(
+        output.status.success(),
+        "pi message should exit 0, got {:?}",
+        output.status.code()
+    );
+    let parsed = parse_stdout_json(&output);
+    assert_eq!(parsed["matches"], 1);
+    assert_eq!(parsed["messages"][0]["id"], "m1");
+    assert_eq!(parsed["messages"][0]["role"], "user");
+    assert_eq!(parsed["messages"][0]["host"], "pi");
+    assert_eq!(parsed["messages"][0]["session_id"], PI_UUID);
+
+    // Tool-call id lookup returns the use + result pair.
+    let output = Command::new(ZFIND_BIN)
+        .env("ZOO_PI_DATA_DIR", pi_root.path())
+        .args(["message", "call-1", "--host", "pi", "--json"])
+        .output()
+        .expect("failed to run zfind message call-1 --host pi --json");
+    assert!(
+        output.status.success(),
+        "pi toolCall message should exit 0, got {:?}",
+        output.status.code()
+    );
+    let parsed = parse_stdout_json(&output);
+    assert_eq!(parsed["matches"], 2);
+    assert_eq!(parsed["messages"][0]["role"], "assistant");
+    assert_eq!(parsed["messages"][1]["role"], "tool");
+    let parts0 = parsed["messages"][0]["parts"].as_array().unwrap();
+    assert_eq!(parts0[0]["type"], "tool");
+    assert_eq!(parts0[0]["tool"], "bash");
+}
+
+#[test]
+fn test_db_implies_opencode_even_with_host_pi() {
+    let fix = TestFixture::new();
+    // --db names an OpenCode SQLite file, so it wins over --host pi.
+    let output = fix
+        .zfind()
+        .args(["--host", "pi", "list", "--json"])
+        .output()
+        .expect("failed to run zfind --db <oc> --host pi list --json");
+    assert!(
+        output.status.success(),
+        "--db + --host pi list should exit 0, got {:?}",
+        output.status.code()
+    );
+    let parsed = parse_stdout_json(&output);
+    let ids: Vec<&str> = parsed["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s.get("id").and_then(Value::as_str))
+        .collect();
+    assert!(ids.contains(&"ses-001"), "opencode sessions still listed");
+    assert!(
+        !ids.contains(&PI_UUID),
+        "pi must not be consulted under an explicit --db"
     );
 }

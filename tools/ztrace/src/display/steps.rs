@@ -17,7 +17,7 @@ use super::common::{
 // ── D. Steps Command ──────────────────────────────────────────────────────────
 
 /// Create the steps table with column definitions.
-fn create_steps_table(show_session: bool) -> Table {
+fn create_steps_table(show_session: bool, show_model: bool) -> Table {
     let mut table = Table::new()
         .title("Step Token Timeline")
         .box_style(&rich_rust::r#box::ROUNDED);
@@ -31,6 +31,11 @@ fn create_steps_table(show_session: bool) -> Table {
     if show_session {
         table.add_column(
             Column::new("Session").no_wrap().overflow(OverflowMethod::Ellipsis),
+        );
+    }
+    if show_model {
+        table.add_column(
+            Column::new("Model").no_wrap().overflow(OverflowMethod::Ellipsis),
         );
     }
     for name in
@@ -77,6 +82,7 @@ fn format_tools_for_step(s: &Value) -> String {
 fn build_step_row(
     s: &Value,
     show_session: bool,
+    show_model: bool,
     hook_overlays: &HashMap<i64, Vec<String>>,
 ) -> Row {
     let di = s
@@ -93,6 +99,12 @@ fn build_step_row(
     } else {
         String::new()
     };
+    let model = s
+        .get("model")
+        .and_then(|v| v.as_str())
+        .filter(|m| !m.is_empty())
+        .map(|m| truncate_display(m, 24))
+        .unwrap_or_default();
 
     let cache_read =
         s.get("cache_read").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
@@ -108,8 +120,6 @@ fn build_step_row(
         .unwrap_or(0.0);
     let cache_pct =
         s.get("cache_pct").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
-    let duration =
-        s.get("duration").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
 
     let delta_text = if delta > 0.0 {
         Cell::from_markup(&format!("[green]{delta:+.0}[/green]"))
@@ -132,7 +142,12 @@ fn build_step_row(
         "[{pct_color}]{pct_str} {bar}[/{pct_color}]"
     ));
 
-    let dur_str = format_dur(duration);
+    // A step whose duration is unknown (pi records none) shows a dash
+    // instead of a misleading 0.
+    let dur_str = s
+        .get("duration")
+        .and_then(serde_json::Value::as_f64)
+        .map_or_else(|| "—".to_string(), format_dur);
 
     let hooks = hook_overlays.get(&di);
     let hook_str = hooks
@@ -160,6 +175,14 @@ fn build_step_row(
     if show_session {
         row_cells.push(Cell::new(sid_short));
     }
+    if show_model {
+        let model_cell = if model.is_empty() {
+            Cell::new(String::new())
+        } else {
+            Cell::from_markup(&format!("[blue]{model}[/blue]"))
+        };
+        row_cells.push(model_cell);
+    }
     row_cells.extend(vec![
         Cell::new(fmt_float_int(cache_read)),
         delta_text,
@@ -179,6 +202,7 @@ fn build_steps_summary_row(
     steps: &[Value],
     hook_overlays: &HashMap<i64, Vec<String>>,
     show_session: bool,
+    show_model: bool,
 ) -> Row {
     let total_input: f64 = steps
         .iter()
@@ -214,6 +238,13 @@ fn build_steps_summary_row(
         .iter()
         .filter_map(|s| s.get("duration").and_then(serde_json::Value::as_f64))
         .sum();
+    // When no step recorded a duration (pi), the summary total is
+    // unknown too and shows a dash instead of a misleading 0.
+    let has_any_duration = steps.iter().any(|s| {
+        s.get("duration")
+            .and_then(serde_json::Value::as_f64)
+            .is_some_and(|d| d > 0.0)
+    });
     let total_hooks: usize =
         hook_overlays.values().map(std::vec::Vec::len).sum();
     let total_tools: usize = steps
@@ -222,7 +253,11 @@ fn build_steps_summary_row(
         .map(std::vec::Vec::len)
         .sum();
 
-    let total_dur_str = format_dur(total_dur);
+    let total_dur_str = if has_any_duration {
+        format_dur(total_dur)
+    } else {
+        "—".to_string()
+    };
 
     let delta_summary = if total_cache_delta > 0.0 {
         Cell::from_markup(&format!("[green]{total_cache_delta:+.0}[/green]"))
@@ -235,6 +270,9 @@ fn build_steps_summary_row(
     let mut summary_cells: Vec<Cell> =
         vec![Cell::from_markup("[bold]Total[/bold]")];
     if show_session {
+        summary_cells.push(Cell::new(String::new()));
+    }
+    if show_model {
         summary_cells.push(Cell::new(String::new()));
     }
     summary_cells.extend(vec![
@@ -272,14 +310,28 @@ pub fn render_steps_table(
         .filter(|s| !s.is_empty())
         .collect();
     let show_session = unique_sids.len() > 1;
+    // The Model column appears only when at least one step recorded one.
+    let show_model = steps.iter().any(|s| {
+        s.get("model").and_then(|v| v.as_str()).is_some_and(|m| !m.is_empty())
+    });
 
     let width = get_terminal_width();
-    let mut table = create_steps_table(show_session);
+    let mut table = create_steps_table(show_session, show_model);
 
     for s in steps {
-        table.add_row(build_step_row(s, show_session, hook_overlays));
+        table.add_row(build_step_row(
+            s,
+            show_session,
+            show_model,
+            hook_overlays,
+        ));
     }
 
-    table.add_row(build_steps_summary_row(steps, hook_overlays, show_session));
+    table.add_row(build_steps_summary_row(
+        steps,
+        hook_overlays,
+        show_session,
+        show_model,
+    ));
     render_table(width, &table);
 }

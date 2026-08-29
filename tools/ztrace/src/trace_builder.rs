@@ -1,439 +1,536 @@
-// Timeline builder — merge ZooKeeper + opencode logs into unified trace events.
+// Timeline builder — merge the session event stream, zoo hook logs and
+// host lifecycle events into a unified trace.
 //
-// This is the heart of ztrace. It merges 4 data sources into a unified
-// timeline: opencode log parsed entries, zoo JSONL log entries, DB messages,
-// and DB tool calls.
+// This is the heart of ztrace. It joins three sources:
+//   1. the host-agnostic session event stream from a `SessionProvider`
+//      (`provider.open`: messages, tool calls, usage),
+//   2. the ZooKeeper JSONL hook logs resolved per session, and
+//   3. host lifecycle events from `provider.host_events` (OpenCode only;
+//      pi does not provide them and is skipped without an error).
 
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::fs;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::{Map, Number, Value};
 
-use zutil::db_helpers::DbTarget;
+use zutil::epoch_ms_to_iso;
 use zutil::format_number;
 use zutil::get_zoo_log_dir;
 use zutil::iso_to_epoch_ms;
 use zutil::resolve_session_path;
+use zutil::session::{Host, Session, SessionEvent, SessionProvider};
 
-use crate::db;
 use crate::parser::{self, tool_type_and_icon};
 
-// ── classify_opencode — helpers ──────────────────────────────────────────────
+// ── event stream → timeline ───────────────────────────────────────────────────
 
-/// Build the detail map for a session-created event.
-fn build_created_detail(
-    entry: &HashMap<String, String>,
-    slug: &str,
-    agent: &str,
-    model_id: &str,
-    model_provider: &str,
-) -> Map<String, Value> {
+/// Truncate text with ellipsis if it exceeds `max_len` characters.
+fn truncate_text(text: &str, max_len: usize) -> String {
+    if text.chars().count() > max_len {
+        let truncated: String = text.chars().take(max_len).collect();
+        format!("{truncated}...")
+    } else {
+        text.to_string()
+    }
+}
+
+/// Extract the primary input field of a tool call for summary display.
+///
+/// Priority: `filePath` > `pattern` > `command` (first 50 chars) >
+/// `description` > first non-empty value > `""`.
+fn primary_tool_input(input: &Value) -> String {
+    let Some(obj) = input.as_object() else {
+        return String::new();
+    };
+
+    if let Some(fp) =
+        obj.get("filePath").and_then(Value::as_str).filter(|s| !s.is_empty())
+    {
+        return fp.to_string();
+    }
+    if let Some(pattern) =
+        obj.get("pattern").and_then(Value::as_str).filter(|s| !s.is_empty())
+    {
+        return pattern.to_string();
+    }
+    if let Some(cmd) =
+        obj.get("command").and_then(Value::as_str).filter(|s| !s.is_empty())
+    {
+        return cmd.chars().take(50).collect();
+    }
+    if let Some(desc) =
+        obj.get("description").and_then(Value::as_str).filter(|s| !s.is_empty())
+    {
+        return desc.to_string();
+    }
+    for val in obj.values() {
+        if let Some(s) = val.as_str().filter(|s| !s.trim().is_empty()) {
+            return s.to_string();
+        }
+    }
+    String::new()
+}
+
+/// Source label for provider-derived events: `db` on `OpenCode` (historical
+/// label), the host name on other hosts.
+fn provider_source(host: Host) -> String {
+    if host == Host::OpenCode {
+        "db".to_string()
+    } else {
+        host.name().to_string()
+    }
+}
+
+/// Convert one session event into a timeline entry.
+///
+/// `Message` becomes a user/assistant message event, `ToolUse` a tool call
+/// event (durations are attached later from its `ToolResult`), `Reasoning`
+/// an assistant-reasoning row, and `Usage` a step/token event.
+/// `ToolResult` alone produces no entry.
+fn event_to_timeline(host: Host, ev: &SessionEvent) -> Option<Value> {
+    match ev {
+        SessionEvent::Message { role, text, timestamp, id, .. } => {
+            message_to_timeline(host, role, text, *timestamp, id.as_deref())
+        }
+        SessionEvent::ToolUse { name, input, timestamp, .. } => {
+            Some(tool_use_to_timeline(host, name, input, *timestamp))
+        }
+        SessionEvent::ToolResult { .. } => None,
+        SessionEvent::Reasoning { text, timestamp, .. } => {
+            Some(reasoning_to_timeline(host, text, *timestamp))
+        }
+        SessionEvent::Usage {
+            input,
+            output,
+            cache_read,
+            cache_write,
+            cost,
+            timestamp,
+            model,
+            message_id,
+            duration_ms,
+            ..
+        } => Some(usage_to_timeline(
+            host,
+            UsageTokens {
+                input: *input,
+                output: *output,
+                cache_read: *cache_read,
+                cache_write: *cache_write,
+            },
+            *cost,
+            *timestamp,
+            model.as_deref(),
+            message_id.as_deref(),
+            *duration_ms,
+        )),
+    }
+}
+
+/// Convert a message event into a user/assistant timeline entry.
+///
+/// The provider message id is carried on the row so the duration pass can
+/// match usage durations back to assistant replies.
+fn message_to_timeline(
+    host: Host,
+    role: &str,
+    text: &str,
+    timestamp: i64,
+    id: Option<&str>,
+) -> Option<Value> {
+    let (etype, icon, summary) = match role {
+        "user" => {
+            ("user_msg".to_string(), "👤".to_string(), truncate_text(text, 80))
+        }
+        "assistant" => (
+            "assistant_reply".to_string(),
+            "🤖".to_string(),
+            truncate_text(text, 80),
+        ),
+        _ => return None,
+    };
+    let mut ev_map = Map::new();
+    ev_map.insert(
+        "timestamp".to_string(),
+        Value::String(epoch_ms_to_iso(timestamp)),
+    );
+    ev_map.insert("source".to_string(), Value::String(provider_source(host)));
+    ev_map.insert("type".to_string(), Value::String(etype));
+    ev_map.insert("icon".to_string(), Value::String(icon));
+    ev_map.insert("summary".to_string(), Value::String(summary));
+    ev_map.insert("content".to_string(), Value::String(text.to_string()));
+    if let Some(id) = id {
+        ev_map.insert("message_id".to_string(), Value::String(id.to_string()));
+    }
+    Some(Value::Object(ev_map))
+}
+
+/// Convert a tool-use event into a tool timeline entry (duration is
+/// attached later from the matching `ToolResult`).
+fn tool_use_to_timeline(
+    host: Host,
+    name: &str,
+    input: &Value,
+    timestamp: i64,
+) -> Value {
+    let (etype, icon) = tool_type_and_icon(name);
+    let primary = primary_tool_input(input);
+    let summary = if primary.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name}: {primary}")
+    };
+
     let mut detail = Map::new();
+    detail.insert("tool_name".to_string(), Value::String(name.to_string()));
+    detail.insert("status".to_string(), Value::String(String::new()));
     detail.insert(
-        "id".to_string(),
-        Value::String(entry.get("id").cloned().unwrap_or_default()),
+        "input_keys".to_string(),
+        Value::Array(
+            input
+                .as_object()
+                .map(|obj| {
+                    obj.keys().map(|k| Value::String(k.clone())).collect()
+                })
+                .unwrap_or_default(),
+        ),
     );
-    detail.insert("slug".to_string(), Value::String(slug.to_string()));
-    detail.insert("agent".to_string(), Value::String(agent.to_string()));
-    detail.insert("model_id".to_string(), Value::String(model_id.to_string()));
+
+    let mut ev_map = Map::new();
+    ev_map.insert(
+        "timestamp".to_string(),
+        Value::String(epoch_ms_to_iso(timestamp)),
+    );
+    ev_map.insert("source".to_string(), Value::String(provider_source(host)));
+    ev_map.insert("type".to_string(), Value::String(etype));
+    ev_map.insert("icon".to_string(), Value::String(icon));
+    ev_map.insert("summary".to_string(), Value::String(summary));
+    ev_map.insert("detail".to_string(), Value::Object(detail));
+    Value::Object(ev_map)
+}
+
+/// Convert a reasoning event into an assistant-reasoning timeline entry.
+///
+/// Mirrors the historical DB row: type `assistant_reasoning`, icon `🧠`,
+/// summary prefixed `Reasoning:`. `OpenCode` `reasoning` parts and pi
+/// `thinking` blocks both arrive as [`SessionEvent::Reasoning`], so both
+/// hosts share this shape. The ops-summary display renders these rows only
+/// in verbose mode.
+fn reasoning_to_timeline(host: Host, text: &str, timestamp: i64) -> Value {
+    let mut ev_map = Map::new();
+    ev_map.insert(
+        "timestamp".to_string(),
+        Value::String(epoch_ms_to_iso(timestamp)),
+    );
+    ev_map.insert("source".to_string(), Value::String(provider_source(host)));
+    ev_map.insert(
+        "type".to_string(),
+        Value::String("assistant_reasoning".to_string()),
+    );
+    ev_map.insert("icon".to_string(), Value::String("🧠".to_string()));
+    ev_map.insert(
+        "summary".to_string(),
+        Value::String(format!("Reasoning: {}", truncate_text(text, 72))),
+    );
+    ev_map.insert("content".to_string(), Value::String(text.to_string()));
+    Value::Object(ev_map)
+}
+
+/// Token counts of one usage event, grouped so the timeline builder
+/// signature stays small.
+#[derive(Clone, Copy)]
+struct UsageTokens {
+    input: i64,
+    output: i64,
+    cache_read: i64,
+    cache_write: i64,
+}
+
+/// Convert a usage event into a step/token timeline entry.
+///
+/// The summary carries the model (when the host recorded one) so both the
+/// rich timeline and the ops summary can surface which model produced the
+/// turn; the detail keeps the raw token counts plus the provider message
+/// id and duration (when the host recorded them) so the duration pass can
+/// match the billed turn back to its assistant reply.
+fn usage_to_timeline(
+    host: Host,
+    tokens: UsageTokens,
+    cost: Option<f64>,
+    timestamp: i64,
+    model: Option<&str>,
+    message_id: Option<&str>,
+    duration_ms: Option<i64>,
+) -> Value {
+    let mut detail = Map::new();
+    detail
+        .insert("input".to_string(), Value::Number(Number::from(tokens.input)));
     detail.insert(
-        "model_provider".to_string(),
-        Value::String(model_provider.to_string()),
+        "output".to_string(),
+        Value::Number(Number::from(tokens.output)),
     );
     detail.insert(
-        "title".to_string(),
-        Value::String(entry.get("title").cloned().unwrap_or_default()),
+        "cache_read".to_string(),
+        Value::Number(Number::from(tokens.cache_read)),
     );
     detail.insert(
-        "parent_id".to_string(),
-        Value::String(entry.get("parent_id").cloned().unwrap_or_default()),
-    );
-    detail.insert(
-        "project_id".to_string(),
-        Value::String(entry.get("projectID").cloned().unwrap_or_default()),
+        "cache_write".to_string(),
+        Value::Number(Number::from(tokens.cache_write)),
     );
     detail.insert(
         "cost".to_string(),
-        Value::String(
-            entry.get("cost").cloned().unwrap_or_else(|| "0".to_string()),
-        ),
+        cost.map_or(Value::Null, |c| {
+            Number::from_f64(c).map_or(Value::Null, Value::Number)
+        }),
     );
-    detail.insert(
-        "tokens_input".to_string(),
-        Value::String(
-            entry
-                .get("tokens_input")
-                .cloned()
-                .unwrap_or_else(|| "0".to_string()),
-        ),
-    );
-    detail.insert(
-        "tokens_output".to_string(),
-        Value::String(
-            entry
-                .get("tokens_output")
-                .cloned()
-                .unwrap_or_else(|| "0".to_string()),
-        ),
-    );
-    detail
-}
-
-/// Build a session-created event from an opencode log entry.
-#[must_use]
-fn classify_opencode_created(
-    entry: &HashMap<String, String>,
-    timestamp: &str,
-) -> Value {
-    let slug = entry.get("slug").map_or("", std::string::String::as_str);
-    let agent = entry.get("agent").map_or("", std::string::String::as_str);
-    let model_id =
-        entry.get("model_id").map_or("", std::string::String::as_str);
-    let model_provider =
-        entry.get("model_providerID").map_or("", std::string::String::as_str);
-    let title = entry
-        .get("title")
-        .map(std::string::String::as_str)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(slug);
-
-    let mut parts: Vec<String> = Vec::new();
-    if !slug.is_empty() {
-        parts.push(slug.to_string());
+    if let Some(model) = model {
+        detail.insert("model".to_string(), Value::String(model.to_string()));
     }
-    if !agent.is_empty() {
-        parts.push(format!("agent={agent}"));
-    }
-    if !model_id.is_empty() {
-        parts.push(format!("model={model_id}"));
-    }
-    if !model_provider.is_empty() {
-        parts.push(format!("provider={model_provider}"));
-    }
-
-    let summary = if parts.is_empty() {
-        if title.is_empty() || title == slug {
-            format!("Session {slug}")
-        } else {
-            format!("Session {slug}: {title}")
-        }
-    } else {
-        format!("Session {} ({})", slug, parts.join(", "))
-    };
-
-    let detail =
-        build_created_detail(entry, slug, agent, model_id, model_provider);
-
-    let mut ev = Map::new();
-    ev.insert("timestamp".to_string(), Value::String(timestamp.to_string()));
-    ev.insert("source".to_string(), Value::String("opencode".to_string()));
-    ev.insert("type".to_string(), Value::String("session".to_string()));
-    ev.insert("icon".to_string(), Value::String("◆".to_string()));
-    ev.insert("summary".to_string(), Value::String(summary));
-    ev.insert("detail".to_string(), Value::Object(detail));
-    Value::Object(ev)
-}
-
-/// Build a loop-step event from an opencode log entry.
-#[must_use]
-fn classify_opencode_loop(
-    entry: &HashMap<String, String>,
-    timestamp: &str,
-) -> Value {
-    let step = entry.get("step").cloned().unwrap_or_else(|| "0".to_string());
-    let mut detail = Map::new();
-    detail.insert("step".to_string(), Value::String(step.clone()));
-    detail.insert(
-        "session_id".to_string(),
-        Value::String(entry.get("session_id").cloned().unwrap_or_default()),
-    );
-
-    let mut ev = Map::new();
-    ev.insert("timestamp".to_string(), Value::String(timestamp.to_string()));
-    ev.insert("source".to_string(), Value::String("opencode".to_string()));
-    ev.insert("type".to_string(), Value::String("session".to_string()));
-    ev.insert("icon".to_string(), Value::String("◆".to_string()));
-    ev.insert(
-        "summary".to_string(),
-        Value::String(format!("Loop step={step}")),
-    );
-    ev.insert("detail".to_string(), Value::Object(detail));
-    Value::Object(ev)
-}
-
-/// Build a process-message event from an opencode log entry.
-#[must_use]
-fn classify_opencode_process(
-    entry: &HashMap<String, String>,
-    timestamp: &str,
-) -> Value {
-    let mut detail = Map::new();
-    detail.insert(
-        "message_id".to_string(),
-        Value::String(entry.get("messageID").cloned().unwrap_or_default()),
-    );
-    detail.insert(
-        "session_id".to_string(),
-        Value::String(entry.get("session_id").cloned().unwrap_or_default()),
-    );
-
-    let mut ev = Map::new();
-    ev.insert("timestamp".to_string(), Value::String(timestamp.to_string()));
-    ev.insert("source".to_string(), Value::String("opencode".to_string()));
-    ev.insert("type".to_string(), Value::String("session".to_string()));
-    ev.insert("icon".to_string(), Value::String("💬".to_string()));
-    ev.insert(
-        "summary".to_string(),
-        Value::String("Process message".to_string()),
-    );
-    ev.insert("detail".to_string(), Value::Object(detail));
-    Value::Object(ev)
-}
-
-/// Build an exiting-loop event from an opencode log entry.
-#[must_use]
-fn classify_opencode_exiting_loop(
-    entry: &HashMap<String, String>,
-    timestamp: &str,
-) -> Value {
-    let mut detail = Map::new();
-    detail.insert(
-        "session_id".to_string(),
-        Value::String(entry.get("session_id").cloned().unwrap_or_default()),
-    );
-
-    let mut ev = Map::new();
-    ev.insert("timestamp".to_string(), Value::String(timestamp.to_string()));
-    ev.insert("source".to_string(), Value::String("opencode".to_string()));
-    ev.insert("type".to_string(), Value::String("session".to_string()));
-    ev.insert("icon".to_string(), Value::String("◆".to_string()));
-    ev.insert("summary".to_string(), Value::String("Exiting loop".to_string()));
-    ev.insert("detail".to_string(), Value::Object(detail));
-    Value::Object(ev)
-}
-
-/// Build an LLM-runtime-selected event from an opencode log entry.
-#[must_use]
-fn classify_opencode_llm_runtime(
-    entry: &HashMap<String, String>,
-    timestamp: &str,
-) -> Value {
-    let provider =
-        entry.get("llm_provider").cloned().unwrap_or_else(|| "?".to_string());
-    let model =
-        entry.get("llm_model").cloned().unwrap_or_else(|| "?".to_string());
-
-    let mut detail = Map::new();
-    detail.insert("provider".to_string(), Value::String(provider.clone()));
-    detail.insert("model".to_string(), Value::String(model.clone()));
-    detail.insert(
-        "runtime".to_string(),
-        Value::String(entry.get("llm_runtime").cloned().unwrap_or_default()),
-    );
-
-    let mut ev = Map::new();
-    ev.insert("timestamp".to_string(), Value::String(timestamp.to_string()));
-    ev.insert("source".to_string(), Value::String("opencode".to_string()));
-    ev.insert("type".to_string(), Value::String("llm".to_string()));
-    ev.insert("icon".to_string(), Value::String("▲".to_string()));
-    ev.insert(
-        "summary".to_string(),
-        Value::String(format!("LLM {provider}/{model}")),
-    );
-    ev.insert("detail".to_string(), Value::Object(detail));
-    Value::Object(ev)
-}
-
-/// Build a stream event from an opencode log entry.
-#[must_use]
-fn classify_opencode_stream(
-    entry: &HashMap<String, String>,
-    timestamp: &str,
-) -> Value {
-    let provider =
-        entry.get("providerID").cloned().unwrap_or_else(|| "?".to_string());
-    let model =
-        entry.get("modelID").cloned().unwrap_or_else(|| "?".to_string());
-    let agent = entry.get("agent").cloned().unwrap_or_else(|| "?".to_string());
-    let mode = entry.get("mode").cloned().unwrap_or_else(|| "?".to_string());
-
-    let mut detail = Map::new();
-    detail.insert("provider".to_string(), Value::String(provider.clone()));
-    detail.insert("model".to_string(), Value::String(model.clone()));
-    detail.insert("agent".to_string(), Value::String(agent.clone()));
-    detail.insert("mode".to_string(), Value::String(mode.clone()));
-
-    let mut ev = Map::new();
-    ev.insert("timestamp".to_string(), Value::String(timestamp.to_string()));
-    ev.insert("source".to_string(), Value::String("opencode".to_string()));
-    ev.insert("type".to_string(), Value::String("llm_stream".to_string()));
-    ev.insert("icon".to_string(), Value::String("▲".to_string()));
-    ev.insert(
-        "summary".to_string(),
-        Value::String(format!(
-            "Stream {provider}/{model} agent={agent} ({mode})"
-        )),
-    );
-    ev.insert("detail".to_string(), Value::Object(detail));
-    Value::Object(ev)
-}
-
-/// Build an evaluated event (permission check or tool call).
-#[must_use]
-fn classify_opencode_evaluated(
-    entry: &HashMap<String, String>,
-    timestamp: &str,
-) -> Value {
-    let permission =
-        entry.get("permission").cloned().unwrap_or_else(|| "?".to_string());
-    let pattern = entry.get("pattern").cloned().unwrap_or_default();
-    let action =
-        entry.get("action_action").cloned().unwrap_or_else(|| "?".to_string());
-
-    let mut detail = Map::new();
-    detail.insert("permission".to_string(), Value::String(permission.clone()));
-    detail.insert("pattern".to_string(), Value::String(pattern.clone()));
-    detail.insert("action".to_string(), Value::String(action.clone()));
-
-    if action == "deny" {
-        // Denied → permission event
-        let mut ev = Map::new();
-        ev.insert(
-            "timestamp".to_string(),
-            Value::String(timestamp.to_string()),
-        );
-        ev.insert("source".to_string(), Value::String("opencode".to_string()));
-        ev.insert("type".to_string(), Value::String("permission".to_string()));
-        ev.insert("icon".to_string(), Value::String("▼".to_string()));
-        ev.insert(
-            "summary".to_string(),
-            Value::String(format!("permission=deny {permission} {pattern}")),
-        );
-        ev.insert("detail".to_string(), Value::Object(detail));
-        return Value::Object(ev);
-    }
-
-    // Allowed → tool call (classified by permission)
-    let (event_type, icon) = tool_type_and_icon(&permission);
-
-    // Parse duration field if present
-    if let Some(dur_str) = entry.get("duration")
-        && let Ok(dur) = dur_str.parse::<f64>()
-    {
+    if let Some(message_id) = message_id {
         detail.insert(
-            "duration_sec".to_string(),
-            Number::from_f64(dur).map_or(Value::Null, Value::Number),
+            "message_id".to_string(),
+            Value::String(message_id.to_string()),
+        );
+    }
+    if let Some(duration_ms) = duration_ms {
+        detail.insert(
+            "duration_ms".to_string(),
+            Value::Number(Number::from(duration_ms)),
         );
     }
 
-    let mut ev = Map::new();
-    ev.insert("timestamp".to_string(), Value::String(timestamp.to_string()));
-    ev.insert("source".to_string(), Value::String("opencode".to_string()));
-    ev.insert("type".to_string(), Value::String(event_type));
-    ev.insert("icon".to_string(), Value::String(icon));
-    ev.insert(
-        "summary".to_string(),
-        Value::String(format!("{permission}: {pattern}")),
-    );
-    ev.insert("detail".to_string(), Value::Object(detail));
-    Value::Object(ev)
-}
-
-/// Build a file-touch event from an opencode log entry.
-#[must_use]
-fn classify_opencode_touching_file(
-    entry: &HashMap<String, String>,
-    timestamp: &str,
-) -> Value {
-    let file_path = entry.get("file").cloned().unwrap_or_default();
-    let action =
-        entry.get("action").cloned().unwrap_or_else(|| "edit".to_string());
-
-    let mut detail = Map::new();
-    detail.insert("file".to_string(), Value::String(file_path.clone()));
-    detail.insert("action".to_string(), Value::String(action.clone()));
-
-    let mut ev = Map::new();
-    ev.insert("timestamp".to_string(), Value::String(timestamp.to_string()));
-    ev.insert("source".to_string(), Value::String("opencode".to_string()));
-    ev.insert("type".to_string(), Value::String("file".to_string()));
-    ev.insert("icon".to_string(), Value::String("■".to_string()));
-    ev.insert(
-        "summary".to_string(),
-        Value::String(format!("{action}: {file_path}")),
-    );
-    ev.insert("detail".to_string(), Value::Object(detail));
-    Value::Object(ev)
-}
-
-/// Build a fallback hook event for unrecognised opencode messages.
-#[must_use]
-fn classify_opencode_fallback(
-    entry: &HashMap<String, String>,
-    timestamp: &str,
-    msg: &str,
-) -> Value {
-    let summary = if msg.is_empty() {
-        "opencode event".to_string()
-    } else {
-        format!("opencode: {msg}")
-    };
-
-    // Build detail from entire entry
-    let mut detail = Map::new();
-    for (k, v) in entry {
-        detail.insert(k.clone(), Value::String(v.clone()));
-    }
-
-    let mut ev = Map::new();
-    ev.insert("timestamp".to_string(), Value::String(timestamp.to_string()));
-    ev.insert("source".to_string(), Value::String("opencode".to_string()));
-    ev.insert("type".to_string(), Value::String("hook".to_string()));
-    ev.insert("icon".to_string(), Value::String("◈".to_string()));
-    ev.insert("summary".to_string(), Value::String(summary));
-    ev.insert("detail".to_string(), Value::Object(detail));
-    Value::Object(ev)
-}
-
-// ── classify_opencode ─────────────────────────────────────────────────────────
-
-/// Convert a parsed opencode log entry to a unified timeline event dict.
-///
-/// Match on `entry["message"]`:
-/// - `"created"` → session creation event
-/// - `"loop"` → loop step event
-/// - `"process"` → process message event
-/// - `"exiting loop"` → loop exit event
-/// - `"llm runtime selected"` → LLM runtime selection
-/// - `"stream"` → LLM stream event
-/// - `"evaluated"` → permission check or tool call
-/// - `"touching file"` → file touch event
-/// - fallback → hook event
-#[must_use]
-pub fn classify_opencode(entry: &HashMap<String, String>) -> Value {
-    let msg = entry.get("message").map_or("", std::string::String::as_str);
-
-    let timestamp = parser::normalize_timestamp(
-        entry.get("timestamp").map_or("", std::string::String::as_str),
+    let summary = model.map_or_else(
+        || {
+            format!(
+                "usage: {}+{} tokens (cache {}/{})",
+                tokens.input,
+                tokens.output,
+                tokens.cache_read,
+                tokens.cache_write
+            )
+        },
+        |model| {
+            format!(
+                "usage ({model}): {}+{} tokens (cache {}/{})",
+                tokens.input,
+                tokens.output,
+                tokens.cache_read,
+                tokens.cache_write
+            )
+        },
     );
 
-    match msg {
-        "created" => classify_opencode_created(entry, &timestamp),
-        "loop" => classify_opencode_loop(entry, &timestamp),
-        "process" => classify_opencode_process(entry, &timestamp),
-        "exiting loop" => classify_opencode_exiting_loop(entry, &timestamp),
-        "llm runtime selected" => {
-            classify_opencode_llm_runtime(entry, &timestamp)
+    let mut ev_map = Map::new();
+    ev_map.insert(
+        "timestamp".to_string(),
+        Value::String(epoch_ms_to_iso(timestamp)),
+    );
+    ev_map.insert("source".to_string(), Value::String(provider_source(host)));
+    ev_map.insert("type".to_string(), Value::String("usage".to_string()));
+    ev_map.insert("icon".to_string(), Value::String("◈".to_string()));
+    ev_map.insert("summary".to_string(), Value::String(summary));
+    ev_map.insert("detail".to_string(), Value::Object(detail));
+    Value::Object(ev_map)
+}
+
+/// Tag a timeline entry with its session id, depth and agent.
+fn tag_event(
+    ev: &mut Value,
+    sid: &str,
+    depth: i64,
+    session_agents: &HashMap<String, String>,
+) {
+    if let Some(obj) = ev.as_object_mut() {
+        obj.insert("session_id".to_string(), Value::String(sid.to_string()));
+        obj.insert("depth".to_string(), Value::Number(Number::from(depth)));
+        if let Some(agent) = session_agents.get(sid) {
+            obj.insert(
+                "session_agent".to_string(),
+                Value::String(agent.clone()),
+            );
         }
-        "stream" => classify_opencode_stream(entry, &timestamp),
-        "evaluated" => classify_opencode_evaluated(entry, &timestamp),
-        "touching file" => classify_opencode_touching_file(entry, &timestamp),
-        _ => classify_opencode_fallback(entry, &timestamp, msg),
     }
 }
 
-// ── classify_zoo ──────────────────────────────────────────────────────────────
+/// One tool-use recorded while converting a session's event stream.
+struct ToolUseInfo {
+    name: String,
+    timestamp: i64,
+    timeline_index: usize,
+    /// Tool-call id, when the host recorded one.
+    id: Option<String>,
+}
+
+/// Convert one session's events, tagging every entry with `sid`/`depth`.
+///
+/// Tool-use entries are returned alongside so the caller can attach their
+/// durations from the matching `ToolResult`.
+fn convert_session_events(
+    host: Host,
+    events: &[SessionEvent],
+    sid: &str,
+    depth: i64,
+    session_agents: &HashMap<String, String>,
+) -> (Vec<Value>, Vec<ToolUseInfo>) {
+    let mut out: Vec<Value> = Vec::new();
+    let mut tool_uses: Vec<ToolUseInfo> = Vec::new();
+
+    for ev in events {
+        if let SessionEvent::ToolUse { id, name, timestamp, .. } = ev {
+            let index = out.len();
+            if let Some(mut value) = event_to_timeline(host, ev) {
+                tag_event(&mut value, sid, depth, session_agents);
+                out.push(value);
+                tool_uses.push(ToolUseInfo {
+                    name: name.clone(),
+                    timestamp: *timestamp,
+                    timeline_index: index,
+                    id: id.clone(),
+                });
+            }
+        } else if let Some(mut value) = event_to_timeline(host, ev) {
+            tag_event(&mut value, sid, depth, session_agents);
+            out.push(value);
+        }
+    }
+
+    (out, tool_uses)
+}
+
+/// Attach `status` and `duration_sec` to tool events using their results.
+///
+/// Each `ToolResult` is paired with the still-unpaired tool use carrying
+/// the same tool-call id, which keeps interleaved same-name calls correct
+/// (results may arrive out of order). Results without an id fall back to
+/// the historical first-still-unpaired-same-name (FIFO per tool) pairing;
+/// results whose id matches no recorded use are dropped rather than
+/// risked on a mismatched FIFO pair.
+fn attach_tool_results(
+    events: &[SessionEvent],
+    tool_uses: &[ToolUseInfo],
+    out: &mut [Value],
+) {
+    let mut used = vec![false; tool_uses.len()];
+    for ev in events {
+        let SessionEvent::ToolResult { id, name, is_error, timestamp, .. } = ev
+        else {
+            continue;
+        };
+        let hit = id.as_deref().map_or_else(
+            // Legacy results without an id keep the name-FIFO fallback.
+            || {
+                tool_uses
+                    .iter()
+                    .enumerate()
+                    .find(|(i, info)| !used[*i] && info.name == *name)
+            },
+            // Results carrying a call id pair exactly by it; an id that
+            // matches no recorded use is dropped rather than risked on a
+            // mismatched FIFO pair.
+            |call_id| {
+                tool_uses.iter().enumerate().find(|(i, info)| {
+                    !used[*i] && info.id.as_deref() == Some(call_id)
+                })
+            },
+        );
+        let Some((index, info)) = hit else {
+            continue;
+        };
+        used[index] = true;
+        let Some(obj) =
+            out.get_mut(info.timeline_index).and_then(Value::as_object_mut)
+        else {
+            continue;
+        };
+        let Some(detail) = obj.get_mut("detail").and_then(Value::as_object_mut)
+        else {
+            continue;
+        };
+        detail.insert(
+            "status".to_string(),
+            Value::String(
+                if *is_error { "error" } else { "completed" }.to_string(),
+            ),
+        );
+        let dur_ms = (*timestamp - info.timestamp).max(0);
+        if dur_ms > 0
+            && let Some(num) = Number::from_f64(
+                f64::from(u32::try_from(dur_ms).unwrap_or(0)) / 1000.0,
+            )
+        {
+            detail.insert("duration_sec".to_string(), Value::Number(num));
+        }
+    }
+}
+
+// ── host lifecycle events ──────────────────────────────────────────────────────
+
+/// Build a `session_id → agent` map from host lifecycle events.
+///
+/// Uses the `created` event of each session (`OpenCode` only; pi returns
+/// `None` from `host_events`, so the map stays empty there).
+#[must_use]
+pub fn build_session_agents(
+    provider: &dyn SessionProvider,
+    sids: &HashSet<&str>,
+) -> HashMap<String, String> {
+    let mut agents: HashMap<String, String> = HashMap::new();
+    for sid in sids {
+        let Some(events) = provider.host_events(sid) else {
+            continue;
+        };
+        for host_event in events {
+            if host_event.kind != "created" {
+                continue;
+            }
+            let agent = host_event
+                .data
+                .get("detail")
+                .and_then(|d| d.get("agent"))
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    host_event
+                        .data
+                        .get("detail")
+                        .and_then(|d| d.get("slug"))
+                        .and_then(Value::as_str)
+                })
+                .unwrap_or("")
+                .to_string();
+            agents.insert(sid.to_string(), agent);
+            break;
+        }
+    }
+    agents
+}
+
+/// Append host lifecycle events for every session to the timeline.
+///
+/// Returns `false` when the host does not provide lifecycle events (pi),
+/// so callers can surface that fact in JSON meta or verbose output.
+/// Missing lifecycle events are never an error.
+fn add_host_events(
+    provider: &dyn SessionProvider,
+    sessions: &[(String, i64)],
+    session_agents: &HashMap<String, String>,
+    timeline: &mut Vec<Value>,
+) -> bool {
+    let mut seen_any = false;
+    for (sid, depth) in sessions {
+        let Some(events) = provider.host_events(sid) else {
+            continue;
+        };
+        seen_any = true;
+        for host_event in events {
+            let mut ev = host_event.data;
+            tag_event(&mut ev, sid, *depth, session_agents);
+            timeline.push(ev);
+        }
+    }
+    seen_any
+}
+
+// ── zoo hook log overlay ──────────────────────────────────────────────────────
 
 /// Convert a `ZooKeeper` log entry to a unified trace event.
 ///
@@ -484,235 +581,6 @@ pub fn classify_zoo(entry: &Value) -> Value {
     Value::Object(ev)
 }
 
-// ── parse_opencode_all ────────────────────────────────────────────────────────
-
-/// Parse an entire opencode log file in a single scan.
-///
-/// Returns all parsed entry dicts. Returns an empty `Vec` if the file is not
-/// found (with a warning printed to stderr).
-#[must_use]
-pub fn parse_opencode_all(oc_path: &str) -> Vec<HashMap<String, String>> {
-    let path = Path::new(oc_path);
-    if !path.exists() {
-        eprintln!("[ztrace] Warning: opencode log file not found: {oc_path}");
-        return Vec::new();
-    }
-
-    let content = match fs::read_to_string(oc_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("[ztrace] Warning: could not read opencode log: {e}");
-            return Vec::new();
-        }
-    };
-
-    let mut entries: Vec<HashMap<String, String>> = Vec::new();
-    for line in content.lines() {
-        if let Some(entry) = parser::parse_opencode_line(line) {
-            entries.push(entry);
-        }
-    }
-    entries
-}
-
-// ── discover_child_sessions_from_entries ──────────────────────────────────────
-
-/// Discover child sessions from pre-parsed entries via BFS.
-///
-/// Builds a `parentID → [child IDs]` map from `message=created` lines,
-/// then BFS-traverses from `root_session_id`.
-///
-/// Returns `Vec<(session_id, depth)>` including the root session (depth 0),
-/// direct children (depth 1), etc., in BFS order.
-#[must_use]
-pub fn discover_child_sessions_from_entries(
-    all_entries: &[HashMap<String, String>],
-    root_session_id: &str,
-) -> Vec<(String, i64)> {
-    // Build parentID → [child IDs] map
-    let mut children: HashMap<String, Vec<String>> = HashMap::new();
-
-    for entry in all_entries {
-        if entry.get("message").map(std::string::String::as_str)
-            != Some("created")
-        {
-            continue;
-        }
-        let eid = match entry.get("id") {
-            Some(id) if !id.is_empty() => id.clone(),
-            _ => continue,
-        };
-        let pid = entry
-            .get("parentID")
-            .or_else(|| entry.get("parent_id"))
-            .filter(|p| *p != "undefined" && !p.is_empty())
-            .cloned();
-
-        if let Some(parent_id) = pid {
-            children.entry(parent_id).or_default().push(eid);
-        }
-    }
-
-    // BFS from root_session_id
-    let mut result: Vec<(String, i64)> = Vec::new();
-    let mut queue: VecDeque<(String, i64)> = VecDeque::new();
-    let mut visited: HashSet<String> = HashSet::new();
-
-    result.push((root_session_id.to_string(), 0));
-    queue.push_back((root_session_id.to_string(), 0));
-    visited.insert(root_session_id.to_string());
-
-    while let Some((current, depth)) = queue.pop_front() {
-        if let Some(child_list) = children.get(&current) {
-            for child in child_list {
-                if visited.insert(child.clone()) {
-                    let entry = (child.clone(), depth + 1);
-                    result.push(entry.clone());
-                    queue.push_back(entry);
-                }
-            }
-        }
-    }
-
-    result
-}
-
-// ── build_session_agents ──────────────────────────────────────────────────────
-
-/// Build a `session_id → agent` map from pre-parsed entries.
-///
-/// Only sessions present in `sids` are included. Agent field takes
-/// priority, with `slug` as fallback.
-#[must_use]
-pub fn build_session_agents(
-    all_entries: &[HashMap<String, String>],
-    sids: &HashSet<&str>,
-) -> HashMap<String, String> {
-    let mut agents: HashMap<String, String> = HashMap::new();
-
-    for entry in all_entries {
-        if entry.get("message").map(std::string::String::as_str)
-            != Some("created")
-        {
-            continue;
-        }
-        let eid = match entry.get("id") {
-            Some(id) if !id.is_empty() => id.clone(),
-            _ => continue,
-        };
-        if sids.contains(eid.as_str()) {
-            let agent = entry
-                .get("agent")
-                .filter(|a| !a.is_empty())
-                .cloned()
-                .or_else(|| entry.get("slug").cloned())
-                .unwrap_or_default();
-            agents.insert(eid, agent);
-        }
-    }
-
-    agents
-}
-
-// ── resolve_and_group_entries ─────────────────────────────────────────────────
-
-/// Shared session-disambiguation logic for grouping entries by session ID.
-///
-/// Builds a `run → session_id` mapping from `message=created` lines,
-/// maintains a `session_stack` for run-based disambiguation via
-/// `loop`/`exiting loop` events, matches entries directly by
-/// `session_id` or `id`, and falls back to run-based resolution.
-///
-/// Returns a dict mapping each `session_id` in `sids` to its list of entry dicts.
-#[must_use]
-pub fn resolve_and_group_entries(
-    all_entries: &[HashMap<String, String>],
-    sids: &HashSet<&str>,
-) -> HashMap<String, Vec<HashMap<String, String>>> {
-    if sids.is_empty() {
-        return HashMap::new();
-    }
-
-    let mut run_to_session: HashMap<String, String> = HashMap::new();
-    let mut session_stack: Vec<String> = Vec::new();
-    let mut result: HashMap<String, Vec<HashMap<String, String>>> =
-        HashMap::new();
-
-    // Initialize result with empty vecs for all requested sids
-    for sid in sids {
-        result.insert(sid.to_string(), Vec::new());
-    }
-
-    for entry in all_entries {
-        let msg = entry.get("message").map_or("", String::as_str);
-
-        // Build run → session_id mapping from 'created' lines
-        if msg == "created"
-            && let (Some(id), Some(run)) = (entry.get("id"), entry.get("run"))
-            && !id.is_empty()
-            && !run.is_empty()
-        {
-            run_to_session.insert(run.clone(), id.clone());
-        }
-
-        // Active session stack: push on loop, pop on exiting loop
-        if msg == "loop"
-            && let Some(sid) = entry.get("session_id")
-            && !sid.is_empty()
-        {
-            session_stack.push(sid.clone());
-        }
-        if msg == "exiting loop"
-            && let Some(sid) = entry.get("session_id")
-            && !sid.is_empty()
-            && let Some(top) = session_stack.last()
-            && top == sid
-        {
-            session_stack.pop();
-        }
-
-        // Check direct session_id / id match
-        let matched_id = entry
-            .get("session_id")
-            .or_else(|| entry.get("id"))
-            .cloned()
-            .filter(|s| !s.is_empty());
-
-        if let Some(ref mid) = matched_id
-            && sids.contains(mid.as_str())
-        {
-            if let Some(vec) = result.get_mut(mid) {
-                vec.push(entry.clone());
-            }
-            continue;
-        }
-
-        // Check run-based mapping (for entries without session_id)
-        if let Some(run) = entry.get("run")
-            && !run.is_empty()
-            && run_to_session.contains_key(run)
-        {
-            let sid = if let Some(top) = session_stack.last()
-                && sids.contains(top.as_str())
-            {
-                top.clone()
-            } else {
-                run_to_session[run].clone()
-            };
-
-            if sids.contains(sid.as_str())
-                && let Some(vec) = result.get_mut(&sid)
-            {
-                vec.push(entry.clone());
-            }
-        }
-    }
-
-    result
-}
-
-// ── build_timeline — helpers ──────────────────────────────────────────────────
-
 /// Read `ZooKeeper` log events and add them to the timeline.
 ///
 /// The log file is named `<host>-{session_id}.log` (host ∈ {opencode, pi})
@@ -724,7 +592,6 @@ fn add_zoo_log_events(
     all_sids: &HashSet<String>,
     sessions: &[(String, i64)],
     session_agents: &HashMap<String, String>,
-    session_depth_map: &HashMap<&str, i64>,
 ) {
     let zoo_dir = get_zoo_log_dir();
     let Some(root_zoo_path) = resolve_session_path(session_id, &zoo_dir) else {
@@ -770,103 +637,7 @@ fn add_zoo_log_events(
                     "session_id".to_string(),
                     Value::String(sid.clone()),
                 );
-                obj.insert(
-                    "depth".to_string(),
-                    Value::Number(Number::from(
-                        session_depth_map
-                            .get(sid.as_str())
-                            .copied()
-                            .unwrap_or(0),
-                    )),
-                );
             }
-            timeline.push(ev);
-        }
-    }
-}
-
-/// Add DB tool-call events, deduplicating against existing opencode tool events.
-///
-/// Dedup uses ±3s proximity by tool name and session ID.
-fn add_db_tool_call_events(
-    timeline: &mut Vec<Value>,
-    sid_vec: &[&str],
-    session_depth_map: &HashMap<&str, i64>,
-    db: &DbTarget,
-) {
-    let db_tool_events = db::query_db_tool_calls(sid_vec, db);
-    if db_tool_events.is_empty() {
-        return;
-    }
-
-    // Build dedup index from existing timeline (opencode log) tool events.
-    // Each entry: (tool_name, epoch_ms, session_id)
-    let mut existing_tool_times: Vec<(String, i64, String)> = Vec::new();
-
-    for ev in timeline.iter() {
-        let etype = ev.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        if etype.starts_with("tool_") {
-            let ts_ms = iso_to_epoch_ms(
-                ev.get("timestamp").and_then(|v| v.as_str()).unwrap_or(""),
-            );
-            if ts_ms != 0 {
-                let tool_name = ev
-                    .get("detail")
-                    .and_then(|d| d.get("permission"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if !tool_name.is_empty() {
-                    let ev_sid = ev
-                        .get("session_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    existing_tool_times.push((tool_name, ts_ms, ev_sid));
-                }
-            }
-        }
-    }
-
-    for mut ev in db_tool_events {
-        // Add depth
-        let ev_sid = ev
-            .get("session_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        if let Some(obj) = ev.as_object_mut() {
-            let depth =
-                session_depth_map.get(ev_sid.as_str()).copied().unwrap_or(0);
-            obj.insert("depth".to_string(), Value::Number(Number::from(depth)));
-        }
-
-        let ts_ms = iso_to_epoch_ms(
-            ev.get("timestamp").and_then(|v| v.as_str()).unwrap_or(""),
-        );
-        let tool_name = ev
-            .get("detail")
-            .and_then(|d| d.get("tool_name"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        // Check absolute proximity (≤ 3s) against existing events
-        // with the same tool name and same session.
-        let is_dup = if ts_ms != 0 && !tool_name.is_empty() {
-            existing_tool_times.iter().any(|(name, existing_ts, sid)| {
-                name == &tool_name
-                    && sid == &ev_sid
-                    && (existing_ts - ts_ms).unsigned_abs() <= 3000
-            })
-        } else {
-            false
-        };
-
-        if !is_dup && ts_ms != 0 && !tool_name.is_empty() {
-            existing_tool_times.push((tool_name, ts_ms, ev_sid));
-        }
-        if !is_dup {
             timeline.push(ev);
         }
     }
@@ -874,119 +645,63 @@ fn add_db_tool_call_events(
 
 // ── build_timeline ────────────────────────────────────────────────────────────
 
-/// Merge `ZooKeeper` + opencode logs + DB sources into a sorted timeline.
+/// Result of [`build_timeline`]: the sorted events plus whether the host
+/// provided lifecycle events.
+pub struct BuiltTimeline {
+    /// Unified, timestamp-sorted timeline events.
+    pub events: Vec<Value>,
+    /// `false` when the host does not provide lifecycle events.
+    pub host_events_provided: bool,
+}
+
+/// Merge the session event stream, zoo hook logs and host lifecycle events
+/// into a sorted timeline.
 ///
-/// When `include_children` is `true`, automatically discovers and includes
-/// all child sessions (transitive descendants) of the given session.
-/// Each event is tagged with `session_id`, `depth`, and `session_agent`.
-///
-/// # Errors
-///
-/// Returns `Err` with a description if the opencode log file cannot be found
-/// or parsed.
+/// `sessions` lists every session to include (root first, then children)
+/// with its depth; `session_map` holds the opened [`Session`] for each.
+/// Events are tagged with `session_id`, `depth`, and `session_agent`.
+#[must_use]
 pub fn build_timeline(
-    session_id: &str,
-    opencode_path: &str,
-    db: &DbTarget,
-    include_children: bool,
-) -> Result<Vec<Value>, String> {
-    let oc_path = Path::new(opencode_path);
-    if !oc_path.exists() {
-        return Err(format!("Log file not found: {opencode_path}"));
-    }
-
-    // Single scan: parse opencode log once
-    let all_entries = parse_opencode_all(opencode_path);
-
-    // Discover sessions to include
-    let sessions: Vec<(String, i64)> = if include_children {
-        discover_child_sessions_from_entries(&all_entries, session_id)
-    } else {
-        vec![(session_id.to_string(), 0)]
-    };
-
-    // Pre-build session → agent map for child labeling
+    provider: &dyn SessionProvider,
+    host: Host,
+    sessions: &[(String, i64)],
+    session_map: &HashMap<String, Session>,
+    session_agents: &HashMap<String, String>,
+    root_session_id: &str,
+) -> BuiltTimeline {
     let all_sids: HashSet<String> =
         sessions.iter().map(|(sid, _)| sid.clone()).collect();
-    let all_sids_refs: HashSet<&str> =
-        all_sids.iter().map(std::string::String::as_str).collect();
-    let session_agents = build_session_agents(&all_entries, &all_sids_refs);
-
-    // Group entries by session
-    let oc_entries_by_sid =
-        resolve_and_group_entries(&all_entries, &all_sids_refs);
 
     let mut timeline: Vec<Value> = Vec::new();
-    let session_depth_map: HashMap<&str, i64> =
-        sessions.iter().map(|(sid, depth)| (sid.as_str(), *depth)).collect();
 
-    // ── ZooKeeper log ──
+    // ── Session event stream ──
+    for (sid, depth) in sessions {
+        let Some(session) = session_map.get(sid) else {
+            continue;
+        };
+        let (mut session_events, tool_uses) = convert_session_events(
+            host,
+            &session.events,
+            sid,
+            *depth,
+            session_agents,
+        );
+        attach_tool_results(&session.events, &tool_uses, &mut session_events);
+        timeline.append(&mut session_events);
+    }
+
+    // ── Zoo hook log overlay (existing logic, host-prefixed) ──
     add_zoo_log_events(
-        session_id,
+        root_session_id,
         &mut timeline,
         &all_sids,
-        &sessions,
-        &session_agents,
-        &session_depth_map,
+        sessions,
+        session_agents,
     );
 
-    // ── Opencode log (from pre-parsed multi-session map) ──
-    for (sid, depth) in &sessions {
-        if let Some(oc_entries) = oc_entries_by_sid.get(sid.as_str()) {
-            for oc_entry in oc_entries {
-                let mut ev = classify_opencode(oc_entry);
-                if let Some(obj) = ev.as_object_mut() {
-                    obj.insert(
-                        "session_id".to_string(),
-                        Value::String(sid.clone()),
-                    );
-                    obj.insert(
-                        "depth".to_string(),
-                        Value::Number(Number::from(*depth)),
-                    );
-                }
-                timeline.push(ev);
-            }
-        }
-    }
-
-    // ── Database messages (user / assistant) ──
-    let sid_vec: Vec<&str> =
-        all_sids.iter().map(std::string::String::as_str).collect();
-    let db_msg_events = db::query_db_messages(&sid_vec, db);
-    for mut ev in db_msg_events {
-        if let Some(obj) = ev.as_object_mut() {
-            let sid = obj
-                .get("session_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let depth =
-                session_depth_map.get(sid.as_str()).copied().unwrap_or(0);
-            obj.insert("depth".to_string(), Value::Number(Number::from(depth)));
-        }
-        timeline.push(ev);
-    }
-
-    // ── Database tool calls (from part table) ──
-    add_db_tool_call_events(&mut timeline, &sid_vec, &session_depth_map, db);
-
-    // Attach session_agent label for child events
-    for ev in &mut timeline {
-        if let Some(obj) = ev.as_object_mut() {
-            let sid = obj
-                .get("session_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            if let Some(agent) = session_agents.get(&sid) {
-                obj.insert(
-                    "session_agent".to_string(),
-                    Value::String(agent.clone()),
-                );
-            }
-        }
-    }
+    // ── Host lifecycle events ──
+    let host_events_provided =
+        add_host_events(provider, sessions, session_agents, &mut timeline);
 
     // Sort by timestamp (missing timestamps last)
     timeline.sort_by(|a, b| {
@@ -1000,7 +715,7 @@ pub fn build_timeline(
         ts_a.cmp(ts_b).then(src_a.cmp(src_b)).then(type_a.cmp(type_b))
     });
 
-    Ok(timeline)
+    BuiltTimeline { events: timeline, host_events_provided }
 }
 
 // ── sort_ops_by_session ───────────────────────────────────────────────────────
@@ -1420,174 +1135,339 @@ pub fn build_stats(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zutil::session::SessionMeta;
 
-    // ── classify_opencode tests ────────────────────────────────────────────
+    fn meta(id: &str) -> SessionMeta {
+        SessionMeta {
+            id: id.to_string(),
+            parent_id: None,
+            cwd: "/w".to_string(),
+            started_at: 0,
+            label: None,
+            title: None,
+            updated_at: None,
+            model: None,
+            agent: None,
+        }
+    }
+
+    fn session(id: &str, events: Vec<SessionEvent>) -> Session {
+        Session { meta: meta(id), events }
+    }
+
+    /// Provider stub that never reports host events.
+    struct NoHost;
+    impl SessionProvider for NoHost {
+        fn list(&self) -> std::io::Result<Vec<zutil::session::SessionMeta>> {
+            Ok(vec![])
+        }
+        fn open(
+            &self,
+            _: &str,
+        ) -> Result<Session, zutil::session::ResolveError> {
+            Err(zutil::session::ResolveError::Io(std::io::Error::other("no")))
+        }
+        fn search(
+            &self,
+            _: &str,
+        ) -> std::io::Result<Vec<zutil::session::SessionMeta>> {
+            Ok(vec![])
+        }
+        fn find_events(
+            &self,
+            _: &[String],
+            _: usize,
+        ) -> std::io::Result<
+            Vec<(zutil::session::SessionMeta, Vec<SessionEvent>)>,
+        > {
+            Ok(vec![])
+        }
+    }
+
+    fn msg_event(role: &str, text: &str, ts: i64) -> SessionEvent {
+        SessionEvent::Message {
+            id: None,
+            role: role.to_string(),
+            text: text.to_string(),
+            timestamp: ts,
+        }
+    }
+
+    fn tool_use_event(name: &str, ts: i64) -> SessionEvent {
+        SessionEvent::ToolUse {
+            id: None,
+            name: name.to_string(),
+            input: Value::Null,
+            timestamp: ts,
+        }
+    }
+
+    fn tool_result_event(name: &str, ts: i64, is_error: bool) -> SessionEvent {
+        SessionEvent::ToolResult {
+            id: None,
+            name: name.to_string(),
+            output: String::new(),
+            is_error,
+            timestamp: ts,
+        }
+    }
+
+    fn usage_event(ts: i64) -> SessionEvent {
+        SessionEvent::Usage {
+            input: 10,
+            output: 5,
+            cache_read: 2,
+            cache_write: 1,
+            cost: None,
+            timestamp: ts,
+            reasoning: 0,
+            reason: None,
+            message_id: None,
+            duration_ms: None,
+            model: None,
+        }
+    }
+
+    // ── event → timeline ──────────────────────────────────────────────────
 
     #[test]
-    fn test_classify_opencode_created() {
-        let mut entry = HashMap::new();
-        entry.insert("message".to_string(), "created".to_string());
-        entry.insert(
-            "timestamp".to_string(),
-            "2025-01-09T12:34:56Z".to_string(),
+    fn test_event_to_timeline_message_user_and_assistant() {
+        let user = msg_event("user", "hello", 1_000);
+        let ev = event_to_timeline(Host::OpenCode, &user).expect("user msg");
+        assert_eq!(ev["type"].as_str().unwrap(), "user_msg");
+        assert_eq!(ev["source"].as_str().unwrap(), "db");
+        assert_eq!(ev["content"].as_str().unwrap(), "hello");
+        assert_eq!(
+            ev["timestamp"].as_str().unwrap(),
+            "1970-01-01T00:00:01.000000Z"
         );
-        entry.insert("id".to_string(), "ses-001".to_string());
-        entry.insert("slug".to_string(), "my-session".to_string());
-        entry.insert("agent".to_string(), "beaver".to_string());
-        entry.insert("model_id".to_string(), "gpt-4".to_string());
-        entry.insert("title".to_string(), "Debug auth".to_string());
 
-        let ev = classify_opencode(&entry);
-        assert_eq!(ev["type"].as_str().unwrap(), "session");
-        assert_eq!(ev["source"].as_str().unwrap(), "opencode");
-        assert_eq!(ev["icon"].as_str().unwrap(), "◆");
-        assert_eq!(ev["timestamp"].as_str().unwrap(), "2025-01-09T12:34:56Z");
-        assert!(ev["summary"].as_str().unwrap().contains("my-session"));
-
-        let detail = ev["detail"].as_object().unwrap();
-        assert_eq!(detail["id"].as_str().unwrap(), "ses-001");
-        assert_eq!(detail["slug"].as_str().unwrap(), "my-session");
-        assert_eq!(detail["agent"].as_str().unwrap(), "beaver");
-        assert_eq!(detail["model_id"].as_str().unwrap(), "gpt-4");
+        let asst = msg_event("assistant", "hi", 2_000);
+        let ev = event_to_timeline(Host::Pi, &asst).expect("asst msg");
+        assert_eq!(ev["type"].as_str().unwrap(), "assistant_reply");
+        assert_eq!(ev["source"].as_str().unwrap(), "pi");
     }
 
     #[test]
-    fn test_classify_opencode_loop() {
-        let mut entry = HashMap::new();
-        entry.insert("message".to_string(), "loop".to_string());
-        entry.insert(
-            "timestamp".to_string(),
-            "2025-01-09T12:34:56Z".to_string(),
-        );
-        entry.insert("step".to_string(), "3".to_string());
-        entry.insert("session_id".to_string(), "ses-001".to_string());
-
-        let ev = classify_opencode(&entry);
-        assert_eq!(ev["type"].as_str().unwrap(), "session");
-        assert_eq!(ev["summary"].as_str().unwrap(), "Loop step=3");
-
-        let detail = ev["detail"].as_object().unwrap();
-        assert_eq!(detail["step"].as_str().unwrap(), "3");
-        assert_eq!(detail["session_id"].as_str().unwrap(), "ses-001");
+    fn test_event_to_timeline_skips_unknown_roles_and_results() {
+        let tool_role = msg_event("tool", "text", 1);
+        assert!(event_to_timeline(Host::OpenCode, &tool_role).is_none());
+        let result = tool_result_event("bash", 2, false);
+        assert!(event_to_timeline(Host::OpenCode, &result).is_none());
     }
 
     #[test]
-    fn test_classify_opencode_process() {
-        let mut entry = HashMap::new();
-        entry.insert("message".to_string(), "process".to_string());
-        entry.insert("messageID".to_string(), "msg-001".to_string());
-        entry.insert("session_id".to_string(), "ses-001".to_string());
-
-        let ev = classify_opencode(&entry);
-        assert_eq!(ev["type"].as_str().unwrap(), "session");
-        assert_eq!(ev["icon"].as_str().unwrap(), "💬");
-        assert_eq!(ev["summary"].as_str().unwrap(), "Process message");
-    }
-
-    #[test]
-    fn test_classify_opencode_exiting_loop() {
-        let mut entry = HashMap::new();
-        entry.insert("message".to_string(), "exiting loop".to_string());
-        entry.insert("session_id".to_string(), "ses-001".to_string());
-
-        let ev = classify_opencode(&entry);
-        assert_eq!(ev["summary"].as_str().unwrap(), "Exiting loop");
-    }
-
-    #[test]
-    fn test_classify_opencode_llm_runtime() {
-        let mut entry = HashMap::new();
-        entry.insert("message".to_string(), "llm runtime selected".to_string());
-        entry.insert("llm_provider".to_string(), "openai".to_string());
-        entry.insert("llm_model".to_string(), "gpt-4".to_string());
-
-        let ev = classify_opencode(&entry);
-        assert_eq!(ev["type"].as_str().unwrap(), "llm");
-        assert_eq!(ev["icon"].as_str().unwrap(), "▲");
-        assert_eq!(ev["summary"].as_str().unwrap(), "LLM openai/gpt-4");
-    }
-
-    #[test]
-    fn test_classify_opencode_stream() {
-        let mut entry = HashMap::new();
-        entry.insert("message".to_string(), "stream".to_string());
-        entry.insert("providerID".to_string(), "openai".to_string());
-        entry.insert("modelID".to_string(), "gpt-4".to_string());
-        entry.insert("agent".to_string(), "beaver".to_string());
-        entry.insert("mode".to_string(), "chat".to_string());
-
-        let ev = classify_opencode(&entry);
-        assert_eq!(ev["type"].as_str().unwrap(), "llm_stream");
-        assert!(
-            ev["summary"].as_str().unwrap().contains("Stream openai/gpt-4")
-        );
-    }
-
-    #[test]
-    fn test_classify_opencode_evaluated_deny() {
-        let mut entry = HashMap::new();
-        entry.insert("message".to_string(), "evaluated".to_string());
-        entry.insert("permission".to_string(), "bash".to_string());
-        entry.insert("pattern".to_string(), "rm -rf /".to_string());
-        entry.insert("action_action".to_string(), "deny".to_string());
-
-        let ev = classify_opencode(&entry);
-        assert_eq!(ev["type"].as_str().unwrap(), "permission");
-        assert_eq!(ev["icon"].as_str().unwrap(), "▼");
-        assert!(ev["summary"].as_str().unwrap().contains("permission=deny"));
-    }
-
-    #[test]
-    fn test_classify_opencode_evaluated_allow() {
-        let mut entry = HashMap::new();
-        entry.insert("message".to_string(), "evaluated".to_string());
-        entry.insert("permission".to_string(), "read".to_string());
-        entry.insert("pattern".to_string(), "src/main.rs".to_string());
-        entry.insert("action_action".to_string(), "allow".to_string());
-
-        let ev = classify_opencode(&entry);
+    fn test_event_to_timeline_tool_and_usage() {
+        let tool = tool_use_event("read", 1_000);
+        let ev = event_to_timeline(Host::OpenCode, &tool).expect("tool");
         assert_eq!(ev["type"].as_str().unwrap(), "tool_read");
-        assert_eq!(ev["icon"].as_str().unwrap(), "▶");
-        assert_eq!(ev["summary"].as_str().unwrap(), "read: src/main.rs");
+        assert_eq!(ev["summary"].as_str().unwrap(), "read");
+        assert_eq!(ev["detail"]["tool_name"].as_str().unwrap(), "read");
+
+        let usage = usage_event(2_000);
+        let ev = event_to_timeline(Host::Pi, &usage).expect("usage");
+        assert_eq!(ev["type"].as_str().unwrap(), "usage");
+        assert_eq!(ev["source"].as_str().unwrap(), "pi");
+        assert_eq!(ev["detail"]["input"].as_i64().unwrap(), 10);
     }
 
     #[test]
-    fn test_classify_opencode_evaluated_with_duration() {
-        let mut entry = HashMap::new();
-        entry.insert("message".to_string(), "evaluated".to_string());
-        entry.insert("permission".to_string(), "read".to_string());
-        entry.insert("pattern".to_string(), "src/main.rs".to_string());
-        entry.insert("action_action".to_string(), "allow".to_string());
-        entry.insert("duration".to_string(), "1.5".to_string());
+    fn test_event_to_timeline_reasoning() {
+        // OpenCode `reasoning` parts become an assistant-reasoning row with
+        // the historical icon and summary shape.
+        let reasoning = SessionEvent::Reasoning {
+            text: "let me think about the parser".to_string(),
+            timestamp: 2_500,
+            id: Some("part-r1".to_string()),
+        };
+        let ev =
+            event_to_timeline(Host::OpenCode, &reasoning).expect("reasoning");
+        assert_eq!(ev["type"].as_str().unwrap(), "assistant_reasoning");
+        assert_eq!(ev["icon"].as_str().unwrap(), "🧠");
+        assert_eq!(ev["source"].as_str().unwrap(), "db");
+        assert_eq!(
+            ev["summary"].as_str().unwrap(),
+            "Reasoning: let me think about the parser"
+        );
+        assert_eq!(
+            ev["content"].as_str().unwrap(),
+            "let me think about the parser"
+        );
 
-        let ev = classify_opencode(&entry);
-        let detail = ev["detail"].as_object().unwrap();
-        assert!((detail["duration_sec"].as_f64().unwrap() - 1.5).abs() < 0.001);
+        // pi `thinking` blocks flow through the same event → same row shape.
+        let thinking = SessionEvent::Reasoning {
+            text: "pi thinking".to_string(),
+            timestamp: 2_600,
+            id: None,
+        };
+        let ev = event_to_timeline(Host::Pi, &thinking).expect("thinking");
+        assert_eq!(ev["type"].as_str().unwrap(), "assistant_reasoning");
+        assert_eq!(ev["icon"].as_str().unwrap(), "🧠");
+        assert_eq!(ev["source"].as_str().unwrap(), "pi");
     }
 
     #[test]
-    fn test_classify_opencode_touching_file() {
-        let mut entry = HashMap::new();
-        entry.insert("message".to_string(), "touching file".to_string());
-        entry.insert("file".to_string(), "src/main.rs".to_string());
-        entry.insert("action".to_string(), "edit".to_string());
-
-        let ev = classify_opencode(&entry);
-        assert_eq!(ev["type"].as_str().unwrap(), "file");
-        assert_eq!(ev["icon"].as_str().unwrap(), "■");
-        assert_eq!(ev["summary"].as_str().unwrap(), "edit: src/main.rs");
+    fn test_primary_tool_input_priority() {
+        let input = serde_json::json!({
+            "command": "ls -la /very/long/path/that/exceeds/fifty/characters/easily/yes",
+            "filePath": "src/a.ts",
+        });
+        assert_eq!(primary_tool_input(&input), "src/a.ts");
+        let input = serde_json::json!({"command": "cargo test"});
+        assert_eq!(primary_tool_input(&input), "cargo test");
+        assert_eq!(primary_tool_input(&Value::Null), "");
     }
 
     #[test]
-    fn test_classify_opencode_fallback() {
-        let mut entry = HashMap::new();
-        entry.insert("message".to_string(), "unknown".to_string());
-        entry.insert("some_key".to_string(), "some_value".to_string());
+    fn test_attach_tool_results_sets_duration_and_status() {
+        let events = vec![
+            tool_use_event("read", 1_000),
+            tool_result_event("read", 1_500, false),
+        ];
+        let sid = "ses-001";
+        let agents = HashMap::new();
+        let (mut out, tools) =
+            convert_session_events(Host::OpenCode, &events, sid, 0, &agents);
+        assert_eq!(out.len(), 1);
+        attach_tool_results(&events, &tools, &mut out);
+        let detail = out[0]["detail"].as_object().unwrap();
+        assert_eq!(detail["status"].as_str().unwrap(), "completed");
+        assert!((detail["duration_sec"].as_f64().unwrap() - 0.5).abs() < 0.001);
+    }
 
-        let ev = classify_opencode(&entry);
-        assert_eq!(ev["type"].as_str().unwrap(), "hook");
-        assert_eq!(ev["icon"].as_str().unwrap(), "◈");
-        assert_eq!(ev["summary"].as_str().unwrap(), "opencode: unknown");
+    #[test]
+    fn test_attach_tool_results_error_status() {
+        let events = vec![
+            tool_use_event("bash", 1_000),
+            tool_result_event("bash", 1_000, true),
+        ];
+        let agents = HashMap::new();
+        let (mut out, tools) = convert_session_events(
+            Host::OpenCode,
+            &events,
+            "ses-001",
+            0,
+            &agents,
+        );
+        attach_tool_results(&events, &tools, &mut out);
+        let detail = out[0]["detail"].as_object().unwrap();
+        assert_eq!(detail["status"].as_str().unwrap(), "error");
+        // zero duration → no duration_sec key
+        assert!(detail.get("duration_sec").is_none());
+    }
+
+    fn tool_use_event_id(name: &str, id: &str, ts: i64) -> SessionEvent {
+        SessionEvent::ToolUse {
+            id: Some(id.to_string()),
+            name: name.to_string(),
+            input: Value::Null,
+            timestamp: ts,
+        }
+    }
+
+    fn tool_result_event_id(
+        name: &str,
+        id: &str,
+        ts: i64,
+        is_error: bool,
+    ) -> SessionEvent {
+        SessionEvent::ToolResult {
+            id: Some(id.to_string()),
+            name: name.to_string(),
+            output: String::new(),
+            is_error,
+            timestamp: ts,
+        }
+    }
+
+    #[test]
+    fn test_attach_tool_results_matches_by_call_id() {
+        // Two interleaved same-name calls whose results arrive out of
+        // order. FIFO-by-name would pair result call-2 with the first
+        // read; id matching must keep each result with its own call.
+        let events = vec![
+            tool_use_event_id("read", "call-1", 1_000),
+            tool_use_event_id("read", "call-2", 1_000),
+            tool_result_event_id("read", "call-2", 1_500, false),
+            tool_result_event_id("read", "call-1", 2_500, true),
+        ];
+        let agents = HashMap::new();
+        let (mut out, tools) = convert_session_events(
+            Host::OpenCode,
+            &events,
+            "ses-001",
+            0,
+            &agents,
+        );
+        assert_eq!(out.len(), 2);
+        attach_tool_results(&events, &tools, &mut out);
+        // call-1 → error, duration 1.5s (2500 - 1000).
+        let d0 = out[0]["detail"].as_object().unwrap();
+        assert_eq!(d0["status"].as_str().unwrap(), "error");
+        assert!((d0["duration_sec"].as_f64().unwrap() - 1.5).abs() < 0.001);
+        // call-2 → completed, duration 0.5s (1500 - 1000).
+        let d1 = out[1]["detail"].as_object().unwrap();
+        assert_eq!(d1["status"].as_str().unwrap(), "completed");
+        assert!((d1["duration_sec"].as_f64().unwrap() - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_attach_tool_results_falls_back_to_name_fifo_without_ids() {
+        // Results without a call id keep the historical name-FIFO pairing
+        // (the pre-id behavior for hosts that recorded none).
+        let events = vec![
+            tool_use_event("read", 1_000),
+            tool_use_event("read", 1_100),
+            tool_result_event("read", 1_500, false),
+            tool_result_event("read", 1_600, true),
+        ];
+        let agents = HashMap::new();
+        let (mut out, tools) = convert_session_events(
+            Host::OpenCode,
+            &events,
+            "ses-001",
+            0,
+            &agents,
+        );
+        attach_tool_results(&events, &tools, &mut out);
+        let d0 = out[0]["detail"].as_object().unwrap();
+        assert_eq!(d0["status"].as_str().unwrap(), "completed");
+        let d1 = out[1]["detail"].as_object().unwrap();
+        assert_eq!(d1["status"].as_str().unwrap(), "error");
+    }
+
+    #[test]
+    fn test_build_timeline_merges_stream_zoo_and_host() {
+        // No zoo log and no host events in this hermetic test: only the
+        // provider-derived events must appear, tagged and sorted.
+        let events = vec![
+            usage_event(3_000),
+            tool_use_event("read", 2_000),
+            msg_event("user", "hello", 1_000),
+        ];
+        let root = session("ses-001", events);
+        let mut session_map = HashMap::new();
+        session_map.insert("ses-001".to_string(), root);
+        let sessions = vec![("ses-001".to_string(), 0_i64)];
+
+        let built = build_timeline(
+            &NoHost,
+            Host::OpenCode,
+            &sessions,
+            &session_map,
+            &HashMap::new(),
+            "ses-001",
+        );
+        assert!(!built.host_events_provided);
+        assert_eq!(built.events.len(), 3);
+        // Sorted ascending by timestamp: user (1s), tool (2s), usage (3s).
+        assert_eq!(built.events[0]["type"].as_str().unwrap(), "user_msg");
+        assert_eq!(built.events[1]["type"].as_str().unwrap(), "tool_read");
+        assert_eq!(built.events[2]["type"].as_str().unwrap(), "usage");
+        for ev in &built.events {
+            assert_eq!(ev["session_id"].as_str().unwrap(), "ses-001");
+            assert_eq!(ev["depth"].as_i64().unwrap(), 0);
+        }
     }
 
     // ── classify_zoo tests ─────────────────────────────────────────────────
@@ -1680,196 +1560,6 @@ mod tests {
             ev["summary"].as_str().unwrap(),
             "context [beaver]: 2,500 tokens (10 msgs)"
         );
-    }
-
-    // ── parse_opencode_all tests ───────────────────────────────────────────
-
-    #[test]
-    fn test_parse_opencode_all_file_not_found() {
-        let result =
-            parse_opencode_all("/tmp/nonexistent-opencode-test-xxxxx.log");
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_parse_opencode_all_from_temp_file() {
-        let tmp = std::env::temp_dir().join("ztrace-test-parse-all.jsonl");
-        let content = r#"message="created" id=ses-001 slug=test
-message="loop" step=1
-garbage_line
-message="stream" providerID=openai"#;
-        std::fs::write(&tmp, content).unwrap();
-
-        let result = parse_opencode_all(tmp.to_str().unwrap());
-        assert_eq!(result.len(), 3); // 3 valid lines, 1 skipped
-        assert_eq!(result[0].get("message").unwrap(), "created");
-        assert_eq!(result[1].get("message").unwrap(), "loop");
-        assert_eq!(result[2].get("message").unwrap(), "stream");
-        let _ = std::fs::remove_file(&tmp);
-    }
-
-    // ── discover_child_sessions_from_entries tests ─────────────────────────
-
-    #[test]
-    fn test_discover_child_sessions_no_children() {
-        let entries = vec![];
-        let result = discover_child_sessions_from_entries(&entries, "ses-001");
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0], ("ses-001".to_string(), 0));
-    }
-
-    #[test]
-    fn test_discover_child_sessions_with_children() {
-        let mut e1 = HashMap::new();
-        e1.insert("message".to_string(), "created".to_string());
-        e1.insert("id".to_string(), "ses-001".to_string());
-
-        let mut e2 = HashMap::new();
-        e2.insert("message".to_string(), "created".to_string());
-        e2.insert("id".to_string(), "ses-002".to_string());
-        e2.insert("parentID".to_string(), "ses-001".to_string());
-
-        let mut e3 = HashMap::new();
-        e3.insert("message".to_string(), "created".to_string());
-        e3.insert("id".to_string(), "ses-003".to_string());
-        e3.insert("parent_id".to_string(), "ses-002".to_string());
-
-        let entries = vec![e1, e2, e3];
-        let result = discover_child_sessions_from_entries(&entries, "ses-001");
-
-        // Result: root + 2 children in BFS order
-        assert_eq!(result.len(), 3);
-        assert_eq!(result[0], ("ses-001".to_string(), 0));
-        // ses-002 is child of root (depth 1)
-        assert!(result.contains(&("ses-002".to_string(), 1)));
-        // ses-003 is grandchild (depth 2)
-        assert!(result.contains(&("ses-003".to_string(), 2)));
-    }
-
-    #[test]
-    fn test_discover_child_sessions_skips_undefined_parent() {
-        let mut e1 = HashMap::new();
-        e1.insert("message".to_string(), "created".to_string());
-        e1.insert("id".to_string(), "ses-001".to_string());
-        e1.insert("parentID".to_string(), "undefined".to_string());
-
-        let entries = vec![e1];
-        let result = discover_child_sessions_from_entries(&entries, "ses-001");
-        assert_eq!(result.len(), 1);
-    }
-
-    #[test]
-    fn test_discover_child_sessions_circular_ref_protection() {
-        // ses-001 is parent of ses-002, ses-002 is parent of ses-001 (circular)
-        let mut e1 = HashMap::new();
-        e1.insert("message".to_string(), "created".to_string());
-        e1.insert("id".to_string(), "ses-001".to_string());
-        e1.insert("parentID".to_string(), "ses-002".to_string());
-
-        let mut e2 = HashMap::new();
-        e2.insert("message".to_string(), "created".to_string());
-        e2.insert("id".to_string(), "ses-002".to_string());
-        e2.insert("parentID".to_string(), "ses-001".to_string());
-
-        let entries = vec![e1, e2];
-        let result = discover_child_sessions_from_entries(&entries, "ses-001");
-        // BFS from ses-001 discovers ses-002 (child via parentID), then
-        // ses-002's children include ses-001 which is already visited.
-        // Both sessions are found with no infinite loop.
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0], ("ses-001".to_string(), 0));
-        assert!(result.contains(&("ses-002".to_string(), 1)));
-    }
-
-    // ── build_session_agents tests ─────────────────────────────────────────
-
-    #[test]
-    fn test_build_session_agents_basic() {
-        let mut e1 = HashMap::new();
-        e1.insert("message".to_string(), "created".to_string());
-        e1.insert("id".to_string(), "ses-001".to_string());
-        e1.insert("agent".to_string(), "beaver".to_string());
-
-        let mut e2 = HashMap::new();
-        e2.insert("message".to_string(), "created".to_string());
-        e2.insert("id".to_string(), "ses-002".to_string());
-        e2.insert("slug".to_string(), "lynx".to_string());
-
-        let entries = vec![e1, e2];
-        let mut sids = HashSet::new();
-        sids.insert("ses-001");
-        sids.insert("ses-002");
-
-        let agents = build_session_agents(&entries, &sids);
-        assert_eq!(agents.get("ses-001").unwrap(), "beaver");
-        assert_eq!(agents.get("ses-002").unwrap(), "lynx");
-    }
-
-    #[test]
-    fn test_build_session_agents_agent_preferred_over_slug() {
-        let mut e1 = HashMap::new();
-        e1.insert("message".to_string(), "created".to_string());
-        e1.insert("id".to_string(), "ses-001".to_string());
-        e1.insert("agent".to_string(), "beaver".to_string());
-        e1.insert("slug".to_string(), "my-slug".to_string());
-
-        let entries = vec![e1];
-        let mut sids = HashSet::new();
-        sids.insert("ses-001");
-
-        let agents = build_session_agents(&entries, &sids);
-        assert_eq!(agents.get("ses-001").unwrap(), "beaver");
-    }
-
-    // ── resolve_and_group_entries tests ────────────────────────────────────
-
-    #[test]
-    fn test_resolve_and_group_entries_empty_sids() {
-        let entries = vec![];
-        let sids = HashSet::new();
-        let result = resolve_and_group_entries(&entries, &sids);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_resolve_and_group_entries_by_session_id() {
-        let mut e1 = HashMap::new();
-        e1.insert("message".to_string(), "loop".to_string());
-        e1.insert("session_id".to_string(), "ses-001".to_string());
-
-        let mut e2 = HashMap::new();
-        e2.insert("message".to_string(), "loop".to_string());
-        e2.insert("session_id".to_string(), "ses-002".to_string());
-
-        let entries = vec![e1.clone(), e2.clone()];
-        let mut sids = HashSet::new();
-        sids.insert("ses-001");
-        sids.insert("ses-002");
-
-        let result = resolve_and_group_entries(&entries, &sids);
-        assert_eq!(result.get("ses-001").unwrap().len(), 1);
-        assert_eq!(result.get("ses-002").unwrap().len(), 1);
-    }
-
-    #[test]
-    fn test_resolve_and_group_entries_by_run_mapping() {
-        // Entry with run but no session_id should map via run→session mapping
-        let mut created = HashMap::new();
-        created.insert("message".to_string(), "created".to_string());
-        created.insert("id".to_string(), "ses-001".to_string());
-        created.insert("run".to_string(), "run-01".to_string());
-
-        let mut evaluated = HashMap::new();
-        evaluated.insert("message".to_string(), "evaluated".to_string());
-        evaluated.insert("run".to_string(), "run-01".to_string());
-        evaluated.insert("permission".to_string(), "read".to_string());
-
-        let entries = vec![created, evaluated];
-        let mut sids = HashSet::new();
-        sids.insert("ses-001");
-
-        let result = resolve_and_group_entries(&entries, &sids);
-        assert_eq!(result.get("ses-001").unwrap().len(), 2);
     }
 
     // ── sort_ops_by_session tests ─────────────────────────────────────────

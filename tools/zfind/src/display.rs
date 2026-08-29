@@ -12,7 +12,6 @@ use zutil::{estimate_tokens, format_number, ts_display};
 
 use zutil::color::{render_segments_to_ansi, style_text};
 
-use crate::helpers::{classify_role, preview_text};
 use zutil::color::msg_print;
 
 /// Print session title + header based on format.
@@ -51,15 +50,15 @@ fn print_session_header(
     println!();
 }
 
-/// Populate table with all columns (`is_all` mode).
-fn populate_all_table(
+/// Populate the session table: title, host, session id, and updated time.
+fn populate_table(
     table: &mut Table,
     results: &[Value],
     cyan: &Style,
     green: &Style,
 ) {
     table.add_column(
-        Column::new("Agent").no_wrap().overflow(OverflowMethod::Ellipsis),
+        Column::new("Host").no_wrap().overflow(OverflowMethod::Ellipsis),
     );
     table.add_column(
         Column::new("Session ID").no_wrap().overflow(OverflowMethod::Ellipsis),
@@ -71,7 +70,7 @@ fn populate_all_table(
     for s in results {
         let title =
             s.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let agent = s.get("agent").and_then(|v| v.as_str()).unwrap_or("");
+        let host = s.get("host").and_then(|v| v.as_str()).unwrap_or("");
         let session_id = s.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let updated = s
             .get("time_updated")
@@ -81,39 +80,7 @@ fn populate_all_table(
 
         table.add_row(Row::new(vec![
             Cell::new(Text::from(title)),
-            Cell::new(Text::styled(agent.to_string(), cyan.clone())),
-            Cell::new(Text::styled(session_id.to_string(), cyan.clone())),
-            Cell::new(Text::styled(updated, green.clone())),
-        ]));
-    }
-}
-
-/// Populate table with compact columns (not `is_all` mode).
-fn populate_compact_table(
-    table: &mut Table,
-    results: &[Value],
-    cyan: &Style,
-    green: &Style,
-) {
-    table.add_column(
-        Column::new("Session ID").no_wrap().overflow(OverflowMethod::Ellipsis),
-    );
-    table.add_column(
-        Column::new("Updated").no_wrap().overflow(OverflowMethod::Ellipsis),
-    );
-
-    for s in results {
-        let title =
-            s.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let session_id = s.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        let updated = s
-            .get("time_updated")
-            .and_then(|v| v.as_str())
-            .map(ts_display)
-            .unwrap_or_default();
-
-        table.add_row(Row::new(vec![
-            Cell::new(Text::from(title)),
+            Cell::new(Text::styled(host.to_string(), cyan.clone())),
             Cell::new(Text::styled(session_id.to_string(), cyan.clone())),
             Cell::new(Text::styled(updated, green.clone())),
         ]));
@@ -155,14 +122,39 @@ pub fn print_session_table(
     table.add_column(
         Column::new("Title").no_wrap().overflow(OverflowMethod::Ellipsis),
     );
-    if is_all {
-        populate_all_table(&mut table, results, &cyan, &green);
-    } else {
-        populate_compact_table(&mut table, results, &cyan, &green);
-    }
+    populate_table(&mut table, results, &cyan, &green);
 
     let segments = table.render(width);
     println!("{}", render_segments_to_ansi(&segments));
+    println!();
+}
+
+/// Print session metadata (non-JSON `show` header block).
+///
+/// The agent and session-level model (from the session store's first
+/// assistant message) render only when the host recorded them.
+pub fn print_session_meta(
+    session_id: &str,
+    host: &str,
+    meta: &zutil::session::SessionMeta,
+) {
+    let bold = Style::new().bold();
+    println!("\n{}", style_text(&format!("Session: {session_id}"), &bold));
+    if let Some(label) = &meta.label {
+        println!("  Title: {label}");
+    }
+    println!("  Host: {host}");
+    if let Some(agent) = &meta.agent {
+        println!("  Agent: {agent}");
+    }
+    if let Some(model) = &meta.model {
+        println!("  Model: {model}");
+    }
+    println!("  Cwd: {}", meta.cwd);
+    if let Some(parent) = &meta.parent_id {
+        println!("  Parent: {parent}");
+    }
+    println!("  Started: {}", zutil::epoch_ms_to_iso(meta.started_at));
     println!();
 }
 
@@ -278,16 +270,12 @@ pub fn print_message_detail(results: &[Value]) {
             .unwrap_or_default();
         let msg_id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let tokens = estimate_tokens(&parts);
-        let agent = msg.get("agent").and_then(|v| v.as_str()).unwrap_or("");
         let timestamp =
             msg.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
 
         msg_print("");
         msg_print(&format!("[bold]Message:[/bold] {msg_id}"));
         msg_print(&format!("  Role: {role}"));
-        if !agent.is_empty() {
-            msg_print(&format!("  Agent: {agent}"));
-        }
         if !timestamp.is_empty() {
             msg_print(&format!("  Timestamp: {timestamp}"));
         }
@@ -312,8 +300,14 @@ pub fn print_message_detail(results: &[Value]) {
     }
 }
 
-/// Print a table of messages for a session.
-pub fn print_session_messages_table(messages: &[Value], session_id: &str) {
+/// Print a table of events for a session.
+///
+/// Rows are the precomputed show rows (`{index, role, tokens, id,
+/// preview}`) built by the session adapter.
+pub fn print_session_messages_table(
+    rows: &[HashMap<String, Value>],
+    session_id: &str,
+) {
     let cyan = Style::new().color(Color::from_ansi(6));
     let green = Style::new().color(Color::from_ansi(2));
     let bold = Style::new().bold();
@@ -330,15 +324,12 @@ pub fn print_session_messages_table(messages: &[Value], session_id: &str) {
 
     println!(
         "\n{} {} ({})\n",
-        style_text("Messages for session:", &bold),
+        style_text("Events for session:", &bold),
         style_text(session_id, &bold),
-        style_text(&messages.len().to_string(), &green),
+        style_text(&rows.len().to_string(), &green),
     );
 
     let width = get_terminal_width();
-
-    // Estimate Preview column width (terminal minus fixed columns minus slack)
-    let preview_width = width.saturating_sub(72).max(8);
 
     let mut table =
         Table::new().show_header(true).show_edge(true).show_lines(false);
@@ -365,29 +356,24 @@ pub fn print_session_messages_table(messages: &[Value], session_id: &str) {
         Column::new("Preview").no_wrap().overflow(OverflowMethod::Ellipsis),
     );
 
-    for (idx, msg) in messages.iter().enumerate() {
+    for (idx, msg) in rows.iter().enumerate() {
         let role =
             msg.get("role").and_then(|v| v.as_str()).unwrap_or("unknown");
-        let parts = msg
-            .get("parts")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
+        let tokens = msg
+            .get("tokens")
+            .and_then(Value::as_i64)
+            .map_or(0, |t| usize::try_from(t.max(0)).unwrap_or(0));
         let msg_id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let preview = msg.get("preview").and_then(|v| v.as_str()).unwrap_or("");
 
-        let total_tokens = estimate_tokens(&parts);
-        let display_role = classify_role(role, &parts);
-        let preview = preview_text(&parts, preview_width);
-
-        let role_color =
-            role_colors.get(display_role.as_str()).unwrap_or(&default_color);
+        let role_color = role_colors.get(role).unwrap_or(&default_color);
 
         table.add_row(Row::new(vec![
             Cell::new((idx + 1).to_string()),
-            Cell::new(Text::styled(display_role, role_color.clone())),
-            Cell::new(format_number(total_tokens)),
+            Cell::new(Text::styled(role.to_string(), role_color.clone())),
+            Cell::new(format_number(tokens)),
             Cell::new(Text::styled(msg_id.to_string(), cyan.clone())),
-            Cell::new(preview),
+            Cell::new(preview.to_string()),
         ]));
     }
 

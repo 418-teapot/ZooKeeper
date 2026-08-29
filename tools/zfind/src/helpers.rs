@@ -2,25 +2,6 @@ use serde_json::Value;
 
 use zutil::truncate_width;
 
-/// Classify a message role for display purposes.
-pub fn classify_role(role: &str, parts: &[Value]) -> String {
-    let has_tool = parts
-        .iter()
-        .any(|p| p.get("type").and_then(|v| v.as_str()) == Some("tool"));
-    match role {
-        "user" => "user".to_string(),
-        "assistant" => {
-            if has_tool {
-                "tool_use".to_string()
-            } else {
-                "assistant".to_string()
-            }
-        }
-        "tool" => "tool_result".to_string(),
-        _ => role.to_string(),
-    }
-}
-
 /// Generate a preview string from message parts.
 ///
 /// The preview is truncated to fit within `max_width` terminal display
@@ -68,21 +49,6 @@ pub fn preview_text(parts: &[Value], max_width: usize) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn test_classify_role() {
-        // user stays user
-        assert_eq!(classify_role("user", &[]), "user");
-        // assistant without tool parts
-        assert_eq!(classify_role("assistant", &[]), "assistant");
-        // assistant with tool parts -> tool_use
-        let parts = vec![json!({"type": "tool", "tool": "read"})];
-        assert_eq!(classify_role("assistant", &parts), "tool_use");
-        // tool -> tool_result
-        assert_eq!(classify_role("tool", &[]), "tool_result");
-        // unknown role passes through
-        assert_eq!(classify_role("system", &[]), "system");
-    }
 
     #[test]
     fn test_preview_text_short() {

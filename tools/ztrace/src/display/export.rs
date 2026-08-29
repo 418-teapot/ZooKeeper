@@ -38,6 +38,9 @@ fn build_step_json_row(
     if let Some(v) = s.get("reasoning_tokens") {
         m.insert("reasoning_tokens".to_string(), v.clone());
     }
+    if let Some(v) = s.get("model") {
+        m.insert("model".to_string(), v.clone());
+    }
     let cache_pct =
         s.get("cache_pct").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
     m.insert(
@@ -47,15 +50,15 @@ fn build_step_json_row(
                 .unwrap_or_else(|| Number::from_f64(0.0).unwrap()),
         ),
     );
-    let duration =
-        s.get("duration").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
-    m.insert(
-        "duration_sec".to_string(),
-        Value::Number(
-            Number::from_f64(duration)
-                .unwrap_or_else(|| Number::from_f64(0.0).unwrap()),
-        ),
-    );
+    // A step whose duration is unknown (pi records none) emits `null`,
+    // never a misleading 0.
+    let duration = s
+        .get("duration")
+        .and_then(serde_json::Value::as_f64)
+        .map_or(Value::Null, |d| {
+            Number::from_f64(d).map_or(Value::Null, Value::Number)
+        });
+    m.insert("duration_sec".to_string(), duration);
     let hooks = hook_overlays.get(&di);
     m.insert(
         "hooks".to_string(),
@@ -136,6 +139,13 @@ fn compute_steps_json_summary(
         .iter()
         .filter_map(|s| s.get("duration").and_then(serde_json::Value::as_f64))
         .sum();
+    // When no step recorded a duration (pi), the total is unknown and
+    // emits `null`, never a misleading 0.
+    let has_any_duration = steps.iter().any(|s| {
+        s.get("duration")
+            .and_then(serde_json::Value::as_f64)
+            .is_some_and(|d| d > 0.0)
+    });
     let total_hooks: usize =
         hook_overlays.values().map(std::vec::Vec::len).sum();
     let total_tools: usize = steps
@@ -151,7 +161,14 @@ fn compute_steps_json_summary(
         "total_cache_read": total_cache_read,
         "total_cache_delta": total_cache_delta,
         "avg_hit_rate": (avg_hit * 100.0).round() / 100.0,
-        "total_duration_sec": (total_dur * 100.0).round() / 100.0,
+        "total_duration_sec": if has_any_duration {
+            serde_json::Value::Number(
+                Number::from_f64((total_dur * 100.0).round() / 100.0)
+                    .unwrap_or_else(|| Number::from(0)),
+            )
+        } else {
+            Value::Null
+        },
         "total_hooks": total_hooks,
         "total_tools": total_tools,
     })

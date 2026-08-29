@@ -195,6 +195,7 @@ fn collect_sorted_ops(timeline: &[Value], verbose: bool) -> Vec<Value> {
         let include = etype.starts_with("tool_")
             || source == "zoo"
             || source == "db"
+            || source == "pi"
             || ((etype == "llm" || etype == "llm_stream") && verbose);
         if include {
             let mut op = Map::new();
@@ -227,7 +228,9 @@ fn build_op_tag_labels(ops: &[Value], verbose: bool) -> Vec<String> {
                 "🤖 LLM stream".to_string()
             } else if source == "zoo" {
                 "zoo".to_string()
-            } else if source == "db" && !etype.starts_with("tool_") {
+            } else if (source == "db" || source == "pi")
+                && !etype.starts_with("tool_")
+            {
                 match etype {
                     "user_msg" => "User".to_string(),
                     "assistant_reply" => {
@@ -408,20 +411,10 @@ fn format_assistant_reply_op_line(
     let tag_padded = pad(&tag_plain, cfg.tag_width);
     let tag_seg = style_text(&tag_padded, cfg.s_blue);
     let content = event.get("content").and_then(|v| v.as_str()).unwrap_or("");
-    let dur = event
-        .get("duration_sec")
-        .and_then(serde_json::Value::as_f64)
-        .or_else(|| {
-            let mc = event
-                .get("msg_time_completed")
-                .and_then(serde_json::Value::as_f64);
-            let mcr = event
-                .get("msg_time_created")
-                .and_then(serde_json::Value::as_f64);
-            mc.zip(mcr)
-                .filter(|&(c, cr)| c > cr)
-                .map(|(c, cr)| (c - cr) / 1000.0)
-        });
+    // The duration is attached by the helpers duration pass from the
+    // provider-reported usage duration (OpenCode); pi records none, so no
+    // `[x.xs]` prefix is shown there.
+    let dur = event.get("duration_sec").and_then(serde_json::Value::as_f64);
     let dur_prefix = dur
         .map(|d| format!("{} ", style_text(&format!("[{d:.1}s]"), cfg.s_dim)))
         .unwrap_or_default();
@@ -604,7 +597,8 @@ fn push_op_line(
             &segs.sep,
             depth_content_offset,
         ));
-    } else if source == "db" && !etype.starts_with("tool_") {
+    } else if (source == "db" || source == "pi") && !etype.starts_with("tool_")
+    {
         match etype {
             "user_msg" => lines.push(format_user_msg_op_line(
                 cfg,

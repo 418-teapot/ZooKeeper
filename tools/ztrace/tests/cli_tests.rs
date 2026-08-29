@@ -215,6 +215,16 @@ fn test_steps_table() {
         stdout.contains("Cache%"),
         "table output should contain Cache% column, got: {stdout}"
     );
+    // The Model column appears because msg-002 carries a modelID; the
+    // second step shows the flat model value (no provider recorded).
+    assert!(
+        stdout.contains("Model"),
+        "table output should contain Model column, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("gpt-4"),
+        "table output should show the step model, got: {stdout}"
+    );
     // Step indices should appear
     assert!(
         stdout.contains("1"),
@@ -264,7 +274,7 @@ fn test_steps_json() {
     let steps = parsed["steps"].as_array().unwrap();
     assert_eq!(steps.len(), 2, "should have 2 steps");
 
-    // Check first step
+    // First step
     assert_eq!(steps[0]["step"], 1);
     assert_eq!(steps[0]["session_id"], "ses-001");
     assert!(
@@ -279,6 +289,22 @@ fn test_steps_json() {
         (steps[0]["output_tokens"].as_f64().unwrap_or(0.0) - 50.0).abs() < 0.1,
         "output_tokens should be ~50"
     );
+    // Restored real fields: reasoning tokens, finish reason and the
+    // message-time duration (msg-001 time 1715000010000→1715000015000).
+    assert!(
+        (steps[0]["reasoning_tokens"].as_f64().unwrap_or(0.0) - 5.0).abs()
+            < 0.1,
+        "reasoning_tokens should be ~5"
+    );
+    assert_eq!(
+        steps[0]["reason"].as_str().unwrap(),
+        "completed",
+        "reason should come from the step-finish part"
+    );
+    assert!(
+        (steps[0]["duration_sec"].as_f64().unwrap_or(0.0) - 5.0).abs() < 0.1,
+        "duration_sec should be ~5s from the message time delta"
+    );
 
     // Check second step (has tool "read" from part-005)
     assert_eq!(steps[1]["step"], 2);
@@ -286,10 +312,31 @@ fn test_steps_json() {
         steps[1]["cache_pct"].as_f64().unwrap_or(0.0) > 0.0,
         "cache_pct should be > 0"
     );
+    assert!(
+        (steps[1]["reasoning_tokens"].as_f64().unwrap_or(0.0) - 12.0).abs()
+            < 0.1,
+        "second step reasoning_tokens should be ~12"
+    );
+    assert_eq!(
+        steps[1]["reason"].as_str().unwrap(),
+        "tool_use",
+        "second step reason should come from its step-finish part"
+    );
     let tools = steps[1]["tools"].as_array().unwrap();
     assert!(
         tools.iter().any(|t| t.as_str() == Some("read")),
         "step 2 should have 'read' tool"
+    );
+    // The model comes from the owning message data: msg-001 (a user
+    // message) records none, msg-002 records the flat `modelID` `gpt-4`.
+    assert!(
+        steps[0].get("model").is_none(),
+        "step 1 has no model (owning message records none)"
+    );
+    assert_eq!(
+        steps[1]["model"].as_str().unwrap(),
+        "gpt-4",
+        "step 2 model should come from its owning message data"
     );
 
     // Hooks should be present (hook_overlays enabled by default)
@@ -374,6 +421,173 @@ fn test_steps_pi_hosted_session_finds_zoo_log() {
 }
 
 #[test]
+fn test_show_attaches_usage_duration_to_assistant_reply() {
+    // The LLM-duration pipeline restore: the `Usage.duration_ms` of an
+    // assistant message (OpenCode msg-002: 1715000020000→1715000025000)
+    // must surface as `[5.0s]` — i.e. `duration_sec` — on the matching
+    // `assistant_reply` timeline row, keyed by the shared message id.
+    let fix = TestFixture::new();
+    let output = fix
+        .ztrace()
+        .args(["show", "ses-001", "--json"])
+        .output()
+        .expect("failed to run ztrace show ses-001 --json");
+    assert!(
+        output.status.success(),
+        "show ses-001 --json should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .expect("output should be valid JSON array");
+    let events = parsed.as_array().expect("JSON output should be an array");
+    let reply = events
+        .iter()
+        .find(|ev| {
+            ev.get("type").and_then(|v| v.as_str()) == Some("assistant_reply")
+                && ev.get("message_id").and_then(|v| v.as_str())
+                    == Some("msg-002")
+        })
+        .unwrap_or_else(|| panic!("no assistant_reply row for msg-002"));
+    assert!(
+        (reply["duration_sec"].as_f64().unwrap_or(0.0) - 5.0).abs() < 0.1,
+        "assistant reply should carry the usage duration, got: {reply}"
+    );
+    // The usage event itself exports the message id and duration_ms.
+    let usage = events
+        .iter()
+        .find(|ev| {
+            ev.get("type").and_then(|v| v.as_str()) == Some("usage")
+                && ev
+                    .get("detail")
+                    .and_then(|d| d.get("message_id"))
+                    .and_then(|v| v.as_str())
+                    == Some("msg-002")
+        })
+        .unwrap_or_else(|| panic!("no usage event for msg-002 in timeline"));
+    assert_eq!(usage["detail"]["message_id"].as_str().unwrap(), "msg-002");
+    assert_eq!(usage["detail"]["duration_ms"].as_i64().unwrap_or(0), 5_000);
+}
+
+#[test]
+fn test_pi_show_assistant_reply_has_no_duration() {
+    // pi reports no per-message duration: assistant reply rows must carry
+    // neither a `duration_sec` nor a misleading 0.
+    let pif = PiFixture::new();
+    let output = pif
+        .ztrace()
+        .args(["show", PI_UUID, "--json"])
+        .output()
+        .expect("failed to run ztrace show pi --json");
+    assert!(
+        output.status.success(),
+        "show pi session should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .expect("output should be valid JSON array");
+    let events = parsed.as_array().expect("JSON output should be an array");
+    for ev in events.iter().filter(|ev| {
+        ev.get("type").and_then(|v| v.as_str()) == Some("assistant_reply")
+    }) {
+        assert!(
+            ev.get("duration_sec").is_none(),
+            "pi assistant reply must not get a fabricated duration, got: {ev}"
+        );
+    }
+    // The pi usage detail must not fabricate a duration either.
+    for ev in events
+        .iter()
+        .filter(|ev| ev.get("type").and_then(|v| v.as_str()) == Some("usage"))
+    {
+        assert!(
+            ev.get("detail").and_then(|d| d.get("duration_ms")).is_none(),
+            "pi usage must not fabricate a duration_ms, got: {ev}"
+        );
+    }
+}
+
+#[test]
+fn test_pi_steps_table_duration_shows_unknown_dash() {
+    // pi records no duration_ms and its per-step time_created equals
+    // time_updated: the Duration cell must show a dash ("—") instead of a
+    // misleading 0 that looks like a real zero-length turn.
+    let pif = PiFixture::new();
+    let output = pif
+        .ztrace()
+        .args(["steps", PI_UUID])
+        .output()
+        .expect("failed to run ztrace steps pi (table)");
+    assert!(
+        output.status.success(),
+        "steps pi session (table) should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("—"),
+        "pi Duration column should show the unknown dash, got: {stdout}"
+    );
+}
+
+#[test]
+fn test_pi_steps_json_duration_is_null() {
+    // JSON must emit `duration_sec: null` (unknown) for pi steps instead
+    // of a fabricated 0.
+    let pif = PiFixture::new();
+    let output = pif
+        .ztrace()
+        .args(["steps", PI_UUID, "--json"])
+        .output()
+        .expect("failed to run ztrace steps pi --json");
+    assert!(
+        output.status.success(),
+        "steps pi session should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .expect("output should be valid JSON");
+    let steps = parsed["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 2, "one step per usage event");
+    for step in steps {
+        assert!(
+            step["duration_sec"].is_null(),
+            "pi step duration_sec must be null (unknown), got: {step}"
+        );
+    }
+    assert!(
+        parsed["summary"]["total_duration_sec"].is_null(),
+        "pi summary total_duration_sec must be null (unknown), got: {}",
+        parsed["summary"]["total_duration_sec"]
+    );
+}
+
+#[test]
+fn test_show_table_surfaces_assistant_reply_duration_marker() {
+    // End-to-end restore check: the compact ops summary must render the
+    // provider duration as `[5.0s]` on the msg-002 assistant line.
+    let fix = TestFixture::new();
+    let output = fix
+        .ztrace()
+        .args(["show", "ses-001"])
+        .output()
+        .expect("failed to run ztrace show ses-001");
+    assert!(
+        output.status.success(),
+        "show ses-001 should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("[5.0s]"),
+        "assistant reply line should show the [5.0s] duration marker, \
+         got: {stdout}"
+    );
+}
+
+#[test]
 fn test_steps_min_cache_drop_no_steps_remaining() {
     let fix = TestFixture::new();
     // All steps have positive delta_cache (10 and 50), so no step satisfies
@@ -420,6 +634,40 @@ fn test_steps_min_cache_drop_json() {
         summary["total_steps"].as_u64().unwrap_or(999),
         0,
         "total_steps should be 0"
+    );
+}
+
+#[test]
+fn test_steps_min_cache_drop_with_overlays_disabled() {
+    // Combining `--hook-overlays false` with `--min-cache-drop`: the filter
+    // must run without touching the (empty) hook map. The zoo log is not
+    // resolved or parsed on this path.
+    let fix = TestFixture::new();
+    let output = fix
+        .ztrace()
+        .args([
+            "steps",
+            "ses-001",
+            "--hook-overlays",
+            "false",
+            "--min-cache-drop",
+            "1",
+        ])
+        .output()
+        .expect("failed to run ztrace steps with overlays disabled and filter");
+    assert!(
+        output.status.success(),
+        "steps with overlays disabled + filter should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("No steps to display"),
+        "output should indicate no steps after filtering, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("task-prompt-validate"),
+        "hook names must not appear when overlays are disabled, got: {stdout}"
     );
 }
 
@@ -623,7 +871,7 @@ impl TestFixture {
                 "msg-001",
                 "ses-001",
                 1_715_000_010_000_i64,
-                r#"{"role":"user","agent":"beaver"}"#,
+                r#"{"role":"user","agent":"beaver","time":{"created":1715000010000,"completed":1715000015000}}"#,
             ],
         )
         .expect("insert msg-001");
@@ -650,7 +898,7 @@ impl TestFixture {
                 1_715_000_010_000_i64, 1_715_000_015_000_i64,
                 concat!(
                     r#"{"type":"step-finish","#,
-                    r#""tokens":{"input":100,"output":50,"cache":{"read":30,"write":10}},"cost":0.005}"#,
+                    r#""tokens":{"input":100,"output":50,"cache":{"read":30,"write":10},"reasoning":5},"cost":0.005,"reason":"completed"}"#,
                 ),
             ],
         )
@@ -663,7 +911,7 @@ impl TestFixture {
                 "msg-002",
                 "ses-001",
                 1_715_000_020_000_i64,
-                r#"{"role":"assistant","agent":"beaver","modelID":"gpt-4"}"#,
+                r#"{"role":"assistant","agent":"beaver","modelID":"gpt-4","time":{"created":1715000020000,"completed":1715000025000}}"#,
             ],
         )
         .expect("insert msg-002");
@@ -687,7 +935,7 @@ impl TestFixture {
                 1_715_000_020_000_i64, 1_715_000_025_000_i64,
                 concat!(
                     r#"{"type":"step-finish","#,
-                    r#""tokens":{"input":200,"output":100,"cache":{"read":80,"write":20}},"cost":0.008}"#,
+                    r#""tokens":{"input":200,"output":100,"cache":{"read":80,"write":20},"reasoning":12},"cost":0.008,"reason":"tool_use"}"#,
                 ),
             ],
         )
@@ -911,7 +1159,7 @@ fn test_tokens_table() {
         output.status.code()
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Table header
+    // Table title
     assert!(
         stdout.contains("Message Token Distribution"),
         "table output should contain title, got: {stdout}"
@@ -929,44 +1177,108 @@ fn test_tokens_table() {
         stdout.contains("ID"),
         "table output should contain ID column, got: {stdout}"
     );
-    // Data rows — message IDs should appear
+    // One row per usage event (LLM turn), role assistant
+    assert!(
+        stdout.contains("assistant"),
+        "output should contain assistant role, got: {stdout}"
+    );
+    // The ID column carries the provider-reported message ids (so
+    // `zfind message <id>` can cross-reference these rows).
     assert!(
         stdout.contains("msg-001"),
-        "output should contain msg-001, got: {stdout}"
+        "output should contain real message id msg-001, got: {stdout}"
     );
     assert!(
         stdout.contains("msg-002"),
-        "output should contain msg-002, got: {stdout}"
+        "output should contain real message id msg-002, got: {stdout}"
+    );
+    // Assigned token values (input+output per usage)
+    assert!(
+        stdout.contains("150"),
+        "output should contain first usage token value, got: {stdout}"
     );
     assert!(
-        stdout.contains("msg-003"),
-        "output should contain msg-003, got: {stdout}"
-    );
-    assert!(
-        stdout.contains("msg-004"),
-        "output should contain msg-004, got: {stdout}"
-    );
-    // Role classifications in output
-    assert!(
-        stdout.contains("user"),
-        "output should contain user role_class, got: {stdout}"
-    );
-    assert!(
-        stdout.contains("tool_use"),
-        "output should contain tool_use role_class, got: {stdout}"
-    );
-    assert!(
-        stdout.contains("assistant"),
-        "output should contain assistant role_class, got: {stdout}"
-    );
-    assert!(
-        stdout.contains("tool_result"),
-        "output should contain tool_result role_class, got: {stdout}"
+        stdout.contains("300"),
+        "output should contain second usage token value, got: {stdout}"
     );
     // Footer stats summary
     assert!(
         stdout.contains("Total tokens"),
         "output should contain total tokens summary, got: {stdout}"
+    );
+}
+
+#[test]
+fn test_tokens_narrow_terminal_keeps_model_columns_aligned() {
+    let fix = TestFixture::new();
+    // COLUMNS=80 (< 110) drops the wide-only Segments/Preview columns.
+    // The show_model branch must emit exactly the 6 narrow cells
+    // (# Role Model Tokens Size ID); before the fix its 8 cells shifted
+    // Segments into the ID column and dropped Preview entirely.
+    let output = fix
+        .ztrace()
+        .env("COLUMNS", "80")
+        .args(["tokens", "ses-001"])
+        .output()
+        .expect("failed to run ztrace tokens ses-001 at COLUMNS=80");
+    assert!(
+        output.status.success(),
+        "tokens at COLUMNS=80 should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Message Token Distribution"),
+        "table output should contain title, got: {stdout}"
+    );
+    // The Model column stays because the fixture records gpt-4.
+    assert!(
+        stdout.contains("Model"),
+        "narrow output should keep the Model column, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Segments"),
+        "narrow output must not show the wide-only Segments column, \
+         got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Preview"),
+        "narrow output must not show the wide-only Preview column, \
+         got: {stdout}"
+    );
+    // The real message ids land in the ID column.
+    assert!(
+        stdout.contains("msg-001"),
+        "narrow output should show msg-001 in the ID column, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("msg-002"),
+        "narrow output should show msg-002 in the ID column, got: {stdout}"
+    );
+}
+
+#[test]
+fn test_tokens_wide_terminal_shows_segments_and_preview() {
+    let fix = TestFixture::new();
+    let output = fix
+        .ztrace()
+        .env("COLUMNS", "200")
+        .args(["tokens", "ses-001"])
+        .output()
+        .expect("failed to run ztrace tokens ses-001 at COLUMNS=200");
+    assert!(
+        output.status.success(),
+        "tokens at COLUMNS=200 should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Segments"),
+        "wide output should show the Segments column, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Preview"),
+        "wide output should show the Preview column, got: {stdout}"
     );
 }
 
@@ -997,39 +1309,43 @@ fn test_tokens_json() {
         "JSON should contain summary object"
     );
 
-    // messages array length
+    // messages array: one row per usage event (ses-001 has 2 step-finishes)
     let msgs = parsed["messages"].as_array().unwrap();
-    assert_eq!(msgs.len(), 4, "should have 4 messages");
+    assert_eq!(msgs.len(), 2, "should have 2 usage rows");
 
-    // Check first message (user)
+    // First usage row (part-002: input 100 / output 50). The id is the
+    // provider-reported message id (msg-001), not a synthetic usage-N.
     assert_eq!(msgs[0]["id"], "msg-001");
-    assert_eq!(msgs[0]["role"], "user");
-    assert!(msgs[0]["tokens"].as_u64().unwrap() > 0);
-    assert!(msgs[0]["preview"].as_str().unwrap().contains("auth"));
+    assert_eq!(msgs[0]["role"], "assistant");
+    assert_eq!(msgs[0]["tokens"].as_u64().unwrap(), 150);
+    assert_eq!(msgs[0]["segments"].as_u64().unwrap(), 0);
 
-    // Second message (tool_use)
+    // Second usage row (part-004: input 200 / output 100) with its
+    // attached tool call (read) and the assistant text as preview.
     assert_eq!(msgs[1]["id"], "msg-002");
-    assert_eq!(msgs[1]["role"], "tool_use");
-    assert!(msgs[1]["segments"].as_u64().unwrap() >= 2);
-    assert!(msgs[1]["preview"].as_str().unwrap().contains("middleware"));
-
-    // Third message (assistant)
-    assert_eq!(msgs[2]["id"], "msg-003");
-    assert_eq!(msgs[2]["role"], "assistant");
-
-    // Fourth message (tool_result)
-    assert_eq!(msgs[3]["id"], "msg-004");
-    assert_eq!(msgs[3]["role"], "tool_result");
+    assert_eq!(msgs[1]["role"], "assistant");
+    assert_eq!(msgs[1]["tokens"].as_u64().unwrap(), 300);
+    assert_eq!(msgs[1]["segments"].as_u64().unwrap(), 1);
+    assert!(
+        msgs[1]["preview"].as_str().unwrap().contains("middleware"),
+        "preview should contain assistant text, got: {}",
+        msgs[1]["preview"]
+    );
 
     // Summary structure
     let summary = &parsed["summary"];
     assert!(
-        summary["total_tokens"].as_f64().unwrap_or(0.0) > 0.0,
-        "total_tokens should be > 0"
+        (summary["total_tokens"].as_f64().unwrap_or(0.0) - 450.0).abs() < 0.1,
+        "total_tokens should be 450"
     );
     assert!(
         summary.get("by_role").unwrap().is_object(),
         "by_role should be an object"
+    );
+    assert_eq!(
+        summary["by_role"]["assistant"].as_f64().unwrap_or(0.0),
+        450.0,
+        "by_role.assistant should total the usage values"
     );
     assert!(
         summary["avg_tokens_per_msg"].as_f64().unwrap_or(0.0) > 0.0,
@@ -1047,10 +1363,14 @@ fn test_tokens_json() {
         summary["largest_messages"].as_array().unwrap().len() <= 3,
         "largest_messages should have at most 3 entries"
     );
-    // empty_parts_count may be 0 since all parts have tokens > 0
     assert!(
         summary.get("empty_parts_count").is_some(),
         "JSON should contain empty_parts_count"
+    );
+    assert_eq!(
+        summary["empty_parts_count"].as_u64().unwrap_or(999),
+        0,
+        "no usage row is empty"
     );
 }
 
@@ -1182,6 +1502,16 @@ fn test_show_basic() {
     assert!(
         stdout.contains("beaver"),
         "output should contain agent name, got: {stdout}"
+    );
+    // Session panel shows the model (from host events or session meta).
+    assert!(
+        stdout.contains("Model:"),
+        "session panel should show a Model line, got: {stdout}"
+    );
+    // Compact panel shows the OpenCode turn count from host events.
+    assert!(
+        stdout.contains("Turns:"),
+        "output should contain a turns indicator, got: {stdout}"
     );
 }
 
@@ -1516,31 +1846,39 @@ fn two_db_data_dir() -> TempDir {
 }
 
 #[test]
-fn test_tokens_default_finds_session_in_second_db() {
+fn test_show_default_finds_session_in_second_db() {
     let dir = two_db_data_dir();
     let data_dir = dir.path().to_string_lossy().to_string();
 
     // No --db: ses-900 lives only in the second DB, but the aggregate
-    // view resolves it and its message.
+    // view resolves it and surfaces its message in the timeline.
     let output = Command::new(ZTRACE_BIN)
         .env("ZOO_OPENCODE_DATA_DIR", &data_dir)
-        .args(["--no-color", "tokens", "ses-900"])
+        .args(["--no-color", "show", "ses-900", "--json"])
         .output()
-        .expect("failed to run ztrace tokens ses-900 (default aggregation)");
+        .expect("failed to run ztrace show ses-900 (default aggregation)");
     assert!(
         output.status.success(),
-        "default tokens should exit 0, got {:?}",
+        "default show should exit 0, got {:?}",
         output.status.code()
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .expect("output should be valid JSON array");
+    let events = parsed.as_array().expect("output should be an array");
+    let has_db_message = events.iter().any(|ev| {
+        ev.get("source").and_then(|v| v.as_str()) == Some("db")
+            && ev.get("content").and_then(|v| v.as_str())
+                == Some("hello from the stable channel")
+    });
     assert!(
-        stdout.contains("msg-900"),
-        "output should contain the second-DB message, got: {stdout}"
+        has_db_message,
+        "second-DB message should surface in the timeline, got: {stdout}"
     );
 }
 
 #[test]
-fn test_tokens_explicit_db_only_sees_that_db() {
+fn test_show_explicit_db_only_sees_that_db() {
     let dir = two_db_data_dir();
     let data_dir = dir.path().to_string_lossy().to_string();
 
@@ -1550,15 +1888,16 @@ fn test_tokens_explicit_db_only_sees_that_db() {
             "--db",
             &format!("{data_dir}/opencode.db"),
             "--no-color",
-            "tokens",
+            "show",
             "ses-900",
+            "--json",
         ])
         .output()
-        .expect("failed to run ztrace tokens ses-900 --db first.db");
+        .expect("failed to run ztrace show ses-900 --db first.db");
     assert_eq!(
         output.status.code(),
         Some(2),
-        "tokens ses-900 --db first.db should exit 2, got {:?}",
+        "show ses-900 --db first.db should exit 2, got {:?}",
         output.status.code()
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1573,19 +1912,520 @@ fn test_tokens_explicit_db_only_sees_that_db() {
             "--db",
             &format!("{data_dir}/opencode-stable.db"),
             "--no-color",
-            "tokens",
+            "show",
             "ses-900",
+            "--json",
         ])
         .output()
-        .expect("failed to run ztrace tokens ses-900 --db stable.db");
+        .expect("failed to run ztrace show ses-900 --db stable.db");
     assert!(
         output.status.success(),
-        "tokens ses-900 --db stable.db should exit 0, got {:?}",
+        "show ses-900 --db stable.db should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .expect("output should be valid JSON array");
+    let events = parsed.as_array().expect("output should be an array");
+    let has_db_message = events.iter().any(|ev| {
+        ev.get("source").and_then(|v| v.as_str()) == Some("db")
+            && ev.get("content").and_then(|v| v.as_str())
+                == Some("hello from the stable channel")
+    });
+    assert!(
+        has_db_message,
+        "stable-DB message should surface in the timeline, got: {stdout}"
+    );
+}
+
+// ── Pi host tests ────────────────────────────────────────────────────────────
+
+/// A pi session id with UUID shape.
+const PI_UUID: &str = "01a04bc0-fa14-76d5-95ec-a8d5ee80f706";
+
+/// Fixture for pi-hosted sessions: a temp `ZOO_PI_DATA_DIR` holding one
+/// `jsonl` session file plus a fake HOME carrying
+/// `~/.zoo/log/pi-<uuid>.log` for the zoo overlay.
+struct PiFixture {
+    /// Keeps the data dir alive until the test ends.
+    _dir: TempDir,
+    /// Keeps the fake HOME alive until the test ends.
+    _home: TempDir,
+    /// Absolute path of the pi data dir.
+    data_dir: String,
+    /// Absolute path of the fake HOME directory.
+    home_path: String,
+}
+
+impl PiFixture {
+    fn new() -> Self {
+        let dir = TempDir::new().expect("create temp dir for pi data");
+        let home_dir = TempDir::new().expect("create temp dir for pi home");
+
+        // Session file: <data>/sessions/<cwd-dir>/<name>.jsonl
+        let sessions = dir.path().join("sessions").join("--work--");
+        fs::create_dir_all(&sessions).expect("create pi sessions dir");
+        let lines = [
+            r#"{"type":"session","version":3,"id":"01a04bc0-fa14-76d5-95ec-a8d5ee80f706","timestamp":"2026-08-29T04:22:13.268Z","cwd":"/Users/teapot/Code/ZooKeeper"}"#.to_string(),
+            r#"{"type":"message","id":"m1","parentId":null,"timestamp":"2026-08-29T04:22:13.289Z","message":{"role":"user","content":[{"type":"text","text":"build the parser and run tests"}]}}"#.to_string(),
+            r#"{"type":"message","id":"m2","parentId":"m1","timestamp":"2026-08-29T04:22:17.861Z","message":{"role":"assistant","provider":"MoonShot","model":"k3-256k","content":[{"type":"thinking","thinking":"inspecting the module layout"},{"type":"text","text":"Inspecting the module."},{"type":"toolCall","id":"call-1","name":"bash","arguments":{"command":"cargo test"}}],"usage":{"input":300,"output":50,"cacheRead":20,"cacheWrite":10,"totalTokens":370,"cost":{"total":0.0012}},"timestamp":1787977340524}}"#.to_string(),
+            r#"{"type":"message","id":"m3","parentId":"m2","timestamp":"2026-08-29T04:22:20.781Z","message":{"role":"toolResult","toolCallId":"call-1","toolName":"bash","content":[{"type":"text","text":"cargo test output: all 42 tests passed"}],"isError":false,"timestamp":1787977340800}}"#.to_string(),
+            r#"{"type":"message","id":"m4","parentId":"m3","timestamp":"2026-08-29T04:22:21.500Z","message":{"role":"assistant","provider":"MoonShot","model":"k3-256k","content":[{"type":"text","text":"The tests pass."}],"usage":{"input":100,"output":25,"cacheRead":5,"cacheWrite":0,"totalTokens":130,"cost":{"total":0.0003}},"timestamp":1787977341000}}"#.to_string(),
+        ];
+        fs::write(
+            sessions.join(format!("2026-08-29T04-22-13-268Z_{PI_UUID}.jsonl")),
+            lines.join("\n"),
+        )
+        .expect("write pi session file");
+
+        // Zoo overlay for the pi session.
+        let zoo_dir = home_dir.path().join(".zoo").join("log");
+        fs::create_dir_all(&zoo_dir).expect("create zoo log dir");
+        fs::write(
+            zoo_dir.join(format!("pi-{PI_UUID}.log")),
+            format!(
+                r#"{{"hook":"task-prompt-validate","event":"trigger","level":"info","timestamp":"2026-08-29T04:22:14.000Z","sessionId":"{PI_UUID}"}}"#
+            ),
+        )
+        .expect("write pi zoo log");
+
+        let data_dir = dir.path().to_string_lossy().to_string();
+        let home_path = home_dir.path().to_string_lossy().to_string();
+        Self { _dir: dir, _home: home_dir, data_dir, home_path }
+    }
+
+    /// Build a `Command` for `ztrace` pointed at the pi fixture.
+    fn ztrace(&self) -> Command {
+        let mut cmd = Command::new(ZTRACE_BIN);
+        cmd.env("HOME", &self.home_path)
+            .env("ZOO_PI_DATA_DIR", &self.data_dir)
+            .env("COLUMNS", "200")
+            .arg("--no-color");
+        cmd
+    }
+}
+
+#[test]
+fn test_pi_show_json_includes_messages_tools_usage_and_zoo() {
+    let pif = PiFixture::new();
+    let output = pif
+        .ztrace()
+        .args(["show", PI_UUID, "--json"])
+        .output()
+        .expect("failed to run ztrace show pi --json");
+    assert!(
+        output.status.success(),
+        "show pi session should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .expect("output should be valid JSON array");
+    let events = parsed.as_array().expect("output should be an array");
+    let types: Vec<&str> = events
+        .iter()
+        .filter_map(|ev| ev.get("type").and_then(|v| v.as_str()))
+        .collect();
+    for expected in
+        ["user_msg", "assistant_reply", "tool_exec", "usage", "hook"]
+    {
+        assert!(
+            types.contains(&expected),
+            "timeline should contain {expected:?} events, got: {types:?}"
+        );
+    }
+    // pi `thinking` blocks surface as assistant_reasoning rows.
+    assert!(
+        types.contains(&"assistant_reasoning"),
+        "timeline should contain assistant_reasoning events, got: {types:?}"
+    );
+    let sources: Vec<&str> = events
+        .iter()
+        .filter_map(|ev| ev.get("source").and_then(|v| v.as_str()))
+        .collect();
+    assert!(
+        sources.contains(&"pi"),
+        "timeline should contain pi source events, got: {sources:?}"
+    );
+    assert!(
+        sources.contains(&"zoo"),
+        "timeline should contain zoo overlay events, got: {sources:?}"
+    );
+    // pi provides no host lifecycle events: the notice goes to stderr
+    // and the command still succeeds (fail-open, not an error).
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("does not provide host lifecycle events"),
+        "missing host events should be noted on stderr, got: {stderr}"
+    );
+}
+
+#[test]
+fn test_pi_show_non_json_exits_0() {
+    let pif = PiFixture::new();
+    let output = pif
+        .ztrace()
+        .args(["show", PI_UUID])
+        .output()
+        .expect("failed to run ztrace show pi");
+    assert!(
+        output.status.success(),
+        "show pi session (table) should exit 0, got {:?}",
         output.status.code()
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("msg-900"),
-        "output should contain msg-900, got: {stdout}"
+        stdout.contains("build the parser and run tests"),
+        "table output should show the user message, got: {stdout}"
+    );
+    // The compact panel surfaces the session model from the session
+    // store (pi provides no host lifecycle events to backfill from).
+    assert!(
+        stdout.contains("MoonShot/k3-256k"),
+        "compact panel should show the session model, got: {stdout}"
+    );
+    // The compact panel surfaces that pi provides no turn counts instead
+    // of a misleading 0.
+    assert!(
+        stdout.contains("该 host 不提供"),
+        "compact panel should note pi does not provide turns, got: {stdout}"
+    );
+}
+
+#[test]
+fn test_pi_steps_table_shows_model_column() {
+    let pif = PiFixture::new();
+    let output = pif
+        .ztrace()
+        .args(["steps", PI_UUID])
+        .output()
+        .expect("failed to run ztrace steps pi (table)");
+    assert!(
+        output.status.success(),
+        "steps pi session (table) should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Both pi usages carry `Provider/modelId`, so the Model column
+    // appears and every row shows the model.
+    assert!(
+        stdout.contains("Model"),
+        "steps table should contain the Model column, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("MoonShot/k3-256k"),
+        "steps table should show the pi model, got: {stdout}"
+    );
+}
+
+#[test]
+fn test_steps_table_hides_model_column_when_absent() {
+    // A session whose message data records no model: the steps table
+    // must not render a Model column at all.
+    let db_dir = TempDir::new().expect("create temp dir");
+    let db_path = db_dir.path().join("opencode.db");
+    let conn = Connection::open(&db_path).expect("open test db");
+    conn.execute_batch(
+        "CREATE TABLE session (
+            id TEXT PRIMARY KEY,
+            parent_id TEXT, title TEXT, slug TEXT, agent TEXT,
+            directory TEXT, model TEXT, time_created INTEGER,
+            time_updated INTEGER, cost REAL, tokens_input REAL,
+            tokens_output REAL, tokens_reasoning REAL,
+            tokens_cache_read REAL, tokens_cache_write REAL
+        );
+        CREATE TABLE message (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            time_created INTEGER,
+            data TEXT
+        );
+        CREATE TABLE part (
+            id TEXT PRIMARY KEY,
+            message_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            time_created INTEGER,
+            time_updated INTEGER,
+            data TEXT
+        );",
+    )
+    .expect("create tables");
+    conn.execute(
+        concat!(
+            "INSERT INTO session VALUES ",
+            "(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+        ),
+        rusqlite::params![
+            "ses-x",
+            Option::<&str>::None,
+            "no model session",
+            "no-model",
+            "beaver",
+            "/w",
+            r#"{"name":"deepseek-v4"}"#,
+            1_715_000_000_000_i64,
+            1_715_000_100_000_i64,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        ],
+    )
+    .expect("insert ses-x");
+    // The assistant message carries no model field at all.
+    conn.execute(
+        "INSERT INTO message VALUES (?1,?2,?3,?4)",
+        rusqlite::params![
+            "msg-x",
+            "ses-x",
+            1_715_000_010_000_i64,
+            r#"{"role":"assistant","agent":"beaver"}"#,
+        ],
+    )
+    .expect("insert msg-x");
+    conn.execute(
+        "INSERT INTO part VALUES (?1,?2,?3,?4,?5,?6)",
+        rusqlite::params![
+            "part-x", "msg-x", "ses-x",
+            1_715_000_010_000_i64, 1_715_000_015_000_i64,
+            r#"{"type":"step-finish","tokens":{"input":100,"output":50,"cache":{"read":30,"write":10}},"cost":0.005,"reason":"completed"}"#,
+        ],
+    )
+    .expect("insert part-x");
+    conn.close().expect("close test db");
+
+    let output = Command::new(ZTRACE_BIN)
+        .args([
+            "--db",
+            db_path.to_str().unwrap_or(""),
+            "--no-color",
+            "steps",
+            "ses-x",
+        ])
+        .output()
+        .expect("failed to run ztrace steps ses-x");
+    assert!(
+        output.status.success(),
+        "steps ses-x should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Step Token Timeline"),
+        "steps output should render a table, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Model"),
+        "steps table should omit the Model column when no step records \
+         a model, got: {stdout}"
+    );
+}
+
+#[test]
+fn test_pi_steps_json_from_usage_events() {
+    let pif = PiFixture::new();
+    let output = pif
+        .ztrace()
+        .args(["steps", PI_UUID, "--json"])
+        .output()
+        .expect("failed to run ztrace steps pi --json");
+    assert!(
+        output.status.success(),
+        "steps pi session should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .expect("output should be valid JSON");
+
+    let steps = parsed["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 2, "one step per usage event");
+
+    // Step 1: usage 300/50 with cache 20/10 and its bash tool call.
+    assert_eq!(steps[0]["step"], 1);
+    assert_eq!(steps[0]["session_id"], PI_UUID);
+    assert_eq!(steps[0]["input_tokens"].as_f64().unwrap_or(0.0), 300.0);
+    assert_eq!(steps[0]["output_tokens"].as_f64().unwrap_or(0.0), 50.0);
+    assert_eq!(steps[0]["cache_read"].as_f64().unwrap_or(0.0), 20.0);
+    assert_eq!(
+        steps[0]["delta_cache"].as_f64().unwrap_or(0.0),
+        10.0,
+        "delta_cache derives from the usage cache_write value"
+    );
+    // The step model is `Provider/modelId` from the assistant message.
+    assert_eq!(
+        steps[0]["model"].as_str().unwrap(),
+        "MoonShot/k3-256k",
+        "step model should combine provider and modelId"
+    );
+    let tools = steps[0]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].as_str().unwrap(), "bash");
+
+    // Step 2: usage 100/25 with cache 5/0.
+    assert_eq!(steps[1]["step"], 2);
+    assert_eq!(steps[1]["input_tokens"].as_f64().unwrap_or(0.0), 100.0);
+    assert_eq!(steps[1]["output_tokens"].as_f64().unwrap_or(0.0), 25.0);
+    assert_eq!(steps[1]["cache_read"].as_f64().unwrap_or(0.0), 5.0);
+    assert_eq!(
+        steps[1]["delta_cache"].as_f64().unwrap_or(0.0),
+        -15.0,
+        "delta_cache reflects the cache_read drop between usages"
+    );
+
+    let summary = &parsed["summary"];
+    assert_eq!(
+        summary["total_steps"].as_u64().unwrap_or(0),
+        2,
+        "total_steps should be 2"
+    );
+    assert_eq!(
+        summary["total_hooks"].as_u64().unwrap_or(0),
+        1,
+        "the pi zoo overlay hook should be attached"
+    );
+}
+
+#[test]
+fn test_pi_tokens_json_from_usage_events() {
+    let pif = PiFixture::new();
+    let output = pif
+        .ztrace()
+        .args(["tokens", PI_UUID, "--json"])
+        .output()
+        .expect("failed to run ztrace tokens pi --json");
+    assert!(
+        output.status.success(),
+        "tokens pi session should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .expect("output should be valid JSON");
+
+    let msgs = parsed["messages"].as_array().unwrap();
+    assert_eq!(msgs.len(), 2, "one row per usage event");
+    assert_eq!(msgs[0]["role"], "assistant");
+    assert_eq!(msgs[0]["tokens"].as_u64().unwrap(), 350);
+    assert_eq!(msgs[1]["tokens"].as_u64().unwrap(), 125);
+    assert_eq!(
+        parsed["summary"]["total_tokens"].as_f64().unwrap_or(0.0),
+        475.0,
+        "total tokens should sum both usages"
+    );
+}
+
+#[test]
+fn test_host_override_opencode_misses_pi_session() {
+    let pif = PiFixture::new();
+    let output = pif
+        .ztrace()
+        .args(["--host", "opencode", "steps", PI_UUID])
+        .output()
+        .expect("failed to run ztrace --host opencode steps pi");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "--host opencode must not see the pi session, got {:?}",
+        output.status.code()
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no session found matching"),
+        "stderr should mention the miss, got: {stderr}"
+    );
+}
+
+#[test]
+fn test_host_override_pi_explicit() {
+    let pif = PiFixture::new();
+    let output = pif
+        .ztrace()
+        .args(["--host", "pi", "steps", PI_UUID, "--json"])
+        .output()
+        .expect("failed to run ztrace --host pi steps");
+    assert!(
+        output.status.success(),
+        "--host pi steps should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .expect("output should be valid JSON");
+    assert_eq!(
+        parsed["summary"]["total_steps"].as_u64().unwrap_or(0),
+        2,
+        "explicit --host pi must still resolve the pi session"
+    );
+}
+
+#[test]
+fn test_export_json_envelope_reports_host_events() {
+    let pif = PiFixture::new();
+    let dir = TempDir::new().expect("create temp dir for export");
+    let output_path = dir.path().join("pi-export.json");
+    let output_path_str = output_path.to_string_lossy().to_string();
+    let output = pif
+        .ztrace()
+        .args([
+            "export",
+            PI_UUID,
+            "--json",
+            "--format",
+            "chrome",
+            "-o",
+            &output_path_str,
+        ])
+        .output()
+        .expect("failed to run ztrace export pi --json");
+    assert!(
+        output.status.success(),
+        "export pi session should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let envelope_start =
+        stdout.rfind('{').expect("stdout should contain JSON envelope");
+    let envelope_str = &stdout[envelope_start..];
+    let parsed: serde_json::Value = serde_json::from_str(envelope_str)
+        .expect("JSON envelope should be valid JSON");
+    assert_eq!(parsed["status"].as_str(), Some("ok"));
+    assert_eq!(
+        parsed["host_events"].as_str(),
+        Some("not-provided"),
+        "pi does not provide host lifecycle events"
+    );
+
+    // The exported file itself must still be a valid chrome trace.
+    let file_content =
+        fs::read_to_string(&output_path_str).expect("export file should exist");
+    let doc: serde_json::Value = serde_json::from_str(&file_content)
+        .expect("export file should be valid JSON");
+    let events = doc.as_array().expect("chrome trace should be an array");
+    assert!(!events.is_empty(), "chrome trace should have events");
+}
+
+#[test]
+fn test_pi_ambiguous_prefix_exits_2() {
+    let pif = PiFixture::new();
+    // The prefix matches the single session; a shared prefix case needs
+    // two sessions, so here a non-matching prefix must be a clean miss.
+    let output = pif
+        .ztrace()
+        .args(["show", "01a04bc0-fa14-76d5-95ec-222222222222"])
+        .output()
+        .expect("failed to run ztrace show pi miss");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "unknown pi id should exit 2, got {:?}",
+        output.status.code()
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no session found matching"),
+        "stderr should mention the miss, got: {stderr}"
     );
 }

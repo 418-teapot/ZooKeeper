@@ -9,15 +9,18 @@ use std::collections::{BTreeMap, HashMap};
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
 
-mod db;
 mod display;
 mod helpers;
+mod session;
 
 use std::sync::atomic::Ordering;
 
 use zutil::color::COLOR;
 use zutil::color::msg_print;
-use zutil::db_helpers::DbTarget;
+use zutil::session::Host;
+use zutil::session::HostFilter;
+
+use crate::session::HostArg;
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
@@ -25,7 +28,7 @@ use zutil::db_helpers::DbTarget;
 #[command(
     name = "zinspect",
     about = "ZooKeeper session inspector -- stats, timeline, \
-             and impact analysis for OpenCode sessions.",
+             and impact analysis for OpenCode and pi sessions.",
     disable_help_subcommand = true
 )]
 struct Args {
@@ -36,9 +39,14 @@ struct Args {
     /// Path to the `OpenCode` `SQLite` database. When omitted, every
     /// `opencode*.db` file in the opencode data directory
     /// (`~/.local/share/opencode`, or `$ZOO_OPENCODE_DATA_DIR` when set)
-    /// is aggregated into one view.
+    /// is aggregated into one view. Implies `--host opencode`.
     #[arg(long, global = true)]
     db: Option<String>,
+
+    /// Restrict session access to one host; auto-detects by session id
+    /// shape when omitted
+    #[arg(long, global = true, value_enum, value_name = "opencode|pi")]
+    host: Option<HostArg>,
 
     /// Disable colored output
     #[arg(long, global = true)]
@@ -195,13 +203,44 @@ fn print_multi_pruning(
     }
 }
 
-fn cmd_stats_multi(args: &Args, n: i64, all: bool, pruning_only: bool) {
+/// Sum the token and cost columns of step rows into the multi-stats tuple.
+fn step_totals(steps: &[Value]) -> (f64, f64, f64, f64) {
+    let input: f64 = steps
+        .iter()
+        .filter_map(|s| {
+            s.get("input_tokens").and_then(serde_json::Value::as_f64)
+        })
+        .sum();
+    let output: f64 = steps
+        .iter()
+        .filter_map(|s| {
+            s.get("output_tokens").and_then(serde_json::Value::as_f64)
+        })
+        .sum();
+    let cache_read: f64 = steps
+        .iter()
+        .filter_map(|s| s.get("cache_read").and_then(serde_json::Value::as_f64))
+        .sum();
+    let cost: f64 = steps
+        .iter()
+        .filter_map(|s| s.get("cost").and_then(serde_json::Value::as_f64))
+        .sum();
+    (input, output, cache_read, cost)
+}
+
+fn cmd_stats_multi(
+    args: &Args,
+    filter: HostFilter,
+    n: i64,
+    all: bool,
+    pruning_only: bool,
+) {
     let log_dir = zutil::get_zoo_log_dir();
-    let db = DbTarget::from_cli(args.db.clone());
-    let sessions = match db::query_recent_sessions(n, &db, all) {
-        Ok(s) => s,
+    let db = args.db.as_deref();
+    let sessions = match session::list_sessions(filter, db) {
+        Ok(s) => session::take_recent(s, usize::try_from(n).unwrap_or(0), all),
         Err(e) => {
-            let msg = format!("[red]Database query failed: {e}[/red]");
+            let msg = format!("[red]Session query failed: {e}[/red]");
             msg_print(&msg);
             return;
         }
@@ -219,36 +258,25 @@ fn cmd_stats_multi(args: &Args, n: i64, all: bool, pruning_only: bool) {
     let mut total_hook_events = 0.0_f64;
     let mut pruning_rows: Vec<(String, Option<Value>)> = Vec::new();
 
-    for s in &sessions {
-        let sid = s.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        let inp = s
-            .get("tokens_input")
-            .and_then(serde_json::Value::as_f64)
-            .unwrap_or(0.0);
-        let out = s
-            .get("tokens_output")
-            .and_then(serde_json::Value::as_f64)
-            .unwrap_or(0.0);
-        let cache_read = s
-            .get("tokens_cache_read")
-            .and_then(serde_json::Value::as_f64)
-            .unwrap_or(0.0);
-        let cost =
-            s.get("cost").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+    for (_, meta) in &sessions {
+        let sid = &meta.id;
+        let (inp, out, cache_read, cost) =
+            session::open_session(filter, db, sid)
+                .map_or((0.0, 0.0, 0.0, 0.0), |(_, s)| {
+                    step_totals(&session::steps_from_session(&s))
+                });
 
         // Hook event count and the pruning summary require parsing the
-        // JSONL log — the DB doesn't store hook-level aggregates. Each
-        // session is parsed at most once.
+        // JSONL log — the session store doesn't hold hook-level
+        // aggregates. Each session is parsed at most once.
         let events: Vec<Value> = zutil::resolve_session_path(sid, &log_dir)
             .map_or_else(Vec::new, |path| helpers::parse_zoo_log(&path));
         let hook_count = count_as_f64(
             events.iter().filter(|e| e.get("hook").is_some()).count(),
         );
         if pruning_only {
-            pruning_rows.push((
-                sid.to_string(),
-                display::build_pruning_summary(&events),
-            ));
+            pruning_rows
+                .push((sid.clone(), display::build_pruning_summary(&events)));
         }
 
         let hit_rate = helpers::cache_hit_rate(cache_read, inp);
@@ -306,9 +334,12 @@ fn cmd_stats(
         std::process::exit(1);
     }
 
+    let filter = session::host_filter(args.host, args.db.as_deref());
+    let db = args.db.as_deref();
+
     // Multi-session mode
     if let Some(n) = sessions_n {
-        cmd_stats_multi(args, n, all, sections.pruning);
+        cmd_stats_multi(args, filter, n, all, sections.pruning);
         return;
     }
 
@@ -317,14 +348,25 @@ fn cmd_stats(
         let path = helpers::resolve_session(sid, &log_dir);
         let events = helpers::parse_zoo_log(&path);
         let exact_sid = helpers::session_id_from_path(&path);
-        let db = DbTarget::from_cli(args.db.clone());
-        let steps = db::query_step_data(&exact_sid, &db);
+        let (host, steps, meta_model) =
+            session::open_session(filter, db, &exact_sid)
+                .map_or((Host::OpenCode, Vec::new(), None), |(h, s)| {
+                    (h, session::steps_from_session(&s), s.meta.model)
+                });
 
         if steps.is_empty() && !sections.hooks {
-            msg_print(
-                "[yellow]No step-finish records found in database \
-                 for this session. Token summary will be empty.[/yellow]",
-            );
+            match host {
+                Host::Pi => msg_print(
+                    "[yellow]No token usage records found in pi session \
+                     storage for this session. Token summary will be \
+                     empty.[/yellow]",
+                ),
+                Host::OpenCode => msg_print(
+                    "[yellow]No step-finish records found in database \
+                     for this session. Token summary will be \
+                     empty.[/yellow]",
+                ),
+            }
         }
 
         if sections.tokens && !sections.hooks && !sections.pruning {
@@ -362,9 +404,21 @@ fn cmd_stats(
         }
 
         if args.json {
-            display::print_json_full_stats(&events, &steps, &path, &exact_sid);
+            display::print_json_full_stats(
+                &events,
+                &steps,
+                &path,
+                &exact_sid,
+                meta_model.as_deref(),
+            );
         } else {
-            display::print_full_stats(&events, &steps, &path, &exact_sid);
+            display::print_full_stats(
+                &events,
+                &steps,
+                &path,
+                &exact_sid,
+                meta_model.as_deref(),
+            );
         }
     }
 }
@@ -588,21 +642,31 @@ fn build_step_details(steps: &[(i64, &Value)]) -> Vec<Value> {
         .collect()
 }
 
-/// Process a single session's hooks and steps, collecting analysis data.
-fn process_impact_session(
-    sid: &str,
-    log_dir: &str,
-    db: &DbTarget,
-    hook_filter: Option<&str>,
+/// Static per-session parameters for impact analysis.
+struct ImpactSessionCtx<'a> {
+    sid: &'a str,
+    log_dir: &'a str,
+    filter: HostFilter,
+    db: Option<&'a str>,
+    hook_filter: Option<&'a str>,
     window: i64,
     verbose: bool,
+}
+
+/// Process a single session's hooks and steps, collecting analysis data.
+///
+/// Steps are derived from the session provider's usage events and tool
+/// usage from its tool events; hooks always come from the JSONL log.
+fn process_impact_session(
+    ctx: &ImpactSessionCtx<'_>,
+    tool_rows: &mut Vec<Value>,
     out: &mut HookOutput<'_>,
 ) -> bool {
-    let window_u = usize::try_from(window).unwrap_or(0);
+    let window_u = usize::try_from(ctx.window).unwrap_or(0);
 
     // Get hook events from JSONL
     let mut hooks: Vec<Value> = Vec::new();
-    if let Some(log_path) = zutil::resolve_session_path(sid, log_dir) {
+    if let Some(log_path) = zutil::resolve_session_path(ctx.sid, ctx.log_dir) {
         let events = helpers::parse_zoo_log(&log_path);
         for e in &events {
             if e.get("hook").is_some()
@@ -610,7 +674,7 @@ fn process_impact_session(
                     .and_then(|v| v.as_str())
                     .is_some_and(|s| !s.is_empty())
             {
-                if let Some(filter) = hook_filter
+                if let Some(filter) = ctx.hook_filter
                     && e.get("hook").and_then(|v| v.as_str()) != Some(filter)
                 {
                     continue;
@@ -620,8 +684,19 @@ fn process_impact_session(
         }
     }
 
-    // Get steps from DB
-    let mut steps: Vec<Value> = db::query_step_data(sid, db);
+    // Get steps and tool usage from the session provider
+    let mut steps: Vec<Value> = Vec::new();
+    let tools = session::open_session(ctx.filter, ctx.db, ctx.sid).map_or_else(
+        |_| json!({}),
+        |(_, s)| {
+            steps = session::steps_from_session(&s);
+            session::tool_usage(&s)
+        },
+    );
+    if tools.as_object().is_some_and(|map| !map.is_empty()) {
+        tool_rows.push(json!({ "session_id": ctx.sid, "tools": tools }));
+    }
+
     steps.retain(|s| {
         s.get("time_created")
             .and_then(|v| v.as_str())
@@ -661,12 +736,12 @@ fn process_impact_session(
         process_hook_event(
             hook,
             &HookCtx {
-                sid,
+                sid: ctx.sid,
                 steps: &steps,
                 step_times: &step_times,
-                window,
+                window: ctx.window,
                 window_u,
-                verbose,
+                verbose: ctx.verbose,
             },
             &mut HookOutput {
                 hook_analysis: out.hook_analysis,
@@ -746,15 +821,30 @@ fn build_recovery_curve_json(
         .collect()
 }
 
+/// Computed impact analysis collections ready for output.
+struct ImpactOutput<'a> {
+    session_ids: &'a [String],
+    hook_analysis: &'a HashMap<String, Vec<Value>>,
+    recovery_data: &'a BTreeMap<i64, Vec<f64>>,
+    cost_data: &'a HashMap<String, display::CostData>,
+    verbose_rows: &'a [Value],
+    tool_rows: &'a [Value],
+}
+
 fn cmd_impact_output(
     args: &Args,
     impact: &ImpactArgs<'_>,
-    session_ids: &[String],
-    hook_analysis: &HashMap<String, Vec<Value>>,
-    recovery_data: &BTreeMap<i64, Vec<f64>>,
-    cost_data: &HashMap<String, display::CostData>,
-    verbose_rows: &[Value],
+    output: &ImpactOutput<'_>,
 ) {
+    let ImpactOutput {
+        session_ids,
+        hook_analysis,
+        recovery_data,
+        cost_data,
+        verbose_rows,
+        tool_rows,
+    } = *output;
+
     if args.json {
         let hook_agg = build_hook_agg_json(hook_analysis);
         let recovery_curve = build_recovery_curve_json(recovery_data);
@@ -807,10 +897,20 @@ fn cmd_impact_output(
             );
         }
 
+        if !tool_rows.is_empty()
+            && let Some(obj) = result.as_object_mut()
+        {
+            obj.insert(
+                "tool_usage".to_string(),
+                Value::Array(tool_rows.to_vec()),
+            );
+        }
+
         display::print_json_impact(&result);
     } else {
         display::print_impact_aggregation(hook_analysis);
         display::print_recovery_curve(recovery_data);
+        display::print_tool_usage(tool_rows);
         if impact.show_cost {
             display::print_cost_impact(cost_data);
         }
@@ -820,30 +920,32 @@ fn cmd_impact_output(
     }
 }
 
-/// Resolve session IDs from the database (multi-session mode).
-/// Returns `None` when no sessions found or DB error (output already printed).
+/// Resolve session IDs from the session providers (multi-session mode).
+/// Returns `None` when no sessions found or listing failed (output already
+/// printed).
 fn resolve_impact_multi_sessions(
     args: &Args,
     impact: &ImpactArgs<'_>,
 ) -> Option<Vec<String>> {
-    let db = DbTarget::from_cli(args.db.clone());
-    let sessions = match db::query_recent_sessions(
-        impact.sessions_n,
-        &db,
-        impact.include_all,
-    ) {
-        Ok(s) => s,
+    let filter = session::host_filter(args.host, args.db.as_deref());
+    let db = args.db.as_deref();
+    let sessions = match session::list_sessions(filter, db) {
+        Ok(s) => session::take_recent(
+            s,
+            usize::try_from(impact.sessions_n).unwrap_or(0),
+            impact.include_all,
+        ),
         Err(e) => {
             if args.json {
                 let error =
-                    json!({"error": format!("Database query failed: {e}")});
+                    json!({"error": format!("Session query failed: {e}")});
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&error)
                         .expect("JSON serialization")
                 );
             } else {
-                let msg = format!("[red]Database query failed: {e}[/red]");
+                let msg = format!("[red]Session query failed: {e}[/red]");
                 msg_print(&msg);
             }
             return None;
@@ -865,18 +967,13 @@ fn resolve_impact_multi_sessions(
         }
         return None;
     }
-    Some(
-        sessions
-            .iter()
-            .filter_map(|s| {
-                s.get("id").and_then(|v| v.as_str()).map(String::from)
-            })
-            .collect(),
-    )
+    Some(sessions.into_iter().map(|(_, meta)| meta.id).collect())
 }
 
 fn cmd_impact(args: &Args, impact: &ImpactArgs<'_>) {
     let log_dir = zutil::get_zoo_log_dir();
+    let filter = session::host_filter(args.host, args.db.as_deref());
+    let db = args.db.as_deref();
 
     // Resolve session IDs
     let mut session_ids: Vec<String> = Vec::new();
@@ -895,17 +992,21 @@ fn cmd_impact(args: &Args, impact: &ImpactArgs<'_>) {
     let mut recovery_data: BTreeMap<i64, Vec<f64>> = BTreeMap::new();
     let mut cost_data: HashMap<String, display::CostData> = HashMap::new();
     let mut verbose_rows: Vec<Value> = Vec::new();
+    let mut tool_rows: Vec<Value> = Vec::new();
     let mut found_steps = false;
 
-    let db = DbTarget::from_cli(args.db.clone());
     for sid in &session_ids {
         let fs = process_impact_session(
-            sid,
-            &log_dir,
-            &db,
-            impact.hook_filter,
-            impact.window,
-            impact.verbose,
+            &ImpactSessionCtx {
+                sid,
+                log_dir: &log_dir,
+                filter,
+                db,
+                hook_filter: impact.hook_filter,
+                window: impact.window,
+                verbose: impact.verbose,
+            },
+            &mut tool_rows,
             &mut HookOutput {
                 hook_analysis: &mut hook_analysis,
                 recovery_data: &mut recovery_data,
@@ -949,11 +1050,14 @@ fn cmd_impact(args: &Args, impact: &ImpactArgs<'_>) {
     cmd_impact_output(
         args,
         impact,
-        &session_ids,
-        &hook_analysis,
-        &recovery_data,
-        &cost_data,
-        &verbose_rows,
+        &ImpactOutput {
+            session_ids: &session_ids,
+            hook_analysis: &hook_analysis,
+            recovery_data: &recovery_data,
+            cost_data: &cost_data,
+            verbose_rows: &verbose_rows,
+            tool_rows: &tool_rows,
+        },
     );
 }
 
@@ -1220,6 +1324,43 @@ mod tests {
         ])
         .expect("--no-color should parse");
         assert!(args.no_color);
+    }
+
+    #[test]
+    fn test_args_global_host_pi() {
+        let args = Args::try_parse_from([
+            "zinspect",
+            "--host",
+            "pi",
+            "stats",
+            "01a04bc0-fa14-76d5-95ec-a8d5ee80f706",
+        ])
+        .expect("--host pi should parse");
+        assert_eq!(args.host, Some(HostArg::Pi));
+    }
+
+    #[test]
+    fn test_args_global_host_opencode() {
+        let args = Args::try_parse_from([
+            "zinspect", "--host", "opencode", "timeline", "ses-001",
+        ])
+        .expect("--host opencode should parse");
+        assert_eq!(args.host, Some(HostArg::OpenCode));
+    }
+
+    #[test]
+    fn test_args_global_host_invalid_value() {
+        let err =
+            Args::try_parse_from(["zinspect", "--host", "bogus", "stats", "x"])
+                .expect_err("--host bogus should fail");
+        assert_eq!(err.kind(), ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn test_args_global_host_defaults_none() {
+        let args = Args::try_parse_from(["zinspect", "stats", "ses-001"])
+            .expect("stats should parse");
+        assert_eq!(args.host, None);
     }
 
     #[test]

@@ -15,7 +15,7 @@ use super::common::{fmt_float_int, render_table};
 // ── E. Tokens Command ─────────────────────────────────────────────────────────
 
 /// Create the tokens table with column definitions.
-fn create_tokens_table(wide: bool) -> Table {
+fn create_tokens_table(wide: bool, show_model: bool) -> Table {
     let mut table = Table::new()
         .title("Message Token Distribution")
         .box_style(&rich_rust::r#box::ROUNDED);
@@ -29,6 +29,11 @@ fn create_tokens_table(wide: bool) -> Table {
     table.add_column(
         Column::new("Role").no_wrap().overflow(OverflowMethod::Ellipsis),
     );
+    if show_model {
+        table.add_column(
+            Column::new("Model").no_wrap().overflow(OverflowMethod::Ellipsis),
+        );
+    }
     table.add_column(
         Column::new("Tokens")
             .justify(JustifyMethod::Right)
@@ -81,6 +86,7 @@ fn build_token_row(
     r: &Value,
     max_tokens: f64,
     wide: bool,
+    show_model: bool,
     role_colors: &HashMap<&str, &str>,
 ) -> Row {
     let role = r.get("role").and_then(|v| v.as_str()).unwrap_or("unknown");
@@ -96,12 +102,43 @@ fn build_token_row(
     let ratio = if max_tokens > 0.0 { tokens / max_tokens } else { 0.0 };
     let bar = render_token_bar(ratio);
 
+    let model = r
+        .get("model")
+        .and_then(|v| v.as_str())
+        .filter(|m| !m.is_empty())
+        .map(|m| {
+            if m.chars().count() > 24 {
+                let truncated: String = m.chars().take(24).collect();
+                format!("{truncated}...")
+            } else {
+                m.to_string()
+            }
+        })
+        .unwrap_or_default();
+
     let segs =
         r.get("segments").and_then(serde_json::Value::as_u64).unwrap_or(0);
     let msg_id = r.get("id").and_then(|v| v.as_str()).unwrap_or("");
     let preview = r.get("preview").and_then(|v| v.as_str()).unwrap_or("");
 
-    if wide {
+    if show_model {
+        // # Role Model Tokens Size [Segments] ID [Preview]
+        let mut cells = vec![
+            Cell::new((idx + 1).to_string()),
+            Cell::new(role_text),
+            Cell::new(model),
+            Cell::new(fmt_float_int(tokens)),
+            Cell::new(bar),
+        ];
+        if wide {
+            cells.push(Cell::new(segs.to_string()));
+        }
+        cells.push(Cell::new(msg_id.to_string()));
+        if wide {
+            cells.push(Cell::new(preview.to_string()));
+        }
+        Row::new(cells)
+    } else if wide {
         Row::new(vec![
             Cell::new((idx + 1).to_string()),
             Cell::new(role_text),
@@ -216,6 +253,10 @@ pub fn render_tokens_table(rows: &[Value]) {
     }
 
     let wide = get_terminal_width() >= 110;
+    // The Model column appears only when at least one row recorded one.
+    let show_model = rows.iter().any(|r| {
+        r.get("model").and_then(|v| v.as_str()).is_some_and(|m| !m.is_empty())
+    });
     let max_tokens = rows
         .iter()
         .filter_map(|r| r.get("tokens").and_then(serde_json::Value::as_f64))
@@ -232,12 +273,105 @@ pub fn render_tokens_table(rows: &[Value]) {
     .collect();
 
     let width = get_terminal_width();
-    let mut table = create_tokens_table(wide);
+    let mut table = create_tokens_table(wide, show_model);
 
     for (idx, r) in rows.iter().enumerate() {
-        table.add_row(build_token_row(idx, r, max_tokens, wide, &role_colors));
+        table.add_row(build_token_row(
+            idx,
+            r,
+            max_tokens,
+            wide,
+            show_model,
+            &role_colors,
+        ));
     }
 
     render_table(width, &table);
     msg_print(&build_token_stats_summary(rows));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{Map, Number};
+    use std::collections::HashMap;
+
+    /// Minimal token-row dict matching the `build_token_rows` key set.
+    fn row_value() -> Value {
+        let mut m = Map::new();
+        m.insert("id".to_string(), Value::String("msg-1".to_string()));
+        m.insert("role".to_string(), Value::String("assistant".to_string()));
+        m.insert("model".to_string(), Value::String("gpt-4".to_string()));
+        m.insert("tokens".to_string(), Value::Number(Number::from(150_u64)));
+        m.insert("segments".to_string(), Value::Number(Number::from(2_u64)));
+        m.insert(
+            "preview".to_string(),
+            Value::String("preview text".to_string()),
+        );
+        Value::Object(m)
+    }
+
+    fn role_colors() -> HashMap<&'static str, &'static str> {
+        HashMap::from([("assistant", "blue")])
+    }
+
+    #[test]
+    fn test_build_token_row_cell_count_matches_column_layout() {
+        // The row must emit exactly as many cells as `create_tokens_table`
+        // declares, in every (wide, show_model) combination. The historical
+        // bug: the show_model branch sent 8 cells unconditionally, so a
+        // narrow terminal (6 columns: # Role Model Tokens Size ID) had
+        // Segments land in the ID column and Preview disappear.
+        let cases = [
+            (false, false, 5),
+            (false, true, 6),
+            (true, false, 7),
+            (true, true, 8),
+        ];
+        for (wide, show_model, expected) in cases {
+            let row = build_token_row(
+                0,
+                &row_value(),
+                150.0,
+                wide,
+                show_model,
+                &role_colors(),
+            );
+            assert_eq!(
+                row.cells.len(),
+                expected,
+                "wide={wide} show_model={show_model}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_build_token_row_narrow_with_model_places_id_last() {
+        // Narrow + model columns: # Role Model Tokens Size ID. The ID cell
+        // must be the final cell and hold the real message id — not a
+        // segment count shifted in from the wide-only layout.
+        let row = build_token_row(
+            0,
+            &row_value(),
+            150.0,
+            false,
+            true,
+            &role_colors(),
+        );
+        assert_eq!(row.cells.len(), 6);
+        assert_eq!(row.cells[5].content.plain(), "msg-1");
+        // The model cell sits at index 2, right after the role.
+        assert_eq!(row.cells[2].content.plain(), "gpt-4");
+    }
+
+    #[test]
+    fn test_build_token_row_wide_with_model_places_id_and_preview() {
+        // Wide + model columns: # Role Model Tokens Size Segments ID Preview.
+        let row =
+            build_token_row(0, &row_value(), 150.0, true, true, &role_colors());
+        assert_eq!(row.cells.len(), 8);
+        assert_eq!(row.cells[5].content.plain(), "2");
+        assert_eq!(row.cells[6].content.plain(), "msg-1");
+        assert_eq!(row.cells[7].content.plain(), "preview text");
+    }
 }

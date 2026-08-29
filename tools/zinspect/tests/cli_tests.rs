@@ -10,10 +10,14 @@ use std::path::Path;
 use std::process::Command;
 
 use rusqlite::Connection;
+use serde_json::{Value, json};
 use tempfile::TempDir;
 
 /// Path to the `zinspect` binary, set by `cargo test`.
 const ZINSPECT_BIN: &str = env!("CARGO_BIN_EXE_zinspect");
+
+/// UUID used by the pi session fixtures.
+const PI_UUID: &str = "01a04bc0-fa14-76d5-95ec-a8d5ee80f706";
 
 // ── Test Fixture ──────────────────────────────────────────────────────────────
 
@@ -145,12 +149,14 @@ impl TestFixture {
         )
         .expect("insert msg-001");
 
-        // Message for ses-001 (assistant turn with time info)
+        // Message for ses-001 (assistant turn with time info and a
+        // structured `model` — the first assistant message decides the
+        // session-level model).
         conn.execute(
             "INSERT INTO message VALUES (?1,?2,?3,?4)",
             rusqlite::params![
                 "msg-002", "ses-001", 1_715_000_020_000_i64,
-                r#"{"role":"assistant","agent":"beaver","time":{"created":1715000020000,"completed":1715000090000}}"#,
+                r#"{"role":"assistant","agent":"beaver","model":{"providerID":"openai","modelID":"gpt-4o"},"time":{"created":1715000020000,"completed":1715000090000}}"#,
             ],
         ).expect("insert msg-002");
 
@@ -530,6 +536,8 @@ fn test_stats_single_session_json() {
     assert_eq!(parsed["total_events"], 7);
     assert!(parsed["hook_breakdown"].is_object());
     assert!(parsed["token_summary"].is_object());
+    // The session-level model comes from the first assistant message.
+    assert_eq!(parsed["model"], "openai/gpt-4o");
 }
 
 #[test]
@@ -591,6 +599,11 @@ fn test_stats_single_session_table() {
     assert!(
         stdout.contains("Stats for session"),
         "output should contain stats header"
+    );
+    // The single-session header shows the session-level model.
+    assert!(
+        stdout.contains("openai/gpt-4o"),
+        "stats header should show the session model, got: {stdout}"
     );
 }
 
@@ -917,6 +930,32 @@ fn test_stats_single_session_pi_hosted_json() {
         .expect("output should be valid JSON");
     assert_eq!(parsed["session_id"], "ses-002");
     assert_eq!(parsed["total_events"], 1);
+    // ses-002 has no assistant message, so no session-level model is
+    // recorded (the JSON key stays absent).
+    assert!(parsed.get("model").is_none());
+}
+
+#[test]
+fn test_stats_single_session_no_model_header() {
+    let fix = TestFixture::new();
+    // ses-002's only message is a user turn: the session carries no
+    // model, so the stats header must not render a Model line.
+    let output = fix
+        .zinspect()
+        .args(["stats", "ses-002", "--no-color"])
+        .output()
+        .expect("failed to run zinspect stats ses-002 --no-color");
+    assert!(
+        output.status.success(),
+        "stats ses-002 should exit 0, got {:?}",
+        output.status.code()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("Model:"),
+        "stats header should omit Model for a model-less session, got: \
+         {stdout}"
+    );
 }
 
 #[test]
@@ -1368,4 +1407,342 @@ fn test_stats_explicit_db_only_sees_that_db() {
         .filter_map(|s| s.get("id").and_then(|v| v.as_str()))
         .collect();
     assert_eq!(ids, vec!["ses-900"], "only the second-DB session visible");
+}
+
+// ── pi host tests ───────────────────────────────────────────────────────────
+
+/// Write one pi session file per entry `(id, lines)` under
+/// `<root>/sessions/<cwd-dir>/<id>.jsonl`, the layout the pi provider
+/// scans.
+fn pi_data_dir(root: &Path, sessions: &[(&str, &[String])]) {
+    for (id, lines) in sessions {
+        let cwd = root.join("sessions").join("--cwd--");
+        fs::create_dir_all(&cwd).expect("create pi cwd dir");
+        fs::write(cwd.join(format!("{id}.jsonl")), lines.join("\n"))
+            .expect("write pi session file");
+    }
+}
+
+/// One pi session file's JSONL lines: the session header plus message
+/// records (in stream order).
+fn pi_session_lines(
+    id: &str,
+    header_ts: i64,
+    messages: &[Value],
+) -> Vec<String> {
+    let mut lines = vec![
+        json!({
+            "type": "session", "version": 3, "id": id,
+            "timestamp": zutil::epoch_ms_to_iso(header_ts), "cwd": "/w",
+        })
+        .to_string(),
+    ];
+    for msg in messages {
+        lines.push(msg.to_string());
+    }
+    lines
+}
+
+/// A pi `message` record with a user role.
+fn user_message(id: &str, ts: i64, text: &str) -> Value {
+    json!({
+        "type": "message", "id": id, "timestamp": zutil::epoch_ms_to_iso(ts),
+        "message": {
+            "role": "user",
+            "content": [{"type": "text", "text": text}],
+        },
+    })
+}
+
+/// A pi `message` record with an assistant role carrying `usage` and an
+/// optional tool call.
+fn assistant_message(
+    id: &str,
+    ts: i64,
+    text: &str,
+    usage: Value,
+    tool: Option<(&str, &str)>,
+) -> Value {
+    let content = json!([{"type": "text", "text": text}]);
+    let mut body = json!({
+        "role": "assistant",
+        "content": content,
+        "usage": usage,
+        "timestamp": ts,
+    });
+    if let Some((call_id, name)) = tool {
+        body["content"] = json!([
+            {"type": "text", "text": text},
+            {"type": "toolCall", "id": call_id, "name": name,
+             "arguments": {"x": 1}},
+        ]);
+    }
+    json!({
+        "type": "message", "id": id, "timestamp": zutil::epoch_ms_to_iso(ts),
+        "message": body,
+    })
+}
+
+/// A pi `message` record with a toolResult role.
+fn tool_result_message(
+    id: &str,
+    ts: i64,
+    call_id: &str,
+    name: &str,
+    text: &str,
+) -> Value {
+    json!({
+        "type": "message", "id": id, "timestamp": zutil::epoch_ms_to_iso(ts),
+        "message": {
+            "role": "toolResult", "toolCallId": call_id, "toolName": name,
+            "content": [{"type": "text", "text": text}],
+            "isError": false, "timestamp": ts,
+        },
+    })
+}
+
+/// Write a `pi-<sid>.log` zoo log fixture under `<home>/.zoo/log`.
+fn write_pi_zoo_log(home: &Path, sid: &str, events: &[Value]) {
+    let log_dir = home.join(".zoo").join("log");
+    fs::create_dir_all(&log_dir).expect("create zoo log dir");
+    let content: Vec<String> = events.iter().map(Value::to_string).collect();
+    fs::write(log_dir.join(format!("pi-{sid}.log")), content.join("\n"))
+        .expect("write pi zoo log");
+}
+
+/// Parse the command's stdout as JSON.
+fn parse_stdout_json(output: &std::process::Output) -> Value {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(stdout.trim()).expect("stdout should be valid JSON")
+}
+
+#[test]
+fn test_stats_pi_single_session_token_aggregation() {
+    let home = TempDir::new().expect("temp home");
+    let pi_root = TempDir::new().expect("temp pi root");
+
+    let lines = pi_session_lines(
+        PI_UUID,
+        1_715_000_000_000,
+        &[
+            assistant_message(
+                "m1",
+                1_715_000_010_000,
+                "first",
+                json!({
+                    "input": 7725, "output": 141, "cacheRead": 0,
+                    "cacheWrite": 0, "cost": {"total": 0.001},
+                }),
+                None,
+            ),
+            assistant_message(
+                "m2",
+                1_715_000_020_000,
+                "second",
+                json!({
+                    "input": 100, "output": 200, "cacheRead": 300,
+                    "cacheWrite": 400, "cost": {"total": 0.002},
+                }),
+                None,
+            ),
+        ],
+    );
+    pi_data_dir(pi_root.path(), &[(PI_UUID, &lines)]);
+    write_pi_zoo_log(
+        home.path(),
+        PI_UUID,
+        &[json!({
+            "hook": "task-prompt", "event": "validate", "level": "info",
+            "timestamp": "2024-05-06T12:53:25Z", "sessionId": PI_UUID,
+        })],
+    );
+
+    let output = Command::new(ZINSPECT_BIN)
+        .env("HOME", home.path())
+        .env("ZOO_PI_DATA_DIR", pi_root.path())
+        .args(["stats", PI_UUID, "--tokens", "--json", "--no-color"])
+        .output()
+        .expect("failed to run zinspect stats <uuid> --tokens --json");
+    assert!(
+        output.status.success(),
+        "pi stats should exit 0, got {:?}",
+        output.status.code()
+    );
+
+    let parsed = parse_stdout_json(&output);
+    assert_eq!(parsed["total_input"], 7825.0);
+    assert_eq!(parsed["total_output"], 341.0);
+    assert_eq!(parsed["total_cache_read"], 300.0);
+    assert_eq!(parsed["total_cache_write"], 400.0);
+    assert_eq!(parsed["est_cost"], 0.003);
+    assert_eq!(parsed["num_steps"], 2);
+}
+
+#[test]
+fn test_stats_sessions_merges_both_hosts() {
+    let home = TempDir::new().expect("temp home");
+    let oc_dir = TempDir::new().expect("temp oc dir");
+    let pi_root = TempDir::new().expect("temp pi root");
+
+    // OpenCode fixture: three root sessions with step-finish usage.
+    TestFixture::create_db(&oc_dir.path().join("opencode.db"));
+
+    // pi fixture: two sessions at interleaved start times.
+    let pi_1 = "01a04bc0-fa14-76d5-95ec-b9e6f11a2233";
+    let pi_2 = "01a04bc0-fa14-76d5-95ec-c8d5ee80f707";
+    let lines_1 = pi_session_lines(
+        pi_1,
+        1_715_000_300_000,
+        &[assistant_message(
+            "m1",
+            1_715_000_310_000,
+            "one",
+            json!({
+                "input": 10, "output": 20, "cacheRead": 0, "cacheWrite": 0,
+                "cost": {"total": 0.0005},
+            }),
+            None,
+        )],
+    );
+    let lines_2 = pi_session_lines(
+        pi_2,
+        1_715_000_500_000,
+        &[assistant_message(
+            "m1",
+            1_715_000_510_000,
+            "two",
+            json!({
+                "input": 30, "output": 40, "cacheRead": 0, "cacheWrite": 0,
+                "cost": {"total": 0.001},
+            }),
+            None,
+        )],
+    );
+    pi_data_dir(pi_root.path(), &[(pi_1, &lines_1), (pi_2, &lines_2)]);
+
+    let output = Command::new(ZINSPECT_BIN)
+        .env("HOME", home.path())
+        .env("ZOO_OPENCODE_DATA_DIR", oc_dir.path())
+        .env("ZOO_PI_DATA_DIR", pi_root.path())
+        .args(["stats", "--sessions", "5", "--json", "--no-color"])
+        .output()
+        .expect("failed to run zinspect stats --sessions 5");
+    assert!(
+        output.status.success(),
+        "merged stats should exit 0, got {:?}",
+        output.status.code()
+    );
+
+    let parsed = parse_stdout_json(&output);
+    let sessions =
+        parsed["sessions"].as_array().expect("sessions should be an array");
+    assert_eq!(sessions.len(), 5, "three opencode + two pi sessions");
+    let ids: Vec<&str> = sessions
+        .iter()
+        .filter_map(|s| s.get("id").and_then(Value::as_str))
+        .collect();
+    for expected in ["ses-001", "ses-002", "ses-003", pi_1, pi_2] {
+        assert!(ids.contains(&expected), "missing {expected}: {ids:?}");
+    }
+
+    // pi token totals flow through its usage events…
+    let pi_2_row = sessions
+        .iter()
+        .find(|s| s.get("id").and_then(Value::as_str) == Some(pi_2))
+        .expect("pi-2 row present");
+    assert_eq!(pi_2_row["input"], 30.0);
+    assert_eq!(pi_2_row["output"], 40.0);
+
+    // …and opencode sessions aggregate their step-finish usage.
+    let oc_row = sessions
+        .iter()
+        .find(|s| s.get("id").and_then(Value::as_str) == Some("ses-001"))
+        .expect("ses-001 row present");
+    assert_eq!(oc_row["input"], 300.0);
+}
+
+#[test]
+fn test_impact_pi_session_tool_counts() {
+    let home = TempDir::new().expect("temp home");
+    let pi_root = TempDir::new().expect("temp pi root");
+
+    // Two bash calls: use at T2/T5, results at T3/T6.
+    let lines = pi_session_lines(
+        PI_UUID,
+        1_715_000_000_000,
+        &[
+            user_message("m0", 1_715_000_001_000, "analyze this"),
+            assistant_message(
+                "m2",
+                1_715_000_010_000,
+                "calling bash",
+                json!({
+                    "input": 100, "output": 50, "cacheRead": 0,
+                    "cacheWrite": 0, "cost": {"total": 0.001},
+                }),
+                Some(("call-1", "bash")),
+            ),
+            tool_result_message(
+                "m3",
+                1_715_000_015_000,
+                "call-1",
+                "bash",
+                "ok",
+            ),
+            assistant_message(
+                "m5",
+                1_715_000_020_000,
+                "calling bash again",
+                json!({
+                    "input": 200, "output": 100, "cacheRead": 30,
+                    "cacheWrite": 40, "cost": {"total": 0.002},
+                }),
+                Some(("call-2", "bash")),
+            ),
+            tool_result_message(
+                "m6",
+                1_715_000_030_000,
+                "call-2",
+                "bash",
+                "done",
+            ),
+        ],
+    );
+    pi_data_dir(pi_root.path(), &[(PI_UUID, &lines)]);
+    write_pi_zoo_log(
+        home.path(),
+        PI_UUID,
+        &[json!({
+            "hook": "task-prompt", "event": "validate", "level": "info",
+            "timestamp": "2024-05-06T12:53:35Z", "sessionId": PI_UUID,
+        })],
+    );
+
+    let output = Command::new(ZINSPECT_BIN)
+        .env("HOME", home.path())
+        .env("ZOO_PI_DATA_DIR", pi_root.path())
+        .args(["impact", PI_UUID, "--json", "--no-color"])
+        .output()
+        .expect("failed to run zinspect impact <uuid> --json");
+    assert!(
+        output.status.success(),
+        "pi impact should exit 0, got {:?}",
+        output.status.code()
+    );
+
+    let parsed = parse_stdout_json(&output);
+    assert_eq!(parsed["sessions_analyzed"], json!([PI_UUID]));
+    assert!(
+        parsed["hook_aggregation"]
+            .as_object()
+            .expect("hook_aggregation object")
+            .contains_key("task-prompt:validate"),
+        "pi hooks must populate the aggregation"
+    );
+    let usage = parsed["tool_usage"]
+        .as_array()
+        .expect("tool_usage should be present for a pi session with tools");
+    assert_eq!(usage[0]["session_id"], PI_UUID);
+    assert_eq!(usage[0]["tools"]["bash"]["calls"], 2);
+    assert_eq!(usage[0]["tools"]["bash"]["duration_ms"], 15000);
 }

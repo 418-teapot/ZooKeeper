@@ -18,6 +18,8 @@ fn build_verbose_session_lines(
     session_id: &str,
     timeline: &[Value],
     stats: &Value,
+    meta_model: Option<&str>,
+    meta_agent: Option<&str>,
 ) -> Vec<String> {
     let info = find_session_info(timeline);
     let mut lines: Vec<String> = Vec::new();
@@ -29,14 +31,20 @@ fn build_verbose_session_lines(
         {
             lines.push(format!("Slug:       [bold]{slug}[/bold]"));
         }
-        if let Some(agent) =
-            info.get("agent").and_then(|v| v.as_str()).filter(|s| !s.is_empty())
-        {
+        let agent = info
+            .get("agent")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .or(meta_agent);
+        if let Some(agent) = agent {
             lines.push(format!("Agent:      [green]{agent}[/green]"));
         }
-        if let Some(model) =
-            info.get("model").and_then(|v| v.as_str()).filter(|s| !s.is_empty())
-        {
+        let model = info
+            .get("model")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .or(meta_model);
+        if let Some(model) = model {
             lines.push(format!("Model:      [blue]{model}[/blue]"));
         }
         if let Some(provider) = info
@@ -104,6 +112,8 @@ fn build_compact_session_panel(
     session_id: &str,
     timeline: &[Value],
     stats: &Value,
+    meta_model: Option<&str>,
+    meta_agent: Option<&str>,
 ) {
     let width = get_terminal_width();
     let info = find_session_info(timeline);
@@ -114,10 +124,14 @@ fn build_compact_session_panel(
     let agent = info
         .as_ref()
         .and_then(|v| v.get("agent").and_then(|s| s.as_str()))
+        .filter(|s| !s.is_empty())
+        .or(meta_agent)
         .unwrap_or("");
     let model = info
         .as_ref()
         .and_then(|v| v.get("model").and_then(|s| s.as_str()))
+        .filter(|s| !s.is_empty())
+        .or(meta_model)
         .unwrap_or("");
 
     let dur_str = stats
@@ -150,6 +164,20 @@ fn build_compact_session_panel(
     }
     if !model.is_empty() {
         content_parts.push(format!("Model: [blue]{model}[/blue]"));
+    }
+    // total_turns counts OpenCode host lifecycle events, which pi does not
+    // provide; surface that instead of a misleading 0.
+    let turns = stats
+        .get("total_turns")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let is_pi = timeline
+        .iter()
+        .any(|e| e.get("source").and_then(|v| v.as_str()) == Some("pi"));
+    if is_pi {
+        content_parts.push("Turns: [dim]该 host 不提供[/dim]".to_string());
+    } else {
+        content_parts.push(format!("Turns: [cyan]{turns}[/cyan]"));
     }
     if !dur_str.is_empty() {
         content_parts.push(format!("Duration: [yellow]{dur_str}[/yellow]"));
@@ -261,21 +289,32 @@ fn build_verbose_stats_line(timeline: &[Value], stats: &Value) -> String {
 ///
 /// In compact mode: single-line header with slug, agent, model, duration,
 /// child sessions count.  In verbose/full mode: complete detail panel.
+///
+/// `meta_model`/`meta_agent` come from the session store's own metadata
+/// (the first assistant message); they backfill the panel when the host
+/// lifecycle events (which carry the historical fields) are unavailable,
+/// e.g. pi sessions or `OpenCode` databases without a retained log.
 pub fn render_session_panel(
     session_id: &str,
     timeline: &[Value],
     stats: &Value,
     compact: bool,
+    meta_model: Option<&str>,
+    meta_agent: Option<&str>,
 ) {
     let width = get_terminal_width();
 
     if compact {
-        build_compact_session_panel(session_id, timeline, stats);
+        build_compact_session_panel(
+            session_id, timeline, stats, meta_model, meta_agent,
+        );
         return;
     }
 
     // ── Full detail panel (verbose mode) ──
-    let mut lines = build_verbose_session_lines(session_id, timeline, stats);
+    let mut lines = build_verbose_session_lines(
+        session_id, timeline, stats, meta_model, meta_agent,
+    );
 
     lines.push(String::new());
     lines.push(build_verbose_stats_line(timeline, stats));

@@ -5,17 +5,20 @@
 #![warn(clippy::nursery)]
 
 use std::collections::HashMap;
-
-use clap::{Parser, Subcommand};
-use serde_json::{Map, Number, Value};
 use std::sync::atomic::Ordering;
+
+use clap::{Parser, Subcommand, ValueEnum};
+use serde_json::{Number, Value};
 
 use zutil::color::COLOR;
 use zutil::color::msg_print;
-use zutil::db_helpers::{DbTarget, resolve_session_id};
+use zutil::session::{
+    Host, HostFilter, OpenCodeSessionProvider, PiSessionProvider, ResolveError,
+    Session, SessionProvider, open_with,
+};
 
-mod db;
 mod display;
+mod events;
 mod helpers;
 mod jaeger;
 mod parser;
@@ -23,17 +26,44 @@ mod trace_builder;
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
-#[derive(clap::ValueEnum, Clone, Debug)]
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 enum ExportFormat {
     Jaeger,
     Chrome,
+}
+
+/// Host selection for session lookups.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+enum HostChoice {
+    Auto,
+    #[value(name = "opencode")]
+    OpenCode,
+    Pi,
+}
+
+impl HostChoice {
+    /// Map the CLI choice to a provider filter.
+    ///
+    /// An explicit `--db` path is an `OpenCode` database, so it always
+    /// wins over `--host` — matching `zfind` and `zinspect`.
+    const fn filter(self, db: Option<&str>) -> HostFilter {
+        if db.is_some() {
+            HostFilter::Only(Host::OpenCode)
+        } else {
+            match self {
+                Self::Auto => HostFilter::Auto,
+                Self::OpenCode => HostFilter::Only(Host::OpenCode),
+                Self::Pi => HostFilter::Only(Host::Pi),
+            }
+        }
+    }
 }
 
 #[derive(Parser, Debug)]
 #[command(
     name = "ztrace",
     about = "ZooKeeper trace -- full orchestration trace with timeline \
-             merging for OpenCode sessions.",
+             merging for OpenCode and pi sessions.",
     disable_help_subcommand = true
 )]
 struct Args {
@@ -44,9 +74,16 @@ struct Args {
     /// Path to the `OpenCode` `SQLite` database. When omitted, every
     /// `opencode*.db` file in the opencode data directory
     /// (`~/.local/share/opencode`, or `$ZOO_OPENCODE_DATA_DIR` when set)
-    /// is aggregated into one view.
+    /// is aggregated into one view. An explicit `--db` implies — and
+    /// wins over — `--host opencode`.
     #[arg(long, global = true)]
     db: Option<String>,
+
+    /// Restrict the session lookup to a single host
+    /// (`auto` detects from the session id shape). Ignored when `--db`
+    /// is given, which always targets `OpenCode`.
+    #[arg(long, global = true, value_enum, default_value = "auto")]
+    host: HostChoice,
 
     /// Disable colored output
     #[arg(long, global = true)]
@@ -112,53 +149,163 @@ enum Command {
         #[arg(long, value_name = "N")]
         min_cache_drop: Option<i64>,
     },
-    /// Message-level token distribution
+    /// Token distribution per LLM turn (one row per usage event)
     Tokens {
         /// Session ID
         session_id: String,
     },
 }
 
-// ── Command Handlers ─────────────────────────────────────────────────────
+// ── Provider plumbing ────────────────────────────────────────────────────────
 
-fn cmd_show(args: &Args, session_id: &str, all: bool, verbose: bool) {
-    let opencode_path =
-        zutil::expand_tilde("~/.local/share/opencode/log/opencode.log");
-    let db =
-        DbTarget::from_cli(args.db.as_ref().map(|p| zutil::expand_tilde(p)));
-
-    let resolved = match resolve_session_id(session_id, &db) {
-        Ok(Some(id)) => id,
-        Ok(None) => {
-            eprintln!("Error: no session found matching '{session_id}'");
-            std::process::exit(2);
+/// Build the provider list honoring `--host` and `--db`.
+fn build_providers(
+    filter: HostFilter,
+    db: Option<&str>,
+) -> Vec<(Host, Box<dyn SessionProvider>)> {
+    let opencode = || -> Box<dyn SessionProvider> {
+        db.map_or_else(
+            || Box::new(OpenCodeSessionProvider::new()),
+            |path| Box::new(OpenCodeSessionProvider::with_db_path(path)),
+        )
+    };
+    match filter {
+        HostFilter::Auto => vec![
+            (Host::OpenCode, opencode()),
+            (Host::Pi, Box::new(PiSessionProvider::new())),
+        ],
+        HostFilter::Only(Host::OpenCode) => {
+            vec![(Host::OpenCode, opencode())]
         }
-        Err(amb) => {
+        HostFilter::Only(Host::Pi) => {
+            vec![(Host::Pi, Box::new(PiSessionProvider::new()))]
+        }
+    }
+}
+
+/// Resolve a session, printing a CLI-style error and exiting 2 on failure.
+///
+/// Delegates the probe — id-shape fast path plus ordered fallback across
+/// the provider list — to [`open_with`], then maps its structured errors
+/// back to the established CLI wording: `NotFound` keeps the "no session
+/// found matching" phrasing and lists the tried hosts, `Ambiguous` lists
+/// the matching ids under "ambiguous session ID prefix".
+fn resolve_or_die(
+    providers: &[(Host, Box<dyn SessionProvider>)],
+    filter: HostFilter,
+    session_id: &str,
+) -> (Host, Session) {
+    match open_with(providers, filter, session_id) {
+        Ok(ok) => ok,
+        Err(ResolveError::Ambiguous { matches, .. }) => {
             eprintln!(
-                "Error: ambiguous session ID prefix '{}' matches \
-                 multiple sessions:",
-                amb.prefix
+                "Error: ambiguous session ID prefix '{session_id}' matches \
+                 multiple sessions:"
             );
-            for m in &amb.matches {
+            for m in &matches {
                 eprintln!("  {m}");
             }
             std::process::exit(2);
         }
-    };
-    let session_id = &resolved;
-
-    let mut timeline = match trace_builder::build_timeline(
-        session_id,
-        &opencode_path,
-        &db,
-        all,
-    ) {
-        Ok(t) => t,
-        Err(e) => {
+        Err(ResolveError::NotFound { tried_hosts, .. }) => {
+            let tried = if tried_hosts.is_empty() {
+                "none".to_string()
+            } else {
+                tried_hosts.join(", ")
+            };
+            eprintln!(
+                "Error: no session found matching '{session_id}' \
+                 (tried hosts: {tried})"
+            );
+            std::process::exit(2);
+        }
+        Err(ResolveError::Io(e)) => {
             eprintln!("Error: {e}");
             std::process::exit(2);
         }
-    };
+    }
+}
+
+/// Provider of the resolved host within `providers`.
+fn provider_for(
+    providers: &[(Host, Box<dyn SessionProvider>)],
+    host: Host,
+) -> &dyn SessionProvider {
+    providers
+        .iter()
+        .find(|(h, _)| *h == host)
+        .map(|(_, p)| p.as_ref())
+        .expect("resolved host must have a provider")
+}
+
+/// Root session plus (optionally) its transitive children.
+type SessionTree = (Vec<(String, i64)>, HashMap<String, Session>);
+
+/// Open the root session plus (optionally) its transitive children.
+///
+/// Returns the `(session_id, depth)` list (root first) and the opened
+/// sessions by id.
+fn open_session_tree(
+    provider: &dyn SessionProvider,
+    root: &Session,
+    include_children: bool,
+) -> Result<SessionTree, String> {
+    let mut sessions: Vec<(String, i64)> = vec![(root.meta.id.clone(), 0)];
+    if include_children {
+        let children =
+            helpers::discover_child_sessions(provider, &root.meta.id).map_err(
+                |e| format!("failed to discover child sessions: {e}"),
+            )?;
+        sessions.extend(children);
+    }
+
+    let mut session_map: HashMap<String, Session> = HashMap::new();
+    for (sid, _) in &sessions {
+        let opened = provider
+            .open(sid)
+            .map_err(|e| format!("failed to open session {sid}: {e}"))?;
+        session_map.insert(sid.clone(), opened);
+    }
+    Ok((sessions, session_map))
+}
+
+// ── Command Handlers ─────────────────────────────────────────────────────────
+
+fn print_host_events_notice(host: Host) {
+    eprintln!(
+        "[ztrace] host '{host_name}' does not provide host lifecycle events",
+        host_name = host.name()
+    );
+}
+
+fn cmd_show(args: &Args, session_id: &str, all: bool, verbose: bool) {
+    let filter = args.host.filter(args.db.as_deref());
+    let providers = build_providers(filter, args.db.as_deref());
+    let (host, session) = resolve_or_die(&providers, filter, session_id);
+    let provider = provider_for(&providers, host);
+
+    let (sessions, session_map) =
+        match open_session_tree(provider, &session, all) {
+            Ok(tree) => tree,
+            Err(e) => {
+                eprintln!("Error: {e}");
+                std::process::exit(2);
+            }
+        };
+
+    let sids: std::collections::HashSet<&str> =
+        sessions.iter().map(|(sid, _)| sid.as_str()).collect();
+    let session_agents = trace_builder::build_session_agents(provider, &sids);
+
+    let built = trace_builder::build_timeline(
+        provider,
+        host,
+        &sessions,
+        &session_map,
+        &session_agents,
+        session_id,
+    );
+    let mut timeline = built.events;
 
     if timeline.is_empty() {
         msg_print("[yellow]No events found[/yellow]");
@@ -171,21 +318,13 @@ fn cmd_show(args: &Args, session_id: &str, all: bool, verbose: bool) {
     let stats =
         trace_builder::build_stats(&timeline, Some(&child_sessions_info));
 
-    let all_sids: Vec<String> = {
-        let mut seen = std::collections::HashSet::new();
-        timeline
-            .iter()
-            .filter_map(|ev| ev.get("session_id").and_then(|v| v.as_str()))
-            .filter(|sid| seen.insert(*sid))
-            .map(std::string::ToString::to_string)
-            .collect()
-    };
-    let all_sids_refs: Vec<&str> =
-        all_sids.iter().map(std::string::String::as_str).collect();
-    helpers::attach_durations(&mut timeline, &all_sids_refs, &db);
+    helpers::attach_durations(&mut timeline);
 
     // --json output
     if args.json {
+        if !built.host_events_provided {
+            print_host_events_notice(host);
+        }
         println!(
             "{}",
             serde_json::to_string_pretty(&timeline)
@@ -195,10 +334,27 @@ fn cmd_show(args: &Args, session_id: &str, all: bool, verbose: bool) {
     }
 
     if verbose {
-        display::render_session_panel(session_id, &timeline, &stats, false);
+        if !built.host_events_provided {
+            print_host_events_notice(host);
+        }
+        display::render_session_panel(
+            session_id,
+            &timeline,
+            &stats,
+            false,
+            session.meta.model.as_deref(),
+            session.meta.agent.as_deref(),
+        );
         display::render_timeline_rich(&timeline);
     } else {
-        display::render_session_panel(session_id, &timeline, &stats, true);
+        display::render_session_panel(
+            session_id,
+            &timeline,
+            &stats,
+            true,
+            session.meta.model.as_deref(),
+            session.meta.agent.as_deref(),
+        );
         display::render_ops_summary(&timeline, &stats, false);
     }
 }
@@ -207,47 +363,37 @@ fn cmd_export(
     args: &Args,
     session_id: &str,
     all: bool,
-    format: &ExportFormat,
+    format: ExportFormat,
     output: &str,
 ) {
-    let opencode_path =
-        zutil::expand_tilde("~/.local/share/opencode/log/opencode.log");
-    let db =
-        DbTarget::from_cli(args.db.as_ref().map(|p| zutil::expand_tilde(p)));
+    let filter = args.host.filter(args.db.as_deref());
+    let providers = build_providers(filter, args.db.as_deref());
+    let (host, session) = resolve_or_die(&providers, filter, session_id);
+    let provider = provider_for(&providers, host);
     let output_path = zutil::expand_tilde(output);
 
-    let resolved = match resolve_session_id(session_id, &db) {
-        Ok(Some(id)) => id,
-        Ok(None) => {
-            eprintln!("Error: no session found matching '{session_id}'");
-            std::process::exit(2);
-        }
-        Err(amb) => {
-            eprintln!(
-                "Error: ambiguous session ID prefix '{}' matches \
-                 multiple sessions:",
-                amb.prefix
-            );
-            for m in &amb.matches {
-                eprintln!("  {m}");
+    let (sessions, session_map) =
+        match open_session_tree(provider, &session, all) {
+            Ok(tree) => tree,
+            Err(e) => {
+                eprintln!("Error: {e}");
+                std::process::exit(2);
             }
-            std::process::exit(2);
-        }
-    };
-    let session_id = &resolved;
+        };
 
-    let timeline = match trace_builder::build_timeline(
+    let sids: std::collections::HashSet<&str> =
+        sessions.iter().map(|(sid, _)| sid.as_str()).collect();
+    let session_agents = trace_builder::build_session_agents(provider, &sids);
+
+    let built = trace_builder::build_timeline(
+        provider,
+        host,
+        &sessions,
+        &session_map,
+        &session_agents,
         session_id,
-        &opencode_path,
-        &db,
-        all,
-    ) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("Error: {e}");
-            std::process::exit(2);
-        }
-    };
+    );
+    let timeline = built.events;
 
     if timeline.is_empty() {
         msg_print("[yellow]No events to export[/yellow]");
@@ -290,38 +436,20 @@ fn cmd_export(
         }
     }
 
-    // --json output: print JSON envelope
+    // --json output: print JSON envelope (with host-events metadata)
     if args.json {
         let envelope = serde_json::json!({
             "status": "ok",
             "format": format!("{format:?}").to_lowercase(),
             "output": output_path,
             "events": timeline.len(),
+            "host_events": if built.host_events_provided { "provided" } else { "not-provided" },
         });
         println!(
             "{}",
             serde_json::to_string_pretty(&envelope)
                 .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
         );
-    }
-}
-
-fn discover_and_merge_child_steps(
-    session_id: &str,
-    db: &DbTarget,
-    steps: &mut Vec<Value>,
-) {
-    let child_results = helpers::discover_child_steps(session_id, db);
-    for (child_sid, _depth, child_steps) in child_results {
-        for mut step in child_steps {
-            if let Some(obj) = step.as_object_mut() {
-                obj.insert(
-                    "_session_id".to_string(),
-                    Value::String(child_sid.clone()),
-                );
-            }
-            steps.push(step);
-        }
     }
 }
 
@@ -346,49 +474,6 @@ fn sort_and_index_steps(steps: &mut [Value], default_sid: &str) {
             obj.insert("_session_id".to_string(), Value::String(sid));
         }
     }
-}
-
-/// Parse ISO timestamp to seconds as f64, avoiding i64→f64 `as` casts.
-///
-/// Uses `i32::try_from` + `f64::from` so clippy does not emit
-/// `cast_precision_loss`.
-fn iso_to_epoch_secs_f64(ts: &str) -> f64 {
-    /// Convert an i64 timestamp to f64 seconds, handling values
-    /// beyond `i32::MAX` (post-2038) by decomposing into high/low parts.
-    fn timestamp_to_secs(timestamp: i64) -> f64 {
-        if let Ok(s) = i32::try_from(timestamp) {
-            return f64::from(s);
-        }
-        let high = i32::try_from(timestamp / 1_000_000).unwrap_or(0);
-        let low = i32::try_from(timestamp % 1_000_000).unwrap_or(0);
-        f64::from(high) * 1_000_000.0 + f64::from(low)
-    }
-
-    if ts.is_empty() {
-        return 0.0;
-    }
-    let cleaned = ts.replace('Z', "+00:00");
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&cleaned) {
-        let secs = timestamp_to_secs(dt.timestamp());
-        let subsec_ms = dt.timestamp_subsec_millis();
-        return secs + f64::from(subsec_ms) / 1000.0;
-    }
-    let bare = ts.trim_end_matches('Z');
-    if let Ok(nd) =
-        chrono::NaiveDateTime::parse_from_str(bare, "%Y-%m-%dT%H:%M:%S%.f")
-    {
-        let secs = timestamp_to_secs(nd.and_utc().timestamp());
-        let subsec_ms = nd.and_utc().timestamp_subsec_millis();
-        return secs + f64::from(subsec_ms) / 1000.0;
-    }
-    if let Ok(nd) =
-        chrono::NaiveDateTime::parse_from_str(bare, "%Y-%m-%dT%H:%M:%S")
-    {
-        let secs = timestamp_to_secs(nd.and_utc().timestamp());
-        let subsec_ms = nd.and_utc().timestamp_subsec_millis();
-        return secs + f64::from(subsec_ms) / 1000.0;
-    }
-    0.0
 }
 
 fn compute_step_metrics(steps: &mut [Value]) {
@@ -441,31 +526,17 @@ fn compute_step_metrics(steps: &mut [Value]) {
                 ),
             );
 
-            let time_created =
-                obj.get("time_created").and_then(|v| v.as_str()).unwrap_or("");
-            let time_updated =
-                obj.get("time_updated").and_then(|v| v.as_str()).unwrap_or("");
-            let msg_created =
-                obj.get("msg_time_created").and_then(serde_json::Value::as_f64);
-            let msg_completed = obj
-                .get("msg_time_completed")
-                .and_then(serde_json::Value::as_f64);
-
-            let dur =
-                if let (Some(mc), Some(mcr)) = (msg_completed, msg_created) {
-                    (mc - mcr) / 1000.0
-                } else {
-                    let c_s = iso_to_epoch_secs_f64(time_created);
-                    let u_s = iso_to_epoch_secs_f64(time_updated);
-                    if u_s > c_s { u_s - c_s } else { 0.0 }
-                };
-            obj.insert(
-                "duration".to_string(),
-                Value::Number(
-                    Number::from_f64(dur)
-                        .unwrap_or_else(|| Number::from_f64(0.0).unwrap()),
-                ),
-            );
+            // Keep the provider-reported duration (seconds, derived from
+            // `Usage.duration_ms`); when the host records none the
+            // duration is unknown and surfaces as `null` — never a
+            // misleading 0 (pi's per-step time_created == time_updated).
+            let dur = obj
+                .get("duration")
+                .and_then(serde_json::Value::as_f64)
+                .map_or(Value::Null, |d| {
+                    Number::from_f64(d).map_or(Value::Null, Value::Number)
+                });
+            obj.insert("duration".to_string(), dur);
         }
     }
 }
@@ -474,8 +545,7 @@ fn apply_filter(
     all_steps: &mut Vec<Value>,
     hook_map: &mut HashMap<i64, Vec<String>>,
     drop_threshold: i64,
-    session_id: &str,
-    hook_overlays: bool,
+    zoo_events: &[Value],
 ) {
     // Use `i32::try_from` + `f64::from` to avoid clippy's cast_precision_loss.
     let threshold =
@@ -493,14 +563,10 @@ fn apply_filter(
             );
         }
     }
-    if hook_overlays {
-        // Resolve the zoo log path first; when no unique log file exists for
-        // the session there is nothing to overlay, so skip parsing instead of
-        // round-tripping `None` through an empty path.
-        let zoo_events = parser::resolve_log_path(session_id)
-            .map_or_else(Vec::new, |log_path| parser::parse_zoo_log(&log_path));
-        *hook_map = helpers::match_hooks_to_steps(all_steps, &zoo_events);
-    }
+    // Re-match hooks against the surviving steps. `zoo_events` was parsed
+    // once in `cmd_steps` and is reused here; an empty slice (overlays
+    // disabled) yields an empty map, matching the pre-filter state.
+    *hook_map = helpers::match_hooks_to_steps(all_steps, zoo_events);
 }
 
 fn cmd_steps(
@@ -510,67 +576,58 @@ fn cmd_steps(
     all: bool,
     min_cache_drop: Option<i64>,
 ) {
-    let db =
-        DbTarget::from_cli(args.db.as_ref().map(|p| zutil::expand_tilde(p)));
+    let filter = args.host.filter(args.db.as_deref());
+    let providers = build_providers(filter, args.db.as_deref());
+    let (host, session) = resolve_or_die(&providers, filter, session_id);
+    let provider = provider_for(&providers, host);
 
-    let resolved = match resolve_session_id(session_id, &db) {
-        Ok(Some(id)) => id,
-        Ok(None) => {
-            eprintln!("Error: no session found matching '{session_id}'");
-            std::process::exit(2);
-        }
-        Err(amb) => {
-            eprintln!(
-                "Error: ambiguous session ID prefix '{}' matches \
-                 multiple sessions:",
-                amb.prefix
-            );
-            for m in &amb.matches {
-                eprintln!("  {m}");
+    let (sessions, session_map) =
+        match open_session_tree(provider, &session, all) {
+            Ok(tree) => tree,
+            Err(e) => {
+                eprintln!("Error: {e}");
+                std::process::exit(2);
             }
-            std::process::exit(2);
-        }
-    };
-    let session_id = &resolved;
+        };
 
-    // 1. Query steps from DB
-    let mut all_steps = db::query_step_data_batch(&[session_id], &db);
+    // 1. Derive steps from the usage events of every session
+    let mut all_steps = events::build_step_values(&session_map, &sessions);
 
-    // 2. Child steps (stub — returns empty for now)
-    if all {
-        discover_and_merge_child_steps(session_id, &db, &mut all_steps);
-    }
-
-    // 3. Sort and index
+    // 2. Sort and index
     sort_and_index_steps(&mut all_steps, session_id);
 
-    // 4. Hook overlays
-    let mut hook_map: HashMap<i64, Vec<String>> = if hook_overlays {
+    // 3. Hook overlays. The zoo log is parsed once here; the events are
+    // reused by the `--min-cache-drop` filter below so the same log file is
+    // never resolved and parsed twice within one invocation.
+    let zoo_events: Vec<Value> = if hook_overlays {
         // Resolve the zoo log path first; when no unique log file exists for
         // the session there is nothing to overlay, so skip parsing instead of
         // round-tripping `None` through an empty path.
-        let zoo_events = parser::resolve_log_path(session_id)
-            .map_or_else(Vec::new, |log_path| parser::parse_zoo_log(&log_path));
+        parser::resolve_log_path(session_id)
+            .map_or_else(Vec::new, |log_path| parser::parse_zoo_log(&log_path))
+    } else {
+        Vec::new()
+    };
+    let mut hook_map: HashMap<i64, Vec<String>> = if hook_overlays {
         helpers::match_hooks_to_steps(&all_steps, &zoo_events)
     } else {
         HashMap::new()
     };
 
-    // 5. Compute per-step metrics
+    // 4. Compute per-step metrics
     compute_step_metrics(&mut all_steps);
 
-    // 6. Filter by --min-cache-drop
+    // 5. Filter by --min-cache-drop
     if let Some(drop_threshold) = min_cache_drop {
         apply_filter(
             &mut all_steps,
             &mut hook_map,
             drop_threshold,
-            session_id,
-            hook_overlays,
+            &zoo_events,
         );
     }
 
-    // 7. Output
+    // 6. Output
     if args.json {
         display::output_steps_json(&all_steps, &hook_map);
     } else {
@@ -579,88 +636,11 @@ fn cmd_steps(
 }
 
 fn cmd_tokens(args: &Args, session_id: &str) {
-    let db =
-        DbTarget::from_cli(args.db.as_ref().map(|p| zutil::expand_tilde(p)));
+    let filter = args.host.filter(args.db.as_deref());
+    let providers = build_providers(filter, args.db.as_deref());
+    let (_, session) = resolve_or_die(&providers, filter, session_id);
 
-    let resolved = match resolve_session_id(session_id, &db) {
-        Ok(Some(id)) => id,
-        Ok(None) => {
-            eprintln!("Error: no session found matching '{session_id}'");
-            std::process::exit(2);
-        }
-        Err(amb) => {
-            eprintln!(
-                "Error: ambiguous session ID prefix '{}' matches \
-                 multiple sessions:",
-                amb.prefix
-            );
-            for m in &amb.matches {
-                eprintln!("  {m}");
-            }
-            std::process::exit(2);
-        }
-    };
-    let session_id = &resolved;
-
-    let messages = db::query_message_parts(session_id, &db);
-
-    let mut rows: Vec<Value> = Vec::new();
-    for msg in &messages {
-        let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
-        let parts = msg
-            .get("parts")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-        let msg_id =
-            msg.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let segments = parts
-            .iter()
-            .filter(|p| {
-                p.get("type").and_then(|v| v.as_str()) != Some("step-finish")
-            })
-            .count();
-
-        let tokens = zutil::estimate_tokens(&parts);
-
-        // Classify role
-        let role_class = match role {
-            "user" => "user",
-            "assistant" => {
-                let has_tool = parts.iter().any(|p| {
-                    p.get("type").and_then(|v| v.as_str()) == Some("tool")
-                });
-                if has_tool { "tool_use" } else { "assistant" }
-            }
-            "tool" => "tool_result",
-            _ => role,
-        };
-
-        // Extract first text content as preview
-        let preview = parts
-            .iter()
-            .find(|p| p.get("type").and_then(|v| v.as_str()) == Some("text"))
-            .and_then(|p| p.get("text").and_then(|v| v.as_str()))
-            .map(|t| {
-                let collapsed = t.replace('\n', " ").trim().to_string();
-                zutil::truncate_width(&collapsed, 40)
-            })
-            .unwrap_or_default();
-
-        let mut row = Map::new();
-        row.insert("id".to_string(), Value::String(msg_id));
-        row.insert("role".to_string(), Value::String(role_class.to_string()));
-        row.insert(
-            "tokens".to_string(),
-            Value::Number(Number::from(tokens as u64)),
-        );
-        row.insert(
-            "segments".to_string(),
-            Value::Number(Number::from(segments as u64)),
-        );
-        row.insert("preview".to_string(), Value::String(preview));
-        rows.push(Value::Object(row));
-    }
+    let rows = events::build_token_rows(&session);
 
     if args.json {
         display::output_tokens_json(&rows);
@@ -682,7 +662,7 @@ fn main() {
             cmd_show(&args, session_id, *all, *verbose);
         }
         Some(Command::Export { session_id, all, format, output }) => {
-            cmd_export(&args, session_id, *all, format, output);
+            cmd_export(&args, session_id, *all, *format, output);
         }
         Some(Command::Steps {
             session_id,
@@ -850,6 +830,48 @@ mod tests {
     }
 
     #[test]
+    fn test_args_global_host_defaults_to_auto() {
+        let args = Args::try_parse_from(["ztrace", "show", "ses-001"])
+            .expect("show should parse");
+        assert_eq!(args.host, HostChoice::Auto);
+    }
+
+    #[test]
+    fn test_args_global_host_choices() {
+        for (value, expected) in [
+            ("opencode", HostChoice::OpenCode),
+            ("pi", HostChoice::Pi),
+            ("auto", HostChoice::Auto),
+        ] {
+            let args = Args::try_parse_from([
+                "ztrace", "--host", value, "show", "ses-001",
+            ])
+            .expect("host value should parse");
+            assert_eq!(args.host, expected, "value {value:?}");
+        }
+    }
+
+    #[test]
+    fn test_host_filter_db_wins_over_host() {
+        assert_eq!(
+            HostChoice::Auto.filter(Some("x.db")),
+            HostFilter::Only(Host::OpenCode)
+        );
+        assert_eq!(HostChoice::Auto.filter(None), HostFilter::Auto);
+        // An explicit `--db` always wins over `--host` (aligned with
+        // zfind/zinspect): even `--host pi` must target the database.
+        assert_eq!(
+            HostChoice::Pi.filter(Some("x.db")),
+            HostFilter::Only(Host::OpenCode)
+        );
+        assert_eq!(
+            HostChoice::OpenCode.filter(Some("x.db")),
+            HostFilter::Only(Host::OpenCode)
+        );
+        assert_eq!(HostChoice::Pi.filter(None), HostFilter::Only(Host::Pi));
+    }
+
+    #[test]
     fn test_args_help_shows_help() {
         let err = Args::try_parse_from(["ztrace", "--help"])
             .expect_err("--help should produce error");
@@ -889,5 +911,104 @@ mod tests {
         let args = Args::try_parse_from(["ztrace"])
             .expect("no subcommand should parse with None command");
         assert!(args.command.is_none());
+    }
+
+    // ── apply_filter (zoo events reuse) ─────────────────────────────────────
+
+    #[test]
+    fn test_apply_filter_rematches_hooks_to_surviving_steps() {
+        // The zoo events parsed once in `cmd_steps` are passed into the
+        // filter and re-matched against the surviving steps after the
+        // delta_cache retain.
+        let mut steps = vec![
+            serde_json::json!({
+                "_display_index": 1,
+                "time_created": "2024-05-06T12:53:30.000000Z",
+                "delta_cache": 10.0,
+            }),
+            serde_json::json!({
+                "_display_index": 2,
+                "time_created": "2024-05-06T12:53:40.000000Z",
+                "delta_cache": -50.0,
+            }),
+        ];
+        let zoo_events = vec![
+            serde_json::json!({
+                "hook": "task-prompt-validate",
+                "timestamp": "2024-05-06T12:53:25Z",
+            }),
+            serde_json::json!({
+                "hook": "json-error-nudge",
+                "timestamp": "2024-05-06T12:53:36Z",
+            }),
+        ];
+        let mut hook_map: HashMap<i64, Vec<String>> = HashMap::new();
+
+        apply_filter(&mut steps, &mut hook_map, 1, &zoo_events);
+
+        // Only the step with delta_cache < -1 survives and is re-indexed.
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0]["_display_index"], 1);
+        assert!(
+            hook_map.contains_key(&1),
+            "surviving step should be re-matched against zoo events"
+        );
+        assert!(
+            !hook_map.contains_key(&2),
+            "removed step should not retain hook entries"
+        );
+    }
+
+    #[test]
+    fn test_apply_filter_no_events_yields_empty_hook_map() {
+        // Overlays disabled: `cmd_steps` passes an empty slice, and the
+        // filter must leave the hook map empty (behavioural equivalent to
+        // the previous `hook_overlays` guard).
+        let mut steps = vec![serde_json::json!({
+            "_display_index": 1,
+            "time_created": "2024-05-06T12:53:30.000000Z",
+            "delta_cache": -5.0,
+        })];
+        let mut hook_map: HashMap<i64, Vec<String>> = HashMap::new();
+
+        apply_filter(&mut steps, &mut hook_map, 1, &[]);
+
+        assert_eq!(steps.len(), 1);
+        assert!(hook_map.is_empty(), "no zoo events means no hook entries");
+    }
+
+    // ── compute_step_metrics (unknown vs provider duration) ───────────────
+
+    #[test]
+    fn test_compute_step_metrics_unknown_duration_is_null_not_zero() {
+        // pi records no duration_ms, and its per-step time_created equals
+        // time_updated (both are the usage timestamp). The metrics pass
+        // must surface `null` (unknown) instead of a misleading 0.0 that
+        // would look like a real zero-length turn.
+        let mut steps = vec![serde_json::json!({
+            "time_created": "2025-01-09T12:34:56Z",
+            "time_updated": "2025-01-09T12:34:56Z",
+            "cache_read": 30.0,
+            "cache_write": 10.0,
+            "input_tokens": 100.0,
+        })];
+        compute_step_metrics(&mut steps);
+        assert!(steps[0]["duration"].is_null());
+    }
+
+    #[test]
+    fn test_compute_step_metrics_keeps_provider_duration() {
+        // OpenCode derives the step duration from `Usage.duration_ms` in
+        // the events layer; the metrics pass must keep that value.
+        let mut steps = vec![serde_json::json!({
+            "time_created": "2025-01-09T12:34:56Z",
+            "time_updated": "2025-01-09T12:34:56Z",
+            "cache_read": 30.0,
+            "cache_write": 10.0,
+            "input_tokens": 100.0,
+            "duration": 42.0,
+        })];
+        compute_step_metrics(&mut steps);
+        assert!((steps[0]["duration"].as_f64().unwrap() - 42.0).abs() < 0.01);
     }
 }

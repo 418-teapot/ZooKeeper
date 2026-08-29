@@ -193,17 +193,20 @@ OpenCode 日志写入以下位置：
 
 ## CLI 工具
 
-`tools/` 下有 4 个 CLI 工具用于分析 zoo 插件日志、会话记录和 token 消耗。
+`tools/` 下有 4 个 CLI 工具用于分析 zoo 插件日志、会话记录和 token 消耗。会话数据经 `zutil::session` 的 host 无关领域模型访问（OpenCode SQLite 与 pi JSONL 各由一个 provider 翻译），工具层不含 host 特判。
 
 | 工具 | 语言 | 职责 | 主要子命令 |
 |------|------|------|-----------|
-| `zfind` | Rust | 搜索 SQLite 中的会话与消息 | `search <keyword>` / `search --exact <title>` / `list [--all]` / `show <sid>` / `message <id>` |
+| `zfind` | Rust | 搜索会话与消息（OpenCode + pi 双 host） | `search <keyword>` / `search --exact <title>` / `list [--all]` / `show <sid>` / `message <id>` |
 | `zlog` | Rust | 实时过滤 zoo JSONL 日志 | `show <id>` / `tail <id>`（支持 `--hook` / `--level` / `--event` / `--raw` 过滤） |
-| `ztrace` | Rust | 完整编排追踪（多源合并） | `show <id>` / `export <id>` / `steps <id>` / `tokens <id>` |
+| `ztrace` | Rust | 完整编排追踪（会话事件流 + zoo 日志 + host 事件） | `show <id>` / `export <id>` / `steps <id>` / `tokens <id>` |
 | `zinspect` | Rust | 事件统计与 hook 影响分析 | `stats <id>` / `stats --sessions N` / `timeline <id>` / `impact [<id>]` |
 
-**共享标志**（全部四工具）：`--json` / `--no-color`；`zfind` / `ztrace` / `zinspect` 额外 `--db <path>`。
+**Host 支持**：`zfind` / `ztrace` / `zinspect` 按 session ID 自动检测 host（`ses_` 前缀 → OpenCode，UUID → pi），可用 `--host <opencode|pi>` 显式限定；`--db <path>` 显式指定 OpenCode SQLite（隐含 `--host opencode`，同给时 `--db` 胜出）。pi 会话目录经 `ZOO_PI_DATA_DIR` 覆盖（默认 `~/.pi/agent`）。pi 不提供的维度（如 host 生命周期事件）显式提示"该 host 不提供"而非报错。
+**共享标志**（全部四工具）：`--json` / `--no-color`。
 **短标志**：`-j`（`--json`）、`-a`（`--all`，含子会话）、`-v`（`--verbose`）。
+
+**zfind message 语义**：`message <id>` 按事件 id 前缀匹配——`Message` 按消息 id、`ToolUse`/`ToolResult` 按 tool-call id（同一 tool-call id 可同时命中 tool use 与其 result）；`--scan N` 为每 host 各取最新 N 个会话（非全局 N）。
 
 **退出码**：`0` 成功 / `1` 参数错误 / `2` 未找到。全部工具支持 session ID 前缀匹配。
 

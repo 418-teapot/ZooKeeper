@@ -16,6 +16,8 @@ pub mod db_helpers;
 
 pub mod fileio;
 
+pub mod session;
+
 /// Return the `ZooKeeper` log directory, expanding `~` to the user home.
 #[must_use]
 pub fn get_zoo_log_dir() -> String {
@@ -200,6 +202,46 @@ pub fn iso_to_epoch_ms(ts: &str) -> i64 {
         return nd.and_utc().timestamp_millis();
     }
     0
+}
+
+/// Normalize a timestamp to ISO 8601 with `Z` suffix.
+///
+/// Returns an empty string for empty input. Input already ending in `Z`
+/// is returned as-is; other parseable values are reformatted with `Z` and
+/// six-digit microseconds; unparseable input is returned unchanged.
+///
+/// Shared by the `OpenCode` log parser (`zutil::session::opencode`) and
+/// the `ztrace` zoo-log parser.
+#[must_use]
+pub fn normalize_timestamp(ts: &str) -> String {
+    if ts.is_empty() {
+        return String::new();
+    }
+    if ts.ends_with('Z') {
+        return ts.to_string();
+    }
+
+    // Try RFC 3339 parsing (covers +00:00 style offsets).
+    let cleaned = ts.replace('Z', "+00:00");
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&cleaned) {
+        return dt.format("%Y-%m-%dT%H:%M:%S.%6fZ").to_string();
+    }
+
+    // Try NaiveDateTime with fractional seconds.
+    if let Ok(nd) =
+        chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%dT%H:%M:%S%.f")
+    {
+        return nd.and_utc().format("%Y-%m-%dT%H:%M:%S.%6fZ").to_string();
+    }
+
+    // Try NaiveDateTime without fractional seconds.
+    if let Ok(nd) =
+        chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%dT%H:%M:%S")
+    {
+        return nd.and_utc().format("%Y-%m-%dT%H:%M:%S.%6fZ").to_string();
+    }
+
+    ts.to_string()
 }
 
 /// Convert a `serde_json::Value` to a string for token estimation.
@@ -521,6 +563,54 @@ mod tests {
     fn test_iso_to_epoch_ms_invalid() {
         assert_eq!(iso_to_epoch_ms("not-a-date"), 0);
         assert_eq!(iso_to_epoch_ms("garbage"), 0);
+    }
+
+    #[test]
+    fn test_normalize_timestamp_with_z() {
+        assert_eq!(
+            normalize_timestamp("2025-01-09T12:34:56Z"),
+            "2025-01-09T12:34:56Z"
+        );
+    }
+
+    #[test]
+    fn test_normalize_timestamp_with_z_and_micros() {
+        assert_eq!(
+            normalize_timestamp("2025-01-09T12:34:56.123456Z"),
+            "2025-01-09T12:34:56.123456Z"
+        );
+    }
+
+    #[test]
+    fn test_normalize_timestamp_without_z() {
+        let result = normalize_timestamp("2025-01-09T12:34:56");
+        // Should add Z suffix
+        assert!(result.ends_with('Z'));
+        assert!(result.starts_with("2025-01-09T12:34:56"));
+    }
+
+    #[test]
+    fn test_normalize_timestamp_without_z_micros() {
+        let result = normalize_timestamp("2025-01-09T12:34:56.123456");
+        assert_eq!(result, "2025-01-09T12:34:56.123456Z");
+    }
+
+    #[test]
+    fn test_normalize_timestamp_empty() {
+        assert_eq!(normalize_timestamp(""), "");
+    }
+
+    #[test]
+    fn test_normalize_timestamp_invalid() {
+        assert_eq!(normalize_timestamp("not-a-date"), "not-a-date");
+        assert_eq!(normalize_timestamp("garbage"), "garbage");
+    }
+
+    #[test]
+    fn test_normalize_timestamp_with_offset() {
+        // +00:00 offset should be normalized to Z
+        let result = normalize_timestamp("2025-01-09T12:34:56.123456+00:00");
+        assert_eq!(result, "2025-01-09T12:34:56.123456Z");
     }
 
     #[test]

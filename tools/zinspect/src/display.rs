@@ -387,11 +387,15 @@ fn compute_token_summary_json(steps: &[Value]) -> Value {
 }
 
 /// Build full session stats as a JSON value (pure, no I/O).
+///
+/// The session-level `model` (from the session store) is emitted as a
+/// `model` key only when the host recorded one.
 pub fn build_json_full_stats(
     events: &[Value],
     steps: &[Value],
     path: &str,
     session_id: &str,
+    model: Option<&str>,
 ) -> Value {
     let total = events.len();
     let time_span = compute_time_span(events);
@@ -477,6 +481,9 @@ pub fn build_json_full_stats(
     });
     if let Some(pruning) = build_pruning_summary(events) {
         result["pruning"] = pruning;
+    }
+    if let Some(model) = model {
+        result["model"] = Value::String(model.to_string());
     }
     result
 }
@@ -766,8 +773,9 @@ pub fn print_json_full_stats(
     steps: &[Value],
     path: &str,
     session_id: &str,
+    model: Option<&str>,
 ) {
-    print_json(&build_json_full_stats(events, steps, path, session_id));
+    print_json(&build_json_full_stats(events, steps, path, session_id, model));
 }
 
 /// Print level distribution table.
@@ -801,12 +809,14 @@ fn print_level_distribution_table(events: &[Value]) {
 /// Print full session stats as rich output.
 ///
 /// Each section summary is computed exactly once and passed to the
-/// section printers.
+/// section printers. The session-level `model` (from the session store)
+/// renders in the header only when the host recorded one.
 pub fn print_full_stats(
     events: &[Value],
     steps: &[Value],
     path: &str,
     session_id: &str,
+    model: Option<&str>,
 ) {
     let total = events.len();
     let time_span = compute_time_span(events);
@@ -823,6 +833,9 @@ pub fn print_full_stats(
     msg_print(&format!(
         "\n[bold]Stats for session:[/bold] [cyan]{session_id}[/cyan]"
     ));
+    if let Some(model) = model {
+        msg_print(&format!("Model: [blue]{model}[/blue]"));
+    }
     msg_print(&format!("[dim]File: {path}[/dim]"));
     msg_print(&format!("[bold]Total events: {total}[/bold]"));
     if time_span.is_empty() {
@@ -1354,6 +1367,57 @@ pub struct CostData {
     pub after: f64,
 }
 
+/// Print the per-session tool usage table.
+///
+/// Each row is a `Value` with `session_id` and a `tools` map whose keys
+/// are tool names and values carry `calls` and `duration_ms`. Rows are
+/// rendered in input order; tool names sort alphabetically.
+pub fn print_tool_usage(rows: &[Value]) {
+    if rows.is_empty() {
+        return;
+    }
+    let width = get_terminal_width();
+    let mut table = Table::new()
+        .title("Tool Usage per Session")
+        .title_justify(JustifyMethod::Left)
+        .show_header(true)
+        .show_edge(true)
+        .show_lines(false);
+    table.add_column(
+        Column::new("Session ID").no_wrap().overflow(OverflowMethod::Ellipsis),
+    );
+    table.add_column(Column::new("Tool"));
+    table.add_column(
+        Column::new("Calls").justify(JustifyMethod::Right).no_wrap(),
+    );
+    table.add_column(
+        Column::new("Duration").justify(JustifyMethod::Right).no_wrap(),
+    );
+
+    for row in rows {
+        let sid = row.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
+        let Some(tools) = row.get("tools").and_then(Value::as_object) else {
+            continue;
+        };
+        let mut names: Vec<&str> = tools.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        for name in names {
+            let tool = &tools[name];
+            let calls = tool.get("calls").and_then(Value::as_i64).unwrap_or(0);
+            let duration_ms =
+                tool.get("duration_ms").and_then(Value::as_i64).unwrap_or(0);
+            table.add_row(Row::new(vec![
+                Cell::new(sid),
+                Cell::new(name),
+                Cell::new(calls.to_string()),
+                Cell::new(format_duration(duration_ms / 1000)),
+            ]));
+        }
+    }
+
+    render_table(width, &table);
+}
+
 /// Print the cost impact table.
 ///
 /// Keys are `hook:event` composite keys, mirroring the impact aggregation.
@@ -1607,8 +1671,13 @@ mod tests {
             json!({"level": "warn", "sessionId": "ses-001", "hook": "json-error-nudge", "event": "trigger", "timestamp": "2025-01-09T14:30:00Z"}),
         ];
         let steps = vec![make_step(100.0, 50.0, 30.0, 10.0, 0.005)];
-        let result =
-            build_json_full_stats(&events, &steps, "/tmp/test.log", "ses-001");
+        let result = build_json_full_stats(
+            &events,
+            &steps,
+            "/tmp/test.log",
+            "ses-001",
+            None,
+        );
         assert_eq!(result["session_id"], "ses-001");
         assert_eq!(result["file"], "/tmp/test.log");
         assert_eq!(result["total_events"], 2);
@@ -1633,8 +1702,13 @@ mod tests {
 
     #[test]
     fn test_build_json_full_stats_empty_events() {
-        let result =
-            build_json_full_stats(&[], &[], "/tmp/empty.log", "ses-empty");
+        let result = build_json_full_stats(
+            &[],
+            &[],
+            "/tmp/empty.log",
+            "ses-empty",
+            None,
+        );
         assert_eq!(result["total_events"], 0);
         assert_eq!(result["time_span"], Value::Null);
         assert_eq!(result["active_session_ids"], Value::Null);
@@ -1648,8 +1722,13 @@ mod tests {
         let events = vec![
             json!({"level": "info", "sessionId": "ses-001", "hook": "task-prompt", "event": "validate", "timestamp": "2025-01-09T12:00:00Z"}),
         ];
-        let result =
-            build_json_full_stats(&events, &[], "/tmp/test.log", "ses-001");
+        let result = build_json_full_stats(
+            &events,
+            &[],
+            "/tmp/test.log",
+            "ses-001",
+            None,
+        );
         assert_eq!(result["token_summary"], Value::Null);
     }
 
@@ -1659,7 +1738,7 @@ mod tests {
             json!({"level": "info", "sessionId": "ses-001", "timestamp": "2025-01-09T12:00:00Z"}),
             json!({"level": "debug", "sessionId": "ses-002", "timestamp": "2025-01-09T12:01:00Z"}),
         ];
-        let result = build_json_full_stats(&events, &[], "", "ses-main");
+        let result = build_json_full_stats(&events, &[], "", "ses-main", None);
         let ids = result["active_session_ids"].as_array().unwrap();
         assert_eq!(ids.len(), 2);
     }
@@ -1976,7 +2055,7 @@ mod tests {
             json!({"level": "info", "hook": "task-prompt", "event": "validate"}),
         ];
         let result =
-            build_json_full_stats(&events, &[], "/tmp/t.log", "ses-001");
+            build_json_full_stats(&events, &[], "/tmp/t.log", "ses-001", None);
         assert!(result.get("pruning").is_none());
 
         // With pruning events → conditional pruning key present.
@@ -1984,7 +2063,7 @@ mod tests {
             json!({"event": "marks_released", "releasedCount": 2, "releasedTokens": 100}),
         ];
         let result =
-            build_json_full_stats(&events, &[], "/tmp/t.log", "ses-001");
+            build_json_full_stats(&events, &[], "/tmp/t.log", "ses-001", None);
         assert!(result.get("pruning").is_some());
         assert_eq!(result["pruning"]["released"]["count"], 2);
         assert_eq!(result["pruning"]["released"]["tokens"], 100);
@@ -2017,7 +2096,7 @@ mod tests {
     #[test]
     fn test_build_json_full_stats_roundtrip() {
         let value =
-            build_json_full_stats(&[], &[], "/tmp/test.log", "ses-test");
+            build_json_full_stats(&[], &[], "/tmp/test.log", "ses-test", None);
         let json_str = serde_json::to_string_pretty(&value)
             .expect("build_json_full_stats should serialize");
         let _parsed: Value = serde_json::from_str(&json_str)
