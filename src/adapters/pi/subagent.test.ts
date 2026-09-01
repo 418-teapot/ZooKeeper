@@ -841,4 +841,28 @@ describe("pi subagent driver — progress snapshots", () => {
       assert.equal(snapshot.sessionPath, undefined);
     }
   });
+
+  it("reports the resolved child session id on every snapshot once the session manager exists", async () => {
+    const h = harness();
+    h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
+    const snapshots: SubagentProgress[] = [];
+    await h.driver.run(
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      {
+        signal: new AbortController().signal,
+        onProgress: (p) => snapshots.push(p),
+      },
+    );
+    // The harness's mock session manager reports `child-session`, so every
+    // snapshot — including the terminal done one — carries that id so the
+    // tool layer can associate the run with its sub-session in the registry.
+    assert.ok(snapshots.length > 0, "expected at least one snapshot");
+    for (const snapshot of snapshots) {
+      assert.equal(
+        snapshot.childSession,
+        "child-session",
+        `childSession missing on snapshot: ${JSON.stringify(snapshot)}`,
+      );
+    }
+  });
 });

@@ -6,10 +6,12 @@
  * returns a reason text and never throws), capability-set computation for
  * the TARGET agent (baseline minus the target's config.toml tool-level
  * denies, fail-closed on a missing baseline), the `runSubagent` request
- * shape (agent / task / tools / parentSession), and the `SubagentResult`
+ * shape (agent / task / tools / parentSession), the `SubagentResult`
  * → tool-text mapping (ok → text verbatim; failure variants → text plus a
- * short reason line).  Also covers the fail-closed registration gate: with
- * no `subagentDriver` in deps the unit contributes zero tools.
+ * short reason line), and the run-registry write lifecycle (start /
+ * update / finish with the forwarded tool-call id and the nested
+ * parent-session pointer).  Also covers the fail-closed registration gate:
+ * with no `subagentDriver` in deps the unit contributes zero tools.
  */
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -26,20 +28,27 @@ import {
   setPrimary,
 } from "../core/subagent/identity.js";
 import {
+  getRun,
+  resetRegistry,
+  topLevelRuns,
+} from "../core/subagent/registry.js";
+import {
   _getBufferForTesting,
   _resetForTesting as _resetLoggerForTesting,
 } from "../utils/logger.js";
 import { unit } from "./subagent.js";
 
-// The identity core is process-global (bun shares one isolate across every
-// test file), so reset it between tests to keep the caller-resolution
-// assertions deterministic.
+// The identity and registry cores are process-global (bun shares one isolate
+// across every test file), so reset them between tests to keep the
+// caller-resolution and registry-write assertions deterministic.
 beforeEach(() => {
   _resetIdentityForTesting();
+  resetRegistry();
 });
 
 afterEach(() => {
   _resetIdentityForTesting();
+  resetRegistry();
   _resetLoggerForTesting();
 });
 
@@ -752,20 +761,28 @@ describe("subagent tool execute — progress bridge to onUpdate", () => {
 
     assert.equal(result, "done");
     // Each snapshot reaches onUpdate as a pi-style partial result carrying
-    // the compact one-line text (prefixed by the description label) and the
-    // full structured progress in details (for the TUI card renderer).
+    // the compact one-line text (prefixed by the description label), the
+    // full structured progress in details (for the TUI card renderer), and
+    // the run's registry id (synthetic here — the pi bridge forwards the
+    // real tool-call id via hostCtx.callId).
     assert.equal(partials.length, 3);
+    const runId = (partials[0] as { details?: { runId?: string } }).details
+      ?.runId;
+    assert.ok(
+      typeof runId === "string" && runId.length > 0,
+      "details must carry the run id",
+    );
     assert.deepEqual(partials[0], {
       content: [{ type: "text", text: "[实现任务] [bash] " }],
-      details: { currentTool: "bash", output: "", done: false },
+      details: { currentTool: "bash", output: "", done: false, runId },
     });
     assert.deepEqual(partials[1], {
       content: [{ type: "text", text: "[实现任务] [bash] running" }],
-      details: { currentTool: "bash", output: "running", done: false },
+      details: { currentTool: "bash", output: "running", done: false, runId },
     });
     assert.deepEqual(partials[2], {
       content: [{ type: "text", text: "[实现任务] finished" }],
-      details: { output: "finished", done: true },
+      details: { output: "finished", done: true, runId },
     });
   });
 
@@ -845,5 +862,225 @@ describe("subagent tool execute — progress bridge to onUpdate", () => {
     );
     assert.equal(t.renderCall, undefined);
     assert.equal(t.renderResult, undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Run-registry write lifecycle
+// ---------------------------------------------------------------------------
+
+describe("subagent tool execute — run-registry writes", () => {
+  it("writes start/update/finish keyed by the forwarded tool-call id", async () => {
+    setPrimary("dolphin");
+    const snapshots: SubagentProgress[] = [
+      { currentTool: "bash", output: "", done: false },
+      { output: "finished", done: true, sessionPath: "/tmp/s.jsonl" },
+    ];
+    const driver: SubagentDriver = {
+      async run(_req, ctx) {
+        for (const snapshot of snapshots) ctx.onProgress?.(snapshot);
+        return { kind: "ok", text: "done" };
+      },
+    };
+    const t = tool(makeDeps({ subagentDriver: driver }));
+    const result = await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "t" },
+      TOOL_CTX,
+      // The pi bridge forwards the real tool-call id via hostCtx.callId.
+      { callId: "call-42" },
+    );
+    assert.equal(result, "done");
+
+    const run = getRun("call-42");
+    assert.ok(run, "the run must be registered under the call id");
+    assert.equal(run?.agent, "beaver");
+    assert.equal(run?.parentSession, "sess-subagent");
+    assert.equal(run?.label, "实现任务");
+    // The running snapshot's currentTool was patched via updateRun.
+    assert.equal(run?.currentTool, "bash");
+    // Terminal state: done with the session path captured from the last
+    // snapshot.
+    assert.equal(run?.status, "done");
+    assert.equal(run?.sessionPath, "/tmp/s.jsonl");
+    assert.ok(run?.endedAt !== undefined, "endedAt must be set");
+  });
+
+  it("maps error and aborted outcomes onto the terminal status", async () => {
+    setPrimary("dolphin");
+    const okT = tool(
+      makeDeps({
+        subagentDriver: {
+          async run() {
+            return { kind: "error", text: "partial", errorMessage: "boom" };
+          },
+        },
+      }),
+    );
+    await okT.execute(
+      { agent: "beaver", description: "实现任务", prompt: "t" },
+      TOOL_CTX,
+      { callId: "call-e" },
+    );
+    assert.equal(getRun("call-e")?.status, "error");
+    assert.equal(getRun("call-e")?.error, "boom");
+
+    const abortT = tool(
+      makeDeps({
+        subagentDriver: {
+          async run() {
+            return { kind: "aborted", text: "partial" };
+          },
+        },
+      }),
+    );
+    await abortT.execute(
+      { agent: "beaver", description: "实现任务", prompt: "t" },
+      TOOL_CTX,
+      { callId: "call-a" },
+    );
+    assert.equal(getRun("call-a")?.status, "aborted");
+  });
+
+  it("records the child session so nested runs associate through it", async () => {
+    setPrimary("dolphin");
+    const driver: SubagentDriver = {
+      async run(_req, ctx) {
+        ctx.onProgress?.({
+          childSession: "child-ses-1",
+          output: "",
+          done: false,
+        });
+        return { kind: "ok", text: "done" };
+      },
+    };
+    const t = tool(makeDeps({ subagentDriver: driver }));
+    await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "t" },
+      TOOL_CTX,
+      { callId: "call-p" },
+    );
+    assert.equal(getRun("call-p")?.childSession, "child-ses-1");
+
+    // A nested delegation inside the beaver sub-session carries that child
+    // session as its own parentSession (topLevelRuns under the main session
+    // therefore excludes it).  lynx must be declared a valid subagent target.
+    const nestedT = tool(
+      makeDeps({
+        subagentDriver: driver,
+        agentModes: {
+          beaver: "subagent",
+          lynx: "subagent",
+          dolphin: "primary",
+        },
+        subagentModels: {
+          beaver: "Dummy/dummy-small",
+          lynx: "Dummy/dummy-small",
+        },
+      }),
+    );
+    await nestedT.execute(
+      { agent: "lynx", description: "调研", prompt: "t" },
+      { sessionID: "child-ses-1", abort: TOOL_CTX.abort },
+      { callId: "call-c" },
+    );
+    assert.equal(getRun("call-c")?.parentSession, "child-ses-1");
+    assert.deepEqual(
+      topLevelRuns("sess-subagent").map((r) => r.id),
+      ["call-p"],
+      "the nested run must not appear under the main session",
+    );
+  });
+
+  it("assigns a unique ASCII synthetic run id per delegation when no call id is forwarded", async () => {
+    setPrimary("dolphin");
+    const t = tool(
+      makeDeps({
+        subagentDriver: {
+          async run() {
+            return { kind: "ok", text: "done" };
+          },
+        },
+      }),
+    );
+    // Two delegations without a forwarded tool-call id (the OpenCode / test
+    // path) must get DISTINCT synthetic ids — the previous scheme stamped
+    // `Date.now()` (colliding within the same millisecond) with a non-ASCII
+    // `→` arrow.
+    await t.execute(
+      { agent: "beaver", description: "任务一", prompt: "t" },
+      TOOL_CTX,
+    );
+    await t.execute(
+      { agent: "beaver", description: "任务二", prompt: "t" },
+      TOOL_CTX,
+    );
+    const runs = topLevelRuns("sess-subagent");
+    assert.equal(runs.length, 2, "both synthetic runs must be registered");
+    assert.notEqual(
+      runs[0]?.id,
+      runs[1]?.id,
+      "consecutive synthetic run ids must never collide",
+    );
+    for (const run of runs) {
+      assert.ok(
+        /^[ -~]+$/.test(run.id),
+        `synthetic id must stay ASCII: ${run.id}`,
+      );
+      assert.ok(
+        run.id.includes("beaver"),
+        `id must carry the agent: ${run.id}`,
+      );
+    }
+  });
+
+  it("notifies onSubagentRunChange on start, update, and finish", async () => {
+    setPrimary("dolphin");
+    let notifications = 0;
+    const driver: SubagentDriver = {
+      async run(_req, ctx) {
+        ctx.onProgress?.({
+          currentTool: "bash",
+          output: "",
+          done: false,
+        });
+        return { kind: "ok", text: "done" };
+      },
+    };
+    const t = tool(
+      makeDeps({
+        subagentDriver: driver,
+        onSubagentRunChange: () => {
+          notifications += 1;
+        },
+      }),
+    );
+    await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "t" },
+      TOOL_CTX,
+      { callId: "call-n" },
+    );
+    // start + update (currentTool) + finish.
+    assert.ok(
+      notifications >= 3,
+      `expected ≥3 notifications, got ${notifications}`,
+    );
+  });
+
+  it("stays silent when no parent session id is available", async () => {
+    setPrimary("dolphin");
+    const t = tool(
+      makeDeps({
+        subagentDriver: {
+          async run() {
+            return { kind: "ok", text: "done" };
+          },
+        },
+      }),
+    );
+    await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "t" },
+      { abort: TOOL_CTX.abort },
+    );
+    assert.equal(topLevelRuns("").length, 0, "no run without a parent session");
   });
 });

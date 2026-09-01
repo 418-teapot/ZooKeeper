@@ -83,11 +83,16 @@ import {
 } from "./adapters/pi/handoff-target.js";
 import { createPiSubagentDriver } from "./adapters/pi/subagent.js";
 import {
+  type PiHistoryEntry,
+  rebuildSubagentRuns,
+} from "./adapters/pi/subagent-scan.js";
+import {
   createPiToolHost,
   type PiContextHolder,
   type PiToolHostContext,
 } from "./adapters/pi/tool-host.js";
 import { buildSubagentCardRenderer } from "./adapters/pi/tui/index.js";
+import { createFleetWidget } from "./adapters/pi/tui/widget.js";
 import {
   buildPiCommandRegistrationPlan,
   buildPiContextHandler,
@@ -396,6 +401,13 @@ export function buildPiContributions(
      * supplier is invoked lazily on first subagent execution and cached.
      */
     subagentBaseline?: () => string[] | undefined;
+    /**
+     * Called after every subagent run-registry mutation so the entry point
+     * can nudge its fleet widget to re-render (the widget reads the
+     * process-level registry directly on render).  Undefined on hosts
+     * without a fleet widget.
+     */
+    onSubagentRunChange?: () => void;
   },
   rawConfig?: any,
 ): {
@@ -451,6 +463,10 @@ export function buildPiContributions(
     // the subagent tool errors (never inherits or falls back) when the
     // target agent's entry is absent.
     subagentModels: loadAgentsJson(),
+    // Registry-write notification: the tool layer calls this after every
+    // subagent run start/update/finish so the fleet widget re-renders with
+    // the latest registry state.
+    onSubagentRunChange: hostDeps?.onSubagentRunChange,
     // pi has no SDK client — the context-pruning transform runs and
     // returns the pruned replacement to pi.  The release notification
     // does not need the client: it posts through the unified pi tool
@@ -688,10 +704,22 @@ export function buildPiHandlers(
     const b = Number.parseInt(hex.slice(5, 7), 16);
     return `\x1b[38;2;${r};${g};${b}m${name}\x1b[39m`;
   };
-  // Render one `zoo` widget line: a `◆` marker followed by the agent
-  // name (colorized when configured).  Single-line so the widget stays
-  // compact above the editor.
-  const renderZooLine = (name: string): string => `◆ ${colorizeAgent(name)}`;
+  // The `zoo` fleet widget — the component factory registered above the
+  // editor.  It reads the active primary live from the identity core and
+  // the run registry for the current session, so a primary switch (or a
+  // registry write) only needs to nudge `refresh()`.  The widget is
+  // created once per extension closure (pi re-runs the extension factory
+  // on every session replacement, so each session gets its own instance
+  // bound to its own TUI).
+  const fleetWidget = createFleetWidget({
+    getPrimary: () => getPrimary(),
+    colorizeAgent,
+    getSessionId: sessionIdProvider,
+    getEditorText: () => contextHolder.current?.ui?.getEditorText?.() ?? "",
+    // No enter action: the widget factory has no command context (pi's
+    // `setWidget` factory receives only the TUI and theme), so enter is a
+    // no-op this round (selection + scrolling only).
+  });
   const piSwitchHost: PiSwitchHost | undefined = piApi
     ? {
         getBaselineTools: () => {
@@ -705,18 +733,19 @@ export function buildPiHandlers(
           return toolBaseline;
         },
         setActiveTools: (names) => piApi.setActiveTools?.(names),
-        // Render ONLY the `zoo` widget text (the active-primary label):
-        // every other key passes through plain.  A name with no
-        // configured color stays plain (fail-closed).  `undefined`
-        // content hides the widget.
-        setWidget: (key, lines) =>
-          contextHolder.current?.ui?.setWidget?.(
-            key,
-            key === "zoo" && lines !== undefined
-              ? lines.map((name) => renderZooLine(name))
-              : lines,
-            { placement: "aboveEditor" },
-          ),
+        // For the `zoo` key this is now a "primary changed" notification:
+        // the fleet widget reads the active primary live, so the switch
+        // only nudges it to re-render.  Every other key passes through
+        // plain.  `undefined` content hides the widget.
+        setWidget: (key, lines) => {
+          if (key === "zoo") {
+            fleetWidget.refresh();
+            return;
+          }
+          contextHolder.current?.ui?.setWidget?.(key, lines, {
+            placement: "aboveEditor",
+          });
+        },
         // Replace the current session with a fresh one re-bound to the
         // target identity.  Delegates to the pi command context's
         // `newSession` (the same REPLACE operation the `/go` handoff
@@ -761,16 +790,18 @@ export function buildPiHandlers(
               // the session is replaced.
               contextHolder.current = newCtx as PiToolHostContext;
               const ops: PiSwitchNewSessionOps = {
-                // pi exposes `ui.setWidget` on the replaced-session
-                // context, so the widget updates immediately.
-                setWidget: (key, lines) =>
-                  newCtx.ui?.setWidget?.(
-                    key,
-                    key === "zoo" && lines !== undefined
-                      ? lines.map((name) => renderZooLine(name))
-                      : lines,
-                    { placement: "aboveEditor" },
-                  ),
+                // The `zoo` widget is a "primary changed" notification: the
+                // fleet widget reads the primary live, so the switch only
+                // nudges a refresh.  Every other key passes through plain.
+                setWidget: (key, lines) => {
+                  if (key === "zoo") {
+                    fleetWidget.refresh();
+                    return;
+                  }
+                  newCtx.ui?.setWidget?.(key, lines, {
+                    placement: "aboveEditor",
+                  });
+                },
                 // Applying the trim here would touch the stale action
                 // bindings that pi invalidates on replacement — defer it
                 // to the new session's first `before_agent_start`.
@@ -827,29 +858,78 @@ export function buildPiHandlers(
             return subagentToolBaseline;
           }
         : undefined,
+      // Registry-write notification → the fleet widget re-renders with the
+      // latest registry state (start / update / finish all nudge it).
+      onSubagentRunChange: () => fleetWidget.refresh(),
     },
     rawConfig,
   );
 
-  // Whether the `zoo` widget has been seeded for this session.  The seed
-  // runs once inside the first `session_start` event (see below), with a
-  // `before_agent_start` fallback; a flag keeps it from re-firing on
-  // later events within the same pi session.
-  let widgetSeeded = false;
+  // The terminal-input unsubscribe handle returned by `ui.onTerminalInput`,
+  // released when the widget is disposed (pi re-runs the extension factory
+  // on session replacement, so each session's registration cleans up after
+  // itself) or re-bound on a re-registration.  Registration is idempotent:
+  // every `session_start` / `before_agent_start` trigger re-runs it (pi
+  // replays `session_start` after a reload / resume, destroying the previous
+  // widget component, so re-running the registration must re-seed it instead
+  // of leaving it permanently gone); the listener is released before
+  // re-binding, so re-registration never stacks a second one.
+  let inputUnsubscribe: (() => void) | undefined;
 
-  // Seed the `zoo` widget (rendered above the editor) with the active
-  // primary.  `setWidget` reads the latest extension context's `ui`, so
-  // it can only run inside an event handler (never at extension-load time
-  // — pi forbids action methods during load, and the `ui` surface is
-  // absent then).  Fails closed: no pi switch host, no active primary, or
-  // no `ui` surface all no-op silently.  Once seeded, later events do not
-  // overwrite the widget.
-  const seedWidget = (): void => {
-    if (widgetSeeded || !piSwitchHost) return;
-    const primary = getPrimary();
-    if (primary === undefined) return;
-    piSwitchHost.setWidget("zoo", [primary]);
-    widgetSeeded = true;
+  // Register the `zoo` fleet widget (component factory) above the editor.
+  //
+  // The factory reads the active primary and the run registry LIVE on every
+  // render, so registration is a setWidget call and all subsequent updates
+  // (primary switch, registry write) are `refresh()` nudges.  The keyboard
+  // listener is bound to the same `ui` surface so the expanded list responds
+  // to `↑↓ / jk` while the editor is empty.
+  //
+  // Fails closed: no pi API, no active primary, or no `ui` surface all
+  // no-op silently (matching the old `seedWidget` fail-closed behaviour).
+  const registerFleetWidget = (): void => {
+    if (!piApi) return;
+    const ui = contextHolder.current?.ui;
+    if (!ui) return;
+    // Fail-closed: without an active primary (no configured primary agent)
+    // no widget is registered — the fleet line is primary-driven and a
+    // primary-less session renders nothing (matching the old seedWidget).
+    if (getPrimary() === undefined) return;
+    // Release any previous terminal-input listener before re-binding so a
+    // re-registration (pi replays `session_start` after a reload / resume)
+    // never stacks a second listener.
+    if (inputUnsubscribe !== undefined) {
+      inputUnsubscribe();
+      inputUnsubscribe = undefined;
+    }
+    if (typeof ui.setWidget === "function") {
+      ui.setWidget(
+        "zoo",
+        (tui, theme) => {
+          fleetWidget.attach(
+            tui as Parameters<typeof fleetWidget.attach>[0],
+            theme as Parameters<typeof fleetWidget.attach>[1],
+          );
+          return {
+            render: (width: number) => fleetWidget.render(width),
+            invalidate: () => fleetWidget.refresh(),
+            dispose: () => {
+              if (inputUnsubscribe !== undefined) {
+                inputUnsubscribe();
+                inputUnsubscribe = undefined;
+              }
+              fleetWidget.dispose();
+            },
+          };
+        },
+        { placement: "aboveEditor" },
+      );
+    }
+    if (typeof ui.onTerminalInput === "function") {
+      inputUnsubscribe = ui.onTerminalInput((data) =>
+        fleetWidget.handleKey(data),
+      );
+    }
+    fleetWidget.refresh();
   };
 
   // Startup anchor: mirror the OpenCode host's `plugin_init` event so a
@@ -892,7 +972,7 @@ export function buildPiHandlers(
           ...(required.length > 0 ? { required } : {}),
         } as unknown as object,
         execute: async (
-          _toolCallId: unknown,
+          toolCallId: unknown,
           params: unknown,
           signal: unknown,
           onUpdate: unknown,
@@ -904,13 +984,17 @@ export function buildPiHandlers(
           // (closure-local), so concurrent subagent cards never cross-talk.
           let lastSubagentDetails: Record<string, unknown> | undefined;
           // Forward the native execution surface to the contribution:
-          // the abort `signal` and the streaming `onUpdate` callback,
+          // the abort `signal`, the streaming `onUpdate` callback, and the
+          // tool-call `callId` (the run's registry id for the fleet widget),
           // passed through the third hostCtx argument.  The sub-session
           // model is NOT forwarded — strict mode reads the agents.json
           // configured model only (never the parent session's model).
           // compress / decompress ignore the hostCtx and keep working
           // unchanged.
           const text = await tool.execute(params, ctx, {
+            ...(typeof toolCallId === "string" && toolCallId.length > 0
+              ? { callId: toolCallId }
+              : {}),
             ...(signal instanceof AbortSignal ? { signal } : {}),
             ...(onUpdate !== undefined
               ? {
@@ -990,8 +1074,9 @@ export function buildPiHandlers(
       }
       // Fallback seed: covers flows where `session_start` fires before the
       // identity is set, or a session begins without a `session_start` in
-      // some flows.  The `widgetSeeded` guard keeps it idempotent.
-      seedWidget();
+      // some flows.  Registration is idempotent — re-running it re-seeds the
+      // widget and never stacks a terminal-input listener.
+      registerFleetWidget();
       // Resolve the current agent identity: the AsyncLocalStorage store
       // first (a delegated sub-session), falling back to the active
       // primary.  The composed agents list is looked up by the resolved
@@ -1011,10 +1096,49 @@ export function buildPiHandlers(
     },
     async sessionStart(_evt?, ctx?) {
       if (ctx) contextHolder.current = ctx as PiToolHostContext;
-      // Seed the widget at session startup / resume (before any LLM
-      // turn), so the current primary shows immediately.  `before_agent_start`
-      // runs the same seed as a fallback.
-      seedWidget();
+      // Register the fleet widget at session startup / resume (before any
+      // LLM turn), so the current primary shows immediately.
+      // `before_agent_start` runs the same registration as a fallback.
+      registerFleetWidget();
+      // Rebuild the run registry from the session's persisted message
+      // history.  The registry is process-level state, so a pi exit wipes
+      // it; on restore / resume this rescans the current session's `subagent`
+      // tool calls (via `buildContextEntries()`) and rewrites the registry,
+      // so the fleet widget keeps showing historical subagent runs.  The
+      // rebuild is recursive: each finished run's `details.sessionPath`
+      // points at its sub-session file, which is rescanned for nested
+      // delegations (beaver → lynx → ...), reconstructing the full
+      // parent/child tree.  A missing / unreadable sub-session file skips
+      // only that branch (warn).  Idempotent: run ids are the pi run ids
+      // and the registry's terminal-immutability rule never duplicates or
+      // overwrites an existing entry.  Best-effort: an unavailable session
+      // manager / history leaves the registry untouched (fresh session).
+      const sessionId = contextHolder.current?.sessionManager?.getSessionId();
+      const sessionManager = contextHolder.current?.sessionManager;
+      if (
+        typeof sessionId === "string" &&
+        sessionId.length > 0 &&
+        sessionManager?.buildContextEntries !== undefined
+      ) {
+        try {
+          // Call as a method: extracting the function reference unbinds
+          // `this`, and pi's SessionManager.buildContextEntries reads
+          // `this.getEntries()` — an unbound call crashes at runtime.
+          const entries =
+            sessionManager.buildContextEntries() as PiHistoryEntry[];
+          rebuildSubagentRuns(entries, sessionId);
+        } catch (err) {
+          log(
+            "plugin",
+            "registry_rebuild_failed",
+            sessionId,
+            undefined,
+            "warn",
+            { error: String(err) },
+          );
+        }
+      }
+      fleetWidget.refresh();
     },
     async resourcesDiscover(_evt?, ctx?) {
       if (ctx) contextHolder.current = ctx as PiToolHostContext;

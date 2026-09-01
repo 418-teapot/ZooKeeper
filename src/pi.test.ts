@@ -27,6 +27,11 @@ import {
   setPrimary,
 } from "./core/subagent/identity.js";
 import {
+  getRun,
+  resetRegistry,
+  topLevelRuns,
+} from "./core/subagent/registry.js";
+import {
   _resetPendingSwitchOpsForTesting,
   buildPiContributions,
   buildPiHandlers,
@@ -216,6 +221,7 @@ afterEach(() => {
   _resetForTesting();
   resetIdentityForTesting();
   _resetPendingSwitchOpsForTesting();
+  resetRegistry();
   delete process.env.ZOO_MODE_FILE;
 });
 // ---------------------------------------------------------------------------
@@ -1249,7 +1255,7 @@ describe("buildPiHandlers — primary-switch command wiring", () => {
     assert.deepEqual(switchNames, ["dolphin", "mola"]);
   });
 
-  it("switch command replaces the session: trims denied tools and renders the widget in the new session", async () => {
+  it("switch command replaces the session: trims denied tools and nudges the fleet widget", async () => {
     const api = mockApi();
     api.activeTools.push("webfetch", "edit", "bash");
     const handlers = buildPiHandlers(POLY_ZOO, api as any, {
@@ -1265,22 +1271,30 @@ describe("buildPiHandlers — primary-switch command wiring", () => {
     const dolphin = api.commands.find((c) => c.name === "dolphin");
     assert.ok(dolphin && typeof dolphin.handler === "function");
 
+    // Register the fleet widget first so the switch can nudge it.
+    const { calls, ctx } = widgetRecordingCtx();
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      ctx,
+    );
+
     // A switch away from the default primary (mola) to dolphin.
     setPrimary("mola");
 
-    let widgetKey = "";
-    let widgetLines: string[] | undefined;
+    // The switch command's `setWidget("zoo", ...)` is now a "primary
+    // changed" notification routed to the fleet widget (it reads the primary
+    // live), so the mock ui never receives a string-array widget for zoo.
     await (dolphin.handler as (args: string, ctx: unknown) => Promise<void>)(
       "",
-      switchCtx((key, lines) => {
-        widgetKey = key;
-        widgetLines = lines;
-      }),
+      switchCtx(() => {}),
     );
-    // The widget renders immediately via the fresh ctx's ui.
+    // The identity switched; the fleet widget (already registered) reads the
+    // new primary live on its next render.
     assert.equal(getPrimary(), "dolphin");
-    assert.equal(widgetKey, "zoo");
-    assert.deepEqual(widgetLines, ["◆ dolphin"]);
+    const { lines, dispose } = renderZooWidget(calls);
+    assert.ok(lines[0].includes("dolphin"), lines[0]);
+    assert.ok(!lines[0].includes("mola"), lines[0]);
+    dispose();
 
     // The tool trim was queued (pi's replaced-session context cannot
     // reach it); the new session's first before_agent_start drains the
@@ -1309,68 +1323,212 @@ describe("buildPiHandlers — primary-switch command wiring", () => {
 // Widget seeding on session start
 // ---------------------------------------------------------------------------
 
+/** A theme stub that wraps each colorized string in `<color>` tags. */
+const WIDGET_THEME = {
+  fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
+};
+
+/** A minimal TUI stub (rendering needs no focus inspection). */
+const WIDGET_TUI = { requestRender: () => {} };
+
+/** A ui ctx that records setWidget calls (key + content). */
+function widgetRecordingCtx(): {
+  calls: Array<[string, unknown]>;
+  ctx: {
+    sessionManager: { getSessionId(): string };
+    ui: {
+      notify(): void;
+      setWidget(key: string, content: unknown): void;
+    };
+  };
+} {
+  const calls: Array<[string, unknown]> = [];
+  const ctx = {
+    sessionManager: { getSessionId: () => "sess-seed" },
+    ui: {
+      notify: () => {},
+      setWidget: (key: string, content: unknown) => calls.push([key, content]),
+    },
+  };
+  return { calls, ctx };
+}
+
+/**
+ * Render the registered `zoo` widget through the recorded factory.
+ *
+ * The fleet widget registers a component factory under `"zoo"`; this helper
+ * invokes it with the stub TUI / theme and returns the rendered lines plus a
+ * dispose handle (so per-test timers never leak).
+ */
+function renderZooWidget(
+  calls: Array<[string, unknown]>,
+  width = 80,
+): { lines: string[]; dispose(): void } {
+  const entry = calls.find(([k]) => k === "zoo");
+  assert.ok(entry, "zoo widget must be registered");
+  assert.equal(
+    typeof entry[1],
+    "function",
+    "zoo widget content must be a component factory",
+  );
+  const factory = entry[1] as (
+    tui: unknown,
+    theme: unknown,
+  ) => { render(width: number): string[]; dispose?(): void };
+  const component = factory(WIDGET_TUI, WIDGET_THEME);
+  return {
+    lines: component.render(width),
+    dispose: () => component.dispose?.(),
+  };
+}
+
 describe("buildPiHandlers — widget seeding", () => {
-  it("first beforeAgentStart seeds the zoo widget with the default primary", async () => {
+  it("first beforeAgentStart registers the fleet widget factory under zoo", async () => {
     const api = mockApi();
     const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
-    const calls: Array<[string, string[] | undefined]> = [];
+    const { calls, ctx } = widgetRecordingCtx();
+
+    // The first per-session event registers the `zoo` fleet widget (a
+    // component factory) with the default primary (dolphin) — even though
+    // no switch has happened.
+    await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], "zoo");
+    assert.equal(typeof calls[0][1], "function");
+  });
+
+  it("re-registers on later beforeAgentStart events without stacking the listener", async () => {
+    const api = mockApi();
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    // Registration is idempotent: every trigger re-seeds the widget (pi's
+    // setWidget disposes the prior component) and re-binds the listener only
+    // after releasing the previous one — so the subscription count never
+    // grows.
+    let activeSubscriptions = 0;
+    const calls: Array<[string, unknown]> = [];
     const ctx = {
-      sessionManager: { getSessionId: () => "sess-seed" },
+      sessionManager: { getSessionId: () => "sess-bas" },
       ui: {
         notify: () => {},
-        setWidget: (k: string, lines: string[] | undefined) =>
-          calls.push([k, lines]),
+        setWidget: (key: string, content: unknown) =>
+          calls.push([key, content]),
+        onTerminalInput: () => {
+          activeSubscriptions += 1;
+          return () => {
+            activeSubscriptions -= 1;
+          };
+        },
       },
     };
 
-    // The first per-session event seeds the widget with the default
-    // primary (dolphin) — even though no switch has happened.
     await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
-    assert.deepEqual(calls, [["zoo", ["◆ dolphin"]]]);
+    await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
+    assert.equal(calls.length, 2, "each trigger re-registers the widget");
+    assert.equal(
+      activeSubscriptions,
+      1,
+      "the terminal-input listener must not stack",
+    );
   });
 
-  it("does not re-seed on later beforeAgentStart events", async () => {
+  it("session_start registers the fleet widget; a later beforeAgentStart re-registers idempotently", async () => {
     const api = mockApi();
     const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
-    const calls: Array<[string, string[] | undefined]> = [];
+    // A ui that records setWidget calls and counts live terminal-input
+    // subscriptions, so the idempotent re-registration can be asserted to
+    // release the previous listener instead of stacking a second one.
+    let activeSubscriptions = 0;
+    const calls: Array<[string, unknown]> = [];
     const ctx = {
       sessionManager: { getSessionId: () => "sess-seed" },
       ui: {
         notify: () => {},
-        setWidget: (k: string, lines: string[] | undefined) =>
-          calls.push([k, lines]),
-      },
-    };
-
-    await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
-    await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
-    assert.deepEqual(calls, [["zoo", ["◆ dolphin"]]], "seeds exactly once");
-  });
-
-  it("session_start with a ui ctx seeds the widget; a later beforeAgentStart does not re-seed", async () => {
-    const api = mockApi();
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
-    const calls: Array<[string, string[] | undefined]> = [];
-    const ctx = {
-      sessionManager: { getSessionId: () => "sess-seed" },
-      ui: {
-        notify: () => {},
-        setWidget: (k: string, lines: string[] | undefined) =>
-          calls.push([k, lines]),
+        setWidget: (key: string, content: unknown) =>
+          calls.push([key, content]),
+        onTerminalInput: () => {
+          activeSubscriptions += 1;
+          return () => {
+            activeSubscriptions -= 1;
+          };
+        },
       },
     };
 
     // session_start fires at startup/resume (before any LLM turn), so the
-    // widget must appear immediately with the default primary.
+    // widget must be registered immediately with the default primary.
     await handlers.sessionStart(
       { type: "session_start", reason: "startup" },
       ctx,
     );
-    assert.deepEqual(calls, [["zoo", ["◆ dolphin"]]]);
+    assert.equal(calls.length, 1);
+    assert.equal(activeSubscriptions, 1);
 
-    // A later beforeAgentStart (first LLM turn) must not overwrite it.
+    // A later beforeAgentStart (first LLM turn) re-runs the registration
+    // (idempotent — re-seeding is safe) without stacking the listener.
     await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
-    assert.deepEqual(calls, [["zoo", ["◆ dolphin"]]], "seeds exactly once");
+    assert.equal(calls.length, 2, "registration re-runs on each trigger");
+    assert.equal(
+      activeSubscriptions,
+      1,
+      "the terminal-input listener must not stack",
+    );
+  });
+
+  it("re-registers the fleet widget after its component is disposed (reload/resume)", async () => {
+    const api = mockApi();
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    // A ui that records setWidget calls AND counts live onTerminalInput
+    // subscriptions (returning a real unsubscribe), so a re-registration can
+    // be asserted to release the previous listener instead of stacking it.
+    let activeSubscriptions = 0;
+    const calls: Array<[string, unknown]> = [];
+    const ctx = {
+      sessionManager: { getSessionId: () => "sess-reload" },
+      ui: {
+        notify: () => {},
+        setWidget: (key: string, content: unknown) =>
+          calls.push([key, content]),
+        onTerminalInput: () => {
+          activeSubscriptions += 1;
+          return () => {
+            activeSubscriptions -= 1;
+          };
+        },
+      },
+    };
+
+    // First session_start registers the widget and binds one listener.
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      ctx,
+    );
+    assert.equal(calls.length, 1);
+    assert.equal(activeSubscriptions, 1);
+
+    // Simulate pi destroying the widget component on reload / resume: invoke
+    // the registered component's dispose (releases the listener and clears
+    // the one-shot flag).
+    const { dispose } = renderZooWidget(calls);
+    dispose();
+    assert.equal(
+      activeSubscriptions,
+      0,
+      "dispose must release the terminal-input listener",
+    );
+
+    // The replayed session_start (reason: reload/resume) must re-register the
+    // widget instead of leaving it permanently gone, and must not stack a
+    // second terminal-input listener.
+    await handlers.sessionStart(
+      { type: "session_start", reason: "resume" },
+      ctx,
+    );
+    assert.equal(calls.length, 2, "the widget must re-register after disposal");
+    assert.equal(
+      activeSubscriptions,
+      1,
+      "re-registration must not stack terminal-input listeners",
+    );
   });
 
   it("session_start stays silent without a ui surface on ctx", async () => {
@@ -1448,6 +1606,212 @@ describe("buildPiHandlers — widget seeding", () => {
     await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
     assert.equal(widgetCalls, 0, "no primary → no seed");
   });
+
+  it("session_start rebuilds the run registry from the message history", async () => {
+    const api = mockApi();
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const history = () => [
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "call-hist-1",
+              name: "subagent",
+              arguments: { agent: "beaver", description: "实现任务" },
+            },
+          ],
+          timestamp: 1000,
+        },
+      },
+      {
+        type: "message",
+        message: {
+          role: "toolResult",
+          toolCallId: "call-hist-1",
+          toolName: "subagent",
+          content: [{ type: "text", text: "ok" }],
+          isError: false,
+          timestamp: 2000,
+        },
+      },
+      // An in-flight call when pi exited → rebuilt as aborted.
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "call-hist-2",
+              name: "subagent",
+              arguments: { agent: "lynx" },
+            },
+          ],
+          timestamp: 3000,
+        },
+      },
+    ];
+    const ctx = {
+      sessionManager: {
+        getSessionId: () => "sess-restore",
+        buildContextEntries: history,
+      },
+      ui: { notify: () => {}, setWidget: () => {} },
+    };
+
+    // A fresh session_start (pi restore / resume) must seed the registry so
+    // the fleet widget renders historical subagent runs.
+    await handlers.sessionStart(
+      { type: "session_start", reason: "resume" },
+      ctx,
+    );
+
+    assert.equal(topLevelRuns("sess-restore").length, 2);
+    const done = getRun("call-hist-1");
+    assert.equal(done?.status, "done");
+    assert.equal(done?.agent, "beaver");
+    assert.equal(done?.label, "实现任务");
+    assert.equal(done?.startedAt, 1000);
+    assert.equal(done?.endedAt, 2000);
+    const interrupted = getRun("call-hist-2");
+    assert.equal(interrupted?.status, "aborted");
+    assert.equal(interrupted?.endedAt, 3000);
+  });
+
+  it("session_start registry rebuild is idempotent across repeated triggers", async () => {
+    const api = mockApi();
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const history = () => [
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "call-x",
+              name: "subagent",
+              arguments: { agent: "spider" },
+            },
+          ],
+        },
+      },
+      {
+        type: "message",
+        message: {
+          role: "toolResult",
+          toolCallId: "call-x",
+          toolName: "subagent",
+          content: [{ type: "text", text: "ok" }],
+          isError: false,
+        },
+      },
+    ];
+    const ctx = {
+      sessionManager: {
+        getSessionId: () => "sess-again",
+        buildContextEntries: history,
+      },
+      ui: { notify: () => {}, setWidget: () => {} },
+    };
+
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      ctx,
+    );
+    await handlers.sessionStart(
+      { type: "session_start", reason: "resume" },
+      ctx,
+    );
+
+    assert.equal(topLevelRuns("sess-again").length, 1, "no duplicate entries");
+    assert.equal(getRun("call-x")?.status, "done");
+  });
+
+  it("session_start leaves the registry untouched without a session manager history", async () => {
+    const api = mockApi();
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    // A ui + session-id-only ctx (no buildContextEntries) must not crash and
+    // must not touch the registry (fresh session → nothing to rebuild).
+    await assert.doesNotReject(() =>
+      handlers.sessionStart(
+        { type: "session_start", reason: "startup" },
+        { sessionManager: { getSessionId: () => "sess" } },
+      ),
+    );
+    assert.equal(topLevelRuns("sess").length, 0);
+  });
+
+  it("session_start rebuilds even when buildContextEntries reads `this`", async () => {
+    const api = mockApi();
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    // Regression: pi's real SessionManager.buildContextEntries reads
+    // `this.getEntries()`, so the mock must be `this`-dependent too.
+    // The old implementation extracted the function reference before calling
+    // (`const f = sm.buildContextEntries; f()`), which unbinds `this` and
+    // crashes — swallowed by the try/catch as `registry_rebuild_failed`, so
+    // the registry stays empty.  Calling `sessionManager.buildContextEntries()`
+    // as a method keeps `this` bound and seeds the registry.
+    class MockSessionManager {
+      private readonly entries = [
+        {
+          type: "message",
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: "call-bind-1",
+                name: "subagent",
+                arguments: { agent: "lynx", description: "搜索代码" },
+              },
+            ],
+            timestamp: 4000,
+          },
+        },
+        {
+          type: "message",
+          message: {
+            role: "toolResult",
+            toolCallId: "call-bind-1",
+            toolName: "subagent",
+            content: [{ type: "text", text: "ok" }],
+            isError: false,
+            timestamp: 5000,
+          },
+        },
+      ];
+      getSessionId(): string {
+        return "sess-bind";
+      }
+      // A `this`-dependent method mirroring pi's SessionManager.
+      buildContextEntries(): unknown[] {
+        return this.entries;
+      }
+    }
+    const ctx = {
+      sessionManager: new MockSessionManager(),
+      ui: { notify: () => {}, setWidget: () => {} },
+    };
+
+    await handlers.sessionStart(
+      { type: "session_start", reason: "resume" },
+      ctx,
+    );
+
+    // The rebuild must run to completion: the registry is seeded and no
+    // exception is surfaced to the caller.
+    assert.equal(topLevelRuns("sess-bind").length, 1);
+    const run = getRun("call-bind-1");
+    assert.equal(run?.status, "done");
+    assert.equal(run?.agent, "lynx");
+    assert.equal(run?.label, "搜索代码");
+    assert.equal(run?.startedAt, 4000);
+    assert.equal(run?.endedAt, 5000);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1463,45 +1827,33 @@ describe("buildPiHandlers — zoo widget colorization", () => {
     return `\x1b[38;2;${r};${g};${b}m${name}\x1b[39m`;
   }
 
-  it("seeds the zoo widget with the ANSI-wrapped default primary when its color is configured", async () => {
+  it("registers the fleet widget whose collapsed line uses the ANSI-wrapped primary when its color is configured", async () => {
     const api = mockApi();
     const handlers = buildPiHandlers(POLY_ZOO, api as any, COLORS_RAW);
-    const calls: Array<[string, string[] | undefined]> = [];
-    const ctx = {
-      sessionManager: { getSessionId: () => "sess-seed" },
-      ui: {
-        notify: () => {},
-        setWidget: (k: string, lines: string[] | undefined) =>
-          calls.push([k, lines]),
-      },
-    };
-    // The default primary (dolphin) carries #66CCFF → the widget line is
-    // a `◆` marker plus the name wrapped in the truecolor sequence.
+    const { calls, ctx } = widgetRecordingCtx();
+    // The default primary (dolphin) carries #66CCFF → the widget's collapsed
+    // line embeds the truecolor-wrapped name (inside the muted status hue).
     await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0][0], "zoo");
-    assert.deepEqual(calls[0][1], [`◆ ${colorize("dolphin", "#66CCFF")}`]);
+    const { lines, dispose } = renderZooWidget(calls);
+    assert.equal(lines.length, 1);
+    assert.ok(lines[0].includes(colorize("dolphin", "#66CCFF")), lines[0]);
+    dispose();
   });
 
-  it("leaves the seeded name plain when the primary has no configured color", async () => {
+  it("leaves the collapsed primary plain when it has no configured color", async () => {
     const api = mockApi();
     // MODES_RAW has no color fields → the colors map is empty, so the
-    // seed falls back to the plain agent name (fail-closed).
+    // primary falls back to the plain agent name (fail-closed).
     const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
-    const calls: Array<[string, string[] | undefined]> = [];
-    const ctx = {
-      sessionManager: { getSessionId: () => "sess-seed" },
-      ui: {
-        notify: () => {},
-        setWidget: (k: string, lines: string[] | undefined) =>
-          calls.push([k, lines]),
-      },
-    };
+    const { calls, ctx } = widgetRecordingCtx();
     await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
-    assert.deepEqual(calls, [["zoo", ["◆ dolphin"]]]);
+    const { lines, dispose } = renderZooWidget(calls);
+    assert.ok(lines[0].includes("dolphin"), lines[0]);
+    assert.ok(!lines[0].includes("\u001b["), "no ANSI when uncolored");
+    dispose();
   });
 
-  it("leaves the seeded name plain when the color for that agent is malformed", async () => {
+  it("leaves the collapsed primary plain when the color for that agent is malformed", async () => {
     const api = mockApi();
     const handlers = buildPiHandlers(POLY_ZOO, api as any, {
       ...MODES_RAW,
@@ -1511,18 +1863,13 @@ describe("buildPiHandlers — zoo widget colorization", () => {
         mola: { mode: "primary", color: "#FFA500" },
       },
     });
-    const calls: Array<[string, string[] | undefined]> = [];
-    const ctx = {
-      sessionManager: { getSessionId: () => "sess-seed" },
-      ui: {
-        notify: () => {},
-        setWidget: (k: string, lines: string[] | undefined) =>
-          calls.push([k, lines]),
-      },
-    };
-    // Malformed color is omitted by the parser → the seed stays plain.
+    const { calls, ctx } = widgetRecordingCtx();
+    // Malformed color is omitted by the parser → the primary stays plain.
     await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
-    assert.deepEqual(calls, [["zoo", ["◆ dolphin"]]]);
+    const { lines, dispose } = renderZooWidget(calls);
+    assert.ok(lines[0].includes("dolphin"), lines[0]);
+    assert.ok(!lines[0].includes("\u001b["), "no ANSI for a malformed color");
+    dispose();
   });
 });
 
@@ -1568,10 +1915,10 @@ describe("buildPiHandlers — primary-switch widget colorization", () => {
     };
   }
 
-  it("switch command renders the zoo widget with the ANSI-wrapped target name", async () => {
+  it("switch command nudges the fleet widget which renders the ANSI-wrapped target name", async () => {
     const api = mockApi();
     api.activeTools.push("webfetch", "edit");
-    buildPiHandlers(POLY_ZOO, api as any, {
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, {
       agent: {
         ...COLORS_RAW.agent,
         mola: { mode: "primary", color: "#FFA500" },
@@ -1580,48 +1927,65 @@ describe("buildPiHandlers — primary-switch widget colorization", () => {
     const mola = api.commands.find((c) => c.name === "mola");
     assert.ok(mola && typeof mola.handler === "function");
 
-    // A switch away from the default primary (dolphin) to mola.
+    // Register the fleet widget first (session_start), then switch away from
+    // the default primary (dolphin) to mola.
+    const { calls, ctx } = widgetRecordingCtx();
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      ctx,
+    );
     setPrimary("dolphin");
 
-    let widgetKey = "";
-    let widgetLines: string[] | undefined;
+    // The switch no longer writes a string-array widget for zoo — it is a
+    // "primary changed" notification the fleet widget turns into a re-render
+    // (the widget reads the primary live).
     await (mola.handler as (args: string, ctx: unknown) => Promise<void>)(
       "",
-      switchCtx((key, lines) => {
-        widgetKey = key;
-        widgetLines = lines;
-      }),
+      switchCtx(() => {}),
     );
+    assert.equal(getPrimary(), "mola");
+
+    // The registered fleet widget now renders the switched primary with its
+    // configured color.
+    const { lines, dispose } = renderZooWidget(calls);
     const r = 0xff;
     const g = 0xa5;
     const b = 0x00;
-    assert.equal(widgetKey, "zoo");
-    assert.deepEqual(widgetLines, [`◆ \x1b[38;2;${r};${g};${b}mmola\x1b[39m`]);
+    assert.ok(
+      lines[0].includes(`\x1b[38;2;${r};${g};${b}mmola\x1b[39m`),
+      lines[0],
+    );
+    dispose();
   });
 
-  it("switch command leaves the widget name plain for an agent without a color", async () => {
+  it("switch command leaves the fleet-widget primary plain for an agent without a color", async () => {
     const api = mockApi();
     api.activeTools.push("webfetch", "edit");
     // COLORS_RAW has no color for spider; MODES_RAW has no colors at all.
     // Build with MODES_RAW so the colors map is empty → plain name.
-    buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     const dolphin = api.commands.find((c) => c.name === "dolphin");
     assert.ok(dolphin && typeof dolphin.handler === "function");
 
-    // A switch away from the default primary (mola) to dolphin.
+    // Register the fleet widget first, then switch away from the default
+    // primary (mola) to dolphin.
+    const { calls, ctx } = widgetRecordingCtx();
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      ctx,
+    );
     setPrimary("mola");
 
-    let widgetKey = "";
-    let widgetLines: string[] | undefined;
     await (dolphin.handler as (args: string, ctx: unknown) => Promise<void>)(
       "",
-      switchCtx((key, lines) => {
-        widgetKey = key;
-        widgetLines = lines;
-      }),
+      switchCtx(() => {}),
     );
-    assert.equal(widgetKey, "zoo");
-    assert.deepEqual(widgetLines, ["◆ dolphin"]);
+    assert.equal(getPrimary(), "dolphin");
+
+    const { lines, dispose } = renderZooWidget(calls);
+    assert.ok(lines[0].includes("dolphin"), lines[0]);
+    assert.ok(!lines[0].includes("\u001b["), "no ANSI for an uncolored agent");
+    dispose();
   });
 });
 

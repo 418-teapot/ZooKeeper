@@ -65,6 +65,7 @@ import {
   formatProgressLine,
   SNAPSHOT_OUTPUT_CAP,
 } from "../core/subagent/progress.js";
+import { finishRun, startRun, updateRun } from "../core/subagent/registry.js";
 import { runSubagent } from "../core/subagent/run.js";
 import { log } from "../utils/logger.js";
 
@@ -73,6 +74,18 @@ type SubagentToolInput = {
   description: string;
   prompt: string;
 };
+
+/**
+ * Monotonic counter for synthetic run ids.
+ *
+ * A run without a forwarded tool-call id (OpenCode, test invocations that
+ * omit `hostCtx.callId`) is tracked under a synthetic id derived from the
+ * caller/agent plus this counter, so consecutive delegations in the same
+ * process never collide (the previous scheme stamped `Date.now()`, which two
+ * delegations in the same millisecond could collide on, and carried a
+ * non-ASCII arrow).
+ */
+let syntheticRunSeq = 0;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -169,20 +182,26 @@ interface PiPartialResult {
  * delegation's `description` label when present) as a `text` content part,
  * and carries the FULL structured progress in `details` so the pi TUI card
  * renderer can draw the live transcript (spinner / current tool / recent
- * output / stats).  The call is defensive: a throwing `onUpdate` is logged
- * and swallowed so a UI callback can never break the subagent run.
+ * output / stats).  The run's registry id (the pi tool-call id) is stamped
+ * onto the snapshot's `runId` so the transcript card can look up this run's
+ * nested children in the run registry.  The call is defensive: a throwing
+ * `onUpdate` is logged and swallowed so a UI callback can never break the
+ * subagent run.
  *
  * @param progress - The snapshot to stream.
  * @param sessionID - The parent session id for logging.
  * @param label - The delegation's description tag, prefixed to the line.
  * @param onUpdate - The host's streaming partial-result callback, when one
  *   is present.
+ * @param runId - The run's registry id (the pi tool-call id), stamped onto
+ *   the streamed details.
  */
 function emitProgressUpdate(
   progress: SubagentProgress,
   sessionID: string,
   label: string | undefined,
   onUpdate: unknown,
+  runId: string | undefined,
 ): void {
   if (typeof onUpdate !== "function") return;
   try {
@@ -193,7 +212,7 @@ function emitProgressUpdate(
           text: formatProgressLine(progress, SNAPSHOT_OUTPUT_CAP, label),
         },
       ],
-      details: progress,
+      details: runId !== undefined ? { ...progress, runId } : progress,
     };
     (onUpdate as (partial: PiPartialResult) => void)(partial);
   } catch (err) {
@@ -243,9 +262,15 @@ export function createSubagentTool(
     | "agentPermissions"
     | "subagentRenderer"
     | "subagentModels"
+    | "onSubagentRunChange"
   >,
 ): ToolContribution {
   const renderer = deps.subagentRenderer;
+  // Nudge the host's fleet widget after every registry mutation (the pi
+  // entry point wires this to the widget's refresh).
+  const notifyRunChange = (): void => {
+    deps.onSubagentRunChange?.();
+  };
   return {
     name: "subagent",
     description:
@@ -377,7 +402,33 @@ export function createSubagentTool(
       }
       const model = configuredModel;
 
-      // 7. Stream compact progress snapshots into the host's partial-result
+      // 7. Registry write — the pi bridge forwards the tool-call id via
+      // `hostCtx.callId`, which doubles as the run id in the process-level
+      // run registry (the fleet widget's source of truth).  A run without a
+      // forwarded call id (OpenCode, test invocations that omit hostCtx) is
+      // tracked with a synthetic id derived from the caller/agent plus a
+      // module-level monotonic counter so consecutive delegations never
+      // collide (the previous scheme stamped `Date.now()`, which two
+      // delegations in the same millisecond could collide on, and carried a
+      // non-ASCII arrow).
+      const runId =
+        hostCtx?.callId ?? `${caller}-${input.agent}-${++syntheticRunSeq}`;
+      const runStarted =
+        typeof parentSession === "string" && parentSession.length > 0;
+      // The sub-session's on-disk path, captured from the last streamed
+      // snapshot (the driver reports it on the terminal `done` snapshot).
+      let runSessionPath: string | undefined;
+      if (runStarted) {
+        startRun({
+          id: runId,
+          agent: input.agent,
+          parentSession,
+          label: input.description,
+        });
+        notifyRunChange();
+      }
+
+      // 8. Stream compact progress snapshots into the host's partial-result
       // channel when one is present (pi's `onUpdate`).  Each snapshot is
       // rendered to a single capped line; a throwing callback is logged and
       // swallowed so live observability can never break the run.  When
@@ -399,15 +450,61 @@ export function createSubagentTool(
         },
         {
           signal,
-          onProgress: (progress) =>
+          onProgress: (progress) => {
+            // Patch the running run's progress fields from the snapshot
+            // (current tool, tokens, model) and report the child session
+            // id once the driver materialises it, so the fleet widget can
+            // rebuild the parent/child tree.
+            if (runStarted) {
+              const patch: {
+                currentTool?: string;
+                tokens?: number;
+                model?: string;
+                childSession?: string;
+              } = {};
+              if (progress.currentTool !== undefined) {
+                patch.currentTool = progress.currentTool;
+              }
+              if (progress.tokens !== undefined) patch.tokens = progress.tokens;
+              if (progress.model !== undefined) patch.model = progress.model;
+              if (progress.childSession !== undefined) {
+                patch.childSession = progress.childSession;
+              }
+              if (Object.keys(patch).length > 0) {
+                updateRun(runId, patch);
+                notifyRunChange();
+              }
+              if (progress.sessionPath !== undefined) {
+                runSessionPath = progress.sessionPath;
+              }
+            }
             emitProgressUpdate(
               progress,
               sessionForLog,
               input.description,
               hostCtx?.onUpdate,
-            ),
+              runId,
+            );
+          },
         },
       );
+
+      // 9. Finish the registry run (terminal state, immutable thereafter).
+      if (runStarted) {
+        finishRun(runId, {
+          status:
+            result.kind === "ok"
+              ? "done"
+              : result.kind === "error"
+                ? "error"
+                : "aborted",
+          ...(result.kind === "error" ? { error: result.errorMessage } : {}),
+          ...(runSessionPath !== undefined
+            ? { sessionPath: runSessionPath }
+            : {}),
+        });
+        notifyRunChange();
+      }
 
       log(
         "subagent-tool",
@@ -423,7 +520,7 @@ export function createSubagentTool(
         },
       );
 
-      // 8. Map the outcome onto the tool text.
+      // 10. Map the outcome onto the tool text.
       return formatSubagentResult(result);
     },
   };

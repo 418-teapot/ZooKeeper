@@ -13,11 +13,32 @@
  * `doRender` width guard never fires.
  */
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import { type Component, visibleWidth } from "@earendil-works/pi-tui";
+import { afterEach, describe, it } from "node:test";
+import {
+  type Component,
+  Container,
+  visibleWidth,
+} from "@earendil-works/pi-tui";
 import type { SubagentProgress } from "../../../core/subagent/driver.js";
-import { buildSubagentCardRenderer, type PiThemeLike } from "./card.js";
+import {
+  finishRun,
+  resetRegistry,
+  startRun,
+  updateRun,
+} from "../../../core/subagent/registry.js";
+import type { CardLine } from "../../../core/subagent/view.js";
+import {
+  addLine,
+  buildSubagentCardRenderer,
+  type PiThemeLike,
+} from "./card.js";
 import { hueToPiColor } from "./theme.js";
+
+// The run registry is process-global (bun shares one isolate), so reset it
+// between tests to keep the card's nested-children lookups deterministic.
+afterEach(() => {
+  resetRegistry();
+});
 
 /** A theme stub that wraps each colorized string in `<color>` tags. */
 const theme: PiThemeLike = {
@@ -327,7 +348,9 @@ describe("card renderer — terminal states", () => {
 
   it("shows more final output when expanded", () => {
     const { renderResult } = buildSubagentCardRenderer();
-    const longText = "output ".repeat(40); // 280 chars — past the 120 collapsed cap
+    const longText = ["line one", "line two", "line three", "line four"].join(
+      "\n",
+    );
     const collapsed = renderLines(
       renderResult(
         {
@@ -466,7 +489,7 @@ describe("card renderer — terminal states", () => {
     assert.ok(!lines.some((l) => l.startsWith("session: ")));
   });
 
-  it("renders the final output through the Markdown component", () => {
+  it("renders the full final output through the Markdown component when expanded", () => {
     const { renderResult } = buildSubagentCardRenderer();
     const component = renderResult(
       {
@@ -480,14 +503,14 @@ describe("card renderer — terminal states", () => {
           },
         } as SubagentProgress,
       },
-      { isPartial: false, expanded: false },
+      { isPartial: false, expanded: true },
       theme,
       { state: {} },
     );
     const lines = renderLines(component);
-    // Markdown structure is rendered: the `**` markers are resolved into a
-    // rendered bold word (no literal asterisks), and list items land on
-    // their own bulleted lines.
+    // Markdown structure is rendered on the expanded path: the `**` markers
+    // are resolved into a rendered bold word (no literal asterisks), and
+    // list items land on their own bulleted lines.
     assert.ok(
       lines.some((l) => l.includes("bold summary")),
       "bold text content missing",
@@ -502,6 +525,102 @@ describe("card renderer — terminal states", () => {
       "list items missing",
     );
     assertFitsWidth(lines, 80);
+  });
+
+  it("collapsed truncates the preview to the render width with an ellipsis", () => {
+    const { renderResult } = buildSubagentCardRenderer();
+    const longLine = `line ${"x".repeat(200)}`; // well past the 80-col viewport
+    const component = renderResult(
+      {
+        details: {
+          agent: "beaver",
+          output: "done",
+          done: true,
+          result: { kind: "ok", text: longLine },
+        } as SubagentProgress,
+      },
+      { isPartial: false, expanded: false },
+      theme,
+      { state: {} },
+    );
+    const lines = renderLines(component);
+    // The collapsed preview is width-truncated: every rendered line fits the
+    // viewport and the preview carries the width-truncation ellipsis
+    // (pi's `truncateToWidth` default `...`).
+    assertFitsWidth(lines, 80);
+    const previewLine = lines.find((l) => l.includes("line"));
+    assert.ok(previewLine !== undefined, "preview line missing");
+    assert.ok(
+      previewLine.endsWith("..."),
+      `collapsed preview must be truncated with the width ellipsis: ${previewLine}`,
+    );
+    assert.ok(
+      previewLine.trimEnd().length < longLine.length,
+      "overlong content must not survive the width truncation",
+    );
+  });
+
+  it("collapsed previews the first non-empty line as plain text", () => {
+    const { renderResult } = buildSubagentCardRenderer();
+    const text = "\n\n**bold summary**\n\n- item one\n- item two";
+    const collapsed = renderLines(
+      renderResult(
+        {
+          details: {
+            agent: "beaver",
+            output: "done",
+            done: true,
+            result: { kind: "ok", text },
+          } as SubagentProgress,
+        },
+        { isPartial: false, expanded: false },
+        theme,
+        { state: {} },
+      ),
+    );
+    const expanded = renderLines(
+      renderResult(
+        {
+          details: {
+            agent: "beaver",
+            output: "done",
+            done: true,
+            result: { kind: "ok", text },
+          } as SubagentProgress,
+        },
+        { isPartial: false, expanded: true },
+        theme,
+        { state: {} },
+      ),
+    );
+    // Collapsed: the first non-empty line, rendered as plain text — the
+    // `**` markers stay literal (the preview is a single-line fold, not a
+    // markdown render).
+    assert.ok(
+      collapsed.some((l) => l.includes("**bold summary**")),
+      `collapsed must preview the raw first line: ${collapsed.join(" | ")}`,
+    );
+    assert.ok(
+      collapsed.some((l) => l.includes("**")),
+      "collapsed preview must keep markdown markers literal",
+    );
+    // Expanded: markdown is resolved (no literal asterisks) and both list
+    // items render.
+    assert.ok(
+      expanded.some((l) => l.includes("bold summary")),
+      "expanded bold content missing",
+    );
+    assert.ok(
+      !expanded.some((l) => l.includes("**")),
+      `expanded must resolve markdown markers: ${expanded.join(" | ")}`,
+    );
+    assert.ok(
+      expanded.some((l) => l.includes("item one")) &&
+        expanded.some((l) => l.includes("item two")),
+      "expanded list items missing",
+    );
+    assertFitsWidth(collapsed, 80);
+    assertFitsWidth(expanded, 80);
   });
 
   it("keeps the running card output as plain text (no markdown resolution)", () => {
@@ -831,5 +950,142 @@ describe("card renderer — plain text output", () => {
     const lines = c.render(width);
     assert.ok(!lines.join("\n").includes("\u001b["));
     assertFitsWidth(lines, width);
+  });
+});
+
+describe("card renderer — segmented lines", () => {
+  it("renders a line with segments as its concatenated plain text", () => {
+    const container = new Container();
+    // A fleet-style line: a pre-colorized primary segment (no hue) plus a
+    // status-hued dot.  The card is uncolored by design, so it must render
+    // the flat `text` verbatim — never wrapping, trimming, or stripping the
+    // segments (the embedded ANSI and any hue metadata ride inside `text`).
+    const line: CardLine = {
+      text: "◆ \u001b[38;2;255;0;0mdolphin\u001b[39m · ●1",
+      hue: "success",
+      segments: [
+        { text: "◆ \u001b[38;2;255;0;0mdolphin\u001b[39m" },
+        { text: " · ●1", hue: "success" },
+      ],
+    };
+    addLine(container, line);
+    const lines = (container as Component).render(80);
+    assert.ok(
+      lines.some((l) => l.trimEnd() === line.text),
+      `segmented lines must render as their flat concatenated text: ${JSON.stringify(lines)}`,
+    );
+    // The card never emits color wrappers: the segments' hues are a
+    // widget-only concern, and no `theme.fg` markup appears in the output.
+    assert.ok(
+      !lines.some((l) => l.includes("<success>") || l.includes("<error>")),
+    );
+  });
+});
+
+describe("card renderer — nested run children", () => {
+  it("appends this run's nested children when details carries its run id", () => {
+    // Seed a parent run and its child (the child's parentSession is the
+    // parent's childSession, per the registry's tree invariant).
+    startRun({
+      id: "call-p",
+      agent: "beaver",
+      parentSession: "main",
+      startedAt: 1000,
+    });
+    updateRun("call-p", { childSession: "child-ses-1" });
+    startRun({
+      id: "call-c",
+      agent: "lynx",
+      parentSession: "child-ses-1",
+      label: "search",
+      startedAt: 2000,
+    });
+    finishRun("call-c", { status: "done" });
+
+    const { renderResult } = buildSubagentCardRenderer();
+    const component = renderResult(
+      {
+        details: {
+          agent: "beaver",
+          runId: "call-p",
+          output: "done",
+          done: true,
+          result: { kind: "ok", text: "done" },
+        } as SubagentProgress,
+      },
+      { isPartial: false, expanded: false },
+      theme,
+      { state: {} },
+    );
+    const lines = renderLines(component);
+    // The child renders as an indented nested line below the card region.
+    assert.ok(
+      lines.some((l) => l.includes("├─") && l.includes("subagent(lynx)")),
+      `nested child line missing: ${lines.join(" | ")}`,
+    );
+    assert.ok(
+      lines.some((l) => l.includes("search")),
+      "child label missing",
+    );
+  });
+
+  it("renders no nested lines when the run id is absent or unknown", () => {
+    const { renderResult } = buildSubagentCardRenderer();
+    const component = renderResult(
+      {
+        details: {
+          agent: "beaver",
+          output: "done",
+          done: true,
+          result: { kind: "ok", text: "done" },
+        } as SubagentProgress,
+      },
+      { isPartial: false, expanded: false },
+      theme,
+      { state: {} },
+    );
+    const lines = renderLines(component);
+    assert.ok(
+      !lines.some((l) => l.includes("├─")),
+      `no nested lines expected: ${lines.join(" | ")}`,
+    );
+  });
+
+  it("appends a running child with the spinner on a terminal parent card", () => {
+    startRun({
+      id: "call-p",
+      agent: "beaver",
+      parentSession: "main",
+      startedAt: 1000,
+    });
+    updateRun("call-p", { childSession: "child-ses-1" });
+    // The child is still running (no finishRun).
+    startRun({
+      id: "call-c",
+      agent: "spider",
+      parentSession: "child-ses-1",
+      startedAt: 2000,
+    });
+
+    const { renderResult } = buildSubagentCardRenderer();
+    const component = renderResult(
+      {
+        details: {
+          agent: "beaver",
+          runId: "call-p",
+          output: "done",
+          done: true,
+          result: { kind: "ok", text: "done" },
+        } as SubagentProgress,
+      },
+      { isPartial: false, expanded: false },
+      theme,
+      { state: {} },
+    );
+    const lines = renderLines(component);
+    assert.ok(
+      lines.some((l) => l.includes("├─") && l.includes("subagent(spider)")),
+      `running child line missing: ${lines.join(" | ")}`,
+    );
   });
 });

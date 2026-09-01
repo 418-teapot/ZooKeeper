@@ -42,6 +42,9 @@
  *     so the extension must drive the animation itself.
  *   - done: `✓ subagent(<agent>)` success / `✗` error / `⏹` aborted (the
  *     stacked call card renders nothing by then).
+ *   - collapsed final preview: the first non-empty line of the delivered
+ *     result, width-truncated to the viewport (plain text, not markdown);
+ *     expanded shows the full result through the `Markdown` component.
  *   - expanded (pi ctrl+o): more recent tools / output lines.
  *
  * @module
@@ -52,9 +55,12 @@ import {
   Container,
   Markdown,
   type MarkdownTheme,
+  stripTerminalSequences,
   Text,
+  truncateToWidth,
 } from "@earendil-works/pi-tui";
 import type { SubagentProgress } from "../../../core/subagent/driver.js";
+import { childrenOf } from "../../../core/subagent/registry.js";
 import {
   type CardLine,
   renderProgressCard,
@@ -154,20 +160,59 @@ interface SubagentToolResult {
  * argument is accepted so the signature stays compatible with the pi
  * renderer surface, but no `theme.fg` call is ever made.
  *
- * A markdown-flagged line (the terminal final output) is rendered through
- * pi-tui's `Markdown` component with a plain theme — structure is parsed
- * (headings, lists, code blocks, spacing) but no color is emitted, keeping
- * the card uncolored.  All other lines render as plain `Text`.
+ * A markdown-flagged line (the terminal final output, expanded) is rendered
+ * through pi-tui's `Markdown` component with a plain theme — structure is
+ * parsed (headings, lists, code blocks, spacing) but no color is emitted,
+ * keeping the card uncolored.  A `truncateToWidth`-flagged line (the
+ * collapsed final-output preview) renders as a single width-truncated line:
+ * the width is only known at `render(width)`, so a thin component truncates
+ * there with pi's own width-aware `truncateToWidth` semantics and strips the
+ * ANSI resets it emits, keeping the card plain.  All other lines render as
+ * plain `Text`.
+ *
+ * A line that carries `segments` renders its flat concatenated `text` (the
+ * per-segment hues are a widget-only concern): the card stays uncolored and
+ * never wraps or strips any segment.
  *
  * @param container - The container to add the line to.
  * @param line - The view-model line (text + semantic hue).
  */
-function addLine(container: Container, line: CardLine): void {
+export function addLine(container: Container, line: CardLine): void {
   if (line.markdown === true) {
     container.addChild(new Markdown(line.text, 0, 0, PLAIN_MARKDOWN_THEME));
     return;
   }
+  if (line.truncateToWidth === true) {
+    container.addChild(new CollapsedPreview(line.text));
+    return;
+  }
   container.addChild(new Text(line.text, 0, 0));
+}
+
+/**
+ * A single-line collapsed preview, width-truncated at render time.
+ *
+ * The terminal width is only known when the TUI calls `render(width)`, so
+ * truncation must live here rather than at construction.  Uses pi's own
+ * width-aware `truncateToWidth` (grapheme + ANSI-aware, `...` ellipsis)
+ * and then strips the ANSI resets it emits so the card stays plain text —
+ * the same no-ANSI contract the card documents for all other lines.
+ */
+class CollapsedPreview implements Component {
+  private readonly text: string;
+
+  constructor(text: string) {
+    this.text = text;
+  }
+
+  invalidate(): void {
+    // Stateless: nothing cached to invalidate.
+  }
+
+  render(width: number): string[] {
+    const safeWidth = Math.max(1, width);
+    return [stripTerminalSequences(truncateToWidth(this.text, safeWidth))];
+  }
 }
 
 /**
@@ -276,9 +321,23 @@ export function renderResult(
     // next rebuild; the terminal title reads it from `details` directly.
     if (details.model !== undefined) state.model = details.model;
 
+    // This run's nested subagent delegations, looked up by the run id the
+    // tool stamped onto the streamed details (the pi tool-call id).  The
+    // card appends them one level deep below its own region.
+    const runId = details.runId;
+    const children =
+      typeof runId === "string" && runId.length > 0 ? childrenOf(runId) : [];
+
     const lines = isPartial
-      ? renderProgressCard(details, label, expanded, Date.now(), state.frame)
-      : renderResultCard(details, label, expanded);
+      ? renderProgressCard(
+          details,
+          label,
+          expanded,
+          Date.now(),
+          state.frame,
+          children,
+        )
+      : renderResultCard(details, label, expanded, children, state.frame);
 
     for (const line of lines) addLine(container, line);
     manageSpinnerTimer(state, isPartial, context?.invalidate);

@@ -527,15 +527,25 @@ export function createPiSubagentDriver(
         aborted = true;
         void session?.abort();
       };
+      // Report one progress snapshot to the caller, carrying the resolved
+      // child-session id on every snapshot once the session manager exists
+      // (so the run registry can associate the run with its sub-session and
+      // the fleet widget can rebuild the parent/child tree).  Before the
+      // session manager materialises the id is empty and snapshots pass
+      // through unchanged.
+      const report = (p: SubagentProgress): void => {
+        if (typeof onProgress !== "function") return;
+        onProgress(sessionId !== "" ? { ...p, childSession: sessionId } : p);
+      };
       // Emit the final done snapshot carrying the run result, so the
       // transcript card transitions to its terminal state.  The compact
       // text stays capped (never the full transcript); the structured
       // `result` carries the full text for the card's terminal rendering.
-      // Defensive: a throwing onProgress must not break the run.
+      // Defensive: a throwing progress callback must not break the run.
       const emitDone = (result: SubagentResult): void => {
         if (typeof onProgress !== "function") return;
         try {
-          onProgress({
+          report({
             agent: request.agent,
             ...toSnapshot(structured),
             ...(modelId !== undefined ? { model: modelId } : {}),
@@ -607,7 +617,7 @@ export function createPiSubagentDriver(
             messages,
             structured,
             request.agent,
-            onProgress,
+            report,
             modelId,
           );
         });

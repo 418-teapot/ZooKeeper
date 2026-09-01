@@ -39,9 +39,20 @@ export interface PiToolHostContext {
   ui?: {
     setWidget?(
       key: string,
-      content: string[] | undefined,
+      content:
+        | string[]
+        | ((tui: unknown, theme: unknown) => unknown)
+        | undefined,
       options?: { placement?: "aboveEditor" | "belowEditor" },
     ): void;
+    /** Read the current editor text (fleet-widget key guard). */
+    getEditorText?(): string;
+    /** Listen to raw terminal input (fleet-widget keyboard). */
+    onTerminalInput?(
+      handler: (
+        data: string,
+      ) => { consume?: boolean; data?: string } | undefined,
+    ): () => void;
   };
 }
 

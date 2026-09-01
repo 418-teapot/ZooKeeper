@@ -198,6 +198,15 @@ export interface Deps {
    */
   subagentBaseline?: string[];
   /**
+   * Called after every subagent run-registry mutation (start / update /
+   * finish) so the host can nudge its fleet widget to re-render.
+   *
+   * Pi wires this to the fleet widget's `refresh()` (the widget reads the
+   * process-level run registry directly on render).  Hosts without a fleet
+   * widget (OpenCode) omit it.
+   */
+  onSubagentRunChange?: () => void;
+  /**
    * Per-agent model map for subagent sessions (`~/.pi/agent/agents.json`).
    *
    * Materialised by the installer from `[agent.<name>].model` as a
@@ -425,7 +434,14 @@ export interface ToolContribution {
   execute(
     args: unknown,
     toolCtx: unknown,
-    hostCtx?: { signal?: AbortSignal; onUpdate?: unknown },
+    hostCtx?: {
+      signal?: AbortSignal;
+      onUpdate?: unknown;
+      /** The host tool-call id (the pi tool-call id), forwarded by the pi
+       * bridge from the native tool signature.  Used as the run id by the
+       * subagent tool's registry write. */
+      callId?: string;
+    },
   ): Promise<string>;
   /**
    * Optional host TUI renderers for the tool's transcript card.

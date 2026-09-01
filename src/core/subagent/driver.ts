@@ -72,6 +72,15 @@ export interface SubagentProgress {
    * sessions (pi).  Absent on hosts without a session file concept
    * (OpenCode). */
   sessionPath?: string;
+  /** The sub-session id this run created once the host materialises it
+   * (pi reports the child session after `SessionManager.create`).  The
+   * tool layer forwards it to the run registry so the fleet widget can
+   * rebuild the parent/child tree. */
+  childSession?: string;
+  /** The delegation's run id (the pi tool-call id), carried on the
+   * streamed details so the transcript card can look up this run's
+   * nested children in the registry. */
+  runId?: string;
   /** The final result when the run has finished. */
   result?:
     | { kind: "ok"; text: string }
