@@ -12,8 +12,8 @@ fn temp_dir(name: &str) -> PathBuf {
     dir
 }
 
-fn make_bundle_tar() -> PathBuf {
-    let dir = temp_dir("root_err_bundle");
+fn make_bundle_tar(name: &str) -> PathBuf {
+    let dir = temp_dir(name);
     std::fs::write(
         dir.join("bundle.toml"),
         r#"[package]
@@ -85,7 +85,7 @@ fn test_json_mode_invalid_root_outputs_json_error() {
 #[test]
 fn test_bundle_subcommand_on_temp_root_rejected() {
     let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
-    let tar = make_bundle_tar();
+    let tar = make_bundle_tar("root_err_list_bundle");
 
     // bundle list on tar root should be rejected.
     let output = Command::new(&bin)
@@ -107,7 +107,7 @@ fn test_bundle_subcommand_on_temp_root_rejected() {
 #[test]
 fn test_bundle_check_on_temp_root_rejected() {
     let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
-    let tar = make_bundle_tar();
+    let tar = make_bundle_tar("root_err_check_bundle");
 
     // bundle check on tar root should also be rejected.
     let output = Command::new(&bin)

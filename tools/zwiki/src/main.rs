@@ -2715,13 +2715,19 @@ title: Bundle Index
         )
         .unwrap();
 
-        // Page with recent timestamp (within 90d lint threshold) but old
-        // last_validated (> 180d) → mark_stale will flag it but lint won't.
-        let page_content = "\
+        // Page with a recent timestamp (kept within the 90d lint threshold
+        // by deriving it from today) but an old last_validated (> 180d), so
+        // mark_stale flags it stale while lint's check_stale_pages does not.
+        // Hardcoding a fixed past timestamp would drift past the 90d
+        // threshold as wall-clock time advances and break this test.
+        let timestamp =
+            chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let page_content = format!(
+            "\
 ---
 title: Timeliness Test
 type: concept
-timestamp: 2026-06-01T00:00:00Z
+timestamp: {timestamp}
 tags: []
 status: draft
 last_validated: 2025-01-01T00:00:00Z
@@ -2733,7 +2739,8 @@ timeliness: current
 This page has enough text to pass the health and lint checks that zwiki
 runs during validation.  It contains well over one hundred characters to
 satisfy the stub threshold check and other quality gates required for the
-bundle validation process.\n";
+bundle validation process.\n"
+        );
         std::fs::write(bundle_dir.join("doc.md"), page_content).unwrap();
 
         let lock = bundle::ZwikiLock {
