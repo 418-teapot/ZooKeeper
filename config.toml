@@ -90,6 +90,21 @@ cache_write = 12.75
 context = 1000000
 output  = 128000
 
+[provider.Aliyun.models."qwen3.8-flash"]
+name      = "aliyun/qwen3.8-flash"
+id        = "aliyun/qwen3.8-flash"
+reasoning = true
+
+[provider.Aliyun.models."qwen3.8-flash".cost]
+input       = 0.68
+output      = 2.29
+cache_read  = 0.085
+cache_write = 1.06
+
+[provider.Aliyun.models."qwen3.8-flash".limit]
+context = 1000000
+output  = 128000
+
 # ── Volces ────────────────────────────────────────────────────────────────────
 
 [provider.Volces]
