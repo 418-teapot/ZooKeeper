@@ -16,6 +16,11 @@ import fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
+import { initTheme } from "@earendil-works/pi-coding-agent";
+import {
+  emitTranscriptEvent,
+  resetTranscriptBus,
+} from "./adapters/pi/live-transcript.js";
 import {
   DIRECT_WORK_NUDGE,
   JSON_ERROR_REMINDER_MARKER,
@@ -27,8 +32,10 @@ import {
   setPrimary,
 } from "./core/subagent/identity.js";
 import {
+  finishRun,
   getRun,
   resetRegistry,
+  startRun,
   topLevelRuns,
 } from "./core/subagent/registry.js";
 import {
@@ -222,8 +229,15 @@ afterEach(() => {
   resetIdentityForTesting();
   _resetPendingSwitchOpsForTesting();
   resetRegistry();
+  resetTranscriptBus();
   delete process.env.ZOO_MODE_FILE;
 });
+
+// The official transcript message components render through the coding-agent
+// module-level theme singleton; the built-in dark theme ships with the
+// package and needs no configuration.  Bun runs each test file in its own
+// worker, so the initialization never leaks into other files.
+initTheme();
 // ---------------------------------------------------------------------------
 // Profile-driven selection
 // ---------------------------------------------------------------------------
@@ -1354,15 +1368,71 @@ function widgetRecordingCtx(): {
 }
 
 /**
+ * A ui ctx that records setWidget calls AND captures the terminal-input
+ * handler (so tests can drive the fleet widget's keyboard through the pi
+ * entry point's `onTerminalInput` wiring end-to-end).  An optional `custom`
+ * surface can be supplied to model the pi `ui.custom` overlay opener cached
+ * in the shared context holder.
+ */
+function widgetInputCtx(
+  opts: { custom?: (factory: unknown, options: unknown) => unknown } = {},
+): {
+  calls: Array<[string, unknown]>;
+  inputHandler: (data: string) => unknown;
+  ctx: {
+    sessionManager: { getSessionId(): string };
+    ui: {
+      notify(): void;
+      setWidget(key: string, content: unknown): void;
+      onTerminalInput(handler: (data: string) => unknown): () => void;
+      custom?: (factory: unknown, options: unknown) => unknown;
+    };
+  };
+} {
+  const calls: Array<[string, unknown]> = [];
+  let inputHandler: ((data: string) => unknown) | undefined;
+  const ctx: {
+    sessionManager: { getSessionId(): string };
+    ui: {
+      notify(): void;
+      setWidget(key: string, content: unknown): void;
+      onTerminalInput(handler: (data: string) => unknown): () => void;
+      custom?: (factory: unknown, options: unknown) => unknown;
+    };
+  } = {
+    sessionManager: { getSessionId: () => "sess-enter" },
+    ui: {
+      notify: () => {},
+      setWidget: (key: string, content: unknown) => calls.push([key, content]),
+      onTerminalInput: (handler: (data: string) => unknown) => {
+        inputHandler = handler;
+        return () => {
+          if (inputHandler === handler) inputHandler = undefined;
+        };
+      },
+      ...(opts.custom !== undefined ? { custom: opts.custom } : {}),
+    },
+  };
+  return {
+    calls,
+    inputHandler: (data: string) => inputHandler?.(data),
+    ctx,
+  };
+}
+
+/**
  * Render the registered `zoo` widget through the recorded factory.
  *
  * The fleet widget registers a component factory under `"zoo"`; this helper
  * invokes it with the stub TUI / theme and returns the rendered lines plus a
- * dispose handle (so per-test timers never leak).
+ * dispose handle (so per-test timers never leak).  A custom TUI can be passed
+ * when a test needs to drive the widget's keyboard (the editor-focus guard
+ * inspects `tui.focusedComponent`).
  */
 function renderZooWidget(
   calls: Array<[string, unknown]>,
   width = 80,
+  tui: unknown = WIDGET_TUI,
 ): { lines: string[]; dispose(): void } {
   const entry = calls.find(([k]) => k === "zoo");
   assert.ok(entry, "zoo widget must be registered");
@@ -1375,10 +1445,28 @@ function renderZooWidget(
     tui: unknown,
     theme: unknown,
   ) => { render(width: number): string[]; dispose?(): void };
-  const component = factory(WIDGET_TUI, WIDGET_THEME);
+  const component = factory(tui, WIDGET_THEME);
   return {
     lines: component.render(width),
     dispose: () => component.dispose?.(),
+  };
+}
+
+/**
+ * A TUI stub with a focused empty editor component, so the fleet widget's
+ * keyboard state machine can be driven (the editor-focus guard requires a
+ * component exposing render/invalidate/handleInput/getText/setText).
+ */
+function focusedEditorTui(): unknown {
+  return {
+    requestRender: () => {},
+    focusedComponent: {
+      render: () => [],
+      invalidate: () => {},
+      handleInput: () => {},
+      getText: () => "",
+      setText: () => {},
+    },
   };
 }
 
@@ -1811,6 +1899,548 @@ describe("buildPiHandlers — widget seeding", () => {
     assert.equal(run?.label, "搜索代码");
     assert.equal(run?.startedAt, 4000);
     assert.equal(run?.endedAt, 5000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fleet widget enter-inspect wiring
+// ---------------------------------------------------------------------------
+
+describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
+  it("enter on a selected run opens the transcript overlay via ui.custom", async () => {
+    const api = mockApi();
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    let opened = 0;
+    let factory: unknown;
+    const { calls, inputHandler, ctx } = widgetInputCtx({
+      custom: (f, _options) => {
+        opened += 1;
+        factory = f;
+        return Promise.resolve(undefined);
+      },
+    });
+
+    // Session start registers the fleet widget + terminal-input listener and
+    // caches the command ctx (with ui.custom) in the shared holder.
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      ctx,
+    );
+    // Attach the widget to a TUI with a focused empty editor so its keyboard
+    // state machine can be driven (kept alive for the key sequence).
+    const { dispose } = renderZooWidget(calls, 80, focusedEditorTui());
+
+    // A run with a session path under the current session.
+    startRun({
+      id: "run-enter",
+      agent: "beaver",
+      parentSession: "sess-enter",
+      startedAt: 1000,
+      sessionPath: "/tmp/sessions/beaver-1.jsonl",
+    });
+
+    // Expand (↓) selects the run; enter must open the read-only overlay.
+    inputHandler("\u001b[B");
+    const result = inputHandler("\r");
+    assert.deepEqual(result, { consume: true }, "enter must be consumed");
+    assert.equal(opened, 1, "ui.custom must be called once");
+    assert.equal(typeof factory, "function", "a component factory is passed");
+    dispose();
+  });
+
+  it("collapses the fleet widget to the stable one-line state before opening the overlay", async () => {
+    // Root cause regression: the overlay compositor line-diffs the base
+    // content.  An expanded widget (~10 lines) that collapses mid-overlay
+    // (the editor-focus guard on each keypress) mutates the base length
+    // under the open overlay, forcing a full symmetric re-paint.  enterRun
+    // must collapse the widget BEFORE the overlay opens.
+    const api = mockApi();
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    let opened = 0;
+    const { calls, inputHandler, ctx } = widgetInputCtx({
+      custom: () => {
+        opened += 1;
+        return Promise.resolve(undefined);
+      },
+    });
+
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      ctx,
+    );
+    const { dispose } = renderZooWidget(calls, 80, focusedEditorTui());
+
+    startRun({
+      id: "run-collapse",
+      agent: "beaver",
+      parentSession: "sess-enter",
+      startedAt: 1000,
+      sessionPath: "/tmp/sessions/beaver-collapse.jsonl",
+    });
+
+    // Expand (↓) so the widget is NOT already collapsed — the enter path
+    // must collapse it before the overlay opens.
+    inputHandler("\u001b[B");
+    assert.ok(
+      renderZooWidget(calls, 80, focusedEditorTui()).lines.length > 1,
+      "precondition: the widget is expanded",
+    );
+    inputHandler("\r");
+    assert.equal(opened, 1, "the overlay must open");
+    // After enter, the widget renders the single-line collapsed state.
+    const after = renderZooWidget(calls, 80, focusedEditorTui()).lines;
+    assert.equal(after.length, 1, "widget must be collapsed for the overlay");
+    dispose();
+  });
+
+  it("keeps the widget collapsed after the overlay closes; ↓ re-expands", async () => {
+    // Overlay close (pi re-renders the base) must find the widget in the
+    // stable one-line state the enter path collapsed it into — a length
+    // change at close would repaint the whole base again.  The normal ↓
+    // path still re-expands afterwards (unchanged semantics).
+    const api = mockApi();
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    let opened = 0;
+    let factory: unknown;
+    const { calls, inputHandler, ctx } = widgetInputCtx({
+      custom: (f, _options) => {
+        opened += 1;
+        factory = f;
+        return Promise.resolve(undefined);
+      },
+    });
+
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      ctx,
+    );
+    const { dispose } = renderZooWidget(calls, 80, focusedEditorTui());
+
+    startRun({
+      id: "run-close",
+      agent: "beaver",
+      parentSession: "sess-enter",
+      startedAt: 1000,
+      sessionPath: "/tmp/sessions/beaver-close.jsonl",
+    });
+
+    inputHandler("\u001b[B"); // expand
+    inputHandler("\r"); // open the overlay (collapses the widget)
+    assert.equal(opened, 1);
+    // Simulate pi closing the overlay: build the overlay component and drive
+    // its esc key (the close path routes through the component's `done`).
+    let closed = 0;
+    const overlay = (
+      factory as (
+        tui: unknown,
+        theme: unknown,
+        _keybindings: unknown,
+        done: (result: undefined) => void,
+      ) => { handleInput(data: string): void }
+    )(WIDGET_TUI, WIDGET_THEME, undefined, () => {
+      closed += 1;
+    });
+    overlay.handleInput("\u001b");
+    assert.equal(closed, 1, "esc must close the overlay");
+    const after = renderZooWidget(calls, 80, focusedEditorTui()).lines;
+    assert.equal(after.length, 1, "widget stays collapsed after overlay close");
+    // The collapsed state never steals keys; ↓ re-expands as before.
+    const result = inputHandler("\u001b[B");
+    assert.deepEqual(result, { consume: true });
+    assert.ok(
+      renderZooWidget(calls, 80, focusedEditorTui()).lines.length > 1,
+      "↓ must re-expand after the overlay closed",
+    );
+    dispose();
+  });
+
+  it("does not open an overlay when the cached ctx exposes no ui.custom", async () => {
+    const api = mockApi();
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    // No ui.custom on the cached ctx (a host ui surface without the overlay
+    // opener).
+    const { calls, inputHandler, ctx } = widgetInputCtx();
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      ctx,
+    );
+    const { dispose } = renderZooWidget(calls, 80, focusedEditorTui());
+    startRun({
+      id: "run-no-ctx",
+      agent: "beaver",
+      parentSession: "sess-enter",
+      startedAt: 1000,
+      sessionPath: "/tmp/sessions/beaver-2.jsonl",
+    });
+
+    inputHandler("\u001b[B");
+    const result = inputHandler("\r");
+    assert.equal(
+      result,
+      undefined,
+      "enter must fall through when no ui.custom is cached",
+    );
+    dispose();
+  });
+
+  it("does not open an overlay when the selected run has no session path", async () => {
+    const api = mockApi();
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    let opened = 0;
+    const { calls, inputHandler, ctx } = widgetInputCtx({
+      custom: () => {
+        opened += 1;
+        return Promise.resolve(undefined);
+      },
+    });
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      ctx,
+    );
+    const { dispose } = renderZooWidget(calls, 80, focusedEditorTui());
+    // A historical run whose session file could not be located.
+    startRun({
+      id: "run-no-path",
+      agent: "beaver",
+      parentSession: "sess-enter",
+      startedAt: 1000,
+    });
+
+    inputHandler("\u001b[B");
+    const result = inputHandler("\r");
+    assert.equal(
+      result,
+      undefined,
+      "enter must fall through without a session path",
+    );
+    assert.equal(opened, 0, "ui.custom must not be called");
+    dispose();
+  });
+
+  it("consumes enter (opens the overlay) even when the session file is unreadable", async () => {
+    const api = mockApi();
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    let opened = 0;
+    const { calls, inputHandler, ctx } = widgetInputCtx({
+      custom: () => {
+        opened += 1;
+        return Promise.resolve(undefined);
+      },
+    });
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      ctx,
+    );
+    const { dispose } = renderZooWidget(calls, 80, focusedEditorTui());
+    // A run whose session file is missing / unreadable on disk.
+    startRun({
+      id: "run-missing",
+      agent: "beaver",
+      parentSession: "sess-enter",
+      startedAt: 1000,
+      sessionPath: "/tmp/nonexistent-sessions/beaver-3.jsonl",
+    });
+
+    inputHandler("\u001b[B");
+    const result = inputHandler("\r");
+    // The run exists (it has a session path), so enter opens the overlay —
+    // which renders the "(transcript unavailable)" notice for the missing
+    // file.  The key is consumed, never falling through to the editor.
+    assert.deepEqual(result, { consume: true }, "enter must be consumed");
+    assert.equal(opened, 1, "ui.custom must open despite the missing file");
+    dispose();
+  });
+
+  it("wires the live bus when the inspected run is still running", async () => {
+    // The composition seam: a running run with a childSession opens the
+    // overlay WITH the child session wired — live event-driven appends flow
+    // onto the overlay through the real bus.
+    const api = mockApi();
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const dir = fs.mkdtempSync(join(tmpdir(), "zoo-pi-enter-live-"));
+    let factory: unknown;
+    const { calls, inputHandler, ctx } = widgetInputCtx({
+      custom: (f: unknown) => {
+        factory = f;
+        return Promise.resolve(undefined);
+      },
+    });
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      ctx,
+    );
+    const { dispose } = renderZooWidget(calls, 80, focusedEditorTui());
+    const sessionPath = join(dir, "beaver-live.jsonl");
+    fs.writeFileSync(
+      sessionPath,
+      [
+        JSON.stringify({
+          type: "session",
+          version: 3,
+          id: "ses-live",
+          timestamp: "2026-08-31T00:00:00.000Z",
+          cwd: "/tmp",
+        }),
+        JSON.stringify({
+          type: "message",
+          id: "m1",
+          parentId: null,
+          timestamp: "2026-08-31T00:00:00.000Z",
+          message: { role: "user", content: "replayed" },
+        }),
+      ].join("\n"),
+      "utf-8",
+    );
+    try {
+      startRun({
+        id: "run-running",
+        agent: "beaver",
+        parentSession: "sess-enter",
+        startedAt: 1000,
+        sessionPath,
+        childSession: "child-live",
+      });
+      inputHandler("\u001b[B");
+      const result = inputHandler("\r");
+      assert.deepEqual(result, { consume: true });
+      assert.equal(typeof factory, "function", "the overlay must open");
+      const component = (factory as (tui: unknown, theme: unknown) => unknown)(
+        WIDGET_TUI,
+        WIDGET_THEME,
+      );
+      const render = (): string[] =>
+        (component as { render(width: number): string[] }).render(80);
+      let lines = render();
+      assert.ok(
+        lines.some((l) => l.includes("replayed")),
+        `the file replay renders: ${lines.join(" | ")}`,
+      );
+      // The live subscription is active: a message_end on the child session
+      // appends to the open overlay — no polling.
+      emitTranscriptEvent("child-live", {
+        type: "message_end",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "live-tail" }],
+        },
+      });
+      lines = render();
+      assert.ok(
+        lines.some((l) => l.includes("live-tail")),
+        `the live message must render: ${lines.join(" | ")}`,
+      );
+    } finally {
+      dispose();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not wire the live bus for a terminal run (file-only overlay)", async () => {
+    // The composition seam's negative gate: a finished run that still
+    // carries a childSession opens the overlay WITHOUT it — the overlay
+    // renders the final file once and stays static (no live subscription).
+    const api = mockApi();
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    const dir = fs.mkdtempSync(join(tmpdir(), "zoo-pi-enter-done-"));
+    let factory: unknown;
+    const { calls, inputHandler, ctx } = widgetInputCtx({
+      custom: (f: unknown) => {
+        factory = f;
+        return Promise.resolve(undefined);
+      },
+    });
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      ctx,
+    );
+    const { dispose } = renderZooWidget(calls, 80, focusedEditorTui());
+    const sessionPath = join(dir, "beaver-done.jsonl");
+    fs.writeFileSync(
+      sessionPath,
+      [
+        JSON.stringify({
+          type: "session",
+          version: 3,
+          id: "ses-done",
+          timestamp: "2026-08-31T00:00:00.000Z",
+          cwd: "/tmp",
+        }),
+        JSON.stringify({
+          type: "message",
+          id: "m1",
+          parentId: null,
+          timestamp: "2026-08-31T00:00:00.000Z",
+          message: { role: "user", content: "final" },
+        }),
+      ].join("\n"),
+      "utf-8",
+    );
+    try {
+      startRun({
+        id: "run-done",
+        agent: "beaver",
+        parentSession: "sess-enter",
+        startedAt: 1000,
+        sessionPath,
+        childSession: "child-done",
+      });
+      finishRun("run-done", { status: "done" });
+      inputHandler("\u001b[B");
+      const result = inputHandler("\r");
+      assert.deepEqual(result, { consume: true });
+      assert.equal(typeof factory, "function", "the overlay must open");
+      const component = (factory as (tui: unknown, theme: unknown) => unknown)(
+        WIDGET_TUI,
+        WIDGET_THEME,
+      );
+      const render = (): string[] =>
+        (component as { render(width: number): string[] }).render(80);
+      let lines = render();
+      assert.ok(
+        lines.some((l) => l.includes("final")),
+        `the final file renders: ${lines.join(" | ")}`,
+      );
+      // No live subscription: an event on the run's child session is
+      // ignored entirely.
+      emitTranscriptEvent("child-done", {
+        type: "message_end",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "live-ignored" }],
+        },
+      });
+      lines = render();
+      assert.ok(
+        !lines.some((l) => l.includes("live-ignored")),
+        `a terminal run's overlay must stay static: ${lines.join(" | ")}`,
+      );
+    } finally {
+      dispose();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fleet widget enter-inspect — overlay border + title agent colorization
+// ---------------------------------------------------------------------------
+
+describe("buildPiHandlers — transcript overlay border + title agent color", () => {
+  /** Open the overlay for a run and render its component with a stub theme. */
+  async function renderOverlayFor(
+    raw: unknown,
+    run: { id: string; agent: string; sessionPath: string; label?: string },
+  ): Promise<string[]> {
+    const api = mockApi();
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, raw as any);
+    let factory: unknown;
+    const { calls, inputHandler, ctx } = widgetInputCtx({
+      custom: (f: unknown) => {
+        factory = f;
+        return Promise.resolve(undefined);
+      },
+    });
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      ctx,
+    );
+    const { dispose } = renderZooWidget(calls, 200, focusedEditorTui());
+    startRun({
+      id: run.id,
+      agent: run.agent,
+      parentSession: "sess-enter",
+      startedAt: 1000,
+      sessionPath: run.sessionPath,
+      ...(run.label !== undefined ? { label: run.label } : {}),
+    });
+    inputHandler("\u001b[B");
+    inputHandler("\r");
+    const component = (factory as (tui: unknown, theme: unknown) => unknown)(
+      WIDGET_TUI,
+      WIDGET_THEME,
+    );
+    const lines = (component as { render(width: number): string[] }).render(
+      200,
+    );
+    dispose();
+    return lines;
+  }
+
+  it("colors the overlay title line with the inspected run's agent color", async () => {
+    const lines = await renderOverlayFor(COLORS_RAW, {
+      id: "run-color",
+      agent: "beaver",
+      sessionPath: "/tmp/sessions/beaver-color.jsonl",
+    });
+    // beaver's configured color #39C5BB wraps the whole title line in the
+    // truecolor sequence; the hint keeps its own dim color.
+    const title = lines.find((l) => l.includes("beaver"));
+    assert.ok(title, "the title line must be present");
+    // The whole title line is wrapped as one colorized unit in beaver's
+    // truecolor sequence (#39C5BB = 57,197,187) — the full-screen surface
+    // has no border glyphs to colorize separately.  (runTitle pre-wraps the
+    // agent name, so the sequence appears twice; padding follows after.)
+    const esc = "\x1b[38;2;57;197;187m";
+    assert.ok(title.startsWith(esc), title);
+    assert.ok(title.includes(`${esc}beaver\x1b[39m`), title);
+    assert.ok(
+      lines.every((l) => !l.includes("╭") && !l.includes("│")),
+      lines.join("\n"),
+    );
+  });
+
+  it("falls back to the fixed title color when the agent has no configured color", async () => {
+    // MODES_RAW declares no agent colors → the overlay title line falls back
+    // to the stub theme's `border` color (current default).
+    const lines = await renderOverlayFor(MODES_RAW, {
+      id: "run-nocolor",
+      agent: "beaver",
+      sessionPath: "/tmp/sessions/beaver-nocolor.jsonl",
+    });
+    const title = lines.find((l) => l.includes("beaver"));
+    assert.ok(title, "the title line must be present");
+    assert.ok(title.includes("<border>beaver</border>"), title);
+    assert.ok(
+      lines.every((l) => !l.includes("╭") && !l.includes("│")),
+      lines.join("\n"),
+    );
+  });
+
+  it("colors the title agent name with the run's configured color", async () => {
+    // beaver carries #39C5BB in COLORS_RAW → the title's agent name is
+    // pre-colorized by `runTitle` (the same `colorizeAgent` source as the
+    // widget) before the overlay renders it.  pi's width handling preserves
+    // ANSI, so the wrapped name survives verbatim in the rendered title line.
+    const lines = await renderOverlayFor(COLORS_RAW, {
+      id: "run-title-color",
+      agent: "beaver",
+      sessionPath: "/tmp/sessions/beaver-title-color.jsonl",
+      label: "实现任务",
+    });
+    const esc = "\x1b[38;2;57;197;187m"; // #39C5BB = 57,197,187
+    const title = lines.find((l) => l.includes("实现任务"));
+    assert.ok(title, lines.join("\n"));
+    assert.ok(title.includes(`${esc}beaver\x1b[39m · 实现任务`), title);
+  });
+
+  it("keeps the title agent name plain when the agent has no configured color", async () => {
+    // MODES_RAW declares no colors → `runTitle` falls back to the plain
+    // agent name (fail-closed), so the title carries no agent truecolor
+    // foreground sequence.  (The overlay's width padding may still emit a
+    // neutral `\x1b[0m` reset — that is pi-tui truncation, not coloring.)
+    const lines = await renderOverlayFor(MODES_RAW, {
+      id: "run-title-nocolor",
+      agent: "beaver",
+      sessionPath: "/tmp/sessions/beaver-title-nocolor.jsonl",
+      label: "实现任务",
+    });
+    const title = lines.find((l) => l.includes("实现任务"));
+    assert.ok(title, lines.join("\n"));
+    assert.ok(title.includes("beaver · 实现任务"), title);
+    assert.ok(
+      !title.includes("\x1b[38;2;"),
+      `no agent truecolor sequence in the title: ${JSON.stringify(title)}`,
+    );
   });
 });
 

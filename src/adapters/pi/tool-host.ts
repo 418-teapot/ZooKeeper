@@ -53,6 +53,8 @@ export interface PiToolHostContext {
         data: string,
       ) => { consume?: boolean; data?: string } | undefined,
     ): () => void;
+    /** Open a full-screen overlay (fleet-widget run inspection). */
+    custom?(factory: unknown, options?: unknown): unknown;
   };
 }
 

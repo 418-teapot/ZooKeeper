@@ -905,6 +905,47 @@ describe("subagent tool execute — run-registry writes", () => {
     assert.ok(run?.endedAt !== undefined, "endedAt must be set");
   });
 
+  it("patches sessionPath on the running run before it finishes", async () => {
+    setPrimary("dolphin");
+    // The driver reads the registry synchronously right after its running
+    // (done: false) snapshot is delivered — at that point the tool's
+    // onProgress handler has already run but finishRun has not, so the run
+    // must be non-terminal AND already carry sessionPath for enter-inspect.
+    // Primitive fields are captured at probe time because the registry
+    // mutates the live run object in place on finishRun.
+    let statusDuring: string | undefined;
+    let sessionPathDuring: string | undefined;
+    const driver: SubagentDriver = {
+      async run(_req, ctx) {
+        ctx.onProgress?.({
+          currentTool: "bash",
+          output: "working",
+          done: false,
+          sessionPath: "/tmp/running-session.jsonl",
+        });
+        statusDuring = getRun("call-running")?.status;
+        sessionPathDuring = getRun("call-running")?.sessionPath;
+        return { kind: "ok", text: "done" };
+      },
+    };
+    const t = tool(makeDeps({ subagentDriver: driver }));
+    await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "t" },
+      TOOL_CTX,
+      { callId: "call-running" },
+    );
+    assert.equal(
+      statusDuring,
+      "running",
+      "the probe must observe the run while it is still running",
+    );
+    assert.equal(
+      sessionPathDuring,
+      "/tmp/running-session.jsonl",
+      "the running run must already carry sessionPath for enter-inspect",
+    );
+  });
+
   it("maps error and aborted outcomes onto the terminal status", async () => {
     setPrimary("dolphin");
     const okT = tool(

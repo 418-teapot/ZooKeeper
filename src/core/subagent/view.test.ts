@@ -567,26 +567,11 @@ describe("renderResultCard", () => {
     );
   });
 
-  it("appends the session file path line when present", () => {
+  it("never renders the session file path line on a terminal card", () => {
     const home = process.env.HOME;
     const snapshot = okSnapshot({
       sessionPath: `${home}/.pi/agent/sessions/x/s.jsonl`,
     });
-    const lines = renderResultCard(snapshot, "实现功能");
-    const sessionLine = lines.find((l) => l.text.startsWith("session: "));
-    assert.ok(
-      sessionLine,
-      `missing session line: ${lines.map((l) => l.text).join(" | ")}`,
-    );
-    assert.ok(
-      sessionLine.text.includes("~/.pi/agent/sessions/x/s.jsonl"),
-      sessionLine.text,
-    );
-    assert.equal(sessionLine.hue, "muted");
-  });
-
-  it("omits the session line when absent", () => {
-    const snapshot = okSnapshot({});
     const lines = renderResultCard(snapshot, "实现功能");
     assert.ok(!lines.some((l) => l.text.startsWith("session: ")));
   });
@@ -666,12 +651,21 @@ describe("renderFleetCollapsed", () => {
     assert.ok(line.segments !== undefined, "segments must be present");
     assert.deepEqual(
       line.segments.slice(1, 7).map((s) => s.hue),
-      [undefined, "running", undefined, undefined, "running", undefined],
+      [undefined, "running", undefined, undefined, undefined, undefined],
     );
     assert.equal(line.segments[2].text, SPINNER_FRAMES[0]);
-    assert.equal(line.segments[5].text, SPINNER_FRAMES[0]);
-    assert.equal(line.segments[3].text, " beaver 1:23");
-    assert.equal(line.segments[6].text, " lynx 0:34");
+    assert.equal(line.segments[7].text, SPINNER_FRAMES[0]);
+    // Each running group splits into five segments — ` · `, the spinner, a
+    // space, the bare agent name (marked with its `agent` for the adapter to
+    // colorize via the configured `[agent.<name>].color`), and the elapsed.
+    assert.equal(line.segments[3].text, " ");
+    assert.equal(line.segments[4].text, "beaver");
+    assert.equal(line.segments[4].agent, "beaver");
+    assert.equal(line.segments[5].text, " 1:23");
+    assert.equal(line.segments[8].text, " ");
+    assert.equal(line.segments[9].text, "lynx");
+    assert.equal(line.segments[9].agent, "lynx");
+    assert.equal(line.segments[10].text, " 0:34");
     // The flat `text` stays the segment concatenation (backward compatible).
     assert.equal(line.text, line.segments.map((s) => s.text).join(""));
   });
@@ -792,36 +786,43 @@ describe("renderFleetCollapsed", () => {
       0,
     );
     assert.ok(line.segments !== undefined, "segments must be present");
-    assert.equal(line.segments.length, 10);
+    assert.equal(line.segments.length, 12);
     // The primary segment is pre-colorized by the host and carries no hue.
     assert.equal(line.segments[0].hue, undefined);
     assert.equal(line.segments[0].text, `◆ ${colorized}`);
-    // The running group splits into three segments — the ` · ` separator,
-    // the bare spinner, and the ` <agent> <m:ss>` label.  Only the spinner
-    // carries the running hue; the separator and the label stay default.
+    // The running group splits into five segments — the ` · ` separator, the
+    // bare spinner, a space, the bare agent name (marked with `agent` so the
+    // adapter colorizes it with the configured `[agent.<name>].color`), and
+    // the elapsed.  Only the spinner carries the running hue; the separator,
+    // the agent name and the elapsed stay default.
     assert.equal(line.segments[1].hue, undefined);
     assert.equal(line.segments[1].text, " · ");
     assert.equal(line.segments[2].hue, "running");
     assert.equal(line.segments[2].text, SPINNER_FRAMES[0]);
     assert.equal(line.segments[3].hue, undefined);
-    assert.equal(line.segments[3].text, " lynx 0:05");
+    assert.equal(line.segments[3].text, " ");
+    assert.equal(line.segments[4].hue, undefined);
+    assert.equal(line.segments[4].text, "lynx");
+    assert.equal(line.segments[4].agent, "lynx");
+    assert.equal(line.segments[5].hue, undefined);
+    assert.equal(line.segments[5].text, " 0:05");
     // Each done/failed count splits into three segments — the ` · `
     // separator, the dot, and the number.  Only the bare dot carries the
     // status hue; the separator and the number stay default.
-    assert.equal(line.segments[4].hue, undefined);
-    assert.equal(line.segments[4].text, " · ");
-    assert.equal(line.segments[5].hue, "success");
-    assert.equal(line.segments[5].text, "●");
     assert.equal(line.segments[6].hue, undefined);
-    assert.equal(line.segments[6].text, " 2");
+    assert.equal(line.segments[6].text, " · ");
+    assert.equal(line.segments[7].hue, "success");
+    assert.equal(line.segments[7].text, "●");
+    assert.equal(line.segments[8].hue, undefined);
+    assert.equal(line.segments[8].text, " 2");
     // The second (failed) dot is separated by a single space — the leading
     // ` · ` already belongs to the first count.
-    assert.equal(line.segments[7].hue, undefined);
-    assert.equal(line.segments[7].text, " ");
-    assert.equal(line.segments[8].hue, "error");
-    assert.equal(line.segments[8].text, "●");
     assert.equal(line.segments[9].hue, undefined);
-    assert.equal(line.segments[9].text, " 1");
+    assert.equal(line.segments[9].text, " ");
+    assert.equal(line.segments[10].hue, "error");
+    assert.equal(line.segments[10].text, "●");
+    assert.equal(line.segments[11].hue, undefined);
+    assert.equal(line.segments[11].text, " 1");
     // The flat `text` stays the concatenation (backward compatible with the
     // card, which renders plain text).
     assert.equal(line.text, line.segments.map((s) => s.text).join(""));
@@ -984,23 +985,36 @@ describe("renderFleetRows", () => {
     ];
     const lines = renderFleetRows(entries, new Map(), "r2", 0, 5000);
     // Running row: marker + prefix hue absent, spinner carries running.
-    assert.equal(lines[0].segments?.length, 4);
+    assert.equal(lines[0].segments?.length, 6);
     assert.equal(lines[0].segments?.[0].hue, undefined);
     assert.equal(lines[0].segments?.[0].text, " ");
     assert.equal(lines[0].segments?.[1].hue, undefined);
     assert.equal(lines[0].segments?.[1].text, " ");
     assert.equal(lines[0].segments?.[2].hue, "running");
     assert.ok(lines[0].segments?.[2].text.startsWith(SPINNER_FRAMES[0]));
+    // The row body splits into the bare agent name (marked for the adapter
+    // to colorize with the configured color) and the plain ` · label ·
+    // duration` remainder.
     assert.equal(lines[0].segments?.[3].hue, undefined);
-    assert.equal(lines[0].segments?.[3].text, " lynx · 0:04");
+    assert.equal(lines[0].segments?.[3].text, " ");
+    assert.equal(lines[0].segments?.[4].hue, undefined);
+    assert.equal(lines[0].segments?.[4].text, "lynx");
+    assert.equal(lines[0].segments?.[4].agent, "lynx");
+    assert.equal(lines[0].segments?.[5].hue, undefined);
+    assert.equal(lines[0].segments?.[5].text, " · 0:04");
     // Done row: ▸ marker hue absent, ● carries success, body plain.
     assert.equal(lines[1].segments?.[0].text, "▸");
     assert.equal(lines[1].segments?.[0].hue, undefined);
     assert.equal(lines[1].segments?.[1].hue, undefined);
     assert.equal(lines[1].segments?.[2].hue, "success");
     assert.equal(lines[1].segments?.[2].text, "●");
+    assert.equal(lines[1].segments?.[3].text, " ");
     assert.equal(lines[1].segments?.[3].hue, undefined);
-    assert.equal(lines[1].segments?.[3].text, " lynx · 0:03");
+    assert.equal(lines[1].segments?.[4].text, "lynx");
+    assert.equal(lines[1].segments?.[4].agent, "lynx");
+    assert.equal(lines[1].segments?.[4].hue, undefined);
+    assert.equal(lines[1].segments?.[5].hue, undefined);
+    assert.equal(lines[1].segments?.[5].text, " · 0:03");
     // Flat text stays the segment concatenation.
     for (const line of lines) {
       assert.equal(
@@ -1022,6 +1036,8 @@ describe("renderFleetRows", () => {
       assert.equal(line.segments?.[2].hue, "error");
       assert.equal(line.segments?.[2].text, "●");
       assert.equal(line.segments?.[3].hue, undefined);
+      assert.equal(line.segments?.[4].agent, "lynx");
+      assert.equal(line.segments?.[5].hue, undefined);
     }
   });
 

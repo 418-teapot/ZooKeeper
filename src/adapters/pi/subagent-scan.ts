@@ -642,3 +642,35 @@ function readSessionEntries(path: string): PiHistoryEntry[] | undefined {
   }
   return entries;
 }
+
+/**
+ * Read the working directory recorded in a pi session file's header.
+ *
+ * The first line of a pi session jsonl is the `session` header carrying the
+ * `cwd` the session ran in.  The transcript overlay's native tool renderers
+ * use it as their render context (e.g. read's compact call classification),
+ * so the header is parsed separately from `readSessionEntries` (which drops
+ * non-message records).  Returns `undefined` when the file is missing,
+ * unreadable, or its header is malformed.
+ *
+ * @param path - The session file path.
+ * @returns The session's working directory, or `undefined`.
+ */
+export function readSessionCwd(path: string): string | undefined {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf-8");
+  } catch {
+    return undefined;
+  }
+  const firstLine = text.split("\n", 1)[0] ?? "";
+  try {
+    const header = JSON.parse(firstLine) as { cwd?: unknown };
+    if (typeof header.cwd === "string" && header.cwd.length > 0) {
+      return header.cwd;
+    }
+  } catch {
+    // Malformed header line.
+  }
+  return undefined;
+}

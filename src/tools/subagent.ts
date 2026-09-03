@@ -415,9 +415,6 @@ export function createSubagentTool(
         hostCtx?.callId ?? `${caller}-${input.agent}-${++syntheticRunSeq}`;
       const runStarted =
         typeof parentSession === "string" && parentSession.length > 0;
-      // The sub-session's on-disk path, captured from the last streamed
-      // snapshot (the driver reports it on the terminal `done` snapshot).
-      let runSessionPath: string | undefined;
       if (runStarted) {
         startRun({
           id: runId,
@@ -461,6 +458,7 @@ export function createSubagentTool(
                 tokens?: number;
                 model?: string;
                 childSession?: string;
+                sessionPath?: string;
               } = {};
               if (progress.currentTool !== undefined) {
                 patch.currentTool = progress.currentTool;
@@ -470,12 +468,16 @@ export function createSubagentTool(
               if (progress.childSession !== undefined) {
                 patch.childSession = progress.childSession;
               }
+              if (progress.sessionPath !== undefined) {
+                // The sub-session file exists from the first progress
+                // snapshot (the driver reports it once the session manager
+                // is created), so the running run carries it for
+                // enter-inspect mid-run — not only on the terminal finish.
+                patch.sessionPath = progress.sessionPath;
+              }
               if (Object.keys(patch).length > 0) {
                 updateRun(runId, patch);
                 notifyRunChange();
-              }
-              if (progress.sessionPath !== undefined) {
-                runSessionPath = progress.sessionPath;
               }
             }
             emitProgressUpdate(
@@ -490,6 +492,9 @@ export function createSubagentTool(
       );
 
       // 9. Finish the registry run (terminal state, immutable thereafter).
+      //    The session path (when any) was already patched onto the run via
+      //    `updateRun` on the first progress snapshot, so finish only sets
+      //    the terminal status and outcome fields.
       if (runStarted) {
         finishRun(runId, {
           status:
@@ -499,9 +504,6 @@ export function createSubagentTool(
                 ? "error"
                 : "aborted",
           ...(result.kind === "error" ? { error: result.errorMessage } : {}),
-          ...(runSessionPath !== undefined
-            ? { sessionPath: runSessionPath }
-            : {}),
         });
         notifyRunChange();
       }

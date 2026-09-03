@@ -29,7 +29,6 @@
  * @module
  */
 
-import { homedir } from "node:os";
 import type { SubagentProgress } from "./driver.js";
 import type { RunSummary, SubagentRun } from "./registry.js";
 
@@ -74,6 +73,16 @@ export interface CardSegment {
   text: string;
   /** The segment's semantic hue — absent means default color (unwrapped). */
   hue?: CardHue;
+  /**
+   * The agent name this segment renders, when it is an agent-name segment.
+   *
+   * Pure semantic markup — core never knows the configured color.  The pi
+   * adapter translates it into the agent's `[agent.<name>].color` via the
+   * host `colorizeAgent` (which returns the plain name when unconfigured,
+   * so the current default is preserved).  Absent for every non-agent
+   * segment.
+   */
+  agent?: string;
 }
 
 /** One display line: the text plus its semantic hue. */
@@ -453,9 +462,9 @@ export function renderProgressCard(
  * Build the display lines for a terminal (done) subagent card.
  *
  * The terminal card shows the title (with the model badge, the run
- * statistics, and the task label), the final output text, and the session
- * path.  Unlike the running card it no longer lists the recent tool calls —
- * the run's tools are already summarized by the statistics badge.
+ * statistics, and the task label) and the final output text.  Unlike the
+ * running card it no longer lists the recent tool calls — the run's tools
+ * are already summarized by the statistics badge.
  *
  * The optional `children` parameter appends this run's nested subagent
  * delegations (one level deep) after the tool-call region; an empty or
@@ -524,13 +533,6 @@ export function renderResultCard(
     });
   }
 
-  // The on-disk sub-session file (pi persists sessions).  The user home
-  // prefix is collapsed to `~` so the path reads compactly.
-  const sessionPath = progress.sessionPath;
-  if (sessionPath !== undefined && sessionPath.length > 0) {
-    lines.push({ text: `session: ${shortenHome(sessionPath)}`, hue: "muted" });
-  }
-
   // Nested subagent runs (this run's own delegations), rendered one level
   // deep after the tool-call region.  Absent when the run has no children.
   for (const line of fleetCardChildLines(children ?? [], frameSeq)) {
@@ -594,9 +596,11 @@ export function renderFleetCollapsed(
   const primaryPart = primaryColorized ?? primary;
   const segments: CardSegment[] = [{ text: `◆ ${primaryPart}` }];
 
-  // Each running run produces three segments — the ` · ` separator, the bare
-  // spinner frame, and the ` <agent> <m:ss>` label — so only the spinner
-  // carries the running hue (same convention as the count dots: only the
+  // Each running run produces five segments — the ` · ` separator, the bare
+  // spinner frame, a space, the bare agent name (marked with its `agent` so
+  // the adapter colorizes it with the configured `[agent.<name>].color`), and
+  // the ` <m:ss>` elapsed — so only the spinner carries the running hue and
+  // the agent name is marked (same convention as the count dots: only the
   // symbol is colored, the separators and text stay default).  Multiple runs
   // are listed one after another in the given order.
   if (summary.running > 0 && currentRunning !== undefined) {
@@ -604,11 +608,13 @@ export function renderFleetCollapsed(
     for (const run of currentRunning) {
       segments.push({ text: " · " });
       segments.push({ text: spinner, hue: "running" });
+      segments.push({ text: " " });
+      segments.push({ text: run.agent, agent: run.agent });
       const elapsed =
         run.elapsedMs === undefined
           ? "-:--"
           : formatSeconds(Math.max(0, Math.floor(run.elapsedMs / 1000)));
-      segments.push({ text: ` ${run.agent} ${elapsed}` });
+      segments.push({ text: ` ${elapsed}` });
     }
   }
   // Each done/failed count splits into three segments — the ` · ` separator,
@@ -721,10 +727,13 @@ export function renderFleetRows(
  * Build one fleet row line as colorized segments.
  *
  * The marker and the branch/prefix characters carry no hue (default color);
- * only the status glyph (`<spinner|●>`) carries the status hue; the body
- * (`<agent> · <label> · <duration>`) stays default so a terminal row does not
- * tint the whole line green/red (visual-noise fix).  The flat `text` is the
- * segment concatenation, so the uncolored card path renders identically.
+ * only the status glyph (`<spinner|●>`) carries the status hue.  The body
+ * splits into the bare agent name (marked with its `agent` so the adapter
+ * colorizes it with the configured `[agent.<name>].color`) and the plain
+ * ` · <label> · <duration>` remainder, so a terminal row does not tint the
+ * whole line green/red (visual-noise fix) while the agent name keeps its own
+ * color.  The flat `text` is the segment concatenation, so the uncolored
+ * card path renders identically.
  *
  * @param marker - The selection marker (`▸` / ` `).
  * @param prefix - The separator between the marker and the glyph (` ` for a
@@ -745,13 +754,40 @@ function fleetRowLine(
     { text: marker },
     { text: prefix },
     { text: glyph, hue },
-    { text: ` ${body}` },
   ];
+  // The leading `<agent>` of the body is split out and marked, so the
+  // adapter colorizes exactly the agent name and leaves the label /
+  // duration plain.  When the body has no agent prefix (never in practice)
+  // the whole body stays one plain segment.
+  const agentName = agentPrefixOf(body);
+  if (agentName === undefined) {
+    segments.push({ text: ` ${body}` });
+  } else {
+    segments.push({ text: " " });
+    segments.push({ text: agentName, agent: agentName });
+    segments.push({ text: body.slice(agentName.length) });
+  }
   return {
     text: segments.map((s) => s.text).join(""),
     hue,
     segments,
   };
+}
+
+/**
+ * The leading agent name of a fleet row body, when the body starts with one.
+ *
+ * `fleetRowBody` always renders `<agent>` first (optionally followed by
+ * ` · <label> · <duration>`), so the leading run of non-whitespace, non-`·`
+ * characters is the agent name.  Returns `undefined` when the body does not
+ * start with an agent name (defensive-only — never the case for real runs).
+ *
+ * @param body - The row body text.
+ * @returns The leading agent name, or `undefined`.
+ */
+function agentPrefixOf(body: string): string | undefined {
+  const match = /^[^\s·]+/.exec(body);
+  return match?.[0];
 }
 
 /**
@@ -813,19 +849,4 @@ function fleetCardChildLines(
       hue,
     };
   });
-}
-
-/**
- * Collapse a user-home prefix in a path to a leading `~`.
- *
- * @param path - The absolute path.
- * @returns The path with a `$HOME` prefix shortened to `~`.
- */
-function shortenHome(path: string): string {
-  const home = homedir();
-  if (home.length > 0 && path.startsWith(home)) {
-    const rest = path.slice(home.length);
-    return rest.length === 0 ? "~" : `~${rest}`;
-  }
-  return path;
 }

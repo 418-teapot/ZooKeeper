@@ -10,10 +10,14 @@
  * `doRender` guard.  This mirrors how the pi-subagents extension (an
  * external extension shipped outside the pi repo) consumes pi-tui.
  *
- * The card renders plain text: every line is emitted without any ANSI
- * color sequences.  The semantic hues of the view model are carried by the
- * view model itself (`src/core/subagent/view.ts` + `theme.ts`) and could
- * be re-mapped to color later, but today the whole card is uncolored.
+ * The card renders structural lines as plain text, while markdown-flagged
+ * lines (the expanded final output) render through pi-tui's `Markdown`
+ * component with pi's FULL markdown theme (`fullMarkdownTheme`) — so markdown
+ * content in the card looks exactly like pi's native transcript (colored
+ * headings / code blocks / emphasis).  Non-markdown lines (titles, current
+ * tool, stats, collapsed previews) stay uncolored.  The semantic hues of the
+ * view model are carried by the view model itself (`src/core/subagent/view.ts`
+ * + `theme.ts`) and are only used by the fleet widget, never by the card.
  *
  * Wrapping is delegated to pi's `Text` component, which is ANSI-aware:
  * it splits on `\n` into logical lines and wraps each one so its *visible*
@@ -67,45 +71,15 @@ import {
   renderProgressTitle,
   renderResultCard,
 } from "../../../core/subagent/view.js";
-
-/**
- * The pi-tui `MarkdownTheme` that renders markdown structure while keeping
- * every glyph plain.
- *
- * The card is uncolored by design (user decision), so each theme function
- * is the identity — markdown *layout* (headings, code blocks, lists, blank
- * line separation) is still parsed and rendered, but no ANSI color is ever
- * emitted.  This is the pi-tui side of the "Markdown rendering lives only
- * in the adapter" rule: the view model flags the final-output line and this
- * theme turns it into structure-aware plain text.
- */
-const PLAIN_MARKDOWN_THEME: MarkdownTheme = {
-  heading: (text) => text,
-  link: (text) => text,
-  linkUrl: (text) => text,
-  code: (text) => text,
-  codeBlock: (text) => text,
-  codeBlockBorder: (text) => text,
-  quote: (text) => text,
-  quoteBorder: (text) => text,
-  hr: (text) => text,
-  listBullet: (text) => text,
-  bold: (text) => text,
-  italic: (text) => text,
-  strikethrough: (text) => text,
-  underline: (text) => text,
-};
+import { fullMarkdownTheme, type MarkdownThemeSource } from "./theme.js";
 
 // ---------------------------------------------------------------------------
 // pi renderer surface types (duck-typed inputs, not pi imports)
 // ---------------------------------------------------------------------------
 
-/** Structural subset of pi's `Theme` the card needs (unused, kept for the
- * duck-typed `theme` argument the pi renderer passes). */
-export interface PiThemeLike {
-  fg(color: string, text: string): string;
-  bold(text: string): string;
-}
+/** Structural subset of pi's `Theme` the card needs for the full markdown
+ * theme (`fullMarkdownTheme`). */
+export type PiThemeLike = MarkdownThemeSource;
 
 /** Structural subset of pi's `ToolRenderResultOptions`. */
 export interface PiRenderOptionsLike {
@@ -155,31 +129,39 @@ interface SubagentToolResult {
 /**
  * Render one view-model line as a pi `Text` child.
  *
- * The card is uncolored by design (user decision): the semantic hue of the
- * line is carried by the view model itself and ignored here.  The `theme`
- * argument is accepted so the signature stays compatible with the pi
- * renderer surface, but no `theme.fg` call is ever made.
+ * Non-markdown lines stay uncolored: the semantic hue of the line is carried
+ * by the view model itself and ignored here — no `theme.fg` call is ever
+ * made for them.  Markdown-flagged lines are the exception, rendering with
+ * pi's full markdown theme.
  *
  * A markdown-flagged line (the terminal final output, expanded) is rendered
- * through pi-tui's `Markdown` component with a plain theme — structure is
- * parsed (headings, lists, code blocks, spacing) but no color is emitted,
- * keeping the card uncolored.  A `truncateToWidth`-flagged line (the
- * collapsed final-output preview) renders as a single width-truncated line:
- * the width is only known at `render(width)`, so a thin component truncates
- * there with pi's own width-aware `truncateToWidth` semantics and strips the
- * ANSI resets it emits, keeping the card plain.  All other lines render as
+ * through pi-tui's `Markdown` component with pi's FULL markdown theme
+ * (built by `fullMarkdownTheme` from the renderer's `theme`) — structure is
+ * parsed (headings, lists, code blocks, spacing) and styled exactly like pi's
+ * native transcript (colored headings / code blocks / emphasis).  A
+ * `truncateToWidth`-flagged line (the collapsed final-output preview) renders
+ * as a single width-truncated line: the width is only known at
+ * `render(width)`, so a thin component truncates there with pi's own
+ * width-aware `truncateToWidth` semantics and strips the ANSI resets it
+ * emits, keeping the collapsed preview plain.  All other lines render as
  * plain `Text`.
  *
  * A line that carries `segments` renders its flat concatenated `text` (the
- * per-segment hues are a widget-only concern): the card stays uncolored and
- * never wraps or strips any segment.
+ * per-segment hues are a widget-only concern): the card stays uncolored for
+ * these and never wraps or strips any segment.
  *
  * @param container - The container to add the line to.
  * @param line - The view-model line (text + semantic hue).
+ * @param markdownTheme - The pi-tui `MarkdownTheme` for markdown-flagged
+ *   lines (pi's full theme, from `fullMarkdownTheme`).
  */
-export function addLine(container: Container, line: CardLine): void {
+export function addLine(
+  container: Container,
+  line: CardLine,
+  markdownTheme: MarkdownTheme,
+): void {
   if (line.markdown === true) {
-    container.addChild(new Markdown(line.text, 0, 0, PLAIN_MARKDOWN_THEME));
+    container.addChild(new Markdown(line.text, 0, 0, markdownTheme));
     return;
   }
   if (line.truncateToWidth === true) {
@@ -271,9 +253,10 @@ export function renderCall(
  * Renders the live running card when the result is a partial update
  * (`isPartial`), otherwise the terminal success / error / aborted card.
  * The structured progress is read from `result.details`; a missing or
- * unshaped `details` falls back to the text content snapshot.  All lines
- * are plain text (no coloring) — the `theme` argument is accepted for the
- * pi renderer surface but unused by the card.
+ * unshaped `details` falls back to the text content snapshot.  Structural
+ * lines (titles, current tool, stats, collapsed previews) are plain text;
+ * markdown-flagged lines (the expanded final output) render with pi's full
+ * markdown theme built from the `theme` argument.
  *
  * Title ownership: the running branch renders only the body — the static
  * title lives in the stacked `renderCall` card, and a second title would
@@ -290,6 +273,8 @@ export function renderCall(
  *
  * @param result - The pi tool result (partial or final).
  * @param options - Render options (`expanded`, `isPartial`).
+ * @param theme - The pi `Theme` (duck-typed) used to build the full
+ *   markdown theme for markdown-flagged lines.
  * @param context - The tool render context (renderer state for the spinner,
  *   `invalidate` for the animation timer).
  * @returns A component tree.
@@ -297,12 +282,16 @@ export function renderCall(
 export function renderResult(
   result: SubagentToolResult,
   options: PiRenderOptionsLike,
+  theme: MarkdownThemeSource,
   context?: PiRenderContextLike,
 ): Component {
   const container = new Container();
   const expanded = options.expanded === true;
   const isPartial = options.isPartial === true;
   const details = result.details;
+  // The full markdown theme: markdown-flagged lines render exactly like
+  // pi's native transcript (colored headings / code blocks / emphasis).
+  const markdownTheme = fullMarkdownTheme(theme);
   // The card's task label comes from the tool-call description (the
   // `description` argument), read off the render context.
   const label = context?.args?.description;
@@ -339,7 +328,7 @@ export function renderResult(
         )
       : renderResultCard(details, label, expanded, children, state.frame);
 
-    for (const line of lines) addLine(container, line);
+    for (const line of lines) addLine(container, line, markdownTheme);
     manageSpinnerTimer(state, isPartial, context?.invalidate);
     return container;
   }
@@ -415,8 +404,9 @@ function manageSpinnerTimer(
  *
  * `renderCall` / `renderResult` are stateless closures over nothing but the
  * view model; pi invokes them with its real `Theme` / render context.  The
- * `theme` argument is accepted (pi passes it) but the card renders plain
- * text and never colors anything.
+ * `theme` argument is forwarded to `renderResult`, which uses it to build
+ * the full markdown theme for markdown-flagged lines; `renderCall` renders
+ * only a plain-text title, so it does not need the theme.
  */
 export function buildSubagentCardRenderer(): {
   renderCall: (args: unknown, theme: unknown, context?: unknown) => unknown;
@@ -430,10 +420,11 @@ export function buildSubagentCardRenderer(): {
   return {
     renderCall: (args, _theme, context) =>
       renderCall(args as SubagentToolArgs, context as PiRenderContextLike),
-    renderResult: (result, options, _theme, context) =>
+    renderResult: (result, options, theme, context) =>
       renderResult(
         result as SubagentToolResult,
         (options ?? {}) as PiRenderOptionsLike,
+        (theme ?? {}) as MarkdownThemeSource,
         context as PiRenderContextLike | undefined,
       ),
   };

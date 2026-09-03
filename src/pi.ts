@@ -92,6 +92,7 @@ import {
   type PiToolHostContext,
 } from "./adapters/pi/tool-host.js";
 import { buildSubagentCardRenderer } from "./adapters/pi/tui/index.js";
+import { openTranscriptOverlay } from "./adapters/pi/tui/transcript.js";
 import { createFleetWidget } from "./adapters/pi/tui/widget.js";
 import {
   buildPiCommandRegistrationPlan,
@@ -130,6 +131,7 @@ import {
   resolveIdentity,
   setPrimary,
 } from "./core/subagent/identity.js";
+import type { SubagentRun } from "./core/subagent/registry.js";
 import type { ValidationLimits } from "./core/validate.js";
 import { REGISTRY } from "./registry.js";
 import { log } from "./utils/logger.js";
@@ -273,6 +275,25 @@ function loadConfig(): any {
     // config.toml missing or unreadable — behave as an absent config.
     return {};
   }
+}
+
+/**
+ * Wrap text in a truecolor ANSI foreground sequence for a `#RRGGBB` hex.
+ *
+ * `\x1b[38;2;<r>;<g>;<b>m<text>\x1b[39m` — the same escape form the widget
+ * `colorizeAgent` uses for agent names, reused here so the transcript
+ * overlay border can carry the inspected run's agent color.  pi's Text /
+ * widget components preserve ANSI codes and are ANSI-width-aware.
+ *
+ * @param hex - The normalized uppercase `#RRGGBB` hex color.
+ * @param text - The text to wrap.
+ * @returns The text wrapped in the truecolor foreground sequence.
+ */
+function truecolorWrap(hex: string, text: string): string {
+  const r = Number.parseInt(hex.slice(1, 3), 16);
+  const g = Number.parseInt(hex.slice(3, 5), 16);
+  const b = Number.parseInt(hex.slice(5, 7), 16);
+  return `\x1b[38;2;${r};${g};${b}m${text}\x1b[39m`;
 }
 
 /**
@@ -699,11 +720,33 @@ export function buildPiHandlers(
   const colorizeAgent = (name: string): string => {
     const hex = agentColors[name];
     if (hex === undefined) return name;
-    const r = Number.parseInt(hex.slice(1, 3), 16);
-    const g = Number.parseInt(hex.slice(3, 5), 16);
-    const b = Number.parseInt(hex.slice(5, 7), 16);
-    return `\x1b[38;2;${r};${g};${b}m${name}\x1b[39m`;
+    return truecolorWrap(hex, name);
   };
+  // The overlay title for a run: `<agent> · <label>` (the label when the run
+  // carries one, otherwise just the agent).  Mirrors the fleet row body so
+  // the inspection overlay reads as the same run the widget selected.  The
+  // agent name is pre-colorized with the same `[agent.<name>].color` source
+  // as the widget (`colorizeAgent`), so the title carries the run's agent
+  // color; pi's Text / truncateToWidth / visibleWidth preserve ANSI codes
+  // (only the collapse-preview path strips them), so the wrapped name
+  // survives the overlay render verbatim.  Unconfigured → the plain name.
+  const runTitle = (run: SubagentRun): string => {
+    const labelPart =
+      run.label !== undefined && run.label.length > 0 ? ` · ${run.label}` : "";
+    return `${colorizeAgent(run.agent)}${labelPart}`;
+  };
+  // Wrap any text in the run's agent truecolor sequence when the agent has a
+  // configured color; `undefined` when it does not (the overlay then falls
+  // back to its fixed border color — the current default).  Used for the
+  // transcript overlay border so it reads as the inspected run's agent color.
+  const agentBorderColorize = (
+    run: SubagentRun,
+  ): ((text: string) => string) | undefined => {
+    const hex = agentColors[run.agent];
+    if (hex === undefined) return undefined;
+    return (text) => truecolorWrap(hex, text);
+  };
+
   // The `zoo` fleet widget — the component factory registered above the
   // editor.  It reads the active primary live from the identity core and
   // the run registry for the current session, so a primary switch (or a
@@ -711,14 +754,60 @@ export function buildPiHandlers(
   // created once per extension closure (pi re-runs the extension factory
   // on every session replacement, so each session gets its own instance
   // bound to its own TUI).
+  //
+  // `enterRun` wires the expanded list's enter-inspect: pressing enter on a
+  // selected run opens a full-screen read-only overlay rendering that run's
+  // sub-session transcript — the initial history replayed from its persisted
+  // JSONL file once, then live updates driven by the subagent driver's
+  // forwarded events while the run is still running (no session switch).
+  // The overlay is opened through the pi `ExtensionUIContext.custom`
+  // surface, which pi exposes on every event context's `ui`, so the callback
+  // reads it from the shared context holder.  When no `ui.custom` is cached,
+  // or the run has no `sessionPath` (a historical run whose session file
+  // could not be located), no overlay can open: the callback returns `false`
+  // so the widget leaves enter unconsumed (the key falls through to the
+  // editor).  An existing `sessionPath` always opens the overlay — even an
+  // unreadable session file (the overlay renders an "(transcript
+  // unavailable)" notice) — so the key is consumed and never falls through.
   const fleetWidget = createFleetWidget({
     getPrimary: () => getPrimary(),
     colorizeAgent,
     getSessionId: sessionIdProvider,
     getEditorText: () => contextHolder.current?.ui?.getEditorText?.() ?? "",
-    // No enter action: the widget factory has no command context (pi's
-    // `setWidget` factory receives only the TUI and theme), so enter is a
-    // no-op this round (selection + scrolling only).
+    enterRun: (run) => {
+      const ui = contextHolder.current?.ui;
+      if (ui?.custom === undefined) return false;
+      if (run.sessionPath === undefined) return false;
+      // Collapse the fleet widget to its one-line stable state BEFORE the
+      // overlay opens: pi's overlay compositor line-diffs the base content,
+      // and an expanded widget (~10 lines) that collapses mid-overlay (the
+      // editor-focus guard on each keypress) would mutate the base length
+      // under it, forcing a full re-paint.  `collapse()` is idempotent —
+      // an already-collapsed widget is unchanged (and the overlay keeps the
+      // collapsed state; ↓ re-expands it after close, as before).
+      fleetWidget.collapse();
+      return openTranscriptOverlay({
+        sessionPath: run.sessionPath,
+        title: runTitle(run),
+        // The overlay border uses the inspected run's agent color; absent a
+        // configured color the overlay falls back to its fixed border color.
+        borderColorize: agentBorderColorize(run),
+        openOverlay: ui.custom.bind(ui),
+        // The overlay subscribes to the live-transcript bus for the run's
+        // child session (the sub-session this run created) while it is
+        // still running: the driver forwards the child session's full
+        // event stream to the bus, which narrows it to the finalized
+        // messages (user / assistant / toolResult `message_end`) plus the
+        // streaming lifecycle of assistant messages — tool results arrive
+        // as `toolResult`-role `message_end` — so new transcript content
+        // flows into the view event-driven, no polling of the session
+        // file.  A historical / terminal run skips the subscription and
+        // renders the final file once, unchanged.
+        ...(run.childSession !== undefined && run.status === "running"
+          ? { childSession: run.childSession }
+          : {}),
+      });
+    },
   });
   const piSwitchHost: PiSwitchHost | undefined = piApi
     ? {

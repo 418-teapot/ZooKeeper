@@ -16,6 +16,11 @@ import type {
 } from "../../core/subagent/driver.js";
 import { _resetForTesting as _resetLoggerForTesting } from "../../utils/logger.js";
 import {
+  type LiveTranscriptEvent,
+  resetTranscriptBus,
+  subscribeTranscript,
+} from "./live-transcript.js";
+import {
   createPiSubagentDriver,
   type PiAgentSession,
   type PiCreateSessionOptions,
@@ -27,6 +32,7 @@ import {
 
 afterEach(() => {
   _resetLoggerForTesting();
+  resetTranscriptBus();
 });
 
 /** A mock pi message with the minimal fields the driver reads. */
@@ -826,6 +832,48 @@ describe("pi subagent driver — progress snapshots", () => {
     assert.equal(done.sessionPath, "/home/u/.pi/agent/sessions/x/s.jsonl");
   });
 
+  it("carries the session file path on every snapshot, not just the terminal one", async () => {
+    const h = harness();
+    h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
+    const manager: PiSessionManager & { getSessionFile(): string | undefined } =
+      {
+        getSessionId: () => "child-session",
+        getSessionFile: () => "/home/u/.pi/agent/sessions/x/s.jsonl",
+      };
+    const driver = createPiSubagentDriver({
+      createSession: async () => ({ session: h.s.session }),
+      createSessionManager: async () => manager,
+      resolveModel: async () => ({
+        model: { provider: "p", id: "m" },
+        modelRuntime: { getModel: () => ({ provider: "p", id: "m" }) },
+      }),
+    });
+    const snapshots: SubagentProgress[] = [];
+    await driver.run(
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      {
+        signal: new AbortController().signal,
+        onProgress: (p) => snapshots.push(p),
+      },
+    );
+    // The sub-session file exists from the moment the session manager is
+    // created, so every snapshot — including the running (done: false) ones
+    // — carries the session path, letting enter-inspect open the growing
+    // JSONL while the subagent is still running.
+    assert.ok(snapshots.length > 0, "expected at least one snapshot");
+    assert.ok(
+      snapshots.some((p) => p.done === false),
+      "the event stream must include a running snapshot",
+    );
+    for (const snapshot of snapshots) {
+      assert.equal(
+        snapshot.sessionPath,
+        "/home/u/.pi/agent/sessions/x/s.jsonl",
+        `sessionPath missing on snapshot: ${JSON.stringify(snapshot)}`,
+      );
+    }
+  });
+
   it("leaves sessionPath undefined when the session manager has no file", async () => {
     const h = harness();
     h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
@@ -864,5 +912,119 @@ describe("pi subagent driver — progress snapshots", () => {
         `childSession missing on snapshot: ${JSON.stringify(snapshot)}`,
       );
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live-transcript event forwarding
+// ---------------------------------------------------------------------------
+
+describe("pi subagent driver — live-transcript event forwarding", () => {
+  it("forwards messages, tool-execution bookends, and the run-end marker onto the session bus", async () => {
+    const h = harness();
+    const received: LiveTranscriptEvent[] = [];
+    subscribeTranscript("child-session", (event) => {
+      received.push(event);
+    });
+    h.s.setPromptBehavior({
+      kind: "resolves",
+      emitOnPrompt: [
+        {
+          type: "tool_execution_start",
+          toolCallId: "c1",
+          toolName: "bash",
+          args: { command: "npm test" },
+        },
+        {
+          type: "message_end",
+          message: rawMessage({ role: "user", text: "task" }),
+        },
+        {
+          type: "tool_execution_end",
+          toolCallId: "c1",
+          toolName: "bash",
+          result: { content: [{ type: "text", text: "ok" }] },
+        },
+        {
+          type: "message_end",
+          message: rawMessage({
+            role: "assistant",
+            text: "answer",
+            stopReason: "stop",
+          }),
+        },
+        { type: "agent_end" },
+      ],
+    });
+    const result = await h.driver.run(
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { signal: new AbortController().signal },
+    );
+    assert.equal(result.kind, "ok");
+    // The bus carries the finalized messages with their FULL payloads — the
+    // overlay renders from the raw message, never the compact snapshot.  The
+    // tool-execution bookends are forwarded narrowed to their host-neutral
+    // duck shape (the overlay mounts live tool components from them), and
+    // `agent_end` arrives as the bare run-end marker.
+    assert.deepEqual(received, [
+      {
+        type: "tool_execution_start",
+        toolCallId: "c1",
+        toolName: "bash",
+        args: { command: "npm test" },
+      },
+      {
+        type: "message_end",
+        message: rawMessage({ role: "user", text: "task" }),
+      },
+      {
+        type: "tool_execution_end",
+        toolCallId: "c1",
+        toolName: "bash",
+        result: { content: [{ type: "text", text: "ok" }] },
+        isError: false,
+      },
+      {
+        type: "message_end",
+        message: rawMessage({
+          role: "assistant",
+          text: "answer",
+          stopReason: "stop",
+        }),
+      },
+      { type: "agent_end" },
+    ]);
+  });
+
+  it("forwards under the resolved child session id even when it differs from the default", async () => {
+    const s = mockSession();
+    const driver = createPiSubagentDriver({
+      createSession: async () => ({ session: s.session }),
+      createSessionManager: async () => mockSessionManager("nested-child-42"),
+      resolveModel: async () => ({
+        model: { provider: "p", id: "m" },
+        modelRuntime: { getModel: () => ({ provider: "p", id: "m" }) },
+      }),
+    });
+    const received: LiveTranscriptEvent[] = [];
+    subscribeTranscript("nested-child-42", (event) => {
+      received.push(event);
+    });
+    s.setPromptBehavior({
+      kind: "resolves",
+      emitOnPrompt: [
+        {
+          type: "message_end",
+          message: rawMessage({ role: "user", text: "task" }),
+        },
+        { type: "agent_end" },
+      ],
+    });
+    await driver.run(
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { signal: new AbortController().signal },
+    );
+    assert.ok(received.length >= 1, "events must reach the session's bus");
+    assert.equal((received[0] as { type: string }).type, "message_end");
   });
 });

@@ -104,6 +104,8 @@ export interface UpdateRunPatch {
   model?: string;
   /** The sub-session id this run created (its delegation target). */
   childSession?: string;
+  /** The on-disk path of the sub-session file, when the host persists it. */
+  sessionPath?: string;
 }
 
 /** Input to `finishRun` — transitions a run to a terminal state. */
@@ -205,6 +207,7 @@ export function updateRun(id: string, patch: UpdateRunPatch): void {
   if (patch.tokens !== undefined) run.tokens = patch.tokens;
   if (patch.model !== undefined) run.model = patch.model;
   if (patch.childSession !== undefined) run.childSession = patch.childSession;
+  if (patch.sessionPath !== undefined) run.sessionPath = patch.sessionPath;
 }
 
 /**

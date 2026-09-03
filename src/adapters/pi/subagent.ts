@@ -43,6 +43,7 @@ import { formatSnapshotOutput } from "../../core/subagent/progress.js";
 import type { AgentMessage } from "../../core/subagent/result.js";
 import { classifyOutcome, reduceMessages } from "../../core/subagent/result.js";
 import { log } from "../../utils/logger.js";
+import { emitTranscriptEvent } from "./live-transcript.js";
 
 /**
  * Duck-type of the pi `AgentSession` surface the driver uses.
@@ -530,12 +531,24 @@ export function createPiSubagentDriver(
       // Report one progress snapshot to the caller, carrying the resolved
       // child-session id on every snapshot once the session manager exists
       // (so the run registry can associate the run with its sub-session and
-      // the fleet widget can rebuild the parent/child tree).  Before the
-      // session manager materialises the id is empty and snapshots pass
-      // through unchanged.
+      // the fleet widget can rebuild the parent/child tree).  The on-disk
+      // sub-session file path is known the moment the session manager is
+      // created, so it is carried on every snapshot too — the transcript
+      // overlay can be opened (enter-inspect) while the run is still
+      // running, reading the growing JSONL at open time.  Before the session
+      // manager materialises both are empty and snapshots pass through
+      // unchanged.
       const report = (p: SubagentProgress): void => {
         if (typeof onProgress !== "function") return;
-        onProgress(sessionId !== "" ? { ...p, childSession: sessionId } : p);
+        onProgress(
+          sessionId !== "" || sessionPath !== undefined
+            ? {
+                ...p,
+                ...(sessionId !== "" ? { childSession: sessionId } : {}),
+                ...(sessionPath !== undefined ? { sessionPath } : {}),
+              }
+            : p,
+        );
       };
       // Emit the final done snapshot carrying the run result, so the
       // transcript card transitions to its terminal state.  The compact
@@ -612,6 +625,16 @@ export function createPiSubagentDriver(
         });
         session = created;
         unsubscribe = session.subscribe((event) => {
+          // Forward the raw session events onto the live-transcript bus so
+          // an open transcript overlay renders the run's new content
+          // event-driven: assistant streaming partials, finalized messages,
+          // the tool-execution bookends (live tool components), and the
+          // `agent_end` run-end marker.  The bus is keyed by the child
+          // session id — the same pointer the registry run carries, which
+          // the overlay looks up to subscribe.  Emitting is a no-op when no
+          // overlay is open for this session; events the overlay does not
+          // render are dropped at the bus boundary.
+          emitTranscriptEvent(sessionId, event);
           reduceEvent(
             event,
             messages,

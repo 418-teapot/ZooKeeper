@@ -32,7 +32,7 @@ import {
   buildSubagentCardRenderer,
   type PiThemeLike,
 } from "./card.js";
-import { hueToPiColor } from "./theme.js";
+import { fullMarkdownTheme, hueToPiColor } from "./theme.js";
 
 // The run registry is process-global (bun shares one isolate), so reset it
 // between tests to keep the card's nested-children lookups deterministic.
@@ -44,6 +44,9 @@ afterEach(() => {
 const theme: PiThemeLike = {
   fg: (color, text) => `<${color}>${text}</${color}>`,
   bold: (text) => `<b>${text}</b>`,
+  italic: (text) => `<i>${text}</i>`,
+  underline: (text) => `<u>${text}</u>`,
+  strikethrough: (text) => `<s>${text}</s>`,
 };
 
 /** Render a component tree to plain lines, stripping color tags. */
@@ -447,7 +450,7 @@ describe("card renderer — terminal states", () => {
     assert.ok(!lines[0].includes("dummy-small"), lines[0]);
   });
 
-  it("renders the session file path line on a terminal card", () => {
+  it("never renders the session file path line on a terminal card", () => {
     const { renderResult } = buildSubagentCardRenderer();
     const component = renderResult(
       {
@@ -456,28 +459,6 @@ describe("card renderer — terminal states", () => {
           output: "done",
           done: true,
           sessionPath: "/home/u/.pi/agent/sessions/x/s.jsonl",
-          result: { kind: "ok", text: "done" },
-        } as SubagentProgress,
-      },
-      { isPartial: false, expanded: false },
-      theme,
-      { state: {} },
-    );
-    const lines = renderLines(component);
-    assert.ok(
-      lines.some((l) => l.startsWith("session: ")),
-      `missing session line: ${lines.join(" | ")}`,
-    );
-  });
-
-  it("omits the session file path line when absent", () => {
-    const { renderResult } = buildSubagentCardRenderer();
-    const component = renderResult(
-      {
-        details: {
-          agent: "beaver",
-          output: "done",
-          done: true,
           result: { kind: "ok", text: "done" },
         } as SubagentProgress,
       },
@@ -968,14 +949,15 @@ describe("card renderer — segmented lines", () => {
         { text: " · ●1", hue: "success" },
       ],
     };
-    addLine(container, line);
+    addLine(container, line, fullMarkdownTheme(theme));
     const lines = (container as Component).render(80);
     assert.ok(
       lines.some((l) => l.trimEnd() === line.text),
       `segmented lines must render as their flat concatenated text: ${JSON.stringify(lines)}`,
     );
-    // The card never emits color wrappers: the segments' hues are a
-    // widget-only concern, and no `theme.fg` markup appears in the output.
+    // The card never emits color wrappers for non-markdown lines: the
+    // segments' hues are a widget-only concern, and no `theme.fg` markup
+    // appears in the output.
     assert.ok(
       !lines.some((l) => l.includes("<success>") || l.includes("<error>")),
     );

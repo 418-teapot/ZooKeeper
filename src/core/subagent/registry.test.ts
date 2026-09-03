@@ -73,6 +73,23 @@ describe("registry — run lifecycle", () => {
     assert.equal(run?.model, "dummy-small");
   });
 
+  it("updateRun records the session path on a running run (enter-inspect while running)", () => {
+    startRun({
+      id: "r1",
+      agent: "lynx",
+      parentSession: "main",
+      startedAt: 100,
+    });
+    updateRun("r1", { sessionPath: "/tmp/child-ses-1.jsonl" });
+    const run = getRun("r1");
+    assert.equal(run?.status, "running", "the run must stay non-terminal");
+    assert.equal(
+      run?.sessionPath,
+      "/tmp/child-ses-1.jsonl",
+      "sessionPath must be visible before the run finishes",
+    );
+  });
+
   it("finishRun marks the run done with endedAt and the session path", () => {
     startRun({
       id: "r1",

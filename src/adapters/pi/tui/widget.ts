@@ -34,6 +34,10 @@
  * live from the identity core, so the primary-switch command only needs to
  * nudge a refresh.
  *
+ * Hosts can force the single-line state through the returned `collapse()`
+ * handle (used before opening the transcript overlay, so the base content
+ * stays at a stable one-line length under pi's line-diff compositor).
+ *
  * Timer: a ~`FLEET_REFRESH_MS` interval advances the spinner frame and the
  * elapsed clock while anything runs OR the widget is expanded; it is cleared
  * when collapsed with nothing running and `unref()`'d so a finished run never
@@ -82,9 +86,11 @@ export const FLEET_REFRESH_MS = 150;
  * `getPrimary` / `colorizeAgent` supply the active primary (read live, so a
  * switch only needs to nudge a refresh).  `getSessionId` scopes the registry
  * queries to the current session.  `getEditorText` feeds the collapsed-key
- * guard.  `enterRun` is optional: when a host can provide a sub-session
- * switch it is invoked for the selected run on enter; without one (pi's
- * widget factory has no command context) enter is a no-op.  The timer
+ * guard.  `enterRun` is optional: when a host can open a run inspection
+ * overlay it is invoked for the selected run on enter.  The callback returns
+ * whether an overlay actually opened — when the host has no `ui.custom`
+ * surface or the run has no session path, it returns `false` and enter is
+ * left unconsumed (the key falls through to the editor).  The timer
  * functions and `now` are injectable for deterministic tests.
  */
 export interface FleetWidgetDeps {
@@ -96,8 +102,15 @@ export interface FleetWidgetDeps {
   getSessionId(): string | undefined;
   /** The current pi editor text (guards the collapsed-key activation). */
   getEditorText(): string;
-  /** Optional jump into the selected run's sub-session on enter. */
-  enterRun?(run: SubagentRun): void | Promise<void>;
+  /**
+   * Optional inspection of the selected run's transcript on enter.
+   *
+   * Returns `true` when the inspection overlay was actually opened (the
+   * enter key is then consumed); `false` when no overlay could open (no
+   * `ui.custom` surface, or the run lacks a session path), leaving the key
+   * to fall through to the editor.
+   */
+  enterRun?(run: SubagentRun): boolean | undefined;
   /** Spinner/clock refresh interval (defaults to `FLEET_REFRESH_MS`). */
   refreshMs?: number;
   /** Injectable interval factory (tests use a fake timer). */
@@ -127,6 +140,12 @@ export interface FleetWidget {
   attach(tui: FleetTuiLike, theme: FleetThemeLike): void;
   /** Handle one raw terminal input (via `ui.onTerminalInput`). */
   handleKey(data: string): { consume?: boolean; data?: string } | undefined;
+  /**
+   * Force the collapsed single-line state (idempotent: already-collapsed
+   * calls have no further effect).  Used by hosts before opening an overlay,
+   * so the base content length stays stable under pi's line-diff compositor.
+   */
+  collapse(): void;
   /** Re-render (registry writes / primary switches nudge this). */
   refresh(): void;
   /** Render the current lines (called by pi's widget component). */
@@ -230,19 +249,25 @@ export function createFleetWidget(deps: FleetWidgetDeps): FleetWidget {
    * is emitted verbatim.  This is what keeps a pre-colorized segment (the
    * primary agent name, carrying its own embedded ANSI sequence that ends
    * with `\x1b[39m`) from washing out the colors of later segments — the
-   * reset sequence never sits inside an outer wrap.  A line without segments
-   * keeps the legacy whole-line wrap.
+   * reset sequence never sits inside an outer wrap.  A segment marked with
+   * its `agent` name is rendered through the host `colorizeAgent` (which
+   * applies the configured `[agent.<name>].color` and returns the plain name
+   * when unconfigured, so the current default is preserved).  A line without
+   * segments keeps the legacy whole-line wrap.
    */
   const colorize = (line: CardLine): string => {
     if (theme === undefined) return line.text;
     const th = theme;
     if (line.segments !== undefined && line.segments.length > 0) {
       return line.segments
-        .map((segment) =>
-          segment.hue === undefined
+        .map((segment) => {
+          if (segment.agent !== undefined) {
+            return deps.colorizeAgent(segment.agent);
+          }
+          return segment.hue === undefined
             ? segment.text
-            : th.fg(hueToPiColor(segment.hue), segment.text),
-        )
+            : th.fg(hueToPiColor(segment.hue), segment.text);
+        })
         .join("");
     }
     return th.fg(hueToPiColor(line.hue), line.text);
@@ -326,7 +351,7 @@ export function createFleetWidget(deps: FleetWidgetDeps): FleetWidget {
         : "◆";
     const hint =
       deps.enterRun !== undefined
-        ? "↑↓/jk select · enter dive · esc back"
+        ? "↑↓/jk select · enter inspect · esc back"
         : "↑↓/jk select · esc back";
 
     const sessionId = sessionIdOf();
@@ -439,12 +464,13 @@ export function createFleetWidget(deps: FleetWidgetDeps): FleetWidget {
       }
       if (matchesKey(data, "enter")) {
         const run = getRun(selectedId ?? "");
-        // Enter is only consumed when there is a dive to perform: an
-        // absent `enterRun` action (pi's widget factory has no command
-        // context) or an empty selection must not swallow the key from the
+        // Enter is only consumed when an overlay was actually opened: an
+        // absent `enterRun` action (no overlay surface wired), an empty
+        // selection, or a callback reporting no overlay (no `ui.custom`
+        // surface or no run session path) must not swallow the key from the
         // editor.
         if (run === undefined || deps.enterRun === undefined) return undefined;
-        void deps.enterRun(run);
+        if (deps.enterRun(run) === false) return undefined;
         return { consume: true };
       }
       // An unmatched key defocuses the fleet navigation (mirroring
@@ -452,6 +478,8 @@ export function createFleetWidget(deps: FleetWidgetDeps): FleetWidget {
       collapse();
       return undefined;
     },
+
+    collapse,
 
     refresh,
 
