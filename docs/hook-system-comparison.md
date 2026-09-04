@@ -728,7 +728,7 @@ interface TUIInterface {
   select<T>(options: SelectOption<T>[]): Promise<T>       // 选择器
   confirm(message: string): Promise<boolean>               // 确认对话框
   input(prompt: string): Promise<string>                   // 文本输入
-  notify(message: string, level: 'info'|'warn'|'error'): void  // 通知
+  notify(message: string, level: 'info'|'warning'|'error'): void  // 通知
   setStatus(status: string): void                          // 状态栏更新
   component(name: string, props: any): void                // 自定义组件渲染
 }

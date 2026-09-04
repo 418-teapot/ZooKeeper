@@ -26,6 +26,7 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import type { ToolHost } from "../../core/client/tool-host.js";
 import type { HostAdapter, HostMessage } from "../../core/context/lens.js";
 import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "../../core/context/message-parts.js";
 import {
@@ -47,6 +48,7 @@ import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import {
   _resetViewChangeFlagsForTesting,
   contextPruningTransformHandler,
+  handleContextPruning,
 } from "./hook.js";
 import { unit } from "./index.js";
 
@@ -95,6 +97,10 @@ const TEST_SESSION_IDS = [
   "sess-nudge-basic",
   "sess-nudge-no-section",
   "sess-nudge-no-tool",
+  "sess-nudge-toast",
+  "sess-nudge-toast-urgent",
+  "sess-toast-wire",
+  "sess-toast-wire-noui",
   "sess-manual-basic",
   "sess-manual-no-tool",
   "sess-dedup-marked",
@@ -632,6 +638,87 @@ describe("context-nudge injection", () => {
     assert.equal(entry.endRef, "m2");
   });
 
+  it("toasts the gentle nudge with source and info level, fire-and-forget", () => {
+    const sessionID = "sess-nudge-toast";
+    setModelLimit(sessionID, NUDGE_LIMIT, "test-model");
+    const toasts: Array<{ source: string; level: string; text: string }> = [];
+    const toast = (t: { source: string; level: string; text: string }) => {
+      toasts.push(t);
+    };
+
+    // Baseline eval at 140K — nothing fires, so nothing toasts.
+    let messages = nudgeMessages(sessionID, 140000);
+    contextPruningTransformHandler(
+      adapter,
+      messages,
+      nudgeTransformConfig(2),
+      undefined,
+      true,
+      toast,
+    );
+    assert.equal(toasts.length, 0, "baseline eval toasts nothing");
+
+    // Growth past the gentle interval: 150K → the nudge injects.
+    messages = nudgeMessages(sessionID, 150000);
+    contextPruningTransformHandler(
+      adapter,
+      messages,
+      nudgeTransformConfig(2),
+      undefined,
+      true,
+      toast,
+    );
+    assert.equal(messages[messages.length - 1].info.id, "zoo-nudge");
+    assert.equal(toasts.length, 1, "toast fires exactly once per injection");
+    assert.equal(toasts[0].source, "context-pruning");
+    // Gentle band maps onto the transient-UI info level (one decision,
+    // two audiences: the model nudge text stays separate).
+    assert.equal(toasts[0].level, "info");
+    // 150000 / 200000 → 75%.
+    assert.match(toasts[0].text, /75%/);
+  });
+
+  it("toasts the urgent nudge with warning level", () => {
+    const sessionID = "sess-nudge-toast-urgent";
+    setModelLimit(sessionID, NUDGE_LIMIT, "test-model");
+    const toasts: Array<{ source: string; level: string; text: string }> = [];
+    const toast = (t: { source: string; level: string; text: string }) => {
+      toasts.push(t);
+    };
+
+    // Baseline at 170K (already past the 80% max threshold) is silent.
+    let messages = nudgeMessages(sessionID, 170000);
+    contextPruningTransformHandler(
+      adapter,
+      messages,
+      nudgeTransformConfig(2),
+      undefined,
+      true,
+      toast,
+    );
+    assert.equal(toasts.length, 0);
+
+    // 180K: delta 10K >= the urgent interval (5K) → urgent fires.
+    messages = nudgeMessages(sessionID, 180000);
+    contextPruningTransformHandler(
+      adapter,
+      messages,
+      nudgeTransformConfig(2),
+      undefined,
+      true,
+      toast,
+    );
+    const entry = _getBufferForTesting().find(
+      (e) => e.event === "nudge_injected",
+    ) as Record<string, unknown> | undefined;
+    assert.equal(entry?.nudgeLevel, "urgent", "urgent band fired");
+    assert.equal(toasts.length, 1);
+    assert.equal(toasts[0].source, "context-pruning");
+    assert.equal(toasts[0].level, "warning");
+    // 180000 / 200000 → 90%.
+    assert.match(toasts[0].text, /90%/);
+  });
+
   it("does not re-inject while the anchor sits at the current tokens", () => {
     const sessionID = "sess-nudge-basic";
     setModelLimit(sessionID, NUDGE_LIMIT, "test-model");
@@ -721,6 +808,89 @@ describe("context-nudge injection", () => {
     assert.ok(
       !entries.some((e) => e.event === "nudge_injected"),
       "no nudge_injected log without both gates",
+    );
+  });
+
+  it("routes the nudge toast through the tool host toast port", () => {
+    const sessionID = "sess-toast-wire";
+    setModelLimit(sessionID, NUDGE_LIMIT, "test-model");
+    const calls: Array<{
+      sessionId: string;
+      source: string;
+      level: string;
+      text: string;
+    }> = [];
+    const toolHost: ToolHost = {
+      resolveSessionId: () => undefined,
+      fetchHistory: async () => [],
+      notify: async () => {},
+      toast: (sessionId, t) => {
+        calls.push({
+          sessionId,
+          source: t.source,
+          level: t.level,
+          text: t.text,
+        });
+      },
+    };
+
+    // Baseline turn — nothing injects, so the port stays untouched.
+    handleContextPruning(
+      { messages: nudgeMessages(sessionID, 140000) },
+      nudgeTransformConfig(2),
+      toolHost,
+      true,
+      adapter,
+    );
+    assert.equal(calls.length, 0, "no toast on the baseline turn");
+
+    // Growth turn — the nudge injects and the toast port receives it
+    // synchronously (fire-and-forget — no await between handle returning
+    // and the call landing).
+    handleContextPruning(
+      { messages: nudgeMessages(sessionID, 150000) },
+      nudgeTransformConfig(2),
+      toolHost,
+      true,
+      adapter,
+    );
+    assert.equal(calls.length, 1, "toast routed through the tool host");
+    assert.equal(calls[0].sessionId, sessionID);
+    assert.equal(calls[0].source, "context-pruning");
+    assert.equal(calls[0].level, "info");
+    assert.match(calls[0].text, /75%/);
+  });
+
+  it("never throws when the tool host wires no toast port", () => {
+    const sessionID = "sess-toast-wire-noui";
+    setModelLimit(sessionID, NUDGE_LIMIT, "test-model");
+    // A host that implements notify but not the optional toast port.
+    const toolHost: ToolHost = {
+      resolveSessionId: () => undefined,
+      fetchHistory: async () => [],
+      notify: async () => {},
+    };
+    handleContextPruning(
+      { messages: nudgeMessages(sessionID, 140000) },
+      nudgeTransformConfig(2),
+      toolHost,
+      true,
+      adapter,
+    );
+    assert.doesNotThrow(() =>
+      handleContextPruning(
+        { messages: nudgeMessages(sessionID, 150000) },
+        nudgeTransformConfig(2),
+        toolHost,
+        true,
+        adapter,
+      ),
+    );
+    // The nudge itself still injected — a missing UI channel never
+    // affects the model-facing reminder.
+    assert.ok(
+      _getBufferForTesting().some((e) => e.event === "nudge_injected"),
+      "nudge injection still happens without a toast port",
     );
   });
 });

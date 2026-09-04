@@ -3,9 +3,11 @@
  *
  * Covers: session id resolution from the tool execution context, history
  * fetching via `sessionManager.buildContextEntries` with custom-entry
- * filtering and role filtering, and best-effort notification via pi's
+ * filtering and role filtering, best-effort notification via pi's
  * `appendEntry` channel (`zoo-notice` custom entries, including missing
- * appendEntry and thrown appendEntry).
+ * appendEntry and thrown appendEntry), and the transient `toast` port
+ * through `ui.notify` (message rendering, silent drop without the UI
+ * surface, and swallowed failures).
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
@@ -122,6 +124,73 @@ describe("createPiToolHost", () => {
 
     const logs = _getBufferForTesting().filter(
       (entry) => entry.event === "notify_failed",
+    );
+    assert.equal(logs.length, 1);
+  });
+});
+
+describe("toast (pi ui.notify channel)", () => {
+  it("renders source and level through ui.notify when available", () => {
+    const notices: Array<{ message: string; type?: string }> = [];
+    const host = createPiToolHost(
+      makeHolder({
+        ui: {
+          notify: (message, type) => {
+            notices.push({ message, type });
+          },
+        },
+      }),
+    );
+
+    assert.doesNotThrow(() =>
+      host.toast?.("sess-1", {
+        source: "context-pruning",
+        level: "warning",
+        text: "上下文吃紧：已用 90%",
+      }),
+    );
+    assert.deepEqual(notices, [
+      {
+        message: "[zoo][context-pruning] 上下文吃紧：已用 90%",
+        type: "warning",
+      },
+    ]);
+  });
+
+  it("silently drops when the context carries no ui.notify", () => {
+    // ui present, notify absent (print mode).
+    const host = createPiToolHost(makeHolder({ ui: {} }));
+    assert.doesNotThrow(() =>
+      host.toast?.("s", { source: "x", level: "info", text: "hi" }),
+    );
+    // Whole context absent.
+    const bare = createPiToolHost(makeHolder());
+    assert.doesNotThrow(() =>
+      bare.toast?.("s", { source: "x", level: "info", text: "hi" }),
+    );
+    assert.equal(
+      _getBufferForTesting().some((entry) => entry.event === "toast_failed"),
+      false,
+      "silent drop must not log a failure",
+    );
+  });
+
+  it("swallows ui.notify failures and logs a warning", () => {
+    const host = createPiToolHost(
+      makeHolder({
+        ui: {
+          notify: () => {
+            throw new Error("tui gone");
+          },
+        },
+      }),
+    );
+    assert.doesNotThrow(() =>
+      host.toast?.("s", { source: "x", level: "info", text: "boom" }),
+    );
+
+    const logs = _getBufferForTesting().filter(
+      (entry) => entry.event === "toast_failed",
     );
     assert.equal(logs.length, 1);
   });

@@ -32,9 +32,10 @@
  * 7. **Nudge / manual compress** — `evaluateNudge` decides and renders
  *    the context-pressure reminder (transform-only synthetic message
  *    appended at the END via `adapter.appendUserMessage`, never
- *    ref-assigned); the `/dcp compress` one-shot
- *    `pendingManualTrigger` flag injects the synthetic user command
- *    driving the `compress` tool.
+ *    ref-assigned), and the same decision point fires the optional
+ *    transient-UI toast (human-facing, host-rendered); the `/dcp
+ *    compress` one-shot `pendingManualTrigger` flag injects the
+ *    synthetic user command driving the `compress` tool.
  * 8. **Save** — the session state is written back to the shared store.
  *
  * The two-turn effect ("turn N marks apply on turn N+1") means that
@@ -53,7 +54,7 @@
  * @module
  */
 
-import type { ToolHost } from "../../core/client/tool-host.js";
+import type { ToastPayload, ToolHost } from "../../core/client/tool-host.js";
 import type { ContextPruningConfig } from "../../core/config-types.js";
 import { computeProtectedStartOrdinal } from "../../core/context/compress.js";
 import { formatTokens } from "../../core/context/context-report.js";
@@ -205,6 +206,10 @@ function coveredOrdinalsOf(
  * @param hasCompressTool - Whether the `compress` tool is registered in
  *   the active mode profile.  Gates the nudge and manual-compress
  *   phases.  Defaults to false.
+ * @param toast - Optional transient-UI port (source/level/text
+ *   payload).  Fires on every nudge injection — the human-facing
+ *   companion of the model nudge at the same watermark-ratchet
+ *   decision point, adding no throttling state of its own.
  * @returns The conversation after pruning.
  */
 export function contextPruningTransformHandler(
@@ -216,6 +221,7 @@ export function contextPruningTransformHandler(
   },
   notify?: (text: string) => void,
   hasCompressTool?: boolean,
+  toast?: (payload: ToastPayload) => void,
 ): unknown {
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
     return messages;
@@ -465,6 +471,23 @@ export function contextPruningTransformHandler(
             }
           : {}),
       });
+
+      // Human-facing companion of the model nudge (one decision, two
+      // audiences): a transient toast on the same watermark-ratchet
+      // decision point — no extra throttling state.  Fire-and-forget;
+      // the port renders source/level uniformly and silently drops
+      // when the host has no UI surface.
+      if (toast && level !== null) {
+        const percent = Math.round((promptTokens / modelLimit.context) * 100);
+        toast({
+          source: "context-pruning",
+          level: level === "urgent" ? "warning" : "info",
+          text:
+            level === "urgent"
+              ? `上下文吃紧：已用 ${percent}%`
+              : `上下文渐满：已用 ${percent}%`,
+        });
+      }
     }
   }
 
@@ -573,8 +596,9 @@ export function contextPruningTransformHandler(
  *
  * Wraps `contextPruningTransformHandler` in try/catch so a pruning
  * failure never disrupts the LLM turn, and wires the release
- * notification through the host tool host's `notify` port, which
- * resolves the session agent before posting.  The transform output
+ * notification through the host tool host's `notify` port (which
+ * resolves the session agent before posting) and the nudge toast
+ * through the optional `toast` port.  The transform output
  * arrives as the core `TransformOutput` shape; the host adapter owns
  * the concrete `messages` type and may replace the array.  The returned
  * conversation is written back into `output.messages` so downstream
@@ -583,8 +607,8 @@ export function contextPruningTransformHandler(
  * @param output - The messages transform output.
  * @param config - Unified context-pruning configuration.
  * @param toolHost - Host tool services used to post the release
- *   notification.  Undefined when the host wires no tool host — the
- *   notification is skipped.
+ *   notification and the nudge toast.  Undefined when the host wires no
+ *   tool host — both are skipped.
  * @param hasCompressTool - Whether the `compress` tool is registered.
  * @param adapter - The host adapter for projecting and mutating the
  *   conversation.
@@ -610,6 +634,15 @@ export function handleContextPruning(
           }
         : undefined,
       hasCompressTool,
+      // Fire-and-forget toast port (nudge companion): same wiring path
+      // as the release notice.  The optional call covers hosts that
+      // implement ToolHost without `toast`; the host implementation
+      // owns the no-UI silent drop.
+      toolHost
+        ? (payload: ToastPayload) => {
+            toolHost.toast?.(sessionID, payload);
+          }
+        : undefined,
     );
   } catch (err) {
     log("plugin", "handler_crashed", sessionID, undefined, "error", {

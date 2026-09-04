@@ -1,20 +1,25 @@
 /**
  * Tests for the OpenCode v1 tool host adapter (`tool-host.ts`).
  *
- * Covers the three host services against a fake `SessionClient`:
- * session-id resolution order (`sessionID` over `sessionId`, undefined
- * fallback), the history fetch unwrap shapes (`{ data: [...] }` wrapper
- * and a bare array) with every rejection branch, the best-effort
- * notification payload with agent resolution (resolver hit, `session.get`
- * fallback, unresolved-agent suppression), and the `resolveSessionAgent`
+ * Covers the host services against a fake `SessionClient`: session-id
+ * resolution order (`sessionID` over `sessionId`, undefined fallback),
+ * the history fetch unwrap shapes (`{ data: [...] }` wrapper and a bare
+ * array) with every rejection branch, the best-effort notification
+ * payload with agent resolution (resolver hit, `session.get` fallback,
+ * unresolved-agent suppression), the transient `toast` port through
+ * `tui.showToast` (rendering, silent drop without the TUI surface, and
+ * swallowed sync/async failures), and the `resolveSessionAgent`
  * resolution order in isolation.
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import type { SessionClient } from "../../core/client/session.js";
 import type { HostMessage } from "../../core/context/lens.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
-import { createV1ToolHost, resolveSessionAgent } from "./tool-host.js";
+import {
+  createV1ToolHost,
+  resolveSessionAgent,
+  type V1ToolHostClient,
+} from "./tool-host.js";
 import type { ContextMessageEntry } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -56,11 +61,24 @@ type PromptInput = {
 };
 
 /**
+ * The toast payload shape recorded by the fake client.
+ */
+type ToastInput = {
+  body: {
+    title?: string;
+    message: string;
+    variant: "info" | "success" | "warning" | "error";
+    duration?: number;
+  };
+};
+
+/**
  * Build a fake session client with optional messages/prompt/get behaviors.
  *
  * Absent options leave the corresponding session API undefined so the
  * "API unavailable", "prompt missing", and "no session.get" paths are
- * exercised.
+ * exercised.  `showToast` attaches the optional `tui` surface for the
+ * toast port tests.
  */
 function fakeClient(options: {
   messages?: () => unknown;
@@ -68,7 +86,8 @@ function fakeClient(options: {
   get?: (input: {
     path: { id: string };
   }) => Promise<{ agent?: string } | undefined>;
-}): SessionClient {
+  showToast?: (input: ToastInput) => Promise<unknown>;
+}): V1ToolHostClient {
   const session: Record<string, unknown> = {};
   if (options.messages !== undefined) {
     session.messages = async () => options.messages?.();
@@ -79,7 +98,11 @@ function fakeClient(options: {
   if (options.get !== undefined) {
     session.get = options.get;
   }
-  return { session } as unknown as SessionClient;
+  const client: Record<string, unknown> = { session };
+  if (options.showToast !== undefined) {
+    client.tui = { showToast: options.showToast };
+  }
+  return client as unknown as V1ToolHostClient;
 }
 
 /**
@@ -341,6 +364,104 @@ describe("notify", () => {
       mapResolver(new Map([["sess-1", "beaver"]])),
     );
     await assert.doesNotReject(host.notify("sess-1", "hi"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// toast
+// ---------------------------------------------------------------------------
+
+describe("toast", () => {
+  it("renders source and level through tui.showToast when available", () => {
+    const shown: ToastInput[] = [];
+    const host = createV1ToolHost(
+      fakeClient({
+        showToast: async (input) => {
+          shown.push(input);
+        },
+      }),
+      NO_AGENT,
+    );
+
+    assert.doesNotThrow(() =>
+      host.toast?.("sess-1", {
+        source: "context-pruning",
+        level: "warning",
+        text: "上下文吃紧：已用 90%",
+      }),
+    );
+    assert.equal(shown.length, 1, "showToast called exactly once");
+    assert.equal(
+      shown[0].body.message,
+      "[zoo][context-pruning] 上下文吃紧：已用 90%",
+    );
+    assert.equal(shown[0].body.variant, "warning");
+  });
+
+  it("maps the info level onto the info variant", () => {
+    const shown: ToastInput[] = [];
+    const host = createV1ToolHost(
+      fakeClient({
+        showToast: async (input) => {
+          shown.push(input);
+        },
+      }),
+      NO_AGENT,
+    );
+    host.toast?.("sess-1", { source: "x", level: "info", text: "hi" });
+    assert.equal(shown.length, 1);
+    assert.equal(shown[0].body.variant, "info");
+    assert.equal(shown[0].body.message, "[zoo][x] hi");
+  });
+
+  it("silently drops when the client has no tui surface", () => {
+    const host = createV1ToolHost(fakeClient({}), NO_AGENT);
+    assert.doesNotThrow(() =>
+      host.toast?.("s", { source: "x", level: "warning", text: "hi" }),
+    );
+    assert.equal(
+      _getBufferForTesting().some((entry) => entry.event === "toast_failed"),
+      false,
+      "silent drop must not log a failure",
+    );
+  });
+
+  it("swallows a synchronous showToast throw and logs a warn", () => {
+    const host = createV1ToolHost(
+      fakeClient({
+        showToast: () => {
+          throw new Error("tui gone");
+        },
+      }),
+      NO_AGENT,
+    );
+    assert.doesNotThrow(() =>
+      host.toast?.("s", { source: "x", level: "info", text: "boom" }),
+    );
+    const warn = _getBufferForTesting().find(
+      (entry) => entry.level === "warn" && entry.event === "toast_failed",
+    );
+    assert.ok(warn, "expected a toast_failed warn entry");
+  });
+
+  it("swallows a rejected showToast promise and logs a warn", async () => {
+    const host = createV1ToolHost(
+      fakeClient({
+        showToast: async () => {
+          throw new Error("net down");
+        },
+      }),
+      NO_AGENT,
+    );
+    assert.doesNotThrow(() =>
+      host.toast?.("s", { source: "x", level: "info", text: "boom" }),
+    );
+    // Let the rejection microtask settle before checking the log.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const warn = _getBufferForTesting().find(
+      (entry) => entry.level === "warn" && entry.event === "toast_failed",
+    );
+    assert.ok(warn, "expected a toast_failed warn entry");
   });
 });
 

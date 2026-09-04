@@ -2,11 +2,13 @@
  * OpenCode v1 tool host — session services for tool adapters.
  *
  * Implements the host-free `ToolHost` contract against the OpenCode v1
- * client slice (`SessionClient`): resolves the session id from a tool
- * context, fetches the session history as lens messages, and posts
- * ignored chat notifications.  Tolerates both `sessionID` and
- * `sessionId` context shapes, unwraps `res.data ?? res` with a
- * `res.error` rejection, and treats notifications as best-effort.
+ * client slice (`SessionClient` + optional `tui.showToast`): resolves
+ * the session id from a tool context, fetches the session history as
+ * lens messages, posts ignored chat notifications, and shows transient
+ * toasts through the TUI surface (silently dropped without it).
+ * Tolerates both `sessionID` and `sessionId` context shapes, unwraps
+ * `res.data ?? res` with a `res.error` rejection, and treats
+ * notifications and toasts as best-effort.
  *
  * Notifications always resolve the session's agent before sending:
  * OpenCode's `session.prompt` carries no `body.agent` and would switch
@@ -18,11 +20,37 @@
  */
 
 import type { SessionClient } from "../../core/client/session.js";
-import type { ToolHost } from "../../core/client/tool-host.js";
+import type { ToastPayload, ToolHost } from "../../core/client/tool-host.js";
 import type { HostMessage } from "../../core/context/lens.js";
 import { log } from "../../utils/logger.js";
 import { history } from "./history.js";
 import type { ContextMessageEntry } from "./types.js";
+
+/**
+ * Minimal client interface required by the v1 tool host.
+ *
+ * The host-facing `SessionClient` session APIs plus the optional TUI
+ * toast surface (`tui.showToast`) consumed by the `toast` port.  The
+ * full OpenCode client object is much larger; this slice keeps the host
+ * thin while remaining trivially compatible with it.  Absent `tui`
+ * (e.g. a partial or headless client) degrades the toast port to a
+ * silent drop — the notification channel is deliberately NOT a
+ * fallback, since a toast is transient by contract and persisting it
+ * would change its semantics.
+ */
+export interface V1ToolHostClient extends SessionClient {
+  tui?: {
+    showToast?: (input: {
+      body: {
+        title?: string;
+        message: string;
+        variant: "info" | "success" | "warning" | "error";
+        /** Duration in milliseconds. */
+        duration?: number;
+      };
+    }) => Promise<unknown>;
+  };
+}
 
 /**
  * Create the v1 tool host backed by an OpenCode session client.
@@ -31,14 +59,14 @@ import type { ContextMessageEntry } from "./types.js";
  * closure; the client may be partial (missing session APIs) in tests.
  *
  * @param client - The OpenCode client (session.messages / session.prompt /
- *   session.get).
+ *   session.get / tui.showToast).
  * @param resolveAgent - Resolves a session's agent name from the shared
  *   session-agent registry (populated by the entry point's
  *   message.updated handler).
  * @returns The v1 tool host.
  */
 export function createV1ToolHost(
-  client: SessionClient,
+  client: V1ToolHostClient,
   resolveAgent: (sessionID: string) => string | undefined,
 ): ToolHost {
   return {
@@ -172,6 +200,51 @@ export function createV1ToolHost(
           reason: "agent unresolved",
           error: String(err),
         });
+      }
+    },
+
+    /**
+     * Show a transient toast via the TUI `showToast` surface.
+     *
+     * The source and level are rendered here (the `[zoo][source]`
+     * message prefix plus the toast variant) so producers stay uniform
+     * across hosts.  Fire-and-forget: the request promise is detached —
+     * rejections are logged and swallowed, and synchronous throws are
+     * logged too.  When the client has no `tui.showToast` the toast
+     * silently drops (debug log); the persisted notification channel is
+     * deliberately not used as a fallback.
+     *
+     * @param sessionId - The session identifier (logged; the TUI toast
+     *   targets the connected terminal, not a stored session record).
+     * @param toast - The toast payload (source / level / text).
+     */
+    toast(sessionId: string, toast: ToastPayload): void {
+      const tui = client.tui;
+      if (tui === undefined || typeof tui.showToast !== "function") {
+        log("tool-host", "toast_skipped", sessionId, undefined, "debug", {
+          reason: "tui.showToast unavailable",
+        });
+        return;
+      }
+
+      const warnFailure = (err: unknown): void => {
+        log("tool-host", "toast_failed", sessionId, undefined, "warn", {
+          error: String(err),
+        });
+      };
+      try {
+        // Best-effort: detach the request so a rejection never reaches
+        // the caller (the port is synchronous by contract).
+        void tui
+          .showToast({
+            body: {
+              message: `[zoo][${toast.source}] ${toast.text}`,
+              variant: toast.level,
+            },
+          })
+          .catch(warnFailure);
+      } catch (err) {
+        warnFailure(err);
       }
     },
   };

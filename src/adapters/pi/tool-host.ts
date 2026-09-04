@@ -4,9 +4,10 @@
  * Implements the host-free `ToolHost` contract against pi's
  * `ExtensionContext`: the session id comes from the tool execution context's
  * `sessionManager`, history is read from the session manager's context
- * entries, and notifications are best-effort via pi's in-session
+ * entries, notifications are best-effort via pi's in-session
  * `appendEntry` channel (a `zoo-notice` custom entry — persistent, never
- * part of the LLM context).
+ * part of the LLM context), and transient toasts go through the latest
+ * context's `ui.notify` (silently dropped when no UI surface exists).
  *
  * pi sessions are single-session, so the host keeps a mutable reference to
  * the latest `ExtensionContext` supplied by the pi event handlers; tool
@@ -17,7 +18,7 @@
  * @module
  */
 
-import type { ToolHost } from "../../core/client/tool-host.js";
+import type { ToastPayload, ToolHost } from "../../core/client/tool-host.js";
 import type { HostMessage } from "../../core/context/lens.js";
 import { log } from "../../utils/logger.js";
 import { history } from "./history.js";
@@ -55,6 +56,8 @@ export interface PiToolHostContext {
     ): () => void;
     /** Open a full-screen overlay (fleet-widget run inspection). */
     custom?(factory: unknown, options?: unknown): unknown;
+    /** Transient user notification (absent in pi's print mode). */
+    notify?(message: string, type?: "info" | "warning" | "error"): void;
   };
 }
 
@@ -227,6 +230,39 @@ export function createPiToolHost(
         appendEntry("zoo-notice", data);
       } catch (err) {
         log("tool-host", "notify_failed", _sessionId, undefined, "warn", {
+          error: String(err),
+        });
+      }
+    },
+
+    /**
+     * Show a transient toast via pi's `ui.notify` channel.
+     *
+     * The source and level are rendered here (the `[zoo][source]` prefix
+     * plus the pi notification type) so producers stay uniform across
+     * hosts.  Fire-and-forget and observational: the latest context is
+     * read from the mutable holder (refreshed on every pi event, so it
+     * is current whenever a transform runs); when the holder has no UI
+     * surface (e.g. pi print mode) the call silently drops with a debug
+     * log.  Failures are swallowed and logged as warnings.
+     *
+     * @param _sessionId - The session identifier (logged but not used;
+     *   pi sessions are single-session and ui.notify targets the TUI).
+     * @param toast - The toast payload (source / level / text).
+     */
+    toast(_sessionId: string, toast: ToastPayload): void {
+      const ui = contextHolder.current?.ui;
+      if (ui === undefined || typeof ui.notify !== "function") {
+        log("tool-host", "toast_skipped", _sessionId, undefined, "debug", {
+          reason: "ui.notify unavailable",
+        });
+        return;
+      }
+
+      try {
+        ui.notify(`[zoo][${toast.source}] ${toast.text}`, toast.level);
+      } catch (err) {
+        log("tool-host", "toast_failed", _sessionId, undefined, "warn", {
           error: String(err),
         });
       }
