@@ -29,7 +29,7 @@ export const JSON_ERROR_TOOL_EXCLUDE_LIST = [
   "grep",
   "webfetch",
   "websearch",
-  "task",
+  "subagent",
   "skill",
 ];
 

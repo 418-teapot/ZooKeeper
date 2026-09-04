@@ -1,8 +1,8 @@
 /**
  * Tests for the post-task-nudge hook.
  *
- * Covers all scenarios: task tool injection with various todo states,
- * non-task tools skipped, null/undefined output skipped, API failure
+ * Covers all scenarios: subagent tool injection with various todo states,
+ * non-subagent tools skipped, null/undefined output skipped, API failure
  * fallback, case-insensitive tool names, and stateless consecutive calls.
  */
 import assert from "node:assert/strict";
@@ -131,7 +131,7 @@ describe("task + multiple in_progress → VERIFY + GENERAL", () => {
       },
       { content: "Refactor", status: "pending", priority: "low", id: "3" },
     ]);
-    const result = await applyNudge(client, "task", "s1", "Done");
+    const result = await applyNudge(client, "subagent", "s1", "Done");
     assertHasVerify(result);
     assertHasGeneral(result);
     assert.equal(result.output?.startsWith("Done"), true);
@@ -142,7 +142,7 @@ describe("task + multiple in_progress → VERIFY + GENERAL", () => {
       { content: "Task A", status: "pending", priority: "high", id: "1" },
       { content: "Task B", status: "pending", priority: "medium", id: "2" },
     ]);
-    const result = await applyNudge(client, "task", "s1", "Done");
+    const result = await applyNudge(client, "subagent", "s1", "Done");
     assertHasVerify(result);
     assertHasGeneral(result);
   });
@@ -152,7 +152,7 @@ describe("task + multiple in_progress → VERIFY + GENERAL", () => {
       { content: "Active", status: "in_progress", priority: "high", id: "1" },
       { content: "Pending", status: "pending", priority: "medium", id: "2" },
     ]);
-    const result = await applyNudge(client, "task", "s1", "Done");
+    const result = await applyNudge(client, "subagent", "s1", "Done");
     assertHasVerify(result);
     assertHasGeneral(result);
   });
@@ -172,7 +172,7 @@ describe("task + 1 in_progress 0 pending → VERIFY + FINAL_ACTIVE", () => {
         id: "1",
       },
     ]);
-    const result = await applyNudge(client, "task", "s1", "Finished");
+    const result = await applyNudge(client, "subagent", "s1", "Finished");
     assertHasVerify(result);
     assertHasFinalActive(result);
     assert.equal(result.output?.startsWith("Finished"), true);
@@ -194,7 +194,7 @@ describe("task + 1 in_progress 0 pending → VERIFY + FINAL_ACTIVE", () => {
       },
       { content: "Cancelled", status: "cancelled", priority: "low", id: "3" },
     ]);
-    const result = await applyNudge(client, "task", "s1", "Done");
+    const result = await applyNudge(client, "subagent", "s1", "Done");
     assertHasVerify(result);
     assertHasFinalActive(result);
   });
@@ -210,7 +210,7 @@ describe("task + all completed → VERIFY + DONE", () => {
       { content: "Task 1", status: "completed", priority: "high", id: "1" },
       { content: "Task 2", status: "completed", priority: "medium", id: "2" },
     ]);
-    const result = await applyNudge(client, "task", "s1", "Done");
+    const result = await applyNudge(client, "subagent", "s1", "Done");
     assertHasVerify(result);
     assertHasDoneNudge(result);
   });
@@ -220,7 +220,7 @@ describe("task + all completed → VERIFY + DONE", () => {
       { content: "Task 1", status: "cancelled", priority: "high", id: "1" },
       { content: "Task 2", status: "cancelled", priority: "medium", id: "2" },
     ]);
-    const result = await applyNudge(client, "task", "s1", "Done");
+    const result = await applyNudge(client, "subagent", "s1", "Done");
     assertHasVerify(result);
     assertHasDoneNudge(result);
   });
@@ -230,7 +230,7 @@ describe("task + all completed → VERIFY + DONE", () => {
       { content: "Task 1", status: "completed", priority: "high", id: "1" },
       { content: "Task 2", status: "cancelled", priority: "medium", id: "2" },
     ]);
-    const result = await applyNudge(client, "task", "s1", "Done");
+    const result = await applyNudge(client, "subagent", "s1", "Done");
     assertHasVerify(result);
     assertHasDoneNudge(result);
   });
@@ -245,7 +245,7 @@ describe("task + all completed → VERIFY + TODO_RESUME_NUDGE", () => {
     const client = mockClient([
       { content: "Task 1", status: "completed", priority: "high", id: "1" },
     ]);
-    const result = await applyNudge(client, "task", "s1", "Done");
+    const result = await applyNudge(client, "subagent", "s1", "Done");
     assertHasVerify(result);
     assert.ok(
       result.output?.includes("TODO LIST DONE"),
@@ -261,7 +261,7 @@ describe("task + all completed → VERIFY + TODO_RESUME_NUDGE", () => {
 describe("task + API failure → VERIFY + GENERAL fallback", () => {
   it("appends VERIFY and GENERAL when todo API fails", async () => {
     const client = failingClient();
-    const result = await applyNudge(client, "task", "s1", "Done");
+    const result = await applyNudge(client, "subagent", "s1", "Done");
     assertHasVerify(result);
     assertHasGeneral(result);
   });
@@ -306,7 +306,12 @@ describe("null / undefined output is skipped", () => {
       { content: "Task", status: "in_progress", priority: "high", id: "1" },
     ]);
     const result: { output?: string } = { output: undefined };
-    await nudgePostTask(client, { tool: "task", sessionID: "s1" }, result, "");
+    await nudgePostTask(
+      client,
+      { tool: "subagent", sessionID: "s1" },
+      result,
+      "",
+    );
     assert.equal(result.output, undefined);
   });
 
@@ -315,7 +320,12 @@ describe("null / undefined output is skipped", () => {
       { content: "Task", status: "in_progress", priority: "high", id: "1" },
     ]);
     const result: { output?: string } = { output: null as unknown as string };
-    await nudgePostTask(client, { tool: "task", sessionID: "s1" }, result, "");
+    await nudgePostTask(
+      client,
+      { tool: "subagent", sessionID: "s1" },
+      result,
+      "",
+    );
     assert.equal(result.output, null);
   });
 
@@ -324,7 +334,12 @@ describe("null / undefined output is skipped", () => {
       { content: "Task", status: "in_progress", priority: "high", id: "1" },
     ]);
     const result: { output?: string } = {};
-    await nudgePostTask(client, { tool: "task", sessionID: "s1" }, result, "");
+    await nudgePostTask(
+      client,
+      { tool: "subagent", sessionID: "s1" },
+      result,
+      "",
+    );
     assert.equal(result.output, undefined);
   });
 });
@@ -343,7 +358,12 @@ describe("stateless consecutive calls", () => {
       { content: "Task 2", status: "pending", priority: "medium", id: "2" },
     ];
     const client1 = mockClient(state1);
-    const result1 = await applyNudge(client1, "task", sessionID, "First run");
+    const result1 = await applyNudge(
+      client1,
+      "subagent",
+      sessionID,
+      "First run",
+    );
     assertHasVerify(result1);
     assertHasGeneral(result1);
 
@@ -353,7 +373,12 @@ describe("stateless consecutive calls", () => {
       { content: "Task 2", status: "completed", priority: "medium", id: "2" },
     ];
     const client2 = mockClient(state2);
-    const result2 = await applyNudge(client2, "task", sessionID, "Second run");
+    const result2 = await applyNudge(
+      client2,
+      "subagent",
+      sessionID,
+      "Second run",
+    );
     assertHasVerify(result2);
     assertHasDoneNudge(result2);
   });
@@ -366,7 +391,7 @@ describe("stateless consecutive calls", () => {
 describe("empty todo list → VERIFY + DONE", () => {
   it("appends VERIFY reminder and TODO_RESUME_NUDGE when todo list is empty", async () => {
     const client = mockClient([]);
-    const result = await applyNudge(client, "task", "s1", "Done");
+    const result = await applyNudge(client, "subagent", "s1", "Done");
     assertHasVerify(result);
     assertHasDoneNudge(result);
   });
@@ -377,20 +402,20 @@ describe("empty todo list → VERIFY + DONE", () => {
 // ---------------------------------------------------------------------------
 
 describe("case-insensitive tool name matching", () => {
-  it('handles "Task" (capitalized)', async () => {
+  it('handles "Subagent" (capitalized)', async () => {
     const client = mockClient([
       { content: "Active", status: "in_progress", priority: "high", id: "1" },
     ]);
-    const result = await applyNudge(client, "Task", "s1", "Done");
+    const result = await applyNudge(client, "Subagent", "s1", "Done");
     assertHasVerify(result);
     assertHasFinalActive(result);
   });
 
-  it('handles "TASK" (uppercase)', async () => {
+  it('handles "SUBAGENT" (uppercase)', async () => {
     const client = mockClient([
       { content: "Active", status: "in_progress", priority: "high", id: "1" },
     ]);
-    const result = await applyNudge(client, "TASK", "s1", "Done");
+    const result = await applyNudge(client, "SUBAGENT", "s1", "Done");
     assertHasVerify(result);
     assertHasFinalActive(result);
   });
@@ -405,7 +430,12 @@ describe("original output is preserved", () => {
     const client = mockClient([
       { content: "Active", status: "in_progress", priority: "high", id: "1" },
     ]);
-    const result = await applyNudge(client, "task", "s1", "Original result");
+    const result = await applyNudge(
+      client,
+      "subagent",
+      "s1",
+      "Original result",
+    );
     assert.ok(result.output?.startsWith("Original result"));
     assert.ok(result.output?.includes(VERIFY_REMINDER));
   });
@@ -507,7 +537,7 @@ describe("integration: tool.execute.after → nudgePostTask", () => {
     const output: { output?: string } = { output: "Task completed" };
     await nudgePostTask(
       client,
-      { tool: "task", sessionID: "s1", callID: "c1" },
+      { tool: "subagent", sessionID: "s1", callID: "c1" },
       output,
       "",
     );
@@ -528,7 +558,7 @@ describe("integration: tool.execute.after → nudgePostTask", () => {
     const output: { output?: string } = { output: "Task completed" };
     await nudgePostTask(
       client,
-      { tool: "task", sessionID: "s1", callID: "c1" },
+      { tool: "subagent", sessionID: "s1", callID: "c1" },
       output,
       "",
     );
@@ -569,7 +599,7 @@ describe("integration: tool.execute.after → nudgePostTask", () => {
     };
     await nudgePostTask(
       client,
-      { tool: "task", sessionID: "s1", callID: "c1" },
+      { tool: "subagent", sessionID: "s1", callID: "c1" },
       output,
       "",
     );
@@ -581,7 +611,7 @@ describe("integration: tool.execute.after → nudgePostTask", () => {
     const output: { output?: string } = { output: "Task ran" };
     await nudgePostTask(
       client,
-      { tool: "task", sessionID: "s1", callID: "c1" },
+      { tool: "subagent", sessionID: "s1", callID: "c1" },
       output,
       "",
     );
@@ -658,7 +688,7 @@ describe("plan nudge scenarios", () => {
       ]);
       const result = await applyNudge(
         client,
-        "task",
+        "subagent",
         sessionID,
         "Done",
         baseDir,
@@ -692,7 +722,7 @@ describe("plan nudge scenarios", () => {
       ]);
       const result = await applyNudge(
         client,
-        "task",
+        "subagent",
         sessionID,
         "Done",
         baseDir,
@@ -726,7 +756,7 @@ describe("plan nudge scenarios", () => {
       ]);
       const result = await applyNudge(
         client,
-        "task",
+        "subagent",
         sessionID,
         "Done",
         baseDir,
@@ -754,7 +784,7 @@ describe("plan nudge scenarios", () => {
       ]);
       const result = await applyNudge(
         client,
-        "task",
+        "subagent",
         sessionID,
         "Done",
         baseDir,

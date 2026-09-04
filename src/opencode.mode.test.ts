@@ -10,12 +10,13 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { COMMAND_HANDLED } from "./compose-opencode.js";
+import { COMMAND_HANDLED, normalizeToolName } from "./compose-opencode.js";
 import { _resetContextStateManagerForTesting } from "./core/context/runtime.js";
 import { sessionAgentRegistry } from "./core/session-agent.js";
 import { DIRECT_WORK_NUDGE } from "./hooks/direct-work-nudge";
 import { JSON_ERROR_REMINDER } from "./hooks/json-error-nudge";
 import { VERIFY_REMINDER } from "./hooks/post-task-nudge";
+import { TASK_PROMPT_HINT } from "./hooks/task-prompt";
 import { buildPlugin, zookeeper } from "./opencode.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
 import { withModeFile } from "./utils/mode-file.js";
@@ -192,6 +193,33 @@ describe("poly full profile — registration parity", () => {
       ),
       /not allowed/,
     );
+  });
+
+  it("tool.definition runs enhanceTaskDefinition via the task→subagent mapping", async () => {
+    // OpenCode names the delegation tool "task"; the compose-opencode
+    // boundary maps it to the canonical "subagent" before handlers run,
+    // so a raw "task" toolID must still reach the definition enhancer.
+    const plugin = await makePlugin();
+    const output = {
+      description: "Launch a subagent",
+      parameters: {
+        type: "object",
+        properties: {
+          prompt: { description: "The task prompt", type: "string" },
+        },
+      },
+    };
+    await plugin["tool.definition"]({ toolID: "task" }, output);
+    assert.equal(
+      output.parameters.properties.prompt.description,
+      `The task prompt\n\n${TASK_PROMPT_HINT}`,
+    );
+  });
+
+  it("normalizeToolName maps the OpenCode dialect to the canonical name", () => {
+    assert.equal(normalizeToolName("task"), "subagent");
+    assert.equal(normalizeToolName("edit"), "edit");
+    assert.equal(normalizeToolName("subagent"), "subagent");
   });
 
   it("tool.execute.after runs nudgeTaskOutput then nudgePostTask in order", async () => {

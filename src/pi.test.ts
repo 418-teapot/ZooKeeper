@@ -27,6 +27,7 @@ import { TRANSCRIPT_UNAVAILABLE_NOTICE } from "./adapters/pi/tui/transcript.js";
 import {
   DIRECT_WORK_NUDGE,
   JSON_ERROR_REMINDER_MARKER,
+  VERIFY_REMINDER,
 } from "./core/prompts.js";
 import { sessionAgentRegistry } from "./core/session-agent.js";
 import {
@@ -768,6 +769,51 @@ describe("buildPiHandlers — compose-driven tool_result", () => {
       SESSION_CTX,
     );
     assert.equal(result, undefined);
+  });
+
+  it("subagent tool_result → post-task nudge fires on the canonical name", async () => {
+    // pi registers the delegation tool as "subagent" (the canonical name
+    // the core hooks gate on), so the post-task nudge must fire here —
+    // before the hooks moved to the canonical name this stayed silent.
+    const handlers = buildPiHandlers(POLY_ZOO);
+    const result = await handlers.toolResult(
+      {
+        type: "tool_result",
+        toolName: "subagent",
+        toolCallId: "call-sub",
+        content: [{ type: "text", text: "subagent finished the delegation" }],
+        isError: false,
+      },
+      SESSION_CTX,
+    );
+    assert.ok(result, "the post-task nudge must fire");
+    assert.ok(
+      joinedText(result).includes(VERIFY_REMINDER),
+      "output must carry the VERIFY reminder",
+    );
+  });
+
+  it("subagent tool_result with JSON error prose → no JSON reminder", async () => {
+    // "subagent" is in the JSON-recovery exclude list: subagent output
+    // may legitimately mention JSON errors without the orchestrator
+    // having sent invalid JSON arguments.
+    const handlers = buildPiHandlers(POLY_ZOO);
+    const result = await handlers.toolResult(
+      {
+        type: "tool_result",
+        toolName: "subagent",
+        toolCallId: "call-sub-json",
+        content: [{ type: "text", text: "json parse error in the response" }],
+        isError: false,
+      },
+      SESSION_CTX,
+    );
+    assert.ok(result, "the post-task nudge still appends for subagent");
+    assert.equal(
+      joinedText(result).includes(JSON_ERROR_REMINDER_MARKER),
+      false,
+      "subagent output must be excluded from JSON recovery",
+    );
   });
 
   it("hooks without direct-work-nudge → no delegation nudge even for a primary", async () => {

@@ -303,18 +303,21 @@ describe("integration: tool.execute.after → recoverJsonError", () => {
     assert.equal(output.output, "json parse error in bash output");
   });
 
-  it("task tool (excluded for JSON recovery) with JSON error NOT appended", () => {
+  it("subagent tool (excluded for JSON recovery) with JSON error NOT appended", () => {
     const output: { output?: string } = {
       output: "I encountered a json parse error in the response",
     };
-    recoverJsonError({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+    recoverJsonError(
+      { tool: "subagent", sessionID: "s1", callID: "c1" },
+      output,
+    );
     assert.equal(
       output.output,
       "I encountered a json parse error in the response",
     );
   });
 
-  it("task tool with nudge-worthy prompt + JSON error: only nudge, no JSON reminder", () => {
+  it("subagent tool with nudge-worthy prompt + JSON error: only nudge, no JSON reminder", () => {
     const prompt = validPrompt({
       context: "The bug is at src/db.py line 42. Fix it.",
     });
@@ -322,17 +325,21 @@ describe("integration: tool.execute.after → recoverJsonError", () => {
       output: "Task finished with a json parse error in subagent output",
     };
     // Simulate the plugin's after-handler pipeline order: task-prompt nudge
-    // first, then JSON recovery (task tool is excluded from JSON recovery).
+    // first, then JSON recovery (the subagent tool is excluded from JSON
+    // recovery).
     nudgeTaskOutput(
-      { tool: "task", sessionID: "s1", callID: "c1", args: { prompt } },
+      { tool: "subagent", sessionID: "s1", callID: "c1", args: { prompt } },
       output,
       limits,
     );
-    recoverJsonError({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+    recoverJsonError(
+      { tool: "subagent", sessionID: "s1", callID: "c1" },
+      output,
+    );
     assert.equal(
       output.output?.includes(JSON_ERROR_REMINDER_MARKER),
       false,
-      "task tool should not receive JSON reminder marker",
+      "subagent tool should not receive JSON reminder marker",
     );
     assert.ok(
       output.output?.includes("Guidance for next time"),

@@ -33,7 +33,7 @@ export async function validateDelegationTarget(
   input: { tool: string; sessionID?: string; callID?: string },
   output: { args?: Record<string, unknown> },
 ): Promise<void> {
-  if (input.tool !== "task") return;
+  if (input.tool !== "subagent") return;
   if (!input.sessionID) return;
 
   const agent = await getAgentName(client, input.sessionID);

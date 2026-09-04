@@ -2,7 +2,7 @@
  * Tests for the task delegation validation hook adapter.
  *
  * Tests `validateDelegationTarget()` with mock clients, covering all
- * exit paths: non-task tools, missing session/agent/subagent, allowlisted
+ * exit paths: non-delegation tools, missing session/agent/subagent, allowlisted
  * and blocked delegations for both mola and build.
  */
 import assert from "node:assert/strict";
@@ -37,10 +37,10 @@ async function tryValidate(
 }
 
 // ---------------------------------------------------------------------------
-// Non-task tools — skipped
+// Non-delegation tools — skipped
 // ---------------------------------------------------------------------------
 
-describe("validateDelegationTarget — non-task tools", () => {
+describe("validateDelegationTarget — non-delegation tools", () => {
   it("skips grep without throwing", async () => {
     const client = mockClient("mola");
     const err = await tryValidate(client, "grep", "s1", {
@@ -65,14 +65,14 @@ describe("validateDelegationTarget — non-task tools", () => {
 describe("validateDelegationTarget — missing context", () => {
   it("skips when sessionID is undefined", async () => {
     const client = mockClient("mola");
-    const err = await tryValidate(client, "task", undefined, {
+    const err = await tryValidate(client, "subagent", undefined, {
       subagent_type: "beaver",
     });
     assert.equal(err, null);
   });
 
   it("skips when agent cannot be resolved (null client)", async () => {
-    const err = await tryValidate(null, "task", "s1", {
+    const err = await tryValidate(null, "subagent", "s1", {
       subagent_type: "beaver",
     });
     assert.equal(err, null);
@@ -80,13 +80,13 @@ describe("validateDelegationTarget — missing context", () => {
 
   it("skips when subagent_type is missing from args", async () => {
     const client = mockClient("mola");
-    const err = await tryValidate(client, "task", "s1", { prompt: "..." });
+    const err = await tryValidate(client, "subagent", "s1", { prompt: "..." });
     assert.equal(err, null);
   });
 
   it("skips when subagent_type is not a string", async () => {
     const client = mockClient("mola");
-    const err = await tryValidate(client, "task", "s1", {
+    const err = await tryValidate(client, "subagent", "s1", {
       subagent_type: 123,
     });
     assert.equal(err, null);
@@ -100,7 +100,7 @@ describe("validateDelegationTarget — missing context", () => {
 describe("validateDelegationTarget — mola allowlisted", () => {
   it("allows mola to delegate to lynx", async () => {
     const client = mockClient("mola");
-    const err = await tryValidate(client, "task", "s1", {
+    const err = await tryValidate(client, "subagent", "s1", {
       subagent_type: "lynx",
     });
     assert.equal(err, null);
@@ -108,7 +108,7 @@ describe("validateDelegationTarget — mola allowlisted", () => {
 
   it("allows mola to delegate to spider", async () => {
     const client = mockClient("mola");
-    const err = await tryValidate(client, "task", "s1", {
+    const err = await tryValidate(client, "subagent", "s1", {
       subagent_type: "spider",
     });
     assert.equal(err, null);
@@ -122,7 +122,7 @@ describe("validateDelegationTarget — mola allowlisted", () => {
 describe("validateDelegationTarget — mola blocked", () => {
   it("blocks mola delegating to beaver", async () => {
     const client = mockClient("mola");
-    const err = await tryValidate(client, "task", "s1", {
+    const err = await tryValidate(client, "subagent", "s1", {
       subagent_type: "beaver",
     });
     assert.ok(err instanceof Error);
@@ -133,7 +133,7 @@ describe("validateDelegationTarget — mola blocked", () => {
 
   it("blocks mola delegating to eagle", async () => {
     const client = mockClient("mola");
-    const err = await tryValidate(client, "task", "s1", {
+    const err = await tryValidate(client, "subagent", "s1", {
       subagent_type: "eagle",
     });
     assert.ok(err instanceof Error);
@@ -142,7 +142,7 @@ describe("validateDelegationTarget — mola blocked", () => {
 
   it("blocks mola delegating to kiwi", async () => {
     const client = mockClient("mola");
-    const err = await tryValidate(client, "task", "s1", {
+    const err = await tryValidate(client, "subagent", "s1", {
       subagent_type: "kiwi",
     });
     assert.ok(err instanceof Error);
@@ -151,7 +151,7 @@ describe("validateDelegationTarget — mola blocked", () => {
 
   it("error message includes allowed targets list", async () => {
     const client = mockClient("mola");
-    const err = await tryValidate(client, "task", "s1", {
+    const err = await tryValidate(client, "subagent", "s1", {
       subagent_type: "beaver",
     });
     assert.ok(err instanceof Error);
@@ -162,7 +162,7 @@ describe("validateDelegationTarget — mola blocked", () => {
 
   it("error message includes fallback guidance", async () => {
     const client = mockClient("mola");
-    const err = await tryValidate(client, "task", "s1", {
+    const err = await tryValidate(client, "subagent", "s1", {
       subagent_type: "beaver",
     });
     assert.ok(err instanceof Error);
@@ -178,7 +178,7 @@ describe("validateDelegationTarget — mola blocked", () => {
 describe("validateDelegationTarget — beaver allowlisted", () => {
   it("allows beaver to delegate to lynx", async () => {
     const client = mockClient("beaver");
-    const err = await tryValidate(client, "task", "s1", {
+    const err = await tryValidate(client, "subagent", "s1", {
       subagent_type: "lynx",
     });
     assert.equal(err, null);
@@ -186,7 +186,7 @@ describe("validateDelegationTarget — beaver allowlisted", () => {
 
   it("allows beaver to delegate to spider", async () => {
     const client = mockClient("beaver");
-    const err = await tryValidate(client, "task", "s1", {
+    const err = await tryValidate(client, "subagent", "s1", {
       subagent_type: "spider",
     });
     assert.equal(err, null);
@@ -200,7 +200,7 @@ describe("validateDelegationTarget — beaver allowlisted", () => {
 describe("validateDelegationTarget — beaver blocked", () => {
   it("blocks beaver delegating to dolphin", async () => {
     const client = mockClient("beaver");
-    const err = await tryValidate(client, "task", "s1", {
+    const err = await tryValidate(client, "subagent", "s1", {
       subagent_type: "dolphin",
     });
     assert.ok(err instanceof Error);
@@ -210,7 +210,7 @@ describe("validateDelegationTarget — beaver blocked", () => {
 
   it("blocks beaver delegating to mola", async () => {
     const client = mockClient("beaver");
-    const err = await tryValidate(client, "task", "s1", {
+    const err = await tryValidate(client, "subagent", "s1", {
       subagent_type: "mola",
     });
     assert.ok(err instanceof Error);
@@ -219,7 +219,7 @@ describe("validateDelegationTarget — beaver blocked", () => {
 
   it("blocks beaver delegating to eagle", async () => {
     const client = mockClient("beaver");
-    const err = await tryValidate(client, "task", "s1", {
+    const err = await tryValidate(client, "subagent", "s1", {
       subagent_type: "eagle",
     });
     assert.ok(err instanceof Error);
@@ -228,7 +228,7 @@ describe("validateDelegationTarget — beaver blocked", () => {
 
   it("blocks beaver delegating to kiwi", async () => {
     const client = mockClient("beaver");
-    const err = await tryValidate(client, "task", "s1", {
+    const err = await tryValidate(client, "subagent", "s1", {
       subagent_type: "kiwi",
     });
     assert.ok(err instanceof Error);
@@ -243,7 +243,7 @@ describe("validateDelegationTarget — beaver blocked", () => {
 describe("validateDelegationTarget — dolphin unrestricted", () => {
   it("allows dolphin to delegate to beaver", async () => {
     const client = mockClient("dolphin");
-    const err = await tryValidate(client, "task", "s1", {
+    const err = await tryValidate(client, "subagent", "s1", {
       subagent_type: "beaver",
     });
     assert.equal(err, null);
@@ -251,7 +251,7 @@ describe("validateDelegationTarget — dolphin unrestricted", () => {
 
   it("allows dolphin to delegate to eagle", async () => {
     const client = mockClient("dolphin");
-    const err = await tryValidate(client, "task", "s1", {
+    const err = await tryValidate(client, "subagent", "s1", {
       subagent_type: "eagle",
     });
     assert.equal(err, null);
@@ -259,7 +259,7 @@ describe("validateDelegationTarget — dolphin unrestricted", () => {
 
   it("allows dolphin to delegate to lynx", async () => {
     const client = mockClient("dolphin");
-    const err = await tryValidate(client, "task", "s1", {
+    const err = await tryValidate(client, "subagent", "s1", {
       subagent_type: "lynx",
     });
     assert.equal(err, null);
@@ -277,7 +277,7 @@ describe("validateDelegationTarget — edge cases", () => {
         throw new Error("fail");
       },
     };
-    const err = await tryValidate(badClient, "task", "s1", {
+    const err = await tryValidate(badClient, "subagent", "s1", {
       subagent_type: "beaver",
     });
     assert.equal(err, null);
@@ -285,7 +285,7 @@ describe("validateDelegationTarget — edge cases", () => {
 
   it("skips when agent is undefined (session exists, no agent field)", async () => {
     const client = mockClient(undefined);
-    const err = await tryValidate(client, "task", "s1", {
+    const err = await tryValidate(client, "subagent", "s1", {
       subagent_type: "beaver",
     });
     assert.equal(err, null);

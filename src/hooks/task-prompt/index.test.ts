@@ -500,7 +500,7 @@ describe("edge cases", () => {
 // ---------------------------------------------------------------------------
 
 describe("tool.definition hook", () => {
-  it("appends hint to prompt parameter description when toolID is task", () => {
+  it("appends hint to prompt parameter description when toolID is subagent", () => {
     const output = {
       description: "Run a task for the dolphin agent",
       parameters: {
@@ -513,7 +513,7 @@ describe("tool.definition hook", () => {
         },
       },
     };
-    enhanceTaskDefinition({ toolID: "task" }, output);
+    enhanceTaskDefinition({ toolID: "subagent" }, output);
     assert.equal(
       output.parameters.properties.prompt.description,
       `The task prompt\n\n${TASK_PROMPT_HINT}`,
@@ -549,7 +549,7 @@ describe("tool.definition hook", () => {
       // No parameters at all
     } as any;
     // Should not throw
-    enhanceTaskDefinition({ toolID: "task" }, output);
+    enhanceTaskDefinition({ toolID: "subagent" }, output);
     // Output remains as-is
     assert.equal(output.description, "Run a task");
   });
@@ -569,7 +569,7 @@ describe("tool.definition hook", () => {
       },
     };
     // Should not throw
-    enhanceTaskDefinition({ toolID: "task" }, output);
+    enhanceTaskDefinition({ toolID: "subagent" }, output);
     assert.equal(output.description, "Run a task");
   });
 
@@ -587,7 +587,7 @@ describe("tool.definition hook", () => {
         },
       },
     };
-    enhanceTaskDefinition({ toolID: "task" }, output);
+    enhanceTaskDefinition({ toolID: "subagent" }, output);
     // Existing text should be preserved, hint appended after double newline
     assert.ok(
       output.parameters.properties.prompt.description.startsWith(existingDesc),
@@ -612,7 +612,7 @@ describe("tool.execute.before hook", () => {
   it("valid prompt passes without throwing", () => {
     const prompt = validPrompt();
     validateBeforeExec(
-      { tool: "task", sessionID: "s1", callID: "c1" },
+      { tool: "subagent", sessionID: "s1", callID: "c1" },
       { args: { prompt } },
       limits,
     );
@@ -624,7 +624,7 @@ describe("tool.execute.before hook", () => {
     await assert.rejects(
       async () =>
         validateBeforeExec(
-          { tool: "task", sessionID: "s1", callID: "c1" },
+          { tool: "subagent", sessionID: "s1", callID: "c1" },
           { args: { prompt } },
           limits,
         ),
@@ -646,7 +646,7 @@ describe("tool.execute.before hook", () => {
     const prompt = validPrompt({ context: longContext });
     // Must not throw — structural check passes, warnings are soft
     validateBeforeExec(
-      { tool: "task", sessionID: "s1", callID: "c1" },
+      { tool: "subagent", sessionID: "s1", callID: "c1" },
       { args: { prompt } },
       limits,
     );
@@ -655,7 +655,7 @@ describe("tool.execute.before hook", () => {
       output: "Task completed successfully",
     };
     nudgeTaskOutput(
-      { tool: "task", sessionID: "s1", callID: "c1", args: { prompt } },
+      { tool: "subagent", sessionID: "s1", callID: "c1", args: { prompt } },
       afterOutput,
       limits,
     );
@@ -669,7 +669,7 @@ describe("tool.execute.before hook", () => {
     });
     // Must not throw — structural check passes, warnings are soft
     validateBeforeExec(
-      { tool: "task", sessionID: "s1", callID: "c1" },
+      { tool: "subagent", sessionID: "s1", callID: "c1" },
       { args: { prompt } },
       limits,
     );
@@ -678,7 +678,7 @@ describe("tool.execute.before hook", () => {
       output: "Task completed successfully",
     };
     nudgeTaskOutput(
-      { tool: "task", sessionID: "s1", callID: "c1", args: { prompt } },
+      { tool: "subagent", sessionID: "s1", callID: "c1", args: { prompt } },
       afterOutput,
       limits,
     );
@@ -686,8 +686,8 @@ describe("tool.execute.before hook", () => {
     assert.ok(afterOutput.output?.includes("line references"));
   });
 
-  it("non-task tools are skipped", () => {
-    // Even with an invalid prompt, non-task tools must not validate
+  it("non-subagent tools are skipped", () => {
+    // Even with an invalid prompt, non-subagent tools must not validate
     validateBeforeExec(
       { tool: "grep", sessionID: "s1", callID: "c1" },
       { args: { prompt: "no sections at all here" } },
@@ -698,7 +698,7 @@ describe("tool.execute.before hook", () => {
 
   it("missing args handled gracefully", () => {
     validateBeforeExec(
-      { tool: "task", sessionID: "s1", callID: "c1" },
+      { tool: "subagent", sessionID: "s1", callID: "c1" },
       {}, // no args at all
       limits,
     );
@@ -707,7 +707,7 @@ describe("tool.execute.before hook", () => {
 
   it("missing prompt in args handled gracefully", () => {
     validateBeforeExec(
-      { tool: "task", sessionID: "s1", callID: "c1" },
+      { tool: "subagent", sessionID: "s1", callID: "c1" },
       { args: { someOtherField: "value" } },
       limits,
     );
@@ -716,7 +716,7 @@ describe("tool.execute.before hook", () => {
 
   it("non-string prompt handled gracefully", () => {
     validateBeforeExec(
-      { tool: "task", sessionID: "s1", callID: "c1" },
+      { tool: "subagent", sessionID: "s1", callID: "c1" },
       { args: { prompt: 123 } },
       limits,
     );
@@ -725,7 +725,7 @@ describe("tool.execute.before hook", () => {
 
   it("null prompt handled gracefully", () => {
     validateBeforeExec(
-      { tool: "task", sessionID: "s1", callID: "c1" },
+      { tool: "subagent", sessionID: "s1", callID: "c1" },
       { args: { prompt: null } },
       limits,
     );
@@ -745,7 +745,7 @@ describe("tool.execute.after hook (nudge delivery)", () => {
       output: "Task result here",
     };
     nudgeTaskOutput(
-      { tool: "task", sessionID: "s1", callID: "c1", args: { prompt } },
+      { tool: "subagent", sessionID: "s1", callID: "c1", args: { prompt } },
       output,
       limits,
     );
@@ -761,16 +761,16 @@ describe("tool.execute.after hook (nudge delivery)", () => {
       output: "Task completed",
     };
     nudgeTaskOutput(
-      { tool: "task", sessionID: "s1", callID: "c1", args: { prompt } },
+      { tool: "subagent", sessionID: "s1", callID: "c1", args: { prompt } },
       output,
       limits,
     );
     assert.equal(output.output, "Task completed");
   });
 
-  it("non-task tools are skipped", () => {
+  it("non-subagent tools are skipped", () => {
     const prompt = validPrompt({
-      context: "line 42 bug here", // would trigger nudge if this were task
+      context: "line 42 bug here", // would trigger nudge if this were subagent
     });
     const output: { output?: string } = {
       output: "grep result",

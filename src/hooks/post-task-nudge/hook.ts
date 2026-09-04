@@ -38,8 +38,8 @@ export async function nudgePostTask(
   output: { output?: string },
   planDir: string,
 ): Promise<void> {
-  // Skip non-task tools
-  if (input.tool.toLowerCase() !== "task") return;
+  // Skip non-delegation tools
+  if (input.tool.toLowerCase() !== "subagent") return;
 
   // Skip null / undefined output
   if (output.output == null) return;

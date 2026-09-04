@@ -24,8 +24,9 @@
  *
  * The exported helper functions (`buildToolHooks`,
  * `injectAgentPrompts`, `registerProfileToolsInConfig`, `registerSkills`,
- * `runAfterHandlers`) are shared with the config hook and kept public
- * for unit tests.
+ * `runAfterHandlers`) are shared with the config hook
+ * and kept public for unit tests.  `normalizeToolName` is exported
+ * for unit tests only.
  *
  * @module
  */
@@ -288,6 +289,26 @@ export async function runAfterHandlers(
 }
 
 // ---------------------------------------------------------------------------
+// Tool-name normalization
+// ---------------------------------------------------------------------------
+
+/**
+ * Map an OpenCode tool name to the canonical name the core hooks gate on.
+ *
+ * The core and hook layers speak a host-neutral vocabulary where the
+ * delegation tool is named `"subagent"`; OpenCode registers that tool as
+ * `"task"`.  Normalizing at this event-key boundary keeps every hook
+ * identical across hosts (pi already names the tool "subagent").  All
+ * other names pass through unchanged.
+ *
+ * @param name - The raw OpenCode tool name from the event input.
+ * @returns The canonical tool name.
+ */
+export function normalizeToolName(name: string): string {
+  return name === "task" ? "subagent" : name;
+}
+
+// ---------------------------------------------------------------------------
 // Hook assembly
 // ---------------------------------------------------------------------------
 
@@ -376,8 +397,12 @@ export function assembleOpenCodeHooks(
             input: ToolDefinitionInput,
             output: ToolDefinitionOutput,
           ) {
+            const mapped: ToolDefinitionInput = {
+              ...input,
+              toolID: normalizeToolName(input.toolID),
+            };
             for (const handler of composed.toolDefinition) {
-              await handler.handle(input, output);
+              await handler.handle(mapped, output);
             }
           },
         }
@@ -391,8 +416,12 @@ export function assembleOpenCodeHooks(
             input: BeforeExecInput,
             output: BeforeExecOutput,
           ) {
+            const mapped: BeforeExecInput = {
+              ...input,
+              tool: normalizeToolName(input.tool),
+            };
             for (const handler of composed.beforeExec) {
-              await handler.handle(input, output);
+              await handler.handle(mapped, output);
             }
           },
         }
@@ -409,7 +438,7 @@ export function assembleOpenCodeHooks(
                 name: handler.name,
                 fn: handler.handle,
               })),
-              input,
+              { ...input, tool: normalizeToolName(input.tool) },
               output,
             );
           },

@@ -37,7 +37,7 @@ export function enhanceTaskDefinition(
   input: { toolID: string },
   output: { description: string; parameters: any },
 ): void {
-  if (input.toolID !== "task") return;
+  if (input.toolID !== "subagent") return;
 
   const promptParam = output.parameters?.properties?.prompt;
   if (!promptParam || typeof promptParam !== "object") {
@@ -71,7 +71,7 @@ export function validateBeforeExec(
   output: { args?: Record<string, unknown> },
   limits: ValidationLimits,
 ): void {
-  if (input.tool !== "task") return;
+  if (input.tool !== "subagent") return;
 
   const promptArg = output.args?.prompt;
   if (typeof promptArg !== "string") return;
@@ -140,14 +140,14 @@ export function nudgeTaskOutput(
   output: { output?: string },
   limits: ValidationLimits,
 ): void {
-  if (input.tool !== "task") {
+  if (input.tool !== "subagent") {
     log(
       "task-prompt",
       "nudge_skipped",
       input.sessionID ?? "",
       input.callID,
       "debug",
-      { reason: "not_task" },
+      { reason: "not_subagent" },
     );
     return;
   }
