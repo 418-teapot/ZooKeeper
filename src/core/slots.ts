@@ -231,10 +231,16 @@ export interface Deps {
   /** The plugin working directory. */
   directory: string;
   /**
-   * Session → agent map held by the host entry point (populated by
-   * `message.updated` events).  Read-only for units.
+   * Resolve the agent driving a session (e.g. `"dolphin"`).
+   *
+   * Backed by the shared `SessionAgentRegistry` (`core/session-agent.ts`):
+   * the host entry point owns the bindings (OpenCode populates from
+   * `message.updated` events; pi resolves lazily through the subagent
+   * run registry and the async-local identity, then binds).  Returns
+   * `undefined` for an unknown session (fail-closed) — callers must
+   * treat an unresolved identity as "not the orchestrator".
    */
-  sessionAgentMap: Map<string, string>;
+  resolveAgent: (sessionID: string) => string | undefined;
   /** Host tool services used by tool adapters. */
   toolHost?: ToolHost;
   /**

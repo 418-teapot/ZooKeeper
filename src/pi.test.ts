@@ -28,6 +28,7 @@ import {
   DIRECT_WORK_NUDGE,
   JSON_ERROR_REMINDER_MARKER,
 } from "./core/prompts.js";
+import { sessionAgentRegistry } from "./core/session-agent.js";
 import {
   getPrimary,
   _resetForTesting as resetIdentityForTesting,
@@ -47,6 +48,7 @@ import {
   buildPiContributions,
   buildPiHandlers,
   buildPiNoticeEntryRenderer,
+  buildPiResolveAgent,
   terminalToolDetails,
   zookeeperPi,
 } from "./pi.js";
@@ -233,6 +235,9 @@ afterEach(() => {
   resetIdentityForTesting();
   _resetPendingSwitchOpsForTesting();
   resetRegistry();
+  // The lazy resolver bindings live in the process-wide registry —
+  // clear them so memoized identities never leak between tests.
+  sessionAgentRegistry.clear();
   delete process.env.ZOO_MODE_FILE;
 });
 
@@ -625,7 +630,7 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
     assert.ok(injected.endsWith("base"));
   });
 
-  it("empty primary set → zero injection; sessionAgentMap empty", async () => {
+  it("empty primary set → zero injection; resolveAgent undefined", async () => {
     // Pre-seed a primary that is not in the profile: the empty-primary
     // profile must fail closed (no setPrimary call) even when a stale
     // module-level primary exists.
@@ -660,8 +665,8 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
     });
     assert.equal(promptResult.systemPrompt, "base");
 
-    // The empty sessionAgentMap means the direct-work nudge gate never
-    // fires for the primary-only nudge.
+    // The unresolvable agent (no primary, no binding) means the
+    // direct-work nudge gate never matches — zero output change.
     const toolResult = await handlers.toolResult(
       {
         type: "tool_result",
@@ -725,8 +730,9 @@ describe("buildPiHandlers — compose-driven tool_result", () => {
   });
 
   it("direct-work-nudge in hooks + primary agent → edit nudge appended", async () => {
-    // The sessionAgentMap resolves to the config-derived default primary
-    // (dolphin here), which satisfies the direct-work nudge's gate.
+    // The root session resolves (and binds) to the config-derived default
+    // primary (dolphin here), which satisfies the direct-work nudge's
+    // gate.
     const handlers = buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
     const result = await handlers.toolResult(
       {
@@ -786,6 +792,170 @@ describe("buildPiHandlers — compose-driven tool_result", () => {
       SESSION_CTX,
     );
     assert.equal(result, undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Session agent identity — buildPiResolveAgent paths
+// ---------------------------------------------------------------------------
+
+describe("buildPiResolveAgent — session identity resolution", () => {
+  /** The poly profile as a ModeProfile literal (default primary: dolphin). */
+  const PROFILE = {
+    name: "poly",
+    agents: POLY_PROFILE.agents,
+    skills: [],
+    hooks: [],
+    tools: [],
+    commands: [],
+  };
+  const MODES: Record<string, "primary" | "subagent"> = {
+    dolphin: "primary",
+    mola: "primary",
+    beaver: "subagent",
+    lynx: "subagent",
+  };
+
+  it("(a) a subagent child session resolves to its delegated run agent", () => {
+    startRun({
+      id: "run-1",
+      agent: "beaver",
+      parentSession: "root-ses",
+      startedAt: 100,
+    });
+    updateRun("run-1", { childSession: "child-beaver" });
+    const resolve = buildPiResolveAgent(PROFILE, MODES);
+    assert.equal(resolve("child-beaver"), "beaver");
+  });
+
+  it("(a) the hit is bound so later lookups skip the run table", () => {
+    startRun({
+      id: "run-1",
+      agent: "beaver",
+      parentSession: "root-ses",
+      startedAt: 100,
+    });
+    updateRun("run-1", { childSession: "child-beaver" });
+    const resolve = buildPiResolveAgent(PROFILE, MODES);
+    assert.equal(sessionAgentRegistry.resolve("child-beaver"), undefined);
+    assert.equal(resolve("child-beaver"), "beaver");
+    // The (a) answer is memoized: a later lookup hits the registry
+    // directly — proven by emptying the run table first, so only the
+    // binding can answer now.
+    resetRegistry();
+    assert.equal(sessionAgentRegistry.resolve("child-beaver"), "beaver");
+    assert.equal(resolve("child-beaver"), "beaver");
+  });
+
+  it("(a) a still-unknown child session (no run recorded) falls through", () => {
+    // Without a run and outside any identity scope the caller's session
+    // is treated as the root session → the default primary.
+    const resolve = buildPiResolveAgent(PROFILE, MODES);
+    assert.equal(resolve("root-ses"), "dolphin");
+  });
+
+  it("(b) an unregistered session inside a subagent identity scope resolves to it", () => {
+    const resolve = buildPiResolveAgent(PROFILE, MODES);
+    let resolved: string | undefined;
+    runWithIdentity({ kind: "subagent", name: "lynx" }, () => {
+      resolved = resolve("orphan-child");
+    });
+    assert.equal(resolved, "lynx");
+  });
+
+  it("(b) the subagent-identity answer is bound into the shared registry", () => {
+    const resolve = buildPiResolveAgent(PROFILE, MODES);
+    assert.equal(sessionAgentRegistry.resolve("orphan-child-2"), undefined);
+    let resolved: string | undefined;
+    runWithIdentity({ kind: "subagent", name: "lynx" }, () => {
+      resolved = resolve("orphan-child-2");
+    });
+    assert.equal(resolved, "lynx");
+    // The binding persists after the ALS scope has ended: a later
+    // resolve hits the registry directly, independent of the resolver
+    // that created it.
+    assert.equal(sessionAgentRegistry.resolve("orphan-child-2"), "lynx");
+  });
+
+  it("(c) the root-session answer is bound and repeats hit the registry", () => {
+    const resolve = buildPiResolveAgent(PROFILE, MODES);
+    assert.equal(sessionAgentRegistry.resolve("root-ses-2"), undefined);
+    assert.equal(resolve("root-ses-2"), "dolphin");
+    // The root session is bound: without the binding every later
+    // lookup from the main session's tool events would re-run the (a)
+    // reverse scan, guaranteed to miss.  Accumulation is bounded —
+    // one root entry per process (see `buildPiResolveAgent`).
+    assert.equal(sessionAgentRegistry.resolve("root-ses-2"), "dolphin");
+    // Repeated calls stay stable, hitting the binding directly.
+    assert.equal(resolve("root-ses-2"), "dolphin");
+    assert.equal(sessionAgentRegistry.resolve("root-ses-2"), "dolphin");
+  });
+
+  it("a pre-existing registry binding wins over fresh resolution", () => {
+    sessionAgentRegistry.bind("bound-ses", "mola");
+    const resolve = buildPiResolveAgent(PROFILE, MODES);
+    assert.equal(resolve("bound-ses"), "mola");
+  });
+
+  it("null profile → undefined (fail-closed, no binding created)", () => {
+    const resolve = buildPiResolveAgent(null, {});
+    assert.equal(resolve("any-session"), undefined);
+    assert.equal(sessionAgentRegistry.resolve("any-session"), undefined);
+  });
+});
+
+describe("pi regression — subagent child session must not get the direct-work nudge", () => {
+  it("edit in a beaver child session is untouched; the root session still nudges", async () => {
+    // The defect: a pi child AgentSession's tool_result used to resolve
+    // to the default primary unconditionally, so the dolphin-only nudge
+    // leaked into subagent sessions.  With the run-registry-backed
+    // resolver the child session resolves to "beaver" and the gate
+    // skips it.
+    const handlers = buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
+    startRun({
+      id: "run-beaver",
+      agent: "beaver",
+      parentSession: "root-ses",
+      startedAt: 100,
+    });
+    updateRun("run-beaver", { childSession: "child-beaver" });
+
+    const childCtx = {
+      sessionManager: { getSessionId: () => "child-beaver" },
+    };
+    const childResult = await handlers.toolResult(
+      {
+        type: "tool_result",
+        toolName: "edit",
+        toolCallId: "call-edit-child",
+        content: [{ type: "text", text: "beaver edited a file" }],
+        isError: false,
+      },
+      childCtx,
+    );
+    assert.equal(
+      childResult,
+      undefined,
+      "the subagent session must not receive the delegation nudge",
+    );
+
+    // Same handlers, same tool: the root session still satisfies the
+    // gate (resolved to the default primary dolphin).
+    const rootResult = await handlers.toolResult(
+      {
+        type: "tool_result",
+        toolName: "edit",
+        toolCallId: "call-edit-root",
+        content: [{ type: "text", text: "dolphin edited a file" }],
+        isError: false,
+      },
+      SESSION_CTX,
+    );
+    assert.ok(rootResult, "the root session nudge must still fire");
+    assert.ok(
+      joinedText(rootResult).includes(DIRECT_WORK_NUDGE),
+      "root output must carry the delegation reminder",
+    );
   });
 });
 

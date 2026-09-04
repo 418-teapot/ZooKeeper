@@ -622,7 +622,7 @@ describe("decompress tool unsupported host", () => {
           contextConfig: ENABLED_CONFIG,
           client: {},
           directory: "",
-          sessionAgentMap: new Map(),
+          resolveAgent: () => undefined,
           toolHost: undefined,
         },
         {} as any,

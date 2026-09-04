@@ -225,14 +225,16 @@ export function buildToolHooks(
   contextConfig: ContextPruningConfig,
   profileTools: string[],
 ): Record<string, ToolContribution> | undefined {
-  const sessionAgentMap = new Map<string, string>();
+  // Tool adapters never read the session agent — the stub resolver
+  // keeps the fail-closed contract (an unknown session resolves to
+  // `undefined`, never an invented agent).
   const deps: Deps = {
     limits: {},
     contextConfig,
     client,
     directory: "",
-    sessionAgentMap,
-    toolHost: createV1ToolHost(client, sessionAgentMap),
+    resolveAgent: () => undefined,
+    toolHost: createV1ToolHost(client, () => undefined),
   };
   const activeSet: ActiveSet = {
     agents: new Set(),
@@ -309,8 +311,7 @@ export function assembleOpenCodeHooks(
 ): Record<string, any> {
   const fullDeps: Deps = {
     ...deps,
-    toolHost:
-      deps.toolHost ?? createV1ToolHost(deps.client, deps.sessionAgentMap),
+    toolHost: deps.toolHost ?? createV1ToolHost(deps.client, deps.resolveAgent),
   };
   return {
     ...(Object.keys(composed.tools).length > 0 ? { tool: composed.tools } : {}),

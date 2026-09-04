@@ -8,12 +8,12 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { initPluginLogger, parseLimits } from "./core/config-parse.js";
+import { sessionAgentRegistry } from "./core/session-agent.js";
 import {
   buildPlugin,
   injectAgentPrompts,
   registerSkills,
   runAfterHandlers,
-  sessionAgentMap,
 } from "./opencode.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
 
@@ -22,7 +22,7 @@ import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
 // ---------------------------------------------------------------------------
 
 afterEach(() => {
-  sessionAgentMap.clear();
+  sessionAgentRegistry.clear();
   _resetForTesting();
 });
 

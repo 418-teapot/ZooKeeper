@@ -29,7 +29,7 @@ const DEPS: Deps = {
   contextConfig: {},
   client: {},
   directory: "/tmp/zoo",
-  sessionAgentMap: new Map(),
+  resolveAgent: () => undefined,
 };
 
 /** The unit registry, in declaration order. */

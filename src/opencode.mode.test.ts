@@ -12,10 +12,11 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { COMMAND_HANDLED } from "./compose-opencode.js";
 import { _resetContextStateManagerForTesting } from "./core/context/runtime.js";
+import { sessionAgentRegistry } from "./core/session-agent.js";
 import { DIRECT_WORK_NUDGE } from "./hooks/direct-work-nudge";
 import { JSON_ERROR_REMINDER } from "./hooks/json-error-nudge";
 import { VERIFY_REMINDER } from "./hooks/post-task-nudge";
-import { buildPlugin, sessionAgentMap, zookeeper } from "./opencode.js";
+import { buildPlugin, zookeeper } from "./opencode.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
 import { withModeFile } from "./utils/mode-file.js";
 
@@ -128,7 +129,7 @@ function transformMessages(): Array<Record<string, any>> {
 
 afterEach(() => {
   _resetForTesting();
-  sessionAgentMap.clear();
+  sessionAgentRegistry.clear();
   _resetContextStateManagerForTesting();
   delete process.env.ZOO_MODE_FILE;
 });
@@ -528,7 +529,7 @@ describe("event-key composition by enabled hook set", () => {
 
   it("direct-work-nudge only → after appends the edit nudge for dolphin", async () => {
     const plugin = await pluginWithHooks(["direct-work-nudge"]);
-    sessionAgentMap.set("s", "dolphin");
+    sessionAgentRegistry.bind("s", "dolphin");
     const output: { output?: string } = { output: "result" };
     await plugin["tool.execute.after"](
       { tool: "edit", sessionID: "s", callID: "c" },
@@ -763,7 +764,7 @@ describe("null profile — skip profile-driven registration", () => {
         properties: { info: { agent: "dolphin", sessionID: "s3" } },
       },
     });
-    assert.equal(sessionAgentMap.get("s3"), "dolphin");
+    assert.equal(sessionAgentRegistry.resolve("s3"), "dolphin");
   });
 
   it("text.complete is absent — reply-strip is profile-gated", async () => {

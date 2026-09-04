@@ -55,10 +55,12 @@
  * posts through the unified pi tool host's `notify` port as a
  * `zoo-notice` custom entry (persistent, never part of the LLM context).
  * The pruning transform runs and returns the pruned replacement to pi.
- * The direct-work nudge's primary-agent gate is satisfied by a
- * `sessionAgentMap` whose lookups always resolve to the default primary
- * (a pi session is the orchestrator); without a primary the map is
- * empty and the nudge stays silent.
+ * Session agent identity (`Deps.resolveAgent`) is resolved per session
+ * through the shared session-agent registry: subagent child sessions
+ * resolve to their delegated agent via the run registry / async-local
+ * identity, the root session to the default primary — so the
+ * direct-work nudge's primary gate only fires for the orchestrator
+ * session and stays silent without a primary (null profile).
  *
  * Config loading: the OpenCode entry imports config.toml directly with
  * Bun's `import ... with { type: "toml" }`.  pi's extension runtime is
@@ -128,6 +130,7 @@ import {
   isSkillAllowed,
   parseSkillPermissions,
 } from "./core/permissions/skill-permissions.js";
+import { sessionAgentRegistry } from "./core/session-agent.js";
 import type {
   ComposedResult,
   Deps,
@@ -142,7 +145,7 @@ import {
   setPrimary,
 } from "./core/subagent/identity.js";
 import type { SubagentRun } from "./core/subagent/registry.js";
-import { getRun } from "./core/subagent/registry.js";
+import { findByChildSession, getRun } from "./core/subagent/registry.js";
 import type { RunLog } from "./core/subagent/run-log.js";
 import type { ValidationLimits } from "./core/validate.js";
 import { REGISTRY } from "./registry.js";
@@ -338,34 +341,88 @@ export function terminalToolDetails(
 // ---------------------------------------------------------------------------
 
 /**
- * Build the session → agent map for the pi host.
+ * Build the session → agent resolver for the pi host.
  *
- * pi has no sub-agent sessions: the single session is the orchestrator,
- * so when the profile has a non-empty primary-agent set the map resolves
- * every lookup to the default primary (the first primary in profile
- * array order, derived from the agent modes map) — this satisfies the
- * direct-work nudge's primary gate and the dedup-release notification.
- * A profile with no primary yields an empty map and both stay silent.
+ * Resolution order for a session with no existing binding:
+ *  (a) reverse lookup in the subagent run registry — a session that is
+ *      some run's `childSession` is driven by that run's delegated
+ *      agent; the run table covers live and terminal runs (and runs
+ *      rebuilt from persisted history), so this is the authoritative
+ *      source for subagent sessions;
+ *  (b) the async-local identity — a `resolveIdentity()` binding of
+ *      kind `subagent` names the delegated agent driving the current
+ *      async chain (covers child-session events that precede the run's
+ *      first progress report, which is when (a) starts matching);
+ *  (c) otherwise the session is the pi root session (pi has a single
+ *      root session and every child-session event runs inside the
+ *      `runWithIdentity` scope) — it resolves to the default primary,
+ *      the first primary in profile array order, derived from the
+ *      agent modes map.
+ *
+ * Binding policy: every answer — (a), (b), and (c) alike — is bound
+ * into the shared session-agent registry so later lookups hit the
+ * binding in O(1).  The (a) memo can never go stale (a childSession
+ * belongs to exactly one run and a run's `agent` is fixed at
+ * creation); the (b) memo is the ALS answer's only durable record
+ * (the scope does not outlive the event callback that observed it).
+ * The (c) root-session binding trades growth for speed: pi offers no
+ * session-deletion event to evict bindings, so they accumulate for
+ * the process lifetime — but the accumulation is bounded to one root
+ * entry plus one per child session, the same order as the run table
+ * (itself never pruned), and without the binding every main-session
+ * tool event would re-run the (a) reverse scan, guaranteed to miss.
+ * A root session with no configured primary (null or primary-less
+ * profile) and no identity resolves to `undefined` — fail-closed,
+ * still without a binding: without a primary the direct-work nudge's
+ * gate never matches and the dedup-release notification stays
+ * silent.
  *
  * @param profile - The active mode profile, or `null` when absent.
  * @param agentModes - Per-agent role map (`[agent.*].mode`), parsed
  *   fail-closed by `parseAgentModes`.
- * @returns A map resolving to the default primary, or an empty map.
+ * @returns The resolver handed to `Deps.resolveAgent`.
  */
-function sessionAgentMapFor(
+export function buildPiResolveAgent(
   profile: ModeProfile | null,
   agentModes: AgentModeMap,
-): Map<string, string> {
-  const primaries = derivePrimaries(profile?.agents ?? [], agentModes);
-  if (primaries.length > 0) {
-    const defaultPrimary = primaries[0];
-    return new (class extends Map<string, string> {
-      get(_key: string): string {
-        return defaultPrimary;
-      }
-    })();
-  }
-  return new Map();
+): (sessionID: string) => string | undefined {
+  const defaultPrimary = derivePrimaries(profile?.agents ?? [], agentModes)[0];
+  return (sessionID: string): string | undefined => {
+    const known = sessionAgentRegistry.resolve(sessionID);
+    if (known !== undefined) return known;
+    const run = findByChildSession(sessionID);
+    if (run !== undefined) {
+      // Memoize the (a) answer so later lookups hit the registry in
+      // O(1) instead of repeating the linear reverse scan.  Safe to
+      // bind: every run records a unique `childSession` and its
+      // `agent` is fixed at creation, so the memo can never go stale.
+      sessionAgentRegistry.bind(sessionID, run.agent);
+      return run.agent;
+    }
+    const identity = resolveIdentity();
+    if (identity?.kind === "subagent") {
+      // Memoize the (b) answer: the ALS scope does not outlive the
+      // event callback that queried it, so without the binding every
+      // later lookup would fall through to the root-session default.
+      // The name is safe to bind — `identity.name` and the `agent`
+      // the same delegation later records in the run table are both
+      // the request's agent (`core/subagent/run.ts` binds
+      // `request.agent`; `tools/subagent.ts` starts the run with the
+      // same value), so this memo never diverges from the (a)
+      // reverse lookup.
+      sessionAgentRegistry.bind(sessionID, identity.name);
+      return identity.name;
+    }
+    // (c): the pi root session.  Bound like every other answer — pi
+    // has no eviction event, but the accumulation is bounded (one
+    // root entry per process, the same order as the never-pruned run
+    // table) and skipping the bind would make every main-session tool
+    // event repeat the guaranteed-missing (a) scan.  No primary at
+    // all (null or primary-less profile) → fail-closed, unbound.
+    if (defaultPrimary === undefined) return undefined;
+    sessionAgentRegistry.bind(sessionID, defaultPrimary);
+    return defaultPrimary;
+  };
 }
 
 /**
@@ -376,11 +433,12 @@ function sessionAgentMapFor(
  * command slots (the `unknown_unit` warning fires when a profile name
  * has no matching registry unit).  `Deps` are adapted to the pi host:
  * `client` is empty, `directory` is the process working directory,
- * `sessionAgentMap` resolves to the default primary (first in profile
- * array order among the agent-modes-marked primaries) when the profile
- * has any, and the host adapter / tool host are taken from `hostDeps`
- * when provided (the entry point supplies the live context holder so
- * event handlers can update it).
+ * `resolveAgent` identifies each session through the shared
+ * session-agent registry (subagent child sessions → their delegated
+ * agent, the root session → the default primary; see
+ * `buildPiResolveAgent`), and the host adapter / tool host are taken
+ * from `hostDeps` when provided (the entry point supplies the live
+ * context holder so event handlers can update it).
  *
  * When the primary set is non-empty the identity state is initialised
  * with the default primary via `setPrimary`, so a `before_agent_start`
@@ -496,7 +554,7 @@ export function buildPiContributions(
     // user-visible notification on pi.
     client: {},
     directory: process.cwd(),
-    sessionAgentMap: sessionAgentMapFor(modeProfile, agentModes),
+    resolveAgent: buildPiResolveAgent(modeProfile, agentModes),
     toolHost: hostDeps?.toolHost,
     // The `/go` handoff target.  `getCommandCtx` reads the mutable pi
     // command-context holder, refreshed by the command handler before

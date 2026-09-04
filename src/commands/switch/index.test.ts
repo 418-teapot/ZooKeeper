@@ -148,7 +148,7 @@ function makeDeps(
     contextConfig: {},
     client: {},
     directory: "/tmp/zoo",
-    sessionAgentMap: new Map(),
+    resolveAgent: () => undefined,
     ...overrides,
   };
 }

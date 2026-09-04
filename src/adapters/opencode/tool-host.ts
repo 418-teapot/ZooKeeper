@@ -11,8 +11,8 @@
  * Notifications always resolve the session's agent before sending:
  * OpenCode's `session.prompt` carries no `body.agent` and would switch
  * the session agent to the default, so the notify path resolves the
- * agent (in-memory map first, `session.get` fallback) and suppresses
- * the message when it cannot be resolved.
+ * agent (registry-backed resolver first, `session.get` fallback) and
+ * suppresses the message when it cannot be resolved.
  *
  * @module
  */
@@ -27,18 +27,19 @@ import type { ContextMessageEntry } from "./types.js";
 /**
  * Create the v1 tool host backed by an OpenCode session client.
  *
- * The client and the session→agent map are captured by the closure; the
- * client may be partial (missing session APIs) in tests.
+ * The client and the session-agent resolver are captured by the
+ * closure; the client may be partial (missing session APIs) in tests.
  *
  * @param client - The OpenCode client (session.messages / session.prompt /
  *   session.get).
- * @param sessionAgentMap - The in-memory session → agent map (populated by
- *   the entry point's message.updated handler).
+ * @param resolveAgent - Resolves a session's agent name from the shared
+ *   session-agent registry (populated by the entry point's
+ *   message.updated handler).
  * @returns The v1 tool host.
  */
 export function createV1ToolHost(
   client: SessionClient,
-  sessionAgentMap: Map<string, string>,
+  resolveAgent: (sessionID: string) => string | undefined,
 ): ToolHost {
   return {
     /**
@@ -115,10 +116,10 @@ export function createV1ToolHost(
     /**
      * Post an ignored chat notification to the session.
      *
-     * Resolves the session agent first (in-memory map, then a
-     * `session.get` fallback) so the prompt never switches the session
-     * agent to the default; when the agent cannot be resolved the
-     * notification is suppressed with a warn entry.  Best-effort:
+     * Resolves the session agent first (registry-backed resolver, then
+     * a `session.get` fallback) so the prompt never switches the
+     * session agent to the default; when the agent cannot be resolved
+     * the notification is suppressed with a warn entry.  Best-effort:
      * failures are logged as warnings and swallowed, never propagated
      * to the caller.
      *
@@ -150,12 +151,13 @@ export function createV1ToolHost(
       };
 
       try {
-        // Resolve the agent (in-memory map first, `session.get`
-        // fallback); suppress the notification when unresolved.
+        // Resolve the agent (registry-backed resolver first,
+        // `session.get` fallback); suppress the notification when
+        // unresolved.
         const agent = await resolveSessionAgent(
           sessionId,
           client,
-          sessionAgentMap,
+          resolveAgent,
         );
         if (agent) {
           body.agent = agent;
@@ -179,26 +181,27 @@ export function createV1ToolHost(
  * Resolve the current agent for a session.
  *
  * Resolution order:
- *   (a) `agentMap` (in-memory map populated solely by the message.updated
- *       handler — single source of truth)
+ *   (a) `resolveAgent` — the shared session-agent registry read
+ *       (populated solely by the message.updated handler — single
+ *       source of truth)
  *   (b) `client.session.get()` API call — per-call fallback WITHOUT
- *       write-back to the map, so a mid-session agent change is reflected
- *       as soon as either the next message.updated or the next resolution
- *       happens.
+ *       write-back to the registry, so a mid-session agent change is
+ *       reflected as soon as either the next message.updated or the
+ *       next resolution happens.
  *   (c) `undefined` — current behavior preserved, debug log entry
  *
  * @param sessionID - The session identifier.
  * @param client - The host client (session.get availability checked).
- * @param agentMap - The in-memory session → agent map.
+ * @param resolveAgent - Registry-backed session → agent resolver.
  * @returns The resolved agent name, or `undefined` when unknown.
  */
 export async function resolveSessionAgent(
   sessionID: string,
   client: SessionClient,
-  agentMap: Map<string, string>,
+  resolveAgent: (sessionID: string) => string | undefined,
 ): Promise<string | undefined> {
-  // (a) Check in-memory map first (fast, no I/O).
-  const mapped = agentMap.get(sessionID);
+  // (a) Check the registry first (fast, no I/O).
+  const mapped = resolveAgent(sessionID);
   if (mapped) return mapped;
 
   // (b) Fallback to session API — read the agent from the session object.

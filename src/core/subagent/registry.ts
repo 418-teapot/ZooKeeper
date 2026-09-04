@@ -348,6 +348,27 @@ export function childrenOf(runId: string): SubagentRun[] {
 }
 
 /**
+ * Find the run that delegated into a given sub-session.
+ *
+ * The reverse lookup over `childSession`: in the host's in-process
+ * model every sub-session was created by exactly one run, so the first
+ * match is the answer.  Terminal runs still match — the delegation
+ * outlives the run, and identity resolution needs it to (a session
+ * rebuilt from persisted history carries the same `childSession`).
+ *
+ * @param childSession - The sub-session id to look up.
+ * @returns The run whose `childSession` matches, or `undefined`.
+ */
+export function findByChildSession(
+  childSession: string,
+): SubagentRun | undefined {
+  for (const run of registry.values()) {
+    if (run.childSession === childSession) return run;
+  }
+  return undefined;
+}
+
+/**
  * Count a main session's runs by status.
  *
  * `failed` counts both `error` and `aborted` outcomes; `running` counts

@@ -18,7 +18,7 @@ const DEPS: Deps = {
   contextConfig: {},
   client: {},
   directory: "",
-  sessionAgentMap: new Map(),
+  resolveAgent: () => undefined,
 };
 
 /** Poly active set: lynx + spider present. */

@@ -23,9 +23,9 @@
  *  experimental.chat.system.transform) keep working.
  *
  *  This module is the entry + always-on infrastructure: it wires the
- *  parsed config, consumes the shared `sessionAgentMap` (held by
- *  `src/core/context/runtime.ts`), and merges
- *  the adapter's profile-driven fragment with the always-on
+ *  parsed config, feeds the shared session-agent registry
+ *  (`src/core/session-agent.ts`) from `message.updated` events, and
+ *  merges the adapter's profile-driven fragment with the always-on
  *  infrastructure hooks.
  */
 
@@ -45,7 +45,8 @@ import {
 } from "./core/config-parse.js";
 import type { ModeProfile } from "./core/config-types.js";
 import { setModelLimit } from "./core/context/model-limits.js";
-import { cleanupSession, sessionAgentMap } from "./core/context/runtime.js";
+import { cleanupSession } from "./core/context/runtime.js";
+import { sessionAgentRegistry } from "./core/session-agent.js";
 import type { Deps } from "./core/slots.js";
 import { derivePrimaries } from "./core/subagent/identity.js";
 import { REGISTRY } from "./registry.js";
@@ -87,9 +88,12 @@ export async function buildPlugin(input: any, zooConfig: any, rawConfig?: any) {
   initPluginLogger(zooConfig, "opencode");
 
   // ── Profile-driven composition ────────────────────────────────────
-  // `sessionAgentMap` is the shared session → agent map held by
-  // core/context/runtime.ts; this entry populates it via
-  // `message.updated` events and the adapter's units read it.
+  // `sessionAgentRegistry` is the shared session → agent registry held
+  // by core/session-agent.ts; this entry populates it via
+  // `message.updated` events and the units read it through
+  // `deps.resolveAgent`.
+  const resolveAgent = (sessionID: string): string | undefined =>
+    sessionAgentRegistry.resolve(sessionID);
   const deps: Deps = {
     limits,
     contextConfig,
@@ -97,8 +101,8 @@ export async function buildPlugin(input: any, zooConfig: any, rawConfig?: any) {
     agentPermissions,
     client,
     directory,
-    sessionAgentMap,
-    toolHost: createV1ToolHost(client, sessionAgentMap),
+    resolveAgent,
+    toolHost: createV1ToolHost(client, resolveAgent),
     adapter: createV1Adapter(),
     handoffTarget: createOpenCodeHandoffTarget(
       client,
@@ -124,7 +128,7 @@ export async function buildPlugin(input: any, zooConfig: any, rawConfig?: any) {
           | { agent?: string; sessionID?: string }
           | undefined;
         if (info?.agent && info.sessionID) {
-          sessionAgentMap.set(info.sessionID, info.agent);
+          sessionAgentRegistry.bind(info.sessionID, info.agent);
         }
       }
 
@@ -184,4 +188,4 @@ export {
   registerSkills,
   runAfterHandlers,
 } from "./compose-opencode.js";
-export { sessionAgentMap } from "./core/context/runtime.js";
+export { sessionAgentRegistry } from "./core/session-agent.js";

@@ -20,7 +20,8 @@ export { nudgeDirectWork, nudgeDirectWorkForAgent };
  * Direct-work-nudge hook unit descriptor.
  *
  * Contributes the after-exec nudge, gated on the session's resolved
- * agent (dolphin only) from the entry-held `sessionAgentMap`.
+ * agent (dolphin only) via `Deps.resolveAgent` (fail-closed: an
+ * unresolved session is treated as "not dolphin").
  */
 export const unit: HookUnitDescriptor = {
   name: "direct-work-nudge",
@@ -36,7 +37,7 @@ export const unit: HookUnitDescriptor = {
             nudgeDirectWorkForAgent(input, output, {
               todoClient: deps.client,
               planDir: deps.directory,
-              agent: deps.sessionAgentMap.get(input.sessionID),
+              agent: deps.resolveAgent(input.sessionID),
             }),
         },
       ],

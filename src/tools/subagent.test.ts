@@ -101,7 +101,7 @@ function makeDeps(overrides: Partial<Deps> = {}): Deps {
     subagentModels: { beaver: "Dummy/dummy-small" },
     client: {},
     directory: "/tmp/zoo",
-    sessionAgentMap: new Map(),
+    resolveAgent: () => undefined,
     toolHost: TOOL_HOST,
     ...overrides,
   };

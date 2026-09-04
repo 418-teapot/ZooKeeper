@@ -19,6 +19,7 @@ import {
   nudgeDirectWork,
   nudgeDirectWorkForAgent,
   SEARCH_DELEGATE_NUDGE,
+  unit,
 } from "./index.js";
 
 // ---------------------------------------------------------------------------
@@ -240,17 +241,17 @@ describe("consecutive calls", () => {
 
 // ---------------------------------------------------------------------------
 // Agent gating: nudgeDirectWork is agent-agnostic — it always fires.
-// Agent filtering happens at the plugin entry point via sessionAgentMap.
+// Agent filtering happens in the hook unit via deps.resolveAgent.
 // ---------------------------------------------------------------------------
 
 describe("agent-agnostic: fires for any caller", () => {
-  it("nudges edit regardless of what may be in sessionAgentMap", async () => {
+  it("nudges edit regardless of the session's resolved identity", async () => {
     // nudgeDirectWork has no agent awareness. It always fires for edit/write.
     const res = await applyReminder("edit", "some edit output");
     assertHasReminder(res);
   });
 
-  it("nudges grep regardless of what may be in sessionAgentMap", async () => {
+  it("nudges grep regardless of the session's resolved identity", async () => {
     const res = await applyReminder("grep", "search results");
     assertHasSearchReminder(res);
   });
@@ -453,10 +454,9 @@ describe("barrel export", () => {
 
 // ---------------------------------------------------------------------------
 // Integration: tool.execute.after mapping (direct adapter)
-// The plugin entry point resolves the session agent from its sessionAgentMap
-// (populated by message.updated events) and passes it to
-// nudgeDirectWorkForAgent via the tool.execute.after handler. Here the
-// resolved agent is passed directly to the adapter.
+// The hook unit resolves the session agent via deps.resolveAgent and
+// passes it to nudgeDirectWorkForAgent via the tool.execute.after handler.
+// Here the resolved agent is passed directly to the adapter.
 // ---------------------------------------------------------------------------
 
 describe("integration: tool.execute.after → nudgeDirectWorkForAgent", () => {
@@ -487,7 +487,7 @@ describe("integration: tool.execute.after → nudgeDirectWorkForAgent", () => {
     assert.equal(output.output, "edited something as subagent");
   });
 
-  it("edit tool skips nudge when sessionAgentMap has no entry", async () => {
+  it("edit tool skips nudge when the session has no resolvable agent", async () => {
     const sid = uniqueSid();
     const output: { output?: string } = {
       output: "edited without known agent",
@@ -540,8 +540,9 @@ describe("integration: tool.execute.after → nudgeDirectWorkForAgent", () => {
 
 // ---------------------------------------------------------------------------
 // Agent-gating state transitions (message.updated / session.deleted)
-// The plugin's event hook maintains sessionAgentMap; the adapter receives
-// the agent value the plugin would resolve for each event-driven state.
+// The plugin's event hook maintains the session-agent registry; the
+// adapter receives the agent value `deps.resolveAgent` would yield for
+// each event-driven state.
 // ---------------------------------------------------------------------------
 
 describe("integration: agent-gating states via nudgeDirectWorkForAgent", () => {
@@ -599,6 +600,72 @@ describe("integration: agent-gating states via nudgeDirectWorkForAgent", () => {
       {},
     );
     assert.equal(output.output, "edited without agent");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hook unit wiring: the contributed after-exec handler reads the session
+// agent through `deps.resolveAgent` — the gate skips every identity that
+// is not "dolphin" (subagents and unresolvable sessions alike).
+// ---------------------------------------------------------------------------
+
+describe("unit.create wiring — gating through deps.resolveAgent", () => {
+  /** Build the contributed after-exec handler with a fixed resolver. */
+  function handlerWith(
+    resolveAgent: (sessionID: string) => string | undefined,
+  ) {
+    const contributions = unit.create(
+      {
+        limits: {},
+        contextConfig: {},
+        client: {},
+        directory: "",
+        resolveAgent,
+      },
+      {
+        agents: new Set(),
+        skills: new Set(),
+        hooks: new Set(["direct-work-nudge"]),
+        tools: new Set(),
+        commands: new Set(),
+      },
+    );
+    assert.equal(contributions.afterExec.length, 1);
+    return contributions.afterExec[0];
+  }
+
+  it("skips the nudge when resolveAgent returns a subagent name (beaver)", async () => {
+    const handler = handlerWith(() => "beaver");
+    const output: { output?: string } = { output: "beaver edited a file" };
+    await handler.handle(
+      { tool: "edit", sessionID: "s-child", callID: "c1" },
+      output,
+    );
+    assert.equal(
+      output.output,
+      "beaver edited a file",
+      "a subagent session must not receive the delegation nudge",
+    );
+  });
+
+  it("skips the nudge when resolveAgent returns undefined (fail-closed)", async () => {
+    const handler = handlerWith(() => undefined);
+    const output: { output?: string } = { output: "unknown session edit" };
+    await handler.handle(
+      { tool: "edit", sessionID: "s-unknown", callID: "c1" },
+      output,
+    );
+    assert.equal(output.output, "unknown session edit");
+  });
+
+  it("appends the nudge when resolveAgent returns dolphin", async () => {
+    const handler = handlerWith(() => "dolphin");
+    const output: { output?: string } = { output: "dolphin edited a file" };
+    await handler.handle(
+      { tool: "edit", sessionID: "s-root", callID: "c1" },
+      output,
+    );
+    assertHasReminder(output);
   });
 });
 

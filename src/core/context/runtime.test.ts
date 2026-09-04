@@ -2,21 +2,22 @@
  * Tests for the runtime singletons (`runtime.ts`).
  *
  * Covers the per-session `cleanupSession` single entry point (clears
- * the agent map, the model-limit entry, the persisted state file, and
- * the pending view-change flag), the `sessionAgentMap` shared map,
- * and the `_resetContextStateManagerForTesting` test seam that drops
- * the singleton plus the view-change flags.  Tests run against a
+ * the agent binding, the model-limit entry, the persisted state file,
+ * and the pending view-change flag), the shared `sessionAgentRegistry`
+ * the cleanup writes through, and the
+ * `_resetContextStateManagerForTesting` test seam that drops the
+ * singleton plus the view-change flags.  Tests run against a
  * scratch store directory so the persistence cleanup is observable.
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import { sessionAgentRegistry } from "../session-agent.js";
 import * as modelLimits from "./model-limits.js";
 import {
   _resetContextStateManagerForTesting,
   cleanupSession,
   consumePendingViewChange,
   getContextStateManager,
-  sessionAgentMap,
   setPendingViewChange,
 } from "./runtime.js";
 
@@ -26,20 +27,8 @@ import {
 
 afterEach(() => {
   _resetContextStateManagerForTesting();
-  sessionAgentMap.clear();
+  sessionAgentRegistry.clear();
   modelLimits._resetForTesting();
-});
-
-// ---------------------------------------------------------------------------
-// sessionAgentMap
-// ---------------------------------------------------------------------------
-
-describe("sessionAgentMap", () => {
-  it("is a plain Map<string, string>", () => {
-    sessionAgentMap.set("s1", "dolphin");
-    assert.equal(sessionAgentMap.get("s1"), "dolphin");
-    assert.equal(sessionAgentMap.size, 1);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -47,14 +36,14 @@ describe("sessionAgentMap", () => {
 // ---------------------------------------------------------------------------
 
 describe("cleanupSession", () => {
-  it("drops the session entry from sessionAgentMap", () => {
+  it("drops the session binding from the shared agent registry", () => {
     const id = "cleanup-agent-map";
-    sessionAgentMap.set(id, "dolphin");
-    assert.equal(sessionAgentMap.get(id), "dolphin");
+    sessionAgentRegistry.bind(id, "dolphin");
+    assert.equal(sessionAgentRegistry.resolve(id), "dolphin");
 
     cleanupSession(id);
 
-    assert.equal(sessionAgentMap.get(id), undefined);
+    assert.equal(sessionAgentRegistry.resolve(id), undefined);
   });
 
   it("clears the model limit for the session", () => {
@@ -142,7 +131,7 @@ describe("cleanupSession", () => {
   it("is a no-op for an unknown session id", () => {
     // No throws, no leaked state.
     cleanupSession("never-existed");
-    assert.equal(sessionAgentMap.get("never-existed"), undefined);
+    assert.equal(sessionAgentRegistry.resolve("never-existed"), undefined);
     assert.equal(modelLimits.getModelLimit("never-existed"), undefined);
   });
 });

@@ -200,7 +200,7 @@ async function runTool(
   switch (action.kind) {
     case "compress-tool": {
       const tool = createCompressTool(
-        createV1ToolHost(client, new Map()),
+        createV1ToolHost(client, () => undefined),
         config,
       );
       const result = await tool.execute(
@@ -211,7 +211,7 @@ async function runTool(
     }
     case "decompress-tool": {
       const tool = createDecompressTool(
-        createV1ToolHost(client, new Map()),
+        createV1ToolHost(client, () => undefined),
         config,
       );
       const result = await tool.execute(
@@ -222,7 +222,7 @@ async function runTool(
     }
     case "compress-tool-raw": {
       const tool = createCompressTool(
-        createV1ToolHost(client, new Map()),
+        createV1ToolHost(client, () => undefined),
         config,
       );
       const result = await tool.execute(
@@ -233,7 +233,7 @@ async function runTool(
     }
     case "decompress-tool-raw": {
       const tool = createDecompressTool(
-        createV1ToolHost(client, new Map()),
+        createV1ToolHost(client, () => undefined),
         config,
       );
       const result = await tool.execute(
@@ -268,7 +268,7 @@ export function createV1GoldenHost(): GoldenHost<ContextMessageEntry> {
     async handleDcp(sessionID, args, config, messages, notifications) {
       const client = makeClient(messages, notifications);
       await handleDcpCommand(
-        createV1ToolHost(client, new Map()),
+        createV1ToolHost(client, () => undefined),
         sessionID,
         args,
         config,

@@ -29,9 +29,9 @@ import { log } from "../../utils/logger.js";
  * Append a protocol nudge to edit/write tool output.
  *
  * Fires on edit/write/grep/glob tool calls regardless of agent identity.
- * Agent gating is the caller's responsibility — the plugin entry point
- * checks the `sessionAgentMap` (populated by `message.updated` events) before
- * calling this function.
+ * Agent gating is the caller's responsibility — the hook unit resolves
+ * the session's agent through `Deps.resolveAgent` before calling this
+ * function.
  *
  * Non-null output gets the nudge appended. Non-matching tools are skipped.
  *
@@ -116,12 +116,12 @@ export async function nudgeDirectWork(
 /**
  * Agent-gated wrapper around `nudgeDirectWork` (dolphin only).
  *
- * The plugin entry point resolves the session's agent from its
- * `sessionAgentMap` (populated by `message.updated` events) and passes it
- * here.  When the agent is not `"dolphin"` (including unknown), the nudge
- * is skipped and one debug entry (`nudge_skipped` / `not_dolphin`) is
- * logged — mirroring the historical entry-point guard.  Other agents keep
- * receiving no protocol reminder: sub-agents must not be told to delegate.
+ * The hook unit resolves the session's agent via `Deps.resolveAgent`
+ * and passes it here.  When the agent is not `"dolphin"` (including unknown),
+ * the nudge is skipped and one debug entry (`nudge_skipped` /
+ * `not_dolphin`) is logged — mirroring the historical entry-point guard.
+ * Other agents keep receiving no protocol reminder: sub-agents must not
+ * be told to delegate.
  *
  * @param input - Input containing the tool name, session ID, and optional call ID.
  * @param output - Output object mutated in place.

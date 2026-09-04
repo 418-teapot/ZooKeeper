@@ -5,7 +5,7 @@
  * session-id resolution order (`sessionID` over `sessionId`, undefined
  * fallback), the history fetch unwrap shapes (`{ data: [...] }` wrapper
  * and a bare array) with every rejection branch, the best-effort
- * notification payload with agent resolution (map hit, `session.get`
+ * notification payload with agent resolution (resolver hit, `session.get`
  * fallback, unresolved-agent suppression), and the `resolveSessionAgent`
  * resolution order in isolation.
  */
@@ -28,6 +28,20 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 // Fake client helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Build a session → agent resolver backed by a plain map.
+ *
+ * The resolver is the production wiring shape (`Deps.resolveAgent`
+ * reads the session-agent registry); tests keep their own map so the
+ * "resolver must not write back" contract stays observable.
+ */
+function mapResolver(map: Map<string, string>) {
+  return (sessionID: string): string | undefined => map.get(sessionID);
+}
+
+/** A resolver that never identifies anything (unbound sessions). */
+const NO_AGENT = () => undefined;
 
 /**
  * The prompt payload shape recorded by the fake client.
@@ -84,7 +98,7 @@ function v1Message(role: string, text: string): ContextMessageEntry {
 
 describe("resolveSessionId", () => {
   it("prefers sessionID over sessionId", () => {
-    const host = createV1ToolHost(fakeClient({}), new Map());
+    const host = createV1ToolHost(fakeClient({}), NO_AGENT);
     assert.equal(
       host.resolveSessionId({ sessionID: "s1", sessionId: "s2" }),
       "s1",
@@ -92,17 +106,17 @@ describe("resolveSessionId", () => {
   });
 
   it("falls back to sessionId when sessionID is absent", () => {
-    const host = createV1ToolHost(fakeClient({}), new Map());
+    const host = createV1ToolHost(fakeClient({}), NO_AGENT);
     assert.equal(host.resolveSessionId({ sessionId: "s2" }), "s2");
   });
 
   it("returns undefined when no session id is present", () => {
-    const host = createV1ToolHost(fakeClient({}), new Map());
+    const host = createV1ToolHost(fakeClient({}), NO_AGENT);
     assert.equal(host.resolveSessionId({}), undefined);
   });
 
   it("returns undefined for non-string or empty session ids", () => {
-    const host = createV1ToolHost(fakeClient({}), new Map());
+    const host = createV1ToolHost(fakeClient({}), NO_AGENT);
     assert.equal(host.resolveSessionId({ sessionID: 42 }), undefined);
     assert.equal(host.resolveSessionId({ sessionID: "" }), undefined);
     assert.equal(host.resolveSessionId({ sessionId: "" }), undefined);
@@ -117,7 +131,7 @@ describe("fetchHistory", () => {
   it("unwraps the { data: [...] } wrapper and projects to lens messages", async () => {
     const host = createV1ToolHost(
       fakeClient({ messages: () => ({ data: [v1Message("user", "Hello")] }) }),
-      new Map(),
+      NO_AGENT,
     );
     const msgs: HostMessage[] = await host.fetchHistory("sess-1");
     assert.equal(msgs.length, 1);
@@ -129,7 +143,7 @@ describe("fetchHistory", () => {
   it("accepts a bare array response", async () => {
     const host = createV1ToolHost(
       fakeClient({ messages: () => [v1Message("assistant", "Hi")] }),
-      new Map(),
+      NO_AGENT,
     );
     const msgs: HostMessage[] = await host.fetchHistory("sess-1");
     assert.equal(msgs.length, 1);
@@ -139,7 +153,7 @@ describe("fetchHistory", () => {
   it("maps an empty data array to an empty transcript", async () => {
     const host = createV1ToolHost(
       fakeClient({ messages: () => ({ data: [] }) }),
-      new Map(),
+      NO_AGENT,
     );
     const msgs: HostMessage[] = await host.fetchHistory("sess-1");
     assert.deepEqual(msgs, []);
@@ -148,7 +162,7 @@ describe("fetchHistory", () => {
   it("rejects on res.error with its message", async () => {
     const host = createV1ToolHost(
       fakeClient({ messages: () => ({ error: { message: "boom" } }) }),
-      new Map(),
+      NO_AGENT,
     );
     await assert.rejects(host.fetchHistory("sess-1"), /获取会话消息失败：boom/);
   });
@@ -156,7 +170,7 @@ describe("fetchHistory", () => {
   it("rejects on res.error without a message field", async () => {
     const host = createV1ToolHost(
       fakeClient({ messages: () => ({ error: "raw error" }) }),
-      new Map(),
+      NO_AGENT,
     );
     await assert.rejects(
       host.fetchHistory("sess-1"),
@@ -171,7 +185,7 @@ describe("fetchHistory", () => {
           throw new Error("network down");
         },
       }),
-      new Map(),
+      NO_AGENT,
     );
     await assert.rejects(
       host.fetchHistory("sess-1"),
@@ -185,7 +199,7 @@ describe("fetchHistory", () => {
   });
 
   it("rejects when the messages API is unavailable", async () => {
-    const host = createV1ToolHost(fakeClient({}), new Map());
+    const host = createV1ToolHost(fakeClient({}), NO_AGENT);
     await assert.rejects(
       host.fetchHistory("sess-1"),
       /无法获取会话消息：会话消息 API 不可用/,
@@ -195,7 +209,7 @@ describe("fetchHistory", () => {
   it("rejects on an empty response", async () => {
     const host = createV1ToolHost(
       fakeClient({ messages: () => null }),
-      new Map(),
+      NO_AGENT,
     );
     await assert.rejects(
       host.fetchHistory("sess-1"),
@@ -206,7 +220,7 @@ describe("fetchHistory", () => {
   it("rejects on a non-array payload", async () => {
     const host = createV1ToolHost(
       fakeClient({ messages: () => ({ data: "nope" }) }),
-      new Map(),
+      NO_AGENT,
     );
     await assert.rejects(
       host.fetchHistory("sess-1"),
@@ -214,7 +228,7 @@ describe("fetchHistory", () => {
     );
     const bareObjectHost = createV1ToolHost(
       fakeClient({ messages: () => ({}) }),
-      new Map(),
+      NO_AGENT,
     );
     await assert.rejects(
       bareObjectHost.fetchHistory("sess-1"),
@@ -236,7 +250,7 @@ describe("notify", () => {
           promptCalls.push(input);
         },
       }),
-      new Map([["sess-1", "beaver"]]),
+      mapResolver(new Map([["sess-1", "beaver"]])),
     );
     await host.notify("sess-1", "上下文压缩：完成");
     assert.equal(promptCalls.length, 1);
@@ -257,7 +271,7 @@ describe("notify", () => {
           promptCalls.push(input);
         },
       }),
-      new Map(),
+      NO_AGENT,
     );
     await host.notify("sess-1", "上下文清理：完成");
     assert.equal(promptCalls.length, 1);
@@ -272,7 +286,7 @@ describe("notify", () => {
           promptCalled = true;
         },
       }),
-      new Map(),
+      NO_AGENT,
     );
     await host.notify("sess-1", "上下文清理：完成");
     assert.equal(promptCalled, false, "prompt must not be called");
@@ -294,7 +308,7 @@ describe("notify", () => {
           promptCalled = true;
         },
       }),
-      new Map(),
+      NO_AGENT,
     );
     await host.notify("sess-1", "hi");
     assert.equal(promptCalled, false, "prompt must not be called");
@@ -311,7 +325,7 @@ describe("notify", () => {
           throw new Error("net down");
         },
       }),
-      new Map([["sess-1", "beaver"]]),
+      mapResolver(new Map([["sess-1", "beaver"]])),
     );
     await assert.doesNotReject(host.notify("sess-1", "hi"));
     const warn = _getBufferForTesting().find(
@@ -324,7 +338,7 @@ describe("notify", () => {
   it("no-ops when the prompt API is missing", async () => {
     const host = createV1ToolHost(
       fakeClient({}),
-      new Map([["sess-1", "beaver"]]),
+      mapResolver(new Map([["sess-1", "beaver"]])),
     );
     await assert.doesNotReject(host.notify("sess-1", "hi"));
   });
@@ -335,7 +349,7 @@ describe("notify", () => {
 // ---------------------------------------------------------------------------
 
 describe("resolveSessionAgent", () => {
-  it("(a) returns agent from in-memory map when present", async () => {
+  it("(a) returns agent from the resolver when present", async () => {
     const map = new Map<string, string>([["ses_test", "beaver"]]);
     const client = {
       session: {
@@ -345,11 +359,15 @@ describe("resolveSessionAgent", () => {
       },
     };
 
-    const result = await resolveSessionAgent("ses_test", client, map);
+    const result = await resolveSessionAgent(
+      "ses_test",
+      client,
+      mapResolver(map),
+    );
     assert.equal(result, "beaver");
   });
 
-  it("(b) falls back to client.session.get when map has no entry", async () => {
+  it("(b) falls back to client.session.get when the resolver has no entry", async () => {
     const map = new Map<string, string>();
     let getCalled = false;
     const client = {
@@ -361,12 +379,16 @@ describe("resolveSessionAgent", () => {
       },
     };
 
-    const result = await resolveSessionAgent("ses_unknown", client, map);
+    const result = await resolveSessionAgent(
+      "ses_unknown",
+      client,
+      mapResolver(map),
+    );
     assert.equal(result, "lynx");
     assert.equal(getCalled, true);
   });
 
-  it("(b) does NOT cache the agent in the map after session.get fallback", async () => {
+  it("(b) does NOT write back through the resolver after session.get fallback", async () => {
     const map = new Map<string, string>();
     const client = {
       session: {
@@ -376,15 +398,15 @@ describe("resolveSessionAgent", () => {
       },
     };
 
-    await resolveSessionAgent("ses_cache", client, map);
+    await resolveSessionAgent("ses_cache", client, mapResolver(map));
     assert.equal(
       map.has("ses_cache"),
       false,
-      "agentMap must NOT be written by resolveSessionAgent — single writer is message.updated handler",
+      "resolver backing map must NOT be written by resolveSessionAgent — single writer is message.updated handler",
     );
   });
 
-  it("reflects mid-session agent change when map is later updated", async () => {
+  it("reflects mid-session agent change when the resolver source is later updated", async () => {
     const map = new Map<string, string>();
     let getCount = 0;
     const client = {
@@ -397,20 +419,28 @@ describe("resolveSessionAgent", () => {
     };
 
     // First call — no map entry, falls to session.get, but does NOT write map
-    const result1 = await resolveSessionAgent("ses_change", client, map);
+    const result1 = await resolveSessionAgent(
+      "ses_change",
+      client,
+      mapResolver(map),
+    );
     assert.equal(result1, "lynx");
     assert.equal(getCount, 1);
     assert.equal(
       map.has("ses_change"),
       false,
-      "map must NOT be written by resolveSessionAgent",
+      "resolver backing map must NOT be written by resolveSessionAgent",
     );
 
     // Simulate message.updated setting the agent
     map.set("ses_change", "beaver");
 
     // Second call — map has entry; returns it without calling session.get
-    const result2 = await resolveSessionAgent("ses_change", client, map);
+    const result2 = await resolveSessionAgent(
+      "ses_change",
+      client,
+      mapResolver(map),
+    );
     assert.equal(result2, "beaver");
     assert.equal(getCount, 1, "session.get must not be called again");
   });
@@ -423,7 +453,11 @@ describe("resolveSessionAgent", () => {
       },
     };
 
-    const result = await resolveSessionAgent("ses_noagent", client, map);
+    const result = await resolveSessionAgent(
+      "ses_noagent",
+      client,
+      mapResolver(map),
+    );
     assert.equal(result, undefined);
   });
 
@@ -437,7 +471,11 @@ describe("resolveSessionAgent", () => {
       },
     };
 
-    const result = await resolveSessionAgent("ses_err", client, map);
+    const result = await resolveSessionAgent(
+      "ses_err",
+      client,
+      mapResolver(map),
+    );
     assert.equal(result, undefined);
   });
 
@@ -445,7 +483,11 @@ describe("resolveSessionAgent", () => {
     const map = new Map<string, string>();
     const client = {};
 
-    const result = await resolveSessionAgent("ses_none", client, map);
+    const result = await resolveSessionAgent(
+      "ses_none",
+      client,
+      mapResolver(map),
+    );
     assert.equal(result, undefined);
   });
 
@@ -453,7 +495,11 @@ describe("resolveSessionAgent", () => {
     const map = new Map<string, string>();
     const client = { session: {} };
 
-    const result = await resolveSessionAgent("ses_noget", client, map);
+    const result = await resolveSessionAgent(
+      "ses_noget",
+      client,
+      mapResolver(map),
+    );
     assert.equal(result, undefined);
   });
 
@@ -469,12 +515,16 @@ describe("resolveSessionAgent", () => {
       },
     };
 
-    const result = await resolveSessionAgent("ses_priority", client, map);
+    const result = await resolveSessionAgent(
+      "ses_priority",
+      client,
+      mapResolver(map),
+    );
     assert.equal(result, "kiwi");
     assert.equal(
       getCalled,
       false,
-      "session.get must not be called when map has entry",
+      "session.get must not be called when the resolver has an entry",
     );
   });
 });

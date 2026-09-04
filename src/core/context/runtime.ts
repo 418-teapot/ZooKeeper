@@ -7,16 +7,18 @@
  * This accessor pins the singleton; the backing store uses the default
  * storage directory.
  *
- * Also owns the cross-session maps that the plugin entry point and the
- * pruning hook share (`sessionAgentMap`) and the single `cleanupSession`
- * entry point that drops every per-session record on `session.deleted`
- * events.  Adding a new session-level record means registering its
- * cleanup in `cleanupSession`, not adding a line to the host's event
- * handler.
+ * Also registers the `cleanupSession` entry point that drops every
+ * per-session record on `session.deleted` events — including the
+ * session's binding in the shared agent registry
+ * (`core/session-agent.ts`, read by units through
+ * `Deps.resolveAgent`).  Adding a new session-level record means
+ * registering its cleanup in `cleanupSession`, not adding a line to the
+ * host's event handler.
  *
  * @module
  */
 
+import { sessionAgentRegistry } from "../session-agent.js";
 import { clearModelLimit } from "./model-limits.js";
 import {
   createSessionStateManager,
@@ -34,21 +36,6 @@ export function getContextStateManager(): SessionStateManager {
 }
 
 // ---------------------------------------------------------------------------
-// Shared session maps
-// ---------------------------------------------------------------------------
-
-/**
- * Maps session IDs to agent names reported by message.updated events.
- *
- * Populated by the entry point's event handler; read by host tool hosts
- * when posting chat notifications (the OpenCode v1 tool host resolves
- * the session agent via this map before sending).  Module-level shared
- * map (singleton lifetime) — the entry point holds the only writer,
- * hook units consult it through `Deps.sessionAgentMap`.
- */
-export const sessionAgentMap = new Map<string, string>();
-
-// ---------------------------------------------------------------------------
 // Cleanup
 // ---------------------------------------------------------------------------
 
@@ -56,7 +43,7 @@ export const sessionAgentMap = new Map<string, string>();
  * Drop every per-session record for the given session ID.
  *
  * Single cleanup entry point called on `session.deleted` events:
- * drops the session-agent-map entry, the model-limit entry, the
+ * drops the session-agent binding, the model-limit entry, the
  * persisted state file, the pending view-change flag, and the
  * in-memory cache entry via `SessionStateManager.evict`.  The cache
  * eviction is silent (no write-back) because the on-disk file has
@@ -68,7 +55,7 @@ export const sessionAgentMap = new Map<string, string>();
  * @param sessionID - The session identifier to clean up.
  */
 export function cleanupSession(sessionID: string): void {
-  sessionAgentMap.delete(sessionID);
+  sessionAgentRegistry.delete(sessionID);
   clearModelLimit(sessionID);
   pendingViewChangeFlags.delete(sessionID);
   const manager = getContextStateManager();

@@ -23,7 +23,7 @@ const DEPS: Deps = {
   contextConfig: {},
   client: {},
   directory: "/tmp/zoo",
-  sessionAgentMap: new Map(),
+  resolveAgent: () => undefined,
 };
 const ACTIVE_SET: ActiveSet = {
   agents: new Set(),

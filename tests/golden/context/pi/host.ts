@@ -106,7 +106,7 @@ function composePruningTransform(
     // through `toolHost.notify` below.
     client: {},
     directory: process.cwd(),
-    sessionAgentMap: new Map(),
+    resolveAgent: () => undefined,
     adapter: createPiAdapter(() => sessionID),
     toolHost,
   };

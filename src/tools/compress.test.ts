@@ -971,7 +971,7 @@ describe("compress tool unsupported host", () => {
           contextConfig: PARSED_CONFIG,
           client: {},
           directory: "",
-          sessionAgentMap: new Map(),
+          resolveAgent: () => undefined,
           toolHost: undefined,
         },
         {} as any,

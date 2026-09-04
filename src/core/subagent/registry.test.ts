@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import {
   childrenOf,
+  findByChildSession,
   finishRun,
   getRun,
   type RunStatus,
@@ -442,6 +443,45 @@ describe("registry — parent/child association", () => {
       ["b1"],
     );
     assert.deepEqual(topLevelRuns("main-c"), []);
+  });
+
+  it("findByChildSession returns the run that delegated into a session", () => {
+    startRun({
+      id: "p1",
+      agent: "beaver",
+      parentSession: "main",
+      startedAt: 100,
+    });
+    updateRun("p1", { childSession: "child-ses-1" });
+    const run = findByChildSession("child-ses-1");
+    assert.ok(run, "expected the delegation run to be found");
+    assert.equal(run.id, "p1");
+    assert.equal(run.agent, "beaver");
+  });
+
+  it("findByChildSession is undefined for a session no run delegated into", () => {
+    startRun({
+      id: "p1",
+      agent: "beaver",
+      parentSession: "main",
+      startedAt: 100,
+    });
+    updateRun("p1", { childSession: "child-ses-1" });
+    // The parent session itself is never a child session of this run.
+    assert.equal(findByChildSession("main"), undefined);
+    assert.equal(findByChildSession("never-delegated"), undefined);
+  });
+
+  it("findByChildSession still matches a terminal run (history survives)", () => {
+    startRun({
+      id: "p1",
+      agent: "lynx",
+      parentSession: "main",
+      startedAt: 100,
+      childSession: "child-ses-9",
+    });
+    finishRun("p1", { status: "done", endedAt: 200 });
+    assert.equal(findByChildSession("child-ses-9")?.agent, "lynx");
   });
 });
 

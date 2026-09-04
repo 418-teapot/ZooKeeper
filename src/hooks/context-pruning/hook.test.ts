@@ -1042,7 +1042,7 @@ describe("unit.create enablement (C13-04)", () => {
       contextConfig: {},
       client: {},
       directory: "/tmp/zoo",
-      sessionAgentMap: new Map(),
+      resolveAgent: () => undefined,
       adapter,
     };
 
@@ -1067,7 +1067,7 @@ describe("unit.create enablement (C13-04)", () => {
         },
       },
       directory: "/tmp/zoo",
-      sessionAgentMap: new Map(),
+      resolveAgent: () => undefined,
     };
 
     const contributions = unit.create(deps, activeSet);
