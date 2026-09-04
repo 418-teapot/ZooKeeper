@@ -18,8 +18,8 @@
  *
  * The driver also maintains the run's running token total incrementally: it
  * folds each assistant `message_end`'s usage into the sum as it appends the
- * fact and reports the sum on every progress line, so consumers never have
- * to rescan the fact log to render a counter.
+ * fact and reports the sum on every progress report, so consumers never
+ * have to rescan the fact log to render a counter.
  *
  * Every pi SDK touch lives in this file (a future subprocess fallback
  * replaces only this layer).  The SDK is never statically imported: pi's
@@ -37,7 +37,6 @@ import type {
   SubagentProgress,
   SubagentResult,
 } from "../../core/subagent/driver.js";
-import { formatSnapshotOutput } from "../../core/subagent/progress.js";
 import type { AgentMessage } from "../../core/subagent/result.js";
 import { classifyOutcome, reduceMessages } from "../../core/subagent/result.js";
 import type {
@@ -104,7 +103,7 @@ export interface PiResolvedModel {
  * The driver records `message_end` events (the finalized message) into the
  * `AgentMessage` view and the run's fact log, reads
  * `tool_execution_start` / `tool_execution_end` as tool facts, and reports
- * the one-line text progress as the run advances.
+ * the run's progress as it advances.
  */
 export interface PiSessionEvent {
   type: string;
@@ -652,10 +651,6 @@ export function createPiSubagentDriver(
       // views project from it at their own render boundary.
       const runLog = ctx.log;
       const messages: AgentMessage[] = [];
-      // The compact text carried on every progress report: the last
-      // non-empty line of the most recent assistant message (empty before
-      // the first one).  The full message text only ever reaches the log.
-      let lastLine = "";
       // Carries the child session id for the failure log once the session
       // manager exists; stays empty when the failure predates its creation.
       let sessionId = "";
@@ -679,7 +674,7 @@ export function createPiSubagentDriver(
         aborted = true;
         void session?.abort();
       };
-      // Report one progress line to the caller, carrying the resolved
+      // Report one progress update to the caller, carrying the resolved
       // child-session id on every report once the session manager exists (so
       // the run registry can associate the run with its sub-session and the
       // fleet widget can rebuild the parent/child tree).  The on-disk
@@ -700,49 +695,43 @@ export function createPiSubagentDriver(
           ...(tokensTotal !== undefined ? { tokens: tokensTotal } : {}),
         });
       };
-      // Report the one-line text progress for one observed event.  The tool
-      // layer forwards it to the host's streaming partial result so the
-      // running card keeps re-rendering; structure never travels here — the
-      // log already carries it.
+      // Report the progress for one observed event.  The tool layer patches
+      // the report's fields (current tool, token total, model, session ids)
+      // onto the registry run; structure never travels here — the log
+      // already carries it.
       const reportEvent = (event: PiSessionEvent): void => {
         switch (event.type) {
           case "tool_execution_start":
-            report({
-              output: lastLine,
-              currentTool: event.toolName ?? "tool",
-              done: false,
-            });
+            report({ currentTool: event.toolName ?? "tool", done: false });
             break;
           case "tool_execution_end":
             // Explicit clear: the finished tool's name must not linger as
             // the running title between calls.  `null` is the "no current
             // tool" signal — an absent field would mean "leave unchanged".
-            report({ output: lastLine, currentTool: null, done: false });
+            report({ currentTool: null, done: false });
             break;
           case "message_end": {
             const message = event.message as PiDuckMessage | undefined;
             if (message?.role !== "assistant") break;
-            // Fold this message's usage into the running total the progress
-            // line carries (the fact log holds the same numbers; rescanning
-            // it per tick would cost O(n) for every advance).
+            // Fold this message's usage into the running total the report
+            // carries (the fact log holds the same numbers; rescanning it
+            // per tick would cost O(n) for every advance).
             const reported = usageTokens(toUsage(message.usage));
             if (reported !== undefined)
               tokensTotal = (tokensTotal ?? 0) + reported;
-            lastLine = formatSnapshotOutput(extractText(message.content));
-            report({ output: lastLine, done: false });
+            report({ done: false });
             break;
           }
           default:
             break;
         }
       };
-      // Emit the terminal progress report, so the streaming text line
-      // settles on the run's outcome.  The full result text goes to the log
-      // with the run's messages; the report carries only its compact form.
+      // Emit the terminal progress report marking the stream settled; the
+      // full result text goes to the log with the run's messages.
       // Defensive: a throwing progress callback must not break the run.
-      const emitDone = (result: SubagentResult): void => {
+      const emitDone = (): void => {
         try {
-          report({ output: formatSnapshotOutput(result.text), done: true });
+          report({ done: true });
         } catch {
           // A throwing progress callback is logged and swallowed — live
           // observability never breaks the run.
@@ -788,7 +777,7 @@ export function createPiSubagentDriver(
             text: "",
             errorMessage,
           };
-          emitDone(result);
+          emitDone();
           return result;
         }
         modelId = modelIdOf(request.model);
@@ -831,13 +820,13 @@ export function createPiSubagentDriver(
             kind: "aborted",
             text: reduceMessages(messages),
           };
-          emitDone(result);
+          emitDone();
           return result;
         }
 
         const stopReason = lastAssistantStopReason(messages);
         const result = classifyOutcome({ stopReason, messages });
-        emitDone(result);
+        emitDone();
         return result;
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : String(err);
@@ -850,7 +839,7 @@ export function createPiSubagentDriver(
           text: reduceMessages(messages),
           errorMessage,
         };
-        emitDone(result);
+        emitDone();
         return result;
       } finally {
         signal.removeEventListener("abort", onAbort);

@@ -538,8 +538,9 @@ export function renderResult(
     // Failed load: fall through to the delivered-text fallback.
   }
 
-  // Fallback: the streamed text (partial, before the driver registered
-  // the run) or the delivered result text (terminal, no log source).
+  // Fallback: partial results are content-free repaint signals, so the
+  // partial-case fallback renders an empty body; the delivered-text path
+  // serves the terminal no-log-source case.
   const container = new Container();
   const text = deliveredText(result);
   if (text.length > 0) {

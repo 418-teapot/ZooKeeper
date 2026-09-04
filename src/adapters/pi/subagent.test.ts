@@ -600,7 +600,7 @@ async function drive(
 }
 
 describe("pi subagent driver — progress reports", () => {
-  it("streams tool / output / done reports through onProgress", async () => {
+  it("streams tool and done reports through onProgress", async () => {
     const h = harness();
     const { reports } = await drive(h, [
       { type: "tool_execution_start", toolName: "bash" },
@@ -619,59 +619,7 @@ describe("pi subagent driver — progress reports", () => {
       `expected ≥3 reports, got ${reports.length}`,
     );
     assert.equal(reports[0].currentTool, "bash");
-    assert.equal(reports[1].output, "running");
     assert.equal(reports[reports.length - 1].done, true);
-  });
-
-  it("emits the compact last-line form, never the full assistant transcript", async () => {
-    const h = harness();
-    const hugeText = `line one\nline two\n${"x".repeat(5000)}`;
-    const { reports } = await drive(h, [
-      {
-        type: "message_end",
-        message: rawMessage({
-          role: "assistant",
-          text: hugeText,
-          stopReason: "toolUse",
-        }),
-      },
-      { type: "agent_end" },
-    ]);
-
-    // The assistant message report is the last non-empty line, capped at the
-    // 200-char progress-line cap — never the full multi-KB text (the log
-    // keeps that instead).
-    const outputReports = reports.filter((r) => !r.done && r.output !== "");
-    assert.ok(outputReports.length >= 1, "expected an output report");
-    for (const report of outputReports) {
-      assert.ok(
-        report.output.length <= 200,
-        `report exceeded cap: ${report.output.length}`,
-      );
-      assert.ok(!report.output.includes("line one"));
-      assert.ok(report.output.endsWith("…"), "expected ellipsis marker");
-    }
-    const done = reports[reports.length - 1];
-    assert.equal(done.done, true);
-    assert.ok(done.output.length <= 200, "done report exceeded cap");
-  });
-
-  it("keeps the last output line across tool events instead of blanking it", async () => {
-    const h = harness();
-    const { reports } = await drive(h, [
-      {
-        type: "message_end",
-        message: rawMessage({
-          role: "assistant",
-          text: "first answer",
-          stopReason: "toolUse",
-        }),
-      },
-      { type: "tool_execution_start", toolName: "bash" },
-    ]);
-    const toolReport = reports.find((r) => r.currentTool === "bash");
-    assert.ok(toolReport, "expected a tool report");
-    assert.equal(toolReport.output, "first answer");
   });
 
   it("clears the current tool on tool_execution_end instead of leaving it set", async () => {
@@ -746,19 +694,6 @@ describe("pi subagent driver — progress reports", () => {
     );
     assert.equal(reports[0].tokens, undefined);
     assert.equal(reports[1].tokens, 10);
-  });
-
-  it("ignores non-assistant messages for the output line", async () => {
-    const h = harness();
-    const { reports } = await drive(h, [
-      {
-        type: "message_end",
-        message: rawMessage({ role: "user", text: "hi" }),
-      },
-    ]);
-    for (const report of reports) {
-      if (!report.done) assert.equal(report.output, "");
-    }
   });
 
   it("carries the model id on every report when one was resolved", async () => {
@@ -1188,7 +1123,10 @@ describe("pi subagent driver — run fact log", () => {
       { log: false },
     );
     // Progress reports still flow — only the fact recording is skipped.
-    assert.ok(reports.some((r) => r.output === "answer"));
+    assert.ok(
+      reports.some((r) => r.done === false),
+      "expected a running report",
+    );
   });
 });
 

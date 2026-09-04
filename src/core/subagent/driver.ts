@@ -9,11 +9,11 @@
  * which host backs it.  A new host only needs a new driver implementation;
  * nothing in core changes.
  *
- * A run's content reaches the caller through two distinct channels: the
- * driver appends every observed fact (tool calls, assistant messages,
- * usage) verbatim to the run's append-only log (`run-log.ts`), and reports
- * a single capped text line per advance through `onProgress`.  Only the log
- * carries structure; the progress channel never carries snapshots.
+ * A run's facts reach the caller through one channel: the driver appends
+ * every observed fact (tool calls, assistant messages, usage) verbatim to
+ * the run's append-only log (`run-log.ts`).  `onProgress` reports only host
+ * facts the tool layer cannot derive itself (tool name, tokens, model,
+ * session ids) — content never travels through it.
  *
  * @module
  */
@@ -41,29 +41,25 @@ export interface SubagentRequest {
 }
 
 /**
- * The one-line progress report a driver emits while a run is in flight.
+ * The progress report a driver emits while a run is in flight.
  *
- * Carries the currently running tool name, a one-line summary of recent
- * output, and a completion flag — plus the host facts the run registry
- * needs and the tool layer cannot derive itself (the resolved model id, the
- * sub-session id, its on-disk file path, and the running token total).
- * Everything structural (tool calls, output lines, turn and tool counters,
- * the terminal result) no longer travels here: the driver appends it
- * verbatim to the run's fact log and views project it from there.
+ * Carries the currently running tool name and a completion flag — plus the
+ * host facts the run registry needs and the tool layer cannot derive itself
+ * (the resolved model id, the sub-session id, its on-disk file path, and
+ * the running token total).  Everything structural (tool calls, assistant
+ * output, turn and tool counters, the terminal result) never travels here:
+ * the driver appends it verbatim to the run's fact log and views project it
+ * from there.
  *
  * Token totals are the one aggregate that DOES travel here: the driver
  * already sees each message's usage as it appends the fact, so carrying the
  * running sum costs nothing, while having the tool layer re-derive it per
  * progress tick would rescan the whole fact log every time.
  *
- * The report must stay small — the full subagent transcript never flows
- * through here.  `output` is already compacted to a single capped line.
  * The `done: true` report is the terminal one, emitted once the run has
  * settled (success, error, or abort).
  */
 export interface SubagentProgress {
-  /** A one-line summary of the subagent's recent output. */
-  output: string;
   /** Whether the subagent run has finished. */
   done: boolean;
   /**
@@ -128,9 +124,9 @@ export interface SubagentDriver {
    *
    * @param request - Agent, prompt, allowed tools, and model.
    * @param ctx.signal - The parent abort signal, honored cooperatively.
-   * @param ctx.onProgress - Optional one-line progress report, called
-   *   whenever the run advances (tool start, assistant message, terminal).
-   *   Hosts that do not render a live progress line omit it.
+   * @param ctx.onProgress - Optional progress report, called whenever the
+   *   run advances (tool start, assistant message, terminal).  Hosts
+   *   without a live consumer omit it.
    * @param ctx.log - The run's append-only fact log, when the caller owns
    *   one.  The driver appends the full, untruncated facts as it observes
    *   them; views project the log at their own render boundary.  Absent

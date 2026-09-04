@@ -431,9 +431,13 @@ export interface ToolContribution {
    *
    * `toolCtx` is the host tool execution context (an OpenCode tool context
    * on OpenCode, a pi `ExtensionContext` on pi).  The optional `hostCtx`
-   * third argument carries the host-forwarded execution surface: the
-   * abort `signal` and the `onUpdate` streaming callback, both forwarded
-   * by the pi bridge from the native tool signature.  Hosts that do not
+   * third argument carries the host-forwarded execution surface: the abort
+   * `signal`, the tool-call `callId`, and the `onUpdate` repaint-signal
+   * callback, all forwarded by the pi bridge from the native tool
+   * signature.  `onUpdate` is a content-free repaint trigger, never a text
+   * channel: pi re-renders a live tool card whenever a partial result
+   * arrives, so a tool driving a live view sends an empty partial
+   * `{ content: [] }` instead of streaming text.  Hosts that do not
    * forward these (OpenCode, which invokes tools natively) simply omit the
    * third argument.
    */
@@ -442,11 +446,13 @@ export interface ToolContribution {
     toolCtx: unknown,
     hostCtx?: {
       signal?: AbortSignal;
-      onUpdate?: unknown;
       /** The host tool-call id (the pi tool-call id), forwarded by the pi
        * bridge from the native tool signature.  Used as the run id by the
        * subagent tool's registry write. */
       callId?: string;
+      /** The host's partial-result callback (pi's `onUpdate`): a
+       * content-free repaint signal, never a text channel. */
+      onUpdate?: unknown;
     },
   ): Promise<string>;
   /**

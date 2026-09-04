@@ -727,60 +727,10 @@ describe("subagent tool execute — result mapping", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Progress → onUpdate bridge
+// Progress → registry updates
 // ---------------------------------------------------------------------------
 
-describe("subagent tool execute — progress bridge to onUpdate", () => {
-  it("streams the compact progress line into a pi onUpdate partial result", async () => {
-    setPrimary("dolphin");
-    // A driver that reports progress through its onProgress callback.
-    const snapshots: SubagentProgress[] = [
-      { currentTool: "bash", output: "", done: false },
-      { currentTool: "bash", output: "running", done: false },
-      { output: "finished", done: true },
-    ];
-    const driver: SubagentDriver = {
-      async run(_req, ctx) {
-        for (const snapshot of snapshots) ctx.onProgress?.(snapshot);
-        return { kind: "ok", text: "done" };
-      },
-    };
-
-    const partials: unknown[] = [];
-    const t = tool(makeDeps({ subagentDriver: driver }));
-
-    const result = await t.execute(
-      { agent: "beaver", description: "实现任务", prompt: "t" },
-      TOOL_CTX,
-      {
-        onUpdate: (partial: unknown) => {
-          partials.push(partial);
-        },
-      },
-    );
-
-    assert.equal(result, "done");
-    // Each report reaches onUpdate as a pi-style partial carrying ONLY the
-    // compact one-line text (prefixed by the description label).  No
-    // structured details ride along: pi never persists a partial's details,
-    // and the facts views need live in the run's log.
-    assert.equal(partials.length, 3);
-    assert.deepEqual(partials[0], {
-      content: [{ type: "text", text: "[实现任务] [bash] " }],
-    });
-    assert.deepEqual(partials[1], {
-      content: [{ type: "text", text: "[实现任务] [bash] running" }],
-    });
-    assert.deepEqual(partials[2], {
-      content: [{ type: "text", text: "[实现任务] finished" }],
-    });
-    assert.equal(
-      Object.keys(partials[0] as Record<string, unknown>).join(","),
-      "content",
-      "the partial must carry no details payload",
-    );
-  });
-
+describe("subagent tool execute — progress to registry updates", () => {
   it("hands the run's fact log to the driver and patches progress from its report", async () => {
     setPrimary("dolphin");
     // The driver appends the full facts to the log the tool hands over (the
@@ -808,7 +758,6 @@ describe("subagent tool execute — progress bridge to onUpdate", () => {
         );
         ctx.onProgress?.({
           currentTool: "bash",
-          output: "all green",
           done: false,
           tokens: 150,
         });
@@ -818,7 +767,7 @@ describe("subagent tool execute — progress bridge to onUpdate", () => {
           { totalTokens: 84 },
           4,
         );
-        ctx.onProgress?.({ output: "done", done: false, tokens: 234 });
+        ctx.onProgress?.({ done: false, tokens: 234 });
         return { kind: "ok", text: "done" };
       },
     };
@@ -847,7 +796,7 @@ describe("subagent tool execute — progress bridge to onUpdate", () => {
     // undefined here.
     const driver: SubagentDriver = {
       async run(_req, ctx) {
-        ctx.onProgress?.({ output: "working", done: false, tokens: 4242 });
+        ctx.onProgress?.({ done: false, tokens: 4242 });
         assert.equal(getRun("call-tokens")?.tokens, 4242);
         return { kind: "ok", text: "done" };
       },
@@ -869,8 +818,8 @@ describe("subagent tool execute — progress bridge to onUpdate", () => {
     // the token segment absent rather than zeroed.
     const driver: SubagentDriver = {
       async run(_req, ctx) {
-        ctx.onProgress?.({ output: "working", done: false });
-        ctx.onProgress?.({ output: "done", done: true });
+        ctx.onProgress?.({ done: false });
+        ctx.onProgress?.({ done: true });
         return { kind: "ok", text: "done" };
       },
     };
@@ -894,12 +843,12 @@ describe("subagent tool execute — progress bridge to onUpdate", () => {
     let toolAfterClear: string | null | undefined;
     const driver: SubagentDriver = {
       async run(_req, ctx) {
-        ctx.onProgress?.({ currentTool: "bash", output: "", done: false });
+        ctx.onProgress?.({ currentTool: "bash", done: false });
         toolAfterStart = getRun("call-clear")?.currentTool;
         // A report with no currentTool field leaves the running tool alone.
-        ctx.onProgress?.({ output: "still running", done: false });
+        ctx.onProgress?.({ done: false });
         toolAfterUnrelated = getRun("call-clear")?.currentTool;
-        ctx.onProgress?.({ currentTool: null, output: "", done: false });
+        ctx.onProgress?.({ currentTool: null, done: false });
         toolAfterClear = getRun("call-clear")?.currentTool;
         return { kind: "ok", text: "done" };
       },
@@ -937,30 +886,50 @@ describe("subagent tool execute — progress bridge to onUpdate", () => {
     assert.equal(getRun("call-nolog"), undefined);
   });
 
-  it("proceeds without streaming when no onUpdate is present (OpenCode path)", async () => {
+  it("emits an empty repaint partial on every progress report (pi)", async () => {
     setPrimary("dolphin");
-    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
+    const snapshots: SubagentProgress[] = [
+      { currentTool: "bash", done: false },
+      { done: false, tokens: 150 },
+      { done: true },
+    ];
+    const driver: SubagentDriver = {
+      async run(_req, ctx) {
+        for (const snapshot of snapshots) ctx.onProgress?.(snapshot);
+        return { kind: "ok", text: "done" };
+      },
+    };
+
+    const partials: unknown[] = [];
     const t = tool(makeDeps({ subagentDriver: driver }));
 
     const result = await t.execute(
       { agent: "beaver", description: "实现任务", prompt: "t" },
       TOOL_CTX,
+      {
+        onUpdate: (partial: unknown) => {
+          partials.push(partial);
+        },
+      },
     );
 
     assert.equal(result, "done");
-    assert.equal(calls.length, 1, "driver must run even without onUpdate");
+    // Each report reaches onUpdate as a content-free repaint signal: pi's
+    // tool-execution gate re-invokes the card renderer only when a partial
+    // result arrives, while the card body projects the run's log.  No text
+    // is streaming — the partial carries an empty content array.
+    assert.equal(partials.length, 3);
+    assert.deepEqual(partials[0], { content: [] });
+    assert.deepEqual(partials[1], { content: [] });
+    assert.deepEqual(partials[2], { content: [] });
   });
 
-  it("does not fail the run when onUpdate throws", async () => {
+  it("does not fail the run when the repaint callback throws", async () => {
     setPrimary("dolphin");
     const driver: SubagentDriver = {
       async run(_req, ctx) {
-        ctx.onProgress?.({
-          currentTool: "bash",
-          output: "working",
-          done: false,
-        });
-        ctx.onProgress?.({ output: "done", done: true });
+        ctx.onProgress?.({ currentTool: "bash", done: false });
+        ctx.onProgress?.({ done: true });
         return { kind: "ok", text: "done" };
       },
     };
@@ -980,6 +949,20 @@ describe("subagent tool execute — progress bridge to onUpdate", () => {
 
     assert.equal(threw, 2, "onUpdate must be invoked for each snapshot");
     assert.equal(result, "done", "a throwing onUpdate must not break the run");
+  });
+
+  it("runs the driver without any hostCtx streaming surface (OpenCode path)", async () => {
+    setPrimary("dolphin");
+    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
+    const t = tool(makeDeps({ subagentDriver: driver }));
+
+    const result = await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "t" },
+      TOOL_CTX,
+    );
+
+    assert.equal(result, "done");
+    assert.equal(calls.length, 1, "driver must run without a hostCtx");
   });
 
   it("attaches renderCall / renderResult when a renderer is present (pi)", () => {
@@ -1024,8 +1007,8 @@ describe("subagent tool execute — run-registry writes", () => {
   it("writes start/update/finish keyed by the forwarded tool-call id", async () => {
     setPrimary("dolphin");
     const snapshots: SubagentProgress[] = [
-      { currentTool: "bash", output: "", done: false },
-      { output: "finished", done: true, sessionPath: "/tmp/s.jsonl" },
+      { currentTool: "bash", done: false },
+      { done: true, sessionPath: "/tmp/s.jsonl" },
     ];
     const driver: SubagentDriver = {
       async run(_req, ctx) {
@@ -1070,7 +1053,6 @@ describe("subagent tool execute — run-registry writes", () => {
       async run(_req, ctx) {
         ctx.onProgress?.({
           currentTool: "bash",
-          output: "working",
           done: false,
           sessionPath: "/tmp/running-session.jsonl",
         });
@@ -1139,7 +1121,6 @@ describe("subagent tool execute — run-registry writes", () => {
       async run(_req, ctx) {
         ctx.onProgress?.({
           childSession: "child-ses-1",
-          output: "",
           done: false,
         });
         return { kind: "ok", text: "done" };
@@ -1232,7 +1213,6 @@ describe("subagent tool execute — run-registry writes", () => {
       async run(_req, ctx) {
         ctx.onProgress?.({
           currentTool: "bash",
-          output: "",
           done: false,
         });
         return { kind: "ok", text: "done" };

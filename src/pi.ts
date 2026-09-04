@@ -698,12 +698,19 @@ export function buildPiNoticeEntryRenderer(): (
  * @param zooConfig - The `zoo` section of config.toml.
  * @param piApi - Optional pi ExtensionAPI instance; when provided, the
  *   active profile's tools are registered with `registerTool`.
+ * @param overrides - Optional host-dependency overrides.  Only used by
+ *   tests: a bridge test injects a fake subagent driver so the registered
+ *   tool executes without loading the real pi SDK.
  * @returns The hook handlers.
  */
 export function buildPiHandlers(
   zooConfig: any,
   piApi?: ExtensionAPI,
   rawConfig?: any,
+  overrides?: {
+    /** Subagent driver used in place of the real pi SDK driver. */
+    subagentDriver?: SubagentDriver;
+  },
 ): {
   beforeAgentStart: (
     evt: { systemPrompt: string },
@@ -1026,7 +1033,11 @@ export function buildPiHandlers(
       // The pi subagent driver — the in-process SDK session executor.  Only
       // wired when a real pi API instance is present (the extension runs
       // inside pi); test-only and driver-less compositions stay closed.
-      subagentDriver: piApi ? createPiSubagentDriver() : undefined,
+      // A test override replaces the SDK driver with a fake so bridge
+      // tests run without loading the pi SDK.
+      subagentDriver:
+        overrides?.subagentDriver ??
+        (piApi ? createPiSubagentDriver() : undefined),
       // The pi subagent transcript-card renderer — turns the tool's
       // streamed text into pi TUI components.  Wired only when a real pi
       // API instance is present; the tool contribution then carries
@@ -1173,14 +1184,17 @@ export function buildPiHandlers(
           onUpdate: unknown,
           ctx: unknown,
         ) => {
-          // Forward the native execution surface to the contribution:
-          // the abort `signal`, the streaming `onUpdate` callback, and the
-          // tool-call `callId` (the run's registry id for the fleet widget),
-          // passed through the third hostCtx argument.  The sub-session
-          // model is NOT forwarded — strict mode reads the agents.json
-          // configured model only (never the parent session's model).
-          // compress / decompress ignore the hostCtx and keep working
-          // unchanged.
+          // Forward the native execution surface to the contribution: the
+          // abort `signal`, the tool-call `callId` (the run's registry id
+          // for the fleet widget), and the `onUpdate` repaint-signal
+          // callback, passed through the third hostCtx argument.  `onUpdate`
+          // is a content-free repaint trigger for live tool cards — pi
+          // re-renders on any partial result, so a tool such as subagent
+          // sends an empty partial rather than streaming text.  The
+          // sub-session model is NOT forwarded — strict mode reads the
+          // agents.json configured model only (never the parent session's
+          // model).  compress / decompress ignore the hostCtx and keep
+          // working unchanged.
           const text = await tool.execute(params, ctx, {
             ...(typeof toolCallId === "string" && toolCallId.length > 0
               ? { callId: toolCallId }

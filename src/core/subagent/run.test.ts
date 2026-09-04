@@ -100,10 +100,9 @@ describe("runSubagent — driver passthrough", () => {
         driverOnProgress = ctx.onProgress;
         ctx.onProgress?.({
           currentTool: "edit",
-          output: "editing",
           done: false,
         });
-        ctx.onProgress?.({ output: "done", done: true });
+        ctx.onProgress?.({ done: true });
         return { kind: "ok", text: "done" };
       },
     };
@@ -116,8 +115,8 @@ describe("runSubagent — driver passthrough", () => {
     });
     assert.equal(driverOnProgress, onProgress);
     assert.deepEqual(received, [
-      { currentTool: "edit", output: "editing", done: false },
-      { output: "done", done: true },
+      { currentTool: "edit", done: false },
+      { done: true },
     ]);
     assert.equal(result.kind, "ok");
   });

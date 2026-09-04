@@ -32,12 +32,13 @@
  *    A missing baseline yields an empty set — permissions are never
  *    invented (fail-closed).
  * 5. Hands the run's append-only fact log to the driver so every observed
- *    fact is recorded there, streams the driver's one-line progress report
- *    into the host's partial-result channel when one is present (pi's
- *    `onUpdate`), patches the report's progress fields (current tool, token
- *    total, model, child session, session path) onto the registry run, and
- *    drives the lifecycle orchestration (`runSubagent`), forwarding the
- *    parent abort signal when the tool context carries one.
+ *    fact is recorded there, patches the driver's progress reports' fields
+ *    (current tool, token total, model, child session, session path) onto
+ *    the registry run, repaints the host's live card with a content-free
+ *    `onUpdate` partial per report (pi re-renders its card on any partial
+ *    result; the card body projects the run's log), and drives the
+ *    lifecycle orchestration (`runSubagent`), forwarding the parent abort
+ *    signal when the tool context carries one.
  * 6. Resolves the sub-session model (strict mode): `deps.subagentModels`
  *    (agents.json, whose mapped values are `"provider/model"` strings) is
  *    the SOLE source.  A missing entry for the target
@@ -60,14 +61,9 @@ import type {
 } from "../core/slots.js";
 import type {
   SubagentDriver,
-  SubagentProgress,
   SubagentResult,
 } from "../core/subagent/driver.js";
 import { resolveIdentity } from "../core/subagent/identity.js";
-import {
-  formatProgressLine,
-  SNAPSHOT_OUTPUT_CAP,
-} from "../core/subagent/progress.js";
 import type { UpdateRunPatch } from "../core/subagent/registry.js";
 import { finishRun, startRun, updateRun } from "../core/subagent/registry.js";
 import { runSubagent } from "../core/subagent/run.js";
@@ -78,6 +74,27 @@ type SubagentToolInput = {
   description: string;
   prompt: string;
 };
+
+/**
+ * The content-free repaint signal forwarded through pi's `onUpdate`
+ * partial-result callback.
+ *
+ * pi's tool-execution component re-invokes a live tool card's renderer
+ * whenever a partial result arrives, and the card body projects the run's
+ * fact log — never the partial payload — so every driver progress report
+ * sends this empty partial as a pure repaint trigger.  The `content` array
+ * is always empty; no text ever streams through it.
+ *
+ * Forward-compat dependency: the signal relies on the pi SDK's current
+ * partial handling, where any partial (even an empty one) triggers a
+ * re-render.  If a future pi version filters out empty partials as no-ops,
+ * the live card would freeze again — the signal would then need whatever
+ * payload that pi still re-renders on.
+ */
+interface PiRepaintSignal {
+  /** The partial content pi re-renders on — always empty. */
+  content: [];
+}
 
 /**
  * Monotonic counter for synthetic run ids.
@@ -167,64 +184,6 @@ function formatSubagentResult(result: SubagentResult): string {
         result.text,
         `子 agent 运行出错：${result.errorMessage}`,
       );
-  }
-}
-
-/**
- * A pi `onUpdate` partial result: the streaming text line only.
- *
- * No structured `details` payload rides along — pi drops partial details
- * before they reach disk, so anything a view needs after a restart must come
- * from the run's fact log or the terminal result's session-path pointer.
- */
-interface PiPartialResult {
-  content: Array<{ type: "text"; text: string }>;
-}
-
-/**
- * Bridge one progress report into the pi streaming partial-result channel.
- *
- * Renders the report into a compact one-line text (prefixed by the
- * delegation's `description` label when present) as a `text` content part,
- * so the host re-renders the running card as the subagent advances.  The
- * call is defensive: a throwing `onUpdate` is logged and swallowed so a UI
- * callback can never break the subagent run.
- *
- * @param progress - The report to stream.
- * @param sessionID - The parent session id for logging.
- * @param label - The delegation's description tag, prefixed to the line.
- * @param onUpdate - The host's streaming partial-result callback, when one
- *   is present.
- */
-function emitProgressUpdate(
-  progress: SubagentProgress,
-  sessionID: string,
-  label: string | undefined,
-  onUpdate: unknown,
-): void {
-  if (typeof onUpdate !== "function") return;
-  try {
-    const partial: PiPartialResult = {
-      content: [
-        {
-          type: "text",
-          text: formatProgressLine(progress, SNAPSHOT_OUTPUT_CAP, label),
-        },
-      ],
-    };
-    (onUpdate as (partial: PiPartialResult) => void)(partial);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    log(
-      "subagent-tool",
-      "progress_update_failed",
-      sessionID,
-      undefined,
-      "warn",
-      {
-        error: message,
-      },
-    );
   }
 }
 
@@ -423,15 +382,10 @@ export function createSubagentTool(
         : undefined;
       if (runStarted) notifyRunChange();
 
-      // 8. Stream the driver's one-line progress reports into the host's
-      // partial-result channel when one is present (pi's `onUpdate`).  Each
-      // report is rendered to a single capped line; a throwing callback is
-      // logged and swallowed so live observability can never break the run.
-      // When `onUpdate` is absent (OpenCode, tests without it) progress is a
-      // no-op and the run proceeds unchanged.  The driver also appends the
-      // full facts to this run's log, the durable record views project from.
-      const sessionForLog = parentSession ?? "";
-
+      // 8. Drive the delegation through the orchestration core.  The run's
+      // progress reports are patched onto the registry run (see the
+      // onProgress handler below) while the driver appends the full facts
+      // to this run's log — the durable record views project from.
       const result = await runSubagent(
         driver,
         {
@@ -487,12 +441,31 @@ export function createSubagentTool(
                 notifyRunChange();
               }
             }
-            emitProgressUpdate(
-              progress,
-              sessionForLog,
-              input.description,
-              hostCtx?.onUpdate,
-            );
+
+            // Repaint the host's live card on every report.  pi re-invokes
+            // the card renderer only when a partial result arrives, while
+            // the card body projects the run's log, so the partial is a
+            // content-free repaint signal, never a text channel.  A
+            // throwing callback is logged and swallowed — a UI callback
+            // must never break the run.
+            if (typeof hostCtx?.onUpdate === "function") {
+              try {
+                (hostCtx.onUpdate as (partial: PiRepaintSignal) => void)({
+                  content: [],
+                });
+              } catch (err) {
+                const message =
+                  err instanceof Error ? err.message : String(err);
+                log(
+                  "subagent-tool",
+                  "progress_update_failed",
+                  parentSession ?? "",
+                  undefined,
+                  "warn",
+                  { error: message },
+                );
+              }
+            }
           },
         },
       );

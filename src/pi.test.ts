@@ -30,6 +30,7 @@ import {
   VERIFY_REMINDER,
 } from "./core/prompts.js";
 import { sessionAgentRegistry } from "./core/session-agent.js";
+import type { SubagentDriver } from "./core/subagent/driver.js";
 import {
   getPrimary,
   _resetForTesting as resetIdentityForTesting,
@@ -1164,7 +1165,16 @@ describe("buildPiHandlers — registerTool wiring", () => {
   it("forwards the pi signal through the bridge to the tool execute", async () => {
     const api = mockApi();
     api.activeTools.push("bash", "edit", "subagent", "compress", "decompress");
-    // The profile enables only the subagent tool.
+    // The profile enables only the subagent tool.  A fake driver keeps the
+    // bridge under test without loading the real pi SDK.  It emits one
+    // progress report so the empty-partial repaint path through the bridge
+    // is exercised.
+    const driver: SubagentDriver = {
+      async run(_req, ctx) {
+        ctx.onProgress?.({ done: false });
+        return { kind: "ok", text: "done" };
+      },
+    };
     buildPiHandlers(
       {
         mode: {
@@ -1177,6 +1187,7 @@ describe("buildPiHandlers — registerTool wiring", () => {
       },
       api as any,
       MODES_RAW,
+      { subagentDriver: driver },
     );
     const subagent = api.tools.find((tool: any) => tool.name === "subagent") as
       | { execute: (...args: unknown[]) => Promise<unknown> }
@@ -1189,11 +1200,14 @@ describe("buildPiHandlers — registerTool wiring", () => {
     // (a pi tool result with a text part) is returned.  The parent model is
     // NOT forwarded — strict mode reads the agents.json configured model
     // only, never the parent session's model.
+    const repaintPartials: unknown[] = [];
     const result = await subagent.execute(
       "call-1",
       { agent: "beaver", description: "实现任务", prompt: "t" },
       controller.signal,
-      undefined,
+      (partial: unknown) => {
+        repaintPartials.push(partial);
+      },
       {
         sessionManager: { getSessionId: () => "sess-1" },
         model: { provider: "Dummy", id: "dummy-small" },
@@ -1207,6 +1221,21 @@ describe("buildPiHandlers — registerTool wiring", () => {
     assert.ok(
       wrapped.content?.some((part) => part.type === "text"),
       "bridge must produce a text part",
+    );
+    // The empty-partial repaint path is pinned end-to-end: the driver's
+    // progress report travels through the bridge's `onUpdate` forwarding
+    // (pi's tool-signature slot) and reaches the capturing callback as a
+    // content-free repaint signal, not a text channel.
+    assert.equal(repaintPartials.length, 1);
+    assert.deepEqual(
+      repaintPartials[0],
+      { content: [] },
+      "the bridge must forward the empty repaint partial",
+    );
+    assert.equal(
+      (repaintPartials[0] as { content: unknown[] }).content.length,
+      0,
+      "the repaint partial must carry no text",
     );
   });
 
