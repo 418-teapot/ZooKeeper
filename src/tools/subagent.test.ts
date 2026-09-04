@@ -731,9 +731,9 @@ describe("subagent tool execute — result mapping", () => {
 // ---------------------------------------------------------------------------
 
 describe("subagent tool execute — progress bridge to onUpdate", () => {
-  it("streams compact progress snapshots into a pi onUpdate partial result", async () => {
+  it("streams the compact progress line into a pi onUpdate partial result", async () => {
     setPrimary("dolphin");
-    // A driver that emits snapshots through its onProgress callback.
+    // A driver that reports progress through its onProgress callback.
     const snapshots: SubagentProgress[] = [
       { currentTool: "bash", output: "", done: false },
       { currentTool: "bash", output: "running", done: false },
@@ -760,30 +760,181 @@ describe("subagent tool execute — progress bridge to onUpdate", () => {
     );
 
     assert.equal(result, "done");
-    // Each snapshot reaches onUpdate as a pi-style partial result carrying
-    // the compact one-line text (prefixed by the description label), the
-    // full structured progress in details (for the TUI card renderer), and
-    // the run's registry id (synthetic here — the pi bridge forwards the
-    // real tool-call id via hostCtx.callId).
+    // Each report reaches onUpdate as a pi-style partial carrying ONLY the
+    // compact one-line text (prefixed by the description label).  No
+    // structured details ride along: pi never persists a partial's details,
+    // and the facts views need live in the run's log.
     assert.equal(partials.length, 3);
-    const runId = (partials[0] as { details?: { runId?: string } }).details
-      ?.runId;
-    assert.ok(
-      typeof runId === "string" && runId.length > 0,
-      "details must carry the run id",
-    );
     assert.deepEqual(partials[0], {
       content: [{ type: "text", text: "[实现任务] [bash] " }],
-      details: { currentTool: "bash", output: "", done: false, runId },
     });
     assert.deepEqual(partials[1], {
       content: [{ type: "text", text: "[实现任务] [bash] running" }],
-      details: { currentTool: "bash", output: "running", done: false, runId },
     });
     assert.deepEqual(partials[2], {
       content: [{ type: "text", text: "[实现任务] finished" }],
-      details: { output: "finished", done: true, runId },
     });
+    assert.equal(
+      Object.keys(partials[0] as Record<string, unknown>).join(","),
+      "content",
+      "the partial must carry no details payload",
+    );
+  });
+
+  it("hands the run's fact log to the driver and patches progress from its report", async () => {
+    setPrimary("dolphin");
+    // The driver appends the full facts to the log the tool hands over (the
+    // registry run's own log) and reports the running token total it already
+    // computed while appending them — the registry counter follows the
+    // report, never a rescan of the log.
+    const driver: SubagentDriver = {
+      async run(_req, ctx) {
+        assert.ok(
+          ctx.log,
+          "the tool must hand the run's fact log to the driver",
+        );
+        ctx.log?.appendToolStart("bash", { command: "npm test" }, 1, "tc-1");
+        ctx.log?.appendToolEnd(
+          "bash",
+          [{ type: "text", text: "1 passed" }],
+          false,
+          2,
+          "tc-1",
+        );
+        ctx.log?.appendMessage(
+          [{ type: "text", text: "all green" }],
+          { input: 100, output: 50, totalTokens: 150 },
+          3,
+        );
+        ctx.onProgress?.({
+          currentTool: "bash",
+          output: "all green",
+          done: false,
+          tokens: 150,
+        });
+        assert.equal(getRun("call-log")?.tokens, 150);
+        ctx.log?.appendMessage(
+          [{ type: "text", text: "done" }],
+          { totalTokens: 84 },
+          4,
+        );
+        ctx.onProgress?.({ output: "done", done: false, tokens: 234 });
+        return { kind: "ok", text: "done" };
+      },
+    };
+    const t = tool(makeDeps({ subagentDriver: driver }));
+    await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "t" },
+      TOOL_CTX,
+      { callId: "call-log" },
+    );
+
+    const run = getRun("call-log");
+    assert.ok(run);
+    // The facts the driver appended are the run's durable record.
+    assert.equal(run?.log.size, 4);
+    assert.equal(run?.log.facts()[0]?.type, "tool_start");
+    // The token total the driver reported as it appended both messages.
+    assert.equal(run?.tokens, 234);
+    assert.equal(run?.currentTool, "bash");
+  });
+
+  it("takes the token total from the progress payload, not from the log", async () => {
+    setPrimary("dolphin");
+    // Discriminating check for the rescan fix: the driver reports a token
+    // total without appending any usage fact to the log.  A tool that still
+    // derived counters from `run.log.facts()` would leave the run's tokens
+    // undefined here.
+    const driver: SubagentDriver = {
+      async run(_req, ctx) {
+        ctx.onProgress?.({ output: "working", done: false, tokens: 4242 });
+        assert.equal(getRun("call-tokens")?.tokens, 4242);
+        return { kind: "ok", text: "done" };
+      },
+    };
+    const t = tool(makeDeps({ subagentDriver: driver }));
+    await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "t" },
+      TOOL_CTX,
+      { callId: "call-tokens" },
+    );
+    assert.equal(getRun("call-tokens")?.tokens, 4242);
+    // The log stayed empty, so no scan of it could have produced the number.
+    assert.equal(getRun("call-tokens")?.log.size, 0);
+  });
+
+  it("leaves the run's token total absent when no report carried usage", async () => {
+    setPrimary("dolphin");
+    // Parity with the old derivation: a run that never reported usage keeps
+    // the token segment absent rather than zeroed.
+    const driver: SubagentDriver = {
+      async run(_req, ctx) {
+        ctx.onProgress?.({ output: "working", done: false });
+        ctx.onProgress?.({ output: "done", done: true });
+        return { kind: "ok", text: "done" };
+      },
+    };
+    const t = tool(makeDeps({ subagentDriver: driver }));
+    await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "t" },
+      TOOL_CTX,
+      { callId: "call-notokens" },
+    );
+    assert.equal(getRun("call-notokens")?.tokens, undefined);
+  });
+
+  it("clears the run's currentTool when the driver reports no current tool", async () => {
+    setPrimary("dolphin");
+    // `currentTool: null` is the driver's "this tool finished" signal; an
+    // absent field means "unchanged".  The tool must forward the clear and
+    // never mistake it for silence, so the card title cannot keep showing a
+    // finished tool between calls.
+    let toolAfterStart: string | null | undefined;
+    let toolAfterUnrelated: string | null | undefined;
+    let toolAfterClear: string | null | undefined;
+    const driver: SubagentDriver = {
+      async run(_req, ctx) {
+        ctx.onProgress?.({ currentTool: "bash", output: "", done: false });
+        toolAfterStart = getRun("call-clear")?.currentTool;
+        // A report with no currentTool field leaves the running tool alone.
+        ctx.onProgress?.({ output: "still running", done: false });
+        toolAfterUnrelated = getRun("call-clear")?.currentTool;
+        ctx.onProgress?.({ currentTool: null, output: "", done: false });
+        toolAfterClear = getRun("call-clear")?.currentTool;
+        return { kind: "ok", text: "done" };
+      },
+    };
+    const t = tool(makeDeps({ subagentDriver: driver }));
+    await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "t" },
+      TOOL_CTX,
+      { callId: "call-clear" },
+    );
+    assert.equal(toolAfterStart, "bash");
+    assert.equal(toolAfterUnrelated, "bash");
+    assert.equal(toolAfterClear, undefined);
+    assert.equal(getRun("call-clear")?.currentTool, undefined);
+  });
+
+  it("runs without a log when the caller has no parent session", async () => {
+    setPrimary("dolphin");
+    let sawLog: unknown = "unset";
+    const driver: SubagentDriver = {
+      async run(_req, ctx) {
+        sawLog = ctx.log;
+        return { kind: "ok", text: "done" };
+      },
+    };
+    const t = tool(makeDeps({ subagentDriver: driver }));
+    // No session id in the tool context: no registry run, so no log to hand
+    // over — the driver must still run.
+    await t.execute(
+      { agent: "beaver", description: "实现任务", prompt: "t" },
+      { abort: new AbortController().signal },
+      { callId: "call-nolog" },
+    );
+    assert.equal(sawLog, undefined);
+    assert.equal(getRun("call-nolog"), undefined);
   });
 
   it("proceeds without streaming when no onUpdate is present (OpenCode path)", async () => {

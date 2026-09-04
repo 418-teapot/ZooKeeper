@@ -2,54 +2,63 @@
  * Pi subagent transcript card — renderCall / renderResult implementation.
  *
  * The only pi-facing translation layer for the subagent tool card: it maps
- * the host-agnostic view-model lines (`src/core/subagent/view.ts`) onto pi
- * TUI components.  The components (`Container` / `Text`) and the width
- * utilities (`visibleWidth` / `truncateToWidth`) come straight from the
- * `@earendil-works/pi-tui` package — the same implementation pi's TUI
- * renders with — so width accounting can never drift from the host's
- * `doRender` guard.  This mirrors how the pi-subagents extension (an
- * external extension shipped outside the pi repo) consumes pi-tui.
+ * the host-agnostic card projection (`src/core/subagent/view.ts`
+ * `projectCard`, over the run's append-only fact log) onto pi TUI
+ * components.  The components (`Container` / `Text`) and the width
+ * utilities (`stripTerminalSequences` / `truncateToWidth`) come straight
+ * from the `@earendil-works/pi-tui` package — the same implementation pi's
+ * TUI renders with — so width accounting can never drift from the host's
+ * `doRender` guard.
  *
- * The card renders structural lines as plain text, while markdown-flagged
- * lines (the expanded final output) render through pi-tui's `Markdown`
- * component with pi's FULL markdown theme (`fullMarkdownTheme`) — so markdown
- * content in the card looks exactly like pi's native transcript (colored
- * headings / code blocks / emphasis).  Non-markdown lines (titles, current
- * tool, stats, collapsed previews) stay uncolored.  The semantic hues of the
- * view model are carried by the view model itself (`src/core/subagent/view.ts`
- * + `theme.ts`) and are only used by the fleet widget, never by the card.
+ * The card is a pure projection: it reads the run from the registry by the
+ * render context's `toolCallId` (the driver keys runs by that id) and
+ * projects `run.log` at render time.  It never reads a progress snapshot —
+ * the only `details` field the card knows is the terminal result's
+ * `sessionPath` hydration pointer (see below).
  *
- * Wrapping is delegated to pi's `Text` component, which is ANSI-aware:
- * it splits on `\n` into logical lines and wraps each one so its *visible*
+ * Width discipline: the terminal width only exists inside the component's
+ * `render(width)`, so the `ProjectedCard` component runs `projectCard`
+ * THERE, caching the rendered lines per width (the `CollapsedPreview`
+ * pattern).  Nothing character-truncates at construction time; the
+ * projection caps lines to the render width it is given.
+ *
+ * Wrapping is delegated to pi's `Text` component, which is ANSI-aware: it
+ * splits on `\n` into logical lines and wraps each one so its *visible*
  * width (ANSI escapes count as 0, CJK / full width characters as 2) never
  * exceeds the passed width.
  *
  * Title ownership (mirroring the pi-subagents extension's division of
  * labour): `renderCall` renders ONLY the single title line
- * `⠋ subagent(<agent>) · <description>` — the prompt preview is omitted
- * because the description already labels the task.  The spinner glyph in
- * that title is read from the shared renderer-state frame, which the
- * running `renderResult` body advances once per rebuild — so the title
+ * `⠋ subagent(<agent>) · <model> · <description>` — the prompt preview is
+ * omitted because the description already labels the task.  The spinner
+ * glyph in that title is read from the shared renderer-state frame, which
+ * the running `renderResult` body advances once per rebuild — so the title
  * animates in lock-step with the body.  The tool-execution component stacks
  * the `renderCall` card with the `renderResult` card (`updateDisplay` adds
  * both, it never replaces), so the running `renderResult` body must NOT
  * render a title — a second title would duplicate the one above it.  On a
- * terminal render `renderCall` yields: it returns an empty container (pi
- * still stacks the call card, but it renders nothing), and the terminal
- * `renderResult` renders its own `✓ / ✗ / ⏹ subagent(<agent>)` title.
+ * terminal render `renderCall` yields: it returns an empty container and
+ * the terminal projection owns the `✓ / ✗ / ⏹` title.
  *
- * Layout (from the agreed visual contract):
- *   - running (isPartial): the stacked `renderCall` title, then the running
- *     body (current tool, recent tools, recent output, stats line).  The
- *     spinner advances via a ~100ms interval that drives
- *     `context.invalidate()` — pi has no periodic re-render for tool cards,
- *     so the extension must drive the animation itself.
- *   - done: `✓ subagent(<agent>)` success / `✗` error / `⏹` aborted (the
- *     stacked call card renders nothing by then).
- *   - collapsed final preview: the first non-empty line of the delivered
- *     result, width-truncated to the viewport (plain text, not markdown);
- *     expanded shows the full result through the `Markdown` component.
- *   - expanded (pi ctrl+o): more recent tools / output lines.
+ * Layout:
+ *   - running (partial render, run in registry): the stacked `renderCall`
+ *     title, then the projected body — current tool, recent tool calls,
+ *     recent outputs, stats, nested children.
+ *   - terminal (run in registry): the projected terminal card — title with
+ *     stats badge, error reason when failed, collapsed preview (expanded
+ *     markdown) of the final output, nested children.
+ *   - terminal after a restart, run missing (or log-less) but the result
+ *     carries `details.sessionPath`: a placeholder line while the
+ *     sub-session jsonl is hydrated into a private log cache
+ *     (`../hydrate.ts` — deliberately NOT the registry, so restored
+ *     finished runs never enter the fleet), then the same terminal
+ *     projection over the hydrated log once `invalidate()` repaints.
+ *   - fallback (no run, no pointer, or an early partial render before the
+ *     driver registered the run): the streamed / delivered result text.
+ *
+ * Coloring discipline: the card body stays UNCOLORED — the view model's
+ * semantic hues are a fleet-widget concern and are never applied here
+ * (markdown lines are the sole exception, styled by pi's markdown theme).
  *
  * @module
  */
@@ -63,14 +72,19 @@ import {
   Text,
   truncateToWidth,
 } from "@earendil-works/pi-tui";
-import type { SubagentProgress } from "../../../core/subagent/driver.js";
-import { childrenOf } from "../../../core/subagent/registry.js";
+import {
+  childrenOf,
+  getRun,
+  type SubagentRun,
+} from "../../../core/subagent/registry.js";
+import type { RunLog } from "../../../core/subagent/run-log.js";
 import {
   type CardLine,
-  renderProgressCard,
+  type CardMeta,
+  projectCard,
   renderProgressTitle,
-  renderResultCard,
 } from "../../../core/subagent/view.js";
+import { beginHydration, hydrationState } from "../hydrate.js";
 import { fullMarkdownTheme, type MarkdownThemeSource } from "./theme.js";
 
 // ---------------------------------------------------------------------------
@@ -91,13 +105,19 @@ export interface PiRenderOptionsLike {
 export interface PiRenderContextLike {
   /** The tool-call arguments (the `description` doubles as the label). */
   args?: SubagentToolArgs;
+  /** The stable tool-call id — the key the driver registers the run
+   * under (registry lookup + hydration cache key). */
+  toolCallId?: string;
   /** Shared renderer state (spinner frame sequence, timer handle). */
   state?: RendererState;
   /** Invalidate this tool-execution component for a redraw (drives the
-   * spinner while partial results stream). */
+   * spinner while partial results stream and the repaint after a cold-
+   * start hydration settles). */
   invalidate?: () => void;
   /** Whether this render is a partial update (false = terminal). */
   isPartial?: boolean;
+  /** Whether the terminal result failed (drives the synthesized title). */
+  isError?: boolean;
 }
 
 /** Structural subset of pi's `ToolRenderContext.state` (renderer state). */
@@ -105,7 +125,8 @@ interface RendererState {
   frame?: number;
   /** The resolved model id published by the running `renderResult` for the
    * stacked `renderCall` title to read (shared per tool-execution
-   * instance, mirroring the spinner frame). */
+   * instance, mirroring the spinner frame).  A fallback for renders
+   * without a registry run; the live path reads the model from the run. */
   model?: string;
 }
 
@@ -116,39 +137,166 @@ interface SubagentToolArgs {
   prompt?: string;
 }
 
-/** The partial/final `AgentToolResult` the card renders from. */
+/**
+ * The partial/final `AgentToolResult` the card renders from.
+ *
+ * `details` is the terminal session pointer only: pi persists a tool
+ * result's `details` (partial ones never reach disk), so the terminal
+ * result carries the sub-session file path and nothing else.  The card
+ * reads it EXCLUSIVELY as the cold-start hydration key — never as a
+ * progress payload (that channel is gone).
+ */
 interface SubagentToolResult {
   content?: Array<{ type?: string; text?: string }>;
-  details?: SubagentProgress;
+  details?: { sessionPath?: string };
 }
 
 // ---------------------------------------------------------------------------
-// Renderer
+// Projection component
+// ---------------------------------------------------------------------------
+
+/** The three inputs one card projection needs, resolved at render time. */
+interface CardProjection {
+  /** The fact log to project (live registry log or hydrated copy). */
+  log: RunLog;
+  /** Run identity / lifecycle beyond the facts. */
+  meta: CardMeta;
+  /** The run's nested subagent runs (registry children, one level deep). */
+  children: SubagentRun[];
+}
+
+/**
+ * A card that projects its content lazily, at the real render width.
+ *
+ * `projectCard` needs the width to cap its lines, but pi only reveals the
+ * width when it calls `render(width)` — so the projection runs there and
+ * the rendered output is cached per width.  Pi rebuilds this component on
+ * every `invalidate()` (the 100ms spinner tick, a partial update, a
+ * hydration repaint), so a live log's new facts are picked up on the next
+ * rebuild; within one instance the cache is exact.
+ */
+class ProjectedCard implements Component {
+  private readonly cache = new Map<number, string[]>();
+
+  /**
+   * @param projection - Resolver for the log / meta / children snapshot.
+   * @param markdownTheme - pi's full markdown theme (markdown lines only).
+   * @param expanded - Whether the card renders in expanded mode.
+   * @param frame - The shared spinner frame (nested-child spinners).
+   */
+  constructor(
+    private readonly projection: () => CardProjection,
+    private readonly markdownTheme: MarkdownTheme,
+    private readonly expanded: boolean,
+    private readonly frame: number,
+  ) {}
+
+  invalidate(): void {
+    this.cache.clear();
+  }
+
+  render(width: number): string[] {
+    const safeWidth = Math.max(1, width);
+    const hit = this.cache.get(safeWidth);
+    if (hit !== undefined) return hit;
+    const { log, meta, children } = this.projection();
+    const lines = projectCard(log, meta, {
+      width: safeWidth,
+      expanded: this.expanded,
+      now: Date.now(),
+      frame: this.frame,
+      children,
+    });
+    const container = new Container();
+    for (const line of lines) addLine(container, line, this.markdownTheme);
+    const rendered = container.render(safeWidth);
+    this.cache.set(safeWidth, rendered);
+    return rendered;
+  }
+}
+
+/**
+ * The card meta of a registry run (identity + lifecycle).
+ *
+ * @param run - The registry entry.
+ * @returns The projection meta.
+ */
+function metaFromRun(run: SubagentRun): CardMeta {
+  return {
+    agent: run.agent,
+    model: run.model,
+    status: run.status,
+    startedAt: run.startedAt,
+    endedAt: run.endedAt,
+    currentTool: run.currentTool,
+    error: run.error,
+  };
+}
+
+/**
+ * Synthesized meta for a restored run the registry does not know.
+ *
+ * A post-restart terminal render knows only the tool-call arguments and
+ * whether the delivered result failed; the lifecycle timestamps are
+ * recovered from the hydrated log's own fact times (the persisted
+ * messages carry them).
+ *
+ * @param args - The tool-call arguments from the render context.
+ * @param isError - Whether the persisted terminal result failed.
+ * @param log - The hydrated fact log (its first / last fact times bound
+ *   the run's lifecycle).
+ * @returns The projection meta.
+ */
+function metaFromRestore(
+  args: SubagentToolArgs,
+  isError: boolean,
+  log: RunLog,
+): CardMeta {
+  const facts = log.facts();
+  return {
+    agent: args.agent,
+    status: isError ? "error" : "done",
+    startedAt: facts.length > 0 ? facts[0].at : 0,
+    endedAt: facts.length > 0 ? facts[facts.length - 1].at : undefined,
+  };
+}
+
+/**
+ * The delivered / streamed text of a result (the fallback body).
+ *
+ * @param result - The pi tool result.
+ * @returns The first text part's text (empty when there is none).
+ */
+function deliveredText(result: SubagentToolResult): string {
+  return result.content?.[0]?.type === "text"
+    ? (result.content[0].text ?? "")
+    : "";
+}
+
+// ---------------------------------------------------------------------------
+// Line rendering
 // ---------------------------------------------------------------------------
 
 /**
- * Render one view-model line as a pi `Text` child.
+ * Render one view-model line as a pi child component.
  *
- * Non-markdown lines stay uncolored: the semantic hue of the line is carried
- * by the view model itself and ignored here — no `theme.fg` call is ever
- * made for them.  Markdown-flagged lines are the exception, rendering with
- * pi's full markdown theme.
+ * Non-markdown lines stay uncolored: the semantic hue of the line is
+ * carried by the view model itself and ignored here — no `theme.fg` call
+ * is ever made for them.  Markdown-flagged lines are the exception,
+ * rendering with pi's full markdown theme.
  *
- * A markdown-flagged line (the terminal final output, expanded) is rendered
- * through pi-tui's `Markdown` component with pi's FULL markdown theme
- * (built by `fullMarkdownTheme` from the renderer's `theme`) — structure is
- * parsed (headings, lists, code blocks, spacing) and styled exactly like pi's
- * native transcript (colored headings / code blocks / emphasis).  A
- * `truncateToWidth`-flagged line (the collapsed final-output preview) renders
- * as a single width-truncated line: the width is only known at
+ * A markdown-flagged line (the terminal final output, expanded) is
+ * rendered through pi-tui's `Markdown` component with pi's FULL markdown
+ * theme — structure is parsed (headings, lists, code blocks, spacing) and
+ * styled exactly like pi's native transcript.  A `truncateToWidth`-flagged
+ * line (the collapsed final-output preview, the error reason) renders as
+ * a single width-truncated line: the width is only known at
  * `render(width)`, so a thin component truncates there with pi's own
  * width-aware `truncateToWidth` semantics and strips the ANSI resets it
- * emits, keeping the collapsed preview plain.  All other lines render as
- * plain `Text`.
+ * emits, keeping the card plain.  All other lines render as plain `Text`.
  *
- * A line that carries `segments` renders its flat concatenated `text` (the
- * per-segment hues are a widget-only concern): the card stays uncolored for
- * these and never wraps or strips any segment.
+ * A line that carries `segments` renders its flat concatenated `text`
+ * (the per-segment hues are a widget-only concern).
  *
  * @param container - The container to add the line to.
  * @param line - The view-model line (text + semantic hue).
@@ -197,30 +345,34 @@ class CollapsedPreview implements Component {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Renderers
+// ---------------------------------------------------------------------------
+
 /**
  * Build the tool-call card (`renderCall`).
  *
- * Shown when the subagent tool call first renders, then re-rendered on each
- * `invalidate()` while partial results stream.  While the run is partial it
- * renders ONLY the single animated title line
- * `⠋ subagent(<agent>) · <description>` — the prompt preview is omitted
- * because the description already labels the task, and a preview would read
- * as noise.  The spinner glyph is read (not advanced) from the shared
- * renderer-state frame, which the running `renderResult` body increments on
- * each rebuild — so both stacked cards animate in lock-step.  The
- * tool-execution component stacks this card above the running
- * `renderResult` body, so the body must NOT render a title (a second title
- * would duplicate the one above it).
+ * Shown when the subagent tool call first renders, then re-rendered on
+ * each `invalidate()` while partial results stream.  While the run is
+ * partial it renders ONLY the single animated title line
+ * `⠋ subagent(<agent>) · <model> · <description>` — the prompt preview is
+ * omitted because the description already labels the task.  The model
+ * badge is read from the registry run (the driver publishes it as soon as
+ * the sub-session resolves one); the spinner glyph is read (not advanced)
+ * from the shared renderer-state frame, which the running `renderResult`
+ * body increments on each rebuild — so both stacked cards animate in
+ * lock-step.
  *
  * On a terminal render (`isPartial === false`) this returns an empty
- * container: pi stacks the renderCall card forever, so the running title
- * must yield to the terminal `renderResult`'s own `✓ / ✗ / ⏹` title — an
- * empty container renders nothing, handing full title ownership to the
- * result card and clearing any frozen spinner glyph.
+ * container: pi stacks the call card forever, so the running title must
+ * yield to the terminal `renderResult`'s own `✓ / ✗ / ⏹` title — an empty
+ * container renders nothing, handing full title ownership to the result
+ * card and clearing any frozen spinner glyph.
  *
  * @param args - The tool-call arguments (agent / description / prompt).
- * @param context - The tool render context (shared renderer state for the
- *   spinner frame, `isPartial` for the running/terminal switch).
+ * @param context - The tool render context (tool-call id for the registry
+ *   run lookup, shared renderer state for the spinner frame, `isPartial`
+ *   for the running/terminal switch).
  * @returns A component tree (empty once the run is terminal).
  */
 export function renderCall(
@@ -228,20 +380,23 @@ export function renderCall(
   context?: PiRenderContextLike,
 ): Component {
   const container = new Container();
-  // Terminal: yield the title to the renderResult terminal branch — an empty
-  // container renders nothing (pi still stacks the call card, but it stays
-  // blank, so the `✓ / ✗ / ⏹` title below is not duplicated).
+  // Terminal: yield the title to the renderResult terminal branch — an
+  // empty container renders nothing (pi still stacks the call card, but it
+  // stays blank, so the `✓ / ✗ / ⏹` title below is not duplicated).
   if (context?.isPartial === false) return container;
 
-  const state = (context?.state ?? {}) as RendererState;
-  // Read-only: the running renderResult body owns the frame counter so each
-  // rebuild advances the frame exactly once for both stacked cards.
+  const state = context?.state ?? {};
+  const run = getRun(context?.toolCallId ?? "");
+  // Read-only: the running renderResult body owns the frame counter so
+  // each rebuild advances the frame exactly once for both stacked cards.
   const frame = state.frame ?? 0;
   const line = renderProgressTitle(
     args.agent,
     args.description,
     frame,
-    state.model,
+    // Live path: the registry run carries the model.  The state copy is
+    // the fallback for renders without a registry run (startup race).
+    run?.model ?? state.model,
   );
   container.addChild(new Text(line.text, 0, 0));
   return container;
@@ -250,33 +405,37 @@ export function renderCall(
 /**
  * Build the result card (`renderResult`).
  *
- * Renders the live running card when the result is a partial update
- * (`isPartial`), otherwise the terminal success / error / aborted card.
- * The structured progress is read from `result.details`; a missing or
- * unshaped `details` falls back to the text content snapshot.  Structural
- * lines (titles, current tool, stats, collapsed previews) are plain text;
- * markdown-flagged lines (the expanded final output) render with pi's full
- * markdown theme built from the `theme` argument.
+ * The card is a lazy projection over the run's fact log: the component it
+ * returns runs `projectCard` inside `render(width)` (see `ProjectedCard`),
+ * looking the run up by the render context's `toolCallId`.  A terminal
+ * render for a run the registry does not have (post-restart restore) — or
+ * one the history scanner rebuilt with an empty log — hydrates the log
+ * from the terminal result's `details.sessionPath` (see `../hydrate.ts`):
+ * a placeholder renders while the sub-session jsonl parses
+ * asynchronously, then `context.invalidate()` repaints with the full
+ * terminal card.  Without any log source the card falls back to the
+ * streamed / delivered text.
  *
- * Title ownership: the running branch renders only the body — the static
- * title lives in the stacked `renderCall` card, and a second title would
- * duplicate it.  The terminal branch renders its own `✓ / ✗ / ⏹` title
- * (the stacked call card is cleared by then).
+ * Title ownership: the RUNNING projection emits no title line (the
+ * stacked `renderCall` owns it); only the terminal projection carries the
+ * `✓ / ✗ / ⏹` title.
  *
  * Spinner animation: pi has no periodic re-render for tool cards, so the
- * running branch drives the animation itself.  While `isPartial` is true
- * it starts (idempotently) a ~100ms interval that calls `context.invalidate()`
- * (which rebuilds this card and re-renders — advancing the shared spinner
- * frame); on a terminal render the interval is cleared.  Timers are tracked
- * per render-context instance (isolated across concurrent subagent cards)
- * and `unref()`'d so a finished run can never hold the process open.
+ * running branch drives the animation itself.  While the run is active it
+ * starts (idempotently) a ~100ms interval calling
+ * `context.invalidate()` — which rebuilds this card, picking up facts
+ * appended since the last paint; once the registry run is terminal (or on
+ * any terminal render) the interval is cleared.  Timers are tracked per
+ * render-context instance (isolated across concurrent subagent cards) and
+ * `unref()`'d so a finished run can never hold the process open.
  *
  * @param result - The pi tool result (partial or final).
  * @param options - Render options (`expanded`, `isPartial`).
- * @param theme - The pi `Theme` (duck-typed) used to build the full
+ * @param theme - The pi `Theme` (duck-typed), used to build the full
  *   markdown theme for markdown-flagged lines.
- * @param context - The tool render context (renderer state for the spinner,
- *   `invalidate` for the animation timer).
+ * @param context - The tool render context (tool-call id for the registry
+ *   run lookup, renderer state for the spinner, `invalidate` for the
+ *   animation timer and the hydration repaint).
  * @returns A component tree.
  */
 export function renderResult(
@@ -285,65 +444,104 @@ export function renderResult(
   theme: MarkdownThemeSource,
   context?: PiRenderContextLike,
 ): Component {
-  const container = new Container();
-  const expanded = options.expanded === true;
   const isPartial = options.isPartial === true;
-  const details = result.details;
-  // The full markdown theme: markdown-flagged lines render exactly like
-  // pi's native transcript (colored headings / code blocks / emphasis).
+  const state = context?.state ?? {};
+  const toolCallId = context?.toolCallId ?? "";
+  const run = getRun(toolCallId);
+  // Active = a partial render whose registry run has not gone terminal.
+  // A terminal run needs no animation ticks even when a late partial
+  // render arrives (e.g. a result update racing the finish).
+  const active = isPartial && (run === undefined || run.status === "running");
+  if (active) state.frame = (state.frame ?? 0) + 1;
+  manageSpinnerTimer(state, active, context?.invalidate);
+  const frame = state.frame ?? 0;
+  const expanded = options.expanded === true;
   const markdownTheme = fullMarkdownTheme(theme);
-  // The card's task label comes from the tool-call description (the
-  // `description` argument), read off the render context.
-  const label = context?.args?.description;
 
-  if (
-    details !== undefined &&
-    typeof details === "object" &&
-    details.output !== undefined
-  ) {
-    // Advance the spinner frame once per render via the shared state.
-    const state = (context?.state ?? {}) as RendererState;
-    state.frame = (state.frame ?? 0) + 1;
-    // Publish the resolved model id onto the shared state so the stacked
-    // `renderCall` title (which cannot see the progress details) shows the
-    // same badge as this terminal title.  The running body reads it on the
-    // next rebuild; the terminal title reads it from `details` directly.
-    if (details.model !== undefined) state.model = details.model;
+  // Publish the resolved model for the stacked renderCall title (the
+  // fallback path for renderers without a registry run read it from
+  // shared state; the live lookup prefers the run itself).
+  if (run?.model !== undefined) state.model = run.model;
 
-    // This run's nested subagent delegations, looked up by the run id the
-    // tool stamped onto the streamed details (the pi tool-call id).  The
-    // card appends them one level deep below its own region.
-    const runId = details.runId;
-    const children =
-      typeof runId === "string" && runId.length > 0 ? childrenOf(runId) : [];
-
-    const lines = isPartial
-      ? renderProgressCard(
-          details,
-          label,
+  // Registry hit: project the run's log.  A terminal run with an empty
+  // log is the restored-scanner case (the history scanner rebuilds runs
+  // without facts) — hydration below upgrades it; until a hydrated log
+  // exists the empty terminal projection (title + "(no output)") renders.
+  const sessionPath = result.details?.sessionPath;
+  const canHydrate =
+    toolCallId.length > 0 &&
+    !isPartial &&
+    typeof sessionPath === "string" &&
+    sessionPath.length > 0;
+  if (run !== undefined) {
+    const emptyTerminal = !active && run.log.facts().length === 0;
+    if (emptyTerminal && canHydrate) {
+      const hydration = hydrationState(toolCallId);
+      if (hydration.kind === "ready") {
+        return new ProjectedCard(
+          () => ({
+            log: hydration.log,
+            meta: metaFromRun(run),
+            children: childrenOf(run.id),
+          }),
+          markdownTheme,
           expanded,
-          Date.now(),
-          state.frame,
-          children,
-        )
-      : renderResultCard(details, label, expanded, children, state.frame);
-
-    for (const line of lines) addLine(container, line, markdownTheme);
-    manageSpinnerTimer(state, isPartial, context?.invalidate);
-    return container;
+          frame,
+        );
+      }
+      if (hydration.kind !== "failed") {
+        // Missing → start the load; pending → wait for the in-flight
+        // one.  Either way paint the placeholder until the settle
+        // invalidate.
+        beginHydration(toolCallId, sessionPath, context?.invalidate);
+        return new Text("(restoring subagent transcript…)", 0, 0);
+      }
+      // Failed load: fall through — the empty terminal projection beats
+      // nothing, and the run's own fields still carry the truth.
+    }
+    return new ProjectedCard(
+      () => ({
+        log: run.log,
+        meta: metaFromRun(run),
+        children: childrenOf(run.id),
+      }),
+      markdownTheme,
+      expanded,
+      frame,
+    );
   }
 
-  // Fallback: render the text snapshot (non-TUI / unshaped details).
-  //
-  // Defensive timer cleanup: this branch is not reachable in practice — the
-  // spinner timer only starts from the shaped-partial branch above, and a
-  // terminal render always inherits the final partial's `details` — but if it
-  // ever is reached after a partial render, clearing the timer closes the
-  // loop instead of leaking an animation interval.
-  const state = (context?.state ?? {}) as RendererState;
-  manageSpinnerTimer(state, false, context?.invalidate);
-  const text =
-    result.content?.[0]?.type === "text" ? (result.content[0].text ?? "") : "";
+  // Cold-start restore with no registry run at all (the history scanner
+  // has not rebuilt it either): hydrate the log from the terminal
+  // result's sub-session pointer.  The hydrated log lives in a private
+  // cache keyed by tool-call id and is NEVER registered — the fleet must
+  // not suddenly list restored finished runs.
+  if (canHydrate) {
+    const hydration = hydrationState(toolCallId);
+    if (hydration.kind === "ready") {
+      const meta = metaFromRestore(
+        context?.args ?? {},
+        context?.isError === true,
+        hydration.log,
+      );
+      return new ProjectedCard(
+        () => ({ log: hydration.log, meta, children: [] }),
+        markdownTheme,
+        expanded,
+        frame,
+      );
+    }
+    if (hydration.kind !== "failed") {
+      beginHydration(toolCallId, sessionPath, context?.invalidate);
+      return new Text("(restoring subagent transcript…)", 0, 0);
+    }
+    // Failed load: fall through to the delivered-text fallback.
+  }
+
+  // Fallback: the streamed text (partial, before the driver registered
+  // the run) or the delivered result text (terminal, no log source).
+  const container = new Container();
+  const text = deliveredText(result);
   if (text.length > 0) {
     container.addChild(new Text(text, 0, 0));
   }
@@ -354,8 +552,8 @@ export function renderResult(
  * The interval-driven spinner handle stored in the shared renderer state.
  *
  * Tracked on `state` (the render-context state object) so timers are
- * isolated per tool-execution instance: concurrent subagent cards each get
- * their own handle, and a terminal render clears only its own.
+ * isolated per tool-execution instance: concurrent subagent cards each
+ * get their own handle, and a terminal render clears only its own.
  */
 interface SpinnerTimerState {
   /** The active animation interval, or undefined when idle. */
@@ -365,25 +563,26 @@ interface SpinnerTimerState {
 /**
  * Start (idempotently) or clear the spinner animation timer.
  *
- * While a partial result is rendering, a ~100ms interval calls the render
- * context's `invalidate()` to drive the spinner; on a terminal (or fallback)
- * render the timer is cleared.  Idempotent: re-rendering a partial never
- * stacks a second interval, and the handle is `unref()`'d so a finished run
- * never keeps the process alive.  The timer state lives on the shared
- * renderer state object, keyed to the tool-execution instance.
+ * While the run is active, a ~100ms interval calls the render context's
+ * `invalidate()` to drive the spinner and pick up appended facts; on a
+ * terminal render the timer is cleared.  Idempotent: re-rendering an
+ * active run never stacks a second interval, and the handle is
+ * `unref()`'d so a finished run never keeps the process alive.  The timer
+ * state lives on the shared renderer state object, keyed to the
+ * tool-execution instance.
  *
  * @param state - The shared renderer state (cast to include the timer).
- * @param isPartial - Whether the current render is a partial update.
- * @param invalidate - The render context's `invalidate` callback (absent in
- *   tests / non-TUI renders, in which case no timer is started).
+ * @param active - Whether the run still needs animation ticks.
+ * @param invalidate - The render context's `invalidate` callback (absent
+ *   in tests / non-TUI renders, in which case no timer is started).
  */
 function manageSpinnerTimer(
   state: RendererState,
-  isPartial: boolean,
+  active: boolean,
   invalidate: (() => void) | undefined,
 ): void {
   const timerState = state as RendererState & SpinnerTimerState;
-  if (isPartial) {
+  if (active) {
     if (
       timerState.spinnerTimer === undefined &&
       typeof invalidate === "function"
@@ -402,11 +601,12 @@ function manageSpinnerTimer(
 /**
  * The renderer surface attached to the subagent tool contribution.
  *
- * `renderCall` / `renderResult` are stateless closures over nothing but the
- * view model; pi invokes them with its real `Theme` / render context.  The
- * `theme` argument is forwarded to `renderResult`, which uses it to build
- * the full markdown theme for markdown-flagged lines; `renderCall` renders
- * only a plain-text title, so it does not need the theme.
+ * `renderCall` / `renderResult` are closures over the host-agnostic
+ * projection machinery; pi invokes them with its real `Theme` / render
+ * context.  The `theme` argument is forwarded to `renderResult`, which
+ * uses it to build the full markdown theme for markdown-flagged lines;
+ * `renderCall` renders only a plain-text title, so it does not need the
+ * theme.
  */
 export function buildSubagentCardRenderer(): {
   renderCall: (args: unknown, theme: unknown, context?: unknown) => unknown;

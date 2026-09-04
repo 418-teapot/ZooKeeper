@@ -3,42 +3,76 @@
  *
  * When the user presses enter on a selected run in the `zoo` fleet widget,
  * the pi entry point opens a full-screen read-only overlay that renders the
- * run sub-session's transcript — the initial history replayed from its
- * persisted JSONL file once, then a live view driven by event-driven
- * appends while the inspected run is still running.  This
- * module is the only pi-touching layer for that surface: it maps the parsed
- * pi session records directly onto pi-tui components mounted into the
- * official `ScrollView` (pi's chat-area scroll component), mirroring how
- * `card.ts` owns the pi Component / theme mapping for the subagent card.
+ * run's transcript.  The overlay is a pure projection over the run's data
+ * stream (`src/core/subagent/run-log.ts`) it is handed: it walks the log's
+ * current facts and subscribes once to `log.subscribe` for live updates —
+ * this module never replays a session file and there is no event bus.
  *
- * Projection-free rendering: there is no intermediate line projection and no
- * physical-line slicing — every pi record becomes one or more pi-tui
+ * Where that log comes from is the opener's business, and it is not always
+ * an in-memory stream: the pi history scanner rebuilds runs after a restart
+ * carrying lifecycle metadata only, so their logs are empty even though the
+ * full transcript survives on disk in the sub-session file.  For such a run
+ * the pi entry point hydrates the facts first (shared cache in
+ * `src/adapters/pi/hydrate.ts`, the same one the inline card uses) and opens
+ * this overlay on the rebuilt log — see `enterRun` in `src/pi.ts`.  A run
+ * whose log is still empty because that load failed opens with the
+ * `emptyNotice` line (`TRANSCRIPT_UNAVAILABLE_NOTICE`) instead of the plain
+ * empty-transcript line, so the surface explains itself rather than lying.
+ *
+ * This module is the only pi-touching layer for that surface: it maps the
+ * facts directly onto pi-tui components mounted into the official
+ * `ScrollView` (pi's chat-area scroll component), mirroring how `card.ts`
+ * owns the pi Component / theme mapping for the subagent card.
+ *
+ * Projection-free rendering: there is no intermediate line projection and
+ * no physical-line slicing — every fact becomes one or more pi-tui
  * components rendered in full:
- *   - user text renders through pi's native `UserMessageComponent` (text
- *     extracted from the message content, mirroring pi's own projection);
- *   - assistant text and `thinking` blocks render through pi's native
- *     `AssistantMessageComponent` with `hideThinkingBlock = false`, so
- *     thinking renders in full (dimmed via pi's official `thinkingText`
- *     color), together with pi's stopReason error / abort notices;
- *   - a `toolCall` paired with its `toolResult` renders through pi's native
- *     `ToolExecutionComponent` (the same component pi's interactive mode uses
- *     for the main session) — the tool's own `renderCall` / `renderResult`
- *     produce the exact native shell (bash preview + fold hint, read /
- *     grep / ls call formats, edit diff preview).  The component owns the
- *     collapsed/expanded view: collapsed is pi's default folded style,
- *     `ctrl+o` flips every tool component to expanded (full output).  A
- *     `toolCall` whose construction fails (unknown tool, missing pi theme)
+ *   - a `user_message` fact renders through pi's native
+ *     `UserMessageComponent` (pi's own user-message box + markdown
+ *     rendering) — this is how the delegation prompt the run was started
+ *     with appears at the head of the transcript;
+ *   - a `message_end` fact renders through pi's native
+ *     `AssistantMessageComponent` with `hideThinkingBlock = false`, so text
+ *     and `thinking` parts render in full (thinking dimmed via pi's
+ *     official `thinkingText` color);
+ *   - a `tool_start` fact mounts pi's native `ToolExecutionComponent` (the
+ *     same component pi's interactive mode uses for the main session) in
+ *     its pending form — the tool's own `renderCall` produces the exact
+ *     native shell — so a call without its end fact stays visible as
+ *     running;
+ *   - the matching `tool_end` fact feeds that component its result
+ *     (`updateResult`), producing the same folded/expanded view pi's own
+ *     chat shows.  Pairing uses the host tool-call id when present;
+ *     id-less facts pair by tool name in FIFO order.  A `tool_start` whose
+ *     native component cannot be built (unknown tool, missing pi theme)
  *     falls back to the accent `→ <name>` line plus its JSON arguments as a
- *     fenced code block; an orphan `toolResult` (no matching call in the
- *     transcript) falls back to its full text verbatim through a `Text`
- *     component — never markdown, so bash / tool output is not mangled.
+ *     fenced code block; a `tool_end` with no paired native start (or a
+ *     fallback-rendered start) appends its result text through a
+ *     `Text` component — never markdown, so bash / tool output is not
+ *     mangled, and with its terminal control sequences stripped, so foreign
+ *     output cannot restyle or drive the overlay.
  *
- * Scrolling is delegated to the official pi-tui `ScrollView`: the record
- * components are mounted into one `ScrollView` that owns the scroll state
- * (scroll offset, page / line stepping, clamping, start / end).  Because pi
+ * Streaming: the forming head of a run — its in-flight assistant message —
+ * is NOT a fact; the log delivers it as transient partial content parts (see
+ * `RunLog.setPartial`), text and thinking together.  While a partial exists
+ * the overlay renders it as a trailing `AssistantMessageComponent` updated in
+ * place per delta (pi's own streaming idiom, `updateContent(msg, true)`),
+ * handing over the parts unchanged so the native component's own thinking
+ * styling applies to a reasoning stream exactly as it does to the finalized
+ * message.  Retirement is mechanical and needs no bookkeeping here: the log
+ * delivers the empty-partial event immediately before the fact that
+ * finalizes the message, on the same stream, so the live surface is replaced
+ * by the completed component and the body never shows a message twice.  A
+ * restored (hydrated) or historical log has no partial, so nothing streams;
+ * the surface is simply never mounted.
+ *
+ * Scrolling is delegated to the official pi-tui `ScrollView`: the fact
+ * components are mounted into one `ScrollView`, which holds the scroll
+ * offset the windowing reads (the overlay owns where the window looks — one
+ * viewport anchor, see `createTranscriptOverlay`).  Because pi
  * composites overlay components by calling `render(width)` directly —
  * bypassing the layout system whose clipping would window a `ScrollView`
- * child — this overlay windows the rendered body rows by `scrollView.scrollTop`
+ * child — this overlay windows the rendered body rows by `scrollTop`
  * itself, after syncing the `ScrollView`'s layout via `updateLayout`.  The
  * keyboard forwards `↑↓/jk` (line), `PageUp/PageDown` (page, matching pi's
  * `PAGE_SCROLL_OVERLAP` convention), and `Home/End` (start / end) to the
@@ -46,37 +80,18 @@
  * focused overlay in fullscreen mode only) steps one line per notch;
  * `esc` / `q` call the `done` callback to close.
  *
- * Live updates: while the inspected run is still running (the host wires a
- * `childSession` — the sub-session id the run created), the overlay
- * subscribes to the live-transcript bus (`src/adapters/pi/live-transcript.ts`),
- * which the subagent driver feeds with the child session's stream events.
- * Assistant text and thinking render incrementally as the accumulated
- * partial messages stream in (`message_start` / `message_update` mount and
- * re-render one in-place streaming surface at the body tail); `message_end`
- * discards that surface and appends the finalized record, so the final
- * rendering is identical to the historical/replay rendering.  Tool activity
- * is visible while it runs: `tool_execution_start` mounts a native
- * `ToolExecutionComponent` (pi's pending shell) at the body tail,
- * `tool_execution_end` feeds it the result, and once the paired
- * `toolResult` record enters the transcript the record walk renders the
- * call at its replay position and the live component is retired — nothing
- * renders twice, and the converged layout is replay-identical.  `agent_end`
- * closes the stream: a streaming surface left by a run that aborted before
- * its final `message_end` is dropped so no frozen partial lingers (live
- * tool components keep their last state).  The scroll
- * state follows the familiar chat semantics: a view glued to the end before
- * an append or a streaming update stays glued (the new tail becomes
- * visible), any other offset is preserved (clamped to the new content).
- * The subscription is dropped on close (`esc` / `q`).  A historical run (no
- * `childSession` wired) renders the final file once — the file-only path.
- *
- * The initial render is always a one-time file replay through the official
- * parser; live events then append on top.  A run opened mid-flight replays
- * the file first and subscribes afterwards — the open path is synchronous
- * (pi invokes the overlay factory synchronously), so replayed history and
- * live events cannot structurally overlap; a per-message fingerprint dedup
- * additionally skips any live event whose message is already in the
- * replayed history.
+ * Live updates: the overlay keeps exactly ONE subscription — `log.subscribe`
+ * on the run's ordered data stream — and projects each fact onto components
+ * appended to the body (a `tool_end` updates its paired component in place),
+ * while each partial delivery drives or retires the streaming surface.  Never
+ * a full rebuild.  An append that retires a partial changes the body twice in
+ * its one dispatch, which shows nothing in between: pi renders only after the
+ * synchronous dispatch returns.  The viewport is one
+ * anchor — the tail, or a body line — so a mutation needs no
+ * save/restore: a tail anchor follows the newest content as facts arrive and
+ * as the partial grows, a line anchor keeps pointing at its line, clamped
+ * into the scrollable range when the content shrinks under it.  The
+ * subscription is dropped on close (`esc` / `q`) and via `dispose`.
  *
  * Layout contract:
  *   - The overlay covers the full terminal (row 0 / col 0, width and height
@@ -99,35 +114,29 @@
  *     every mounted tool component: collapsed = pi's default folded style
  *     (bash shows a preview + fold hint), expanded = the full output.
  *
- * Rendering strategy: message records render through pi's own
- * `UserMessageComponent` / `AssistantMessageComponent` / `ToolExecutionComponent`
- * imported from `@earendil-works/pi-coding-agent` (added as a devDependency;
- * pi's extension loader aliases that specifier to the bundled entry at
- * runtime, so the components are the exact ones pi's interactive mode uses).
- * They are constructed statically from the parsed records — `render(width)`
- * never executes a tool.  The components render through the coding-agent
+ * Rendering strategy: facts render through pi's own
+ * `AssistantMessageComponent` / `ToolExecutionComponent` imported from
+ * `@earendil-works/pi-coding-agent` (added as a devDependency; pi's
+ * extension loader aliases that specifier to the bundled entry at runtime,
+ * so the components are the exact ones pi's interactive mode uses).  They
+ * are constructed statically from the facts — `render(width)` never
+ * executes a tool.  The components render through the coding-agent
  * module-level `theme` singleton (`initTheme`), which pi has already
  * initialized by the time an overlay can open; in tests the theme is
  * initialized from the package's built-in dark theme.
  *
- * Parsing strategy: the session file goes through pi's official
- * `parseSessionEntries` / `sessionEntryToContextMessages` (the same parser
- * pi's session manager uses), so the persisted JSONL — including session
- * headers and non-message records — is projected exactly as pi would.
- *
- * An unreadable session file or an empty transcript renders a one-line
- * explanation instead of crashing.
+ * An empty fact log renders a one-line "(empty transcript)" explanation
+ * instead of crashing; the opener can replace that line with its own
+ * `emptyNotice` (e.g. the unavailable-transcript notice after a failed
+ * hydration).
  *
  * @module
  */
 
-import { readFileSync } from "node:fs";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
   AssistantMessageComponent,
   getMarkdownTheme,
-  parseSessionEntries,
-  sessionEntryToContextMessages,
   ToolExecutionComponent,
   UserMessageComponent,
 } from "@earendil-works/pi-coding-agent";
@@ -138,13 +147,23 @@ import {
   Markdown,
   matchesKey,
   ScrollView,
+  stripTerminalSequences,
   Text,
   type TUI,
   truncateToWidth,
   visibleWidth,
 } from "@earendil-works/pi-tui";
-import { subscribeTranscript } from "../live-transcript.js";
-import { type PiHistoryEntry, readSessionCwd } from "../subagent-scan.js";
+import type {
+  LogEvent,
+  MessageEndFact,
+  MessagePart,
+  RunFact,
+  RunLog,
+  TextPart,
+  ToolEndFact,
+  ToolStartFact,
+  UserMessageFact,
+} from "../../../core/subagent/run-log.js";
 import type { MarkdownThemeSource } from "./theme.js";
 
 /** Fallback viewport height when the terminal height is unknown. */
@@ -152,6 +171,29 @@ export const TRANSCRIPT_VIEWPORT_FALLBACK = 12;
 
 /** Minimum viewport height so a tiny terminal still shows content. */
 const MIN_VIEWPORT_ROWS = 3;
+
+/**
+ * Dim notice shown when an empty log cannot be restored from disk.
+ *
+ * The pi entry point hands this as `emptyNotice` when a run's transcript
+ * hydration failed (its persisted sub-session is gone or unparseable), so
+ * the overlay states the reason instead of the bare "(empty transcript)"
+ * line, which would read as "this run produced nothing".
+ */
+export const TRANSCRIPT_UNAVAILABLE_NOTICE =
+  "(transcript unavailable — session file unreadable)";
+
+/**
+ * Dim notice shown when a finished run has neither facts nor a session file.
+ *
+ * The pi entry point hands this as `emptyNotice` when the hydration gate has
+ * nothing to restore from: the run recorded no fact on its log AND reports no
+ * sub-session path, which is what a run that failed or was aborted before its
+ * prompt ever reached the host looks like.  The bare "(empty transcript)"
+ * line would blame the run's output instead of the missing record.
+ */
+export const TRANSCRIPT_NOT_RECORDED_NOTICE =
+  "(no transcript was recorded for this run)";
 
 /**
  * Fixed chrome rows: the title line plus the bottom hint line.
@@ -195,7 +237,8 @@ const SGR_MOUSE_BODY = /^\[<(\d+);(\d+);(\d+)[Mm]$/;
  */
 function wheelStepFromSgr(data: string): number | undefined {
   // CSI introducer first: ESC as a string escape, then the control-free body.
-  if (!data.startsWith("\u001b[")) return undefined;
+  const csi = `${String.fromCharCode(27)}[`;
+  if (!data.startsWith(csi)) return undefined;
   const sgr = SGR_MOUSE_BODY.exec(data.slice(1));
   if (sgr === null) return undefined;
   const button = Number.parseInt(sgr[1], 10);
@@ -222,6 +265,89 @@ export function computeViewportRows(rows: number | undefined): number {
   return Math.max(MIN_VIEWPORT_ROWS, rows - FIXED_OVERLAY_ROWS);
 }
 
+/**
+ * The `scrollTop` that puts the last body line at the bottom of the window.
+ *
+ * Content shorter than the viewport cannot scroll, so the tail position is
+ * then 0 (the single view shows the whole body and counts as "at the end").
+ *
+ * @param bodyLines - The rendered body line count.
+ * @param viewportRows - The visible body rows.
+ * @returns The tail scroll offset (>= 0).
+ */
+function tailScrollTop(bodyLines: number, viewportRows: number): number {
+  return Math.max(0, bodyLines - viewportRows);
+}
+
+/**
+ * Where the window is looking — the overlay's only viewport state.
+ *
+ * - `tail` — glued to the last body line (the chat-follow intent): the newest
+ *   content stays on screen as facts append and as the stream grows.
+ * - `line` — glued to body line `lineIndex`, the rendered row of the body at
+ *   the width of the last measure: the view keeps showing that line while
+ *   content is appended above or below it.
+ *
+ * The scroll offset is not state — it is derived from an anchor plus the
+ * measured content height (see `resolveAnchor`) and only ever written from
+ * it, so the two can never disagree.  A body line is the stable unit the view
+ * holds: the window scrolls in whole rendered rows, so a within-line offset
+ * would be a second encoding of the same position and is deliberately not
+ * tracked.  Line identity holds within a width (transcript rows are appended
+ * at the tail or rewritten in place); a re-wrap at a new width moves rows, so
+ * an anchor survives a resize as the row it pointed at, re-clamped into the
+ * scrollable range by the next measure.
+ */
+type ViewportAnchor = { kind: "tail" } | { kind: "line"; lineIndex: number };
+
+/** The anchor that follows the end of the body (the open state). */
+const TAIL_ANCHOR: ViewportAnchor = { kind: "tail" };
+
+/**
+ * The top row an anchor resolves to for a measured body.
+ *
+ * A tail anchor is the tail offset; a line anchor is its line, clamped into
+ * the scrollable range.  The clamp is geometry only — it never re-interprets
+ * a line anchor as a follow, which is what keeps a shrinking body from
+ * silently starting to tail.
+ *
+ * @param anchor - The current viewport anchor.
+ * @param bodyLines - The rendered body line count.
+ * @param viewportRows - The visible body rows.
+ * @returns The `scrollTop` the anchor means (>= 0, <= the tail offset).
+ */
+function resolveAnchor(
+  anchor: ViewportAnchor,
+  bodyLines: number,
+  viewportRows: number,
+): number {
+  const tail = tailScrollTop(bodyLines, viewportRows);
+  if (anchor.kind === "tail") return tail;
+  return Math.min(tail, Math.max(0, anchor.lineIndex));
+}
+
+/**
+ * The anchor for a desired top row, under the chat convention.
+ *
+ * A row at or past the end of the scrollable range is the tail anchor (that
+ * is how a step back down re-engages the follow); any earlier row pins its
+ * line.  Only an explicit movement goes through here — a content change
+ * never re-anchors, so the tail re-engagement is always the user's doing.
+ *
+ * @param row - The requested top row (may be out of range; it is clamped).
+ * @param bodyLines - The rendered body line count.
+ * @param viewportRows - The visible body rows.
+ * @returns The anchor that means that row.
+ */
+function anchorAtRow(
+  row: number,
+  bodyLines: number,
+  viewportRows: number,
+): ViewportAnchor {
+  if (row >= tailScrollTop(bodyLines, viewportRows)) return TAIL_ANCHOR;
+  return { kind: "line", lineIndex: Math.max(0, row) };
+}
+
 /** Structural subset of pi's `TUI` the overlay uses. */
 export interface TranscriptTuiLike {
   /** Request a re-render (pi drives the overlay render). */
@@ -237,10 +363,20 @@ export type TranscriptThemeLike = MarkdownThemeSource;
 export interface TranscriptOverlayDeps {
   /** The overlay title line (e.g. `beaver · <label>`). */
   title: string;
-  /** The pi session records (from the official parser), in source order. */
-  entries: PiHistoryEntry[];
-  /** An optional notice line replacing the transcript body. */
-  notice?: string;
+  /**
+   * The inspected run's data stream.  Its current facts form the initial
+   * projection; later deliveries — appended facts and the streaming partial
+   * alike — arrive through the single subscription this overlay takes (a
+   * terminal run's log simply never delivers again).
+   */
+  log: RunLog;
+  /**
+   * Replacement for the "(empty transcript)" line while the log has no facts
+   * (e.g. `TRANSCRIPT_UNAVAILABLE_NOTICE` after a failed hydration).  Absent
+   * → the default line.  The line is clipped to the terminal width, never
+   * wrapped, so a notice has to stay short.
+   */
+  emptyNotice?: string;
   /**
    * Optional colorizer for the inspected run's agent.
    *
@@ -252,10 +388,9 @@ export interface TranscriptOverlayDeps {
    */
   borderColorize?: (text: string) => string;
   /**
-   * The working directory the sub-session ran in (the session header's
-   * `cwd`).  Feeds the native tool renderers' render context (e.g. `read`'s
-   * compact call classification).  Absent → empty (the tool renderers fall
-   * back to their non-cwd formats).
+   * The working directory the sub-session ran in.  Feeds the native tool
+   * renderers' render context (e.g. `read`'s compact call classification).
+   * Absent → empty (the tool renderers fall back to their non-cwd formats).
    */
   cwd?: string;
   /** The live pi TUI. */
@@ -264,153 +399,62 @@ export interface TranscriptOverlayDeps {
   theme: TranscriptThemeLike;
   /** Close the overlay (pi's `ui.custom` done callback). */
   done(result: undefined): void;
-  /**
-   * Optional child-session id for live event-driven updates.
-   *
-   * When provided, the overlay subscribes to the live-transcript bus
-   * (`src/adapters/pi/live-transcript.ts`) for this session's streaming
-   * lifecycle, finalized messages, tool-execution bookends, and run-end
-   * marker: assistant partials render incrementally, tool calls mount live
-   * native components as they execute, and each finalized message appends
-   * its record as it arrives — no polling.  Absent → the overlay renders a
-   * static snapshot (the historical-run path).
-   */
-  childSession?: string;
 }
 
 /**
- * Join the text content of a pi user content value (string or text parts).
+ * Join the text of a tool result's content parts.
  *
- * Mirrors pi's own user-text projection (interactive-mode's
- * `getUserMessageText`): a string content is used directly, an array joins
- * the `text` parts in order.
+ * The RunLog stores tool results as text parts only; the joined text feeds
+ * the verbatim fallback rendering.
  *
- * @param content - The pi user content (raw string or content-part array).
+ * @param parts - The result content parts.
  * @returns The joined text (empty when there is none).
  */
-function userText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  const parts: string[] = [];
-  for (const part of content) {
-    if (
-      part !== null &&
-      typeof part === "object" &&
-      (part as { type?: unknown }).type === "text"
-    ) {
-      const text = (part as { text?: unknown }).text;
-      if (typeof text === "string") parts.push(text);
+function resultText(parts: readonly TextPart[]): string {
+  const texts: string[] = [];
+  for (const part of parts) {
+    if (typeof part.text === "string") texts.push(part.text);
+  }
+  return texts.join("");
+}
+
+/** The tab and line-feed bytes, the only control bytes kept as whitespace. */
+const TAB = 0x09;
+/** The line-feed byte. */
+const LF = 0x0a;
+
+/**
+ * Strip the terminal control bytes a foreign string may carry.
+ *
+ * The fallback tool-result path renders text the plugin never produced — a
+ * custom tool can return anything, including ANSI / OSC escape sequences and
+ * raw C0 / C1 control bytes.  Those would reach the terminal untouched
+ * through `Text` and let tool output restyle the overlay, move the cursor, or
+ * rewrite the line it is printed on.  The card documents a no-ANSI contract
+ * for everything it renders, so this path honors the same one: escape
+ * sequences go through pi's own `stripTerminalSequences`, and the remaining
+ * non-printing bytes (C0 except tab / line feed, DEL, and C1) are dropped
+ * here.  The scan is by code point rather than regex because Biome forbids
+ * control characters in regex literals.
+ *
+ * @param text - The untrusted text (may contain escape / control sequences).
+ * @returns The same text with its visible characters preserved and its
+ *   control bytes removed; a plain string is returned unchanged.
+ */
+export function stripControlSequences(text: string): string {
+  const stripped = stripTerminalSequences(text);
+  let out = "";
+  for (const char of stripped) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code === TAB || code === LF) {
+      out += char;
+    } else if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) {
+      // Non-printing: drop it.
+    } else {
+      out += char;
     }
   }
-  return parts.join("");
-}
-
-/**
- * Extract the joined text of the text content parts of a tool result.
- *
- * Only `text` parts count — image / other parts are ignored — mirroring the
- * projection used across the pi adapter.
- *
- * @param content - The pi content parts (array or raw string).
- * @returns The joined text (empty when there is none).
- */
-function resultText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  const parts: string[] = [];
-  for (const part of content) {
-    if (
-      part !== null &&
-      typeof part === "object" &&
-      (part as { type?: unknown }).type === "text"
-    ) {
-      const text = (part as { text?: unknown }).text;
-      if (typeof text === "string") parts.push(text);
-    }
-  }
-  return parts.join("");
-}
-
-/**
- * The paired facts of a tool invocation extracted from the transcript.
- *
- * A `toolCall` content block is the call half, matched by call id with a
- * `toolResult` message (the result half).  Both halves are fed into pi's
- * native `ToolExecutionComponent`.
- */
-interface ToolResultFacts {
-  /** The tool's display name. */
-  toolName: string;
-  /** The result content parts (text / image), as pi's tool result shape. */
-  content: Array<{
-    type: string;
-    text?: string;
-    data?: string;
-    mimeType?: string;
-  }>;
-  /** Whether the tool failed. */
-  isError: boolean;
-  /** The structured result details (e.g. the edit diff), when present. */
-  details?: unknown;
-}
-
-/** A tool result content part as pi's native component takes it. */
-type ToolResultPart = {
-  type: string;
-  text?: string;
-  data?: string;
-  mimeType?: string;
-};
-
-/**
- * Normalize a raw pi tool-result content value into content parts.
- *
- * A string content becomes a single text part; an array passes through as
- * the parts it already is (pi persists `text` / `image` parts); anything
- * else yields an empty list.  Mirrors pi's own projection so the live and
- * replay paths feed `ToolExecutionComponent.updateResult` the same shape.
- *
- * @param rawContent - The raw `content` value of a tool result.
- * @returns The content parts (possibly empty).
- */
-function toolResultParts(rawContent: unknown): ToolResultPart[] {
-  if (Array.isArray(rawContent)) return rawContent as ToolResultPart[];
-  if (typeof rawContent === "string" && rawContent.length > 0) {
-    return [{ type: "text", text: rawContent }];
-  }
-  return [];
-}
-
-/**
- * Index every `toolResult` message in the transcript by call id.
- *
- * Runs before the record walk so a `toolCall` block can resolve its result
- * regardless of message order (pi persists call then result, but the walk
- * renders assistant messages first).
- *
- * @param entries - The pi session records.
- * @returns The call-id → result-facts index.
- */
-function indexToolResults(
-  entries: PiHistoryEntry[],
-): Map<string, ToolResultFacts> {
-  const results = new Map<string, ToolResultFacts>();
-  for (const entry of entries) {
-    const message = entry.message;
-    if (message === null || typeof message !== "object") continue;
-    const msg = message as Record<string, unknown>;
-    if (msg.role !== "toolResult") continue;
-    const callId = msg.toolCallId;
-    if (typeof callId !== "string" || callId.length === 0) continue;
-    const toolName = typeof msg.toolName === "string" ? msg.toolName : "tool";
-    results.set(callId, {
-      toolName,
-      content: toolResultParts(msg.content),
-      isError: msg.isError === true,
-      ...(msg.details !== undefined ? { details: msg.details } : {}),
-    });
-  }
-  return results;
+  return out;
 }
 
 /**
@@ -418,18 +462,19 @@ function indexToolResults(
  *
  * The component renders the tool's own `renderCall` (through the built-in
  * tool definitions) — the exact shell pi's interactive mode shows while a
- * tool executes in the main session.  Construction and `updateResult` are
- * static (no tool execution); `render(width)` only reflects state.  The
- * component needs pi's module-level theme singleton (`initTheme`), which pi
- * initializes at startup; construction is guarded so an uninitialized theme
- * (e.g. a host without pi wiring) falls back instead of crashing the
- * overlay.  Returns `undefined` on failure.
+ * tool executes in the main session.  Construction is static (no tool
+ * execution); `render(width)` only reflects state.  The component needs
+ * pi's module-level theme singleton (`initTheme`), which pi initializes at
+ * startup; construction is guarded so an uninitialized theme (e.g. a host
+ * without pi wiring) falls back instead of crashing the overlay.  Returns
+ * `undefined` on failure.
  *
- * @param callId - The tool call id.
+ * @param callId - The pairing id (the fact's tool-call id, or a synthetic
+ *   stand-in for id-less facts).
  * @param name - The tool name.
  * @param args - The tool call arguments.
  * @param tui - The overlay's TUI surface (for the component's redraw hook).
- * @param cwd - The session's working directory (render context).
+ * @param cwd - The working directory (render context).
  * @returns The native component, or `undefined` when it cannot be built.
  */
 function buildNativeToolComponent(
@@ -440,7 +485,7 @@ function buildNativeToolComponent(
   cwd: string,
 ): ToolExecutionComponent | undefined {
   try {
-    return new ToolExecutionComponent(
+    const component = new ToolExecutionComponent(
       name,
       callId,
       args,
@@ -450,6 +495,16 @@ function buildNativeToolComponent(
       tui as unknown as TUI,
       cwd,
     );
+    // pi keeps a private generic text display for tools WITHOUT a renderer
+    // definition; the overlay's documented form for such a tool is the
+    // structured fallback (arrow line + full JSON args).  Probe pi's own
+    // definition check (private in the typing, present at runtime) and
+    // decline the component when it reports no definition.
+    const defined = (
+      component as unknown as { hasRendererDefinition?(): boolean }
+    ).hasRendererDefinition?.();
+    if (defined === false) return undefined;
+    return component;
   } catch {
     // Unknown tool / uninitialized pi theme → the caller falls back to the
     // structured rendering.
@@ -458,49 +513,7 @@ function buildNativeToolComponent(
 }
 
 /**
- * Construct pi's native tool-execution component for a completed tool call.
- *
- * Builds the pending shell (shared with the live-mount path) and immediately
- * folds in the paired result — both guarded, so any construction or renderer
- * failure yields `undefined` and the caller falls back.
- *
- * @param callId - The tool call id.
- * @param name - The tool name.
- * @param args - The tool call arguments.
- * @param result - The paired result facts.
- * @param tui - The overlay's TUI surface (for the component's redraw hook).
- * @param cwd - The session's working directory (render context).
- * @returns The native component, or `undefined` when it cannot be built.
- */
-function createNativeToolComponent(
-  callId: string,
-  name: string,
-  args: unknown,
-  result: ToolResultFacts,
-  tui: TranscriptTuiLike,
-  cwd: string,
-): ToolExecutionComponent | undefined {
-  const component = buildNativeToolComponent(callId, name, args, tui, cwd);
-  if (component === undefined) return undefined;
-  try {
-    component.updateResult(
-      {
-        content: result.content,
-        details: result.details,
-        isError: result.isError,
-      },
-      false,
-    );
-    return component;
-  } catch {
-    // A throwing result renderer → the caller falls back to the structured
-    // rendering.
-    return undefined;
-  }
-}
-
-/**
- * Build the fallback components for a `toolCall` without a native renderer.
+ * Build the fallback components for a tool call without a native renderer.
  *
  * Renders the accent `→ <name>` line plus the complete arguments as a JSON
  * fenced code block (through `Markdown`), so every parameter stays visible.
@@ -523,157 +536,112 @@ function fallbackToolCallComponents(name: string, args: unknown): Component[] {
 }
 
 /**
- * Build the pi-tui components for one pi session record.
+ * Build the streaming assistant message for a log partial.
  *
- * Projection-free mapping — every record becomes one or more components
- * rendered in full:
- *   - a `user` message → pi's native `UserMessageComponent` (its own
- *     userMessageBg box + markdown rendering);
- *   - an `assistant` message → pi's native `AssistantMessageComponent` with
- *     `hideThinkingBlock = false` (thinking renders in full, dimmed via
- *     pi's official `thinkingText` color, together with stopReason error /
- *     abort notices), and every `toolCall` block rendered separately: a
- *     call paired with its `toolResult` → pi's native
- *     `ToolExecutionComponent` (when it can be built); a call whose result
- *     is not recorded yet but whose live component is mounted → rendered by
- *     that live component at the body tail (nothing added here, so it never
- *     appears twice); a failed / unknown tool or a call with neither →
- *     fallback to the accent `→ <name>` line plus the complete JSON
- *     arguments;
- *   - an orphan `toolResult` (no matching `toolCall` in the transcript) →
- *     a `Text` with the full verbatim text (never markdown);
- *   - everything else (non-message records, empty content, unrecognized
- *     roles) → no components.
+ * The log holds a partial as content parts (host-neutral text + thinking),
+ * so the live surface is built as an assistant message carrying exactly
+ * those parts — the same shape pi itself feeds
+ * `AssistantMessageComponent.updateContent` while a model streams, and the
+ * same projection `assistantComponents` gives the finalized fact.  That is
+ * what makes a reasoning stream read like one: the native component applies
+ * its own thinking styling (dimmed, italic, via pi's `thinkingText` color)
+ * to the thinking parts, so the streaming surface needs no styling logic of
+ * its own.
  *
- * @param entry - The pi session record.
- * @param results - The call-id → result-facts index (for pairing).
- * @param renderedToolCalls - The call ids already rendered natively (an
- *   orphan result must skip its text form when its call rendered).
- * @param liveToolIds - Call ids with a mounted live tool component (a call
- *   whose result is not recorded yet renders at the body tail from its live
- *   component — the rebuild must not also draw the fallback for it).
- * @param tui - The overlay's TUI surface (for native tool components).
- * @param cwd - The session's working directory (render context).
- * @returns The component list for the record (empty when nothing renders).
+ * @param parts - The accumulated content parts of the in-flight message.
+ * @returns The partial message payload for the native component.
  */
-function recordComponents(
-  entry: PiHistoryEntry,
-  results: Map<string, ToolResultFacts>,
-  renderedToolCalls: Set<string>,
-  liveToolIds: ReadonlySet<string>,
-  tui: TranscriptTuiLike,
-  cwd: string,
-): Component[] {
-  const message = entry.message;
-  if (message === null || typeof message !== "object") return [];
-  const msg = message as Record<string, unknown>;
-  const role = msg.role;
-
-  if (role === "user") {
-    const text = userText(msg.content);
-    if (text.trim().length === 0) return [];
-    return [new UserMessageComponent(text)];
-  }
-
-  if (role === "assistant") {
-    const content = msg.content;
-    if (!Array.isArray(content)) return [];
-    const out: Component[] = [];
-    // The official component renders the text / thinking blocks (thinking in
-    // full, dimmed via pi's `thinkingText` color) plus the stopReason error
-    // / abort notices — exactly pi's native assistant message.  It does not
-    // render toolCall blocks, so those are rendered separately below.
-    out.push(
-      new AssistantMessageComponent(msg as unknown as AssistantMessage, false),
-    );
-    for (const blockRaw of content) {
-      if (blockRaw === null || typeof blockRaw !== "object") continue;
-      const block = blockRaw as Record<string, unknown>;
-      if (block.type !== "toolCall") continue;
-      const name = typeof block.name === "string" ? block.name : "tool";
-      const callId = block.id;
-      const args = block.arguments;
-      const result =
-        typeof callId === "string" ? results.get(callId) : undefined;
-      if (result !== undefined) {
-        const native = createNativeToolComponent(
-          callId as string,
-          name,
-          args,
-          result,
-          tui,
-          cwd,
-        );
-        if (native !== undefined) {
-          out.push(native);
-          renderedToolCalls.add(callId as string);
-          continue;
-        }
-      }
-      // A live tool component already renders this still-unrecorded call at
-      // the body tail — drawing the fallback on top would render it twice.
-      if (typeof callId === "string" && liveToolIds.has(callId)) continue;
-      // No paired result (interrupted call) or no native renderer → the
-      // structured fallback keeps the arguments visible.
-      out.push(...fallbackToolCallComponents(name, args));
-    }
-    return out;
-  }
-
-  if (role === "toolResult") {
-    const callId = msg.toolCallId;
-    // The call half already rendered this result through the native
-    // component — skip the orphan text form.
-    if (typeof callId === "string" && renderedToolCalls.has(callId)) {
-      return [];
-    }
-    const text = resultText(msg.content);
-    if (text.trim().length === 0) return [];
-    return [new Text(text, 0, 0)];
-  }
-
-  return [];
+function streamingMessage(parts: readonly MessagePart[]): AssistantMessage {
+  return {
+    role: "assistant",
+    content: [...parts],
+  } as unknown as AssistantMessage;
 }
 
 /**
- * Build the transcript overlay component.
+ * Build the native component for a completed assistant-message fact.
+ *
+ * The official component renders the text / thinking blocks (thinking in
+ * full, dimmed via pi's `thinkingText` color) — exactly pi's native
+ * assistant message.  A RunLog fact is by definition complete, so no
+ * streaming flag and no stopReason notices apply.
+ *
+ * @param fact - The message-end fact.
+ * @returns The assistant message component.
+ */
+function assistantComponents(fact: MessageEndFact): Component[] {
+  const message = {
+    role: "assistant",
+    content: fact.content,
+  } as unknown as AssistantMessage;
+  return [new AssistantMessageComponent(message, false)];
+}
+
+/**
+ * Build the native component for a user-message fact.
+ *
+ * The fact carries the instruction the run was given (the delegation prompt,
+ * or a later steered input).  pi's official component renders it in its own
+ * user-message box, so the transcript opens with what the subagent was asked
+ * to do — the same surface pi's main chat shows for the same message.
+ * Blank text renders nothing (an empty box would read as a bug).
+ *
+ * @param fact - The user-message fact.
+ * @returns The component list (empty when there is nothing to show).
+ */
+function userComponents(fact: UserMessageFact): Component[] {
+  if (fact.text.trim().length === 0) return [];
+  return [new UserMessageComponent(fact.text)];
+}
+
+/**
+ * Build the transcript overlay component from a run's fact log.
  *
  * The component renders the full terminal surface: a title line, the
  * scrolling transcript window, and a bottom hint line (`↑↓/jk scroll ·
  * esc/q close`).  Every row spans the full terminal width (padded to the
  * end), so the base layer never shows through.
  *
- * The body is a component tree of the pi records mounted into the official
- * pi-tui `ScrollView`, which owns the scroll state.  Because pi composites
- * overlay components via `render(width)` directly (no layout-system clipping
- * for overlays), this component windows the `ScrollView`'s full rendered body
- * rows by `scrollTop` each render, syncing the `ScrollView`'s layout through
- * `updateLayout` first so `scrollTop` stays clamped to the content.
+ * The body is a component tree of the projected fact components mounted
+ * into the official pi-tui `ScrollView`, which holds the scroll offset the
+ * windowing reads.  Because pi composites overlay components via
+ * `render(width)` directly (no layout-system clipping for overlays), this
+ * component windows the `ScrollView`'s full rendered body rows by
+ * `scrollTop` each render, syncing the `ScrollView`'s layout through
+ * `updateLayout` first.  `scrollTop` is the anchor's derived value: it is
+ * written from the anchor, never read back as state.
  *
- * `↑↓` / `jk` scroll by one line, `PageUp/PageDown` by a page (viewport minus
- * `PAGE_SCROLL_OVERLAP`, mirroring pi's transcript), and `Home/End` jump to
- * the start / end — all through `ScrollView.scrollBy` / `scrollTo` / `scrollToStart`
- * / `scrollToEnd`.  `esc` / `q` close via the `done` callback.
+ * `↑↓` / `jk` scroll by one line, `PageUp/PageDown` by a page (viewport
+ * minus `PAGE_SCROLL_OVERLAP`, mirroring pi's transcript), and `Home/End`
+ * jump to the start / end — every one of them an anchor update (see
+ * `stepAnchorBy` / `reanchor`), which commits the derived offset.  `esc` and
+ * `q` close via the `done` callback.
  *
- * Live updates: when `deps.childSession` is provided (a running run), the
- * overlay subscribes to the live-transcript bus (`src/adapters/pi/live-transcript.ts`)
- * for that session's stream events: assistant `message_start` /
- * `message_update` render the accumulating partial in place on a single
- * streaming surface at the body tail, `message_end` discards that surface
- * and appends the finalized record (fingerprint-deduped against the
- * replayed history), `tool_execution_start` / `tool_execution_end` mount
- * and finalize live native tool components, and `agent_end` drops a
- * streaming surface the run left dangling — event-driven, no polling, no
- * full file re-parse.  The
- * scroll state follows the familiar chat semantics: a view glued to the end
- * stays glued (the new tail becomes visible), any other offset is preserved
- * (clamped to the new content length).  The `ctrl+o` expanded state is
- * carried across the append rebuild.  The subscription is dropped on close
- * (`esc` / `q`) and via `dispose`.  A run without a `childSession` renders
- * the final file once (the historical-run path).
+ * Viewport anchor: the window's position is a single state variable, an
+ * anchor into the body — the tail, or a body line — and it starts at the
+ * tail, so the overlay opens showing the most recent content (the same view
+ * as pressing `End`), for live runs and restored ones alike.  The scroll
+ * offset is derived from that anchor plus the content height, and because
+ * the height is only known once the body has rendered at a width the
+ * derivation runs in `render` (and on the keyboard / append paths through
+ * `commitAnchor`, which measures the body and syncs the `ScrollView`
+ * layout).  A scroll step moves the anchor: one that leaves the tail pins
+ * the line it lands on, one that reaches the tail hands the view back to the
+ * tail anchor (`End` anchors to the tail, `Home` to the first line).
  *
- * @param deps - The overlay deps (title, entries, theme, done, optional
- *   live-update surfaces).
+ * Live updates: the overlay takes ONE subscription — `deps.log.subscribe` on
+ * the run's ordered data stream — and projects each appended fact onto
+ * components added to the body tail (a `tool_end` updates its paired
+ * component in place), while each partial delivery drives or retires the
+ * streaming surface — never a full rebuild.  Scroll
+ * semantics follow the familiar chat convention with no bookkeeping around a
+ * mutation: a tail anchor keeps following (the new tail becomes visible), a
+ * line anchor keeps pointing at its line (clamped into the scrollable range
+ * when an in-place change shrinks the body under it).  The shared `ctrl+o`
+ * expansion is carried across appends.  The subscription is dropped on
+ * close (`esc` / `q`) and via `dispose`.
+ *
+ * @param deps - The overlay deps (title, run data stream, theme, done).
  * @returns The overlay component (with the mounted `ScrollView` exposed as
  *   `scrollView` for tests and host wiring).
  */
@@ -682,121 +650,212 @@ export function createTranscriptOverlay(
 ): Component & { scrollView: ScrollView; dispose(): void } {
   const { theme, tui, done } = deps;
 
-  // The session's working directory (from the session header) feeds the
-  // native tool renderers' render context.  Absent → empty string.
-  let cwd = deps.cwd ?? "";
+  // The working directory feeds the native tool renderers' render context.
+  // Absent → empty string (the renderers fall back to their non-cwd forms).
+  const cwd = deps.cwd ?? "";
   // The shared `ctrl+o` tool expansion state (collapsed = pi's default
   // folded style, expanded = the full output).  The ToolExecutionComponent
   // keeps `expanded` private, so the overlay tracks the toggle itself and
-  // re-applies it to every freshly built tool component on a live append.
+  // applies it to every freshly built tool component (initial projection
+  // and live appends alike).
   let toolsExpanded = false;
-  // The notice line (e.g. "(transcript unavailable)" / "(empty transcript)").
-  // Mutable: a live append that renders real content clears an earlier
-  // "unavailable" notice (a run opened mid-flight before pi created the
-  // session file still shows the live stream).
-  let notice: string | undefined = deps.notice;
-  // The last render width — the append path uses it to size the body-line
-  // counts for the end-follow decision (it must match the ScrollView's
-  // width).
+  // The last render width — the measurement paths use it so the body-line
+  // counts they compare against match the ScrollView's width.
   let lastWidth = 80;
-  // The rendered body line count at the last render / rebuild at `lastWidth`,
-  // cached so a live append makes its end-follow decision without re-rendering
-  // the pre-append body (one full render pass saved per append).  `undefined`
-  // until the first render / rebuild — an append before any render (defensive)
-  // falls back to measuring the body once.
-  let cachedBodyLines: number | undefined;
-  // The live tool components mounted from the `tool_execution_start`
-  // bookends, keyed by tool-call id.  A component enters the body tail on
-  // the call's start (pi's native pending shell — the tool's activity is
-  // visible the moment it runs, before any record is finalized), receives
-  // its result on `tool_execution_end`, and leaves the map when the paired
-  // `toolResult` record enters the transcript (the record walk then renders
-  // the call at its replay position — the live twin is dropped so nothing
-  // renders twice).  A call whose run aborted before its result was
-  // recorded keeps its live component: it shows the tool's last state
-  // (running, or the delivered result), mirroring how pi's own chat leaves
-  // finished tool components on screen after a run ends.
-  const liveToolComponents = new Map<string, ToolExecutionComponent>();
-
+  // The viewport state — one anchor, nothing else (see `ViewportAnchor`).  It
+  // starts at the tail so the overlay opens at the bottom — the recent end of
+  // the run — and stays tail-anchored while live facts append, until a scroll
+  // step moves the view off the tail.  `ScrollView.scrollTop` is not state
+  // beside it: it is the anchor's derived value, rewritten from here.
+  let anchor: ViewportAnchor = TAIL_ANCHOR;
+  // The tool components mounted from `tool_start` facts and still awaiting
+  // their `tool_end`, keyed by the pairing key (the fact's tool-call id
+  // when present, else a synthetic id).  A start without its end renders
+  // as running — the same view pi's own chat keeps for an unfinished call.
+  const pendingTools = new Map<string, ToolExecutionComponent>();
+  // Keys whose `tool_start` rendered through the structured fallback (no
+  // native component to feed the result to); their `tool_end` appends the
+  // result text verbatim below the fallback block.
+  const fallbackTools = new Set<string>();
+  // FIFO queues of pending synthetic keys per tool name, pairing id-less
+  // facts (pi always reports call ids; the queues are the defensive path).
+  const anonymousPending = new Map<string, string[]>();
+  let anonymousSeq = 0;
   /**
-   * (Re)fill the transcript body container with the record components.
-   *
-   * Recomputes the tool-result index and walks every record, collecting the
-   * native tool components (which own the collapsed/expanded view).  The
-   * container instance is stable — the ScrollView holds it as its single
-   * child — so a refresh clears and refills it in place, keeping the
-   * ScrollView's scroll state alive.  The shared `ctrl+o` expansion is
-   * applied to the fresh tool components (a refresh must not reset it).
-   *
-   * The live tool components (mounted from the tool-execution bookends) are
-   * not records: a call whose result is now recorded was just rendered by
-   * the walk (paired native), so its live component is dropped for good;
-   * a still-unrecorded call's component survives and is re-appended at the
-   * body tail (in mount order) — `body.clear()` took it out of the tree.
-   *
-   * @param entries - The pi session records (in source order).
-   * @param nextCwd - The session's working directory for the tool renderers.
+   * Unsubscribe from the run's data stream (idempotent; called on close and
+   * by `dispose`).
    */
-  const rebuildBody = (entries: PiHistoryEntry[], nextCwd: string): void => {
-    cwd = nextCwd;
-    const results = indexToolResults(entries);
-    const renderedToolCalls = new Set<string>();
-    const liveToolIds = new Set(liveToolComponents.keys());
-    // The streaming surface is not a record: a rebuild refills the body
-    // solely from the record list, which discards it — drop the reference
-    // along with it so the streaming state never points at an orphaned
-    // component (the `message_end` handler removes it before finalizing;
-    // this reset covers any other rebuild path).
-    streamingComponent = undefined;
-    body.clear();
-    for (const entry of entries) {
-      const components = recordComponents(
-        entry,
-        results,
-        renderedToolCalls,
-        liveToolIds,
-        tui,
-        cwd,
-      );
-      for (const component of components) {
-        if (component instanceof ToolExecutionComponent) {
-          component.setExpanded(toolsExpanded);
-        }
-        body.addChild(component);
-      }
-    }
-    for (const callId of [...liveToolComponents.keys()]) {
-      const component = liveToolComponents.get(callId);
-      if (component === undefined) continue;
-      if (results.has(callId)) {
-        // The record walk rendered the call paired with its recorded result
-        // — the live twin is redundant (nothing renders twice).
-        liveToolComponents.delete(callId);
-      } else {
-        body.addChild(component);
-      }
-    }
+  let unsubscribe: (() => void) | undefined;
+  // The live streaming surface: the trailing assistant component showing the
+  // in-flight message, kept in place per streamed delta and replaced by the
+  // finalized fact component when the message closes.  Undefined while
+  // nothing streams.
+  let streamingComponent: AssistantMessageComponent | undefined;
+
+  // The transcript body: every projected fact becomes one or more pi-tui
+  // components, mounted into the official ScrollView (the same component
+  // pi's chat area scrolls with).  The ScrollView owns the scroll state;
+  // this overlay windows the rendered rows by scrollTop (overlays bypass
+  // pi's layout-system clipping).
+  const body = new Container();
+
+  /** Mount components at the body tail. */
+  const addAll = (components: readonly Component[]): void => {
+    for (const component of components) body.addChild(component);
   };
 
-  // The transcript body: every pi record becomes one or more pi-tui
-  // components, mounted into the official ScrollView (the same component pi's
-  // chat area scrolls with).  The ScrollView owns the scroll state; this
-  // overlay windows the rendered rows by scrollTop (overlays bypass pi's
-  // layout-system clipping).
-  const body = new Container();
-  // The live streaming surface: one `AssistantMessageComponent` mounted at
-  // the tail of the body while an assistant message streams (its content is
-  // replaced in place on every accumulated partial).  It is NOT part of the
-  // record list — `message_end` removes it and the record rebuild renders
-  // the finalized message through the normal (replay-identical) path.
-  let streamingComponent: AssistantMessageComponent | undefined;
-  rebuildBody(deps.entries, cwd);
+  /**
+   * Pair a `tool_end` fact with its pending `tool_start` key.
+   *
+   * An id-carrying end pairs by id; an id-less end pops the oldest pending
+   * id-less start of the same tool name (FIFO).  Returns `undefined` when
+   * nothing pairs (the end then renders its result as an orphan text).
+   *
+   * ASSUMPTION: call ids are always present in practice — pi reports a
+   * `toolCallId` on both tool events, so the id-carrying branch is the only
+   * one real transcripts take.  The FIFO fallback exists purely for
+   * anomalous id-less input (foreign/legacy fact logs): without an id there
+   * is no correct pairing for concurrent same-name calls, and oldest-first
+   * is the best effort available (a same-name pair started out of order can
+   * cross-pair, which no key derivation can fix).
+   */
+  const pairToolEnd = (fact: {
+    toolCallId?: string;
+    toolName: string;
+  }): string | undefined => {
+    if (fact.toolCallId !== undefined) return fact.toolCallId;
+    const queue = anonymousPending.get(fact.toolName);
+    if (queue === undefined || queue.length === 0) return undefined;
+    const key = queue.shift() as string;
+    if (queue.length === 0) anonymousPending.delete(fact.toolName);
+    return key;
+  };
+
+  /** Record a pending id-less start key under its tool name. */
+  const enqueueAnonymous = (toolName: string, key: string): void => {
+    const queue = anonymousPending.get(toolName);
+    if (queue === undefined) anonymousPending.set(toolName, [key]);
+    else queue.push(key);
+  };
+
+  /** Project a `tool_start` fact onto the body (pending native or fallback). */
+  const projectToolStart = (fact: ToolStartFact): void => {
+    const key = fact.toolCallId ?? `tool-${anonymousSeq++}`;
+    // A duplicated start for an already-mounted key is ignored (the maps
+    // are the single source for the pairing).
+    if (pendingTools.has(key) || fallbackTools.has(key)) return;
+    if (fact.toolCallId === undefined) enqueueAnonymous(fact.toolName, key);
+    const native = buildNativeToolComponent(
+      key,
+      fact.toolName,
+      fact.args,
+      tui,
+      cwd,
+    );
+    if (native !== undefined) {
+      native.setExpanded(toolsExpanded);
+      pendingTools.set(key, native);
+      addAll([native]);
+      return;
+    }
+    // Unknown tool / missing pi theme → the structured fallback keeps the
+    // arguments visible; the end fact appends its result text below.
+    fallbackTools.add(key);
+    addAll(fallbackToolCallComponents(fact.toolName, fact.args));
+  };
+
+  /** Project a `tool_end` fact: update the paired component or append text. */
+  const projectToolEnd = (fact: ToolEndFact): void => {
+    const key = pairToolEnd(fact);
+    const native = key === undefined ? undefined : pendingTools.get(key);
+    if (key !== undefined && native !== undefined) {
+      pendingTools.delete(key);
+      try {
+        native.updateResult(
+          { content: [...fact.content], isError: fact.isError },
+          false,
+        );
+      } catch {
+        // A throwing renderer must never break the projection; the
+        // component keeps showing its last state.
+      }
+      return;
+    }
+    if (key !== undefined) fallbackTools.delete(key);
+    // Orphan end (no start observed) or a fallback-rendered start: the
+    // result text appends as plain text — never markdown, so tool output is
+    // not mangled, and never raw, so a foreign string cannot drive the
+    // terminal (see `stripControlSequences`).
+    const text = stripControlSequences(resultText(fact.content));
+    if (text.trim().length === 0) return;
+    addAll([new Text(text, 0, 0)]);
+  };
+
+  /**
+   * Project one fact onto the body tree (pure mutation, no bookkeeping).
+   *
+   * The single mapping every path uses — the initial fill over the log's
+   * existing facts and every live append — so the two can never diverge.
+   */
+  const projectFact = (fact: RunFact): void => {
+    if (fact.type === "user_message") addAll(userComponents(fact));
+    else if (fact.type === "message_end") addAll(assistantComponents(fact));
+    else if (fact.type === "tool_start") projectToolStart(fact);
+    else projectToolEnd(fact);
+  };
+
+  // The initial projection: walk the log's facts in order.  The view opens
+  // anchored to the tail (see `anchor`); the first render turns that intent
+  // into a scroll offset once the body has a measurable height.
+  for (const fact of deps.log.facts()) projectFact(fact);
+
+  /**
+   * Show the transient partial on the streaming surface (no bookkeeping).
+   *
+   * Mounts a fresh trailing assistant component the first time a partial is
+   * seen (the overlay may open mid-stream, or subscribe after the run's
+   * first delta) and updates the mounted one in place afterwards, so a
+   * growing transcript never rebuilds the earlier messages.  The partial's
+   * content parts are handed over untouched, so text and thinking stream
+   * with the same rendering the finalized fact gets.
+   */
+  const renderPartial = (parts: readonly MessagePart[]): void => {
+    if (streamingComponent === undefined) {
+      const component = new AssistantMessageComponent(undefined, false);
+      streamingComponent = component;
+      body.addChild(component);
+      component.updateContent(streamingMessage(parts), true);
+      return;
+    }
+    streamingComponent.updateContent(streamingMessage(parts), true);
+  };
+
+  /**
+   * Retire the streaming surface (body mutation only; no scroll bookkeeping).
+   *
+   * Driven by the empty-partial delivery that precedes the fact which
+   * finalized the message, so the completed component takes the tail slot
+   * the streaming one vacates.
+   */
+  const dropStreaming = (): void => {
+    if (streamingComponent === undefined) return;
+    const component = streamingComponent;
+    streamingComponent = undefined;
+    body.removeChild(component);
+  };
+
+  // A log opened mid-stream already carries its partial: mount it after the
+  // existing facts so the tail reads as the growing message.  A restored or
+  // historical log has none, and nothing mounts.
+  const initialPartial = deps.log.partial();
+  if (initialPartial.length > 0) renderPartial(initialPartial);
+
   const scrollView = new ScrollView(body, {
     overscroll: "contain",
     scrollbar: "hidden",
   });
 
-  /** Re-render after a scroll / close. */
+  /** Re-render after a scroll / close / append. */
   const refresh = (): void => {
     tui.requestRender?.();
   };
@@ -807,280 +866,135 @@ export function createTranscriptOverlay(
       return sum + child.render(width).length;
     }, 0);
 
+  /** The body rows one frame shows (the viewport budget). */
+  const viewportBudget = (): number => computeViewportRows(tui.terminal?.rows);
+
   /**
-   * The stable message fingerprint used to dedup live events against the
-   * replayed history.
+   * Commit the anchor: sync the `ScrollView` layout to a measured height and
+   * write the offset the anchor derives.
    *
-   * The live `message_end` event carries the exact message object pi
-   * persisted to the session file (`appendMessage(event.message)` runs after
-   * listener dispatch), so the JSON serialization of the live message equals
-   * the serialization of the replayed message parsed from the file — key
-   * order is preserved through both paths.  A live event whose fingerprint
-   * is already known was already in the replayed history and is skipped.
+   * The only writer of the scroll offset.  The `ScrollView` learns its content
+   * height from `render`, which overlays bypass, so the measured row count is
+   * handed in (at the last render width) and the layout is synced to it before
+   * the derived offset is written — so a movement outside of `render` takes
+   * effect on the frame the host draws, and a host reading `scrollTop` sees
+   * the anchor's value, never a position of its own.
    */
-  const fingerprintOf = (message: unknown): string => {
-    try {
-      return JSON.stringify(message);
-    } catch {
-      return "";
-    }
+  const commitAnchor = (lines: number): void => {
+    const rows = viewportBudget();
+    scrollView.updateLayout(lines, rows, refresh);
+    scrollView.scrollTo(resolveAnchor(anchor, lines, rows));
   };
-  // The fingerprints of the replayed history (the initial records), plus
-  // every live message appended afterwards — a live event that duplicates an
-  // already-rendered message is skipped.
-  const seenFingerprints = new Set<string>(
-    deps.entries.map((entry) => fingerprintOf(entry.message)),
-  );
-  /** The overlay's record list in the same shape as the file-parsed records. */
-  const recordEntries: PiHistoryEntry[] = [...deps.entries];
-
-  /** Unsubscribe from the live-transcript bus (idempotent; called on close
-   * and dispose). */
-  let unsubscribeLive: (() => void) | undefined;
 
   /**
-   * Apply a body mutation preserving the chat-follow scroll state.
+   * Adopt an anchor and commit the offset it derives (the keys, the landing
+   * point of a step).
    *
-   * The pre-change content height comes from the cached line count (the last
-   * render / rebuild at `lastWidth`) — no fresh body render for the
-   * end-follow decision; a defensive fallback measures once when no render /
-   * rebuild happened yet.  After the mutation the body is measured once (and
-   * the cache repopulated), the `ScrollView` layout is synced to the new
-   * height so end-scrolling clamps to the new tail, and a view that was
-   * glued to the end stays glued; any other offset is preserved (clamped to
-   * the new content).
-   *
-   * @param mutate - The body change (record append / streaming mount /
-   *   in-place update / removal).
+   * @param next - The anchor the window moves to.
+   * @param lines - The body row count measured at the last render width.
    */
-  const applyBodyChange = (mutate: () => void): void => {
-    const width = lastWidth;
-    const viewportRows = computeViewportRows(tui.terminal?.rows);
-    const oldLines = cachedBodyLines ?? bodyLines(width);
-    const atEnd = scrollView.scrollTop >= Math.max(0, oldLines - viewportRows);
-    mutate();
-    // The ScrollView only learns the content height in render; sync it now
-    // so scrollToEnd clamps to the NEW content length.  The post-mutation
-    // line count is computed once and cached — the next change reuses it.
-    cachedBodyLines = bodyLines(width);
-    scrollView.updateLayout(cachedBodyLines, viewportRows, refresh);
-    if (atEnd) {
-      scrollView.scrollToEnd();
-    }
+  const reanchor = (next: ViewportAnchor, lines: number): void => {
+    anchor = next;
+    commitAnchor(lines);
     refresh();
   };
 
   /**
-   * Mount the live streaming surface for a new assistant stream.
+   * Move the window by `delta` rows and re-anchor it where it lands.
    *
-   * The surface is one `AssistantMessageComponent` appended to the body and
-   * filled in place on every accumulated partial — never a body rebuild.
-   * A new stream supersedes any dangling surface defensively; in practice
-   * the `agent_end` handler already dropped a surface left by a run that
-   * aborted before its `message_end`.
+   * The step updates the anchor rather than nudging a scroll offset: the row
+   * the view lands on becomes a line anchor, and a row at the end of the body
+   * becomes the tail anchor again — the chat convention (a step off the tail
+   * unpins, a step onto it re-pins).  The landing row is decided against the
+   * measured content height, so the body is measured at the last render width.
    *
-   * @param message - The partial assistant message to render.
+   * @param delta - The rows to move (negative scrolls toward the head).
    */
-  const beginStreaming = (message: unknown): void => {
-    const component = new AssistantMessageComponent(undefined, false);
-    applyBodyChange(() => {
-      if (streamingComponent !== undefined) {
-        body.removeChild(streamingComponent);
-      }
-      streamingComponent = component;
-      body.addChild(component);
-      component.updateContent(message as AssistantMessage, true);
-    });
+  const stepAnchorBy = (delta: number): void => {
+    const rows = viewportBudget();
+    const lines = bodyLines(lastWidth);
+    reanchor(
+      anchorAtRow(resolveAnchor(anchor, lines, rows) + delta, lines, rows),
+      lines,
+    );
   };
 
   /**
-   * Re-render the streaming surface with the accumulated partial message.
+   * Move the window to an absolute row and anchor it there (the `Home` key).
    *
-   * The overlay may subscribe after pi emitted `message_start` (a run
-   * opened mid-stream): the first seen partial then mounts the surface.
-   *
-   * @param message - The accumulated partial assistant message.
+   * @param row - The requested top row (clamped; a row at the end re-pins).
    */
-  const updateStreaming = (message: unknown): void => {
-    if (streamingComponent === undefined) {
-      beginStreaming(message);
+  const stepAnchorToRow = (row: number): void => {
+    const lines = bodyLines(lastWidth);
+    reanchor(anchorAtRow(row, lines, viewportBudget()), lines);
+  };
+
+  /** The rows a page step moves (the viewport minus pi's overlap). */
+  const pageStep = (): number =>
+    Math.max(1, viewportBudget() - PAGE_SCROLL_OVERLAP);
+
+  /**
+   * Apply a body change and commit the anchor.
+   *
+   * The anchor survives the change by itself, so there is nothing to save and
+   * restore: a tail anchor re-points at the new tail (the newest content stays
+   * on screen as facts append or as the stream grows), and a line anchor keeps
+   * pointing at its line while content is appended above or below it.  An
+   * in-place change that shrinks the body clamps the view into the scrollable
+   * range, and — unlike a pin re-derived from geometry — the clamped view does
+   * not start following.
+   *
+   * An append that retires a partial changes the body twice in its one
+   * dispatch (the retirement, then the fact), and that is safe: pi renders only
+   * after the synchronous dispatch returns, so the half-changed body is never
+   * displayed, and each commit measures the body as it stands then.
+   *
+   * @param mutate - The body change (component append / in-place update).
+   */
+  const mutateBody = (mutate: () => void): void => {
+    mutate();
+    commitAnchor(bodyLines(lastWidth));
+    refresh();
+  };
+
+  /**
+   * Project one stream event onto the body.
+   *
+   * The single mapping every live update goes through, driven by the one
+   * subscription the overlay keeps: facts and the forming head arrive on the
+   * same ordered stream, so the overlay never reconstructs which append a
+   * partial belonged to and never retires a streaming surface from a second
+   * callback.
+   *
+   * @param event - The delivered stream event.
+   */
+  const applyEvent = (event: LogEvent): void => {
+    if (event.kind === "fact") {
+      projectFact(event.fact);
       return;
     }
-    const component = streamingComponent;
-    applyBodyChange(() => {
-      component.updateContent(message as AssistantMessage, true);
-    });
+    // The forming head: re-render the trailing live assistant component in
+    // place (text and thinking parts alike).  Growth changes the body height,
+    // so a tail-anchored view keeps following the streaming text while a line
+    // anchor keeps its line.  An empty part list is the retirement — either
+    // the next event on this very stream is the fact that finalizes the
+    // message, or the driver sent its end-of-stream marker.  Retiring with
+    // nothing mounted changes nothing, so an append with no partial (the
+    // usual case for tool facts) leaves the body untouched here.
+    if (event.parts.length === 0) {
+      dropStreaming();
+      return;
+    }
+    renderPartial(event.parts);
   };
 
-  /**
-   * Remove the streaming surface ahead of the `message_end` finalization.
-   *
-   * No-op when nothing streams.  The scroll state is maintained through the
-   * removal the same way as any body change (glued stays glued).
-   */
-  const endStreaming = (): void => {
-    if (streamingComponent === undefined) return;
-    const component = streamingComponent;
-    streamingComponent = undefined;
-    applyBodyChange(() => {
-      body.removeChild(component);
-    });
-  };
-
-  /**
-   * Append a live message to the record list and rebuild the body.
-   *
-   * Rebuilds from the full record list so the tool-result pairing logic
-   * (which indexes every result before walking) resolves the new message
-   * against the previously-rendered history — an assistant message carrying
-   * a `toolCall` block renders as an unpaired call until its `toolResult`
-   * message arrives, then the rebuild pairs them through the native
-   * component.  A paired record also retires the call's live tool
-   * component (see `rebuildBody`).  Scroll semantics follow the familiar
-   * chat convention (a view glued to the end stays glued, any other offset
-   * is preserved); see `applyBodyChange`.  The shared `ctrl+o` expansion is
-   * carried across the rebuild.
-   *
-   * @param message - The finalized message from the live event.
-   */
-  const appendLiveMessage = (message: unknown): void => {
-    const fingerprint = fingerprintOf(message);
-    // An empty fingerprint means the message was not JSON-serializable
-    // (stringify failed); two such messages would share the "" key and the
-    // second would be dropped, so they skip dedup and always append.
-    if (fingerprint !== "" && seenFingerprints.has(fingerprint)) return;
-    if (fingerprint !== "") seenFingerprints.add(fingerprint);
-    recordEntries.push({ type: "message", message });
-    // A live append proves the run's stream is flowing — clear the
-    // "unavailable" notice (the session file may not have existed at open
-    // time for a mid-flight run).
-    if (notice !== undefined) notice = undefined;
-    applyBodyChange(() => {
-      rebuildBody(recordEntries, cwd);
-    });
-  };
-
-  /**
-   * Mount the live native tool component for a call that started executing.
-   *
-   * Same construction the record walk uses (minus the result — the tool is
-   * still running, so pi's native pending shell shows).  The component
-   * enters at the body tail; a rebuild triggered here also retires any
-   * `→ <name>` fallback the record walk had drawn for the same call, so the
-   * call never renders twice.  A construction failure (unknown tool under
-   * an unmapped renderer) simply leaves the record-path rendering in place —
-   * the overlay must never go blind on a live tool.  A duplicated start for
-   * an already-mounted id is ignored (the map is the single source).
-   *
-   * @param callId - The tool call id (the live component's key).
-   * @param toolName - The tool's name.
-   * @param args - The tool call arguments.
-   */
-  const mountLiveTool = (
-    callId: string,
-    toolName: string,
-    args: unknown,
-  ): void => {
-    if (liveToolComponents.has(callId)) return;
-    const component = buildNativeToolComponent(
-      callId,
-      toolName,
-      args,
-      tui,
-      cwd,
-    );
-    if (component === undefined) return;
-    component.setExpanded(toolsExpanded);
-    liveToolComponents.set(callId, component);
-    applyBodyChange(() => {
-      rebuildBody(recordEntries, cwd);
-    });
-  };
-
-  /**
-   * Deliver a finished result to the call's live tool component.
-   *
-   * pi emits `tool_execution_end` before the `toolResult`-role
-   * `message_end`, so this is the first moment the result is visible.  An
-   * end for an id without a mounted component (start missed, or a rebuild
-   * already retired the twin because the result entered the records) is
-   * inert — the record path owns the rendering from there.
-   *
-   * @param callId - The tool call id.
-   * @param result - The raw tool result (duck shape: `content` parts,
-   *   optional `details`).
-   * @param isError - Whether the tool failed.
-   */
-  const finishLiveTool = (
-    callId: string,
-    result: unknown,
-    isError: boolean,
-  ): void => {
-    const component = liveToolComponents.get(callId);
-    if (component === undefined) return;
-    const raw =
-      result !== null && typeof result === "object"
-        ? (result as Record<string, unknown>)
-        : {};
-    applyBodyChange(() => {
-      try {
-        component.updateResult(
-          {
-            content: toolResultParts(raw.content),
-            ...(raw.details !== undefined ? { details: raw.details } : {}),
-            isError,
-          },
-          false,
-        );
-      } catch {
-        // A throwing renderer must never break the live path; the finalized
-        // record rebuild re-renders the pair through the guarded path.
-      }
-    });
-  };
-
-  // Live updates: subscribe to the live-transcript bus for this run's child
-  // session.  The driver forwards the session's stream: `message_start` /
-  // `message_update` (assistant) render the accumulating partial in place on
-  // a single streaming surface, `message_end` discards that surface and
-  // appends the finalized record, `tool_execution_start` /
-  // `tool_execution_end` mount and finalize the live tool components (tool
-  // activity is visible the moment it runs, not only once records finalize),
-  // and `agent_end` closes the stream — event-driven, no full file
-  // re-parse.  A finalized message whose fingerprint already sits in the
-  // replayed history appends nothing (the streaming surface is still
-  // removed, so nothing duplicates or lingers).  The subscription is dropped
-  // on close (and via dispose); a run without a `childSession` wired
-  // renders the final file once (the historical-run path).
-  if (deps.childSession !== undefined) {
-    unsubscribeLive = subscribeTranscript(deps.childSession, (event) => {
-      // Any live event — even a bare streaming delta — proves the run's
-      // stream is flowing, so the "unavailable" notice must clear while the
-      // partial renders (the record path alone cannot recover a stream that
-      // has not finalized yet).
-      if (notice !== undefined) notice = undefined;
-      if (event.type === "message_start") {
-        beginStreaming(event.message);
-      } else if (event.type === "message_update") {
-        updateStreaming(event.message);
-      } else if (event.type === "tool_execution_start") {
-        mountLiveTool(event.toolCallId, event.toolName, event.args);
-      } else if (event.type === "tool_execution_end") {
-        finishLiveTool(event.toolCallId, event.result, event.isError);
-      } else if (event.type === "agent_end") {
-        // The run ended.  A final `message_end` normally already closed the
-        // streaming surface; when the run aborted before it, drop the
-        // dangling partial here so no frozen half-message outlives the run.
-        // Live tool components intentionally stay: each shows its last
-        // state (running, or the result that arrived before the abort) —
-        // the same post-run behavior pi's own chat has.
-        endStreaming();
-      } else {
-        endStreaming();
-        appendLiveMessage(event.message);
-      }
-    });
-  }
+  // Live updates: every delivery on the run's data stream projects onto the
+  // open body (event-driven, no polling; a terminal run streams nothing more,
+  // so the same wiring is inert for it).  Scroll semantics follow the
+  // familiar chat convention (see `mutateBody`).
+  unsubscribe = deps.log.subscribe((event) => {
+    mutateBody(() => applyEvent(event));
+  });
 
   /**
    * Clip a cell to a width and pad it back out (ANSI-width-aware).
@@ -1098,11 +1012,12 @@ export function createTranscriptOverlay(
     },
 
     // pi calls `dispose()` on an overlay component when it closes (the
-    // `ui.custom` done path); the esc/q handler also drops the live
-    // subscription, so the two close routes are both covered and idempotent.
+    // `ui.custom` done path); the esc/q handler also drops the log
+    // subscription, so the two close routes are both covered and
+    // idempotent.
     dispose(): void {
-      unsubscribeLive?.();
-      unsubscribeLive = undefined;
+      unsubscribe?.();
+      unsubscribe = undefined;
     },
 
     handleInput(data: string): void {
@@ -1113,48 +1028,40 @@ export function createTranscriptOverlay(
       // and fall through to the unmatched-key ignore at the end.
       const wheel = wheelStepFromSgr(data);
       if (wheel !== undefined) {
-        scrollView.scrollBy(wheel);
-        refresh();
+        stepAnchorBy(wheel);
         return;
       }
       if (matchesKey(data, "escape") || matchesKey(data, "q")) {
-        unsubscribeLive?.();
-        unsubscribeLive = undefined;
+        unsubscribe?.();
+        unsubscribe = undefined;
         done(undefined);
         return;
       }
+      // Every scroll gesture below is an anchor update: the row the step lands
+      // on becomes the anchor, so no separate follow flag has to be kept in
+      // sync, and the committed offset is the anchor's derived value.
       if (matchesKey(data, "down") || matchesKey(data, "j")) {
-        scrollView.scrollBy(1);
-        refresh();
+        stepAnchorBy(1);
         return;
       }
       if (matchesKey(data, "up") || matchesKey(data, "k")) {
-        scrollView.scrollBy(-1);
-        refresh();
+        stepAnchorBy(-1);
         return;
       }
       if (matchesKey(data, "pageDown")) {
-        scrollView.scrollBy(
-          Math.max(1, scrollView.viewportHeight - PAGE_SCROLL_OVERLAP),
-        );
-        refresh();
+        stepAnchorBy(pageStep());
         return;
       }
       if (matchesKey(data, "pageUp")) {
-        scrollView.scrollBy(
-          -Math.max(1, scrollView.viewportHeight - PAGE_SCROLL_OVERLAP),
-        );
-        refresh();
+        stepAnchorBy(-pageStep());
         return;
       }
       if (matchesKey(data, "home")) {
-        scrollView.scrollToStart();
-        refresh();
+        stepAnchorToRow(0);
         return;
       }
       if (matchesKey(data, "end")) {
-        scrollView.scrollToEnd();
-        refresh();
+        reanchor(TAIL_ANCHOR, bodyLines(lastWidth));
         return;
       }
       // ctrl+o (pi's `app.tools.expand` key) flips every native tool
@@ -1169,14 +1076,17 @@ export function createTranscriptOverlay(
           }
         }
         if (toolComponents.length > 0) {
-          toolsExpanded = !toolsExpanded;
-          for (const component of toolComponents) {
-            component.setExpanded(toolsExpanded);
-          }
-          // Expansion changes the rendered line count; the cached count is
-          // stale until the next render repopulates it.
-          cachedBodyLines = undefined;
-          refresh();
+          // The toggle is a body change like any other: it rewrites the
+          // rendered line count in place, so it goes through `mutateBody`,
+          // which re-commits the anchor — a tail anchor chases the new end, a
+          // line anchor keeps its line and simply re-resolves against the new
+          // height.
+          mutateBody(() => {
+            toolsExpanded = !toolsExpanded;
+            for (const component of toolComponents) {
+              component.setExpanded(toolsExpanded);
+            }
+          });
         }
         return;
       }
@@ -1189,41 +1099,46 @@ export function createTranscriptOverlay(
       // The title line defaults to the fixed BORDER_COLOR; when the pi
       // entry point supplies a `borderColorize` (from the inspected run's
       // `[agent.<name>].color`), the whole title line uses the agent color
-      // instead.  The hint / notices keep their own colors either way.
+      // instead.  The hint keeps its own color either way.
       const titleColor =
         deps.borderColorize ??
         ((text: string): string => theme.fg(BORDER_COLOR, text));
       const dim = (text: string): string => theme.fg(DIM_COLOR, text);
       const hint = dim("↑↓/jk scroll · esc/q close");
-      const viewportRows = computeViewportRows(tui.terminal?.rows);
+      const rows = viewportBudget();
 
-      // Render the ScrollView's full content and sync its layout so
-      // scrollTop is clamped to the content (overlays bypass pi's layout
-      // system, so the ScrollView's viewport height is supplied here).  The
-      // body spans the full terminal width (no side borders to reserve).
+      // Render the ScrollView's full content and derive this frame's window
+      // from the anchor (overlays bypass pi's layout system, so the
+      // ScrollView's viewport height is supplied here).  The body spans the
+      // full terminal width (no side borders to reserve).
       const contentWidth = Math.max(1, safeWidth);
       const fullBody = scrollView.render(contentWidth);
-      cachedBodyLines = fullBody.length;
-      scrollView.updateLayout(fullBody.length, viewportRows, refresh);
-      const top = scrollView.scrollTop;
+      // The anchor is resolved here rather than at construction because the
+      // content height is only known once the body has rendered at a width:
+      // the first render of a restored transcript therefore opens at its last
+      // line (the tail anchor), and facts appended between open and first
+      // render are included.  The layout is synced before the derived offset
+      // is written so it clamps against the height just measured — this path
+      // runs on every frame, so no extra body measure is taken.
+      const top = resolveAnchor(anchor, fullBody.length, rows);
+      scrollView.updateLayout(fullBody.length, rows, refresh);
+      scrollView.scrollTo(top);
 
-      const currentNotice =
-        notice !== undefined
-          ? dim(notice)
-          : fullBody.length === 0
-            ? dim("(empty transcript)")
-            : undefined;
+      const empty =
+        fullBody.length === 0
+          ? dim(deps.emptyNotice ?? "(empty transcript)")
+          : undefined;
 
       // Exactly `termHeight` rows when the terminal height is known: title
-      // line + viewportRows body rows + hint line.  Every row is padded to
+      // line + `rows` body rows + hint line.  Every row is padded to
       // the full terminal width (no base content may bleed through at the
       // line ends — the compositor only overwrites declared columns).
       const out: string[] = [fit(titleColor(deps.title), safeWidth)];
-      for (let i = 0; i < viewportRows; i++) {
+      for (let i = 0; i < rows; i++) {
         const content =
-          currentNotice !== undefined
+          empty !== undefined
             ? i === 0
-              ? currentNotice
+              ? empty
               : ""
             : top + i < fullBody.length
               ? fullBody[top + i]
@@ -1259,54 +1174,27 @@ const OVERLAY_OPTIONS = {
 };
 
 /**
- * Read a session file's raw text (the default `readSessionFile`).
+ * Open the transcript overlay for a registry run's fact log.
  *
- * Returns `undefined` when the file is missing or unreadable — the caller
- * renders the "(transcript unavailable)" notice.
+ * Maps the log's current facts directly onto pi-tui components mounted
+ * into the official `ScrollView`, and opens the full-screen read-only
+ * overlay via the `openOverlay` surface (the pi `ui.custom` call).  The
+ * overlay stays live: while the run is still running, log appends project
+ * onto the open body (see `createTranscriptOverlay`).  Returns whether the
+ * overlay was actually opened: an absent `openOverlay` surface or log
+ * returns `false` (the caller leaves the enter key unconsumed).
  *
- * @param path - The session file path.
- * @returns The raw file text, or `undefined` on read failure.
- */
-function readSessionFileDefault(path: string): string | undefined {
-  try {
-    return readFileSync(path, "utf-8");
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Open the transcript overlay for a run sub-session.
- *
- * Reads the persisted session file (the initial read-at-open snapshot)
- * through pi's official `parseSessionEntries` / `sessionEntryToContextMessages`
- * (the same parser pi's session manager uses), maps each message record
- * directly onto pi-tui components mounted into the official `ScrollView`,
- * and opens the full-screen read-only overlay via the `openOverlay` surface
- * (the pi `ui.custom` call).  Returns whether the overlay was actually
- * opened: an absent `openOverlay` surface or an empty `sessionPath` returns
- * `false` (the caller leaves the enter key unconsumed).
- *
- * While the overlay is open and the inspected run is live, new transcript
- * content arrives event-driven: the overlay subscribes to the live-transcript
- * bus for the run's child session (`childSession`, the sub-session id the
- * run created), renders assistant partials incrementally as they stream,
- * and finalizes each `message_end` record as it arrives — no polling.  An
- * unreadable session file still opens the overlay (the run exists, so the
- * enter key is consumed) but renders a one-line "(transcript unavailable)"
- * notice instead of crashing.
- *
- * `readSessionFile` is injectable for tests (it supplies the raw jsonl
- * text); `readEntries` injects the parsed records directly, bypassing the
- * official parser.  `childSession` — when provided — wires the live
- * event-driven updates for the running run.
- *
- * @param opts - The open options (session path, title, surfaces).
+ * @param opts - The open options (fact log, title, surfaces).
  * @returns True when the overlay was opened.
  */
 export function openTranscriptOverlay(opts: {
-  /** The run's on-disk sub-session file path. */
-  sessionPath: string | undefined;
+  /** The inspected run's fact log (absent → no overlay possible). */
+  log: RunLog | undefined;
+  /**
+   * Replacement for the "(empty transcript)" line while the log has no facts
+   * (see `TRANSCRIPT_UNAVAILABLE_NOTICE`).  Absent → the default line.
+   */
+  emptyNotice?: string;
   /** The overlay title (e.g. `beaver · <label>`). */
   title: string;
   /**
@@ -1315,82 +1203,27 @@ export function openTranscriptOverlay(opts: {
    * the fixed `BORDER_COLOR` default.
    */
   borderColorize?: (text: string) => string;
+  /** The working directory the sub-session ran in (tool render context). */
+  cwd?: string;
   /** The `ui.custom` surface (absent → no overlay possible). */
   openOverlay?: (factory: unknown, options: unknown) => unknown;
-  /**
-   * Injectable raw session-file reader (defaults to reading the file and
-   * parsing it through pi's official `parseSessionEntries`).  Returns the
-   * file text, or `undefined` when the file cannot be read.
-   */
-  readSessionFile?: (path: string) => string | undefined;
-  /**
-   * Injectable parsed-record reader (defaults to the official parser
-   * projection over `readSessionFile`'s text).  When provided, the raw file
-   * is not read.
-   */
-  readEntries?: (path: string) => PiHistoryEntry[] | undefined;
-  /** Injectable session-cwd reader (defaults to the pi header parser). */
-  readCwd?: (path: string) => ReturnType<typeof readSessionCwd>;
-  /**
-   * Optional child-session id for live event-driven updates.
-   *
-   * When provided (a running run), the overlay subscribes to the
-   * live-transcript bus for this session and appends each new message
-   * record as it arrives — no polling.  Absent → the overlay renders the
-   * final file once (the historical-run path).
-   */
-  childSession?: string;
 }): boolean {
-  const { sessionPath, title, openOverlay } = opts;
-  if (sessionPath === undefined || sessionPath.length === 0) return false;
+  const { log, title, openOverlay } = opts;
+  if (log === undefined) return false;
   if (typeof openOverlay !== "function") return false;
-
-  // The entry projection shared by the initial read (the one-time history
-  // replay).
-  const readEntriesFn = (): PiHistoryEntry[] | undefined => {
-    if (opts.readEntries !== undefined) return opts.readEntries(sessionPath);
-    // The official projection: parse the jsonl into file entries, then map
-    // each entry to its context message(s) — the exact parser pi's session
-    // manager uses (headers / non-message records are dropped here).
-    const readSessionFile = opts.readSessionFile ?? readSessionFileDefault;
-    const text = readSessionFile(sessionPath);
-    if (text === undefined) return undefined;
-    // Only the session header is filtered: compaction / branch_summary /
-    // custom_message entries project to context messages, which the record
-    // walk then skips (the overlay renders user / assistant / toolResult
-    // records only).
-    return parseSessionEntries(text)
-      .filter((entry) => entry.type !== "session")
-      .flatMap((entry) => sessionEntryToContextMessages(entry))
-      .map((message) => ({ type: "message", message }));
-  };
-  // The session header's cwd feeds the native tool renderers' render
-  // context; absent (unreadable file / malformed header) the tool renderers
-  // fall back to their non-cwd formats.
-  const readCwd = opts.readCwd ?? readSessionCwd;
-  const cwd = readCwd(sessionPath);
-
-  const entries = readEntriesFn();
-  let notice: string | undefined;
-  let recordEntries: PiHistoryEntry[];
-  if (entries === undefined) {
-    notice = "(transcript unavailable)";
-    recordEntries = [];
-  } else {
-    recordEntries = entries;
-    if (recordEntries.length === 0) notice = "(empty transcript)";
-  }
 
   openOverlay(
     (tui: unknown, theme: unknown, _keybindings: unknown, done: unknown) =>
       createTranscriptOverlay({
         title,
-        entries: recordEntries,
-        ...(notice !== undefined ? { notice } : {}),
+        log,
+        ...(opts.emptyNotice !== undefined
+          ? { emptyNotice: opts.emptyNotice }
+          : {}),
         ...(opts.borderColorize !== undefined
           ? { borderColorize: opts.borderColorize }
           : {}),
-        ...(cwd !== undefined ? { cwd } : {}),
+        ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
         tui: tui as TranscriptTuiLike,
         theme: theme as TranscriptThemeLike,
         // pi invokes the factory with its `done` callback (the 4th
@@ -1400,13 +1233,6 @@ export function openTranscriptOverlay(opts: {
             (done as (result: undefined) => void)(result);
           }
         },
-        // Live updates: subscribe to the live-transcript bus for the run's
-        // child session when the run is live (event-driven appends, no
-        // polling).  A historical run (no childSession) renders the file
-        // once.
-        ...(opts.childSession !== undefined
-          ? { childSession: opts.childSession }
-          : {}),
       }),
     OVERLAY_OPTIONS,
   );

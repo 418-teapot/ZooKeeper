@@ -1,25 +1,32 @@
 /**
- * Subagent transcript view model — host-agnostic card layout for the pi TUI.
+ * Subagent transcript view model — host-agnostic projections over a run's
+ * fact log for the pi TUI.
  *
- * Pure functions only: given a structured `SubagentProgress` snapshot and
- * the delegation label, they derive the display lines for the live tool
- * card (collapsed or expanded).  Every line carries a *semantic hue*
- * (`running` / `success` / `error` / `muted` / `accent`) — core never
- * knows pi's concrete theme colors.  The pi adapter owns the one-place
- * mapping from hue to a real `theme.fg` color name (`src/adapters/pi/tui/theme.ts`),
- * so this module stays importable and unit-testable in any TS runtime.
+ * A subagent run is an ordered, immutable fact stream (`run-log.ts`);
+ * everything here is a *pure projection* of that stream plus run metadata.
+ * No information is destroyed before projection: the log keeps full args,
+ * results, and message text, and every display decision — which entries
+ * are in the recency window, how wide a line may get, how a tool call reads
+ * on one line — is made here, at render time, from the options the host
+ * passes in.
  *
- * The layout mirrors the visual contract:
+ * Every line carries a *semantic hue* (`running` / `success` / `error` /
+ * `muted` / `accent`) — core never knows pi's concrete theme colors.  The
+ * pi adapter owns the one-place mapping from hue to a real `theme.fg`
+ * color name (`src/adapters/pi/tui/theme.ts`), so this module stays
+ * importable and unit-testable in any TS runtime.
+ *
+ * The layout contract:
  *   - running: the title is owned by the tool-call card (`renderCall` in
  *     the pi adapter); the running body only carries the current-tool line,
- *     the recent tool lines, recent output lines, and a stats line
- *     (`⟳ N turns · M tools · T`).  The spinner frame advances with each
- *     render.
+ *     the tool-call lines, the assistant output lines, and a stats line
+ *     (`⟳ N turns · M tools · T`) whose counters are derived from the
+ *     facts.  The spinner frame advances with each render.
  *   - done ok: `✓ subagent(<name>)` success-hued title (badged with the
- *     run statistics) plus the final text summary; error / abort render
- *     their own marker and reason.  The recent tool list is not repeated —
- *     the statistics badge already summarizes the run's tools.
- *   - expanded (pi's ctrl+o) shows more recent tools and output lines.
+ *     run statistics) plus the final message text projected from the log;
+ *     error / aborted render their own marker and reason.
+ *   - expanded shows every entry; collapsed keeps only the recent
+ *     `GLANCE_LINES` entries.
  *
  * The fleet-widget functions (`renderFleetCollapsed` / `renderFleetRows`)
  * derive the pi `zoo` widget lines from the run registry (`registry.ts`):
@@ -29,8 +36,15 @@
  * @module
  */
 
-import type { SubagentProgress } from "./driver.js";
-import type { RunSummary, SubagentRun } from "./registry.js";
+import { homedir } from "node:os";
+import type { RunStatus, RunSummary, SubagentRun } from "./registry.js";
+import type {
+  MessageEndFact,
+  RunFact,
+  RunLog,
+  ToolStartFact,
+} from "./run-log.js";
+import { usageTokens } from "./run-log.js";
 
 /**
  * Humanize a token count for the stats line.
@@ -131,30 +145,16 @@ export interface CardLine {
   truncateToWidth?: boolean;
 }
 
-/** Recent tool-call entries rendered by the card. */
-export interface ToolCallLine {
-  name: string;
-  summary: string;
-}
+/** Recent entries rendered by a collapsed card per region. See
+ * `GLANCE_LINES`. */
 
-/** Recent output lines rendered by the card. */
-export interface OutputLine {
-  text: string;
-}
-
-/** Recent tool-call entries rendered when collapsed. */
-const COLLAPSED_TOOL_CAP = 3;
-
-/** Recent tool-call entries rendered when expanded. */
-const EXPANDED_TOOL_CAP = 15;
-
-/** Recent output lines rendered when collapsed. */
-const COLLAPSED_OUTPUT_CAP = 3;
-
-/** Recent output lines rendered when expanded. */
-const EXPANDED_OUTPUT_CAP = 15;
-
-export { COLLAPSED_TOOL_CAP, EXPANDED_TOOL_CAP };
+/**
+ * How many recent entries a collapsed card shows per region (tool calls,
+ * output lines).  This is a taste value, not a technical bound — it
+ * follows pi's own practice of a small fixed preview window (e.g.
+ * `BASH_PREVIEW_LINES = 5`); adjust by eye, never treat it as a contract.
+ */
+export const GLANCE_LINES = 3;
 
 /**
  * Format a whole-second duration as `MM:SS`.
@@ -198,13 +198,16 @@ export function spinnerFrameIndex(seq: number): number {
 }
 
 /**
- * Cap a string to a maximum width with an ellipsis marker.
+ * Cap a string to a maximum render width with an ellipsis marker.
+ *
+ * Width is always the render-time width the caller passes in — core keeps
+ * no baked-in character caps.
  *
  * @param text - The string to cap.
- * @param limit - The maximum length.
+ * @param limit - The maximum width in characters.
  * @returns The capped string.
  */
-function truncate(text: string, limit: number): string {
+function fit(text: string, limit: number): string {
   if (text.length <= limit) return text;
   const keep = Math.max(1, limit - 1);
   return `${text.slice(0, keep)}…`;
@@ -242,42 +245,234 @@ function currentToolLine(tool: string | undefined): CardLine | undefined {
 }
 
 /**
- * Build the recent output lines.
- *
- * @param outputLines - The recent output line texts.
- * @param expanded - Whether the card is expanded.
- * @returns The output lines.
+ * The ESC control character, kept out of the regex literal.
  */
-function outputLines(
-  outputLines: string[] | undefined,
-  expanded: boolean,
-): CardLine[] {
-  const cap = expanded ? EXPANDED_OUTPUT_CAP : COLLAPSED_OUTPUT_CAP;
-  const lines = (outputLines ?? []).slice(-cap);
-  if (lines.length === 0) return [{ text: "(no output yet)", hue: "muted" }];
-  return lines.map((line) => ({ text: truncate(line, 80), hue: "muted" }));
+const ESC = "\u001b";
+
+/** Matches an ANSI SGR sequence like `ESC[31m` or `ESC[0m`. */
+const ANSI_RE = new RegExp(`${ESC}\\[[0-9;]*m`, "g");
+
+/**
+ * Strip ANSI escape sequences and collapse whitespace runs.
+ *
+ * Tool arguments arrive with terminal color codes and stray whitespace;
+ * a one-line TUI summary must render them as plain, single-spaced text.
+ *
+ * @param text - The raw text.
+ * @returns The cleaned text: ANSI `ESC[...m` sequences removed, every
+ *   whitespace run collapsed to a single space, trimmed.
+ */
+function clean(text: string): string {
+  return text.replace(ANSI_RE, "").replace(/\s+/g, " ").trim();
 }
 
 /**
- * Build the recent tool-call lines.
+ * Collapse a user-home prefix in a path to a leading `~`.
  *
- * The summary is self-contained (`read <path>` / `$ <cmd>` / `<name> <json>`,
- * see `summarizeToolCall`), so each line renders the summary verbatim after
- * the arrow — the tool name is never re-prefixed (that would duplicate the
- * name already embedded in the summary).
+ * @param path - The absolute path.
+ * @returns The path with a `$HOME` prefix shortened to `~`.
+ */
+function shortenHome(path: string): string {
+  const home = homedir();
+  if (home.length > 0 && path.startsWith(home)) {
+    const rest = path.slice(home.length);
+    return rest.length === 0 ? "~" : `~${rest}`;
+  }
+  return path;
+}
+
+/**
+ * Render a one-line summary of a tool call from its arguments.
  *
- * @param toolCalls - The recent tool-call entries.
- * @param expanded - Whether the card is expanded.
+ * A display convention, so it lives in the projection — never at
+ * collection time.  Following the pi-subagents `formatToolCall`
+ * conventions: bash renders as `$ <command>`, read / write / edit render
+ * as `<name> <path>` (the `file_path` or `path` argument, with `$HOME`
+ * collapsed to `~`), and any other tool renders as
+ * `<name> <JSON.stringify(args)>`.  All text is ANSI-cleaned and
+ * whitespace-collapsed, then capped to the passed render width — there
+ * are no fixed character caps.
+ *
+ * @param name - The tool name.
+ * @param args - The tool-call arguments (may be undefined for malformed
+ *   facts).
+ * @param width - The render width the summary must fit into.
+ * @returns The one-line tool-call summary, capped to the width.
+ */
+export function summarizeToolCall(
+  name: string,
+  args: Record<string, unknown> | undefined,
+  width: number,
+): string {
+  const argsObj =
+    args !== null && typeof args === "object" && !Array.isArray(args)
+      ? args
+      : {};
+  let summary: string;
+  switch (name) {
+    case "bash": {
+      const command =
+        typeof argsObj.command === "string" ? argsObj.command : "";
+      summary = command.length > 0 ? `$ ${clean(command)}` : "$ …";
+      break;
+    }
+    case "read":
+    case "write":
+    case "edit": {
+      const rawPath = argsObj.file_path ?? argsObj.path;
+      const path =
+        typeof rawPath === "string" && rawPath.length > 0
+          ? shortenHome(clean(rawPath))
+          : "…";
+      summary = `${name} ${path}`;
+      break;
+    }
+    default: {
+      const json = JSON.stringify(argsObj) ?? "";
+      summary = `${name} ${clean(json)}`;
+      break;
+    }
+  }
+  return fit(summary, Math.max(1, Math.floor(width)));
+}
+
+/**
+ * Run counters derived from the fact stream.
+ *
+ * Turns count completed assistant messages, tool calls count started tool
+ * executions, and tokens sum the per-message usage reports (see
+ * `usageTokens` for the per-message rule; a run without any positive report
+ * yields `undefined`, so the card omits the token segment).
+ *
+ * The user-message fact is deliberately excluded from every counter: it is
+ * the instruction the run was given, not a turn the agent produced, and it
+ * carries no usage report.
+ *
+ * @param facts - The run's facts (in append order).
+ * @returns The derived counters.
+ */
+export function deriveCounters(facts: readonly RunFact[]): {
+  turnCount: number;
+  toolCallCount: number;
+  tokens?: number;
+} {
+  let turnCount = 0;
+  let toolCallCount = 0;
+  let tokens: number | undefined;
+  for (const fact of facts) {
+    if (fact.type === "tool_start") toolCallCount += 1;
+    // Only assistant messages are a turn and report usage: `tool_start`,
+    // `tool_end` and `user_message` all contribute nothing to these counters
+    // (the user fact is the instruction the run was given, not output).
+    if (fact.type !== "message_end") continue;
+    turnCount += 1;
+    const reported = usageTokens(fact.usage);
+    if (reported === undefined) continue;
+    tokens = (tokens ?? 0) + reported;
+  }
+  return {
+    turnCount,
+    toolCallCount,
+    ...(tokens !== undefined ? { tokens } : {}),
+  };
+}
+
+/**
+ * The text of one completed assistant message (its text parts joined).
+ *
+ * @param fact - The message fact.
+ * @returns The concatenated message text.
+ */
+function messageText(fact: MessageEndFact): string {
+  return fact.content
+    .filter(
+      (part): part is { type: "text"; text: string } => part.type === "text",
+    )
+    .map((part) => part.text)
+    .join("");
+}
+
+/**
+ * The last non-empty line of a text block.
+ *
+ * The card's output regions show one line per assistant message — its
+ * last non-empty line, the same compaction the snapshot formatter used
+ * for the compact progress line, derived here at projection time.
+ *
+ * @param text - The multi-line text block.
+ * @returns The last non-empty line, or `undefined` when there is none.
+ */
+function lastNonEmptyLine(text: string): string | undefined {
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i].trim().length > 0) return lines[i].trim();
+  }
+  return undefined;
+}
+
+/**
+ * Build the assistant output lines projected from the message facts.
+ *
+ * Only assistant messages are projected: a `user_message` fact holds the
+ * delegation instruction, which the card never shows (the caller already
+ * knows it) and which would otherwise masquerade as agent output.
+ *
+ * @param facts - The run's facts.
+ * @param expanded - Whether the card is expanded (shows every message).
+ * @param glance - The collapsed recency window size.
+ * @param width - The render width for line capping.
+ * @returns The output lines.
+ */
+function outputLines(
+  facts: readonly RunFact[],
+  expanded: boolean,
+  glance: number,
+  width: number,
+): CardLine[] {
+  const messages = facts.filter(
+    (fact): fact is MessageEndFact => fact.type === "message_end",
+  );
+  const projected = messages
+    .map((fact) => lastNonEmptyLine(messageText(fact)))
+    .filter((line): line is string => line !== undefined);
+  const window = expanded ? projected : projected.slice(-glance);
+  if (window.length === 0) {
+    return [{ text: "(no output yet)", hue: "muted" }];
+  }
+  return window.map((line) => ({
+    text: fit(line, width),
+    hue: "muted" as const,
+  }));
+}
+
+/**
+ * Build the tool-call lines projected from the tool-start facts.
+ *
+ * Each line renders the one-line summary verbatim after the arrow — the
+ * tool name is never re-prefixed (that would duplicate the name already
+ * embedded in the summary).  The predicate selects `tool_start` facts only,
+ * so `user_message` / `tool_end` / `message_end` facts contribute no line.
+ *
+ * @param facts - The run's facts.
+ * @param expanded - Whether the card is expanded (shows every call).
+ * @param glance - The collapsed recency window size.
+ * @param width - The render width for line capping.
  * @returns The tool-call lines.
  */
 function toolCallLines(
-  toolCalls: ToolCallLine[] | undefined,
+  facts: readonly RunFact[],
   expanded: boolean,
+  glance: number,
+  width: number,
 ): CardLine[] {
-  const cap = expanded ? EXPANDED_TOOL_CAP : COLLAPSED_TOOL_CAP;
-  const entries = (toolCalls ?? []).slice(-cap);
-  return entries.map((entry) => ({
-    text: `→ ${truncate(entry.summary, 60)}`,
+  const starts = facts.filter(
+    (fact): fact is ToolStartFact => fact.type === "tool_start",
+  );
+  const window = expanded ? starts : starts.slice(-glance);
+  // Two characters of the render width belong to the `→ ` marker.
+  const summaryWidth = Math.max(1, width - 2);
+  return window.map((fact) => ({
+    text: `→ ${summarizeToolCall(fact.toolName, fact.args, summaryWidth)}`,
     hue: "accent" as const,
   }));
 }
@@ -285,42 +480,32 @@ function toolCallLines(
 /**
  * Build the run-statistics text (`⟳ N turns · M tools · …`).
  *
- * Shared by the running card's stats line and the terminal title badge so
- * the run statistics survive the transition from running to terminal in the
- * same format.
+ * Counters are derived from the fact stream, not read off a pre-aggregated
+ * snapshot.  Shared by the running card's stats line and the terminal
+ * title badge so the run statistics survive the transition from running
+ * to terminal in the same format.
  *
- * @param progress - The structured progress snapshot.
+ * @param facts - The run's facts.
+ * @param startedAt - Epoch-millis start time of the run.
  * @param now - The current epoch-millis time (injected for determinism).
  * @returns The `⟳ …` statistics text.
  */
-function statsText(progress: SubagentProgress, now: number): string {
-  const turns = progress.turnCount ?? 0;
-  const tools = progress.toolCallCount ?? 0;
-  const elapsed = formatElapsed(progress.startedAt ?? 0, now);
+function statsText(
+  facts: readonly RunFact[],
+  startedAt: number,
+  now: number,
+): string {
+  const counters = deriveCounters(facts);
+  const elapsed = formatElapsed(startedAt, now);
   const parts = [
-    `${turns} ${plural(turns, "turn")}`,
-    `${tools} ${plural(tools, "tool")}`,
+    `${counters.turnCount} ${plural(counters.turnCount, "turn")}`,
+    `${counters.toolCallCount} ${plural(counters.toolCallCount, "tool")}`,
   ];
-  if (progress.tokens !== undefined && progress.tokens > 0) {
-    parts.push(`${formatTokenCount(progress.tokens)} tok`);
+  if (counters.tokens !== undefined && counters.tokens > 0) {
+    parts.push(`${formatTokenCount(counters.tokens)} tok`);
   }
   parts.push(elapsed);
   return `⟳ ${parts.join(" · ")}`;
-}
-
-/**
- * Build the stats line.
- *
- * `⟳ N turns · M tools · <elapsed>` with an optional token segment
- * (`· 12.4k tok`) inserted before the elapsed time when the run has
- * accumulated token usage.
- *
- * @param progress - The structured progress snapshot.
- * @param now - The current epoch-millis time (injected for determinism).
- * @returns The stats line.
- */
-function statsLine(progress: SubagentProgress, now: number): CardLine {
-  return { text: statsText(progress, now), hue: "muted" };
 }
 
 /**
@@ -417,113 +602,153 @@ export function renderTitle(
 }
 
 /**
- * Build the display lines for a running (partial) subagent card.
+ * Run metadata a card projection needs beyond the fact log.
  *
- * The card's title is owned by the tool-call card (`renderCall` in the pi
- * adapter), so the running body never emits a title line — the tool-execution
- * component stacks both cards and a second title would duplicate it.
- *
- * The optional `children` parameter appends this run's nested subagent
- * delegations (one level deep) after the tool-call region; an empty or
- * absent list leaves the card output unchanged.
- *
- * @param progress - The structured progress snapshot.
- * @param label - The delegation's task description (unused by the running
- *   body — kept for signature stability).
- * @param expanded - Whether the card is expanded (ctrl+o).
- * @param now - The current epoch-millis time (injected for determinism).
- * @param frameSeq - An optional per-render sequence for the spinner frame
- *   (defaults to the tool-call counter); the host advances it per render so
- *   the spinner animates.
- * @param children - This run's nested subagent runs (optional).
- * @returns The display lines for the running card.
+ * Identity and lifecycle facts the log itself does not carry: who the run
+ * is, which model it uses, where it stands in its lifecycle, and — while
+ * running — which tool is currently executing (the host announces a tool
+ * start before its fact pair completes).
  */
-export function renderProgressCard(
-  progress: SubagentProgress,
-  _label: string | undefined,
-  expanded = false,
-  now: number = Date.now(),
-  frameSeq?: number,
-  children?: SubagentRun[],
-): CardLine[] {
-  const lines: CardLine[] = [];
-  const tool = currentToolLine(progress.currentTool);
-  if (tool !== undefined) lines.push(tool);
-  lines.push(...toolCallLines(progress.toolCalls, expanded));
-  lines.push(...outputLines(progress.outputLines, expanded));
-  lines.push(statsLine(progress, now));
-  for (const line of fleetCardChildLines(children ?? [], frameSeq)) {
-    lines.push(line);
-  }
-  return lines;
+export interface CardMeta {
+  /** The delegated subagent name. */
+  agent?: string;
+  /** The model id actually used by the sub-session, when resolved. */
+  model?: string;
+  /** The lifecycle status (`running` renders the live body, a terminal
+   * status renders the terminal card). */
+  status: RunStatus;
+  /** Epoch-millis start time of the run. */
+  startedAt: number;
+  /** Epoch-millis end time (terminal runs; elapsed falls back to `now`). */
+  endedAt?: number;
+  /** The tool name the run is currently executing, when any. */
+  currentTool?: string;
+  /** The failure reason (rendered when `status` is `error`). */
+  error?: string;
+}
+
+/** Render-time options for a card projection. */
+export interface CardOptions {
+  /** The render width in characters the lines must fit into. */
+  width: number;
+  /** Whether the card is expanded (shows every entry, no recency window). */
+  expanded: boolean;
+  /** The collapsed recency window size (defaults to `GLANCE_LINES`). */
+  glanceLines?: number;
+  /** The current epoch-millis time (injected for determinism). */
+  now?: number;
+  /** The shared spinner frame sequence (for nested-child spinners). */
+  frame?: number;
+  /** This run's nested subagent runs (rendered one level deep). */
+  children?: SubagentRun[];
 }
 
 /**
- * Build the display lines for a terminal (done) subagent card.
+ * Project a run's fact log into the card's display lines.
  *
- * The terminal card shows the title (with the model badge, the run
- * statistics, and the task label) and the final output text.  Unlike the
- * running card it no longer lists the recent tool calls — the run's tools
- * are already summarized by the statistics badge.
+ * The single card projection, live or terminal:
+ *   - running: no title line (the tool-call card's `renderCall` owns
+ *     it); the body is the current-tool line, the tool-call lines, the
+ *     assistant output lines, the stats line, and the nested-child lines.
+ *   - terminal: a static title (`✓` / `✗` / `⏹`) badged with
+ *     the run statistics, the error reason when the run failed, the final
+ *     assistant text projected from the last message fact, and the
+ *     nested-child lines.
  *
- * The optional `children` parameter appends this run's nested subagent
- * delegations (one level deep) after the tool-call region; an empty or
- * absent list leaves the card output unchanged.
+ * Collapsed mode windows each region to the last `glanceLines` entries;
+ * expanded mode shows every entry.  Width is never baked into the log —
+ * previews are capped to `opts.width` here, and the final-output preview
+ * carries the `truncateToWidth` flag so the adapter clips it at the real
+ * terminal width.
  *
- * @param progress - The structured progress snapshot (done).
- * @param label - The delegation's task description.
- * @param expanded - Whether the card is expanded (ctrl+o).
- * @param children - This run's nested subagent runs (optional).
- * @param frameSeq - An optional per-render sequence for the spinner frame
- *   (defaults to 0 when the host does not advance one); forwarded to the
- *   nested-child lines so a running child's spinner animates.  The pi
- *   adapter has no animation timer on the terminal card, so the result
- *   card's children keep the last live frame — still better than a frozen
- *   frame-0 glyph when a host does pass a sequence.
- * @returns The display lines for the result card.
+ * @param log - The run's append-only fact log.
+ * @param meta - The run metadata (identity, lifecycle, current tool).
+ * @param opts - Render-time options (width, expansion, recency window,
+ *   clock, spinner frame, children).
+ * @returns The display lines for the card.
  */
-export function renderResultCard(
-  progress: SubagentProgress,
-  label: string | undefined,
-  expanded = false,
-  children?: SubagentRun[],
-  frameSeq: number = 0,
+export function projectCard(
+  log: RunLog,
+  meta: CardMeta,
+  opts: CardOptions,
 ): CardLine[] {
-  const agent = progress.agent ?? "…";
-  const result = progress.result;
-  const model = progress.model;
-  const stats = statsText(progress, Date.now());
+  const facts = log.facts();
+  const now = opts.now ?? Date.now();
+  const glance = opts.glanceLines ?? GLANCE_LINES;
+  const frame = opts.frame ?? 0;
   const lines: CardLine[] = [];
 
-  if (result?.kind === "error") {
-    lines.push(renderTitle("✗", agent, label, "error", model, stats));
+  if (meta.status === "running") {
+    // The running body emits no title line — the tool-call card owns it,
+    // and the tool-execution component stacks both cards, so a title here
+    // would duplicate it.
+    const tool = currentToolLine(meta.currentTool);
+    if (tool !== undefined) lines.push(tool);
+    lines.push(...toolCallLines(facts, opts.expanded, glance, opts.width));
+    lines.push(...outputLines(facts, opts.expanded, glance, opts.width));
     lines.push({
-      text: truncate(result.errorMessage, 100),
-      hue: "error",
+      text: statsText(facts, meta.startedAt, now),
+      hue: "muted",
     });
-  } else if (result?.kind === "aborted") {
-    lines.push(renderTitle("⏹", agent, label, "muted", model, stats));
-  } else {
-    lines.push(renderTitle("✓", agent, label, "success", model, stats));
+    // Nested subagent runs (this run's own delegations), rendered one
+    // level deep after the tool-call region.
+    lines.push(...fleetCardChildLines(opts.children ?? [], frame));
+    return lines;
   }
 
-  // Final text summary — the subagent's delivered output.  Expanded shows
-  // the delivered result in full — an arbitrary cap would silently hide the
-  // rest of the text with no way to reach it (the result card owns the whole
-  // pi result render).  The full text (newlines included) flows through the
-  // `markdown` path, which splits logical lines and width-wraps them.
+  // Terminal card: the tool-call list is not repeated — the statistics
+  // badge already summarizes the run's tools.
+  const marker =
+    meta.status === "done" ? "✓" : meta.status === "error" ? "✗" : "⏹";
+  const hue: CardHue =
+    meta.status === "done"
+      ? "success"
+      : meta.status === "error"
+        ? "error"
+        : "muted";
+  lines.push(
+    renderTitle(
+      marker,
+      meta.agent,
+      undefined,
+      hue,
+      meta.model,
+      statsText(facts, meta.startedAt, meta.endedAt ?? now),
+    ),
+  );
+  if (meta.status === "error" && meta.error !== undefined) {
+    lines.push({ text: meta.error, hue: "error", truncateToWidth: true });
+  }
+
+  // Final text summary — the last completed assistant message projected
+  // from the log.  Expanded shows the delivered result in full — an
+  // arbitrary cap would silently hide the rest of the text with no way to
+  // reach it (the terminal card owns the whole pi result render).  The
+  // full text (newlines included) flows through the `markdown` path,
+  // which splits logical lines and width-wraps them.
   //
-  // Collapsed previews only the first non-empty line — leading blank lines
-  // are skipped, matching the pi-subagents fold — and flags it for
-  // render-boundary width truncation (the view model never character-caps:
-  // the adapter truncates to the terminal width with pi's own width-aware
-  // `truncateToWidth` semantics).  The preview is plain text, not markdown:
-  // a markdown source line truncated mid-stream would leave inline markers
-  // unclosed, so the collapsed fold stays literal.
-  const finalText = result?.text ?? progress.output;
+  // Collapsed previews only the first non-empty line — leading blank
+  // lines are skipped, matching the pi-subagents fold — and flags it for
+  // render-boundary width truncation (the projection never
+  // character-caps: the adapter truncates to the terminal width with
+  // pi's own width-aware `truncateToWidth` semantics).  The preview is
+  // plain text, not markdown: a markdown source line truncated mid-stream
+  // would leave inline markers unclosed, so the collapsed fold stays
+  // literal.
+  let finalText = "";
+  for (let i = facts.length - 1; i >= 0; i--) {
+    const fact = facts[i];
+    // The scan stops at the last ASSISTANT message: a `user_message` fact is
+    // an input, never the run's final text, so it must not end the search
+    // (a run can be steered mid-flight).
+    if (fact.type === "message_end") {
+      finalText = messageText(fact);
+      break;
+    }
+  }
   if (finalText.trim().length === 0) {
     lines.push({ text: "(no output)", hue: "muted" });
-  } else if (expanded) {
+  } else if (opts.expanded) {
     lines.push({ text: finalText, hue: "muted", markdown: true });
   } else {
     lines.push({
@@ -533,12 +758,10 @@ export function renderResultCard(
     });
   }
 
-  // Nested subagent runs (this run's own delegations), rendered one level
-  // deep after the tool-call region.  Absent when the run has no children.
-  for (const line of fleetCardChildLines(children ?? [], frameSeq)) {
-    lines.push(line);
-  }
-
+  // Nested subagent runs (this run's own delegations), rendered one
+  // level deep after the output region.  Absent when the run has no
+  // children.
+  lines.push(...fleetCardChildLines(opts.children ?? [], frame));
   return lines;
 }
 
@@ -820,8 +1043,7 @@ function fleetRowBody(run: SubagentRun, now: number): string {
 }
 
 /**
- * Build the nested-child lines for a card (`renderProgressCard` /
- * `renderResultCard`).
+ * Build the nested-child lines for a card (`projectCard`).
  *
  * Each child run renders one line, indented one level:
  * `├─ <spinner|●> subagent(<agent>) · <label>` (the label when present).

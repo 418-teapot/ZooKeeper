@@ -11,7 +11,7 @@
  *
  * The two scenarios the file covers (the pieces `transcript.test.ts` cannot,
  * because it never initializes the theme):
- *   - a paired toolCall + toolResult renders through the native component
+ *   - a paired tool_start + tool_end renders through the native component
  *     (the tool's own renderer, pi's exact shell: `$ <command>` for bash),
  *     not the structured `→ <name>` fallback;
  *   - `ctrl+o` (pi's `app.tools.expand` key) flips every native tool
@@ -25,7 +25,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
-import type { PiHistoryEntry } from "../subagent-scan.js";
+import { createRunLog } from "../../../core/subagent/run-log.js";
 import {
   createTranscriptOverlay,
   type TranscriptThemeLike,
@@ -76,44 +76,29 @@ function esc(hex: string): string {
 }
 
 /** A bash tool call with 8 result lines (over bash's 5-line preview). */
-const BASH_ENTRIES: PiHistoryEntry[] = [
-  { type: "message", message: { role: "user", content: "u1" } },
-  {
-    type: "message",
-    message: {
-      role: "assistant",
-      content: [
-        {
-          type: "toolCall",
-          id: "c1",
-          name: "bash",
-          arguments: { command: "npm test", cwd: "/a/b" },
-        },
-      ],
-    },
-  },
-  {
-    type: "message",
-    message: {
-      role: "toolResult",
-      toolCallId: "c1",
-      toolName: "bash",
-      content: [
-        {
-          type: "text",
-          text: "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8",
-        },
-      ],
-      isError: false,
-    },
-  },
-];
+function bashLog() {
+  const log = createRunLog();
+  log.appendToolStart("bash", { command: "npm test" }, 1, "c1");
+  log.appendToolEnd(
+    "bash",
+    [
+      {
+        type: "text",
+        text: "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8",
+      },
+    ],
+    false,
+    2,
+    "c1",
+  );
+  return log;
+}
 
-/** Build the overlay over the bash entries. */
+/** Build the overlay over the bash facts. */
 function bashOverlay(): unknown {
   return createTranscriptOverlay({
     title: "beaver · 实现任务",
-    entries: BASH_ENTRIES,
+    log: bashLog(),
     tui: TUI,
     theme: THEME,
     done: () => {},
@@ -121,7 +106,7 @@ function bashOverlay(): unknown {
 }
 
 describe("createTranscriptOverlay — native tool rendering (theme initialized)", () => {
-  it("renders a paired toolCall + toolResult through pi's native component", () => {
+  it("renders a paired tool_start + tool_end through pi's native component", () => {
     const component = bashOverlay();
     const lines = renderComponent(component, 100).map(stripAnsi);
 

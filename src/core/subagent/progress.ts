@@ -55,9 +55,11 @@ export function formatSnapshotOutput(
  * Render a progress snapshot into a compact one-line text.
  *
  * Prefixes the compact output with the running tool name in brackets when
- * one is present, e.g. `[bash] <last line>`.  An optional short `label`
- * (e.g. the delegation's description tag) is prepended before any tool
- * name, e.g. `[<label>] [bash] <last line>`.  The output part is capped by
+ * one is present, e.g. `[bash] <last line>`.  An explicit "no tool running"
+ * signal (`currentTool: null`) and an absent field ("unchanged") both render
+ * no prefix — only a tool name does.  An optional short `label` (e.g. the
+ * delegation's description tag) is prepended before any tool name, e.g.
+ * `[<label>] [bash] <last line>`.  The output part is capped by
  * `formatSnapshotOutput`; the label and tool prefixes sit outside the cap.
  *
  * @param progress - The snapshot to render.
@@ -75,6 +77,8 @@ export function formatProgressLine(
   const labelPrefix =
     label !== undefined && label.length > 0 ? `[${label}] ` : "";
   const toolPrefix =
-    progress.currentTool === undefined ? "" : `[${progress.currentTool}] `;
+    typeof progress.currentTool === "string"
+      ? `[${progress.currentTool}] `
+      : "";
   return `${labelPrefix}${toolPrefix}${output}`;
 }

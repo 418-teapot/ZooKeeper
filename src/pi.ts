@@ -81,9 +81,15 @@ import {
   createPiHandoffTarget,
   type PiCommandCtx,
 } from "./adapters/pi/handoff-target.js";
+import {
+  beginHydration,
+  hydrationState,
+  waitForHydration,
+} from "./adapters/pi/hydrate.js";
 import { createPiSubagentDriver } from "./adapters/pi/subagent.js";
 import {
   type PiHistoryEntry,
+  readSessionCwd,
   rebuildSubagentRuns,
 } from "./adapters/pi/subagent-scan.js";
 import {
@@ -92,7 +98,11 @@ import {
   type PiToolHostContext,
 } from "./adapters/pi/tool-host.js";
 import { buildSubagentCardRenderer } from "./adapters/pi/tui/index.js";
-import { openTranscriptOverlay } from "./adapters/pi/tui/transcript.js";
+import {
+  openTranscriptOverlay,
+  TRANSCRIPT_NOT_RECORDED_NOTICE,
+  TRANSCRIPT_UNAVAILABLE_NOTICE,
+} from "./adapters/pi/tui/transcript.js";
 import { createFleetWidget } from "./adapters/pi/tui/widget.js";
 import {
   buildPiCommandRegistrationPlan,
@@ -132,6 +142,8 @@ import {
   setPrimary,
 } from "./core/subagent/identity.js";
 import type { SubagentRun } from "./core/subagent/registry.js";
+import { getRun } from "./core/subagent/registry.js";
+import type { RunLog } from "./core/subagent/run-log.js";
 import type { ValidationLimits } from "./core/validate.js";
 import { REGISTRY } from "./registry.js";
 import { log } from "./utils/logger.js";
@@ -297,40 +309,28 @@ function truecolorWrap(hex: string, text: string): string {
 }
 
 /**
- * Wrap a pi `onUpdate` callback to capture the streamed progress details.
+ * The terminal tool result's persisted `details`.
  *
- * The subagent tool streams each progress snapshot through the parent's
- * `onUpdate` as a partial result carrying a structured `details` payload
- * (agent, model, session path, tokens, result).  The wrapper forwards every
- * partial to the original callback unchanged while also reporting the
- * payload's `details` via `onDetails`, so the terminal tool result can
- * forward the last (done) snapshot's details to the TUI card.
+ * pi writes a tool result's `details` into the session file (a partial's
+ * never do), so this is the only durable payload a subagent run leaves
+ * behind.  It carries ONLY the fact pointer — the sub-session file path the
+ * driver reported mid-run, looked up by run id (the tool-call id) in the
+ * process-level run registry — which lets a view re-hydrate the run's facts
+ * after a process restart.  Tools without a registry run (compress /
+ * decompress, or a call id that is not a subagent delegation) contribute an
+ * empty object.
  *
- * Exported for unit testing; `buildPiHandlers` wires it into the tool's
- * onUpdate bridge.
- *
- * @param onUpdate - The original pi `onUpdate` callback (may be absent).
- * @param onDetails - Called with the streamed `details` object of every
- *   partial that carries one.
- * @returns The wrapped callback, or `undefined` when the original is not a
- *   function (nothing to capture).
+ * @param toolCallId - pi's tool-call id for the finished call.
+ * @returns `{ sessionPath }`, or `{}` when there is nothing to point at.
  */
-export function withSubagentDetailsCapture(
-  onUpdate: unknown,
-  onDetails: (details: Record<string, unknown>) => void,
-): ((partial: unknown) => void) | undefined {
-  if (typeof onUpdate !== "function") return undefined;
-  return (partial: unknown) => {
-    const details = (partial as { details?: unknown } | undefined)?.details;
-    if (
-      details !== undefined &&
-      typeof details === "object" &&
-      details !== null
-    ) {
-      onDetails(details as Record<string, unknown>);
-    }
-    (onUpdate as (partial: unknown) => void)(partial);
-  };
+export function terminalToolDetails(
+  toolCallId: unknown,
+): Record<string, unknown> {
+  const sessionPath =
+    typeof toolCallId === "string"
+      ? getRun(toolCallId)?.sessionPath
+      : undefined;
+  return sessionPath === undefined ? {} : { sessionPath };
 }
 
 // ---------------------------------------------------------------------------
@@ -757,18 +757,22 @@ export function buildPiHandlers(
   //
   // `enterRun` wires the expanded list's enter-inspect: pressing enter on a
   // selected run opens a full-screen read-only overlay rendering that run's
-  // sub-session transcript — the initial history replayed from its persisted
-  // JSONL file once, then live updates driven by the subagent driver's
-  // forwarded events while the run is still running (no session switch).
-  // The overlay is opened through the pi `ExtensionUIContext.custom`
+  // transcript as a pure projection of the fact log it is given.  While the
+  // run is still running new facts stream onto the open overlay through the
+  // log's append notifications — event-driven, no session switch.  A run
+  // rebuilt by the post-restart history scanner is the exception: it carries
+  // lifecycle metadata but an EMPTY log, so its facts have to be restored
+  // from the persisted sub-session file first (see the hydration gate in the
+  // callback).  The overlay is opened through the pi `ExtensionUIContext.custom`
   // surface, which pi exposes on every event context's `ui`, so the callback
   // reads it from the shared context holder.  When no `ui.custom` is cached,
-  // or the run has no `sessionPath` (a historical run whose session file
-  // could not be located), no overlay can open: the callback returns `false`
-  // so the widget leaves enter unconsumed (the key falls through to the
-  // editor).  An existing `sessionPath` always opens the overlay — even an
-  // unreadable session file (the overlay renders an "(transcript
-  // unavailable)" notice) — so the key is consumed and never falls through.
+  // no overlay can open: the callback returns `false` so the widget leaves
+  // enter unconsumed (the key falls through to the editor); otherwise the key
+  // is always consumed.
+  //
+  // Runs whose overlay open is deferred on a transcript load: a second enter
+  // while that load is in flight must not stack a second overlay.
+  const deferredOverlayOpens = new Set<string>();
   const fleetWidget = createFleetWidget({
     getPrimary: () => getPrimary(),
     colorizeAgent,
@@ -777,7 +781,7 @@ export function buildPiHandlers(
     enterRun: (run) => {
       const ui = contextHolder.current?.ui;
       if (ui?.custom === undefined) return false;
-      if (run.sessionPath === undefined) return false;
+      const openOverlay = ui.custom.bind(ui);
       // Collapse the fleet widget to its one-line stable state BEFORE the
       // overlay opens: pi's overlay compositor line-diffs the base content,
       // and an expanded widget (~10 lines) that collapses mid-overlay (the
@@ -786,27 +790,71 @@ export function buildPiHandlers(
       // an already-collapsed widget is unchanged (and the overlay keeps the
       // collapsed state; ↓ re-expands it after close, as before).
       fleetWidget.collapse();
-      return openTranscriptOverlay({
-        sessionPath: run.sessionPath,
-        title: runTitle(run),
-        // The overlay border uses the inspected run's agent color; absent a
-        // configured color the overlay falls back to its fixed border color.
-        borderColorize: agentBorderColorize(run),
-        openOverlay: ui.custom.bind(ui),
-        // The overlay subscribes to the live-transcript bus for the run's
-        // child session (the sub-session this run created) while it is
-        // still running: the driver forwards the child session's full
-        // event stream to the bus, which narrows it to the finalized
-        // messages (user / assistant / toolResult `message_end`) plus the
-        // streaming lifecycle of assistant messages — tool results arrive
-        // as `toolResult`-role `message_end` — so new transcript content
-        // flows into the view event-driven, no polling of the session
-        // file.  A historical / terminal run skips the subscription and
-        // renders the final file once, unchanged.
-        ...(run.childSession !== undefined && run.status === "running"
-          ? { childSession: run.childSession }
-          : {}),
-      });
+      // Open the overlay on a chosen fact log (empty-log notice optional).
+      const open = (log: RunLog, emptyNotice?: string): boolean =>
+        openTranscriptOverlay({
+          log,
+          title: runTitle(run),
+          // The overlay title uses the inspected run's agent color; absent a
+          // configured color the overlay falls back to its fixed border color.
+          borderColorize: agentBorderColorize(run),
+          // The working directory the sub-session ran in — the native tool
+          // renderers' render context (see `openTranscriptOverlay`).  Read at
+          // open time because `run.sessionPath` is patched mid-run, so a run
+          // whose path is still unknown (or whose header cannot be read)
+          // leaves `cwd` undefined and the renderers use their non-cwd
+          // fallback formats.
+          cwd:
+            typeof run.sessionPath === "string" && run.sessionPath.length > 0
+              ? readSessionCwd(run.sessionPath)
+              : undefined,
+          ...(emptyNotice === undefined ? {} : { emptyNotice }),
+          openOverlay,
+        });
+      // HYDRATION GATE.  The post-restart history scanner rebuilds runs from
+      // persisted sessions with lifecycle metadata only, so such a run's log
+      // is empty while its full transcript sits intact in `run.sessionPath`;
+      // opening straight on `run.log` would render "(empty transcript)" for
+      // a run that clearly produced work.  Restore the facts through the
+      // shared hydration cache the inline card already uses (keyed by run id,
+      // so the card and this overlay dedupe one load): open on the settled
+      // log when it is ready, state `TRANSCRIPT_UNAVAILABLE_NOTICE` when the
+      // load failed (a gone or unparseable file — the cache never retries, so
+      // the reason is stable), and otherwise join the load and open when it
+      // settles, which costs a few milliseconds of dead time on the keypress
+      // but never shows a transcript that is not there.  A still-RUNNING run
+      // is excluded on purpose: its log is the live source, and a file
+      // snapshot would both repeat the facts already appended and cut the
+      // open overlay off from the driver's later appends.  A finished run
+      // with an EMPTY log and no session path at all is the other dead end —
+      // nothing to restore from anywhere (a run that failed or was aborted
+      // before its prompt reached the host leaves exactly this shape), so it
+      // opens on the explicit "nothing was recorded" notice rather than the
+      // generic empty line.
+      const sessionPath = run.sessionPath;
+      if (run.status !== "running" && run.log.facts().length === 0) {
+        if (typeof sessionPath !== "string" || sessionPath.length === 0) {
+          return open(run.log, TRANSCRIPT_NOT_RECORDED_NOTICE);
+        }
+        const state = hydrationState(run.id);
+        if (state.kind === "ready") return open(state.log);
+        if (state.kind === "failed")
+          return open(run.log, TRANSCRIPT_UNAVAILABLE_NOTICE);
+        if (deferredOverlayOpens.has(run.id)) return true;
+        deferredOverlayOpens.add(run.id);
+        beginHydration(run.id, sessionPath);
+        void waitForHydration(run.id).then(() => {
+          deferredOverlayOpens.delete(run.id);
+          const settled = hydrationState(run.id);
+          if (settled.kind === "ready") {
+            open(settled.log);
+          } else {
+            open(run.log, TRANSCRIPT_UNAVAILABLE_NOTICE);
+          }
+        });
+        return true;
+      }
+      return open(run.log);
     },
   });
   const piSwitchHost: PiSwitchHost | undefined = piApi
@@ -921,10 +969,10 @@ export function buildPiHandlers(
       // wired when a real pi API instance is present (the extension runs
       // inside pi); test-only and driver-less compositions stay closed.
       subagentDriver: piApi ? createPiSubagentDriver() : undefined,
-      // The pi subagent transcript-card renderer — translates the
-      // structured progress snapshots into pi TUI components.  Wired only
-      // when a real pi API instance is present; the tool contribution then
-      // carries renderCall / renderResult so the TUI draws the live card.
+      // The pi subagent transcript-card renderer — turns the tool's
+      // streamed text into pi TUI components.  Wired only when a real pi
+      // API instance is present; the tool contribution then carries
+      // renderCall / renderResult so the TUI draws the live card.
       // Without it (OpenCode, test-only compositions) the tool stays
       // text-only.
       subagentRenderer: piApi ? buildSubagentCardRenderer() : undefined,
@@ -1046,7 +1094,7 @@ export function buildPiHandlers(
         label: tool.name,
         description: tool.description,
         // Forward the tool's custom TUI renderers (the subagent transcript
-        // card) so pi draws a live card instead of the plain text snapshot.
+        // card) so pi draws the animated card instead of a static result.
         // Tools without renderers (compress / decompress) simply omit them.
         ...(tool.renderCall !== undefined
           ? { renderCall: tool.renderCall }
@@ -1067,11 +1115,6 @@ export function buildPiHandlers(
           onUpdate: unknown,
           ctx: unknown,
         ) => {
-          // The last streamed partial's structured progress, captured from
-          // the onUpdate bridge below and forwarded as the terminal tool
-          // result's `details` (see the return below).  Per-execution
-          // (closure-local), so concurrent subagent cards never cross-talk.
-          let lastSubagentDetails: Record<string, unknown> | undefined;
           // Forward the native execution surface to the contribution:
           // the abort `signal`, the streaming `onUpdate` callback, and the
           // tool-call `callId` (the run's registry id for the fleet widget),
@@ -1085,25 +1128,11 @@ export function buildPiHandlers(
               ? { callId: toolCallId }
               : {}),
             ...(signal instanceof AbortSignal ? { signal } : {}),
-            ...(onUpdate !== undefined
-              ? {
-                  onUpdate: withSubagentDetailsCapture(onUpdate, (details) => {
-                    lastSubagentDetails = details;
-                  }),
-                }
-              : {}),
+            ...(onUpdate !== undefined ? { onUpdate } : {}),
           });
-          // The terminal tool result must carry the FULL structured progress
-          // so the TUI card can render its terminal state.  The tool streams
-          // each progress snapshot through `onUpdate` (whose partial carries
-          // `details`), so the LAST streamed partial — the `done` snapshot
-          // with the run result, session path, model, and token total — is
-          // forwarded as the terminal `details`.  Without it the terminal
-          // `renderResult` would fall back to plain text and lose the card
-          // (session line / model badge / markdown output).
           return {
             content: [{ type: "text", text }],
-            details: lastSubagentDetails ?? {},
+            details: terminalToolDetails(toolCallId),
           };
         },
       });

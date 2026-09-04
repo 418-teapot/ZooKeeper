@@ -28,8 +28,17 @@
  *
  * Pure module-level state plus `resetRegistry()` for tests.
  *
+ * Each run entry owns a `RunLog` (`run-log.ts`): the run's ordered data
+ * stream.  Fact appends to any run's log surface through the run-change
+ * subscription (`subscribeRunChange`) alongside lifecycle transitions, so
+ * one subscription refreshes consumers on both kinds of change (the
+ * streaming partial deliveries stay off this fact-only feed by design — the
+ * fleet must not repaint per streamed token).
+ *
  * @module
  */
+
+import { createRunLog, type RunLog } from "./run-log.js";
 
 /**
  * The lifecycle status of a subagent run.
@@ -74,6 +83,9 @@ export interface SubagentRun {
   error?: string;
   /** The on-disk path of the sub-session file, when the host persists it. */
   sessionPath?: string;
+  /** The run's append-only fact log (tool starts / ends, assistant
+   * messages).  Created with the run; never replaced. */
+  log: RunLog;
 }
 
 /** Input to `startRun`. */
@@ -96,8 +108,14 @@ export interface StartRunInput {
 
 /** Progress fields patchable on a running run via `updateRun`. */
 export interface UpdateRunPatch {
-  /** The tool name the run is currently executing. */
-  currentTool?: string;
+  /**
+   * The tool name the run is currently executing.
+   *
+   * Tri-state: a name sets it, `null` clears it (the tool finished), and an
+   * absent field leaves the previous value untouched — the clear signal has
+   * to be expressible separately from "no news".
+   */
+  currentTool?: string | null;
   /** The accumulated token usage. */
   tokens?: number;
   /** The model id actually used by the sub-session. */
@@ -147,6 +165,38 @@ export interface WindowSlice {
 /** The module-level run table, keyed by run id. */
 const registry = new Map<string, SubagentRun>();
 
+/**
+ * Listeners notified on any run change — a lifecycle transition or a fact
+ * appended to any run's log.
+ */
+type RunChangeListener = () => void;
+
+const runChangeListeners = new Set<RunChangeListener>();
+
+/** Fire the run-change notification for every registered listener. */
+function notifyRunChange(): void {
+  for (const listener of runChangeListeners) listener();
+}
+
+/**
+ * Subscribe to run changes.
+ *
+ * The listener is called whenever a run is registered, updated, or
+ * finished, and whenever any run's fact log receives an append (partial
+ * deliveries never reach it) — so a
+ * single subscription keeps consumers (fleet widget, card, overlay)
+ * current with both lifecycle and transcript changes.
+ *
+ * @param listener - Called with no arguments on each change.
+ * @returns A function that removes the subscription.
+ */
+export function subscribeRunChange(listener: RunChangeListener): () => void {
+  runChangeListeners.add(listener);
+  return () => {
+    runChangeListeners.delete(listener);
+  };
+}
+
 /** The terminal statuses — no field may change after one is reached. */
 const TERMINAL: ReadonlySet<RunStatus> = new Set(["done", "error", "aborted"]);
 
@@ -179,6 +229,7 @@ export function startRun(input: StartRunInput): SubagentRun {
     parentSession: input.parentSession,
     status: "running",
     startedAt: input.startedAt ?? Date.now(),
+    log: createRunLog(),
     ...(input.label !== undefined ? { label: input.label } : {}),
     ...(input.childSession !== undefined
       ? { childSession: input.childSession }
@@ -187,7 +238,11 @@ export function startRun(input: StartRunInput): SubagentRun {
       ? { sessionPath: input.sessionPath }
       : {}),
   };
+  run.log.onFact(() => {
+    notifyRunChange();
+  });
   registry.set(input.id, run);
+  notifyRunChange();
   return run;
 }
 
@@ -203,11 +258,16 @@ export function startRun(input: StartRunInput): SubagentRun {
 export function updateRun(id: string, patch: UpdateRunPatch): void {
   const run = registry.get(id);
   if (run === undefined || TERMINAL.has(run.status)) return;
-  if (patch.currentTool !== undefined) run.currentTool = patch.currentTool;
+  if (patch.currentTool !== undefined) {
+    // `null` is the explicit clear; an absent field never reaches here.
+    if (patch.currentTool === null) delete run.currentTool;
+    else run.currentTool = patch.currentTool;
+  }
   if (patch.tokens !== undefined) run.tokens = patch.tokens;
   if (patch.model !== undefined) run.model = patch.model;
   if (patch.childSession !== undefined) run.childSession = patch.childSession;
   if (patch.sessionPath !== undefined) run.sessionPath = patch.sessionPath;
+  notifyRunChange();
 }
 
 /**
@@ -228,6 +288,7 @@ export function finishRun(id: string, input: FinishRunInput): void {
   if (input.error !== undefined) run.error = input.error;
   if (input.sessionPath !== undefined) run.sessionPath = input.sessionPath;
   if (input.childSession !== undefined) run.childSession = input.childSession;
+  notifyRunChange();
 }
 
 /**

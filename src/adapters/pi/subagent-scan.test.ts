@@ -14,10 +14,11 @@
  * - timestamp resolution with fallback when the history carries none
  * - idempotent re-scanning (the registry's terminal immutability is the
  *   guarantee — a duplicate call id never produces a second entry)
- * - `details` extraction: run-id preference and child/session pointer
- *   carriage, with ill-shaped `details` leaving them absent
+ * - `details` extraction: the reduced `{ sessionPath }` payload and the
+ *   legacy pointers, with ill-shaped `details` leaving them absent
  * - recursive nested rebuild: single-level and multi-level delegation
- *   chains reconstructed through sub-session files, with missing-file
+ *   chains reconstructed through sub-session files, with the parent's
+ *   `childSession` recovered from the child file's header id, missing-file
  *   tolerance, cycle detection (a global visited set), and idempotence
  *   across re-scans
  */
@@ -116,23 +117,31 @@ function writeSessionFile(
   return path;
 }
 
-/** A `details` payload as pi persists it on a subagent toolResult. */
-function detailsPayload(
-  runId: string,
-  overrides: { childSession?: string; sessionPath?: string } = {},
-): Record<string, unknown> {
+/**
+ * The `details` payload a subagent result persists TODAY: the sub-session
+ * file path ONLY (see `terminalToolDetails` in `src/pi.ts`).  A run without
+ * a sub-session path persists `{}`.
+ */
+function detailsPayload(sessionPath?: string): Record<string, unknown> {
+  return sessionPath === undefined ? {} : { sessionPath };
+}
+
+/**
+ * The `details` payload written BEFORE that reduction — it also carried the
+ * run id and the created child-session id.  Used only by the fixtures that
+ * lock backward compatibility with pre-reduction session files.
+ */
+function legacyDetailsPayload(facts: {
+  runId?: string;
+  childSession?: string;
+  sessionPath?: string;
+}): Record<string, unknown> {
   return {
     agent: "beaver",
     output: "ok",
     done: true,
     result: { kind: "ok", text: "ok" },
-    runId,
-    ...(overrides.childSession !== undefined
-      ? { childSession: overrides.childSession }
-      : {}),
-    ...(overrides.sessionPath !== undefined
-      ? { sessionPath: overrides.sessionPath }
-      : {}),
+    ...facts,
   };
 }
 
@@ -311,7 +320,10 @@ describe("extractSubagentRuns — scan pi history for subagent calls", () => {
     assert.equal(runs[0]?.parentSession, "sess-other");
   });
 
-  it("carries childSession/sessionPath from the result details", () => {
+  it("carries sessionPath from the reduced details payload", () => {
+    // The producer persists ONLY the sub-session path; the child-session id
+    // is recovered later (from the child file's header), so the scanned run
+    // itself carries no childSession.
     const runs = extractSubagentRuns(
       [
         assistantEntry(
@@ -319,7 +331,29 @@ describe("extractSubagentRuns — scan pi history for subagent calls", () => {
           100,
         ),
         toolResultEntry("call-8", "subagent", [{ type: "text", text: "ok" }], {
-          details: detailsPayload("run-8", {
+          details: detailsPayload("/tmp/child-ses-8.jsonl"),
+        }),
+      ],
+      "sess-1",
+    );
+
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]?.id, "call-8");
+    assert.equal(runs[0]?.sessionPath, "/tmp/child-ses-8.jsonl");
+    assert.equal(runs[0]?.childSession, undefined);
+    assert.equal(runs[0]?.status, "done");
+  });
+
+  it("carries a legacy details childSession when the file predates the reduction", () => {
+    const runs = extractSubagentRuns(
+      [
+        assistantEntry(
+          [toolCall("call-8b", "subagent", { agent: "beaver" })],
+          100,
+        ),
+        toolResultEntry("call-8b", "subagent", [{ type: "text", text: "ok" }], {
+          details: legacyDetailsPayload({
+            runId: "call-8b",
             childSession: "child-ses-8",
             sessionPath: "/tmp/child-ses-8.jsonl",
           }),
@@ -331,10 +365,12 @@ describe("extractSubagentRuns — scan pi history for subagent calls", () => {
     assert.equal(runs.length, 1);
     assert.equal(runs[0]?.childSession, "child-ses-8");
     assert.equal(runs[0]?.sessionPath, "/tmp/child-ses-8.jsonl");
-    assert.equal(runs[0]?.status, "done");
   });
 
-  it("prefers details.runId over the tool-call id", () => {
+  it("uses the tool-call id as the run id even when legacy details carry a runId", () => {
+    // On pi the subagent tool's registry run id IS the forwarded tool-call
+    // id, so the never-written `details.runId` is not consulted: an
+    // id-bearing legacy payload must not re-key the run.
     const runs = extractSubagentRuns(
       [
         assistantEntry(
@@ -342,24 +378,20 @@ describe("extractSubagentRuns — scan pi history for subagent calls", () => {
           200,
         ),
         toolResultEntry("call-9", "subagent", [{ type: "text", text: "ok" }], {
-          details: detailsPayload("run-9"),
+          details: legacyDetailsPayload({ runId: "other-run-9" }),
         }),
       ],
       "sess-1",
     );
 
     assert.equal(runs.length, 1);
-    assert.equal(
-      runs[0]?.id,
-      "run-9",
-      "the details run id must win over the call id",
-    );
+    assert.equal(runs[0]?.id, "call-9", "the tool-call id is the run id");
   });
 
   it("leaves the run id and session pointers absent when details is ill-shaped", () => {
-    // `details` missing or non-object: the top-level run is still rebuilt
-    // with the call id, and no session pointers are attached.
-    for (const details of [undefined, "oops", 42, []]) {
+    // `details` missing, empty, or non-object: the top-level run is still
+    // rebuilt with the call id, and no session pointers are attached.
+    for (const details of [undefined, {}, "oops", 42, []]) {
       const runs = extractSubagentRuns(
         [
           assistantEntry([toolCall("call-10", "subagent", { agent: "mola" })]),
@@ -476,7 +508,8 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
     const sessionsRoot = join(root, "sessions", "cwd");
     mkdirSync(sessionsRoot, { recursive: true });
 
-    // The nested sub-session file: beaver delegated to lynx inside it.
+    // The nested sub-session file: beaver delegated to lynx inside it.  The
+    // lynx run delegates no further, so its own details carry no pointer.
     const lynxPath = writeSessionFile(
       sessionsRoot,
       "child-ses-1.jsonl",
@@ -484,29 +517,31 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
       [
         assistantEntry([toolCall("n1", "subagent", { agent: "lynx" })], 500),
         toolResultEntry("n1", "subagent", [{ type: "text", text: "ok" }], {
-          details: detailsPayload("n1"),
+          details: detailsPayload(),
         }),
       ],
     );
 
-    // The main session: beaver run with details pointing at the child file.
+    // The main session: the beaver run's persisted details carry ONLY the
+    // sub-session path — the shape the producer writes today.
     rebuildSubagentRuns(
       [
         assistantEntry([toolCall("p1", "subagent", { agent: "beaver" })], 100),
         toolResultEntry("p1", "subagent", [{ type: "text", text: "ok" }], {
-          details: detailsPayload("run-p1", {
-            childSession: "child-ses-1",
-            sessionPath: lynxPath,
-          }),
+          details: detailsPayload(lynxPath),
         }),
       ],
       "main",
       { sessionsRoot: join(root, "sessions") },
     );
 
-    const parent = getRun("run-p1");
+    const parent = getRun("p1");
     assert.equal(parent?.status, "done");
-    assert.equal(parent?.childSession, "child-ses-1");
+    assert.equal(
+      parent?.childSession,
+      "child-ses-1",
+      "the child session id is recovered from the sub-session file header",
+    );
     assert.equal(parent?.sessionPath, lynxPath);
 
     // The nested lynx run must be attached under the parent's child session.
@@ -515,17 +550,64 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
     assert.equal(child?.agent, "lynx");
     assert.equal(child?.parentSession, "child-ses-1");
     assert.deepEqual(
-      childrenOf("run-p1").map((c) => c.id),
+      childrenOf("p1").map((c) => c.id),
       ["n1"],
     );
     // The nested run must NOT show up as a top-level run of the main session.
     assert.deepEqual(
       topLevelRuns("main").map((r) => r.id),
-      ["run-p1"],
+      ["p1"],
     );
   });
 
-  it("locates the nested session file by childSession id when sessionPath is absent", () => {
+  it("attaches nested children on a rebuild after a restart from sessionPath-only details", () => {
+    // Regression: the reduced persisted payload dropped `childSession`, so a
+    // rebuilt parent kept no child-session id and its nested runs became
+    // orphans (missing from the fleet tree, project card, and summary).
+    const root = makeFixtureDir();
+    const sessionsRoot = join(root, "sessions", "cwd");
+    mkdirSync(sessionsRoot, { recursive: true });
+
+    const lynxPath = writeSessionFile(
+      sessionsRoot,
+      "child-ses-1.jsonl",
+      "child-ses-1",
+      [
+        assistantEntry([toolCall("n1", "subagent", { agent: "lynx" })], 500),
+        toolResultEntry("n1", "subagent", [{ type: "text", text: "ok" }], {
+          details: detailsPayload(),
+        }),
+      ],
+    );
+    const history = [
+      assistantEntry([toolCall("p1", "subagent", { agent: "beaver" })], 100),
+      toolResultEntry("p1", "subagent", [{ type: "text", text: "ok" }], {
+        // ONLY { sessionPath } — no childSession, no runId on disk.
+        details: detailsPayload(lynxPath),
+      }),
+    ];
+
+    // The run finishes in this process, pi exits (the process-level registry
+    // is wiped), and the resume rebuild reconstructs the tree from disk.
+    rebuildSubagentRuns(history, "main", { sessionsRoot });
+    resetRegistry();
+    assert.equal(getRun("p1"), undefined, "the wipe emptied the registry");
+    rebuildSubagentRuns(history, "main", { sessionsRoot });
+
+    assert.equal(getRun("p1")?.childSession, "child-ses-1");
+    assert.deepEqual(
+      childrenOf("p1").map((c) => c.id),
+      ["n1"],
+      "the nested child re-attaches to its parent after the rescan",
+    );
+    assert.deepEqual(
+      topLevelRuns("main").map((r) => r.id),
+      ["p1"],
+      "the nested child is not promoted to a top-level run",
+    );
+  });
+
+  it("locates the nested session file by a legacy childSession when sessionPath is absent", () => {
     const root = makeFixtureDir();
     const sessionsRoot = join(root, "sessions");
     const cwdDir = join(sessionsRoot, "cwd");
@@ -535,18 +617,60 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
     writeSessionFile(cwdDir, "child-ses-1.jsonl", "child-ses-1", [
       assistantEntry([toolCall("n1", "subagent", { agent: "lynx" })], 500),
       toolResultEntry("n1", "subagent", [{ type: "text", text: "ok" }], {
-        details: detailsPayload("n1"),
+        details: detailsPayload(),
       }),
     ]);
 
-    // The parent run's details carry ONLY childSession (no sessionPath) —
-    // the scanner must locate the file by scanning for the header id.
+    // Pre-reduction details carry ONLY childSession (no sessionPath) — the
+    // scanner must locate the file by scanning for the header id.
     rebuildSubagentRuns(
       [
         assistantEntry([toolCall("p1", "subagent", { agent: "beaver" })], 100),
         toolResultEntry("p1", "subagent", [{ type: "text", text: "ok" }], {
-          details: detailsPayload("run-p1", {
-            childSession: "child-ses-1",
+          details: legacyDetailsPayload({ childSession: "child-ses-1" }),
+        }),
+      ],
+      "main",
+      { sessionsRoot },
+    );
+
+    const parent = getRun("p1");
+    assert.equal(parent?.childSession, "child-ses-1");
+    assert.equal(parent?.sessionPath, undefined);
+    assert.equal(getRun("n1")?.status, "done");
+    assert.equal(getRun("n1")?.parentSession, "child-ses-1");
+    assert.deepEqual(
+      childrenOf("p1").map((c) => c.id),
+      ["n1"],
+    );
+  });
+
+  it("prefers a persisted childSession over the sub-session file's header id", () => {
+    const root = makeFixtureDir();
+    const sessionsRoot = join(root, "sessions");
+    mkdirSync(sessionsRoot, { recursive: true });
+
+    // A pointer whose header id disagrees with the persisted childSession
+    // (a rewritten / corrupted file) must not re-parent the tree — the
+    // persisted pointer wins, keeping backward compatibility exact.
+    const mismatched = writeSessionFile(
+      sessionsRoot,
+      "child-ses-1.jsonl",
+      "header-says-this",
+      [
+        assistantEntry([toolCall("n1", "subagent", { agent: "lynx" })], 500),
+        toolResultEntry("n1", "subagent", [{ type: "text", text: "ok" }], {
+          details: detailsPayload(),
+        }),
+      ],
+    );
+    rebuildSubagentRuns(
+      [
+        assistantEntry([toolCall("p1", "subagent", { agent: "beaver" })], 100),
+        toolResultEntry("p1", "subagent", [{ type: "text", text: "ok" }], {
+          details: legacyDetailsPayload({
+            childSession: "persisted-child-1",
+            sessionPath: mismatched,
           }),
         }),
       ],
@@ -554,14 +678,10 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
       { sessionsRoot },
     );
 
-    const parent = getRun("run-p1");
-    assert.equal(parent?.childSession, "child-ses-1");
-    assert.equal(parent?.sessionPath, undefined);
-    const child = getRun("n1");
-    assert.equal(child?.status, "done");
-    assert.equal(child?.parentSession, "child-ses-1");
+    assert.equal(getRun("p1")?.childSession, "persisted-child-1");
+    assert.equal(getRun("n1")?.parentSession, "persisted-child-1");
     assert.deepEqual(
-      childrenOf("run-p1").map((c) => c.id),
+      childrenOf("p1").map((c) => c.id),
       ["n1"],
     );
   });
@@ -583,7 +703,7 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
           500,
         ),
         toolResultEntry(`r-${id}`, "subagent", [{ type: "text", text: "ok" }], {
-          details: detailsPayload(`run-${id}`),
+          details: detailsPayload(),
         }),
       ]);
     }
@@ -617,22 +737,26 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
       },
     };
 
-    // Three parent runs, each carrying only a childSession (no sessionPath),
-    // so every nested branch resolves through the shared index.
+    // Three legacy parent runs, each carrying only a childSession (no
+    // sessionPath), so every nested branch resolves through the shared index.
     const history = childIds.flatMap((id, i) => [
       assistantEntry(
         [toolCall(`p${i}`, "subagent", { agent: "beaver" })],
         i * 100,
       ),
       toolResultEntry(`p${i}`, "subagent", [{ type: "text", text: "ok" }], {
-        details: detailsPayload(`run-p${i}`, { childSession: id }),
+        details: legacyDetailsPayload({ childSession: id }),
       }),
     ]);
     rebuildSubagentRuns(history, "main", { sessionsRoot, indexIO });
 
     // All three nested branches rebuilt (behavior unchanged).
     for (const id of childIds) {
-      assert.equal(getRun(`run-${id}`)?.status, "done", `${id} rebuilt`);
+      assert.equal(getRun(`r-${id}`)?.status, "done", `${id} rebuilt`);
+      assert.deepEqual(
+        childrenOf(`p${childIds.indexOf(id)}`).map((c) => c.id),
+        [`r-${id}`],
+      );
     }
     assert.equal(
       rootScans,
@@ -660,7 +784,7 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
       [
         assistantEntry([toolCall("g2", "subagent", { agent: "spider" })], 900),
         toolResultEntry("g2", "subagent", [{ type: "text", text: "ok" }], {
-          details: detailsPayload("g2"),
+          details: detailsPayload(),
         }),
       ],
     );
@@ -670,10 +794,7 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
     writeSessionFile(cwdDir, "child-ses-1.jsonl", "child-ses-1", [
       assistantEntry([toolCall("n1", "subagent", { agent: "lynx" })], 500),
       toolResultEntry("n1", "subagent", [{ type: "text", text: "ok" }], {
-        details: detailsPayload("run-n1", {
-          childSession: "child-ses-2",
-          sessionPath: spiderPath,
-        }),
+        details: detailsPayload(spiderPath),
       }),
     ]);
 
@@ -682,19 +803,15 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
       [
         assistantEntry([toolCall("p1", "subagent", { agent: "beaver" })], 100),
         toolResultEntry("p1", "subagent", [{ type: "text", text: "ok" }], {
-          details: detailsPayload("run-p1", {
-            childSession: "child-ses-1",
-            sessionPath: join(cwdDir, "child-ses-1.jsonl"),
-          }),
+          details: detailsPayload(join(cwdDir, "child-ses-1.jsonl")),
         }),
       ],
       "main",
       { sessionsRoot },
     );
 
-    const parent = getRun("run-p1");
-    assert.equal(parent?.childSession, "child-ses-1");
-    const middle = getRun("run-n1");
+    assert.equal(getRun("p1")?.childSession, "child-ses-1");
+    const middle = getRun("n1");
     assert.equal(middle?.status, "done");
     assert.equal(middle?.agent, "lynx");
     assert.equal(middle?.childSession, "child-ses-2");
@@ -705,35 +822,35 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
     assert.equal(leaf?.parentSession, "child-ses-2");
 
     assert.deepEqual(
-      childrenOf("run-p1").map((c) => c.id),
-      ["run-n1"],
+      childrenOf("p1").map((c) => c.id),
+      ["n1"],
     );
     assert.deepEqual(
-      childrenOf("run-n1").map((c) => c.id),
+      childrenOf("n1").map((c) => c.id),
       ["g2"],
     );
   });
 
   it("rebuilds the top-level run but skips the nested branch when details is missing", () => {
-    // A completed subagent call without a details payload: the top-level
-    // run is still rebuilt, but with no session pointer the nested scan
-    // cannot descend (and must not crash).
+    // A completed subagent call whose details carry no session pointer: the
+    // top-level run is still rebuilt, but the nested scan cannot descend
+    // (and must not crash).
     rebuildSubagentRuns(
       [
         assistantEntry([toolCall("p1", "subagent", { agent: "beaver" })], 100),
         toolResultEntry("p1", "subagent", [{ type: "text", text: "ok" }], {
-          details: detailsPayload("run-p1"),
+          details: detailsPayload(),
         }),
       ],
       "main",
       { sessionsRoot: join(makeFixtureDir(), "sessions") },
     );
 
-    const run = getRun("run-p1");
+    const run = getRun("p1");
     assert.equal(run?.status, "done");
     assert.equal(run?.childSession, undefined);
     assert.equal(run?.sessionPath, undefined);
-    assert.equal(childrenOf("run-p1").length, 0);
+    assert.equal(childrenOf("p1").length, 0);
   });
 
   it("tolerates a missing / unreadable sub-session file (warn, skip branch)", () => {
@@ -745,10 +862,7 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
       [
         assistantEntry([toolCall("p1", "subagent", { agent: "beaver" })], 100),
         toolResultEntry("p1", "subagent", [{ type: "text", text: "ok" }], {
-          details: detailsPayload("run-p1", {
-            childSession: "child-ses-missing",
-            sessionPath: join(sessionsRoot, "nonexistent.jsonl"),
-          }),
+          details: detailsPayload(join(sessionsRoot, "nonexistent.jsonl")),
         }),
       ],
       "main",
@@ -756,15 +870,20 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
     );
 
     // The parent run is still rebuilt; no nested runs were found.
-    assert.equal(getRun("run-p1")?.status, "done");
-    assert.equal(childrenOf("run-p1").length, 0);
+    assert.equal(getRun("p1")?.status, "done");
+    assert.equal(
+      getRun("p1")?.childSession,
+      undefined,
+      "an unreadable file yields no child-session id",
+    );
+    assert.equal(childrenOf("p1").length, 0);
 
     // A warn entry must be logged for the skipped branch.
     const warns = scanWarns().filter(
       (e) => e.event === "nested_session_unreadable",
     );
     assert.ok(warns.length >= 1, "expected a nested_session_unreadable warn");
-    assert.equal(warns[0]?.runId, "run-p1");
+    assert.equal(warns[0]?.runId, "p1");
   });
 
   it("detects a session cycle (A → B → A back-reference) and stops the branch", () => {
@@ -780,19 +899,13 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
     const bPath = writeSessionFile(sessionsRoot, "sess-b.jsonl", "sess-b", [
       assistantEntry([toolCall("rb", "subagent", { agent: "spider" })], 900),
       toolResultEntry("rb", "subagent", [{ type: "text", text: "ok" }], {
-        details: detailsPayload("run-b", {
-          childSession: "sess-a",
-          sessionPath: aPath,
-        }),
+        details: detailsPayload(aPath),
       }),
     ]);
     writeSessionFile(sessionsRoot, "sess-a.jsonl", "sess-a", [
       assistantEntry([toolCall("ra", "subagent", { agent: "lynx" })], 500),
       toolResultEntry("ra", "subagent", [{ type: "text", text: "ok" }], {
-        details: detailsPayload("run-a", {
-          childSession: "sess-b",
-          sessionPath: bPath,
-        }),
+        details: detailsPayload(bPath),
       }),
     ]);
 
@@ -801,20 +914,26 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
       [
         assistantEntry([toolCall("p1", "subagent", { agent: "beaver" })], 100),
         toolResultEntry("p1", "subagent", [{ type: "text", text: "ok" }], {
-          details: detailsPayload("run-p1", {
-            childSession: "sess-a",
-            sessionPath: aPath,
-          }),
+          details: detailsPayload(aPath),
         }),
       ],
       "main",
       { sessionsRoot },
     );
 
-    // The first visit to each file still rebuilt its runs.
-    assert.equal(getRun("run-p1")?.status, "done");
-    assert.equal(getRun("run-a")?.status, "done");
-    assert.equal(getRun("run-b")?.status, "done", "level-2 run rebuilt");
+    // The first visit to each file still rebuilt its runs, attached under
+    // the header-derived child sessions.
+    assert.equal(getRun("p1")?.status, "done");
+    assert.equal(getRun("ra")?.status, "done");
+    assert.equal(getRun("rb")?.status, "done", "level-2 run rebuilt");
+    assert.deepEqual(
+      childrenOf("p1").map((c) => c.id),
+      ["ra"],
+    );
+    assert.deepEqual(
+      childrenOf("ra").map((c) => c.id),
+      ["rb"],
+    );
 
     // A warn must mark the repeated session (the back-reference back to
     // sess-a inside sess-b), and the scan must have terminated (not hung).
@@ -837,10 +956,7 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
     writeSessionFile(sessionsRoot, "sess-main.jsonl", "main", [
       assistantEntry([toolCall("rm", "subagent", { agent: "beaver" })], 900),
       toolResultEntry("rm", "subagent", [{ type: "text", text: "ok" }], {
-        details: detailsPayload("run-m", {
-          childSession: "main",
-          sessionPath: mainPath,
-        }),
+        details: detailsPayload(mainPath),
       }),
     ]);
 
@@ -848,20 +964,17 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
       [
         assistantEntry([toolCall("p1", "subagent", { agent: "beaver" })], 100),
         toolResultEntry("p1", "subagent", [{ type: "text", text: "ok" }], {
-          details: detailsPayload("run-p1", {
-            childSession: "main",
-            sessionPath: mainPath,
-          }),
+          details: detailsPayload(mainPath),
         }),
       ],
       "main",
       { sessionsRoot },
     );
 
-    assert.equal(getRun("run-p1")?.status, "done");
+    assert.equal(getRun("p1")?.status, "done");
     // The repeated main-session branch is skipped — only the top-level
     // run exists.
-    assert.equal(getRun("run-m"), undefined);
+    assert.equal(getRun("rm"), undefined);
     const cycleWarns = scanWarns().filter(
       (e) => e.event === "nested_session_cycle",
     );
@@ -880,18 +993,12 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
     // stopped at level 7 — the cycle-guard rebuild must reach the leaf.
     const CHAIN_DEPTH = 12;
     const pathOf = (i: number) => join(sessionsRoot, `lvl${i}.jsonl`);
-    const chainSession = (i: number) => `lvl${i}`;
     for (let i = 0; i < CHAIN_DEPTH; i++) {
-      const sessionId = chainSession(i);
-      const runId = `run-${sessionId}`;
       const pointer =
         i === CHAIN_DEPTH - 1
-          ? detailsPayload(runId)
-          : detailsPayload(runId, {
-              childSession: chainSession(i + 1),
-              sessionPath: pathOf(i + 1),
-            });
-      writeSessionFile(sessionsRoot, `${sessionId}.jsonl`, sessionId, [
+          ? detailsPayload()
+          : detailsPayload(pathOf(i + 1));
+      writeSessionFile(sessionsRoot, `lvl${i}.jsonl`, `lvl${i}`, [
         assistantEntry(
           [toolCall(`r${i}`, "subagent", { agent: "beaver" })],
           1000 + i,
@@ -907,26 +1014,36 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
       [
         assistantEntry([toolCall("p1", "subagent", { agent: "beaver" })], 100),
         toolResultEntry("p1", "subagent", [{ type: "text", text: "ok" }], {
-          details: detailsPayload("run-p1", {
-            childSession: chainSession(0),
-            sessionPath: pathOf(0),
-          }),
+          details: detailsPayload(pathOf(0)),
         }),
       ],
       "main",
       { sessionsRoot },
     );
 
-    assert.equal(getRun("run-p1")?.status, "done");
-    // Every level of the chain must be rebuilt — no depth limit.
+    assert.equal(getRun("p1")?.status, "done");
+    // Every level of the chain must be rebuilt and attached to its parent —
+    // no depth cap, and no orphaned nested run.
+    let parent = "p1";
     for (let i = 0; i < CHAIN_DEPTH; i++) {
-      const runId = `run-lvl${i}`;
       assert.equal(
-        getRun(runId)?.status,
+        getRun(`r${i}`)?.status,
         "done",
         `chain level ${i} run rebuilt (no depth cap)`,
       );
+      assert.equal(
+        getRun(`r${i}`)?.parentSession,
+        `lvl${i}`,
+        `chain level ${i} scoped to its parent's child session`,
+      );
+      assert.deepEqual(
+        childrenOf(parent).map((c) => c.id),
+        [`r${i}`],
+        `chain level ${i} attaches to its parent`,
+      );
+      parent = `r${i}`;
     }
+    assert.equal(childrenOf(parent).length, 0, "the leaf has no children");
     // No cycle warns — the chain is acyclic.
     const cycleWarns = scanWarns().filter(
       (e) => e.event === "nested_session_cycle",
@@ -946,29 +1063,26 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
       [
         assistantEntry([toolCall("n1", "subagent", { agent: "lynx" })], 500),
         toolResultEntry("n1", "subagent", [{ type: "text", text: "ok" }], {
-          details: detailsPayload("n1"),
+          details: detailsPayload(),
         }),
       ],
     );
     const history = [
       assistantEntry([toolCall("p1", "subagent", { agent: "beaver" })], 100),
       toolResultEntry("p1", "subagent", [{ type: "text", text: "ok" }], {
-        details: detailsPayload("run-p1", {
-          childSession: "child-ses-1",
-          sessionPath: lynxPath,
-        }),
+        details: detailsPayload(lynxPath),
       }),
     ];
 
     rebuildSubagentRuns(history, "main", { sessionsRoot });
-    const frozenParent = getRun("run-p1");
+    const frozenParent = getRun("p1");
     const frozenChild = getRun("n1");
     rebuildSubagentRuns(history, "main", { sessionsRoot });
     rebuildSubagentRuns(history, "main", { sessionsRoot });
 
     assert.equal(topLevelRuns("main").length, 1, "no duplicate top runs");
-    assert.equal(childrenOf("run-p1").length, 1, "no duplicate nested runs");
-    assert.equal(getRun("run-p1")?.endedAt, frozenParent?.endedAt);
+    assert.equal(childrenOf("p1").length, 1, "no duplicate nested runs");
+    assert.equal(getRun("p1")?.endedAt, frozenParent?.endedAt);
     assert.equal(getRun("n1")?.endedAt, frozenChild?.endedAt);
   });
 });

@@ -1,90 +1,76 @@
 /**
- * Tests for the subagent transcript view model (`src/core/subagent/view.ts`).
+ * Tests for the subagent transcript projections (`src/core/subagent/view.ts`).
  *
- * The view model is pure: it takes a structured `SubagentProgress` snapshot
- * plus the delegation label and derives the display lines for the pi TUI
- * card.  Every line carries a semantic hue (`running` / `success` / `error`
- * / `muted` / `accent`) that the pi adapter later maps to a concrete theme
- * color — core stays host-free.  This suite locks the line *structure* and
- * *content* for the running (isPartial) and terminal (ok / error / aborted)
- * states, plus the collapsed vs expanded variants.
+ * The view model is pure: it projects a run's append-only fact log
+ * (`run-log.ts`) plus run metadata into the display lines of the pi TUI
+ * card.  Every line carries a semantic hue (`running` / `success` /
+ * `error` / `muted` / `accent`) that the pi adapter later maps to a
+ * concrete theme color — core stays host-free.  This suite locks the
+ * projection rules: the collapsed recency window vs full expanded
+ * output, render-width truncation (never a baked-in character cap),
+ * per-tool-kind one-line summaries, and counters derived from facts.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { SubagentProgress } from "./driver.js";
 import type { SubagentRun } from "./registry.js";
+import { createRunLog, type RunLog } from "./run-log.js";
+import type { CardLine, CardMeta, CardOptions } from "./view.js";
 import {
-  type CardLine,
-  COLLAPSED_TOOL_CAP,
-  EXPANDED_TOOL_CAP,
+  deriveCounters,
   formatTokenCount,
+  GLANCE_LINES,
+  projectCard,
   renderFleetCollapsed,
   renderFleetRows,
-  renderProgressCard,
   renderProgressTitle,
-  renderResultCard,
   renderTitle,
   SPINNER_FRAMES,
+  summarizeToolCall,
 } from "./view.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
 
-/** A mid-run snapshot with one current tool and recent output. */
-function runningSnapshot(
-  overrides: Partial<SubagentProgress> = {},
-): SubagentProgress {
+/** A running-run card metadata fixture. */
+function runningMeta(overrides: Partial<CardMeta> = {}): CardMeta {
   return {
     agent: "beaver",
-    currentTool: "bash",
-    output: "compiling the agent",
-    toolCalls: [{ name: "bash", summary: "compiling" }],
-    outputLines: ["compiling the agent"],
-    turnCount: 1,
-    toolCallCount: 1,
+    status: "running",
     startedAt: 0,
-    done: false,
+    currentTool: "bash",
     ...overrides,
   };
 }
 
-/** A completed ok snapshot. */
-function okSnapshot(
-  overrides: Partial<SubagentProgress> = {},
-): SubagentProgress {
+/** A terminal-run card metadata fixture (done unless overridden). */
+function terminalMeta(overrides: Partial<CardMeta> = {}): CardMeta {
   return {
     agent: "beaver",
-    currentTool: undefined,
-    output: "all tests pass",
-    toolCalls: [
-      { name: "bash", summary: "run tests" },
-      { name: "edit", summary: "fix typo" },
-    ],
-    outputLines: ["all tests pass"],
-    turnCount: 3,
-    toolCallCount: 2,
+    status: "done",
     startedAt: 0,
-    done: true,
-    result: { kind: "ok", text: "all tests pass" },
+    endedAt: 0,
     ...overrides,
   };
 }
 
-/** An errored snapshot. */
-function errorSnapshot(): SubagentProgress {
-  return {
-    agent: "beaver",
-    currentTool: "bash",
-    output: "command failed",
-    toolCalls: [{ name: "bash", summary: "run build" }],
-    outputLines: ["command failed"],
-    turnCount: 2,
-    toolCallCount: 1,
-    startedAt: 0,
-    done: true,
-    result: { kind: "error", text: "command failed", errorMessage: "exit 1" },
-  };
+/** The card projection options with the test defaults filled in. */
+function cardOpts(overrides: Partial<CardOptions> = {}): CardOptions {
+  return { width: 80, expanded: false, now: 0, ...overrides };
+}
+
+/** A log with `n` tool-start facts (bash echo 0..n-1), newest last. */
+function toolStarts(log: RunLog, n: number): void {
+  for (let i = 0; i < n; i++) {
+    log.appendToolStart("bash", { command: `echo ${i}` }, i);
+  }
+}
+
+/** A log with `n` assistant message facts ("line of message i"). */
+function messageEnds(log: RunLog, n: number): void {
+  for (let i = 0; i < n; i++) {
+    log.appendMessage([{ type: "text", text: `msg ${i} body` }], undefined, i);
+  }
 }
 
 /** Assert every line carries one of the documented semantic hues. */
@@ -94,6 +80,11 @@ function assertValidLines(lines: CardLine[]): void {
     assert.ok(hues.has(line.hue), `unknown hue ${line.hue}`);
     assert.ok(typeof line.text === "string" && line.text.length > 0);
   }
+}
+
+/** The tool-call (`→ ...`) line texts of a projected card. */
+function toolTexts(lines: CardLine[]): string[] {
+  return lines.filter((l) => l.text.startsWith("\u2192")).map((l) => l.text);
 }
 
 // ---------------------------------------------------------------------------
@@ -116,162 +107,6 @@ describe("view — spinner frames", () => {
     ]);
   });
 });
-
-// ---------------------------------------------------------------------------
-// renderProgressCard (running / partial)
-// ---------------------------------------------------------------------------
-
-describe("renderProgressCard", () => {
-  it("renders the spinner, task label, current tool, output, and stats", () => {
-    const lines = renderProgressCard(runningSnapshot(), "实现功能");
-    assertValidLines(lines);
-
-    const texts = lines.map((l) => l.text);
-    // The running card has no title line: the title is owned by the
-    // tool-call card (`renderCall`), which the tool-execution component
-    // stacks above this body.  A title here would duplicate it.
-    const titleLine = texts.find((t) =>
-      SPINNER_FRAMES.some((f) => t.startsWith(f)),
-    );
-    assert.ok(
-      titleLine === undefined,
-      `running card must not render a spinner title: ${texts.join(" | ")}`,
-    );
-
-    // Current tool line is present and accent-hued.
-    const toolLine = lines.find((l) => l.hue === "accent");
-    assert.ok(toolLine, "expected an accent current-tool line");
-    assert.ok(toolLine.text.includes("bash"));
-
-    // Recent output line (muted).
-    const outputLine = lines.find((l) => l.hue === "muted");
-    assert.ok(outputLine, "expected a muted output line");
-    assert.ok(outputLine.text.includes("compiling the agent"));
-
-    // Stats line carries turn / tool / elapsed.
-    const stats = lines[lines.length - 1];
-    assert.ok(stats.text.includes("1 turn"), `missing turns: ${stats.text}`);
-    assert.ok(stats.text.includes("1 tool"), `missing tools: ${stats.text}`);
-    assert.ok(
-      !stats.text.includes("1 turns") && !stats.text.includes("1 tools"),
-      `singular must be used for a count of 1: ${stats.text}`,
-    );
-  });
-
-  it("renders tool-call lines without duplicating the tool name", () => {
-    const snapshot = runningSnapshot({
-      toolCalls: [
-        {
-          name: "read",
-          summary: "read ~/Code/Agent/ZooKeeper/src/core/slots.ts",
-        },
-        { name: "bash", summary: "$ npm run build" },
-      ],
-    });
-    const lines = renderProgressCard(snapshot, undefined);
-    const toolLines = lines
-      .filter((l) => l.hue === "accent" && l.text.startsWith("→"))
-      .map((l) => l.text);
-    // The summary is self-contained (`read <path>` / `$ <cmd>`): the view
-    // renders it verbatim after the arrow, never re-prefixing the name.
-    assert.deepEqual(toolLines, [
-      "→ read ~/Code/Agent/ZooKeeper/src/core/slots.ts",
-      "→ $ npm run build",
-    ]);
-    assert.ok(
-      !toolLines.some((t) => t.includes("read read") || t.includes("bash $")),
-      `duplicated tool name: ${toolLines.join(" | ")}`,
-    );
-  });
-
-  it("keeps the running card body independent of the task description", () => {
-    const lines = renderProgressCard(runningSnapshot(), undefined);
-    const texts = lines.map((l) => l.text);
-    // The label is owned by the tool-call card title; the running body
-    // never leaks it (and never renders a spinner title either).
-    assert.ok(!texts.some((t) => t.includes("subagent(beaver)")));
-    assert.ok(
-      !texts.some((t) => t.includes("undefined")),
-      `leaked undefined: ${texts.join(" | ")}`,
-    );
-  });
-
-  it("shows more recent tools and output lines when expanded", () => {
-    const manyTools = Array.from({ length: 6 }, (_, i) => ({
-      name: `tool${i}`,
-      summary: `doing ${i}`,
-    }));
-    const manyOutput = Array.from({ length: 8 }, (_, i) => `output line ${i}`);
-    const snapshot = runningSnapshot({
-      currentTool: "tool5",
-      toolCalls: manyTools,
-      outputLines: manyOutput,
-    });
-
-    const collapsed = renderProgressCard(snapshot, undefined, false);
-    const expanded = renderProgressCard(snapshot, undefined, true);
-
-    const toolText = (lines: CardLine[]): string =>
-      lines
-        .filter((l) => l.hue === "accent" && l.text.startsWith("→"))
-        .map((l) => l.text)
-        .join("\n");
-    const outputText = (lines: CardLine[]): string =>
-      lines
-        .filter((l) => l.hue === "muted")
-        .map((l) => l.text)
-        .join("\n");
-
-    assert.ok(
-      toolText(collapsed).split("\n").length <= COLLAPSED_TOOL_CAP,
-      "collapsed must cap recent tools",
-    );
-    assert.ok(
-      toolText(expanded).split("\n").length > COLLAPSED_TOOL_CAP,
-      "expanded must show more recent tools",
-    );
-    assert.ok(
-      outputText(expanded).length > outputText(collapsed).length,
-      "expanded must show more recent output",
-    );
-    // Expanded never exceeds the documented tool cap.
-    assert.ok(toolText(expanded).split("\n").length <= EXPANDED_TOOL_CAP);
-  });
-
-  it("appends the token usage to the stats line when present", () => {
-    const snapshot = runningSnapshot({
-      tokens: 12345,
-      startedAt: 0,
-      turnCount: 3,
-      toolCallCount: 5,
-    });
-    const lines = renderProgressCard(snapshot, undefined, false, 0);
-    const stats = lines[lines.length - 1].text;
-    // `⟳ 3 turns · 5 tools · 12.3k tok · <elapsed>`
-    assert.ok(stats.includes("12.3k tok"), `missing tokens: ${stats}`);
-    assert.ok(
-      stats.includes("3 turns · 5 tools · 12.3k tok"),
-      `unexpected order: ${stats}`,
-    );
-  });
-
-  it("formats the token count with the thousand-abbreviation convention", () => {
-    assert.equal(formatTokenCount(0), "0");
-    assert.equal(formatTokenCount(999), "999");
-    assert.equal(formatTokenCount(1000), "1.0k");
-    assert.equal(formatTokenCount(12345), "12.3k");
-    assert.equal(formatTokenCount(100000), "100.0k");
-    assert.equal(formatTokenCount(1000000), "1000k");
-  });
-
-  it("omits the token segment from the stats line when absent", () => {
-    const snapshot = runningSnapshot({});
-    const lines = renderProgressCard(snapshot, undefined, false, 0);
-    const stats = lines[lines.length - 1].text;
-    assert.ok(!stats.includes("tok"), `unexpected tokens: ${stats}`);
-  });
-});
-
 // ---------------------------------------------------------------------------
 // renderProgressTitle / renderTitle (the tool-call card's single title line)
 // ---------------------------------------------------------------------------
@@ -372,221 +207,374 @@ describe("renderTitle", () => {
 });
 
 // ---------------------------------------------------------------------------
-// renderResultCard (terminal states)
+// projectCard — running body
 // ---------------------------------------------------------------------------
 
-describe("renderResultCard", () => {
-  it("renders a success check and the final text summary", () => {
-    const lines = renderResultCard(okSnapshot(), "实现功能");
-    assertValidLines(lines);
-
-    const title = lines[0].text;
-    assert.ok(title.includes("✓"), `missing success check: ${title}`);
-    assert.ok(title.includes("subagent(beaver)"), `missing agent: ${title}`);
-    const successLine = lines.find((l) => l.hue === "success");
-    assert.ok(successLine, "expected a success-hued title line");
-    assert.ok(
-      lines.some((l) => l.text.includes("all tests pass")),
-      "final summary text missing",
-    );
-  });
-
-  it("renders no tool-call lines on the terminal card", () => {
-    const lines = renderResultCard(okSnapshot(), "实现功能");
-    const arrowLines = lines.filter((l) => l.text.startsWith("→"));
-    assert.equal(
-      arrowLines.length,
-      0,
-      `terminal card must not render tool-call lines: ${lines.map((l) => l.text).join(" | ")}`,
-    );
-  });
-
-  it("carries the run statistics in the terminal title badge", () => {
-    const lines = renderResultCard(okSnapshot(), "实现功能");
-    const title = lines[0].text;
-    // The terminal title mirrors the running title's badge layout, so the
-    // run statistics (`N turns · M tools`, optional token total) survive
-    // the transition from the running card's stats line.  Like the running
-    // card's always-present stats line, the badge renders even for a
-    // zero-count run.
-    assert.ok(title.includes("3 turns"), `missing turns badge: ${title}`);
-    assert.ok(title.includes("2 tools"), `missing tools badge: ${title}`);
-    assert.ok(title.includes("⟳"), `missing stats marker: ${title}`);
-  });
-
-  it("includes the token total in the terminal title badge when present", () => {
-    const lines = renderResultCard(okSnapshot({ tokens: 12345 }), "实现功能");
-    const title = lines[0].text;
-    assert.ok(title.includes("12.3k tok"), `missing token badge: ${title}`);
-  });
-
-  it("renders an error marker and the error reason", () => {
-    const lines = renderResultCard(errorSnapshot(), "实现功能");
-    assertValidLines(lines);
-
-    const title = lines[0].text;
-    assert.ok(title.includes("✗"), `missing error marker: ${title}`);
-    assert.ok(
-      lines.some((l) => l.hue === "error"),
-      "expected an error line",
-    );
-    assert.ok(
-      lines.some((l) => l.text.includes("exit 1")),
-      "error reason text missing",
-    );
-  });
-
-  it("renders an aborted result distinctly from ok", () => {
-    const aborted: SubagentProgress = {
-      ...okSnapshot(),
-      result: { kind: "aborted", text: "stopped early" },
-      done: true,
-    };
-    const lines = renderResultCard(aborted, undefined);
-    assertValidLines(lines);
-    assert.ok(
-      lines[0].text.includes("⏹"),
-      `missing aborted marker: ${lines[0].text}`,
-    );
-    // Regression: the aborted branch used to push a truncated reason line
-    // AND the final-text block rendered the same `result.text` again, so the
-    // transcript duplicated the aborted text.  The text must render exactly
-    // once — the final-text block owns it, matching the ok branch.
-    const textMatches = lines.filter((l) => l.text.includes("stopped early"));
-    assert.equal(
-      textMatches.length,
+describe("projectCard (running)", () => {
+  it("renders the current tool, tool lines, output lines, and stats", () => {
+    const log = createRunLog();
+    log.appendToolStart("bash", { command: "npm run build" }, 0);
+    log.appendMessage(
+      [{ type: "text", text: "compiling the agent" }],
+      undefined,
       1,
-      `aborted text must render exactly once: ${lines.map((l) => l.text).join(" | ")}`,
     );
-    assert.equal(textMatches[0].hue, "muted");
-  });
+    const lines = projectCard(log, runningMeta(), cardOpts());
+    assertValidLines(lines);
 
-  it("shows more final output when expanded", () => {
-    const longText = ["line one", "line two", "line three", "line four"].join(
-      "\n",
+    const texts = lines.map((l) => l.text);
+    // The running card has no title line: the title is owned by the
+    // tool-call card (`renderCall`), which the tool-execution component
+    // stacks above this body.  A title here would duplicate it.
+    const titleLine = texts.find((t) =>
+      SPINNER_FRAMES.some((f) => t.startsWith(f)),
     );
-    const snapshot = okSnapshot({ result: { kind: "ok", text: longText } });
-    const collapsed = renderResultCard(snapshot, undefined, false);
-    const expanded = renderResultCard(snapshot, undefined, true);
-    const outputText = (lines: CardLine[]): string =>
-      lines
-        .filter((l) => l.hue === "muted")
-        .map((l) => l.text)
-        .join("\n");
-    // Collapsed previews only the first non-empty line; expanded shows the
-    // whole multi-line result.
     assert.ok(
-      outputText(expanded).length > outputText(collapsed).length,
-      "expanded must show more final output",
+      titleLine === undefined,
+      `running card must not render a spinner title: ${texts.join(" | ")}`,
     );
-  });
 
-  it("shows the full final output when expanded past 400 chars", () => {
-    // Regression: the expanded terminal card used to cap the final result at
-    // 400 chars — a silent arbitrary cap with nowhere to see the rest (the
-    // result card fully owns the pi result rendering).  Expanded must pass
-    // the text through untruncated; collapsed previews only the first
-    // non-empty line (width truncation is the adapter's render boundary, so
-    // the view model applies no character cap and no ellipsis).
-    const longText = "detail ".repeat(100); // 700 chars — well past the 400 cap
-    const snapshot = okSnapshot({ result: { kind: "ok", text: longText } });
-    const collapsed = renderResultCard(snapshot, undefined, false);
-    const expanded = renderResultCard(snapshot, undefined, true);
-    const finalTextLines = (lines: CardLine[]): string[] =>
-      lines.filter((l) => l.hue === "muted").map((l) => l.text);
-    const collapsedLines = finalTextLines(collapsed);
-    const expandedLines = finalTextLines(expanded);
-    // Expanded: the full 700-char text passes through untruncated (no
-    // ellipsis marker, exact content).
-    assert.ok(
-      expandedLines.includes(longText),
-      "expanded must contain the full untruncated result",
+    // Current tool line is present and accent-hued.
+    const toolLine = lines.find(
+      (l) => l.hue === "accent" && !l.text.startsWith("→"),
     );
-    assert.ok(
-      !expandedLines.some((t) => t.endsWith("…")),
-      "expanded must not truncate",
+    assert.ok(toolLine, "expected an accent current-tool line");
+    assert.equal(toolLine.text, "bash");
+
+    // The tool-call summary line is projected from the tool-start fact.
+    assert.deepEqual(toolTexts(lines), ["→ $ npm run build"]);
+
+    // Recent output line (muted), derived from the message fact.
+    const outputLine = lines.find(
+      (l) => l.hue === "muted" && !l.text.startsWith("⟳"),
     );
-    // Collapsed: the first non-empty line of a single-line result is the
-    // whole line (trailing whitespace trimmed, mirroring the pi-subagents
-    // fold) — the view model never character-caps it (no 120 limit, no
-    // ellipsis; the adapter truncates to the terminal width at render time).
+    assert.ok(outputLine, "expected a muted output line");
+    assert.ok(outputLine.text.includes("compiling the agent"));
+
+    // Stats line carries turn / tool / elapsed — counters derived from facts.
+    const stats = lines[lines.length - 1];
+    assert.ok(stats.text.includes("1 turn"), `missing turns: ${stats.text}`);
+    assert.ok(stats.text.includes("1 tool"), `missing tools: ${stats.text}`);
     assert.ok(
-      collapsedLines.some((t) => t === longText.trim()),
-      "collapsed must pass the first non-empty line through untruncated in the view model",
-    );
-    assert.ok(
-      !collapsedLines.some((t) => t.endsWith("…")),
-      "collapsed must not add an ellipsis in the view model",
+      !stats.text.includes("1 turns") && !stats.text.includes("1 tools"),
+      `singular must be used for a count of 1: ${stats.text}`,
     );
   });
 
-  it("collapsed previews only the first non-empty line of the final text", () => {
-    const text = "\n\n**SUMMARY:** done\n\nDetails below";
-    const snapshot = okSnapshot({ result: { kind: "ok", text } });
-    const collapsed = renderResultCard(snapshot, undefined, false);
-    const expanded = renderResultCard(snapshot, undefined, true);
-    const finalTextLines = (lines: CardLine[]): string[] =>
-      lines.filter((l) => l.hue === "muted").map((l) => l.text);
-    // Collapsed previews the first non-empty line; expanded keeps the full
-    // multi-line markdown result.
+  it("renders tool-call summaries without duplicating the tool name", () => {
+    const log = createRunLog();
+    log.appendToolStart(
+      "read",
+      { file_path: "/home/u/x/src/core/slots.ts" },
+      0,
+    );
+    log.appendToolStart("bash", { command: "npm run build" }, 1);
+    const lines = projectCard(
+      log,
+      runningMeta({ currentTool: undefined }),
+      cardOpts({ width: 200 }),
+    );
+    // The summary is self-contained (`read <path>` / `$ <cmd>`): the view
+    // renders it verbatim after the arrow, never re-prefixing the name.
+    assert.deepEqual(toolTexts(lines), [
+      "→ read /home/u/x/src/core/slots.ts",
+      "→ $ npm run build",
+    ]);
     assert.ok(
-      finalTextLines(collapsed).some((t) => t === "**SUMMARY:** done"),
-      `collapsed must preview the first non-empty line: ${finalTextLines(collapsed).join(" | ")}`,
-    );
-    assert.ok(
-      finalTextLines(expanded).some((t) => t === text),
-      "expanded must keep the full final text",
-    );
-    // The collapsed preview is flagged for render-boundary width truncation
-    // (the view model never truncates); it is not markdown — plain preview,
-    // matching pi-subagents' collapsed fold.
-    const collapsedLine = collapsed.find((l) => l.hue === "muted");
-    assert.ok(collapsedLine !== undefined, "expected a muted final line");
-    assert.equal(
-      collapsedLine.truncateToWidth,
-      true,
-      "collapsed preview must be flagged for adapter width truncation",
-    );
-    assert.notEqual(
-      collapsedLine.markdown,
-      true,
-      "collapsed preview must not be markdown",
+      !toolTexts(lines).some((t) => t.includes("read read")),
+      `duplicated tool name: ${toolTexts(lines).join(" | ")}`,
     );
   });
 
-  it("skips leading blank and whitespace-only lines when collapsing", () => {
-    const text = "\n   \n\t \n  the answer\nmore";
-    const snapshot = okSnapshot({ result: { kind: "ok", text } });
-    const collapsed = renderResultCard(snapshot, undefined, false);
-    const finalTextLines = collapsed
-      .filter((l) => l.hue === "muted")
-      .map((l) => l.text);
+  it("collapsed shows only the last GLANCE_LINES tool and output entries, newest last", () => {
+    const log = createRunLog();
+    toolStarts(log, 10);
+    messageEnds(log, 10);
+    const lines = projectCard(
+      log,
+      runningMeta({ currentTool: undefined }),
+      cardOpts({ width: 200 }),
+    );
+    const tools = toolTexts(lines);
+    assert.equal(tools.length, GLANCE_LINES, "collapsed tool window");
+    assert.deepEqual(tools, ["→ $ echo 7", "→ $ echo 8", "→ $ echo 9"]);
+    const outputs = lines.filter(
+      (l) => l.hue === "muted" && !l.text.startsWith("⟳"),
+    );
+    assert.equal(outputs.length, GLANCE_LINES, "collapsed output window");
+    assert.deepEqual(
+      outputs.map((l) => l.text),
+      ["msg 7 body", "msg 8 body", "msg 9 body"],
+    );
+    // Newest last within each region.
+    assert.equal(tools[tools.length - 1], "→ $ echo 9");
+  });
+
+  it("collapsed window size is overridable via opts.glanceLines", () => {
+    const log = createRunLog();
+    toolStarts(log, 10);
+    const lines = projectCard(
+      log,
+      runningMeta({ currentTool: undefined }),
+      cardOpts({ width: 200, glanceLines: 5 }),
+    );
+    assert.equal(toolTexts(lines).length, 5);
+  });
+
+  it("expanded shows every entry, not just the glance window", () => {
+    const log = createRunLog();
+    toolStarts(log, 40);
+    messageEnds(log, 40);
+    const lines = projectCard(
+      log,
+      runningMeta({ currentTool: undefined }),
+      cardOpts({ width: 200, expanded: true }),
+    );
+    assert.equal(toolTexts(lines).length, 40, "expanded shows all tool lines");
+    const outputs = lines.filter(
+      (l) => l.hue === "muted" && !l.text.startsWith("⟳"),
+    );
+    assert.equal(outputs.length, 40, "expanded shows all output lines");
+    assert.equal(lines[lines.length - 1].text.includes("40 turns"), true);
+    assert.equal(lines[lines.length - 1].text.includes("40 tools"), true);
+  });
+
+  it("shows the (no output yet) placeholder when no message facts exist", () => {
+    const log = createRunLog();
+    log.appendToolStart("bash", { command: "true" }, 0);
+    const lines = projectCard(log, runningMeta(), cardOpts());
     assert.ok(
-      finalTextLines.some((t) => t === "the answer"),
-      `leading blank lines must be skipped: ${finalTextLines.join(" | ")}`,
+      lines.some((l) => l.text === "(no output yet)"),
+      lines.map((l) => l.text).join(" | "),
     );
   });
 
-  it("never renders the session file path line on a terminal card", () => {
-    const home = process.env.HOME;
-    const snapshot = okSnapshot({
-      sessionPath: `${home}/.pi/agent/sessions/x/s.jsonl`,
+  it("caps tool-call lines to the render width, never a baked-in 60", () => {
+    const log = createRunLog();
+    const long = "x".repeat(500);
+    log.appendToolStart("bash", { command: long }, 0);
+    const narrow = projectCard(
+      log,
+      runningMeta({ currentTool: undefined }),
+      cardOpts({ width: 40 }),
+    );
+    const [line] = toolTexts(narrow);
+    assert.ok(line.startsWith("→ $ xxx"), line);
+    assert.equal(line.length, 40, `width-clipped line: ${line.length}`);
+    assert.ok(line.endsWith("…"), `missing ellipsis: ${line}`);
+    // A wider render keeps more of the same fact — proof the cap is the
+    // passed width, not a constant.
+    const wide = projectCard(
+      log,
+      runningMeta({ currentTool: undefined }),
+      cardOpts({ width: 120 }),
+    );
+    assert.equal(toolTexts(wide)[0].length, 120);
+  });
+
+  it("appends the token usage to the stats line when facts report it", () => {
+    const log = createRunLog();
+    for (let i = 0; i < 3; i++) {
+      log.appendMessage(
+        [{ type: "text", text: `t${i}` }],
+        { totalTokens: 4115 },
+        i,
+      );
+    }
+    for (let i = 0; i < 5; i++)
+      log.appendToolStart("bash", { command: "x" }, i);
+    const lines = projectCard(
+      log,
+      runningMeta({ currentTool: undefined }),
+      cardOpts(),
+    );
+    const stats = lines[lines.length - 1].text;
+    // `3 turns · 5 tools · 12.3k tok · <elapsed>`
+    assert.ok(stats.includes("12.3k tok"), `missing tokens: ${stats}`);
+    assert.ok(
+      stats.includes("3 turns · 5 tools · 12.3k tok"),
+      `unexpected order: ${stats}`,
+    );
+  });
+
+  it("omits the token segment from the stats line when absent", () => {
+    const log = createRunLog();
+    log.appendMessage([{ type: "text", text: "hi" }], undefined, 0);
+    const lines = projectCard(log, runningMeta(), cardOpts());
+    const stats = lines[lines.length - 1].text;
+    assert.ok(!stats.includes("tok"), `unexpected tokens: ${stats}`);
+  });
+
+  it("keeps the running body independent of agent identity text", () => {
+    const log = createRunLog();
+    const lines = projectCard(log, runningMeta(), cardOpts());
+    const texts = lines.map((l) => l.text);
+    // The label is owned by the tool-call card title; the running body
+    // never leaks it (and never renders a spinner title either).
+    assert.ok(!texts.some((t) => t.includes("subagent(beaver)")));
+    assert.ok(
+      !texts.some((t) => t.includes("undefined")),
+      `leaked undefined: ${texts.join(" | ")}`,
+    );
+  });
+});
+
+describe("formatTokenCount", () => {
+  it("uses the thousand-abbreviation convention", () => {
+    assert.equal(formatTokenCount(0), "0");
+    assert.equal(formatTokenCount(999), "999");
+    assert.equal(formatTokenCount(1000), "1.0k");
+    assert.equal(formatTokenCount(12345), "12.3k");
+    assert.equal(formatTokenCount(100000), "100.0k");
+    assert.equal(formatTokenCount(1000000), "1000k");
+  });
+});
+
+describe("deriveCounters", () => {
+  it("counts turns from message facts and tools from tool-start facts", () => {
+    const log = createRunLog();
+    log.appendToolStart("bash", { command: "a" }, 0);
+    log.appendToolEnd("bash", [{ type: "text", text: "ok" }], false, 1);
+    log.appendMessage(
+      [{ type: "text", text: "done" }],
+      { input: 10, output: 5 },
+      2,
+    );
+    assert.deepEqual(deriveCounters(log.facts()), {
+      turnCount: 1,
+      toolCallCount: 1,
+      tokens: 15,
     });
-    const lines = renderResultCard(snapshot, "实现功能");
-    assert.ok(!lines.some((l) => l.text.startsWith("session: ")));
   });
 
-  it("carries the model badge on the terminal title", () => {
-    const snapshot = okSnapshot({ model: "dummy-small" });
-    const lines = renderResultCard(snapshot, "research");
-    assert.ok(lines[0].text.includes("subagent(beaver)"), lines[0].text);
-    assert.ok(lines[0].text.includes("· dummy-small"), lines[0].text);
+  it("prefers totalTokens over input+output and skips non-positive reports", () => {
+    const log = createRunLog();
+    log.appendMessage(
+      [{ type: "text", text: "a" }],
+      { totalTokens: 100, input: 1, output: 1 },
+      0,
+    );
+    log.appendMessage(
+      [{ type: "text", text: "b" }],
+      { input: 0, output: 0 },
+      1,
+    );
+    assert.equal(deriveCounters(log.facts()).tokens, 100);
   });
 
-  it("omits the model badge on the terminal title when absent (defensive-only branch)", () => {
-    const snapshot = okSnapshot({});
-    const lines = renderResultCard(snapshot, "research");
-    assert.ok(!lines[0].text.includes("dummy-small"), lines[0].text);
+  it("keeps tokens undefined when no usage was ever reported", () => {
+    const log = createRunLog();
+    log.appendMessage([{ type: "text", text: "a" }], undefined, 0);
+    assert.deepEqual(deriveCounters(log.facts()), {
+      turnCount: 1,
+      toolCallCount: 0,
+    });
+  });
+
+  it("ignores user_message facts: the instruction is neither a turn nor a token report", () => {
+    const log = createRunLog();
+    log.appendUserMessage("the delegation prompt", 0);
+    log.appendMessage([{ type: "text", text: "a" }], { totalTokens: 50 }, 1);
+    log.appendUserMessage("steered mid-run", 2);
+    assert.deepEqual(deriveCounters(log.facts()), {
+      turnCount: 1,
+      toolCallCount: 0,
+      tokens: 50,
+    });
+  });
+});
+
+describe("user_message facts — never projected as agent output", () => {
+  it("keeps the prompt out of the running card's output region", () => {
+    const log = createRunLog();
+    log.appendUserMessage("SUMMARY: the instruction", 0);
+    log.appendMessage([{ type: "text", text: "real output" }], undefined, 1);
+    const lines = projectCard(
+      log,
+      terminalMeta({ status: "running" }),
+      cardOpts({ expanded: true }),
+    );
+    assert.ok(
+      lines.some((line) => line.text.includes("real output")),
+      "the assistant message still projects",
+    );
+    assert.equal(
+      lines.filter((line) => line.text.includes("the instruction")).length,
+      0,
+      "the delegation prompt must not appear as agent output",
+    );
+  });
+
+  it("keeps the last assistant message as the terminal card's final text when a later user fact exists", () => {
+    // A run steered mid-flight ends with a user fact; the final-text scan
+    // must walk past it to the assistant message rather than reporting "no
+    // output" (or the instruction).
+    const log = createRunLog();
+    log.appendUserMessage("the delegation prompt", 0);
+    log.appendMessage([{ type: "text", text: "the answer" }], undefined, 1);
+    log.appendUserMessage("and now the tests", 2);
+    const lines = projectCard(
+      log,
+      terminalMeta(),
+      cardOpts({ expanded: true }),
+    );
+    assert.ok(
+      lines.some((line) => line.text === "the answer"),
+      `final text must be the assistant message, got: ${JSON.stringify(
+        lines.map((l) => l.text),
+      )}`,
+    );
+    assert.equal(
+      lines.filter((line) => line.text === "(no output)").length,
+      0,
+      "a trailing user fact must not erase the final text",
+    );
+  });
+});
+
+describe("summarizeToolCall", () => {
+  it("renders a bash call as `$ <command>` (ANSI-cleaned, whitespace-collapsed)", () => {
+    assert.equal(
+      summarizeToolCall("bash", { command: "[1mecho   hi[0m" }, 80),
+      "$ echo hi",
+    );
+    assert.equal(summarizeToolCall("bash", {}, 80), "$ …");
+  });
+
+  it("renders read/write/edit as `<name> <path>` with $HOME collapsed to ~", () => {
+    const home = process.env.HOME ?? "";
+    assert.equal(
+      summarizeToolCall("read", { file_path: `${home}/src/a.ts` }, 80),
+      "read ~/src/a.ts",
+    );
+    assert.equal(
+      summarizeToolCall("write", { path: "/tmp/out.txt" }, 80),
+      "write /tmp/out.txt",
+    );
+    assert.equal(summarizeToolCall("edit", { file_path: home }, 80), "edit ~");
+    assert.equal(summarizeToolCall("read", {}, 80), "read …");
+  });
+
+  it("renders other tools as `<name> <JSON args>`", () => {
+    const summary = summarizeToolCall(
+      "webfetch",
+      { url: "https://example.com", method: "GET" },
+      80,
+    );
+    assert.ok(summary.startsWith("webfetch "), `unexpected: ${summary}`);
+    assert.ok(summary.includes('"url"'), `missing url: ${summary}`);
+  });
+
+  it("caps the summary to the passed width, not a fixed character cap", () => {
+    const long = `echo ${"x".repeat(300)}`;
+    const summary = summarizeToolCall("bash", { command: long }, 30);
+    assert.equal(summary.length, 30, `width-capped summary: ${summary.length}`);
+    assert.ok(summary.endsWith("…"), summary);
+    // The same fact with a wider render keeps everything.
+    assert.equal(
+      summarizeToolCall("bash", { command: "ls -la" }, 30).length,
+      8,
+    );
   });
 });
 
@@ -605,6 +593,7 @@ function fleetRun(
     parentSession: "main",
     status: "done",
     startedAt: 0,
+    log: createRunLog(),
     ...overrides,
   };
 }
@@ -1096,33 +1085,148 @@ describe("renderFleetRows", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Card children — renderProgressCard / renderResultCard nested run lines
+// projectCard — terminal states
 // ---------------------------------------------------------------------------
 
-describe("renderProgressCard — children", () => {
+describe("projectCard (terminal)", () => {
+  /** A finished log: two tool calls, then a final assistant message. */
+  function finishedLog(text = "all tests pass"): RunLog {
+    const log = createRunLog();
+    log.appendToolStart("bash", { command: "bun test" }, 0);
+    log.appendToolEnd("bash", [{ type: "text", text: "pass" }], false, 1);
+    log.appendMessage([{ type: "text", text }], { totalTokens: 500 }, 2);
+    return log;
+  }
+
+  it("renders a success check and the final text summary", () => {
+    const lines = projectCard(
+      finishedLog(),
+      terminalMeta(),
+      cardOpts({ now: 0 }),
+    );
+    assertValidLines(lines);
+    assert.ok(lines[0].text.startsWith("✓ subagent(beaver)"), lines[0].text);
+    assert.equal(lines[0].hue, "success");
+    // The terminal card shows no tool-call lines: the statistics badge
+    // already summarizes the run's tools.
+    assert.deepEqual(toolTexts(lines), []);
+    const finalLine = lines[lines.length - 1];
+    assert.equal(finalLine.text, "all tests pass");
+    // Collapsed previews carry the render-boundary flag, not a cap.
+    assert.equal(finalLine.truncateToWidth, true);
+    assert.equal(finalLine.markdown, undefined);
+  });
+
+  it("carries the run statistics in the terminal title badge", () => {
+    const lines = projectCard(
+      finishedLog(),
+      terminalMeta(),
+      cardOpts({ now: 0 }),
+    );
+    // startedAt 0 means "unknown" -> the elapsed segment degrades to -:--.
+    assert.ok(
+      lines[0].text.includes("⟳ 1 turn · 1 tool · 500 tok · -:--"),
+      lines[0].text,
+    );
+  });
+
+  it("renders an error marker and the error reason", () => {
+    const lines = projectCard(
+      finishedLog("command failed"),
+      terminalMeta({ status: "error", error: "exit 1" }),
+      cardOpts(),
+    );
+    assert.ok(lines[0].text.startsWith("✗"), lines[0].text);
+    assert.equal(lines[0].hue, "error");
+    const errLine = lines.find((l) => l.hue === "error" && l !== lines[0]);
+    assert.equal(errLine?.text, "exit 1");
+    assert.equal(
+      errLine?.truncateToWidth,
+      true,
+      "reason clips at render width",
+    );
+  });
+
+  it("renders an aborted result distinctly from ok", () => {
+    const lines = projectCard(
+      finishedLog("partial work"),
+      terminalMeta({ status: "aborted" }),
+      cardOpts(),
+    );
+    assert.ok(lines[0].text.startsWith("⏹"), lines[0].text);
+    assert.equal(lines[0].hue, "muted");
+    assert.ok(!lines[0].text.startsWith("✓"));
+  });
+
+  it("expanded shows the final text in full as markdown, with no cap", () => {
+    const long = "x".repeat(4000);
+    const lines = projectCard(
+      finishedLog(long),
+      terminalMeta(),
+      cardOpts({ expanded: true }),
+    );
+    const md = lines.find((l) => l.markdown === true);
+    assert.ok(md, "expanded final text must flow through the markdown path");
+    assert.equal(md.text.length, 4000, "expanded must not character-cap");
+    assert.equal(md.truncateToWidth, undefined);
+  });
+
+  it("collapsed previews only the first non-empty line of the final text", () => {
+    const text = "\n   \nfirst line\nsecond line\n";
+    const lines = projectCard(finishedLog(text), terminalMeta(), cardOpts());
+    const preview = lines[lines.length - 1];
+    assert.equal(preview.text, "first line");
+    assert.equal(preview.truncateToWidth, true);
+    // The preview is not character-capped even past the old 60/80 marks:
+    // clipping is the adapter's render-boundary job.
+    const longWord = "y".repeat(500);
+    const wide = projectCard(finishedLog(longWord), terminalMeta(), cardOpts());
+    assert.equal(wide[wide.length - 1].text, longWord);
+  });
+
+  it("renders (no output) when the log holds no message facts", () => {
+    const log = createRunLog();
+    log.appendToolStart("bash", { command: "true" }, 0);
+    const lines = projectCard(log, terminalMeta(), cardOpts());
+    assert.ok(
+      lines.some((l) => l.text === "(no output)"),
+      lines.map((l) => l.text).join(" | "),
+    );
+  });
+
+  it("joins multiple text parts of the final message", () => {
+    const log = createRunLog();
+    log.appendMessage(
+      [
+        { type: "thinking", thinking: "hm" },
+        { type: "text", text: "part one\n" },
+        { type: "text", text: "part two" },
+      ],
+      undefined,
+      0,
+    );
+    const lines = projectCard(
+      log,
+      terminalMeta(),
+      cardOpts({ expanded: true }),
+    );
+    assert.equal(lines[lines.length - 1].text, "part one\npart two");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Card children — projectCard nested run lines
+// ---------------------------------------------------------------------------
+
+describe("projectCard (running) — children", () => {
   it("appends nested run lines after the tool-call region when children exist", () => {
     const children = [
-      fleetRun("c1", {
-        agent: "lynx",
-        label: "search",
-        status: "done",
-        startedAt: 0,
-      }),
-      fleetRun("c2", {
-        agent: "spider",
-        label: "fetch",
-        status: "running",
-        startedAt: 0,
-      }),
+      fleetRun("c1", { agent: "lynx", label: "search", status: "done" }),
+      fleetRun("c2", { agent: "spider", label: "fetch", status: "running" }),
     ];
-    const lines = renderProgressCard(
-      runningSnapshot(),
-      "实现功能",
-      false,
-      0,
-      0,
-      children,
-    );
+    const log = createRunLog();
+    log.appendToolStart("bash", { command: "true" }, 0);
+    const lines = projectCard(log, runningMeta(), cardOpts({ children }));
     const childLines = lines.filter((l) => l.text.startsWith("├─"));
     assert.deepEqual(
       childLines.map((l) => l.text),
@@ -1136,44 +1240,33 @@ describe("renderProgressCard — children", () => {
     assert.equal(childLines[1].hue, "running");
   });
 
-  it("advances the running child spinner with the shared frameSeq", () => {
+  it("advances the running child spinner with the shared frame", () => {
+    // Regression: the child glyph must follow the card's frame sequence so
+    // a running nested child's spinner animates on each rebuild.
     const children = [
-      fleetRun("c1", {
-        agent: "lynx",
-        label: "search",
-        status: "running",
-        startedAt: 0,
-      }),
+      fleetRun("c1", { agent: "lynx", label: "search", status: "running" }),
     ];
-    // Regression: `fleetCardChildLines` hardcoded frame 0, so a running
-    // nested child's spinner never animated even when the card was rebuilt
-    // with an advancing frameSeq.  The card's frameSeq must flow through to
-    // the child glyph.
-    const lines = renderProgressCard(
-      runningSnapshot(),
-      "实现功能",
-      false,
-      0,
-      3,
-      children,
+    const lines = projectCard(
+      createRunLog(),
+      runningMeta(),
+      cardOpts({ children, frame: 3 }),
     );
     const childLines = lines.filter((l) => l.text.startsWith("├─"));
     assert.equal(
       childLines[0].text,
       `├─ ${SPINNER_FRAMES[3]} subagent(lynx) · search`,
-      "running child spinner must use the shared frameSeq, not frame 0",
+      "running child spinner must use the shared frame, not frame 0",
     );
   });
 
   it("leaves the running card output identical when no children are passed", () => {
-    const without = renderProgressCard(runningSnapshot(), "实现功能");
-    const withEmpty = renderProgressCard(
-      runningSnapshot(),
-      "实现功能",
-      false,
-      Date.now(),
-      undefined,
-      [],
+    const log = createRunLog();
+    log.appendToolStart("bash", { command: "true" }, 0);
+    const without = projectCard(log, runningMeta(), cardOpts());
+    const withEmpty = projectCard(
+      log,
+      runningMeta(),
+      cardOpts({ children: [] }),
     );
     assert.deepEqual(
       withEmpty.map((l) => l.text),
@@ -1183,59 +1276,43 @@ describe("renderProgressCard — children", () => {
   });
 });
 
-describe("renderResultCard — children", () => {
-  it("appends nested run lines when children exist", () => {
+describe("projectCard (terminal) — children", () => {
+  it("appends nested run lines and advances a running child spinner", () => {
     const children = [
-      fleetRun("c1", {
-        agent: "lynx",
-        label: "search",
-        status: "error",
-        startedAt: 0,
-      }),
+      fleetRun("c1", { agent: "lynx", label: "search", status: "error" }),
+      fleetRun("c2", { agent: "spider", label: "fetch", status: "running" }),
     ];
-    const lines = renderResultCard(okSnapshot(), "实现功能", false, children);
+    const log = createRunLog();
+    log.appendMessage([{ type: "text", text: "done" }], undefined, 0);
+    const lines = projectCard(
+      log,
+      terminalMeta(),
+      cardOpts({ children, frame: 7 }),
+    );
     const childLines = lines.filter((l) => l.text.startsWith("├─"));
     assert.deepEqual(
       childLines.map((l) => l.text),
-      ["├─ ● subagent(lynx) · search"],
+      [
+        "├─ ● subagent(lynx) · search",
+        `├─ ${SPINNER_FRAMES[7]} subagent(spider) · fetch`,
+      ],
     );
     assert.equal(childLines[0].hue, "error");
   });
 
-  it("advances a running child spinner with the result card frameSeq", () => {
-    const children = [
-      fleetRun("c1", {
-        agent: "spider",
-        label: "fetch",
-        status: "running",
-        startedAt: 0,
-      }),
-    ];
-    // Regression: `fleetCardChildLines` hardcoded frame 0, so a running
-    // nested child's spinner never animated.  The result card's frameSeq
-    // must flow through to the child glyph.
-    const lines = renderResultCard(
-      okSnapshot(),
-      "实现功能",
-      false,
-      children,
-      7,
+  it("leaves the terminal card output identical when no children are passed", () => {
+    const log = createRunLog();
+    log.appendMessage([{ type: "text", text: "done" }], undefined, 0);
+    const without = projectCard(log, terminalMeta(), cardOpts());
+    const withEmpty = projectCard(
+      log,
+      terminalMeta(),
+      cardOpts({ children: [] }),
     );
-    const childLines = lines.filter((l) => l.text.startsWith("├─"));
-    assert.equal(
-      childLines[0].text,
-      `├─ ${SPINNER_FRAMES[7]} subagent(spider) · fetch`,
-      "running child spinner must use the result card frameSeq, not frame 0",
-    );
-  });
-
-  it("leaves the result card output identical when no children are passed", () => {
-    const without = renderResultCard(okSnapshot(), "实现功能");
-    const withEmpty = renderResultCard(okSnapshot(), "实现功能", false, []);
     assert.deepEqual(
       withEmpty.map((l) => l.text),
       without.map((l) => l.text),
-      "an empty children list must not change the result card",
+      "an empty children list must not change the terminal card",
     );
   });
 });

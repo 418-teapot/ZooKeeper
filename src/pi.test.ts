@@ -13,14 +13,17 @@
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import {
-  emitTranscriptEvent,
-  resetTranscriptBus,
-} from "./adapters/pi/live-transcript.js";
+  beginHydration,
+  resetHydration,
+  waitForHydration,
+} from "./adapters/pi/hydrate.js";
+import { TRANSCRIPT_UNAVAILABLE_NOTICE } from "./adapters/pi/tui/transcript.js";
 import {
   DIRECT_WORK_NUDGE,
   JSON_ERROR_REMINDER_MARKER,
@@ -37,13 +40,14 @@ import {
   resetRegistry,
   startRun,
   topLevelRuns,
+  updateRun,
 } from "./core/subagent/registry.js";
 import {
   _resetPendingSwitchOpsForTesting,
   buildPiContributions,
   buildPiHandlers,
   buildPiNoticeEntryRenderer,
-  withSubagentDetailsCapture,
+  terminalToolDetails,
   zookeeperPi,
 } from "./pi.js";
 import { validateCompressArgs } from "./tools/compress.js";
@@ -229,7 +233,6 @@ afterEach(() => {
   resetIdentityForTesting();
   _resetPendingSwitchOpsForTesting();
   resetRegistry();
-  resetTranscriptBus();
   delete process.env.ZOO_MODE_FILE;
 });
 
@@ -991,52 +994,32 @@ describe("buildPiHandlers — registerTool wiring", () => {
     );
   });
 
-  it("captures the streamed progress details for the terminal tool result", () => {
-    // The helper wraps a pi onUpdate callback: every partial carrying a
-    // structured `details` payload is reported via onDetails (so the
-    // terminal tool result can forward the last done snapshot), and every
-    // partial still reaches the original callback unchanged.
-    const received: unknown[] = [];
-    const captured: unknown[] = [];
-    const wrapped = withSubagentDetailsCapture(
-      (partial: unknown) => {
-        received.push(partial);
-      },
-      (details) => {
-        captured.push(details);
-      },
-    );
-    assert.ok(wrapped, "wrapper must be returned for a function onUpdate");
-
-    const doneDetails = {
-      agent: "beaver",
-      output: "done",
-      done: true,
-      model: "dummy-small",
+  it("terminal details carry only the run's sub-session path pointer", () => {
+    // The bridge forwards no structured progress any more: pi never
+    // persists a partial's `details`, so the terminal result carries only
+    // the fact pointer that lets a view re-hydrate the run after a restart
+    // — the sub-session file path the driver reported mid-run, looked up by
+    // run id (the pi tool-call id) in the run registry.
+    startRun({ id: "call-pointer", agent: "beaver", parentSession: "sess-1" });
+    updateRun("call-pointer", {
       sessionPath: "/home/u/.pi/agent/sessions/x/s.jsonl",
-      tokens: 1234,
-      result: { kind: "ok", text: "done" },
-    };
-    wrapped?.({
-      content: [{ type: "text", text: "[实现任务] working" }],
-      details: { agent: "beaver", output: "working", done: false },
     });
-    wrapped?.({
-      content: [{ type: "text", text: "[实现任务] done" }],
-      details: doneDetails,
-    });
-    // Every partial reaches the original callback (running card updates).
-    assert.equal(received.length, 2);
-    // The wrapper only captures object details (the last one wins).
-    assert.deepEqual(captured, [
-      { agent: "beaver", output: "working", done: false },
-      doneDetails,
-    ]);
+    assert.deepEqual(
+      terminalToolDetails("call-pointer"),
+      { sessionPath: "/home/u/.pi/agent/sessions/x/s.jsonl" },
+      "details must carry the session path pointer and nothing else",
+    );
   });
 
-  it("returns no wrapper when onUpdate is absent", () => {
-    const wrapped = withSubagentDetailsCapture(undefined, () => {});
-    assert.equal(wrapped, undefined);
+  it("terminal details stay empty without a run or a path", () => {
+    // A tool with no registry run (compress / decompress) and a run that
+    // never reported a path (a host that does not persist sessions) both
+    // contribute an empty details object.
+    assert.deepEqual(terminalToolDetails("call-unknown"), {});
+    assert.deepEqual(terminalToolDetails(undefined), {});
+    assert.deepEqual(terminalToolDetails(42), {});
+    startRun({ id: "call-no-path", agent: "beaver", parentSession: "s" });
+    assert.deepEqual(terminalToolDetails("call-no-path"), {});
   });
 });
 
@@ -1930,13 +1913,11 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
     // state machine can be driven (kept alive for the key sequence).
     const { dispose } = renderZooWidget(calls, 80, focusedEditorTui());
 
-    // A run with a session path under the current session.
     startRun({
       id: "run-enter",
       agent: "beaver",
       parentSession: "sess-enter",
       startedAt: 1000,
-      sessionPath: "/tmp/sessions/beaver-1.jsonl",
     });
 
     // Expand (↓) selects the run; enter must open the read-only overlay.
@@ -1975,7 +1956,6 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
       agent: "beaver",
       parentSession: "sess-enter",
       startedAt: 1000,
-      sessionPath: "/tmp/sessions/beaver-collapse.jsonl",
     });
 
     // Expand (↓) so the widget is NOT already collapsed — the enter path
@@ -2021,7 +2001,6 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
       agent: "beaver",
       parentSession: "sess-enter",
       startedAt: 1000,
-      sessionPath: "/tmp/sessions/beaver-close.jsonl",
     });
 
     inputHandler("\u001b[B"); // expand
@@ -2070,7 +2049,6 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
       agent: "beaver",
       parentSession: "sess-enter",
       startedAt: 1000,
-      sessionPath: "/tmp/sessions/beaver-2.jsonl",
     });
 
     inputHandler("\u001b[B");
@@ -2083,13 +2061,15 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
     dispose();
   });
 
-  it("does not open an overlay when the selected run has no session path", async () => {
+  it("opens the overlay for a run with an empty log (empty-transcript line)", async () => {
+    // The log is the single data source: a run whose log carries no facts
+    // yet still opens (the key is consumed) and explains itself.
     const api = mockApi();
     const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
-    let opened = 0;
+    let factory: unknown;
     const { calls, inputHandler, ctx } = widgetInputCtx({
-      custom: () => {
-        opened += 1;
+      custom: (f: unknown) => {
+        factory = f;
         return Promise.resolve(undefined);
       },
     });
@@ -2098,9 +2078,8 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
       ctx,
     );
     const { dispose } = renderZooWidget(calls, 80, focusedEditorTui());
-    // A historical run whose session file could not be located.
     startRun({
-      id: "run-no-path",
+      id: "run-empty",
       agent: "beaver",
       parentSession: "sess-enter",
       startedAt: 1000,
@@ -2108,56 +2087,22 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
 
     inputHandler("\u001b[B");
     const result = inputHandler("\r");
-    assert.equal(
-      result,
-      undefined,
-      "enter must fall through without a session path",
-    );
-    assert.equal(opened, 0, "ui.custom must not be called");
-    dispose();
-  });
-
-  it("consumes enter (opens the overlay) even when the session file is unreadable", async () => {
-    const api = mockApi();
-    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
-    let opened = 0;
-    const { calls, inputHandler, ctx } = widgetInputCtx({
-      custom: () => {
-        opened += 1;
-        return Promise.resolve(undefined);
-      },
-    });
-    await handlers.sessionStart(
-      { type: "session_start", reason: "startup" },
-      ctx,
-    );
-    const { dispose } = renderZooWidget(calls, 80, focusedEditorTui());
-    // A run whose session file is missing / unreadable on disk.
-    startRun({
-      id: "run-missing",
-      agent: "beaver",
-      parentSession: "sess-enter",
-      startedAt: 1000,
-      sessionPath: "/tmp/nonexistent-sessions/beaver-3.jsonl",
-    });
-
-    inputHandler("\u001b[B");
-    const result = inputHandler("\r");
-    // The run exists (it has a session path), so enter opens the overlay —
-    // which renders the "(transcript unavailable)" notice for the missing
-    // file.  The key is consumed, never falling through to the editor.
     assert.deepEqual(result, { consume: true }, "enter must be consumed");
-    assert.equal(opened, 1, "ui.custom must open despite the missing file");
+    const component = (factory as (tui: unknown, theme: unknown) => unknown)(
+      WIDGET_TUI,
+      WIDGET_THEME,
+    );
+    const lines = (component as { render(width: number): string[] }).render(80);
+    assert.ok(
+      lines.some((l) => l.includes("(empty transcript)")),
+      `the empty-log line must render: ${lines.join(" | ")}`,
+    );
     dispose();
   });
 
-  it("wires the live bus when the inspected run is still running", async () => {
-    // The composition seam: a running run with a childSession opens the
-    // overlay WITH the child session wired — live event-driven appends flow
-    // onto the overlay through the real bus.
+  it("projects the run's existing facts when the overlay opens", async () => {
     const api = mockApi();
     const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
-    const dir = fs.mkdtempSync(join(tmpdir(), "zoo-pi-enter-live-"));
     let factory: unknown;
     const { calls, inputHandler, ctx } = widgetInputCtx({
       custom: (f: unknown) => {
@@ -2170,78 +2115,38 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
       ctx,
     );
     const { dispose } = renderZooWidget(calls, 80, focusedEditorTui());
-    const sessionPath = join(dir, "beaver-live.jsonl");
-    fs.writeFileSync(
-      sessionPath,
-      [
-        JSON.stringify({
-          type: "session",
-          version: 3,
-          id: "ses-live",
-          timestamp: "2026-08-31T00:00:00.000Z",
-          cwd: "/tmp",
-        }),
-        JSON.stringify({
-          type: "message",
-          id: "m1",
-          parentId: null,
-          timestamp: "2026-08-31T00:00:00.000Z",
-          message: { role: "user", content: "replayed" },
-        }),
-      ].join("\n"),
-      "utf-8",
+    startRun({
+      id: "run-projected",
+      agent: "beaver",
+      parentSession: "sess-enter",
+      startedAt: 1000,
+    });
+    const run = getRun("run-projected");
+    assert.ok(run, "the run must be registered");
+    run.log.appendMessage([{ type: "text", text: "projected fact" }]);
+    finishRun("run-projected", { status: "done" });
+
+    inputHandler("\u001b[B");
+    const result = inputHandler("\r");
+    assert.deepEqual(result, { consume: true });
+    const component = (factory as (tui: unknown, theme: unknown) => unknown)(
+      WIDGET_TUI,
+      WIDGET_THEME,
     );
-    try {
-      startRun({
-        id: "run-running",
-        agent: "beaver",
-        parentSession: "sess-enter",
-        startedAt: 1000,
-        sessionPath,
-        childSession: "child-live",
-      });
-      inputHandler("\u001b[B");
-      const result = inputHandler("\r");
-      assert.deepEqual(result, { consume: true });
-      assert.equal(typeof factory, "function", "the overlay must open");
-      const component = (factory as (tui: unknown, theme: unknown) => unknown)(
-        WIDGET_TUI,
-        WIDGET_THEME,
-      );
-      const render = (): string[] =>
-        (component as { render(width: number): string[] }).render(80);
-      let lines = render();
-      assert.ok(
-        lines.some((l) => l.includes("replayed")),
-        `the file replay renders: ${lines.join(" | ")}`,
-      );
-      // The live subscription is active: a message_end on the child session
-      // appends to the open overlay — no polling.
-      emitTranscriptEvent("child-live", {
-        type: "message_end",
-        message: {
-          role: "user",
-          content: [{ type: "text", text: "live-tail" }],
-        },
-      });
-      lines = render();
-      assert.ok(
-        lines.some((l) => l.includes("live-tail")),
-        `the live message must render: ${lines.join(" | ")}`,
-      );
-    } finally {
-      dispose();
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    const lines = (component as { render(width: number): string[] }).render(80);
+    assert.ok(
+      lines.some((l) => l.includes("projected fact")),
+      `the pre-existing fact must render: ${lines.join(" | ")}`,
+    );
+    dispose();
   });
 
-  it("does not wire the live bus for a terminal run (file-only overlay)", async () => {
-    // The composition seam's negative gate: a finished run that still
-    // carries a childSession opens the overlay WITHOUT it — the overlay
-    // renders the final file once and stays static (no live subscription).
+  it("renders facts appended while the overlay is open (live log subscription)", async () => {
+    // The composition seam: a running run's log delivers onto the open
+    // overlay through the log's single stream subscription — no polling, no
+    // bus.
     const api = mockApi();
     const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
-    const dir = fs.mkdtempSync(join(tmpdir(), "zoo-pi-enter-done-"));
     let factory: unknown;
     const { calls, inputHandler, ctx } = widgetInputCtx({
       custom: (f: unknown) => {
@@ -2254,73 +2159,259 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
       ctx,
     );
     const { dispose } = renderZooWidget(calls, 80, focusedEditorTui());
-    const sessionPath = join(dir, "beaver-done.jsonl");
-    fs.writeFileSync(
-      sessionPath,
-      [
-        JSON.stringify({
-          type: "session",
-          version: 3,
-          id: "ses-done",
-          timestamp: "2026-08-31T00:00:00.000Z",
-          cwd: "/tmp",
-        }),
-        JSON.stringify({
-          type: "message",
-          id: "m1",
-          parentId: null,
-          timestamp: "2026-08-31T00:00:00.000Z",
-          message: { role: "user", content: "final" },
-        }),
-      ].join("\n"),
-      "utf-8",
+    startRun({
+      id: "run-running",
+      agent: "beaver",
+      parentSession: "sess-enter",
+      startedAt: 1000,
+    });
+    inputHandler("\u001b[B");
+    const result = inputHandler("\r");
+    assert.deepEqual(result, { consume: true });
+    const component = (factory as (tui: unknown, theme: unknown) => unknown)(
+      WIDGET_TUI,
+      WIDGET_THEME,
     );
-    try {
-      startRun({
-        id: "run-done",
-        agent: "beaver",
-        parentSession: "sess-enter",
-        startedAt: 1000,
-        sessionPath,
-        childSession: "child-done",
-      });
-      finishRun("run-done", { status: "done" });
-      inputHandler("\u001b[B");
-      const result = inputHandler("\r");
-      assert.deepEqual(result, { consume: true });
-      assert.equal(typeof factory, "function", "the overlay must open");
-      const component = (factory as (tui: unknown, theme: unknown) => unknown)(
-        WIDGET_TUI,
-        WIDGET_THEME,
-      );
-      const render = (): string[] =>
-        (component as { render(width: number): string[] }).render(80);
-      let lines = render();
-      assert.ok(
-        lines.some((l) => l.includes("final")),
-        `the final file renders: ${lines.join(" | ")}`,
-      );
-      // No live subscription: an event on the run's child session is
-      // ignored entirely.
-      emitTranscriptEvent("child-done", {
-        type: "message_end",
-        message: {
-          role: "user",
-          content: [{ type: "text", text: "live-ignored" }],
-        },
-      });
-      lines = render();
-      assert.ok(
-        !lines.some((l) => l.includes("live-ignored")),
-        `a terminal run's overlay must stay static: ${lines.join(" | ")}`,
-      );
-    } finally {
-      dispose();
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    const render = (): string[] =>
+      (component as { render(width: number): string[] }).render(80);
+    let lines = render();
+    assert.ok(
+      lines.some((l) => l.includes("(empty transcript)")),
+      lines.join(" | "),
+    );
+    // A message fact appended while the overlay is open becomes visible.
+    getRun("run-running")?.log.appendMessage([
+      { type: "text", text: "live-tail" },
+    ]);
+    lines = render();
+    assert.ok(
+      lines.some((l) => l.includes("live-tail")),
+      `the live message must render: ${lines.join(" | ")}`,
+    );
+    dispose();
   });
 });
+// ---------------------------------------------------------------------------
+// Fleet widget enter-inspect — post-restart hydration of rebuilt runs
+// ---------------------------------------------------------------------------
 
+describe("buildPiHandlers — fleet widget enter-inspect hydration", () => {
+  afterEach(() => {
+    resetHydration();
+  });
+
+  /** One `message` line of a pi session jsonl. */
+  function line(message: unknown): string {
+    return JSON.stringify({
+      type: "message",
+      id: `m${Math.random().toString(36).slice(2)}`,
+      parentId: null,
+      timestamp: "2026-08-31T00:00:00.000Z",
+      message,
+    });
+  }
+
+  /** Write a minimal pi session jsonl (header + given message records). */
+  async function writeSession(messages: unknown[]): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "zoo-enter-hydrate-"));
+    const path = join(dir, "session.jsonl");
+    const header = JSON.stringify({
+      type: "session",
+      version: 3,
+      id: "ses-enter-hydrate",
+      timestamp: "2026-08-31T00:00:00.000Z",
+      cwd: "/tmp",
+    });
+    await writeFile(path, [header, ...messages.map(line)].join("\n"), "utf-8");
+    return path;
+  }
+
+  /**
+   * Wire a session, register one run, press the selection keys and enter,
+   * then hand back the overlay-open counters and a render helper.
+   */
+  async function openOverlayOn(
+    run: { id: string; sessionPath?: string; finish?: boolean },
+    presses = 1,
+  ): Promise<{
+    opened: () => number;
+    renderOverlay: () => string[];
+    dispose: () => void;
+  }> {
+    const api = mockApi();
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    let opened = 0;
+    let factory: unknown;
+    const { calls, inputHandler, ctx } = widgetInputCtx({
+      custom: (f: unknown) => {
+        opened += 1;
+        factory = f;
+        return Promise.resolve(undefined);
+      },
+    });
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      ctx,
+    );
+    const { dispose } = renderZooWidget(calls, 80, focusedEditorTui());
+    startRun({
+      id: run.id,
+      agent: "beaver",
+      parentSession: "sess-enter",
+      startedAt: 1000,
+      ...(run.sessionPath !== undefined
+        ? { sessionPath: run.sessionPath }
+        : {}),
+    });
+    if (run.finish === true) finishRun(run.id, { status: "done" });
+    inputHandler("\u001b[B"); // expand + select the run
+    for (let i = 0; i < presses; i++) inputHandler("\r");
+    return {
+      opened: () => opened,
+      renderOverlay: () => {
+        const component = (
+          factory as (
+            tui: unknown,
+            theme: unknown,
+            kb: unknown,
+            done: (r: undefined) => void,
+          ) => { render(width: number): string[] }
+        )(WIDGET_TUI, WIDGET_THEME, undefined, () => {});
+        return component.render(80);
+      },
+      dispose,
+    };
+  }
+
+  it("opens the overlay on the hydrated facts of a scanner-rebuilt run", async () => {
+    // A run rebuilt by the history scanner carries lifecycle metadata and a
+    // sessionPath but an EMPTY log; entering it must show the persisted
+    // transcript, never "(empty transcript)".
+    const path = await writeSession([
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "restored from disk" }],
+        timestamp: 100,
+      },
+    ]);
+    const h = await openOverlayOn({
+      id: "run-rebuilt",
+      sessionPath: path,
+      finish: true,
+    });
+    await waitForHydration("run-rebuilt");
+    // The overlay opens from the load's settle continuation — let it run.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(h.opened(), 1, "the settled load must open the overlay");
+    const lines = h.renderOverlay();
+    assert.ok(
+      lines.some((l) => l.includes("restored from disk")),
+      `the hydrated fact must render: ${lines.join(" | ")}`,
+    );
+    assert.ok(
+      !lines.some((l) => l.includes("(empty transcript)")),
+      lines.join(" | "),
+    );
+    h.dispose();
+  });
+
+  it("opens synchronously when the shared cache already holds the log", async () => {
+    // The dedupe the inline card relies on: a warm cache (the card already
+    // loaded this run) means enter opens right on the keypress.
+    const path = await writeSession([
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "warm cache" }],
+        timestamp: 100,
+      },
+    ]);
+    beginHydration("run-warm", path);
+    await waitForHydration("run-warm");
+    const h = await openOverlayOn({
+      id: "run-warm",
+      sessionPath: path,
+      finish: true,
+    });
+    assert.equal(h.opened(), 1, "a warm hydration must open on the keypress");
+    const lines = h.renderOverlay();
+    assert.ok(
+      lines.some((l) => l.includes("warm cache")),
+      lines.join(" | "),
+    );
+    h.dispose();
+  });
+
+  it("states the unavailable notice when the session file cannot be read", async () => {
+    // Hydration failure is terminal for that run (the cache never retries):
+    // the overlay still opens and says why there is nothing to show.
+    const h = await openOverlayOn({
+      id: "run-gone",
+      sessionPath: "/nonexistent/zoo-enter-hydrate/none.jsonl",
+      finish: true,
+    });
+    await waitForHydration("run-gone");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(h.opened(), 1, "the failed load must still open the overlay");
+    const lines = h.renderOverlay();
+    assert.ok(
+      lines.some((l) => l.includes(TRANSCRIPT_UNAVAILABLE_NOTICE)),
+      `the unavailable notice must render: ${lines.join(" | ")}`,
+    );
+    assert.ok(
+      !lines.some((l) => l.includes("(empty transcript)")),
+      lines.join(" | "),
+    );
+    h.dispose();
+  });
+
+  it("never swaps a still-running run onto a file snapshot", async () => {
+    // A running run's log is the live source: hydrating it from the partially
+    // written session file would both duplicate facts and cut the overlay off
+    // from the driver's appends.  Enter must open the live log immediately.
+    const path = await writeSession([
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "stale file snapshot" }],
+        timestamp: 100,
+      },
+    ]);
+    const h = await openOverlayOn({ id: "run-live", sessionPath: path });
+    assert.equal(h.opened(), 1, "a running run opens on the keypress");
+    getRun("run-live")?.log.appendMessage([
+      { type: "text", text: "live tail fact" },
+    ]);
+    const lines = h.renderOverlay();
+    assert.ok(
+      lines.some((l) => l.includes("live tail fact")),
+      lines.join(" | "),
+    );
+    assert.ok(
+      !lines.some((l) => l.includes("stale file snapshot")),
+      "the file snapshot must not be projected over the live log",
+    );
+    h.dispose();
+  });
+
+  it("opens a single overlay when enter is pressed twice during the load", async () => {
+    // The deferred open is async; a second keypress while the load is in
+    // flight must not stack a second overlay on the same run.
+    const path = await writeSession([
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "once only" }],
+        timestamp: 100,
+      },
+    ]);
+    const h = await openOverlayOn(
+      { id: "run-twice", sessionPath: path, finish: true },
+      2,
+    );
+    await waitForHydration("run-twice");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(h.opened(), 1, "exactly one overlay may open per run");
+    h.dispose();
+  });
+});
 // ---------------------------------------------------------------------------
 // Fleet widget enter-inspect — overlay border + title agent colorization
 // ---------------------------------------------------------------------------
@@ -2329,7 +2420,7 @@ describe("buildPiHandlers — transcript overlay border + title agent color", ()
   /** Open the overlay for a run and render its component with a stub theme. */
   async function renderOverlayFor(
     raw: unknown,
-    run: { id: string; agent: string; sessionPath: string; label?: string },
+    run: { id: string; agent: string; label?: string },
   ): Promise<string[]> {
     const api = mockApi();
     const handlers = buildPiHandlers(POLY_ZOO, api as any, raw as any);
@@ -2350,7 +2441,6 @@ describe("buildPiHandlers — transcript overlay border + title agent color", ()
       agent: run.agent,
       parentSession: "sess-enter",
       startedAt: 1000,
-      sessionPath: run.sessionPath,
       ...(run.label !== undefined ? { label: run.label } : {}),
     });
     inputHandler("\u001b[B");
@@ -2370,7 +2460,6 @@ describe("buildPiHandlers — transcript overlay border + title agent color", ()
     const lines = await renderOverlayFor(COLORS_RAW, {
       id: "run-color",
       agent: "beaver",
-      sessionPath: "/tmp/sessions/beaver-color.jsonl",
     });
     // beaver's configured color #39C5BB wraps the whole title line in the
     // truecolor sequence; the hint keeps its own dim color.
@@ -2395,7 +2484,6 @@ describe("buildPiHandlers — transcript overlay border + title agent color", ()
     const lines = await renderOverlayFor(MODES_RAW, {
       id: "run-nocolor",
       agent: "beaver",
-      sessionPath: "/tmp/sessions/beaver-nocolor.jsonl",
     });
     const title = lines.find((l) => l.includes("beaver"));
     assert.ok(title, "the title line must be present");
@@ -2414,7 +2502,6 @@ describe("buildPiHandlers — transcript overlay border + title agent color", ()
     const lines = await renderOverlayFor(COLORS_RAW, {
       id: "run-title-color",
       agent: "beaver",
-      sessionPath: "/tmp/sessions/beaver-title-color.jsonl",
       label: "实现任务",
     });
     const esc = "\x1b[38;2;57;197;187m"; // #39C5BB = 57,197,187
@@ -2431,7 +2518,6 @@ describe("buildPiHandlers — transcript overlay border + title agent color", ()
     const lines = await renderOverlayFor(MODES_RAW, {
       id: "run-title-nocolor",
       agent: "beaver",
-      sessionPath: "/tmp/sessions/beaver-title-nocolor.jsonl",
       label: "实现任务",
     });
     const title = lines.find((l) => l.includes("实现任务"));

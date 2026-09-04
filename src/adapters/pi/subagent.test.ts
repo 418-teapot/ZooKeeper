@@ -14,12 +14,18 @@ import type {
   SubagentProgress,
   SubagentResult,
 } from "../../core/subagent/driver.js";
-import { _resetForTesting as _resetLoggerForTesting } from "../../utils/logger.js";
+import type {
+  LogEvent,
+  MessagePart,
+  RunFact,
+  RunLog,
+} from "../../core/subagent/run-log.js";
+import { createRunLog } from "../../core/subagent/run-log.js";
+import { deriveCounters } from "../../core/subagent/view.js";
 import {
-  type LiveTranscriptEvent,
-  resetTranscriptBus,
-  subscribeTranscript,
-} from "./live-transcript.js";
+  _resetForTesting as _resetLoggerForTesting,
+  initLogger,
+} from "../../utils/logger.js";
 import {
   createPiSubagentDriver,
   type PiAgentSession,
@@ -32,7 +38,6 @@ import {
 
 afterEach(() => {
   _resetLoggerForTesting();
-  resetTranscriptBus();
 });
 
 /** A mock pi message with the minimal fields the driver reads. */
@@ -562,248 +567,215 @@ describe("pi subagent driver — SDK exception collapse", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Progress snapshots
+// Progress reports
 // ---------------------------------------------------------------------------
 
-describe("pi subagent driver — progress snapshots", () => {
-  it("streams tool / output / done snapshots through onProgress", async () => {
+/**
+ * Run a scripted event stream through the driver.
+ *
+ * Returns the progress reports the driver emitted, the run's fact log, and
+ * the facts recorded in it — the two channels a caller observes.
+ */
+async function drive(
+  h: ReturnType<typeof harness>,
+  events: PiSessionEvent[],
+  options: { log?: boolean } = {},
+): Promise<{
+  reports: SubagentProgress[];
+  facts: ReturnType<RunLog["facts"]>;
+  log: RunLog;
+}> {
+  const log = createRunLog();
+  const reports: SubagentProgress[] = [];
+  h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: events });
+  await h.driver.run(
+    { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+    {
+      signal: new AbortController().signal,
+      onProgress: (progress) => reports.push(progress),
+      ...(options.log === false ? {} : { log }),
+    },
+  );
+  return { reports, facts: log.facts(), log };
+}
+
+describe("pi subagent driver — progress reports", () => {
+  it("streams tool / output / done reports through onProgress", async () => {
     const h = harness();
-    h.s.setPromptBehavior({
-      kind: "resolves",
-      emitOnPrompt: [
-        { type: "tool_execution_start", toolName: "bash" },
-        {
-          type: "message_end",
-          message: rawMessage({
-            role: "assistant",
-            text: "running",
-            stopReason: "toolUse",
-          }),
-        },
-        { type: "agent_end" },
-      ],
-    });
-    const snapshots: Array<{
-      currentTool?: string;
-      output: string;
-      done: boolean;
-    }> = [];
-    await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+    const { reports } = await drive(h, [
+      { type: "tool_execution_start", toolName: "bash" },
       {
-        signal: new AbortController().signal,
-        onProgress: (p) => snapshots.push(p),
+        type: "message_end",
+        message: rawMessage({
+          role: "assistant",
+          text: "running",
+          stopReason: "toolUse",
+        }),
       },
-    );
+      { type: "agent_end" },
+    ]);
     assert.ok(
-      snapshots.length >= 3,
-      `expected ≥3 snapshots, got ${snapshots.length}`,
+      reports.length >= 3,
+      `expected ≥3 reports, got ${reports.length}`,
     );
-    assert.equal(snapshots[0].currentTool, "bash");
-    assert.equal(snapshots[1].output, "running");
-    assert.equal(snapshots[snapshots.length - 1].done, true);
+    assert.equal(reports[0].currentTool, "bash");
+    assert.equal(reports[1].output, "running");
+    assert.equal(reports[reports.length - 1].done, true);
   });
 
   it("emits the compact last-line form, never the full assistant transcript", async () => {
     const h = harness();
     const hugeText = `line one\nline two\n${"x".repeat(5000)}`;
-    h.s.setPromptBehavior({
-      kind: "resolves",
-      emitOnPrompt: [
-        {
-          type: "message_end",
-          message: rawMessage({
-            role: "assistant",
-            text: hugeText,
-            stopReason: "toolUse",
-          }),
-        },
-        { type: "agent_end" },
-      ],
-    });
-    const snapshots: Array<{
-      currentTool?: string;
-      output: string;
-      done: boolean;
-    }> = [];
-    await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+    const { reports } = await drive(h, [
       {
-        signal: new AbortController().signal,
-        onProgress: (p) => snapshots.push(p),
+        type: "message_end",
+        message: rawMessage({
+          role: "assistant",
+          text: hugeText,
+          stopReason: "toolUse",
+        }),
       },
-    );
-
-    // The assistant message_end snapshot must be the last non-empty line,
-    // capped at the 200-char snapshot cap — never the full multi-KB text.
-    const outputSnapshots = snapshots.filter((s) => !s.done && s.output !== "");
-    assert.ok(outputSnapshots.length >= 1, "expected an output snapshot");
-    for (const snapshot of outputSnapshots) {
-      assert.ok(
-        snapshot.output.length <= 200,
-        `snapshot exceeded cap: ${snapshot.output.length}`,
-      );
-      assert.ok(!snapshot.output.includes("line one"));
-      assert.ok(snapshot.output.endsWith("…"), "expected ellipsis marker");
-    }
-    const done = snapshots[snapshots.length - 1];
-    assert.equal(done.done, true);
-    assert.ok(done.output.length <= 200, "done snapshot exceeded cap");
-  });
-
-  it("accumulates structured tool calls, output, turns, and the result", async () => {
-    const h = harness();
-    h.s.setPromptBehavior({
-      kind: "resolves",
-      emitOnPrompt: [
-        {
-          type: "tool_execution_start",
-          toolName: "bash",
-          args: { command: "npm run build" },
-        },
-        {
-          type: "tool_execution_end",
-          toolName: "bash",
-          result: { command: "npm run build" },
-        },
-        {
-          type: "message_end",
-          message: rawMessage({
-            role: "assistant",
-            text: "building…",
-            stopReason: "stop",
-          }),
-        },
-        { type: "agent_end" },
-      ],
-    });
-    const snapshots: SubagentProgress[] = [];
-    await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
-      {
-        signal: new AbortController().signal,
-        onProgress: (p) => snapshots.push(p),
-      },
-    );
-
-    assert.ok(snapshots.length >= 4, `got ${snapshots.length} snapshots`);
-    // First snapshot: tool start carries the current tool and increments the
-    // tool-call counter.
-    assert.equal(snapshots[0].currentTool, "bash");
-    assert.equal(snapshots[0].toolCallCount, 1);
-    // Second: tool end records the args-based tool-call summary (the raw
-    // result JSON is never shown).
-    assert.deepEqual(snapshots[1].toolCalls, [
-      { name: "bash", summary: "$ npm run build" },
+      { type: "agent_end" },
     ]);
-    // Third: message_end records the turn and output line.
-    assert.equal(snapshots[2].turnCount, 1);
-    assert.deepEqual(snapshots[2].outputLines, ["building…"]);
-    // Final: agent_end + emitDone carry the ok result.
-    const done = snapshots[snapshots.length - 1];
+
+    // The assistant message report is the last non-empty line, capped at the
+    // 200-char progress-line cap — never the full multi-KB text (the log
+    // keeps that instead).
+    const outputReports = reports.filter((r) => !r.done && r.output !== "");
+    assert.ok(outputReports.length >= 1, "expected an output report");
+    for (const report of outputReports) {
+      assert.ok(
+        report.output.length <= 200,
+        `report exceeded cap: ${report.output.length}`,
+      );
+      assert.ok(!report.output.includes("line one"));
+      assert.ok(report.output.endsWith("…"), "expected ellipsis marker");
+    }
+    const done = reports[reports.length - 1];
     assert.equal(done.done, true);
-    assert.deepEqual(done.result, { kind: "ok", text: "building…" });
-    assert.equal(done.agent, "beaver");
+    assert.ok(done.output.length <= 200, "done report exceeded cap");
   });
 
-  it("accumulates token usage from assistant message_end usage", async () => {
+  it("keeps the last output line across tool events instead of blanking it", async () => {
     const h = harness();
-    h.s.setPromptBehavior({
-      kind: "resolves",
-      emitOnPrompt: [
-        {
-          type: "message_end",
-          message: {
-            role: "assistant",
-            content: [{ type: "text", text: "first" }],
-            stopReason: "toolUse",
-            usage: { input: 1000, output: 500, totalTokens: 1500 },
-          },
-        },
-        {
-          type: "message_end",
-          message: {
-            role: "assistant",
-            content: [{ type: "text", text: "second" }],
-            stopReason: "stop",
-            usage: { input: 200, output: 300, totalTokens: 500 },
-          },
-        },
-        { type: "agent_end" },
-      ],
+    const { reports } = await drive(h, [
+      {
+        type: "message_end",
+        message: rawMessage({
+          role: "assistant",
+          text: "first answer",
+          stopReason: "toolUse",
+        }),
+      },
+      { type: "tool_execution_start", toolName: "bash" },
+    ]);
+    const toolReport = reports.find((r) => r.currentTool === "bash");
+    assert.ok(toolReport, "expected a tool report");
+    assert.equal(toolReport.output, "first answer");
+  });
+
+  it("clears the current tool on tool_execution_end instead of leaving it set", async () => {
+    const h = harness();
+    const { reports } = await drive(h, [
+      { type: "tool_execution_start", toolName: "bash" },
+      { type: "tool_execution_end", toolName: "bash" },
+      { type: "tool_execution_start", toolName: "edit" },
+    ]);
+    const start = reports[0];
+    assert.equal(start.currentTool, "bash");
+    // The end report carries the explicit clear (`null`), not silence: an
+    // absent field would mean "leave unchanged" and the finished tool's name
+    // would linger in the card title between calls.
+    const end = reports[1];
+    assert.equal(end.currentTool, null);
+    // The next tool's start sets its own name again.
+    assert.equal(reports[2].currentTool, "edit");
+  });
+
+  it("carries the accumulated token total on every report", async () => {
+    const h = harness();
+    const usage = (input: number, output: number, totalTokens: number) => ({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "chunk" }],
+        stopReason: "toolUse",
+        usage: { input, output, totalTokens },
+      },
     });
-    const snapshots: SubagentProgress[] = [];
-    await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
-      {
-        signal: new AbortController().signal,
-        onProgress: (p) => snapshots.push(p),
-      },
-    );
-    // The final done snapshot carries the accumulated token total.
-    const done = snapshots[snapshots.length - 1];
-    assert.equal(done.tokens, 2000);
+    const { reports } = await drive(h, [
+      usage(1000, 500, 1500),
+      { type: "tool_execution_start", toolName: "bash" },
+      usage(200, 300, 500),
+    ]);
+    // Each message_end folds its usage into the running total, and every
+    // later report (the tool bookends too) carries the sum so far.
+    assert.equal(reports[0].tokens, 1500);
+    assert.equal(reports[1].tokens, 1500);
+    assert.equal(reports[2].tokens, 2000);
+    // The terminal report carries the full total as well.
+    assert.equal(reports[reports.length - 1].tokens, 2000);
   });
 
-  it("leaves tokens undefined when no assistant usage is reported", async () => {
+  it("omits the token total until a message reports usage, and needs no log", async () => {
     const h = harness();
-    h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
-    const snapshots: SubagentProgress[] = [];
-    await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
-      {
-        signal: new AbortController().signal,
-        onProgress: (p) => snapshots.push(p),
-      },
+    // No fact log is handed over: the total a report carries can only come
+    // from the driver's own accumulator, never from scanning the log.
+    const { reports } = await drive(
+      h,
+      [
+        {
+          type: "message_end",
+          message: rawMessage({
+            role: "assistant",
+            text: "no usage yet",
+            stopReason: "toolUse",
+          }),
+        },
+        {
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "with usage" }],
+            stopReason: "toolUse",
+            usage: { input: 7, output: 3, totalTokens: 10 },
+          },
+        },
+      ],
+      { log: false },
     );
-    const done = snapshots[snapshots.length - 1];
-    assert.equal(done.tokens, undefined);
+    assert.equal(reports[0].tokens, undefined);
+    assert.equal(reports[1].tokens, 10);
   });
 
-  it("carries the model id on every snapshot when one was resolved", async () => {
-    const h = harness({ model: "p/m" });
-    h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
-    const snapshots: SubagentProgress[] = [];
-    await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+  it("ignores non-assistant messages for the output line", async () => {
+    const h = harness();
+    const { reports } = await drive(h, [
       {
-        signal: new AbortController().signal,
-        onProgress: (p) => snapshots.push(p),
+        type: "message_end",
+        message: rawMessage({ role: "user", text: "hi" }),
       },
-    );
-    assert.ok(snapshots.length > 0);
-    for (const snapshot of snapshots) {
+    ]);
+    for (const report of reports) {
+      if (!report.done) assert.equal(report.output, "");
+    }
+  });
+
+  it("carries the model id on every report when one was resolved", async () => {
+    const h = harness();
+    const { reports } = await drive(h, okEvents());
+    assert.ok(reports.length > 0);
+    for (const report of reports) {
       assert.equal(
-        snapshot.model,
+        report.model,
         "m",
-        `model missing on snapshot: ${JSON.stringify(snapshot)}`,
+        `model missing on report: ${JSON.stringify(report)}`,
       );
     }
   });
 
-  it("carries the resolved model id on every snapshot (strict mode always resolves one)", async () => {
+  it("captures the session file path on the terminal report", async () => {
     const h = harness();
-    h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
-    const snapshots: SubagentProgress[] = [];
-    await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
-      {
-        signal: new AbortController().signal,
-        onProgress: (p) => snapshots.push(p),
-      },
-    );
-    // Strict mode: the request always carries a model and it resolves, so
-    // every snapshot — including the terminal done one — carries the badge.
-    assert.ok(snapshots.length > 0);
-    for (const snapshot of snapshots) {
-      assert.equal(snapshot.model, "m", `model missing on snapshot`);
-    }
-  });
-
-  it("captures the session file path on the terminal snapshot", async () => {
-    const h = harness();
-    h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
-    // Override the mock session manager to also expose getSessionFile.
     const manager: PiSessionManager & { getSessionFile(): string | undefined } =
       {
         getSessionId: () => "child-session",
@@ -819,22 +791,22 @@ describe("pi subagent driver — progress snapshots", () => {
         modelRuntime: { getModel: () => ({ provider: "p", id: "m" }) },
       }),
     });
-    const snapshots: SubagentProgress[] = [];
+    const reports: SubagentProgress[] = [];
+    h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
     await driver.run(
       { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
       {
         signal: new AbortController().signal,
-        onProgress: (p) => snapshots.push(p),
+        onProgress: (p) => reports.push(p),
       },
     );
-    const done = snapshots[snapshots.length - 1];
+    const done = reports[reports.length - 1];
     assert.equal(done.done, true);
     assert.equal(done.sessionPath, "/home/u/.pi/agent/sessions/x/s.jsonl");
   });
 
-  it("carries the session file path on every snapshot, not just the terminal one", async () => {
+  it("carries the session file path on every report, not just the terminal one", async () => {
     const h = harness();
-    h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
     const manager: PiSessionManager & { getSessionFile(): string | undefined } =
       {
         getSessionId: () => "child-session",
@@ -848,108 +820,335 @@ describe("pi subagent driver — progress snapshots", () => {
         modelRuntime: { getModel: () => ({ provider: "p", id: "m" }) },
       }),
     });
-    const snapshots: SubagentProgress[] = [];
+    const reports: SubagentProgress[] = [];
+    h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
     await driver.run(
       { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
       {
         signal: new AbortController().signal,
-        onProgress: (p) => snapshots.push(p),
+        onProgress: (p) => reports.push(p),
       },
     );
     // The sub-session file exists from the moment the session manager is
-    // created, so every snapshot — including the running (done: false) ones
-    // — carries the session path, letting enter-inspect open the growing
-    // JSONL while the subagent is still running.
-    assert.ok(snapshots.length > 0, "expected at least one snapshot");
+    // created, so every report — including the running (done: false) ones —
+    // carries the session path, letting enter-inspect open the growing JSONL
+    // while the subagent is still running.
+    assert.ok(reports.length > 0, "expected at least one report");
     assert.ok(
-      snapshots.some((p) => p.done === false),
-      "the event stream must include a running snapshot",
+      reports.some((p) => p.done === false),
+      "the event stream must include a running report",
     );
-    for (const snapshot of snapshots) {
+    for (const report of reports) {
       assert.equal(
-        snapshot.sessionPath,
+        report.sessionPath,
         "/home/u/.pi/agent/sessions/x/s.jsonl",
-        `sessionPath missing on snapshot: ${JSON.stringify(snapshot)}`,
+        `sessionPath missing on report: ${JSON.stringify(report)}`,
       );
     }
   });
 
-  it("leaves sessionPath undefined when the session manager has no file", async () => {
+  it("leaves sessionPath absent when the session manager has no file", async () => {
     const h = harness();
-    h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
-    const snapshots: SubagentProgress[] = [];
-    await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
-      {
-        signal: new AbortController().signal,
-        onProgress: (p) => snapshots.push(p),
-      },
-    );
-    for (const snapshot of snapshots) {
-      assert.equal(snapshot.sessionPath, undefined);
+    const { reports } = await drive(h, okEvents());
+    for (const report of reports) {
+      assert.equal(report.sessionPath, undefined);
     }
   });
 
-  it("reports the resolved child session id on every snapshot once the session manager exists", async () => {
+  it("reports the resolved child session id on every report once the session manager exists", async () => {
     const h = harness();
-    h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: okEvents() });
-    const snapshots: SubagentProgress[] = [];
-    await h.driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
-      {
-        signal: new AbortController().signal,
-        onProgress: (p) => snapshots.push(p),
-      },
-    );
-    // The harness's mock session manager reports `child-session`, so every
-    // snapshot — including the terminal done one — carries that id so the
-    // tool layer can associate the run with its sub-session in the registry.
-    assert.ok(snapshots.length > 0, "expected at least one snapshot");
-    for (const snapshot of snapshots) {
+    const { reports } = await drive(h, okEvents());
+    assert.ok(reports.length > 0, "expected at least one report");
+    for (const report of reports) {
       assert.equal(
-        snapshot.childSession,
+        report.childSession,
         "child-session",
-        `childSession missing on snapshot: ${JSON.stringify(snapshot)}`,
+        `childSession missing on report: ${JSON.stringify(report)}`,
       );
     }
   });
 });
 
 // ---------------------------------------------------------------------------
-// Live-transcript event forwarding
+// Run fact log
 // ---------------------------------------------------------------------------
 
-describe("pi subagent driver — live-transcript event forwarding", () => {
-  it("forwards messages, tool-execution bookends, and the run-end marker onto the session bus", async () => {
+describe("pi subagent driver — run fact log", () => {
+  it("records the delegation prompt as a leading user_message fact", async () => {
+    // The transcript overlay shows the prompt through this fact, and the
+    // driver appends it at the send point (not from a host event), so it is
+    // the FIRST fact of every run that sends a prompt, stored verbatim.
     const h = harness();
-    const received: LiveTranscriptEvent[] = [];
-    subscribeTranscript("child-session", (event) => {
-      received.push(event);
+    const prompt = "SUMMARY: implement X\n\nCONTEXT: nothing\n";
+    const log = createRunLog();
+    h.s.setPromptBehavior({
+      kind: "resolves",
+      emitOnPrompt: okEvents("done"),
+    });
+    await h.driver.run(
+      { agent: "beaver", prompt, tools: [], model: "p/m" },
+      { signal: new AbortController().signal, log },
+    );
+    const fact = log.facts()[0];
+    assert.ok(fact, "the prompt must be recorded");
+    assert.equal(fact.type, "user_message");
+    if (fact.type !== "user_message") return;
+    assert.equal(fact.text, prompt, "the prompt must be stored untruncated");
+    assert.ok(
+      log.facts().every((later, index) => index === 0 || later.at >= fact.at),
+      "the prompt fact precedes every event fact",
+    );
+    // The instruction is neither a turn nor a token report: only the
+    // assistant message of the scripted stream counts.
+    assert.deepEqual(deriveCounters(log.facts()), {
+      turnCount: 1,
+      toolCallCount: 0,
+    });
+  });
+
+  it("records a tool call with its FULL args, result text, and ids", async () => {
+    const h = harness();
+    const args = { command: "npm run build -- --verbose", keepAlive: true };
+    const { facts } = await drive(h, [
+      {
+        type: "tool_execution_start",
+        toolCallId: "tc-1",
+        toolName: "bash",
+        args,
+      },
+      {
+        type: "tool_execution_end",
+        toolCallId: "tc-1",
+        toolName: "bash",
+        result: {
+          content: [
+            { type: "text", text: "build ok" },
+            { type: "image", data: "zzz" },
+          ],
+        },
+        isError: false,
+      },
+    ]);
+    // facts[0] is the prompt's user_message fact; the tool facts follow.
+    assert.equal(facts.length, 3);
+    const start = facts[1] as Extract<RunFact, { type: "tool_start" }>;
+    assert.equal(start.type, "tool_start");
+    assert.equal(start.toolName, "bash");
+    assert.equal(start.toolCallId, "tc-1");
+    // The args are stored by reference and untruncated.
+    assert.deepEqual(start.args, args);
+    const end = facts[2] as Extract<RunFact, { type: "tool_end" }>;
+    assert.equal(end.type, "tool_end");
+    assert.equal(end.toolName, "bash");
+    assert.equal(end.isError, false);
+    assert.equal(end.toolCallId, "tc-1");
+    // Only text parts are recorded (images have no renderer yet); a long
+    // result is stored whole, never truncated.
+    assert.deepEqual(end.content, [{ type: "text", text: "build ok" }]);
+  });
+
+  it("flags an errored tool call", async () => {
+    const h = harness();
+    const { facts } = await drive(h, [
+      { type: "tool_execution_start", toolName: "bash", args: {} },
+      {
+        type: "tool_execution_end",
+        toolName: "bash",
+        result: { content: "boom" },
+        isError: true,
+      },
+    ]);
+    const end = facts[2] as Extract<RunFact, { type: "tool_end" }>;
+    assert.equal(end.isError, true);
+    // A string content payload is normalized into one text part.
+    assert.deepEqual(end.content, [{ type: "text", text: "boom" }]);
+  });
+
+  it("records a tool end whose result carries no text as an empty content list", async () => {
+    const h = harness();
+    const { facts } = await drive(h, [
+      { type: "tool_execution_start", toolName: "bash", args: {} },
+      { type: "tool_execution_end", toolName: "bash", result: {} },
+    ]);
+    const end = facts[2] as Extract<RunFact, { type: "tool_end" }>;
+    assert.deepEqual(end.content, []);
+  });
+
+  it("records assistant messages with their content parts and usage", async () => {
+    const h = harness();
+    const { facts } = await drive(h, [
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "planning" },
+            { type: "text", text: "first" },
+          ],
+          stopReason: "toolUse",
+          usage: { input: 1000, output: 500, totalTokens: 1500 },
+        },
+      },
+    ]);
+    const message = facts[1] as Extract<RunFact, { type: "message_end" }>;
+    assert.deepEqual(message.content, [
+      { type: "thinking", thinking: "planning" },
+      { type: "text", text: "first" },
+    ]);
+    assert.deepEqual(message.usage, {
+      input: 1000,
+      output: 500,
+      totalTokens: 1500,
+    });
+  });
+
+  it("records no usage when the provider reports none", async () => {
+    const h = harness();
+    const { facts } = await drive(h, [
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "first" }],
+          stopReason: "stop",
+        },
+      },
+    ]);
+    const message = facts[1] as Extract<RunFact, { type: "message_end" }>;
+    assert.equal(message.usage, undefined);
+    assert.equal(deriveCounters(facts).tokens, undefined);
+  });
+
+  it("records no usage for a non-numeric or empty usage envelope", async () => {
+    const h = harness();
+    const { facts } = await drive(h, [
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "first" }],
+          stopReason: "stop",
+          usage: {},
+        },
+      },
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "second" }],
+          stopReason: "stop",
+          usage: { input: "1000", output: null },
+        },
+      },
+    ]);
+    // Nothing reportable is stored — the fact carries no usage rather than
+    // a zeroed envelope, so derived counters stay absent.  (The leading
+    // user_message fact is not a message: it has no usage field either.)
+    for (const fact of facts) {
+      if (fact.type === "user_message") continue;
+      const message = fact as Extract<RunFact, { type: "message_end" }>;
+      assert.equal(message.usage, undefined);
+    }
+  });
+
+  it("accumulates token counters through the log's view projection", async () => {
+    const h = harness();
+    const { facts } = await drive(h, [
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "first" }],
+          stopReason: "toolUse",
+          usage: { input: 1000, output: 500, totalTokens: 1500 },
+        },
+      },
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "second" }],
+          stopReason: "stop",
+          usage: { input: 200, output: 300, totalTokens: 500 },
+        },
+      },
+    ]);
+    // The driver stores per-message usage verbatim, so the counters the
+    // views project from the log survive a restart (the progress channel
+    // carries the same running sum, but the log stays the durable record).
+    assert.deepEqual(deriveCounters(facts), {
+      turnCount: 2,
+      toolCallCount: 0,
+      tokens: 2000,
+    });
+  });
+
+  it("appends no second fact for a user-role message event or a lifecycle marker", async () => {
+    // The prompt's user_message fact comes from the send point, so a host
+    // that echoes the user message back as a `message_end` event must NOT
+    // produce a duplicate; lifecycle markers still append nothing.
+    const h = harness();
+    const { facts } = await drive(h, [
+      {
+        type: "message_end",
+        message: rawMessage({ role: "user", text: "hi" }),
+      },
+      { type: "agent_end" },
+    ]);
+    assert.deepEqual(
+      facts.map((fact) => fact.type),
+      ["user_message"],
+    );
+    const only = facts[0];
+    assert.ok(only && only.type === "user_message");
+    assert.equal(only.text, "t", "the only user fact is the sent prompt");
+  });
+
+  it("fires the log listeners as facts arrive", async () => {
+    const h = harness();
+    const log = createRunLog();
+    const seen: string[] = [];
+    log.onFact((fact) => seen.push(fact.type));
+    h.s.setPromptBehavior({
+      kind: "resolves",
+      emitOnPrompt: okEvents("text"),
+    });
+    await h.driver.run(
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { signal: new AbortController().signal, log },
+    );
+    assert.deepEqual(seen, ["user_message", "message_end"]);
+  });
+
+  it("survives a throwing log listener on every event it appends", async () => {
+    // Regression guard for the transcript-overlay throw path: the driver
+    // appends facts synchronously from inside the host's event delivery, so
+    // a listener that throws (a UI projection building components from the
+    // fact) must never unwind into that delivery, lose a later fact, or
+    // change the run's outcome.
+    initLogger("pi");
+    const h = harness();
+    const log = createRunLog();
+    let notified = 0;
+    log.onFact(() => {
+      notified += 1;
+      throw new Error("overlay projection boom");
     });
     h.s.setPromptBehavior({
       kind: "resolves",
       emitOnPrompt: [
-        {
-          type: "tool_execution_start",
-          toolCallId: "c1",
-          toolName: "bash",
-          args: { command: "npm test" },
-        },
-        {
-          type: "message_end",
-          message: rawMessage({ role: "user", text: "task" }),
-        },
+        { type: "tool_execution_start", toolName: "bash", args: {} },
         {
           type: "tool_execution_end",
-          toolCallId: "c1",
           toolName: "bash",
-          result: { content: [{ type: "text", text: "ok" }] },
+          result: { content: "build ok" },
+          isError: false,
         },
         {
           type: "message_end",
           message: rawMessage({
             role: "assistant",
-            text: "answer",
+            text: "done",
             stopReason: "stop",
           }),
         },
@@ -958,73 +1157,315 @@ describe("pi subagent driver — live-transcript event forwarding", () => {
     });
     const result = await h.driver.run(
       { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
-      { signal: new AbortController().signal },
+      { signal: new AbortController().signal, log },
     );
-    assert.equal(result.kind, "ok");
-    // The bus carries the finalized messages with their FULL payloads — the
-    // overlay renders from the raw message, never the compact snapshot.  The
-    // tool-execution bookends are forwarded narrowed to their host-neutral
-    // duck shape (the overlay mounts live tool components from them), and
-    // `agent_end` arrives as the bare run-end marker.
-    assert.deepEqual(received, [
-      {
-        type: "tool_execution_start",
-        toolCallId: "c1",
-        toolName: "bash",
-        args: { command: "npm test" },
-      },
-      {
-        type: "message_end",
-        message: rawMessage({ role: "user", text: "task" }),
-      },
-      {
-        type: "tool_execution_end",
-        toolCallId: "c1",
-        toolName: "bash",
-        result: { content: [{ type: "text", text: "ok" }] },
-        isError: false,
-      },
+    assert.equal(result.kind, "ok", "the run must finish normally");
+    // user_message (the prompt) + tool_start + tool_end + message_end reach
+    // the listener (agent_end appends nothing); every append still stored
+    // its fact.
+    assert.equal(notified, 4);
+    assert.deepEqual(
+      log.facts().map((fact) => fact.type),
+      ["user_message", "tool_start", "tool_end", "message_end"],
+    );
+  });
+
+  it("runs without a fact log when the caller has no registry run", async () => {
+    const h = harness();
+    const { reports } = await drive(
+      h,
+      [
+        { type: "tool_execution_start", toolName: "bash", args: {} },
+        {
+          type: "message_end",
+          message: rawMessage({
+            role: "assistant",
+            text: "answer",
+            stopReason: "stop",
+          }),
+        },
+      ],
+      { log: false },
+    );
+    // Progress reports still flow — only the fact recording is skipped.
+    assert.ok(reports.some((r) => r.output === "answer"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Streaming partials
+// ---------------------------------------------------------------------------
+
+/** An assistant `message_update` carrying the accumulated partial message. */
+function partialEvent(text: string): PiSessionEvent {
+  return {
+    type: "message_update",
+    message: rawMessage({ role: "assistant", text }),
+    assistantMessageEvent: { type: "text_delta", delta: text.slice(-1) },
+  };
+}
+
+/**
+ * An assistant `message_update` whose accumulated partial message carries raw
+ * pi content parts (the shape pi's stream hands over: text and thinking
+ * blocks interleaved), with the delta envelope naming the last delta.
+ */
+function partialPartsEvent(
+  content: unknown[],
+  deltaType: string,
+): PiSessionEvent {
+  return {
+    type: "message_update",
+    message: { role: "assistant", content },
+    assistantMessageEvent: { type: deltaType, delta: "" },
+  };
+}
+
+/** A pi-shaped thinking content block. */
+function piThinking(thinking: string): unknown {
+  return { type: "thinking", thinking };
+}
+
+/** A pi-shaped text content block. */
+function piText(text: string): unknown {
+  return { type: "text", text };
+}
+
+/**
+ * Run the driver over a scripted stream while collecting everything the run
+ * delivers on its data stream, so a test can see the streaming state as the
+ * run advances (it is transient by contract and gone once the run settles)
+ * AND the order the deliveries arrived in.
+ */
+async function driveStreaming(
+  h: ReturnType<typeof harness>,
+  events: PiSessionEvent[],
+): Promise<{
+  log: RunLog;
+  delivered: LogEvent[];
+  partials: Array<readonly MessagePart[]>;
+}> {
+  const log = createRunLog();
+  const delivered: LogEvent[] = [];
+  log.subscribe((event) => delivered.push(event));
+  h.s.setPromptBehavior({ kind: "resolves", emitOnPrompt: events });
+  await h.driver.run(
+    { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+    { signal: new AbortController().signal, log },
+  );
+  return {
+    log,
+    delivered,
+    partials: delivered.flatMap((event) =>
+      event.kind === "partial" ? [event.parts] : [],
+    ),
+  };
+}
+
+/**
+ * A human-readable trace of one delivery, for order assertions.
+ *
+ * `partial:<body>` for a forming-head delivery (`partial:none` once retired),
+ * `fact:<kind>` for an appended fact.
+ */
+function streamShape(event: LogEvent): string {
+  if (event.kind === "fact") return `fact:${event.fact.type}`;
+  if (event.parts.length === 0) return "partial:none";
+  const first = event.parts[0];
+  const body =
+    first === undefined ? "" : first.type === "text" ? first.text : "…thinks";
+  return `partial:${body}`;
+}
+
+describe("pi subagent driver — streaming partials", () => {
+  it("pushes each assistant message_update onto the log's forming head", async () => {
+    const h = harness();
+    const { log, delivered, partials } = await driveStreaming(h, [
+      partialEvent("Hel"),
+      partialEvent("Hello"),
+      partialEvent("Hello there"),
       {
         type: "message_end",
         message: rawMessage({
           role: "assistant",
-          text: "answer",
+          text: "Hello there",
           stopReason: "stop",
         }),
       },
+    ]);
+    assert.deepEqual(partials, [
+      [{ type: "text", text: "Hel" }],
+      [{ type: "text", text: "Hello" }],
+      [{ type: "text", text: "Hello there" }],
+      [],
+    ]);
+    // The whole run is one ordered stream: the prompt fact, the deltas, then
+    // the retirement the append delivered for it, then the fact itself.
+    assert.deepEqual(
+      delivered.map(streamShape),
+      [
+        "fact:user_message",
+        "partial:Hel",
+        "partial:Hello",
+        "partial:Hello there",
+        "partial:none",
+        "fact:message_end",
+      ],
+      "the retirement sits immediately before the fact that finalizes it",
+    );
+    // The streamed text reaches the record exactly once — as the finalized
+    // fact, never as a partial masquerading as one.
+    assert.deepEqual(
+      log.facts().map((f) => f.type),
+      ["user_message", "message_end"],
+    );
+    assert.deepEqual(log.partial(), [], "the finalize retired the partial");
+  });
+
+  it("retires the partial through the stream, not through a driver call", async () => {
+    // The stream's contract: the driver never clears on `message_end` —
+    // `RunLog.append` emits the empty-partial delivery before its fact
+    // delivery, so a streaming surface drops exactly when the fact exists.
+    const h = harness();
+    const log = createRunLog();
+    const partialAtFact: Array<readonly MessagePart[]> = [];
+    log.onFact((_fact, source) => partialAtFact.push(source.partial()));
+    h.s.setPromptBehavior({
+      kind: "resolves",
+      emitOnPrompt: [
+        partialEvent("half a mess"),
+        partialEvent("half a message"),
+        {
+          type: "message_end",
+          message: rawMessage({
+            role: "assistant",
+            text: "half a message",
+            stopReason: "stop",
+          }),
+        },
+      ],
+    });
+    await h.driver.run(
+      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
+      { signal: new AbortController().signal, log },
+    );
+    assert.deepEqual(
+      partialAtFact,
+      [[], []],
+      "the fact deliveries see no outstanding partial: the prompt's had none " +
+        "yet, the message's was retired in the same dispatch",
+    );
+  });
+
+  it("drops a dangling partial when the stream never finalizes the message", async () => {
+    // An abort or a provider cut mid-message leaves no `message_end`: the
+    // run's finally must clear the transient text so an open overlay never
+    // keeps a frozen half-message.
+    const h = harness();
+    const { log, partials } = await driveStreaming(h, [
+      partialEvent("streamed but never finished"),
+    ]);
+    assert.deepEqual(
+      partials,
+      [[{ type: "text", text: "streamed but never finished" }], []],
+      "the run's teardown clears the dangling partial",
+    );
+    assert.deepEqual(log.partial(), []);
+    assert.deepEqual(
+      log.facts().map((f) => f.type),
+      ["user_message"],
+      "a partial never becomes a fact",
+    );
+  });
+
+  it("agent_end closes the stream without leaving a partial", async () => {
+    const h = harness();
+    const { log } = await driveStreaming(h, [
+      partialEvent("streaming"),
       { type: "agent_end" },
+    ]);
+    assert.deepEqual(log.partial(), []);
+  });
+
+  it("ignores update events of non-assistant messages", async () => {
+    const h = harness();
+    const { log, partials } = await driveStreaming(h, [
+      {
+        type: "message_update",
+        message: rawMessage({ role: "user", text: "x" }),
+      },
+      {
+        type: "message_update",
+        message: { role: "toolResult", content: "y" },
+      },
+    ]);
+    assert.deepEqual(partials, []);
+    assert.deepEqual(log.partial(), []);
+  });
+
+  it("streams thinking deltas onto the partial as thinking parts", async () => {
+    // The reason the partial contract carries content parts: reasoning
+    // arrives as its own delta kind, and an open transcript has to show it
+    // while it streams — not only once the message finalizes.
+    const h = harness();
+    const { log, partials } = await driveStreaming(h, [
+      partialPartsEvent([piThinking("Let me")], "thinking_delta"),
+      partialPartsEvent([piThinking("Let me think")], "thinking_delta"),
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [piThinking("Let me think")],
+          stopReason: "stop",
+        },
+      },
+    ]);
+    assert.deepEqual(partials, [
+      [{ type: "thinking", thinking: "Let me" }],
+      [{ type: "thinking", thinking: "Let me think" }],
+      // The last entry is the retirement `append` delivered for the fact
+      // below — the driver never clears it itself.
+      [],
+    ]);
+    // The finalized fact keeps the same shape, so the streaming surface and
+    // the record never disagree on what the part was.
+    assert.deepEqual((log.facts()[1] as { content: MessagePart[] }).content, [
+      { type: "thinking", thinking: "Let me think" },
     ]);
   });
 
-  it("forwards under the resolved child session id even when it differs from the default", async () => {
-    const s = mockSession();
-    const driver = createPiSubagentDriver({
-      createSession: async () => ({ session: s.session }),
-      createSessionManager: async () => mockSessionManager("nested-child-42"),
-      resolveModel: async () => ({
-        model: { provider: "p", id: "m" },
-        modelRuntime: { getModel: () => ({ provider: "p", id: "m" }) },
-      }),
-    });
-    const received: LiveTranscriptEvent[] = [];
-    subscribeTranscript("nested-child-42", (event) => {
-      received.push(event);
-    });
-    s.setPromptBehavior({
-      kind: "resolves",
-      emitOnPrompt: [
-        {
-          type: "message_end",
-          message: rawMessage({ role: "user", text: "task" }),
-        },
-        { type: "agent_end" },
-      ],
-    });
-    await driver.run(
-      { agent: "beaver", prompt: "t", tools: [], model: "p/m" },
-      { signal: new AbortController().signal },
-    );
-    assert.ok(received.length >= 1, "events must reach the session's bus");
-    assert.equal((received[0] as { type: string }).type, "message_end");
+  it("preserves text/thinking interleaving from the partial message", async () => {
+    // pi accumulates the partial message itself, so the driver maps its
+    // content rather than re-summing deltas; the order the model produced
+    // must survive to the projection untouched.
+    const h = harness();
+    const { partials } = await driveStreaming(h, [
+      partialPartsEvent([piThinking("think-1")], "thinking_delta"),
+      partialPartsEvent([piThinking("think-1"), piText("say-1")], "text_delta"),
+      partialPartsEvent(
+        [piThinking("think-1"), piText("say-1"), piThinking("think-2")],
+        "thinking_delta",
+      ),
+    ]);
+    // The last notification is the run's teardown clear (no `message_end`
+    // was scripted), so the final streamed shape is the one before it.
+    assert.deepEqual(partials[partials.length - 2], [
+      { type: "thinking", thinking: "think-1" },
+      { type: "text", text: "say-1" },
+      { type: "thinking", thinking: "think-2" },
+    ]);
+  });
+
+  it("drops tool-call parts from a streamed partial", async () => {
+    // A partial message also carries tool-call blocks; no projection renders
+    // them, so the partial holds only what a surface can show.
+    const h = harness();
+    const { partials } = await driveStreaming(h, [
+      partialPartsEvent(
+        [piText("calling"), { type: "toolCall", id: "t1", name: "bash" }],
+        "toolcall_delta",
+      ),
+    ]);
+    assert.deepEqual(partials[0], [{ type: "text", text: "calling" }]);
   });
 });

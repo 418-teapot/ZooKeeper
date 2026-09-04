@@ -21,11 +21,13 @@ import {
   resetRegistry,
   type SubagentRun,
   startRun,
+  subscribeRunChange,
   summary,
   topLevelRuns,
   updateRun,
   windowRuns,
 } from "./registry.js";
+import { createRunLog } from "./run-log.js";
 
 // bun shares one isolate across every test file, so the module-level
 // registry state is process-global — reset it between tests to keep every
@@ -71,6 +73,30 @@ describe("registry — run lifecycle", () => {
     assert.equal(run?.currentTool, "bash");
     assert.equal(run?.tokens, 1200);
     assert.equal(run?.model, "dummy-small");
+  });
+
+  it("updateRun clears the current tool on an explicit null patch", () => {
+    startRun({
+      id: "r1",
+      agent: "lynx",
+      parentSession: "main",
+      startedAt: 100,
+    });
+    updateRun("r1", { currentTool: "bash" });
+    assert.equal(getRun("r1")?.currentTool, "bash");
+    // An absent field means "unchanged" — it must never clear the tool.
+    updateRun("r1", { tokens: 10 });
+    assert.equal(getRun("r1")?.currentTool, "bash");
+    // Null is the explicit clear, distinguishable from the absent field.
+    updateRun("r1", { currentTool: null });
+    assert.equal(getRun("r1")?.currentTool, undefined);
+    assert.equal(
+      "currentTool" in (getRun("r1") as object),
+      false,
+      "a cleared tool must leave no stale key on the run",
+    );
+    // The other fields of the same patch still apply.
+    assert.equal(getRun("r1")?.tokens, 10);
   });
 
   it("updateRun records the session path on a running run (enter-inspect while running)", () => {
@@ -489,7 +515,16 @@ function run(
   startedAt: number,
   status: RunStatus = "done",
 ): SubagentRun {
-  return { id, agent: "lynx", parentSession: "main", status, startedAt };
+  // The fact log is part of a run's shape (each registry run owns one); the
+  // fixture starts it empty since these tests only sort and window runs.
+  return {
+    id,
+    agent: "lynx",
+    parentSession: "main",
+    status,
+    startedAt,
+    log: createRunLog(),
+  };
 }
 
 /** A dense list of n runs with ids r0..r(n-1) and startedAt 0..n-1. */
@@ -588,5 +623,36 @@ describe("registry — windowRuns", () => {
       before,
       "the input array must not be reordered",
     );
+  });
+});
+
+describe("registry — run-change notification", () => {
+  it("surfaces a fact append but never a streaming partial", () => {
+    // The fleet widget refreshes on this one notification, so the streaming
+    // path must not reach it: a token-by-token partial would repaint the
+    // whole widget list per delta.
+    let changes = 0;
+    const off = subscribeRunChange(() => {
+      changes += 1;
+    });
+    const run = startRun({ id: "r1", agent: "lynx", parentSession: "main" });
+    const afterStart = changes;
+    assert.ok(afterStart > 0, "registration itself is a change");
+    run.log.setPartial([{ type: "text", text: "streaming text" }]);
+    run.log.setPartial([{ type: "text", text: "streaming text and more" }]);
+    run.log.setPartial([]);
+    assert.equal(changes, afterStart, "partials must not churn the fleet");
+    run.log.appendMessage([{ type: "text", text: "finalized" }]);
+    assert.equal(changes, afterStart + 1, "appends still surface");
+    // An append that retires a partial delivers two stream events; the
+    // fact-only feed must still report exactly one change.
+    run.log.setPartial([{ type: "text", text: "streaming again" }]);
+    run.log.appendMessage([{ type: "text", text: "finalized again" }]);
+    assert.equal(
+      changes,
+      afterStart + 2,
+      "the mechanical retirement must not double-count as a change",
+    );
+    off();
   });
 });

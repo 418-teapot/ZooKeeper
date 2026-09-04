@@ -35,16 +35,20 @@ import type {
   SubagentResult,
 } from "./driver.js";
 import { runWithIdentity } from "./identity.js";
+import type { RunLog } from "./run-log.js";
 
 /**
  * The execution context passed alongside a request.
  *
  * `signal` is the parent session's abort signal; aborting it propagates to
- * the driver.  `onProgress` is forwarded to the driver unchanged.
+ * the driver.  `onProgress` and `log` are forwarded to the driver
+ * unchanged — the log is the run's append-only fact log owned by the
+ * caller (the run registry), which the driver appends observed facts to.
  */
 export interface SubagentRunContext {
   signal: AbortSignal;
   onProgress?: (progress: SubagentProgress) => void;
+  log?: RunLog;
 }
 
 /**
@@ -72,6 +76,7 @@ export async function runSubagent(
         driver.run(request, {
           signal: ctx.signal,
           onProgress: ctx.onProgress,
+          log: ctx.log,
         }),
     );
   } catch (err) {

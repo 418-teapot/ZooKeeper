@@ -3,14 +3,23 @@
  *
  * Implements the host-agnostic `SubagentDriver` contract against pi's SDK
  * factory (`createAgentSession`): a run creates a sub-session carrying the
- * request's tool allowlist and configured model, subscribes
- * to its events and reduces them into the host-neutral `AgentMessage` view,
- * calls the pi SDK `prompt(text)` with the request's prompt, and classifies
- * the outcome from the final assistant message's `stopReason`.  Termination
+ * request's tool allowlist and configured model, subscribes to its events,
+ * appends every observed fact to the run's append-only log (`run-log.ts`)
+ * untruncated, streams a running assistant message's partial content (text
+ * and thinking) onto that log's transient (non-fact) partial as
+ * `message_update` events arrive,
+ * calls the pi SDK `prompt(text)` with the request's prompt,
+ * and classifies the outcome from the final assistant message's
+ * `stopReason`.  Termination
  * is wired end to end: the parent
  * abort signal aborts the sub-session, and `dispose()` always runs in
  * `finally`.  Any SDK-level failure collapses into an `error` result — a
  * run never rejects and never throws, per the driver contract.
+ *
+ * The driver also maintains the run's running token total incrementally: it
+ * folds each assistant `message_end`'s usage into the sum as it appends the
+ * fact and reports the sum on every progress line, so consumers never have
+ * to rescan the fact log to render a counter.
  *
  * Every pi SDK touch lives in this file (a future subprocess fallback
  * replaces only this layer).  The SDK is never statically imported: pi's
@@ -23,17 +32,6 @@
  * @module
  */
 
-import {
-  createStructuredProgress,
-  recordOutput,
-  recordTokens,
-  recordToolCall,
-  recordToolStart,
-  recordTurn,
-  type StructuredProgressState,
-  summarizeToolCall,
-  toSnapshot,
-} from "../../core/subagent/accumulate.js";
 import type {
   SubagentDriver,
   SubagentProgress,
@@ -42,8 +40,14 @@ import type {
 import { formatSnapshotOutput } from "../../core/subagent/progress.js";
 import type { AgentMessage } from "../../core/subagent/result.js";
 import { classifyOutcome, reduceMessages } from "../../core/subagent/result.js";
+import type {
+  MessagePart,
+  RunLog,
+  TextPart,
+  Usage,
+} from "../../core/subagent/run-log.js";
+import { usageTokens } from "../../core/subagent/run-log.js";
 import { log } from "../../utils/logger.js";
-import { emitTranscriptEvent } from "./live-transcript.js";
 
 /**
  * Duck-type of the pi `AgentSession` surface the driver uses.
@@ -97,9 +101,10 @@ export interface PiResolvedModel {
 /**
  * Duck-type of the pi `AgentSession` event stream.
  *
- * The driver reduces `message_end` events (the finalized message) into the
- * `AgentMessage` view, and reads `tool_execution_start` / `tool_execution_end`
- * / `agent_end` for progress snapshots.
+ * The driver records `message_end` events (the finalized message) into the
+ * `AgentMessage` view and the run's fact log, reads
+ * `tool_execution_start` / `tool_execution_end` as tool facts, and reports
+ * the one-line text progress as the run advances.
  */
 export interface PiSessionEvent {
   type: string;
@@ -108,7 +113,15 @@ export interface PiSessionEvent {
   toolCallId?: string;
   args?: Record<string, unknown>;
   result?: unknown;
+  isError?: boolean;
   toolResults?: unknown;
+  /**
+   * The raw streaming delta envelope pi attaches to a `message_update`
+   * event.  The driver does not read it — pi's `message` field on the same
+   * event already carries the accumulated partial message — but it is part
+   * of the host's event shape this duck-type mirrors.
+   */
+  assistantMessageEvent?: unknown;
 }
 
 /**
@@ -132,6 +145,7 @@ export interface PiDuckMessage {
 interface PiContentPart {
   type?: string;
   text?: string;
+  thinking?: string;
 }
 
 /**
@@ -295,95 +309,222 @@ function lastAssistantStopReason(messages: AgentMessage[]): string | undefined {
 }
 
 /**
- * Reduce one session event into the message view and progress snapshots.
+ * The finite numeric usage fields of one pi message (`number` only).
  *
- * `message_end` events append the finalized message; `tool_execution_start`,
- * `tool_execution_end`, and `agent_end` drive the progress snapshots.  Every
- * snapshot output is the compact form — the last non-empty line of the
- * assistant message text (or the reduced run text), capped by the
- * compact-snapshot formatter — never the full transcript.  The structured
- * view (recent tool calls, recent output, turn/tool counters) is accumulated
- * in `state` and merged into every snapshot so the transcript card can render
- * live state.
+ * @param value - The raw usage field.
+ * @returns The number, or `undefined` when absent or not finite.
+ */
+function usageNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
+}
+
+/**
+ * Map a pi usage envelope onto the run-log usage report.
+ *
+ * @param usage - The raw per-message usage, when the provider reported one.
+ * @returns The usage report, or `undefined` when nothing was reported.
+ */
+function toUsage(usage: PiDuckMessage["usage"]): Usage | undefined {
+  if (usage === null || typeof usage !== "object") return undefined;
+  const input = usageNumber(usage.input);
+  const output = usageNumber(usage.output);
+  const totalTokens = usageNumber(usage.totalTokens);
+  if (
+    input === undefined &&
+    output === undefined &&
+    totalTokens === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    ...(input !== undefined ? { input } : {}),
+    ...(output !== undefined ? { output } : {}),
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
+  };
+}
+
+/**
+ * The text parts of a finalized pi message, or of a pi tool result.
+ *
+ * Thinking, image, and tool-call parts are dropped: no projection renders
+ * them yet, so the run log records only text for these two fact kinds.
+ *
+ * @param content - The raw content (parts array or plain string).
+ * @returns The text parts in order (empty when there are none).
+ */
+function toTextParts(content: unknown): TextPart[] {
+  const parts: TextPart[] = [];
+  for (const part of contentParts(content)) {
+    if (part.type === "text" && typeof part.text === "string") {
+      parts.push({ type: "text", text: part.text });
+    }
+  }
+  return parts;
+}
+
+/**
+ * The content parts (text + thinking) of a pi message.
+ *
+ * Used for both a finalized `message_end` and the accumulated partial message
+ * a `message_update` carries, so a streamed message and its finalized fact
+ * project through one mapping and can never disagree on shape or order.
+ * Tool-call and image parts are dropped (no projection renders them).
+ *
+ * @param content - The raw content (parts array or plain string).
+ * @returns The message parts in order (empty when there are none).
+ */
+function toMessageParts(content: unknown): MessagePart[] {
+  const parts: MessagePart[] = [];
+  for (const part of contentParts(content)) {
+    if (part.type === "text" && typeof part.text === "string") {
+      parts.push({ type: "text", text: part.text });
+    } else if (part.type === "thinking" && typeof part.thinking === "string") {
+      parts.push({ type: "thinking", thinking: part.thinking });
+    }
+  }
+  return parts;
+}
+
+/**
+ * Normalize a pi content payload into its object-shaped parts.
+ *
+ * pi reports message and tool-result content either as a plain string or as
+ * an array of typed parts; anything else yields no parts.
+ *
+ * @param content - The raw content (parts array or plain string).
+ * @returns The parts worth inspecting (a string becomes a single text part).
+ */
+function contentParts(content: unknown): PiContentPart[] {
+  if (typeof content === "string") return [{ type: "text", text: content }];
+  if (!Array.isArray(content)) return [];
+  return content.filter(
+    (part): part is PiContentPart => part !== null && typeof part === "object",
+  );
+}
+
+/**
+ * Stream one observed pi session event onto the run log's forming head.
+ *
+ * Assistant content arrives token by token as `message_update` events, each
+ * carrying the accumulated partial message — pi's own stream state, whose
+ * `content` array already holds every text and thinking block assembled so
+ * far, in order.  The driver therefore maps that message with the SAME
+ * projection the finalized fact uses (`toMessageParts`) rather than
+ * re-accumulating the `assistantMessageEvent` deltas itself: re-summing
+ * would duplicate bookkeeping pi already does, and would have to reinvent
+ * the interleaving order pi's content array gives for free.  The log holds
+ * the result as transient projection state (never a fact) so an open
+ * transcript overlay can render it live — thinking included.
+ *
+ * The finalized `message_end` retires it mechanically: `RunLog.append`
+ * delivers the empty-partial event before its fact event, so the driver
+ * never clears on that path.  A stream cut before any fact lands — the turn
+ * ending at `agent_end` — sends the end-of-stream marker (`setPartial([])`)
+ * so no half-message outlives the run.
+ *
+ * Only assistant messages stream: pi emits user and tool-result messages
+ * whole (their `message_start` / `message_end` back to back), so their update
+ * events carry nothing to render incrementally.
+ *
+ * @param log - The run's data stream.
+ * @param event - The pi session event.
+ */
+function streamRunPartial(log: RunLog, event: PiSessionEvent): void {
+  if (event.type === "agent_end") {
+    log.setPartial([]);
+    return;
+  }
+  if (event.type !== "message_update") return;
+  const message = event.message as PiDuckMessage | undefined;
+  if (message?.role !== "assistant") return;
+  log.setPartial(toMessageParts(message.content));
+}
+
+/**
+ * Append one observed pi session event to the run's fact log.
+ *
+ * The log's fact kinds mirror pi's events one-to-one, so the driver appends
+ * them without adaptation: `tool_execution_start` records the FULL
+ * untruncated call args, `tool_execution_end` records the result's text
+ * parts and its error flag, and an assistant `message_end` records the
+ * message's content parts with its usage report.  Any other event (user or
+ * tool-result messages, lifecycle markers) carries no run-level fact.
+ *
+ * The user-message fact is NOT derived here: pi does echo the sent prompt
+ * back as a user `message_end`, but the driver appends that fact once at the
+ * send point instead (see `run()`), so the transcript always opens with the
+ * instruction.  The assistant-only guard on the `message_end` branch is what
+ * keeps that prompt from being recorded twice.
+ *
+ * @param log - The run's append-only fact log.
+ * @param event - The pi session event.
+ */
+function appendRunFact(log: RunLog, event: PiSessionEvent): void {
+  switch (event.type) {
+    case "tool_execution_start":
+      log.appendToolStart(
+        event.toolName ?? "tool",
+        event.args ?? {},
+        undefined,
+        event.toolCallId,
+      );
+      break;
+    case "tool_execution_end":
+      log.appendToolEnd(
+        event.toolName ?? "tool",
+        toTextParts(
+          (event.result as { content?: unknown } | undefined)?.content,
+        ),
+        event.isError === true,
+        undefined,
+        event.toolCallId,
+      );
+      break;
+    case "message_end": {
+      const message = event.message as PiDuckMessage | undefined;
+      // Assistant messages only.  The user branch is load-bearing, not
+      // dead: pi emits a `message_end` for the prompt it was handed
+      // (pi-agent-core agent-loop), and the run's `user_message` fact is
+      // appended once at the send point — falling through here would render
+      // the instruction twice in the transcript overlay.
+      if (message?.role !== "assistant") break;
+      log.appendMessage(
+        toMessageParts(message.content),
+        toUsage(message.usage),
+      );
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+/**
+ * Record one observed session event.
+ *
+ * Finalized messages are projected onto the host-neutral `AgentMessage`
+ * view — the outcome classifier reads that view when the run settles — and
+ * every loggable fact is appended to the run's log, untruncated.  Streamed
+ * assistant content (text and thinking) is pushed onto the log's transient
+ * partial before the fact paths run, so a finalized message's append always
+ * wins over the partial it streamed into.
  *
  * @param event - The pi session event.
- * @param messages - The accumulating message view.
- * @param state - The structured progress accumulator.
- * @param agent - The subagent (target) name.
- * @param onProgress - Optional progress callback (driver ctx).
- * @param model - The resolved model id (the id part of a `"provider/model"`
- *   string), carried on every snapshot so the transcript card's badge shows
- *   the model actually in use.
+ * @param messages - The accumulating message view (mutated in place).
+ * @param log - The run's append-only fact log, when the caller owns one.
  */
-function reduceEvent(
+function observe(
   event: PiSessionEvent,
   messages: AgentMessage[],
-  state: StructuredProgressState,
-  agent: string,
-  onProgress?: (progress: SubagentProgress) => void,
-  model?: string,
+  log?: RunLog,
 ): void {
-  // Project the finalized message once; the push and the assistant progress
-  // snapshot share the same projected view.
+  if (log !== undefined) streamRunPartial(log, event);
   const projected =
     event.type === "message_end" ? projectMessage(event.message) : undefined;
   if (projected !== undefined) messages.push(projected);
-  if (onProgress === undefined) return;
-  const modelField = model !== undefined ? { model } : {};
-  if (event.type === "tool_execution_start") {
-    recordToolStart(state, event.args);
-    onProgress({
-      agent,
-      ...toSnapshot(state),
-      ...modelField,
-      currentTool: event.toolName,
-      output: "",
-      done: false,
-    });
-  } else if (event.type === "tool_execution_end") {
-    recordToolCall(
-      state,
-      event.toolName ?? "tool",
-      summarizeToolCall(event.toolName ?? "tool", state.lastToolArgs),
-    );
-    onProgress({
-      agent,
-      ...toSnapshot(state),
-      ...modelField,
-      output: "",
-      done: false,
-    });
-  } else if (event.type === "message_end") {
-    if (projected?.role === "assistant") {
-      recordTurn(state);
-      recordOutput(state, formatSnapshotOutput(projected.text));
-      // pi reports per-message usage on assistant messages (input+output+
-      // caches, with a totalTokens convenience field).  The total is
-      // accumulated so the transcript card can show a running token count;
-      // prefer the provider's totalTokens, falling back to input+output.
-      const raw = event.message as PiDuckMessage | undefined;
-      const usage = raw?.usage;
-      const total = usage?.totalTokens ?? 0;
-      const tokens =
-        total > 0 ? total : (usage?.input ?? 0) + (usage?.output ?? 0);
-      recordTokens(state, tokens);
-      onProgress({
-        agent,
-        ...toSnapshot(state),
-        ...modelField,
-        output: formatSnapshotOutput(projected.text),
-        done: false,
-      });
-    }
-  } else if (event.type === "agent_end") {
-    onProgress({
-      agent,
-      ...toSnapshot(state),
-      ...modelField,
-      output: formatSnapshotOutput(reduceMessages(messages)),
-      done: true,
-    });
-  }
+  if (log !== undefined) appendRunFact(log, event);
 }
 
 /**
@@ -506,10 +647,15 @@ export function createPiSubagentDriver(
   return {
     async run(request, ctx): Promise<SubagentResult> {
       const { signal, onProgress } = ctx;
+      // The run's append-only fact log, owned by the caller (the run
+      // registry).  Every observed fact is appended to it untruncated;
+      // views project from it at their own render boundary.
+      const runLog = ctx.log;
       const messages: AgentMessage[] = [];
-      // Structured view accumulated for the transcript card; bounded by the
-      // accumulator's recency caps.
-      const structured = createStructuredProgress();
+      // The compact text carried on every progress report: the last
+      // non-empty line of the most recent assistant message (empty before
+      // the first one).  The full message text only ever reaches the log.
+      let lastLine = "";
       // Carries the child session id for the failure log once the session
       // manager exists; stays empty when the failure predates its creation.
       let sessionId = "";
@@ -521,6 +667,11 @@ export function createPiSubagentDriver(
       // `"provider/model"` string).  Strict mode: every run carries a
       // configured model, so the id is set once resolution succeeds.
       let modelId: string | undefined;
+      // The running token total, folded in from each assistant message's
+      // usage report as its fact is appended.  Stays undefined while no
+      // message has reported positive usage, so the progress line omits the
+      // token segment instead of showing a zero.
+      let tokensTotal: number | undefined;
       let session: PiAgentSession | undefined;
       let unsubscribe: (() => void) | undefined;
       let aborted = false;
@@ -528,45 +679,70 @@ export function createPiSubagentDriver(
         aborted = true;
         void session?.abort();
       };
-      // Report one progress snapshot to the caller, carrying the resolved
-      // child-session id on every snapshot once the session manager exists
-      // (so the run registry can associate the run with its sub-session and
-      // the fleet widget can rebuild the parent/child tree).  The on-disk
+      // Report one progress line to the caller, carrying the resolved
+      // child-session id on every report once the session manager exists (so
+      // the run registry can associate the run with its sub-session and the
+      // fleet widget can rebuild the parent/child tree).  The on-disk
       // sub-session file path is known the moment the session manager is
-      // created, so it is carried on every snapshot too — the transcript
+      // created, so it is carried on every report too — the transcript
       // overlay can be opened (enter-inspect) while the run is still
-      // running, reading the growing JSONL at open time.  Before the session
-      // manager materialises both are empty and snapshots pass through
-      // unchanged.
+      // running, reading the growing JSONL at open time.  The running token
+      // total rides along once any message has reported usage.  Before the
+      // session manager materialises both are absent and the report passes
+      // through unchanged.
       const report = (p: SubagentProgress): void => {
         if (typeof onProgress !== "function") return;
-        onProgress(
-          sessionId !== "" || sessionPath !== undefined
-            ? {
-                ...p,
-                ...(sessionId !== "" ? { childSession: sessionId } : {}),
-                ...(sessionPath !== undefined ? { sessionPath } : {}),
-              }
-            : p,
-        );
+        onProgress({
+          ...p,
+          ...(modelId !== undefined ? { model: modelId } : {}),
+          ...(sessionId !== "" ? { childSession: sessionId } : {}),
+          ...(sessionPath !== undefined ? { sessionPath } : {}),
+          ...(tokensTotal !== undefined ? { tokens: tokensTotal } : {}),
+        });
       };
-      // Emit the final done snapshot carrying the run result, so the
-      // transcript card transitions to its terminal state.  The compact
-      // text stays capped (never the full transcript); the structured
-      // `result` carries the full text for the card's terminal rendering.
+      // Report the one-line text progress for one observed event.  The tool
+      // layer forwards it to the host's streaming partial result so the
+      // running card keeps re-rendering; structure never travels here — the
+      // log already carries it.
+      const reportEvent = (event: PiSessionEvent): void => {
+        switch (event.type) {
+          case "tool_execution_start":
+            report({
+              output: lastLine,
+              currentTool: event.toolName ?? "tool",
+              done: false,
+            });
+            break;
+          case "tool_execution_end":
+            // Explicit clear: the finished tool's name must not linger as
+            // the running title between calls.  `null` is the "no current
+            // tool" signal — an absent field would mean "leave unchanged".
+            report({ output: lastLine, currentTool: null, done: false });
+            break;
+          case "message_end": {
+            const message = event.message as PiDuckMessage | undefined;
+            if (message?.role !== "assistant") break;
+            // Fold this message's usage into the running total the progress
+            // line carries (the fact log holds the same numbers; rescanning
+            // it per tick would cost O(n) for every advance).
+            const reported = usageTokens(toUsage(message.usage));
+            if (reported !== undefined)
+              tokensTotal = (tokensTotal ?? 0) + reported;
+            lastLine = formatSnapshotOutput(extractText(message.content));
+            report({ output: lastLine, done: false });
+            break;
+          }
+          default:
+            break;
+        }
+      };
+      // Emit the terminal progress report, so the streaming text line
+      // settles on the run's outcome.  The full result text goes to the log
+      // with the run's messages; the report carries only its compact form.
       // Defensive: a throwing progress callback must not break the run.
       const emitDone = (result: SubagentResult): void => {
-        if (typeof onProgress !== "function") return;
         try {
-          report({
-            agent: request.agent,
-            ...toSnapshot(structured),
-            ...(modelId !== undefined ? { model: modelId } : {}),
-            ...(sessionPath !== undefined ? { sessionPath } : {}),
-            output: formatSnapshotOutput(result.text),
-            done: true,
-            result,
-          });
+          report({ output: formatSnapshotOutput(result.text), done: true });
         } catch {
           // A throwing progress callback is logged and swallowed — live
           // observability never breaks the run.
@@ -625,24 +801,11 @@ export function createPiSubagentDriver(
         });
         session = created;
         unsubscribe = session.subscribe((event) => {
-          // Forward the raw session events onto the live-transcript bus so
-          // an open transcript overlay renders the run's new content
-          // event-driven: assistant streaming partials, finalized messages,
-          // the tool-execution bookends (live tool components), and the
-          // `agent_end` run-end marker.  The bus is keyed by the child
-          // session id — the same pointer the registry run carries, which
-          // the overlay looks up to subscribe.  Emitting is a no-op when no
-          // overlay is open for this session; events the overlay does not
-          // render are dropped at the bus boundary.
-          emitTranscriptEvent(sessionId, event);
-          reduceEvent(
-            event,
-            messages,
-            structured,
-            request.agent,
-            report,
-            modelId,
-          );
+          // Record the event: the message view feeds the outcome
+          // classification, the run's fact log is the durable, untruncated
+          // record that every view projects from.
+          observe(event, messages, runLog);
+          reportEvent(event);
         });
 
         // The abort listener is attached only when the run has not already
@@ -654,6 +817,13 @@ export function createPiSubagentDriver(
         }
 
         if (!aborted) {
+          // Record the instruction the run was started with before sending
+          // it: the transcript overlay projects this fact as the head of the
+          // transcript (pi's native user-message box).  Appending it at the
+          // send point — rather than from the echoed user `message_end` —
+          // fixes both its presence and its position, whatever the host's
+          // event ordering is.
+          runLog?.appendUserMessage(request.prompt);
           await session.prompt(request.prompt);
         }
         if (aborted) {
@@ -685,6 +855,11 @@ export function createPiSubagentDriver(
       } finally {
         signal.removeEventListener("abort", onAbort);
         unsubscribe?.();
+        // A run that ended without its final `message_end` (abort, SDK
+        // failure) must not leave a transient partial behind for a surface
+        // that might still be reading the log.  The empty list is the
+        // stream's end-of-stream marker, not a fact.
+        runLog?.setPartial([]);
         session?.dispose();
       }
     },

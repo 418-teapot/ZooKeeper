@@ -23,17 +23,25 @@
  * - `args.agent` / `args.description` map to the run's `agent` / `label`.
  * - Timestamps come from the pi message `timestamp` (epoch millis); absent
  *   on both halves, they fall back to `Date.now()`.
- * - The terminal `toolResult`'s `details` payload (persisted by the
- *   subagent tool, see `src/tools/subagent.ts`) carries the delegation's
- *   `runId`, the sub-session `childSession`, and the on-disk `sessionPath`.
- *   When present, `runId` is preferred over the tool-call id as the run id,
- *   and the two session pointers are carried onto the scanned run.
+ * - The run id is the tool-call id (on pi the subagent tool's run id IS the
+ *   forwarded tool-call id, see `src/tools/subagent.ts`).
+ * - The terminal `toolResult`'s `details` payload carries the on-disk
+ *   `sessionPath` of the sub-session the run created (see
+ *   `terminalToolDetails` in `src/pi.ts` — the ONLY fact persisted there).
+ *   Older session files additionally carry `childSession` (the sub-session
+ *   id); when present it is preferred, otherwise the id is recovered from
+ *   the sub-session file's own header (see below).
  *
  * Nested delegation rebuild: each finished run's `details.sessionPath`
  * points at its sub-session jsonl file.  The scanner reads that file and
  * rescans it for `subagent` calls, whose nested runs are scoped to the
  * parent run's `childSession` (the registry's tree invariant:
  * `childrenOf(parent)` matches `run.parentSession === parent.childSession`).
+ * Because the reduced persisted payload no longer carries `childSession`,
+ * the parent run's child-session id is taken from the sub-session file's
+ * header record (`SessionHeader.id` — the id the file stores is exactly the
+ * session the run delegated into); a legacy persisted `details.childSession`
+ * takes precedence when present.
  * This recursion descends through arbitrarily deep delegation chains
  * (beaver → lynx → ...) with no depth cap.  A global visited set of
  * session ids guards against cycles: each session file is scanned at most
@@ -91,7 +99,7 @@ interface PiAssistantMessage {
 
 /** The parsed facts of one subagent tool call in the history. */
 export interface ScannedRun {
-  /** The run id (the pi run id / tool-call id). */
+  /** The run id — the pi tool-call id (the subagent tool's registry run id). */
   id: string;
   /** The delegated subagent name. */
   agent: string;
@@ -107,7 +115,8 @@ export interface ScannedRun {
   endedAt: number;
   /** The failure reason, when the outcome is `error`. */
   error?: string;
-  /** The sub-session id this run created, from the result's `details`. */
+  /** The sub-session id, from the result's `details` (legacy payloads only).
+   * The rebuild recovers it from the sub-session file's header when absent. */
   childSession?: string;
   /** The on-disk sub-session file path, from the result's `details`. */
   sessionPath?: string;
@@ -177,19 +186,19 @@ function callFacts(raw: unknown): { agent: string; label?: string } {
 }
 
 /**
- * Extract the delegation pointers from a subagent tool result's `details`.
+ * Extract the session pointers from a subagent tool result's `details`.
  *
- * The terminal `details` payload (persisted by the subagent tool, see
- * `src/tools/subagent.ts`) carries the run's `runId`, the created
- * sub-session's `childSession`, and the on-disk `sessionPath`.  All three
- * are optional strings; a missing or ill-shaped `details` yields an empty
- * result (the top-level rebuild never depends on them).
+ * The terminal `details` payload (see `terminalToolDetails` in `src/pi.ts`)
+ * persists ONLY the sub-session's on-disk `sessionPath`.  Older session
+ * files additionally carried `childSession`; it is read here so a rebuild
+ * of pre-reduction history keeps the persisted value.  Both are optional
+ * strings; a missing or ill-shaped `details` yields an empty result (the
+ * top-level rebuild never depends on them).
  *
  * @param raw - The raw `details` value from the toolResult message.
- * @returns The extracted run id / child session / session path.
+ * @returns The extracted child session / session path.
  */
 function detailsFacts(raw: unknown): {
-  runId?: string;
   childSession?: string;
   sessionPath?: string;
 } {
@@ -197,11 +206,9 @@ function detailsFacts(raw: unknown): {
     return {};
   }
   const obj = raw as Record<string, unknown>;
-  const runId = obj.runId;
   const childSession = obj.childSession;
   const sessionPath = obj.sessionPath;
   return {
-    ...(typeof runId === "string" && runId.length > 0 ? { runId } : {}),
     ...(typeof childSession === "string" && childSession.length > 0
       ? { childSession }
       : {}),
@@ -219,11 +226,11 @@ function detailsFacts(raw: unknown): {
  * outcome from its `isError` flag; an unlinked (in-flight) call is treated
  * as interrupted by the pi exit and resolved to `aborted`.
  *
- * The run id is the result's `details.runId` when present (the subagent
- * tool's own run id), falling back to the tool-call id — they are equal on
- * pi (see `src/pi.ts`), so this only matters for robustness.  The result's
- * `details.childSession` / `details.sessionPath` are carried onto the
- * scanned run when present.
+ * The run id is the tool-call id: on pi the subagent tool's registry run id
+ * IS the forwarded tool-call id (see `src/tools/subagent.ts`), so no
+ * persisted pointer is needed to recover it.  The result's
+ * `details.sessionPath` (and a legacy `details.childSession`) are carried
+ * onto the scanned run when present.
  *
  * @param entries - The pi context entries from `buildContextEntries()`.
  * @param parentSession - The calling (main) session id the runs are scoped
@@ -283,9 +290,9 @@ export function extractSubagentRuns(
 
       const isError = result.isError === true;
       const text = resultText(result.content);
-      const { runId, childSession, sessionPath } = detailsFacts(result.details);
+      const { childSession, sessionPath } = detailsFacts(result.details);
       runs.push({
-        id: runId ?? callId,
+        id: callId,
         agent,
         parentSession,
         status: isError ? "error" : "done",
@@ -316,13 +323,16 @@ export function extractSubagentRuns(
  * at its sub-session jsonl file.  That file is read and rescanned with the
  * same logic, producing nested `ScannedRun`s scoped to the parent run's
  * `childSession` (the registry tree invariant), and the recursion descends
- * through arbitrarily deep chains.  When a run carries only a
- * `childSession` (no `sessionPath`) the file is located by scanning the
- * sessions root for a header whose id matches.  A missing / unreadable
- * sub-session file skips only that branch (warn); the parent run is still
- * rebuilt.  A global visited set of session ids prevents infinite
- * recursion on cyclic (corrupted) session graphs: a session file already
- * scanned on the current path is skipped with a warn.
+ * through arbitrarily deep chains.  Because the persisted details carry
+ * only `sessionPath`, the parent's `childSession` is taken from the child
+ * session file's own header id (a legacy persisted `details.childSession`
+ * still wins when present).  When a run carries only a `childSession` and
+ * no `sessionPath`, the file is located by scanning the sessions root for a
+ * header whose id matches.  A missing / unreadable sub-session file skips
+ * only that branch (warn); the parent run is still rebuilt.  A global
+ * visited set of session ids prevents infinite recursion on cyclic
+ * (corrupted) session graphs: a session file already scanned on the current
+ * path is skipped with a warn.
  *
  * @param entries - The pi context entries from `buildContextEntries()`.
  * @param parentSession - The calling session id the runs are scoped to in
@@ -375,6 +385,31 @@ export function rebuildSubagentRuns(
 export interface SessionIndexIO {
   readdirSync(dir: string): string[];
   readFileSync(path: string, encoding: "utf-8"): string;
+}
+
+/**
+ * Parse the session id out of a pi session jsonl's header record.
+ *
+ * The first line of a session file is the `session` header, whose `id` is
+ * the session the file stores — for a sub-session file that id IS the
+ * delegating run's `childSession`.  Shared by the session-path index and
+ * the nested-session reader so the header is only ever parsed one way.
+ *
+ * @param text - The raw file text (only its first line is parsed).
+ * @returns The header session id, or `undefined` when absent / malformed.
+ */
+function headerSessionId(text: string): string | undefined {
+  const firstLine = text.split("\n", 1)[0] ?? "";
+  if (firstLine.length === 0) return undefined;
+  try {
+    const header = JSON.parse(firstLine) as { id?: unknown };
+    return typeof header.id === "string" && header.id.length > 0
+      ? header.id
+      : undefined;
+  } catch {
+    // Malformed header line.
+    return undefined;
+  }
 }
 
 /**
@@ -441,12 +476,10 @@ export class SessionPathIndex {
         if (!file.endsWith(".jsonl")) continue;
         const path = join(dir, file);
         try {
-          const header = JSON.parse(
-            this.io.readFileSync(path, "utf-8").split("\n", 1)[0] ?? "",
-          ) as { id?: unknown };
-          if (typeof header.id === "string" && header.id.length > 0) {
+          const id = headerSessionId(this.io.readFileSync(path, "utf-8"));
+          if (id !== undefined) {
             // First occurrence wins, matching the old linear scan.
-            if (!index.has(header.id)) index.set(header.id, path);
+            if (!index.has(id)) index.set(id, path);
           }
         } catch {
           // Skip malformed / unreadable session files.
@@ -462,9 +495,10 @@ export class SessionPathIndex {
  *
  * Scans one history level, writes each run, then descends into each run's
  * sub-session file (when one can be located).  The nested level's runs are
- * scoped to the parent run's `childSession`, keeping the registry's
- * parent/child tree invariant.  A global `visited` set of session ids
- * guards against cycles: every sub-session file is scanned at most once,
+ * scoped to the parent run's `childSession` — read from that sub-session
+ * file's header when the persisted details do not carry it — keeping the
+ * registry's parent/child tree invariant.  A global `visited` set of session
+ * ids guards against cycles: every sub-session file is scanned at most once,
  * so a corrupted back-reference (A → B → A) skips the repeated session
  * with a warn instead of recursing forever.  Tree-shaped data descends
  * with no depth limit.
@@ -486,6 +520,18 @@ function rebuildLevel(
   const runs = extractSubagentRuns(entries, parentSession);
   let written = 0;
   for (const scanned of runs) {
+    const nestedPath = resolveNestedPath(scanned, pathIndex);
+    // The sub-session file is read ONCE here: its message entries feed the
+    // nested rescan, and its header record supplies the child-session id.
+    // The persisted details carry only `sessionPath`, so the header id is
+    // where the parent's `childSession` — the registry's tree-invariant key
+    // — comes from; a legacy persisted `childSession` still wins.
+    const nested =
+      nestedPath === undefined ? undefined : readSessionFile(nestedPath);
+    const childSession =
+      scanned.childSession !== undefined
+        ? scanned.childSession
+        : nested?.sessionId;
     // Idempotence: an absent run is started and finished; an existing one
     // is left untouched (terminal immutability silently ignores the
     // finish).  Recursion still descends so a partially-scanned history is
@@ -497,9 +543,7 @@ function rebuildLevel(
         parentSession,
         label: scanned.label,
         startedAt: scanned.startedAt,
-        ...(scanned.childSession !== undefined
-          ? { childSession: scanned.childSession }
-          : {}),
+        ...(childSession !== undefined ? { childSession } : {}),
         ...(scanned.sessionPath !== undefined
           ? { sessionPath: scanned.sessionPath }
           : {}),
@@ -508,9 +552,7 @@ function rebuildLevel(
         status: scanned.status,
         endedAt: scanned.endedAt,
         ...(scanned.error !== undefined ? { error: scanned.error } : {}),
-        ...(scanned.childSession !== undefined
-          ? { childSession: scanned.childSession }
-          : {}),
+        ...(childSession !== undefined ? { childSession } : {}),
         ...(scanned.sessionPath !== undefined
           ? { sessionPath: scanned.sessionPath }
           : {}),
@@ -518,10 +560,8 @@ function rebuildLevel(
       written += 1;
     }
 
-    const nestedPath = resolveNestedPath(scanned, pathIndex);
     if (nestedPath === undefined) continue;
-    const nestedEntries = readSessionEntries(nestedPath);
-    if (nestedEntries === undefined) {
+    if (nested === undefined) {
       log(
         "subagent-scan",
         "nested_session_unreadable",
@@ -536,11 +576,10 @@ function rebuildLevel(
       continue;
     }
     // The nested runs execute inside the parent run's sub-session, so their
-    // `parentSession` is the parent run's `childSession` (falling back to
-    // the run id when the child session is absent — the tree invariant
-    // simply won't attach them).
-    const nestedParent =
-      scanned.childSession !== undefined ? scanned.childSession : scanned.id;
+    // `parentSession` is that child-session id (falling back to the run id
+    // when neither a persisted pointer nor a header id is available — the
+    // tree invariant simply won't attach them).
+    const nestedParent = childSession !== undefined ? childSession : scanned.id;
     // Cycle guard: a session id already scanned on this rebuild means the
     // session graph is corrupted (e.g. A → B → A back-reference).  Skip
     // the repeat with a warn instead of recursing forever.  The set is
@@ -562,7 +601,7 @@ function rebuildLevel(
       continue;
     }
     visited.add(nestedParent);
-    written += rebuildLevel(nestedEntries, nestedParent, visited, pathIndex);
+    written += rebuildLevel(nested.entries, nestedParent, visited, pathIndex);
   }
   return written;
 }
@@ -608,22 +647,37 @@ function defaultSessionsRoot(): string {
 }
 
 /**
- * Read a pi session jsonl file into history entries.
+ * A pi session file read off disk: its message entries plus the session id
+ * recorded in its header.
+ */
+interface NestedSession {
+  /** The `session` header's id — the child session id for a sub-session. */
+  sessionId?: string;
+  /** The file's `message` entries (every other record type is dropped). */
+  entries: PiHistoryEntry[];
+}
+
+/**
+ * Read a pi session jsonl file into its header id and message entries.
  *
- * Only `message` entries are kept (the session header and other record
- * types are ignored).  Malformed lines are skipped.  Returns `undefined`
- * when the file is missing or unreadable — the caller skips the branch.
+ * Only `message` entries are kept (the session header record supplies the
+ * id, other record types are ignored).  Malformed lines are skipped.  The
+ * header id is parsed through the same helper the session-path index uses.
+ * Returns `undefined` when the file is missing or unreadable — the caller
+ * skips the branch.
  *
  * @param path - The session file path.
- * @returns The message entries, or `undefined` on read failure.
+ * @returns The header id and message entries, or `undefined` on read
+ *   failure.
  */
-function readSessionEntries(path: string): PiHistoryEntry[] | undefined {
+function readSessionFile(path: string): NestedSession | undefined {
   let text: string;
   try {
     text = readFileSync(path, "utf-8");
   } catch {
     return undefined;
   }
+  const sessionId = headerSessionId(text);
   const entries: PiHistoryEntry[] = [];
   for (const line of text.split("\n")) {
     const trimmed = line.trim();
@@ -640,7 +694,7 @@ function readSessionEntries(path: string): PiHistoryEntry[] | undefined {
       // Skip malformed lines.
     }
   }
-  return entries;
+  return sessionId !== undefined ? { sessionId, entries } : { entries };
 }
 
 /**
@@ -649,7 +703,7 @@ function readSessionEntries(path: string): PiHistoryEntry[] | undefined {
  * The first line of a pi session jsonl is the `session` header carrying the
  * `cwd` the session ran in.  The transcript overlay's native tool renderers
  * use it as their render context (e.g. read's compact call classification),
- * so the header is parsed separately from `readSessionEntries` (which drops
+ * so the header is parsed separately from `readSessionFile` (which drops
  * non-message records).  Returns `undefined` when the file is missing,
  * unreadable, or its header is malformed.
  *

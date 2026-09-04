@@ -31,10 +31,13 @@
  *    the target's parsed `[agent.<name>].permission` tool-level denies.
  *    A missing baseline yields an empty set — permissions are never
  *    invented (fail-closed).
- * 5. Streams compact progress snapshots into the host's partial-result
- *    channel when one is present (pi's `onUpdate`), and drives the
- *    lifecycle orchestration (`runSubagent`), forwarding the parent abort
- *    signal when the tool context carries one.
+ * 5. Hands the run's append-only fact log to the driver so every observed
+ *    fact is recorded there, streams the driver's one-line progress report
+ *    into the host's partial-result channel when one is present (pi's
+ *    `onUpdate`), patches the report's progress fields (current tool, token
+ *    total, model, child session, session path) onto the registry run, and
+ *    drives the lifecycle orchestration (`runSubagent`), forwarding the
+ *    parent abort signal when the tool context carries one.
  * 6. Resolves the sub-session model (strict mode): `deps.subagentModels`
  *    (agents.json, whose mapped values are `"provider/model"` strings) is
  *    the SOLE source.  A missing entry for the target
@@ -65,6 +68,7 @@ import {
   formatProgressLine,
   SNAPSHOT_OUTPUT_CAP,
 } from "../core/subagent/progress.js";
+import type { UpdateRunPatch } from "../core/subagent/registry.js";
 import { finishRun, startRun, updateRun } from "../core/subagent/registry.js";
 import { runSubagent } from "../core/subagent/run.js";
 import { log } from "../utils/logger.js";
@@ -167,41 +171,36 @@ function formatSubagentResult(result: SubagentResult): string {
 }
 
 /**
- * A pi `onUpdate` partial result, structurally matching pi's
- * `AgentToolResult` (`content` parts plus an arbitrary `details`).
+ * A pi `onUpdate` partial result: the streaming text line only.
+ *
+ * No structured `details` payload rides along — pi drops partial details
+ * before they reach disk, so anything a view needs after a restart must come
+ * from the run's fact log or the terminal result's session-path pointer.
  */
 interface PiPartialResult {
   content: Array<{ type: "text"; text: string }>;
-  details: SubagentProgress;
 }
 
 /**
- * Bridge one progress snapshot into the pi streaming partial-result channel.
+ * Bridge one progress report into the pi streaming partial-result channel.
  *
- * Renders the snapshot into a compact one-line text (prefixed by the
+ * Renders the report into a compact one-line text (prefixed by the
  * delegation's `description` label when present) as a `text` content part,
- * and carries the FULL structured progress in `details` so the pi TUI card
- * renderer can draw the live transcript (spinner / current tool / recent
- * output / stats).  The run's registry id (the pi tool-call id) is stamped
- * onto the snapshot's `runId` so the transcript card can look up this run's
- * nested children in the run registry.  The call is defensive: a throwing
- * `onUpdate` is logged and swallowed so a UI callback can never break the
- * subagent run.
+ * so the host re-renders the running card as the subagent advances.  The
+ * call is defensive: a throwing `onUpdate` is logged and swallowed so a UI
+ * callback can never break the subagent run.
  *
- * @param progress - The snapshot to stream.
+ * @param progress - The report to stream.
  * @param sessionID - The parent session id for logging.
  * @param label - The delegation's description tag, prefixed to the line.
  * @param onUpdate - The host's streaming partial-result callback, when one
  *   is present.
- * @param runId - The run's registry id (the pi tool-call id), stamped onto
- *   the streamed details.
  */
 function emitProgressUpdate(
   progress: SubagentProgress,
   sessionID: string,
   label: string | undefined,
   onUpdate: unknown,
-  runId: string | undefined,
 ): void {
   if (typeof onUpdate !== "function") return;
   try {
@@ -212,7 +211,6 @@ function emitProgressUpdate(
           text: formatProgressLine(progress, SNAPSHOT_OUTPUT_CAP, label),
         },
       ],
-      details: runId !== undefined ? { ...progress, runId } : progress,
     };
     (onUpdate as (partial: PiPartialResult) => void)(partial);
   } catch (err) {
@@ -415,22 +413,23 @@ export function createSubagentTool(
         hostCtx?.callId ?? `${caller}-${input.agent}-${++syntheticRunSeq}`;
       const runStarted =
         typeof parentSession === "string" && parentSession.length > 0;
-      if (runStarted) {
-        startRun({
-          id: runId,
-          agent: input.agent,
-          parentSession,
-          label: input.description,
-        });
-        notifyRunChange();
-      }
+      const run = runStarted
+        ? startRun({
+            id: runId,
+            agent: input.agent,
+            parentSession,
+            label: input.description,
+          })
+        : undefined;
+      if (runStarted) notifyRunChange();
 
-      // 8. Stream compact progress snapshots into the host's partial-result
-      // channel when one is present (pi's `onUpdate`).  Each snapshot is
-      // rendered to a single capped line; a throwing callback is logged and
-      // swallowed so live observability can never break the run.  When
-      // `onUpdate` is absent (OpenCode, tests without it) progress is a
-      // no-op and the run proceeds unchanged.
+      // 8. Stream the driver's one-line progress reports into the host's
+      // partial-result channel when one is present (pi's `onUpdate`).  Each
+      // report is rendered to a single capped line; a throwing callback is
+      // logged and swallowed so live observability can never break the run.
+      // When `onUpdate` is absent (OpenCode, tests without it) progress is a
+      // no-op and the run proceeds unchanged.  The driver also appends the
+      // full facts to this run's log, the durable record views project from.
       const sessionForLog = parentSession ?? "";
 
       const result = await runSubagent(
@@ -447,31 +446,39 @@ export function createSubagentTool(
         },
         {
           signal,
+          ...(run !== undefined ? { log: run.log } : {}),
           onProgress: (progress) => {
-            // Patch the running run's progress fields from the snapshot
-            // (current tool, tokens, model) and report the child session
-            // id once the driver materialises it, so the fleet widget can
-            // rebuild the parent/child tree.
-            if (runStarted) {
-              const patch: {
-                currentTool?: string;
-                tokens?: number;
-                model?: string;
-                childSession?: string;
-                sessionPath?: string;
-              } = {};
+            // Patch the running run's progress fields — the current tool
+            // (including the driver's explicit "tool finished" clear), the
+            // token total the driver accumulates as it appends usage facts,
+            // the model, the child session id (so the fleet widget can
+            // rebuild the parent/child tree), and the sub-session path.
+            //
+            // The token total comes from the report rather than from
+            // `deriveCounters(run.log.facts())`: rescanning the whole fact log
+            // for every progress report is O(n) per report and O(n²) over a
+            // run, while the driver has already read each usage figure as it
+            // appended the fact.  Fields an absent report omits are left
+            // untouched.
+            if (runStarted && run !== undefined) {
+              const patch: UpdateRunPatch = {};
               if (progress.currentTool !== undefined) {
                 patch.currentTool = progress.currentTool;
               }
-              if (progress.tokens !== undefined) patch.tokens = progress.tokens;
+              if (
+                progress.tokens !== undefined &&
+                progress.tokens !== run.tokens
+              ) {
+                patch.tokens = progress.tokens;
+              }
               if (progress.model !== undefined) patch.model = progress.model;
               if (progress.childSession !== undefined) {
                 patch.childSession = progress.childSession;
               }
               if (progress.sessionPath !== undefined) {
                 // The sub-session file exists from the first progress
-                // snapshot (the driver reports it once the session manager
-                // is created), so the running run carries it for
+                // report (the driver carries its path once the session
+                // manager is created), so the running run holds it for
                 // enter-inspect mid-run — not only on the terminal finish.
                 patch.sessionPath = progress.sessionPath;
               }
@@ -485,7 +492,6 @@ export function createSubagentTool(
               sessionForLog,
               input.description,
               hostCtx?.onUpdate,
-              runId,
             );
           },
         },
@@ -493,7 +499,7 @@ export function createSubagentTool(
 
       // 9. Finish the registry run (terminal state, immutable thereafter).
       //    The session path (when any) was already patched onto the run via
-      //    `updateRun` on the first progress snapshot, so finish only sets
+      //    `updateRun` on the first progress report, so finish only sets
       //    the terminal status and outcome fields.
       if (runStarted) {
         finishRun(runId, {
