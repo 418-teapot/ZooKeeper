@@ -234,17 +234,18 @@ def build_pi_settings(
     """Build the pi ``settings.json`` dictionary from scratch.
 
     The settings file is fully rebuilt on every install: the previous file
-    is never read or merged, so only the ``extensions`` array plus the
-    derived ``defaultProvider``/``defaultModel`` keys are written.  Keys pi
-    writes back at runtime (theme, lastChangelogVersion, ...) are
-    intentionally not preserved.
+    is never read or merged, so only the ``extensions`` array, the
+    ``defaultThinkingLevel`` value, and the derived
+    ``defaultProvider``/``defaultModel`` keys are written.  Keys pi writes
+    back at runtime (theme, lastChangelogVersion, ...) are intentionally
+    not preserved.
 
     The default provider/model derive from ``[defaults].model`` in
     config.toml (format ``Provider/model``), resolved against *env*.
     When the value is missing, unresolved, empty, or lacks a valid ``/``
     separator, a Chinese warning is printed and only the ``extensions``
-    array is written — the install continues.  A provider that is absent
-    from this run's pi providers (e.g. pruned for missing credentials)
+    array plus ``defaultThinkingLevel`` are written — the install
+    continues.  A provider that is absent from this run's pi providers (e.g. pruned for missing credentials)
     still gets written, with a warning.
 
     Args:
@@ -257,11 +258,15 @@ def build_pi_settings(
             filtered out.
 
     Returns:
-        The settings dictionary.  Always contains ``extensions``;
+        The settings dictionary.  Always contains ``extensions`` and
+        ``defaultThinkingLevel`` (hardcoded to ``high``);
         ``defaultProvider``/``defaultModel`` are added only when the
         default model resolves and splits cleanly.
     """
-    settings: dict[str, object] = {"extensions": [extension_path]}
+    settings: dict[str, object] = {
+        "extensions": [extension_path],
+        "defaultThinkingLevel": "high",
+    }
 
     resolved = _resolve_default_model(defaults_model, env)
     if resolved is None:

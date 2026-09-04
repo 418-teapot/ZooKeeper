@@ -220,6 +220,7 @@ def test_build_pi_settings_env_ref_split() -> None:
     )
     assert settings == {
         "extensions": ["/abs/src/pi.ts"],
+        "defaultThinkingLevel": "high",
         "defaultProvider": "Dummy",
         "defaultModel": "dummy-small",
     }
@@ -232,6 +233,7 @@ def test_build_pi_settings_plain_string_split() -> None:
     )
     assert settings == {
         "extensions": ["/abs/src/pi.ts"],
+        "defaultThinkingLevel": "high",
         "defaultProvider": "Dummy",
         "defaultModel": "dummy-small",
     }
@@ -242,7 +244,10 @@ def test_build_pi_settings_missing_env_only_extensions(capsys) -> None:
     settings = build_pi_settings(
         "/abs/src/pi.ts", "{env:ZOO_WHALE_MODEL}", {}, []
     )
-    assert settings == {"extensions": ["/abs/src/pi.ts"]}
+    assert settings == {
+        "extensions": ["/abs/src/pi.ts"],
+        "defaultThinkingLevel": "high",
+    }
     assert "defaultProvider" not in settings
     assert "defaultModel" not in settings
     assert "环境变量" in capsys.readouterr().out
@@ -253,7 +258,10 @@ def test_build_pi_settings_missing_defaults_section(capsys) -> None:
     settings = build_pi_settings(
         "/abs/src/pi.ts", None, {"ZOO_WHALE_MODEL": "x"}, []
     )
-    assert settings == {"extensions": ["/abs/src/pi.ts"]}
+    assert settings == {
+        "extensions": ["/abs/src/pi.ts"],
+        "defaultThinkingLevel": "high",
+    }
     assert "defaultProvider" not in settings
     assert "环境变量" in capsys.readouterr().out
 
@@ -263,7 +271,10 @@ def test_build_pi_settings_empty_env_value(capsys) -> None:
     settings = build_pi_settings(
         "/abs/src/pi.ts", "{env:ZOO_WHALE_MODEL}", {"ZOO_WHALE_MODEL": ""}, []
     )
-    assert settings == {"extensions": ["/abs/src/pi.ts"]}
+    assert settings == {
+        "extensions": ["/abs/src/pi.ts"],
+        "defaultThinkingLevel": "high",
+    }
     assert "defaultProvider" not in settings
     assert "为空" in capsys.readouterr().out
 
@@ -276,7 +287,10 @@ def test_build_pi_settings_no_slash(capsys) -> None:
         {"ZOO_WHALE_MODEL": "dummy-small"},
         [],
     )
-    assert settings == {"extensions": ["/abs/src/pi.ts"]}
+    assert settings == {
+        "extensions": ["/abs/src/pi.ts"],
+        "defaultThinkingLevel": "high",
+    }
     assert "defaultProvider" not in settings
     assert "分隔" in capsys.readouterr().out
 
@@ -291,6 +305,7 @@ def test_build_pi_settings_pruned_provider_still_writes(capsys) -> None:
     )
     assert settings == {
         "extensions": ["/abs/src/pi.ts"],
+        "defaultThinkingLevel": "high",
         "defaultProvider": "Foo",
         "defaultModel": "bar",
     }
