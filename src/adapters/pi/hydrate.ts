@@ -3,8 +3,10 @@
  *
  * After a pi restart the run registry (process-level state) is empty (or,
  * when the history scanner rebuilt it, holds terminal runs whose `RunLog`
- * never received the delegation's facts), so the transcript card's
- * registry lookup cannot project a restored run's transcript.  This module
+ * never received the delegation's facts), and runs finished live lose their
+ * in-memory log the moment they finish (the registry keeps metadata only),
+ * so the transcript card's registry lookup cannot project a finished run's
+ * transcript.  This module
  * rebuilds a `RunLog` from the delegation's persisted sub-session jsonl
  * (`result.details.sessionPath`, the only surviving pointer on terminal
  * tool results): parse with pi's official session reader, project the
@@ -14,7 +16,11 @@
  *
  * The cache is deliberately separate from the registry: registering
  * restored runs would make the fleet widget re-list finished history on
- * every card paint, which the card is the only consumer that needs.
+ * every card paint, which the card is the only consumer that needs.  It is
+ * also bounded — a small fixed capacity (see `SETTLED_CAPACITY`) with FIFO
+ * eviction — because finished-run transcripts live on the session files,
+ * not in resident memory: the cache only avoids reloading the handful of
+ * runs a view revisits around a finish.
  *
  * @module
  */
@@ -47,10 +53,38 @@ export type HydrationState =
 
 const defaultReader: SessionFileReader = (path) => readFile(path, "utf-8");
 
-/** Settled hydrations: `null` value marks a failed load. */
+/**
+ * The settled-cache capacity.
+ *
+ * Finished-run views rebuild their transcripts from disk through this cache;
+ * a small fixed capacity keeps resident memory bounded (finished runs live
+ * on the session files, not here) while comfortably serving the handful of
+ * runs a user inspects around a finish.
+ */
+const SETTLED_CAPACITY = 8;
+
+/** Settled hydrations: `null` value marks a failed load.  Bounded — the
+ * oldest entry is evicted beyond `SETTLED_CAPACITY` (FIFO). */
 const settled = new Map<string, RunLog | null>();
 /** In-flight hydrations, keyed by tool-call id. */
 const inflight = new Map<string, Promise<void>>();
+
+/**
+ * Store one settled hydration, evicting the oldest entry beyond capacity.
+ *
+ * `beginHydration` guards re-entry, so each id is stored exactly once and
+ * the first key is the oldest — the FIFO eviction target.
+ *
+ * @param toolCallId - The tool-call id to store under.
+ * @param log - The rebuilt log, or `null` for a failed load.
+ */
+function cacheSettled(toolCallId: string, log: RunLog | null): void {
+  settled.set(toolCallId, log);
+  if (settled.size > SETTLED_CAPACITY) {
+    const oldest = settled.keys().next().value;
+    if (oldest !== undefined) settled.delete(oldest);
+  }
+}
 
 /**
  * Coerce a raw value to a finite number (usage counters, epoch millis).
@@ -367,12 +401,12 @@ export function beginHydration(
   const task = load(sessionPath).then(
     (log) => {
       inflight.delete(toolCallId);
-      settled.set(toolCallId, log ?? null);
+      cacheSettled(toolCallId, log ?? null);
       onSettled?.();
     },
     () => {
       inflight.delete(toolCallId);
-      settled.set(toolCallId, null);
+      cacheSettled(toolCallId, null);
       onSettled?.();
     },
   );

@@ -2345,7 +2345,12 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
     dispose();
   });
 
-  it("projects the run's existing facts when the overlay opens", async () => {
+  it("keeps an open overlay intact when the run finishes mid-view (log released)", async () => {
+    // The overlay opened on the run's LIVE log; while it is open the run
+    // finishes, and the registry swaps the run's log for a fresh empty one
+    // (resident memory tracks active work only).  The open overlay keeps
+    // projecting the log it was handed — it must neither crash nor blank
+    // out; it simply stops receiving appends.
     const api = mockApi();
     const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     let factory: unknown;
@@ -2361,16 +2366,11 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
     );
     const { dispose } = renderZooWidget(calls, 80, focusedEditorTui());
     startRun({
-      id: "run-projected",
+      id: "run-midfinish",
       agent: "beaver",
       parentSession: "sess-enter",
       startedAt: 1000,
     });
-    const run = getRun("run-projected");
-    assert.ok(run, "the run must be registered");
-    run.log.appendMessage([{ type: "text", text: "projected fact" }]);
-    finishRun("run-projected", { status: "done" });
-
     inputHandler("\u001b[B");
     const result = inputHandler("\r");
     assert.deepEqual(result, { consume: true });
@@ -2378,10 +2378,27 @@ describe("buildPiHandlers — fleet widget enter-inspect wiring", () => {
       WIDGET_TUI,
       WIDGET_THEME,
     );
-    const lines = (component as { render(width: number): string[] }).render(80);
+    const render = (): string[] =>
+      (component as { render(width: number): string[] }).render(80);
+    getRun("run-midfinish")?.log.appendMessage([
+      { type: "text", text: "visible before finish" },
+    ]);
     assert.ok(
-      lines.some((l) => l.includes("projected fact")),
-      `the pre-existing fact must render: ${lines.join(" | ")}`,
+      render().some((l) => l.includes("visible before finish")),
+      `the live fact must render while the run runs: ${render().join(" | ")}`,
+    );
+    // The run finishes while the overlay is open → the registry releases the
+    // live log.  The open overlay keeps what it already projected.
+    finishRun("run-midfinish", { status: "done" });
+    assert.equal(
+      getRun("run-midfinish")?.log.facts().length,
+      0,
+      "the terminal run must hold no facts",
+    );
+    assert.doesNotThrow(() => render(), "the alive overlay must not crash");
+    assert.ok(
+      render().some((l) => l.includes("visible before finish")),
+      `the open overlay must keep its projected content: ${render().join(" | ")}`,
     );
     dispose();
   });
@@ -2478,6 +2495,7 @@ describe("buildPiHandlers — fleet widget enter-inspect hydration", () => {
   async function openOverlayOn(
     run: { id: string; sessionPath?: string; finish?: boolean },
     presses = 1,
+    beforeFinish?: (id: string) => void,
   ): Promise<{
     opened: () => number;
     renderOverlay: () => string[];
@@ -2508,6 +2526,7 @@ describe("buildPiHandlers — fleet widget enter-inspect hydration", () => {
         ? { sessionPath: run.sessionPath }
         : {}),
     });
+    beforeFinish?.(run.id);
     if (run.finish === true) finishRun(run.id, { status: "done" });
     inputHandler("\u001b[B"); // expand + select the run
     for (let i = 0; i < presses; i++) inputHandler("\r");
@@ -2560,6 +2579,49 @@ describe("buildPiHandlers — fleet widget enter-inspect hydration", () => {
     h.dispose();
   });
 
+  it("hydrates a just-finished live run from its persisted sub-session file", async () => {
+    // The registry releases a run's fact log when it finishes, so a run
+    // that finished LIVE takes the same hydration gate the post-restart
+    // scanner-rebuilt runs do: terminal + empty registry log → rebuild the
+    // transcript from the persisted sub-session file.
+    const path = await writeSession([
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "final answer from disk" }],
+        timestamp: 100,
+      },
+    ]);
+    const h = await openOverlayOn(
+      { id: "run-just-done", sessionPath: path, finish: true },
+      1,
+      (id) => {
+        // The run appended facts while it was live (the driver's in-memory
+        // record, mirrored on disk by pi's session persistence).
+        getRun(id)?.log.appendMessage([
+          { type: "text", text: "live fact, released at finish" },
+        ]);
+      },
+    );
+    assert.equal(
+      getRun("run-just-done")?.log.facts().length,
+      0,
+      "finish must release the live run's in-memory log",
+    );
+    await waitForHydration("run-just-done");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(h.opened(), 1, "the settled load must open the overlay");
+    const lines = h.renderOverlay();
+    assert.ok(
+      lines.some((l) => l.includes("final answer from disk")),
+      `the hydrated transcript must render: ${lines.join(" | ")}`,
+    );
+    assert.ok(
+      !lines.some((l) => l.includes("live fact, released at finish")),
+      `the released in-memory facts must not leak: ${lines.join(" | ")}`,
+    );
+    h.dispose();
+  });
+
   it("opens synchronously when the shared cache already holds the log", async () => {
     // The dedupe the inline card relies on: a warm cache (the card already
     // loaded this run) means enter opens right on the keypress.
@@ -2587,7 +2649,7 @@ describe("buildPiHandlers — fleet widget enter-inspect hydration", () => {
   });
 
   it("states the unavailable notice when the session file cannot be read", async () => {
-    // Hydration failure is terminal for that run (the cache never retries):
+    // Hydration failure stays cached for that run until eviction:
     // the overlay still opens and says why there is nothing to show.
     const h = await openOverlayOn({
       id: "run-gone",

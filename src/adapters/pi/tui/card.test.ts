@@ -61,6 +61,33 @@ function streamed(text: string): {
   return { content: [{ type: "text", text }] };
 }
 
+/** Write a minimal pi session jsonl (header + one given message record). */
+async function writeSessionFile(message: unknown): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "zoo-card-"));
+  const path = join(dir, "child.jsonl");
+  await writeFile(
+    path,
+    [
+      JSON.stringify({
+        type: "session",
+        version: 3,
+        id: "ses-card",
+        timestamp: "2026-08-31T00:00:00.000Z",
+        cwd: "/tmp",
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "m1",
+        parentId: null,
+        timestamp: "2026-08-31T00:00:00.000Z",
+        message,
+      }),
+    ].join("\n"),
+    "utf-8",
+  );
+  return path;
+}
+
 /** A text render context carrying a stable tool-call id. */
 function toolContext(
   toolCallId: string,
@@ -256,7 +283,15 @@ describe("pi renderResult — structured projection from the run log", () => {
     assert.ok(expanded.some((l) => l.includes("$ cmd1")));
   });
 
-  it("renders terminal state ✓ with stats badge and preview of the final text", () => {
+  it("renders terminal state ✓ with stats badge and preview of the final text", async () => {
+    // The run finished LIVE: the registry released its in-memory log, so the
+    // terminal card rebuilds the transcript from the persisted sub-session
+    // file (the shared hydration cache) around the run's own lifecycle meta.
+    const sessionPath = await writeSessionFile({
+      role: "assistant",
+      content: [{ type: "text", text: "line one\nline two" }],
+      timestamp: 1500,
+    });
     const run = startRun({
       id: "tc-done",
       agent: "lynx",
@@ -265,14 +300,24 @@ describe("pi renderResult — structured projection from the run log", () => {
     });
     run.log.appendMessage([{ type: "text", text: "line one\nline two" }]);
     finishRun("tc-done", { status: "done", endedAt: 2000 });
+    const result = {
+      content: [{ type: "text", text: "" }],
+      details: { sessionPath },
+    };
 
+    // First paint: the released log is empty, so the placeholder shows while
+    // the persisted file parses.
+    const first = renderComponent(
+      renderResult(result, { isPartial: false }, THEME, toolContext("tc-done")),
+      80,
+    );
+    assert.ok(
+      first.some((l) => l.includes("restoring")),
+      `placeholder expected: ${first.join(" | ")}`,
+    );
+    await waitForHydration("tc-done");
     const lines = renderComponent(
-      renderResult(
-        streamed(""),
-        { isPartial: false },
-        THEME,
-        toolContext("tc-done"),
-      ),
+      renderResult(result, { isPartial: false }, THEME, toolContext("tc-done")),
       80,
     ).filter((l) => l.length > 0);
     assert.ok(
@@ -290,7 +335,12 @@ describe("pi renderResult — structured projection from the run log", () => {
     );
   });
 
-  it("expanded terminal renders the full final text through markdown", () => {
+  it("expanded terminal renders the full final text through markdown", async () => {
+    const sessionPath = await writeSessionFile({
+      role: "assistant",
+      content: [{ type: "text", text: "# heading\n\nbody paragraph" }],
+      timestamp: 1500,
+    });
     const run = startRun({
       id: "tc-exp",
       agent: "lynx",
@@ -300,9 +350,27 @@ describe("pi renderResult — structured projection from the run log", () => {
       { type: "text", text: "# heading\n\nbody paragraph" },
     ]);
     finishRun("tc-exp", { status: "done" });
+    const result = {
+      content: [{ type: "text", text: "" }],
+      details: { sessionPath },
+    };
+    const first = renderComponent(
+      renderResult(
+        result,
+        { isPartial: false, expanded: true },
+        THEME,
+        toolContext("tc-exp"),
+      ),
+      80,
+    );
+    assert.ok(
+      first.some((l) => l.includes("restoring")),
+      `placeholder expected: ${first.join(" | ")}`,
+    );
+    await waitForHydration("tc-exp");
     const lines = renderComponent(
       renderResult(
-        streamed(""),
+        result,
         { isPartial: false, expanded: true },
         THEME,
         toolContext("tc-exp"),
@@ -501,6 +569,54 @@ describe("pi renderResult — structured projection from the run log", () => {
     assert.ok(
       second.some((l) => l.includes("restored scanner answer")),
       second.join(" | "),
+    );
+  });
+
+  it("hydrates a terminal run from run.sessionPath on a partial render racing the finish", async () => {
+    // A content-free partial repaint arrives after the terminal result
+    // finished the run: the registry log is already released (empty) and a
+    // partial result carries no `details`, so only the run's own
+    // `sessionPath` can source the hydrate — and it must, so the empty
+    // "(no output)" projection never flashes.
+    const sessionPath = await writeSessionFile({
+      role: "assistant",
+      content: [{ type: "text", text: "the final answer" }],
+      timestamp: 1500,
+    });
+    const run = startRun({
+      id: "tc-raced",
+      agent: "lynx",
+      parentSession: "main-1",
+      startedAt: 1000,
+    });
+    run.log.appendMessage([{ type: "text", text: "the final answer" }]);
+    finishRun("tc-raced", { status: "done", endedAt: 2000, sessionPath });
+    const result = { content: [] };
+
+    const first = renderComponent(
+      renderResult(result, { isPartial: true }, THEME, toolContext("tc-raced")),
+      80,
+    );
+    assert.ok(
+      first.some((l) => l.includes("restoring")),
+      `placeholder expected, got: ${first.join(" | ")}`,
+    );
+    assert.ok(
+      !first.some((l) => l.includes("(no output)")),
+      `the empty terminal projection must never flash: ${first.join(" | ")}`,
+    );
+    await waitForHydration("tc-raced");
+    const lines = renderComponent(
+      renderResult(result, { isPartial: true }, THEME, toolContext("tc-raced")),
+      80,
+    ).filter((l) => l.length > 0);
+    assert.ok(
+      lines.some((l) => l.startsWith("✓ subagent(lynx)")),
+      `terminal title expected: ${lines.join(" | ")}`,
+    );
+    assert.ok(
+      lines.some((l) => l.includes("the final answer")),
+      lines.join(" | "),
     );
   });
 

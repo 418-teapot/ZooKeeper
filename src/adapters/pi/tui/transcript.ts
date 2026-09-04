@@ -9,8 +9,10 @@
  * this module never replays a session file and there is no event bus.
  *
  * Where that log comes from is the opener's business, and it is not always
- * an in-memory stream: the pi history scanner rebuilds runs after a restart
- * carrying lifecycle metadata only, so their logs are empty even though the
+ * an in-memory stream: the registry releases a finished run's log (resident
+ * memory tracks active work only) and the pi history scanner rebuilds runs
+ * after a restart carrying lifecycle metadata only, so in both cases a
+ * terminal run's registry log is empty even though the
  * full transcript survives on disk in the sub-session file.  For such a run
  * the pi entry point hydrates the facts first (shared cache in
  * `src/adapters/pi/hydrate.ts`, the same one the inline card uses) and opens

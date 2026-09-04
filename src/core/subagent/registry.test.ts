@@ -182,6 +182,62 @@ describe("registry — run lifecycle", () => {
     assert.equal(run?.sessionPath, "/tmp/child-ses-1.jsonl");
   });
 
+  it("finishRun releases the run's fact log; the terminal run keeps metadata only", () => {
+    const run = startRun({
+      id: "r1",
+      agent: "lynx",
+      parentSession: "main",
+      startedAt: 100,
+    });
+    run.log.appendToolStart("bash", { command: "ls -la" }, 101);
+    run.log.appendMessage(
+      [{ type: "text", text: "final answer" }],
+      undefined,
+      102,
+    );
+    updateRun("r1", {
+      tokens: 4200,
+      model: "dummy-small",
+      childSession: "child-ses-9",
+      sessionPath: "/tmp/child-ses-9.jsonl",
+    });
+    const liveLog = run.log;
+    assert.equal(liveLog.size, 2, "precondition: the live log holds the facts");
+    finishRun("r1", { status: "done", endedAt: 300 });
+    const finished = getRun("r1");
+    assert.ok(finished);
+    assert.equal(
+      finished.log.size,
+      0,
+      "the terminal run must not retain the run's facts",
+    );
+    assert.ok(
+      finished.log !== liveLog,
+      "the terminal run must hold a fresh empty log, not the released one",
+    );
+    // The released log object stays a valid frozen stream for any holder
+    // (an open transcript overlay keeps what it already projected).
+    assert.equal(
+      liveLog.size,
+      2,
+      "the released log must still serve a consumer holding it",
+    );
+    assert.equal(
+      liveLog.facts()[1]?.type,
+      "message_end",
+      "the released log's facts stay readable",
+    );
+    // Metadata survives on the terminal run.
+    assert.equal(finished.status, "done");
+    assert.equal(finished.agent, "lynx");
+    assert.equal(finished.startedAt, 100);
+    assert.equal(finished.endedAt, 300);
+    assert.equal(finished.tokens, 4200);
+    assert.equal(finished.model, "dummy-small");
+    assert.equal(finished.childSession, "child-ses-9");
+    assert.equal(finished.sessionPath, "/tmp/child-ses-9.jsonl");
+  });
+
   it("finishRun cannot change childSession/sessionPath of a finished run", () => {
     startRun({
       id: "r1",

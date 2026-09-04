@@ -16,6 +16,13 @@
  *   `aborted`, `updateRun` and `finishRun` never change its status,
  *   `endedAt`, `error`, or `sessionPath` again (silently ignored), mirroring
  *   the OpenCode sidebar rule.  Entries are never deleted.
+ * - **Finished runs keep metadata only** — `finishRun` releases the run's
+ *   fact log (a fresh empty log takes its place), so resident memory scales
+ *   with ACTIVE work, not with the number or size of finished runs.  A
+ *   finished run keeps its lifecycle metadata (status, timestamps, `error`,
+ *   `sessionPath`, `childSession`, `tokens`, `model`); the facts'
+ *   authoritative copy lives in the persisted sub-session file and any
+ *   post-finish view rebuilds it on demand through the hydration layer.
  * - **Session isolation** — `topLevelRuns` / `summary` scope by
  *   `parentSession`, so concurrent main sessions never see each other's
  *   runs.  Run ids are globally unique; a duplicate `startRun` never
@@ -29,11 +36,14 @@
  * Pure module-level state plus `resetRegistry()` for tests.
  *
  * Each run entry owns a `RunLog` (`run-log.ts`): the run's ordered data
- * stream.  Fact appends to any run's log surface through the run-change
- * subscription (`subscribeRunChange`) alongside lifecycle transitions, so
- * one subscription refreshes consumers on both kinds of change (the
- * streaming partial deliveries stay off this fact-only feed by design — the
- * fleet must not repaint per streamed token).
+ * stream while the run is active.  Fact appends to a live run's log
+ * surface through the run-change subscription (`subscribeRunChange`)
+ * alongside lifecycle transitions, so one subscription refreshes consumers
+ * on both kinds of change (the streaming partial deliveries stay off this
+ * fact-only feed by design — the fleet must not repaint per streamed
+ * token).  At finish the log is released: the terminal run holds a fresh
+ * empty log, and the released object stays valid for any consumer already
+ * holding it (an open transcript overlay keeps its projected content).
  *
  * @module
  */
@@ -83,8 +93,12 @@ export interface SubagentRun {
   error?: string;
   /** The on-disk path of the sub-session file, when the host persists it. */
   sessionPath?: string;
-  /** The run's append-only fact log (tool starts / ends, assistant
-   * messages).  Created with the run; never replaced. */
+  /** The run's append-only fact log while the run is active.  Created with
+   * the run; replaced by a fresh empty log when the run finishes — the
+   * terminal log is inert by design: it carries no `onFact` listener, so
+   * appending to it fires no notifications (a post-finish append is a
+   * programming error).  The terminal run keeps metadata only (see the
+   * module doc). */
   log: RunLog;
 }
 
@@ -277,6 +291,16 @@ export function updateRun(id: string, patch: UpdateRunPatch): void {
  * `error`, and `sessionPath` are frozen — a second finish never overwrites
  * the first) or the id is unknown.  `endedAt` defaults to the current time.
  *
+ * The finish also RELEASES the run's fact log: the terminal run keeps its
+ * lifecycle metadata only and its `log` becomes a fresh empty log.  The
+ * facts' authoritative copy lives in the persisted sub-session file, and
+ * any post-finish view rebuilds it through the hydration path.  The
+ * released log object stays valid for consumers already holding it (an
+ * open transcript overlay keeps what it projected) but receives no further
+ * appends.  The fresh terminal log is inert by design: it carries no
+ * `onFact` listener, so appending to it fires no run-change notification —
+ * a post-finish append is a programming error.
+ *
  * @param id - The run id.
  * @param input - The terminal outcome.
  */
@@ -288,6 +312,12 @@ export function finishRun(id: string, input: FinishRunInput): void {
   if (input.error !== undefined) run.error = input.error;
   if (input.sessionPath !== undefined) run.sessionPath = input.sessionPath;
   if (input.childSession !== undefined) run.childSession = input.childSession;
+  // Release the run's fact log: resident memory must track ACTIVE work only.
+  // The run keeps its lifecycle metadata; a later view of the finished run's
+  // transcript rebuilds the facts from the persisted sub-session file
+  // through the hydration path.  The released log stays valid for any holder
+  // (the open-overlay edge case) but is no longer the registry's.
+  run.log = createRunLog();
   notifyRunChange();
 }
 

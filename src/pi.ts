@@ -825,8 +825,10 @@ export function buildPiHandlers(
   // transcript as a pure projection of the fact log it is given.  While the
   // run is still running new facts stream onto the open overlay through the
   // log's append notifications — event-driven, no session switch.  A run
-  // rebuilt by the post-restart history scanner is the exception: it carries
-  // lifecycle metadata but an EMPTY log, so its facts have to be restored
+  // whose registry log is empty is the exception: finished runs (their log
+  // is released at finish — the registry keeps metadata only) and post-
+  // restart scanner-rebuilt runs are exactly this shape, so their facts have
+  // to be restored
   // from the persisted sub-session file first (see the hydration gate in the
   // callback).  The overlay is opened through the pi `ExtensionUIContext.custom`
   // surface, which pi exposes on every event context's `ui`, so the callback
@@ -876,16 +878,19 @@ export function buildPiHandlers(
           ...(emptyNotice === undefined ? {} : { emptyNotice }),
           openOverlay,
         });
-      // HYDRATION GATE.  The post-restart history scanner rebuilds runs from
-      // persisted sessions with lifecycle metadata only, so such a run's log
-      // is empty while its full transcript sits intact in `run.sessionPath`;
+      // HYDRATION GATE.  `finishRun` releases a finished run's in-memory log
+      // (resident memory tracks active work only), and the post-restart
+      // history scanner rebuilds runs from persisted sessions with lifecycle
+      // metadata only — so in both cases a terminal run's registry log is
+      // empty while its full transcript sits intact in `run.sessionPath`;
       // opening straight on `run.log` would render "(empty transcript)" for
       // a run that clearly produced work.  Restore the facts through the
       // shared hydration cache the inline card already uses (keyed by run id,
       // so the card and this overlay dedupe one load): open on the settled
       // log when it is ready, state `TRANSCRIPT_UNAVAILABLE_NOTICE` when the
-      // load failed (a gone or unparseable file — the cache never retries, so
-      // the reason is stable), and otherwise join the load and open when it
+      // load failed (a gone or unparseable file — the failure stays cached
+      // until eviction, after which the id returns to `missing` and a later
+      // open retries the load), and otherwise join the load and open when it
       // settles, which costs a few milliseconds of dead time on the keypress
       // but never shows a transcript that is not there.  A still-RUNNING run
       // is excluded on purpose: its log is the live source, and a file

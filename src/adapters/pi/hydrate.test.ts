@@ -396,4 +396,46 @@ describe("hydration cache orchestration", () => {
     await waitForHydration("call-never");
     assert.equal(hydrationState("call-never").kind, "missing");
   });
+
+  it("evicts settled hydrations when the cache exceeds its 8-entry capacity", async () => {
+    // The settled cache is bounded (FIFO): filling it past 8 evicts the
+    // oldest entry so resident memory cannot grow with finished-run views.
+    const paths: string[] = [];
+    for (let i = 0; i < 9; i++) {
+      const path = await writeSession([
+        {
+          role: "assistant",
+          content: [{ type: "text", text: `m${i}` }],
+          timestamp: i,
+        },
+      ]);
+      paths.push(path);
+    }
+    for (let i = 0; i < 9; i++) {
+      beginHydration(`call-${i}`, paths[i]);
+      await waitForHydration(`call-${i}`);
+    }
+    assert.equal(
+      hydrationState("call-0").kind,
+      "missing",
+      "the oldest settled entry must be evicted at capacity 8",
+    );
+    for (let i = 1; i < 9; i++) {
+      assert.equal(
+        hydrationState(`call-${i}`).kind,
+        "ready",
+        `entry ${i} must remain in the cache`,
+      );
+    }
+    // An evicted id hydrates again on demand (a later begin is not blocked),
+    // and the re-settle evicts the then-oldest entry in turn.
+    beginHydration("call-0", paths[0]);
+    await waitForHydration("call-0");
+    assert.equal(hydrationState("call-0").kind, "ready");
+    assert.equal(
+      hydrationState("call-1").kind,
+      "missing",
+      "the re-added entry must evict the new oldest",
+    );
+  });
 });

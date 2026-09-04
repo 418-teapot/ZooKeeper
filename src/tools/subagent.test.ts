@@ -768,6 +768,12 @@ describe("subagent tool execute — progress to registry updates", () => {
           4,
         );
         ctx.onProgress?.({ done: false, tokens: 234 });
+        // While the run is live its registry log holds the driver's facts.
+        assert.equal(
+          getRun("call-log")?.log.size,
+          4,
+          "the live run's log must hold the appended facts",
+        );
         return { kind: "ok", text: "done" };
       },
     };
@@ -780,9 +786,13 @@ describe("subagent tool execute — progress to registry updates", () => {
 
     const run = getRun("call-log");
     assert.ok(run);
-    // The facts the driver appended are the run's durable record.
-    assert.equal(run?.log.size, 4);
-    assert.equal(run?.log.facts()[0]?.type, "tool_start");
+    // Finishing the run releases its fact log (resident memory tracks active
+    // work only; the durable copy lives in the persisted sub-session file).
+    assert.equal(
+      run?.log.size,
+      0,
+      "the terminal run must no longer hold the driver's facts",
+    );
     // The token total the driver reported as it appended both messages.
     assert.equal(run?.tokens, 234);
     assert.equal(run?.currentTool, "bash");

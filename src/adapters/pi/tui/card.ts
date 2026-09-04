@@ -44,15 +44,20 @@
  *   - running (partial render, run in registry): the stacked `renderCall`
  *     title, then the projected body — current tool, recent tool calls,
  *     recent outputs, stats, nested children.
- *   - terminal (run in registry): the projected terminal card — title with
- *     stats badge, error reason when failed, collapsed preview (expanded
- *     markdown) of the final output, nested children.
- *   - terminal after a restart, run missing (or log-less) but the result
- *     carries `details.sessionPath`: a placeholder line while the
- *     sub-session jsonl is hydrated into a private log cache
+ *   - terminal (run in registry): the projected terminal card — when the
+ *     run's log is still live (the render raced the finish) it projects the
+ *     in-memory facts; once the run has finished its log is released and the
+ *     registry holds metadata only, so the card rebuilds the transcript from
+ *     the persisted sub-session file (hydration) exactly like the
+ *     post-restart case below.
+ *   - terminal after a restart (or any run whose registry log is empty — a
+ *     finished run, or one rebuilt by the history scanner): the terminal
+ *     projection needs a fact source, so the
+ *     card hydrates the run's log from the sub-session jsonl
  *     (`../hydrate.ts` — deliberately NOT the registry, so restored
- *     finished runs never enter the fleet), then the same terminal
- *     projection over the hydrated log once `invalidate()` repaints.
+ *     finished runs never enter the fleet), showing a placeholder line while
+ *     the file parses and the terminal projection over the hydrated log once
+ *     `invalidate()` repaints.
  *   - fallback (no run, no pointer, or an early partial render before the
  *     driver registered the run): the streamed / delivered result text.
  *
@@ -407,14 +412,19 @@ export function renderCall(
  *
  * The card is a lazy projection over the run's fact log: the component it
  * returns runs `projectCard` inside `render(width)` (see `ProjectedCard`),
- * looking the run up by the render context's `toolCallId`.  A terminal
- * render for a run the registry does not have (post-restart restore) — or
- * one the history scanner rebuilt with an empty log — hydrates the log
- * from the terminal result's `details.sessionPath` (see `../hydrate.ts`):
- * a placeholder renders while the sub-session jsonl parses
- * asynchronously, then `context.invalidate()` repaints with the full
- * terminal card.  Without any log source the card falls back to the
- * streamed / delivered text.
+ * looking the run up by the render context's `toolCallId`.  An empty
+ * registry log on a terminal run — one finished live (the registry
+ * releases its log at finish — see `src/core/subagent/registry.ts`), one
+ * the history scanner rebuilt with metadata only, or one the registry
+ * does not have (post-restart restore) — hydrates the log
+ * from the sub-session file (see `../hydrate.ts`), pointed to by the
+ * run's metadata or the terminal result's `details.sessionPath`: a
+ * placeholder renders while the jsonl parses asynchronously, then
+ * `context.invalidate()` repaints with the full terminal card.  A
+ * partial render racing the finish takes the same path — the run is
+ * already terminal, so the persisted file is final and the empty
+ * "(no output)" projection never flashes.  Without any log source the
+ * card falls back to the streamed / delivered text.
  *
  * Title ownership: the RUNNING projection emits no title line (the
  * stacked `renderCall` owns it); only the terminal projection carries the
@@ -463,18 +473,25 @@ export function renderResult(
   // shared state; the live lookup prefers the run itself).
   if (run?.model !== undefined) state.model = run.model;
 
-  // Registry hit: project the run's log.  A terminal run with an empty
-  // log is the restored-scanner case (the history scanner rebuilds runs
-  // without facts) — hydration below upgrades it; until a hydrated log
-  // exists the empty terminal projection (title + "(no output)") renders.
-  const sessionPath = result.details?.sessionPath;
-  const canHydrate =
-    toolCallId.length > 0 &&
-    !isPartial &&
-    typeof sessionPath === "string" &&
-    sessionPath.length > 0;
+  // Registry hit: project the run's log.  A terminal run with an empty log
+  // is the finished-run contract (the registry releases a run's log at
+  // finish) and the restored-scanner case alike (the history scanner
+  // rebuilds runs without facts).  Hydration upgrades it — on a terminal
+  // render and on a partial render racing the finish alike: the persisted
+  // sub-session file is final once the run is terminal, so a placeholder
+  // shows until the hydrated log settles, never the empty "(no output)"
+  // projection.
   if (run !== undefined) {
+    // The sub-session file pointer: the run's metadata first (it survives
+    // the finish by design), the terminal result's `details` as the
+    // fallback for a render that raced the driver's `sessionPath` patch.
+    const sessionPath = run.sessionPath ?? result.details?.sessionPath;
     const emptyTerminal = !active && run.log.facts().length === 0;
+    const canHydrate =
+      toolCallId.length > 0 &&
+      run.status !== "running" &&
+      typeof sessionPath === "string" &&
+      sessionPath.length > 0;
     if (emptyTerminal && canHydrate) {
       const hydration = hydrationState(toolCallId);
       if (hydration.kind === "ready") {
@@ -515,7 +532,15 @@ export function renderResult(
   // has not rebuilt it either): hydrate the log from the terminal
   // result's sub-session pointer.  The hydrated log lives in a private
   // cache keyed by tool-call id and is NEVER registered — the fleet must
-  // not suddenly list restored finished runs.
+  // not suddenly list restored finished runs.  Partial renders never
+  // hydrate here: the terminal result's `details` is the only pointer, and
+  // a content-free partial repaint projects the streamed text instead.
+  const sessionPath = result.details?.sessionPath;
+  const canHydrate =
+    toolCallId.length > 0 &&
+    !isPartial &&
+    typeof sessionPath === "string" &&
+    sessionPath.length > 0;
   if (canHydrate) {
     const hydration = hydrationState(toolCallId);
     if (hydration.kind === "ready") {
