@@ -86,7 +86,7 @@ ZooKeeper/
 │   ├── registry.ts          # 单元注册表 — 唯一有序的加载单元名单（单一事实来源）
 │   ├── opencode.ts          # OpenCode 扩展入口 + 底盘（profile 驱动的注册由 compose-opencode 组装）
 │   ├── compose-opencode.ts  # OpenCode 事件键适配器（组装 ComposedResult → hook 注册；统一 COMMAND_HANDLED 哨兵）
-│   ├── compose-pi.ts        # pi 事件键适配器（组装 ComposedResult → tool_result/context handler）
+│   ├── compose-pi.ts        # pi 事件键适配器（组装 ComposedResult → tool_result/context handler + 工具注册边界的委派门包装）
 │   ├── pi.ts                # pi 扩展入口（compose 驱动：注册 before_agent_start / resources_discover / tool_result / context 四事件）
 │   ├── core/                # 框架无关纯逻辑（零 OpenCode 依赖）
 │   │   ├── compose.ts       # 选择引擎（composeProfile：profile → 启用单元实例化 → ComposedResult）
@@ -159,7 +159,7 @@ ZooKeeper/
 - **`src/pi.ts`** — pi 扩展入口，通过 `~/.pi/agent/settings.json` 的 `extensions` 数组被 pi 加载；compose 驱动，把全量 REGISTRY 交给 `composeProfile`（tool/command 单元实例化但槽位不被消费）：注册 `before_agent_start`（prepend 组合后的 agent prompt 到 systemPrompt）、`resources_discover`（贡献 `core/skills` 子目录）、`tool_result`（跑 profile.hooks 的 afterExec 贡献）与 `context`（跑 transform 贡献，写回裁剪后的消息视图）四事件；deps 适配：`client: {}`（pruning transform 照常运行，dedup 通知因无 session prompt API 短路）、`directory: process.cwd()`、dolphin-enabled profile 时 `sessionAgentMap` 恒解析 "dolphin"（pi 会话即编排器）；null profile 四事件全部失效（fail-closed，与 OpenCode 对齐）；用 `realpathSync` 跟随路径确保 `../config.toml` 与 `../core/skills` 解析正确；config.toml 经 `vendor/smol-toml` 的 `parse` 解析（pi 的 Node/jiti 运行时无法 import .toml）
 - **`src/registry.ts`** — 单元注册表，唯一有序的加载单元名单（单一事实来源），`composeProfile` 按此数组顺序实例化启用单元
 - **`src/compose-opencode.ts`** — OpenCode 事件键适配器：把 `ComposedResult` 组装成 hook 注册（config / tool / command / 三个 handler 槽位），统一抛出 `COMMAND_HANDLED` 哨兵短路已处理的斜杠命令
-- **`src/compose-pi.ts`** — pi 事件键适配器：唯一理解 pi 事件键的模块，把 `ComposedResult` 组装成 `buildPiToolResultHandler(afterExec)`（tool_result handler：文本增量追加）与 `buildPiContextHandler(transform)`（context handler：消息转换，写回裁剪后的视图）
+- **`src/compose-pi.ts`** — pi 事件键适配器：唯一理解 pi 事件键的模块，把 `ComposedResult` 组装成 `buildPiToolResultHandler(afterExec)`（tool_result handler：文本增量追加）、`buildPiContextHandler(transform)`（context handler：消息转换，写回裁剪后的视图）与 `wrapToolsWithDelegationGate`（工具注册边界的委派门包装：在 subagent 工具注册时包装其 execute，refusal 返回 reason 文本，工具本身零策略感知）
 - **`src/core/`** — 框架无关纯逻辑模块，零 OpenCode 依赖，可被任何 TS 运行时 import；含选择引擎 `compose.ts`（`composeProfile`）、槽位词汇 `slots.ts`
 - **`src/agents/<name>.ts`** — 各 agent 的 prompt 常量 + agent 单元（unit 描述符），按 `{agent-name}.ts` 命名
 - **`src/agents/parts.ts`** — 共享 prompt 片段常量（`DELEGATION_FORMAT_TEXT`、`TASK_PROMPT_HINT`）

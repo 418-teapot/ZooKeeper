@@ -2,9 +2,8 @@
  * Tests for the subagent delegation tool unit (`src/tools/subagent.ts`).
  *
  * Covers the full delegation flow of the contributed tool's `execute`:
- * resolving the CALLER identity, allowlist judgment (a blocked delegation
- * returns a reason text and never throws), capability-set computation for
- * the TARGET agent (baseline minus the target's config.toml tool-level
+ * resolving the CALLER identity, capability-set computation for the
+ * TARGET agent (baseline minus the target's config.toml tool-level
  * denies, fail-closed on a missing baseline), the `runSubagent` request
  * shape (agent / task / tools / parentSession), the `SubagentResult`
  * → tool-text mapping (ok → text verbatim; failure variants → text plus a
@@ -12,11 +11,17 @@
  * update / finish with the forwarded tool-call id and the nested
  * parent-session pointer).  Also covers the fail-closed registration gate:
  * with no `subagentDriver` in deps the unit contributes zero tools.
+ *
+ * The tool contains no delegation policy and no prompt-formatting policy —
+ * the composed delegation gate and the task-prompt format hint are both
+ * enforced at the host registration boundary (see `src/compose-pi.test.ts`
+ * and the compose-opencode `tool.definition` tests), so no gate or hint
+ * cases appear here.
  */
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { ToolHost } from "../core/client/tool-host.js";
-import type { Deps } from "../core/slots.js";
+import type { ActiveSet, Deps } from "../core/slots.js";
 import type {
   SubagentDriver,
   SubagentProgress,
@@ -107,18 +112,23 @@ function makeDeps(overrides: Partial<Deps> = {}): Deps {
   };
 }
 
-/** The contributed subagent tool for a set of deps. */
-function tool(deps: Deps) {
-  const contributions = unit.create(deps, {
+/** The contributed subagent tool for a set of deps and an active set. */
+function tool(deps: Deps, activeSet: ActiveSet = emptyActiveSet()) {
+  const contributions = unit.create(deps, activeSet);
+  assert.equal(contributions.kind, "tool");
+  assert.equal(contributions.tools.length, 1, "exactly one tool contributed");
+  return contributions.tools[0];
+}
+
+/** A default (all-empty) active enablement set. */
+function emptyActiveSet(): ActiveSet {
+  return {
     agents: new Set(),
     skills: new Set(),
     hooks: new Set(),
     tools: new Set(),
     commands: new Set(),
-  });
-  assert.equal(contributions.kind, "tool");
-  assert.equal(contributions.tools.length, 1, "exactly one tool contributed");
-  return contributions.tools[0];
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -505,41 +515,6 @@ describe("subagent tool execute — successful delegation", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Allowlist rejection
-// ---------------------------------------------------------------------------
-
-describe("subagent tool execute — allowlist rejection", () => {
-  it("beaver → eagle is rejected with a reason text and the driver never runs", async () => {
-    const { driver, calls } = fakeDriver({ kind: "ok", text: "done" });
-    setPrimary("beaver");
-
-    const t = tool(makeDeps({ subagentDriver: driver }));
-
-    const result = await t.execute(
-      { agent: "eagle", description: "查找缺陷", prompt: "Find the bug" },
-      TOOL_CTX,
-    );
-
-    // A blocked delegation must return a tool-level text explaining WHY,
-    // never throw and never invoke the driver.
-    assert.equal(
-      calls.length,
-      0,
-      "driver must not run for a blocked delegation",
-    );
-    assert.ok(
-      result.includes("can only delegate to"),
-      `reason missing: ${result}`,
-    );
-    assert.ok(result.includes("not allowed"), `reason missing: ${result}`);
-    assert.ok(
-      result.includes("eagle"),
-      `reason must name the target: ${result}`,
-    );
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Target-role guard (fail-closed on non-subagent targets)
 // ---------------------------------------------------------------------------
 
@@ -621,7 +596,7 @@ describe("subagent tool execute — target-role guard", () => {
     );
   });
 
-  it("logs a delegation_blocked warn entry for a rejected target", async () => {
+  it("logs a target_role_blocked warn entry for a rejected target", async () => {
     const { driver } = fakeDriver({ kind: "ok", text: "done" });
     setPrimary("dolphin");
 
@@ -638,9 +613,9 @@ describe("subagent tool execute — target-role guard", () => {
     );
 
     const blocked = _getBufferForTesting().filter(
-      (e) => e.event === "delegation_blocked",
+      (e) => e.event === "target_role_blocked",
     );
-    assert.equal(blocked.length, 1, "one delegation_blocked entry expected");
+    assert.equal(blocked.length, 1, "one target_role_blocked entry expected");
     assert.equal(blocked[0].target, "mola");
     assert.equal(blocked[0].reason, "not-a-subagent");
     assert.equal(blocked[0].level, "warn");

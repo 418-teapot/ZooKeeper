@@ -63,13 +63,14 @@ function makeUnits(): { units: UnitDescriptor[]; calls: string[] } {
       calls.push("task-prompt");
       return {
         kind: "hook",
-        beforeExec: [{ name: "validateBeforeExec", handle: async () => {} }],
+        beforeExec: [],
         afterExec: [{ name: "nudgeTaskOutput", handle: async () => {} }],
         transform: [],
         textComplete: [],
         toolDefinition: [
           { name: "enhanceTaskDefinition", handle: async () => {} },
         ],
+        delegation: [{ name: "judgeTaskPrompt", judge: () => null }],
       };
     }),
     mockUnit("context-pruning", "hook", () => {
@@ -81,6 +82,7 @@ function makeUnits(): { units: UnitDescriptor[]; calls: string[] } {
         transform: [{ name: "contextPruning", handle: async () => {} }],
         textComplete: [],
         toolDefinition: [],
+        delegation: [],
       };
     }),
     mockUnit("compress", "tool", () => {
@@ -227,7 +229,7 @@ describe("composeProfile — full profile", () => {
     ]);
     assert.deepEqual(
       result.beforeExec.map((h) => h.name),
-      ["validateBeforeExec"],
+      [],
     );
     assert.deepEqual(
       result.afterExec.map((h) => h.name),
@@ -242,8 +244,62 @@ describe("composeProfile — full profile", () => {
       result.toolDefinition.map((h) => h.name),
       ["enhanceTaskDefinition"],
     );
+    assert.ok(
+      result.gate !== null,
+      "delegation judges must compose into a gate",
+    );
+    assert.equal(
+      result.gate?.({ caller: "beaver", target: "kiwi", prompt: "x" }),
+      null,
+      "allow-all mock judges let the delegation pass",
+    );
+    // The mock task-prompt judge declares no caller need, so the
+    // composition must not ask the host for the caller.
+    assert.equal(result.gateNeedsCaller, false);
     assert.deepEqual(Object.keys(result.tools), ["compress", "decompress"]);
     assert.deepEqual(Object.keys(result.commands), ["go", "dcp"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gateNeedsCaller aggregation
+// ---------------------------------------------------------------------------
+
+describe("composeProfile — gateNeedsCaller aggregation", () => {
+  it("is false when no enabled judge needs the caller", () => {
+    const { units } = makeUnits();
+    const result = composeProfile(ALL_UNITS_PROFILE, units, DEPS);
+    assert.equal(result.gateNeedsCaller, false);
+  });
+
+  it("is true when any enabled judge needs the caller", () => {
+    const unit = mockUnit("task-delegation", "hook", () => ({
+      kind: "hook",
+      beforeExec: [],
+      afterExec: [],
+      transform: [],
+      textComplete: [],
+      toolDefinition: [],
+      delegation: [
+        { name: "judgeDelegationTarget", needsCaller: true, judge: () => null },
+      ],
+    }));
+    const profile: ModeProfile = {
+      name: "td",
+      agents: [],
+      skills: [],
+      hooks: ["task-delegation"],
+      tools: [],
+      commands: [],
+    };
+    const result = composeProfile(profile, [unit], DEPS);
+    assert.equal(result.gateNeedsCaller, true);
+  });
+
+  it("is false for a null profile", () => {
+    const { units } = makeUnits();
+    const result = composeProfile(null, units, DEPS);
+    assert.equal(result.gateNeedsCaller, false);
   });
 });
 
@@ -266,6 +322,8 @@ describe("composeProfile — null profile", () => {
       toolDefinition: [],
       tools: {},
       commands: {},
+      gate: null,
+      gateNeedsCaller: false,
     });
   });
 });
@@ -335,6 +393,8 @@ describe("composeProfile — empty category lists", () => {
       toolDefinition: [],
       tools: {},
       commands: {},
+      gate: null,
+      gateNeedsCaller: false,
     });
   });
 });
@@ -402,6 +462,7 @@ describe("composeProfile — active set", () => {
         transform: [],
         textComplete: [],
         toolDefinition: [],
+        delegation: [],
       };
     });
     composeProfile(ALL_UNITS_PROFILE, [unit], DEPS);

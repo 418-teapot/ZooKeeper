@@ -1,17 +1,19 @@
 /**
- * Tests for the ZooKeeper OpenCode plugin's task prompt validation logic.
+ * Tests for the ZooKeeper plugin's task prompt validation judge.
  *
  * These tests cover `validateTaskPrompt()` — the core function used by the
- * `tool.execute.before` hook to verify dolphin agent `task()` prompt format.
+ * task-prompt delegation judge to verify task() prompt format — plus the
+ * judge wrapper (`judgeTaskPrompt`) and the tool-definition / output-nudge
+ * handlers that were part of the same hook unit.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   enhanceTaskDefinition,
+  judgeTaskPrompt,
   nudgeTaskOutput,
   TASK_PROMPT_HINT,
   type ValidationLimits,
-  validateBeforeExec,
   validateTaskPrompt,
 } from "./index.js";
 
@@ -496,161 +498,137 @@ describe("edge cases", () => {
 });
 
 // ---------------------------------------------------------------------------
-// tool.definition hook (enhanceTaskDefinition)
+// tool.definition enhancement (enhanceTaskDefinition)
 // ---------------------------------------------------------------------------
 
-describe("tool.definition hook", () => {
-  it("appends hint to prompt parameter description when toolID is subagent", () => {
-    const output = {
+describe("tool.definition enhancement", () => {
+  it("appends hint to the prompt argument description when the tool is subagent", () => {
+    const view = {
+      name: "subagent",
       description: "Run a task for the dolphin agent",
-      parameters: {
-        type: "object",
-        properties: {
-          prompt: {
-            description: "The task prompt",
-            type: "string",
-          },
+      args: {
+        prompt: {
+          description: "The task prompt",
+          type: "string",
         },
       },
     };
-    enhanceTaskDefinition({ toolID: "subagent" }, output);
+    enhanceTaskDefinition(view);
     assert.equal(
-      output.parameters.properties.prompt.description,
+      view.args.prompt.description,
       `The task prompt\n\n${TASK_PROMPT_HINT}`,
     );
   });
 
-  it("does NOT modify other tools (e.g. toolID is grep)", () => {
-    const output = {
+  it("does NOT modify other tools (e.g. the tool named grep)", () => {
+    const view = {
+      name: "grep",
       description: "Search file contents",
-      parameters: {
-        type: "object",
-        properties: {
-          pattern: {
-            description: "Search pattern",
-            type: "string",
-          },
+      args: {
+        pattern: {
+          description: "Search pattern",
+          type: "string",
         },
       },
     };
     // Capture a snapshot before
-    const originalDesc = output.parameters.properties.pattern.description;
-    enhanceTaskDefinition({ toolID: "grep" }, output);
+    const originalDesc = view.args.pattern.description;
+    enhanceTaskDefinition(view);
     // Should remain unchanged
-    assert.equal(
-      output.parameters.properties.pattern.description,
-      originalDesc,
-    );
+    assert.equal(view.args.pattern.description, originalDesc);
   });
 
-  it("handles missing parameters gracefully", () => {
-    const output = {
+  it("handles a view without args gracefully", () => {
+    const view = {
+      name: "subagent",
       description: "Run a task",
-      // No parameters at all
-    } as any;
+      // No args at all
+    };
     // Should not throw
-    enhanceTaskDefinition({ toolID: "subagent" }, output);
-    // Output remains as-is
-    assert.equal(output.description, "Run a task");
+    enhanceTaskDefinition(view);
+    // View remains as-is
+    assert.equal(view.description, "Run a task");
   });
 
-  it("handles missing prompt property gracefully", () => {
-    const output = {
+  it("handles a missing prompt argument gracefully", () => {
+    const view = {
+      name: "subagent",
       description: "Run a task",
-      parameters: {
-        type: "object",
-        properties: {
-          // No 'prompt' property
-          pattern: {
-            description: "Some other param",
-            type: "string",
-          },
+      args: {
+        // No 'prompt' argument
+        pattern: {
+          description: "Some other param",
+          type: "string",
         },
       },
     };
     // Should not throw
-    enhanceTaskDefinition({ toolID: "subagent" }, output);
-    assert.equal(output.description, "Run a task");
+    enhanceTaskDefinition(view);
+    assert.equal(view.description, "Run a task");
   });
 
   it("preserves existing description text (appends, doesn't replace)", () => {
     const existingDesc = "Original prompt description text";
-    const output = {
+    const view = {
+      name: "subagent",
       description: "Run a task",
-      parameters: {
-        type: "object",
-        properties: {
-          prompt: {
-            description: existingDesc,
-            type: "string",
-          },
+      args: {
+        prompt: {
+          description: existingDesc,
+          type: "string",
         },
       },
     };
-    enhanceTaskDefinition({ toolID: "subagent" }, output);
+    enhanceTaskDefinition(view);
     // Existing text should be preserved, hint appended after double newline
-    assert.ok(
-      output.parameters.properties.prompt.description.startsWith(existingDesc),
-    );
-    assert.ok(
-      output.parameters.properties.prompt.description.includes(
-        TASK_PROMPT_HINT,
-      ),
-    );
+    assert.ok(view.args.prompt.description.startsWith(existingDesc));
+    assert.ok(view.args.prompt.description.includes(TASK_PROMPT_HINT));
     assert.equal(
-      output.parameters.properties.prompt.description,
+      view.args.prompt.description,
       `${existingDesc}\n\n${TASK_PROMPT_HINT}`,
     );
   });
 });
 
 // ---------------------------------------------------------------------------
-// tool.execute.before hook (validateBeforeExec)
+// task-prompt delegation judge (judgeTaskPrompt)
 // ---------------------------------------------------------------------------
 
-describe("tool.execute.before hook", () => {
-  it("valid prompt passes without throwing", () => {
-    const prompt = validPrompt();
-    validateBeforeExec(
-      { tool: "subagent", sessionID: "s1", callID: "c1" },
-      { args: { prompt } },
+describe("judgeTaskPrompt", () => {
+  it("valid prompt allows (returns null)", () => {
+    const refusal = judgeTaskPrompt(
+      { caller: "dolphin", target: "beaver", prompt: validPrompt() },
       limits,
     );
-    // No throw means success
+    assert.equal(refusal, null);
   });
 
-  it("invalid prompt throws with format error", async () => {
-    const prompt = "Some random text without any sections";
-    await assert.rejects(
-      async () =>
-        validateBeforeExec(
-          { tool: "subagent", sessionID: "s1", callID: "c1" },
-          { args: { prompt } },
-          limits,
-        ),
-      (err: unknown) => {
-        assert.ok(err instanceof Error);
-        const e = err as Error;
-        assert.ok(e.message.includes("Task prompt format error"));
-        assert.ok(e.message.includes("SUMMARY"));
-        assert.ok(e.message.includes("CONTEXT"));
-        assert.ok(e.message.includes("ACCEPTANCE"));
-        assert.ok(e.message.includes("Required format"));
-        return true;
+  it("invalid prompt refuses with the format error text", () => {
+    const refusal = judgeTaskPrompt(
+      {
+        caller: "dolphin",
+        target: "beaver",
+        prompt: "Some random text without any sections",
       },
+      limits,
     );
+    assert.ok(refusal !== null);
+    assert.ok(refusal.reason.includes("Task prompt format error"));
+    assert.ok(refusal.reason.includes("SUMMARY"));
+    assert.ok(refusal.reason.includes("CONTEXT"));
+    assert.ok(refusal.reason.includes("ACCEPTANCE"));
+    assert.ok(refusal.reason.includes("Required format"));
   });
 
-  it("does not throw on CONTEXT too long — nudge delivered via tool.execute.after", () => {
+  it("does not refuse on CONTEXT too long — soft warnings go to the nudge", () => {
     const longContext = "word ".repeat(201).trim();
     const prompt = validPrompt({ context: longContext });
-    // Must not throw — structural check passes, warnings are soft
-    validateBeforeExec(
-      { tool: "subagent", sessionID: "s1", callID: "c1" },
-      { args: { prompt } },
+    const refusal = judgeTaskPrompt(
+      { caller: "dolphin", target: "beaver", prompt },
       limits,
     );
-    // Now verify the nudge is appended via nudgeTaskOutput
+    assert.equal(refusal, null);
+    // The nudge is delivered via nudgeTaskOutput (after-exec).
     const afterOutput: { output?: string } = {
       output: "Task completed successfully",
     };
@@ -663,17 +641,15 @@ describe("tool.execute.before hook", () => {
     assert.ok(afterOutput.output?.includes("201 words"));
   });
 
-  it("does not throw on line references — nudge delivered via tool.execute.after", () => {
+  it("does not refuse on line references — soft warnings go to the nudge", () => {
     const prompt = validPrompt({
       context: "The bug is at src/db.py line 42. Fix it.",
     });
-    // Must not throw — structural check passes, warnings are soft
-    validateBeforeExec(
-      { tool: "subagent", sessionID: "s1", callID: "c1" },
-      { args: { prompt } },
+    const refusal = judgeTaskPrompt(
+      { caller: "dolphin", target: "beaver", prompt },
       limits,
     );
-    // Now verify the nudge is appended via nudgeTaskOutput
+    assert.equal(refusal, null);
     const afterOutput: { output?: string } = {
       output: "Task completed successfully",
     };
@@ -686,50 +662,22 @@ describe("tool.execute.before hook", () => {
     assert.ok(afterOutput.output?.includes("line references"));
   });
 
-  it("non-subagent tools are skipped", () => {
-    // Even with an invalid prompt, non-subagent tools must not validate
-    validateBeforeExec(
-      { tool: "grep", sessionID: "s1", callID: "c1" },
-      { args: { prompt: "no sections at all here" } },
+  it("allows when the prompt is missing (skip semantics)", () => {
+    const refusal = judgeTaskPrompt(
+      { caller: "dolphin", target: "beaver", prompt: undefined },
       limits,
     );
-    // No throw means success
+    assert.equal(refusal, null);
   });
 
-  it("missing args handled gracefully", () => {
-    validateBeforeExec(
-      { tool: "subagent", sessionID: "s1", callID: "c1" },
-      {}, // no args at all
+  it("rejects an empty prompt string (empty string is still validated)", () => {
+    const refusal = judgeTaskPrompt(
+      { caller: "dolphin", target: "beaver", prompt: "" as never },
       limits,
     );
-    // No throw means success
-  });
-
-  it("missing prompt in args handled gracefully", () => {
-    validateBeforeExec(
-      { tool: "subagent", sessionID: "s1", callID: "c1" },
-      { args: { someOtherField: "value" } },
-      limits,
-    );
-    // No throw means success
-  });
-
-  it("non-string prompt handled gracefully", () => {
-    validateBeforeExec(
-      { tool: "subagent", sessionID: "s1", callID: "c1" },
-      { args: { prompt: 123 } },
-      limits,
-    );
-    // No throw means success
-  });
-
-  it("null prompt handled gracefully", () => {
-    validateBeforeExec(
-      { tool: "subagent", sessionID: "s1", callID: "c1" },
-      { args: { prompt: null } },
-      limits,
-    );
-    // No throw means success
+    // Empty string is still a string — the gate boundary converts a
+    // non-string argument to `undefined` before the judge runs.
+    assert.ok(refusal !== null);
   });
 });
 

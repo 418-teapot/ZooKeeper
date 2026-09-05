@@ -1,53 +1,39 @@
 /**
- * Task delegation validation hook for ZooKeeper OpenCode plugin.
+ * Task delegation judge for the ZooKeeper plugin.
  *
- * Provides the hook-level adapter that reads the calling agent identity
- * from the session and validates the delegation target against the
- * allowlist defined in `src/core/delegation.ts`.
+ * The delegation-target strategy, contributed by the task-delegation
+ * hook unit as a judge: given the calling agent and the target subagent
+ * type, it consults the allowlist in `src/core/delegation.ts` and
+ * returns a refusal when the caller may not delegate to the target.
+ * The judge is pure — caller resolution and tool filtering happen at
+ * the consuming host's gate boundary (OpenCode resolves the caller from
+ * the session; pi passes the identity-resolved caller directly).
  *
  * @module
  */
 
-import { type Clientish, getAgentName } from "../../core/client/agent.js";
 import { isDelegationAllowed } from "../../core/delegation.js";
-import { log } from "../../utils/logger.js";
-
-// ---------------------------------------------------------------------------
-// Handler — wired by the plugin entry point
-// ---------------------------------------------------------------------------
+import type { DelegationRefusal, DelegationRequest } from "../../core/gate.js";
 
 /**
- * Validate that the calling agent is permitted to delegate to the target
- * subagent type. Throws a blocking error when the delegation is forbidden.
+ * Judge a delegation request against the allowlist.
  *
- * Relies on `getAgentName` to resolve the calling agent from the session,
- * then consults the static allowlist in `isDelegationAllowed`.
+ * Returns a refusal when the caller may not delegate to the target,
+ * carrying the allowlist's reason unchanged; `null` otherwise.  A
+ * missing caller (could not be resolved from the session) or a missing
+ * target (the `subagent_type` argument was not a string) skips the
+ * judgment and allows — the original boundary semantics.
  *
- * @param client - Framework client providing session lookup.
- * @param input - Hook input containing the tool name and session ID.
- * @param output - Hook output object with the tool call arguments.
- * @throws Error if the delegation target is not allowlisted for the caller.
+ * @param req - The delegation request being judged.
+ * @returns The refusal, or `null` to allow (or skip).
  */
-export async function validateDelegationTarget(
-  client: Clientish | null | undefined,
-  input: { tool: string; sessionID?: string; callID?: string },
-  output: { args?: Record<string, unknown> },
-): Promise<void> {
-  if (input.tool !== "subagent") return;
-  if (!input.sessionID) return;
-
-  const agent = await getAgentName(client, input.sessionID);
-  if (!agent) return;
-
-  const subagentType = output.args?.subagent_type;
-  if (typeof subagentType !== "string") return;
-
-  const result = isDelegationAllowed(agent, subagentType);
+export function judgeDelegationTarget(
+  req: DelegationRequest,
+): DelegationRefusal | null {
+  if (!req.caller || !req.target) return null;
+  const result = isDelegationAllowed(req.caller, req.target);
   if (!result.allowed) {
-    log("task-delegation", "blocked", input.sessionID, input.callID, "warn", {
-      caller: agent,
-      target: subagentType,
-    });
-    throw new Error(result.reason);
+    return { reason: result.reason ?? "委派被拒绝。" };
   }
+  return null;
 }

@@ -13,25 +13,33 @@
  * deps.  A host without a driver (OpenCode, which keeps its native `task`
  * tool) gets zero tools — the tool never registers there (fail-closed).
  *
+ * The tool contains no delegation policy and no prompt-formatting policy:
+ * the composed delegation gate (contributed by hook-unit judges) is
+ * applied at the tool registration boundary by the pi adapter
+ * (`wrapToolsWithDelegationGate` in `src/compose-pi.ts`), and the
+ * task-prompt format hint (when the task-prompt hook unit is enabled) is
+ * appended to the `prompt` argument's description by the composed
+ * `tool.definition` contributions at each host's definition boundary
+ * (compose-opencode's `tool.definition` event / compose-pi's
+ * `applyToolDefinitionContributions`) — none of it ever reaches this
+ * file, so the tool definition here is the plain, policy-free shape.
+ *
  * Each execution:
  * 1. Resolves the CALLER identity through the identity core
  *    (`resolveIdentity` — the active primary outside a sub-session scope, a
  *    bound subagent identity inside one).
- * 2. Judges the delegation against the static allowlist
- *    (`isDelegationAllowed`); a blocked delegation returns a tool-level
- *    text explaining WHY (never throws, never runs the driver).
- * 3. Fails closed on the TARGET role: only agents declared
+ * 2. Fails closed on the TARGET role: only agents declared
  *    `mode = "subagent"` in the parsed config are valid delegation
  *    targets.  A missing modes map, a target absent from it, or a target
  *    declared with another mode returns a tool-level text explaining WHY
  *    (never throws, never runs the driver).
- * 4. Computes the TARGET agent's capability set as `baseline − deniedTools`
+ * 3. Computes the TARGET agent's capability set as `baseline − deniedTools`
  *    via `computeCapabilitySet`, where the baseline is the host's full
  *    untrimmed tool list (`deps.subagentBaseline`) and the denies come from
  *    the target's parsed `[agent.<name>].permission` tool-level denies.
  *    A missing baseline yields an empty set — permissions are never
  *    invented (fail-closed).
- * 5. Hands the run's append-only fact log to the driver so every observed
+ * 4. Hands the run's append-only fact log to the driver so every observed
  *    fact is recorded there, patches the driver's progress reports' fields
  *    (current tool, token total, model, child session, session path) onto
  *    the registry run, repaints the host's live card with a content-free
@@ -39,20 +47,19 @@
  *    result; the card body projects the run's log), and drives the
  *    lifecycle orchestration (`runSubagent`), forwarding the parent abort
  *    signal when the tool context carries one.
- * 6. Resolves the sub-session model (strict mode): `deps.subagentModels`
+ * 5. Resolves the sub-session model (strict mode): `deps.subagentModels`
  *    (agents.json, whose mapped values are `"provider/model"` strings) is
  *    the SOLE source.  A missing entry for the target
  *    fails closed with an actionable Chinese error and never runs the
  *    driver — there is no inheritance from the parent model and no
  *    default fallback.
- * 7. Maps the run outcome onto the tool's text return: an `ok` result is
+ * 6. Maps the run outcome onto the tool's text return: an `ok` result is
  *    the subagent text verbatim; every failure variant (`aborted`,
  *    `error`) returns the partial text plus a short Chinese reason line.
  *
  * @module
  */
 
-import { isDelegationAllowed } from "../core/delegation.js";
 import { computeCapabilitySet } from "../core/permissions/capability.js";
 import type {
   Deps,
@@ -243,7 +250,7 @@ export function createSubagentTool(
       },
       prompt: {
         type: "string",
-        description: "交由子 agent 执行的完整任务说明。",
+        description: `交由子 agent 执行的完整任务说明。`,
       },
     },
     required: ["agent", "description", "prompt"],
@@ -267,26 +274,7 @@ export function createSubagentTool(
       }
       const caller = identity.name;
 
-      // 2. Allowlist judgment — a blocked delegation returns the reason as
-      // the tool text (never throws, never runs the driver).
-      const verdict = isDelegationAllowed(caller, input.agent);
-      if (!verdict.allowed) {
-        const sessionID = deps.toolHost?.resolveSessionId(toolCtx) ?? "";
-        log(
-          "subagent-tool",
-          "delegation_blocked",
-          sessionID,
-          undefined,
-          "warn",
-          {
-            caller,
-            target: input.agent,
-          },
-        );
-        return verdict.reason ?? "委派被拒绝。";
-      }
-
-      // 3. Target-role guard — only agents declared `mode = "subagent"`
+      // 2. Target-role guard — only agents declared `mode = "subagent"`
       // in the parsed config are valid delegation targets.  A missing
       // modes map, a target absent from it, or a target declared with
       // another mode (e.g. a primary) fails closed with an explanatory
@@ -297,7 +285,7 @@ export function createSubagentTool(
         const sessionID = deps.toolHost?.resolveSessionId(toolCtx) ?? "";
         log(
           "subagent-tool",
-          "delegation_blocked",
+          "target_role_blocked",
           sessionID,
           undefined,
           "warn",
@@ -310,7 +298,7 @@ export function createSubagentTool(
         return `"${input.agent}" 不是可委派的子 agent：仅在配置中声明 mode = "subagent" 的 agent 才能作为委派目标。`;
       }
 
-      // 4. Capability set for the TARGET agent: `baseline − deniedTools`.
+      // 3. Capability set for the TARGET agent: `baseline − deniedTools`.
       // A missing baseline yields an empty set (fail-closed — permissions
       // are never invented).
       const deniedTools = deps.agentPermissions?.[input.agent] ?? [];
@@ -319,7 +307,7 @@ export function createSubagentTool(
         deniedTools,
       });
 
-      // 5. Parent session id (for session lineage) and the abort signal.
+      // 4. Parent session id (for session lineage) and the abort signal.
       // The signal is taken from the host-forwarded execution context
       // (the pi bridge forwards the real tool signal there) when present,
       // falling back to the tool context's own `abort` field; otherwise a
@@ -339,7 +327,7 @@ export function createSubagentTool(
             ? toolCtxSignal
             : new AbortController().signal;
 
-      // 6. Model resolution for the sub-session (strict mode): the target's
+      // 5. Model resolution for the sub-session (strict mode): the target's
       //    `[agent.<name>].model` from agents.json (`deps.subagentModels`,
       //    materialised by the installer as a `{provider, model}` pair whose
       //    mapped value is the concatenated `"provider/model"` string — the
@@ -359,7 +347,7 @@ export function createSubagentTool(
       }
       const model = configuredModel;
 
-      // 7. Registry write — the pi bridge forwards the tool-call id via
+      // 6. Registry write — the pi bridge forwards the tool-call id via
       // `hostCtx.callId`, which doubles as the run id in the process-level
       // run registry (the fleet widget's source of truth).  A run without a
       // forwarded call id (OpenCode, test invocations that omit hostCtx) is
@@ -382,7 +370,7 @@ export function createSubagentTool(
         : undefined;
       if (runStarted) notifyRunChange();
 
-      // 8. Drive the delegation through the orchestration core.  The run's
+      // 7. Drive the delegation through the orchestration core.  The run's
       // progress reports are patched onto the registry run (see the
       // onProgress handler below) while the driver appends the full facts
       // to this run's log — the durable record views project from.
@@ -470,7 +458,7 @@ export function createSubagentTool(
         },
       );
 
-      // 9. Finish the registry run (terminal state, immutable thereafter).
+      // 8. Finish the registry run (terminal state, immutable thereafter).
       //    The session path (when any) was already patched onto the run via
       //    `updateRun` on the first progress report, so finish only sets
       //    the terminal status and outcome fields.
@@ -501,7 +489,7 @@ export function createSubagentTool(
         },
       );
 
-      // 10. Map the outcome onto the tool text.
+      // 9. Map the outcome onto the tool text.
       return formatSubagentResult(result);
     },
   };

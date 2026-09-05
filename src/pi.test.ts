@@ -283,9 +283,14 @@ describe("buildPiContributions — profile-driven selection", () => {
       composed.transform.map((h) => h.name),
       ["contextPruning"],
     );
-    assert.deepEqual(
-      composed.beforeExec.map((h) => h.name),
-      ["validateBeforeExec", "validateDelegationTarget"],
+    // The delegation strategy lives in the composed gate (judge slot),
+    // not in the beforeExec chain — the pi host consumes it inside the
+    // subagent tool's execute.
+    assert.deepEqual(composed.beforeExec, []);
+    assert.equal(
+      typeof composed.gate,
+      "function",
+      "composed gate must be a function when delegation judges are enabled",
     );
     // Tool/command units instantiate but pi never consumes their slots.
     assert.deepEqual(Object.keys(composed.tools).sort(), [
@@ -1160,6 +1165,80 @@ describe("buildPiHandlers — registerTool wiring", () => {
     // subagent transcript card draws from the structured progress details).
     assert.equal(typeof (subagent as any).renderCall, "function");
     assert.equal(typeof (subagent as any).renderResult, "function");
+  });
+
+  it("enforces the composed delegation gate at the registration boundary", async () => {
+    // The gate belongs to the path, not the mechanism: the composed gate
+    // (here the real allowlist judge from the task-delegation hook unit)
+    // wraps the registered subagent tool's execute — the tool itself
+    // never observes the policy.  A blocked delegation returns the reason
+    // text and the driver never runs.
+    const api = mockApi();
+    api.activeTools.push("bash", "edit", "subagent", "compress", "decompress");
+    let driverRuns = 0;
+    const driver: SubagentDriver = {
+      async run() {
+        driverRuns += 1;
+        return { kind: "ok", text: "done" };
+      },
+    };
+    buildPiHandlers(
+      {
+        mode: {
+          poly: {
+            ...POLY_PROFILE,
+            tools: ["subagent"],
+          },
+        },
+      },
+      api as any,
+      MODES_RAW,
+      { subagentDriver: driver },
+    );
+    const subagent = api.tools.find((tool: any) => tool.name === "subagent") as
+      | { execute: (...args: unknown[]) => Promise<unknown> }
+      | undefined;
+    assert.ok(subagent);
+
+    // Caller beaver may only delegate to lynx / spider — mola is blocked
+    // by the composed allowlist judge.  The task prompt is well-formed so
+    // the task-prompt judge (the other composed judge) lets it through
+    // and the allowlist judge is the one that refuses.
+    setPrimary("beaver");
+    const result = await subagent.execute(
+      "call-gate",
+      {
+        agent: "mola",
+        description: "实现任务",
+        prompt:
+          "**SUMMARY:** implement the thing.\n\n" +
+          "**CONTEXT:** all the facts needed.\n\n" +
+          "**ACCEPTANCE:** verify it.",
+      },
+      undefined,
+      undefined,
+      { sessionManager: { getSessionId: () => "sess-gate" } },
+    );
+    const wrapped = result as { content?: { type?: string; text?: string }[] };
+    const text = (wrapped.content ?? [])
+      .map((part) => (part.type === "text" ? (part.text ?? "") : ""))
+      .join("");
+    assert.equal(driverRuns, 0, "the driver must never run on a refusal");
+    assert.ok(
+      text.includes("can only delegate to"),
+      `allowlist reason missing: ${text}`,
+    );
+    assert.ok(text.includes("mola"), `reason must name the target: ${text}`);
+
+    // The refusal is a warn log entry naming the refusing judge.
+    const blocked = _getBufferForTesting().filter(
+      (e) =>
+        e.event === "delegation_blocked" && e.judge === "judgeDelegationTarget",
+    );
+    assert.equal(blocked.length, 1, "one allowlist refusal expected");
+    assert.equal(blocked[0].target, "mola");
+    assert.equal(blocked[0].caller, "beaver");
+    assert.equal(blocked[0].level, "warn");
   });
 
   it("forwards the pi signal through the bridge to the tool execute", async () => {

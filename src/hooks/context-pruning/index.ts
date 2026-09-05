@@ -47,6 +47,7 @@ export const unit: HookUnitDescriptor = {
         transform: [],
         textComplete: [],
         toolDefinition: [],
+        delegation: [],
       };
     }
     return {
@@ -69,6 +70,7 @@ export const unit: HookUnitDescriptor = {
       ],
       textComplete: [],
       toolDefinition: [],
+      delegation: [],
     };
   },
 };

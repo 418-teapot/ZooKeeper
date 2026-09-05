@@ -8,13 +8,16 @@
  *
  *  - `config` — agent prompt injection, skill registration, tool
  *    primary_tools append, and slash-command registration.
- *  - `tool.execute.before` — sequential handlers; exceptions propagate
- *    (cancel tool execution).
+ *  - `tool.execute.before` — sequential handlers, then the composed
+ *    delegation gate for subagent calls; exceptions propagate (cancel
+ *    tool execution).
  *  - `tool.execute.after` — per-handler error isolation (`runAfterHandlers`).
  *  - `experimental.chat.messages.transform` — sequential handlers.
  *  - `experimental.text.complete` — sequential handlers (text
  *    finalization, e.g. ref-echo stripping).
- *  - `tool.definition` — sequential enhancers (one contributor today).
+ *  - `tool.definition` — the raw OpenCode output is mapped onto the
+ *    host-neutral tool-definition view, enhancers run in order (one
+ *    contributor today), and the changed fields are written back.
  *  - `command.execute.before` — routes by `input.command`, then throws
  *    the unified `COMMAND_HANDLED` sentinel to short-circuit the flow.
  *  - `tool` — the enabled tool contributions keyed by tool name.
@@ -35,6 +38,7 @@ import { readdirSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createV1ToolHost } from "./adapters/opencode/tool-host.js";
+import { getAgentName } from "./core/client/agent.js";
 import type { ContextPruningConfig, ModeProfile } from "./core/config-types.js";
 import type {
   ActiveSet,
@@ -48,9 +52,9 @@ import type {
   Deps,
   TextCompleteInput,
   TextCompleteOutput,
+  ToolArgDefinition,
   ToolContribution,
-  ToolDefinitionInput,
-  ToolDefinitionOutput,
+  ToolDefinitionView,
   ToolUnitDescriptor,
   TransformOutput,
 } from "./core/slots.js";
@@ -309,6 +313,91 @@ export function normalizeToolName(name: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Tool-definition translation (OpenCode ↔ host-neutral view)
+// ---------------------------------------------------------------------------
+
+/** Raw `tool.definition` hook input handed by OpenCode. */
+interface OpenCodeToolDefinitionInput {
+  toolID: string;
+}
+
+/** Raw `tool.definition` hook output handed by OpenCode (mutated in place). */
+interface OpenCodeToolDefinitionOutput {
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+/**
+ * Map an OpenCode `tool.definition` output onto the host-neutral view.
+ *
+ * The per-argument schemas are referenced directly (not copied): a
+ * contributor's in-place `description` mutation lands on the native
+ * schema objects immediately, so `applyToolDefinitionView` only has to
+ * re-apply rebindings and a rewritten top-level description.
+ *
+ * @param name - The canonical (host-normalized) tool name.
+ * @param output - The raw OpenCode hook output.
+ * @returns The host-neutral tool-definition view.
+ */
+function toToolDefinitionView(
+  name: string,
+  output: OpenCodeToolDefinitionOutput,
+): ToolDefinitionView {
+  const args: Record<string, ToolArgDefinition> = {};
+  const parameters =
+    output.parameters && typeof output.parameters === "object"
+      ? (output.parameters as { properties?: unknown }).properties
+      : undefined;
+  if (parameters && typeof parameters === "object") {
+    for (const [key, value] of Object.entries(parameters)) {
+      if (value !== null && typeof value === "object") {
+        args[key] = value as ToolArgDefinition;
+      }
+    }
+  }
+  return { name, description: output.description, args };
+}
+
+/**
+ * Write the neutral view's changes back into the raw OpenCode output.
+ *
+ * Per-argument entries are live references to the native schema property
+ * objects, so in-place description mutations already landed; this pass
+ * re-applies rebindings (a contributor replacing an entry wholesale)
+ * and a rewritten top-level description.
+ *
+ * @param view - The (possibly mutated) host-neutral view.
+ * @param output - The raw OpenCode hook output.
+ */
+function applyToolDefinitionView(
+  view: ToolDefinitionView,
+  output: OpenCodeToolDefinitionOutput,
+): void {
+  if (
+    view.description !== undefined &&
+    view.description !== output.description
+  ) {
+    output.description = view.description;
+  }
+  const parameters =
+    output.parameters && typeof output.parameters === "object"
+      ? (output.parameters as { properties?: Record<string, unknown> })
+          .properties
+      : undefined;
+  if (parameters && typeof parameters === "object" && view.args !== undefined) {
+    for (const [key, arg] of Object.entries(view.args)) {
+      const property = parameters[key];
+      if (property !== null && typeof property === "object") {
+        const schema = property as { description?: unknown };
+        if (schema.description !== arg.description) {
+          schema.description = arg.description;
+        }
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Hook assembly
 // ---------------------------------------------------------------------------
 
@@ -394,23 +483,26 @@ export function assembleOpenCodeHooks(
     ...(composed.toolDefinition.length > 0
       ? {
           async "tool.definition"(
-            input: ToolDefinitionInput,
-            output: ToolDefinitionOutput,
+            input: OpenCodeToolDefinitionInput,
+            output: OpenCodeToolDefinitionOutput,
           ) {
-            const mapped: ToolDefinitionInput = {
-              ...input,
-              toolID: normalizeToolName(input.toolID),
-            };
+            const view = toToolDefinitionView(
+              normalizeToolName(input.toolID),
+              output,
+            );
             for (const handler of composed.toolDefinition) {
-              await handler.handle(mapped, output);
+              await handler.handle(view);
             }
+            applyToolDefinitionView(view, output);
           },
         }
       : {}),
 
-    // Present only when at least one before-exec hook unit is enabled.
+    // Present when at least one before-exec hook or one delegation
+    // judge is enabled.  The generic before-exec chain runs first;
+    // then the composed delegation gate judges every subagent call.
     // Exceptions propagate intentionally — they cancel tool execution.
-    ...(composed.beforeExec.length > 0
+    ...(composed.beforeExec.length > 0 || composed.gate !== null
       ? {
           async "tool.execute.before"(
             input: BeforeExecInput,
@@ -420,8 +512,51 @@ export function assembleOpenCodeHooks(
               ...input,
               tool: normalizeToolName(input.tool),
             };
+            // Generic before-exec chain.  No unit contributes a
+            // beforeExec handler today (all hook units keep the slot
+            // empty); the slot is reserved for future units that need
+            // to run before any tool call.  Event registration for the
+            // delegation gate below is driven by `composed.gate`, not
+            // by this chain.
             for (const handler of composed.beforeExec) {
               await handler.handle(mapped, output);
+            }
+            // Delegation gate — the strategy contributed by hook-unit
+            // judges runs only for the subagent tool.  Each judge
+            // handles its own field-absence skip, so the gate runs
+            // whenever the tool is subagent, regardless of whether the
+            // caller could be resolved.  The caller is resolved only
+            // when at least one judge needs it (an asynchronous session
+            // query otherwise skipped).
+            if (composed.gate !== null && mapped.tool === "subagent") {
+              const caller = composed.gateNeedsCaller
+                ? await getAgentName(deps.client, mapped.sessionID)
+                : undefined;
+              const target =
+                typeof output.args?.subagent_type === "string"
+                  ? output.args.subagent_type
+                  : undefined;
+              const prompt =
+                typeof output.args?.prompt === "string"
+                  ? output.args.prompt
+                  : undefined;
+              const refusal = composed.gate({ caller, target, prompt });
+              if (refusal !== null) {
+                log(
+                  "delegation",
+                  "gate_blocked",
+                  mapped.sessionID,
+                  mapped.callID,
+                  "warn",
+                  {
+                    caller: caller ?? null,
+                    target: target ?? null,
+                    judge: refusal.judge,
+                    reason: refusal.reason,
+                  },
+                );
+                throw new Error(refusal.reason);
+              }
             }
           },
         }

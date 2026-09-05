@@ -172,7 +172,7 @@ describe("poly full profile — registration parity", () => {
     assert.equal(typeof plugin.tool.decompress.execute, "function");
   });
 
-  it("tool.execute.before runs validateBeforeExec (blocking prompt error)", async () => {
+  it("tool.execute.before runs the gate prompt judge (blocking prompt error)", async () => {
     const plugin = await makePlugin();
     await assert.rejects(
       plugin["tool.execute.before"](
@@ -183,7 +183,7 @@ describe("poly full profile — registration parity", () => {
     );
   });
 
-  it("tool.execute.before runs validateDelegationTarget (blocked delegation)", async () => {
+  it("tool.execute.before runs the gate delegation judge (blocked delegation)", async () => {
     const client = { getSession: async () => ({ agent: "beaver" }) };
     const plugin = await makePlugin(POLY_ZOO, { client });
     await assert.rejects(
@@ -468,7 +468,7 @@ describe("event-key composition by enabled hook set", () => {
 
     assert.equal(typeof plugin["tool.definition"], "function");
 
-    // validateBeforeExec runs (blocking prompt error).
+    // The prompt judge of the composed gate blocks the invalid prompt.
     await assert.rejects(
       plugin["tool.execute.before"](
         { tool: "task", sessionID: "s", callID: "c" },
@@ -477,7 +477,7 @@ describe("event-key composition by enabled hook set", () => {
       /Task prompt format error/,
     );
 
-    // validateDelegationTarget does NOT run — a denied delegation passes.
+    // No delegation judge is enabled — a denied delegation passes.
     const client = { getSession: async () => ({ agent: "beaver" }) };
     const plugin2 = await makePlugin(
       {
@@ -505,13 +505,13 @@ describe("event-key composition by enabled hook set", () => {
 
     assert.equal(plugin["tool.definition"], undefined);
 
-    // validateBeforeExec does NOT run — an invalid prompt passes.
+    // No prompt judge is enabled — an invalid prompt passes.
     await plugin["tool.execute.before"](
       { tool: "task", sessionID: "s", callID: "c" },
       { args: { prompt: INVALID_PROMPT } },
     );
 
-    // validateDelegationTarget runs — a denied delegation is blocked.
+    // The delegation judge blocks the denied delegation.
     await assert.rejects(
       plugin["tool.execute.before"](
         { tool: "task", sessionID: "s", callID: "c" },

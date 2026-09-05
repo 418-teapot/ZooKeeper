@@ -22,6 +22,17 @@
  *    host's in-session `appendEntry` channel (`zoo-notice` custom
  *    entries) — persistent, rendered by the entry renderer, and never
  *    part of the LLM context.
+ *  - `tools` — the composed tool contributions are gate-wrapped at the
+ *    registration boundary (`wrapToolsWithDelegationGate`): the composed
+ *    delegation gate (the strategy contributed by hook-unit judges) is
+ *    enforced by wrapping the subagent tool's `execute`, so the tool
+ *    itself stays policy-free (the gate belongs to the path, not the
+ *    mechanism — mirroring the OpenCode host's `tool.execute.before`
+ *    enforcement).  The composed `tool.definition` contributions run at
+ *    the same boundary (`applyToolDefinitionContributions`), enriching
+ *    the tool arguments' descriptions (e.g. the task-prompt hint) before
+ *    pi registers the tools — pi has no native `tool.definition` event,
+ *    so the OpenCode chain is applied here instead.
  *
  * pi event and message shapes (pi 0.84.x) are declared as local
  * duck-typed interfaces — the pi package is never imported.
@@ -45,7 +56,15 @@ import type {
 } from "./adapters/pi/types.js";
 import { setModelLimit } from "./core/context/model-limits.js";
 import { stripLineStartRefs } from "./core/context/reply-strip.js";
-import type { ComposedResult } from "./core/slots.js";
+import type { DelegationGate } from "./core/gate.js";
+import type {
+  ComposedResult,
+  ToolArgDefinition,
+  ToolContribution,
+  ToolDefinitionContribution,
+  ToolDefinitionView,
+} from "./core/slots.js";
+import { resolveIdentity } from "./core/subagent/identity.js";
 import { log } from "./utils/logger.js";
 
 // Re-export the duck types so callers (including tests) that previously
@@ -74,6 +93,220 @@ import type {
   AfterExecOutput,
   TransformOutput,
 } from "./core/slots.js";
+
+// ---------------------------------------------------------------------------
+// Tool-slot delegation gate wrapping
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve a best-effort session id from a pi tool execution context.
+ *
+ * pi passes its `ExtensionContext` (which carries a session manager) as
+ * the tool context of the contributed tool's `execute`.  The wrapper
+ * reads the session id off it for logging only; when the surface is
+ * absent (test invocations, structural drift) it degrades to an empty
+ * string.
+ *
+ * @param toolCtx - The pi tool execution context (opaque to this layer).
+ * @returns The session id, or an empty string when unresolvable.
+ */
+function toolSessionId(toolCtx: unknown): string {
+  const manager =
+    toolCtx && typeof toolCtx === "object"
+      ? (toolCtx as { sessionManager?: unknown }).sessionManager
+      : undefined;
+  if (
+    !manager ||
+    typeof manager !== "object" ||
+    typeof (manager as { getSessionId?: unknown }).getSessionId !== "function"
+  ) {
+    return "";
+  }
+  // Invoke the method WITH the manager as receiver: a real pi session
+  // manager is a class instance whose getSessionId reads `this.sessionId`,
+  // so extracting the method and calling it bare would drop `this` and
+  // throw.
+  const sessionID = (manager as { getSessionId(): unknown }).getSessionId();
+  return typeof sessionID === "string" ? sessionID : "";
+}
+
+/**
+ * Wrap the composed tools so the delegation gate runs at the registration
+ * boundary.
+ *
+ * The strategy gate (contributed by hook-unit judges) belongs to the
+ * path, not the mechanism: the subagent tool itself is policy-free, and
+ * the composed gate is enforced here — where the tool registers with pi
+ * — so the tool never observes the policy (mirroring the OpenCode host,
+ * which applies the same gate on `tool.execute.before`).
+ *
+ * A `null` gate (an empty judge chain — a valid profile that enables no
+ * delegation judges) passes the tools through unchanged, as do tool sets
+ * that contain no `subagent` entry.  Otherwise the subagent tool's
+ * `execute` is wrapped: the request is built from the arguments (a
+ * non-string `agent` / `prompt` is left undefined, deferring to the
+ * inner tool's own argument validation), the caller comes from
+ * `resolveIdentity` only when at least one judge needs it (`needsCaller`,
+ * mirroring the OpenCode boundary, which resolves the caller only when
+ * `composed.gateNeedsCaller` is set — a judge that needs the caller
+ * opts in by declaring `needsCaller`; otherwise the caller is left
+ * undefined and the judges skip caller-dependent checks), and a refusal
+ * logs a warn (with caller / target / judge / reason, session id
+ * best-effort) and returns the reason text (pi tool convention: never
+ * throw).  All other tool fields are preserved.
+ *
+ * @param tools - The composed tool contributions keyed by name.
+ * @param gate - The composed delegation gate, or `null` for no strategy.
+ * @param needsCaller - Whether at least one judge needs the caller; when
+ *   false the caller is left undefined and never resolved.
+ * @returns The tools, with the subagent execute gate-wrapped when a gate
+ *   applies.
+ */
+export function wrapToolsWithDelegationGate(
+  tools: Record<string, ToolContribution>,
+  gate: DelegationGate | null,
+  needsCaller: boolean,
+): Record<string, ToolContribution> {
+  // No strategy (valid config) or no subagent tool → nothing to wrap.
+  if (gate === null) return tools;
+  const subagent = tools.subagent;
+  if (subagent === undefined) return tools;
+
+  return {
+    ...tools,
+    subagent: {
+      ...subagent,
+      execute: async (args, toolCtx, hostCtx) => {
+        // Build the request.  A non-string field is left undefined so the
+        // inner tool's argument validation reports it (preserving the
+        // current boundary semantics).
+        const raw =
+          args && typeof args === "object"
+            ? (args as Record<string, unknown>)
+            : {};
+        const target = typeof raw.agent === "string" ? raw.agent : undefined;
+        const prompt = typeof raw.prompt === "string" ? raw.prompt : undefined;
+        // The caller comes from the identity core only when at least one
+        // judge needs it; otherwise it is left undefined (OpenCode parity).
+        const caller = needsCaller ? resolveIdentity()?.name : undefined;
+
+        const refusal = gate({ caller, target, prompt });
+        if (refusal !== null) {
+          log(
+            "subagent-tool",
+            "delegation_blocked",
+            toolSessionId(toolCtx),
+            undefined,
+            "warn",
+            {
+              caller: caller ?? null,
+              target: target ?? null,
+              judge: refusal.judge,
+              reason: refusal.reason,
+            },
+          );
+          return refusal.reason;
+        }
+        return subagent.execute(args, toolCtx, hostCtx);
+      },
+    },
+  };
+}
+
+/**
+ * Extract the raw tool arguments onto a neutral per-argument map.
+ *
+ * Each argument's schema is copied (the entry itself, not the containing
+ * map), so a contributor's `description` mutation never reaches the
+ * input tool's objects — the boundary function stays pure and the
+ * unchanged arguments keep their original identity.
+ *
+ * @param args - The raw tool argument schemas (or `undefined`).
+ * @returns The neutral per-argument map.
+ */
+function collectArgDefinitions(
+  args: Record<string, unknown> | undefined,
+): Record<string, ToolArgDefinition> {
+  const viewArgs: Record<string, ToolArgDefinition> = {};
+  for (const [name, schema] of Object.entries(args ?? {})) {
+    if (schema !== null && typeof schema === "object") {
+      viewArgs[name] = { ...(schema as Record<string, unknown>) };
+    }
+  }
+  return viewArgs;
+}
+
+/**
+ * Apply the composed `tool.definition` contributions at the pi tool
+ * registration boundary.
+ *
+ * pi has no native `tool.definition` event (the OpenCode host runs the
+ * same chain on its own hook); the composed enhancers run once here,
+ * against each tool's host-neutral definition, before the tools are
+ * registered with pi.  The strategy stays with the path: the input tool
+ * map is never mutated — affected arguments are rebuilt in a fresh tool
+ * object, and unaffected tools keep their exact identity (matching the
+ * OpenCode adapter, which runs the chain at its own event boundary).
+ *
+ * @param tools - The composed tool contributions keyed by name.
+ * @param contributions - The composed `tool.definition` enhancers.
+ * @returns The tools with their argument descriptions enriched.
+ */
+export function applyToolDefinitionContributions(
+  tools: Record<string, ToolContribution>,
+  contributions: ToolDefinitionContribution[],
+): Record<string, ToolContribution> {
+  // No enhancers (a profile without the task-prompt hook unit) → pass
+  // the tools through unchanged.
+  if (contributions.length === 0) return tools;
+
+  const enriched: Record<string, ToolContribution> = {};
+  for (const [key, tool] of Object.entries(tools)) {
+    const view: ToolDefinitionView = {
+      name: tool.name,
+      description: tool.description,
+      args: collectArgDefinitions(tool.args),
+    };
+    for (const contribution of contributions) {
+      contribution.handle(view);
+    }
+
+    // Write the mutated per-argument descriptions back into a fresh tool
+    // only when something changed; untouched arguments keep their exact
+    // identity.
+    const originalArgs = tool.args ?? {};
+    let argsChanged = false;
+    const args: Record<string, unknown> = {};
+    for (const [argName, schema] of Object.entries(originalArgs)) {
+      const argView = view.args?.[argName];
+      if (
+        argView !== undefined &&
+        argView.description !==
+          (schema as { description?: unknown }).description
+      ) {
+        args[argName] = {
+          ...(schema as Record<string, unknown>),
+          description: argView.description,
+        };
+        argsChanged = true;
+      } else {
+        args[argName] = schema;
+      }
+    }
+    const descriptionChanged =
+      view.description !== undefined && view.description !== tool.description;
+    if (!argsChanged && !descriptionChanged) {
+      enriched[key] = tool;
+    } else {
+      enriched[key] = {
+        ...tool,
+        ...(descriptionChanged ? { description: view.description } : {}),
+        ...(argsChanged ? { args } : {}),
+      };
+    }
+  }
+  return enriched;
+}
 
 // ---------------------------------------------------------------------------
 // Text extraction

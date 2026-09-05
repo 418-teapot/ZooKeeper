@@ -107,11 +107,13 @@ import {
 } from "./adapters/pi/tui/transcript.js";
 import { createFleetWidget } from "./adapters/pi/tui/widget.js";
 import {
+  applyToolDefinitionContributions,
   buildPiCommandRegistrationPlan,
   buildPiContextHandler,
   buildPiMessageEndHandler,
   buildPiToolResultHandler,
   type PiCommandContext,
+  wrapToolsWithDelegationGate,
 } from "./compose-pi.js";
 import type { ToolHost } from "./core/client/tool-host.js";
 import { composeProfile } from "./core/compose.js";
@@ -1156,9 +1158,30 @@ export function buildPiHandlers(
   const profileSkills = composed.skills.map((skill) => skill.name);
 
   // Register profile tools with pi when an API instance is supplied.
+  // The composed delegation gate is applied at this registration
+  // boundary: the subagent tool's `execute` is wrapped so the strategy
+  // (hook-contributed judges) runs when the tool registers, keeping the
+  // tool itself policy-free (the gate belongs to the path, not the
+  // mechanism).  A `null` gate or a tool set without `subagent` passes
+  // through unchanged.
+  const gateWrappedTools = wrapToolsWithDelegationGate(
+    composed.tools,
+    composed.gate,
+    composed.gateNeedsCaller,
+  );
+  // The composed `tool.definition` contributions (the task-prompt format
+  // hint, when the task-prompt hook unit is enabled) run at the same
+  // registration boundary: pi has no native `tool.definition` event, so
+  // the OpenCode chain is applied here instead — enriching the tool
+  // arguments' descriptions before pi registers the tools, with the tool
+  // itself staying policy-free.
+  const definitionEnrichedTools = applyToolDefinitionContributions(
+    gateWrappedTools,
+    composed.toolDefinition,
+  );
   if (piApi?.registerTool) {
     const registered = new Set<string>();
-    for (const tool of Object.values(composed.tools)) {
+    for (const tool of Object.values(definitionEnrichedTools)) {
       if (registered.has(tool.name)) continue;
       registered.add(tool.name);
       const args = tool.args ?? {};

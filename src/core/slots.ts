@@ -24,6 +24,7 @@
 import type { ToolHost } from "./client/tool-host.js";
 import type { AgentModeMap, ContextPruningConfig } from "./config-types.js";
 import type { HostAdapter } from "./context/lens.js";
+import type { DelegationGate, DelegationJudgeContribution } from "./gate.js";
 import type { HandoffTarget } from "./handoff.js";
 import type { AgentPermissionMap } from "./permissions/deny-tools.js";
 import type { SubagentDriver } from "./subagent/driver.js";
@@ -300,15 +301,37 @@ export interface AfterExecOutput {
   output?: string;
 }
 
-/** Input shape of the `tool.definition` hook. */
-export interface ToolDefinitionInput {
-  toolID: string;
+/**
+ * One argument schema within a host tool definition.
+ *
+ * Only `description` is contractually meaningful to `tool.definition`
+ * enhancers; the remaining fields (`type`, `enum`, ...) are opaque host
+ * schema markup that ride through untouched.
+ */
+export interface ToolArgDefinition {
+  description?: string;
+  [key: string]: unknown;
 }
 
-/** Output shape of the `tool.definition` hook. */
-export interface ToolDefinitionOutput {
-  description: string;
-  parameters: Record<string, unknown>;
+/**
+ * Host-neutral view of a tool definition handed to `tool.definition`
+ * enhancers.
+ *
+ * Both hosts translate their native definition onto this shape before
+ * the contribution chain runs — OpenCode maps its `tool.definition`
+ * hook output (`parameters.properties`) in `compose-opencode.ts`; pi
+ * maps `ToolContribution.args` at its registration boundary in
+ * `compose-pi.ts`.  Contributors read the canonical tool `name` and
+ * mutate per-argument `description` fields; the host writes the changes
+ * back into its native definition.
+ */
+export interface ToolDefinitionView {
+  /** Canonical tool name (OpenCode's native `task` maps to `subagent`). */
+  name: string;
+  /** Tool description. */
+  description?: string;
+  /** Per-argument schemas keyed by argument name. */
+  args?: Record<string, ToolArgDefinition>;
 }
 
 /** Input shape of a slash-command handler. */
@@ -402,14 +425,14 @@ export interface TextCompleteContribution {
 
 /**
  * One named `tool.definition` enhancer contributed by a hook unit.
+ *
+ * The handler mutates the host-neutral {@link ToolDefinitionView},
+ * typically appending guidance to a tool argument's `description`.
  */
 export interface ToolDefinitionContribution {
   /** Handler label used for logging. */
   name: string;
-  handle(
-    input: ToolDefinitionInput,
-    output: ToolDefinitionOutput,
-  ): void | Promise<void>;
+  handle(view: ToolDefinitionView): void | Promise<void>;
 }
 
 /**
@@ -536,6 +559,7 @@ export interface HookUnitContributions {
   transform: TransformContribution[];
   textComplete: TextCompleteContribution[];
   toolDefinition: ToolDefinitionContribution[];
+  delegation: DelegationJudgeContribution[];
 }
 
 /** Contributions produced by a tool unit. */
@@ -634,6 +658,16 @@ export interface ComposedResult {
   textComplete: TextCompleteContribution[];
   /** Enabled `tool.definition` enhancers. */
   toolDefinition: ToolDefinitionContribution[];
+  /** The composed delegation gate, or `null` for an empty judge chain. */
+  gate: DelegationGate | null;
+  /**
+   * Whether any composed judge needs the `caller` request field.
+   *
+   * Aggregated from the judges' `needsCaller` flags.  The OpenCode host
+   * uses this to decide whether the asynchronous caller resolution runs
+   * before judging — it is skipped entirely when no judge needs it.
+   */
+  gateNeedsCaller: boolean;
   /** Enabled tools, keyed by tool name. */
   tools: Record<string, ToolContribution>;
   /** Enabled commands, keyed by command name. */

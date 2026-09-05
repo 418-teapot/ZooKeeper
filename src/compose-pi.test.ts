@@ -6,12 +6,16 @@
  * preservation, missing sessionManager), `buildPiContextHandler`
  * (native pi messages passed to transforms, result replacement, model
  * limit capture, empty array, crash isolation), the pure helper
- * `extractText`, and the command-slot assembly
- * (`buildPiCommandRegistrationPlan`).
+ * `extractText`, the command-slot assembly
+ * (`buildPiCommandRegistrationPlan`), the gate wrapper
+ * (`wrapToolsWithDelegationGate`), and the registration-boundary
+ * tool-definition application (`applyToolDefinitionContributions`).
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import { TASK_PROMPT_HINT } from "./agents/parts.js";
 import {
+  applyToolDefinitionContributions,
   buildPiCommandRegistrationPlan,
   buildPiContextHandler,
   buildPiMessageEndHandler,
@@ -21,18 +25,27 @@ import {
   type PiAssistantMessage,
   type PiContentPart,
   type PiToolResultEvent,
+  wrapToolsWithDelegationGate,
 } from "./compose-pi.js";
+import type { DelegationGate, DelegationRequest } from "./core/gate.js";
 import type {
   AfterExecContribution,
   AfterExecInput,
   CommandInput,
   ComposedResult,
+  ToolContribution,
   TransformOutput,
 } from "./core/slots.js";
+import {
+  _resetForTesting as _resetIdentityForTesting,
+  setPrimary,
+} from "./core/subagent/identity.js";
+import { enhanceTaskDefinition } from "./hooks/task-prompt/index.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
 
 afterEach(() => {
   _resetForTesting();
+  _resetIdentityForTesting();
 });
 
 /** Session context shared by the handler tests. */
@@ -628,5 +641,348 @@ describe("buildPiCommandRegistrationPlan", () => {
 
   it("returns an empty plan for an empty commands map", () => {
     assert.deepEqual(buildPiCommandRegistrationPlan({}), []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// wrapToolsWithDelegationGate
+// ---------------------------------------------------------------------------
+
+/** A subagent-shaped tool contribution whose inner execute records calls. */
+function fakeSubagentTool(): {
+  tool: ToolContribution;
+  calls: { count: number };
+} {
+  const calls = { count: 0 };
+  return {
+    tool: {
+      name: "subagent",
+      description: "delegate to a subagent",
+      required: ["agent", "description", "prompt"],
+      async execute(args) {
+        calls.count += 1;
+        // Mirror the real tool's boundary: non-string arguments fail the
+        // inner validation.
+        const raw = args as Record<string, unknown>;
+        if (typeof raw.agent !== "string" || raw.agent.length === 0) {
+          throw new Error("agent 必须是字符串");
+        }
+        return `ran ${raw.agent}`;
+      },
+    },
+    calls,
+  };
+}
+
+describe("wrapToolsWithDelegationGate", () => {
+  it("returns the tools unchanged for a null gate (empty strategy chain)", () => {
+    const { tool } = fakeSubagentTool();
+    const tools = wrapToolsWithDelegationGate({ subagent: tool }, null, false);
+    assert.equal(tools.subagent, tool, "no wrapper must be installed");
+  });
+
+  it("returns the tools unchanged when no subagent tool is present", () => {
+    const compress: ToolContribution = {
+      name: "compress",
+      description: "compress",
+      async execute() {
+        return "compressed";
+      },
+    };
+    const gate: DelegationGate = () => null;
+    const tools = wrapToolsWithDelegationGate({ compress }, gate, false);
+    assert.equal(tools.compress, compress, "foreign tools must pass through");
+  });
+
+  it("blocks a refused delegation: returns the reason and never runs the inner execute", async () => {
+    const { tool, calls } = fakeSubagentTool();
+    const gate: DelegationGate = () => ({
+      judge: "judgeDelegationTarget",
+      reason: "delegation refused",
+    });
+    const tools = wrapToolsWithDelegationGate({ subagent: tool }, gate, true);
+
+    const result = await tools.subagent.execute(
+      { agent: "eagle", description: "t", prompt: "p" },
+      { sessionManager: { getSessionId: () => "sess-gate" } },
+    );
+    assert.equal(result, "delegation refused");
+    assert.equal(calls.count, 0, "the inner execute must not run");
+
+    // The refusal is a warn log entry carrying caller/target/judge/reason.
+    const blocked = _getBufferForTesting().filter(
+      (e) => e.event === "delegation_blocked",
+    );
+    assert.equal(blocked.length, 1);
+    assert.equal(blocked[0].level, "warn");
+    assert.equal(blocked[0].judge, "judgeDelegationTarget");
+    assert.equal(blocked[0].reason, "delegation refused");
+    assert.equal(blocked[0].sessionId, "sess-gate");
+  });
+
+  it("reads the session id off a class-instance session manager (this-bound)", async () => {
+    // Regression: the real pi SessionManager is a class instance whose
+    // getSessionId reads `this.sessionId`.  An earlier implementation
+    // extracted the method and called it bare (`id()`), which dropped the
+    // receiver and threw on the refusal path.  Arrow-function mocks bind
+    // no `this` and never exposed the bug.
+    class FakeSessionManager {
+      readonly sessionId: string;
+      constructor(sessionId: string) {
+        this.sessionId = sessionId;
+      }
+      getSessionId(): string {
+        return this.sessionId;
+      }
+    }
+    const { tool, calls } = fakeSubagentTool();
+    const gate: DelegationGate = () => ({
+      judge: "judgeDelegationTarget",
+      reason: "delegation refused",
+    });
+    const tools = wrapToolsWithDelegationGate({ subagent: tool }, gate, true);
+
+    const result = await tools.subagent.execute(
+      { agent: "eagle", description: "t", prompt: "p" },
+      { sessionManager: new FakeSessionManager("sess-class") },
+    );
+    assert.equal(result, "delegation refused");
+    assert.equal(calls.count, 0, "the inner execute must not run");
+
+    const blocked = _getBufferForTesting().filter(
+      (e) => e.event === "delegation_blocked",
+    );
+    assert.equal(blocked.length, 1);
+    assert.equal(blocked[0].sessionId, "sess-class");
+  });
+
+  it("resolves the caller from the identity core and the request from the args", async () => {
+    const { tool, calls } = fakeSubagentTool();
+    let received: DelegationRequest | undefined;
+    const gate: DelegationGate = (req) => {
+      received = req;
+      return null;
+    };
+    const tools = wrapToolsWithDelegationGate({ subagent: tool }, gate, true);
+
+    setPrimary("dolphin");
+    const result = await tools.subagent.execute(
+      { agent: "beaver", description: "t", prompt: "do the task" },
+      {},
+    );
+    assert.equal(result, "ran beaver");
+    assert.equal(calls.count, 1, "an allowed delegation must reach the tool");
+    assert.deepEqual(received, {
+      caller: "dolphin",
+      target: "beaver",
+      prompt: "do the task",
+    });
+  });
+
+  it("passes non-string args through to the inner tool's validation (undef fields)", async () => {
+    const { tool, calls } = fakeSubagentTool();
+    let received: DelegationRequest | undefined;
+    const gate: DelegationGate = (req) => {
+      received = req;
+      return null;
+    };
+    const tools = wrapToolsWithDelegationGate({ subagent: tool }, gate, true);
+    setPrimary("dolphin");
+
+    // The gate sees absent target/prompt; the args reach the inner tool
+    // verbatim, whose validation reports the malformed fields.
+    await assert.rejects(
+      async () =>
+        tools.subagent.execute(
+          { agent: 42, description: "t", prompt: "p" } as never,
+          {},
+        ),
+      /agent 必须是字符串/,
+    );
+    // The non-string field is left out of the gate request (undefined), a
+    // string sibling still reaches the request, and the args travel to the
+    // inner tool verbatim for its own validation to reject.
+    assert.equal(received?.target, undefined);
+    assert.equal(received?.prompt, "p");
+    assert.equal(calls.count, 1, "the inner validation must have run");
+  });
+
+  it("unresolvable caller → undefined, judges skip caller-dependent checks", async () => {
+    const { tool } = fakeSubagentTool();
+    let received: DelegationRequest | undefined;
+    const gate: DelegationGate = (req) => {
+      received = req;
+      return null;
+    };
+    // No setPrimary → resolveIdentity() is undefined.
+    const tools = wrapToolsWithDelegationGate({ subagent: tool }, gate, true);
+    await tools.subagent.execute(
+      { agent: "beaver", description: "t", prompt: "p" },
+      {},
+    );
+    assert.equal(received?.caller, undefined);
+  });
+
+  it("skips caller resolution entirely when needsCaller is false", async () => {
+    const { tool, calls } = fakeSubagentTool();
+    let received: DelegationRequest | undefined;
+    const gate: DelegationGate = (req) => {
+      received = req;
+      return null;
+    };
+    // The caller resolves fine, but needsCaller=false means the wrapper
+    // never resolves it — the gate sees caller === undefined regardless.
+    setPrimary("dolphin");
+    const tools = wrapToolsWithDelegationGate({ subagent: tool }, gate, false);
+    const result = await tools.subagent.execute(
+      { agent: "beaver", description: "t", prompt: "p" },
+      {},
+    );
+    assert.equal(result, "ran beaver");
+    assert.equal(calls.count, 1, "an allowed delegation must reach the tool");
+    assert.deepEqual(received, {
+      caller: undefined,
+      target: "beaver",
+      prompt: "p",
+    });
+  });
+
+  it("preserves the other tool fields on the wrapped contribution", async () => {
+    const { tool } = fakeSubagentTool();
+    const withRender = {
+      ...tool,
+      renderCall: () => ({ kind: "call" }),
+      renderResult: () => ({ kind: "result" }),
+    };
+    const gate: DelegationGate = () => null;
+    const tools = wrapToolsWithDelegationGate(
+      { subagent: withRender },
+      gate,
+      false,
+    );
+    const wrapped = tools.subagent;
+    assert.equal(wrapped.name, "subagent");
+    assert.equal(wrapped.description, tool.description);
+    assert.deepEqual(wrapped.required, tool.required);
+    assert.equal(wrapped.renderCall, withRender.renderCall);
+    assert.equal(wrapped.renderResult, withRender.renderResult);
+  });
+
+  it("does not wrap the subagent tool when the gate passes through other tools unchanged", async () => {
+    // Only the subagent entry is wrapped: a sibling tool keeps its exact
+    // identity while the subagent execute is replaced.
+    const { tool } = fakeSubagentTool();
+    const compress: ToolContribution = {
+      name: "compress",
+      description: "compress",
+      async execute() {
+        return "compressed";
+      },
+    };
+    const gate: DelegationGate = () => null;
+    const tools = wrapToolsWithDelegationGate(
+      { subagent: tool, compress },
+      gate,
+      false,
+    );
+    assert.equal(tools.compress, compress);
+    assert.notEqual(tools.subagent, tool);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyToolDefinitionContributions
+// ---------------------------------------------------------------------------
+
+/** The task-prompt enhancement contribution (the real hook handler). */
+const HINT_CONTRIBUTIONS = [
+  { name: "enhanceTaskDefinition", handle: enhanceTaskDefinition },
+];
+
+/** A subagent tool contribution carrying the delegation argument schemas. */
+function subagentToolWithArgs(): ToolContribution {
+  return {
+    name: "subagent",
+    description: "delegate to a subagent",
+    required: ["agent", "description", "prompt"],
+    args: {
+      agent: { type: "string", description: "目标 agent" },
+      description: { type: "string", description: "任务短标签" },
+      prompt: { type: "string", description: "完整任务说明" },
+    },
+    async execute() {
+      return "done";
+    },
+  };
+}
+
+describe("applyToolDefinitionContributions", () => {
+  it("returns the tools unchanged for an empty contribution chain", () => {
+    const tool = subagentToolWithArgs();
+    const tools = applyToolDefinitionContributions({ subagent: tool }, []);
+    assert.equal(tools.subagent, tool, "no enhancers must pass tools through");
+  });
+
+  it("appends TASK_PROMPT_HINT to the subagent prompt description when task-prompt is composed", () => {
+    const tool = subagentToolWithArgs();
+    const tools = applyToolDefinitionContributions(
+      { subagent: tool },
+      HINT_CONTRIBUTIONS,
+    );
+    const prompt = tools.subagent.args?.prompt as {
+      description?: string;
+      type?: string;
+    };
+    assert.ok(
+      prompt.description?.includes(TASK_PROMPT_HINT),
+      "prompt description must embed the format hint at the boundary",
+    );
+    // Untouched fields ride through: the schema type survives and a
+    // sibling argument keeps its exact description and identity.
+    assert.equal(prompt.type, "string");
+    const agent = tools.subagent.args?.agent as
+      | { description?: string }
+      | undefined;
+    assert.equal(agent?.description, "目标 agent");
+    assert.equal(tools.subagent.args?.agent, tool.args?.agent);
+  });
+
+  it("keeps the tool arguments hint-free when no task-prompt contribution is composed", () => {
+    const tool = subagentToolWithArgs();
+    const noop = [{ name: "no-op", handle: () => {} }];
+    const tools = applyToolDefinitionContributions({ subagent: tool }, noop);
+    assert.equal(
+      tools.subagent,
+      tool,
+      "a no-op chain must pass the tool through",
+    );
+    const prompt = tools.subagent?.args?.prompt as
+      | { description?: string }
+      | undefined;
+    assert.equal(prompt?.description, "完整任务说明");
+    assert.ok(!prompt?.description?.includes(TASK_PROMPT_HINT));
+  });
+
+  it("leaves non-subagent tools untouched (identity preserved)", () => {
+    const compress: ToolContribution = {
+      name: "compress",
+      description: "compress message ranges",
+      args: { ranges: { type: "array", description: "ranges" } },
+      async execute() {
+        return "compressed";
+      },
+    };
+    const tools = applyToolDefinitionContributions(
+      { subagent: subagentToolWithArgs(), compress },
+      HINT_CONTRIBUTIONS,
+    );
+    assert.equal(tools.compress, compress, "foreign tools must pass through");
+  });
+
+  it("does not mutate the input tool map (pure boundary)", () => {
+    const tool = subagentToolWithArgs();
+    const before = tool.args?.prompt as { description?: string } | undefined;
+    applyToolDefinitionContributions({ subagent: tool }, HINT_CONTRIBUTIONS);
+    assert.equal(before?.description, "完整任务说明");
   });
 });

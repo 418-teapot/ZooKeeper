@@ -1,10 +1,13 @@
 /**
- * Task prompt validation hook for ZooKeeper OpenCode plugin.
+ * Task prompt validation judge for the ZooKeeper plugin.
  *
- * Provides handler functions for enhancing the task tool definition with
- * format guidance, validating task() prompt structure before execution, and
- * appending advisory nudges to tool output. The actual validation logic lives
- * in `src/core/validate.ts`; this module wires it into OpenCode hooks.
+ * Provides the prompt-format strategy contributed by the task-prompt
+ * hook unit as a judge, plus the after-exec advisory nudge and the
+ * tool-definition enhancement (host-neutral; applied at each host's
+ * definition boundary — OpenCode's `tool.definition` event and pi's
+ * registration boundary).  The actual validation logic lives in
+ * `src/core/validate.ts`; this module wraps it as a pure judge for the
+ * host gate.
  *
  * @module
  */
@@ -13,6 +16,8 @@ import {
   DELEGATION_FORMAT_TEXT,
   TASK_PROMPT_HINT,
 } from "../../agents/parts.js";
+import type { DelegationRefusal, DelegationRequest } from "../../core/gate.js";
+import type { ToolDefinitionView } from "../../core/slots.js";
 import {
   type ValidationLimits,
   validateTaskPrompt,
@@ -24,31 +29,30 @@ import { log } from "../../utils/logger.js";
 // ---------------------------------------------------------------------------
 
 /**
- * Enhance the `task` tool's `prompt` parameter description with format
- * guidance. This makes the LLM aware of the required section structure.
+ * Enhance the `subagent` tool's `prompt` argument description with
+ * format guidance.  This makes the LLM aware of the required section
+ * structure.
  *
- * @param input - Hook input containing the tool ID.
- * @param input.toolID - Identifier of the tool being defined.
- * @param output - Hook output object mutated in place.
- * @param output.description - Tool description.
- * @param output.parameters - JSON Schema parameters object.
+ * Host-neutral: the handler operates on the tool-definition view built
+ * by each host from its native definition (OpenCode's `tool.definition`
+ * hook output; pi's registration-boundary tool arguments), and matches
+ * the canonical tool name `"subagent"` on both hosts.
+ *
+ * @param view - The host-neutral tool definition view.
  */
-export function enhanceTaskDefinition(
-  input: { toolID: string },
-  output: { description: string; parameters: any },
-): void {
-  if (input.toolID !== "subagent") return;
+export function enhanceTaskDefinition(view: ToolDefinitionView): void {
+  if (view.name !== "subagent") return;
 
-  const promptParam = output.parameters?.properties?.prompt;
-  if (!promptParam || typeof promptParam !== "object") {
+  const promptArg = view.args?.prompt;
+  if (!promptArg || typeof promptArg !== "object") {
     log("task-prompt", "definition_skipped", "", undefined, "debug", {
       reason: "no_prompt_param",
     });
     return;
   }
 
-  const existing = promptParam.description ?? "";
-  promptParam.description = existing
+  const existing = promptArg.description ?? "";
+  promptArg.description = existing
     ? `${existing}\n\n${TASK_PROMPT_HINT}`
     : TASK_PROMPT_HINT;
 
@@ -56,64 +60,38 @@ export function enhanceTaskDefinition(
 }
 
 /**
- * Validate a task prompt before execution. Throws a blocking error if the
- * prompt is missing required sections (SUMMARY, CONTEXT, ACCEPTANCE).
+ * Judge a delegation request's task prompt structure.
  *
- * @param input - Hook input containing the tool name.
- * @param input.tool - Name of the tool being executed.
- * @param output - Hook output object with execution arguments.
- * @param output.args - Tool call arguments.
+ * Returns a refusal when the prompt lacks the required sections
+ * (SUMMARY / CONTEXT / ACCEPTANCE) or exceeds the configured limits;
+ * `null` otherwise.  A missing prompt (the `prompt` argument was not a
+ * string) skips the judgment and allows — the original before-exec
+ * boundary semantics.
+ *
+ * @param req - The delegation request being judged.
  * @param limits - Validation limits (word count thresholds).
- * @throws Error if the prompt lacks required sections.
+ * @returns The refusal, or `null` to allow (or skip).
  */
-export function validateBeforeExec(
-  input: { tool: string; sessionID?: string; callID?: string },
-  output: { args?: Record<string, unknown> },
+export function judgeTaskPrompt(
+  req: DelegationRequest,
   limits: ValidationLimits,
-): void {
-  if (input.tool !== "subagent") return;
+): DelegationRefusal | null {
+  if (req.prompt === undefined) return null;
 
-  const promptArg = output.args?.prompt;
-  if (typeof promptArg !== "string") return;
-
-  const result = validateTaskPrompt(promptArg, limits);
-
+  const result = validateTaskPrompt(req.prompt, limits);
   if (!result.valid) {
     const details = result.errors.map((e) => `- ${e}`).join("\n");
-    log(
-      "task-prompt",
-      "validate_failed",
-      input.sessionID ?? "",
-      input.callID,
-      "warn",
-      {
-        errors: result.errors,
-      },
-    );
-    throw new Error(
-      "Task prompt format error:\n" +
+    return {
+      reason:
+        "Task prompt format error:\n" +
         `${details}\n\n` +
         "Required format:\n" +
         `${DELEGATION_FORMAT_TEXT}\n\n` +
         "Please rewrite before delegating.",
-    );
+    };
   }
 
-  // Validation passed — log if there are warnings (include word counts regardless)
-  if (result.warnings.length > 0) {
-    log(
-      "task-prompt",
-      "validate_passed",
-      input.sessionID ?? "",
-      input.callID,
-      "info",
-      {
-        warnings: result.warnings.length,
-        ctx_words: result.ctx_words,
-        total_words: result.total_words,
-      },
-    );
-  }
+  return null;
 }
 
 /**

@@ -15,6 +15,8 @@
 
 import { log } from "../utils/logger.js";
 import type { ModeProfile } from "./config-types.js";
+import type { DelegationJudgeContribution } from "./gate.js";
+import { composeGate } from "./gate.js";
 import type {
   ActiveSet,
   ComposedResult,
@@ -50,6 +52,8 @@ function emptyResult(): ComposedResult {
     toolDefinition: [],
     tools: {},
     commands: {},
+    gate: null,
+    gateNeedsCaller: false,
   };
 }
 
@@ -61,10 +65,12 @@ function emptyResult(): ComposedResult {
  *
  * @param result - The accumulating composition result.
  * @param contributions - The unit's contribution collection.
+ * @param judges - The accumulating delegation judges.
  */
 function collect(
   result: ComposedResult,
   contributions: UnitContributions,
+  judges: DelegationJudgeContribution[],
 ): void {
   switch (contributions.kind) {
     case "agent":
@@ -79,6 +85,7 @@ function collect(
       result.transform.push(...contributions.transform);
       result.textComplete.push(...contributions.textComplete);
       result.toolDefinition.push(...contributions.toolDefinition);
+      judges.push(...contributions.delegation);
       break;
     case "tool":
       for (const tool of contributions.tools) {
@@ -143,13 +150,22 @@ export function composeProfile(
 
   const result = emptyResult();
   const known = new Set(units.map((unit) => unit.name));
+  const judges: DelegationJudgeContribution[] = [];
 
   for (const unit of units) {
     const category = PROFILE_CATEGORY[unit.kind];
     if (!profile[category].includes(unit.name)) continue;
     const contributions = unit.create(deps, activeSet);
-    collect(result, contributions);
+    collect(result, contributions, judges);
   }
+
+  // Compose the delegation judges into a single gate (empty chain →
+  // `null`, allow — a valid profile with no delegation judges).  The
+  // host always knows whether a strategy exists by inspecting the gate.
+  result.gate = composeGate(judges);
+  // Whether any judge needs the caller field — the OpenCode host uses
+  // this to decide if the asynchronous caller resolution must run.
+  result.gateNeedsCaller = judges.some((judge) => judge.needsCaller === true);
 
   for (const category of CATEGORIES) {
     if (opts?.warnUnknownUnits === false) continue;
