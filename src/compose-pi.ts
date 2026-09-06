@@ -55,10 +55,12 @@ import type {
   PiToolResultResult,
 } from "./adapters/pi/types.js";
 import { setModelLimit } from "./core/context/model-limits.js";
-import { stripLineStartRefs } from "./core/context/reply-strip.js";
 import type { DelegationGate } from "./core/gate.js";
 import type {
   ComposedResult,
+  TextCompleteContribution,
+  TextCompleteInput,
+  TextCompleteOutput,
   ToolArgDefinition,
   ToolContribution,
   ToolDefinitionContribution,
@@ -535,36 +537,72 @@ export function buildPiContextHandler(
 // ---------------------------------------------------------------------------
 
 /**
- * Build the pi `message_end` handler that strips model-imitated
- * line-start ref prefixes from finalized assistant text.
+ * Minimal duck-type shape of the pi `message_end` handler context.
+ *
+ * Only the session id is read off it (for log attribution); the rest of
+ * pi's `ExtensionContext` is irrelevant here.
+ */
+export interface PiMessageEndContext {
+  sessionManager?: { getSessionId(): string };
+}
+
+/**
+ * Build the pi `message_end` handler from the composed text-finalization
+ * contributions.
  *
  * pi fires `message_end` after a message is finalized; the handler
- * inspects assistant messages and strips any leading `[mN] ` echoes
- * from text parts.  Thinking and tool-call parts are left untouched.
- * When no text part changes, `undefined` is returned so pi keeps the
- * original message; otherwise a shallow copy with the stripped text
- * parts is returned.  The input message is never mutated.
+ * inspects assistant messages and runs every text-finalization
+ * contribution (in registration order) over each text part, mirroring
+ * how the OpenCode adapter consumes the same slot.  Contributions mutate
+ * the `output.text` in place (e.g. stripping model-imitated `[mN] `
+ * echoes).  Thinking and tool-call parts are left untouched.  When no
+ * text part changes, `undefined` is returned so pi keeps the original
+ * message; otherwise a shallow copy with the rewritten text parts is
+ * returned.  The input message is never mutated.
  *
+ * @param textComplete - The composed text-finalization contributions.
  * @returns The `message_end` event handler.
  */
-export function buildPiMessageEndHandler(): (
+export function buildPiMessageEndHandler(
+  textComplete: TextCompleteContribution[],
+): (
   event: PiMessageEndEvent,
-  _ctx: unknown,
+  ctx: PiMessageEndContext,
 ) => PiMessageEndResult | undefined {
-  return (event) => {
+  return (event, ctx) => {
     const message = event.message;
     if (message.role !== "assistant") {
       return undefined;
     }
 
+    const sessionID = ctx?.sessionManager?.getSessionId() ?? "";
+
     let changed = false;
-    const newContent = message.content.map((part) => {
-      if (part.type === "text") {
-        const stripped = stripLineStartRefs(part.text);
-        if (stripped !== part.text) {
-          changed = true;
-          return { ...part, text: stripped };
+    const newContent = message.content.map((part, index) => {
+      if (part.type !== "text") {
+        return part;
+      }
+
+      const input: TextCompleteInput = {
+        sessionID,
+        messageID: "",
+        partID: String(index),
+      };
+      const output: TextCompleteOutput = { text: part.text };
+      for (const contribution of textComplete) {
+        try {
+          contribution.handle(input, output);
+        } catch (err) {
+          log("plugin", "handler_crashed", sessionID, String(index), "error", {
+            handler: contribution.name,
+            error: String(err),
+          });
         }
+      }
+
+      if (output.text !== part.text) {
+        changed = true;
+        return { ...part, text: output.text };
       }
       return part;
     });

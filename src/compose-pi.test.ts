@@ -40,6 +40,7 @@ import {
   _resetForTesting as _resetIdentityForTesting,
   setPrimary,
 } from "./core/subagent/identity.js";
+import { createReplyStripHandler } from "./hooks/reply-strip/index.js";
 import { enhanceTaskDefinition } from "./hooks/task-prompt/index.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
 
@@ -493,8 +494,10 @@ function messageEndEvent(message: PiAgentMessage) {
 }
 
 describe("buildPiMessageEndHandler", () => {
+  const stripContrib = [createReplyStripHandler()];
+
   it("strips a leading [mN] ref echo from assistant text", () => {
-    const handler = buildPiMessageEndHandler();
+    const handler = buildPiMessageEndHandler(stripContrib);
     const message = assistantMessage([{ type: "text", text: "[m3] hello" }]);
     const result = handler(messageEndEvent(message), {});
     assert.ok(result);
@@ -505,7 +508,7 @@ describe("buildPiMessageEndHandler", () => {
   });
 
   it("strips multiple leading [mN] ref echoes", () => {
-    const handler = buildPiMessageEndHandler();
+    const handler = buildPiMessageEndHandler(stripContrib);
     const message = assistantMessage([
       { type: "text", text: "[m1] [m2] body" },
     ]);
@@ -517,28 +520,28 @@ describe("buildPiMessageEndHandler", () => {
   });
 
   it("preserves a mid-text [mN] occurrence", () => {
-    const handler = buildPiMessageEndHandler();
+    const handler = buildPiMessageEndHandler(stripContrib);
     const message = assistantMessage([{ type: "text", text: "see [m3] here" }]);
     const result = handler(messageEndEvent(message), {});
     assert.equal(result, undefined);
   });
 
   it("leaves non-assistant messages untouched", () => {
-    const handler = buildPiMessageEndHandler();
+    const handler = buildPiMessageEndHandler(stripContrib);
     const message: PiAgentMessage = { role: "user", content: "[m3] hi" };
     const result = handler(messageEndEvent(message), {});
     assert.equal(result, undefined);
   });
 
   it("returns undefined when the message is unchanged", () => {
-    const handler = buildPiMessageEndHandler();
+    const handler = buildPiMessageEndHandler(stripContrib);
     const message = assistantMessage([{ type: "text", text: "plain" }]);
     const result = handler(messageEndEvent(message), {});
     assert.equal(result, undefined);
   });
 
   it("does not mutate the input message", () => {
-    const handler = buildPiMessageEndHandler();
+    const handler = buildPiMessageEndHandler(stripContrib);
     const content = [{ type: "text" as const, text: "[m3] hello" }];
     const message = assistantMessage(content);
     handler(messageEndEvent(message), {});
@@ -547,7 +550,7 @@ describe("buildPiMessageEndHandler", () => {
   });
 
   it("leaves thinking and toolCall blocks untouched", () => {
-    const handler = buildPiMessageEndHandler();
+    const handler = buildPiMessageEndHandler(stripContrib);
     const message = assistantMessage([
       { type: "thinking", thinking: "[m3] thought" },
       { type: "toolCall", id: "c1", name: "x", arguments: {} },
@@ -560,6 +563,56 @@ describe("buildPiMessageEndHandler", () => {
       { type: "toolCall", id: "c1", name: "x", arguments: {} },
       { type: "text", text: "ok" },
     ]);
+  });
+
+  it("runs multiple contributions in registration order", () => {
+    const calls: string[] = [];
+    const contribs = [
+      {
+        name: "first",
+        handle: (
+          _i: { sessionID: string; messageID: string; partID: string },
+          o: { text: string },
+        ) => {
+          calls.push("first");
+          o.text += "!";
+        },
+      },
+      {
+        name: "second",
+        handle: (
+          _i: { sessionID: string; messageID: string; partID: string },
+          o: { text: string },
+        ) => {
+          calls.push("second");
+          o.text += "?";
+        },
+      },
+    ];
+    const handler = buildPiMessageEndHandler(contribs);
+    const result = handler(
+      messageEndEvent(assistantMessage([{ type: "text", text: "hi" }])),
+      {},
+    );
+    assert.deepEqual(calls, ["first", "second"]);
+    assert.ok(result);
+    assert.deepEqual(result?.message?.content, [
+      { type: "text", text: "hi!?" },
+    ]);
+  });
+
+  it("returns undefined for any input when no contributions are supplied", () => {
+    const handler = buildPiMessageEndHandler([]);
+    const assistant = handler(
+      messageEndEvent(assistantMessage([{ type: "text", text: "[m3] hi" }])),
+      {},
+    );
+    assert.equal(assistant, undefined);
+    const user = handler(
+      messageEndEvent({ role: "user", content: "[m3] hi" }),
+      {},
+    );
+    assert.equal(user, undefined);
   });
 });
 

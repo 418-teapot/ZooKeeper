@@ -1270,7 +1270,7 @@ export function buildPiHandlers(
   // current ExtensionContext before delegating to the core handler.
   const toolResultHandler = buildPiToolResultHandler(composed.afterExec);
   const contextHandler = buildPiContextHandler(composed.transform);
-  const messageEndHandler = buildPiMessageEndHandler();
+  const messageEndHandler = buildPiMessageEndHandler(composed.textComplete);
 
   return {
     async beforeAgentStart(evt, ctx?) {
@@ -1399,7 +1399,6 @@ export function buildPiHandlers(
     },
     messageEnd: (event, ctx) => {
       if (ctx) contextHolder.current = ctx as PiToolHostContext;
-      if (profile === null) return undefined;
       return messageEndHandler(event, ctx);
     },
   };
