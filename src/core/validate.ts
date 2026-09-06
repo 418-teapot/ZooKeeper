@@ -11,9 +11,15 @@
  * @module
  */
 
-/** Regex matching section headers: SUMMARY, CONTEXT, ACCEPTANCE. */
+/**
+ * Regex matching section headers: SUMMARY, CONTEXT, ACCEPTANCE.
+ *
+ * Section names are matched case-sensitively — they must be ALLCAPS to be
+ * recognized as headers, so a lowercase content line like `- acceptance: ...`
+ * cannot be mistaken for a real section.
+ */
 const SECTION_HEADER_RE =
-  /^(\s*[-–]\s+)?\*{0,2}(SUMMARY|CONTEXT|ACCEPTANCE)\*{0,2}:\s*(.*)$/im;
+  /^(\s*[-–]\s+)?\*{0,2}(SUMMARY|CONTEXT|ACCEPTANCE)\*{0,2}(?:\s*:\s*|\s+[–-]\s+)(.*)$/m;
 
 /** Regex matching English line references like "line 42". */
 const LINE_REF_RE = /\bline\s+\d+\b/i;
@@ -31,15 +37,19 @@ const CODE_BLOCK_RE = /```/;
 /**
  * Split a task prompt into its named sections.
  *
- * Supports multiple formatting styles:
+ * Supports multiple formatting styles (section names must be ALLCAPS):
  *   - `SUMMARY: ...`
  *   - `- SUMMARY: ...`
  *   - `**SUMMARY:** ...`
  *   - `- **SUMMARY:** ...`
+ *   - `**SUMMARY** - ...`
+ *   - `- **SUMMARY** - ...`
  *
- * The text after the colon on the header line is included as the first line of
- * the section content. Subsequent lines belong to the section until the next
- * header or end-of-string.
+ * Section names are matched case-sensitively (uppercase only), so lowercase
+ * content lines are never treated as headers. The text after the separator on
+ * the header line is included as the first line of the section content.
+ * Subsequent lines belong to the section until the next header or
+ * end-of-string.
  *
  * @param prompt - Raw task prompt string.
  * @returns A map of section name → content (trimmed). Missing sections are
@@ -60,7 +70,7 @@ function extractSections(prompt: string): Record<string, string> {
         sections[currentSection] = currentContent.join("\n").trim();
       }
       currentSection = match[2].toUpperCase();
-      // Everything after the colon on the same line is the first line of content
+      // Everything after the separator on the same line is the first line of content
       currentContent = [match[3]];
     } else {
       currentContent.push(line);

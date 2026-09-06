@@ -88,6 +88,53 @@ describe("extractSections (via validateTaskPrompt)", () => {
     assert.equal(result.valid, true);
   });
 
+  it("accepts dash separator: - **SUMMARY** - ...", () => {
+    const prompt = [
+      "- **SUMMARY** - Fix the flaky auth test",
+      "- **CONTEXT** - The auth.login test fails on CI",
+      "- **ACCEPTANCE** - All tests pass",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, true);
+  });
+
+  it("accepts dash separator without bullet: **SUMMARY** - ...", () => {
+    const prompt = [
+      "**SUMMARY** - Fix the flaky auth test",
+      "**CONTEXT** - The auth.login test fails on CI",
+      "**ACCEPTANCE** - All tests pass",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, true);
+  });
+
+  it("rejects a hyphenated-compound bullet as a fake ACCEPTANCE header", () => {
+    // "- acceptance-criteria ..." must not count as an ACCEPTANCE section:
+    // dash separators require whitespace on both sides.
+    const prompt = [
+      "SUMMARY: Fix the flaky auth test",
+      "CONTEXT: The auth.login test fails intermittently on CI",
+      "- acceptance-criteria are listed below",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((e) => e.includes("ACCEPTANCE")));
+  });
+
+  it("treats a lowercase 'acceptance:' content line as a fake header", () => {
+    // Section names must be ALLCAPS: a lowercase content line like
+    // "- acceptance: ..." must not count as an ACCEPTANCE section, so a prompt
+    // genuinely missing ACCEPTANCE fails the hard gate.
+    const prompt = [
+      "SUMMARY: Fix the flaky auth test",
+      "CONTEXT: The auth.login test fails intermittently on CI",
+      "- acceptance: criteria are listed below",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((e) => e.includes("ACCEPTANCE")));
+  });
+
   it("treats content after colon on header line as section content", () => {
     const prompt = [
       "SUMMARY: Fix the flaky auth test",
@@ -618,6 +665,26 @@ describe("judgeTaskPrompt", () => {
     assert.ok(refusal.reason.includes("CONTEXT"));
     assert.ok(refusal.reason.includes("ACCEPTANCE"));
     assert.ok(refusal.reason.includes("Required format"));
+  });
+
+  it("refuses when acceptance is only a hyphenated-compound content bullet", () => {
+    // Regression: the header regex must not treat "- acceptance-criteria ..."
+    // as an ACCEPTANCE section, otherwise a prompt missing the section would
+    // slip through the hard delegation gate.
+    const refusal = judgeTaskPrompt(
+      {
+        caller: "dolphin",
+        target: "beaver",
+        prompt: [
+          "SUMMARY: Fix the flaky auth test",
+          "CONTEXT: The auth.login test fails on CI",
+          "- acceptance-criteria are listed below",
+        ].join("\n"),
+      },
+      limits,
+    );
+    assert.ok(refusal !== null);
+    assert.ok(refusal.reason.includes("ACCEPTANCE"));
   });
 
   it("does not refuse on CONTEXT too long — soft warnings go to the nudge", () => {

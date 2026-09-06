@@ -381,4 +381,78 @@ describe("edge cases", () => {
     assert.ok(codeWarnings.length >= 1);
     assert.ok(lineWarnings.length >= 1);
   });
+
+  it("accepts dash-style headers: - **SUMMARY** - ...", () => {
+    const prompt = [
+      "- **SUMMARY** - Fix the flaky auth test",
+      "- **CONTEXT** - The auth.login test fails on CI",
+      "- **ACCEPTANCE** - All tests pass",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+  });
+
+  it("rejects a hyphenated-compound bullet as a fake ACCEPTANCE header", () => {
+    // "- acceptance-criteria ..." must not parse as an ACCEPTANCE header:
+    // the dash separator requires whitespace on both sides.
+    const prompt = [
+      "SUMMARY: Fix the flaky auth test",
+      "CONTEXT: The auth.login test fails intermittently on CI",
+      "- acceptance-criteria are listed below",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((e) => e.includes("ACCEPTANCE")));
+  });
+
+  it("rejects a hyphenated-compound bullet as a fake CONTEXT header", () => {
+    const prompt = [
+      "SUMMARY: Fix the flaky auth test",
+      "- context-aware caching is used in the auth module",
+      "ACCEPTANCE: All tests pass",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((e) => e.includes("CONTEXT")));
+  });
+
+  it("treats a lowercase 'acceptance:' content line as a fake header (INVALID)", () => {
+    // A content line like "- acceptance: criteria are listed below" must NOT
+    // count as an ACCEPTANCE section — section names must be ALLCAPS, so a
+    // prompt genuinely missing ACCEPTANCE must fail the hard gate.
+    const prompt = [
+      "SUMMARY: Fix the flaky auth test",
+      "CONTEXT: The auth.login test fails intermittently on CI",
+      "- acceptance: criteria are listed below",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((e) => e.includes("ACCEPTANCE")));
+  });
+
+  it("does not let a lowercase 'context:' line start a CONTEXT section", () => {
+    // A lowercase content line beginning with "context:" is not a section
+    // header, so CONTEXT is reported as missing (and the line is absorbed into
+    // whatever section precedes it, truncating nothing).
+    const prompt = [
+      "SUMMARY: Fix the flaky auth test",
+      "context: some background detail on the flaky test",
+      "ACCEPTANCE: All tests pass",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((e) => e.includes("CONTEXT")));
+  });
+
+  it("does not let a lowercase 'summary:' line start a SUMMARY section", () => {
+    const prompt = [
+      "summary: some heading-looking content",
+      "CONTEXT: The auth.login test fails on CI",
+      "ACCEPTANCE: All tests pass",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((e) => e.includes("SUMMARY")));
+  });
 });

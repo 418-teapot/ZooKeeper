@@ -273,13 +273,26 @@ def _assert_task_prompt_format(
             message="No task() calls found to check",
         )
 
+    # Same separator rule as the plugin validator: flexible colon, or
+    # dash/en-dash requiring whitespace on both sides (so hyphenated compound
+    # content like "- acceptance-criteria ..." is not a fake header).
+    # Section names are matched case-sensitively — they must be ALLCAPS, so a
+    # lowercase content line like "- acceptance: ..." is not a fake header.
+    sections = ("SUMMARY", "CONTEXT", "ACCEPTANCE")
+    patterns = [
+        re.compile(
+            rf"(?m)^\s*(?:[-–]\s+)?\*{{0,2}}{s}\*{{0,2}}"
+            rf"(?:\s*:\s*|\s+[–-]\s+)"
+        )
+        for s in sections
+    ]
+
     issues: list[str] = []
     for i, c in enumerate(task_calls):
-        prompt = (c.args.get("prompt", "") or "").lower()
-        missing: list[str] = []
-        for section in ("summary:", "context:", "acceptance:"):
-            if section not in prompt:
-                missing.append(section.upper().rstrip(":"))
+        prompt = c.args.get("prompt", "") or ""
+        missing: list[str] = [
+            s for s, p in zip(sections, patterns) if not p.search(prompt)
+        ]
         if missing:
             issues.append(f"Task #{i + 1} missing: {', '.join(missing)}")
 
