@@ -121,18 +121,98 @@ describe("extractSections (via validateTaskPrompt)", () => {
     assert.ok(result.errors.some((e) => e.includes("ACCEPTANCE")));
   });
 
-  it("treats a lowercase 'acceptance:' content line as a fake header", () => {
-    // Section names must be ALLCAPS: a lowercase content line like
-    // "- acceptance: ..." must not count as an ACCEPTANCE section, so a prompt
-    // genuinely missing ACCEPTANCE fails the hard gate.
+  it("recognizes a lowercase 'acceptance:' content line as a header", () => {
+    // Section names are recognized in any letter case — the hard gate looks
+    // for evidence of the three required elements, not exact typography.
     const prompt = [
       "SUMMARY: Fix the flaky auth test",
       "CONTEXT: The auth.login test fails intermittently on CI",
       "- acceptance: criteria are listed below",
     ].join("\n");
     const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+  });
+
+  it("accepts a bare title on its own line with content below", () => {
+    const prompt = [
+      "**SUMMARY**",
+      "Fix the flaky auth test",
+      "**CONTEXT**",
+      "The auth.login test fails intermittently on CI",
+      "**ACCEPTANCE**",
+      "All auth tests pass",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+  });
+
+  it("accepts markdown heading prefixes and fullwidth colons", () => {
+    const prompt = [
+      "## SUMMARY",
+      "修复间歇性失败的登录测试",
+      "### CONTEXT： auth.login 在 CI 上间歇性失败",
+      "#### acceptance： 所有测试通过",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+  });
+
+  it("rejects a section name followed by text without a separator", () => {
+    const prompt = [
+      "SUMMARY 随便文字",
+      "CONTEXT: The auth.login test fails on CI",
+      "ACCEPTANCE: All tests pass",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((e) => e.includes("SUMMARY")));
+  });
+
+  it("still rejects a prompt missing ACCEPTANCE when titles are bare", () => {
+    const prompt = [
+      "**SUMMARY**",
+      "Fix the flaky auth test",
+      "**CONTEXT**",
+      "The auth.login test fails on CI",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => e.includes("ACCEPTANCE")));
+  });
+
+  it("accepts undecorated bare titles: a lone 'acceptance' line opens a section", () => {
+    // A lone undecorated `acceptance` line satisfies the hard gate. Known
+    // tradeoff: a prose word could forge a section boundary; the stricter
+    // rule was reverted because it rejected naturally written prompts.
+    const prompt = [
+      "**SUMMARY:** Fix the flaky auth test",
+      "**CONTEXT:** The auth.login test fails intermittently on CI",
+      "acceptance",
+      "some prose that trails the prompt",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+  });
+
+  it("captures no leaked bold markers in section content", () => {
+    // `**SUMMARY:**` bolds name + colon; the closing asterisks must not leak
+    // into the captured content, which would inflate the CONTEXT word count.
+    const prompt = [
+      "**SUMMARY:** one two three",
+      "**CONTEXT:** four five",
+      "**ACCEPTANCE:** six",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt, { contextWordLimit: 2 });
+    // Content is "four five" (2 words) — no leaked `**` token pushing it over.
+    assert.equal(result.ctx_words, 2);
+    assert.equal(
+      result.warnings.filter((w) => w.includes("CONTEXT is")).length,
+      0,
+    );
   });
 
   it("treats content after colon on header line as section content", () => {

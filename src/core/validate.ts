@@ -12,14 +12,23 @@
  */
 
 /**
- * Regex matching section headers: SUMMARY, CONTEXT, ACCEPTANCE.
+ * Regex matching section header lines: SUMMARY, CONTEXT, ACCEPTANCE.
  *
- * Section names are matched case-sensitively — they must be ALLCAPS to be
- * recognized as headers, so a lowercase content line like `- acceptance: ...`
- * cannot be mistaken for a real section.
+ * A header line is a section name (any letter case) at line start —
+ * optionally behind a bullet (`-` / `–`) or a markdown heading prefix
+ * (`#`..`######`), optionally wrapped in bold (`*`/`**`) — followed by one
+ * of four endings: `:`, `：`, a spaced dash (` - ` / ` – `), or nothing at
+ * all (a bare title on its own line whose content starts on the following
+ * line).
+ *
+ * The colon separator consumes an optional closing bold; the dash
+ * separator requires whitespace on both sides.
+ *
+ * Capture groups: 1 = section name, 2 = text after the separator on the
+ * header line.
  */
 const SECTION_HEADER_RE =
-  /^(\s*[-–]\s+)?\*{0,2}(SUMMARY|CONTEXT|ACCEPTANCE)\*{0,2}(?:\s*:\s*|\s+[–-]\s+)(.*)$/m;
+  /^\s*(?:[-–]\s+|#{1,6}\s+)?\*{0,2}(SUMMARY|CONTEXT|ACCEPTANCE)\*{0,2}(?:\s*[:：]\*{0,2}\s*|\s+[–-]\s+|\s*$)(.*)$/im;
 
 /** Regex matching English line references like "line 42". */
 const LINE_REF_RE = /\bline\s+\d+\b/i;
@@ -37,19 +46,21 @@ const CODE_BLOCK_RE = /```/;
 /**
  * Split a task prompt into its named sections.
  *
- * Supports multiple formatting styles (section names must be ALLCAPS):
+ * Supports multiple formatting styles; section names are recognized in any
+ * letter case and may sit behind a bullet, a markdown heading prefix, or bold:
  *   - `SUMMARY: ...`
  *   - `- SUMMARY: ...`
  *   - `**SUMMARY:** ...`
  *   - `- **SUMMARY:** ...`
  *   - `**SUMMARY** - ...`
  *   - `- **SUMMARY** - ...`
+ *   - `**SUMMARY**` / `SUMMARY` (bare title, content starts on the next line)
+ *   - `## SUMMARY` / `acceptance:` / `CONTEXT： ...`
  *
- * Section names are matched case-sensitively (uppercase only), so lowercase
- * content lines are never treated as headers. The text after the separator on
- * the header line is included as the first line of the section content.
- * Subsequent lines belong to the section until the next header or
- * end-of-string.
+ * The text after the separator on the header line is included as the first
+ * line of the section content. For a bare title (no separator), content starts
+ * on the following line. Subsequent lines belong to the section until the next
+ * header or end-of-string.
  *
  * @param prompt - Raw task prompt string.
  * @returns A map of section name → content (trimmed). Missing sections are
@@ -69,9 +80,10 @@ function extractSections(prompt: string): Record<string, string> {
       if (currentSection) {
         sections[currentSection] = currentContent.join("\n").trim();
       }
-      currentSection = match[2].toUpperCase();
-      // Everything after the separator on the same line is the first line of content
-      currentContent = [match[3]];
+      currentSection = match[1].toUpperCase();
+      // Everything after the separator on the same line is the first line of
+      // content (empty for a bare title on its own line)
+      currentContent = [match[2]];
     } else {
       currentContent.push(line);
     }

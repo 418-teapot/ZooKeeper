@@ -417,42 +417,229 @@ describe("edge cases", () => {
     assert.ok(result.errors.some((e) => e.includes("CONTEXT")));
   });
 
-  it("treats a lowercase 'acceptance:' content line as a fake header (INVALID)", () => {
-    // A content line like "- acceptance: criteria are listed below" must NOT
-    // count as an ACCEPTANCE section — section names must be ALLCAPS, so a
-    // prompt genuinely missing ACCEPTANCE must fail the hard gate.
+  it("recognizes a lowercase 'acceptance:' content line as a header", () => {
+    // Section names are recognized in any letter case: recognition is about
+    // evidence of the three required elements, not exact typography.
     const prompt = [
       "SUMMARY: Fix the flaky auth test",
       "CONTEXT: The auth.login test fails intermittently on CI",
       "- acceptance: criteria are listed below",
     ].join("\n");
     const result = validateTaskPrompt(prompt);
-    assert.equal(result.valid, false);
-    assert.ok(result.errors.some((e) => e.includes("ACCEPTANCE")));
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
   });
 
-  it("does not let a lowercase 'context:' line start a CONTEXT section", () => {
-    // A lowercase content line beginning with "context:" is not a section
-    // header, so CONTEXT is reported as missing (and the line is absorbed into
-    // whatever section precedes it, truncating nothing).
+  it("recognizes a lowercase 'context:' line as a CONTEXT header", () => {
     const prompt = [
       "SUMMARY: Fix the flaky auth test",
       "context: some background detail on the flaky test",
       "ACCEPTANCE: All tests pass",
     ].join("\n");
     const result = validateTaskPrompt(prompt);
-    assert.equal(result.valid, false);
-    assert.ok(result.errors.some((e) => e.includes("CONTEXT")));
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
   });
 
-  it("does not let a lowercase 'summary:' line start a SUMMARY section", () => {
+  it("recognizes a lowercase 'summary:' line as a SUMMARY header", () => {
     const prompt = [
       "summary: some heading-looking content",
       "CONTEXT: The auth.login test fails on CI",
       "ACCEPTANCE: All tests pass",
     ].join("\n");
     const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+  });
+
+  it("accepts a bare title on its own line with content below", () => {
+    // The formatting most LLMs write naturally: **ACCEPTANCE** alone on a
+    // line, the content starting on the next line.
+    const prompt = [
+      "**SUMMARY**",
+      "Fix the flaky auth test",
+      "**CONTEXT**",
+      "The auth.login test fails intermittently on CI",
+      "**ACCEPTANCE**",
+      "All auth tests pass with no new flaky tests",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+  });
+
+  it("collects content under a decorated bare title until the next header", () => {
+    const prompt = [
+      "**SUMMARY**",
+      "first summary line",
+      "second summary line",
+      "**CONTEXT**",
+      "the context body",
+      "**ACCEPTANCE**",
+      "the acceptance body",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, true);
+    // A decorated bare title must not swallow the following sections: a
+    // prompt missing CONTEXT fails the gate even when titles are bare.
+    const missing = validateTaskPrompt(
+      "**SUMMARY**\nfirst summary line\nsecond summary line\n**ACCEPTANCE**\nbody",
+    );
+    assert.equal(missing.valid, false);
+    assert.ok(missing.errors.some((e) => e.includes("CONTEXT")));
+  });
+
+  it("accepts undecorated bare titles as section headers", () => {
+    // The formatting LLMs write naturally: a lone `SUMMARY` line, content
+    // starting below. The possible forgery of a section boundary by a bare
+    // prose word is an accepted tradeoff.
+    const prompt = [
+      "SUMMARY",
+      "first summary line",
+      "CONTEXT",
+      "the context body",
+      "ACCEPTANCE",
+      "the acceptance body",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+  });
+
+  it("accepts an undecorated bare 'acceptance' line as a section header", () => {
+    // A lone `acceptance` line opens a section and satisfies the hard gate.
+    // Known tradeoff: a prose word could forge the boundary; the alternative
+    // (requiring decoration) rejected real prompts.
+    const prompt = [
+      "**SUMMARY:** fix the flaky auth test",
+      "**CONTEXT:** the auth.login test fails intermittently on CI",
+      "acceptance",
+      "some prose that happens to end the prompt",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+  });
+
+  it("lets a bare 'summary' line re-open the SUMMARY section", () => {
+    const prompt = [
+      "**SUMMARY:** fix the flaky auth test",
+      "**CONTEXT:** the auth.login test fails",
+      "summary",
+      "of what happened afterwards",
+      "**ACCEPTANCE:** all tests pass",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, true);
+    // The bare `summary` line opens a new SUMMARY section, so the lines after
+    // it no longer belong to CONTEXT: "the auth.login test fails" is 4 words.
+    assert.equal(result.ctx_words, 4);
+  });
+
+  it("captures no leaked asterisks for **SUMMARY:** style headers", () => {
+    // `**SUMMARY:**` wraps name + colon in bold; the closing `**` must not
+    // leak into the captured content (word counts are the observable).
+    const prompt = [
+      "**SUMMARY:** one two",
+      "**CONTEXT：** three four five",
+      "**ACCEPTANCE:** six",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, true);
+    // CONTEXT content is "three four five" — 3 words, no leaked `**` token.
+    assert.equal(result.ctx_words, 3);
+  });
+
+  it("accepts bold headers with fullwidth colon: **CONTEXT：**", () => {
+    const prompt = [
+      "**SUMMARY：** 修复间歇性失败的登录测试",
+      "**CONTEXT：** auth.login 在 CI 上间歇性失败",
+      "**ACCEPTANCE：** 所有测试通过",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+  });
+
+  it("rejects a section name appearing mid-line", () => {
+    // Headers are anchored to line start: prose mentioning a section name in
+    // the middle of a sentence must not open a section.
+    const prompt = [
+      "please SUMMARY: fix it somehow",
+      "CONTEXT: The auth.login test fails on CI",
+      "ACCEPTANCE: All tests pass",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => e.includes("SUMMARY")));
+  });
+
+  it("accepts an indented bullet header", () => {
+    const prompt = [
+      "  - SUMMARY: Fix the flaky auth test",
+      "  - CONTEXT: The auth.login test fails on CI",
+      "  - ACCEPTANCE: All tests pass",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+  });
+
+  it("accepts markdown heading prefixes: ## SUMMARY", () => {
+    const prompt = [
+      "## SUMMARY",
+      "Fix the flaky auth test",
+      "### CONTEXT: The auth.login test fails on CI",
+      "#### ACCEPTANCE - All tests pass",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+  });
+
+  it("accepts a fullwidth colon separator: CONTEXT：", () => {
+    const prompt = [
+      "SUMMARY： 修复间歇性失败的登录测试",
+      "CONTEXT： auth.login 在 CI 上间歇性失败",
+      "ACCEPTANCE： 所有测试通过",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+  });
+
+  it("rejects a section name followed by text without any separator", () => {
+    // "SUMMARY 随便文字" is prose, not a header: the name must be followed by
+    // a colon, a spaced dash, or end of line.
+    const prompt = [
+      "SUMMARY 随便文字",
+      "CONTEXT: The auth.login test fails on CI",
+      "ACCEPTANCE: All tests pass",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((e) => e.includes("SUMMARY")));
+  });
+
+  it("rejects a lowercase name followed by text without separator", () => {
+    const prompt = [
+      "summary of the change is here",
+      "CONTEXT: The auth.login test fails on CI",
+      "ACCEPTANCE: All tests pass",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((e) => e.includes("SUMMARY")));
+  });
+
+  it("still rejects a missing section with headers in new formats", () => {
+    const prompt = [
+      "## SUMMARY",
+      "Fix the flaky auth test",
+      "context： 一些背景",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((e) => e.includes("ACCEPTANCE")));
   });
 });
