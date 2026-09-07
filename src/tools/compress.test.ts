@@ -18,7 +18,8 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import type { ToolHost } from "../core/client/tool-host.js";
 import { parseContextConfig } from "../core/config-parse.js";
-import type { HostMessage } from "../core/context/lens.js";
+import type { HostMessage, Projection } from "../core/context/lens.js";
+import { project } from "../core/context/lens.js";
 import {
   _resetContextStateManagerForTesting,
   consumePendingViewChange,
@@ -129,8 +130,8 @@ function makeToolLensMsg(): HostMessage {
     role: "assistant",
     hidden: false,
     regions: [
-      { kind: "tool-input", get: () => "x", tool: { name: "bash" } },
-      { kind: "tool-output", get: () => LONG_OUTPUT, tool: { name: "bash" } },
+      { kind: "tool-input", get: () => "x" },
+      { kind: "tool-output", get: () => LONG_OUTPUT },
     ],
   };
 }
@@ -183,8 +184,8 @@ function fakeHost(messages: HostMessage[]): {
       if (typeof id !== "string" || id.length === 0) return undefined;
       return id;
     },
-    async fetchHistory(_sessionId: string): Promise<HostMessage[]> {
-      return messages;
+    async fetchHistory(_sessionId: string): Promise<Projection> {
+      return project(messages, []);
     },
     async notify(sessionID: string, text: string): Promise<void> {
       notifyCalls.push({ sessionID, text });

@@ -58,11 +58,11 @@ describe("createPiToolHost", () => {
       },
     });
     const host = createPiToolHost(holder);
-    const history = await host.fetchHistory("sess-1");
+    const snapshot = await host.fetchHistory("sess-1");
 
-    assert.equal(history.length, 2);
-    assert.equal(history[0]?.role, "user");
-    assert.equal(history[1]?.role, "assistant");
+    assert.equal(snapshot.messages.length, 2);
+    assert.equal(snapshot.messages[0]?.role, "user");
+    assert.equal(snapshot.messages[1]?.role, "assistant");
   });
 
   it("filters out custom agent message roles", async () => {
@@ -83,10 +83,10 @@ describe("createPiToolHost", () => {
       },
     });
     const host = createPiToolHost(holder);
-    const history = await host.fetchHistory("sess-1");
+    const snapshot = await host.fetchHistory("sess-1");
 
-    assert.equal(history.length, 1);
-    assert.equal(history[0]?.role, "user");
+    assert.equal(snapshot.messages.length, 1);
+    assert.equal(snapshot.messages[0]?.role, "user");
   });
 
   it("throws a Chinese error when buildContextEntries is unavailable", async () => {

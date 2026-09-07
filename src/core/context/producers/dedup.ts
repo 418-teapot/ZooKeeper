@@ -1,13 +1,16 @@
 /**
  * Deduplication producer over the host-agnostic context lens.
  *
- * Scans the transcript for repeated completed tool invocations — same
- * tool name plus input parameters normalised for key order and volatile
- * fields — and writes pending prune marks for every occurrence except
- * the newest.  Marks anchor to the tool-output region: key
- * `(ordinal, regionIndex)` per `state.markKey`, `effective=false` for
- * the two-turn batch release lifecycle.  The module reads tool regions
- * only through `TextRegion` lenses and never rewrites any region text.
+ * Scans the transcript's invocation table for repeated completed tool
+ * invocations — same tool name plus input parameters normalised for key
+ * order and volatile fields — and writes pending prune marks for every
+ * occurrence except the newest.  Marks anchor to the tool-output region:
+ * key `(ordinal, regionIndex)` per `state.markKey`, `effective=false`
+ * for the two-turn batch release lifecycle.  Input text, tool name and
+ * status all come from the invocation entry — the pairing is produced at
+ * projection time by the host adapter, never re-derived from message
+ * layout here.  The module reads tool regions only through `TextRegion`
+ * lenses and never rewrites any region text.
  *
  * Gating is self-contained: the producer skips entirely below the
  * message-count floor and below the context-fraction threshold, and it
@@ -20,7 +23,7 @@
  * @module
  */
 
-import type { HostMessage } from "../lens.js";
+import type { Projection } from "../lens.js";
 import { measureMessages, netReclaimTokens } from "../measure.js";
 import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "../message-parts.js";
 import { markKey, RECALL_MAX_CHARS, type SessionState } from "../state.js";
@@ -221,9 +224,9 @@ function addPendingMark(
 // ---------------------------------------------------------------------------
 
 /**
- * Run dedup over the transcript: scan tool-output regions, group them
- * by signature, and write pending marks for every duplicate except the
- * newest.
+ * Run dedup over the transcript: scan the invocation table, group the
+ * paired calls by signature, and write pending marks for every duplicate
+ * except the newest.
  *
  * Gating order mirrors the legacy hook: an absent protected window
  * skips everything (fail-safe), then the message-count floor, then the
@@ -233,15 +236,17 @@ function addPendingMark(
  *
  * @param state - The session state; `state.marks` is read to skip
  *   already-claimed positions and written with new pending marks.
- * @param messages - The transcript.
+ * @param snapshot - The projection snapshot: the region view plus the
+ *   invocation table this producer scans.
  * @param options - Dedup options; all fields optional.
  * @returns The number of new marks and their total reclaim tokens.
  */
 export function runDedup(
   state: SessionState,
-  messages: HostMessage[],
+  snapshot: Projection,
   options: DedupProducerOptions = {},
 ): DedupRunResult {
+  const messages = snapshot.messages;
   const minMessages = options.minMessages ?? DEFAULT_MIN_MESSAGES;
   const thresholdContext =
     options.thresholdContext ?? DEFAULT_THRESHOLD_CONTEXT;
@@ -275,49 +280,49 @@ export function runDedup(
   // never get a second mark.
   const alreadyMarked = new Set(state.marks.keys());
 
-  // Phase 2: group tool-output regions by signature.
+  // Phase 2: group paired tool invocations by signature.  The pairing
+  // comes from the projection's invocation table — the producer never
+  // re-derives it from message layout.  Calls the table does not pair,
+  // calls still in flight (no linked output), and entries whose region
+  // addresses do not resolve are abstained from (fail-closed).
   const sigMap = new Map<string, DedupEntry[]>();
-  for (let ordinal = 0; ordinal < messages.length; ordinal++) {
-    const msg = messages[ordinal];
-    if (!msg?.regions) continue;
-    if (prunedOrdinals?.(ordinal)) continue;
-    if (ordinal >= protectedStartOrdinal) continue;
+  for (const invocation of snapshot.invocations) {
+    const output = invocation.output;
+    if (output === undefined) continue;
+    const outputRegion = messages[output.ordinal]?.regions[output.regionIndex];
+    if (outputRegion?.kind !== "tool-output") continue;
+    const input = invocation.input;
+    const inputRegion = messages[input.ordinal]?.regions[input.regionIndex];
+    if (inputRegion?.kind !== "tool-input") continue;
+    if (prunedOrdinals?.(output.ordinal)) continue;
+    if (output.ordinal >= protectedStartOrdinal) continue;
 
-    // The input text of a tool-output region is the nearest preceding
-    // tool-input region in the same message (each call's input/output
-    // pair is adjacent in the host layout; the lens carries no ids).
-    let inputText = "";
-    for (let regionIndex = 0; regionIndex < msg.regions.length; regionIndex++) {
-      const region = msg.regions[regionIndex];
-      if (!region) continue;
-      if (region.kind === "tool-input") {
-        inputText = region.get();
-        continue;
-      }
-      if (region.kind !== "tool-output") continue;
+    // Skip rules (migrated verbatim from the legacy producer).
+    const status = invocation.status;
+    if (status !== undefined && status !== "completed") continue;
+    const tool = invocation.name;
+    if (protectedTools.includes(tool)) continue;
+    const key = markKey(output.ordinal, output.regionIndex);
+    if (alreadyMarked.has(key)) continue;
 
-      // Skip rules (migrated verbatim from the legacy producer).
-      const status = region.tool?.status;
-      if (status !== undefined && status !== "completed") continue;
-      const tool = region.tool?.name ?? "";
-      if (protectedTools.includes(tool)) continue;
-      const key = markKey(ordinal, regionIndex);
-      if (alreadyMarked.has(key)) continue;
+    const outputText = outputRegion.get();
+    const estimatedTokens = netReclaimTokens(
+      outputText,
+      PRUNED_TOOL_OUTPUT_REPLACEMENT,
+    );
+    const signature = makeSignature(tool, parseInputText(inputRegion.get()));
 
-      const output = region.get();
-      const estimatedTokens = netReclaimTokens(
-        output,
-        PRUNED_TOOL_OUTPUT_REPLACEMENT,
-      );
-      const signature = makeSignature(tool, parseInputText(inputText));
-
-      let entries = sigMap.get(signature);
-      if (!entries) {
-        entries = [];
-        sigMap.set(signature, entries);
-      }
-      entries.push({ ordinal, regionIndex, output, estimatedTokens });
+    let entries = sigMap.get(signature);
+    if (!entries) {
+      entries = [];
+      sigMap.set(signature, entries);
     }
+    entries.push({
+      ordinal: output.ordinal,
+      regionIndex: output.regionIndex,
+      output: outputText,
+      estimatedTokens,
+    });
   }
 
   // Phase 3: mark older duplicates, keep the newest.

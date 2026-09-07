@@ -25,7 +25,7 @@
  */
 
 import { canon } from "./canon.js";
-import type { HostMessage } from "./lens.js";
+import type { Projection } from "./lens.js";
 
 /** FNV-1a 32-bit offset basis. */
 const FNV_OFFSET_BASIS = 0x811c9dc5;
@@ -85,17 +85,18 @@ function mixMessage(state: number, messageHash: number): number {
  * has no content to vouch for and is rejected).  Use `validateBlock`
  * for the tolerant existence check against persisted data.
  *
- * @param history - The transcript to hash over.
+ * @param snapshot - The projection snapshot to hash over.
  * @param start - First covered ordinal (inclusive).
  * @param end - Last covered ordinal (exclusive).
  * @returns The fixed-length 8-character lowercase hex hash.
  * @throws RangeError when the interval is empty or out of bounds.
  */
 export function computeSpanHash(
-  history: HostMessage[],
+  snapshot: Projection,
   start: number,
   end: number,
 ): string {
+  const history = snapshot.messages;
   if (start < 0 || end > history.length || start >= end) {
     throw new RangeError(
       `invalid span [${start}, ${end}) for history of length ${history.length}`,
@@ -103,7 +104,7 @@ export function computeSpanHash(
   }
   let state = FNV_OFFSET_BASIS;
   for (let i = start; i < end; i++) {
-    state = mixMessage(state, fnv1a(canon(history[i])));
+    state = mixMessage(state, fnv1a(canon(snapshot, i)));
   }
   return state.toString(16).padStart(8, "0");
 }
@@ -133,15 +134,16 @@ export interface HashedSpan {
  * longer contains what was hashed at creation (compaction replacement,
  * mid-span rewrite, or any other content change).
  *
- * @param history - The current transcript.
+ * @param snapshot - The current projection snapshot.
  * @param block - The block record to validate.
  * @returns True when the interval is in bounds and its content hashes
  *   to the stored `spanHash`.
  */
 export function validateBlock(
-  history: HostMessage[],
+  snapshot: Projection,
   block: HashedSpan,
 ): boolean {
+  const history = snapshot.messages;
   if (
     block.start < 0 ||
     block.end > history.length ||
@@ -149,5 +151,5 @@ export function validateBlock(
   ) {
     return false;
   }
-  return computeSpanHash(history, block.start, block.end) === block.spanHash;
+  return computeSpanHash(snapshot, block.start, block.end) === block.spanHash;
 }

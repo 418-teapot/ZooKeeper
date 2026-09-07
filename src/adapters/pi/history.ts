@@ -14,20 +14,21 @@
  * - `image` content block → `content` region for estimation parity, never
  *   an injection target.
  * - `thinking` block → `thinking` region.
- * - `toolCall` block → `tool-input` region with tool name metadata.  The
- *   metadata also carries the call status resolved from the linked
- *   `toolResult` message (`"error"`/`"completed"`, the core vocabulary
- *   purge-errors and sweep/dedup interpret) and the positional address
- *   of that result's tool-output region (`ToolMeta.output`).
- * - `toolResult` message → `tool-output` region with tool name and the
- *   resolved status (`"error"` when `isError`, `"completed"` otherwise).
+ * - `toolCall` block → `tool-input` region.
+ * - `toolResult` message → one `tool-output` region.
  *
  * Tool-call pairing spans two messages on pi: the assistant message
  * holds the `toolCall` block and a separate `toolResult` message holds
- * the result.  `history` indexes the result messages by call id once,
- * so the tool-input region of each call resolves its linked result —
- * matching v1, where both halves of a call live in one message and the
- * part's `state.status` supplies both regions' status.
+ * the result.  `history` indexes the result messages by call id once and
+ * pairs each call with its result **at projection time**, emitting a
+ * first-class invocation table (`Invocation`) alongside the region view.
+ * The call's name, its status resolved from the linked result
+ * (`"error"`/`"completed"`, the core vocabulary purge-errors and
+ * sweep/dedup interpret), and the positional addresses of both halves
+ * live on the table entry — never on the regions.  A call without a
+ * linked result (still in flight) has no status and no output address;
+ * a result whose call id matches no `toolCall` block is left unpaired
+ * and producers abstain from it (fail-closed).
  *
  * Message-level mapping: role passes through unchanged; assistant usage is
  * already flat and maps directly to `TokenUsage`; `hidden` is always false
@@ -38,10 +39,12 @@
 
 import type {
   HostMessage,
+  Invocation,
+  Projection,
   RegionKind,
   TextRegion,
-  ToolMeta,
 } from "../../core/context/lens.js";
+import { project } from "../../core/context/lens.js";
 import type {
   PiAgentMessage,
   PiAssistantMessage,
@@ -135,16 +138,12 @@ export interface WritableRegion extends TextRegion {
  * construction.
  */
 class PiTextRegion implements WritableRegion {
-  readonly tool: ToolMeta | undefined;
-
   constructor(
     readonly kind: RegionKind,
     private readonly read: () => string,
     private readonly write: (text: string) => void,
-    tool: ToolMeta | undefined,
     provenance: RegionProvenance,
   ) {
-    this.tool = tool;
     regionProvenance.set(this, provenance);
   }
 
@@ -214,7 +213,6 @@ function userMessageRegions(message: PiUserMessage): TextRegion[] {
           (text) => {
             message.content = text;
           },
-          undefined,
           "text",
         ),
       );
@@ -232,7 +230,6 @@ function userMessageRegions(message: PiUserMessage): TextRegion[] {
           (text) => {
             part.text = text;
           },
-          undefined,
           "text",
         ),
       );
@@ -245,7 +242,6 @@ function userMessageRegions(message: PiUserMessage): TextRegion[] {
             // Replace the image part with a text part carrying the edit.
             (content as PiContentPart[])[i] = { type: "text", text };
           },
-          undefined,
           "image",
         ),
       );
@@ -258,20 +254,29 @@ function userMessageRegions(message: PiUserMessage): TextRegion[] {
  * Map the content blocks of a pi assistant message to lens regions.
  *
  * Each `toolCall` block resolves its linked `toolResult` message (by
- * call id, via the prebuilt index) so the tool-input region's metadata
- * carries the core status and the positional address of the result's
- * tool-output region.  A call without a linked result — still in flight
- * when the conversation was projected — carries neither: pi provides no
- * state signal for an unanswered call.
+ * call id, via the prebuilt index) and is paired into the invocation
+ * table: the entry carries the tool name, the status resolved from the
+ * linked result, and the positional addresses of both halves.  A call
+ * without a linked result — still in flight when the conversation was
+ * projected — gets an entry with no status and no output half: pi
+ * provides no state signal for an unanswered call.
+ *
+ * @param message - The assistant message to map.
+ * @param resultIndex - Prebuilt call-id to linked-result index.
+ * @param ordinal - Transcript position of this message (input address).
+ * @param invocations - Output parameter: entries are appended in
+ *   message order.
+ * @returns The mapped regions.
  */
 function assistantMessageRegions(
   message: PiAssistantMessage,
   resultIndex: Map<string, LinkedResult>,
+  ordinal: number,
+  invocations: Invocation[],
 ): TextRegion[] {
   const regions: TextRegion[] = [];
   const content = message.content;
-  for (let i = 0; i < content.length; i++) {
-    const block = content[i];
+  for (const block of content) {
     if (block.type === "text") {
       regions.push(
         new PiTextRegion(
@@ -280,7 +285,6 @@ function assistantMessageRegions(
           (text) => {
             block.text = text;
           },
-          undefined,
           "text",
         ),
       );
@@ -292,14 +296,18 @@ function assistantMessageRegions(
           (text) => {
             block.thinking = text;
           },
-          undefined,
           "thinking",
         ),
       );
     } else {
+      const input: Invocation["input"] = {
+        ordinal,
+        regionIndex: regions.length,
+      };
       const result = resultIndex.get(block.id);
-      const tool: ToolMeta = {
+      invocations.push({
         name: block.name,
+        input,
         ...(result
           ? {
               status: statusOf(result.isError),
@@ -308,7 +316,7 @@ function assistantMessageRegions(
               output: { ordinal: result.ordinal, regionIndex: 0 },
             }
           : {}),
-      };
+      });
       regions.push(
         new PiTextRegion(
           "tool-input",
@@ -316,7 +324,6 @@ function assistantMessageRegions(
           (text) => {
             writeArguments(block, text);
           },
-          tool,
           "tool",
         ),
       );
@@ -328,17 +335,13 @@ function assistantMessageRegions(
 /**
  * Map a pi tool-result message to a single tool-output region.
  *
- * A result message always represents a finished call, so the region's
- * tool metadata carries the resolved status: `"error"` when `isError`,
- * `"completed"` otherwise — the same shape v1 gives both regions of a
- * call from the part's `state.status`.
+ * The message maps to exactly one region, at index 0 — the address
+ * every linked `toolCall` block points its output half at (see
+ * `assistantMessageRegions`).  The call's name and status live on the
+ * invocation table, not on this region.
  */
 function toolResultMessageRegions(message: PiToolResultMessage): TextRegion[] {
   const content = message.content;
-  const tool: ToolMeta = {
-    name: message.toolName,
-    status: statusOf(message.isError),
-  };
   let textIndex = -1;
   for (let i = 0; i < content.length; i++) {
     if (content[i].type === "text") {
@@ -359,7 +362,6 @@ function toolResultMessageRegions(message: PiToolResultMessage): TextRegion[] {
           content.push({ type: "text", text });
         }
       },
-      tool,
       "tool",
     ),
   ];
@@ -369,17 +371,25 @@ function toolResultMessageRegions(message: PiToolResultMessage): TextRegion[] {
  * Map one pi message to a host-agnostic lens message.
  *
  * Assistant tool-call blocks resolve their linked tool-result message
- * through the prebuilt call-id index (see `assistantMessageRegions`).
+ * through the prebuilt call-id index and are paired into the
+ * invocation table as they map (see `assistantMessageRegions`).
  */
 function toHostMessage(
   message: PiAgentMessage,
   resultIndex: Map<string, LinkedResult>,
+  ordinal: number,
+  invocations: Invocation[],
 ): HostMessage {
   let regions: TextRegion[];
   if (message.role === "user") {
     regions = userMessageRegions(message);
   } else if (message.role === "assistant") {
-    regions = assistantMessageRegions(message, resultIndex);
+    regions = assistantMessageRegions(
+      message,
+      resultIndex,
+      ordinal,
+      invocations,
+    );
   } else {
     regions = toolResultMessageRegions(message);
   }
@@ -393,19 +403,23 @@ function toHostMessage(
 }
 
 /**
- * Project a pi conversation into host-agnostic lens messages.
+ * Project a pi conversation into a host-agnostic lens snapshot.
  *
  * Ordinals align 1:1 with the input array; pi has no hidden messages, so
  * every message is visible.  The result messages are indexed by call id
- * first so each tool-call block can resolve its linked result and expose
- * the call status and pair linkage through the lens metadata.
+ * first, so each tool-call block pairs its linked result into the
+ * invocation table within the same pass that builds the region view.
  *
  * @param messages - The pi AgentMessage list.
- * @returns The mapped transcript.
+ * @returns The projection snapshot (region view + invocation table).
  */
-export function history(messages: PiAgentMessage[]): HostMessage[] {
+export function history(messages: PiAgentMessage[]): Projection {
   const resultIndex = buildResultIndex(messages);
-  return messages.map((message) => toHostMessage(message, resultIndex));
+  const invocations: Invocation[] = [];
+  const mapped = messages.map((message, ordinal) =>
+    toHostMessage(message, resultIndex, ordinal, invocations),
+  );
+  return project(mapped, invocations);
 }
 
 /**

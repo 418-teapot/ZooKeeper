@@ -13,7 +13,6 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import type { HostMessage } from "../../core/context/lens.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import {
   createV1ToolHost,
@@ -156,7 +155,8 @@ describe("fetchHistory", () => {
       fakeClient({ messages: () => ({ data: [v1Message("user", "Hello")] }) }),
       NO_AGENT,
     );
-    const msgs: HostMessage[] = await host.fetchHistory("sess-1");
+    const snapshot = await host.fetchHistory("sess-1");
+    const msgs = snapshot.messages;
     assert.equal(msgs.length, 1);
     assert.equal(msgs[0].role, "user");
     assert.equal(msgs[0].hidden, false);
@@ -168,9 +168,9 @@ describe("fetchHistory", () => {
       fakeClient({ messages: () => [v1Message("assistant", "Hi")] }),
       NO_AGENT,
     );
-    const msgs: HostMessage[] = await host.fetchHistory("sess-1");
-    assert.equal(msgs.length, 1);
-    assert.equal(msgs[0].role, "assistant");
+    const snapshot = await host.fetchHistory("sess-1");
+    assert.equal(snapshot.messages.length, 1);
+    assert.equal(snapshot.messages[0].role, "assistant");
   });
 
   it("maps an empty data array to an empty transcript", async () => {
@@ -178,8 +178,9 @@ describe("fetchHistory", () => {
       fakeClient({ messages: () => ({ data: [] }) }),
       NO_AGENT,
     );
-    const msgs: HostMessage[] = await host.fetchHistory("sess-1");
-    assert.deepEqual(msgs, []);
+    const snapshot = await host.fetchHistory("sess-1");
+    assert.deepEqual(snapshot.messages, []);
+    assert.deepEqual(snapshot.invocations, []);
   });
 
   it("rejects on res.error with its message", async () => {

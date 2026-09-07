@@ -48,7 +48,7 @@ export function applyEdits(
   entries: ContextMessageEntry[],
   edits: RegionEdit[],
 ): void {
-  const lens = history(entries);
+  const lens = history(entries).messages;
   for (const edit of edits) {
     if (edit.regionIndex === undefined) continue;
     const region = lens[edit.messageOrdinal]?.regions?.[edit.regionIndex];
@@ -130,7 +130,7 @@ export function renderView(
   items: ViewItem[],
   state: SessionState,
 ): ContextMessageEntry[] {
-  const lens = history(entries);
+  const lens = history(entries).messages;
   const numbered = numberView(items, (ordinal) => lens[ordinal].hidden);
   const lineByItem = new Map<ViewItem, number>();
   for (const { n, item } of numbered) {

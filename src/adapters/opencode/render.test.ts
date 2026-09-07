@@ -19,7 +19,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { fold } from "../../core/context/fold.js";
-import type { HostMessage, RegionEdit } from "../../core/context/lens.js";
+import type { Projection, RegionEdit } from "../../core/context/lens.js";
 import {
   PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
@@ -117,7 +117,7 @@ function seedMark(
 /** Seed an active compression block over `[start, end)`. */
 function seedBlock(
   state: SessionState,
-  lens: HostMessage[],
+  lens: Projection,
   id: number,
   start: number,
   end: number,
@@ -142,21 +142,22 @@ function seedBlock(
  * then render the view with those edits applied.
  *
  * @param buildEntries - Builds a fresh v1 fixture.
- * @param seed - Seeds blocks and marks on the state (lens for hashes).
+ * @param seed - Seeds blocks and marks on the state (projection for
+ *   span hashes).
  * @param options - Release gate inputs.
  * @returns The rendered v1 messages array.
  */
 function runRound(
   buildEntries: () => ContextMessageEntry[],
-  seed: (state: SessionState, lens: HostMessage[]) => void,
+  seed: (state: SessionState, snapshot: Projection) => void,
   options: ReleaseOptions,
 ): ContextMessageEntry[] {
   const entries = buildEntries();
-  const lens = history(entries);
+  const snapshot = history(entries);
   const state = makeNewState();
-  seed(state, lens);
-  const edits = computeEdits(state, lens, options);
-  const items = fold(lens, state).items;
+  seed(state, snapshot);
+  const edits = computeEdits(state, snapshot.messages, options);
+  const items = fold(snapshot, state).items;
   return render(entries, items, edits, state);
 }
 
@@ -342,12 +343,12 @@ describe("render behavior", () => {
       entry("user", "u0", [text("开场")]),
       entry("assistant", "a1", [reasoning("旧推理")]),
     ];
-    const lens = history(entries);
+    const snapshot = history(entries);
     const state = makeNewState();
     const edits: RegionEdit[] = [
       { messageOrdinal: 1, regionIndex: 0, text: "新推理" },
     ];
-    const out = render(entries, fold(lens, state).items, edits, state);
+    const out = render(entries, fold(snapshot, state).items, edits, state);
     assert.equal(out, entries, "same array reference returned");
     assert.equal(partText(entries[0], 0), "[m1] 开场");
     // The thinking region has no injection provenance — the edit text
@@ -365,13 +366,13 @@ describe("render behavior", () => {
     ];
     const state = makeNewState();
     seedMark(state, 1, 2, true, 100);
-    const lens = history(entries);
-    const edits = computeEdits(state, lens, {
+    const snapshot = history(entries);
+    const edits = computeEdits(state, snapshot.messages, {
       promptTokens: 100_000,
       releasedPercent: 0,
       pendingViewChange: false,
     });
-    const items = fold(lens, state).items;
+    const items = fold(snapshot, state).items;
 
     // Split path: apply the edits first, then render the view.
     applyEdits(entries, edits);
@@ -385,14 +386,14 @@ describe("render behavior", () => {
 
   it("skips edits whose anchor cannot be resolved", () => {
     const entries = [entry("user", "u0", [text("开场")])];
-    const lens = history(entries);
+    const snapshot = history(entries);
     const state = makeNewState();
     const edits: RegionEdit[] = [
       { messageOrdinal: 9, regionIndex: 0, text: "x" }, // vanished message
       { messageOrdinal: 0, regionIndex: 5, text: "y" }, // out-of-range region
       { messageOrdinal: 0, text: "z" }, // no region index
     ];
-    render(entries, fold(lens, state).items, edits, state);
+    render(entries, fold(snapshot, state).items, edits, state);
     assert.equal(partText(entries[0], 0), "[m1] 开场");
   });
 
@@ -404,10 +405,10 @@ describe("render behavior", () => {
       entry("assistant", "a3", [text("回答二")]),
       entry("assistant", "a4", [text("回答三")]),
     ];
-    const lens = history(entries);
+    const snapshot = history(entries);
     const state = makeNewState();
-    seedBlock(state, lens, 1, 1, 3, "第一段", "摘要正文");
-    render(entries, fold(lens, state).items, [], state);
+    seedBlock(state, snapshot, 1, 1, 3, "第一段", "摘要正文");
+    render(entries, fold(snapshot, state).items, [], state);
 
     assert.equal(entries.length, 4);
     assert.equal(entries[1].info.synthetic, true);

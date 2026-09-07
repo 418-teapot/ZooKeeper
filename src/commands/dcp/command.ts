@@ -227,7 +227,8 @@ export async function handleDcpCommand(
   if (!toolHost?.fetchHistory) {
     throw new Error("无法获取会话消息：会话消息 API 不可用");
   }
-  const view = await toolHost.fetchHistory(sessionID);
+  const snapshot = await toolHost.fetchHistory(sessionID);
+  const view = snapshot.messages;
 
   // ── Read state from the shared manager ────────────────────────────
   // The process-wide manager (shared with the hook and the tools) holds
@@ -255,7 +256,7 @@ export async function handleDcpCommand(
   let storageCount: number | undefined;
   try {
     if (state) {
-      const { items } = fold(view, state);
+      const { items } = fold(snapshot, state);
       const counts = countFoldedMessages(items, view);
       foldedCount = counts.foldedMessageCount;
       storageCount = counts.storageMessageCount;
@@ -343,7 +344,7 @@ async function handleSweepSubcommand(
   if (!toolHost?.fetchHistory) {
     throw new Error("无法获取会话消息：会话消息 API 不可用");
   }
-  const view = await toolHost.fetchHistory(sessionID);
+  const view = (await toolHost.fetchHistory(sessionID)).messages;
 
   // ── Select regions and write pending marks ───────────────────────
   const manager = getContextStateManager();

@@ -28,6 +28,7 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import type { ToolHost } from "../../core/client/tool-host.js";
 import type { HostAdapter, HostMessage } from "../../core/context/lens.js";
+import { project } from "../../core/context/lens.js";
 import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "../../core/context/message-parts.js";
 import {
   _resetForTesting as _resetModelLimitsForTesting,
@@ -822,7 +823,7 @@ describe("context-nudge injection", () => {
     }> = [];
     const toolHost: ToolHost = {
       resolveSessionId: () => undefined,
-      fetchHistory: async () => [],
+      fetchHistory: async () => project([], []),
       notify: async () => {},
       toast: (sessionId, t) => {
         calls.push({
@@ -867,7 +868,7 @@ describe("context-nudge injection", () => {
     // A host that implements notify but not the optional toast port.
     const toolHost: ToolHost = {
       resolveSessionId: () => undefined,
-      fetchHistory: async () => [],
+      fetchHistory: async () => project([], []),
       notify: async () => {},
     };
     handleContextPruning(
@@ -1110,17 +1111,20 @@ describe("pure adapter pipeline support", () => {
    */
   const mockAdapter: HostAdapter<MockMessage[]> = {
     history(messages) {
-      return messages.map(
-        (m): HostMessage => ({
-          role: "user",
-          hidden: false,
-          regions: [
-            {
-              kind: "content",
-              get: () => m.text,
-            },
-          ],
-        }),
+      return project(
+        messages.map(
+          (m): HostMessage => ({
+            role: "user",
+            hidden: false,
+            regions: [
+              {
+                kind: "content",
+                get: () => m.text,
+              },
+            ],
+          }),
+        ),
+        [],
       );
     },
     applyEdits(messages, edits) {

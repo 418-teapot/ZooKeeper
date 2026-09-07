@@ -63,7 +63,7 @@ export type DecompressToolDefinition = {
   execute(args: unknown, toolCtx: unknown): Promise<string>;
 };
 
-export type DecompressToolMetadata = Omit<DecompressToolDefinition, "execute">;
+export type DecompressToolSpec = Omit<DecompressToolDefinition, "execute">;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -107,9 +107,9 @@ function validateDecompressArgs(args: unknown): DecompressToolInput {
  * @param _contextConfig - The parsed context-pruning config.
  * @returns The tool description and args schema.
  */
-function buildDecompressToolMetadata(
+function buildDecompressToolSpec(
   _contextConfig: ContextPruningConfig,
-): DecompressToolMetadata {
+): DecompressToolSpec {
   return {
     description: `恢复被压缩成摘要的块中的内容。当原文过长时，会拒绝恢复。`,
     args: {
@@ -139,7 +139,7 @@ export function createDecompressTool(
   contextConfig: ContextPruningConfig,
 ): DecompressToolDefinition {
   return {
-    ...buildDecompressToolMetadata(contextConfig),
+    ...buildDecompressToolSpec(contextConfig),
     async execute(args, toolCtx) {
       const sessionID = host.resolveSessionId(toolCtx);
       if (sessionID === undefined) {
@@ -181,7 +181,8 @@ export function createDecompressTool(
       }
 
       // ── Restore path ─────────────────────────────────────────────
-      const view = await host.fetchHistory(sessionID);
+      const history = await host.fetchHistory(sessionID);
+      const view = history.messages;
       const currentPromptTokens = measureMessages(view).total;
       const contextLimit = getModelLimit(sessionID)?.context;
 
@@ -248,7 +249,7 @@ export const unit: ToolUnitDescriptor = {
   kind: "tool",
   create(deps) {
     const host = deps.toolHost;
-    const metadata = buildDecompressToolMetadata(deps.contextConfig);
+    const metadata = buildDecompressToolSpec(deps.contextConfig);
     if (host === undefined) {
       return {
         kind: "tool",

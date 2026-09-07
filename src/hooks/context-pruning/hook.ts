@@ -59,7 +59,11 @@ import type { ContextPruningConfig } from "../../core/config-types.js";
 import { computeProtectedStartOrdinal } from "../../core/context/compress.js";
 import { formatTokens } from "../../core/context/context-report.js";
 import { fold } from "../../core/context/fold.js";
-import type { HostAdapter, HostMessage } from "../../core/context/lens.js";
+import type {
+  HostAdapter,
+  HostMessage,
+  Projection,
+} from "../../core/context/lens.js";
 import { findLastCompletedAssistant } from "../../core/context/measure.js";
 import { getModelLimit } from "../../core/context/model-limits.js";
 import {
@@ -161,16 +165,16 @@ function fractionOf(
  * survival, so the predicate and the fold never disagree.
  *
  * @param state - The session state.
- * @param view - The lens transcript.
+ * @param snapshot - The projection snapshot.
  * @returns The covered ordinals.
  */
 function coveredOrdinalsOf(
   state: SessionState,
-  view: HostMessage[],
+  snapshot: Projection,
 ): Set<number> {
   const covered = new Set<number>();
   for (const block of state.blocks.values()) {
-    if (!block.active || !validateBlock(view, block)) continue;
+    if (!block.active || !validateBlock(snapshot, block)) continue;
     for (let ordinal = block.start; ordinal < block.end; ordinal++) {
       covered.add(ordinal);
     }
@@ -235,7 +239,8 @@ export function contextPruningTransformHandler(
   // The process-wide shared manager (hook/tool/dcp single instance).
   const manager = getContextStateManager();
   const state = getRuntimeFlaggedState(sessionId);
-  let view = adapter.history(messages);
+  let snapshot = adapter.history(messages);
+  let view = snapshot.messages;
   const promptTokens = promptSideTokens(view);
 
   // ── Phase 2: release — start of turn ──────────────────────────────
@@ -262,7 +267,8 @@ export function contextPruningTransformHandler(
   // and must observe the placeholder text.
   const releaseEdits = computeEdits(state, view, releaseOptions);
   messages = adapter.applyEdits(messages, releaseEdits);
-  view = adapter.history(messages);
+  snapshot = adapter.history(messages);
+  view = snapshot.messages;
   const released = flipReleasedMarks(state, releaseOptions);
   viewChangeFlags.delete(sessionId);
 
@@ -302,11 +308,11 @@ export function contextPruningTransformHandler(
           config.protectedMessages,
           config.compress?.protectedTokens ?? 0,
         );
-  const covered = coveredOrdinalsOf(state, view);
+  const covered = coveredOrdinalsOf(state, snapshot);
   const prunedOrdinals = (ordinal: number): boolean => covered.has(ordinal);
 
   if (config.dedup?.thresholdContext !== undefined) {
-    const result = runDedup(state, view, {
+    const result = runDedup(state, snapshot, {
       thresholdContext: fractionOf(config.dedup.thresholdContext, contextLimit),
       contextLimit,
       protectedStartOrdinal,
@@ -322,7 +328,7 @@ export function contextPruningTransformHandler(
   }
 
   if (config.purgeErrors?.thresholdContext !== undefined) {
-    const result = runPurgeErrors(state, view, {
+    const result = runPurgeErrors(state, snapshot, {
       thresholdContext: fractionOf(
         config.purgeErrors.thresholdContext,
         contextLimit,
@@ -347,7 +353,7 @@ export function contextPruningTransformHandler(
     }
   }
 
-  const sweepResult = runSweep(state, view, {
+  const sweepResult = runSweep(state, snapshot, {
     contextLimit,
     protectedStartOrdinal,
     prunedOrdinals,
@@ -364,7 +370,7 @@ export function contextPruningTransformHandler(
   // content changed) are deactivated and reported; deactivation and
   // any other fold change arm the view-change flag that forces the
   // next release regardless of the releasedPercent threshold.
-  const folded = fold(view, state);
+  const folded = fold(snapshot, state);
   if (folded.expiredBlockIds.length > 0) {
     for (const id of folded.expiredBlockIds) {
       const block = state.blocks.get(id);

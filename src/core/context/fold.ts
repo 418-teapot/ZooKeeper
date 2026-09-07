@@ -28,7 +28,7 @@
  * @module
  */
 
-import type { HostMessage, ViewItem } from "./lens.js";
+import type { Projection, ViewItem } from "./lens.js";
 import { validateBlock } from "./spanhash.js";
 import type { Block, SessionState } from "./state.js";
 
@@ -59,7 +59,7 @@ export interface FoldResult {
  * transcript members and appear as original items; fold does no hidden
  * filtering.
  *
- * Block survival is `active && validateBlock(history, block)`.  An
+ * Block survival is `active && validateBlock(snapshot, block)`.  An
  * active block that fails validation silently expands: its ordinals
  * revert to original items, its id lands in `expiredBlockIds`, and
  * `viewChanged` is set.  An inactive block expands the same way but is
@@ -73,17 +73,19 @@ export interface FoldResult {
  * path prevents overlap via `hasActiveOverlap`, so this branch is
  * defensive — it must not be removed or left untested.
  *
- * @param history - The current transcript (not mutated).
+ * @param snapshot - The current projection snapshot (span validation
+ *   resolves tool names through the invocation table).
  * @param state - The session state; only `state.blocks` is read.
  * @returns The folded view plus change and expiry signals.
  */
-export function fold(history: HostMessage[], state: SessionState): FoldResult {
+export function fold(snapshot: Projection, state: SessionState): FoldResult {
+  const history = snapshot.messages;
   const expiredBlockIds: number[] = [];
   const surviving: Block[] = [];
   let viewChanged = false;
 
   for (const [id, block] of state.blocks) {
-    if (!block.active || !validateBlock(history, block)) {
+    if (!block.active || !validateBlock(snapshot, block)) {
       viewChanged = true;
       if (block.active) expiredBlockIds.push(id);
       continue;

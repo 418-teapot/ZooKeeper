@@ -19,7 +19,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { fold } from "./fold.js";
 import type { HostMessage, ViewItem } from "./lens.js";
-import { makeAssistantMsg, makeMsg } from "./lens-testkit.js";
+import { makeAssistantMsg, makeMsg, projectMessages } from "./lens-testkit.js";
 import { computeSpanHash } from "./spanhash.js";
 import type { Block, SessionState } from "./state.js";
 import {
@@ -63,7 +63,7 @@ function makeBlock(
     start,
     end,
     summary: `summary [${start}, ${end})`,
-    spanHash: computeSpanHash(history, start, end),
+    spanHash: computeSpanHash(projectMessages(history), start, end),
     active: true,
     compressedTokens: 100,
     summaryTokens: 10,
@@ -320,7 +320,7 @@ describe("swallowed blocks occupy no line", () => {
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 1, 3));
     state.blocks.set(2, makeBlock(history, 2, 5));
-    const { items } = fold(history, state);
+    const { items } = fold(projectMessages(history), state);
     // One summary item for the union; the swallowed block's summary item
     // is absent, so the numbering has no gap.
     assert.equal(items.filter((item) => item.type === "summary").length, 1);

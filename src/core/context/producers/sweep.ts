@@ -29,8 +29,8 @@
  * @module
  */
 
-import type { HostMessage } from "../lens.js";
-import { findLastUserOrdinal } from "../lens.js";
+import type { Projection } from "../lens.js";
+import { findLastUserOrdinal, invocationForRegion } from "../lens.js";
 import { measureMessages, netReclaimTokens } from "../measure.js";
 import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "../message-parts.js";
 import { markKey, RECALL_MAX_CHARS, type SessionState } from "../state.js";
@@ -174,15 +174,17 @@ function addPendingMark(
  *
  * @param state - The session state; `state.marks` is read to skip
  *   already-claimed positions and written with new pending marks.
- * @param messages - The transcript.
+ * @param snapshot - The projection snapshot: the region view plus the
+ *   invocation table whose entries supply each output's status.
  * @param options - Sweep options; all fields optional.
  * @returns The number of new marks and their total reclaim tokens.
  */
 export function runSweep(
   state: SessionState,
-  messages: HostMessage[],
+  snapshot: Projection,
   options: SweepProducerOptions = {},
 ): SweepRunResult {
+  const messages = snapshot.messages;
   const thresholdContext =
     options.thresholdContext ?? DEFAULT_THRESHOLD_CONTEXT;
   const prunedOrdinals = options.prunedOrdinals;
@@ -236,8 +238,12 @@ export function runSweep(
       if (!region) continue;
       if (region.kind !== "tool-output") continue;
 
-      // Only completed calls are expired.
-      const status = region.tool?.status;
+      // Only completed calls are expired.  The status comes from the
+      // invocation owning this output region; an output the table does
+      // not pair carries no status — the producer abstains (fail-closed).
+      const invocation = invocationForRegion(snapshot, ordinal, regionIndex);
+      if (invocation === undefined) continue;
+      const status = invocation.status;
       if (status !== undefined && status !== "completed") continue;
 
       const output = region.get();

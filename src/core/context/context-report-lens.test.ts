@@ -102,7 +102,7 @@ function summaryMsg(text: string): ContextMessageEntry {
  * Assert that the lens report equals the v1 report field-for-field.
  */
 function assertReportParity(v1Messages: ContextMessageEntry[]): void {
-  const lensMessages: HostMessage[] = history(v1Messages);
+  const lensMessages: HostMessage[] = history(v1Messages).messages;
   const v1 = v1ComputeContextReport(v1Messages);
   const lens = computeContextReportLens(lensMessages);
   assert.deepEqual(

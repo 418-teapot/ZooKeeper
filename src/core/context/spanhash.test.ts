@@ -15,7 +15,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { canon } from "./canon.js";
 import type { HostMessage } from "./lens.js";
-import { makeAssistantMsg, makeMsg, setRegionText } from "./lens-testkit.js";
+import {
+  makeAssistantMsg,
+  makeMsg,
+  projectMessages,
+  setRegionText,
+} from "./lens-testkit.js";
 import {
   PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
@@ -49,7 +54,11 @@ function makeBlock(
   start: number,
   end: number,
 ): HashedSpan {
-  return { start, end, spanHash: computeSpanHash(history, start, end) };
+  return {
+    start,
+    end,
+    spanHash: computeSpanHash(projectMessages(history), start, end),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -60,15 +69,24 @@ describe("truncation", () => {
   it("a block is invalidated when the tail is cut into its interval", () => {
     const history = makeTranscript();
     const block = makeBlock(history, 1, 5);
-    assert.equal(validateBlock(history.slice(0, 4), block), false);
+    assert.equal(
+      validateBlock(projectMessages(history.slice(0, 4)), block),
+      false,
+    );
   });
 
   it("a block survives truncation that keeps its interval intact", () => {
     const history = makeTranscript();
     const block = makeBlock(history, 1, 5);
     // Cut exactly at the block's end and beyond: interval fully present.
-    assert.equal(validateBlock(history.slice(0, 5), block), true);
-    assert.equal(validateBlock(history.slice(0, 6), block), true);
+    assert.equal(
+      validateBlock(projectMessages(history.slice(0, 5)), block),
+      true,
+    );
+    assert.equal(
+      validateBlock(projectMessages(history.slice(0, 6)), block),
+      true,
+    );
   });
 });
 
@@ -82,7 +100,7 @@ describe("compaction replacement", () => {
     const block = makeBlock(history, 1, 5);
     const compacted = [...history];
     compacted[2] = makeMsg("user", ["[summary of messages 1-4]"]);
-    assert.equal(validateBlock(compacted, block), false);
+    assert.equal(validateBlock(projectMessages(compacted), block), false);
   });
 
   it("an identical-content replacement keeps the block valid (control)", () => {
@@ -90,7 +108,7 @@ describe("compaction replacement", () => {
     const block = makeBlock(history, 1, 5);
     const same = [...history];
     same[2] = makeMsg("user", [history[2].regions[0].get()]);
-    assert.equal(validateBlock(same, block), true);
+    assert.equal(validateBlock(projectMessages(same), block), true);
   });
 });
 
@@ -106,7 +124,7 @@ describe("mid-span rewrite", () => {
     // "answer" -> "answrX": same length, different content, first and last
     // covered messages intact.
     rewritten[3] = makeMsg("assistant", ["answrX"]);
-    assert.equal(validateBlock(rewritten, block), false);
+    assert.equal(validateBlock(projectMessages(rewritten), block), false);
   });
 });
 
@@ -119,14 +137,14 @@ describe("fork prefix", () => {
     const history = makeTranscript();
     const block = makeBlock(history, 1, 5);
     const forked = history.slice(0, 5); // fork exactly at the block's end
-    assert.equal(validateBlock(forked, block), true);
+    assert.equal(validateBlock(projectMessages(forked), block), true);
   });
 
   it("a fork that cuts into the interval makes the block out of bounds", () => {
     const history = makeTranscript();
     const block = makeBlock(history, 1, 5);
     const forked = history.slice(0, 3);
-    assert.equal(validateBlock(forked, block), false);
+    assert.equal(validateBlock(projectMessages(forked), block), false);
   });
 
   it("a diverged tail beyond the interval leaves the block alive", () => {
@@ -134,7 +152,7 @@ describe("fork prefix", () => {
     const block = makeBlock(history, 1, 5);
     const diverged = [...history];
     diverged[5] = makeMsg("assistant", ["divergent tail"]);
-    assert.equal(validateBlock(diverged, block), true);
+    assert.equal(validateBlock(projectMessages(diverged), block), true);
   });
 });
 
@@ -159,7 +177,7 @@ describe("suicide block protection", () => {
     ];
     const block = makeBlock(history, 1, 3);
     const mutated = history[1];
-    const canonBefore = canon(mutated);
+    const canonBefore = canon(projectMessages([mutated]), 0);
 
     // Tool-output prune (sweep/dedup).
     setRegionText(mutated, 3, PRUNED_TOOL_OUTPUT_REPLACEMENT);
@@ -170,8 +188,8 @@ describe("suicide block protection", () => {
 
     // canon is invariant under the placeholder mutations, so the span
     // hash is unchanged and the block still validates.
-    assert.equal(canon(mutated), canonBefore);
-    assert.equal(validateBlock(history, block), true);
+    assert.equal(canon(projectMessages([mutated]), 0), canonBefore);
+    assert.equal(validateBlock(projectMessages(history), block), true);
   });
 
   it("a line-start ref marker in content breaks validation (hashed verbatim)", () => {
@@ -197,7 +215,7 @@ describe("suicide block protection", () => {
     // hits this — hashing runs before the injection phase on pristine
     // text — but persisted text containing a line-start marker hashes
     // verbatim (accepted consequence).
-    assert.equal(validateBlock(history, block), false);
+    assert.equal(validateBlock(projectMessages(history), block), false);
   });
 });
 
@@ -218,8 +236,8 @@ describe("hidden messages", () => {
       makeMsg("user", ["q"]),
     ];
     assert.notEqual(
-      computeSpanHash(original, 0, 3),
-      computeSpanHash(rewritten, 0, 3),
+      computeSpanHash(projectMessages(original), 0, 3),
+      computeSpanHash(projectMessages(rewritten), 0, 3),
     );
   });
 
@@ -234,7 +252,10 @@ describe("hidden messages", () => {
       makeMsg("assistant", ["h"], { hidden: true }),
       makeMsg("user", ["q"]),
     ];
-    assert.equal(computeSpanHash(visible, 0, 3), computeSpanHash(hidden, 0, 3));
+    assert.equal(
+      computeSpanHash(projectMessages(visible), 0, 3),
+      computeSpanHash(projectMessages(hidden), 0, 3),
+    );
   });
 });
 
@@ -246,21 +267,27 @@ describe("rolling composition", () => {
   it("is deterministic for identical input", () => {
     const history = makeTranscript();
     assert.equal(
-      computeSpanHash(history, 1, 5),
-      computeSpanHash(history, 1, 5),
+      computeSpanHash(projectMessages(history), 1, 5),
+      computeSpanHash(projectMessages(history), 1, 5),
     );
   });
 
   it("is order-sensitive", () => {
     const ab = [makeMsg("user", ["a"]), makeMsg("user", ["b"])];
     const ba = [makeMsg("user", ["b"]), makeMsg("user", ["a"])];
-    assert.notEqual(computeSpanHash(ab, 0, 2), computeSpanHash(ba, 0, 2));
+    assert.notEqual(
+      computeSpanHash(projectMessages(ab), 0, 2),
+      computeSpanHash(projectMessages(ba), 0, 2),
+    );
   });
 
   it("does not confuse a two-message span [a, b] with a single [ab]", () => {
     const two = [makeMsg("user", ["a"]), makeMsg("user", ["b"])];
     const one = [makeMsg("user", ["ab"])];
-    assert.notEqual(computeSpanHash(two, 0, 2), computeSpanHash(one, 0, 1));
+    assert.notEqual(
+      computeSpanHash(projectMessages(two), 0, 2),
+      computeSpanHash(projectMessages(one), 0, 1),
+    );
   });
 
   it("returns a fixed-length lowercase hex string", () => {
@@ -271,7 +298,10 @@ describe("rolling composition", () => {
       [2, 3],
     ]) {
       const [start, end] = span;
-      assert.match(computeSpanHash(history, start, end), /^[0-9a-f]{8}$/);
+      assert.match(
+        computeSpanHash(projectMessages(history), start, end),
+        /^[0-9a-f]{8}$/,
+      );
     }
   });
 });
@@ -294,17 +324,29 @@ describe("fnv1a", () => {
 
 describe("range defense", () => {
   it("throws on a negative start", () => {
-    assert.throws(() => computeSpanHash(makeTranscript(), -1, 3), RangeError);
+    assert.throws(
+      () => computeSpanHash(projectMessages(makeTranscript()), -1, 3),
+      RangeError,
+    );
   });
 
   it("throws when the end exceeds the history length", () => {
-    assert.throws(() => computeSpanHash(makeTranscript(), 1, 9), RangeError);
+    assert.throws(
+      () => computeSpanHash(projectMessages(makeTranscript()), 1, 9),
+      RangeError,
+    );
   });
 
   it("throws on an empty or inverted span", () => {
     const history = makeTranscript();
-    assert.throws(() => computeSpanHash(history, 2, 2), RangeError);
-    assert.throws(() => computeSpanHash(history, 4, 2), RangeError);
+    assert.throws(
+      () => computeSpanHash(projectMessages(history), 2, 2),
+      RangeError,
+    );
+    assert.throws(
+      () => computeSpanHash(projectMessages(history), 4, 2),
+      RangeError,
+    );
   });
 
   it("validateBlock reports invalid spans as false without throwing", () => {
@@ -316,7 +358,7 @@ describe("range defense", () => {
       { start: 4, end: 2, spanHash: "00000000" },
     ];
     for (const block of invalid) {
-      assert.equal(validateBlock(history, block), false);
+      assert.equal(validateBlock(projectMessages(history), block), false);
     }
   });
 });

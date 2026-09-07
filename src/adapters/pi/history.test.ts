@@ -20,7 +20,7 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { TextRegion } from "../../core/context/lens.js";
+import type { HostMessage, TextRegion } from "../../core/context/lens.js";
 import { makeMsg } from "../../core/context/lens-testkit.js";
 import {
   PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
@@ -85,8 +85,17 @@ function toolResultMessage(
   return { role: "toolResult", toolCallId, toolName, content, isError };
 }
 
-function regionsOf(message: PiAgentMessage) {
-  return history([message])[0].regions;
+function regionsOf(message: PiAgentMessage): TextRegion[] {
+  return messagesOf([message])[0].regions;
+}
+
+/**
+ * The region view of a pi transcript (most tests here ignore the
+ * invocation table; pairing is pinned in "tool pair status and
+ * linkage").
+ */
+function messagesOf(piMessages: PiAgentMessage[]): HostMessage[] {
+  return history(piMessages).messages;
 }
 
 // ---------------------------------------------------------------------------
@@ -147,13 +156,14 @@ describe("pi block → region mapping", () => {
     assert.equal(region.get(), "trace");
   });
 
-  it("toolCall block maps to a tool-input region with tool name", () => {
-    const [region] = regionsOf(
+  it("toolCall block maps to a tool-input region, name on the table", () => {
+    const snapshot = history([
       assistantMessage([toolCallPart("call-1", "bash", { cmd: "ls" })]),
-    );
+    ]);
+    const [region] = snapshot.messages[0].regions;
     assert.equal(region.kind, "tool-input");
     assert.equal(region.get(), '{"cmd":"ls"}');
-    assert.equal(region.tool?.name, "bash");
+    assert.equal(snapshot.invocations[0].name, "bash");
   });
 
   it("toolCall with null/undefined arguments maps to empty string", () => {
@@ -176,7 +186,7 @@ describe("pi block → region mapping", () => {
   });
 
   it("assistant usage maps flat to TokenUsage", () => {
-    const [msg] = history([
+    const [msg] = messagesOf([
       assistantMessage([textPart("ok")], {
         input: 10,
         output: 20,
@@ -203,7 +213,6 @@ describe("pi block → region mapping", () => {
     );
     assert.equal(region.kind, "tool-output");
     assert.equal(region.get(), "line1line2");
-    assert.equal(region.tool?.name, "bash");
   });
 
   it("toolResult ignores image blocks when joining text", () => {
@@ -214,10 +223,13 @@ describe("pi block → region mapping", () => {
   });
 
   it("every message is visible (hidden is always false)", () => {
-    assert.equal(history([userMessage("x")])[0].hidden, false);
-    assert.equal(history([assistantMessage([textPart("x")])])[0].hidden, false);
+    assert.equal(messagesOf([userMessage("x")])[0].hidden, false);
     assert.equal(
-      history([toolResultMessage("c", "t", [textPart("x")])])[0].hidden,
+      messagesOf([assistantMessage([textPart("x")])])[0].hidden,
+      false,
+    );
+    assert.equal(
+      messagesOf([toolResultMessage("c", "t", [textPart("x")])])[0].hidden,
       false,
     );
   });
@@ -241,26 +253,30 @@ describe("pi block → region mapping", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Tool pair linkage (status + output address)
+// Tool pair linkage (the invocation table)
 // ---------------------------------------------------------------------------
 
 describe("tool pair status and linkage", () => {
-  it("errored pair surfaces error status on both halves", () => {
+  it("errored pair surfaces error status on the invocation entry", () => {
     const messages: PiAgentMessage[] = [
       userMessage("do it"),
       assistantMessage([toolCallPart("call-1", "bash", { cmd: "ls" })]),
       toolResultMessage("call-1", "bash", [textPart("boom")], true),
     ];
-    const mapped = history(messages);
-    const input = mapped[1].regions[0];
-    const output = mapped[2].regions[0];
+    const snapshot = history(messages);
+    assert.deepEqual(snapshot.invocations, [
+      {
+        name: "bash",
+        status: "error",
+        input: { ordinal: 1, regionIndex: 0 },
+        output: { ordinal: 2, regionIndex: 0 },
+      },
+    ]);
+    // Regions are a pure text lens: no pairing travels on them.
+    const input = snapshot.messages[1].regions[0];
+    const output = snapshot.messages[2].regions[0];
     assert.equal(input.kind, "tool-input");
-    assert.equal(input.tool?.name, "bash");
-    assert.equal(input.tool?.status, "error");
-    assert.deepEqual(input.tool?.output, { ordinal: 2, regionIndex: 0 });
     assert.equal(output.kind, "tool-output");
-    assert.equal(output.tool?.name, "bash");
-    assert.equal(output.tool?.status, "error");
   });
 
   it("clean pair surfaces completed status and the linked output address", () => {
@@ -269,22 +285,36 @@ describe("tool pair status and linkage", () => {
       assistantMessage([toolCallPart("call-1", "bash", { cmd: "ls" })]),
       toolResultMessage("call-1", "bash", [textPart("total 12")]),
     ];
-    const mapped = history(messages);
-    const input = mapped[1].regions[0];
-    const output = mapped[2].regions[0];
-    assert.equal(input.tool?.status, "completed");
-    assert.deepEqual(input.tool?.output, { ordinal: 2, regionIndex: 0 });
-    assert.equal(output.tool?.status, "completed");
+    const snapshot = history(messages);
+    const invocation = snapshot.invocations[0];
+    assert.equal(invocation.status, "completed");
+    assert.deepEqual(invocation.input, { ordinal: 1, regionIndex: 0 });
+    assert.deepEqual(invocation.output, { ordinal: 2, regionIndex: 0 });
+    // The reverse index resolves both halves to the same entry.
+    assert.equal(snapshot.byRegion.get("1:0"), invocation);
+    assert.equal(snapshot.byRegion.get("2:0"), invocation);
   });
 
-  it("unlinked toolCall carries neither status nor output address", () => {
-    const [msg] = history([
+  it("unlinked toolCall carries neither status nor output half", () => {
+    const snapshot = history([
       assistantMessage([toolCallPart("call-1", "bash", { cmd: "ls" })]),
     ]);
-    const input = msg.regions[0];
-    assert.equal(input.tool?.name, "bash");
-    assert.equal(input.tool?.status, undefined);
-    assert.equal(input.tool?.output, undefined);
+    assert.deepEqual(snapshot.invocations, [
+      {
+        name: "bash",
+        input: { ordinal: 0, regionIndex: 0 },
+      },
+    ]);
+    assert.equal(snapshot.invocations[0].status, undefined);
+    assert.equal(snapshot.invocations[0].output, undefined);
+  });
+
+  it("orphan toolResult message is not paired at all (fail-closed)", () => {
+    const snapshot = history([
+      toolResultMessage("call-1", "bash", [textPart("boom")], true),
+    ]);
+    assert.deepEqual(snapshot.invocations, []);
+    assert.equal(snapshot.byRegion.size, 0);
   });
 
   it("each call links to its own toolResult across interleaved pairs", () => {
@@ -296,20 +326,37 @@ describe("tool pair status and linkage", () => {
       toolResultMessage("c1", "bash", [textPart("out1")]),
       toolResultMessage("c2", "read", [textPart("out2")], true),
     ];
-    const mapped = history(messages);
-    const inputs = mapped[0].regions;
-    assert.deepEqual(inputs[0].tool?.output, { ordinal: 1, regionIndex: 0 });
-    assert.deepEqual(inputs[1].tool?.output, { ordinal: 2, regionIndex: 0 });
-    assert.equal(inputs[0].tool?.status, "completed");
-    assert.equal(inputs[1].tool?.status, "error");
+    const snapshot = history(messages);
+    assert.deepEqual(
+      snapshot.invocations.map((invocation) => [
+        invocation.name,
+        invocation.status,
+        invocation.input,
+        invocation.output,
+      ]),
+      [
+        [
+          "bash",
+          "completed",
+          { ordinal: 0, regionIndex: 0 },
+          { ordinal: 1, regionIndex: 0 },
+        ],
+        [
+          "read",
+          "error",
+          { ordinal: 0, regionIndex: 1 },
+          { ordinal: 2, regionIndex: 0 },
+        ],
+      ],
+    );
 
-    // The pair linkage resolves to the sibling tool-output region.
-    for (const input of inputs) {
-      const ref = input.tool?.output;
-      assert.ok(ref);
-      const sibling = mapped[ref.ordinal].regions[ref.regionIndex ?? -1];
-      assert.equal(sibling.kind, "tool-output");
-      assert.equal(sibling.tool?.name, input.tool?.name);
+    // Each output half addresses a real tool-output region.
+    for (const invocation of snapshot.invocations) {
+      const output = invocation.output;
+      assert.ok(output);
+      const region =
+        snapshot.messages[output?.ordinal].regions[output?.regionIndex];
+      assert.equal(region.kind, "tool-output");
     }
   });
 });
@@ -321,21 +368,21 @@ describe("tool pair status and linkage", () => {
 describe("pi region write-back", () => {
   it("content region set rewrites an assistant text block", () => {
     const message = assistantMessage([textPart("before")]);
-    const region = history([message])[0].regions[0];
+    const region = messagesOf([message])[0].regions[0];
     (region as WritableRegion).set("after");
     assert.equal((message.content[0] as { text: string }).text, "after");
   });
 
   it("content region set rewrites a user string content", () => {
     const message = userMessage("before");
-    const region = history([message])[0].regions[0];
+    const region = messagesOf([message])[0].regions[0];
     (region as WritableRegion).set("after");
     assert.equal(message.content, "after");
   });
 
   it("content region set replaces an image block with a text block", () => {
     const message = userMessage([imagePart()]);
-    const region = history([message])[0].regions[0];
+    const region = messagesOf([message])[0].regions[0];
     (region as WritableRegion).set("image caption");
     assert.deepEqual(message.content, [
       { type: "text", text: "image caption" },
@@ -344,7 +391,7 @@ describe("pi region write-back", () => {
 
   it("tool-output region set rewrites the first text part", () => {
     const message = toolResultMessage("call-1", "bash", [textPart("before")]);
-    const region = history([message])[0].regions[0];
+    const region = messagesOf([message])[0].regions[0];
     (region as WritableRegion).set(PRUNED_TOOL_OUTPUT_REPLACEMENT);
     assert.equal(
       (message.content[0] as { text: string }).text,
@@ -354,7 +401,7 @@ describe("pi region write-back", () => {
 
   it("tool-output region set creates a text part when none exists", () => {
     const message = toolResultMessage("call-1", "bash", [imagePart()]);
-    const region = history([message])[0].regions[0];
+    const region = messagesOf([message])[0].regions[0];
     (region as WritableRegion).set(PRUNED_TOOL_OUTPUT_REPLACEMENT);
     assert.deepEqual(message.content, [
       { type: "text", text: PRUNED_TOOL_OUTPUT_REPLACEMENT },
@@ -365,7 +412,7 @@ describe("pi region write-back", () => {
     const message = assistantMessage([
       toolCallPart("call-1", "bash", { cmd: "ls" }),
     ]);
-    const region = history([message])[0].regions[0];
+    const region = messagesOf([message])[0].regions[0];
     (region as WritableRegion).set('{"cmd":"pwd"}');
     assert.deepEqual(
       (message.content[0] as { arguments: Record<string, unknown> }).arguments,
@@ -377,7 +424,7 @@ describe("pi region write-back", () => {
     const message = assistantMessage([
       toolCallPart("call-1", "bash", { cmd: "ls" }),
     ]);
-    const region = history([message])[0].regions[0];
+    const region = messagesOf([message])[0].regions[0];
     (region as WritableRegion).set(PRUNED_TOOL_ERROR_INPUT_REPLACEMENT);
     assert.deepEqual(
       (message.content[0] as { arguments: Record<string, unknown> }).arguments,

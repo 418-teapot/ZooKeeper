@@ -23,7 +23,7 @@ import {
 } from "./decompress.js";
 import { fold } from "./fold.js";
 import type { HostMessage } from "./lens.js";
-import { makeAssistantMsg, makeMsg } from "./lens-testkit.js";
+import { makeAssistantMsg, makeMsg, projectMessages } from "./lens-testkit.js";
 import { computeSpanHash } from "./spanhash.js";
 import { type Block, RECALL_MAX_CHARS, type SessionState } from "./state.js";
 
@@ -60,7 +60,7 @@ function makeBlock(
     start,
     end,
     summary: `summary [${start}, ${end})`,
-    spanHash: computeSpanHash(history, start, end),
+    spanHash: computeSpanHash(projectMessages(history), start, end),
     active: true,
     compressedTokens: 1000,
     summaryTokens: 60,
@@ -317,11 +317,11 @@ describe("applyDecompress", () => {
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 1, 4));
     // While active, the block folds its interval into one summary item.
-    const folded = fold(history, state);
+    const folded = fold(projectMessages(history), state);
     assert.equal(folded.items[1].type, "summary");
 
     applyDecompress(state, 1, history);
-    const unfolded = fold(history, state);
+    const unfolded = fold(projectMessages(history), state);
     assert.deepEqual(unfolded.items, [
       { type: "original", ordinal: 0 },
       { type: "original", ordinal: 1 },

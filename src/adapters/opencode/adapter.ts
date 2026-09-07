@@ -11,7 +11,7 @@
 
 import type {
   HostAdapter,
-  HostMessage,
+  Projection,
   RegionEdit,
   ViewItem,
 } from "../../core/context/lens.js";
@@ -32,7 +32,7 @@ import type { ContextMessageEntry } from "./types.js";
  */
 export function createV1Adapter(): HostAdapter<unknown> {
   return {
-    history(conversation: unknown): HostMessage[] {
+    history(conversation: unknown): Projection {
       return history(conversation as ContextMessageEntry[] | null | undefined);
     },
     applyEdits(conversation: unknown, edits: RegionEdit[]): unknown {

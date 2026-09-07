@@ -26,6 +26,7 @@ import {
   makeAssistantMsg,
   makeMsg,
   makeToolMsg,
+  projectMessages,
   setRegionText,
 } from "../lens-testkit.js";
 import { measureMessages } from "../measure.js";
@@ -98,7 +99,11 @@ function runOpen(
   overrides: Partial<SweepProducerOptions> = {},
 ): { keys: string[]; tokens: number } {
   const state = makeNewState();
-  const result = runSweep(state, messages, openOptions(messages, overrides));
+  const result = runSweep(
+    state,
+    projectMessages(messages),
+    openOptions(messages, overrides),
+  );
   return { keys: [...state.marks.keys()].sort(), tokens: result.tokens };
 }
 
@@ -177,7 +182,7 @@ describe("sweep window semantics", () => {
     ];
     const state = makeNewState();
     state.blocks.set(1, makeBlock(3, 4));
-    const result = runSweep(state, lens, openOptions(lens));
+    const result = runSweep(state, projectMessages(lens), openOptions(lens));
     assert.equal(result.created, 2);
     assert.ok(state.marks.has(markKey(3, 1)));
     assert.ok(state.marks.has(markKey(4, 1)));
@@ -193,7 +198,7 @@ describe("sweep window semantics", () => {
     ];
     const state = makeNewState();
     state.blocks.set(1, makeBlock(3, 4));
-    const result = runSweep(state, lens, {
+    const result = runSweep(state, projectMessages(lens), {
       ...openOptions(lens),
       sweepProtectedBlocks: true,
     });
@@ -248,11 +253,17 @@ describe("sweep window semantics", () => {
       }),
     ];
     const state = makeNewState();
-    assert.equal(runSweep(state, lens, openOptions(lens)).created, 2);
-    assert.deepEqual(runSweep(state, lens, openOptions(lens)), {
-      created: 0,
-      tokens: 0,
-    });
+    assert.equal(
+      runSweep(state, projectMessages(lens), openOptions(lens)).created,
+      2,
+    );
+    assert.deepEqual(
+      runSweep(state, projectMessages(lens), openOptions(lens)),
+      {
+        created: 0,
+        tokens: 0,
+      },
+    );
     assert.equal(state.marks.size, 2);
   });
 });
@@ -268,7 +279,7 @@ describe("lens-specific gating semantics", () => {
       makeMsg("user", ["do it"]),
       makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT),
     ];
-    const result = runSweep(state, lens, {
+    const result = runSweep(state, projectMessages(lens), {
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
     });
@@ -282,7 +293,7 @@ describe("lens-specific gating semantics", () => {
       makeMsg("user", ["do it"]),
       makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT),
     ];
-    const result = runSweep(state, lens, {
+    const result = runSweep(state, projectMessages(lens), {
       thresholdContext: 0,
       protectedStartOrdinal: lens.length,
     });
@@ -299,7 +310,7 @@ describe("lens-specific gating semantics", () => {
 
     // Default threshold 0.80: limit twice the total closes the gate.
     const below = makeNewState();
-    const rBelow = runSweep(below, lens, {
+    const rBelow = runSweep(below, projectMessages(lens), {
       contextLimit: total * 2,
       protectedStartOrdinal: lens.length,
     });
@@ -307,7 +318,7 @@ describe("lens-specific gating semantics", () => {
 
     // Default threshold 0.80: limit equal to the total opens the gate.
     const at = makeNewState();
-    const rAt = runSweep(at, lens, {
+    const rAt = runSweep(at, projectMessages(lens), {
       contextLimit: total,
       protectedStartOrdinal: lens.length,
     });
@@ -321,7 +332,7 @@ describe("lens-specific gating semantics", () => {
     ];
     const total = measureMessages(lens).total;
     const state = makeNewState();
-    const result = runSweep(state, lens, {
+    const result = runSweep(state, projectMessages(lens), {
       contextLimit: total,
       thresholdContext: 1,
       protectedStartOrdinal: lens.length,
@@ -335,7 +346,7 @@ describe("lens-specific gating semantics", () => {
       makeMsg("user", ["do it"]),
       makeToolMsg("bash", '{"cmd":"ls"}', "short"),
     ];
-    const result = runSweep(state, lens, {
+    const result = runSweep(state, projectMessages(lens), {
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
       protectedStartOrdinal: lens.length,
@@ -359,7 +370,7 @@ describe("lens-specific skip semantics", () => {
       makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT, { hidden: true }),
       makeToolMsg("bash", '{"cmd":"pwd"}', LONG_OUTPUT),
     ];
-    const result = runSweep(state, lens, {
+    const result = runSweep(state, projectMessages(lens), {
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
       protectedStartOrdinal: lens.length,
@@ -385,7 +396,7 @@ describe("lens-specific skip semantics", () => {
           status: c.status,
         }),
       ];
-      runSweep(state, lens, {
+      runSweep(state, projectMessages(lens), {
         contextLimit: MODEL_LIMIT,
         thresholdContext: 0,
         protectedStartOrdinal: lens.length,
@@ -405,7 +416,7 @@ describe("lens-specific skip semantics", () => {
       makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT),
       makeToolMsg("bash", '{"cmd":"pwd"}', LONG_OUTPUT),
     ];
-    const result = runSweep(state, lens, {
+    const result = runSweep(state, projectMessages(lens), {
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
       protectedStartOrdinal: lens.length,
@@ -430,7 +441,7 @@ describe("lens-specific skip semantics", () => {
       makeMsg("user", ["do it"]),
       makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT),
     ];
-    const result = runSweep(state, lens, {
+    const result = runSweep(state, projectMessages(lens), {
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
       protectedStartOrdinal: lens.length,
@@ -449,7 +460,7 @@ describe("lens-specific skip semantics", () => {
       makeMsg("user", ["do it"]),
       makeToolMsg("bash", '{"cmd":"ls"}', big),
     ];
-    runSweep(state, lens, {
+    runSweep(state, projectMessages(lens), {
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
       protectedStartOrdinal: lens.length,
@@ -469,7 +480,7 @@ describe("lens-specific skip semantics", () => {
       makeMsg("user", ["do it"]),
       makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT),
     ];
-    runSweep(state, lens, {
+    runSweep(state, projectMessages(lens), {
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
       protectedStartOrdinal: lens.length,
@@ -495,14 +506,14 @@ describe("spanhash linkage (in-block sweep)", () => {
     const span = {
       start: 0,
       end: 5,
-      spanHash: computeSpanHash(history, 0, 5),
+      spanHash: computeSpanHash(projectMessages(history), 0, 5),
     };
     const state = makeNewState();
     state.blocks.set(1, makeBlock(span.start, span.end, span.spanHash));
 
     // Window opens after the last user (ordinal 2); both in-block
     // outputs at ordinals 3 and 4 are swept with the switch off.
-    const result = runSweep(state, history, {
+    const result = runSweep(state, projectMessages(history), {
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
       protectedStartOrdinal: history.length,
@@ -513,7 +524,7 @@ describe("spanhash linkage (in-block sweep)", () => {
     for (const ordinal of [3, 4]) {
       setRegionText(history[ordinal], 1, PRUNED_TOOL_OUTPUT_REPLACEMENT);
     }
-    assert.equal(validateBlock(history, span), true);
+    assert.equal(validateBlock(projectMessages(history), span), true);
   });
 
   it("control: a real content change invalidates the block", () => {
@@ -525,10 +536,10 @@ describe("spanhash linkage (in-block sweep)", () => {
     const span = {
       start: 0,
       end: 3,
-      spanHash: computeSpanHash(history, 0, 3),
+      spanHash: computeSpanHash(projectMessages(history), 0, 3),
     };
     setRegionText(history[0], 0, "changed content");
-    assert.equal(validateBlock(history, span), false);
+    assert.equal(validateBlock(projectMessages(history), span), false);
   });
 
   it("sweepProtectedBlocks=true keeps in-block outputs untouched", () => {
@@ -542,12 +553,12 @@ describe("spanhash linkage (in-block sweep)", () => {
     const span = {
       start: 3,
       end: 5,
-      spanHash: computeSpanHash(history, 3, 5),
+      spanHash: computeSpanHash(projectMessages(history), 3, 5),
     };
     const state = makeNewState();
     state.blocks.set(1, makeBlock(span.start, span.end, span.spanHash));
 
-    const result = runSweep(state, history, {
+    const result = runSweep(state, projectMessages(history), {
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
       protectedStartOrdinal: history.length,

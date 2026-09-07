@@ -25,6 +25,7 @@ import {
   makeMsg,
   makeToolMsg,
   makeToolResultMsg,
+  projectMessages,
   setRegionText,
 } from "../lens-testkit.js";
 import {
@@ -101,8 +102,8 @@ function makeNewState(): SessionState {
 
 /**
  * Pi-shaped lens transcript: the call's input and output live in
- * different messages, linked by the input region's positional
- * `ToolMeta.output` reference (see `adapters/pi/history.ts`).
+ * different messages, paired by call identity into the invocation
+ * table at projection time (see `adapters/pi/history.ts`).
  *
  * @returns The transcript: user, assistant tool-call, tool-result.
  */
@@ -120,7 +121,7 @@ function piLensPair(): HostMessage[] {
         },
       ],
     }),
-    makeToolResultMsg("bash", LONG_OUTPUT, { status: "error" }),
+    makeToolResultMsg(LONG_OUTPUT),
   ];
 }
 
@@ -171,7 +172,7 @@ function runOpen(
   const state = makeNewState();
   const result = runPurgeErrors(
     state,
-    messages,
+    projectMessages(messages),
     purgeOptions(messages, overrides),
   );
   return { keys: [...state.marks.keys()].sort(), tokens: result.tokens };
@@ -185,7 +186,11 @@ describe("purge semantics", () => {
   it("marks an error-status call's input region and returns pending marks", () => {
     const lens = [lensMsg([errCall()])];
     const state = makeNewState();
-    const result = runPurgeErrors(state, lens, purgeOptions(lens));
+    const result = runPurgeErrors(
+      state,
+      projectMessages(lens),
+      purgeOptions(lens),
+    );
     assert.equal(result.created, 1);
     assert.equal(result.tokens, INPUT_MARK_TOKENS);
     const mark = state.marks.get(markKey(0, 0));
@@ -215,8 +220,15 @@ describe("purge semantics", () => {
   it("skips calls already marked (re-runs are idempotent)", () => {
     const lens = [lensMsg([errCall()])];
     const state = makeNewState();
-    assert.equal(runPurgeErrors(state, lens, purgeOptions(lens)).created, 1);
-    const second = runPurgeErrors(state, lens, purgeOptions(lens));
+    assert.equal(
+      runPurgeErrors(state, projectMessages(lens), purgeOptions(lens)).created,
+      1,
+    );
+    const second = runPurgeErrors(
+      state,
+      projectMessages(lens),
+      purgeOptions(lens),
+    );
     assert.equal(second.created, 0);
     assert.equal(second.tokens, 0);
     assert.equal(state.marks.size, 1);
@@ -326,7 +338,7 @@ describe("lens-specific gating semantics", () => {
   it("fail-safe: undefined protectedStartOrdinal skips with zero side effects", () => {
     const state = makeNewState();
     const lens = [lensMsg([errCall()])];
-    const result = runPurgeErrors(state, lens, {
+    const result = runPurgeErrors(state, projectMessages(lens), {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
@@ -340,7 +352,7 @@ describe("lens-specific gating semantics", () => {
       makeToolMsg("bash", LONG_INPUT, LONG_OUTPUT, { status: "error" }),
     );
     const state20 = makeNewState();
-    const r20 = runPurgeErrors(state20, atTwenty, {
+    const r20 = runPurgeErrors(state20, projectMessages(atTwenty), {
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
       protectedStartOrdinal: atTwenty.length,
@@ -353,7 +365,7 @@ describe("lens-specific gating semantics", () => {
       makeToolMsg("bash", LONG_INPUT, LONG_OUTPUT, { status: "error" }),
     ];
     const state21 = makeNewState();
-    const r21 = runPurgeErrors(state21, above, {
+    const r21 = runPurgeErrors(state21, projectMessages(above), {
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
       protectedStartOrdinal: above.length,
@@ -366,7 +378,7 @@ describe("lens-specific gating semantics", () => {
     const total = measureMessages(lens).total;
 
     const below = makeNewState();
-    const rBelow = runPurgeErrors(below, lens, {
+    const rBelow = runPurgeErrors(below, projectMessages(lens), {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0.5,
@@ -376,7 +388,7 @@ describe("lens-specific gating semantics", () => {
 
     // Equality opens the gate (legacy "equal opens" semantics).
     const at = makeNewState();
-    const rAt = runPurgeErrors(at, lens, {
+    const rAt = runPurgeErrors(at, projectMessages(lens), {
       minMessages: 0,
       contextLimit: total,
       thresholdContext: 1,
@@ -385,7 +397,7 @@ describe("lens-specific gating semantics", () => {
     assert.equal(rAt.created, 1);
 
     const above = makeNewState();
-    const rAbove = runPurgeErrors(above, lens, {
+    const rAbove = runPurgeErrors(above, projectMessages(lens), {
       minMessages: 0,
       contextLimit: 1,
       thresholdContext: 0.5,
@@ -400,7 +412,7 @@ describe("lens-specific gating semantics", () => {
 
     // total / (2 * total) == 0.5 — equality with the default opens.
     const at = makeNewState();
-    const rAt = runPurgeErrors(at, lens, {
+    const rAt = runPurgeErrors(at, projectMessages(lens), {
       minMessages: 0,
       contextLimit: 2 * total,
       protectedStartOrdinal: lens.length,
@@ -409,7 +421,7 @@ describe("lens-specific gating semantics", () => {
 
     // total / (3 * total) < 0.5 — closed.
     const below = makeNewState();
-    const rBelow = runPurgeErrors(below, lens, {
+    const rBelow = runPurgeErrors(below, projectMessages(lens), {
       minMessages: 0,
       contextLimit: 3 * total,
       protectedStartOrdinal: lens.length,
@@ -420,7 +432,7 @@ describe("lens-specific gating semantics", () => {
   it("context gate: undefined context limit skips (fail-closed)", () => {
     const state = makeNewState();
     const lens = [lensMsg([errCall()])];
-    const result = runPurgeErrors(state, lens, {
+    const result = runPurgeErrors(state, projectMessages(lens), {
       minMessages: 0,
       thresholdContext: 0.5,
       protectedStartOrdinal: lens.length,
@@ -432,7 +444,7 @@ describe("lens-specific gating semantics", () => {
   it("no default protectedTools (legacy purge-errors had none)", () => {
     const state = makeNewState();
     const lens = [lensMsg([errCall("question")])];
-    const result = runPurgeErrors(state, lens, {
+    const result = runPurgeErrors(state, projectMessages(lens), {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
@@ -450,7 +462,7 @@ describe("lens-specific skip and mark semantics", () => {
   it("skips ordinals reported as folded or pruned via prunedOrdinals", () => {
     const state = makeNewState();
     const lens = [lensMsg([errCall()]), lensMsg([errCall()])];
-    const result = runPurgeErrors(state, lens, {
+    const result = runPurgeErrors(state, projectMessages(lens), {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
@@ -471,7 +483,7 @@ describe("lens-specific skip and mark semantics", () => {
       }),
       makeToolMsg("bash", LONG_INPUT, LONG_OUTPUT, { status: "error" }),
     ];
-    const result = runPurgeErrors(state, lens, {
+    const result = runPurgeErrors(state, projectMessages(lens), {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
@@ -494,7 +506,7 @@ describe("lens-specific skip and mark semantics", () => {
       markedAt: 1,
     });
     const lens = [lensMsg([errCall()])];
-    const rA = runPurgeErrors(stateA, lens, {
+    const rA = runPurgeErrors(stateA, projectMessages(lens), {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
@@ -514,7 +526,7 @@ describe("lens-specific skip and mark semantics", () => {
       effective: false,
       markedAt: 1,
     });
-    const rB = runPurgeErrors(stateB, lens, {
+    const rB = runPurgeErrors(stateB, projectMessages(lens), {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
@@ -527,7 +539,7 @@ describe("lens-specific skip and mark semantics", () => {
   it("never writes output-region marks", () => {
     const state = makeNewState();
     const lens = [lensMsg([errCall("bash", LONG_INPUT, SHORT_OUTPUT)])];
-    const result = runPurgeErrors(state, lens, {
+    const result = runPurgeErrors(state, projectMessages(lens), {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
@@ -541,7 +553,7 @@ describe("lens-specific skip and mark semantics", () => {
   it("marks anchor to the tool-input region with the input reclaim", () => {
     const state = makeNewState();
     const lens = [lensMsg([errCall()])];
-    runPurgeErrors(state, lens, {
+    runPurgeErrors(state, projectMessages(lens), {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
@@ -563,7 +575,7 @@ describe("lens-specific skip and mark semantics", () => {
     const big = "x".repeat(20_000);
     const state = makeNewState();
     const lens = [makeToolMsg("bash", big, LONG_OUTPUT, { status: "error" })];
-    const result = runPurgeErrors(state, lens, {
+    const result = runPurgeErrors(state, projectMessages(lens), {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
@@ -594,28 +606,30 @@ describe("lens-specific skip and mark semantics", () => {
 // Cross-message output lookup (pi-shaped lens)
 // ===========================================================================
 
-describe("cross-message output lookup via ToolMeta.output", () => {
+describe("cross-message output lookup via the invocation table", () => {
   it("marks the input region when the output lives in another message", () => {
     const lens = piLensPair();
     const { keys, tokens } = runOpen(lens);
     assert.deepEqual(keys, [markKey(1, 0)]);
     assert.equal(tokens, INPUT_MARK_TOKENS);
-    assert.equal(
-      lens[1].regions[0].tool?.output?.ordinal,
-      2,
-      "the reference addresses the tool-result message",
-    );
+    const invocation = projectMessages(lens).invocations[0];
+    assert.deepEqual(invocation.output, { ordinal: 2, regionIndex: 0 });
   });
 
   it("an existing mark on the referenced output region suppresses the call", () => {
     // The dedup/sweep producers hold the output-region key of the
     // linked tool-result message; purge-errors must see it through the
-    // cross-message reference (the same-message sibling lookup on pi
-    // would find nothing and re-mark the call).
+    // invocation entry's output address (a layout scan for a
+    // same-message sibling on pi would find nothing and re-mark the
+    // call).
     const state = makeNewState();
     seedOutputMark(state, 2, 0);
     const lens = piLensPair();
-    const result = runPurgeErrors(state, lens, purgeOptions(lens));
+    const result = runPurgeErrors(
+      state,
+      projectMessages(lens),
+      purgeOptions(lens),
+    );
     assert.equal(result.created, 0);
     assert.equal(result.tokens, 0);
     assert.equal(state.marks.size, 1);
@@ -624,8 +638,15 @@ describe("cross-message output lookup via ToolMeta.output", () => {
   it("re-runs on pi-shaped input are idempotent", () => {
     const lens = piLensPair();
     const state = makeNewState();
-    assert.equal(runPurgeErrors(state, lens, purgeOptions(lens)).created, 1);
-    const second = runPurgeErrors(state, lens, purgeOptions(lens));
+    assert.equal(
+      runPurgeErrors(state, projectMessages(lens), purgeOptions(lens)).created,
+      1,
+    );
+    const second = runPurgeErrors(
+      state,
+      projectMessages(lens),
+      purgeOptions(lens),
+    );
     assert.equal(second.created, 0);
     assert.equal(second.tokens, 0);
     assert.equal(state.marks.size, 1);
@@ -647,9 +668,13 @@ describe("cross-message output lookup via ToolMeta.output", () => {
           },
         ],
       }),
-      makeToolResultMsg("bash", LONG_OUTPUT, { status: "error" }),
+      makeToolResultMsg(LONG_OUTPUT),
     ];
-    const result = runPurgeErrors(state, lens, purgeOptions(lens));
+    const result = runPurgeErrors(
+      state,
+      projectMessages(lens),
+      purgeOptions(lens),
+    );
     assert.equal(result.created, 0);
   });
 
@@ -694,16 +719,18 @@ describe("canon invariance under purge-errors", () => {
         },
       ],
     });
-    const before = canon(msg);
+    const snapshot = projectMessages([msg]);
+    const before = canon(snapshot, 0);
     setRegionText(msg, 2, PRUNED_TOOL_ERROR_INPUT_REPLACEMENT);
-    assert.equal(canon(msg), before);
+    assert.equal(canon(snapshot, 0), before);
   });
 
   it("end-to-end: applying the producer's marks keeps canon stable", () => {
     const lens = [makeMsg("user", ["do it"]), lensMsg([errCall()])];
+    const snapshot = projectMessages(lens);
     const state = makeNewState();
-    const before = canon(lens[1]);
-    const result = runPurgeErrors(state, lens, {
+    const before = canon(snapshot, 1);
+    const result = runPurgeErrors(state, projectMessages(lens), {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
@@ -720,6 +747,6 @@ describe("canon invariance under purge-errors", () => {
         PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
       );
     }
-    assert.equal(canon(lens[1]), before);
+    assert.equal(canon(snapshot, 1), before);
   });
 });

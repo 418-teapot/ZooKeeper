@@ -13,11 +13,12 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import type { ToolHost } from "../../core/client/tool-host.js";
-import type { HostMessage } from "../../core/context/lens.js";
+import { type HostMessage, project } from "../../core/context/lens.js";
 import {
   makeAssistantMsg,
   makeMsg,
   makeToolMsg,
+  projectMessages,
 } from "../../core/context/lens-testkit.js";
 import { estimateTokenCount } from "../../core/context/measure.js";
 import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "../../core/context/message-parts.js";
@@ -75,7 +76,7 @@ function mockToolHost(messages: HostMessage[]): {
 
   const toolHost: ToolHost = {
     resolveSessionId: () => undefined,
-    fetchHistory: async () => messages,
+    fetchHistory: async () => projectMessages(messages),
     notify: async (sessionID, text) => {
       notifyCalls.push({ sessionID, text });
     },
@@ -743,7 +744,7 @@ describe("/dcp compress subcommand", () => {
   it("repeat /dcp compress keeps the flag armed (idempotent)", async () => {
     const toolHost: ToolHost = {
       resolveSessionId: () => undefined,
-      fetchHistory: async () => [],
+      fetchHistory: async () => project([] as HostMessage[], []),
       notify: async () => {},
     };
 

@@ -16,9 +16,8 @@
  *   completed-part exclusion, zero-benefit skip, protected tools.  A
  *   model limit and a >20-message view open the producer gates, so the
  *   rounds exercise the producer for real on pi-shaped input: the
- *   error call's input and output live in different messages, linked by
- *   the positional `ToolMeta.output` reference the pi lens populates on
- *   the tool-input region.
+ *   error call's input and output live in different messages, paired by
+ *   the host call id into the projection's invocation table.
  * - G-MS-03 is NOT ported: it drives the /dcp `sweep` command, which
  *   does not exist on pi.
  * - G-MS-04: batch release — accumulation across rounds to the

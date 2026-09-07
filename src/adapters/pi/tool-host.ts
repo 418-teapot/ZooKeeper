@@ -19,7 +19,7 @@
  */
 
 import type { ToastPayload, ToolHost } from "../../core/client/tool-host.js";
-import type { HostMessage } from "../../core/context/lens.js";
+import type { Projection } from "../../core/context/lens.js";
 import { log } from "../../utils/logger.js";
 import { history } from "./history.js";
 import type { PiAgentMessage } from "./types.js";
@@ -157,7 +157,7 @@ export function createPiToolHost(
      * @throws A loud Chinese error when the session manager is unavailable
      *   or returns no entries.
      */
-    async fetchHistory(sessionId: string): Promise<HostMessage[]> {
+    async fetchHistory(sessionId: string): Promise<Projection> {
       const ctx = contextHolder.current;
       const sessionManager = ctx?.sessionManager;
       if (!sessionManager?.buildContextEntries) {

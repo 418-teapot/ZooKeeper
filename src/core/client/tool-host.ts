@@ -14,7 +14,7 @@
  * @module
  */
 
-import type { HostMessage } from "../context/lens.js";
+import type { Projection } from "../context/lens.js";
 
 /**
  * Payload of a transient toast shown to the human observer.
@@ -40,8 +40,9 @@ export interface ToastPayload {
 export interface ToolHost {
   /** Resolve the session id from a tool execution context. */
   resolveSessionId(toolCtx: unknown): string | undefined;
-  /** Fetch the session's full history as host-agnostic lens messages. */
-  fetchHistory(sessionId: string): Promise<HostMessage[]>;
+  /** Fetch the session's full history as a host-agnostic projection
+   * snapshot (lens transcript + invocation table). */
+  fetchHistory(sessionId: string): Promise<Projection>;
   /**
    * Post a session-scoped system notification.
    *

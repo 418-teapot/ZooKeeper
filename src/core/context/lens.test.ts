@@ -20,6 +20,7 @@ import {
   makeAssistantMsg,
   makeMsg,
   makeToolMsg,
+  projectMessages,
   setRegionText,
 } from "./lens-testkit.js";
 
@@ -119,18 +120,21 @@ describe("makeToolMsg", () => {
     ]);
   });
 
-  it("carries the tool name and status on both tool regions", () => {
+  it("pairs the call into the invocation table with name and status", () => {
     const msg = makeToolMsg("bash", "in", "out", { status: "error" });
-    assert.deepEqual(msg.regions[0].tool, { name: "bash", status: "error" });
-    assert.deepEqual(msg.regions[1].tool, { name: "bash", status: "error" });
+    assert.deepEqual(projectMessages([msg]).invocations, [
+      {
+        name: "bash",
+        status: "error",
+        input: { ordinal: 0, regionIndex: 0 },
+        output: { ordinal: 0, regionIndex: 1 },
+      },
+    ]);
   });
 
   it("defaults tool status to completed", () => {
     const msg = makeToolMsg("bash", "in", "out");
-    assert.deepEqual(msg.regions[0].tool, {
-      name: "bash",
-      status: "completed",
-    });
+    assert.deepEqual(projectMessages([msg]).invocations[0].status, "completed");
   });
 
   it("honors hidden and usage options", () => {
@@ -140,11 +144,10 @@ describe("makeToolMsg", () => {
     assert.deepEqual(msg.usage, usage);
   });
 
-  it("leaves tool undefined on non tool regions", () => {
-    assert.equal(makeMsg("user", ["x"]).regions[0].tool, undefined);
+  it("produces no invocations for non tool messages", () => {
+    assert.deepEqual(projectMessages([makeMsg("user", ["x"])]).invocations, []);
     const assistant = makeAssistantMsg({ text: "t", thinking: "th" });
-    assert.equal(assistant.regions[0].tool, undefined);
-    assert.equal(assistant.regions[1].tool, undefined);
+    assert.deepEqual(projectMessages([assistant]).invocations, []);
   });
 });
 
@@ -171,16 +174,21 @@ describe("makeAssistantMsg", () => {
       ["tool-input", "a.ts"],
       ["tool-output", "source"],
     ]);
-    assert.deepEqual(msg.regions[2].tool, {
-      name: "bash",
-      status: "completed",
-    });
-    assert.deepEqual(msg.regions[3].tool, {
-      name: "bash",
-      status: "completed",
-    });
-    assert.deepEqual(msg.regions[4].tool, { name: "read", status: "error" });
-    assert.deepEqual(msg.regions[5].tool, { name: "read", status: "error" });
+    const invocations = projectMessages([msg]).invocations;
+    assert.deepEqual(invocations, [
+      {
+        name: "bash",
+        status: "completed",
+        input: { ordinal: 0, regionIndex: 2 },
+        output: { ordinal: 0, regionIndex: 3 },
+      },
+      {
+        name: "read",
+        status: "error",
+        input: { ordinal: 0, regionIndex: 4 },
+        output: { ordinal: 0, regionIndex: 5 },
+      },
+    ]);
   });
 
   it("omits absent parts of the shape", () => {

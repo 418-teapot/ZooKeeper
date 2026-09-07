@@ -17,7 +17,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { fold } from "./fold.js";
 import type { HostMessage } from "./lens.js";
-import { makeAssistantMsg, makeMsg, setRegionText } from "./lens-testkit.js";
+import {
+  makeAssistantMsg,
+  makeMsg,
+  projectMessages,
+  setRegionText,
+} from "./lens-testkit.js";
 import { computeSpanHash } from "./spanhash.js";
 import type { Block, SessionState } from "./state.js";
 
@@ -54,7 +59,7 @@ function makeBlock(
     start,
     end,
     summary: `summary [${start}, ${end})`,
-    spanHash: computeSpanHash(history, start, end),
+    spanHash: computeSpanHash(projectMessages(history), start, end),
     active: true,
     compressedTokens: 100,
     summaryTokens: 10,
@@ -72,7 +77,7 @@ describe("basic fold", () => {
     const history = makeTranscript(6);
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 0, 3));
-    const result = fold(history, state);
+    const result = fold(projectMessages(history), state);
     assert.deepEqual(result.items, [
       { type: "summary", block: state.blocks.get(1) },
       { type: "original", ordinal: 3 },
@@ -87,7 +92,7 @@ describe("basic fold", () => {
     const history = makeTranscript(6);
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 2, 4));
-    const result = fold(history, state);
+    const result = fold(projectMessages(history), state);
     assert.deepEqual(result.items, [
       { type: "original", ordinal: 0 },
       { type: "original", ordinal: 1 },
@@ -103,7 +108,7 @@ describe("basic fold", () => {
     const history = makeTranscript(6);
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 3, 6));
-    const result = fold(history, state);
+    const result = fold(projectMessages(history), state);
     assert.deepEqual(result.items, [
       { type: "original", ordinal: 0 },
       { type: "original", ordinal: 1 },
@@ -125,7 +130,7 @@ describe("adjacent and nested block views", () => {
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 1, 3));
     state.blocks.set(2, makeBlock(history, 3, 5));
-    const result = fold(history, state);
+    const result = fold(projectMessages(history), state);
     assert.deepEqual(result.items, [
       { type: "original", ordinal: 0 },
       { type: "summary", block: state.blocks.get(1) },
@@ -143,7 +148,7 @@ describe("adjacent and nested block views", () => {
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 1, 5));
     state.blocks.set(2, makeBlock(history, 2, 4)); // inside block 1
-    const result = fold(history, state);
+    const result = fold(projectMessages(history), state);
     assert.deepEqual(result.items, [
       { type: "original", ordinal: 0 },
       { type: "summary", block: state.blocks.get(1) },
@@ -168,7 +173,7 @@ describe("hash-invalid blocks silently expand", () => {
     // Rewrite the content of the message at ordinal 2 — the block's span
     // no longer hashes to the stored value.
     setRegionText(history[2], 0, "edited question");
-    const result = fold(history, state);
+    const result = fold(projectMessages(history), state);
     assert.deepEqual(result.expiredBlockIds, [7]);
     assert.equal(result.viewChanged, true);
     // Silent expansion: no summary item and no tombstone hint; the edited
@@ -188,7 +193,7 @@ describe("hash-invalid blocks silently expand", () => {
     const state = makeState();
     state.blocks.set(7, makeBlock(history, 1, 4));
     const truncated = history.slice(0, 3); // block end 4 > length 3
-    const result = fold(truncated, state);
+    const result = fold(projectMessages(truncated), state);
     assert.deepEqual(result.expiredBlockIds, [7]);
     assert.equal(result.viewChanged, true);
     assert.deepEqual(result.items, [
@@ -203,7 +208,7 @@ describe("hash-invalid blocks silently expand", () => {
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 1, 3));
     state.blocks.set(2, makeBlock(history, 4, 6, { spanHash: "deadbeef" }));
-    const result = fold(history, state);
+    const result = fold(projectMessages(history), state);
     assert.deepEqual(result.expiredBlockIds, [2]);
     assert.equal(result.viewChanged, true);
     assert.deepEqual(result.items, [
@@ -226,7 +231,7 @@ describe("inactive blocks never refold", () => {
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 1, 4));
     // While active, the block folds its interval into one summary.
-    const before = fold(history, state);
+    const before = fold(projectMessages(history), state);
     assert.equal(before.items.length, 4); // orig 0 + summary + orig 4 + orig 5
     assert.equal(before.items[1].type, "summary");
 
@@ -234,7 +239,7 @@ describe("inactive blocks never refold", () => {
     const block = state.blocks.get(1);
     assert.ok(block !== undefined);
     block.active = false;
-    const result = fold(history, state);
+    const result = fold(projectMessages(history), state);
     assert.deepEqual(result.items, [
       { type: "original", ordinal: 0 },
       { type: "original", ordinal: 1 },
@@ -262,7 +267,7 @@ describe("overlapping surviving blocks merge (defensive branch)", () => {
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 1, 4));
     state.blocks.set(2, makeBlock(history, 3, 6));
-    const result = fold(history, state);
+    const result = fold(projectMessages(history), state);
     // Union [1, 6) is covered by a single summary rendered from the
     // first-appearing block (id 1); ordinals 0, 6, 7 stay original.
     assert.deepEqual(result.items, [
@@ -281,7 +286,7 @@ describe("overlapping surviving blocks merge (defensive branch)", () => {
     state.blocks.set(1, makeBlock(history, 1, 4));
     state.blocks.set(2, makeBlock(history, 3, 5));
     state.blocks.set(3, makeBlock(history, 4, 7));
-    const result = fold(history, state);
+    const result = fold(projectMessages(history), state);
     assert.deepEqual(result.items, [
       { type: "original", ordinal: 0 },
       { type: "summary", block: state.blocks.get(1) },
@@ -294,7 +299,7 @@ describe("overlapping surviving blocks merge (defensive branch)", () => {
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 1, 5));
     state.blocks.set(2, makeBlock(history, 3, 6)); // overlaps and extends
-    const result = fold(history, state);
+    const result = fold(projectMessages(history), state);
     assert.deepEqual(result.items, [
       { type: "original", ordinal: 0 },
       { type: "summary", block: state.blocks.get(1) },
@@ -310,7 +315,7 @@ describe("overlapping surviving blocks merge (defensive branch)", () => {
 
 describe("empty history and no blocks pass through", () => {
   it("empty history with no blocks yields an empty view", () => {
-    const result = fold([], makeState());
+    const result = fold(projectMessages([]), makeState());
     assert.deepEqual(result.items, []);
     assert.equal(result.viewChanged, false);
     assert.deepEqual(result.expiredBlockIds, []);
@@ -318,7 +323,7 @@ describe("empty history and no blocks pass through", () => {
 
   it("messages with no blocks pass through as originals", () => {
     const history = makeTranscript(3);
-    const result = fold(history, makeState());
+    const result = fold(projectMessages(history), makeState());
     assert.deepEqual(result.items, [
       { type: "original", ordinal: 0 },
       { type: "original", ordinal: 1 },
@@ -334,7 +339,7 @@ describe("empty history and no blocks pass through", () => {
       makeMsg("assistant", ["hidden reply"], { hidden: true }),
       makeMsg("user", ["next"]),
     ];
-    const result = fold(history, makeState());
+    const result = fold(projectMessages(history), makeState());
     assert.deepEqual(result.items, [
       { type: "original", ordinal: 0 },
       { type: "original", ordinal: 1 },
@@ -350,7 +355,7 @@ describe("empty history and no blocks pass through", () => {
     ];
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 0, 3));
-    const result = fold(history, state);
+    const result = fold(projectMessages(history), state);
     assert.deepEqual(result.items, [
       { type: "summary", block: state.blocks.get(1) },
     ]);
@@ -359,7 +364,7 @@ describe("empty history and no blocks pass through", () => {
   it("an empty history with a block expires the block (span out of bounds)", () => {
     const state = makeState();
     state.blocks.set(1, makeBlock([makeMsg("user", ["prompt"])], 0, 1));
-    const result = fold([], state);
+    const result = fold(projectMessages([]), state);
     assert.deepEqual(result.items, []);
     assert.equal(result.viewChanged, true);
     assert.deepEqual(result.expiredBlockIds, [1]);
@@ -376,7 +381,7 @@ describe("ordinal correspondence", () => {
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 1, 3));
     state.blocks.set(2, makeBlock(history, 5, 6));
-    const result = fold(history, state);
+    const result = fold(projectMessages(history), state);
     assert.deepEqual(result.items, [
       { type: "original", ordinal: 0 },
       { type: "summary", block: state.blocks.get(1) },
@@ -409,8 +414,8 @@ describe("ordinal correspondence", () => {
 describe("fold is pure", () => {
   it("returns a fresh items array on every call", () => {
     const history = makeTranscript(3);
-    const first = fold(history, makeState());
-    const second = fold(history, makeState());
+    const first = fold(projectMessages(history), makeState());
+    const second = fold(projectMessages(history), makeState());
     assert.notEqual(first.items, second.items);
     assert.notEqual(first.items, history);
   });
@@ -425,7 +430,7 @@ describe("fold is pure", () => {
     const stored = state.blocks.get(1);
     assert.ok(stored !== undefined);
     const blockBefore = { ...stored };
-    fold(history, state);
+    fold(projectMessages(history), state);
     assert.deepEqual(
       history.map((msg) => msg.regions.map((region) => region.get())),
       historyBefore,
@@ -440,7 +445,7 @@ describe("fold is pure", () => {
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 1, 4));
     setRegionText(history[2], 0, "edited");
-    const result = fold(history, state);
+    const result = fold(projectMessages(history), state);
     assert.deepEqual(result.expiredBlockIds, [1]);
     // Deactivation is the caller's decision — fold only reports.
     assert.equal(state.blocks.get(1)?.active, true);

@@ -32,7 +32,7 @@
  * @module
  */
 
-import type { HostMessage } from "./lens.js";
+import type { HostMessage, Projection } from "./lens.js";
 import { findFirstUserOrdinal, findLastUserOrdinal } from "./lens.js";
 import { estimateMessageHeuristic, estimateTokenCount } from "./measure.js";
 import { computeSpanHash } from "./spanhash.js";
@@ -347,13 +347,13 @@ function estimateIntervalTokens(
  *    overlap; a fully-covered inactive block is carried on
  *    `coveredInactive` for token netting, a partially-covered one is
  *    ignored entirely.
- * 4. **Mid-pair** — a tool call whose linked tool-output region sits
- *    outside the interval is rejected: the pi lens addresses the linked
- *    result on the tool-input region's metadata (`ToolMeta.output`), and
- *    cutting between the halves would leave the render to widen the
- *    summary, which loses the block-id label.  Hosts that never set the
- *    linkage (v1, where both halves live in one message) are
- *    structurally unaffected.
+ * 4. **Mid-pair** — a range cutting between the two halves of a tool
+ *    call is rejected in either direction: a call inside with its linked
+ *    result outside, or a result inside with its call outside.  The
+ *    projection's invocation table addresses both halves beside the
+ *    call, and cutting between them would leave the render to widen the
+ *    summary, which loses the block-id label.  Hosts whose pairs always
+ *    live in one message (v1) are structurally unaffected.
  * 5. **Phantom** — the interval's heuristic estimate must reach
  *    `thresholdTokens`.
  *
@@ -361,7 +361,8 @@ function estimateIntervalTokens(
  * not consume anything.  The apply-time gates (no-new-content,
  * negative-benefit) run later on the prepared payload.
  *
- * @param history - The transcript.
+ * @param snapshot - The projection snapshot (region view plus the
+ *   invocation table feeding the mid-pair gate).
  * @param state - The session state (block collection, read-only here).
  * @param options - Protection windows and the phantom threshold.
  * @param start - First ordinal (inclusive).
@@ -369,12 +370,13 @@ function estimateIntervalTokens(
  * @returns The gate outcome.
  */
 export function validateRange(
-  history: HostMessage[],
+  snapshot: Projection,
   state: SessionState,
   options: CompressOptions,
   start: number,
   end: number,
 ): RangeValidation {
+  const history = snapshot.messages;
   const failed = (error: string): RangeValidation => ({
     error,
     swallowed: [],
@@ -435,28 +437,43 @@ export function validateRange(
 
   // ── Mid-pair gate ──────────────────────────────────────────────────
   // A tool call and its result must fold as a pair: a range that covers
-  // the tool-input region but not its linked tool-output region would
-  // create a block whose summary interval the render would have to widen
-  // to swallow the orphaned result — which breaks the block-id label
-  // lookup for decompression.  The pi lens addresses the linked result
-  // on the tool-input region's metadata; hosts that never set the
-  // linkage (v1, where both halves of a call live in one message) are
-  // structurally unaffected.
-  for (let o = start; o < end; o++) {
-    for (const region of history[o].regions) {
-      if (region.kind !== "tool-input") continue;
-      const output = region.tool?.output;
-      if (
-        output !== undefined &&
-        (output.ordinal < start || output.ordinal >= end)
-      ) {
-        return failed(
-          `范围 [${start}, ${end}) 在工具调用对中间截断：区间内的工具调用 ` +
-            `${region.tool?.name ?? "未知工具"} 链接的工具结果位于区间之外` +
-            `（序数 ${output.ordinal}）。工具调用与其结果必须成对压缩，` +
-            `请将范围扩展到包含该工具结果。`,
-        );
-      }
+  // one half of an invocation but not the other would create a block
+  // whose summary interval the render would have to widen to swallow the
+  // orphaned half — which breaks the block-id label lookup for
+  // decompression.  Both directions are gated: the call inside / result
+  // outside, and the result inside / call outside.  The pairing comes
+  // from the projection's invocation table; calls still in flight (no
+  // linked output) and hosts whose pairs always live in one message (v1)
+  // are structurally unaffected.
+  for (const invocation of snapshot.invocations) {
+    const output = invocation.output;
+    if (output === undefined) continue;
+    if (
+      invocation.input.ordinal >= start &&
+      invocation.input.ordinal < end &&
+      (output.ordinal < start || output.ordinal >= end)
+    ) {
+      return failed(
+        `范围 [${start}, ${end}) 在工具调用对中间截断：区间内的工具调用 ` +
+          `${invocation.name} 链接的工具结果位于区间之外` +
+          `（序数 ${output.ordinal}）。工具调用与其结果必须成对压缩，` +
+          `请将范围扩展到包含该工具结果。`,
+      );
+    }
+    // Reverse direction: the range covers the result half while its call
+    // sits before the start boundary (a call always precedes its result,
+    // so the "outside" side can only be below `start`).
+    if (
+      output.ordinal >= start &&
+      output.ordinal < end &&
+      invocation.input.ordinal < start
+    ) {
+      return failed(
+        `范围 [${start}, ${end}) 在工具调用对中间截断：区间内的工具结果 ` +
+          `来自工具调用 ${invocation.name}，其调用位于区间之外` +
+          `（序数 ${invocation.input.ordinal}）。工具调用与其结果必须成对压缩，` +
+          `请将范围扩展到包含该工具调用。`,
+      );
     }
   }
 
@@ -622,7 +639,8 @@ function prepareRange(
  * saw pre-flight), and its `spanHash` is computed over the interval at
  * creation so `validateBlock` can self-verify the coverage later.
  *
- * @param history - The transcript.
+ * @param snapshot - The projection snapshot (span hash resolves tool
+ *   names through the invocation table).
  * @param state - The session state (mutated).
  * @param range - The resolved range with its validated title.
  * @param validation - The gate outcome (swallowed blocks consumed).
@@ -630,12 +648,13 @@ function prepareRange(
  * @returns The newly created block plus the count of swallowed marks.
  */
 function commitPreparedRange(
-  history: HostMessage[],
+  snapshot: Projection,
   state: SessionState,
   range: { start: number; end: number; title: string },
   validation: RangeValidation,
   prepared: PreparedRange,
 ): { block: Block; markCount: number } {
+  const history = snapshot.messages;
   const markStats = pendingMarkStats(state, range.start, range.end);
   for (const { block } of validation.swallowed) {
     block.active = false;
@@ -661,7 +680,7 @@ function commitPreparedRange(
     end: range.end,
     title: range.title,
     summary: prepared.summary,
-    spanHash: computeSpanHash(history, range.start, range.end),
+    spanHash: computeSpanHash(snapshot, range.start, range.end),
     active: true,
     compressedTokens:
       intervalTokens + clearedTokens - consumedTokens - coveredInactiveTokens,
@@ -757,7 +776,8 @@ interface ValidatedRange {
  * Any failure anywhere rejects the whole call: `created` is empty and
  * the state is untouched.  A single-range call is a length-1 array.
  *
- * @param history - The transcript.
+ * @param snapshot - The projection snapshot (region view plus the
+ *   invocation table feeding the mid-pair gate and the span hashes).
  * @param items - The numbered view items of the current round.
  * @param state - The session state (mutated only on full-batch success).
  * @param options - Protection windows, phantom threshold, range bound.
@@ -766,12 +786,13 @@ interface ValidatedRange {
  *   pending-mark count.
  */
 export function compressRanges(
-  history: HostMessage[],
+  snapshot: Projection,
   items: NumberedItem[],
   state: SessionState,
   options: CompressOptions,
   ranges: CompressRangeInput[],
 ): CompressResult {
+  const history = snapshot.messages;
   // ── Whole-call input gate ──────────────────────────────────────────
   if (options.maxRanges !== undefined && ranges.length > options.maxRanges) {
     return {
@@ -821,7 +842,7 @@ export function compressRanges(
   const gateResults: RangeValidation[] = [];
   for (const entry of validated) {
     const result = validateRange(
-      history,
+      snapshot,
       state,
       options,
       entry.start,
@@ -916,7 +937,7 @@ export function compressRanges(
   let swallowedMarks = 0;
   for (const { entry, result, prepared } of preparedList) {
     const applied = commitPreparedRange(
-      history,
+      snapshot,
       state,
       { start: entry.start, end: entry.end, title: entry.title },
       result,

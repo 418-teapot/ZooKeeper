@@ -15,9 +15,11 @@
  * 2. Content region texts, verbatim, in region order.
  * 3. Thinking region texts, verbatim, in region order (full text — a
  *    truncation would introduce a boundary semantic).
- * 4. Tool names, in region order, from tool-input and tool-output
- *    regions (every call contributes its name twice; no dedup, so call
- *    count is preserved).
+ * 4. Tool names, in region order, resolved from the projection's
+ *    invocation table for tool-input and tool-output regions (every
+ *    call contributes its name twice; no dedup, so call count is
+ *    preserved).  A tool region the table does not pair contributes the
+ *    empty string.
  *
  * Explicitly excluded: tool-output text (sweep/dedup may replace it
  * with a placeholder) and tool-input text (purge-errors may replace
@@ -36,26 +38,34 @@
  * @module
  */
 
-import type { HostMessage } from "./lens.js";
-import { regionsOfKind } from "./lens.js";
+import type { Projection } from "./lens.js";
+import { invocationForRegion, regionsOfKind } from "./lens.js";
 
 /**
- * Compute the mutation-invariant projection of a message.
+ * Compute the mutation-invariant projection of one transcript message.
  *
  * The projection ignores the `hidden` flag — the caller decides whether
  * hidden messages participate in hashing.  The result is a plain string
  * projection (no cryptographic hash; hashing is the caller's concern).
+ * Tool names resolve through the projection's invocation table, keyed
+ * by the message's transcript position.
  *
- * @param msg - The message to project.
+ * @param snapshot - The projection snapshot holding the transcript.
+ * @param ordinal - The message's transcript position.
  * @returns The deterministic canonical string.
  */
-export function canon(msg: HostMessage): string {
+export function canon(snapshot: Projection, ordinal: number): string {
+  const msg = snapshot.messages[ordinal];
   const content = regionsOfKind(msg, "content").map((region) => region.get());
   const thinking = regionsOfKind(msg, "thinking").map((region) => region.get());
-  const toolNames = msg.regions
-    .filter(
-      (region) => region.kind === "tool-input" || region.kind === "tool-output",
-    )
-    .map((region) => region.tool?.name ?? "");
+  const toolNames: string[] = [];
+  msg.regions.forEach((region, regionIndex) => {
+    if (region.kind !== "tool-input" && region.kind !== "tool-output") {
+      return;
+    }
+    toolNames.push(
+      invocationForRegion(snapshot, ordinal, regionIndex)?.name ?? "",
+    );
+  });
   return JSON.stringify([msg.role, content, thinking, toolNames]);
 }

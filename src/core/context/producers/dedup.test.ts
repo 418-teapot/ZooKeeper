@@ -17,7 +17,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { HostMessage } from "../lens.js";
-import { makeAssistantMsg, makeToolMsg } from "../lens-testkit.js";
+import {
+  makeAssistantMsg,
+  makeToolMsg,
+  makeToolResultMsg,
+  projectMessages,
+} from "../lens-testkit.js";
 import { measureMessages } from "../measure.js";
 import { markKey, type SessionState } from "../state.js";
 import { type DedupProducerOptions, runDedup } from "./dedup.js";
@@ -109,7 +114,11 @@ function runOpen(
   overrides: Partial<DedupProducerOptions> = {},
 ): { keys: string[]; tokens: number } {
   const state = makeNewState();
-  const result = runDedup(state, messages, dedupOptions(messages, overrides));
+  const result = runDedup(
+    state,
+    projectMessages(messages),
+    dedupOptions(messages, overrides),
+  );
   return { keys: [...state.marks.keys()].sort(), tokens: result.tokens };
 }
 
@@ -300,8 +309,11 @@ describe("dedup semantics", () => {
       lensMsg([bash({ cmd: "ls" })]),
     ];
     const state = makeNewState();
-    assert.equal(runDedup(state, lens, dedupOptions(lens)).created, 1);
-    const second = runDedup(state, lens, dedupOptions(lens));
+    assert.equal(
+      runDedup(state, projectMessages(lens), dedupOptions(lens)).created,
+      1,
+    );
+    const second = runDedup(state, projectMessages(lens), dedupOptions(lens));
     assert.equal(second.created, 0);
     assert.equal(second.tokens, 0);
     assert.equal(state.marks.size, 1);
@@ -319,7 +331,7 @@ describe("lens-specific gating semantics", () => {
       lensMsg([bash({ cmd: "ls" })]),
       lensMsg([bash({ cmd: "ls" })]),
     ];
-    const result = runDedup(state, lens, {
+    const result = runDedup(state, projectMessages(lens), {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
@@ -333,7 +345,7 @@ describe("lens-specific gating semantics", () => {
       makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT),
     );
     const state20 = makeNewState();
-    const r20 = runDedup(state20, atTwenty, {
+    const r20 = runDedup(state20, projectMessages(atTwenty), {
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
       protectedStartOrdinal: atTwenty.length,
@@ -346,7 +358,7 @@ describe("lens-specific gating semantics", () => {
       makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT),
     ];
     const state21 = makeNewState();
-    const r21 = runDedup(state21, above, {
+    const r21 = runDedup(state21, projectMessages(above), {
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
       protectedStartOrdinal: above.length,
@@ -362,7 +374,7 @@ describe("lens-specific gating semantics", () => {
     const total = measureMessages(lens).total;
 
     const below = makeNewState();
-    const rBelow = runDedup(below, lens, {
+    const rBelow = runDedup(below, projectMessages(lens), {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0.4,
@@ -372,7 +384,7 @@ describe("lens-specific gating semantics", () => {
 
     // Equality opens the gate (legacy "equal opens" semantics).
     const at = makeNewState();
-    const rAt = runDedup(at, lens, {
+    const rAt = runDedup(at, projectMessages(lens), {
       minMessages: 0,
       contextLimit: total,
       thresholdContext: 1,
@@ -381,7 +393,7 @@ describe("lens-specific gating semantics", () => {
     assert.equal(rAt.created, 1);
 
     const above = makeNewState();
-    const rAbove = runDedup(above, lens, {
+    const rAbove = runDedup(above, projectMessages(lens), {
       minMessages: 0,
       contextLimit: 1,
       thresholdContext: 0.4,
@@ -396,7 +408,7 @@ describe("lens-specific gating semantics", () => {
       lensMsg([bash({ cmd: "ls" })]),
       lensMsg([bash({ cmd: "ls" })]),
     ];
-    const result = runDedup(state, lens, {
+    const result = runDedup(state, projectMessages(lens), {
       minMessages: 0,
       thresholdContext: 0.4,
       protectedStartOrdinal: lens.length,
@@ -417,7 +429,7 @@ describe("lens-specific skip and dedup semantics", () => {
       makeToolMsg("batch", '{"x":1}', LONG_OUTPUT),
       makeToolMsg("batch", '{"x":1}', LONG_OUTPUT),
     ];
-    const result = runDedup(state, lens, {
+    const result = runDedup(state, projectMessages(lens), {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
@@ -432,7 +444,7 @@ describe("lens-specific skip and dedup semantics", () => {
       makeToolMsg("Batch", '{"x":1}', LONG_OUTPUT),
       makeToolMsg("Batch", '{"x":1}', LONG_OUTPUT),
     ];
-    const result = runDedup(state, lens, {
+    const result = runDedup(state, projectMessages(lens), {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
@@ -447,7 +459,7 @@ describe("lens-specific skip and dedup semantics", () => {
       makeToolMsg("systemioprompt", '{"x":1}', LONG_OUTPUT),
       makeToolMsg("systemioprompt", '{"x":1}', LONG_OUTPUT),
     ];
-    const result = runDedup(state, lens, {
+    const result = runDedup(state, projectMessages(lens), {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
@@ -462,7 +474,7 @@ describe("lens-specific skip and dedup semantics", () => {
       makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT, { hidden: true }),
       makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT),
     ];
-    const result = runDedup(state, lens, {
+    const result = runDedup(state, projectMessages(lens), {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
@@ -478,7 +490,7 @@ describe("lens-specific skip and dedup semantics", () => {
       lensMsg([bash({ cmd: "ls" })]),
       lensMsg([bash({ cmd: "ls" })]),
     ];
-    const result = runDedup(state, lens, {
+    const result = runDedup(state, projectMessages(lens), {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
@@ -496,7 +508,7 @@ describe("lens-specific skip and dedup semantics", () => {
       makeToolMsg("bash", "not json at all", LONG_OUTPUT),
     ];
     assert.equal(
-      runDedup(same, lensSame, {
+      runDedup(same, projectMessages(lensSame), {
         minMessages: 0,
         contextLimit: MODEL_LIMIT,
         thresholdContext: 0,
@@ -511,7 +523,7 @@ describe("lens-specific skip and dedup semantics", () => {
       makeToolMsg("bash", "bbb", LONG_OUTPUT),
     ];
     assert.equal(
-      runDedup(different, lensDiff, {
+      runDedup(different, projectMessages(lensDiff), {
         minMessages: 0,
         contextLimit: MODEL_LIMIT,
         thresholdContext: 0,
@@ -528,7 +540,7 @@ describe("lens-specific skip and dedup semantics", () => {
       makeToolMsg("bash", '{"cmd":"ls"}', big),
       makeToolMsg("bash", '{"cmd":"ls"}', big),
     ];
-    const result = runDedup(state, lens, {
+    const result = runDedup(state, projectMessages(lens), {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
@@ -559,7 +571,7 @@ describe("lens-specific skip and dedup semantics", () => {
       lensMsg([bash({ cmd: "ls" })]),
       lensMsg([bash({ cmd: "ls" })]),
     ];
-    const result = runDedup(state, lens, {
+    const result = runDedup(state, projectMessages(lens), {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
@@ -582,7 +594,7 @@ describe("lens-specific skip and dedup semantics", () => {
       }),
       makeToolMsg("bash", '{"cmd":"ls"}', LONG_OUTPUT),
     ];
-    runDedup(state, lens, {
+    runDedup(state, projectMessages(lens), {
       minMessages: 0,
       contextLimit: MODEL_LIMIT,
       thresholdContext: 0,
@@ -590,5 +602,103 @@ describe("lens-specific skip and dedup semantics", () => {
     });
     assert.equal(lens[0].regions[0].get(), '{"cmd":"ls"}');
     assert.equal(lens[1].regions[0].get(), '{"cmd":"ls"}');
+  });
+});
+
+// ===========================================================================
+// Pi cross-message pairing (regression: the invocation table, not layout)
+// ===========================================================================
+
+describe("pi cross-message dedup (invocation-table pairing)", () => {
+  /**
+   * Build a pi-shaped transcript: each entry pairs an assistant tool-call
+   * message (tool-input region only, paired by call identity to the
+   * following standalone toolResult message) with its input text.  The
+   * pairing mirrors what the pi adapter produces at projection time —
+   * the pre-migration producer scanned for the input inside the result
+   * message, never found it, and collapsed every same-name call into one
+   * signature bucket.
+   */
+  function piTranscript(inputs: string[]): {
+    lens: HostMessage[];
+    resultOrdinals: number[];
+  } {
+    const lens: HostMessage[] = [];
+    const resultOrdinals: number[] = [];
+    for (const input of inputs) {
+      // The result lands at `lens.length + 1` (call message, then
+      // result message).
+      const resultOrdinal = lens.length + 1;
+      lens.push(
+        makeAssistantMsg({
+          toolCalls: [
+            {
+              name: "bash",
+              input,
+              output: "",
+              status: "completed",
+              outputRef: { ordinal: resultOrdinal, regionIndex: 0 },
+            },
+          ],
+        }),
+      );
+      lens.push(makeToolResultMsg(LONG_OUTPUT));
+      resultOrdinals.push(resultOrdinal);
+    }
+    return { lens, resultOrdinals };
+  }
+
+  it("keeps same-name pi calls with DIFFERENT arguments apart", () => {
+    const { lens, resultOrdinals } = piTranscript([
+      '{"cmd":"ls"}',
+      '{"cmd":"pwd"}',
+      '{"cmd":"ls -la"}',
+    ]);
+    const result = runOpen(lens);
+    assert.deepEqual(result, { keys: [], tokens: 0 }, "no false duplicates");
+    // Sanity: the pairing under test really addresses the result regions.
+    assert.deepEqual(resultOrdinals, [1, 3, 5]);
+    const snapshot = projectMessages(lens);
+    assert.equal(snapshot.invocations.length, 3);
+    for (const invocation of snapshot.invocations) {
+      assert.ok(invocation.output);
+      const region =
+        snapshot.messages[invocation.output?.ordinal].regions[
+          invocation.output?.regionIndex
+        ];
+      assert.equal(region.kind, "tool-output");
+      assert.equal(region.get(), LONG_OUTPUT);
+    }
+  });
+
+  it("dedups same-name pi calls with SAME arguments, marking the older result", () => {
+    const { lens } = piTranscript(['{"cmd":"ls"}', '{"cmd":"ls"}']);
+    const result = runOpen(lens);
+    // The older call's result sits at ordinal 1, region 0.
+    assert.deepEqual(result.keys, [markKey(1, 0)]);
+    assert.equal(result.tokens, MARK_TOKENS);
+  });
+
+  it("normalises pi cross-message signatures like the same-message shape", () => {
+    // Key-order equivalence across the pi shape: the signature must read
+    // the INPUT from the paired call message, not the result message.
+    const { lens } = piTranscript([
+      '{"cmd":"ls","path":"/tmp"}',
+      '{"path":"/tmp","cmd":"ls"}',
+    ]);
+    const result = runOpen(lens);
+    assert.deepEqual(result.keys, [markKey(1, 0)]);
+    assert.equal(result.tokens, MARK_TOKENS);
+  });
+
+  it("abstains from unpaired pi result messages (fail-closed)", () => {
+    // A standalone toolResult whose call never appears in the transcript
+    // carries no pairing; the producer must not touch it.
+    const lens = [
+      makeToolResultMsg(LONG_OUTPUT),
+      makeToolResultMsg(LONG_OUTPUT),
+    ];
+    const result = runOpen(lens);
+    assert.deepEqual(result, { keys: [], tokens: 0 });
   });
 });

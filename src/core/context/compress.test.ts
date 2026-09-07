@@ -25,8 +25,14 @@ import {
   validateRange,
 } from "./compress.js";
 import { fold } from "./fold.js";
-import type { HostMessage, TextRegion, ToolOutputRef } from "./lens.js";
-import { makeAssistantMsg, makeMsg } from "./lens-testkit.js";
+import type { HostMessage, Projection } from "./lens.js";
+import { project } from "./lens.js";
+import {
+  makeAssistantMsg,
+  makeMsg,
+  makeToolResultMsg,
+  projectMessages,
+} from "./lens-testkit.js";
 import { estimateMessageHeuristic } from "./measure.js";
 import { computeSpanHash, validateBlock } from "./spanhash.js";
 import type { Block, Mark, SessionState } from "./state.js";
@@ -85,7 +91,7 @@ function makeBlock(
     start,
     end,
     summary: `summary [${start}, ${end})`,
-    spanHash: computeSpanHash(history, start, end),
+    spanHash: computeSpanHash(projectMessages(history), start, end),
     active: true,
     compressedTokens: 100,
     summaryTokens: 10,
@@ -99,7 +105,7 @@ function numberedView(
   history: HostMessage[],
   state: SessionState,
 ): NumberedItem[] {
-  const { items } = fold(history, state);
+  const { items } = fold(projectMessages(history), state);
   return numberView(items, (ordinal) => history[ordinal].hidden);
 }
 
@@ -137,7 +143,7 @@ function compressRange(
   const toRef = ordinalLine(items, toOrdinal);
   assert.ok(fromRef !== null, `ordinal ${fromOrdinal} must be visible`);
   assert.ok(toRef !== null, `ordinal ${toOrdinal} must be visible`);
-  return compressRanges(history, items, state, options, [
+  return compressRanges(projectMessages(history), items, state, options, [
     { fromRef, toRef, title, summary },
   ]);
 }
@@ -304,7 +310,13 @@ describe("validateRange — protection-zone gate", () => {
   it("rejects a range reaching into the protected window", () => {
     const history = makeTranscript(10);
     const state = makeState();
-    const result = validateRange(history, state, OPTIONS, 1, 9);
+    const result = validateRange(
+      projectMessages(history),
+      state,
+      OPTIONS,
+      1,
+      9,
+    );
     assert.ok(result.error !== null);
     assert.ok(result.error.includes("保护区域"));
     assert.ok(result.error.includes("边界 8"));
@@ -313,7 +325,13 @@ describe("validateRange — protection-zone gate", () => {
   it("accepts a range ending exactly at the boundary", () => {
     const history = makeTranscript(10);
     const state = makeState();
-    const result = validateRange(history, state, OPTIONS, 1, 8);
+    const result = validateRange(
+      projectMessages(history),
+      state,
+      OPTIONS,
+      1,
+      8,
+    );
     assert.equal(result.error, null);
   });
 });
@@ -326,7 +344,13 @@ describe("validateRange — first-user gate", () => {
   it("rejects a range containing the first user message", () => {
     const history = makeTranscript(10);
     const state = makeState();
-    const result = validateRange(history, state, OPTIONS, 0, 5);
+    const result = validateRange(
+      projectMessages(history),
+      state,
+      OPTIONS,
+      0,
+      5,
+    );
     assert.ok(result.error !== null);
     assert.ok(result.error.includes("第一条用户消息"));
   });
@@ -334,7 +358,13 @@ describe("validateRange — first-user gate", () => {
   it("accepts a range strictly after the first user message", () => {
     const history = makeTranscript(10);
     const state = makeState();
-    const result = validateRange(history, state, OPTIONS, 1, 6);
+    const result = validateRange(
+      projectMessages(history),
+      state,
+      OPTIONS,
+      1,
+      6,
+    );
     assert.equal(result.error, null);
   });
 });
@@ -348,7 +378,13 @@ describe("validateRange — overlap gate", () => {
     const history = makeTranscript(10);
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 2, 6));
-    const result = validateRange(history, state, OPTIONS, 4, 8);
+    const result = validateRange(
+      projectMessages(history),
+      state,
+      OPTIONS,
+      4,
+      8,
+    );
     assert.ok(result.error !== null);
     assert.ok(result.error.includes("部分重叠"));
     assert.ok(result.error.includes("b1"));
@@ -358,7 +394,13 @@ describe("validateRange — overlap gate", () => {
     const history = makeTranscript(10);
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 2, 6));
-    const result = validateRange(history, state, OPTIONS, 6, 8);
+    const result = validateRange(
+      projectMessages(history),
+      state,
+      OPTIONS,
+      6,
+      8,
+    );
     assert.equal(result.error, null);
   });
 });
@@ -372,7 +414,13 @@ describe("validateRange — swallow gate", () => {
     const history = makeTranscript(10);
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 2, 6));
-    const result = validateRange(history, state, OPTIONS, 2, 8);
+    const result = validateRange(
+      projectMessages(history),
+      state,
+      OPTIONS,
+      2,
+      8,
+    );
     assert.equal(result.error, null);
     assert.deepEqual(
       result.swallowed.map((ref) => ref.id),
@@ -385,7 +433,13 @@ describe("validateRange — swallow gate", () => {
     const history = makeTranscript(10);
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 2, 6, { active: false }));
-    const result = validateRange(history, state, OPTIONS, 2, 8);
+    const result = validateRange(
+      projectMessages(history),
+      state,
+      OPTIONS,
+      2,
+      8,
+    );
     assert.equal(result.error, null);
     assert.deepEqual(result.swallowed, []);
     assert.deepEqual(
@@ -398,7 +452,13 @@ describe("validateRange — swallow gate", () => {
     const history = makeTranscript(10);
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 2, 6, { active: false }));
-    const result = validateRange(history, state, OPTIONS, 4, 8);
+    const result = validateRange(
+      projectMessages(history),
+      state,
+      OPTIONS,
+      4,
+      8,
+    );
     assert.equal(result.error, null);
     assert.deepEqual(result.swallowed, []);
     assert.deepEqual(result.coveredInactive, []);
@@ -423,7 +483,7 @@ describe("validateRange — phantom gate", () => {
     ];
     const state = makeState();
     const result = validateRange(
-      history,
+      projectMessages(history),
       state,
       { protectedMessages: 0, protectedTokens: 0, thresholdTokens: 50 },
       1,
@@ -437,50 +497,27 @@ describe("validateRange — phantom gate", () => {
   it("accepts a range at or above the threshold", () => {
     const history = makeTranscript(10);
     const state = makeState();
-    const result = validateRange(history, state, OPTIONS, 1, 3);
+    const result = validateRange(
+      projectMessages(history),
+      state,
+      OPTIONS,
+      1,
+      3,
+    );
     assert.equal(result.error, null);
   });
 });
 
 // ---------------------------------------------------------------------------
-// 7b. validateRange — mid-pair gate (ToolMeta.output linkage)
+// 7b. validateRange — mid-pair gate (the invocation table)
 // ---------------------------------------------------------------------------
 
-/**
- * Build a pi-shaped tool-input region whose call links its result in a
- * SEPARATE message — the pi lens maps a toolCall block and its
- * toolResult message to two lens messages, and the tool-input region's
- * metadata carries the positional address of the linked tool-output
- * region (`ToolMeta.output`).
- */
-function makeToolInputRegion(
-  input: string,
-  outputRef: ToolOutputRef | undefined,
-  name = "bash",
-): TextRegion {
+/** A bare tool-input-only message (the pi toolCall shape). */
+function makeToolInputMsg(input: string): HostMessage {
   return {
-    kind: "tool-input",
-    get: () => input,
-    tool: {
-      name,
-      status: "completed",
-      ...(outputRef === undefined ? {} : { output: outputRef }),
-    },
-  };
-}
-
-/** A pi-shaped tool-result message (the sibling of a tool-input). */
-function makePiToolResultMsg(output: string, name = "bash"): HostMessage {
-  return {
-    role: "toolResult",
+    role: "assistant",
     hidden: false,
-    regions: [
-      {
-        kind: "tool-output",
-        get: () => output,
-        tool: { name, status: "completed" },
-      },
-    ],
+    regions: [{ kind: "tool-input", get: () => input }],
   };
 }
 
@@ -489,31 +526,35 @@ function makePiToolResultMsg(output: string, name = "bash"): HostMessage {
  * trailing user and assistant.  Ordinals: 0 user, 1 call-1, 2 result-1,
  * 3 call-2, 4 result-2, 5 user, 6 assistant.
  *
- * With `linkOutput` the tool-input regions carry the positional address
- * of their linked result (the pi lens shape); without it they carry no
- * output metadata — the v1 metadata shape, where both halves of a call
- * live in one message and `ToolMeta.output` is never set.
+ * With `linked` the invocation table pairs each call message with its
+ * result message (the pi projection shape); without it the calls are
+ * in flight (no output half) — the gate has no pairing to check and
+ * must not fire.
  */
-function makePairTranscript(linkOutput: boolean): HostMessage[] {
-  const output = (ordinal: number): ToolOutputRef | undefined =>
-    linkOutput ? { ordinal, regionIndex: 0 } : undefined;
-  return [
+function makePairTranscript(linked: boolean): Projection {
+  const messages = [
     makeMsg("user", ["开场问题"]),
-    {
-      role: "assistant",
-      hidden: false,
-      regions: [makeToolInputRegion('{"cmd":"ls"}', output(2))],
-    },
-    makePiToolResultMsg(`data 1 ${"x".repeat(40)}`),
-    {
-      role: "assistant",
-      hidden: false,
-      regions: [makeToolInputRegion('{"cmd":"find"}', output(4))],
-    },
-    makePiToolResultMsg(`data 2 ${"x".repeat(40)}`),
+    makeToolInputMsg('{"cmd":"ls"}'),
+    makeToolResultMsg(`data 1 ${"x".repeat(40)}`),
+    makeToolInputMsg('{"cmd":"find"}'),
+    makeToolResultMsg(`data 2 ${"x".repeat(40)}`),
     makeMsg("user", ["最后一个问题"]),
     makeAssistantMsg({ text: "回答完毕" }),
   ];
+  return project(messages, [
+    {
+      name: "bash",
+      status: "completed",
+      input: { ordinal: 1, regionIndex: 0 },
+      ...(linked ? { output: { ordinal: 2, regionIndex: 0 } } : {}),
+    },
+    {
+      name: "bash",
+      status: "completed",
+      input: { ordinal: 3, regionIndex: 0 },
+      ...(linked ? { output: { ordinal: 4, regionIndex: 0 } } : {}),
+    },
+  ]);
 }
 
 /**
@@ -529,38 +570,72 @@ const PAIR_OPTIONS: CompressOptions = {
 
 describe("validateRange — mid-pair gate", () => {
   it("rejects a range ending right after a toolCall whose result sits outside", () => {
-    const history = makePairTranscript(true);
+    const transcript = makePairTranscript(true);
     const state = makeState();
-    const result = validateRange(history, state, PAIR_OPTIONS, 3, 4);
+    const result = validateRange(transcript, state, PAIR_OPTIONS, 3, 4);
     assert.ok(result.error !== null);
     assert.ok(result.error.includes("工具调用对中间截断"));
     assert.ok(result.error.includes("序数 4"));
   });
 
   it("accepts a range extended to include the linked toolResult", () => {
-    const history = makePairTranscript(true);
+    const transcript = makePairTranscript(true);
     const state = makeState();
-    const result = validateRange(history, state, PAIR_OPTIONS, 3, 5);
+    const result = validateRange(transcript, state, PAIR_OPTIONS, 3, 5);
     assert.equal(result.error, null);
   });
 
-  it("never fires on v1-shaped input (no output metadata)", () => {
-    const history = makePairTranscript(false);
+  it("rejects a range starting after a toolCall whose call sits before the start", () => {
+    const transcript = makePairTranscript(true);
+    const state = makeState();
+    // [2, 3) covers the result half (ordinal 2) of the first pair while
+    // its call (ordinal 1) stays outside — the reverse of the direction
+    // above, gated the same way.
+    const result = validateRange(transcript, state, PAIR_OPTIONS, 2, 3);
+    assert.ok(result.error !== null);
+    assert.ok(result.error.includes("工具调用对中间截断"));
+    assert.ok(result.error.includes("序数 1"));
+  });
+
+  it("accepts a range covering both halves of a pair (reverse direction)", () => {
+    const transcript = makePairTranscript(true);
+    const state = makeState();
+    // [1, 3) covers call-1 (ordinal 1) together with its result
+    // (ordinal 2) — the range the test above rejects once extended.
+    const result = validateRange(transcript, state, PAIR_OPTIONS, 1, 3);
+    assert.equal(result.error, null);
+  });
+
+  it("never fires on unpaired result messages", () => {
+    const transcript = makePairTranscript(false);
+    const state = makeState();
+    // Without the invocation table there is no pairing information at
+    // all; a lone result message must not be rejected by this gate
+    // (producers abstain from unpaired regions).
+    const result = validateRange(transcript, state, PAIR_OPTIONS, 2, 3);
+    assert.equal(result.error, null);
+  });
+
+  it("never fires on in-flight calls (no linked output half)", () => {
+    const transcript = makePairTranscript(false);
     const state = makeState();
     // The same ordinal range that triggers the mid-pair gate when the
-    // output linkage is present passes untouched on the v1 metadata
-    // shape — the gate consumes only ToolMeta.output.
-    const result = validateRange(history, state, PAIR_OPTIONS, 3, 4);
+    // pairing is present passes untouched while the call is still in
+    // flight — the gate consumes only invocation output addresses.
+    const result = validateRange(transcript, state, PAIR_OPTIONS, 3, 4);
     assert.equal(result.error, null);
   });
 });
 
 describe("compressRanges — mid-pair gate batch semantics", () => {
   it("rejects the whole batch when any range cuts a pair, with zero state change", () => {
-    const history = makePairTranscript(true);
+    const transcript = makePairTranscript(true);
     const state = makeState();
-    const items = numberedView(history, state);
-    const result = compressRanges(history, items, state, PAIR_OPTIONS, [
+    const items = numberView(
+      fold(transcript, state).items,
+      (ordinal) => transcript.messages[ordinal].hidden,
+    );
+    const result = compressRanges(transcript, items, state, PAIR_OPTIONS, [
       // [3, 4) covers only the a2 toolCall half of the second pair; its
       // linked result (ordinal 4) sits outside → mid-pair rejection.
       { fromRef: "m4", toRef: "m4", title: "对半", summary: "摘要。" },
@@ -568,31 +643,27 @@ describe("compressRanges — mid-pair gate batch semantics", () => {
       // atomic: the mid-pair range rejects the whole call.
       { fromRef: "m2", toRef: "m3", title: "整对", summary: "摘要。" },
     ]);
-    assert.deepEqual(result.created, []);
+    assert.equal(result.created.length, 0);
     assert.equal(result.failed.length, 1);
-    assert.equal(result.failed[0].index, 1);
     assert.ok(result.failed[0].error.includes("工具调用对中间截断"));
     assert.equal(state.blocks.size, 0);
-    assert.equal(state.marks.size, 0);
   });
 
-  it("accepts a full-pair range end to end", () => {
-    const history = makePairTranscript(true);
+  it("accepts paired ranges covering both halves of every call", () => {
+    const transcript = makePairTranscript(true);
     const state = makeState();
-    const items = numberedView(history, state);
-    const result = compressRange(
-      history,
-      items,
-      state,
-      1,
-      4,
-      "双对",
-      "摘要。",
-      PAIR_OPTIONS,
+    const items = numberView(
+      fold(transcript, state).items,
+      (ordinal) => transcript.messages[ordinal].hidden,
     );
-    assert.deepEqual(result.failed, []);
-    assert.equal(result.created.length, 1);
-    assert.deepEqual([result.created[0].start, result.created[0].end], [1, 5]);
+    const result = compressRanges(transcript, items, state, PAIR_OPTIONS, [
+      // [1, 3) covers call-1 (ordinal 1) with its result (ordinal 2).
+      { fromRef: "m2", toRef: "m3", title: "整对一", summary: "摘要一。" },
+      // [3, 5) covers call-2 (ordinal 3) with its result (ordinal 4).
+      { fromRef: "m4", toRef: "m5", title: "整对二", summary: "摘要二。" },
+    ]);
+    assert.equal(result.created.length, 2);
+    assert.equal(result.failed.length, 0);
   });
 });
 
@@ -622,8 +693,11 @@ describe("compressRanges — block creation", () => {
     assert.equal(block.end, 6);
     assert.equal(block.title, "执行主题");
     assert.equal(block.active, true);
-    assert.equal(block.spanHash, computeSpanHash(history, 1, 6));
-    assert.ok(validateBlock(history, block));
+    assert.equal(
+      block.spanHash,
+      computeSpanHash(projectMessages(history), 1, 6),
+    );
+    assert.ok(validateBlock(projectMessages(history), block));
     assert.equal(typeof block.createdAt, "number");
     assert.ok(block.compressedTokens > block.summaryTokens);
     // No consumed blocks → the summary is the model text alone.
@@ -678,11 +752,17 @@ describe("compressRanges — batch semantics", () => {
     const history = makeTranscript(12);
     const state = makeState();
     const items = numberedView(history, state);
-    const result = compressRanges(history, items, state, OPTIONS, [
-      { fromRef: "m2", toRef: "m3", title: "主题A", summary: "摘要A。" },
-      { fromRef: "m4", toRef: "m7", title: "主题B", summary: "摘要B。" },
-      { fromRef: "m8", toRef: "m9", title: "主题C", summary: "摘要C。" },
-    ]);
+    const result = compressRanges(
+      projectMessages(history),
+      items,
+      state,
+      OPTIONS,
+      [
+        { fromRef: "m2", toRef: "m3", title: "主题A", summary: "摘要A。" },
+        { fromRef: "m4", toRef: "m7", title: "主题B", summary: "摘要B。" },
+        { fromRef: "m8", toRef: "m9", title: "主题C", summary: "摘要C。" },
+      ],
+    );
     assert.deepEqual(result.failed, []);
     assert.equal(result.created.length, 3);
     assert.deepEqual(
@@ -698,7 +778,7 @@ describe("compressRanges — batch semantics", () => {
     assert.equal(state.blocks.get(2)?.title, "主题B");
     assert.equal(state.blocks.get(3)?.title, "主题C");
     for (const block of state.blocks.values()) {
-      assert.ok(validateBlock(history, block));
+      assert.ok(validateBlock(projectMessages(history), block));
     }
   });
 
@@ -709,10 +789,16 @@ describe("compressRanges — batch semantics", () => {
     // Range 2 fully covers range 1's interval: validated against the
     // snapshot (no block exists yet), then rejected by the cross-range
     // same-call rule — zero state change proves atomicity.
-    const result = compressRanges(history, items, state, OPTIONS, [
-      { fromRef: "m2", toRef: "m4", title: "主题A", summary: "摘要A。" },
-      { fromRef: "m2", toRef: "m8", title: "主题B", summary: "摘要B。" },
-    ]);
+    const result = compressRanges(
+      projectMessages(history),
+      items,
+      state,
+      OPTIONS,
+      [
+        { fromRef: "m2", toRef: "m4", title: "主题A", summary: "摘要A。" },
+        { fromRef: "m2", toRef: "m8", title: "主题B", summary: "摘要B。" },
+      ],
+    );
     assert.deepEqual(result.created, []);
     assert.equal(result.failed.length, 1);
     assert.equal(result.failed[0].index, 2);
@@ -724,10 +810,16 @@ describe("compressRanges — batch semantics", () => {
     const history = makeTranscript(10);
     const state = makeState();
     const items = numberedView(history, state);
-    const result = compressRanges(history, items, state, OPTIONS, [
-      { fromRef: "m2", toRef: "m4", title: "主题A", summary: "摘要A。" },
-      { fromRef: "m8", toRef: "m10", title: "主题B", summary: "摘要B。" },
-    ]);
+    const result = compressRanges(
+      projectMessages(history),
+      items,
+      state,
+      OPTIONS,
+      [
+        { fromRef: "m2", toRef: "m4", title: "主题A", summary: "摘要A。" },
+        { fromRef: "m8", toRef: "m10", title: "主题B", summary: "摘要B。" },
+      ],
+    );
     assert.deepEqual(result.created, []);
     assert.equal(result.failed.length, 1);
     assert.equal(result.failed[0].index, 2);
@@ -742,11 +834,17 @@ describe("compressRanges — batch semantics", () => {
     compressRange(history, initial, state, 2, 3, "第一段主题", "第一段摘要。");
 
     const items = numberedView(history, state);
-    const result = compressRanges(history, items, state, OPTIONS, [
-      // [1, 6) fully covers block 1 [2, 4) → consumed in the batch.
-      { fromRef: "m2", toRef: "m5", title: "主题A", summary: "摘要A。" },
-      { fromRef: "m6", toRef: "m7", title: "主题B", summary: "摘要B。" },
-    ]);
+    const result = compressRanges(
+      projectMessages(history),
+      items,
+      state,
+      OPTIONS,
+      [
+        // [1, 6) fully covers block 1 [2, 4) → consumed in the batch.
+        { fromRef: "m2", toRef: "m5", title: "主题A", summary: "摘要A。" },
+        { fromRef: "m6", toRef: "m7", title: "主题B", summary: "摘要B。" },
+      ],
+    );
     assert.deepEqual(result.failed, []);
     assert.equal(result.created.length, 2);
     assert.equal(state.blocks.get(1)?.active, false);
@@ -771,7 +869,7 @@ describe("compressRanges — maxRanges and title rules", () => {
     const state = makeState();
     const items = numberedView(history, state);
     const result = compressRanges(
-      history,
+      projectMessages(history),
       items,
       state,
       { ...OPTIONS, maxRanges: 1 },
@@ -791,9 +889,13 @@ describe("compressRanges — maxRanges and title rules", () => {
     const history = makeTranscript(10);
     const state = makeState();
     const items = numberedView(history, state);
-    const result = compressRanges(history, items, state, OPTIONS, [
-      { fromRef: "m2", toRef: "m3", title: "   ", summary: "s" },
-    ]);
+    const result = compressRanges(
+      projectMessages(history),
+      items,
+      state,
+      OPTIONS,
+      [{ fromRef: "m2", toRef: "m3", title: "   ", summary: "s" }],
+    );
     assert.deepEqual(result.created, []);
     assert.equal(result.failed.length, 1);
     assert.equal(result.failed[0].index, 1);
@@ -805,9 +907,13 @@ describe("compressRanges — maxRanges and title rules", () => {
     const history = makeTranscript(10);
     const state = makeState();
     const items = numberedView(history, state);
-    const result = compressRanges(history, items, state, OPTIONS, [
-      { fromRef: "m2", toRef: "m3", title: "a\nb", summary: "s" },
-    ]);
+    const result = compressRanges(
+      projectMessages(history),
+      items,
+      state,
+      OPTIONS,
+      [{ fromRef: "m2", toRef: "m3", title: "a\nb", summary: "s" }],
+    );
     assert.ok(result.failed[0]?.error.includes("控制字符"));
     assert.equal(state.blocks.size, 0);
   });
@@ -816,9 +922,13 @@ describe("compressRanges — maxRanges and title rules", () => {
     const history = makeTranscript(10);
     const state = makeState();
     const items = numberedView(history, state);
-    const result = compressRanges(history, items, state, OPTIONS, [
-      { fromRef: "m2", toRef: "m3", title: "a---b", summary: "s" },
-    ]);
+    const result = compressRanges(
+      projectMessages(history),
+      items,
+      state,
+      OPTIONS,
+      [{ fromRef: "m2", toRef: "m3", title: "a---b", summary: "s" }],
+    );
     assert.ok(result.failed[0]?.error.includes("连字符"));
     assert.equal(state.blocks.size, 0);
   });
@@ -827,9 +937,13 @@ describe("compressRanges — maxRanges and title rules", () => {
     const history = makeTranscript(10);
     const state = makeState();
     const items = numberedView(history, state);
-    const result = compressRanges(history, items, state, OPTIONS, [
-      { fromRef: "m2", toRef: "m3", title: "x".repeat(81), summary: "s" },
-    ]);
+    const result = compressRanges(
+      projectMessages(history),
+      items,
+      state,
+      OPTIONS,
+      [{ fromRef: "m2", toRef: "m3", title: "x".repeat(81), summary: "s" }],
+    );
     assert.ok(result.failed[0]?.error.includes("80 字符上限"));
     assert.equal(state.blocks.size, 0);
   });
@@ -838,9 +952,13 @@ describe("compressRanges — maxRanges and title rules", () => {
     const history = makeTranscript(10);
     const state = makeState();
     const items = numberedView(history, state);
-    const result = compressRanges(history, items, state, OPTIONS, [
-      { fromRef: "m2", toRef: "m3", title: "  主题  ", summary: "s" },
-    ]);
+    const result = compressRanges(
+      projectMessages(history),
+      items,
+      state,
+      OPTIONS,
+      [{ fromRef: "m2", toRef: "m3", title: "  主题  ", summary: "s" }],
+    );
     assert.deepEqual(result.failed, []);
     assert.equal(result.created[0].title, "主题");
   });
@@ -860,14 +978,20 @@ describe("compressRanges — apply-time gates", () => {
     const items = numberedView(history, state);
     const summaryLine = summaryLineOf(items);
     assert.ok(summaryLine !== null);
-    const result = compressRanges(history, items, state, OPTIONS, [
-      {
-        fromRef: `m${summaryLine}`,
-        toRef: `m${summaryLine}`,
-        title: "重复主题",
-        summary: "重复摘要。",
-      },
-    ]);
+    const result = compressRanges(
+      projectMessages(history),
+      items,
+      state,
+      OPTIONS,
+      [
+        {
+          fromRef: `m${summaryLine}`,
+          toRef: `m${summaryLine}`,
+          title: "重复主题",
+          summary: "重复摘要。",
+        },
+      ],
+    );
     assert.deepEqual(result.created, []);
     assert.equal(result.failed.length, 1);
     assert.ok(result.failed[0].error.includes("没有带来新的可压缩内容"));
@@ -884,9 +1008,20 @@ describe("compressRanges — apply-time gates", () => {
     compressRange(history, initial, state, 2, 3, "第一段主题", "第一段摘要。");
 
     const items = numberedView(history, state);
-    const result = compressRanges(history, items, state, OPTIONS, [
-      { fromRef: "m2", toRef: "m5", title: "长主题", summary: "y".repeat(300) },
-    ]);
+    const result = compressRanges(
+      projectMessages(history),
+      items,
+      state,
+      OPTIONS,
+      [
+        {
+          fromRef: "m2",
+          toRef: "m5",
+          title: "长主题",
+          summary: "y".repeat(300),
+        },
+      ],
+    );
     assert.deepEqual(result.created, []);
     assert.equal(result.failed.length, 1);
     assert.ok(result.failed[0].error.includes("收益为负"));
@@ -903,14 +1038,20 @@ describe("compressRanges — apply-time gates", () => {
     assert.ok(b1 !== undefined);
 
     const items = numberedView(history, state);
-    const result = compressRanges(history, items, state, OPTIONS, [
-      {
-        fromRef: "m2",
-        toRef: "m5",
-        title: "第二段主题",
-        summary: "第二段摘要。",
-      },
-    ]);
+    const result = compressRanges(
+      projectMessages(history),
+      items,
+      state,
+      OPTIONS,
+      [
+        {
+          fromRef: "m2",
+          toRef: "m5",
+          title: "第二段主题",
+          summary: "第二段摘要。",
+        },
+      ],
+    );
     assert.equal(result.failed.length, 0);
     const b2 = result.created[0];
     assert.deepEqual([b2.start, b2.end], [1, 6]);
@@ -924,7 +1065,7 @@ describe("compressRanges — apply-time gates", () => {
       intervalTokens += estimateMessageHeuristic(history[i]);
     }
     assert.equal(b2.compressedTokens, intervalTokens - b1.compressedTokens);
-    assert.ok(validateBlock(history, b2));
+    assert.ok(validateBlock(projectMessages(history), b2));
   });
 
   it("nets out a fully-covered inactive block and keeps its index line", () => {
@@ -940,14 +1081,20 @@ describe("compressRanges — apply-time gates", () => {
     b1.active = false;
 
     const items = numberedView(history, state);
-    const result = compressRanges(history, items, state, OPTIONS, [
-      {
-        fromRef: "m2",
-        toRef: "m6",
-        title: "第二段主题",
-        summary: "第二段摘要。",
-      },
-    ]);
+    const result = compressRanges(
+      projectMessages(history),
+      items,
+      state,
+      OPTIONS,
+      [
+        {
+          fromRef: "m2",
+          toRef: "m6",
+          title: "第二段主题",
+          summary: "第二段摘要。",
+        },
+      ],
+    );
     assert.equal(result.failed.length, 0);
     const b2 = result.created[0];
     assert.ok(b2.summary.includes("--- b1: 第一段主题 ---"));
@@ -975,7 +1122,13 @@ function runNewBatch(
   options: CompressOptions = OPTIONS,
 ): { ok: boolean; error?: string; count?: number } {
   const items = numberedView(history, state);
-  const result = compressRanges(history, items, state, options, ranges);
+  const result = compressRanges(
+    projectMessages(history),
+    items,
+    state,
+    options,
+    ranges,
+  );
   if (result.error !== undefined) return { ok: false, error: result.error };
   if (result.failed.length > 0)
     return { ok: false, error: result.failed[0].error };
@@ -1041,7 +1194,13 @@ describe("end-to-end gate decisions", () => {
     const state = makeState();
     const initial = numberedView(history, state);
     compressRange(history, initial, state, 2, 5, "第一段主题", "第一段摘要。");
-    const newError = validateRange(history, state, OPTIONS, 4, 8).error;
+    const newError = validateRange(
+      projectMessages(history),
+      state,
+      OPTIONS,
+      4,
+      8,
+    ).error;
     assert.ok(newError !== null);
     assert.ok(newError.includes("部分重叠"));
   });

@@ -274,12 +274,9 @@ describe("pruned tool-output adjustment", () => {
       thinking: "th",
       toolCalls: [{ name: "bash", input: "cmd", output: "out" }],
     });
-    // The predicate matches both tool regions (shared tool metadata), but
-    // only the tool-output region is replaced by the placeholder estimate.
-    const pruned = estimateMessageHeuristic(
-      msg,
-      (r) => r.tool?.name === "bash",
-    );
+    // The predicate may match any region, but only tool-output regions
+    // are replaced by the placeholder estimate.
+    const pruned = estimateMessageHeuristic(msg, () => true);
     // "hi" 1 + "th" 1 + input "cmd" 1 + placeholder 20 = 23
     assert.equal(pruned, 23);
   });

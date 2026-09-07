@@ -79,7 +79,7 @@ export function applyEdits(
   const copies = messages.map(
     (message) => structuredClone(message) as PiAgentMessage,
   );
-  const lens = history(copies);
+  const lens = history(copies).messages;
   applyEditsToLens(lens, edits);
   return copies;
 }
@@ -168,16 +168,15 @@ function buildToolPairIndex(messages: PiAgentMessage[]): {
  * semantics therefore require a summary that covers one half of a pair to
  * swallow the other half as well.
  *
- * This stays as defensive hardening even though the compress gate chain
- * now rejects mid-pair ranges at creation (`validateRange` in
- * `compress.ts`): the gate consumes `ToolMeta.output`, which is carried
- * on the tool-input region only, so it rejects a range covering the
- * toolCall half without its result — but a range covering the RESULT
- * half without its call (a lone tool-output message inside the
- * interval) carries no linkage to check and would pass whenever the
- * phantom threshold is low enough.  Host truncation cannot produce a
- * mid-pair state interval (revert deactivates whole blocks, never
- * truncating one), but the expansion costs nothing and keeps every
+ * This stays as defensive hardening for blocks created before the
+ * compress gate chain rejected mid-pair ranges: `validateRange` in
+ * `compress.ts` now gates both directions (a call inside with its result
+ * outside, and a result inside with its call outside) using the
+ * projection's invocation table, so a newly created block never cuts a
+ * pair.  Host truncation cannot produce a mid-pair state interval
+ * (revert deactivates whole blocks, never truncating one), but a state
+ * persisted while the gate only checked one direction can still hold a
+ * result-only block; the expansion costs nothing and keeps every
  * pair-touching summary id-resolvable.
  */
 export function expandSummaryBlocks(
@@ -269,7 +268,7 @@ function buildRenderedView(
   items: ViewItem[],
   state: SessionState,
 ): PiAgentMessage[] {
-  const lens = history(copies);
+  const lens = history(copies).messages;
   const view = expandSummaryBlocks(items, copies);
   const numbered = numberView(view, () => false);
   const lineByItem = new Map<ViewItem, number>();
@@ -340,7 +339,7 @@ export function render(
   const copies = messages.map(
     (message) => structuredClone(message) as PiAgentMessage,
   );
-  const lens = history(copies);
+  const lens = history(copies).messages;
   applyEditsToLens(lens, edits);
   return buildRenderedView(copies, items, state);
 }

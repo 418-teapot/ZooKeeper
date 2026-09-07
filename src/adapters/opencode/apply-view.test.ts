@@ -253,14 +253,15 @@ describe("render injection", () => {
         toolPart("read", "a.ts", "content"),
       ]),
     ];
-    const lens = history(msgs);
+    const snapshot = history(msgs);
+    const lens = snapshot.messages;
     // Prove the adapter's provenance agrees with the injection output.
     assert.equal(isInjectableRegion(lens[0].regions[0]), false); // thinking
     assert.equal(isInjectableRegion(lens[0].regions[1]), false); // tool-input
     assert.equal(isInjectableRegion(lens[0].regions[2]), true); // tool-output
 
     const state: SessionState = { blocks: new Map(), marks: new Map() };
-    const { items } = fold(lens, state);
+    const { items } = fold(snapshot, state);
     render(msgs, items, [], state);
     assert.equal((msgs[0].parts?.[0] as { text: string }).text, "think");
     const toolState = (

@@ -89,7 +89,7 @@ export type CompressToolDefinition = {
   execute(args: unknown, toolCtx: unknown): Promise<string>;
 };
 
-export type CompressToolMetadata = Omit<CompressToolDefinition, "execute">;
+export type CompressToolSpec = Omit<CompressToolDefinition, "execute">;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -192,9 +192,9 @@ function createdBlockIds(state: SessionState, created: Block[]): number[] {
  * @param _contextConfig - The parsed context-pruning config.
  * @returns The tool description and args schema.
  */
-function buildCompressToolMetadata(
+function buildCompressToolSpec(
   _contextConfig: ContextPruningConfig,
-): CompressToolMetadata {
+): CompressToolSpec {
   return {
     description: `将一段或多段连续的、不再需要逐字保留的历史消息压缩为摘要。每一段的压缩范围不能有重叠，且都应是独立的主题。`,
     args: {
@@ -248,7 +248,7 @@ export function createCompressTool(
   contextConfig: ContextPruningConfig,
 ): CompressToolDefinition {
   return {
-    ...buildCompressToolMetadata(contextConfig),
+    ...buildCompressToolSpec(contextConfig),
     async execute(args, toolCtx) {
       const sessionID = host.resolveSessionId(toolCtx);
       if (sessionID === undefined) {
@@ -283,13 +283,13 @@ export function createCompressTool(
 
       // Fetch full messages as the host-agnostic transcript and build the
       // folded, line-numbered view of the current round.
-      const view = await host.fetchHistory(sessionID);
+      const snapshot = await host.fetchHistory(sessionID);
       const manager = getContextStateManager();
       const state = manager.get(sessionID);
-      const { items } = fold(view, state);
+      const { items } = fold(snapshot, state);
       const numbered: NumberedItem[] = numberView(
         items,
-        (ordinal) => view[ordinal].hidden,
+        (ordinal) => snapshot.messages[ordinal].hidden,
       );
 
       // Core batch pipeline: loud Chinese guidance errors come back as a
@@ -301,7 +301,7 @@ export function createCompressTool(
         thresholdTokens: compressCfg.thresholdTokens,
         maxRanges: compressCfg.maxRanges,
       };
-      const result = compressRanges(view, numbered, state, options, ranges);
+      const result = compressRanges(snapshot, numbered, state, options, ranges);
 
       if (result.error !== undefined) {
         throw new Error(result.error);
@@ -375,7 +375,7 @@ export const unit: ToolUnitDescriptor = {
   kind: "tool",
   create(deps) {
     const host = deps.toolHost;
-    const metadata = buildCompressToolMetadata(deps.contextConfig);
+    const metadata = buildCompressToolSpec(deps.contextConfig);
     if (host === undefined) {
       return {
         kind: "tool",

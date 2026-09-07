@@ -7,7 +7,7 @@
  *    kind, message-level fields (`role`, `tokens`, `ignored`) map to the
  *    lens message fields, and edge shapes (empty parts, null parts,
  *    step-start, parallel tools, non-string text) are covered.
- * 2. Parity — real v1 entries are mapped through `history()` and fed to
+ * 2. Parity — real v1 entries are mapped through `messagesOf()` and fed to
  *    the new estimators; the results must equal the legacy estimators
  *    applied to the same entries, per message and per transcript.
  * 3. Write-back — the adapter's `WritableRegion` regions mutate the
@@ -29,7 +29,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { canon } from "../../core/context/canon.js";
-import type { TextRegion } from "../../core/context/lens.js";
+import type { HostMessage, TextRegion } from "../../core/context/lens.js";
 import { makeMsg } from "../../core/context/lens-testkit.js";
 import {
   estimateMessageHeuristic,
@@ -136,7 +136,17 @@ function entry(
  * Regions of the single mapped message for a v1 entry.
  */
 function regionsOf(entryToMap: ContextMessageEntry): TextRegion[] {
-  return history([entryToMap])[0].regions;
+  return history([entryToMap]).messages[0].regions;
+}
+
+/**
+ * The region view of a v1 transcript (most tests here ignore the
+ * invocation table; table behavior is pinned where noted).
+ */
+function messagesOf(
+  entries: ContextMessageEntry[] | null | undefined,
+): HostMessage[] {
+  return history(entries).messages;
 }
 
 // ---------------------------------------------------------------------------
@@ -172,27 +182,38 @@ describe("v1 part → region mapping", () => {
     assert.equal(region.get(), "reasoning trace");
   });
 
-  it("tool part maps to tool-input + tool-output regions with metadata", () => {
-    const [inputRegion, outputRegion] = regionsOf(
+  it("tool part maps to adjacent regions paired into the invocation table", () => {
+    const snapshot = history([
       entry("assistant", [
         toolPart("bash", "ls", "file1", "running", "call-1"),
       ]),
-    );
+    ]);
+    const [inputRegion, outputRegion] = snapshot.messages[0].regions;
     assert.equal(inputRegion.kind, "tool-input");
     assert.equal(outputRegion.kind, "tool-output");
     assert.equal(inputRegion.get(), "ls");
     assert.equal(outputRegion.get(), "file1");
-    assert.equal(inputRegion.tool?.name, "bash");
-    assert.equal(inputRegion.tool?.status, "running");
-    assert.equal(outputRegion.tool?.name, "bash");
-    assert.equal(outputRegion.tool?.status, "running");
+    assert.deepEqual(snapshot.invocations, [
+      {
+        name: "bash",
+        status: "running",
+        input: { ordinal: 0, regionIndex: 0 },
+        output: { ordinal: 0, regionIndex: 1 },
+      },
+    ]);
+    // Reverse index resolves both halves to the same entry.
+    assert.equal(
+      snapshot.byRegion.get("0:1"),
+      snapshot.invocations[0],
+      "the output half resolves through the reverse index",
+    );
   });
 
   it("status stays undefined when the tool part carries none", () => {
-    const [inputRegion] = regionsOf(
+    const snapshot = history([
       entry("assistant", [toolPart("bash", "ls", "out")]),
-    );
-    assert.equal(inputRegion.tool?.status, undefined);
+    ]);
+    assert.equal(snapshot.invocations[0].status, undefined);
   });
 
   it("object tool input is JSON-serialized on get (legacy counting parity)", () => {
@@ -225,9 +246,23 @@ describe("v1 part → region mapping", () => {
       regions.map((r) => r.kind),
       ["tool-input", "tool-output", "content", "tool-input", "tool-output"],
     );
+    const snapshot = history([
+      entry("assistant", [
+        toolPart("bash", "a", "A"),
+        textPart("interleaved"),
+        toolPart("read", "b.ts", "B"),
+      ]),
+    ]);
     assert.deepEqual(
-      regions.map((r) => r.tool?.name),
-      ["bash", "bash", undefined, "read", "read"],
+      snapshot.invocations.map((invocation) => [
+        invocation.name,
+        invocation.input.regionIndex,
+        invocation.output?.regionIndex,
+      ]),
+      [
+        ["bash", 0, 1],
+        ["read", 3, 4],
+      ],
     );
   });
 
@@ -277,19 +312,19 @@ describe("v1 part → region mapping", () => {
   });
 
   it("role passes through info.role (including system)", () => {
-    assert.equal(history([entry("user", [textPart("hi")])])[0].role, "user");
+    assert.equal(messagesOf([entry("user", [textPart("hi")])])[0].role, "user");
     assert.equal(
-      history([entry("assistant", [textPart("hi")])])[0].role,
+      messagesOf([entry("assistant", [textPart("hi")])])[0].role,
       "assistant",
     );
     assert.equal(
-      history([entry("system", [textPart("sys")])])[0].role,
+      messagesOf([entry("system", [textPart("sys")])])[0].role,
       "system",
     );
   });
 
   it("usage flattens the nested cache report into five components", () => {
-    const [msg] = history([
+    const [msg] = messagesOf([
       entry("assistant", [textPart("hi")], {
         input: 10,
         output: 20,
@@ -308,29 +343,31 @@ describe("v1 part → region mapping", () => {
 
   it("usage stays undefined when tokens are absent", () => {
     assert.equal(
-      history([entry("user", [textPart("hi")])])[0].usage,
+      messagesOf([entry("user", [textPart("hi")])])[0].usage,
       undefined,
     );
   });
 
   it("info.ignored maps to hidden", () => {
-    const [msg] = history([entry("user", [textPart("hi")], undefined, true)]);
+    const [msg] = messagesOf([
+      entry("user", [textPart("hi")], undefined, true),
+    ]);
     assert.equal(msg.hidden, true);
   });
 
   it("all-parts-ignored maps to hidden (isMessageIgnored semantics)", () => {
-    const [msg] = history([
+    const [msg] = messagesOf([
       entry("user", [textPart("a", true), textPart("b", true)]),
     ]);
     assert.equal(msg.hidden, true);
   });
 
   it("empty parts are NOT hidden even with no ignored flags", () => {
-    assert.equal(history([entry("user", [])])[0].hidden, false);
+    assert.equal(messagesOf([entry("user", [])])[0].hidden, false);
   });
 
   it("info.summary === true maps to compaction (host-native boundary)", () => {
-    const [msg] = history([
+    const [msg] = messagesOf([
       {
         info: { role: "assistant", id: "summary", summary: true },
         parts: [textPart("Previous conversation condensed")],
@@ -340,7 +377,7 @@ describe("v1 part → region mapping", () => {
   });
 
   it("info.synthetic is NOT mapped to compaction (distinct concept)", () => {
-    const [msg] = history([
+    const [msg] = messagesOf([
       {
         info: { role: "user", id: "synthetic", synthetic: true },
         parts: [textPart("[Block b1 · 2 条] title\nbody")],
@@ -350,7 +387,7 @@ describe("v1 part → region mapping", () => {
   });
 
   it("compaction stays undefined when summary is absent", () => {
-    const [msg] = history([entry("assistant", [textPart("hi")])]);
+    const [msg] = messagesOf([entry("assistant", [textPart("hi")])]);
     assert.equal(msg.compaction, undefined);
   });
 });
@@ -416,7 +453,7 @@ describe("parity: per-message heuristic vs legacy", () => {
 
   for (const [name, entryToMap] of cases) {
     it(name, () => {
-      const [lens] = history([entryToMap]);
+      const [lens] = messagesOf([entryToMap]);
       assert.equal(
         estimateMessageHeuristic(lens),
         legacyEstimateMessageHeuristic(entryToMap),
@@ -435,7 +472,7 @@ describe("parity: per-message heuristic vs legacy", () => {
       undefined,
       true,
     );
-    const [lens] = history([entryToMap]);
+    const [lens] = messagesOf([entryToMap]);
     assert.equal(lens.hidden, true);
     assert.equal(estimateMessageHeuristic(lens), 0);
     assert.ok(legacyEstimateMessageHeuristic(entryToMap) > 0);
@@ -458,7 +495,7 @@ describe("parity: whole-session vs legacy", () => {
       }),
       entry("user", [textPart("Follow-up text here")]),
     ];
-    const measured = measureMessages(history(v1));
+    const measured = measureMessages(messagesOf(v1));
     const legacy = legacyMeasureContext({ messages: v1 });
     assert.equal(measured.exact, legacy.exact_tokens); // 500+100+50+200+50 = 900
     assert.equal(measured.heuristic, legacy.estimated_new_tokens); // ceil(19/4) = 5
@@ -477,7 +514,7 @@ describe("parity: whole-session vs legacy", () => {
       entry("user", [textPart("Ignored /dcp context report")], undefined, true),
       entry("user", [textPart("Normal follow-up")]),
     ];
-    const measured = measureMessages(history(v1));
+    const measured = measureMessages(messagesOf(v1));
     const legacy = legacyComputeContextReport(v1);
     assert.equal(measured.exact, legacy.exact); // 600
     assert.equal(measured.heuristic, legacy.heuristic); // ceil(16/4) = 4
@@ -486,7 +523,7 @@ describe("parity: whole-session vs legacy", () => {
   });
 
   it("empty transcript matches legacy measureContext zeros", () => {
-    const measured = measureMessages(history([]));
+    const measured = measureMessages(messagesOf([]));
     const legacy = legacyMeasureContext({ messages: [] });
     assert.equal(measured.exact, legacy.exact_tokens);
     assert.equal(measured.heuristic, legacy.estimated_new_tokens);
@@ -495,13 +532,13 @@ describe("parity: whole-session vs legacy", () => {
   });
 
   it("nullish transcript input yields zeros", () => {
-    assert.deepEqual(measureMessages(history(undefined)), {
+    assert.deepEqual(measureMessages(messagesOf(undefined)), {
       exact: 0,
       heuristic: 0,
       total: 0,
       messageCount: 0,
     });
-    assert.deepEqual(measureMessages(history(null)), {
+    assert.deepEqual(measureMessages(messagesOf(null)), {
       exact: 0,
       heuristic: 0,
       total: 0,
@@ -517,7 +554,7 @@ describe("parity: whole-session vs legacy", () => {
       entry("assistant", [textPart("OK")], { input: 100, output: 50 }),
       null as unknown as ContextMessageEntry,
     ];
-    const mapped = history(v1);
+    const mapped = messagesOf(v1);
     // Ordinals line up with the v1 array; null entries become hidden
     // empty messages (never null — the core chain assumes non-null).
     assert.equal(mapped.length, 5);
@@ -544,7 +581,7 @@ describe("parity: whole-session vs legacy", () => {
 describe("region set() write-back", () => {
   it("content region set rewrites part.text", () => {
     const entryToMap = entry("user", [textPart("before")]);
-    const region = history([entryToMap])[0].regions[0] as WritableRegion;
+    const region = messagesOf([entryToMap])[0].regions[0] as WritableRegion;
     region.set("after");
     const part = entryToMap.parts?.[0] as { text?: string };
     assert.equal(part.text, "after");
@@ -553,7 +590,7 @@ describe("region set() write-back", () => {
 
   it("thinking region set rewrites part.text", () => {
     const entryToMap = entry("assistant", [reasoningPart("thought")]);
-    const region = history([entryToMap])[0].regions[0] as WritableRegion;
+    const region = messagesOf([entryToMap])[0].regions[0] as WritableRegion;
     assert.equal(region.kind, "thinking");
     region.set("new thought");
     const part = entryToMap.parts?.[0] as { text?: string };
@@ -563,7 +600,7 @@ describe("region set() write-back", () => {
 
   it("tool-output region set writes state.output as a string", () => {
     const entryToMap = entry("assistant", [toolPart("bash", "ls", "out")]);
-    const region = history([entryToMap])[0].regions[1] as WritableRegion;
+    const region = messagesOf([entryToMap])[0].regions[1] as WritableRegion;
     region.set(PRUNED_TOOL_OUTPUT_REPLACEMENT);
     const part = entryToMap.parts?.[0] as ToolPartShape;
     assert.equal(part.state?.output, PRUNED_TOOL_OUTPUT_REPLACEMENT);
@@ -575,7 +612,7 @@ describe("region set() write-back", () => {
     const entryToMap = entry("assistant", [
       toolPart("bash", "a command", "out"),
     ]);
-    const region = history([entryToMap])[0].regions[0] as WritableRegion;
+    const region = messagesOf([entryToMap])[0].regions[0] as WritableRegion;
     region.set(PRUNED_TOOL_ERROR_INPUT_REPLACEMENT);
     const part = entryToMap.parts?.[0] as ToolPartShape;
     assert.equal(part.state?.input, PRUNED_TOOL_ERROR_INPUT_REPLACEMENT);
@@ -586,7 +623,7 @@ describe("region set() write-back", () => {
     const entryToMap = entry("assistant", [
       toolPart("bash", { cmd: "ls" }, "out"),
     ]);
-    const region = history([entryToMap])[0].regions[0] as WritableRegion;
+    const region = messagesOf([entryToMap])[0].regions[0] as WritableRegion;
     assert.equal(region.get(), '{"cmd":"ls"}');
     region.set('{"cmd":"pwd"}');
     const part = entryToMap.parts?.[0] as ToolPartShape;
@@ -603,7 +640,7 @@ describe("region set() write-back", () => {
     const entryToMap = entry("assistant", [
       toolPart("bash", { cmd: "ls" }, "out"),
     ]);
-    const region = history([entryToMap])[0].regions[0] as WritableRegion;
+    const region = messagesOf([entryToMap])[0].regions[0] as WritableRegion;
     region.set(PRUNED_TOOL_ERROR_INPUT_REPLACEMENT);
     const part = entryToMap.parts?.[0] as ToolPartShape;
     assert.equal(typeof part.state?.input, "object");
@@ -631,7 +668,7 @@ describe("region set() write-back", () => {
 
 describe("null entry hardening", () => {
   it("null/undefined entries map to hidden empty messages with ordinals preserved", () => {
-    const mapped = history([
+    const mapped = messagesOf([
       null as unknown as ContextMessageEntry,
       entry("user", [textPart("Hello")]),
       undefined as unknown as ContextMessageEntry,
@@ -647,7 +684,7 @@ describe("null entry hardening", () => {
   });
 
   it("estimation skips the hidden empty messages", () => {
-    const mapped = history([
+    const mapped = messagesOf([
       null as unknown as ContextMessageEntry,
       entry("user", [textPart("Hello")]),
       undefined as unknown as ContextMessageEntry,
@@ -660,16 +697,16 @@ describe("null entry hardening", () => {
   });
 
   it("canon and span hashing project the hidden empty messages normally", () => {
-    const mapped = history([
+    const snapshot = history([
       null as unknown as ContextMessageEntry,
       entry("user", [textPart("Hello")]),
       undefined as unknown as ContextMessageEntry,
     ]);
     // canon on a hidden empty message is deterministic and safe.
-    assert.equal(canon(mapped[0]), JSON.stringify(["user", [], [], []]));
+    assert.equal(canon(snapshot, 0), JSON.stringify(["user", [], [], []]));
     // computeSpanHash over a transcript containing null-derived entries
     // does not throw and yields a fixed-length hex hash.
-    const hash = computeSpanHash(mapped, 0, mapped.length);
+    const hash = computeSpanHash(snapshot, 0, snapshot.messages.length);
     assert.match(hash, /^[0-9a-f]{8}$/);
   });
 });

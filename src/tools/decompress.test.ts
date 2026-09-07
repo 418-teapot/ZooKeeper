@@ -16,7 +16,8 @@ import { afterEach, describe, it } from "node:test";
 import type { ToolHost } from "../core/client/tool-host.js";
 import { parseContextConfig } from "../core/config-parse.js";
 import type { ContextPruningConfig } from "../core/config-types.js";
-import type { HostMessage } from "../core/context/lens.js";
+import type { HostMessage, Projection } from "../core/context/lens.js";
+import { projectMessages } from "../core/context/lens-testkit.js";
 import {
   _resetForTesting as _resetModelLimitsForTesting,
   setModelLimit,
@@ -134,8 +135,8 @@ function fakeHost(messages: HostMessage[]): {
       if (typeof id !== "string" || id.length === 0) return undefined;
       return id;
     },
-    async fetchHistory(_sessionId: string): Promise<HostMessage[]> {
-      return messages;
+    async fetchHistory(_sessionId: string): Promise<Projection> {
+      return projectMessages(messages);
     },
     async notify(sessionID: string, text: string): Promise<void> {
       notifyCalls.push({ sessionID, text });

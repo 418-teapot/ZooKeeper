@@ -14,7 +14,7 @@
 
 import type {
   HostAdapter,
-  HostMessage,
+  Projection,
   RegionEdit,
   ViewItem,
 } from "../../core/context/lens.js";
@@ -42,7 +42,7 @@ export function createPiAdapter(
   getSessionId: () => string | undefined,
 ): HostAdapter<PiAgentMessage[]> {
   return {
-    history(conversation: PiAgentMessage[]): HostMessage[] {
+    history(conversation: PiAgentMessage[]): Projection {
       return history(conversation);
     },
     applyEdits(

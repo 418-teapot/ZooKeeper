@@ -30,39 +30,64 @@ export type Role = "user" | "assistant" | (string & {});
 export type RegionKind = "content" | "thinking" | "tool-input" | "tool-output";
 
 /**
- * Positional address of the sibling tool-output region of a tool call.
+ * Positional address of a region within the transcript.
  *
- * Carried on the tool-input region's metadata only; it points at the
- * message ordinal and region index of the call's tool-output region, so
- * a core gate can detect whether a message interval ends mid-pair
- * (input inside the interval, its output outside).  The address uses
- * the lens's own positional identity — no host ids, no host fields.
+ * The same vocabulary the `RegionEdit` and prune-mark addresses use —
+ * a message ordinal plus a region index inside it — so an invocation
+ * reference and a mark can address the same region without any host
+ * id.
  */
-export interface ToolOutputRef {
-  /** Ordinal of the message holding the sibling tool-output region. */
+export interface InvocationRef {
+  /** Ordinal of the message holding the region. */
   ordinal: number;
-  /** Index of the sibling tool-output region within that message. */
-  regionIndex?: number;
+  /** Index of the region within that message. */
+  regionIndex: number;
 }
 
 /**
- * Tool-call metadata attached to a region.
+ * One paired tool invocation of the transcript.
  *
- * Region-level text metadata, not structural access: the lens still
- * offers no message structure, no ids, and no host fields.  `status` is
- * the host's verbatim status string (e.g. "pending", "running",
- * "completed", "error"); the core does not enumerate the value space —
- * producers interpret the semantics themselves.  `output` is the
- * positional address of the call's tool-output region, present on the
- * tool-input region only.
+ * The host adapter pairs a call's input with its output at projection
+ * time using the host's own call identity (a call id, or the same-part
+ * adjacency of the v1 layout) and emits the pairing result as this
+ * positional table entry.  `status` follows a shared convention:
+ * hosts map their terminal states onto `"completed"` / `"error"`
+ * (pi synthesises them from its error flag; v1 supplies the same
+ * literals natively), and producers compare against exactly those
+ * two strings — any other value is treated as non-terminal and the
+ * call is left alone.  `input` is always present (a projected tool
+ * call carries its arguments); `output` is absent while the call is
+ * still in flight and no result has been linked to it.
  */
-export interface ToolMeta {
+export interface Invocation {
   /** Tool name (e.g. "bash", "read"). */
   name: string;
   /** Host-verbatim call status string. */
   status?: string;
-  /** Positional address of this call's tool-output region. */
-  output?: ToolOutputRef;
+  /** Positional address of the call's tool-input region. */
+  input: InvocationRef;
+  /** Positional address of the call's tool-output region, once linked. */
+  output?: InvocationRef;
+}
+
+/**
+ * The snapshot one projection pass produces.
+ *
+ * Bundles the region view with the invocation table paired in the same
+ * pass, so every positional reference of the table is guaranteed
+ * consistent with `messages`.  `byRegion` is the reverse index — a map
+ * from a region address (see `regionKey`) to the invocation whose
+ * input or output the region addresses — for per-region consumers
+ * (sweep, canon).  A tool region with no reverse-index entry carries
+ * no pairing information: producers abstain from it (fail-closed).
+ */
+export interface Projection {
+  /** The lens transcript; ordinals are array indices. */
+  messages: HostMessage[];
+  /** The invocation table, in the order the adapter paired the calls. */
+  invocations: Invocation[];
+  /** Reverse index keyed by `regionKey` over every invocation address. */
+  byRegion: Map<string, Invocation>;
 }
 
 /**
@@ -71,14 +96,12 @@ export interface ToolMeta {
  * The lens exposes text only — no structure, no ids, no host fields.
  * Text replacement is expressed as `RegionEdit` data; writing edits
  * into a conversation is the host adapter's job (`HostAdapter.render`),
- * never a core capability.  `tool` is present on tool-input/tool-output
- * regions only.
+ * never a core capability.  Tool-call pairing does not travel on
+ * regions — it is first-class table data (see `Projection`).
  */
 export interface TextRegion {
   kind: RegionKind;
   get(): string;
-  /** Tool-call metadata; undefined on non tool regions. */
-  tool?: ToolMeta;
 }
 
 /**
@@ -188,8 +211,12 @@ export interface RegionEdit {
  * `SessionState` here would create an import cycle.
  */
 export interface HostAdapter<THostConversation> {
-  /** Project the host conversation into lens messages (ordinals align 1:1). */
-  history(conversation: THostConversation): HostMessage[];
+  /**
+   * Project the host conversation into a lens snapshot (ordinals align
+   * 1:1).  The invocation table is paired with the region view in the
+   * same pass, so the two always agree on addresses.
+   */
+  history(conversation: THostConversation): Projection;
   /**
    * Apply region edits to the host conversation.
    *
@@ -263,6 +290,63 @@ export interface HostAdapter<THostConversation> {
     sessionId: string,
     text: string,
   ): THostConversation;
+}
+
+/**
+ * Reverse-index key of a region address.
+ *
+ * The `byRegion` map of a `Projection` is keyed by this string; the
+ * `ordinal:regionIndex` shape is unique per region address.
+ *
+ * @param ref - The region address to key.
+ * @returns The reverse-index key.
+ */
+export function regionKey(ref: InvocationRef): string {
+  return `${ref.ordinal}:${ref.regionIndex}`;
+}
+
+/**
+ * Assemble a projection snapshot from the views of one projection pass.
+ *
+ * Builds the region-address reverse index over every input and output
+ * reference of the invocation table in the same call, so adapters only
+ * have to supply the two paired views.  When several invocations
+ * address the same region (a malformed host projection), the last one
+ * wins.
+ *
+ * @param messages - The lens transcript.
+ * @param invocations - The invocation table paired with the transcript.
+ * @returns The projection snapshot bundling both views.
+ */
+export function project(
+  messages: HostMessage[],
+  invocations: Invocation[],
+): Projection {
+  const byRegion = new Map<string, Invocation>();
+  for (const invocation of invocations) {
+    byRegion.set(regionKey(invocation.input), invocation);
+    if (invocation.output !== undefined) {
+      byRegion.set(regionKey(invocation.output), invocation);
+    }
+  }
+  return { messages, invocations, byRegion };
+}
+
+/**
+ * Look up the invocation owning a region.
+ *
+ * @param projection - The projection snapshot holding the reverse index.
+ * @param ordinal - Ordinal of the message holding the region.
+ * @param regionIndex - Index of the region within the message.
+ * @returns The owning invocation, or undefined when the region carries
+ *   no pairing information.
+ */
+export function invocationForRegion(
+  projection: Projection,
+  ordinal: number,
+  regionIndex: number,
+): Invocation | undefined {
+  return projection.byRegion.get(regionKey({ ordinal, regionIndex }));
 }
 
 /**

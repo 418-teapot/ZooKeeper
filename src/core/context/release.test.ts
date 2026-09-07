@@ -19,6 +19,7 @@ import type { HostMessage } from "./lens.js";
 import {
   makeAssistantMsg,
   makeToolMsg,
+  projectMessages,
   setRegionText,
 } from "./lens-testkit.js";
 import {
@@ -135,7 +136,7 @@ function newTurn(
     releasedPercent,
     pendingViewChange,
   });
-  runDedup(state, messages, {
+  runDedup(state, projectMessages(messages), {
     minMessages: 0,
     contextLimit: MODEL_LIMIT,
     thresholdContext: 0,

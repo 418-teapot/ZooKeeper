@@ -16,7 +16,11 @@
  * - `reasoning` → one `thinking` region.
  * - `tool` with `state` → `tool-input` + `tool-output` regions; the
  *   input/output values are serialized with `JSON.stringify` when not
- *   already strings, matching the legacy estimator's counting.
+ *   already strings, matching the legacy estimator's counting.  The
+ *   part is paired into the invocation table at projection time — both
+ *   halves of a v1 call live in one message, so the entry's input and
+ *   output addresses are the two adjacent region indices, its name the
+ *   part's tool name, and its status the part's verbatim `state.status`.
  * - any other type with a string `text` field (`step-start`,
  *   `step-finish`, `snapshot`, `file`, ...) → `content`, mirroring the
  *   legacy heuristic that counted `part.text` for every non-tool part.
@@ -63,11 +67,13 @@
 
 import type {
   HostMessage,
+  Invocation,
+  Projection,
   RegionKind,
   TextRegion,
   TokenUsage,
-  ToolMeta,
 } from "../../core/context/lens.js";
+import { project } from "../../core/context/lens.js";
 import type { ContextMessageEntry, ContextTokenInfo } from "./types.js";
 
 /**
@@ -100,7 +106,7 @@ type RegionProvenance = "text" | "reasoning" | "tool" | "other";
  * Provenance registry keyed by region instance.
  *
  * Kept out of the `TextRegion` interface — the lens contract stays
- * `{ kind, get, tool? }`; the adapter's own regions carry their
+ * `{ kind, get }`; the adapter's own regions carry their
  * provenance in this side table so `isInjectableRegion` can read it
  * without polluting the core types.
  */
@@ -124,16 +130,12 @@ export interface WritableRegion extends TextRegion {
  * recorded in the provenance side table at construction.
  */
 class PartRegion implements WritableRegion {
-  readonly tool: ToolMeta | undefined;
-
   constructor(
     readonly kind: RegionKind,
     private readonly read: () => string,
     private readonly write: (text: string) => void,
-    tool: ToolMeta | undefined,
     provenance: RegionProvenance,
   ) {
-    this.tool = tool;
     regionProvenance.set(this, provenance);
   }
 
@@ -234,10 +236,22 @@ function isHidden(entry: ContextMessageEntry): boolean {
 /**
  * Map one v1 message entry to a lens message.
  *
+ * Each tool part's input/output regions are emitted adjacent to each
+ * other and paired into the invocation table in the same step — the
+ * v1 layout keeps both halves of a call in one message, so the pairing
+ * needs no host ids beyond the part's own identity.
+ *
  * @param entry - The v1 message entry (never null here).
+ * @param ordinal - Transcript position of this message (address basis).
+ * @param invocations - Output parameter: entries are appended in
+ *   message order.
  * @returns The mapped host-agnostic message.
  */
-function toHostMessage(entry: ContextMessageEntry): HostMessage {
+function toHostMessage(
+  entry: ContextMessageEntry,
+  ordinal: number,
+  invocations: Invocation[],
+): HostMessage {
   const regions: TextRegion[] = [];
 
   for (const part of entry.parts ?? []) {
@@ -245,12 +259,7 @@ function toHostMessage(entry: ContextMessageEntry): HostMessage {
     const toolPart = part as V1ToolPart;
 
     if (toolPart.type === "tool" && toolPart.state) {
-      const tool: ToolMeta = {
-        name: toolPart.tool ?? "",
-        ...(toolPart.state.status !== undefined
-          ? { status: toolPart.state.status }
-          : {}),
-      };
+      const inputIndex = regions.length;
       regions.push(
         new PartRegion(
           "tool-input",
@@ -259,7 +268,6 @@ function toHostMessage(entry: ContextMessageEntry): HostMessage {
             const state = toolPart.state;
             if (state) writeInputBack(state, text);
           },
-          tool,
           "tool",
         ),
         new PartRegion(
@@ -269,10 +277,17 @@ function toHostMessage(entry: ContextMessageEntry): HostMessage {
             const state = toolPart.state;
             if (state) state.output = text;
           },
-          tool,
           "tool",
         ),
       );
+      invocations.push({
+        name: toolPart.tool ?? "",
+        ...(toolPart.state.status !== undefined
+          ? { status: toolPart.state.status }
+          : {}),
+        input: { ordinal, regionIndex: inputIndex },
+        output: { ordinal, regionIndex: inputIndex + 1 },
+      });
       continue;
     }
 
@@ -284,7 +299,6 @@ function toHostMessage(entry: ContextMessageEntry): HostMessage {
         (text) => {
           toolPart.text = text;
         },
-        undefined,
         toolPart.type === "text"
           ? "text"
           : toolPart.type === "reasoning"
@@ -318,15 +332,20 @@ function toHostMessage(entry: ContextMessageEntry): HostMessage {
  * A nullish input maps to an empty transcript.
  *
  * @param entries - The v1 message entries from the transform output.
- * @returns The mapped transcript, free of null entries.
+ * @returns The projection snapshot (region view, free of null entries,
+ *   plus the invocation table paired in the same pass).
  */
 export function history(
   entries: ContextMessageEntry[] | null | undefined,
-): HostMessage[] {
-  if (!entries) return [];
-  return entries.map((entry) =>
-    entry ? toHostMessage(entry) : { role: "user", hidden: true, regions: [] },
+): Projection {
+  if (!entries) return project([], []);
+  const invocations: Invocation[] = [];
+  const mapped = entries.map((entry, ordinal) =>
+    entry
+      ? toHostMessage(entry, ordinal, invocations)
+      : { role: "user", hidden: true, regions: [] },
   );
+  return project(mapped, invocations);
 }
 
 /**

@@ -21,6 +21,8 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { ToolHost } from "../core/client/tool-host.js";
+import type { Projection } from "../core/context/lens.js";
+import { project } from "../core/context/lens.js";
 import type { ActiveSet, Deps } from "../core/slots.js";
 import type {
   SubagentDriver,
@@ -70,8 +72,8 @@ const TOOL_HOST: ToolHost = {
     const id = ctx.sessionID ?? ctx.sessionId;
     return typeof id === "string" && id.length > 0 ? id : undefined;
   },
-  async fetchHistory(): Promise<never[]> {
-    return [];
+  async fetchHistory(): Promise<Projection> {
+    return project([], []);
   },
   async notify(): Promise<void> {},
 };

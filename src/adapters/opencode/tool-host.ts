@@ -21,7 +21,7 @@
 
 import type { SessionClient } from "../../core/client/session.js";
 import type { ToastPayload, ToolHost } from "../../core/client/tool-host.js";
-import type { HostMessage } from "../../core/context/lens.js";
+import type { Projection } from "../../core/context/lens.js";
 import { log } from "../../utils/logger.js";
 import { history } from "./history.js";
 import type { ContextMessageEntry } from "./types.js";
@@ -98,7 +98,7 @@ export function createV1ToolHost(
      *   rejects, returns an empty result, carries an error field, or
      *   resolves to a non-array.
      */
-    async fetchHistory(sessionId: string): Promise<HostMessage[]> {
+    async fetchHistory(sessionId: string): Promise<Projection> {
       if (!client?.session?.messages) {
         throw new Error("无法获取会话消息：会话消息 API 不可用");
       }
