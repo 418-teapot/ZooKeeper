@@ -159,9 +159,9 @@ export const G_COMP_02: Scenario = {
  * G-COMP-03 — nested consumption (three generations).
  *
  * b1 = [1, 13).  A wider range [1, 31) consumes b1 (index line
- * `--- b1: 第一段 ---`, net token header, b1 deactivated).  A third
- * range [1, 33) re-absorbs the now-inactive b1 (removed from the map
- * by the fold-phase reclaim) together with b2 into b3.
+ * `--- b1: 第一段 ---`, net token header, b1 moved to consumed).  A third
+ * range [1, 33) re-absorbs the retained consumed b1 together with b2
+ * into b3.
  *
  * Note: the v1 fixture rejected rounds 3-4 on the protection zone
  * (boundary 11), so the documented three-generation consumption never
@@ -169,10 +169,10 @@ export const G_COMP_02: Scenario = {
  * ranges, so the pi lane realizes the consumption the scenario
  * describes.  Both wider ranges end on a toolResult line (m20 / m4) —
  * a range ending on a toolCall half is rejected by the mid-pair gate.
- * The covered-inactive netting branch (an inactive block still in the
- * map when the action runs) is unreachable through the runner on either
- * lane — the transform's fold phase always reclaims inactive blocks
- * before the next action.
+ * The absorbed-record netting branch is live here: a block that stopped
+ * folding keeps its record, so the third generation sees b1 still in the
+ * map and nets it (its tokens were taken out of b2's figure) while
+ * giving it an index line.
  */
 export const G_COMP_03: Scenario = {
   id: "G-COMP-03",

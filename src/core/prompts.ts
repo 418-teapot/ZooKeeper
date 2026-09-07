@@ -220,17 +220,16 @@ export const MANUAL_COMPRESS_TEMPLATE = `请立即使用 compress 工具压缩�
  * copy slots (see CONTEXT_NUDGE_LEVELS).
  *
  * The window line conveys the SAME boundaries the `compress` tool
- * enforces — both refs are INCLUSIVE bounds and the model picks its own
- * contiguous sub-range inside them.  `compress`'s `toRef` is exclusive,
- * so a message is included only when the ref after it is passed —
- * stopping inside the window is always fine.
+ * enforces — both refs are INCLUSIVE bounds: each ref points at a
+ * message that gets compressed.  The model picks its own contiguous
+ * sub-range inside the window — stopping inside it is always fine.
  */
 export const CONTEXT_NUDGE_TEMPLATE = `<internal-reminder>
 **{HEADER} — {tokens} ({percent} of {limit} window)**
 
 Compressible window: {startRef}–{endRef} (~{reclaim} tokens), both refs inclusive.
 Pick your own contiguous sub-range inside — compressing everything is optional.
-\`compress\` \`toRef\` is exclusive — pass the ref after a message to include it.
+\`compress\` refs are inclusive — both endpoints are compressed.
 
 {ACTION}
 

@@ -8,9 +8,9 @@
  * the ToolResults are roughly doubled.
  *
  * - G-DEC-01: restore vs recall — active block restores (two-round view
- *   effect), inactive block recall errors listing the surviving blocks,
- *   long summaries are truncated with a Chinese tail note, and invalid
- *   / missing block ids error loudly.
+ *   effect), a block that stopped folding keeps its record and recalls
+ *   its persisted summary, long summaries are truncated with a Chinese
+ *   tail note, and invalid / missing block ids error loudly.
  * - G-DEC-02: maxFillPercent gate three states — restore allowed, and
  *   gate skipped when no model limit is known.
  *
@@ -41,10 +41,12 @@ function decConfig(maxFillPercent: number) {
 /**
  * G-DEC-01 — restore and recall dual path.
  *
- * b1 ([1, 13)) is consumed by b2 ([1, 31)) so it is reclaimed and
- * recalls error listing b2; restore b2 deactivates it; recalls stay
- * not-found after the restore; a third block with a 17000-char summary
- * is created and then consumed; invalid ids error loudly.
+ * b1 ([1, 13)) is consumed by b2 ([1, 31)); the record stays in the
+ * map, so its recall reads back the persisted summary.  Restoring b2
+ * consumes it the same way, and both records stay recallable — the
+ * invented-id error lists them.  A third block with a 17000-char summary
+ * is created (under the next id, never a reused one) and then consumed
+ * by b4; its recall truncates to the cap.  Invalid ids error loudly.
  */
 export const G_DEC_01: Scenario = {
   id: "G-DEC-01",

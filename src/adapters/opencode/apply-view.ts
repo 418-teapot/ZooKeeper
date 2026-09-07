@@ -25,14 +25,14 @@ import type { ContextMessageEntry } from "./types.js";
  * Materialize a block's folded summary as a synthetic v1 message.
  *
  * A user-role entry carrying `info.synthetic: true` and a single text
- * part.  The id is the block-derived placeholder `zoo-fold-bN` (same
- * shape as the legacy id) — it carries no addressing semantics (spec
- * D7); the `bN` label and the ordinal interval own block identity.
+ * part.  The id is the block-derived placeholder `zoo-fold-bN` — it
+ * carries no addressing semantics; the `bN` label and the ordinal
+ * interval own block identity.
  *
  * The text is the render label (`formatSummaryLabel`:
  * `[Block bN · K 条] 标题`) followed by the block's summary body.  When
  * `lineNumber` is given, the `[mN] ` prefix is prepended to the first
- * line — summary items occupy a line like any other view item (P1.7).
+ * line — summary items occupy a line like any other view item.
  *
  * @param block - The surviving block span.  The caller attaches the
  *   block-map id so the label renders the `bN` segment; a bare `Block`

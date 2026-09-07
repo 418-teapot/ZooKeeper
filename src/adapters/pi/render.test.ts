@@ -17,11 +17,14 @@ import { describe, it } from "node:test";
 import type { RegionEdit, ViewItem } from "../../core/context/lens.js";
 import { computeSpanHash } from "../../core/context/spanhash.js";
 import type { SessionState } from "../../core/context/state.js";
+import { numberView } from "../../core/context/view-refs.js";
 import { history } from "./history.js";
-import { materializeSummary, render } from "./render.js";
+import { materializeSummary, render, renderView } from "./render.js";
 import type {
   PiAgentMessage,
   PiAssistantMessage,
+  PiBashExecutionMessage,
+  PiCompactionSummaryMessage,
   PiToolResultMessage,
   PiUserMessage,
 } from "./types.js";
@@ -98,7 +101,7 @@ function seedBlock(
     title,
     summary,
     spanHash: computeSpanHash(history(messages), start, end),
-    active: true,
+    status: "active",
     compressedTokens: 100,
     summaryTokens: 10,
     createdAt: 1000,
@@ -154,6 +157,59 @@ describe("pi render", () => {
     // occupies a visible line.
     assert.deepEqual((out[4] as PiUserMessage).content, [imagePart()]);
     assert.equal((out[5] as PiUserMessage).content, "[m6] follow-up");
+  });
+
+  it("numbers hidden transcript entries like the published round view", () => {
+    // The context-pruning hook publishes its round view numbered with the
+    // real hidden predicate over the lens projection — that published
+    // numbering is the address space the compression tools resolve `mN`
+    // refs against.  An entry the pi lens projects as hidden (no valid
+    // role, see `hiddenEmptyProjection`) must therefore be skipped by the
+    // render numbering too, or the model is shown refs the tools reject.
+    const hiddenEntry = {
+      separator: "system divider",
+    } as unknown as PiAgentMessage;
+    const messages: PiAgentMessage[] = [
+      userMessage("before"),
+      hiddenEntry,
+      userMessage("after"),
+    ];
+    const state = makeState();
+    const items: ViewItem[] = messages.map((_, ordinal) => ({
+      type: "original",
+      ordinal,
+    }));
+
+    // The predicate the hook applies to its published view, restated here
+    // over the same projection type.
+    const lens = history(messages).messages;
+    assert.ok(lens[1].hidden, "fixture: the entry must project as hidden");
+    const published = numberView(items, (ordinal) => lens[ordinal].hidden);
+    const publishedRefs = published.map(
+      ({ n, item }) =>
+        `${n}:${item.type === "original" ? item.ordinal : "summary"}`,
+    );
+    assert.deepEqual(
+      publishedRefs,
+      ["1:0", "2:2"],
+      "fixture: the published view skips the hidden ordinal and stays dense",
+    );
+
+    const out = renderView(messages, items, state);
+
+    // The rendered prefixes match the published numbering line for line:
+    // dense over visible entries, no hole where the hidden entry sits.
+    const rendered = out
+      .map((message) =>
+        typeof (message as PiUserMessage).content === "string"
+          ? (message as PiUserMessage).content
+          : "",
+      )
+      .filter((text) => text.length > 0);
+    assert.deepEqual(rendered, [
+      `[m${published[0].n}] before`,
+      `[m${published[1].n}] after`,
+    ]);
   });
 
   it("applies edits and skips unresolvable anchors", () => {
@@ -260,6 +316,54 @@ describe("pi render", () => {
     const out = render(messages, items, [], state);
 
     assert.notEqual(out, messages);
+    assert.deepEqual(messages, snapshot);
+  });
+
+  it("renders a post-compaction transcript with the host summary intact", () => {
+    const summary: PiCompactionSummaryMessage = {
+      role: "compactionSummary",
+      summary: "earlier work summarized here",
+      tokensBefore: 50000,
+      timestamp: 1,
+    };
+    const bash: PiBashExecutionMessage = {
+      role: "bashExecution",
+      command: "ls",
+      output: "a.ts",
+      exitCode: 0,
+      cancelled: false,
+      truncated: false,
+      timestamp: 1,
+    };
+    const messages: PiAgentMessage[] = [
+      summary,
+      userMessage("question"),
+      bash,
+      assistantMessage([textPart("answer")]),
+    ];
+    const snapshot = structuredClone(messages);
+    const state = makeState();
+    const items: ViewItem[] = messages.map((_, ordinal) => ({
+      type: "original",
+      ordinal,
+    }));
+
+    const out = render(messages, items, [], state);
+
+    // Every input message survives the round trip (content conservation).
+    assert.equal(out.length, messages.length);
+    // The host-authored summary and the derived bash block carry no
+    // injectable region: they render back byte-identical, never prefixed
+    // with a line ref.
+    assert.deepEqual(out[0], snapshot[0]);
+    assert.deepEqual(out[2], snapshot[2]);
+    // Ordinary messages keep the usual per-round line refs.
+    assert.equal((out[1] as PiUserMessage).content, "[m2] question");
+    assert.deepEqual((out[3] as PiAssistantMessage).content[0], {
+      type: "text",
+      text: "[m4] answer",
+    });
+    // The input conversation itself is never mutated.
     assert.deepEqual(messages, snapshot);
   });
 });

@@ -67,7 +67,7 @@ function makeBlock(
     end,
     spanHash,
     summary: "block",
-    active: true,
+    status: "active",
     compressedTokens: 0,
     summaryTokens: 0,
     createdAt: 0,
@@ -340,7 +340,7 @@ describe("lens-specific gating semantics", () => {
     assert.equal(result.created, 1);
   });
 
-  it("marks zero-benefit short outputs (legacy marks regardless of reclaim)", () => {
+  it("marks short outputs regardless of reclaim benefit", () => {
     const state = makeNewState();
     const lens = [
       makeMsg("user", ["do it"]),

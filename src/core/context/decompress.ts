@@ -5,17 +5,19 @@
  * `b<N>` id (the block map key) and either restores it or recalls its
  * summary:
  *
- * - **restore** — the block is active (`active === true`): flip it to
- *   inactive so the next fold round stops folding its interval and the
- *   original messages reappear in the view.  View expansion is the fold
- *   phase's job — this module never touches the transcript.  A
+ * - **restore** — the block is active (`status === "active"`): move it
+ *   to `consumed` so the next fold round stops folding its interval and
+ *   the original messages reappear in the view.  View expansion is the
+ *   fold phase's job — this module never touches the transcript.  A
  *   context-limit gate rejects restores that would push the estimated
  *   prompt over `maxFillPercent` of the model window.
- * - **recall** — the block is inactive (consumed by a wider block,
- *   content invalidated, or previously restored): the restore is refused
- *   and the operation resolves to read-only recall — the persisted
- *   summary body, truncated to `RECALL_MAX_CHARS`.  Idempotent, zero
- *   state change.
+ * - **recall** — the block is in a terminal status (`consumed` by a
+ *   wider block or by an earlier restore, or `stale` — its span no
+ *   longer verifies): the restore is refused and the operation resolves to
+ *   read-only recall — the persisted summary body, truncated to
+ *   `RECALL_MAX_CHARS`.  Idempotent, zero state change.  A stale recall
+ *   labels itself as such: the summary survives, the original text it
+ *   addressed does not.
  *
  * Pure logic module with zero framework dependencies — the tool adapter
  * layer supplies the current token estimate and the model context limit
@@ -37,9 +39,11 @@ import { type Block, RECALL_MAX_CHARS, type SessionState } from "./state.js";
  * Result of resolving a `b<N>` decompress target.
  *
  * - `{ kind: "restore", blockId, block }` — the block is active;
- *   deactivate it so the next fold round un-folds the original messages.
- * - `{ kind: "recall", blockId, block }` — the block is inactive; the
- *   restore is refused and the operation reads its summary body instead.
+ *   move it to `consumed` so the next fold round un-folds the original
+ *   messages.
+ * - `{ kind: "recall", blockId, block }` — the block is in a terminal
+ *   status; the restore is refused and the operation reads its summary
+ *   body instead.
  */
 export type ResolveTargetResult =
   | { kind: "restore"; blockId: number; block: Block }
@@ -130,7 +134,7 @@ function notFoundError(state: SessionState, blockId: number): string {
  * @param state - The session state (blocks map).
  * @param ref - The target id (e.g. `"b3"`).
  * @returns The resolved target — `"restore"` for active blocks,
- *   `"recall"` for inactive ones (the restore is refused and the summary
+ *   `"recall"` for terminal ones (the restore is refused and the summary
  *   body is read instead).
  */
 export function resolveTarget(
@@ -150,7 +154,7 @@ export function resolveTarget(
   if (block === undefined) {
     throw new Error(notFoundError(state, blockId));
   }
-  return block.active
+  return block.status === "active"
     ? { kind: "restore", blockId, block }
     : { kind: "recall", blockId, block };
 }
@@ -167,8 +171,8 @@ export function resolveTarget(
  * still placeholders at gate time, making this a conservative
  * over-estimate — acceptable.
  *
- * - `contextLimit === undefined` skips the gate (allowed) — mirrors the
- *   legacy missing-limit behavior.
+ * - `contextLimit === undefined` skips the gate (allowed) — no limit
+ *   means nothing to check against.
  * - `maxFillPercent === undefined || maxFillPercent === 0` also skips
  *   the gate (allowed) — an unset or zero ceiling means no fill limit.
  * - `after > contextLimit × maxFillPercent / 100` is rejected with a
@@ -222,18 +226,20 @@ export function evaluateGate(
 // ---------------------------------------------------------------------------
 
 /**
- * Apply a restore deactivation to an active block.
+ * Apply a restore to an active block.
  *
- * Looks the block up by its numeric id, flips `active` to `false` (the
+ * Looks the block up by its numeric id, moves it to `consumed` (the
  * next fold round naturally expands its interval — view expansion is the
  * fold phase's responsibility, never this module's), and returns the
  * restore data the adapter reports (summary, interval, message count,
  * and token accounting).  The transcript is never touched.
  *
  * Defensive: a missing block throws the same loud not-found error as
- * `resolveTarget`; an already-inactive block throws a loud error —
+ * `resolveTarget`; a block in a terminal status throws a loud error —
  * duplicate restores are refused (the normal path never reaches this,
- * because `resolveTarget` resolves inactive blocks to recall).
+ * because `resolveTarget` resolves terminal blocks to recall).  A stale
+ * block is told apart from a consumed one because its original content
+ * is gone for good, not merely unfolded.
  *
  * @param state - The session state (blocks map mutated).
  * @param blockId - The block id (`b<N>`).
@@ -251,13 +257,16 @@ export function applyDecompress(
   if (block === undefined) {
     throw new Error(notFoundError(state, blockId));
   }
-  if (!block.active) {
+  if (block.status !== "active") {
     throw new Error(
-      `压缩块 b${blockId} 已失活，无法再次恢复（原始消息已在视图中展开）。` +
-        `该块的摘要正文可通过再次调用 decompress（recall 路径）获取。`,
+      block.status === "stale"
+        ? `压缩块 b${blockId} 已失效，无法恢复：其区间 [${block.start}, ${block.end}) 的内容已不再与创建时一致，` +
+            `原文无法从该区间取回。该块的摘要正文可通过 decompress 的 recall 路径读取。`
+        : `压缩块 b${blockId} 已失活，无法再次恢复（原始消息已在视图中展开）。` +
+            `该块的摘要正文可通过再次调用 decompress（recall 路径）获取。`,
     );
   }
-  block.active = false;
+  block.status = "consumed";
   const messageCount = Math.max(
     0,
     Math.min(block.end, history.length) - block.start,
@@ -295,5 +304,25 @@ export function truncateRecallSummary(summary: string): string {
   return (
     summary.slice(0, RECALL_MAX_CHARS) +
     `\n[摘要过长已截断：省略 ${omitted} 字符]`
+  );
+}
+
+/**
+ * Compose the recall output of one block.
+ *
+ * The truncated summary body, preceded by a status note when the block
+ * is stale: its interval no longer addresses the content it vouched
+ * for, so a reader must know this summary is all that survives of the
+ * span rather than a window onto text that could still be restored.
+ *
+ * @param block - The recalled block.
+ * @returns The recall text the tool returns.
+ */
+export function recallOutput(block: Block): string {
+  const body = truncateRecallSummary(block.summary);
+  if (block.status !== "stale") return body;
+  return (
+    `[压缩块已失效：区间 [${block.start}, ${block.end}) 的原文已不可恢复，` +
+    `以下为持久化摘要]\n${body}`
   );
 }

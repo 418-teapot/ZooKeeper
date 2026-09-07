@@ -2,10 +2,10 @@
  * Tests for `src/core/context/context-report.ts` -- pure format layer.
  *
  * Covers: formatTokens, formatPercent, progressBar, formatContextReport
- * output.  The `ContextReport` input is constructed directly as literals —
- * computation logic (v1 message parsing, category breakdown) is the
- * adapter's responsibility and is tested in the OpenCode adapter's
- * `types.test.ts`.
+ * output.  The `ContextReport` input is constructed directly as
+ * literals — report computation (OpenCode message parsing, category
+ * breakdown) is the adapter's responsibility and is tested in the
+ * OpenCode adapter's `types.test.ts`.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
@@ -361,7 +361,7 @@ describe("formatContextReport with pending/released reclaim", () => {
             {
               start: 0,
               end: 4,
-              active: true,
+              status: "active",
               spanHash: "deadbeef",
               summary: "block summary",
               title: "test",
@@ -405,7 +405,7 @@ describe("formatContextReport with pending/released reclaim", () => {
             {
               start: 0,
               end: 1,
-              active: false,
+              status: "stale",
               spanHash: "deadbeef",
               summary: "block summary",
               title: "test",

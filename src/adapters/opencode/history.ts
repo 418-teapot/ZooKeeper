@@ -3,7 +3,7 @@
  * messages.
  *
  * This is the only layer allowed to know both the v1 message shape
- * (`ContextMessageEntry { info, parts }`) and the new core lens types
+ * (`ContextMessageEntry { info, parts }`) and the core lens types
  * (`HostMessage`, `TextRegion`).  Every v1 part type maps to lens
  * regions with lossless text round-tripping: the adapter's `PartRegion`
  * regions are writable (see `WritableRegion`), so edit application and
@@ -16,14 +16,14 @@
  * - `reasoning` → one `thinking` region.
  * - `tool` with `state` → `tool-input` + `tool-output` regions; the
  *   input/output values are serialized with `JSON.stringify` when not
- *   already strings, matching the legacy estimator's counting.  The
+ *   already strings, so estimation counts the serialized text.  The
  *   part is paired into the invocation table at projection time — both
  *   halves of a v1 call live in one message, so the entry's input and
  *   output addresses are the two adjacent region indices, its name the
  *   part's tool name, and its status the part's verbatim `state.status`.
  * - any other type with a string `text` field (`step-start`,
- *   `step-finish`, `snapshot`, `file`, ...) → `content`, mirroring the
- *   legacy heuristic that counted `part.text` for every non-tool part.
+ *   `step-finish`, `snapshot`, `file`, ...) → `content`, so its text is
+ *   counted like any other content text.
  * - parts without text or tool state contribute no region.
  *
  * Message-level mapping: `info.role` → `role`, `info.tokens` → `usage`
@@ -39,14 +39,14 @@
  * estimation, numbering, injection, and the first-user search, and the
  * empty region list lets `canon`/`computeSpanHash`/`fold` project it
  * normally.  The mapped transcript therefore never contains null
- * entries (the new core's canon/span-hash/fold/view-refs layers assume
+ * entries (the core's canon/span-hash/fold/view-refs layers assume
  * non-null messages; only `measure` tolerates nulls defensively).
  *
  * Write-back semantics of the adapter's writable regions:
  *
  * - content / thinking → rewrites `part.text`.
  * - tool-output → rewrites `part.state.output` as a plain string (the
- *   legacy prune path always wrote the placeholder string).
+ *   prune path always writes the placeholder string).
  * - tool-input → string inputs are rewritten verbatim; object inputs
  *   are `JSON.parse`d back to an object when the new text parses, and
  *   wrapped into a `{ pruned }` object when it does not (prune
@@ -55,11 +55,11 @@
  *   always stay an object.
  *
  * Injection provenance: every region records how it was derived from
- * the v1 message (`text` / `reasoning` / `tool` / `other`).  The
- * legacy ref-injection wrote only text parts and tool outputs, so
+ * the v1 message (`text` / `reasoning` / `tool` / `other`).  Ref
+ * injection writes only text parts and tool outputs, so
  * `isInjectableRegion` marks exactly the text-derived content regions
- * and the tool-output regions; the line-number renderer of phase two
- * filters by it.  Parts mapped to content only for estimation parity
+ * and the tool-output regions; the line-number renderer filters by it.
+ * Parts mapped to content only for estimation parity
  * (step-start/snapshot/file text) are never injection targets.
  *
  * @module
@@ -94,7 +94,7 @@ interface V1ToolPart {
 /**
  * Derivation source of a lens region within its v1 message.
  *
- * The legacy ref-injection wrote only text parts and tool outputs, so
+ * Ref injection writes only text parts and tool outputs, so
  * the injection filter keys off this provenance instead of the region
  * kind alone (content regions also exist for step-start/snapshot/file
  * parts, which are estimation-only and must never receive a line
@@ -152,8 +152,8 @@ class PartRegion implements WritableRegion {
  * Serialize a part value for lens reads.
  *
  * `null`/`undefined` become the empty string; objects are
- * `JSON.stringify`ed — the same normalization the legacy
- * `estimateTokenCount` applied, so estimates stay equal.
+ * `JSON.stringify`ed — the same normalization `estimateTokenCount`
+ * applies, so estimates stay equal.
  *
  * @param value - The raw part value.
  * @returns The lens-visible text.
@@ -165,7 +165,7 @@ function serializeValue(value: unknown): string {
 
 /**
  * Map a message-level `info.tokens` object to lens `usage`, flattening
- * the legacy nested `cache.read`/`cache.write` into flat components.
+ * the nested `cache.read`/`cache.write` into flat components.
  *
  * @param tokens - The v1 token report.
  * @returns The flat usage report, or undefined when absent.
@@ -216,9 +216,9 @@ function writeInputBack(
 /**
  * Determine whether a v1 message is "ignored" and maps to `hidden`.
  *
- * Mirrors the legacy `isMessageIgnored` semantics — `info.ignored`
+ * Mirrors `isMessageIgnored` semantics — `info.ignored`
  * truthy, or every part carrying `ignored: true` — but tolerates null
- * part entries (the legacy helper crashes on them).
+ * part entries (`isMessageIgnored` throws on them).
  *
  * @param entry - The v1 message entry.
  * @returns True when the message should be hidden from estimation.
@@ -351,7 +351,7 @@ export function history(
 /**
  * Report whether a lens region may receive the line-number prefix.
  *
- * Mirrors the legacy ref-injection targets — text parts and tool
+ * Ref-injection targets are text parts and tool
  * outputs.  Content regions derived from text parts and tool-output
  * regions are injectable; thinking, tool-input, content derived from
  * step-start/snapshot/file parts (estimation-only), and regions this

@@ -24,6 +24,12 @@ import {
   waitForHydration,
 } from "./adapters/pi/hydrate.js";
 import { TRANSCRIPT_UNAVAILABLE_NOTICE } from "./adapters/pi/tui/transcript.js";
+import { project } from "./core/context/lens.js";
+import {
+  clearRoundView,
+  getRoundView,
+  publishRoundView,
+} from "./core/context/round-view.js";
 import {
   DIRECT_WORK_NUDGE,
   JSON_ERROR_REMINDER_MARKER,
@@ -1396,18 +1402,34 @@ describe("buildPiHandlers — registerCommand wiring", () => {
     const dcp = api.commands.find((c) => c.name === "dcp");
     assert.ok(dcp && typeof dcp.handler === "function");
 
+    // pi offers no host history read, so /dcp reports over the round view
+    // published by the context transform — the projection the model holds.
+    publishRoundView("sess-dcp", {
+      projection: project(
+        [
+          {
+            role: "user",
+            hidden: false,
+            regions: [{ kind: "content", get: () => "hi" }],
+          },
+        ],
+        [],
+      ),
+      numbered: [],
+    });
     const ctx = {
       sessionManager: {
         getSessionId: () => "sess-dcp",
-        buildContextEntries: () => [
-          { type: "message", message: { role: "user", content: "hi" } },
-        ],
       },
     };
-    await (dcp.handler as (args: string, ctx: unknown) => Promise<void>)(
-      "context",
-      ctx,
-    );
+    try {
+      await (dcp.handler as (args: string, ctx: unknown) => Promise<void>)(
+        "context",
+        ctx,
+      );
+    } finally {
+      clearRoundView("sess-dcp");
+    }
 
     assert.ok(
       api.appendedEntries.length >= 1,
@@ -2206,6 +2228,80 @@ describe("buildPiHandlers — widget seeding", () => {
     assert.equal(run?.label, "搜索代码");
     assert.equal(run?.startedAt, 4000);
     assert.equal(run?.endedAt, 5000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// session_start — round-view cache cleanup
+// ---------------------------------------------------------------------------
+
+describe("buildPiHandlers — session_start drops the cached round view", () => {
+  it("clears the session's published round view (pi has no session-deleted event)", async () => {
+    const api = mockApi();
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    // pi never fires session.deleted, so session_start is the only place a
+    // long-lived process can reclaim a finished session's frozen snapshot.
+    publishRoundView("sess-rv", {
+      projection: project(
+        [
+          {
+            role: "user",
+            hidden: false,
+            regions: [{ kind: "content", get: () => "hi" }],
+          },
+        ],
+        [],
+      ),
+      numbered: [],
+    });
+    assert.ok(getRoundView("sess-rv"), "the view starts published");
+
+    await handlers.sessionStart(
+      { type: "session_start", reason: "resume" },
+      {
+        sessionManager: { getSessionId: () => "sess-rv" },
+        ui: { notify: () => {}, setWidget: () => {} },
+      },
+    );
+
+    assert.equal(
+      getRoundView("sess-rv"),
+      undefined,
+      "session_start must drop the cached round view",
+    );
+  });
+
+  it("drops only the cached view — the session's other records survive", async () => {
+    const api = mockApi();
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    // The session's identity binding stands in for the records a resume
+    // must keep (the binding, the persisted state file, the model limit):
+    // `cleanupSession` would have dropped all of them, so its survival
+    // proves session_start stays on the round-view-only path.
+    sessionAgentRegistry.bind("sess-rv-scope", "dolphin");
+    publishRoundView("sess-rv-scope", {
+      projection: project([], []),
+      numbered: [],
+    });
+
+    await handlers.sessionStart(
+      { type: "session_start", reason: "resume" },
+      {
+        sessionManager: { getSessionId: () => "sess-rv-scope" },
+        ui: { notify: () => {}, setWidget: () => {} },
+      },
+    );
+
+    assert.equal(
+      getRoundView("sess-rv-scope"),
+      undefined,
+      "the cached round view is dropped",
+    );
+    assert.equal(
+      sessionAgentRegistry.resolve("sess-rv-scope"),
+      "dolphin",
+      "cleanupSession must NOT run — resume keeps the persisted state",
+    );
   });
 });
 

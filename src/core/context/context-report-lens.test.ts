@@ -1,15 +1,16 @@
 /**
- * Parity tests for `computeContextReportLens` (lens model) against the v1
- * `computeContextReport` (OpenCode adapter) — field-for-field equality.
+ * Parity tests for `computeContextReportLens` against the OpenCode
+ * adapter's `computeContextReport` — field-for-field equality.
  *
- * The same representative v1 `ContextMessageEntry` fixture is projected
- * through the adapter's `history()` into lens `HostMessage`s, then fed to
- * both producers.  Covering: multi-turn dialogs, a completed assistant with
- * cache usage, pruned tool output, ignored/hidden messages, and trailing
- * heuristic segments.
+ * The same representative OpenCode `ContextMessageEntry` fixture is
+ * projected through the adapter's `history()` into lens `HostMessage`s,
+ * then fed to both producers.  Covering: multi-turn dialogs, a completed
+ * assistant with cache usage, pruned tool output, ignored/hidden
+ * messages, and trailing heuristic segments.
  *
- * This test file imports the v1 adapter types and `computeContextReport`
- * purely as the reference oracle — the only place allowed to do so.
+ * This test file imports the OpenCode adapter types and
+ * `computeContextReport` purely as the reference oracle — the only place
+ * allowed to do so.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
@@ -29,7 +30,8 @@ import type { HostMessage, ViewItem } from "./lens.js";
 // ---------------------------------------------------------------------------
 
 /**
- * Build a minimal v1 message entry with role, optional tokens, and text.
+ * Build a minimal OpenCode message entry with role, optional tokens, and
+ * text.
  */
 function msg(
   role: string,
@@ -48,7 +50,7 @@ type ContextTokenInfoShape = {
 };
 
 /**
- * Build a v1 tool message entry with a tool part.
+ * Build an OpenCode tool message entry with a tool part.
  */
 function toolMsg(
   role: string,
@@ -75,7 +77,7 @@ function toolMsg(
 }
 
 /**
- * Build a v1 ignored (hidden) user message.
+ * Build an OpenCode ignored (hidden) user message.
  */
 function ignoredMsg(text: string): ContextMessageEntry {
   return {
@@ -85,7 +87,8 @@ function ignoredMsg(text: string): ContextMessageEntry {
 }
 
 /**
- * Build a v1 message with summary=true (host-native compaction boundary).
+ * Build an OpenCode message with summary=true (host-native compaction
+ * boundary).
  */
 function summaryMsg(text: string): ContextMessageEntry {
   return {
@@ -99,7 +102,7 @@ function summaryMsg(text: string): ContextMessageEntry {
 // ---------------------------------------------------------------------------
 
 /**
- * Assert that the lens report equals the v1 report field-for-field.
+ * Assert that the lens report equals the adapter report field-for-field.
  */
 function assertReportParity(v1Messages: ContextMessageEntry[]): void {
   const lensMessages: HostMessage[] = history(v1Messages).messages;
@@ -108,7 +111,7 @@ function assertReportParity(v1Messages: ContextMessageEntry[]): void {
   assert.deepEqual(
     lens,
     v1,
-    "lens report must match v1 report field-for-field",
+    "lens report must match the adapter report field-for-field",
   );
 }
 
@@ -116,7 +119,7 @@ function assertReportParity(v1Messages: ContextMessageEntry[]): void {
 // Parity tests
 // ---------------------------------------------------------------------------
 
-describe("computeContextReportLens parity with v1 computeContextReport", () => {
+describe("computeContextReportLens parity with the OpenCode adapter report", () => {
   it("multi-turn dialog with cache usage, trailing heuristic, ignored message", () => {
     // user "Hello" (2) + assistant with cache (900) + ignored /dcp report
     // (excluded) + user "Follow-up text here" (5) + streaming assistant (0).
@@ -157,7 +160,8 @@ describe("computeContextReportLens parity with v1 computeContextReport", () => {
 
   it("pruned tool output via state mutation (write-back path)", () => {
     // Simulate the post-prune state: the output has been replaced by the
-    // placeholder in the v1 state object, so history() exposes it directly.
+    // placeholder in the adapter state object, so history() exposes it
+    // directly.
     const v1: ContextMessageEntry[] = [
       msg("user", undefined, "Go"),
       toolMsg(
@@ -184,7 +188,8 @@ describe("computeContextReportLens parity with v1 computeContextReport", () => {
     // Post-boundary current context:
     //   user "New question" (12 chars → 3) + assistant {input: 300,
     //   output: 60}.
-    // v1: total = last completed assistant (idx 4): 300+60 = 360.
+    // Adapter report: total = last completed assistant (idx 4): 300+60 =
+    // 360.
     // Categories (boundary-aware): user=3, assistant=8+60=68, tool=0,
     // system = 360 − 3 − 68 − 0 = 289.
     const v1: ContextMessageEntry[] = [
@@ -199,11 +204,11 @@ describe("computeContextReportLens parity with v1 computeContextReport", () => {
 
   it("synthetic (ZooKeeper fold-block summary) is not a compaction boundary", () => {
     // `info.synthetic` marks ZooKeeper's own fold-block summary — a
-    // distinct concept from `info.summary`.  v1's findCompactionBoundary
-    // only recognizes `summary === true`, so a synthetic message must not
-    // restrict the lens category breakdown either.  This fixture would
-    // diverge if the projection mistakenly mapped `synthetic` to
-    // `compaction`.
+    // distinct concept from `info.summary`.  The adapter's
+    // `findCompactionBoundary` only recognizes `summary === true`, so a
+    // synthetic message must not restrict the lens category breakdown
+    // either.  This fixture would diverge if the projection mistakenly
+    // mapped `synthetic` to `compaction`.
     const v1: ContextMessageEntry[] = [
       msg("user", undefined, "Old question"),
       msg("assistant", { input: 500, output: 100 }, "Old answer"),

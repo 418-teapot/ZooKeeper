@@ -2,8 +2,7 @@
  * Pi `zoo` fleet widget — a component factory that tracks the active primary
  * and the current session's subagent runs above the editor.
  *
- * Replaces the legacy string-array `zoo` widget (a single `◆ <primary>`
- * line) with a live fleet widget:
+ * Two display states:
  *
  *   - **Collapsed** (default): one line
  *     `◆ <primary> · <spinner> <agent> <m:ss> · ●<done> ●<failed>` — the
@@ -253,7 +252,7 @@ export function createFleetWidget(deps: FleetWidgetDeps): FleetWidget {
    * its `agent` name is rendered through the host `colorizeAgent` (which
    * applies the configured `[agent.<name>].color` and returns the plain name
    * when unconfigured, so the current default is preserved).  A line without
-   * segments keeps the legacy whole-line wrap.
+   * segments falls back to the whole-line wrap.
    */
   const colorize = (line: CardLine): string => {
     if (theme === undefined) return line.text;

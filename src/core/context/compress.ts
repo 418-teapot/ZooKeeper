@@ -4,11 +4,12 @@
  *
  * A compression request describes one or more contiguous spans of the
  * current view; each span becomes a new block over its ordinal interval.
- * Endpoints are addressed by per-round line numbers and resolved through
- * the view layer (`resolveSpan`): an original item maps to its unit
- * interval, a summary item to its block's whole interval, and a reversed
- * pair of refs swaps instead of erroring.  Every gate (`validateRange`)
- * then runs against the same transcript and block snapshot — the first
+ * Endpoints are addressed by per-round line numbers and resolved
+ * against the numbered view (`resolveSpan`): an original item maps to
+ * its unit interval, a summary item to its block's whole interval, and a
+ * reversed pair of refs is rejected with an order error.  Every gate
+ * (`validateRange`) then runs against the same transcript and block
+ * snapshot — the first
  * gate that fails returns an actionable Chinese error text naming the
  * ordinal interval, and a failed range never mutates state.
  *
@@ -24,9 +25,11 @@
  * Token accounting: a block's `compressedTokens` is the heuristic
  * estimate of its interval plus the pending-mark tokens swallowed by the
  * landed range (`clearConsumedBlockRange`), minus the compressed tokens
- * of the fully-covered active blocks it consumes and the fully-covered
- * inactive blocks it absorbs — so previously compressed content is never
- * counted twice.  The stored summary carries the model text plus one-line
+ * of the fully-covered active blocks it consumes and of the absorbed
+ * inactive records whose content those blocks already fold away — so
+ * previously compressed content is never counted twice, while content
+ * that is visible in the view again counts as fresh compression
+ * material.  The stored summary carries the model text plus one-line
  * index entries (`--- bN: title ---`) for every absorbed block.
  *
  * @module
@@ -37,7 +40,7 @@ import { findFirstUserOrdinal, findLastUserOrdinal } from "./lens.js";
 import { estimateMessageHeuristic, estimateTokenCount } from "./measure.js";
 import { computeSpanHash } from "./spanhash.js";
 import type { Block, SessionState } from "./state.js";
-import { clearConsumedBlockRange, nextBlockId } from "./state.js";
+import { allocateBlockId, clearConsumedBlockRange } from "./state.js";
 import type { NumberedItem } from "./view-refs.js";
 import { resolveRange } from "./view-refs.js";
 
@@ -120,14 +123,16 @@ export interface RangeValidation {
   /** Actionable Chinese error text, or null when every gate passed. */
   error: string | null;
   /**
-   * Active blocks fully covered by the range — consumed (deactivated)
-   * when the range is applied.
+   * Active blocks fully covered by the range — consumed (moved to
+   * `"consumed"`) when the range is applied.
    */
   swallowed: ConsumedBlockRef[];
   /**
-   * Inactive blocks fully covered by the range — their compressed tokens
-   * are netted out and they get an index line, but they are never
-   * consumed again.
+   * Terminal-status blocks (consumed or stale) fully covered by the
+   * range — absorbed records that get an index line.  Their tokens are
+   * netted out only when an active block consumed by the same range
+   * already folds their interval away (see
+   * `nettedCoveredInactiveTokens`).
    */
   coveredInactive: ConsumedBlockRef[];
 }
@@ -268,7 +273,7 @@ function enrichCoveredOrdinalHint(error: string, state: SessionState): string {
   if (!error.includes("不存在")) return error;
   const activeIds: number[] = [];
   for (const [id, block] of state.blocks) {
-    if (block.active) activeIds.push(id);
+    if (block.status === "active") activeIds.push(id);
   }
   if (activeIds.length === 0) return error;
   const blockList = activeIds.map((id) => `b${id}`).join("、");
@@ -344,16 +349,18 @@ function estimateIntervalTokens(
  *    user message.
  * 3. **Overlap / swallow** — an active block intersecting the range must
  *    be fully covered (swallowed) or the range is rejected as a partial
- *    overlap; a fully-covered inactive block is carried on
- *    `coveredInactive` for token netting, a partially-covered one is
- *    ignored entirely.
+ *    overlap; a fully-covered block in a terminal status is carried on
+ *    `coveredInactive` as an absorbed record (index line, plus token
+ *    netting where its content is still folded), a partially-covered one
+ *    is ignored entirely.
  * 4. **Mid-pair** — a range cutting between the two halves of a tool
  *    call is rejected in either direction: a call inside with its linked
  *    result outside, or a result inside with its call outside.  The
  *    projection's invocation table addresses both halves beside the
  *    call, and cutting between them would leave the render to widen the
  *    summary, which loses the block-id label.  Hosts whose pairs always
- *    live in one message (v1) are structurally unaffected.
+ *    live in one message (the OpenCode adapter) are structurally
+ *    unaffected.
  * 5. **Phantom** — the interval's heuristic estimate must reach
  *    `thresholdTokens`.
  *
@@ -416,7 +423,7 @@ export function validateRange(
     const intersects = Math.max(block.start, start) < Math.min(block.end, end);
     if (!intersects) continue;
     const fullyCovered = start <= block.start && block.end <= end;
-    if (block.active) {
+    if (block.status === "active") {
       if (!fullyCovered) {
         return failed(
           `范围与活跃压缩块 b${id} 部分重叠：该块覆盖的区间未被完整包含` +
@@ -427,10 +434,12 @@ export function validateRange(
       }
       swallowed.push({ id, block });
     } else if (fullyCovered) {
-      // Inactive (superseded) block fully re-covered: not consumed (it is
-      // already inactive) but its content is absorbed — carried so the
-      // tokens are netted and it gets an index line.  Partially covered
-      // inactive blocks are ordinary content again and ignored entirely.
+      // Terminal-status block fully re-covered: it folds nothing of its
+      // own, so it is never consumed again, but the record is absorbed —
+      // carried so it gets an index line, and so its tokens are netted
+      // when a swallowed active block already folds its interval away.
+      // Partially covered terminal blocks are ordinary content again and
+      // ignored entirely.
       coveredInactive.push({ id, block });
     }
   }
@@ -443,8 +452,8 @@ export function validateRange(
   // decompression.  Both directions are gated: the call inside / result
   // outside, and the result inside / call outside.  The pairing comes
   // from the projection's invocation table; calls still in flight (no
-  // linked output) and hosts whose pairs always live in one message (v1)
-  // are structurally unaffected.
+  // linked output) and hosts whose pairs always live in one message (the
+  // OpenCode adapter) are structurally unaffected.
   for (const invocation of snapshot.invocations) {
     const output = invocation.output;
     if (output === undefined) continue;
@@ -566,6 +575,39 @@ function mergeSummary(
 }
 
 /**
+ * Sum the compressed tokens of the absorbed records the range nets out.
+ *
+ * A terminal-status block folds nothing of its own: its interval shows
+ * in the view either as ordinary messages (restored, or invalidated by a
+ * content change) or inside the summary of an active block that consumed
+ * it.  Only the second case is netted.  A consuming block's own
+ * `compressedTokens` was computed with the swallowed interval taken out,
+ * so the range's raw interval estimate has to take those tokens out
+ * through the absorbed record as well, otherwise the same content is
+ * counted twice.  A record whose content is back in the view is fresh
+ * compression material, and netting it would erase the very gain the
+ * range is claiming.
+ *
+ * @param validation - The gate outcome for the range.
+ * @returns The compressed tokens to subtract from the range estimate.
+ */
+function nettedCoveredInactiveTokens(validation: RangeValidation): number {
+  return validation.coveredInactive.reduce((sum, ref) => {
+    // Strict containment: an absorbed record sharing a consuming block's
+    // interval exactly describes the same content that block already
+    // counts in full, so only the block is netted.
+    const nested = validation.swallowed.some(
+      (parent) =>
+        parent.block.start <= ref.block.start &&
+        ref.block.end <= parent.block.end &&
+        (parent.block.start < ref.block.start ||
+          ref.block.end < parent.block.end),
+    );
+    return nested ? sum + ref.block.compressedTokens : sum;
+  }, 0);
+}
+
+/**
  * Prepare a validated range's payload and run the apply-time gates.
  *
  * Zero-mutation: builds the merged summary and the token arithmetic, then
@@ -596,10 +638,7 @@ function prepareRange(
     (sum, ref) => sum + ref.block.compressedTokens,
     0,
   );
-  const coveredInactiveTokens = validation.coveredInactive.reduce(
-    (sum, ref) => sum + ref.block.compressedTokens,
-    0,
-  );
+  const coveredInactiveTokens = nettedCoveredInactiveTokens(validation);
   const compressedTokens =
     intervalTokens + markTokens - consumedTokens - coveredInactiveTokens;
 
@@ -630,7 +669,7 @@ function prepareRange(
 }
 
 /**
- * Commit a prepared range: deactivate swallowed blocks, swallow the
+ * Commit a prepared range: consume the swallowed blocks, swallow the
  * pending marks of the landed interval, and create the new block.
  *
  * Runs only after every gate passed, so it cannot fail.  The block's
@@ -657,7 +696,7 @@ function commitPreparedRange(
   const history = snapshot.messages;
   const markStats = pendingMarkStats(state, range.start, range.end);
   for (const { block } of validation.swallowed) {
-    block.active = false;
+    block.status = "consumed";
   }
   const clearedTokens = clearConsumedBlockRange(state, range.start, range.end);
   const intervalTokens = estimateIntervalTokens(
@@ -669,19 +708,16 @@ function commitPreparedRange(
     (sum, ref) => sum + ref.block.compressedTokens,
     0,
   );
-  const coveredInactiveTokens = validation.coveredInactive.reduce(
-    (sum, ref) => sum + ref.block.compressedTokens,
-    0,
-  );
+  const coveredInactiveTokens = nettedCoveredInactiveTokens(validation);
 
-  const id = nextBlockId(state.blocks);
+  const id = allocateBlockId(state);
   const block: Block = {
     start: range.start,
     end: range.end,
     title: range.title,
     summary: prepared.summary,
     spanHash: computeSpanHash(snapshot, range.start, range.end),
-    active: true,
+    status: "active",
     compressedTokens:
       intervalTokens + clearedTokens - consumedTokens - coveredInactiveTokens,
     summaryTokens: prepared.summaryTokens,

@@ -18,18 +18,16 @@
  * below the context-fraction threshold; a `prunedOrdinals` predicate
  * excludes messages already folded or pruned.  All other semantics —
  * error-status determination, skip rules, the input zero-benefit gate,
- * and the placeholder — are migrated verbatim from the legacy
- * `pruning/producers/purge-errors.ts`, which prunes the failed call's
- * input only and never touches its output.
+ * and the placeholder — are defined below: only the failed call's input
+ * is pruned, never its output.
  *
- * **Idempotency.**  The legacy producer skipped a call whose callID
- * already held a mark (the marks map is callID-scoped and shared with
- * the dedup/sweep producers).  The lens equivalent checks both region
- * keys of the call — the tool-input key this producer writes and the
- * linked tool-output key the dedup/sweep producers write — so a call
- * claimed by any producer is never re-marked.  The output half comes
- * from the invocation entry's output address; a call whose output is
- * not paired yet (in flight) has no output key to check.
+ * **Idempotency.**  A call whose region already holds a mark is never
+ * re-marked.  The check covers both region keys of the call — the
+ * tool-input key this producer writes and the linked tool-output key the
+ * dedup/sweep producers write — so a call claimed by any producer is
+ * left alone.  The output half comes from the invocation entry's output
+ * address; a call whose output is not paired yet (in flight) has no
+ * output key to check.
  *
  * **Content accounting.**  Following the shared producer convention
  * (see `producers/dedup.ts`), a mark's `contentTokens` carries the net
@@ -82,14 +80,14 @@ export interface PurgeErrorsProducerOptions {
    * First protected ordinal (inclusive): error calls at or after this
    * ordinal are never marked.  Computed by the caller from the
    * protected-messages window; undefined skips the producer entirely
-   * (legacy fail-safe when the window is not configured).
+   * (fail-safe when the window is not configured).
    * `messages.length` is an empty window.
    */
   protectedStartOrdinal?: number;
   /**
    * Tool names excluded from the strategy, matched case-sensitively.
-   * Undefined → no exclusions — the legacy purge-errors producer had
-   * no default list (unlike dedup, whose default list is its own).
+   * Undefined → no exclusions (unlike dedup, which has its own default
+   * list).
    */
   protectedTools?: string[];
   /**
@@ -118,9 +116,9 @@ export interface PurgeErrorsRunResult {
  * Write a pending prune mark, first-write-wins.
  *
  * The clamp — a position that already holds a mark is never overwritten
- * — is the legacy `addMark` idempotency contract migrated here: the new
- * `state.ts` has no `addMark` helper yet, so the write guard lives in
- * this module until the release-gate phase centralises mark writes.
+ * — keeps mark writes idempotent: `state.ts` exposes no `addMark` helper,
+ * so the write guard lives in this module until the release-gate phase
+ * centralises mark writes.
  *
  * @param state - The session state to write into.
  * @param ordinal - The message ordinal the mark anchors to.
@@ -162,27 +160,23 @@ function addPendingMark(
  * Run purge-errors over the transcript: scan the invocation table for
  * error-status calls and write pending marks for their input regions.
  *
- * Gating order mirrors the legacy hook: an absent protected window
- * skips everything (fail-safe), then the message-count floor, then the
- * context-fraction threshold.  Hidden messages still participate in the
- * scan (the legacy producer scanned ignored messages too); the
- * message-count floor counts non-hidden messages.
+ * Gating order: an absent protected window skips everything (fail-safe),
+ * then the message-count floor, then the context-fraction threshold.
+ * Hidden messages still participate in the scan; the message-count floor
+ * counts non-hidden messages.
  *
- * Per error call the skip chain is migrated verbatim from the legacy
- * producer: *
+ * Per error call the skip chain is:
  * 1. Protected window / already-folded-or-pruned ordinal → skip.
  * 2. Tool name in `protectedTools` → skip (no default list).
  * 3. A mark already held by either of the call's regions — its
  *    tool-input key or its linked tool-output key — → skip the whole
- *    call (the legacy callID-scoped idempotency, migrated to region
- *    keys; the output-region key covers marks written by the dedup and
+ *    call (the output-region key covers marks written by the dedup and
  *    sweep producers).
  * 4. Input reclaim not positive — input text estimate does not exceed
- *    the error-input placeholder estimate (the legacy string-input
- *    zero-benefit rule) — → skip the call entirely.
+ *    the error-input placeholder estimate — → skip the call entirely.
  *
  * When the call survives, only its tool-input region is marked; the
- * output region is never touched, matching the legacy producer.
+ * output region is never touched.
  *
  * @param state - The session state; `state.marks` is read to skip
  *   already-claimed calls and written with new pending marks.
@@ -204,7 +198,7 @@ export function runPurgeErrors(
   const prunedOrdinals = options.prunedOrdinals;
 
   // Fail-safe: without a protection window the producer is skipped with
-  // zero side effects (legacy contract when the window is not set).
+  // zero side effects.
   if (options.protectedStartOrdinal === undefined) {
     return { created: 0, tokens: 0 };
   }
@@ -244,11 +238,10 @@ export function runPurgeErrors(
       messages[inputRef.ordinal]?.regions[inputRef.regionIndex];
     if (inputRegion?.kind !== "tool-input") continue; // bad ref — abstain
 
-    // Call-level idempotency (legacy callID-scoped): an existing mark
-    // on either region of the call suppresses the whole call.  The
-    // output-region key is never written here, but the dedup/sweep
-    // producers may hold it — resolved through the invocation's output
-    // address.
+    // Call-level idempotency: an existing mark on either region of the
+    // call suppresses the whole call.  The output-region key is never
+    // written here, but the dedup/sweep producers may hold it —
+    // resolved through the invocation's output address.
     if (state.marks.has(markKey(inputRef.ordinal, inputRef.regionIndex))) {
       continue;
     }
@@ -265,8 +258,8 @@ export function runPurgeErrors(
       input,
       PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
     );
-    // Zero-benefit gate (migrated verbatim): without positive input
-    // reclaim the call is skipped entirely.
+    // Zero-benefit gate: without positive input reclaim the call is
+    // skipped entirely.
     if (inputReclaim <= 0) continue;
 
     if (

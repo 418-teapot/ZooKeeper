@@ -394,7 +394,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "第一段",
             "coveredMessages": 5,
             "compressedTokens": 900,
@@ -514,7 +514,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "第一段",
             "coveredMessages": 5,
             "compressedTokens": 900,
@@ -522,7 +522,7 @@
           },
           {
             "blockId": 2,
-            "active": true,
+            "status": "active",
             "title": "第二段",
             "coveredMessages": 6,
             "compressedTokens": 900,

@@ -2,8 +2,10 @@
  * Context report data types and formatting for the `/dcp context` command.
  *
  * Declares the report data types (`ContextReport`,
- * `ContextCategoryBreakdown`) and the pure display layer — all computation
- * lives in the OpenCode v1 adapter module.  Provides token/cache/percentage
+ * `ContextCategoryBreakdown`) and the pure display layer — the report
+ * values are computed elsewhere (`context-report-lens.ts` over the
+ * host-agnostic lens, and the OpenCode adapter's own producer over host
+ * message shapes).  Provides token/cache/percentage
  * formatting helpers and the final multi-line report string in Chinese
  * (user-facing).
  *
@@ -101,14 +103,14 @@ export function formatPercent(ratio: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Block stats (derived from the new core's SessionState)
+// Block stats (derived from SessionState)
 // ---------------------------------------------------------------------------
 
 /**
- * Count of compression blocks whose `active` flag is true.
+ * Count of compression blocks currently folding their interval.
  *
  * Drives the "N 个压缩块" parenthetical in the report's reclaim
- * section.  Inactive blocks are excluded — the report's "active
+ * section.  Terminal-status blocks are excluded — the report's "active
  * scope" semantics.
  *
  * @param state - The session state.
@@ -117,7 +119,7 @@ export function formatPercent(ratio: number): string {
 function activeBlockCount(state: SessionState): number {
   let count = 0;
   for (const block of state.blocks.values()) {
-    if (block.active) count++;
+    if (block.status === "active") count++;
   }
   return count;
 }
@@ -126,7 +128,7 @@ function activeBlockCount(state: SessionState): number {
  * Net reclaimed tokens across all active blocks.
  *
  * Each active block contributes `compressedTokens - summaryTokens`
- * (the count saved by folding the segment).  Inactive blocks are
+ * (the count saved by folding the segment).  Terminal-status blocks are
  * excluded.
  *
  * @param state - The session state.
@@ -135,7 +137,7 @@ function activeBlockCount(state: SessionState): number {
 function activeReclaimedTokens(state: SessionState): number {
   let sum = 0;
   for (const block of state.blocks.values()) {
-    if (block.active) {
+    if (block.status === "active") {
       sum += block.compressedTokens - block.summaryTokens;
     }
   }
@@ -228,14 +230,14 @@ export function formatContextReport(
   }
 
   // ── Reclaim section ──────────────────────────────────────────────────
-  // 已生效 = cumulative pruned tokens + active-block net reclaimed.
-  // 待生效 appears only when pendingCount > 0.
+  // "已生效" (in effect) = cumulative pruned tokens + active-block net
+  // reclaimed.  "待生效" (pending) appears only when pendingCount > 0.
   const blockCnt = state ? activeBlockCount(state) : 0;
   const blockReclaimed = state ? activeReclaimedTokens(state) : 0;
   let blockCovered = 0;
   if (state) {
     for (const block of state.blocks.values()) {
-      if (block.active) {
+      if (block.status === "active") {
         blockCovered += block.end - block.start;
       }
     }

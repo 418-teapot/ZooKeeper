@@ -1,15 +1,14 @@
 /**
  * Tests for rolling span hashing and block validation (`spanhash.ts`).
  *
- * Covers the spec's G3 / SC3 requirements: four rewrite scenarios
+ * Covers the rewrite scenarios a persisted block must survive or reject
  * (truncation, compaction replacement, mid-span rewrite, fork prefix —
  * prefix-survival and out-of-bounds invalidation), hidden-message
- * participation in the hash (Decision 1), the concatenation-ambiguity
- * property of the rolling composition, hash determinism and output
- * format, range defense, and suicide-block protection — the prune
- * placeholders leave validation passing, while a line-start ref marker
- * in content hashes verbatim and breaks it.  Fixtures are built through
- * the lens testkit.
+ * participation in the hash, the concatenation-ambiguity property of the
+ * rolling composition, hash determinism and output format, range
+ * defense, and suicide-block protection — the prune placeholders leave
+ * validation passing, while a line-start ref marker in content hashes
+ * verbatim and breaks it.  Fixtures are built through the lens testkit.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
@@ -26,6 +25,7 @@ import {
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
 } from "./message-parts.js";
 import {
+  checkSpan,
   computeSpanHash,
   fnv1a,
   type HashedSpan,
@@ -62,7 +62,7 @@ function makeBlock(
 }
 
 // ---------------------------------------------------------------------------
-// Truncation (v1 revert semantics)
+// Truncation (a host-side cut into the covered interval)
 // ---------------------------------------------------------------------------
 
 describe("truncation", () => {
@@ -113,7 +113,7 @@ describe("compaction replacement", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Mid-span rewrite (spec Decision 2, option C: full-span hash catches it)
+// Mid-span rewrite (the full-span hash catches it)
 // ---------------------------------------------------------------------------
 
 describe("mid-span rewrite", () => {
@@ -157,7 +157,7 @@ describe("fork prefix", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Suicide block protection (spec R6 / Decision 2)
+// Suicide block protection
 // ---------------------------------------------------------------------------
 
 describe("suicide block protection", () => {
@@ -220,7 +220,7 @@ describe("suicide block protection", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Hidden messages (spec Decision 1)
+// Hidden messages
 // ---------------------------------------------------------------------------
 
 describe("hidden messages", () => {
@@ -360,5 +360,97 @@ describe("range defense", () => {
     for (const block of invalid) {
       assert.equal(validateBlock(projectMessages(history), block), false);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkSpan — the diagnosed form of the same comparison
+// ---------------------------------------------------------------------------
+
+describe("checkSpan", () => {
+  it("reports a match with both hashes equal and the transcript length", () => {
+    const history = makeTranscript();
+    const block = makeBlock(history, 1, 5);
+
+    const check = checkSpan(projectMessages(history), block);
+
+    assert.equal(check.valid, true);
+    assert.equal(check.reason, "match");
+    assert.equal(check.storedHash, block.spanHash);
+    assert.equal(check.currentHash, block.spanHash);
+    assert.equal(check.historyLength, 6);
+  });
+
+  it("exposes the recomputed hash on a mid-span rewrite", () => {
+    const history = makeTranscript();
+    const block = makeBlock(history, 1, 5);
+    setRegionText(history[2], 0, "rewritten inside the span");
+
+    const check = checkSpan(projectMessages(history), block);
+
+    assert.equal(check.valid, false);
+    assert.equal(check.reason, "hash-mismatch");
+    assert.equal(check.storedHash, block.spanHash);
+    assert.notEqual(check.currentHash, block.spanHash);
+    assert.equal(check.currentHash?.length, 8);
+    assert.equal(check.historyLength, 6);
+    // The boolean projection agrees with the diagnosed one.
+    assert.equal(validateBlock(projectMessages(history), block), false);
+  });
+
+  it("reports out-of-bounds with no current hash after a truncation", () => {
+    const history = makeTranscript();
+    const block = makeBlock(history, 1, 5);
+    const truncated = history.slice(0, 3);
+
+    const check = checkSpan(projectMessages(truncated), block);
+
+    assert.equal(check.valid, false);
+    assert.equal(check.reason, "out-of-bounds");
+    assert.equal(check.currentHash, null);
+    assert.equal(check.storedHash, block.spanHash);
+    assert.equal(check.historyLength, 3);
+  });
+
+  it("reports a negative start as out-of-bounds", () => {
+    const history = makeTranscript();
+    const check = checkSpan(projectMessages(history), {
+      start: -1,
+      end: 3,
+      spanHash: "00000000",
+    });
+
+    assert.equal(check.reason, "out-of-bounds");
+    assert.equal(check.currentHash, null);
+    assert.equal(check.historyLength, 6);
+  });
+
+  it("reports an empty or inverted span separately from a bound break", () => {
+    const history = makeTranscript();
+    const empty = checkSpan(projectMessages(history), {
+      start: 2,
+      end: 2,
+      spanHash: "00000000",
+    });
+    const inverted = checkSpan(projectMessages(history), {
+      start: 4,
+      end: 2,
+      spanHash: "00000000",
+    });
+
+    assert.equal(empty.reason, "empty-span");
+    assert.equal(inverted.reason, "empty-span");
+    assert.equal(empty.valid, false);
+    assert.equal(empty.currentHash, null);
+  });
+
+  it("keeps the stored hash verbatim in every outcome", () => {
+    const history = makeTranscript();
+    const block: HashedSpan = { start: 0, end: 6, spanHash: "ffffffff" };
+
+    const check = checkSpan(projectMessages(history), block);
+
+    assert.equal(check.reason, "hash-mismatch");
+    assert.equal(check.storedHash, "ffffffff");
   });
 });

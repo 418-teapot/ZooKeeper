@@ -18,7 +18,7 @@
  * `promptTokens` is the prompt-side total (last completed assistant's
  * input + cache read + cache write), the gate denominator — not the model
  * limit.  A `pendingViewChange` flag bypasses the gate entirely: when the
- * view changed last turn (fold debut, block deactivation, a compress or
+ * view changed last turn (fold debut, a block turning stale, a compress or
  * decompress tool call) the cache is broken anyway, so every pending mark
  * flushes unconditionally, even with `promptTokens === 0` or an undefined
  * `releasedPercent`.  The flag is read here but owned by the caller, which

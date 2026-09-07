@@ -1,17 +1,16 @@
 /**
  * Tests for the ordinal-based compression core (`compress.ts`).
  *
- * Covers the P1.10 acceptance contract: the combined protection window
- * (message-count and token-budget dimensions), endpoint resolution via
- * line refs (original / summary / reversed-swap / actionable errors with
- * the covered-content hint), every validation gate with one positive and
+ * Covers the combined protection window (message-count and token-budget
+ * dimensions), endpoint resolution via line refs (original / summary /
+ * reversed-pair order error / actionable errors with the
+ * covered-content hint), every validation gate with one positive and
  * one negative case each (protection zone, first user, overlap, swallow,
  * phantom), the apply-time gates (no-new-content, negative benefit),
  * block creation with spanHash self-validation, pending-mark token
- * accounting via `clearConsumedBlockRange`, batch semantics (three-range
- * batch, same-snapshot validation, cross-range rules, atomicity,
- * maxRanges, title rules), and end-to-end gate-decision pins over the
- * same ordinal inputs once compared against the legacy implementation.
+ * accounting via `clearConsumedBlockRange`, and batch semantics
+ * (three-range batch, same-snapshot validation, cross-range rules,
+ * atomicity, maxRanges, title rules).
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
@@ -92,7 +91,7 @@ function makeBlock(
     end,
     summary: `summary [${start}, ${end})`,
     spanHash: computeSpanHash(projectMessages(history), start, end),
-    active: true,
+    status: "active",
     compressedTokens: 100,
     summaryTokens: 10,
     createdAt: 1000,
@@ -226,7 +225,7 @@ describe("computeProtectedStartOrdinal", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 2. resolveSpan — endpoint resolution gate (C7-07 / C2-10)
+// 2. resolveSpan — endpoint resolution gate
 // ---------------------------------------------------------------------------
 
 describe("resolveSpan — endpoint resolution", () => {
@@ -303,7 +302,7 @@ describe("resolveSpan — endpoint resolution", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. validateRange — protection-zone gate (C2-02)
+// 3. validateRange — protection-zone gate
 // ---------------------------------------------------------------------------
 
 describe("validateRange — protection-zone gate", () => {
@@ -337,7 +336,7 @@ describe("validateRange — protection-zone gate", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4. validateRange — first-user gate (C2-03)
+// 4. validateRange — first-user gate
 // ---------------------------------------------------------------------------
 
 describe("validateRange — first-user gate", () => {
@@ -370,7 +369,7 @@ describe("validateRange — first-user gate", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 5. validateRange — overlap gate (C2-04)
+// 5. validateRange — overlap gate
 // ---------------------------------------------------------------------------
 
 describe("validateRange — overlap gate", () => {
@@ -406,7 +405,7 @@ describe("validateRange — overlap gate", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 6. validateRange — swallow gate (C1-11 / C2-07 / C2-08 / C2-09)
+// 6. validateRange — swallow gate
 // ---------------------------------------------------------------------------
 
 describe("validateRange — swallow gate", () => {
@@ -429,10 +428,11 @@ describe("validateRange — swallow gate", () => {
     assert.deepEqual(result.coveredInactive, []);
   });
 
-  it("collects a fully-covered inactive block for token netting", () => {
+  it("collects a fully-covered terminal block as an absorbed record", () => {
     const history = makeTranscript(10);
     const state = makeState();
-    state.blocks.set(1, makeBlock(history, 2, 6, { active: false }));
+    state.blocks.set(1, makeBlock(history, 2, 6, { status: "consumed" }));
+    state.blocks.set(2, makeBlock(history, 6, 8, { status: "stale" }));
     const result = validateRange(
       projectMessages(history),
       state,
@@ -444,14 +444,14 @@ describe("validateRange — swallow gate", () => {
     assert.deepEqual(result.swallowed, []);
     assert.deepEqual(
       result.coveredInactive.map((ref) => ref.id),
-      [1],
+      [1, 2],
     );
   });
 
-  it("ignores a partially-covered inactive block entirely", () => {
+  it("ignores a partially-covered terminal block entirely", () => {
     const history = makeTranscript(10);
     const state = makeState();
-    state.blocks.set(1, makeBlock(history, 2, 6, { active: false }));
+    state.blocks.set(1, makeBlock(history, 2, 6, { status: "consumed" }));
     const result = validateRange(
       projectMessages(history),
       state,
@@ -466,7 +466,7 @@ describe("validateRange — swallow gate", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 7. validateRange — phantom gate (C2-05)
+// 7. validateRange — phantom gate
 // ---------------------------------------------------------------------------
 
 describe("validateRange — phantom gate", () => {
@@ -668,7 +668,7 @@ describe("compressRanges — mid-pair gate batch semantics", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 8. compressRanges — block creation with spanHash (C2-13)
+// 8. compressRanges — block creation with spanHash
 // ---------------------------------------------------------------------------
 
 describe("compressRanges — block creation", () => {
@@ -692,7 +692,7 @@ describe("compressRanges — block creation", () => {
     assert.equal(block.start, 1);
     assert.equal(block.end, 6);
     assert.equal(block.title, "执行主题");
-    assert.equal(block.active, true);
+    assert.equal(block.status, "active");
     assert.equal(
       block.spanHash,
       computeSpanHash(projectMessages(history), 1, 6),
@@ -744,7 +744,7 @@ describe("compressRanges — pending-mark accounting", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 10. compressRanges — batch semantics (C2-11 / C2-12)
+// 10. compressRanges — batch semantics
 // ---------------------------------------------------------------------------
 
 describe("compressRanges — batch semantics", () => {
@@ -847,7 +847,7 @@ describe("compressRanges — batch semantics", () => {
     );
     assert.deepEqual(result.failed, []);
     assert.equal(result.created.length, 2);
-    assert.equal(state.blocks.get(1)?.active, false);
+    assert.equal(state.blocks.get(1)?.status, "consumed");
     const b2 = state.blocks.get(2);
     assert.ok(b2 !== undefined);
     assert.deepEqual([b2.start, b2.end], [1, 6]);
@@ -855,12 +855,12 @@ describe("compressRanges — batch semantics", () => {
     const b3 = state.blocks.get(3);
     assert.ok(b3 !== undefined);
     assert.deepEqual([b3.start, b3.end], [6, 8]);
-    assert.equal(b3.active, true);
+    assert.equal(b3.status, "active");
   });
 });
 
 // ---------------------------------------------------------------------------
-// 11. compressRanges — maxRanges and title rules (C2-14)
+// 11. compressRanges — maxRanges and title rules
 // ---------------------------------------------------------------------------
 
 describe("compressRanges — maxRanges and title rules", () => {
@@ -965,7 +965,7 @@ describe("compressRanges — maxRanges and title rules", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 12. compressRanges — apply-time gates (C2-06 / C2-05)
+// 12. compressRanges — apply-time gates
 // ---------------------------------------------------------------------------
 
 describe("compressRanges — apply-time gates", () => {
@@ -998,7 +998,7 @@ describe("compressRanges — apply-time gates", () => {
     assert.ok(!result.failed[0].error.includes("收益为负"));
     // Failure safety: the existing block is untouched.
     assert.equal(state.blocks.size, 1);
-    assert.equal(state.blocks.get(1)?.active, true);
+    assert.equal(state.blocks.get(1)?.status, "active");
   });
 
   it("rejects a negative benefit evaluated over the merged summary", () => {
@@ -1026,7 +1026,7 @@ describe("compressRanges — apply-time gates", () => {
     assert.equal(result.failed.length, 1);
     assert.ok(result.failed[0].error.includes("收益为负"));
     assert.equal(state.blocks.size, 1);
-    assert.equal(state.blocks.get(1)?.active, true);
+    assert.equal(state.blocks.get(1)?.status, "active");
   });
 
   it("swallows a covered block and merges index lines without double counting", () => {
@@ -1058,7 +1058,7 @@ describe("compressRanges — apply-time gates", () => {
     assert.ok(b2.summary.includes(SUPERSEDED_BLOCKS_LEAD_IN));
     assert.ok(b2.summary.includes("--- b1: 第一段主题 ---"));
     assert.ok(!b2.summary.includes("第一段摘要。"));
-    assert.equal(state.blocks.get(1)?.active, false);
+    assert.equal(state.blocks.get(1)?.status, "consumed");
     // Token no-double-count: the interval estimate minus the consumed block.
     let intervalTokens = 0;
     for (let i = 1; i < 6; i++) {
@@ -1068,17 +1068,91 @@ describe("compressRanges — apply-time gates", () => {
     assert.ok(validateBlock(projectMessages(history), b2));
   });
 
-  it("nets out a fully-covered inactive block and keeps its index line", () => {
+  it("nets an absorbed record whose content a consumed parent still folds", () => {
+    const history = makeTranscript(16);
+    const state = makeState();
+    // Generation 1: b1 folds [2, 4).
+    compressRange(
+      history,
+      numberedView(history, state),
+      state,
+      2,
+      3,
+      "第一段主题",
+      "第一段摘要。",
+    );
+    const b1 = state.blocks.get(1);
+    assert.ok(b1 !== undefined);
+    // Generation 2: b2 folds [1, 6) and swallows b1 — b1's content stays
+    // out of the view, folded inside b2's summary.
+    const gen2 = compressRange(
+      history,
+      numberedView(history, state),
+      state,
+      1,
+      5,
+      "第二段主题",
+      "第二段摘要。",
+    );
+    assert.equal(gen2.failed.length, 0);
+    const b2 = state.blocks.get(2);
+    assert.ok(b2 !== undefined);
+    assert.equal(b1.status, "consumed");
+
+    // Generation 3: b3 folds [1, 12) — it swallows b2 and re-covers the
+    // consumed b1, whose tokens b2 deliberately left out.
+    const thirdItems = numberedView(history, state);
+    const summaryLine = summaryLineOf(thirdItems);
+    assert.ok(summaryLine !== null);
+    const toRef = ordinalLine(thirdItems, 11);
+    assert.ok(toRef !== null);
+    const gen3 = compressRanges(
+      projectMessages(history),
+      thirdItems,
+      state,
+      OPTIONS,
+      [
+        {
+          fromRef: `m${summaryLine}`,
+          toRef,
+          title: "第三段主题",
+          summary: "第三段摘要。",
+        },
+      ],
+    );
+    assert.equal(gen3.failed.length, 0);
+    const b3 = gen3.created[0];
+    assert.deepEqual([b3.start, b3.end], [1, 12]);
+    assert.ok(b3.summary.includes("--- b1: 第一段主题 ---"));
+    assert.ok(b3.summary.includes("--- b2: 第二段主题 ---"));
+
+    let intervalTokens = 0;
+    for (let i = 1; i < 12; i++) {
+      intervalTokens += estimateMessageHeuristic(history[i]);
+    }
+    // Both absorbed records are netted: what remains is exactly the
+    // freshly folded content (ordinals 6 through 11).
+    assert.equal(
+      b3.compressedTokens,
+      intervalTokens - b2.compressedTokens - b1.compressedTokens,
+    );
+    let freshTokens = 0;
+    for (let i = 6; i < 12; i++) {
+      freshTokens += estimateMessageHeuristic(history[i]);
+    }
+    assert.equal(b3.compressedTokens, freshTokens);
+  });
+
+  it("does not net an absorbed record whose content is visible again", () => {
     const history = makeTranscript(10);
     const state = makeState();
     const initial = numberedView(history, state);
     compressRange(history, initial, state, 2, 3, "第一段主题", "第一段摘要。");
     const b1 = state.blocks.get(1);
     assert.ok(b1 !== undefined);
-    // Deactivate without consumption: its content becomes ordinary again
-    // (the fold shows every message, no summary item) and the tokens must
-    // be netted out of any re-covering block.
-    b1.active = false;
+    // The block goes stale: no active block folds its interval any more,
+    // so every message it covered is ordinary view content again.
+    b1.status = "stale";
 
     const items = numberedView(history, state);
     const result = compressRanges(
@@ -1088,22 +1162,99 @@ describe("compressRanges — apply-time gates", () => {
       OPTIONS,
       [
         {
-          fromRef: "m2",
-          toRef: "m6",
-          title: "第二段主题",
-          summary: "第二段摘要。",
+          fromRef: ordinalLine(items, 2) as string,
+          toRef: ordinalLine(items, 3) as string,
+          title: "重压缩主题",
+          summary: "重压缩摘要。",
         },
       ],
     );
+
+    // Re-folding visible content is real gain — the record is absorbed
+    // for its index line but its tokens are NOT netted out.
     assert.equal(result.failed.length, 0);
     const b2 = result.created[0];
     assert.ok(b2.summary.includes("--- b1: 第一段主题 ---"));
-    assert.equal(state.blocks.get(1)?.active, false);
-    let intervalTokens = 0;
-    for (let i = 1; i < 6; i++) {
-      intervalTokens += estimateMessageHeuristic(history[i]);
-    }
-    assert.equal(b2.compressedTokens, intervalTokens - b1.compressedTokens);
+    assert.equal(b2.compressedTokens, b1.compressedTokens);
+    // The stale record survives alongside the new block.
+    assert.equal(state.blocks.get(1)?.status, "stale");
+    assert.equal(state.blocks.size, 2);
+  });
+
+  it("re-compresses a stale span under a fresh id, never reusing b1", () => {
+    const history = makeTranscript(10);
+    const state = makeState();
+    compressRange(
+      history,
+      numberedView(history, state),
+      state,
+      2,
+      3,
+      "第一段",
+      "第一段摘要。",
+    );
+    const b1 = state.blocks.get(1);
+    assert.ok(b1 !== undefined);
+    // The block loses its content guarantee and stays in the map.
+    b1.status = "stale";
+
+    const items = numberedView(history, state);
+    const result = compressRanges(
+      projectMessages(history),
+      items,
+      state,
+      OPTIONS,
+      [
+        {
+          fromRef: ordinalLine(items, 2) as string,
+          toRef: ordinalLine(items, 3) as string,
+          title: "重压缩",
+          summary: "重压缩摘要。",
+        },
+      ],
+    );
+
+    assert.equal(result.failed.length, 0);
+    const created = result.created[0];
+    assert.equal(created.status, "active");
+    // The new block lands under its own id; the stale record is untouched.
+    assert.equal(state.blocks.get(2), created);
+    assert.notEqual(state.blocks.get(1), created);
+    assert.equal(state.blocks.size, 2);
+    assert.equal(state.blocks.get(1)?.status, "stale");
+    assert.equal(state.blocks.get(1)?.summary, "第一段摘要。");
+    assert.equal(state.nextBlockId, 3);
+  });
+
+  it("does not net an absorbed record left visible by a restore", () => {
+    const history = makeTranscript(10);
+    const state = makeState();
+    const initial = numberedView(history, state);
+    compressRange(history, initial, state, 2, 3, "第一段主题", "第一段摘要。");
+    const b1 = state.blocks.get(1);
+    assert.ok(b1 !== undefined);
+    // A restore consumes the block without any wider block folding its
+    // interval — the content is back in the view.
+    b1.status = "consumed";
+
+    const items = numberedView(history, state);
+    const result = compressRanges(
+      projectMessages(history),
+      items,
+      state,
+      OPTIONS,
+      [
+        {
+          fromRef: ordinalLine(items, 2) as string,
+          toRef: ordinalLine(items, 3) as string,
+          title: "重压缩主题",
+          summary: "重压缩摘要。",
+        },
+      ],
+    );
+
+    assert.equal(result.failed.length, 0);
+    assert.equal(result.created[0].compressedTokens, b1.compressedTokens);
   });
 });
 
@@ -1216,7 +1367,7 @@ describe("end-to-end gate decisions", () => {
     const consumed = state.blocks.get(1);
     assert.equal(result.ok, true);
     assert.equal(result.count, 1);
-    assert.equal(consumed?.active, false);
+    assert.equal(consumed?.status, "consumed");
   });
 
   it("rejects a range equal to a block span (no-new-content)", () => {

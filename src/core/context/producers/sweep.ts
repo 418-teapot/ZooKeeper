@@ -11,20 +11,18 @@
  *
  * Gating is self-contained: the producer skips entirely without a
  * caller-computed protected window, below the context-fraction
- * threshold (`sweep_threshold_context`, default 0.80 of the model
- * limit), and when the model limit is unknown (fail-closed).  The
- * window and skip rules — last non-hidden user message boundary,
- * already-pruned placeholder detection, folded-message exclusion,
- * completed-status filtering, and the block-protection switch
- * (`sweep_protected_blocks`, default false) — are migrated from the
- * legacy `/dcp sweep` semantics: with the switch off, tool outputs
- * inside an active compression block are still swept (the block's span
- * hash excludes tool-output text, so the block survives); with it on,
- * messages inside active blocks are skipped.
+ * threshold (`thresholdContext`, default 0.80 of the model limit), and
+ * when the model limit is unknown (fail-closed).  The window and skip
+ * rules — last non-hidden user message boundary, already-pruned
+ * placeholder detection, folded-message exclusion, completed-status
+ * filtering, and the block-protection switch (`sweepProtectedBlocks`,
+ * default false) — define the behaviour: with the switch off, tool
+ * outputs inside an active compression block are still swept (the
+ * block's span hash excludes tool-output text, so the block survives);
+ * with it on, messages inside active blocks are skipped.
  *
- * The legacy sweep producer never consulted a `protectedTools` list, so
- * this producer does not either — every tool name is sweepable inside
- * the window.
+ * This producer never consults a `protectedTools` list — every tool name
+ * is sweepable inside the window.
  *
  * @module
  */
@@ -64,7 +62,7 @@ export interface SweepProducerOptions {
    * First protected ordinal (inclusive): tool-output regions at or
    * after this ordinal are never marked.  Computed by the caller from
    * the protected-messages window; undefined skips the producer
-   * entirely (legacy fail-safe when the window is not configured).
+   * entirely (fail-safe when the window is not configured).
    * `messages.length` is an empty window.
    */
   protectedStartOrdinal?: number;
@@ -106,7 +104,7 @@ export interface SweepRunResult {
  */
 function inActiveBlock(state: SessionState, ordinal: number): boolean {
   for (const block of state.blocks.values()) {
-    if (!block.active) continue;
+    if (block.status !== "active") continue;
     if (block.start <= ordinal && ordinal < block.end) return true;
   }
   return false;
@@ -120,9 +118,9 @@ function inActiveBlock(state: SessionState, ordinal: number): boolean {
  * Write a pending prune mark, first-write-wins.
  *
  * The clamp — a position that already holds a mark is never overwritten
- * — is the legacy `addMark` idempotency contract migrated here: the new
- * `state.ts` has no `addMark` helper yet, so the write guard lives in
- * this module until the release-gate phase centralises mark writes.
+ * — keeps mark writes idempotent: `state.ts` exposes no `addMark` helper,
+ * so the write guard lives in this module until the release-gate phase
+ * centralises mark writes.
  *
  * @param state - The session state to write into.
  * @param ordinal - The message ordinal the mark anchors to.
@@ -164,10 +162,9 @@ function addPendingMark(
  * Run sweep over the transcript: mark every completed tool output after
  * the last non-hidden user message with a pending prune mark.
  *
- * Gating order mirrors the legacy hook: an absent protected window
- * skips everything (fail-safe), then the context-fraction threshold,
- * with an unknown model limit closing the gate.  Within the window the
- * skip chain is: folded-or-pruned ordinal (caller predicate), protected
+ * Gating order: an absent protected window skips everything (fail-safe),
+ * then the context-fraction threshold, with an unknown model limit
+ * closing the gate.  Within the window the skip chain is: folded-or-pruned ordinal (caller predicate), protected
  * window, hidden message, active-block interval (when the switch is
  * on), already-pruned output (placeholder-prefixed), and non-completed
  * call status.
@@ -191,7 +188,7 @@ export function runSweep(
   const sweepProtectedBlocks = options.sweepProtectedBlocks ?? false;
 
   // Fail-safe: without a protection window the producer is skipped with
-  // zero side effects (legacy contract when the window is not set).
+  // zero side effects (the contract when the window is not set).
   if (options.protectedStartOrdinal === undefined) {
     return { created: 0, tokens: 0 };
   }

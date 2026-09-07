@@ -382,7 +382,7 @@ describe("lens-specific gating semantics", () => {
     });
     assert.equal(rBelow.created, 0);
 
-    // Equality opens the gate (legacy "equal opens" semantics).
+    // Equality opens the gate.
     const at = makeNewState();
     const rAt = runDedup(at, projectMessages(lens), {
       minMessages: 0,
@@ -614,10 +614,10 @@ describe("pi cross-message dedup (invocation-table pairing)", () => {
    * Build a pi-shaped transcript: each entry pairs an assistant tool-call
    * message (tool-input region only, paired by call identity to the
    * following standalone toolResult message) with its input text.  The
-   * pairing mirrors what the pi adapter produces at projection time —
-   * the pre-migration producer scanned for the input inside the result
-   * message, never found it, and collapsed every same-name call into one
-   * signature bucket.
+   * pairing mirrors what the pi adapter produces at projection time:
+   * without a pairing table, a pi-shaped transcript hides each input in
+   * a different message than its output, same-name calls would collapse
+   * into one signature bucket, and dedup would mark unrelated calls.
    */
   function piTranscript(inputs: string[]): {
     lens: HostMessage[];

@@ -102,7 +102,7 @@ describe("cleanupSession", () => {
       end: 3,
       summary: "should-not-survive",
       spanHash: "ffff0000",
-      active: true,
+      status: "active",
       compressedTokens: 100,
       summaryTokens: 20,
       createdAt: 1000,

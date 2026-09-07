@@ -1,11 +1,11 @@
 /**
  * Tests for the mutation-invariant message projection (`canon.ts`).
  *
- * Covers the spec's R6 mitigation: every text mutation the core itself
- * performs (tool-output / tool-input placeholder replacement) must
- * leave `canon` unchanged, while real content changes must always
- * change it.  Also covers concatenation boundary ambiguity and
- * hidden-message behavior.  All fixtures are built through the lens
+ * Covers the mutation-invariance guarantee: every text mutation the
+ * core itself performs (tool-output / tool-input placeholder
+ * replacement) must leave `canon` unchanged, while real content changes
+ * must always change it.  Also covers concatenation boundary ambiguity
+ * and hidden-message behavior.  All fixtures are built through the lens
  * testkit; `canon` observes each message through a projection of one.
  */
 import assert from "node:assert/strict";

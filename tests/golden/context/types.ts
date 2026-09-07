@@ -23,7 +23,10 @@
 
 import type { ContextPruningConfig } from "../../../src/core/config-types.js";
 import type { CompressRangeInput } from "../../../src/core/context/compress.js";
-import type { SessionState } from "../../../src/core/context/state.js";
+import type {
+  BlockStatus,
+  SessionState,
+} from "../../../src/core/context/state.js";
 
 /**
  * Plan describing a single compression block to land on the transcript.
@@ -89,7 +92,7 @@ export type RoundAction =
       action: "tool-output" | "tool-error-input";
     }
   | { kind: "create-block"; plan: CompressionPlan }
-  | { kind: "deactivate-block"; blockId: number }
+  | { kind: "stale-block"; blockId: number }
   | { kind: "restart" }
   | { kind: "set-model-limit"; context: number }
   | { kind: "arm-manual-trigger" }
@@ -146,7 +149,8 @@ export interface Scenario<M = unknown> {
  */
 export interface BlockProjection {
   blockId: number;
-  active: boolean;
+  /** Lifecycle status — "active" folds the interval, the rest do not. */
+  status: BlockStatus;
   title: string | null;
   /** Number of messages covered by the block. */
   coveredMessages: number;

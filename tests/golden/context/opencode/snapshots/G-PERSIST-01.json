@@ -52,7 +52,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "test",
             "coveredMessages": 1,
             "compressedTokens": 500,
@@ -123,7 +123,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "test",
             "coveredMessages": 1,
             "compressedTokens": 500,
@@ -194,7 +194,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "test",
             "coveredMessages": 1,
             "compressedTokens": 500,

@@ -17,8 +17,7 @@
  * honours a caller-computed protected window (`protectedStartOrdinal`)
  * plus a predicate for messages already folded or pruned.  All other
  * semantics — signature normalisation, skip rules, defaults, and the
- * first-write-wins mark clamp — are migrated verbatim from the legacy
- * `pruning/producers/dedup.ts`.
+ * first-write-wins mark clamp — are defined below.
  *
  * @module
  */
@@ -43,7 +42,7 @@ const DEFAULT_PROTECTED_TOOLS = ["batch"];
 
 /**
  * Fields stripped from input objects at any depth when computing the
- * signature — the legacy volatile-field list, kept verbatim.
+ * signature.
  */
 const VOLATILE_FIELDS = new Set(["timestamp", "ts", "date"]);
 
@@ -74,7 +73,7 @@ export interface DedupProducerOptions {
    * First protected ordinal (inclusive): tool-output regions at or
    * after this ordinal are never marked.  Computed by the caller from
    * the protected-messages / protected-tokens window; undefined skips
-   * the producer entirely (legacy fail-safe when the window is not
+   * the producer entirely (fail-safe when the window is not
    * configured).  `messages.length` is an empty window.
    */
   protectedStartOrdinal?: number;
@@ -183,9 +182,9 @@ function makeSignature(tool: string, input: unknown): string {
  * Write a pending prune mark, first-write-wins.
  *
  * The clamp — a position that already holds a mark is never overwritten
- * — is the legacy `addMark` idempotency contract migrated here: the new
- * `state.ts` has no `addMark` helper yet, so the write guard lives in
- * this module until the release-gate phase centralises mark writes.
+ * — keeps mark writes idempotent: `state.ts` exposes no `addMark` helper,
+ * so the write guard lives in this module until the release-gate phase
+ * centralises mark writes.
  *
  * @param state - The session state to write into.
  * @param ordinal - The message ordinal the mark anchors to.
@@ -228,11 +227,10 @@ function addPendingMark(
  * paired calls by signature, and write pending marks for every duplicate
  * except the newest.
  *
- * Gating order mirrors the legacy hook: an absent protected window
- * skips everything (fail-safe), then the message-count floor, then the
- * context-fraction threshold.  Hidden messages still participate in the
- * scan (the legacy producer scanned ignored messages too); the
- * message-count floor counts non-hidden messages.
+ * Gating order: an absent protected window skips everything (fail-safe),
+ * then the message-count floor, then the context-fraction threshold.
+ * Hidden messages still participate in the scan; the message-count floor
+ * counts non-hidden messages.
  *
  * @param state - The session state; `state.marks` is read to skip
  *   already-claimed positions and written with new pending marks.
@@ -254,7 +252,7 @@ export function runDedup(
   const prunedOrdinals = options.prunedOrdinals;
 
   // Fail-safe: without a protection window the producer is skipped with
-  // zero side effects (legacy contract when the window is not set).
+  // zero side effects.
   if (options.protectedStartOrdinal === undefined) {
     return { created: 0, tokens: 0 };
   }
@@ -297,7 +295,7 @@ export function runDedup(
     if (prunedOrdinals?.(output.ordinal)) continue;
     if (output.ordinal >= protectedStartOrdinal) continue;
 
-    // Skip rules (migrated verbatim from the legacy producer).
+    // Skip rules.
     const status = invocation.status;
     if (status !== undefined && status !== "completed") continue;
     const tool = invocation.name;

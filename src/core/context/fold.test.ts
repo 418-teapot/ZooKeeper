@@ -1,15 +1,14 @@
 /**
  * Tests for the pure fold view (`fold.ts`).
  *
- * Covers the C1 fold-semantics checklist: basic folding (head block →
- * one summary + trailing originals, C1-01), adjacent and nested block
- * view layout, silent expansion of hash-invalidated blocks with
- * `viewChanged` / `expiredBlockIds` reporting (C1-05, C1-10, spanhash
- * linkage), inactive blocks never refolding (C1-08/C1-10 unfold
- * protection), the defensive overlapping-block merge branch (spec
- * Decision 5), empty-history and no-block pass-through (C1-05),
- * hidden-message visibility, exact ordinal correspondence between
- * original items and the transcript (C1-01), and fold purity (C1-08).
+ * Covers: basic folding (head block → one summary + trailing
+ * originals), adjacent and nested block view layout, silent expansion of
+ * hash-invalidated blocks with `viewChanged` / `expiredBlockIds`
+ * reporting (spanhash linkage), terminal blocks (consumed / stale) never
+ * refolding (unfold protection), the defensive overlapping-block merge
+ * branch, empty-history and no-block pass-through, hidden-message
+ * visibility, exact ordinal correspondence between original items and
+ * the transcript, and fold purity.
  * Fixtures are built through the lens testkit; block hashes come from
  * `computeSpanHash`.
  */
@@ -60,7 +59,7 @@ function makeBlock(
     end,
     summary: `summary [${start}, ${end})`,
     spanHash: computeSpanHash(projectMessages(history), start, end),
-    active: true,
+    status: "active",
     compressedTokens: 100,
     summaryTokens: 10,
     createdAt: 1000,
@@ -69,7 +68,7 @@ function makeBlock(
 }
 
 // ---------------------------------------------------------------------------
-// 1. Basic folding — C1-01
+// 1. Basic folding
 // ---------------------------------------------------------------------------
 
 describe("basic fold", () => {
@@ -162,7 +161,7 @@ describe("adjacent and nested block views", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. Hash-invalidated blocks silently expand — C1-05, C1-10, spanhash link
+// 3. Hash-invalidated blocks silently expand — spanhash link
 // ---------------------------------------------------------------------------
 
 describe("hash-invalid blocks silently expand", () => {
@@ -222,11 +221,11 @@ describe("hash-invalid blocks silently expand", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4. Inactive blocks never refold — C1-08 unfold protection
+// 4. Terminal blocks never refold (unfold protection)
 // ---------------------------------------------------------------------------
 
-describe("inactive blocks never refold", () => {
-  it("a deactivated block expands to originals and stays expanded", () => {
+describe("terminal blocks never refold", () => {
+  it("a consumed block expands to originals and stays expanded", () => {
     const history = makeTranscript(6);
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 1, 4));
@@ -235,10 +234,10 @@ describe("inactive blocks never refold", () => {
     assert.equal(before.items.length, 4); // orig 0 + summary + orig 4 + orig 5
     assert.equal(before.items[1].type, "summary");
 
-    // Deactivate — fold must not re-fold it (no other refold path exists).
+    // Consume it — fold must not re-fold it (no other refold path exists).
     const block = state.blocks.get(1);
     assert.ok(block !== undefined);
-    block.active = false;
+    block.status = "consumed";
     const result = fold(projectMessages(history), state);
     assert.deepEqual(result.items, [
       { type: "original", ordinal: 0 },
@@ -248,17 +247,57 @@ describe("inactive blocks never refold", () => {
       { type: "original", ordinal: 4 },
       { type: "original", ordinal: 5 },
     ]);
-    // Inactive expansion changes the view but is not a validation failure.
-    assert.equal(result.viewChanged, true);
+    // A block that already stopped folding is steady state, not a change
+    // this round made — and it is never reported as expired.
+    assert.equal(result.viewChanged, false);
     assert.deepEqual(result.expiredBlockIds, []);
     // The block object is untouched by fold.
-    assert.equal(block.active, false);
+    assert.equal(block.status, "consumed");
     assert.equal(state.blocks.size, 1);
+  });
+
+  it("a stale block expands, is not re-validated, and never re-expires", () => {
+    const history = makeTranscript(6);
+    const state = makeState();
+    // The stored hash addresses content that is no longer there.
+    state.blocks.set(
+      1,
+      makeBlock(history, 1, 4, { status: "stale", spanHash: "deadbeef" }),
+    );
+
+    const result = fold(projectMessages(history), state);
+
+    // Reporting no expiry proves the span was never re-hashed: a stale
+    // block is a terminal status, not a pending re-check.
+    assert.deepEqual(result.expiredBlockIds, []);
+    assert.equal(result.viewChanged, false);
+    assert.equal(result.items.length, 6);
+    assert.ok(result.items.every((item) => item.type === "original"));
+  });
+
+  it("a stale block alongside active blocks leaves them folding", () => {
+    const history = makeTranscript(8);
+    const state = makeState();
+    state.blocks.set(1, makeBlock(history, 1, 3, { status: "stale" }));
+    state.blocks.set(2, makeBlock(history, 4, 7));
+
+    const result = fold(projectMessages(history), state);
+
+    assert.deepEqual(result.expiredBlockIds, []);
+    assert.equal(result.viewChanged, false);
+    assert.deepEqual(result.items, [
+      { type: "original", ordinal: 0 },
+      { type: "original", ordinal: 1 },
+      { type: "original", ordinal: 2 },
+      { type: "original", ordinal: 3 },
+      { type: "summary", block: state.blocks.get(2) },
+      { type: "original", ordinal: 7 },
+    ]);
   });
 });
 
 // ---------------------------------------------------------------------------
-// 5. Overlapping surviving blocks merge — spec Decision 5 defensive branch
+// 5. Overlapping surviving blocks merge — defensive branch
 // ---------------------------------------------------------------------------
 
 describe("overlapping surviving blocks merge (defensive branch)", () => {
@@ -310,7 +349,7 @@ describe("overlapping surviving blocks merge (defensive branch)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 6. Empty history / no blocks pass through — C1-05
+// 6. Empty history / no blocks pass through
 // ---------------------------------------------------------------------------
 
 describe("empty history and no blocks pass through", () => {
@@ -372,7 +411,7 @@ describe("empty history and no blocks pass through", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 7. Ordinal correspondence — C1-01
+// 7. Ordinal correspondence
 // ---------------------------------------------------------------------------
 
 describe("ordinal correspondence", () => {
@@ -408,7 +447,7 @@ describe("ordinal correspondence", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 8. Purity — C1-08
+// 8. Purity
 // ---------------------------------------------------------------------------
 
 describe("fold is pure", () => {
@@ -447,8 +486,8 @@ describe("fold is pure", () => {
     setRegionText(history[2], 0, "edited");
     const result = fold(projectMessages(history), state);
     assert.deepEqual(result.expiredBlockIds, [1]);
-    // Deactivation is the caller's decision — fold only reports.
-    assert.equal(state.blocks.get(1)?.active, true);
+    // The status transition is the caller's decision — fold only reports.
+    assert.equal(state.blocks.get(1)?.status, "active");
     assert.equal(state.blocks.size, 1);
   });
 });

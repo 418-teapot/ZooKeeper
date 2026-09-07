@@ -204,9 +204,7 @@ describe("derived stats", () => {
 describe("release decisions (lens)", () => {
   /**
    * Seed two pending output marks on a two-message transcript and run
-   * the release gate with the given inputs — the same input patterns
-   * formerly driven through the legacy Phase 5 gate, now pinned as
-   * literals.
+   * the release gate with the given inputs, pinned as literals.
    */
   function runLens(
     tokens: [number, number],
@@ -340,7 +338,7 @@ describe("release decisions (lens)", () => {
     // Turn 1: two identical calls — dedup marks the older output.
     const turn1 = [lensMsg([bashCall("ls"), bashCall("ls")])];
     newTurn(state, turn1, promptTokens, releasedPercent, false);
-    // C5-01: this turn's mark never prunes this turn's view.
+    // This turn's mark never prunes this turn's view.
     assert.ok(
       turn1[0].regions[1].get().startsWith("x"),
       "turn 1 output unchanged",
@@ -560,7 +558,7 @@ describe("pendingViewChange bypass", () => {
     assert.equal(r1.forced, true);
     assert.equal(r1.releasedCount, 1);
 
-    // Turn 2: flag cleared by the caller (legacy Phase 7) — normal batching.
+    // Turn 2: flag cleared by the caller — normal batching.
     seedLensMark(state, 0, 1, "output", 200, false);
     const r2 = releasePhase(state, lens, {
       promptTokens: 100_000,

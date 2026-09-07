@@ -11,11 +11,16 @@
  * Failure handling is silent by design: an active block that no longer
  * validates expands back into plain original items — its id is reported
  * in `expiredBlockIds` and `viewChanged` is set, but no tombstone or
- * hint is added to the view.  Inactive blocks expand the same way; they
- * are never re-folded and never reported as expired (deactivation is a
- * known prior event).  `viewChanged` signals that some block did not
- * participate in this fold, so the caller can decide whether to notify
- * that the view differs.
+ * hint is added to the view.  Blocks already in a terminal status
+ * (`consumed`, `stale`) expand the same way but are neither reported
+ * nor re-validated — their interval is ordinary content again, and
+ * re-checking a hash nothing folds any more would only add work.
+ *
+ * `viewChanged` therefore signals a change made by THIS fold: an active
+ * block dropped out of the view.  Retaining terminal blocks in the
+ * state means the same non-folding blocks are seen round after round,
+ * so steady-state rounds over them must not report a change (the caller
+ * arms a release bypass on this signal, which has to stay a one-shot).
  *
  * Defensive merge: surviving blocks whose intervals intersect (a
  * condition the normal compression path prevents via `hasActiveOverlap`)
@@ -23,7 +28,7 @@
  * rendered from the first-appearing block's reference.
  *
  * The module never mutates its inputs: expired-block reporting returns
- * ids only, and deactivation is the caller's decision.
+ * ids only, and the status transition is the caller's decision.
  *
  * @module
  */
@@ -39,10 +44,11 @@ export interface FoldResult {
   /** The folded view, in ordinal order. */
   items: ViewItem[];
   /**
-   * True when at least one block did not participate in the fold (an
-   * inactive block, or an active block whose span hash no longer
-   * matches).  Signals that the produced view differs from the fully
-   * folded expectation, so the caller can notify a pending view change.
+   * True when an active block dropped out of the view in this fold (its
+   * span hash no longer matches).  Signals that the produced view
+   * differs from the fully folded expectation, so the caller can notify
+   * a pending view change.  Blocks already in a terminal status fold
+   * out every round and are not a change.
    */
   viewChanged: boolean;
   /** Ids of active blocks that failed span validation, ascending. */
@@ -59,12 +65,12 @@ export interface FoldResult {
  * transcript members and appear as original items; fold does no hidden
  * filtering.
  *
- * Block survival is `active && validateBlock(snapshot, block)`.  An
- * active block that fails validation silently expands: its ordinals
- * revert to original items, its id lands in `expiredBlockIds`, and
- * `viewChanged` is set.  An inactive block expands the same way but is
- * never reported as expired — fold has no other path that could re-fold
- * it.
+ * Block survival is `status === "active" && validateBlock(snapshot,
+ * block)`.  An active block that fails validation silently expands: its
+ * ordinals revert to original items, its id lands in `expiredBlockIds`,
+ * and `viewChanged` is set.  A block in a terminal status expands the
+ * same way but is never reported and never hash-checked — fold has no
+ * path that could re-fold it.
  *
  * Defensive merge: when two surviving blocks' intervals intersect, the
  * view folds the union of their intervals into a single summary item
@@ -85,9 +91,10 @@ export function fold(snapshot: Projection, state: SessionState): FoldResult {
   let viewChanged = false;
 
   for (const [id, block] of state.blocks) {
-    if (!block.active || !validateBlock(snapshot, block)) {
+    if (block.status !== "active") continue;
+    if (!validateBlock(snapshot, block)) {
       viewChanged = true;
-      if (block.active) expiredBlockIds.push(id);
+      expiredBlockIds.push(id);
       continue;
     }
     surviving.push(block);

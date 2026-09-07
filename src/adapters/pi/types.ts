@@ -72,11 +72,87 @@ export interface PiToolResultMessage {
   timestamp?: number;
 }
 
-/** Union of the three pi LLM message kinds. */
+/**
+ * Pi bash-execution message.
+ *
+ * Produced by the built-in `bash` tool's interactive escape hatch.  It has
+ * no `content` field: pi derives the model-visible text from `command`,
+ * `output`, `exitCode`, `cancelled` and `truncated` at request-build time,
+ * so no single field round-trips an edit.
+ */
+export interface PiBashExecutionMessage {
+  role: "bashExecution";
+  command: string;
+  output: string;
+  exitCode: number | undefined;
+  cancelled: boolean;
+  truncated: boolean;
+  fullOutputPath?: string;
+  timestamp: number;
+  excludeFromContext?: boolean;
+}
+
+/**
+ * Pi extension-contributed message.
+ *
+ * `content` is user-shaped (a string or text/image parts), which is what
+ * pi converts into a user message when building the request.
+ */
+export interface PiCustomMessage {
+  role: "custom";
+  customType: string;
+  content: string | PiContentPart[];
+  display: boolean;
+  details?: unknown;
+  timestamp: number;
+}
+
+/**
+ * Pi branch-summary message.
+ *
+ * Injected when the conversation returns from a branched session.  Carries
+ * a `summary` string and no `content` field; unlike a compaction summary it
+ * does not delimit the historical part of the transcript.
+ */
+export interface PiBranchSummaryMessage {
+  role: "branchSummary";
+  summary: string;
+  fromId: string;
+  timestamp: number;
+}
+
+/**
+ * Pi compaction-summary message.
+ *
+ * Injected by pi's own compaction (`/compact`, auto-compaction).  Carries a
+ * `summary` string and no `content` field; every transcript message before
+ * it is historical, which is the semantics the core lens `compaction` flag
+ * expresses.
+ */
+export interface PiCompactionSummaryMessage {
+  role: "compactionSummary";
+  summary: string;
+  tokensBefore: number;
+  timestamp: number;
+}
+
+/**
+ * Union of every pi `AgentMessage` role.
+ *
+ * Mirrors pi's `AgentMessage` union: the three LLM-shaped kinds plus the
+ * coding-agent extensions (bash execution, extension-contributed messages,
+ * branch and compaction summaries).  Keep it exhaustive — the projection in
+ * `history.ts` relies on it to type-check its role dispatch, and the
+ * `context` / `message_end` events deliver exactly this union.
+ */
 export type PiAgentMessage =
   | PiUserMessage
   | PiAssistantMessage
-  | PiToolResultMessage;
+  | PiToolResultMessage
+  | PiBashExecutionMessage
+  | PiCustomMessage
+  | PiBranchSummaryMessage
+  | PiCompactionSummaryMessage;
 
 /** The pi `tool_result` event payload. */
 export interface PiToolResultEvent {
@@ -104,7 +180,14 @@ export interface PiToolResultResult {
   content?: PiContentPart[];
 }
 
-/** The pi `context` event payload (fired before every LLM request). */
+/**
+ * The pi `context` event payload (fired before every LLM request).
+ *
+ * `messages` is the full `AgentMessage` union, not just the three
+ * LLM-shaped kinds: after a compaction the list also carries
+ * `compactionSummary`, and branch returns / bash escapes / extension
+ * messages add `branchSummary`, `bashExecution` and `custom`.
+ */
 export interface PiContextEvent {
   type: "context";
   messages: PiAgentMessage[];

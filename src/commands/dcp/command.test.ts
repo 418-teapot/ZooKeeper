@@ -28,6 +28,7 @@ import {
   pendingTokens,
   reclaimedTokens,
 } from "../../core/context/release.js";
+import { publishRoundView } from "../../core/context/round-view.js";
 import {
   _resetContextStateManagerForTesting,
   consumePendingViewChange,
@@ -49,6 +50,8 @@ const SWEEP_TEST_SESSION_IDS = [
   "sess-sweep-1",
   "sess-no-double",
   "sess-persist-after-sweep",
+  "sess-report-round-view",
+  "sess-sweep-round-view",
 ];
 
 afterEach(() => {
@@ -240,6 +243,68 @@ describe("missing host APIs", () => {
       () => handleDcpCommand(toolHost, "sess-9", "context"),
       /无法获取/,
     );
+  });
+
+  it("reports over the published round view when the host reads no history", async () => {
+    // A host whose own read is not provably the transform's source (pi)
+    // leaves `fetchHistory` unwired; the round view the last transform
+    // published is then the only — and correct — report basis.
+    const notices: string[] = [];
+    const toolHost: ToolHost = {
+      resolveSessionId: () => undefined,
+      notify: async (_sid, text) => {
+        notices.push(text);
+      },
+    };
+    publishRoundView("sess-report-round-view", {
+      projection: projectMessages([
+        makeMsg("user", ["问题"]),
+        makeAssistantMsg({
+          toolCalls: [{ name: "bash", input: "{}", output: "输出内容" }],
+        }),
+      ]),
+      numbered: [],
+    });
+
+    await handleDcpCommand(toolHost, "sess-report-round-view", "context");
+
+    assert.equal(notices.length, 1);
+    assert.match(notices[0], /上下文报告/);
+  });
+
+  it("sweeps against the published round view when the host reads no history", async () => {
+    const notices: string[] = [];
+    const toolHost: ToolHost = {
+      resolveSessionId: () => undefined,
+      notify: async (_sid, text) => {
+        notices.push(text);
+      },
+    };
+    publishRoundView("sess-sweep-round-view", {
+      projection: projectMessages([
+        makeMsg("user", ["do something"]),
+        makeAssistantMsg({
+          toolCalls: [
+            {
+              name: "bash",
+              input: "{}",
+              output:
+                "output data with additional content long enough to yield a positive net reclaim estimate",
+            },
+          ],
+        }),
+      ]),
+      numbered: [],
+    });
+
+    await handleDcpCommand(toolHost, "sess-sweep-round-view", "sweep");
+
+    assert.equal(
+      getContextStateManager().get("sess-sweep-round-view").marks.size,
+      1,
+      "the sweep marked the round view's tool output",
+    );
+    assert.match(notices[0] ?? "", /已标记/);
   });
 
   it("propagates the fetchHistory rejection (HTTP error)", async () => {

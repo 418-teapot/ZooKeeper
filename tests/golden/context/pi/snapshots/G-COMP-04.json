@@ -3453,7 +3453,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "phantom",
             "coveredMessages": 6,
             "compressedTokens": 84,
@@ -4103,7 +4103,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "phantom",
             "coveredMessages": 6,
             "compressedTokens": 84,
@@ -4751,7 +4751,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "phantom",
             "coveredMessages": 6,
             "compressedTokens": 84,
@@ -5254,8 +5254,16 @@
       "state": {
         "blocks": [
           {
+            "blockId": 1,
+            "status": "consumed",
+            "title": "phantom",
+            "coveredMessages": 6,
+            "compressedTokens": 84,
+            "summaryTokens": 12
+          },
+          {
             "blockId": 2,
-            "active": true,
+            "status": "active",
             "title": "已有",
             "coveredMessages": 18,
             "compressedTokens": 168,
@@ -5760,8 +5768,16 @@
       "state": {
         "blocks": [
           {
+            "blockId": 1,
+            "status": "consumed",
+            "title": "phantom",
+            "coveredMessages": 6,
+            "compressedTokens": 84,
+            "summaryTokens": 12
+          },
+          {
             "blockId": 2,
-            "active": true,
+            "status": "active",
             "title": "已有",
             "coveredMessages": 18,
             "compressedTokens": 168,
@@ -5792,7 +5808,7 @@
         {
           "role": "user",
           "toolParts": [],
-          "text": "[m2] [Block b3 · 34 条] 更宽\n更宽\n=== Superseded Blocks ===\n--- b2: 已有 ---"
+          "text": "[m2] [Block b3 · 34 条] 更宽\n更宽\n=== Superseded Blocks ===\n--- b1: phantom ---\n--- b2: 已有 ---"
         },
         {
           "role": "assistant",
@@ -6072,12 +6088,28 @@
       "state": {
         "blocks": [
           {
+            "blockId": 1,
+            "status": "consumed",
+            "title": "phantom",
+            "coveredMessages": 6,
+            "compressedTokens": 84,
+            "summaryTokens": 12
+          },
+          {
+            "blockId": 2,
+            "status": "consumed",
+            "title": "已有",
+            "coveredMessages": 18,
+            "compressedTokens": 168,
+            "summaryTokens": 23
+          },
+          {
             "blockId": 3,
-            "active": true,
+            "status": "active",
             "title": "更宽",
             "coveredMessages": 34,
-            "compressedTokens": 308,
-            "summaryTokens": 13
+            "compressedTokens": 224,
+            "summaryTokens": 18
           }
         ],
         "marks": {
@@ -6089,10 +6121,10 @@
         "pendingViewChange": false,
         "nudgeAnchor": null
       },
-      "toolResult": "上下文压缩：已压缩 34 条消息为压缩块 b3：更宽，约回收 295 tokens",
+      "toolResult": "上下文压缩：已压缩 34 条消息为压缩块 b3：更宽，约回收 206 tokens",
       "toolError": null,
       "notifications": [
-        "上下文压缩：已压缩 34 条消息为压缩块 b3：更宽，约回收 295 tokens"
+        "上下文压缩：已压缩 34 条消息为压缩块 b3：更宽，约回收 206 tokens"
       ]
     },
     {
@@ -6106,7 +6138,7 @@
         {
           "role": "user",
           "toolParts": [],
-          "text": "[m2] [Block b3 · 34 条] 更宽\n更宽\n=== Superseded Blocks ===\n--- b2: 已有 ---"
+          "text": "[m2] [Block b3 · 34 条] 更宽\n更宽\n=== Superseded Blocks ===\n--- b1: phantom ---\n--- b2: 已有 ---"
         },
         {
           "role": "assistant",
@@ -6386,12 +6418,28 @@
       "state": {
         "blocks": [
           {
+            "blockId": 1,
+            "status": "consumed",
+            "title": "phantom",
+            "coveredMessages": 6,
+            "compressedTokens": 84,
+            "summaryTokens": 12
+          },
+          {
+            "blockId": 2,
+            "status": "consumed",
+            "title": "已有",
+            "coveredMessages": 18,
+            "compressedTokens": 168,
+            "summaryTokens": 23
+          },
+          {
             "blockId": 3,
-            "active": true,
+            "status": "active",
             "title": "更宽",
             "coveredMessages": 34,
-            "compressedTokens": 308,
-            "summaryTokens": 13
+            "compressedTokens": 224,
+            "summaryTokens": 18
           }
         ],
         "marks": {
@@ -6418,7 +6466,7 @@
         {
           "role": "user",
           "toolParts": [],
-          "text": "[m2] [Block b3 · 34 条] 更宽\n更宽\n=== Superseded Blocks ===\n--- b2: 已有 ---"
+          "text": "[m2] [Block b3 · 34 条] 更宽\n更宽\n=== Superseded Blocks ===\n--- b1: phantom ---\n--- b2: 已有 ---"
         },
         {
           "role": "assistant",
@@ -6698,12 +6746,28 @@
       "state": {
         "blocks": [
           {
+            "blockId": 1,
+            "status": "consumed",
+            "title": "phantom",
+            "coveredMessages": 6,
+            "compressedTokens": 84,
+            "summaryTokens": 12
+          },
+          {
+            "blockId": 2,
+            "status": "consumed",
+            "title": "已有",
+            "coveredMessages": 18,
+            "compressedTokens": 168,
+            "summaryTokens": 23
+          },
+          {
             "blockId": 3,
-            "active": true,
+            "status": "active",
             "title": "更宽",
             "coveredMessages": 34,
-            "compressedTokens": 308,
-            "summaryTokens": 13
+            "compressedTokens": 224,
+            "summaryTokens": 18
           }
         ],
         "marks": {

@@ -11,11 +11,11 @@
  *
  * - G-FOLD-01: multi-block folded view structure (summary position,
  *   gap preservation, first-user force-keep, summary text verbatim).
- * - G-FOLD-02: full deactivation restores the original view.
- * - G-FOLD-03: revert (truncation) deactivates the block and covered
- *   messages reappear; the deactivation forces a pending-mark flush on
+ * - G-FOLD-02: every block stopping to fold restores the original view.
+ * - G-FOLD-03: revert (truncation) turns the block stale and covered
+ *   messages reappear; the transition forces a pending-mark flush on
  *   the next turn.
- * - G-FOLD-04: compaction removes the anchor, deactivates the block,
+ * - G-FOLD-04: compaction removes the anchor, turns the block stale,
  *   and renumbers refs from m1 — the pi compaction boundary is a user
  *   message with the `summary: true` marker and, unlike v1, occupies a
  *   numbered view line (pi has no hidden messages).
@@ -112,11 +112,12 @@ export const G_FOLD_01: Scenario = {
 };
 
 /**
- * G-FOLD-02 — full deactivation restores the original view.
+ * G-FOLD-02 — every block stopping to fold restores the original view.
  *
  * Creates the same two blocks as G-FOLD-01 (folded view captured),
- * then deactivates them one at a time.  The final round's view is the
- * original message list byte-for-byte — no synthetic residue.
+ * then turns them stale one at a time.  The final round's view is the
+ * original message list byte-for-byte — no synthetic residue, while both
+ * records stay in the state map.
  */
 export const G_FOLD_02: Scenario = {
   id: "G-FOLD-02",
@@ -156,25 +157,25 @@ export const G_FOLD_02: Scenario = {
     {
       label: "deactivate-b1",
       messages: smallConversation("golden-pi-g-fold-02"),
-      action: { kind: "deactivate-block", blockId: 1 },
+      action: { kind: "stale-block", blockId: 1 },
     },
     {
       label: "deactivate-b2-view-restored",
       messages: smallConversation("golden-pi-g-fold-02"),
-      action: { kind: "deactivate-block", blockId: 2 },
+      action: { kind: "stale-block", blockId: 2 },
     },
   ],
 };
 
 /**
- * G-FOLD-03 — revert (truncation) deactivates the block; covered
+ * G-FOLD-03 — revert (truncation) turns the block stale; covered
  * messages reappear; pending marks are force-flushed.
  *
  * b1 covers [a1, tr1, u2] anchored at u2.  A revert physically deletes
  * u2 (the anchor) while a1 stays in the view.  The round's transform
- * deactivates b1 (activeBefore > activeAfter → pendingViewChange),
- * which forces the release of the two pre-seeded pending marks on the
- * next turn.
+ * finds b1's span no longer addressable and marks it stale (record
+ * retained, one-shot pendingViewChange), which forces the release of the
+ * two pre-seeded pending marks on the next turn.
  */
 export const G_FOLD_03: Scenario = {
   id: "G-FOLD-03",
@@ -255,7 +256,7 @@ export const G_FOLD_03: Scenario = {
       label: "revert-anchor-deleted-deactivate-flush",
       messages: [
         userMsg("hello", { id: "u0" }),
-        // a1 was covered by the block — reappears after deactivation.
+        // a1 was covered by the block — reappears once it goes stale.
         assistantMsg([toolCallPart("call-1", "bash", { cmd: "x" })], {
           id: "a1",
         }),
@@ -292,7 +293,7 @@ function compactionBoundaryMsg(text: string): PiAgentMessage {
  *
  * b1 covers [a1..a4] (with their toolResults) anchored at a4.  Host
  * compaction replaces the old history with a summary-boundary message
- * (`summary: true`): the anchor disappears → the block deactivates;
+ * (`summary: true`): the anchor disappears → the block goes stale;
  * the boundary id changes → refs reset and renumber from m1 over the
  * new view.  On pi the boundary message itself occupies a numbered
  * line (pi has no hidden messages — a documented lane difference from

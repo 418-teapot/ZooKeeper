@@ -169,7 +169,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "test",
             "coveredMessages": 2,
             "compressedTokens": 1500,

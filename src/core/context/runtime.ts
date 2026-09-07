@@ -20,6 +20,7 @@
 
 import { sessionAgentRegistry } from "../session-agent.js";
 import { clearModelLimit } from "./model-limits.js";
+import { _resetRoundViewsForTesting, clearRoundView } from "./round-view.js";
 import {
   createSessionStateManager,
   type SessionStateManager,
@@ -42,15 +43,16 @@ export function getContextStateManager(): SessionStateManager {
 /**
  * Drop every per-session record for the given session ID.
  *
- * Single cleanup entry point called on `session.deleted` events:
- * drops the session-agent binding, the model-limit entry, the
- * persisted state file, the pending view-change flag, and the
- * in-memory cache entry via `SessionStateManager.evict`.  The cache
- * eviction is silent (no write-back) because the on-disk file has
- * already been removed and writing it back would resurrect the
- * deletion — TTL eviction is reserved for entries that are merely
- * idle, not deleted.  Adding a new per-session record means registering
- * its cleanup here, not adding a line to the host's event handler.
+ * Single cleanup entry point called on `session.deleted` events: drops
+ * the session-agent binding, the model-limit entry, the persisted state
+ * file, the pending view-change flag (however it was armed), the cached
+ * round view, and the in-memory cache entry via
+ * `SessionStateManager.evict`.  The cache eviction is silent (no
+ * write-back) because the on-disk file has already been removed and
+ * writing it back would resurrect the deletion — TTL eviction is
+ * reserved for entries that are merely idle, not deleted.  Adding a new
+ * per-session record means registering its cleanup here, not adding a
+ * line to the host's event handler.
  *
  * @param sessionID - The session identifier to clean up.
  */
@@ -58,6 +60,7 @@ export function cleanupSession(sessionID: string): void {
   sessionAgentRegistry.delete(sessionID);
   clearModelLimit(sessionID);
   pendingViewChangeFlags.delete(sessionID);
+  clearRoundView(sessionID);
   const manager = getContextStateManager();
   manager.store.delete(sessionID);
   // Silent drop — the store file is already gone, so writing the
@@ -82,8 +85,8 @@ export function cleanupSession(sessionID: string): void {
  * reads or writes it must go through `getRuntimeFlaggedState` (or
  * the `RuntimeFlaggedState` alias) instead of the bare `SessionState`
  * type.  `pendingViewChange` deliberately does NOT live here — it is
- * signalled exclusively through the module-level flag maps in this
- * module and in the context-pruning hook.
+ * signalled through this module's own flag map (see
+ * `setPendingViewChange`).
  */
 export interface RuntimeFlags {
   pendingManualTrigger?: boolean;
@@ -113,11 +116,13 @@ export function getRuntimeFlaggedState(sessionId: string): RuntimeFlaggedState {
 /**
  * Per-session view-change flags shared by the pipeline.
  *
- * The compress/decompress tools and the /dcp command arm the flag after
- * mutating blocks; the transform hook's release phase consumes (reads
- * and clears) it on the next turn, which bypasses the release
- * percentage gate so pending marks flip in the same turn the view
- * changes.  Never persisted — loss on restart is benign.
+ * The transform hook's release phase consumes (reads and clears) the
+ * flag on the next turn, bypassing the release percentage gate so
+ * pending marks flip in the same turn the view changes.  Armed by the
+ * fold phase (a block dropped out of this round's fold) and by the
+ * compress/decompress tools and the /dcp command after mutating
+ * blocks.  Never persisted — loss on restart is benign; `cleanupSession`
+ * drops it with the session's other records.
  */
 const pendingViewChangeFlags = new Map<string, boolean>();
 
@@ -137,4 +142,5 @@ export function consumePendingViewChange(sessionId: string): boolean {
 export function _resetContextStateManagerForTesting(): void {
   manager = null;
   pendingViewChangeFlags.clear();
+  _resetRoundViewsForTesting();
 }

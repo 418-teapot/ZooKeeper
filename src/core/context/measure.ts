@@ -14,8 +14,8 @@ import type { HostMessage, TextRegion } from "./lens.js";
 import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./message-parts.js";
 
 // Re-exported so sibling lens-domain modules (e.g. the release phase)
-// consume the placeholder contract without naming the v1-shaped source
-// module.  The estimation here interprets these exact strings.
+// consume the placeholder contract from one module: `message-parts.ts`
+// holds the literals, and the estimation here interprets them.
 export {
   PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
   PRUNED_TOOL_OUTPUT_REPLACEMENT,

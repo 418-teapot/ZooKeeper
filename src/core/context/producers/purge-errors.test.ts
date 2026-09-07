@@ -386,7 +386,7 @@ describe("lens-specific gating semantics", () => {
     });
     assert.equal(rBelow.created, 0);
 
-    // Equality opens the gate (legacy "equal opens" semantics).
+    // Equality opens the gate.
     const at = makeNewState();
     const rAt = runPurgeErrors(at, projectMessages(lens), {
       minMessages: 0,
@@ -441,7 +441,7 @@ describe("lens-specific gating semantics", () => {
     assert.equal(state.marks.size, 0);
   });
 
-  it("no default protectedTools (legacy purge-errors had none)", () => {
+  it("has no default protectedTools list", () => {
     const state = makeNewState();
     const lens = [lensMsg([errCall("question")])];
     const result = runPurgeErrors(state, projectMessages(lens), {
@@ -594,7 +594,7 @@ describe("lens-specific skip and mark semantics", () => {
     );
   });
 
-  it("uses the legacy placeholder constant verbatim", () => {
+  it("pins the error-input placeholder literal", () => {
     assert.equal(
       PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
       "[Input removed due to failed tool call - information no longer relevant]",

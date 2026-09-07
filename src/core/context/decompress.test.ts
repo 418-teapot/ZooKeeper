@@ -1,23 +1,24 @@
 /**
- * Tests for the decompress core (`decompress.ts`) over the new Block
- * model.
+ * Tests for the decompress core (`decompress.ts`).
  *
- * Covers the C3 checklist class: loud Chinese errors for invalid `b<N>`
- * formats and nonexistent blocks (the not-found error lists the
- * currently available block numbers), restore vs recall resolution with
- * idempotent recall (C3-01), the restore context-limit gate three states
- * — allowed at/below the threshold (boundary passes), rejected above
- * with delta + fill-rate guidance, skipped when the model limit or the
- * fill ceiling is unset/zero (C3-05) — applyDecompress semantics (active
- * flip, restore data accounting, missing-block and duplicate-restore
- * rejection, no transcript mutation, next-round view expansion via
- * fold), and recall summary truncation (C3-04).
+ * Covers: loud Chinese errors for invalid `b<N>` formats and
+ * nonexistent blocks (the not-found error lists the currently available
+ * block numbers), restore vs recall resolution with idempotent recall,
+ * the restore context-limit gate three states — allowed at/below the
+ * threshold (boundary passes), rejected above with delta + fill-rate
+ * guidance, skipped when the model limit or the fill ceiling is
+ * unset/zero — applyDecompress semantics (active flip, restore data
+ * accounting, missing-block and duplicate-restore rejection, no
+ * transcript mutation, next-round view expansion via fold), the stale
+ * status (record kept readable, restore refused with guidance, recall
+ * labelled), and recall summary truncation.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   applyDecompress,
   evaluateGate,
+  recallOutput,
   resolveTarget,
   truncateRecallSummary,
 } from "./decompress.js";
@@ -25,7 +26,12 @@ import { fold } from "./fold.js";
 import type { HostMessage } from "./lens.js";
 import { makeAssistantMsg, makeMsg, projectMessages } from "./lens-testkit.js";
 import { computeSpanHash } from "./spanhash.js";
-import { type Block, RECALL_MAX_CHARS, type SessionState } from "./state.js";
+import {
+  type Block,
+  hasActiveOverlap,
+  RECALL_MAX_CHARS,
+  type SessionState,
+} from "./state.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -61,7 +67,7 @@ function makeBlock(
     end,
     summary: `summary [${start}, ${end})`,
     spanHash: computeSpanHash(projectMessages(history), start, end),
-    active: true,
+    status: "active",
     compressedTokens: 1000,
     summaryTokens: 60,
     createdAt: 1000,
@@ -124,20 +130,20 @@ describe("resolveTarget", () => {
     assert.equal(result.block, state.blocks.get(3));
   });
 
-  it("resolves an inactive block to kind recall (the restore is refused)", () => {
+  it("resolves a consumed block to kind recall (the restore is refused)", () => {
     const history = makeTranscript(6);
     const state = makeState();
-    state.blocks.set(1, makeBlock(history, 1, 4, { active: false }));
+    state.blocks.set(1, makeBlock(history, 1, 4, { status: "consumed" }));
     const result = resolveTarget(state, "b1");
     assert.equal(result.kind, "recall");
     assert.equal(result.blockId, 1);
     assert.equal(result.block, state.blocks.get(1));
   });
 
-  it("recall is idempotent — repeated resolution of the same inactive block never errors", () => {
+  it("recall is idempotent — repeated resolution of the same terminal block never errors", () => {
     const history = makeTranscript(6);
     const state = makeState();
-    state.blocks.set(1, makeBlock(history, 1, 4, { active: false }));
+    state.blocks.set(1, makeBlock(history, 1, 4, { status: "consumed" }));
     const r1 = resolveTarget(state, "b1");
     const r2 = resolveTarget(state, "b1");
     assert.equal(r1.kind, "recall");
@@ -230,7 +236,7 @@ describe("evaluateGate", () => {
 // ===========================================================================
 
 describe("applyDecompress", () => {
-  it("flips an active block inactive and returns the restore data accounting", () => {
+  it("moves an active block to consumed and returns the restore data accounting", () => {
     const history = makeTranscript(8);
     const state = makeState();
     state.blocks.set(
@@ -243,7 +249,7 @@ describe("applyDecompress", () => {
     );
     const result = applyDecompress(state, 1, history);
 
-    assert.equal(state.blocks.get(1)?.active, false);
+    assert.equal(state.blocks.get(1)?.status, "consumed");
     assert.deepEqual(result, {
       blockId: 1,
       summary: "该段的摘要正文",
@@ -267,14 +273,14 @@ describe("applyDecompress", () => {
       end: 5,
       spanHash: "deadbeef",
       summary: "truncated span",
-      active: true,
+      status: "active",
       compressedTokens: 1000,
       summaryTokens: 60,
       createdAt: 1000,
     });
     const result = applyDecompress(state, 1, history);
     assert.equal(result.messageCount, 2);
-    assert.equal(state.blocks.get(1)?.active, false);
+    assert.equal(state.blocks.get(1)?.status, "consumed");
   });
 
   it("throws the loud not-found error for a missing block id", () => {
@@ -288,10 +294,10 @@ describe("applyDecompress", () => {
     );
   });
 
-  it("refuses a duplicate restore of an already-inactive block", () => {
+  it("refuses a duplicate restore of an already-consumed block", () => {
     const history = makeTranscript(6);
     const state = makeState();
-    state.blocks.set(1, makeBlock(history, 1, 4, { active: false }));
+    state.blocks.set(1, makeBlock(history, 1, 4, { status: "consumed" }));
     assert.throws(
       () => applyDecompress(state, 1, history),
       (err: unknown) => err instanceof Error && /已失活/.test(err.message),
@@ -330,6 +336,127 @@ describe("applyDecompress", () => {
       { type: "original", ordinal: 4 },
       { type: "original", ordinal: 5 },
     ]);
+  });
+});
+
+// ===========================================================================
+// Stale blocks — readable but no longer restorable
+// ===========================================================================
+
+describe("stale blocks", () => {
+  it("stay addressable and resolve to recall", () => {
+    const history = makeTranscript(6);
+    const state = makeState();
+    state.blocks.set(1, makeBlock(history, 1, 4, { status: "stale" }));
+
+    const result = resolveTarget(state, "b1");
+
+    assert.equal(result.kind, "recall");
+    assert.equal(result.blockId, 1);
+  });
+
+  it("keep their title and summary readable after invalidation", () => {
+    const history = makeTranscript(6);
+    const state = makeState();
+    state.blocks.set(
+      1,
+      makeBlock(history, 1, 4, {
+        status: "stale",
+        title: "失效段主题",
+        summary: "要点一：区间已不再指向原内容。",
+      }),
+    );
+
+    const result = resolveTarget(state, "b1");
+
+    assert.equal(result.block.title, "失效段主题");
+    assert.equal(result.block.summary, "要点一：区间已不再指向原内容。");
+  });
+
+  it("are refused a restore with guidance that the original is gone", () => {
+    const history = makeTranscript(6);
+    const state = makeState();
+    state.blocks.set(1, makeBlock(history, 1, 4, { status: "stale" }));
+
+    assert.throws(
+      () => applyDecompress(state, 1, history),
+      (err: unknown) =>
+        err instanceof Error &&
+        /已失效，无法恢复/.test(err.message) &&
+        /recall/.test(err.message),
+    );
+    // The refusal changes nothing — the record keeps its status.
+    assert.equal(state.blocks.get(1)?.status, "stale");
+  });
+
+  it("are listed by the not-found error like any other retained block", () => {
+    const history = makeTranscript(6);
+    const state = makeState();
+    state.blocks.set(1, makeBlock(history, 1, 4, { status: "stale" }));
+
+    assert.throws(
+      () => resolveTarget(state, "b9"),
+      (err: unknown) =>
+        err instanceof Error && /共有 1 个压缩块：b1/.test(err.message),
+    );
+  });
+
+  it("are still counted as covering nothing in the overlap check", () => {
+    const history = makeTranscript(6);
+    const state = makeState();
+    state.blocks.set(1, makeBlock(history, 1, 4, { status: "stale" }));
+
+    // A stale block folds no interval, so a new block may cover it.
+    assert.equal(hasActiveOverlap(state, 2, 3), false);
+  });
+});
+
+// ===========================================================================
+// recallOutput
+// ===========================================================================
+
+describe("recallOutput", () => {
+  it("returns the plain summary body for a consumed block", () => {
+    const history = makeTranscript(6);
+    const block = makeBlock(history, 1, 4, {
+      status: "consumed",
+      summary: "普通摘要正文",
+    });
+
+    assert.equal(recallOutput(block), "普通摘要正文");
+  });
+
+  it("returns the plain summary body for an active block", () => {
+    const history = makeTranscript(6);
+    const block = makeBlock(history, 1, 4, { summary: "活跃摘要正文" });
+
+    assert.equal(recallOutput(block), "活跃摘要正文");
+  });
+
+  it("labels a stale recall as all that survives of the interval", () => {
+    const history = makeTranscript(6);
+    const block = makeBlock(history, 1, 4, {
+      status: "stale",
+      summary: "仅存的摘要",
+    });
+
+    const output = recallOutput(block);
+
+    assert.ok(output.startsWith("[压缩块已失效"));
+    assert.ok(output.includes("区间 [1, 4)"));
+    assert.ok(output.endsWith("仅存的摘要"));
+  });
+
+  it("truncates an over-cap stale summary under the note", () => {
+    const history = makeTranscript(6);
+    const block = makeBlock(history, 1, 4, {
+      status: "stale",
+      summary: "z".repeat(RECALL_MAX_CHARS + 10),
+    });
+
+    const output = recallOutput(block);
+
+    assert.ok(output.includes("[摘要过长已截断：省略 10 字符]"));
   });
 });
 

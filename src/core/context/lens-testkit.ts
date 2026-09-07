@@ -228,8 +228,8 @@ export function makeMsg(
  * Build an assistant tool-call message.
  *
  * The result carries exactly two regions in order — tool-input then
- * tool-output — and the builder records an invocation pairing them,
- * mirroring the v1 adapter's same-part adjacency.
+ * tool-output — and the builder records an invocation pairing them, the
+ * shape a host projects when a call and its result live in one message.
  *
  * @param name - The tool name.
  * @param input - The tool input arguments text.

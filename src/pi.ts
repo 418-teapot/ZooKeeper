@@ -128,6 +128,7 @@ import {
 } from "./core/config-parse.js";
 import type { AgentModeMap, ModeProfile } from "./core/config-types.js";
 import type { HostAdapter } from "./core/context/lens.js";
+import { clearRoundView } from "./core/context/round-view.js";
 import {
   isSkillAllowed,
   parseSkillPermissions,
@@ -1333,6 +1334,17 @@ export function buildPiHandlers(
       // manager / history leaves the registry untouched (fresh session).
       const sessionId = contextHolder.current?.sessionManager?.getSessionId();
       const sessionManager = contextHolder.current?.sessionManager;
+      // Drop this session's cached round view.  pi never fires a session
+      // deleted event, so `cleanupSession` (the only other caller of
+      // `clearRoundView`) is never reached in this process: without this
+      // call every session ever opened leaves its frozen snapshot
+      // resident.  The record is runtime-only and every pruning round
+      // republishes it, so clearing at startup / reload / resume is safe.
+      // Deliberately NOT `cleanupSession` — that also deletes the
+      // persisted state file, which must survive a resume.
+      if (typeof sessionId === "string" && sessionId.length > 0) {
+        clearRoundView(sessionId);
+      }
       if (
         typeof sessionId === "string" &&
         sessionId.length > 0 &&
@@ -1424,6 +1436,11 @@ export function buildPiHandlers(
  * (e.g. `/dcp` and the config-derived `/<agent>` primary-switch commands)
  * are registered with pi and the `zoo-notice` entry renderer is wired so
  * appended notification cards draw in the TUI transcript.
+ *
+ * Session lifecycle: pi fires no session-deletion event, so the replayed
+ * `session_start` (startup / reload / resume) also drops the session's
+ * cached round view — the runtime-only snapshot every transform
+ * republishes — so a long-lived pi process reclaims it.
  *
  * Strategy for `before_agent_start`:
  *   **Prepend** the resolved identity's prompt rather than replacing the

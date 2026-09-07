@@ -8,8 +8,8 @@
  *    lens message fields, and edge shapes (empty parts, null parts,
  *    step-start, parallel tools, non-string text) are covered.
  * 2. Parity — real v1 entries are mapped through `messagesOf()` and fed to
- *    the new estimators; the results must equal the legacy estimators
- *    applied to the same entries, per message and per transcript.
+ *    the lens-based estimators; the results must equal the v1-shape
+ *    estimators applied to the same entries, per message and per transcript.
  * 3. Write-back — the adapter's `WritableRegion` regions mutate the
  *    v1 object in place: `part.text`, `state.output`, and
  *    `state.input` (JSON.parse round-trip for object inputs;
@@ -462,10 +462,11 @@ describe("parity: per-message heuristic vs legacy", () => {
   }
 
   it("ignored message maps to hidden and estimates 0", () => {
-    // The legacy per-message estimator does NOT skip ignored parts, so the
-    // direct per-message comparison cannot hold for ignored messages; the
-    // hidden-skip semantic is pinned whole-session via computeContextReport
-    // below and per-message here as the new-core 0 estimate.
+    // The v1-shape per-message estimator does NOT skip ignored parts, so
+    // the direct per-message comparison cannot hold for ignored messages;
+    // the hidden-skip semantic is pinned whole-session via
+    // computeContextReport below and per-message here as the lens-based 0
+    // estimate.
     const entryToMap = entry(
       "user",
       [textPart("ignored text")],
@@ -608,7 +609,7 @@ describe("region set() write-back", () => {
   });
 
   it("tool-input region set rewrites a string input verbatim", () => {
-    // Placeholder parity with the legacy prune string-input path.
+    // Mirrors the prune path's placeholder handling for string inputs.
     const entryToMap = entry("assistant", [
       toolPart("bash", "a command", "out"),
     ]);

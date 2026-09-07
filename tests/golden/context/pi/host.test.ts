@@ -129,7 +129,7 @@ describe("pi host — landPlan", () => {
     expect(block?.end).toBe(3);
     expect(block?.title).toBe("smoke");
     expect(block?.summary).toBe("early segment.");
-    expect(block?.active).toBe(true);
+    expect(block?.status).toBe("active");
     expect(block?.spanHash.length).toBeGreaterThan(0);
   });
 

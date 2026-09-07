@@ -19,8 +19,8 @@ import type { SessionClient } from "../../../../src/core/client/session.js";
 import type { ContextPruningConfig } from "../../../../src/core/config-types.js";
 import { computeSpanHash } from "../../../../src/core/context/spanhash.js";
 import {
+  allocateBlockId,
   type Block,
-  nextBlockId,
   type SessionState,
 } from "../../../../src/core/context/state.js";
 import { contextPruningTransformHandler } from "../../../../src/hooks/context-pruning/hook.js";
@@ -164,14 +164,14 @@ function landPlan(
   } catch {
     return;
   }
-  const id = nextBlockId(state.blocks);
+  const id = allocateBlockId(state);
   const block: Block = {
     start: startOrdinal,
     end,
     title: plan.title,
     summary: plan.summary,
     spanHash,
-    active: true,
+    status: "active",
     compressedTokens: plan.compressedTokens,
     summaryTokens: plan.summaryTokens,
     createdAt: Date.now(),

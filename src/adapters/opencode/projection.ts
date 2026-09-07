@@ -1,8 +1,8 @@
 /**
- * New-core state → v1 projection helpers.
+ * Core state → v1 projection helpers.
  *
  * The `/dcp` command and the TUI sidebar both consume v1-shaped inputs
- * (message arrays with `{info, parts}` entries) while holding the new
+ * (message arrays with `{info, parts}` entries) while holding the
  * core's session state and `ViewItem` fold output.  These two
  * projections bridge the shapes:
  *
@@ -13,7 +13,7 @@
  *   tool part's call id, or `undefined` when no effective mark exists.
  *
  * Both live in the v1 adapter layer because they know the v1 message
- * shape AND the new core's state/view shapes; the consumers stay
+ * shape AND the core's state/view shapes; the consumers stay
  * framework-agnostic and share this single copy.
  *
  * @module
@@ -30,7 +30,10 @@ import { type ContextMessageEntry, getCallId } from "./types.js";
  * A `ViewItem` summary carries a `BlockSpan` without its map key; the
  * id is the state block-map key (`bN`).  A surviving block always
  * matches by interval; a defensively merged summary item references its
- * first-appearing block.  Returns undefined when nothing matches.
+ * first-appearing block.  Only active blocks are candidates — a block
+ * that stopped folding keeps its record and may share an interval with a
+ * later block, so the id must address the one producing the summary.
+ * Returns undefined when nothing matches.
  *
  * @param state - The session state (blocks map).
  * @param start - First covered ordinal of the summary item.
@@ -43,6 +46,7 @@ export function blockIdOf(
   end: number,
 ): number | undefined {
   for (const [id, block] of state.blocks) {
+    if (block.status !== "active") continue;
     if (block.start === start && block.end === end) return id;
   }
   return undefined;
@@ -90,8 +94,8 @@ export function foldedV1Messages(
  * Map every effective mark back to its v1 tool part's call id.
  *
  * The report's pruned-tool accounting keys off v1 call ids
- * (`computeContextReport`'s `prunedCallIDs`), while new-core marks are
- * keyed by `(ordinal, regionIndex)`.  The lens region layout is
+ * (`computeContextReport`'s `prunedCallIDs`), while the core's marks
+ * are keyed by `(ordinal, regionIndex)`.  The lens region layout is
  * deterministic per part — a tool part with state contributes exactly a
  * tool-input then a tool-output region, a text part contributes one
  * content region — so each effective mark's region index resolves back

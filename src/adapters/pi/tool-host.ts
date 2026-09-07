@@ -3,11 +3,16 @@
  *
  * Implements the host-free `ToolHost` contract against pi's
  * `ExtensionContext`: the session id comes from the tool execution context's
- * `sessionManager`, history is read from the session manager's context
- * entries, notifications are best-effort via pi's in-session
+ * `sessionManager`, notifications are best-effort via pi's in-session
  * `appendEntry` channel (a `zoo-notice` custom entry — persistent, never
  * part of the LLM context), and transient toasts go through the latest
  * context's `ui.notify` (silently dropped when no UI surface exists).
+ *
+ * No history read is offered: pi's `buildContextEntries()` channel is not
+ * the same ordinal space the `context` event projects (compaction rewrites
+ * it), so this host deliberately leaves the optional `fetchHistory`
+ * fallback unwired.  The compress / decompress tools address the round view
+ * published by the context transform instead.
  *
  * pi sessions are single-session, so the host keeps a mutable reference to
  * the latest `ExtensionContext` supplied by the pi event handlers; tool
@@ -19,21 +24,24 @@
  */
 
 import type { ToastPayload, ToolHost } from "../../core/client/tool-host.js";
-import type { Projection } from "../../core/context/lens.js";
 import { log } from "../../utils/logger.js";
-import { history } from "./history.js";
-import type { PiAgentMessage } from "./types.js";
 
 /**
- * Minimal duck-type shape of pi's `ExtensionContext` that the tool host needs.
+ * Minimal duck-type shape of pi's `ExtensionContext` that the latest-context
+ * holder keeps.
  *
  * No import from the pi package — these structural types are the only
- * contract the host relies on.
+ * contract the holder's readers rely on.  `sessionManager.getSessionId`
+ * serves session-id resolution, `buildContextEntries` is read by the pi
+ * entry point's session-start subagent-run rescan (never by this host: it
+ * offers no history read for the compression tools), and `ui` serves the
+ * toast port.
  */
 export interface PiToolHostContext {
   /** Session manager (read-only). */
   sessionManager?: {
     getSessionId(): string;
+    /** Read by the pi entry point's run-registry rescan, not by the host. */
     buildContextEntries?(): unknown[];
   };
   /** UI surface (widget updates from the pi entry point). */
@@ -67,8 +75,8 @@ export interface PiToolHostContext {
  * The entry persists as a `CustomEntry` (session-visible only when a
  * renderer is registered for `customType`) and — unlike
  * `CustomMessageEntry` — is ignored by `buildSessionContext`, so it never
- * reaches the LLM context.  This is the pi-native equivalent of v1's
- * `ignored` parts.
+ * reaches the LLM context.  This is the pi-native equivalent of
+ * OpenCode's `ignored` parts.
  */
 export type PiAppendEntry = (customType: string, data?: unknown) => void;
 
@@ -95,27 +103,11 @@ export interface PiContextHolder {
 }
 
 /**
- * Test whether an unknown session entry message looks like a pi LLM message.
- *
- * Custom agent message roles are filtered out because the pi adapter only
- * understands `user`, `assistant`, and `toolResult`.
- *
- * @param value - The unknown message value.
- * @returns True when the value can be projected through the pi lens.
- */
-function isPiAgentMessage(value: unknown): value is PiAgentMessage {
-  if (value === null || typeof value !== "object") return false;
-  const role = (value as Record<string, unknown>).role;
-  return role === "user" || role === "assistant" || role === "toolResult";
-}
-
-/**
  * Create the pi tool host backed by a mutable context holder.
  *
  * The holder is updated by the pi extension entry point
  * (`src/pi.ts`) as each event handler fires.  All operations are
- * best-effort: fetch failures throw with Chinese guidance (so the model can
- * retry), while notification failures are swallowed and logged.
+ * best-effort: notification failures are swallowed and logged.
  *
  * @param contextHolder - Mutable reference to the latest pi context.
  * @param appendEntry - Optional pi `appendEntry` binding (extension API)
@@ -141,66 +133,6 @@ export function createPiToolHost(
         sessionManager?: { getSessionId(): string };
       };
       return ctx.sessionManager?.getSessionId();
-    },
-
-    /**
-     * Fetch the session's LLM-context entries and project them to lens
-     * messages.
-     *
-     * Uses `sessionManager.buildContextEntries()` so compaction summaries and
-     * branch state are already applied.  Only message entries with a known
-     * LLM role are kept; custom entry types are ignored.
-     *
-     * @param sessionId - The session identifier (used for logging only; pi
-     *   sessions are single-session).
-     * @returns The projected host-agnostic transcript.
-     * @throws A loud Chinese error when the session manager is unavailable
-     *   or returns no entries.
-     */
-    async fetchHistory(sessionId: string): Promise<Projection> {
-      const ctx = contextHolder.current;
-      const sessionManager = ctx?.sessionManager;
-      if (!sessionManager?.buildContextEntries) {
-        throw new Error("无法获取会话消息：会话管理器不可用");
-      }
-
-      let entries: unknown[];
-      try {
-        entries = sessionManager.buildContextEntries();
-      } catch (err) {
-        log(
-          "tool-host",
-          "fetch_messages_failed",
-          sessionId,
-          undefined,
-          "error",
-          { error: String(err) },
-        );
-        throw new Error(
-          `无法获取会话消息：${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-
-      if (!Array.isArray(entries)) {
-        throw new Error("会话消息格式异常：期望数组");
-      }
-
-      const messages: PiAgentMessage[] = [];
-      for (const entry of entries) {
-        if (
-          entry === null ||
-          typeof entry !== "object" ||
-          (entry as Record<string, unknown>).type !== "message"
-        ) {
-          continue;
-        }
-        const message = (entry as Record<string, unknown>).message;
-        if (isPiAgentMessage(message)) {
-          messages.push(message);
-        }
-      }
-
-      return history(messages);
     },
 
     /**

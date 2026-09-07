@@ -12,8 +12,12 @@
  * The schema carries a version field; an incompatible version (the old
  * layout or any future one) loads as empty and is discarded —
  * compression state is volatile by design and the transcript itself
- * survives, so restarting from scratch is always safe.  There is no refs
- * snapshot field; refs are derived per-view and never persisted.
+ * survives, so restarting from scratch is always safe.  Additions within
+ * the current version (block status, the next-block-id field) are read
+ * tolerantly: a file written before the field existed migrates — the
+ * legacy `active` flag becomes a status, the next id derives from the
+ * highest stored id.  There is no refs snapshot field; refs are derived
+ * per-view and never persisted.
  *
  * @module
  */
@@ -30,6 +34,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   type Block,
+  type BlockStatus,
+  deriveNextBlockId,
   type Mark,
   markKey,
   type Nudges,
@@ -47,6 +53,9 @@ const SAFE_SESSION_ID_RE = /^[a-zA-Z0-9_-]+$/;
 
 /**
  * Persisted block shape — mirrors `Block`, keyed by block id string.
+ *
+ * Loads read raw JSON records and validate field by field (see
+ * `parsePersistedBlock`), so this type describes what is written.
  */
 interface PersistedBlock {
   start: number;
@@ -54,7 +63,7 @@ interface PersistedBlock {
   title?: string;
   summary: string;
   spanHash: string;
-  active: boolean;
+  status: BlockStatus;
   compressedTokens: number;
   summaryTokens: number;
   createdAt: number;
@@ -82,6 +91,8 @@ interface PersistedState {
   blocks: Record<string, PersistedBlock>;
   marks: Record<string, PersistedMark>;
   nudges?: Nudges;
+  /** Id to hand out to the next created block (see `allocateBlockId`). */
+  nextBlockId?: number;
   lastUpdated: string;
 }
 
@@ -102,6 +113,35 @@ export interface StateStore {
   delete(sessionId: string): void;
 }
 
+/** Block statuses a file may declare. */
+const BLOCK_STATUSES: readonly string[] = ["active", "consumed", "stale"];
+
+/**
+ * Read a persisted block's lifecycle status.
+ *
+ * Prefers the `status` field; a file written before the status existed
+ * declares `active: boolean`, which maps to the statuses that shape
+ * could express — folding to `"active"`, not folding to `"consumed"`
+ * (a persisted non-folding block came from a restore or a wider block
+ * swallowing it, the two ways a block stopped folding while the file
+ * was written).
+ *
+ * @param value - The raw block record.
+ * @returns The status, or null when neither field is well-formed.
+ */
+function parseBlockStatus(value: Record<string, unknown>): BlockStatus | null {
+  const status = value.status;
+  if (status !== undefined) {
+    return typeof status === "string" && BLOCK_STATUSES.includes(status)
+      ? (status as BlockStatus)
+      : null;
+  }
+  if (typeof value.active === "boolean") {
+    return value.active ? "active" : "consumed";
+  }
+  return null;
+}
+
 /** Guard: value is a plain record, not null and not an array. */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -117,35 +157,37 @@ function isNonNegInt(value: unknown): value is number {
  *
  * Unknown fields are ignored (forward compatibility); any known field
  * with a wrong type or an empty/inverted span invalidates the entry.
+ * The lifecycle status is migrated from the legacy `active` flag when
+ * the file predates it.
  *
  * @param value - The raw block entry.
  * @returns The validated block, or null.
  */
-function parsePersistedBlock(value: unknown): PersistedBlock | null {
+function parsePersistedBlock(value: unknown): Block | null {
   if (!isRecord(value)) return null;
   const start = value.start;
   const end = value.end;
   const title = value.title;
   const summary = value.summary;
   const spanHash = value.spanHash;
-  const active = value.active;
+  const status = parseBlockStatus(value);
   const compressedTokens = value.compressedTokens;
   const summaryTokens = value.summaryTokens;
   const createdAt = value.createdAt;
   if (!isNonNegInt(start) || !isNonNegInt(end) || start >= end) return null;
   if (typeof summary !== "string") return null;
   if (typeof spanHash !== "string") return null;
-  if (typeof active !== "boolean") return null;
+  if (status === null) return null;
   if (!isNonNegInt(compressedTokens) || !isNonNegInt(summaryTokens)) {
     return null;
   }
   if (!isNonNegInt(createdAt)) return null;
-  const block: PersistedBlock = {
+  const block: Block = {
     start,
     end,
     summary,
     spanHash,
-    active,
+    status,
     compressedTokens,
     summaryTokens,
     createdAt,
@@ -202,16 +244,34 @@ function parsePersistedMark(value: unknown): PersistedMark | null {
  * auxiliary and re-baselines on the next evaluation).  `0` is a valid
  * watermark; negative or fractional values are not.
  *
+ * The reclaim credit (`pendingReclaimTokens` + `reclaimMeasurement`) is
+ * pair bookkeeping — the discount only means anything anchored to the
+ * measurement it discounts — so both fields must be present and
+ * well-formed to load.  A file carrying only one half (or a malformed
+ * value) loses the credit, which is exactly the state a credit reaches
+ * once a newer measurement digests it; the watermark survives.
+ * Files written before the credit existed simply carry neither field
+ * and load unchanged.
+ *
  * @param value - The raw `nudges` field.
  * @returns The validated snapshot, or undefined.
  */
 function parseNudges(value: unknown): Nudges | undefined {
   if (value === undefined) return undefined;
   if (!isRecord(value)) return undefined;
+  const nudges: Nudges = {};
   const last = value.lastNudgeTokens;
-  if (last === undefined) return {};
-  if (!isNonNegInt(last)) return undefined;
-  return { lastNudgeTokens: last };
+  if (last !== undefined) {
+    if (!isNonNegInt(last)) return undefined;
+    nudges.lastNudgeTokens = last;
+  }
+  const credit = value.pendingReclaimTokens;
+  const anchor = value.reclaimMeasurement;
+  if (isNonNegInt(credit) && isNonNegInt(anchor)) {
+    nudges.pendingReclaimTokens = credit;
+    nudges.reclaimMeasurement = anchor;
+  }
+  return nudges;
 }
 
 /**
@@ -262,6 +322,11 @@ export function createStateStore(storageDir?: string): StateStore {
       }
 
       const state: SessionState = { blocks, marks };
+      // The next-id field persists so ids are never re-issued; a file
+      // written before it existed migrates to the id following the
+      // highest one stored.
+      const next = parsed.nextBlockId;
+      state.nextBlockId = isNonNegInt(next) ? next : deriveNextBlockId(blocks);
       const nudges = parseNudges(parsed.nudges);
       if (nudges !== undefined) state.nudges = nudges;
       return state;
@@ -283,7 +348,7 @@ export function createStateStore(storageDir?: string): StateStore {
           end: block.end,
           summary: block.summary,
           spanHash: block.spanHash,
-          active: block.active,
+          status: block.status,
           compressedTokens: block.compressedTokens,
           summaryTokens: block.summaryTokens,
           createdAt: block.createdAt,
@@ -319,6 +384,9 @@ export function createStateStore(storageDir?: string): StateStore {
         lastUpdated: new Date().toISOString(),
       };
       if (state.nudges !== undefined) data.nudges = state.nudges;
+      if (state.nextBlockId !== undefined) {
+        data.nextBlockId = state.nextBlockId;
+      }
 
       const filePath = join(dir, `${sessionId}.json`);
       const tmpPath = join(dir, `.${sessionId}.json.tmp`);

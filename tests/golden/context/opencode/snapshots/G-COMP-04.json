@@ -2181,7 +2181,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "已有",
             "coveredMessages": 3,
             "compressedTokens": 84,
@@ -2533,7 +2533,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "已有",
             "coveredMessages": 3,
             "compressedTokens": 84,
@@ -2883,7 +2883,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "已有",
             "coveredMessages": 3,
             "compressedTokens": 84,
@@ -3160,8 +3160,16 @@
       "state": {
         "blocks": [
           {
+            "blockId": 1,
+            "status": "consumed",
+            "title": "已有",
+            "coveredMessages": 3,
+            "compressedTokens": 84,
+            "summaryTokens": 12
+          },
+          {
             "blockId": 2,
-            "active": true,
+            "status": "active",
             "title": "更宽",
             "coveredMessages": 9,
             "compressedTokens": 168,
@@ -3440,8 +3448,16 @@
       "state": {
         "blocks": [
           {
+            "blockId": 1,
+            "status": "consumed",
+            "title": "已有",
+            "coveredMessages": 3,
+            "compressedTokens": 84,
+            "summaryTokens": 12
+          },
+          {
             "blockId": 2,
-            "active": true,
+            "status": "active",
             "title": "更宽",
             "coveredMessages": 9,
             "compressedTokens": 168,
@@ -3718,8 +3734,16 @@
       "state": {
         "blocks": [
           {
+            "blockId": 1,
+            "status": "consumed",
+            "title": "已有",
+            "coveredMessages": 3,
+            "compressedTokens": 84,
+            "summaryTokens": 12
+          },
+          {
             "blockId": 2,
-            "active": true,
+            "status": "active",
             "title": "更宽",
             "coveredMessages": 9,
             "compressedTokens": 168,
@@ -3996,8 +4020,16 @@
       "state": {
         "blocks": [
           {
+            "blockId": 1,
+            "status": "consumed",
+            "title": "已有",
+            "coveredMessages": 3,
+            "compressedTokens": 84,
+            "summaryTokens": 12
+          },
+          {
             "blockId": 2,
-            "active": true,
+            "status": "active",
             "title": "更宽",
             "coveredMessages": 9,
             "compressedTokens": 168,

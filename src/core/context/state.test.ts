@@ -1,14 +1,15 @@
 /**
- * Tests for the session state layer (`state.ts`) and persistence v2
- * (`store.ts`).
+ * Tests for the session state layer (`state.ts`) and persistence
+ * (`store.ts`, schema version 2).
  *
- * Covers the spec's Decision 1/5 field contracts and R5 cleanup rules:
+ * Covers the block and mark field contracts and the cleanup rules:
  * persistence round-trip and restart survival, defensive load (corrupt /
  * missing / old-schema files recover to an empty state), the
  * `clearConsumedBlockRange` pending-mark consumption accounting,
- * `deactivateCovering` + `clearInactiveBlocks` revert semantics, the
- * compile- and runtime guarantee that a `Block` satisfies both the fold
- * view contract (`BlockSpan`) and the span validation contract
+ * `markStale` lifecycle transitions (records
+ * survive, only the status changes), the monotonic block-id allocator,
+ * the compile- and runtime guarantee that a `Block` satisfies both the
+ * fold view contract (`BlockSpan`) and the span validation contract
  * (`HashedSpan`), atomic write (temp file + rename, no residue), and
  * `hasActiveOverlap` interval checking.  Persistence tests run against a
  * per-suite temporary directory injected into the store factory.
@@ -27,14 +28,14 @@ import { after, describe, it } from "node:test";
 import type { BlockSpan } from "./lens.js";
 import type { HashedSpan } from "./spanhash.js";
 import {
+  allocateBlockId,
   type Block,
   clearConsumedBlockRange,
-  clearInactiveBlocks,
-  deactivateCovering,
+  deriveNextBlockId,
   hasActiveOverlap,
   type Mark,
   markKey,
-  nextBlockId,
+  markStale,
   type SessionState,
 } from "./state.js";
 import { createStateStore, SCHEMA_VERSION, type StateStore } from "./store.js";
@@ -55,7 +56,7 @@ function makeBlock(overrides: Partial<Block> = {}): Block {
     end: 3,
     summary: "summary text",
     spanHash: "abcd1234",
-    active: true,
+    status: "active",
     compressedTokens: 100,
     summaryTokens: 20,
     createdAt: 1000,
@@ -91,7 +92,7 @@ describe("persistence round-trip", () => {
     const { store } = scratchStore();
     const state = makeState();
     state.blocks.set(1, makeBlock({ start: 0, end: 3, title: "first block" }));
-    state.blocks.set(2, makeBlock({ start: 5, end: 8, active: false }));
+    state.blocks.set(2, makeBlock({ start: 5, end: 8, status: "consumed" }));
     state.marks.set(
       markKey(3),
       makeMark({
@@ -136,6 +137,24 @@ describe("persistence round-trip", () => {
     assert.deepEqual(loaded.nudges, { lastNudgeTokens: 150000 });
   });
 
+  it("reclaim credit bookkeeping survives a restart", () => {
+    const { store } = scratchStore();
+    const state = makeState();
+    state.nudges = {
+      lastNudgeTokens: 150000,
+      pendingReclaimTokens: 12000,
+      reclaimMeasurement: 160000,
+    };
+    store.save("credit-session", state);
+
+    const loaded = createStateStore(store.dir).load("credit-session");
+    assert.deepEqual(loaded.nudges, {
+      lastNudgeTokens: 150000,
+      pendingReclaimTokens: 12000,
+      reclaimMeasurement: 160000,
+    });
+  });
+
   it("sessions are isolated per file", () => {
     const { store } = scratchStore();
     const a = makeState();
@@ -159,6 +178,121 @@ describe("persistence round-trip", () => {
     const loaded = store.load("absent-session");
     assert.deepEqual(loaded.blocks, new Map());
     assert.deepEqual(loaded.marks, new Map());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 1b. Field migration — files written before status / id counter existed
+// ---------------------------------------------------------------------------
+
+describe("schema migration within the persisted version", () => {
+  /** Write a raw state file shaped like a pre-status v2 write. */
+  function writeLegacyFile(
+    dir: string,
+    sessionId: string,
+    blocks: Record<string, unknown>,
+  ): void {
+    writeFileSync(
+      join(dir, `${sessionId}.json`),
+      JSON.stringify({
+        schema: SCHEMA_VERSION,
+        blocks,
+        marks: {},
+        lastUpdated: "2026-08-01T00:00:00.000Z",
+      }),
+    );
+  }
+
+  const legacyBlock = (extra: Record<string, unknown>) => ({
+    start: 0,
+    end: 3,
+    summary: "legacy summary",
+    spanHash: "abcd1234",
+    compressedTokens: 100,
+    summaryTokens: 20,
+    createdAt: 1000,
+    ...extra,
+  });
+
+  it("legacy active flags migrate to statuses and the load never throws", () => {
+    const { dir, store } = scratchStore();
+    writeLegacyFile(dir, "legacy-flags", {
+      "1": legacyBlock({ active: true }),
+      "2": legacyBlock({ active: false, start: 4, end: 6 }),
+    });
+
+    const loaded = store.load("legacy-flags");
+
+    assert.equal(loaded.blocks.get(1)?.status, "active");
+    assert.equal(loaded.blocks.get(2)?.status, "consumed");
+    // Both records survive the migration.
+    assert.equal(loaded.blocks.size, 2);
+  });
+
+  it("a file without the id counter migrates to one past the highest id", () => {
+    const { dir, store } = scratchStore();
+    writeLegacyFile(dir, "legacy-counter", {
+      "7": legacyBlock({ active: true, start: 4, end: 6 }),
+      "3": legacyBlock({ active: false }),
+    });
+
+    const loaded = store.load("legacy-counter");
+
+    assert.equal(loaded.nextBlockId, 8);
+    // The migrated counter keeps the no-reuse rule for the next block.
+    assert.equal(allocateBlockId(loaded), 8);
+  });
+
+  it("an empty legacy file migrates the counter to 1", () => {
+    const { dir, store } = scratchStore();
+    writeLegacyFile(dir, "legacy-empty", {});
+
+    assert.equal(store.load("legacy-empty").nextBlockId, 1);
+  });
+
+  it("a hand-edited counter that is not a number migrates instead of failing", () => {
+    const { dir, store } = scratchStore();
+    writeLegacyFile(dir, "bad-counter", {
+      "4": legacyBlock({ active: true, start: 2, end: 5 }),
+    });
+    const filePath = join(dir, "bad-counter.json");
+    const data = JSON.parse(readFileSync(filePath, "utf8"));
+    data.nextBlockId = "not-a-number";
+    writeFileSync(filePath, JSON.stringify(data));
+
+    const loaded = store.load("bad-counter");
+
+    assert.equal(loaded.blocks.size, 1);
+    assert.equal(loaded.nextBlockId, 5);
+  });
+
+  it("statuses and the counter round-trip through a save", () => {
+    const { dir, store } = scratchStore();
+    const state = makeState();
+    const id = allocateBlockId(state);
+    state.blocks.set(id, makeBlock());
+    state.blocks.set(allocateBlockId(state), makeBlock({ status: "stale" }));
+    store.save("modern", state);
+
+    const parsed = JSON.parse(readFileSync(join(dir, "modern.json"), "utf8"));
+    assert.equal(parsed.blocks["1"].status, "active");
+    assert.equal(parsed.blocks["2"].status, "stale");
+    assert.equal(parsed.blocks["1"].active, undefined);
+    assert.equal(parsed.nextBlockId, 3);
+
+    const loaded = createStateStore(dir).load("modern");
+    assert.equal(loaded.blocks.get(2)?.status, "stale");
+    assert.equal(loaded.nextBlockId, 3);
+    assert.equal(allocateBlockId(loaded), 3);
+  });
+
+  it("an unknown status string invalidates the entry like any bad field", () => {
+    const { dir, store } = scratchStore();
+    writeLegacyFile(dir, "bad-status", {
+      "1": legacyBlock({ status: "exploded" }),
+    });
+
+    assert.equal(store.load("bad-status").blocks.size, 0);
   });
 });
 
@@ -260,6 +394,58 @@ describe("defensive load", () => {
     assert.equal(loaded.blocks.size, 1);
     assert.equal(loaded.nudges, undefined);
   });
+
+  it("a file predating the reclaim fields loads the watermark alone", () => {
+    const { dir, store } = scratchStore();
+    const state = makeState();
+    store.save("nudge-legacy", state);
+    const filePath = join(dir, "nudge-legacy.json");
+    const data = JSON.parse(readFileSync(filePath, "utf8"));
+    data.nudges = { lastNudgeTokens: 140000 };
+    writeFileSync(filePath, JSON.stringify(data));
+
+    const loaded = store.load("nudge-legacy");
+    assert.deepEqual(loaded.nudges, { lastNudgeTokens: 140000 });
+    assert.equal(
+      Object.hasOwn(loaded.nudges ?? {}, "pendingReclaimTokens"),
+      false,
+    );
+    assert.equal(
+      Object.hasOwn(loaded.nudges ?? {}, "reclaimMeasurement"),
+      false,
+    );
+  });
+
+  it("a half-recorded reclaim credit is dropped, the watermark kept", () => {
+    // The credit and its anchor are pair bookkeeping: a file carrying
+    // only one half (or a malformed value) loads as if the credit had
+    // already been digested by the next measurement.
+    const { dir, store } = scratchStore();
+    const state = makeState();
+    store.save("nudge-half", state);
+    const filePath = join(dir, "nudge-half.json");
+    const data = JSON.parse(readFileSync(filePath, "utf8"));
+    const variants: Record<string, unknown>[] = [
+      { lastNudgeTokens: 140000, pendingReclaimTokens: 5000 },
+      { lastNudgeTokens: 140000, reclaimMeasurement: 150000 },
+      {
+        lastNudgeTokens: 140000,
+        pendingReclaimTokens: 5000,
+        reclaimMeasurement: -1,
+      },
+      {
+        lastNudgeTokens: 140000,
+        pendingReclaimTokens: "x",
+        reclaimMeasurement: 150000,
+      },
+    ];
+    for (const nudges of variants) {
+      data.nudges = nudges;
+      writeFileSync(filePath, JSON.stringify(data));
+      const loaded = store.load("nudge-half");
+      assert.deepEqual(loaded.nudges, { lastNudgeTokens: 140000 });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -346,50 +532,63 @@ describe("clearConsumedBlockRange", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4. Revert semantics — deactivateCovering + clearInactiveBlocks
+// 4. Lifecycle transitions — markStale
 // ---------------------------------------------------------------------------
 
-describe("deactivateCovering", () => {
-  it("deactivates active blocks that anchor at or cover the ordinal", () => {
+describe("markStale", () => {
+  it("transitions the named active blocks and reports how many changed", () => {
     const state = makeState();
-    state.blocks.set(1, makeBlock({ start: 2, end: 6 })); // covers ordinal 4
-    state.blocks.set(2, makeBlock({ start: 4, end: 7 })); // anchors at ordinal 4
-    state.blocks.set(3, makeBlock({ start: 0, end: 4 })); // ends before ordinal 4
-    state.blocks.set(4, makeBlock({ start: 8, end: 10 })); // starts after ordinal 4
+    state.blocks.set(1, makeBlock({ start: 0, end: 2 }));
+    state.blocks.set(2, makeBlock({ start: 3, end: 5 }));
 
-    deactivateCovering(state, 4);
+    assert.equal(markStale(state, [1]), 1);
 
-    assert.equal(state.blocks.get(1)?.active, false);
-    assert.equal(state.blocks.get(2)?.active, false);
-    assert.equal(state.blocks.get(3)?.active, true);
-    assert.equal(state.blocks.get(4)?.active, true);
+    assert.equal(state.blocks.get(1)?.status, "stale");
+    assert.equal(state.blocks.get(2)?.status, "active");
   });
 
-  it("leaves already-inactive blocks as they are", () => {
+  it("keeps the record readable — interval, title and summary survive", () => {
     const state = makeState();
-    state.blocks.set(1, makeBlock({ start: 1, end: 3, active: false }));
-    deactivateCovering(state, 2);
-    assert.equal(state.blocks.get(1)?.active, false);
+    state.blocks.set(
+      1,
+      makeBlock({ start: 4, end: 9, title: "第一段", summary: "要点 A" }),
+    );
+
+    markStale(state, [1]);
+
+    const block = state.blocks.get(1);
+    assert.ok(block);
+    assert.equal(block.start, 4);
+    assert.equal(block.end, 9);
+    assert.equal(block.title, "第一段");
+    assert.equal(block.summary, "要点 A");
+    assert.equal(block.spanHash, "abcd1234");
+  });
+
+  it("never re-ages a terminal block and ignores unknown ids", () => {
+    const state = makeState();
+    state.blocks.set(1, makeBlock({ status: "consumed" }));
+    state.blocks.set(2, makeBlock({ status: "stale" }));
+
+    assert.equal(markStale(state, [1, 2, 99]), 0);
+    assert.equal(state.blocks.get(1)?.status, "consumed");
+    assert.equal(state.blocks.get(2)?.status, "stale");
+    assert.equal(state.blocks.size, 2);
   });
 });
 
-describe("clearInactiveBlocks", () => {
-  it("reclaims inactive blocks and keeps active ones", () => {
+describe("block retention", () => {
+  it("a block that stops folding stays in the map for both statuses", () => {
     const state = makeState();
     state.blocks.set(1, makeBlock({ start: 0, end: 2 }));
-    state.blocks.set(2, makeBlock({ start: 3, end: 5, active: false }));
-    state.blocks.set(3, makeBlock({ start: 6, end: 8, active: false }));
+    state.blocks.set(2, makeBlock({ start: 3, end: 5 }));
 
-    clearInactiveBlocks(state);
+    markStale(state, [1]);
+    const consumed = state.blocks.get(2);
+    assert.ok(consumed !== undefined);
+    consumed.status = "consumed";
 
-    assert.deepEqual([...state.blocks.keys()], [1]);
-  });
-
-  it("is a no-op when every block is active", () => {
-    const state = makeState();
-    state.blocks.set(1, makeBlock());
-    clearInactiveBlocks(state);
-    assert.equal(state.blocks.size, 1);
+    assert.deepEqual([...state.blocks.keys()], [1, 2]);
   });
 });
 
@@ -419,7 +618,7 @@ describe("block contract", () => {
       end: 4,
       summary: "s",
       spanHash: "00ff00ff",
-      active: true,
+      status: "active",
       compressedTokens: 10,
       summaryTokens: 2,
       createdAt: 5,
@@ -495,9 +694,10 @@ describe("hasActiveOverlap", () => {
     assert.equal(hasActiveOverlap(state, 0, 2), false); // ends at block start
   });
 
-  it("ignores inactive blocks", () => {
+  it("ignores blocks that stopped folding", () => {
     const state = makeState();
-    state.blocks.set(1, makeBlock({ start: 0, end: 5, active: false }));
+    state.blocks.set(1, makeBlock({ start: 0, end: 5, status: "consumed" }));
+    state.blocks.set(2, makeBlock({ start: 0, end: 5, status: "stale" }));
     assert.equal(hasActiveOverlap(state, 1, 3), false);
   });
 
@@ -522,12 +722,62 @@ describe("markKey", () => {
   });
 });
 
-describe("nextBlockId", () => {
-  it("continues from the maximum existing id, including inactive blocks", () => {
+describe("deriveNextBlockId", () => {
+  it("returns the id following the highest one stored", () => {
     const state = makeState();
-    assert.equal(nextBlockId(state.blocks), 1);
+    assert.equal(deriveNextBlockId(state.blocks), 1);
     state.blocks.set(2, makeBlock());
-    state.blocks.set(5, makeBlock({ active: false }));
-    assert.equal(nextBlockId(state.blocks), 6);
+    state.blocks.set(5, makeBlock({ status: "stale" }));
+    assert.equal(deriveNextBlockId(state.blocks), 6);
+  });
+});
+
+describe("allocateBlockId", () => {
+  it("hands out ascending ids and persists the counter on the state", () => {
+    const state = makeState();
+    assert.equal(allocateBlockId(state), 1);
+    assert.equal(state.nextBlockId, 2);
+    assert.equal(allocateBlockId(state), 2);
+    assert.equal(allocateBlockId(state), 3);
+    assert.equal(state.nextBlockId, 4);
+  });
+
+  it("migrates a state that carries blocks but no counter", () => {
+    const state: SessionState = {
+      blocks: new Map([
+        [7, makeBlock()],
+        [3, makeBlock({ status: "stale" })],
+      ]),
+      marks: new Map(),
+    };
+    assert.equal(state.nextBlockId, undefined);
+    assert.equal(allocateBlockId(state), 8);
+    assert.equal(state.nextBlockId, 9);
+  });
+
+  it("never re-issues an id after its block goes stale or consumed", () => {
+    const state = makeState();
+    const first = allocateBlockId(state);
+    state.blocks.set(first, makeBlock());
+    markStale(state, [first]);
+
+    const second = allocateBlockId(state);
+
+    assert.notEqual(second, first);
+    assert.ok(second > first);
+    // The stale record is still addressable under its own id.
+    assert.equal(state.blocks.get(first)?.status, "stale");
+    assert.equal(state.blocks.get(second), undefined);
+  });
+
+  it("is not fooled by a counter that lags the stored ids", () => {
+    // A hand-edited file could carry a counter below the highest stored
+    // id; allocation must still land on a fresh id.
+    const state: SessionState = {
+      blocks: new Map([[12, makeBlock()]]),
+      marks: new Map(),
+      nextBlockId: 3,
+    };
+    assert.equal(allocateBlockId(state), 13);
   });
 });

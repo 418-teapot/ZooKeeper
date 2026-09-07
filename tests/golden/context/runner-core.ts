@@ -135,9 +135,13 @@ async function runAction<M>(
         host.landPlan(state, messages, action.plan);
         return { result: null, error: null };
       }
-      case "deactivate-block": {
+      case "stale-block": {
+        // Simulate a block that stopped folding and lost its content
+        // guarantee (hash expiry, revert cut): the record stays in the
+        // map with the stale status, which is what the pipeline does to
+        // it now.
         const block = state.blocks.get(action.blockId);
-        if (block) block.active = false;
+        if (block) block.status = "stale";
         return { result: null, error: null };
       }
       case "restart": {

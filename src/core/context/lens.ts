@@ -5,7 +5,7 @@
  * only through `TextRegion` read lenses, never by unpacking host
  * message structures.  Identity is positional (ordinal) only — no host
  * ids and no structural access.  This module is the lowest layer of the
- * new core: pure types plus pure helpers, zero imports.
+ * context core: pure types plus pure helpers, zero imports.
  *
  * @module
  */
@@ -48,12 +48,13 @@ export interface InvocationRef {
  * One paired tool invocation of the transcript.
  *
  * The host adapter pairs a call's input with its output at projection
- * time using the host's own call identity (a call id, or the same-part
- * adjacency of the v1 layout) and emits the pairing result as this
- * positional table entry.  `status` follows a shared convention:
- * hosts map their terminal states onto `"completed"` / `"error"`
- * (pi synthesises them from its error flag; v1 supplies the same
- * literals natively), and producers compare against exactly those
+ * time using the host's own call identity (a call id, or the adjacency
+ * of call and result inside one message, as the OpenCode adapter
+ * provides) and emits the pairing result as this positional table entry.
+ * `status` follows a shared convention: hosts map their terminal states
+ * onto `"completed"` / `"error"` (the pi adapter synthesises them from
+ * its error flag; the OpenCode adapter supplies the same literals
+ * natively), and producers compare against exactly those
  * two strings — any other value is treated as non-terminal and the
  * call is left alone.  `input` is always present (a projected tool
  * call carries its arguments); `output` is absent while the call is
@@ -107,12 +108,12 @@ export interface TextRegion {
 /**
  * API-reported exact token usage for a message.
  *
- * Field names are flat and mirror the legacy token report consumed by
- * `measure` (input + output + reasoning + cache read/write) so exact
- * accounting parity is preserved; `reasoning` is included because the
- * legacy exact-token sum counts it alongside the other four components.
- * `cacheRead`/`cacheWrite` correspond to the legacy nested
- * `cache.read`/`cache.write`.
+ * Field names are flat so exact accounting stays comparable with the
+ * host's API-reported token report consumed by `measure` (input +
+ * output + reasoning + cache read/write); `reasoning` is included
+ * because the exact-token sum counts it alongside the other four
+ * components.  `cacheRead`/`cacheWrite` correspond to the host report's
+ * nested `cache.read`/`cache.write`.
  */
 export interface TokenUsage {
   input?: number;
@@ -125,10 +126,10 @@ export interface TokenUsage {
 /**
  * An opaque message handle in the host-agnostic core.
  *
- * `hidden` carries the v1 "ignored" semantics: the message still
- * occupies an ordinal in the transcript but is skipped by estimation
- * and numbering.  `usage` is the API exact token report when available.
- * `compaction` marks a host-native compaction summary message: the
+ * `hidden` marks a message the host excludes from line numbering and
+ * token estimation: it still occupies an ordinal and its raw text still
+ * reaches the model, but no line number addresses it.  `usage` is the
+ * API exact token report when available.  `compaction` marks a host-native compaction summary message: the
  * transcript interval before the last such message is historical, so
  * the report's category breakdown starts at (and includes) the last
  * compaction-marked message.

@@ -3,13 +3,19 @@
  * rules that keep the two collections consistent.
  *
  * Blocks and marks live in the same session state but in separate maps
- * with disjoint keys: blocks are keyed by their monotonic block id,
+ * with disjoint keys: blocks are keyed by their persistent block id,
  * marks by `(anchorOrdinal, regionIndex?)`.  Identity is ordinal-only —
- * no host message identity anywhere.  The cleanup rules in this module
- * are the single place that reconciles the two collections when a
- * compression range lands (`clearConsumedBlockRange`), when a revert
- * removes covered ordinals (`deactivateCovering`), and when deactivated
- * blocks are reclaimed (`clearInactiveBlocks`).
+ * no host message identity anywhere.  Block ids come from a persistent
+ * monotonic counter (`allocateBlockId`), so an id never addresses two
+ * different histories over a session's life.  Blocks are never removed
+ * from the map: a block that stops folding its interval keeps its
+ * record — and with it its title and summary, the recall contract of the
+ * decompress tool — and only changes lifecycle status.  The cleanup
+ * rules in this module are the single place that reconciles the two
+ * collections when a compression range lands
+ * (`clearConsumedBlockRange`); a block whose content disappears — e.g. a
+ * host revert removes a message it covers — is invalidated by the span
+ * check at fold time, which moves it to stale via `markStale`.
  *
  * This module is pure state semantics — persistence lives in
  * `store.ts`; view construction belongs to the fold/render phases.
@@ -23,13 +29,33 @@ import type { HashedSpan } from "./spanhash.js";
 /**
  * Canonical character cap for persisted text snapshots (~4K tokens).
  *
- * The legacy core's single truncation length, shared by the decompress
- * recall path (`decompress.truncateRecallSummary`) and the prune
- * producers' mark content snapshots: `producers/dedup.ts` imports this
- * constant; `producers/sweep.ts` and `producers/purge-errors.ts` keep a
- * local copy of the same value.
+ * The single source of truth for the truncation length used by the
+ * decompress recall path (`truncateRecallSummary`) and by all three prune
+ * producers' mark content snapshots (`producers/dedup.ts`,
+ * `producers/sweep.ts`, `producers/purge-errors.ts`), which import this
+ * constant.
  */
 export const RECALL_MAX_CHARS = 16000;
+
+/**
+ * Lifecycle status of a compression block.
+ *
+ * A block starts `active` and moves to one of two terminal states; it
+ * never returns to active and never leaves the block map.
+ *
+ * - `"active"` — the block folds its interval into a summary item, and
+ *   a restore can expand it back.
+ * - `"consumed"` — a wider compression swallowed the block, or a
+ *   restore expanded it.  Its interval is ordinary content again; its
+ *   summary stays recallable.
+ * - `"stale"` — the block can no longer vouch for its interval: the
+ *   span hash stopped matching (content changed or the transcript was
+ *   cut) or a revert removed a message it covers.  The record degrades
+ *   to "readable but no longer verifiable": its title and summary stay
+ *   recallable, but restoring would republish an interval that no
+ *   longer points at the original content, so restore is refused.
+ */
+export type BlockStatus = "active" | "consumed" | "stale";
 
 /**
  * A compression block — a pure-data declaration over a transcript
@@ -43,8 +69,8 @@ export const RECALL_MAX_CHARS = 16000;
  * field.
  */
 export interface Block extends BlockSpan, HashedSpan {
-  /** Whether the block currently folds its interval. */
-  active: boolean;
+  /** Lifecycle status; only `"active"` blocks fold their interval. */
+  status: BlockStatus;
   /** Estimated tokens of the covered messages at creation. */
   compressedTokens: number;
   /** Estimated tokens of the summary text. */
@@ -90,21 +116,42 @@ export interface Mark {
 }
 
 /**
- * Nudge watermark state, mirroring the legacy watermark shape.
+ * Nudge watermark state.
+ *
+ * All three numbers are token counts; each is optional and defaults to
+ * "unset" (no watermark, no booked reclaim), so a state written before a
+ * field existed loads unchanged.
  */
 export interface Nudges {
   /** Single-anchor watermark token count (0 is a valid watermark). */
   lastNudgeTokens?: number;
+  /**
+   * Reclaimed tokens not yet visible in the measured prompt-side total.
+   *
+   * A compression books what it took out of the view here, so the water
+   * level drops the moment the tokens are gone instead of waiting for the
+   * next API measurement of the smaller view.  The bookkeeping is
+   * one-shot: it is cleared as soon as a measurement arrives that
+   * already reflects the reclaim.
+   */
+  pendingReclaimTokens?: number;
+  /**
+   * The measured prompt-side total that `pendingReclaimTokens` discounts.
+   *
+   * Any other measurement is taken from a view the compression already
+   * shrank, so the booked reclaim is consumed once the measured total
+   * moves off this value — never subtracted twice.
+   */
+  reclaimMeasurement?: number;
 }
 
 /**
  * Per-session state — the union of the block and mark collections plus
- * the nudge watermark.
+ * the nudge watermark and the block-id sequence.
  *
- * `blocks` is keyed by a monotonically increasing block id (see
- * `nextBlockId`); `marks` is keyed by `markKey(anchorOrdinal,
- * regionIndex?)`.  The two collections never share keys, so their
- * cleanup rules cannot collide.
+ * `blocks` is keyed by a persistent block id (see `allocateBlockId`);
+ * `marks` is keyed by `markKey(anchorOrdinal, regionIndex?)`.  The two
+ * collections never share keys, so their cleanup rules cannot collide.
  */
 export interface SessionState {
   /** Blocks keyed by block id. */
@@ -113,6 +160,16 @@ export interface SessionState {
   marks: Map<string, Mark>;
   /** Nudge watermark state; undefined when no watermark has been set. */
   nudges?: Nudges;
+  /**
+   * Id to hand out to the next created block.
+   *
+   * It only ever moves forward and is never derived from the live block
+   * collection, so an id is never re-issued.  Optional for states
+   * without a counter (an older on-disk record, or a freshly built
+   * in-memory state); `allocateBlockId` falls back to
+   * `deriveNextBlockId` in that case.
+   */
+  nextBlockId?: number;
 }
 
 /**
@@ -133,17 +190,17 @@ export function markKey(anchorOrdinal: number, regionIndex?: number): string {
 }
 
 /**
- * Derive the next block id from the current block map.
+ * Derive the id a block collection would hand out next.
  *
- * Returns `max(existing id) + 1`, or `1` when the map is empty.  The
- * map is the single source of block identity, so ids continue correctly
- * across persistence round-trips.  Ids of reclaimed blocks may be
- * reused after `clearInactiveBlocks` removes them.
+ * Returns `max(existing id) + 1`, or `1` for an empty map.  This is the
+ * fallback used when no persistent counter is set; `allocateBlockId`
+ * combines it with the counter so an id is never re-issued even when the
+ * counter is stale.
  *
  * @param blocks - The current block map.
- * @returns The next block id.
+ * @returns The id following the highest one present.
  */
-export function nextBlockId(blocks: ReadonlyMap<number, Block>): number {
+export function deriveNextBlockId(blocks: ReadonlyMap<number, Block>): number {
   let max = 0;
   for (const id of blocks.keys()) {
     if (id > max) max = id;
@@ -152,17 +209,39 @@ export function nextBlockId(blocks: ReadonlyMap<number, Block>): number {
 }
 
 /**
+ * Allocate the id for a newly created block.
+ *
+ * The session's persistent `nextBlockId` is the single source of block
+ * identity: it advances on every allocation and never moves back, so ids
+ * stay distinct across a session no matter what later happens to the
+ * blocks that held them.  A state without the field (loaded from an
+ * older on-disk record, or built fresh in memory) falls back to
+ * `max(existing id) + 1` on first allocation rather than erroring.
+ *
+ * @param state - The session state (`nextBlockId` advanced).
+ * @returns The allocated block id.
+ */
+export function allocateBlockId(state: SessionState): number {
+  const migrated = deriveNextBlockId(state.blocks);
+  const id = Math.max(state.nextBlockId ?? 0, migrated);
+  state.nextBlockId = id + 1;
+  return id;
+}
+
+/**
  * Check whether any active block overlaps the interval `[start, end)`.
  *
  * **Caller invariant:** before landing a new compression block, the
  * caller must verify the interval has no overlap with any active block
  * — a new block must never fold an interval an active block already
- * folds.  This helper is that verification; `deactivateCovering` and
- * `clearInactiveBlocks` are the transitions that keep the invariant
- * satisfiable over time.
+ * folds.  This helper is that verification; the fold-time span check
+ * keeps the invariant satisfiable over time by moving blocks whose
+ * interval no longer validates to the stale status (`markStale`), after
+ * which they stop counting as overlaps.
  *
  * Intervals are half-open, so touching edges (`end === block.start` or
- * `start === block.end`) do not overlap.  Inactive blocks never count.
+ * `start === block.end`) do not overlap.  Terminal-status blocks never
+ * count.
  *
  * @param state - The session state.
  * @param start - First ordinal (inclusive).
@@ -175,7 +254,7 @@ export function hasActiveOverlap(
   end: number,
 ): boolean {
   for (const block of state.blocks.values()) {
-    if (!block.active) continue;
+    if (block.status !== "active") continue;
     // Non-empty intersection of two half-open intervals; correct even
     // for an empty query interval, which overlaps nothing.
     if (Math.max(block.start, start) < Math.min(block.end, end)) {
@@ -218,41 +297,28 @@ export function clearConsumedBlockRange(
 }
 
 /**
- * Deactivate every active block that anchors at or covers the ordinal.
+ * Move active blocks to the `"stale"` status.
  *
- * A block deactivates when the message at the given ordinal is removed
- * by a host revert: blocks that start exactly at the ordinal (anchored
- * to the removed message) and blocks whose interval contains the ordinal
- * both lose content they vouched for.  Deactivated blocks can no longer
- * be decompressed and are never consumed by later compression; blocks
- * entirely below or above the ordinal stay active (content loss beyond
- * the boundary is caught by span validation during folding).
+ * The transition is the whole record of an invalidation: the block
+ * keeps its interval, title, summary and stored hash so the loss stays
+ * diagnosable and the summary stays recallable, and it stops folding.
+ * Blocks that are not active are skipped — stale and consumed are
+ * terminal, so an already-transitioned block is never re-aged.
  *
- * @param state - The session state.
- * @param ordinal - The removed message ordinal.
+ * @param state - The session state (block records mutated).
+ * @param blockIds - The ids to transition; unknown ids are ignored.
+ * @returns The number of blocks that changed status in this call.
  */
-export function deactivateCovering(state: SessionState, ordinal: number): void {
-  for (const block of state.blocks.values()) {
-    if (!block.active) continue;
-    if (block.start <= ordinal && ordinal < block.end) {
-      block.active = false;
-    }
+export function markStale(
+  state: SessionState,
+  blockIds: Iterable<number>,
+): number {
+  let changed = 0;
+  for (const id of blockIds) {
+    const block = state.blocks.get(id);
+    if (block === undefined || block.status !== "active") continue;
+    block.status = "stale";
+    changed += 1;
   }
-}
-
-/**
- * Reclaim memory held by deactivated blocks.
- *
- * Removes every inactive block from the map, keeping only active ones.
- * Reclamation is a deliberate trade: after this runs, `nextBlockId` no
- * longer sees the removed ids, so a later block may reuse one — callers
- * must only reclaim when no live reference to the removed blocks can
- * occur.
- *
- * @param state - The session state.
- */
-export function clearInactiveBlocks(state: SessionState): void {
-  for (const [id, block] of [...state.blocks]) {
-    if (!block.active) state.blocks.delete(id);
-  }
+  return changed;
 }

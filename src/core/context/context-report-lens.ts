@@ -1,13 +1,9 @@
 /**
- * Lens-based context report producer — host-agnostic sibling of the v1
- * `computeContextReport` in the OpenCode adapter.
+ * Lens-based context report producer — computes the `/dcp context`
+ * report (`ContextReport`) from the host-agnostic lens transcript
+ * (`HostMessage[]`), with no host message structures unpacked.
  *
- * Consumes the host-agnostic lens transcript (`HostMessage[]`) and
- * produces the same `ContextReport` the v1 adapter computes, with
- * field-for-field parity (proven by the parity tests in
- * `context-report-lens.test.ts`).
- *
- * Semantics (mirroring the v1 reference):
+ * Field rules:
  * - `messageCount` — non-hidden messages.
  * - `exact` — API-reported tokens of the last completed assistant
  *   (input + output + reasoning + cache read + cache write).
@@ -22,24 +18,22 @@
  *   fallback), `system` as the residual `total − user − assistant −
  *   tool` (clamped at 0).
  *
- * The one behavior rewrite vs v1: pruned tool calls are recognized by
- * the placeholder text rather than a call-id set — a tool-output region
- * whose text starts with `PRUNED_TOOL_OUTPUT_REPLACEMENT` is pruned, so
- * its tool category contribution is `input + placeholder` instead of
- * `input + output`.  This mirrors the v1 post-prune reality where the
- * LLM sees the original input plus the replacement placeholder.
+ * Pruned tool calls are recognized by placeholder text: a tool-output
+ * region whose text starts with `PRUNED_TOOL_OUTPUT_REPLACEMENT`
+ * contributes the placeholder estimate instead of the original output,
+ * so the tool category counts `input + placeholder` — what the model
+ * actually sees after pruning.
  *
  * Compaction boundary: category statistics (user/tool/assistant) only
  * reflect messages at/after the last message marked `compaction` (a
  * host-native compaction summary); messages before it are historical and
  * excluded.  The total/exact/heuristic/messageCount fields are
- * unaffected — they always cover the whole transcript, mirroring the v1
- * `computeContextReport` (where only `catStartIdx` is boundary-aware).
+ * unaffected — they always cover the whole transcript.
  *
  * The dual-scope ("模型可见 vs 存储") message counts are exposed as a
  * separate helper (`countFoldedMessages`) so the `ContextReport` type
  * stays unchanged — the formatter receives those counts via
- * `FormatContextReportOptions`, exactly as it does today.
+ * `FormatContextReportOptions`.
  *
  * @module
  */
@@ -64,8 +58,7 @@ import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "./message-parts.js";
  * compaction-marked message (a host-native compaction summary); the
  * transcript interval before it is historical and excluded.  Returns 0
  * when no compaction message exists, so the category breakdown then
- * covers the whole transcript from the first message — the same
- * no-boundary semantics as the v1 `catStartIdx` (0, not -1).
+ * covers the whole transcript from the first message.
  *
  * @param messages - The lens transcript.
  * @returns The start ordinal for category statistics (the ordinal of the
@@ -85,11 +78,10 @@ function categoryStartIndex(messages: HostMessage[]): number {
 /**
  * Compute a context report from the host-agnostic lens transcript.
  *
- * Mirrors the v1 `computeContextReport` semantics field-for-field (see
- * the module docstring).  Hidden messages are skipped by estimation,
- * the heuristic tail, and the category breakdown, and excluded from
- * `messageCount`.  Category statistics start at the last compaction
- * boundary (see `categoryStartIndex`).
+ * Hidden messages are skipped by estimation, the heuristic tail, and the
+ * category breakdown, and excluded from `messageCount`.  Category
+ * statistics start at the last compaction boundary (see
+ * `categoryStartIndex`).
  *
  * @param messages - The lens transcript (host-projected, ordinal-aligned).
  * @returns The computed context report.

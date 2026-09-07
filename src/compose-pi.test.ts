@@ -514,6 +514,7 @@ describe("buildPiMessageEndHandler", () => {
     ]);
     const result = handler(messageEndEvent(message), {});
     assert.ok(result);
+    assert.equal(result?.message?.role, "assistant");
     assert.deepEqual(result?.message?.content, [
       { type: "text", text: "body" },
     ]);
@@ -558,6 +559,7 @@ describe("buildPiMessageEndHandler", () => {
     ]);
     const result = handler(messageEndEvent(message), {});
     assert.ok(result);
+    assert.equal(result?.message?.role, "assistant");
     assert.deepEqual(result?.message?.content, [
       { type: "thinking", thinking: "[m3] thought" },
       { type: "toolCall", id: "c1", name: "x", arguments: {} },
@@ -596,6 +598,7 @@ describe("buildPiMessageEndHandler", () => {
     );
     assert.deepEqual(calls, ["first", "second"]);
     assert.ok(result);
+    assert.equal(result?.message?.role, "assistant");
     assert.deepEqual(result?.message?.content, [
       { type: "text", text: "hi!?" },
     ]);

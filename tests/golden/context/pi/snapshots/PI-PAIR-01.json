@@ -193,7 +193,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "双对",
             "coveredMessages": 4,
             "compressedTokens": 11,
@@ -283,7 +283,16 @@
         }
       ],
       "state": {
-        "blocks": [],
+        "blocks": [
+          {
+            "blockId": 1,
+            "status": "consumed",
+            "title": "双对",
+            "coveredMessages": 4,
+            "compressedTokens": 11,
+            "summaryTokens": 5
+          }
+        ],
         "marks": {
           "pending": 0,
           "pendingTokens": 0,

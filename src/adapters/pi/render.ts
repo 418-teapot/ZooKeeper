@@ -8,8 +8,9 @@
  * user messages.  The original input array and its message objects are
  * never mutated.
  *
- * Summary materialization follows the same label format as the v1 adapter:
- * `[Block bN · K 条] 标题` with the block summary body on the next line and
+ * Summary materialization follows the same label format as the OpenCode
+ * v1 adapter: `[Block bN · K 条] 标题` with the block summary body on
+ * the next line and
  * a leading `[mN] ` prefix when the summary occupies a visible view line.
  *
  * @module
@@ -32,6 +33,10 @@ import type { PiAgentMessage, PiUserMessage } from "./types.js";
 
 /**
  * Look up the block-map id matching a folded summary item's interval.
+ *
+ * Only active blocks are candidates: a block that stopped folding keeps
+ * its record (and can share an interval with a later block), so the
+ * label must address the block that actually produces the summary.
  */
 function blockIdOf(
   state: SessionState,
@@ -39,6 +44,7 @@ function blockIdOf(
   end: number,
 ): number | undefined {
   for (const [id, block] of state.blocks) {
+    if (block.status !== "active") continue;
     if (block.start === start && block.end === end) return id;
   }
   return undefined;
@@ -163,21 +169,19 @@ function buildToolPairIndex(messages: PiAgentMessage[]): {
  * Expand summary block intervals so that a tool call and its result are
  * always folded together.
  *
- * Pi represents a tool call and its result as two separate messages, while
- * the v1 adapter keeps them in the same message.  Whole-message fold
- * semantics therefore require a summary that covers one half of a pair to
- * swallow the other half as well.
+ * Pi represents a tool call and its result as two separate messages,
+ * while OpenCode's v1 message shape keeps them in the same message.
+ * Whole-message fold semantics therefore require a summary that covers
+ * one half of a pair to swallow the other half as well.
  *
- * This stays as defensive hardening for blocks created before the
- * compress gate chain rejected mid-pair ranges: `validateRange` in
- * `compress.ts` now gates both directions (a call inside with its result
- * outside, and a result inside with its call outside) using the
- * projection's invocation table, so a newly created block never cuts a
- * pair.  Host truncation cannot produce a mid-pair state interval
- * (revert deactivates whole blocks, never truncating one), but a state
- * persisted while the gate only checked one direction can still hold a
- * result-only block; the expansion costs nothing and keeps every
- * pair-touching summary id-resolvable.
+ * `validateRange` in `compress.ts` gates both directions (a call inside
+ * with its result outside, and a result inside with its call outside)
+ * using the projection's invocation table, so a newly created block
+ * never cuts a pair.  Host truncation cannot produce a mid-pair state
+ * interval either — a revert moves whole blocks to `"stale"`, never
+ * truncating one — but state persisted by older plugin versions can
+ * still hold a mid-pair block; the expansion costs nothing and keeps
+ * every pair-touching summary id-resolvable.
  */
 export function expandSummaryBlocks(
   items: ViewItem[],
@@ -270,7 +274,16 @@ function buildRenderedView(
 ): PiAgentMessage[] {
   const lens = history(copies).messages;
   const view = expandSummaryBlocks(items, copies);
-  const numbered = numberView(view, () => false);
+  // Number with the same hidden predicate the context-pruning hook uses
+  // when it publishes the round view: that published view is the
+  // authoritative coordinate system the compression tools resolve `mN`
+  // refs against, so the numbers rendered here must match it.  View item
+  // ordinals still address the transcript, so they index the lens; a lens
+  // slot that is missing (a transcript hole) is treated as hidden.
+  // Residual divergence: `expandSummaryBlocks` widens blocks that
+  // straddle a tool-call / tool-result pair, and the published view is
+  // numbered before that expansion — there the published view wins.
+  const numbered = numberView(view, (ordinal) => lens[ordinal]?.hidden ?? true);
   const lineByItem = new Map<ViewItem, number>();
   for (const { n, item } of numbered) {
     lineByItem.set(item, n);

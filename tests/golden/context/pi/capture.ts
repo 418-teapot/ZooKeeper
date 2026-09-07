@@ -72,13 +72,16 @@ export function captureMessage(message: PiAgentMessage): ViewMessageCapture {
       }
       // thinking blocks are reasoning traces — no text, no tool part.
     }
-  } else {
-    // toolResult — the single tool-output region of the message.
+  } else if (message.role === "toolResult") {
+    // The single tool-output region of the message.
     capture.toolParts.push({
       tool: message.toolName,
       ...captureToolOutput(extractText(message.content)),
     });
   }
+  // The remaining pi roles (bashExecution, custom, branch/compaction
+  // summaries) own no tool-output region and no text blocks of the shapes
+  // above, so they capture as their bare role.
 
   if (textParts.length > 0) capture.text = textParts.join("\n");
   return capture;

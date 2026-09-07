@@ -13,14 +13,12 @@
  * notification lives in `src/commands/notify.ts` and is shared with
  * the `/go` command unit.
  *
- * State comes from the new host-agnostic context core: the shared
+ * State comes from the host-agnostic context core: the shared
  * process-wide session-state manager (`getContextStateManager`)
  * supplies the session state, and the fold/measure/release layers
- * drive the report and the sweep.  Effective prune marks are no
- * longer projected back to v1 tool call ids — the lens report
- * recognizes pruned tool calls by their placeholder text, so the
- * report's pruned-tool accounting keeps the previous contract
- * verbatim.
+ * drive the report and the sweep.  Pruned tool calls are recognized by
+ * their placeholder text, so the report needs no mark-to-tool-call-id
+ * projection.
  *
  * @module
  */
@@ -36,7 +34,7 @@ import {
   countFoldedMessages,
 } from "../../core/context/context-report-lens.js";
 import { fold } from "../../core/context/fold.js";
-import type { HostMessage } from "../../core/context/lens.js";
+import type { HostMessage, Projection } from "../../core/context/lens.js";
 import { findLastUserOrdinal } from "../../core/context/lens.js";
 import { netReclaimTokens } from "../../core/context/measure.js";
 import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "../../core/context/message-parts.js";
@@ -45,6 +43,7 @@ import {
   pendingTokens,
   reclaimedTokens,
 } from "../../core/context/release.js";
+import { getRoundView } from "../../core/context/round-view.js";
 import {
   getContextStateManager,
   getRuntimeFlaggedState,
@@ -74,14 +73,12 @@ interface SweepWrite {
 /**
  * Select tool-output regions to mark and write pending marks.
  *
- * Migrated from the previous `/dcp sweep` producer with its marks
- * semantics preserved: no-count mode marks every tool output after the
- * last non-hidden user message; numeric mode walks backward collecting
- * the N most recent tool outputs.  Positions already claimed by a mark
- * are skipped (first-write-wins).  Marks are written pending — the
- * caller arms `setPendingViewChange` so the next transform's release
- * flips them unconditionally, preserving the previous immediate-release
- * timing.
+ * No-count mode marks every tool output after the last non-hidden user
+ * message; numeric mode walks backward collecting the N most recent tool
+ * outputs.  Positions already claimed by a mark are skipped
+ * (first-write-wins).  Marks are written pending — the caller arms
+ * `setPendingViewChange` so the next transform's release flips them
+ * unconditionally.
  *
  * @param state - The session state to write marks into.
  * @param view - The lens transcript of the session messages.
@@ -157,6 +154,41 @@ function sweepToolRegions(
 // ---------------------------------------------------------------------------
 
 /**
+ * Read the transcript one `/dcp` pass reports and marks over.
+ *
+ * Two sources, in priority order:
+ *
+ * 1. The host's own history read, when it wires one.  A host wires
+ *    `fetchHistory` only when its read is provably the same source the
+ *    context transform projects, so the ordinals agree — and a live read
+ *    is fresher than a cached view for a usage report.
+ * 2. Otherwise the round view published by the last transform (see
+ *    `core/context/round-view.ts`) — the projection the model actually
+ *    holds, which is the only same-source read a host without a history
+ *    channel can offer.
+ *
+ * @param toolHost - Host tool services (optional history read / notify).
+ * @param sessionID - The current session identifier.
+ * @returns The projection snapshot to report over.
+ * @throws Error when neither source is available.
+ */
+async function readReportHistory(
+  toolHost: ToolHost | null | undefined,
+  sessionID: string,
+): Promise<Projection> {
+  if (toolHost?.fetchHistory) {
+    return toolHost.fetchHistory(sessionID);
+  }
+  const roundView = getRoundView(sessionID);
+  if (roundView !== undefined) {
+    return roundView.projection;
+  }
+  throw new Error(
+    "无法获取会话消息：宿主未提供历史读取，且上下文变换尚未发布当轮视图。",
+  );
+}
+
+/**
  * Handle the `/dcp` command.
  *
  * - `""` or `"context"` → fetches session messages, computes a context
@@ -219,15 +251,11 @@ export async function handleDcpCommand(
   }
 
   // ── Fetch messages ────────────────────────────────────────────────
-  // The host adapter's `fetchHistory` already unwraps the response,
-  // projects the lens transcript, and wraps every failure in a Chinese
-  // error (logged as `fetch_messages_failed`) — the handler propagates
-  // those errors verbatim.  A missing history API is treated the same
-  // way the previous inline fetch did.
-  if (!toolHost?.fetchHistory) {
-    throw new Error("无法获取会话消息：会话消息 API 不可用");
-  }
-  const snapshot = await toolHost.fetchHistory(sessionID);
+  // `readReportHistory` supplies the projection this pass reports over
+  // (host read when the host provably shares the transform's source,
+  // otherwise the published round view); its failures propagate
+  // verbatim.
+  const snapshot = await readReportHistory(toolHost, sessionID);
   const view = snapshot.messages;
 
   // ── Read state from the shared manager ────────────────────────────
@@ -313,11 +341,11 @@ export function parseSweepCount(trimmed: string): number | undefined {
  *
  * 1. Parses the count argument (optional).
  * 2. Fetches session messages (lens transcript directly).
- * 3. Selects tool-output regions for marking (the previous sweep semantics).
+ * 3. Selects tool-output regions for marking.
  * 4. Writes pending marks into the shared session state, arms the
  *    pending-view-change flag (the next transform's release flips them
- *    unconditionally — the immediate-release timing the previous sweep had
- *    with effective marks), and persists once.
+ *    unconditionally, so the marks take effect as soon as the view rolls
+ *    over), and persists once.
  * 5. Injects an ignored message reporting how many tools were marked
  *    and the estimated token reclaim.
  * 6. Returns normally — the OpenCode adapter throws the unified
@@ -336,15 +364,10 @@ async function handleSweepSubcommand(
   const count = parseSweepCount(trimmed);
 
   // ── Fetch messages ──────────────────────────────────────────────
-  // The host adapter's `fetchHistory` already unwraps the response,
-  // projects the lens transcript, and wraps every failure in a Chinese
-  // error (logged as `fetch_messages_failed`) — the handler propagates
-  // those errors verbatim.  A missing history API is treated the same
-  // way the previous inline fetch did.
-  if (!toolHost?.fetchHistory) {
-    throw new Error("无法获取会话消息：会话消息 API 不可用");
-  }
-  const view = (await toolHost.fetchHistory(sessionID)).messages;
+  // Same read as the context report (see `readReportHistory`); the
+  // ordinals the sweep marks are the read's own, which is why a host
+  // read is only used when it shares the transform's source.
+  const view = (await readReportHistory(toolHost, sessionID)).messages;
 
   // ── Select regions and write pending marks ───────────────────────
   const manager = getContextStateManager();
@@ -359,10 +382,9 @@ async function handleSweepSubcommand(
   }
 
   // Pending marks flip on the next transform's release.  The
-  // pending-view-change flag bypasses the release gate so the marks
-  // take effect in the same turn the view rolls over — the previous
-  // sweep wrote immediately-effective marks, which the next prune pass
-  // applied; the two behaviours coincide in timing.
+  // pending-view-change flag bypasses the release gate so the marks take
+  // effect as soon as the view rolls over, rather than waiting for the
+  // percentage threshold to open.
   setPendingViewChange(sessionID);
   manager.save(sessionID);
 
@@ -393,11 +415,11 @@ async function handleSweepSubcommand(
 /**
  * Handle the `/dcp compress` subcommand.
  *
- * The command no longer runs a mechanical compression pipeline.  It arms
- * a per-session one-shot in-memory flag (`state.pendingManualTrigger`),
- * then the NEXT transform appends a synthetic user message
- * (`zoo-manual-compress`) that drives the model to call the `compress`
- * tool — command and tool now share a single model-driven path.
+ * The command drives compression through the model rather than running a
+ * mechanical pipeline: it arms a per-session one-shot in-memory flag
+ * (`state.pendingManualTrigger`), then the NEXT transform appends a
+ * synthetic user message (`zoo-manual-compress`) that makes the model
+ * call the `compress` tool — command and tool share a single path.
  *
  * 1. Checks the registration gate — the `compress` tool must be listed
  *    in the active mode profile's tools and the compress section must

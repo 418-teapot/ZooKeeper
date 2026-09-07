@@ -16,8 +16,8 @@
  *  - `experimental.text.complete` — sequential handlers (text
  *    finalization, e.g. ref-echo stripping).
  *  - `tool.definition` — the raw OpenCode output is mapped onto the
- *    host-neutral tool-definition view, enhancers run in order (one
- *    contributor today), and the changed fields are written back.
+ *    host-neutral tool-definition view, enhancers run in order (the
+ *    task-prompt contributor), and the changed fields are written back.
  *  - `command.execute.before` — routes by `input.command`, then throws
  *    the unified `COMMAND_HANDLED` sentinel to short-circuit the flow.
  *  - `tool` — the enabled tool contributions keyed by tool name.
@@ -513,8 +513,8 @@ export function assembleOpenCodeHooks(
               tool: normalizeToolName(input.tool),
             };
             // Generic before-exec chain.  No unit contributes a
-            // beforeExec handler today (all hook units keep the slot
-            // empty); the slot is reserved for future units that need
+            // beforeExec handler (all hook units keep the slot
+            // empty); the slot is reserved for units that need
             // to run before any tool call.  Event registration for the
             // delegation gate below is driven by `composed.gate`, not
             // by this chain.

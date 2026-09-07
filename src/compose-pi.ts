@@ -3,7 +3,9 @@
  *
  * The only module that understands pi's event keys.  Given the
  * host-agnostic `ComposedResult` produced by `composeProfile`, it builds
- * the two handlers pi registers on `tool_result` and `context`:
+ * the handlers and registration inputs pi consumes — the `tool_result`,
+ * `context` and `message_end` event handlers, the command registrations,
+ * and the tool set after its registration-boundary processing:
  *
  *  - `tool_result` — the text content of the event seeds a shared
  *    `AfterExecOutput` object; the after-exec contributions run in
@@ -16,6 +18,10 @@
  *    parts are kept.
  *  - `context` — the native pi `AgentMessage` array is handed to the
  *    transform contributions; the pruned replacement is returned to pi.
+ *  - `message_end` — assistant text parts run through the composed
+ *    text-finalization contributions (`buildPiMessageEndHandler`); a
+ *    changed part is returned as a shallow-copied message, an unchanged
+ *    message as `undefined`.
  *  - `commands` — the composed slash-command contributions become pi
  *    `registerCommand` registrations (`buildPiCommandRegistrationPlan`).
  *    Command chat notifications flow through the single base pi tool
@@ -69,8 +75,8 @@ import type {
 import { resolveIdentity } from "./core/subagent/identity.js";
 import { log } from "./utils/logger.js";
 
-// Re-export the duck types so callers (including tests) that previously
-// imported them from this module keep working.
+// Re-export the pi duck types (declared in adapters/pi/types.js) so
+// consumers can import the event shapes alongside the builders.
 export type {
   PiAgentMessage,
   PiAssistantMessage,

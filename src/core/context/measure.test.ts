@@ -5,8 +5,8 @@
  * heuristic measurement, usage-exact precedence, hidden-message skipping,
  * thinking inclusion, the pruned-output adjustment, and net reclaim.
  *
- * The v1-shape parsing counterparts (parts arrays, nested cache token
- * reports) are the adapter's responsibility and are tested in the
+ * The OpenCode-shape parsing counterparts (parts arrays, nested cache
+ * token reports) are the adapter's responsibility and are tested in the
  * OpenCode adapter's `history.test.ts` and `types.test.ts`; this
  * module only tests the core functions with `HostMessage` inputs.
  */

@@ -54,12 +54,14 @@ const PRUNE_PLACEHOLDERS = [
  *
  * @param blockId - The persistent block-map key.
  * @param block - The block record from the core state.
- * @returns The projection (title null when undefined).
+ * @returns The projection (title null when undefined).  A block that
+ *   stopped folding is still projected, with its terminal status — the
+ *   record survives so its summary stays recallable.
  */
 export function projectBlock(blockId: number, block: Block): BlockProjection {
   return {
     blockId,
-    active: block.active,
+    status: block.status,
     title: block.title ?? null,
     coveredMessages: block.end - block.start,
     compressedTokens: block.compressedTokens,

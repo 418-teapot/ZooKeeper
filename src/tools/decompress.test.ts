@@ -1,15 +1,17 @@
 /**
- * Integration tests for the decompress tool adapter against the new
- * ordinal core.
+ * Integration tests for the decompress tool adapter.
  *
- * Covers: the restore flow (deactivate → pending view-change flag →
- * persist → notify → single-line ToolResult), the recall flow (summary
- * body, zero state change, no notification, RECALL_MAX_CHARS truncation
- * with the Chinese tail note), the context-limit gate rejection (state
- * untouched), the not-found error listing the available block numbers
- * (new UX), the loud config-guidance error when the
- * `[zoo.context.decompress]` section is absent, and the registration
- * gate (absent section → no tool key, primary_tools untouched).
+ * Covers: the restore flow (block active → consumed, pending
+ * view-change flag, persist, notify, single-line ToolResult), the recall
+ * flow (summary body, zero state change, no notification,
+ * RECALL_MAX_CHARS truncation with the Chinese tail note), the
+ * context-limit gate rejection (state untouched), the not-found error
+ * listing the available block numbers, the loud config-guidance error
+ * when the `[zoo.context.decompress]` section is absent, the
+ * history-source rule (restore measures the published round view, host
+ * read only as a fallback, guidance error when neither exists), and the
+ * registration gate (absent section → no tool key, primary_tools
+ * untouched).
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
@@ -22,14 +24,15 @@ import {
   _resetForTesting as _resetModelLimitsForTesting,
   setModelLimit,
 } from "../core/context/model-limits.js";
+import { publishRoundView } from "../core/context/round-view.js";
 import {
   _resetContextStateManagerForTesting,
   consumePendingViewChange,
   getContextStateManager,
 } from "../core/context/runtime.js";
 import {
+  allocateBlockId,
   type Block,
-  nextBlockId,
   RECALL_MAX_CHARS,
 } from "../core/context/state.js";
 import {
@@ -211,7 +214,7 @@ const ENABLED_CONFIG: ContextPruningConfig = {
  *
  * The default span [0, 3) covers the 3-message transcript, with
  * compressedTokens 20000 / summaryTokens 500 (net delta 19500) — the
- * same accounting the legacy fixture used.
+ * accounting the gate tests measure against.
  *
  * @param overrides - Block field overrides.
  * @returns The seeded block id.
@@ -219,14 +222,14 @@ const ENABLED_CONFIG: ContextPruningConfig = {
 function seedBlock(overrides: Partial<Block> = {}): number {
   const manager = getContextStateManager();
   const state = manager.get(TEST_SESSION_ID);
-  const id = nextBlockId(state.blocks);
+  const id = allocateBlockId(state);
   state.blocks.set(id, {
     start: 0,
     end: 3,
     title: "测试块主题",
     summary: "该段的摘要正文",
     spanHash: "test-span-hash",
-    active: true,
+    status: "active",
     compressedTokens: 20000,
     summaryTokens: 500,
     createdAt: Date.now(),
@@ -242,11 +245,78 @@ function seedActiveBlock(): number {
 }
 
 // ---------------------------------------------------------------------------
+// History source — the single snapshot published by the transform
+// ---------------------------------------------------------------------------
+
+/** A host that records (or withholds) the optional history read. */
+function sourceHost(options: {
+  history?: HostMessage[];
+  calls?: number[];
+}): ToolHost {
+  const host: ToolHost = {
+    resolveSessionId: () => TEST_SESSION_ID,
+    async notify(): Promise<void> {},
+  };
+  if (options.history !== undefined) {
+    const messages = options.history;
+    host.fetchHistory = async (): Promise<Projection> => {
+      options.calls?.push(1);
+      return projectMessages(messages);
+    };
+  }
+  return host;
+}
+
+describe("decompress tool execute — history source", () => {
+  it("restores against the published round view without reading the host", async () => {
+    // The seeded block spans [0, 3): the round view says 3 messages, the
+    // host read would answer with an empty transcript (0 messages).
+    seedActiveBlock();
+    publishRoundView(TEST_SESSION_ID, {
+      projection: projectMessages(makeMessages()),
+      numbered: [],
+    });
+    const calls: number[] = [];
+
+    const tool = createDecompressTool(
+      sourceHost({ history: [], calls }),
+      PARSED_CONFIG,
+    );
+    const result = await tool.execute({ blockId: "b1" }, mockToolContext);
+
+    assert.equal(
+      calls.length,
+      0,
+      "the cached round view must not re-read the host",
+    );
+    assert.ok(
+      result.includes("3 条原始消息"),
+      `expected the cached view's message count, got: ${result}`,
+    );
+  });
+
+  it("throws guidance when neither a view nor a host fallback exists", async () => {
+    seedActiveBlock();
+    const tool = createDecompressTool(sourceHost({}), PARSED_CONFIG);
+
+    await assert.rejects(
+      () => tool.execute({ blockId: "b1" }, mockToolContext),
+      /无法解压：尚未取得当轮上下文视图/,
+    );
+    assert.equal(
+      getContextStateManager().get(TEST_SESSION_ID).blocks.get(1)?.status,
+      "active",
+      "state untouched — the block stays folded",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Restore happy path
 // ---------------------------------------------------------------------------
 
 describe("decompress tool execute — restore happy path", () => {
-  it("deactivates the block, flags the view change, persists, and notifies", async () => {
+  it("consumes the block, flags the view change, persists, and notifies", async () => {
     const messages = makeMessages();
     const { host, notifyCalls } = fakeHost(messages);
     seedActiveBlock();
@@ -255,17 +325,17 @@ describe("decompress tool execute — restore happy path", () => {
 
     const result = await tool.execute({ blockId: "b1" }, mockToolContext);
 
-    // (1) Block deactivated in the shared new-core session state.
+    // (1) Block moved to consumed in the shared session state.
     const state = getContextStateManager().get(TEST_SESSION_ID);
     const block = state.blocks.get(1);
     assert.ok(block !== undefined);
-    assert.equal(block.active, false);
+    assert.equal(block.status, "consumed");
     assert.equal(consumePendingViewChange(TEST_SESSION_ID), true);
 
     // (2) State persisted to disk via the shared manager.
     const persisted = getContextStateManager().store.load(TEST_SESSION_ID);
     assert.equal(persisted.blocks.size, 1);
-    assert.equal(persisted.blocks.get(1)?.active, false);
+    assert.equal(persisted.blocks.get(1)?.status, "consumed");
 
     // (3) Ignored notification sent.
     assert.equal(notifyCalls.length, 1);
@@ -307,9 +377,9 @@ describe("decompress tool execute — recall path", () => {
   it("returns the summary body with zero state change and no notification", async () => {
     const { host, notifyCalls } = fakeHost([]);
 
-    // Build an inactive block (as if consumed by a wider recompression).
+    // Build a consumed block (as if swallowed by a wider recompression).
     seedBlock({
-      active: false,
+      status: "consumed",
       summary: "被消费旧块的完整摘要正文",
       title: "旧块主题",
     });
@@ -322,7 +392,7 @@ describe("decompress tool execute — recall path", () => {
 
     // Zero state change.
     const after = getContextStateManager().get(TEST_SESSION_ID);
-    assert.equal(after.blocks.get(1)?.active, false);
+    assert.equal(after.blocks.get(1)?.status, "consumed");
     assert.equal(consumePendingViewChange(TEST_SESSION_ID), false);
 
     // No persistence, no notification.
@@ -335,7 +405,7 @@ describe("decompress tool execute — recall path", () => {
     const { host } = fakeHost([]);
     const longSummary = "长".repeat(RECALL_MAX_CHARS + 100);
     seedBlock({
-      active: false,
+      status: "consumed",
       summary: longSummary,
       title: "超长块主题",
     });
@@ -377,7 +447,7 @@ describe("decompress tool execute — gate rejection", () => {
 
     // State untouched: block still active, nothing saved, no notification.
     const state = getContextStateManager().get(TEST_SESSION_ID);
-    assert.equal(state.blocks.get(1)?.active, true);
+    assert.equal(state.blocks.get(1)?.status, "active");
     assert.equal(consumePendingViewChange(TEST_SESSION_ID), false);
     assert.equal(
       getContextStateManager().store.load(TEST_SESSION_ID).blocks.size,
@@ -396,7 +466,7 @@ describe("decompress tool execute — gate rejection", () => {
     const result = await tool.execute({ blockId: "b1" }, mockToolContext);
 
     const state = getContextStateManager().get(TEST_SESSION_ID);
-    assert.equal(state.blocks.get(1)?.active, false);
+    assert.equal(state.blocks.get(1)?.status, "consumed");
     assert.equal(typeof result, "string");
     assert.ok(result.includes("下一轮上下文生效"));
     assert.equal(notifyCalls.length, 1);
@@ -404,7 +474,7 @@ describe("decompress tool execute — gate rejection", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Target resolution errors (new UX — available block listing)
+// Target resolution errors (available block listing)
 // ---------------------------------------------------------------------------
 
 describe("decompress tool execute — target resolution errors", () => {

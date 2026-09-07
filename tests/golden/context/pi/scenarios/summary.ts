@@ -9,7 +9,7 @@
  * message (that marker is reserved for host compaction boundaries; the
  * capture surfaces it as `boundary`).  The scenario also proves
  * `validateBlock` survives across rounds: an unchanged view keeps
- * folding the same blocks, and deactivating one block un-folds it
+ * folding the same blocks, and turning one block stale un-folds it
  * while the other keeps folding.
  *
  * @module
@@ -99,7 +99,7 @@ export const PI_SUMMARY_01: Scenario = {
     {
       label: "deactivate-first-unfolds-one",
       messages: summaryView(),
-      action: { kind: "deactivate-block", blockId: 1 },
+      action: { kind: "stale-block", blockId: 1 },
     },
   ],
 };

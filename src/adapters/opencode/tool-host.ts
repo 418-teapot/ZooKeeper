@@ -3,12 +3,19 @@
  *
  * Implements the host-free `ToolHost` contract against the OpenCode v1
  * client slice (`SessionClient` + optional `tui.showToast`): resolves
- * the session id from a tool context, fetches the session history as
- * lens messages, posts ignored chat notifications, and shows transient
- * toasts through the TUI surface (silently dropped without it).
- * Tolerates both `sessionID` and `sessionId` context shapes, unwraps
- * `res.data ?? res` with a `res.error` rejection, and treats
- * notifications and toasts as best-effort.
+ * the session id from a tool context, posts ignored chat notifications,
+ * and shows transient toasts through the TUI surface (silently dropped
+ * without it).  Tolerates both `sessionID` and `sessionId` context
+ * shapes, unwraps `res.data ?? res` with a `res.error` rejection, and
+ * treats notifications and toasts as best-effort.
+ *
+ * This host also wires the optional `fetchHistory` fallback: v1's
+ * `session.messages` API reads the same storage the messages-transform
+ * projects and folds, so its ordinal space is provably the one the
+ * transform's round view (see `core/context/round-view.ts`) addresses —
+ * which is what makes a host history read legitimate here.  The tools
+ * still prefer the published round view and consult this only before the
+ * first transform has run.
  *
  * Notifications always resolve the session's agent before sending:
  * OpenCode's `session.prompt` carries no `body.agent` and would switch
@@ -53,6 +60,15 @@ export interface V1ToolHostClient extends SessionClient {
 }
 
 /**
+ * The v1 tool host: `ToolHost` with the history fallback always wired.
+ *
+ * `ToolHost.fetchHistory` is optional because a host may not be able to
+ * offer a same-source read; v1 always can, so the port is declared
+ * required here and callers of this factory never narrow it.
+ */
+export type V1ToolHost = ToolHost & Required<Pick<ToolHost, "fetchHistory">>;
+
+/**
  * Create the v1 tool host backed by an OpenCode session client.
  *
  * The client and the session-agent resolver are captured by the
@@ -68,7 +84,7 @@ export interface V1ToolHostClient extends SessionClient {
 export function createV1ToolHost(
   client: V1ToolHostClient,
   resolveAgent: (sessionID: string) => string | undefined,
-): ToolHost {
+): V1ToolHost {
   return {
     /**
      * Resolve the session id from the OpenCode tool context.
@@ -89,6 +105,11 @@ export function createV1ToolHost(
 
     /**
      * Fetch the session's full history and project it to lens messages.
+     *
+     * Offered as the round-view fallback: v1's messages API reads the same
+     * storage the messages-transform projects and folds, so its ordinal
+     * space agrees with the transform's — which is what licenses a host
+     * history read here at all.
      *
      * Unwraps `res.data ?? res` and rejects on `res.error`.
      *

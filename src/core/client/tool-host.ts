@@ -2,14 +2,23 @@
  * Host tool services contract shared by tool adapters.
  *
  * Declares the host capabilities a tool adapter needs to run against a
- * session: resolving the session id from a tool context, fetching the
- * session history as host-agnostic lens messages, posting a
+ * session: resolving the session id from a tool context, posting a
  * session-scoped system notification that is persisted with the session
  * record (when the host supports it) and is never visible to the model,
  * and — optionally — showing a transient session-scoped toast to the
  * human observer.  Framework-agnostic by design: each host implements
  * this interface against its own SDK instead of tools typing against
  * any host type.
+ *
+ * The one optional capability is `fetchHistory`.  Its two consumers rank
+ * the sources differently: the compression tools address the round view
+ * published by the context transform (see `core/context/round-view.ts`)
+ * and consult this read only when no round view exists, while `/dcp`
+ * prefers the live host read — fresher for a usage report — and falls
+ * back to the published round view.  Either way a host may implement it
+ * only when its read path is provably the same source the transform
+ * projects; a host whose read lands in a different ordinal space must
+ * not implement it at all.
  *
  * @module
  */
@@ -40,9 +49,27 @@ export interface ToastPayload {
 export interface ToolHost {
   /** Resolve the session id from a tool execution context. */
   resolveSessionId(toolCtx: unknown): string | undefined;
-  /** Fetch the session's full history as a host-agnostic projection
-   * snapshot (lens transcript + invocation table). */
-  fetchHistory(sessionId: string): Promise<Projection>;
+  /**
+   * Fetch the session's full history as a host-agnostic projection
+   * snapshot (lens transcript + invocation table).
+   *
+   * Optional.  The two consumers rank it differently:
+   *
+   * - The compression tools treat it as a FALLBACK: they address the
+   *   folded view the context transform published for the current round
+   *   and consult this method only when no round view exists yet (e.g.
+   *   the very first turn, before any transform ran).
+   * - The `/dcp` command treats it as its PREFERRED read — a live host
+   *   read is fresher than a cached view for a usage report — and falls
+   *   back to the published round view when the host wires no history.
+   *
+   * A host may implement it only when its read path is provably the
+   * same source the transform projects — same storage, same projection
+   * — so the ordinal space agrees.  A host that cannot make that claim
+   * must leave the method absent rather than hand back a snapshot in a
+   * different address space.
+   */
+  fetchHistory?(sessionId: string): Promise<Projection>;
   /**
    * Post a session-scoped system notification.
    *

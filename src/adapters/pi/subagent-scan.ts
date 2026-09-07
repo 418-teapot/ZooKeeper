@@ -415,9 +415,9 @@ function headerSessionId(text: string): string | undefined {
 /**
  * A lazily-built session-id → file-path index over the sessions root.
  *
- * The legacy `locateSessionFile` rescan of the sessions root (a readdirSync
- * over every cwd dir and every `*.jsonl` header) ran for EACH run missing a
- * `sessionPath` — O(runs × files).  The index builds that scan ONCE, on the
+ * A rescan of the sessions root per lookup (a readdirSync
+ * over every cwd dir and every `*.jsonl` header) would cost
+ * O(runs × files).  The index builds that scan ONCE, on the
  * first lookup that needs it, then serves every later lookup from the
  * in-memory map, so a rebuild with many pointer-less runs does a single
  * directory sweep.  Malformed / unreadable files are skipped; a missing or
@@ -478,7 +478,8 @@ export class SessionPathIndex {
         try {
           const id = headerSessionId(this.io.readFileSync(path, "utf-8"));
           if (id !== undefined) {
-            // First occurrence wins, matching the old linear scan.
+            // First occurrence wins (deterministic: a duplicate header
+            // id keeps its earlier entry).
             if (!index.has(id)) index.set(id, path);
           }
         } catch {

@@ -7,9 +7,10 @@
  * estimate, rendered through the shared templates in `prompts.ts`).
  *
  * Threshold resolution and the watermark math operate over host-agnostic
- * inputs; the token level and the eligibility window are derived from
- * the lens transcript through the measurement machinery
- * (`measure.ts` / `compress.ts`).
+ * inputs; the token level comes from the API usage carried by the last
+ * completed assistant message, while the eligibility window is measured
+ * over the FOLDED, numbered view — the same `mN` address space the model
+ * is shown.
  *
  * **Denominator semantics:** the level comparison uses the *prompt-side
  * total* of the last completed assistant message — `input + cacheRead +
@@ -33,6 +34,26 @@
  * triggers; a nudge message is injected only when a level fires AND an
  * eligible compressible window exists.
  *
+ * **Measured level:** the API measurement of the water level lags the
+ * view — the usage of the last completed assistant describes the prompt
+ * that call was billed for, so a compression that happens later in the
+ * same round is invisible to it until the NEXT call is billed.  A
+ * compression therefore books its reclaim (`creditReclaim`), and the
+ * booked amount discounts the measured total until a different
+ * measurement arrives; a fresh measurement is taken from the already
+ * shrunk view, so the discount is consumed rather than applied again.
+ *
+ * **Window coordinates:** the compressible window, its refs and its
+ * reclaim estimate all live in the numbered view, never in raw transcript
+ * ordinals — a folded interval still holds its original text in the raw
+ * transcript, so measuring there would advertise tokens the view no
+ * longer shows.  Only the protection boundary stays in ordinal space,
+ * because that is the space the `compress` gates are defined in; it is
+ * translated to view lines by requiring a line to sit ENTIRELY below it.
+ * Lines folded into a summary contribute no reclaim (their tokens are
+ * already spent), which keeps the estimate at what a new compression
+ * could still free.
+ *
  * @module
  */
 
@@ -45,6 +66,8 @@ import {
   findLastCompletedAssistant,
 } from "./measure.js";
 import type { SessionState } from "./state.js";
+import type { NumberedItem } from "./view-refs.js";
+import { itemInterval } from "./view-refs.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -108,20 +131,18 @@ export interface EligibilityConfig {
  * Eligibility payload for a nudge message.
  *
  * `startRef` / `endRef` address the compressible window — the same
- * triple-protection boundaries the `compress` tool enforces, with the
- * first user message excluded.  Both refs are INCLUSIVE window bounds;
- * the model picks its own contiguous sub-range inside them.  The ref
- * strings are supplied by the caller (per-round line numbers in the
- * current architecture); this module only locates their holder
- * messages.  `reclaimTokens` estimates what compressing the whole
- * window would free.
+ * protection boundaries the `compress` tool enforces, with the first user
+ * message excluded — as per-round view lines.  Both refs are INCLUSIVE
+ * window bounds; the model picks its own contiguous sub-range inside
+ * them.  `reclaimTokens` estimates what compressing the whole window
+ * would free, counting only the content the view still shows in full.
  */
 export interface NudgeEligibility {
-  /** Ref of the first eligible message holding a ref (window start, inclusive). */
+  /** Ref of the first view line of the window (inclusive). */
   startRef: string;
-  /** Ref of the last eligible message holding a ref (window end, inclusive). */
+  /** Ref of the last view line of the window (inclusive). */
   endRef: string;
-  /** Heuristic token estimate of the eligible window. */
+  /** Estimated tokens a compression of the whole window would free. */
   reclaimTokens: number;
 }
 
@@ -129,14 +150,15 @@ export interface NudgeEligibility {
  * Context inputs for one nudge evaluation.
  *
  * Bundles the model context window (percentage resolution + header
- * percent) with the compressible-window inputs and the ref lookup.
+ * percent) with the compressible-window inputs and this round's numbered
+ * view.
  */
 export interface NudgeInjectOptions extends EligibilityConfig {
   /** The current model context window (tokens). */
   contextLimit: number;
-  /** Map a message ordinal to its per-round line ref, or undefined when
-   * the message carries no ref (hidden / not injectable). */
-  refForOrdinal: (ordinal: number) => string | undefined;
+  /** This round's numbered folded view — the `mN` address space the model
+   * holds, and the coordinate system the window is measured in. */
+  numbered: NumberedItem[];
 }
 
 // ---------------------------------------------------------------------------
@@ -242,6 +264,109 @@ function promptSideTokens(messages: HostMessage[]): number {
 }
 
 /**
+ * Book a compression's reclaim against the water level.
+ *
+ * The reclaim is a one-shot discount on the measured prompt-side total:
+ * the usage figures the nudge measures are written by the API call that
+ * preceded the compression, so without this booking the level keeps
+ * counting tokens the view no longer shows.
+ *
+ * Repeated compressions of the same stale measurement accumulate — each
+ * booked amount is real content removed from the view.
+ *
+ * @param state - The session state (mutated).
+ * @param reclaimTokens - Tokens the compression took out of the view.
+ */
+export function creditReclaim(
+  state: SessionState,
+  reclaimTokens: number,
+): void {
+  if (!Number.isFinite(reclaimTokens) || reclaimTokens <= 0) return;
+  const nudges = { ...(state.nudges ?? {}) };
+  nudges.pendingReclaimTokens =
+    (nudges.pendingReclaimTokens ?? 0) + Math.round(reclaimTokens);
+  state.nudges = nudges;
+}
+
+/**
+ * Clear the booked reclaim.
+ *
+ * Drops the discount and the measurement it was anchored to, so the next
+ * evaluation reads the measurement at face value.
+ *
+ * @param state - The session state (mutated).
+ */
+function consumeReclaimCredit(state: SessionState): void {
+  if (
+    state.nudges?.pendingReclaimTokens === undefined &&
+    state.nudges?.reclaimMeasurement === undefined
+  ) {
+    return;
+  }
+  const nudges = { ...(state.nudges ?? {}) };
+  delete nudges.pendingReclaimTokens;
+  delete nudges.reclaimMeasurement;
+  state.nudges = nudges;
+}
+
+/**
+ * The measured prompt-side total after the booked reclaim, if any.
+ *
+ * The discount is anchored to the measurement it was granted against
+ * (`state.nudges.reclaimMeasurement`): while the measurement is that
+ * same value the compression is not billed yet and the discount applies;
+ * any other measurement comes from a view the compression already shrank,
+ * so the discount is consumed here and the value is reported as measured
+ * (the same tokens are never subtracted twice).
+ *
+ * Unlike `measureLevel` this never writes state, so a caller reporting
+ * the level (logs, transient UI) can read the number the decision used.
+ *
+ * @param state - The session state.
+ * @param measured - The raw prompt-side total of the last completed
+ *   assistant message.
+ * @returns The water level in tokens.
+ */
+export function readLevel(state: SessionState, measured: number): number {
+  const credit = state.nudges?.pendingReclaimTokens ?? 0;
+  if (credit <= 0) return measured;
+  const anchored = state.nudges?.reclaimMeasurement;
+  if (anchored !== undefined && anchored !== measured) return measured;
+  return Math.max(0, measured - credit);
+}
+
+/**
+ * Read the water level for this evaluation and persist the credit state.
+ *
+ * Same value as `readLevel`, plus it records the measurement a live
+ * discount is anchored to and clears a discount a newer measurement has
+ * already absorbed.
+ *
+ * @param state - The session state (mutated).
+ * @param measured - The raw prompt-side total.
+ * @returns The water level in tokens.
+ */
+function measureLevel(state: SessionState, measured: number): number {
+  const credit = state.nudges?.pendingReclaimTokens ?? 0;
+  if (credit <= 0) {
+    consumeReclaimCredit(state);
+    return measured;
+  }
+  const anchored = state.nudges?.reclaimMeasurement;
+  if (anchored !== undefined && anchored !== measured) {
+    consumeReclaimCredit(state);
+    return measured;
+  }
+  if (anchored === undefined) {
+    state.nudges = {
+      ...(state.nudges ?? {}),
+      reclaimMeasurement: measured,
+    };
+  }
+  return Math.max(0, measured - credit);
+}
+
+/**
  * Render the nudge text for a fired level from the shared templates.
  *
  * Fills the copy slots of `CONTEXT_NUDGE_TEMPLATE` from
@@ -284,9 +409,10 @@ function renderNudgeText(
  *    the subsystem — nothing runs and the watermark is untouched.
  * 2. Without a completed assistant message there is no real token level
  *    — the evaluation is skipped (watermark untouched).
- * 3. The token level is the prompt-side total (see `promptSideTokens`).
- *    `anchor = min(last ?? tokens, tokens)` ratchets downward; the level
- *    is `"urgent"` at/above `max`, `"gentle"` at/above `min`, else null.
+ * 3. The token level is the measured prompt-side total with the booked
+ *    reclaim discounted off it (see `measureLevel`).  `anchor = min(last
+ *    ?? tokens, tokens)` ratchets downward; the level is `"urgent"`
+ *    at/above `max`, `"gentle"` at/above `min`, else null.
  * 4. A trigger fires when a level is set AND the distance from the anchor
  *    has grown past the level's interval (`growthTokens` gentle,
  *    `floor(growthTokens / 2)` urgent); on trigger the anchor moves to
@@ -297,11 +423,13 @@ function renderNudgeText(
  *    reminder text is assembled from the shared templates and returned;
  *    otherwise `null` (the anchor was still persisted).
  *
- * @param state - The session state; `state.nudges.lastNudgeTokens` is
- *   read and persisted.
- * @param messages - The transcript (folded view).
+ * @param state - The session state; `state.nudges` carries the watermark
+ *   and the reclaim booking, both read and persisted here.
+ * @param messages - The transcript — the raw view the usage figures and
+ *   the protection boundaries are read from.
  * @param config - Raw nudge configuration; `undefined` disables.
- * @param options - Context window, protection inputs, and the ref lookup.
+ * @param options - Context window, protection inputs, and this round's
+ *   numbered view (the window's coordinate system).
  * @returns The reminder text, or `null` when nothing should be injected.
  */
 export function evaluateNudge(
@@ -317,7 +445,7 @@ export function evaluateNudge(
   const { index } = findLastCompletedAssistant(messages);
   if (index < 0) return null;
 
-  const promptTokens = promptSideTokens(messages);
+  const promptTokens = measureLevel(state, promptSideTokens(messages));
   const anchor = Math.min(
     state.nudges?.lastNudgeTokens ?? promptTokens,
     promptTokens,
@@ -349,11 +477,7 @@ export function evaluateNudge(
 
   if (!fired || level === null) return null;
 
-  const eligibility = computeEligibility(
-    messages,
-    options,
-    options.refForOrdinal,
-  );
+  const eligibility = computeEligibility(messages, options.numbered, options);
   if (eligibility === null) return null;
 
   return renderNudgeText(
@@ -369,43 +493,91 @@ export function evaluateNudge(
 // ---------------------------------------------------------------------------
 
 /**
+ * What one view line contributes to a compressible window.
+ *
+ * A line addresses either a single transcript message or a whole folded
+ * block, so it carries the ordinal interval it stands for (the same
+ * mapping `resolveEndpoint` uses) plus the tokens a new compression of
+ * that line could still free.
+ */
+interface ViewLine {
+  /** The line's per-round ref (`mN`) — the address the model writes. */
+  ref: string;
+  /** First transcript ordinal the line covers (inclusive). */
+  start: number;
+  /** Last transcript ordinal the line covers (exclusive). */
+  end: number;
+  /** Tokens a compression of this line frees (0 once it is folded). */
+  reclaimTokens: number;
+}
+
+/**
+ * Project the numbered view into the lines the window is measured over.
+ *
+ * Numbering is dense over the visible view, so every line holds a ref
+ * (hidden messages carry none and are absent here) and the lines are in
+ * ascending ordinal order.  A summary line is already folded: its text
+ * is what a compression of that interval would have to keep, so it
+ * frees nothing new and is counted as zero reclaim.
+ *
+ * @param history - The transcript the view was folded from.
+ * @param numbered - This round's numbered folded view.
+ * @returns One entry per view line, in view order.
+ */
+function viewLines(
+  history: HostMessage[],
+  numbered: NumberedItem[],
+): ViewLine[] {
+  const lines: ViewLine[] = [];
+  for (const { n, item } of numbered) {
+    const { start, end } = itemInterval(item);
+    lines.push({
+      ref: `m${n}`,
+      start,
+      end,
+      reclaimTokens:
+        item.type === "original"
+          ? estimateMessageHeuristic(history[item.ordinal])
+          : 0,
+    });
+  }
+  return lines;
+}
+
+/**
  * Compute the eligibility payload for a nudge message.
  *
- * Derives the compressible window from the SAME boundaries the compress
- * path enforces (triple protection + first-user-message exclusion), so
- * the nudge never advertises a range the `compress` tool would reject:
+ * The window is a run of VIEW LINES, measured in this round's numbered
+ * view — the same `mN` address space the model sees and the `compress`
+ * tool resolves.  Its bounds come from the SAME gates the compress path
+ * enforces (protection window + last-user cap from the end, first-user
+ * exclusion from the start), which are defined over transcript ordinals;
+ * a line joins the window only when the interval it stands for sits
+ * entirely inside them, so the advertised range can never be one
+ * `compress` would reject as reaching into protection or clipping an
+ * active block.
  *
- * - `endIdx = min(protectedStart, lastUserOrdinal)` where
- *   `protectedStart` is the union of the trailing message-count and
- *   token-budget windows, and the last non-hidden user message caps the
- *   window from the end.
- * - `startIdx = firstUserOrdinal + 1` (the first user message is never
- *   compressible).
+ * `reclaimTokens` sums the not-yet-folded content of the window: an
+ * interval that is already a summary contributes nothing, so repeated
+ * compressions never re-bill the same tokens.
  *
- * `startRef` is the FIRST ref-holding message at/after `startIdx`;
- * `endRef` is the LAST ref-holding message before `endIdx`.
- * `reclaimTokens` is the heuristic estimate of the whole window
- * `[startIdx, endIdx)` (no folding happens here).
+ * Returns `null` when there is no user message, no view line, the window
+ * is empty, or the estimate falls below `config.thresholdTokens` (a
+ * compress in this window would be a no-op the gates reject).
  *
- * Returns `null` when there is no user message, the window is empty, no
- * ref-holding message exists inside it, or the window estimate falls
- * below `config.thresholdTokens` (a compress in this window would be a
- * phantom-gate no-op rejection).
- *
- * @param history - The transcript.
+ * @param history - The transcript the view was folded from.
+ * @param numbered - This round's numbered folded view.
  * @param config - Window protection configuration (message count, token
  *   budget, phantom threshold).
- * @param refForOrdinal - Lookup from message ordinal to its per-round
- *   line ref (injected so this module stays free of the view layer).
  * @returns The eligibility payload, or `null`.
  */
 export function computeEligibility(
   history: HostMessage[],
+  numbered: NumberedItem[],
   config: EligibilityConfig,
-  refForOrdinal: (ordinal: number) => string | undefined,
 ): NudgeEligibility | null {
   const lastUser = findLastUserOrdinal(history);
-  const endIdx = Math.min(
+  const boundary = Math.min(
     computeProtectedStartOrdinal(
       history,
       config.protectedMessages,
@@ -415,39 +587,33 @@ export function computeEligibility(
   );
   const firstUserIdx = findFirstUserOrdinal(history);
   if (firstUserIdx < 0) return null;
-  const startIdx = firstUserIdx + 1;
-  if (startIdx >= endIdx) return null;
 
-  // First ref-holding message inside the window (inclusive start bound).
-  let startRef: string | undefined;
-  for (let i = startIdx; i < endIdx; i++) {
-    const ref = refForOrdinal(i);
-    if (ref) {
-      startRef = ref;
-      break;
-    }
-  }
-  if (!startRef) return null;
-
-  // Last ref-holding message inside the window (inclusive end bound).
-  let endRef: string | undefined;
-  for (let i = endIdx - 1; i >= startIdx; i--) {
-    const ref = refForOrdinal(i);
-    if (ref) {
-      endRef = ref;
-      break;
-    }
-  }
-  if (!endRef) return null;
+  // Both gates are monotone over the ascending lines, so they cut a
+  // prefix (at or below the first user message) and a suffix (reaching
+  // into the protection boundary) off one contiguous window.
+  const lines = viewLines(history, numbered);
+  let from = 0;
+  while (from < lines.length && lines[from].start <= firstUserIdx) from += 1;
+  let to = lines.length;
+  while (to > from && lines[to - 1].end > boundary) to -= 1;
+  if (from >= to) return null;
 
   let reclaimTokens = 0;
-  for (let i = startIdx; i < endIdx; i++) {
-    reclaimTokens += estimateMessageHeuristic(history[i]);
+  for (let i = from; i < to; i++) {
+    reclaimTokens += lines[i].reclaimTokens;
   }
+
+  // Nothing left to free: the window is folded content only, so a
+  // compress here would be rejected for bringing no new content.
+  if (reclaimTokens <= 0) return null;
 
   // Phantom alignment: a compress inside this window would be rejected
   // as a no-op, so the nudge stays silent.
   if (reclaimTokens < config.thresholdTokens) return null;
 
-  return { startRef, endRef, reclaimTokens };
+  return {
+    startRef: lines[from].ref,
+    endRef: lines[to - 1].ref,
+    reclaimTokens,
+  };
 }

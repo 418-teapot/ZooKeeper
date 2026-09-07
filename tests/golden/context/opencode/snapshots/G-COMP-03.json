@@ -665,7 +665,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "第一段",
             "coveredMessages": 6,
             "compressedTokens": 12018,
@@ -884,8 +884,16 @@
       "state": {
         "blocks": [
           {
+            "blockId": 1,
+            "status": "consumed",
+            "title": "第一段",
+            "coveredMessages": 6,
+            "compressedTokens": 12018,
+            "summaryTokens": 12
+          },
+          {
             "blockId": 2,
-            "active": true,
+            "status": "active",
             "title": "第二段",
             "coveredMessages": 14,
             "compressedTokens": 16024,
@@ -920,7 +928,7 @@
           "toolParts": [],
           "synthetic": true,
           "sentinelId": "zoo-fold-b3",
-          "text": "[m2] [Block b3 · 15 条] 第三段\n第三段\n=== Superseded Blocks ===\n--- b2: 第二段 ---"
+          "text": "[m2] [Block b3 · 15 条] 第三段\n第三段\n=== Superseded Blocks ===\n--- b1: 第一段 ---\n--- b2: 第二段 ---"
         },
         {
           "role": "assistant",
@@ -1092,12 +1100,28 @@
       "state": {
         "blocks": [
           {
+            "blockId": 1,
+            "status": "consumed",
+            "title": "第一段",
+            "coveredMessages": 6,
+            "compressedTokens": 12018,
+            "summaryTokens": 12
+          },
+          {
+            "blockId": 2,
+            "status": "consumed",
+            "title": "第二段",
+            "coveredMessages": 14,
+            "compressedTokens": 16024,
+            "summaryTokens": 24
+          },
+          {
             "blockId": 3,
-            "active": true,
+            "status": "active",
             "title": "第三段",
             "coveredMessages": 15,
-            "compressedTokens": 14021,
-            "summaryTokens": 14
+            "compressedTokens": 2003,
+            "summaryTokens": 19
           }
         ],
         "marks": {
@@ -1109,10 +1133,10 @@
         "pendingViewChange": false,
         "nudgeAnchor": null
       },
-      "toolResult": "上下文压缩：已压缩 15 条消息为压缩块 b3：第三段，约回收 14.0K tokens",
+      "toolResult": "上下文压缩：已压缩 15 条消息为压缩块 b3：第三段，约回收 2.0K tokens",
       "toolError": null,
       "notifications": [
-        "上下文压缩：已压缩 15 条消息为压缩块 b3：第三段，约回收 14.0K tokens"
+        "上下文压缩：已压缩 15 条消息为压缩块 b3：第三段，约回收 2.0K tokens"
       ]
     }
   ]

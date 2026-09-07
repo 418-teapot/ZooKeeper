@@ -50,8 +50,8 @@ import type {
 import { getModelLimit } from "../../../../src/core/context/model-limits.js";
 import { computeSpanHash } from "../../../../src/core/context/spanhash.js";
 import {
+  allocateBlockId,
   type Block,
-  nextBlockId,
   type SessionState,
 } from "../../../../src/core/context/state.js";
 import type {
@@ -384,14 +384,14 @@ function landPlan(
   } catch {
     return;
   }
-  const id = nextBlockId(state.blocks);
+  const id = allocateBlockId(state);
   const block: Block = {
     start: startOrdinal,
     end,
     title: plan.title,
     summary: plan.summary,
     spanHash,
-    active: true,
+    status: "active",
     compressedTokens: plan.compressedTokens,
     summaryTokens: plan.summaryTokens,
     createdAt: Date.now(),

@@ -139,7 +139,7 @@ describe("compareSnapshots — semantic differences detected", () => {
           blocks: [
             {
               blockId: 1,
-              active: true,
+              status: "active",
               title: "t",
               coveredMessages: 3,
               compressedTokens: 900,
@@ -162,12 +162,12 @@ describe("compareSnapshots — semantic differences detected", () => {
     ],
   };
 
-  test("block active state differs → flagged", () => {
+  test("block lifecycle status differs → flagged", () => {
     const other = JSON.parse(JSON.stringify(base)) as typeof base;
-    other.rounds[0].state.blocks[0].active = false;
+    other.rounds[0].state.blocks[0].status = "stale";
     const diffs = compareSnapshots(other, base);
     expect(diffs.length).toBeGreaterThan(0);
-    expect(diffs.some((d) => d.includes("active"))).toBe(true);
+    expect(diffs.some((d) => d.includes("status"))).toBe(true);
   });
 
   test("view message count differs → flagged", () => {

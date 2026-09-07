@@ -1,8 +1,9 @@
 /**
- * OpenCode v1 message shapes and the legacy context measurement module.
+ * OpenCode v1 message shapes and the v1-based context measurement
+ * module.
  *
  * This is the OpenCode adapter's home for the v1 message shapes
- * (`ContextMessageEntry { info, parts }` and friends) and the legacy
+ * (`ContextMessageEntry { info, parts }` and friends) and the
  * measurement functions built on them (`measureContext`,
  * `computeContextReport`, the cache/token helpers).  The shapes describe
  * the host messages as they arrive at the `messages.transform` hook, so

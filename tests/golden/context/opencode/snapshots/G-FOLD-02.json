@@ -98,7 +98,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "第一段",
             "coveredMessages": 3,
             "compressedTokens": 900,
@@ -186,7 +186,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "第一段",
             "coveredMessages": 3,
             "compressedTokens": 900,
@@ -194,7 +194,7 @@
           },
           {
             "blockId": 2,
-            "active": true,
+            "status": "active",
             "title": "第二段",
             "coveredMessages": 3,
             "compressedTokens": 900,
@@ -303,8 +303,16 @@
       "state": {
         "blocks": [
           {
+            "blockId": 1,
+            "status": "stale",
+            "title": "第一段",
+            "coveredMessages": 3,
+            "compressedTokens": 900,
+            "summaryTokens": 40
+          },
+          {
             "blockId": 2,
-            "active": true,
+            "status": "active",
             "title": "第二段",
             "coveredMessages": 3,
             "compressedTokens": 900,
@@ -440,7 +448,24 @@
         }
       ],
       "state": {
-        "blocks": [],
+        "blocks": [
+          {
+            "blockId": 1,
+            "status": "stale",
+            "title": "第一段",
+            "coveredMessages": 3,
+            "compressedTokens": 900,
+            "summaryTokens": 40
+          },
+          {
+            "blockId": 2,
+            "status": "stale",
+            "title": "第二段",
+            "coveredMessages": 3,
+            "compressedTokens": 900,
+            "summaryTokens": 40
+          }
+        ],
         "marks": {
           "pending": 0,
           "pendingTokens": 0,

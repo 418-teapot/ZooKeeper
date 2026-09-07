@@ -9,20 +9,20 @@
  * re-derives identical numbers from the same fold output without any
  * reconciliation.
  *
- * Three identity layers stay distinct (spec Decision 7): block identity
- * `bN` (persistent, owned by the block map), internal identity = the
- * ordinal interval + span hash (persistent), and the view line number
- * (transient, valid for the current round only).
+ * Three identity layers stay distinct: block identity `bN` (persistent,
+ * owned by the block map), internal identity = the ordinal interval +
+ * span hash (persistent), and the view line number (transient, valid for
+ * the current round only).
  *
  * The module renders but never materializes: original items receive
- * their prefix through the lens; summary messages are the adapter's job
- * (`src/adapters/opencode/render.ts`), and their first line is composed
- * as `refPrefix(n) + formatSummaryLabel(block)` followed by the summary
- * text.
+ * their prefix through the lens; summary messages are the host
+ * adapters' job (`src/adapters/<host>/render.ts`), and their first line
+ * is composed as `refPrefix(n) + formatSummaryLabel(block)` followed by
+ * the summary text.
  *
- * Hidden messages (spec Decision 3) occupy an ordinal but are skipped by
- * numbering and injection: they stay visible in the view with their raw
- * text and no line number, so the visible numbering stays dense 1..N.
+ * Hidden messages occupy an ordinal but are skipped by numbering and
+ * injection: they stay visible in the view with their raw text and no
+ * line number, so the visible numbering stays dense 1..N.
  *
  * @module
  */
@@ -82,6 +82,24 @@ export function numberView(
     numbered.push({ n: numbered.length + 1, item });
   }
   return numbered;
+}
+
+/**
+ * The ordinal interval a view item covers.
+ *
+ * An original item covers exactly its message; a summary item covers the
+ * whole interval of the block it folds.  This is the address→content map
+ * the view layer is built on: everything that turns an `mN` line into
+ * transcript ordinals goes through it, so the compression gates and any
+ * window measured over the view agree on what a line stands for.
+ *
+ * @param item - The view item to measure.
+ * @returns The half-open ordinal interval `[start, end)`.
+ */
+export function itemInterval(item: ViewItem): { start: number; end: number } {
+  return item.type === "original"
+    ? { start: item.ordinal, end: item.ordinal + 1 }
+    : { start: item.block.start, end: item.block.end };
 }
 
 /**
@@ -183,14 +201,7 @@ export function resolveEndpoint(
             `有效 m1..m${items.length}`,
     };
   }
-  if (target.item.type === "original") {
-    const ordinal = target.item.ordinal;
-    return { start: ordinal, end: ordinal + 1 };
-  }
-  return {
-    start: target.item.block.start,
-    end: target.item.block.end,
-  };
+  return itemInterval(target.item);
 }
 
 /**

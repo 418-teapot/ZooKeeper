@@ -33,7 +33,7 @@ function makeBlock(overrides: Partial<Block> = {}): Block {
     end: 3,
     summary: "summary text",
     spanHash: "abcd1234",
-    active: true,
+    status: "active",
     compressedTokens: 100,
     summaryTokens: 20,
     createdAt: 1000,

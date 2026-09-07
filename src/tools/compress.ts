@@ -14,18 +14,22 @@
  *    summary}`); per-range title rules and the `max_ranges` upper bound
  *    are enforced by the core with loud batch guidance BEFORE any range
  *    is applied.
- * 3. Fetches the full session messages as a host-agnostic transcript
- *    through the host.
- * 4. Folds the transcript with the shared session state and numbers the
- *    visible view — the per-round line-number address space the model
- *    references (`mN` / `[mN]`).
- * 5. Drives the core batch pipeline (resolve → validate → apply).  Every
+ * 3. Reads the round view published by the context transform — the
+ *    frozen transcript snapshot plus the numbered fold the model was
+ *    shown this round — so the refs it accepts address exactly the view
+ *    the model sees.  Only when no round view exists yet (a call made
+ *    before any transform ran) does it fall back to a host that
+ *    guarantees a same-source history read, folding that snapshot
+ *    itself; a host without that guarantee leaves the fallback unwired
+ *    and the call fails closed with guidance.
+ * 4. Drives the core batch pipeline (resolve → validate → apply).  Every
  *    range is validated against the same snapshot; any invalid range
  *    rejects the whole call naming the 1-based range index, leaving the
  *    state untouched.
- * 6. Flags the pending view change and persists the session state ONCE
- *    through the shared state manager.
- * 7. Posts a single ignored chat notification through the host.
+ * 5. Books the reclaimed tokens as the nudge's reclaim credit, flags the
+ *    pending view change, and persists the session state ONCE through the
+ *    shared state manager.
+ * 6. Posts a single ignored chat notification through the host.
  *
  * Loud Chinese guidance errors from the core propagate to the model
  * unchanged — the model self-corrects by re-picking refs and retrying.
@@ -44,6 +48,9 @@ import {
 } from "../core/context/compress.js";
 import { formatTokens } from "../core/context/context-report.js";
 import { fold } from "../core/context/fold.js";
+import type { Projection } from "../core/context/lens.js";
+import { creditReclaim } from "../core/context/nudge.js";
+import { getRoundView } from "../core/context/round-view.js";
 import {
   getContextStateManager,
   setPendingViewChange,
@@ -212,7 +219,7 @@ function buildCompressToolSpec(
             },
             toRef: {
               type: "string",
-              description: "终点行号，该消息之前的内容会被压缩。",
+              description: "终点行号，该消息及其之前的内容会被压缩。",
             },
             title: {
               type: "string",
@@ -281,16 +288,39 @@ export function createCompressTool(
         );
       }
 
-      // Fetch full messages as the host-agnostic transcript and build the
-      // folded, line-numbered view of the current round.
-      const snapshot = await host.fetchHistory(sessionID);
+      // The history the model addressed is the round view published by
+      // the last transform (frozen snapshot + numbered fold) — read it
+      // back verbatim, never refolded.  Only a call made before any
+      // transform ran (no round view) may fall back to a host history
+      // read, and only for hosts that wire one (a host whose read path
+      // is not provably the same source as the transform's projection
+      // must leave `fetchHistory` unwired — then the call fails closed
+      // with guidance instead of addressing a foreign ordinal space).
       const manager = getContextStateManager();
       const state = manager.get(sessionID);
-      const { items } = fold(snapshot, state);
-      const numbered: NumberedItem[] = numberView(
-        items,
-        (ordinal) => snapshot.messages[ordinal].hidden,
-      );
+      const cached = getRoundView(sessionID);
+      let snapshot: Projection;
+      let numbered: NumberedItem[];
+      if (cached !== undefined) {
+        snapshot = cached.projection;
+        numbered = cached.numbered;
+      } else if (host.fetchHistory !== undefined) {
+        snapshot = await host.fetchHistory(sessionID);
+        const { items } = fold(snapshot, state);
+        numbered = numberView(
+          items,
+          (ordinal) => snapshot.messages[ordinal].hidden,
+        );
+      } else {
+        log("compress-tool", "no_round_view", sessionID, undefined, "warn", {
+          reason: "no published round view and no host history fallback",
+        });
+        return (
+          "无法压缩：尚未取得当轮上下文视图（上下文变换本轮还未运行），" +
+          "当前宿主也不提供同源的历史回退——历史无法定位到模型看到的行号。" +
+          "请在下一轮对话后重试压缩。"
+        );
+      }
 
       // Core batch pipeline: loud Chinese guidance errors come back as a
       // whole-call error (max_ranges overflow) or per-range failures
@@ -309,8 +339,8 @@ export function createCompressTool(
       if (result.failed.length > 0) {
         const failure = result.failed[0];
         // Core span-resolution errors are not range-indexed; prefix them
-        // with the range index the legacy contract exposed.  Title and
-        // cross-range errors already carry their range index verbatim.
+        // with the failing range index.  Title and cross-range errors
+        // already carry their range index verbatim.
         const indexed = failure.error.startsWith(`第 ${failure.index} 个范围`);
         throw new Error(
           indexed
@@ -334,6 +364,12 @@ export function createCompressTool(
       // The view differs next round (new fold blocks) — flag the view
       // change and persist ONCE so the next transform folds the new
       // blocks and its release phase flushes pending marks.
+      //
+      // The same figure is booked as the nudge's reclaim credit: the API
+      // measurement the pressure level is read from comes from the call
+      // that preceded this compression, so without the booking the water
+      // level keeps counting tokens the compressed view has dropped.
+      creditReclaim(state, reclaimed);
       setPendingViewChange(sessionID);
       manager.save(sessionID);
 

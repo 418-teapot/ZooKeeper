@@ -1,11 +1,12 @@
 /**
- * Integration tests for the batch compress tool adapter against the new
- * ordinal core.
+ * Integration tests for the batch compress tool adapter.
  *
- * Covers: the full execute flow (fetch → v1 history mapping → folded
- * line-numbered view → core batch → pending view-change flag → persist →
- * notify → ToolResult), multi-range batch creation with a single
- * persistence and a single notification, the `max_ranges` overflow gate
+ * Covers: the full execute flow (round view published by the transform →
+ * core batch → pending view-change flag → persist → notify →
+ * ToolResult), the history-source rule (cached round view wins, host
+ * read only as a fallback, fail-closed guidance when neither exists),
+ * multi-range batch creation with a single persistence and a single
+ * notification, the `max_ranges` overflow gate
  * (loud batch guidance), every argument-validation branch with its
  * G-TOOL-01 Chinese guidance text (missing/empty/non-array ranges,
  * non-object items, non-string fields, empty/control/hyphen/overlong
@@ -18,14 +19,20 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import type { ToolHost } from "../core/client/tool-host.js";
 import { parseContextConfig } from "../core/config-parse.js";
+import { fold } from "../core/context/fold.js";
 import type { HostMessage, Projection } from "../core/context/lens.js";
 import { project } from "../core/context/lens.js";
+import {
+  _listRoundViewSessionsForTesting,
+  publishRoundView,
+} from "../core/context/round-view.js";
 import {
   _resetContextStateManagerForTesting,
   consumePendingViewChange,
   getContextStateManager,
 } from "../core/context/runtime.js";
 import type { Block, SessionState } from "../core/context/state.js";
+import { numberView } from "../core/context/view-refs.js";
 import {
   buildPlugin,
   buildToolHooks,
@@ -259,6 +266,127 @@ function firstBlock(): Block {
 }
 
 // ---------------------------------------------------------------------------
+// History source — the single snapshot published by the transform
+// ---------------------------------------------------------------------------
+
+/**
+ * Publish the round view the transform would have published for `messages`.
+ *
+ * Built the same way the hook builds it (fold over the projection, then
+ * dense numbering over the visible items), so the tool's cached path is
+ * exercised with production-shaped data.
+ */
+function publishViewOf(messages: HostMessage[]): void {
+  const snapshot = project(messages, []);
+  const state = getContextStateManager().get(TEST_SESSION_ID);
+  const { items } = fold(snapshot, state);
+  const numbered = numberView(
+    items,
+    (ordinal) => snapshot.messages[ordinal].hidden,
+  );
+  publishRoundView(TEST_SESSION_ID, { projection: snapshot, numbered });
+}
+
+/**
+ * A host whose optional history read is observable (call-counted) or absent.
+ *
+ * @param options.calls - Where to record each `fetchHistory` call; omit
+ *   `history` entirely to model a host that offers no fallback.
+ */
+function sourceHost(options: { history?: HostMessage[]; calls?: number[] }): {
+  host: ToolHost;
+  notifyCalls: string[];
+} {
+  const notifyCalls: string[] = [];
+  const host: ToolHost = {
+    resolveSessionId: () => TEST_SESSION_ID,
+    async notify(): Promise<void> {
+      notifyCalls.push("notify");
+    },
+  };
+  if (options.history !== undefined) {
+    const messages = options.history;
+    host.fetchHistory = async (): Promise<Projection> => {
+      options.calls?.push(1);
+      return project(messages, []);
+    };
+  }
+  return { host, notifyCalls };
+}
+
+describe("compress tool execute — history source", () => {
+  it("uses the published round view and never reads the host history", async () => {
+    // A view is published for this round; the host read would answer with
+    // an EMPTY transcript, so a host read would fail every ref — the
+    // counter proves the tool never asked.
+    publishViewOf(makeMessages());
+    const calls: number[] = [];
+    const { host, notifyCalls } = sourceHost({ history: [], calls });
+
+    const tool = createCompressTool(host, PARSED_CONFIG);
+    const result = await tool.execute(
+      { ranges: [makeRange(1, 9)] },
+      mockToolContext,
+    );
+
+    assert.equal(
+      calls.length,
+      0,
+      "the cached round view must not re-read the host",
+    );
+    assert.equal(getContextStateManager().get(TEST_SESSION_ID).blocks.size, 1);
+    assert.equal(consumePendingViewChange(TEST_SESSION_ID), true);
+    assert.equal(notifyCalls.length, 1);
+    assert.ok(result.includes("已压缩"));
+  });
+
+  it("falls back to the host history read when no round view exists", async () => {
+    assert.deepEqual(_listRoundViewSessionsForTesting(), []);
+    const calls: number[] = [];
+    const { host } = sourceHost({ history: makeMessages(), calls });
+
+    const tool = createCompressTool(host, PARSED_CONFIG);
+    const result = await tool.execute(
+      { ranges: [makeRange(1, 9)] },
+      mockToolContext,
+    );
+
+    assert.equal(calls.length, 1, "the fallback read runs once");
+    assert.equal(getContextStateManager().get(TEST_SESSION_ID).blocks.size, 1);
+    assert.ok(result.includes("已压缩"));
+  });
+
+  it("fails closed with guidance when neither a view nor a fallback exists", async () => {
+    const { host, notifyCalls } = sourceHost({});
+
+    const tool = createCompressTool(host, PARSED_CONFIG);
+    const result = await tool.execute(
+      { ranges: [makeRange(1, 9)] },
+      mockToolContext,
+    );
+
+    assert.match(result, /无法压缩/);
+    assert.match(result, /当轮上下文视图/);
+    assert.equal(
+      getContextStateManager().get(TEST_SESSION_ID).blocks.size,
+      0,
+      "state untouched — nothing was compressed",
+    );
+    assert.equal(
+      consumePendingViewChange(TEST_SESSION_ID),
+      false,
+      "no view change armed by a refused call",
+    );
+    assert.deepEqual(notifyCalls, [], "no notification for a refused call");
+    assert.equal(
+      sessionState().nudges?.pendingReclaimTokens,
+      undefined,
+      "a refused call books no reclaim credit",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Happy path
 // ---------------------------------------------------------------------------
 
@@ -274,9 +402,9 @@ describe("compress tool execute — happy path", () => {
       mockToolContext,
     );
 
-    // (1) Block created in the shared new-core session state.
+    // (1) Block created in the shared session state.
     const block = firstBlock();
-    assert.equal(block.active, true);
+    assert.equal(block.status, "active");
     assert.equal(block.title, "执行命令主题");
     assert.equal(block.end - block.start, 9, "range [1, 10) covers 9 ordinals");
 
@@ -288,10 +416,23 @@ describe("compress tool execute — happy path", () => {
       "flag is consumed and cleared",
     );
 
+    // (2b) The reclaim is booked against the water level, so the pressure
+    // the nudge measures drops with the view instead of waiting for the
+    // next API measurement of it.
+    assert.equal(
+      sessionState().nudges?.pendingReclaimTokens,
+      block.compressedTokens - block.summaryTokens,
+      "booked reclaim equals what the block frees",
+    );
+    assert.ok(
+      (sessionState().nudges?.pendingReclaimTokens ?? 0) > 0,
+      "a landed compression books something",
+    );
+
     // (3) State persisted to disk via the shared manager.
     const persisted = getContextStateManager().store.load(TEST_SESSION_ID);
     assert.equal(persisted.blocks.size, 1);
-    assert.equal(persisted.blocks.get(1)?.active, true);
+    assert.equal(persisted.blocks.get(1)?.status, "active");
     assert.equal(persisted.blocks.get(1)?.title, "执行命令主题");
 
     // (4) Ignored notification sent.
@@ -364,7 +505,7 @@ describe("compress tool execute — happy path", () => {
     // (2) Persisted exactly once (both blocks on disk).
     const persisted = getContextStateManager().store.load(TEST_SESSION_ID);
     assert.equal(persisted.blocks.size, 2);
-    assert.equal(persisted.blocks.get(2)?.active, true);
+    assert.equal(persisted.blocks.get(2)?.status, "active");
 
     // (3) ONE ignored notification covering both blocks.
     assert.equal(notifyCalls.length, 1, "single notification for the batch");
@@ -908,9 +1049,9 @@ describe("compress tool registration gate", () => {
     );
     assert.ok(
       tool.args.ranges.items.properties.toRef.description.includes(
-        "该消息之前的内容会被压缩",
+        "该消息及其之前的内容会被压缩",
       ),
-      "toRef arg must state that everything before the message gets compressed",
+      "toRef arg must state that the message and everything before it gets compressed",
     );
     assert.ok(
       tool.args.ranges.items.properties.title.description.includes(

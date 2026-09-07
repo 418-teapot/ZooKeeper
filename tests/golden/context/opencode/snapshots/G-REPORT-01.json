@@ -173,7 +173,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "报告块",
             "coveredMessages": 3,
             "compressedTokens": 900,
@@ -223,7 +223,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "报告块",
             "coveredMessages": 3,
             "compressedTokens": 900,
@@ -273,7 +273,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "报告块",
             "coveredMessages": 3,
             "compressedTokens": 900,
@@ -323,7 +323,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "报告块",
             "coveredMessages": 3,
             "compressedTokens": 900,
@@ -375,7 +375,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "报告块",
             "coveredMessages": 3,
             "compressedTokens": 900,

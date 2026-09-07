@@ -82,7 +82,7 @@ function seedBlock(
     title,
     summary,
     spanHash: computeSpanHash(history(messages), start, end),
-    active: true,
+    status: "active",
     compressedTokens: 100,
     summaryTokens: 10,
     createdAt: 1000,

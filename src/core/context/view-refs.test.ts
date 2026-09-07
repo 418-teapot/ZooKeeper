@@ -1,16 +1,18 @@
 /**
  * Tests for the view-as-address-space render layer (`view-refs.ts`).
  *
- * Covers the P1.7 acceptance contract: dense per-round numbering (original
- * and summary items alike), the summary label format with title-less
- * degradation, endpoint resolution (original → unit interval, summary →
- * whole block, reversed-range swap), actionable out-of-view errors, swallowed
- * blocks occupying no line, and restart-free reproducibility (no persistence
- * reconciliation).  The three-branch injection placement and the
- * pure-prefix injection semantics live in the adapter renderer tests
- * (`src/adapters/opencode/apply-view.test.ts`, which owns the actual
- * injection).  Hidden messages
- * (spec Decision 3 / checklist C7-02) stay visible in the view but occupy
+ * Covers: dense per-round numbering (original and summary items alike),
+ * the summary label format with title-less degradation, endpoint
+ * resolution (original → unit interval, summary → whole block, reversed
+ * range rejected with an order error), actionable out-of-view errors,
+ * swallowed blocks occupying no line, and restart-free reproducibility
+ * (no persistence reconciliation).  The three-branch injection placement
+ * and the pure-prefix injection semantics live in the host adapters'
+ * renderer tests, which own the actual injection
+ * (`src/adapters/opencode/apply-view.test.ts`,
+ * `src/adapters/opencode/render.test.ts`,
+ * `src/adapters/pi/render.test.ts`).  Hidden messages stay visible in
+ * the view but occupy
  * no line number and receive no prefix, so the visible numbering stays
  * dense.  Fixtures are built through the lens testkit; the
  * swallowed-block view comes from `fold`.
@@ -64,7 +66,7 @@ function makeBlock(
     end,
     summary: `summary [${start}, ${end})`,
     spanHash: computeSpanHash(projectMessages(history), start, end),
-    active: true,
+    status: "active",
     compressedTokens: 100,
     summaryTokens: 10,
     createdAt: 1000,
@@ -362,7 +364,7 @@ describe("restart reproducibility (stateless numbering)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 7. Hidden messages occupy no line — spec Decision 3 / checklist C7-02
+// 7. Hidden messages occupy no line
 // ---------------------------------------------------------------------------
 
 describe("hidden messages occupy no line", () => {

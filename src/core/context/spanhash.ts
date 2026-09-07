@@ -11,8 +11,8 @@
  * injection never reaches hashed text: both observations run before
  * the injection phase.
  *
- * Hash selection (spec Q2): FNV-1a, 32-bit, non-cryptographic, ten-ish
- * lines of plain TypeScript.  Each message's canon string is hashed
+ * Hash selection: FNV-1a, 32-bit, non-cryptographic, ten-ish lines of
+ * plain TypeScript.  Each message's canon string is hashed
  * individually over its UTF-8 bytes; the per-message hashes are then
  * rolled into a running state in ordinal order as fixed-width 4-byte
  * frames (big-endian).  The fixed frame width keeps the composition
@@ -76,14 +76,14 @@ function mixMessage(state: number, messageHash: number): number {
  * `[start, end)`.
  *
  * Every message in the interval participates — including hidden ones,
- * which occupy ordinals like any other message (spec Decision 1).  Each
- * message is projected through `canon` first, so core-side text
- * mutations leave the result unchanged.
+ * which occupy ordinals like any other message.  Each message is
+ * projected through `canon` first, so core-side text mutations leave the
+ * result unchanged.
  *
  * Invalid ranges are a programming error and throw a `RangeError`:
  * `start < 0`, `end > history.length`, or `start >= end` (an empty span
- * has no content to vouch for and is rejected).  Use `validateBlock`
- * for the tolerant existence check against persisted data.
+ * has no content to vouch for and is rejected).  Use `checkSpan` for
+ * the tolerant comparison against persisted data.
  *
  * @param snapshot - The projection snapshot to hash over.
  * @param start - First covered ordinal (inclusive).
@@ -125,14 +125,95 @@ export interface HashedSpan {
 }
 
 /**
+ * Why a span check turned out the way it did.
+ *
+ * - `"match"` — the interval is in bounds and hashes to the stored value.
+ * - `"out-of-bounds"` — the interval is not addressable in the current
+ *   transcript (`start < 0` or `end > history.length`): a truncation or
+ *   a fork cut into the span, or the transcript shrank under it.  No
+ *   current hash is defined for such an interval.
+ * - `"empty-span"` — `start >= end`, so the span vouches for nothing.
+ * - `"hash-mismatch"` — the interval is addressable but its content no
+ *   longer hashes to the stored value (compaction replacement, mid-span
+ *   rewrite, or any other content change).
+ */
+export type SpanCheckReason =
+  | "match"
+  | "out-of-bounds"
+  | "empty-span"
+  | "hash-mismatch";
+
+/**
+ * Outcome of one span self-verification.
+ *
+ * Carries both sides of the comparison plus the transcript length it was
+ * computed against, so a caller can log why a block stopped validating
+ * instead of only that it did.
+ */
+export interface SpanCheck {
+  /** True when the interval is in bounds and hashes to `storedHash`. */
+  valid: boolean;
+  /** Classification of the outcome. */
+  reason: SpanCheckReason;
+  /** The hash stored at block creation. */
+  storedHash: string;
+  /**
+   * The hash of the interval as it reads now, or `null` when the
+   * interval is not addressable and no hash is defined for it.
+   */
+  currentHash: string | null;
+  /** Transcript length the interval was checked against. */
+  historyLength: number;
+}
+
+/**
+ * Recompute the span hash and compare it against the stored value.
+ *
+ * Tolerant by design: out-of-bounds or empty intervals are reported,
+ * never thrown — this runs over persisted data.  `computeSpanHash` is
+ * the strict counterpart used at creation time.
+ *
+ * @param snapshot - The current projection snapshot.
+ * @param block - The block record to validate.
+ * @returns The comparison outcome, including both hashes and the
+ *   failure classification.
+ */
+export function checkSpan(snapshot: Projection, block: HashedSpan): SpanCheck {
+  const historyLength = snapshot.messages.length;
+  const storedHash = block.spanHash;
+  if (block.start < 0 || block.end > historyLength) {
+    return {
+      valid: false,
+      reason: "out-of-bounds",
+      storedHash,
+      currentHash: null,
+      historyLength,
+    };
+  }
+  if (block.start >= block.end) {
+    return {
+      valid: false,
+      reason: "empty-span",
+      storedHash,
+      currentHash: null,
+      historyLength,
+    };
+  }
+  const currentHash = computeSpanHash(snapshot, block.start, block.end);
+  return {
+    valid: currentHash === storedHash,
+    reason: currentHash === storedHash ? "match" : "hash-mismatch",
+    storedHash,
+    currentHash,
+    historyLength,
+  };
+}
+
+/**
  * Recompute the span hash and compare against the stored value.
  *
- * Any of the following makes the block invalid: `start < 0`,
- * `end > history.length` (a truncation or fork cut into the interval),
- * or `start >= end`.  Otherwise the hash is recomputed over the current
- * interval content and compared — a mismatch means the interval no
- * longer contains what was hashed at creation (compaction replacement,
- * mid-span rewrite, or any other content change).
+ * Boolean projection of {@link checkSpan}; use `checkSpan` when the
+ * reason for a failure needs to be reported.
  *
  * @param snapshot - The current projection snapshot.
  * @param block - The block record to validate.
@@ -143,13 +224,5 @@ export function validateBlock(
   snapshot: Projection,
   block: HashedSpan,
 ): boolean {
-  const history = snapshot.messages;
-  if (
-    block.start < 0 ||
-    block.end > history.length ||
-    block.start >= block.end
-  ) {
-    return false;
-  }
-  return computeSpanHash(snapshot, block.start, block.end) === block.spanHash;
+  return checkSpan(snapshot, block).valid;
 }

@@ -1,42 +1,43 @@
 /**
- * Context pruning transform handler — the new-core pipeline entry point.
+ * Context pruning transform handler.
  *
- * Called from the messages-transform hook.  The legacy seven-phase
- * pipeline is replaced by the host-agnostic context core
- * (`src/core/context/`) driven through an injected `HostAdapter`:
+ * Runs on the messages transform and drives the host-agnostic context
+ * core (`src/core/context/`) through an injected `HostAdapter`.  Phases,
+ * matching the banners in the handler body:
  *
- * 1. **State** — the process-wide shared `SessionStateManager`
+ * 1. **State + read** — the process-wide shared `SessionStateManager`
  *    (`getContextStateManager`) yields the session state (shared with
  *    the compress/decompress tools and the /dcp command — never a
- *    private manager).
- * 2. **Read** — `adapter.history()` maps the host messages to lens
- *    messages; the prompt-side token total of the last completed
- *    assistant is extracted for the release gate.
- * 3. **Release** — `computeEdits` selects the round's region edits
+ *    private manager); `adapter.history()` maps the host messages to
+ *    lens messages, and the prompt-side token total of the last
+ *    completed assistant is extracted for the release gate.
+ * 2. **Release** — `computeEdits` selects the round's region edits
  *    (effective marks plus pending marks passing the `releasedPercent`
- *    gate or the `pendingViewChange` bypass), `adapter.applyEdits`
+ *    gate or the pending-view-change bypass), `adapter.applyEdits`
  *    writes them through the adapter lens, and `flipReleasedMarks`
  *    flips the released marks effective.  Runs FIRST so marks written
  *    last turn take effect this turn (the two-turn lifecycle).  The
  *    notify callback and the `marks_released` log fire on a flip.
- * 4. **Producers** — dedup / purge-errors run only when their
- *    configured `thresholdContext` is defined (legacy gating); sweep
- *    always runs with the new core's defaults.  Marks are pending for
- *    the next turn's release.
- * 5. **Fold** — `fold` computes the folded view; expired (hash-
- *    invalidated) blocks are deactivated, inactive blocks reclaimed
- *    (`clearInactiveBlocks`), and a view change arms the per-session
- *    `pendingViewChange` flag that forces the next release.
- * 6. **Materialize** — `adapter.renderView` rebuilds the host messages in
+ * 3. **Producers** — dedup / purge-errors run only when their
+ *    configured `thresholdContext` is defined; sweep always runs with
+ *    its own defaults.  Marks are pending for the next turn's release.
+ * 4. **Fold** — `fold` computes the folded view; blocks whose span no
+ *    longer validates move to the stale status (record retained, with a
+ *    diagnostic log of the interval and both hashes), and a view change
+ *    arms the pending-view-change flag that forces the next release.
+ * 5. **Publish + materialize** — the round's folded view is numbered and
+ *    published to the compression tools (`core/context/round-view.ts`,
+ *    frozen), then `adapter.renderView` rebuilds the host messages in
  *    place (synthetic summary messages, per-round `[mN] ` line refs).
- * 7. **Nudge / manual compress** — `evaluateNudge` decides and renders
+ * 6. **Nudge / manual compress** — `evaluateNudge` decides and renders
  *    the context-pressure reminder (transform-only synthetic message
  *    appended at the END via `adapter.appendUserMessage`, never
  *    ref-assigned), and the same decision point fires the optional
  *    transient-UI toast (human-facing, host-rendered); the `/dcp
  *    compress` one-shot `pendingManualTrigger` flag injects the
  *    synthetic user command driving the `compress` tool.
- * 8. **Save** — the session state is written back to the shared store.
+ * 7. **Persist** — the session state is written back to the shared store,
+ *    followed by the `prune_completed` summary log.
  *
  * The two-turn effect ("turn N marks apply on turn N+1") means that
  * marks produced by the current turn are NOT pruned during the same
@@ -69,6 +70,7 @@ import { getModelLimit } from "../../core/context/model-limits.js";
 import {
   computeEligibility,
   evaluateNudge,
+  readLevel,
   resolveThresholds,
 } from "../../core/context/nudge.js";
 import { runDedup } from "../../core/context/producers/dedup.js";
@@ -81,39 +83,19 @@ import {
   type ReleaseOptions,
   reclaimedTokens,
 } from "../../core/context/release.js";
+import { publishRoundView } from "../../core/context/round-view.js";
 import {
   consumePendingViewChange,
   getContextStateManager,
   getRuntimeFlaggedState,
+  setPendingViewChange,
 } from "../../core/context/runtime.js";
-import { validateBlock } from "../../core/context/spanhash.js";
-import {
-  clearInactiveBlocks,
-  type SessionState,
-} from "../../core/context/state.js";
+import { checkSpan, validateBlock } from "../../core/context/spanhash.js";
+import { markStale, type SessionState } from "../../core/context/state.js";
 import { numberView } from "../../core/context/view-refs.js";
 import { MANUAL_COMPRESS_TEMPLATE } from "../../core/prompts.js";
 import type { TransformOutput } from "../../core/slots.js";
 import { log } from "../../utils/logger.js";
-
-// ---------------------------------------------------------------------------
-// Module-level view-change flags
-// ---------------------------------------------------------------------------
-
-/**
- * Per-session `pendingViewChange` flags owned by this module.
- *
- * `fold` reports a view change (`viewChanged`) when a block did not
- * participate in the fold (deactivation or span-hash expiry); the flag
- * is armed here and consumed by the NEXT turn's release phase, which
- * clears it.  Never persisted — loss on restart is benign.
- */
-const viewChangeFlags = new Map<string, boolean>();
-
-/** Test affordance: drop the module-level view-change flags. */
-export function _resetViewChangeFlagsForTesting(): void {
-  viewChangeFlags.clear();
-}
 
 // ---------------------------------------------------------------------------
 // Pipeline helpers
@@ -122,8 +104,8 @@ export function _resetViewChangeFlagsForTesting(): void {
 /**
  * Compute the prompt-side token total of the last completed assistant.
  *
- * Mirrors the legacy hook's extraction: `input + cacheRead +
- * cacheWrite`, output and reasoning excluded.
+ * Counts `input + cacheRead + cacheWrite`; output and reasoning tokens
+ * are excluded.
  *
  * @param view - The lens transcript.
  * @returns The prompt-side total, or 0 without a completed assistant.
@@ -138,12 +120,12 @@ function promptSideTokens(view: HostMessage[]): number {
 }
 
 /**
- * Convert a legacy absolute prompt-side threshold into the new-core
- * producers' model-context fraction.
+ * Convert an absolute prompt-side threshold into the producers'
+ * model-context fraction.
  *
- * The legacy hook gated producers on `promptTokens >= absolute`; the new
- * producers gate on `measured.total >= contextLimit × fraction`, so the
- * fraction `absolute / contextLimit` preserves the configured value.
+ * The producers gate on `measured.total >= contextLimit × fraction`, so
+ * the fraction `absolute / contextLimit` preserves a configured absolute
+ * value.
  *
  * @param absolute - The configured absolute threshold.
  * @param contextLimit - The model context window.
@@ -174,7 +156,7 @@ function coveredOrdinalsOf(
 ): Set<number> {
   const covered = new Set<number>();
   for (const block of state.blocks.values()) {
-    if (!block.active || !validateBlock(snapshot, block)) continue;
+    if (block.status !== "active" || !validateBlock(snapshot, block)) continue;
     for (let ordinal = block.start; ordinal < block.end; ordinal++) {
       covered.add(ordinal);
     }
@@ -193,8 +175,8 @@ function coveredOrdinalsOf(
  * the module docstring for the phase order).  All host-specific
  * operations go through `adapter`; `messages` is treated as an opaque
  * conversation.  `notify` fires exactly once per batch release with a
- * user-visible cleanup notice; the log surface preserves the legacy
- * event contracts (`prune_completed` counts effective marks only,
+ * user-visible cleanup notice; the log surface keeps its event
+ * contracts (`prune_completed` counts effective marks only,
  * `marks_released` carries the forced field, `nudge_injected` /
  * `manual_compress_injected` carry their payloads).
  *
@@ -246,20 +228,18 @@ export function contextPruningTransformHandler(
   // ── Phase 2: release — start of turn ──────────────────────────────
   // Effective marks from earlier turns write their placeholders again
   // (the host reloads the transcript fresh each turn); pending marks
-  // flip when the releasedPercent gate opens or the pendingViewChange
-  // bypass is armed (fold view change, compress / decompress tool call
-  // or block deactivation last turn).  The flag is consumed and
-  // cleared here, mirroring the legacy Phase 5/7 hand-off.  The bypass
-  // arrives through the module-level maps only — the fold view-change
-  // flag local to this module and the runtime map armed by the tools
-  // (`setPendingViewChange`) — never through a state-object field.
-  const releaseFlag = viewChangeFlags.get(sessionId) ?? false;
-  const toolFlag = consumePendingViewChange(sessionId);
+  // flip when the releasedPercent gate opens or the pending-view-change
+  // bypass is armed (a fold view change, a compress / decompress tool
+  // call, or a block that stopped folding last turn).  The flag is
+  // consumed and cleared here so it forces exactly one release; it
+  // arrives only through the runtime map (`setPendingViewChange`) —
+  // never through a state-object field.
+  const bypass = consumePendingViewChange(sessionId);
   const curPendingTokens = pendingTokens(state);
   const releaseOptions: ReleaseOptions = {
     promptTokens,
     releasedPercent: config.releasedPercent,
-    pendingViewChange: releaseFlag || toolFlag,
+    pendingViewChange: bypass,
   };
   // The release edits are applied through the adapter lens NOW, before
   // the producers and the nudge eligibility scan — those read region
@@ -270,7 +250,6 @@ export function contextPruningTransformHandler(
   snapshot = adapter.history(messages);
   view = snapshot.messages;
   const released = flipReleasedMarks(state, releaseOptions);
-  viewChangeFlags.delete(sessionId);
 
   if (released.releasedCount > 0) {
     log("context-pruning", "marks_released", sessionId, undefined, "info", {
@@ -282,8 +261,8 @@ export function contextPruningTransformHandler(
     });
 
     // Notify the session chat with a user-visible ignored message.
-    // Fire-and-forget — the caller (opencode.ts) wraps this in
-    // an async prompt that must never block the transform.
+    // Fire-and-forget — the host tool host's `notify` port owns
+    // delivery and must never block the transform.
     if (notify) {
       notify(
         `上下文清理：已折叠 ${released.releasedCount} 个工具调用，约回收 ${formatTokens(released.releasedTokens)} tokens`,
@@ -292,12 +271,11 @@ export function contextPruningTransformHandler(
   }
 
   // ── Phase 3: producers (dedup / purge-errors / sweep) ─────────────
-  // Table-driven gating mirrors the legacy hook: a producer whose
-  // prompt-side threshold is not configured is skipped; configured
-  // thresholds are converted to context-limit fractions.  Sweep has no
-  // legacy hook phase and runs with the new core's defaults (0.8 of
-  // the model limit, no protected tools).  New marks are pending for
-  // the NEXT turn's release (two-turn lifecycle).
+  // A producer whose prompt-side threshold is not configured is skipped;
+  // configured thresholds are converted to context-limit fractions.
+  // Sweep is ungated here and applies its own defaults (0.8 of the model
+  // limit, no protected tools).  New marks are pending for the NEXT
+  // turn's release (two-turn lifecycle).
   const modelLimit = getModelLimit(sessionId);
   const contextLimit = modelLimit?.context;
   const protectedStartOrdinal =
@@ -366,57 +344,80 @@ export function contextPruningTransformHandler(
   }
 
   // ── Phase 4: fold + block maintenance ─────────────────────────────
-  // Blocks that no longer validate (anchor messages vanished or
-  // content changed) are deactivated and reported; deactivation and
-  // any other fold change arm the view-change flag that forces the
-  // next release regardless of the releasedPercent threshold.
+  // Blocks that no longer validate (anchor messages vanished or content
+  // changed) move to the stale status and are reported; the transition
+  // keeps the record — interval, title, summary and stored hash — so the
+  // loss stays diagnosable and the summary recallable.  Staling and any
+  // other fold change arm the view-change flag that forces the next
+  // release regardless of the releasedPercent threshold.
   const folded = fold(snapshot, state);
   if (folded.expiredBlockIds.length > 0) {
     for (const id of folded.expiredBlockIds) {
       const block = state.blocks.get(id);
-      if (block) block.active = false;
+      if (block === undefined) continue;
+      // The fold already decided the span is invalid; re-derive the
+      // reason here so the log says why, not just that.
+      const check = checkSpan(snapshot, block);
+      log(
+        "context-pruning",
+        "compress_block_stale",
+        sessionId,
+        undefined,
+        "warn",
+        {
+          blockId: id,
+          start: block.start,
+          end: block.end,
+          reason: check.reason,
+          storedHash: check.storedHash,
+          currentHash: check.currentHash,
+          historyLength: check.historyLength,
+          ...(block.title !== undefined ? { title: block.title } : {}),
+        },
+      );
     }
-    log(
-      "context-pruning",
-      "compress_deactivated",
-      sessionId,
-      undefined,
-      "info",
-      {
-        deactivatedCount: folded.expiredBlockIds.length,
-      },
-    );
+    markStale(state, folded.expiredBlockIds);
   }
   if (folded.viewChanged) {
-    viewChangeFlags.set(sessionId, true);
+    setPendingViewChange(sessionId);
   }
-  clearInactiveBlocks(state);
 
-  // ── Phase 5: materialize the folded view ──────────────────────────
+  // ── Phase 5: publish + materialize the folded view ────────────────
+  // Per-round line refs used by the nudge, the manual-compress window
+  // and the compression tools (line numbers are transient — valid for
+  // this round only).  Numbering and the round-view publication run
+  // BEFORE the view is rendered: the frozen snapshot handed to the
+  // tools must carry the transcript exactly as the fold hashed it, and
+  // `renderView` rewrites the host messages in place (line-number
+  // prefixes, synthetic summary messages) — publishing afterwards would
+  // capture a view the fold never hashed.
+  const numbered = numberView(folded.items, (ordinal) => view[ordinal].hidden);
+
+  // Hand the compression tools this round's address space: the transcript
+  // snapshot the fold ran over plus the numbered view over it.  A
+  // `compress` call made mid-turn therefore addresses exactly the `mN`
+  // lines the model was shown, with no re-derivation from the host.
+  publishRoundView(sessionId, { projection: snapshot, numbered });
+
   // Rebuilds the host messages through the adapter (synthetic summary
   // messages, per-round dense `[mN] ` line refs on the injectable
   // regions).  The returned array is threaded through every subsequent
   // step.
   messages = adapter.renderView(messages, folded.items, state);
 
-  // Per-round line refs used by the nudge and manual-compress windows
-  // (line numbers are transient — valid for this round only).
-  const numbered = numberView(folded.items, (ordinal) => view[ordinal].hidden);
   if (numbered.length > 0) {
     // Line-ref allocation (per-round dense line numbers) — the
-    // observability sentinel for a completed pruning round, mirroring
-    // the legacy refs_assigned event.
+    // observability sentinel for a completed pruning round.
     log("context-pruning", "refs_assigned", sessionId, undefined, "info", {
       assigned: numbered.length,
     });
   }
-  const lineByOrdinal = new Map<number, number>();
-  for (const { n, item } of numbered) {
-    if (item.type === "original") lineByOrdinal.set(item.ordinal, n);
-  }
-  const refForOrdinal = (ordinal: number): string | undefined => {
-    const line = lineByOrdinal.get(ordinal);
-    return line === undefined ? undefined : `m${line}`;
+  // Window protection inputs shared by the nudge decision, its log line,
+  // and the manual-compress window: all three measure the same window.
+  const eligibilityConfig = {
+    protectedMessages: config.protectedMessages ?? 0,
+    protectedTokens: config.compress?.protectedTokens ?? 0,
+    thresholdTokens: config.compress?.thresholdTokens ?? 0,
   };
 
   // ── Phase 6: nudge — context-pressure reminders ───────────────────
@@ -425,17 +426,17 @@ export function contextPruningTransformHandler(
   // and a model context limit captured for this session.  The core
   // decides threshold resolution, the watermark ratchet (persisted on
   // every evaluation) and the eligibility window, and renders the
-  // message from the shared prompts.ts templates.  The synthetic
-  // message is transform-only — appended at the END, never persisted,
-  // never ref-assigned.
+  // message from the shared prompts.ts templates.  The window is
+  // measured over this round's numbered view, so the refs it advertises
+  // are addresses in the view the model was just rendered.  The
+  // synthetic message is transform-only — appended at the END, never
+  // persisted, never ref-assigned.
   const nudgeConfig = config.nudge;
   if (hasCompressTool && nudgeConfig !== undefined && modelLimit) {
     const nudgeText = evaluateNudge(state, view, nudgeConfig, {
       contextLimit: modelLimit.context,
-      protectedMessages: config.protectedMessages ?? 0,
-      protectedTokens: config.compress?.protectedTokens ?? 0,
-      thresholdTokens: config.compress?.thresholdTokens ?? 0,
-      refForOrdinal,
+      numbered,
+      ...eligibilityConfig,
     });
     if (nudgeText !== null) {
       messages = adapter.appendUserMessage(
@@ -446,28 +447,24 @@ export function contextPruningTransformHandler(
       );
 
       // Log the decision payload (the eligibility window is recomputed
-      // here; it is pure over the same inputs the core just used).
-      const eligibility = computeEligibility(
-        view,
-        {
-          protectedMessages: config.protectedMessages ?? 0,
-          protectedTokens: config.compress?.protectedTokens ?? 0,
-          thresholdTokens: config.compress?.thresholdTokens ?? 0,
-        },
-        refForOrdinal,
-      );
+      // here; it is pure over the same inputs the core just used).  The
+      // level is the one the decision used — the measured total with the
+      // booked reclaim discounted off it.
+      const eligibility = computeEligibility(view, numbered, eligibilityConfig);
+      const levelTokens = readLevel(state, promptTokens);
       const thresholds = resolveThresholds(nudgeConfig, modelLimit.context);
       const level =
         thresholds === null
           ? null
-          : promptTokens >= thresholds.max
+          : levelTokens >= thresholds.max
             ? "urgent"
             : "gentle";
       log("context-pruning", "nudge_injected", sessionId, undefined, "info", {
         // `nudgeLevel` instead of `level` — the logger reserves
         // `level` for the entry's log level.
         nudgeLevel: level,
-        tokens: promptTokens,
+        tokens: levelTokens,
+        measuredTokens: promptTokens,
         anchor: state.nudges?.lastNudgeTokens,
         ...(eligibility
           ? {
@@ -484,7 +481,7 @@ export function contextPruningTransformHandler(
       // the port renders source/level uniformly and silently drops
       // when the host has no UI surface.
       if (toast && level !== null) {
-        const percent = Math.round((promptTokens / modelLimit.context) * 100);
+        const percent = Math.round((levelTokens / modelLimit.context) * 100);
         toast({
           source: "context-pruning",
           level: level === "urgent" ? "warning" : "info",
@@ -516,17 +513,13 @@ export function contextPruningTransformHandler(
       const eligibility =
         config.protectedMessages === undefined
           ? null
-          : computeEligibility(
-              view,
-              {
-                protectedMessages: config.protectedMessages,
-                protectedTokens: manualCfg.protectedTokens,
-                thresholdTokens: manualCfg.thresholdTokens,
-              },
-              refForOrdinal,
-            );
+          : computeEligibility(view, numbered, {
+              protectedMessages: config.protectedMessages,
+              protectedTokens: manualCfg.protectedTokens,
+              thresholdTokens: manualCfg.thresholdTokens,
+            });
       const windowLine = eligibility
-        ? `可压缩窗口：${eligibility.startRef}–${eligibility.endRef}（约 ${eligibility.reclaimTokens} tokens，两端 ref 均为包含边界）。你可以在此窗口内选择连续子范围；compress 的 toRef 为排他边界——传入某条消息之后的 ref 才会包含该消息。`
+        ? `可压缩窗口：${eligibility.startRef}–${eligibility.endRef}（约 ${eligibility.reclaimTokens} tokens，两端 ref 均为包含边界）。你可以在此窗口内选择连续子范围，fromRef 与 toRef 都指向要压缩的消息本身。`
         : "未检测到明确的可压缩窗口（全部内容均在保护区内）。如你判断仍有已完成且无需逐字保留的历史，请自行选择合适的范围压缩。";
       const text = MANUAL_COMPRESS_TEMPLATE.replace("{WINDOW}", windowLine);
 
@@ -594,7 +587,7 @@ export function contextPruningTransformHandler(
 }
 
 // ---------------------------------------------------------------------------
-// Transform wrapper (sunk from the host entry point)
+// Transform wrapper
 // ---------------------------------------------------------------------------
 
 /**

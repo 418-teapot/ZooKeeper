@@ -3,10 +3,10 @@
  *
  * - G-FOLD-01: multi-block folded view structure (summary position,
  *   gap preservation, first-user force-keep, summary text verbatim).
- * - G-FOLD-02: full deactivation restores the original view.
- * - G-FOLD-03: revert (truncation) deactivates the block and covered
- *   messages reappear; the deactivation forces a pending-mark flush.
- * - G-FOLD-04: compaction removes the anchor, deactivates the block,
+ * - G-FOLD-02: every block stopping to fold restores the original view.
+ * - G-FOLD-03: revert (truncation) turns the block stale and covered
+ *   messages reappear; the transition forces a pending-mark flush.
+ * - G-FOLD-04: compaction removes the anchor, turns the block stale,
  *   and renumbers refs from m0001.
  *
  * @module
@@ -86,11 +86,12 @@ export const G_FOLD_01: Scenario = {
 };
 
 /**
- * G-FOLD-02 — full deactivation restores the original view.
+ * G-FOLD-02 — every block stopping to fold restores the original view.
  *
  * Creates the same two blocks as G-FOLD-01 (folded view captured),
- * then deactivates them one at a time.  The final round's view is the
- * original message list byte-for-byte — no synthetic residue.
+ * then turns them stale one at a time.  The final round's view is the
+ * original message list byte-for-byte — no synthetic residue, while both
+ * records stay in the state map.
  */
 export const G_FOLD_02: Scenario = {
   id: "G-FOLD-02",
@@ -130,24 +131,25 @@ export const G_FOLD_02: Scenario = {
     {
       label: "deactivate-b1",
       messages: smallConversation("golden-g-fold-02"),
-      action: { kind: "deactivate-block", blockId: 1 },
+      action: { kind: "stale-block", blockId: 1 },
     },
     {
       label: "deactivate-b2-view-restored",
       messages: smallConversation("golden-g-fold-02"),
-      action: { kind: "deactivate-block", blockId: 2 },
+      action: { kind: "stale-block", blockId: 2 },
     },
   ],
 };
 
 /**
- * G-FOLD-03 — revert (truncation) deactivates the block; covered
+ * G-FOLD-03 — revert (truncation) turns the block stale; covered
  * messages reappear; pending marks are force-flushed.
  *
  * b1 covers [a1, u2] anchored at u2.  A revert physically deletes u2
- * (the anchor) while a1 stays in the view.  The round's transform
- * deactivates b1 (activeBefore > activeAfter → pendingViewChange),
- * which forces the release of the two pre-seeded pending marks.
+ * (the anchor) while a1 stays in the view.  The round's transform finds
+ * b1's span no longer addressable and marks it stale (record retained,
+ * one-shot pendingViewChange), which forces the release of the two
+ * pre-seeded pending marks.
  */
 export const G_FOLD_03: Scenario = {
   id: "G-FOLD-03",
@@ -210,7 +212,7 @@ export const G_FOLD_03: Scenario = {
       label: "revert-anchor-deleted-deactivate-flush",
       messages: [
         msg("user", "u0", [textPart("hello")], "golden-g-fold-03"),
-        // a1 was covered by the block — reappears after deactivation.
+        // a1 was covered by the block — reappears once it goes stale.
         msg("assistant", "a1", [toolPart("call-1", "data")]),
         // u2 (the anchor) is GONE — physically deleted by the revert.
         msg("assistant", "a2", [toolPart("call-2", "done")]),
@@ -224,7 +226,7 @@ export const G_FOLD_03: Scenario = {
  *
  * b1 covers [a1..a4] anchored at a4.  Host compaction replaces the old
  * history with a summary-boundary message (info.summary === true):
- * the anchor disappears → the block deactivates; the boundary id
+ * the anchor disappears → the block goes stale; the boundary id
  * changes → refs reset and renumber from m0001 over the new view.
  */
 export const G_FOLD_04: Scenario = {

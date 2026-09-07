@@ -191,7 +191,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "test",
             "coveredMessages": 3,
             "compressedTokens": 1500,

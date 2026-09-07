@@ -33,7 +33,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "test",
             "coveredMessages": 2,
             "compressedTokens": 1500,
@@ -85,7 +85,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "test",
             "coveredMessages": 2,
             "compressedTokens": 1500,
@@ -137,7 +137,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "test",
             "coveredMessages": 2,
             "compressedTokens": 1500,
@@ -191,7 +191,16 @@
         }
       ],
       "state": {
-        "blocks": [],
+        "blocks": [
+          {
+            "blockId": 1,
+            "status": "stale",
+            "title": "test",
+            "coveredMessages": 2,
+            "compressedTokens": 1500,
+            "summaryTokens": 80
+          }
+        ],
         "marks": {
           "pending": 2,
           "pendingTokens": 300,

@@ -629,7 +629,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "执行命令主题",
             "coveredMessages": 9,
             "compressedTokens": 18027,
@@ -909,7 +909,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "执行命令主题",
             "coveredMessages": 9,
             "compressedTokens": 18027,
@@ -1187,7 +1187,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "执行命令主题",
             "coveredMessages": 9,
             "compressedTokens": 18027,
@@ -1465,7 +1465,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "执行命令主题",
             "coveredMessages": 9,
             "compressedTokens": 18027,
@@ -1743,7 +1743,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "执行命令主题",
             "coveredMessages": 9,
             "compressedTokens": 18027,
@@ -2021,7 +2021,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "执行命令主题",
             "coveredMessages": 9,
             "compressedTokens": 18027,
@@ -2299,7 +2299,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "执行命令主题",
             "coveredMessages": 9,
             "compressedTokens": 18027,
@@ -2577,7 +2577,7 @@
         "blocks": [
           {
             "blockId": 1,
-            "active": true,
+            "status": "active",
             "title": "执行命令主题",
             "coveredMessages": 9,
             "compressedTokens": 18027,
@@ -2953,7 +2953,16 @@
         }
       ],
       "state": {
-        "blocks": [],
+        "blocks": [
+          {
+            "blockId": 1,
+            "status": "consumed",
+            "title": "执行命令主题",
+            "coveredMessages": 9,
+            "compressedTokens": 18027,
+            "summaryTokens": 12
+          }
+        ],
         "marks": {
           "pending": 0,
           "pendingTokens": 0,
@@ -3325,7 +3334,16 @@
         }
       ],
       "state": {
-        "blocks": [],
+        "blocks": [
+          {
+            "blockId": 1,
+            "status": "consumed",
+            "title": "执行命令主题",
+            "coveredMessages": 9,
+            "compressedTokens": 18027,
+            "summaryTokens": 12
+          }
+        ],
         "marks": {
           "pending": 0,
           "pendingTokens": 0,
@@ -3335,8 +3353,8 @@
         "pendingViewChange": false,
         "nudgeAnchor": null
       },
-      "toolResult": null,
-      "toolError": "压缩块 b1 不存在。当前会话没有已创建的压缩块。",
+      "toolResult": "用户请求执行命令，助手完成了操作。",
+      "toolError": null,
       "notifications": []
     },
     {
@@ -3695,7 +3713,16 @@
         }
       ],
       "state": {
-        "blocks": [],
+        "blocks": [
+          {
+            "blockId": 1,
+            "status": "consumed",
+            "title": "执行命令主题",
+            "coveredMessages": 9,
+            "compressedTokens": 18027,
+            "summaryTokens": 12
+          }
+        ],
         "marks": {
           "pending": 0,
           "pendingTokens": 0,
@@ -4065,7 +4092,16 @@
         }
       ],
       "state": {
-        "blocks": [],
+        "blocks": [
+          {
+            "blockId": 1,
+            "status": "consumed",
+            "title": "执行命令主题",
+            "coveredMessages": 9,
+            "compressedTokens": 18027,
+            "summaryTokens": 12
+          }
+        ],
         "marks": {
           "pending": 0,
           "pendingTokens": 0,
@@ -4435,7 +4471,16 @@
         }
       ],
       "state": {
-        "blocks": [],
+        "blocks": [
+          {
+            "blockId": 1,
+            "status": "consumed",
+            "title": "执行命令主题",
+            "coveredMessages": 9,
+            "compressedTokens": 18027,
+            "summaryTokens": 12
+          }
+        ],
         "marks": {
           "pending": 0,
           "pendingTokens": 0,

@@ -22,6 +22,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { HostMessage, TextRegion } from "../../core/context/lens.js";
 import { makeMsg } from "../../core/context/lens-testkit.js";
+import { estimateMessageHeuristic } from "../../core/context/measure.js";
 import {
   PRUNED_TOOL_ERROR_INPUT_REPLACEMENT,
   PRUNED_TOOL_OUTPUT_REPLACEMENT,
@@ -30,6 +31,11 @@ import { history, isInjectableRegion, type WritableRegion } from "./history.js";
 import type {
   PiAgentMessage,
   PiAssistantMessage,
+  PiBashExecutionMessage,
+  PiBranchSummaryMessage,
+  PiCompactionSummaryMessage,
+  PiContentPart,
+  PiCustomMessage,
   PiToolCallPart,
   PiToolResultMessage,
   PiUserMessage,
@@ -83,6 +89,42 @@ function toolResultMessage(
   isError = false,
 ): PiToolResultMessage {
   return { role: "toolResult", toolCallId, toolName, content, isError };
+}
+
+function compactionSummaryMessage(
+  summary: string,
+  tokensBefore = 100,
+): PiCompactionSummaryMessage {
+  return { role: "compactionSummary", summary, tokensBefore, timestamp: 1 };
+}
+
+function branchSummaryMessage(summary: string): PiBranchSummaryMessage {
+  return { role: "branchSummary", summary, fromId: "abc123", timestamp: 1 };
+}
+
+function bashExecutionMessage(
+  command: string,
+  output: string,
+): PiBashExecutionMessage {
+  return {
+    role: "bashExecution",
+    command,
+    output,
+    exitCode: 0,
+    cancelled: false,
+    truncated: false,
+    timestamp: 1,
+  };
+}
+
+function customMessage(content: string | PiContentPart[]): PiCustomMessage {
+  return {
+    role: "custom",
+    customType: "my-ext",
+    content,
+    display: true,
+    timestamp: 1,
+  };
 }
 
 function regionsOf(message: PiAgentMessage): TextRegion[] {
@@ -250,6 +292,80 @@ describe("pi block → region mapping", () => {
     assert.equal(regions[1].get(), "trace");
     assert.equal(regions[2].get(), '{"path":"a.ts"}');
   });
+
+  it("compactionSummary maps its summary text to a content region", () => {
+    const [msg] = messagesOf([compactionSummaryMessage("## done\n3 files")]);
+    assert.equal(msg.role, "compactionSummary");
+    assert.equal(msg.regions.length, 1);
+    assert.equal(msg.regions[0].kind, "content");
+    assert.equal(msg.regions[0].get(), "## done\n3 files");
+  });
+
+  it("compactionSummary is marked as the host compaction boundary", () => {
+    const [msg] = messagesOf([compactionSummaryMessage("s")]);
+    assert.equal(msg.compaction, true);
+  });
+
+  it("branchSummary is counted but is not a compaction boundary", () => {
+    const [msg] = messagesOf([branchSummaryMessage("branch text")]);
+    assert.equal(msg.regions[0].get(), "branch text");
+    assert.equal(msg.compaction, undefined);
+  });
+
+  it("an empty compactionSummary yields no regions", () => {
+    assert.deepEqual(regionsOf(compactionSummaryMessage("")), []);
+  });
+
+  it("a summary message with no summary field yields no regions", () => {
+    const broken = {
+      role: "compactionSummary",
+      tokensBefore: 5,
+    } as unknown as PiCompactionSummaryMessage;
+    assert.deepEqual(regionsOf(broken), []);
+  });
+
+  it("custom content maps like a user message", () => {
+    const [strMsg] = messagesOf([customMessage("extension text")]);
+    assert.equal(strMsg.role, "custom");
+    assert.equal(strMsg.regions[0].get(), "extension text");
+    const regions = regionsOf(
+      customMessage([textPart("a"), imagePart(), textPart("b")]),
+    );
+    assert.deepEqual(
+      regions.map((r) => r.get()),
+      ["a", "", "b"],
+    );
+  });
+
+  it("bashExecution projects no region (its text is host-derived)", () => {
+    const [msg] = messagesOf([bashExecutionMessage("ls", "file")]);
+    assert.equal(msg.role, "bashExecution");
+    assert.deepEqual(msg.regions, []);
+    assert.equal(msg.hidden, false);
+  });
+
+  it("an undeclared role projects the minimal safe shape", () => {
+    const alien = {
+      role: "brandNewRole",
+      payload: "opaque",
+    } as unknown as PiAgentMessage;
+    const [msg] = messagesOf([alien]);
+    assert.equal(msg.role, "brandNewRole");
+    assert.deepEqual(msg.regions, []);
+  });
+
+  it("an entry that is not a shaped message projects hidden with no region", () => {
+    const messages = [
+      userMessage("hi"),
+      null,
+      undefined,
+    ] as unknown as PiAgentMessage[];
+    const snapshot = history(messages);
+    assert.equal(snapshot.messages.length, 3);
+    assert.equal(snapshot.messages[1].hidden, true);
+    assert.deepEqual(snapshot.messages[1].regions, []);
+    assert.equal(snapshot.messages[2].hidden, true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -362,6 +478,78 @@ describe("tool pair status and linkage", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Summary and non-LLM roles (post-compaction transcript regression)
+// ---------------------------------------------------------------------------
+
+/**
+ * pi's `context` event delivers the whole `AgentMessage` list, which after
+ * an automatic compaction also contains roles without a `content` field.
+ * The projection used to route every unrecognised role through the
+ * toolResult mapping — reading `message.content.length` — and crashed the
+ * pruning handler for the rest of the session.  These tests pin that the
+ * projection is a total function over host message shapes.
+ */
+function postCompactionTranscript(): PiAgentMessage[] {
+  return [
+    compactionSummaryMessage("compact summary text", 40000),
+    userMessage("continue"),
+    branchSummaryMessage("branch summary text"),
+    bashExecutionMessage("ls", "a.ts"),
+    customMessage("extension note"),
+    assistantMessage([toolCallPart("call-1", "bash", { cmd: "ls" })]),
+    toolResultMessage("call-1", "bash", [textPart("a.ts")]),
+  ];
+}
+
+describe("summary and non-LLM roles", () => {
+  it("a transcript containing compactionSummary projects without throwing", () => {
+    assert.doesNotThrow(() => history(postCompactionTranscript()));
+  });
+
+  it("every input message occupies exactly one ordinal", () => {
+    const messages = postCompactionTranscript();
+    const snapshot = history(messages);
+    assert.equal(snapshot.messages.length, messages.length);
+    assert.deepEqual(
+      snapshot.messages.map((m) => m.role),
+      messages.map((m) => m.role),
+    );
+  });
+
+  it("summary text is counted by estimation and marked as the boundary", () => {
+    const snapshot = history(postCompactionTranscript());
+    const summary = snapshot.messages[0];
+    assert.equal(summary.compaction, true);
+    assert.ok(estimateMessageHeuristic(summary) > 0);
+    // A branch summary is counted too, but is not a boundary.
+    const branch = snapshot.messages[2];
+    assert.equal(branch.compaction, undefined);
+    assert.ok(estimateMessageHeuristic(branch) > 0);
+  });
+
+  it("tool pairing addresses the result across summary messages", () => {
+    const snapshot = history(postCompactionTranscript());
+    assert.deepEqual(snapshot.invocations, [
+      {
+        name: "bash",
+        status: "completed",
+        input: { ordinal: 5, regionIndex: 0 },
+        output: { ordinal: 6, regionIndex: 0 },
+      },
+    ]);
+  });
+
+  it("unknown-role and non-message entries still hold their ordinals", () => {
+    const alien = { role: "brandNewRole" } as unknown as PiAgentMessage;
+    const messages = [userMessage("a"), alien, bashExecutionMessage("ls", "o")];
+    const snapshot = history(messages);
+    assert.equal(snapshot.messages.length, 3);
+    assert.equal(snapshot.messages[1].regions.length, 0);
+    assert.equal(snapshot.messages[2].regions.length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Region write-back
 // ---------------------------------------------------------------------------
 
@@ -431,6 +619,22 @@ describe("pi region write-back", () => {
       { pruned: PRUNED_TOOL_ERROR_INPUT_REPLACEMENT },
     );
   });
+
+  it("summary region set rewrites the backing summary field", () => {
+    const message = compactionSummaryMessage("original summary");
+    const region = messagesOf([message])[0].regions[0];
+    (region as WritableRegion).set("replaced");
+    assert.equal(message.summary, "replaced");
+    // The region reads live, so a later projection pass sees the edit.
+    assert.equal(region.get(), "replaced");
+  });
+
+  it("custom content region set rewrites the message content", () => {
+    const message = customMessage("extension text");
+    const region = messagesOf([message])[0].regions[0];
+    (region as WritableRegion).set("[pruned]");
+    assert.equal(message.content, "[pruned]");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -465,6 +669,13 @@ describe("isInjectableRegion", () => {
       toolResultMessage("call-1", "bash", [textPart("out")]),
     );
     assert.equal(isInjectableRegion(region), true);
+  });
+
+  it("host summary regions are not injectable", () => {
+    const [compaction] = regionsOf(compactionSummaryMessage("summary text"));
+    assert.equal(isInjectableRegion(compaction), false);
+    const [branch] = regionsOf(branchSummaryMessage("branch text"));
+    assert.equal(isInjectableRegion(branch), false);
   });
 
   it("regions from other adapters are not injectable", () => {

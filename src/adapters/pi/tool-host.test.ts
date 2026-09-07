@@ -1,13 +1,13 @@
 /**
  * Tests for the pi tool host (`src/adapters/pi/tool-host.ts`).
  *
- * Covers: session id resolution from the tool execution context, history
- * fetching via `sessionManager.buildContextEntries` with custom-entry
- * filtering and role filtering, best-effort notification via pi's
- * `appendEntry` channel (`zoo-notice` custom entries, including missing
- * appendEntry and thrown appendEntry), and the transient `toast` port
- * through `ui.notify` (message rendering, silent drop without the UI
- * surface, and swallowed failures).
+ * Covers: session id resolution from the tool execution context, the
+ * deliberate absence of a host history fallback (pi's context-entry read
+ * is not the ordinal space the `context` event projects), best-effort
+ * notification via pi's `appendEntry` channel (`zoo-notice` custom
+ * entries, including missing appendEntry and thrown appendEntry), and the
+ * transient `toast` port through `ui.notify` (message rendering, silent
+ * drop without the UI surface, and swallowed failures).
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
@@ -36,67 +36,12 @@ describe("createPiToolHost", () => {
     assert.equal(host.resolveSessionId({}), undefined);
   });
 
-  it("fetches history as lens messages from message entries", async () => {
-    const holder = makeHolder({
-      sessionManager: {
-        getSessionId: () => "sess-1",
-        buildContextEntries: () => [
-          { type: "message", message: { role: "user", content: "hi" } },
-          {
-            type: "message",
-            message: {
-              role: "assistant",
-              content: [{ type: "text", text: "hello" }],
-            },
-          },
-          {
-            type: "custom",
-            customType: "zoo-state",
-            data: {},
-          },
-        ],
-      },
-    });
-    const host = createPiToolHost(holder);
-    const snapshot = await host.fetchHistory("sess-1");
-
-    assert.equal(snapshot.messages.length, 2);
-    assert.equal(snapshot.messages[0]?.role, "user");
-    assert.equal(snapshot.messages[1]?.role, "assistant");
-  });
-
-  it("filters out custom agent message roles", async () => {
-    const holder = makeHolder({
-      sessionManager: {
-        getSessionId: () => "sess-1",
-        buildContextEntries: () => [
-          { type: "message", message: { role: "user", content: "hi" } },
-          {
-            type: "message",
-            message: {
-              role: "custom",
-              customType: "notify",
-              content: "ignored",
-            },
-          },
-        ],
-      },
-    });
-    const host = createPiToolHost(holder);
-    const snapshot = await host.fetchHistory("sess-1");
-
-    assert.equal(snapshot.messages.length, 1);
-    assert.equal(snapshot.messages[0]?.role, "user");
-  });
-
-  it("throws a Chinese error when buildContextEntries is unavailable", async () => {
-    const host = createPiToolHost(
-      makeHolder({ sessionManager: { getSessionId: () => "sess-1" } }),
-    );
-    await assert.rejects(
-      async () => host.fetchHistory("sess-1"),
-      /无法获取会话消息：会话管理器不可用/,
-    );
+  it("offers no history fallback (the tools read the transform's round view)", () => {
+    // pi's buildContextEntries channel is a different ordinal space than
+    // the one the context event projects, so the host must not expose it
+    // as a fallback — a regression here silently resurrects the bug.
+    const host = createPiToolHost(makeHolder());
+    assert.equal(host.fetchHistory, undefined);
   });
 
   it("notifies by appending a zoo-notice custom entry when appendEntry is available", async () => {

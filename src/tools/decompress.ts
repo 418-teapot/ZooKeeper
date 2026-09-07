@@ -5,22 +5,27 @@
  * host tool so the model can address a compression block by its
  * persistent `b<N>` id and either restore it or recall its summary:
  *
- * - **restore** — the block is active: deactivate it so the next
+ * - **restore** — the block is active: move it to `consumed` so the next
  *   transform round stops folding its interval and the original messages
  *   reappear in the view.  A context-limit gate rejects restores that
  *   would push the estimated prompt over `maxFillPercent` of the model
  *   window.  The ToolResult is a single-line confirmation carrying the
  *   expansion amount — never the original message content.
- * - **recall** — the block is inactive (consumed, content invalidated, or
- *   previously restored): read-only and idempotent, returns the persisted
- *   summary body (truncated to `RECALL_MAX_CHARS`).  Zero state change,
- *   zero view impact, no notification.
+ * - **recall** — the block is in a terminal status (`consumed`, stale,
+ *   or previously restored): read-only and idempotent, returns the
+ *   persisted summary body (truncated to `RECALL_MAX_CHARS`, and labelled
+ *   as all-that-survives for a stale block).  Zero state change, zero
+ *   view impact, no notification.
  *
  * The host tool services and the parsed context-pruning config are
- * captured by the factory closure.  Loud Chinese guidance errors from the
- * core propagate to the model unchanged — including the not-found error
- * that lists the currently available block numbers — the model
- * self-corrects by re-picking a valid block id or freeing context first.
+ * captured by the factory closure.  The history the restore gate
+ * measures is the round view published by the context transform (the
+ * same address space the model sees), with the host's history read only
+ * as a fallback on hosts that guarantee it is the same source.  Loud
+ * Chinese guidance errors from the core propagate to the model unchanged
+ * — including the not-found error that lists the currently available
+ * block numbers — the model self-corrects by re-picking a valid block id
+ * or freeing context first.
  *
  * @module
  */
@@ -31,11 +36,12 @@ import { formatTokens } from "../core/context/context-report.js";
 import {
   applyDecompress,
   evaluateGate,
+  recallOutput,
   resolveTarget,
-  truncateRecallSummary,
 } from "../core/context/decompress.js";
 import { measureMessages } from "../core/context/measure.js";
 import { getModelLimit } from "../core/context/model-limits.js";
+import { getRoundView } from "../core/context/round-view.js";
 import {
   getContextStateManager,
   setPendingViewChange,
@@ -164,7 +170,9 @@ export function createDecompressTool(
       const target = resolveTarget(state, input.blockId);
 
       // ── Recall path: read-only, idempotent, zero view impact ─────
-      // No notification — nothing changed in the view.
+      // No notification — nothing changed in the view.  A stale block
+      // takes this path too: its summary survives, its original span
+      // does not, and `recallOutput` says so.
       if (target.kind === "recall") {
         log(
           "decompress-tool",
@@ -175,13 +183,27 @@ export function createDecompressTool(
           {
             blockId: target.blockId,
             kind: "recall",
+            status: target.block.status,
           },
         );
-        return truncateRecallSummary(target.block.summary);
+        return recallOutput(target.block);
       }
 
       // ── Restore path ─────────────────────────────────────────────
-      const history = await host.fetchHistory(sessionID);
+      // Same source rule as the compress tool: the round view published
+      // by the transform is the history this tool measures and restores
+      // against; the host read is only a fallback for rounds that ran
+      // without a published view (and only on hosts that wire it).
+      const cached = getRoundView(sessionID);
+      const history =
+        cached !== undefined
+          ? cached.projection
+          : await host.fetchHistory?.(sessionID);
+      if (history === undefined) {
+        throw new Error(
+          "无法解压：尚未取得当轮上下文视图（上下文变换本轮还未运行），且当前宿主不提供同源的历史回退。请在下一轮对话后重试。",
+        );
+      }
       const view = history.messages;
       const currentPromptTokens = measureMessages(view).total;
       const contextLimit = getModelLimit(sessionID)?.context;
@@ -221,8 +243,8 @@ export function createDecompressTool(
         },
       );
 
-      // Ignored chat notification (best-effort — deactivation already
-      // applied).  Same shape as the compress tool.
+      // Ignored chat notification (best-effort — the status change is
+      // already applied).  Same shape as the compress tool.
       const notifyMsg = `上下文解压：已恢复压缩块 b${restored.blockId} 的 ${restored.messageCount} 条原始消息，约回胀 ${formatTokens(delta)} tokens，下一轮上下文生效——本轮请勿引用其原文。`;
       try {
         await host.notify(sessionID, notifyMsg);

@@ -2,14 +2,14 @@
  * Context data controller for the ZooKeeper TUI sidebar panel.
  *
  * Owns the shared session-message fetch, the full context recompute
- * (fetch → new-core state read → lens mapping → fold → metrics
+ * (fetch → core state read → lens mapping → fold → metrics
  * computation → panel signal writes), and the 2-second debounced event
  * refresh.  Created once per plugin lifecycle via the
  * `createContextController` factory; all external dependencies (client
  * slice, state slice, signal setters) are injected through the options
  * object so the module stays free of host-plugin imports.
  *
- * Session state is read through the new host-agnostic core's store
+ * Session state is read through the host-agnostic core's store
  * (`createStateStore().load`) — a read-only disk load that never
  * mutates or caches, matching the panel's display-only role; effective
  * prune marks are projected back to v1 tool call ids so the category
@@ -159,7 +159,7 @@ export function createContextController(
       );
       const view = history(mapped);
 
-      // Load the new-core persisted state for DCP visibility in the
+      // Load the persisted session state for DCP visibility in the
       // category breakdown.  Read-only disk load — the display never
       // mutates or persists.  Defensive: load failure results in an
       // empty set (tools fully counted).

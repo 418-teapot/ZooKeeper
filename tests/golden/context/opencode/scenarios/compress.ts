@@ -8,8 +8,8 @@
  *   validation failure) with zero state change.
  * - G-COMP-03: nested consumption — a wider range swallows an active
  *   block (index line + net token arithmetic), then a third generation
- *   swallows the second (the consumed predecessor is reclaimed by the
- *   fold phase before the next action).
+ *   swallows the second (the consumed predecessor stays in the map and
+ *   is absorbed again, index line and all).
  * - G-COMP-04: every validation gate's negative path, each with its
  *   captured error text and zero state change; the ref-based
  *   partial-overlap gate is documented as structurally unreachable.
@@ -144,17 +144,17 @@ export const G_COMP_02: Scenario = {
  * G-COMP-03 — nested consumption (three generations).
  *
  * b1 = [1, 7).  A wider range swallows b1 (index line
- * `--- b1: 第一段 ---`, net token arithmetic, b1 deactivated).  A third
- * generation swallows b2 into b3.
+ * `--- b1: 第一段 ---`, net token arithmetic, b1 moved to consumed).  A
+ * third generation swallows b2 into b3, re-absorbing the retained b1.
  *
  * The scenario lowers `protectedMessages` from the shared 20 to 10 so
  * the combined protection boundary lands at 18 instead of 11 — with
  * boundary 11 the wider round and the third generation resolve past the
  * window and are rejected, so the documented consumption never
- * completes.  The covered-inactive netting branch (an inactive block
- * still in the map when the action runs) is unreachable through the
- * runner: the transform's fold phase always reclaims inactive blocks
- * (`clearInactiveBlocks`) before the next action.
+ * completes.  The absorbed-record netting branch is live here: a block
+ * that stopped folding keeps its record, so the third generation finds
+ * b1 in the map, nets the tokens its consuming block left out, and
+ * writes b1 an index line.
  */
 export const G_COMP_03: Scenario = {
   id: "G-COMP-03",

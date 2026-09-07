@@ -1,23 +1,24 @@
 /**
- * Tests for the context-pruning transform handler on the new core.
+ * Tests for the context-pruning transform handler.
  *
- * Focused suite covering the cut-over checklist C13 contracts and the
- * pipeline phase wiring (state → history → release → three producers →
+ * Focused suite covering the handler contracts and the pipeline phase
+ * wiring (state → history → release → three producers →
  * fold + block maintenance → view render → nudge / manual compress →
  * save):
  *
- * - **C13-01** release notification exactly once, text carries the
+ * - Release notification fires exactly once, text carries the
  *   "上下文清理" / "约回收" wording.
- * - **C13-02** log field sets: `prune_completed` counts effective marks
+ * - Log field sets: `prune_completed` counts effective marks
  *   only, `marks_released` carries the forced field, `nudge_injected` /
  *   `manual_compress_injected` carry their payloads.
- * - **C13-03** robust no-ops for null / undefined / empty / missing
+ * - Robust no-ops for null / undefined / empty / missing
  *   sessionID inputs.
- * - **C13-04** the unit registration contributes the transform handler
+ * - The unit registration contributes the transform handler
  *   unconditionally.
  * - Persistence round-trip through the shared store (restart keeps
  *   blocks folding and marks pruning), nudge injection + anchor
- *   persistence, and config gating combinations.
+ *   persistence, config gating combinations, and the session-cleanup
+ *   contract for the pending-view-change bypass.
  *
  * Fixtures are v1-shaped message arrays driven through the real
  * handler; state and persistence go through the process-wide shared
@@ -34,20 +35,25 @@ import {
   _resetForTesting as _resetModelLimitsForTesting,
   setModelLimit,
 } from "../../core/context/model-limits.js";
+import { creditReclaim } from "../../core/context/nudge.js";
+import {
+  _listRoundViewSessionsForTesting,
+  getRoundView,
+} from "../../core/context/round-view.js";
 import {
   _resetContextStateManagerForTesting,
+  cleanupSession,
   consumePendingViewChange,
   getContextStateManager,
   getRuntimeFlaggedState,
   setPendingViewChange,
 } from "../../core/context/runtime.js";
 import { computeSpanHash } from "../../core/context/spanhash.js";
-import { markKey } from "../../core/context/state.js";
+import { allocateBlockId, markKey } from "../../core/context/state.js";
 import type { ActiveSet, Deps } from "../../core/slots.js";
 import { createV1Adapter } from "../../opencode.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import {
-  _resetViewChangeFlagsForTesting,
   contextPruningTransformHandler,
   handleContextPruning,
 } from "./hook.js";
@@ -96,6 +102,9 @@ const TEST_SESSION_IDS = [
   "sess-log-effective",
   "sess-release-forced",
   "sess-nudge-basic",
+  "sess-nudge-window-plain",
+  "sess-nudge-window-folded",
+  "sess-nudge-reclaim-credit",
   "sess-nudge-no-section",
   "sess-nudge-no-tool",
   "sess-nudge-toast",
@@ -108,6 +117,11 @@ const TEST_SESSION_IDS = [
   "sess-dedup-gated",
   "sess-dedup-pending",
   "sess-pure-mock",
+  "sess-round-view",
+  "sess-stale-expiry",
+  "sess-terminal-view-change",
+  "sess-cleanup-bypass",
+  "sess-cleanup-control",
 ];
 
 afterEach(() => {
@@ -116,7 +130,6 @@ afterEach(() => {
     manager.store.delete(sid);
   }
   _resetContextStateManagerForTesting();
-  _resetViewChangeFlagsForTesting();
   _resetForTesting();
   _resetModelLimitsForTesting();
 });
@@ -183,10 +196,384 @@ const LONG_OUTPUT = "x".repeat(2000);
 const MODEL_LIMIT = 1_000_000;
 
 // ---------------------------------------------------------------------------
-// C13-03 — Robust no-ops
+// Block staleness — span-hash invalidation keeps the record
 // ---------------------------------------------------------------------------
 
-describe("robustness (C13-03)", () => {
+describe("block staleness (span-hash invalidation)", () => {
+  /** A three-message transcript whose first text is caller-chosen. */
+  const turn = (sessionID: string, firstText: string): TestMessageEntry[] => [
+    msg("user", "u1", [textPart(firstText)], sessionID),
+    msg("assistant", "a1", [toolPart("first call output")]),
+    msg("user", "u2", [textPart("again")], sessionID),
+  ];
+
+  /** Seed an active block over [0, 2) hashing the given transcript. */
+  function seedBlock(sessionID: string, hashing: TestMessageEntry[]): void {
+    const state = getContextStateManager().get(sessionID);
+    state.blocks.set(1, {
+      start: 0,
+      end: 2,
+      title: "会话开场",
+      summary: "packed summary",
+      spanHash: computeSpanHash(adapter.history(hashing), 0, 2),
+      status: "active",
+      compressedTokens: 100,
+      summaryTokens: 10,
+      createdAt: 1000,
+    });
+  }
+
+  const NO_PRODUCERS = { dedup: {}, purgeErrors: {} };
+
+  it("folds while the span validates, then expands once it does not", () => {
+    const sessionID = "sess-stale-expiry";
+    seedBlock(sessionID, turn(sessionID, "hello"));
+
+    const roundOne = turn(sessionID, "hello");
+    contextPruningTransformHandler(adapter, roundOne, NO_PRODUCERS);
+    assert.equal(roundOne[0].info.synthetic, true, "block folds while valid");
+    assert.equal(
+      getContextStateManager().get(sessionID).blocks.get(1)?.status,
+      "active",
+    );
+
+    // The covered content changed under the block: it can no longer
+    // vouch for its interval.
+    const roundTwo = turn(sessionID, "rewritten opening");
+    contextPruningTransformHandler(adapter, roundTwo, NO_PRODUCERS);
+
+    assert.equal(
+      roundTwo[0].info.synthetic,
+      undefined,
+      "the invalidated interval expands back into originals",
+    );
+    assert.equal(
+      getContextStateManager().get(sessionID).blocks.get(1)?.status,
+      "stale",
+    );
+  });
+
+  it("keeps the record addressable — retained in the map with its text", () => {
+    const sessionID = "sess-stale-expiry";
+    seedBlock(sessionID, turn(sessionID, "hello"));
+    contextPruningTransformHandler(
+      adapter,
+      turn(sessionID, "hello"),
+      NO_PRODUCERS,
+    );
+
+    contextPruningTransformHandler(
+      adapter,
+      turn(sessionID, "rewritten opening"),
+      NO_PRODUCERS,
+    );
+
+    const state = getContextStateManager().get(sessionID);
+    const block = state.blocks.get(1);
+    assert.ok(block !== undefined, "the record is not deleted");
+    assert.equal(block.title, "会话开场");
+    assert.equal(block.summary, "packed summary");
+    assert.deepEqual([block.start, block.end], [0, 2]);
+    assert.equal(state.blocks.size, 1);
+  });
+
+  it("logs the transition with the interval and both hashes", () => {
+    const sessionID = "sess-stale-expiry";
+    seedBlock(sessionID, turn(sessionID, "hello"));
+    contextPruningTransformHandler(
+      adapter,
+      turn(sessionID, "hello"),
+      NO_PRODUCERS,
+    );
+    const before = _getBufferForTesting().length;
+
+    contextPruningTransformHandler(
+      adapter,
+      turn(sessionID, "rewritten opening"),
+      NO_PRODUCERS,
+    );
+
+    const entry = _getBufferForTesting()
+      .slice(before)
+      .find((e) => e.event === "compress_block_stale") as
+      | Record<string, unknown>
+      | undefined;
+    assert.ok(entry, "compress_block_stale logged for the invalidated block");
+    assert.equal(entry.blockId, 1);
+    assert.equal(entry.start, 0);
+    assert.equal(entry.end, 2);
+    assert.equal(entry.reason, "hash-mismatch");
+    assert.equal(entry.title, "会话开场");
+    assert.equal(entry.historyLength, 3);
+    assert.equal(typeof entry.storedHash, "string");
+    assert.equal(typeof entry.currentHash, "string");
+    assert.notEqual(entry.storedHash, entry.currentHash);
+  });
+
+  it("reports a reason instead of a hash when the span is out of bounds", () => {
+    const sessionID = "sess-stale-expiry";
+    seedBlock(sessionID, turn(sessionID, "hello"));
+    const before = _getBufferForTesting().length;
+
+    // The transcript shrank under the block's interval (a revert cut).
+    const truncated = [msg("user", "u1", [textPart("hello")], sessionID)];
+    contextPruningTransformHandler(adapter, truncated, NO_PRODUCERS);
+
+    const entry = _getBufferForTesting()
+      .slice(before)
+      .find((e) => e.event === "compress_block_stale") as
+      | Record<string, unknown>
+      | undefined;
+    assert.ok(entry, "the out-of-bounds block is reported stale");
+    assert.equal(entry.reason, "out-of-bounds");
+    assert.equal(typeof entry.storedHash, "string");
+    assert.equal(entry.currentHash, null, "no hash is defined for the span");
+    assert.equal(entry.historyLength, 1);
+    assert.equal(
+      getContextStateManager().get(sessionID).blocks.get(1)?.status,
+      "stale",
+    );
+  });
+
+  it("never re-ages a stale block in later rounds", () => {
+    const sessionID = "sess-stale-expiry";
+    seedBlock(sessionID, turn(sessionID, "hello"));
+    contextPruningTransformHandler(
+      adapter,
+      turn(sessionID, "rewritten opening"),
+      NO_PRODUCERS,
+    );
+    assert.equal(
+      getContextStateManager().get(sessionID).blocks.get(1)?.status,
+      "stale",
+    );
+    const before = _getBufferForTesting().length;
+
+    contextPruningTransformHandler(
+      adapter,
+      turn(sessionID, "rewritten opening"),
+      NO_PRODUCERS,
+    );
+
+    assert.equal(
+      _getBufferForTesting()
+        .slice(before)
+        .filter((e) => e.event === "compress_block_stale").length,
+      0,
+      "a terminal block is never re-validated or re-reported",
+    );
+    assert.equal(
+      getContextStateManager().get(sessionID).blocks.get(1)?.status,
+      "stale",
+    );
+  });
+
+  it("allocates a fresh id for the next block instead of reusing b1", () => {
+    const sessionID = "sess-stale-expiry";
+    seedBlock(sessionID, turn(sessionID, "hello"));
+    contextPruningTransformHandler(
+      adapter,
+      turn(sessionID, "rewritten opening"),
+      NO_PRODUCERS,
+    );
+
+    const state = getContextStateManager().get(sessionID);
+    assert.equal(allocateBlockId(state), 2);
+    assert.equal(state.blocks.get(1)?.status, "stale");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Retained terminal blocks and the release bypass
+//
+// Terminal records stay in the state map, so a fold round over them is
+// steady state: only a block that drops out of the view in THIS round
+// arms the pending-view-change bypass.
+// ---------------------------------------------------------------------------
+
+describe("retained terminal blocks do not force every release", () => {
+  const sessionID = "sess-terminal-view-change";
+
+  /** A three-message transcript whose first text is caller-chosen. */
+  const turn = (firstText: string): TestMessageEntry[] => [
+    msg("user", "u1", [textPart(firstText)], sessionID),
+    msg("assistant", "a1", [toolPart("first call output")]),
+    msg("user", "u2", [textPart("again")], sessionID),
+  ];
+
+  /** Seed a pending mark over a1's tool-output region. */
+  function seedPendingMark(): void {
+    getContextStateManager().get(sessionID).marks.set(markKey(1, 1), {
+      anchorOrdinal: 1,
+      regionIndex: 1,
+      content: "first call output",
+      contentTokens: 400,
+      effective: false,
+      markedAt: 1000,
+    });
+  }
+
+  /** marks_released entries recorded after the buffer watermark. */
+  function releasedLog(since: number): Record<string, unknown>[] {
+    return _getBufferForTesting()
+      .slice(since)
+      .filter((e) => e.event === "marks_released") as Record<string, unknown>[];
+  }
+
+  it("arms the bypass for the expiry round only", () => {
+    // releasedPercent is unset, so the percentage gate stays closed and a
+    // release can only come from the view-change bypass.
+    const config = { dedup: {}, purgeErrors: {} };
+    const state = getContextStateManager().get(sessionID);
+    state.blocks.set(1, {
+      start: 0,
+      end: 2,
+      summary: "packed summary",
+      spanHash: computeSpanHash(adapter.history(turn("hello")), 0, 2),
+      status: "active",
+      compressedTokens: 100,
+      summaryTokens: 10,
+      createdAt: 1000,
+    });
+
+    // Round 1: the span still validates; the pending mark stays pending.
+    seedPendingMark();
+    let watermark = _getBufferForTesting().length;
+    contextPruningTransformHandler(adapter, turn("hello"), config);
+    assert.equal(releasedLog(watermark).length, 0, "gate closed, no bypass");
+
+    // Round 2: the content changes, the block goes stale and arms the
+    // bypass for the NEXT round.
+    watermark = _getBufferForTesting().length;
+    contextPruningTransformHandler(adapter, turn("rewritten opening"), config);
+    assert.equal(state.blocks.get(1)?.status, "stale");
+    assert.equal(releasedLog(watermark).length, 0, "the flag lands next turn");
+
+    // Round 3: the bypass fires — the mark flushes even with the gate shut.
+    watermark = _getBufferForTesting().length;
+    contextPruningTransformHandler(adapter, turn("rewritten opening"), config);
+    const forced = releasedLog(watermark);
+    assert.equal(forced.length, 1, "the armed bypass flushed the mark");
+    assert.equal(forced[0].forced, "view_change");
+
+    // Round 4: the stale record is still in the map, yet the steady-state
+    // fold over it must not arm the bypass again.
+    seedPendingMark();
+    watermark = _getBufferForTesting().length;
+    contextPruningTransformHandler(adapter, turn("rewritten opening"), config);
+    assert.equal(state.blocks.size, 1, "the record is retained");
+    assert.equal(state.blocks.get(1)?.status, "stale");
+    assert.equal(
+      releasedLog(watermark).length,
+      0,
+      "a retained terminal block is not a view change",
+    );
+  });
+
+  it("treats a terminal record in the map as steady state every round", () => {
+    const config = { dedup: {}, purgeErrors: {} };
+    const state = getContextStateManager().get(sessionID);
+    // A block that stopped folding but stayed in the map (restored or
+    // swallowed by a wider block) — exactly what retention now leaves
+    // behind round after round.
+    state.blocks.set(1, {
+      start: 0,
+      end: 2,
+      summary: "packed summary",
+      spanHash: computeSpanHash(adapter.history(turn("hello")), 0, 2),
+      status: "consumed",
+      compressedTokens: 100,
+      summaryTokens: 10,
+      createdAt: 1000,
+    });
+
+    for (const round of ["first", "second"]) {
+      seedPendingMark();
+      const watermark = _getBufferForTesting().length;
+      contextPruningTransformHandler(adapter, turn("hello"), config);
+      assert.equal(
+        releasedLog(watermark).length,
+        0,
+        `${round} round over a retained block must not force a flush`,
+      );
+      assert.equal(state.blocks.size, 1, "the record survives the round");
+      assert.equal(state.blocks.get(1)?.status, "consumed");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Session cleanup and the fold-armed bypass
+//
+// A fold view change arms the bypass after the release phase has already
+// consumed it, so the flag survives the final round of a session. The
+// deleted-session cleanup must drop it with the session's other records.
+// ---------------------------------------------------------------------------
+
+describe("cleanupSession drops a bypass armed by the fold", () => {
+  /** A three-message transcript addressed to the given session. */
+  const turnFor = (
+    sessionID: string,
+    firstText: string,
+  ): TestMessageEntry[] => [
+    msg("user", "u1", [textPart(firstText)], sessionID),
+    msg("assistant", "a1", [toolPart("first call output")]),
+    msg("user", "u2", [textPart("again")], sessionID),
+  ];
+
+  /**
+   * Run one round whose opening text changes, staling the active block
+   * and arming the bypass for the NEXT round.
+   */
+  function armBypass(sessionID: string): void {
+    const state = getContextStateManager().get(sessionID);
+    state.blocks.set(1, {
+      start: 0,
+      end: 2,
+      summary: "packed summary",
+      spanHash: computeSpanHash(
+        adapter.history(turnFor(sessionID, "hello")),
+        0,
+        2,
+      ),
+      status: "active",
+      compressedTokens: 100,
+      summaryTokens: 10,
+      createdAt: 1000,
+    });
+    contextPruningTransformHandler(
+      adapter,
+      turnFor(sessionID, "rewritten opening"),
+      { dedup: {}, purgeErrors: {} },
+    );
+    assert.equal(state.blocks.get(1)?.status, "stale", "the span went stale");
+  }
+
+  it("leaves no armed flag behind once the session is cleaned up", () => {
+    // Control: without cleanup the armed flag is pending for the next
+    // round, so the assertion below is not vacuously true.
+    armBypass("sess-cleanup-control");
+    assert.equal(
+      consumePendingViewChange("sess-cleanup-control"),
+      true,
+      "the fold armed the bypass",
+    );
+
+    armBypass("sess-cleanup-bypass");
+    cleanupSession("sess-cleanup-bypass");
+    assert.equal(
+      consumePendingViewChange("sess-cleanup-bypass"),
+      false,
+      "cleanupSession must drop the fold-armed bypass",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Robust no-ops
+// ---------------------------------------------------------------------------
+
+describe("robustness", () => {
   it("is a no-op for null messages", () => {
     assert.doesNotThrow(() =>
       contextPruningTransformHandler(adapter, null, {}),
@@ -275,7 +662,7 @@ describe("persistence round-trip via the shared store", () => {
       end: 2,
       summary: "packed",
       spanHash: computeSpanHash(adapter.history(turnOne), 0, 2),
-      active: true,
+      status: "active",
       compressedTokens: 100,
       summaryTokens: 10,
       createdAt: 1000,
@@ -333,10 +720,10 @@ describe("persistence round-trip via the shared store", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Release notification contract (C13-01) + sweep lifecycle
+// Release notification contract + sweep lifecycle
 // ---------------------------------------------------------------------------
 
-describe("release notification (C13-01)", () => {
+describe("release notification", () => {
   it("notifies exactly once with the cleanup wording on a batch release", () => {
     const sessionID = "sess-sweep-notify";
     setModelLimit(sessionID, MODEL_LIMIT, "test-model");
@@ -374,7 +761,8 @@ describe("release notification (C13-01)", () => {
     contextPruningTransformHandler(adapter, buildTurn(), config, notify);
     assert.equal(notifyCalls.length, 1, "notify called exactly once");
 
-    // C13-01: the text carries the required wording and the mark count.
+    // The notification text carries the required wording and the mark
+    // count.
     const text = notifyCalls[0];
     assert.ok(
       text.includes("上下文清理"),
@@ -427,10 +815,10 @@ describe("release notification (C13-01)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Log field sets (C13-02)
+// Log field sets
 // ---------------------------------------------------------------------------
 
-describe("log field sets (C13-02)", () => {
+describe("log field sets", () => {
   it("prune_completed counts effective marks only", () => {
     const sessionID = "sess-log-effective";
     const manager = getContextStateManager();
@@ -601,8 +989,8 @@ describe("context-nudge injection", () => {
       true,
     );
 
-    // The synthetic nudge is appended at the very END with the legacy
-    // message shape (info marker + single text part).
+    // The synthetic nudge is appended at the very END carrying the
+    // message shape the adapter emits (info marker + single text part).
     assert.equal(messages.length, 5, "nudge message appended");
     const last = messages[messages.length - 1];
     assert.equal(last.info.id, "zoo-nudge");
@@ -753,6 +1141,137 @@ describe("context-nudge injection", () => {
     );
     assert.equal(messages2.length, 4, "no second injection");
     assert.equal(messages2[messages2.length - 1].info.id, "a2");
+  });
+
+  it("advertises the window in the folded view's coordinates", () => {
+    // Two sessions over the same transcript; one carries an active block
+    // folding ordinals 1-2.  The window the nudge advertises must be
+    // measured over the view the model sees: the folded interval holds no
+    // reclaim and the dense renumbering pulls the end ref back.
+    const plain = "sess-nudge-window-plain";
+    const folded = "sess-nudge-window-folded";
+    setModelLimit(plain, NUDGE_LIMIT, "test-model");
+    setModelLimit(folded, NUDGE_LIMIT, "test-model");
+
+    const HEAVY = "y".repeat(2000);
+    const viewMessages = (sessionID: string, inputTokens: number) => [
+      msg("user", "u1", [textPart("开场问题")], sessionID),
+      msg("assistant", "a1", [textPart(HEAVY)]),
+      msg("assistant", "a2", [textPart(HEAVY)]),
+      msg("assistant", "a3", [textPart(HEAVY)]),
+      msg("user", "u4", [textPart("再来一次")], sessionID),
+      msg("assistant", "a5", [textPart("好的")], undefined, {
+        input: inputTokens,
+        output: 100,
+      }),
+    ];
+
+    // Seed the block over [1, 3) on the transcript as the fold sees it.
+    const seed = viewMessages(folded, 140000);
+    const snapshot = adapter.history(seed);
+    getContextStateManager()
+      .get(folded)
+      .blocks.set(1, {
+        start: 1,
+        end: 3,
+        summary: "已折叠的历史",
+        spanHash: computeSpanHash(snapshot, 1, 3),
+        status: "active",
+        compressedTokens: 900,
+        summaryTokens: 30,
+        createdAt: 1000,
+      });
+
+    const run = (sessionID: string, inputTokens: number) => {
+      _resetForTesting();
+      contextPruningTransformHandler(
+        adapter,
+        viewMessages(sessionID, inputTokens),
+        nudgeTransformConfig(2),
+        undefined,
+        true,
+      );
+      return _getBufferForTesting().find((e) => e.event === "nudge_injected") as
+        | Record<string, unknown>
+        | undefined;
+    };
+
+    // Baseline round establishes the anchor; the growth round fires.
+    run(plain, 140000);
+    run(folded, 140000);
+    const plainEntry = run(plain, 150000);
+    const foldedEntry = run(folded, 150000);
+    assert.ok(plainEntry && foldedEntry, "both rounds fire the nudge");
+
+    // Unfolded: the window is ordinals 1-3, i.e. lines m2-m4, and all
+    // three messages are billed as reclaim.
+    assert.equal(plainEntry.startRef, "m2");
+    assert.equal(plainEntry.endRef, "m4");
+    // Folded: the same content is lines m2-m3 (one summary plus one
+    // original) and only the unfolded line still carries reclaim.
+    assert.equal(foldedEntry.startRef, "m2");
+    assert.equal(foldedEntry.endRef, "m3");
+    assert.equal(
+      Number(foldedEntry.reclaimTokens) * 3,
+      Number(plainEntry.reclaimTokens),
+      "the folded interval is not billed again",
+    );
+  });
+
+  it("drops the water level as soon as a compression books its reclaim", () => {
+    const sessionID = "sess-nudge-reclaim-credit";
+    setModelLimit(sessionID, NUDGE_LIMIT, "test-model");
+    const state = getContextStateManager().get(sessionID);
+
+    // Anchor at 140K.
+    contextPruningTransformHandler(
+      adapter,
+      nudgeMessages(sessionID, 140000),
+      nudgeTransformConfig(2),
+      undefined,
+      true,
+    );
+    assert.equal(state.nudges?.lastNudgeTokens, 140000);
+
+    // A compression frees 30K mid-round; the usage figure still reads
+    // 150K because it was written by the call that preceded the compress.
+    creditReclaim(state, 30000);
+    const stale = nudgeMessages(sessionID, 150000);
+    contextPruningTransformHandler(
+      adapter,
+      stale,
+      nudgeTransformConfig(2),
+      undefined,
+      true,
+    );
+    assert.equal(stale.length, 4, "the reclaimed tokens are off the level");
+    assert.equal(
+      state.nudges?.lastNudgeTokens,
+      120000,
+      "water level follows the view down at once",
+    );
+    assert.equal(state.nudges?.pendingReclaimTokens, 30000, "still booked");
+    assert.equal(state.nudges?.reclaimMeasurement, 150000, "anchored to it");
+
+    // A newer measurement already includes the reclaim, so the credit is
+    // consumed rather than subtracted again: the level is the measured
+    // 152K, and that is 32K above the anchor → the nudge fires.
+    const fresh = nudgeMessages(sessionID, 152000);
+    contextPruningTransformHandler(
+      adapter,
+      fresh,
+      nudgeTransformConfig(2),
+      undefined,
+      true,
+    );
+    assert.equal(
+      fresh[fresh.length - 1].info.id,
+      "zoo-nudge",
+      "no double subtraction: the level is measured, not discounted twice",
+    );
+    assert.equal(state.nudges?.pendingReclaimTokens, undefined);
+    assert.equal(state.nudges?.reclaimMeasurement, undefined);
+    assert.equal(state.nudges?.lastNudgeTokens, 152000);
   });
 
   it("stays silent without the nudge section or the compress tool", () => {
@@ -1093,6 +1612,63 @@ describe("config gating combinations", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Round-view publication — the single snapshot the tools read
+// ---------------------------------------------------------------------------
+
+describe("round-view publication", () => {
+  it("publishes the round's frozen snapshot and numbering before rendering", () => {
+    const sessionID = "sess-round-view";
+    const messages: TestMessageEntry[] = [
+      msg("user", "u1", [textPart("开场问题")], sessionID),
+      msg("assistant", "a1", [textPart("回答")], sessionID),
+      msg("user", "u2", [textPart("第二个问题")], sessionID),
+    ];
+
+    const rendered = contextPruningTransformHandler(adapter, messages, {
+      dedup: {},
+      purgeErrors: {},
+    }) as TestMessageEntry[];
+
+    const view = getRoundView(sessionID);
+    assert.ok(view, "the transform publishes the round view");
+
+    // Numbering is the address space the model was shown this round.
+    assert.deepEqual(
+      view.numbered.map(({ n, item }) => [n, item.type]),
+      [
+        [1, "original"],
+        [2, "original"],
+        [3, "original"],
+      ],
+    );
+
+    // The published transcript is the text the fold hashed: the rendered
+    // host view carries per-round `[mN] ` prefixes, the snapshot must not.
+    assert.equal(
+      String((rendered[0].parts[0] as { text: string }).text),
+      "[m1] 开场问题",
+    );
+    assert.equal(view.projection.messages[0].regions[0].get(), "开场问题");
+
+    // Frozen: the snapshot is copied text, so a later in-place rewrite of
+    // the host message (mid-turn, by any host) cannot reach the tools.
+    (rendered[0].parts[0] as { text: string }).text = "当轮被改写的文本";
+    assert.equal(view.projection.messages[0].regions[0].get(), "开场问题");
+  });
+
+  it("publishes nothing when the pipeline short-circuits", () => {
+    // No resolvable session id → the handler returns before any fold, so
+    // no view is published and no session key enters the cache.
+    const orphan = [msg("user", "u1", [textPart("无主消息")])];
+    contextPruningTransformHandler(adapter, orphan, {
+      dedup: {},
+      purgeErrors: {},
+    });
+    assert.deepEqual(_listRoundViewSessionsForTesting(), []);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Mutation-agnostic pipeline with a strictly-pure mock adapter
 // ---------------------------------------------------------------------------
 
@@ -1198,10 +1774,10 @@ describe("pure adapter pipeline support", () => {
 });
 
 // ---------------------------------------------------------------------------
-// C13-04 — unit registration behavior
+// Unit registration behavior
 // ---------------------------------------------------------------------------
 
-describe("unit.create enablement (C13-04)", () => {
+describe("unit.create enablement", () => {
   const activeSet: ActiveSet = {
     agents: new Set(),
     skills: new Set(),
