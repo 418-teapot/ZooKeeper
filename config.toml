@@ -21,9 +21,9 @@ id   = "aliyun/deepseek-v4-flash"
 reasoning = true
 
 [provider.Aliyun.models."deepseek-v4-flash".cost]
-input       = 0.75
-output      = 1.5
-cache_read  = 0.15
+input       = 2.25
+output      = 6.75
+cache_read  = 0.225
 cache_write = 0
 
 [provider.Aliyun.models."deepseek-v4-flash".limit]
@@ -42,6 +42,21 @@ cache_read  = 1.5
 cache_write = 0
 
 [provider.Aliyun.models."glm-5.2".limit]
+context = 1000000
+output  = 256000
+
+[provider.Aliyun.models."kimi-k3"]
+name      = "aliyun/kimi-k3"
+id        = "aliyun/kimi-k3"
+reasoning = true
+
+[provider.Aliyun.models."kimi-k3".cost]
+input       = 19
+output      = 95
+cache_read  = 1.9
+cache_write = 0
+
+[provider.Aliyun.models."kimi-k3".limit]
 context = 1000000
 output  = 256000
 
@@ -123,9 +138,9 @@ id        = "volces/deepseek-v4-pro"
 reasoning = true
 
 [provider.Volces.models."deepseek-v4-pro".cost]
-input       = 7.65
-output      = 22.95
-cache_read  = 0.3
+input       = 6.3
+output      = 18.9
+cache_read  = 0.21
 cache_write = 0.017
 
 [provider.Volces.models."deepseek-v4-pro".limit]
@@ -138,27 +153,27 @@ id        = "volces/deepseek-v4-flash"
 reasoning = true
 
 [provider.Volces.models."deepseek-v4-flash".cost]
-input       = 0.85
-output      = 1.7
-cache_read  = 0.2
+input       = 2.1
+output      = 6.3
+cache_read  = 0.07
 cache_write = 0.017
 
 [provider.Volces.models."deepseek-v4-flash".limit]
 context = 1000000
 output  = 384000
 
-[provider.Volces.models."glm-5.2"]
-name      = "volces/glm-5.2"
-id        = "volces/glm-5.2"
+[provider.Volces.models."glm-5.3"]
+name      = "volces/glm-5.3"
+id        = "volces/glm-5.3"
 reasoning = true
 
-[provider.Volces.models."glm-5.2".cost]
-input       = 6.8
-output      = 23.8
-cache_read  = 2
+[provider.Volces.models."glm-5.3".cost]
+input       = 6.4
+output      = 22.4
+cache_read  = 1.6
 cache_write = 0.017
 
-[provider.Volces.models."glm-5.2".limit]
+[provider.Volces.models."glm-5.3".limit]
 context = 1000000
 output  = 256000
 
@@ -168,9 +183,9 @@ id        = "volces/kimi-k3"
 reasoning = true
 
 [provider.Volces.models."kimi-k3".cost]
-input       = 20
-output      = 100
-cache_read  = 2
+input       = 19
+output      = 95
+cache_read  = 1.9
 cache_write = 0.017
 
 [provider.Volces.models."kimi-k3".limit]
@@ -240,10 +255,10 @@ id        = "chatgpt/gpt-5.6-sol"
 reasoning = true
 
 [provider.Chatgpt.models."gpt-5.6-sol".cost]
-input       = 10.8
-output      = 64.8
-cache_read  = 1.08
-cache_write = 13.5
+input       = 2.17
+output      = 12.99
+cache_read  = 0.22
+cache_write = 2.71
 
 [provider.Chatgpt.models."gpt-5.6-sol".limit]
 context = 272000
@@ -255,10 +270,10 @@ id        = "chatgpt/gpt-5.6-terra"
 reasoning = true
 
 [provider.Chatgpt.models."gpt-5.6-terra".cost]
-input       = 4.32
-output      = 25.92
-cache_read  = 0.432
-cache_write = 5.4
+input       = 0.87
+output      = 4.2
+cache_read  = 0.09
+cache_write = 1.08
 
 [provider.Chatgpt.models."gpt-5.6-terra".limit]
 context = 272000
@@ -270,10 +285,10 @@ id        = "chatgpt/gpt-5.6-luna"
 reasoning = true
 
 [provider.Chatgpt.models."gpt-5.6-luna".cost]
-input       = 0.432
-output      = 2.59
-cache_read  = 0.0432
-cache_write = 0.54
+input       = 0.09
+output      = 0.52
+cache_read  = 0.01
+cache_write = 0.11
 
 [provider.Chatgpt.models."gpt-5.6-luna".limit]
 context = 272000
