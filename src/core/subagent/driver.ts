@@ -45,16 +45,16 @@ export interface SubagentRequest {
  *
  * Carries the currently running tool name and a completion flag — plus the
  * host facts the run registry needs and the tool layer cannot derive itself
- * (the resolved model id, the sub-session id, its on-disk file path, and
- * the running token total).  Everything structural (tool calls, assistant
+ * (the resolved model id, the sub-session id, its on-disk file path, and the
+ * latest context length).  Everything structural (tool calls, assistant
  * output, turn and tool counters, the terminal result) never travels here:
  * the driver appends it verbatim to the run's fact log and views project it
  * from there.
  *
- * Token totals are the one aggregate that DOES travel here: the driver
- * already sees each message's usage as it appends the fact, so carrying the
- * running sum costs nothing, while having the tool layer re-derive it per
- * progress tick would rescan the whole fact log every time.
+ * The context length is the one usage aggregate that DOES travel here: the
+ * driver already reads each message's usage as it appends the fact, so
+ * carrying the newest value costs nothing, while having the tool layer
+ * re-derive it per progress tick would rescan the whole fact log every time.
  *
  * The `done: true` report is the terminal one, emitted once the run has
  * settled (success, error, or abort).
@@ -71,9 +71,9 @@ export interface SubagentProgress {
    * leave whatever it holds untouched.
    */
   currentTool?: string | null;
-  /** The accumulated token usage reported by the sub-session so far, when
-   * any message reported usage.  The driver maintains the running sum as it
-   * appends message facts. */
+  /** The context length of the latest message that reported usable usage,
+   * when any message did.  The driver updates it as it appends message
+   * facts. */
   tokens?: number;
   /** The model id actually used by the sub-session (the id part of a
    * `"provider/id"` string), when one was resolved. */

@@ -16,9 +16,9 @@
  * `finally`.  Any SDK-level failure collapses into an `error` result — a
  * run never rejects and never throws, per the driver contract.
  *
- * The driver also maintains the run's running token total incrementally: it
- * folds each assistant `message_end`'s usage into the sum as it appends the
- * fact and reports the sum on every progress report, so consumers never
+ * The driver also maintains the run's context length incrementally: it
+ * reads each assistant `message_end`'s usage as it appends the fact and
+ * reports the newest valid one on every progress report, so consumers never
  * have to rescan the fact log to render a counter.
  *
  * Every pi SDK touch lives in this file (a future subprocess fallback
@@ -45,7 +45,7 @@ import type {
   TextPart,
   Usage,
 } from "../../core/subagent/run-log.js";
-import { usageTokens } from "../../core/subagent/run-log.js";
+import { contextTokens } from "../../core/subagent/run-log.js";
 import { log } from "../../utils/logger.js";
 
 /**
@@ -128,8 +128,8 @@ export interface PiSessionEvent {
  *
  * Only the fields needed for result computation are read: role, content
  * parts, the assistant stop reason, the assistant error message, the
- * tool-result error flag, and the assistant usage report (for token
- * accumulation).
+ * tool-result error flag, and the assistant usage report (for the context
+ * length the progress line shows).
  */
 export interface PiDuckMessage {
   role?: string;
@@ -137,7 +137,12 @@ export interface PiDuckMessage {
   stopReason?: string;
   errorMessage?: string;
   isError?: boolean;
-  usage?: { input?: number; output?: number; totalTokens?: number };
+  usage?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    totalTokens?: number;
+  };
 }
 
 /** One content part of a pi message (`TextContent | ThinkingContent | ...`). */
@@ -329,10 +334,12 @@ function toUsage(usage: PiDuckMessage["usage"]): Usage | undefined {
   if (usage === null || typeof usage !== "object") return undefined;
   const input = usageNumber(usage.input);
   const output = usageNumber(usage.output);
+  const cacheRead = usageNumber(usage.cacheRead);
   const totalTokens = usageNumber(usage.totalTokens);
   if (
     input === undefined &&
     output === undefined &&
+    cacheRead === undefined &&
     totalTokens === undefined
   ) {
     return undefined;
@@ -340,6 +347,7 @@ function toUsage(usage: PiDuckMessage["usage"]): Usage | undefined {
   return {
     ...(input !== undefined ? { input } : {}),
     ...(output !== undefined ? { output } : {}),
+    ...(cacheRead !== undefined ? { cacheRead } : {}),
     ...(totalTokens !== undefined ? { totalTokens } : {}),
   };
 }
@@ -662,11 +670,12 @@ export function createPiSubagentDriver(
       // `"provider/model"` string).  Strict mode: every run carries a
       // configured model, so the id is set once resolution succeeds.
       let modelId: string | undefined;
-      // The running token total, folded in from each assistant message's
-      // usage report as its fact is appended.  Stays undefined while no
-      // message has reported positive usage, so the progress line omits the
-      // token segment instead of showing a zero.
-      let tokensTotal: number | undefined;
+      // The context length the progress reports carry: the prompt side of
+      // the newest assistant message that reported usable usage, read as its
+      // fact is appended.  Stays undefined while no message has reported
+      // usage, so the progress line omits the token segment instead of
+      // showing a zero.
+      let contextLen: number | undefined;
       let session: PiAgentSession | undefined;
       let unsubscribe: (() => void) | undefined;
       let aborted = false;
@@ -681,8 +690,8 @@ export function createPiSubagentDriver(
       // sub-session file path is known the moment the session manager is
       // created, so it is carried on every report too — the transcript
       // overlay can be opened (enter-inspect) while the run is still
-      // running, reading the growing JSONL at open time.  The running token
-      // total rides along once any message has reported usage.  Before the
+      // running, reading the growing JSONL at open time.  The context length
+      // rides along once any message has reported usage.  Before the
       // session manager materialises both are absent and the report passes
       // through unchanged.
       const report = (p: SubagentProgress): void => {
@@ -692,11 +701,11 @@ export function createPiSubagentDriver(
           ...(modelId !== undefined ? { model: modelId } : {}),
           ...(sessionId !== "" ? { childSession: sessionId } : {}),
           ...(sessionPath !== undefined ? { sessionPath } : {}),
-          ...(tokensTotal !== undefined ? { tokens: tokensTotal } : {}),
+          ...(contextLen !== undefined ? { tokens: contextLen } : {}),
         });
       };
       // Report the progress for one observed event.  The tool layer patches
-      // the report's fields (current tool, token total, model, session ids)
+      // the report's fields (current tool, context length, model, session ids)
       // onto the registry run; structure never travels here — the log
       // already carries it.
       const reportEvent = (event: PiSessionEvent): void => {
@@ -713,12 +722,11 @@ export function createPiSubagentDriver(
           case "message_end": {
             const message = event.message as PiDuckMessage | undefined;
             if (message?.role !== "assistant") break;
-            // Fold this message's usage into the running total the report
+            // Record this message's context length as the value the report
             // carries (the fact log holds the same numbers; rescanning it
             // per tick would cost O(n) for every advance).
-            const reported = usageTokens(toUsage(message.usage));
-            if (reported !== undefined)
-              tokensTotal = (tokensTotal ?? 0) + reported;
+            const reported = contextTokens(toUsage(message.usage));
+            if (reported !== undefined) contextLen = reported;
             report({ done: false });
             break;
           }

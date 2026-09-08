@@ -372,12 +372,14 @@ describe("projectCard (running)", () => {
     assert.equal(toolTexts(wide)[0].length, 120);
   });
 
-  it("appends the token usage to the stats line when facts report it", () => {
+  it("appends the context length to the stats line when facts report it", () => {
     const log = createRunLog();
+    // Every turn reports the same prompt size: the displayed number is the
+    // newest report, not a sum over turns.
     for (let i = 0; i < 3; i++) {
       log.appendMessage(
         [{ type: "text", text: `t${i}` }],
-        { totalTokens: 4115 },
+        { input: 8230, cacheRead: 4115, totalTokens: 16460 },
         i,
       );
     }
@@ -389,10 +391,13 @@ describe("projectCard (running)", () => {
       cardOpts(),
     );
     const stats = lines[lines.length - 1].text;
-    // `3 turns · 5 tools · 12.3k tok · <elapsed>`
-    assert.ok(stats.includes("12.3k tok"), `missing tokens: ${stats}`);
+    // `3 turns · 5 tools · 12.3k token · <elapsed>`
     assert.ok(
-      stats.includes("3 turns · 5 tools · 12.3k tok"),
+      stats.includes("12.3k token"),
+      `missing context length: ${stats}`,
+    );
+    assert.ok(
+      stats.includes("3 turns · 5 tools · 12.3k token"),
       `unexpected order: ${stats}`,
     );
   });
@@ -402,7 +407,7 @@ describe("projectCard (running)", () => {
     log.appendMessage([{ type: "text", text: "hi" }], undefined, 0);
     const lines = projectCard(log, runningMeta(), cardOpts());
     const stats = lines[lines.length - 1].text;
-    assert.ok(!stats.includes("tok"), `unexpected tokens: ${stats}`);
+    assert.ok(!stats.includes("token"), `unexpected context length: ${stats}`);
   });
 
   it("keeps the running body independent of agent identity text", () => {
@@ -437,7 +442,7 @@ describe("deriveCounters", () => {
     log.appendToolEnd("bash", [{ type: "text", text: "ok" }], false, 1);
     log.appendMessage(
       [{ type: "text", text: "done" }],
-      { input: 10, output: 5 },
+      { input: 10, cacheRead: 5, output: 3 },
       2,
     );
     assert.deepEqual(deriveCounters(log.facts()), {
@@ -447,19 +452,34 @@ describe("deriveCounters", () => {
     });
   });
 
-  it("prefers totalTokens over input+output and skips non-positive reports", () => {
+  it("takes the newest report as the context length, not a sum", () => {
     const log = createRunLog();
     log.appendMessage(
       [{ type: "text", text: "a" }],
-      { totalTokens: 100, input: 1, output: 1 },
+      { input: 1000, cacheRead: 500 },
       0,
     );
     log.appendMessage(
       [{ type: "text", text: "b" }],
-      { input: 0, output: 0 },
+      { input: 1500, cacheRead: 900, totalTokens: 2900 },
       1,
     );
-    assert.equal(deriveCounters(log.facts()).tokens, 100);
+    assert.equal(deriveCounters(log.facts()).tokens, 2400);
+  });
+
+  it("skips reports without a usable prompt side and keeps the newest valid one", () => {
+    const log = createRunLog();
+    log.appendMessage(
+      [{ type: "text", text: "a" }],
+      { input: 100, cacheRead: 1 },
+      0,
+    );
+    // A generated-only report describes no prompt: it must not replace the
+    // context length, and neither does a placeholder zero.
+    log.appendMessage([{ type: "text", text: "b" }], { output: 40 }, 1);
+    log.appendMessage([{ type: "text", text: "c" }], { input: 0 }, 2);
+    log.appendMessage([{ type: "text", text: "d" }], undefined, 3);
+    assert.equal(deriveCounters(log.facts()).tokens, 101);
   });
 
   it("keeps tokens undefined when no usage was ever reported", () => {
@@ -471,10 +491,20 @@ describe("deriveCounters", () => {
     });
   });
 
+  it("degrades to input alone when no cache read is reported", () => {
+    const log = createRunLog();
+    log.appendMessage([{ type: "text", text: "a" }], { input: 250 }, 0);
+    assert.equal(deriveCounters(log.facts()).tokens, 250);
+  });
+
   it("ignores user_message facts: the instruction is neither a turn nor a token report", () => {
     const log = createRunLog();
     log.appendUserMessage("the delegation prompt", 0);
-    log.appendMessage([{ type: "text", text: "a" }], { totalTokens: 50 }, 1);
+    log.appendMessage(
+      [{ type: "text", text: "a" }],
+      { input: 30, cacheRead: 20 },
+      1,
+    );
     log.appendUserMessage("steered mid-run", 2);
     assert.deepEqual(deriveCounters(log.facts()), {
       turnCount: 1,
@@ -1094,7 +1124,11 @@ describe("projectCard (terminal)", () => {
     const log = createRunLog();
     log.appendToolStart("bash", { command: "bun test" }, 0);
     log.appendToolEnd("bash", [{ type: "text", text: "pass" }], false, 1);
-    log.appendMessage([{ type: "text", text }], { totalTokens: 500 }, 2);
+    log.appendMessage(
+      [{ type: "text", text }],
+      { input: 300, cacheRead: 200 },
+      2,
+    );
     return log;
   }
 
@@ -1125,7 +1159,7 @@ describe("projectCard (terminal)", () => {
     );
     // startedAt 0 means "unknown" -> the elapsed segment degrades to -:--.
     assert.ok(
-      lines[0].text.includes("⟳ 1 turn · 1 tool · 500 tok · -:--"),
+      lines[0].text.includes("⟳ 1 turn · 1 tool · 500 token · -:--"),
       lines[0].text,
     );
   });

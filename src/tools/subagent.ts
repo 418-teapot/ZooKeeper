@@ -41,8 +41,8 @@
  *    invented (fail-closed).
  * 4. Hands the run's append-only fact log to the driver so every observed
  *    fact is recorded there, patches the driver's progress reports' fields
- *    (current tool, token total, model, child session, session path) onto
- *    the registry run, repaints the host's live card with a content-free
+ *    (current tool, context length, model, child session ids, session path)
+ *    onto the registry run, repaints the host's live card with a content-free
  *    `onUpdate` partial per report (pi re-renders its card on any partial
  *    result; the card body projects the run's log), and drives the
  *    lifecycle orchestration (`runSubagent`), forwarding the parent abort
@@ -392,11 +392,11 @@ export function createSubagentTool(
           onProgress: (progress) => {
             // Patch the running run's progress fields — the current tool
             // (including the driver's explicit "tool finished" clear), the
-            // token total the driver accumulates as it appends usage facts,
+            // context length the driver reads from the latest usage fact,
             // the model, the child session id (so the fleet widget can
             // rebuild the parent/child tree), and the sub-session path.
             //
-            // The token total comes from the report rather than from
+            // The context length comes from the report rather than from
             // `deriveCounters(run.log.facts())`: rescanning the whole fact log
             // for every progress report is O(n) per report and O(n²) over a
             // run, while the driver has already read each usage figure as it

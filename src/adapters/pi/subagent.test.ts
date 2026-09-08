@@ -640,35 +640,41 @@ describe("pi subagent driver — progress reports", () => {
     assert.equal(reports[2].currentTool, "edit");
   });
 
-  it("carries the accumulated token total on every report", async () => {
+  it("carries the latest context length on every report", async () => {
     const h = harness();
-    const usage = (input: number, output: number, totalTokens: number) => ({
+    const usage = (
+      input: number,
+      cacheRead: number,
+      output: number,
+      totalTokens: number,
+    ) => ({
       type: "message_end",
       message: {
         role: "assistant",
         content: [{ type: "text", text: "chunk" }],
         stopReason: "toolUse",
-        usage: { input, output, totalTokens },
+        usage: { input, cacheRead, output, totalTokens },
       },
     });
     const { reports } = await drive(h, [
-      usage(1000, 500, 1500),
+      usage(1000, 500, 200, 1700),
       { type: "tool_execution_start", toolName: "bash" },
-      usage(200, 300, 500),
+      usage(1500, 300, 90, 1890),
     ]);
-    // Each message_end folds its usage into the running total, and every
-    // later report (the tool bookends too) carries the sum so far.
+    // Each report holds the prompt its request was sent with, so the newest
+    // one replaces the previous value instead of adding to it; every later
+    // report (the tool bookends too) carries it.
     assert.equal(reports[0].tokens, 1500);
     assert.equal(reports[1].tokens, 1500);
-    assert.equal(reports[2].tokens, 2000);
-    // The terminal report carries the full total as well.
-    assert.equal(reports[reports.length - 1].tokens, 2000);
+    assert.equal(reports[2].tokens, 1800);
+    // The terminal report carries the latest snapshot as well.
+    assert.equal(reports[reports.length - 1].tokens, 1800);
   });
 
-  it("omits the token total until a message reports usage, and needs no log", async () => {
+  it("omits the context length until a message reports usage, and needs no log", async () => {
     const h = harness();
-    // No fact log is handed over: the total a report carries can only come
-    // from the driver's own accumulator, never from scanning the log.
+    // No fact log is handed over: the value a report carries can only come
+    // from the driver's own reader, never from scanning the log.
     const { reports } = await drive(
       h,
       [
@@ -686,7 +692,7 @@ describe("pi subagent driver — progress reports", () => {
             role: "assistant",
             content: [{ type: "text", text: "with usage" }],
             stopReason: "toolUse",
-            usage: { input: 7, output: 3, totalTokens: 10 },
+            usage: { input: 7, cacheRead: 3, output: 4, totalTokens: 14 },
           },
         },
       ],
@@ -921,7 +927,7 @@ describe("pi subagent driver — run fact log", () => {
             { type: "text", text: "first" },
           ],
           stopReason: "toolUse",
-          usage: { input: 1000, output: 500, totalTokens: 1500 },
+          usage: { input: 1000, output: 500, cacheRead: 20, totalTokens: 1520 },
         },
       },
     ]);
@@ -933,7 +939,8 @@ describe("pi subagent driver — run fact log", () => {
     assert.deepEqual(message.usage, {
       input: 1000,
       output: 500,
-      totalTokens: 1500,
+      cacheRead: 20,
+      totalTokens: 1520,
     });
   });
 
@@ -986,7 +993,7 @@ describe("pi subagent driver — run fact log", () => {
     }
   });
 
-  it("accumulates token counters through the log's view projection", async () => {
+  it("reports the latest context length through the log's view projection", async () => {
     const h = harness();
     const { facts } = await drive(h, [
       {
@@ -995,7 +1002,7 @@ describe("pi subagent driver — run fact log", () => {
           role: "assistant",
           content: [{ type: "text", text: "first" }],
           stopReason: "toolUse",
-          usage: { input: 1000, output: 500, totalTokens: 1500 },
+          usage: { input: 1000, cacheRead: 500, output: 200 },
         },
       },
       {
@@ -1004,17 +1011,18 @@ describe("pi subagent driver — run fact log", () => {
           role: "assistant",
           content: [{ type: "text", text: "second" }],
           stopReason: "stop",
-          usage: { input: 200, output: 300, totalTokens: 500 },
+          usage: { input: 1200, cacheRead: 300, output: 90 },
         },
       },
     ]);
     // The driver stores per-message usage verbatim, so the counters the
     // views project from the log survive a restart (the progress channel
-    // carries the same running sum, but the log stays the durable record).
+    // carries the same latest snapshot, but the log stays the durable
+    // record).
     assert.deepEqual(deriveCounters(facts), {
       turnCount: 2,
       toolCallCount: 0,
-      tokens: 2000,
+      tokens: 1500,
     });
   });
 

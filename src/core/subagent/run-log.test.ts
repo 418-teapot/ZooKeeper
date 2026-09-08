@@ -18,6 +18,7 @@ import {
   initLogger,
 } from "../../utils/logger.js";
 import {
+  contextTokens,
   createRunLog,
   type LogEvent,
   type MessagePart,
@@ -25,7 +26,6 @@ import {
   RunLog,
   type TextPart,
   type ThinkingPart,
-  usageTokens,
 } from "./run-log.js";
 
 // Listener isolation reports through the shared logger; keep every test's
@@ -76,7 +76,7 @@ describe("run-log — append keeps facts verbatim", () => {
         { type: "thinking", thinking: "reasoning kept verbatim" },
         { type: "text", text },
       ],
-      { input: 10, output: 20, totalTokens: 30 },
+      { input: 10, output: 20, cacheRead: 5, totalTokens: 35 },
       30,
     );
     const fact = log.facts()[0];
@@ -86,7 +86,12 @@ describe("run-log — append keeps facts verbatim", () => {
     assert.equal(fact.content[1]?.type, "text");
     if (fact.content[1]?.type !== "text") return;
     assert.equal(fact.content[1].text, text, "message text must not be capped");
-    assert.deepEqual(fact.usage, { input: 10, output: 20, totalTokens: 30 });
+    assert.deepEqual(fact.usage, {
+      input: 10,
+      output: 20,
+      cacheRead: 5,
+      totalTokens: 35,
+    });
   });
 
   it("stores the delegation prompt verbatim as a user-message fact", () => {
@@ -631,19 +636,34 @@ describe("run-log — dispatch is never reentrant", () => {
   });
 });
 
-describe("run-log — usageTokens", () => {
-  it("prefers totalTokens and falls back to input + output", () => {
-    assert.equal(usageTokens({ totalTokens: 100, input: 1, output: 1 }), 100);
-    assert.equal(usageTokens({ input: 10, output: 5 }), 15);
+describe("run-log — contextTokens", () => {
+  it("sums the prompt sides: input plus cached prompt tokens", () => {
+    assert.equal(contextTokens({ input: 10, cacheRead: 5 }), 15);
+    assert.equal(
+      contextTokens({
+        input: 900,
+        cacheRead: 8100,
+        output: 50,
+        totalTokens: 9050,
+      }),
+      9000,
+    );
+  });
+
+  it("degrades to input alone when no cache read is reported", () => {
+    assert.equal(contextTokens({ input: 120, output: 30 }), 120);
   });
 
   it("returns undefined when the report is absent or not positive", () => {
-    assert.equal(usageTokens(undefined), undefined);
-    assert.equal(usageTokens({}), undefined);
-    assert.equal(usageTokens({ input: 0, output: 0 }), undefined);
+    assert.equal(contextTokens(undefined), undefined);
+    assert.equal(contextTokens({}), undefined);
+    assert.equal(contextTokens({ input: 0, cacheRead: 0 }), undefined);
+    // Generated-only usage describes no prompt, so it must not read as a
+    // context length.
+    assert.equal(contextTokens({ output: 400, totalTokens: 400 }), undefined);
     // A non-finite value never reaches the log through the driver's own
-    // reader, but the shared helper must not poison a running total.
-    assert.equal(usageTokens({ totalTokens: Number.NaN }), undefined);
-    assert.equal(usageTokens({ totalTokens: -5 }), undefined);
+    // reader, but the shared helper must not poison a displayed number.
+    assert.equal(contextTokens({ input: Number.NaN }), undefined);
+    assert.equal(contextTokens({ input: -5 }), undefined);
   });
 });

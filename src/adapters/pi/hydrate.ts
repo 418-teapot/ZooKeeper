@@ -136,12 +136,19 @@ function toUsage(raw: unknown): Usage | undefined {
   const usage = raw as Record<string, unknown>;
   const input = asFiniteNumber(usage.input);
   const output = asFiniteNumber(usage.output);
+  const cacheRead = asFiniteNumber(usage.cacheRead);
   const totalTokens = asFiniteNumber(usage.totalTokens);
-  if (input === undefined && output === undefined && totalTokens === undefined)
+  if (
+    input === undefined &&
+    output === undefined &&
+    cacheRead === undefined &&
+    totalTokens === undefined
+  )
     return undefined;
   return {
     ...(input !== undefined ? { input } : {}),
     ...(output !== undefined ? { output } : {}),
+    ...(cacheRead !== undefined ? { cacheRead } : {}),
     ...(totalTokens !== undefined ? { totalTokens } : {}),
   };
 }

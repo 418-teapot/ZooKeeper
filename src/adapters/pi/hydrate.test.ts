@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import type { RunFact } from "../../core/subagent/run-log.js";
+import { deriveCounters } from "../../core/subagent/view.js";
 import {
   beginHydration,
   factsFromContextMessages,
@@ -43,7 +44,7 @@ describe("factsFromContextMessages", () => {
           { type: "thinking", thinking: "hm" },
           { type: "text", text: "world" },
         ],
-        usage: { input: 10, output: 4, totalTokens: 14 },
+        usage: { input: 10, output: 4, cacheRead: 6, totalTokens: 20 },
         timestamp: 1000,
       },
     ]);
@@ -56,7 +57,7 @@ describe("factsFromContextMessages", () => {
         { type: "thinking", thinking: "hm" },
         { type: "text", text: "world" },
       ],
-      usage: { input: 10, output: 4, totalTokens: 14 },
+      usage: { input: 10, output: 4, cacheRead: 6, totalTokens: 20 },
     });
   });
 
@@ -244,6 +245,30 @@ describe("factsFromContextMessages", () => {
       undefined,
       "NaN usage must not produce a usage field",
     );
+  });
+
+  it("keeps cacheRead so a restored card shows the prompt-side token count", () => {
+    // The stats line reads `input` + `cacheRead` of the newest report: a
+    // hydration that dropped cacheRead would understate the context.
+    const facts = factsFromContextMessages([
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "first" }],
+        usage: { input: 900, cacheRead: 8100, output: 60 },
+        timestamp: 10,
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "second" }],
+        usage: { input: 1200, cacheRead: 9000, output: 80 },
+        timestamp: 20,
+      },
+    ]);
+    assert.deepEqual(deriveCounters(facts), {
+      turnCount: 2,
+      toolCallCount: 0,
+      tokens: 10200,
+    });
   });
 });
 

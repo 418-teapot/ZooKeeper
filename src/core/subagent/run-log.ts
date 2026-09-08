@@ -45,36 +45,43 @@ export type MessagePart = TextPart | ThinkingPart;
 /**
  * Token usage reported with one assistant message.
  *
- * Mirrors the provider usage envelope: `totalTokens` is the convenience
- * total when the host computes one; otherwise `input` + `output` are the
- * parts.  All fields are optional because providers may omit usage.
+ * Mirrors the provider usage envelope: `input` and `cacheRead` are the
+ * prompt sides (new prompt tokens plus tokens read from the prompt cache),
+ * `output` is the generated side, and `totalTokens` is the convenience total
+ * when the host computes one.  All fields are optional because providers may
+ * omit usage.
  */
 export interface Usage {
   input?: number;
   output?: number;
+  cacheRead?: number;
   totalTokens?: number;
 }
 
 /**
- * The token count one usage report contributes to a run's total.
+ * The context length one usage report describes.
  *
- * Prefers the provider's `totalTokens`, falling back to `input` + `output`.
- * A missing report, or one whose sum is not a positive finite number,
- * contributes nothing (`undefined`) so a run that never reported usage keeps
- * an absent total rather than a misleading zero.  This is the single
- * definition of "tokens of one message", shared by the render-time counters
- * (`view.ts`) and by any driver that accumulates the total incrementally.
+ * A provider's `input` + `cacheRead` is the prompt sent with that request,
+ * which holds the whole conversation up to it — so the newest valid report
+ * is the run's current context size, and the generated tokens are not part
+ * of it.  A missing report, or one whose prompt side is not a positive
+ * finite number, yields `undefined` so a run that never reported usable
+ * usage keeps an absent context length rather than a misleading zero.  This
+ * is the single definition of "context of one message", shared by the
+ * render-time counters (`view.ts`) and by any driver that tracks the newest
+ * report incrementally.
  *
  * @param usage - The per-message usage report, when the provider gave one.
- * @returns The contributed token count, or `undefined` when the report is
+ * @returns The prompt-side token count, or `undefined` when the report is
  *   absent or non-positive.
  */
-export function usageTokens(usage: Usage | undefined): number | undefined {
+export function contextTokens(usage: Usage | undefined): number | undefined {
   if (usage === undefined) return undefined;
-  const total = usage.totalTokens ?? 0;
-  const reported = total > 0 ? total : (usage.input ?? 0) + (usage.output ?? 0);
-  if (!Number.isFinite(reported) || reported <= 0) return undefined;
-  return reported;
+  const input = usage.input ?? 0;
+  const cacheRead = usage.cacheRead ?? 0;
+  const prompt = input + cacheRead;
+  if (!Number.isFinite(prompt) || prompt <= 0) return undefined;
+  return prompt;
 }
 
 /** Fields shared by every fact: when it happened. */
@@ -118,7 +125,7 @@ export interface ToolEndFact extends FactBase {
  * asked to do.
  *
  * IMPORTANT for projections: this is not an assistant message.  Anything
- * counting turns or folding token usage over the fact stream must skip it
+ * counting turns or reading token usage over the fact stream must skip it
  * (see `deriveCounters` in `view.ts`); only surfaces that show what the user
  * asked for project it.
  */

@@ -682,7 +682,7 @@ describe("pi renderResult — structured projection from the run log", () => {
               },
             ],
             model: "kimi-k2",
-            usage: { input: 8, output: 3, totalTokens: 11 },
+            usage: { input: 8, cacheRead: 40, output: 3, totalTokens: 51 },
             timestamp: 1000,
           },
         }),
@@ -709,7 +709,7 @@ describe("pi renderResult — structured projection from the run log", () => {
             role: "assistant",
             content: [{ type: "text", text: "the restored final answer" }],
             model: "kimi-k2",
-            usage: { input: 2, output: 1, totalTokens: 3 },
+            usage: { input: 2, cacheRead: 5, output: 1, totalTokens: 8 },
             timestamp: 1200,
           },
         }),
@@ -757,8 +757,10 @@ describe("pi renderResult — structured projection from the run log", () => {
       second.join(" | "),
     );
     assert.ok(
-      second.some((l) => l.includes("⟳ 2 turns · 1 tool · 14 tok")),
-      `restored counters (turns/tools/tokens) expected: ${second.join(" | ")}`,
+      second.some((l) => l.includes("⟳ 2 turns · 1 tool · 7 token")),
+      `restored counters (turns/tools/context length) expected: ${second.join(
+        " | ",
+      )}`,
     );
     assert.equal(
       getRun("tc-restored"),

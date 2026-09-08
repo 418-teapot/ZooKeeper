@@ -85,7 +85,7 @@ export interface SubagentRun {
   childSession?: string;
   /** The tool name the run is currently executing, when any. */
   currentTool?: string;
-  /** The accumulated token usage reported by the sub-session, when any. */
+  /** The context length of the latest message that reported usable usage. */
   tokens?: number;
   /** The model id actually used by the sub-session, when resolved. */
   model?: string;
@@ -130,7 +130,7 @@ export interface UpdateRunPatch {
    * to be expressible separately from "no news".
    */
   currentTool?: string | null;
-  /** The accumulated token usage. */
+  /** The context length of the latest usage report. */
   tokens?: number;
   /** The model id actually used by the sub-session. */
   model?: string;

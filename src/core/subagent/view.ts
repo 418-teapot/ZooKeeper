@@ -44,7 +44,7 @@ import type {
   RunLog,
   ToolStartFact,
 } from "./run-log.js";
-import { usageTokens } from "./run-log.js";
+import { contextTokens } from "./run-log.js";
 
 /**
  * Humanize a token count for the stats line.
@@ -52,7 +52,7 @@ import { usageTokens } from "./run-log.js";
  * Follows the compact thousand-abbreviation convention (`12.4k`, `1.0k`,
  * `999`): below 1000 the bare number, at or above 1000 a one-decimal `k`
  * suffix (rounded up to whole `k` past 999.9k).  The lowercase `k` matches
- * the agreed visual contract (`· 12.4k tok`).
+ * the agreed visual contract (`· 12.4k token`).
  *
  * @param n - The token count.
  * @returns The formatted token string.
@@ -340,9 +340,10 @@ export function summarizeToolCall(
  * Run counters derived from the fact stream.
  *
  * Turns count completed assistant messages, tool calls count started tool
- * executions, and tokens sum the per-message usage reports (see
- * `usageTokens` for the per-message rule; a run without any positive report
- * yields `undefined`, so the card omits the token segment).
+ * executions, and tokens hold the context length of the latest assistant
+ * message that reported usable usage (see `contextTokens` for the per-
+ * message rule; a run without any such report yields `undefined`, so the
+ * card omits the token segment).
  *
  * The user-message fact is deliberately excluded from every counter: it is
  * the instruction the run was given, not a turn the agent produced, and it
@@ -366,9 +367,10 @@ export function deriveCounters(facts: readonly RunFact[]): {
     // (the user fact is the instruction the run was given, not output).
     if (fact.type !== "message_end") continue;
     turnCount += 1;
-    const reported = usageTokens(fact.usage);
-    if (reported === undefined) continue;
-    tokens = (tokens ?? 0) + reported;
+    // The context length is the newest valid report, not a sum: each report
+    // already covers the whole conversation up to that request.
+    const reported = contextTokens(fact.usage);
+    if (reported !== undefined) tokens = reported;
   }
   return {
     turnCount,
@@ -501,8 +503,8 @@ function statsText(
     `${counters.turnCount} ${plural(counters.turnCount, "turn")}`,
     `${counters.toolCallCount} ${plural(counters.toolCallCount, "tool")}`,
   ];
-  if (counters.tokens !== undefined && counters.tokens > 0) {
-    parts.push(`${formatTokenCount(counters.tokens)} tok`);
+  if (counters.tokens !== undefined) {
+    parts.push(`${formatTokenCount(counters.tokens)} token`);
   }
   parts.push(elapsed);
   return `⟳ ${parts.join(" · ")}`;
