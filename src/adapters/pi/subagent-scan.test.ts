@@ -150,6 +150,57 @@ function scanWarns(): Array<Record<string, unknown>> {
   return _getBufferForTesting().filter((e) => e.hook === "subagent-scan");
 }
 
+/**
+ * Write a pi session jsonl whose LAST assistant message carries the given
+ * `stopReason` (the shape a real sub-session file ends with — pi persists
+ * the terminal assistant message's `stopReason` verbatim).
+ */
+function writeChildSessionWithStopReason(
+  dir: string,
+  name: string,
+  sessionId: string,
+  stopReason: string,
+): string {
+  const record = (message: Record<string, unknown>): string =>
+    JSON.stringify({
+      type: "message",
+      id: "msg",
+      parentId: null,
+      timestamp: "2026-08-31T00:00:00.000Z",
+      message,
+    });
+  const lines = [
+    JSON.stringify({
+      type: "session",
+      version: 3,
+      id: sessionId,
+      timestamp: "2026-08-31T00:00:00.000Z",
+      cwd: "/tmp",
+    }),
+    record({ role: "user", content: [{ type: "text", text: "go" }] }),
+    record({
+      role: "assistant",
+      content: [{ type: "text", text: "working" }],
+      stopReason: "toolUse",
+    }),
+    record({
+      role: "toolResult",
+      toolCallId: "mid",
+      toolName: "read",
+      content: [],
+      isError: false,
+    }),
+    record({
+      role: "assistant",
+      content: [{ type: "text", text: "partial work" }],
+      stopReason,
+    }),
+  ];
+  const path = join(dir, name);
+  writeFileSync(path, lines.join("\n"), "utf-8");
+  return path;
+}
+
 /** A pi assistant toolCall block. */
 function toolCall(id: string, name: string, args: Record<string, unknown>) {
   return { type: "toolCall", id, name, arguments: args };
@@ -1084,6 +1135,157 @@ describe("rebuildSubagentRuns — recursive nested delegation rebuild", () => {
     assert.equal(childrenOf("p1").length, 1, "no duplicate nested runs");
     assert.equal(getRun("p1")?.endedAt, frozenParent?.endedAt);
     assert.equal(getRun("n1")?.endedAt, frozenChild?.endedAt);
+  });
+});
+
+describe("terminal status recovery — persisted outcome / child stopReason", () => {
+  it("rebuilds a user-aborted run from the child session's terminal stopReason", () => {
+    // The pre-outcome producer persisted a NON-error result for a run the
+    // user aborted: isError=false, details carrying only the sessionPath,
+    // while the sub-session file's last assistant message records
+    // stopReason:"aborted".  The old isError binary rebuilt it as done —
+    // the stopReason is the authoritative evidence.
+    const dir = makeFixtureDir();
+    const childPath = writeChildSessionWithStopReason(
+      dir,
+      "child-abort.jsonl",
+      "child-abort",
+      "aborted",
+    );
+    const history = [
+      assistantEntry(
+        [toolCall("call-abort", "subagent", { agent: "beaver" })],
+        100,
+      ),
+      toolResultEntry(
+        "call-abort",
+        "subagent",
+        [{ type: "text", text: "interrupted" }],
+        { isError: false, details: detailsPayload(childPath) },
+      ),
+    ];
+
+    const runs = extractSubagentRuns(history, "sess-1");
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]?.status, "aborted");
+    assert.equal(runs[0]?.error, undefined, "an aborted run carries no error");
+
+    // The registry rebuild writes the same status.
+    rebuildSubagentRuns(history, "sess-rebuild");
+    assert.equal(getRun("call-abort")?.status, "aborted");
+  });
+
+  it("trusts the persisted details.outcome without reading the sub-session file", () => {
+    // New data: terminalToolDetails writes outcome on every terminal
+    // result.  The pointer here names a NONEXISTENT file, so reaching the
+    // stopReason fallback would be impossible — the outcome alone must
+    // decide.
+    for (const outcome of ["done", "error", "aborted"] as const) {
+      const runs = extractSubagentRuns(
+        [
+          assistantEntry(
+            [toolCall(`call-${outcome}`, "subagent", { agent: "mola" })],
+            100,
+          ),
+          toolResultEntry(
+            `call-${outcome}`,
+            "subagent",
+            [{ type: "text", text: "ok" }],
+            {
+              isError: false,
+              details: { sessionPath: "/nonexistent/child.jsonl", outcome },
+            },
+          ),
+        ],
+        "sess-1",
+      );
+      assert.equal(
+        runs[0]?.status,
+        outcome,
+        `details.outcome=${outcome} decides the status`,
+      );
+    }
+  });
+
+  it("recovers aborted via stopReason when details.outcome is not a legal terminal string", () => {
+    // An unrecognized outcome value must not win — the scan falls through
+    // to the sub-session evidence.
+    const dir = makeFixtureDir();
+    const childPath = writeChildSessionWithStopReason(
+      dir,
+      "child-abort-2.jsonl",
+      "child-abort-2",
+      "aborted",
+    );
+    const runs = extractSubagentRuns(
+      [
+        assistantEntry(
+          [toolCall("call-illegal", "subagent", { agent: "lynx" })],
+          100,
+        ),
+        toolResultEntry(
+          "call-illegal",
+          "subagent",
+          [{ type: "text", text: "ok" }],
+          {
+            isError: false,
+            details: { sessionPath: childPath, outcome: "cancelled" },
+          },
+        ),
+      ],
+      "sess-1",
+    );
+    assert.equal(runs[0]?.status, "aborted");
+  });
+
+  it("keeps done for a child session whose terminal stopReason is not aborted", () => {
+    const dir = makeFixtureDir();
+    const childPath = writeChildSessionWithStopReason(
+      dir,
+      "child-stop.jsonl",
+      "child-stop",
+      "stop",
+    );
+    const runs = extractSubagentRuns(
+      [
+        assistantEntry(
+          [toolCall("call-stop", "subagent", { agent: "spider" })],
+          100,
+        ),
+        toolResultEntry(
+          "call-stop",
+          "subagent",
+          [{ type: "text", text: "ok" }],
+          { isError: false, details: detailsPayload(childPath) },
+        ),
+      ],
+      "sess-1",
+    );
+    assert.equal(runs[0]?.status, "done");
+  });
+
+  it("falls back to the isError binary when the child session is missing", () => {
+    // Old data with a pointer to a file that no longer exists (or never
+    // did): the legacy binary decides — non-error result → done.
+    const runs = extractSubagentRuns(
+      [
+        assistantEntry(
+          [toolCall("call-missing", "subagent", { agent: "eagle" })],
+          100,
+        ),
+        toolResultEntry(
+          "call-missing",
+          "subagent",
+          [{ type: "text", text: "ok" }],
+          {
+            isError: false,
+            details: detailsPayload("/nonexistent/child.jsonl"),
+          },
+        ),
+      ],
+      "sess-1",
+    );
+    assert.equal(runs[0]?.status, "done");
   });
 });
 

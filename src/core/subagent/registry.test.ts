@@ -546,7 +546,7 @@ describe("registry — parent/child association", () => {
 // ---------------------------------------------------------------------------
 
 describe("registry — summary counts", () => {
-  it("counts running / done / failed where failed includes error and aborted", () => {
+  it("counts running / done / failed / aborted, keeping aborted separate", () => {
     startRun({
       id: "r1",
       agent: "lynx",
@@ -575,11 +575,21 @@ describe("registry — summary counts", () => {
       startedAt: 400,
     });
 
-    assert.deepEqual(summary("main"), { running: 1, done: 1, failed: 2 });
+    assert.deepEqual(summary("main"), {
+      running: 1,
+      done: 1,
+      failed: 1,
+      aborted: 1,
+    });
   });
 
   it("summaries with no activity are all zero", () => {
-    assert.deepEqual(summary("main"), { running: 0, done: 0, failed: 0 });
+    assert.deepEqual(summary("main"), {
+      running: 0,
+      done: 0,
+      failed: 0,
+      aborted: 0,
+    });
   });
 
   it("summary counts are isolated per main session", () => {
@@ -596,8 +606,18 @@ describe("registry — summary counts", () => {
       parentSession: "main-b",
       startedAt: 200,
     });
-    assert.deepEqual(summary("main-a"), { running: 0, done: 0, failed: 1 });
-    assert.deepEqual(summary("main-b"), { running: 1, done: 0, failed: 0 });
+    assert.deepEqual(summary("main-a"), {
+      running: 0,
+      done: 0,
+      failed: 1,
+      aborted: 0,
+    });
+    assert.deepEqual(summary("main-b"), {
+      running: 1,
+      done: 0,
+      failed: 0,
+      aborted: 0,
+    });
   });
 });
 

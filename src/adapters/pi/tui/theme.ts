@@ -16,7 +16,7 @@
  */
 
 import type { MarkdownTheme } from "@earendil-works/pi-tui";
-import type { CardHue } from "../../../core/subagent/view.js";
+import type { DisplayHue } from "../../../core/display.js";
 
 /**
  * Structural subset of pi's `Theme` needed to build the full markdown theme.
@@ -73,7 +73,7 @@ export function fullMarkdownTheme(theme: MarkdownThemeSource): MarkdownTheme {
  * @param hue - The semantic hue from the view model.
  * @returns The pi `ThemeColor` name for `theme.fg`.
  */
-export function hueToPiColor(hue: CardHue): string {
+export function hueToPiColor(hue: DisplayHue): string {
   switch (hue) {
     case "running":
       return "warning";

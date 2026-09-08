@@ -149,7 +149,11 @@ import {
   setPrimary,
 } from "./core/subagent/identity.js";
 import type { SubagentRun } from "./core/subagent/registry.js";
-import { findByChildSession, getRun } from "./core/subagent/registry.js";
+import {
+  findByChildSession,
+  getRun,
+  TERMINAL_STATUSES,
+} from "./core/subagent/registry.js";
 import type { RunLog } from "./core/subagent/run-log.js";
 import type { ValidationLimits } from "./core/validate.js";
 import { REGISTRY } from "./registry.js";
@@ -321,24 +325,33 @@ function truecolorWrap(hex: string, text: string): string {
  *
  * pi writes a tool result's `details` into the session file (a partial's
  * never do), so this is the only durable payload a subagent run leaves
- * behind.  It carries ONLY the fact pointer — the sub-session file path the
- * driver reported mid-run, looked up by run id (the tool-call id) in the
- * process-level run registry — which lets a view re-hydrate the run's facts
- * after a process restart.  Tools without a registry run (compress /
- * decompress, or a call id that is not a subagent delegation) contribute an
- * empty object.
+ * behind.  It carries:
+ *
+ * - `sessionPath` — the sub-session file path the driver reported mid-run,
+ *   looked up by run id (the tool-call id) in the process-level run
+ *   registry; a view re-hydrates the run's facts from it after a restart.
+ * - `outcome` — the run's terminal status (`done` / `error` / `aborted`),
+ *   present only when the run has already reached a terminal state.  The
+ *   restored-render path uses it to show the true lifecycle status (an
+ *   aborted run must not fall back to the green done dot, which the bare
+ *   `isError` flag alone cannot distinguish).
+ *
+ * Tools without a registry run (compress / decompress, or a call id that
+ * is not a subagent delegation) contribute an empty object.
  *
  * @param toolCallId - pi's tool-call id for the finished call.
- * @returns `{ sessionPath }`, or `{}` when there is nothing to point at.
+ * @returns The `{ sessionPath?, outcome? }` payload, or `{}` when there
+ *   is nothing to point at.
  */
 export function terminalToolDetails(
   toolCallId: unknown,
 ): Record<string, unknown> {
-  const sessionPath =
-    typeof toolCallId === "string"
-      ? getRun(toolCallId)?.sessionPath
-      : undefined;
-  return sessionPath === undefined ? {} : { sessionPath };
+  const run = typeof toolCallId === "string" ? getRun(toolCallId) : undefined;
+  if (run === undefined) return {};
+  const details: Record<string, unknown> = {};
+  if (run.sessionPath !== undefined) details.sessionPath = run.sessionPath;
+  if (TERMINAL_STATUSES.has(run.status)) details.outcome = run.status;
+  return details;
 }
 
 /**

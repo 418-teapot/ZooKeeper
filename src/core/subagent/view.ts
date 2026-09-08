@@ -22,21 +22,32 @@
  *     the tool-call lines, the assistant output lines, and a stats line
  *     (`⟳ N turns · M tools · T`) whose counters are derived from the
  *     facts.  The spinner frame advances with each render.
- *   - done ok: `✓ subagent(<name>)` success-hued title (badged with the
+ *   - done ok: `● subagent(<name>)` success-hued title (badged with the
  *     run statistics) plus the final message text projected from the log;
- *     error / aborted render their own marker and reason.
+ *     terminal titles carry the square marker (red for error, muted for
+ *     aborted — a cancellation is not a failure), and error additionally
+ *     renders its reason line below the title.
  *   - expanded shows every entry; collapsed keeps only the recent
  *     `GLANCE_LINES` entries.
  *
  * The fleet-widget functions (`renderFleetCollapsed` / `renderFleetRows`)
  * derive the pi `zoo` widget lines from the run registry (`registry.ts`):
- * a single-line collapsed summary (status carried purely by color, no
- * ✓/✗ text) and the expanded scrolling row list with nested child runs.
+ * a single-line collapsed summary (status carried purely by color, never
+ * by text markers) and the expanded scrolling row list with nested child runs.
  *
  * @module
  */
 
 import { homedir } from "node:os";
+import {
+  type DisplayHue,
+  type PresentationStatus,
+  SPINNER_FRAMES,
+  STATUS_PRESENTATION,
+  spinnerFrameIndex,
+  TREE_BRANCH,
+  TREE_LAST,
+} from "../display.js";
 import type { RunStatus, RunSummary, SubagentRun } from "./registry.js";
 import type {
   MessageEndFact,
@@ -47,7 +58,24 @@ import type {
 import { contextTokens } from "./run-log.js";
 
 /**
- * Humanize a token count for the stats line.
+ * The run-status → presentation mapping for the subagent domain.
+ *
+ * The domain maps its lifecycle states onto the canonical presentation
+ * statuses: a run in flight is `active`, a finished run is `succeeded` or
+ * `failed` — an interruption (aborted) is a `cancelled` stop, not a
+ * failure (the user's intent stays visually distinct from an exception,
+ * matching the todo domain's treatment of abandoned work).  Both the card
+ * title and the fleet rows resolve their glyph/hue through this mapping.
+ */
+export const RUN_PRESENTATION: Record<RunStatus, PresentationStatus> = {
+  running: "active",
+  done: "succeeded",
+  error: "failed",
+  aborted: "cancelled",
+};
+
+/**
+ * Format a token count for the stats line.
  *
  * Follows the compact thousand-abbreviation convention (`12.4k`, `1.0k`,
  * `999`): below 1000 the bare number, at or above 1000 a one-decimal `k`
@@ -64,29 +92,12 @@ export function formatTokenCount(n: number): string {
   return `${val.toFixed(1)}k`;
 }
 
-/** The canonical ten-frame braille spinner. */
-export const SPINNER_FRAMES = [
-  "⠋",
-  "⠙",
-  "⠹",
-  "⠸",
-  "⠼",
-  "⠴",
-  "⠦",
-  "⠧",
-  "⠇",
-  "⠏",
-];
-
-/** Semantic hues a display line can carry. */
-export type CardHue = "running" | "success" | "error" | "muted" | "accent";
-
 /** One colorizable segment of a display line. */
 export interface CardSegment {
   /** The segment text (may embed its own ANSI color sequences). */
   text: string;
   /** The segment's semantic hue — absent means default color (unwrapped). */
-  hue?: CardHue;
+  hue?: DisplayHue;
   /**
    * The agent name this segment renders, when it is an agent-name segment.
    *
@@ -109,7 +120,7 @@ export interface CardLine {
    * For a line that also carries `segments`, the adapter uses the per-segment
    * hues instead of wrapping the whole line — see `segments`.
    */
-  hue: CardHue;
+  hue: DisplayHue;
   /**
    * Optional per-segment hues for lines composed of independently colorized
    * parts (the fleet-widget lines).
@@ -143,6 +154,16 @@ export interface CardLine {
    * text, truncated to fit the viewport.
    */
   truncateToWidth?: boolean;
+  /**
+   * Whether this line is the fleet widget's transiently selected row.
+   *
+   * Selection is a widget-only presentation state: the pi adapter renders
+   * the row in reverse video at widget render time, and the static
+   * transcript card ignores this field entirely (history never shows a
+   * selection).  Selection is never carried as a text marker — the
+   * structural `▸/▾` glyphs stay reserved for folding.
+   */
+  selected?: boolean;
 }
 
 /** Recent entries rendered by a collapsed card per region. See
@@ -182,19 +203,6 @@ export function formatElapsed(
   if (!startedAt || startedAt <= 0) return "-:--";
   const seconds = Math.max(0, Math.floor((now - startedAt) / 1000));
   return formatSeconds(seconds);
-}
-
-/**
- * Compute the display index of the current spinner frame.
- *
- * @param seq - A monotonically increasing sequence counter.
- * @returns The frame index into `SPINNER_FRAMES`.
- */
-export function spinnerFrameIndex(seq: number): number {
-  return (
-    ((Math.max(0, seq) % SPINNER_FRAMES.length) + SPINNER_FRAMES.length) %
-    SPINNER_FRAMES.length
-  );
 }
 
 /**
@@ -563,20 +571,26 @@ export function renderProgressTitle(
  * Build a terminal title line for the subagent card.
  *
  * Mirrors the layout of `renderProgressTitle` (same `subagent(<agent>) ·
- * <model-id> · <label>` structure) with a static terminal marker (`✓` /
- * `✗` / `⏹`), so the title handed over from `renderCall` to `renderResult`
- * reads as the same line throughout the run.  The model-id segment appears
- * only when a model was actually resolved.
+ * <model-id> · <label>` structure) with a static terminal marker glyph
+ * (from the canonical `STATUS_PRESENTATION` table), so the title handed
+ * over from `renderCall` to `renderResult` reads as the same line
+ * throughout the run.  The model-id segment appears only when a model was
+ * actually resolved.
  *
  * The optional `stats` segment (`⟳ N turns · M tools · …`) appends the run
  * statistics to the title badge on the terminal card, so the stats the
  * running card showed in its own line survive the transition.
  *
- * @param marker - The terminal marker (`✓` / `✗` / `⏹`).
+ * The status marker is carried as a separate segment with the title's hue:
+ * both the fleet widget AND the transcript card colorize per-segment hues,
+ * so the dot renders in the status color on every surface while the rest
+ * of the title stays default-colored.  The flat `text` remains the segment
+ * concatenation (backward compatible with consumers that only read it).
+ *
+ * @param marker - The terminal marker glyph (`●`, from the canonical table).
  * @param agent - The delegated subagent name (falls back to a placeholder).
  * @param label - The delegation's task description (omitted when absent).
- * @param hue - The terminal title's semantic hue (defaults to `success`;
- *   `⏹` aborted titles stay `muted`).
+ * @param hue - The terminal title's semantic hue (defaults to `success`).
  * @param model - The model id actually used by the sub-session (the id part
  *   of a `"provider/id"` string), omitted when unknown.
  * @param stats - The run-statistics text (omitted when absent).
@@ -586,7 +600,7 @@ export function renderTitle(
   marker: string,
   agent: string | undefined,
   label: string | undefined,
-  hue: CardHue = "success",
+  hue: DisplayHue = "success",
   model?: string,
   stats?: string,
 ): CardLine {
@@ -597,9 +611,11 @@ export function renderTitle(
     model !== undefined && model.length > 0 ? ` · ${model}` : "";
   const statsPart =
     stats !== undefined && stats.length > 0 ? ` · ${stats}` : "";
+  const rest = ` subagent(${name})${modelPart}${labelPart}${statsPart}`;
   return {
-    text: `${marker} subagent(${name})${modelPart}${labelPart}${statsPart}`,
+    text: `${marker}${rest}`,
     hue,
+    segments: [{ text: marker, hue }, { text: rest }],
   };
 }
 
@@ -652,10 +668,10 @@ export interface CardOptions {
  *   - running: no title line (the tool-call card's `renderCall` owns
  *     it); the body is the current-tool line, the tool-call lines, the
  *     assistant output lines, the stats line, and the nested-child lines.
- *   - terminal: a static title (`✓` / `✗` / `⏹`) badged with
- *     the run statistics, the error reason when the run failed, the final
- *     assistant text projected from the last message fact, and the
- *     nested-child lines.
+ *   - terminal: a static title (`●`, hue from the canonical presentation
+ *     table) badged with the run statistics, the error reason when the run
+ *     failed, the final assistant text projected from the last message
+ *     fact, and the nested-child lines.
  *
  * Collapsed mode windows each region to the last `glanceLines` entries;
  * expanded mode shows every entry.  Width is never baked into the log —
@@ -699,21 +715,16 @@ export function projectCard(
   }
 
   // Terminal card: the tool-call list is not repeated — the statistics
-  // badge already summarizes the run's tools.
-  const marker =
-    meta.status === "done" ? "✓" : meta.status === "error" ? "✗" : "⏹";
-  const hue: CardHue =
-    meta.status === "done"
-      ? "success"
-      : meta.status === "error"
-        ? "error"
-        : "muted";
+  // badge already summarizes the run's tools.  The title's marker and hue
+  // come from the canonical presentation table through the domain mapping;
+  // a run never renders its own ad-hoc marker.
+  const presentation = STATUS_PRESENTATION[RUN_PRESENTATION[meta.status]];
   lines.push(
     renderTitle(
-      marker,
+      presentation.glyph,
       meta.agent,
       undefined,
-      hue,
+      presentation.hue,
       meta.model,
       statsText(facts, meta.startedAt, meta.endedAt ?? now),
     ),
@@ -788,8 +799,8 @@ export interface FleetRunningSummary {
 /**
  * Build the single collapsed fleet-widget line for a main session.
  *
- * Layout: `◆ <primary> · <spinner> <agent> <elapsed> · ● <done> ● <failed>`.
- * The spinner segment appears only while something is running; a zero count
+ * Layout: `◆ <primary> · <spinner> <agent> <elapsed> · ● <done> ■ <failed>
+ * ■ <aborted>`.  The spinner segment appears only while something is running; a zero count
  * omits that segment; with no activity at all the line is just
  * `◆ <primary>`.  The line is produced as per-segment hues (the `◆ <primary>`
  * part carries no hue, the running part carries its hue, and each done/failed
@@ -798,9 +809,9 @@ export interface FleetRunningSummary {
  * primary keeps its own host color, the dots stay colored, and the
  * separators / counts stay default.  The flat `text` field remains the
  * segment concatenation (backward compatible with the uncolored card).  The
- * line's dominant `hue` conveys the status
- * priority — running > error > success > muted (no ✓/✗ text, per the visual
- * contract).
+ * line's dominant `hue` conveys the status priority — running > error >
+ * success > muted (status is carried purely by color, never by text
+ * markers, per the visual contract).
  *
  * @param primary - The active primary agent name (plain).
  * @param primaryColorized - The same name pre-colorized by the host adapter
@@ -830,9 +841,10 @@ export function renderFleetCollapsed(
   // are listed one after another in the given order.
   if (summary.running > 0 && currentRunning !== undefined) {
     const spinner = SPINNER_FRAMES[spinnerFrameIndex(frameSeq)];
+    const runningHue = STATUS_PRESENTATION.active.hue;
     for (const run of currentRunning) {
       segments.push({ text: " · " });
-      segments.push({ text: spinner, hue: "running" });
+      segments.push({ text: spinner, hue: runningHue });
       segments.push({ text: " " });
       segments.push({ text: run.agent, agent: run.agent });
       const elapsed =
@@ -842,24 +854,40 @@ export function renderFleetCollapsed(
       segments.push({ text: ` ${elapsed}` });
     }
   }
-  // Each done/failed count splits into three segments — the ` · ` separator,
-  // the bare dot, and the number (` · ● 2`), so only the dot carries the
-  // status hue.  The first dot's separator leads with ` · `; a second dot
-  // (both counts present) is separated by a single space.  Only the dot
-  // carries the status hue — the separator and the number stay default so
-  // the punctuation is never tinted green/red.
+  // Each done/failed/aborted count splits into three segments — the ` · `
+  // separator, the bare glyph, and the number (` · ● 2`), so only the glyph
+  // carries the status hue.  The first glyph's separator leads with ` · `;
+  // each further glyph (any earlier count present) is separated by a single
+  // space.  Only the glyph carries the status hue — the separator and the
+  // number stay default so the punctuation is never tinted green/red/gray.
   if (summary.done > 0) {
     segments.push({ text: " · " });
-    segments.push({ text: "●", hue: "success" });
+    segments.push({
+      text: STATUS_PRESENTATION.succeeded.glyph,
+      hue: STATUS_PRESENTATION.succeeded.hue,
+    });
     segments.push({ text: ` ${summary.done}` });
   }
   if (summary.failed > 0) {
     segments.push({ text: summary.done > 0 ? " " : " · " });
-    segments.push({ text: "●", hue: "error" });
+    segments.push({
+      text: STATUS_PRESENTATION.failed.glyph,
+      hue: STATUS_PRESENTATION.failed.hue,
+    });
     segments.push({ text: ` ${summary.failed}` });
   }
+  if (summary.aborted > 0) {
+    segments.push({
+      text: summary.done > 0 || summary.failed > 0 ? " " : " · ",
+    });
+    segments.push({
+      text: STATUS_PRESENTATION.cancelled.glyph,
+      hue: STATUS_PRESENTATION.cancelled.hue,
+    });
+    segments.push({ text: ` ${summary.aborted}` });
+  }
 
-  const hue: CardHue =
+  const hue: DisplayHue =
     summary.running > 0
       ? "running"
       : summary.failed > 0
@@ -874,10 +902,14 @@ export function renderFleetCollapsed(
 /**
  * The status glyph and hue for one fleet row.
  *
- * A running run shows the spinner glyph (frame-indexed, so consecutive
- * renders animate) with the `running` hue; every terminal status shows a
- * static `●` — `success` for done, `error` for error/aborted.  Status is
- * carried purely by color + the spinner, never by ✓/✗ text.
+ * Both resolve through the canonical `STATUS_PRESENTATION` table via the
+ * `RUN_PRESENTATION` mapping: an `active` run shows the spinner glyph
+ * (frame-indexed, so consecutive renders animate) with the table's `running`
+ * hue; every terminal status shows the table's static glyph with its hue —
+ * success for a finished run, error for a failed one, muted for an
+ * interrupted one.  The
+ * spinner flag is what separates the animated running row from the static
+ * blocked-style one.
  *
  * @param run - The run.
  * @param frameSeq - The shared spinner frame sequence.
@@ -886,24 +918,27 @@ export function renderFleetCollapsed(
 function fleetGlyph(
   run: SubagentRun,
   frameSeq: number,
-): { glyph: string; hue: CardHue } {
-  if (run.status === "running") {
+): { glyph: string; hue: DisplayHue } {
+  const presentation = STATUS_PRESENTATION[RUN_PRESENTATION[run.status]];
+  if (presentation.spinner === true) {
     return {
       glyph: SPINNER_FRAMES[spinnerFrameIndex(frameSeq)],
-      hue: "running",
+      hue: presentation.hue,
     };
   }
-  return { glyph: "●", hue: run.status === "done" ? "success" : "error" };
+  return { glyph: presentation.glyph, hue: presentation.hue };
 }
 
 /**
  * Build the display lines for the expanded fleet widget.
  *
- * Each run renders one row: `▸ <spinner|●> <agent> · <label> · <duration>`
- * (a space in place of `▸` when not selected).  A run's nested children
- * (from `childrenByParent`) render immediately beneath it, indented one
- * level with `├─` for all but the last child and `└─` for the last.  A
- * selected child row carries the `▸` marker in its own slot.
+ * Each run renders one row: `<spinner|●> <agent> · <label> · <duration>`.
+ * The selected row is flagged with `selected` (the adapter applies a
+ * reverse-video highlight — selection is never a text marker, so the
+ * structural `▸/▾` glyphs stay reserved for folding).  A run's nested
+ * children (from `childrenByParent`) render immediately beneath it, indented
+ * one level with `TREE_BRANCH` for all but the last child and `TREE_LAST`
+ * for the last; a selected child row is flagged the same way.
  *
  * The `entries` list is expected to be the windowed, sorted top-level runs
  * (`registry.windowRuns`); `childrenByParent` is a precomputed map of
@@ -925,22 +960,28 @@ export function renderFleetRows(
 ): CardLine[] {
   const lines: CardLine[] = [];
   for (const run of entries) {
-    const marker = run.id === selectedId ? "▸" : " ";
     const { glyph, hue } = fleetGlyph(run, frameSeq);
-    lines.push(fleetRowLine(marker, " ", glyph, hue, fleetRowBody(run, now)));
+    lines.push(
+      fleetRowLine(
+        "",
+        glyph,
+        hue,
+        fleetRowBody(run, now),
+        run.id === selectedId,
+      ),
+    );
     const children = childrenByParent.get(run.id);
     if (children === undefined) continue;
     children.forEach((child, index) => {
-      const branch = index === children.length - 1 ? "└─" : "├─";
-      const childMarker = child.id === selectedId ? "▸" : " ";
+      const branch = index === children.length - 1 ? TREE_LAST : TREE_BRANCH;
       const childGlyph = fleetGlyph(child, frameSeq);
       lines.push(
         fleetRowLine(
-          childMarker,
-          ` ${branch} `,
+          `${branch} `,
           childGlyph.glyph,
           childGlyph.hue,
           fleetRowBody(child, now),
+          child.id === selectedId,
         ),
       );
     });
@@ -951,35 +992,33 @@ export function renderFleetRows(
 /**
  * Build one fleet row line as colorized segments.
  *
- * The marker and the branch/prefix characters carry no hue (default color);
- * only the status glyph (`<spinner|●>`) carries the status hue.  The body
- * splits into the bare agent name (marked with its `agent` so the adapter
- * colorizes it with the configured `[agent.<name>].color`) and the plain
+ * The tree/prefix characters carry no hue (default color); only the status
+ * glyph (`<spinner|●>`) carries the status hue.  The body splits into the
+ * bare agent name (marked with its `agent` so the adapter colorizes it with
+ * the configured `[agent.<name>].color`) and the plain
  * ` · <label> · <duration>` remainder, so a terminal row does not tint the
  * whole line green/red (visual-noise fix) while the agent name keeps its own
  * color.  The flat `text` is the segment concatenation, so the uncolored
- * card path renders identically.
+ * card path renders identically.  Selection is carried only as the line's
+ * `selected` flag — no marker text is emitted.
  *
- * @param marker - The selection marker (`▸` / ` `).
- * @param prefix - The separator between the marker and the glyph (` ` for a
- *   top-level row, ` ├─ ` / ` └─ ` for a nested child).
+ * @param prefix - The characters between the line start and the glyph (` `
+ *   for a top-level row, `${TREE_BRANCH} ` / `${TREE_LAST} ` for a nested
+ *   child).
  * @param glyph - The status glyph (`<spinner|●>`).
  * @param hue - The glyph's semantic hue.
  * @param body - The row body (`<agent> · <label> · <duration>`).
+ * @param selected - Whether the row is the widget's selected row.
  * @returns The row line with its per-segment hues.
  */
 function fleetRowLine(
-  marker: string,
   prefix: string,
   glyph: string,
-  hue: CardHue,
+  hue: DisplayHue,
   body: string,
+  selected: boolean,
 ): CardLine {
-  const segments: CardSegment[] = [
-    { text: marker },
-    { text: prefix },
-    { text: glyph, hue },
-  ];
+  const segments: CardSegment[] = [{ text: prefix }, { text: glyph, hue }];
   // The leading `<agent>` of the body is split out and marked, so the
   // adapter colorizes exactly the agent name and leaves the label /
   // duration plain.  When the body has no agent prefix (never in practice)
@@ -996,6 +1035,7 @@ function fleetRowLine(
     text: segments.map((s) => s.text).join(""),
     hue,
     segments,
+    selected,
   };
 }
 
@@ -1048,9 +1088,11 @@ function fleetRowBody(run: SubagentRun, now: number): string {
  * Build the nested-child lines for a card (`projectCard`).
  *
  * Each child run renders one line, indented one level:
- * `├─ <spinner|●> subagent(<agent>) · <label>` (the label when present).
+ * `<TREE_BRANCH> <spinner|●> subagent(<agent>) · <label>` (the label when
+ * present).
  * A running child shows the spinner with the `running` hue; terminal
- * children show `●` with the `success` / `error` hue.  An empty list yields
+ * children show the canonical static glyph with the `success` / `error` /
+ * `muted` hue of their presentation.  An empty list yields
  * no lines, so the card output is unchanged when there are no children.
  *
  * @param children - The run's nested subagent runs.
@@ -1069,7 +1111,7 @@ function fleetCardChildLines(
         ? ` · ${child.label}`
         : "";
     return {
-      text: `├─ ${glyph} subagent(${child.agent})${labelPart}`,
+      text: `${TREE_BRANCH} ${glyph} subagent(${child.agent})${labelPart}`,
       hue,
     };
   });

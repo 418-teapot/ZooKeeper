@@ -14,9 +14,14 @@
  *
  * Resolution rules:
  * - `name === "subagent"` tool calls are tracked; everything else is ignored.
- * - A call with a linked `toolResult` message resolves by the result's
- *   `isError` flag: `true` → `error` (with the result text as the failure
- *   reason), `false` → `done`.
+ * - A call with a linked `toolResult` message resolves its status by a
+ *   three-level priority: the persisted `details.outcome` (written by
+ *   `terminalToolDetails` in `src/pi.ts` — new data) when it is a legal
+ *   terminal string; otherwise the sub-session file's last assistant
+ *   message `stopReason` (pi's own authoritative field — a user-aborted run
+ *   persists a non-error result whose `stopReason` is `"aborted"`);
+ *   otherwise the legacy `isError` binary (`true` → `error` with the result
+ *   text as the failure reason, `false` → `done`).
  * - A call WITHOUT a linked result was still in flight when pi exited — the
  *   exit interrupted it — so it is rebuilt as `aborted`, with `endedAt`
  *   falling back to the call's own timestamp.
@@ -58,10 +63,23 @@
  * @module
  */
 
-import { readdirSync, readFileSync } from "node:fs";
+import {
+  closeSync,
+  fstatSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { finishRun, getRun, startRun } from "../../core/subagent/registry.js";
+import {
+  finishRun,
+  getRun,
+  type RunStatus,
+  startRun,
+  TERMINAL_STATUSES,
+} from "../../core/subagent/registry.js";
 import { log } from "../../utils/logger.js";
 
 /** The pi history entry shape returned by `buildContextEntries()`. */
@@ -108,7 +126,7 @@ export interface ScannedRun {
   /** The delegation's task description, when present. */
   label?: string;
   /** The terminal outcome: `done` / `error` / `aborted` (interrupted). */
-  status: "done" | "error" | "aborted";
+  status: TerminalStatus;
   /** Epoch-millis start time. */
   startedAt: number;
   /** Epoch-millis end time. */
@@ -183,6 +201,196 @@ function callFacts(raw: unknown): { agent: string; label?: string } {
       ? { label: description }
       : {}),
   };
+}
+
+/** The terminal statuses a rebuilt run can resolve to. */
+type TerminalStatus = "done" | "error" | "aborted";
+
+/**
+ * Read the terminal outcome persisted in a subagent result's `details`.
+ *
+ * `terminalToolDetails` in `src/pi.ts` writes `outcome: run.status` on
+ * every terminal result it produces — the authoritative record for new
+ * data.  Only the three legal terminal strings count; anything else
+ * (older payloads without the field, ill-shaped values) yields `undefined`
+ * so the caller falls through to its next priority.
+ *
+ * @param raw - The raw `details` value from the toolResult message.
+ * @returns The legal terminal outcome, or `undefined`.
+ */
+function detailsOutcome(raw: unknown): TerminalStatus | undefined {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return undefined;
+  }
+  const outcome = (raw as Record<string, unknown>).outcome;
+  return typeof outcome === "string" &&
+    TERMINAL_STATUSES.has(outcome as RunStatus)
+    ? (outcome as TerminalStatus)
+    : undefined;
+}
+
+/** The tail window (bytes) scanned for the last assistant message before
+ * falling back to a full-file pass. */
+const TAIL_WINDOW_BYTES = 64 * 1024;
+
+/**
+ * What a backwards scan over session-file text found.
+ */
+interface StopReasonProbe {
+  /** Whether any assistant message record was present. */
+  found: boolean;
+  /** The LAST assistant message's `stopReason`, when it is a string. */
+  stopReason?: string;
+}
+
+/**
+ * Scan session-file text backwards for the last assistant message.
+ *
+ * Records are JSON lines; the first `role:"assistant"` message met from the
+ * end is the session's terminal assistant message, and its `stopReason` is
+ * returned (with `found: true` even when the field is absent — the caller
+ * must not keep looking past the terminal message).
+ *
+ * @param text - The raw file text (or a tail window of it).
+ * @param skipFirstLine - Whether the text's first line may be a partial
+ *   record (true for a tail window that did not start at byte 0).
+ * @returns What the scan found.
+ */
+function scanForStopReason(
+  text: string,
+  skipFirstLine: boolean,
+): StopReasonProbe {
+  const lines = text.split("\n");
+  const start = skipFirstLine ? 1 : 0;
+  for (let i = lines.length - 1; i >= start; i--) {
+    const trimmed = lines[i]?.trim();
+    if (trimmed === undefined || trimmed.length === 0) continue;
+    try {
+      const raw = JSON.parse(trimmed) as {
+        message?: { role?: unknown; stopReason?: unknown };
+      };
+      const message = raw?.message;
+      if (
+        message === null ||
+        typeof message !== "object" ||
+        message.role !== "assistant"
+      ) {
+        continue;
+      }
+      return {
+        found: true,
+        ...(typeof message.stopReason === "string"
+          ? { stopReason: message.stopReason }
+          : {}),
+      };
+    } catch {
+      // Skip malformed lines.
+    }
+  }
+  return { found: false };
+}
+
+/**
+ * Read a session file's tail window.
+ *
+ * Sub-session files can be large; the common case only needs the last
+ * records.  Returns the window's text and whether it covers the whole file
+ * (the first line of a partial window may be a truncated record and must
+ * be skipped by the caller).  `undefined` when the file is missing or
+ * unreadable.
+ *
+ * @param path - The session file path.
+ * @returns The tail text, or `undefined`.
+ */
+function tailWindow(path: string):
+  | {
+      text: string;
+      complete: boolean;
+    }
+  | undefined {
+  let fd: number;
+  try {
+    fd = openSync(path, "r");
+  } catch {
+    return undefined;
+  }
+  try {
+    const size = fstatSync(fd).size;
+    const start = Math.max(0, size - TAIL_WINDOW_BYTES);
+    const length = size - start;
+    const buffer = Buffer.alloc(length);
+    let offset = 0;
+    while (offset < length) {
+      const read = readSync(
+        fd,
+        buffer,
+        offset,
+        length - offset,
+        start + offset,
+      );
+      if (read <= 0) break;
+      offset += read;
+    }
+    return { text: buffer.toString("utf-8", 0, offset), complete: start === 0 };
+  } catch {
+    return undefined;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Find the LAST assistant message's `stopReason` in a session jsonl file.
+ *
+ * Reads the file's tail window first and scans it backwards; when the
+ * window holds no assistant message at all (e.g. the terminal one straddles
+ * the window boundary), falls back to one full backwards pass.  Returns
+ * `undefined` when the file is missing / unreadable or carries no assistant
+ * message.
+ *
+ * @param path - The session file path.
+ * @returns The terminal `stopReason`, or `undefined`.
+ */
+function lastAssistantStopReason(path: string): string | undefined {
+  const window = tailWindow(path);
+  if (window === undefined) return undefined;
+  const probe = scanForStopReason(window.text, !window.complete);
+  if (probe.found || window.complete) return probe.stopReason;
+  try {
+    return scanForStopReason(readFileSync(path, "utf-8"), false).stopReason;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Resolve a linked-result run's status from its persisted evidence.
+ *
+ * Three-level priority:
+ * 1. the persisted `details.outcome` (new data — `terminalToolDetails`
+ *    writes it on every terminal result it produces);
+ * 2. the sub-session file's last assistant message `stopReason` — the pi
+ *    field that records a user abort, which the persisted non-error result
+ *    alone does not reveal;
+ * 3. the legacy `isError` binary (missing/unreadable sub-session file or
+ *    old data).
+ *
+ * @param details - The raw `details` value from the toolResult message.
+ * @param sessionPath - The sub-session file path, when persisted.
+ * @param isError - The result's `isError` flag (the final fallback).
+ * @returns The resolved terminal status.
+ */
+function terminalStatus(
+  details: unknown,
+  sessionPath: string | undefined,
+  isError: boolean,
+): TerminalStatus {
+  const outcome = detailsOutcome(details);
+  if (outcome !== undefined) return outcome;
+  if (sessionPath !== undefined && sessionPath.length > 0) {
+    if (lastAssistantStopReason(sessionPath) === "aborted") return "aborted";
+  }
+  return isError ? "error" : "done";
 }
 
 /**
@@ -295,7 +503,7 @@ export function extractSubagentRuns(
         id: callId,
         agent,
         parentSession,
-        status: isError ? "error" : "done",
+        status: terminalStatus(result.details, sessionPath, isError),
         startedAt: fallback,
         endedAt: asMillis(result.timestamp) ?? fallback,
         ...(label !== undefined ? { label } : {}),

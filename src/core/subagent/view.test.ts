@@ -12,6 +12,7 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { SPINNER_FRAMES, TREE_BRANCH } from "../display.js";
 import type { SubagentRun } from "./registry.js";
 import { createRunLog, type RunLog } from "./run-log.js";
 import type { CardLine, CardMeta, CardOptions } from "./view.js";
@@ -20,13 +21,28 @@ import {
   formatTokenCount,
   GLANCE_LINES,
   projectCard,
+  RUN_PRESENTATION,
   renderFleetCollapsed,
   renderFleetRows,
   renderProgressTitle,
   renderTitle,
-  SPINNER_FRAMES,
   summarizeToolCall,
 } from "./view.js";
+
+// ---------------------------------------------------------------------------
+// RUN_PRESENTATION → STATUS_PRESENTATION
+// ---------------------------------------------------------------------------
+
+describe("view — run status presentation", () => {
+  it("maps each run status onto exactly one canonical presentation status", () => {
+    assert.deepEqual(RUN_PRESENTATION, {
+      running: "active",
+      done: "succeeded",
+      error: "failed",
+      aborted: "cancelled",
+    });
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -170,29 +186,48 @@ describe("renderProgressTitle", () => {
 
 describe("renderTitle", () => {
   it("renders the terminal title with the success marker and label", () => {
-    const line = renderTitle("✓", "beaver", "实现功能");
-    assert.ok(line.text.includes("✓"), line.text);
+    const line = renderTitle("●", "beaver", "实现功能");
+    assert.ok(line.text.includes("●"), line.text);
     assert.ok(line.text.includes("subagent(beaver)"), line.text);
     assert.ok(line.text.includes("实现功能"), line.text);
   });
 
   it("renders the model id badge when present", () => {
-    const line = renderTitle("✓", "lynx", "research", "success", "dummy-small");
+    const line = renderTitle("●", "lynx", "research", "success", "dummy-small");
     assert.ok(line.text.includes("subagent(lynx)"), line.text);
     assert.ok(line.text.includes("· dummy-small"), line.text);
     assert.ok(line.text.includes("research"), line.text);
   });
 
   it("omits the model badge when absent (defensive-only branch)", () => {
-    const line = renderTitle("✓", "lynx", "research");
+    const line = renderTitle("●", "lynx", "research");
     assert.ok(!line.text.includes("dummy-small"), line.text);
-    assert.ok(line.text.includes("✓ subagent(lynx) · research"), line.text);
+    assert.ok(line.text.includes("● subagent(lynx) · research"), line.text);
   });
 
   it("omits the label when absent", () => {
-    const line = renderTitle("✓", "beaver", undefined);
-    assert.ok(line.text.includes("✓ subagent(beaver)"), line.text);
+    const line = renderTitle("●", "beaver", undefined);
+    assert.ok(line.text.includes("● subagent(beaver)"), line.text);
     assert.ok(!line.text.includes("undefined"), line.text);
+  });
+
+  it("carries the status hue on the marker segment only", () => {
+    // The terminal marker is its own segment with the title's hue; the rest
+    // of the title stays uncolored so card and widget colorize exactly the
+    // dot.  The flat text remains the segment concatenation.
+    const done = renderTitle("●", "beaver", "实现功能", "success", "m1", "⟳ 1");
+    assert.ok(done.segments !== undefined, "segments must be present");
+    assert.deepEqual(done.segments, [
+      { text: "●", hue: "success" },
+      { text: " subagent(beaver) · m1 · 实现功能 · ⟳ 1" },
+    ]);
+    assert.equal(done.text, done.segments.map((s) => s.text).join(""));
+
+    const failed = renderTitle("●", "lynx", undefined, "error");
+    assert.ok(failed.segments !== undefined);
+    assert.deepEqual(failed.segments[0], { text: "●", hue: "error" });
+    assert.equal(failed.segments[1].hue, undefined);
+    assert.equal(failed.text, failed.segments.map((s) => s.text).join(""));
   });
 
   it("keeps the running card title line and terminal card title in sync", () => {
@@ -200,7 +235,7 @@ describe("renderTitle", () => {
     // the terminal renderResult title (which takes over from renderCall)
     // reads as the same line, just with a static marker.
     const run = renderProgressTitle("beaver", "实现功能", 0).text;
-    const done = renderTitle("✓", "beaver", "实现功能").text;
+    const done = renderTitle("●", "beaver", "实现功能").text;
     assert.ok(run.includes("subagent(beaver) · 实现功能"), run);
     assert.ok(done.includes("subagent(beaver) · 实现功能"), done);
   });
@@ -633,7 +668,7 @@ describe("renderFleetCollapsed", () => {
     const line = renderFleetCollapsed(
       "dolphin",
       undefined,
-      { running: 1, done: 2, failed: 1 },
+      { running: 1, done: 2, failed: 1, aborted: 0 },
       [{ agent: "lynx", label: "research", elapsedMs: 5000 }],
       0,
     );
@@ -642,7 +677,7 @@ describe("renderFleetCollapsed", () => {
     assert.equal(line.hue, "running");
     assert.equal(
       line.text,
-      `◆ dolphin · ${SPINNER_FRAMES[0]} lynx 0:05 · ● 2 ● 1`,
+      `◆ dolphin · ${SPINNER_FRAMES[0]} lynx 0:05 · ● 2 ■ 1`,
     );
   });
 
@@ -650,7 +685,7 @@ describe("renderFleetCollapsed", () => {
     const line = renderFleetCollapsed(
       "dolphin",
       undefined,
-      { running: 2, done: 2, failed: 0 },
+      { running: 2, done: 2, failed: 0, aborted: 0 },
       [
         { agent: "beaver", elapsedMs: 83000 },
         { agent: "lynx", elapsedMs: 34000 },
@@ -694,14 +729,47 @@ describe("renderFleetCollapsed", () => {
       running: 0,
       done: 1,
       failed: 1,
+      aborted: 0,
     });
     assert.equal(failed.hue, "error");
     const allDone = renderFleetCollapsed("dolphin", undefined, {
       running: 0,
       done: 2,
       failed: 0,
+      aborted: 0,
     });
     assert.equal(allDone.hue, "success");
+  });
+
+  it("renders the aborted count as its own cancelled-hued segment", () => {
+    const line = renderFleetCollapsed("dolphin", undefined, {
+      running: 0,
+      done: 1,
+      failed: 1,
+      aborted: 2,
+    });
+    // The aborted count renders the cancelled presentation (muted gray
+    // square), separate from the red failure square.
+    assert.equal(line.text, "◆ dolphin · ● 1 ■ 1 ■ 2");
+    assert.ok(line.segments !== undefined, "segments must be present");
+    const glyphs = line.segments.filter((s) => s.hue !== undefined);
+    assert.deepEqual(
+      glyphs.map((s) => [s.text, s.hue]),
+      [
+        ["●", "success"],
+        ["■", "error"],
+        ["■", "muted"],
+      ],
+    );
+    // Aborted only: the segment still appears and the line falls to muted.
+    const only = renderFleetCollapsed("dolphin", undefined, {
+      running: 0,
+      done: 0,
+      failed: 0,
+      aborted: 1,
+    });
+    assert.equal(only.text, "◆ dolphin · ■ 1");
+    assert.equal(only.hue, "muted");
   });
 
   it("omits the spinner segment when nothing is running", () => {
@@ -709,20 +777,21 @@ describe("renderFleetCollapsed", () => {
       running: 0,
       done: 2,
       failed: 1,
+      aborted: 0,
     });
-    assert.equal(line.text, "◆ dolphin · ● 2 ● 1");
+    assert.equal(line.text, "◆ dolphin · ● 2 ■ 1");
   });
 
   it("omits the running label from the collapsed line (agent + elapsed only)", () => {
     const line = renderFleetCollapsed(
       "dolphin",
       undefined,
-      { running: 1, done: 0, failed: 1 },
+      { running: 1, done: 0, failed: 1, aborted: 0 },
       [{ agent: "lynx", label: "research", elapsedMs: 5000 }],
       0,
     );
     // The collapsed one-liner stays compact: `<spinner> <agent> <elapsed>`.
-    assert.equal(line.text, `◆ dolphin · ${SPINNER_FRAMES[0]} lynx 0:05 · ● 1`);
+    assert.equal(line.text, `◆ dolphin · ${SPINNER_FRAMES[0]} lynx 0:05 · ■ 1`);
     assert.ok(!line.text.includes("research"), line.text);
   });
 
@@ -730,11 +799,11 @@ describe("renderFleetCollapsed", () => {
     const line = renderFleetCollapsed(
       "dolphin",
       undefined,
-      { running: 1, done: 0, failed: 1 },
+      { running: 1, done: 0, failed: 1, aborted: 0 },
       [{ agent: "lynx", elapsedMs: 5000 }],
       0,
     );
-    assert.equal(line.text, `◆ dolphin · ${SPINNER_FRAMES[0]} lynx 0:05 · ● 1`);
+    assert.equal(line.text, `◆ dolphin · ${SPINNER_FRAMES[0]} lynx 0:05 · ■ 1`);
   });
 
   it("renders only the primary when there is no activity", () => {
@@ -742,6 +811,7 @@ describe("renderFleetCollapsed", () => {
       running: 0,
       done: 0,
       failed: 0,
+      aborted: 0,
     });
     assert.equal(line.text, "◆ dolphin");
   });
@@ -752,6 +822,7 @@ describe("renderFleetCollapsed", () => {
       running: 0,
       done: 1,
       failed: 0,
+      aborted: 0,
     });
     assert.ok(line.text.startsWith(`◆ ${colorized}`), line.text);
     assert.ok(!line.text.includes("· ●0"), line.text);
@@ -761,14 +832,14 @@ describe("renderFleetCollapsed", () => {
     const f0 = renderFleetCollapsed(
       "dolphin",
       undefined,
-      { running: 1, done: 0, failed: 0 },
+      { running: 1, done: 0, failed: 0, aborted: 0 },
       [{ agent: "lynx", elapsedMs: 5000 }],
       0,
     ).text;
     const f1 = renderFleetCollapsed(
       "dolphin",
       undefined,
-      { running: 1, done: 0, failed: 0 },
+      { running: 1, done: 0, failed: 0, aborted: 0 },
       [{ agent: "lynx", elapsedMs: 5000 }],
       1,
     ).text;
@@ -780,7 +851,7 @@ describe("renderFleetCollapsed", () => {
     const known = renderFleetCollapsed(
       "dolphin",
       undefined,
-      { running: 1, done: 0, failed: 0 },
+      { running: 1, done: 0, failed: 0, aborted: 0 },
       [{ agent: "lynx", elapsedMs: 65000 }],
       0,
     );
@@ -788,7 +859,7 @@ describe("renderFleetCollapsed", () => {
     const unknown = renderFleetCollapsed(
       "dolphin",
       undefined,
-      { running: 1, done: 0, failed: 0 },
+      { running: 1, done: 0, failed: 0, aborted: 0 },
       [{ agent: "lynx" }],
       0,
     );
@@ -800,7 +871,7 @@ describe("renderFleetCollapsed", () => {
     const line = renderFleetCollapsed(
       "dolphin",
       colorized,
-      { running: 1, done: 2, failed: 1 },
+      { running: 1, done: 2, failed: 1, aborted: 0 },
       [{ agent: "lynx", elapsedMs: 5000 }],
       0,
     );
@@ -834,12 +905,12 @@ describe("renderFleetCollapsed", () => {
     assert.equal(line.segments[7].text, "●");
     assert.equal(line.segments[8].hue, undefined);
     assert.equal(line.segments[8].text, " 2");
-    // The second (failed) dot is separated by a single space — the leading
-    // ` · ` already belongs to the first count.
+    // The second (failed) square is separated by a single space — the
+    // leading ` · ` already belongs to the first count.
     assert.equal(line.segments[9].hue, undefined);
     assert.equal(line.segments[9].text, " ");
     assert.equal(line.segments[10].hue, "error");
-    assert.equal(line.segments[10].text, "●");
+    assert.equal(line.segments[10].text, "■");
     assert.equal(line.segments[11].hue, undefined);
     assert.equal(line.segments[11].text, " 1");
     // The flat `text` stays the concatenation (backward compatible with the
@@ -853,6 +924,7 @@ describe("renderFleetCollapsed", () => {
       running: 0,
       done: 0,
       failed: 0,
+      aborted: 0,
     });
     assert.deepEqual(
       idle.segments?.map((s) => s.hue),
@@ -864,6 +936,7 @@ describe("renderFleetCollapsed", () => {
       running: 0,
       done: 2,
       failed: 0,
+      aborted: 0,
     });
     assert.deepEqual(
       done.segments?.map((s) => s.hue),
@@ -875,12 +948,13 @@ describe("renderFleetCollapsed", () => {
       running: 0,
       done: 0,
       failed: 1,
+      aborted: 0,
     });
     assert.deepEqual(
       failed.segments?.map((s) => s.hue),
       [undefined, undefined, "error", undefined],
     );
-    assert.equal(failed.text, "◆ dolphin · ● 1");
+    assert.equal(failed.text, "◆ dolphin · ■ 1");
   });
 });
 
@@ -897,33 +971,38 @@ describe("renderFleetRows", () => {
     const lines = renderFleetRows(entries, new Map(), undefined, 0, 5000);
     assert.equal(lines.length, 2);
     assert.equal(lines[0].hue, "running");
-    assert.equal(lines[0].text, `  ${SPINNER_FRAMES[0]} lynx · 0:04`);
+    assert.equal(lines[0].text, `${SPINNER_FRAMES[0]} lynx · 0:04`);
     assert.equal(lines[1].hue, "success");
-    assert.equal(lines[1].text, "  ● spider · 0:03");
+    assert.equal(lines[1].text, "● spider · 0:03");
   });
 
-  it("marks error and aborted rows with ● and the error hue", () => {
+  it("renders error rows with the red square and aborted rows muted", () => {
     const entries = [
       fleetRun("r1", { status: "error", startedAt: 1000 }),
       fleetRun("r2", { status: "aborted", startedAt: 2000 }),
     ];
     const lines = renderFleetRows(entries, new Map(), undefined, 0, 3000);
+    // Error is a failure (red square); aborted is a cancellation, not a
+    // failure (muted square).
     assert.equal(lines[0].hue, "error");
-    assert.equal(lines[1].hue, "error");
-    assert.equal(lines[0].text, "  ● lynx · 0:02");
-    assert.equal(lines[1].text, "  ● lynx · 0:01");
+    assert.equal(lines[1].hue, "muted");
+    assert.equal(lines[0].text, "■ lynx · 0:02");
+    assert.equal(lines[1].text, "■ lynx · 0:01");
   });
 
-  it("marks the selected row with ▸ and leaves the others a leading space", () => {
+  it("flags the selected row with `selected` and emits no marker text", () => {
     const entries = [
       fleetRun("r1", { status: "done", startedAt: 1000 }),
       fleetRun("r2", { status: "done", startedAt: 2000 }),
     ];
     const lines = renderFleetRows(entries, new Map(), "r2", 0, 5000);
-    assert.equal(lines[0].text, "  ● lynx · 0:04");
-    assert.equal(lines[1].text, "▸ ● lynx · 0:03");
-    assert.equal(lines[0].text[0], " ");
-    assert.equal(lines[1].text[0], "▸");
+    // No text marker is emitted — the row text starts directly with the
+    // status glyph; the selection is only the boolean flag (the adapter
+    // renders it in reverse video).
+    assert.equal(lines[0].text, "● lynx · 0:04");
+    assert.equal(lines[1].text, "● lynx · 0:03");
+    assert.equal(lines[0].selected, false);
+    assert.equal(lines[1].selected, true);
   });
 
   it("renders the label between agent and duration when present", () => {
@@ -936,7 +1015,7 @@ describe("renderFleetRows", () => {
       }),
     ];
     const lines = renderFleetRows(entries, new Map(), undefined, 0, 5000);
-    assert.equal(lines[0].text, "  ● lynx · research the api · 0:04");
+    assert.equal(lines[0].text, "● lynx · research the api · 0:04");
   });
 
   it("indents nested children beneath their parent with ├─ and └─", () => {
@@ -972,23 +1051,26 @@ describe("renderFleetRows", () => {
     assert.deepEqual(
       lines.map((l) => l.text),
       [
-        `  ${SPINNER_FRAMES[0]} beaver · implement · 0:09`,
-        "  ├─ ● lynx · search · 0:08",
-        `  └─ ${SPINNER_FRAMES[0]} spider · fetch · 0:07`,
-        "  ● mola · 0:06",
+        `${SPINNER_FRAMES[0]} beaver · implement · 0:09`,
+        "├─ ● lynx · search · 0:08",
+        `└─ ${SPINNER_FRAMES[0]} spider · fetch · 0:07`,
+        "● mola · 0:06",
       ],
     );
     assert.equal(lines[2].hue, "running");
   });
 
-  it("selects a nested child row with ▸", () => {
+  it("flags a nested child row as selected", () => {
     const entries = [fleetRun("p1", { status: "running", startedAt: 1000 })];
     const children = new Map<string, SubagentRun[]>([
       ["p1", [fleetRun("c1", { status: "done", startedAt: 2000 })]],
     ]);
     const lines = renderFleetRows(entries, children, "c1", 0, 5000);
-    assert.equal(lines[0].text[0], " ");
-    assert.equal(lines[1].text[0], "▸");
+    // Neither row emits marker text; only the flag distinguishes them.
+    assert.ok(!lines[0].text.startsWith(" "), lines[0].text);
+    assert.ok(!lines[1].text.startsWith(" "), lines[1].text);
+    assert.equal(lines[0].selected, false);
+    assert.equal(lines[1].selected, true);
   });
 
   it("renders no child lines when the map has no children", () => {
@@ -1003,37 +1085,36 @@ describe("renderFleetRows", () => {
       fleetRun("r2", { status: "done", startedAt: 2000 }),
     ];
     const lines = renderFleetRows(entries, new Map(), "r2", 0, 5000);
-    // Running row: marker + prefix hue absent, spinner carries running.
-    assert.equal(lines[0].segments?.length, 6);
+    // Running row: prefix hue absent, spinner carries running.
+    assert.equal(lines[0].segments?.length, 5);
     assert.equal(lines[0].segments?.[0].hue, undefined);
-    assert.equal(lines[0].segments?.[0].text, " ");
-    assert.equal(lines[0].segments?.[1].hue, undefined);
-    assert.equal(lines[0].segments?.[1].text, " ");
-    assert.equal(lines[0].segments?.[2].hue, "running");
-    assert.ok(lines[0].segments?.[2].text.startsWith(SPINNER_FRAMES[0]));
+    assert.equal(lines[0].segments?.[0].text, "");
+    assert.equal(lines[0].segments?.[1].hue, "running");
+    assert.ok(lines[0].segments?.[1].text.startsWith(SPINNER_FRAMES[0]));
     // The row body splits into the bare agent name (marked for the adapter
     // to colorize with the configured color) and the plain ` · label ·
     // duration` remainder.
+    assert.equal(lines[0].segments?.[2].hue, undefined);
+    assert.equal(lines[0].segments?.[2].text, " ");
     assert.equal(lines[0].segments?.[3].hue, undefined);
-    assert.equal(lines[0].segments?.[3].text, " ");
+    assert.equal(lines[0].segments?.[3].text, "lynx");
+    assert.equal(lines[0].segments?.[3].agent, "lynx");
     assert.equal(lines[0].segments?.[4].hue, undefined);
-    assert.equal(lines[0].segments?.[4].text, "lynx");
-    assert.equal(lines[0].segments?.[4].agent, "lynx");
-    assert.equal(lines[0].segments?.[5].hue, undefined);
-    assert.equal(lines[0].segments?.[5].text, " · 0:04");
-    // Done row: ▸ marker hue absent, ● carries success, body plain.
-    assert.equal(lines[1].segments?.[0].text, "▸");
+    assert.equal(lines[0].segments?.[4].text, " · 0:04");
+    // Done row: prefix hue absent, ● carries success, body plain, and the
+    // selection is carried by the flag (never as segment text).
+    assert.equal(lines[1].selected, true);
+    assert.equal(lines[1].segments?.[0].text, "");
     assert.equal(lines[1].segments?.[0].hue, undefined);
-    assert.equal(lines[1].segments?.[1].hue, undefined);
-    assert.equal(lines[1].segments?.[2].hue, "success");
-    assert.equal(lines[1].segments?.[2].text, "●");
-    assert.equal(lines[1].segments?.[3].text, " ");
+    assert.equal(lines[1].segments?.[1].hue, "success");
+    assert.equal(lines[1].segments?.[1].text, "●");
+    assert.equal(lines[1].segments?.[2].text, " ");
+    assert.equal(lines[1].segments?.[2].hue, undefined);
+    assert.equal(lines[1].segments?.[3].text, "lynx");
+    assert.equal(lines[1].segments?.[3].agent, "lynx");
     assert.equal(lines[1].segments?.[3].hue, undefined);
-    assert.equal(lines[1].segments?.[4].text, "lynx");
-    assert.equal(lines[1].segments?.[4].agent, "lynx");
     assert.equal(lines[1].segments?.[4].hue, undefined);
-    assert.equal(lines[1].segments?.[5].hue, undefined);
-    assert.equal(lines[1].segments?.[5].text, " · 0:03");
+    assert.equal(lines[1].segments?.[4].text, " · 0:03");
     // Flat text stays the segment concatenation.
     for (const line of lines) {
       assert.equal(
@@ -1043,20 +1124,22 @@ describe("renderFleetRows", () => {
     }
   });
 
-  it("marks error/aborted rows' ● with the error hue", () => {
+  it("renders error/aborted rows' square with their own hues", () => {
     const entries = [
       fleetRun("r1", { status: "error", startedAt: 1000 }),
       fleetRun("r2", { status: "aborted", startedAt: 2000 }),
     ];
     const lines = renderFleetRows(entries, new Map(), undefined, 0, 3000);
-    for (const line of lines) {
+    for (const [line, hue] of [
+      [lines[0], "error"],
+      [lines[1], "muted"],
+    ] as const) {
       assert.equal(line.segments?.[0].hue, undefined);
-      assert.equal(line.segments?.[1].hue, undefined);
-      assert.equal(line.segments?.[2].hue, "error");
-      assert.equal(line.segments?.[2].text, "●");
-      assert.equal(line.segments?.[3].hue, undefined);
-      assert.equal(line.segments?.[4].agent, "lynx");
-      assert.equal(line.segments?.[5].hue, undefined);
+      assert.equal(line.segments?.[1].hue, hue);
+      assert.equal(line.segments?.[1].text, "■");
+      assert.equal(line.segments?.[2].hue, undefined);
+      assert.equal(line.segments?.[3].agent, "lynx");
+      assert.equal(line.segments?.[4].hue, undefined);
     }
   });
 
@@ -1067,9 +1150,8 @@ describe("renderFleetRows", () => {
     ];
     // `now` is far in the future — a terminal row must not keep counting.
     const lines = renderFleetRows(entries, new Map(), undefined, 0, 1_000_000);
-    assert.equal(lines[0].text, "  ● lynx · 0:05");
-    assert.equal(lines[1].text, "  ● lynx · 0:03");
-    // The flat text and the body segment agree.
+    assert.equal(lines[0].text, "● lynx · 0:05");
+    assert.equal(lines[1].text, "■ lynx · 0:03");
     assert.ok(lines[0].text.includes("· 0:05"), lines[0].text);
     assert.ok(lines[1].text.includes("· 0:03"), lines[1].text);
   });
@@ -1099,11 +1181,11 @@ describe("renderFleetRows", () => {
     ];
     const lines = renderFleetRows(entries, new Map(), undefined, 0, 1_000_000);
     // Done row keeps its duration.
-    assert.equal(lines[0].text, "  ● lynx · 0:05");
+    assert.equal(lines[0].text, "● lynx · 0:05");
     // Aborted with unknown duration: no `· 0:00` and no trailing ` ·`.
-    assert.equal(lines[1].text, "  ● lynx");
+    assert.equal(lines[1].text, "■ lynx");
     // Aborted with a known duration still shows it.
-    assert.equal(lines[2].text, "  ● lynx · 0:06");
+    assert.equal(lines[2].text, "■ lynx · 0:06");
     // The flat text and the body segment agree for the duration-less row.
     assert.ok(!lines[1].text.includes("0:00"), lines[1].text);
     assert.ok(!lines[1].text.includes(" · "), lines[1].text);
@@ -1139,7 +1221,7 @@ describe("projectCard (terminal)", () => {
       cardOpts({ now: 0 }),
     );
     assertValidLines(lines);
-    assert.ok(lines[0].text.startsWith("✓ subagent(beaver)"), lines[0].text);
+    assert.ok(lines[0].text.startsWith("● subagent(beaver)"), lines[0].text);
     assert.equal(lines[0].hue, "success");
     // The terminal card shows no tool-call lines: the statistics badge
     // already summarizes the run's tools.
@@ -1170,7 +1252,7 @@ describe("projectCard (terminal)", () => {
       terminalMeta({ status: "error", error: "exit 1" }),
       cardOpts(),
     );
-    assert.ok(lines[0].text.startsWith("✗"), lines[0].text);
+    assert.ok(lines[0].text.startsWith("■ subagent(beaver)"), lines[0].text);
     assert.equal(lines[0].hue, "error");
     const errLine = lines.find((l) => l.hue === "error" && l !== lines[0]);
     assert.equal(errLine?.text, "exit 1");
@@ -1181,15 +1263,17 @@ describe("projectCard (terminal)", () => {
     );
   });
 
-  it("renders an aborted result distinctly from ok", () => {
+  it("renders an aborted result with the cancelled presentation", () => {
     const lines = projectCard(
       finishedLog("partial work"),
       terminalMeta({ status: "aborted" }),
       cardOpts(),
     );
-    assert.ok(lines[0].text.startsWith("⏹"), lines[0].text);
+    // Aborted maps onto the canonical `cancelled` status — a muted square,
+    // distinct from the red error square, per the unified presentation
+    // table (matching the todo domain's treatment of abandoned work).
+    assert.ok(lines[0].text.startsWith("■ subagent(beaver)"), lines[0].text);
     assert.equal(lines[0].hue, "muted");
-    assert.ok(!lines[0].text.startsWith("✓"));
   });
 
   it("expanded shows the final text in full as markdown, with no cap", () => {
@@ -1261,7 +1345,7 @@ describe("projectCard (running) — children", () => {
     const log = createRunLog();
     log.appendToolStart("bash", { command: "true" }, 0);
     const lines = projectCard(log, runningMeta(), cardOpts({ children }));
-    const childLines = lines.filter((l) => l.text.startsWith("├─"));
+    const childLines = lines.filter((l) => l.text.startsWith(TREE_BRANCH));
     assert.deepEqual(
       childLines.map((l) => l.text),
       [
@@ -1285,7 +1369,7 @@ describe("projectCard (running) — children", () => {
       runningMeta(),
       cardOpts({ children, frame: 3 }),
     );
-    const childLines = lines.filter((l) => l.text.startsWith("├─"));
+    const childLines = lines.filter((l) => l.text.startsWith(TREE_BRANCH));
     assert.equal(
       childLines[0].text,
       `├─ ${SPINNER_FRAMES[3]} subagent(lynx) · search`,
@@ -1323,11 +1407,11 @@ describe("projectCard (terminal) — children", () => {
       terminalMeta(),
       cardOpts({ children, frame: 7 }),
     );
-    const childLines = lines.filter((l) => l.text.startsWith("├─"));
+    const childLines = lines.filter((l) => l.text.startsWith(TREE_BRANCH));
     assert.deepEqual(
       childLines.map((l) => l.text),
       [
-        "├─ ● subagent(lynx) · search",
+        "├─ ■ subagent(lynx) · search",
         `├─ ${SPINNER_FRAMES[7]} subagent(spider) · fetch`,
       ],
     );

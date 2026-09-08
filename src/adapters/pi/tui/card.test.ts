@@ -10,7 +10,7 @@
  * shared renderer state — and no card-internal function is reached into.
  *
  * The expected line texts are independent literals of the documented
- * view-model formats (e.g. `→ $ ls -la`, `✓ subagent(lynx)`, `⟳ 1 turn ·
+ * view-model formats (e.g. `→ $ ls -la`, `● subagent(lynx)`, `⟳ 1 turn ·
  * 2 tools`), asserted against the projection the card delegates to.
  */
 import assert from "node:assert/strict";
@@ -283,7 +283,7 @@ describe("pi renderResult — structured projection from the run log", () => {
     assert.ok(expanded.some((l) => l.includes("$ cmd1")));
   });
 
-  it("renders terminal state ✓ with stats badge and preview of the final text", async () => {
+  it("renders terminal state ● with stats badge and preview of the final text", async () => {
     // The run finished LIVE: the registry released its in-memory log, so the
     // terminal card rebuilds the transcript from the persisted sub-session
     // file (the shared hydration cache) around the run's own lifecycle meta.
@@ -323,7 +323,7 @@ describe("pi renderResult — structured projection from the run log", () => {
     assert.ok(
       lines.some(
         (l) =>
-          l.startsWith("✓ subagent(lynx)") && l.includes("⟳ 1 turn · 0 tools"),
+          l.startsWith("● subagent(lynx)") && l.includes("⟳ 1 turn · 0 tools"),
       ),
       `terminal title with stats expected: ${lines.join(" | ")}`,
     );
@@ -381,7 +381,7 @@ describe("pi renderResult — structured projection from the run log", () => {
     assert.ok(lines.some((l) => l.includes("body paragraph")));
   });
 
-  it("terminal error state renders ✗ with the failure reason", () => {
+  it("terminal error state renders ■ with the failure reason", () => {
     const run = startRun({
       id: "tc-err",
       agent: "beaver",
@@ -399,7 +399,7 @@ describe("pi renderResult — structured projection from the run log", () => {
       80,
     );
     assert.ok(
-      lines.some((l) => l.startsWith("✗ subagent(beaver)")),
+      lines.some((l) => l.startsWith("■ subagent(beaver)")),
       lines.join(" | "),
     );
     assert.ok(
@@ -408,7 +408,7 @@ describe("pi renderResult — structured projection from the run log", () => {
     );
   });
 
-  it("terminal aborted state renders ⏹", () => {
+  it("terminal aborted state renders ■ (muted square)", () => {
     startRun({
       id: "tc-abort",
       agent: "beaver",
@@ -425,8 +425,49 @@ describe("pi renderResult — structured projection from the run log", () => {
       80,
     );
     assert.ok(
-      lines.some((l) => l.startsWith("⏹ subagent(beaver)")),
+      lines.some((l) => l.startsWith("■ subagent(beaver)")),
       lines.join(" | "),
+    );
+  });
+
+  it("colors the terminal title's status dot, never the body", () => {
+    // The status hue lives ONLY on the title's marker segment: the raw
+    // (unstripped) render shows the theme wrap around the dot alone, while
+    // every body line (error reason, final-output preview) stays uncolored.
+    const run = startRun({
+      id: "tc-hue",
+      agent: "beaver",
+      parentSession: "main-1",
+    });
+    run.log.appendMessage([{ type: "text", text: "partial work" }]);
+    finishRun("tc-hue", { status: "error", error: "provider exploded" });
+    const component = renderResult(
+      streamed(""),
+      { isPartial: false },
+      THEME,
+      toolContext("tc-hue"),
+    );
+    const raw = (component as Renderable).render(80);
+    const title = raw.find((l) => l.includes("subagent(beaver)"));
+    assert.ok(title !== undefined, `title expected: ${raw.join(" | ")}`);
+    assert.ok(
+      title.includes(`<${hueToPiColor("error")}>■</${hueToPiColor("error")}>`),
+      `the status square must carry the error hue: ${title}`,
+    );
+    assert.ok(
+      title.includes(">■</error> subagent(beaver)"),
+      `the rest of the title must stay default-colored: ${title}`,
+    );
+    // Body discipline: the error reason and the final-output preview are
+    // never theme-wrapped.
+    const body = raw.filter((l) => l !== title && l.trim().length > 0);
+    assert.ok(
+      body.some((l) => l.includes("provider exploded")),
+      `error reason expected: ${body.join(" | ")}`,
+    );
+    assert.ok(
+      body.every((l) => !/<[a-z]+>/.test(l)),
+      `body lines must stay uncolored: ${body.join(" | ")}`,
     );
   });
 
@@ -450,7 +491,7 @@ describe("pi renderResult — structured projection from the run log", () => {
     );
     assert.ok(
       lines.some(
-        (l) => l.startsWith("✓ subagent(beaver)") && l.includes("claude-opus"),
+        (l) => l.startsWith("● subagent(beaver)") && l.includes("claude-opus"),
       ),
       lines.join(" | "),
     );
@@ -562,7 +603,7 @@ describe("pi renderResult — structured projection from the run log", () => {
     ).filter((l) => l.length > 0);
     assert.ok(
       second.some(
-        (l) => l.startsWith("✓ subagent(spider)") && l.includes("0:05"),
+        (l) => l.startsWith("● subagent(spider)") && l.includes("0:05"),
       ),
       `run meta (real lifecycle) + hydrated body expected: ${second.join(" | ")}`,
     );
@@ -611,7 +652,7 @@ describe("pi renderResult — structured projection from the run log", () => {
       80,
     ).filter((l) => l.length > 0);
     assert.ok(
-      lines.some((l) => l.startsWith("✓ subagent(lynx)")),
+      lines.some((l) => l.startsWith("● subagent(lynx)")),
       `terminal title expected: ${lines.join(" | ")}`,
     );
     assert.ok(
@@ -749,7 +790,7 @@ describe("pi renderResult — structured projection from the run log", () => {
       80,
     ).filter((l) => l.length > 0);
     assert.ok(
-      second.some((l) => l.startsWith("✓ subagent(lynx)")),
+      second.some((l) => l.startsWith("● subagent(lynx)")),
       `terminal title from restored facts expected: ${second.join(" | ")}`,
     );
     assert.ok(
@@ -766,6 +807,78 @@ describe("pi renderResult — structured projection from the run log", () => {
       getRun("tc-restored"),
       undefined,
       "hydration must not register the restored run into the registry",
+    );
+  });
+
+  it("restored outcome=aborted colors the status square with the muted hue", async () => {
+    // The terminal result's persisted `details.outcome` is the only
+    // channel that lets a restored render distinguish an aborted run
+    // (a cancellation, muted) from a clean done (green): the bare
+    // `isError` is false on both.  The status hue lives on the title's
+    // status-symbol segment alone, exactly like the live-path coloring.
+    const sessionPath = await writeSessionFile({
+      role: "assistant",
+      content: [{ type: "text", text: "interrupted answer" }],
+      model: "kimi-k2",
+      usage: { input: 2, output: 1, totalTokens: 3 },
+      timestamp: 1000,
+    });
+    const context = toolContext("tc-outcome-aborted", {
+      args: { agent: "lynx", description: "interrupted task" },
+    });
+    const result = {
+      content: [{ type: "text", text: "delivered" }],
+      details: { sessionPath, outcome: "aborted" },
+    };
+    renderComponent(
+      renderResult(result, { isPartial: false }, THEME, context),
+      80,
+    );
+    await waitForHydration("tc-outcome-aborted");
+    const raw = (
+      renderResult(result, { isPartial: false }, THEME, context) as Renderable
+    ).render(80);
+    const title = raw.find((l) => l.includes("subagent(lynx)"));
+    assert.ok(title !== undefined, `title expected: ${raw.join(" | ")}`);
+    assert.ok(
+      title.includes(`<${hueToPiColor("muted")}>■</${hueToPiColor("muted")}>`),
+      `the restored aborted run's square must carry the muted hue: ${title}`,
+    );
+  });
+
+  it("restored result without outcome falls back to the isError binary", async () => {
+    // Legacy persisted results carry no `details.outcome`: the restore
+    // path keeps the isError binary (locked behavior) — a non-failed
+    // result still restores as done (green).
+    const sessionPath = await writeSessionFile({
+      role: "assistant",
+      content: [{ type: "text", text: "legacy answer" }],
+      model: "kimi-k2",
+      usage: { input: 2, output: 1, totalTokens: 3 },
+      timestamp: 1000,
+    });
+    const context = toolContext("tc-legacy", {
+      args: { agent: "beaver", description: "legacy task" },
+    });
+    const result = {
+      content: [{ type: "text", text: "delivered" }],
+      details: { sessionPath },
+    };
+    renderComponent(
+      renderResult(result, { isPartial: false }, THEME, context),
+      80,
+    );
+    await waitForHydration("tc-legacy");
+    const raw = (
+      renderResult(result, { isPartial: false }, THEME, context) as Renderable
+    ).render(80);
+    const title = raw.find((l) => l.includes("subagent(beaver)"));
+    assert.ok(title !== undefined, `title expected: ${raw.join(" | ")}`);
+    assert.ok(
+      title.includes(
+        `<${hueToPiColor("success")}>●</${hueToPiColor("success")}>`,
+      ),
+      `the legacy non-failed restore must keep the done dot: ${title}`,
     );
   });
 });

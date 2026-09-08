@@ -38,7 +38,7 @@
  * both, it never replaces), so the running `renderResult` body must NOT
  * render a title — a second title would duplicate the one above it.  On a
  * terminal render `renderCall` yields: it returns an empty container and
- * the terminal projection owns the `✓ / ✗ / ⏹` title.
+ * the terminal projection owns the colored-dot title.
  *
  * Layout:
  *   - running (partial render, run in registry): the stacked `renderCall`
@@ -63,7 +63,13 @@
  *
  * Coloring discipline: the card body stays UNCOLORED — the view model's
  * semantic hues are a fleet-widget concern and are never applied here
- * (markdown lines are the sole exception, styled by pi's markdown theme).
+ * (markdown lines are styled by pi's markdown theme).  The ONE exception
+ * is the terminal title's status mark: `renderTitle` emits the status
+ * glyph as its own segment carrying the status hue, and the card colorizes
+ * per-segment hues exactly like the widget does — the only colored pixels
+ * in the card, so done / error / aborted stay distinguishable now that
+ * status lives in the color channel and terminal shape instead of three
+ * ad-hoc glyphs.
  *
  * @module
  */
@@ -77,10 +83,13 @@ import {
   Text,
   truncateToWidth,
 } from "@earendil-works/pi-tui";
+import type { DisplayHue } from "../../../core/display.js";
 import {
   childrenOf,
   getRun,
+  type RunStatus,
   type SubagentRun,
+  TERMINAL_STATUSES,
 } from "../../../core/subagent/registry.js";
 import type { RunLog } from "../../../core/subagent/run-log.js";
 import {
@@ -90,7 +99,11 @@ import {
   renderProgressTitle,
 } from "../../../core/subagent/view.js";
 import { beginHydration, hydrationState } from "../hydrate.js";
-import { fullMarkdownTheme, type MarkdownThemeSource } from "./theme.js";
+import {
+  fullMarkdownTheme,
+  hueToPiColor,
+  type MarkdownThemeSource,
+} from "./theme.js";
 
 // ---------------------------------------------------------------------------
 // pi renderer surface types (duck-typed inputs, not pi imports)
@@ -145,15 +158,19 @@ interface SubagentToolArgs {
 /**
  * The partial/final `AgentToolResult` the card renders from.
  *
- * `details` is the terminal session pointer only: pi persists a tool
- * result's `details` (partial ones never reach disk), so the terminal
- * result carries the sub-session file path and nothing else.  The card
- * reads it EXCLUSIVELY as the cold-start hydration key — never as a
- * progress payload (that channel is gone).
+ * `details` is the terminal session pointer plus the run's terminal
+ * outcome: pi persists a tool result's `details` (partial ones never reach
+ * disk), so the terminal result carries the sub-session file path the card
+ * hydrates from and — for runs that had already finished when the result
+ * was written — the terminal status (`done` / `error` / `aborted`) the
+ * restored title's status dot renders.  The card reads `sessionPath`
+ * EXCLUSIVELY as the cold-start hydration key — never as a progress
+ * payload (that channel is gone).  Legacy persisted results carry neither
+ * field.
  */
 interface SubagentToolResult {
   content?: Array<{ type?: string; text?: string }>;
-  details?: { sessionPath?: string };
+  details?: { sessionPath?: string; outcome?: string };
 }
 
 // ---------------------------------------------------------------------------
@@ -194,6 +211,7 @@ class ProjectedCard implements Component {
     private readonly markdownTheme: MarkdownTheme,
     private readonly expanded: boolean,
     private readonly frame: number,
+    private readonly colorize?: (hue: DisplayHue, text: string) => string,
   ) {}
 
   invalidate(): void {
@@ -213,7 +231,9 @@ class ProjectedCard implements Component {
       children,
     });
     const container = new Container();
-    for (const line of lines) addLine(container, line, this.markdownTheme);
+    for (const line of lines) {
+      addLine(container, line, this.markdownTheme, this.colorize);
+    }
     const rendered = container.render(safeWidth);
     this.cache.set(safeWidth, rendered);
     return rendered;
@@ -246,8 +266,17 @@ function metaFromRun(run: SubagentRun): CardMeta {
  * recovered from the hydrated log's own fact times (the persisted
  * messages carry them).
  *
+ * The status comes from the persisted `details.outcome` when it is a
+ * valid terminal status — the only channel that distinguishes an aborted
+ * run (a muted-gray square, a cancellation) from a clean done (a green
+ * dot).  Legacy persisted results carry no `outcome`, so those restore
+ * through the `isError` binary fallback and an aborted run still shows
+ * the done dot.
+ *
  * @param args - The tool-call arguments from the render context.
  * @param isError - Whether the persisted terminal result failed.
+ * @param outcome - The persisted `details.outcome` (undefined on legacy
+ *   results).
  * @param log - The hydrated fact log (its first / last fact times bound
  *   the run's lifecycle).
  * @returns The projection meta.
@@ -255,12 +284,19 @@ function metaFromRun(run: SubagentRun): CardMeta {
 function metaFromRestore(
   args: SubagentToolArgs,
   isError: boolean,
+  outcome: string | undefined,
   log: RunLog,
 ): CardMeta {
   const facts = log.facts();
+  const restored =
+    outcome !== undefined && TERMINAL_STATUSES.has(outcome as RunStatus)
+      ? (outcome as RunStatus)
+      : isError
+        ? "error"
+        : "done";
   return {
     agent: args.agent,
-    status: isError ? "error" : "done",
+    status: restored,
     startedAt: facts.length > 0 ? facts[0].at : 0,
     endedAt: facts.length > 0 ? facts[facts.length - 1].at : undefined,
   };
@@ -285,9 +321,9 @@ function deliveredText(result: SubagentToolResult): string {
 /**
  * Render one view-model line as a pi child component.
  *
- * Non-markdown lines stay uncolored: the semantic hue of the line is
- * carried by the view model itself and ignored here — no `theme.fg` call
- * is ever made for them.  Markdown-flagged lines are the exception,
+ * Non-markdown lines stay uncolored: the line's own semantic hue is
+ * carried by the view model and ignored here — no `theme.fg` call is ever
+ * made for the line as a whole.  Markdown-flagged lines are the exception,
  * rendering with pi's full markdown theme.
  *
  * A markdown-flagged line (the terminal final output, expanded) is
@@ -300,18 +336,25 @@ function deliveredText(result: SubagentToolResult): string {
  * width-aware `truncateToWidth` semantics and strips the ANSI resets it
  * emits, keeping the card plain.  All other lines render as plain `Text`.
  *
- * A line that carries `segments` renders its flat concatenated `text`
- * (the per-segment hues are a widget-only concern).
+ * Per-segment hues are the one body-level exception: a line that carries
+ * `segments` renders each segment through `colorize` when it has a hue
+ * and verbatim otherwise (the same no-hue-no-wrap strategy as the widget,
+ * which keeps pre-colorized segments intact) — today only the terminal
+ * title's status dot.  The line's whole-line `hue` is still ignored, and
+ * without a `colorize` callback the segments degrade to plain text.
  *
  * @param container - The container to add the line to.
  * @param line - The view-model line (text + semantic hue).
  * @param markdownTheme - The pi-tui `MarkdownTheme` for markdown-flagged
  *   lines (pi's full theme, from `fullMarkdownTheme`).
+ * @param colorize - Optional host colorizer for segment-level hues
+ *   (`theme.fg(hueToPiColor(hue), text)`), absent in unthemed renders.
  */
 export function addLine(
   container: Container,
   line: CardLine,
   markdownTheme: MarkdownTheme,
+  colorize?: (hue: DisplayHue, text: string) => string,
 ): void {
   if (line.markdown === true) {
     container.addChild(new Markdown(line.text, 0, 0, markdownTheme));
@@ -319,6 +362,17 @@ export function addLine(
   }
   if (line.truncateToWidth === true) {
     container.addChild(new CollapsedPreview(line.text));
+    return;
+  }
+  if (line.segments !== undefined && line.segments.length > 0) {
+    const text = line.segments
+      .map((segment) =>
+        segment.hue === undefined || colorize === undefined
+          ? segment.text
+          : colorize(segment.hue, segment.text),
+      )
+      .join("");
+    container.addChild(new Text(text, 0, 0));
     return;
   }
   container.addChild(new Text(line.text, 0, 0));
@@ -370,7 +424,7 @@ class CollapsedPreview implements Component {
  *
  * On a terminal render (`isPartial === false`) this returns an empty
  * container: pi stacks the call card forever, so the running title must
- * yield to the terminal `renderResult`'s own `✓ / ✗ / ⏹` title — an empty
+ * yield to the terminal `renderResult`'s own colored-dot title — an empty
  * container renders nothing, handing full title ownership to the result
  * card and clearing any frozen spinner glyph.
  *
@@ -387,7 +441,7 @@ export function renderCall(
   const container = new Container();
   // Terminal: yield the title to the renderResult terminal branch — an
   // empty container renders nothing (pi still stacks the call card, but it
-  // stays blank, so the `✓ / ✗ / ⏹` title below is not duplicated).
+  // stays blank, so the colored-dot title below is not duplicated).
   if (context?.isPartial === false) return container;
 
   const state = context?.state ?? {};
@@ -428,7 +482,7 @@ export function renderCall(
  *
  * Title ownership: the RUNNING projection emits no title line (the
  * stacked `renderCall` owns it); only the terminal projection carries the
- * `✓ / ✗ / ⏹` title.
+ * colored-dot title.
  *
  * Spinner animation: pi has no periodic re-render for tool cards, so the
  * running branch drives the animation itself.  While the run is active it
@@ -467,6 +521,14 @@ export function renderResult(
   const frame = state.frame ?? 0;
   const expanded = options.expanded === true;
   const markdownTheme = fullMarkdownTheme(theme);
+  // Segment-level colorizer (the terminal title's status dot): the same
+  // hue→theme.fg path the widget uses; undefined when the host passes no
+  // usable theme, degrading the segments to plain text.
+  const colorize =
+    typeof theme.fg === "function"
+      ? (hue: DisplayHue, text: string): string =>
+          theme.fg(hueToPiColor(hue), text)
+      : undefined;
 
   // Publish the resolved model for the stacked renderCall title (the
   // fallback path for renderers without a registry run read it from
@@ -504,6 +566,7 @@ export function renderResult(
           markdownTheme,
           expanded,
           frame,
+          colorize,
         );
       }
       if (hydration.kind !== "failed") {
@@ -525,6 +588,7 @@ export function renderResult(
       markdownTheme,
       expanded,
       frame,
+      colorize,
     );
   }
 
@@ -547,6 +611,7 @@ export function renderResult(
       const meta = metaFromRestore(
         context?.args ?? {},
         context?.isError === true,
+        result.details?.outcome,
         hydration.log,
       );
       return new ProjectedCard(
@@ -554,6 +619,7 @@ export function renderResult(
         markdownTheme,
         expanded,
         frame,
+        colorize,
       );
     }
     if (hydration.kind !== "failed") {

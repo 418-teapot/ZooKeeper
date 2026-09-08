@@ -5,7 +5,8 @@
  * Two display states:
  *
  *   - **Collapsed** (default): one line
- *     `◆ <primary> · <spinner> <agent> <m:ss> · ●<done> ●<failed>` — the
+ *     `◆ <primary> · <spinner> <agent> <m:ss> · ●<done> ■<failed> ■<aborted>`
+ *     — the
  *     running segment appears only while something runs, zero counts are
  *     omitted, and with no activity at all the line is just `◆ <primary>`.
  *     The primary name keeps its own `[agent.<name>].color` ANSI color; the
@@ -131,6 +132,13 @@ export interface FleetTuiLike {
 /** Structural subset of pi's `Theme` the widget colors lines with. */
 export interface FleetThemeLike {
   fg(color: string, text: string): string;
+  /**
+   * Paint a background color for the selected fleet row (pi's `Theme.bg`).
+   *
+   * Optional: when absent the widget falls back to a raw ANSI background
+   * pair (see `highlight`), so a minimal theme stub keeps working.
+   */
+  bg?(color: string, text: string): string;
 }
 
 /** The fleet widget surface the pi entry point wires up. */
@@ -277,6 +285,24 @@ export function createFleetWidget(deps: FleetWidgetDeps): FleetWidget {
     theme !== undefined ? theme.fg("dim", text) : text;
 
   /**
+   * Highlight a selected fleet row with a background band.
+   *
+   * The whole rendered line (indent + per-segment colors + body) is wrapped:
+   * the inner ANSI sequences use fg-only resets (`\x1b[39m`), which never
+   * clear a background color, so the band survives the embedded colorization
+   * and the segments' own foreground hues stay intact (unlike reverse
+   * video, which swaps fg/bg per cell).  Uses pi's `Theme.bg` with the
+   * `selectedBg` token (the same token pi's host selectors use) when the
+   * theme provides it, else a raw ANSI 256-color gray (index 239,
+   * ≈ `#4e4e4e`) approximating pi's default dark theme
+   * `selectedBg: #3a3a4a` (which has no exact 256-color counterpart).
+   */
+  const highlight = (text: string): string =>
+    theme?.bg !== undefined
+      ? theme.bg("selectedBg", text)
+      : `\x1b[48;5;239m${text}\x1b[49m`;
+
+  /**
    * The currently-running delegation summaries — top-level runs plus each
    * top-level run's nested children (one level deep, mirroring the expanded
    * view's rendering depth), so a nested run under a finished parent still
@@ -321,7 +347,7 @@ export function createFleetWidget(deps: FleetWidgetDeps): FleetWidget {
             ...summary(sessionId),
             running: currentRunning?.length ?? 0,
           }
-        : { running: 0, done: 0, failed: 0 };
+        : { running: 0, done: 0, failed: 0, aborted: 0 };
     return renderFleetCollapsed(
       primary,
       primary.length > 0 ? deps.colorizeAgent(primary) : undefined,
@@ -372,7 +398,8 @@ export function createFleetWidget(deps: FleetWidgetDeps): FleetWidget {
       frameSeq,
       now(),
     )) {
-      out.push(`  ${colorize(line)}`);
+      const colored = `  ${colorize(line)}`;
+      out.push(line.selected === true ? highlight(colored) : colored);
     }
     if (slice.hiddenBelow > 0) {
       out.push(dim(`↓ ${slice.hiddenBelow} more`));

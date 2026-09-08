@@ -165,7 +165,7 @@ checkCompletion 和 mid-run nudge 是 oh-my-pi 调研中定位的"低成本高�
 
 **形态：pi 侧 `zoo` widget 内双列并排——左 subagent（fleet）右 todo**，不开新 widget key（`onTerminalInput` 是单例监听，单组件内分发更简单；总高度一笔预算统一分配）。
 
-- **布局**：widget 工厂返回 `HStack([fleetCol, todoCol])`（pi-tui 现成组件），中间 `│` 分隔；宽度 fleet 55% / todo 45%（todo content 限 5-10 词，窄列天然适配）；**终端 <100 列降级为 VStack 纵向堆叠**（fleet 在上、todo 在下，各 cap 4 行）；布局决策写成 core 纯函数 `layoutForWidth(width)`，宽窄两形态共享同一套行渲染函数；
+- **布局**：widget 工厂返回 `HStack([fleetCol, todoCol])`（pi-tui 现成组件），中间 `│` 分隔；宽度 fleet 55% / todo 45%（todo content 限 5-10 词，窄列天然适配）；**终端 <100 列降级为 VStack 纵向堆叠**（fleet 在上、todo 在下，各 cap 4 行）；**布局决策属 pi 宿主约束，不进 core**（评审后决定：P5 接线时在 pi 适配层实现，core 只保留视图投影策略），宽窄两形态共享同一套行渲染函数；
 - **高度**：两列各自 cap 7 行窗口，整高 ≤8 行（并排取 max 而非求和，两列常显，不需要展开/收起状态机）；折叠态保留 1 行双列摘要（各列 = 计数 + 当前活跃项名，空列显示占位 `代理 —` 保持列结构稳定）；两列都空时整行隐藏不占高度；
 - **键位**：`tab` 左右切焦点（焦点列标题反色），`↑↓/jk` 只作用焦点列，`esc` 折叠为摘要行；沿用 fleet 现有守卫——编辑器非空时 collapsed 不抢键（widget.ts:29-33）；
 - **数据流**：实时 = `tool_result` 事件识别 `toolName === "todo"` 读 details 刷新；恢复 = `session_start`/`session_tree` 从 `sessionManager.getBranch()` 倒序扫最新 todo details（与官方 todo.ts 示例、fleet 历史重扫 pi.ts:1325-1359 同一模式）；details → 视图模型为 core 纯函数，双宿主共享。
@@ -190,7 +190,7 @@ checkCompletion 和 mid-run nudge 是 oh-my-pi 调研中定位的"低成本高�
 ▸ 代理 1/3 ⠋ beaver 实现状态机 │ ▸ 待办 3/7 ⠋ 实现核心状态机
 ```
 
-窄终端降级（<100 列，VStack 纵向堆叠，fleet 在上、todo 在下，各 cap 4 行）：
+窄终端降级（<100 列，VStack 纵向堆叠，fleet 在上、todo 在下，行数预算由适配层给）：
 
 ```
 ▾ 代理 1/3
@@ -211,10 +211,11 @@ checkCompletion 和 mid-run nudge 是 oh-my-pi 调研中定位的"低成本高�
 | 活跃（in_progress = running） | spinner 动画字符，warning 黄 |
 | 等待（pending = queued） | `○`，dim |
 | 完成（completed = done） | `●` 绿色（todo 侧附加划线） |
-| 失败/放弃（error = abandoned） | `●` 红色 |
+| 失败（error） | `■` 红色 |
+| 取消/放弃（aborted = abandoned） | `■` 灰色 |
 | 阻塞（blocked，todo 专有） | `●` 黄色静止（与 spinner 靠静/动区分） |
 
-规则：结构符号与状态符号是两个不相交集，每个符号在全 widget 只有唯一含义；语义全走颜色通道（复用 fleet 的 `hueToPiColor`，widget.ts:269），完成划线动画与 spinner 共用 fleet 现有 150ms 刷新时钟（widget.ts:35），无需新增定时器；禁用 emoji（双宽度破坏 `truncateToWidth` 列对齐）；计数一律 `完成/总数`，溢出 `+N`，附属信息 `·` 分隔，焦点用反色不新增符号。
+规则：结构符号与状态符号是两个不相交集，每个符号在全 widget 只有唯一含义；语义全走颜色通道（复用 fleet 的 `hueToPiColor`，widget.ts:269），完成划线动画与 spinner 共用 fleet 现有 150ms 刷新时钟（widget.ts:35），无需新增定时器；禁用 emoji（双宽度破坏 `truncateToWidth` 列对齐）；计数一律 `完成/总数`，溢出 `+N`，附属信息 `·` 分隔，选择/焦点用 selectedBg 背景带表达（不用 SGR 7 反色——会翻转行内语义色），不新增符号。
 
 **OpenCode 侧**：`ZookeeperPanel`（src/adapters/opencode/tui/index.tsx，sidebar_content 槽位）加一个 todo 可折叠 section，与现有 4 个 section 同构；数据通道宿主现成（`api.state.session.todo(sessionID)` + `todo.updated` 事件），自建 todo 落地后切换为读 details 快照；行内布局注意 opentui 当前版本 three-child flex 不可用（index.tsx 注释明示）。**v2 侧**：TUI 槽位 API 待调研，视图模型宿主无关，届时只补渲染适配。
 

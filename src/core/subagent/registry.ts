@@ -160,8 +160,10 @@ export interface RunSummary {
   running: number;
   /** Runs in the terminal `done` state. */
   done: number;
-  /** Runs in a failed terminal state (`error` or `aborted`). */
+  /** Runs in the failed terminal state (`error`). */
   failed: number;
+  /** Runs aborted — a cancellation, kept separate from failures. */
+  aborted: number;
 }
 
 /** A scrolling-window slice over a run list. */
@@ -212,7 +214,12 @@ export function subscribeRunChange(listener: RunChangeListener): () => void {
 }
 
 /** The terminal statuses — no field may change after one is reached. */
-const TERMINAL: ReadonlySet<RunStatus> = new Set(["done", "error", "aborted"]);
+/** The terminal statuses — no field may change after one is reached. */
+export const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set([
+  "done",
+  "error",
+  "aborted",
+]);
 
 /**
  * Reset the module-level registry state.
@@ -271,7 +278,7 @@ export function startRun(input: StartRunInput): SubagentRun {
  */
 export function updateRun(id: string, patch: UpdateRunPatch): void {
   const run = registry.get(id);
-  if (run === undefined || TERMINAL.has(run.status)) return;
+  if (run === undefined || TERMINAL_STATUSES.has(run.status)) return;
   if (patch.currentTool !== undefined) {
     // `null` is the explicit clear; an absent field never reaches here.
     if (patch.currentTool === null) delete run.currentTool;
@@ -306,7 +313,7 @@ export function updateRun(id: string, patch: UpdateRunPatch): void {
  */
 export function finishRun(id: string, input: FinishRunInput): void {
   const run = registry.get(id);
-  if (run === undefined || TERMINAL.has(run.status)) return;
+  if (run === undefined || TERMINAL_STATUSES.has(run.status)) return;
   run.status = input.status;
   run.endedAt = input.endedAt ?? Date.now();
   if (input.error !== undefined) run.error = input.error;
@@ -401,9 +408,10 @@ export function findByChildSession(
 /**
  * Count a main session's runs by status.
  *
- * `failed` counts both `error` and `aborted` outcomes; `running` counts
- * still-active runs; `done` counts successful completions.  Scoped to one
- * main session.
+ * `failed` counts `error` outcomes; `aborted` counts cancellations in
+ * their own field so the collapsed line renders them with the cancelled
+ * presentation instead of the failure one; `running` counts still-active
+ * runs; `done` counts successful completions.  Scoped to one main session.
  *
  * @param parentSession - The main session id.
  * @returns The per-status counts.
@@ -412,13 +420,15 @@ export function summary(parentSession: string): RunSummary {
   let running = 0;
   let done = 0;
   let failed = 0;
+  let aborted = 0;
   for (const run of registry.values()) {
     if (run.parentSession !== parentSession) continue;
     if (run.status === "running") running += 1;
     else if (run.status === "done") done += 1;
-    else failed += 1; // error or aborted
+    else if (run.status === "aborted") aborted += 1;
+    else failed += 1; // error
   }
-  return { running, done, failed };
+  return { running, done, failed, aborted };
 }
 
 /**

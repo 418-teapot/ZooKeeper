@@ -81,6 +81,7 @@ function fakeTimer() {
 /** A theme stub that wraps each colorized string in `<color>` tags. */
 const THEME = {
   fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
+  bg: (color: string, text: string) => `<${color}>${text}</${color}>`,
 };
 
 /** A focusable fake TUI (defaults to an empty focused editor). */
@@ -275,10 +276,11 @@ describe("fleet widget — collapsed line", () => {
     // pi theme emits zero-width ANSI), so a narrow width would truncate the
     // line before the trailing dots.
     const line = w.render(200)[0];
-    // Each count splits into a separator, a colored dot, and an uncolored
-    // number — only the bare dot is wrapped, so the literal `● 1 ● 1` is
-    // broken up by the color tags that enclose just the dots.
-    assert.ok(line.includes("<success>●</success> 1 <error>●</error> 1"), line);
+    // Each count splits into a separator, a colored status symbol, and an
+    // uncolored number — only the bare symbol is wrapped, so the literal
+    // `● 1 ■ 1` is broken up by the color tags that enclose just the
+    // symbols (the failed count renders the canonical error square).
+    assert.ok(line.includes("<success>●</success> 1 <error>■</error> 1"), line);
     // The separator before the first dot (` · `) and between the dots (` `)
     // must never be wrapped into a status color.
     assert.ok(
@@ -330,8 +332,8 @@ describe("fleet widget — collapsed line", () => {
       `success dot must be wrapped standalone: ${calls.map((c) => `${c.color}:${c.text}`).join(" | ")}`,
     );
     assert.ok(
-      calls.some((c) => c.color === "error" && c.text === "●"),
-      `error dot must be wrapped standalone: ${calls.map((c) => `${c.color}:${c.text}`).join(" | ")}`,
+      calls.some((c) => c.color === "error" && c.text === "■"),
+      `error square must be wrapped standalone: ${calls.map((c) => `${c.color}:${c.text}`).join(" | ")}`,
     );
     // No separator or number may be passed to theme.fg: the dots are the
     // only colorized pieces of the count segments.
@@ -346,7 +348,7 @@ describe("fleet widget — collapsed line", () => {
     // The rendered line keeps the dots visibly colored (not reset by the
     // primary's ANSI reset sequence).
     assert.ok(line.includes("\u001b[38;2;255;0;0mdolphin\u001b[39m"), line);
-    assert.ok(line.includes("<success>●</success> 1 <error>●</error> 1"), line);
+    assert.ok(line.includes("<success>●</success> 1 <error>■</error> 1"), line);
     w.dispose();
   });
 });
@@ -473,7 +475,7 @@ describe("fleet widget — keyboard state machine", () => {
     w.dispose();
   });
 
-  it("moves the selection with ↓/j and ↑/k and reflects it in ▸", () => {
+  it("renders the ↓/j / ↑/k selection as a background-banded row", () => {
     const { deps } = depsOf();
     const w = createFleetWidget(deps);
     w.attach(tuiOf().tui, THEME);
@@ -485,13 +487,42 @@ describe("fleet widget — keyboard state machine", () => {
     w.handleKey("\u001b[B"); // r2
     w.handleKey("k"); // back to r1
     const lines = w.render(80);
-    const selectedLines = lines.filter((l) => l.includes("▸"));
+    // Selection is presentation only: exactly one row carries the
+    // `selectedBg` background band (the theme's `bg` in tests), and no
+    // marker text is emitted.
+    const selectedLines = lines.filter((l) => l.includes("<selectedBg>"));
     assert.equal(
       selectedLines.length,
       1,
       `expected one selected row: ${lines}`,
     );
     assert.ok(selectedLines[0].includes("lynx"), selectedLines[0]);
+    // The band must wrap the whole row, with per-segment fg colors intact
+    // inside it (no reverse-video cell swaps).
+    assert.ok(selectedLines[0].includes("</selectedBg>"), selectedLines[0]);
+    const chevron = "\u25b8"; // the fold glyph — must never appear as a marker
+    assert.ok(!lines.some((l) => l.includes(chevron)), lines.join("\n"));
+    w.dispose();
+  });
+
+  it("falls back to raw ANSI background when the theme has no bg", () => {
+    const { deps } = depsOf();
+    const w = createFleetWidget(deps);
+    // A minimal theme without `bg` — the widget must still highlight the
+    // selected row with the raw ANSI band (256-color gray 239) approximating
+    // pi's default dark theme `selectedBg: #3a3a4a`.
+    w.attach(tuiOf().tui, { fg: THEME.fg });
+    seedRun("r0", 0);
+    seedRun("r1", 1000);
+    w.handleKey("\u001b[B"); // expand, selects r0
+    const lines = w.render(80);
+    const selectedLines = lines.filter((l) => l.includes("\x1b[48;5;239m"));
+    assert.equal(
+      selectedLines.length,
+      1,
+      `expected one ANSI-highlighted row: ${lines}`,
+    );
+    assert.ok(selectedLines[0].includes("\x1b[49m"), selectedLines[0]);
     w.dispose();
   });
 
@@ -674,7 +705,7 @@ describe("fleet widget — window following", () => {
     // Move down to r8 — the window must follow it into view.
     for (let i = 0; i < 8; i++) w.handleKey("j");
     const lines = w.render(80);
-    const selected = lines.find((l) => l.includes("▸"));
+    const selected = lines.find((l) => l.includes("<selectedBg>"));
     assert.ok(selected, `selected row must be in view: ${lines}`);
     assert.ok(
       lines.some((l) => l.includes("more")),
