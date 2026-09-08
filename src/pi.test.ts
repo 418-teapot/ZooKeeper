@@ -57,6 +57,7 @@ import {
   buildPiHandlers,
   buildPiNoticeEntryRenderer,
   buildPiResolveAgent,
+  mergeTerminalToolDetails,
   terminalToolDetails,
   zookeeperPi,
 } from "./pi.js";
@@ -1145,6 +1146,38 @@ describe("buildPiHandlers — registerTool wiring", () => {
     );
   });
 
+  it("merges a contribution's details into the bridge's own, never over it", async () => {
+    // The terminal details carry the bridge's fact pointer (the run's
+    // sub-session path); a contribution's write-back slot is merged INTO it,
+    // so a tool payload adds keys (ask's `questions`) but can never displace
+    // `sessionPath`.
+    startRun({ id: "call-ask", agent: "beaver", parentSession: "sess-1" });
+    updateRun("call-ask", { sessionPath: "/tmp/ask-run.jsonl" });
+    const api = mockApi();
+    buildPiHandlers(
+      { mode: { poly: { ...POLY_PROFILE, tools: ["ask"] } } },
+      api as any,
+    );
+    const ask = api.tools.find((tool: any) => tool.name === "ask") as
+      | { execute: (...args: unknown[]) => Promise<unknown> }
+      | undefined;
+    assert.ok(ask, "the pi host must register the ask tool");
+    // No TUI in the fake context, so the form short-circuits to `no-ui`
+    // while still handing back its structured per-question payload.
+    const result = (await ask.execute(
+      "call-ask",
+      { questions: [{ question: "One?", options: [{ label: "A1" }] }] },
+      undefined,
+      undefined,
+      { mode: "print" },
+    )) as { details?: Record<string, unknown> };
+    assert.equal(result.details?.sessionPath, "/tmp/ask-run.jsonl");
+    assert.ok(
+      Array.isArray(result.details?.questions),
+      "the tool's payload must survive the merge",
+    );
+  });
+
   it("registers the subagent tool when the profile lists it and a driver is wired", () => {
     const api = mockApi();
     api.activeTools.push("bash", "edit", "subagent", "compress", "decompress");
@@ -1350,6 +1383,26 @@ describe("buildPiHandlers — registerTool wiring", () => {
     assert.deepEqual(terminalToolDetails(42), {});
     startRun({ id: "call-no-path", agent: "beaver", parentSession: "s" });
     assert.deepEqual(terminalToolDetails("call-no-path"), {});
+  });
+
+  it("the bridge's own keys win a details collision", () => {
+    // A contribution may not displace the run's fact pointer by writing a
+    // details record that carries the same key: the write-back slot is
+    // merged INTO the bridge's own details, never over them.
+    startRun({ id: "call-clash", agent: "beaver", parentSession: "sess-1" });
+    updateRun("call-clash", { sessionPath: "/real/run.jsonl" });
+    assert.deepEqual(
+      mergeTerminalToolDetails("call-clash", {
+        sessionPath: "/forged/path",
+        questions: [],
+      }),
+      { sessionPath: "/real/run.jsonl", questions: [] },
+    );
+    // Nothing written back, or a payload that is not a record, adds no keys.
+    assert.deepEqual(mergeTerminalToolDetails("call-clash", undefined), {
+      sessionPath: "/real/run.jsonl",
+    });
+    assert.deepEqual(mergeTerminalToolDetails("call-unknown", "nope"), {});
   });
 });
 

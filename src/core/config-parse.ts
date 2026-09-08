@@ -26,6 +26,7 @@ import { initLogger, log } from "../utils/logger.js";
 import type {
   AgentColorMap,
   AgentModeMap,
+  AskConfig,
   CompressConfig,
   ContextNudgeConfig,
   ContextPruningConfig,
@@ -206,6 +207,48 @@ export function parseLimits(zooConfig: any): ValidationLimits {
     contextWordLimit: v.context_word_limit as number | undefined,
     promptWordLimit: v.prompt_word_limit as number | undefined,
   };
+}
+
+/**
+ * Extract the ask-tool config from the `[zoo.ask]` section.
+ *
+ * Fail to skip with zero invented defaults: an absent section yields
+ * `undefined` silently; a malformed section (non-object, unknown key,
+ * or a present-but-invalid `timeout` — non-number, non-finite, zero, or
+ * negative) yields `undefined` and exactly one `ask_config_invalid`
+ * warn.  A present section without a valid `timeout` key yields an
+ * `AskConfig` whose `timeoutSeconds` is `undefined` — the ask tool then
+ * waits indefinitely (there is no default timeout seconds value).
+ *
+ * @param zooConfig - The `zoo` section of the parsed config.toml.
+ * @returns The parsed ask config, or `undefined` when the section is
+ *   absent or invalid.
+ */
+export function parseAskConfig(zooConfig: any): AskConfig | undefined {
+  const a = zooConfig.ask as unknown;
+  if (a == null) return undefined;
+  if (typeof a !== "object" || Array.isArray(a)) {
+    warnSectionInvalid("ask", ["ask", a, () => false]);
+    return undefined;
+  }
+
+  const table = a as Record<string, unknown>;
+  const unknownKey = Object.keys(table).find((key) => key !== "timeout");
+  if (unknownKey !== undefined) {
+    warnSectionInvalid("ask", [unknownKey, table[unknownKey], () => false]);
+    return undefined;
+  }
+
+  const keyChecks: KeyCheck[] = [
+    ["timeout", table.timeout, isOptionalPositiveNumber],
+  ];
+  const bad = findBadKey(keyChecks);
+  if (bad) {
+    warnSectionInvalid("ask", bad);
+    return undefined;
+  }
+
+  return { timeoutSeconds: table.timeout as number | undefined };
 }
 
 /**

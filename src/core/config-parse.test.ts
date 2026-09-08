@@ -41,6 +41,7 @@ import {
   parseAgentColors,
   parseAgentModes,
   parseAgentPermissions,
+  parseAskConfig,
   parseContextConfig,
 } from "./config-parse.js";
 
@@ -1520,5 +1521,71 @@ describe("parseAgentColors", () => {
     });
     assert.deepEqual(result, { lynx: "#FFE211" });
     assert.equal(warnCount("agent_color_invalid"), 0);
+  });
+});
+
+// =============================================================================
+// parseAskConfig — `[zoo.ask]` (ask-tool timeout, zero defaults).
+//
+// Contract: absent section → undefined silently; malformed section
+// (non-object, unknown key, present-but-invalid timeout) → undefined +
+// exactly one `ask_config_invalid` warn; valid section → AskConfig with
+// `timeoutSeconds` (undefined when the key is absent — never a default).
+// =============================================================================
+
+describe("parseAskConfig", () => {
+  it("returns undefined without a warn when the section is absent", () => {
+    assert.equal(parseAskConfig({}), undefined);
+    assert.equal(parseAskConfig({ ask: null }), undefined);
+    assert.equal(warnCount("ask_config_invalid"), 0);
+  });
+
+  it("invalidates the whole section for a non-object ask value", () => {
+    assert.equal(parseAskConfig({ ask: "300" }), undefined);
+    assert.equal(parseAskConfig({ ask: [1, 2] }), undefined);
+    const warns = warnsOf("ask_config_invalid");
+    assert.equal(warns.length, 2);
+    assert.equal(warns[0].key, "ask");
+  });
+
+  it("invalidates the section for an unknown key", () => {
+    assert.equal(parseAskConfig({ ask: { timeout: 60, typo: 1 } }), undefined);
+    const warns = warnsOf("ask_config_invalid");
+    assert.equal(warns.length, 1);
+    assert.equal(warns[0].key, "typo");
+  });
+
+  it("rejects a non-number timeout with one warn", () => {
+    assert.equal(parseAskConfig({ ask: { timeout: "60" } }), undefined);
+    const warns = warnsOf("ask_config_invalid");
+    assert.equal(warns.length, 1);
+    assert.equal(warns[0].key, "timeout");
+    assert.equal(warns[0].value, "60");
+  });
+
+  it("rejects zero and negative timeouts (no default invented)", () => {
+    assert.equal(parseAskConfig({ ask: { timeout: 0 } }), undefined);
+    assert.equal(parseAskConfig({ ask: { timeout: -5 } }), undefined);
+    assert.equal(
+      parseAskConfig({ ask: { timeout: Number.POSITIVE_INFINITY } }),
+      undefined,
+    );
+    assert.equal(warnCount("ask_config_invalid"), 3);
+  });
+
+  it("yields an undefined timeoutSeconds when the key is absent", () => {
+    const result = parseAskConfig({ ask: {} });
+    assert.deepEqual(result, { timeoutSeconds: undefined });
+    assert.equal(warnCount("ask_config_invalid"), 0);
+  });
+
+  it("accepts a positive finite timeout", () => {
+    assert.deepEqual(parseAskConfig({ ask: { timeout: 300 } }), {
+      timeoutSeconds: 300,
+    });
+    assert.deepEqual(parseAskConfig({ ask: { timeout: 0.5 } }), {
+      timeoutSeconds: 0.5,
+    });
+    assert.equal(warnCount("ask_config_invalid"), 0);
   });
 });

@@ -9,11 +9,11 @@ from installer.variants import collect_agent_variants
 
 _MODE_CATEGORIES = ("agents", "skills", "hooks", "tools", "commands")
 
-# Permission-key dialect mapping: config.toml uses the canonical word
-# ``subagent``; the OpenCode host dialect calls the same tool ``task``.
-# The translation happens only when emitting opencode.json, never on the
-# parsed config in memory.
-_PERMISSION_KEY_DIALECT = {"subagent": "task"}
+# Permission-key dialect mapping: config.toml uses the canonical words
+# ``subagent`` and ``ask``; the OpenCode host dialect calls the same
+# tools ``task`` and ``question``.  The translation happens only when
+# emitting opencode.json, never on the parsed config in memory.
+_PERMISSION_KEY_DIALECT = {"subagent": "task", "ask": "question"}
 
 
 def _translate_permission_keys(permission: dict) -> dict:
@@ -165,8 +165,9 @@ def build_config(
             }
             if filtered:
                 # Translate permission keys to the OpenCode host dialect
-                # (``subagent`` -> ``task``) on the emitted copy only; the
-                # parsed config in memory keeps the canonical vocabulary.
+                # (``subagent`` -> ``task``, ``ask`` -> ``question``) on
+                # the emitted copy only; the parsed config in memory keeps
+                # the canonical vocabulary.
                 emitted_agents: dict = {}
                 for name, data in filtered.items():
                     if not isinstance(data, dict):

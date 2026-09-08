@@ -12,6 +12,24 @@
 import type { NudgeConfig } from "./context/nudge.js";
 
 /**
+ * Ask-tool configuration (`[zoo.ask]`).
+ *
+ * Pure type definition for the ask tool's timeout setting, consumed by
+ * the config parser (`config-parse.ts`) and injected into `Deps` on the
+ * pi host only.  The section carries no on/off switch — a missing or
+ * invalidated section yields `undefined` from the parser (fail to
+ * skip), and a present section without a valid `timeout` leaves the
+ * field `undefined` (the ask tool then waits indefinitely).
+ */
+export interface AskConfig {
+  /**
+   * Ask timeout in seconds (positive finite number).  Undefined → no
+   * timeout enforced (the tool waits for the user indefinitely).
+   */
+  timeoutSeconds?: number;
+}
+
+/**
  * Per-subsystem gate config for a pruning strategy (dedup / purge-errors).
  *
  * Enablement is decided exclusively by the mode profile — a producer

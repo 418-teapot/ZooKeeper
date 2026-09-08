@@ -556,6 +556,7 @@ color = "#FFE211"
 [agent.lynx.permission]
 edit = "deny"
 subagent = "deny"
+ask = "deny"
 [agent.lynx.permission.bash]
 "git checkout *" = "ask"
 "git clean *"    = "deny"
@@ -575,6 +576,7 @@ color = "#39C5BB"
 [agent.beaver.permission]
 webfetch = "deny"
 websearch = "deny"
+ask = "deny"
 [agent.beaver.permission.bash]
 "git checkout *" = "ask"
 "git clean *"    = "ask"
@@ -596,6 +598,7 @@ model = "{env:ZOO_ANT_MODEL}"
 edit = "deny"
 bash = "deny"
 subagent = "deny"
+ask = "deny"
 [agent.spider.permission.skill]
 "*" = "deny"
 "wiki-query" = "allow"
@@ -609,6 +612,7 @@ edit = "deny"
 subagent = "deny"
 webfetch = "deny"
 websearch = "deny"
+ask = "deny"
 [agent.eagle.permission.bash]
 "git checkout *" = "ask"
 "git clean *"    = "deny"
@@ -627,6 +631,7 @@ model = "{env:ZOO_HIPPO_MODEL}"
 [agent.kiwi.permission]
 subagent = "deny"
 edit = "deny"
+ask = "deny"
 [agent.kiwi.permission.bash]
 "git checkout *" = "deny"
 "git clean *"    = "deny"
@@ -688,6 +693,12 @@ Authorization = "Basic {env:JSD_BASIC_AUTH}"
 [zoo.validation]
 context_word_limit = 200
 prompt_word_limit = 500
+
+# ── Ask 工具 ──────────────────────────────────────────────────────────────────
+
+[zoo.ask]
+# 提问超时（秒）
+timeout = 1200
 
 # ── Variants ──────────────────────────────────────────────────────────────────
 
@@ -787,6 +798,7 @@ hooks = [
   "task-prompt",
 ]
 tools = [
+  "ask",
   "compress",
   "decompress",
   "subagent",
@@ -816,6 +828,7 @@ hooks = [
   "reply-strip",
 ]
 tools = [
+  "ask",
   "compress",
   "decompress",
 ]

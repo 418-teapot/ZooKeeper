@@ -122,6 +122,7 @@ import {
   parseAgentColors,
   parseAgentModes,
   parseAgentPermissions,
+  parseAskConfig,
   parseContextConfig,
   parseLimits,
   parseModeProfile,
@@ -172,6 +173,7 @@ interface ExtensionAPI {
     label: string;
     description: string;
     parameters: unknown;
+    executionMode?: "sequential" | "parallel";
     execute: (...args: unknown[]) => Promise<unknown>;
   }): void;
 
@@ -339,6 +341,42 @@ export function terminalToolDetails(
   return sessionPath === undefined ? {} : { sessionPath };
 }
 
+/**
+ * Whether a value is a plain object usable as a details record.
+ *
+ * The bridge merges a contribution's structured details into its own
+ * result details; only a non-null object can be spread, anything else
+ * (a string, a number, an array) is dropped.
+ *
+ * @param value - The candidate details payload.
+ * @returns True when the value can be spread into the details object.
+ */
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Merge a contribution's write-back details into the bridge's own.
+ *
+ * The contribution's payload adds keys; the bridge's keys always win, so a
+ * tool can never displace the run's fact pointer by writing a `details`
+ * object that happens to carry the same key.
+ *
+ * @param toolCallId - pi's tool-call id for the finished call.
+ * @param contributionDetails - Whatever the contribution wrote back (a
+ *   non-record is dropped).
+ * @returns The persisted details record.
+ */
+export function mergeTerminalToolDetails(
+  toolCallId: unknown,
+  contributionDetails: unknown,
+): Record<string, unknown> {
+  return {
+    ...(isPlainRecord(contributionDetails) ? contributionDetails : {}),
+    ...terminalToolDetails(toolCallId),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Profile-driven composition
 // ---------------------------------------------------------------------------
@@ -501,6 +539,9 @@ export function buildPiContributions(
 } {
   const limits = parseLimits(zooConfig);
   const contextConfig = parseContextConfig(zooConfig);
+  // The ask-tool timeout (seconds), parsed fail to skip.  Injected only
+  // here (pi host) — the ask tool is not registered on OpenCode.
+  const askConfig = parseAskConfig(zooConfig);
   const modeProfile = parseModeProfile(zooConfig);
   // The `agent` table lives at the top level of config.toml, so the
   // fail-closed mode map and tool-level deny map are parsed from the
@@ -520,6 +561,7 @@ export function buildPiContributions(
     contextConfig,
     agentModes,
     agentPermissions,
+    askTimeoutSeconds: askConfig?.timeoutSeconds,
     piSwitchHost: hostDeps?.piSwitchHost,
     // The pi subagent driver (in-process SDK session execution).  Only the
     // real pi entry point supplies one; unit tests and other hosts omit it
@@ -1191,6 +1233,12 @@ export function buildPiHandlers(
         name: tool.name,
         label: tool.name,
         description: tool.description,
+        // Forward the tool's scheduling hint (the ask dialog needs
+        // `sequential` so two forms never fight for the keyboard).  Tools
+        // without a hint keep pi's default execution mode.
+        ...(tool.executionMode !== undefined
+          ? { executionMode: tool.executionMode }
+          : {}),
         // Forward the tool's custom TUI renderers (the subagent transcript
         // card) so pi draws the animated card instead of a static result.
         // Tools without renderers (compress / decompress) simply omit them.
@@ -1224,16 +1272,29 @@ export function buildPiHandlers(
           // agents.json configured model only (never the parent session's
           // model).  compress / decompress ignore the hostCtx and keep
           // working unchanged.
-          const text = await tool.execute(params, ctx, {
+          //
+          // `details` is a write-back slot: a contribution that needs to
+          // hand renderers a structured payload (the ask tool's
+          // per-question results) assigns it here, and the bridge merges a
+          // plain object into the host result's details AFTER execute
+          // resolves — merged INTO (never replacing) the bridge's own
+          // details, so the run's session path survives.
+          const hostCtx: {
+            signal?: AbortSignal;
+            callId?: string;
+            onUpdate?: unknown;
+            details?: unknown;
+          } = {
             ...(typeof toolCallId === "string" && toolCallId.length > 0
               ? { callId: toolCallId }
               : {}),
             ...(signal instanceof AbortSignal ? { signal } : {}),
             ...(onUpdate !== undefined ? { onUpdate } : {}),
-          });
+          };
+          const text = await tool.execute(params, ctx, hostCtx);
           return {
             content: [{ type: "text", text }],
-            details: terminalToolDetails(toolCallId),
+            details: mergeTerminalToolDetails(toolCallId, hostCtx.details),
           };
         },
       });

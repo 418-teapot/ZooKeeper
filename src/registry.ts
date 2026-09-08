@@ -14,7 +14,7 @@
  *      task-prompt → json-error-nudge → direct-work-nudge →
  *      post-task-nudge (afterExec), context-pruning (transform),
  *      reply-strip (textComplete).
- *   2. tool units — compress, decompress, subagent.
+ *   2. tool units — compress, decompress, subagent, ask.
  *   3. command units — go, dcp.
  *   4. agent units — the seven prompt-injection units.
  *   5. skill units — one data-only unit per directory under
@@ -48,6 +48,7 @@ import { unit as postTaskNudgeUnit } from "./hooks/post-task-nudge/index.js";
 import { unit as replyStripUnit } from "./hooks/reply-strip/index.js";
 import { unit as taskDelegationUnit } from "./hooks/task-delegation/index.js";
 import { unit as taskPromptUnit } from "./hooks/task-prompt/index.js";
+import { unit as askToolUnit } from "./tools/ask.js";
 import { unit as compressToolUnit } from "./tools/compress.js";
 import { unit as decompressToolUnit } from "./tools/decompress.js";
 import { unit as subagentToolUnit } from "./tools/subagent.js";
@@ -160,6 +161,7 @@ export const REGISTRY: UnitDescriptor[] = [
   compressToolUnit,
   decompressToolUnit,
   subagentToolUnit,
+  askToolUnit,
   // ── Command units ───────────────────────────────────────────────
   goCommandUnit,
   dcpCommandUnit,

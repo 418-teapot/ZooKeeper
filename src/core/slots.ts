@@ -227,6 +227,15 @@ export interface Deps {
    * command unit then fails closed with the missing-client error.
    */
   handoffTarget?: HandoffTarget;
+  /**
+   * Ask-tool timeout in seconds (`[zoo.ask].timeout`), injected on the pi
+   * host only — the ask tool is not registered on OpenCode.
+   *
+   * Undefined when the section is absent or failed validation (fail to
+   * skip) — the ask tool then waits for the user indefinitely (no
+   * default timeout is ever invented).
+   */
+  askTimeoutSeconds?: number;
   /** The host client (OpenCode / pi), opaque to this layer. */
   client: any;
   /** The plugin working directory. */
@@ -476,8 +485,30 @@ export interface ToolContribution {
       /** The host's partial-result callback (pi's `onUpdate`): a
        * content-free repaint signal, never a text channel. */
       onUpdate?: unknown;
+      /**
+       * Write-back slot for a structured result payload (pi's tool-result
+       * `details` slot).  The bridge allocates this object per call, reads
+       * `details` back AFTER `execute` resolves, and merges a plain object
+       * into the host result's details — so a tool whose text is a
+       * model-facing summary can still hand renderers the structured
+       * outcome behind it (the `ask` tool's per-question results).
+       * Leaving it unset changes nothing; hosts that do not build this
+       * object (OpenCode) never see it.
+       */
+      details?: unknown;
     },
   ): Promise<string>;
+  /**
+   * Optional scheduling hint forwarded to hosts that support it (pi's
+   * native `ToolDefinition.executionMode`).
+   *
+   * `"sequential"` forces the tool to run one call at a time with respect
+   * to other tool calls — required by any tool that takes over a single
+   * shared surface (the `ask` dialog, where two concurrent forms would
+   * fight for the keyboard).  Omitted → the host default; hosts without
+   * per-tool scheduling ignore it.
+   */
+  executionMode?: "sequential" | "parallel";
   /**
    * Optional host TUI renderers for the tool's transcript card.
    *

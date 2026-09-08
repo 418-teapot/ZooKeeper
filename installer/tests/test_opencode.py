@@ -291,6 +291,22 @@ def test_build_config_maps_subagent_key_to_task(tmp_path) -> None:
     }
 
 
+def test_build_config_maps_ask_key_to_question(tmp_path) -> None:
+    """An ``ask = "deny"`` permission is emitted as ``question``."""
+    toml_data = _toml_with_permission({"edit": "deny", "ask": "deny"})
+    config = build_config(
+        toml_data, str(tmp_path), {}, profile_agents=["lynx"]
+    )
+    emitted = config["agent"]["lynx"]["permission"]
+    assert emitted == {"edit": "deny", "question": "deny"}
+    assert "ask" not in emitted
+    # The parsed in-memory data keeps the canonical vocabulary.
+    assert toml_data["agent"]["lynx"]["permission"] == {
+        "edit": "deny",
+        "ask": "deny",
+    }
+
+
 def test_build_config_passes_unknown_permission_keys_through(tmp_path) -> None:
     """Non-dialect permission keys are emitted unchanged."""
     toml_data = _toml_with_permission(
