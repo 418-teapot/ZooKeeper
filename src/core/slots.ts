@@ -28,6 +28,7 @@ import type { DelegationGate, DelegationJudgeContribution } from "./gate.js";
 import type { HandoffTarget } from "./handoff.js";
 import type { AgentPermissionMap } from "./permissions/deny-tools.js";
 import type { SubagentDriver } from "./subagent/driver.js";
+import type { TodoStateStore } from "./todo/store.js";
 import type { ValidationLimits } from "./validate.js";
 
 // ---------------------------------------------------------------------------
@@ -180,6 +181,39 @@ export interface Deps {
    * behavior unchanged.
    */
   subagentRenderer?: {
+    renderCall(args: unknown, theme: unknown, context?: unknown): unknown;
+    renderResult(
+      result: unknown,
+      options: unknown,
+      theme: unknown,
+      context?: unknown,
+    ): unknown;
+  };
+  /**
+   * Per-session todo state store (only on the pi host).
+   *
+   * Owned by the host-extension instance that created it: each session
+   * (main or subagent child) gets the store backed by its own transcript,
+   * so a cache miss can never scan another session.  The todo tool reads
+   * and writes state exclusively through it; the host invalidates entries
+   * when transcript navigation changes the active branch.
+   *
+   * Undefined on hosts that supply no store (OpenCode) — the todo tool
+   * unit then contributes no tools (fail-closed), so no `todo` tool ever
+   * registers there.
+   */
+  todoStore?: TodoStateStore;
+  /**
+   * Optional host renderer for the todo tool card (only on the pi host).
+   *
+   * Structurally loose (never importing pi types in core): when present
+   * the todo tool unit attaches its `renderCall` / `renderResult`
+   * callbacks to the contributed tool, so pi's TUI draws the todo list as
+   * a transcript card instead of the plain summary text.  Undefined on
+   * hosts without a renderer (OpenCode) — the tool keeps its text-only
+   * behavior unchanged.
+   */
+  todoRenderer?: {
     renderCall(args: unknown, theme: unknown, context?: unknown): unknown;
     renderResult(
       result: unknown,
