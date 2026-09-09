@@ -60,8 +60,9 @@
 ```
 ZooKeeper/
 ├── install.py               # 安装脚本入口（薄编排层：检测宿主 → 备份 → 生成 → 验证）
-├── installer/               # 安装逻辑包（envfile 解析 / variants 校验 / opencode·pi 配置生成 /
-│   │                        #   jsonio IO helper / output 终端输出；单元测试在 installer/tests/）
+├── installer/               # 安装逻辑包（envfile 解析 / variants 校验 / thinking 字段翻译 /
+│   │                        #   opencode·pi 配置生成 / jsonio IO helper / output 终端输出；
+│   │                        #   单元测试在 installer/tests/）
 │   └── tests/               # installer 模块单元测试（pytest）
 ├── config.toml              # 用户可编辑的配置模板（{env:VAR} 占位符；含 [zoo.validation] 阈值）
 ├── .env / .env.example      # 环境变量（apiKey、baseURL、模型名）
@@ -153,7 +154,7 @@ ZooKeeper/
 ## 关键文件
 
 - **`install.py`** — 安装脚本入口，读取 config.toml + .env → 用 `shutil.which` 检测 opencode/pi 是否安装 → 按检测结果生成：OpenCode 的 `~/.config/opencode/opencode.json`、pi 的 `~/.pi/agent/settings.json`（每次安装完整重建，只含 extensions + 从 `[defaults].model`（`{env:ZOO_WHALE_MODEL}`，`Provider/model` 格式）拆出的 defaultProvider/defaultModel，不读取旧文件）+ `~/.pi/agent/models.json`（provider 转换：明文 apiKey、baseUrl 对 anthropic-messages 去 `/v1`、cost 补全四字段、idempotent prune 残留）+ `~/.pi/agent/agents.json`（每次安装完整重建，解析各 `[agent.<name>].model` 的 `{env:}` 占位符为 `Provider/model` 明文，per-agent 映射物化给 pi 扩展运行时读取；无 model 或 env 缺失的 agent 缺席，不读取旧文件）。provider 跳过 warn 统一打一次。三阶段对称打印（备份/生成/验证/安装完成）。只依赖 Python 标准库。
-- **`installer/`** — install.py 委托的安装逻辑包：`envfile.py`（.env 解析 + `{env:VAR}` 递归解析 + 凭据缺失条目剔除）、`variants.py`（`[zoo.variants]` 全局/按 agent 双通道校验收集）、`opencode.py`（mode profile 解析 + opencode.json 组装）、`pi.py`（provider → models.json 转换 + per-agent → agents.json 解析）、`jsonio.py`（JSON 读写 helper）、`output.py`（终端输出）。单元测试位于 `installer/tests/`。
+- **`installer/`** — install.py 委托的安装逻辑包：`envfile.py`（.env 解析 + `{env:VAR}` 递归解析 + 凭据缺失条目剔除）、`variants.py`（`[zoo.variants]` 全局/按 agent 双通道校验收集）、`thinking.py`（模型级 `thinking = "high"|"max"|"none"` 语义字段的校验与读取，由 opencode/pi 两个生成器各自翻译：OpenCode 写模型 `options.effort`（@ai-sdk/anthropic，由 AI SDK 合成 `output_config.effort` 发给网关）或 `options.reasoning_effort`（@ai-sdk/openai*），pi 写 `compat.forceAdaptiveThinking`，两侧都会剔除 `thinking` 键）、`opencode.py`（mode profile 解析 + opencode.json 组装）、`pi.py`（provider → models.json 转换 + per-agent → agents.json 解析）、`jsonio.py`（JSON 读写 helper）、`output.py`（终端输出）。单元测试位于 `installer/tests/`。
 - **`config.toml`** — 用户配置模板（单一事实来源），所有 deny 权限和 agent 配置在此声明，`[zoo.validation]` 阈值由 TS 插件在运行时直接读取
 - **`src/opencode.ts`** — 插件入口 + 底盘，薄接线层：解析配置、持有共享 session 映射（`sessionAgentMap`），合并 `compose-opencode.ts` 组装的 profile 驱动 fragment 与常驻基础设施 hook
 - **`src/pi.ts`** — pi 扩展入口，通过 `~/.pi/agent/settings.json` 的 `extensions` 数组被 pi 加载；compose 驱动，把全量 REGISTRY 交给 `composeProfile`（tool/command 单元实例化但槽位不被消费）：注册 `before_agent_start`（prepend 组合后的 agent prompt 到 systemPrompt）、`resources_discover`（贡献 `core/skills` 子目录）、`tool_result`（跑 profile.hooks 的 afterExec 贡献）与 `context`（跑 transform 贡献，写回裁剪后的消息视图）四事件；deps 适配：`client: {}`（pruning transform 照常运行，dedup 通知因无 session prompt API 短路）、`directory: process.cwd()`、dolphin-enabled profile 时 `sessionAgentMap` 恒解析 "dolphin"（pi 会话即编排器）；null profile 四事件全部失效（fail-closed，与 OpenCode 对齐）；用 `realpathSync` 跟随路径确保 `../config.toml` 与 `../core/skills` 解析正确；config.toml 经 `vendor/smol-toml` 的 `parse` 解析（pi 的 Node/jiti 运行时无法 import .toml）

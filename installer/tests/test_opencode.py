@@ -10,6 +10,7 @@ section, with no default fallback when the profile is missing.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
 from installer.envfile import _gather_env_vars, parse_toml
 from installer.opencode import build_config, parse_mode_profile
@@ -327,3 +328,140 @@ def test_build_config_unchanged_without_subagent_key(tmp_path) -> None:
     )
     emitted = config["agent"]["lynx"]["permission"]
     assert emitted == {"edit": "deny", "webfetch": "deny"}
+
+
+# ── build_config: model-level thinking translation ───────────────────────
+
+
+def _toml_with_model(
+    npm: str, model_data: dict, provider_options: Optional[dict] = None
+) -> dict:
+    """Build a minimal toml dict with one provider holding one model table."""
+    provider: dict = {"npm": npm, "models": {"m": model_data}}
+    if provider_options is not None:
+        provider["options"] = provider_options
+    return {"provider": {"P": provider}}
+
+
+def test_build_config_anthropic_thinking_injects_effort(
+    tmp_path,
+) -> None:
+    """``thinking = "high"`` becomes ``options.effort``."""
+    toml_data = _toml_with_model(
+        "@ai-sdk/anthropic", {"id": "m", "thinking": "high"}
+    )
+    config = build_config(toml_data, str(tmp_path), {})
+    model = config["provider"]["P"]["models"]["m"]
+    assert model["options"] == {"effort": "high"}
+    assert "thinking" not in model
+
+
+def test_build_config_max_effort(tmp_path) -> None:
+    """``thinking = "max"`` maps to the same option key with effort max."""
+    toml_data = _toml_with_model("@ai-sdk/anthropic", {"thinking": "max"})
+    config = build_config(toml_data, str(tmp_path), {})
+    model = config["provider"]["P"]["models"]["m"]
+    assert model["options"]["effort"] == "max"
+
+
+def test_build_config_effort_keeps_existing_option_keys(tmp_path) -> None:
+    """Injecting effort leaves other options keys (incl. nested dicts) alone."""
+    toml_data = _toml_with_model(
+        "@ai-sdk/anthropic",
+        {
+            "thinking": "high",
+            "options": {
+                "temperature": 0.5,
+                "output_config": {"x": 1},
+            },
+        },
+    )
+    config = build_config(toml_data, str(tmp_path), {})
+    model = config["provider"]["P"]["models"]["m"]
+    assert model["options"] == {
+        "temperature": 0.5,
+        "output_config": {"x": 1},
+        "effort": "high",
+    }
+
+
+def test_build_config_openai_compatible_thinking_injects_reasoning_effort(
+    tmp_path,
+) -> None:
+    """OpenAI-compatible SDKs get a top-level ``reasoning_effort`` option."""
+    for npm in ("@ai-sdk/openai-compatible", "@ai-sdk/openai"):
+        toml_data = _toml_with_model(npm, {"thinking": "high"})
+        config = build_config(toml_data, str(tmp_path), {})
+        model = config["provider"]["P"]["models"]["m"]
+        assert model["options"] == {"reasoning_effort": "high"}
+        assert "thinking" not in model
+
+
+def test_build_config_thinking_none_drops_key_without_injection(
+    tmp_path,
+) -> None:
+    """``thinking = "none"`` leaves no key and injects no options."""
+    toml_data = _toml_with_model("@ai-sdk/anthropic", {"thinking": "none"})
+    config = build_config(toml_data, str(tmp_path), {})
+    model = config["provider"]["P"]["models"]["m"]
+    assert "thinking" not in model
+    assert "options" not in model
+
+
+def test_build_config_without_thinking_untouched(tmp_path) -> None:
+    """A model with no thinking field is emitted verbatim."""
+    toml_data = _toml_with_model(
+        "@ai-sdk/anthropic", {"id": "m", "reasoning": True}
+    )
+    config = build_config(toml_data, str(tmp_path), {})
+    assert config["provider"]["P"]["models"]["m"] == {
+        "id": "m",
+        "reasoning": True,
+    }
+
+
+def test_build_config_invalid_thinking_injects_nothing(
+    tmp_path, capsys
+) -> None:
+    """An invalid level (reported by validate_thinking) injects nothing."""
+    toml_data = _toml_with_model("@ai-sdk/anthropic", {"thinking": "ultra"})
+    config = build_config(toml_data, str(tmp_path), {})
+    model = config["provider"]["P"]["models"]["m"]
+    assert "thinking" not in model
+    assert "options" not in model
+
+
+def test_build_config_unsupported_npm_warns_and_skips(
+    tmp_path, capsys
+) -> None:
+    """A provider whose npm is not covered warns and injects no options."""
+    toml_data = _toml_with_model(
+        "@ai-sdk/other", {"id": "m", "thinking": "high"}
+    )
+    config = build_config(toml_data, str(tmp_path), {})
+    model = config["provider"]["P"]["models"]["m"]
+    assert "thinking" not in model
+    assert "options" not in model
+    assert "不支持该翻译" in capsys.readouterr().out
+
+
+def test_build_config_resolves_env_refs_in_thinking_model(tmp_path) -> None:
+    """Env placeholders of a thinking model still resolve to plaintext."""
+    toml_data = _toml_with_model(
+        "@ai-sdk/anthropic",
+        {"thinking": "high"},
+        {"baseURL": "{env:P_BASE}", "apiKey": "{env:P_KEY}"},
+    )
+    config = build_config(
+        toml_data, str(tmp_path), {"P_BASE": "https://x/v1", "P_KEY": "k"}
+    )
+    provider = config["provider"]["P"]
+    assert provider["options"]["baseURL"] == "https://x/v1"
+    assert provider["models"]["m"]["options"] == {"effort": "high"}
+
+
+def test_build_config_leaves_parsed_toml_data_untouched(tmp_path) -> None:
+    """The translation only touches the emitted copy, not the parsed TOML."""
+    toml_data = _toml_with_model("@ai-sdk/anthropic", {"thinking": "high"})
+    build_config(toml_data, str(tmp_path), {})
+    assert toml_data["provider"]["P"]["models"]["m"] == {"thinking": "high"}

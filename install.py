@@ -33,6 +33,7 @@ from installer.pi import (
     build_pi_models_config,
     build_pi_settings,
 )
+from installer.thinking import validate_thinking
 from installer.variants import collect_variants
 
 
@@ -185,6 +186,10 @@ def main() -> None:
         toml_data, "provider", "provider", env, scope_key="options"
     )
     _filter_missing_entries(toml_data, "mcp", "MCP 服务器", env)
+
+    # Report invalid model-level ``thinking`` values once, before either
+    # host generator translates the field into its own dialect.
+    validate_thinking(toml_data)
 
     # Parse the mode profile once, regardless of which hosts are present,
     # so the selected mode is reported and persisted even when opencode

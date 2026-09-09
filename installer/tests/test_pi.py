@@ -560,3 +560,72 @@ def test_build_pi_agents_config_structure_reserved_shape() -> None:
         "provider": "Dummy",
         "model": "dummy-large",
     }
+
+
+# ── thinking → compat.forceAdaptiveThinking ─────────────────────────────
+
+
+def _provider_with_thinking(thinking: object) -> dict:
+    """An anthropic provider whose single model declares ``thinking``."""
+    model: dict[str, object] = {"id": "m", "name": "m"}
+    if thinking is not None:
+        model["thinking"] = thinking
+    return {
+        "npm": "@ai-sdk/anthropic",
+        "options": {"baseURL": "https://api.example.com/v1"},
+        "models": {"m": model},
+    }
+
+
+def test_convert_provider_thinking_adds_compat() -> None:
+    """A non-none thinking level enables pi adaptive thinking."""
+    for level in ("high", "max"):
+        result = _convert_provider_to_pi("P", _provider_with_thinking(level))
+        assert result is not None
+        assert result["models"][0]["compat"] == {"forceAdaptiveThinking": True}
+        assert "thinking" not in result["models"][0]
+
+
+def test_convert_provider_thinking_none_omits_compat() -> None:
+    """``thinking = "none"`` produces no compat key."""
+    result = _convert_provider_to_pi("P", _provider_with_thinking("none"))
+    assert result is not None
+    assert "compat" not in result["models"][0]
+
+
+def test_convert_provider_without_thinking_omits_compat() -> None:
+    """An absent thinking field produces no compat key."""
+    result = _convert_provider_to_pi("P", _provider_with_thinking(None))
+    assert result is not None
+    assert "compat" not in result["models"][0]
+
+
+def test_convert_provider_invalid_thinking_omits_compat() -> None:
+    """An invalid level is not translated (validation warns elsewhere)."""
+    result = _convert_provider_to_pi("P", _provider_with_thinking("ultra"))
+    assert result is not None
+    assert "compat" not in result["models"][0]
+
+
+def test_build_pi_models_config_thinking_end_to_end() -> None:
+    """The thinking field survives env resolution into compat."""
+    toml_data = {
+        "provider": {
+            "Dummy": {
+                "npm": "@ai-sdk/anthropic",
+                "options": {"baseURL": "{env:BASE}", "apiKey": "{env:KEY}"},
+                "models": {
+                    "thinker": {"id": "thinker", "thinking": "high"},
+                    "quiet": {"id": "quiet", "thinking": "none"},
+                },
+            }
+        }
+    }
+    config = build_pi_models_config(
+        toml_data, {"BASE": "https://api.example.com/v1", "KEY": "k"}
+    )
+    models = config["providers"]["Dummy"]["models"]
+    by_id = {m["id"]: m for m in models}
+    assert by_id["thinker"]["compat"] == {"forceAdaptiveThinking": True}
+    assert "compat" not in by_id["quiet"]
+    assert all("thinking" not in m for m in models)

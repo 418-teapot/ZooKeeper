@@ -5,7 +5,16 @@ from typing import Optional
 
 from installer.envfile import resolve_env_refs_deep
 from installer.output import info, warn
+from installer.thinking import thinking_level
 from installer.variants import collect_agent_variants
+
+# npm packages understood by the ``thinking`` translation for OpenCode:
+# each maps to the model-level ``options`` key that turns thinking on for
+# that SDK (``effort`` for the Anthropic SDK, which the AI SDK synthesizes
+# into the request's ``output_config.effort``; a top-level
+# ``reasoning_effort`` for the OpenAI SDKs).
+_ANTHROPIC_NPM = "@ai-sdk/anthropic"
+_OPENAI_NPM = ("@ai-sdk/openai", "@ai-sdk/openai-compatible")
 
 _MODE_CATEGORIES = ("agents", "skills", "hooks", "tools", "commands")
 
@@ -108,6 +117,50 @@ def parse_mode_profile(
     return result
 
 
+def _translate_thinking_options(provider: dict) -> None:
+    """Rewrite model-level ``thinking`` into host ``options`` in place.
+
+    For every model of a provider that declares ``thinking``, the
+    ``thinking`` key is removed (it is not part of the OpenCode model
+    schema) and, unless the level is ``none``, the level is written as
+    ``options.effort`` for ``@ai-sdk/anthropic`` (the AI SDK synthesizes
+    the request's ``output_config.effort`` from it) or
+    ``options.reasoning_effort`` for the OpenAI SDKs, leaving the other
+    option keys untouched.  Providers whose ``npm`` package is
+    not covered by the translation warn and inject nothing.
+
+    Args:
+        provider: A single ``[provider.*]`` table of the emitted config.
+    """
+    models = provider.get("models")
+    if not isinstance(models, dict):
+        return
+    npm = provider.get("npm", "")
+    npm_key = npm.lower() if isinstance(npm, str) else ""
+
+    for model_data in models.values():
+        if not isinstance(model_data, dict) or "thinking" not in model_data:
+            continue
+        level = thinking_level(model_data)
+        model_data.pop("thinking")
+        if level is None:
+            continue
+        if npm_key not in (_ANTHROPIC_NPM, *_OPENAI_NPM):
+            warn(
+                f"模型 {model_data.get('id', '')} 设了 thinking='{level}'，"
+                f"但 provider 的 npm ('{npm}') 不支持该翻译，跳过"
+            )
+            continue
+        options = model_data.get("options")
+        if not isinstance(options, dict):
+            options = {}
+        if npm_key == _ANTHROPIC_NPM:
+            options["effort"] = level
+        else:
+            options["reasoning_effort"] = level
+        model_data["options"] = options
+
+
 def build_config(
     toml_data: dict,
     project_dir: str,
@@ -188,6 +241,16 @@ def build_config(
         config["mcp"] = toml_data["mcp"]
 
     config = resolve_env_refs_deep(config, env)
+
+    # Translate the host-agnostic ``thinking`` field of every model into
+    # the OpenCode model-level ``options`` dialect.  Runs after env
+    # resolution so it operates on the emitted deep copies, leaving the
+    # parsed config.toml data (shared with the pi generator) untouched.
+    providers = config.get("provider")
+    if isinstance(providers, dict):
+        for provider in providers.values():
+            if isinstance(provider, dict):
+                _translate_thinking_options(provider)
 
     # Inject per-agent variants from [zoo.variants.<agent>] subtables.  The
     # variant is set on an agent's dict only when the agent declares a model

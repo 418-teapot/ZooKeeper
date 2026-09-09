@@ -319,6 +319,10 @@ output  = 128000
 name      = "deepseek-v4-flash"
 id        = "deepseek-v4-flash"
 reasoning = true
+# 网关要求显式声明才开启思考：OpenCode 侧翻译为模型 options.effort,
+# pi 侧为 compat.forceAdaptiveThinking，由 install.py 按宿主翻译。
+# 可选 "high" / "max" / "none"（缺省 none）。
+thinking  = "high"
 
 [provider.Cambricon.models."deepseek-v4-flash".limit]
 context = 1000000

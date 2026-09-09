@@ -8,6 +8,7 @@ from installer.envfile import (
     resolve_env_refs_deep,
 )
 from installer.output import warn
+from installer.thinking import thinking_level
 
 
 def _npm_to_api_type(npm: str) -> Optional[str]:
@@ -123,6 +124,13 @@ def _convert_provider_to_pi(prov_name: str, prov_data: dict) -> Optional[dict]:
                 "cacheWrite": cost.get("cache_write", 0),
             }
             entry["cost"] = cost_entry
+
+        # Thinking — pi enables it per model through compat
+        # forceAdaptiveThinking (pi then sends thinking.type "adaptive"
+        # plus output_config.effort, using the settings.json default
+        # thinking level).  ``thinking = "none"``/absent adds nothing.
+        if thinking_level(model_data) is not None:
+            entry["compat"] = {"forceAdaptiveThinking": True}
 
         models_list.append(entry)
 
