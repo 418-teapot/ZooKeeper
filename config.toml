@@ -177,6 +177,21 @@ cache_write = 0.017
 context = 1000000
 output  = 256000
 
+[provider.Volces.models."glm-5.3-flash"]
+name      = "volces/glm-5.3-flash"
+id        = "volces/glm-5.3-flash"
+reasoning = true
+
+[provider.Volces.models."glm-5.3-flash".cost]
+input       = 0.68
+output      = 2.38
+cache_read  = 0.23
+cache_write = 0.017
+
+[provider.Volces.models."glm-5.3-flash".limit]
+context = 1000000
+output  = 256000
+
 [provider.Volces.models."kimi-k3"]
 name      = "volces/kimi-k3"
 id        = "volces/kimi-k3"
@@ -237,63 +252,6 @@ cache_write = 0.017
 context = 1000000
 output  = 256000
 
-# ── Chatgpt ───────────────────────────────────────────────────────────────────
-
-[provider.Chatgpt]
-npm = "@ai-sdk/openai-compatible"
-
-[provider.Chatgpt.options]
-baseURL = "{env:CAMBRICON_BASE_URL}"
-apiKey  = "{env:CAMBRICON_API_KEY}"
-
-[provider.Chatgpt.options.headers]
-x-project = "personal"
-
-[provider.Chatgpt.models."gpt-5.6-sol"]
-name      = "chatgpt/gpt-5.6-sol"
-id        = "chatgpt/gpt-5.6-sol"
-reasoning = true
-
-[provider.Chatgpt.models."gpt-5.6-sol".cost]
-input       = 2.17
-output      = 12.99
-cache_read  = 0.22
-cache_write = 2.71
-
-[provider.Chatgpt.models."gpt-5.6-sol".limit]
-context = 272000
-output  = 128000
-
-[provider.Chatgpt.models."gpt-5.6-terra"]
-name      = "chatgpt/gpt-5.6-terra"
-id        = "chatgpt/gpt-5.6-terra"
-reasoning = true
-
-[provider.Chatgpt.models."gpt-5.6-terra".cost]
-input       = 0.87
-output      = 4.2
-cache_read  = 0.09
-cache_write = 1.08
-
-[provider.Chatgpt.models."gpt-5.6-terra".limit]
-context = 272000
-output  = 128000
-
-[provider.Chatgpt.models."gpt-5.6-luna"]
-name      = "chatgpt/gpt-5.6-luna"
-id        = "chatgpt/gpt-5.6-luna"
-reasoning = true
-
-[provider.Chatgpt.models."gpt-5.6-luna".cost]
-input       = 0.09
-output      = 0.52
-cache_read  = 0.01
-cache_write = 0.11
-
-[provider.Chatgpt.models."gpt-5.6-luna".limit]
-context = 272000
-output  = 128000
-
 # ── Cambricon ─────────────────────────────────────────────────────────────────
 
 [provider.Cambricon]
@@ -343,9 +301,9 @@ id        = "deepseek-v4-pro"
 reasoning = true
 
 [provider.DeepSeek.models.deepseek-v4-pro.cost]
-input       = 1.74
-output      = 3.48
-cache_read  = 0.145
+input       = 4.5
+output      = 13.5
+cache_read  = 0.15
 cache_write = 0
 
 [provider.DeepSeek.models.deepseek-v4-pro.limit]
@@ -358,9 +316,9 @@ id        = "deepseek-v4-flash"
 reasoning = true
 
 [provider.DeepSeek.models.deepseek-v4-flash.cost]
-input       = 0.14
-output      = 0.28
-cache_read  = 0.028
+input       = 1
+output      = 4
+cache_read  = 0.02
 cache_write = 0
 
 [provider.DeepSeek.models.deepseek-v4-flash.limit]
@@ -403,16 +361,27 @@ npm = "@ai-sdk/openai-compatible"
 baseURL = "{env:OPENAI_BASE_URL}"
 apiKey  = "{env:OPENAI_API_KEY}"
 
+[provider.OpenAI.models."gpt-6-astra"]
+name      = "gpt-6-astra"
+id        = "gpt-6-astra"
+reasoning = true
+
+[provider.OpenAI.models."gpt-6-astra".cost]
+input       = 10
+output      = 50
+cache_read  = 1
+cache_write = 12.5
+
 [provider.OpenAI.models."gpt-5.6-sol"]
 name      = "gpt-5.6-sol"
 id        = "gpt-5.6-sol"
 reasoning = true
 
 [provider.OpenAI.models."gpt-5.6-sol".cost]
-input       = 5
-output      = 30
-cache_read  = 0.5
-cache_write = 6.25
+input       = 4
+output      = 20
+cache_read  = 0.4
+cache_write = 5
 
 [provider.OpenAI.models."gpt-5.6-sol".limit]
 context = 272000
@@ -448,21 +417,6 @@ cache_write = 0.25
 context = 272000
 output  = 128000
 
-[provider.OpenAI.models."gpt-5.5"]
-name      = "gpt-5.5"
-id        = "gpt-5.5"
-reasoning = true
-
-[provider.OpenAI.models."gpt-5.5".cost]
-input       = 5
-output      = 30
-cache_read  = 0.5
-cache_write = 0
-
-[provider.OpenAI.models."gpt-5.5".limit]
-context = 272000
-output  = 128000
-
 # ── OpenCodeGo ────────────────────────────────────────────────────────────────
 
 [provider.OpenCodeGo]
@@ -471,24 +425,6 @@ npm = "@ai-sdk/openai-compatible"
 [provider.OpenCodeGo.options]
 baseURL = "{env:OPENCODEGO_BASE_URL}"
 apiKey  = "{env:OPENCODEGO_API_KEY}"
-
-[provider.OpenCodeGo.models."glm-5.2"]
-name      = "glm-5.2"
-id        = "glm-5.2"
-reasoning = true
-
-[provider.OpenCodeGo.models."glm-5.2".limit]
-context = 1000000
-output  = 128000
-
-[provider.OpenCodeGo.models."deepseek-v4-pro"]
-name      = "deepseek-v4-pro"
-id        = "deepseek-v4-pro"
-reasoning = true
-
-[provider.OpenCodeGo.models."deepseek-v4-pro".limit]
-context = 1000000
-output  = 384000
 
 [provider.OpenCodeGo.models."deepseek-v4-flash"]
 name      = "deepseek-v4-flash"
@@ -499,14 +435,23 @@ reasoning = true
 context = 1000000
 output  = 384000
 
-[provider.OpenCodeGo.models."qwen3.7-plus"]
-name      = "qwen3.7-plus"
-id        = "qwen3.7-plus"
+[provider.OpenCodeGo.models."qwen3.8-flash"]
+name      = "qwen3.8-flash"
+id        = "qwen3.8-flash"
 reasoning = true
 
-[provider.OpenCodeGo.models."qwen3.7-plus".limit]
+[provider.OpenCodeGo.models."qwen3.8-flash".limit]
 context = 1000000
-output  = 64000
+output  = 128000
+
+[provider.OpenCodeGo.models."omen-alpha"]
+name      = "omen-alpha"
+id        = "omen-alpha"
+reasoning = true
+
+[provider.OpenCodeGo.models."omen-alpha".limit]
+context = 500000
+output  = 128000
 
 # ── Agents ────────────────────────────────────────────────────────────────────
 
