@@ -8,8 +8,10 @@
  * the six hook handlers (session_start widget seeding,
  * identity-dispatch prompt injection, skill discovery, compose-driven
  * `tool_result` nudge gating, native `context` handler returning the
- * pruned replacement, `message_end` ref-stripping), and the thin entry
- * (`zookeeperPi`) against the real config.toml.
+ * pruned replacement, `message_end` ref-stripping), the todo tool's host-port
+ * wiring (composed only when the host supplies its transcript scan), the
+ * `session_tree` todo-cache invalidation, and the thin entry (`zookeeperPi`)
+ * against the real config.toml.
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -24,6 +26,7 @@ import {
   waitForHydration,
 } from "./adapters/pi/hydrate.js";
 import { TRANSCRIPT_UNAVAILABLE_NOTICE } from "./adapters/pi/tui/transcript.js";
+import type { ToolHost } from "./core/client/tool-host.js";
 import { project } from "./core/context/lens.js";
 import {
   clearRoundView,
@@ -51,6 +54,7 @@ import {
   topLevelRuns,
   updateRun,
 } from "./core/subagent/registry.js";
+import { createTodoStore } from "./core/todo/store.js";
 import {
   _resetPendingSwitchOpsForTesting,
   buildPiContributions,
@@ -396,6 +400,134 @@ describe("buildPiContributions — profile-driven selection", () => {
     assert.equal(profile, null);
     assert.deepEqual(composed.agents, []);
     assert.deepEqual(composed.skills, []);
+  });
+
+  it("poly profile listing todo + host todoStore/toolHost → todo composes", () => {
+    // The pi entry point forwards its host ports into deps; with both
+    // supplied the fail-closed todo unit contributes its tool.
+    const zoo = {
+      ...POLY_ZOO,
+      mode: {
+        poly: { ...POLY_PROFILE, tools: [...POLY_PROFILE.tools, "todo"] },
+      },
+    };
+    const { composed } = buildPiContributions(zoo, {
+      toolHost: fakePiToolHost(),
+      todoStore: createTodoStore(async () => []),
+    });
+    assert.ok(composed.tools.todo, "todo must register on the pi host");
+    assert.equal(typeof composed.tools.todo.execute, "function");
+    // The tool unit also carries the scheduling hint the pi registration
+    // boundary forwards (one todo call at a time).
+    assert.equal(composed.tools.todo.executionMode, "sequential");
+  });
+
+  it("the same todo-listing profile with no host ports → no todo tool", () => {
+    // Without the transcript scan the unit fails closed, so the composed
+    // tool surface stays exactly the host-port-free tools.
+    const zoo = {
+      ...POLY_ZOO,
+      mode: {
+        poly: { ...POLY_PROFILE, tools: [...POLY_PROFILE.tools, "todo"] },
+      },
+    };
+    const { composed } = buildPiContributions(zoo);
+    assert.equal(composed.tools.todo, undefined);
+    assert.deepEqual(Object.keys(composed.tools).sort(), [
+      "compress",
+      "decompress",
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Todo cache invalidation (session_tree)
+// ---------------------------------------------------------------------------
+
+/** The pi host's tool services: a fixed session id and a no-op notify. */
+function fakePiToolHost(): ToolHost {
+  return {
+    resolveSessionId: () => "sess-tool-host",
+    async notify(): Promise<void> {},
+  };
+}
+
+describe("session_tree — todo cache invalidation", () => {
+  /** The poly profile plus the todo tool, so the unit registers it. */
+  const TODO_ZOO = {
+    ...POLY_ZOO,
+    mode: {
+      poly: { ...POLY_PROFILE, tools: [...POLY_PROFILE.tools, "todo"] },
+    },
+  };
+
+  /**
+   * Build a session context whose history scan counts invocations, so the
+   * store's cache behaviour is observable through the registered tool.
+   */
+  function scanCtx(sessionId: string) {
+    const scans: { count: number } = { count: 0 };
+    const ctx = {
+      sessionManager: {
+        getSessionId: () => sessionId,
+        getBranch: () => {
+          scans.count += 1;
+          return [];
+        },
+      },
+    };
+    return { ctx, scans };
+  }
+
+  it("the tool restores once per cache miss and session_tree forces a re-scan", async () => {
+    const api = mockApi();
+    const handlers = buildPiHandlers(TODO_ZOO, api as any, MODES_RAW);
+    const todo = api.tools.find((tool: any) => tool.name === "todo") as any;
+    assert.ok(todo, "the todo tool must register when the profile lists it");
+    assert.equal(todo.executionMode, "sequential");
+
+    const { ctx, scans } = scanCtx("sess-tree");
+    // Seed the holder's live session: the scan reads the session manager
+    // through it (pi exposes exactly one live session per instance).  The
+    // seeding call also invalidates, but the cache is empty at this point.
+    handlers.sessionTree(undefined, ctx);
+
+    await todo.execute("call-1", { op: "view" }, undefined, undefined, ctx);
+    assert.equal(scans.count, 1, "a cache miss scans the transcript once");
+    await todo.execute("call-2", { op: "view" }, undefined, undefined, ctx);
+    assert.equal(scans.count, 1, "a cached read must not re-scan");
+
+    handlers.sessionTree(undefined, ctx);
+    await todo.execute("call-3", { op: "view" }, undefined, undefined, ctx);
+    assert.equal(
+      scans.count,
+      2,
+      "tree navigation must drop the cache so the next read re-scans",
+    );
+  });
+
+  it("is a no-op without a session id in the event context", () => {
+    const api = mockApi();
+    const handlers = buildPiHandlers(TODO_ZOO, api as any, MODES_RAW);
+    assert.doesNotThrow(() => handlers.sessionTree());
+    assert.doesNotThrow(() => handlers.sessionTree(undefined, {}));
+    assert.doesNotThrow(() =>
+      handlers.sessionTree(undefined, {
+        sessionManager: { getSessionId: () => "" },
+      }),
+    );
+  });
+
+  it("piApi absent → no store owned → the handler is a no-op", () => {
+    // Without a real pi API the entry point owns no todo store (the tool
+    // never registers, fail-closed): the handler must not crash over it.
+    const handlers = buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
+    assert.doesNotThrow(() => handlers.sessionTree());
+    assert.doesNotThrow(() =>
+      handlers.sessionTree(undefined, {
+        sessionManager: { getSessionId: () => "sess-tree" },
+      }),
+    );
   });
 });
 

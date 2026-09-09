@@ -43,6 +43,9 @@ export interface PiToolHostContext {
     getSessionId(): string;
     /** Read by the pi entry point's run-registry rescan, not by the host. */
     buildContextEntries?(): unknown[];
+    /** Raw entries of the active branch (incl. pre-compaction), read by the
+     * pi entry point's todo snapshot scan. */
+    getBranch?(): unknown[];
   };
   /** UI surface (widget updates from the pi entry point). */
   ui?: {

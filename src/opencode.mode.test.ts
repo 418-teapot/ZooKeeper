@@ -10,7 +10,12 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { COMMAND_HANDLED, normalizeToolName } from "./compose-opencode.js";
+import {
+  buildToolHooks,
+  COMMAND_HANDLED,
+  normalizeToolName,
+  registerProfileToolsInConfig,
+} from "./compose-opencode.js";
 import { _resetContextStateManagerForTesting } from "./core/context/runtime.js";
 import { sessionAgentRegistry } from "./core/session-agent.js";
 import { DIRECT_WORK_NUDGE } from "./hooks/direct-work-nudge";
@@ -28,6 +33,10 @@ import { withModeFile } from "./utils/mode-file.js";
 /**
  * The poly profile (mirrors the config.toml lists the parallel
  * task adds to `[zoo.mode.poly]`).
+ *
+ * The tools list carries `todo` exactly as config.toml does: the OpenCode
+ * host supplies no todo candidate source, so the unit must fail closed and
+ * keep `todo` off both the tool surface and `experimental.primary_tools`.
  */
 const POLY_PROFILE = {
   agents: ["dolphin", "mola", "beaver", "lynx", "spider", "eagle", "kiwi"],
@@ -52,7 +61,7 @@ const POLY_PROFILE = {
     "context-pruning",
     "reply-strip",
   ],
-  tools: ["compress", "decompress"],
+  tools: ["compress", "decompress", "todo"],
   commands: ["go", "dcp"],
 };
 
@@ -170,6 +179,66 @@ describe("poly full profile — registration parity", () => {
     assert.ok(plugin.tool.decompress, "decompress tool must be registered");
     assert.equal(typeof plugin.tool.compress.execute, "function");
     assert.equal(typeof plugin.tool.decompress.execute, "function");
+  });
+
+  it("never registers todo on OpenCode: absent from the tool surface and from primary_tools", async () => {
+    // config.toml lists `todo` in the poly profile, but the OpenCode host
+    // supplies no todo state store (`todoStore`), so the fail-closed unit
+    // contributes no tool — and the name must not leak into the config's
+    // primary-tool surface either.
+    const plugin = await makePlugin();
+    assert.equal(
+      plugin.tool.todo,
+      undefined,
+      "the todo tool must never register on OpenCode",
+    );
+    assert.deepEqual(
+      Object.keys(plugin.tool).sort(),
+      ["compress", "decompress"],
+      "the OpenCode tool surface stays free of todo",
+    );
+
+    const config: Record<string, any> = {};
+    await plugin.config(config);
+    assert.deepEqual(
+      config.experimental.primary_tools,
+      ["compress", "decompress"],
+      "todo must not pollute experimental.primary_tools",
+    );
+    assert.ok(!config.experimental.primary_tools.includes("todo"));
+  });
+
+  it("buildToolHooks fails closed for todo with OpenCode deps (no todoStore)", () => {
+    // The compose-layer check: the OpenCode tool surface composes the real
+    // registry with deps that carry a tool host but no todo store, so only
+    // the host-port-free tools come back.
+    const hooks = buildToolHooks({}, {}, ["compress", "decompress", "todo"]);
+    assert.deepEqual(Object.keys(hooks ?? {}).sort(), [
+      "compress",
+      "decompress",
+    ]);
+  });
+
+  it("registerProfileToolsInConfig never appends a tool name beyond compress/decompress", () => {
+    // The config assembly is a fixed two-name append: a profile listing
+    // `todo` (and unknown names) leaves `primary_tools` free of them while
+    // preserving the host's pre-existing entries.
+    const config: Record<string, any> = {
+      experimental: { primary_tools: ["bash"] },
+    };
+    registerProfileToolsInConfig(config, [
+      "todo",
+      "ask",
+      "subagent",
+      "future-tool",
+      "compress",
+      "decompress",
+    ]);
+    assert.deepEqual(config.experimental.primary_tools, [
+      "bash",
+      "compress",
+      "decompress",
+    ]);
   });
 
   it("tool.execute.before runs the gate prompt judge (blocking prompt error)", async () => {

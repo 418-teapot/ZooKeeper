@@ -9,7 +9,11 @@
  * `extractText`, the command-slot assembly
  * (`buildPiCommandRegistrationPlan`), the gate wrapper
  * (`wrapToolsWithDelegationGate`), and the registration-boundary
- * tool-definition application (`applyToolDefinitionContributions`).
+ * tool-definition application (`applyToolDefinitionContributions`), plus the
+ * pi composition boundary of the `todo` tool (profile-enabled and host-port
+ * gated: it registers only when the host supplies both its transcript scan
+ * and tool services, and the pi assembly boundaries pass it through
+ * untouched).
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
@@ -27,12 +31,16 @@ import {
   type PiToolResultEvent,
   wrapToolsWithDelegationGate,
 } from "./compose-pi.js";
+import type { ToolHost } from "./core/client/tool-host.js";
+import { composeProfile } from "./core/compose.js";
+import type { ModeProfile } from "./core/config-types.js";
 import type { DelegationGate, DelegationRequest } from "./core/gate.js";
 import type {
   AfterExecContribution,
   AfterExecInput,
   CommandInput,
   ComposedResult,
+  Deps,
   ToolContribution,
   TransformOutput,
 } from "./core/slots.js";
@@ -40,8 +48,10 @@ import {
   _resetForTesting as _resetIdentityForTesting,
   setPrimary,
 } from "./core/subagent/identity.js";
+import { createTodoStore } from "./core/todo/store.js";
 import { createReplyStripHandler } from "./hooks/reply-strip/index.js";
 import { enhanceTaskDefinition } from "./hooks/task-prompt/index.js";
+import { REGISTRY } from "./registry.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
 
 afterEach(() => {
@@ -1040,5 +1050,137 @@ describe("applyToolDefinitionContributions", () => {
     const before = tool.args?.prompt as { description?: string } | undefined;
     applyToolDefinitionContributions({ subagent: tool }, HINT_CONTRIBUTIONS);
     assert.equal(before?.description, "完整任务说明");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pi composition — the todo tool registration boundary
+// ---------------------------------------------------------------------------
+
+/**
+ * A tool-only profile: every category but `tools` stays empty so the
+ * composition pass instantiates exactly the tool units under test.
+ */
+const TOOL_PROFILE: ModeProfile = {
+  name: "poly",
+  agents: [],
+  skills: [],
+  hooks: [],
+  tools: ["compress", "decompress", "todo"],
+  commands: [],
+};
+
+/** The pi host's tool services: a fixed session id and a no-op notify. */
+function piToolHost(): ToolHost {
+  return {
+    resolveSessionId: () => "sess-compose",
+    async notify(): Promise<void> {},
+  };
+}
+
+/** Deps carrying the required base fields plus the supplied host ports. */
+function piDeps(host: Partial<Deps> = {}): Deps {
+  return {
+    limits: {},
+    contextConfig: {},
+    client: {},
+    directory: "",
+    resolveAgent: () => undefined,
+    ...host,
+  };
+}
+
+/** Compose the real registry with the tool profile and the given deps. */
+function composeTools(host: Partial<Deps> = {}) {
+  return composeProfile(TOOL_PROFILE, REGISTRY, piDeps(host)).tools;
+}
+
+describe("pi composition — the todo tool registration boundary", () => {
+  it("registers todo when the host supplies both todoStore and toolHost", () => {
+    const tools = composeTools({
+      toolHost: piToolHost(),
+      todoStore: createTodoStore(async () => []),
+    });
+    assert.ok(tools.todo, "the todo tool must register on the pi host");
+    assert.equal(tools.todo.name, "todo");
+    assert.equal(typeof tools.todo.execute, "function");
+    // The sibling tools are unaffected by the host-port gate.
+    assert.deepEqual(Object.keys(tools).sort(), [
+      "compress",
+      "decompress",
+      "todo",
+    ]);
+    // Every profile name matched a registry unit — no unknown_unit warning.
+    assert.deepEqual(
+      _getBufferForTesting().filter((e) => e.event === "unknown_unit"),
+      [],
+    );
+  });
+
+  it("the composed tool serves state through the injected store instance", async () => {
+    const store = createTodoStore(async () => []);
+    const tools = composeTools({ toolHost: piToolHost(), todoStore: store });
+    // Mutating through the composed tool must land in the very store the
+    // host injected (no hidden re-creation), so the host's own invalidation
+    // and the tool always share one cache.
+    await tools.todo?.execute(
+      { op: "init", entries: [{ items: ["Injected"] }] },
+      {},
+      {},
+    );
+    const phases = await store.get("sess-compose");
+    assert.equal(phases[0]?.tasks[0]?.content, "Injected");
+  });
+
+  it("contributes no todo tool when the host supplies no todoStore", () => {
+    const tools = composeTools({ toolHost: piToolHost() });
+    assert.equal(
+      tools.todo,
+      undefined,
+      "no todo store → the todo unit must fail closed",
+    );
+    assert.deepEqual(Object.keys(tools).sort(), ["compress", "decompress"]);
+  });
+
+  it("contributes no todo tool when the host supplies no toolHost", () => {
+    const tools = composeTools({ todoStore: createTodoStore(async () => []) });
+    assert.equal(
+      tools.todo,
+      undefined,
+      "no tool services → the todo unit must fail closed",
+    );
+    assert.deepEqual(Object.keys(tools).sort(), ["compress", "decompress"]);
+  });
+
+  it("attaches the host todo renderer to the composed tool (pi-only seam)", () => {
+    const renderCall = () => ({ kind: "call" });
+    const renderResult = () => ({ kind: "result" });
+    const tools = composeTools({
+      toolHost: piToolHost(),
+      todoStore: createTodoStore(async () => []),
+      todoRenderer: { renderCall, renderResult },
+    });
+    assert.equal(tools.todo?.renderCall, renderCall);
+    assert.equal(tools.todo?.renderResult, renderResult);
+  });
+
+  it("the pi assembly boundaries pass the composed todo tool through untouched", () => {
+    const tools = composeTools({
+      toolHost: piToolHost(),
+      todoStore: createTodoStore(async () => []),
+    });
+    const todo = tools.todo;
+    assert.ok(todo);
+
+    // Definition enhancers only target the subagent tool.
+    const enhanced = applyToolDefinitionContributions(tools, [
+      { name: "enhanceTaskDefinition", handle: enhanceTaskDefinition },
+    ]);
+    assert.equal(enhanced.todo, todo, "no enhancer may rewrite the todo tool");
+
+    // The delegation gate only wraps the subagent tool.
+    const gate: DelegationGate = () => null;
+    const gated = wrapToolsWithDelegationGate(enhanced, gate, true);
+    assert.equal(gated.todo, todo, "the todo tool must stay unwrapped");
   });
 });

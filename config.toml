@@ -751,6 +751,7 @@ tools = [
   "compress",
   "decompress",
   "subagent",
+  "todo",
 ]
 commands = [
   "go",
@@ -780,6 +781,7 @@ tools = [
   "ask",
   "compress",
   "decompress",
+  "todo",
 ]
 commands = [
   "go",

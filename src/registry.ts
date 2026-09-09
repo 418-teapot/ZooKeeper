@@ -52,6 +52,7 @@ import { unit as askToolUnit } from "./tools/ask.js";
 import { unit as compressToolUnit } from "./tools/compress.js";
 import { unit as decompressToolUnit } from "./tools/decompress.js";
 import { unit as subagentToolUnit } from "./tools/subagent.js";
+import { unit as todoToolUnit } from "./tools/todo.js";
 
 // ---------------------------------------------------------------------------
 // Skill units — pure data (name only), discovered from core/skills/.
@@ -162,6 +163,7 @@ export const REGISTRY: UnitDescriptor[] = [
   decompressToolUnit,
   subagentToolUnit,
   askToolUnit,
+  todoToolUnit,
   // ── Command units ───────────────────────────────────────────────
   goCommandUnit,
   dcpCommandUnit,

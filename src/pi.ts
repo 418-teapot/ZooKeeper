@@ -94,12 +94,16 @@ import {
   readSessionCwd,
   rebuildSubagentRuns,
 } from "./adapters/pi/subagent-scan.js";
+import { scanTodoSnapshots } from "./adapters/pi/todo-scan.js";
 import {
   createPiToolHost,
   type PiContextHolder,
   type PiToolHostContext,
 } from "./adapters/pi/tool-host.js";
-import { buildSubagentCardRenderer } from "./adapters/pi/tui/index.js";
+import {
+  buildSubagentCardRenderer,
+  buildTodoCardRenderer,
+} from "./adapters/pi/tui/index.js";
 import {
   openTranscriptOverlay,
   TRANSCRIPT_NOT_RECORDED_NOTICE,
@@ -155,6 +159,8 @@ import {
   TERMINAL_STATUSES,
 } from "./core/subagent/registry.js";
 import type { RunLog } from "./core/subagent/run-log.js";
+import type { FetchCandidates } from "./core/todo/store.js";
+import { createTodoStore } from "./core/todo/store.js";
 import type { ValidationLimits } from "./core/validate.js";
 import { REGISTRY } from "./registry.js";
 import { log } from "./utils/logger.js";
@@ -234,6 +240,14 @@ interface ExtensionAPI {
   on(
     event: "message_end",
     handler: ReturnType<typeof buildPiMessageEndHandler>,
+  ): void;
+  /**
+   * Register handler for `session_tree` (fired after navigating in the
+   * session tree).
+   */
+  on(
+    event: "session_tree",
+    handler: (evt: unknown, ctx: unknown) => void | Promise<void>,
   ): void;
 }
 
@@ -528,6 +542,21 @@ export function buildPiContributions(
      */
     subagentRenderer?: Deps["subagentRenderer"];
     /**
+     * Per-session todo state store (only on the pi host).  Built by the
+     * entry point over its own transcript scan, so each extension instance
+     * (main session or subagent child session) owns a separate store.
+     * Undefined without it — the todo tool unit contributes no tools
+     * (fail-closed, the subagent precedent), so `todo` never registers on
+     * a host that cannot restore todo state from its transcript.
+     */
+    todoStore?: Deps["todoStore"];
+    /**
+     * Host todo transcript-card renderer (only supplied by the real pi
+     * entry point).  Undefined without it — the todo tool stays
+     * text-only.
+     */
+    todoRenderer?: Deps["todoRenderer"];
+    /**
      * Lazily supplies the host's full untrimmed tool-name baseline for
      * subagent capability computation.  The baseline cannot be captured at
      * extension-load time (pi forbids calling action methods then), so the
@@ -583,6 +612,12 @@ export function buildPiContributions(
     // The pi subagent transcript-card renderer.  Only the real pi entry
     // point supplies one; without it the tool stays text-only.
     subagentRenderer: hostDeps?.subagentRenderer,
+    // The per-instance todo state store (pi host only).  Without it the
+    // todo tool unit contributes no tools (fail-closed).
+    todoStore: hostDeps?.todoStore,
+    // The pi todo transcript-card renderer.  Only the real pi entry
+    // point supplies one; without it the tool stays text-only.
+    todoRenderer: hostDeps?.todoRenderer,
     // The full untrimmed tool baseline for subagent capability computation,
     // read lazily: a getter so the supplier (pi's `getActiveTools`) runs at
     // first subagent execution — which is always post-bind — never at
@@ -783,6 +818,8 @@ export function buildPiHandlers(
   messageEnd: ReturnType<typeof buildPiMessageEndHandler>;
   /** Seed the `zoo` widget at session startup / resume. */
   sessionStart: (evt?: unknown, ctx?: unknown) => Promise<void>;
+  /** Drop the todo cache after a session-tree navigation. */
+  sessionTree: (evt?: unknown, ctx?: unknown) => void;
 } {
   // Mutable holder updated by every event handler so the pi adapter and
   // tool host always see the latest ExtensionContext.
@@ -804,6 +841,49 @@ export function buildPiHandlers(
       ? piApi.appendEntry.bind(piApi)
       : undefined;
   const toolHost = createPiToolHost(contextHolder, appendEntry);
+  // The todo tool's snapshot candidate source: the newest-first `details`
+  // payloads of the session's `todo` tool results.  Built ONLY when a real
+  // pi API instance is supplied — without it there is no todo store at all,
+  // so the todo tool unit contributes no tools (fail-closed, the subagent
+  // precedent) and `todo` never registers on a host that cannot restore its
+  // state from the transcript.
+  //
+  // The scan reads the CURRENT live session through the shared context
+  // holder: pi exposes exactly one live session per extension instance, so
+  // the store's sessionId argument cannot be resolved to a different
+  // session manager here and is deliberately ignored.
+  //
+  // `getBranch` (not `buildContextEntries`): it returns the raw entries of
+  // the active branch INCLUDING pre-compaction ones, so a cache miss after
+  // a compaction still finds the last snapshot.  It MUST be called as a
+  // method on the session manager (an extracted reference unbinds `this`
+  // and crashes), matching the `session_start` rebuild precedent.  An
+  // unavailable manager yields an empty candidate list; a THROWING read is
+  // logged and rethrown, because the store's no-cache-on-failure policy
+  // owns the semantics — a transient error must not be cached as empty.
+  const todoHistory: FetchCandidates | undefined = piApi
+    ? async () => {
+        const sessionManager = contextHolder.current?.sessionManager;
+        if (sessionManager?.getBranch === undefined) return [];
+        try {
+          return scanTodoSnapshots(
+            sessionManager.getBranch() as PiHistoryEntry[],
+          );
+        } catch (err) {
+          log("plugin", "todo_history_failed", "", undefined, "warn", {
+            error: String(err),
+          });
+          throw err;
+        }
+      }
+    : undefined;
+  // The per-instance todo state store: created here so it lives exactly as
+  // long as this extension factory execution (pi re-runs the factory per
+  // session, including subagent child sessions).  A process-wide singleton
+  // would let a child's compose replace the candidate source and make the
+  // main session's cache miss scan the child's transcript.
+  const todoStore =
+    todoHistory !== undefined ? createTodoStore(todoHistory) : undefined;
   // The pi switch surfaces for the `/<agent>` commands.  Built ONLY when
   // a pi API instance is supplied: without one (test-only or a host
   // without the surfaces) the switch command unit contributes no
@@ -1108,6 +1188,16 @@ export function buildPiHandlers(
       // Without it (OpenCode, test-only compositions) the tool stays
       // text-only.
       subagentRenderer: piApi ? buildSubagentCardRenderer() : undefined,
+      // The pi todo transcript-card renderer — turns the tool's summary
+      // text into a pi TUI card over the persisted snapshot.  Wired only
+      // when a real pi API instance is present; the tool contribution
+      // then carries renderCall / renderResult.  Without it (OpenCode,
+      // test-only compositions) the tool stays text-only.
+      todoRenderer: piApi ? buildTodoCardRenderer() : undefined,
+      // The todo state store (pi host only, see its definition).  Owned by
+      // this factory execution: the todo tool unit and the `session_tree`
+      // handler always reach the same instance through this closure.
+      todoStore,
       // The subagent capability baseline: pi's full untrimmed active tool
       // set, captured lazily on first subagent execution and cached —
       // mirroring the switch command's baseline capture so tool denies
@@ -1487,6 +1577,17 @@ export function buildPiHandlers(
       if (ctx) contextHolder.current = ctx as PiToolHostContext;
       return messageEndHandler(event, ctx);
     },
+    sessionTree: (_evt?, ctx?) => {
+      if (ctx) contextHolder.current = ctx as PiToolHostContext;
+      // Tree navigation (`/tree`) moves the active leaf to another branch,
+      // so the transcript the todo store restores from has changed: drop
+      // this session's cached state and let the next `todo` call re-scan.
+      // No-ops when no session resolves or this factory execution owns no
+      // store (a host with no todo restore path — the tool never
+      // registered).
+      const sessionId = sessionIdProvider();
+      if (sessionId !== undefined) todoStore?.invalidate(sessionId);
+    },
   };
 }
 
@@ -1536,6 +1637,7 @@ export function zookeeperPi(pi: ExtensionAPI): void {
   pi.on("tool_result", handlers.toolResult);
   pi.on("context", handlers.contextHandler);
   pi.on("message_end", handlers.messageEnd);
+  pi.on("session_tree", handlers.sessionTree);
 }
 
 export default zookeeperPi;

@@ -16,3 +16,4 @@ export {
   type PiThemeLike,
 } from "./card.js";
 export { hueToPiColor } from "./theme.js";
+export { buildTodoCardRenderer } from "./todo-card.js";
