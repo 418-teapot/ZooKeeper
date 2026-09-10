@@ -372,6 +372,10 @@ output      = 50
 cache_read  = 1
 cache_write = 12.5
 
+[provider.OpenAI.models."gpt-6-astra".limit]
+context = 272000
+output  = 128000
+
 [provider.OpenAI.models."gpt-5.6-sol"]
 name      = "gpt-5.6-sol"
 id        = "gpt-5.6-sol"
@@ -417,6 +421,21 @@ cache_write = 0.25
 context = 272000
 output  = 128000
 
+[provider.OpenAI.models."gpt-5.5"]
+name      = "gpt-5.5"
+id        = "gpt-5.5"
+reasoning = true
+
+[provider.OpenAI.models."gpt-5.5".cost]
+input       = 5
+output      = 30
+cache_read  = 0.5
+cache_write = 0
+
+[provider.OpenAI.models."gpt-5.5".limit]
+context = 272000
+output  = 128000
+
 # ── OpenCodeGo ────────────────────────────────────────────────────────────────
 
 [provider.OpenCodeGo]
@@ -435,6 +454,15 @@ reasoning = true
 context = 1000000
 output  = 384000
 
+[provider.OpenCodeGo.models."deepseek-flash"]
+name      = "deepseek-flash"
+id        = "deepseek-flash"
+reasoning = true
+
+[provider.OpenCodeGo.models."deepseek-flash".limit]
+context = 1000000
+output  = 384000
+
 [provider.OpenCodeGo.models."qwen3.8-flash"]
 name      = "qwen3.8-flash"
 id        = "qwen3.8-flash"
@@ -444,12 +472,12 @@ reasoning = true
 context = 1000000
 output  = 128000
 
-[provider.OpenCodeGo.models."omen-alpha"]
-name      = "omen-alpha"
-id        = "omen-alpha"
+[provider.OpenCodeGo.models."glm-5.3-flash"]
+name      = "glm-5.3-flash"
+id        = "glm-5.3-flash"
 reasoning = true
 
-[provider.OpenCodeGo.models."omen-alpha".limit]
+[provider.OpenCodeGo.models."glm-5.3-flash".limit]
 context = 500000
 output  = 128000
 
