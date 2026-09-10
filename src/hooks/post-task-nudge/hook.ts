@@ -1,5 +1,5 @@
 /**
- * Post-task nudge hook for ZooKeeper OpenCode plugin.
+ * Post-task nudge hook for ZooKeeper plugin.
  *
  * After every `task()` tool execution, appends a verification reminder and
  * delegates todo and plan progress nudges to `checkTodoProgress` and
@@ -9,7 +9,7 @@
  */
 
 import { checkPlanProgress, checkTodoProgress } from "../../core/checks.js";
-import type { TinyClient } from "../../core/client/todo.js";
+import type { TodoSource } from "../../core/client/todo.js";
 import { VERIFY_REMINDER } from "../../core/prompts.js";
 import { log } from "../../utils/logger.js";
 
@@ -24,7 +24,13 @@ import { log } from "../../utils/logger.js";
  * `checkPlanProgress` for additional nudges. Both check functions handle
  * their own error logging; this function only assembles the output.
  *
- * @param client - OpenCode client captured via closure in the plugin factory.
+ * The todo entries are read through `source`; which backend serves that
+ * read is decided by the caller once at composition time. When `source`
+ * is `null` the todo nudge contribution is skipped, while the verification
+ * reminder and the plan nudge still run — neither depends on todo state.
+ *
+ * @param source - Port reading the session's todo entries, or `null` to
+ *   skip the todo nudge.
  * @param input - Hook input containing the tool name and session ID.
  * @param input.tool - Name of the tool that was executed.
  * @param input.sessionID - Session identifier for todo/plan lookup.
@@ -33,7 +39,7 @@ import { log } from "../../utils/logger.js";
  * @param planDir - Workspace base directory containing `.zoo/plans/`.
  */
 export async function nudgePostTask(
-  client: TinyClient | null | undefined,
+  source: TodoSource | null,
   input: { tool: string; sessionID: string; callID?: string },
   output: { output?: string },
   planDir: string,
@@ -44,14 +50,13 @@ export async function nudgePostTask(
   // Skip null / undefined output
   if (output.output == null) return;
 
-  // Skip if no client available — OpenCode runtime may not provide one
-  if (!client) return;
-
   // Build nudge pipeline
   let suffix = `\n\n${VERIFY_REMINDER}`;
 
-  // Todo progress check (async — API call)
-  const todoNudge = await checkTodoProgress(client, input.sessionID);
+  // Todo progress check (async — read through the injected source)
+  const todoNudge = source
+    ? await checkTodoProgress(source, input.sessionID)
+    : null;
   if (todoNudge) suffix += `\n\n${todoNudge}`;
 
   // Plan progress check (sync — filesystem read)

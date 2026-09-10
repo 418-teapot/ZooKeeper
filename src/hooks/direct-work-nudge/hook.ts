@@ -14,7 +14,7 @@
  */
 
 import { checkPlanProgress, checkTodoProgress } from "../../core/checks.js";
-import type { TinyClient } from "../../core/client/todo.js";
+import type { TodoSource } from "../../core/client/todo.js";
 import {
   DIRECT_WORK_NUDGE,
   SEARCH_DELEGATE_NUDGE,
@@ -42,13 +42,13 @@ import { log } from "../../utils/logger.js";
  * @param output - Output object mutated in place.
  * @param output.output - Text output from the tool call.
  * @param options - Optional configuration.
- * @param options.todoClient - Client for todo progress check (OpenCode SDK client at runtime).
+ * @param options.todoSource - Port reading the session's todo entries, or `null` when no todo list is readable.
  * @param options.planDir - Workspace base directory for plan discovery.
  */
 export async function nudgeDirectWork(
   input: { tool: string; sessionID: string; callID?: string },
   output: { output?: string },
-  options?: { todoClient?: TinyClient | null; planDir?: string },
+  options?: { todoSource?: TodoSource | null; planDir?: string },
 ): Promise<void> {
   const tool = input.tool.toLowerCase();
   const isDirectEdit = tool === "edit" || tool === "write";
@@ -72,10 +72,12 @@ export async function nudgeDirectWork(
   if (isDirectEdit) {
     output.output += `\n\n${DIRECT_WORK_NUDGE}`;
 
-    const todoNudge = await checkTodoProgress(
-      options?.todoClient ?? null,
-      input.sessionID,
-    );
+    // Which backend serves the todo read is decided by the caller at
+    // composition time; a caller without a readable list passes `null`
+    // (or omits the option) and this nudge is simply skipped.
+    const todoNudge = options?.todoSource
+      ? await checkTodoProgress(options.todoSource, input.sessionID)
+      : null;
     if (todoNudge) output.output += `\n\n${todoNudge}`;
 
     const planNudge = checkPlanProgress(
@@ -126,7 +128,7 @@ export async function nudgeDirectWork(
  * @param input - Input containing the tool name, session ID, and optional call ID.
  * @param output - Output object mutated in place.
  * @param options - Optional configuration.
- * @param options.todoClient - Client for todo progress check (OpenCode SDK client at runtime).
+ * @param options.todoSource - Port reading the session's todo entries, or `null` when no todo list is readable.
  * @param options.planDir - Workspace base directory for plan discovery.
  * @param options.agent - The session's resolved agent name (`undefined` when unknown).
  */
@@ -134,7 +136,7 @@ export async function nudgeDirectWorkForAgent(
   input: { tool: string; sessionID: string; callID?: string },
   output: { output?: string },
   options: {
-    todoClient?: TinyClient | null;
+    todoSource?: TodoSource | null;
     planDir?: string;
     agent?: string;
   },
@@ -154,7 +156,7 @@ export async function nudgeDirectWorkForAgent(
     return;
   }
   return nudgeDirectWork(input, output, {
-    todoClient: options.todoClient,
+    todoSource: options.todoSource,
     planDir: options.planDir,
   });
 }

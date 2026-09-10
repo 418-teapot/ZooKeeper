@@ -14,6 +14,7 @@ export {
   VERIFY_REMINDER,
 } from "../../core/prompts.js";
 
+import { resolveTodoSource } from "../../core/client/todo.js";
 import type { HookUnitDescriptor } from "../../core/slots.js";
 import { nudgePostTask } from "./hook.js";
 
@@ -23,11 +24,15 @@ export { nudgePostTask };
  * Post-task-nudge hook unit descriptor.
  *
  * Contributes the after-exec post-task verification and progress nudge.
+ * The todo source is resolved once per composition via
+ * `resolveTodoSource` (state store, then capable host client, else no
+ * todo contribution).
  */
 export const unit: HookUnitDescriptor = {
   name: "post-task-nudge",
   kind: "hook",
   create(deps) {
+    const source = resolveTodoSource(deps);
     return {
       kind: "hook",
       beforeExec: [],
@@ -35,7 +40,7 @@ export const unit: HookUnitDescriptor = {
         {
           name: "nudgePostTask",
           handle: (input, output) =>
-            nudgePostTask(deps.client, input, output, deps.directory),
+            nudgePostTask(source, input, output, deps.directory),
         },
       ],
       transform: [],

@@ -4,15 +4,24 @@
  * Covers edit/write firing, non-matching tools, null/undefined output,
  * case-insensitivity, no path exemptions, consecutive calls, constants,
  * grep/glob search delegation, plan nudge scenarios, the dolphin-gated
- * `nudgeDirectWorkForAgent` wrapper (skip + delegate paths), and the
+ * `nudgeDirectWorkForAgent` wrapper (skip + delegate paths), the
  * tool.execute.after agent-gating states (message.updated / session.deleted)
- * driven directly through `nudgeDirectWorkForAgent`.
+ * driven directly through `nudgeDirectWorkForAgent`, and the todo source
+ * selected by the hook unit at composition time.
  */
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import {
+  type TinyClient,
+  type TodoSource,
+  todoSourceFromClient,
+} from "../../core/client/todo.js";
+import type { Deps } from "../../core/slots.js";
+import type { TodoStateStore } from "../../core/todo/store.js";
+import type { TodoPhase } from "../../core/todo/types.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import {
   DIRECT_WORK_NUDGE,
@@ -21,6 +30,82 @@ import {
   SEARCH_DELEGATE_NUDGE,
   unit,
 } from "./index.js";
+
+// The todo nudge text produced when the list still holds active work.
+const TODO_MARKER = "TODO UPDATE REQUIRED";
+
+// ---------------------------------------------------------------------------
+// Todo source helpers
+// ---------------------------------------------------------------------------
+
+/** Host-shaped todo item as returned by `client.session.todo`. */
+interface HostTodo {
+  content: string;
+  status: string;
+  priority: string;
+  id: string;
+}
+
+/**
+ * Build a mock client whose `session.todo` resolves to the given items.
+ *
+ * @param items - Todo items to return.
+ * @returns A mock client object.
+ */
+function mockClient(items: HostTodo[]): TinyClient {
+  return {
+    session: {
+      todo: async () => ({ data: items }),
+    },
+  };
+}
+
+/**
+ * Build a todo source serving the given host-shaped items through the
+ * client adapter.
+ *
+ * @param items - Todo items to return.
+ * @returns A `TodoSource` over a mock client.
+ */
+function sourceOf(items: HostTodo[]): TodoSource {
+  return todoSourceFromClient(mockClient(items));
+}
+
+/**
+ * Build a store-shaped fake serving the given phases on every read.
+ *
+ * @param phases - Phases the store hands out.
+ * @returns A `TodoStateStore`-shaped object.
+ */
+function fakeStore(phases: TodoPhase[]): TodoStateStore {
+  return {
+    get: async () => phases,
+    set: () => {},
+    invalidate: () => {},
+  };
+}
+
+/** A todo list with work in flight (the progress tier). */
+const ACTIVE_PHASES: TodoPhase[] = [
+  {
+    name: "Implement",
+    tasks: [
+      { content: "Wire source", status: "in_progress" },
+      { content: "Update tests", status: "pending" },
+    ],
+  },
+];
+
+/** Active host-shaped todo items as returned by a mock client. */
+const ACTIVE_HOST_TODOS: HostTodo[] = [
+  {
+    content: "Wire source",
+    status: "in_progress",
+    priority: "high",
+    id: "t1",
+  },
+  { content: "Update tests", status: "pending", priority: "high", id: "t2" },
+];
 
 // ---------------------------------------------------------------------------
 // Logger cleanup
@@ -356,7 +441,7 @@ describe("nudgeDirectWorkForAgent (dolphin-gated wrapper)", () => {
     assertHasSearchReminder(output);
   });
 
-  it("passes todoClient/planDir through to nudgeDirectWork (plan nudge appears)", async () => {
+  it("passes todoSource/planDir through to nudgeDirectWork (plan nudge appears)", async () => {
     const sessionID = `test-for-agent-${Date.now()}-${_planNudgeCounter++}`;
     const baseDir = tmpDir();
     try {
@@ -816,5 +901,218 @@ describe("plan nudge scenarios", () => {
     } finally {
       cleanupPlanDir(baseDir);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Todo progress check through the injected `todoSource` port
+// ---------------------------------------------------------------------------
+
+describe("options.todoSource drives the todo progress check", () => {
+  it("appends the todo nudge for edit when the source lists active work", async () => {
+    const source: TodoSource = async () => [
+      { content: "Wire source", status: "in_progress" },
+      { content: "Update tests", status: "pending" },
+    ];
+    const res = await applyReminder("edit", "edited file", {
+      todoSource: source,
+    });
+    assertHasReminder(res);
+    assert.ok(
+      res.output?.includes(TODO_MARKER),
+      "expected the todo progress nudge",
+    );
+  });
+
+  it("reads through a client-backed source built by the caller", async () => {
+    const res = await applyReminder("edit", "edited file", {
+      todoSource: sourceOf(ACTIVE_HOST_TODOS),
+    });
+    assertHasReminder(res);
+    assert.ok(
+      res.output?.includes(TODO_MARKER),
+      "expected the todo nudge from the client-backed source",
+    );
+  });
+
+  it("adds no todo nudge when the source is null", async () => {
+    const res = await applyReminder("edit", "edited file", {
+      todoSource: null,
+    });
+    assertHasReminder(res);
+    assert.ok(
+      !res.output?.includes(TODO_MARKER),
+      "a null source contributes no todo nudge",
+    );
+  });
+
+  it("adds no todo nudge when the source returns an empty list", async () => {
+    const res = await applyReminder("edit", "edited file", {
+      todoSource: async () => [],
+    });
+    assertHasReminder(res);
+    assert.ok(!res.output?.includes(TODO_MARKER));
+  });
+
+  it("still nudges when the source read fails", async () => {
+    const failing: TodoSource = async () => {
+      throw new Error("API failure");
+    };
+    const res = await applyReminder("edit", "edited file", {
+      todoSource: failing,
+    });
+    assertHasReminder(res);
+    assert.ok(
+      !res.output?.includes(TODO_MARKER),
+      "a failed read stays silent about todo state",
+    );
+  });
+
+  it("never runs the todo check for search tools", async () => {
+    const res = await applyReminder("grep", "found matches", {
+      todoSource: async () => [
+        { content: "Wire source", status: "in_progress" },
+      ],
+    });
+    assertHasSearchReminder(res);
+    assert.ok(!res.output?.includes(TODO_MARKER));
+  });
+
+  it("forwards todoSource through the dolphin-gated wrapper", async () => {
+    const output: { output?: string } = { output: "dolphin edited" };
+    await nudgeDirectWorkForAgent({ tool: "edit", sessionID: "s1" }, output, {
+      agent: "dolphin",
+      todoSource: async () => [
+        { content: "Wire source", status: "in_progress" },
+      ],
+    });
+    assertHasReminder(output);
+    assert.ok(output.output?.includes(TODO_MARKER));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hook unit wiring: the todo source is selected once in create(deps) —
+// the injected state store wins, then a client exposing session.todo,
+// else the unit contributes no todo nudge.
+// ---------------------------------------------------------------------------
+
+/** Assemble a partial deps object for unit-level tests. */
+function makeDeps(partial: Record<string, unknown>): Deps {
+  return partial as unknown as Deps;
+}
+
+/** Activation sets enabling only this unit — create() does not consult them. */
+const EMPTY_SETS = {
+  agents: new Set<string>(),
+  skills: new Set<string>(),
+  hooks: new Set<string>(["direct-work-nudge"]),
+  tools: new Set<string>(),
+  commands: new Set<string>(),
+};
+
+/**
+ * Compose the unit and run its after-exec handler for an edit in `sid`.
+ *
+ * @param deps - Dependencies handed to `unit.create`.
+ * @param sid - Session ID for the simulated tool call.
+ * @returns The mutated output object.
+ */
+async function runComposedEdit(deps: Deps, sid: string) {
+  const composed = unit.create(deps, EMPTY_SETS);
+  assert.equal(composed.afterExec.length, 1);
+  const output: { output?: string } = { output: "edited a file" };
+  await composed.afterExec[0].handle(
+    { tool: "edit", sessionID: sid, callID: "c1" },
+    output,
+  );
+  return output;
+}
+
+describe("unit.create(deps) todo source selection", () => {
+  it("reads the state store on pi-shaped deps (empty client + todoStore)", async () => {
+    const output = await runComposedEdit(
+      makeDeps({
+        client: {},
+        directory: "",
+        todoStore: fakeStore(ACTIVE_PHASES),
+        resolveAgent: () => "dolphin",
+      }),
+      "s-pi",
+    );
+    assertHasReminder(output, "the direct-work nudge must still fire");
+    assert.ok(
+      output.output?.includes(TODO_MARKER),
+      "expected the todo nudge served by the state store",
+    );
+  });
+
+  it("contributes no todo nudge on an incapable client without a store", async () => {
+    const output = await runComposedEdit(
+      makeDeps({
+        client: {},
+        directory: "",
+        resolveAgent: () => "dolphin",
+      }),
+      "s-no-store",
+    );
+    assertHasReminder(output, "the direct-work nudge must still fire");
+    assert.ok(
+      !output.output?.includes(TODO_MARKER),
+      "no readable todo list means no todo nudge",
+    );
+  });
+
+  it("reads a client exposing session.todo when no store is injected", async () => {
+    const output = await runComposedEdit(
+      makeDeps({
+        client: mockClient(ACTIVE_HOST_TODOS),
+        directory: "",
+        resolveAgent: () => "dolphin",
+      }),
+      "s-client",
+    );
+    assertHasReminder(output);
+    assert.ok(
+      output.output?.includes(TODO_MARKER),
+      "expected the todo nudge served by the host client",
+    );
+  });
+
+  it("prefers the store over a client serving a different list", async () => {
+    // The client list is all completed (resume tier -> "TODO LIST DONE");
+    // the store list holds active work (progress tier).
+    const output = await runComposedEdit(
+      makeDeps({
+        client: mockClient([
+          { content: "Old", status: "completed", priority: "high", id: "1" },
+        ]),
+        directory: "",
+        todoStore: fakeStore(ACTIVE_PHASES),
+        resolveAgent: () => "dolphin",
+      }),
+      "s-both",
+    );
+    assert.ok(
+      output.output?.includes(TODO_MARKER),
+      "expected the store-served todo nudge to win",
+    );
+    assert.ok(
+      !output.output?.includes("TODO LIST DONE"),
+      "the client list must not be read when a store is injected",
+    );
+  });
+
+  it("keeps the agent gate closed for subagent sessions", async () => {
+    const output = await runComposedEdit(
+      makeDeps({
+        client: {},
+        directory: "",
+        todoStore: fakeStore(ACTIVE_PHASES),
+        resolveAgent: () => "beaver",
+      }),
+      "s-child",
+    );
+    assert.equal(output.output, "edited a file");
   });
 });

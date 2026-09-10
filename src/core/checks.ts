@@ -9,7 +9,7 @@
  */
 
 import { log } from "../utils/logger.js";
-import { getTodoState, type TinyClient } from "./client/todo.js";
+import type { TodoSource } from "./client/todo.js";
 import { allTodosDone, countOpenTodos, findPlanByStatus } from "./plan.js";
 import {
   PLAN_DONE_NUDGE,
@@ -19,6 +19,7 @@ import {
   TODO_PROGRESS_NUDGE,
   TODO_RESUME_NUDGE,
 } from "./prompts.js";
+import { decideTodoNudge } from "./todo/nudge.js";
 
 // ---------------------------------------------------------------------------
 // Plan progress check
@@ -100,50 +101,44 @@ export function checkPlanProgress(
  * Check todo list progress and return a nudge string if the orchestrator
  * needs a reminder about todo state.
  *
- * Logic:
- * 1. If no client is available, or the client lacks a callable
- *    `session.todo` method, return `null` (skip silently).
- * 2. Fetch the todo list via the client API.
- * 3. If zero items are active (in_progress or pending), return the done nudge.
- * 4. If exactly 1 item is in_progress and 0 are pending, return the final
- *    active nudge.
- * 5. Otherwise, return the general todo nudge.
- * 6. On API failure, log a warning and return the general nudge as fallback.
+ * The todo entries are read through the injected `TodoSource` port: which
+ * backend serves the read (state store or host client) is decided by the
+ * caller at composition time, so this function never inspects a client.
  *
- * @param client - OpenCode client (captured via closure), or null/undefined.
- * @param sessionID - The current session identifier.
+ * The reminder tier comes from `decideTodoNudge` and maps onto the prompt
+ * constants: `"progress"` -> TODO_PROGRESS_NUDGE, `"done"` -> TODO_DONE_NUDGE,
+ * `"resume"` -> TODO_RESUME_NUDGE.
+ *
+ * The function returns `null` — no reminder — when the decision is `null`
+ * (an empty list makes every reminder premise false) and when the source
+ * read fails: with nothing verifiable about the list, staying silent beats
+ * asserting an unverified claim.
+ *
+ * @param source - Port that reads the session's todo entries as a flat view.
+ * @param sessionID - The current session identifier (for logging).
  * @returns A nudge string, or `null` if no nudge is needed.
  */
 export async function checkTodoProgress(
-  client: TinyClient | null | undefined,
+  source: TodoSource,
   sessionID: string,
 ): Promise<string | null> {
-  // A client without a callable session.todo method cannot be queried.
-  // Some hosts pass an empty client object, so this check must not rely on
-  // truthiness alone — skip silently instead of falling back to the nudge.
-  if (!client || typeof client.session?.todo !== "function") return null;
-
   try {
-    const state = await getTodoState(client, sessionID);
+    const tier = decideTodoNudge(await source(sessionID));
 
-    const activeStatuses = new Set(["in_progress", "pending"]);
-    const activeCount = state.todos.filter((t) =>
-      activeStatuses.has(t.status),
-    ).length;
-
-    if (activeCount === 0) {
-      return TODO_RESUME_NUDGE;
+    switch (tier) {
+      case "resume":
+        return TODO_RESUME_NUDGE;
+      case "done":
+        return TODO_DONE_NUDGE;
+      case "progress":
+        return TODO_PROGRESS_NUDGE;
+      default:
+        return null;
     }
-
-    if (state.inProgressCount === 1 && state.pendingCount === 0) {
-      return TODO_DONE_NUDGE;
-    }
-
-    return TODO_PROGRESS_NUDGE;
   } catch (err) {
     log("checks", "todo_check_failed", sessionID, undefined, "warn", {
       error: String(err),
     });
-    return TODO_PROGRESS_NUDGE;
+    return null;
   }
 }

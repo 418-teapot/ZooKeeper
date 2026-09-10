@@ -43,6 +43,17 @@ export interface TodoPhase {
   tasks: TodoItem[];
 }
 
+/**
+ * Flattened, phase-agnostic view of a single todo entry.
+ *
+ * Consumed by progress checks that only need content and status,
+ * regardless of which source (state store or host client) produced it.
+ */
+export interface TodoItemView {
+  content: string;
+  status: TodoStatus;
+}
+
 /** One phase entry of a canonical `init` list. */
 export interface TodoInitPhase {
   phase: string;

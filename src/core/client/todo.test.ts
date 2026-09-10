@@ -1,13 +1,21 @@
 /**
  * Direct unit tests for core/client/todo.ts.
  *
- * Tests `getTodoState()` in isolation: empty lists, single in_progress items,
- * mixed statuses, and API failure. Verifies `inProgressCount` and
- * `pendingCount` are computed correctly.
+ * Covers the `TodoSource` adapters: store-backed flattening, phase order
+ * preservation and per-session isolation, plus client-backed status
+ * mapping, unrecognized-status dropping, session id pass-through and
+ * error propagation, and the `resolveTodoSource` backend selection rule.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { getTodoState, type TinyClient } from "./todo.js";
+import type { TodoStateStore } from "../todo/store.js";
+import type { TodoPhase } from "../todo/types.js";
+import {
+  resolveTodoSource,
+  type TinyClient,
+  todoSourceFromClient,
+  todoSourceFromStore,
+} from "./todo.js";
 
 // ---------------------------------------------------------------------------
 // Helper
@@ -45,64 +53,247 @@ function failingClient(): TinyClient {
 }
 
 // ---------------------------------------------------------------------------
-// getTodoState
+// Helpers for TodoSource adapters
 // ---------------------------------------------------------------------------
 
-describe("getTodoState", () => {
-  it("returns zero counts for an empty todo list", async () => {
-    const client = mockClient([]);
-    const state = await getTodoState(client, "s1");
-    assert.deepEqual(state.todos, []);
-    assert.equal(state.inProgressCount, 0);
-    assert.equal(state.pendingCount, 0);
-  });
+/**
+ * Build a fake TodoStateStore serving fixed phase lists per session id.
+ */
+function mockStore(
+  phasesBySession: Record<string, TodoPhase[]>,
+): TodoStateStore {
+  return {
+    async get(sessionId: string): Promise<TodoPhase[]> {
+      return phasesBySession[sessionId] ?? [];
+    },
+    set(): void {
+      /* unused by the read-only adapter */
+    },
+    invalidate(): void {
+      /* unused by the read-only adapter */
+    },
+  };
+}
 
-  it("returns correct counts for a single in_progress item", async () => {
-    const client = mockClient([
-      { content: "Fix auth", status: "in_progress", priority: "high", id: "1" },
+// ---------------------------------------------------------------------------
+// todoSourceFromStore
+// ---------------------------------------------------------------------------
+
+describe("todoSourceFromStore", () => {
+  it("flattens multiple phases preserving order and drops blocker", async () => {
+    const store = mockStore({
+      s1: [
+        {
+          name: "Setup",
+          tasks: [
+            { content: "Init repo", status: "completed" },
+            {
+              content: "Wait for API",
+              status: "blocked",
+              blocker: "missing key",
+            },
+          ],
+        },
+        {
+          name: "Implement",
+          tasks: [
+            { content: "Write code", status: "in_progress" },
+            { content: "Add tests", status: "pending" },
+          ],
+        },
+      ],
+    });
+    const view = await todoSourceFromStore(store)("s1");
+    assert.deepEqual(view, [
+      { content: "Init repo", status: "completed" },
+      { content: "Wait for API", status: "blocked" },
+      { content: "Write code", status: "in_progress" },
+      { content: "Add tests", status: "pending" },
     ]);
-    const state = await getTodoState(client, "s1");
-    assert.equal(state.todos.length, 1);
-    assert.equal(state.inProgressCount, 1);
-    assert.equal(state.pendingCount, 0);
   });
 
-  it("returns correct counts for a single pending item", async () => {
-    const client = mockClient([
-      { content: "Refactor", status: "pending", priority: "low", id: "1" },
+  it("serves two sessions independently without leakage", async () => {
+    const store = mockStore({
+      s1: [
+        { name: "A", tasks: [{ content: "only in s1", status: "pending" }] },
+      ],
+      s2: [
+        {
+          name: "B",
+          tasks: [
+            { content: "first in s2", status: "completed" },
+            { content: "second in s2", status: "abandoned" },
+          ],
+        },
+      ],
+    });
+    const source = todoSourceFromStore(store);
+    const view1 = await source("s1");
+    const view2 = await source("s2");
+    assert.deepEqual(view1, [{ content: "only in s1", status: "pending" }]);
+    assert.deepEqual(view2, [
+      { content: "first in s2", status: "completed" },
+      { content: "second in s2", status: "abandoned" },
     ]);
-    const state = await getTodoState(client, "s1");
-    assert.equal(state.todos.length, 1);
-    assert.equal(state.inProgressCount, 0);
-    assert.equal(state.pendingCount, 1);
   });
 
-  it("handles mixed statuses correctly", async () => {
+  it("returns an empty view for a session with no phases", async () => {
+    const source = todoSourceFromStore(mockStore({}));
+    assert.deepEqual(await source("missing"), []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// todoSourceFromClient
+// ---------------------------------------------------------------------------
+
+describe("todoSourceFromClient", () => {
+  it("maps cancelled to abandoned and passes other statuses through", async () => {
     const client = mockClient([
-      { content: "Task A", status: "in_progress", priority: "high", id: "1" },
-      { content: "Task B", status: "in_progress", priority: "medium", id: "2" },
-      { content: "Task C", status: "pending", priority: "low", id: "3" },
-      { content: "Task D", status: "completed", priority: "high", id: "4" },
-      { content: "Task E", status: "cancelled", priority: "medium", id: "5" },
+      { content: "Task A", status: "pending", priority: "low", id: "1" },
+      {
+        content: "Task B",
+        status: "in_progress",
+        priority: "high",
+        id: "2",
+      },
+      {
+        content: "Task C",
+        status: "completed",
+        priority: "medium",
+        id: "3",
+      },
+      {
+        content: "Task D",
+        status: "cancelled",
+        priority: "low",
+        id: "4",
+      },
     ]);
-    const state = await getTodoState(client, "s1");
-    assert.equal(state.todos.length, 5);
-    assert.equal(state.inProgressCount, 2);
-    assert.equal(state.pendingCount, 1);
+    const view = await todoSourceFromClient(client)("s1");
+    assert.deepEqual(view, [
+      { content: "Task A", status: "pending" },
+      { content: "Task B", status: "in_progress" },
+      { content: "Task C", status: "completed" },
+      { content: "Task D", status: "abandoned" },
+    ]);
   });
 
-  it("treats only in_progress as in_progress (not completed/cancelled)", async () => {
+  it("drops items whose host status is unrecognized", async () => {
     const client = mockClient([
-      { content: "Done", status: "completed", priority: "high", id: "1" },
-      { content: "Cancelled", status: "cancelled", priority: "low", id: "2" },
+      {
+        content: "Task A",
+        status: "in_progress",
+        priority: "high",
+        id: "1",
+      },
+      { content: "Task B", status: "paused", priority: "low", id: "2" },
+      { content: "Task C", status: "cancelled", priority: "low", id: "3" },
     ]);
-    const state = await getTodoState(client, "s1");
-    assert.equal(state.inProgressCount, 0);
-    assert.equal(state.pendingCount, 0);
+    const view = await todoSourceFromClient(client)("s1");
+    assert.deepEqual(view, [
+      { content: "Task A", status: "in_progress" },
+      { content: "Task C", status: "abandoned" },
+    ]);
   });
 
-  it("rejects when the todo API fails", async () => {
-    const client = failingClient();
-    await assert.rejects(async () => getTodoState(client, "s1"), /API failure/);
+  it("rejects when the underlying client fetch fails", async () => {
+    const source = todoSourceFromClient(failingClient());
+    await assert.rejects(async () => source("s1"), /API failure/);
+  });
+
+  it("returns an empty view when the session has no todo items", async () => {
+    assert.deepEqual(await todoSourceFromClient(mockClient([]))("s1"), []);
+  });
+
+  it("queries the host with the requested session id", async () => {
+    const requested: string[] = [];
+    const client: TinyClient = {
+      session: {
+        todo: async (opts) => {
+          requested.push(opts.path.id);
+          return { data: [] };
+        },
+      },
+    };
+    const source = todoSourceFromClient(client);
+    await source("s1");
+    await source("s2");
+    assert.deepEqual(requested, ["s1", "s2"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveTodoSource
+// ---------------------------------------------------------------------------
+
+describe("resolveTodoSource", () => {
+  const storePhases: Record<string, TodoPhase[]> = {
+    s1: [
+      {
+        name: "Implement",
+        tasks: [{ content: "from the store", status: "in_progress" }],
+      },
+    ],
+  };
+
+  it("prefers the store when a capable client is also present", async () => {
+    const clientCalled: string[] = [];
+    const client: TinyClient = {
+      session: {
+        todo: async (opts) => {
+          clientCalled.push(opts.path.id);
+          return {
+            data: [
+              {
+                content: "from the client",
+                status: "pending",
+                priority: "high",
+                id: "1",
+              },
+            ],
+          };
+        },
+      },
+    };
+    const source = resolveTodoSource({
+      todoStore: mockStore(storePhases),
+      client,
+    });
+    assert.ok(source, "a store-backed source must be resolved");
+    assert.deepEqual(await source("s1"), [
+      { content: "from the store", status: "in_progress" },
+    ]);
+    assert.deepEqual(clientCalled, [], "the client must not be read");
+  });
+
+  it("falls back to the client adapter when no store is supplied", async () => {
+    const source = resolveTodoSource({
+      client: mockClient([
+        {
+          content: "from the client",
+          status: "cancelled",
+          priority: "low",
+          id: "1",
+        },
+      ]),
+    });
+    assert.ok(source, "a client-backed source must be resolved");
+    assert.deepEqual(await source("s1"), [
+      { content: "from the client", status: "abandoned" },
+    ]);
+  });
+
+  it("fails closed for a client that does not expose session.todo", () => {
+    assert.equal(
+      resolveTodoSource({ client: {} as TinyClient }),
+      null,
+      "an incapable client must resolve to null",
+    );
+  });
+
+  it("fails closed when neither store nor client is supplied", () => {
+    assert.equal(resolveTodoSource({}), null);
+    assert.equal(resolveTodoSource({ client: null }), null);
   });
 });

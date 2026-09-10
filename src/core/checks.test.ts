@@ -13,7 +13,8 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { _getBufferForTesting } from "../utils/logger.js";
 import { checkPlanProgress, checkTodoProgress } from "./checks.js";
-import type { TinyClient } from "./client/todo.js";
+import type { TodoSource } from "./client/todo.js";
+import type { TodoItemView } from "./todo/types.js";
 
 // ---------------------------------------------------------------------------
 // Counters for unique session IDs
@@ -162,47 +163,20 @@ describe("checkPlanProgress", () => {
 // checkTodoProgress
 // ---------------------------------------------------------------------------
 
+/** A TodoSource that always resolves the given items. */
+function sourceWith(items: TodoItemView[]): TodoSource {
+  return async () => items;
+}
+
 describe("checkTodoProgress", () => {
-  it("returns null when client is null", async () => {
-    const result = await checkTodoProgress(null, "test-session");
-    assert.equal(result, null);
-  });
-
-  it("returns null when client lacks a callable session.todo method", async () => {
-    const sessionID = `test-checks-${Date.now()}-${_counter++}`;
-    // Hosts may pass an empty client object (e.g. pi) or a client whose
-    // session does not expose todo — both are truthy but lack the capability.
-    const capabilitylessClients = [
-      {} as unknown as TinyClient,
-      { session: {} } as unknown as TinyClient,
-    ];
-    for (const client of capabilitylessClients) {
-      const result = await checkTodoProgress(client, sessionID);
-      assert.equal(result, null, "expected null for capability-less client");
-    }
-    // The early return must not hit the catch fallback, so no
-    // todo_check_failed warning is logged for this session.
-    const failed = _getBufferForTesting().filter(
-      (e) =>
-        e.hook === "checks" &&
-        e.event === "todo_check_failed" &&
-        e.sessionId === sessionID,
+  it("returns TODO_PROGRESS_NUDGE when active work remains", async () => {
+    const result = await checkTodoProgress(
+      sourceWith([
+        { content: "Task A", status: "in_progress" },
+        { content: "Task B", status: "pending" },
+      ]),
+      "test-session",
     );
-    assert.equal(failed.length, 0, "expected no todo_check_failed log entry");
-  });
-
-  it("returns a todo nudge when the client session.todo resolves", async () => {
-    const sessionID = `test-checks-${Date.now()}-${_counter++}`;
-    const workingClient: TinyClient = {
-      session: {
-        todo: async () => ({
-          data: [
-            { content: "Task A", status: "pending", priority: "high", id: "1" },
-          ],
-        }),
-      },
-    };
-    const result = await checkTodoProgress(workingClient, sessionID);
     assert.ok(result !== null, "expected non-null result");
     assert.ok(
       result?.includes("TODO UPDATE REQUIRED"),
@@ -210,19 +184,54 @@ describe("checkTodoProgress", () => {
     );
   });
 
-  it("returns TODO UPDATE REQUIRED fallback when client API fails", async () => {
-    const failingClient: TinyClient = {
-      session: {
-        todo: async () => {
-          throw new Error("API failure");
-        },
-      },
-    };
-    const result = await checkTodoProgress(failingClient, "test-session");
-    assert.ok(result !== null, "expected non-null result");
-    assert.ok(
-      result?.includes("TODO UPDATE REQUIRED"),
-      "expected TODO_PROGRESS_NUDGE fallback containing TODO UPDATE REQUIRED",
+  it("returns TODO_DONE_NUDGE for one in_progress task and no pending", async () => {
+    const result = await checkTodoProgress(
+      sourceWith([{ content: "Task A", status: "in_progress" }]),
+      "test-session",
     );
+    assert.ok(
+      result?.includes("last task still in_progress"),
+      "expected TODO_DONE_NUDGE text",
+    );
+  });
+
+  it("returns TODO_RESUME_NUDGE when no item is active", async () => {
+    const result = await checkTodoProgress(
+      sourceWith([
+        { content: "Task A", status: "completed" },
+        { content: "Task B", status: "abandoned" },
+        { content: "Task C", status: "blocked" },
+      ]),
+      "test-session",
+    );
+    assert.ok(
+      result?.includes("TODO LIST DONE"),
+      "expected TODO_RESUME_NUDGE text",
+    );
+  });
+
+  it("returns null for an empty list", async () => {
+    const result = await checkTodoProgress(sourceWith([]), "test-session");
+    assert.equal(result, null);
+  });
+
+  it("returns null and logs a warning when the source rejects", async () => {
+    const sessionID = `test-checks-${Date.now()}-${_counter++}`;
+    const failingSource: TodoSource = async () => {
+      throw new Error("read failure");
+    };
+    const result = await checkTodoProgress(failingSource, sessionID);
+    assert.equal(
+      result,
+      null,
+      "expected no nudge when the list cannot be read",
+    );
+    const failed = _getBufferForTesting().filter(
+      (e) =>
+        e.hook === "checks" &&
+        e.event === "todo_check_failed" &&
+        e.sessionId === sessionID,
+    );
+    assert.equal(failed.length, 1, "expected one todo_check_failed log entry");
   });
 });
