@@ -430,6 +430,94 @@ describe("edge cases", () => {
     assert.deepEqual(result.errors, []);
   });
 
+  it("accepts a dangling dash header with content on the following lines", () => {
+    // Real-world rejection this form fixes: `**ACCEPTANCE** -` with the items
+    // starting below. A dangling dash is treated like a bare title.
+    const prompt = [
+      "**SUMMARY** - Fix the flaky auth test",
+      "**CONTEXT** - The auth.login test fails intermittently on CI",
+      "**ACCEPTANCE** -",
+      "1. All auth tests pass",
+      "2. No new flaky tests",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+    // A dangling dash does not forge the sections below it into an unrelated
+    // name: with CONTEXT absent the hard gate still fires.
+    const missing = validateTaskPrompt(
+      [
+        "**SUMMARY** - fix the flaky auth test",
+        "**ACCEPTANCE** -",
+        "1. All tests pass",
+      ].join("\n"),
+    );
+    assert.equal(missing.valid, false);
+    assert.ok(missing.errors.some((e) => e.includes("CONTEXT")));
+  });
+
+  it("accepts a dangling en-dash header", () => {
+    const prompt = [
+      "**SUMMARY** – Fix the flaky auth test",
+      "**CONTEXT** – The auth.login test fails on CI",
+      "**ACCEPTANCE** –",
+      "All auth tests pass",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+  });
+
+  it("accepts a dangling dash followed by trailing spaces", () => {
+    const prompt = [
+      "SUMMARY - Fix the flaky auth test",
+      "CONTEXT - The auth.login test fails on CI",
+      "ACCEPTANCE -   ",
+      "All auth tests pass",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+  });
+
+  it("accepts a dash glued to the name with same-line content", () => {
+    const prompt = [
+      "SUMMARY- Fix the flaky auth test",
+      "CONTEXT- three four five words here",
+      "ACCEPTANCE- 1. all tests pass",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, true);
+    // Group 2 still holds the remainder after the separator, so the CONTEXT
+    // section is exactly the five words written on the header line.
+    assert.equal(result.ctx_words, 5);
+  });
+
+  it("accepts a glued dash dangling at end of line", () => {
+    const prompt = [
+      "SUMMARY- Fix the flaky auth test",
+      "CONTEXT-",
+      "The auth.login test fails intermittently on CI",
+      "ACCEPTANCE- All tests pass",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+  });
+
+  it("rejects a name hyphenated into prose as a header", () => {
+    // Content glued directly to the dash is not a header: `CONTEXT-dependent`
+    // is a hyphenated compound, so CONTEXT stays missing.
+    const prompt = [
+      "SUMMARY: Fix the flaky auth test",
+      "CONTEXT-dependent behavior is described in the design doc",
+      "ACCEPTANCE: All tests pass",
+    ].join("\n");
+    const result = validateTaskPrompt(prompt);
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((e) => e.includes("CONTEXT")));
+  });
+
   it("recognizes a lowercase 'context:' line as a CONTEXT header", () => {
     const prompt = [
       "SUMMARY: Fix the flaky auth test",

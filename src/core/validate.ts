@@ -17,18 +17,25 @@
  * A header line is a section name (any letter case) at line start —
  * optionally behind a bullet (`-` / `–`) or a markdown heading prefix
  * (`#`..`######`), optionally wrapped in bold (`*`/`**`) — followed by one
- * of four endings: `:`, `：`, a spaced dash (` - ` / ` – `), or nothing at
- * all (a bare title on its own line whose content starts on the following
- * line).
+ * of two separators: a colon (`:` / `：`) or a dash.
  *
- * The colon separator consumes an optional closing bold; the dash
- * separator requires whitespace on both sides.
+ * The colon separator consumes an optional closing bold.
+ *
+ * The dash separator accepts whitespace before it (`**X** - content`) or not
+ * (`X- content`), but always requires either whitespace or end-of-line after
+ * it. A dangling dash at end of line (`**ACCEPTANCE** -`) is treated like a
+ * bare title: the header is recognized and its content starts on the
+ * following line. Gluing content directly to the dash (`CONTEXT-dependent`)
+ * is rejected so that hyphenated prose is not mistaken for a header.
+ *
+ * A bare title on its own line (no separator) is a header whose content
+ * starts on the following line.
  *
  * Capture groups: 1 = section name, 2 = text after the separator on the
- * header line.
+ * header line (empty for a bare title or a dangling dash).
  */
 const SECTION_HEADER_RE =
-  /^\s*(?:[-–]\s+|#{1,6}\s+)?\*{0,2}(SUMMARY|CONTEXT|ACCEPTANCE)\*{0,2}(?:\s*[:：]\*{0,2}\s*|\s+[–-]\s+|\s*$)(.*)$/im;
+  /^\s*(?:[-–]\s+|#{1,6}\s+)?\*{0,2}(SUMMARY|CONTEXT|ACCEPTANCE)\*{0,2}(?:\s*[:：]\*{0,2}\s*|\s*[–-](?:\s+|$)|\s*$)(.*)$/im;
 
 /** Regex matching English line references like "line 42". */
 const LINE_REF_RE = /\bline\s+\d+\b/i;
@@ -54,13 +61,16 @@ const CODE_BLOCK_RE = /```/;
  *   - `- **SUMMARY:** ...`
  *   - `**SUMMARY** - ...`
  *   - `- **SUMMARY** - ...`
+ *   - `ACCEPTANCE- ...` (dash without preceding whitespace)
  *   - `**SUMMARY**` / `SUMMARY` (bare title, content starts on the next line)
+ *   - `**ACCEPTANCE** -` (dangling dash, content starts on the next line)
  *   - `## SUMMARY` / `acceptance:` / `CONTEXT： ...`
  *
  * The text after the separator on the header line is included as the first
- * line of the section content. For a bare title (no separator), content starts
- * on the following line. Subsequent lines belong to the section until the next
- * header or end-of-string.
+ * line of the section content. For a bare title or a dangling dash (nothing
+ * but the separator left on the line), content starts on the following line.
+ * Subsequent lines belong to the section until the next header or
+ * end-of-string.
  *
  * @param prompt - Raw task prompt string.
  * @returns A map of section name → content (trimmed). Missing sections are
@@ -82,7 +92,7 @@ function extractSections(prompt: string): Record<string, string> {
       }
       currentSection = match[1].toUpperCase();
       // Everything after the separator on the same line is the first line of
-      // content (empty for a bare title on its own line)
+      // content (empty for a bare title or a dangling dash on its own line)
       currentContent = [match[2]];
     } else {
       currentContent.push(line);
