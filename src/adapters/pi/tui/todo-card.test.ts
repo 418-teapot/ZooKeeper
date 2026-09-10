@@ -76,7 +76,7 @@ function textResult(
 describe("pi todo card renderCall", () => {
   it("shows the op label and the targeted task", () => {
     const lines = renderComponent(
-      renderCall({ op: "start", entries: [{ task: "实现登录中间件" }] }),
+      renderCall({ op: "start", task: "实现登录中间件" }),
     );
     assert.equal(lines.length, 1, lines.join(" | "));
     assert.ok(
@@ -89,13 +89,9 @@ describe("pi todo card renderCall", () => {
     const lines = renderComponent(
       renderCall({
         op: "init",
-        entries: [
-          {
-            list: [
-              { phase: "环境搭建", items: ["a", "b"] },
-              { phase: "核心实现", items: ["c"] },
-            ],
-          },
+        list: [
+          { phase: "环境搭建", items: ["a", "b"] },
+          { phase: "核心实现", items: ["c"] },
         ],
       }),
     );
@@ -107,11 +103,45 @@ describe("pi todo card renderCall", () => {
     );
   });
 
+  it("lists task names for a flat init (no phase)", () => {
+    const lines = renderComponent(
+      renderCall({ op: "init", items: ["改 schema", "补测试"] }),
+    );
+    assert.ok(
+      lines[0].includes("todo(初始化)") &&
+        lines[0].includes("改 schema") &&
+        lines[0].includes("补测试"),
+      lines.join(" | "),
+    );
+  });
+
+  it("names the phase target of a phase-scoped unblock", () => {
+    const lines = renderComponent(
+      renderCall({ op: "unblock", phase: "核心实现" }),
+    );
+    assert.ok(
+      lines[0].includes("todo(解除阻塞)") && lines[0].includes("核心实现"),
+      lines.join(" | "),
+    );
+  });
+
+  it("keeps a block call's reason out of the target list", () => {
+    const lines = renderComponent(
+      renderCall({ op: "block", task: "t1", reason: "等用户确认" }),
+    );
+    assert.ok(
+      lines[0].includes("todo(阻塞)") &&
+        lines[0].includes("t1") &&
+        !lines[0].includes("等用户确认"),
+      lines.join(" | "),
+    );
+  });
+
   it("caps the target list and counts the rest", () => {
     const lines = renderComponent(
       renderCall({
-        op: "done",
-        entries: [{ tasks: ["t1", "t2", "t3", "t4", "t5"] }],
+        op: "init",
+        items: ["t1", "t2", "t3", "t4", "t5"],
       }),
     );
     assert.ok(
@@ -134,8 +164,10 @@ describe("pi todo card renderCall", () => {
     for (const args of [
       {},
       { op: 42 },
-      { op: "init", entries: "oops" },
-      { op: "init", entries: [null, 7, { list: "x" }] },
+      { op: "init", list: "oops" },
+      { op: "init", list: [null, 7, { list: "x" }] },
+      { op: "block", task: 7, phase: null, reason: [] },
+      { op: "append", items: [null, 3, "ok"], phase: 9 },
     ]) {
       const lines = renderComponent(renderCall(args));
       assert.equal(
@@ -392,7 +424,7 @@ describe("pi buildTodoCardRenderer (deps port shape)", () => {
     assert.equal(typeof renderer.renderResult, "function");
 
     const call = renderer.renderCall(
-      { op: "append", entries: [{ phase: "收尾", items: ["x"] }] },
+      { op: "append", phase: "收尾", items: ["x"] },
       THEME,
       {},
     ) as Renderable;

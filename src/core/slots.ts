@@ -537,9 +537,10 @@ export interface ToolContribution {
    * native `ToolDefinition.executionMode`).
    *
    * `"sequential"` forces the tool to run one call at a time with respect
-   * to other tool calls — required by any tool that takes over a single
-   * shared surface (the `ask` dialog, where two concurrent forms would
-   * fight for the keyboard).  Omitted → the host default; hosts without
+   * to every other tool call in the turn.  Tools that need exclusivity over
+   * their own state get it from a sequencer instead (see
+   * `core/sequencer.js`), because the host-wide hint would also block
+   * unrelated concurrent work.  Omitted → the host default; hosts without
    * per-tool scheduling ignore it.
    */
   executionMode?: "sequential" | "parallel";

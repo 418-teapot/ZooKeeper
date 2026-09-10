@@ -17,7 +17,8 @@
  *    structurally illegal `answered` slot.
  *
  * Also the unit descriptor's pi-only fail-closed behaviour (no
- * `piSwitchHost` → zero tools) and the `sequential` scheduling hint.
+ * `piSwitchHost` → zero tools) and the internal gate that keeps two forms
+ * from mounting on top of each other.
  *
  * @module
  */
@@ -85,6 +86,11 @@ function overlayHarness(): {
     component: () => mounted,
     resolve: (outcome) => resolver?.(outcome),
   };
+}
+
+/** Let the queued tool bodies run (microtask-safe, no timers involved). */
+async function settle(turns = 6): Promise<void> {
+  for (let i = 0; i < turns; i += 1) await Promise.resolve();
 }
 
 /** Send one raw key to a mounted dialog. */
@@ -611,8 +617,133 @@ describe("ask tool — contribution", () => {
     );
   });
 
-  it("declares sequential execution so two forms never overlap", () => {
-    assert.equal(unitTools()[0].executionMode, "sequential");
+  it("never mounts two dialogs at once — the queue is inside the tool", async () => {
+    const tool = unitTools()[0];
+    let onScreen = 0;
+    let maxOnScreen = 0;
+    const dismiss: Array<(outcome: AskDialogOutcome) => void> = [];
+    const overlay = {
+      custom: (_factory: unknown, _options: unknown) => {
+        onScreen += 1;
+        maxOnScreen = Math.max(maxOnScreen, onScreen);
+        return new Promise<AskDialogOutcome>((resolve) => {
+          dismiss.push((outcome) => {
+            onScreen -= 1;
+            resolve(outcome);
+          });
+        });
+      },
+    };
+    const answered = (label: string): AskDialogOutcome => ({
+      results: [
+        { status: "answered", answer: [label], wasCustom: false },
+        { status: "declined" },
+      ] as AskResult[],
+      closure: "submit" as const,
+    });
+
+    const first = tool.execute(args, { mode: "tui", ui: overlay }, {});
+    await settle();
+    assert.equal(dismiss.length, 1, "the first call draws the form");
+
+    // Dispatched while the first form is still on screen: it must wait.
+    const second = tool.execute(args, { mode: "tui", ui: overlay }, {});
+    await settle();
+    assert.equal(onScreen, 1, "the second call never stacks a form");
+
+    dismiss[0](answered("A1"));
+    assert.match(await first, /Q1: One\? => User answered: A1/);
+    await settle();
+    assert.equal(dismiss.length, 2, "the queued call gets its turn");
+
+    dismiss[1](answered("A1"));
+    assert.match(await second, /Q1: One\? => User answered: A1/);
+    assert.equal(maxOnScreen, 1, "no two forms ever shared the terminal");
+  });
+
+  it("rejects a malformed call immediately even while the gate is busy", async () => {
+    // Argument parsing runs ahead of the serialising gate, so a bad call is
+    // corrected at once instead of queueing behind the open dialog.
+    const tool = unitTools()[0];
+    const dismiss: Array<(outcome: AskDialogOutcome) => void> = [];
+    const overlay = {
+      custom: (_factory: unknown, _options: unknown) =>
+        new Promise<AskDialogOutcome>((resolve) => {
+          dismiss.push((outcome) => resolve(outcome));
+        }),
+    };
+    const first = tool.execute(args, { mode: "tui", ui: overlay }, {});
+    await settle();
+    assert.equal(dismiss.length, 1, "the first call draws the form");
+
+    await assert.rejects(
+      () => tool.execute({ questions: [] }, { mode: "tui", ui: overlay }, {}),
+      /ask \u5de5\u5177\u53c2\u6570\u9519\u8bef/,
+    );
+    assert.equal(
+      dismiss.length,
+      1,
+      "the refused call never took a turn in the queue",
+    );
+
+    dismiss[0]({
+      results: [{ status: "declined" }, { status: "declined" }] as AskResult[],
+      closure: "submit" as const,
+    });
+    await first;
+  });
+
+  it("lets a queued call see an abort that landed while it waited", async () => {
+    // Interrupt handling stays the dialog's own already-aborted-signal
+    // check, which runs at the call's turn rather than at submission time.
+    const tool = unitTools()[0];
+    let customCalls = 0;
+    const dismiss: Array<(outcome: AskDialogOutcome) => void> = [];
+    const overlay = {
+      custom: (_factory: unknown, _options: unknown) => {
+        customCalls += 1;
+        return new Promise<AskDialogOutcome>((resolve) => {
+          dismiss.push((outcome) => resolve(outcome));
+        });
+      },
+    };
+    const controller = new AbortController();
+    const first = tool.execute(args, { mode: "tui", ui: overlay }, {});
+    const second = tool.execute(
+      args,
+      { mode: "tui", ui: overlay },
+      { signal: controller.signal },
+    );
+    controller.abort();
+
+    // The queued call only reaches its turn after the open form is
+    // dismissed — and by then its own signal is already aborted.
+    dismiss[0]({
+      results: [{ status: "declined" }, { status: "declined" }] as AskResult[],
+      closure: "submit" as const,
+    });
+    await first;
+
+    const text = await second;
+    assert.match(text, /Q1: One\? => User unavailable \(aborted\)/);
+    assert.match(text, /Q2: Two\? => User unavailable \(aborted\)/);
+    assert.equal(
+      customCalls,
+      1,
+      "the cancelled call never reached the terminal",
+    );
+  });
+
+  it("keeps no-ui calls out of the way of the gate", async () => {
+    // The non-TUI path returns without touching the terminal, so it still
+    // flows through the same queue and stays a normal result.
+    const tool = unitTools()[0];
+    const [a, b] = await Promise.all([
+      tool.execute(args, { mode: "print" }, {}),
+      tool.execute(args, { mode: "print" }, {}),
+    ]);
+    assert.match(a, /no-ui/);
+    assert.match(b, /no-ui/);
   });
 
   it("declares the arg surface the model must fill and the slots policy", () => {

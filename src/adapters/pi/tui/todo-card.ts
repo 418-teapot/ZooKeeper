@@ -95,10 +95,21 @@ const TODO_OP_LABELS: Record<TodoOperation, string> = {
 // pi renderer surface types (duck-typed inputs, not pi imports)
 // ---------------------------------------------------------------------------
 
-/** Structural subset of the todo tool's raw call arguments. */
+/**
+ * Structural subset of the todo tool's raw call arguments.
+ *
+ * The tool's arguments are flat: one `op` plus that op's payload fields at
+ * the top level (`list` / `items` / `phase` / `task` / `reason`).  `reason`
+ * is carried for completeness but is a note, not a target, so `callTargets`
+ * never lists it.
+ */
 interface TodoToolArgs {
   op?: unknown;
-  entries?: unknown;
+  list?: unknown;
+  items?: unknown;
+  phase?: unknown;
+  task?: unknown;
+  reason?: unknown;
 }
 
 /**
@@ -239,7 +250,7 @@ class TitleLine implements Component {
 // renderCall
 // ---------------------------------------------------------------------------
 
-/** Push every non-empty string of a raw entry field into `targets`. */
+/** Push every non-empty string of a raw argument field into `targets`. */
 function collectStrings(value: unknown, targets: string[]): void {
   if (typeof value === "string" && value.length > 0) {
     targets.push(value);
@@ -253,34 +264,28 @@ function collectStrings(value: unknown, targets: string[]): void {
 }
 
 /**
- * The target labels a call acts on, in entry order.
+ * The target labels a call acts on.
  *
- * Reads the raw entry payload fields loosely (the same `{op, entries}`
- * shape the tool validates strictly — a malformed call degrades to fewer
- * labels, never a throw): `task` / `tasks` / `items` name tasks,
- * `phase` names a phase target, and `init`'s `list` contributes its
- * phase names.
+ * Reads the flat payload fields loosely (the same `{op, list|items|phase|
+ * task}` shape the tool validates strictly — a malformed call degrades to
+ * fewer labels, never a throw): `task` / `items` name the targeted rows,
+ * `phase` names a phase target, and `init`'s canonical `list` contributes
+ * its phase names.
  *
  * @param args - The raw tool-call arguments.
  * @returns The collected target labels (possibly empty).
  */
 function callTargets(args: TodoToolArgs): string[] {
   const targets: string[] = [];
-  const entries = Array.isArray(args.entries) ? args.entries : [];
-  for (const raw of entries) {
-    if (!isRecord(raw)) continue;
-    if (Array.isArray(raw.list)) {
-      for (const phase of raw.list) {
-        if (isRecord(phase) && typeof phase.phase === "string") {
-          targets.push(phase.phase);
-        }
-      }
+  const list = Array.isArray(args.list) ? args.list : [];
+  for (const phase of list) {
+    if (isRecord(phase) && typeof phase.phase === "string") {
+      targets.push(phase.phase);
     }
-    collectStrings(raw.phase, targets);
-    collectStrings(raw.task, targets);
-    collectStrings(raw.tasks, targets);
-    collectStrings(raw.items, targets);
   }
+  collectStrings(args.phase, targets);
+  collectStrings(args.task, targets);
+  collectStrings(args.items, targets);
   return targets;
 }
 
@@ -288,13 +293,14 @@ function callTargets(args: TodoToolArgs): string[] {
  * Build the tool-call title line (`renderCall`).
  *
  * A compact single line naming the tool, the operation (Chinese label,
- * matching the tool's model-facing vocabulary), and the targeted tasks or
+ * matching the tool's model-facing vocabulary), and the targeted rows or
  * phases: `todo(初始化) · 环境搭建, 核心实现 +2`.  The target LIST is
  * capped at construction (the count is layout, not clipping); the line
  * itself truncates at render width through `TitleLine`, so no
  * character-cutting happens before the real width is known.
  *
- * @param args - The raw tool-call arguments (`{ op, entries? }`).
+ * @param args - The raw tool-call arguments (`{ op, list?, items?, phase?,
+ *   task?, reason? }`).
  * @returns A component tree (the single title line).
  */
 export function renderCall(args: TodoToolArgs): Component {

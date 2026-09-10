@@ -72,6 +72,9 @@ function mockStore(
     invalidate(): void {
       /* unused by the read-only adapter */
     },
+    serialize<T>(fn: () => Promise<T>): Promise<T> {
+      return fn();
+    },
   };
 }
 

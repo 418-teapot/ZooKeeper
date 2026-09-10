@@ -71,8 +71,6 @@ export interface TodoEntry {
   phase?: string;
   /** Single task target by exact content text. */
   task?: string;
-  /** Batch task targets by exact content text (`done`/`rm`/`drop`). */
-  tasks?: string[];
   /** Blocker note for `block` (whitespace-collapsed when stored). */
   reason?: string;
 }

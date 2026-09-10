@@ -417,9 +417,10 @@ describe("buildPiContributions — profile-driven selection", () => {
     });
     assert.ok(composed.tools.todo, "todo must register on the pi host");
     assert.equal(typeof composed.tools.todo.execute, "function");
-    // The tool unit also carries the scheduling hint the pi registration
-    // boundary forwards (one todo call at a time).
-    assert.equal(composed.tools.todo.executionMode, "sequential");
+    // No host scheduling hint: todo state changes are serialised inside the
+    // tool through the store's own gate, so unrelated calls in the same
+    // turn stay concurrent.
+    assert.equal(composed.tools.todo.executionMode, undefined);
   });
 
   it("the same todo-listing profile with no host ports → no todo tool", () => {
@@ -484,7 +485,11 @@ describe("session_tree — todo cache invalidation", () => {
     const handlers = buildPiHandlers(TODO_ZOO, api as any, MODES_RAW);
     const todo = api.tools.find((tool: any) => tool.name === "todo") as any;
     assert.ok(todo, "the todo tool must register when the profile lists it");
-    assert.equal(todo.executionMode, "sequential");
+    assert.equal(
+      todo.executionMode,
+      undefined,
+      "no host-level serialisation asked for",
+    );
 
     const { ctx, scans } = scanCtx("sess-tree");
     // Seed the holder's live session: the scan reads the session manager

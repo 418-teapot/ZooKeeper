@@ -2,6 +2,7 @@
 
 > 调研日期：2026-08-13
 > 更新：2026-09-06 源码核实 oh-my-pi（todo.ts 1273 行 / todo-tracker.ts 399 行 / todo.md 44 行）与 pi 示例（todo.ts 297 行），修正动画范围、守卫数量等转述误差，新增 4.5 TUI 呈现设计
+> 更新：2026-09-10 参数形状决策改写——从 `{op, entries[]}` 批量信封改为扁平字段、一次调用一个 op（见 4.6），原子性语义随之从"同 op 批量整批原子"改为"单 op 单次调用原子"
 > 关联文档：[pi-subagent.md](pi-subagent.md)、[todo-nudge-research.md](todo-nudge-research.md)
 
 ## 1. 背景与动机
@@ -33,7 +34,7 @@ todo 的"好用"已被多轮调研定位：80% 来自 prompt 工程（工具描�
 ### 2.1 OpenCode v1：极薄"哑存储 + prompt 纪律"
 
 - 数据模型：扁平 `{content, status, priority}`，4 态（pending/in_progress/completed/cancelled），SQLite 存储；
-- 更新语义：单工具 `todowrite`，**全量替换**（session/todo.ts:33 先 delete 全表再 insert）；
+- 更新语义：单工具 `todowrite`，参数只有一层批量数组 `{todos: [{content, status, priority}, ...]}`，**全量替换**（session/todo.ts:33 先 delete 全表再 insert）——无 op 分支、无增量操作，调用面最简单（也就最不易调错）；
 - 模型交互：无 todoread，靠写回回显自持状态，无任何自动注入；
 - 权限：`always: ["*"]` 批准一次全程免问；子代理默认 deny（"parent-owned bookkeeping"）；
 - UI：TUI 侧边栏（todo.updated 事件驱动），全 completed 时整块隐藏。
@@ -50,9 +51,10 @@ todo 的"好用"已被多轮调研定位：80% 来自 prompt 工程（工具描�
 **架构要点：**
 
 - 分 phase 5 态（pending/in_progress/completed/abandoned/blocked+blocker 原因），9 个 op 增量更新（init/start/done/drop/rm/block/unblock/append/view）；
-- 批量原子性分两层：execute 层整批任一错误回滚 previousPhases 不落库（todo.ts:884-891）；单 op 内（append/init）也先整批校验再变更（todo.ts:410-424、438-455）；
+- **参数形状是扁平的**：`{op, list?, task?, phase?, items?, reason?}`——除 op 外只有 5 个可选参数字段，全部直接放在顶层，没有批量信封数组；一次调用只描述一次状态迁移；
+- 单个 op 内部是原子的：`append`/`init` 的 items 先整批校验再变更（todo.ts:410-424、438-455），任一条目非法则该次调用整体不落库（execute 层同样整批回滚 previousPhases，todo.ts:884-891）；
 - `normalizeInProgressTask`：多 in_progress 只留第一个，无 in_progress 自动提升最早 pending（todo.ts:146-161）；
-- TodoTool 声明 `concurrency = "exclusive"`、`lenientArgValidation = true`，缺 op 时 `inferTodoOp` 从参数形状推断（todo.ts:567-595）；
+- TodoTool 声明 `concurrency = "exclusive"`、`lenientArgValidation = true`，缺 op 时 `inferTodoOp` 从参数形状推断（todo.ts:567-595）；纠偏靠三层防线——`lenientArgValidation`（宽松参数校验，不合规不直接抛错）+ `inferTodoOp`（op 推断）+ 工具描述里 8 条内联示例；**注意 `lenientArgValidation` 与 schema 的 `examples` 字段都是 oh-my-pi fork 私有的，上游 pi 不存在**；
 - 持久化 = toolResult `details.phases` 快照进 session JSONL + `user_todo_edit` 自定义条目（用户编辑最高权威）；**恢复 = 从 transcript 倒序取最新快照，不重放 op 历史**（todo.ts:177-202：先认 `user_todo_edit` 条目，回退到最近一条成功 todo toolResult 的 details.phases）；内存态只是缓存，6 个时机 syncFromBranch 重建；
 - 模型引导三件套集中在 `session/todo-tracker.ts`（399 行 TodoTracker 类），宿主接线在 agent-session.ts：
   - **eager prelude**（todo-tracker.ts:133-172）：三档 `default`（不产 prelude）/ `preferred`（软提醒，无 tool_choice）/ `always`（模板 forced 分支 "You MUST call todo first"+ `buildNamedToolChoice` 强制首轮 tool_choice）。强制按 provider 分形：anthropic/bedrock `{type:"tool"}`、openai 系 `{type:"function"}`、google 系 `"required"`（退化为强制任意工具，语义已偏）。**只对带真实 prompt 的首轮生效**——转录已有 user 消息、`?`/`!` 结尾、plan mode、prewalk handoff 均跳过；post-compaction 重建只发 reminder 不强制；
@@ -103,7 +105,9 @@ pi 宿主自带一个完整的 todo 扩展示例（297 行），证明了关键�
 | 持久化 | ✅ | details 自动进 transcript（不进 LLM context）；CustomEntry "Persist extension state across session reloads"；任意文件写入 |
 | TUI 呈现 | ✅ | renderCall/renderResult 逐槽位覆盖；`ctx.ui.custom()` 全屏/overlay；`setWidget` 编辑器上下常驻（10 行上限）；`setStatus` footer；无侧栏 API |
 
-pi 侧缺 oh-my-pi 的宿主级能力：无 approval 分档、无 `lenientArgValidation`（用 `prepareArguments` shim 或 schema 可选 op + execute 内推断替代）、无 TodoTracker 宿主集成（可用 ZooKeeper 已注册的 `before_agent_start`/`tool_result`/`context` 事件近似）、无 `scheduleAgentContinue` 等价物。
+pi 侧缺 oh-my-pi 的宿主级能力：无 approval 分档、无 `lenientArgValidation`、无 schema `examples` 字段（后两者均为 oh-my-pi fork 私有，上游 pi 不提供）、无 TodoTracker 宿主集成（可用 ZooKeeper 已注册的 `before_agent_start`/`tool_result`/`context` 事件近似）、无 `scheduleAgentContinue` 等价物。
+
+上游 pi 能提供的相关机制只有一条：**参数校验错误以 tool result 的形式回流给模型**（不中断会话），因此错误消息本身就是纠偏通道。曾考虑的 `prepareArguments` shim 已在 4.6 的决策中放弃——扁平形状 + 运行时按字段形状推断 op 已覆盖 `lenientArgValidation` + `inferTodoOp` 想解决的问题，不需要额外的参数改写钩子。
 
 ## 4. ZooKeeper 自建 todo 工具设计
 
@@ -114,8 +118,9 @@ pi 侧缺 oh-my-pi 的宿主级能力：无 approval 分档、无 `lenientArgVal
 ```
 src/core/todo/
 ├── types.ts        # TodoItem/TodoPhase/TodoStatus 类型（纯类型，零 import）
-├── state.ts        # 状态机：9 op apply、normalizeInProgressTask、批量原子性、
-│                   #   去重、content 匹配（照抄 oh-my-pi 纯逻辑 ~500 行，改写成 zoo 风格）
+├── state.ts        # 状态机：9 op apply、normalizeInProgressTask、整批回滚原语、
+│                   #   去重、content 匹配（照抄 oh-my-pi 纯逻辑 ~500 行，改写成 zoo 风格；
+│                   #   applyEntries 仍收数组，但工具层每次只传一条，见 4.6）
 ├── markdown.ts     # phasesToMarkdown/markdownToPhases（状态标记 + blocker HTML 注释）
 ├── summary.ts      # formatSummary（模型回显文本）
 └── store.ts        # 快照持久化抽象：append/read latest snapshot（宿主无关接口）
@@ -135,11 +140,14 @@ src/pi.ts               # pi 侧 registerTool（复用 core/todo，适配 TypeBo
 
 ### 4.2 数据模型与 op 集：照抄 oh-my-pi，砍掉编排联动
 
-采用 oh-my-pi 的完整模型（分 phase 5 态、9 op、content 寻址、单 in_progress 自动提升、批量原子），理由：
+采用 oh-my-pi 的完整模型（分 phase 5 态、9 op、content 寻址、单 in_progress 自动提升、单 op 单次调用原子），理由：
 
 - 这些是**纯逻辑零宿主依赖**（oh-my-pi todo.ts 中约 500 行可直接改写），已被生产验证；
-- content 寻址 + 5-10 词 + 禁 ID 是最防幻觉的设计，opencode v1 的扁平全量替换在对比中全面落于下风；
-- blocked/abandoned 语义对编排器场景（等 subagent、等用户）有直接价值。
+- content 寻址 + 5-10 词 + 禁 ID 是最防幻觉的设计，opencode v1 的全量替换在**更新能力**上落于下风（其调用面简单的优势由 4.6 的扁平形状吸收，见 4.6.6）；
+- blocked/abandoned 语义对编排器场景（等 subagent、等用户）有直接价值；
+- op 词表与参数字段名沿用 oh-my-pi 的扁平形状（见 4.6），已验证的调用形式不必重新发明。
+
+**原子性语义：单 op 单次调用原子**——一次调用只承载一个 op，出错时该次调用对状态零改动（core 返回输入状态、不落快照），错误原因逐条报回。"同一次调用里批量勾完多个任务"的能力不再提供，批量意图改由"发多条调用"表达。
 
 **暂不做**（依赖宿主深度集成，超出现有通道）：subagent 完成自动勾选（除宿主集成难度外，归一化+双向子串模糊匹配改父级状态有 false positive 风险——若做，联动只应做 UI 点亮提示、不做状态变更）、prewalk 门控、粘性 HUD（OpenCode 插件无 TUI 槽位；pi 侧经 setWidget 双列 widget 实现，设计见 4.5）。
 
@@ -147,7 +155,7 @@ src/pi.ts               # pi 侧 registerTool（复用 core/todo，适配 TypeBo
 
 | oh-my-pi 机制 | ZooKeeper 对应通道 | 现状 |
 |---|---|---|
-| 工具描述手册（todo.md 44 行） | 工具 description 字段 + `before_agent_start` prompt 注入 | 可直接移植文案 |
+| 工具描述手册（todo.md 44 行） | 工具 description 字段 + `before_agent_start` prompt 注入 | 可直接移植文案；description 另附 9 条内联示例（每 op 一条最小合法调用，见 4.6.4） |
 | eager prelude（首轮建议建 todo） | `before_agent_start` 每轮注入（已注册） | 可实现 preferred 档；always 档的强制 tool_choice 两宿主均无公开 API，放弃 |
 | checkCompletion 停手清点 | OpenCode：`stop`/`idle` 类事件 + client 读消息；pi：`agent_end` 事件 | 需新增 hook 单元，跳过条件照抄（等用户回答/提醒后无进展/max 上限） |
 | takeMidRunNudge 中途纠偏 | ZooKeeper 已有 `tool_result`/`afterExec` 通道 + direct-work-nudge 先例 | 可实现：计数成功 mutating 工具 ≥12 且期间无 todo 调用则注入 aside |
@@ -219,9 +227,97 @@ checkCompletion 和 mid-run nudge 是 oh-my-pi 调研中定位的"低成本高�
 
 **OpenCode 侧**：`ZookeeperPanel`（src/adapters/opencode/tui/index.tsx，sidebar_content 槽位）加一个 todo 可折叠 section，与现有 4 个 section 同构；数据通道宿主现成（`api.state.session.todo(sessionID)` + `todo.updated` 事件），自建 todo 落地后切换为读 details 快照；行内布局注意 opentui 当前版本 three-child flex 不可用（index.tsx 注释明示）。**v2 侧**：TUI 槽位 API 待调研，视图模型宿主无关，届时只补渲染适配。
 
-### 4.6 工具命名与词汇
+### 4.6 参数形状：扁平字段 + 一次调用一个 op（2026-09-10 决策）
 
-吸取 opencode task→subagent 改名教训（"task" 一词在 v1 承载 5 种语义）：ZooKeeper 已有 `task()` 委派概念（prompt 层），todo 工具应避开 `task` 词根。建议工具名 `todo`（op 参数区分动作），todo item 的字段用 `content` 不用 `task`/`id`。
+本节记录一次**被生产证据推翻的设计**，是 todo 工具能否被模型稳定调起的关键。
+
+#### 4.6.1 为什么推翻 `{op, entries[]}` 信封
+
+第一版参数形状是 `{op, entries[]}`：`entries` 是一个判别联合数组，同一次调用可携带多条同 op 条目（换取"同 op 批量整批原子"）。落地后模型调用**连续失败 9 次**，失败方式高度一致——漏传 `entries` 信封（把 `task`/`items` 直接平铺到顶层），重试时仍犯同一个错。
+
+失效机理不是文档不清楚，而是**生成式模式锁定**：上下文里一旦出现自己犯过的错误样本，模型会把它当 few-shot 继续强化；抽象的错误描述（"缺少 entries 字段"）无法打断这个循环，同一轮内的重试只会复制同一个错。能打破循环的是**结构性变化**，不是更详细的说明。
+
+于是把参数形状本身换掉：扁平字段、一次调用只有一个 op。"信封"这个概念不再存在，也就无从漏传。
+
+#### 4.6.2 schema 形状与字段规则
+
+```
+{ op, list?, items?, phase?, task?, reason? }
+```
+
+除 `op` 外只有 5 个可选参数字段，全部平铺在顶层，没有任何数组信封。每个 op 只接受自己那一份字段：
+
+| op | 接受的顶层字段 | 最小合法调用 |
+|---|---|---|
+| init | `list` **或** `items`（可配 `phase`），二者互斥 | `{"op":"init","list":[{"phase":"实现","items":["改 schema"]}]}` |
+| start | `task` | `{"op":"start","task":"改 schema"}` |
+| done | `task` | `{"op":"done","task":"改 schema"}` |
+| drop | `task` \| `phase` 恰好其一 | `{"op":"drop","task":"改 schema"}` |
+| rm | `task` | `{"op":"rm","task":"改 schema"}` |
+| block | `task` \| `phase` 恰好其一 + `reason` | `{"op":"block","task":"改 schema","reason":"等用户确认方案"}` |
+| unblock | `task` \| `phase` 恰好其一 | `{"op":"unblock","task":"改 schema"}` |
+| append | `phase` + `items` | `{"op":"append","phase":"实现","items":["补文档"]}` |
+| view | 不带任何字段 | `{"op":"view"}` |
+
+字段规则：
+
+- **只保留单数 `task`，砍掉 `tasks` 复数**——批量语义交给"发多条调用"；`items` 的复数只留给意图天然复数的 op（`init` 建清单、`append` 追加任务）。复数字段等于在扁平形状里重新埋回一个信封。
+- **每个 op 各自持有字段白名单**，不只拒绝未知字段：一个对本 op 无意义的字段若被忽略，`done`/`rm` 就成了"无目标"，而 core 把无目标读作"全部任务"——打错一个字段就能清空整个清单。爆炸半径在参数边界收口。
+- **三个破坏性 op 中，`done`/`rm` 只接受 `task`**：收到批量形状的字段（`items`/`list`）时，纠偏文案指向“拆成多条调用”，而不是指向一个会放大爆炸半径的字段。`drop` 例外地接受 `phase`：分界线是记录是否保留——drop 记为 abandoned（记录可观测），整阶段放弃是真实的单一意图；rm 是抯除记录（不可逆），批量抯除没有正当意图场景，必须逐条点名。
+- **状态变更在工具内部串行**（store 自带的 promise 链闸门，见 `core/sequencer`）：宿主默认并发一轮内的多个工具调用，并发 todo 会对状态缓存丢更新、写出分叉快照。不用 `executionMode: "sequential"` 声明——pi 的批次调度是“任一 sequential 则整批串行”，该声明会把同批次的无关工具（如并行 subagent 派发）一起拖慢；互斥收进工具内部后保护粒度等于资源粒度。
+
+#### 4.6.3 分层校验：schema 管形式，运行时管意义
+
+- JSON Schema 只能表达"这 6 个字段的类型"，表达不了"`init` 的 `list` 与 `items` 二选一""`block` 的 `task`/`phase` 恰好其一"这类跨字段约束，两宿主也不会为它报错；
+- 所以这些约束全部放在 execute 入口的参数解析里，与类型错误共用同一条失败通道——模型收到的都是一条带示例的 todo 参数错误，不需要区分两种报错风格；
+- `op` 在 schema 层同样可选（`required: []`）：schema 若把 op 标为必填，缺 op 的调用在宿主校验层就被泛化错误拒掉，运行时的形状推断兜底（见 4.6.5）将永远不可达——所以 schema 全可选，运行时校验权威；
+- 宿主反馈机制：上游 pi 把参数校验错误作为 tool result 回流模型（不中断会话），因此**错误消息本身就是纠偏通道**，内容质量直接决定能否一次转正（不需 `prepareArguments` shim，理由见 3.3）。
+
+#### 4.6.4 错误消息原则：每条附一段该 op 的最小合法 JSON
+
+所有拒绝路径（未知字段、跨字段冲突、缺失参数、字段类型/空值错误、op 词表外）都强制带一段可直接照抄的正确参数示例（`OP_EXAMPLE`），无例外：
+
+- "规则不配示例"已在本次故障中被证伪——面对已经在错的模型，抽象描述无法纠偏，具体样本才能；
+- 示例文本与校验路径共用同一常量：工具 description 里的 9 条示例（每个 op 一条）与错误消息尾注**一字不差**，不会两处维护、慢慢漂移；
+- 示例尾部不写解释性散文，只写可执行参数，避免模型把说明当参数的一部分。
+
+工具 description 中的示例同时起到 oh-my-pi 那三层防线中 `examples` 内联样本的作用（上游 pi 无此字段，只能进文案）。
+
+#### 4.6.5 缺 `op` 时的形状推断
+
+只在形状无歧义时推断，否则拒绝并列出词表：
+
+| 字段形状 | 推断为 |
+|---|---|
+| 含 `list` | `init` |
+| 含 `items` + 含 `phase` | `append` |
+| 含 `items`、不含 `phase` | `init` |
+| 其余（无 `op` 也无可识别字段） | 拒绝，错误消息展开全部 9 个 op |
+
+显式 `op` 优先且永不事后质疑（不做"看起来不像这个 op"的二次猜测）。
+
+#### 4.6.6 三家对比结论
+
+| | OpenCode `todowrite` | oh-my-pi `todo` | 本工具 `todo` |
+|---|---|---|---|
+| 参数形状 | 单层 `{todos:[...]}` | 扁平 `{op, list?, task?, phase?, items?, reason?}` | 同 oh-my-pi（已对齐） |
+| 更新语义 | 全量替换，零分支 | 9 op 增量 | 9 op 增量 |
+| 一次调用 | 写完整清单 | 一个 op（op 内可含多个字段） | 一个 op（op 内最多一份清单类字段） |
+| 原子性 | 天然（写入即替换） | 单 op 内整批校验，任一条非法则不落库 | 单 op 单次调用原子，出错时输入状态原样返回 |
+| 参数容错 | 无需（无分支） | 三层：`lenientArgValidation` + `inferTodoOp` + 8 条内联示例 | 扁平形状消灭信封 + 形状推断 + 每条错误附最小合法示例 + description 每 op 一条示例 |
+| 误调风险 | 无参数风险，但无增量能力（记不住全量就丢历史） | 生产验证 | 同样依赖扁平形状，额外把爆炸半径收到参数边界 |
+
+结论：OpenCode 的全量替换是**最不易调错但能力封顶**的一端（模型必须自己持住全量清单，无增量、无阻塞语义）；oh-my-pi 的扁平单 op 形状是**同宗 9 op 语义已被生产验证过的调用面**，本工具直接对齐其形状而不发明新语法；本工具在其上额外补齐两项：错误消息逐条附可照抄示例、按 op 收紧字段白名单。
+
+#### 4.6.7 历史决策记录：已被取代的 `{op, entries[]}`
+
+保留备查：首版选择 `{op, entries[]}`（entries 为判别联合数组）是为了拿住"同 op 批量整批原子"——一次勾完多个已完成任务，要么全成要么全滚。该能力已随本次改写**主动放弃**：core 的 `applyEntries` 仍接受条目数组、仍保留整批回滚原语，但工具层恒传单条，对外不暴露批量入口。代价是"勾 5 个已完成"从 1 次调用变成 5 次，收益是消除一类高频、不自愈的调用失败。
+
+### 4.7 工具命名与词汇
+
+吸取 opencode task→subagent 改名教训（"task" 一词在 v1 承载 5 种语义）：ZooKeeper 已有 `task()` 委派概念（prompt 层），todo 工具应避开 `task` 词根。工具名定为 `todo`（`op` 参数区分动作），todo item 的存储字段用 `content` 不用 `task`/`id`。
+
+与 4.6 的衔接：扁平参数里确实有一个叫 `task` 的入参字段，但它指的是"待寻址任务的 content 原文"（标识符的值），不是另一种实体；且只有单数形式，不构成第二套批量词汇。
 
 ## 5. 分期路线
 
@@ -229,7 +325,7 @@ checkCompletion 和 mid-run nudge 是 oh-my-pi 调研中定位的"低成本高�
 |---|---|---|
 | P0 | `src/core/todo/` 纯逻辑（状态机 + markdown + summary + 单测） | 零宿主依赖，可独立验证 |
 | P1 | OpenCode 侧工具注册 + details 快照持久化 + 恢复 | 与 compress/decompress 同路，风险最低 |
-| P2 | pi 侧 registerTool 适配（TypeBox schema + prepareArguments 容错） | 官方 todo.ts 示例蓝本 |
+| P2 | pi 侧 registerTool 适配（TypeBox schema：op 枚举 + 5 个可选平铺字段，不用 prepareArguments） | 官方 todo.ts 示例蓝本 + 4.6 扁平形状 |
 | P3 | checkCompletion 停手清点 + mid-run nudge（新 hook 单元） | 现有事件通道可实现 |
 | P4 | getTodoState/checkTodoProgress 切换到自建状态源 | 解除 v2 断供隐患 |
 | P5（可选） | pi 侧 widget todo 列（4.5 设计）+ `/ztodo` 命令 + eager preferred 注入 | 增强项 |
@@ -243,11 +339,13 @@ P0-P2 是"MVP：双宿主可用的 todo 工具"；P3-P4 是"编排闭环"；P5 �
 3. **subagent 默认 deny 的实现**：OpenCode 侧 subagent permission 由宿主 deriveSubagentSessionPermission 推导，zoo todo 作为插件工具是否在 deny 推导范围内需在 P1 验证；pi 侧暂无委派工具，暂无此问题。
 4. **prompt 文案移植的版权/风格**：oh-my-pi 的 todo.md 文案精炼但应改写为 zoo 风格（注释英文、描述"是什么"），不逐字照抄。
 5. **eager always 档（强制 tool_choice）两宿主均无公开 API**，确认放弃；preferred 档（注入提醒）已足够覆盖主要场景。
+6. **参数形状是易退化的维度**：4.6 的失败记录说明，一旦上下文中累积了错误调用样本，模型会自我强化该错误，光改 description 文案救不回来。因此后续维护的约束是：不在扁平形状上重新引入数组信封或复数目标字段（包括以"兼容旧调用"名义）；新增 op 时 `OP_EXAMPLE` / 字段白名单 / description 示例三处必须同步，否则新 op 没有纠偏示例可用。
 
 ## 7. 结论
 
 - **可行性**：双宿主（OpenCode v1/v2、pi）均验证可注册自定义工具，pi 侧官方有完整 todo 扩展示例；状态持久化经 toolResult details 快照天然解决分支/恢复问题。
-- **设计蓝本**：状态机与 op 集照抄 oh-my-pi 纯逻辑（约 500 行零依赖代码），模型引导三件套用 ZooKeeper 现有事件通道近似，砍掉依赖宿主深度集成的编排联动。
+- **参数形状**：扁平字段 + 单 op 单次调用，已取代首版的 `{op, entries[]}` 信封——后者因模型漏传信封连续失败 9 次（生成式模式锁定，光改文案纠不回来），详见 4.6。
+- **设计蓝本**：状态机与 op 集照抄 oh-my-pi 纯逻辑（约 500 行零依赖代码），参数形状照抄其扁平设计（`{op, list?, items?, phase?, task?, reason?}`，一次调用一个 op，见 4.6），模型引导三件套用 ZooKeeper 现有事件通道近似，砍掉依赖宿主深度集成的编排联动。
 - **必要性**：v2 断供使 getTodoState 链路静默失效（P4 必须做）；且宿主 todo 对插件只读，自建是编排闭环（委派勾选、停手清点）的唯一途径。
 - **成本估算**：P0-P2（MVP）约 800-1000 行（含测试），P3-P4 约 300-400 行；核心风险在 P1 的 OpenCode details 读取与 subagent deny 验证。
 - **TUI 方案**：pi 侧 widget 双列并排（左 fleet 右 todo）定稿（4.5），与 fleet 共享色彩/符号词汇和渲染管线；OpenCode 侧栏加 section 的数据通道现成；TUI 总量可控，不复刻 oh-my-pi 的 HUD 全家桶。

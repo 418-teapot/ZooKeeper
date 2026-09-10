@@ -82,6 +82,7 @@ function fakeStore(phases: TodoPhase[]): TodoStateStore {
     get: async () => phases,
     set: () => {},
     invalidate: () => {},
+    serialize: <T>(fn: () => Promise<T>) => fn(),
   };
 }
 

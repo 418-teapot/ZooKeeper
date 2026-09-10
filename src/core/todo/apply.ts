@@ -129,11 +129,7 @@ function taskNotFoundError(
 }
 
 function hasTargetField(entry: TodoEntry): boolean {
-  return (
-    entry.task !== undefined ||
-    entry.tasks !== undefined ||
-    entry.phase !== undefined
-  );
+  return entry.task !== undefined || entry.phase !== undefined;
 }
 
 /**
@@ -150,17 +146,13 @@ function resolveTargets(
   errors: string[],
   allowDefault: boolean,
 ): TodoItem[] | null {
-  const { task, tasks, phase } = entry;
-  const provided = [
-    task !== undefined,
-    tasks !== undefined,
-    phase !== undefined,
-  ].filter(Boolean).length;
+  const { task, phase } = entry;
+  const provided = [task !== undefined, phase !== undefined].filter(
+    Boolean,
+  ).length;
 
   if (provided > 1) {
-    errors.push(
-      'Ambiguous target: provide only one of "task", "tasks", or "phase"',
-    );
+    errors.push('Ambiguous target: provide only one of "task" or "phase"');
     return null;
   }
 
@@ -171,25 +163,6 @@ function resolveTargets(
       return null;
     }
     return [hit.task];
-  }
-
-  if (tasks !== undefined) {
-    if (tasks.length === 0) {
-      errors.push(`Empty task list for ${entry.op} operation`);
-      return null;
-    }
-    const found: TodoItem[] = [];
-    let missing = false;
-    for (const content of tasks) {
-      const hit = findTaskByContent(phases, content);
-      if (hit) {
-        found.push(hit.task);
-      } else {
-        errors.push(taskNotFoundError(phases, content));
-        missing = true;
-      }
-    }
-    return missing ? null : found;
   }
 
   if (phase !== undefined) {
@@ -354,7 +327,7 @@ function applyBlock(
   errors: string[],
 ): void {
   if (!hasTargetField(entry)) {
-    errors.push("block requires a task, tasks, or phase target");
+    errors.push("block requires a task or phase target");
     return;
   }
   const targets = resolveTargets(phases, entry, errors, false);
@@ -391,7 +364,7 @@ function applyUnblock(
   errors: string[],
 ): void {
   if (!hasTargetField(entry)) {
-    errors.push("unblock requires a task, tasks, or phase target");
+    errors.push("unblock requires a task or phase target");
     return;
   }
   const targets = resolveTargets(phases, entry, errors, false);

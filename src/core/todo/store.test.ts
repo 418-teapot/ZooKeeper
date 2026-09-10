@@ -5,7 +5,9 @@
  * hit, re-fetch after invalidation, `set` short-circuiting history,
  * corrupted candidates restoring to an empty list without throwing, and
  * a failed fetch recovering on the next access instead of poisoning
- * the cache. Also locks clone isolation between the cache and callers.
+ * the cache. Also locks clone isolation between the cache and callers, and
+ * the `serialize` gate that keeps concurrent state changes from
+ * interleaving.
  */
 
 import assert from "node:assert/strict";
@@ -163,5 +165,41 @@ describe("createTodoStore", () => {
     assert.equal((await first.get("s1")).length, 1);
     // The second instance must not see the first one's cached state.
     assert.deepEqual(await second.get("s1"), []);
+  });
+
+  it("serialize hands out the state one change at a time", async () => {
+    const { createTodoStore } = await import("./store.js");
+    const store = createTodoStore(async () => [SNAPSHOT]);
+    const order: string[] = [];
+
+    const slow = store.serialize(async () => {
+      const before = await store.get("s1");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      order.push(`slow:${before.length}`);
+      store.set("s1", [...before, phase("Added", ["x", "pending"])]);
+    });
+    const fast = store.serialize(async () => {
+      const before = await store.get("s1");
+      order.push(`fast:${before.length}`);
+    });
+
+    await Promise.all([slow, fast]);
+    // The queued change read the state the first one wrote: no
+    // read-modify-write interleaving through the store.
+    assert.deepEqual(order, ["slow:1", "fast:2"]);
+  });
+
+  it("serialize reports a failed change to its own caller only", async () => {
+    const { createTodoStore } = await import("./store.js");
+    const store = createTodoStore(async () => [SNAPSHOT]);
+
+    await assert.rejects(
+      store.serialize(async () => {
+        throw new Error("write failed");
+      }),
+      /write failed/,
+    );
+    // The gate is released: the next change still runs.
+    assert.equal(await store.serialize(async () => "ok"), "ok");
   });
 });

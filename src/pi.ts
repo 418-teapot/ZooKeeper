@@ -1336,9 +1336,10 @@ export function buildPiHandlers(
         name: tool.name,
         label: tool.name,
         description: tool.description,
-        // Forward the tool's scheduling hint (the ask dialog needs
-        // `sequential` so two forms never fight for the keyboard).  Tools
-        // without a hint keep pi's default execution mode.
+        // Forward a declared scheduling hint to pi's per-tool execution mode.
+        // Tools that guard their own state (todo, ask) serialise inside
+        // themselves and declare nothing, so they keep pi's default and stay
+        // concurrent with unrelated calls in the same turn.
         ...(tool.executionMode !== undefined
           ? { executionMode: tool.executionMode }
           : {}),

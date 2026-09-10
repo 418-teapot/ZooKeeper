@@ -23,9 +23,15 @@
  * singleton would let a late compose replace the candidate source and
  * make one session's cache miss scan another session's transcript.
  *
+ * The store also owns the serialisation gate for todo state changes
+ * (`serialize`): the lock lives with the cache it protects, so
+ * concurrent tool calls cannot lose updates without asking the host to
+ * run the tool alone.
+ *
  * @module
  */
 
+import { createSequencer } from "../sequencer.js";
 import { restoreFromHistory } from "./serialize.js";
 import type { TodoPhase } from "./types.js";
 import { clonePhases } from "./types.js";
@@ -69,6 +75,20 @@ export interface TodoStateStore {
    * @param sessionId - The session to invalidate.
    */
   invalidate(sessionId: string): void;
+  /**
+   * Run a state change alone with respect to every other change made
+   * through this store (used by the todo tool to make its
+   * read-modify-write cycle atomic).
+   *
+   * Queued functions start in submission order and never overlap; a
+   * rejected function is reported to its own caller without affecting
+   * the rest of the queue.  A function must not call `serialize` again
+   * while running.
+   *
+   * @param fn - The change to run.
+   * @returns Whatever `fn` resolved with.
+   */
+  serialize<T>(fn: () => Promise<T>): Promise<T>;
 }
 
 /**
@@ -86,6 +106,7 @@ export function createTodoStore(
   fetchCandidates: FetchCandidates,
 ): TodoStateStore {
   const cache = new Map<string, TodoPhase[]>();
+  const gate = createSequencer();
 
   return {
     async get(sessionId: string): Promise<TodoPhase[]> {
@@ -109,6 +130,10 @@ export function createTodoStore(
 
     invalidate(sessionId: string): void {
       cache.delete(sessionId);
+    },
+
+    serialize<T>(fn: () => Promise<T>): Promise<T> {
+      return gate(fn);
     },
   };
 }

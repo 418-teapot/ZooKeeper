@@ -3,17 +3,17 @@
  *
  * Covers: the nine-operation routing through one scripted session sequence
  * (each step asserting the echoed summary and the resulting store state), the
- * loud Chinese argument-validation errors (unknown op, missing/empty batch,
- * batch handed to the read-only `view`, malformed entry fields, empty
- * contents, unknown fields, per-op missing payload, and per-op inapplicable
- * fields — the stray payload that the state machine would otherwise ignore
- * into a destructive "every task" default), batch atomic rollback
- * (one bad entry leaves the stored state untouched and reports the errors),
- * the transcript-truthfulness rule (every successful mutating call writes a
- * fresh `{ op, phases }` snapshot into `hostCtx.details`, a refused call and a
+ * flat argument parsing (per-op field whitelist, missing/malformed payload,
+ * empty contents, unknown fields), the
+ * op-inference fallback for a missing `op`, the rule that every rejection
+ * ends with a copy-ready example call, batch atomicity (a refused call leaves
+ * the stored state untouched and writes no snapshot), the
+ * transcript-truthfulness rule (every successful mutating call writes a fresh
+ * `{ op, phases }` snapshot into `hostCtx.details`, a refused call and a
  * `view` write nothing), the restore loop through an injected store, the
- * missing-session-ID error, the renderer attachment seam, and the fail-closed
- * registration gate (no `todoStore` / no `toolHost` → zero tools).
+ * missing-session-ID error, the renderer attachment seam, the fail-closed
+ * registration gate (no `todoStore` / no `toolHost` → zero tools), and the
+ * store gate that keeps concurrently dispatched calls from losing updates.
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
@@ -23,7 +23,7 @@ import type { TodoSnapshot } from "../core/todo/serialize.js";
 import { createTodoStore } from "../core/todo/store.js";
 import type { TodoPhase } from "../core/todo/types.js";
 import { _resetForTesting } from "../utils/logger.js";
-import { unit as todoUnit, validateTodoArgs } from "./todo.js";
+import { parseTodoArgs, unit as todoUnit } from "./todo.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures & teardown
@@ -118,6 +118,34 @@ function statusOf(phases: TodoPhase[], content: string): string | undefined {
   return undefined;
 }
 
+/** Run the parser, requiring a copy-ready example in every rejection. */
+function expectRejection(args: unknown, fragment: string, label: string): void {
+  assert.throws(
+    () => parseTodoArgs(args),
+    (err: unknown) => {
+      const text = String(err);
+      assert.ok(
+        text.includes("todo 工具参数格式错误"),
+        `${label}: expected the Chinese guidance prefix, got ${text}`,
+      );
+      assert.ok(
+        text.includes(fragment),
+        `${label}: expected "${fragment}" in ${text}`,
+      );
+      assert.ok(
+        text.includes("正确示例："),
+        `${label}: every rejection must end with an example, got ${text}`,
+      );
+      assert.match(
+        text,
+        /正确示例：\{.*"op"/,
+        `${label}: the example must be a whole call, got ${text}`,
+      );
+      return true;
+    },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Nine-operation routing (one scripted sequence)
 // ---------------------------------------------------------------------------
@@ -129,16 +157,12 @@ describe("todo tool operations", () => {
     // 1. init — canonical phased list; the earliest task is auto-promoted.
     const initText = await run(tool, {
       op: "init",
-      entries: [
+      list: [
         {
-          list: [
-            {
-              phase: "Setup",
-              items: ["Install dependencies", "Configure environment"],
-            },
-            { phase: "Ship", items: ["Write release notes"] },
-          ],
+          phase: "Setup",
+          items: ["Install dependencies", "Configure environment"],
         },
+        { phase: "Ship", items: ["Write release notes"] },
       ],
     });
     assert.match(initText, /Install dependencies \[in_progress] \(Setup\)/);
@@ -152,15 +176,16 @@ describe("todo tool operations", () => {
     // 2. start — the pointer moves; the earlier in-progress task falls back.
     const startText = await run(tool, {
       op: "start",
-      entries: [{ task: "Write release notes" }],
+      task: "Write release notes",
     });
     assert.match(startText, /Write release notes \[in_progress] \(Ship\)/);
     assert.match(startText, /Install dependencies \[pending] \(Setup\)/);
 
-    // 3. done — completed work is counted, never echoed as remaining.
+    // 3. done — completed work is counted, never echoed as remaining; the
+    // next pending task is auto-promoted by normalization.
     const doneText = await run(tool, {
       op: "done",
-      entries: [{ task: "Write release notes" }],
+      task: "Write release notes",
     });
     assert.match(doneText, /Overall: 1\/3 done/);
     assert.equal(statusOf(await state(), "Write release notes"), "completed");
@@ -168,39 +193,35 @@ describe("todo tool operations", () => {
     // 4. append — a new task lands in the named phase as pending.
     const appendText = await run(tool, {
       op: "append",
-      entries: [{ phase: "Ship", items: ["Tag release"] }],
+      phase: "Ship",
+      items: ["Tag release"],
     });
     assert.match(appendText, /Tag release \[pending] \(Ship\)/);
 
     // 5. block — blocked work is counted separately and carries its reason.
     const blockText = await run(tool, {
       op: "block",
-      entries: [{ task: "Tag release", reason: "waiting on user sign-off" }],
+      task: "Tag release",
+      reason: "waiting on user sign-off",
     });
     assert.match(blockText, /1 blocked/);
     assert.equal(statusOf(await state(), "Tag release"), "blocked");
 
     // 6. unblock — back to pending, blocker cleared.
-    const unblockText = await run(tool, {
-      op: "unblock",
-      entries: [{ task: "Tag release" }],
-    });
+    const unblockText = await run(tool, { op: "unblock", task: "Tag release" });
     assert.doesNotMatch(unblockText, /blocked/);
     assert.equal(statusOf(await state(), "Tag release"), "pending");
 
     // 7. drop — abandoned work counts as closed.
     const dropText = await run(tool, {
       op: "drop",
-      entries: [{ tasks: ["Configure environment"] }],
+      task: "Configure environment",
     });
     assert.match(dropText, /Overall: 2\/4 done/);
     assert.equal(statusOf(await state(), "Configure environment"), "abandoned");
 
     // 8. rm — the task disappears from the list entirely.
-    const rmText = await run(tool, {
-      op: "rm",
-      entries: [{ tasks: ["Configure environment"] }],
-    });
+    const rmText = await run(tool, { op: "rm", task: "Configure environment" });
     assert.doesNotMatch(rmText, /Configure environment/);
     assert.deepEqual(contents(await state()), [
       "Install dependencies",
@@ -214,20 +235,44 @@ describe("todo tool operations", () => {
     assert.match(viewText, /Install dependencies \[in_progress]/);
   });
 
-  it("treats a target-less done/drop/rm batch as 'every task'", async () => {
+  it("refuses a target-less done/drop/rm instead of hitting every task", async () => {
     const tool = makeTool();
-    await run(tool, { op: "init", entries: [{ items: ["One", "Two"] }] });
-    const text = await run(tool, { op: "done", entries: [{}] });
-    assert.match(text, /Remaining items: none\./);
-    assert.match(text, /Overall: 2\/2 done/);
+    await run(tool, { op: "init", items: ["One", "Two"] });
+    for (const op of ["done", "drop", "rm"]) {
+      await assert.rejects(
+        () => tool.execute({ op }, TOOL_CTX, {}),
+        op === "drop" ? /drop 缺少目标/ : /task 必须是字符串/,
+      );
+      assert.match(
+        await run(tool, { op: "view" }),
+        /One \[in_progress]/,
+        `${op} without a task must leave the list intact`,
+      );
+    }
+    // Clearing the list still works — one explicit rm per task.
+    await run(tool, { op: "rm", task: "One" });
+    await run(tool, { op: "rm", task: "Two" });
+    assert.equal(await run(tool, { op: "view" }), "Todo list is empty.");
+  });
 
-    const cleared = await run(tool, { op: "rm", entries: [{}] });
-    assert.equal(cleared, "Todo list cleared.");
-    assert.deepEqual(
-      contents(await state()),
-      [],
-      "a target-less rm removes every task",
-    );
+  it("drops a whole phase and auto-promotes outside it", async () => {
+    const tool = makeTool();
+    await run(tool, {
+      op: "init",
+      list: [
+        { phase: "P1", items: ["a", "b"] },
+        { phase: "P2", items: ["c"] },
+      ],
+    });
+    // init promotes the earliest pending: "a" is in_progress inside P1.
+    const text = await run(tool, { op: "drop", phase: "P1" });
+    const after = await state();
+    assert.equal(statusOf(after, "a"), "abandoned");
+    assert.equal(statusOf(after, "b"), "abandoned");
+    // Every task of the dropped phase is abandoned, so the promotion can
+    // only land on the next pending outside it.
+    assert.equal(statusOf(after, "c"), "in_progress");
+    assert.match(text, /Overall: 2\/3 done, 1 open/);
   });
 
   it("echoes the empty-list variant for a read-only view", async () => {
@@ -237,10 +282,11 @@ describe("todo tool operations", () => {
 
   it("replaces the whole list on a repeated init", async () => {
     const tool = makeTool();
-    await run(tool, { op: "init", entries: [{ items: ["Old task"] }] });
+    await run(tool, { op: "init", items: ["Old task"] });
     const text = await run(tool, {
       op: "init",
-      entries: [{ items: ["Fresh plan"], phase: "Redo" }],
+      items: ["Fresh plan"],
+      phase: "Redo",
     });
     assert.doesNotMatch(text, /Old task/);
     assert.match(text, /Fresh plan \[in_progress] \(Redo\)/);
@@ -248,353 +294,346 @@ describe("todo tool operations", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Loud Chinese argument validation
+// Loud Chinese argument validation (every rejection carries an example)
 // ---------------------------------------------------------------------------
 
 describe("todo tool argument validation", () => {
-  /** Assert a call throws with the Chinese guidance prefix. */
-  async function expectChinese(
-    args: unknown,
-    fragment: string,
-    message: string,
-  ): Promise<void> {
-    const tool = makeTool();
-    await assert.rejects(
-      () => tool.execute(args, TOOL_CTX, {}),
-      (err: unknown) => {
-        const text = String(err);
-        assert.ok(
-          text.includes("todo 工具参数格式错误"),
-          `${message}: expected the Chinese guidance prefix, got ${text}`,
-        );
-        assert.ok(
-          text.includes(fragment),
-          `${message}: expected "${fragment}" in ${text}`,
-        );
-        return true;
-      },
-    );
-  }
-
-  it("rejects an unknown op", async () => {
-    await expectChinese(
-      { op: "frobnicate", entries: [{}] },
-      "init/start/done/drop/rm/block/unblock/append/view",
-      "unknown op lists the vocabulary",
+  it("rejects an unknown op, naming the vocabulary", () => {
+    expectRejection(
+      { op: "frobnicate", task: "a" },
+      "op 必须是 init/start/done/drop/rm/block/unblock/append/view 之一",
+      "unknown op",
     );
   });
 
-  it("rejects a missing op", async () => {
-    await expectChinese({ entries: [{}] }, "op 必须是", "missing op is loud");
+  it("rejects non-object arguments", () => {
+    expectRejection("init", "参数必须是扁平对象", "scalar args");
+    expectRejection(null, "参数必须是扁平对象", "null args");
   });
 
-  it("rejects non-object arguments", async () => {
-    await expectChinese(
-      "init",
-      "请提供 { op, entries }",
-      "scalar args rejected",
+  it("rejects a done whose task is missing, empty, or not a string", () => {
+    expectRejection({ op: "done" }, "task 必须是字符串", "missing task");
+    expectRejection(
+      { op: "done", task: "   " },
+      "不能是空字符串",
+      "blank task",
+    );
+    expectRejection(
+      { op: "done", task: 5 },
+      "task 必须是字符串",
+      "number task",
     );
   });
 
-  it("rejects a missing entries batch", async () => {
-    await expectChinese(
-      { op: "init" },
-      "entries 必须是数组",
-      "init needs entries",
+  it("rejects an init with neither list nor items", () => {
+    expectRejection(
+      { op: "init", phase: "P" },
+      "init 缺少清单：需要 list",
+      "init payload",
     );
   });
 
-  it("rejects an empty entries batch", async () => {
-    await expectChinese(
-      { op: "append", entries: [] },
-      "entries 不能为空",
-      "empty batch rejected",
+  it("rejects an init carrying both payloads", () => {
+    expectRejection(
+      { op: "init", list: [{ phase: "P", items: ["a"] }], items: ["b"] },
+      "不能同时带 list 和 items",
+      "init ambiguity",
     );
   });
 
-  it("rejects entries handed to the read-only view op", async () => {
-    await expectChinese(
-      { op: "view", entries: [{ task: "x" }] },
-      "view 是只读操作",
-      "view takes no payload",
+  it("rejects an empty init list and a malformed list entry", () => {
+    expectRejection(
+      { op: "init", list: [] },
+      "list 不能是空数组",
+      "empty list",
     );
-  });
-
-  it("accepts view with an empty or absent batch", () => {
-    assert.deepEqual(validateTodoArgs({ op: "view" }), {
-      op: "view",
-      entries: [{ op: "view" }],
-    });
-    assert.deepEqual(validateTodoArgs({ op: "view", entries: [] }), {
-      op: "view",
-      entries: [{ op: "view" }],
-    });
-  });
-
-  it("rejects a non-object entry", async () => {
-    await expectChinese(
-      { op: "start", entries: ["Install dependencies"] },
-      "entries[1] 必须是",
-      "entry must be an object",
-    );
-  });
-
-  it("rejects unknown entry fields", async () => {
-    await expectChinese(
-      { op: "start", entries: [{ task: "a", id: 3 }] },
-      '未知字段 "id"',
-      "unknown field named",
-    );
-  });
-
-  it("rejects an empty content string", async () => {
-    await expectChinese(
-      { op: "start", entries: [{ task: "   " }] },
-      "task 不能是空字符串",
-      "blank content rejected",
-    );
-  });
-
-  it("rejects a non-string item inside a list", async () => {
-    await expectChinese(
-      { op: "init", entries: [{ items: ["ok", 7] }] },
-      "items[2] 必须是非空字符串",
-      "item index named",
-    );
-  });
-
-  it("rejects a malformed init list entry", async () => {
-    await expectChinese(
-      { op: "init", entries: [{ list: [{ phase: "P" }] }] },
+    expectRejection(
+      { op: "init", list: [{ phase: "P" }] },
       "items 必须是字符串数组",
-      "list entry shape enforced",
+      "list entry shape",
+    );
+    expectRejection(
+      { op: "init", list: ["P"] },
+      "list[1] 必须是",
+      "list entry must be an object",
     );
   });
 
-  it("rejects an init entry with neither list nor items", async () => {
-    await expectChinese(
-      { op: "init", entries: [{ phase: "P" }] },
-      "init 需要提供 list 或 items",
-      "init payload enforced",
+  it("names the offending item index inside a string array", () => {
+    expectRejection(
+      { op: "init", items: ["ok", 7] },
+      "items[2] 必须是非空字符串",
+      "item index",
+    );
+    expectRejection(
+      { op: "append", phase: "P", items: [] },
+      "items 不能是空数组",
+      "empty items",
     );
   });
 
-  it("rejects a start entry with no task", async () => {
-    await expectChinese(
-      { op: "start", entries: [{}] },
-      "start 需要提供 task",
-      "start target enforced",
+  it("rejects an unknown top-level field", () => {
+    expectRejection(
+      { op: "start", task: "a", id: 3 },
+      '未知字段 "id"',
+      "unknown field",
     );
   });
 
-  it("rejects a block with no reason", async () => {
-    await expectChinese(
-      { op: "block", entries: [{ task: "a" }] },
-      "block 需要提供 reason",
-      "block reason enforced",
+  it("rejects a legacy entries field as an unknown field", () => {
+    expectRejection(
+      { op: "done", entries: [{ task: "a" }] },
+      '含未知字段 "entries"：done 只接受 task',
+      "legacy envelope",
     );
   });
 
-  it("rejects an unblock with no target", async () => {
-    await expectChinese(
-      { op: "unblock", entries: [{}] },
-      "unblock 需要提供 task 或 tasks 或 phase",
-      "unblock target enforced",
+  it("rejects a legacy tasks field as an unknown field", () => {
+    for (const op of ["done", "drop", "rm"]) {
+      expectRejection(
+        { op, tasks: ["a", "b"] },
+        `含未知字段 "tasks"：${op} 只接受 task`,
+        `${op} legacy tasks field`,
+      );
+    }
+  });
+
+  it("rejects an init whose phased list also carries a top-level phase", () => {
+    expectRejection(
+      { op: "init", list: [{ phase: "P", items: ["a"] }], phase: "Q" },
+      "init 带 list 时不能带 phase",
+      "init list + phase",
+    );
+    // The same refusal applies to the inferred (op-less) shape.
+    expectRejection(
+      { list: [{ phase: "P", items: ["a"] }], phase: "Q" },
+      "init 带 list 时不能带 phase",
+      "inferred init list + phase",
     );
   });
 
-  it("rejects an append with no phase", async () => {
-    await expectChinese(
-      { op: "append", entries: [{ items: ["a"] }] },
-      "append 需要提供 phase",
-      "append phase enforced",
+  it("rejects a block with no reason and one with no target", () => {
+    expectRejection(
+      { op: "block", task: "a" },
+      "reason 必须是字符串",
+      "block reason",
+    );
+    expectRejection(
+      { op: "block", reason: "waiting" },
+      "block 缺少目标",
+      "block target",
+    );
+    expectRejection(
+      { op: "block", task: "a", phase: "P", reason: "waiting" },
+      "不能同时给 task 和 phase",
+      "block ambiguity",
     );
   });
 
-  it("names the offending entry by 1-based position", async () => {
-    const tool = makeTool();
-    await assert.rejects(
-      () =>
-        tool.execute(
-          { op: "start", entries: [{ task: "fine" }, { task: 5 }] },
-          TOOL_CTX,
-          {},
-        ),
-      (err: unknown) => {
-        assert.ok(
-          String(err).includes("entries[2]"),
-          `expected the 1-based index, got ${String(err)}`,
-        );
-        return true;
-      },
+  it("rejects an unblock with no target", () => {
+    expectRejection({ op: "unblock" }, "unblock 缺少目标", "unblock target");
+  });
+
+  it("rejects a drop with no target or with both task and phase", () => {
+    expectRejection({ op: "drop" }, "drop 缺少目标", "drop target");
+    expectRejection(
+      { op: "drop", task: "a", phase: "P" },
+      "drop 的目标不能同时给 task 和 phase",
+      "drop ambiguity",
     );
+  });
+
+  it("rejects an append with no phase and one with no items", () => {
+    expectRejection(
+      { op: "append", items: ["a"] },
+      "phase 必须是字符串",
+      "append phase",
+    );
+    expectRejection(
+      { op: "append", phase: "P" },
+      "items 必须是字符串",
+      "append items",
+    );
+  });
+
+  it("rejects any payload on the read-only view op", () => {
+    expectRejection(
+      { op: "view", task: "a" },
+      'view 不接受的字段 "task"',
+      "view payload",
+    );
+    expectRejection(
+      { op: "view", items: ["a"] },
+      "view 是只读操作，不带任何字段",
+      "view items",
+    );
+    // The bare call is the only legal one.
+    assert.deepEqual(parseTodoArgs({ op: "view" }), [{ op: "view" }]);
   });
 
   it("errors without a session id in the tool context", async () => {
     const tool = makeTool({ host: fakeHost(null) });
     await assert.rejects(
-      () =>
-        tool.execute({ op: "init", entries: [{ items: ["a"] }] }, TOOL_CTX, {}),
+      () => tool.execute({ op: "init", items: ["a"] }, TOOL_CTX, {}),
       /无法确定会话 ID：工具上下文缺少 sessionID。/,
     );
   });
 });
 
 // ---------------------------------------------------------------------------
-// Per-op entry field restrictions
+// Op inference for a missing op
 // ---------------------------------------------------------------------------
 
-describe("todo tool per-op entry fields", () => {
-  /** A field value of the right shape for whichever field is being probed. */
-  const VALUE: Record<string, unknown> = {
-    list: [{ phase: "P", items: ["a"] }],
-    items: ["a", "b"],
-    phase: "P",
-    task: "a",
-    tasks: ["a", "b"],
-    reason: "waiting on user",
-  };
+describe("todo tool op inference", () => {
+  it("infers init from a list", () => {
+    assert.deepEqual(
+      parseTodoArgs({
+        list: [{ phase: "P", items: ["a"] }],
+      }),
+      [{ op: "init", list: [{ phase: "P", items: ["a"] }] }],
+    );
+  });
 
+  it("infers init from bare items and append from items + phase", () => {
+    assert.deepEqual(parseTodoArgs({ items: ["a", "b"] }), [
+      { op: "init", items: ["a", "b"] },
+    ]);
+    assert.deepEqual(parseTodoArgs({ items: ["a"], phase: "P" }), [
+      { op: "append", phase: "P", items: ["a"] },
+    ]);
+  });
+
+  it("refuses to guess when the shape is ambiguous", () => {
+    expectRejection({ task: "a" }, "缺少 op", "task alone");
+    expectRejection({ phase: "P" }, "缺少 op", "phase alone");
+    expectRejection({}, "缺少 op", "empty args");
+    expectRejection({ reason: "waiting" }, "缺少 op", "reason alone");
+  });
+
+  it("never overrides an explicit op", () => {
+    // items + phase would infer append, but an explicit init wins.
+    assert.deepEqual(parseTodoArgs({ op: "init", items: ["a"], phase: "P" }), [
+      { op: "init", items: ["a"], phase: "P" },
+    ]);
+    // An explicit append keeps its meaning even where init would also fit.
+    assert.deepEqual(
+      parseTodoArgs({ op: "append", phase: "P", items: ["a"] }),
+      [{ op: "append", phase: "P", items: ["a"] }],
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-op field whitelist
+// ---------------------------------------------------------------------------
+
+describe("todo tool per-op fields", () => {
   /**
-   * Assert an op rejects an inapplicable field with a Chinese error naming
-   * both the op and the offending field.
+   * Assert an op rejects an inapplicable field, naming op + field + example.
    */
   function expectFieldRejected(
     op: string,
     field: string,
     extra: Record<string, unknown> = {},
   ): void {
-    assert.throws(
-      () =>
-        validateTodoArgs({
-          op,
-          entries: [{ [field]: VALUE[field], ...extra }],
-        }),
-      (err: unknown) => {
-        const text = String(err);
-        assert.ok(
-          text.includes("todo 工具参数格式错误"),
-          `${op}+${field}: expected the Chinese prefix, got ${text}`,
-        );
-        assert.ok(
-          text.includes(`${op} 不接受的字段 "${field}"`),
-          `${op}+${field}: expected the op and field to be named, got ${text}`,
-        );
-        return true;
-      },
+    expectRejection(
+      { op, [field]: sampleValue(field), ...extra },
+      `${op} 不接受的字段 "${field}"`,
+      `${op}+${field}`,
     );
   }
 
-  it("rejects list/items/reason on done, drop and rm entries", () => {
-    for (const op of ["done", "drop", "rm"]) {
-      for (const field of ["list", "items", "reason"]) {
-        expectFieldRejected(op, field);
+  /** A field value of the right shape for whichever field is being probed. */
+  function sampleValue(field: string): unknown {
+    switch (field) {
+      case "list":
+        return [{ phase: "P", items: ["a"] }];
+      case "items":
+        return ["a", "b"];
+      case "phase":
+        return "P";
+      case "task":
+        return "a";
+      case "reason":
+        return "waiting on user";
+      default:
+        return "x";
+    }
+  }
+
+  it("rejects list/items/reason/phase on done and rm, list/items/reason on drop", () => {
+    for (const op of ["done", "rm"]) {
+      for (const field of ["list", "items", "reason", "phase"]) {
+        expectFieldRejected(op, field, { task: "a" });
       }
+    }
+    for (const field of ["list", "items", "reason"]) {
+      expectFieldRejected("drop", field, { task: "a" });
     }
   });
 
-  it("rejects list and items on block and unblock entries", () => {
-    for (const op of ["block", "unblock"]) {
-      for (const field of ["list", "items"]) {
-        expectFieldRejected(op, field, { reason: "waiting on user" });
-      }
-    }
-  });
-
-  it("rejects reason on unblock (block is the only reason consumer)", () => {
-    expectFieldRejected("unblock", "reason", { task: "a" });
-  });
-
-  it("rejects everything but task on a start entry", () => {
-    for (const field of ["list", "items", "phase", "tasks", "reason"]) {
+  it("rejects list/items/reason on start", () => {
+    for (const field of ["list", "items", "reason"]) {
       expectFieldRejected("start", field, { task: "a" });
     }
   });
 
-  it("rejects task, tasks and reason on an append entry", () => {
-    for (const field of ["task", "tasks", "reason"]) {
-      expectFieldRejected("append", field, { phase: "P", items: ["a"] });
-    }
+  it("rejects list/items on block and unblock, reason on unblock", () => {
+    expectFieldRejected("block", "items", { task: "a", reason: "waiting" });
+    expectFieldRejected("block", "list", { task: "a", reason: "waiting" });
+    expectFieldRejected("unblock", "items", { task: "a" });
+    expectFieldRejected("unblock", "list", { task: "a" });
+    expectFieldRejected("unblock", "reason", { task: "a" });
   });
 
-  it("rejects task, tasks and reason on an init entry", () => {
-    for (const field of ["task", "tasks", "reason"]) {
+  it("rejects task/reason on append and init, reason/list-or-items as needed", () => {
+    for (const field of ["task", "reason"]) {
+      expectFieldRejected("append", field, { phase: "P", items: ["a"] });
       expectFieldRejected("init", field, { items: ["a"] });
     }
+    expectFieldRejected("init", "reason", {
+      list: [{ phase: "P", items: ["a"] }],
+    });
   });
 
-  it("rejects an init entry carrying both list and items", () => {
-    assert.throws(
-      () =>
-        validateTodoArgs({
-          op: "init",
-          entries: [{ list: [{ phase: "P", items: ["a"] }], items: ["b"] }],
-        }),
-      (err: unknown) => {
-        const text = String(err);
-        assert.ok(
-          text.includes("todo 工具参数格式错误"),
-          `expected the Chinese prefix, got ${text}`,
-        );
-        assert.ok(
-          text.includes("不能同时带 list 和 items"),
-          `expected the ambiguity to be named, got ${text}`,
-        );
-        return true;
-      },
-    );
-  });
-
-  it("points the items-on-a-target-op mistake at tasks and warns of the default", () => {
-    assert.throws(
-      () => validateTodoArgs({ op: "rm", entries: [{ items: ["a", "b"] }] }),
-      /若目标是清单里的这些任务，请改用 tasks[\s\S]*不带目标的 rm 会作用于全部任务——即清空整个清单/,
-    );
-  });
-
-  it("keeps every op's own payload combination accepted", () => {
-    const accepted: Array<Record<string, unknown>> = [
-      { op: "init", entries: [{ list: [{ phase: "P", items: ["a"] }] }] },
-      { op: "init", entries: [{ items: ["a"] }] },
-      { op: "init", entries: [{ items: ["a"], phase: "P" }] },
-      { op: "start", entries: [{ task: "a" }] },
-      { op: "done", entries: [{ task: "a" }] },
-      { op: "done", entries: [{ tasks: ["a"] }] },
-      { op: "done", entries: [{ phase: "P" }] },
-      { op: "done", entries: [{}] },
-      { op: "drop", entries: [{ tasks: ["a"] }] },
-      { op: "drop", entries: [{}] },
-      { op: "rm", entries: [{ phase: "P" }] },
-      { op: "rm", entries: [{}] },
-      {
-        op: "block",
-        entries: [{ task: "a", reason: "waiting on user" }],
-      },
-      { op: "block", entries: [{ tasks: ["a"], reason: "waiting" }] },
-      { op: "block", entries: [{ phase: "P", reason: "waiting" }] },
-      { op: "unblock", entries: [{ task: "a" }] },
-      { op: "unblock", entries: [{ tasks: ["a"] }] },
-      { op: "unblock", entries: [{ phase: "P" }] },
-      { op: "append", entries: [{ phase: "P", items: ["a"] }] },
+  it("keeps every op's own accepted combination", () => {
+    const accepted: unknown[] = [
+      { op: "init", list: [{ phase: "P", items: ["a"] }] },
+      { op: "init", items: ["a"] },
+      { op: "init", items: ["a"], phase: "P" },
+      { op: "start", task: "a" },
+      { op: "done", task: "a" },
+      { op: "drop", task: "a" },
+      { op: "drop", phase: "P" },
+      { op: "rm", task: "a" },
+      { op: "block", task: "a", reason: "waiting" },
+      { op: "block", phase: "P", reason: "waiting" },
+      { op: "unblock", task: "a" },
+      { op: "unblock", phase: "P" },
+      { op: "append", phase: "P", items: ["a"] },
+      { op: "view" },
     ];
     for (const args of accepted) {
-      assert.doesNotThrow(() => validateTodoArgs(args));
+      assert.doesNotThrow(() => parseTodoArgs(args), JSON.stringify(args));
     }
+  });
+
+  it("parses into a single-entry batch stamped with the op", () => {
+    const entries = parseTodoArgs({ op: "done", task: "a" });
+    assert.equal(entries.length, 1);
+    assert.deepEqual(entries[0], { op: "done", task: "a" });
+    assert.deepEqual(parseTodoArgs({ op: "view" }), [{ op: "view" }]);
   });
 
   it("blocks the destructive no-target rm behind a stray items field", async () => {
     const tool = makeTool();
-    await run(tool, { op: "init", entries: [{ items: ["Alpha", "Beta"] }] });
+    await run(tool, { op: "init", items: ["Alpha", "Beta"] });
     const before = await state();
 
     const hostCtx: { details?: unknown } = {};
     await assert.rejects(
       () =>
-        tool.execute(
-          { op: "rm", entries: [{ items: ["Alpha", "Beta"] }] },
-          TOOL_CTX,
-          hostCtx,
-        ),
+        tool.execute({ op: "rm", items: ["Alpha", "Beta"] }, TOOL_CTX, hostCtx),
       /rm 不接受的字段 "items"/,
     );
     assert.deepEqual(
@@ -608,54 +647,28 @@ describe("todo tool per-op entry fields", () => {
       "a rejected call records no snapshot",
     );
     // And the list is still fully intact for a correctly targeted rm later.
-    const text = await run(tool, {
-      op: "rm",
-      entries: [{ tasks: ["Alpha", "Beta"] }],
-    });
+    await run(tool, { op: "rm", task: "Alpha" });
+    const text = await run(tool, { op: "rm", task: "Beta" });
     assert.equal(text, "Todo list cleared.");
-  });
-
-  it("blocks a stray items field on done and drop the same way", async () => {
-    const tool = makeTool();
-    await run(tool, { op: "init", entries: [{ items: ["Alpha", "Beta"] }] });
-    for (const op of ["done", "drop"]) {
-      await assert.rejects(
-        () =>
-          tool.execute(
-            { op, entries: [{ items: ["Alpha", "Beta"] }] },
-            TOOL_CTX,
-            {},
-          ),
-        /不接受的字段 "items"/,
-      );
-      assert.match(
-        await run(tool, { op: "view" }),
-        /Alpha \[in_progress\]/,
-        `${op}+items left the list untouched and un-statused`,
-      );
-    }
   });
 });
 
 // ---------------------------------------------------------------------------
-// Batch atomicity
+// Atomicity
 // ---------------------------------------------------------------------------
 
-describe("todo tool batch atomicity", () => {
-  it("rolls the whole batch back when one entry is invalid", async () => {
+describe("todo tool atomicity", () => {
+  it("leaves the stored state untouched when the core rejects the call", async () => {
     const tool = makeTool();
     await run(tool, {
       op: "init",
-      entries: [{ items: ["Install dependencies", "Configure environment"] }],
+      items: ["Install dependencies", "Configure environment"],
     });
     const before = await state();
 
     const hostCtx: { details?: unknown } = {};
     const text = await tool.execute(
-      {
-        op: "done",
-        entries: [{ task: "Install dependencies" }, { task: "Never existed" }],
-      },
+      { op: "done", task: "Never existed" },
       TOOL_CTX,
       hostCtx,
     );
@@ -665,39 +678,35 @@ describe("todo tool batch atomicity", () => {
     assert.deepEqual(
       await state(),
       before,
-      "a refused batch must leave the stored state untouched",
+      "a refused call must leave the stored state untouched",
     );
     assert.equal(
       hostCtx.details,
       undefined,
-      "a refused batch must not write a snapshot",
+      "a refused call must not write a snapshot",
     );
   });
 
-  it("rolls back a state-changing entry that shares a batch with an error", async () => {
+  it("keeps a later duplicate-content append from half-applying", async () => {
     const tool = makeTool();
-    await run(tool, { op: "init", entries: [{ items: ["Alpha", "Beta"] }] });
+    await run(tool, { op: "init", items: ["Alpha", "Beta"] });
     const before = await state();
 
-    const hostCtx: { details?: unknown } = {};
-    const text = await tool.execute(
-      { op: "done", entries: [{ task: "Alpha" }, { task: "Gamma" }] },
-      TOOL_CTX,
-      hostCtx,
-    );
+    // An append of an existing content is reported, not applied.
+    const text = await run(tool, {
+      op: "append",
+      phase: "P",
+      items: ["Alpha"],
+    });
     assert.match(text, /^Errors: /);
-    assert.equal(statusOf(await state(), "Alpha"), "in_progress");
+    assert.match(text, /already exists/);
     assert.deepEqual(await state(), before);
-    assert.equal(hostCtx.details, undefined);
   });
 
   it("reports the errors while echoing the untouched remaining items", async () => {
     const tool = makeTool();
-    await run(tool, { op: "init", entries: [{ items: ["Alpha", "Beta"] }] });
-    const text = await run(tool, {
-      op: "done",
-      entries: [{ task: "task-1" }],
-    });
+    await run(tool, { op: "init", items: ["Alpha", "Beta"] });
+    const text = await run(tool, { op: "done", task: "task-1" });
     assert.match(text, /Errors: .*task-1/);
     assert.match(text, /Alpha/);
     assert.match(text, /Beta/);
@@ -712,16 +721,10 @@ describe("todo tool snapshot details", () => {
   it("writes a fresh { op, phases } snapshot after every successful mutating call", async () => {
     const tool = makeTool();
     const calls: Array<Record<string, unknown>> = [
-      {
-        op: "init",
-        entries: [{ items: ["Install dependencies", "Run tests"] }],
-      },
-      { op: "start", entries: [{ task: "Run tests" }] },
-      { op: "done", entries: [{ task: "Run tests" }] },
-      {
-        op: "block",
-        entries: [{ task: "Install dependencies", reason: "registry offline" }],
-      },
+      { op: "init", items: ["Install dependencies", "Run tests"] },
+      { op: "start", task: "Run tests" },
+      { op: "done", task: "Run tests" },
+      { op: "block", task: "Install dependencies", reason: "registry offline" },
     ];
 
     for (const call of calls) {
@@ -747,7 +750,7 @@ describe("todo tool snapshot details", () => {
 
   it("writes nothing for a read-only view", async () => {
     const tool = makeTool();
-    await run(tool, { op: "init", entries: [{ items: ["Only task"] }] });
+    await run(tool, { op: "init", items: ["Only task"] });
     const hostCtx: { details?: unknown } = {};
     await tool.execute({ op: "view" }, TOOL_CTX, hostCtx);
     assert.equal(hostCtx.details, undefined, "view records no state change");
@@ -755,12 +758,9 @@ describe("todo tool snapshot details", () => {
 
   it("restores the live state from the newest transcript snapshot", async () => {
     const first = makeTool();
-    await run(first, { op: "init", entries: [{ items: ["A", "B"] }] });
-    await run(first, { op: "done", entries: [{ task: "A" }] });
-    await run(first, {
-      op: "append",
-      entries: [{ phase: "Todos", items: ["C"] }],
-    });
+    await run(first, { op: "init", items: ["A", "B"] });
+    await run(first, { op: "done", task: "A" });
+    await run(first, { op: "append", phase: "Todos", items: ["C"] });
 
     // A fresh store instance has an empty cache, so its first read restores
     // from the newest-first candidates the host's scan supplies.
@@ -782,7 +782,7 @@ describe("todo tool snapshot details", () => {
   it("drops snapshots written by a host that builds no details slot", async () => {
     const tool = makeTool();
     const text = await tool.execute(
-      { op: "init", entries: [{ items: ["No details host"] }] },
+      { op: "init", items: ["No details host"] },
       TOOL_CTX,
     );
     assert.match(text, /No details host/);
@@ -793,6 +793,136 @@ describe("todo tool snapshot details", () => {
 // ---------------------------------------------------------------------------
 // Registration gate
 // ---------------------------------------------------------------------------
+
+describe("todo tool concurrency", () => {
+  /** Read a task status out of a snapshot written by a mutating call. */
+  function snapshotStatus(
+    details: unknown,
+    content: string,
+  ): string | undefined {
+    return statusOf((details as TodoSnapshot).phases, content);
+  }
+
+  it("loses no update when two mutations are dispatched together", async () => {
+    const tool = makeTool();
+    await run(tool, { op: "init", items: ["Alpha", "Beta"] });
+
+    const ctxAlpha: { details?: unknown } = {};
+    const ctxBeta: { details?: unknown } = {};
+    const [textAlpha, textBeta] = await Promise.all([
+      tool.execute({ op: "done", task: "Alpha" }, TOOL_CTX, ctxAlpha),
+      tool.execute({ op: "done", task: "Beta" }, TOOL_CTX, ctxBeta),
+    ]);
+    // No lost update, and a total order: the call submitted first saw the
+    // base state (one of two done), the second read the first one's write.
+    assert.match(textAlpha, /Overall: 1\/2 done/);
+    assert.match(textBeta, /Overall: 2\/2 done/);
+    const final = await state();
+    assert.equal(statusOf(final, "Alpha"), "completed");
+    assert.equal(statusOf(final, "Beta"), "completed");
+
+    // And the two snapshots are explainable as a total order: exactly one
+    // of them still saw the base state, the other read the first call's
+    // write. Two snapshots off the same base would mean an unlocked
+    // read-modify-write.
+    const both = (details: unknown) =>
+      snapshotStatus(details, "Alpha") === "completed" &&
+      snapshotStatus(details, "Beta") === "completed";
+    assert.notEqual(
+      both(ctxAlpha.details),
+      both(ctxBeta.details),
+      "the second call must observe the first call's write",
+    );
+  });
+
+  it("applies every one of many concurrent mutating calls", async () => {
+    const tool = makeTool();
+    await run(tool, { op: "init", items: ["T1", "T2", "T3", "T4"] });
+
+    const calls = [
+      { op: "done", task: "T1" },
+      { op: "drop", task: "T2" },
+      { op: "append", items: ["T5"], phase: "Todos" },
+      { op: "rm", task: "T3" },
+      { op: "block", task: "T4", reason: "waiting on the registry" },
+    ];
+    const texts = await Promise.all(
+      calls.map((call) => tool.execute(call, TOOL_CTX, {})),
+    );
+
+    const final = await state();
+    const contents = final.flatMap((phase) =>
+      phase.tasks.map((task) => task.content),
+    );
+    assert.equal(texts.length, calls.length, "every call produced a summary");
+    assert.ok(contents.includes("T5"), "the appended task survived");
+    assert.ok(!contents.includes("T3"), "the removed task stayed gone");
+    assert.equal(statusOf(final, "T1"), "completed", "the completion survived");
+    assert.equal(
+      statusOf(final, "T2"),
+      "abandoned",
+      "the abandonment survived",
+    );
+    assert.equal(statusOf(final, "T4"), "blocked", "the block survived");
+  });
+
+  it("still reports a failed call to its own caller only", async () => {
+    const tool = makeTool();
+    await run(tool, { op: "init", items: ["Alpha"] });
+
+    const outcomes = await Promise.allSettled([
+      tool.execute({ op: "done", task: "Ghost" }, TOOL_CTX, {}),
+      tool.execute({ op: "done", task: "Alpha" }, TOOL_CTX, {}),
+    ]);
+
+    // A refused operation is a summary with errors, not a rejection; the
+    // point is that the following call still ran and still took effect.
+    assert.equal(outcomes[0].status, "fulfilled");
+    assert.equal(outcomes[1].status, "fulfilled");
+    assert.match(
+      (outcomes[0] as PromiseFulfilledResult<string>).value,
+      /Ghost|错误|不存在/,
+    );
+    assert.equal(statusOf(await state(), "Alpha"), "completed");
+  });
+
+  it("never queues behind another session's store", async () => {
+    // Two tools over two stores are independent gates: the sequencer is
+    // per store, matching the state it protects.
+    const first = createTodoStore(async () => []);
+    const second = createTodoStore(async () => []);
+    const depsFor = (store: ReturnType<typeof createTodoStore>) =>
+      ({
+        limits: {},
+        contextConfig: {},
+        client: {},
+        directory: "",
+        resolveAgent: () => undefined,
+        toolHost: fakeHost(),
+        todoStore: store,
+      }) as unknown as Deps;
+    const toolA = todoUnit.create(depsFor(first), {} as ActiveSet).tools[0];
+    const toolB = todoUnit.create(depsFor(second), {} as ActiveSet).tools[0];
+
+    await Promise.all([
+      toolA.execute({ op: "init", items: ["A only"] }, TOOL_CTX, {}),
+      toolB.execute({ op: "init", items: ["B only"] }, TOOL_CTX, {}),
+    ]);
+
+    assert.deepEqual(
+      (await first.get(TEST_SESSION_ID)).flatMap((p) =>
+        p.tasks.map((t) => t.content),
+      ),
+      ["A only"],
+    );
+    assert.deepEqual(
+      (await second.get(TEST_SESSION_ID)).flatMap((p) =>
+        p.tasks.map((t) => t.content),
+      ),
+      ["B only"],
+    );
+  });
+});
 
 describe("todo tool unit descriptor", () => {
   it("has the tool kind and the todo name", () => {
@@ -836,19 +966,28 @@ describe("todo tool unit descriptor", () => {
       todoStore: store,
     } as unknown as Deps;
     const tool = todoUnit.create(deps, {} as ActiveSet).tools[0];
-    await tool.execute(
-      { op: "init", entries: [{ items: ["Injected"] }] },
-      TOOL_CTX,
-      {},
-    );
+    await tool.execute({ op: "init", items: ["Injected"] }, TOOL_CTX, {});
     assert.equal(
       statusOf(await store.get(TEST_SESSION_ID), "Injected"),
       "in_progress",
     );
   });
 
-  it("runs one call at a time so concurrent calls cannot lose updates", () => {
-    assert.equal(makeTool().executionMode, "sequential");
+  it("exposes a flat argument schema with every field optional", () => {
+    const tool = makeTool();
+    // All fields optional at schema level: the runtime parser owns the
+    // per-op requirements so its shape inference and example-carrying
+    // errors stay reachable.
+    assert.deepEqual(tool.required, []);
+    assert.deepEqual(Object.keys(tool.args ?? {}).sort(), [
+      "items",
+      "list",
+      "op",
+      "phase",
+      "reason",
+      "task",
+    ]);
+    assert.equal(tool.args?.entries, undefined);
   });
 
   it("attaches host renderers only when the renderer port is supplied", () => {
@@ -873,7 +1012,7 @@ describe("todo tool unit descriptor", () => {
     assert.equal(plain.renderResult, undefined);
   });
 
-  it("carries the operation manual in its description", () => {
+  it("carries the operation manual and one example per op in its description", () => {
     const tool = makeTool();
     for (const op of [
       "init",
@@ -890,7 +1029,11 @@ describe("todo tool unit descriptor", () => {
         tool.description.includes(op),
         `description documents the ${op} operation`,
       );
+      assert.ok(
+        tool.description.includes(`"op":"${op}"`),
+        `description shows a copy-ready ${op} call`,
+      );
     }
-    assert.match(tool.description, /<critical>/);
+    assert.doesNotMatch(tool.description, /entries/);
   });
 });

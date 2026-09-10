@@ -97,10 +97,6 @@ function opEntry(
   if (op === "rm" && rand() < 0.15) return { op: "rm" }; // clear-all
 
   const content = targetContent(rand, state);
-  const batch =
-    (op === "done" || op === "rm" || op === "drop") && rand() < 0.25
-      ? [content, targetContent(rand, state)]
-      : undefined;
 
   if (op === "block") {
     const reason =
@@ -109,7 +105,15 @@ function opEntry(
         : pick(rand, ["waiting", "review", "  gate\n hold  "]);
     return { op, task: content, reason };
   }
-  if (batch) return { op, tasks: batch };
+  // done/drop/rm also address a whole phase: the state machine keeps that
+  // target even though the tool boundary requires a single task.
+  if (
+    (op === "done" || op === "rm" || op === "drop") &&
+    rand() < 0.25 &&
+    state.length > 0
+  ) {
+    return { op, phase: pick(rand, state).name };
+  }
   return { op, task: content };
 }
 

@@ -15,8 +15,9 @@
  * `isError` for a user decision or a host that cannot draw the form.  Only
  * malformed arguments raise (the loud Chinese guidance the other tools use).
  * Model-supplied texts are stripped of terminal control sequences on the way
- * in.  Scheduling is `sequential`: two concurrent forms would fight for the
- * same keyboard.
+ * in.  Two forms can never overlap: the tool serialises its own calls
+ * through an internal gate, because the dialog takes over the single
+ * terminal surface.
  *
  * The unit is pi-only: without a pi host surface in deps (`piSwitchHost`)
  * it contributes zero tools, so OpenCode never registers `ask` (the agents
@@ -41,6 +42,7 @@ import {
   normalizeQuestion,
   validateAnswer,
 } from "../core/ask.js";
+import { createSequencer } from "../core/sequencer.js";
 import type { ToolContribution, ToolUnitDescriptor } from "../core/slots.js";
 import { log } from "../utils/logger.js";
 
@@ -395,10 +397,14 @@ export async function presentAskForm(opts: {
  *
  * @param timeoutSeconds - The `[zoo.ask].timeout` budget (undefined → the
  *   form waits for the user indefinitely).
- * @returns The tool contribution (sequential scheduling — the dialog owns
- *   the terminal).
+ * @returns The tool contribution (its calls are serialised — the dialog
+ *   owns the terminal).
  */
 export function createAskTool(timeoutSeconds?: number): ToolContribution {
+  // The resource this tool protects is one user-facing dialog, so the
+  // exclusion is kept per tool instance rather than declared to the host.
+  const runSerialized = createSequencer();
+
   return {
     name: "ask",
     description:
@@ -455,31 +461,41 @@ export function createAskTool(timeoutSeconds?: number): ToolContribution {
       },
     },
     required: ["questions"],
-    // The dialog takes over the terminal, so two calls can never overlap.
-    executionMode: "sequential",
     async execute(args, toolCtx, hostCtx) {
+      // Parsing is a pure function over the raw arguments — it touches no
+      // shared state — so it runs ahead of the gate: a malformed call gets
+      // its correction immediately instead of queueing behind a live dialog.
       const questions = parseAskArgs(args);
-      const ctx = (toolCtx ?? {}) as AskToolCtxLike;
-      const custom = ctx.ui?.custom;
-      // No TUI to draw on (print / RPC / json mode, or a host without the
-      // custom-component surface): every question reports the system-side
-      // slot, still as a normal tool result.
-      if (ctx.mode !== "tui" || typeof custom !== "function") {
+      // One dialog at a time, guarded inside the tool: the resource is the
+      // terminal the form draws on, so a concurrent call waits its turn
+      // instead of the host being told to run this tool alone.
+      return runSerialized(async () => {
+        const ctx = (toolCtx ?? {}) as AskToolCtxLike;
+        const custom = ctx.ui?.custom;
+        // No TUI to draw on (print / RPC / json mode, or a host without the
+        // custom-component surface): every question reports the system-side
+        // slot, still as a normal tool result.
+        if (ctx.mode !== "tui" || typeof custom !== "function") {
+          return handBack(
+            hostCtx,
+            assembleAskResults(questions, fallbackResults(questions, "no-ui")),
+          );
+        }
+        // A call that waited in the queue behind another form and was then
+        // cancelled never steals the terminal: `presentAskForm` checks the
+        // signal at its turn and reports every question as aborted without
+        // opening the UI.
+        const results = await presentAskForm({
+          questions,
+          custom,
+          ...(timeoutSeconds !== undefined ? { timeoutSeconds } : {}),
+          ...(hostCtx?.signal !== undefined ? { signal: hostCtx.signal } : {}),
+        });
         return handBack(
           hostCtx,
-          assembleAskResults(questions, fallbackResults(questions, "no-ui")),
+          assembleAskResults(questions, guardAnswers(questions, results)),
         );
-      }
-      const results = await presentAskForm({
-        questions,
-        custom,
-        ...(timeoutSeconds !== undefined ? { timeoutSeconds } : {}),
-        ...(hostCtx?.signal !== undefined ? { signal: hostCtx.signal } : {}),
       });
-      return handBack(
-        hostCtx,
-        assembleAskResults(questions, guardAnswers(questions, results)),
-      );
     },
   };
 }

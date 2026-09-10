@@ -458,7 +458,7 @@ describe("start", () => {
 // ---------------------------------------------------------------------------
 
 describe("done and drop", () => {
-  it("done completes a single task, a tasks batch, a phase, or everything", () => {
+  it("done completes a single task, a phase, or everything", () => {
     const before = [
       phase("P1", ["a", "pending"], ["b", "in_progress"]),
       phase("P2", ["c", "pending"]),
@@ -469,16 +469,6 @@ describe("done and drop", () => {
         { content: "a", status: "completed" },
         { content: "b", status: "in_progress" },
         { content: "c", status: "pending" },
-      ],
-    );
-    assert.deepEqual(
-      applied(before, { op: "done", tasks: ["a", "c"] }).flatMap(
-        (p) => p.tasks,
-      ),
-      [
-        { content: "a", status: "completed" },
-        { content: "b", status: "in_progress" },
-        { content: "c", status: "completed" },
       ],
     );
     assert.deepEqual(
@@ -501,10 +491,23 @@ describe("done and drop", () => {
 
   it("drop marks targets abandoned", () => {
     const before = [phase("P", ["a", "in_progress"], ["b", "pending"])];
-    const result = applied(before, { op: "drop", tasks: ["a"] });
+    const result = applied(before, { op: "drop", task: "a" });
     assert.equal(statusOf(result, "a"), "abandoned");
     // b becomes the active task through normalization.
     assert.equal(statusOf(result, "b"), "in_progress");
+  });
+
+  it("drop on a phase abandons the whole phase and promotes outside it", () => {
+    const before = [
+      phase("P1", ["a", "in_progress"], ["b", "pending"]),
+      phase("P2", ["c", "pending"]),
+    ];
+    const result = applied(before, { op: "drop", phase: "P1" });
+    assert.equal(statusOf(result, "a"), "abandoned");
+    assert.equal(statusOf(result, "b"), "abandoned");
+    // No pending is left in the dropped phase, so the auto-promote can only
+    // land on the next pending outside it.
+    assert.equal(statusOf(result, "c"), "in_progress");
   });
 
   it("done on a blocked task completes it", () => {
@@ -513,23 +516,19 @@ describe("done and drop", () => {
     assert.equal(statusOf(result, "a"), "completed");
   });
 
-  it("rejects batch targeting with a missing task, applying nothing", () => {
+  it("rejects a missing task, applying nothing", () => {
     const before = [phase("P", ["a", "pending"])];
-    const result = apply(before, { op: "done", tasks: ["a", "ghost"] });
+    const result = apply(before, { op: "done", task: "ghost" });
     assert.equal(result.errors.length, 1);
     assert.ok(result.errors[0].includes('Task "ghost" not found'));
     assert.deepEqual(result.phases, before);
   });
 
-  it("rejects an empty tasks array and ambiguous targets", () => {
+  it("rejects an ambiguous target", () => {
     const before = [phase("P", ["a", "pending"])];
-    const empty = apply(before, { op: "done", tasks: [] });
-    assert.equal(empty.errors.length, 1);
-    const ambiguous = apply(before, { op: "done", task: "a", tasks: ["a"] });
-    assert.ok(ambiguous.errors[0].includes("Ambiguous target"));
     const mixed = apply(before, { op: "done", task: "a", phase: "P" });
     assert.ok(mixed.errors[0].includes("Ambiguous target"));
-    assert.deepEqual(empty.phases, before);
+    assert.deepEqual(mixed.phases, before);
   });
 
   it("rejects targeting a missing phase", () => {
@@ -544,7 +543,7 @@ describe("done and drop", () => {
 // ---------------------------------------------------------------------------
 
 describe("rm", () => {
-  it("removes a single task, a batch, or a whole phase", () => {
+  it("removes a single task or a whole phase", () => {
     const before = [
       phase("P1", ["a", "pending"], ["b", "pending"]),
       phase("P2", ["c", "pending"]),
@@ -553,10 +552,6 @@ describe("rm", () => {
       "b",
       "c",
     ]);
-    assert.deepEqual(
-      contentsOf(applied(before, { op: "rm", tasks: ["a", "c"] })),
-      ["b"],
-    );
     assert.deepEqual(contentsOf(applied(before, { op: "rm", phase: "P1" })), [
       "c",
     ]);
