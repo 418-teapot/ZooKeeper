@@ -7,7 +7,7 @@
  * `append` / `view`.
  *
  * The arguments are flat: one call carries one `op` plus that op's payload
- * fields directly at the top level (`list` / `items` / `phase` / `task` /
+ * fields directly at the top level (`list` / `tasks` / `phase` / `task` /
  * `reason`), never a nested batch array.  A call therefore always describes
  * exactly one state transition, and a target-less `done` / `drop` / `rm`
  * (which the core reads as "every task") cannot be produced by accident —
@@ -84,7 +84,7 @@ const TODO_OPS: readonly TodoOperation[] = [
 /** Payload fields the flat arguments may carry at all (`op` is separate). */
 const ARG_FIELDS: readonly string[] = [
   "list",
-  "items",
+  "tasks",
   "phase",
   "task",
   "reason",
@@ -101,14 +101,14 @@ const ARG_FIELDS: readonly string[] = [
  * payload at all.
  */
 const ALLOWED_FIELDS: Record<TodoOperation, readonly string[]> = {
-  init: ["list", "items", "phase"],
+  init: ["list", "tasks", "phase"],
   start: ["task"],
   done: ["task"],
   drop: ["task", "phase"],
   rm: ["task"],
   block: ["task", "phase", "reason"],
   unblock: ["task", "phase"],
-  append: ["phase", "items"],
+  append: ["phase", "tasks"],
   view: [],
 };
 
@@ -121,14 +121,14 @@ const OP_VOCABULARY = TODO_OPS.join("/");
  * what the model is shown can never drift from what is accepted.
  */
 const OP_EXAMPLE: Record<TodoOperation, string> = {
-  init: '{"op":"init","list":[{"phase":"实现","items":["改 schema","补测试"]}]}',
+  init: '{"op":"init","list":[{"phase":"实现","tasks":["改 schema","补测试"]}]}',
   start: '{"op":"start","task":"改 schema"}',
   done: '{"op":"done","task":"改 schema"}',
   drop: '{"op":"drop","task":"改 schema"}',
   rm: '{"op":"rm","task":"改 schema"}',
   block: '{"op":"block","task":"改 schema","reason":"等用户确认方案"}',
   unblock: '{"op":"unblock","task":"改 schema"}',
-  append: '{"op":"append","phase":"实现","items":["补文档"]}',
+  append: '{"op":"append","phase":"实现","tasks":["补文档"]}',
   view: '{"op":"view"}',
 };
 
@@ -144,7 +144,7 @@ function fieldsHint(op: TodoOperation): string {
  * Corrective guidance for a field the op does not accept.
  *
  * `done`/`rm` only ever carry a single `task`, so a batch-shaped payload
- * (`items`/`list`) is pointed at repeated single-task calls rather than at a
+ * (`tasks`/`list`) is pointed at repeated single-task calls rather than at a
  * field that would widen the blast radius.
  */
 function fieldGuidance(op: TodoOperation, field: string): string {
@@ -156,21 +156,22 @@ function fieldGuidance(op: TodoOperation, field: string): string {
   if (op === "view") {
     return `"${field}" 对 view 没有语义，请去掉该字段后重试。`;
   }
+  const batch = field === "tasks" || field === "list";
   switch (op) {
     case "init":
-      return "init 需要 list（分阶段清单）或 items（扁平清单，可配 phase），只带其一。";
+      return "init 需要 list（分阶段清单）或 tasks（扁平清单，可配 phase），只带其一。";
     case "start":
       return "start 一次只指定一个任务，字段是 task（该任务的完整 content 原文）。";
     case "done":
     case "rm":
-      return field === "items" || field === "list"
+      return batch
         ? `一次 ${op} 只处理一个任务：请拆成多条 ${op} 调用，每条只带一个 task。` +
             (op === "rm"
               ? "不带 task 的 rm 等于清空整个清单，因此在参数层就被拒绝。"
               : "")
         : `${op} 的字段是 task（清单里该任务的完整 content 原文）。`;
     case "drop":
-      return field === "items" || field === "list"
+      return batch
         ? "drop 不接受批量字段：个别任务放弃用 task，整阶段放弃用 phase。"
         : "drop 的目标是 task（单个任务）或 phase（整阶段），二选一。";
     case "block":
@@ -178,7 +179,7 @@ function fieldGuidance(op: TodoOperation, field: string): string {
     case "unblock":
       return "unblock 只需要目标（task 或 phase，二选一）；阻塞原因是 block 的字段。";
     case "append":
-      return "append 需要 phase（目标阶段）和 items（新任务清单）。";
+      return "append 需要 phase（目标阶段）和 tasks（新任务清单）。";
     default:
       return `"${field}" 对 ${op} 没有语义，请去掉该字段后重试。`;
   }
@@ -189,14 +190,14 @@ function fieldGuidance(op: TodoOperation, field: string): string {
 
 /** The nine-op table: fields and effect of every operation. */
 const OP_TABLE = `每行列出该 op 要带的字段："或"表示只带其一，"可配"表示可选，表外字段一律不带。
-- init     重建整个清单：list=[{phase, items}]，或 items（可配 phase）
+- init     重建整个清单：list=[{phase, tasks}]，或 tasks（可配 phase）
 - start    开始任务：task
 - done     完成任务：task
 - drop     放弃任务：task 或 phase
 - rm       删除任务：task
 - block    阻塞任务：task + reason 或 phase + reason
 - unblock  解除阻塞（回到待办）：task 或 phase
-- append   往 phase 追加新任务（phase 不存在则创建）：phase + items
+- append   往 phase 追加新任务（phase 不存在则创建）：phase + tasks
 - view     只读查看当前清单：不带字段`;
 
 /** One copy-ready call per op, derived from the rejection examples. */
@@ -303,7 +304,7 @@ function stringArrayField(
 }
 
 /**
- * Read the canonical `init` list: an array of `{ phase, items }`.
+ * Read the canonical `init` list: an array of `{ phase, tasks }`.
  *
  * Every rejection here is an `init` shape problem, so the example is always
  * the `init` one regardless of which caller reached it.
@@ -311,27 +312,27 @@ function stringArrayField(
 function initListField(source: Record<string, unknown>): TodoInitPhase[] {
   const value = source.list;
   if (!Array.isArray(value)) {
-    fail("list 必须是数组（init 的 [{phase, items}] 列表）。", OP_EXAMPLE.init);
+    fail("list 必须是数组（init 的 [{phase, tasks}] 列表）。", OP_EXAMPLE.init);
   }
   if (value.length === 0) {
     fail(
-      "list 不能是空数组——init 至少需要一个 phase，或改用 items 提交扁平清单。",
+      "list 不能是空数组——init 至少需要一个 phase，或改用 tasks 提交扁平清单。",
       OP_EXAMPLE.init,
     );
   }
   return value.map((raw, i) => {
     if (!isRecord(raw)) {
       fail(
-        `list[${i + 1}] 必须是 { phase: string, items: string[] } 对象。`,
+        `list[${i + 1}] 必须是 { phase: string, tasks: string[] } 对象。`,
         OP_EXAMPLE.init,
       );
     }
     const at = `list[${i + 1}]`;
     return {
       phase: stringField(raw, "phase", "init 的 phase 名", OP_EXAMPLE.init),
-      items: stringArrayField(
+      tasks: stringArrayField(
         raw,
-        "items",
+        "tasks",
         `init phase 的任务清单（${at}）`,
         OP_EXAMPLE.init,
       ),
@@ -344,7 +345,7 @@ function initListField(source: Record<string, unknown>): TodoInitPhase[] {
  *
  * An explicit `op` wins and is never second-guessed.  When it is absent the
  * shape is inferred only while it stays unambiguous: a `list` or a bare
- * `items` means `init`, `items` together with `phase` means `append`.
+ * `tasks` means `init`, `tasks` together with `phase` means `append`.
  * Anything else is refused with the vocabulary spelled out.
  */
 function resolveOp(args: Record<string, unknown>): TodoOperation {
@@ -359,7 +360,7 @@ function resolveOp(args: Record<string, unknown>): TodoOperation {
     return raw as TodoOperation;
   }
   if (args.list !== undefined) return "init";
-  if (args.items !== undefined) {
+  if (args.tasks !== undefined) {
     return args.phase !== undefined ? "append" : "init";
   }
   fail(
@@ -427,29 +428,29 @@ function readPayload(
   switch (op) {
     case "init": {
       const hasList = args.list !== undefined;
-      const hasItems = args.items !== undefined;
+      const hasTasks = args.tasks !== undefined;
       // Two payloads cannot both take effect (the core reads `list` first and
-      // would discard `items` silently), so the ambiguity is refused rather
+      // would discard `tasks` silently), so the ambiguity is refused rather
       // than resolved by precedence.
-      if (hasList && hasItems) {
+      if (hasList && hasTasks) {
         fail(
-          "init 不能同时带 list 和 items：两者都是完整清单，只会生效一个——请任选其一后重试。",
+          "init 不能同时带 list 和 tasks：两者都是完整清单，只会生效一个——请任选其一后重试。",
           OP_EXAMPLE.init,
         );
       }
-      if (!hasList && !hasItems) {
+      if (!hasList && !hasTasks) {
         fail(
-          "init 缺少清单：需要 list（分阶段清单）或 items（扁平清单）。",
+          "init 缺少清单：需要 list（分阶段清单）或 tasks（扁平清单）。",
           OP_EXAMPLE.init,
         );
       }
       if (hasList) {
-        // `phase` only pairs with the flat `items` payload; a phased `list`
+        // `phase` only pairs with the flat `tasks` payload; a phased `list`
         // carries its own phase names, so a top-level `phase` beside `list`
         // would have no effect — refuse rather than ignore it.
         if (args.phase !== undefined) {
           fail(
-            "init 带 list 时不能带 phase：phase 只与 items（扁平清单）搭配使用，list 的每个 phase 各自带 phase 名。",
+            "init 带 list 时不能带 phase：phase 只与 tasks（扁平清单）搭配使用，list 的每个 phase 各自带 phase 名。",
             OP_EXAMPLE.init,
           );
         }
@@ -462,9 +463,9 @@ function readPayload(
         OP_EXAMPLE.init,
       );
       return {
-        items: stringArrayField(
+        tasks: stringArrayField(
           args,
-          "items",
+          "tasks",
           "init 的任务清单",
           OP_EXAMPLE.init,
         ),
@@ -474,7 +475,7 @@ function readPayload(
     case "append":
       return {
         phase: stringField(args, "phase", "append 的目标阶段", example),
-        items: stringArrayField(args, "items", "append 的新任务清单", example),
+        tasks: stringArrayField(args, "tasks", "append 的新任务清单", example),
       };
     case "start":
     case "done":
@@ -569,7 +570,7 @@ export function createTodoTool(
         description: "分阶段的任务清单（init）",
         items: { type: "object" },
       },
-      items: {
+      tasks: {
         type: "array",
         description: "单阶段初始化或新增的任务。",
         items: { type: "string" },

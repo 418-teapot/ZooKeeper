@@ -150,24 +150,24 @@ function appendEntry(
   );
   if (candidates.length === 0) return initEntry(rand);
   if (rand() < 0.1) {
-    // Malformed append items exercise the structural guard; the batch is
+    // Malformed append tasks exercise the structural guard; the batch is
     // rejected atomically like any other error.
     const variant = rand();
     if (variant < 0.5) {
       return {
         op: "append",
         phase: pick(rand, PHASES),
-        items: 42 as unknown as string[],
+        tasks: 42 as unknown as string[],
       };
     }
     return {
       op: "append",
       phase: pick(rand, PHASES),
-      items: ["x", 7] as unknown as string[],
+      tasks: ["x", 7] as unknown as string[],
     };
   }
-  const items = shuffle(rand, candidates).slice(0, 1 + Math.floor(rand() * 3));
-  return { op: "append", phase: pick(rand, PHASES), items };
+  const tasks = shuffle(rand, candidates).slice(0, 1 + Math.floor(rand() * 3));
+  return { op: "append", phase: pick(rand, PHASES), tasks };
 }
 
 /** Valid inits build distinct phases/contents; invalid ones add error pressure. */
@@ -180,24 +180,24 @@ function initEntry(rand: () => number): TodoEntry {
       1 + Math.floor(rand() * 2),
     );
     const phases = phaseNames.map((name) => {
-      const items = shuffle(rand, POOL)
+      const tasks = shuffle(rand, POOL)
         .filter((content) => !used.has(content))
         .slice(0, 2 + Math.floor(rand() * 3));
-      for (const item of items) used.add(item);
-      return { phase: name, items };
+      for (const content of tasks) used.add(content);
+      return { phase: name, tasks };
     });
     if (roll < 0.45) return { op: "init", list: phases };
-    const flat = phases.flatMap((entry) => entry.items);
-    return { op: "init", items: flat, phase: phases[0]?.phase };
+    const flat = phases.flatMap((entry) => entry.tasks);
+    return { op: "init", tasks: flat, phase: phases[0]?.phase };
   }
   const variant = rand();
-  if (variant < 0.2) return { op: "init", items: ["x", "x"] };
+  if (variant < 0.2) return { op: "init", tasks: ["x", "x"] };
   if (variant < 0.35) {
     return {
       op: "init",
       list: [
-        { phase: "S", items: ["a"] },
-        { phase: "S", items: ["b"] },
+        { phase: "S", tasks: ["a"] },
+        { phase: "S", tasks: ["b"] },
       ],
     };
   }
@@ -210,22 +210,22 @@ function initEntry(rand: () => number): TodoEntry {
   if (variant < 0.7) {
     return {
       op: "init",
-      list: [{ phase: 7, items: [] } as unknown as TodoInitPhase],
+      list: [{ phase: 7, tasks: [] } as unknown as TodoInitPhase],
     };
   }
   if (variant < 0.8) {
     return {
       op: "init",
-      list: [{ phase: "M", items: 42 } as unknown as TodoInitPhase],
+      list: [{ phase: "M", tasks: 42 } as unknown as TodoInitPhase],
     };
   }
   if (variant < 0.9) {
     return {
       op: "init",
-      list: [{ phase: "M", items: ["x", 7] } as unknown as TodoInitPhase],
+      list: [{ phase: "M", tasks: ["x", 7] } as unknown as TodoInitPhase],
     };
   }
-  return { op: "init", list: [{ phase: "M", items: ["x", "x"] }] };
+  return { op: "init", list: [{ phase: "M", tasks: ["x", "x"] }] };
 }
 
 function generateBatch(

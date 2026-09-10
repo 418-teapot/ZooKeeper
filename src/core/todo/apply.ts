@@ -8,7 +8,7 @@
  * Tasks are addressed exclusively by verbatim content equality — synthetic
  * IDs like `task-1` are rejected with an explicit corrective message.
  * `init` accepts both the canonical `list` shape and a flattened
- * `items` (+ optional `phase`) shape; a repeated `init` replaces the whole
+ * `tasks` (+ optional `phase`) shape; a repeated `init` replaces the whole
  * list (restart semantics).
  *
  * @module
@@ -180,12 +180,12 @@ function resolveTargets(
 
 /**
  * Resolve the source list of an `init`: canonical `list`, or a synthesized
- * single-phase list from flat `items` (default phase "Todos").
+ * single-phase list from flat `tasks` (default phase "Todos").
  */
 function resolveInitList(entry: TodoEntry): TodoInitPhase[] | undefined {
   if (entry.list !== undefined) return entry.list;
-  if (Array.isArray(entry.items) && entry.items.length > 0) {
-    return [{ phase: entry.phase ?? DEFAULT_INIT_PHASE, items: entry.items }];
+  if (Array.isArray(entry.tasks) && entry.tasks.length > 0) {
+    return [{ phase: entry.phase ?? DEFAULT_INIT_PHASE, tasks: entry.tasks }];
   }
   return undefined;
 }
@@ -205,7 +205,7 @@ function applyInit(
   // (content targeting always resolves the first match), so the whole batch
   // is rejected up front and nothing is replaced. Each entry is also guarded
   // structurally: a malformed `list` entry (missing or mistyped fields, or
-  // non-string items) is reported as an error and never thrown, keeping the
+  // non-string tasks) is reported as an error and never thrown, keeping the
   // batch atomic.
   const seenPhases = new Set<string>();
   const seenTasks = new Set<string>();
@@ -213,21 +213,21 @@ function applyInit(
   for (const listEntry of list) {
     const phaseName =
       typeof listEntry.phase === "string" ? listEntry.phase : undefined;
-    const items = Array.isArray(listEntry.items) ? listEntry.items : undefined;
-    if (phaseName === undefined || items === undefined) {
+    const tasks = Array.isArray(listEntry.tasks) ? listEntry.tasks : undefined;
+    if (phaseName === undefined || tasks === undefined) {
       errors.push(
-        "Malformed init list entry: expected { phase: string, items: string[] }",
+        "Malformed init list entry: expected { phase: string, tasks: string[] }",
       );
       invalid = true;
       continue;
     }
-    if (items.some((content) => typeof content !== "string")) {
-      errors.push(`Phase "${phaseName}" contains non-string items`);
+    if (tasks.some((content) => typeof content !== "string")) {
+      errors.push(`Phase "${phaseName}" contains non-string tasks`);
       invalid = true;
       continue;
     }
-    if (items.length === 0) {
-      errors.push(`Phase "${phaseName}" contains no items`);
+    if (tasks.length === 0) {
+      errors.push(`Phase "${phaseName}" contains no tasks`);
       invalid = true;
     }
     if (seenPhases.has(phaseName)) {
@@ -235,7 +235,7 @@ function applyInit(
       invalid = true;
     }
     seenPhases.add(phaseName);
-    for (const content of items) {
+    for (const content of tasks) {
       if (seenTasks.has(content)) {
         errors.push(`Duplicate task "${content}" in init list`);
         invalid = true;
@@ -247,7 +247,7 @@ function applyInit(
 
   const replacement = list.map((listEntry) => ({
     name: listEntry.phase,
-    tasks: listEntry.items.map<TodoItem>((content) => ({
+    tasks: listEntry.tasks.map<TodoItem>((content) => ({
       content,
       status: "pending",
     })),
@@ -386,13 +386,13 @@ function applyAppend(
     errors.push("Missing phase name for append operation");
     return;
   }
-  if (!Array.isArray(entry.items) || entry.items.length === 0) {
-    errors.push("Missing items for append operation");
+  if (!Array.isArray(entry.tasks) || entry.tasks.length === 0) {
+    errors.push("Missing tasks for append operation");
     return;
   }
-  if (entry.items.some((content) => typeof content !== "string")) {
+  if (entry.tasks.some((content) => typeof content !== "string")) {
     errors.push(
-      "Malformed items for append operation: expected an array of strings",
+      "Malformed tasks for append operation: expected an array of strings",
     );
     return;
   }
@@ -401,7 +401,7 @@ function applyAppend(
   // a failing append reports every duplicate and leaves nothing half-applied.
   const seen = new Set<string>();
   let hasDuplicate = false;
-  for (const content of entry.items) {
+  for (const content of entry.tasks) {
     if (seen.has(content) || findTaskByContent(phases, content)) {
       errors.push(`Task "${content}" already exists`);
       hasDuplicate = true;
@@ -415,7 +415,7 @@ function applyAppend(
     phase = { name: entry.phase, tasks: [] };
     phases.push(phase);
   }
-  for (const content of entry.items) {
+  for (const content of entry.tasks) {
     phase.tasks.push({ content, status: "pending" });
   }
 }

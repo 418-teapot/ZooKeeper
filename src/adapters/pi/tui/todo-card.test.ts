@@ -90,8 +90,8 @@ describe("pi todo card renderCall", () => {
       renderCall({
         op: "init",
         list: [
-          { phase: "环境搭建", items: ["a", "b"] },
-          { phase: "核心实现", items: ["c"] },
+          { phase: "环境搭建", tasks: ["a", "b"] },
+          { phase: "核心实现", tasks: ["c"] },
         ],
       }),
     );
@@ -105,7 +105,7 @@ describe("pi todo card renderCall", () => {
 
   it("lists task names for a flat init (no phase)", () => {
     const lines = renderComponent(
-      renderCall({ op: "init", items: ["改 schema", "补测试"] }),
+      renderCall({ op: "init", tasks: ["改 schema", "补测试"] }),
     );
     assert.ok(
       lines[0].includes("todo(初始化)") &&
@@ -141,7 +141,7 @@ describe("pi todo card renderCall", () => {
     const lines = renderComponent(
       renderCall({
         op: "init",
-        items: ["t1", "t2", "t3", "t4", "t5"],
+        tasks: ["t1", "t2", "t3", "t4", "t5"],
       }),
     );
     assert.ok(
@@ -167,7 +167,7 @@ describe("pi todo card renderCall", () => {
       { op: "init", list: "oops" },
       { op: "init", list: [null, 7, { list: "x" }] },
       { op: "block", task: 7, phase: null, reason: [] },
-      { op: "append", items: [null, 3, "ok"], phase: 9 },
+      { op: "append", tasks: [null, 3, "ok"], phase: 9 },
     ]) {
       const lines = renderComponent(renderCall(args));
       assert.equal(
@@ -424,7 +424,7 @@ describe("pi buildTodoCardRenderer (deps port shape)", () => {
     assert.equal(typeof renderer.renderResult, "function");
 
     const call = renderer.renderCall(
-      { op: "append", phase: "收尾", items: ["x"] },
+      { op: "append", phase: "收尾", tasks: ["x"] },
       THEME,
       {},
     ) as Renderable;

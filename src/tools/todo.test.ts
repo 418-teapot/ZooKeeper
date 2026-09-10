@@ -160,9 +160,9 @@ describe("todo tool operations", () => {
       list: [
         {
           phase: "Setup",
-          items: ["Install dependencies", "Configure environment"],
+          tasks: ["Install dependencies", "Configure environment"],
         },
-        { phase: "Ship", items: ["Write release notes"] },
+        { phase: "Ship", tasks: ["Write release notes"] },
       ],
     });
     assert.match(initText, /Install dependencies \[in_progress] \(Setup\)/);
@@ -194,7 +194,7 @@ describe("todo tool operations", () => {
     const appendText = await run(tool, {
       op: "append",
       phase: "Ship",
-      items: ["Tag release"],
+      tasks: ["Tag release"],
     });
     assert.match(appendText, /Tag release \[pending] \(Ship\)/);
 
@@ -237,7 +237,7 @@ describe("todo tool operations", () => {
 
   it("refuses a target-less done/drop/rm instead of hitting every task", async () => {
     const tool = makeTool();
-    await run(tool, { op: "init", items: ["One", "Two"] });
+    await run(tool, { op: "init", tasks: ["One", "Two"] });
     for (const op of ["done", "drop", "rm"]) {
       await assert.rejects(
         () => tool.execute({ op }, TOOL_CTX, {}),
@@ -260,8 +260,8 @@ describe("todo tool operations", () => {
     await run(tool, {
       op: "init",
       list: [
-        { phase: "P1", items: ["a", "b"] },
-        { phase: "P2", items: ["c"] },
+        { phase: "P1", tasks: ["a", "b"] },
+        { phase: "P2", tasks: ["c"] },
       ],
     });
     // init promotes the earliest pending: "a" is in_progress inside P1.
@@ -282,10 +282,10 @@ describe("todo tool operations", () => {
 
   it("replaces the whole list on a repeated init", async () => {
     const tool = makeTool();
-    await run(tool, { op: "init", items: ["Old task"] });
+    await run(tool, { op: "init", tasks: ["Old task"] });
     const text = await run(tool, {
       op: "init",
-      items: ["Fresh plan"],
+      tasks: ["Fresh plan"],
       phase: "Redo",
     });
     assert.doesNotMatch(text, /Old task/);
@@ -325,7 +325,7 @@ describe("todo tool argument validation", () => {
     );
   });
 
-  it("rejects an init with neither list nor items", () => {
+  it("rejects an init with neither list nor tasks", () => {
     expectRejection(
       { op: "init", phase: "P" },
       "init 缺少清单：需要 list",
@@ -335,13 +335,18 @@ describe("todo tool argument validation", () => {
 
   it("rejects an init carrying both payloads", () => {
     expectRejection(
-      { op: "init", list: [{ phase: "P", items: ["a"] }], items: ["b"] },
-      "不能同时带 list 和 items",
+      { op: "init", list: [{ phase: "P", tasks: ["a"] }], tasks: ["b"] },
+      "不能同时带 list 和 tasks",
       "init ambiguity",
     );
   });
 
   it("rejects an empty init list and a malformed list entry", () => {
+    expectRejection(
+      { op: "init", list: "oops" },
+      "list 必须是数组",
+      "list not an array",
+    );
     expectRejection(
       { op: "init", list: [] },
       "list 不能是空数组",
@@ -349,7 +354,7 @@ describe("todo tool argument validation", () => {
     );
     expectRejection(
       { op: "init", list: [{ phase: "P" }] },
-      "items 必须是字符串数组",
+      "tasks 必须是字符串数组",
       "list entry shape",
     );
     expectRejection(
@@ -361,14 +366,14 @@ describe("todo tool argument validation", () => {
 
   it("names the offending item index inside a string array", () => {
     expectRejection(
-      { op: "init", items: ["ok", 7] },
-      "items[2] 必须是非空字符串",
+      { op: "init", tasks: ["ok", 7] },
+      "tasks[2] 必须是非空字符串",
       "item index",
     );
     expectRejection(
-      { op: "append", phase: "P", items: [] },
-      "items 不能是空数组",
-      "empty items",
+      { op: "append", phase: "P", tasks: [] },
+      "tasks 不能是空数组",
+      "empty tasks",
     );
   });
 
@@ -388,25 +393,46 @@ describe("todo tool argument validation", () => {
     );
   });
 
-  it("rejects a legacy tasks field as an unknown field", () => {
+  it("rejects a batch-shaped tasks field on the single-target ops", () => {
     for (const op of ["done", "drop", "rm"]) {
       expectRejection(
         { op, tasks: ["a", "b"] },
-        `含未知字段 "tasks"：${op} 只接受 task`,
-        `${op} legacy tasks field`,
+        `含 ${op} 不接受的字段 "tasks"：${op} 只接受 task`,
+        `${op} batch-shaped tasks field`,
       );
     }
   });
 
+  it("refuses a stray items field as the unknown field it is", () => {
+    // `items` is not part of the argument vocabulary: it gets the generic
+    // unknown-field refusal, exactly like a field that never existed.
+    expectRejection(
+      { op: "init", items: ["a"] },
+      '含未知字段 "items"：init 只接受 list/tasks/phase',
+      "init unknown items",
+    );
+    expectRejection(
+      { op: "done", task: "a", items: ["b"] },
+      '含未知字段 "items"：done 只接受 task',
+      "done unknown items",
+    );
+    // A never-existing field is refused the same way.
+    expectRejection(
+      { op: "init", todos: ["a"] },
+      '含未知字段 "todos"',
+      "never-existing field",
+    );
+  });
+
   it("rejects an init whose phased list also carries a top-level phase", () => {
     expectRejection(
-      { op: "init", list: [{ phase: "P", items: ["a"] }], phase: "Q" },
+      { op: "init", list: [{ phase: "P", tasks: ["a"] }], phase: "Q" },
       "init 带 list 时不能带 phase",
       "init list + phase",
     );
     // The same refusal applies to the inferred (op-less) shape.
     expectRejection(
-      { list: [{ phase: "P", items: ["a"] }], phase: "Q" },
+      { list: [{ phase: "P", tasks: ["a"] }], phase: "Q" },
       "init 带 list 时不能带 phase",
       "inferred init list + phase",
     );
@@ -443,16 +469,16 @@ describe("todo tool argument validation", () => {
     );
   });
 
-  it("rejects an append with no phase and one with no items", () => {
+  it("rejects an append with no phase and one with no tasks", () => {
     expectRejection(
-      { op: "append", items: ["a"] },
+      { op: "append", tasks: ["a"] },
       "phase 必须是字符串",
       "append phase",
     );
     expectRejection(
       { op: "append", phase: "P" },
-      "items 必须是字符串",
-      "append items",
+      "tasks 必须是字符串",
+      "append tasks",
     );
   });
 
@@ -463,9 +489,9 @@ describe("todo tool argument validation", () => {
       "view payload",
     );
     expectRejection(
-      { op: "view", items: ["a"] },
+      { op: "view", tasks: ["a"] },
       "view 是只读操作，不带任何字段",
-      "view items",
+      "view tasks",
     );
     // The bare call is the only legal one.
     assert.deepEqual(parseTodoArgs({ op: "view" }), [{ op: "view" }]);
@@ -474,7 +500,7 @@ describe("todo tool argument validation", () => {
   it("errors without a session id in the tool context", async () => {
     const tool = makeTool({ host: fakeHost(null) });
     await assert.rejects(
-      () => tool.execute({ op: "init", items: ["a"] }, TOOL_CTX, {}),
+      () => tool.execute({ op: "init", tasks: ["a"] }, TOOL_CTX, {}),
       /无法确定会话 ID：工具上下文缺少 sessionID。/,
     );
   });
@@ -488,18 +514,18 @@ describe("todo tool op inference", () => {
   it("infers init from a list", () => {
     assert.deepEqual(
       parseTodoArgs({
-        list: [{ phase: "P", items: ["a"] }],
+        list: [{ phase: "P", tasks: ["a"] }],
       }),
-      [{ op: "init", list: [{ phase: "P", items: ["a"] }] }],
+      [{ op: "init", list: [{ phase: "P", tasks: ["a"] }] }],
     );
   });
 
-  it("infers init from bare items and append from items + phase", () => {
-    assert.deepEqual(parseTodoArgs({ items: ["a", "b"] }), [
-      { op: "init", items: ["a", "b"] },
+  it("infers init from bare tasks and append from tasks + phase", () => {
+    assert.deepEqual(parseTodoArgs({ tasks: ["a", "b"] }), [
+      { op: "init", tasks: ["a", "b"] },
     ]);
-    assert.deepEqual(parseTodoArgs({ items: ["a"], phase: "P" }), [
-      { op: "append", phase: "P", items: ["a"] },
+    assert.deepEqual(parseTodoArgs({ tasks: ["a"], phase: "P" }), [
+      { op: "append", phase: "P", tasks: ["a"] },
     ]);
   });
 
@@ -508,17 +534,19 @@ describe("todo tool op inference", () => {
     expectRejection({ phase: "P" }, "缺少 op", "phase alone");
     expectRejection({}, "缺少 op", "empty args");
     expectRejection({ reason: "waiting" }, "缺少 op", "reason alone");
+    // A field outside the payload vocabulary infers nothing.
+    expectRejection({ items: ["a"] }, "缺少 op", "unknown field alone");
   });
 
   it("never overrides an explicit op", () => {
-    // items + phase would infer append, but an explicit init wins.
-    assert.deepEqual(parseTodoArgs({ op: "init", items: ["a"], phase: "P" }), [
-      { op: "init", items: ["a"], phase: "P" },
+    // tasks + phase would infer append, but an explicit init wins.
+    assert.deepEqual(parseTodoArgs({ op: "init", tasks: ["a"], phase: "P" }), [
+      { op: "init", tasks: ["a"], phase: "P" },
     ]);
     // An explicit append keeps its meaning even where init would also fit.
     assert.deepEqual(
-      parseTodoArgs({ op: "append", phase: "P", items: ["a"] }),
-      [{ op: "append", phase: "P", items: ["a"] }],
+      parseTodoArgs({ op: "append", phase: "P", tasks: ["a"] }),
+      [{ op: "append", phase: "P", tasks: ["a"] }],
     );
   });
 });
@@ -547,8 +575,8 @@ describe("todo tool per-op fields", () => {
   function sampleValue(field: string): unknown {
     switch (field) {
       case "list":
-        return [{ phase: "P", items: ["a"] }];
-      case "items":
+        return [{ phase: "P", tasks: ["a"] }];
+      case "tasks":
         return ["a", "b"];
       case "phase":
         return "P";
@@ -561,46 +589,46 @@ describe("todo tool per-op fields", () => {
     }
   }
 
-  it("rejects list/items/reason/phase on done and rm, list/items/reason on drop", () => {
+  it("rejects list/tasks/reason/phase on done and rm, ditto on drop", () => {
     for (const op of ["done", "rm"]) {
-      for (const field of ["list", "items", "reason", "phase"]) {
+      for (const field of ["list", "tasks", "reason", "phase"]) {
         expectFieldRejected(op, field, { task: "a" });
       }
     }
-    for (const field of ["list", "items", "reason"]) {
+    for (const field of ["list", "tasks", "reason"]) {
       expectFieldRejected("drop", field, { task: "a" });
     }
   });
 
-  it("rejects list/items/reason on start", () => {
-    for (const field of ["list", "items", "reason"]) {
+  it("rejects list/tasks/reason on start", () => {
+    for (const field of ["list", "tasks", "reason"]) {
       expectFieldRejected("start", field, { task: "a" });
     }
   });
 
-  it("rejects list/items on block and unblock, reason on unblock", () => {
-    expectFieldRejected("block", "items", { task: "a", reason: "waiting" });
-    expectFieldRejected("block", "list", { task: "a", reason: "waiting" });
-    expectFieldRejected("unblock", "items", { task: "a" });
-    expectFieldRejected("unblock", "list", { task: "a" });
+  it("rejects list/tasks on block and unblock, reason on unblock", () => {
+    for (const field of ["list", "tasks"]) {
+      expectFieldRejected("block", field, { task: "a", reason: "waiting" });
+      expectFieldRejected("unblock", field, { task: "a" });
+    }
     expectFieldRejected("unblock", "reason", { task: "a" });
   });
 
-  it("rejects task/reason on append and init, reason/list-or-items as needed", () => {
+  it("rejects task/reason on append and init, reason/list as needed", () => {
     for (const field of ["task", "reason"]) {
-      expectFieldRejected("append", field, { phase: "P", items: ["a"] });
-      expectFieldRejected("init", field, { items: ["a"] });
+      expectFieldRejected("append", field, { phase: "P", tasks: ["a"] });
+      expectFieldRejected("init", field, { tasks: ["a"] });
     }
     expectFieldRejected("init", "reason", {
-      list: [{ phase: "P", items: ["a"] }],
+      list: [{ phase: "P", tasks: ["a"] }],
     });
   });
 
   it("keeps every op's own accepted combination", () => {
     const accepted: unknown[] = [
-      { op: "init", list: [{ phase: "P", items: ["a"] }] },
-      { op: "init", items: ["a"] },
-      { op: "init", items: ["a"], phase: "P" },
+      { op: "init", list: [{ phase: "P", tasks: ["a"] }] },
+      { op: "init", tasks: ["a"] },
+      { op: "init", tasks: ["a"], phase: "P" },
       { op: "start", task: "a" },
       { op: "done", task: "a" },
       { op: "drop", task: "a" },
@@ -610,7 +638,7 @@ describe("todo tool per-op fields", () => {
       { op: "block", phase: "P", reason: "waiting" },
       { op: "unblock", task: "a" },
       { op: "unblock", phase: "P" },
-      { op: "append", phase: "P", items: ["a"] },
+      { op: "append", phase: "P", tasks: ["a"] },
       { op: "view" },
     ];
     for (const args of accepted) {
@@ -625,27 +653,36 @@ describe("todo tool per-op fields", () => {
     assert.deepEqual(parseTodoArgs({ op: "view" }), [{ op: "view" }]);
   });
 
-  it("blocks the destructive no-target rm behind a stray items field", async () => {
+  it("blocks the destructive no-target rm behind a stray batch field", async () => {
     const tool = makeTool();
-    await run(tool, { op: "init", items: ["Alpha", "Beta"] });
+    await run(tool, { op: "init", tasks: ["Alpha", "Beta"] });
     const before = await state();
 
-    const hostCtx: { details?: unknown } = {};
-    await assert.rejects(
-      () =>
-        tool.execute({ op: "rm", items: ["Alpha", "Beta"] }, TOOL_CTX, hostCtx),
-      /rm 不接受的字段 "items"/,
-    );
-    assert.deepEqual(
-      await state(),
-      before,
-      "a stray items field must never reach the 'every task' default",
-    );
-    assert.equal(
-      hostCtx.details,
-      undefined,
-      "a rejected call records no snapshot",
-    );
+    for (const [field, refusal] of [
+      ["tasks", 'rm 不接受的字段 "tasks"'],
+      ["items", '含未知字段 "items"：rm 只接受 task'],
+    ] as const) {
+      const hostCtx: { details?: unknown } = {};
+      await assert.rejects(
+        () =>
+          tool.execute(
+            { op: "rm", [field]: ["Alpha", "Beta"] },
+            TOOL_CTX,
+            hostCtx,
+          ),
+        new RegExp(refusal),
+      );
+      assert.deepEqual(
+        await state(),
+        before,
+        `a stray ${field} field must never reach the 'every task' default`,
+      );
+      assert.equal(
+        hostCtx.details,
+        undefined,
+        "a rejected call records no snapshot",
+      );
+    }
     // And the list is still fully intact for a correctly targeted rm later.
     await run(tool, { op: "rm", task: "Alpha" });
     const text = await run(tool, { op: "rm", task: "Beta" });
@@ -662,7 +699,7 @@ describe("todo tool atomicity", () => {
     const tool = makeTool();
     await run(tool, {
       op: "init",
-      items: ["Install dependencies", "Configure environment"],
+      tasks: ["Install dependencies", "Configure environment"],
     });
     const before = await state();
 
@@ -689,14 +726,14 @@ describe("todo tool atomicity", () => {
 
   it("keeps a later duplicate-content append from half-applying", async () => {
     const tool = makeTool();
-    await run(tool, { op: "init", items: ["Alpha", "Beta"] });
+    await run(tool, { op: "init", tasks: ["Alpha", "Beta"] });
     const before = await state();
 
     // An append of an existing content is reported, not applied.
     const text = await run(tool, {
       op: "append",
       phase: "P",
-      items: ["Alpha"],
+      tasks: ["Alpha"],
     });
     assert.match(text, /^Errors: /);
     assert.match(text, /already exists/);
@@ -705,7 +742,7 @@ describe("todo tool atomicity", () => {
 
   it("reports the errors while echoing the untouched remaining items", async () => {
     const tool = makeTool();
-    await run(tool, { op: "init", items: ["Alpha", "Beta"] });
+    await run(tool, { op: "init", tasks: ["Alpha", "Beta"] });
     const text = await run(tool, { op: "done", task: "task-1" });
     assert.match(text, /Errors: .*task-1/);
     assert.match(text, /Alpha/);
@@ -721,7 +758,7 @@ describe("todo tool snapshot details", () => {
   it("writes a fresh { op, phases } snapshot after every successful mutating call", async () => {
     const tool = makeTool();
     const calls: Array<Record<string, unknown>> = [
-      { op: "init", items: ["Install dependencies", "Run tests"] },
+      { op: "init", tasks: ["Install dependencies", "Run tests"] },
       { op: "start", task: "Run tests" },
       { op: "done", task: "Run tests" },
       { op: "block", task: "Install dependencies", reason: "registry offline" },
@@ -750,7 +787,7 @@ describe("todo tool snapshot details", () => {
 
   it("writes nothing for a read-only view", async () => {
     const tool = makeTool();
-    await run(tool, { op: "init", items: ["Only task"] });
+    await run(tool, { op: "init", tasks: ["Only task"] });
     const hostCtx: { details?: unknown } = {};
     await tool.execute({ op: "view" }, TOOL_CTX, hostCtx);
     assert.equal(hostCtx.details, undefined, "view records no state change");
@@ -758,9 +795,9 @@ describe("todo tool snapshot details", () => {
 
   it("restores the live state from the newest transcript snapshot", async () => {
     const first = makeTool();
-    await run(first, { op: "init", items: ["A", "B"] });
+    await run(first, { op: "init", tasks: ["A", "B"] });
     await run(first, { op: "done", task: "A" });
-    await run(first, { op: "append", phase: "Todos", items: ["C"] });
+    await run(first, { op: "append", phase: "Todos", tasks: ["C"] });
 
     // A fresh store instance has an empty cache, so its first read restores
     // from the newest-first candidates the host's scan supplies.
@@ -782,7 +819,7 @@ describe("todo tool snapshot details", () => {
   it("drops snapshots written by a host that builds no details slot", async () => {
     const tool = makeTool();
     const text = await tool.execute(
-      { op: "init", items: ["No details host"] },
+      { op: "init", tasks: ["No details host"] },
       TOOL_CTX,
     );
     assert.match(text, /No details host/);
@@ -805,7 +842,7 @@ describe("todo tool concurrency", () => {
 
   it("loses no update when two mutations are dispatched together", async () => {
     const tool = makeTool();
-    await run(tool, { op: "init", items: ["Alpha", "Beta"] });
+    await run(tool, { op: "init", tasks: ["Alpha", "Beta"] });
 
     const ctxAlpha: { details?: unknown } = {};
     const ctxBeta: { details?: unknown } = {};
@@ -837,12 +874,12 @@ describe("todo tool concurrency", () => {
 
   it("applies every one of many concurrent mutating calls", async () => {
     const tool = makeTool();
-    await run(tool, { op: "init", items: ["T1", "T2", "T3", "T4"] });
+    await run(tool, { op: "init", tasks: ["T1", "T2", "T3", "T4"] });
 
     const calls = [
       { op: "done", task: "T1" },
       { op: "drop", task: "T2" },
-      { op: "append", items: ["T5"], phase: "Todos" },
+      { op: "append", tasks: ["T5"], phase: "Todos" },
       { op: "rm", task: "T3" },
       { op: "block", task: "T4", reason: "waiting on the registry" },
     ];
@@ -868,7 +905,7 @@ describe("todo tool concurrency", () => {
 
   it("still reports a failed call to its own caller only", async () => {
     const tool = makeTool();
-    await run(tool, { op: "init", items: ["Alpha"] });
+    await run(tool, { op: "init", tasks: ["Alpha"] });
 
     const outcomes = await Promise.allSettled([
       tool.execute({ op: "done", task: "Ghost" }, TOOL_CTX, {}),
@@ -905,8 +942,8 @@ describe("todo tool concurrency", () => {
     const toolB = todoUnit.create(depsFor(second), {} as ActiveSet).tools[0];
 
     await Promise.all([
-      toolA.execute({ op: "init", items: ["A only"] }, TOOL_CTX, {}),
-      toolB.execute({ op: "init", items: ["B only"] }, TOOL_CTX, {}),
+      toolA.execute({ op: "init", tasks: ["A only"] }, TOOL_CTX, {}),
+      toolB.execute({ op: "init", tasks: ["B only"] }, TOOL_CTX, {}),
     ]);
 
     assert.deepEqual(
@@ -966,7 +1003,7 @@ describe("todo tool unit descriptor", () => {
       todoStore: store,
     } as unknown as Deps;
     const tool = todoUnit.create(deps, {} as ActiveSet).tools[0];
-    await tool.execute({ op: "init", items: ["Injected"] }, TOOL_CTX, {});
+    await tool.execute({ op: "init", tasks: ["Injected"] }, TOOL_CTX, {});
     assert.equal(
       statusOf(await store.get(TEST_SESSION_ID), "Injected"),
       "in_progress",
@@ -980,13 +1017,15 @@ describe("todo tool unit descriptor", () => {
     // errors stay reachable.
     assert.deepEqual(tool.required, []);
     assert.deepEqual(Object.keys(tool.args ?? {}).sort(), [
-      "items",
       "list",
       "op",
       "phase",
       "reason",
       "task",
+      "tasks",
     ]);
+    // Fields outside the schema carry no entry of their own.
+    assert.equal(tool.args?.items, undefined);
     assert.equal(tool.args?.entries, undefined);
   });
 
@@ -1035,5 +1074,7 @@ describe("todo tool unit descriptor", () => {
       );
     }
     assert.doesNotMatch(tool.description, /entries/);
+    // The batch list field is spelled `tasks` everywhere the model can see.
+    assert.doesNotMatch(tool.description, /items/);
   });
 });

@@ -99,14 +99,14 @@ const TODO_OP_LABELS: Record<TodoOperation, string> = {
  * Structural subset of the todo tool's raw call arguments.
  *
  * The tool's arguments are flat: one `op` plus that op's payload fields at
- * the top level (`list` / `items` / `phase` / `task` / `reason`).  `reason`
+ * the top level (`list` / `tasks` / `phase` / `task` / `reason`).  `reason`
  * is carried for completeness but is a note, not a target, so `callTargets`
  * never lists it.
  */
 interface TodoToolArgs {
   op?: unknown;
   list?: unknown;
-  items?: unknown;
+  tasks?: unknown;
   phase?: unknown;
   task?: unknown;
   reason?: unknown;
@@ -266,9 +266,9 @@ function collectStrings(value: unknown, targets: string[]): void {
 /**
  * The target labels a call acts on.
  *
- * Reads the flat payload fields loosely (the same `{op, list|items|phase|
+ * Reads the flat payload fields loosely (the same `{op, list|tasks|phase|
  * task}` shape the tool validates strictly — a malformed call degrades to
- * fewer labels, never a throw): `task` / `items` name the targeted rows,
+ * fewer labels, never a throw): `task` / `tasks` name the targeted rows,
  * `phase` names a phase target, and `init`'s canonical `list` contributes
  * its phase names.
  *
@@ -285,7 +285,7 @@ function callTargets(args: TodoToolArgs): string[] {
   }
   collectStrings(args.phase, targets);
   collectStrings(args.task, targets);
-  collectStrings(args.items, targets);
+  collectStrings(args.tasks, targets);
   return targets;
 }
 
@@ -299,7 +299,7 @@ function callTargets(args: TodoToolArgs): string[] {
  * itself truncates at render width through `TitleLine`, so no
  * character-cutting happens before the real width is known.
  *
- * @param args - The raw tool-call arguments (`{ op, list?, items?, phase?,
+ * @param args - The raw tool-call arguments (`{ op, list?, tasks?, phase?,
  *   task?, reason? }`).
  * @returns A component tree (the single title line).
  */

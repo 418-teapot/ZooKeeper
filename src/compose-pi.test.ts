@@ -1123,7 +1123,7 @@ describe("pi composition — the todo tool registration boundary", () => {
     // Mutating through the composed tool must land in the very store the
     // host injected (no hidden re-creation), so the host's own invalidation
     // and the tool always share one cache.
-    await tools.todo?.execute({ op: "init", items: ["Injected"] }, {}, {});
+    await tools.todo?.execute({ op: "init", tasks: ["Injected"] }, {}, {});
     const phases = await store.get("sess-compose");
     assert.equal(phases[0]?.tasks[0]?.content, "Injected");
   });

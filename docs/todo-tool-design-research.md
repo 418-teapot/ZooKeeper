@@ -3,6 +3,7 @@
 > 调研日期：2026-08-13
 > 更新：2026-09-06 源码核实 oh-my-pi（todo.ts 1273 行 / todo-tracker.ts 399 行 / todo.md 44 行）与 pi 示例（todo.ts 297 行），修正动画范围、守卫数量等转述误差，新增 4.5 TUI 呈现设计
 > 更新：2026-09-10 参数形状决策改写——从 `{op, entries[]}` 批量信封改为扁平字段、一次调用一个 op（见 4.6），原子性语义随之从"同 op 批量整批原子"改为"单 op 单次调用原子"
+> 更新：2026-09-10 清单字段改名 `items` → `tasks`（见 4.6.2）——实测调用方反复把清单写成标量字段 `task`（同工具内高频合法字段成了错误吸引子，干净上下文的首次调用即错），改复数 `tasks` 与"task 管单个、tasks 管清单"的直觉对齐；`items` 就此退役、不再被接受，与任意未知字段同等拒绝。本工具与 oh-my-pi 的字段名自此不同（见 4.6.6）
 > 关联文档：[pi-subagent.md](pi-subagent.md)、[todo-nudge-research.md](todo-nudge-research.md)
 
 ## 1. 背景与动机
@@ -242,33 +243,33 @@ checkCompletion 和 mid-run nudge 是 oh-my-pi 调研中定位的"低成本高�
 #### 4.6.2 schema 形状与字段规则
 
 ```
-{ op, list?, items?, phase?, task?, reason? }
+{ op, list?, tasks?, phase?, task?, reason? }
 ```
 
 除 `op` 外只有 5 个可选参数字段，全部平铺在顶层，没有任何数组信封。每个 op 只接受自己那一份字段：
 
 | op | 接受的顶层字段 | 最小合法调用 |
 |---|---|---|
-| init | `list` **或** `items`（可配 `phase`），二者互斥 | `{"op":"init","list":[{"phase":"实现","items":["改 schema"]}]}` |
+| init | `list` **或** `tasks`（可配 `phase`），二者互斥 | `{"op":"init","list":[{"phase":"实现","tasks":["改 schema"]}]}` |
 | start | `task` | `{"op":"start","task":"改 schema"}` |
 | done | `task` | `{"op":"done","task":"改 schema"}` |
 | drop | `task` \| `phase` 恰好其一 | `{"op":"drop","task":"改 schema"}` |
 | rm | `task` | `{"op":"rm","task":"改 schema"}` |
 | block | `task` \| `phase` 恰好其一 + `reason` | `{"op":"block","task":"改 schema","reason":"等用户确认方案"}` |
 | unblock | `task` \| `phase` 恰好其一 | `{"op":"unblock","task":"改 schema"}` |
-| append | `phase` + `items` | `{"op":"append","phase":"实现","items":["补文档"]}` |
+| append | `phase` + `tasks` | `{"op":"append","phase":"实现","tasks":["补文档"]}` |
 | view | 不带任何字段 | `{"op":"view"}` |
 
 字段规则：
 
-- **只保留单数 `task`，砍掉 `tasks` 复数**——批量语义交给"发多条调用"；`items` 的复数只留给意图天然复数的 op（`init` 建清单、`append` 追加任务）。复数字段等于在扁平形状里重新埋回一个信封。
+- **单复数按意图分职**：`task`（单数）永远指向一个任务，`tasks`（复数）只出现在意图天然复数的 op（`init` 建清单、`append` 追加任务），二者永不同时属于同一个 op。清单字段最初拼作 `items`，因调用方反复把它误写成 `task`（复数 `items` 与单数 `task` 之间没有形态上的对应关系），2026-09-10 改名 `tasks`；批量语义仍由"发多条调用"承担，清单字段本身仍只是一份扁平数组，不是信封。
 - **每个 op 各自持有字段白名单**，不只拒绝未知字段：一个对本 op 无意义的字段若被忽略，`done`/`rm` 就成了"无目标"，而 core 把无目标读作"全部任务"——打错一个字段就能清空整个清单。爆炸半径在参数边界收口。
-- **三个破坏性 op 中，`done`/`rm` 只接受 `task`**：收到批量形状的字段（`items`/`list`）时，纠偏文案指向“拆成多条调用”，而不是指向一个会放大爆炸半径的字段。`drop` 例外地接受 `phase`：分界线是记录是否保留——drop 记为 abandoned（记录可观测），整阶段放弃是真实的单一意图；rm 是抯除记录（不可逆），批量抯除没有正当意图场景，必须逐条点名。
+- **三个破坏性 op 中，`done`/`rm` 只接受 `task`**：收到批量形状的字段（`tasks`/`list`）时，纠偏文案指向“拆成多条调用”，而不是指向一个会放大爆炸半径的字段。`drop` 例外地接受 `phase`：分界线是记录是否保留——drop 记为 abandoned（记录可观测），整阶段放弃是真实的单一意图；rm 是抯除记录（不可逆），批量抯除没有正当意图场景，必须逐条点名。
 - **状态变更在工具内部串行**（store 自带的 promise 链闸门，见 `core/sequencer`）：宿主默认并发一轮内的多个工具调用，并发 todo 会对状态缓存丢更新、写出分叉快照。不用 `executionMode: "sequential"` 声明——pi 的批次调度是“任一 sequential 则整批串行”，该声明会把同批次的无关工具（如并行 subagent 派发）一起拖慢；互斥收进工具内部后保护粒度等于资源粒度。
 
 #### 4.6.3 分层校验：schema 管形式，运行时管意义
 
-- JSON Schema 只能表达"这 6 个字段的类型"，表达不了"`init` 的 `list` 与 `items` 二选一""`block` 的 `task`/`phase` 恰好其一"这类跨字段约束，两宿主也不会为它报错；
+- JSON Schema 只能表达"这 6 个字段的类型"，表达不了"`init` 的 `list` 与 `tasks` 二选一""`block` 的 `task`/`phase` 恰好其一"这类跨字段约束，两宿主也不会为它报错；
 - 所以这些约束全部放在 execute 入口的参数解析里，与类型错误共用同一条失败通道——模型收到的都是一条带示例的 todo 参数错误，不需要区分两种报错风格；
 - `op` 在 schema 层同样可选（`required: []`）：schema 若把 op 标为必填，缺 op 的调用在宿主校验层就被泛化错误拒掉，运行时的形状推断兜底（见 4.6.5）将永远不可达——所以 schema 全可选，运行时校验权威；
 - 宿主反馈机制：上游 pi 把参数校验错误作为 tool result 回流模型（不中断会话），因此**错误消息本身就是纠偏通道**，内容质量直接决定能否一次转正（不需 `prepareArguments` shim，理由见 3.3）。
@@ -290,8 +291,8 @@ checkCompletion 和 mid-run nudge 是 oh-my-pi 调研中定位的"低成本高�
 | 字段形状 | 推断为 |
 |---|---|
 | 含 `list` | `init` |
-| 含 `items` + 含 `phase` | `append` |
-| 含 `items`、不含 `phase` | `init` |
+| 含 `tasks` + 含 `phase` | `append` |
+| 含 `tasks`、不含 `phase` | `init` |
 | 其余（无 `op` 也无可识别字段） | 拒绝，错误消息展开全部 9 个 op |
 
 显式 `op` 优先且永不事后质疑（不做"看起来不像这个 op"的二次猜测）。
@@ -300,7 +301,7 @@ checkCompletion 和 mid-run nudge 是 oh-my-pi 调研中定位的"低成本高�
 
 | | OpenCode `todowrite` | oh-my-pi `todo` | 本工具 `todo` |
 |---|---|---|---|
-| 参数形状 | 单层 `{todos:[...]}` | 扁平 `{op, list?, task?, phase?, items?, reason?}` | 同 oh-my-pi（已对齐） |
+| 参数形状 | 单层 `{todos:[...]}` | 扁平 `{op, list?, task?, phase?, items?, reason?}` | 扁平 `{op, list?, task?, phase?, tasks?, reason?}`（同构，仅清单字段改名 `tasks`） |
 | 更新语义 | 全量替换，零分支 | 9 op 增量 | 9 op 增量 |
 | 一次调用 | 写完整清单 | 一个 op（op 内可含多个字段） | 一个 op（op 内最多一份清单类字段） |
 | 原子性 | 天然（写入即替换） | 单 op 内整批校验，任一条非法则不落库 | 单 op 单次调用原子，出错时输入状态原样返回 |
@@ -317,7 +318,7 @@ checkCompletion 和 mid-run nudge 是 oh-my-pi 调研中定位的"低成本高�
 
 吸取 opencode task→subagent 改名教训（"task" 一词在 v1 承载 5 种语义）：ZooKeeper 已有 `task()` 委派概念（prompt 层），todo 工具应避开 `task` 词根。工具名定为 `todo`（`op` 参数区分动作），todo item 的存储字段用 `content` 不用 `task`/`id`。
 
-与 4.6 的衔接：扁平参数里确实有一个叫 `task` 的入参字段，但它指的是"待寻址任务的 content 原文"（标识符的值），不是另一种实体；且只有单数形式，不构成第二套批量词汇。
+与 4.6 的衔接：扁平参数里确实有一个叫 `task` 的入参字段，但它指的是"待寻址任务的 content 原文"（标识符的值），不是另一种实体；批量清单字段 `tasks` 与之同词根（清单内容本来就是任务），单/复数按意图分职、永不同属一个 op，因此仍不构成第二套词汇。
 
 ## 5. 分期路线
 
@@ -345,7 +346,7 @@ P0-P2 是"MVP：双宿主可用的 todo 工具"；P3-P4 是"编排闭环"；P5 �
 
 - **可行性**：双宿主（OpenCode v1/v2、pi）均验证可注册自定义工具，pi 侧官方有完整 todo 扩展示例；状态持久化经 toolResult details 快照天然解决分支/恢复问题。
 - **参数形状**：扁平字段 + 单 op 单次调用，已取代首版的 `{op, entries[]}` 信封——后者因模型漏传信封连续失败 9 次（生成式模式锁定，光改文案纠不回来），详见 4.6。
-- **设计蓝本**：状态机与 op 集照抄 oh-my-pi 纯逻辑（约 500 行零依赖代码），参数形状照抄其扁平设计（`{op, list?, items?, phase?, task?, reason?}`，一次调用一个 op，见 4.6），模型引导三件套用 ZooKeeper 现有事件通道近似，砍掉依赖宿主深度集成的编排联动。
+- **设计蓝本**：状态机与 op 集照抄 oh-my-pi 纯逻辑（约 500 行零依赖代码），参数形状照抄其扁平设计（六个顶层字段、一次调用一个 op，见 4.6；清单字段本工具改名 `tasks`，其余同名），模型引导三件套用 ZooKeeper 现有事件通道近似，砍掉依赖宿主深度集成的编排联动。
 - **必要性**：v2 断供使 getTodoState 链路静默失效（P4 必须做）；且宿主 todo 对插件只读，自建是编排闭环（委派勾选、停手清点）的唯一途径。
 - **成本估算**：P0-P2（MVP）约 800-1000 行（含测试），P3-P4 约 300-400 行；核心风险在 P1 的 OpenCode details 读取与 subagent deny 验证。
 - **TUI 方案**：pi 侧 widget 双列并排（左 fleet 右 todo）定稿（4.5），与 fleet 共享色彩/符号词汇和渲染管线；OpenCode 侧栏加 section 的数据通道现成；TUI 总量可控，不复刻 oh-my-pi 的 HUD 全家桶。

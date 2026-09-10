@@ -57,7 +57,7 @@ export interface TodoItemView {
 /** One phase entry of a canonical `init` list. */
 export interface TodoInitPhase {
   phase: string;
-  items: string[];
+  tasks: string[];
 }
 
 /** One operation entry targeting the todo state machine. */
@@ -66,7 +66,7 @@ export interface TodoEntry {
   /** Canonical phased list for `init`. */
   list?: TodoInitPhase[];
   /** Flat contents for a single-phase `init`, or the payload of `append`. */
-  items?: string[];
+  tasks?: string[];
   /** Phase name for a flattened `init`, the `append` target, or a phase target. */
   phase?: string;
   /** Single task target by exact content text. */

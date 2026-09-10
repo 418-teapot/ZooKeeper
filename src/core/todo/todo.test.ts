@@ -135,8 +135,8 @@ describe("init", () => {
     const result = applied([], {
       op: "init",
       list: [
-        { phase: "Foundation", items: ["Scaffold", "Wire"] },
-        { phase: "Auth", items: ["Port store"] },
+        { phase: "Foundation", tasks: ["Scaffold", "Wire"] },
+        { phase: "Auth", tasks: ["Port store"] },
       ],
     });
     // Normalization promotes the earliest pending task right after init.
@@ -147,14 +147,14 @@ describe("init", () => {
   });
 
   it("accepts the flattened shape with the default phase name Todos", () => {
-    const result = applied([], { op: "init", items: ["a", "b"] });
+    const result = applied([], { op: "init", tasks: ["a", "b"] });
     assert.deepEqual(result, [
       phase("Todos", ["a", "in_progress"], ["b", "pending"]),
     ]);
   });
 
   it("accepts the flattened shape with an explicit phase", () => {
-    const result = applied([], { op: "init", items: ["a"], phase: "Build" });
+    const result = applied([], { op: "init", tasks: ["a"], phase: "Build" });
     assert.deepEqual(result, [phase("Build", ["a", "in_progress"])]);
   });
 
@@ -163,9 +163,9 @@ describe("init", () => {
     const result = apply(before, {
       op: "init",
       list: [
-        { phase: "A", items: ["dup"] },
-        { phase: "B", items: ["dup", "dup"] },
-        { phase: "A", items: ["z"] },
+        { phase: "A", tasks: ["dup"] },
+        { phase: "B", tasks: ["dup", "dup"] },
+        { phase: "A", tasks: ["z"] },
       ],
     });
     assert.equal(result.errors.length, 3);
@@ -176,33 +176,33 @@ describe("init", () => {
   });
 
   it("rejects an empty phase entry in the canonical list", () => {
-    const result = apply([], { op: "init", list: [{ phase: "A", items: [] }] });
+    const result = apply([], { op: "init", list: [{ phase: "A", tasks: [] }] });
     assert.equal(result.errors.length, 1);
-    assert.ok(result.errors[0].includes('Phase "A" contains no items'));
+    assert.ok(result.errors[0].includes('Phase "A" contains no tasks'));
     assert.deepEqual(result.phases, []);
   });
 
   it("rejects a missing list entirely", () => {
-    const result = apply([], { op: "init", items: [] });
+    const result = apply([], { op: "init", tasks: [] });
     assert.equal(result.errors[0], "Missing list for init operation");
     assert.deepEqual(result.phases, []);
   });
 
   it("rejects malformed init list entries without throwing", () => {
     const before = [phase("Keep", ["x", "pending"])];
-    // Missing items field.
-    const missingItems = apply(before, {
+    // Missing tasks field.
+    const missingTasks = apply(before, {
       op: "init",
       list: [{ phase: "A" }],
     } as unknown as TodoEntry);
-    assert.equal(missingItems.errors.length, 1);
-    assert.ok(missingItems.errors[0].includes("Malformed init list entry"));
-    assert.deepEqual(missingItems.phases, before);
+    assert.equal(missingTasks.errors.length, 1);
+    assert.ok(missingTasks.errors[0].includes("Malformed init list entry"));
+    assert.deepEqual(missingTasks.phases, before);
 
-    // Non-array items.
+    // Non-array tasks.
     const nonArray = apply(before, {
       op: "init",
-      list: [{ phase: "A", items: 42 }],
+      list: [{ phase: "A", tasks: 42 }],
     } as unknown as TodoEntry);
     assert.equal(nonArray.errors.length, 1);
     assert.deepEqual(nonArray.phases, before);
@@ -210,33 +210,33 @@ describe("init", () => {
     // Non-string phase: never becomes an unaddressable orphan phase.
     const nonStringPhase = apply(before, {
       op: "init",
-      list: [{ phase: 7, items: ["a"] }],
+      list: [{ phase: 7, tasks: ["a"] }],
     } as unknown as TodoEntry);
     assert.equal(nonStringPhase.errors.length, 1);
     assert.deepEqual(nonStringPhase.phases, before);
 
-    // Non-string items element.
-    const nonStringItem = apply(before, {
+    // Non-string tasks element.
+    const nonStringTask = apply(before, {
       op: "init",
-      list: [{ phase: "A", items: ["ok", 42] }],
+      list: [{ phase: "A", tasks: ["ok", 42] }],
     } as unknown as TodoEntry);
-    assert.equal(nonStringItem.errors.length, 1);
-    assert.deepEqual(nonStringItem.phases, before);
+    assert.equal(nonStringTask.errors.length, 1);
+    assert.deepEqual(nonStringTask.phases, before);
 
-    // Flat items must be an array of strings.
+    // Flat tasks must be an array of strings.
     const flatNonArray = apply(before, {
       op: "init",
-      items: 42,
+      tasks: 42,
     } as unknown as TodoEntry);
     assert.equal(flatNonArray.errors.length, 1);
     assert.deepEqual(flatNonArray.phases, before);
   });
 
-  it("prefers canonical list over a stray flat items field", () => {
+  it("prefers canonical list over a stray flat tasks field", () => {
     const result = applied([], {
       op: "init",
-      list: [{ phase: "A", items: ["a"] }],
-      items: ["stray"],
+      list: [{ phase: "A", tasks: ["a"] }],
+      tasks: ["stray"],
     });
     assert.deepEqual(result, [phase("A", ["a", "in_progress"])]);
   });
@@ -250,13 +250,13 @@ describe("init", () => {
   it("repeated init overwrites the whole list (restart semantics)", () => {
     const first = applied([], {
       op: "init",
-      list: [{ phase: "A", items: ["old"] }],
+      list: [{ phase: "A", tasks: ["old"] }],
     });
     const second = applied(first, {
       op: "init",
       list: [
-        { phase: "B", items: ["new1"] },
-        { phase: "C", items: ["new2"] },
+        { phase: "B", tasks: ["new1"] },
+        { phase: "C", tasks: ["new2"] },
       ],
     });
     assert.deepEqual(second, [
@@ -276,7 +276,7 @@ describe("append", () => {
     const result = applied(before, {
       op: "append",
       phase: "Build",
-      items: ["b"],
+      tasks: ["b"],
     });
     // a was the earliest pending task and becomes active post-batch.
     assert.deepEqual(result, [
@@ -285,7 +285,7 @@ describe("append", () => {
   });
 
   it("creates a missing phase for append", () => {
-    const result = applied([], { op: "append", phase: "New", items: ["a"] });
+    const result = applied([], { op: "append", phase: "New", tasks: ["a"] });
     assert.deepEqual(result, [phase("New", ["a", "in_progress"])]);
   });
 
@@ -297,7 +297,7 @@ describe("append", () => {
     const result = apply(before, {
       op: "append",
       phase: "P2",
-      items: ["shared"],
+      tasks: ["shared"],
     });
     assert.equal(result.errors[0], 'Task "shared" already exists');
     assert.deepEqual(result.phases, before);
@@ -308,47 +308,47 @@ describe("append", () => {
     const result = apply(before, {
       op: "append",
       phase: "P",
-      items: ["b", "b"],
+      tasks: ["b", "b"],
     });
     assert.equal(result.errors.length, 1);
     assert.deepEqual(result.phases, before);
   });
 
-  it("rejects missing phase and missing items", () => {
+  it("rejects missing phase and missing tasks", () => {
     const before = [phase("P", ["a", "pending"])];
-    const noPhase = apply(before, { op: "append", items: ["b"] });
+    const noPhase = apply(before, { op: "append", tasks: ["b"] });
     assert.equal(noPhase.errors[0], "Missing phase name for append operation");
-    const noItems = apply(before, { op: "append", phase: "P" });
-    assert.equal(noItems.errors[0], "Missing items for append operation");
-    assert.deepEqual(noItems.phases, before);
+    const noTasks = apply(before, { op: "append", phase: "P" });
+    assert.equal(noTasks.errors[0], "Missing tasks for append operation");
+    assert.deepEqual(noTasks.phases, before);
   });
 
-  it("rejects malformed append items without throwing", () => {
+  it("rejects malformed append tasks without throwing", () => {
     const before = [phase("P", ["a", "pending"])];
-    // Non-array items.
+    // Non-array tasks.
     const nonArray = apply(before, {
       op: "append",
       phase: "P",
-      items: 42,
+      tasks: 42,
     } as unknown as TodoEntry);
     assert.equal(nonArray.errors.length, 1);
-    assert.ok(nonArray.errors[0].includes("Missing items"));
+    assert.ok(nonArray.errors[0].includes("Missing tasks"));
     assert.deepEqual(nonArray.phases, before);
 
     // A string must not be iterated character-by-character.
-    const stringItems = apply(before, {
+    const stringTasks = apply(before, {
       op: "append",
       phase: "P",
-      items: "abc",
+      tasks: "abc",
     } as unknown as TodoEntry);
-    assert.equal(stringItems.errors.length, 1);
-    assert.deepEqual(stringItems.phases, before);
+    assert.equal(stringTasks.errors.length, 1);
+    assert.deepEqual(stringTasks.phases, before);
 
-    // Non-string items element.
+    // Non-string tasks element.
     const nonString = apply(before, {
       op: "append",
       phase: "P",
-      items: ["b", 7],
+      tasks: ["b", 7],
     } as unknown as TodoEntry);
     assert.equal(nonString.errors.length, 1);
     assert.ok(nonString.errors[0].includes("array of strings"));
@@ -676,7 +676,7 @@ describe("batch atomicity", () => {
       before,
       { op: "start", task: "a" },
       { op: "done", task: "ghost" },
-      { op: "append", phase: "P1", items: ["new"] },
+      { op: "append", phase: "P1", tasks: ["new"] },
     );
     assert.equal(result.errors.length, 1);
     assert.deepEqual(result.phases, before);
@@ -697,7 +697,7 @@ describe("batch atomicity", () => {
     const result = apply(before, { op: "frobnicate" } as unknown as TodoEntry, {
       op: "append",
       phase: "P",
-      items: ["b"],
+      tasks: ["b"],
     });
     assert.equal(result.errors.length, 1);
     assert.ok(result.errors[0].includes('Unknown operation "frobnicate"'));
@@ -708,8 +708,8 @@ describe("batch atomicity", () => {
     const before = [phase("P", ["a", "pending"])];
     const result = apply(
       before,
-      { op: "append", phase: "P", items: ["b"] },
-      { op: "append", phase: "P", items: ["b"] },
+      { op: "append", phase: "P", tasks: ["b"] },
+      { op: "append", phase: "P", tasks: ["b"] },
     );
     // The second append duplicates the first's content, so the batch as a
     // whole is invalid and nothing is applied.
