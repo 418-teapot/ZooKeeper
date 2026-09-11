@@ -15,7 +15,8 @@
  *   wider block or by an earlier restore, or `stale` — its span no
  *   longer verifies): the restore is refused and the operation resolves to
  *   read-only recall — the persisted summary body, truncated to
- *   `RECALL_MAX_CHARS`.  Idempotent, zero state change.  A stale recall
+ *   `RECALL_MAX_CHARS` and framed by a note stating that no original text
+ *   is being restored.  Idempotent, zero state change.  A stale recall
  *   labels itself as such: the summary survives, the original text it
  *   addressed does not.
  *
@@ -210,7 +211,7 @@ export function evaluateGate(
     return {
       allowed: false,
       reason:
-        `恢复压缩块 b${blockId} 后预计上下文约 ${after} tokens` +
+        `恢复压缩块 b${blockId} 后，预计上下文约 ${after} tokens` +
         `（当前约 ${currentPromptTokens} tokens，填充率将由约 ${currentPct}%` +
         ` 升至约 ${afterPct}%），超过解压阈值 ${threshold} tokens` +
         `（${maxFillPercent}% × ${contextLimit}）。` +
@@ -260,10 +261,10 @@ export function applyDecompress(
   if (block.status !== "active") {
     throw new Error(
       block.status === "stale"
-        ? `压缩块 b${blockId} 已失效，无法恢复：其区间 [${block.start}, ${block.end}) 的内容已不再与创建时一致，` +
-            `原文无法从该区间取回。该块的摘要正文可通过 decompress 的 recall 路径读取。`
-        : `压缩块 b${blockId} 已失活，无法再次恢复（原始消息已在视图中展开）。` +
-            `该块的摘要正文可通过再次调用 decompress（recall 路径）获取。`,
+        ? `压缩块 b${blockId} 已失效，无法恢复：其中的原始消息已发生变化，` +
+            `原文无法取回。再次调用 decompress 只能读取仍保存的摘要。`
+        : `压缩块 b${blockId} 已不能恢复原文（它已经恢复过，或已被更大的压缩块覆盖）。` +
+            `如需回顾结论，请再次调用 decompress 读取保存的摘要；本次不会恢复原文。`,
     );
   }
   block.status = "consumed";
@@ -303,26 +304,31 @@ export function truncateRecallSummary(summary: string): string {
   const omitted = summary.length - RECALL_MAX_CHARS;
   return (
     summary.slice(0, RECALL_MAX_CHARS) +
-    `\n[摘要过长已截断：省略 ${omitted} 字符]`
+    `\n[摘要过长已截断：省略 ${omitted} 字符，省略部分无法取回]`
   );
 }
 
 /**
  * Compose the recall output of one block.
  *
- * The truncated summary body, preceded by a status note when the block
- * is stale: its interval no longer addresses the content it vouched
- * for, so a reader must know this summary is all that survives of the
- * span rather than a window onto text that could still be restored.
+ * Recall is the read-only branch of decompress: it returns the persisted
+ * summary body and changes nothing.  Because a tool result that reads
+ * like prose is easy to mistake for restored original text, the body is
+ * always framed by a status note naming the block id, stating that the
+ * original text is NOT being restored, and (for a stale block) that the
+ * summary is all that survives of the span.
  *
  * @param block - The recalled block.
- * @returns The recall text the tool returns.
+ * @param blockId - The block id (`b<N>`), named in the status note.
+ * @returns The framed recall text the tool returns.
  */
-export function recallOutput(block: Block): string {
+export function recallOutput(block: Block, blockId: number): string {
   const body = truncateRecallSummary(block.summary);
-  if (block.status !== "stale") return body;
-  return (
-    `[压缩块已失效：区间 [${block.start}, ${block.end}) 的原文已不可恢复，` +
-    `以下为持久化摘要]\n${body}`
-  );
+  const note =
+    block.status === "stale"
+      ? `【只读召回 · 未恢复原文】压缩块 b${blockId} 已失效：其原文区间已无法核对，原文不可能再被恢复，` +
+        `以下是仅存的持久化摘要（视图未变动）：`
+      : `【仅返回摘要，未恢复原文】压缩块 b${blockId} 已经恢复过，或已被更大的压缩块覆盖。` +
+        `本次调用不改变状态，以下是保存的摘要：`;
+  return `${note}\n${body}`;
 }

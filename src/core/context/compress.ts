@@ -9,9 +9,10 @@
  * its unit interval, a summary item to its block's whole interval, and a
  * reversed pair of refs is rejected with an order error.  Every gate
  * (`validateRange`) then runs against the same transcript and block
- * snapshot — the first
- * gate that fails returns an actionable Chinese error text naming the
- * ordinal interval, and a failed range never mutates state.
+ * snapshot — the first gate that fails returns an actionable Chinese error
+ * text naming the span in the model's own address space (the closed line
+ * refs such as `m2` through `m9`, never the internal half-open ordinal interval), and a
+ * failed range never mutates state.
  *
  * Batch semantics (`compressRanges`): all ranges resolve, validate, and
  * pass the apply-time gates against the SAME snapshot before anything is
@@ -42,7 +43,12 @@ import { computeSpanHash } from "./spanhash.js";
 import type { Block, SessionState } from "./state.js";
 import { allocateBlockId, clearConsumedBlockRange } from "./state.js";
 import type { NumberedItem } from "./view-refs.js";
-import { resolveRange } from "./view-refs.js";
+import {
+  itemAtOrdinal,
+  itemInterval,
+  refAtOrdinal,
+  resolveRange,
+} from "./view-refs.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -139,6 +145,10 @@ export interface RangeValidation {
 
 /**
  * One rejected range of a batch call, with its 1-based request index.
+ *
+ * The `error` text describes the failing range and may include its own
+ * user-facing range label. The caller still prefixes each failure with its
+ * request index so batch errors can be located unambiguously.
  */
 export interface RangeFailure {
   /** 1-based range index in the request order. */
@@ -169,6 +179,55 @@ export interface CompressResult {
    * absent otherwise.
    */
   error?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Error-text labels — internal ordinals → the model's line refs
+// ---------------------------------------------------------------------------
+
+/**
+ * Render a resolved ordinal interval in the address space the model holds.
+ *
+ * Gates reject a span the model addressed by two line refs, so the error
+ * names it back the same way — a closed `[m2..m9]` (both endpoints
+ * included, the spelling the tool contract documents).  When a boundary
+ * ordinal occupies no visible line (folded into a block, or a hidden
+ * message) the internal ordinals are quoted only as diagnosis, next to
+ * the instruction to re-read the view, because no ref exists that the
+ * model could act on.
+ *
+ * @param items - The numbered view items of the current round.
+ * @param start - First ordinal of the interval (inclusive).
+ * @param end - Last ordinal of the interval (exclusive).
+ * @returns A user-facing range label, or guidance to reread the current view.
+ */
+function spanLabel(items: NumberedItem[], start: number, end: number): string {
+  const from = refAtOrdinal(items, start);
+  const to = end > start ? refAtOrdinal(items, end - 1) : from;
+  if (from !== undefined && to !== undefined) return `范围 ${from} 至 ${to}`;
+  return "当前范围无法用本轮可见行号完整定位，请重新读取当前视图后选择范围";
+}
+
+/**
+ * The summary line a folded block occupies in the current view.
+ *
+ * The partial-overlap gate can only point the model at a boundary it can
+ * actually write: an active block whose interval the fold renders as one
+ * summary line is addressable through that line's ref.  A block that is
+ * not folded in this round's view (its span expired, so the fold expanded
+ * it back into originals) has no line to name — the interval comparison
+ * rejects a coincidental original item, and the caller then guides on the
+ * block id alone.
+ *
+ * @param items - The numbered view items of the current round.
+ * @param block - The block being discussed.
+ * @returns The ref text (`"m4"`), or undefined when the block occupies no line.
+ */
+function blockViewRef(items: NumberedItem[], block: Block): string | undefined {
+  const entry = itemAtOrdinal(items, block.start);
+  if (entry === undefined || entry.item.type !== "summary") return undefined;
+  const { start, end } = itemInterval(entry.item);
+  return start === block.start && end === block.end ? `m${entry.n}` : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -364,12 +423,20 @@ function estimateIntervalTokens(
  * 5. **Phantom** — the interval's heuristic estimate must reach
  *    `thresholdTokens`.
  *
+ * Every rejection is worded in the model's address space: the rejected
+ * span and the boundary it must move are named by current-round line refs
+ * (`items`), so the model can fix the call without translating internal
+ * ordinals.  An interval bound that occupies no line is reported as such
+ * with a re-read instruction instead of a fabricated ref.
+ *
  * Zero-mutation: the returned collections describe the apply, they do
  * not consume anything.  The apply-time gates (no-new-content,
  * negative-benefit) run later on the prepared payload.
  *
  * @param snapshot - The projection snapshot (region view plus the
  *   invocation table feeding the mid-pair gate).
+ * @param items - The numbered view items of the current round (the
+ *   address space the rejected range is reported back in).
  * @param state - The session state (block collection, read-only here).
  * @param options - Protection windows and the phantom threshold.
  * @param start - First ordinal (inclusive).
@@ -378,6 +445,7 @@ function estimateIntervalTokens(
  */
 export function validateRange(
   snapshot: Projection,
+  items: NumberedItem[],
   state: SessionState,
   options: CompressOptions,
   start: number,
@@ -389,6 +457,7 @@ export function validateRange(
     swallowed: [],
     coveredInactive: [],
   });
+  const span = spanLabel(items, start, end);
 
   // ── Protection-zone gate ───────────────────────────────────────────
   const protectedStart = computeProtectedStartOrdinal(
@@ -400,18 +469,34 @@ export function validateRange(
   const lastUserBoundary = lastUser >= 0 ? lastUser : history.length;
   const boundary = Math.min(protectedStart, lastUserBoundary);
   if (end > boundary) {
+    // `boundary` is exclusive: the last compressible ordinal is the one
+    // before it, and the model needs that line (or the knowledge that no
+    // such line exists) rather than the raw boundary ordinal.
+    const lastFree = refAtOrdinal(items, boundary - 1);
+    if (lastFree === undefined) {
+      return failed(
+        `${span} 无法压缩：本轮可见的最近对话内容都在保护范围内。` +
+          `请等对话继续产生更多历史后再选择范围；本轮内重复提交不会成功。`,
+      );
+    }
+    const firstProtected = refAtOrdinal(items, boundary);
     return failed(
-      `范围 [${start}, ${end}) 触及保护区域（边界 ${boundary}）。` +
-        `最近的对话内容受到保护、不可压缩，请将终点往前调整。`,
+      `${span} 包含受到保护的最近对话内容` +
+        `${firstProtected === undefined ? "" : `（从 ${firstProtected} 开始）`}，不能压缩。` +
+        `请将终点改为 ${lastFree} 或更早。`,
     );
   }
 
   // ── First-user gate ────────────────────────────────────────────────
   const firstUser = findFirstUserOrdinal(history);
   if (firstUser >= 0 && start <= firstUser && firstUser < end) {
+    const ref = refAtOrdinal(items, firstUser);
     return failed(
-      `范围 [${start}, ${end}) 包含会话的第一条用户消息（序数 ${firstUser}）。` +
-        `第一条用户消息不可压缩，请调整起点。`,
+      `${span} 包含会话的第一条用户消息` +
+        (ref === undefined
+          ? "（该消息不占当轮视图行号，无法按行号定位）。"
+          : `（${ref}）。`) +
+        `第一条用户消息不可压缩，请将起点调整到该消息之后。`,
     );
   }
 
@@ -425,11 +510,16 @@ export function validateRange(
     const fullyCovered = start <= block.start && block.end <= end;
     if (block.status === "active") {
       if (!fullyCovered) {
+        const blockRef = blockViewRef(items, block);
         return failed(
-          `范围与活跃压缩块 b${id} 部分重叠：该块覆盖的区间未被完整包含` +
-            `（范围 [${start}, ${end}) 只覆盖了该块的一部分）。` +
-            `跨块压缩必须完整消费整个块——请扩大范围以完整覆盖该块，` +
-            `或改用该块摘要项的行号作为边界。`,
+          `${span} 与活跃压缩块 b${id}` +
+            (blockRef === undefined
+              ? "（本轮视图中不占摘要行）"
+              : `（摘要行 ${blockRef}）`) +
+            ` 部分重叠：压缩块只能整块消费。` +
+            (blockRef === undefined
+              ? "请扩大范围以完整覆盖该块，或收窄范围到完全不触碰它。"
+              : `请将范围扩展到完整覆盖 ${blockRef}，或收窄范围到完全不触碰 ${blockRef}。`),
         );
       }
       swallowed.push({ id, block });
@@ -462,11 +552,13 @@ export function validateRange(
       invocation.input.ordinal < end &&
       (output.ordinal < start || output.ordinal >= end)
     ) {
+      const ref = refAtOrdinal(items, output.ordinal);
       return failed(
-        `范围 [${start}, ${end}) 在工具调用对中间截断：区间内的工具调用 ` +
-          `${invocation.name} 链接的工具结果位于区间之外` +
-          `（序数 ${output.ordinal}）。工具调用与其结果必须成对压缩，` +
-          `请将范围扩展到包含该工具结果。`,
+        `${span} 在工具调用和对应结果之间截断：工具 ${invocation.name} ` +
+          `链接的工具结果在区间之外` +
+          (ref === undefined
+            ? "（该结果不占当轮视图行号）。工具调用与其结果必须成对压缩，请将范围扩展到包含该工具结果。"
+            : `（${ref}）。工具调用与其结果必须成对压缩，请将终点扩展到包含 ${ref}。`),
       );
     }
     // Reverse direction: the range covers the result half while its call
@@ -477,11 +569,13 @@ export function validateRange(
       output.ordinal < end &&
       invocation.input.ordinal < start
     ) {
+      const ref = refAtOrdinal(items, invocation.input.ordinal);
       return failed(
-        `范围 [${start}, ${end}) 在工具调用对中间截断：区间内的工具结果 ` +
-          `来自工具调用 ${invocation.name}，其调用位于区间之外` +
-          `（序数 ${invocation.input.ordinal}）。工具调用与其结果必须成对压缩，` +
-          `请将范围扩展到包含该工具调用。`,
+        `${span} 在工具调用和对应结果之间截断：工具 ` +
+          `${invocation.name}，其调用在区间之外` +
+          (ref === undefined
+            ? "（该调用不占当轮视图行号）。工具调用与其结果必须成对压缩，请将范围扩展到包含该工具调用。"
+            : `（${ref}）。工具调用与其结果必须成对压缩，请将起点前移到包含 ${ref}。`),
       );
     }
   }
@@ -490,8 +584,9 @@ export function validateRange(
   const segTokens = estimateIntervalTokens(history, start, end);
   if (segTokens < options.thresholdTokens) {
     return failed(
-      `范围 [${start}, ${end}) 预计仅约 ${segTokens} tokens，低于压缩阈值` +
-        ` ${options.thresholdTokens}，收益过低。请选择更大的压缩范围。`,
+      `${span} 预计只有约 ${segTokens} tokens，低于最小压缩规模` +
+        ` ${options.thresholdTokens}，无法带来足够收益。请扩大到更多同一主题的历史；` +
+        `如果没有适合合并的内容，请不要压缩这段。`,
     );
   }
 
@@ -732,44 +827,43 @@ function commitPreparedRange(
 // ---------------------------------------------------------------------------
 
 /**
- * Validate a single range's title (loud Chinese guidance, range-indexed).
+ * Validate a single range's title (loud Chinese guidance).
  *
  * The title becomes the block's one-line index entry when a wider
  * recompression consumes this block, so it must be short and non-empty.
  * Control characters would split the single-line index lines, and runs
  * of 3+ hyphens would visually merge with the `--- b<N>: <title> ---`
- * separators — both rejected so the model retries.
+ * separators — both rejected so the model retries.  The text names the
+ * offending field only; the caller labels it with the failing range's
+ * 1-based index.
  *
  * @param title - The raw title string.
- * @param rangeIndex - The 1-based range index for the error message.
  * @returns The trimmed, validated title.
- * @throws The range-indexed guidance error when the title is invalid.
+ * @throws The guidance error (relative to the range) when the title is invalid.
  */
-function validateRangeTitle(title: string, rangeIndex: number): string {
+function validateRangeTitle(title: string): string {
   const trimmed = title.trim();
   if (trimmed.length === 0) {
     throw new Error(
-      `第 ${rangeIndex} 个范围：title 不能为空：请用一行不超过 80 字符的主题说明` +
+      `title 不能为空：请用一行不超过 80 字符的主题说明` +
         `概括这段压缩内容（将来此块被更大范围压缩时，该主题会作为索引行展示）。`,
     );
   }
   for (let i = 0; i < trimmed.length; i++) {
     const code = trimmed.charCodeAt(i);
     if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) {
-      throw new Error(
-        `第 ${rangeIndex} 个范围：title 必须用单行纯文本概括主题，不含换行或控制字符。`,
-      );
+      throw new Error(`title 必须用单行纯文本概括主题，不含换行或控制字符。`);
     }
   }
   if (/-{3,}/.test(trimmed)) {
     throw new Error(
-      `第 ${rangeIndex} 个范围：title 不能包含三个及以上连续连字符（---），` +
+      `title 不能包含三个及以上连续连字符（---），` +
         `否则会破坏压缩块索引行的分隔格式。请改用其他标点（如破折号 ——）或文字分隔。`,
     );
   }
   if (trimmed.length > 80) {
     throw new Error(
-      `第 ${rangeIndex} 个范围：title 过长（${trimmed.length} 字符，超过 80 字符上限）：` +
+      `title 过长（${trimmed.length} 字符，超过 80 字符上限）：` +
         `请压缩到 80 字符以内后重试。一行主题足够，详细内容请放进 summary。`,
     );
   }
@@ -849,7 +943,7 @@ export function compressRanges(
     const range = ranges[i];
     let title: string;
     try {
-      title = validateRangeTitle(range.title, i + 1);
+      title = validateRangeTitle(range.title);
     } catch (err) {
       failures.push({
         index: i + 1,
@@ -879,6 +973,7 @@ export function compressRanges(
   for (const entry of validated) {
     const result = validateRange(
       snapshot,
+      items,
       state,
       options,
       entry.start,
@@ -906,7 +1001,8 @@ export function compressRanges(
           index: seg.index,
           range: seg.range,
           error:
-            `第 ${seg.index} 个范围将消费第 ${prev.index} 个范围刚创建的压缩块：` +
+            `第 ${seg.index} 个范围（${spanLabel(items, seg.start, seg.end)}）会消费第 ${prev.index} 个范围` +
+            `（${spanLabel(items, prev.start, prev.end)}）产生的压缩块：` +
             `同一调用内不允许消费本调用创建的块。请将这两个范围合并为一个更大的范围，` +
             `或调整边界避免覆盖其他范围的消息。`,
         });
@@ -925,8 +1021,8 @@ export function compressRanges(
           index: seg.index,
           range: seg.range,
           error:
-            `第 ${seg.index} 个范围与第 ${prev.index} 个范围重叠` +
-            `（[${seg.start}, ${seg.end}) 与 [${prev.start}, ${prev.end})）。` +
+            `第 ${seg.index} 个范围（${spanLabel(items, seg.start, seg.end)}）与第 ${prev.index} 个范围` +
+            `（${spanLabel(items, prev.start, prev.end)}）重叠。` +
             `ranges 必须互不重叠，请调整边界后重试。`,
         });
       }

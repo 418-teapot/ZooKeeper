@@ -10,12 +10,14 @@
  *   reappear in the view.  A context-limit gate rejects restores that
  *   would push the estimated prompt over `maxFillPercent` of the model
  *   window.  The ToolResult is a single-line confirmation carrying the
- *   expansion amount — never the original message content.
+ *   expansion amount and the "下一轮生效" caveat — never the original
+ *   message content.
  * - **recall** — the block is in a terminal status (`consumed`, stale,
  *   or previously restored): read-only and idempotent, returns the
- *   persisted summary body (truncated to `RECALL_MAX_CHARS`, and labelled
- *   as all-that-survives for a stale block).  Zero state change, zero
- *   view impact, no notification.
+ *   persisted summary body (truncated to `RECALL_MAX_CHARS`) framed by a
+ *   note that says out loud that NO original text is being restored and
+ *   that the view is unchanged.  Zero state change, zero view impact, no
+ *   notification.
  *
  * The host tool services and the parsed context-pruning config are
  * captured by the factory closure.  The history the restore gate
@@ -117,11 +119,15 @@ function buildDecompressToolSpec(
   _contextConfig: ContextPruningConfig,
 ): DecompressToolSpec {
   return {
-    description: `恢复被压缩成摘要的块中的内容。当原文过长时，会拒绝恢复。`,
+    description:
+      "根据块 ID 恢复被压缩块隐藏的原始消息；恢复将在下一轮上下文中生效，原文过长时会拒绝恢复。" +
+      "只有当前仍显示为 [Block bN · K 条] 的块可以恢复；已经恢复过、被更大范围覆盖或已经失效的块不能恢复原文，" +
+      "调用只会返回保存的摘要，不会改变状态。",
     args: {
       blockId: {
         type: "string",
-        description: "要恢复的压缩块 id",
+        description:
+          '要恢复的压缩块 id（形如 "b3"，取自当前视图的块头 [Block bN · K 条] 或索引行 --- bN: 标题 ---）',
       },
     },
     required: ["blockId"],
@@ -149,7 +155,10 @@ export function createDecompressTool(
     async execute(args, toolCtx) {
       const sessionID = host.resolveSessionId(toolCtx);
       if (sessionID === undefined) {
-        throw new Error("无法确定会话 ID：工具上下文缺少 sessionID。");
+        throw new Error(
+          "无法解压：工具上下文缺少 sessionID，会话状态无法定位。" +
+            "这是宿主接线问题，重试本工具无法解决，需重启宿主或由用户处理。",
+        );
       }
       const input = validateDecompressArgs(args);
 
@@ -161,7 +170,9 @@ export function createDecompressTool(
       const decompressCfg = contextConfig.decompress;
       if (!decompressCfg || decompressCfg.maxFillPercent === undefined) {
         throw new Error(
-          "[zoo.context.decompress] 段缺失或非法：请在 config.toml 配置 max_fill_percent（1-100 的整数）后重试。",
+          "[zoo.context.decompress] 段缺失或非法：请在 config.toml 配置 " +
+            "max_fill_percent（1-100 的整数），并重新安装生效。" +
+            "配置错误不会因重试本工具而消失：请停止重试并告知用户修正配置。",
         );
       }
 
@@ -186,7 +197,7 @@ export function createDecompressTool(
             status: target.block.status,
           },
         );
-        return recallOutput(target.block);
+        return recallOutput(target.block, target.blockId);
       }
 
       // ── Restore path ─────────────────────────────────────────────
@@ -201,7 +212,10 @@ export function createDecompressTool(
           : await host.fetchHistory?.(sessionID);
       if (history === undefined) {
         throw new Error(
-          "无法解压：尚未取得当轮上下文视图（上下文变换本轮还未运行），且当前宿主不提供同源的历史回退。请在下一轮对话后重试。",
+          "无法解压：尚未取得当轮上下文视图（上下文变换本轮还未运行），" +
+            "且当前宿主不提供同源的历史回退，无法评估恢复后的上下文水位。" +
+            "本轮内重试结果相同，请等下一轮上下文变换运行后再恢复；" +
+            "若每轮都如此，属于宿主配置问题，请告知用户处理。",
         );
       }
       const view = history.messages;
@@ -279,7 +293,12 @@ export const unit: ToolUnitDescriptor = {
           {
             name: "decompress",
             ...metadata,
-            execute: async () => "此工具在当前 host 上不可用。",
+            execute: async () => {
+              throw new Error(
+                "decompress 在当前宿主上不可用：没有宿主工具服务就无法定位会话与上下文视图。" +
+                  "重试本工具无法解决，请告知用户或改用可用的宿主。",
+              );
+            },
           },
         ],
       };

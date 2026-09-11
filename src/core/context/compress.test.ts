@@ -99,13 +99,21 @@ function makeBlock(
   };
 }
 
+/** Number the folded view of a projection snapshot, skipping hidden messages. */
+function numberedViewOf(
+  snapshot: Projection,
+  state: SessionState,
+): NumberedItem[] {
+  const { items } = fold(snapshot, state);
+  return numberView(items, (ordinal) => snapshot.messages[ordinal].hidden);
+}
+
 /** Number the folded view of the state, skipping hidden messages. */
 function numberedView(
   history: HostMessage[],
   state: SessionState,
 ): NumberedItem[] {
-  const { items } = fold(projectMessages(history), state);
-  return numberView(items, (ordinal) => history[ordinal].hidden);
+  return numberedViewOf(projectMessages(history), state);
 }
 
 /** Line ref of the visible original item at the ordinal, or null. */
@@ -311,14 +319,24 @@ describe("validateRange — protection-zone gate", () => {
     const state = makeState();
     const result = validateRange(
       projectMessages(history),
+      numberedView(history, state),
       state,
       OPTIONS,
       1,
       9,
     );
     assert.ok(result.error !== null);
-    assert.ok(result.error.includes("保护区域"));
-    assert.ok(result.error.includes("边界 8"));
+    // The rejected span and the boundary to move are named in the model's
+    // address space: ordinals 1..8 are m2..m9, the last compressible line
+    // is m8, and the internal half-open interval never leaks.
+    assert.ok(
+      result.error.includes("包含受到保护的最近对话内容"),
+      result.error,
+    );
+    assert.ok(result.error.includes("范围 m2 至 m9"), result.error);
+    assert.ok(result.error.includes("（从 m9 开始）"), result.error);
+    assert.ok(result.error.includes("请将终点改为 m8 或更早"), result.error);
+    assert.ok(!result.error.includes("[1, 9)"), result.error);
   });
 
   it("accepts a range ending exactly at the boundary", () => {
@@ -326,6 +344,7 @@ describe("validateRange — protection-zone gate", () => {
     const state = makeState();
     const result = validateRange(
       projectMessages(history),
+      numberedView(history, state),
       state,
       OPTIONS,
       1,
@@ -345,6 +364,7 @@ describe("validateRange — first-user gate", () => {
     const state = makeState();
     const result = validateRange(
       projectMessages(history),
+      numberedView(history, state),
       state,
       OPTIONS,
       0,
@@ -352,6 +372,8 @@ describe("validateRange — first-user gate", () => {
     );
     assert.ok(result.error !== null);
     assert.ok(result.error.includes("第一条用户消息"));
+    // The first user message (ordinal 0) is named by its line, not its ordinal.
+    assert.ok(result.error.includes("（m1）"), result.error);
   });
 
   it("accepts a range strictly after the first user message", () => {
@@ -359,6 +381,7 @@ describe("validateRange — first-user gate", () => {
     const state = makeState();
     const result = validateRange(
       projectMessages(history),
+      numberedView(history, state),
       state,
       OPTIONS,
       1,
@@ -379,6 +402,7 @@ describe("validateRange — overlap gate", () => {
     state.blocks.set(1, makeBlock(history, 2, 6));
     const result = validateRange(
       projectMessages(history),
+      numberedView(history, state),
       state,
       OPTIONS,
       4,
@@ -387,6 +411,11 @@ describe("validateRange — overlap gate", () => {
     assert.ok(result.error !== null);
     assert.ok(result.error.includes("部分重叠"));
     assert.ok(result.error.includes("b1"));
+    // Block 1 folds [2, 6) into summary line m3 — the boundary to align on,
+    // and the rejected span [4, 8) is named by its own lines.
+    assert.ok(result.error.includes("范围 m3 至 m5"), result.error);
+    assert.ok(result.error.includes("摘要行 m3"), result.error);
+    assert.ok(result.error.includes("请将范围扩展到完整覆盖 m3"), result.error);
   });
 
   it("accepts a range disjoint from every active block", () => {
@@ -395,6 +424,7 @@ describe("validateRange — overlap gate", () => {
     state.blocks.set(1, makeBlock(history, 2, 6));
     const result = validateRange(
       projectMessages(history),
+      numberedView(history, state),
       state,
       OPTIONS,
       6,
@@ -415,6 +445,7 @@ describe("validateRange — swallow gate", () => {
     state.blocks.set(1, makeBlock(history, 2, 6));
     const result = validateRange(
       projectMessages(history),
+      numberedView(history, state),
       state,
       OPTIONS,
       2,
@@ -435,6 +466,7 @@ describe("validateRange — swallow gate", () => {
     state.blocks.set(2, makeBlock(history, 6, 8, { status: "stale" }));
     const result = validateRange(
       projectMessages(history),
+      numberedView(history, state),
       state,
       OPTIONS,
       2,
@@ -454,6 +486,7 @@ describe("validateRange — swallow gate", () => {
     state.blocks.set(1, makeBlock(history, 2, 6, { status: "consumed" }));
     const result = validateRange(
       projectMessages(history),
+      numberedView(history, state),
       state,
       OPTIONS,
       4,
@@ -484,14 +517,19 @@ describe("validateRange — phantom gate", () => {
     const state = makeState();
     const result = validateRange(
       projectMessages(history),
+      numberedView(history, state),
       state,
       { protectedMessages: 0, protectedTokens: 0, thresholdTokens: 50 },
       1,
       5,
     );
     assert.ok(result.error !== null);
-    assert.ok(result.error.includes("收益过低"));
+    assert.ok(result.error.includes("无法带来足够收益"));
     assert.ok(result.error.includes("50"));
+    // The phantom span is reported as "范围 m2 至 m5", not as ordinal half-open.
+    assert.ok(result.error.includes("范围 m2 至 m5"), result.error);
+    assert.ok(result.error.includes("低于最小压缩规模"), result.error);
+    assert.ok(!result.error.includes("[1, 5)"), result.error);
   });
 
   it("accepts a range at or above the threshold", () => {
@@ -499,6 +537,7 @@ describe("validateRange — phantom gate", () => {
     const state = makeState();
     const result = validateRange(
       projectMessages(history),
+      numberedView(history, state),
       state,
       OPTIONS,
       1,
@@ -572,16 +611,32 @@ describe("validateRange — mid-pair gate", () => {
   it("rejects a range ending right after a toolCall whose result sits outside", () => {
     const transcript = makePairTranscript(true);
     const state = makeState();
-    const result = validateRange(transcript, state, PAIR_OPTIONS, 3, 4);
+    const result = validateRange(
+      transcript,
+      numberedViewOf(transcript, state),
+      state,
+      PAIR_OPTIONS,
+      3,
+      4,
+    );
     assert.ok(result.error !== null);
-    assert.ok(result.error.includes("工具调用对中间截断"));
-    assert.ok(result.error.includes("序数 4"));
+    assert.ok(result.error.includes("在工具调用和对应结果之间截断"));
+    // ordinal 4 (the linked result) is line m5 of this view.
+    assert.ok(result.error.includes("（m5）"), result.error);
+    assert.ok(result.error.includes("请将终点扩展到包含 m5"), result.error);
   });
 
   it("accepts a range extended to include the linked toolResult", () => {
     const transcript = makePairTranscript(true);
     const state = makeState();
-    const result = validateRange(transcript, state, PAIR_OPTIONS, 3, 5);
+    const result = validateRange(
+      transcript,
+      numberedViewOf(transcript, state),
+      state,
+      PAIR_OPTIONS,
+      3,
+      5,
+    );
     assert.equal(result.error, null);
   });
 
@@ -591,10 +646,19 @@ describe("validateRange — mid-pair gate", () => {
     // [2, 3) covers the result half (ordinal 2) of the first pair while
     // its call (ordinal 1) stays outside — the reverse of the direction
     // above, gated the same way.
-    const result = validateRange(transcript, state, PAIR_OPTIONS, 2, 3);
+    const result = validateRange(
+      transcript,
+      numberedViewOf(transcript, state),
+      state,
+      PAIR_OPTIONS,
+      2,
+      3,
+    );
     assert.ok(result.error !== null);
-    assert.ok(result.error.includes("工具调用对中间截断"));
-    assert.ok(result.error.includes("序数 1"));
+    assert.ok(result.error.includes("在工具调用和对应结果之间截断"));
+    // ordinal 1 (the orphaned call) is line m2 of this view.
+    assert.ok(result.error.includes("（m2）"), result.error);
+    assert.ok(result.error.includes("请将起点前移到包含 m2"), result.error);
   });
 
   it("accepts a range covering both halves of a pair (reverse direction)", () => {
@@ -602,7 +666,14 @@ describe("validateRange — mid-pair gate", () => {
     const state = makeState();
     // [1, 3) covers call-1 (ordinal 1) together with its result
     // (ordinal 2) — the range the test above rejects once extended.
-    const result = validateRange(transcript, state, PAIR_OPTIONS, 1, 3);
+    const result = validateRange(
+      transcript,
+      numberedViewOf(transcript, state),
+      state,
+      PAIR_OPTIONS,
+      1,
+      3,
+    );
     assert.equal(result.error, null);
   });
 
@@ -612,7 +683,14 @@ describe("validateRange — mid-pair gate", () => {
     // Without the invocation table there is no pairing information at
     // all; a lone result message must not be rejected by this gate
     // (producers abstain from unpaired regions).
-    const result = validateRange(transcript, state, PAIR_OPTIONS, 2, 3);
+    const result = validateRange(
+      transcript,
+      numberedViewOf(transcript, state),
+      state,
+      PAIR_OPTIONS,
+      2,
+      3,
+    );
     assert.equal(result.error, null);
   });
 
@@ -622,7 +700,14 @@ describe("validateRange — mid-pair gate", () => {
     // The same ordinal range that triggers the mid-pair gate when the
     // pairing is present passes untouched while the call is still in
     // flight — the gate consumes only invocation output addresses.
-    const result = validateRange(transcript, state, PAIR_OPTIONS, 3, 4);
+    const result = validateRange(
+      transcript,
+      numberedViewOf(transcript, state),
+      state,
+      PAIR_OPTIONS,
+      3,
+      4,
+    );
     assert.equal(result.error, null);
   });
 });
@@ -645,7 +730,10 @@ describe("compressRanges — mid-pair gate batch semantics", () => {
     ]);
     assert.equal(result.created.length, 0);
     assert.equal(result.failed.length, 1);
-    assert.ok(result.failed[0].error.includes("工具调用对中间截断"));
+    assert.ok(
+      result.failed[0].error.includes("在工具调用和对应结果之间截断"),
+      result.failed[0].error,
+    );
     assert.equal(state.blocks.size, 0);
   });
 
@@ -823,7 +911,10 @@ describe("compressRanges — batch semantics", () => {
     assert.deepEqual(result.created, []);
     assert.equal(result.failed.length, 1);
     assert.equal(result.failed[0].index, 2);
-    assert.ok(result.failed[0].error.includes("保护区域"));
+    assert.ok(
+      result.failed[0].error.includes("包含受到保护的最近对话内容"),
+      result.failed[0].error,
+    );
     assert.equal(state.blocks.size, 0);
   });
 
@@ -1300,7 +1391,10 @@ describe("end-to-end gate decisions", () => {
       { fromRef: "m2", toRef: "m9", title: "主题", summary: "摘要。" },
     ]);
     assert.equal(result.ok, false);
-    assert.ok(result.error?.includes("保护区域"));
+    assert.ok(
+      result.error?.includes("包含受到保护的最近对话内容"),
+      result.error,
+    );
   });
 
   it("rejects a range containing the first user message", () => {
@@ -1337,7 +1431,7 @@ describe("end-to-end gate decisions", () => {
       phantomOptions,
     );
     assert.equal(result.ok, false);
-    assert.ok(result.error?.includes("收益过低"));
+    assert.ok(result.error?.includes("无法带来足够收益"), result.error);
   });
 
   it("rejects a partial overlap with an active block (gate level)", () => {
@@ -1347,6 +1441,7 @@ describe("end-to-end gate decisions", () => {
     compressRange(history, initial, state, 2, 5, "第一段主题", "第一段摘要。");
     const newError = validateRange(
       projectMessages(history),
+      numberedView(history, state),
       state,
       OPTIONS,
       4,
@@ -1354,6 +1449,8 @@ describe("end-to-end gate decisions", () => {
     ).error;
     assert.ok(newError !== null);
     assert.ok(newError.includes("部分重叠"));
+    assert.ok(newError.includes("范围 m3 至 m5"), newError);
+    assert.ok(newError.includes("摘要行 m3"), newError);
   });
 
   it("swallows a fully-covered block in a later batch range", () => {

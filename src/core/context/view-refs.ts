@@ -103,6 +103,53 @@ export function itemInterval(item: ViewItem): { start: number; end: number } {
 }
 
 /**
+ * The view item covering an ordinal, if any of its lines does.
+ *
+ * The inverse of the address→content map `itemInterval` provides: an
+ * ordinal inside an original item's single message maps back to that
+ * line, an ordinal folded into a surviving block maps back to the block's
+ * summary line.  An ordinal that belongs to no view item — a message
+ * swallowed by a folding block's interval, a hidden original — maps to
+ * nothing, which is why callers must treat the result as optional.
+ *
+ * @param items - The numbered view items of the current round.
+ * @param ordinal - The transcript ordinal to locate.
+ * @returns The numbered item whose interval contains the ordinal.
+ */
+export function itemAtOrdinal(
+  items: NumberedItem[],
+  ordinal: number,
+): NumberedItem | undefined {
+  for (const entry of items) {
+    const { start, end } = itemInterval(entry.item);
+    if (start <= ordinal && ordinal < end) return entry;
+  }
+  return undefined;
+}
+
+/**
+ * The line ref (`mN`) of the view item covering an ordinal.
+ *
+ * Error-text guidance is written in the address space the model was shown:
+ * a gate that rejects a range names the lines to move, not the internal
+ * ordinals it cannot act on.  Returns undefined when no visible line
+ * covers the ordinal (folded-away or hidden content) — callers then fall
+ * back to telling the model to re-read the view instead of inventing a
+ * ref.
+ *
+ * @param items - The numbered view items of the current round.
+ * @param ordinal - The transcript ordinal to locate.
+ * @returns The ref text (`"m7"`), or undefined when unaddressable.
+ */
+export function refAtOrdinal(
+  items: NumberedItem[],
+  ordinal: number,
+): string | undefined {
+  const entry = itemAtOrdinal(items, ordinal);
+  return entry === undefined ? undefined : `m${entry.n}`;
+}
+
+/**
  * Line-start ref pattern matching a rendered line-number marker: `[mN] `
  * — natural integer, no zero padding, trailing space included.  Matches
  * only an exact line start; bare refs in prose are not matched.

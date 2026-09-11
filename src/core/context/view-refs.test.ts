@@ -26,7 +26,9 @@ import { computeSpanHash } from "./spanhash.js";
 import type { Block, SessionState } from "./state.js";
 import {
   formatSummaryLabel,
+  itemAtOrdinal,
   numberView,
+  refAtOrdinal,
   refPrefix,
   resolveEndpoint,
   resolveRange,
@@ -119,6 +121,52 @@ describe("numberView — dense per-round numbering", () => {
 // ---------------------------------------------------------------------------
 // refPrefix — marker + space, no zero padding
 // ---------------------------------------------------------------------------
+
+describe("itemAtOrdinal / refAtOrdinal — ordinal → line lookup", () => {
+  it("maps an original item's ordinal back to its own line", () => {
+    const history = makeTranscript(6);
+    const numbered = numberView(
+      projectMessages(history).messages.map((_, ordinal) => ({
+        type: "original" as const,
+        ordinal,
+      })),
+      () => false,
+    );
+    assert.equal(itemAtOrdinal(numbered, 0)?.n, 1);
+    assert.equal(refAtOrdinal(numbered, 2), "m3");
+  });
+
+  it("maps every ordinal folded into a block back to the block's summary line", () => {
+    const history = makeTranscript(8);
+    const state = makeState();
+    state.blocks.set(1, makeBlock(history, 2, 6));
+    const numbered = numberView(
+      fold(projectMessages(history), state).items,
+      () => false,
+    );
+    // The fold renders [2, 6) as one line (the summary item); each of its
+    // four ordinals addresses that same line.
+    const refs = [2, 3, 4, 5].map((ordinal) => refAtOrdinal(numbered, ordinal));
+    assert.deepEqual(refs, ["m3", "m3", "m3", "m3"]);
+    assert.equal(refAtOrdinal(numbered, 6), "m4");
+  });
+
+  it("returns undefined for ordinals that occupy no line", () => {
+    const history = makeTranscript(4);
+    const numbered = numberView(
+      projectMessages(history).messages.map((_, ordinal) => ({
+        type: "original" as const,
+        ordinal,
+      })),
+      (ordinal) => ordinal === 1,
+    );
+    // Hidden message 1 occupies no line, so nothing addresses it.
+    assert.equal(itemAtOrdinal(numbered, 1), undefined);
+    assert.equal(refAtOrdinal(numbered, 1), undefined);
+    // Ordinals beyond the transcript are unaddressable too.
+    assert.equal(refAtOrdinal(numbered, 99), undefined);
+  });
+});
 
 describe("refPrefix", () => {
   it("is a marker plus a trailing space with no zero padding", () => {

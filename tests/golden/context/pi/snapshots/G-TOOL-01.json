@@ -1714,7 +1714,7 @@
         "nudgeAnchor": null
       },
       "toolResult": null,
-      "toolError": "第 1 个范围校验失败：范围 [34, 44) 触及保护区域（边界 38）。最近的对话内容受到保护、不可压缩，请将终点往前调整。",
+      "toolError": "本次压缩未生效：2/2 个范围校验失败，会话状态未改动。请按下列提示修正后重新提交：\n- 第 1 个范围（m0018 → m0027）：范围 m18 至 m27 包含受到保护的最近对话内容（从 m22 开始），不能压缩。请将终点改为 m21 或更早。\n- 第 2 个范围（m0026 → m0035）：范围 m26 至 m35 包含受到保护的最近对话内容（从 m22 开始），不能压缩。请将终点改为 m21 或更早。",
       "notifications": []
     },
     {
@@ -2218,7 +2218,7 @@
         "nudgeAnchor": null
       },
       "toolResult": null,
-      "toolError": "一次调用最多提交 8 个压缩范围，本次提交了 9 个。请分批提交：每批不超过 8 个范围，分多次调用完成。",
+      "toolError": "本次压缩未生效（会话状态未改动）：一次调用最多提交 8 个压缩范围，本次提交了 9 个。请分批提交：每批不超过 8 个范围，分多次调用完成。",
       "notifications": []
     },
     {
@@ -3730,7 +3730,7 @@
         "nudgeAnchor": null
       },
       "toolResult": null,
-      "toolError": "第 1 个范围：title 不能为空：请用一行不超过 80 字符的主题说明概括这段压缩内容（将来此块被更大范围压缩时，该主题会作为索引行展示）。",
+      "toolError": "本次压缩未生效：1/1 个范围校验失败，会话状态未改动。请按下列提示修正后重新提交：\n- 第 1 个范围（m0002 → m0006）：title 不能为空：请用一行不超过 80 字符的主题说明概括这段压缩内容（将来此块被更大范围压缩时，该主题会作为索引行展示）。",
       "notifications": []
     },
     {
@@ -4234,7 +4234,7 @@
         "nudgeAnchor": null
       },
       "toolResult": null,
-      "toolError": "第 1 个范围：title 不能包含三个及以上连续连字符（---），否则会破坏压缩块索引行的分隔格式。请改用其他标点（如破折号 ——）或文字分隔。",
+      "toolError": "本次压缩未生效：1/1 个范围校验失败，会话状态未改动。请按下列提示修正后重新提交：\n- 第 1 个范围（m0002 → m0006）：title 不能包含三个及以上连续连字符（---），否则会破坏压缩块索引行的分隔格式。请改用其他标点（如破折号 ——）或文字分隔。",
       "notifications": []
     },
     {
@@ -4738,7 +4738,7 @@
         "nudgeAnchor": null
       },
       "toolResult": null,
-      "toolError": "fromRef 参数必须是字符串：ranges 数组的每一项都必须包含 fromRef、toRef、title、summary 四个必填字符串后重试。",
+      "toolError": "第 1 个范围：fromRef 参数必须是字符串（其余字段已提供）。ranges 的每一项都必须同时包含 fromRef、toRef、title、summary 四个字符串，请补齐该范围后重新提交整批范围。",
       "notifications": []
     },
     {
@@ -6169,7 +6169,7 @@
         "pendingViewChange": false,
         "nudgeAnchor": null
       },
-      "toolResult": "用户请求执行命令，助手完成了操作。",
+      "toolResult": "【仅返回摘要，未恢复原文】压缩块 b1 已经恢复过，或已被更大的压缩块覆盖。本次调用不改变状态，以下是保存的摘要：\n用户请求执行命令，助手完成了操作。",
       "toolError": null,
       "notifications": []
     },
@@ -6885,7 +6885,7 @@
         "nudgeAnchor": null
       },
       "toolResult": null,
-      "toolError": "无法确定会话 ID：工具上下文缺少 sessionID。",
+      "toolError": "无法解压：工具上下文缺少 sessionID，会话状态无法定位。这是宿主接线问题，重试本工具无法解决，需重启宿主或由用户处理。",
       "notifications": []
     },
     {
@@ -7600,7 +7600,7 @@
         "nudgeAnchor": null
       },
       "toolResult": null,
-      "toolError": "[zoo.context.compress] 段缺失或非法：请在 config.toml 配置 threshold_tokens、protected_tokens（非负整数）与 max_ranges（正整数）后重试。",
+      "toolError": "[zoo.context.compress] 段缺失或非法：请在 config.toml 配置 threshold_tokens、protected_tokens（非负整数）与 max_ranges（正整数），并重新安装生效。配置错误不会因重试本工具而消失：请停止重试并告知用户修正配置。",
       "notifications": []
     },
     {
@@ -8315,7 +8315,7 @@
         "nudgeAnchor": null
       },
       "toolResult": null,
-      "toolError": "[zoo.context.decompress] 段缺失或非法：请在 config.toml 配置 max_fill_percent（1-100 的整数）后重试。",
+      "toolError": "[zoo.context.decompress] 段缺失或非法：请在 config.toml 配置 max_fill_percent（1-100 的整数），并重新安装生效。配置错误不会因重试本工具而消失：请停止重试并告知用户修正配置。",
       "notifications": []
     }
   ]

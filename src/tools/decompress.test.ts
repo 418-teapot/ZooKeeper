@@ -3,9 +3,9 @@
  *
  * Covers: the restore flow (block active → consumed, pending
  * view-change flag, persist, notify, single-line ToolResult), the recall
- * flow (summary body, zero state change, no notification,
- * RECALL_MAX_CHARS truncation with the Chinese tail note), the
- * context-limit gate rejection (state untouched), the not-found error
+ * flow (summary body framed as a read-only recall, zero state change, no
+ * notification, RECALL_MAX_CHARS truncation with the Chinese tail note),
+ * the context-limit gate rejection (state untouched), the not-found error
  * listing the available block numbers, the loud config-guidance error
  * when the `[zoo.context.decompress]` section is absent, the
  * history-source rule (restore measures the published round view, host
@@ -374,7 +374,7 @@ describe("decompress tool execute — restore happy path", () => {
 // ---------------------------------------------------------------------------
 
 describe("decompress tool execute — recall path", () => {
-  it("returns the summary body with zero state change and no notification", async () => {
+  it("returns the summary body framed as a read-only recall, with zero state change and no notification", async () => {
     const { host, notifyCalls } = fakeHost([]);
 
     // Build a consumed block (as if swallowed by a wider recompression).
@@ -387,8 +387,16 @@ describe("decompress tool execute — recall path", () => {
     const tool = createDecompressTool(host, PARSED_CONFIG);
     const result = await tool.execute({ blockId: "b1" }, mockToolContext);
 
-    // Returns the full summary body (untruncated — short summary).
-    assert.equal(result, "被消费旧块的完整摘要正文");
+    // The body is always framed by a note naming the block id and saying
+    // out loud that no original text is restored — a bare body would read
+    // like a completed restore.
+    assert.ok(result.startsWith("【仅返回摘要，未恢复原文】压缩块 b1 "));
+    assert.ok(result.includes("本次调用不改变状态"));
+    assert.ok(!result.includes("已失效"), "a consumed block is not stale");
+    assert.equal(
+      result.slice(result.indexOf("\n") + 1),
+      "被消费旧块的完整摘要正文",
+    );
 
     // Zero state change.
     const after = getContextStateManager().get(TEST_SESSION_ID);
@@ -413,13 +421,16 @@ describe("decompress tool execute — recall path", () => {
     const tool = createDecompressTool(host, PARSED_CONFIG);
     const result = await tool.execute({ blockId: "b1" }, mockToolContext);
 
-    assert.ok(result.length <= RECALL_MAX_CHARS + 64);
+    // The recall note is one line; the truncated body follows it.
+    assert.ok(result.startsWith("【仅返回摘要，未恢复原文】"));
+    const body = result.slice(result.indexOf("\n") + 1);
+    assert.ok(body.length <= RECALL_MAX_CHARS + 32);
     assert.ok(
-      result.includes("[摘要过长已截断：省略 100 字符]"),
+      body.includes("[摘要过长已截断：省略 100 字符，省略部分无法取回]"),
       "expected truncation tail note",
     );
     assert.ok(
-      result.startsWith("长".repeat(RECALL_MAX_CHARS)),
+      body.startsWith("长".repeat(RECALL_MAX_CHARS)),
       "expected the first RECALL_MAX_CHARS characters",
     );
   });
@@ -610,24 +621,52 @@ describe("decompress tool registration gate", () => {
     ]);
 
     assert.ok(hooks?.decompress);
-    assert.deepEqual(hooks.decompress.args, {
-      blockId: {
-        type: "string",
-        description: "要恢复的压缩块 id",
-      },
-    });
+    const args = hooks.decompress.args as Record<
+      string,
+      { type: string; description: string }
+    >;
+    assert.deepEqual(Object.keys(args), ["blockId"]);
+    assert.equal(args.blockId.type, "string");
+    assert.ok(
+      args.blockId.description.includes('形如 "b3"'),
+      "blockId must show the id shape the model copies",
+    );
+    assert.ok(
+      args.blockId.description.includes("[Block bN · K 条]"),
+      "blockId must point at where ids are visible in the view",
+    );
+    assert.deepEqual(hooks.decompress.required, ["blockId"]);
   });
 
-  it("carries the verbatim decompress description", () => {
+  it("carries the restore/recall contract in the description", () => {
     const { client } = mockClient([]);
     const hooks = buildToolHooks(client, { dedup: {}, purgeErrors: {} }, [
       "decompress",
     ]);
 
     assert.ok(hooks?.decompress);
-    assert.equal(
-      hooks.decompress.description,
-      `恢复被压缩成摘要的块中的内容。当原文过长时，会拒绝恢复。`,
+    const description = hooks.decompress.description;
+    assert.ok(!description.includes("\n"), "description stays a single line");
+    assert.ok(
+      description.includes("恢复") && description.includes("拒绝恢复"),
+      "description must state the restore and its over-long rejection",
+    );
+    assert.ok(
+      description.includes("下一轮"),
+      "description must state that the restore takes effect next round",
+    );
+    assert.ok(
+      description.includes("[Block bN · K 条] 的块可以恢复"),
+      "description must restrict restore to active blocks",
+    );
+    assert.ok(
+      description.includes("不能恢复原文"),
+      "description must exclude terminal blocks from restore",
+    );
+    assert.ok(
+      description.includes("只会返回保存的摘要") &&
+        description.includes("不会改变状态"),
+      "description must distinguish recall from restore",
     );
   });
 });
@@ -685,21 +724,28 @@ describe("config hook — primary_tools", () => {
 // ---------------------------------------------------------------------------
 
 describe("decompress tool unsupported host", () => {
-  it("returns a single-line Chinese message when the host has no tool services", async () => {
-    const result = await decompressUnit
-      .create(
-        {
-          limits: {},
-          contextConfig: ENABLED_CONFIG,
-          client: {},
-          directory: "",
-          resolveAgent: () => undefined,
-          toolHost: undefined,
-        },
-        {} as any,
-      )
-      .tools[0].execute({ blockId: "b1" }, mockToolContext);
+  it("throws a single-line Chinese tool error when the host has no tool services", async () => {
+    const tool = decompressUnit.create(
+      {
+        limits: {},
+        contextConfig: ENABLED_CONFIG,
+        client: {},
+        directory: "",
+        resolveAgent: () => undefined,
+        toolHost: undefined,
+      },
+      {} as any,
+    ).tools[0];
 
-    assert.equal(result, "此工具在当前 host 上不可用。");
+    // An unself-healable wiring fault is a real tool failure, never a
+    // success-shaped returned string.
+    await assert.rejects(
+      () => tool.execute({ blockId: "b1" }, mockToolContext),
+      (err: unknown) =>
+        err instanceof Error &&
+        !err.message.includes("\n") &&
+        /在当前宿主上不可用/.test(err.message) &&
+        /重试本工具无法解决/.test(err.message),
+    );
   });
 });

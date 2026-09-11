@@ -300,8 +300,13 @@ describe("applyDecompress", () => {
     state.blocks.set(1, makeBlock(history, 1, 4, { status: "consumed" }));
     assert.throws(
       () => applyDecompress(state, 1, history),
-      (err: unknown) => err instanceof Error && /已失活/.test(err.message),
+      (err: unknown) =>
+        err instanceof Error &&
+        /已不能恢复原文/.test(err.message) &&
+        /本次不会恢复原文/.test(err.message),
     );
+    // The refusal changes nothing — the record keeps its status.
+    assert.equal(state.blocks.get(1)?.status, "consumed");
   });
 
   it("never mutates the transcript — view expansion is fold's job", () => {
@@ -383,7 +388,8 @@ describe("stale blocks", () => {
       (err: unknown) =>
         err instanceof Error &&
         /已失效，无法恢复/.test(err.message) &&
-        /recall/.test(err.message),
+        /原文无法取回/.test(err.message) &&
+        /只能读取仍保存的摘要/.test(err.message),
     );
     // The refusal changes nothing — the record keeps its status.
     assert.equal(state.blocks.get(1)?.status, "stale");
@@ -416,21 +422,30 @@ describe("stale blocks", () => {
 // ===========================================================================
 
 describe("recallOutput", () => {
-  it("returns the plain summary body for a consumed block", () => {
+  it("frames a consumed recall as read-only with the summary body", () => {
     const history = makeTranscript(6);
     const block = makeBlock(history, 1, 4, {
       status: "consumed",
       summary: "普通摘要正文",
     });
 
-    assert.equal(recallOutput(block), "普通摘要正文");
+    const output = recallOutput(block, 7);
+
+    assert.ok(output.includes("b7"), output);
+    // The framing must rule out the "the original text is back" reading.
+    assert.ok(output.includes("未恢复原文"), output);
+    assert.ok(output.endsWith("普通摘要正文"), output);
+    assert.ok(!output.includes("[1, 4)"), output);
   });
 
-  it("returns the plain summary body for an active block", () => {
+  it("frames an active block's recall the same read-only way", () => {
     const history = makeTranscript(6);
     const block = makeBlock(history, 1, 4, { summary: "活跃摘要正文" });
 
-    assert.equal(recallOutput(block), "活跃摘要正文");
+    const output = recallOutput(block, 2);
+
+    assert.ok(output.includes("未恢复原文"), output);
+    assert.ok(output.endsWith("活跃摘要正文"), output);
   });
 
   it("labels a stale recall as all that survives of the interval", () => {
@@ -440,11 +455,14 @@ describe("recallOutput", () => {
       summary: "仅存的摘要",
     });
 
-    const output = recallOutput(block);
+    const output = recallOutput(block, 1);
 
-    assert.ok(output.startsWith("[压缩块已失效"));
-    assert.ok(output.includes("区间 [1, 4)"));
-    assert.ok(output.endsWith("仅存的摘要"));
+    assert.ok(
+      output.startsWith("【只读召回 · 未恢复原文】压缩块 b1 已失效"),
+      output,
+    );
+    assert.ok(output.includes("原文不可能再被恢复"), output);
+    assert.ok(output.endsWith("仅存的摘要"), output);
   });
 
   it("truncates an over-cap stale summary under the note", () => {
@@ -454,9 +472,14 @@ describe("recallOutput", () => {
       summary: "z".repeat(RECALL_MAX_CHARS + 10),
     });
 
-    const output = recallOutput(block);
+    const output = recallOutput(block, 1);
 
-    assert.ok(output.includes("[摘要过长已截断：省略 10 字符]"));
+    assert.ok(
+      output.includes("[摘要过长已截断：省略 10 字符，省略部分无法取回]"),
+      output,
+    );
+    // The truncation note stays inside the body, below the status note.
+    assert.ok(output.startsWith("【只读召回 · 未恢复原文】"), output);
   });
 });
 
@@ -470,7 +493,7 @@ describe("truncateRecallSummary", () => {
     const result = truncateRecallSummary(long);
     assert.equal(
       result,
-      `${"x".repeat(RECALL_MAX_CHARS)}\n[摘要过长已截断：省略 500 字符]`,
+      `${"x".repeat(RECALL_MAX_CHARS)}\n[摘要过长已截断：省略 500 字符，省略部分无法取回]`,
     );
   });
 

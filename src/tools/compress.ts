@@ -21,20 +21,24 @@
  *    before any transform ran) does it fall back to a host that
  *    guarantees a same-source history read, folding that snapshot
  *    itself; a host without that guarantee leaves the fallback unwired
- *    and the call fails closed with guidance.
+ *    and the call fails as a tool error (unself-healable within the
+ *    round, so it is never reported as a success-shaped string).
  * 4. Drives the core batch pipeline (resolve → validate → apply).  Every
  *    range is validated against the same snapshot; any invalid range
- *    rejects the whole call naming the 1-based range index, leaving the
- *    state untouched.
+ *    rejects the whole call, leaving the state untouched.
  * 5. Books the reclaimed tokens as the nudge's reclaim credit, flags the
  *    pending view change, and persists the session state ONCE through the
  *    shared state manager.
  * 6. Posts a single ignored chat notification through the host.
  *
- * Loud Chinese guidance errors from the core propagate to the model
- * unchanged — the model self-corrects by re-picking refs and retrying.
- * The ToolResult is a single-line short summary (block ids / message
- * count / reclaimed-token estimate), never the summary bodies.
+ * Every rejection is thrown as a tool error whose text is written in the
+ * model's address space: per-range failures are aggregated (all of them,
+ * each labelled with its 1-based range index and submitted refs) behind a
+ * "本次压缩未生效" header, so the model re-picks refs and retries with the
+ * whole picture instead of one failure at a time.  Config and wiring
+ * errors say so explicitly — repeating the call cannot fix them.
+ * The successful ToolResult is a single-line short summary (block ids /
+ * message count / reclaimed-token estimate), never the summary bodies.
  *
  * @module
  */
@@ -102,17 +106,44 @@ export type CompressToolSpec = Omit<CompressToolDefinition, "execute">;
 // Helpers
 // ---------------------------------------------------------------------------
 
-function requireStringArg(
+/**
+ * Validate one raw range item into a `CompressRangeInput`.
+ *
+ * Collects every field that is missing or not a string so one message
+ * names them all, and always leads with the 1-based range position — in a
+ * batch call the model has no other way to tell which item to fix.
+ *
+ * @param item - The raw range object.
+ * @param position - The 1-based index of this range in `ranges`.
+ * @returns The validated range input.
+ * @throws A Chinese guidance error naming the position and the bad fields.
+ */
+function requireRangeFields(
   item: Record<string, unknown>,
-  name: keyof CompressRangeInput,
-): string {
-  const value = item[name];
-  if (typeof value !== "string") {
+  position: number,
+): CompressRangeInput {
+  const fields = ["fromRef", "toRef", "title", "summary"] as const;
+  const values: Partial<Record<(typeof fields)[number], string>> = {};
+  const bad: string[] = [];
+  for (const field of fields) {
+    const value = item[field];
+    if (typeof value === "string") {
+      values[field] = value;
+    } else {
+      bad.push(field);
+    }
+  }
+  if (bad.length > 0) {
     throw new Error(
-      `${name} 参数必须是字符串：ranges 数组的每一项都必须包含 fromRef、toRef、title、summary 四个必填字符串后重试。`,
+      `第 ${position} 个范围：${bad.join("、")} 参数必须是字符串` +
+        (bad.length === fields.length
+          ? "（四个字段全部缺失或类型错误）"
+          : "（其余字段已提供）") +
+        `。ranges 的每一项都必须同时包含 fromRef、toRef、title、summary 四个字符串，` +
+        `请补齐该范围后重新提交整批范围。`,
     );
   }
-  return value;
+  return values as CompressRangeInput;
 }
 
 /**
@@ -150,13 +181,7 @@ export function validateCompressArgs(args: unknown): CompressToolInput {
         `第 ${i + 1} 个范围格式错误：ranges 的每一项必须是包含 fromRef、toRef、title、summary 四个必填字符串的对象。`,
       );
     }
-    const record = item as Record<string, unknown>;
-    ranges.push({
-      fromRef: requireStringArg(record, "fromRef"),
-      toRef: requireStringArg(record, "toRef"),
-      title: requireStringArg(record, "title"),
-      summary: requireStringArg(record, "summary"),
-    });
+    ranges.push(requireRangeFields(item as Record<string, unknown>, i + 1));
   }
   return { ranges };
 }
@@ -203,12 +228,14 @@ function buildCompressToolSpec(
   _contextConfig: ContextPruningConfig,
 ): CompressToolSpec {
   return {
-    description: `将一段或多段连续的、不再需要逐字保留的历史消息压缩为摘要。每一段的压缩范围不能有重叠，且都应是独立的主题。`,
+    description:
+      "将一段或多段连续的、不再需要逐字保留的历史消息压缩为摘要。每一段的压缩范围不能有重叠，且都应是独立的主题。" +
+      "端点使用当轮视图的行号（如 m12）且两端都包含；行号仅对当轮有效，失效时重新读取视图。引用压缩块摘要行会把整个块纳入范围。",
     args: {
       ranges: {
         type: "array",
         description:
-          "要压缩的范围数组，每项 {fromRef, toRef, title, summary}。",
+          "要压缩的范围数组，每项 {fromRef, toRef, title, summary}。任一范围校验失败时整批不生效，错误会列出全部失败范围。",
         items: {
           type: "object",
           description: "压缩范围（一段连续的历史消息）。",
@@ -259,7 +286,10 @@ export function createCompressTool(
     async execute(args, toolCtx) {
       const sessionID = host.resolveSessionId(toolCtx);
       if (sessionID === undefined) {
-        throw new Error("无法确定会话 ID：工具上下文缺少 sessionID。");
+        throw new Error(
+          "无法压缩：工具上下文缺少 sessionID，会话状态无法定位。" +
+            "这是宿主接线问题，重试本工具无法解决，需重启宿主或由用户处理。",
+        );
       }
       const { ranges } = validateCompressArgs(args);
 
@@ -279,12 +309,16 @@ export function createCompressTool(
         compressCfg.maxRanges === undefined
       ) {
         throw new Error(
-          "[zoo.context.compress] 段缺失或非法：请在 config.toml 配置 threshold_tokens、protected_tokens（非负整数）与 max_ranges（正整数）后重试。",
+          "[zoo.context.compress] 段缺失或非法：请在 config.toml 配置 " +
+            "threshold_tokens、protected_tokens（非负整数）与 max_ranges（正整数），" +
+            "并重新安装生效。配置错误不会因重试本工具而消失：请停止重试并告知用户修正配置。",
         );
       }
       if (contextConfig.protectedMessages === undefined) {
         throw new Error(
-          "[zoo.context] protected_messages 缺失或非法：请在 config.toml 的 [zoo.context] 段配置 protected_messages（非负整数）后重试。",
+          "[zoo.context] protected_messages 缺失或非法：请在 config.toml 的 " +
+            "[zoo.context] 段配置 protected_messages（非负整数），并重新安装生效。" +
+            "配置错误不会因重试本工具而消失：请停止重试并告知用户修正配置。",
         );
       }
 
@@ -315,37 +349,47 @@ export function createCompressTool(
         log("compress-tool", "no_round_view", sessionID, undefined, "warn", {
           reason: "no published round view and no host history fallback",
         });
-        return (
+        // Not a retryable model error: the line numbers the model holds
+        // cannot be resolved at all this round, and the same call made
+        // again in this round fails identically.  Reported as a tool
+        // failure so the host surfaces it as such — never a success-shaped
+        // string that reads like a completed compression.
+        throw new Error(
           "无法压缩：尚未取得当轮上下文视图（上下文变换本轮还未运行），" +
-          "当前宿主也不提供同源的历史回退——历史无法定位到模型看到的行号。" +
-          "请在下一轮对话后重试压缩。"
+            "当前宿主也不提供同源的历史回退——行号无法定位到模型看到的视图。" +
+            "本轮内重试结果相同，请等下一轮上下文变换运行后再压缩；" +
+            "若每轮都如此，属于宿主配置问题，请告知用户处理。",
         );
       }
 
-      // Core batch pipeline: loud Chinese guidance errors come back as a
-      // whole-call error (max_ranges overflow) or per-range failures
-      // (already range-indexed by the core).
+      // Compression options straight from the parsed config — no
+      // fallbacks, config.toml is the single source of truth.
       const options: CompressOptions = {
         protectedMessages: contextConfig.protectedMessages,
         protectedTokens: compressCfg.protectedTokens,
         thresholdTokens: compressCfg.thresholdTokens,
         maxRanges: compressCfg.maxRanges,
       };
+      // Core batch pipeline: the whole-call error (max_ranges overflow)
+      // and the per-range failures both mean NOTHING was applied — the
+      // core's per-range texts are written relative to the failing range,
+      // so the range index is labelled exactly once here and every failure
+      // of the call is reported together.
       const result = compressRanges(snapshot, numbered, state, options, ranges);
 
       if (result.error !== undefined) {
-        throw new Error(result.error);
+        throw new Error(`本次压缩未生效（会话状态未改动）：${result.error}`);
       }
       if (result.failed.length > 0) {
-        const failure = result.failed[0];
-        // Core span-resolution errors are not range-indexed; prefix them
-        // with the failing range index.  Title and cross-range errors
-        // already carry their range index verbatim.
-        const indexed = failure.error.startsWith(`第 ${failure.index} 个范围`);
+        const detail = result.failed
+          .map(
+            (failure) =>
+              `- 第 ${failure.index} 个范围（${failure.range.fromRef} → ${failure.range.toRef}）：${failure.error}`,
+          )
+          .join("\n");
         throw new Error(
-          indexed
-            ? failure.error
-            : `第 ${failure.index} 个范围校验失败：${failure.error}`,
+          `本次压缩未生效：${result.failed.length}/${ranges.length} 个范围校验失败，` +
+            `会话状态未改动。请按下列提示修正后重新提交：\n${detail}`,
         );
       }
 
@@ -419,7 +463,12 @@ export const unit: ToolUnitDescriptor = {
           {
             name: "compress",
             ...metadata,
-            execute: async () => "此工具在当前 host 上不可用。",
+            execute: async () => {
+              throw new Error(
+                "compress 在当前宿主上不可用：没有宿主工具服务就无法定位会话与上下文视图。" +
+                  "重试本工具无法解决，请告知用户或改用可用的宿主。",
+              );
+            },
           },
         ],
       };

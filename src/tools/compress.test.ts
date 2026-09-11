@@ -360,13 +360,17 @@ describe("compress tool execute — history source", () => {
     const { host, notifyCalls } = sourceHost({});
 
     const tool = createCompressTool(host, PARSED_CONFIG);
-    const result = await tool.execute(
-      { ranges: [makeRange(1, 9)] },
-      mockToolContext,
+    // An unaddressable view is not a model-recoverable condition: the
+    // failure is thrown (never returned as a success-shaped string) and
+    // says that repeating the call in this round changes nothing.
+    await assert.rejects(
+      () => tool.execute({ ranges: [makeRange(1, 9)] }, mockToolContext),
+      (err: unknown) =>
+        err instanceof Error &&
+        /无法压缩/.test(err.message) &&
+        /当轮上下文视图/.test(err.message) &&
+        /本轮内重试结果相同/.test(err.message),
     );
-
-    assert.match(result, /无法压缩/);
-    assert.match(result, /当轮上下文视图/);
     assert.equal(
       getContextStateManager().get(TEST_SESSION_ID).blocks.size,
       0,
@@ -1024,8 +1028,26 @@ describe("compress tool registration gate", () => {
       "description must forbid overlapping ranges",
     );
     assert.ok(
+      tool.description.includes("端点使用当轮视图的行号") &&
+        tool.description.includes("两端都包含"),
+      "description must state the ref address space and that both endpoints are inclusive",
+    );
+    assert.ok(
+      tool.description.includes("行号仅对当轮有效"),
+      "description must state that line refs are round-scoped",
+    );
+    assert.ok(
+      tool.description.includes("引用压缩块摘要行会把整个块纳入范围"),
+      "description must state that a summary-line ref pulls in the whole block",
+    );
+    assert.ok(
       tool.args.ranges.description.includes("{fromRef, toRef, title, summary}"),
       "ranges arg must state the per-item fields",
+    );
+    assert.ok(
+      tool.args.ranges.description.includes("整批不生效") &&
+        tool.args.ranges.description.includes("全部失败范围"),
+      "ranges arg must state batch atomicity and that all failures are listed",
     );
     assert.ok(
       tool.args.ranges.items.description.includes("一段连续的历史消息"),
@@ -1105,21 +1127,28 @@ describe("config hook — primary_tools", () => {
 // ---------------------------------------------------------------------------
 
 describe("compress tool unsupported host", () => {
-  it("returns a single-line Chinese message when the host has no tool services", async () => {
-    const result = await compressUnit
-      .create(
-        {
-          limits: {},
-          contextConfig: PARSED_CONFIG,
-          client: {},
-          directory: "",
-          resolveAgent: () => undefined,
-          toolHost: undefined,
-        },
-        {} as any,
-      )
-      .tools[0].execute({ ranges: [makeRange(1, 9)] }, mockToolContext);
+  it("throws a single-line Chinese tool error when the host has no tool services", async () => {
+    const tool = compressUnit.create(
+      {
+        limits: {},
+        contextConfig: PARSED_CONFIG,
+        client: {},
+        directory: "",
+        resolveAgent: () => undefined,
+        toolHost: undefined,
+      },
+      {} as any,
+    ).tools[0];
 
-    assert.equal(result, "此工具在当前 host 上不可用。");
+    // An unself-healable wiring fault is a real tool failure, never a
+    // success-shaped returned string.
+    await assert.rejects(
+      () => tool.execute({ ranges: [makeRange(1, 9)] }, mockToolContext),
+      (err: unknown) =>
+        err instanceof Error &&
+        !err.message.includes("\n") &&
+        /在当前宿主上不可用/.test(err.message) &&
+        /重试本工具无法解决/.test(err.message),
+    );
   });
 });
