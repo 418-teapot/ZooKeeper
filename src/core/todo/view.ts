@@ -6,10 +6,16 @@
  * mutation, no host dependency — the module stays
  * importable and unit-testable in any TS runtime.
  *
- * The projection is the single place display surfaces read the todo rows
- * from: it emits every row in full semantic order, and each surface clips
- * the sequence to its own physical space with `fitToBudget` (overflow is
- * summarized by the `+N` row this module builds).
+ * A single projection, `todoLines`, always enumerates the plan: every
+ * non-empty phase renders its header, and a phase's fold defaults to its
+ * settled status — a phase holding open work enumerates all of its tasks in
+ * declaration order (completed work included and struck through), while a
+ * settled phase (all tasks closed) renders header-only.  A per-phase entry
+ * in `opts.foldOverrides` replaces that default in either direction, so a
+ * surface can collapse a busy in-progress phase or expand finished work on
+ * demand.  Callers clip the projection to their budget with the shared
+ * `fitToBudget` (the `+N` overflow row this module builds keeps dropped work
+ * discoverable) without re-deriving any shape policy.
  *
  * Rows carry semantics only — a `hue` from the shared `DisplayHue`
  * vocabulary (`running` / `success` / `error` / `muted` / `accent`, defined
@@ -57,6 +63,8 @@ export interface TodoHeaderLine {
   total: number;
   /** Whether this is the phase currently being worked on. */
   active: boolean;
+  /** Whether every task in the phase is closed (settled work). */
+  settled: boolean;
   /** The structural fold glyph (`▾` expanded / `▸` collapsed). */
   fold: string;
   /** The rendered header text (`<fold> <name>  <done>/<total>`). */
@@ -176,14 +184,23 @@ function taskLine(item: TodoItem): TodoTaskViewLine {
   };
 }
 
-/** Build a phase header view row. */
+/**
+ * Build a phase header view row.
+ *
+ * @param phase - The phase the header names.
+ * @param index - The one-based phase ordinal within the plan.
+ * @param active - Whether the phase currently holds the active work.
+ * @param enumerated - Whether the phase's task rows follow the header.
+ */
 function headerLine(
   phase: TodoPhase,
   index: number,
   active: boolean,
+  enumerated: boolean,
 ): TodoHeaderLine {
   const done = phase.tasks.filter(isClosed).length;
   const total = phase.tasks.length;
+  const fold = enumerated ? FOLD_EXPANDED : FOLD_COLLAPSED;
   return {
     kind: "header",
     name: phase.name,
@@ -191,8 +208,9 @@ function headerLine(
     done,
     total,
     active,
-    fold: active ? FOLD_EXPANDED : FOLD_COLLAPSED,
-    text: `${active ? FOLD_EXPANDED : FOLD_COLLAPSED} ${phase.name}  ${done}/${total}`,
+    settled: done === total,
+    fold,
+    text: `${fold} ${phase.name}  ${done}/${total}`,
     hue: active ? "running" : "muted",
   };
 }
@@ -211,42 +229,51 @@ export function overflowLine(count: number): TodoOverflowLine {
   return { kind: "overflow", count, text: `+${count} more`, hue: "muted" };
 }
 
+/** Options for {@link todoLines}. */
+export interface TodoLinesOptions {
+  /**
+   * Per-phase fold overrides (phase name → whether to enumerate its tasks).
+   *
+   * A phase's fold defaults to its settled status: a phase holding open work
+   * enumerates, a settled phase collapses to its header.  A name in this map
+   * overrides that default for that phase, in either direction.
+   */
+  foldOverrides?: ReadonlyMap<string, boolean>;
+}
+
 /**
- * Project a todo plan into its view rows, in full semantic order.
+ * Project a todo plan into its view rows.
  *
- * Every non-empty phase renders its header row, followed by its tasks:
- * the active phase leads with its most recent closed task (the last
- * completed or abandoned one, a directional thread into the current work)
- * and then emits all of its open tasks; every later phase emits all of its
- * open tasks in place.  A settled phase (no open work left) renders as its
- * header alone.  No row is ever dropped here — the sequence carries the
- * whole plan, and each surface clips it to its own budget with
- * `fitToBudget` (overflow rows via `overflowLine`).
+ * Every non-empty phase renders its header row.  A phase's fold defaults to
+ * its settled status — one holding open work (pending, in progress, or
+ * blocked) enumerates every one of its tasks in declaration order (closed
+ * rows included, each keeping its `strikethrough` flag), while a settled
+ * phase (tasks present, none open) renders its header alone.  A
+ * `foldOverrides` entry (name → whether to enumerate) replaces that default
+ * in either direction.  Task-less phases are skipped; an empty plan yields
+ * no rows.
  *
  * @param phases - Todo phases to project.
- * @returns Every view row (header / task) in display order.
+ * @param opts - Per-phase fold overrides.
+ * @returns The view rows (header / task) in display order.
  */
-export function todoLines(phases: readonly TodoPhase[]): TodoViewLine[] {
-  const lines: TodoViewLine[] = [];
+export function todoLines(
+  phases: readonly TodoPhase[],
+  opts: TodoLinesOptions = {},
+): TodoViewLine[] {
+  const overrides = opts.foldOverrides;
   const activeIdx = activePhaseIndex(phases);
-
+  const lines: TodoViewLine[] = [];
   for (let i = 0; i < phases.length; i++) {
     const phase = phases[i];
     if (phase.tasks.length === 0) continue;
-    const active = i === activeIdx;
-    lines.push(headerLine(phase, i + 1, active));
-
-    if (active) {
-      const closed = phase.tasks.filter(isClosed);
-      const lead = closed[closed.length - 1];
-      if (lead !== undefined) lines.push(taskLine(lead));
-    }
-
-    for (const item of phase.tasks) {
-      if (isOpen(item)) lines.push(taskLine(item));
+    const settled = !phase.tasks.some(isOpen);
+    const enumerated = overrides?.get(phase.name) ?? !settled;
+    lines.push(headerLine(phase, i + 1, i === activeIdx, enumerated));
+    if (enumerated) {
+      for (const item of phase.tasks) lines.push(taskLine(item));
     }
   }
-
   return lines;
 }
 

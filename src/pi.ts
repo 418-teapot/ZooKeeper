@@ -161,6 +161,7 @@ import {
 import type { RunLog } from "./core/subagent/run-log.js";
 import type { FetchCandidates } from "./core/todo/store.js";
 import { createTodoStore } from "./core/todo/store.js";
+import type { TodoPhase } from "./core/todo/types.js";
 import type { ValidationLimits } from "./core/validate.js";
 import { REGISTRY } from "./registry.js";
 import { log } from "./utils/logger.js";
@@ -978,11 +979,18 @@ export function buildPiHandlers(
   // Runs whose overlay open is deferred on a transcript load: a second enter
   // while that load is in flight must not stack a second overlay.
   const deferredOverlayOpens = new Set<string>();
+  // The session-scoped todo snapshot the widget's column renders.  The
+  // per-session store fills it through `refreshTodoView`, triggered by a
+  // successful `todo` tool result, a session start, and a session tree
+  // navigation.  An empty list hides the column, so a session with no plan
+  // (or no store) reads as the fleet column alone.
+  let todoPhasesCache: readonly TodoPhase[] = [];
   const fleetWidget = createFleetWidget({
     getPrimary: () => getPrimary(),
     colorizeAgent,
     getSessionId: sessionIdProvider,
     getEditorText: () => contextHolder.current?.ui?.getEditorText?.() ?? "",
+    getTodoPhases: () => todoPhasesCache,
     enterRun: (run) => {
       const ui = contextHolder.current?.ui;
       if (ui?.custom === undefined) return false;
@@ -1065,6 +1073,50 @@ export function buildPiHandlers(
       return open(run.log);
     },
   });
+  // The monotonically increasing request sequence: a refresh issued later
+  // must never be overwritten by an earlier one that resolves later, so
+  // each read carries its sequence and a stale resolution is discarded.
+  let todoViewRequest = 0;
+  // Whether a todo read has actually resolved a session.  The first such
+  // read marks the column seeded so the `before_agent_start` fallback stops
+  // consulting the store on every turn.
+  let todoSeeded = false;
+  // Refresh the widget's todo cache from the per-session store, then nudge
+  // the widget to re-render.  Fire-and-forget: the async store read must
+  // not block the triggering handler, and a rejected read keeps the
+  // previous cache in place so the widget keeps rendering the last good
+  // view.
+  const refreshTodoView = (): void => {
+    const request = ++todoViewRequest;
+    const sessionId = sessionIdProvider();
+    if (todoStore === undefined || sessionId === undefined) {
+      todoPhasesCache = [];
+      fleetWidget.refresh();
+      return;
+    }
+    // A resolved read is the one-shot seed: later turns skip the fallback
+    // read entirely.
+    todoSeeded = true;
+    todoStore
+      .get(sessionId)
+      .then((phases) => {
+        if (request !== todoViewRequest) return;
+        todoPhasesCache = phases;
+        fleetWidget.refresh();
+      })
+      .catch((err) => {
+        log(
+          "plugin",
+          "todo_view_refresh_failed",
+          sessionId,
+          undefined,
+          "warn",
+          {
+            error: String(err),
+          },
+        );
+      });
+  };
   const piSwitchHost: PiSwitchHost | undefined = piApi
     ? {
         getBaselineTools: () => {
@@ -1461,6 +1513,10 @@ export function buildPiHandlers(
       // some flows.  Registration is idempotent — re-running it re-seeds the
       // widget and never stacks a terminal-input listener.
       registerFleetWidget();
+      // Seed the todo column on the first turn that resolves a session when
+      // `session_start` did not already do so; the one-shot flag keeps later
+      // turns from re-reading the store.
+      if (!todoSeeded) refreshTodoView();
       // Resolve the current agent identity: the AsyncLocalStorage store
       // first (a delegated sub-session), falling back to the active
       // primary.  The composed agents list is looked up by the resolved
@@ -1484,6 +1540,9 @@ export function buildPiHandlers(
       // LLM turn), so the current primary shows immediately.
       // `before_agent_start` runs the same registration as a fallback.
       registerFleetWidget();
+      // Seed the widget's todo column from this session's plan; the store
+      // read is async, so the column appears once it resolves.
+      refreshTodoView();
       // Rebuild the run registry from the session's persisted message
       // history.  The registry is process-level state, so a pi exit wipes
       // it; on restore / resume this rescans the current session's `subagent`
@@ -1568,7 +1627,15 @@ export function buildPiHandlers(
     },
     toolResult: async (event, ctx) => {
       if (ctx) contextHolder.current = ctx as PiToolHostContext;
-      return toolResultHandler(event, ctx);
+      const result = await toolResultHandler(event, ctx);
+      // A successful `todo` call changed this session's plan: refresh the
+      // widget's todo view after the existing chain has run, without
+      // touching its result.  Other tools and error results leave the
+      // cache alone.
+      if (event.toolName === "todo" && !event.isError) {
+        refreshTodoView();
+      }
+      return result;
     },
     contextHandler: async (event, ctx) => {
       if (ctx) contextHolder.current = ctx as PiToolHostContext;
@@ -1588,6 +1655,9 @@ export function buildPiHandlers(
       // registered).
       const sessionId = sessionIdProvider();
       if (sessionId !== undefined) todoStore?.invalidate(sessionId);
+      // Re-read the invalidated cache so the widget shows the branch the
+      // navigation moved to.
+      refreshTodoView();
     },
   };
 }

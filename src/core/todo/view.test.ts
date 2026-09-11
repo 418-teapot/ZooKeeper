@@ -2,9 +2,10 @@
  * Tests for the todo view model (`src/core/todo/view.ts`).
  *
  * Locks the host-agnostic display projections: the todo-domain mapping onto
- * the canonical presentation table (`../display.ts`), the full-ordered
- * emission of view rows (closed lead, phase order, blocked placement,
- * settled-phase headers), the `+N` overflow row, and the single-line
+ * the canonical presentation table (`../display.ts`), the single
+ * enumerate-all view-row projection (phase order, blocked placement,
+ * status-derived default folds with per-phase overrides), the `+N` overflow
+ * row, and the single-line
  * collapsed summary.  Rows are asserted for their semantic fields (glyph,
  * hue, flags) only — concrete styling is never the model's concern.
  */
@@ -181,6 +182,8 @@ describe("view — status presentation", () => {
 describe("view — todoLines ordering", () => {
   it("is empty for an empty plan", () => {
     assert.deepEqual(todoLines([]), []);
+    // A plan of task-less phases has nothing to summarize either.
+    assert.deepEqual(todoLines([phase("Empty"), phase("AlsoEmpty")]), []);
   });
 
   it("emits every open task of the active phase without a cap", () => {
@@ -205,7 +208,7 @@ describe("view — todoLines ordering", () => {
     assert.equal(overflowsOf(lines).length, 0);
   });
 
-  it("leads the active phase with the most recent closed task", () => {
+  it("enumerates every task of an open phase in declaration order", () => {
     const lines = todoLines([
       phase(
         "Work",
@@ -215,11 +218,15 @@ describe("view — todoLines ordering", () => {
         ["b", "pending"],
       ),
     ]);
-    const tasksShown = tasksOf(lines).map((line) => line.content);
-    // The closed lead is the LAST closed task, ahead of the open work; the
-    // earlier closed task is not re-surfaced.
-    assert.deepEqual(tasksShown, ["c2", "a", "b"]);
-    assert.equal(taskContent(lines, "c1"), undefined);
+    // Closed rows stay in place, struck through, ahead of the open work.
+    assert.deepEqual(
+      tasksOf(lines).map((line) => line.content),
+      ["c1", "c2", "a", "b"],
+    );
+    assert.deepEqual(
+      tasksOf(lines).map((line) => line.strikethrough),
+      [true, true, false, false],
+    );
   });
 
   it("emits phases in declaration order, header before tasks", () => {
@@ -275,18 +282,18 @@ describe("view — todoLines ordering", () => {
     assert.equal(overflowsOf(lines).length, 0);
   });
 
-  it("grants the closed lead only to the active phase", () => {
+  it("enumerates a closed task in a non-active open phase too", () => {
     const lines = todoLines([
       phase("Current", ["a", "in_progress"], ["closed", "completed"]),
       phase("Later", ["done2", "completed"], ["x", "pending"]),
     ]);
-    // The active phase leads with its closed task; the later phase's closed
-    // task is never surfaced — only its open task is emitted.
+    // Every open phase enumerates all of its rows; no phase gets a special
+    // "closed lead" and no closed row is hidden.
     assert.deepEqual(
       tasksOf(lines).map((line) => line.content),
-      ["closed", "a", "x"],
+      ["a", "closed", "done2", "x"],
     );
-    assert.equal(taskContent(lines, "done2"), undefined);
+    assert.equal(taskContent(lines, "done2"), "done2");
     assert.equal(taskContent(lines, "x"), "x");
   });
 
@@ -324,17 +331,46 @@ describe("view — todoLines ordering", () => {
     assert.equal(blocked?.text, "b — waiting on review");
   });
 
-  it("renders a settled plan as header rows alone", () => {
+  it("renders a settled single-phase plan as its header alone", () => {
     const lines = todoLines([
       phase("Done", ["a", "completed"], ["b", "abandoned"]),
     ]);
-    const header = lines.find((line) => line.kind === "header");
-    assert.ok(header && header.kind === "header");
-    assert.equal(header.active, false);
-    assert.equal(header.fold, FOLD_COLLAPSED);
-    assert.equal(header.done, 2);
-    assert.equal(header.total, 2);
-    assert.equal(tasksOf(lines).length, 0);
+    // Settled work collapses to the phase header — never a plan-wide summary.
+    assert.deepEqual(kindsOf(lines), ["header"]);
+    assert.equal(headerOf(lines, 1).settled, true);
+    assert.equal(headerOf(lines, 1).fold, FOLD_COLLAPSED);
+    assert.equal(headerOf(lines, 1).text, `${FOLD_COLLAPSED} Done  2/2`);
+    assert.equal(overflowsOf(lines).length, 0);
+  });
+
+  it("renders a settled multi-phase plan as N headers, no summary row", () => {
+    const lines = todoLines([
+      phase("Done", ["a", "completed"], ["b", "abandoned"]),
+      phase("Later", ["c", "completed"]),
+    ]);
+    assert.deepEqual(kindsOf(lines), ["header", "header"]);
+    assert.deepEqual(
+      lines.map((line) => (line.kind === "header" ? line.name : "")),
+      ["Done", "Later"],
+    );
+    assert.equal(
+      lines.some((line) => line.kind === "summary"),
+      false,
+    );
+  });
+
+  it("keeps the multi-row projection for a plan with one pending task", () => {
+    // One pending task among completed ones is open work: the phase stays
+    // active and renders its header, closed lead, and open task as today.
+    const lines = todoLines([
+      phase("Work", ["c1", "completed"], ["p1", "pending"]),
+    ]);
+    assert.deepEqual(kindsOf(lines), ["header", "task", "task"]);
+    assert.equal(headerOf(lines, 1).active, true);
+    assert.deepEqual(
+      tasksOf(lines).map((line) => line.content),
+      ["c1", "p1"],
+    );
   });
 
   it("skips phases with no tasks, keeping their ordinal slot", () => {
@@ -364,17 +400,26 @@ describe("view — todoLines ordering", () => {
     assert.equal(header.text, `${FOLD_EXPANDED} Work  1/3`);
   });
 
-  it("marks non-active phase headers collapsed with FOLD_COLLAPSED", () => {
+  it("marks a settled phase header collapsed and an open one expanded", () => {
     const lines = todoLines([
       phase("Current", ["a", "in_progress"]),
       phase("Later", ["x", "pending"]),
+      phase("Closed", ["y", "completed"]),
     ]);
     const later = lines.find(
       (line) => line.kind === "header" && line.index === 2,
     );
     assert.ok(later && later.kind === "header");
     assert.equal(later.active, false);
-    assert.equal(later.fold, FOLD_COLLAPSED);
+    assert.equal(later.settled, false);
+    assert.equal(later.fold, FOLD_EXPANDED);
+    const closed = lines.find(
+      (line) => line.kind === "header" && line.index === 3,
+    );
+    assert.ok(closed && closed.kind === "header");
+    assert.equal(closed.active, false);
+    assert.equal(closed.settled, true);
+    assert.equal(closed.fold, FOLD_COLLAPSED);
   });
 
   it("marks the in_progress task row with the spinner flag", () => {
@@ -394,6 +439,127 @@ describe("view — overflow row", () => {
     assert.equal(row.count, 3);
     assert.equal(row.text, "+3 more");
     assert.equal(row.hue, "muted");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// todoLines — phase fold overrides
+// ---------------------------------------------------------------------------
+
+describe("view — phase fold overrides", () => {
+  it("enumerates an open phase by default", () => {
+    const lines = todoLines([
+      phase("Work", ["a", "pending"], ["b", "completed"]),
+    ]);
+    assert.deepEqual(kindsOf(lines), ["header", "task", "task"]);
+    assert.equal(headerOf(lines, 1).fold, FOLD_EXPANDED);
+  });
+
+  it("collapses an open phase to its header when overridden", () => {
+    const lines = todoLines(
+      [phase("Work", ["a", "pending"], ["b", "in_progress"])],
+      {
+        foldOverrides: new Map([["Work", false]]),
+      },
+    );
+    assert.deepEqual(kindsOf(lines), ["header"]);
+    const header = headerOf(lines, 1);
+    assert.equal(header.settled, false);
+    assert.equal(header.fold, FOLD_COLLAPSED);
+    assert.equal(header.text, `${FOLD_COLLAPSED} Work  0/2`);
+  });
+
+  it("enumerates a settled phase's struck tasks when overridden", () => {
+    const lines = todoLines(
+      [phase("Done", ["a", "completed"], ["b", "abandoned"])],
+      { foldOverrides: new Map([["Done", true]]) },
+    );
+    assert.deepEqual(kindsOf(lines), ["header", "task", "task"]);
+    assert.deepEqual(
+      tasksOf(lines).map((line) => line.content),
+      ["a", "b"],
+    );
+    assert.equal(headerOf(lines, 1).settled, true);
+    assert.equal(headerOf(lines, 1).fold, FOLD_EXPANDED);
+    // Only completed work is crossed out; abandonment is not.
+    assert.deepEqual(
+      tasksOf(lines).map((line) => line.strikethrough),
+      [true, false],
+    );
+  });
+
+  it("overrides a single phase while the rest keep their status default", () => {
+    const lines = todoLines(
+      [
+        phase("Done", ["a", "completed"]),
+        phase("Later", ["b", "completed"]),
+        phase("Open", ["c", "pending"]),
+        phase("Busy", ["d", "in_progress"]),
+      ],
+      {
+        foldOverrides: new Map([
+          ["Later", true],
+          ["Busy", false],
+        ]),
+      },
+    );
+    assert.deepEqual(kindsOf(lines), [
+      "header",
+      "header",
+      "task",
+      "header",
+      "task",
+      "header",
+    ]);
+    assert.deepEqual(
+      tasksOf(lines).map((line) => line.content),
+      ["b", "c"],
+    );
+    assert.equal(headerOf(lines, 3).fold, FOLD_EXPANDED);
+    assert.equal(headerOf(lines, 4).fold, FOLD_COLLAPSED);
+  });
+
+  it("lets an override win over the status default in both directions", () => {
+    // Settled → expanded, open → collapsed.
+    const overridden = todoLines(
+      [phase("Settled", ["a", "completed"]), phase("Open", ["b", "pending"])],
+      {
+        foldOverrides: new Map([
+          ["Settled", true],
+          ["Open", false],
+        ]),
+      },
+    );
+    assert.deepEqual(kindsOf(overridden), ["header", "task", "header"]);
+    assert.deepEqual(
+      tasksOf(overridden).map((line) => line.content),
+      ["a"],
+    );
+    // The same statuses without overrides fall back to their defaults.
+    assert.deepEqual(
+      kindsOf(
+        todoLines([
+          phase("Settled", ["a", "completed"]),
+          phase("Open", ["b", "pending"]),
+        ]),
+      ),
+      ["header", "header", "task"],
+    );
+  });
+
+  it("is unaffected by an override name that matches no phase", () => {
+    const lines = todoLines([phase("Done", ["a", "completed"])], {
+      foldOverrides: new Map([["Nope", true]]),
+    });
+    assert.deepEqual(kindsOf(lines), ["header"]);
+  });
+
+  it("treats an empty override map like no options", () => {
+    const phases = [phase("Done", ["a", "completed"])];
+    assert.deepEqual(
+      todoLines(phases, { foldOverrides: new Map() }),
+      todoLines(phases),
+    );
   });
 });
 

@@ -342,6 +342,94 @@ describe("pi todo card renderResult — snapshot rows", () => {
     );
   });
 
+  it("keeps a settled plan collapsed to its header (summary first)", () => {
+    const phases: TodoPhase[] = [
+      {
+        name: "A",
+        tasks: [
+          { content: "t1", status: "completed" },
+          { content: "t2", status: "abandoned" },
+        ],
+      },
+    ];
+    const collapsed = renderComponent(
+      renderResult(textResult("x", snapshot("done", phases)), {}, THEME),
+    );
+    // Summary + the settled phase header; the tasks stay hidden (the card is
+    // non-interactive), and the summary prints exactly once.
+    assert.equal(collapsed.length, 2, collapsed.join(" | "));
+    assert.equal(
+      collapsed.filter((l) => l.includes("2/2 done")).length,
+      1,
+      collapsed.join(" | "),
+    );
+    assert.ok(
+      collapsed.some((l) => l.includes("A  2/2")),
+      collapsed.join(" | "),
+    );
+    assert.ok(!collapsed.some((l) => l.includes("t1")), collapsed.join(" | "));
+
+    // Expanded drops the summary and keeps the header-only settled phase.
+    const expanded = renderComponent(
+      renderResult(
+        textResult("x", snapshot("done", phases)),
+        { expanded: true },
+        THEME,
+      ),
+    );
+    assert.equal(expanded.length, 1, expanded.join(" | "));
+    assert.ok(expanded[0].includes("A  2/2"), expanded.join(" | "));
+    assert.ok(!expanded.some((l) => l.includes("done")), expanded.join(" | "));
+  });
+
+  it("enumerates an open phase's struck completed rows", () => {
+    const phases: TodoPhase[] = [
+      {
+        name: "A",
+        tasks: [
+          { content: "c1", status: "completed" },
+          { content: "p1", status: "pending" },
+        ],
+      },
+    ];
+    const lines = renderComponent(
+      renderResult(textResult("x", snapshot("init", phases)), {}, THEME),
+    );
+    assert.ok(
+      lines.some((l) => l.includes("c1")),
+      lines.join(" | "),
+    );
+    assert.ok(
+      lines.some((l) => l.includes("p1")),
+      lines.join(" | "),
+    );
+  });
+
+  it("collapses an over-budget settled plan to summary + header", () => {
+    const tasks = Array.from({ length: 20 }, (_, i) => ({
+      content: `t${i + 1}`,
+      status: "completed" as const,
+    }));
+    const phases: TodoPhase[] = [{ name: "A", tasks }];
+    const collapsed = renderComponent(
+      renderResult(textResult("x", snapshot("done", phases)), {}, THEME),
+    );
+    // Summary + the settled header; the 20 rows never enumerate.
+    assert.equal(collapsed.length, 2, collapsed.join(" | "));
+    assert.ok(collapsed[0].includes("20/20 done"), collapsed.join(" | "));
+    assert.ok(collapsed[1].includes("A  20/20"), collapsed.join(" | "));
+
+    const expanded = renderComponent(
+      renderResult(
+        textResult("x", snapshot("done", phases)),
+        { expanded: true },
+        THEME,
+      ),
+    );
+    assert.equal(expanded.length, 1, expanded.join(" | "));
+    assert.ok(expanded[0].includes("A  20/20"), expanded.join(" | "));
+  });
+
   it("renders the summary line for an empty plan (never blank)", () => {
     for (const options of [{}, { expanded: true }]) {
       const lines = renderComponent(

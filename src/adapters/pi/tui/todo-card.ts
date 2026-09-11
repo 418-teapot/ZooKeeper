@@ -2,8 +2,8 @@
  * Pi todo transcript card — renderCall / renderResult implementation.
  *
  * The only pi-facing translation layer for the todo tool card: it maps the
- * host-agnostic todo view model (`src/core/todo/view.ts` `todoLines`, over
- * the `{ op, phases }` snapshot the tool writes into the persisted result
+ * host-agnostic todo view model (`src/core/todo/view.ts`, over the
+ * `{ op, phases }` snapshot the tool writes into the persisted result
  * `details`) onto pi TUI components.  The components (`Container` / `Text`)
  * and the width utilities (`stripTerminalSequences` / `truncateToWidth`)
  * come straight from the `@earendil-works/pi-tui` package — the same
@@ -17,16 +17,17 @@
  * missing or structurally invalid snapshot degrades to a plain-text render
  * of the result content, exactly like pi's default text result reads.
  *
- * Glyph / color discipline: every row comes from `todoLines` carrying a
- * pre-computed `text`, `glyph`, and semantic `hue`; this module never
- * re-derives them.  Hues map to pi colors exclusively through
+ * Glyph / color discipline: every row comes from the core projection
+ * carrying a pre-computed `text`, `glyph`, and semantic `hue`; this module
+ * never re-derives them.  Hues map to pi colors exclusively through
  * `hueToPiColor` (the single pi color vocabulary translation), the
  * spinner slot resolves through the shared `SPINNER_FRAMES` /
  * `spinnerFrameIndex`, and completed rows get the theme's strikethrough.
  *
- * Budget discipline: the projection emits the whole plan; the card clips
- * it with the shared `fitToBudget`, so dropped work always surfaces as the
- * view model's `+N more` overflow row (never a silent cut).  Collapsed
+ * Budget discipline: the card projects through the single core projection
+ * (`todoLines`) and clips it, so dropped work always surfaces as the view
+ * model's `+N more` overflow row (never a silent cut).  Settled phases stay
+ * collapsed to their headers (the card is non-interactive), and collapsed
  * renders lead with the single-line `collapsedSummaryLine`, matching the
  * glance/expand split of the subagent card.
  *
@@ -44,12 +45,7 @@ import {
   Text,
   truncateToWidth,
 } from "@earendil-works/pi-tui";
-import type { DisplayHue } from "../../../core/display.js";
-import {
-  fitToBudget,
-  SPINNER_FRAMES,
-  spinnerFrameIndex,
-} from "../../../core/display.js";
+import { type DisplayHue, fitToBudget } from "../../../core/display.js";
 import type { TodoOperation, TodoPhase } from "../../../core/todo/types.js";
 import { isTodoPhase } from "../../../core/todo/types.js";
 import {
@@ -60,6 +56,7 @@ import {
 } from "../../../core/todo/view.js";
 import type { MarkdownThemeSource } from "./theme.js";
 import { hueToPiColor } from "./theme.js";
+import { todoRowBody } from "./todo-row.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -200,19 +197,7 @@ function rowComponent(
   strikethrough: ((text: string) => string) | undefined,
   frame: number,
 ): Component {
-  let body: string;
-  if (row.kind === "task") {
-    const glyph = row.spinner
-      ? SPINNER_FRAMES[spinnerFrameIndex(frame)]
-      : row.glyph;
-    const text =
-      row.strikethrough === true && strikethrough !== undefined
-        ? strikethrough(row.text)
-        : row.text;
-    body = `${glyph} ${text}`;
-  } else {
-    body = row.text;
-  }
+  const body = todoRowBody(row, frame, strikethrough);
   return new Text(
     colorize === undefined ? body : colorize(row.hue, body),
     0,
@@ -328,15 +313,16 @@ export function renderCall(args: TodoToolArgs): Component {
 /**
  * Build the result card (`renderResult`).
  *
- * A valid `{ op, phases }` snapshot projects through `todoLines` into
- * card rows, clipped to the card's line budget with the shared
- * `fitToBudget` (dropped work resurfaces as the view model's `+N`
- * overflow row).  Collapsed renders lead with the single-line
- * `collapsedSummaryLine`; an empty plan renders just that summary line
- * (`0/0 done`) in either mode, so the card is never blank on a valid
- * snapshot.  A missing or malformed snapshot (a `view` call, a failed
- * call, a legacy record) degrades to the plain-text result content — the
- * exact reading pi's default text result gives.
+ * A valid `{ op, phases }` snapshot projects through the single core
+ * projection (`todoLines`) into card rows, clipped to the card's line
+ * budget (dropped work resurfaces as the view model's `+N` overflow row).
+ * Settled phases stay collapsed to their headers — the card is
+ * non-interactive — so collapsed renders lead with the single-line
+ * `collapsedSummaryLine` followed by the projected rows.  An empty plan
+ * renders just the summary line (`0/0 done`) in either mode, so the card is
+ * never blank on a valid snapshot.  A missing or malformed snapshot (a
+ * `view` call, a failed call, a legacy record) degrades to the plain-text
+ * result content — the exact reading pi's default text result gives.
  *
  * @param result - The pi tool result (partial or final).
  * @param options - Render options (`expanded`, `isPartial`).
@@ -375,15 +361,19 @@ export function renderResult(
   // the frame only fills the spinner slot for an in-progress row.
   const frame = context?.state?.frame ?? 0;
 
-  const lines = todoLines(phases);
+  const budget =
+    options?.expanded === true ? EXPANDED_BODY_ROWS : COLLAPSED_BODY_ROWS;
+  const projected = todoLines(phases);
+  // A non-interactive card leaves settled phases collapsed to their headers;
+  // only the top-level collapsed render prepends the plan-wide summary.
   const rows =
-    lines.length === 0
+    projected.length === 0
       ? [collapsedSummaryLine(phases)]
       : options?.expanded === true
-        ? fitToBudget(lines, EXPANDED_BODY_ROWS, overflowLine)
+        ? fitToBudget(projected, budget, overflowLine)
         : [
             collapsedSummaryLine(phases),
-            ...fitToBudget(lines, COLLAPSED_BODY_ROWS, overflowLine),
+            ...fitToBudget(projected, budget, overflowLine),
           ];
   for (const row of rows) {
     container.addChild(rowComponent(row, colorize, strikethrough, frame));

@@ -493,21 +493,31 @@ describe("session_tree — todo cache invalidation", () => {
 
     const { ctx, scans } = scanCtx("sess-tree");
     // Seed the holder's live session: the scan reads the session manager
-    // through it (pi exposes exactly one live session per instance).  The
-    // seeding call also invalidates, but the cache is empty at this point.
-    handlers.sessionTree(undefined, ctx);
+    // through it (pi exposes exactly one live session per instance).  This
+    // seeding path does not refresh the widget, so the scan count below
+    // only reflects the tool's cache behaviour.
+    await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
 
     await todo.execute("call-1", { op: "view" }, undefined, undefined, ctx);
     assert.equal(scans.count, 1, "a cache miss scans the transcript once");
     await todo.execute("call-2", { op: "view" }, undefined, undefined, ctx);
     assert.equal(scans.count, 1, "a cached read must not re-scan");
 
+    // Tree navigation drops the cache; the widget refresh then re-reads the
+    // transcript eagerly, so the next tool call is served from the restored
+    // cache instead of scanning again.
     handlers.sessionTree(undefined, ctx);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(
+      scans.count,
+      2,
+      "tree navigation must re-scan for the restored view",
+    );
     await todo.execute("call-3", { op: "view" }, undefined, undefined, ctx);
     assert.equal(
       scans.count,
       2,
-      "tree navigation must drop the cache so the next read re-scans",
+      "the eager refresh already repopulated the cache",
     );
   });
 
@@ -532,6 +542,180 @@ describe("session_tree — todo cache invalidation", () => {
       handlers.sessionTree(undefined, {
         sessionManager: { getSessionId: () => "sess-tree" },
       }),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Todo view — widget cache refresh
+// ---------------------------------------------------------------------------
+
+describe("todo view — widget cache refresh triggers", () => {
+  /** The poly profile plus the todo tool, so the unit registers it. */
+  const TODO_ZOO = {
+    ...POLY_ZOO,
+    mode: {
+      poly: { ...POLY_PROFILE, tools: [...POLY_PROFILE.tools, "todo"] },
+    },
+  };
+
+  /** Let a fire-and-forget cache refresh settle before asserting. */
+  async function flush(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  /** A widget-recording ui ctx whose session resolves to `sessionId`. */
+  function todoWidgetCtx(sessionId: string) {
+    const calls: Array<[string, unknown]> = [];
+    const ctx = {
+      sessionManager: { getSessionId: () => sessionId },
+      ui: {
+        notify: () => {},
+        setWidget: (key: string, content: unknown) =>
+          calls.push([key, content]),
+      },
+    };
+    return { calls, ctx };
+  }
+
+  it("a successful todo tool_result refreshes the widget's todo cache", async () => {
+    const api = mockApi();
+    const handlers = buildPiHandlers(TODO_ZOO, api as any, MODES_RAW);
+    const { calls, ctx } = todoWidgetCtx("sess-todo-widget");
+    await handlers.sessionStart({ type: "session_start" }, ctx);
+    await flush();
+
+    const todo = api.tools.find((tool: any) => tool.name === "todo") as any;
+    await todo.execute(
+      "call-1",
+      { op: "init", tasks: ["Wire widget"] },
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    // Writing the store alone does not touch the widget's todo cache.
+    const before = renderZooWidget(calls);
+    try {
+      assert.ok(!before.lines.join("\n").includes("Wire widget"));
+    } finally {
+      before.dispose();
+    }
+
+    await handlers.toolResult(
+      {
+        type: "tool_result",
+        toolName: "todo",
+        toolCallId: "call-1",
+        content: [{ type: "text", text: "ok" }],
+        isError: false,
+      },
+      ctx,
+    );
+    await flush();
+
+    const after = renderZooWidget(calls);
+    try {
+      assert.ok(after.lines.join("\n").includes("Wire widget"));
+    } finally {
+      after.dispose();
+    }
+  });
+
+  it("ignores other tool names and error results", async () => {
+    const api = mockApi();
+    const handlers = buildPiHandlers(TODO_ZOO, api as any, MODES_RAW);
+    const { calls, ctx } = todoWidgetCtx("sess-todo-ignore");
+    await handlers.sessionStart({ type: "session_start" }, ctx);
+    await flush();
+    const todo = api.tools.find((tool: any) => tool.name === "todo") as any;
+    await todo.execute(
+      "call-1",
+      { op: "init", tasks: ["Hidden task"] },
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    // A non-todo result and a failed todo result must both leave the cache
+    // untouched, so the task never reaches the widget.
+    await handlers.toolResult(
+      {
+        type: "tool_result",
+        toolName: "bash",
+        toolCallId: "call-2",
+        content: [{ type: "text", text: "ok" }],
+        isError: false,
+      },
+      ctx,
+    );
+    await handlers.toolResult(
+      {
+        type: "tool_result",
+        toolName: "todo",
+        toolCallId: "call-3",
+        content: [{ type: "text", text: "boom" }],
+        isError: true,
+      },
+      ctx,
+    );
+    await flush();
+
+    const { lines, dispose } = renderZooWidget(calls);
+    try {
+      assert.ok(!lines.join("\n").includes("Hidden task"));
+    } finally {
+      dispose();
+    }
+  });
+
+  it("session_tree re-fetches the todo cache for the widget", async () => {
+    const api = mockApi();
+    const handlers = buildPiHandlers(TODO_ZOO, api as any, MODES_RAW);
+    const scans = { count: 0 };
+    const ctx = {
+      sessionManager: {
+        getSessionId: () => "sess-tree-widget",
+        getBranch: () => {
+          scans.count += 1;
+          return [];
+        },
+      },
+      ui: { notify: () => {}, setWidget: () => {} },
+    };
+    await handlers.sessionStart({ type: "session_start" }, ctx);
+    await flush();
+    const afterStart = scans.count;
+
+    handlers.sessionTree(undefined, ctx);
+    await flush();
+    assert.equal(
+      scans.count,
+      afterStart + 1,
+      "tree navigation must re-read the store for the widget",
+    );
+  });
+
+  it("no store → the three triggers stay harmless", async () => {
+    // Without a pi API the factory owns no todo store; the cache then stays
+    // empty, so the widget's todo column resolves to no phases.  All three
+    // refresh triggers must remain silent no-ops.
+    const handlers = buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
+    assert.doesNotThrow(() => handlers.sessionTree());
+    await assert.doesNotReject(() =>
+      handlers.sessionStart(undefined, undefined),
+    );
+    await assert.doesNotReject(() =>
+      handlers.toolResult(
+        {
+          type: "tool_result",
+          toolName: "todo",
+          toolCallId: "call-1",
+          content: [],
+          isError: false,
+        },
+        {},
+      ),
     );
   });
 });
@@ -2035,6 +2219,32 @@ describe("buildPiHandlers — widget seeding", () => {
     assert.equal(calls.length, 1);
     assert.equal(calls[0][0], "zoo");
     assert.equal(typeof calls[0][1], "function");
+  });
+
+  it("beforeAgentStart seeds the todo column one-shot when session_start never ran", async () => {
+    const api = mockApi();
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
+    // The store's first read scans the transcript, so the fallback seed is
+    // observable through a counted history scan.
+    const scans = { count: 0 };
+    const ctx = {
+      sessionManager: {
+        getSessionId: () => "sess-fallback",
+        getBranch: () => {
+          scans.count += 1;
+          return [];
+        },
+      },
+      ui: { notify: () => {}, setWidget: () => {} },
+    };
+
+    // No session_start: the first LLM turn must seed the widget's todo
+    // column so a plan rendered before startup still appears.
+    await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
+    assert.equal(scans.count, 1, "the first turn seeds the todo column");
+    // Later turns are one-shot: the store is never re-read.
+    await handlers.beforeAgentStart({ systemPrompt: "base" }, ctx);
+    assert.equal(scans.count, 1, "the todo seed must be one-shot");
   });
 
   it("re-registers on later beforeAgentStart events without stacking the listener", async () => {
