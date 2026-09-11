@@ -51,6 +51,7 @@ import { unit as taskPromptUnit } from "./hooks/task-prompt/index.js";
 import { unit as askToolUnit } from "./tools/ask.js";
 import { unit as compressToolUnit } from "./tools/compress.js";
 import { unit as decompressToolUnit } from "./tools/decompress.js";
+import { unit as fetchToolUnit } from "./tools/fetch.js";
 import { unit as subagentToolUnit } from "./tools/subagent.js";
 import { unit as todoToolUnit } from "./tools/todo.js";
 
@@ -161,6 +162,7 @@ export const REGISTRY: UnitDescriptor[] = [
   // ── Tool units ──────────────────────────────────────────────────
   compressToolUnit,
   decompressToolUnit,
+  fetchToolUnit,
   subagentToolUnit,
   askToolUnit,
   todoToolUnit,

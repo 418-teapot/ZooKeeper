@@ -30,3 +30,22 @@ for bin in zwiki zlog zfind zinspect ztrace; do
         echo "  ✖ $bin not found"
     fi
 done
+
+section "N-API addon"
+# Rename the cdylib to the flat name the pi extension probes at runtime.
+ZWEB_DIR="$SCRIPT_DIR/tools/zweb"
+NODE_PATH="$ZWEB_DIR/zweb.node"
+
+rm -f "$NODE_PATH"
+shopt -s nullglob
+for candidate in target/release/*zweb.so target/release/*zweb.dylib target/release/*zweb.dll; do
+    cp "$candidate" "$NODE_PATH"
+    size=$(du -h "$NODE_PATH" | cut -f1)
+    ok "zweb ($size) → $NODE_PATH"
+    break
+done
+shopt -u nullglob
+
+if [ ! -f "$NODE_PATH" ]; then
+    echo "  ✖ zweb addon not found"
+fi

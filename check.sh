@@ -50,7 +50,7 @@ bunx tsc --noEmit && ok "tsc" || { fail "tsc"; FAILED=1; }
 
 echo "Rust …"
 # Ban any #[expect(...)] or #[allow(...)] in Rust source — lints must be fixed, not suppressed.
-if grep -rn '#\{0,1\}\[\(expect\|allow\)' "$ZOO_DIR" --include='*.rs' 2>/dev/null; then
+if grep -rn '#\{0,1\}\[\(expect\|allow\)' "$ZOO_DIR" --include='*.rs' --exclude-dir=target 2>/dev/null; then
   fail "no-expect/allow: found forbidden #[expect] or #[allow] — fix the code, don't suppress"
   FAILED=1
 else

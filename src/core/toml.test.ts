@@ -61,6 +61,7 @@ describe("vendor smol-toml — config.toml zoo section", () => {
       "ask",
       "compress",
       "decompress",
+      "fetch",
       "subagent",
       "todo",
     ]);

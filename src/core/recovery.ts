@@ -27,6 +27,7 @@ export const JSON_ERROR_TOOL_EXCLUDE_LIST = [
   "read",
   "glob",
   "grep",
+  "fetch",
   "webfetch",
   "websearch",
   "subagent",

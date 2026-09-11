@@ -22,6 +22,7 @@ tests/results/
 # ——— Rust ———
 tools/target/
 tools/bin/
+tools/zweb/*.node
 
 # ——— Release ———
 release/

@@ -4,7 +4,7 @@
 # Produces: release/zookeeper-<VERSION>-linux-gnu-x86_64.tar.gz
 #
 # The tarball contains pre-built Rust CLI binaries (zwiki, zlog, zfind,
-# zinspect, ztrace) plus portable project files.
+# zinspect, ztrace), the zweb N-API addon, plus portable project files.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -39,12 +39,19 @@ if [ ! -f "$SCRIPT_DIR/tools/bin/zlog" ]; then
     echo "✖ 错误：编译失败，找不到二进制文件。" >&2
     exit 1
 fi
+if [ ! -f "$SCRIPT_DIR/tools/zweb/zweb.node" ]; then
+    echo "✖ 错误：编译失败，找不到 zweb N-API addon。" >&2
+    exit 1
+fi
 
 # ── Step 3: Stage files for packaging ─────────────────────────────────────
 echo "━━━ 步骤 3/4：准备打包文件 ━━━"
 mkdir -p "$STAGING/zookeeper/tools/bin"
 cp "$SCRIPT_DIR/tools/bin/"{zwiki,zlog,zfind,zinspect,ztrace} \
    "$STAGING/zookeeper/tools/bin/"
+mkdir -p "$STAGING/zookeeper/tools/zweb"
+cp "$SCRIPT_DIR/tools/zweb/zweb.node" \
+   "$STAGING/zookeeper/tools/zweb/"
 cp install.py           "$STAGING/zookeeper/"
 cp -r installer         "$STAGING/zookeeper/"
 # Drop bytecode caches copied along with installer/ from the package.

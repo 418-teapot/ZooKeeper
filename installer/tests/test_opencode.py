@@ -308,26 +308,42 @@ def test_build_config_maps_ask_key_to_question(tmp_path) -> None:
     }
 
 
-def test_build_config_passes_unknown_permission_keys_through(tmp_path) -> None:
-    """Non-dialect permission keys are emitted unchanged."""
-    toml_data = _toml_with_permission(
-        {"subagent": "deny", "edit": "deny", "webfetch": "deny"}
-    )
-    config = build_config(
-        toml_data, str(tmp_path), {}, profile_agents=["lynx"]
-    )
-    emitted = config["agent"]["lynx"]["permission"]
-    assert emitted == {"edit": "deny", "webfetch": "deny", "task": "deny"}
-
-
-def test_build_config_unchanged_without_subagent_key(tmp_path) -> None:
-    """An agent with no ``subagent`` key is emitted verbatim."""
-    toml_data = _toml_with_permission({"edit": "deny", "webfetch": "deny"})
+def test_build_config_maps_fetch_key_to_webfetch(tmp_path) -> None:
+    """A ``fetch = "deny"`` permission is emitted as ``webfetch``."""
+    toml_data = _toml_with_permission({"edit": "deny", "fetch": "deny"})
     config = build_config(
         toml_data, str(tmp_path), {}, profile_agents=["lynx"]
     )
     emitted = config["agent"]["lynx"]["permission"]
     assert emitted == {"edit": "deny", "webfetch": "deny"}
+    assert "fetch" not in emitted
+    # The parsed in-memory data keeps the canonical vocabulary.
+    assert toml_data["agent"]["lynx"]["permission"] == {
+        "edit": "deny",
+        "fetch": "deny",
+    }
+
+
+def test_build_config_passes_unknown_permission_keys_through(tmp_path) -> None:
+    """Non-dialect permission keys are emitted unchanged."""
+    toml_data = _toml_with_permission(
+        {"subagent": "deny", "edit": "deny", "websearch": "deny"}
+    )
+    config = build_config(
+        toml_data, str(tmp_path), {}, profile_agents=["lynx"]
+    )
+    emitted = config["agent"]["lynx"]["permission"]
+    assert emitted == {"edit": "deny", "websearch": "deny", "task": "deny"}
+
+
+def test_build_config_unchanged_without_subagent_key(tmp_path) -> None:
+    """An agent with no ``subagent`` key is emitted verbatim."""
+    toml_data = _toml_with_permission({"edit": "deny", "websearch": "deny"})
+    config = build_config(
+        toml_data, str(tmp_path), {}, profile_agents=["lynx"]
+    )
+    emitted = config["agent"]["lynx"]["permission"]
+    assert emitted == {"edit": "deny", "websearch": "deny"}
 
 
 # ── build_config: model-level thinking translation ───────────────────────

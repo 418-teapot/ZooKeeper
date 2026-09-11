@@ -6,7 +6,8 @@
  * preservation, missing sessionManager), `buildPiContextHandler`
  * (native pi messages passed to transforms, result replacement, model
  * limit capture, empty array, crash isolation), the pure helper
- * `extractText`, the command-slot assembly
+ * `extractText`, the native converter loader (`loadPiHtmlConverter`), the
+ * command-slot assembly
  * (`buildPiCommandRegistrationPlan`), the gate wrapper
  * (`wrapToolsWithDelegationGate`), and the registration-boundary
  * tool-definition application (`applyToolDefinitionContributions`), plus the
@@ -25,6 +26,7 @@ import {
   buildPiMessageEndHandler,
   buildPiToolResultHandler,
   extractText,
+  loadPiHtmlConverter,
   type PiAgentMessage,
   type PiAssistantMessage,
   type PiContentPart,
@@ -1178,5 +1180,36 @@ describe("pi composition — the todo tool registration boundary", () => {
     const gate: DelegationGate = () => null;
     const gated = wrapToolsWithDelegationGate(enhanced, gate, true);
     assert.equal(gated.todo, todo, "the todo tool must stay unwrapped");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadPiHtmlConverter
+// ---------------------------------------------------------------------------
+
+describe("loadPiHtmlConverter", () => {
+  it("returns the loader's converter unchanged without warning", () => {
+    const converter = (html: string) => `<md>${html}</md>`;
+    assert.equal(
+      loadPiHtmlConverter(() => converter),
+      converter,
+    );
+    assert.equal(
+      _getBufferForTesting().filter((e) => e.hook === "fetch-tool").length,
+      0,
+      "a usable converter must not warn",
+    );
+  });
+
+  it("warns converter_unavailable and returns null when unavailable", () => {
+    assert.equal(
+      loadPiHtmlConverter(() => null),
+      null,
+    );
+    const warnings = _getBufferForTesting().filter(
+      (e) => e.hook === "fetch-tool" && e.event === "converter_unavailable",
+    );
+    assert.equal(warnings.length, 1);
+    assert.equal(warnings[0]?.level, "warn");
   });
 });

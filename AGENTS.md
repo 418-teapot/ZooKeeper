@@ -15,8 +15,8 @@
 | `uv run python install.py` | 安装/更新配置（读取 config.toml + .env → 检测 opencode/pi → 生成 OpenCode 的 opencode.json 和 pi 的 settings.json + models.json） |
 | `./check.sh` | 自动修复 + 严格 lint（Python + TS + Rust），禁止 `#[expect]`/`#[allow]` |
 | `./test.sh` | 统一测试入口（Python + Rust 测试 + 覆盖率 + TS 单元测试） |
-| `./build.sh` | Release 编译 Rust CLI 工具（zlog / zfind / ztrace / zinspect） |
-| `./release.sh` | 构建发布包（podman + Debian 10 容器编译 Rust 工具 + 打包 tarball） |
+| `./build.sh` | Release 编译 Rust CLI 工具（zlog / zfind / ztrace / zinspect）+ zweb N-API addon（HTML→markdown，输出 `.node`） |
+| `./release.sh` | 构建发布包（podman + Debian 10 容器编译 Rust 工具与 zweb addon + 打包 tarball） |
 | `python3 tests/runner.py --dry-run` | 干跑（不调用 LLM，回放 JSONL） |
 | `python3 tests/runner.py --scenario <name>` | 只跑指定场景 |
 | `python3 tests/runner.py --replay` | 从 JSONL 回放（不调 LLM，只跑断言+阈值） |
@@ -49,7 +49,7 @@
 - **Formatter/Linter:** cargo fmt + cargo clippy
 - **Docstring:** 注释英文
 - **行宽：** 80 字符（`tools/rustfmt.toml`: `max_width = 80`）
-- **禁止 unsafe：** 所有 crate 顶部含 `#![forbid(unsafe_code)]`
+- **禁止 unsafe：** 所有 crate 顶部含 `#![forbid(unsafe_code)]`（N-API crate `zweb` 例外，用 `#![deny(unsafe_code)]`：`#[napi]` 宏展开自带 `allow(unsafe_code)`，与 `forbid` 冲突触发 E0453）
 
 ### TOML
 - **注释中文**（用户可编辑的配置文件）
@@ -104,6 +104,7 @@ ZooKeeper/
 │   │   ├── plan.ts          # 计划文件读写（frontmatter 解析、状态更新）
 │   │   ├── checks.ts        # 计划/todo 进度检查
 │   │   ├── delegation.ts    # task() 委派权限判定
+│   │   ├── webfetch/        # fetch 管线（SSRF 防护 + HTML 抓取 + native 转换器加载器）
 │   │   └── prompts.ts       # hook/tool 注入的 nudge 文本（agent 片段见 agents/parts.ts）
 │   ├── hooks/               # 各 hook 单元的薄适配层（每目录一个单元：解包框架 (input, output) → 调 core 函数）
 │   │   ├── context-metrics/ # 上下文指标（重导出 adapters/opencode/types 的 measureContext）
@@ -113,7 +114,7 @@ ZooKeeper/
 │   │   ├── post-task-nudge/ # task() 返回后验证+todo 提醒（nudgePostTask 适配器）
 │   │   ├── task-delegation/ # task() 委派权限拦截
 │   │   └── task-prompt/     # task prompt 校验 + nudge（3 个适配器函数）
-│   ├── tools/               # OpenCode 工具适配器（compress / decompress 工具工厂）
+│   ├── tools/               # 工具适配器（fetch / compress / decompress 工具工厂）
 │   ├── commands/            # 斜杠命令单元（每目录一个命令单元：unit 描述符 + 处理器）
 │   │   ├── go/              # /go 命令（计划 handoff：planning-done → dolphin 子会话）
 │   │   ├── dcp/             # /dcp 命令（command.ts 处理器 + unit 描述符）
@@ -127,13 +128,14 @@ ZooKeeper/
 ├── tests/                   # Prompt 评估测试框架（Phase 1: dolphin.md）
 │   └── runner.py            # 评估测试运行器
 ├── tools/                   # Rust CLI tools workspace
-│   ├── Cargo.toml           # workspace root (members: zutil, zlog, zfind, ztrace, zinspect)
+│   ├── Cargo.toml           # workspace root (members: zutil, zlog, zfind, ztrace, zinspect, zweb)
 │   ├── rustfmt.toml         # max_width = 80
 │   ├── zutil/               # 共享库（expand_tilde, format_number, ts_display 等）
 │   ├── zlog/                # 实时日志过滤（取代 Python zoo-log）
 │   ├── zfind/               # 会话/消息搜索（取代 Python zoo-find）
 │   ├── ztrace/              # 编排追踪（取代 Python zoo-trace）
 │   ├── zinspect/            # 事件统计（取代 Python zoo-inspect）
+│   ├── zweb/                # N-API HTML→markdown 转换（cdylib，pi 扩展运行时 require）
 └── docs/                    # 设计文档和调研报告
 ```
 

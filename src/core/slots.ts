@@ -30,6 +30,7 @@ import type { AgentPermissionMap } from "./permissions/deny-tools.js";
 import type { SubagentDriver } from "./subagent/driver.js";
 import type { TodoStateStore } from "./todo/store.js";
 import type { ValidationLimits } from "./validate.js";
+import type { HtmlConverter } from "./webfetch/pipeline.js";
 
 // ---------------------------------------------------------------------------
 // Dependencies and enablement
@@ -270,6 +271,17 @@ export interface Deps {
    * default timeout is ever invented).
    */
   askTimeoutSeconds?: number;
+  /**
+   * Native HTML→Markdown converter loader (pi host only).
+   *
+   * Undefined on hosts without a native addon (OpenCode) — the fetch tool
+   * unit then contributes no tools (fail-closed, so `fetch` never
+   * registers there).  The unit invokes it only when the active profile
+   * enables `fetch`, and a `null` result (missing addon, wrong platform,
+   * ABI mismatch) also yields no tool.  Supplied by the pi entry point,
+   * which wraps the core loader to emit the `converter_unavailable` warn.
+   */
+  loadHtmlConverter?: () => HtmlConverter | null;
   /** The host client (OpenCode / pi), opaque to this layer. */
   client: any;
   /** The plugin working directory. */

@@ -488,7 +488,6 @@ mode  = "primary"
 model = "{env:ZOO_WHALE_MODEL}"
 color = "#66CCFF"
 [agent.dolphin.permission]
-webfetch = "deny"
 websearch = "deny"
 [agent.dolphin.permission.bash]
 "git checkout *" = "ask"
@@ -551,7 +550,7 @@ mode  = "subagent"
 model = "{env:ZOO_ANT_MODEL}"
 color = "#39C5BB"
 [agent.beaver.permission]
-webfetch = "deny"
+fetch = "deny"
 websearch = "deny"
 ask = "deny"
 [agent.beaver.permission.bash]
@@ -587,7 +586,7 @@ color = "#961E32"
 [agent.eagle.permission]
 edit = "deny"
 subagent = "deny"
-webfetch = "deny"
+fetch = "deny"
 websearch = "deny"
 ask = "deny"
 [agent.eagle.permission.bash]
@@ -778,6 +777,7 @@ tools = [
   "ask",
   "compress",
   "decompress",
+  "fetch",
   "subagent",
   "todo",
 ]
@@ -809,6 +809,7 @@ tools = [
   "ask",
   "compress",
   "decompress",
+  "fetch",
   "todo",
 ]
 commands = [

@@ -1,0 +1,17 @@
+[package]
+name = "zweb"
+version = "0.1.0"
+edition = "2024"
+description = "ZooKeeper web — HTML to Markdown conversion exposed to Node via N-API"
+
+[lib]
+# cdylib so Node can load the compiled addon; rlib so `cargo test` can link it.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+html-to-markdown-rs = "3.9.2"
+napi = { version = "3", features = ["napi10"] }
+napi-derive = "3"
+
+[build-dependencies]
+napi-build = "2"

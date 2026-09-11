@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
+import { createPiHandoffTarget } from "./adapters/pi/handoff-target.js";
 import {
   beginHydration,
   resetHydration,
@@ -2066,6 +2067,136 @@ describe("buildPiHandlers — primary-switch command wiring", () => {
       .map((c) => c.name)
       .filter((n) => ["dolphin", "mola"].includes(n));
     assert.deepEqual(switchNames, []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Primary tool-deny trim (main session)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-agent tool-level denies used by the main-session trim tests.
+ *
+ * dolphin (the profile's default primary) denies `websearch` but NOT
+ * `fetch` — mirroring the config.toml decision that dolphin may fetch.
+ * beaver denies `fetch`, so a beaver-driven session must lose it.
+ */
+const PERM_DENY_RAW = {
+  agent: {
+    ...MODES_RAW.agent,
+    dolphin: { mode: "primary", permission: { websearch: "deny" } },
+    beaver: { mode: "primary", permission: { fetch: "deny" } },
+  },
+};
+
+describe("buildPiHandlers — primary tool-deny trim (main session)", () => {
+  /** A reference tool set carrying the fetch tool the deny tests target. */
+  const ALL_TOOLS = ["fetch", "edit", "bash"];
+
+  it("trims a beaver-primary session's fetch at session start", async () => {
+    const api = mockApi();
+    api.activeTools.push(...ALL_TOOLS);
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
+    setPrimary("beaver");
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      SESSION_CTX,
+    );
+    assert.deepEqual(api.activeTools, ["edit", "bash"]);
+  });
+
+  it("keeps fetch for a dolphin session (dolphin denies websearch only)", async () => {
+    const api = mockApi();
+    api.activeTools.push(...ALL_TOOLS);
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
+    setPrimary("dolphin");
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      SESSION_CTX,
+    );
+    assert.deepEqual(api.activeTools, ALL_TOOLS);
+  });
+
+  it("applies the trim from before_agent_start (fallback) and is idempotent", async () => {
+    const api = mockApi();
+    api.activeTools.push(...ALL_TOOLS);
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
+    setPrimary("beaver");
+    await handlers.beforeAgentStart({ systemPrompt: "base" }, SESSION_CTX);
+    assert.deepEqual(api.activeTools, ["edit", "bash"]);
+    // Repeated calls filter the FIXED baseline, so denies never accumulate.
+    await handlers.beforeAgentStart({ systemPrompt: "base" }, SESSION_CTX);
+    assert.deepEqual(api.activeTools, ["edit", "bash"]);
+  });
+
+  it("restores fetch when switching from beaver back to dolphin", async () => {
+    const api = mockApi();
+    api.activeTools.push(...ALL_TOOLS);
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
+    setPrimary("beaver");
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      SESSION_CTX,
+    );
+    assert.deepEqual(api.activeTools, ["edit", "bash"]);
+    setPrimary("dolphin");
+    await handlers.beforeAgentStart({ systemPrompt: "base" }, SESSION_CTX);
+    assert.deepEqual(api.activeTools, ALL_TOOLS);
+  });
+
+  it("does not trim a subagent session's tool face", async () => {
+    // The driver already restricts a child session's tools via the
+    // capability allowlist; the process-wide primary is not its identity.
+    const api = mockApi();
+    api.activeTools.push(...ALL_TOOLS);
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
+    setPrimary("beaver");
+    await runWithIdentity({ kind: "subagent", name: "beaver" }, () =>
+      handlers.sessionStart(
+        { type: "session_start", reason: "startup" },
+        SESSION_CTX,
+      ),
+    );
+    assert.deepEqual(api.activeTools, ALL_TOOLS);
+  });
+
+  it("leaves the tool set untouched with no baseline (fail-closed)", async () => {
+    const api = mockApi();
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
+    setPrimary("beaver");
+    await handlers.sessionStart(
+      { type: "session_start", reason: "startup" },
+      SESSION_CTX,
+    );
+    assert.deepEqual(api.activeTools, []);
+  });
+
+  it("/go handoff: the executor primary's deny is trimmed in the new session", async () => {
+    const api = mockApi();
+    api.activeTools.push(...ALL_TOOLS);
+    const handlers = buildPiHandlers(POLY_ZOO, api as any, PERM_DENY_RAW);
+    setPrimary("dolphin");
+    // The /go handoff switches the self-maintained primary to the executor
+    // (beaver) BEFORE replacing the session; the generic trim in the new
+    // session's bind-time handler then removes beaver's deny.
+    const target = createPiHandoffTarget({
+      getCommandCtx: () => ({
+        newSession: async (options) => {
+          await options?.withSession?.({ sendUserMessage: async () => {} });
+          return { cancelled: false };
+        },
+      }),
+      defaultPrimary: "beaver",
+    });
+    await target.create({ parentage: "sess-go", title: "t" });
+    await target.installAgent();
+    await target.deliver({ id: "" }, "plan ref");
+    assert.equal(getPrimary(), "beaver");
+    await handlers.sessionStart(
+      { type: "session_start", reason: "new" },
+      SESSION_CTX,
+    );
+    assert.deepEqual(api.activeTools, ["edit", "bash"]);
   });
 });
 

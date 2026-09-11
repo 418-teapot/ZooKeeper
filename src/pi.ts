@@ -116,6 +116,7 @@ import {
   buildPiContextHandler,
   buildPiMessageEndHandler,
   buildPiToolResultHandler,
+  loadPiHtmlConverter,
   type PiCommandContext,
   wrapToolsWithDelegationGate,
 } from "./compose-pi.js";
@@ -571,6 +572,13 @@ export function buildPiContributions(
      * without a fleet widget.
      */
     onSubagentRunChange?: () => void;
+    /**
+     * Native HTML→Markdown converter loader for the fetch tool (only
+     * supplied by the real pi entry point).  Undefined without it — the
+     * fetch tool unit contributes no tools (fail-closed, matching
+     * OpenCode).
+     */
+    loadHtmlConverter?: Deps["loadHtmlConverter"];
   },
   rawConfig?: any,
 ): {
@@ -640,6 +648,11 @@ export function buildPiContributions(
     // subagent run start/update/finish so the fleet widget re-renders with
     // the latest registry state.
     onSubagentRunChange: hostDeps?.onSubagentRunChange,
+    // The native HTML→Markdown converter loader (pi host only).  Without it
+    // the fetch tool unit contributes no tools (fail-closed); the pi entry
+    // point supplies the fail-closed wrapper that warns when the addon is
+    // unavailable.
+    loadHtmlConverter: hostDeps?.loadHtmlConverter,
     // pi has no SDK client — the context-pruning transform runs and
     // returns the pruned replacement to pi.  The release notification
     // does not need the client: it posts through the unified pi tool
@@ -891,18 +904,34 @@ export function buildPiHandlers(
   // commands (fail-closed).  `setWidget` reads the latest extension
   // context's `ui` from the shared holder, which the command handler
   // refreshes before running.
-  // The untrimmed tool BASELINE is captured ONCE before any switch can
-  // trim it, and held on the host: every switch computes
+  // The untrimmed tool BASELINE is captured ONCE before any trim can
+  // mutate the active set, and shared by the session-start primary trim
+  // and the switch command: every consumer computes
   // `baseline minus deniedTools(target)` from this fixed set, so tool
   // denies never accumulate across switches.  The capture is DEFERRED to
-  // the first switch (lazily, then cached) instead of running at
+  // the first post-bind call (lazily, then cached) instead of running at
   // extension-load time: pi forbids calling action methods (including
   // `getActiveTools`) during extension loading — the runtime only binds
-  // real actions after the extension factory returns.  First switch is
-  // still pre-trim, so the lazily-captured set is the same untrimmed
-  // universe.  When the API reports no baseline the host returns
-  // `undefined` and switches skip the trim (fail-closed).
+  // real actions after the extension factory returns.  When the API
+  // reports no baseline the host returns `undefined` and consumers skip
+  // the trim (fail-closed).
   let toolBaseline: string[] | undefined;
+  // Lazily capture the shared untrimmed baseline.  It is deliberately
+  // captured before the first trim (the first session-start or switch
+  // handler), so a trim applied at session start can never become the
+  // baseline a later switch filters — otherwise a primary switched to
+  // afterwards could never restore the tools its predecessor denied
+  // (denies would silently accumulate).  A `[]` report is cached too:
+  // callers treat it as "no baseline" and skip the trim rather than
+  // wiping every tool.
+  const captureToolBaseline = (): string[] | undefined => {
+    if (toolBaseline === undefined) {
+      // Copy the reported names: the baseline must stay frozen even if the
+      // host hands back a live array that a later `setActiveTools` mutates.
+      toolBaseline = piApi?.getActiveTools?.()?.slice();
+    }
+    return toolBaseline;
+  };
   // The subagent capability baseline, captured lazily once on the first
   // subagent execution and cached (mirrors the switch baseline above).
   let subagentToolBaseline: string[] | undefined;
@@ -1119,16 +1148,7 @@ export function buildPiHandlers(
   };
   const piSwitchHost: PiSwitchHost | undefined = piApi
     ? {
-        getBaselineTools: () => {
-          // Capture once, on first call (which happens inside a command
-          // handler — always post-bind).  A `[]` report is cached too:
-          // callers treat it as "no baseline" and skip the trim rather
-          // than wiping every tool.
-          if (toolBaseline === undefined) {
-            toolBaseline = piApi.getActiveTools?.();
-          }
-          return toolBaseline;
-        },
+        getBaselineTools: () => captureToolBaseline(),
         setActiveTools: (names) => piApi.setActiveTools?.(names),
         // For the `zoo` key this is now a "primary changed" notification:
         // the fleet widget reads the active primary live, so the switch
@@ -1215,7 +1235,7 @@ export function buildPiHandlers(
         },
       }
     : undefined;
-  const { profile, composed, limits } = buildPiContributions(
+  const { profile, composed, limits, agentPermissions } = buildPiContributions(
     zooConfig,
     {
       adapter,
@@ -1272,9 +1292,52 @@ export function buildPiHandlers(
       // Registry-write notification → the fleet widget re-renders with the
       // latest registry state (start / update / finish all nudge it).
       onSubagentRunChange: () => fleetWidget.refresh(),
+      // Native HTML→Markdown converter for the fetch tool.  Wired here (the
+      // real pi entry point); the wrapper warns once when the addon is
+      // unavailable and the fetch unit then no-ops (fail-closed).
+      loadHtmlConverter: loadPiHtmlConverter,
     },
     rawConfig,
   );
+
+  // Apply the active primary's tool-level denies to the current session's
+  // active tool set.
+  //
+  // pi has no host-level per-agent permission enforcement (unlike
+  // OpenCode), so the extension trims pi's process-wide registered tool
+  // face per session.  The trim is computed from the SHARED untrimmed
+  // baseline (`captureToolBaseline`) minus the current primary's
+  // tool-level denies, so it is idempotent and denies never accumulate
+  // across repeated calls or primary switches.  Subagent sessions are
+  // skipped: their tool face is already restricted by the driver's
+  // capability allowlist, and the process-wide primary is not their
+  // identity.  Fails closed: no primary, no denies, or no baseline all
+  // leave the active set untouched (an empty filter would wipe every
+  // tool).
+  const applyPrimaryToolTrim = (): void => {
+    const identity = resolveIdentity();
+    if (identity !== undefined && identity.kind !== "primary") return;
+    const primary = identity?.name ?? getPrimary();
+    if (primary === undefined) return;
+    const denied = agentPermissions[primary] ?? [];
+    if (denied.length === 0) return;
+    const baseline = captureToolBaseline();
+    if (baseline === undefined || baseline.length === 0) return;
+    const deniedSet = new Set(denied);
+    // Always write the FULL `baseline minus denies` set (never a delta):
+    // this both removes the current primary's denies and restores tools a
+    // previously active primary had denied.  Log only an actual removal so
+    // a steady-state turn (denies already absent) stays quiet.
+    const next = baseline.filter((tool) => !deniedSet.has(tool));
+    piApi?.setActiveTools?.(next);
+    const removed = denied.filter((tool) => baseline.includes(tool));
+    if (removed.length > 0) {
+      log("permissions", "primary_tools_trimmed", "", undefined, "info", {
+        agent: primary,
+        removed,
+      });
+    }
+  };
 
   // The terminal-input unsubscribe handle returned by `ui.onTerminalInput`,
   // released when the widget is disposed (pi re-runs the extension factory
@@ -1508,6 +1571,12 @@ export function buildPiHandlers(
           piApi?.setActiveTools?.(ops.activeTools);
         }
       }
+      // Re-apply the current primary's deny trim.  `session_start` already
+      // does this at bind time; this fallback covers flows where a session
+      // begins without one (and keeps the active set authoritative after a
+      // deferred switch drain).  Idempotent — it always filters the fixed
+      // baseline, so repeated calls never accumulate denies.
+      applyPrimaryToolTrim();
       // Fallback seed: covers flows where `session_start` fires before the
       // identity is set, or a session begins without a `session_start` in
       // some flows.  Registration is idempotent — re-running it re-seeds the
@@ -1536,6 +1605,13 @@ export function buildPiHandlers(
     },
     async sessionStart(_evt?, ctx?) {
       if (ctx) contextHolder.current = ctx as PiToolHostContext;
+      // Trim the session's active tool set by the current primary's denies
+      // at session bind time (startup / reload / resume / replacement), so
+      // the primary's deny list takes effect from the first turn — before
+      // the /<agent> switch path or a /go handoff would otherwise be the
+      // first place it applied.  `before_agent_start` runs it again as a
+      // fallback (idempotent).
+      applyPrimaryToolTrim();
       // Register the fleet widget at session startup / resume (before any
       // LLM turn), so the current primary shows immediately.
       // `before_agent_start` runs the same registration as a fallback.

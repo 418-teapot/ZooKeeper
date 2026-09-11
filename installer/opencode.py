@@ -19,10 +19,15 @@ _OPENAI_NPM = ("@ai-sdk/openai", "@ai-sdk/openai-compatible")
 _MODE_CATEGORIES = ("agents", "skills", "hooks", "tools", "commands")
 
 # Permission-key dialect mapping: config.toml uses the canonical words
-# ``subagent`` and ``ask``; the OpenCode host dialect calls the same
-# tools ``task`` and ``question``.  The translation happens only when
-# emitting opencode.json, never on the parsed config in memory.
-_PERMISSION_KEY_DIALECT = {"subagent": "task", "ask": "question"}
+# ``subagent``, ``ask`` and ``fetch``; the OpenCode host dialect calls the
+# same tools ``task``, ``question`` and ``webfetch``.  The translation
+# happens only when emitting opencode.json, never on the parsed config in
+# memory.
+_PERMISSION_KEY_DIALECT = {
+    "subagent": "task",
+    "ask": "question",
+    "fetch": "webfetch",
+}
 
 
 def _translate_permission_keys(permission: dict) -> dict:

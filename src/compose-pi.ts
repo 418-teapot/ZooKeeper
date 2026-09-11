@@ -73,6 +73,8 @@ import type {
   ToolDefinitionView,
 } from "./core/slots.js";
 import { resolveIdentity } from "./core/subagent/identity.js";
+import { loadHtmlConverter } from "./core/webfetch/native.js";
+import type { HtmlConverter } from "./core/webfetch/pipeline.js";
 import { log } from "./utils/logger.js";
 
 // Re-export the pi duck types (declared in adapters/pi/types.js) so
@@ -101,6 +103,35 @@ import type {
   AfterExecOutput,
   TransformOutput,
 } from "./core/slots.js";
+
+// ---------------------------------------------------------------------------
+// Native fetch converter
+// ---------------------------------------------------------------------------
+
+/**
+ * Load the native HTML→Markdown converter for the fetch tool.
+ *
+ * Fail-closed at the pi contact layer: when the addon is unavailable
+ * (wrong platform, ABI mismatch, not built) the core loader returns
+ * `null`, a single warn is logged (`converter_unavailable`), and the fetch
+ * tool unit receives no converter — so `fetch` is not registered at all
+ * (matching the null-profile principle: a capability that cannot run
+ * contributes nothing).
+ *
+ * @param loadConverter - Loader for the native converter. Defaults to
+ *   {@link loadHtmlConverter}; tests inject a stub.
+ * @returns The converter, or `null` when unavailable.
+ */
+export function loadPiHtmlConverter(
+  loadConverter: () => HtmlConverter | null = loadHtmlConverter,
+): HtmlConverter | null {
+  const converter = loadConverter();
+  if (converter === null) {
+    log("fetch-tool", "converter_unavailable", "", undefined, "warn", {});
+    return null;
+  }
+  return converter;
+}
 
 // ---------------------------------------------------------------------------
 // Tool-slot delegation gate wrapping
