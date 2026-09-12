@@ -768,10 +768,10 @@ hooks = [
   "context-pruning",
   "direct-work-nudge",
   "json-error-nudge",
-  "post-task-nudge",
+  "post-subagent-nudge",
   "reply-strip",
-  "task-delegation",
-  "task-prompt",
+  "subagent-delegation",
+  "subagent-prompt",
 ]
 tools = [
   "ask",

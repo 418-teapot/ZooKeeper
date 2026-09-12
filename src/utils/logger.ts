@@ -406,7 +406,7 @@ export function initLogger(host: string, opts?: Partial<LoggerOptions>): void {
  * file.  Before any session exists, sessionless entries remain buffered and
  * are dropped at process exit if no session ever materialises.
  *
- * @param hook - The hook module name (e.g. `"task-prompt-validate"`).
+ * @param hook - The hook module name (e.g. `"subagent-prompt"`).
  * @param event - The event name (e.g. `"reminder_injected"`).
  * @param sessionId - The current session identifier.
  * @param callId - Optional call identifier tied to the current tool
@@ -446,7 +446,7 @@ export function log(
   // Zero wiring for either host: the OpenCode `config` hook and pi's
   // load-time events emit `plugin_init` with an empty session id, so the
   // primary session is instead established by the first sessioned
-  // hook-unit log in a turn (e.g. a task-prompt validate or a
+  // hook-unit log in a turn (e.g. a subagent-prompt validate or a
   // tool_result).  Load-time sessionless entries flush into that first
   // session's file.
   if (sessionId !== "" && _primarySessionId === null) {

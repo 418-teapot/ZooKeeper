@@ -6,7 +6,7 @@
 
 ## 一、背景
 
-用户观测：**gpt-5.6-sol 驱动 ZooKeeper dolphin 编排器时表现差 —— 过度委派、给 subagent 的 task prompt 质量差**。
+用户观测：**gpt-5.6-sol 驱动 ZooKeeper dolphin 编排器时表现差 —— 过度委派、给 subagent 的 prompt 质量差**。
 
 ZooKeeper 现状：dolphin 的 prompt 头部写着 "Default Bias: DELEGATE"（默认委派倾向），与 Claude 系模型配合良好，但在 gpt-5.6-sol 上该默认值被放大成病态的过度委派。
 

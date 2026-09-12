@@ -17,7 +17,7 @@
  *    finalization, e.g. ref-echo stripping).
  *  - `tool.definition` — the raw OpenCode output is mapped onto the
  *    host-neutral tool-definition view, enhancers run in order (the
- *    task-prompt contributor), and the changed fields are written back.
+ *    subagent-prompt contributor), and the changed fields are written back.
  *  - `command.execute.before` — routes by `input.command`, then throws
  *    the unified `COMMAND_HANDLED` sentinel to short-circuit the flow.
  *  - `tool` — the enabled tool contributions keyed by tool name.
@@ -479,7 +479,7 @@ export function assembleOpenCodeHooks(
         }
       : {}),
 
-    // Present only when the task-prompt hook unit is enabled.
+    // Present only when the subagent-prompt hook unit is enabled.
     ...(composed.toolDefinition.length > 0
       ? {
           async "tool.definition"(

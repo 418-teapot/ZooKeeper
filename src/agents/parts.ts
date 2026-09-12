@@ -3,7 +3,7 @@
  *
  * DELEGATION_FORMAT_TEXT — the canonical delegation-format block used by
  *   orchestrator and subagents.
- * TASK_PROMPT_HINT — format guidance injected into the `task` tool's
+ * SUBAGENT_PROMPT_HINT — format guidance injected into the `task` tool's
  *   parameter description.
  *
  * Scope: fragments composing agent prompts only. Hook/tool-injected nudge
@@ -28,10 +28,10 @@ export const DELEGATION_FORMAT_TEXT = `- **SUMMARY** - 1 sentence describing the
 `;
 
 // ---------------------------------------------------------------------------
-// Task prompt hint
+// Subagent prompt hint
 // ---------------------------------------------------------------------------
 
-export const TASK_PROMPT_HINT = `Format:
+export const SUBAGENT_PROMPT_HINT = `Format:
 ${DELEGATION_FORMAT_TEXT}
 
 Required for all delegation targets, regardless of agent type.`;

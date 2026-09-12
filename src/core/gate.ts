@@ -36,7 +36,7 @@ export interface DelegationRequest {
   caller?: string;
   /** The target subagent type, when a string was supplied. */
   target?: string;
-  /** The delegated task prompt, when a string was supplied. */
+  /** The delegated subagent prompt, when a string was supplied. */
   prompt?: string;
 }
 

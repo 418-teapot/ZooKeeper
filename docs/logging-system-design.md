@@ -77,7 +77,7 @@ ZooKeeper 作为 OpenCode 编排器插件，当前日志能力薄弱——仅有
 | **持久化** | 仅 stderr | 关闭终端后日志丢失 |
 | **格式** | `[zookeeper:<tag>] <JSON>` | 无固定字段 schema，不可查询 |
 | **级别** | binary on/off | 无法区分正常触发与异常 |
-| **session 关联** | 仅 task-prompt 带 sessionId/callId | 其他 hook 均不带 sessionId |
+| **session 关联** | 仅 subagent-prompt 带 sessionId/callId | 其他 hook 均不带 sessionId |
 | **call 关联** | 无 | 无法定位到单次工具调用 |
 | **初始化** | 完全静默 | 不知道插件是否加载、哪些 agent 注入了 prompt |
 | **异常** | 4 个 `catch {}` 静默吞掉 | handler 静默失效不可知 |
@@ -137,7 +137,7 @@ TS 插件运行时通过 config hook 传入的配置对象读取这些值，与 
 |------|------|------|------|
 | `timestamp` | `string` | ISO 8601 毫秒时间戳 | `"2026-06-13T14:46:31.050Z"` |
 | `level` | `string` | 级别：`debug` / `info` / `warn` / `error` | `"debug"` |
-| `hook` | `string` | 来源 hook 模块 | `"task-prompt"` |
+| `hook` | `string` | 来源 hook 模块 | `"subagent-prompt"` |
 | `sessionId` | `string` | session ID（初始化时为空串） | `"ses_1407dd2a0ffe"` |
 | `callId` | `string?` | call ID（工具调用时有） | `"call_xyz"` |
 | `event` | `string` | 事件名 | `"validate_failed"` |
@@ -168,14 +168,14 @@ TS 插件运行时通过 config hook 传入的配置对象读取这些值，与 
 | `skill_registered` | `debug` | `skill: string` | `config` hook 注册 skill 时 |
 | `handler_crashed` | `error` | `handler: string`, `error: string` | 各 `catch {}` 块 |
 
-#### `task-prompt` — 任务 prompt 校验
+#### `subagent-prompt` — 任务 prompt 校验
 
 | event | level | 附加字段 | 触发点 |
 |-------|-------|---------|--------|
 | `validate_failed` | `warn` | `errors: string[]` | `validateBeforeExec` 缺 section |
 | `validate_passed` | `debug` | `warnings: int`, `ctx_words: int`, `total_words: int` | 校验通过 |
-| `nudge_injected` | `debug` | `warnings: string[]` | `nudgeTaskOutput` 有 warn |
-| `nudge_skipped` | `debug` | — | `nudgeTaskOutput` 无 warn |
+| `nudge_injected` | `debug` | `warnings: string[]` | `nudgeSubagentOutput` 有 warn |
+| `nudge_skipped` | `debug` | — | `nudgeSubagentOutput` 无 warn |
 
 #### `json-error-nudge` — JSON 解析错误恢复
 
@@ -191,7 +191,7 @@ TS 插件运行时通过 config hook 传入的配置对象读取这些值，与 
 | `nudge_injected` | `debug` | `tool: string`, `nudge_type: "edit" \| "search"` | build agent 直接操作 |
 | `nudge_skipped` | `debug` | `tool: string`, `reason: "not_build" \| "no_output" \| "not_direct_work"` | 跳过 |
 
-#### `post-task-nudge` — 子任务完成后提醒
+#### `post-subagent-nudge` — 子任务完成后提醒
 
 | event | level | 附加字段 | 触发点 |
 |-------|-------|---------|--------|
@@ -204,9 +204,9 @@ TS 插件运行时通过 config hook 传入的配置对象读取这些值，与 
 {"timestamp":"2026-06-13T14:46:31.050Z","level":"info","hook":"plugin","sessionId":"","event":"plugin_init","agents":["dolphin","lynx","beaver","spider"],"limits":{"contextWordLimit":200,"promptWordLimit":500},"skills":["git-commit"]}
 {"timestamp":"2026-06-13T14:46:31.052Z","level":"debug","hook":"plugin","sessionId":"","event":"agent_loaded","agent":"dolphin","prompt_len":3823}
 {"timestamp":"2026-06-13T14:46:31.054Z","level":"debug","hook":"plugin","sessionId":"","event":"skill_registered","skill":"git-commit"}
-{"timestamp":"2026-06-13T14:46:33.000Z","level":"debug","hook":"task-prompt","sessionId":"ses_1407dd2a0ffe","callId":"call_xyz","event":"validate_passed","warnings":1,"ctx_words":145,"total_words":312}
-{"timestamp":"2026-06-13T14:46:33.001Z","level":"debug","hook":"task-prompt","sessionId":"ses_1407dd2a0ffe","callId":"call_xyz","event":"nudge_injected","warnings":["CONTEXT is 145 words — consider splitting into multiple task() calls..."]}
-{"timestamp":"2026-06-13T14:46:45.000Z","level":"debug","hook":"post-task-nudge","sessionId":"ses_1407dd2a0ffe","callId":"call_xyz","event":"verify_injected","todo_state":"final_active"}
+{"timestamp":"2026-06-13T14:46:33.000Z","level":"debug","hook":"subagent-prompt","sessionId":"ses_1407dd2a0ffe","callId":"call_xyz","event":"validate_passed","warnings":1,"ctx_words":145,"total_words":312}
+{"timestamp":"2026-06-13T14:46:33.001Z","level":"debug","hook":"subagent-prompt","sessionId":"ses_1407dd2a0ffe","callId":"call_xyz","event":"nudge_injected","warnings":["CONTEXT is 145 words — consider splitting into multiple task() calls..."]}
+{"timestamp":"2026-06-13T14:46:45.000Z","level":"debug","hook":"post-subagent-nudge","sessionId":"ses_1407dd2a0ffe","callId":"call_xyz","event":"verify_injected","todo_state":"final_active"}
 {"timestamp":"2026-06-13T14:46:45.200Z","level":"warn","hook":"json-error-nudge","sessionId":"ses_1407dd2a0ffe","callId":"call_abc","event":"recovery_injected","tool":"question","pattern":"json parse error"}
 {"timestamp":"2026-06-13T14:46:50.000Z","level":"debug","hook":"direct-work-nudge","sessionId":"ses_1407dd2a0ffe","callId":"call_def","event":"nudge_skipped","tool":"edit","reason":"not_build"}
 ```
@@ -284,8 +284,8 @@ TS 插件运行时通过 config hook 传入的配置对象读取这些值，与 
 14:46:32.100  ▼ PERMISSION CHECK  read *.env.example → allow
 14:46:32.150  ■ TOOL: read .env.example  [tool]
 14:46:33.000  ▲ LLM CALL #2 (deepseek-v4-pro, 15000→2400 tokens)  [thinking]
-              │  ZooKeeper: task-prompt-validate → valid (0 errors, 1 warn)
-              │  ZooKeeper: post-task-nudge → hasTodo=true, general nudge
+              │  ZooKeeper: subagent-prompt → nudge_injected (1 warn)
+              │  ZooKeeper: post-subagent-nudge → hasTodo=true, general nudge
 14:46:35.000  ■ TOOL: task "fix the bug" → subagent general  [orchestration]
 ```
 
@@ -353,10 +353,10 @@ Duration:                4m 32s
 |------|----------|------|
 | `src/hooks/utils/logger.ts` | 重写 | 从 stderr 单函数 → 文件 JSONL + 级别 + 缓冲 + 轮转 |
 | `src/index.ts` | 修改 | 初始化日志 + 异常日志 + 会话 ID 获取 |
-| `src/hooks/task-prompt/hook.ts` | 修改 | 增加 sid/cid，替换计数为具体内容 |
+| `src/hooks/subagent-prompt/hook.ts` | 修改 | 增加 sid/cid，替换计数为具体内容 |
 | `src/hooks/json-error-nudge/hook.ts` | 修改 | 增加 sid/cid，增加 skip reason |
 | `src/hooks/direct-work-nudge/hook.ts` | 修改 | 增加 sid/cid，增加 skip reason |
-| `src/hooks/post-task-nudge/hook.ts` | 修改 | 增加 sid/cid，增加 error 日志 |
+| `src/hooks/post-subagent-nudge/hook.ts` | 修改 | 增加 sid/cid，增加 error 日志 |
 | `config.toml` | 修改 | 新增 `[zoo.logging]` section |
 | `tools/zoo-log` | 新增 | 实时日志过滤工具（Python） |
 | `tools/zoo-inspect` | 新增 | Session 摘要工具（Python） |

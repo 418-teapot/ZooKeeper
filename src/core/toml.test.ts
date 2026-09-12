@@ -52,10 +52,10 @@ describe("vendor smol-toml — config.toml zoo section", () => {
       "context-pruning",
       "direct-work-nudge",
       "json-error-nudge",
-      "post-task-nudge",
+      "post-subagent-nudge",
       "reply-strip",
-      "task-delegation",
-      "task-prompt",
+      "subagent-delegation",
+      "subagent-prompt",
     ]);
     assert.deepEqual(poly.tools, [
       "ask",

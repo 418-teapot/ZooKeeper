@@ -1624,17 +1624,17 @@ mod tests {
     #[test]
     fn test_build_json_hook_breakdown_basic() {
         let events = vec![
-            json!({"hook": "task-prompt", "event": "validate"}),
-            json!({"hook": "task-prompt", "event": "validate"}),
+            json!({"hook": "subagent-prompt", "event": "validate"}),
+            json!({"hook": "subagent-prompt", "event": "validate"}),
             json!({"hook": "json-error-nudge", "event": "trigger"}),
         ];
         let result = build_json_hook_breakdown(&events, "ses-001");
         assert_eq!(result["session_id"], "ses-001");
         let bd = result["hook_breakdown"].as_object().unwrap();
-        // task-prompt should come first (count 2 > 1)
-        assert!(bd.contains_key("task-prompt"));
+        // subagent-prompt should come first (count 2 > 1)
+        assert!(bd.contains_key("subagent-prompt"));
         assert!(bd.contains_key("json-error-nudge"));
-        let tp = &bd["task-prompt"];
+        let tp = &bd["subagent-prompt"];
         assert_eq!(tp["count"], 2);
         assert_eq!(tp["events"]["validate"], 2);
         let jen = &bd["json-error-nudge"];
@@ -1653,11 +1653,11 @@ mod tests {
     #[test]
     fn test_build_json_hook_breakdown_multiple_event_types() {
         let events = vec![
-            json!({"hook": "task-prompt", "event": "validate"}),
-            json!({"hook": "task-prompt", "event": "trigger"}),
+            json!({"hook": "subagent-prompt", "event": "validate"}),
+            json!({"hook": "subagent-prompt", "event": "trigger"}),
         ];
         let result = build_json_hook_breakdown(&events, "ses-002");
-        let tp = &result["hook_breakdown"]["task-prompt"];
+        let tp = &result["hook_breakdown"]["subagent-prompt"];
         assert_eq!(tp["events"]["validate"], 1);
         assert_eq!(tp["events"]["trigger"], 1);
     }
@@ -1667,7 +1667,7 @@ mod tests {
     #[test]
     fn test_build_json_full_stats_basic() {
         let events = vec![
-            json!({"level": "info", "sessionId": "ses-001", "hook": "task-prompt", "event": "validate", "timestamp": "2025-01-09T12:00:00Z"}),
+            json!({"level": "info", "sessionId": "ses-001", "hook": "subagent-prompt", "event": "validate", "timestamp": "2025-01-09T12:00:00Z"}),
             json!({"level": "warn", "sessionId": "ses-001", "hook": "json-error-nudge", "event": "trigger", "timestamp": "2025-01-09T14:30:00Z"}),
         ];
         let steps = vec![make_step(100.0, 50.0, 30.0, 10.0, 0.005)];
@@ -1692,7 +1692,7 @@ mod tests {
         assert_eq!(ld["error"], 0);
         // hook breakdown
         let bd = result["hook_breakdown"].as_object().unwrap();
-        assert!(bd.contains_key("task-prompt"));
+        assert!(bd.contains_key("subagent-prompt"));
         assert!(bd.contains_key("json-error-nudge"));
         // token summary
         let ts = result["token_summary"].as_object().unwrap();
@@ -1720,7 +1720,7 @@ mod tests {
     #[test]
     fn test_build_json_full_stats_no_steps() {
         let events = vec![
-            json!({"level": "info", "sessionId": "ses-001", "hook": "task-prompt", "event": "validate", "timestamp": "2025-01-09T12:00:00Z"}),
+            json!({"level": "info", "sessionId": "ses-001", "hook": "subagent-prompt", "event": "validate", "timestamp": "2025-01-09T12:00:00Z"}),
         ];
         let result = build_json_full_stats(
             &events,
@@ -1998,7 +1998,7 @@ mod tests {
     fn test_build_pruning_summary_none_without_pruning_events() {
         assert!(build_pruning_summary(&[]).is_none());
         let events = vec![
-            json!({"event": "validate", "hook": "task-prompt"}),
+            json!({"event": "validate", "hook": "subagent-prompt"}),
             json!({"event": "trigger", "hook": "json-error-nudge"}),
         ];
         assert!(build_pruning_summary(&events).is_none());
@@ -2052,7 +2052,7 @@ mod tests {
     fn test_build_json_full_stats_pruning_key_conditional() {
         // No pruning events → no pruning key in full stats.
         let events = vec![
-            json!({"level": "info", "hook": "task-prompt", "event": "validate"}),
+            json!({"level": "info", "hook": "subagent-prompt", "event": "validate"}),
         ];
         let result =
             build_json_full_stats(&events, &[], "/tmp/t.log", "ses-001", None);
@@ -2085,7 +2085,8 @@ mod tests {
 
     #[test]
     fn test_build_json_hook_breakdown_roundtrip() {
-        let events = vec![json!({"hook": "task-prompt", "event": "trigger"})];
+        let events =
+            vec![json!({"hook": "subagent-prompt", "event": "trigger"})];
         let value = build_json_hook_breakdown(&events, "ses-test");
         let json_str = serde_json::to_string_pretty(&value)
             .expect("build_json_hook_breakdown should serialize");

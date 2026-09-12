@@ -18,7 +18,7 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { TASK_PROMPT_HINT } from "./agents/parts.js";
+import { SUBAGENT_PROMPT_HINT } from "./agents/parts.js";
 import {
   applyToolDefinitionContributions,
   buildPiCommandRegistrationPlan,
@@ -52,7 +52,7 @@ import {
 } from "./core/subagent/identity.js";
 import { createTodoStore } from "./core/todo/store.js";
 import { createReplyStripHandler } from "./hooks/reply-strip/index.js";
-import { enhanceTaskDefinition } from "./hooks/task-prompt/index.js";
+import { enhanceSubagentDefinition } from "./hooks/subagent-prompt/index.js";
 import { REGISTRY } from "./registry.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
 
@@ -962,9 +962,9 @@ describe("wrapToolsWithDelegationGate", () => {
 // applyToolDefinitionContributions
 // ---------------------------------------------------------------------------
 
-/** The task-prompt enhancement contribution (the real hook handler). */
+/** The subagent-prompt enhancement contribution (the real hook handler). */
 const HINT_CONTRIBUTIONS = [
-  { name: "enhanceTaskDefinition", handle: enhanceTaskDefinition },
+  { name: "enhanceSubagentDefinition", handle: enhanceSubagentDefinition },
 ];
 
 /** A subagent tool contribution carrying the delegation argument schemas. */
@@ -991,7 +991,7 @@ describe("applyToolDefinitionContributions", () => {
     assert.equal(tools.subagent, tool, "no enhancers must pass tools through");
   });
 
-  it("appends TASK_PROMPT_HINT to the subagent prompt description when task-prompt is composed", () => {
+  it("appends SUBAGENT_PROMPT_HINT to the subagent prompt description when subagent-prompt is composed", () => {
     const tool = subagentToolWithArgs();
     const tools = applyToolDefinitionContributions(
       { subagent: tool },
@@ -1002,7 +1002,7 @@ describe("applyToolDefinitionContributions", () => {
       type?: string;
     };
     assert.ok(
-      prompt.description?.includes(TASK_PROMPT_HINT),
+      prompt.description?.includes(SUBAGENT_PROMPT_HINT),
       "prompt description must embed the format hint at the boundary",
     );
     // Untouched fields ride through: the schema type survives and a
@@ -1015,7 +1015,7 @@ describe("applyToolDefinitionContributions", () => {
     assert.equal(tools.subagent.args?.agent, tool.args?.agent);
   });
 
-  it("keeps the tool arguments hint-free when no task-prompt contribution is composed", () => {
+  it("keeps the tool arguments hint-free when no subagent-prompt contribution is composed", () => {
     const tool = subagentToolWithArgs();
     const noop = [{ name: "no-op", handle: () => {} }];
     const tools = applyToolDefinitionContributions({ subagent: tool }, noop);
@@ -1028,7 +1028,7 @@ describe("applyToolDefinitionContributions", () => {
       | { description?: string }
       | undefined;
     assert.equal(prompt?.description, "完整任务说明");
-    assert.ok(!prompt?.description?.includes(TASK_PROMPT_HINT));
+    assert.ok(!prompt?.description?.includes(SUBAGENT_PROMPT_HINT));
   });
 
   it("leaves non-subagent tools untouched (identity preserved)", () => {
@@ -1172,7 +1172,7 @@ describe("pi composition — the todo tool registration boundary", () => {
 
     // Definition enhancers only target the subagent tool.
     const enhanced = applyToolDefinitionContributions(tools, [
-      { name: "enhanceTaskDefinition", handle: enhanceTaskDefinition },
+      { name: "enhanceSubagentDefinition", handle: enhanceSubagentDefinition },
     ]);
     assert.equal(enhanced.todo, todo, "no enhancer may rewrite the todo tool");
 

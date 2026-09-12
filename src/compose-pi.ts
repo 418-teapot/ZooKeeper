@@ -36,7 +36,7 @@
  *    mechanism — mirroring the OpenCode host's `tool.execute.before`
  *    enforcement).  The composed `tool.definition` contributions run at
  *    the same boundary (`applyToolDefinitionContributions`), enriching
- *    the tool arguments' descriptions (e.g. the task-prompt hint) before
+ *    the tool arguments' descriptions (e.g. the subagent-prompt hint) before
  *    pi registers the tools — pi has no native `tool.definition` event,
  *    so the OpenCode chain is applied here instead.
  *
@@ -295,7 +295,7 @@ export function applyToolDefinitionContributions(
   tools: Record<string, ToolContribution>,
   contributions: ToolDefinitionContribution[],
 ): Record<string, ToolContribution> {
-  // No enhancers (a profile without the task-prompt hook unit) → pass
+  // No enhancers (a profile without the subagent-prompt hook unit) → pass
   // the tools through unchanged.
   if (contributions.length === 0) return tools;
 

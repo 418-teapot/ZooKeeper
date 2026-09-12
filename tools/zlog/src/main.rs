@@ -507,10 +507,10 @@ mod tests {
             dir.join(format!("zlog_test_{}_{}.log", std::process::id(), n));
         let _ = fs::remove_file(&path);
         let content = r#"
-{"hook":"task-prompt-validate","level":"info","event":"trigger","ts":"2025-01-09T12:00:00Z"}
+{"hook":"subagent-prompt","level":"info","event":"trigger","ts":"2025-01-09T12:00:00Z"}
 {"hook":"json-error-nudge","level":"warn","event":"trigger","ts":"2025-01-09T12:01:00Z"}
 {"hook":"direct-work-nudge","level":"info","event":"trigger","ts":"2025-01-09T12:02:00Z"}
-{"hook":"post-task-nudge","level":"info","event":"trigger","ts":"2025-01-09T12:03:00Z"}
+{"hook":"post-subagent-nudge","level":"info","event":"trigger","ts":"2025-01-09T12:03:00Z"}
 "#.trim();
         fs::write(&path, content).expect("write mock log");
         path.to_str().unwrap().to_string()
@@ -530,7 +530,7 @@ mod tests {
     fn test_integration_raw_log_read() {
         let log_path = create_mock_log();
         let content = fs::read_to_string(&log_path).unwrap();
-        assert!(content.contains("task-prompt-validate"));
+        assert!(content.contains("subagent-prompt"));
         assert!(content.contains("json-error-nudge"));
         assert_eq!(content.lines().count(), 4);
         let _ = fs::remove_file(&log_path);
@@ -562,7 +562,7 @@ mod tests {
             "should match hook filter, got: {stdout}"
         );
         assert!(
-            !stdout.contains("task-prompt-validate"),
+            !stdout.contains("subagent-prompt"),
             "should filter out other hooks, got: {stdout}"
         );
         assert_eq!(
@@ -597,7 +597,7 @@ mod tests {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("direct-work-nudge"), "got: {stdout}");
-        assert!(!stdout.contains("task-prompt-validate"), "got: {stdout}");
+        assert!(!stdout.contains("subagent-prompt"), "got: {stdout}");
         assert_eq!(stdout.lines().count(), 1);
 
         let _ = fs::remove_file(&log_path);

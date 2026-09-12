@@ -241,7 +241,7 @@ fn test_steps_table() {
     );
     // Hook events from log file should appear (hook_overlays enabled by default)
     assert!(
-        stdout.contains("task-prompt-validate"),
+        stdout.contains("subagent-prompt"),
         "output should contain hook name from log, got: {stdout}"
     );
 }
@@ -342,7 +342,7 @@ fn test_steps_json() {
     // Hooks should be present (hook_overlays enabled by default)
     let hooks0 = steps[0]["hooks"].as_array().unwrap();
     assert_eq!(hooks0.len(), 1, "step 1 should have 1 hook");
-    assert_eq!(hooks0[0], "task-prompt-validate");
+    assert_eq!(hooks0[0], "subagent-prompt");
 
     let hooks1 = steps[1]["hooks"].as_array().unwrap();
     assert!(!hooks1.is_empty(), "step 2 should have hooks");
@@ -385,7 +385,7 @@ fn test_steps_hook_overlays_false() {
     );
     // Hook name should NOT appear
     assert!(
-        !stdout.contains("task-prompt-validate"),
+        !stdout.contains("subagent-prompt"),
         "output should not contain hook name when overlays disabled, got: {stdout}"
     );
 }
@@ -666,7 +666,7 @@ fn test_steps_min_cache_drop_with_overlays_disabled() {
         "output should indicate no steps after filtering, got: {stdout}"
     );
     assert!(
-        !stdout.contains("task-prompt-validate"),
+        !stdout.contains("subagent-prompt"),
         "hook names must not appear when overlays are disabled, got: {stdout}"
     );
 }
@@ -1062,7 +1062,7 @@ impl TestFixture {
         let lines = match session_id {
             "ses-001" => vec![
                 // Before step 1 → matched to step 1
-                r#"{"hook":"task-prompt-validate","event":"trigger","level":"info","timestamp":"2024-05-06T12:53:25Z","sessionId":"ses-001"}"#,
+                r#"{"hook":"subagent-prompt","event":"trigger","level":"info","timestamp":"2024-05-06T12:53:25Z","sessionId":"ses-001"}"#,
                 // Between step 1 and step 2 → matched to step 2
                 r#"{"hook":"json-error-nudge","event":"trigger","level":"warn","timestamp":"2024-05-06T12:53:36Z","sessionId":"ses-001","tool":"webfetch","pattern":"SyntaxError"}"#,
                 // After step 2 → matched to last step (step 2)
@@ -1070,7 +1070,7 @@ impl TestFixture {
             ],
             // pi-hosted session: the log lives in `pi-ses-002.log`.
             "ses-002" => vec![
-                r#"{"hook":"task-prompt-validate","event":"trigger","level":"info","timestamp":"2024-05-06T12:54:00Z","sessionId":"ses-002"}"#,
+                r#"{"hook":"subagent-prompt","event":"trigger","level":"info","timestamp":"2024-05-06T12:54:00Z","sessionId":"ses-002"}"#,
             ],
             _ => vec![],
         };
@@ -1984,7 +1984,7 @@ impl PiFixture {
         fs::write(
             zoo_dir.join(format!("pi-{PI_UUID}.log")),
             format!(
-                r#"{{"hook":"task-prompt-validate","event":"trigger","level":"info","timestamp":"2026-08-29T04:22:14.000Z","sessionId":"{PI_UUID}"}}"#
+                r#"{{"hook":"subagent-prompt","event":"trigger","level":"info","timestamp":"2026-08-29T04:22:14.000Z","sessionId":"{PI_UUID}"}}"#
             ),
         )
         .expect("write pi zoo log");

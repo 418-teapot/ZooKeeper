@@ -1,5 +1,5 @@
 /**
- * Task delegation judge hook barrel export.
+ * Subagent delegation judge hook barrel export.
  *
  * Re-exports the judge function from the hook module.
  *
@@ -12,7 +12,7 @@ import { judgeDelegationTarget } from "./hook.js";
 export { judgeDelegationTarget };
 
 /**
- * Task-delegation hook unit descriptor.
+ * Subagent-delegation hook unit descriptor.
  *
  * Contributes the delegation-target judge; all handler slots stay
  * empty.  The judge is composed into the host gate by the selection
@@ -20,7 +20,7 @@ export { judgeDelegationTarget };
  * boundary.
  */
 export const unit: HookUnitDescriptor = {
-  name: "task-delegation",
+  name: "subagent-delegation",
   kind: "hook",
   create() {
     return {

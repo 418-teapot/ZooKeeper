@@ -93,10 +93,10 @@ const POLY_PROFILE = {
     "wiki-verify",
   ],
   hooks: [
-    "task-prompt",
-    "task-delegation",
+    "subagent-prompt",
+    "subagent-delegation",
     "direct-work-nudge",
-    "post-task-nudge",
+    "post-subagent-nudge",
     "json-error-nudge",
     "context-pruning",
   ],
@@ -282,10 +282,10 @@ describe("buildPiContributions — profile-driven selection", () => {
     assert.deepEqual(
       composed.afterExec.map((h) => h.name),
       [
-        "nudgeTaskOutput",
+        "nudgeSubagentOutput",
         "recoverJsonError",
         "nudgeDirectWork",
-        "nudgePostTask",
+        "nudgePostSubagent",
       ],
     );
     // context-pruning is no longer gated on client capabilities — the
@@ -1106,9 +1106,9 @@ describe("buildPiHandlers — compose-driven tool_result", () => {
     assert.equal(result, undefined);
   });
 
-  it("subagent tool_result → post-task nudge fires on the canonical name", async () => {
+  it("subagent tool_result → post-subagent nudge fires on the canonical name", async () => {
     // pi registers the delegation tool as "subagent" (the canonical name
-    // the core hooks gate on), so the post-task nudge must fire here —
+    // the core hooks gate on), so the post-subagent nudge must fire here —
     // before the hooks moved to the canonical name this stayed silent.
     const handlers = buildPiHandlers(POLY_ZOO);
     const result = await handlers.toolResult(
@@ -1121,7 +1121,7 @@ describe("buildPiHandlers — compose-driven tool_result", () => {
       },
       SESSION_CTX,
     );
-    assert.ok(result, "the post-task nudge must fire");
+    assert.ok(result, "the post-subagent nudge must fire");
     assert.ok(
       joinedText(result).includes(VERIFY_REMINDER),
       "output must carry the VERIFY reminder",
@@ -1143,7 +1143,7 @@ describe("buildPiHandlers — compose-driven tool_result", () => {
       },
       SESSION_CTX,
     );
-    assert.ok(result, "the post-task nudge still appends for subagent");
+    assert.ok(result, "the post-subagent nudge still appends for subagent");
     assert.equal(
       joinedText(result).includes(JSON_ERROR_REMINDER_MARKER),
       false,
@@ -1530,7 +1530,7 @@ describe("buildPiHandlers — registerTool wiring", () => {
 
   it("enforces the composed delegation gate at the registration boundary", async () => {
     // The gate belongs to the path, not the mechanism: the composed gate
-    // (here the real allowlist judge from the task-delegation hook unit)
+    // (here the real allowlist judge from the subagent-delegation hook unit)
     // wraps the registered subagent tool's execute — the tool itself
     // never observes the policy.  A blocked delegation returns the reason
     // text and the driver never runs.
@@ -1562,8 +1562,8 @@ describe("buildPiHandlers — registerTool wiring", () => {
     assert.ok(subagent);
 
     // Caller beaver may only delegate to lynx / spider — mola is blocked
-    // by the composed allowlist judge.  The task prompt is well-formed so
-    // the task-prompt judge (the other composed judge) lets it through
+    // by the composed allowlist judge.  The subagent prompt is well-formed so
+    // the subagent-prompt judge (the other composed judge) lets it through
     // and the allowlist judge is the one that refuses.
     setPrimary("beaver");
     const result = await subagent.execute(

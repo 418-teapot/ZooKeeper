@@ -45,13 +45,13 @@ impl TestFixture {
 
         // ses-001: 4 log entries with different hook/level combinations
         let data_001 = concat!(
-            r#"{"hook":"task-prompt-validate","level":"info","event":"trigger","ts":"2025-01-09T12:00:00Z","sessionId":"ses-001"}"#,
+            r#"{"hook":"subagent-prompt","level":"info","event":"trigger","ts":"2025-01-09T12:00:00Z","sessionId":"ses-001"}"#,
             "\n",
             r#"{"hook":"json-error-nudge","level":"warn","event":"trigger","ts":"2025-01-09T12:01:00Z","sessionId":"ses-001","tool":"webfetch","pattern":"SyntaxError"}"#,
             "\n",
             r#"{"hook":"direct-work-nudge","level":"info","event":"trigger","ts":"2025-01-09T12:02:00Z","sessionId":"ses-001","tool":"edit"}"#,
             "\n",
-            r#"{"hook":"post-task-nudge","level":"info","event":"trigger","ts":"2025-01-09T12:03:00Z","sessionId":"ses-001","todo_state":"pending","nudge":"beaver"}"#,
+            r#"{"hook":"post-subagent-nudge","level":"info","event":"trigger","ts":"2025-01-09T12:03:00Z","sessionId":"ses-001","todo_state":"pending","nudge":"beaver"}"#,
             "\n",
         );
         fs::write(log_dir.join("opencode-ses-001.log"), data_001)
@@ -61,7 +61,7 @@ impl TestFixture {
         // log lives in `pi-ses-002.log` and must be resolved via the pi
         // prefix.
         let data_002 = concat!(
-            r#"{"hook":"task-prompt-validate","level":"info","event":"trigger","ts":"2025-01-09T14:00:00Z","sessionId":"ses-002"}"#,
+            r#"{"hook":"subagent-prompt","level":"info","event":"trigger","ts":"2025-01-09T14:00:00Z","sessionId":"ses-002"}"#,
             "\n",
         );
         fs::write(log_dir.join("pi-ses-002.log"), data_002)
@@ -243,7 +243,7 @@ fn test_show_raw_all_lines() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("task-prompt-validate"),
+        stdout.contains("subagent-prompt"),
         "raw output should contain first entry"
     );
     assert!(
@@ -255,7 +255,7 @@ fn test_show_raw_all_lines() {
         "raw output should contain third entry"
     );
     assert!(
-        stdout.contains("post-task-nudge"),
+        stdout.contains("post-subagent-nudge"),
         "raw output should contain fourth entry"
     );
     assert_eq!(stdout.lines().count(), 4, "should have exactly 4 lines");
@@ -276,7 +276,7 @@ fn test_show_raw_prefix_matches() {
         output.status.code()
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("task-prompt-validate"));
+    assert!(stdout.contains("subagent-prompt"));
 }
 
 #[test]
@@ -369,7 +369,7 @@ fn test_show_jq_with_hook_filter() {
         "output should contain the matching hook"
     );
     assert!(
-        !stdout.contains("task-prompt-validate"),
+        !stdout.contains("subagent-prompt"),
         "output should NOT contain other hooks"
     );
     assert!(
@@ -406,7 +406,7 @@ fn test_show_jq_with_level_filter() {
         "output should contain the warn entry"
     );
     assert!(
-        !stdout.contains("task-prompt-validate"),
+        !stdout.contains("subagent-prompt"),
         "output should NOT contain info entries"
     );
     assert_eq!(stdout.lines().count(), 1, "should have exactly 1 warn line");
@@ -444,7 +444,7 @@ fn test_show_jq_with_hook_and_level_filter() {
         "output should contain the matching entry"
     );
     assert!(
-        !stdout.contains("task-prompt-validate"),
+        !stdout.contains("subagent-prompt"),
         "output should NOT contain other hooks"
     );
     assert_eq!(
@@ -517,7 +517,7 @@ fn test_show_raw_pi_hosted_session() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("task-prompt-validate"),
+        stdout.contains("subagent-prompt"),
         "raw output should contain the pi-hosted entry"
     );
 }
@@ -560,7 +560,7 @@ fn test_show_absolute_path_resolved() {
         output.status.code()
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("task-prompt-validate"));
+    assert!(stdout.contains("subagent-prompt"));
 }
 
 // ── cmd_show: error paths ──────────────────────────────────────────────────
@@ -848,7 +848,7 @@ fn test_tail_raw_new_line_appended() {
     );
     // The original 4 lines should NOT appear (tail -n 0 suppresses history).
     assert!(
-        !stdout_content.contains("task-prompt-validate"),
+        !stdout_content.contains("subagent-prompt"),
         "tail -n 0 should NOT output existing lines, got: {stdout_content}"
     );
 }

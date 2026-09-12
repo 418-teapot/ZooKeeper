@@ -323,7 +323,7 @@ messages.transform → stripHallucinations → assignMessageRefs → syncCompres
 2. 当 hook 内子逻辑超过 5 个时，引入轻量 handler 数组：
 
 ```ts
-const beforeHandlers = [validateTaskPrompt, recoverJsonError, ...];
+const beforeHandlers = [validateSubagentPrompt, recoverJsonError, ...];
 for (const h of beforeHandlers) { try { await h(); } catch {} }
 ```
 
@@ -534,7 +534,7 @@ ZooKeeper 的 JSONL 回放能力是独特优势（superpowers 没有），但缺
 
 **ZooKeeper**：
 - 委派规则在 build.md prompt 中文字描述
-- 通过 `tool.execute.before` 验证 task prompt 格式
+- 通过 `tool.execute.before` 验证 subagent prompt 格式
 - 无并行委派支持
 - 无递归深度限制
 
@@ -640,14 +640,14 @@ ZooKeeper 的核心优势在**可维护性、轻量性和学习曲线**。劣势
 **中期（2-4 周）**：
 
 4. **L2 模型回退链**：config.toml 的 model 字段支持数组，插件监听 `session.error` 事件做模型切换 → ❌ 未实现
-5. **Prompt 按需注入**：把 verify-iterate 规则从 build.md 拆出来，通过 `tool.execute.after` 在 `task()` 返回后注入 → ✅ **已实现**（`src/hooks/post-task-nudge/`）
+5. **Prompt 按需注入**：把 verify-iterate 规则从 build.md 拆出来，通过 `tool.execute.after` 在 `task()` 返回后注入 → ✅ **已实现**（`src/hooks/post-subagent-nudge/`）
 6. **DCP 兼容性**：确保 ZooKeeper 的 hook 不与 DCP 的 `messages.transform` 冲突，写兼容性测试 → ❌ 未实现
 
 **长期（4-8 周）**：
 
 7. **Plan Mode**：引入 plan agent（只读），强制编排器在动手前先规划 → ❌ 未实现
 8. **子 agent 行为测试**：借鉴 superpowers 的隐式触发测试，验证子 agent 是否真正遵循 prompt 约束 → ❌ 未实现
-9. **Skill 体系**：把方法论指令（verify-iterate、task-prompt-format）拆为独立 skill 文件，按需触发 → ❌ 未实现
+9. **Skill 体系**：把方法论指令（verify-iterate、subagent-prompt-format）拆为独立 skill 文件，按需触发 → ❌ 未实现
 
 ### 11.3 核心原则
 

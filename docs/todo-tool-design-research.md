@@ -21,7 +21,7 @@ OpenCode v2 分支（`~/Code/Agent/opencode2`）通过 `7feefb697f refactor: rem
 ZooKeeper 当前依赖宿主 todo 的链路：
 
 - `src/core/client/todo.ts:43-67` `getTodoState` 调 v1 SDK 的 `client.session.todo()`（GET `/session/{id}/todo`，读 SQLite TodoTable）；
-- `src/core/checks.ts:117-149` `checkTodoProgress` 消费 todo 状态生成三种 nudge（`TODO_PROGRESS_NUDGE` / `TODO_DONE_NUDGE` / `TODO_RESUME_NUDGE`，定义在 `src/core/prompts.ts:115-147`），挂接在 post-task-nudge hook（task() 返回后校验）；
+- `src/core/checks.ts:117-149` `checkTodoProgress` 消费 todo 状态生成三种 nudge（`TODO_PROGRESS_NUDGE` / `TODO_DONE_NUDGE` / `TODO_RESUME_NUDGE`，定义在 `src/core/prompts.ts:115-147`），挂接在 post-subagent-nudge hook（task() 返回后校验）；
 - 防护已存在：`checks.ts:124` `typeof client.session?.todo !== "function"` 时静默返回 null——**v2 下 SDK 方法不存在会抛 TypeError，但防护使 todo nudge 静默失效，plan nudge 不受影响**（plan 机制走 `.zoo/plans/` 文件系统，完全独立）。
 
 即：v2 迁移后 ZooKeeper 不会崩，但**静默丢失 todo 进度感知能力**。且 v1 宿主的 todo 只有"读"通道对插件开放（SDK 无 todowrite 写方法），ZooKeeper 无法借助宿主 todo 做更多编排。自建 todo 工具同时解决"v2 断供"和"能力封顶"两个问题。

@@ -13,7 +13,7 @@ Your job: determine whether the code is correct, complete, and safe to merge.
 </Role>
 
 <Context>
-Your task prompt contains the review scope — a diff, a commit, or a set of files. Read the actual code. Do not rely on the implementer's self-report.
+Your subagent prompt contains the review scope — a diff, a commit, or a set of files. Read the actual code. Do not rely on the implementer's self-report.
 </Context>
 
 <Workflow>

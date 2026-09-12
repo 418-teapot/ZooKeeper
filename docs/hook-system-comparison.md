@@ -992,7 +992,7 @@ ZooKeeper 当前使用 3 个 OpenCode 挂载点（config、tool.definition、too
 
 | 阶段 | 挂载点 | 做什么 |
 |:----:|--------|--------|
-| **短期** | `tool.execute.after` | 已有 json-error-nudge、post-task-nudge 等逻辑，统一注册到此挂载点作为独立 Hook 模块 |
+| **短期** | `tool.execute.after` | 已有 json-error-nudge、post-subagent-nudge 等逻辑，统一注册到此挂载点作为独立 Hook 模块 |
 | **短期** | `event` | 监听 `session.error`、`session.idle`、`session.deleted` ——为中期错误恢复和 session 生命周期管理做准备 |
 | **中期** | `experimental.chat.messages.transform` | 按需注入 verify-iterate 提示，替代现在全量写死在 build.md 的方式，实现 OMO 式的上下文注入管线 |
 | **中期** | `chat.message` | 追踪 sessionID→agentName 映射，精确识别当前会话的 Agent 类型（SLIM 的 sessionAgentMap 模式） |
@@ -1066,11 +1066,11 @@ ZooKeeper 当前使用 3 个 OpenCode 挂载点（config、tool.definition、too
 |:--:|---------|:-------------:|------|
 | L0 | 配置层（tool-config-handler） | ✅ `config.toml` deny 列表 | 已有 |
 | L1 | SDK 权限层（frontier-tool-schema-guard） | ❌ | **中期：** 在 `tool.execute.before` 中实现工具 schema 级别校验 |
-| L2 | Hook 守卫层（prometheus-md-only 等 10 个守卫） | 🟡 部分（task prompt 校验） | **中期：** 补齐文件操作守卫（覆盖写入检查、bash 文件读替代提示） |
+| L2 | Hook 守卫层（prometheus-md-only 等 10 个守卫） | 🟡 部分（subagent prompt 校验） | **中期：** 补齐文件操作守卫（覆盖写入检查、bash 文件读替代提示） |
 | L3 | 工具定义层（disabled-tools） | ✅ OpenCode permission | 已有 |
 | L4 | Agent 工具限制（per-agent tool restriction） | ✅ config.toml per-agent section | 已有 |
 
-**长期目标：** L2 守卫数量达到 6-8 个，覆盖文件写入、bash 使用、task prompt 格式、JSON 格式、委派深度等关键防御点。
+**长期目标：** L2 守卫数量达到 6-8 个，覆盖文件写入、bash 使用、subagent prompt 格式、JSON 格式、委派深度等关键防御点。
 
 ### 8.9 分阶段 Hook 数量目标
 

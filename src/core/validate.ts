@@ -1,9 +1,10 @@
 /**
- * Framework-independent task-prompt validation logic.
+ * Framework-independent subagent-prompt validation logic.
  *
- * Pure functions and types for validating `task()` prompt structure (SUMMARY /
- * CONTEXT / ACCEPTANCE sections), enforcing word-count limits, and detecting
- * common anti-patterns (code blocks, line references) in CONTEXT.
+ * Pure functions and types for validating the subagent prompt structure
+ * (SUMMARY / CONTEXT / ACCEPTANCE sections), enforcing word-count limits,
+ * and detecting common anti-patterns (code blocks, line references) in
+ * CONTEXT.
  *
  * This module has zero framework dependencies — no logger, no OpenCode types.
  * All functions are synchronous and side-effect-free.
@@ -51,7 +52,7 @@ const CODE_BLOCK_RE = /```/;
 // ---------------------------------------------------------------------------
 
 /**
- * Split a task prompt into its named sections.
+ * Split a subagent prompt into its named sections.
  *
  * Supports multiple formatting styles; section names are recognized in any
  * letter case and may sit behind a bullet, a markdown heading prefix, or bold:
@@ -72,7 +73,7 @@ const CODE_BLOCK_RE = /```/;
  * Subsequent lines belong to the section until the next header or
  * end-of-string.
  *
- * @param prompt - Raw task prompt string.
+ * @param prompt - Raw subagent prompt string.
  * @returns A map of section name → content (trimmed). Missing sections are
  *   absent from the map.
  */
@@ -157,7 +158,7 @@ function buildContextNudges(context: string): string[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Configurable word-count limits for task prompt validation,
+ * Configurable word-count limits for subagent prompt validation,
  * loaded from `config.toml` at plugin initialization.
  *
  * Each field is optional — when `undefined` the corresponding soft check
@@ -169,7 +170,7 @@ export interface ValidationLimits {
 }
 
 /**
- * Validate a task() prompt against the dolphin.md specification.
+ * Validate a subagent prompt against the dolphin.md specification.
  *
  * Hard check (blocking):
  *   1. All three required sections (SUMMARY, CONTEXT, ACCEPTANCE) are present.
@@ -181,12 +182,12 @@ export interface ValidationLimits {
  *      Skip when `promptWordLimit` is `undefined`.
  *   4. CONTEXT contains code blocks or line references — nudge toward intent.
  *
- * @param prompt - The `prompt` argument passed to the `task()` tool.
+ * @param prompt - The `prompt` argument passed to the `subagent` tool.
  * @param limits - Optional word-count thresholds.  Fields can be `undefined`
  *   to skip the corresponding soft check (no internal defaults).
  * @returns Validation result with `valid` flag, hard `errors`, and soft `warnings`.
  */
-export function validateTaskPrompt(
+export function validateSubagentPrompt(
   prompt: string,
   limits?: Partial<ValidationLimits>,
 ): {

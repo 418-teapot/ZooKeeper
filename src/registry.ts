@@ -10,9 +10,9 @@
  * only declare which units are enabled; they never order execution —
  * load order is decided exclusively by this array:
  *
- *   1. hook units — task-prompt → task-delegation (beforeExec),
- *      task-prompt → json-error-nudge → direct-work-nudge →
- *      post-task-nudge (afterExec), context-pruning (transform),
+ *   1. hook units — subagent-prompt → subagent-delegation (beforeExec),
+ *      subagent-prompt → json-error-nudge → direct-work-nudge →
+ *      post-subagent-nudge (afterExec), context-pruning (transform),
  *      reply-strip (textComplete).
  *   2. tool units — compress, decompress, subagent, ask.
  *   3. command units — go, dcp.
@@ -44,10 +44,10 @@ import type { SkillUnitDescriptor, UnitDescriptor } from "./core/slots.js";
 import { unit as contextPruningUnit } from "./hooks/context-pruning/index.js";
 import { unit as directWorkNudgeUnit } from "./hooks/direct-work-nudge/index.js";
 import { unit as jsonErrorNudgeUnit } from "./hooks/json-error-nudge/index.js";
-import { unit as postTaskNudgeUnit } from "./hooks/post-task-nudge/index.js";
+import { unit as postSubagentNudgeUnit } from "./hooks/post-subagent-nudge/index.js";
 import { unit as replyStripUnit } from "./hooks/reply-strip/index.js";
-import { unit as taskDelegationUnit } from "./hooks/task-delegation/index.js";
-import { unit as taskPromptUnit } from "./hooks/task-prompt/index.js";
+import { unit as subagentDelegationUnit } from "./hooks/subagent-delegation/index.js";
+import { unit as subagentPromptUnit } from "./hooks/subagent-prompt/index.js";
 import { unit as askToolUnit } from "./tools/ask.js";
 import { unit as compressToolUnit } from "./tools/compress.js";
 import { unit as decompressToolUnit } from "./tools/decompress.js";
@@ -152,11 +152,11 @@ const skillUnits: SkillUnitDescriptor[] = discoverSkillUnits(
  */
 export const REGISTRY: UnitDescriptor[] = [
   // ── Hook units (registry order) ──────────────────────────────────
-  taskPromptUnit,
-  taskDelegationUnit,
+  subagentPromptUnit,
+  subagentDelegationUnit,
   jsonErrorNudgeUnit,
   directWorkNudgeUnit,
-  postTaskNudgeUnit,
+  postSubagentNudgeUnit,
   contextPruningUnit,
   replyStripUnit,
   // ── Tool units ──────────────────────────────────────────────────

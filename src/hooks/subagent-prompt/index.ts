@@ -1,5 +1,5 @@
 /**
- * Task prompt validation hook barrel export.
+ * Subagent prompt validation hook barrel export.
  *
  * Re-exports all public API. Types and validation functions come from
  * `src/core/validate.ts` and `src/core/prompts.ts`; judge/handler
@@ -8,30 +8,30 @@
  * @module
  */
 
-export { TASK_PROMPT_HINT } from "../../agents/parts.js";
+export { SUBAGENT_PROMPT_HINT } from "../../agents/parts.js";
 export {
   type ValidationLimits,
-  validateTaskPrompt,
+  validateSubagentPrompt,
 } from "../../core/validate.js";
 
 import type { HookUnitDescriptor } from "../../core/slots.js";
 import {
-  enhanceTaskDefinition,
-  judgeTaskPrompt,
-  nudgeTaskOutput,
+  enhanceSubagentDefinition,
+  judgeSubagentPrompt,
+  nudgeSubagentOutput,
 } from "./hook";
 
-export { enhanceTaskDefinition, judgeTaskPrompt, nudgeTaskOutput };
+export { enhanceSubagentDefinition, judgeSubagentPrompt, nudgeSubagentOutput };
 
 /**
- * Task-prompt hook unit descriptor.
+ * Subagent-prompt hook unit descriptor.
  *
  * Contributes the prompt-format judge (composed into the host gate),
- * the after-exec output nudge, and the `task` tool definition
+ * the after-exec output nudge, and the `subagent` tool definition
  * enhancement.
  */
 export const unit: HookUnitDescriptor = {
-  name: "task-prompt",
+  name: "subagent-prompt",
   kind: "hook",
   create(deps) {
     return {
@@ -39,23 +39,23 @@ export const unit: HookUnitDescriptor = {
       beforeExec: [],
       afterExec: [
         {
-          name: "nudgeTaskOutput",
+          name: "nudgeSubagentOutput",
           handle: (input, output) =>
-            nudgeTaskOutput(input, output, deps.limits),
+            nudgeSubagentOutput(input, output, deps.limits),
         },
       ],
       transform: [],
       textComplete: [],
       toolDefinition: [
         {
-          name: "enhanceTaskDefinition",
-          handle: enhanceTaskDefinition,
+          name: "enhanceSubagentDefinition",
+          handle: enhanceSubagentDefinition,
         },
       ],
       delegation: [
         {
-          name: "judgeTaskPrompt",
-          judge: (req) => judgeTaskPrompt(req, deps.limits),
+          name: "judgeSubagentPrompt",
+          judge: (req) => judgeSubagentPrompt(req, deps.limits),
         },
       ],
     };

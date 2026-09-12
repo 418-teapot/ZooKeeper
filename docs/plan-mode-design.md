@@ -646,7 +646,7 @@ TUI 自动跳转到新会话
   - `checkPlanProgress(sessionID, planDir)` — 同步文件系统读取，扫描 `<planDir>/.zoo/plans/` 下的 plan 文件，按 mtime 降序查找最新匹配状态的 plan（sessionID 仅用于日志）
   - `checkTodoProgress(client, sessionID)` — 异步 API 调用，通过 OpenCode client 读取当前会话消息计算 checkbox 状态
 - **薄 hook 适配器**：将框架 (input, output) 解包后调用共享函数
-  - `post-task-nudge/hook.ts` — 在 `VERIFY_REMINDER` 后注入
+  - `post-subagent-nudge/hook.ts` — 在 `VERIFY_REMINDER` 后注入
   - `direct-work-nudge/hook.ts` — 在 `DIRECT_WORK_NUDGE` 后注入，仅 edit/write 操作触发
 
 **六个统一 nudge 常量**（`src/core/prompts.ts`，重构：+72/-22 行）：
@@ -668,10 +668,10 @@ TUI 自动跳转到新会话
 
 | Hook | 触发时机 | 注入内容 | 位置 |
 |------|----------|----------|------|
-| post-task-nudge | `task()` 返回后 | todo + plan | 接在 `VERIFY_REMINDER` 之后 |
+| post-subagent-nudge | `task()` 返回后 | todo + plan | 接在 `VERIFY_REMINDER` 之后 |
 | direct-work-nudge | edit/write 执行后 | todo + plan | 接在 `DIRECT_WORK_NUDGE` 之后 |
 
-> **v1.6 对比：** direct-work-nudge 原来只注入 plan nudge，缺失 todo 检查；post-task-nudge 的 todo 处理中 `TODO_RESUME_NUDGE` 场景（全部完成但仍在编辑）被静默跳过。v1.7 补全了两端点的 todo + plan 完整覆盖。
+> **v1.6 对比：** direct-work-nudge 原来只注入 plan nudge，缺失 todo 检查；post-subagent-nudge 的 todo 处理中 `TODO_RESUME_NUDGE` 场景（全部完成但仍在编辑）被静默跳过。v1.7 补全了两端点的 todo + plan 完整覆盖。
 
 **无 plan 文件 → 静默跳过：** 若 `.zoo/plans/` 下无 plan 文件，两个检查函数均返回 `null`，不注入任何 nudge。
 
@@ -1660,12 +1660,12 @@ mola-plan = "enable"  # 注：已由 [zoo.mode.*] profile 机制取代
 | Plan progress checks | `src/core/checks.ts` | 133 行 | `checks.test.ts` 7 行 |
 | TODO counting | `src/core/plan.ts`（新增函数） | +32 行 | `plan.test.ts` +42 行 |
 | Unified nudge constants | `src/core/prompts.ts`（重构） | +72/−22 行 | — |
-| Hook refactoring | `post-task-nudge/hook.ts`, `direct-work-nudge/hook.ts` | −90/+21 行 | 已有测试更新 |
+| Hook refactoring | `post-subagent-nudge/hook.ts`, `direct-work-nudge/hook.ts` | −90/+21 行 | 已有测试更新 |
 
 **统一内容：**
 1. **格式** — 6 个 nudge 常量全部 `<internal-reminder>` 包裹，`X = Y = LOST PROGRESS` 公式结尾
 2. **命名** — TODO 与 PLAN 对称：PROGRESS ↔ PROGRESS，DONE ↔ DONE，RESUME ↔ RESUME
-3. **注入点** — 两个 hook（post-task、direct-work edit/write）均注入 todo + plan
+3. **注入点** — 两个 hook（post-subagent、direct-work edit/write）均注入 todo + plan
 4. **逻辑复用** — 两份重复的 plan 检查逻辑合并为 `checkPlanProgress()` 共享函数
 5. **错误处理** — 统一 warn 级别日志，不阻断其他 nudge
 6. **场景覆盖** — 补齐 TODO 全部完成时的 `TODO_RESUME_NUDGE`（原来静默跳过）；direct-work-nudge 补齐 todo 检查（原来只有 plan）

@@ -213,7 +213,7 @@ Then: beaver: write tests (depends on adapter output)
 
 ## Phase 4: Delegate
 
-### 4.1 Task prompt format
+### 4.1 Subagent prompt format
 
 Every delegation uses this three-section structure — **this is ZooKeeper's signature format, never deviate:**
 

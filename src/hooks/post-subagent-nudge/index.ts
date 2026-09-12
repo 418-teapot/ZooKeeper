@@ -1,5 +1,5 @@
 /**
- * Post-task nudge hook barrel export.
+ * Post-subagent nudge hook barrel export.
  *
  * Re-exports the handler function from the hook module and prompt constants
  * from `src/core/prompts.ts`.
@@ -16,20 +16,20 @@ export {
 
 import { resolveTodoSource } from "../../core/client/todo.js";
 import type { HookUnitDescriptor } from "../../core/slots.js";
-import { nudgePostTask } from "./hook.js";
+import { nudgePostSubagent } from "./hook.js";
 
-export { nudgePostTask };
+export { nudgePostSubagent };
 
 /**
- * Post-task-nudge hook unit descriptor.
+ * Post-subagent-nudge hook unit descriptor.
  *
- * Contributes the after-exec post-task verification and progress nudge.
+ * Contributes the after-exec post-subagent verification and progress nudge.
  * The todo source is resolved once per composition via
  * `resolveTodoSource` (state store, then capable host client, else no
  * todo contribution).
  */
 export const unit: HookUnitDescriptor = {
-  name: "post-task-nudge",
+  name: "post-subagent-nudge",
   kind: "hook",
   create(deps) {
     const source = resolveTodoSource(deps);
@@ -38,9 +38,9 @@ export const unit: HookUnitDescriptor = {
       beforeExec: [],
       afterExec: [
         {
-          name: "nudgePostTask",
+          name: "nudgePostSubagent",
           handle: (input, output) =>
-            nudgePostTask(source, input, output, deps.directory),
+            nudgePostSubagent(source, input, output, deps.directory),
         },
       ],
       transform: [],

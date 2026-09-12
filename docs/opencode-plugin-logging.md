@@ -131,7 +131,7 @@ export function debug(tag: string, data?: Record<string, unknown>): void {
 
 输出格式示例：
 ```
-[zookeeper:task-prompt-validate] {"valid":false,"errors":1}
+[zookeeper:subagent-prompt] {"event":"nudge_injected","warnings":["..."]}
 [zookeeper:json-error-nudge] {"tool":"webfetch","pattern":"..."}
 ```
 
@@ -145,15 +145,14 @@ opencode
 
 ### 3.3 调用点位统计
 
-当前共有 **7 处调用**，分布在 4 个 hook 文件中：
+当前共有 **16 处调用**，分布在 4 个文件中：
 
 | 文件 | 标签 | 调用行数 | 触发时机 |
-|------|------|---------|---------|
-| `src/hooks/task-prompt/hook.ts` | `task-prompt-validate` | 2 | task() prompt 验证阻塞失败/通过时 |
-| `src/hooks/task-prompt/hook.ts` | `task-prompt-nudge` | 1 | task() 输出附加建议时 |
-| `src/hooks/json-error-nudge/hook.ts` | `json-error-nudge` | 1 | 检测到 JSON 解析错误时 |
-| `src/hooks/direct-work-nudge/hook.ts` | `direct-work-nudge` | 1 | 检测到直接编辑行为时 |
-| `src/hooks/post-task-nudge/hook.ts` | `post-task-nudge` | 2 | task() 返回后验证 + todo 提醒时 |
+|------|------|---------|--------|
+| `src/hooks/subagent-prompt/hook.ts` | `subagent-prompt` | 6 | subagent 工具定义增强、prompt 建议注入时 |
+| `src/core/recovery.ts` | `json-error-nudge` | 5 | 检测到 JSON 解析错误时 |
+| `src/hooks/direct-work-nudge/hook.ts` | `direct-work-nudge` | 4 | 检测到直接编辑行为时 |
+| `src/hooks/post-subagent-nudge/hook.ts` | `post-subagent-nudge` | 1 | task() 返回后验证 + todo 提醒时 |
 
 所有原有的 `console.debug` 调用已被全部替换为 `logger.debug()`。
 

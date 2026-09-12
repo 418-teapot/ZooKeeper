@@ -1,16 +1,16 @@
 /**
  * Direct unit tests for core/validate.ts.
  *
- * Tests `validateTaskPrompt()` in isolation — focus on the return structure,
+ * Tests `validateSubagentPrompt()` in isolation — focus on the return structure,
  * default vs custom limit behavior, boundary conditions, and warning patterns.
  *
  * These complement the existing hook-level tests in
- * `hooks/task-prompt/index.test.ts` which cover section extraction, plugin
+ * `hooks/subagent-prompt/index.test.ts` which cover section extraction, plugin
  * integration, and tool.execute.before/after wiring.
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { validateTaskPrompt } from "./validate.js";
+import { validateSubagentPrompt } from "./validate.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -38,9 +38,9 @@ function validPrompt(overrides?: {
 // Return structure
 // ---------------------------------------------------------------------------
 
-describe("validateTaskPrompt return structure", () => {
+describe("validateSubagentPrompt return structure", () => {
   it("returns valid=true with empty errors/warnings for a well-formed prompt", () => {
-    const result = validateTaskPrompt(validPrompt());
+    const result = validateSubagentPrompt(validPrompt());
     assert.equal(result.valid, true);
     assert.deepEqual(result.errors, []);
     assert.deepEqual(result.warnings, []);
@@ -50,7 +50,7 @@ describe("validateTaskPrompt return structure", () => {
 
   it("returns valid=false when a section is missing", () => {
     const prompt = "SUMMARY: Fix stuff\nCONTEXT: Some context";
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, false);
     assert.ok(result.errors.length > 0);
   });
@@ -63,7 +63,7 @@ describe("validateTaskPrompt return structure", () => {
 describe("missing sections", () => {
   it("reports missing SUMMARY only", () => {
     const prompt = "CONTEXT: Some context\nACCEPTANCE: Tests pass";
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => e.includes("SUMMARY")));
     assert.ok(!result.errors.some((e) => e.includes("CONTEXT")));
@@ -72,21 +72,21 @@ describe("missing sections", () => {
 
   it("reports missing CONTEXT only", () => {
     const prompt = "SUMMARY: Fix stuff\nACCEPTANCE: Tests pass";
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => e.includes("CONTEXT")));
   });
 
   it("reports missing ACCEPTANCE only", () => {
     const prompt = "SUMMARY: Fix stuff\nCONTEXT: Some context";
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => e.includes("ACCEPTANCE")));
   });
 
   it("returns zero ctx_words when CONTEXT is missing", () => {
     const prompt = "SUMMARY: Fix stuff\nACCEPTANCE: Tests pass";
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.ctx_words, 0);
   });
 });
@@ -99,7 +99,7 @@ describe("word-count limits (explicit)", () => {
   it("contextWordLimit=100 warns at 101 words", () => {
     const words = Array.from({ length: 101 }, (_, i) => `w${i + 1}`);
     const prompt = validPrompt({ context: words.join(" ") });
-    const result = validateTaskPrompt(prompt, { contextWordLimit: 100 });
+    const result = validateSubagentPrompt(prompt, { contextWordLimit: 100 });
     assert.ok(result.warnings.some((e) => e.includes("CONTEXT is")));
   });
 
@@ -112,13 +112,13 @@ describe("word-count limits (explicit)", () => {
       `CONTEXT: ${contextWords.join(" ")}`,
       `ACCEPTANCE: ${acceptanceWords.join(" ")}`,
     ].join("\n");
-    const result = validateTaskPrompt(prompt, { promptWordLimit: 250 });
+    const result = validateSubagentPrompt(prompt, { promptWordLimit: 250 });
     assert.ok(result.warnings.some((e) => e.includes("concise")));
   });
 
   it("returns correct total_words count", () => {
     const prompt = "SUMMARY: Fix bug\nCONTEXT: Short context\nACCEPTANCE: Pass";
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     // "SUMMARY:", "Fix", "bug", "CONTEXT:", "Short", "context", "ACCEPTANCE:", "Pass" = 8
     assert.equal(result.total_words, 8);
   });
@@ -133,7 +133,7 @@ describe("custom limits via Partial<ValidationLimits>", () => {
     // 60 words exceeds custom limit of 50
     const words = Array.from({ length: 60 }, (_, i) => `w${i + 1}`);
     const prompt = validPrompt({ context: words.join(" ") });
-    const result = validateTaskPrompt(prompt, { contextWordLimit: 50 });
+    const result = validateSubagentPrompt(prompt, { contextWordLimit: 50 });
     assert.ok(result.warnings.some((e) => e.includes("CONTEXT is")));
   });
 
@@ -146,7 +146,7 @@ describe("custom limits via Partial<ValidationLimits>", () => {
       `CONTEXT: ${contextWords.join(" ")}`,
       `ACCEPTANCE: Fix bug`,
     ].join("\n");
-    const result = validateTaskPrompt(prompt, { promptWordLimit: 100 });
+    const result = validateSubagentPrompt(prompt, { promptWordLimit: 100 });
     assert.ok(result.warnings.some((e) => e.includes("concise")));
   });
 
@@ -154,7 +154,7 @@ describe("custom limits via Partial<ValidationLimits>", () => {
     // Only set contextWordLimit; promptWordLimit omitted → skip total check.
     const words = Array.from({ length: 101 }, (_, i) => `w${i + 1}`);
     const prompt = validPrompt({ context: words.join(" ") });
-    const result = validateTaskPrompt(prompt, { contextWordLimit: 200 });
+    const result = validateSubagentPrompt(prompt, { contextWordLimit: 200 });
     // 101 < 200 → no context warning
     assert.equal(
       result.warnings.filter((w) => w.includes("CONTEXT is")).length,
@@ -170,7 +170,7 @@ describe("custom limits via Partial<ValidationLimits>", () => {
   it("skips all soft checks when limits object is empty", () => {
     const words = Array.from({ length: 101 }, (_, i) => `w${i + 1}`);
     const prompt = validPrompt({ context: words.join(" ") });
-    const result = validateTaskPrompt(prompt, {});
+    const result = validateSubagentPrompt(prompt, {});
     // Both limits undefined → both soft checks skipped
     assert.equal(result.warnings.length, 0);
   });
@@ -184,14 +184,14 @@ describe("CONTEXT word count warnings", () => {
   it("warns when CONTEXT equals limit + 1 (boundary)", () => {
     const words = Array.from({ length: 101 }, (_, i) => `w${i + 1}`);
     const prompt = validPrompt({ context: words.join(" ") });
-    const result = validateTaskPrompt(prompt, { contextWordLimit: 100 });
+    const result = validateSubagentPrompt(prompt, { contextWordLimit: 100 });
     assert.ok(result.warnings.some((e) => e.includes("101 words")));
   });
 
   it("does not warn when CONTEXT is exactly at limit", () => {
     const words = Array.from({ length: 100 }, (_, i) => `w${i + 1}`);
     const prompt = validPrompt({ context: words.join(" ") });
-    const result = validateTaskPrompt(prompt, { contextWordLimit: 100 });
+    const result = validateSubagentPrompt(prompt, { contextWordLimit: 100 });
     assert.equal(
       result.warnings.filter((w) => w.includes("CONTEXT is")).length,
       0,
@@ -201,7 +201,7 @@ describe("CONTEXT word count warnings", () => {
   it("reports ctx_words in return value", () => {
     const words = Array.from({ length: 42 }, (_, i) => `w${i + 1}`);
     const prompt = validPrompt({ context: words.join(" ") });
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.ctx_words, 42);
   });
 });
@@ -219,13 +219,13 @@ describe("total prompt word count warnings", () => {
       "CONTEXT: Short context",
       "ACCEPTANCE: Pass",
     ].join("\n");
-    const result = validateTaskPrompt(prompt, { promptWordLimit: 250 });
+    const result = validateSubagentPrompt(prompt, { promptWordLimit: 250 });
     assert.ok(result.warnings.some((e) => e.includes("concise")));
   });
 
   it("does not warn when total is under the limit", () => {
     const prompt = validPrompt();
-    const result = validateTaskPrompt(prompt, { promptWordLimit: 250 });
+    const result = validateSubagentPrompt(prompt, { promptWordLimit: 250 });
     assert.equal(
       result.warnings.filter((w) => w.includes("concise")).length,
       0,
@@ -241,7 +241,7 @@ describe("skip behavior when limits are undefined", () => {
   it("skips CONTENT word count check when contextWordLimit is undefined", () => {
     const words = Array.from({ length: 999 }, (_, i) => `w${i + 1}`);
     const prompt = validPrompt({ context: words.join(" ") });
-    const result = validateTaskPrompt(prompt, {
+    const result = validateSubagentPrompt(prompt, {
       contextWordLimit: undefined,
       promptWordLimit: 5000,
     });
@@ -257,7 +257,7 @@ describe("skip behavior when limits are undefined", () => {
       "CONTEXT: Short context",
       "ACCEPTANCE: Pass",
     ].join("\n");
-    const result = validateTaskPrompt(prompt, {
+    const result = validateSubagentPrompt(prompt, {
       contextWordLimit: 5000,
       promptWordLimit: undefined,
     });
@@ -271,7 +271,7 @@ describe("skip behavior when limits are undefined", () => {
       context:
         "The bug is at src/db.py line 42. Code:\n```\ndef foo()\n```\nFix the issue.",
     });
-    const result = validateTaskPrompt(prompt, {});
+    const result = validateSubagentPrompt(prompt, {});
     // Hard checks still pass (sections present)
     assert.equal(result.valid, true);
     // Pattern nudges still fire (code blocks + line refs)
@@ -281,7 +281,7 @@ describe("skip behavior when limits are undefined", () => {
 
   it("hard section checks still fire when both limits are undefined", () => {
     const prompt = "CONTEXT: Some context\nACCEPTANCE: Tests pass";
-    const result = validateTaskPrompt(prompt, {});
+    const result = validateSubagentPrompt(prompt, {});
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => e.includes("SUMMARY")));
   });
@@ -296,14 +296,14 @@ describe("code block detection in CONTEXT", () => {
     const prompt = validPrompt({
       context: "Signature:\n```\ndef foo(x: int) -> str:\n```\nDo not modify.",
     });
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.ok(result.warnings.some((e) => e.includes("code blocks")));
     assert.equal(result.valid, true);
   });
 
   it("does not warn when CONTEXT has no backticks", () => {
     const prompt = validPrompt();
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(
       result.warnings.filter((w) => w.includes("code blocks")).length,
       0,
@@ -320,7 +320,7 @@ describe("line reference detection in CONTEXT", () => {
     const prompt = validPrompt({
       context: "The bug is at src/db.py line 42. Fix it.",
     });
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.ok(result.warnings.some((e) => e.includes("line references")));
   });
 
@@ -328,7 +328,7 @@ describe("line reference detection in CONTEXT", () => {
     const prompt = validPrompt({
       context: "问题出现在 src/db.py 行 42 位置",
     });
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.ok(result.warnings.some((e) => e.includes("line references")));
   });
 
@@ -336,13 +336,13 @@ describe("line reference detection in CONTEXT", () => {
     const prompt = validPrompt({
       context: "bug 在 handler.go 第 15 行",
     });
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.ok(result.warnings.some((e) => e.includes("line references")));
   });
 
   it("does not warn on CONTEXT without line references", () => {
     const prompt = validPrompt();
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(
       result.warnings.filter((w) => w.includes("line references")).length,
       0,
@@ -356,13 +356,13 @@ describe("line reference detection in CONTEXT", () => {
 
 describe("edge cases", () => {
   it("handles empty prompt string", () => {
-    const result = validateTaskPrompt("");
+    const result = validateSubagentPrompt("");
     assert.equal(result.valid, false);
     assert.equal(result.ctx_words, 0);
   });
 
   it("handles prompt with only whitespace", () => {
-    const result = validateTaskPrompt("   \n  \n   ");
+    const result = validateSubagentPrompt("   \n  \n   ");
     assert.equal(result.valid, false);
   });
 
@@ -371,7 +371,7 @@ describe("edge cases", () => {
       context:
         "The bug is at src/db.py line 42. Code:\n```\ndef foo()\n```\nFix the issue.",
     });
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     const codeWarnings = result.warnings.filter((w) =>
       w.includes("code blocks"),
     );
@@ -388,7 +388,7 @@ describe("edge cases", () => {
       "- **CONTEXT** - The auth.login test fails on CI",
       "- **ACCEPTANCE** - All tests pass",
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, true);
     assert.deepEqual(result.errors, []);
   });
@@ -401,7 +401,7 @@ describe("edge cases", () => {
       "CONTEXT: The auth.login test fails intermittently on CI",
       "- acceptance-criteria are listed below",
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => e.includes("ACCEPTANCE")));
   });
@@ -412,7 +412,7 @@ describe("edge cases", () => {
       "- context-aware caching is used in the auth module",
       "ACCEPTANCE: All tests pass",
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => e.includes("CONTEXT")));
   });
@@ -425,7 +425,7 @@ describe("edge cases", () => {
       "CONTEXT: The auth.login test fails intermittently on CI",
       "- acceptance: criteria are listed below",
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, true);
     assert.deepEqual(result.errors, []);
   });
@@ -440,12 +440,12 @@ describe("edge cases", () => {
       "1. All auth tests pass",
       "2. No new flaky tests",
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, true);
     assert.deepEqual(result.errors, []);
     // A dangling dash does not forge the sections below it into an unrelated
     // name: with CONTEXT absent the hard gate still fires.
-    const missing = validateTaskPrompt(
+    const missing = validateSubagentPrompt(
       [
         "**SUMMARY** - fix the flaky auth test",
         "**ACCEPTANCE** -",
@@ -463,7 +463,7 @@ describe("edge cases", () => {
       "**ACCEPTANCE** –",
       "All auth tests pass",
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, true);
     assert.deepEqual(result.errors, []);
   });
@@ -475,7 +475,7 @@ describe("edge cases", () => {
       "ACCEPTANCE -   ",
       "All auth tests pass",
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, true);
     assert.deepEqual(result.errors, []);
   });
@@ -486,7 +486,7 @@ describe("edge cases", () => {
       "CONTEXT- three four five words here",
       "ACCEPTANCE- 1. all tests pass",
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, true);
     // Group 2 still holds the remainder after the separator, so the CONTEXT
     // section is exactly the five words written on the header line.
@@ -500,7 +500,7 @@ describe("edge cases", () => {
       "The auth.login test fails intermittently on CI",
       "ACCEPTANCE- All tests pass",
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, true);
     assert.deepEqual(result.errors, []);
   });
@@ -513,7 +513,7 @@ describe("edge cases", () => {
       "CONTEXT-dependent behavior is described in the design doc",
       "ACCEPTANCE: All tests pass",
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => e.includes("CONTEXT")));
   });
@@ -524,7 +524,7 @@ describe("edge cases", () => {
       "context: some background detail on the flaky test",
       "ACCEPTANCE: All tests pass",
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, true);
     assert.deepEqual(result.errors, []);
   });
@@ -535,7 +535,7 @@ describe("edge cases", () => {
       "CONTEXT: The auth.login test fails on CI",
       "ACCEPTANCE: All tests pass",
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, true);
     assert.deepEqual(result.errors, []);
   });
@@ -551,7 +551,7 @@ describe("edge cases", () => {
       "**ACCEPTANCE**",
       "All auth tests pass with no new flaky tests",
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, true);
     assert.deepEqual(result.errors, []);
   });
@@ -566,11 +566,11 @@ describe("edge cases", () => {
       "**ACCEPTANCE**",
       "the acceptance body",
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, true);
     // A decorated bare title must not swallow the following sections: a
     // prompt missing CONTEXT fails the gate even when titles are bare.
-    const missing = validateTaskPrompt(
+    const missing = validateSubagentPrompt(
       "**SUMMARY**\nfirst summary line\nsecond summary line\n**ACCEPTANCE**\nbody",
     );
     assert.equal(missing.valid, false);
@@ -589,7 +589,7 @@ describe("edge cases", () => {
       "ACCEPTANCE",
       "the acceptance body",
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, true);
     assert.deepEqual(result.errors, []);
   });
@@ -604,7 +604,7 @@ describe("edge cases", () => {
       "acceptance",
       "some prose that happens to end the prompt",
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, true);
     assert.deepEqual(result.errors, []);
   });
@@ -617,7 +617,7 @@ describe("edge cases", () => {
       "of what happened afterwards",
       "**ACCEPTANCE:** all tests pass",
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, true);
     // The bare `summary` line opens a new SUMMARY section, so the lines after
     // it no longer belong to CONTEXT: "the auth.login test fails" is 4 words.
@@ -632,7 +632,7 @@ describe("edge cases", () => {
       "**CONTEXT：** three four five",
       "**ACCEPTANCE:** six",
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, true);
     // CONTEXT content is "three four five" — 3 words, no leaked `**` token.
     assert.equal(result.ctx_words, 3);
@@ -644,7 +644,7 @@ describe("edge cases", () => {
       "**CONTEXT：** auth.login 在 CI 上间歇性失败",
       "**ACCEPTANCE：** 所有测试通过",
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, true);
     assert.deepEqual(result.errors, []);
   });
@@ -657,7 +657,7 @@ describe("edge cases", () => {
       "CONTEXT: The auth.login test fails on CI",
       "ACCEPTANCE: All tests pass",
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => e.includes("SUMMARY")));
   });
@@ -668,7 +668,7 @@ describe("edge cases", () => {
       "  - CONTEXT: The auth.login test fails on CI",
       "  - ACCEPTANCE: All tests pass",
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, true);
     assert.deepEqual(result.errors, []);
   });
@@ -680,7 +680,7 @@ describe("edge cases", () => {
       "### CONTEXT: The auth.login test fails on CI",
       "#### ACCEPTANCE - All tests pass",
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, true);
     assert.deepEqual(result.errors, []);
   });
@@ -691,7 +691,7 @@ describe("edge cases", () => {
       "CONTEXT： auth.login 在 CI 上间歇性失败",
       "ACCEPTANCE： 所有测试通过",
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, true);
     assert.deepEqual(result.errors, []);
   });
@@ -704,7 +704,7 @@ describe("edge cases", () => {
       "CONTEXT: The auth.login test fails on CI",
       "ACCEPTANCE: All tests pass",
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => e.includes("SUMMARY")));
   });
@@ -715,7 +715,7 @@ describe("edge cases", () => {
       "CONTEXT: The auth.login test fails on CI",
       "ACCEPTANCE: All tests pass",
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => e.includes("SUMMARY")));
   });
@@ -726,7 +726,7 @@ describe("edge cases", () => {
       "Fix the flaky auth test",
       "context： 一些背景",
     ].join("\n");
-    const result = validateTaskPrompt(prompt);
+    const result = validateSubagentPrompt(prompt);
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => e.includes("ACCEPTANCE")));
   });

@@ -20,8 +20,8 @@ import { _resetContextStateManagerForTesting } from "./core/context/runtime.js";
 import { sessionAgentRegistry } from "./core/session-agent.js";
 import { DIRECT_WORK_NUDGE } from "./hooks/direct-work-nudge";
 import { JSON_ERROR_REMINDER } from "./hooks/json-error-nudge";
-import { VERIFY_REMINDER } from "./hooks/post-task-nudge";
-import { TASK_PROMPT_HINT } from "./hooks/task-prompt";
+import { VERIFY_REMINDER } from "./hooks/post-subagent-nudge";
+import { SUBAGENT_PROMPT_HINT } from "./hooks/subagent-prompt";
 import { buildPlugin, zookeeper } from "./opencode.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
 import { withModeFile } from "./utils/mode-file.js";
@@ -53,10 +53,10 @@ const POLY_PROFILE = {
     "wiki-verify",
   ],
   hooks: [
-    "task-prompt",
-    "task-delegation",
+    "subagent-prompt",
+    "subagent-delegation",
     "direct-work-nudge",
-    "post-task-nudge",
+    "post-subagent-nudge",
     "json-error-nudge",
     "context-pruning",
     "reply-strip",
@@ -248,7 +248,7 @@ describe("poly full profile — registration parity", () => {
         { tool: "task", sessionID: "s", callID: "c" },
         { args: { prompt: INVALID_PROMPT } },
       ),
-      /Task prompt format error/,
+      /Subagent prompt format error/,
     );
   });
 
@@ -264,7 +264,7 @@ describe("poly full profile — registration parity", () => {
     );
   });
 
-  it("tool.definition runs enhanceTaskDefinition via the task→subagent mapping", async () => {
+  it("tool.definition runs enhanceSubagentDefinition via the task→subagent mapping", async () => {
     // OpenCode names the delegation tool "task"; the compose-opencode
     // boundary maps it to the canonical "subagent" before handlers run,
     // so a raw "task" toolID must still reach the definition enhancer.
@@ -274,14 +274,14 @@ describe("poly full profile — registration parity", () => {
       parameters: {
         type: "object",
         properties: {
-          prompt: { description: "The task prompt", type: "string" },
+          prompt: { description: "The subagent prompt", type: "string" },
         },
       },
     };
     await plugin["tool.definition"]({ toolID: "task" }, output);
     assert.equal(
       output.parameters.properties.prompt.description,
-      `The task prompt\n\n${TASK_PROMPT_HINT}`,
+      `The subagent prompt\n\n${SUBAGENT_PROMPT_HINT}`,
     );
   });
 
@@ -291,7 +291,7 @@ describe("poly full profile — registration parity", () => {
     assert.equal(normalizeToolName("subagent"), "subagent");
   });
 
-  it("tool.execute.after runs nudgeTaskOutput then nudgePostTask in order", async () => {
+  it("tool.execute.after runs nudgeSubagentOutput then nudgePostSubagent in order", async () => {
     const plugin = await makePlugin();
     const output: { output?: string } = {};
     await plugin["tool.execute.after"](
@@ -304,11 +304,11 @@ describe("poly full profile — registration parity", () => {
       output,
     );
 
-    // task-prompt handler appended the guidance suffix first...
+    // subagent-prompt handler appended the guidance suffix first...
     const text = output.output ?? "";
     const guidanceAt = text.indexOf("--- Guidance for next time ---");
     assert.ok(guidanceAt >= 0, "guidance suffix must be appended");
-    // ...post-task handler appended VERIFY_REMINDER afterwards.
+    // ...post-subagent handler appended VERIFY_REMINDER afterwards.
     const verifyAt = text.indexOf(VERIFY_REMINDER);
     assert.ok(
       verifyAt > guidanceAt,
@@ -532,8 +532,8 @@ describe("event-key composition by enabled hook set", () => {
     assert.equal(plugin["experimental.chat.messages.transform"], undefined);
   });
 
-  it("task-prompt only → definition + prompt validation, no delegation", async () => {
-    const plugin = await pluginWithHooks(["task-prompt"]);
+  it("subagent-prompt only → definition + prompt validation, no delegation", async () => {
+    const plugin = await pluginWithHooks(["subagent-prompt"]);
 
     assert.equal(typeof plugin["tool.definition"], "function");
 
@@ -543,7 +543,7 @@ describe("event-key composition by enabled hook set", () => {
         { tool: "task", sessionID: "s", callID: "c" },
         { args: { prompt: INVALID_PROMPT } },
       ),
-      /Task prompt format error/,
+      /Subagent prompt format error/,
     );
 
     // No delegation judge is enabled — a denied delegation passes.
@@ -551,7 +551,7 @@ describe("event-key composition by enabled hook set", () => {
     const plugin2 = await makePlugin(
       {
         ...POLY_ZOO,
-        mode: { poly: { ...POLY_PROFILE, hooks: ["task-prompt"] } },
+        mode: { poly: { ...POLY_PROFILE, hooks: ["subagent-prompt"] } },
       },
       { client },
     );
@@ -562,12 +562,12 @@ describe("event-key composition by enabled hook set", () => {
     assert.ok(true, "delegation validation must be skipped");
   });
 
-  it("task-delegation only → delegation validation, no prompt validation", async () => {
+  it("subagent-delegation only → delegation validation, no prompt validation", async () => {
     const client = { getSession: async () => ({ agent: "beaver" }) };
     const plugin = await makePlugin(
       {
         ...POLY_ZOO,
-        mode: { poly: { ...POLY_PROFILE, hooks: ["task-delegation"] } },
+        mode: { poly: { ...POLY_PROFILE, hooks: ["subagent-delegation"] } },
       },
       { client },
     );
@@ -590,8 +590,8 @@ describe("event-key composition by enabled hook set", () => {
     );
   });
 
-  it("task-prompt only → after runs nudgeTaskOutput but not post-task", async () => {
-    const plugin = await pluginWithHooks(["task-prompt"]);
+  it("subagent-prompt only → after runs nudgeSubagentOutput but not post-subagent", async () => {
+    const plugin = await pluginWithHooks(["subagent-prompt"]);
     const output: { output?: string } = {};
     await plugin["tool.execute.after"](
       {
@@ -606,12 +606,12 @@ describe("event-key composition by enabled hook set", () => {
     assert.ok(text.includes("--- Guidance for next time ---"));
     assert.ok(
       !text.includes(VERIFY_REMINDER),
-      "post-task handler must not run",
+      "post-subagent handler must not run",
     );
   });
 
-  it("post-task-nudge only → after appends VERIFY_REMINDER, no guidance", async () => {
-    const plugin = await pluginWithHooks(["post-task-nudge"]);
+  it("post-subagent-nudge only → after appends VERIFY_REMINDER, no guidance", async () => {
+    const plugin = await pluginWithHooks(["post-subagent-nudge"]);
     const output: { output?: string } = { output: "result" };
     await plugin["tool.execute.after"](
       { tool: "task", sessionID: "s", callID: "c" },
@@ -620,7 +620,7 @@ describe("event-key composition by enabled hook set", () => {
     assert.ok(output.output?.includes(VERIFY_REMINDER));
     assert.ok(
       !output.output?.includes("--- Guidance for next time ---"),
-      "task-prompt handler must not run",
+      "subagent-prompt handler must not run",
     );
   });
 

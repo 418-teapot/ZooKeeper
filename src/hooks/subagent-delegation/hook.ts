@@ -1,7 +1,7 @@
 /**
- * Task delegation judge for the ZooKeeper plugin.
+ * Subagent delegation judge for the ZooKeeper plugin.
  *
- * The delegation-target strategy, contributed by the task-delegation
+ * The delegation-target strategy, contributed by the subagent-delegation
  * hook unit as a judge: given the calling agent and the target subagent
  * type, it consults the allowlist in `src/core/delegation.ts` and
  * returns a refusal when the caller may not delegate to the target.

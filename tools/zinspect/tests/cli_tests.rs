@@ -312,16 +312,16 @@ impl TestFixture {
     fn create_log_file(path: &Path, session_id: &str) {
         let lines = match session_id {
             "ses-001" => vec![
-                r#"{"hook":"task-prompt","event":"validate","level":"info","timestamp":"2025-01-09T12:00:00Z","sessionId":"ses-001","warnings":0,"errors":0}"#,
+                r#"{"hook":"subagent-prompt","event":"validate","level":"info","timestamp":"2025-01-09T12:00:00Z","sessionId":"ses-001","warnings":0,"errors":0}"#,
                 r#"{"hook":"json-error-nudge","event":"trigger","level":"warn","timestamp":"2025-01-09T12:01:00Z","sessionId":"ses-001","tool":"webfetch","pattern":"SyntaxError"}"#,
                 r#"{"hook":"direct-work-nudge","event":"trigger","level":"info","timestamp":"2025-01-09T12:02:00Z","sessionId":"ses-001","tool":"edit"}"#,
-                r#"{"hook":"post-task-nudge","event":"trigger","level":"info","timestamp":"2025-01-09T12:03:00Z","sessionId":"ses-001","todo_state":"pending","nudge":"beaver"}"#,
+                r#"{"hook":"post-subagent-nudge","event":"trigger","level":"info","timestamp":"2025-01-09T12:03:00Z","sessionId":"ses-001","todo_state":"pending","nudge":"beaver"}"#,
                 r#"{"hook":"context-metrics","event":"check","level":"info","timestamp":"2025-01-09T12:04:00Z","sessionId":"ses-001","estimated_tokens":1500,"message_count":3,"exact_tokens":1200,"estimated_new_tokens":300}"#,
                 r#"{"hook":"plugin","event":"load","level":"info","timestamp":"2025-01-09T12:05:00Z","sessionId":"ses-001","agents":["beaver","lynx"],"skills":["git-commit"]}"#,
-                r#"{"hook":"task-prompt","event":"trigger","level":"info","timestamp":"2025-01-09T12:06:00Z","sessionId":"ses-001","warnings":1,"errors":0}"#,
+                r#"{"hook":"subagent-prompt","event":"trigger","level":"info","timestamp":"2025-01-09T12:06:00Z","sessionId":"ses-001","warnings":1,"errors":0}"#,
             ],
             "ses-002" => vec![
-                r#"{"hook":"task-prompt","event":"validate","level":"info","timestamp":"2025-01-09T14:00:00Z","sessionId":"ses-002","warnings":0,"errors":0}"#,
+                r#"{"hook":"subagent-prompt","event":"validate","level":"info","timestamp":"2025-01-09T14:00:00Z","sessionId":"ses-002","warnings":0,"errors":0}"#,
             ],
             // Pruning fixture: covers all five event families consumed by
             // `build_pruning_summary`. Two `prune_completed` events verify
@@ -731,7 +731,10 @@ fn test_impact_single_session_table() {
     // Table output should contain hook names and analysis data. The
     // aggregation now groups by `hook:event` composite keys, so the header
     // reads "Hook:Event" (rendered in full at the default 80-col width).
-    assert!(stdout.contains("task-prompt"), "output should contain hook name");
+    assert!(
+        stdout.contains("subagent-prompt"),
+        "output should contain hook name"
+    );
     assert!(
         stdout.contains("Hook:Event"),
         "output should contain Hook:Event column header"
@@ -804,10 +807,10 @@ fn test_impact_with_hook_filter() {
             "--json",
             "--no-color",
             "--hook",
-            "task-prompt",
+            "subagent-prompt",
         ])
         .output()
-        .expect("failed to run zinspect impact ses-001 --hook task-prompt");
+        .expect("failed to run zinspect impact ses-001 --hook subagent-prompt");
     assert!(
         output.status.success(),
         "should exit 0, got {:?}",
@@ -819,12 +822,12 @@ fn test_impact_with_hook_filter() {
     let agg = parsed["hook_aggregation"].as_object().unwrap();
     // Aggregation keys are `hook:event` composite keys, so assert on the
     // composite form instead of the bare hook name.
-    assert!(agg.contains_key("task-prompt:validate"));
-    assert!(agg.contains_key("task-prompt:trigger"));
+    assert!(agg.contains_key("subagent-prompt:validate"));
+    assert!(agg.contains_key("subagent-prompt:trigger"));
     // Every key must carry the filtered hook prefix — nothing from other
     // hooks should survive the filter.
     assert!(
-        agg.keys().all(|k| k.starts_with("task-prompt:")),
+        agg.keys().all(|k| k.starts_with("subagent-prompt:")),
         "all keys should start with the filtered hook prefix, got: {agg:?}"
     );
     assert!(!agg.contains_key("json-error-nudge"));
@@ -865,7 +868,8 @@ fn test_impact_multi_session_table() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("task-prompt") || stdout.contains("json-error-nudge"),
+        stdout.contains("subagent-prompt")
+            || stdout.contains("json-error-nudge"),
         "output should contain hook names"
     );
 }
@@ -905,7 +909,7 @@ fn test_stats_single_session_hooks_table() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Hook") || stdout.contains("task-prompt"),
+        stdout.contains("Hook") || stdout.contains("subagent-prompt"),
         "table output should contain hook breakdown"
     );
 }
@@ -1552,7 +1556,7 @@ fn test_stats_pi_single_session_token_aggregation() {
         home.path(),
         PI_UUID,
         &[json!({
-            "hook": "task-prompt", "event": "validate", "level": "info",
+            "hook": "subagent-prompt", "event": "validate", "level": "info",
             "timestamp": "2024-05-06T12:53:25Z", "sessionId": PI_UUID,
         })],
     );
@@ -1713,7 +1717,7 @@ fn test_impact_pi_session_tool_counts() {
         home.path(),
         PI_UUID,
         &[json!({
-            "hook": "task-prompt", "event": "validate", "level": "info",
+            "hook": "subagent-prompt", "event": "validate", "level": "info",
             "timestamp": "2024-05-06T12:53:35Z", "sessionId": PI_UUID,
         })],
     );
@@ -1736,7 +1740,7 @@ fn test_impact_pi_session_tool_counts() {
         parsed["hook_aggregation"]
             .as_object()
             .expect("hook_aggregation object")
-            .contains_key("task-prompt:validate"),
+            .contains_key("subagent-prompt:validate"),
         "pi hooks must populate the aggregation"
     );
     let usage = parsed["tool_usage"]

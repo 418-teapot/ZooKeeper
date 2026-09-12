@@ -1,7 +1,7 @@
 /**
- * Task prompt validation judge for the ZooKeeper plugin.
+ * Subagent prompt validation judge for the ZooKeeper plugin.
  *
- * Provides the prompt-format strategy contributed by the task-prompt
+ * Provides the prompt-format strategy contributed by the subagent-prompt
  * hook unit as a judge, plus the after-exec advisory nudge and the
  * tool-definition enhancement (host-neutral; applied at each host's
  * definition boundary — OpenCode's `tool.definition` event and pi's
@@ -14,13 +14,13 @@
 
 import {
   DELEGATION_FORMAT_TEXT,
-  TASK_PROMPT_HINT,
+  SUBAGENT_PROMPT_HINT,
 } from "../../agents/parts.js";
 import type { DelegationRefusal, DelegationRequest } from "../../core/gate.js";
 import type { ToolDefinitionView } from "../../core/slots.js";
 import {
   type ValidationLimits,
-  validateTaskPrompt,
+  validateSubagentPrompt,
 } from "../../core/validate.js";
 import { log } from "../../utils/logger.js";
 
@@ -40,12 +40,12 @@ import { log } from "../../utils/logger.js";
  *
  * @param view - The host-neutral tool definition view.
  */
-export function enhanceTaskDefinition(view: ToolDefinitionView): void {
+export function enhanceSubagentDefinition(view: ToolDefinitionView): void {
   if (view.name !== "subagent") return;
 
   const promptArg = view.args?.prompt;
   if (!promptArg || typeof promptArg !== "object") {
-    log("task-prompt", "definition_skipped", "", undefined, "debug", {
+    log("subagent-prompt", "definition_skipped", "", undefined, "debug", {
       reason: "no_prompt_param",
     });
     return;
@@ -53,14 +53,21 @@ export function enhanceTaskDefinition(view: ToolDefinitionView): void {
 
   const existing = promptArg.description ?? "";
   promptArg.description = existing
-    ? `${existing}\n\n${TASK_PROMPT_HINT}`
-    : TASK_PROMPT_HINT;
+    ? `${existing}\n\n${SUBAGENT_PROMPT_HINT}`
+    : SUBAGENT_PROMPT_HINT;
 
-  log("task-prompt", "definition_enhanced", "", undefined, "info", undefined);
+  log(
+    "subagent-prompt",
+    "definition_enhanced",
+    "",
+    undefined,
+    "info",
+    undefined,
+  );
 }
 
 /**
- * Judge a delegation request's task prompt structure.
+ * Judge a delegation request's subagent prompt structure.
  *
  * Returns a refusal when the prompt lacks the required sections
  * (SUMMARY / CONTEXT / ACCEPTANCE) or exceeds the configured limits;
@@ -72,18 +79,18 @@ export function enhanceTaskDefinition(view: ToolDefinitionView): void {
  * @param limits - Validation limits (word count thresholds).
  * @returns The refusal, or `null` to allow (or skip).
  */
-export function judgeTaskPrompt(
+export function judgeSubagentPrompt(
   req: DelegationRequest,
   limits: ValidationLimits,
 ): DelegationRefusal | null {
   if (req.prompt === undefined) return null;
 
-  const result = validateTaskPrompt(req.prompt, limits);
+  const result = validateSubagentPrompt(req.prompt, limits);
   if (!result.valid) {
     const details = result.errors.map((e) => `- ${e}`).join("\n");
     return {
       reason:
-        "Task prompt format error:\n" +
+        "Subagent prompt format error:\n" +
         `${details}\n\n` +
         "Required format:\n" +
         `${DELEGATION_FORMAT_TEXT}\n\n` +
@@ -108,7 +115,7 @@ export function judgeTaskPrompt(
  * @param output.output - Text output from the tool call.
  * @param limits - Validation limits (word count thresholds).
  */
-export function nudgeTaskOutput(
+export function nudgeSubagentOutput(
   input: {
     tool: string;
     sessionID?: string;
@@ -120,7 +127,7 @@ export function nudgeTaskOutput(
 ): void {
   if (input.tool !== "subagent") {
     log(
-      "task-prompt",
+      "subagent-prompt",
       "nudge_skipped",
       input.sessionID ?? "",
       input.callID,
@@ -133,7 +140,7 @@ export function nudgeTaskOutput(
   const promptArg = input.args?.prompt;
   if (typeof promptArg !== "string") {
     log(
-      "task-prompt",
+      "subagent-prompt",
       "nudge_skipped",
       input.sessionID ?? "",
       input.callID,
@@ -143,10 +150,10 @@ export function nudgeTaskOutput(
     return;
   }
 
-  const result = validateTaskPrompt(promptArg, limits);
+  const result = validateSubagentPrompt(promptArg, limits);
   if (result.warnings.length === 0) {
     log(
-      "task-prompt",
+      "subagent-prompt",
       "nudge_skipped",
       input.sessionID ?? "",
       input.callID,
@@ -162,7 +169,7 @@ export function nudgeTaskOutput(
   output.output = (output.output ?? "") + suffix;
 
   log(
-    "task-prompt",
+    "subagent-prompt",
     "nudge_injected",
     input.sessionID ?? "",
     input.callID,

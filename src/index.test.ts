@@ -661,10 +661,10 @@ describe("plugin wiring", () => {
         agents: [],
         skills: [],
         hooks: [
-          "task-prompt",
-          "task-delegation",
+          "subagent-prompt",
+          "subagent-delegation",
           "direct-work-nudge",
-          "post-task-nudge",
+          "post-subagent-nudge",
           "json-error-nudge",
           "context-pruning",
           "reply-strip",

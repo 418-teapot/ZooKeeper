@@ -114,7 +114,7 @@ class SubagentSession:
     Attributes:
         name: Display name like ``"beaver#1"``, ``"lynx#1"``.
         subagent_type: The subagent type (e.g. ``"beaver"``, ``"lynx"``).
-        task_prompt: The prompt string sent to the subagent.
+        subagent_prompt: The prompt string sent to the subagent.
         task_args: Full args dict of the task() call.
         calls: Tool calls made during this subagent's execution window.
         agent_text: Concatenated text output from this window.
@@ -122,7 +122,7 @@ class SubagentSession:
 
     name: str
     subagent_type: str
-    task_prompt: str
+    subagent_prompt: str
     task_args: dict[str, Any]
     calls: list[ToolCall] = field(default_factory=list)
     agent_text: str = ""
@@ -541,7 +541,7 @@ def split_subagent_sessions(data: SessionData) -> list[SubagentSession]:
 
     for window_idx, (call_idx, task_call) in enumerate(task_calls):
         subagent_type = task_call.args.get("subagent_type", "unknown")
-        task_prompt = task_call.args.get("prompt", "")
+        subagent_prompt = task_call.args.get("prompt", "")
         task_args = task_call.args
 
         # --- Call window -------------------------------------------------
@@ -576,7 +576,7 @@ def split_subagent_sessions(data: SessionData) -> list[SubagentSession]:
             SubagentSession(
                 name=name,
                 subagent_type=subagent_type,
-                task_prompt=task_prompt,
+                subagent_prompt=subagent_prompt,
                 task_args=task_args,
                 calls=window_calls,
                 agent_text=window_text,

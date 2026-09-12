@@ -6,7 +6,7 @@ import { MSG_REF_NO_ECHO } from "./parts.js";
  *
  * Workflows (distillation, contradiction detection, etc.) are provided
  * by skills loaded at task-time.  Kiwi loads the appropriate skill
- * based on the task type described in the calling agent's task prompt.
+ * based on the task type described in the calling agent's subagent prompt.
  *
  * Source: `core/prompts/kiwi.md`
  */
@@ -17,7 +17,7 @@ You never write code or delegate work; you CAN search the web and fetch external
 </Role>
 
 <Context>
-Your task prompt from the calling agent uses three sections:
+Your subagent prompt from the calling agent uses three sections:
 
 - **SUMMARY** — what analysis to perform (1 sentence)
 - **CONTEXT** — the artifacts to analyze and any constraints or preferences

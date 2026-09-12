@@ -59,18 +59,18 @@ function makeUnits(): { units: UnitDescriptor[]; calls: string[] } {
       calls.push("wiki-query");
       return { kind: "skill", skills: [{ name: "wiki-query" }] };
     }),
-    mockUnit("task-prompt", "hook", () => {
-      calls.push("task-prompt");
+    mockUnit("subagent-prompt", "hook", () => {
+      calls.push("subagent-prompt");
       return {
         kind: "hook",
         beforeExec: [],
-        afterExec: [{ name: "nudgeTaskOutput", handle: async () => {} }],
+        afterExec: [{ name: "nudgeSubagentOutput", handle: async () => {} }],
         transform: [],
         textComplete: [],
         toolDefinition: [
-          { name: "enhanceTaskDefinition", handle: async () => {} },
+          { name: "enhanceSubagentDefinition", handle: async () => {} },
         ],
-        delegation: [{ name: "judgeTaskPrompt", judge: () => null }],
+        delegation: [{ name: "judgeSubagentPrompt", judge: () => null }],
       };
     }),
     mockUnit("context-pruning", "hook", () => {
@@ -146,7 +146,7 @@ const ALL_UNITS_PROFILE: ModeProfile = {
   name: "poly",
   agents: ["dolphin", "beaver", "mola"],
   skills: ["beaver-tdd", "wiki-query"],
-  hooks: ["task-prompt", "context-pruning"],
+  hooks: ["subagent-prompt", "context-pruning"],
   tools: ["compress", "decompress"],
   commands: ["go", "dcp"],
 };
@@ -176,7 +176,7 @@ const UNKNOWN_PROFILE: ModeProfile = {
   name: "poly",
   agents: ["dolphin", "ghost-agent"],
   skills: ["beaver-tdd", "ghost-skill"],
-  hooks: ["task-prompt", "ghost-hook"],
+  hooks: ["subagent-prompt", "ghost-hook"],
   tools: ["compress", "ghost-tool"],
   commands: ["go", "ghost-command"],
 };
@@ -205,7 +205,7 @@ describe("composeProfile — full profile", () => {
       "mola",
       "beaver-tdd",
       "wiki-query",
-      "task-prompt",
+      "subagent-prompt",
       "context-pruning",
       "compress",
       "decompress",
@@ -233,7 +233,7 @@ describe("composeProfile — full profile", () => {
     );
     assert.deepEqual(
       result.afterExec.map((h) => h.name),
-      ["nudgeTaskOutput"],
+      ["nudgeSubagentOutput"],
     );
     assert.deepEqual(
       result.transform.map((h) => h.name),
@@ -242,7 +242,7 @@ describe("composeProfile — full profile", () => {
     assert.deepEqual(result.textComplete, []);
     assert.deepEqual(
       result.toolDefinition.map((h) => h.name),
-      ["enhanceTaskDefinition"],
+      ["enhanceSubagentDefinition"],
     );
     assert.ok(
       result.gate !== null,
@@ -253,7 +253,7 @@ describe("composeProfile — full profile", () => {
       null,
       "allow-all mock judges let the delegation pass",
     );
-    // The mock task-prompt judge declares no caller need, so the
+    // The mock subagent-prompt judge declares no caller need, so the
     // composition must not ask the host for the caller.
     assert.equal(result.gateNeedsCaller, false);
     assert.deepEqual(Object.keys(result.tools), ["compress", "decompress"]);
@@ -273,7 +273,7 @@ describe("composeProfile — gateNeedsCaller aggregation", () => {
   });
 
   it("is true when any enabled judge needs the caller", () => {
-    const unit = mockUnit("task-delegation", "hook", () => ({
+    const unit = mockUnit("subagent-delegation", "hook", () => ({
       kind: "hook",
       beforeExec: [],
       afterExec: [],
@@ -288,7 +288,7 @@ describe("composeProfile — gateNeedsCaller aggregation", () => {
       name: "td",
       agents: [],
       skills: [],
-      hooks: ["task-delegation"],
+      hooks: ["subagent-delegation"],
       tools: [],
       commands: [],
     };
@@ -427,7 +427,7 @@ describe("composeProfile — unknown profile names", () => {
     assert.deepEqual(calls, [
       "dolphin",
       "beaver-tdd",
-      "task-prompt",
+      "subagent-prompt",
       "compress",
       "go",
     ]);
@@ -453,7 +453,7 @@ describe("composeProfile — unknown profile names", () => {
 describe("composeProfile — active set", () => {
   it("passes profile-derived enablement sets to unit factories", () => {
     let seen: ActiveSet | undefined;
-    const unit = mockUnit("task-prompt", "hook", (_deps, activeSet) => {
+    const unit = mockUnit("subagent-prompt", "hook", (_deps, activeSet) => {
       seen = activeSet;
       return {
         kind: "hook",
@@ -470,7 +470,7 @@ describe("composeProfile — active set", () => {
     assert.ok(seen, "factory must receive the active set");
     assert.deepEqual([...seen.agents], ["dolphin", "beaver", "mola"]);
     assert.deepEqual([...seen.skills], ["beaver-tdd", "wiki-query"]);
-    assert.deepEqual([...seen.hooks], ["task-prompt", "context-pruning"]);
+    assert.deepEqual([...seen.hooks], ["subagent-prompt", "context-pruning"]);
     assert.deepEqual([...seen.tools], ["compress", "decompress"]);
     assert.deepEqual([...seen.commands], ["go", "dcp"]);
   });

@@ -1,5 +1,5 @@
 /**
- * Tests for the task delegation judge (`src/hooks/task-delegation`).
+ * Tests for the subagent delegation judge (`src/hooks/subagent-delegation`).
  *
  * Tests `judgeDelegationTarget()` as a pure judge, covering the skip
  * boundary semantics (a missing caller — unresolvable session agent —

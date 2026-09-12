@@ -269,8 +269,8 @@ ZooKeeper 的 `session.py` 已经解析了工具调用轨迹，但当前断言�
 | `assert_no_edit_write` | explore, spider | 零 edit/write 调用 |
 | `assert_cites_locations` | explore | 输出包含文件路径+行号 |
 | `assert_cites_sources` | spider | 输出包含 URL |
-| `assert_no_task_delegation` | general | 零 task() 调用 |
-| `assert_task_prompt_format` | build | 委派 prompt 包含三段式 |
+| `assert_no_subagent_delegation` | general | 零 task() 调用 |
+| `assert_subagent_prompt_format` | build | 委派 prompt 包含三段式 |
 | `assert_delegates_to_correct_agent` | build | 任务分配给正确的 subagent |
 
 #### 模式三：LLM-as-Judge 语义评估
@@ -429,12 +429,12 @@ def assert_delegates_to_correct_agent(session, expected):
     return Pass(f"All {len(task_calls)} delegations routed correctly")
 ```
 
-#### 5.2.2 委派 Prompt 格式（`assert_task_prompt_format`）
+#### 5.2.2 委派 Prompt 格式（`assert_subagent_prompt_format`）
 
-验证 build 的 task prompt 遵循三段式（SUMMARY/CONTEXT/ACCEPTANCE）：
+验证 build 的 subagent prompt 遵循三段式（SUMMARY/CONTEXT/ACCEPTANCE）：
 
 ```python
-def assert_task_prompt_format(session, expected):
+def assert_subagent_prompt_format(session, expected):
     """Verify build's task() prompts follow the 3-section format."""
     task_calls = session.get_tool_calls("task")
     issues = []
@@ -457,16 +457,16 @@ def assert_task_prompt_format(session, expected):
 
     if issues:
         return Fail("; ".join(issues))
-    return Pass(f"All {len(task_calls)} task prompts follow 3-section format")
+    return Pass(f"All {len(task_calls)} subagent prompts follow 3-section format")
 ```
 
-#### 5.2.3 委派 Prompt 简洁度（`assert_task_prompt_concise`）
+#### 5.2.3 委派 Prompt 简洁度（`assert_subagent_prompt_concise`）
 
-验证 build 的 task prompt 保持简洁（build.md 要求 5-15 行，不是 50 行）：
+验证 build 的 subagent prompt 保持简洁（build.md 要求 5-15 行，不是 50 行）：
 
 ```python
-def assert_task_prompt_concise(session, expected):
-    """Verify build's task prompts are concise (5-15 lines, not 50)."""
+def assert_subagent_prompt_concise(session, expected):
+    """Verify build's subagent prompts are concise (5-15 lines, not 50)."""
     max_lines = expected.get("max_lines", 20)  # slightly lenient
     task_calls = session.get_tool_calls("task")
     issues = []
@@ -479,7 +479,7 @@ def assert_task_prompt_concise(session, expected):
 
     if issues:
         return Fail("; ".join(issues))
-    return Pass(f"All task prompts within {max_lines}-line limit")
+    return Pass(f"All subagent prompts within {max_lines}-line limit")
 ```
 
 ### 5.3 Layer 1 按 Subagent 设计断言
@@ -490,7 +490,7 @@ def assert_task_prompt_concise(session, expected):
 |------|---------|------|
 | `assert_pre_verifies` | edit/write 之前有 read/grep（"先验证再编写"） | 已有，但未用于任何场景 |
 | `assert_self_verifies` | edit 后运行 bash（build/test/lint） | 已有，但未用 |
-| `assert_no_task_delegation` | 零 task() 调用 | **新增** |
+| `assert_no_subagent_delegation` | 零 task() 调用 | **新增** |
 
 **GREEN 场景设计**：给一个有 bug 的函数，验证 general 遵循"先验证再编写"规则
 
@@ -567,8 +567,8 @@ names = [
   # Layer 2: build agent 的委派决策
   "assert_delegates",
   "assert_delegates_to_correct_agent",
-  "assert_task_prompt_format",
-  "assert_task_prompt_concise",
+  "assert_subagent_prompt_format",
+  "assert_subagent_prompt_concise",
   "assert_verifies",
   # Layer 1: 通过 build 观察 subagent 行为
   "assert_no_direct_edit",
@@ -1010,14 +1010,14 @@ Phase 0 (立即可做，0 成本)    │ Phase 1 (1-2 天)           │ Phase 2
                               │                             │
  ├ 静态分析 (方法三)          │ ├ Layer 2 断言              │ ├ A/B 对比基础设施
  │ ├ prompt-config 一致性     │ │ ├ delegates_to_correct    │ │ ├ baseline 管理
- │ ├ prompt 结构完整性        │ │ ├ task_prompt_format      │ │ ├ diff 报告
- │ └ token 预算检查           │ │ └ task_prompt_concise     │ │ └ CI 集成
+ │ ├ prompt 结构完整性        │ │ ├ subagent_prompt_format  │ │ ├ diff 报告
+ │ └ token 预算检查           │ │ └ subagent_prompt_concise │ │ └ CI 集成
  │                            │ │                           │ │
  ├ 补充 subagent 阈值配置     │ ├ Layer 1 场景              │ ├ LLM-as-Judge
  │ ├ explore 阈值             │ │ ├ general-green           │ │ ├ assert_llm_judge
  │ └ spider 阈值              │ │ ├ spider-green             │ │ └ 与 A/B 整合
  ├ 新增 subagent 断言         │ │                           │
- │ ├ assert_no_task_delegation│ ├ PRESSURE 场景             │
+ │ ├ assert_no_subagent_delegation│ ├ PRESSURE 场景         │
  │ ├ assert_cites_locations   │ │ ├ general-pressure        │
  │ └ assert_concise_response  │ │ └ explore-pressure        │
 ```
@@ -1120,9 +1120,9 @@ Phase 0 (立即可做，0 成本)    │ Phase 1 (1-2 天)           │ Phase 2
 | 断言 | 测试层 | 适用 Agent | 类型 |
 |------|--------|-----------|------|
 | `assert_delegates_to_correct_agent` | L2 | build | 委派准确性 |
-| `assert_task_prompt_format` | L2 | build | prompt 格式 |
-| `assert_task_prompt_concise` | L2 | build | prompt 简洁度 |
-| `assert_no_task_delegation` | L1 | general | 权限遵守 |
+| `assert_subagent_prompt_format` | L2 | build | prompt 格式 |
+| `assert_subagent_prompt_concise` | L2 | build | prompt 简洁度 |
+| `assert_no_subagent_delegation` | L1 | general | 权限遵守 |
 | `assert_cites_locations` | L1 | explore | 输出格式 |
 | `assert_search_before_read` | L1 | explore | 工作流 |
 | `assert_no_command_execution` | L1 | spider | 权限遵守 |
@@ -1171,20 +1171,20 @@ Phase 0 (立即可做，0 成本)    │ Phase 1 (1-2 天)           │ Phase 2
 
 | 类别 | 内容 | 数量 |
 |------|------|------|
-| Layer 2 assertions | `assert_delegation_accuracy`, `assert_task_prompt_format`, `assert_task_prompt_concise` | 3 |
-| Layer 1 assertions | `assert_no_task_delegation`, `assert_cites_locations`, `assert_search_before_read`, `assert_concise_response`, `assert_no_bash_calls`, `assert_subagent_no_direct_edit`, `assert_self_verifies` | 7 |
+| Layer 2 assertions | `assert_delegation_accuracy`, `assert_subagent_prompt_format`, `assert_subagent_prompt_concise` | 3 |
+| Layer 1 assertions | `assert_no_subagent_delegation`, `assert_cites_locations`, `assert_search_before_read`, `assert_concise_response`, `assert_no_bash_calls`, `assert_subagent_no_direct_edit`, `assert_self_verifies` | 7 |
 | Session infrastructure | `SubagentSession` dataclass, `split_subagent_sessions()` function, `deferred` status field | 3 |
 | Scenarios | `dolphin-delegation-accuracy`, `dolphin-beaver-coding`, `dolphin-lynx-search`, `pressure-beaver-skip-verify` | 4 |
 
 **Layer 2 断言详述**:
 
 - `assert_delegation_accuracy` — 验证编排器是否将任务委派给正确的 subagent（例如：编码任务委派给 general，搜索任务委派给 explore）。检查 `task()` 调用的 `subagent` 参数是否与场景定义的预期相符。
-- `assert_task_prompt_format` — 验证编排器构造的 subagent prompt 是否包含必要的上下文元素：任务描述、文件位置、输出格式要求。检查 `task()` 的 `prompt` 参数字段结构。
-- `assert_task_prompt_concise` — 验证 subagent prompt 长度在合理范围内，无冗余上下文。以字符数阈值衡量，配置项 `max_prompt_chars` 默认 2000。
+- `assert_subagent_prompt_format` — 验证编排器构造的 subagent prompt 是否包含必要的上下文元素：任务描述、文件位置、输出格式要求。检查 `task()` 的 `prompt` 参数字段结构。
+- `assert_subagent_prompt_concise` — 验证 subagent prompt 长度在合理范围内，无冗余上下文。以字符数阈值衡量，配置项 `max_prompt_chars` 默认 2000。
 
 **Layer 1 断言详述**:
 
-- `assert_no_task_delegation` — subagent 不得再次调用 `task()` 委派任务（general/spider 均为叶子 agent）。检查 subagent 工具调用列表中是否包含 `task` 工具。
+- `assert_no_subagent_delegation` — subagent 不得再次调用 `task()` 委派任务（general/spider 均为叶子 agent）。检查 subagent 工具调用列表中是否包含 `task` 工具。
 - `assert_cites_locations` — subagent 的回复中应引用文件位置（`file:line` 格式）。正则匹配 `\w+\.\w+:\d+` 模式，支持 `min_locations` 和 `min_locations_soft` 两个阈值。
 - `assert_search_before_read` — subagent 应先搜索再读取具体文件。检查工具调用序列中 `grep`/`glob`（搜索）是否出现在 `read`（读取）之前。
 - `assert_concise_response` — subagent 回复不应超过指定长度。基于词数或字符数阈值，默认 500 词。

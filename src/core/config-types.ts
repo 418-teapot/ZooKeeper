@@ -125,7 +125,7 @@ export interface ModeProfile {
   agents: string[];
   /** Skill directory names registered from core/skills/. */
   skills: string[];
-  /** Hook unit names (task-prompt, task-delegation, ...). */
+  /** Hook unit names (subagent-prompt, subagent-delegation, ...). */
   hooks: string[];
   /** Tool names registered (compress, decompress). */
   tools: string[];

@@ -38,10 +38,10 @@ const POLY_PROFILE = {
     "wiki-verify",
   ],
   hooks: [
-    "task-prompt",
-    "task-delegation",
+    "subagent-prompt",
+    "subagent-delegation",
     "direct-work-nudge",
-    "post-task-nudge",
+    "post-subagent-nudge",
     "json-error-nudge",
     "context-pruning",
   ],

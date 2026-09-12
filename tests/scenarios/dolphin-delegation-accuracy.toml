@@ -24,8 +24,8 @@ max_prompt_words = 250
 required = [
   "assert_delegates",
   "assert_delegation_accuracy",
-  "assert_task_prompt_format",
-  "assert_task_prompt_concise",
+  "assert_subagent_prompt_format",
+  "assert_subagent_prompt_concise",
   "assert_no_direct_edit",
   "assert_no_read_abuse",
 ]

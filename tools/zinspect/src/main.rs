@@ -1282,7 +1282,7 @@ mod tests {
             "--cost",
             "--verbose",
             "--hook",
-            "task-prompt",
+            "subagent-prompt",
         ])
         .expect("impact with options should parse");
         if let Some(Command::Impact {
@@ -1300,7 +1300,7 @@ mod tests {
             assert_eq!(*window, 3);
             assert!(*cost);
             assert!(*verbose);
-            assert_eq!(hook.as_deref(), Some("task-prompt"));
+            assert_eq!(hook.as_deref(), Some("subagent-prompt"));
         } else {
             panic!("expected Impact command");
         }

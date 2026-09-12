@@ -76,7 +76,7 @@ description: 用于将外部源文档或对话知识 ingest 到项目 wiki 中�
 
 ### 1.3 委派 kiwi
 
-在 task prompt 开头告知 kiwi 加载 `kiwi-distill` 技能（kiwi 的技能列表由 `config.toml` 白名单控制，当前仅 `kiwi-distill` 可用）：
+在 subagent prompt 开头告知 kiwi 加载 `kiwi-distill` 技能（kiwi 的技能列表由 `config.toml` 白名单控制，当前仅 `kiwi-distill` 可用）：
 
 > 加载 `kiwi-distill` 技能后执行以下蒸馏任务。
 

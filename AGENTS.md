@@ -74,7 +74,7 @@ ZooKeeper/
 │   └── skills/              # skill 定义目录
 ├── src/                     # 插件 TS 代码（OpenCode + pi 双宿主入口，共享 core/agents）
 │   ├── agents/              # 各 agent 的 prompt 常量 + agent 单元（unit 描述符）
-│   │   ├── parts.ts         # 共享 prompt 片段（DELEGATION_FORMAT_TEXT、TASK_PROMPT_HINT）
+│   │   ├── parts.ts         # 共享 prompt 片段（DELEGATION_FORMAT_TEXT、SUBAGENT_PROMPT_HINT）
 │   │   ├── dolphin.ts
 │   │   ├── beaver.ts
 │   │   ├── mola.ts
@@ -99,7 +99,7 @@ ZooKeeper/
 │   │   │   └── session.ts       # 会话 client 最小契约（SessionClient 接口）
 │   │   ├── config-types.ts  # [zoo.context] 配置 schema 类型（纯类型）
 │   │   ├── config-parse.ts  # config.toml 解析
-│   │   ├── validate.ts      # task prompt 校验（section 提取、词数限制、反模式检测）
+│   │   ├── validate.ts      # subagent prompt 校验（section 提取、词数限制、反模式检测）
 │   │   ├── recovery.ts      # JSON 解析错误检测与恢复
 │   │   ├── plan.ts          # 计划文件读写（frontmatter 解析、状态更新）
 │   │   ├── checks.ts        # 计划/todo 进度检查
@@ -111,9 +111,9 @@ ZooKeeper/
 │   │   ├── context-pruning/ # 上下文裁剪 transform（mark-sweep + compress）
 │   │   ├── direct-work-nudge/# 直接编辑提醒（nudgeDirectWork 适配器）
 │   │   ├── json-error-nudge/# JSON 解析错误恢复（重导出 core/recovery）
-│   │   ├── post-task-nudge/ # task() 返回后验证+todo 提醒（nudgePostTask 适配器）
-│   │   ├── task-delegation/ # task() 委派权限拦截
-│   │   └── task-prompt/     # task prompt 校验 + nudge（3 个适配器函数）
+│   │   ├── post-subagent-nudge/ # task() 返回后验证+todo 提醒（nudgePostSubagent 适配器）
+│   │   ├── subagent-delegation/ # task() 委派权限拦截
+│   │   └── subagent-prompt/     # subagent prompt 校验 + nudge（3 个适配器函数）
 │   ├── tools/               # 工具适配器（fetch / compress / decompress 工具工厂）
 │   ├── commands/            # 斜杠命令单元（每目录一个命令单元：unit 描述符 + 处理器）
 │   │   ├── go/              # /go 命令（计划 handoff：planning-done → dolphin 子会话）
@@ -165,7 +165,7 @@ ZooKeeper/
 - **`src/compose-pi.ts`** — pi 事件键适配器：唯一理解 pi 事件键的模块，把 `ComposedResult` 组装成 `buildPiToolResultHandler(afterExec)`（tool_result handler：文本增量追加）、`buildPiContextHandler(transform)`（context handler：消息转换，写回裁剪后的视图）与 `wrapToolsWithDelegationGate`（工具注册边界的委派门包装：在 subagent 工具注册时包装其 execute，refusal 返回 reason 文本，工具本身零策略感知）
 - **`src/core/`** — 框架无关纯逻辑模块，零 OpenCode 依赖，可被任何 TS 运行时 import；含选择引擎 `compose.ts`（`composeProfile`）、槽位词汇 `slots.ts`
 - **`src/agents/<name>.ts`** — 各 agent 的 prompt 常量 + agent 单元（unit 描述符），按 `{agent-name}.ts` 命名
-- **`src/agents/parts.ts`** — 共享 prompt 片段常量（`DELEGATION_FORMAT_TEXT`、`TASK_PROMPT_HINT`）
+- **`src/agents/parts.ts`** — 共享 prompt 片段常量（`DELEGATION_FORMAT_TEXT`、`SUBAGENT_PROMPT_HINT`）
 - **`tools/Cargo.toml`** — Rust workspace 根配置
 
 ## 调试/日志
@@ -188,10 +188,10 @@ OpenCode 日志写入以下位置：
 示例输出：
 
 ```
-[zookeeper:task-prompt-validate] trigger { valid: false, errors: 1 }
+[zookeeper:subagent-prompt] nudge_injected { warnings: ["..."] }
 [zookeeper:json-error-nudge] trigger { tool: "webfetch", pattern: "...", }
 [zookeeper:direct-work-nudge] trigger { tool: "edit" }
-[zookeeper:post-task-nudge] trigger { hasTodo: true, nudge: "beaver" }
+[zookeeper:post-subagent-nudge] trigger { hasTodo: true, nudge: "beaver" }
 ```
 
 ## CLI 工具

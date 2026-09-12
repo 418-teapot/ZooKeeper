@@ -184,7 +184,7 @@ pub fn format_details(event: &Value) -> String {
     let hook = event.get("hook").and_then(|v| v.as_str()).unwrap_or("");
 
     let result = match hook {
-        "task-prompt" => {
+        "subagent-prompt" => {
             let mut parts: Vec<String> = Vec::new();
             if let Some(warnings) =
                 event.get("warnings").and_then(serde_json::Value::as_i64)
@@ -214,7 +214,7 @@ pub fn format_details(event: &Value) -> String {
             .and_then(|v| v.as_str())
             .map(|tool| format!("tool={tool}"))
             .unwrap_or_default(),
-        "post-task-nudge" => {
+        "post-subagent-nudge" => {
             let mut parts: Vec<String> = Vec::new();
             if let Some(todo_state) =
                 event.get("todo_state").and_then(|v| v.as_str())
@@ -382,9 +382,9 @@ mod tests {
     }
 
     #[test]
-    fn test_format_details_task_prompt() {
+    fn test_format_details_subagent_prompt() {
         let event = json!({
-            "hook": "task-prompt",
+            "hook": "subagent-prompt",
             "warnings": 2,
             "errors": 1
         });
@@ -416,9 +416,9 @@ mod tests {
     }
 
     #[test]
-    fn test_format_details_post_task_nudge() {
+    fn test_format_details_post_subagent_nudge() {
         let event = json!({
-            "hook": "post-task-nudge",
+            "hook": "post-subagent-nudge",
             "todo_state": "pending",
             "nudge": "beaver"
         });
@@ -496,7 +496,7 @@ mod tests {
     #[test]
     fn test_format_details_strips_vs16() {
         let event = json!({
-            "hook": "task-prompt",
+            "hook": "subagent-prompt",
             "warnings": 2,
             "errors": 1,
             "msg": "hello\u{fe0f}world"
@@ -524,7 +524,7 @@ mod tests {
         // Embed the actual VS16 character via Rust's string literal escape.
         let vs16 = '\u{fe0f}';
         let line = format!(
-            r#"{{"hook": "task-prompt", "event": "validate", "msg": "hello{vs16}world"}}"#
+            r#"{{"hook": "subagent-prompt", "event": "validate", "msg": "hello{vs16}world"}}"#
         );
         let mut value: Value = serde_json::from_str(&line).unwrap();
         strip_vs16_from_value(&mut value);

@@ -1895,5 +1895,5 @@ ZooKeeper 剪枝 → 插件级，启发式策略 + 手动控制，编排器专�
 **相关文档**：
 - `docs/dcp-architecture.md` — DCP 完整代码级分析
 - `docs/opencode-plugin-mechanism.md` — OpenCode 插件机制参考
-- `docs/task-prompt-validation-evolution.md` — 相近的"软约束先行"设计哲学
+- `docs/subagent-prompt-validation-evolution.md` — 相近的"软约束先行"设计哲学
 - `docs/todo-nudge-research.md` — 类似的 nudge 系统设计

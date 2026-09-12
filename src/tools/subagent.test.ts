@@ -13,7 +13,7 @@
  * with no `subagentDriver` in deps the unit contributes zero tools.
  *
  * The tool contains no delegation policy and no prompt-formatting policy —
- * the composed delegation gate and the task-prompt format hint are both
+ * the composed delegation gate and the subagent-prompt format hint are both
  * enforced at the host registration boundary (see `src/compose-pi.test.ts`
  * and the compose-opencode `tool.definition` tests), so no gate or hint
  * cases appear here.

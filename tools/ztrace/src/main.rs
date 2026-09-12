@@ -934,7 +934,7 @@ mod tests {
         ];
         let zoo_events = vec![
             serde_json::json!({
-                "hook": "task-prompt-validate",
+                "hook": "subagent-prompt",
                 "timestamp": "2024-05-06T12:53:25Z",
             }),
             serde_json::json!({

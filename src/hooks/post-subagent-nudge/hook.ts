@@ -1,5 +1,5 @@
 /**
- * Post-task nudge hook for ZooKeeper plugin.
+ * Post-subagent nudge hook for ZooKeeper plugin.
  *
  * After every `task()` tool execution, appends a verification reminder and
  * delegates todo and plan progress nudges to `checkTodoProgress` and
@@ -38,7 +38,7 @@ import { log } from "../../utils/logger.js";
  * @param output.output - Text output from the tool call.
  * @param planDir - Workspace base directory containing `.zoo/plans/`.
  */
-export async function nudgePostTask(
+export async function nudgePostSubagent(
   source: TodoSource | null,
   input: { tool: string; sessionID: string; callID?: string },
   output: { output?: string },
@@ -66,7 +66,7 @@ export async function nudgePostTask(
   output.output += suffix;
 
   log(
-    "post-task-nudge",
+    "post-subagent-nudge",
     "nudge_injected",
     input.sessionID,
     input.callID,

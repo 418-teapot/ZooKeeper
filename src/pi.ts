@@ -1430,8 +1430,8 @@ export function buildPiHandlers(
     composed.gate,
     composed.gateNeedsCaller,
   );
-  // The composed `tool.definition` contributions (the task-prompt format
-  // hint, when the task-prompt hook unit is enabled) run at the same
+  // The composed `tool.definition` contributions (the subagent-prompt format
+  // hint, when the subagent-prompt hook unit is enabled) run at the same
   // registration boundary: pi has no native `tool.definition` event, so
   // the OpenCode chain is applied here instead — enriching the tool
   // arguments' descriptions before pi registers the tools, with the tool

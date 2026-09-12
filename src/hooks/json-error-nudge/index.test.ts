@@ -7,9 +7,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  nudgeTaskOutput,
+  nudgeSubagentOutput,
   type ValidationLimits,
-} from "../task-prompt/index.js";
+} from "../subagent-prompt/index.js";
 import {
   JSON_ERROR_PATTERNS,
   JSON_ERROR_REMINDER,
@@ -20,7 +20,7 @@ import {
 } from "./index.js";
 
 // Limits mirror `[zoo.validation]` in config.toml — needed to drive the
-// task-prompt nudge adapter when simulating the plugin's after pipeline.
+// subagent-prompt nudge adapter when simulating the plugin's after pipeline.
 const limits: ValidationLimits = {
   contextWordLimit: 200,
   promptWordLimit: 500,
@@ -324,10 +324,10 @@ describe("integration: tool.execute.after → recoverJsonError", () => {
     const output: { output?: string } = {
       output: "Task finished with a json parse error in subagent output",
     };
-    // Simulate the plugin's after-handler pipeline order: task-prompt nudge
+    // Simulate the plugin's after-handler pipeline order: subagent-prompt nudge
     // first, then JSON recovery (the subagent tool is excluded from JSON
     // recovery).
-    nudgeTaskOutput(
+    nudgeSubagentOutput(
       { tool: "subagent", sessionID: "s1", callID: "c1", args: { prompt } },
       output,
       limits,

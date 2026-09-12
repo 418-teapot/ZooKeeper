@@ -1,5 +1,5 @@
 /**
- * Tests for the post-task-nudge hook.
+ * Tests for the post-subagent-nudge hook.
  *
  * Covers all scenarios: subagent tool injection with various todo states,
  * non-subagent tools skipped, null/undefined output skipped, source read
@@ -25,7 +25,7 @@ import {
 import type { Deps } from "../../core/slots.js";
 import type { TodoStateStore } from "../../core/todo/store.js";
 import type { TodoPhase } from "../../core/todo/types.js";
-import { nudgePostTask, unit } from "./index.js";
+import { nudgePostSubagent, unit } from "./index.js";
 
 // The todo nudge text produced for the "progress" tier.
 const PROGRESS_MARKER = "TODO UPDATE REQUIRED";
@@ -79,7 +79,7 @@ function failingSource(): TodoSource {
 }
 
 /**
- * Helper: invoke nudgePostTask with the given parameters and return
+ * Helper: invoke nudgePostSubagent with the given parameters and return
  * the mutated output.
  */
 async function applyNudge(
@@ -90,7 +90,7 @@ async function applyNudge(
   planDir?: string,
 ): Promise<{ output?: string }> {
   const result: { output?: string } = { output };
-  await nudgePostTask(source, { tool, sessionID }, result, planDir ?? "");
+  await nudgePostSubagent(source, { tool, sessionID }, result, planDir ?? "");
   return result;
 }
 
@@ -380,7 +380,7 @@ describe("null / undefined output is skipped", () => {
       { content: "Task", status: "in_progress", priority: "high", id: "1" },
     ]);
     const result: { output?: string } = { output: undefined };
-    await nudgePostTask(
+    await nudgePostSubagent(
       source,
       { tool: "subagent", sessionID: "s1" },
       result,
@@ -394,7 +394,7 @@ describe("null / undefined output is skipped", () => {
       { content: "Task", status: "in_progress", priority: "high", id: "1" },
     ]);
     const result: { output?: string } = { output: null as unknown as string };
-    await nudgePostTask(
+    await nudgePostSubagent(
       source,
       { tool: "subagent", sessionID: "s1" },
       result,
@@ -408,7 +408,7 @@ describe("null / undefined output is skipped", () => {
       { content: "Task", status: "in_progress", priority: "high", id: "1" },
     ]);
     const result: { output?: string } = {};
-    await nudgePostTask(
+    await nudgePostSubagent(
       source,
       { tool: "subagent", sessionID: "s1" },
       result,
@@ -576,7 +576,7 @@ describe("constants", () => {
 // host adapter unwraps. Here the handler is invoked directly.
 // ---------------------------------------------------------------------------
 
-describe("integration: tool.execute.after → nudgePostTask", () => {
+describe("integration: tool.execute.after → nudgePostSubagent", () => {
   it("appends VERIFY + GENERAL for task tool", async () => {
     const source = sourceOf([
       {
@@ -593,7 +593,7 @@ describe("integration: tool.execute.after → nudgePostTask", () => {
       },
     ]);
     const output: { output?: string } = { output: "Task completed" };
-    await nudgePostTask(
+    await nudgePostSubagent(
       source,
       { tool: "subagent", sessionID: "s1", callID: "c1" },
       output,
@@ -614,7 +614,7 @@ describe("integration: tool.execute.after → nudgePostTask", () => {
       },
     ]);
     const output: { output?: string } = { output: "Task completed" };
-    await nudgePostTask(
+    await nudgePostSubagent(
       source,
       { tool: "subagent", sessionID: "s1", callID: "c1" },
       output,
@@ -634,7 +634,7 @@ describe("integration: tool.execute.after → nudgePostTask", () => {
       },
     ]);
     const output: { output?: string } = { output: "grep result" };
-    await nudgePostTask(
+    await nudgePostSubagent(
       source,
       { tool: "grep", sessionID: "s1", callID: "c1" },
       output,
@@ -655,7 +655,7 @@ describe("integration: tool.execute.after → nudgePostTask", () => {
     const output: { output?: string } = {
       output: null as unknown as string,
     };
-    await nudgePostTask(
+    await nudgePostSubagent(
       source,
       { tool: "subagent", sessionID: "s1", callID: "c1" },
       output,
@@ -666,7 +666,7 @@ describe("integration: tool.execute.after → nudgePostTask", () => {
 
   it("handles a rejecting source gracefully (VERIFY only)", async () => {
     const output: { output?: string } = { output: "Task ran" };
-    await nudgePostTask(
+    await nudgePostSubagent(
       failingSource(),
       { tool: "subagent", sessionID: "s1", callID: "c1" },
       output,
@@ -710,14 +710,16 @@ const EMPTY_SETS = {
   commands: new Set<string>(),
 };
 
-/** Invoke the unit's composed nudgePostTask after-exec handler. */
+/** Invoke the unit's composed nudgePostSubagent after-exec handler. */
 async function runComposed(
   deps: Deps,
   output: { output?: string },
 ): Promise<void> {
   const composed = unit.create(deps, EMPTY_SETS);
-  const handler = composed.afterExec.find((h) => h.name === "nudgePostTask");
-  assert.ok(handler, "nudgePostTask must be composed");
+  const handler = composed.afterExec.find(
+    (h) => h.name === "nudgePostSubagent",
+  );
+  assert.ok(handler, "nudgePostSubagent must be composed");
   await handler.handle(
     { tool: "subagent", sessionID: "s1", callID: "c1" },
     output,
@@ -798,7 +800,7 @@ describe("unit.create(deps) todo source selection", () => {
   });
 
   it("keeps the unit name and kind stable", () => {
-    assert.equal(unit.name, "post-task-nudge");
+    assert.equal(unit.name, "post-subagent-nudge");
     assert.equal(unit.kind, "hook");
   });
 });

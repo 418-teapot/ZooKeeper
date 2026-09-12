@@ -21,11 +21,11 @@
 插件在运行时通过 Prompt 注入和行为引导 hook 增强 Agent 能力：
 
 - **Prompt 注入**：自动将 `src/agents/<name>.ts` 中定义的 prompt 常量注入到对应 Agent，无需手动配置
-- **Task Prompt 校验**：拦截格式不合规的 `task()` 调用，要求包含 SUMMARY / CONTEXT / ACCEPTANCE 三段式结构
+- **Subagent Prompt 校验**：拦截格式不合规的 `task()` 调用，要求包含 SUMMARY / CONTEXT / ACCEPTANCE 三段式结构
 - **直接工作提醒**：当编排器直接执行代码编辑时，提醒其应当委派子代理完成任务
 - **JSON 错误恢复**：检测工具输出中的 JSON 解析错误，自动注入修复提示
-- **任务完成验证**：每次子代理返回后，注入标准化的验证清单（post-task nudge），确保结果被严格审查
-- **Prompt 长度检测**：自动检测 Task Prompt 是否过长或包含不推荐的代码片段
+- **任务完成验证**：每次子代理返回后，注入标准化的验证清单（post-subagent nudge），确保结果被严格审查
+- **Prompt 长度检测**：自动检测 Subagent Prompt 是否过长或包含不推荐的代码片段
 - **上下文管理**：自动管理上下文，包括消息去重、错误清理、压缩与用量提醒
 - **模型变体**：支持为不同 Agent 分配模型变体（high / low / max 等）
 

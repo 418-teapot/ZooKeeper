@@ -260,15 +260,15 @@ def _assert_delegation_accuracy(
     )
 
 
-def _assert_task_prompt_format(
+def _assert_subagent_prompt_format(
     data: SessionData,
     expected: dict,  # noqa: ARG001
 ) -> AssertionResult:
-    """Verify every ``task()`` prompt contains SUMMARY / CONTEXT / ACCEPTANCE."""
+    """Verify every subagent ``task()`` prompt has SUMMARY / CONTEXT / ACCEPTANCE."""
     task_calls = [c for c in data.calls if c.tool == "task"]
     if not task_calls:
         return AssertionResult(
-            name="assert_task_prompt_format",
+            name="assert_subagent_prompt_format",
             passed=False,
             message="No task() calls found to check",
         )
@@ -298,22 +298,22 @@ def _assert_task_prompt_format(
 
     if issues:
         return AssertionResult(
-            name="assert_task_prompt_format",
+            name="assert_subagent_prompt_format",
             passed=False,
             message="; ".join(issues),
         )
     return AssertionResult(
-        name="assert_task_prompt_format",
+        name="assert_subagent_prompt_format",
         passed=True,
-        message=f"All {len(task_calls)} task prompts follow 3-section format",
+        message=f"All {len(task_calls)} subagent prompts follow 3-section format",
     )
 
 
-def _assert_task_prompt_concise(
+def _assert_subagent_prompt_concise(
     data: SessionData,
     expected: dict,
 ) -> AssertionResult:
-    """Verify every ``task()`` prompt is within the word limit.
+    """Verify every subagent ``task()`` prompt is within the word limit.
 
     Uses ``expected.get("max_prompt_words", 250)`` as the upper bound
     for the total word count of the prompt string.
@@ -322,7 +322,7 @@ def _assert_task_prompt_concise(
     task_calls = [c for c in data.calls if c.tool == "task"]
     if not task_calls:
         return AssertionResult(
-            name="assert_task_prompt_concise",
+            name="assert_subagent_prompt_concise",
             passed=False,
             message="No task() calls found to check",
         )
@@ -338,14 +338,14 @@ def _assert_task_prompt_concise(
 
     if issues:
         return AssertionResult(
-            name="assert_task_prompt_concise",
+            name="assert_subagent_prompt_concise",
             passed=False,
             message="; ".join(issues),
         )
     return AssertionResult(
-        name="assert_task_prompt_concise",
+        name="assert_subagent_prompt_concise",
         passed=True,
-        message=f"All task prompts within {max_words}-word limit",
+        message=f"All subagent prompts within {max_words}-word limit",
     )
 
 
@@ -398,7 +398,7 @@ def _assert_delegation_leaf_only(
     )
 
 
-def _assert_no_task_delegation(
+def _assert_no_subagent_delegation(
     data: SessionData | SubagentSession,
     expected: dict,  # noqa: ARG001
 ) -> AssertionResult:
@@ -411,20 +411,20 @@ def _assert_no_task_delegation(
     # Deferred: no visible calls means we cannot verify absence of delegation
     if not sd.calls:
         return AssertionResult(
-            name="assert_no_task_delegation",
+            name="assert_no_subagent_delegation",
             passed=True,
-            message="No tool calls visible in orchestrator JSONL — cannot verify no-task-delegation",
+            message="No tool calls visible in orchestrator JSONL — cannot verify no-subagent-delegation",
             deferred=True,
         )
     task_calls = [c for c in sd.calls if c.tool == "task"]
     if task_calls:
         return AssertionResult(
-            name="assert_no_task_delegation",
+            name="assert_no_subagent_delegation",
             passed=False,
             message=f"Found {len(task_calls)} task() calls — subagent must not delegate",
         )
     return AssertionResult(
-        name="assert_no_task_delegation",
+        name="assert_no_subagent_delegation",
         passed=True,
         message="No task() delegation found",
     )
@@ -697,10 +697,10 @@ ASSERTIONS: dict[str, Callable[[SessionData, dict], AssertionResult]] = {
     "assert_cites_sources": _assert_cites_sources,
     # Layer 2 (orchestrator-level)
     "assert_delegation_accuracy": _assert_delegation_accuracy,
-    "assert_task_prompt_format": _assert_task_prompt_format,
-    "assert_task_prompt_concise": _assert_task_prompt_concise,
+    "assert_subagent_prompt_format": _assert_subagent_prompt_format,
+    "assert_subagent_prompt_concise": _assert_subagent_prompt_concise,
     # Layer 1 (subagent-level)
-    "assert_no_task_delegation": _assert_no_task_delegation,
+    "assert_no_subagent_delegation": _assert_no_subagent_delegation,
     "assert_delegation_leaf_only": _assert_delegation_leaf_only,
     "assert_cites_locations": _assert_cites_locations,
     "assert_search_before_read": _assert_search_before_read,
@@ -716,7 +716,7 @@ ASSERTIONS: dict[str, Callable[[SessionData, dict], AssertionResult]] = {
 # handled instead by ``_analyse_dual_layer``.
 _SUBAGENT_ASSERTIONS: frozenset[str] = frozenset(
     {
-        "assert_no_task_delegation",
+        "assert_no_subagent_delegation",
         "assert_delegation_leaf_only",
         "assert_cites_locations",
         "assert_search_before_read",

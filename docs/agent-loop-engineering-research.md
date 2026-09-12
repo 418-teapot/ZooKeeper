@@ -569,7 +569,7 @@ Best: 38.00ms (#5) -9.5%  conf 3.2x
 | **状态持久化** | YAML frontmatter markdown | SQLite（sessions + runs 表） | 无（对话历史） |
 | **停止条件** | `<promise>DONE</promise>` + 最大轮次 + 无进展 | 用户中断 + max_iterations | Build 判断"修好了" |
 | **用户可见性** | Toast 通知 | TUI Widget + Ctrl+X 面板 | 对话流中可见 |
-| **验证机制** | Ultrawork: Oracle agent 验证 | log_experiment: keep/discard/crash | VERIFY_REMINDER (post-task-nudge hook) |
+| **验证机制** | Ultrawork: Oracle agent 验证 | log_experiment: keep/discard/crash | VERIFY_REMINDER (post-subagent-nudge hook) |
 | **代码量** | ~1687 LOC | ~4131 LOC | n/a（无专门模块） |
 
 ### 5.2 循环驱动机制对比
@@ -646,7 +646,7 @@ VERIFY_REMINDER 注入 → Build 读取变更 → 分析结果
     └─ 没修好 → [没有机制推回循环] → build 倾向于停下
 ```
 
-**问题：** `post-task-nudge` 的 `VERIFY_REMINDER` 让 build 验证，但只验证不续写。prompt 里写的"if failed, repeat"是建议而非约束。
+**问题：** `post-subagent-nudge` 的 `VERIFY_REMINDER` 让 build 验证，但只验证不续写。prompt 里写的"if failed, repeat"是建议而非约束。
 
 ### 6.2 结构性差距
 
@@ -669,7 +669,7 @@ VERIFY_REMINDER 注入 → Build 读取变更 → 分析结果
 | `dispatchInternalPrompt` | ✅ 注入 continuation prompt | ❓ 待验证具体 API 名称 |
 | `promptAsync` | ✅ 调度下一轮 | ❓ 待验证 |
 
-ZooKeeper 当前 hooks 体系已经使用了多个 hooks（`task-prompt`、`post-task-nudge`、`direct-work-nudge`、`context-metrics`），说明插件架构本身支持事件驱动。差距不是"能不能监听"，而是"还没用到这些事件"。
+ZooKeeper 当前 hooks 体系已经使用了多个 hooks（`subagent-prompt`、`post-subagent-nudge`、`direct-work-nudge`、`context-metrics`），说明插件架构本身支持事件驱动。差距不是"能不能监听"，而是"还没用到这些事件"。
 
 ---
 
@@ -698,7 +698,7 @@ ZooKeeper 当前 hooks 体系已经使用了多个 hooks（`task-prompt`、`post
 
 **机制：** `no-progress-turn-detector.ts` 检测 token=0 + `finish="unknown"` 的 assistant turn，出现则停止循环。
 
-**借鉴方式：** 在 build.md 或 post-task-nudge 中加一个规则：
+**借鉴方式：** 在 build.md 或 post-subagent-nudge 中加一个规则：
 
 > If General has been delegated 2+ times with the same instruction and the result is identical, STOP. Switch to a different approach, delegate to explore for more investigation, or ask the user for clarification.
 
@@ -743,18 +743,18 @@ Build 解析此格式，比自由文本输出更可靠。
 | 阶段 | 内容 | 依赖 | 优先级 |
 |------|------|------|--------|
 | **Phase 0: Prompt 强化** | build.md 路由表 + checklist + anti-patterns（已完成） | 无 | ✅ done |
-| **Phase 1: Hook 硬约束** | `post-task-nudge` 加续写提示：验证失败时自动追加"Analyze and delegate next step" | 改 hook 代码 | 高 |
+| **Phase 1: Hook 硬约束** | `post-subagent-nudge` 加续写提示：验证失败时自动追加"Analyze and delegate next step" | 改 hook 代码 | 高 |
 | **Phase 2: 结构化报告** | `general.md` 加 FIX_REPORT 输出约定 + Build 解析 | 改 prompt | 中 |
 | **Phase 3: 调试笔记** | `build.md` 加调试 playbook 指令 | 改 prompt | 中 |
 | **Phase 4: session.idle 驱动** | 用 `session.idle` 事件实现自动续写，对齐 ralph loop 模式 | 验证 OpenCode 插件 API | 高（长期） |
 | **Phase 5: 状态持久化** | SQLite 存储调试会话（类似 autoresearch 的 sessions/runs 表） | 新模块 | 低 |
 
-### 8.2 Phase 1 详细设计：post-task-nudge 续写
+### 8.2 Phase 1 详细设计：post-subagent-nudge 续写
 
 **目标：** 在 `VERIFY_REMINDER` 之后，如果 General 的任务是 debug 类型且验证结果未知，追加续写提示。
 
 ```typescript
-// post-task-nudge/hook.ts — 扩展 VERIFY_REMINDER
+// post-subagent-nudge/hook.ts — 扩展 VERIFY_REMINDER
 
 const DEBUG_CONTINUE_PROMPT =
   "**DEBUGGING LOOP: DO NOT STOP HERE.**\n" +

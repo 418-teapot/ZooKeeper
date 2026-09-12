@@ -2,7 +2,7 @@
  * Pure check functions for plan progress and todo progress nudges.
  *
  * These functions extract the nudge decision logic from the direct-work-nudge
- * and post-task-nudge hooks into reusable, testable units. Each returns a
+ * and post-subagent-nudge hooks into reusable, testable units. Each returns a
  * nudge string or `null` when no nudge is needed.
  *
  * @module

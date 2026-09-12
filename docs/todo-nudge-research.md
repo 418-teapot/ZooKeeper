@@ -910,7 +910,7 @@ export function createTodoHygieneHook(): HookHandlers {
 ```
 P0 (本次实现):
   ┌─────────────────────────────────────────┐
-  │ 1. Post-task Nudge    ✅ 已实现          │  解决 A (子 Agent 完成后)
+  │ 1. Post-subagent Nudge    ✅ 已实现     │  解决 A (子 Agent 完成后)
   │ 2. Direct Work Reminder ✅ 已实现        │  解决 B (违规编辑)
   └─────────────────────────────────────────┘
 
@@ -920,9 +920,9 @@ P1 (后续):
   └─────────────────────────────────────────┘
 ```
 
-### 8.2 机制 1: Post-task Nudge ✅ 已实现
+### 8.2 机制 1: Post-subagent Nudge ✅ 已实现
 
-**位置**: `src/hooks/post-task-nudge/`  
+**位置**: `src/hooks/post-subagent-nudge/`  
 **触发条件**: `tool === "task"`
 **作用**: 从 build.md 拆出 verify-iterate section，在 task() 返回时注入 verify + todo nudge
 **Hook 点**: `tool.execute.after`
@@ -936,7 +936,7 @@ P1 (后续):
 #### 代码设计
 
 ```typescript
-// src/hooks/post-task-nudge/hook.ts
+// src/hooks/post-subagent-nudge/hook.ts
 
 const VERIFY_REMINDER = `
 **VERIFY NOW — NO EXCEPTIONS**
@@ -964,7 +964,7 @@ Mark it \`completed\` now, or move unfinished items back to \`pending\`.
 Stale status = Invisible work = Forgotten work.
 `;
 
-export async function nudgePostTask(
+export async function nudgePostSubagent(
   ctx: any,
   input: { tool: string; sessionID: string },
   output: { output?: string },
@@ -1166,10 +1166,10 @@ Stale status = Invisible work = Forgotten work.
 ```typescript
 // tool.execute.after hook (tool-output 注入：Mechanism 1 + 2)
 const handlers = [
-  (i, o) => nudgeTaskOutput(i, o, limits),   // task prompt nudge
+  (i, o) => nudgeSubagentOutput(i, o, limits),   // subagent prompt nudge
   recoverJsonError,                            // JSON error recovery
   nudgeDirectWork,                             // Mechanism 2
-  (i, o) => nudgePostTask(client, i, o),      // Mechanism 1
+  (i, o) => nudgePostSubagent(client, i, o),      // Mechanism 1
 ];
 
 // experimental.chat.messages.transform hook (user-message 注入：Mechanism 3)
@@ -1187,7 +1187,7 @@ const handlers = [
 ```
 build 调 todowrite (标记 in_progress)
 build 调 task() 委派子 Agent
-  └─ ✅ 子 Agent 返回，注入 post-task nudge (含 verify + todo)
+  └─ ✅ 子 Agent 返回，注入 post-subagent nudge (含 verify + todo)
 build 调 bash 跑验证命令
   └─ ❌ 没有 todo 提醒
 build 调 read 看验证结果
@@ -1232,7 +1232,7 @@ build 验证通过，应该标记 todo 完成
 
 - Phase Reminder 使用 `messages.transform` 注入 user message
 - 因为是每 turn 注入（天然去重），所以即使使用 messages.transform 也不需要状态管理
-- 与 post-task / direct-work 的工具输出注入形成互补
+- 与 post-subagent / direct-work 的工具输出注入形成互补
 
 ### 9.4 待观测的行为模式
 
@@ -1260,8 +1260,8 @@ build 验证通过，应该标记 todo 完成
 |------|------|----------------|
 | `core/prompts/build.md` | 删除 verify-iterate section (-8 行) ✅ | — |
 | `src/hooks/shared/todo-nudge.ts` | **新建** ✅ | 40 / — |
-| `src/hooks/post-task-nudge/hook.ts` | **新建** ✅ | 80 / 300 |
-| `src/hooks/post-task-nudge/index.ts` | **新建** ✅ | 5 / — |
+| `src/hooks/post-subagent-nudge/hook.ts` | **新建** ✅ | 80 / 300 |
+| `src/hooks/post-subagent-nudge/index.ts` | **新建** ✅ | 5 / — |
 | `src/hooks/direct-work-nudge/hook.ts` | **新建** ✅ | 50 / 200 |
 | `src/hooks/direct-work-nudge/index.ts` | **新建** ✅ | 5 / — |
 | `src/index.ts` | 修改 ✅ | 20 / — |
@@ -1277,8 +1277,8 @@ Phase 1: 基础设施
 Phase 2: 机制 3 - Direct Work Reminder
   ✅ 已实现 — 验证：非配置路径的 edit/write 注入违规提醒
 
-Phase 4: 机制 1 - Post-task Nudge
-  ✅ 已实现 — 创建 src/hooks/post-task-nudge/
+Phase 4: 机制 1 - Post-subagent Nudge
+  ✅ 已实现 — 创建 src/hooks/post-subagent-nudge/
   ✅ 已实现 — 修改 build.md 删除 verify-iterate section
   ✅ 已实现 — 在 src/index.ts 注册 tool.execute.after hook
   ✅ 已实现 — 验证：task() 返回后注入 verify + todo nudge
@@ -1350,7 +1350,7 @@ ZooKeeper 方案遵循以下原则：
 |-----------------|---------|
 | 身份声明 ("You are an orchestrator") | **保留** (每轮静态注入) |
 | 委派规则 ("What you MUST delegate") | **保留** (每轮静态注入) |
-| 验证迭代 ("Verify-Iterate Pattern") | **已移出** ✅ — 改为 `tool.execute.after` 中 post-task nudge 按需注入 |
+| 验证迭代 ("Verify-Iterate Pattern") | **已移出** ✅ — 改为 `tool.execute.after` 中 post-subagent nudge 按需注入 |
 | CONTEXT 约束 ("Why CONTEXT must stay focused") | **保留** (每轮静态注入，帮助 task 格式正确) |
 | Examples | **保留** (每轮静态注入，减少 token 浪费) |
 | Subagent output | **保留** (每轮静态注入) |
@@ -1359,7 +1359,7 @@ ZooKeeper 方案遵循以下原则：
 
 | 机制 | OMO | slim | ZooKeeper |
 |------|-----|------|-----------|
-| 任务完成 → 验证+todo | ✅ | (通过 hygiene 间接) | ✅ post-task nudge **已实现** |
+| 任务完成 → 验证+todo | ✅ | (通过 hygiene 间接) | ✅ post-subagent nudge **已实现** |
 | 违规编辑 → 警告 | ✅ | ✅ | ✅ direct-work reminder **已实现** |
 | 每 turn → 委派提示 | ❌ | ✅ phase-reminder | ❌（已移除） |
 | 任务完成 → todo 更新 | (通过 Idle Enf. 兜底) | ✅ todo-hygiene | (通过 Idle Cont. P1) |

@@ -46,7 +46,7 @@ zwiki verify --json
 
 ## Phase 2 — 委派 kiwi
 
-对每个页面对构造三段式 task prompt 并委派 kiwi subagent，告知 kiwi 加载 `kiwi-verify` 技能。
+对每个页面对构造三段式 subagent prompt 并委派 kiwi subagent，告知 kiwi 加载 `kiwi-verify` 技能。
 
 ### 2.1 构造 Prompt
 

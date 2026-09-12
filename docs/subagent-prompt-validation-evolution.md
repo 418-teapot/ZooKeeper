@@ -1,4 +1,4 @@
-# Task Prompt 验证机制演进：从阻断到引导
+# Subagent Prompt 验证机制演进：从阻断到引导
 
 > 本文档记录 ZooKeeper 对编排器 `task()` prompt 验证机制的设计讨论、行业调研、及最终落地方案。重点回答三个问题：该不该验证、该验证什么、以什么方式验证。
 >
@@ -32,7 +32,7 @@ ZooKeeper 早期通过 `tool.execute.before` hook 在每次 `task()` 调用前�
 | 层次 | 机制 | 强度 |
 |------|------|------|
 | build.md（system prompt） | 自然语言指令 | 软 |
-| tool.definition（schema 描述） | TASK_PROMPT_HINT | 软 |
+| tool.definition（schema 描述） | SUBAGENT_PROMPT_HINT | 软 |
 | tool.execute.before | throw Error | 硬 |
 
 前两层已经足以表达约束，第三层从"引导"升级为"强制"，但代价是不对等的浪费。
@@ -105,7 +105,7 @@ ZooKeeper 是唯一在运行时 throw Error 阻断 `task()` 调用的框架—�
 | 层次 | 应保留 | 强度 | 职责 |
 |------|--------|------|------|
 | build.md | 完整角色分工原则 | 软 | 说明分工哲学 |
-| tool.definition | TASK_PROMPT_HINT | 软 | 在 schema 里提示格式 |
+| tool.definition | SUBAGENT_PROMPT_HINT | 软 | 在 schema 里提示格式 |
 | tool.execute.before | **仅**三段式结构检查 | 硬 | 结构性缺失阻断 |
 | tool.execute.after | 字数/代码块/行号 nudge | 软 | 追加到输出，下次改进 |
 
@@ -149,7 +149,7 @@ prompt_word_limit  = 250
 
 不留任何"默默填默认值"的路径。配置缺失必须显式暴露，不能隐藏问题。
 
-### 4.3 TASK_PROMPT_HINT 重写
+### 4.3 SUBAGENT_PROMPT_HINT 重写
 
 **改前：** "CONTEXT ≤ 100 words … Max 250 words total …"（强调限制）
 
@@ -159,7 +159,7 @@ prompt_word_limit  = 250
 
 ### 4.4 build.md 改写
 
-**"Task Prompt Format" 段：** 去掉 "≤ 100 words"，改为 "facts the subagent CANNOT discover on its own — keep it focused"
+**"Subagent Prompt Format" 段：** 去掉 "≤ 100 words"，改为 "facts the subagent CANNOT discover on its own — keep it focused"
 
 **"Why CONTEXT must stay small" 段：** 第三条从 "Passing code means doing the subagent's job" 扩写为 "Prescribing exact line-by-line edits means doing the subagent's job. Your role is to route tasks with the right context, not to write the implementation."
 
@@ -175,7 +175,7 @@ prompt_word_limit  = 250
 
 区分"提示"（合理）与"处方"（过度）。放在 Include 末尾，与 Not recommended 里的 "Prescribed implementation" 直接对照，一眼可辨边界。
 
-**最终行：** 原 "Target: ≤ 250 words for the entire task prompt …" 的硬限制措辞删除，改为 "Aim for concise prompts. If CONTEXT grows too large, it usually means the task should be split into multiple task() calls."
+**最终行：** 原 "Target: ≤ 250 words for the entire subagent prompt …" 的硬限制措辞删除，改为 "Aim for concise prompts. If CONTEXT grows too large, it usually means the task should be split into multiple task() calls."
 
 ### 4.5 Examples 段改写
 
@@ -250,7 +250,7 @@ build.md、tool.definition、tool.execute.before 三层表达**同一个**约束
 
 **中期**：
 
-- **Prompt 按需注入** ✅ **已实现**：把 verify-iterate 规则从 build.md 拆出，通过 `tool.execute.after` 在 `task()` 返回后注入。已在 `src/hooks/post-task-nudge/` 中实现。
+- **Prompt 按需注入** ✅ **已实现**：把 verify-iterate 规则从 build.md 拆出，通过 `tool.execute.after` 在 `task()` 返回后注入。已在 `src/hooks/post-subagent-nudge/` 中实现。
 
 **长期**：
 

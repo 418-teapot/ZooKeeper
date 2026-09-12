@@ -413,10 +413,10 @@ preview_per_file = max(5, floor(100 / fileCount))
 
 | Hook | 签名 | 功能 | ZooKeeper 使用 | DCP 使用 |
 |------|------|------|---------------|----------|
-| `tool.execute.before` | `(input: {tool, sessionID, callID}, output: {args})` | 修改工具入参、校验 | ✅ task-prompt 注入 SUMMARY/CONTEXT/ACCEPTANCE | ❌ |
-| `tool.execute.after` | `(input: {tool, sessionID, args}, output: {title, output, metadata})` | 拦截/修改工具输出（string） | ✅ post-task-nudge 追加提示 | ❌ |
+| `tool.execute.before` | `(input: {tool, sessionID, callID}, output: {args})` | 修改工具入参、校验 | ✅ subagent-prompt 注入 SUMMARY/CONTEXT/ACCEPTANCE | ❌ |
+| `tool.execute.after` | `(input: {tool, sessionID, args}, output: {title, output, metadata})` | 拦截/修改工具输出（string） | ✅ post-subagent-nudge 追加提示 | ❌ |
 | `tool.schema` (zod) | 通过 `tool()` factory | 工具输入侧 zod 校验 | ❌（无自定义工具） | ❌ |
-| `tool.definition` | `(input: {toolID}, output: {description, parameters})` | 修改 LLM 侧工具描述/参数 | ✅ task-prompt 注入格式提示 | ❌ |
+| `tool.definition` | `(input: {toolID}, output: {description, parameters})` | 修改 LLM 侧工具描述/参数 | ✅ subagent-prompt 注入格式提示 | ❌ |
 | `experimental.chat.messages.transform` | `(input: {}, output: {messages})` | 向最后一条用户消息追加文本 | ❌（已移除） | ✅ DCP 注入预计算结果 |
 | `experimental.chat.system.transform` | `(input: {sessionID, model}, output: {system})` | 向 system prompt 数组追加内容 | ❌（暂未使用；权重高于 user message） | ❌ |
 | `chat.params` | `(input: {sessionID, agent, model}, output: {temperature, topP, topK, maxOutputTokens})` | 覆盖每 session 的 LLM 参数 | ✅ | ❌ |
@@ -451,8 +451,8 @@ DCP 的 `/dcp compress` 工作流展示了这种模式的强大：
 **2. ZooKeeper 的 hook 使用策略**
 
 ZooKeeper 当前仅使用了有限的 hook 子集：
-- **`tool.execute.before`** — task-prompt 校验 + 注入
-- **`tool.execute.after`** — post-task nudge
+- **`tool.execute.before`** — subagent-prompt 校验 + 注入
+- **`tool.execute.after`** — post-subagent nudge
 - **`tool.definition`** — 格式提示注入
 - **`chat.params`** — 参数覆盖
 - **`experimental.chat.messages.transform`** — 上下文度量
@@ -937,7 +937,7 @@ omp ────────→ 跨边界 dispatch 校验 ──→ 消费侧 di
 
 3. **阈值配置：**
    - 在 `config.toml` 的 `[zoo.validation]` 中增加 `max_diff_bytes` 或 `max_diff_lines` 参数
-   - 插件在 task prompt 注入时判断 diff 大小，超过阈值时触发"大 diff 模式"指令注入
+   - 插件在 subagent prompt 注入时判断 diff 大小，超过阈值时触发"大 diff 模式"指令注入
 
 **实施时机：** 第一阶段上线后，收集实际 diff 大小分布数据后决定。若多数 diff 远小于上下文窗口，此阶段可跳过或大幅简化。
 
