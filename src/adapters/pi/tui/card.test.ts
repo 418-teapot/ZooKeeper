@@ -497,7 +497,7 @@ describe("pi renderResult — structured projection from the run log", () => {
     );
   });
 
-  it("renders nested children one level deep via childrenOf", () => {
+  it("renders nested child rows via childrenOf", () => {
     startRun({
       id: "tc-parent",
       agent: "beaver",
@@ -517,6 +517,54 @@ describe("pi renderResult — structured projection from the run log", () => {
     assert.ok(
       lines.some((l) => l.includes("lynx") && /[├└]/.test(l)),
       `nested child row expected: ${lines.join(" | ")}`,
+    );
+  });
+
+  it("back-fills a restored card's children lazily after a registry rebuild", async () => {
+    const sessionPath = await writeSessionFile({
+      role: "assistant",
+      content: [{ type: "text", text: "restored answer" }],
+      timestamp: 1500,
+    });
+    const result = {
+      content: [{ type: "text", text: "" }],
+      details: { sessionPath },
+    };
+    const context = toolContext("tc-backfill", {
+      args: { agent: "beaver", description: "实现" },
+    });
+    // First paint: no registry run yet, so the card cold-start hydrates.
+    renderComponent(
+      renderResult(result, { isPartial: false }, THEME, context),
+      80,
+    );
+    await waitForHydration("tc-backfill");
+    // The layout is built while the registry has NOT rebuilt the run yet: the
+    // projection closure must resolve the live run at RENDER time, so a later
+    // rebuild still contributes its subtree.
+    const component = renderResult(
+      result,
+      { isPartial: false },
+      THEME,
+      context,
+    );
+    startRun({
+      id: "tc-backfill",
+      agent: "beaver",
+      parentSession: "main-1",
+      childSession: "backfill-child",
+      startedAt: 1000,
+    });
+    startRun({
+      id: "tc-backfill-child",
+      agent: "lynx",
+      parentSession: "backfill-child",
+      startedAt: 1200,
+    });
+    const lines = renderComponent(component, 80);
+    assert.ok(
+      lines.some((l) => l.includes("lynx") && /[├└]/.test(l)),
+      `lazily back-filled child row expected: ${lines.join(" | ")}`,
     );
   });
 

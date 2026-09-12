@@ -3,8 +3,12 @@
  * fact log for the pi TUI.
  *
  * A subagent run is an ordered, immutable fact stream (`run-log.ts`);
- * everything here is a *pure projection* of that stream plus run metadata.
- * No information is destroyed before projection: the log keeps full args,
+ * most functions here are *pure projections* of that stream plus run
+ * metadata.  The fleet-widget projections (`renderFleetCollapsed` /
+ * `renderFleetRows`) and the card's nested subtrees are the exception:
+ * they also read the process-global run registry (`registry.ts`) through
+ * `childrenOf` to reach a run's descendants.  No information is destroyed
+ * before projection: the log keeps full args,
  * results, and message text, and every display decision — which entries
  * are in the recency window, how wide a line may get, how a tool call reads
  * on one line — is made here, at render time, from the options the host
@@ -33,7 +37,8 @@
  * The fleet-widget functions (`renderFleetCollapsed` / `renderFleetRows`)
  * derive the pi `zoo` widget lines from the run registry (`registry.ts`):
  * a single-line collapsed summary (status carried purely by color, never
- * by text markers) and the expanded scrolling row list with nested child runs.
+ * by text markers) and the expanded scrolling row list with nested child
+ * runs at every generation.
  *
  * @module
  */
@@ -47,8 +52,14 @@ import {
   spinnerFrameIndex,
   TREE_BRANCH,
   TREE_LAST,
+  TREE_PIPE,
 } from "../display.js";
-import type { RunStatus, RunSummary, SubagentRun } from "./registry.js";
+import {
+  childrenOf,
+  type RunStatus,
+  type RunSummary,
+  type SubagentRun,
+} from "./registry.js";
 import type {
   MessageEndFact,
   RunFact,
@@ -357,10 +368,20 @@ export function summarizeToolCall(
  * the instruction the run was given, not a turn the agent produced, and it
  * carries no usage report.
  *
+ * A tool-start fact that is an inner delegation already mirrored by a
+ * registered child run is excluded from the tool count: the child's own
+ * row is the visible record of that call, so counting it here would make
+ * the parent's `N tools` disagree with the rows the card shows.
+ *
  * @param facts - The run's facts (in append order).
+ * @param excludeToolCallIds - Tool-call ids of inner delegations that have
+ *   a registered child run (absent / empty when the caller has none).
  * @returns The derived counters.
  */
-export function deriveCounters(facts: readonly RunFact[]): {
+export function deriveCounters(
+  facts: readonly RunFact[],
+  excludeToolCallIds?: ReadonlySet<string>,
+): {
   turnCount: number;
   toolCallCount: number;
   tokens?: number;
@@ -369,7 +390,12 @@ export function deriveCounters(facts: readonly RunFact[]): {
   let toolCallCount = 0;
   let tokens: number | undefined;
   for (const fact of facts) {
-    if (fact.type === "tool_start") toolCallCount += 1;
+    if (
+      fact.type === "tool_start" &&
+      !isExcludedDelegation(fact, excludeToolCallIds)
+    ) {
+      toolCallCount += 1;
+    }
     // Only assistant messages are a turn and report usage: `tool_start`,
     // `tool_end` and `user_message` all contribute nothing to these counters
     // (the user fact is the instruction the run was given, not output).
@@ -421,7 +447,46 @@ function lastNonEmptyLine(text: string): string | undefined {
 }
 
 /**
- * Build the assistant output lines projected from the message facts.
+ * One entry on the card's merged timeline.
+ *
+ * A card body is a chronological merge of fact-derived lines (tool calls,
+ * assistant output) and child subtrees: each entry carries the timestamp
+ * its lines anchor to, so a nested run's row lands where the run started
+ * and the parent's later lines render below it.
+ */
+interface TimelineEntry {
+  /** Epoch-millis timestamp the entry anchors to. */
+  at: number;
+  /** The display lines belonging to this entry. */
+  lines: CardLine[];
+}
+
+/**
+ * Whether a tool-start fact is an inner delegation already mirrored by a
+ * registered child run.
+ *
+ * Each nested delegation is registered under the tool-call id of the
+ * `subagent` call that started it, so a `subagent` tool-start whose id
+ * matches a known child run would otherwise render twice — once as a raw
+ * `→ subagent {…}` line, once as the child's own tree row.  A call with no
+ * matching child run (or no tool-call id) is kept: dropping it would
+ * silently lose the only record of the delegation.
+ *
+ * @param fact - The tool-start fact.
+ * @param childIds - The registered child run ids, when known.
+ * @returns True when the fact must not be projected (or counted) again.
+ */
+function isExcludedDelegation(
+  fact: ToolStartFact,
+  childIds: ReadonlySet<string> | undefined,
+): boolean {
+  if (childIds === undefined || childIds.size === 0) return false;
+  if (fact.toolName !== "subagent") return false;
+  return fact.toolCallId !== undefined && childIds.has(fact.toolCallId);
+}
+
+/**
+ * Project the assistant output facts into timed timeline entries.
  *
  * Only assistant messages are projected: a `user_message` fact holds the
  * delegation instruction, which the card never shows (the caller already
@@ -431,59 +496,69 @@ function lastNonEmptyLine(text: string): string | undefined {
  * @param expanded - Whether the card is expanded (shows every message).
  * @param glance - The collapsed recency window size.
  * @param width - The render width for line capping.
- * @returns The output lines.
+ * @returns The output entries (empty when no message carries text).
  */
-function outputLines(
+function outputEntries(
   facts: readonly RunFact[],
   expanded: boolean,
   glance: number,
   width: number,
-): CardLine[] {
+): TimelineEntry[] {
   const messages = facts.filter(
     (fact): fact is MessageEndFact => fact.type === "message_end",
   );
   const projected = messages
-    .map((fact) => lastNonEmptyLine(messageText(fact)))
-    .filter((line): line is string => line !== undefined);
+    .map((fact) => ({
+      at: fact.at,
+      line: lastNonEmptyLine(messageText(fact)),
+    }))
+    .filter(
+      (entry): entry is { at: number; line: string } =>
+        entry.line !== undefined,
+    );
   const window = expanded ? projected : projected.slice(-glance);
-  if (window.length === 0) {
-    return [{ text: "(no output yet)", hue: "muted" }];
-  }
-  return window.map((line) => ({
-    text: fit(line, width),
-    hue: "muted" as const,
+  return window.map((entry) => ({
+    at: entry.at,
+    lines: [{ text: fit(entry.line, width), hue: "muted" as const }],
   }));
 }
 
 /**
- * Build the tool-call lines projected from the tool-start facts.
+ * Project the tool-start facts into timed timeline entries.
  *
  * Each line renders the one-line summary verbatim after the arrow — the
  * tool name is never re-prefixed (that would duplicate the name already
- * embedded in the summary).  The predicate selects `tool_start` facts only,
- * so `user_message` / `tool_end` / `message_end` facts contribute no line.
+ * embedded in the summary).  A `subagent` call already mirrored by a child
+ * run is skipped (see `isExcludedDelegation`).
  *
  * @param facts - The run's facts.
  * @param expanded - Whether the card is expanded (shows every call).
  * @param glance - The collapsed recency window size.
  * @param width - The render width for line capping.
- * @returns The tool-call lines.
+ * @param childIds - The registered child run ids.
+ * @returns The tool-call entries.
  */
-function toolCallLines(
+function toolEntries(
   facts: readonly RunFact[],
   expanded: boolean,
   glance: number,
   width: number,
-): CardLine[] {
-  const starts = facts.filter(
-    (fact): fact is ToolStartFact => fact.type === "tool_start",
-  );
+  childIds: ReadonlySet<string>,
+): TimelineEntry[] {
+  const starts = facts
+    .filter((fact): fact is ToolStartFact => fact.type === "tool_start")
+    .filter((fact) => !isExcludedDelegation(fact, childIds));
   const window = expanded ? starts : starts.slice(-glance);
   // Two characters of the render width belong to the `→ ` marker.
   const summaryWidth = Math.max(1, width - 2);
   return window.map((fact) => ({
-    text: `→ ${summarizeToolCall(fact.toolName, fact.args, summaryWidth)}`,
-    hue: "accent" as const,
+    at: fact.at,
+    lines: [
+      {
+        text: `→ ${summarizeToolCall(fact.toolName, fact.args, summaryWidth)}`,
+        hue: "accent" as const,
+      },
+    ],
   }));
 }
 
@@ -498,14 +573,17 @@ function toolCallLines(
  * @param facts - The run's facts.
  * @param startedAt - Epoch-millis start time of the run.
  * @param now - The current epoch-millis time (injected for determinism).
+ * @param excludeToolCallIds - Tool-call ids of inner delegations mirrored
+ *   by registered child runs (excluded from the tool count).
  * @returns The `⟳ …` statistics text.
  */
 function statsText(
   facts: readonly RunFact[],
   startedAt: number,
   now: number,
+  excludeToolCallIds?: ReadonlySet<string>,
 ): string {
-  const counters = deriveCounters(facts);
+  const counters = deriveCounters(facts, excludeToolCallIds);
   const elapsed = formatElapsed(startedAt, now);
   const parts = [
     `${counters.turnCount} ${plural(counters.turnCount, "turn")}`,
@@ -657,7 +735,8 @@ export interface CardOptions {
   now?: number;
   /** The shared spinner frame sequence (for nested-child spinners). */
   frame?: number;
-  /** This run's nested subagent runs (rendered one level deep). */
+  /** This run's nested subagent runs (rendered as a recursive,
+   * time-anchored tree). */
   children?: SubagentRun[];
 }
 
@@ -666,12 +745,13 @@ export interface CardOptions {
  *
  * The single card projection, live or terminal:
  *   - running: no title line (the tool-call card's `renderCall` owns
- *     it); the body is the current-tool line, the tool-call lines, the
- *     assistant output lines, the stats line, and the nested-child lines.
+ *     it); the body merges the current-tool line, the tool-call lines,
+ *     the assistant output lines, and the nested subtrees into one
+ *     timeline, then closes with the stats line.
  *   - terminal: a static title (`●`, hue from the canonical presentation
- *     table) badged with the run statistics, the error reason when the run
- *     failed, the final assistant text projected from the last message
- *     fact, and the nested-child lines.
+ *     table) badged with the run statistics and the descendant-failure
+ *     count, the error reason when the run failed, the nested subtrees,
+ *     and the final assistant text projected from the last message fact.
  *
  * Collapsed mode windows each region to the last `glanceLines` entries;
  * expanded mode shows every entry.  Width is never baked into the log —
@@ -695,22 +775,42 @@ export function projectCard(
   const glance = opts.glanceLines ?? GLANCE_LINES;
   const frame = opts.frame ?? 0;
   const lines: CardLine[] = [];
+  const children = opts.children ?? [];
+  const childIds = new Set(children.map((child) => child.id));
+  const childGroups = childEntries(children, frame);
 
   if (meta.status === "running") {
     // The running body emits no title line — the tool-call card owns it,
     // and the tool-execution component stacks both cards, so a title here
     // would duplicate it.
+    // The current activity is the youngest timeline entry: anchored at
+    // `now`, it sorts after every recorded fact and every child already
+    // started, so a parent that resumes work after delegating shows its
+    // live tool name below the child rows instead of above them.
     const tool = currentToolLine(meta.currentTool);
-    if (tool !== undefined) lines.push(tool);
-    lines.push(...toolCallLines(facts, opts.expanded, glance, opts.width));
-    lines.push(...outputLines(facts, opts.expanded, glance, opts.width));
+    const current: TimelineEntry[] =
+      tool !== undefined ? [{ at: now, lines: [tool] }] : [];
+    // Merge the fact-derived lines with the child subtrees by timestamp: a
+    // nested run's row lands where the run started, and the parent's later
+    // tool / output lines render below it instead of above it.
+    const output = outputEntries(facts, opts.expanded, glance, opts.width);
+    const timeline = [
+      ...toolEntries(facts, opts.expanded, glance, opts.width, childIds),
+      ...output,
+      ...childGroups.anchored,
+      ...current,
+    ].sort((a, b) => a.at - b.at);
+    for (const entry of timeline) lines.push(...entry.lines);
+    // A child without a usable time anchor degrades to trailing rows just
+    // above the stats line.
+    lines.push(...childGroups.unanchored);
+    if (output.length === 0) {
+      lines.push({ text: "(no output yet)", hue: "muted" });
+    }
     lines.push({
-      text: statsText(facts, meta.startedAt, now),
+      text: statsText(facts, meta.startedAt, now, childIds),
       hue: "muted",
     });
-    // Nested subagent runs (this run's own delegations), rendered one
-    // level deep after the tool-call region.
-    lines.push(...fleetCardChildLines(opts.children ?? [], frame));
     return lines;
   }
 
@@ -719,19 +819,32 @@ export function projectCard(
   // come from the canonical presentation table through the domain mapping;
   // a run never renders its own ad-hoc marker.
   const presentation = STATUS_PRESENTATION[RUN_PRESENTATION[meta.status]];
+  const title = renderTitle(
+    presentation.glyph,
+    meta.agent,
+    undefined,
+    presentation.hue,
+    meta.model,
+    statsText(facts, meta.startedAt, meta.endedAt ?? now, childIds),
+  );
+  // A successful run still flags a failure anywhere in its subtree; an
+  // error parent already carries the failure marker and an aborted run is a
+  // cancellation, not a failure, so neither gets the descendant badge.
   lines.push(
-    renderTitle(
-      presentation.glyph,
-      meta.agent,
-      undefined,
-      presentation.hue,
-      meta.model,
-      statsText(facts, meta.startedAt, meta.endedAt ?? now),
-    ),
+    meta.status === "done"
+      ? badgeFailures(title, countDescendantErrors(children))
+      : title,
   );
   if (meta.status === "error" && meta.error !== undefined) {
     lines.push({ text: meta.error, hue: "error", truncateToWidth: true });
   }
+  // Nested subtrees render before the delivered result: the result is the
+  // card's trailing region, and the child rows are anchored in the run's
+  // earlier timeline.
+  for (const entry of [...childGroups.anchored].sort((a, b) => a.at - b.at)) {
+    lines.push(...entry.lines);
+  }
+  lines.push(...childGroups.unanchored);
 
   // Final text summary — the last completed assistant message projected
   // from the log.  Expanded shows the delivered result in full — an
@@ -771,10 +884,6 @@ export function projectCard(
     });
   }
 
-  // Nested subagent runs (this run's own delegations), rendered one
-  // level deep after the output region.  Absent when the run has no
-  // children.
-  lines.push(...fleetCardChildLines(opts.children ?? [], frame));
   return lines;
 }
 
@@ -936,16 +1045,20 @@ function fleetGlyph(
  * The selected row is flagged with `selected` (the adapter applies a
  * reverse-video highlight — selection is never a text marker, so the
  * structural `▸/▾` glyphs stay reserved for folding).  A run's nested
- * children (from `childrenByParent`) render immediately beneath it, indented
- * one level with `TREE_BRANCH` for all but the last child and `TREE_LAST`
- * for the last; a selected child row is flagged the same way.
+ * children (from `childrenByParent`) render immediately beneath it, and the
+ * recursion continues through every generation: each level indents one more
+ * step with `TREE_BRANCH` for all but the last sibling and `TREE_LAST` for
+ * the last, while the ancestors' indent accumulates `TREE_PIPE` (a still-
+ * open level) or three spaces (a closed level).  A selected row at any
+ * depth is flagged the same way.
  *
  * The `entries` list is expected to be the windowed, sorted top-level runs
  * (`registry.windowRuns`); `childrenByParent` is a precomputed map of
- * parent-run id → child runs.  Durations reuse `formatElapsed`.
+ * parent-run id → child runs that must cover every run with children, not
+ * only the top-level ones.  Durations reuse `formatElapsed`.
  *
  * @param entries - The visible top-level runs (already windowed and sorted).
- * @param childrenByParent - Parent-run id → its child runs.
+ * @param childrenByParent - Parent-run id → its child runs (all depths).
  * @param selectedId - The selected run id, or `undefined` for no selection.
  * @param frameSeq - The shared spinner frame sequence.
  * @param now - The current epoch-millis time (injected for determinism).
@@ -970,22 +1083,73 @@ export function renderFleetRows(
         run.id === selectedId,
       ),
     );
-    const children = childrenByParent.get(run.id);
-    if (children === undefined) continue;
-    children.forEach((child, index) => {
-      const branch = index === children.length - 1 ? TREE_LAST : TREE_BRANCH;
-      const childGlyph = fleetGlyph(child, frameSeq);
-      lines.push(
-        fleetRowLine(
-          `${branch} `,
-          childGlyph.glyph,
-          childGlyph.hue,
-          fleetRowBody(child, now),
-          child.id === selectedId,
-        ),
-      );
-    });
+    lines.push(
+      ...fleetChildRows(
+        childrenByParent.get(run.id) ?? [],
+        "",
+        childrenByParent,
+        selectedId,
+        frameSeq,
+        now,
+      ),
+    );
   }
+  return lines;
+}
+
+/**
+ * Render one sibling group's rows and, recursively, their descendants.
+ *
+ * Mirrors the card subtree's indent rules (`childSubtreeLines`): each row is
+ * prefixed with its sibling branch glyph (`TREE_BRANCH` / `TREE_LAST`) and a
+ * space, and the indent handed to the next generation extends the ancestor
+ * prefix with `TREE_PIPE` while a later sibling remains below, or three
+ * spaces when the ancestor was last.
+ *
+ * @param children - The sibling group to render (oldest first).
+ * @param ancestorPrefix - The indent accumulated from ancestor levels.
+ * @param childrenByParent - Parent-run id → its child runs (all depths).
+ * @param selectedId - The selected run id, or `undefined` for no selection.
+ * @param frameSeq - The shared spinner frame sequence.
+ * @param now - The current epoch-millis time (injected for determinism).
+ * @returns The rendered rows for the group and its descendants.
+ */
+function fleetChildRows(
+  children: SubagentRun[],
+  ancestorPrefix: string,
+  childrenByParent: Map<string, SubagentRun[]>,
+  selectedId: string | undefined,
+  frameSeq: number,
+  now: number,
+): CardLine[] {
+  const lines: CardLine[] = [];
+  children.forEach((child, index) => {
+    const isLast = index === children.length - 1;
+    const branch = isLast ? TREE_LAST : TREE_BRANCH;
+    const { glyph, hue } = fleetGlyph(child, frameSeq);
+    lines.push(
+      fleetRowLine(
+        `${ancestorPrefix}${branch} `,
+        glyph,
+        hue,
+        fleetRowBody(child, now),
+        child.id === selectedId,
+      ),
+    );
+    const nested = childrenByParent.get(child.id);
+    if (nested === undefined || nested.length === 0) return;
+    const childPrefix = `${ancestorPrefix}${isLast ? "   " : TREE_PIPE}`;
+    lines.push(
+      ...fleetChildRows(
+        nested,
+        childPrefix,
+        childrenByParent,
+        selectedId,
+        frameSeq,
+        now,
+      ),
+    );
+  });
   return lines;
 }
 
@@ -1085,34 +1249,170 @@ function fleetRowBody(run: SubagentRun, now: number): string {
 }
 
 /**
- * Build the nested-child lines for a card (`projectCard`).
+ * The current activity of a running child run, when it has one.
  *
- * Each child run renders one line, indented one level:
- * `<TREE_BRANCH> <spinner|●> subagent(<agent>) · <label>` (the label when
- * present).
- * A running child shows the spinner with the `running` hue; terminal
- * children show the canonical static glyph with the `success` / `error` /
- * `muted` hue of their presentation.  An empty list yields
- * no lines, so the card output is unchanged when there are no children.
+ * The delegating driver patches the registry run's `currentTool` as it
+ * observes tool events, so that field is the primary source; a run whose
+ * tool field is unset (a restored or hand-built run) falls back to the
+ * newest tool-start fact with no matching tool-end.  A terminal run reports
+ * no activity — its work is over, and the row must stop advertising a tool
+ * that will never advance.
  *
- * @param children - The run's nested subagent runs.
- * @param frameSeq - The shared spinner frame sequence (defaults to 0 when
- *   the host does not advance one).
- * @returns The child display lines.
+ * @param child - The child run.
+ * @returns The activity text, or `undefined` when the run is idle/terminal.
  */
-function fleetCardChildLines(
-  children: SubagentRun[],
-  frameSeq: number = 0,
+function childActivity(child: SubagentRun): string | undefined {
+  if (child.status !== "running") return undefined;
+  if (child.currentTool !== undefined && child.currentTool.length > 0) {
+    return child.currentTool;
+  }
+  return lastUnfinishedTool(child.log.facts());
+}
+
+/**
+ * The tool name of the newest unfinished tool-start fact.
+ *
+ * A tool-start with no later matching tool-end is the call still in flight.
+ * The match is by tool name (facts without a tool-call id cannot be matched
+ * by id), which is exact for the sequential execution the host performs.
+ *
+ * @param facts - The child run's facts.
+ * @returns The tool name, or `undefined` when every call finished.
+ */
+function lastUnfinishedTool(facts: readonly RunFact[]): string | undefined {
+  const open: string[] = [];
+  for (const fact of facts) {
+    if (fact.type === "tool_start") {
+      open.push(fact.toolName);
+    } else if (fact.type === "tool_end") {
+      const index = open.lastIndexOf(fact.toolName);
+      if (index !== -1) open.splice(index, 1);
+    }
+  }
+  return open.length > 0 ? open[open.length - 1] : undefined;
+}
+
+/**
+ * Build the card lines for one child run and, recursively, its descendants.
+ *
+ * The child renders one row — `<branch> <spinner|●> subagent(<agent>) ·
+ * <label> · <activity>` — with the branch glyph chosen from the child's
+ * position among its siblings (`TREE_LAST` for the last, `TREE_BRANCH`
+ * otherwise) and the indent accumulated from every ancestor level.  The
+ * activity segment appears only while the run is live.  Descendants come
+ * from the registry (`childrenOf`), one level deeper with the ancestor's
+ * indent extended, so the whole subtree renders as a tree.
+ *
+ * @param child - The child run.
+ * @param isLast - Whether the child is the last of its siblings.
+ * @param ancestorPrefix - The indent accumulated from ancestor levels.
+ * @param frameSeq - The shared spinner frame sequence.
+ * @returns The subtree's display lines (the child row first).
+ */
+function childSubtreeLines(
+  child: SubagentRun,
+  isLast: boolean,
+  ancestorPrefix: string,
+  frameSeq: number,
 ): CardLine[] {
-  return children.map((child) => {
-    const { glyph, hue } = fleetGlyph(child, frameSeq);
-    const labelPart =
-      child.label !== undefined && child.label.length > 0
-        ? ` · ${child.label}`
-        : "";
-    return {
-      text: `${TREE_BRANCH} ${glyph} subagent(${child.agent})${labelPart}`,
-      hue,
-    };
+  const { glyph, hue } = fleetGlyph(child, frameSeq);
+  const labelPart =
+    child.label !== undefined && child.label.length > 0
+      ? ` · ${child.label}`
+      : "";
+  const activity = childActivity(child);
+  const activityPart = activity !== undefined ? ` · ${activity}` : "";
+  const branch = isLast ? TREE_LAST : TREE_BRANCH;
+  const body = `subagent(${child.agent})${labelPart}${activityPart}`;
+  const lines: CardLine[] = [
+    { text: `${ancestorPrefix}${branch} ${glyph} ${body}`, hue },
+  ];
+  const children = childrenOf(child.id);
+  const childPrefix = `${ancestorPrefix}${isLast ? "   " : TREE_PIPE}`;
+  children.forEach((descendant, index) => {
+    lines.push(
+      ...childSubtreeLines(
+        descendant,
+        index === children.length - 1,
+        childPrefix,
+        frameSeq,
+      ),
+    );
   });
+  return lines;
+}
+
+/**
+ * Split the child runs into timeline-anchored groups and trailing lines.
+ *
+ * A child whose `startedAt` is known anchors its subtree group on the
+ * parent's timeline; a child without a usable anchor (a restored entry
+ * whose timestamp is zero) degrades to trailing lines the caller appends
+ * just before its trailing region.
+ *
+ * @param children - The run's direct child runs (oldest first).
+ * @param frameSeq - The shared spinner frame sequence.
+ * @returns The anchored groups and the unanchored lines.
+ */
+function childEntries(
+  children: SubagentRun[],
+  frameSeq: number,
+): { anchored: TimelineEntry[]; unanchored: CardLine[] } {
+  const anchored: TimelineEntry[] = [];
+  const unanchored: CardLine[] = [];
+  children.forEach((child, index) => {
+    const lines = childSubtreeLines(
+      child,
+      index === children.length - 1,
+      "",
+      frameSeq,
+    );
+    if (child.startedAt > 0) {
+      anchored.push({ at: child.startedAt, lines });
+    } else {
+      unanchored.push(...lines);
+    }
+  });
+  return { anchored, unanchored };
+}
+
+/**
+ * Count every descendant run (all generations) that finished with an error.
+ *
+ * Recurses through `childrenOf`, so a failure buried under a successful
+ * intermediate run still surfaces on the top-level card's title.
+ *
+ * @param children - The direct child runs.
+ * @returns The number of error descendants.
+ */
+function countDescendantErrors(children: SubagentRun[]): number {
+  let count = 0;
+  for (const child of children) {
+    if (child.status === "error") count += 1;
+    count += countDescendantErrors(childrenOf(child.id));
+  }
+  return count;
+}
+
+/**
+ * Append the descendant-failure badge to a terminal title.
+ *
+ * The badge (`■ N failed`, error-hued) marks that a run which itself
+ * succeeded still has a failed run somewhere beneath it.  Only a `done`
+ * parent gets the badge: an error parent already carries the failure marker
+ * and an aborted run is a cancellation, not a failure.
+ *
+ * @param title - The terminal title line.
+ * @param failures - The number of error descendants.
+ * @returns The title, badged when failures were counted.
+ */
+function badgeFailures(title: CardLine, failures: number): CardLine {
+  if (failures <= 0) return title;
+  const badge = `■ ${failures} failed`;
+  const segments: CardSegment[] = [
+    ...(title.segments ?? []),
+    { text: " · " },
+    { text: badge, hue: "error" },
+  ];
+  return { ...title, text: segments.map((s) => s.text).join(""), segments };
 }

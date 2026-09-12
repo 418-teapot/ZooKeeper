@@ -619,6 +619,56 @@ describe("registry — summary counts", () => {
       aborted: 0,
     });
   });
+
+  it("counts nested runs across the whole session tree", () => {
+    // main → p (done) → { n1 (error) → g (running), n2 (done) }.
+    startRun({
+      id: "p",
+      agent: "beaver",
+      parentSession: "main",
+      startedAt: 0,
+    });
+    finishRun("p", { status: "done", childSession: "child-p" });
+    startRun({
+      id: "n1",
+      agent: "lynx",
+      parentSession: "child-p",
+      startedAt: 1,
+    });
+    finishRun("n1", {
+      status: "error",
+      error: "boom",
+      childSession: "child-n1",
+    });
+    startRun({
+      id: "n2",
+      agent: "spider",
+      parentSession: "child-p",
+      startedAt: 2,
+    });
+    finishRun("n2", { status: "done" });
+    startRun({
+      id: "g",
+      agent: "mola",
+      parentSession: "child-n1",
+      startedAt: 3,
+    });
+    // A run under another main session must stay out of the tally.
+    startRun({
+      id: "other",
+      agent: "lynx",
+      parentSession: "main-other",
+      startedAt: 4,
+    });
+    finishRun("other", { status: "done" });
+
+    assert.deepEqual(summary("main"), {
+      running: 1,
+      done: 2,
+      failed: 1,
+      aborted: 0,
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -739,6 +789,45 @@ describe("registry — windowRuns", () => {
       before,
       "the input array must not be reordered",
     );
+  });
+
+  it("budgets rendered rows so a run's child rows are never split", () => {
+    const entries = denseList(5);
+    const rowsOf = (run: SubagentRun): number => (run.id === "r0" ? 4 : 1);
+
+    // Bottom-aligned: r0 renders 4 rows, so only r1..r4 fit the 5-row cap.
+    const slice = windowRuns(entries, undefined, 5, rowsOf);
+    assert.deepEqual(
+      slice.rows.map((r) => r.id),
+      ["r1", "r2", "r3", "r4"],
+    );
+    assert.equal(slice.hiddenAbove, 1);
+    assert.equal(slice.hiddenBelow, 0);
+
+    // Selecting the tall run keeps it whole (r0's 4 rows) and spends the
+    // remaining row on r1, hiding the rest.
+    const selected = windowRuns(entries, "r0", 5, rowsOf);
+    assert.deepEqual(
+      selected.rows.map((r) => r.id),
+      ["r0", "r1"],
+    );
+    assert.equal(selected.selectedIndex, 0);
+    assert.equal(selected.hiddenAbove, 0);
+    assert.equal(selected.hiddenBelow, 3);
+  });
+
+  it("keeps a selected run whose rows alone exceed the budget", () => {
+    const entries = denseList(5);
+    const rowsOf = (run: SubagentRun): number => (run.id === "r4" ? 9 : 1);
+
+    const slice = windowRuns(entries, "r4", 3, rowsOf);
+    assert.deepEqual(
+      slice.rows.map((r) => r.id),
+      ["r4"],
+    );
+    assert.equal(slice.hiddenAbove, 4);
+    assert.equal(slice.hiddenBelow, 0);
+    assert.equal(slice.selectedIndex, 0);
   });
 });
 

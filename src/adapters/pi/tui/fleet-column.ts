@@ -2,8 +2,8 @@
  * Pi expanded fleet column renderer.
  *
  * The left-hand column of the pi dual-column widget: the scrolling window of
- * subagent run rows (top-level rows plus one nested-child level indented with
- * `├─` / `└─`), the `↑`/`↓` overflow indicators, and the background band on
+ * subagent run rows (top-level rows plus every nested generation indented
+ * with `├─` / `└─`), the `↑`/`↓` overflow indicators, and the background band on
  * the selected row.  All row semantics come from the host-agnostic view model
  * (`src/core/subagent/view.ts`); this module only windows the roster, draws
  * the indicators, and colorizes each line through the single pi hue bridge
@@ -22,6 +22,7 @@
 import {
   childrenOf,
   type SubagentRun,
+  type WindowSlice,
   windowRuns,
 } from "../../../core/subagent/registry.js";
 import { type CardLine, renderFleetRows } from "../../../core/subagent/view.js";
@@ -45,7 +46,10 @@ export interface FleetColumnThemeLike {
 
 /** Inputs for the expanded fleet column. */
 export interface FleetColumnOptions {
-  /** The run-window height (top-level rows kept visible). */
+  /**
+   * The window's run-row budget (each top-level run costs `1 + descendants`
+   * rendered rows; whole runs are windowed, never split).
+   */
   windowRows: number;
   /**
    * The body's total row budget (indicators included). Required: the widget
@@ -138,20 +142,22 @@ function highlight(theme: FleetColumnThemeLike, text: string): string {
 }
 
 /**
- * The window anchor: the selected top-level id, or the parent of a selected
- * child (so the child's parent stays in view).  A stale id yields `undefined`
- * and `windowRuns` bottom-aligns.
+ * The window anchor: the selected top-level id, or the top-level ancestor of
+ * a selected descendant at any depth (so the selected run's top-level run
+ * stays in view).  A stale id yields `undefined` and `windowRuns`
+ * bottom-aligns.
  */
 function anchorFor(
   tops: readonly SubagentRun[],
   selectedId: string | undefined,
 ): string | undefined {
   if (selectedId === undefined) return undefined;
+  const contains = (runId: string): boolean => {
+    if (runId === selectedId) return true;
+    return childrenOf(runId).some((child) => contains(child.id));
+  };
   for (const top of tops) {
-    if (top.id === selectedId) return top.id;
-    if (childrenOf(top.id).some((child) => child.id === selectedId)) {
-      return top.id;
-    }
+    if (contains(top.id)) return top.id;
   }
   return undefined;
 }
@@ -163,13 +169,17 @@ function anchorFor(
 /**
  * Render the expanded fleet column rows.
  *
- * The roster windows around the selection (`windowRuns`) within `windowRows`
- * top-level rows, surfacing any hidden runs as `↑`/`↓` overflow indicators.
- * The assembled block (↑ + rows + ↓) can still exceed `maxLines` when nested
- * children inflate the rows (each child renders its own line) or both
- * indicators appear; the trim removes lines from the END of the run-row block
- * only — never the trailing `↓` indicator (which a naive tail-slice would
- * cut) nor the leading `↑`.
+ * The roster windows around the selection by WHOLE run: a top-level run plus
+ * its descendants at every generation is one indivisible unit that occupies
+ * `1 + <descendant count>` rendered rows.  The window is chosen so the
+ * visible runs plus any `↑`/`↓` overflow indicators fit `maxLines`: the
+ * budget is searched down from `windowRows` until the rendered block fits,
+ * so an over-budget window hides whole runs (surfaced as `↑ N more` /
+ * `↓ N more`) instead of trimming rows off the end of the last run.  When
+ * even a single run alone overflows the budget, that run's own row is kept,
+ * its head child rows fill what remains beside one `… +K more` hint row, and
+ * the tail child rows (along with the whole-run indicators) are dropped, so
+ * the result stays within `maxLines`.
  *
  * The selection band is drawn only while `focused` is set (see
  * {@link FleetColumnOptions.focused}).
@@ -177,48 +187,98 @@ function anchorFor(
  * @param tops - The session's top-level runs, in display order.
  * @param opts - The window size, row budget, selection, focus flag, frame /
  *   clock, theme, and agent colorizer.
- * @returns The rendered rows, at most `opts.maxLines` long.
+ * @returns The rendered rows, at most `opts.maxLines` long.  When a single
+ *   run alone exceeds the budget, its trailing child rows are summarized by
+ *   a `… +K more` row so the bound still holds.
  */
 export function renderFleetColumn(
   tops: readonly SubagentRun[],
   opts: FleetColumnOptions,
 ): string[] {
   const { windowRows, maxLines, selectedId, focused, frame, now, theme } = opts;
+  // Index every run that has children, at any depth, so the recursive
+  // renderer and the row count below walk the whole tree — not just the
+  // top-level runs' direct children.
   const childrenByParent = new Map<string, SubagentRun[]>();
-  for (const top of tops) {
-    childrenByParent.set(top.id, childrenOf(top.id));
+  const collect = (run: SubagentRun): void => {
+    const children = childrenOf(run.id);
+    if (children.length === 0) return;
+    childrenByParent.set(run.id, children);
+    for (const child of children) collect(child);
+  };
+  for (const top of tops) collect(top);
+
+  const descendantCount = (runId: string): number => {
+    const children = childrenByParent.get(runId);
+    if (children === undefined) return 0;
+    let total = 0;
+    for (const child of children) total += 1 + descendantCount(child.id);
+    return total;
+  };
+  // One row per run, at every generation: this must equal the number of
+  // lines `renderFleetRows` emits for the run, or the window budget lies.
+  const rowsOf = (run: SubagentRun): number => 1 + descendantCount(run.id);
+  const anchor = anchorFor(tops, selectedId);
+
+  // Pick the largest whole-run window (bounded by `windowRows`) whose rows
+  // plus their overflow indicators still fit `maxLines`.  Shrinking the
+  // budget hides whole runs, so a run's nested children are never cut in
+  // half.  When even the smallest window overflows, the fallback below keeps
+  // that single run's row and summarizes its trailing children.
+  const budgetCap = Math.max(1, Math.floor(windowRows));
+  let slice!: WindowSlice;
+  for (let budget = budgetCap; budget >= 1; budget--) {
+    const candidate = windowRuns([...tops], anchor, budget, rowsOf);
+    slice = candidate;
+    const runRows = candidate.rows.reduce((sum, r) => sum + rowsOf(r), 0);
+    const indicators =
+      (candidate.hiddenAbove > 0 ? 1 : 0) + (candidate.hiddenBelow > 0 ? 1 : 0);
+    if (runRows + indicators <= maxLines) break;
   }
-  const slice = windowRuns([...tops], anchorFor(tops, selectedId), windowRows);
+
+  const paint = (line: CardLine): string => {
+    const colored = colorize(line, theme, opts.colorizeAgent);
+    const banded = line.selected === true && focused;
+    return banded ? highlight(theme, colored) : colored;
+  };
 
   const out: string[] = [];
   if (slice.hiddenAbove > 0) {
     out.push(dim(theme, `↑ ${slice.hiddenAbove} more`));
   }
-  for (const line of renderFleetRows(
+  const rendered = renderFleetRows(
     slice.rows,
     childrenByParent,
     selectedId,
     frame,
     now,
-  )) {
-    const colored = colorize(line, theme, opts.colorizeAgent);
-    const banded = line.selected === true && focused;
-    out.push(banded ? highlight(theme, colored) : colored);
-  }
+  );
+  for (const line of rendered) out.push(paint(line));
   if (slice.hiddenBelow > 0) {
     out.push(dim(theme, `↓ ${slice.hiddenBelow} more`));
   }
 
-  // Nested children (or both indicators) can push the assembled block past
-  // the budget.  Trim from the end of the run-row block only, preserving the
-  // leading ↑ and the trailing ↓ indicator.
-  if (out.length <= maxLines) return out;
-  const overflow = out.length - maxLines;
-  const hasUp = slice.hiddenAbove > 0;
-  const hasDown = slice.hiddenBelow > 0;
-  const runStart = hasUp ? 1 : 0;
-  const runEnd = hasDown ? out.length - 1 : out.length;
-  const remove = Math.min(overflow, runEnd - runStart);
-  out.splice(runEnd - remove, remove);
-  return out;
+  const budget = Math.floor(maxLines);
+  // `maxLines < 1` is a degenerate caller and the common case fits; both
+  // return the assembled rows unchanged.
+  if (budget < 1 || out.length <= budget) return out;
+
+  // Degenerate fallback: the budget search never found a fitting window, so
+  // the slice is the smallest one — a single run.  Keep that run's own row,
+  // drop the whole-run indicators, and keep as many head child rows as fit
+  // beside one `… +K more` hint row; the tail child rows are dropped and the
+  // hint (itself within the budget) reports how many.
+  const childLines = rendered.slice(1);
+  const lines = [paint(rendered[0])];
+  const roomForChildren = budget - 1;
+  if (childLines.length > 0 && roomForChildren >= 1) {
+    if (childLines.length <= roomForChildren) {
+      for (const line of childLines) lines.push(paint(line));
+    } else {
+      const keep = roomForChildren - 1;
+      for (let i = 0; i < keep; i++) lines.push(paint(childLines[i]));
+      lines.push(dim(theme, `… +${childLines.length - keep} more`));
+    }
+  }
+  return lines;
 }

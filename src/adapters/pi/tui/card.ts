@@ -42,8 +42,9 @@
  *
  * Layout:
  *   - running (partial render, run in registry): the stacked `renderCall`
- *     title, then the projected body — current tool, recent tool calls,
- *     recent outputs, stats, nested children.
+ *     title, then the projected body — the tool-call / output lines and the
+ *     nested child subtrees merged into one timestamp-ordered timeline,
+ *     closing with the stats line.
  *   - terminal (run in registry): the projected terminal card — when the
  *     run's log is still live (the render raced the finish) it projects the
  *     in-memory facts; once the run has finished its log is released and the
@@ -183,7 +184,8 @@ interface CardProjection {
   log: RunLog;
   /** Run identity / lifecycle beyond the facts. */
   meta: CardMeta;
-  /** The run's nested subagent runs (registry children, one level deep). */
+  /** The run's nested subagent runs (registry children, rendered as a
+   * recursive tree). */
   children: SubagentRun[];
 }
 
@@ -615,7 +617,18 @@ export function renderResult(
         hydration.log,
       );
       return new ProjectedCard(
-        () => ({ log: hydration.log, meta, children: [] }),
+        () => {
+          // The registry may finish rebuilding the run's tree AFTER this
+          // restored card first rendered, so resolve the children lazily: a
+          // run that appeared since the last projection contributes its
+          // subtree, and only a run never rebuilt falls back to none.
+          const live = getRun(toolCallId);
+          return {
+            log: hydration.log,
+            meta,
+            children: live !== undefined ? childrenOf(live.id) : [],
+          };
+        },
         markdownTheme,
         expanded,
         frame,

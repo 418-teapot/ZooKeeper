@@ -11,9 +11,14 @@
  * per-tool-kind one-line summaries, and counters derived from facts.
  */
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import { SPINNER_FRAMES, TREE_BRANCH } from "../display.js";
-import type { SubagentRun } from "./registry.js";
+import { afterEach, describe, it } from "node:test";
+import { SPINNER_FRAMES, TREE_BRANCH, TREE_LAST } from "../display.js";
+import {
+  finishRun,
+  resetRegistry,
+  type SubagentRun,
+  startRun,
+} from "./registry.js";
 import { createRunLog, type RunLog } from "./run-log.js";
 import type { CardLine, CardMeta, CardOptions } from "./view.js";
 import {
@@ -101,6 +106,11 @@ function assertValidLines(lines: CardLine[]): void {
 /** The tool-call (`→ ...`) line texts of a projected card. */
 function toolTexts(lines: CardLine[]): string[] {
   return lines.filter((l) => l.text.startsWith("\u2192")).map((l) => l.text);
+}
+
+/** The nested-child rows (`├─`/`└─`, any indent) of a projected card. */
+function childRows(lines: CardLine[]): CardLine[] {
+  return lines.filter((l) => /^[│ ]*[├└]─/.test(l.text));
 }
 
 // ---------------------------------------------------------------------------
@@ -1060,6 +1070,63 @@ describe("renderFleetRows", () => {
     assert.equal(lines[2].hue, "running");
   });
 
+  it("indents grandchildren one generation deeper with │ pipes and └─", () => {
+    const entries = [
+      fleetRun("p1", {
+        agent: "dolphin",
+        status: "running",
+        startedAt: 1000,
+      }),
+    ];
+    const children = new Map<string, SubagentRun[]>([
+      [
+        "p1",
+        [
+          fleetRun("c1", {
+            agent: "beaver",
+            label: "impl",
+            status: "done",
+            startedAt: 2000,
+          }),
+          fleetRun("c2", {
+            agent: "mola",
+            label: "plan",
+            status: "done",
+            startedAt: 4000,
+          }),
+        ],
+      ],
+      [
+        "c1",
+        [
+          fleetRun("g1", {
+            agent: "lynx",
+            label: "search",
+            status: "done",
+            startedAt: 3000,
+          }),
+        ],
+      ],
+    ]);
+    const lines = renderFleetRows(entries, children, "g1", 0, 10000);
+    // c1 is not the last child, so the vertical pipe keeps the grandchild
+    // aligned one level deeper; the grandchild itself closes with └─ and is
+    // selectable at that depth.
+    assert.deepEqual(
+      lines.map((l) => l.text),
+      [
+        `${SPINNER_FRAMES[0]} dolphin · 0:09`,
+        "├─ ● beaver · impl · 0:08",
+        "│  └─ ● lynx · search · 0:07",
+        "└─ ● mola · plan · 0:06",
+      ],
+    );
+    assert.deepEqual(
+      lines.map((l) => l.selected),
+      [false, false, true, false],
+    );
+  });
+
   it("flags a nested child row as selected", () => {
     const entries = [fleetRun("p1", { status: "running", startedAt: 1000 })];
     const children = new Map<string, SubagentRun[]>([
@@ -1345,12 +1412,12 @@ describe("projectCard (running) — children", () => {
     const log = createRunLog();
     log.appendToolStart("bash", { command: "true" }, 0);
     const lines = projectCard(log, runningMeta(), cardOpts({ children }));
-    const childLines = lines.filter((l) => l.text.startsWith(TREE_BRANCH));
+    const childLines = childRows(lines);
     assert.deepEqual(
       childLines.map((l) => l.text),
       [
-        "├─ ● subagent(lynx) · search",
-        `├─ ${SPINNER_FRAMES[0]} subagent(spider) · fetch`,
+        `${TREE_BRANCH} ● subagent(lynx) · search`,
+        `${TREE_LAST} ${SPINNER_FRAMES[0]} subagent(spider) · fetch`,
       ],
     );
     // Running child carries the running hue; done child the success hue.
@@ -1369,10 +1436,10 @@ describe("projectCard (running) — children", () => {
       runningMeta(),
       cardOpts({ children, frame: 3 }),
     );
-    const childLines = lines.filter((l) => l.text.startsWith(TREE_BRANCH));
+    const childLines = childRows(lines);
     assert.equal(
       childLines[0].text,
-      `├─ ${SPINNER_FRAMES[3]} subagent(lynx) · search`,
+      `${TREE_LAST} ${SPINNER_FRAMES[3]} subagent(lynx) · search`,
       "running child spinner must use the shared frame, not frame 0",
     );
   });
@@ -1407,12 +1474,12 @@ describe("projectCard (terminal) — children", () => {
       terminalMeta(),
       cardOpts({ children, frame: 7 }),
     );
-    const childLines = lines.filter((l) => l.text.startsWith(TREE_BRANCH));
+    const childLines = childRows(lines);
     assert.deepEqual(
       childLines.map((l) => l.text),
       [
-        "├─ ■ subagent(lynx) · search",
-        `├─ ${SPINNER_FRAMES[7]} subagent(spider) · fetch`,
+        `${TREE_BRANCH} ■ subagent(lynx) · search`,
+        `${TREE_LAST} ${SPINNER_FRAMES[7]} subagent(spider) · fetch`,
       ],
     );
     assert.equal(childLines[0].hue, "error");
@@ -1432,5 +1499,368 @@ describe("projectCard (terminal) — children", () => {
       without.map((l) => l.text),
       "an empty children list must not change the terminal card",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Card children — recursive tree, activity, anchoring, dedup, badges
+// ---------------------------------------------------------------------------
+
+describe("projectCard — recursive subagent tree", () => {
+  afterEach(() => resetRegistry());
+
+  it("indents grandchildren and closes every level with └─", () => {
+    startRun({
+      id: "tree-c1",
+      agent: "lynx",
+      parentSession: "child-1",
+      childSession: "child-2",
+      startedAt: 10,
+    });
+    startRun({
+      id: "tree-g1",
+      agent: "spider",
+      parentSession: "child-2",
+      startedAt: 20,
+    });
+    finishRun("tree-g1", { status: "done" });
+    const children = [
+      fleetRun("tree-c1", {
+        agent: "lynx",
+        label: "search",
+        status: "done",
+        startedAt: 10,
+      }),
+      fleetRun("tree-c2", {
+        agent: "mola",
+        label: "plan",
+        status: "done",
+        startedAt: 30,
+      }),
+    ];
+    const lines = projectCard(
+      createRunLog(),
+      runningMeta({ currentTool: undefined }),
+      cardOpts({ children }),
+    );
+    assert.deepEqual(
+      childRows(lines).map((l) => l.text),
+      [
+        `${TREE_BRANCH} ● subagent(lynx) · search`,
+        `│  ${TREE_LAST} ● subagent(spider)`,
+        `${TREE_LAST} ● subagent(mola) · plan`,
+      ],
+    );
+  });
+});
+
+describe("projectCard — child live activity", () => {
+  it("appends the running child's current tool and drops it when done", () => {
+    const running = fleetRun("act-c1", {
+      agent: "lynx",
+      label: "search",
+      status: "running",
+      currentTool: "read",
+      startedAt: 10,
+    });
+    const runningLines = projectCard(
+      createRunLog(),
+      runningMeta({ currentTool: undefined }),
+      cardOpts({ children: [running] }),
+    );
+    assert.equal(
+      childRows(runningLines)[0].text,
+      `${TREE_LAST} ${SPINNER_FRAMES[0]} subagent(lynx) · search · read`,
+    );
+
+    const done = fleetRun("act-c2", {
+      agent: "lynx",
+      label: "search",
+      status: "done",
+      currentTool: "read",
+      startedAt: 10,
+    });
+    const doneLines = projectCard(
+      createRunLog(),
+      runningMeta({ currentTool: undefined }),
+      cardOpts({ children: [done] }),
+    );
+    assert.equal(
+      childRows(doneLines)[0].text,
+      `${TREE_LAST} ● subagent(lynx) · search`,
+    );
+  });
+
+  it("derives the activity from the child log when no tool field is set", () => {
+    const log = createRunLog();
+    log.appendToolStart("grep", { pattern: "x" }, 10);
+    log.appendToolEnd("grep", [{ type: "text", text: "hit" }], false, 11);
+    log.appendToolStart("read", { file_path: "/tmp/a" }, 12);
+    const child = fleetRun("act-log", {
+      agent: "spider",
+      status: "running",
+      log,
+      startedAt: 10,
+    });
+    const lines = projectCard(
+      createRunLog(),
+      runningMeta({ currentTool: undefined }),
+      cardOpts({ children: [child] }),
+    );
+    assert.equal(
+      childRows(lines)[0].text,
+      `${TREE_LAST} ${SPINNER_FRAMES[0]} subagent(spider) · read`,
+    );
+  });
+
+  it("still shows the agent and activity when the label is empty", () => {
+    const child = fleetRun("act-nolabel", {
+      agent: "lynx",
+      status: "running",
+      currentTool: "bash",
+      startedAt: 10,
+    });
+    const lines = projectCard(
+      createRunLog(),
+      runningMeta({ currentTool: undefined }),
+      cardOpts({ children: [child] }),
+    );
+    assert.equal(
+      childRows(lines)[0].text,
+      `${TREE_LAST} ${SPINNER_FRAMES[0]} subagent(lynx) · bash`,
+    );
+  });
+});
+
+describe("projectCard — time-anchored child rows", () => {
+  it("places a child row where its run started, below later parent lines", () => {
+    const log = createRunLog();
+    log.appendToolStart("bash", { command: "before" }, 100);
+    log.appendToolStart("bash", { command: "after" }, 300);
+    const children = [
+      fleetRun("anchor-c1", {
+        agent: "lynx",
+        label: "search",
+        status: "done",
+        startedAt: 200,
+      }),
+    ];
+    const lines = projectCard(
+      log,
+      runningMeta({ currentTool: undefined }),
+      cardOpts({ children }),
+    );
+    const texts = lines.map((l) => l.text);
+    const childIndex = texts.indexOf(`${TREE_LAST} ● subagent(lynx) · search`);
+    const beforeIndex = texts.indexOf("→ $ before");
+    const afterIndex = texts.indexOf("→ $ after");
+    assert.ok(
+      beforeIndex !== -1 && childIndex !== -1 && afterIndex !== -1,
+      texts.join(" | "),
+    );
+    assert.ok(
+      beforeIndex < childIndex && childIndex < afterIndex,
+      `child must sit between the earlier and later parent lines: ${texts.join(
+        " | ",
+      )}`,
+    );
+  });
+
+  it("anchors the current-tool line after a child the parent outlived", () => {
+    // The parent delegates, then resumes its own work: the live current tool
+    // must render below the child row (the child started first), and it must
+    // follow the `→ tool` fact line that records the resumed work.
+    const log = createRunLog();
+    log.appendToolStart("bash", { command: "before" }, 100);
+    log.appendToolStart("bash", { command: "after" }, 300);
+    const children = [
+      fleetRun("anchor-live", {
+        agent: "lynx",
+        label: "search",
+        status: "running",
+        startedAt: 200,
+      }),
+    ];
+    const lines = projectCard(
+      log,
+      runningMeta({ currentTool: "read" }),
+      cardOpts({ children, now: 400 }),
+    );
+    const texts = lines.map((l) => l.text);
+    const childIndex = texts.findIndex((t) => t.includes("subagent(lynx)"));
+    const afterIndex = texts.indexOf("→ $ after");
+    const currentIndex = texts.indexOf("read");
+    const statsIndex = texts.findIndex((t) => t.includes("⟳"));
+    assert.ok(
+      childIndex !== -1 &&
+        afterIndex !== -1 &&
+        currentIndex !== -1 &&
+        statsIndex !== -1,
+      texts.join(" | "),
+    );
+    assert.ok(
+      childIndex < afterIndex &&
+        afterIndex < currentIndex &&
+        currentIndex < statsIndex,
+      `current tool must trail the child and its resumed fact line: ${texts.join(
+        " | ",
+      )}`,
+    );
+    assert.equal(lines[currentIndex].hue, "accent");
+  });
+
+  it("appends a child without a usable anchor just above the stats line", () => {
+    const log = createRunLog();
+    log.appendToolStart("bash", { command: "work" }, 100);
+    const children = [
+      fleetRun("anchor-unknown", { agent: "lynx", status: "done" }),
+    ];
+    const lines = projectCard(
+      log,
+      runningMeta({ currentTool: undefined }),
+      cardOpts({ children }),
+    );
+    const texts = lines.map((l) => l.text);
+    const childIndex = texts.findIndex((t) => t.includes("subagent(lynx)"));
+    const statsIndex = texts.findIndex((t) => t.includes("⟳"));
+    assert.ok(childIndex !== -1 && statsIndex !== -1, texts.join(" | "));
+    assert.ok(childIndex < statsIndex, texts.join(" | "));
+  });
+});
+
+describe("projectCard — inner delegation dedup", () => {
+  it("skips a subagent call mirrored by a child run and its tool count", () => {
+    const log = createRunLog();
+    log.appendToolStart(
+      "subagent",
+      { agent: "lynx", prompt: "x" },
+      100,
+      "dedup-c1",
+    );
+    log.appendToolStart("bash", { command: "kept" }, 200);
+    const children = [
+      fleetRun("dedup-c1", {
+        agent: "lynx",
+        label: "search",
+        status: "done",
+        startedAt: 150,
+      }),
+    ];
+    const lines = projectCard(
+      log,
+      runningMeta({ currentTool: undefined }),
+      cardOpts({ children }),
+    );
+    const texts = lines.map((l) => l.text);
+    assert.ok(
+      !texts.some((t) => t.startsWith("→ subagent ")),
+      `no raw delegation line expected: ${texts.join(" | ")}`,
+    );
+    assert.ok(texts.includes("→ $ kept"), texts.join(" | "));
+    assert.ok(
+      texts[texts.length - 1].includes("1 tool"),
+      `the mirrored delegation must not be counted: ${texts[texts.length - 1]}`,
+    );
+  });
+
+  it("keeps a subagent line with no registered child run", () => {
+    const log = createRunLog();
+    log.appendToolStart("subagent", { agent: "lynx" }, 100, "orphan");
+    const lines = projectCard(
+      log,
+      runningMeta({ currentTool: undefined }),
+      cardOpts({ children: [] }),
+    );
+    assert.ok(
+      lines.some((l) => l.text.startsWith("→ subagent ")),
+      lines.map((l) => l.text).join(" | "),
+    );
+  });
+});
+
+describe("projectCard — descendant failure badge", () => {
+  afterEach(() => resetRegistry());
+
+  it("badges a successful title when a descendant failed", () => {
+    const log = createRunLog();
+    log.appendMessage([{ type: "text", text: "ok" }], undefined, 0);
+    const children = [
+      fleetRun("badge-c1", {
+        agent: "lynx",
+        status: "error",
+        startedAt: 10,
+      }),
+    ];
+    const lines = projectCard(log, terminalMeta(), cardOpts({ children }));
+    const title = lines[0];
+    assert.ok(title.text.includes("■ 1 failed"), title.text);
+    assert.ok(
+      title.segments?.some((s) => s.text === "■ 1 failed" && s.hue === "error"),
+      JSON.stringify(title.segments),
+    );
+  });
+
+  it("counts failures at any depth", () => {
+    startRun({
+      id: "badge-n1",
+      agent: "beaver",
+      parentSession: "sess-1",
+      childSession: "sess-2",
+      startedAt: 10,
+    });
+    startRun({
+      id: "badge-g1",
+      agent: "lynx",
+      parentSession: "sess-2",
+      startedAt: 20,
+    });
+    finishRun("badge-n1", { status: "done" });
+    finishRun("badge-g1", { status: "error" });
+    const lines = projectCard(
+      createRunLog(),
+      terminalMeta(),
+      cardOpts({
+        children: [
+          fleetRun("badge-n1", {
+            agent: "beaver",
+            status: "done",
+            startedAt: 10,
+          }),
+        ],
+      }),
+    );
+    assert.ok(lines[0].text.includes("■ 1 failed"), lines[0].text);
+  });
+
+  it("leaves a failed parent's title unchanged", () => {
+    const children = [
+      fleetRun("badge-x1", {
+        agent: "lynx",
+        status: "error",
+        startedAt: 10,
+      }),
+    ];
+    const lines = projectCard(
+      createRunLog(),
+      terminalMeta({ status: "error", error: "boom" }),
+      cardOpts({ children }),
+    );
+    assert.ok(!lines[0].text.includes("failed"), lines[0].text);
+  });
+
+  it("does not badge an aborted parent with a failed descendant", () => {
+    const children = [
+      fleetRun("badge-a1", {
+        agent: "lynx",
+        status: "error",
+        startedAt: 10,
+      }),
+    ];
+    const lines = projectCard(
+      createRunLog(),
+      terminalMeta({ status: "aborted" }),
+      cardOpts({ children }),
+    );
+    assert.ok(!lines[0].text.includes("failed"), lines[0].text);
   });
 });

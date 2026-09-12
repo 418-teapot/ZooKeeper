@@ -408,10 +408,17 @@ export function findByChildSession(
 /**
  * Count a main session's runs by status.
  *
- * `failed` counts `error` outcomes; `aborted` counts cancellations in
- * their own field so the collapsed line renders them with the cancelled
- * presentation instead of the failure one; `running` counts still-active
- * runs; `done` counts successful completions.  Scoped to one main session.
+ * Counts the WHOLE run tree under one main session — every top-level run plus
+ * its nested descendants (a nested delegation lands in the parent run's
+ * `childSession`, so the tree is walked through `parentSession` /
+ * `childSession` links).  The done/failed totals therefore reflect every
+ * delegation the session performed, not just the ones it launched directly.
+ * The `running` field is likewise whole-tree, matching the collapsed line's
+ * running list, which also walks every generation.  `failed` counts `error`
+ * outcomes; `aborted` counts
+ * cancellations in their own field so the collapsed line renders them with
+ * the cancelled presentation instead of the failure one; `running` counts
+ * still-active runs; `done` counts successful completions.
  *
  * @param parentSession - The main session id.
  * @returns The per-status counts.
@@ -421,42 +428,87 @@ export function summary(parentSession: string): RunSummary {
   let done = 0;
   let failed = 0;
   let aborted = 0;
-  for (const run of registry.values()) {
-    if (run.parentSession !== parentSession) continue;
+  const tally = (run: SubagentRun): void => {
     if (run.status === "running") running += 1;
     else if (run.status === "done") done += 1;
     else if (run.status === "aborted") aborted += 1;
     else failed += 1; // error
+  };
+  // Index runs by their calling session once, then walk the tree from the
+  // main session so nested runs are counted without a per-run registry scan.
+  const runsByParent = new Map<string, SubagentRun[]>();
+  for (const run of registry.values()) {
+    const siblings = runsByParent.get(run.parentSession);
+    if (siblings === undefined) runsByParent.set(run.parentSession, [run]);
+    else siblings.push(run);
+  }
+  const counted = new Set<string>();
+  const stack: string[] = [parentSession];
+  while (stack.length > 0) {
+    const session = stack.pop();
+    if (session === undefined) break;
+    for (const run of runsByParent.get(session) ?? []) {
+      if (counted.has(run.id)) continue;
+      counted.add(run.id);
+      tally(run);
+      if (run.childSession !== undefined) stack.push(run.childSession);
+    }
   }
   return { running, done, failed, aborted };
 }
 
 /**
- * Slice a run list into a scrolling window of at most `maxRows` rows.
+ * Slice a run list into a scrolling window whose rendered rows fit `maxRows`.
+ *
+ * Selection is always by whole run: the window is a contiguous run range, so
+ * a run's nested children are never split across the boundary.  `maxRows` is
+ * a ROW budget, not a run count — the optional `rowsOf` callback reports how
+ * many display rows a run occupies (a top-level run plus its descendants
+ * renders `1 + <descendant count>` rows), and the window keeps whole runs
+ * while their cumulative rows fit.
  *
  * When a `selectedId` is present and found, the window keeps it visible and
  * follows it: the window start is clamped so the selection stays in view
- * while as many later rows as fit are shown.  When the selection is absent
+ * while as many later runs as fit are shown.  When the selection is absent
  * or stale (not found), the window aligns to the bottom of the list.  The
  * input array is never mutated.
  *
  * @param entries - The full sorted run list (top-level runs).
  * @param selectedId - The id of the selected run, or `undefined` for the
  *   bottom-aligned window.
- * @param maxRows - The maximum window height (clamped to at least 1).
+ * @param maxRows - The maximum rendered-row budget (clamped to at least 1).
+ * @param rowsOf - Reports the display rows a run occupies; defaults to 1
+ *   (one row per run).
  * @returns The visible slice with the hidden counts and selection index.
  */
 export function windowRuns(
   entries: SubagentRun[],
   selectedId: string | undefined,
   maxRows: number,
+  rowsOf?: (run: SubagentRun) => number,
 ): WindowSlice {
   const n = entries.length;
   if (n === 0) {
     return { rows: [], hiddenAbove: 0, hiddenBelow: 0, selectedIndex: -1 };
   }
   const cap = Math.max(1, Math.floor(maxRows));
-  const bottomStart = Math.max(0, n - cap);
+  const cost = (run: SubagentRun): number => {
+    if (rowsOf === undefined) return 1;
+    const rows = Math.floor(rowsOf(run));
+    return Number.isFinite(rows) && rows >= 1 ? rows : 1;
+  };
+  // Walk in from the end to the smallest start whose whole-run suffix fits
+  // the budget.  A run whose rows alone exceed the cap still counts as one
+  // run so the window is never empty.
+  let bottomStart = n;
+  let bottomRows = 0;
+  while (bottomStart > 0) {
+    const next = cost(entries[bottomStart - 1]);
+    if (bottomRows + next > cap) break;
+    bottomStart -= 1;
+    bottomRows += next;
+  }
+  if (bottomStart === n) bottomStart = n - 1;
   if (selectedId === undefined) {
     return {
       rows: entries.slice(bottomStart),
@@ -474,15 +526,25 @@ export function windowRuns(
       selectedIndex: -1,
     };
   }
-  // Keep the selection visible while showing as many later rows as fit:
+  // Keep the selection visible while showing as many later runs as fit:
   // start = min(sel, bottomStart) keeps the window from pushing the
   // selection out when the list outgrows it.
   const start = Math.min(sel, bottomStart);
-  const rows = entries.slice(start, start + cap);
+  let end = start;
+  let rows = 0;
+  while (end < n) {
+    const next = cost(entries[end]);
+    if (end > start && rows + next > cap) break;
+    rows += next;
+    end += 1;
+  }
+  // Defensive: the clamped start always reaches the selection, but never
+  // let the window end before it if the cost model ever changes.
+  if (end <= sel) end = sel + 1;
   return {
-    rows,
+    rows: entries.slice(start, end),
     hiddenAbove: start,
-    hiddenBelow: n - (start + rows.length),
+    hiddenBelow: n - end,
     selectedIndex: sel - start,
   };
 }

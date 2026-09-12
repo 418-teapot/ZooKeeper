@@ -11,8 +11,9 @@
  *   - `SPINNER_FRAMES` / `spinnerFrameIndex` — the canonical braille spinner
  *     frame sequence and its frame-selector helper.
  *   - Structural symbols — the fold glyphs (`FOLD_COLLAPSED` /
- *     `FOLD_EXPANDED`) and the tree branch glyphs (`TREE_BRANCH` /
- *     `TREE_LAST`), one unique meaning per symbol.
+ *     `FOLD_EXPANDED`), the tree branch glyphs (`TREE_BRANCH` /
+ *     `TREE_LAST`), and the vertical connector (`TREE_PIPE`), one unique
+ *     meaning per symbol.
  *   - `fitToBudget` — the generic line-budget fit: emit every line, or the
  *     first `budget - 1` lines plus one caller-built overflow row.
  *
@@ -136,6 +137,15 @@ export const TREE_BRANCH = "├─";
 
 /** Tree glyph for the last nested child of a parent. */
 export const TREE_LAST = "└─";
+
+/**
+ * The vertical connector drawn for a non-last ancestor level.
+ *
+ * The tree glyphs mark the child at the current level; this connector keeps
+ * the deeper levels aligned under an ancestor that still has siblings below
+ * it.
+ */
+export const TREE_PIPE = "│  ";
 
 /**
  * Fit a sequence of display lines into a fixed line budget.

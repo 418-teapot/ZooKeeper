@@ -276,6 +276,35 @@ describe("fleet widget — collapsed line", () => {
     w.dispose();
   });
 
+  it("counts a third-generation running run in the collapsed line", () => {
+    // A running run two levels below a finished top-level run must still
+    // drive the collapsed spinner segment and its count.
+    const { deps, t } = depsOf();
+    seedRun("parent", 0, "beaver");
+    finishRun("parent", { status: "done", childSession: "child-a" });
+    startRun({
+      id: "mid",
+      agent: "mola",
+      parentSession: "child-a",
+      startedAt: 1000,
+    });
+    finishRun("mid", { status: "done", childSession: "child-b" });
+    startRun({
+      id: "deep",
+      agent: "lynx",
+      parentSession: "child-b",
+      startedAt: 2000,
+    });
+    const w = createFleetWidget(deps);
+    w.attach(tuiOf().tui, THEME);
+    t.advance(5000);
+    const line = w.render(200)[0];
+    // The deep running lynx appears with its own spinner segment + elapsed.
+    assert.ok(line.includes("<warning>"), line);
+    assert.ok(line.includes("<c>lynx</c> 0:03"), line);
+    w.dispose();
+  });
+
   it("renders the done and failed dots with zero-count omission", () => {
     const { deps, t } = depsOf();
     // r0 finishes done, r1 finishes error, r2 stays running.
@@ -728,6 +757,35 @@ describe("fleet widget — window following", () => {
       lines.some((l) => l.includes("more")),
       "window indicators must appear",
     );
+    w.dispose();
+  });
+
+  it("moves the selection into a grandchild row across every generation", () => {
+    const { deps } = depsOf();
+    seedRun("r0", 0, "beaver");
+    finishRun("r0", { status: "done", childSession: "child-a" });
+    startRun({
+      id: "c0",
+      agent: "mola",
+      parentSession: "child-a",
+      startedAt: 1000,
+    });
+    finishRun("c0", { status: "done", childSession: "child-b" });
+    startRun({
+      id: "g0",
+      agent: "lynx",
+      parentSession: "child-b",
+      startedAt: 2000,
+    });
+    const w = createFleetWidget(deps);
+    w.attach(tuiOf().tui, THEME);
+    w.handleKey("\u001b[B"); // expand, selects r0
+    w.handleKey("j"); // c0
+    w.handleKey("j"); // g0 — only reachable if the roster walks the whole tree
+    const lines = w.render(200);
+    const banded = lines.filter((l) => l.includes("<selectedBg>"));
+    assert.equal(banded.length, 1, lines.join("\n"));
+    assert.ok(banded[0].includes("<c>lynx</c>"), banded[0]);
     w.dispose();
   });
 

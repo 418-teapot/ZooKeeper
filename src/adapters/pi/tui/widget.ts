@@ -14,7 +14,7 @@
  *     success > muted).
  *   - **Expanded** (`↓` with the editor focused and empty): a full-width
  *     title line, an operation-hint line, and a scrolling window of run rows
- *     (top-level rows plus one nested-child level indented with `├─` / `└─`),
+ *     (top-level rows plus every nested generation indented with `├─` / `└─`),
  *     bounded to the widget's ~10-line budget (`FLEET_MAX_LINES`).
  *
  * When the host supplies todo phases the widget becomes dual-column: the
@@ -111,7 +111,11 @@ import {
   type TodoColumnThemeLike,
 } from "./todo-column.js";
 
-/** The expanded run-list window height (of the ~10-line widget budget). */
+/**
+ * The expanded run-list window budget in rendered rows (of the ~10-line
+ * widget budget).  A top-level run with nested children costs more than one
+ * row, so this is a row budget, not a run count.
+ */
 export const FLEET_WINDOW_ROWS = 7;
 
 /** The widget's total line budget (title + hint + window + indicators). */
@@ -262,15 +266,19 @@ export function createFleetWidget(deps: FleetWidgetDeps): FleetWidget {
   /** The current session id, or undefined when none is available. */
   const sessionIdOf = (): string | undefined => deps.getSessionId();
 
-  /** The flattened run ids (top-level runs then their children, in order). */
+  /**
+   * The flattened run ids (top-level runs, then their descendants depth-first
+   * in the expanded view's row order).
+   */
   const rosterIds = (): string[] => {
     const sessionId = sessionIdOf();
     if (sessionId === undefined) return [];
     const ids: string[] = [];
-    for (const top of topLevelRuns(sessionId)) {
-      ids.push(top.id);
-      for (const child of childrenOf(top.id)) ids.push(child.id);
-    }
+    const walk = (runId: string): void => {
+      ids.push(runId);
+      for (const child of childrenOf(runId)) walk(child.id);
+    };
+    for (const top of topLevelRuns(sessionId)) walk(top.id);
     return ids;
   };
 
@@ -446,34 +454,27 @@ export function createFleetWidget(deps: FleetWidgetDeps): FleetWidget {
     theme !== undefined ? theme.fg("dim", text) : text;
 
   /**
-   * The currently-running delegation summaries — top-level runs plus each
-   * top-level run's nested children (one level deep, mirroring the expanded
-   * view's rendering depth), so a nested run under a finished parent still
-   * drives the collapsed spinner segment and its count.
+   * The currently-running delegation summaries — every running run in the
+   * tree, at any depth, in roster order, so a deeply nested run under a
+   * finished parent still drives the collapsed spinner segment and its
+   * count.
    */
   const currentRunningOf = (
     sessionId: string | undefined,
   ): FleetRunningSummary[] | undefined => {
     if (sessionId === undefined) return undefined;
     const running: FleetRunningSummary[] = [];
-    for (const top of topLevelRuns(sessionId)) {
-      if (top.status === "running") {
+    const collect = (run: SubagentRun): void => {
+      if (run.status === "running") {
         running.push({
-          agent: top.agent,
-          label: top.label,
-          elapsedMs: now() - top.startedAt,
+          agent: run.agent,
+          label: run.label,
+          elapsedMs: now() - run.startedAt,
         });
       }
-      for (const child of childrenOf(top.id)) {
-        if (child.status === "running") {
-          running.push({
-            agent: child.agent,
-            label: child.label,
-            elapsedMs: now() - child.startedAt,
-          });
-        }
-      }
-    }
+      for (const child of childrenOf(run.id)) collect(child);
+    };
+    for (const top of topLevelRuns(sessionId)) collect(top);
     return running;
   };
 
@@ -482,8 +483,9 @@ export function createFleetWidget(deps: FleetWidgetDeps): FleetWidget {
     const primary = deps.getPrimary() ?? "";
     const sessionId = sessionIdOf();
     const currentRunning = currentRunningOf(sessionId);
-    // The running count covers top-level + one nested level (matching the
-    // running list above); the done/failed counts stay top-level scoped.
+    // Both counts cover the whole run tree: the running list walks every
+    // generation and `summary` tallies top-level plus nested runs, so the
+    // collapsed line reports every delegation the session performed.
     const sum =
       sessionId !== undefined
         ? {
