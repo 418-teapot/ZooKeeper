@@ -431,7 +431,8 @@ async function handleSweepSubcommand(
  *    will fire on the next turn.
  *
  * No message fetch, no blocks, no plan — the flag is consumed by the
- * transform's injection phase (context-pruning hook, Phase 6b).
+ * context-pruning transform's manual-compress injection, which appends
+ * a synthetic user command on the next turn.
  *
  * @param toolHost - Host tool services (notify).
  * @param sessionID - The current session identifier.

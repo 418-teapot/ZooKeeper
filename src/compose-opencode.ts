@@ -28,8 +28,8 @@
  * The exported helper functions (`buildToolHooks`,
  * `injectAgentPrompts`, `registerProfileToolsInConfig`, `registerSkills`,
  * `runAfterHandlers`) are shared with the config hook
- * and kept public for unit tests.  `normalizeToolName` is exported
- * for unit tests only.
+ * and kept public for unit tests.  `normalizeToolName` is shared with
+ * the tool registration path and kept public for unit tests.
  *
  * @module
  */
@@ -71,9 +71,8 @@ const CORE_DIR = resolve(__dirname, "../core");
 /**
  * Sentinel thrown after a registered slash command's handler resolves.
  *
- * Replaces the old per-command sentinels: the adapter throws it
- * uniformly to short-circuit the `command()` flow so a handled command
- * is never processed as a user message.
+ * The adapter throws it uniformly to short-circuit the `command()` flow
+ * so a handled command is never processed as a user message.
  */
 export const COMMAND_HANDLED = new Error(
   "command handled — no user message needed",

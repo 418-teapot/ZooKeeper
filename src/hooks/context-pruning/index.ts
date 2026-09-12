@@ -32,7 +32,8 @@ export { contextPruningTransformHandler, handleContextPruning };
  * tool would accept.
  *
  * Fail-closed: when `deps.adapter` is undefined the unit contributes no
- * transform handler, consistent with the null-profile philosophy.
+ * transform handler, matching how a null mode profile disables every
+ * unit.
  */
 export const unit: HookUnitDescriptor = {
   name: "context-pruning",

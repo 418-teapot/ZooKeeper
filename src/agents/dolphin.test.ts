@@ -50,7 +50,7 @@ const MONO_SET: ActiveSet = {
 
 /**
  * The intended poly dolphin prompt — the truth source for the poly
- * variant.  Byte-identical to the pre-refactor `DOLPHIN_PROMPT` export.
+ * variant.  Byte-identical to the `DOLPHIN_PROMPT` export.
  */
 const POLY_FIXTURE = `<Role>
 You are an orchestrator — a conductor, not a musician. You DELEGATE, VERIFY, and ITERATE. Your job is to route work to the right subagent, not to implement it yourself.

@@ -1,5 +1,5 @@
 /**
- * Pi event-key adapter (host contact layer).
+ * Pi event-key adapter.
  *
  * The only module that understands pi's event keys.  Given the
  * host-agnostic `ComposedResult` produced by `composeProfile`, it builds
@@ -111,7 +111,7 @@ import type {
 /**
  * Load the native HTML→Markdown converter for the fetch tool.
  *
- * Fail-closed at the pi contact layer: when the addon is unavailable
+ * Fail-closed in the pi host adapter: when the addon is unavailable
  * (wrong platform, ABI mismatch, not built) the core loader returns
  * `null`, a single warn is logged (`converter_unavailable`), and the fetch
  * tool unit receives no converter — so `fetch` is not registered at all

@@ -95,11 +95,12 @@ export interface PiSwitchHost {
  * Per-fresh-session operations handed to a `newSession` `withSession`
  * callback.
  *
- * REGRESSION NOTE: pi invalidates the captured extension API and command
- * context after `ctx.newSession()` (the old runtime's action methods
- * throw "This extension ctx is stale after session replacement or
- * reload...").  Post-replacement work — widget, tool trim — MUST
- * therefore run through the handles provided here, which the host binds
+ * pi invalidates the captured extension API and command context after
+ * `ctx.newSession()`: the action methods of the context captured before
+ * the switch throw "This extension ctx is stale after session
+ * replacement or reload...".  Post-replacement work — widget, tool
+ * trim — MUST therefore run through the handles provided here, which
+ * the host binds
  * to the fresh session (via the real `ReplacedSessionContext` pi passes
  * to `withSession`), never through a process-level `PiSwitchHost`
  * captured before the switch.

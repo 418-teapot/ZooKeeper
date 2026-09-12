@@ -378,8 +378,8 @@ describe("subagent tool execute — successful delegation", () => {
       { agent: "beaver", description: "实现任务", prompt: "task" },
       TOOL_CTX,
       // Strict mode ignores the parent model entirely — a host-forwarded
-      // model must NOT leak into the request.  The hostCtx type no longer
-      // exposes `model`, so the cast models a stale host that still sends
+      // model must NOT leak into the request.  The hostCtx type does not
+      // expose `model`, so the cast models a stale host that still sends
       // it.
       { model: "Dummy/dummy-small" } as never,
     );
@@ -503,7 +503,7 @@ describe("subagent tool execute — successful delegation", () => {
       { agent: "beaver", description: "实现任务", prompt: "task" },
       TOOL_CTX,
       // A stale host forwarding a parent model — strict mode must ignore it
-      // (the type no longer exposes `model`, so the cast models it).
+      // (the type does not expose `model`, so the cast models it).
       { model: "Dummy/dummy-small" } as never,
     );
 
@@ -768,7 +768,7 @@ describe("subagent tool execute — progress to registry updates", () => {
     assert.equal(
       run?.log.size,
       0,
-      "the terminal run must no longer hold the driver's facts",
+      "the terminal run must not hold the driver's facts",
     );
     // The token total the driver reported as it appended both messages.
     assert.equal(run?.tokens, 234);
@@ -801,7 +801,7 @@ describe("subagent tool execute — progress to registry updates", () => {
 
   it("leaves the run's token total absent when no report carried usage", async () => {
     setPrimary("dolphin");
-    // Parity with the old derivation: a run that never reported usage keeps
+    // Parity check: a run that never reported usage keeps
     // the token segment absent rather than zeroed.
     const driver: SubagentDriver = {
       async run(_req, ctx) {

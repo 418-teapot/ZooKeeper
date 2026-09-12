@@ -773,7 +773,7 @@ describe("/dcp compress subcommand", () => {
 
   it("arms the one-shot trigger and notifies; creates no blocks, fetches no messages", async () => {
     // The tool host deliberately has NO fetchHistory — arming the trigger
-    // must not fetch the message list (the mechanical pipeline is gone).
+    // must not fetch the message list (arming only sets the one-shot trigger).
     let notifyText = "";
     const toolHost: ToolHost = {
       resolveSessionId: () => undefined,

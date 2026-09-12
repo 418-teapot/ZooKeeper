@@ -280,9 +280,9 @@ function buildRenderedView(
   // refs against, so the numbers rendered here must match it.  View item
   // ordinals still address the transcript, so they index the lens; a lens
   // slot that is missing (a transcript hole) is treated as hidden.
-  // Residual divergence: `expandSummaryBlocks` widens blocks that
-  // straddle a tool-call / tool-result pair, and the published view is
-  // numbered before that expansion — there the published view wins.
+  // `expandSummaryBlocks` widens blocks that straddle a tool-call /
+  // tool-result pair, and the published view is numbered before that
+  // expansion — there the published view wins.
   const numbered = numberView(view, (ordinal) => lens[ordinal]?.hidden ?? true);
   const lineByItem = new Map<ViewItem, number>();
   for (const { n, item } of numbered) {

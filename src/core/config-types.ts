@@ -169,8 +169,7 @@ export type AgentColorMap = Record<string, string>;
 /**
  * Unified context-pruning configuration.
  *
- * Replaces the old flat `DedupOptions` used by the hook.  Each
- * producer (dedup, purge-errors) has its own gate sub-config;
+ * Each producer (dedup, purge-errors) has its own gate sub-config;
  * `turnProtection` and `releaseThresholdPercent` remain shared.
  * Enablement is decided exclusively by the mode profile: registering
  * the `context-pruning` hook unit runs the whole pipeline, and

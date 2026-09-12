@@ -45,9 +45,9 @@ import { history, isInjectableRegion, type WritableRegion } from "./history.js";
 import {
   type ContextMessageEntry,
   type ContextTokenInfo,
-  computeContextReport as legacyComputeContextReport,
-  estimateMessageHeuristic as legacyEstimateMessageHeuristic,
-  measureContext as legacyMeasureContext,
+  computeContextReport as referenceComputeContextReport,
+  estimateMessageHeuristic as referenceEstimateMessageHeuristic,
+  measureContext as referenceMeasureContext,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -216,7 +216,7 @@ describe("v1 part → region mapping", () => {
     assert.equal(snapshot.invocations[0].status, undefined);
   });
 
-  it("object tool input is JSON-serialized on get (legacy counting parity)", () => {
+  it("object tool input is JSON-serialized on get (reference counting parity)", () => {
     const input = { cmd: "ls" };
     const output = { stdout: "file1\n" };
     const [inputRegion, outputRegion] = regionsOf(
@@ -226,7 +226,7 @@ describe("v1 part → region mapping", () => {
     assert.equal(outputRegion.get(), JSON.stringify(output));
   });
 
-  it("tool part without state but with text maps to content (legacy text counting)", () => {
+  it("tool part without state but with text maps to content (reference text counting)", () => {
     const [region] = regionsOf(
       entry("assistant", [{ type: "tool", text: "orphan text" }]),
     );
@@ -393,10 +393,10 @@ describe("v1 part → region mapping", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Parity: per-message heuristic (legacy estimateMessageHeuristic)
+// Parity: per-message heuristic (types.ts reference: estimateMessageHeuristic)
 // ---------------------------------------------------------------------------
 
-describe("parity: per-message heuristic vs legacy", () => {
+describe("parity: per-message heuristic vs types.ts reference", () => {
   const cases: Array<[string, ContextMessageEntry]> = [
     ["pure text", entry("user", [textPart("Hello World")])],
     [
@@ -456,7 +456,7 @@ describe("parity: per-message heuristic vs legacy", () => {
       const [lens] = messagesOf([entryToMap]);
       assert.equal(
         estimateMessageHeuristic(lens),
-        legacyEstimateMessageHeuristic(entryToMap),
+        referenceEstimateMessageHeuristic(entryToMap),
       );
     });
   }
@@ -476,7 +476,7 @@ describe("parity: per-message heuristic vs legacy", () => {
     const [lens] = messagesOf([entryToMap]);
     assert.equal(lens.hidden, true);
     assert.equal(estimateMessageHeuristic(lens), 0);
-    assert.ok(legacyEstimateMessageHeuristic(entryToMap) > 0);
+    assert.ok(referenceEstimateMessageHeuristic(entryToMap) > 0);
   });
 });
 
@@ -484,8 +484,8 @@ describe("parity: per-message heuristic vs legacy", () => {
 // Parity: whole-session measurement
 // ---------------------------------------------------------------------------
 
-describe("parity: whole-session vs legacy", () => {
-  it("usage-exact precedence matches legacy measureContext", () => {
+describe("parity: whole-session vs types.ts reference", () => {
+  it("usage-exact precedence matches the types.ts measureContext reference", () => {
     const v1 = [
       entry("user", [textPart("Hello")]),
       entry("assistant", [textPart("Response")], {
@@ -497,18 +497,18 @@ describe("parity: whole-session vs legacy", () => {
       entry("user", [textPart("Follow-up text here")]),
     ];
     const measured = measureMessages(messagesOf(v1));
-    const legacy = legacyMeasureContext({ messages: v1 });
-    assert.equal(measured.exact, legacy.exact_tokens); // 500+100+50+200+50 = 900
-    assert.equal(measured.heuristic, legacy.estimated_new_tokens); // ceil(19/4) = 5
-    assert.equal(measured.total, legacy.estimated_tokens); // 905
-    assert.equal(measured.messageCount, legacy.message_count); // 3
+    const reference = referenceMeasureContext({ messages: v1 });
+    assert.equal(measured.exact, reference.exact_tokens); // 500+100+50+200+50 = 900
+    assert.equal(measured.heuristic, reference.estimated_new_tokens); // ceil(19/4) = 5
+    assert.equal(measured.total, reference.estimated_tokens); // 905
+    assert.equal(measured.messageCount, reference.message_count); // 3
   });
 
-  it("ignored messages are hidden and skipped like legacy computeContextReport", () => {
-    // Legacy measureContext counts ignored tail text and includes ignored
-    // messages in message_count; computeContextReport is the counterpart
-    // that skips them, so it is the comparison target for the hidden
-    // dimension (same convention as measure.test.ts).
+  it("ignored messages are hidden and skipped like the types.ts computeContextReport reference", () => {
+    // measureContext (types.ts) counts ignored tail text and includes
+    // ignored messages in message_count; computeContextReport is the
+    // counterpart that skips them, so it is the comparison target for the
+    // hidden dimension (same convention as measure.test.ts).
     const v1 = [
       entry("user", [textPart("Hello")]),
       entry("assistant", [textPart("Response")], { input: 500, output: 100 }),
@@ -516,20 +516,20 @@ describe("parity: whole-session vs legacy", () => {
       entry("user", [textPart("Normal follow-up")]),
     ];
     const measured = measureMessages(messagesOf(v1));
-    const legacy = legacyComputeContextReport(v1);
-    assert.equal(measured.exact, legacy.exact); // 600
-    assert.equal(measured.heuristic, legacy.heuristic); // ceil(16/4) = 4
-    assert.equal(measured.total, legacy.total); // 604
-    assert.equal(measured.messageCount, legacy.messageCount); // 3
+    const reference = referenceComputeContextReport(v1);
+    assert.equal(measured.exact, reference.exact); // 600
+    assert.equal(measured.heuristic, reference.heuristic); // ceil(16/4) = 4
+    assert.equal(measured.total, reference.total); // 604
+    assert.equal(measured.messageCount, reference.messageCount); // 3
   });
 
-  it("empty transcript matches legacy measureContext zeros", () => {
+  it("empty transcript matches the types.ts measureContext reference zeros", () => {
     const measured = measureMessages(messagesOf([]));
-    const legacy = legacyMeasureContext({ messages: [] });
-    assert.equal(measured.exact, legacy.exact_tokens);
-    assert.equal(measured.heuristic, legacy.estimated_new_tokens);
-    assert.equal(measured.total, legacy.estimated_tokens);
-    assert.equal(measured.messageCount, legacy.message_count);
+    const reference = referenceMeasureContext({ messages: [] });
+    assert.equal(measured.exact, reference.exact_tokens);
+    assert.equal(measured.heuristic, reference.estimated_new_tokens);
+    assert.equal(measured.total, reference.estimated_tokens);
+    assert.equal(measured.messageCount, reference.message_count);
   });
 
   it("nullish transcript input yields zeros", () => {
@@ -547,7 +547,7 @@ describe("parity: whole-session vs legacy", () => {
     });
   });
 
-  it("dirty transcript maps null entries to hidden empty messages and matches legacy on exact/heuristic/total", () => {
+  it("dirty transcript maps null entries to hidden empty messages and matches the reference on exact/heuristic/total", () => {
     const v1 = [
       null as unknown as ContextMessageEntry,
       entry("user", [textPart("Hi")]),
@@ -564,14 +564,15 @@ describe("parity: whole-session vs legacy", () => {
     assert.ok(mapped[4].hidden);
     assert.deepEqual(mapped[0].regions, []);
     const measured = measureMessages(mapped);
-    const legacy = legacyMeasureContext({ messages: v1 });
-    assert.equal(measured.exact, legacy.exact_tokens); // 150
-    assert.equal(measured.heuristic, legacy.estimated_new_tokens); // 0
-    assert.equal(measured.total, legacy.estimated_tokens); // 150
-    // Divergence: legacy counts null entries in message_count; the
-    // hidden empty messages are excluded from the new count.
+    const reference = referenceMeasureContext({ messages: v1 });
+    assert.equal(measured.exact, reference.exact_tokens); // 150
+    assert.equal(measured.heuristic, reference.estimated_new_tokens); // 0
+    assert.equal(measured.total, reference.estimated_tokens); // 150
+    // Divergence: the types.ts reference counts null entries in
+    // message_count; the hidden empty messages are excluded from the new
+    // count.
     assert.equal(measured.messageCount, 2);
-    assert.notEqual(measured.messageCount, legacy.message_count); // 5
+    assert.notEqual(measured.messageCount, reference.message_count); // 5
   });
 });
 

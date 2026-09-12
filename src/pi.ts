@@ -37,7 +37,7 @@
  *    the post-replacement tool trim + status inside `withSession`).
  *
  * Architecture: units contribute host-agnostic slots (`src/core/slots.ts`)
- * and the pi contact layer (`src/compose-pi.ts`) is the only module that
+ * and the pi host adapter (`src/compose-pi.ts`) is the only module that
  * understands pi's event keys — it maps the `ComposedResult` to the
  * event handlers and the command registrations.  The composition feeds
  * the full registry to `composeProfile`; tool units instantiate
@@ -433,7 +433,8 @@ export function mergeTerminalToolDetails(
  * into the shared session-agent registry so later lookups hit the
  * binding in O(1).  The (a) memo can never go stale (a childSession
  * belongs to exactly one run and a run's `agent` is fixed at
- * creation); the (b) memo is the ALS answer's only durable record
+ * creation); the (b) memo is the AsyncLocalStorage answer's only
+ * durable record
  * (the scope does not outlive the event callback that observed it).
  * The (c) root-session binding trades growth for speed: pi offers no
  * session-deletion event to evict bindings, so they accumulate for
@@ -471,9 +472,10 @@ export function buildPiResolveAgent(
     }
     const identity = resolveIdentity();
     if (identity?.kind === "subagent") {
-      // Memoize the (b) answer: the ALS scope does not outlive the
-      // event callback that queried it, so without the binding every
-      // later lookup would fall through to the root-session default.
+      // Memoize the (b) answer: the AsyncLocalStorage scope does not
+      // outlive the event callback that queried it, so without the
+      // binding every later lookup would fall through to the
+      // root-session default.
       // The name is safe to bind — `identity.name` and the `agent`
       // the same delegation later records in the run table are both
       // the request's agent (`core/subagent/run.ts` binds
@@ -786,7 +788,7 @@ export function buildPiNoticeEntryRenderer(): (
  * by the active primary's `[agent.<name>].permission.skill` rules when it
  * has any), an empty array when the profile has none.  `toolResult` and
  * `contextHandler` wrap the composed after-exec / transform
- * contributions via the pi contact layer; with a null profile both are
+ * contributions via the pi host adapter; with a null profile both are
  * empty so the handlers no-op.  When `piApi` is provided, the
  * profile's tool contributions are registered natively through pi's
  * `registerTool`.
@@ -1173,10 +1175,11 @@ export function buildPiHandlers(
         // `withSession` callback runs against the fresh session's
         // context.
         //
-        // REGRESSION NOTE: pi invalidates the captured extension API and
-        // command context after `newSession` — calling the old `piApi`
-        // action methods inside `withSession` throws "This extension ctx
-        // is stale after session replacement or reload...".  The facade
+        // pi invalidates the captured extension API and command context
+        // after `newSession` — calling the `piApi` action methods
+        // captured before the switch inside `withSession` throws "This
+        // extension ctx is stale after session replacement or
+        // reload...".  The facade
         // handed to `withSession` therefore binds every operation to the
         // FRESH `ReplacedSessionContext` pi passes there (which
         // structurally inherits the command-context surface):
@@ -1359,14 +1362,14 @@ export function buildPiHandlers(
   // to `↑↓ / jk` while the editor is empty.
   //
   // Fails closed: no pi API, no active primary, or no `ui` surface all
-  // no-op silently (matching the old `seedWidget` fail-closed behaviour).
+  // no-op silently.
   const registerFleetWidget = (): void => {
     if (!piApi) return;
     const ui = contextHolder.current?.ui;
     if (!ui) return;
     // Fail-closed: without an active primary (no configured primary agent)
     // no widget is registered — the fleet line is primary-driven and a
-    // primary-less session renders nothing (matching the old seedWidget).
+    // primary-less session renders nothing.
     if (getPrimary() === undefined) return;
     // Release any previous terminal-input listener before re-binding so a
     // re-registration (pi replays `session_start` after a reload / resume)

@@ -286,8 +286,8 @@ function flushBuffer(): void {
  * Scans `_logDir` for files matching `<host>.log` / `<host>-<sessionId>.log`
  * (with `.N` backup suffixes) for any host (opencode or pi) and removes
  * those whose mtime exceeds the retention threshold.  The broad pattern
- * also covers legacy host-level files already on disk from earlier
- * versions — new host-level files are never created (see `flushBuffer`).
+ * also matches host-level files already on disk; the current writer
+ * creates none of those (see `flushBuffer`).
  * When `_retentionDays` is `undefined` the cleanup is skipped.
  *
  * All errors are silently swallowed.

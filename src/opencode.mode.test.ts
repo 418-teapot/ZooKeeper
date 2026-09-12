@@ -1,7 +1,7 @@
 /**
  * Tests for profile-driven registration composition in `buildPlugin`.
  *
- * Covers: poly-full registration parity with the pre-refactor key set,
+ * Covers: poly-full registration parity with the full hook key set,
  * event-key composition by the enabled hook set (tool.definition /
  * tool.execute.before / tool.execute.after / messages.transform),
  * command atomic registration (go / dcp), tool / skill / agent gating by
@@ -153,7 +153,7 @@ function logEvents(): Array<Record<string, unknown>> {
 // ---------------------------------------------------------------------------
 
 describe("poly full profile — registration parity", () => {
-  it("registers exactly the pre-refactor hook key set", async () => {
+  it("registers exactly the full hook key set", async () => {
     const plugin = await makePlugin();
     assert.deepEqual(
       Object.keys(plugin).sort(),

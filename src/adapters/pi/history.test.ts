@@ -484,10 +484,11 @@ describe("tool pair status and linkage", () => {
 /**
  * pi's `context` event delivers the whole `AgentMessage` list, which after
  * an automatic compaction also contains roles without a `content` field.
- * The projection used to route every unrecognised role through the
- * toolResult mapping — reading `message.content.length` — and crashed the
- * pruning handler for the rest of the session.  These tests pin that the
- * projection is a total function over host message shapes.
+ * The projection must route every unrecognised role safely: the
+ * toolResult mapping reads `message.content.length`, so a role without a
+ * `content` field must not reach it, or the pruning handler crashes for
+ * the rest of the session.  These tests pin that the projection is a
+ * total function over host message shapes.
  */
 function postCompactionTranscript(): PiAgentMessage[] {
   return [

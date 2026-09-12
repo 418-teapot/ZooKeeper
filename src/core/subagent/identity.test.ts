@@ -75,7 +75,7 @@ describe("setPrimary / getPrimary", () => {
 // ---------------------------------------------------------------------------
 
 describe("runWithIdentity — scope behavior", () => {
-  it("ALS store overrides currentPrimary inside the scope", () => {
+  it("AsyncLocalStorage store overrides currentPrimary inside the scope", () => {
     setPrimary("alpha");
     runWithIdentity({ kind: "subagent", name: "worker" }, () => {
       assert.deepEqual(resolveIdentity(), { kind: "subagent", name: "worker" });

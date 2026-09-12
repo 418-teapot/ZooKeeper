@@ -288,7 +288,7 @@ describe("buildPiContributions — profile-driven selection", () => {
         "nudgePostSubagent",
       ],
     );
-    // context-pruning is no longer gated on client capabilities — the
+    // context-pruning is not gated on client capabilities — the
     // unit contributes unconditionally, so the transform handler
     // appears.
     assert.deepEqual(
@@ -367,8 +367,8 @@ describe("buildPiContributions — profile-driven selection", () => {
   });
 
   it("unknown hooks/tools profile names reach the unknown_unit warning path", () => {
-    // Unlike the old agent/skill-only narrowing, the full-profile
-    // composition surfaces unmatched category names to the engine.
+    // The full-profile composition surfaces unmatched category names to
+    // the engine.
     const zoo = {
       mode: {
         poly: {
@@ -1108,8 +1108,7 @@ describe("buildPiHandlers — compose-driven tool_result", () => {
 
   it("subagent tool_result → post-subagent nudge fires on the canonical name", async () => {
     // pi registers the delegation tool as "subagent" (the canonical name
-    // the core hooks gate on), so the post-subagent nudge must fire here —
-    // before the hooks moved to the canonical name this stayed silent.
+    // the core hooks gate on), so the post-subagent nudge fires here.
     const handlers = buildPiHandlers(POLY_ZOO);
     const result = await handlers.toolResult(
       {
@@ -1287,11 +1286,10 @@ describe("buildPiResolveAgent — session identity resolution", () => {
 
 describe("pi regression — subagent child session must not get the direct-work nudge", () => {
   it("edit in a beaver child session is untouched; the root session still nudges", async () => {
-    // The defect: a pi child AgentSession's tool_result used to resolve
-    // to the default primary unconditionally, so the dolphin-only nudge
-    // leaked into subagent sessions.  With the run-registry-backed
-    // resolver the child session resolves to "beaver" and the gate
-    // skips it.
+    // A pi child AgentSession's tool_result resolves through the
+    // run-registry-backed resolver, so it maps to the child's own agent
+    // ("beaver") and the dolphin-only nudge never leaks into subagent
+    // sessions.
     const handlers = buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
     startRun({
       id: "run-beaver",
@@ -2731,11 +2729,12 @@ describe("buildPiHandlers — widget seeding", () => {
     const handlers = buildPiHandlers(POLY_ZOO, api as any, MODES_RAW);
     // Regression: pi's real SessionManager.buildContextEntries reads
     // `this.getEntries()`, so the mock must be `this`-dependent too.
-    // The old implementation extracted the function reference before calling
-    // (`const f = sm.buildContextEntries; f()`), which unbinds `this` and
+    // The function must be invoked as a method
+    // (`sessionManager.buildContextEntries()`): extracting the reference
+    // first (`const f = sm.buildContextEntries; f()`) unbinds `this` and
     // crashes — swallowed by the try/catch as `registry_rebuild_failed`, so
-    // the registry stays empty.  Calling `sessionManager.buildContextEntries()`
-    // as a method keeps `this` bound and seeds the registry.
+    // the registry stays empty.  Calling it as a method keeps `this` bound
+    // and seeds the registry.
     class MockSessionManager {
       private readonly entries = [
         {
@@ -3698,9 +3697,9 @@ describe("buildPiHandlers — primary-switch widget colorization", () => {
     );
     setPrimary("dolphin");
 
-    // The switch no longer writes a string-array widget for zoo — it is a
-    // "primary changed" notification the fleet widget turns into a re-render
-    // (the widget reads the primary live).
+    // The switch writes a "primary changed" notification (not a
+    // string-array widget): the fleet widget turns it into a re-render,
+    // reading the primary live.
     await (mola.handler as (args: string, ctx: unknown) => Promise<void>)(
       "",
       switchCtx(() => {}),
@@ -3988,9 +3987,9 @@ describe("zookeeperPi — thin entry wiring", () => {
       assert.equal(typeof api.handlers.context, "function");
       assert.equal(typeof api.handlers.message_end, "function");
 
-      // The ctrl+tab cyclic primary-switch shortcut is no longer
-      // registered: switching is done exclusively through the /<agent>
-      // commands, which replace the session.
+      // No ctrl+tab cyclic primary-switch shortcut is registered:
+      // switching is done exclusively through the /<agent> commands, which
+      // replace the session.
       assert.deepEqual(
         api.shortcuts.filter((s) => s.shortcut === "ctrl+tab"),
         [],
