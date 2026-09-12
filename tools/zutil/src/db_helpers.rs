@@ -14,7 +14,7 @@ const DEFAULT_DATA_DIR: &str = "~/.local/share/opencode";
 
 /// Where to locate the `SQLite` databases behind a command's queries.
 ///
-/// `Path` reproduces the single-DB behavior for an explicit `--db`;
+/// `Path` opens the single database named by an explicit `--db`;
 /// `Aggregate` merges every `opencode*.db` file found in a data
 /// directory (used when `--db` is absent).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,8 +47,8 @@ pub fn opencode_data_dir() -> String {
 
 /// Discover `opencode*.db` files in `data_dir` (tilde-expanded).
 ///
-/// Ordering is deterministic: the exact `opencode.db` (the historical
-/// default) comes first, remaining files follow lexicographically. A
+/// Ordering is deterministic: the exact `opencode.db` comes first,
+/// remaining files follow lexicographically. A
 /// symlinked `opencode*.db` is discovered like a regular file. Missing
 /// or unreadable directories yield an empty list.
 #[must_use]
@@ -75,8 +75,8 @@ pub fn discover_databases(data_dir: &str) -> Vec<String> {
     files
 }
 
-/// Sort key for discovered DB paths: the exact `opencode.db` (the
-/// historical default) sorts first, everything else by file name.
+/// Sort key for discovered DB paths: the exact `opencode.db` sorts
+/// first, everything else by file name.
 fn discovery_key(path: &str) -> (bool, &str) {
     let name =
         Path::new(path).file_name().and_then(|s| s.to_str()).unwrap_or("");
@@ -99,7 +99,7 @@ pub fn open_db(path: &str) -> Option<Connection> {
 ///
 /// Returns `None` when the target resolves to no databases (missing
 /// explicit file, or no discovered `opencode*.db` files) — callers then
-/// behave like today's missing-DB case.
+/// see no rows, as with a missing database.
 #[must_use]
 pub fn open_db_target(target: &DbTarget) -> Option<Connection> {
     match target {
@@ -115,8 +115,8 @@ pub fn open_db_target(target: &DbTarget) -> Option<Connection> {
 /// `message`, and `part` merge the per-table rows across all databases.
 ///
 /// Falls back to a plain single-file open of the first discovered database
-/// when ATTACH or view creation fails (e.g. schema drift), so behavior
-/// never regresses below today's single-DB mode.
+/// when ATTACH or view creation fails (e.g. schema drift), so the
+/// aggregate still serves that file's rows.
 #[must_use]
 pub fn open_aggregate_in(data_dir: &str) -> Option<Connection> {
     let paths = discover_databases(data_dir);
@@ -926,7 +926,7 @@ mod tests {
         fs::create_dir_all(&dir).expect("create empty fixture dir");
         let target = DbTarget::Aggregate(dir.to_string_lossy().to_string());
 
-        // Zero DBs found behaves like today's missing-DB case.
+        // Zero DBs found behaves like a missing database.
         assert_eq!(resolve_session_id("ses-abc", &target), Ok(None));
         let rows = query_sessions_where(&target, "ORDER BY id", &[])
             .expect("query on empty aggregate should not error");

@@ -11,7 +11,7 @@ use crate::helpers::find_session_info;
 
 use super::common::render_panel;
 
-// ── A. Session Panel ──────────────────────────────────────────────────────────
+// ── Session panel ─────────────────────────────────────────────────────────────
 
 /// Build verbose detail panel lines for session info.
 fn build_verbose_session_lines(
@@ -292,7 +292,7 @@ fn build_verbose_stats_line(timeline: &[Value], stats: &Value) -> String {
 ///
 /// `meta_model`/`meta_agent` come from the session store's own metadata
 /// (the first assistant message); they backfill the panel when the host
-/// lifecycle events (which carry the historical fields) are unavailable,
+/// lifecycle events that normally carry model and agent are unavailable,
 /// e.g. pi sessions or `OpenCode` databases without a retained log.
 pub fn render_session_panel(
     session_id: &str,

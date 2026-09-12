@@ -16,22 +16,15 @@ use zutil::epoch_ms_to_iso;
 use zutil::format_number;
 use zutil::get_zoo_log_dir;
 use zutil::iso_to_epoch_ms;
+use zutil::normalize_timestamp;
 use zutil::resolve_session_path;
 use zutil::session::{Host, Session, SessionEvent, SessionProvider};
+use zutil::truncate_chars;
+use zutil::zoo_log::parse_zoo_log;
 
-use crate::parser::{self, tool_type_and_icon};
+use crate::parser::tool_type_and_icon;
 
 // ── event stream → timeline ───────────────────────────────────────────────────
-
-/// Truncate text with ellipsis if it exceeds `max_len` characters.
-fn truncate_text(text: &str, max_len: usize) -> String {
-    if text.chars().count() > max_len {
-        let truncated: String = text.chars().take(max_len).collect();
-        format!("{truncated}...")
-    } else {
-        text.to_string()
-    }
-}
 
 /// Extract the primary input field of a tool call for summary display.
 ///
@@ -70,8 +63,8 @@ fn primary_tool_input(input: &Value) -> String {
     String::new()
 }
 
-/// Source label for provider-derived events: `db` on `OpenCode` (historical
-/// label), the host name on other hosts.
+/// Source label for provider-derived events: `db` on `OpenCode`, the host
+/// name on other hosts.
 fn provider_source(host: Host) -> String {
     if host == Host::OpenCode {
         "db".to_string()
@@ -139,12 +132,12 @@ fn message_to_timeline(
 ) -> Option<Value> {
     let (etype, icon, summary) = match role {
         "user" => {
-            ("user_msg".to_string(), "👤".to_string(), truncate_text(text, 80))
+            ("user_msg".to_string(), "👤".to_string(), truncate_chars(text, 80))
         }
         "assistant" => (
             "assistant_reply".to_string(),
             "🤖".to_string(),
-            truncate_text(text, 80),
+            truncate_chars(text, 80),
         ),
         _ => return None,
     };
@@ -210,7 +203,7 @@ fn tool_use_to_timeline(
 
 /// Convert a reasoning event into an assistant-reasoning timeline entry.
 ///
-/// Mirrors the historical DB row: type `assistant_reasoning`, icon `🧠`,
+/// The emitted row carries type `assistant_reasoning`, icon `🧠`, and a
 /// summary prefixed `Reasoning:`. `OpenCode` `reasoning` parts and pi
 /// `thinking` blocks both arrive as [`SessionEvent::Reasoning`], so both
 /// hosts share this shape. The ops-summary display renders these rows only
@@ -229,7 +222,7 @@ fn reasoning_to_timeline(host: Host, text: &str, timestamp: i64) -> Value {
     ev_map.insert("icon".to_string(), Value::String("🧠".to_string()));
     ev_map.insert(
         "summary".to_string(),
-        Value::String(format!("Reasoning: {}", truncate_text(text, 72))),
+        Value::String(format!("Reasoning: {}", truncate_chars(text, 72))),
     );
     ev_map.insert("content".to_string(), Value::String(text.to_string()));
     Value::Object(ev_map)
@@ -400,8 +393,8 @@ fn convert_session_events(
 ///
 /// Each `ToolResult` is paired with the still-unpaired tool use carrying
 /// the same tool-call id, which keeps interleaved same-name calls correct
-/// (results may arrive out of order). Results without an id fall back to
-/// the historical first-still-unpaired-same-name (FIFO per tool) pairing;
+/// (results may arrive out of order). Results without an id are paired
+/// with the first still-unpaired use of the same name (FIFO per tool);
 /// results whose id matches no recorded use are dropped rather than
 /// risked on a mismatched FIFO pair.
 fn attach_tool_results(
@@ -416,7 +409,7 @@ fn attach_tool_results(
             continue;
         };
         let hit = id.as_deref().map_or_else(
-            // Legacy results without an id keep the name-FIFO fallback.
+            // Results without an id fall back to name-FIFO pairing.
             || {
                 tool_uses
                     .iter()
@@ -565,7 +558,7 @@ pub fn classify_zoo(entry: &Value) -> Value {
         format!("{hook}/{event_}")
     };
 
-    let timestamp = parser::normalize_timestamp(
+    let timestamp = normalize_timestamp(
         entry.get("timestamp").and_then(Value::as_str).unwrap_or(""),
     );
 
@@ -598,7 +591,7 @@ fn add_zoo_log_events(
         return;
     };
 
-    let zoo_events = parser::parse_zoo_log(&root_zoo_path);
+    let zoo_events = parse_zoo_log(&root_zoo_path);
     for zoo_ev in &zoo_events {
         // Determine which session this entry belongs to
         let mut target_sid: Option<String> = None;
@@ -690,7 +683,7 @@ pub fn build_timeline(
         timeline.append(&mut session_events);
     }
 
-    // ── Zoo hook log overlay (existing logic, host-prefixed) ──
+    // ── Zoo hook log overlay (source `zoo`) ──
     add_zoo_log_events(
         root_session_id,
         &mut timeline,
@@ -1274,7 +1267,7 @@ mod tests {
     #[test]
     fn test_event_to_timeline_reasoning() {
         // OpenCode `reasoning` parts become an assistant-reasoning row with
-        // the historical icon and summary shape.
+        // icon `🧠` and a `Reasoning:`-prefixed summary.
         let reasoning = SessionEvent::Reasoning {
             text: "let me think about the parser".to_string(),
             timestamp: 2_500,
@@ -1413,8 +1406,8 @@ mod tests {
 
     #[test]
     fn test_attach_tool_results_falls_back_to_name_fifo_without_ids() {
-        // Results without a call id keep the historical name-FIFO pairing
-        // (the pre-id behavior for hosts that recorded none).
+        // Results without a call id fall back to name-FIFO pairing, which
+        // hosts that record no call ids rely on.
         let events = vec![
             tool_use_event("read", 1_000),
             tool_use_event("read", 1_100),

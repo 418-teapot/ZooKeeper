@@ -103,7 +103,7 @@ fn test_readonly_root_rejects_write_commands() {
     assert_write_rejected(
         &bin,
         &tar_path,
-        &["log", "--op", "test", "--path", "doc.md", "--action", "create"],
+        &["log", "--path", "doc.md", "--action", "create"],
         "log",
     );
 

@@ -2,7 +2,7 @@
 name = "zfind"
 version = "0.1.0"
 edition = "2024"
-description = "ZooKeeper session finder — search OpenCode sessions and messages in SQLite"
+description = "ZooKeeper session finder -- search, list, show, and message lookup for OpenCode and pi sessions."
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

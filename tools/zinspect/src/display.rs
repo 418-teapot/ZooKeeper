@@ -20,7 +20,7 @@ use crate::helpers::{
 /// Convert a `usize` count to `f64` without triggering `cast_precision_loss`.
 ///
 /// Goes through `u32` first (safe for in-memory counts that never exceed 4B).
-fn count_as_f64(n: usize) -> f64 {
+pub fn count_as_f64(n: usize) -> f64 {
     f64::from(u32::try_from(n).unwrap_or(0))
 }
 
@@ -183,7 +183,7 @@ fn field_i64(event: &Value, key: &str) -> i64 {
 ///
 /// Goes through `u32` first (safe for in-memory token counts that never
 /// exceed 4B), matching the `count_as_f64` strategy.
-fn tokens_to_f64(v: i64) -> f64 {
+pub fn tokens_to_f64(v: i64) -> f64 {
     f64::from(u32::try_from(v.max(0)).unwrap_or(0))
 }
 

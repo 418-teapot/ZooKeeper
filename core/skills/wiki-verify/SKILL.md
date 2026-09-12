@@ -133,7 +133,7 @@ zwiki page set <path> status --downgrade
 
 ```bash
 zwiki log \
-  --op verify --path "<domain>/concepts/<page>.md" \
+  --path "<domain>/concepts/<page>.md" \
   --action edit --note "来源回溯验证：{validated|drifted}"
 ```
 

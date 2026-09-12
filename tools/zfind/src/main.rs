@@ -185,7 +185,8 @@ fn cmd_search(
         (None, Some(kw)) => {
             let hits = session::search_sessions(filter, db, kw)
                 .unwrap_or_else(|e| fail(&format!("search failed: {e}")));
-            // Search keeps the root-session semantics of the old title query.
+            // Keyword search may match child sessions; `session_rows`
+            // below narrows the display to root sessions.
             (hits, kw)
         }
         (None, None) => {

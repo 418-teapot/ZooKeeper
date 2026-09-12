@@ -18,7 +18,7 @@ use super::common::{
     agent_style, pad, render_table, truncate_display, type_color, type_style,
 };
 
-// ── B. Show Command — Timeline Views ──────────────────────────────────────────
+// ── Timeline views (show command) ─────────────────────────────────────────────
 
 /// Create the timeline table with column definitions.
 fn create_timeline_table() -> Table {

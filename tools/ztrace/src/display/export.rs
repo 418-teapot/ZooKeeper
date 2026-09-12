@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use serde_json::{Map, Number, Value, json};
 
-// ── C. Export — Steps JSON ────────────────────────────────────────────────────
+// ── Export steps JSON ─────────────────────────────────────────────────────────
 
 /// Build a single JSON object for one step row.
 fn build_step_json_row(
@@ -189,7 +189,7 @@ pub fn output_steps_json(
     );
 }
 
-// ── C. Export — Tokens JSON ───────────────────────────────────────────────────
+// ── Export tokens JSON ────────────────────────────────────────────────────────
 
 /// Output token distribution as JSON.
 pub fn output_tokens_json(rows: &[Value]) {

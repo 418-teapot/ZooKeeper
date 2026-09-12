@@ -2,7 +2,7 @@
 name = "zinspect"
 version = "0.1.0"
 edition = "2024"
-description = "ZooKeeper session inspector -- stats, timeline, and impact analysis for OpenCode sessions."
+description = "ZooKeeper session inspector -- stats, timeline, and impact analysis for OpenCode and pi sessions."
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

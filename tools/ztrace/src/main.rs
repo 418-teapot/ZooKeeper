@@ -603,8 +603,9 @@ fn cmd_steps(
         // Resolve the zoo log path first; when no unique log file exists for
         // the session there is nothing to overlay, so skip parsing instead of
         // round-tripping `None` through an empty path.
-        parser::resolve_log_path(session_id)
-            .map_or_else(Vec::new, |log_path| parser::parse_zoo_log(&log_path))
+        parser::resolve_log_path(session_id).map_or_else(Vec::new, |log_path| {
+            zutil::zoo_log::parse_zoo_log(&log_path)
+        })
     } else {
         Vec::new()
     };
@@ -961,9 +962,9 @@ mod tests {
 
     #[test]
     fn test_apply_filter_no_events_yields_empty_hook_map() {
-        // Overlays disabled: `cmd_steps` passes an empty slice, and the
-        // filter must leave the hook map empty (behavioural equivalent to
-        // the previous `hook_overlays` guard).
+        // Overlays disabled: `cmd_steps` passes an empty slice, so the
+        // filter leaves the hook map empty because there are no zoo events
+        // to attach.
         let mut steps = vec![serde_json::json!({
             "_display_index": 1,
             "time_created": "2024-05-06T12:53:30.000000Z",

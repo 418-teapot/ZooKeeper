@@ -77,18 +77,10 @@ pub fn pad(s: &str, width: usize) -> String {
 }
 
 /// Truncate text to fit within `max_cols` display columns.
+///
+/// Thin wrapper over [`zutil::truncate_width`], which measures terminal
+/// columns and appends `"..."` when truncation occurs.
 pub fn truncate_display(text: &str, max_cols: usize) -> String {
-    if text.is_empty() || max_cols < 4 {
-        return if max_cols > 0 {
-            text.chars().take(max_cols).collect()
-        } else {
-            String::new()
-        };
-    }
-    if display_width(text) <= max_cols {
-        return text.to_string();
-    }
-    // Use zutil's truncate_width
     truncate_width(text, max_cols)
 }
 

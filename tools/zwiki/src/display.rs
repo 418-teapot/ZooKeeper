@@ -104,11 +104,7 @@ fn today() -> String {
 /// replacing newlines with spaces.
 fn truncate_for_display(s: &str, max: usize) -> String {
     let flat = s.replace('\n', " ");
-    if flat.chars().count() <= max {
-        flat
-    } else {
-        flat.chars().take(max).collect::<String>() + "..."
-    }
+    zutil::truncate_chars(&flat, max)
 }
 
 // ---------------------------------------------------------------------------

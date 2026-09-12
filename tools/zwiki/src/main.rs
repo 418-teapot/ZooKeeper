@@ -62,7 +62,7 @@ fn guard_writable(root: &WikiRoot, cmd_desc: &str) {
 
 /// Normalize a page path argument that should reference an **existing** page.
 ///
-/// Pipeline (per §12.1 of the wiki design):
+/// Pipeline:
 /// 1. Strip leading `./` prefix.
 /// 2. Make relative to wiki root (strip root prefix or reject absolute paths).
 /// 3. Append `.md` if the path has no extension.
@@ -348,10 +348,6 @@ enum Command {
 
     /// Append a log entry to wiki/logs/YYYY-MM.md
     Log {
-        /// Operation: ingest, update, delete, query, health, lint, refresh, tool
-        #[arg(long)]
-        op: String,
-
         /// Wiki-relative page path (e.g. concepts/npc.md)
         #[arg(long)]
         path: String,
@@ -507,17 +503,16 @@ fn dispatch(args: ZwikiArgs) {
         Some(Command::Page(ref page_cmd)) => {
             dispatch_page(&wiki_root, page_cmd, args.json);
         }
-        Some(Command::Log { op, path, action, note }) => {
+        Some(Command::Log { path, action, note }) => {
             guard_writable(&wiki_root, "log");
-            // Intentional per blueprint §12.1: log --path normalizes first
-            // and rejects nonexistent pages with a clear error instead of
-            // silently proceeding (behavioral change from old code).
+            // log --path normalizes the argument first and rejects a
+            // nonexistent page with a clear error.
             let normalized = normalize_page_path(wiki_root.path(), &path)
                 .unwrap_or_else(|e| {
                     eprintln!("{e}");
                     process::exit(1);
                 });
-            cmd_log(&wiki_root, &op, &normalized, &action, note.as_deref());
+            cmd_log(&wiki_root, &normalized, &action, note.as_deref());
         }
         Some(Command::Search { query, r#type, tag, domain }) => {
             cmd_search(
@@ -551,8 +546,7 @@ fn dispatch(args: ZwikiArgs) {
     }
 }
 
-/// Dispatch the remaining subcommands (Verify through Contradictions)
-/// to keep the main `dispatch` function under the line limit.
+/// Dispatch the remaining subcommands (Verify through Contradictions).
 fn dispatch_tail(wiki_root: &WikiRoot, args: &ZwikiArgs, cmd: &Command) {
     match cmd {
         Command::Verify { domain } => {
@@ -1309,14 +1303,8 @@ fn cmd_page_unset(wiki_root: &WikiRoot, path: &str, prop: &str) {
     });
 }
 
-fn cmd_log(
-    wiki_root: &WikiRoot,
-    op: &str,
-    path: &str,
-    action: &str,
-    note: Option<&str>,
-) {
-    log::add_entry_at(wiki_root.path(), op, path, action, note).unwrap_or_else(
+fn cmd_log(wiki_root: &WikiRoot, path: &str, action: &str, note: Option<&str>) {
+    log::add_entry_at(wiki_root.path(), path, action, note).unwrap_or_else(
         |e| {
             eprintln!("{e}");
             process::exit(1);
@@ -1517,8 +1505,6 @@ mod tests {
         let args = ZwikiArgs::try_parse_from([
             "zwiki",
             "log",
-            "--op",
-            "ingest",
             "--path",
             "concepts/foo.md",
             "--action",
@@ -1526,8 +1512,7 @@ mod tests {
         ])
         .unwrap();
         match args.command {
-            Some(Command::Log { op, path, action, .. }) => {
-                assert_eq!(op, "ingest");
+            Some(Command::Log { path, action, .. }) => {
                 assert_eq!(path, "concepts/foo.md");
                 assert_eq!(action, "create");
             }

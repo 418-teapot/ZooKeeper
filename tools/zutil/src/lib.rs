@@ -18,6 +18,8 @@ pub mod fileio;
 
 pub mod session;
 
+pub mod zoo_log;
+
 /// Return the `ZooKeeper` log directory, expanding `~` to the user home.
 #[must_use]
 pub fn get_zoo_log_dir() -> String {
@@ -106,7 +108,7 @@ fn session_id_from_filename(name: &str) -> Option<&str> {
 /// host), the lookup is ambiguous and `None` is returned.
 #[must_use]
 pub fn resolve_session_path(session_id: &str, log_dir: &str) -> Option<String> {
-    // os.path.basename: strip any directory components from the argument
+    // Strip any directory components from the argument.
     let session_id = Path::new(session_id)
         .file_name()
         .and_then(|s| s.to_str())
@@ -617,7 +619,8 @@ mod tests {
     fn test_estimate_tokens_tool_string_no_quotes() {
         // Bugfix: string tool input should NOT be JSON-quoted in estimation.
         // str("hello world") = 11 chars (bare, not JSON-quoted)
-        // Bug (old): Value::String.to_string() = "\"hello world\"" (15 chars)
+        // Regression: string tool input is measured bare (11 chars → 2
+        // tokens); a JSON-quoted form would count 13 chars and yield 3.
         let parts = vec![serde_json::json!({
             "type": "tool",
             "state": {"input": "hello world", "output": "ok"}

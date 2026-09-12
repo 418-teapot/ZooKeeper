@@ -950,8 +950,8 @@ fn test_message_json() {
 fn test_message_table() {
     let fix = TestFixture::new();
     // msg-004 is an assistant message with a single text part, so the
-    // detail renderer shows one text part (the old raw-part fixtures —
-    // agent, custom part types — are gone from the event model).
+    // detail renderer shows one text part (the event model carries only
+    // text, tool, and reasoning parts).
     let output = fix
         .zfind()
         .args(["message", "msg-004"])

@@ -11,6 +11,8 @@ use std::io;
 
 use serde_json::{Number, Value, json};
 
+use crate::display::tokens_to_f64;
+
 use zutil::session::{
     Host, HostFilter, OpenCodeSessionProvider, ResolveError, Session,
     SessionEvent, SessionMeta, SessionProvider,
@@ -117,11 +119,6 @@ pub fn take_recent(
 
 // ── step mapping ─────────────────────────────────────────────────────────────
 
-/// Convert a token count to `f64` without triggering `cast_precision_loss`.
-fn tokens_to_f64(v: i64) -> f64 {
-    f64::from(u32::try_from(v.max(0)).unwrap_or(0))
-}
-
 /// Convert an `f64` to a JSON number or `Null` for non-finite values.
 fn f64_to_json(v: f64) -> Value {
     Number::from_f64(v).map_or(Value::Null, Value::Number)
@@ -129,14 +126,12 @@ fn f64_to_json(v: f64) -> Value {
 
 /// Build the step row shape the stats and impact subcommands consume.
 ///
-/// Mirrors the previous DB extraction's field set so `OpenCode` numbers
-/// stay identical: token totals, reasoning count, reason and message id
-/// come from [`SessionEvent::Usage`] (which the `OpenCode` provider
-/// fills from `step-finish` parts) and timestamps are ISO-8601. The
-/// message duration surfaces as `duration_ms`; the absolute
-/// `msg_time_created`/`msg_time_completed` endpoints the old
-/// message-table lookup produced are not recorded in the event model, so
-/// they stay `Null`.
+/// Token totals, reasoning count, reason and message id come from
+/// [`SessionEvent::Usage`] (which the `OpenCode` provider fills from
+/// `step-finish` parts) and timestamps are ISO-8601. The message
+/// duration surfaces as `duration_ms`; the absolute
+/// `msg_time_created`/`msg_time_completed` endpoints stay `Null`
+/// because the event model does not record them.
 fn usage_to_step(step_index: usize, usage: &SessionEvent) -> Value {
     let SessionEvent::Usage {
         input,

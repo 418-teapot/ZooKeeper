@@ -2,6 +2,7 @@ use chrono::NaiveDateTime;
 use serde_json::Value;
 
 use zutil::resolve_session_path;
+use zutil::zoo_log::strip_vs16;
 
 // Note: sub-tick characters for the histogram bar (▏..▉) are emitted
 // directly in `hit_rate_bar` to satisfy single_char_add_str as `bar.push()`.
@@ -103,7 +104,7 @@ pub fn hit_rate_bar(rate: f64) -> String {
 /// Strips either the `opencode-` or `pi-` host prefix. Returns the full
 /// basename when no known host prefix is present.
 pub fn session_id_from_path(path: &str) -> String {
-    // os.path.basename equivalent
+    // file-name component of the path
     let basename = path.rsplit('/').next().unwrap_or(path);
     for prefix in ["opencode-", "pi-"] {
         if let Some(stripped) =
@@ -113,34 +114,6 @@ pub fn session_id_from_path(path: &str) -> String {
         }
     }
     basename.to_string()
-}
-
-/// Strip emoji variation selector-16 (VS16, U+FE0F) from a string.
-///
-/// VS16 causes terminal display width mismatches: the terminal renders it
-/// as 0-width but some Unicode width libraries count it as 1 cell.
-pub fn strip_vs16(s: &str) -> String {
-    s.replace('\u{fe0f}', "")
-}
-
-/// Recursively strip VS16 from all string values in a JSON tree.
-fn strip_vs16_from_value(value: &mut Value) {
-    match value {
-        Value::String(s) => {
-            *s = strip_vs16(s);
-        }
-        Value::Object(obj) => {
-            for v in obj.values_mut() {
-                strip_vs16_from_value(v);
-            }
-        }
-        Value::Array(arr) => {
-            for v in arr.iter_mut() {
-                strip_vs16_from_value(v);
-            }
-        }
-        _ => {}
-    }
 }
 
 /// Format the context-metrics hook details.
@@ -260,27 +233,6 @@ pub fn format_details(event: &Value) -> String {
     strip_vs16(&result)
 }
 
-/// Read a JSONL file and parse each non-empty line as JSON.
-///
-/// Returns an empty `Vec` if the file does not exist or cannot be read.
-/// Invalid JSON lines are silently skipped.
-pub fn parse_zoo_log(path: &str) -> Vec<Value> {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return vec![];
-    };
-    let mut events: Vec<Value> = content
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect();
-    // Strip VS16 from all string values to avoid terminal display width
-    // mismatches in table cells (e.g. timeline Details column).
-    for event in &mut events {
-        strip_vs16_from_value(event);
-    }
-    events
-}
-
 /// Resolve a session ID (full or prefix) to an absolute log path.
 ///
 /// Wrapper around `zutil::resolve_session_path` that exits with code 2
@@ -303,6 +255,7 @@ pub fn resolve_session(session_id: &str, log_dir: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+    use zutil::zoo_log::strip_vs16_from_value;
 
     #[test]
     fn test_shorten_timestamp_empty() {

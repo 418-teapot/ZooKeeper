@@ -14,7 +14,7 @@ use super::common::{
     fmt_float_int, format_dur, render_table, truncate_display,
 };
 
-// ── D. Steps Command ──────────────────────────────────────────────────────────
+// ── Steps command ─────────────────────────────────────────────────────────────
 
 /// Create the steps table with column definitions.
 fn create_steps_table(show_session: bool, show_model: bool) -> Table {

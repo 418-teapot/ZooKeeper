@@ -26,7 +26,7 @@ const SYSTEM_FILES: &[&str] =
 const EXCLUDED_DIRS: &[&str] = &["templates", "tools", "raw", "logs"];
 
 // ---------------------------------------------------------------------------
-// 1. is_valid_wiki_target
+// is_valid_wiki_target
 // ---------------------------------------------------------------------------
 
 /// Check whether `target` is a valid wiki-root-relative link target.
@@ -124,7 +124,7 @@ fn strip_bundle_prefix(rel: &str) -> Option<&str> {
 }
 
 // ---------------------------------------------------------------------------
-// 2. strip_backlinks_section
+// strip_backlinks_section
 // ---------------------------------------------------------------------------
 
 /// Remove the `## Backlinks` section from `body`.
@@ -146,19 +146,19 @@ pub fn strip_backlinks_section(body: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// 3. extract_links
+// extract_links
 // ---------------------------------------------------------------------------
 
 /// Extract cross-reference link targets from `content`, checking existence
 /// against `wiki_root`.
 ///
-/// Sources (in order):
-/// 1. Frontmatter `relations` field
-///    1b. Frontmatter `supersedes`/`superseded_by`/`contradictions` fields
-/// 2. Inline markdown links `[text](path.md)` in body text
-///    (excluding the `## Backlinks` section)
-/// 3. Backtick-wrapped paths `` `path.md` `` in body text
-///    (excluding the `## Backlinks` section)
+/// Sources:
+/// - Frontmatter `relations` field
+/// - Frontmatter `supersedes`/`superseded_by`/`contradictions` fields
+/// - Inline markdown links `[text](path.md)` in body text
+///   (excluding the `## Backlinks` section)
+/// - Backtick-wrapped paths `` `path.md` `` in body text
+///   (excluding the `## Backlinks` section)
 ///
 /// Returns a sorted, deduplicated list of wiki-root-relative `.md` paths
 /// that pass [`is_valid_wiki_target`].
@@ -170,7 +170,7 @@ pub fn extract_links(wiki_root: &Path, content: &str) -> Vec<String> {
     let body = wiki::strip_frontmatter(content);
     let clean_body = strip_backlinks_section(&body);
 
-    // 1. Frontmatter relations field
+    // Frontmatter relations field
     if let Some(Value::Array(related)) = fm.get("relations") {
         for val in related {
             if let Some(s) = val.as_str() {
@@ -214,7 +214,7 @@ pub fn extract_links(wiki_root: &Path, content: &str) -> Vec<String> {
         }
     }
 
-    // 2. Inline markdown links [text](path.md) in body
+    // Inline markdown links [text](path.md) in body
     let md_re =
         Regex::new(r"\[([^\]]+)\]\(([^)]+\.md)\)").expect("valid regex");
     for cap in md_re.captures_iter(&clean_body) {
@@ -227,7 +227,7 @@ pub fn extract_links(wiki_root: &Path, content: &str) -> Vec<String> {
         }
     }
 
-    // 3. Backtick-wrapped paths `path.md` in body
+    // Backtick-wrapped paths `path.md` in body
     let bt_re = Regex::new(r"`([^\s`]+\.md)`").expect("valid regex");
     for cap in bt_re.captures_iter(&clean_body) {
         let target = cap[1].trim();
@@ -243,7 +243,7 @@ pub fn extract_links(wiki_root: &Path, content: &str) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
-// 4. build_reverse_index
+// build_reverse_index
 // ---------------------------------------------------------------------------
 
 /// Build reverse-link index from parsed pages, using `wiki_root` for
@@ -372,7 +372,7 @@ pub fn build_backlinks_for(
 }
 
 // ---------------------------------------------------------------------------
-// 5. format_backlinks_section
+// format_backlinks_section
 // ---------------------------------------------------------------------------
 
 /// Format a `## Backlinks` section body for `_target_rel` with `sources`.
@@ -403,7 +403,7 @@ pub fn format_backlinks_section(
 }
 
 // ---------------------------------------------------------------------------
-// 6. find_insertion_point
+// find_insertion_point
 // ---------------------------------------------------------------------------
 
 /// Find the best offset to insert a new `## Backlinks` section.
@@ -413,11 +413,9 @@ pub fn format_backlinks_section(
 /// match positions — all captured offsets are always on valid char
 /// boundaries.
 ///
-/// Priority:
-/// 1. After `## Details` section end
-/// 2. Before `## References` section start
-/// 3. (Legacy) After `## Relations` — kept as a fallback for pages not yet
-///    migrated; `## Relations` sections have been removed wiki-wide.
+/// Anchors, in priority order:
+/// - after the `## Details` section end
+/// - before the `## References` section start
 ///
 /// Returns `None` if none of the anchors exist.
 #[must_use]
@@ -432,24 +430,18 @@ pub fn find_insertion_point(content: &str) -> Option<usize> {
         return Some(start);
     }
 
-    // Legacy fallback: after ## Relations (removed wiki-wide; kept in case
-    // a page was not migrated or is rolled back from history).
-    if let Some((_, end)) = find_section_pos(content, "Relations") {
-        return Some(end);
-    }
-
     None
 }
 
 // ---------------------------------------------------------------------------
-// 7. update_backlinks
+// update_backlinks
 // ---------------------------------------------------------------------------
 
 /// Write `## Backlinks` sections into each wiki page.
 ///
 /// For each page that has inbound links, adds or updates a `## Backlinks`
 /// section. The section is placed after `## Details`, or before
-/// `## References` (legacy `## Relations` fallback kept for unmigrated pages).
+/// `## References` when no `## Details` section exists.
 ///
 /// Pages with no inbound links that still carry a `## Backlinks` section
 /// (e.g. from a previous run) will have it removed to keep pages clean.
@@ -488,20 +480,23 @@ pub fn update_backlinks(
                     backlinks_content.trim_end(),
                     &content[end..].trim_start()
                 );
+            } else if let Some(ins_point) = find_insertion_point(&content) {
+                // Insert new backlinks section, preserving
+                // blank line separation from adjacent sections.
+                new_content = format!(
+                    "{}\n\n{}\n\n{}",
+                    &content[..ins_point].trim_end(),
+                    backlinks_content.trim(),
+                    &content[ins_point..].trim_start()
+                );
             } else {
-                match find_insertion_point(&content) {
-                    Some(ins_point) => {
-                        // Insert new backlinks section, preserving
-                        // blank line separation from adjacent sections.
-                        new_content = format!(
-                            "{}\n\n{}\n\n{}",
-                            &content[..ins_point].trim_end(),
-                            backlinks_content.trim(),
-                            &content[ins_point..].trim_start()
-                        );
-                    }
-                    None => continue,
-                }
+                // Neither anchor exists, so there is nowhere to insert
+                // the section without disturbing the page.
+                eprintln!(
+                    "警告: {} 缺少 ## Details / ## References 锚点，跳过反向链接写入",
+                    page.rel
+                );
+                continue;
             }
         } else if let Some((start, end)) = existing {
             // No inbound links — remove stale Backlinks section
@@ -655,7 +650,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // 1. is_valid_wiki_target
+    // is_valid_wiki_target
     // -------------------------------------------------------------------
 
     #[test]
@@ -725,7 +720,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // 2. strip_backlinks_section
+    // strip_backlinks_section
     // -------------------------------------------------------------------
 
     #[test]
@@ -764,7 +759,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // 3. extract_links
+    // extract_links
     // -------------------------------------------------------------------
 
     #[test]
@@ -790,7 +785,7 @@ mod tests {
 
     #[test]
     fn test_extract_links_from_backtick() {
-        let content = "Relations: `foo.md`, `bar.md`";
+        let content = "See: `foo.md`, `bar.md`";
         let dir = temp_dir("extract_backtick");
         write(&dir.join("foo.md"), "# Foo");
         write(&dir.join("bar.md"), "# Bar");
@@ -894,7 +889,7 @@ Body.";
     }
 
     // -------------------------------------------------------------------
-    // 4. build_reverse_index
+    // build_reverse_index
     // -------------------------------------------------------------------
 
     #[test]
@@ -958,7 +953,7 @@ Body.";
     }
 
     // -------------------------------------------------------------------
-    // 5. format_backlinks_section
+    // format_backlinks_section
     // -------------------------------------------------------------------
 
     #[test]
@@ -987,19 +982,14 @@ Body.";
     }
 
     // -------------------------------------------------------------------
-    // 6. find_insertion_point
+    // find_insertion_point
     // -------------------------------------------------------------------
 
     #[test]
-    fn test_find_insertion_point_after_relations() {
-        let content =
-            "# Title\n\n## Relations\n\n- `foo.md`\n\n## Details\n\nStuff.";
-        let point = find_insertion_point(content);
-        assert!(point.is_some());
-        // Point should be after ## Relations section end
-        let pos = point.unwrap();
-        assert!(pos > content.find("## Relations").unwrap());
-        assert!(pos <= content.len());
+    fn test_find_insertion_point_ignores_relations() {
+        let content = "# Title\n\n## Relations\n\n- `foo.md`\n\nBody.";
+        // `## Relations` is not an insertion anchor.
+        assert!(find_insertion_point(content).is_none());
     }
 
     #[test]
@@ -1029,7 +1019,7 @@ Body.";
     }
 
     // -------------------------------------------------------------------
-    // 7. update_backlinks
+    // update_backlinks
     // -------------------------------------------------------------------
 
     #[test]
@@ -1038,7 +1028,7 @@ Body.";
         let page = make_page(
             &dir,
             "target.md",
-            "---\ntitle: Target\n---\n\n# Target\n\n## Relations\n\n- `foo.md`\n\nBody.",
+            "---\ntitle: Target\n---\n\n# Target\n\n## Details\n\nBody.",
         );
         write(&dir.join("foo.md"), "# Foo");
         let pages = vec![page];
@@ -1054,13 +1044,31 @@ Body.";
     }
 
     #[test]
+    fn test_update_backlinks_no_anchor_skips_page() {
+        let dir = temp_dir("update_no_anchor");
+        let original = "---\ntitle: Target\n---\n\n# Target\n\nBody.";
+        let page = make_page(&dir, "target.md", original);
+        write(&dir.join("foo.md"), "# Foo");
+        let pages = vec![page];
+        let mut index = HashMap::new();
+        index.insert("target.md".to_string(), vec!["foo.md".to_string()]);
+
+        let updated = update_backlinks(&dir, &index, &pages);
+
+        assert_eq!(updated, 0);
+        let content = fs::read_to_string(dir.join("target.md")).unwrap();
+        assert_eq!(content, original);
+        assert!(!content.contains("## Backlinks"));
+    }
+
+    #[test]
     fn test_update_backlinks_updates_existing_section() {
         let dir = temp_dir("update_existing");
         let page = make_page(
             &dir,
             "target.md",
-            "---\ntitle: Target\n---\n\n# Target\n\n## Relations\n\n- `foo.md`\n\n\
-             ## Backlinks\n\n- [Old](old.md)\n\nBody.",
+            "---\ntitle: Target\n---\n\n# Target\n\n## Details\n\nBody.\n\n\
+             ## Backlinks\n\n- [Old](old.md)\n\nOutro.",
         );
         write(&dir.join("foo.md"), "# Foo");
         write(&dir.join("new.md"), "---\ntitle: New Source\n---\n\nBody.");
@@ -1106,7 +1114,7 @@ Body.";
     }
 
     // -------------------------------------------------------------------
-    // 9. Bundle path resolution
+    // Bundle path resolution
     // -------------------------------------------------------------------
 
     #[test]
@@ -1150,7 +1158,7 @@ Body.";
     }
 
     // -------------------------------------------------------------------
-    // 10. build_reverse_index with bundle structure
+    // build_reverse_index with bundle structure
     // -------------------------------------------------------------------
 
     #[test]
@@ -1189,7 +1197,7 @@ Body.";
     }
 
     // -------------------------------------------------------------------
-    // 11. update_backlinks — newline handling
+    // update_backlinks — newline handling
     // -------------------------------------------------------------------
 
     #[test]
@@ -1219,7 +1227,7 @@ Body.";
     }
 
     // -------------------------------------------------------------------
-    // 12. strip_bundle_prefix edge cases
+    // strip_bundle_prefix edge cases
     // -------------------------------------------------------------------
 
     #[test]
@@ -1253,7 +1261,7 @@ Body.";
     }
 
     // -------------------------------------------------------------------
-    // 13. build_reverse_index — multi-bundle collision
+    // build_reverse_index — multi-bundle collision
     // -------------------------------------------------------------------
 
     #[test]
@@ -1327,7 +1335,7 @@ Body.";
     }
 
     // -------------------------------------------------------------------
-    // 14. update_backlinks — single newline edge case
+    // update_backlinks — single newline edge case
     // -------------------------------------------------------------------
 
     #[test]

@@ -58,8 +58,8 @@ pub fn cmd_verify(root: &Path, json: bool, domain: Option<&str>) {
 /// Collect stale source–derived pairs for a given wiki root and optional
 /// domain filter.
 ///
-/// This is the domain-filter + sort + output logic extracted from
-/// `cmd_verify` so tests can exercise it without capturing stdout.
+/// Applies the optional domain filter, sorts the results, and returns
+/// them so tests can exercise the logic without capturing stdout.
 /// The per-page stale-source scan is delegated to
 /// [`wiki::stale_sources`].
 pub fn collect_stale_pairs(

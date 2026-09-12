@@ -111,7 +111,7 @@ kiwi 返回分析后，由调用方 agent 执行写入：
 5. **记录日志** — 调用 `zwiki log`，`--action` 用 `create` 或 `edit`：
     ```bash
     zwiki log \
-        --op ingest --path "<domain>/concepts/<file>.md" \
+        --path "<domain>/concepts/<file>.md" \
         --action <create|edit> --note "<简短说明>"
     ```
 6. **更新 overview.md** — 如果 kiwi 的分析建议更新，则执行
@@ -204,7 +204,7 @@ kiwi 返回分析后，由调用方 agent 执行写入：
 4. **记录日志** — 对每个确认的验证，追加日志条目说明验证来源：
     ```bash
     zwiki log \
-      --op validate --path "<domain>/concepts/<page>.md" \
+      --path "<domain>/concepts/<page>.md" \
       --action edit --note "新源确认声明「…」"
     ```
     `--note` 应包含被确认的声明摘要。

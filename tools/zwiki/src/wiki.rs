@@ -688,8 +688,8 @@ mod tests {
         let dir = temp_dir("wiki_pages_meta");
         write(&dir.join("regular.md"), "# Regular");
         write(&dir.join("overview.md"), "# Overview");
-        // health-report.md and lint-report.md are no longer meta files —
-        // they now appear as regular pages.
+        // health-report.md and lint-report.md are regular pages, not meta
+        // files.
         write(&dir.join("health-report.md"), "# Health Report");
         write(&dir.join("lint-report.md"), "# Lint Report");
         for meta in &["index.md", "SCHEMA.md", ".gitkeep"] {

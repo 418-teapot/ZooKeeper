@@ -7,8 +7,8 @@
 //! check in `main()`.
 //!
 //! The `--help` tests inject a fake `HOME` so they never depend on a
-//! real `~/.zoo/log` directory.  With the directory check moved after
-//! `Cli::parse()`, clap handles `--help` before any I/O check runs.
+//! real `~/.zoo/log` directory: the directory check runs after
+//! `Cli::parse()`, so clap handles `--help` before any I/O check runs.
 
 use std::fs;
 use std::io::Read;
@@ -782,8 +782,8 @@ fn test_tail_raw_new_line_appended() {
     });
 
     // Brief pause for tail -f to start and register inotify before we
-    // append.  This is much smaller than the original 300ms sleep and is
-    // bounded (milliseconds only); the main wait below uses polling.
+    // append.  The sleep is bounded to milliseconds; the main wait below
+    // uses polling.
     std::thread::sleep(Duration::from_millis(50));
 
     // Append a new JSONL line to the watched log file.
@@ -846,7 +846,8 @@ fn test_tail_raw_new_line_appended() {
         found || stdout_content.contains("new-event"),
         "tail --raw should have emitted the appended line, got stdout: {stdout_content}",
     );
-    // The original 4 lines should NOT appear (tail -n 0 suppresses history).
+    // The 4 pre-existing lines should NOT appear (tail -n 0 suppresses
+    // history).
     assert!(
         !stdout_content.contains("subagent-prompt"),
         "tail -n 0 should NOT output existing lines, got: {stdout_content}"

@@ -90,7 +90,7 @@ pub fn resolve_wiki_link(target: &str, wiki_dir: &Path) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
-// 1. check_empty_files
+// check_empty_files
 // ---------------------------------------------------------------------------
 
 /// Find wiki pages whose body (after stripping frontmatter) is below
@@ -133,7 +133,7 @@ pub fn check_empty_files(pages: &[Page], threshold: usize) -> Vec<Issue> {
 }
 
 // ---------------------------------------------------------------------------
-// 2. check_index_sync
+// check_index_sync
 // ---------------------------------------------------------------------------
 
 /// Compare all `index.md` files (root + subdirectories) against actual files
@@ -240,25 +240,25 @@ pub fn check_index_sync(pages: &[Page], wiki_dir: &Path) -> IndexSyncResult {
 }
 
 // ---------------------------------------------------------------------------
-// 3. check_log_coverage
+// check_log_coverage
 // ---------------------------------------------------------------------------
 
 /// Extract logged paths from the concatenated content of `logs/` monthly files.
 ///
-/// Supports two formats:
-/// - Old format: `## [YYYY-MM-DD] op | path | action — note`
-/// - New OKF §7 format: `* **verb**: path — note` under `## YYYY-MM-DD` groups
+/// Supports two entry shapes:
+/// - Heading entries: `## [YYYY-MM-DD] op | path | action — note`
+/// - List entries: `* **verb**: path — note` under a `## YYYY-MM-DD` group
 fn parse_log_entries(content: &str) -> HashSet<String> {
     let mut paths = HashSet::new();
 
-    // Old format: ## [YYYY-MM-DD] op | path | action — note
+    // Heading entries: ## [YYYY-MM-DD] op | path | action — note
     let old_re =
         Regex::new(r"(?m)^## \[\d{4}-\d{2}-\d{2}\] \w+ \| ([^|]+) \|").unwrap();
     for cap in old_re.captures_iter(content) {
         paths.insert(cap[1].trim().to_string());
     }
 
-    // New OKF §7 format: * **verb**: path — note
+    // List entries: * **verb**: path — note
     let new_re = Regex::new(r"(?m)^\* \*\*[^*]+\*\*:\s*([^—\n]+)").unwrap();
     for cap in new_re.captures_iter(content) {
         paths.insert(cap[1].trim().to_string());
@@ -332,7 +332,7 @@ pub fn check_log_coverage(pages: &[Page], wiki_dir: &Path) -> Vec<Issue> {
 }
 
 // ---------------------------------------------------------------------------
-// 4. check_frontmatter
+// check_frontmatter
 // ---------------------------------------------------------------------------
 
 /// Verify every page has required frontmatter fields with valid values.
@@ -445,7 +445,7 @@ pub fn check_frontmatter(pages: &[Page]) -> Vec<Issue> {
 }
 
 // ---------------------------------------------------------------------------
-// 5. check_relations_field
+// check_related_field
 // ---------------------------------------------------------------------------
 
 /// Check that `relations` frontmatter fields and markdown links don't point
@@ -456,7 +456,7 @@ pub fn check_related_field(pages: &[Page]) -> Vec<Issue> {
     let mut results: Vec<Issue> = Vec::new();
 
     for page in pages {
-        // 1. Check frontmatter `relations` field.
+        // Check frontmatter `relations` field.
         if let Some(related) = page.frontmatter.get("relations") {
             let items: Vec<&str> = match related {
                 Value::String(s) => vec![s.as_str()],
@@ -487,7 +487,7 @@ pub fn check_related_field(pages: &[Page]) -> Vec<Issue> {
             }
         }
 
-        // 2. Check markdown links in body text.
+        // Check markdown links in body text.
         for cap in link_re.captures_iter(&page.body) {
             let link_text = &cap[1];
             let link_target = &cap[2];
@@ -514,7 +514,7 @@ pub fn check_related_field(pages: &[Page]) -> Vec<Issue> {
 }
 
 // ---------------------------------------------------------------------------
-// 6. check_related_body_consistency — bidirectional consistency
+// check_related_body_consistency — bidirectional consistency
 // ---------------------------------------------------------------------------
 
 /// Verify that each page's `relations` frontmatter entries and inline wiki
@@ -716,7 +716,7 @@ pub fn check_source_field(pages: &[Page]) -> Vec<Issue> {
 }
 
 // ---------------------------------------------------------------------------
-// 7. check_missing_inline_links — anchor text mining
+// check_missing_inline_links — anchor text mining
 // ---------------------------------------------------------------------------
 
 /// Scan all pages and extract `[display text](target.md)` → target mappings.
@@ -1050,7 +1050,7 @@ pub fn check_missing_inline_links(
 }
 
 // ---------------------------------------------------------------------------
-// 8. check_duplicate_inline_links
+// check_duplicate_inline_links
 // ---------------------------------------------------------------------------
 
 /// Find pages that link to the same wiki target multiple times in prose
@@ -1136,7 +1136,7 @@ pub fn check_duplicate_inline_links(
 }
 
 // ---------------------------------------------------------------------------
-// 9. mark_stale — timeliness staleness computation
+// mark_stale — timeliness staleness computation
 // ---------------------------------------------------------------------------
 
 /// Result of a timeliness staleness check — a page whose timeliness needs
@@ -1406,7 +1406,7 @@ mod tests {
     }
 
     // =======================================================================
-    // 1. check_empty_files
+    // check_empty_files
     // =======================================================================
 
     #[test]
@@ -1464,7 +1464,7 @@ mod tests {
     }
 
     // =======================================================================
-    // 2. check_index_sync
+    // check_index_sync
     // =======================================================================
 
     #[test]
@@ -1604,7 +1604,7 @@ mod tests {
     }
 
     // =======================================================================
-    // 3. check_log_coverage
+    // check_log_coverage
     // =======================================================================
 
     #[test]
@@ -1725,7 +1725,7 @@ mod tests {
     }
 
     // =======================================================================
-    // 4. check_frontmatter
+    // check_frontmatter
     // =======================================================================
 
     #[test]
@@ -1976,7 +1976,7 @@ last_validated: not-a-date\n---\nBody.\n";
     }
 
     // =======================================================================
-    // 5. check_related_field
+    // check_related_field
     // =======================================================================
 
     #[test]
@@ -2027,7 +2027,7 @@ last_validated: not-a-date\n---\nBody.\n";
     }
 
     // =======================================================================
-    // 6. check_source_field
+    // check_source_field
     // =======================================================================
 
     #[test]
@@ -2087,7 +2087,7 @@ last_validated: not-a-date\n---\nBody.\n";
     }
 
     // =======================================================================
-    // 7. check_missing_inline_links — integration test via high-level
+    // check_missing_inline_links — integration test via high-level
     //    function.  Full anchor-map expansion is a complex cross-page check;
     //    we test the public API with a minimal two-page scenario.
     // =======================================================================
@@ -2123,7 +2123,7 @@ last_validated: not-a-date\n---\nBody.\n";
     }
 
     // =======================================================================
-    // 8. check_duplicate_inline_links — minimal integration test.
+    // check_duplicate_inline_links — minimal integration test.
     // =======================================================================
 
     #[test]
@@ -2247,7 +2247,7 @@ last_validated: not-a-date\n---\nBody.\n";
         let body = "## Overview\nContent.\n\n## Relations\nRelated.\n";
         let result = body_sections_to_check(body);
         assert!(result.contains("## Overview"));
-        // Relations is no longer in SKIP_LINK_CHECK_SECTIONS, so it is kept.
+        // Relations is not in SKIP_LINK_CHECK_SECTIONS, so it is kept.
         assert!(result.contains("## Relations"));
     }
 
@@ -2273,7 +2273,7 @@ last_validated: not-a-date\n---\nBody.\n";
     }
 
     // =======================================================================
-    // 9. check_related_body_consistency
+    // check_related_body_consistency
     // =======================================================================
 
     #[test]
@@ -2431,7 +2431,7 @@ last_validated: not-a-date\n---\nBody.\n";
     }
 
     // =======================================================================
-    // 10. invalidate_by_source
+    // invalidate_by_source
     // =======================================================================
 
     #[test]

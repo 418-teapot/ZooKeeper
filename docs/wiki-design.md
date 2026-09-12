@@ -203,7 +203,7 @@ OKF v0.1 §9 一致性三要求：
 - ✅ 无 frontmatter
 - ✅ 按日期分组 `## YYYY-MM-DD`，最新在前
 - ✅ 条目格式 `* **<中文动词>**: <path> — <note>`
-- ✅ `zwiki log` 的 `--op/--path/--action/--note` 接口保留，`--action` 映射为中文动词（create→创建，edit→编辑，pass→通过，fail→失败）
+- ✅ `zwiki log` 的 `--path/--action/--note` 接口，`--action` 映射为中文动词（create→创建，edit→编辑，pass→通过，fail→失败）
 - ✅ 解析器向后兼容旧格式（`## [date] ...` 单行），写入器只产新格式
 
 #### 5.2.4 目录结构 — 域优先（已迁移）
@@ -446,7 +446,7 @@ kiwi 系统 prompt（~40 行）          kiwi 技能
 1. `zwiki page create --domain <domain> --type <type> --title "..."` 生成骨架（source 加 `--source-type`）
 2. `write`/`edit` 填充内容（或 `zwiki page set` 改单个字段）
 3. 更新 `wiki/index.md`
-4. `zwiki log --op ingest --path <path> --action create --note "..."`
+4. `zwiki log --path <path> --action create --note "..."`
 5. （可选）更新相关页面 `relations` 字段
 
 ### 7.3 复杂路径（已实现于 skill）
@@ -692,7 +692,7 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 | `page set <path> <prop> <value>` | 写属性（合并原 property 命令，含 status 降级语义） | ✅ 已实现 |
 | `page unset <path> <prop>` | 删属性（合并原 property delete/unset） | ✅ 已实现 |
 | `page move <old> <new>` | 移动/重命名（合并原 move 命令） | ✅ 已实现 |
-| `log --op --path --action [--note]` | 追加日志 | ✅ 已实现 |
+| `log --path --action [--note]` | 追加日志 | ✅ 已实现 |
 | `supersede --old --new --reason` | 建立取代关系 | ✅ 已实现 |
 | `contradictions list\|apply` | 矛盾记录查询/写入 | ✅ 已实现 |
 | `bundle init\|export\|install\|list\|check\|update\|uninstall` | bundle 生命周期 | ✅ 已实现 |
@@ -707,7 +707,7 @@ LLM 不裁决。所有矛盾最终由人解决。系统职责是**保证矛盾�
 |--------|------|------|
 | `check` | 运行 health + lint；可写 root 下自动同步反向链接与 timeliness 标注；默认严格模式（任何问题 exit(1)） | ✅ |
 | `backlinks <page>` | 查询指定页面的反向链接（`page` 必填，`.md` 可省略） | 将并入 `page --backlinks` |
-| `log` | 追加日志到 `wiki/logs/YYYY-MM.md`（`--op`/`--path`/`--action`/`--note`） | ✅ |
+| `log` | 追加日志到 `wiki/logs/YYYY-MM.md`（`--path`/`--action`/`--note`） | ✅ |
 | page | 读页面（`--property`/`--outline`） | 将扩展为 page 命令族 |
 | `property` | 读/写/删 frontmatter 属性（结构化，不手改 YAML） | 将并入 `page set/unset` |
 | `create` | 从模板创建骨架页（`--domain`/`--type`/`--title`/`--slug`/`--source-type`）；新域自动建完整骨架 | 将并入 `page create` |
@@ -967,7 +967,7 @@ zwiki bundle install https://example.com/zoo-wiki.tar.gz
 | `wiki/SCHEMA.md` §目录结构 | 重写为域优先结构 + subdir index.md 约定 |
 | `wiki/index.md` | `##` 章节标题改 `#`；条目 `—` 改 `-`；frontmatter `okf_version` 保留；**缩减为领域列表 + `shared/` 条目** |
 | `wiki/log.md` | 迁移现有 33 条历史条目到 OKF 格式（一次性脚本或手工） |
-| `zwiki log` CLI | `--op/--path/--action/--note` 参数接口保留；`--action` 值映射为中文动词（create→创建，edit→编辑，pass→通过，fail→失败）或保留英文粗体词 |
+| `zwiki log` CLI | `--path/--action/--note` 参数接口；`--action` 值映射为中文动词（create→创建，edit→编辑，pass→通过，fail→失败）或保留英文粗体词 |
 
 **域优先重构（`OKF-DOMAIN`，与 `OKF-LOG` 一并执行）：**
 

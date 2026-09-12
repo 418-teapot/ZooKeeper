@@ -4,8 +4,7 @@
 //! Sessions, messages and parts live in `opencode*.db` files under the
 //! opencode data directory ([`crate::db_helpers::opencode_data_dir`],
 //! overridable via `ZOO_OPENCODE_DATA_DIR`). Host lifecycle events are
-//! parsed from `<data dir>/log/opencode.log`, the same file `ztrace`
-//! reads today.
+//! parsed from `<data dir>/log/opencode.log`.
 
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -356,8 +355,8 @@ fn usage_from_step_finish(
 
 /// Model recorded on an `OpenCode` message, formatted `providerID/modelID`.
 ///
-/// Handles both the structured `model: {providerID, modelID}` object and
-/// the legacy flat `modelID` string. Returns `None` when the message
+/// Accepts both the structured `model: {providerID, modelID}` object and
+/// a flat top-level `modelID` string. Returns `None` when the message
 /// records no model id.
 #[must_use]
 fn message_model(msg_data: &Value) -> Option<String> {
@@ -677,7 +676,7 @@ impl SessionProvider for OpenCodeSessionProvider {
     }
 }
 
-// ── opencode.log parsing (migrated from ztrace) ──────────────────────────────
+// ── opencode.log parsing ──────────────────────────────────────────────────────
 
 /// Map a tool identifier string to a trace event type and icon.
 ///
@@ -1795,7 +1794,7 @@ timestamp=2025-01-09T12:36:00Z level=info message="evaluated" session_id=ses-001
             "model": {"providerID": "openai", "modelID": "gpt-4"},
         });
         assert_eq!(message_model(&obj).as_deref(), Some("openai/gpt-4"));
-        // Legacy flat `modelID` string → the bare model id.
+        // Flat `modelID` string → the bare model id.
         let flat = serde_json::json!({"modelID": "gpt-4"});
         assert_eq!(message_model(&flat).as_deref(), Some("gpt-4"));
         // No model recorded at all.

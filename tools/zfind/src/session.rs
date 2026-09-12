@@ -105,9 +105,8 @@ pub fn list_sessions(
 /// Search session content across the hosts selected by `filter`, honoring
 /// an explicit `--db`.
 ///
-/// Match semantics come from the providers: session labels and message /
-/// tool-result text, case-insensitive — a superset of the old title-only
-/// search.
+/// Match semantics come from the providers: session labels plus message
+/// and tool-result text, matched case-insensitively.
 ///
 /// # Errors
 ///
@@ -132,9 +131,8 @@ pub fn search_sessions(
 /// `max_sessions` most recent sessions per host, honoring an explicit
 /// `--db`.
 ///
-/// Replaces the old scan-and-open-everything message lookup: each host's
-/// provider resolves matching events without fully opening unrelated
-/// sessions.
+/// Each host's provider resolves matching events directly, without fully
+/// opening unrelated sessions.
 ///
 /// # Errors
 ///
@@ -158,8 +156,7 @@ pub fn find_events_across(
 
 /// Sort sessions newest first — by last update time, falling back to the
 /// start time when the host records no update time (e.g. an empty pi
-/// session), then by id for a stable total order. This matches the
-/// previous `ORDER BY time_updated DESC` semantics: the latest activity,
+/// session), then by id for a stable total order. The latest activity,
 /// not the session start, decides the list order.
 #[must_use]
 pub fn sort_newest_first(
@@ -194,11 +191,10 @@ pub fn meta_to_value(host: Host, meta: &SessionMeta) -> Value {
 
 /// Build the show row for one event.
 ///
-/// The row shape mirrors the previous message-based output: `index`,
-/// `role`, `tokens`, `id`, `preview` — plus the `host` tag. `Message`
-/// events carry `user`/`assistant` roles with a text preview; tool events
-/// carry `tool_use`/`tool_result` with a tool preview; `Usage` carries the
-/// total token count.
+/// The row shape is `index`, `role`, `tokens`, `id`, `preview` — plus the
+/// `host` tag. `Message` events carry `user`/`assistant` roles with a
+/// text preview; tool events carry `tool_use`/`tool_result` with a tool
+/// preview; `Usage` carries the total token count.
 #[must_use]
 pub fn show_row(
     host: Host,
@@ -277,8 +273,7 @@ fn event_id(event: &SessionEvent) -> Option<&str> {
     }
 }
 
-/// Reconstruct the display `parts` of one event, mirroring the previous
-/// part-based rows.
+/// Reconstruct the display `parts` of one event for the detail renderer.
 fn event_parts(event: &SessionEvent) -> Vec<Value> {
     match event {
         SessionEvent::Message { text, .. } => {
@@ -304,10 +299,9 @@ fn event_parts(event: &SessionEvent) -> Vec<Value> {
 /// Collect the rows for every event whose id matches one of the requested
 /// id prefixes within `session`.
 ///
-/// The old `message` subcommand looked the ids up in the `message` table;
-/// the event model keeps per-event ids (`Message` ← message id,
-/// `ToolUse`/`ToolResult` ← tool-call id), so a lookup now matches any
-/// event id (exact or prefix) across the scanned sessions.
+/// The event model keeps per-event ids (`Message` ← message id,
+/// `ToolUse`/`ToolResult` ← tool-call id), so a lookup matches any event
+/// id (exact or prefix) across the scanned sessions.
 #[must_use]
 pub fn message_rows(
     host: Host,
@@ -348,7 +342,7 @@ pub fn message_rows(
     rows
 }
 
-/// Truncate a message text like the previous previews did.
+/// Truncate a message text to the preview width.
 fn preview_text(parts: &[Value]) -> String {
     crate::helpers::preview_text(parts, PREVIEW_WIDTH)
 }

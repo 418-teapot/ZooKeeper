@@ -4,7 +4,8 @@
 // [`Session`]: one `Usage` event approximates one LLM step, so the two
 // commands behave identically for OpenCode and pi sessions. Tool uses are
 // attached to the step whose usage timestamp is closest in time (ties go to
-// the later step), which reproduces the historical message-level grouping.
+// the later step), grouping each tool call with the message-level step that
+// issued it.
 
 use std::collections::HashMap;
 
@@ -495,9 +496,9 @@ mod tests {
 
     #[test]
     fn test_build_session_steps_none_fields_placeholder() {
-        // Missing reason/message_id keep the historical empty placeholders,
-        // and an absent duration_ms leaves no duration key for the metrics
-        // pass to fall back on.
+        // Missing reason/message_id become empty placeholders, and an
+        // absent duration_ms leaves no duration key for the metrics pass
+        // to fall back on.
         let events = vec![usage(2, 100, 50, 30, 10)];
         let steps = build_session_steps(&events, "ses-001");
         assert_eq!(steps[0]["message_id"].as_str().unwrap(), "");
@@ -565,7 +566,7 @@ mod tests {
 
     #[test]
     fn test_build_token_rows_falls_back_to_synthetic_id() {
-        // A usage without a message id keeps the historical `usage-N` id.
+        // A usage without a message id gets the synthetic `usage-N` id.
         let session = Session {
             meta: session_meta(),
             events: vec![usage(2, 100, 50, 0, 0)],

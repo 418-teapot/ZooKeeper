@@ -356,22 +356,23 @@ pub fn collect_child_sessions_info(
 
 /// Attach `duration_sec` to timeline events IN-PLACE.
 ///
-/// **Phase 1**: For `tool_*` events with `detail.duration_sec` already set
-/// (embedded by the timeline builder from the `ToolUse`/`ToolResult`
-/// timestamp delta, or by the opencode log evaluation events), forward
-/// them to the top level.
+/// First forwards durations that `tool_*` events already carry in
+/// `detail.duration_sec` (embedded by the timeline builder from the
+/// `ToolUse`/`ToolResult` timestamp delta, or by the opencode log
+/// evaluation events).
 ///
-/// **Phase 3**: For `assistant_reply` events, match the provider-reported
-/// usage duration (`detail.duration_ms` on the `usage` event billing that
-/// turn) back through the shared `message_id`, so `OpenCode` reply lines
-/// display `[x.xs]` and `pi` (which records no duration) shows none.
+/// Then matches provider-reported LLM durations onto `assistant_reply`
+/// events: the `usage` event billing a turn exports `detail.duration_ms`
+/// and `detail.message_id`, and that duration is copied to the reply row
+/// with the same message id so `OpenCode` reply lines display `[x.xs]`
+/// (`pi`, which records no duration, shows none).
 pub fn attach_durations(timeline: &mut [Value]) {
-    phase1_forward_durations(timeline);
-    phase3_match_message_durations(timeline);
+    forward_tool_durations(timeline);
+    match_message_durations(timeline);
 }
 
-/// Phase 1: Forward tool durations from detail.
-fn phase1_forward_durations(timeline: &mut [Value]) {
+/// Forward `detail.duration_sec` from `tool_*` events to the top level.
+fn forward_tool_durations(timeline: &mut [Value]) {
     for e in timeline.iter_mut() {
         let etype = e.get("type").and_then(|v| v.as_str()).unwrap_or("");
         if etype.starts_with("tool_")
@@ -387,14 +388,14 @@ fn phase1_forward_durations(timeline: &mut [Value]) {
     }
 }
 
-/// Phase 3: Attach provider-reported LLM durations to assistant replies.
+/// Match provider-reported LLM durations onto `assistant_reply` rows.
 ///
 /// A `usage` timeline event bills one assistant turn and, when the host
 /// recorded one, exports `detail.message_id` plus `detail.duration_ms`
 /// (`OpenCode` reports a real per-message duration; `pi` reports none).
 /// Match that duration back to the `assistant_reply` row carrying the
 /// same message id so the message line displays `[x.xs]`.
-fn phase3_match_message_durations(timeline: &mut [Value]) {
+fn match_message_durations(timeline: &mut [Value]) {
     let mut durations: HashMap<String, f64> = HashMap::new();
     for e in timeline.iter() {
         if e.get("type").and_then(|v| v.as_str()) != Some("usage") {
@@ -1052,10 +1053,10 @@ mod tests {
         assert_eq!(result[0].get("agent").and_then(|v| v.as_str()), Some("?"));
     }
 
-    // ── attach_durations (Phase 1 + Phase 3, no DB) ────────────────────
+    // ── attach_durations (no DB) ───────────────────────────────────────
 
     #[test]
-    fn test_attach_durations_phase1_keeps_existing() {
+    fn test_attach_durations_forwards_tool_duration() {
         let mut detail = Map::new();
         detail.insert(
             "duration_sec".to_string(),
@@ -1076,7 +1077,7 @@ mod tests {
     }
 
     #[test]
-    fn test_attach_durations_phase1_skips_non_tool() {
+    fn test_attach_durations_skips_non_tool() {
         let mut ev = Map::new();
         ev.insert("type".to_string(), Value::String("llm".to_string()));
         ev.insert(
@@ -1140,9 +1141,9 @@ mod tests {
 
     #[test]
     fn test_attach_durations_matches_usage_duration_by_message_id() {
-        // Phase 3 restore: the usage event bills the assistant turn with a
-        // real duration (OpenCode); the matching assistant reply row must
-        // surface it as `[x.xs]` via `duration_sec`.
+        // The usage event bills the assistant turn with a real duration
+        // (OpenCode); the matching assistant reply row must surface it as
+        // `[x.xs]` via `duration_sec`.
         let mut timeline = vec![
             make_assistant_reply("msg-1"),
             make_usage(Some("msg-1"), Some(5_000)),

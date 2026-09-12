@@ -1,4 +1,5 @@
-//! Page scaffolding — create new pages from templates, read pages and outlines.
+//! Page creation from templates, domain directory setup, and page /
+//! outline reading.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -88,7 +89,7 @@ fn apply_template(content: &str, title: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Domain validation & scaffolding
+// Domain validation & directory setup
 // ---------------------------------------------------------------------------
 
 /// Validate a domain name: non-empty, lowercase kebab-case, no path
@@ -126,7 +127,7 @@ fn validate_domain_name(domain: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Create the full domain directory skeleton per SCHEMA.md:
+/// Create the full domain directory layout per SCHEMA.md:
 /// concepts/, entities/, sources/{adr,rfc,notes}/, analysis/,
 /// syntheses/, each with a .gitkeep placeholder.
 fn scaffold_domain(domain_root: &Path) -> Result<(), String> {
@@ -170,7 +171,7 @@ pub fn create_page_at(
     validate_domain_name(domain)?;
 
     // Ensure the domain directory structure exists. Creating a page in
-    // a new domain auto-scaffolds the full domain layout per SCHEMA.md.
+    // a new domain gets the full domain layout created per SCHEMA.md.
     let domain_root = wiki_root.join(domain);
     if !domain_root.exists() {
         scaffold_domain(&domain_root)?;
@@ -596,7 +597,8 @@ mod tests {
     #[test]
     fn test_create_page_dynamic_domain() {
         with_wiki_dir("create_dynamic_domain", |wiki| {
-            // Domain is auto-scaffolded; no pre-creation needed.
+            // The domain directory is created automatically; no
+            // pre-creation needed.
             let result = create_page_at(
                 &wiki,
                 "newproject",
@@ -616,7 +618,7 @@ mod tests {
                 "path should be under newproject/concepts/: {}",
                 path.display()
             );
-            // Verify full skeleton was created.
+            // Verify the full directory layout was created.
             assert!(
                 wiki.join("newproject")
                     .join("entities")

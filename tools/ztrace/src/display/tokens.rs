@@ -12,7 +12,7 @@ use zutil::get_terminal_width;
 
 use super::common::{fmt_float_int, render_table};
 
-// ── E. Tokens Command ─────────────────────────────────────────────────────────
+// ── Tokens command ────────────────────────────────────────────────────────────
 
 /// Create the tokens table with column definitions.
 fn create_tokens_table(wide: bool, show_model: bool) -> Table {
@@ -318,10 +318,10 @@ mod tests {
     #[test]
     fn test_build_token_row_cell_count_matches_column_layout() {
         // The row must emit exactly as many cells as `create_tokens_table`
-        // declares, in every (wide, show_model) combination. The historical
-        // bug: the show_model branch sent 8 cells unconditionally, so a
-        // narrow terminal (6 columns: # Role Model Tokens Size ID) had
-        // Segments land in the ID column and Preview disappear.
+        // declares, in every (wide, show_model) combination. The show_model
+        // branch must gate the Segments and Preview cells on `wide`;
+        // otherwise a narrow terminal (6 columns: # Role Model Tokens Size
+        // ID) has Segments land in the ID column and Preview disappear.
         let cases = [
             (false, false, 5),
             (false, true, 6),

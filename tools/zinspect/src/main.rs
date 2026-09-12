@@ -20,6 +20,7 @@ use zutil::color::msg_print;
 use zutil::session::Host;
 use zutil::session::HostFilter;
 
+use crate::display::count_as_f64;
 use crate::session::HostArg;
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
@@ -121,13 +122,6 @@ enum Command {
         #[arg(short = 'v', long)]
         verbose: bool,
     },
-}
-
-// ── Conversion helpers ────────────────────────────────────────────────────────
-
-/// Convert a `usize` count to `f64` without triggering `cast_precision_loss`.
-fn count_as_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(0))
 }
 
 // ── Command Handlers ─────────────────────────────────────────────────────────
@@ -270,7 +264,7 @@ fn cmd_stats_multi(
         // JSONL log — the session store doesn't hold hook-level
         // aggregates. Each session is parsed at most once.
         let events: Vec<Value> = zutil::resolve_session_path(sid, &log_dir)
-            .map_or_else(Vec::new, |path| helpers::parse_zoo_log(&path));
+            .map_or_else(Vec::new, |path| zutil::zoo_log::parse_zoo_log(&path));
         let hook_count = count_as_f64(
             events.iter().filter(|e| e.get("hook").is_some()).count(),
         );
@@ -346,7 +340,7 @@ fn cmd_stats(
     // Single-session mode
     if let Some(sid) = session_id {
         let path = helpers::resolve_session(sid, &log_dir);
-        let events = helpers::parse_zoo_log(&path);
+        let events = zutil::zoo_log::parse_zoo_log(&path);
         let exact_sid = helpers::session_id_from_path(&path);
         let (host, steps, meta_model) =
             session::open_session(filter, db, &exact_sid)
@@ -426,7 +420,7 @@ fn cmd_stats(
 fn cmd_timeline(_args: &Args, session_id: &str, all_events: bool) {
     let log_dir = zutil::get_zoo_log_dir();
     let path = helpers::resolve_session(session_id, &log_dir);
-    let mut events = helpers::parse_zoo_log(&path);
+    let mut events = zutil::zoo_log::parse_zoo_log(&path);
 
     events.sort_by(|a, b| {
         a.get("timestamp")
@@ -667,7 +661,7 @@ fn process_impact_session(
     // Get hook events from JSONL
     let mut hooks: Vec<Value> = Vec::new();
     if let Some(log_path) = zutil::resolve_session_path(ctx.sid, ctx.log_dir) {
-        let events = helpers::parse_zoo_log(&log_path);
+        let events = zutil::zoo_log::parse_zoo_log(&log_path);
         for e in &events {
             if e.get("hook").is_some()
                 && e.get("timestamp")

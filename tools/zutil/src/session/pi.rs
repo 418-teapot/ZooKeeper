@@ -276,7 +276,7 @@ fn summarize(text: &str) -> String {
 /// `modelId` when the record stores no provider.
 ///
 /// pi stores the model id in the `model` field of an assistant message
-/// (e.g. `"model": "k3-256k"`); the legacy `modelId` key is accepted as a
+/// (e.g. `"model": "k3-256k"`); a flat `modelId` key is accepted as a
 /// fallback.
 fn assistant_model(message: &Value) -> Option<String> {
     let model_id = message
@@ -1578,7 +1578,7 @@ mod tests {
         let provider = PiSessionProvider::with_data_dir(root.to_string_lossy());
 
         // Scanning 1 session covers only the newest file (2.jsonl), which
-        // has no match for the old id.
+        // has no match for the requested id.
         assert!(
             provider.find_events(&["m1a".into()], 1).expect("find").is_empty()
         );
@@ -1702,7 +1702,7 @@ mod tests {
         // Without a provider the bare model id is returned.
         let bare = serde_json::json!({ "role": "assistant", "model": "x" });
         assert_eq!(assistant_model(&bare).as_deref(), Some("x"));
-        // The legacy `modelId` key still parses.
+        // A flat `modelId` key still parses.
         let legacy = serde_json::json!({
             "role": "assistant",
             "provider": "MoonShot",

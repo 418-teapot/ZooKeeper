@@ -3,7 +3,8 @@
 //!
 //! Deliberately avoids parsing the block list semantically; instead
 //! it finds the relevant field by scanning lines and inserts / replaces
-//! text at the row level (same philosophy as `property.rs`).
+//! text at the row level, the same line-oriented approach used by
+//! `property.rs`.
 
 use std::fs;
 use std::path::Path;

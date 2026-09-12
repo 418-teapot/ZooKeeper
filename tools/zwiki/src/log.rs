@@ -41,9 +41,7 @@ fn action_to_chinese(action: &str) -> &str {
 /// Format a single log entry line (OKF §7 prose style).
 ///
 /// Returns a markdown bullet like `* **创建**: <path> — <note>`.
-/// The `op` parameter is accepted for API compatibility but is not
-/// included in the output (the action verb encodes the operation).
-fn format_entry(_op: &str, path: &str, action: &str, note: &str) -> String {
+fn format_entry(path: &str, action: &str, note: &str) -> String {
     let verb = action_to_chinese(action);
     if note.is_empty() {
         format!("* **{verb}**: {path}")
@@ -121,7 +119,6 @@ fn insert_entry(content: &str, date: &str, entry_line: &str) -> String {
 /// Append a structured log entry under an explicit wiki root.
 pub fn add_entry_at(
     wiki_root: &Path,
-    op: &str,
     path: &str,
     action: &str,
     note: Option<&str>,
@@ -137,7 +134,7 @@ pub fn add_entry_at(
     let note = note.map_or_else(String::new, truncate_note);
 
     // Format entry
-    let entry = format_entry(op, &path, action, &note);
+    let entry = format_entry(&path, action, &note);
 
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
 
@@ -278,21 +275,19 @@ mod tests {
 
     #[test]
     fn test_format_entry_with_note() {
-        let result =
-            format_entry("ingest", "concepts/foo.md", "create", "test note");
+        let result = format_entry("concepts/foo.md", "create", "test note");
         assert_eq!(result, "* **创建**: concepts/foo.md — test note");
     }
 
     #[test]
     fn test_format_entry_without_note() {
-        let result = format_entry("ingest", "concepts/foo.md", "create", "");
+        let result = format_entry("concepts/foo.md", "create", "");
         assert_eq!(result, "* **创建**: concepts/foo.md");
     }
 
     #[test]
     fn test_format_entry_unknown_action() {
-        let result =
-            format_entry("ingest", "concepts/foo.md", "review", "needs review");
+        let result = format_entry("concepts/foo.md", "review", "needs review");
         assert_eq!(result, "* **review**: concepts/foo.md — needs review");
     }
 
@@ -371,7 +366,6 @@ mod tests {
 
         let result = add_entry_at(
             &wiki,
-            "ingest",
             "concepts/test.md",
             "create",
             Some("test note"),
@@ -398,7 +392,6 @@ mod tests {
 
         add_entry_at(
             &wiki,
-            "update",
             "entities/foo.md",
             "edit",
             Some("updated description"),
@@ -429,14 +422,8 @@ mod tests {
         let wiki = temp_dir("note_truncated");
 
         let long_note = "x".repeat(100);
-        add_entry_at(
-            &wiki,
-            "query",
-            "concepts/test.md",
-            "pass",
-            Some(&long_note),
-        )
-        .unwrap();
+        add_entry_at(&wiki, "concepts/test.md", "pass", Some(&long_note))
+            .unwrap();
 
         let content = fs::read_to_string(monthly_log_path(&wiki)).unwrap();
         let expected_note = truncate_note(&long_note);
@@ -456,7 +443,6 @@ mod tests {
 
         add_entry_at(
             &wiki,
-            "ingest",
             "wiki/concepts/test.md",
             "create",
             Some("via prefix"),
@@ -479,11 +465,9 @@ mod tests {
         let wiki = temp_dir("same_day_grouping");
 
         // First entry
-        add_entry_at(&wiki, "ingest", "first.md", "create", Some("first"))
-            .unwrap();
+        add_entry_at(&wiki, "first.md", "create", Some("first")).unwrap();
         // Second entry — same day, should be in the same group
-        add_entry_at(&wiki, "ingest", "second.md", "create", Some("second"))
-            .unwrap();
+        add_entry_at(&wiki, "second.md", "create", Some("second")).unwrap();
 
         let content = fs::read_to_string(monthly_log_path(&wiki)).unwrap();
         // Both entries should be present

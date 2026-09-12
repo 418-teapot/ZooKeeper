@@ -425,8 +425,8 @@ fn add_index_entry(
             format!("\n{trimmed_body}\n{entry_line}\n")
         };
 
-        // Use the original header line from the file (preserving any
-        // extra content such as annotations) rather than the mapped one.
+        // Use the file's own header line (preserving any extra content
+        // such as annotations) rather than the mapped one.
         format!(
             "{before_section}{matched_header_line}{updated_body}{after_section}"
         )
@@ -1144,7 +1144,7 @@ contradictions:
             "error should mention unknown page type"
         );
         // The file was already renamed before the index update attempt,
-        // so old_rel no longer exists and new_rel was created.
+        // so old_rel is gone and new_rel was created.
         assert!(!wiki_root.join(old_rel).exists());
         assert!(wiki_root.join(new_rel).exists());
         // The new index should NOT be created (no malformed section).
