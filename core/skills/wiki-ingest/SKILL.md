@@ -68,10 +68,8 @@ description: 用于将外部源文档或对话知识 ingest 到项目 wiki 中�
 **ACCEPTANCE:**
 返回一份结构化分析，描述：
   - 要创建/更新的页面路径、完整 frontmatter、完整页面内容（遵循 SCHEMA.md 规范）
-  - 要在相关**域**的 `index.md`（如 `wiki/<domain>/index.md`）中添加的索引条目（根 index.md 只列域，新建域时才改）
-   - 需要更新的交叉引用（更新哪些已有页面的 `relations` 字段；反向链接由 `zwiki check` 自动维护，kiwi 无需处理）
+   - 需要更新的交叉引用（在哪些已有页面的正文中添加指回新页面的内联链接；`relations` 与反向链接由 `zwiki check` 自动派生，kiwi 无需处理）
    - 关于 `overview.md` 是否需要更新的建议
-   - 要通过 `zwiki log` 追加的日志条目
 ```
 
 ### 1.3 委派 kiwi
@@ -86,16 +84,16 @@ description: 用于将外部源文档或对话知识 ingest 到项目 wiki 中�
 
 ## Phase 2 — 通用写入步骤
 
-kiwi 返回分析后，由调用方 agent 执行写入：
+kiwi 返回分析后，由调用方 agent 执行写入。写命令必须显式传 `--root`，填该 bundle 的源目录（含 `bundle.toml` 的目录，不知道位置时问用户）；`~/.zoo/wiki` 是只读聚合视图，不直接写入。个人知识同样写入其 bundle 的源目录。
 
 **创建新页面时：**
 1. **创建骨架** — 使用 `zwiki page create`：
     ```bash
-    zwiki page create --domain <域名> \
+    zwiki --root <bundle源目录> page create --domain <域名> \
         --type <concept|entity|analysis|synthesis> \
         --title "<页面标题>"
     ```
-    域由 kiwi 的分析结果决定（kiwi 返回的页面路径含域前缀）。合法域由 wiki 根目录下实际存在的子目录决定（运行 `zwiki page create --help` 或查看 `~/.zoo/wiki/` 下子目录）；团队可通过新建子目录扩展域。对于 source 类型追加 `--source-type <adr|rfc|notes>`；中文标题需加 `--slug <english-slug>`
+    域由 kiwi 的分析结果决定（kiwi 返回的页面路径含域前缀）。合法域由 bundle 源根目录下实际存在的子目录决定；团队可通过新建子目录扩展域。对于 source 类型追加 `--source-type <adr|rfc|notes>`；中文标题需加 `--slug <english-slug>`
 2. **填充内容** — 使用 `write` / `edit` 将 kiwi 提供的页面内容写入
 
 **更新已有页面时：**
@@ -103,20 +101,12 @@ kiwi 返回分析后，由调用方 agent 执行写入：
 2. **编辑页面** — 使用 `edit` 工具按照 kiwi 的建议修改已有页面的指定节
 
 **以下步骤创建和更新共用：**
-3. **保存原始材料** — 如果输入为 URL 或文件，保存原文副本到 `raw/`：
+3. **保存原始材料** — 如果输入为 URL 或文件，保存原文副本到 bundle 源的 `raw/`：
     ```bash
-    curl -sL "<url>" -o ~/.zoo/wiki/raw/$(date +%F)-<slug>.md
+    curl -sL "<url>" -o <bundle源目录>/raw/$(date +%F)-<slug>.md
     ```
-4. **更新索引** — 创建新页面时在对应**域的 index.md**（`~/.zoo/wiki/<domain>/index.md`）对应类型节下追加条目；**根 index.md 只在新建域时才改动**（通常不需要）。更新已有页面时跳过此步
-5. **记录日志** — 调用 `zwiki log`，`--action` 用 `create` 或 `edit`：
-    ```bash
-    zwiki log \
-        --path "<domain>/concepts/<file>.md" \
-        --action <create|edit> --note "<简短说明>"
-    ```
-6. **更新 overview.md** — 如果 kiwi 的分析建议更新，则执行
-7. **更新交叉引用** — 按照 kiwi 的建议，在已有页面的 `relations` 字段中添加新引用（使用域前缀路径，如 `<domain>/concepts/<file>.md`）。反向链接由 `zwiki check` 自动同步
-8. **同步反向链接** — `zwiki check` 已自动执行，无需手动调用
+4. **更新 overview.md** — 如果 kiwi 的分析建议更新，则执行
+5. **更新交叉引用** — 按照 kiwi 的建议，在已有页面正文中添加指回新页面的内联链接（使用域前缀路径，如 `<domain>/concepts/<file>.md`）。`relations`、反向链接与各级索引均由 zwiki 自动派生，无需手工维护；`page create`/`page set` 会自动记录日志，需要说明时加 `--note`
 
 ---
 
@@ -140,7 +130,7 @@ kiwi 返回分析后，由调用方 agent 执行写入：
 3. 只对用户确认的提议执行写入。kiwi 会在每个取代提议中标明哪个页面取代哪个页面。对每对取代关系，使用 `zwiki supersede` 一次性更新两侧 frontmatter：
 
    ```bash
-   zwiki supersede \
+   zwiki --root <bundle源目录> supersede \
        --old <domain>/concepts/old-page.md \
        --new <domain>/concepts/new-page.md \
        --reason "<kiwi 提供的取代理由>"
@@ -164,14 +154,14 @@ kiwi 返回分析后，由调用方 agent 执行写入：
    ```
     将该数组直接管道给 `zwiki contradictions apply`：
     ```bash
-    echo '<JSON 数组>' | zwiki contradictions apply
+    echo '<JSON 数组>' | zwiki --root <bundle源目录> contradictions apply
     ```
     该命令会追加 `contradictions` 条目并更新 `last_validated`。
 
     然后对双方页面执行 status 降级：
     ```bash
-    zwiki page set "domain/page_a.md" status --downgrade
-    zwiki page set "domain/page_b.md" status --downgrade
+    zwiki --root <bundle源目录> page set "domain/page_a.md" status --downgrade
+    zwiki --root <bundle源目录> page set "domain/page_b.md" status --downgrade
     ```
 
 3. **验证写入** — 运行 `zwiki contradictions list` 确认矛盾已记录。
@@ -197,17 +187,10 @@ kiwi 返回分析后，由调用方 agent 执行写入：
 
 3. **只对用户确认的提议执行写入**。对每个要刷新的页面：
     ```bash
-    zwiki page set <domain>/concepts/<page>.md last_validated "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    zwiki --root <bundle源目录> page set <domain>/concepts/<page>.md last_validated "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      --note "新源确认声明「…」"
     ```
     注意：`zwiki page set` 会覆盖已有时间戳。多次确认同一页面时，只需执行一次（以最新时间为准）。
-
-4. **记录日志** — 对每个确认的验证，追加日志条目说明验证来源：
-    ```bash
-    zwiki log \
-      --path "<domain>/concepts/<page>.md" \
-      --action edit --note "新源确认声明「…」"
-    ```
-    `--note` 应包含被确认的声明摘要。
 
 ---
 
@@ -216,12 +199,9 @@ kiwi 返回分析后，由调用方 agent 执行写入：
 写入完成后，执行以下验证：
 
 1. **路径确认** — 确认创建/更新的页面路径列表与预期一致
-2. **日志检查** — 确认 `~/.zoo/wiki/logs/` 目录下已有对应的日志条目（当前月份 `logs/YYYY-MM.md` 文件）
-3. **索引检查** — 确认对应**域的 index.md** 已更新；根 index.md 通常无需改动
-4. **反向链接检查** — `zwiki check` 已自动同步，二次运行应报告 0 更新
-5. **全量健康检查** — `zwiki check` 同时覆盖结构完整性与内联链接检查：
+2. **全量健康检查** — `zwiki check` 同时覆盖结构完整性、派生数据同步与内联链接检查：
     ```bash
-    zwiki check || echo "⚠ wiki 检查发现问题，请检查并修复"
+    zwiki --root <bundle源目录> check || echo "⚠ wiki 检查发现问题，请检查并修复"
     ```
     如果检查出本次写入引入的问题（如缺失内联链接）→ 修复（为术语添加 `[术语](目标页.md)` 内联链接等），然后重新运行确认通过。若报告的仅为与本次写入无关的既有问题，向用户说明即可。
 

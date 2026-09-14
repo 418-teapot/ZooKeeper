@@ -103,14 +103,11 @@ fn validate_domain_name(domain: &str) -> Result<(), String> {
             "无效的领域名: {domain} — 不能包含 .. / \\ 等路径分隔符"
         ));
     }
-    // System directories are not domains.
-    match domain {
-        "templates" | "tools" | "raw" => {
-            return Err(format!(
-                "无效的领域名: {domain} — 这是系统目录，不能用作领域"
-            ));
-        }
-        _ => {}
+    // Reserved wiki system directories are not domains.
+    if wiki::EXCLUDED_DIRS.contains(&domain) {
+        return Err(format!(
+            "无效的领域名: {domain} — 这是系统目录，不能用作领域"
+        ));
     }
     if domain.starts_with('.') {
         return Err(format!("无效的领域名: {domain} — 不能以 . 开头"));
@@ -171,10 +168,10 @@ pub fn create_page_at(
     validate_domain_name(domain)?;
 
     // Ensure the domain directory structure exists. Creating a page in
-    // a new domain gets the full domain layout created per SCHEMA.md.
+    // a new domain gets the full domain layout and a canonical index.md.
     let domain_root = wiki_root.join(domain);
     if !domain_root.exists() {
-        scaffold_domain(&domain_root)?;
+        init_domain(wiki_root, domain)?;
     }
 
     // Validate slug
@@ -198,14 +195,12 @@ pub fn create_page_at(
     let dir_name = type_to_dir(page_type)
         .ok_or_else(|| format!("未知的页面类型: {page_type}"))?;
 
-    // Load template
-    let template_path =
-        wiki_root.join("templates").join(format!("{page_type}.md"));
-    let template_content = fs::read_to_string(&template_path)
-        .map_err(|e| format!("未找到模板 {page_type}.md: {e}"))?;
+    // Load the embedded tool-level template.
+    let template = crate::assets::template(page_type)
+        .ok_or_else(|| format!("未知的页面类型: {page_type}"))?;
 
     // Apply substitutions
-    let processed = apply_template(&template_content, title);
+    let processed = apply_template(template, title);
 
     // Compute output path
     let output_path = if page_type == "source" {
@@ -227,7 +222,53 @@ pub fn create_page_at(
     zutil::fileio::write_atomic(&output_path, &processed)
         .map_err(|e| format!("写入文件失败: {e}"))?;
 
+    // Regenerate the domain index so the new page appears immediately.
+    if let Err(e) = crate::index::regenerate_domain_index(&domain_root) {
+        eprintln!("警告: {e}");
+    }
+
     Ok(output_path)
+}
+
+/// Scaffold a brand-new domain under `wiki_root`: create the standard
+/// subdirectory layout and a domain `index.md`.
+///
+/// Fails when the domain name is invalid or the domain already has an
+/// `index.md` (an existing domain is never silently overwritten).
+pub fn create_domain_at(
+    wiki_root: &Path,
+    domain: &str,
+) -> Result<PathBuf, String> {
+    validate_domain_name(domain)?;
+
+    let domain_root = wiki_root.join(domain);
+    let index_path = domain_root.join("index.md");
+    if index_path.exists() {
+        return Err(format!("领域已存在: {domain}"));
+    }
+
+    init_domain(wiki_root, domain)
+}
+
+/// Scaffold a brand-new domain: the standard subdirectory layout, a
+/// domain `index.md`, and a regenerated bundle root index.
+///
+/// Returns the path of the created `index.md`.
+fn init_domain(wiki_root: &Path, domain: &str) -> Result<PathBuf, String> {
+    let domain_root = wiki_root.join(domain);
+    scaffold_domain(&domain_root)?;
+
+    // Seed the domain index (authored frontmatter + generated body).
+    let index_path = domain_root.join("index.md");
+    crate::index::regenerate_domain_index(&domain_root)?;
+
+    // Make the new domain reachable from the bundle root index.  The domain
+    // itself is already scaffolded, so a failure here only warns.
+    if let Err(e) = crate::index::regenerate_bundle_root_index(wiki_root) {
+        eprintln!("警告: {e}");
+    }
+
+    Ok(index_path)
 }
 
 /// Read the full content of a wiki page (including frontmatter).
@@ -284,12 +325,10 @@ mod tests {
         dir
     }
 
-    /// Run a closure with a temp directory that has a `templates/` subdirectory
-    /// with all known template files, and domain subdirectory structure.
+    /// Run a closure with a temp directory laid out as a bundle source with
+    /// the domain subdirectory structure for all valid domains.
     fn with_wiki_dir(test_name: &str, f: impl FnOnce(PathBuf)) {
         let wiki = temp_dir(test_name);
-        let templates = wiki.join("templates");
-        fs::create_dir_all(&templates).expect("failed to create templates dir");
         // Create domain subdirectory structure for all valid domains
         for domain in &["autoresearch", "wiki-system", "shared"] {
             for subdir in &[
@@ -304,29 +343,6 @@ mod tests {
                 fs::create_dir_all(wiki.join(domain).join(subdir))
                     .expect("failed to create domain subdir");
             }
-        }
-        // Write all known templates so create_page can find them.
-        for ttype in &["concept", "entity", "source", "analysis", "synthesis"] {
-            let tpl = match *ttype {
-                "concept" => {
-                    "---\ntitle: <概念名称>\ntype: concept\ntimestamp: YYYY-MM-DDTHH:mm:ssZ\nstatus: draft|review|stable|deprecated\n---\n\n# <概念名称>\n"
-                }
-                "entity" => {
-                    "---\ntitle: <实体名称>\ntype: entity\ntimestamp: YYYY-MM-DDTHH:mm:ssZ\nstatus: draft|review|stable|deprecated\n---\n\n# <实体名称>\n"
-                }
-                "source" => {
-                    "---\ntitle: <源文档标题>\ntype: source\ntimestamp: YYYY-MM-DDTHH:mm:ssZ\nstatus: draft|review|stable|deprecated\n---\n\n# <源文档标题>\n"
-                }
-                "analysis" => {
-                    "---\ntitle: <分析标题>\ntype: analysis\ntimestamp: YYYY-MM-DDTHH:mm:ssZ\nstatus: draft|review|stable|deprecated\n---\n\n# <分析标题>\n"
-                }
-                "synthesis" => {
-                    "---\ntitle: <综合标题>\ntype: synthesis\ntimestamp: YYYY-MM-DDTHH:mm:ssZ\nstatus: draft|review|stable|deprecated\n---\n\n# <综合标题>\n"
-                }
-                _ => unreachable!(),
-            };
-            fs::write(templates.join(format!("{ttype}.md")), tpl)
-                .expect("failed to write template");
         }
         f(wiki);
     }
@@ -553,19 +569,22 @@ mod tests {
                 "uppercase/space should be rejected: {err}"
             );
 
-            // System directory name
-            let err = create_page_at(
-                &wiki,
-                "templates",
-                "concept",
-                "Test",
-                None,
-                None,
-            )
-            .unwrap_err();
+            // Reserved system directory is not a domain.
+            let err =
+                create_page_at(&wiki, "tools", "concept", "Test", None, None)
+                    .unwrap_err();
             assert!(
                 err.contains("无效的领域名"),
-                "templates should be rejected: {err}"
+                "tools should be rejected: {err}"
+            );
+
+            // Reserved log directory is not a domain either.
+            let err =
+                create_page_at(&wiki, "logs", "concept", "Test", None, None)
+                    .unwrap_err();
+            assert!(
+                err.contains("无效的领域名"),
+                "logs should be rejected: {err}"
             );
 
             // Path traversal
@@ -657,12 +676,8 @@ mod tests {
 
     #[test]
     fn test_create_page_scaffolds_full_domain() {
-        // Use a fresh temp dir with only templates/ (no domain dirs).
+        // Use a fresh temp dir with no domain dirs.
         let wiki = temp_dir("scaffold_full_domain");
-        let templates = wiki.join("templates");
-        fs::create_dir_all(&templates).expect("failed to create templates dir");
-        fs::write(templates.join("concept.md"), "---\ntitle: <概念名称>\ntype: concept\ntimestamp: YYYY-MM-DDTHH:mm:ssZ\nstatus: draft|review|stable|deprecated\n---\n\n# <概念名称>\n")
-            .expect("write concept template");
 
         let result =
             create_page_at(&wiki, "freshdomain", "concept", "Test", None, None);
@@ -688,6 +703,98 @@ mod tests {
                 gitkeep.display()
             );
         }
+    }
+
+    #[test]
+    fn test_create_page_new_domain_writes_index() {
+        let wiki = temp_dir("create_page_new_domain_index");
+
+        create_page_at(&wiki, "freshdomain", "concept", "Test", None, None)
+            .expect("create page in new domain");
+
+        let index = wiki.join("freshdomain").join("index.md");
+        assert!(index.is_file(), "new domain should get an index.md");
+        let content = fs::read_to_string(&index).unwrap();
+        assert!(content.starts_with("---\ntitle: freshdomain\n---"));
+        assert!(
+            content.contains("- [Test](concepts/test.md)"),
+            "index body should list the new page: {content}"
+        );
+    }
+
+    #[test]
+    fn test_create_page_regenerates_domain_index_with_descriptions() {
+        let wiki = temp_dir("create_page_regen_index_description");
+        // Existing pages: one with a description, one without.
+        let domain = wiki.join("newdomain");
+        fs::create_dir_all(domain.join("concepts")).unwrap();
+        fs::write(
+            domain.join("concepts/old-summary.md"),
+            "---\ntitle: Old Summary\ntype: concept\ndescription: Has a description\n---\n\n# Old Summary\n",
+        )
+        .unwrap();
+        fs::write(
+            domain.join("concepts/old-plain.md"),
+            "---\ntitle: Old Plain\ntype: concept\n---\n\n# Old Plain\n",
+        )
+        .unwrap();
+
+        create_page_at(&wiki, "newdomain", "concept", "Fresh", None, None)
+            .expect("create page in existing domain");
+
+        let content = fs::read_to_string(domain.join("index.md")).unwrap();
+        assert!(
+            content.contains(
+                "- [Old Summary](concepts/old-summary.md) — Has a description"
+            ),
+            "description entry should be rendered: {content}"
+        );
+        assert!(
+            content.contains("- [Old Plain](concepts/old-plain.md)"),
+            "page without description should be title-only: {content}"
+        );
+        assert!(
+            content.contains("- [Fresh](concepts/fresh.md)"),
+            "newly created page should appear: {content}"
+        );
+    }
+
+    #[test]
+    fn test_create_domain_full_structure_and_index() {
+        let wiki = temp_dir("create_domain_full");
+        let index = create_domain_at(&wiki, "newdomain").unwrap();
+        assert!(index.exists(), "index.md should exist: {}", index.display());
+
+        // Standard subdirectory layout with .gitkeep placeholders.
+        for subdir in [
+            "concepts",
+            "entities",
+            "sources/adr",
+            "sources/rfc",
+            "sources/notes",
+            "analysis",
+            "syntheses",
+        ] {
+            let gitkeep = wiki.join("newdomain").join(subdir).join(".gitkeep");
+            assert!(gitkeep.exists(), "missing {subdir}/.gitkeep");
+        }
+
+        // Generated index with authored frontmatter and an empty body.
+        let content = fs::read_to_string(&index).unwrap();
+        assert!(content.starts_with("---\ntitle: newdomain\n---"));
+    }
+
+    #[test]
+    fn test_create_domain_rejects_existing_and_invalid() {
+        let wiki = temp_dir("create_domain_reject");
+        create_domain_at(&wiki, "existing").unwrap();
+        let err = create_domain_at(&wiki, "existing").unwrap_err();
+        assert!(err.contains("领域已存在"), "unexpected error: {err}");
+
+        assert!(create_domain_at(&wiki, "Bad Name").is_err());
+        assert!(create_domain_at(&wiki, "..").is_err());
+        assert!(create_domain_at(&wiki, "tools").is_err());
+        assert!(create_domain_at(&wiki, "logs").is_err());
     }
 
     // -------------------------------------------------------------------

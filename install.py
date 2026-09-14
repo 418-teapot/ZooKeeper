@@ -22,7 +22,6 @@ from installer.envfile import (
     _filter_missing_entries,
     parse_env_file,
     parse_toml,
-    tomllib,
 )
 from installer.jsonio import load_json_or_empty, write_json
 from installer.mode import mode_state_path, write_mode_state
@@ -344,15 +343,9 @@ def main() -> None:
     zoo_dir = os.path.join(os.path.expanduser("~"), ".zoo")
     wiki_root = os.path.join(zoo_dir, "wiki")
 
-    # Pre-create wiki directory structure
-    for subdir in [
-        wiki_root,
-        os.path.join(wiki_root, ".upstream"),
-        os.path.join(wiki_root, ".teams"),
-        os.path.join(wiki_root, ".org"),
-        os.path.join(wiki_root, "personal"),
-    ]:
-        os.makedirs(subdir, exist_ok=True)
+    # Ensure the wiki store root exists.  Installed bundles, the root
+    # index.md, and SCHEMA.md are created by zwiki.
+    os.makedirs(wiki_root, exist_ok=True)
 
     source_wiki = os.path.join(SCRIPT_DIR, "wiki")
     zwiki_bin = os.path.join(SCRIPT_DIR, "tools", "bin", "zwiki")
@@ -373,38 +366,6 @@ def main() -> None:
         )
         if result.returncode == 0:
             info(f"✓ Wiki bundle 已安装: {wiki_root}")
-            # Derive team-bundle directory from zwiki.lock instead of hardcoding
-            lock_path = os.path.join(wiki_root, "zwiki.lock")
-            core_dir = None
-            if not os.path.isfile(lock_path):
-                warn("zwiki.lock 不存在，跳过 SCHEMA.md/templates 软链接")
-            else:
-                try:
-                    lock_data = parse_toml(lock_path)
-                    for entry in lock_data.get("bundles", []):
-                        target = entry.get("target", "")
-                        if target.startswith(".teams/"):
-                            core_dir = os.path.join(
-                                wiki_root, target.rstrip("/")
-                            )
-                            break
-                    if core_dir is None:
-                        warn("zwiki.lock 中未找到团队 bundle 条目，跳过软链接")
-                except (tomllib.TOMLDecodeError, KeyError, TypeError) as e:
-                    warn(f"zwiki.lock 解析失败，跳过软链接: {e}")
-            if core_dir is not None:
-                for name in ["SCHEMA.md", "templates"]:
-                    src = os.path.join(core_dir, name)
-                    dst = os.path.join(wiki_root, name)
-                    if not os.path.exists(src):
-                        warn(f"源路径不存在，跳过: {src}")
-                        continue
-                    if os.path.islink(dst) or os.path.exists(dst):
-                        if os.path.isdir(dst) and not os.path.islink(dst):
-                            shutil.rmtree(dst)
-                        else:
-                            os.remove(dst)
-                    os.symlink(src, dst)
         else:
             warn(
                 f"Wiki bundle 安装失败: {result.stderr.strip() or result.stdout.strip()}"

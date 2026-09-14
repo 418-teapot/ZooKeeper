@@ -12,6 +12,7 @@ relations:
   - "[train.py](autoresearch/entities/autoresearch-train-py.md)"
   - "[prepare.py](autoresearch/entities/autoresearch-prepare-py.md)"
   - "[autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)"
+  - '[program.md](autoresearch/entities/autoresearch-program-md.md)'
 status: stable
 last_validated: 2026-06-19T00:00:00Z
 timeliness: current

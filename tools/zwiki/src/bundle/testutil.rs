@@ -37,7 +37,6 @@ pub fn valid_manifest_with_name(name: &str) -> manifest::BundleManifest {
             name: name.to_string(),
             version: "1.0.0".to_string(),
             okf_version: "0.1".to_string(),
-            kind: "upstream".to_string(),
             registry: None,
             description: None,
         },
@@ -60,7 +59,7 @@ pub fn setup_partial_lock_env(port_a: u16, port_b: u16) -> (PathBuf, PathBuf) {
         name: "bundle-a".to_string(),
         version: "1.0.0".to_string(),
         registry: format!("http://127.0.0.1:{port_a}"),
-        target: ".upstream/bundle-a/".to_string(),
+        target: "bundle-a/".to_string(),
         integrity: "sha256-abc".to_string(),
         installed_at: "2026-01-01T00:00:00Z".to_string(),
         description: None,
@@ -69,13 +68,13 @@ pub fn setup_partial_lock_env(port_a: u16, port_b: u16) -> (PathBuf, PathBuf) {
         name: "bundle-b".to_string(),
         version: "1.0.0".to_string(),
         registry: format!("http://127.0.0.1:{port_b}"),
-        target: ".upstream/bundle-b/".to_string(),
+        target: "bundle-b/".to_string(),
         integrity: "sha256-def".to_string(),
         installed_at: "2026-01-01T00:00:00Z".to_string(),
         description: None,
     };
     let lock = lock::ZwikiLock {
-        bundles: vec![entry_a, entry_b],
+        entries: vec![entry_a, entry_b],
         ..Default::default()
     };
     std::fs::write(
@@ -83,10 +82,9 @@ pub fn setup_partial_lock_env(port_a: u16, port_b: u16) -> (PathBuf, PathBuf) {
         toml::to_string_pretty(&lock).unwrap(),
     )
     .unwrap();
-    std::fs::create_dir_all(wiki_root.join(".upstream").join("bundle-a"))
-        .unwrap();
-    std::fs::create_dir_all(wiki_root.join(".upstream")).unwrap();
-    let target_b = wiki_root.join(".upstream").join("bundle-b");
+    std::fs::create_dir_all(wiki_root.join("bundle-a")).unwrap();
+    std::fs::create_dir_all(&wiki_root).unwrap();
+    let target_b = wiki_root.join("bundle-b");
     std::fs::create_dir_all(&target_b).unwrap();
     std::fs::set_permissions(&target_b, PermissionsExt::from_mode(0o444))
         .unwrap();

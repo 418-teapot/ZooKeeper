@@ -9,7 +9,7 @@ use crate::bundle::lock;
 /// Format the bundle lock contents as a human-readable table.
 #[must_use]
 fn format_bundle_table(lock: &lock::ZwikiLock) -> String {
-    if lock.bundles.is_empty() {
+    if lock.entries.is_empty() {
         return String::new();
     }
 
@@ -19,21 +19,21 @@ fn format_bundle_table(lock: &lock::ZwikiLock) -> String {
     let header_installed = "INSTALLED";
 
     let max_name = lock
-        .bundles
+        .entries
         .iter()
         .map(|b| b.name.len())
         .max()
         .unwrap_or(0)
         .max(header_name.len());
     let max_version = lock
-        .bundles
+        .entries
         .iter()
         .map(|b| b.version.len())
         .max()
         .unwrap_or(0)
         .max(header_version.len());
     let max_target = lock
-        .bundles
+        .entries
         .iter()
         .map(|b| b.target.len())
         .max()
@@ -60,7 +60,7 @@ fn format_bundle_table(lock: &lock::ZwikiLock) -> String {
     )
     .expect("write to string");
 
-    for entry in &lock.bundles {
+    for entry in &lock.entries {
         let date = zutil::ts_display(&entry.installed_at);
         writeln!(
             out,
@@ -103,25 +103,24 @@ pub fn cmd_list_installed_inner(
 ) -> Result<(), String> {
     let l = lock::read_lock_at(wiki_root)?;
 
-    if l.bundles.is_empty() {
+    if l.entries.is_empty() {
         if use_json {
-            println!("[]");
+            crate::print_stdout_line("[]");
         } else {
-            println!("没有已安装的 bundle");
+            crate::print_stdout_line("没有已安装的 bundle");
         }
         return Ok(());
     }
 
     if use_json {
-        println!(
-            "{}",
+        crate::print_stdout_line(
             serde_json::to_string_pretty(&l)
-                .map_err(|e| format!("JSON 序列化失败: {e}"))?
+                .map_err(|e| format!("JSON 序列化失败: {e}"))?,
         );
         return Ok(());
     }
 
-    print!("{}", format_bundle_table(&l));
+    crate::print_stdout(format_bundle_table(&l));
     Ok(())
 }
 
@@ -144,7 +143,7 @@ mod tests {
                 name: "test-bundle".to_string(),
                 version: "1.0.0".to_string(),
                 registry: String::new(),
-                target: ".upstream/test-bundle/".to_string(),
+                target: "test-bundle/".to_string(),
                 integrity: "sha256-abc".to_string(),
                 installed_at: "2026-07-05T12:00:00Z".to_string(),
                 description: None,
@@ -153,13 +152,13 @@ mod tests {
                 name: "another-pkg".to_string(),
                 version: "2.1.0".to_string(),
                 registry: String::new(),
-                target: ".teams/my-team/".to_string(),
+                target: "my-team/".to_string(),
                 integrity: "sha256-def".to_string(),
                 installed_at: "2026-06-01T00:00:00Z".to_string(),
                 description: None,
             },
         ];
-        let lock = lock::ZwikiLock { bundles: entries, ..Default::default() };
+        let lock = lock::ZwikiLock { entries, ..Default::default() };
         let table = format_bundle_table(&lock);
         assert!(table.contains("test-bundle"));
         assert!(table.contains("another-pkg"));

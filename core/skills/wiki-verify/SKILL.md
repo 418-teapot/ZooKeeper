@@ -1,11 +1,11 @@
 ---
 name: wiki-verify
-description: 用于对 `~/.zoo/wiki/` 中的页面执行来源回溯验证（source traceback verification）。扫描 stale 验证记录，委派 kiwi 做语义比对，根据 drift/validated/uncertain 三类结果执行差异化的写入操作。只要涉及验证 wiki 页面来源一致性的请求，就请加载此技能。
+description: 用于对 wiki bundle 中的页面执行来源回溯验证（source traceback verification）。在 bundle 源上扫描 stale 验证记录，委派 kiwi 做语义比对，根据 drift/validated/uncertain 三类结果执行差异化的写入操作。只要涉及验证 wiki 页面来源一致性的请求，就请加载此技能。
 ---
 
 # Wiki Verify 技能
 
-对 `~/.zoo/wiki/` 中已标记 `last_validated` 的页面执行来源回溯验证，确认其声明仍与源页面保持一致。
+对 bundle 中已标记 `last_validated` 的页面执行来源回溯验证，确认其声明仍与源页面保持一致。
 
 收到"验证 wiki 来源"或"检查 wiki 页面一致性"等请求时加载此技能。
 
@@ -13,18 +13,18 @@ description: 用于对 `~/.zoo/wiki/` 中的页面执行来源回溯验证（sou
 
 ## Phase 1 — 确定范围并扫描
 
-确定验证范围，然后运行 `zwiki verify --json` 获取 stale 页面对列表：
+确定验证范围，在目标 bundle 源上运行 `zwiki verify --json` 获取 stale 页面对列表（读与写同一根，返回路径与写命令直接对应）：
 
 | 范围 | 操作 |
 |------|------|
-| 全量扫描（默认） | `zwiki verify --json` |
-| 指定域 | `zwiki verify --json --domain <name>` |
+| 单个 bundle（默认） | `zwiki --root <bundle源目录> verify --json` |
+| 指定域 | `zwiki --root <bundle源目录> verify --json --domain <name>` |
 | 指定页面 | 跳过扫描，直接以该页面进入 Phase 2 |
 
 源页面 `timestamp` > 派生页面 `last_validated` 时判定为 stale。
 
 ```bash
-zwiki verify --json
+zwiki --root <bundle源目录> verify --json
 ```
 
 输出为 JSON 数组，每个元素包含：
@@ -98,14 +98,15 @@ zwiki verify --json
 
 ## Phase 4 — 写入
 
-根据裁定执行不同写入操作：
+根据裁定执行不同写入操作。写命令必须显式传 `--root`，填该 bundle 的源目录（含 `bundle.toml` 的目录，不知道位置时问用户）；`~/.zoo/wiki` 是只读聚合视图，不直接写入。以下示例以 `<bundle源目录>` 占位。
 
 ### validated — 刷新验证时间戳
 
 对每个裁定为 `validated` 的派生页，更新其 `last_validated` 为当前时间：
 
 ```bash
-zwiki page set <domain>/concepts/<page>.md last_validated "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+zwiki --root <bundle源目录> page set <domain>/concepts/<page>.md last_validated "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --note "来源回溯验证：validated（<验证通过的声明数量> 条）"
 ```
 
 ### drifted — 降级状态并追加待确认标记
@@ -114,7 +115,8 @@ zwiki page set <domain>/concepts/<page>.md last_validated "$(date -u +%Y-%m-%dT%
 
 1. **降级 status**：
 ```bash
-zwiki page set <path> status --downgrade
+zwiki --root <bundle源目录> page set <path> status --downgrade \
+  --note "来源回溯验证：drifted（<漂移声明摘要>）"
 ```
    zwiki 自动执行 `stable → review → draft` 映射，仅降派生页，源页不动。
 
@@ -127,32 +129,17 @@ zwiki page set <path> status --downgrade
 
 ---
 
-## Phase 5 — 日志
-
-对每个写入的页面（validated 和 drifted），追加日志条目：
-
-```bash
-zwiki log \
-  --path "<domain>/concepts/<page>.md" \
-  --action edit --note "来源回溯验证：{validated|drifted}"
-```
-
-validated 页面在 note 中附带验证通过的声明数量；drifted 页面在 note 中附带漂移声明摘要。
-
----
-
-## Phase 6 — 验证
+## Phase 5 — 验证
 
 执行最终验证确认所有操作完成：
 
 1. **路径确认** — 确认需要刷新的页面列表与已操作的页面一致
-2. **完整性检查** — 运行 wiki 健康检查：
+2. **完整性检查** — 在写入的 bundle 源上运行健康检查：
    ```bash
-   zwiki check 2>/dev/null \
-     && echo "✓ wiki 结构完整性检查通过" \
-     || echo "ℹ 健康检查工具不可用，跳过"
+   zwiki --root <bundle源目录> check || echo "⚠ wiki 检查发现问题，请检查并修复"
    ```
-3. **日志检查** — 确认 `~/.zoo/wiki/logs/` 下已有对应的日志条目（当前月份 `logs/YYYY-MM.md` 文件）
+
+写入命令会自动记录日志（`--note` 内容随条目入日志），无需单独记录。
 
 向用户报告最终结果：
 

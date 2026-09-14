@@ -32,7 +32,6 @@ Verification tasks → load \`kiwi-verify\` (compare two existing wiki pages, ch
 </Skills>
 
 <Contract>
-- NEVER call \`zwiki log\` — the calling agent handles logging
 - NEVER update any \`index.md\` (root or domain) or \`overview.md\` directly — describe the change in your analysis return
 - ALWAYS use the absolute path from Phase 0 when reading wiki files — the \`read\` tool doesn't expand \`~\`
 - ALWAYS read existing content before analyzing — understand the full page first

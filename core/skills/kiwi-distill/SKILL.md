@@ -9,7 +9,7 @@ description: kiwi 知识蒸馏工作流。将源材料分析为结构化页面�
 
 Run `realpath ~/.zoo/wiki` to get the wiki's absolute path. Use this path for all subsequent file reads (the `read` tool does not expand `~`).
 
-Then read `SCHEMA.md` inside the wiki to confirm formatting and naming rules. If already read this session, skip.
+Then read `SCHEMA.md` inside the wiki (or run `zwiki schema`) to confirm formatting and naming rules. If already read this session, skip. Run `zwiki template <type>` to see the exact skeleton of the page type you will produce.
 
 If your CONTEXT contains external URLs, use `webfetch`. For additional external sources, use `websearch`.
 
@@ -208,10 +208,8 @@ Revise, then re-check. After 2 iterations, if a criterion still fails, flag it e
 
 Explain to the calling agent what should be created/updated:
 - What pages to create or update (full paths including domain prefix, frontmatter, page content following SCHEMA.md conventions). If a similar page already exists, recommend updating it instead of creating a duplicate — describe what sections to add or revise
-- What index entries to add to the relevant domain's `index.md` (NOT the root index.md, which only lists domains)
-- What cross-references to update (add new page to existing pages' `related` field)
+- What cross-references to update (which existing pages should gain an inline link to the new page; `relations` and backlinks are derived by `zwiki check`, not hand-edited)
 - Whether `overview.md` needs rewriting
-- What log entries to append via `zwiki log`
 
 ### Supersede Proposals
 
@@ -261,7 +259,7 @@ If validation candidates were found (per 4.7, Outcome C):
       - Existing claim: "..." (exact quote from the existing page)
         Confirming claim: "..." (exact quote from the new source)
         Status: proposal only — calling agent must confirm before refreshing `last_validated`
-  **THESE ARE PROPOSALS ONLY. The calling agent must confirm with the user before using `zwiki page set <path> last_validated <value>` on any page.**
+  **THESE ARE PROPOSALS ONLY. The calling agent must confirm with the user before using `zwiki --root <bundle源目录> page set <path> last_validated <value>` on any page.**
 
 If no validation candidates:
   No existing page claims are independently confirmed by this source.

@@ -1,6 +1,6 @@
 //! Core wiki library — path resolution, page discovery, frontmatter parsing.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -21,7 +21,7 @@ use walkdir::WalkDir;
 const META_FILES: &[&str] = &["index.md", "SCHEMA.md", ".gitkeep"];
 
 /// Directory names excluded from page discovery.
-const EXCLUDED_DIRS: &[&str] = &["templates", "tools", "raw", "logs"];
+pub const EXCLUDED_DIRS: &[&str] = &["tools", "raw", "logs"];
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -51,7 +51,7 @@ pub fn read_file(path: &Path) -> String {
 // ---------------------------------------------------------------------------
 
 /// Find all `*.md` files under `base`, excluding meta / system
-/// files and directories named `templates/`, `tools/`, `raw/`.
+/// files and directories named `tools/`, `raw/`, `logs/`.
 pub fn discover_pages(base: &Path) -> Vec<PathBuf> {
     let mut pages: Vec<PathBuf> = WalkDir::new(base)
         .into_iter()
@@ -87,7 +87,7 @@ pub fn discover_pages(base: &Path) -> Vec<PathBuf> {
 /// The following are excluded:
 ///
 /// * Meta files: `index.md`, `SCHEMA.md`, `.gitkeep`.
-/// * Files under the `templates/`, `tools/`, `raw/`, and `logs/` directories.
+/// * Files under the `tools/`, `raw/`, and `logs/` directories.
 #[must_use]
 pub fn all_wiki_pages_at(root: &Path) -> Vec<PathBuf> {
     discover_pages(root)
@@ -112,6 +112,23 @@ pub fn strip_frontmatter(content: &str) -> String {
 fn frontmatter_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"(?m)^---\s*$").unwrap())
+}
+
+/// Return the byte range of the frontmatter's inner content, i.e. between
+/// the opening and closing `---` delimiter lines (delimiters excluded).
+///
+/// Returns `None` when the content has no frontmatter block, when the
+/// opening delimiter is not the very first line, or when the block is not
+/// closed.
+#[must_use]
+pub fn frontmatter_inner_range(content: &str) -> Option<(usize, usize)> {
+    let mut delimiters = frontmatter_re().find_iter(content);
+    let opening = delimiters.next()?;
+    if opening.start() != 0 {
+        return None;
+    }
+    let closing = delimiters.next()?;
+    Some((opening.end(), closing.start()))
 }
 
 /// Minimal YAML frontmatter parser.
@@ -328,65 +345,148 @@ pub fn page_cache_at(
 // Domain validation
 // ---------------------------------------------------------------------------
 
-/// Extract the logical domain from a wiki-relative path.
+/// The set of bundle names directly under a root.
 ///
-/// For bundle layers (`.teams/`, `.upstream/`, `.org/`), strips the layer
-/// prefix and the bundle name, then returns the first remaining directory
-/// component.  For `personal/`, strips the prefix and returns the first
-/// subdirectory.  Falls back to the first path component if no layer prefix
-/// matches.  Returns `""` when there is no domain (root-level file).
-#[must_use]
-pub fn domain_of(rel: &str) -> &str {
-    // Bundle layers: .teams/<bundle>/<domain>/...
-    for prefix in &[".teams/", ".upstream/", ".org/"] {
-        if let Some(rest) = rel.strip_prefix(prefix) {
-            // Skip the bundle name (next component).
-            if let Some(after_bundle) = rest.split_once('/').map(|(_, r)| r) {
-                let candidate = after_bundle.split('/').next().unwrap_or("");
-                if std::path::Path::new(candidate)
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+/// A directory containing `bundle.toml` is a bundle.  Commands discover the
+/// set once from the root and thread it through path attribution: a page
+/// inside an installed bundle carries the bundle name as its first path
+/// component, so domain and link resolution must skip it.
+#[derive(Debug, Clone, Default)]
+pub struct BundleSet {
+    names: HashSet<String>,
+}
+
+impl BundleSet {
+    /// Discover the bundles directly under `root` — its child directories
+    /// that contain `bundle.toml`.
+    #[must_use]
+    pub fn discover(root: &Path) -> Self {
+        let mut names = HashSet::new();
+        if let Ok(entries) = fs::read_dir(root) {
+            for entry in entries.flatten() {
+                if entry.file_type().is_ok_and(|t| t.is_dir())
+                    && entry.path().join("bundle.toml").is_file()
+                    && let Some(name) = entry.file_name().to_str()
                 {
-                    return "";
+                    names.insert(name.to_string());
                 }
-                return candidate;
             }
-            return "";
         }
+        Self { names }
     }
-    // Personal space: personal/<domain>/...
-    if let Some(rest) = rel.strip_prefix("personal/") {
-        let candidate = rest.split('/').next().unwrap_or("");
-        if std::path::Path::new(candidate)
+
+    /// Iterate over the discovered bundle names.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.names.iter().map(String::as_str)
+    }
+
+    /// Strip a leading bundle component from `rel` when the first component
+    /// names a discovered bundle.
+    #[must_use]
+    pub fn strip_prefix<'a>(&self, rel: &'a str) -> Option<&'a str> {
+        let (first, rest) = rel.split_once('/')?;
+        self.names.contains(first).then_some(rest)
+    }
+
+    /// Extract the logical domain from a wiki-relative path.
+    ///
+    /// A leading bundle component is skipped, then the first remaining
+    /// directory component is returned.  Returns `""` when there is no
+    /// domain (a root-level or bundle-level file).
+    #[must_use]
+    pub fn domain_of<'a>(&self, rel: &'a str) -> &'a str {
+        let rel = self.strip_prefix(rel).unwrap_or(rel);
+        let candidate = rel.split('/').next().unwrap_or(rel);
+        if Path::new(candidate)
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
         {
             return "";
         }
-        return candidate;
+        candidate
     }
-    // No layer prefix — first component.
-    let candidate = rel.split('/').next().unwrap_or(rel);
-    if std::path::Path::new(candidate)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
-    {
-        return "";
-    }
-    candidate
 }
 
-/// Collects unique parent directory paths from all wiki pages.  Returns
-/// `Ok(())` if `domain` appears as a case-insensitive substring of any
-/// known domain path, or `Err(message)` with available domains listed.
-pub fn validate_domain(domain: &str, wiki_dir: &Path) -> Result<(), String> {
+/// Whether `dir` is a bundle directory (contains `bundle.toml`).
+#[must_use]
+pub fn is_bundle_dir(dir: &Path) -> bool {
+    dir.join("bundle.toml").is_file()
+}
+
+/// Return the name of the first directory below `root` on the path to `rel`
+/// that contains `bundle.toml`.
+///
+/// `rel` is relative to `root`; the root itself is not considered (the
+/// caller judges it separately).  Every component is probed, so a page path
+/// and a directory path are both handled (a file component can never be a
+/// bundle directory).  Used to keep writes out of installed bundles
+/// aggregated under one root and to keep derived-metadata sync out of them.
+#[must_use]
+pub fn bundle_on_path(root: &Path, rel: &str) -> Option<String> {
+    let mut dir = root.to_path_buf();
+    for component in rel.split('/') {
+        if component.is_empty() || component == "." || component == ".." {
+            continue;
+        }
+        dir.push(component);
+        if is_bundle_dir(&dir) {
+            return Some(component.to_string());
+        }
+    }
+    None
+}
+
+/// Return the name of the nearest bundle directory strictly above `dir`.
+#[must_use]
+pub fn enclosing_bundle(dir: &Path) -> Option<String> {
+    let mut current = dir.parent();
+    while let Some(parent) = current {
+        if is_bundle_dir(parent) {
+            return parent
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(ToString::to_string);
+        }
+        current = parent.parent();
+    }
+    None
+}
+
+/// Return the installed bundle name that owns `path`, if any.
+///
+/// A path is owned when it lies inside a bundle whose ancestry includes a
+/// store root (`zwiki.lock`).  Returns the nearest bundle directory name.
+#[must_use]
+pub fn installed_bundle(path: &Path) -> Option<String> {
+    let mut current = Some(path);
+    let mut bundle: Option<String> = None;
+    while let Some(dir) = current {
+        if dir.join("zwiki.lock").is_file() {
+            return bundle;
+        }
+        if bundle.is_none() && is_bundle_dir(dir) {
+            bundle = dir.file_name().and_then(|n| n.to_str()).map(String::from);
+        }
+        current = dir.parent();
+    }
+    None
+}
+
+/// Collect the known domains from all wiki pages.  Returns `Ok(())` when
+/// `domain` matches a known domain (case-insensitively), or `Err(message)`
+/// with the available domains listed.
+pub fn validate_domain(
+    domain: &str,
+    wiki_dir: &Path,
+    bundles: &BundleSet,
+) -> Result<(), String> {
     let known: std::collections::BTreeSet<String> = discover_pages(wiki_dir)
         .into_iter()
         .filter_map(|p| {
             p.strip_prefix(wiki_dir)
                 .ok()
                 .and_then(|r| r.to_str())
-                .map(|r| domain_of(r).to_string())
+                .map(|r| bundles.domain_of(r).to_string())
                 .filter(|d| !d.is_empty())
         })
         .collect();
@@ -414,6 +514,87 @@ pub fn parse_index_links(content: &str) -> Vec<String> {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| Regex::new(r"\[.*?\]\(([^)]+\.md)\)").unwrap());
     re.captures_iter(content).map(|c| c[1].to_string()).collect()
+}
+
+/// Resolve a markdown link target to a path relative to `base`.
+///
+/// `base` is the directory the target is relative to: links inside an
+/// `index.md` resolve against the directory holding that index.  Returns
+/// `None` for absolute paths and targets containing `..` components.
+#[must_use]
+pub fn resolve_wiki_link(target: &str, base: &Path) -> Option<String> {
+    let target_path = Path::new(target);
+    if target_path.is_absolute() {
+        return None;
+    }
+    if target_path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    let full = base.join(target_path);
+    full.strip_prefix(base).ok().map(|p| p.to_string_lossy().to_string())
+}
+
+/// Collect the page paths listed by every `index.md` under `root`.
+///
+/// One set is returned per index file, holding wiki-relative page paths
+/// resolved against that index's own directory.  A domain index may
+/// therefore list its pages with paths relative to the domain, while the
+/// bundle root index lists domains and root-level pages.  Meta files
+/// (`index.md`, `SCHEMA.md`) and indexes under excluded directories are
+/// skipped.  Callers union the sets to test coverage: a page counts as
+/// indexed when listed in any index, not only the root one.
+#[must_use]
+pub fn collect_index_entries(root: &Path) -> Vec<HashSet<String>> {
+    let exclude_dirs: HashSet<&str> = EXCLUDED_DIRS.iter().copied().collect();
+    let meta: HashSet<&str> = META_FILES.iter().copied().collect();
+    let mut entries: Vec<HashSet<String>> = Vec::new();
+
+    let walk = WalkDir::new(root)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file())
+        .filter(|e| e.file_name() == "index.md");
+
+    for entry in walk {
+        let index_path = entry.path();
+        let rel_index = index_path.strip_prefix(root).unwrap_or(index_path);
+
+        if rel_index.components().any(|c| {
+            exclude_dirs.contains(c.as_os_str().to_str().unwrap_or(""))
+        }) {
+            continue;
+        }
+
+        let index_dir = index_path.parent().unwrap_or(root);
+        let index_parent = rel_index.parent().unwrap_or_else(|| Path::new(""));
+        let content = read_file(index_path);
+        let mut listed: HashSet<String> = HashSet::new();
+
+        for link in parse_index_links(&content) {
+            let Some(rel_to_index) = resolve_wiki_link(&link, index_dir) else {
+                continue;
+            };
+            let full_rel = if index_parent.as_os_str().is_empty() {
+                rel_to_index
+            } else {
+                format!("{}/{}", index_parent.to_string_lossy(), rel_to_index)
+            };
+            let fname = Path::new(&full_rel)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+            if !meta.contains(fname) {
+                listed.insert(full_rel);
+            }
+        }
+
+        entries.push(listed);
+    }
+
+    entries
 }
 
 // ---------------------------------------------------------------------------
@@ -515,6 +696,7 @@ pub fn page_matches_slice(
     type_filter: Option<&str>,
     tag_filter: Option<&str>,
     domain_filter: Option<&str>,
+    bundles: &BundleSet,
 ) -> bool {
     // Type filter (case-insensitive substring).
     if let Some(tf) = type_filter {
@@ -542,10 +724,10 @@ pub fn page_matches_slice(
         }
     }
 
-    // Domain filter (case-insensitive exact match against `domain_of`).
+    // Domain filter (case-insensitive exact match against the domain).
     if let Some(df) = domain_filter {
         let df_lower = df.to_lowercase();
-        let domain = domain_of(&page.rel);
+        let domain = bundles.domain_of(&page.rel);
         if domain.to_lowercase() != df_lower {
             return false;
         }
@@ -713,20 +895,6 @@ mod tests {
                 "regular.md"
             ]
         );
-    }
-
-    #[test]
-    fn test_all_wiki_pages_excludes_templates_dir() {
-        let dir = temp_dir("wiki_pages_templates");
-        write(&dir.join("regular.md"), "# Regular");
-        write(&dir.join("templates").join("page-tpl.md"), "# Tpl");
-
-        let pages = discover_pages(&dir);
-        let names: Vec<String> = pages
-            .iter()
-            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
-            .collect();
-        assert_eq!(names, vec!["regular.md"]);
     }
 
     #[test]
@@ -1077,7 +1245,7 @@ mod tests {
             "# Foo",
         );
         write(&dir.join("shared").join("concepts").join("bar.md"), "# Bar");
-        let result = validate_domain("autoresearch", &dir);
+        let result = validate_domain("autoresearch", &dir, &bundles(&[]));
         assert!(result.is_ok());
     }
 
@@ -1085,7 +1253,7 @@ mod tests {
     fn test_validate_domain_case_insensitive() {
         let dir = temp_dir("validate_domain_ci");
         write(&dir.join("AutoResearch").join("foo.md"), "# Foo");
-        let result = validate_domain("autoresearch", &dir);
+        let result = validate_domain("autoresearch", &dir, &bundles(&[]));
         assert!(result.is_ok());
     }
 
@@ -1093,7 +1261,7 @@ mod tests {
     fn test_validate_domain_invalid() {
         let dir = temp_dir("validate_domain_invalid");
         write(&dir.join("autoresearch").join("foo.md"), "# Foo");
-        let result = validate_domain("nonexistent", &dir);
+        let result = validate_domain("nonexistent", &dir, &bundles(&[]));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("未知的 domain"));
     }
@@ -1104,56 +1272,51 @@ mod tests {
         write(&dir.join("root.md"), "# Root");
         write(&dir.join("sub").join("page.md"), "# Page");
         // "root" is not a domain — it's a root-level file.
-        let result = validate_domain("root", &dir);
+        let result = validate_domain("root", &dir, &bundles(&[]));
         assert!(result.is_err());
-        let result2 = validate_domain("sub", &dir);
+        let result2 = validate_domain("sub", &dir, &bundles(&[]));
         assert!(result2.is_ok());
     }
 
     // -------------------------------------------------------------------
-    // 8. domain_of
+    // 8. BundleSet::domain_of
     // -------------------------------------------------------------------
 
+    /// Build a `BundleSet` from explicit bundle names.
+    fn bundles(names: &[&str]) -> BundleSet {
+        BundleSet { names: names.iter().map(|s| (*s).to_string()).collect() }
+    }
+
     #[test]
-    fn test_domain_of_teams_bundle() {
+    fn test_domain_of_installed_bundle() {
+        let set = bundles(&["my-bundle"]);
         assert_eq!(
-            domain_of(".teams/my-team/autoresearch/concepts/foo.md"),
+            set.domain_of("my-bundle/autoresearch/concepts/foo.md"),
             "autoresearch"
         );
     }
 
     #[test]
-    fn test_domain_of_upstream_bundle() {
-        assert_eq!(domain_of(".upstream/some-bundle/domain/page.md"), "domain");
-    }
-
-    #[test]
-    fn test_domain_of_org_bundle() {
-        assert_eq!(
-            domain_of(".org/org-bundle/topic/subtopic/file.md"),
-            "topic"
-        );
-    }
-
-    #[test]
     fn test_domain_of_bundle_md_file_no_subdir() {
-        // .md file at bundle root — no domain subdirectory.
-        assert_eq!(domain_of(".teams/team/readme.md"), "");
+        // A .md file at the bundle root has no domain subdirectory.
+        let set = bundles(&["my-bundle"]);
+        assert_eq!(set.domain_of("my-bundle/readme.md"), "");
     }
 
     #[test]
-    fn test_domain_of_personal_space() {
-        assert_eq!(domain_of("personal/shared/concepts/bar.md"), "shared");
+    fn test_domain_of_unknown_first_component_is_domain() {
+        let set = bundles(&["my-bundle"]);
+        assert_eq!(set.domain_of("autoresearch/foo.md"), "autoresearch");
     }
 
     #[test]
     fn test_domain_of_root_level_file() {
-        assert_eq!(domain_of("just-a-file.md"), "");
+        assert_eq!(bundles(&[]).domain_of("just-a-file.md"), "");
     }
 
     #[test]
     fn test_domain_of_empty_string() {
-        assert_eq!(domain_of(""), "");
+        assert_eq!(bundles(&[]).domain_of(""), "");
     }
 
     // -------------------------------------------------------------------
@@ -1169,7 +1332,7 @@ mod tests {
         );
         let pages = discover_pages(&dir);
         let page = read_page_at(&pages[0], &dir).unwrap();
-        assert!(page_matches_slice(&page, None, None, None));
+        assert!(page_matches_slice(&page, None, None, None, &bundles(&[])));
     }
 
     #[test]
@@ -1177,8 +1340,20 @@ mod tests {
         let dir = temp_dir("slice_type");
         write(&dir.join("a.md"), "---\ntype: concept\ntags: []\n---\n");
         let page = read_page_at(&dir.join("a.md"), &dir).unwrap();
-        assert!(page_matches_slice(&page, Some("conc"), None, None));
-        assert!(!page_matches_slice(&page, Some("entity"), None, None));
+        assert!(page_matches_slice(
+            &page,
+            Some("conc"),
+            None,
+            None,
+            &bundles(&[])
+        ));
+        assert!(!page_matches_slice(
+            &page,
+            Some("entity"),
+            None,
+            None,
+            &bundles(&[])
+        ));
     }
 
     #[test]
@@ -1189,8 +1364,20 @@ mod tests {
             "---\ntype: concept\ntags: [access-control]\n---\n",
         );
         let page = read_page_at(&dir.join("a.md"), &dir).unwrap();
-        assert!(page_matches_slice(&page, None, Some("access"), None));
-        assert!(!page_matches_slice(&page, None, Some("auth"), None));
+        assert!(page_matches_slice(
+            &page,
+            None,
+            Some("access"),
+            None,
+            &bundles(&[])
+        ));
+        assert!(!page_matches_slice(
+            &page,
+            None,
+            Some("auth"),
+            None,
+            &bundles(&[])
+        ));
     }
 
     #[test]
@@ -1202,8 +1389,20 @@ mod tests {
         );
         let page =
             read_page_at(&dir.join("shared").join("a.md"), &dir).unwrap();
-        assert!(page_matches_slice(&page, None, None, Some("shared")));
-        assert!(!page_matches_slice(&page, None, None, Some("other")));
+        assert!(page_matches_slice(
+            &page,
+            None,
+            None,
+            Some("shared"),
+            &bundles(&[])
+        ));
+        assert!(!page_matches_slice(
+            &page,
+            None,
+            None,
+            Some("other"),
+            &bundles(&[])
+        ));
     }
 
     #[test]
@@ -1227,12 +1426,14 @@ mod tests {
             Some("concept"),
             Some("auth"),
             Some("shared"),
+            &bundles(&[]),
         ));
         assert!(!page_matches_slice(
             &page_b,
             Some("concept"),
             Some("auth"),
             Some("shared"),
+            &bundles(&[]),
         ));
     }
 }

@@ -1,11 +1,9 @@
 ---
-title: <概念名称>
+title: <实体名称>
 description: <一句话摘要>。
-type: concept
+type: entity
 timestamp: YYYY-MM-DDTHH:mm:ssZ
 tags: [tag1, tag2]
-relations:
-  - "[示例实体](autoresearch/entities/foo.md)"
 status: draft|review|stable|deprecated
 last_validated: YYYY-MM-DDTHH:mm:ssZ
 timeliness: current
@@ -24,27 +22,25 @@ timeliness: current
 # freshness_days: 90
 ---
 
-# <概念名称>
+# <实体名称>
 
-> 一句话概括该概念是什么，解决什么问题。
+> 一句话概括该实体是什么，在项目中的位置。
 
 ## Overview
 
-对该概念的简要描述（2-3 段），说明其在本项目中的角色和意义。
+该实体的简要描述：位置、职责、创建原因。
 
-## Details
+## Role
 
-### 定义
+该实体在系统中扮演的角色，主要的职责范围。
 
-精确定义，必要时给出形式化描述。
+## Behavior
 
-### 工作原理
+关键行为描述：输入、输出、副作用、异常处理。
 
-解释该概念如何运作，涉及哪些机制。
+## Permissions（如适用）
 
-### 变体 / 子概念
-
-如果存在子类型或相关变体，在此列出。
+如果该实体涉及权限（如插件、agent），列出其权限范围。
 
 ## Backlinks
 
@@ -57,5 +53,6 @@ timeliness: current
 
 ## Notes
 
-- 边缘情况
-- 待确认事项
+- 依赖关系
+- 配置要求
+- 已知限制

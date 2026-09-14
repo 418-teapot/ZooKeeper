@@ -20,18 +20,18 @@ fn temp_dir(name: &str) -> PathBuf {
 
 /// Create a minimal writable wiki root at `dir` with a few pages.
 fn make_wiki(dir: &Path) {
+    std::fs::create_dir_all(dir).unwrap();
+    // Bundle manifest marks this as a writable bundle source.
+    std::fs::write(
+        dir.join("bundle.toml"),
+        "[package]\nname = \"test-wiki\"\nversion = \"0.1.0\"\n\n[export]\ninclude = [\"**/*\"]\n",
+    )
+    .unwrap();
     // Domain subdirectories.
     for sub in &["concepts", "entities", "sources/adr", "analysis", "syntheses"]
     {
         std::fs::create_dir_all(dir.join(sub)).unwrap();
     }
-    std::fs::create_dir_all(dir.join("templates")).unwrap();
-    // Minimal template.
-    std::fs::write(
-        dir.join("templates").join("concept.md"),
-        "---\ntitle: <概念名称>\ntype: concept\ntimestamp: YYYY-MM-DDTHH:mm:ssZ\nstatus: draft|review|stable|deprecated\n---\n\n# <概念名称>\n",
-    )
-    .unwrap();
     // A page for set/unset/show tests.
     std::fs::write(
         dir.join("concepts").join("test-page.md"),
@@ -54,7 +54,6 @@ fn make_readonly_bundle(dir: &Path) -> PathBuf {
 name = "test-bundle"
 version = "0.1.0"
 okf_version = "0.1"
-kind = "upstream"
 
 [export]
 include = ["*.md"]
@@ -351,7 +350,6 @@ fn test_page_create_and_move() {
     make_wiki(&wiki);
 
     // Create a page: domain "concepts" + type "concept" → concepts/concepts/<slug>.md.
-    // The concept template is provided by make_wiki.
     assert_ok(
         &bin,
         &[
@@ -905,4 +903,306 @@ fn test_readonly_root_allows_page_show() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim(), "Doc");
+}
+
+// ---------------------------------------------------------------------------
+// Automatic change-log entries
+// ---------------------------------------------------------------------------
+
+/// Read the single monthly log file under `<wiki>/logs`.
+fn read_monthly_log(wiki: &Path) -> String {
+    let log_file = std::fs::read_dir(wiki.join("logs"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|e| e == "md"))
+        .expect("monthly log file should exist");
+    std::fs::read_to_string(&log_file).unwrap()
+}
+
+#[test]
+fn test_page_create_writes_create_log_with_note() {
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
+    let wiki = temp_dir("page_create_log");
+    make_wiki(&wiki);
+
+    assert_ok(
+        &bin,
+        &[
+            "--root",
+            &wiki.to_string_lossy(),
+            "page",
+            "create",
+            "--domain",
+            "research",
+            "--type",
+            "concept",
+            "--title",
+            "New Page",
+            "--slug",
+            "new-page",
+            "--note",
+            "首次录入",
+        ],
+        "page create with note",
+    );
+
+    let content = read_monthly_log(&wiki);
+    assert!(
+        content
+            .contains("* **创建**: research/concepts/new-page.md — 首次录入"),
+        "page create should auto-log with the note:\n{content}"
+    );
+}
+
+#[test]
+fn test_page_set_writes_edit_log_with_note() {
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
+    let wiki = temp_dir("page_set_log");
+    make_wiki(&wiki);
+
+    assert_ok(
+        &bin,
+        &[
+            "--root",
+            &wiki.to_string_lossy(),
+            "page",
+            "set",
+            "concepts/test-page.md",
+            "status",
+            "stable",
+            "--note",
+            "评审通过",
+        ],
+        "page set with note",
+    );
+
+    let content = read_monthly_log(&wiki);
+    assert!(
+        content.contains("* **编辑**: concepts/test-page.md — 评审通过"),
+        "page set should auto-log an edit entry with the note:\n{content}"
+    );
+}
+
+#[test]
+fn test_page_unset_writes_edit_log_with_note() {
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
+    let wiki = temp_dir("page_unset_log");
+    make_wiki(&wiki);
+
+    assert_ok(
+        &bin,
+        &[
+            "--root",
+            &wiki.to_string_lossy(),
+            "page",
+            "unset",
+            "concepts/test-page.md",
+            "timeliness",
+            "--note",
+            "清理属性",
+        ],
+        "page unset with note",
+    );
+
+    let content = read_monthly_log(&wiki);
+    assert!(
+        content.contains("* **编辑**: concepts/test-page.md — 清理属性"),
+        "page unset should auto-log an edit entry with the note:\n{content}"
+    );
+}
+
+#[test]
+fn test_page_move_writes_move_log_with_note() {
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
+    let wiki = temp_dir("page_move_log");
+    make_wiki(&wiki);
+
+    assert_ok(
+        &bin,
+        &[
+            "--root",
+            &wiki.to_string_lossy(),
+            "page",
+            "move",
+            "concepts/test-page.md",
+            "concepts/renamed-page.md",
+            "--note",
+            "重命名",
+        ],
+        "page move with note",
+    );
+
+    let content = read_monthly_log(&wiki);
+    assert!(
+        content.contains(
+            "* **移动**: concepts/test-page.md → concepts/renamed-page.md — 重命名"
+        ),
+        "page move should auto-log a structured move entry with the note:\n{content}"
+    );
+}
+
+#[test]
+fn test_log_subcommand_rejected() {
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
+    let wiki = temp_dir("log_removed");
+    make_wiki(&wiki);
+
+    let output = Command::new(&bin)
+        .args([
+            "--root",
+            &wiki.to_string_lossy(),
+            "log",
+            "--path",
+            "concepts/test-page.md",
+            "--action",
+            "create",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "zwiki log must no longer be a recognized subcommand"
+    );
+}
+
+/// Run `check --json` and return the pages listed under `log_coverage`.
+fn coverage_pages(bin: &Path, wiki: &Path) -> Vec<String> {
+    let output = Command::new(bin)
+        .args(["--root", &wiki.to_string_lossy(), "check", "--json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| {
+            panic!("check --json output is not JSON: {e}\n{stdout}")
+        });
+    value["health"]["log_coverage"]
+        .as_array()
+        .expect("log_coverage array")
+        .iter()
+        .filter_map(|i| i["page"].as_str().map(ToString::to_string))
+        .collect()
+}
+
+#[test]
+fn test_log_coverage_tracks_tool_created_sources() {
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
+    let wiki = temp_dir("log_coverage_auto");
+    make_wiki(&wiki);
+
+    // A tool-created source page is auto-logged, so coverage must pass.
+    assert_ok(
+        &bin,
+        &[
+            "--root",
+            &wiki.to_string_lossy(),
+            "page",
+            "create",
+            "--domain",
+            "research",
+            "--type",
+            "source",
+            "--title",
+            "ADR One",
+            "--slug",
+            "adr-001",
+            "--source-type",
+            "adr",
+            "--note",
+            "tool created",
+        ],
+        "page create source",
+    );
+
+    let created = "research/sources/adr/adr-001.md";
+    assert!(
+        !coverage_pages(&bin, &wiki).contains(&created.to_string()),
+        "tool-created source page must not be flagged as missing coverage"
+    );
+
+    // A hand-dropped source page has no log entry and must be flagged.
+    let hand = "research/sources/adr/hand-dropped.md";
+    std::fs::write(
+        wiki.join(hand),
+        "---\ntitle: Hand Dropped\ntype: source\n---\nBody.\n",
+    )
+    .unwrap();
+
+    assert!(
+        coverage_pages(&bin, &wiki).contains(&hand.to_string()),
+        "hand-dropped source page must be flagged as missing coverage"
+    );
+}
+
+#[test]
+fn test_page_create_new_domain_creates_index() {
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
+    let wiki = temp_dir("page_create_new_domain_index");
+    make_wiki(&wiki);
+
+    assert_ok(
+        &bin,
+        &[
+            "--root",
+            &wiki.to_string_lossy(),
+            "page",
+            "create",
+            "--domain",
+            "freshdomain",
+            "--type",
+            "concept",
+            "--title",
+            "Fresh",
+        ],
+        "page create in new domain",
+    );
+
+    let index = wiki.join("freshdomain").join("index.md");
+    assert!(
+        index.is_file(),
+        "page create into a new domain should write index.md"
+    );
+    let content = std::fs::read_to_string(&index).unwrap();
+    assert!(
+        content.starts_with("---\ntitle: freshdomain\n---"),
+        "index.md should be generated with seeded frontmatter:\n{content}"
+    );
+    assert!(
+        content.contains("- [Fresh](concepts/fresh.md)"),
+        "index.md should list the created page:\n{content}"
+    );
+}
+
+#[test]
+fn test_template_command_prints_embedded_template() {
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
+    let output =
+        Command::new(&bin).args(["template", "concept"]).output().unwrap();
+    assert!(output.status.success(), "template command should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("type: concept"), "should be the concept template");
+    assert!(stdout.contains("<概念名称>"), "should contain the placeholder");
+}
+
+#[test]
+fn test_template_command_unknown_type_fails() {
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
+    let output =
+        Command::new(&bin).args(["template", "bogus"]).output().unwrap();
+    assert!(!output.status.success(), "unknown type should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("未知的模板类型") && stderr.contains("concept"),
+        "error should list valid types: {stderr}"
+    );
+}
+
+#[test]
+fn test_schema_command_prints_embedded_schema() {
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_zwiki"));
+    let output = Command::new(&bin).args(["schema"]).output().unwrap();
+    assert!(output.status.success(), "schema command should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.starts_with("# Wiki Schema"), "should print SCHEMA.md");
 }

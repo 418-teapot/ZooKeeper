@@ -181,7 +181,9 @@ pub fn format_human(results: &[PageContradictions]) -> String {
 pub fn dispatch(cmd: &crate::ContradictionsCommand, root: &Path, json: bool) {
     match cmd {
         crate::ContradictionsCommand::List => cmd_list(root, json),
-        crate::ContradictionsCommand::Apply => cmd_apply(root, json),
+        crate::ContradictionsCommand::Apply(args) => {
+            cmd_apply(root, json, args.note.as_deref());
+        }
     }
 }
 
@@ -193,9 +195,9 @@ pub fn cmd_list(root: &Path, json: bool) {
     let results = collect_all(root);
 
     if json {
-        println!("{}", format_json(&results));
+        crate::print_stdout_line(format_json(&results));
     } else {
-        println!("{}", format_human(&results));
+        crate::print_stdout_line(format_human(&results));
     }
 }
 
@@ -571,7 +573,7 @@ fn apply_one_pair(
 /// frontmatter blocks with `last_validated` update.
 /// Status downgrade is NOT performed — callers must explicitly use
 /// `zwiki page set <path> status --downgrade` if desired.
-pub fn cmd_apply(root: &Path, json: bool) {
+pub fn cmd_apply(root: &Path, json: bool, note: Option<&str>) {
     let inputs = match input_from_stdin() {
         Ok(v) => v,
         Err(e) => {
@@ -584,6 +586,18 @@ pub fn cmd_apply(root: &Path, json: bool) {
 
     // Validate all referenced pages exist before writing anything.
     for input in &inputs {
+        // Reject path traversal in the caller-supplied paths before they
+        // are joined to the wiki root.
+        for path in [&input.page_a, &input.page_b] {
+            if let Err(e) = crate::r#move::validate_rel_path(path) {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+        // Reject targets inside a read-only installation bundle layer
+        // before any write.
+        crate::guard_write_page(root, &input.page_a, "contradictions apply");
+        crate::guard_write_page(root, &input.page_b, "contradictions apply");
         let abs_a = wiki_root.join(&input.page_a);
         let abs_b = wiki_root.join(&input.page_b);
 
@@ -603,12 +617,20 @@ pub fn cmd_apply(root: &Path, json: bool) {
         .filter_map(|input| apply_one_pair(input, &wiki_root, &today))
         .collect();
 
+    // Log every page whose frontmatter was mutated.
+    for entry in &applied {
+        crate::log_mutation(&wiki_root, &entry.page_a, "edit", note);
+        crate::log_mutation(&wiki_root, &entry.page_b, "edit", note);
+    }
+
     if json {
         let output = serde_json::json!({
             "applied": applied.len(),
             "entries": applied,
         });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        crate::print_stdout_line(
+            serde_json::to_string_pretty(&output).unwrap(),
+        );
     }
 
     eprintln!(

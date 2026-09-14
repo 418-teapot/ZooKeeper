@@ -7,7 +7,7 @@ use chrono::Local;
 // ---------------------------------------------------------------------------
 
 /// Number of health check sections.
-const HEALTH_SECTION_COUNT: usize = 9;
+const HEALTH_SECTION_COUNT: usize = 8;
 
 /// Number of lint check sections.
 const LINT_SECTION_COUNT: usize = 5;
@@ -28,7 +28,6 @@ pub const fn count_health_issues(r: &CheckResults) -> usize {
         + r.log_coverage.len()
         + r.frontmatter.len()
         + r.related_field.len()
-        + r.related_body_consistency.len()
         + r.source_field.len()
         + r.missing_inline_links.len()
         + r.duplicate_inline_links.len()
@@ -72,7 +71,6 @@ pub struct CheckResults {
     pub log_coverage: Vec<Issue>,
     pub frontmatter: Vec<Issue>,
     pub related_field: Vec<Issue>,
-    pub related_body_consistency: Vec<Issue>,
     pub source_field: Vec<Issue>,
     pub missing_inline_links: Vec<Issue>,
     pub duplicate_inline_links: Vec<Issue>,
@@ -87,7 +85,7 @@ pub struct IndexSyncResult {
 #[derive(Debug, Clone)]
 pub struct Issue {
     pub page: String,
-    pub kind: String,
+    pub category: String,
     pub details: String,
 }
 
@@ -122,7 +120,7 @@ fn fmt_empty_files(issues: &[Issue]) -> Vec<String> {
         let parts: Vec<&str> = issue.details.split(':').collect();
         let total = parts.first().unwrap_or(&"0");
         let body = parts.get(1).unwrap_or(&"0");
-        let (emoji, status_cn) = if issue.kind == "empty" {
+        let (emoji, status_cn) = if issue.category == "empty" {
             ("🔴", "空文件")
         } else {
             ("🟡", "存根")
@@ -190,7 +188,7 @@ fn fmt_frontmatter(issues: &[Issue]) -> Vec<String> {
     for issue in issues {
         lines.push(format!(
             "| `{}` | {} | {} |",
-            issue.page, issue.kind, issue.details
+            issue.page, issue.category, issue.details
         ));
     }
     lines.push(String::new());
@@ -206,23 +204,7 @@ fn fmt_related_field(issues: &[Issue]) -> Vec<String> {
     for issue in issues {
         lines.push(format!(
             "| `{}` | {} | {} |",
-            issue.page, issue.kind, issue.details
-        ));
-    }
-    lines.push(String::new());
-    lines
-}
-
-fn fmt_related_body_consistency(issues: &[Issue]) -> Vec<String> {
-    let mut lines = Vec::new();
-    lines.push(format!("## Relations 与正文一致性（{}）", issues.len()));
-    lines.push(String::new());
-    lines.push("| 页面 | 方向 | 详情 |".to_string());
-    lines.push("|---|---|---|".to_string());
-    for issue in issues {
-        lines.push(format!(
-            "| `{}` | {} | {} |",
-            issue.page, issue.kind, issue.details
+            issue.page, issue.category, issue.details
         ));
     }
     lines.push(String::new());
@@ -238,7 +220,7 @@ fn fmt_source_field(issues: &[Issue]) -> Vec<String> {
     for issue in issues {
         lines.push(format!(
             "| `{}` | {} | {} |",
-            issue.page, issue.kind, issue.details
+            issue.page, issue.category, issue.details
         ));
     }
     lines.push(String::new());
@@ -295,6 +277,11 @@ fn fmt_duplicate_inline_links(issues: &[Issue]) -> Vec<String> {
     lines.push(String::new());
     lines.push(
         "以下页面在正文中多次链接到同一个目标页面（Relations/Backlinks/References/Notes 已排除）："
+            .to_string(),
+    );
+    lines.push(String::new());
+    lines.push(
+        "处理方式：保留首次出现处的链接，移除后续重复链接；不要删除首次出现的链接，也不要通过删除首次链接来消除本警告。"
             .to_string(),
     );
     lines.push(String::new());
@@ -395,11 +382,6 @@ pub fn format_full_report(health: &CheckResults, lint: &LintResults) -> String {
         }
         if !health.related_field.is_empty() {
             lines.extend(fmt_related_field(&health.related_field));
-        }
-        if !health.related_body_consistency.is_empty() {
-            lines.extend(fmt_related_body_consistency(
-                &health.related_body_consistency,
-            ));
         }
         if !health.source_field.is_empty() {
             lines.extend(fmt_source_field(&health.source_field));
@@ -573,11 +555,30 @@ mod tests {
 
         assert!(report.contains("全部通过 ✅"), "should contain all-pass");
         assert!(
-            report.contains("扫描 42 页，14 项检查"),
+            report.contains("扫描 42 页，13 项检查"),
             "header with page count"
         );
         assert!(!report.contains("## "), "no sections when all-pass: {report}");
         assert!(!report.contains("---"), "no footer when all-pass");
+    }
+
+    /// The duplicate-inline-link section must guide the author to keep the
+    /// first occurrence instead of deleting the first link to silence it.
+    #[test]
+    fn test_duplicate_inline_links_report_guides_keep_first() {
+        let mut health = CheckResults { total_pages: 1, ..Default::default() };
+        health.duplicate_inline_links.push(Issue {
+            page: "dup.md".into(),
+            category: "duplicate_inline_link".into(),
+            details:
+                r#"{"target":"other.md","occurrences":[{"display":"o","line":3}],"suggestion":"保留首次出现的链接"}"#
+                    .into(),
+        });
+        let report = format_full_report(&health, &LintResults::default());
+        assert!(
+            report.contains("保留首次出现"),
+            "report should guide keeping the first occurrence: {report}"
+        );
     }
 
     /// Health-only issues — only those sections appear, lint sections
@@ -587,12 +588,12 @@ mod tests {
         let mut health = CheckResults { total_pages: 10, ..Default::default() };
         health.empty_files.push(Issue {
             page: "concepts/foo.md".into(),
-            kind: "stub".into(),
+            category: "stub".into(),
             details: "100:50".into(),
         });
         health.frontmatter.push(Issue {
             page: "concepts/bar.md".into(),
-            kind: "missing_field:type".into(),
+            category: "missing_field:type".into(),
             details: String::new(),
         });
         let lint = LintResults::default();
@@ -620,7 +621,7 @@ mod tests {
         let mut lint = LintResults::default();
         lint.broken_links.push(Issue {
             page: "concepts/bad.md".into(),
-            kind: "target_not_found".into(),
+            category: "target_not_found".into(),
             details: r#"{"link_text":"bad link","target_path":"nope.md"}"#
                 .into(),
         });
@@ -638,18 +639,18 @@ mod tests {
         let mut health = CheckResults { total_pages: 20, ..Default::default() };
         health.log_coverage.push(Issue {
             page: "sources/rfc.md".into(),
-            kind: "missing_log".into(),
+            category: "missing_log".into(),
             details: "RFC-001".into(),
         });
         let mut lint = LintResults::default();
         lint.orphan_pages.push(Issue {
             page: "concepts/ghost.md".into(),
-            kind: "orphan".into(),
+            category: "orphan".into(),
             details: r#"{"inbound_links":0,"in_index":false}"#.into(),
         });
         lint.stale_pages.push(Issue {
             page: "concepts/old.md".into(),
-            kind: "stale".into(),
+            category: "stale".into(),
             details:
                 r#"{"timestamp":"2020-01-01","status":"draft","days_since_update":2000}"#.into(),
         });
@@ -670,27 +671,27 @@ mod tests {
         let mut lint = LintResults::default();
         lint.broken_links.push(Issue {
             page: "a.md".into(),
-            kind: "x".into(),
+            category: "x".into(),
             details: "{}".into(),
         });
         lint.orphan_pages.push(Issue {
             page: "b.md".into(),
-            kind: "x".into(),
+            category: "x".into(),
             details: "{}".into(),
         });
         lint.sparse_pages.push(Issue {
             page: "c.md".into(),
-            kind: "x".into(),
+            category: "x".into(),
             details: "{}".into(),
         });
         lint.stale_pages.push(Issue {
             page: "d.md".into(),
-            kind: "x".into(),
+            category: "x".into(),
             details: "{}".into(),
         });
         lint.cascade_stale.push(Issue {
             page: "e.md".into(),
-            kind: "x".into(),
+            category: "x".into(),
             details: "{}".into(),
         });
         let report = format_full_report(&health, &lint);
@@ -714,13 +715,13 @@ mod tests {
         let mut health = CheckResults { total_pages: 3, ..Default::default() };
         health.empty_files.push(Issue {
             page: "p.md".into(),
-            kind: "empty".into(),
+            category: "empty".into(),
             details: "0:0".into(),
         });
         let mut lint = LintResults::default();
         lint.broken_links.push(Issue {
             page: "q.md".into(),
-            kind: "x".into(),
+            category: "x".into(),
             details: "{}".into(),
         });
         let report = format_full_report(&health, &lint);
@@ -748,48 +749,43 @@ mod tests {
     fn test_format_full_report_saturation_all_fields() {
         let mut health = CheckResults { total_pages: 14, ..Default::default() };
 
-        // Health: 9 sections (index_sync has 2 sub-vecs → 1 section)
+        // Health: 8 sections (index_sync has 2 sub-vecs → 1 section)
         health.empty_files.push(Issue {
             page: "empty.md".into(),
-            kind: "empty".into(),
+            category: "empty".into(),
             details: "0:0".into(),
         });
         health.index_sync.on_disk_not_in_index.push("disk-only.md".into());
         health.index_sync.in_index_not_on_disk.push("index-only.md".into());
         health.log_coverage.push(Issue {
             page: "sources/s.md".into(),
-            kind: "missing_log".into(),
+            category: "missing_log".into(),
             details: "Source Title".into(),
         });
         health.frontmatter.push(Issue {
             page: "no-fm.md".into(),
-            kind: "missing_field:type".into(),
+            category: "missing_field:type".into(),
             details: String::new(),
         });
         health.related_field.push(Issue {
             page: "bad-related.md".into(),
-            kind: "related_to_system".into(),
+            category: "related_to_system".into(),
             details: String::new(),
-        });
-        health.related_body_consistency.push(Issue {
-            page: "mismatch.md".into(),
-            kind: "related_omission".into(),
-            details: "in-body link not in relations".into(),
         });
         health.source_field.push(Issue {
             page: "no-source.md".into(),
-            kind: "missing_resource".into(),
+            category: "missing_resource".into(),
             details: String::new(),
         });
         health.missing_inline_links.push(Issue {
             page: "no-link.md".into(),
-            kind: "x".into(),
+            category: "x".into(),
             details:
                 r#"{"term":"term","targets":["term.md"],"snippet":"some context"}"#.into(),
         });
         health.duplicate_inline_links.push(Issue {
             page: "dup-link.md".into(),
-            kind: "x".into(),
+            category: "x".into(),
             details:
                 r#"{"target":"other.md","occurrences":[{"display":"other","line":5}]}"#.into(),
         });
@@ -798,28 +794,28 @@ mod tests {
         let mut lint = LintResults::default();
         lint.broken_links.push(Issue {
             page: "broken.md".into(),
-            kind: "target_not_found".into(),
+            category: "target_not_found".into(),
             details: r#"{"link_text":"bad","target_path":"gone.md"}"#.into(),
         });
         lint.orphan_pages.push(Issue {
             page: "orphan.md".into(),
-            kind: "orphan".into(),
+            category: "orphan".into(),
             details: r#"{"inbound_links":0,"in_index":false}"#.into(),
         });
         lint.sparse_pages.push(Issue {
             page: "sparse.md".into(),
-            kind: "sparse".into(),
+            category: "sparse".into(),
             details: r#"{"body_length":10,"threshold":50}"#.into(),
         });
         lint.stale_pages.push(Issue {
             page: "stale.md".into(),
-            kind: "stale".into(),
+            category: "stale".into(),
             details:
                 r#"{"timestamp":"2020-01-01","status":"draft","days_since_update":2000}"#.into(),
         });
         lint.cascade_stale.push(Issue {
             page: "cascade.md".into(),
-            kind: "stale".into(),
+            category: "stale".into(),
             details: r#"{"superseded_page":"old.md","superseded_by":"new.md"}"#
                 .into(),
         });

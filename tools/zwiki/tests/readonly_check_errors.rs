@@ -84,10 +84,7 @@ fn test_check_invalid_manifest() {
     write_tar(
         &tar,
         &[
-            (
-                "bundle.toml",
-                b"[package]\nname = \"\"\nversion = \"0.1\"\nkind = \"unknown\"\n",
-            ),
+            ("bundle.toml", b"[package]\nname = \"\"\nversion = \"0.1\"\n"),
             ("index.md", b"---\ntitle: X\n---\n# X\n"),
             ("doc.md", b"# Doc\n"),
         ],
@@ -111,7 +108,6 @@ fn test_check_missing_index_md() {
 name = "test-bundle"
 version = "0.1.0"
 okf_version = "0.1"
-kind = "upstream"
 
 [export]
 include = ["*.md"]

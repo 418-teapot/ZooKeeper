@@ -48,7 +48,7 @@ timeliness: current
 |----|------|
 | 源材料 | 外部文档、URL、设计记录（不可变，LLM 只读） |
 | Wiki 页面 | LLM 生成和维护的结构化 markdown 文件，按领域组织（每个域含 6 类目录） |
-| SCHEMA.md | 格式规范与操作流程的约定文档（人机共演进） |
+| SCHEMA.md | 页面格式规范，内嵌于 zwiki（`zwiki schema` 查看，安装时物化到 store 根） |
 
 ### 当前知识版图
 

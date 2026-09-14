@@ -39,6 +39,7 @@ timeliness: current
 
 > 此节由 zwiki 自动维护，请勿手动编辑。
 
+- [长程任务的上下文管理](context-engineering/analysis/long-horizon-context-management.md)
 - [有效上下文的构成](context-engineering/concepts/context-anatomy.md)
 - [上下文工程](context-engineering/concepts/context-engineering.md)
 - [上下文腐烂](context-engineering/concepts/context-rot.md)

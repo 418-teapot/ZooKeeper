@@ -36,9 +36,9 @@ pub fn cmd_uninstall_inner(
             let inner: Result<(), String> = (|| {
                 let mut l = lock::read_lock_at(wiki_root)?;
 
-                let pos = l.bundles.iter().position(|b| b.name == args.name);
+                let pos = l.entries.iter().position(|b| b.name == args.name);
                 let entry = if let Some(idx) = pos {
-                    l.bundles.remove(idx)
+                    l.entries.remove(idx)
                 } else {
                     return Err(if use_json {
                         format!("bundle '{}' not found", args.name)
@@ -54,12 +54,11 @@ pub fn cmd_uninstall_inner(
                         "status": "ok",
                         "name": args.name,
                     });
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&output).unwrap()
+                    crate::print_stdout_line(
+                        serde_json::to_string_pretty(&output).unwrap(),
                     );
                 } else {
-                    println!("已卸载: {}", args.name);
+                    crate::print_stdout_line(format!("已卸载: {}", args.name));
                 }
 
                 Ok(())
@@ -99,7 +98,7 @@ fn uninstall_bundle_entry_inner(
         }
     })?;
 
-    if let Err(e) = index::regenerate_root_index_at(l, wiki_root) {
+    if let Err(e) = index::regenerate_store_metadata(l, wiki_root) {
         eprintln!("{e}");
     }
 
@@ -133,7 +132,7 @@ mod tests {
         let wiki_root = tmp.join(".zoo").join("wiki");
         std::fs::create_dir_all(&wiki_root).unwrap();
 
-        let bundle_dir = wiki_root.join(".upstream").join("test-pkg");
+        let bundle_dir = wiki_root.join("test-pkg");
         std::fs::create_dir_all(&bundle_dir).unwrap();
         std::fs::write(bundle_dir.join("doc.md"), "content").unwrap();
 
@@ -141,13 +140,13 @@ mod tests {
             name: "test-pkg".to_string(),
             version: "1.0".to_string(),
             registry: String::new(),
-            target: ".upstream/test-pkg/".to_string(),
+            target: "test-pkg/".to_string(),
             integrity: "sha256-abc".to_string(),
             installed_at: "2026-01-01T00:00:00Z".to_string(),
             description: None,
         };
         let mut l =
-            lock::ZwikiLock { bundles: vec![entry], ..Default::default() };
+            lock::ZwikiLock { entries: vec![entry], ..Default::default() };
 
         let lock_path = wiki_root.join("zwiki.lock");
         let lock_toml = toml::to_string_pretty(&l).unwrap();
@@ -156,7 +155,7 @@ mod tests {
         assert!(bundle_dir.exists());
         assert!(lock_path.exists());
 
-        let removed_entry = l.bundles.remove(0);
+        let removed_entry = l.entries.remove(0);
         let result =
             uninstall_bundle_entry_inner(&l, &removed_entry, &wiki_root, false);
         assert!(result.is_ok(), "uninstall should succeed");
@@ -165,14 +164,14 @@ mod tests {
 
         let content = std::fs::read_to_string(&lock_path).unwrap();
         let parsed: lock::ZwikiLock = toml::from_str(&content).unwrap();
-        assert!(parsed.bundles.is_empty(), "lock should have no entries");
+        assert!(parsed.entries.is_empty(), "lock should have no entries");
 
         let index_path = wiki_root.join("index.md");
         assert!(index_path.exists(), "index.md should exist");
         let index_content = std::fs::read_to_string(&index_path).unwrap();
         assert!(
-            index_content.contains("暂无已安装的 bundle"),
-            "index should indicate no bundles"
+            !index_content.contains("- ["),
+            "index should list no bundles: {index_content}"
         );
     }
 

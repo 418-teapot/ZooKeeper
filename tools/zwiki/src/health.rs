@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use crate::display::{CheckResults, IndexSyncResult, Issue};
 use crate::wiki;
-use crate::wiki::Page;
+use crate::wiki::{Page, resolve_wiki_link};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -53,43 +53,6 @@ const VALID_TIMELINESS: &[&str] = &["current", "stale"];
 const SKIP_LINK_CHECK_SECTIONS: &[&str] = &["backlinks", "references", "notes"];
 
 // ---------------------------------------------------------------------------
-// Path utilities
-// ---------------------------------------------------------------------------
-
-/// Check if a path belongs to an excluded directory (`raw/` or `logs/`).
-fn is_excluded_dir(path: &str) -> bool {
-    path.starts_with("raw/") || path.starts_with("logs/")
-}
-
-/// Resolve a markdown link target to a wiki-relative path.
-///
-/// Assumes links are wiki-root-relative (the wiki convention).  Skips
-/// absolute paths and paths containing `..` components that escape
-/// the wiki directory.
-pub fn resolve_wiki_link(target: &str, wiki_dir: &Path) -> Option<String> {
-    let target_path = Path::new(target);
-    // Skip absolute paths.
-    if target_path.is_absolute() {
-        return None;
-    }
-    // Skip targets with parent-dir components (not standard in this wiki).
-    if target_path
-        .components()
-        .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
-        return None;
-    }
-    let full = wiki_dir.join(target_path);
-    if full.starts_with(wiki_dir) {
-        full.strip_prefix(wiki_dir)
-            .ok()
-            .map(|p| p.to_string_lossy().to_string())
-    } else {
-        None
-    }
-}
-
-// ---------------------------------------------------------------------------
 // check_empty_files
 // ---------------------------------------------------------------------------
 
@@ -108,7 +71,7 @@ pub fn check_empty_files(pages: &[Page], threshold: usize) -> Vec<Issue> {
             let status = if body_len == 0 { "empty" } else { "stub" };
             results.push(Issue {
                 page: page.rel.clone(),
-                kind: status.to_string(),
+                category: status.to_string(),
                 details: format!("{total_len}:{body_len}"),
             });
         }
@@ -139,20 +102,19 @@ pub fn check_empty_files(pages: &[Page], threshold: usize) -> Vec<Issue> {
 /// Compare all `index.md` files (root + subdirectories) against actual files
 /// on disk.
 ///
-/// Walk all `index.md` files under `wiki_dir` (excluding templates, tools,
-/// raw directories).  Collects every page path referenced across **any**
-/// index as the global `indexed_anywhere` set.  A file is reported as
-/// `on_disk_not_in_index` only if it appears on disk but is **not** listed
-/// in any index — this implements the OKF §6 progressive-disclosure
-/// contract, where a page indexed by a subdirectory `index.md` is
-/// considered covered even if omitted from the root `index.md`.
+/// Each `index.md` resolves its links relative to its own directory (see
+/// `wiki::collect_index_entries`).  Collects every page path referenced
+/// across **any** index as the global `indexed_anywhere` set.  A file is
+/// reported as `on_disk_not_in_index` only if it appears on disk but is
+/// **not** listed in any index — this implements the OKF §6
+/// progressive-disclosure contract, where a page indexed by a subdirectory
+/// `index.md` is considered covered even if omitted from the root
+/// `index.md`.
 ///
 /// `in_index_not_on_disk` reports links that exist in any index but whose
 /// target file is missing from disk.
 pub fn check_index_sync(pages: &[Page], wiki_dir: &Path) -> IndexSyncResult {
     let meta_names: HashSet<&str> = META_FILE_NAMES.iter().copied().collect();
-    let exclude_dirs: HashSet<&str> =
-        ["templates", "tools", "raw"].iter().copied().collect();
 
     // Build a set of all wiki-relative disk paths (non-meta).
     let all_disk: HashSet<&str> = pages
@@ -169,56 +131,18 @@ pub fn check_index_sync(pages: &[Page], wiki_dir: &Path) -> IndexSyncResult {
     let all_disk_owned: HashSet<String> =
         all_disk.iter().map(|s| (*s).to_string()).collect();
 
-    // Collect every page path referenced across ANY index.md.
+    // Collect every page path referenced across ANY index.md.  Each index
+    // resolves its links relative to its own directory, so a page listed
+    // in a subdirectory index counts even when the root index omits it
+    // (OKF §6 progressive disclosure).
     let mut indexed_anywhere: HashSet<String> = HashSet::new();
     let mut in_index_not_on_disk: Vec<String> = Vec::new();
 
-    for entry in walkdir::WalkDir::new(wiki_dir)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_file())
-        .filter(|e| e.file_name() == "index.md")
-    {
-        let index_path = entry.path();
-        let rel_index = index_path.strip_prefix(wiki_dir).unwrap_or(index_path);
-
-        if rel_index.components().any(|c| {
-            exclude_dirs.contains(c.as_os_str().to_str().unwrap_or(""))
-        }) {
-            continue;
+    for index_rel_paths in wiki::collect_index_entries(wiki_dir) {
+        for p in &index_rel_paths {
+            indexed_anywhere.insert(p.clone());
         }
-
-        let index_dir = index_path.parent().unwrap_or(wiki_dir);
-        let index_rel_parent =
-            rel_index.parent().unwrap_or_else(|| Path::new(""));
-
-        let index_content = wiki::read_file(index_path);
-        let index_links = wiki::parse_index_links(&index_content);
-
-        let mut index_rel_paths: HashSet<String> = HashSet::new();
-        for link in &index_links {
-            if let Some(rel_to_index) = resolve_wiki_link(link, index_dir) {
-                let full_rel = if index_rel_parent.as_os_str().is_empty() {
-                    rel_to_index
-                } else {
-                    format!(
-                        "{}/{}",
-                        index_rel_parent.to_string_lossy(),
-                        rel_to_index
-                    )
-                };
-                let fname = Path::new(&full_rel)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("");
-                if !meta_names.contains(fname) {
-                    index_rel_paths.insert(full_rel.clone());
-                    indexed_anywhere.insert(full_rel);
-                }
-            }
-        }
-
-        // in_index_not_on_disk: linked in this index but file missing on disk.
+        // in_index_not_on_disk: linked in this index but file missing.
         for p in index_rel_paths.difference(&all_disk_owned) {
             if !in_index_not_on_disk.contains(p) {
                 in_index_not_on_disk.push(p.clone());
@@ -255,16 +179,29 @@ fn parse_log_entries(content: &str) -> HashSet<String> {
     let old_re =
         Regex::new(r"(?m)^## \[\d{4}-\d{2}-\d{2}\] \w+ \| ([^|]+) \|").unwrap();
     for cap in old_re.captures_iter(content) {
-        paths.insert(cap[1].trim().to_string());
+        insert_log_paths(&mut paths, &cap[1]);
     }
 
     // List entries: * **verb**: path — note
     let new_re = Regex::new(r"(?m)^\* \*\*[^*]+\*\*:\s*([^—\n]+)").unwrap();
     for cap in new_re.captures_iter(content) {
-        paths.insert(cap[1].trim().to_string());
+        insert_log_paths(&mut paths, &cap[1]);
     }
 
     paths
+}
+
+/// Register the path(s) named by one log entry.
+///
+/// A move entry records both endpoints as `old → new`, so each side is
+/// registered separately; otherwise the whole string is a single path.
+fn insert_log_paths(paths: &mut HashSet<String>, raw: &str) {
+    for part in raw.split('→') {
+        let trimmed = part.trim();
+        if !trimmed.is_empty() {
+            paths.insert(trimmed.to_string());
+        }
+    }
 }
 
 /// Find source pages that have no corresponding log entry in `logs/` files.
@@ -321,7 +258,7 @@ pub fn check_log_coverage(pages: &[Page], wiki_dir: &Path) -> Vec<Issue> {
                 );
             results.push(Issue {
                 page: page.rel.clone(),
-                kind: "missing_log_coverage".to_string(),
+                category: "missing_log_coverage".to_string(),
                 details: title,
             });
         }
@@ -358,7 +295,7 @@ pub fn check_frontmatter(pages: &[Page]) -> Vec<Issue> {
         if fm.is_empty() {
             results.push(Issue {
                 page: page.rel.clone(),
-                kind: "missing_frontmatter".to_string(),
+                category: "missing_frontmatter".to_string(),
                 details: "No YAML frontmatter found".to_string(),
             });
             continue;
@@ -369,7 +306,7 @@ pub fn check_frontmatter(pages: &[Page]) -> Vec<Issue> {
             if !fm.contains_key(*field) {
                 results.push(Issue {
                     page: page.rel.clone(),
-                    kind: format!("missing_field:{field}"),
+                    category: format!("missing_field:{field}"),
                     details: format!(
                         "Required frontmatter field '{field}' is missing"
                     ),
@@ -384,7 +321,7 @@ pub fn check_frontmatter(pages: &[Page]) -> Vec<Issue> {
             let valid_list = VALID_TYPES.join(", ");
             results.push(Issue {
                 page: page.rel.clone(),
-                kind: format!("invalid_type:{val}"),
+                category: format!("invalid_type:{val}"),
                 details: format!(
                     "Type '{val}' is not valid. Must be one of: {valid_list}"
                 ),
@@ -398,7 +335,7 @@ pub fn check_frontmatter(pages: &[Page]) -> Vec<Issue> {
             let valid_list = VALID_STATUSES.join(", ");
             results.push(Issue {
                 page: page.rel.clone(),
-                kind: format!("invalid_status:{val}"),
+                category: format!("invalid_status:{val}"),
                 details: format!(
                     "Status '{val}' is not valid. Must be one of: {valid_list}"
                 ),
@@ -409,7 +346,7 @@ pub fn check_frontmatter(pages: &[Page]) -> Vec<Issue> {
         if !fm.contains_key("timeliness") {
             results.push(Issue {
                 page: page.rel.clone(),
-                kind: "missing_field:timeliness".to_string(),
+                category: "missing_field:timeliness".to_string(),
                 details: "Required frontmatter field 'timeliness' is missing"
                     .to_string(),
             });
@@ -418,7 +355,7 @@ pub fn check_frontmatter(pages: &[Page]) -> Vec<Issue> {
         {
             results.push(Issue {
                 page: page.rel.clone(),
-                kind: format!("invalid_timeliness:{val}"),
+                category: format!("invalid_timeliness:{val}"),
                 details: format!(
                     "Field 'timeliness' value '{val}' is not valid, must be \
                      'current' or 'stale'"
@@ -432,7 +369,7 @@ pub fn check_frontmatter(pages: &[Page]) -> Vec<Issue> {
         {
             results.push(Issue {
                 page: page.rel.clone(),
-                kind: "invalid_date:timestamp".to_string(),
+                category: "invalid_date:timestamp".to_string(),
                 details: format!(
                     "Field 'timestamp' value '{val}' is not a valid ISO 8601 date"
                 ),
@@ -477,7 +414,7 @@ pub fn check_related_field(pages: &[Page]) -> Vec<Issue> {
                 {
                     results.push(Issue {
                         page: page.rel.clone(),
-                        kind: "related_to_system_file".to_string(),
+                        category: "related_to_system_file".to_string(),
                         details: format!(
                             "Frontmatter 'relations' field points to system file '{target}' — \
                              this is not allowed"
@@ -499,7 +436,7 @@ pub fn check_related_field(pages: &[Page]) -> Vec<Issue> {
             {
                 results.push(Issue {
                     page: page.rel.clone(),
-                    kind: "markdown_link_to_system_file".to_string(),
+                    category: "markdown_link_to_system_file".to_string(),
                     details: format!(
                         "Markdown link [{link_text}]({link_target}) points to system file — \
                          this is not allowed"
@@ -513,144 +450,6 @@ pub fn check_related_field(pages: &[Page]) -> Vec<Issue> {
     results
 }
 
-// ---------------------------------------------------------------------------
-// check_related_body_consistency — bidirectional consistency
-// ---------------------------------------------------------------------------
-
-/// Verify that each page's `relations` frontmatter entries and inline wiki
-/// links in the body (excluding Backlinks/References/Notes sections) are
-/// mutually consistent.
-///
-/// Two types of issues are reported:
-///
-/// - **`related_redundant`** (direction A): a page listed in `related` but
-///   no inline link points to it.
-/// - **`related_omission`** (direction B): an inline wiki link pointing to a
-///   page that is not listed in `relations`.
-///
-/// Only wiki-internal `.md` targets are compared.  External URLs, system
-/// files, and `raw/` paths are skipped.
-pub fn check_related_body_consistency(
-    pages: &[Page],
-    wiki_dir: &Path,
-) -> Vec<Issue> {
-    let link_re = Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").unwrap();
-    let system_names: HashSet<&str> = SYSTEM_FILES.iter().copied().collect();
-    let mut results: Vec<Issue> = Vec::new();
-
-    for page in pages {
-        // --- Extract relations entries from frontmatter ---
-        let raw_related: Vec<String> = page
-            .frontmatter
-            .get("relations")
-            .map(|v| match v {
-                Value::String(s) => vec![s.clone()],
-                Value::Array(arr) => arr
-                    .iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect(),
-                _ => Vec::new(),
-            })
-            .unwrap_or_default();
-
-        // Resolve each relations entry to a wiki-relative path.
-        let resolved_related: HashSet<String> = raw_related
-            .iter()
-            .map(|entry| wiki::parse_related_entry(entry))
-            .filter_map(|entry| resolve_wiki_link(&entry, wiki_dir))
-            .collect();
-
-        // --- Extract inline links from body (excl special sections) ---
-        let check_body = body_sections_to_check(&page.body);
-        let mut resolved_links: HashSet<String> = HashSet::new();
-
-        for cap in link_re.captures_iter(&check_body) {
-            let target = cap[2].trim().to_string();
-            // Skip non-.md targets.
-            if !Path::new(&target)
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
-            {
-                continue;
-            }
-            // Resolve to wiki-relative path.
-            let Some(rel_target) = resolve_wiki_link(&target, wiki_dir) else {
-                continue;
-            };
-            // Skip system files and raw/ paths.
-            let fname = Path::new(&rel_target)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
-            if system_names.contains(fname) || is_excluded_dir(&rel_target) {
-                continue;
-            }
-            resolved_links.insert(rel_target);
-        }
-
-        // --- Direction A: relations entries with no matching inline link ---
-        for entry in &raw_related {
-            let bare_entry = wiki::parse_related_entry(entry);
-            // Only check entries that resolved successfully.
-            let Some(rel_entry) = resolve_wiki_link(&bare_entry, wiki_dir)
-            else {
-                continue;
-            };
-            // Skip system files, raw/ paths, and logs/ paths.
-            let fname = Path::new(&rel_entry)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
-            if system_names.contains(fname) || is_excluded_dir(&rel_entry) {
-                continue;
-            }
-            if !resolved_links.contains(&rel_entry) {
-                results.push(Issue {
-                    page: page.rel.clone(),
-                    kind: "related_redundant".to_string(),
-                    details: format!(
-                        "relations 字段包含 {entry}，但正文中无内联链接指向该页面"
-                    ),
-                });
-            }
-        }
-
-        // --- Direction B: inline links not listed in relations ---
-        for cap in link_re.captures_iter(&check_body) {
-            let target = cap[2].trim().to_string();
-            // Skip non-.md targets.
-            if !Path::new(&target)
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
-            {
-                continue;
-            }
-            let Some(rel_target) = resolve_wiki_link(&target, wiki_dir) else {
-                continue;
-            };
-            // Skip system files and raw/ paths.
-            let fname = Path::new(&rel_target)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
-            if system_names.contains(fname) || is_excluded_dir(&rel_target) {
-                continue;
-            }
-            if !resolved_related.contains(&rel_target) {
-                results.push(Issue {
-                    page: page.rel.clone(),
-                    kind: "related_omission".to_string(),
-                    details: format!(
-                        "正文包含指向 {rel_target} 的内联链接，但 relations 字段未收录该页面"
-                    ),
-                });
-            }
-        }
-    }
-
-    results.sort_by(|a, b| a.page.cmp(&b.page));
-    results
-}
 // ---------------------------------------------------------------------------
 
 /// Validate `resource` field for source-type pages under `<domain>/sources/`.
@@ -687,7 +486,7 @@ pub fn check_source_field(pages: &[Page]) -> Vec<Issue> {
             None | Some("") => {
                 results.push(Issue {
                     page: page.rel.clone(),
-                    kind: "missing_resource_field".to_string(),
+                    category: "missing_resource_field".to_string(),
                     details: format!(
                         "Source-type page '{fname}' is missing required 'resource' field"
                     ),
@@ -700,7 +499,7 @@ pub fn check_source_field(pages: &[Page]) -> Vec<Issue> {
                 {
                     results.push(Issue {
                         page: page.rel.clone(),
-                        kind: "invalid_resource_url".to_string(),
+                        category: "invalid_resource_url".to_string(),
                         details: format!(
                             "Page '{fname}' has resource value '{val}' — should be a URL \
                              (http:// or https://) or a raw/ file path"
@@ -754,46 +553,6 @@ pub fn extract_anchor_map(
     map
 }
 
-/// Add prefix aliases for multi-word anchor texts.
-///
-/// Generates progressive prefixes by truncating the tail of the anchor
-/// text character by character.  Only prefixes that contain at least one
-/// space and are ≥ 5 characters are kept.
-pub fn expand_anchor_prefixes(map: &mut HashMap<String, HashSet<String>>) {
-    let mut new_entries: HashMap<String, HashSet<String>> = HashMap::new();
-
-    let keys: Vec<String> = map.keys().cloned().collect();
-    for text in &keys {
-        if let Some((head, tail)) = text.split_once(' ') {
-            let targets = map[text].clone();
-
-            let tail_chars: Vec<char> = tail.chars().collect();
-            for end in (1..=tail_chars.len()).rev() {
-                let tail_prefix: String = tail_chars[..end].iter().collect();
-                let prefix = format!("{head} {tail_prefix}");
-                let prefix = prefix.trim_end().to_string();
-
-                if prefix.len() < 5 {
-                    continue;
-                }
-                if !prefix.contains(' ') {
-                    continue;
-                }
-                if let Some(existing) = map.get_mut(&prefix) {
-                    existing.extend(targets.clone());
-                } else {
-                    new_entries
-                        .entry(prefix)
-                        .or_default()
-                        .extend(targets.clone());
-                }
-            }
-        }
-    }
-
-    map.extend(new_entries);
-}
-
 /// Return body text with Backlinks/References/Notes sections removed.
 ///
 /// These sections contain explicit, structured links — checking them for
@@ -828,6 +587,27 @@ pub fn body_sections_to_check(body: &str) -> String {
     kept.join("\n")
 }
 
+/// Return the byte index of the first occurrence of `term` in `body` that
+/// is not inside a Markdown link span (`[...](...)`), or `None` when every
+/// occurrence already sits inside a link.
+fn first_unlinked_occurrence(
+    body: &str,
+    term: &str,
+    link_spans: &[(usize, usize)],
+) -> Option<usize> {
+    let mut from = 0;
+    while let Some(rel) = body[from..].find(term) {
+        let idx = from + rel;
+        let inside =
+            link_spans.iter().any(|(start, end)| *start <= idx && idx < *end);
+        if !inside {
+            return Some(idx);
+        }
+        from = idx + term.len();
+    }
+    None
+}
+
 /// Check a body text fragment for anchor terms missing inline links.
 pub fn check_body_for_missing_links(
     body: &str,
@@ -849,11 +629,16 @@ pub fn check_body_for_missing_links(
     // Keep only sections where links are expected.
     let body = body_sections_to_check(&body);
 
-    // Build link span map and linked-text set.
-    let mut link_spans: Vec<(usize, usize, String)> = Vec::new();
+    // Build the full span of every Markdown link, plus the resolvable
+    // internal links' display-text set.  A term occurrence inside any link
+    // span is already linked at that position and must not be treated as
+    // an unlinked occurrence.
+    let mut link_spans: Vec<(usize, usize)> = Vec::new();
     let mut linked_texts: HashSet<(String, String)> = HashSet::new();
 
     for cap in link_re.captures_iter(&body) {
+        let whole = cap.get(0).unwrap();
+        link_spans.push((whole.start(), whole.end()));
         let target = cap[2].trim().to_string();
         if !Path::new(&target)
             .extension()
@@ -863,11 +648,6 @@ pub fn check_body_for_missing_links(
         }
         if let Some(rel_target) = resolve_wiki_link(&target, wiki_dir) {
             let display = cap[1].trim().to_string();
-            link_spans.push((
-                cap.get(0).unwrap().start(),
-                cap.get(0).unwrap().end(),
-                rel_target.clone(),
-            ));
             linked_texts.insert((display, rel_target));
         }
     }
@@ -909,24 +689,12 @@ pub fn check_body_for_missing_links(
             continue;
         }
 
-        // Find the first occurrence in body.
-        let Some(idx) = body.find(anchor_text) else {
+        // Find the first occurrence that is not part of an existing link.
+        let Some(idx) =
+            first_unlinked_occurrence(&body, anchor_text, &link_spans)
+        else {
             continue;
         };
-
-        // Check if inside an existing link.
-        let mut covered = false;
-        for (span_start, span_end, span_target) in &link_spans {
-            if *span_start <= idx && idx < *span_end {
-                if valid_targets.contains(span_target) {
-                    covered = true;
-                }
-                break;
-            }
-        }
-        if covered {
-            continue;
-        }
 
         reported_terms.insert(anchor_text.clone());
 
@@ -952,7 +720,7 @@ pub fn check_body_for_missing_links(
 
         results.push(Issue {
             page: rel_page.to_string(),
-            kind: "missing_inline_link".to_string(),
+            category: "missing_inline_link".to_string(),
             details,
         });
     }
@@ -1032,9 +800,6 @@ pub fn check_missing_inline_links(
         }
     }
 
-    // Expand multi-word anchor texts with prefix aliases.
-    expand_anchor_prefixes(&mut anchor_map);
-
     let mut results: Vec<Issue> = Vec::new();
     for page in pages {
         results.extend(check_body_for_missing_links(
@@ -1055,6 +820,10 @@ pub fn check_missing_inline_links(
 
 /// Find pages that link to the same wiki target multiple times in prose
 /// sections (Backlinks/References/Notes excluded).
+///
+/// Each issue carries a `suggestion` guiding the author to keep the first
+/// occurrence and remove later duplicates, so the report never invites
+/// deleting the first link to silence the warning.
 pub fn check_duplicate_inline_links(
     pages: &[Page],
     wiki_dir: &Path,
@@ -1116,15 +885,21 @@ pub fn check_duplicate_inline_links(
                     })
                     .collect();
 
+                let first_line =
+                    occurrences.first().map_or(0, |(_, line)| *line);
                 let details = serde_json::json!({
                     "target": rel_target,
                     "occurrences": occ_json,
+                    "suggestion": format!(
+                        "保留首次出现的链接（第 {first_line} 行），移除后续重复链接；\
+                         不要删除首次出现的链接"
+                    ),
                 })
                 .to_string();
 
                 results.push(Issue {
                     page: page.rel.clone(),
-                    kind: "duplicate_inline_link".to_string(),
+                    category: "duplicate_inline_link".to_string(),
                     details,
                 });
             }
@@ -1296,7 +1071,6 @@ pub fn run_all(root: &Path) -> CheckResults {
         log_coverage: check_log_coverage(&pages, root),
         frontmatter: check_frontmatter(&pages),
         related_field: check_related_field(&pages),
-        related_body_consistency: check_related_body_consistency(&pages, root),
         source_field: check_source_field(&pages),
         missing_inline_links: check_missing_inline_links(&pages, root),
         duplicate_inline_links: check_duplicate_inline_links(&pages, root),
@@ -1418,7 +1192,7 @@ mod tests {
         );
         let issues = check_empty_files(&pages, 100);
         assert_eq!(issues.len(), 1);
-        assert_eq!(issues[0].kind, "stub");
+        assert_eq!(issues[0].category, "stub");
         assert_eq!(issues[0].page, "concepts/foo.md");
     }
 
@@ -1431,7 +1205,7 @@ mod tests {
         );
         let issues = check_empty_files(&pages, 100);
         assert_eq!(issues.len(), 1);
-        assert_eq!(issues[0].kind, "empty");
+        assert_eq!(issues[0].category, "empty");
     }
 
     #[test]
@@ -1628,6 +1402,39 @@ mod tests {
     }
 
     #[test]
+    fn test_log_coverage_move_entry_covers_new_path() {
+        let dir = temp_dir("log_move_new_path");
+        write(
+            &dir.join("logs").join("2026-06.md"),
+            "# 目录更新日志\n\n## 2024-06-01\n* **移动**: inbox/adr-001.md → autoresearch/sources/adr/adr-001.md\n",
+        );
+        write(
+            &dir.join("autoresearch")
+                .join("sources")
+                .join("adr")
+                .join("adr-001.md"),
+            "---\ntitle: ADR-001\ntype: source\n---\nBody.\n",
+        );
+
+        let pages = discover_local_pages(&dir);
+        let issues = check_log_coverage(&pages, &dir);
+        assert!(
+            issues.is_empty(),
+            "the new path of a move entry must count as logged: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn test_parse_log_entries_registers_both_move_endpoints() {
+        let content = "# 目录更新日志\n\n## 2024-06-01\n\
+            * **移动**: old/foo.md → concepts/foo.md — 迁移\n";
+        let entries = parse_log_entries(content);
+        assert!(entries.contains("old/foo.md"));
+        assert!(entries.contains("concepts/foo.md"));
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
     fn test_log_coverage_missing() {
         let dir = temp_dir("log_missing");
         write(
@@ -1739,18 +1546,18 @@ mod tests {
         let issues = check_frontmatter(&pages);
         let field_issues: Vec<&Issue> = issues
             .iter()
-            .filter(|i| i.kind.starts_with("missing_field:"))
+            .filter(|i| i.category.starts_with("missing_field:"))
             .collect();
         assert!(
             field_issues.is_empty(),
             "all required fields present: {field_issues:?}"
         );
         assert!(
-            issues.iter().all(|i| !i.kind.starts_with("invalid_type")),
+            issues.iter().all(|i| !i.category.starts_with("invalid_type")),
             "valid type should pass"
         );
         assert!(
-            issues.iter().all(|i| !i.kind.starts_with("invalid_status")),
+            issues.iter().all(|i| !i.category.starts_with("invalid_status")),
             "valid status should pass"
         );
     }
@@ -1761,7 +1568,7 @@ mod tests {
             vec![make_page("concepts/nofm.md", "# No frontmatter\n\nBody.\n")];
         let issues = check_frontmatter(&pages);
         assert!(
-            issues.iter().any(|i| i.kind == "missing_frontmatter"),
+            issues.iter().any(|i| i.category == "missing_frontmatter"),
             "should report missing frontmatter"
         );
     }
@@ -1775,7 +1582,7 @@ mod tests {
         let issues = check_frontmatter(&pages);
         let missing_fields: Vec<&str> = issues
             .iter()
-            .filter_map(|i| i.kind.strip_prefix("missing_field:"))
+            .filter_map(|i| i.category.strip_prefix("missing_field:"))
             .collect();
         assert!(missing_fields.contains(&"type"), "type should be missing");
         assert!(
@@ -1796,7 +1603,9 @@ mod tests {
         )];
         let issues = check_frontmatter(&pages);
         assert!(
-            issues.iter().any(|i| i.kind == "invalid_type:invalid_type_value"),
+            issues
+                .iter()
+                .any(|i| i.category == "invalid_type:invalid_type_value"),
             "invalid type should be reported"
         );
     }
@@ -1811,7 +1620,7 @@ mod tests {
         )];
         let issues = check_frontmatter(&pages);
         assert!(
-            issues.iter().any(|i| i.kind == "invalid_status:obsolete"),
+            issues.iter().any(|i| i.category == "invalid_status:obsolete"),
             "invalid status should be reported"
         );
     }
@@ -1826,7 +1635,9 @@ mod tests {
         )];
         let issues = check_frontmatter(&pages);
         assert!(
-            !issues.iter().any(|i| i.kind.starts_with("invalid_timeliness")),
+            !issues
+                .iter()
+                .any(|i| i.category.starts_with("invalid_timeliness")),
             "valid timeliness 'current' should not produce invalid_timeliness"
         );
     }
@@ -1841,7 +1652,7 @@ mod tests {
         )];
         let issues = check_frontmatter(&pages);
         assert!(
-            issues.iter().any(|i| i.kind == "invalid_timeliness:archived"),
+            issues.iter().any(|i| i.category == "invalid_timeliness:archived"),
             "invalid timeliness 'archived' should be reported"
         );
     }
@@ -1855,7 +1666,9 @@ mod tests {
         )];
         let issues = check_frontmatter(&pages);
         assert!(
-            !issues.iter().any(|i| i.kind.starts_with("invalid_timeliness")),
+            !issues
+                .iter()
+                .any(|i| i.category.starts_with("invalid_timeliness")),
             "absent timeliness should not produce invalid_timeliness"
         );
     }
@@ -1970,7 +1783,7 @@ last_validated: not-a-date\n---\nBody.\n";
         )];
         let issues = check_frontmatter(&pages);
         assert!(
-            issues.iter().any(|i| i.kind == "invalid_date:timestamp"),
+            issues.iter().any(|i| i.category == "invalid_date:timestamp"),
             "invalid date should be reported"
         );
     }
@@ -1997,7 +1810,7 @@ last_validated: not-a-date\n---\nBody.\n";
         )];
         let issues = check_related_field(&pages);
         assert!(
-            issues.iter().any(|i| i.kind == "related_to_system_file"),
+            issues.iter().any(|i| i.category == "related_to_system_file"),
             "should detect relations field pointing to system file"
         );
     }
@@ -2010,7 +1823,7 @@ last_validated: not-a-date\n---\nBody.\n";
         )];
         let issues = check_related_field(&pages);
         assert!(
-            issues.iter().any(|i| i.kind == "markdown_link_to_system_file"),
+            issues.iter().any(|i| i.category == "markdown_link_to_system_file"),
             "should detect markdown link to system file"
         );
         assert_eq!(issues.len(), 2);
@@ -2048,7 +1861,7 @@ last_validated: not-a-date\n---\nBody.\n";
         )];
         let issues = check_source_field(&pages);
         assert!(
-            issues.iter().any(|i| i.kind == "missing_resource_field"),
+            issues.iter().any(|i| i.category == "missing_resource_field"),
             "missing resource should be reported"
         );
     }
@@ -2061,7 +1874,7 @@ last_validated: not-a-date\n---\nBody.\n";
         )];
         let issues = check_source_field(&pages);
         assert!(
-            issues.iter().any(|i| i.kind == "invalid_resource_url"),
+            issues.iter().any(|i| i.category == "invalid_resource_url"),
             "non-URL/non-raw/ resource should be invalid"
         );
     }
@@ -2154,6 +1967,95 @@ last_validated: not-a-date\n---\nBody.\n";
         let pages = discover_local_pages(&dir);
         let issues = check_duplicate_inline_links(&pages, &dir);
         assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn test_duplicate_inline_links_suggestion_keeps_first() {
+        let dir = temp_dir("dup_suggestion");
+        write(
+            &dir.join("page.md"),
+            "---\ntitle: Test\n---\n\nSee [foo](page-b.md) and also [foo again](page-b.md).\n",
+        );
+        write(&dir.join("page-b.md"), "---\ntitle: Page B\n---\n\nBody.\n");
+
+        let pages = discover_local_pages(&dir);
+        let issues = check_duplicate_inline_links(&pages, &dir);
+        assert_eq!(issues.len(), 1);
+        assert!(
+            issues[0].details.contains("保留首次出现"),
+            "suggestion should keep the first occurrence: {}",
+            issues[0].details
+        );
+    }
+
+    #[test]
+    fn test_missing_inline_links_no_prefix_expansion_noise() {
+        // "多 agent" is only a prefix of the anchor "多 agent 协作".
+        // Without prose-level prefix expansion it must not be reported as a
+        // missing link just because page-c mentions the prefix alone.
+        let dir = temp_dir("missing_links_no_prefix");
+        write(
+            &dir.join("page-a.md"),
+            "---\ntitle: Page A\n---\n\nSee [多 agent 协作](page-b.md) for details.\n",
+        );
+        write(&dir.join("page-b.md"), "---\ntitle: Page B\n---\n\nBody.\n");
+        write(
+            &dir.join("page-c.md"),
+            "---\ntitle: Page C\n---\n\nThe 多 agent pattern is discussed elsewhere.\n",
+        );
+
+        let pages = discover_local_pages(&dir);
+        let issues = check_missing_inline_links(&pages, &dir);
+        assert!(
+            !issues.iter().any(|i| {
+                i.page == "page-c.md" && i.details.contains("多 agent")
+            }),
+            "prefix noise should not be reported: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn test_missing_inline_links_skips_link_text_occurrences() {
+        // The term "多 agent 研究架构" appears only inside the display text
+        // of another link.  That occurrence is already linked, so it must
+        // not be reported as an unlinked term.
+        let dir = temp_dir("missing_links_inside_link_text");
+        write(
+            &dir.join("page-a.md"),
+            "---\ntitle: Page A\n---\n\nSee [多 agent 研究架构](page-b.md) for details.\n",
+        );
+        write(&dir.join("page-b.md"), "---\ntitle: Page B\n---\n\nBody.\n");
+        write(&dir.join("page-d.md"), "---\ntitle: Page D\n---\n\nBody.\n");
+        write(
+            &dir.join("page-c.md"),
+            "---\ntitle: Page C\n---\n\n本文基于 Anthropic 的[多 agent 研究架构实践](page-d.md)。\n",
+        );
+
+        let pages = discover_local_pages(&dir);
+        let issues = check_missing_inline_links(&pages, &dir);
+        assert!(
+            !issues.iter().any(|i| {
+                i.page == "page-c.md" && i.details.contains("多 agent 研究架构")
+            }),
+            "occurrences inside link text must be skipped: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn test_first_unlinked_occurrence_skips_link_spans() {
+        let body = "[多 agent 系统](a.md) 与其他 多 agent 系统 的对比";
+        let spans = vec![(0, "[多 agent 系统](a.md)".len())];
+        let idx = first_unlinked_occurrence(body, "多 agent 系统", &spans)
+            .expect("second occurrence is unlinked");
+        assert!(idx > spans[0].1);
+
+        let only_linked = "[多 agent 系统](a.md)";
+        let spans = vec![(0, only_linked.len())];
+        assert!(
+            first_unlinked_occurrence(only_linked, "多 agent 系统", &spans)
+                .is_none(),
+            "a term that only appears inside a link has no unlinked hit"
+        );
     }
 
     // =======================================================================
@@ -2272,149 +2174,6 @@ last_validated: not-a-date\n---\nBody.\n";
         assert!(!result.contains("## Notes"), "Notes should be removed");
     }
 
-    // =======================================================================
-    // check_related_body_consistency
-    // =======================================================================
-
-    #[test]
-    fn test_related_body_consistency_direction_a_redundant() {
-        let dir = temp_dir("consistency_a");
-        let pages = vec![make_page(
-            "concepts/foo.md",
-            "---\ntitle: Foo\nrelations:\n- concepts/bar.md\n---\n\nBody text with no link to bar.\n",
-        )];
-        let issues = check_related_body_consistency(&pages, &dir);
-        let redundant: Vec<&Issue> =
-            issues.iter().filter(|i| i.kind == "related_redundant").collect();
-        assert_eq!(
-            redundant.len(),
-            1,
-            "should report one related_redundant: {issues:?}"
-        );
-        assert_eq!(redundant[0].page, "concepts/foo.md");
-        assert!(
-            redundant[0].details.contains("concepts/bar.md"),
-            "details should mention the redundant entry"
-        );
-    }
-
-    #[test]
-    fn test_related_body_consistency_direction_b_omission() {
-        let dir = temp_dir("consistency_b");
-        let pages = vec![make_page(
-            "concepts/foo.md",
-            "---\ntitle: Foo\n---\n\nSee [bar](concepts/bar.md) for details.\n",
-        )];
-        let issues = check_related_body_consistency(&pages, &dir);
-        let omission: Vec<&Issue> =
-            issues.iter().filter(|i| i.kind == "related_omission").collect();
-        assert_eq!(
-            omission.len(),
-            1,
-            "should report one related_omission: {issues:?}"
-        );
-        assert_eq!(omission[0].page, "concepts/foo.md");
-        assert!(
-            omission[0].details.contains("concepts/bar.md"),
-            "details should mention the omitted target"
-        );
-    }
-
-    #[test]
-    fn test_related_body_consistency_both_directions() {
-        let dir = temp_dir("consistency_both");
-        let pages = vec![make_page(
-            "concepts/foo.md",
-            "---\ntitle: Foo\nrelations:\n- concepts/bar.md\n- concepts/baz.md\n---\n\
-             \nSee [bar](concepts/bar.md) for details.\n\
-             Also see [qux](concepts/qux.md).\n",
-        )];
-        let issues = check_related_body_consistency(&pages, &dir);
-        let redundant: Vec<&Issue> =
-            issues.iter().filter(|i| i.kind == "related_redundant").collect();
-        let omission: Vec<&Issue> =
-            issues.iter().filter(|i| i.kind == "related_omission").collect();
-        assert_eq!(redundant.len(), 1, "baz is redundant");
-        assert!(redundant[0].details.contains("baz"));
-        assert_eq!(omission.len(), 1, "qux is omitted");
-        assert!(omission[0].details.contains("qux"));
-    }
-
-    #[test]
-    fn test_related_body_consistency_consistent() {
-        let dir = temp_dir("consistency_ok");
-        let pages = vec![make_page(
-            "concepts/foo.md",
-            "---\ntitle: Foo\nrelations:\n- concepts/bar.md\n---\n\
-             \nSee [bar](concepts/bar.md) for details.\n",
-        )];
-        let issues = check_related_body_consistency(&pages, &dir);
-        assert!(
-            issues.is_empty(),
-            "consistent page should have no issues: {issues:?}"
-        );
-    }
-
-    #[test]
-    fn test_related_body_consistency_skips_system_files() {
-        let dir = temp_dir("consistency_system");
-        let pages = vec![make_page(
-            "concepts/foo.md",
-            "---\ntitle: Foo\nrelations:\n- index.md\n---\n\
-             \nSee [schema](SCHEMA.md) for details.\n",
-        )];
-        let issues = check_related_body_consistency(&pages, &dir);
-        // System files should be skipped entirely — no issues.
-        assert!(
-            issues.is_empty(),
-            "system file references should be skipped: {issues:?}"
-        );
-    }
-
-    #[test]
-    fn test_related_body_consistency_skips_raw_paths() {
-        let dir = temp_dir("consistency_raw");
-        let pages = vec![make_page(
-            "concepts/foo.md",
-            "---\ntitle: Foo\nrelations:\n- raw/notes/meeting.txt\n---\n\
-             \nSee [raw notes](raw/notes/meeting.txt) for details.\n",
-        )];
-        let issues = check_related_body_consistency(&pages, &dir);
-        // raw/ paths should be skipped entirely.
-        assert!(issues.is_empty(), "raw/ paths should be skipped: {issues:?}");
-    }
-
-    #[test]
-    fn test_related_body_consistency_markdown_link_entry() {
-        // Relations entry in markdown-link format should resolve correctly.
-        let dir = temp_dir("consistency_mdlink");
-        let pages = vec![make_page(
-            "concepts/foo.md",
-            "---\ntitle: Foo\nrelations:\n- \"[Bar](concepts/bar.md)\"\n---\n\
-             \nSee [bar](concepts/bar.md) for details.\n",
-        )];
-        let issues = check_related_body_consistency(&pages, &dir);
-        assert!(
-            issues.is_empty(),
-            "markdown-link relations entry should resolve: {issues:?}"
-        );
-    }
-
-    #[test]
-    fn test_related_body_consistency_markdown_link_entry_redundant() {
-        // Markdown-link relations entry with no matching inline link.
-        let dir = temp_dir("consistency_mdlink_redun");
-        let pages = vec![make_page(
-            "concepts/foo.md",
-            "---\ntitle: Foo\nrelations:\n- \"[Bar](concepts/bar.md)\"\n---\n\
-             \nBody text with no link to bar.\n",
-        )];
-        let issues = check_related_body_consistency(&pages, &dir);
-        let redundant_count =
-            issues.iter().filter(|i| i.kind == "related_redundant").count();
-        assert_eq!(redundant_count, 1);
-    }
-
     #[test]
     fn test_related_field_markdown_link_format() {
         // Markdown-link format entries should have path extracted for
@@ -2425,7 +2184,7 @@ last_validated: not-a-date\n---\nBody.\n";
         )];
         let issues = check_related_field(&pages);
         assert!(
-            issues.iter().any(|i| i.kind == "related_to_system_file"),
+            issues.iter().any(|i| i.category == "related_to_system_file"),
             "should detect system file even inside markdown-link wrapper"
         );
     }

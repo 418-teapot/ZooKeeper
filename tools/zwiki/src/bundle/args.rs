@@ -13,10 +13,6 @@ pub struct InitArgs {
     #[arg(long, default_value = "0.1.0")]
     pub version: String,
 
-    /// Bundle kind — upstream, team, or org
-    #[arg(long, default_value = "upstream")]
-    pub kind: String,
-
     /// OKF schema version
     #[arg(long = "okf-version", default_value = "0.1")]
     pub okf_version: String,

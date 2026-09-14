@@ -39,18 +39,20 @@ pub fn cmd_verify(root: &Path, json: bool, domain: Option<&str>) {
                 })
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        crate::print_stdout_line(
+            serde_json::to_string_pretty(&output).unwrap(),
+        );
     } else if stale.is_empty() {
-        println!("所有 analysis/synthesis 页面均基于最新来源");
+        crate::print_stdout_line("所有 analysis/synthesis 页面均基于最新来源");
     } else {
         for s in &stale {
-            println!(
+            crate::print_stdout_line(format!(
                 "  {} ← {} (source changed {}, validated {})",
                 s.derived_page,
                 s.source_page,
                 s.source_timestamp,
                 s.derived_last_validated,
-            );
+            ));
         }
     }
 }

@@ -45,13 +45,15 @@ pub struct SearchResult {
 /// Search engine that finds and scores wiki pages for a given query.
 pub struct SearchEngine {
     wiki_root: PathBuf,
+    bundle_set: wiki::BundleSet,
 }
 
 impl SearchEngine {
     /// Create a new search engine for the given wiki root.
     #[must_use]
-    pub const fn new(wiki_root: PathBuf) -> Self {
-        Self { wiki_root }
+    pub fn new(wiki_root: PathBuf) -> Self {
+        let bundle_set = wiki::BundleSet::discover(&wiki_root);
+        Self { wiki_root, bundle_set }
     }
 
     /// Run a search across the wiki.
@@ -99,7 +101,7 @@ impl SearchEngine {
         if let Some(df) = domain_filter {
             let df_lower = df.to_lowercase();
             results.retain(|r| {
-                wiki::domain_of(&r.path).to_lowercase() == df_lower
+                self.bundle_set.domain_of(&r.path).to_lowercase() == df_lower
             });
         }
 
@@ -128,7 +130,7 @@ impl SearchEngine {
             Some(0) => {
                 // Matches found.  Keep only files that are valid wiki
                 // pages (apply the same exclusions as page discovery:
-                // meta files, templates/, tools/, raw/).
+                // meta files, tools/, raw/, logs/).
                 let known: std::collections::HashSet<PathBuf> =
                     wiki::discover_pages(&self.wiki_root).into_iter().collect();
                 let stdout = String::from_utf8_lossy(&output.stdout);

@@ -4,8 +4,7 @@
 //! by a `bundle.toml` manifest with `[package]` and `[export]` sections.
 //!
 //! Bundles can be exported to `.tar.gz` archives and installed into the wiki
-//! directory under `.upstream/<name>/` (upstream bundles) or
-//! `.teams/<name>/` (team bundles).  A `zwiki.lock` file tracks installed
+//! store as `<name>/` directories.  A `zwiki.lock` file tracks installed
 //! bundles with integrity hashing.
 
 pub mod args;
@@ -121,7 +120,9 @@ pub fn report_manifest_errors(
                     "error": summary,
                     "errors": errs,
                 });
-                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                crate::print_stdout_line(
+                    serde_json::to_string_pretty(&output).unwrap(),
+                );
             } else {
                 let warnings: Vec<serde_json::Value> = errors
                     .iter()
@@ -136,7 +137,9 @@ pub fn report_manifest_errors(
                     "status": "ok",
                     "warnings": warnings,
                 });
-                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                crate::print_stdout_line(
+                    serde_json::to_string_pretty(&output).unwrap(),
+                );
             }
         } else {
             for err in errors {
@@ -188,7 +191,6 @@ mod tests {
         let init_args = InitArgs {
             name: Some("test-bundle".to_string()),
             version: "1.0.0".to_string(),
-            kind: "upstream".to_string(),
             okf_version: "0.1".to_string(),
             registry: None,
             description: None,
@@ -264,11 +266,11 @@ mod tests {
         // 12. Read lock — verify bundle is installed.
         let lock = crate::bundle::lock::read_lock_at(&wiki_root)?;
         assert_eq!(
-            lock.bundles.len(),
+            lock.entries.len(),
             1,
             "lock should have 1 bundle after install",
         );
-        assert_eq!(lock.bundles[0].name, "test-bundle");
+        assert_eq!(lock.entries[0].name, "test-bundle");
 
         // 13. Check — integrity should pass.
         crate::bundle::check::cmd_check_inner(false, &wiki_root, false, false)?;
@@ -291,12 +293,12 @@ mod tests {
         // 16. Read lock — verify empty.
         let lock = crate::bundle::lock::read_lock_at(&wiki_root)?;
         assert!(
-            lock.bundles.is_empty(),
+            lock.entries.is_empty(),
             "lock should be empty after uninstall",
         );
 
         // 17. Assert target directory is removed.
-        let target_dir = wiki_root.join(".upstream").join("test-bundle");
+        let target_dir = wiki_root.join("test-bundle");
         assert!(
             !target_dir.exists(),
             "target directory should be removed after uninstall: \

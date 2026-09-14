@@ -47,8 +47,6 @@ pub struct PackageSection {
     pub version: String,
     #[serde(default = "default_okf_version")]
     pub okf_version: String,
-    #[serde(default = "default_kind")]
-    pub kind: String,
     pub registry: Option<String>,
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -67,11 +65,6 @@ pub struct ExportSection {
 #[must_use]
 fn default_okf_version() -> String {
     "0.1".to_string()
-}
-
-#[must_use]
-fn default_kind() -> String {
-    "upstream".to_string()
 }
 
 impl BundleManifest {
@@ -136,6 +129,7 @@ fn check_fatal_errors(
     }
 
     check_path_traversal(&package.name, "package.name", use_json, errors);
+    check_reserved_name(&package.name, use_json, errors);
 
     if package.version.trim().is_empty() {
         errors.push(ValidationError {
@@ -162,25 +156,28 @@ fn check_fatal_errors(
             },
         });
     }
+}
 
-    let kind = package.kind.trim().to_lowercase();
-    if kind != "upstream" && kind != "team" && kind != "org" {
-        errors.push(ValidationError {
-            severity: Severity::Fatal,
-            field: "package.kind".to_string(),
-            message: if use_json {
-                format!(
-                    "invalid kind '{}', must be upstream, team, or org",
-                    package.kind
-                )
-            } else {
-                format!(
-                    "无效的 kind 值 '{}'，可选值为 upstream、team 或 org",
-                    package.kind
-                )
-            },
-        });
+/// Reject a bundle name that collides with a reserved wiki system
+/// directory.  Page discovery filters those directories out everywhere, so
+/// such a bundle would install but stay permanently invisible.
+fn check_reserved_name(
+    name: &str,
+    use_json: bool,
+    errors: &mut Vec<ValidationError>,
+) {
+    if !crate::wiki::EXCLUDED_DIRS.contains(&name) {
+        return;
     }
+    errors.push(ValidationError {
+        severity: Severity::Fatal,
+        field: "package.name".to_string(),
+        message: if use_json {
+            format!("bundle name '{name}' is a reserved system directory")
+        } else {
+            format!("包名称 '{name}' 是保留的系统目录，不能用作 bundle 名称")
+        },
+    });
 }
 
 /// Check a manifest field value for path traversal characters.
@@ -261,7 +258,6 @@ mod tests {
                 name: "test-bundle".to_string(),
                 version: "0.1.0".to_string(),
                 okf_version: "0.1".to_string(),
-                kind: "upstream".to_string(),
                 registry: None,
                 description: None,
             },
@@ -277,6 +273,17 @@ mod tests {
         let m = valid_manifest();
         let errors = m.validate(false);
         assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_deserialize_rejects_unknown_package_fields() {
+        // An unknown `[package]` field must fail loudly rather than being
+        // silently ignored.
+        let result: Result<BundleManifest, _> = toml::from_str(
+            "[package]\nname = \"core\"\nversion = \"0.1.0\"\n\
+             kind = \"team\"\n\n[export]\ninclude = [\"**/*\"]\n",
+        );
+        assert!(result.is_err(), "unknown [package] field must fail to parse");
     }
 
     #[test]
@@ -312,16 +319,6 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_invalid_kind_fatal() {
-        let mut m = valid_manifest();
-        m.package.kind = "invalid".to_string();
-        let errors = m.validate(false);
-        assert!(errors.iter().any(
-            |e| e.severity == Severity::Fatal && e.field == "package.kind"
-        ));
-    }
-
-    #[test]
     fn test_validate_wrong_okf_version_warning() {
         let mut m = valid_manifest();
         m.package.okf_version = "0.2".to_string();
@@ -331,21 +328,8 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_kind_case_insensitive() {
-        let mut m = valid_manifest();
-        m.package.kind = "TEAM".to_string();
-        let errors = m.validate(false);
-        assert!(!errors.iter().any(|e| e.field == "package.kind"));
-    }
-
-    #[test]
     fn test_default_okf_version() {
         assert_eq!(default_okf_version(), "0.1");
-    }
-
-    #[test]
-    fn test_default_kind() {
-        assert_eq!(default_kind(), "upstream");
     }
 
     #[test]

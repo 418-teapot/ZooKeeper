@@ -65,7 +65,7 @@ fn push_skip(
             "reason": reason,
         }));
     } else {
-        println!("已跳过: {name} ({reason})");
+        crate::print_stdout_line(format!("已跳过: {name} ({reason})"));
     }
 }
 
@@ -83,7 +83,7 @@ fn push_updated(
             "reason": "ok",
         }));
     } else {
-        println!("已更新: {name} {from} → {to}");
+        crate::print_stdout_line(format!("已更新: {name} {from} → {to}"));
     }
 }
 
@@ -223,7 +223,7 @@ fn check_remote_version(
                 "reason": "已是最新版本",
             }));
         } else {
-            println!("{} 已是最新版本", entry.name);
+            crate::print_stdout_line(format!("{} 已是最新版本", entry.name));
         }
         return None;
     }
@@ -398,7 +398,9 @@ fn prepare_update_staging(
                 "lint": lint_issues,
             });
             output["details"] = details;
-            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            crate::print_stdout_line(
+                serde_json::to_string_pretty(&output).unwrap(),
+            );
         } else {
             eprintln!(
                 "{}",
@@ -435,23 +437,23 @@ fn cmd_update_dry_run_at(
                     "to": remote_version,
                 }));
             } else {
-                println!(
+                crate::print_stdout_line(format!(
                     "{}: {} → {}",
                     entry.name, entry.version, remote_version
-                );
+                ));
             }
         }
     }
     if use_json {
         match serde_json::to_string_pretty(&dry_results) {
-            Ok(s) => println!("{s}"),
+            Ok(s) => crate::print_stdout_line(s),
             Err(e) => {
                 eprintln!("JSON 序列化失败: {e}");
                 return 1;
             }
         }
     } else {
-        println!("DRY RUN — 未修改任何文件");
+        crate::print_stdout_line("DRY RUN — 未修改任何文件");
     }
     0
 }
@@ -602,7 +604,7 @@ fn phase3_apply_updates(
     } in prepared_updates
     {
         // Invariant 1: bundle was concurrently uninstalled during Phase 2.
-        let Some(current) = l.bundles.iter().find(|b| b.name == entry.name)
+        let Some(current) = l.entries.iter().find(|b| b.name == entry.name)
         else {
             push_skip(
                 &mut *success_entries,
@@ -656,7 +658,7 @@ fn phase3_apply_updates(
             );
             *commit_error = true; // Write partial lock with what we have committed so far
             let _ = lock::write_lock_at(&l, wiki_root);
-            if let Err(e) = index::regenerate_root_index_at(&l, wiki_root) {
+            if let Err(e) = index::regenerate_store_metadata(&l, wiki_root) {
                 eprintln!("{e}");
             }
             return Err(std::io::Error::other(msg));
@@ -684,7 +686,7 @@ fn phase3_apply_updates(
     }
 
     lock::write_lock_at(&l, wiki_root)?;
-    if let Err(e) = index::regenerate_root_index_at(&l, wiki_root) {
+    if let Err(e) = index::regenerate_store_metadata(&l, wiki_root) {
         eprintln!("{e}");
     }
     Ok(())
@@ -707,7 +709,7 @@ pub fn cmd_update_at(args: &UpdateArgs, use_json: bool, wiki_root: &Path) {
         match zutil::fileio::with_file_lock(&lock_path, || {
             let l =
                 lock::read_lock_at(wiki_root).map_err(std::io::Error::other)?;
-            Ok(l.bundles
+            Ok(l.entries
                 .iter()
                 .filter(|b| args.name.as_ref().is_none_or(|n| b.name == *n))
                 .cloned()
@@ -734,9 +736,11 @@ pub fn cmd_update_at(args: &UpdateArgs, use_json: bool, wiki_root: &Path) {
                     "status": "not-found",
                     "name": name,
                 });
-                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                crate::print_stdout_line(
+                    serde_json::to_string_pretty(&output).unwrap(),
+                );
             } else {
-                println!("[]");
+                crate::print_stdout_line("[]");
             }
         } else if let Some(ref name) = args.name {
             eprintln!("bundle '{name}' 未找到");
@@ -771,7 +775,7 @@ pub fn cmd_update_at(args: &UpdateArgs, use_json: bool, wiki_root: &Path) {
     if prepared_updates.is_empty() {
         if use_json {
             if let Ok(s) = serde_json::to_string_pretty(&results) {
-                println!("{s}");
+                crate::print_stdout_line(s);
             }
         } else {
             eprintln!("没有可更新的 bundle");
@@ -794,7 +798,7 @@ pub fn cmd_update_at(args: &UpdateArgs, use_json: bool, wiki_root: &Path) {
 
         if commit_error {
             if use_json && let Ok(s) = serde_json::to_string_pretty(&results) {
-                println!("{s}");
+                crate::print_stdout_line(s);
             }
             return;
         }
@@ -802,7 +806,7 @@ pub fn cmd_update_at(args: &UpdateArgs, use_json: bool, wiki_root: &Path) {
 
     // All done — print JSON summary if needed (also handles up-to-date case)
     if use_json && let Ok(s) = serde_json::to_string_pretty(&results) {
-        println!("{s}");
+        crate::print_stdout_line(s);
     }
 }
 
@@ -904,7 +908,6 @@ mod tests {
         let remote_toml = br#"[package]
 name = "downgrade-test"
 version = "1.0.0"
-kind = "upstream"
 
 [export]
 include = ["*.md"]
@@ -938,7 +941,7 @@ include = ["*.md"]
             name: "downgrade-test".to_string(),
             version: "2.0.0".to_string(),
             registry: format!("http://127.0.0.1:{port}"),
-            target: ".upstream/downgrade-test/".to_string(),
+            target: "downgrade-test/".to_string(),
             integrity: "sha256-abc".to_string(),
             installed_at: "2026-01-01T00:00:00Z".to_string(),
             description: None,
@@ -975,7 +978,6 @@ include = ["*.md"]
         let bundle_toml_content = br#"[package]
 name = "test-bundle"
 version = "2.0.0"
-kind = "upstream"
 
 [export]
 include = ["*.md"]
@@ -1018,22 +1020,26 @@ include = ["*.md"]
             name: "test-bundle".to_string(),
             version: "1.0.0".to_string(),
             registry: format!("http://127.0.0.1:{port}"),
-            target: ".upstream/test-bundle/".to_string(),
+            target: "test-bundle/".to_string(),
             integrity: "sha256-abc".to_string(),
             installed_at: "2026-01-01T00:00:00Z".to_string(),
             description: None,
         };
         let lock =
-            lock::ZwikiLock { bundles: vec![entry], ..Default::default() };
+            lock::ZwikiLock { entries: vec![entry], ..Default::default() };
         std::fs::write(
             wiki_root.join("zwiki.lock"),
             toml::to_string_pretty(&lock).unwrap(),
         )
         .unwrap();
 
-        let upstream = wiki_root.join(".upstream");
-        std::fs::create_dir_all(&upstream).unwrap();
-        std::fs::set_permissions(&upstream, PermissionsExt::from_mode(0o444))
+        // Block the atomic swap: a non-empty, read-only temp directory at
+        // the swap destination makes `atomic_dir_swap` fail while keeping
+        // the store root itself writable.
+        let blocker = wiki_root.join(".tmp_test-bundle");
+        std::fs::create_dir_all(&blocker).unwrap();
+        std::fs::write(blocker.join("blocker.md"), "x").unwrap();
+        std::fs::set_permissions(&blocker, PermissionsExt::from_mode(0o555))
             .unwrap();
 
         let args = UpdateArgs {
@@ -1049,7 +1055,7 @@ include = ["*.md"]
             }));
 
         let _ = std::fs::set_permissions(
-            &upstream,
+            &blocker,
             PermissionsExt::from_mode(0o755),
         );
 
@@ -1063,9 +1069,9 @@ include = ["*.md"]
             std::fs::read_to_string(wiki_root.join("zwiki.lock")).unwrap();
         let updated_lock: lock::ZwikiLock =
             toml::from_str(&lock_content).unwrap();
-        assert_eq!(updated_lock.bundles.len(), 1);
+        assert_eq!(updated_lock.entries.len(), 1);
         assert_eq!(
-            updated_lock.bundles[0].version, "1.0.0",
+            updated_lock.entries[0].version, "1.0.0",
             "lock should retain old version"
         );
 
@@ -1077,7 +1083,6 @@ include = ["*.md"]
         let bundle_a_toml: &[u8] = br#"[package]
 name = "bundle-a"
 version = "2.0.0"
-kind = "upstream"
 
 [export]
 include = ["*.md"]
@@ -1085,7 +1090,6 @@ include = ["*.md"]
         let second_toml: &[u8] = br#"[package]
 name = "bundle-b"
 version = "2.0.0"
-kind = "upstream"
 
 [export]
 include = ["*.md"]
@@ -1138,7 +1142,7 @@ include = ["*.md"]
         let updated_lock: lock::ZwikiLock =
             toml::from_str(&lock_content).unwrap();
         let updated_a =
-            updated_lock.bundles.iter().find(|b| b.name == "bundle-a");
+            updated_lock.entries.iter().find(|b| b.name == "bundle-a");
         assert!(updated_a.is_some(), "bundle-a should be in the lock");
         assert_eq!(
             updated_a.unwrap().version,
@@ -1161,13 +1165,13 @@ include = ["*.md"]
             name: "test-bundle".to_string(),
             version: "1.0.0".to_string(),
             registry: String::new(),
-            target: ".upstream/test-bundle/".to_string(),
+            target: "test-bundle/".to_string(),
             integrity: "sha256-abc".to_string(),
             installed_at: "2026-01-01T00:00:00Z".to_string(),
             description: None,
         };
         let lock = lock::ZwikiLock {
-            bundles: vec![entry.clone()],
+            entries: vec![entry.clone()],
             ..Default::default()
         };
         std::fs::write(
@@ -1216,7 +1220,7 @@ include = ["*.md"]
             std::fs::read_to_string(wiki_root.join("zwiki.lock")).unwrap();
         let updated_lock: lock::ZwikiLock =
             toml::from_str(&lock_content).unwrap();
-        assert!(updated_lock.bundles.is_empty());
+        assert!(updated_lock.entries.is_empty());
     }
 
     #[test]
@@ -1230,13 +1234,13 @@ include = ["*.md"]
             name: "test-bundle".to_string(),
             version: "2.0.0".to_string(),
             registry: String::new(),
-            target: ".upstream/test-bundle/".to_string(),
+            target: "test-bundle/".to_string(),
             integrity: "sha256-abc".to_string(),
             installed_at: "2026-01-01T00:00:00Z".to_string(),
             description: None,
         };
         let lock =
-            lock::ZwikiLock { bundles: vec![lock_entry], ..Default::default() };
+            lock::ZwikiLock { entries: vec![lock_entry], ..Default::default() };
         std::fs::write(
             wiki_root.join("zwiki.lock"),
             toml::to_string_pretty(&lock).unwrap(),
@@ -1249,7 +1253,7 @@ include = ["*.md"]
             name: "test-bundle".to_string(),
             version: "1.0.0".to_string(),
             registry: String::new(),
-            target: ".upstream/test-bundle/".to_string(),
+            target: "test-bundle/".to_string(),
             integrity: "sha256-abc".to_string(),
             installed_at: "2026-01-01T00:00:00Z".to_string(),
             description: None,
@@ -1282,8 +1286,8 @@ include = ["*.md"]
             std::fs::read_to_string(wiki_root.join("zwiki.lock")).unwrap();
         let updated_lock: lock::ZwikiLock =
             toml::from_str(&lock_content).unwrap();
-        assert_eq!(updated_lock.bundles.len(), 1);
-        assert_eq!(updated_lock.bundles[0].version, "2.0.0");
+        assert_eq!(updated_lock.entries.len(), 1);
+        assert_eq!(updated_lock.entries[0].version, "2.0.0");
     }
 
     #[test]
@@ -1297,13 +1301,13 @@ include = ["*.md"]
             name: "test-bundle".to_string(),
             version: "3.0.0".to_string(),
             registry: String::new(),
-            target: ".upstream/test-bundle/".to_string(),
+            target: "test-bundle/".to_string(),
             integrity: "sha256-abc".to_string(),
             installed_at: "2026-01-01T00:00:00Z".to_string(),
             description: None,
         };
         let lock =
-            lock::ZwikiLock { bundles: vec![lock_entry], ..Default::default() };
+            lock::ZwikiLock { entries: vec![lock_entry], ..Default::default() };
         std::fs::write(
             wiki_root.join("zwiki.lock"),
             toml::to_string_pretty(&lock).unwrap(),
@@ -1317,7 +1321,7 @@ include = ["*.md"]
             name: "test-bundle".to_string(),
             version: "1.0.0".to_string(),
             registry: String::new(),
-            target: ".upstream/test-bundle/".to_string(),
+            target: "test-bundle/".to_string(),
             integrity: "sha256-abc".to_string(),
             installed_at: "2026-01-01T00:00:00Z".to_string(),
             description: None,
@@ -1350,8 +1354,8 @@ include = ["*.md"]
             std::fs::read_to_string(wiki_root.join("zwiki.lock")).unwrap();
         let updated_lock: lock::ZwikiLock =
             toml::from_str(&lock_content).unwrap();
-        assert_eq!(updated_lock.bundles.len(), 1);
-        assert_eq!(updated_lock.bundles[0].version, "3.0.0");
+        assert_eq!(updated_lock.entries.len(), 1);
+        assert_eq!(updated_lock.entries[0].version, "3.0.0");
     }
 
     #[test]
@@ -1359,7 +1363,6 @@ include = ["*.md"]
         let bundle_toml_content = br#"[package]
 name = "rollback-test"
 version = "2.0.0"
-kind = "upstream"
 
 [export]
 include = ["*.md"]
@@ -1399,7 +1402,7 @@ include = ["*.md"]
         });
 
         let wiki_root = temp_dir("update_rollback");
-        let bundle_dir = wiki_root.join(".upstream").join("rollback-test");
+        let bundle_dir = wiki_root.join("rollback-test");
         std::fs::create_dir_all(&bundle_dir).unwrap();
         std::fs::write(bundle_dir.join("old-file.md"), "old content").unwrap();
 
@@ -1407,13 +1410,13 @@ include = ["*.md"]
             name: "rollback-test".to_string(),
             version: "1.0.0".to_string(),
             registry: format!("http://127.0.0.1:{port}"),
-            target: ".upstream/rollback-test/".to_string(),
+            target: "rollback-test/".to_string(),
             integrity: "sha256-abc".to_string(),
             installed_at: "2026-01-01T00:00:00Z".to_string(),
             description: None,
         };
         let lock =
-            lock::ZwikiLock { bundles: vec![entry], ..Default::default() };
+            lock::ZwikiLock { entries: vec![entry], ..Default::default() };
         std::fs::write(
             wiki_root.join("zwiki.lock"),
             toml::to_string_pretty(&lock).unwrap(),
@@ -1453,9 +1456,9 @@ include = ["*.md"]
         let lock_content = std::fs::read_to_string(&lock_path).unwrap();
         let updated_lock: lock::ZwikiLock =
             toml::from_str(&lock_content).unwrap();
-        assert_eq!(updated_lock.bundles.len(), 1);
+        assert_eq!(updated_lock.entries.len(), 1);
         assert_eq!(
-            updated_lock.bundles[0].version, "1.0.0",
+            updated_lock.entries[0].version, "1.0.0",
             "lock should retain old version"
         );
 

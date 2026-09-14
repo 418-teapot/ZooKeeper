@@ -43,7 +43,7 @@ pub fn finalize_install_and_lock_at(
     // allow the install to proceed as if --force was set.
     let effective_force = force
         || (!target_abs.exists()
-            && l.bundles.iter().any(|b| b.name == manifest.package.name));
+            && l.entries.iter().any(|b| b.name == manifest.package.name));
 
     if effective_force != force && !use_json {
         eprintln!(
@@ -61,7 +61,7 @@ pub fn finalize_install_and_lock_at(
         }
     })?;
 
-    if let Err(e) = index::regenerate_root_index_at(&l, wiki_root) {
+    if let Err(e) = index::regenerate_store_metadata(&l, wiki_root) {
         eprintln!("{e}");
     }
 
@@ -73,9 +73,14 @@ pub fn finalize_install_and_lock_at(
             "target": target_display,
             "integrity": integrity,
         });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        crate::print_stdout_line(
+            serde_json::to_string_pretty(&output).unwrap(),
+        );
     } else {
-        println!("已安装: {} → {}", manifest.package.name, target_display);
+        crate::print_stdout_line(format!(
+            "已安装: {} → {}",
+            manifest.package.name, target_display
+        ));
     }
 
     Ok(())
@@ -269,8 +274,7 @@ pub fn install_bundle_files_at(
     let result: std::io::Result<Result<(), String>> =
         zutil::fileio::with_file_lock(&lock_path, || {
             let inner: Result<(), String> = (|| {
-                let target_rel =
-                    source::resolve_target_rel(manifest, use_json)?;
+                let target_rel = source::resolve_target_rel(manifest);
                 let target_abs = wiki_root.join(&target_rel);
 
                 if force_replace_bundle_at(
@@ -408,7 +412,7 @@ pub fn cmd_install_at_inner(
 
     // Dry-run: preview without modifying files.
     if args.dry_run {
-        let target_rel = source::resolve_target_rel(&manifest, use_json)?;
+        let target_rel = source::resolve_target_rel(&manifest);
         let target_abs = wiki_root.join(&target_rel);
         let would_overwrite = target_abs.exists();
         if use_json {
@@ -419,20 +423,22 @@ pub fn cmd_install_at_inner(
                 "target": target_rel,
                 "would_overwrite": would_overwrite,
             });
-            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            crate::print_stdout_line(
+                serde_json::to_string_pretty(&output).unwrap(),
+            );
         } else {
-            print!(
+            crate::print_stdout(format!(
                 "DRY RUN: bundle '{}' v{} → {}",
                 manifest.package.name, manifest.package.version, target_rel
-            );
+            ));
             if would_overwrite {
-                println!(" (将覆盖)");
+                crate::print_stdout_line(" (将覆盖)");
             } else {
-                println!();
+                crate::print_stdout_line("");
             }
         }
         if !use_json {
-            println!("DRY RUN — 未修改任何文件");
+            crate::print_stdout_line("DRY RUN — 未修改任何文件");
         }
         return Ok(());
     }
@@ -453,7 +459,9 @@ pub fn cmd_install_at_inner(
                 "lint": lint_issues,
             });
             output["details"] = details;
-            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            crate::print_stdout_line(
+                serde_json::to_string_pretty(&output).unwrap(),
+            );
         } else {
             eprintln!(
                 "{}",
@@ -509,7 +517,7 @@ mod tests {
 [package]
 name = "test-install-bundle"
 version = "1.0.0"
-kind = "upstream"
+description = "Install test bundle"
 
 [export]
 include = ["*.md"]
@@ -529,8 +537,7 @@ include = ["*.md"]
             dry_run: false,
         };
         cmd_install_at(&args, false, &wiki_root);
-        let bundle_dir =
-            wiki_root.join(".upstream").join("test-install-bundle");
+        let bundle_dir = wiki_root.join("test-install-bundle");
         assert!(bundle_dir.exists(), "bundle target dir should exist");
         assert!(bundle_dir.join("doc.md").exists(), "doc.md should be copied");
         assert!(
@@ -555,19 +562,25 @@ include = ["*.md"]
         assert!(lock_path.exists(), "zwiki.lock should exist");
         let lock_content = std::fs::read_to_string(&lock_path).unwrap();
         let l: lock::ZwikiLock = toml::from_str(&lock_content).unwrap();
-        assert_eq!(l.bundles.len(), 1);
-        assert_eq!(l.bundles[0].name, "test-install-bundle");
-        assert_eq!(l.bundles[0].version, "1.0.0");
-        assert_eq!(l.bundles[0].target, ".upstream/test-install-bundle/");
+        assert_eq!(l.entries.len(), 1);
+        assert_eq!(l.entries[0].name, "test-install-bundle");
+        assert_eq!(l.entries[0].version, "1.0.0");
+        assert_eq!(l.entries[0].target, "test-install-bundle/");
         assert!(
-            l.bundles[0].integrity.starts_with("sha256-"),
+            l.entries[0].integrity.starts_with("sha256-"),
             "integrity should be sha256- format"
         );
         let index_path = wiki_root.join("index.md");
         assert!(index_path.exists(), "index.md should exist");
         let index_content = std::fs::read_to_string(&index_path).unwrap();
-        assert!(index_content.contains("## Upstream Bundles"));
+        assert!(index_content.contains("test-install-bundle/index.md"));
         assert!(index_content.contains("test-install-bundle"));
+        assert!(
+            index_content.contains(
+                "- [test-install-bundle](test-install-bundle/index.md) \u{2014} Install test bundle"
+            ),
+            "store index should include the manifest description: {index_content}"
+        );
         w(s.join("doc.md"), DOC_U0);
         w(s.join("new.md"), NEW_M0);
         w(s.join("index.md"), IDX_U0);
@@ -591,11 +604,11 @@ include = ["*.md"]
         let lock_content = std::fs::read_to_string(&lock_path).unwrap();
         let l: lock::ZwikiLock = toml::from_str(&lock_content).unwrap();
         assert_eq!(
-            l.bundles.len(),
+            l.entries.len(),
             1,
             "lock should still have one entry after force reinstall"
         );
-        assert_eq!(l.bundles[0].version, "1.0.0");
+        assert_eq!(l.entries[0].version, "1.0.0");
     }
 
     #[test]
@@ -605,7 +618,6 @@ include = ["*.md"]
 [package]
 name = "json-test-bundle"
 version = "0.5.0"
-kind = "org"
 
 [export]
 include = ["*.md"]
@@ -639,7 +651,7 @@ include = ["*.md"]
             }));
         assert!(output.is_ok(), "cmd_install_at with JSON should not panic");
 
-        let bundle_dir = wiki_root.join(".org").join("json-test-bundle");
+        let bundle_dir = wiki_root.join("json-test-bundle");
         assert!(bundle_dir.exists(), "org bundle dir should exist");
         assert!(bundle_dir.join("page.md").exists(), "page.md should exist");
 
@@ -647,9 +659,9 @@ include = ["*.md"]
         assert!(lock_path.exists());
         let lock_content = std::fs::read_to_string(&lock_path).unwrap();
         let l: lock::ZwikiLock = toml::from_str(&lock_content).unwrap();
-        assert_eq!(l.bundles.len(), 1);
-        assert_eq!(l.bundles[0].name, "json-test-bundle");
-        assert_eq!(l.bundles[0].target, ".org/json-test-bundle/");
+        assert_eq!(l.entries.len(), 1);
+        assert_eq!(l.entries[0].name, "json-test-bundle");
+        assert_eq!(l.entries[0].target, "json-test-bundle/");
     }
 
     #[test]
@@ -659,7 +671,6 @@ include = ["*.md"]
 [package]
 name = "unhealthy-bundle"
 version = "1.0.0"
-kind = "upstream"
 
 [export]
 include = ["*.md"]
@@ -690,7 +701,7 @@ include = ["*.md"]
             "unhealthy bundle should have health/lint issues, got {total}"
         );
 
-        let target_dir = wiki_root.join(".upstream").join("unhealthy-bundle");
+        let target_dir = wiki_root.join("unhealthy-bundle");
         assert!(
             !target_dir.exists(),
             "target directory should not exist for rejected bundle"
@@ -710,7 +721,6 @@ include = ["*.md"]
 [package]
 name = "valid-bundle"
 version = "1.0.0"
-kind = "upstream"
 
 [export]
 include = ["*.md"]
@@ -739,7 +749,6 @@ include = ["*.md"]
 [package]
 name = ""
 version = "1.0.0"
-kind = "upstream"
 
 [export]
 include = ["*.md"]
@@ -775,7 +784,6 @@ include = ["*.md"]
 [package]
 name = "err-test-bundle"
 version = "1.0.0"
-kind = "upstream"
 
 [export]
 include = ["*.md"]
@@ -820,7 +828,6 @@ include = ["*.md"]
 [package]
 name = "copy-fail-bundle"
 version = "1.0.0"
-kind = "upstream"
 
 [export]
 include = ["*.md"]
@@ -856,7 +863,6 @@ include = ["*.md"]
 [package]
 name = "unhealthy-bundle"
 version = "1.0.0"
-kind = "upstream"
 
 [export]
 include = ["*.md"]
@@ -907,7 +913,6 @@ include = ["*.md"]
 [package]
 name = "empty-target-test-bundle"
 version = "1.0.0"
-kind = "upstream"
 
 [export]
 include = ["*.md"]
@@ -920,7 +925,7 @@ include = ["*.md"]
         let manifest = valid_manifest_with_name("empty-target-test-bundle");
 
         // Pre-create an empty target directory (simulating the bug scenario).
-        let target_rel = source::resolve_target_rel(&manifest, false).unwrap();
+        let target_rel = source::resolve_target_rel(&manifest);
         let target_abs = wiki_root.join(&target_rel);
         std::fs::create_dir_all(&target_abs).unwrap();
 
@@ -961,12 +966,12 @@ include = ["*.md"]
         assert!(lock_path.exists(), "zwiki.lock should exist");
         let lock_content = std::fs::read_to_string(&lock_path).unwrap();
         let l: lock::ZwikiLock = toml::from_str(&lock_content).unwrap();
-        assert_eq!(l.bundles.len(), 1);
-        assert_eq!(l.bundles[0].name, "empty-target-test-bundle");
-        assert_eq!(l.bundles[0].version, "1.0.0");
-        assert_eq!(l.bundles[0].target, ".upstream/empty-target-test-bundle/");
+        assert_eq!(l.entries.len(), 1);
+        assert_eq!(l.entries[0].name, "empty-target-test-bundle");
+        assert_eq!(l.entries[0].version, "1.0.0");
+        assert_eq!(l.entries[0].target, "empty-target-test-bundle/");
         assert!(
-            l.bundles[0].integrity.starts_with("sha256-"),
+            l.entries[0].integrity.starts_with("sha256-"),
             "integrity should be sha256- format"
         );
     }

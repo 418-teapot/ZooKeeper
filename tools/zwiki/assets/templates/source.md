@@ -1,11 +1,10 @@
 ---
-title: <实体名称>
+title: <源文档标题>
 description: <一句话摘要>。
-type: entity
+type: source
 timestamp: YYYY-MM-DDTHH:mm:ssZ
+resource: <source-id>
 tags: [tag1, tag2]
-relations:
-  - "[示例概念](context-engineering/concepts/foo.md)"
 status: draft|review|stable|deprecated
 last_validated: YYYY-MM-DDTHH:mm:ssZ
 timeliness: current
@@ -24,25 +23,29 @@ timeliness: current
 # freshness_days: 90
 ---
 
-# <实体名称>
+# <源文档标题>
 
-> 一句话概括该实体是什么，在项目中的位置。
+> 一句话概括该源文档的内容和重要性。
 
 ## Overview
 
-该实体的简要描述：位置、职责、创建原因。
+源文档的背景、作者、日期、上下文。
 
-## Role
+## Key Points
 
-该实体在系统中扮演的角色，主要的职责范围。
+- 要点 1
+- 要点 2
+- 要点 3
 
-## Behavior
+## Decisions Made（如适用）
 
-关键行为描述：输入、输出、副作用、异常处理。
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| <决策项> | <选择方案> | <理由> |
 
-## Permissions（如适用）
+## Impact
 
-如果该实体涉及权限（如插件、agent），列出其权限范围。
+该源文档对项目产生的影响。
 
 ## Backlinks
 
@@ -50,11 +53,11 @@ timeliness: current
 
 ## References
 
+- 原始文档路径
+- 相关代码提交
 - 外部链接
-- 代码路径引用
 
 ## Notes
 
-- 依赖关系
-- 配置要求
-- 已知限制
+- 理解上下文所需的补充信息
+- 后续变化

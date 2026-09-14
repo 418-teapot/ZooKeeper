@@ -41,6 +41,7 @@ pub fn list_pages(
     type_filter: Option<&str>,
     tag_filter: Option<&str>,
     domain_filter: Option<&str>,
+    bundles: &wiki::BundleSet,
 ) -> Vec<ListEntry> {
     let pages = wiki::discover_pages(wiki_dir);
 
@@ -55,6 +56,7 @@ pub fn list_pages(
                 type_filter,
                 tag_filter,
                 domain_filter,
+                bundles,
             ) {
                 return None;
             }
@@ -122,6 +124,11 @@ pub fn format_list_json(entries: &[ListEntry]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An empty bundle set for a plain (non-aggregated) root.
+    fn no_bundles() -> wiki::BundleSet {
+        wiki::BundleSet::default()
+    }
     use std::fs;
 
     // -------------------------------------------------------------------
@@ -151,7 +158,7 @@ mod tests {
     #[test]
     fn test_empty_wiki() {
         let dir = temp_dir("empty");
-        let entries = list_pages(&dir, None, None, None);
+        let entries = list_pages(&dir, None, None, None, &no_bundles());
         assert!(entries.is_empty());
     }
 
@@ -178,7 +185,7 @@ mod tests {
             "---\ntitle: Shared\ntype: concept\ntags: []\n---\n# Shared\n",
         );
 
-        let entries = list_pages(&dir, None, None, None);
+        let entries = list_pages(&dir, None, None, None, &no_bundles());
         assert_eq!(entries.len(), 3);
         // Sorted by path.
         assert_eq!(entries[0].path, "concepts/npc.md");
@@ -204,7 +211,8 @@ mod tests {
             "---\ntitle: Entity One\ntype: entity\ntags: []\n---\n",
         );
 
-        let entries = list_pages(&dir, Some("concept"), None, None);
+        let entries =
+            list_pages(&dir, Some("concept"), None, None, &no_bundles());
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].page_type, "concept");
     }
@@ -217,7 +225,8 @@ mod tests {
             "concepts/one.md",
             "---\ntitle: One\ntype: concept\ntags: []\n---\n",
         );
-        let entries = list_pages(&dir, Some("Concept"), None, None);
+        let entries =
+            list_pages(&dir, Some("Concept"), None, None, &no_bundles());
         assert_eq!(entries.len(), 1);
     }
 
@@ -234,7 +243,7 @@ mod tests {
             "analysis/two.md",
             "---\ntitle: Two\ntype: analysis\ntags: []\n---\n",
         );
-        let entries = list_pages(&dir, Some("ana"), None, None);
+        let entries = list_pages(&dir, Some("ana"), None, None, &no_bundles());
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].page_type, "analysis");
     }
@@ -257,7 +266,8 @@ mod tests {
             "---\ntitle: Misc\ntype: concept\ntags: [other]\n---\n",
         );
 
-        let entries = list_pages(&dir, None, Some("access"), None);
+        let entries =
+            list_pages(&dir, None, Some("access"), None, &no_bundles());
         assert_eq!(entries.len(), 1);
     }
 
@@ -269,7 +279,8 @@ mod tests {
             "concepts/auth.md",
             "---\ntitle: Auth\ntype: concept\ntags: [access-control]\n---\n",
         );
-        let entries = list_pages(&dir, None, Some("control"), None);
+        let entries =
+            list_pages(&dir, None, Some("control"), None, &no_bundles());
         assert_eq!(entries.len(), 1);
     }
 
@@ -281,7 +292,8 @@ mod tests {
             "concepts/auth.md",
             "---\ntitle: Auth\ntype: concept\ntags: [Access]\n---\n",
         );
-        let entries = list_pages(&dir, None, Some("access"), None);
+        let entries =
+            list_pages(&dir, None, Some("access"), None, &no_bundles());
         assert_eq!(entries.len(), 1);
     }
 
@@ -303,7 +315,8 @@ mod tests {
             "---\ntitle: B\ntype: concept\ntags: []\n---\n",
         );
 
-        let entries = list_pages(&dir, None, None, Some("shared"));
+        let entries =
+            list_pages(&dir, None, None, Some("shared"), &no_bundles());
         assert_eq!(entries.len(), 1);
         assert!(entries[0].path.starts_with("shared/"));
     }
@@ -316,7 +329,8 @@ mod tests {
             "Shared/concepts/a.md",
             "---\ntitle: A\ntype: concept\ntags: []\n---\n",
         );
-        let entries = list_pages(&dir, None, None, Some("shared"));
+        let entries =
+            list_pages(&dir, None, None, Some("shared"), &no_bundles());
         assert_eq!(entries.len(), 1);
     }
 
@@ -344,8 +358,13 @@ mod tests {
         );
 
         // Only concept pages in shared domain with "access" tag.
-        let entries =
-            list_pages(&dir, Some("concept"), Some("access"), Some("shared"));
+        let entries = list_pages(
+            &dir,
+            Some("concept"),
+            Some("access"),
+            Some("shared"),
+            &no_bundles(),
+        );
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].path, "shared/concepts/a.md");
     }
@@ -362,7 +381,8 @@ mod tests {
             "concepts/one.md",
             "---\ntitle: One\ntype: concept\ntags: []\n---\n",
         );
-        let entries = list_pages(&dir, Some("entity"), None, None);
+        let entries =
+            list_pages(&dir, Some("entity"), None, None, &no_bundles());
         assert!(entries.is_empty());
     }
 
@@ -378,7 +398,7 @@ mod tests {
             "concepts/test.md",
             "---\ntitle: My Page\ntype: analysis\ntags: [tag1, tag2]\n---\nBody.",
         );
-        let entries = list_pages(&dir, None, None, None);
+        let entries = list_pages(&dir, None, None, None, &no_bundles());
         assert_eq!(entries.len(), 1);
         assert!(entries[0].path.ends_with("concepts/test.md"));
         assert_eq!(entries[0].title, "My Page");
@@ -390,7 +410,7 @@ mod tests {
     fn test_list_entry_title_fallback() {
         let dir = temp_dir("title_fallback");
         write_page(&dir, "concepts/nofrontmatter.md", "# No Frontmatter\n");
-        let entries = list_pages(&dir, None, None, None);
+        let entries = list_pages(&dir, None, None, None, &no_bundles());
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].title, "nofrontmatter");
     }
@@ -472,7 +492,7 @@ mod tests {
             "---\ntitle: M-C\ntype: concept\ntags: []\n---\n",
         );
 
-        let entries = list_pages(&dir, None, None, None);
+        let entries = list_pages(&dir, None, None, None, &no_bundles());
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].path, "a/concepts/b.md");
         assert_eq!(entries[1].path, "m/concepts/c.md");

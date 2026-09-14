@@ -61,6 +61,7 @@ pub fn compute_status(
     type_filter: Option<&str>,
     tag_filter: Option<&str>,
     domain_filter: Option<&str>,
+    bundles: &wiki::BundleSet,
 ) -> StatusReport {
     let pages = wiki::discover_pages(wiki_dir);
 
@@ -83,6 +84,7 @@ pub fn compute_status(
             type_filter,
             tag_filter,
             domain_filter,
+            bundles,
         ) {
             continue;
         }
@@ -235,6 +237,11 @@ pub fn format_status_json(report: &StatusReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An empty bundle set for a plain (non-aggregated) root.
+    fn no_bundles() -> wiki::BundleSet {
+        wiki::BundleSet::default()
+    }
     use std::fs;
 
     // -------------------------------------------------------------------
@@ -290,7 +297,7 @@ mod tests {
     #[test]
     fn test_empty_wiki() {
         let dir = temp_dir("empty");
-        let report = compute_status(&dir, None, None, None);
+        let report = compute_status(&dir, None, None, None, &no_bundles());
         assert_eq!(report.total, 0);
         assert!(report.by_type.is_empty());
         assert!(report.by_domain.is_empty());
@@ -335,7 +342,7 @@ mod tests {
             &["research"],
         );
 
-        let report = compute_status(&dir, None, None, None);
+        let report = compute_status(&dir, None, None, None, &no_bundles());
         assert_eq!(report.total, 3);
 
         // Type distribution: concept: 2, entity: 1
@@ -379,7 +386,7 @@ mod tests {
             "---\ntitle: No Fields\ntype: concept\n---\n# No Fields\n",
         );
 
-        let report = compute_status(&dir, None, None, None);
+        let report = compute_status(&dir, None, None, None, &no_bundles());
         assert_eq!(report.total, 1);
         assert_eq!(report.by_type.get("concept"), Some(&1_usize));
         assert!(report.by_status.is_empty());
@@ -399,7 +406,7 @@ mod tests {
             "---\ntitle: No Type\nstatus: stable\n---\n# No Type\n",
         );
 
-        let report = compute_status(&dir, None, None, None);
+        let report = compute_status(&dir, None, None, None, &no_bundles());
         assert_eq!(report.total, 1);
         assert!(report.by_type.is_empty());
         assert_eq!(report.by_status.get("stable"), Some(&1_usize));
@@ -431,7 +438,8 @@ mod tests {
             &[],
         );
 
-        let report = compute_status(&dir, Some("concept"), None, None);
+        let report =
+            compute_status(&dir, Some("concept"), None, None, &no_bundles());
         assert_eq!(report.total, 1);
         assert_eq!(report.by_type.get("concept"), Some(&1_usize));
         assert!(!report.by_type.contains_key("entity"));
@@ -463,7 +471,8 @@ mod tests {
             &["misc"],
         );
 
-        let report = compute_status(&dir, None, Some("access"), None);
+        let report =
+            compute_status(&dir, None, Some("access"), None, &no_bundles());
         assert_eq!(report.total, 1);
     }
 
@@ -493,7 +502,8 @@ mod tests {
             &[],
         );
 
-        let report = compute_status(&dir, None, None, Some("shared"));
+        let report =
+            compute_status(&dir, None, None, Some("shared"), &no_bundles());
         assert_eq!(report.total, 1);
         assert!(report.by_domain.contains_key("shared"));
         assert!(!report.by_domain.contains_key("autoresearch"));
@@ -518,7 +528,7 @@ mod tests {
             "---\ntitle: Overview\ntype: synthesis\n---\n# Overview\n",
         );
 
-        let report = compute_status(&dir, None, None, None);
+        let report = compute_status(&dir, None, None, None, &no_bundles());
         assert_eq!(report.total, 2);
         assert!(report.by_domain.contains_key("shared"));
         // Root-level files must not appear as domains.
@@ -538,7 +548,7 @@ mod tests {
             "---\ntitle: A\ntype: concept\nstatus: stable\n\
              last_validated: not-a-date\n---\n# A\n",
         );
-        let report = compute_status(&dir, None, None, None);
+        let report = compute_status(&dir, None, None, None, &no_bundles());
         assert!(report.last_validated_range.earliest.is_none());
         assert!(report.last_validated_range.latest.is_none());
     }
@@ -555,7 +565,7 @@ mod tests {
             "2025-06-15",
             &[],
         );
-        let report = compute_status(&dir, None, None, None);
+        let report = compute_status(&dir, None, None, None, &no_bundles());
         assert_eq!(
             report.last_validated_range.earliest,
             Some("2025-06-15".to_string())

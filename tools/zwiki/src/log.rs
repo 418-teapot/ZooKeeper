@@ -30,10 +30,9 @@ fn action_to_chinese(action: &str) -> &str {
         "create" => "创建",
         "edit" => "编辑",
         "ingest" => "摄入",
-        "pass" => "通过",
-        "fail" => "失败",
         "update" => "更新",
         "delete" => "删除",
+        "move" => "移动",
         other => other,
     }
 }
@@ -186,6 +185,21 @@ pub fn add_entry_at(
     Ok(())
 }
 
+/// Append a structured `move` log entry recording `old_rel → new_rel`.
+///
+/// The rendered line is `* **移动**: old_rel → new_rel` (optionally with
+/// `— <note>`), keeping the origin and destination of the move in one
+/// machine-readable structure rather than a free-text edit.
+pub fn add_move_entry_at(
+    wiki_root: &Path,
+    old_rel: &str,
+    new_rel: &str,
+    note: Option<&str>,
+) -> Result<(), String> {
+    let path = format!("{old_rel} → {new_rel}");
+    add_entry_at(wiki_root, &path, "move", note)
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -257,10 +271,9 @@ mod tests {
         assert_eq!(action_to_chinese("create"), "创建");
         assert_eq!(action_to_chinese("edit"), "编辑");
         assert_eq!(action_to_chinese("ingest"), "摄入");
-        assert_eq!(action_to_chinese("pass"), "通过");
-        assert_eq!(action_to_chinese("fail"), "失败");
         assert_eq!(action_to_chinese("update"), "更新");
         assert_eq!(action_to_chinese("delete"), "删除");
+        assert_eq!(action_to_chinese("move"), "移动");
     }
 
     #[test]
@@ -422,7 +435,7 @@ mod tests {
         let wiki = temp_dir("note_truncated");
 
         let long_note = "x".repeat(100);
-        add_entry_at(&wiki, "concepts/test.md", "pass", Some(&long_note))
+        add_entry_at(&wiki, "concepts/test.md", "edit", Some(&long_note))
             .unwrap();
 
         let content = fs::read_to_string(monthly_log_path(&wiki)).unwrap();
@@ -457,6 +470,48 @@ mod tests {
         assert!(
             !content.contains("wiki/concepts/test.md"),
             "path should NOT have wiki/ prefix"
+        );
+    }
+
+    #[test]
+    fn test_add_move_entry_at_structured() {
+        let wiki = temp_dir("move_entry");
+
+        add_move_entry_at(
+            &wiki,
+            "concepts/foo.md",
+            "shared/concepts/bar.md",
+            None,
+        )
+        .unwrap();
+
+        let content = fs::read_to_string(monthly_log_path(&wiki)).unwrap();
+        assert!(
+            content.contains(
+                "* **移动**: concepts/foo.md → shared/concepts/bar.md"
+            ),
+            "move entry should record old → new: {content}"
+        );
+    }
+
+    #[test]
+    fn test_add_move_entry_at_with_note() {
+        let wiki = temp_dir("move_entry_note");
+
+        add_move_entry_at(
+            &wiki,
+            "concepts/foo.md",
+            "concepts/bar.md",
+            Some("领域拆分"),
+        )
+        .unwrap();
+
+        let content = fs::read_to_string(monthly_log_path(&wiki)).unwrap();
+        assert!(
+            content.contains(
+                "* **移动**: concepts/foo.md → concepts/bar.md — 领域拆分"
+            ),
+            "move entry should keep the note: {content}"
         );
     }
 

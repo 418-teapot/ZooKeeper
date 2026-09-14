@@ -39,7 +39,6 @@ pub fn cmd_init_inner(args: &InitArgs, use_json: bool) -> Result<(), String> {
             name: resolved_name,
             version: args.version.clone(),
             okf_version: args.okf_version.clone(),
-            kind: args.kind.clone(),
             registry: args.registry.clone(),
             description: args.description.clone(),
         },
@@ -72,7 +71,7 @@ pub fn cmd_init_inner(args: &InitArgs, use_json: bool) -> Result<(), String> {
             .map_err(|e| format!("写入文件失败: {e}"))?;
         eprintln!("已生成 bundle.toml 模板");
     } else {
-        println!("{serialized}");
+        crate::print_stdout_line(serialized);
     }
 
     Ok(())
@@ -94,7 +93,6 @@ mod tests {
         let args = InitArgs {
             name: Some(String::new()),
             version: "0.1.0".to_string(),
-            kind: "upstream".to_string(),
             okf_version: "0.1".to_string(),
             registry: None,
             description: None,

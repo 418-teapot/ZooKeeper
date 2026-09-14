@@ -7,8 +7,6 @@ tags: [tag1, tag2]
 sources:
   - adr-XXX
   - rfc-YYY
-relations:
-  - "[示例概念](autoresearch/concepts/foo.md)"
 status: draft|review|stable|deprecated
 last_validated: YYYY-MM-DDTHH:mm:ssZ
 timeliness: current

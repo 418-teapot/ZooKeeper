@@ -63,6 +63,7 @@ pub fn aggregate_field(
     type_filter: Option<&str>,
     tag_filter: Option<&str>,
     domain_filter: Option<&str>,
+    bundles: &wiki::BundleSet,
 ) -> BTreeMap<String, usize> {
     let pages = wiki::discover_pages(wiki_dir);
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
@@ -78,6 +79,7 @@ pub fn aggregate_field(
             type_filter,
             tag_filter,
             domain_filter,
+            bundles,
         ) {
             continue;
         }
@@ -103,7 +105,7 @@ pub fn aggregate_field(
             }
             AggregateField::Domains => {
                 if page.rel.contains('/') {
-                    let domain = wiki::domain_of(&page.rel).to_string();
+                    let domain = bundles.domain_of(&page.rel).to_string();
                     if !domain.is_empty() {
                         *counts.entry(domain).or_insert(0) += 1;
                     }
@@ -162,6 +164,11 @@ pub fn format_aggregate_json(counts: &BTreeMap<String, usize>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An empty bundle set for a plain (non-aggregated) root.
+    fn no_bundles() -> wiki::BundleSet {
+        wiki::BundleSet::default()
+    }
     use std::fs;
 
     // -------------------------------------------------------------------
@@ -193,8 +200,14 @@ mod tests {
     #[test]
     fn test_tags_empty_wiki() {
         let dir = temp_dir("tags_empty");
-        let counts =
-            aggregate_field(&dir, AggregateField::Tags, None, None, None);
+        let counts = aggregate_field(
+            &dir,
+            AggregateField::Tags,
+            None,
+            None,
+            None,
+            &no_bundles(),
+        );
         assert!(counts.is_empty());
     }
 
@@ -221,8 +234,14 @@ mod tests {
             "---\ntitle: C\ntype: entity\ntags: [database, access]\n---\n",
         );
 
-        let counts =
-            aggregate_field(&dir, AggregateField::Tags, None, None, None);
+        let counts = aggregate_field(
+            &dir,
+            AggregateField::Tags,
+            None,
+            None,
+            None,
+            &no_bundles(),
+        );
         assert_eq!(counts.len(), 3);
         assert_eq!(counts.get("auth"), Some(&2_usize));
         assert_eq!(counts.get("access"), Some(&2_usize));
@@ -250,8 +269,14 @@ mod tests {
             "---\ntitle: B\ntype: concept\ntags: [multi, tags]\n---\n",
         );
 
-        let counts =
-            aggregate_field(&dir, AggregateField::Tags, None, None, None);
+        let counts = aggregate_field(
+            &dir,
+            AggregateField::Tags,
+            None,
+            None,
+            None,
+            &no_bundles(),
+        );
         assert_eq!(counts.len(), 3);
         assert_eq!(counts.get("single-tag"), Some(&1_usize));
         assert_eq!(counts.get("multi"), Some(&1_usize));
@@ -276,8 +301,14 @@ mod tests {
             "---\ntitle: B\ntype: entity\n---\n", // no tags field
         );
 
-        let counts =
-            aggregate_field(&dir, AggregateField::Tags, None, None, None);
+        let counts = aggregate_field(
+            &dir,
+            AggregateField::Tags,
+            None,
+            None,
+            None,
+            &no_bundles(),
+        );
         assert!(counts.is_empty());
     }
 
@@ -305,6 +336,7 @@ mod tests {
             Some("concept"),
             None,
             None,
+            &no_bundles(),
         );
         assert_eq!(counts.len(), 1);
         assert_eq!(counts.get("auth"), Some(&1_usize));
@@ -334,6 +366,7 @@ mod tests {
             None,
             None,
             Some("shared"),
+            &no_bundles(),
         );
         assert_eq!(counts.len(), 1);
         assert_eq!(counts.get("auth"), Some(&1_usize));
@@ -369,6 +402,7 @@ mod tests {
             Some("concept"),
             None,
             Some("shared"),
+            &no_bundles(),
         );
         assert_eq!(counts.len(), 1);
         assert_eq!(counts.get("auth"), Some(&1_usize));
@@ -392,6 +426,7 @@ mod tests {
             Some("concept"),
             None,
             None,
+            &no_bundles(),
         );
         assert_eq!(counts.len(), 1);
     }
@@ -410,6 +445,7 @@ mod tests {
             None,
             Some("auth"),
             None,
+            &no_bundles(),
         );
         assert_eq!(counts.len(), 1);
         assert_eq!(counts.get("Auth"), Some(&1_usize));
@@ -438,8 +474,14 @@ mod tests {
             "---\ntitle: C\ntype: entity\ntags: []\n---\n",
         );
 
-        let counts =
-            aggregate_field(&dir, AggregateField::Types, None, None, None);
+        let counts = aggregate_field(
+            &dir,
+            AggregateField::Types,
+            None,
+            None,
+            None,
+            &no_bundles(),
+        );
         assert_eq!(counts.len(), 2);
         assert_eq!(counts.get("concept"), Some(&2_usize));
         assert_eq!(counts.get("entity"), Some(&1_usize));
@@ -453,8 +495,14 @@ mod tests {
     fn test_types_no_type_field() {
         let dir = temp_dir("types_no_type");
         write_page(&dir, "shared/a.md", "---\ntitle: A\ntags: []\n---\n");
-        let counts =
-            aggregate_field(&dir, AggregateField::Types, None, None, None);
+        let counts = aggregate_field(
+            &dir,
+            AggregateField::Types,
+            None,
+            None,
+            None,
+            &no_bundles(),
+        );
         // Missing type is skipped (consistent with status by_type).
         assert!(counts.is_empty());
     }
@@ -483,6 +531,7 @@ mod tests {
             None,
             Some("auth"),
             None,
+            &no_bundles(),
         );
         assert_eq!(counts.len(), 1);
         assert_eq!(counts.get("concept"), Some(&1_usize));
@@ -512,6 +561,7 @@ mod tests {
             None,
             None,
             Some("shared"),
+            &no_bundles(),
         );
         assert_eq!(counts.len(), 1);
         assert_eq!(counts.get("concept"), Some(&1_usize));
@@ -540,8 +590,14 @@ mod tests {
             "---\ntitle: C\ntype: concept\ntags: []\n---\n",
         );
 
-        let counts =
-            aggregate_field(&dir, AggregateField::Domains, None, None, None);
+        let counts = aggregate_field(
+            &dir,
+            AggregateField::Domains,
+            None,
+            None,
+            None,
+            &no_bundles(),
+        );
         assert_eq!(counts.len(), 2);
         assert_eq!(counts.get("shared"), Some(&2_usize));
         assert_eq!(counts.get("autoresearch"), Some(&1_usize));
@@ -566,8 +622,14 @@ mod tests {
             "---\ntitle: Overview\ntype: synthesis\ntags: []\n---\n",
         );
 
-        let counts =
-            aggregate_field(&dir, AggregateField::Domains, None, None, None);
+        let counts = aggregate_field(
+            &dir,
+            AggregateField::Domains,
+            None,
+            None,
+            None,
+            &no_bundles(),
+        );
         assert_eq!(counts.len(), 1);
         assert_eq!(counts.get("shared"), Some(&1_usize));
         assert!(!counts.contains_key("overview"));
@@ -602,6 +664,7 @@ mod tests {
             Some("entity"),
             None,
             None,
+            &no_bundles(),
         );
         assert_eq!(counts.len(), 1);
         assert_eq!(counts.get("shared"), Some(&1_usize));
@@ -632,6 +695,7 @@ mod tests {
             None,
             Some("auth"),
             None,
+            &no_bundles(),
         );
         assert_eq!(counts.len(), 2);
         assert_eq!(counts.get("shared"), Some(&1_usize));

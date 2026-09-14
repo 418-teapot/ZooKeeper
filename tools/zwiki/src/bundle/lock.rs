@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 #[serde(deny_unknown_fields)]
 pub struct ZwikiLock {
     #[serde(rename = "bundles")]
-    pub bundles: Vec<ZwikiLockEntry>,
+    pub entries: Vec<ZwikiLockEntry>,
     #[serde(default)]
     pub lock_version: u32,
 }
@@ -77,14 +77,14 @@ pub fn upsert_bundle(
     entry: ZwikiLockEntry,
     force: bool,
 ) -> Result<(), String> {
-    let pos = lock.bundles.iter().position(|b| b.name == entry.name);
+    let pos = lock.entries.iter().position(|b| b.name == entry.name);
     if let Some(p) = pos {
         if !force {
             return Err("bundle already installed".to_string());
         }
-        lock.bundles[p] = entry;
+        lock.entries[p] = entry;
     } else {
-        lock.bundles.push(entry);
+        lock.entries.push(entry);
     }
     Ok(())
 }
@@ -175,7 +175,7 @@ mod tests {
         let exists = lock_path.exists();
         assert!(!exists, "lock file should not exist yet");
         let lock = ZwikiLock::default();
-        assert!(lock.bundles.is_empty());
+        assert!(lock.entries.is_empty());
     }
 
     #[test]
@@ -185,14 +185,14 @@ mod tests {
             name: "test".to_string(),
             version: "1.0".to_string(),
             registry: String::new(),
-            target: ".upstream/test/".to_string(),
+            target: "test/".to_string(),
             integrity: "sha256-abc".to_string(),
             installed_at: "2026-01-01T00:00:00Z".to_string(),
             description: None,
         };
 
         assert!(upsert_bundle(&mut lock, entry, false).is_ok());
-        assert_eq!(lock.bundles.len(), 1);
+        assert_eq!(lock.entries.len(), 1);
     }
 
     #[test]
@@ -202,7 +202,7 @@ mod tests {
             name: "test".to_string(),
             version: "1.0".to_string(),
             registry: String::new(),
-            target: ".upstream/test/".to_string(),
+            target: "test/".to_string(),
             integrity: "sha256-abc".to_string(),
             installed_at: "2026-01-01T00:00:00Z".to_string(),
             description: None,
@@ -211,7 +211,7 @@ mod tests {
             name: "test".to_string(),
             version: "2.0".to_string(),
             registry: String::new(),
-            target: ".upstream/test/".to_string(),
+            target: "test/".to_string(),
             integrity: "sha256-def".to_string(),
             installed_at: "2026-01-02T00:00:00Z".to_string(),
             description: None,
@@ -220,7 +220,7 @@ mod tests {
         upsert_bundle(&mut lock, entry1, false).unwrap();
         let result = upsert_bundle(&mut lock, entry2, false);
         assert!(result.is_err());
-        assert_eq!(lock.bundles.len(), 1);
+        assert_eq!(lock.entries.len(), 1);
     }
 
     #[test]
@@ -230,7 +230,7 @@ mod tests {
             name: "test".to_string(),
             version: "1.0".to_string(),
             registry: String::new(),
-            target: ".upstream/test/".to_string(),
+            target: "test/".to_string(),
             integrity: "sha256-abc".to_string(),
             installed_at: "2026-01-01T00:00:00Z".to_string(),
             description: None,
@@ -239,7 +239,7 @@ mod tests {
             name: "test".to_string(),
             version: "2.0".to_string(),
             registry: String::new(),
-            target: ".upstream/test/".to_string(),
+            target: "test/".to_string(),
             integrity: "sha256-def".to_string(),
             installed_at: "2026-01-02T00:00:00Z".to_string(),
             description: None,
@@ -247,8 +247,8 @@ mod tests {
 
         upsert_bundle(&mut lock, entry1, false).unwrap();
         assert!(upsert_bundle(&mut lock, entry2, true).is_ok());
-        assert_eq!(lock.bundles.len(), 1);
-        assert_eq!(lock.bundles[0].version, "2.0");
+        assert_eq!(lock.entries.len(), 1);
+        assert_eq!(lock.entries[0].version, "2.0");
     }
 
     #[test]
@@ -309,12 +309,12 @@ mod tests {
             name: "mypkg".to_string(),
             version: "1.0.0".to_string(),
             registry: String::new(),
-            target: ".upstream/mypkg/".to_string(),
+            target: "mypkg/".to_string(),
             integrity: "sha256-abc".to_string(),
             installed_at: "2026-06-01T12:00:00Z".to_string(),
             description: None,
         };
-        let lock = ZwikiLock { bundles: vec![entry], ..Default::default() };
+        let lock = ZwikiLock { entries: vec![entry], ..Default::default() };
 
         let toml_str = toml::to_string_pretty(&lock).unwrap();
         let lock_file = dir.join("zwiki.lock");
@@ -322,9 +322,9 @@ mod tests {
 
         let content = std::fs::read_to_string(&lock_file).unwrap();
         let parsed: ZwikiLock = toml::from_str(&content).unwrap();
-        assert_eq!(parsed.bundles.len(), 1);
-        assert_eq!(parsed.bundles[0].name, "mypkg");
-        assert_eq!(parsed.bundles[0].version, "1.0.0");
+        assert_eq!(parsed.entries.len(), 1);
+        assert_eq!(parsed.entries[0].name, "mypkg");
+        assert_eq!(parsed.entries[0].version, "1.0.0");
     }
 
     #[test]
@@ -333,12 +333,12 @@ mod tests {
             name: "test".to_string(),
             version: "1.0".to_string(),
             registry: "https://example.com".to_string(),
-            target: ".upstream/test/".to_string(),
+            target: "test/".to_string(),
             integrity: "sha256-aGVsbG8=".to_string(),
             installed_at: "2026-07-05T12:00:00Z".to_string(),
             description: None,
         };
-        let lock = ZwikiLock { bundles: vec![entry], ..Default::default() };
+        let lock = ZwikiLock { entries: vec![entry], ..Default::default() };
 
         let toml_str = toml::to_string_pretty(&lock).unwrap();
         assert!(
@@ -349,8 +349,8 @@ mod tests {
         assert!(toml_str.contains("version = \"1.0\""));
 
         let parsed: ZwikiLock = toml::from_str(&toml_str).unwrap();
-        assert_eq!(parsed.bundles.len(), 1);
-        assert_eq!(parsed.bundles[0].registry, "https://example.com");
+        assert_eq!(parsed.entries.len(), 1);
+        assert_eq!(parsed.entries[0].registry, "https://example.com");
     }
 
     #[test]
@@ -358,13 +358,13 @@ mod tests {
         let toml_input = r#"[[bundles]]
 name = "test"
 version = "1.0"
-target = ".upstream/test/"
+target = "test/"
 integrity = "sha256-abc"
 installed_at = "2026-07-05T12:00:00Z"
 "#;
         let parsed: ZwikiLock = toml::from_str(toml_input).unwrap();
-        assert_eq!(parsed.bundles.len(), 1);
-        assert_eq!(parsed.bundles[0].registry, "");
+        assert_eq!(parsed.entries.len(), 1);
+        assert_eq!(parsed.entries[0].registry, "");
     }
 
     #[test]
@@ -372,13 +372,13 @@ installed_at = "2026-07-05T12:00:00Z"
         let toml_input = r#"[[bundles]]
 name = "test"
 version = "1.0"
-target = ".upstream/test/"
+target = "test/"
 integrity = "sha256-abc"
 installed_at = "2026-07-05T12:00:00Z"
 "#;
         let parsed: ZwikiLock = toml::from_str(toml_input).unwrap();
-        assert_eq!(parsed.bundles.len(), 1);
-        assert!(parsed.bundles[0].description.is_none());
+        assert_eq!(parsed.entries.len(), 1);
+        assert!(parsed.entries[0].description.is_none());
     }
 
     #[test]
@@ -387,7 +387,7 @@ installed_at = "2026-07-05T12:00:00Z"
         let result: Result<ZwikiLock, _> = toml::from_str(corrupt);
         assert!(result.is_err(), "corrupt TOML should fail to parse");
         let lock = result.unwrap_or_else(|_| ZwikiLock::default());
-        assert!(lock.bundles.is_empty());
+        assert!(lock.entries.is_empty());
     }
 
     #[test]
@@ -397,24 +397,24 @@ installed_at = "2026-07-05T12:00:00Z"
 name = "test-bundle"
 version = "1.0.0"
 registry = ""
-target = ".upstream/test-bundle/"
+target = "test-bundle/"
 integrity = "sha256-abc"
 installed_at = "2026-01-01T00:00:00Z"
 "#;
         let lock: ZwikiLock = toml::from_str(content).unwrap();
-        assert_eq!(lock.bundles.len(), 1);
-        assert_eq!(lock.bundles[0].name, "test-bundle");
+        assert_eq!(lock.entries.len(), 1);
+        assert_eq!(lock.entries[0].name, "test-bundle");
     }
 
     #[test]
     fn test_write_lock_at_atomic() {
         let dir = temp_dir("write_lock_atomic");
         let lock = ZwikiLock {
-            bundles: vec![ZwikiLockEntry {
+            entries: vec![ZwikiLockEntry {
                 name: "test".to_string(),
                 version: "1.0".to_string(),
                 registry: String::new(),
-                target: ".upstream/test/".to_string(),
+                target: "test/".to_string(),
                 integrity: "sha256-abc".to_string(),
                 installed_at: "2026-01-01T00:00:00Z".to_string(),
                 description: None,
@@ -433,8 +433,8 @@ installed_at = "2026-01-01T00:00:00Z"
         assert!(lock_path.exists(), "zwiki.lock should exist");
         let content = std::fs::read_to_string(&lock_path).unwrap();
         let parsed: ZwikiLock = toml::from_str(&content).unwrap();
-        assert_eq!(parsed.bundles.len(), 1);
-        assert_eq!(parsed.bundles[0].name, "test");
+        assert_eq!(parsed.entries.len(), 1);
+        assert_eq!(parsed.entries[0].name, "test");
     }
 
     #[test]
@@ -451,11 +451,11 @@ installed_at = "2026-01-01T00:00:00Z"
             zutil::fileio::acquire_file_lock(&dir.join(".zwiki.flock"))
                 .unwrap();
         let lock = ZwikiLock {
-            bundles: vec![ZwikiLockEntry {
+            entries: vec![ZwikiLockEntry {
                 name: "sidecar-test".to_string(),
                 version: "1.0".to_string(),
                 registry: String::new(),
-                target: ".upstream/sidecar-test/".to_string(),
+                target: "sidecar-test/".to_string(),
                 integrity: "sha256-abc".to_string(),
                 installed_at: "2026-01-01T00:00:00Z".to_string(),
                 description: None,
@@ -467,6 +467,6 @@ installed_at = "2026-01-01T00:00:00Z"
         assert!(lock_path.exists(), "zwiki.lock should exist");
         let content = std::fs::read_to_string(&lock_path).unwrap();
         let parsed: ZwikiLock = toml::from_str(&content).unwrap();
-        assert_eq!(parsed.bundles.len(), 1);
+        assert_eq!(parsed.entries.len(), 1);
     }
 }

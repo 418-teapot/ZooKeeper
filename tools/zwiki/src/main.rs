@@ -5,11 +5,13 @@
 #![warn(clippy::nursery)]
 
 mod aggregate;
+mod assets;
 mod backlinks;
 mod bundle;
 mod contradictions;
 mod display;
 mod health;
+mod index;
 mod lint;
 mod list;
 mod log;
@@ -24,6 +26,7 @@ mod wiki;
 
 use crate::bundle::ZwikiLock;
 use clap::{Args, Parser, Subcommand};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 use tempfile::TempDir;
@@ -57,6 +60,93 @@ fn guard_writable(root: &WikiRoot, cmd_desc: &str) {
             "错误: 在 tar.gz/URL 形式的 wiki 根上不支持「{cmd_desc}」操作"
         );
         std::process::exit(1);
+    }
+}
+
+/// Return the command description when `cmd` mutates the wiki, or `None`
+/// for read-only commands.  Write commands must be given an explicit
+/// `--root` so the write target is never guessed.
+const fn write_command_desc(cmd: &Command) -> Option<&'static str> {
+    match cmd {
+        Command::Supersede { .. } => Some("supersede"),
+        Command::Contradictions(ContradictionsCommand::Apply(_)) => {
+            Some("contradictions apply")
+        }
+        Command::Page(PageCommand::Set(_)) => Some("page set"),
+        Command::Page(PageCommand::Unset(_)) => Some("page unset"),
+        Command::Page(PageCommand::Create(_)) => Some("page create"),
+        Command::Page(PageCommand::Move(_)) => Some("page move"),
+        Command::Domain(DomainCommand::Create(_)) => Some("domain create"),
+        _ => None,
+    }
+}
+
+/// Print a rejection for a write whose target lies inside an installed
+/// bundle and exit.
+fn reject_readonly_bundle(bundle: &str, cmd_desc: &str) -> ! {
+    eprintln!(
+        "错误: 路径位于只读的安装态 bundle「{bundle}」，不支持「{cmd_desc}」写入；请在包含 bundle.toml 的 bundle 源目录操作"
+    );
+    process::exit(1);
+}
+
+/// Print a rejection for a write whose root is the installed wiki store (a
+/// directory holding `zwiki.lock`) and exit.
+fn reject_store_root(cmd_desc: &str) -> ! {
+    eprintln!(
+        "错误: 「{cmd_desc}」不能在安装态 wiki 仓库（包含 zwiki.lock）上写入；请将 --root 指向包含 bundle.toml 的 bundle 源目录"
+    );
+    process::exit(1);
+}
+
+/// Print a rejection for a write whose root lacks `bundle.toml` and exit.
+fn reject_not_bundle_source(root: &Path, cmd_desc: &str) -> ! {
+    eprintln!(
+        "错误: 「{cmd_desc}」要求 --root 指向 bundle 源目录（包含 bundle.toml），但 {} 中缺少 bundle.toml",
+        root.display()
+    );
+    process::exit(1);
+}
+
+/// Whether `root` must be treated as read-only by `check`: an installed
+/// wiki store (a directory holding `zwiki.lock`), a directory nested inside
+/// a bundle, or a directory that is not a bundle source (lacks
+/// `bundle.toml`).  A bare directory has no writable page tree of its own,
+/// so `check` reports on it without regenerating derived metadata.
+fn is_read_only_check_root(root: &Path) -> bool {
+    root.join("zwiki.lock").exists()
+        || wiki::enclosing_bundle(root).is_some()
+        || !root.join("bundle.toml").is_file()
+}
+
+/// Guard a write command after root resolution: reject read-only
+/// (tar.gz/URL) roots, the installed wiki store (`zwiki.lock`), roots
+/// inside an installed bundle, and roots that are not bundle sources
+/// (`bundle.toml`).  Explicit `--root` is enforced earlier, before root
+/// resolution, so omitting it never silently writes to the default
+/// installation root.
+fn guard_write(root: &WikiRoot, cmd_desc: &str) {
+    guard_writable(root, cmd_desc);
+    let path = root.path();
+    if path.join("zwiki.lock").exists() {
+        reject_store_root(cmd_desc);
+    }
+    if let Some(bundle) = wiki::installed_bundle(path) {
+        reject_readonly_bundle(&bundle, cmd_desc);
+    }
+    if !path.join("bundle.toml").is_file() {
+        reject_not_bundle_source(path, cmd_desc);
+    }
+}
+
+/// Guard a write whose target is a specific page within a writable root:
+/// reject when the resolved page path passes through any directory below
+/// the root that contains `bundle.toml`.  This complements [`guard_write`],
+/// which only judges the root, so a page below an installed bundle is never
+/// written when the root aggregates installed bundles.
+pub(crate) fn guard_write_page(root: &Path, page_rel: &str, cmd_desc: &str) {
+    if let Some(bundle) = wiki::bundle_on_path(root, page_rel) {
+        reject_readonly_bundle(&bundle, cmd_desc);
     }
 }
 
@@ -225,7 +315,15 @@ enum ContradictionsCommand {
     /// Reads a JSON array of contradiction pairs from stdin and writes
     /// `contradictions` frontmatter blocks to both conflicting pages
     /// with symmetric status downgrade and `last_validated` update.
-    Apply,
+    Apply(ContradictionsApplyArgs),
+}
+
+/// Record contradictions from stdin, with an optional change-log note.
+#[derive(Args)]
+pub struct ContradictionsApplyArgs {
+    /// Free-text note recorded in the change log
+    #[arg(long)]
+    pub note: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -266,6 +364,10 @@ pub struct PageSetArgs {
     /// Downgrade the property value (status: stable→review→draft)
     #[arg(long)]
     pub downgrade: bool,
+
+    /// Free-text note recorded in the change log
+    #[arg(long)]
+    pub note: Option<String>,
 }
 
 /// Delete a frontmatter property from a page
@@ -275,6 +377,10 @@ pub struct PageUnsetArgs {
     pub path: String,
     /// Property name to delete
     pub prop: String,
+
+    /// Free-text note recorded in the change log
+    #[arg(long)]
+    pub note: Option<String>,
 }
 
 /// Create a new wiki page from template
@@ -299,6 +405,10 @@ pub struct PageCreateArgs {
     /// Source sub-type: adr, rfc, notes (required when --type=source)
     #[arg(long)]
     pub source_type: Option<String>,
+
+    /// Free-text note recorded in the change log
+    #[arg(long)]
+    pub note: Option<String>,
 }
 
 /// Move / rename a wiki page
@@ -308,6 +418,10 @@ pub struct PageMoveArgs {
     pub old: String,
     /// New wiki-relative page path
     pub new: String,
+
+    /// Free-text note recorded in the change log
+    #[arg(long)]
+    pub note: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -330,6 +444,27 @@ enum PageCommand {
 }
 
 // ---------------------------------------------------------------------------
+// Domain command family — create
+// ---------------------------------------------------------------------------
+
+/// Scaffold a new domain with the standard directory layout and index.
+#[derive(Args)]
+pub struct DomainCreateArgs {
+    /// Domain name (kebab-case, e.g. agent-design)
+    pub name: String,
+
+    /// Free-text note recorded in the change log
+    #[arg(long)]
+    pub note: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum DomainCommand {
+    /// Scaffold a new domain with the standard subdirectories and index.md
+    Create(DomainCreateArgs),
+}
+
+// ---------------------------------------------------------------------------
 // Top-level command enum
 // ---------------------------------------------------------------------------
 
@@ -338,28 +473,26 @@ enum Command {
     /// Run all health and lint checks
     Check,
 
+    /// Print an embedded page template to stdout
+    Template {
+        /// Template type: concept, entity, source, analysis, synthesis
+        r#type: String,
+    },
+
+    /// Print the embedded OKF schema document (SCHEMA.md) to stdout
+    Schema,
+
     /// Read a wiki page or manage page properties
     #[command(subcommand)]
     Page(PageCommand),
 
+    /// Scaffold and manage wiki domains
+    #[command(subcommand)]
+    Domain(DomainCommand),
+
     /// Bundle distribution commands
     #[command(subcommand)]
     Bundle(bundle::BundleCommand),
-
-    /// Append a log entry to wiki/logs/YYYY-MM.md
-    Log {
-        /// Wiki-relative page path (e.g. concepts/npc.md)
-        #[arg(long)]
-        path: String,
-
-        /// Action: create, edit, delete, pass, fail
-        #[arg(long)]
-        action: String,
-
-        /// Free-text note (truncated to 60 chars)
-        #[arg(long)]
-        note: Option<String>,
-    },
 
     /// Search wiki pages for a query
     Search {
@@ -462,6 +595,10 @@ enum Command {
         /// Reason for the supersede relationship
         #[arg(long)]
         reason: String,
+
+        /// Free-text note recorded in the change log
+        #[arg(long)]
+        note: Option<String>,
     },
 
     /// Find and manage contradictory claims between wiki pages
@@ -476,12 +613,37 @@ fn main() {
 
 fn dispatch(args: ZwikiArgs) {
     let use_json = args.json;
+
+    // Write commands must name their target explicitly.  This check runs
+    // before root resolution so that omitting `--root` never falls back to
+    // the default installation root (and never fails with an unrelated
+    // "root not found" error).
+    if let Some(cmd) = args.command.as_ref()
+        && let Some(desc) = write_command_desc(cmd)
+        && args.root.is_none()
+    {
+        let msg = format!(
+            "「{desc}」是写命令，必须用 --root 显式指定写入目标（例如 --root ./wiki/）"
+        );
+        if use_json {
+            let output = serde_json::json!({"status": "error", "error": msg});
+            crate::print_stdout_line(
+                serde_json::to_string_pretty(&output).unwrap(),
+            );
+        } else {
+            eprintln!("错误: {msg}");
+        }
+        process::exit(1);
+    }
+
     let wiki_root = match resolve_wiki_root(args.root.as_deref(), use_json) {
         Ok(r) => r,
         Err(e) => {
             if use_json {
                 let output = serde_json::json!({"status": "error", "error": e});
-                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                crate::print_stdout_line(
+                    serde_json::to_string_pretty(&output).unwrap(),
+                );
             } else {
                 eprintln!("{e}");
             }
@@ -494,25 +656,23 @@ fn dispatch(args: ZwikiArgs) {
             use clap::CommandFactory;
             let mut cmd = ZwikiArgs::command();
             let _ = cmd.print_help();
-            println!();
+            crate::print_stdout_line("");
             process::exit(1);
         }
         Some(Command::Check) => {
             dispatch_check(&wiki_root, args.json);
         }
+        Some(Command::Template { r#type }) => {
+            cmd_template(&r#type, args.json);
+        }
+        Some(Command::Schema) => {
+            cmd_schema(args.json);
+        }
         Some(Command::Page(ref page_cmd)) => {
             dispatch_page(&wiki_root, page_cmd, args.json);
         }
-        Some(Command::Log { path, action, note }) => {
-            guard_writable(&wiki_root, "log");
-            // log --path normalizes the argument first and rejects a
-            // nonexistent page with a clear error.
-            let normalized = normalize_page_path(wiki_root.path(), &path)
-                .unwrap_or_else(|e| {
-                    eprintln!("{e}");
-                    process::exit(1);
-                });
-            cmd_log(&wiki_root, &normalized, &action, note.as_deref());
+        Some(Command::Domain(ref domain_cmd)) => {
+            dispatch_domain(&wiki_root, domain_cmd);
         }
         Some(Command::Search { query, r#type, tag, domain }) => {
             cmd_search(
@@ -546,6 +706,77 @@ fn dispatch(args: ZwikiArgs) {
     }
 }
 
+/// Exit quietly when `result` reports a closed downstream pipe, otherwise
+/// report the write failure on stderr.
+fn finish_stdout(result: io::Result<()>) {
+    if let Err(e) = result {
+        if e.kind() == io::ErrorKind::BrokenPipe {
+            process::exit(0);
+        }
+        eprintln!("错误: 写入标准输出失败: {e}");
+        process::exit(1);
+    }
+}
+
+/// Write `text` to stdout without a trailing newline.
+///
+/// A closed reader (`Broken pipe`) is a normal end of output for a pager or
+/// `head`, so it exits with status 0 instead of panicking the way the
+/// standard printing macros do.
+pub(crate) fn print_stdout(text: impl std::fmt::Display) {
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+    finish_stdout(write!(handle, "{text}").and_then(|()| handle.flush()));
+}
+
+/// Write `text` to stdout followed by a newline.
+pub(crate) fn print_stdout_line(text: impl std::fmt::Display) {
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+    finish_stdout(writeln!(handle, "{text}").and_then(|()| handle.flush()));
+}
+
+/// Print an embedded page template to stdout.
+fn cmd_template(page_type: &str, json: bool) {
+    if let Some(content) = assets::template(page_type) {
+        if json {
+            let output = serde_json::json!({
+                "type": page_type,
+                "content": content,
+            });
+            crate::print_stdout_line(
+                serde_json::to_string_pretty(&output).unwrap(),
+            );
+        } else {
+            print_stdout(content);
+        }
+    } else {
+        let valid = assets::TEMPLATE_TYPES.join(", ");
+        let msg = format!("未知的模板类型: {page_type} — 有效类型: {valid}");
+        if json {
+            let output = serde_json::json!({"status": "error", "error": msg});
+            crate::print_stdout_line(
+                serde_json::to_string_pretty(&output).unwrap(),
+            );
+        } else {
+            eprintln!("错误: {msg}");
+        }
+        process::exit(1);
+    }
+}
+
+/// Print the embedded OKF schema document to stdout.
+fn cmd_schema(json: bool) {
+    if json {
+        let output = serde_json::json!({"content": assets::SCHEMA});
+        crate::print_stdout_line(
+            serde_json::to_string_pretty(&output).unwrap(),
+        );
+    } else {
+        print_stdout(assets::SCHEMA);
+    }
+}
+
 /// Dispatch the remaining subcommands (Verify through Contradictions).
 fn dispatch_tail(wiki_root: &WikiRoot, args: &ZwikiArgs, cmd: &Command) {
     match cmd {
@@ -553,6 +784,7 @@ fn dispatch_tail(wiki_root: &WikiRoot, args: &ZwikiArgs, cmd: &Command) {
             if check_domain_or_print(
                 domain.as_deref(),
                 wiki_root.path(),
+                &wiki::BundleSet::discover(wiki_root.path()),
                 args.json,
                 "[]",
             ) {
@@ -590,8 +822,8 @@ fn dispatch_tail(wiki_root: &WikiRoot, args: &ZwikiArgs, cmd: &Command) {
                 args.json,
             );
         }
-        Command::Supersede { old, new, reason } => {
-            guard_writable(wiki_root, "supersede");
+        Command::Supersede { old, new, reason, note } => {
+            guard_write(wiki_root, "supersede");
             // Normalize both old and new paths.
             let old_norm = normalize_page_path(wiki_root.path(), old)
                 .unwrap_or_else(|e| {
@@ -603,7 +835,15 @@ fn dispatch_tail(wiki_root: &WikiRoot, args: &ZwikiArgs, cmd: &Command) {
                     eprintln!("{e}");
                     process::exit(1);
                 });
-            cmd_supersede(wiki_root, &old_norm, &new_norm, reason);
+            guard_write_page(wiki_root.path(), &old_norm, "supersede");
+            guard_write_page(wiki_root.path(), &new_norm, "supersede");
+            cmd_supersede(
+                wiki_root,
+                &old_norm,
+                &new_norm,
+                reason,
+                note.as_deref(),
+            );
         }
         Command::Bundle(cmd) => {
             // All bundle subcommands require a lock-based wiki root
@@ -627,8 +867,8 @@ fn dispatch_tail(wiki_root: &WikiRoot, args: &ZwikiArgs, cmd: &Command) {
             bundle::dispatch(cmd, args.json, wiki_root.path());
         }
         Command::Contradictions(cmd) => {
-            if matches!(cmd, crate::ContradictionsCommand::Apply) {
-                guard_writable(wiki_root, "contradictions apply");
+            if matches!(cmd, crate::ContradictionsCommand::Apply(_)) {
+                guard_write(wiki_root, "contradictions apply");
             }
             contradictions::dispatch(cmd, wiki_root.path(), args.json);
         }
@@ -641,39 +881,80 @@ fn dispatch_tail(wiki_root: &WikiRoot, args: &ZwikiArgs, cmd: &Command) {
     }
 }
 
+/// Append an automatic change-log entry for a completed mutation.
+///
+/// A logging failure is reported as a warning because the page write has
+/// already succeeded and must not be reported as failed.
+pub(crate) fn log_mutation(
+    wiki_root: &Path,
+    path: &str,
+    action: &str,
+    note: Option<&str>,
+) {
+    if let Err(e) = log::add_entry_at(wiki_root, path, action, note) {
+        eprintln!("警告: 无法写入变更日志: {e}");
+    }
+}
+
 /// Move a wiki page, updating references and indexes.
-fn cmd_move(wiki_root: &WikiRoot, old: &str, new: &str, json: bool) {
+fn cmd_move(
+    wiki_root: &WikiRoot,
+    old: &str,
+    new: &str,
+    note: Option<&str>,
+    json: bool,
+) {
     match r#move::execute_move(wiki_root.path(), old, new) {
         Ok(result) => {
+            // Record the move in the wiki log (structured old → new).
+            // Log the result's recorded destination (normalized relative
+            // path) rather than the raw user-typed argument.
+            if let Err(e) = log::add_move_entry_at(
+                wiki_root.path(),
+                old,
+                &result.new_rel,
+                note,
+            ) {
+                eprintln!("警告: 无法写入移动日志: {e}");
+            }
             if json {
                 let output = serde_json::json!({
                     "moved": result.moved,
                     "updated_refs": result.updated_refs,
                     "updated_indexes": result.updated_indexes,
+                    "backlinks_synced": result.backlinks_synced,
                 });
-                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                crate::print_stdout_line(
+                    serde_json::to_string_pretty(&output).unwrap(),
+                );
             } else {
-                println!("已移动: {}", result.moved);
+                crate::print_stdout_line(format!("已移动: {}", result.moved));
                 if !result.updated_refs.is_empty() {
-                    println!(
+                    crate::print_stdout_line(format!(
                         "已更新引用: {} 个页面",
                         result.updated_refs.len()
-                    );
+                    ));
                     for r in &result.updated_refs {
-                        println!("  {r}");
+                        crate::print_stdout_line(format!("  {r}"));
                     }
                 }
                 if !result.updated_indexes.is_empty() {
-                    println!(
+                    crate::print_stdout_line(format!(
                         "已更新索引: {} 个文件",
                         result.updated_indexes.len()
-                    );
+                    ));
                     for idx in &result.updated_indexes {
-                        println!("  {idx}");
+                        crate::print_stdout_line(format!("  {idx}"));
                     }
                 }
-                println!();
-                println!("运行 zwiki check 验证引用一致性");
+                if result.backlinks_synced > 0 {
+                    crate::print_stdout_line(format!(
+                        "已同步反向链接: {} 个页面",
+                        result.backlinks_synced
+                    ));
+                }
+                crate::print_stdout_line("");
+                crate::print_stdout_line("运行 zwiki check 验证引用一致性");
             }
         }
         Err(e) => {
@@ -684,13 +965,21 @@ fn cmd_move(wiki_root: &WikiRoot, old: &str, new: &str, json: bool) {
 }
 
 /// Record a supersede relationship between two wiki pages.
-fn cmd_supersede(wiki_root: &WikiRoot, old: &str, new: &str, reason: &str) {
+fn cmd_supersede(
+    wiki_root: &WikiRoot,
+    old: &str,
+    new: &str,
+    reason: &str,
+    note: Option<&str>,
+) {
     supersede::link_supersede_at(old, new, reason, wiki_root.path())
         .unwrap_or_else(|e| {
             eprintln!("{e}");
             process::exit(1);
         });
-    println!("已记录取代关系: {old} ← {new}");
+    log_mutation(wiki_root.path(), old, "edit", note);
+    log_mutation(wiki_root.path(), new, "edit", note);
+    crate::print_stdout_line(format!("已记录取代关系: {old} ← {new}"));
 }
 
 /// Validate `--domain` and emit the error output if invalid.
@@ -702,17 +991,18 @@ fn cmd_supersede(wiki_root: &WikiRoot, old: &str, new: &str, reason: &str) {
 fn check_domain_or_print(
     domain_filter: Option<&str>,
     wiki_dir: &Path,
+    bundles: &wiki::BundleSet,
     json: bool,
     json_empty: &str,
 ) -> bool {
     if let Some(df) = domain_filter
-        && let Err(msg) = wiki::validate_domain(df, wiki_dir)
+        && let Err(msg) = wiki::validate_domain(df, wiki_dir, bundles)
     {
         if json {
             eprintln!("{msg}");
-            println!("{json_empty}");
+            crate::print_stdout_line(json_empty);
         } else {
-            println!("{msg}");
+            crate::print_stdout_line(msg);
         }
         return true;
     }
@@ -731,7 +1021,7 @@ fn dispatch_check(root: &WikiRoot, json_mode: bool) {
                 eprintln!("{msg}");
                 process::exit(1);
             });
-            if lock.bundles.is_empty() {
+            if lock.entries.is_empty() {
                 // No bundles — check the root directory directly so that
                 // `--root ./wiki` on a wiki without a lock still validates.
                 let code = dispatch_check_root_dir(dir, json_mode);
@@ -754,9 +1044,8 @@ fn dispatch_check(root: &WikiRoot, json_mode: bool) {
                         "status": "error",
                         "error": "bundle.toml not found in wiki root",
                     });
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&output).unwrap()
+                    crate::print_stdout_line(
+                        serde_json::to_string_pretty(&output).unwrap(),
                     );
                 } else {
                     eprintln!("错误: 在 wiki 根中未找到 bundle.toml");
@@ -767,9 +1056,8 @@ fn dispatch_check(root: &WikiRoot, json_mode: bool) {
                 if json_mode {
                     let output =
                         serde_json::json!({"status": "error", "error": e});
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&output).unwrap()
+                    crate::print_stdout_line(
+                        serde_json::to_string_pretty(&output).unwrap(),
                     );
                 } else {
                     eprintln!("{e}");
@@ -783,9 +1071,8 @@ fn dispatch_check(root: &WikiRoot, json_mode: bool) {
                 if json_mode {
                     let output =
                         serde_json::json!({"status": "error", "error": e});
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&output).unwrap()
+                    crate::print_stdout_line(
+                        serde_json::to_string_pretty(&output).unwrap(),
                     );
                 } else {
                     eprintln!("{e}");
@@ -802,15 +1089,16 @@ fn dispatch_check(root: &WikiRoot, json_mode: bool) {
                     &lint_results,
                     health_issues,
                     lint_issues,
+                    true,
                 );
             } else {
-                println!(
-                    "{}",
-                    display::format_full_report(&health_results, &lint_results)
-                );
+                crate::print_stdout_line(display::format_full_report(
+                    &health_results,
+                    &lint_results,
+                ));
             }
             // Read-only: skip derived metadata writes.
-            eprintln!("只读模式：跳过派生元数据写入");
+            eprintln!("只读根，已跳过派生元数据同步");
             if total > 0 {
                 process::exit(1);
             }
@@ -821,6 +1109,13 @@ fn dispatch_check(root: &WikiRoot, json_mode: bool) {
 /// Check a directory root directly (no lock file) — run health/lint +
 /// `sync_derived_metadata`.  Returns exit code (0 = pass, 1 = issues found).
 fn dispatch_check_root_dir(dir: &Path, json_mode: bool) -> i32 {
+    // An installed store and a directory nested in a bundle are read-only.
+    let read_only = is_read_only_check_root(dir);
+    if !read_only {
+        // Regenerate generated index bodies from authored frontmatter so
+        // the report reflects the synchronized state.
+        index::regenerate_all_indexes(dir, json_mode);
+    }
     let (health_results, lint_results, health_issues, lint_issues) =
         run_health_lint_at(dir);
     let total = health_issues + lint_issues;
@@ -830,22 +1125,27 @@ fn dispatch_check_root_dir(dir: &Path, json_mode: bool) -> i32 {
             &lint_results,
             health_issues,
             lint_issues,
+            read_only,
         );
     } else {
-        println!(
-            "{}",
-            display::format_full_report(&health_results, &lint_results)
-        );
+        crate::print_stdout_line(display::format_full_report(
+            &health_results,
+            &lint_results,
+        ));
     }
-    // Sync derived metadata (writable for Dir root).
-    let paths = wiki::all_wiki_pages_at(dir);
-    let all_pages: Vec<wiki::Page> =
-        paths.iter().filter_map(|p| wiki::read_page_at(p, dir)).collect();
-    sync_derived_metadata(dir, &all_pages, json_mode);
+    if read_only {
+        eprintln!("只读根，已跳过派生元数据同步");
+    } else {
+        // Sync derived metadata (writable for Dir root).
+        let paths = wiki::all_wiki_pages_at(dir);
+        let all_pages: Vec<wiki::Page> =
+            paths.iter().filter_map(|p| wiki::read_page_at(p, dir)).collect();
+        sync_derived_metadata(dir, &all_pages, json_mode);
+    }
     i32::from(total > 0)
 }
 
-/// Sync backlinks and apply timeliness updates (`mark_stale` +
+/// Sync relations, backlinks, and apply timeliness updates (`mark_stale` +
 /// `invalidate_by_source`) across a set of pages under `root`.  When
 /// `suppress_eprint` is true, informational eprintln messages are suppressed
 /// (used in `json_mode` for the no-arg check path).
@@ -858,15 +1158,54 @@ fn sync_derived_metadata(
         return;
     }
 
-    // Sync backlinks.
-    let bl_index = backlinks::build_reverse_index(root, all_pages);
-    let updated = backlinks::update_backlinks(root, &bl_index, all_pages);
+    let bundles = wiki::BundleSet::discover(root);
+
+    // Pages inside an installed bundle layer must never be rewritten.
+    // Their check report is still produced; only the derived metadata
+    // writes are skipped.  The bundle pages remain part of the reverse
+    // index so that writable pages still see their inbound links.
+    let readonly_count = all_pages
+        .iter()
+        .filter(|p| wiki::bundle_on_path(root, &p.rel).is_some())
+        .count();
+    if readonly_count > 0 && !suppress_eprint {
+        eprintln!("已跳过 {readonly_count} 个只读 bundle 页面");
+    }
+    let writable: Vec<wiki::Page> = all_pages
+        .iter()
+        .filter(|p| wiki::bundle_on_path(root, &p.rel).is_none())
+        .cloned()
+        .collect();
+
+    // Sync relations from prose inline links before rebuilding backlinks,
+    // so the reverse index sees the freshly written metadata.
+    let relations_synced =
+        backlinks::sync_relations(root, &writable, &bundles, suppress_eprint);
+    if relations_synced > 0 && !suppress_eprint {
+        eprintln!("已同步 {relations_synced} 个页面的 relations");
+    }
+
+    // Sync backlinks.  The reverse index is built from all pages so that
+    // bundle pages contribute their outbound links, but only writable
+    // pages are rewritten.
+    let bl_index = backlinks::build_reverse_index(root, all_pages, &bundles);
+    let updated = backlinks::update_backlinks(
+        root,
+        &bl_index,
+        &writable,
+        &bundles,
+        suppress_eprint,
+    );
     if updated > 0 && !suppress_eprint {
         eprintln!("已同步 {updated} 个页面的反向链接");
     }
 
-    // Apply timeliness updates (mark_stale + invalidate_by_source).
-    let stale_updates = health::mark_stale(all_pages);
+    // Apply timeliness updates (mark_stale + invalidate_by_source) to
+    // writable pages only.
+    let stale_updates: Vec<health::StaleUpdate> = health::mark_stale(all_pages)
+        .into_iter()
+        .filter(|u| wiki::bundle_on_path(root, &u.rel).is_none())
+        .collect();
     let stale_count =
         stale_updates.iter().filter(|u| u.new_timeliness == "stale").count();
     let current_count =
@@ -888,7 +1227,11 @@ fn sync_derived_metadata(
     }
 
     // Invalidate derived pages whose sources have changed.
-    let invalidated = health::invalidate_by_source(all_pages);
+    let invalidated: Vec<health::InvalidateUpdate> =
+        health::invalidate_by_source(all_pages)
+            .into_iter()
+            .filter(|u| wiki::bundle_on_path(root, &u.rel).is_none())
+            .collect();
     for update in &invalidated {
         if let Err(e) = property::set(
             &update.path,
@@ -915,18 +1258,22 @@ fn dispatch_check_no_arg_inner(
     lock: &ZwikiLock,
     json_mode: bool,
 ) -> i32 {
+    // An installed store and a directory nested in a bundle are read-only.
+    let read_only = is_read_only_check_root(wiki_root);
     // Root index check first — missing/corrupt index is fatal.
     if let Err(msg) = bundle::check_root_index(wiki_root, lock) {
         if json_mode {
             let output = serde_json::json!({"status": "error", "error": msg});
-            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            crate::print_stdout_line(
+                serde_json::to_string_pretty(&output).unwrap(),
+            );
         } else {
-            println!("{msg}");
+            crate::print_stdout_line(msg);
         }
         return 1;
     }
     if !json_mode {
-        println!("root index.md 检查通过");
+        crate::print_stdout_line("root index.md 检查通过");
     }
 
     let mut total_issues: usize = 0;
@@ -934,7 +1281,7 @@ fn dispatch_check_no_arg_inner(
     let mut bundle_results: Vec<serde_json::Value> = Vec::new();
     let mut had_missing = false;
 
-    for entry in &lock.bundles {
+    for entry in &lock.entries {
         let bundle_dir = wiki_root.join(&entry.target);
 
         if !bundle_dir.exists() {
@@ -946,7 +1293,10 @@ fn dispatch_check_no_arg_inner(
                     "status": "missing",
                 }));
             } else {
-                println!("✗ {} — 未安装（目标目录缺失）", entry.name);
+                crate::print_stdout_line(format!(
+                    "✗ {} — 未安装（目标目录缺失）",
+                    entry.name
+                ));
             }
             continue;
         }
@@ -960,12 +1310,19 @@ fn dispatch_check_no_arg_inner(
         total_issues += health_issues + lint_issues;
     }
 
-    // Sync backlinks and apply timeliness updates across the entire
-    // wiki root before printing the aggregate output.
-    let paths = wiki::all_wiki_pages_at(wiki_root);
-    let all_pages: Vec<wiki::Page> =
-        paths.iter().filter_map(|p| wiki::read_page_at(p, wiki_root)).collect();
-    sync_derived_metadata(wiki_root, &all_pages, json_mode);
+    // Sync relations/backlinks and apply timeliness updates across the
+    // entire wiki root before printing the aggregate output.  Read-only
+    // roots skip all writes.
+    if read_only {
+        eprintln!("只读根，已跳过派生元数据同步");
+    } else {
+        let paths = wiki::all_wiki_pages_at(wiki_root);
+        let all_pages: Vec<wiki::Page> = paths
+            .iter()
+            .filter_map(|p| wiki::read_page_at(p, wiki_root))
+            .collect();
+        sync_derived_metadata(wiki_root, &all_pages, json_mode);
+    }
 
     if json_mode {
         let status =
@@ -976,12 +1333,19 @@ fn dispatch_check_no_arg_inner(
             "bundles": bundle_results,
             "total_issues": total_issues,
             "missing": missing_count,
+            "read_only_root": read_only,
+            "derived_metadata_sync":
+                if read_only { "skipped" } else { "synced" },
         });
-        println!("{}", serde_json::to_string_pretty(&final_output).unwrap());
+        crate::print_stdout_line(
+            serde_json::to_string_pretty(&final_output).unwrap(),
+        );
     } else if total_issues > 0 || had_missing {
-        println!();
-        println!("---");
-        println!("**全局总计：{total_issues} 个问题**");
+        crate::print_stdout_line("");
+        crate::print_stdout_line("---");
+        crate::print_stdout_line(format!(
+            "**全局总计：{total_issues} 个问题**"
+        ));
     }
 
     if total_issues > 0 || had_missing {
@@ -1017,12 +1381,12 @@ fn check_single_bundle(
     } else {
         let total = health_issues + lint_issues;
         if total == 0 {
-            println!("✓ {} — 健康", entry.name);
+            crate::print_stdout_line(format!("✓ {} — 健康", entry.name));
         } else {
-            println!(
+            crate::print_stdout_line(format!(
                 "✗ {} — {} 个问题（health: {}, lint: {}）",
                 entry.name, total, health_issues, lint_issues,
-            );
+            ));
         }
     }
 
@@ -1053,7 +1417,7 @@ pub(crate) fn format_health_lint_json(
         issues
             .iter()
             .map(|i| {
-                serde_json::json!({"page": i.page, "kind": i.kind, "details": i.details})
+                serde_json::json!({"page": i.page, "category": i.category, "details": i.details})
             })
             .collect()
     };
@@ -1069,9 +1433,6 @@ pub(crate) fn format_health_lint_json(
             "log_coverage": fmt_issues(&health.log_coverage),
             "frontmatter": fmt_issues(&health.frontmatter),
             "related_field": fmt_issues(&health.related_field),
-            "related_body_consistency": fmt_issues(
-                &health.related_body_consistency,
-            ),
             "source_field": fmt_issues(&health.source_field),
             "missing_inline_links": fmt_issues(&health.missing_inline_links),
             "duplicate_inline_links": fmt_issues(&health.duplicate_inline_links),
@@ -1091,6 +1452,7 @@ fn print_json_check_output(
     lint: &display::LintResults,
     health_issues: usize,
     lint_issues: usize,
+    derived_metadata_skipped: bool,
 ) {
     let mut json_output = format_health_lint_json(health, lint);
     let total = health_issues + lint_issues;
@@ -1099,8 +1461,17 @@ fn print_json_check_output(
     json_output["status"] =
         serde_json::json!(if total == 0 { "ok" } else { "error" });
     json_output["total_issues"] = serde_json::json!(total);
+    json_output["read_only_root"] = serde_json::json!(derived_metadata_skipped);
+    json_output["derived_metadata_sync"] =
+        serde_json::json!(if derived_metadata_skipped {
+            "skipped"
+        } else {
+            "synced"
+        });
 
-    println!("{}", serde_json::to_string_pretty(&json_output).unwrap());
+    crate::print_stdout_line(
+        serde_json::to_string_pretty(&json_output).unwrap(),
+    );
 }
 
 /// Dispatch all `page` subcommands — show, set, unset, create, move.
@@ -1122,31 +1493,42 @@ fn dispatch_page(wiki_root: &WikiRoot, cmd: &PageCommand, json: bool) {
             );
         }
         PageCommand::Set(args) => {
-            guard_writable(wiki_root, "page set");
+            guard_write(wiki_root, "page set");
             let normalized = normalize_page_path(wiki_root.path(), &args.path)
                 .unwrap_or_else(|e| {
                     eprintln!("{e}");
                     process::exit(1);
                 });
+            guard_write_page(wiki_root.path(), &normalized, "page set");
             cmd_page_set(
                 wiki_root,
                 &normalized,
                 &args.prop,
                 args.value.as_deref(),
                 args.downgrade,
+                args.note.as_deref(),
             );
         }
         PageCommand::Unset(args) => {
-            guard_writable(wiki_root, "page unset");
+            guard_write(wiki_root, "page unset");
             let normalized = normalize_page_path(wiki_root.path(), &args.path)
                 .unwrap_or_else(|e| {
                     eprintln!("{e}");
                     process::exit(1);
                 });
-            cmd_page_unset(wiki_root, &normalized, &args.prop);
+            guard_write_page(wiki_root.path(), &normalized, "page unset");
+            cmd_page_unset(
+                wiki_root,
+                &normalized,
+                &args.prop,
+                args.note.as_deref(),
+            );
         }
         PageCommand::Create(args) => {
-            guard_writable(wiki_root, "page create");
+            guard_write(wiki_root, "page create");
+            // The target page is always created inside `<domain>/`, so
+            // guarding the domain directory covers the write target.
+            guard_write_page(wiki_root.path(), &args.domain, "page create");
             cmd_create(
                 wiki_root,
                 &args.domain,
@@ -1154,17 +1536,56 @@ fn dispatch_page(wiki_root: &WikiRoot, cmd: &PageCommand, json: bool) {
                 &args.title,
                 args.slug.as_deref(),
                 args.source_type.as_deref(),
+                args.note.as_deref(),
             );
         }
         PageCommand::Move(args) => {
-            guard_writable(wiki_root, "page move");
+            guard_write(wiki_root, "page move");
             // Normalize only the old path (new path doesn't exist yet).
             let old_norm = normalize_page_path(wiki_root.path(), &args.old)
                 .unwrap_or_else(|e| {
                     eprintln!("{e}");
                     process::exit(1);
                 });
-            cmd_move(wiki_root, &old_norm, &args.new, json);
+            guard_write_page(wiki_root.path(), &old_norm, "page move");
+            guard_write_page(wiki_root.path(), &args.new, "page move");
+            cmd_move(
+                wiki_root,
+                &old_norm,
+                &args.new,
+                args.note.as_deref(),
+                json,
+            );
+        }
+    }
+}
+
+/// Dispatch `domain` subcommands — currently only `domain create`.
+fn dispatch_domain(wiki_root: &WikiRoot, cmd: &DomainCommand) {
+    match cmd {
+        DomainCommand::Create(args) => {
+            guard_write(wiki_root, "domain create");
+            match page::create_domain_at(wiki_root.path(), &args.name) {
+                Ok(path) => {
+                    let rel = path
+                        .strip_prefix(wiki_root.path())
+                        .unwrap_or(path.as_path());
+                    log_mutation(
+                        wiki_root.path(),
+                        &rel.to_string_lossy(),
+                        "create",
+                        args.note.as_deref(),
+                    );
+                    crate::print_stdout_line(format!(
+                        "已创建领域: {}",
+                        path.display()
+                    ));
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    process::exit(1);
+                }
+            }
         }
     }
 }
@@ -1183,7 +1604,12 @@ fn cmd_page_show(
         let paths = wiki::all_wiki_pages_at(root);
         let pages: Vec<wiki::Page> =
             paths.iter().filter_map(|p| wiki::read_page_at(p, root)).collect();
-        let filtered_index = backlinks::build_backlinks_for(path, root, &pages);
+        let filtered_index = backlinks::build_backlinks_for(
+            path,
+            root,
+            &pages,
+            &wiki::BundleSet::discover(root),
+        );
 
         if json {
             let total = pages.len();
@@ -1204,7 +1630,9 @@ fn cmd_page_show(
                 );
             }
             let out = serde_json::json!({"total_pages": total, "pages_with_backlinks": with_bl, "backlinks": map});
-            println!("{}", serde_json::to_string_pretty(&out).unwrap());
+            crate::print_stdout_line(
+                serde_json::to_string_pretty(&out).unwrap(),
+            );
         } else {
             // Compact single-page view — not the full-wiki report frame.
             let title = backlinks::page_title_from_rel(path, root);
@@ -1212,13 +1640,16 @@ fn cmd_page_show(
                 .get(path)
                 .map(|s| s.iter().collect())
                 .unwrap_or_default();
-            println!("## 反向链接 — {title}（{}）\n", sources.len());
+            crate::print_stdout_line(format!(
+                "## 反向链接 — {title}（{}）\n",
+                sources.len()
+            ));
             if sources.is_empty() {
-                println!("无页面引用此页。");
+                crate::print_stdout_line("无页面引用此页。");
             } else {
                 for s in sources {
                     let st = backlinks::page_title_from_rel(s, root);
-                    println!("- [{st}]({s})");
+                    crate::print_stdout_line(format!("- [{st}]({s})"));
                 }
             }
         }
@@ -1228,7 +1659,7 @@ fn cmd_page_show(
     let full = wiki_root.path().join(path);
     if let Some(prop) = property {
         match page::read_property(&full, prop) {
-            Ok(Some(v)) => println!("{v}"),
+            Ok(Some(v)) => crate::print_stdout_line(v),
             Ok(None) => {
                 eprintln!("属性未找到: {prop}");
                 process::exit(1);
@@ -1240,7 +1671,7 @@ fn cmd_page_show(
         }
     } else if outline {
         match page::read_outline(&full) {
-            Ok(headings) => println!("{headings}"),
+            Ok(headings) => crate::print_stdout_line(headings),
             Err(e) => {
                 eprintln!("{e}");
                 process::exit(1);
@@ -1248,7 +1679,7 @@ fn cmd_page_show(
         }
     } else {
         match page::read_full(&full) {
-            Ok(c) => print!("{c}"),
+            Ok(c) => print_stdout(c),
             Err(e) => {
                 eprintln!("{e}");
                 process::exit(1);
@@ -1264,6 +1695,7 @@ fn cmd_page_set(
     prop: &str,
     value: Option<&str>,
     downgrade: bool,
+    note: Option<&str>,
 ) {
     let full = wiki_root.path().join(path);
     if downgrade {
@@ -1282,12 +1714,14 @@ fn cmd_page_set(
             eprintln!("{e}");
             process::exit(1);
         });
-        println!("{current} → {new_val}");
+        log_mutation(wiki_root.path(), path, "edit", note);
+        crate::print_stdout_line(format!("{current} → {new_val}"));
     } else if let Some(val) = value {
         property::set(&full, prop, val).unwrap_or_else(|e| {
             eprintln!("{e}");
             process::exit(1);
         });
+        log_mutation(wiki_root.path(), path, "edit", note);
     } else {
         eprintln!("需要设置值或 --downgrade");
         process::exit(1);
@@ -1295,21 +1729,18 @@ fn cmd_page_set(
 }
 
 /// Unset (delete) a frontmatter property from a page.
-fn cmd_page_unset(wiki_root: &WikiRoot, path: &str, prop: &str) {
+fn cmd_page_unset(
+    wiki_root: &WikiRoot,
+    path: &str,
+    prop: &str,
+    note: Option<&str>,
+) {
     let full = wiki_root.path().join(path);
     property::delete(&full, prop).unwrap_or_else(|e| {
         eprintln!("{e}");
         process::exit(1);
     });
-}
-
-fn cmd_log(wiki_root: &WikiRoot, path: &str, action: &str, note: Option<&str>) {
-    log::add_entry_at(wiki_root.path(), path, action, note).unwrap_or_else(
-        |e| {
-            eprintln!("{e}");
-            process::exit(1);
-        },
-    );
+    log_mutation(wiki_root.path(), path, "edit", note);
 }
 
 fn cmd_create(
@@ -1319,6 +1750,7 @@ fn cmd_create(
     title: &str,
     slug: Option<&str>,
     source_type: Option<&str>,
+    note: Option<&str>,
 ) {
     match page::create_page_at(
         wiki_root.path(),
@@ -1328,7 +1760,16 @@ fn cmd_create(
         slug,
         source_type,
     ) {
-        Ok(p) => println!("已创建页面: {}", p.display()),
+        Ok(p) => {
+            let rel = p.strip_prefix(wiki_root.path()).unwrap_or(p.as_path());
+            log_mutation(
+                wiki_root.path(),
+                &rel.to_string_lossy(),
+                "create",
+                note,
+            );
+            crate::print_stdout_line(format!("已创建页面: {}", p.display()));
+        }
         Err(e) => {
             eprintln!("{e}");
             process::exit(1);
@@ -1347,16 +1788,22 @@ fn cmd_search(
     let wiki_dir = wiki_root.path().to_path_buf();
     let engine = search::SearchEngine::new(wiki_dir.clone());
 
-    if check_domain_or_print(domain_filter, &wiki_dir, json, "[]") {
+    if check_domain_or_print(
+        domain_filter,
+        &wiki_dir,
+        &wiki::BundleSet::discover(&wiki_dir),
+        json,
+        "[]",
+    ) {
         return;
     }
 
     let results = engine.search(query, type_filter, tag_filter, domain_filter);
 
     if json {
-        println!("{}", search::format_results_json(&results));
+        crate::print_stdout_line(search::format_results_json(&results));
     } else {
-        println!("{}", search::format_results(&results));
+        print_stdout_line(search::format_results(&results));
     }
 }
 
@@ -1368,18 +1815,24 @@ fn cmd_list(
     json: bool,
 ) {
     let wiki_dir = wiki_root.path().to_path_buf();
+    let bundles = wiki::BundleSet::discover(&wiki_dir);
 
-    if check_domain_or_print(domain_filter, &wiki_dir, json, "[]") {
+    if check_domain_or_print(domain_filter, &wiki_dir, &bundles, json, "[]") {
         return;
     }
 
-    let entries =
-        list::list_pages(&wiki_dir, type_filter, tag_filter, domain_filter);
+    let entries = list::list_pages(
+        &wiki_dir,
+        type_filter,
+        tag_filter,
+        domain_filter,
+        &bundles,
+    );
 
     if json {
-        println!("{}", list::format_list_json(&entries));
+        crate::print_stdout_line(list::format_list_json(&entries));
     } else {
-        println!("{}", list::format_list(&entries));
+        print_stdout_line(list::format_list(&entries));
     }
 }
 
@@ -1391,8 +1844,9 @@ fn cmd_status(
     json: bool,
 ) {
     let wiki_dir = wiki_root.path().to_path_buf();
+    let bundles = wiki::BundleSet::discover(&wiki_dir);
 
-    if check_domain_or_print(domain_filter, &wiki_dir, json, "{}") {
+    if check_domain_or_print(domain_filter, &wiki_dir, &bundles, json, "{}") {
         return;
     }
 
@@ -1401,20 +1855,18 @@ fn cmd_status(
         type_filter,
         tag_filter,
         domain_filter,
+        &bundles,
     );
 
     if json {
-        println!("{}", status::format_status_json(&report));
+        crate::print_stdout_line(status::format_status_json(&report));
     } else {
-        println!(
-            "{}",
-            status::format_status(
-                &report,
-                type_filter,
-                tag_filter,
-                domain_filter,
-            ),
-        );
+        print_stdout_line(status::format_status(
+            &report,
+            type_filter,
+            tag_filter,
+            domain_filter,
+        ));
     }
 }
 
@@ -1431,8 +1883,9 @@ fn cmd_aggregate(
     json: bool,
 ) {
     let wiki_dir = wiki_root.path().to_path_buf();
+    let bundles = wiki::BundleSet::discover(&wiki_dir);
 
-    if check_domain_or_print(domain_filter, &wiki_dir, json, "[]") {
+    if check_domain_or_print(domain_filter, &wiki_dir, &bundles, json, "[]") {
         return;
     }
 
@@ -1442,12 +1895,13 @@ fn cmd_aggregate(
         type_filter,
         tag_filter,
         domain_filter,
+        &bundles,
     );
 
     if json {
-        println!("{}", aggregate::format_aggregate_json(&counts));
+        crate::print_stdout_line(aggregate::format_aggregate_json(&counts));
     } else {
-        println!("{}", aggregate::format_aggregate_human(&counts, field));
+        print_stdout_line(aggregate::format_aggregate_human(&counts, field));
     }
 }
 
@@ -1501,23 +1955,96 @@ mod tests {
     }
 
     #[test]
-    fn test_log_parses() {
-        let args = ZwikiArgs::try_parse_from([
+    fn test_write_command_desc_classifies_commands() {
+        let cases: &[(&[&str], bool)] = &[
+            (&["zwiki", "check"], false),
+            (&["zwiki", "page", "show", "a.md"], false),
+            (&["zwiki", "page", "set", "a.md", "status", "draft"], true),
+            (&["zwiki", "page", "unset", "a.md", "status"], true),
+            (
+                &[
+                    "zwiki", "page", "create", "--domain", "d", "--type",
+                    "concept", "--title", "T",
+                ],
+                true,
+            ),
+            (&["zwiki", "page", "move", "a.md", "b.md"], true),
+            (
+                &[
+                    "zwiki",
+                    "supersede",
+                    "--old",
+                    "a.md",
+                    "--new",
+                    "b.md",
+                    "--reason",
+                    "r",
+                ],
+                true,
+            ),
+            (&["zwiki", "domain", "create", "d"], true),
+            (&["zwiki", "contradictions", "apply"], true),
+            (&["zwiki", "contradictions", "list"], false),
+            (&["zwiki", "bundle", "list"], false),
+        ];
+        for (argv, expect_write) in cases {
+            let args = ZwikiArgs::try_parse_from(*argv).unwrap();
+            let is_write =
+                args.command.as_ref().and_then(write_command_desc).is_some();
+            assert_eq!(is_write, *expect_write, "argv: {argv:?}");
+        }
+    }
+
+    #[test]
+    fn test_bundle_path_helpers() {
+        let base =
+            std::env::temp_dir().join("zwiki-test").join("bundle_helpers");
+        let _ = std::fs::remove_dir_all(&base);
+        let store = base.join("store");
+        let bundle_root = store.join("myteam");
+        std::fs::create_dir_all(&bundle_root).unwrap();
+        std::fs::write(bundle_root.join("bundle.toml"), ".").unwrap();
+        std::fs::write(store.join("zwiki.lock"), "").unwrap();
+
+        // A nested directory inside the bundle is owned by it.
+        let nested = bundle_root.join("concepts");
+        std::fs::create_dir_all(&nested).unwrap();
+        assert_eq!(wiki::installed_bundle(&nested), Some("myteam".to_string()));
+        assert_eq!(
+            wiki::installed_bundle(&bundle_root),
+            Some("myteam".to_string())
+        );
+        // The store root itself has no owning bundle.
+        assert_eq!(wiki::installed_bundle(&store), None);
+        // A standalone bundle source (no store ancestor) is writable.
+        let source = base.join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("bundle.toml"), ".").unwrap();
+        assert_eq!(wiki::installed_bundle(&source), None);
+
+        // A page below a bundle directory is detected by probe.
+        assert_eq!(
+            wiki::bundle_on_path(&store, "myteam/concepts/page.md"),
+            Some("myteam".to_string())
+        );
+        assert_eq!(
+            wiki::bundle_on_path(&store, "myteam/readme.md"),
+            Some("myteam".to_string())
+        );
+        assert_eq!(wiki::bundle_on_path(&source, "concepts/page.md"), None);
+    }
+
+    #[test]
+    fn test_log_subcommand_removed() {
+        let result = ZwikiArgs::try_parse_from([
             "zwiki",
             "log",
             "--path",
             "concepts/foo.md",
             "--action",
             "create",
-        ])
-        .unwrap();
-        match args.command {
-            Some(Command::Log { path, action, .. }) => {
-                assert_eq!(path, "concepts/foo.md");
-                assert_eq!(action, "create");
-            }
-            _ => panic!("expected Log"),
-        }
+        ]);
+        assert!(result.is_err(), "log must no longer be a recognized command");
     }
 
     // -------------------------------------------------------------------
@@ -1785,6 +2312,26 @@ mod tests {
                 assert_eq!(a.new, "concepts/bar.md");
             }
             _ => panic!("expected Page::Move with json"),
+        }
+    }
+
+    #[test]
+    fn test_page_move_parses_note() {
+        let args = ZwikiArgs::try_parse_from([
+            "zwiki",
+            "page",
+            "move",
+            "old.md",
+            "new.md",
+            "--note",
+            "重命名",
+        ])
+        .unwrap();
+        match args.command {
+            Some(Command::Page(PageCommand::Move(ref a))) => {
+                assert_eq!(a.note.as_deref(), Some("重命名"));
+            }
+            _ => panic!("expected Page::Move with note"),
         }
     }
 
@@ -2257,7 +2804,7 @@ mod tests {
         ])
         .unwrap();
         match args.command {
-            Some(Command::Supersede { old, new, reason }) => {
+            Some(Command::Supersede { old, new, reason, .. }) => {
                 assert_eq!(old, "old.md");
                 assert_eq!(new, "new.md");
                 assert_eq!(reason, "replaces old content");
@@ -2381,8 +2928,6 @@ mod tests {
             "my-bundle",
             "--version",
             "1.0.0",
-            "--kind",
-            "team",
             "--okf-version",
             "0.2",
             "--registry",
@@ -2400,7 +2945,6 @@ mod tests {
             Some(Command::Bundle(bundle::BundleCommand::Init(ref a))) => {
                 assert_eq!(a.name, Some("my-bundle".to_string()));
                 assert_eq!(a.version, "1.0.0");
-                assert_eq!(a.kind, "team");
                 assert_eq!(a.okf_version, "0.2");
                 assert_eq!(
                     a.registry,
@@ -2601,16 +3145,16 @@ satisfy the stub threshold check and other quality gates.\n";
     #[test]
     fn test_dispatch_check_no_arg_inner_missing_exits() {
         let dir = temp_dir("check_inner_missing_ci");
-        // Create index.md with markers referencing the missing bundle
-        // so check_root_index passes and we test missing-dir detection.
+        // Create a store index referencing the missing bundle so
+        // check_root_index passes and we test missing-dir detection.
         std::fs::write(
             dir.join("index.md"),
-            "<!-- ZOO:BUNDLES:BEGIN -->\n[missing](bundles/missing)\n<!-- ZOO:BUNDLES:END -->\n",
+            "- [missing](bundles/missing/index.md)\n",
         )
         .unwrap();
 
         let lock = bundle::ZwikiLock {
-            bundles: vec![bundle::ZwikiLockEntry {
+            entries: vec![bundle::ZwikiLockEntry {
                 name: "missing".to_string(),
                 version: "1.0".to_string(),
                 registry: String::new(),
@@ -2628,14 +3172,10 @@ satisfy the stub threshold check and other quality gates.\n";
     #[test]
     fn test_dispatch_check_no_arg_inner_valid() {
         let dir = temp_dir("check_inner_valid");
-        // Create index.md with markers referencing the bundle and its page
-        // so the page is indexed and not orphaned.
+        // Create a store index referencing the bundle.
         std::fs::write(
             dir.join("index.md"),
-            "<!-- ZOO:BUNDLES:BEGIN -->\n\
-             [bundle](bundles/test)\n\
-             [doc](bundles/test/doc.md)\n\
-             <!-- ZOO:BUNDLES:END -->\n",
+            "- [test](bundles/test/index.md)\n",
         )
         .unwrap();
 
@@ -2661,7 +3201,7 @@ title: Bundle Index
         std::fs::write(bundle_dir.join("doc.md"), PAGE_OK).unwrap();
 
         let lock = bundle::ZwikiLock {
-            bundles: vec![bundle::ZwikiLockEntry {
+            entries: vec![bundle::ZwikiLockEntry {
                 name: "test".to_string(),
                 version: "1.0".to_string(),
                 registry: String::new(),
@@ -2683,12 +3223,12 @@ title: Bundle Index
         // last_validated far enough in the past (>180d) that mark_stale
         // marks it stale, changing timeliness from "current" to "stale".
         let dir = temp_dir("check_inner_timeliness");
+        // A writable parent must contain bundle.toml; without it the root
+        // is read-only for check and no derived metadata is written.
+        std::fs::write(dir.join("bundle.toml"), ".").unwrap();
         std::fs::write(
             dir.join("index.md"),
-            "<!-- ZOO:BUNDLES:BEGIN -->\n\
-             [bundle](bundles/test)\n\
-             [doc](bundles/test/doc.md)\n\
-             <!-- ZOO:BUNDLES:END -->\n",
+            "- [test](bundles/test/index.md)\n",
         )
         .unwrap();
 
@@ -2729,7 +3269,7 @@ bundle validation process.\n"
         std::fs::write(bundle_dir.join("doc.md"), page_content).unwrap();
 
         let lock = bundle::ZwikiLock {
-            bundles: vec![bundle::ZwikiLockEntry {
+            entries: vec![bundle::ZwikiLockEntry {
                 name: "test".to_string(),
                 version: "1.0".to_string(),
                 registry: String::new(),
@@ -2758,7 +3298,7 @@ bundle validation process.\n"
         let dir = temp_dir("check_inner_fail");
         std::fs::write(
             dir.join("index.md"),
-            "<!-- ZOO:BUNDLES:BEGIN -->\n[bundle](bundles/test)\n<!-- ZOO:BUNDLES:END -->\n",
+            "- [test](bundles/test/index.md)\n",
         )
         .unwrap();
 
@@ -2770,7 +3310,7 @@ bundle validation process.\n"
         std::fs::write(bundle_dir.join("page.md"), "# Page\n").unwrap();
 
         let lock = bundle::ZwikiLock {
-            bundles: vec![bundle::ZwikiLockEntry {
+            entries: vec![bundle::ZwikiLockEntry {
                 name: "test".to_string(),
                 version: "1.0".to_string(),
                 registry: String::new(),

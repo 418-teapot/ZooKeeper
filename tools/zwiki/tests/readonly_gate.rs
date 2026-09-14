@@ -27,7 +27,6 @@ fn make_test_bundle_tar(dir: &Path) -> PathBuf {
 name = "test-bundle"
 version = "0.1.0"
 okf_version = "0.1"
-kind = "upstream"
 
 [export]
 include = ["*.md"]
@@ -98,14 +97,6 @@ fn test_readonly_root_rejects_write_commands() {
 
     let tmp = temp_dir("ro_write_gate");
     let tar_path = make_test_bundle_tar(&tmp);
-
-    // --- log ---
-    assert_write_rejected(
-        &bin,
-        &tar_path,
-        &["log", "--path", "doc.md", "--action", "create"],
-        "log",
-    );
 
     // --- page set ---
     assert_write_rejected(

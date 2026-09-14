@@ -170,7 +170,7 @@ pub fn check_broken_links(
             {
                 issues.push(Issue {
                     page: page.rel.clone(),
-                    kind: "target_not_found".to_string(),
+                    category: "target_not_found".to_string(),
                     details: serde_json::json!({
                         "link_text": link_text,
                         "target_path": resolved,
@@ -187,7 +187,7 @@ pub fn check_broken_links(
             {
                 issues.push(Issue {
                     page: page.rel.clone(),
-                    kind: "target_not_found".to_string(),
+                    category: "target_not_found".to_string(),
                     details: serde_json::json!({
                         "link_text": "relations",
                         "target_path": resolved,
@@ -206,8 +206,8 @@ pub fn check_broken_links(
 // 2. check_orphan_pages
 // ---------------------------------------------------------------------------
 
-/// Find pages with zero inbound links that are also not listed in
-/// `wiki/index.md`.
+/// Find pages with zero inbound links that are also not listed in any
+/// `index.md` (bundle root or domain index).
 ///
 /// Inbound links are counted from:
 /// - Markdown body links (`[text](target.md)`)
@@ -239,30 +239,23 @@ pub fn check_orphan_pages(pages: &[Page], wiki_dir: &Path) -> Vec<Issue> {
         }
     }
 
-    // Parse index.md for listed page paths.
-    let index_content = wiki::read_file(&wiki_dir.join("index.md"));
-    let index_links = wiki::parse_index_links(&index_content);
-
-    // Resolve index links to wiki-relative paths.
-    let index_rel_paths: HashSet<String> = index_links
-        .iter()
-        .map(|link| {
-            // Index links are wiki-root-relative; resolve from root.
-            let normalized = normalize_path(Path::new(link));
-            normalized.to_string_lossy().to_string()
-        })
-        .collect();
+    // A page counts as indexed when listed by any index.md.  Each index
+    // resolves its links relative to its own directory, so a domain index
+    // covers its pages even though the bundle root index lists only the
+    // domain (progressive disclosure).
+    let indexed: HashSet<String> =
+        wiki::collect_index_entries(wiki_dir).into_iter().flatten().collect();
 
     // Identify orphans.
     let mut issues: Vec<Issue> = Vec::new();
     for page in pages {
         let inbound_count = inbound.get(&page.rel).copied().unwrap_or(0);
-        let in_index = index_rel_paths.contains(&page.rel);
+        let in_index = indexed.contains(&page.rel);
 
         if inbound_count == 0 && !in_index {
             issues.push(Issue {
                 page: page.rel.clone(),
-                kind: "orphan".to_string(),
+                category: "orphan".to_string(),
                 details: serde_json::json!({
                     "inbound_links": inbound_count,
                     "in_index": in_index,
@@ -292,7 +285,7 @@ pub fn check_sparse_pages(pages: &[Page]) -> Vec<Issue> {
         if body_len < SPARSE_BODY_CHARS {
             issues.push(Issue {
                 page: page.rel.clone(),
-                kind: "sparse".to_string(),
+                category: "sparse".to_string(),
                 details: serde_json::json!({
                     "body_length": body_len,
                     "threshold": SPARSE_BODY_CHARS,
@@ -347,7 +340,7 @@ pub fn check_stale_pages(
         if days_since > STALE_DAYS {
             issues.push(Issue {
                 page: page.rel.clone(),
-                kind: "stale".to_string(),
+                category: "stale".to_string(),
                 details: serde_json::json!({
                     "timestamp": timestamp_str,
                     "status": status,
@@ -376,8 +369,13 @@ pub fn check_stale_pages(
 ///
 /// The superseding page itself (linked via `superseded_by`) is always
 /// excluded from results — its backlink to the old page is expected.
-pub fn check_cascade_stale(pages: &[Page], wiki_dir: &Path) -> Vec<Issue> {
-    let reverse_index = backlinks::build_reverse_index(wiki_dir, pages);
+pub fn check_cascade_stale(
+    pages: &[Page],
+    wiki_dir: &Path,
+    bundles: &wiki::BundleSet,
+) -> Vec<Issue> {
+    let reverse_index =
+        backlinks::build_reverse_index(wiki_dir, pages, bundles);
 
     // Map rel → page for quick lookup.
     let page_map: HashMap<String, &Page> =
@@ -451,7 +449,7 @@ pub fn check_cascade_stale(pages: &[Page], wiki_dir: &Path) -> Vec<Issue> {
 
                 issues.push(Issue {
                     page: referrer_rel.clone(),
-                    kind: "cascade_stale".to_string(),
+                    category: "cascade_stale".to_string(),
                     details: serde_json::json!({
                         "superseded_page": page.rel,
                         "superseded_by": superseded_by_paths.join(", "),
@@ -475,6 +473,7 @@ pub fn run_all(root: &Path) -> LintResults {
     let paths = wiki::all_wiki_pages_at(root);
     let cache = wiki::page_cache_at(&paths, root);
     let pages: Vec<Page> = cache.values().cloned().collect();
+    let bundles = wiki::BundleSet::discover(root);
 
     let reference_date = chrono::Local::now().date_naive();
 
@@ -483,7 +482,7 @@ pub fn run_all(root: &Path) -> LintResults {
         orphan_pages: check_orphan_pages(&pages, root),
         sparse_pages: check_sparse_pages(&pages),
         stale_pages: check_stale_pages(&pages, reference_date),
-        cascade_stale: check_cascade_stale(&pages, root),
+        cascade_stale: check_cascade_stale(&pages, root, &bundles),
     }
 }
 
@@ -494,6 +493,11 @@ pub fn run_all(root: &Path) -> LintResults {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An empty bundle set for a plain (non-aggregated) root.
+    fn no_bundles() -> wiki::BundleSet {
+        wiki::BundleSet::default()
+    }
     use std::fs;
     use std::path::PathBuf;
 
@@ -585,7 +589,7 @@ mod tests {
         let issues = check_broken_links(&pages, &cache);
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].page, "concepts/page-a.md");
-        assert_eq!(issues[0].kind, "target_not_found");
+        assert_eq!(issues[0].category, "target_not_found");
         let details: Value = serde_json::from_str(&issues[0].details).unwrap();
         assert_eq!(details["link_text"], "page b");
         assert!(details["target_path"].as_str().unwrap().contains("page-b.md"));
@@ -666,7 +670,7 @@ mod tests {
                 "concepts/page-a.md",
                 "---\ntitle: Page A\n---\n\
                      See [core](@core/concepts/foo.md) and \
-                     [upstream](@upstream/bar.md).\n",
+                     [vendor](@vendor/bar.md).\n",
             )],
         );
         let issues = check_broken_links(&pages, &cache);
@@ -688,7 +692,7 @@ mod tests {
         );
         let issues = check_broken_links(&pages, &cache);
         assert_eq!(issues.len(), 1);
-        assert_eq!(issues[0].kind, "target_not_found");
+        assert_eq!(issues[0].category, "target_not_found");
         let details: Value = serde_json::from_str(&issues[0].details).unwrap();
         assert_eq!(details["link_text"], "relations");
     }
@@ -728,7 +732,7 @@ mod tests {
         let issues = check_orphan_pages(&pages, &dir);
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].page, "page-c.md");
-        assert_eq!(issues[0].kind, "orphan");
+        assert_eq!(issues[0].category, "orphan");
     }
 
     #[test]
@@ -788,6 +792,56 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_orphan_pages_domain_index_exempt() {
+        // A page listed only in its domain index.md is covered even though
+        // the bundle root index lists just the domain.
+        let dir = temp_dir("orphan_domain_index");
+        write(&dir.join("index.md"), "# Index\n\n[Alpha](alpha/index.md)\n");
+        write(&dir.join("alpha/index.md"), "# Alpha\n\n[Foo](foo.md)\n");
+        write(
+            &dir.join("alpha/foo.md"),
+            "---\ntitle: Foo\n---\nBody content.\n",
+        );
+
+        let files =
+            &[("alpha/foo.md", "---\ntitle: Foo\n---\nBody content.\n")];
+        let (_, pages, _) = setup_wiki("orphan_domain_index_inner", files);
+        let issues = check_orphan_pages(&pages, &dir);
+        assert!(
+            issues.is_empty(),
+            "page listed in its domain index should not be orphan: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn test_orphan_pages_unindexed_still_flagged() {
+        // A page absent from every index.md and without inbound links is
+        // still an orphan, even when a sibling is listed in the domain
+        // index.
+        let dir = temp_dir("orphan_unindexed");
+        write(&dir.join("index.md"), "# Index\n\n[Alpha](alpha/index.md)\n");
+        write(&dir.join("alpha/index.md"), "# Alpha\n\n[Foo](foo.md)\n");
+        write(
+            &dir.join("alpha/foo.md"),
+            "---\ntitle: Foo\n---\nBody content.\n",
+        );
+        write(
+            &dir.join("alpha/bar.md"),
+            "---\ntitle: Bar\n---\nUnowned content.\n",
+        );
+
+        let files = &[
+            ("alpha/foo.md", "---\ntitle: Foo\n---\nBody content.\n"),
+            ("alpha/bar.md", "---\ntitle: Bar\n---\nUnowned content.\n"),
+        ];
+        let (_, pages, _) = setup_wiki("orphan_unindexed_inner", files);
+        let issues = check_orphan_pages(&pages, &dir);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].page, "alpha/bar.md");
+        assert_eq!(issues[0].category, "orphan");
+    }
+
     // =======================================================================
     // 3. check_sparse_pages
     // =======================================================================
@@ -801,7 +855,7 @@ mod tests {
         let issues = check_sparse_pages(&pages);
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].page, "concepts/sparse.md");
-        assert_eq!(issues[0].kind, "sparse");
+        assert_eq!(issues[0].category, "sparse");
     }
 
     #[test]
@@ -851,7 +905,7 @@ mod tests {
         let issues = check_stale_pages(&pages, reference);
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].page, "concepts/old.md");
-        assert_eq!(issues[0].kind, "stale");
+        assert_eq!(issues[0].category, "stale");
     }
 
     #[test]
@@ -932,10 +986,10 @@ mod tests {
                 ),
             ],
         );
-        let issues = check_cascade_stale(&pages, &wiki_dir);
+        let issues = check_cascade_stale(&pages, &wiki_dir, &no_bundles());
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].page, "shared/concepts/referrer.md");
-        assert_eq!(issues[0].kind, "cascade_stale");
+        assert_eq!(issues[0].category, "cascade_stale");
         let details: Value = serde_json::from_str(&issues[0].details).unwrap();
         assert_eq!(details["superseded_page"], "shared/concepts/old.md");
         assert_eq!(details["superseded_by"], "shared/concepts/new.md");
@@ -967,7 +1021,7 @@ mod tests {
                 ),
             ],
         );
-        let issues = check_cascade_stale(&pages, &wiki_dir);
+        let issues = check_cascade_stale(&pages, &wiki_dir, &no_bundles());
         assert!(
             issues.is_empty(),
             "referrer with newer last_validated should not be flagged"
@@ -995,7 +1049,7 @@ mod tests {
                 ),
             ],
         );
-        let issues = check_cascade_stale(&pages, &wiki_dir);
+        let issues = check_cascade_stale(&pages, &wiki_dir, &no_bundles());
         assert!(
             issues.is_empty(),
             "superseding page itself should be excluded"
@@ -1026,9 +1080,9 @@ mod tests {
                 ),
             ],
         );
-        let issues = check_cascade_stale(&pages, &wiki_dir);
+        let issues = check_cascade_stale(&pages, &wiki_dir, &no_bundles());
         assert_eq!(issues.len(), 1);
-        assert_eq!(issues[0].kind, "cascade_stale");
+        assert_eq!(issues[0].category, "cascade_stale");
     }
 
     #[test]
@@ -1050,7 +1104,7 @@ mod tests {
                 ),
             ],
         );
-        let issues = check_cascade_stale(&pages, &wiki_dir);
+        let issues = check_cascade_stale(&pages, &wiki_dir, &no_bundles());
         assert!(issues.is_empty(), "no referrers should produce no issues");
     }
 }

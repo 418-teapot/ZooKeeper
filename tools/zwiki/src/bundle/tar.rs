@@ -868,7 +868,6 @@ mod tests {
 [package]
 name = "test-export-bundle"
 version = "1.0.0"
-kind = "upstream"
 
 [export]
 include = ["pages/**/*.md"]

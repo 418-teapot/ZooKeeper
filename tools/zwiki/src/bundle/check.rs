@@ -94,9 +94,9 @@ pub fn cmd_check_inner(
 ) -> Result<(), String> {
     let mut l = lock::read_lock_at(wiki_root)?;
 
-    if l.bundles.is_empty() {
+    if l.entries.is_empty() {
         if use_json {
-            println!("[]");
+            crate::print_stdout_line("[]");
         } else {
             eprintln!("没有已安装的 bundle");
         }
@@ -116,7 +116,7 @@ pub fn cmd_check_inner(
     );
     let mut has_error = false;
 
-    for entry in &l.bundles {
+    for entry in &l.entries {
         let abs_path = wiki_root.join(&entry.target);
 
         if !abs_path.exists() {
@@ -128,10 +128,10 @@ pub fn cmd_check_inner(
                     "note": "directory missing, may be caused by concurrent update",
                 }));
             } else {
-                println!(
+                crate::print_stdout_line(format!(
                     "✗ {} MISSING（目标目录缺失，可能因并发更新导致，请重新检查）",
                     entry.name
-                );
+                ));
             }
             continue;
         }
@@ -146,7 +146,7 @@ pub fn cmd_check_inner(
                     "actual": actual,
                 }));
             } else {
-                println!("✓ {}", entry.name);
+                crate::print_stdout_line(format!("✓ {}", entry.name));
             }
         } else {
             has_error = true;
@@ -158,10 +158,10 @@ pub fn cmd_check_inner(
                     "actual": actual,
                 }));
             } else {
-                println!(
+                crate::print_stdout_line(format!(
                     "✗ {} MISMATCH (expected: {}, actual: {})",
                     entry.name, entry.integrity, actual
-                );
+                ));
             }
         }
     }
@@ -185,7 +185,10 @@ pub fn cmd_check_inner(
     }
 
     if use_json {
-        println!("{}", format_check_json(&results, root_index_fixed)?);
+        crate::print_stdout_line(format_check_json(
+            &results,
+            root_index_fixed,
+        )?);
     }
 
     if has_error { Err("检查发现错误".to_string()) } else { Ok(()) }
@@ -217,7 +220,7 @@ fn apply_check_fix_with_lock_at(
             // Re-check root index inside the lock with fresh state.
             let mut root_index_fixed = false;
             if index::check_root_index(wiki_root, &fresh_l).is_err()
-                && index::regenerate_root_index_at(&fresh_l, wiki_root).is_ok()
+                && index::regenerate_store_metadata(&fresh_l, wiki_root).is_ok()
             {
                 root_index_fixed = true;
                 if !use_json {
@@ -250,7 +253,9 @@ fn apply_check_fix_cleanup_at(
                     "status": "orphan",
                 }));
             } else {
-                println!("DRY RUN — would remove orphan directory: {rel}");
+                crate::print_stdout_line(format!(
+                    "DRY RUN — would remove orphan directory: {rel}"
+                ));
             }
         }
         for p in &stale_temp_paths {
@@ -260,10 +265,10 @@ fn apply_check_fix_cleanup_at(
                     "status": "stale_temp",
                 }));
             } else {
-                println!(
+                crate::print_stdout_line(format!(
                     "DRY RUN — would remove stale temp directory: {}",
                     p.display()
-                );
+                ));
             }
         }
     }
@@ -294,18 +299,18 @@ fn apply_check_fix_cleanup_at(
         }
 
         // Prune orphan lock entries (target directory missing).
-        let pre_len = l.bundles.len();
-        l.bundles.retain(|entry| {
+        let pre_len = l.entries.len();
+        l.entries.retain(|entry| {
             let keep = wiki_root.join(&entry.target).exists();
             if !keep && !use_json {
                 eprintln!("已移除孤儿锁记录: {}（目标目录缺失）", entry.name);
             }
             keep
         });
-        if l.bundles.len() != pre_len {
+        if l.entries.len() != pre_len {
             lock::write_lock_at(l, wiki_root)
                 .map_err(|e| format!("无法写入锁文件: {e}"))?;
-            if let Err(e) = index::regenerate_root_index_at(l, wiki_root) {
+            if let Err(e) = index::regenerate_store_metadata(l, wiki_root) {
                 eprintln!("{e}");
             }
         }
@@ -314,50 +319,32 @@ fn apply_check_fix_cleanup_at(
     Ok(())
 }
 
-/// Collect paths of directories under `.upstream/`, `.teams/`, `.org/` that
-/// have no matching lock entry (orphan directories).
+/// Collect paths of bundle directories (directories containing
+/// `bundle.toml`) that have no matching lock entry (orphan directories).
 fn scan_orphan_paths_at(
     wiki_root: &Path,
     lock: &lock::ZwikiLock,
 ) -> Vec<String> {
     let lock_targets: std::collections::HashSet<&str> =
-        lock.bundles.iter().map(|b| b.target.as_str()).collect();
+        lock.entries.iter().map(|b| b.target.as_str()).collect();
     let mut paths = Vec::new();
-    for subdir in &[".upstream", ".teams", ".org"] {
-        let dir = wiki_root.join(subdir);
-        if !dir.exists() {
-            continue;
-        }
-        let Ok(mut read_dir) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        while let Some(Ok(entry)) = read_dir.next() {
-            let Ok(ft) = entry.file_type() else {
-                continue;
-            };
-            if !ft.is_dir() {
-                continue;
-            }
-            let name = entry.file_name();
-            let rel = format!("{subdir}/{}/", name.to_string_lossy());
-            if !lock_targets.contains(rel.as_str()) {
-                paths.push(rel);
-            }
+    for name in crate::wiki::BundleSet::discover(wiki_root).names() {
+        let rel = format!("{name}/");
+        if !lock_targets.contains(rel.as_str()) {
+            paths.push(rel);
         }
     }
+    paths.sort();
     paths
 }
 
 /// Collect paths of `.tmp_*` directories that remain from
 /// interrupted [`atomic_dir_swap`] operations (stale temporary directories).
+/// The swap creates them beside the target directory, i.e. directly under
+/// the store root.
 fn scan_stale_temp_paths_at(wiki_root: &Path) -> Vec<PathBuf> {
     let prefixes = [".tmp_"];
-    let scan_dirs = [
-        wiki_root.to_path_buf(),
-        wiki_root.join(".upstream"),
-        wiki_root.join(".teams"),
-        wiki_root.join(".org"),
-    ];
+    let scan_dirs = [wiki_root.to_path_buf()];
     let mut paths = Vec::new();
     for dir in &scan_dirs {
         if !dir.exists() {
@@ -382,8 +369,8 @@ fn scan_stale_temp_paths_at(wiki_root: &Path) -> Vec<PathBuf> {
     paths
 }
 
-/// Scan `.upstream/`, `.teams/`, `.org/` for directories that have no
-/// matching lock entry and report them as orphans.
+/// Scan bundle directories for directories that have no matching lock
+/// entry and report them as orphans.
 fn scan_orphan_dirs_at(
     wiki_root: &Path,
     lock: &lock::ZwikiLock,
@@ -398,7 +385,9 @@ fn scan_orphan_dirs_at(
                 "status": "orphan",
             }));
         } else {
-            println!("提醒: {rel} 目录无对应锁记录（孤立）");
+            crate::print_stdout_line(format!(
+                "提醒: {rel} 目录无对应锁记录（孤立）"
+            ));
         }
     }
 }
@@ -412,7 +401,7 @@ mod tests {
     #[test]
     fn test_cmd_check_inner_returns_err_on_mismatch() {
         let wiki_root = temp_dir("check_inner_mismatch");
-        let bundle_dir = wiki_root.join(".upstream").join("test-bundle");
+        let bundle_dir = wiki_root.join("test-bundle");
         std::fs::create_dir_all(&bundle_dir).unwrap();
         std::fs::write(bundle_dir.join("test.md"), "content").unwrap();
 
@@ -420,12 +409,12 @@ mod tests {
             name: "test-bundle".to_string(),
             version: "1.0.0".to_string(),
             registry: String::new(),
-            target: ".upstream/test-bundle/".to_string(),
+            target: "test-bundle/".to_string(),
             integrity: "sha256-different".to_string(),
             installed_at: "2026-01-01T00:00:00Z".to_string(),
             description: None,
         };
-        let l = lock::ZwikiLock { bundles: vec![entry], ..Default::default() };
+        let l = lock::ZwikiLock { entries: vec![entry], ..Default::default() };
         std::fs::write(
             wiki_root.join("zwiki.lock"),
             toml::to_string_pretty(&l).unwrap(),
@@ -439,8 +428,8 @@ mod tests {
     #[test]
     fn test_cmd_check_inner_fix_cleans_orphans() {
         let wiki_root = temp_dir("check_inner_fix_orphans");
-        let upstream = wiki_root.join(".upstream");
-        let bundle_dir = upstream.join("test-bundle");
+        let store_dir = wiki_root.clone();
+        let bundle_dir = store_dir.join("test-bundle");
         std::fs::create_dir_all(&bundle_dir).unwrap();
         std::fs::write(bundle_dir.join("test.md"), "content").unwrap();
 
@@ -449,21 +438,22 @@ mod tests {
             name: "test-bundle".to_string(),
             version: "1.0.0".to_string(),
             registry: String::new(),
-            target: ".upstream/test-bundle/".to_string(),
+            target: "test-bundle/".to_string(),
             integrity: lock::compute_integrity(&bundle_dir),
             installed_at: "2026-01-01T00:00:00Z".to_string(),
             description: None,
         };
-        let l = lock::ZwikiLock { bundles: vec![entry], ..Default::default() };
+        let l = lock::ZwikiLock { entries: vec![entry], ..Default::default() };
         std::fs::write(
             wiki_root.join("zwiki.lock"),
             toml::to_string_pretty(&l).unwrap(),
         )
         .unwrap();
 
-        // Orphan directory — exists but no lock entry.
-        let orphan_dir = upstream.join("orphan-bundle");
+        // Orphan directory — a bundle with no lock entry.
+        let orphan_dir = store_dir.join("orphan-bundle");
         std::fs::create_dir_all(&orphan_dir).unwrap();
+        std::fs::write(orphan_dir.join("bundle.toml"), ".").unwrap();
         std::fs::write(orphan_dir.join("orphan.md"), "orphan").unwrap();
 
         // Stale temp directory from interrupted atomic_dir_swap.
@@ -483,15 +473,15 @@ mod tests {
 
         // Assert lock still valid — entry intact.
         let lock_after = lock::read_lock_at(&wiki_root).unwrap();
-        assert_eq!(lock_after.bundles.len(), 1);
-        assert_eq!(lock_after.bundles[0].name, "test-bundle");
+        assert_eq!(lock_after.entries.len(), 1);
+        assert_eq!(lock_after.entries[0].name, "test-bundle");
     }
 
     #[test]
     fn test_cmd_check_inner_dry_run() {
         let wiki_root = temp_dir("check_inner_dry_run");
-        let upstream = wiki_root.join(".upstream");
-        let bundle_dir = upstream.join("test-bundle");
+        let store_dir = wiki_root.clone();
+        let bundle_dir = store_dir.join("test-bundle");
         std::fs::create_dir_all(&bundle_dir).unwrap();
         std::fs::write(bundle_dir.join("test.md"), "content").unwrap();
 
@@ -500,31 +490,28 @@ mod tests {
             name: "test-bundle".to_string(),
             version: "1.0.0".to_string(),
             registry: String::new(),
-            target: ".upstream/test-bundle/".to_string(),
+            target: "test-bundle/".to_string(),
             integrity: lock::compute_integrity(&bundle_dir),
             installed_at: "2026-01-01T00:00:00Z".to_string(),
             description: None,
         };
-        let l = lock::ZwikiLock { bundles: vec![entry], ..Default::default() };
+        let l = lock::ZwikiLock { entries: vec![entry], ..Default::default() };
         std::fs::write(
             wiki_root.join("zwiki.lock"),
             toml::to_string_pretty(&l).unwrap(),
         )
         .unwrap();
 
-        // Create valid root index.md for check_root_index.
+        // Create a valid store root index for check_root_index.
         let index_content =
-            "---\nokf_version: \"0.1\"\n---\n\n# Wiki Index\n\n\
-             <!-- ZOO:BUNDLES:BEGIN -->\n\n\
-             ## Upstream Bundles\n\n\
-             - [test-bundle](.upstream/test-bundle/)\n\n\
-             <!-- ZOO:BUNDLES:END -->\n"
+            "---\nokf_version: \"0.1\"\n---\n\n- [test-bundle](test-bundle/index.md)\n"
                 .to_string();
         std::fs::write(wiki_root.join("index.md"), &index_content).unwrap();
 
-        // Orphan directory — exists but no lock entry.
-        let orphan_dir = upstream.join("orphan-bundle");
+        // Orphan directory — a bundle with no lock entry.
+        let orphan_dir = store_dir.join("orphan-bundle");
         std::fs::create_dir_all(&orphan_dir).unwrap();
+        std::fs::write(orphan_dir.join("bundle.toml"), ".").unwrap();
         std::fs::write(orphan_dir.join("orphan.md"), "orphan").unwrap();
 
         // Stale temp directory from interrupted atomic_dir_swap.
@@ -557,8 +544,8 @@ mod tests {
         // The JSON "would_regenerate" signal is verified in
         // test_push_root_index_dry_run_signal_would_regenerate.
         let wiki_root = temp_dir("check_inner_dry_json_corrupt");
-        let upstream = wiki_root.join(".upstream");
-        let bundle_dir = upstream.join("test-bundle");
+        let store_dir = wiki_root.clone();
+        let bundle_dir = store_dir.join("test-bundle");
         std::fs::create_dir_all(&bundle_dir).unwrap();
         std::fs::write(bundle_dir.join("test.md"), "content").unwrap();
 
@@ -566,12 +553,12 @@ mod tests {
             name: "test-bundle".to_string(),
             version: "1.0.0".to_string(),
             registry: String::new(),
-            target: ".upstream/test-bundle/".to_string(),
+            target: "test-bundle/".to_string(),
             integrity: lock::compute_integrity(&bundle_dir),
             installed_at: "2026-01-01T00:00:00Z".to_string(),
             description: None,
         };
-        let l = lock::ZwikiLock { bundles: vec![entry], ..Default::default() };
+        let l = lock::ZwikiLock { entries: vec![entry], ..Default::default() };
         std::fs::write(
             wiki_root.join("zwiki.lock"),
             toml::to_string_pretty(&l).unwrap(),
@@ -641,13 +628,12 @@ mod tests {
 
     #[test]
     fn test_cmd_check_inner_fix_regenerates_corrupt_index() {
-        // Verify that --fix mode regenerates a corrupt root index (no
-        // ZOO:BUNDLES markers) when the directory is writable.
-        // The fix path creates index.md from scratch with the expected
-        // markers and bundle references.
+        // Verify that --fix mode regenerates a corrupt root index (one that
+        // does not reference the installed bundles) when the directory is
+        // writable.  The fix path recreates index.md from the lock.
         let wiki_root = temp_dir("check_inner_fix_regenerates");
-        let upstream = wiki_root.join(".upstream");
-        let bundle_dir = upstream.join("test-bundle");
+        let store_dir = wiki_root.clone();
+        let bundle_dir = store_dir.join("test-bundle");
         std::fs::create_dir_all(&bundle_dir).unwrap();
         std::fs::write(bundle_dir.join("test.md"), "content").unwrap();
 
@@ -655,12 +641,12 @@ mod tests {
             name: "test-bundle".to_string(),
             version: "1.0.0".to_string(),
             registry: String::new(),
-            target: ".upstream/test-bundle/".to_string(),
+            target: "test-bundle/".to_string(),
             integrity: lock::compute_integrity(&bundle_dir),
             installed_at: "2026-01-01T00:00:00Z".to_string(),
             description: None,
         };
-        let l = lock::ZwikiLock { bundles: vec![entry], ..Default::default() };
+        let l = lock::ZwikiLock { entries: vec![entry], ..Default::default() };
         std::fs::write(
             wiki_root.join("zwiki.lock"),
             toml::to_string_pretty(&l).unwrap(),
@@ -675,12 +661,12 @@ mod tests {
         let result = cmd_check_inner(false, &wiki_root, true, false);
         assert!(result.is_ok(), "fix should succeed for corrupt root index");
 
-        // After fix, index.md should exist and contain the bundle marker.
+        // After fix, index.md should exist and reference the bundle.
         let index_content =
             std::fs::read_to_string(wiki_root.join("index.md")).unwrap();
         assert!(
-            index_content.contains("<!-- ZOO:BUNDLES:BEGIN -->"),
-            "fix should regenerate root index with markers"
+            index_content.contains("test-bundle/index.md"),
+            "fix should regenerate root index referencing the bundle"
         );
     }
 }

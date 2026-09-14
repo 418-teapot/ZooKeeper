@@ -1,12 +1,13 @@
 ---
-title: <源文档标题>
+title: <问题标题>
 description: <一句话摘要>。
-type: source
+type: synthesis
 timestamp: YYYY-MM-DDTHH:mm:ssZ
-resource: <source-id>
 tags: [tag1, tag2]
-relations:
-  - "[示例分析](autoresearch/analysis/foo.md)"
+sources:
+  - wiki-system/concepts/foo.md
+  - autoresearch/entities/bar.md
+  - wiki-system/analysis/baz.md
 status: draft|review|stable|deprecated
 last_validated: YYYY-MM-DDTHH:mm:ssZ
 timeliness: current
@@ -25,29 +26,22 @@ timeliness: current
 # freshness_days: 90
 ---
 
-# <源文档标题>
+# <问题标题>
 
-> 一句话概括该源文档的内容和重要性。
+> 一句话概括该 synthesis 回答的核心问题。
 
-## Overview
+## Question
 
-源文档的背景、作者、日期、上下文。
+本次 query 提出的具体问题。
 
-## Key Points
+## Answer
 
-- 要点 1
-- 要点 2
-- 要点 3
+结构化的回答。使用多个二级/三级标题组织内容。
 
-## Decisions Made（如适用）
+## Sources Consulted
 
-| 决策 | 选择 | 理由 |
-|------|------|------|
-| <决策项> | <选择方案> | <理由> |
-
-## Impact
-
-该源文档对项目产生的影响。
+- [概念](wiki-system/concepts/foo.md) — 使用方式与贡献
+- [实体](autoresearch/entities/bar.md) — 使用方式与贡献
 
 ## Backlinks
 
@@ -55,11 +49,10 @@ timeliness: current
 
 ## References
 
-- 原始文档路径
-- 相关代码提交
 - 外部链接
+- 代码路径引用
 
 ## Notes
 
-- 理解上下文所需的补充信息
-- 后续变化
+- 补充说明
+- 待确认事项

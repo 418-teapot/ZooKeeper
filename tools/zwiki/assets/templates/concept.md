@@ -1,15 +1,9 @@
 ---
-title: <问题标题>
+title: <概念名称>
 description: <一句话摘要>。
-type: synthesis
+type: concept
 timestamp: YYYY-MM-DDTHH:mm:ssZ
 tags: [tag1, tag2]
-sources:
-  - wiki-system/concepts/foo.md
-  - autoresearch/entities/bar.md
-  - wiki-system/analysis/baz.md
-relations:
-  - "[示例分析](wiki-system/analysis/related.md)"
 status: draft|review|stable|deprecated
 last_validated: YYYY-MM-DDTHH:mm:ssZ
 timeliness: current
@@ -28,22 +22,27 @@ timeliness: current
 # freshness_days: 90
 ---
 
-# <问题标题>
+# <概念名称>
 
-> 一句话概括该 synthesis 回答的核心问题。
+> 一句话概括该概念是什么，解决什么问题。
 
-## Question
+## Overview
 
-本次 query 提出的具体问题。
+对该概念的简要描述（2-3 段），说明其在本项目中的角色和意义。
 
-## Answer
+## Details
 
-结构化的回答。使用多个二级/三级标题组织内容。
+### 定义
 
-## Sources Consulted
+精确定义，必要时给出形式化描述。
 
-- [概念](wiki-system/concepts/foo.md) — 使用方式与贡献
-- [实体](autoresearch/entities/bar.md) — 使用方式与贡献
+### 工作原理
+
+解释该概念如何运作，涉及哪些机制。
+
+### 变体 / 子概念
+
+如果存在子类型或相关变体，在此列出。
 
 ## Backlinks
 
@@ -56,5 +55,5 @@ timeliness: current
 
 ## Notes
 
-- 补充说明
+- 边缘情况
 - 待确认事项

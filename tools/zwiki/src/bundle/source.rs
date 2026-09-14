@@ -412,22 +412,11 @@ fn resolve_tar_source(
     Ok(tmp)
 }
 
-/// Determine the wiki-relative install target path from the manifest.
+/// Determine the wiki-store-relative install target path from the manifest.
 pub fn resolve_target_rel(
     manifest: &crate::bundle::manifest::BundleManifest,
-    use_json: bool,
-) -> Result<String, String> {
-    let kind = manifest.package.kind.trim().to_lowercase();
-    match kind.as_str() {
-        "upstream" => Ok(format!(".upstream/{}/", manifest.package.name)),
-        "org" => Ok(format!(".org/{}/", manifest.package.name)),
-        "team" => Ok(format!(".teams/{}/", manifest.package.name)),
-        _ => Err(if use_json {
-            format!("unknown kind '{kind}'")
-        } else {
-            format!("未知的 kind 值 '{kind}'")
-        }),
-    }
+) -> String {
+    format!("{}/", manifest.package.name)
 }
 
 /// Check that a bundle directory has the required wiki structure.
@@ -477,7 +466,6 @@ mod tests {
                 name: "test-bundle".to_string(),
                 version: "0.1.0".to_string(),
                 okf_version: "0.1".to_string(),
-                kind: "upstream".to_string(),
                 registry: None,
                 description: None,
             },
@@ -496,27 +484,18 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_target_upstream() {
+    fn test_resolve_target_uses_bundles_layer() {
         let m = valid_manifest();
-        let target = resolve_target_rel(&m, false);
-        assert_eq!(target.unwrap(), ".upstream/test-bundle/");
+        let target = resolve_target_rel(&m);
+        assert_eq!(target, "test-bundle/");
     }
 
     #[test]
-    fn test_resolve_target_team() {
+    fn test_resolve_target_uses_manifest_name() {
         let mut m = valid_manifest();
-        m.package.kind = "team".to_string();
-        let target = resolve_target_rel(&m, false);
-        assert_eq!(target.unwrap(), ".teams/test-bundle/");
-    }
-
-    #[test]
-    fn test_resolve_target_org() {
-        let mut m = valid_manifest();
-        m.package.kind = "org".to_string();
-        m.package.name = "my-org-bundle".to_string();
-        let target = resolve_target_rel(&m, false);
-        assert_eq!(target.unwrap(), ".org/my-org-bundle/");
+        m.package.name = "my-bundle".to_string();
+        let target = resolve_target_rel(&m);
+        assert_eq!(target, "my-bundle/");
     }
 
     #[test]
@@ -599,7 +578,6 @@ mod tests {
 [package]
 name = "test-install-bundle"
 version = "2.0.0"
-kind = "upstream"
 
 [export]
 include = ["*.md"]

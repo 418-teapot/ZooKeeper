@@ -20,7 +20,6 @@ fn make_bundle_tar(name: &str) -> PathBuf {
 name = "test-bundle"
 version = "0.1.0"
 okf_version = "0.1"
-kind = "upstream"
 
 [export]
 include = ["*.md"]

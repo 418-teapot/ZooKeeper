@@ -64,7 +64,9 @@ pub fn cmd_export_inner(
             "output": output_path,
             "files": files.len(),
         });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        crate::print_stdout_line(
+            serde_json::to_string_pretty(&output).unwrap(),
+        );
     } else {
         eprintln!("已导出: {output_path}");
     }
