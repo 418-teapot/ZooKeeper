@@ -6,19 +6,18 @@
  *   - the full-screen render: title line + scrolled body window + hint line,
  *     every line padded to the full width (no base-layer bleed-through);
  *   - fact projection: message_end through pi's native assistant component,
- *     tool pairs through the native ToolExecutionComponent (bash's exact
- *     `$ <command>` shell), unbuildable tools through the structured
- *     fallback (accent `→ <name>` + JSON fenced args), pending tool_starts
- *     rendered as running, orphan tool_ends appended as verbatim result
- *     text;
+ *     tool pairs through the native ToolExecutionComponent (pi's generic
+ *     call card: bold tool name + result text), pending tool_starts
+ *     rendered as running, the structured `→ <name>` fallback when the
+ *     native component cannot be built (driven through the deps seam),
+ *     orphan tool_ends appended as verbatim result text;
  *   - keyboard scrolling (line / page / start / end), clamping, and the
  *     ctrl+o tool-expansion toggle;
- *   - the SGR mouse wheel (fullscreen-mode bytes) stepping one line per
- *     notch;
+ *   - the normalized mouse wheel (fullscreen-mode events) stepping by its
+ *     reported line delta;
  *   - live updates through the log's single subscription (`log.subscribe`):
- *     components grow at the tail, the
- *     end-follow scroll semantics, fallback blocks updated when their tool
- *     result arrives;
+ *     components grow at the tail, the end-follow scroll semantics, tool
+ *     cards updated in place when their result arrives;
  *   - the esc/q close protocol and dispose (subscription dropped).
  *
  * The official message/tool components render through the coding-agent
@@ -33,6 +32,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
+import type {
+  TuiMouseEvent,
+  TuiMouseEventResult,
+} from "@earendil-works/pi-tui";
 import {
   createRunLog,
   type MessagePart,
@@ -96,6 +99,7 @@ const TUI = {
 interface OverlayComponent {
   render(width: number): string[];
   handleInput(data: string): void;
+  handleMouse?(event: TuiMouseEvent): TuiMouseEventResult | undefined;
   dispose(): void;
   invalidate(): void;
   scrollView: { scrollTop: number; viewportHeight: number };
@@ -141,6 +145,44 @@ function press(component: OverlayComponent, data: string): void {
 /** A control-character sequence helper (ESC + body; avoids raw escapes). */
 function key(body: string): string {
   return String.fromCharCode(27) + body;
+}
+
+/** A normalized wheel event carrying the given line delta. */
+function wheelEvent(wheelDelta: number): TuiMouseEvent {
+  return {
+    type: "wheel",
+    button: "none",
+    x: 0,
+    y: 0,
+    screenX: 0,
+    screenY: 0,
+    width: 60,
+    height: 40,
+    shift: false,
+    alt: false,
+    ctrl: false,
+    wheelDelta,
+  };
+}
+
+/** A normalized non-wheel mouse event. */
+function mouseEvent(
+  type: TuiMouseEvent["type"],
+  button: TuiMouseEvent["button"],
+): TuiMouseEvent {
+  return {
+    type,
+    button,
+    x: 0,
+    y: 0,
+    screenX: 0,
+    screenY: 0,
+    width: 60,
+    height: 40,
+    shift: false,
+    alt: false,
+    ctrl: false,
+  };
 }
 
 describe("computeViewportRows", () => {
@@ -399,12 +441,12 @@ describe("createTranscriptOverlay — tool projection", () => {
     );
     const { component } = overlay({}, log);
     const lines = render(component, 100);
-    // The native bash shell renders the command line...
+    // The native generic call card renders the tool name...
     assert.ok(
-      lines.some((l) => l.includes("npm test")),
+      lines.some((l) => l.includes("bash")),
       lines.join(" | "),
     );
-    // ...and the result through the tool's own renderer.
+    // ...and the result through the component's renderer path.
     assert.ok(
       lines.some((l) => l.includes("all tests pass")),
       lines.join(" | "),
@@ -419,8 +461,8 @@ describe("createTranscriptOverlay — tool projection", () => {
     const { component } = overlay({}, log);
     const lines = render(component, 100);
     assert.ok(
-      lines.some((l) => l.includes("sleep 30")),
-      `the running call shell must render: ${lines.join(" | ")}`,
+      lines.some((l) => l.includes("bash")),
+      `the running call card must render: ${lines.join(" | ")}`,
     );
   });
 
@@ -444,41 +486,74 @@ describe("createTranscriptOverlay — tool projection", () => {
     );
   });
 
-  it("falls back to the structured block for an unbuildable tool", () => {
+  it("adopts the native component for a tool without a built-in renderer", () => {
+    // With an empty renderer definition the component is always taken (the
+    // overlay no longer probes a private definition check), so an unknown
+    // tool renders through pi's generic call card rather than the overlay's
+    // structured `→ <name>` fallback.
     const log = createRunLog();
     log.appendToolStart("made_up_tool", { knob: "up" }, 1, "c1");
     const { component } = overlay({}, log);
     const lines = render(component, 100);
     assert.ok(
-      lines.some((l) => l.includes("→ made_up_tool")),
-      `fallback call line expected: ${lines.join(" | ")}`,
+      lines.some((l) => l.includes("made_up_tool")),
+      `generic call card expected: ${lines.join(" | ")}`,
     );
     assert.ok(
-      lines.some((l) => l.includes("knob")),
-      `fallback args block expected: ${lines.join(" | ")}`,
+      !lines.some((l) => l.includes("→ made_up_tool")),
+      `structured fallback must not render: ${lines.join(" | ")}`,
     );
   });
 
-  it("appends the result text below a fallback-rendered start", () => {
+  it("feeds an unknown tool's result into its mounted component", () => {
     const log = createRunLog();
     log.appendToolStart("made_up_tool", { knob: "up" }, 1, "c1");
     log.appendToolEnd(
       "made_up_tool",
-      [{ type: "text", text: "fallback result" }],
+      [{ type: "text", text: "generic result" }],
       false,
       2,
       "c1",
     );
     const { component } = overlay({}, log);
     const lines = render(component, 100);
-    const call = lines.findIndex((l) => l.includes("→ made_up_tool"));
-    const result = lines.findIndex((l) => l.includes("fallback result"));
+    const call = lines.findIndex((l) => l.includes("made_up_tool"));
+    const result = lines.findIndex((l) => l.includes("generic result"));
     assert.ok(call >= 0, lines.join(" | "));
     assert.ok(
       result > call,
       `result must follow the call: ${lines.join(" | ")}`,
     );
   });
+  it("falls back to the structured block when the native component cannot be built", () => {
+    // The seam drives the branch the real theme never reaches: a tool_start
+    // whose native component cannot be constructed renders the accent
+    // `→ <name>` line plus its JSON arguments, and its paired tool_end
+    // appends the result text verbatim below the block.
+    const log = createRunLog();
+    log.appendToolStart("bash", { command: "npm test" }, 1, "c1");
+    log.appendToolEnd(
+      "bash",
+      [{ type: "text", text: "fallback result" }],
+      false,
+      2,
+      "c1",
+    );
+    const { component } = overlay({ buildToolComponent: () => undefined }, log);
+    const lines = render(component, 100).map(plain);
+    const call = lines.findIndex((l) => l.includes("→ bash"));
+    assert.ok(call >= 0, `fallback call line expected: ${lines.join(" | ")}`);
+    assert.ok(
+      lines.some((l) => l.includes("npm test")),
+      `the JSON args block must render: ${lines.join(" | ")}`,
+    );
+    const result = lines.findIndex((l) => l.includes("fallback result"));
+    assert.ok(
+      result > call,
+      `the result must follow the fallback block: ${lines.join(" | ")}`,
+    );
+  });
+
   it("renders an orphan tool_end (no start) as verbatim result text", () => {
     const log = createRunLog();
     log.appendToolEnd(
@@ -897,7 +972,7 @@ describe("createTranscriptOverlay — live appends", () => {
     log.appendToolStart("bash", { command: "ls -la" }, 1, "live-1");
     let lines = render(component, 100);
     assert.ok(
-      lines.some((l) => l.includes("ls -la")),
+      lines.some((l) => l.includes("bash")),
       lines.join(" | "),
     );
     log.appendToolEnd(
@@ -912,9 +987,9 @@ describe("createTranscriptOverlay — live appends", () => {
       lines.some((l) => l.includes("total 3")),
       lines.join(" | "),
     );
-    // The update happened in place: one shell line, not a duplicated block.
-    const shells = lines.filter((l) => l.includes("ls -la"));
-    assert.equal(shells.length, 1, lines.join(" | "));
+    // The update happened in place: one call card, not a duplicated block.
+    const cards = lines.filter((l) => l.includes("bash"));
+    assert.equal(cards.length, 1, lines.join(" | "));
   });
 
   it("opens at the bottom and stays pinned as live facts append", () => {
@@ -991,22 +1066,73 @@ describe("createTranscriptOverlay — live appends", () => {
   });
 
   it("carries the ctrl+o expansion across live appends", () => {
+    // The generic result card folds at ten lines (pi's
+    // FALLBACK_PREVIEW_LINES) behind a "more lines" hint, so a longer result
+    // makes the expansion state observable: the folded tail is hidden until
+    // ctrl+o, and a card appended after the toggle inherits the new state.
     const { component, log } = overlay();
-    log.appendToolStart("bash", { command: "first" }, 1, "t1");
-    render(component, 100);
+    const first = Array.from(
+      { length: 12 },
+      (_, i) => `first-${String(i + 1)}`,
+    ).join("\n");
+    log.appendToolStart("read", { file: "first" }, 1, "t1");
+    log.appendToolEnd("read", [{ type: "text", text: first }], false, 2, "t1");
+    let lines = render(component, 100).map(plain);
+    assert.ok(
+      lines.some((l) => l.includes("more lines")),
+      `the collapsed card must fold: ${lines.join(" | ")}`,
+    );
+    assert.ok(
+      lines.some((l) => l.includes("first-10")),
+      lines.join(" | "),
+    );
+    assert.ok(
+      !lines.some((l) => l.includes("first-11")),
+      `the folded tail must be hidden: ${lines.join(" | ")}`,
+    );
+
     press(component, String.fromCharCode(15)); // ctrl+o — expand
-    log.appendToolStart("bash", { command: "second" }, 2, "t2");
-    const lines = render(component, 100);
-    // Both tool components exist; the fresh one inherits the expanded flag.
+    lines = render(component, 100).map(plain);
     assert.ok(
-      lines.some((l) => l.includes("first")),
+      lines.some((l) => l.includes("first-11")),
+      `expanding must reveal the tail: ${lines.join(" | ")}`,
+    );
+    assert.ok(
+      lines.some((l) => l.includes("first-12")),
       lines.join(" | "),
     );
     assert.ok(
-      lines.some((l) => l.includes("second")),
+      !lines.some((l) => l.includes("more lines")),
+      `the fold hint must be gone when expanded: ${lines.join(" | ")}`,
+    );
+
+    // A pair appended live inherits the shared expanded state, so its own
+    // folded tail is visible without a second ctrl+o.
+    const second = Array.from(
+      { length: 12 },
+      (_, i) => `second-${String(i + 1)}`,
+    ).join("\n");
+    log.appendToolStart("write", { file: "second" }, 3, "t2");
+    log.appendToolEnd(
+      "write",
+      [{ type: "text", text: second }],
+      false,
+      4,
+      "t2",
+    );
+    lines = render(component, 100).map(plain);
+    assert.ok(
+      lines.some((l) => l.includes("write")),
       lines.join(" | "),
     );
-    assert.equal(component.scrollView.constructor.name, "ScrollView");
+    assert.ok(
+      lines.some((l) => l.includes("second-11")),
+      `the fresh card must inherit the expansion: ${lines.join(" | ")}`,
+    );
+    assert.ok(
+      lines.some((l) => l.includes("second-12")),
+      lines.join(" | "),
+    );
   });
 });
 
@@ -1020,31 +1146,44 @@ describe("createTranscriptOverlay — mouse wheel + close", () => {
     return log;
   }
 
-  it("SGR wheel reports step one line per notch (fullscreen bytes)", () => {
+  it("steps the viewport by the wheel event's line delta", () => {
     const { component } = overlay({}, wheelLog());
     render(component, 60);
     // The view opens pinned to the tail, so the down direction clamps there
     // and the up direction steps back from it.
     const tail = component.scrollView.scrollTop;
     assert.ok(tail > 0, "a long transcript must be scrollable");
-    press(component, key("[<65;10;5M")); // wheel down — already at the tail
+    // A wheel-down event is consumed and clamps at the tail.
+    assert.deepEqual(component.handleMouse?.(wheelEvent(1)), { handled: true });
     assert.equal(component.scrollView.scrollTop, tail);
-    press(component, key("[<64;10;5M")); // wheel up
+    component.handleMouse?.(wheelEvent(-1)); // wheel up
     assert.equal(component.scrollView.scrollTop, tail - 1);
-    press(component, key("[<64;10;5M"));
+    component.handleMouse?.(wheelEvent(-1));
     assert.equal(component.scrollView.scrollTop, tail - 2);
-    press(component, key("[<65;10;5M")); // wheel down
+    component.handleMouse?.(wheelEvent(1)); // wheel down
+    assert.equal(component.scrollView.scrollTop, tail - 1);
+    // A multi-line delta (pi's wheelScrollLines / Alt acceleration) steps by
+    // the whole reported delta, not one line per event.
+    component.handleMouse?.(wheelEvent(-3)); // wheel up 3
+    assert.equal(component.scrollView.scrollTop, tail - 4);
+    component.handleMouse?.(wheelEvent(3)); // wheel down 3
     assert.equal(component.scrollView.scrollTop, tail - 1);
   });
 
-  it("ignores non-wheel mouse reports and key releases", () => {
+  it("ignores non-wheel mouse events and raw mouse input bytes", () => {
     const { component } = overlay({}, wheelLog());
     render(component, 60);
     const tail = component.scrollView.scrollTop;
     assert.ok(tail > 0);
-    press(component, key("[<0;10;5M")); // left-button press — ignored
-    press(component, key("[<66;10;5M")); // horizontal wheel — ignored
-    press(component, key("[<0;10;5m")); // release — ignored
+    // Non-wheel events are left to pi (not handled).
+    assert.equal(
+      component.handleMouse?.(mouseEvent("press", "left")),
+      undefined,
+    );
+    // A wheel event with no line delta is a no-op too.
+    assert.equal(component.handleMouse?.(wheelEvent(0)), undefined);
+    // Raw SGR mouse bytes are no longer parsed by the keyboard handler.
+    press(component, key("[<65;10;5M"));
     assert.equal(component.scrollView.scrollTop, tail);
   });
 
@@ -1293,7 +1432,7 @@ describe("createTranscriptOverlay — streaming partials", () => {
     const lines = render(component, 60);
     assert.equal(hits(lines, "let me run"), 0, lines.join(" | "));
     assert.ok(
-      lines.some((l) => l.includes("ls")),
+      lines.some((l) => l.includes("bash")),
       lines.join(" | "),
     );
   });

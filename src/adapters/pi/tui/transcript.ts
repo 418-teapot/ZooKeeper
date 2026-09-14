@@ -39,14 +39,13 @@
  *     official `thinkingText` color);
  *   - a `tool_start` fact mounts pi's native `ToolExecutionComponent` (the
  *     same component pi's interactive mode uses for the main session) in
- *     its pending form — the tool's own `renderCall` produces the exact
- *     native shell — so a call without its end fact stays visible as
- *     running;
+ *     its pending form — the generic call card (the bold tool-name line),
+ *     so a call without its end fact stays visible as running;
  *   - the matching `tool_end` fact feeds that component its result
- *     (`updateResult`), producing the same folded/expanded view pi's own
- *     chat shows.  Pairing uses the host tool-call id when present;
+ *     (`updateResult`), producing pi's generic result card (the result text
+ *     with the standard fold hint, expandable via `ctrl+o`).  Pairing uses the host tool-call id when present;
  *     id-less facts pair by tool name in FIFO order.  A `tool_start` whose
- *     native component cannot be built (unknown tool, missing pi theme)
+ *     native component cannot be built (e.g. an uninitialized pi theme)
  *     falls back to the accent `→ <name>` line plus its JSON arguments as a
  *     fenced code block; a `tool_end` with no paired native start (or a
  *     fallback-rendered start) appends its result text through a
@@ -78,9 +77,9 @@
  * itself, after syncing the `ScrollView`'s layout via `updateLayout`.  The
  * keyboard forwards `↑↓/jk` (line), `PageUp/PageDown` (page, matching pi's
  * `PAGE_SCROLL_OVERLAP` convention), and `Home/End` (start / end) to the
- * `ScrollView`; the SGR mouse wheel (raw wheel bytes pi forwards to the
- * focused overlay in fullscreen mode only) steps one line per notch;
- * `esc` / `q` call the `done` callback to close.
+ * `ScrollView`; the mouse wheel (a normalized wheel event pi dispatches to
+ * the focused overlay in fullscreen mode only) steps by its reported line
+ * delta; `esc` / `q` call the `done` callback to close.
  *
  * Live updates: the overlay keeps exactly ONE subscription — `log.subscribe`
  * on the run's ordered data stream — and projects each fact onto components
@@ -152,6 +151,8 @@ import {
   stripTerminalSequences,
   Text,
   type TUI,
+  type TuiMouseEvent,
+  type TuiMouseEventResult,
   truncateToWidth,
   visibleWidth,
 } from "@earendil-works/pi-tui";
@@ -211,44 +212,6 @@ const BORDER_COLOR = "border";
 const DIM_COLOR = "dim";
 /** Scroll-overlap on a page step (mirrors pi's `PAGE_SCROLL_OVERLAP`). */
 const PAGE_SCROLL_OVERLAP = 4;
-
-/**
- * SGR mouse report introducer (`ESC [ < button ; col ; row`, `M` press /
- * `m` release), emitted under pi's `?1006h` mouse mode.  The ESC byte is
- * matched as a plain string so no control character enters a regex literal
- * (Biome disallows that); the remainder matches the control-free body.
- */
-const SGR_MOUSE_BODY = /^\[<(\d+);(\d+);(\d+)[Mm]$/;
-
-/**
- * Decode an SGR mouse-wheel report into a ScrollView line step.
- *
- * Wheel bytes only arrive in pi's fullscreen TUI mode: pi enables SGR
- * mouse tracking (`?1006h`) there and forwards the raw report to the
- * focused overlay's `handleInput`.  In pi's regular mode the terminal
- * scrolls its own native scrollback and no wheel bytes reach pi at all.
- *
- * A wheel report has bit 64 set; its low two bits carry the direction
- * (0 = up, 1 = down).  Button presses/drags (bit 64 clear) and horizontal
- * wheels (direction 2/3) decode to undefined and are ignored.  The
- * decoding mirrors pi's own wheel parser, so one notch steps exactly one
- * line, matching pi's chat-viewport granularity.
- *
- * @param data - The raw input bytes received by the overlay.
- * @returns `-1` for wheel up, `1` for wheel down, undefined otherwise.
- */
-function wheelStepFromSgr(data: string): number | undefined {
-  // CSI introducer first: ESC as a string escape, then the control-free body.
-  const csi = `${String.fromCharCode(27)}[`;
-  if (!data.startsWith(csi)) return undefined;
-  const sgr = SGR_MOUSE_BODY.exec(data.slice(1));
-  if (sgr === null) return undefined;
-  const button = Number.parseInt(sgr[1], 10);
-  if ((button & 64) === 0) return undefined;
-  const direction = button & 3;
-  if (direction !== 0 && direction !== 1) return undefined;
-  return direction === 0 ? -1 : 1;
-}
 
 /**
  * Derive the transcript viewport height from the terminal row count.
@@ -361,6 +324,24 @@ export interface TranscriptTuiLike {
 /** Structural subset of pi's `Theme` the overlay colors chrome lines with. */
 export type TranscriptThemeLike = MarkdownThemeSource;
 
+/**
+ * Factory for the native tool-execution component a `tool_start` mounts.
+ *
+ * Production builds pi's own `ToolExecutionComponent` through
+ * `buildNativeToolComponent`; this is the deps seam that lets a test
+ * substitute a factory, so the structured-fallback path — taken when the
+ * native component cannot be built — is reachable without breaking the real
+ * constructor, which the tests themselves keep working by initializing pi's
+ * theme singleton.
+ */
+export type BuildToolComponent = (
+  callId: string,
+  name: string,
+  args: unknown,
+  tui: TranscriptTuiLike,
+  cwd: string,
+) => ToolExecutionComponent | undefined;
+
 /** The deps the overlay component factory needs. */
 export interface TranscriptOverlayDeps {
   /** The overlay title line (e.g. `beaver · <label>`). */
@@ -395,6 +376,14 @@ export interface TranscriptOverlayDeps {
    * Absent → empty (the tool renderers fall back to their non-cwd formats).
    */
   cwd?: string;
+  /**
+   * Override for the native tool-component factory (a test seam).  Absent →
+   * `buildNativeToolComponent`; production never sets it.  A test injects a
+   * factory returning `undefined` to drive the structured `→ <name>` fallback
+   * path, which the real constructor never reaches once pi's theme singleton
+   * is initialized.
+   */
+  buildToolComponent?: BuildToolComponent;
   /** The live pi TUI. */
   tui: TranscriptTuiLike;
   /** The live pi theme. */
@@ -462,10 +451,11 @@ export function stripControlSequences(text: string): string {
 /**
  * Build pi's native tool-execution component (pending form, no result).
  *
- * The component renders the tool's own `renderCall` (through the built-in
- * tool definitions) — the exact shell pi's interactive mode shows while a
- * tool executes in the main session.  Construction is static (no tool
- * execution); `render(width)` only reflects state.  The component needs
+ * The component is constructed with an empty renderer definition, so it
+ * takes pi's generic tool-card path — the bold tool-name call line plus the
+ * result text with the standard fold hint — instead of the component's bare
+ * no-definition text display.  Construction is static (no tool execution);
+ * `render(width)` only reflects state.  The component needs
  * pi's module-level theme singleton (`initTheme`), which pi initializes at
  * startup; construction is guarded so an uninitialized theme (e.g. a host
  * without pi wiring) falls back instead of crashing the overlay.  Returns
@@ -487,29 +477,23 @@ function buildNativeToolComponent(
   cwd: string,
 ): ToolExecutionComponent | undefined {
   try {
-    const component = new ToolExecutionComponent(
+    return new ToolExecutionComponent(
       name,
       callId,
       args,
       // History rendering is read-only: no live images.
       { showImages: false },
-      undefined,
+      // An empty renderer set is a supplied definition: the component then
+      // always renders through its renderer path — pi's generic call /
+      // result fallback card — rather than the bare no-definition text
+      // display.
+      {},
       tui as unknown as TUI,
       cwd,
     );
-    // pi keeps a private generic text display for tools WITHOUT a renderer
-    // definition; the overlay's documented form for such a tool is the
-    // structured fallback (arrow line + full JSON args).  Probe pi's own
-    // definition check (private in the typing, present at runtime) and
-    // decline the component when it reports no definition.
-    const defined = (
-      component as unknown as { hasRendererDefinition?(): boolean }
-    ).hasRendererDefinition?.();
-    if (defined === false) return undefined;
-    return component;
   } catch {
-    // Unknown tool / uninitialized pi theme → the caller falls back to the
-    // structured rendering.
+    // An uninitialized pi theme throws during construction → the caller
+    // falls back to the structured rendering.
     return undefined;
   }
 }
@@ -519,6 +503,8 @@ function buildNativeToolComponent(
  *
  * Renders the accent `→ <name>` line plus the complete arguments as a JSON
  * fenced code block (through `Markdown`), so every parameter stays visible.
+ * Used when the native component cannot be constructed at all (e.g. an
+ * uninitialized pi theme).
  *
  * @param name - The tool name.
  * @param args - The tool call arguments (may be `undefined`).
@@ -655,6 +641,11 @@ export function createTranscriptOverlay(
   // The working directory feeds the native tool renderers' render context.
   // Absent → empty string (the renderers fall back to their non-cwd forms).
   const cwd = deps.cwd ?? "";
+  // The native tool-component factory: production builds pi's component; a
+  // test injects a failing factory to exercise the structured fallback (see
+  // `BuildToolComponent`).
+  const buildToolComponent =
+    deps.buildToolComponent ?? buildNativeToolComponent;
   // The shared `ctrl+o` tool expansion state (collapsed = pi's default
   // folded style, expanded = the full output).  The ToolExecutionComponent
   // keeps `expanded` private, so the overlay tracks the toggle itself and
@@ -674,11 +665,10 @@ export function createTranscriptOverlay(
   // their `tool_end`, keyed by the pairing key (the fact's tool-call id
   // when present, else a synthetic id).  A start without its end renders
   // as running — the same view pi's own chat keeps for an unfinished call.
-  const pendingTools = new Map<string, ToolExecutionComponent>();
-  // Keys whose `tool_start` rendered through the structured fallback (no
-  // native component to feed the result to); their `tool_end` appends the
-  // result text verbatim below the fallback block.
-  const fallbackTools = new Set<string>();
+  // A key mapped to `undefined` is a start that rendered through the
+  // structured fallback (no native component to feed the result to); its
+  // `tool_end` appends the result text verbatim below the fallback block.
+  const pendingTools = new Map<string, ToolExecutionComponent | undefined>();
   // FIFO queues of pending synthetic keys per tool name, pairing id-less
   // facts (pi always reports call ids; the queues are the defensive path).
   const anonymousPending = new Map<string, string[]>();
@@ -743,26 +733,19 @@ export function createTranscriptOverlay(
   /** Project a `tool_start` fact onto the body (pending native or fallback). */
   const projectToolStart = (fact: ToolStartFact): void => {
     const key = fact.toolCallId ?? `tool-${anonymousSeq++}`;
-    // A duplicated start for an already-mounted key is ignored (the maps
-    // are the single source for the pairing).
-    if (pendingTools.has(key) || fallbackTools.has(key)) return;
+    // A duplicated start for an already-mounted key is ignored (the map
+    // is the single source for the pairing).
+    if (pendingTools.has(key)) return;
     if (fact.toolCallId === undefined) enqueueAnonymous(fact.toolName, key);
-    const native = buildNativeToolComponent(
-      key,
-      fact.toolName,
-      fact.args,
-      tui,
-      cwd,
-    );
+    const native = buildToolComponent(key, fact.toolName, fact.args, tui, cwd);
+    pendingTools.set(key, native);
     if (native !== undefined) {
       native.setExpanded(toolsExpanded);
-      pendingTools.set(key, native);
       addAll([native]);
       return;
     }
-    // Unknown tool / missing pi theme → the structured fallback keeps the
+    // Unbuildable native component → the structured fallback keeps the
     // arguments visible; the end fact appends its result text below.
-    fallbackTools.add(key);
     addAll(fallbackToolCallComponents(fact.toolName, fact.args));
   };
 
@@ -770,8 +753,8 @@ export function createTranscriptOverlay(
   const projectToolEnd = (fact: ToolEndFact): void => {
     const key = pairToolEnd(fact);
     const native = key === undefined ? undefined : pendingTools.get(key);
-    if (key !== undefined && native !== undefined) {
-      pendingTools.delete(key);
+    if (key !== undefined) pendingTools.delete(key);
+    if (native !== undefined) {
       try {
         native.updateResult(
           { content: [...fact.content], isError: fact.isError },
@@ -783,7 +766,6 @@ export function createTranscriptOverlay(
       }
       return;
     }
-    if (key !== undefined) fallbackTools.delete(key);
     // Orphan end (no start observed) or a fallback-rendered start: the
     // result text appends as plain text — never markdown, so tool output is
     // not mangled, and never raw, so a foreign string cannot drive the
@@ -1024,15 +1006,6 @@ export function createTranscriptOverlay(
 
     handleInput(data: string): void {
       if (isKeyRelease(data)) return;
-      // SGR mouse wheel (pi fullscreen mode only — the bytes never arrive
-      // in regular mode): one notch steps one line, the same shape as the
-      // ↑↓ handlers below.  Non-wheel mouse reports decode to undefined
-      // and fall through to the unmatched-key ignore at the end.
-      const wheel = wheelStepFromSgr(data);
-      if (wheel !== undefined) {
-        stepAnchorBy(wheel);
-        return;
-      }
       if (matchesKey(data, "escape") || matchesKey(data, "q")) {
         unsubscribe?.();
         unsubscribe = undefined;
@@ -1093,6 +1066,20 @@ export function createTranscriptOverlay(
         return;
       }
       // Unmatched keys are ignored (the overlay owns the keyboard).
+    },
+
+    // pi's alt-screen TUI consumes the raw SGR mouse bytes and dispatches a
+    // normalized event to the overlay under the pointer.  Only the wheel is
+    // meaningful here: its line delta moves the viewport through the same
+    // anchor step the keyboard uses, and the event is consumed so pi's
+    // layout-level wheel routing cannot scroll the base layer beneath the
+    // overlay.  Every other mouse event is left to pi (not handled).
+    handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+      if (event.type !== "wheel") return undefined;
+      const delta = event.wheelDelta ?? 0;
+      if (delta === 0) return undefined;
+      stepAnchorBy(delta);
+      return { handled: true };
     },
 
     render(width: number): string[] {

@@ -1,24 +1,21 @@
 /**
  * Tests for the transcript overlay's native tool rendering path.
  *
- * A separate file from `transcript.test.ts` on purpose: pi's native
- * `ToolExecutionComponent` renders through the module-level `theme` singleton
- * of `@earendil-works/pi-coding-agent`, which must be initialized with
- * `initTheme()` before construction.  Bun runs each test file in its own
- * worker process, so initializing the real theme here never leaks into the
- * fallback-path tests (`transcript.test.ts`), which must keep seeing an
- * uninitialized theme to exercise the structured fallback.
+ * pi's native `ToolExecutionComponent` renders through the module-level
+ * `theme` singleton of `@earendil-works/pi-coding-agent`, which must be
+ * initialized with `initTheme()` before construction.  This file groups the
+ * assertions on the exact native call card — its call line, its result fold
+ * and the `ctrl+o` expansion — against that real theme.
  *
- * The two scenarios the file covers (the pieces `transcript.test.ts` cannot,
- * because it never initializes the theme):
+ * The scenarios the file covers:
  *   - a paired tool_start + tool_end renders through the native component
- *     (the tool's own renderer, pi's exact shell: `$ <command>` for bash),
- *     not the structured `→ <name>` fallback;
+ *     (pi's generic call card: bold tool name + the result text) rather than
+ *     the structured `→ <name>` fallback;
  *   - `ctrl+o` (pi's `app.tools.expand` key) flips every native tool
- *     component between collapsed (bash fold preview + hint) and expanded
- *     (full output), and back.
+ *     component between collapsed (result folded at ten lines + hint) and
+ *     expanded (full output), and back.
  *
- * Assertions strip the real ANSI codes (the native renderers emit truecolor
+ * Assertions strip the real ANSI codes (the native components emit truecolor
  * sequences; the markdown records still go through the stub theme's
  * `<color>` tags, which are irrelevant to the tool-line assertions).
  */
@@ -75,7 +72,7 @@ function esc(hex: string): string {
   return String.fromCharCode(parseInt(hex, 16));
 }
 
-/** A bash tool call with 8 result lines (over bash's 5-line preview). */
+/** A bash tool call with 12 result lines (over the ten-line card fold). */
 function bashLog() {
   const log = createRunLog();
   log.appendToolStart("bash", { command: "npm test" }, 1, "c1");
@@ -84,7 +81,7 @@ function bashLog() {
     [
       {
         type: "text",
-        text: "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8",
+        text: "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12",
       },
     ],
     false,
@@ -110,21 +107,24 @@ describe("createTranscriptOverlay — native tool rendering (theme initialized)"
     const component = bashOverlay();
     const lines = renderComponent(component, 100).map(stripAnsi);
 
-    // The native bash shell: `$ <command>` call line (pi's exact style).
+    // The native generic call card renders the tool name...
     assert.ok(
-      lines.some((l) => l.includes("$ npm test")),
-      `native shell line expected: ${lines.join(" | ")}`,
+      lines.some((l) => l.includes("bash")),
+      `native call card expected: ${lines.join(" | ")}`,
+    );
+    // ...and its result text (collapsed: the first ten lines are shown).
+    assert.ok(
+      lines.some((l) => l.includes("line1")),
+      `result head must render: ${lines.join(" | ")}`,
+    );
+    assert.ok(
+      lines.some((l) => l.includes("line10")),
+      `result head must render: ${lines.join(" | ")}`,
     );
     // Not the structured fallback (`→ <name>` + JSON args code block).
     assert.ok(
       !lines.some((l) => l.includes("→ bash")),
       `structured fallback must not render: ${lines.join(" | ")}`,
-    );
-    // The result text renders through the tool's renderResult (collapsed
-    // shows the preview tail; the last line is always visible).
-    assert.ok(
-      lines.some((l) => l.includes("line8")),
-      `result tail must render: ${lines.join(" | ")}`,
     );
   });
 
@@ -132,34 +132,34 @@ describe("createTranscriptOverlay — native tool rendering (theme initialized)"
     const component = bashOverlay();
     let lines = renderComponent(component, 100).map(stripAnsi);
 
-    // Collapsed: fold preview (bash truncates to its 5-line preview) —
-    // "earlier lines" hint present, head lines folded away.
+    // Collapsed: the generic result card folds at ten lines — the fold hint
+    // is present, the tail lines are hidden.
     assert.ok(
-      lines.some((l) => l.includes("earlier lines")),
+      lines.some((l) => l.includes("more lines")),
       `collapsed fold hint expected: ${lines.join(" | ")}`,
     );
     assert.ok(
-      lines.some((l) => l.includes("line8")),
+      lines.some((l) => l.includes("line10")),
       lines.join(" | "),
     );
     assert.ok(
-      !lines.some((l) => l.includes("line1")),
-      `folded head must be hidden: ${lines.join(" | ")}`,
+      !lines.some((l) => l.includes("line11")),
+      `folded tail must be hidden: ${lines.join(" | ")}`,
     );
 
     // ctrl+o (0x0f) → expanded: full output, fold hint gone.
     sendInput(component, "\u000f");
     lines = renderComponent(component, 100).map(stripAnsi);
     assert.ok(
-      lines.some((l) => l.includes("line1")),
-      `expanded must show the head: ${lines.join(" | ")}`,
+      lines.some((l) => l.includes("line11")),
+      `expanded must show the tail: ${lines.join(" | ")}`,
     );
     assert.ok(
-      lines.some((l) => l.includes("line8")),
+      lines.some((l) => l.includes("line12")),
       lines.join(" | "),
     );
     assert.ok(
-      !lines.some((l) => l.includes("earlier lines")),
+      !lines.some((l) => l.includes("more lines")),
       `expanded fold hint must be gone: ${lines.join(" | ")}`,
     );
 
@@ -167,12 +167,12 @@ describe("createTranscriptOverlay — native tool rendering (theme initialized)"
     sendInput(component, "\u000f");
     lines = renderComponent(component, 100).map(stripAnsi);
     assert.ok(
-      lines.some((l) => l.includes("earlier lines")),
+      lines.some((l) => l.includes("more lines")),
       `second ctrl+o must collapse again: ${lines.join(" | ")}`,
     );
     assert.ok(
-      !lines.some((l) => l.includes("line1")),
-      `collapsed head hidden again: ${lines.join(" | ")}`,
+      !lines.some((l) => l.includes("line11")),
+      `collapsed tail hidden again: ${lines.join(" | ")}`,
     );
   });
 });
