@@ -66,7 +66,7 @@ git log --oneline -5     # 最近的提交上下文
 运行自动化安全扫描器：
 
 ```bash
-bash scripts/scan-secrets.sh
+bash "<当前 skill 目录>/scripts/scan-secrets.sh"
 ```
 
 - **Exit 0** → 显示 "✓ Clean" 并继续
@@ -78,7 +78,7 @@ bash scripts/scan-secrets.sh
 3. 如有必要，添加到 `.gitignore`
 4. 如果已推送，轮换已暴露的凭据
 
-阅读 `references/security-rules.md` 获取完整的模式列表。
+阅读 `<当前 skill 目录>/references/security-rules.md` 获取完整的模式列表。
 
 ---
 
@@ -154,14 +154,14 @@ IMPACT:  - Eliminates billing support tickets for duplicate charges.
 Closes #301
 ```
 
-阅读 `references/message-examples.md` 获取 15 个完整示例。
+阅读 `<当前 skill 目录>/references/message-examples.md` 获取 15 个完整示例。
 
 ### 消息格式验证（不得跳过）
 
 提交前，用 `-m` 直接传入消息字符串运行验证脚本：
 
 ```bash
-bash scripts/check-commit-msg.sh -m "<完整提交消息>"
+bash "<当前 skill 目录>/scripts/check-commit-msg.sh" -m "<完整提交消息>"
 ```
 
 - **Exit 0** → 消息格式正确，继续提交。
