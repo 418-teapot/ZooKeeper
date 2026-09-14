@@ -7,7 +7,7 @@ tags: [autoresearch, file, model, training]
 relations:
   - "[自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md)"
   - "[单文件修改原则](autoresearch/concepts/single-file-modification.md)"
-  - "[NPC 式分工](shared/concepts/npc.md)"
+  - "[NPC 式分工](agent-design/concepts/npc.md)"
   - "[prepare.py](autoresearch/entities/autoresearch-prepare-py.md)"
   - "[program.md](autoresearch/entities/autoresearch-program-md.md)"
   - "[autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)"
@@ -18,7 +18,7 @@ timeliness: current
 
 # train.py
 
-> autoresearch 中唯一由 AI agent 修改的文件。包含完整的 GPT 模型实现、MuonAdamW 优化器、训练循环和超参配置。是 agent 的实验画布，也是[自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md)的核心操作对象和[单文件修改原则](autoresearch/concepts/single-file-modification.md)中唯一可修改的文件。在[NPC 式分工](shared/concepts/npc.md)中，本文件是 agent 专属的编辑领地。
+> autoresearch 中唯一由 AI agent 修改的文件。包含完整的 GPT 模型实现、MuonAdamW 优化器、训练循环和超参配置。是 agent 的实验画布，也是[自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md)的核心操作对象和[单文件修改原则](autoresearch/concepts/single-file-modification.md)中唯一可修改的文件。在[NPC 式分工](agent-design/concepts/npc.md)中，本文件是 agent 专属的编辑领地。
 
 ## Overview
 
@@ -50,6 +50,7 @@ train.py 是 [autoresearch](autoresearch/sources/notes/autoresearch.md) 的核�
 
 > 此节由 zwiki 自动维护，请勿手动编辑。
 
+- [NPC 式分工](agent-design/concepts/npc.md)
 - [autoresearch 设计权衡分析](autoresearch/analysis/autoresearch-design-tradeoffs.md)
 - [自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md)
 - [实验版本管理](autoresearch/concepts/experiment-versioning.md)
@@ -57,7 +58,6 @@ train.py 是 [autoresearch](autoresearch/sources/notes/autoresearch.md) 的核�
 - [prepare.py](autoresearch/entities/autoresearch-prepare-py.md)
 - [program.md](autoresearch/entities/autoresearch-program-md.md)
 - [autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)
-- [NPC 式分工](shared/concepts/npc.md)
 
 ## References
 

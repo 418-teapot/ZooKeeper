@@ -8,7 +8,7 @@ sources:
   - autoresearch/sources/rfc/autoresearch-design.md
 relations:
   - "[autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md)"
-  - "[Agent/Skill/Plugin 判断框架](shared/analysis/agent-skill-plugin-framework.md)"
+  - "[Agent/Skill/Plugin 判断框架](agent-design/analysis/agent-skill-plugin-framework.md)"
   - "[性能调优设计模式](autoresearch/analysis/performance-tuning-design-patterns.md)"
 status: draft
 last_validated: 2026-06-19T00:00:00Z
@@ -34,7 +34,7 @@ oh-my-pi 的 autoresearch 扩展（~4131 行 TypeScript）为 ZooKeeper 的 agen
 - 重新设计 plugin hooks（高难度，OpenCode hook 能力差异大）
 
 **Phase 2: 内核调优特化**
-- 定义 `perf-tuner` agent（config.toml + core/prompts/perf-tuner.md）—— 根据 [Agent/Skill/Plugin 判断框架](shared/analysis/agent-skill-plugin-framework.md)的六维评估，perf-tuning 适合实现为 agent
+- 定义 `perf-tuner` agent（config.toml + core/prompts/perf-tuner.md）—— 根据 [Agent/Skill/Plugin 判断框架](agent-design/analysis/agent-skill-plugin-framework.md)的六维评估，perf-tuning 适合实现为 agent
 - 定义 `perf-tuning` skill（core/skills/perf-tuning/SKILL.md）
 - 调整超时（内核编译 > 600s）
 - 定义内核 benchmark 指标约定和 scope 约束模板

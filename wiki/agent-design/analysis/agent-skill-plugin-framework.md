@@ -8,8 +8,9 @@ sources:
   - autoresearch/sources/rfc/autoresearch-design.md
 relations:
   - "[autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)"
+  - "[多 agent 研究架构](multi-agent/concepts/multi-agent-research-architecture.md)"
 status: stable
-last_validated: 2026-07-21T00:00:00Z
+last_validated: 2026-09-14T02:27:26Z
 timeliness: current
 ---
 
@@ -29,7 +30,7 @@ oh-my-pi 的 [autoresearch 设计](autoresearch/sources/rfc/autoresearch-design.
 
 - **权限隔离** — 需要不同工具访问面 → Agent；共享 host 权限 → Skill
 - **模型差异** — 需要不同 tier 模型 → Agent；沿用 host 模型 → Skill
-- **上下文隔离** — 专项上下文污染主对话 → Agent；共享上下文有益 → Skill
+- **上下文隔离** — 专项上下文污染主对话 → Agent（如[多 agent 研究架构](multi-agent/concepts/multi-agent-research-architecture.md)中 subagent 隔离搜索上下文）；共享上下文有益 → Skill
 - **并行执行** — 可同时多实例 → Agent；单一执行流 → Skill
 - **角色边界** — 身份清晰 → Agent；角色不重要 → Skill
 - **迭代模式** — measure→analyze→change 循环 → Agent；单次工作流 → Skill
@@ -74,8 +75,10 @@ autoresearch (plugin)        ← 4 个工具、SQLite、segment、auto-resume、
 - [autoresearch ZooKeeper 移植路线图](autoresearch/analysis/autoresearch-porting-roadmap.md)
 - [性能调优设计模式](autoresearch/analysis/performance-tuning-design-patterns.md)
 - [autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)
+- [长程任务的上下文管理](context-engineering/analysis/long-horizon-context-management.md)
+- [Agent 协作的 prompt 与工具设计](multi-agent/concepts/agent-collaboration-prompting.md)
+- [多 agent 研究架构](multi-agent/concepts/multi-agent-research-architecture.md)
 - [ZooKeeper Wiki 概览](overview.md)
-- [长程任务的上下文管理](shared/analysis/long-horizon-context-management.md)
 
 ## References
 

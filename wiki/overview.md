@@ -16,9 +16,13 @@ relations:
   - "[autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md)"
   - "[MAD 置信度算法](autoresearch/concepts/mad-confidence.md)"
   - "[METRIC/ASI 文本协议](autoresearch/concepts/metric-asi-protocol.md)"
-  - "[NPC 式分工](shared/concepts/npc.md)"
-  - "[Agent/Skill/Plugin 判断框架](shared/analysis/agent-skill-plugin-framework.md)"
-  - "[Anthropic 上下文工程文章](shared/sources/notes/anthropic-context-engineering.md)"
+  - "[NPC 式分工](agent-design/concepts/npc.md)"
+  - "[Agent/Skill/Plugin 判断框架](agent-design/analysis/agent-skill-plugin-framework.md)"
+  - "[Anthropic 上下文工程文章](context-engineering/sources/notes/anthropic-context-engineering.md)"
+  - "[Anthropic 多 agent 研究系统文章](multi-agent/sources/notes/anthropic-multi-agent-research-system.md)"
+  - "[多 agent 研究架构](multi-agent/concepts/multi-agent-research-architecture.md)"
+  - "[Agent 协作的 prompt 与工具设计](multi-agent/concepts/agent-collaboration-prompting.md)"
+  - "[多 agent 系统的评估与生产可靠性](multi-agent/analysis/multi-agent-evaluation-reliability.md)"
 status: stable
 last_validated: 2026-07-01T00:00:00Z
 timeliness: current
@@ -54,13 +58,16 @@ Wiki 按领域组织，每个领域独立维护 6 类页面（concepts/entities/
 |------|--------|----------|
 | autoresearch | 15 | 自主实验循环、扩展循环、实验版本管理、固定时间预算评估、[MAD 置信度](autoresearch/concepts/mad-confidence.md)、[METRIC/ASI 协议](autoresearch/concepts/metric-asi-protocol.md)、单文件修改原则；train.py/prepare.py/program.md 三个核心文件；设计权衡、移植路线图、性能调优模式；autoresearch 设计文档与原始提案 |
 | wiki-system | 8 | 复利知识、ingest 工作流、query→synthesis 归档、健康检查、图链接预测；LLM Wiki vs RAG 对比、Karpathy 蒸馏示例；Karpathy LLM Wiki 原始材料 |
-| shared | 10 | [NPC 式分工](shared/concepts/npc.md)、后验问责制、简约准则；上下文工程系列（上下文工程、上下文腐烂、有效上下文构成、即时检索、长程管理）；[Agent/Skill/Plugin 判断框架](shared/analysis/agent-skill-plugin-framework.md)；Anthropic 上下文工程文章 |
+| context-engineering | 6 | 上下文工程系列（上下文工程、上下文腐烂、有效上下文构成、即时检索、长程管理）；Anthropic 上下文工程文章 |
+| multi-agent | 4 | [多 agent 研究架构](multi-agent/concepts/multi-agent-research-architecture.md)、[协作 prompt](multi-agent/concepts/agent-collaboration-prompting.md)、[评估与生产可靠性](multi-agent/analysis/multi-agent-evaluation-reliability.md)；Anthropic multi-agent research 工程博客 |
+| agent-design | 4 | [NPC 式分工](agent-design/concepts/npc.md)、后验问责制、简约准则；[Agent/Skill/Plugin 判断框架](agent-design/analysis/agent-skill-plugin-framework.md) |
 
 ### 外部参考知识
 
 - [autoresearch](autoresearch/sources/notes/autoresearch.md) — Karpathy 的 AI agent 自主 LLM 训练实验框架，为 ZooKeeper 的 agent 自动化设计提供参考。其核心机制（自主实验循环、NPC 式分工、单文件修改原则）与 ZooKeeper 的 agent 编排理念高度相关。
 - [autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md) — oh-my-pi 的 [autoresearch 扩展](autoresearch/concepts/autoresearch-extension-loop.md)设计，为 ZooKeeper 的 agent 自动化和内核调优提供架构参考。核心机制（扩展循环、MAD 置信度、METRIC/ASI 协议）与 ZooKeeper 的插件架构和 perf-tuner 规划直接相关。
-- [Anthropic 上下文工程文章](shared/sources/notes/anthropic-context-engineering.md) — Anthropic Applied AI 团队关于 AI agent 有效上下文工程的工程博客。其核心原则（上下文为有限资源、高信息量 token 最小化、即时检索、长程管理技术）为 ZooKeeper 的 validation 阈值和 prompt 注入机制提供独立理论支撑。
+- [Anthropic 上下文工程文章](context-engineering/sources/notes/anthropic-context-engineering.md) — Anthropic Applied AI 团队关于 AI agent 有效上下文工程的工程博客。其核心原则（上下文为有限资源、高信息量 token 最小化、即时检索、长程管理技术）为 ZooKeeper 的 validation 阈值和 prompt 注入机制提供独立理论支撑。
+- [Anthropic 多 agent 研究系统文章](multi-agent/sources/notes/anthropic-multi-agent-research-system.md) — Anthropic 关于 Research（multi-agent research system）的工程博客。其 lead/subagent 编排模式、委派契约、effort scaling、结果导向 eval 与生产可靠性经验，与 ZooKeeper 的编排器 + subagent 委派架构直接对应。
 
 ### 与 RAG 的本质区别
 
@@ -74,6 +81,8 @@ Wiki 按领域组织，每个领域独立维护 6 类页面（concepts/entities/
 - **LLM（kiwi 等蒸馏 agent）** 负责判断性工作：提取、分类、组织、建议链接方向
 - **工具脚本** 负责机械性工作：格式校验、关联对称性维护、孤立页面检测
 - 交叉引用的双向对称性不应由 agent 保证 — 确定性程序比 LLM 更适合重复性机械操作
+
+跨主题结论：高价值、可并行、信息量超过单一上下文窗口的任务适合 lead/subagent 架构；但生产化必须配套评估、tracing、checkpoint 与渐进部署。
 
 ## References
 

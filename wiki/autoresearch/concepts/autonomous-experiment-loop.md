@@ -7,7 +7,7 @@ tags: [autoresearch, ai-agent, experiment-loop, automation]
 relations:
   - "[固定时间预算评估](autoresearch/concepts/fixed-time-budget-evaluation.md)"
   - "[单文件修改原则](autoresearch/concepts/single-file-modification.md)"
-  - "[NPC 式分工](shared/concepts/npc.md)"
+  - "[NPC 式分工](agent-design/concepts/npc.md)"
   - "[实验版本管理](autoresearch/concepts/experiment-versioning.md)"
   - "[autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md)"
   - "[train.py](autoresearch/entities/autoresearch-train-py.md)"
@@ -20,7 +20,7 @@ timeliness: current
 
 # 自主实验循环
 
-> AI agent 自主进行小规模 LLM 训练实验的闭环机制：读取指令 → 修改代码 → 运行训练 → 评估结果 → 保留或丢弃。人类只需设定初始条件，agent 在[固定时间预算](autoresearch/concepts/fixed-time-budget-evaluation.md)内持续迭代优化。这体现了[NPC 式分工](shared/concepts/npc.md)——人类设定目标与约束，agent 自主执行。
+> AI agent 自主进行小规模 LLM 训练实验的闭环机制：读取指令 → 修改代码 → 运行训练 → 评估结果 → 保留或丢弃。人类只需设定初始条件，agent 在[固定时间预算](autoresearch/concepts/fixed-time-budget-evaluation.md)内持续迭代优化。这体现了[NPC 式分工](agent-design/concepts/npc.md)——人类设定目标与约束，agent 自主执行。
 
 ## Overview
 
@@ -61,6 +61,8 @@ oh-my-pi 的 [autoresearch 扩展循环](autoresearch/concepts/autoresearch-exte
 
 > 此节由 zwiki 自动维护，请勿手动编辑。
 
+- [NPC 式分工](agent-design/concepts/npc.md)
+- [简约准则](agent-design/concepts/simplicity-criterion.md)
 - [autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md)
 - [实验版本管理](autoresearch/concepts/experiment-versioning.md)
 - [固定时间预算评估](autoresearch/concepts/fixed-time-budget-evaluation.md)
@@ -68,8 +70,6 @@ oh-my-pi 的 [autoresearch 扩展循环](autoresearch/concepts/autoresearch-exte
 - [program.md](autoresearch/entities/autoresearch-program-md.md)
 - [train.py](autoresearch/entities/autoresearch-train-py.md)
 - [autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)
-- [NPC 式分工](shared/concepts/npc.md)
-- [简约准则](shared/concepts/simplicity-criterion.md)
 
 ## References
 

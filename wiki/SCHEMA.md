@@ -26,25 +26,9 @@ wiki/
 │   ├── analysis/          # 分析页面
 │   └── syntheses/         # 合成页面
 ├── wiki-system/           # wiki-system 领域（结构同上）
-│   ├── index.md           # 领域索引
-│   ├── concepts/          # 概念页面
-│   ├── entities/          # 实体页面
-│   ├── sources/           # 源文档
-│   │   ├── adr/           # Architecture Decision Records
-│   │   ├── rfc/           # RFC / 设计文档
-│   │   └── notes/         # 会议纪要、调研笔记
-│   ├── analysis/          # 分析页面
-│   └── syntheses/         # 合成页面
-└── shared/                # shared 领域（结构同上）
-    ├── index.md           # 领域索引
-    ├── concepts/          # 概念页面
-    ├── entities/          # 实体页面
-    ├── sources/           # 源文档
-    │   ├── adr/           # Architecture Decision Records
-    │   ├── rfc/           # RFC / 设计文档
-    │   └── notes/         # 会议纪要、调研笔记
-    ├── analysis/          # 分析页面
-    └── syntheses/         # 合成页面
+├── context-engineering/   # 上下文工程领域（结构同上）
+├── multi-agent/           # 多 agent 领域（结构同上）
+└── agent-design/          # agent 设计领域（结构同上）
 ```
 
 每个子目录下的文件使用 `.md` 扩展名。空目录含 `.gitkeep` 以纳入版本控制。
@@ -102,7 +86,7 @@ timestamp: 2026-06-17T00:00:00Z
 tags: [permission, security]
 relations:
   - "[foo 实体](autoresearch/entities/foo.md)"
-  - "[bar 概念](shared/concepts/bar.md)"
+  - "[bar 概念](context-engineering/concepts/bar.md)"
 status: stable
 last_validated: 2026-06-19T00:00:00Z
 timeliness: current
@@ -112,7 +96,7 @@ supersedes:
     reason: "新设计覆盖了旧的权限模型"
 superseded_by: []
 contradictions:
-  - path: shared/concepts/security-model.md
+  - path: context-engineering/concepts/security-model.md
     claims:
       - "声称权限由 X 控制"
       - "声称权限由 Y 控制"
@@ -154,7 +138,7 @@ freshness_days: 90
   ```yaml
 relations:
   - "[foo 实体](autoresearch/entities/foo.md)"
-  - "[bar 概念](shared/concepts/bar.md)"
+  - "[bar 概念](context-engineering/concepts/bar.md)"
   ```
 - **Frontmatter `sources`（synthesis 页面）：**
   ```yaml

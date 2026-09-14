@@ -6,8 +6,8 @@ timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, file, skill, prompt]
 relations:
   - "[自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md)"
-  - "[NPC 式分工](shared/concepts/npc.md)"
-  - "[简约准则](shared/concepts/simplicity-criterion.md)"
+  - "[NPC 式分工](agent-design/concepts/npc.md)"
+  - "[简约准则](agent-design/concepts/simplicity-criterion.md)"
   - "[train.py](autoresearch/entities/autoresearch-train-py.md)"
   - "[prepare.py](autoresearch/entities/autoresearch-prepare-py.md)"
   - "[autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)"
@@ -18,7 +18,7 @@ timeliness: current
 
 # program.md
 
-> autoresearch 中的人类可编辑 agent 指令文件。本质是一个"轻量级 skill"：定义实验目标、约束条件、评估标准、行为准则和停止条件。Agent 通过阅读此文件理解自己在[自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md)中的角色和任务边界。它体现了[NPC 式分工](shared/concepts/npc.md)中人类编写脚本、agent 执行的协作模式，并明确定义了[简约准则](shared/concepts/simplicity-criterion.md)作为行为约束。
+> autoresearch 中的人类可编辑 agent 指令文件。本质是一个"轻量级 skill"：定义实验目标、约束条件、评估标准、行为准则和停止条件。Agent 通过阅读此文件理解自己在[自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md)中的角色和任务边界。它体现了[NPC 式分工](agent-design/concepts/npc.md)中人类编写脚本、agent 执行的协作模式，并明确定义了[简约准则](agent-design/concepts/simplicity-criterion.md)作为行为约束。
 
 ## Overview
 
@@ -51,6 +51,8 @@ program.md 是 [autoresearch](autoresearch/sources/notes/autoresearch.md) 的"�
 
 > 此节由 zwiki 自动维护，请勿手动编辑。
 
+- [NPC 式分工](agent-design/concepts/npc.md)
+- [简约准则](agent-design/concepts/simplicity-criterion.md)
 - [autoresearch 设计权衡分析](autoresearch/analysis/autoresearch-design-tradeoffs.md)
 - [自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md)
 - [实验版本管理](autoresearch/concepts/experiment-versioning.md)
@@ -59,8 +61,6 @@ program.md 是 [autoresearch](autoresearch/sources/notes/autoresearch.md) 的"�
 - [program.md](autoresearch/entities/autoresearch-program-md.md)
 - [train.py](autoresearch/entities/autoresearch-train-py.md)
 - [autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)
-- [NPC 式分工](shared/concepts/npc.md)
-- [简约准则](shared/concepts/simplicity-criterion.md)
 
 ## References
 

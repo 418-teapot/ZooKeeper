@@ -5,7 +5,7 @@ type: entity
 timestamp: YYYY-MM-DDTHH:mm:ssZ
 tags: [tag1, tag2]
 relations:
-  - "[示例概念](shared/concepts/foo.md)"
+  - "[示例概念](context-engineering/concepts/foo.md)"
 status: draft|review|stable|deprecated
 last_validated: YYYY-MM-DDTHH:mm:ssZ
 timeliness: current

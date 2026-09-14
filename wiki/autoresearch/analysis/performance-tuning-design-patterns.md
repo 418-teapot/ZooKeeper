@@ -7,7 +7,7 @@ tags: [performance-tuning, design-pattern, linux-kernel, gpu, ai-agent]
 sources:
   - autoresearch/sources/rfc/autoresearch-design.md
 relations:
-  - "[Agent/Skill/Plugin 判断框架](shared/analysis/agent-skill-plugin-framework.md)"
+  - "[Agent/Skill/Plugin 判断框架](agent-design/analysis/agent-skill-plugin-framework.md)"
   - "[autoresearch ZooKeeper 移植路线图](autoresearch/analysis/autoresearch-porting-roadmap.md)"
 status: stable
 last_validated: 2026-06-19T00:00:00Z
@@ -46,7 +46,7 @@ TuneAgent 先训练 format/correctness，再训练 performance。探索阶段可
 
 ### 模式 6: 技能蒸馏 (Skill Distillation)
 
-NPU Agent 将人类 guided sessions 蒸馏为可复用 skill。渐进式自治路径：人类指导 → 记录轨迹 → 蒸馏 skill → 自治运行。这与 [Agent/Skill/Plugin 判断框架](shared/analysis/agent-skill-plugin-framework.md)中"skill 作为可复用能力单元"的定位一致。
+NPU Agent 将人类 guided sessions 蒸馏为可复用 skill。渐进式自治路径：人类指导 → 记录轨迹 → 蒸馏 skill → 自治运行。这与 [Agent/Skill/Plugin 判断框架](agent-design/analysis/agent-skill-plugin-framework.md)中"skill 作为可复用能力单元"的定位一致。
 
 ### 领域空白
 

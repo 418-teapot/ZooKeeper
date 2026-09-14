@@ -9,8 +9,8 @@ relations:
   - "[autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md)"
   - "[MAD 置信度算法](autoresearch/concepts/mad-confidence.md)"
   - "[METRIC/ASI 文本协议](autoresearch/concepts/metric-asi-protocol.md)"
-  - "[后验问责制](shared/concepts/post-hoc-accountability.md)"
-  - "[Agent/Skill/Plugin 判断框架](shared/analysis/agent-skill-plugin-framework.md)"
+  - "[后验问责制](agent-design/concepts/post-hoc-accountability.md)"
+  - "[Agent/Skill/Plugin 判断框架](agent-design/analysis/agent-skill-plugin-framework.md)"
   - "[性能调优设计模式](autoresearch/analysis/performance-tuning-design-patterns.md)"
   - "[autoresearch ZooKeeper 移植路线图](autoresearch/analysis/autoresearch-porting-roadmap.md)"
 status: stable
@@ -20,7 +20,7 @@ timeliness: current
 
 # autoresearch 设计文档
 
-> oh-my-pi 的 [autoresearch 扩展](autoresearch/concepts/autoresearch-extension-loop.md)模块的完整设计文档（3747 行）。涵盖架构设计、行业调研（蒸馏为[性能调优设计模式](autoresearch/analysis/performance-tuning-design-patterns.md)）、Agent/Skill/Plugin 讨论、核心循环、类型系统、状态管理、存储层、Git 策略、[METRIC/ASI 协议](autoresearch/concepts/metric-asi-protocol.md)、工具规范、Hook 集成、Dashboard、Prompt 工程、设计决策（包括[后验问责制](shared/concepts/post-hoc-accountability.md)）、测试策略、配置参数、已知局限和 [ZooKeeper 移植路线图](autoresearch/analysis/autoresearch-porting-roadmap.md)。
+> oh-my-pi 的 [autoresearch 扩展](autoresearch/concepts/autoresearch-extension-loop.md)模块的完整设计文档（3747 行）。涵盖架构设计、行业调研（蒸馏为[性能调优设计模式](autoresearch/analysis/performance-tuning-design-patterns.md)）、Agent/Skill/Plugin 讨论、核心循环、类型系统、状态管理、存储层、Git 策略、[METRIC/ASI 协议](autoresearch/concepts/metric-asi-protocol.md)、工具规范、Hook 集成、Dashboard、Prompt 工程、设计决策（包括[后验问责制](agent-design/concepts/post-hoc-accountability.md)）、测试策略、配置参数、已知局限和 [ZooKeeper 移植路线图](autoresearch/analysis/autoresearch-porting-roadmap.md)。
 
 ## Overview
 
@@ -30,7 +30,7 @@ timeliness: current
 
 ### 文档结构
 
-本文档共 19 个章节，核心可复用知识集中在：§2（行业调研与 6 个设计模式）、§3（[Agent/Skill/Plugin 判断框架](shared/analysis/agent-skill-plugin-framework.md)）、§5（两阶段循环与 auto-resume）、§7（[MAD 置信度算法](autoresearch/concepts/mad-confidence.md)）、§10（METRIC/ASI 协议）、§15（7 个关键设计决策）、§18（8 个已知局限）、§19（ZooKeeper 移植路线图）。
+本文档共 19 个章节，核心可复用知识集中在：§2（行业调研与 6 个设计模式）、§3（[Agent/Skill/Plugin 判断框架](agent-design/analysis/agent-skill-plugin-framework.md)）、§5（两阶段循环与 auto-resume）、§7（[MAD 置信度算法](autoresearch/concepts/mad-confidence.md)）、§10（METRIC/ASI 协议）、§15（7 个关键设计决策）、§18（8 个已知局限）、§19（ZooKeeper 移植路线图）。
 
 实现层面细节（TypeScript 接口、行号引用、测试 fixture、模板变量清单）占约 60%，属于非核心知识。
 
@@ -38,6 +38,8 @@ timeliness: current
 
 > 此节由 zwiki 自动维护，请勿手动编辑。
 
+- [Agent/Skill/Plugin 判断框架](agent-design/analysis/agent-skill-plugin-framework.md)
+- [后验问责制](agent-design/concepts/post-hoc-accountability.md)
 - [autoresearch 设计权衡分析](autoresearch/analysis/autoresearch-design-tradeoffs.md)
 - [autoresearch ZooKeeper 移植路线图](autoresearch/analysis/autoresearch-porting-roadmap.md)
 - [性能调优设计模式](autoresearch/analysis/performance-tuning-design-patterns.md)
@@ -46,8 +48,6 @@ timeliness: current
 - [METRIC/ASI 文本协议](autoresearch/concepts/metric-asi-protocol.md)
 - [autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)
 - [ZooKeeper Wiki 概览](overview.md)
-- [Agent/Skill/Plugin 判断框架](shared/analysis/agent-skill-plugin-framework.md)
-- [后验问责制](shared/concepts/post-hoc-accountability.md)
 
 ## References
 

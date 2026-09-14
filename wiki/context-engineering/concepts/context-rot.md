@@ -6,9 +6,9 @@ type: concept
 timestamp: 2026-07-21T00:00:00Z
 tags: [context-engineering, llm, attention, context-rot]
 relations:
-  - "[上下文工程](shared/concepts/context-engineering.md)"
-  - "[长程任务的上下文管理](shared/analysis/long-horizon-context-management.md)"
-  - "[Anthropic 上下文工程文章](shared/sources/notes/anthropic-context-engineering.md)"
+  - "[上下文工程](context-engineering/concepts/context-engineering.md)"
+  - "[长程任务的上下文管理](context-engineering/analysis/long-horizon-context-management.md)"
+  - "[Anthropic 上下文工程文章](context-engineering/sources/notes/anthropic-context-engineering.md)"
 status: stable
 last_validated: 2026-07-21T00:00:00Z
 timeliness: current
@@ -16,11 +16,11 @@ timeliness: current
 
 # 上下文腐烂
 
-> 上下文腐烂（context rot）：随着上下文窗口中 token 数量增加，模型从该上下文中准确召回信息的能力下降。这一现象在所有模型中普遍存在，使上下文必须被视为有限资源。它是[上下文工程](shared/concepts/context-engineering.md)的根本动机。
+> 上下文腐烂（context rot）：随着上下文窗口中 token 数量增加，模型从该上下文中准确召回信息的能力下降。这一现象在所有模型中普遍存在，使上下文必须被视为有限资源。它是[上下文工程](context-engineering/concepts/context-engineering.md)的根本动机。
 
 ## Overview
 
-上下文腐烂是 needle-in-a-haystack 基准测试揭示的现象，由 Chroma Research 命名，[Anthropic 上下文工程文章](shared/sources/notes/anthropic-context-engineering.md)系统阐述了其影响。它解释了为什么更大的上下文窗口不能消除对上下文工程的需求——任何大小的窗口都受腐烂约束，[长程任务的上下文管理](shared/analysis/long-horizon-context-management.md)需要专门技术应对。
+上下文腐烂是 needle-in-a-haystack 基准测试揭示的现象，由 Chroma Research 命名，[Anthropic 上下文工程文章](context-engineering/sources/notes/anthropic-context-engineering.md)系统阐述了其影响。它解释了为什么更大的上下文窗口不能消除对上下文工程的需求——任何大小的窗口都受腐烂约束，[长程任务的上下文管理](context-engineering/analysis/long-horizon-context-management.md)需要专门技术应对。
 
 ## Details
 
@@ -43,9 +43,9 @@ timeliness: current
 
 > 此节由 zwiki 自动维护，请勿手动编辑。
 
-- [长程任务的上下文管理](shared/analysis/long-horizon-context-management.md)
-- [上下文工程](shared/concepts/context-engineering.md)
-- [Anthropic 上下文工程文章](shared/sources/notes/anthropic-context-engineering.md)
+- [长程任务的上下文管理](context-engineering/analysis/long-horizon-context-management.md)
+- [上下文工程](context-engineering/concepts/context-engineering.md)
+- [Anthropic 上下文工程文章](context-engineering/sources/notes/anthropic-context-engineering.md)
 
 ## References
 

@@ -9,8 +9,8 @@ sources:
 relations:
   - "[固定时间预算评估](autoresearch/concepts/fixed-time-budget-evaluation.md)"
   - "[单文件修改原则](autoresearch/concepts/single-file-modification.md)"
-  - "[NPC 式分工](shared/concepts/npc.md)"
-  - "[简约准则](shared/concepts/simplicity-criterion.md)"
+  - "[NPC 式分工](agent-design/concepts/npc.md)"
+  - "[简约准则](agent-design/concepts/simplicity-criterion.md)"
   - "[autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)"
   - "[autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)"
   - "[train.py](autoresearch/entities/autoresearch-train-py.md)"
@@ -22,7 +22,7 @@ timeliness: current
 
 # [autoresearch 设计](autoresearch/sources/rfc/autoresearch-design.md)权衡分析
 
-> [autoresearch](autoresearch/sources/notes/autoresearch.md) 项目的核心设计决策及其利弊分析。每个决策都是在特定约束下的权衡，涉及[简约准则](shared/concepts/simplicity-criterion.md)等评估原则，理解这些权衡有助于评估该框架的适用边界和扩展方向。
+> [autoresearch](autoresearch/sources/notes/autoresearch.md) 项目的核心设计决策及其利弊分析。每个决策都是在特定约束下的权衡，涉及[简约准则](agent-design/concepts/simplicity-criterion.md)等评估原则，理解这些权衡有助于评估该框架的适用边界和扩展方向。
 
 ## Overview
 
@@ -63,7 +63,7 @@ autoresearch 的设计不是"最优解"，而是"在约束下的合理选择"。
 
 **结论：** 自包含是"最小可行实验跟踪"，适合快速启动和隐私敏感场景。规模化后可能需要补充外部工具。
 
-### [NPC 式分工](shared/concepts/npc.md) vs 协作编程
+### [NPC 式分工](agent-design/concepts/npc.md) vs 协作编程
 
 | 维度 | NPC 式分工 | 协作编程 |
 |------|-----------|---------|

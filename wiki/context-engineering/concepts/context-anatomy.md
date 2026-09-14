@@ -6,9 +6,9 @@ type: concept
 timestamp: 2026-07-21T00:00:00Z
 tags: [context-engineering, system-prompt, tool-design, few-shot]
 relations:
-  - "[上下文工程](shared/concepts/context-engineering.md)"
-  - "[即时上下文检索](shared/concepts/just-in-time-context-retrieval.md)"
-  - "[Anthropic 上下文工程文章](shared/sources/notes/anthropic-context-engineering.md)"
+  - "[上下文工程](context-engineering/concepts/context-engineering.md)"
+  - "[即时上下文检索](context-engineering/concepts/just-in-time-context-retrieval.md)"
+  - "[Anthropic 上下文工程文章](context-engineering/sources/notes/anthropic-context-engineering.md)"
 status: stable
 last_validated: 2026-07-21T00:00:00Z
 timeliness: current
@@ -16,11 +16,11 @@ timeliness: current
 
 # 有效上下文的构成
 
-> [上下文工程](shared/concepts/context-engineering.md)的核心原则——用尽可能少的高信息量 token，让模型最可能产出期望结果——需应用于上下文的每个组件。三个关键组件各有其优化方法：system prompt 的正确高度、工具的 token 效率、示例的精选策略。
+> [上下文工程](context-engineering/concepts/context-engineering.md)的核心原则——用尽可能少的高信息量 token，让模型最可能产出期望结果——需应用于上下文的每个组件。三个关键组件各有其优化方法：system prompt 的正确高度、工具的 token 效率、示例的精选策略。
 
 ## Overview
 
-本文展开上下文工程指导原则在三个静态组件上的具体应用，源自[Anthropic 上下文工程文章](shared/sources/notes/anthropic-context-engineering.md)。这些是构建 agent 时的基础实践，区别于运行时的动态检索策略。
+本文展开上下文工程指导原则在三个静态组件上的具体应用，源自[Anthropic 上下文工程文章](context-engineering/sources/notes/anthropic-context-engineering.md)。这些是构建 agent 时的基础实践，区别于运行时的动态检索策略。
 
 ## Details
 
@@ -35,7 +35,7 @@ Prompt 应在两个失败模式之间找到 Goldilocks 区域：
 
 ### 工具：Token 效率
 
-工具定义了 agent 与信息/动作空间的契约。运行时按需加载相关数据的检索策略见[即时上下文检索](shared/concepts/just-in-time-context-retrieval.md)。优化原则：
+工具定义了 agent 与信息/动作空间的契约。运行时按需加载相关数据的检索策略见[即时上下文检索](context-engineering/concepts/just-in-time-context-retrieval.md)。优化原则：
 
 - **自包含、健壮、用途清晰** — 类似设计良好的函数
 - **功能无重叠** — 最常见的失败模式是臃肿工具集覆盖过多功能或导致模糊的工具选择
@@ -49,13 +49,14 @@ Few-shot 示例是"值千字的画面"，但不应把所有边缘情况塞入 pr
 
 > 此节由 zwiki 自动维护，请勿手动编辑。
 
-- [上下文工程](shared/concepts/context-engineering.md)
-- [即时上下文检索](shared/concepts/just-in-time-context-retrieval.md)
-- [Anthropic 上下文工程文章](shared/sources/notes/anthropic-context-engineering.md)
+- [上下文工程](context-engineering/concepts/context-engineering.md)
+- [即时上下文检索](context-engineering/concepts/just-in-time-context-retrieval.md)
+- [Anthropic 上下文工程文章](context-engineering/sources/notes/anthropic-context-engineering.md)
+- [Agent 协作的 prompt 与工具设计](multi-agent/concepts/agent-collaboration-prompting.md)
 
 ## References
 
-- [Anthropic 上下文工程文章](shared/sources/notes/anthropic-context-engineering.md) — 本地源文档摘要
+- [Anthropic 上下文工程文章](context-engineering/sources/notes/anthropic-context-engineering.md) — 本地源文档摘要
 - Anthropic, "Effective context engineering for AI agents" (2025): https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents
 
 ## Notes

@@ -8,7 +8,7 @@ relations:
   - "[自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md)"
   - "[MAD 置信度算法](autoresearch/concepts/mad-confidence.md)"
   - "[METRIC/ASI 文本协议](autoresearch/concepts/metric-asi-protocol.md)"
-  - "[后验问责制](shared/concepts/post-hoc-accountability.md)"
+  - "[后验问责制](agent-design/concepts/post-hoc-accountability.md)"
   - "[实验版本管理](autoresearch/concepts/experiment-versioning.md)"
   - "[autoresearch ZooKeeper 移植路线图](autoresearch/analysis/autoresearch-porting-roadmap.md)"
   - "[autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)"
@@ -25,7 +25,7 @@ timeliness: current
 
 autoresearch 扩展循环是 [Karpathy 自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md) 的架构化演进。它将循环机制从 agent prompt 层面下沉到插件基础设施层面，提供 4 个 LLM-callable 工具、SQLite 状态持久化、[MAD 置信度](autoresearch/concepts/mad-confidence.md)评估和自动恢复能力。该扩展的完整设计记录在 [autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)中，向 ZooKeeper 的移植分析见 [ZooKeeper 移植路线图](autoresearch/analysis/autoresearch-porting-roadmap.md)。
 
-扩展循环在原始基础上增加了：插件驱动的循环基础设施（替代 prompt 自主维持）、SQLite 跨会话状态持久化、[METRIC/ASI](autoresearch/concepts/metric-asi-protocol.md) 标准度量协议、agent_end 自动恢复机制、4 个结构化工具接口，以及 MAD 置信度评估。其权限设计遵循[后验问责制](shared/concepts/post-hoc-accountability.md)，允许 agent 越界编辑但在记录时捕获偏差。
+扩展循环在原始基础上增加了：插件驱动的循环基础设施（替代 prompt 自主维持）、SQLite 跨会话状态持久化、[METRIC/ASI](autoresearch/concepts/metric-asi-protocol.md) 标准度量协议、agent_end 自动恢复机制、4 个结构化工具接口，以及 MAD 置信度评估。其权限设计遵循[后验问责制](agent-design/concepts/post-hoc-accountability.md)，允许 agent 越界编辑但在记录时捕获偏差。
 
 ## Details
 
@@ -68,6 +68,7 @@ autoresearch 扩展循环是 [Karpathy 自主实验循环](autoresearch/concepts
 
 > 此节由 zwiki 自动维护，请勿手动编辑。
 
+- [后验问责制](agent-design/concepts/post-hoc-accountability.md)
 - [autoresearch ZooKeeper 移植路线图](autoresearch/analysis/autoresearch-porting-roadmap.md)
 - [自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md)
 - [实验版本管理](autoresearch/concepts/experiment-versioning.md)
@@ -76,7 +77,6 @@ autoresearch 扩展循环是 [Karpathy 自主实验循环](autoresearch/concepts
 - [autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)
 - [autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)
 - [ZooKeeper Wiki 概览](overview.md)
-- [后验问责制](shared/concepts/post-hoc-accountability.md)
 
 ## References
 
