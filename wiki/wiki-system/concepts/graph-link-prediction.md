@@ -4,10 +4,6 @@ description: 不依赖文本内容，仅从页面间拓扑结构推断哪些页�
 type: concept
 timestamp: 2026-06-19T00:00:00Z
 tags: [wiki, graph-theory, link-prediction, health-check]
-relations:
-  - "[Wiki 健康检查 — 知识库的持续质量维护](wiki-system/concepts/wiki-health-check.md)"
-  - "[复利知识 — 持久化知识库的核心价值](wiki-system/concepts/compounding-knowledge.md)"
-  - "[LLM Wiki vs RAG — 两种知识管理范式的对比](wiki-system/analysis/llm-wiki-vs-rag.md)"
 status: stable
 last_validated: 2026-06-19T00:00:00Z
 timeliness: current
@@ -19,7 +15,7 @@ timeliness: current
 
 ## Overview
 
-Wiki 已有的锚文本挖掘（见 [Wiki 健康检查](wiki-system/concepts/wiki-health-check.md) 中的 `check_missing_inline_links`）依赖已建立的链接映射表发现缺失内联链接，对新页面或冷门概念覆盖不足。图链接预测提供一条纯拓扑路径：将 wiki 视为有向图（节点 = 页面，边 = `related` 声明 + 正文内联链接），通过邻居集合的交集和路径结构推断缺失边。
+Wiki 已有的锚文本挖掘（见 [Wiki 健康检查](wiki-system/concepts/wiki-health-check.md) 中的 `check_missing_inline_links`）依赖已建立的链接映射表发现缺失内联链接，对新页面或冷门概念覆盖不足。图链接预测提供一条纯拓扑路径：将 wiki 视为有向图（节点 = 页面，边 = 正文内联链接），通过邻居集合的交集和路径结构推断缺失边。
 
 ## Details
 
@@ -42,7 +38,7 @@ Wiki 已有的锚文本挖掘（见 [Wiki 健康检查](wiki-system/concepts/wik
 
 对于当前 wiki 规模，推荐顺序：**Adamic-Adar > Jaccard > Katz > 结构洞检测**。不推荐 GNN/node2vec/SBM（节点太少，训练不稳定，无法解释）。
 
-阈值策略：Top-20 推荐 + 以已有 `related` 边的分数分布均值作为下限。百分位或 Z-score 也可作为备选过滤。
+阈值策略：Top-20 推荐 + 以已有链接边的分数分布均值作为下限。百分位或 Z-score 也可作为备选过滤。
 
 ### 与现有健康检查的关系
 

@@ -5,12 +5,6 @@ type: source
 timestamp: 2026-09-14T02:14:29Z
 resource: https://www.anthropic.com/engineering/multi-agent-research-system
 tags: [multi-agent, agent-orchestration, prompt-engineering, evaluation, anthropic]
-relations:
-  - "[多 agent 研究架构](multi-agent/concepts/multi-agent-research-architecture.md)"
-  - "[Agent 协作的 prompt 与工具设计](multi-agent/concepts/agent-collaboration-prompting.md)"
-  - "[多 agent 系统的评估与生产可靠性](multi-agent/analysis/multi-agent-evaluation-reliability.md)"
-  - "[上下文工程](context-engineering/concepts/context-engineering.md)"
-  - "[长程任务的上下文管理](context-engineering/analysis/long-horizon-context-management.md)"
 status: stable
 last_validated: 2026-09-14T02:14:29Z
 timeliness: current

@@ -6,15 +6,6 @@ timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, design, tradeoff, analysis]
 sources:
   - autoresearch/sources/notes/autoresearch.md
-relations:
-  - "[固定时间预算评估](autoresearch/concepts/fixed-time-budget-evaluation.md)"
-  - "[单文件修改原则](autoresearch/concepts/single-file-modification.md)"
-  - "[NPC 式分工](agent-design/concepts/npc.md)"
-  - "[简约准则](agent-design/concepts/simplicity-criterion.md)"
-  - "[autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)"
-  - "[autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)"
-  - "[train.py](autoresearch/entities/autoresearch-train-py.md)"
-  - "[program.md](autoresearch/entities/autoresearch-program-md.md)"
 status: stable
 last_validated: 2026-06-19T00:00:00Z
 timeliness: current

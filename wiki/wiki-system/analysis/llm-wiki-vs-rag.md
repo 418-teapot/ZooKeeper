@@ -7,10 +7,6 @@ timestamp: 2026-06-18T00:00:00Z
 tags: [wiki, rag, comparison, knowledge-management]
 sources:
   - wiki-system/sources/notes/llm-wiki-karpathy.md
-relations:
-  - "[复利知识 — 持久化知识库的核心价值](wiki-system/concepts/compounding-knowledge.md)"
-  - "[LLM Wiki — 用 LLM 构建个人知识库的模式](wiki-system/sources/notes/llm-wiki-karpathy.md)"
-  - "[Wiki Ingest 工作流 — 源材料的增量整合](wiki-system/concepts/wiki-ingest-workflow.md)"
 status: stable
 last_validated: 2026-06-18T00:00:00Z
 timeliness: current

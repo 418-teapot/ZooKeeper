@@ -6,9 +6,6 @@ timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, architecture, agent-design, extension-design]
 sources:
   - autoresearch/sources/rfc/autoresearch-design.md
-relations:
-  - "[autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)"
-  - "[多 agent 研究架构](multi-agent/concepts/multi-agent-research-architecture.md)"
 status: stable
 last_validated: 2026-09-14T02:27:26Z
 timeliness: current
@@ -20,7 +17,7 @@ timeliness: current
 
 ## Overview
 
-oh-my-pi 的 [autoresearch 设计](autoresearch/sources/rfc/autoresearch-design.md)经历了"Agent vs Skill vs Plugin Extension"的深度讨论。最终结论是一个三层协作架构：Plugin 提供循环基础设施，Agent 提供领域知识和执行能力，Skill 提供方法论约束。
+oh-my-pi 的 [autoresearch 设计](autoresearch/sources/rfc/autoresearch-design.md)经历了"Agent vs Skill vs Plugin Extension"的深度讨论。最终结论是一个三层协作架构：Plugin 提供循环基础设施，Agent 提供领域知识和执行能力，Skill 提供方法论约束。它与[Agentic System 选择分析](agent-design/analysis/agentic-system-selection.md)互补：前者决定能力的实现形态，后者决定运行时应采用单次调用、固定 workflow 还是自主 agent。
 
 ## Details
 
@@ -72,6 +69,7 @@ autoresearch (plugin)        ← 4 个工具、SQLite、segment、auto-resume、
 
 > 此节由 zwiki 自动维护，请勿手动编辑。
 
+- [Agentic System 选择分析](agent-design/analysis/agentic-system-selection.md)
 - [autoresearch ZooKeeper 移植路线图](autoresearch/analysis/autoresearch-porting-roadmap.md)
 - [性能调优设计模式](autoresearch/analysis/performance-tuning-design-patterns.md)
 - [autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)

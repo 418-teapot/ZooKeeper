@@ -4,14 +4,6 @@ description: oh-my-pi 提供的两阶段自主实验循环，通过插件基础�
 type: concept
 timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, extension, experiment-loop, auto-resume]
-relations:
-  - "[自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md)"
-  - "[MAD 置信度算法](autoresearch/concepts/mad-confidence.md)"
-  - "[METRIC/ASI 文本协议](autoresearch/concepts/metric-asi-protocol.md)"
-  - "[后验问责制](agent-design/concepts/post-hoc-accountability.md)"
-  - "[实验版本管理](autoresearch/concepts/experiment-versioning.md)"
-  - "[autoresearch ZooKeeper 移植路线图](autoresearch/analysis/autoresearch-porting-roadmap.md)"
-  - "[autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)"
 status: stable
 last_validated: 2026-06-19T00:00:00Z
 timeliness: current

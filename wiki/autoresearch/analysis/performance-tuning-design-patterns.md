@@ -6,9 +6,6 @@ timestamp: 2026-06-19T00:00:00Z
 tags: [performance-tuning, design-pattern, linux-kernel, gpu, ai-agent]
 sources:
   - autoresearch/sources/rfc/autoresearch-design.md
-relations:
-  - "[Agent/Skill/Plugin 判断框架](agent-design/analysis/agent-skill-plugin-framework.md)"
-  - "[autoresearch ZooKeeper 移植路线图](autoresearch/analysis/autoresearch-porting-roadmap.md)"
 status: stable
 last_validated: 2026-06-19T00:00:00Z
 timeliness: current

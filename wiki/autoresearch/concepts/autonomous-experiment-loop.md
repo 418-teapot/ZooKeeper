@@ -4,15 +4,6 @@ description: AI agent 自主进行小规模 LLM 训练实验的闭环机制：�
 type: concept
 timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, ai-agent, experiment-loop, automation]
-relations:
-  - "[固定时间预算评估](autoresearch/concepts/fixed-time-budget-evaluation.md)"
-  - "[单文件修改原则](autoresearch/concepts/single-file-modification.md)"
-  - "[NPC 式分工](agent-design/concepts/npc.md)"
-  - "[实验版本管理](autoresearch/concepts/experiment-versioning.md)"
-  - "[autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md)"
-  - "[train.py](autoresearch/entities/autoresearch-train-py.md)"
-  - "[program.md](autoresearch/entities/autoresearch-program-md.md)"
-  - "[autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)"
 status: stable
 last_validated: 2026-06-19T00:00:00Z
 timeliness: current

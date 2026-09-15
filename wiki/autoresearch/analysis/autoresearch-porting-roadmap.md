@@ -6,10 +6,6 @@ timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, zookeeper, porting, roadmap, opencode]
 sources:
   - autoresearch/sources/rfc/autoresearch-design.md
-relations:
-  - "[autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md)"
-  - "[Agent/Skill/Plugin 判断框架](agent-design/analysis/agent-skill-plugin-framework.md)"
-  - "[性能调优设计模式](autoresearch/analysis/performance-tuning-design-patterns.md)"
 status: draft
 last_validated: 2026-06-19T00:00:00Z
 timeliness: current

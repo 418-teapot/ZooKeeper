@@ -4,12 +4,6 @@ description: 由 lead agent 编排多个隔离上下文中的专门 subagent，�
 type: concept
 timestamp: 2026-09-14T02:14:29Z
 tags: [multi-agent, orchestration, subagent, parallelism, context-isolation]
-relations:
-  - "[Anthropic 多 agent 研究系统文章](multi-agent/sources/notes/anthropic-multi-agent-research-system.md)"
-  - "[长程任务的上下文管理](context-engineering/analysis/long-horizon-context-management.md)"
-  - "[上下文工程](context-engineering/concepts/context-engineering.md)"
-  - "[Agent/Skill/Plugin 判断框架](agent-design/analysis/agent-skill-plugin-framework.md)"
-  - "[多 agent 系统的评估与生产可靠性](multi-agent/analysis/multi-agent-evaluation-reliability.md)"
 status: stable
 last_validated: 2026-09-14T02:14:29Z
 timeliness: current
@@ -37,7 +31,7 @@ timeliness: current
 
 研究问题通常具有开放式、路径依赖和广度优先特征，无法可靠地预先规定所有步骤。独立 subagent 可以从不同方向探索，避免单个 agent 过早锁定某条搜索路径；它们还可以在各自上下文中消化大量工具结果，只向 lead agent 返回压缩后的发现。这与[上下文工程](context-engineering/concepts/context-engineering.md)的最小高信息量 token 原则一致，也是[长程任务的上下文管理中的子 agent 架构技术](context-engineering/analysis/long-horizon-context-management.md)的核心机制。
 
-这同时形成关注点分离：不同 subagent 可以拥有不同的任务 prompt、工具选择和探索轨迹。并行化因此既增加覆盖范围，也把详细搜索上下文隔离在主 agent 之外。
+这同时形成关注点分离：不同 subagent 可以拥有不同的任务 prompt、工具选择和探索轨迹。并行化因此既增加覆盖范围，也把详细搜索上下文隔离在主 agent 之外。orchestrator-workers 是更一般的 workflow 模式；它与本页的研究架构都使用中央 agent 动态拆解任务，但不局限于研究场景，详见[LLM Workflow 模式](agent-design/analysis/llm-workflow-patterns.md)。
 
 ### 适用边界与成本
 
@@ -50,6 +44,7 @@ timeliness: current
 > 此节由 zwiki 自动维护，请勿手动编辑。
 
 - [Agent/Skill/Plugin 判断框架](agent-design/analysis/agent-skill-plugin-framework.md)
+- [LLM Workflow 模式](agent-design/analysis/llm-workflow-patterns.md)
 - [长程任务的上下文管理](context-engineering/analysis/long-horizon-context-management.md)
 - [多 agent 系统的评估与生产可靠性](multi-agent/analysis/multi-agent-evaluation-reliability.md)
 - [Agent 协作的 prompt 与工具设计](multi-agent/concepts/agent-collaboration-prompting.md)

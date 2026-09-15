@@ -5,10 +5,6 @@ resource: https://www.anthropic.com/engineering/effective-context-engineering-fo
 type: concept
 timestamp: 2026-07-21T00:00:00Z
 tags: [context-engineering, system-prompt, tool-design, few-shot]
-relations:
-  - "[上下文工程](context-engineering/concepts/context-engineering.md)"
-  - "[即时上下文检索](context-engineering/concepts/just-in-time-context-retrieval.md)"
-  - "[Anthropic 上下文工程文章](context-engineering/sources/notes/anthropic-context-engineering.md)"
 status: stable
 last_validated: 2026-07-21T00:00:00Z
 timeliness: current
@@ -41,6 +37,8 @@ Prompt 应在两个失败模式之间找到 Goldilocks 区域：
 - **功能无重叠** — 最常见的失败模式是臃肿工具集覆盖过多功能或导致模糊的工具选择
 - **可决断性** — 如果人类工程师无法明确判断某情境下该用哪个工具，agent 也做不到
 
+更完整的工具接口、格式选择、错误预防和模型实测原则见[增强型 LLM](agent-design/concepts/augmented-llm.md)。
+
 ### 示例：精选而非堆砌
 
 Few-shot 示例是"值千字的画面"，但不应把所有边缘情况塞入 prompt。应精选一组多样的、规范性的示例来有效展示期望行为，而非试图穷举每条规则。
@@ -49,6 +47,7 @@ Few-shot 示例是"值千字的画面"，但不应把所有边缘情况塞入 pr
 
 > 此节由 zwiki 自动维护，请勿手动编辑。
 
+- [增强型 LLM](agent-design/concepts/augmented-llm.md)
 - [上下文工程](context-engineering/concepts/context-engineering.md)
 - [即时上下文检索](context-engineering/concepts/just-in-time-context-retrieval.md)
 - [Anthropic 上下文工程文章](context-engineering/sources/notes/anthropic-context-engineering.md)

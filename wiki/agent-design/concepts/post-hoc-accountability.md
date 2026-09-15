@@ -4,10 +4,6 @@ description: 不阻止 agent 越界编辑，而是在实验记录时捕获偏差
 type: concept
 timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, design-philosophy, scope-management, agent-constraint]
-relations:
-  - "[autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md)"
-  - "[单文件修改原则](autoresearch/concepts/single-file-modification.md)"
-  - "[autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)"
 status: stable
 last_validated: 2026-06-19T00:00:00Z
 timeliness: current

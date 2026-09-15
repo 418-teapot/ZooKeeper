@@ -4,13 +4,6 @@ description: 通过明确委派契约、按复杂度分配工作量、工具启�
 type: concept
 timestamp: 2026-09-14T02:14:29Z
 tags: [multi-agent, prompt-engineering, tool-design, delegation, evaluation]
-relations:
-  - "[Anthropic 多 agent 研究系统文章](multi-agent/sources/notes/anthropic-multi-agent-research-system.md)"
-  - "[上下文工程](context-engineering/concepts/context-engineering.md)"
-  - "[有效上下文的构成](context-engineering/concepts/context-anatomy.md)"
-  - "[Agent/Skill/Plugin 判断框架](agent-design/analysis/agent-skill-plugin-framework.md)"
-  - "[多 agent 研究架构](multi-agent/concepts/multi-agent-research-architecture.md)"
-  - "[多 agent 系统的评估与生产可靠性](multi-agent/analysis/multi-agent-evaluation-reliability.md)"
 status: stable
 last_validated: 2026-09-14T02:14:29Z
 timeliness: current
@@ -48,7 +41,7 @@ prompt 应包含 effort scaling 规则，而不是让 agent 对所有问题采�
 
 工具描述应有清晰、互斥的用途，帮助 agent 根据用户意图选择正确工具。agent 应先了解可用工具，再匹配工具与任务；广泛探索使用通用搜索，已有专门数据源时优先使用专用工具。
 
-搜索过程通常应先宽后窄：先用短而宽泛的查询了解信息版图，再根据发现逐步收窄。过早写出很长、很具体的查询容易返回稀疏结果并锁定错误方向。
+搜索过程通常应先宽后窄：先用短而宽泛的查询了解信息版图，再根据发现逐步收窄。过早写出很长、很具体的查询容易返回稀疏结果并锁定错误方向。工具定义本身是 agent-computer interface 的控制面；关于格式开销、参数防错、边界说明和工具使用测试的系统化原则见[增强型 LLM](agent-design/concepts/augmented-llm.md)。
 
 ### 用失败轨迹改进系统
 

@@ -4,11 +4,6 @@ description: 固定不变的基础设施文件，负责数据下载、BPE tokeni
 type: entity
 timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, file, data, evaluation]
-relations:
-  - "[固定时间预算评估](autoresearch/concepts/fixed-time-budget-evaluation.md)"
-  - "[单文件修改原则](autoresearch/concepts/single-file-modification.md)"
-  - "[train.py](autoresearch/entities/autoresearch-train-py.md)"
-  - "[autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)"
 status: stable
 last_validated: 2026-06-19T00:00:00Z
 timeliness: current

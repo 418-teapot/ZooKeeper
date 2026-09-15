@@ -5,12 +5,6 @@ type: source
 timestamp: 2026-07-21T00:00:00Z
 resource: https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents
 tags: [context-engineering, agent-design, anthropic]
-relations:
-  - "[上下文工程](context-engineering/concepts/context-engineering.md)"
-  - "[上下文腐烂](context-engineering/concepts/context-rot.md)"
-  - "[有效上下文的构成](context-engineering/concepts/context-anatomy.md)"
-  - "[即时上下文检索](context-engineering/concepts/just-in-time-context-retrieval.md)"
-  - "[长程任务的上下文管理](context-engineering/analysis/long-horizon-context-management.md)"
 status: stable
 last_validated: 2026-07-21T00:00:00Z
 timeliness: current

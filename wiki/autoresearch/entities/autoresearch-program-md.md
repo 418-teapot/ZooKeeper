@@ -4,13 +4,6 @@ description: 人类可编辑的 agent 指令文件，定义实验目标、约束
 type: entity
 timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, file, skill, prompt]
-relations:
-  - "[自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md)"
-  - "[NPC 式分工](agent-design/concepts/npc.md)"
-  - "[简约准则](agent-design/concepts/simplicity-criterion.md)"
-  - "[train.py](autoresearch/entities/autoresearch-train-py.md)"
-  - "[prepare.py](autoresearch/entities/autoresearch-prepare-py.md)"
-  - "[autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)"
 status: stable
 last_validated: 2026-06-19T00:00:00Z
 timeliness: current

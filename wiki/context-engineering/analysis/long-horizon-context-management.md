@@ -7,14 +7,6 @@ timestamp: 2026-07-21T00:00:00Z
 tags: [context-engineering, long-horizon, compaction, agentic-memory, multi-agent]
 sources:
   - context-engineering/sources/notes/anthropic-context-engineering.md
-relations:
-  - "[上下文工程](context-engineering/concepts/context-engineering.md)"
-  - "[上下文腐烂](context-engineering/concepts/context-rot.md)"
-  - "[即时上下文检索](context-engineering/concepts/just-in-time-context-retrieval.md)"
-  - "[Agent/Skill/Plugin 判断框架](agent-design/analysis/agent-skill-plugin-framework.md)"
-  - "[复利知识 — 持久化知识库的核心价值](wiki-system/concepts/compounding-knowledge.md)"
-  - "[多 agent 研究架构](multi-agent/concepts/multi-agent-research-architecture.md)"
-  - "[多 agent 系统的评估与生产可靠性](multi-agent/analysis/multi-agent-evaluation-reliability.md)"
 status: stable
 last_validated: 2026-09-14T02:27:26Z
 timeliness: current

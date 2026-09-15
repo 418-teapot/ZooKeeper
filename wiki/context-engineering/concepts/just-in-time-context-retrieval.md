@@ -5,12 +5,6 @@ resource: https://www.anthropic.com/engineering/effective-context-engineering-fo
 type: concept
 timestamp: 2026-07-21T00:00:00Z
 tags: [context-engineering, retrieval, agentic-search, progressive-disclosure]
-relations:
-  - "[上下文工程](context-engineering/concepts/context-engineering.md)"
-  - "[有效上下文的构成](context-engineering/concepts/context-anatomy.md)"
-  - "[复利知识 — 持久化知识库的核心价值](wiki-system/concepts/compounding-knowledge.md)"
-  - "[长程任务的上下文管理](context-engineering/analysis/long-horizon-context-management.md)"
-  - "[Anthropic 上下文工程文章](context-engineering/sources/notes/anthropic-context-engineering.md)"
 status: stable
 last_validated: 2026-07-21T00:00:00Z
 timeliness: current

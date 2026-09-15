@@ -5,12 +5,6 @@ resource: https://github.com/karpathy/autoresearch
 type: concept
 timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, evaluation, metric, fair-comparison]
-relations:
-  - "[自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md)"
-  - "[单文件修改原则](autoresearch/concepts/single-file-modification.md)"
-  - "[prepare.py](autoresearch/entities/autoresearch-prepare-py.md)"
-  - "[autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)"
-  - '[program.md](autoresearch/entities/autoresearch-program-md.md)'
 status: stable
 last_validated: 2026-06-19T00:00:00Z
 timeliness: current

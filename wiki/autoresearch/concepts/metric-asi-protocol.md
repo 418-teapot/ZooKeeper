@@ -4,10 +4,6 @@ description: 基于标准输出的零依赖文本协议，通过 METRIC 行报�
 type: concept
 timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, protocol, metric, benchmark]
-relations:
-  - "[autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md)"
-  - "[MAD 置信度算法](autoresearch/concepts/mad-confidence.md)"
-  - "[autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)"
 status: stable
 last_validated: 2026-06-19T00:00:00Z
 timeliness: current

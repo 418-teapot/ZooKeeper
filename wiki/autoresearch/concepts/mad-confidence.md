@@ -4,9 +4,6 @@ description: 使用 Median Absolute Deviation 作为噪声底限，计算实验�
 type: concept
 timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, statistics, confidence, algorithm]
-relations:
-  - "[autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md)"
-  - "[autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)"
 status: stable
 last_validated: 2026-06-19T00:00:00Z
 timeliness: current

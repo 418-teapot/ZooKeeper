@@ -4,13 +4,8 @@ description: 自主实验中变更评估准则：复杂度成本必须与收益 
 type: concept
 timestamp: 2026-06-19T00:00:00Z
 tags: [autoresearch, design-principle, complexity-tradeoff]
-relations:
-  - "[自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md)"
-  - "[单文件修改原则](autoresearch/concepts/single-file-modification.md)"
-  - "[program.md](autoresearch/entities/autoresearch-program-md.md)"
-  - "[autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)"
 status: stable
-last_validated: 2026-06-19T00:00:00Z
+last_validated: 2026-09-15T06:31:27Z
 timeliness: current
 ---
 
@@ -20,7 +15,7 @@ timeliness: current
 
 ## Overview
 
-简约准则是 [autoresearch](autoresearch/sources/notes/autoresearch.md) 中 agent 的决策启发式，写入 program.md 作为 agent 的行为约束。它防止 agent 在收益递减的局部最优中持续投入复杂代码。
+简约准则是 [autoresearch](autoresearch/sources/notes/autoresearch.md) 中 agent 的决策启发式，写入 program.md 作为 agent 的行为约束。它防止 agent 在收益递减的局部最优中持续投入复杂代码。这一原则也适用于一般 agentic system：应先采用简单的单次调用或固定 workflow，再根据可测量的结果改进决定是否增加自主性，详见[Agentic System 选择分析](agent-design/analysis/agentic-system-selection.md)。
 
 ## Details
 
@@ -48,6 +43,7 @@ Agent 作为自主决策者，需要清晰的启发式来避免：
 
 > 此节由 zwiki 自动维护，请勿手动编辑。
 
+- [Agentic System 选择分析](agent-design/analysis/agentic-system-selection.md)
 - [autoresearch 设计权衡分析](autoresearch/analysis/autoresearch-design-tradeoffs.md)
 - [program.md](autoresearch/entities/autoresearch-program-md.md)
 - [autoresearch — AI agent 自主 LLM 训练实验框架](autoresearch/sources/notes/autoresearch.md)

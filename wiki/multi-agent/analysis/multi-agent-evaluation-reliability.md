@@ -6,11 +6,6 @@ timestamp: 2026-09-14T02:14:29Z
 tags: [multi-agent, evaluation, reliability, production]
 sources:
   - multi-agent/sources/notes/anthropic-multi-agent-research-system.md
-relations:
-  - "[Anthropic 多 agent 研究系统文章](multi-agent/sources/notes/anthropic-multi-agent-research-system.md)"
-  - "[长程任务的上下文管理](context-engineering/analysis/long-horizon-context-management.md)"
-  - "[上下文工程](context-engineering/concepts/context-engineering.md)"
-  - "[多 agent 研究架构](multi-agent/concepts/multi-agent-research-architecture.md)"
 status: stable
 last_validated: 2026-09-14T02:14:29Z
 timeliness: current
@@ -64,6 +59,7 @@ agent 在多个工具调用中持续维护状态，微小失败可能改变后�
 
 > 此节由 zwiki 自动维护，请勿手动编辑。
 
+- [Agentic System 选择分析](agent-design/analysis/agentic-system-selection.md)
 - [长程任务的上下文管理](context-engineering/analysis/long-horizon-context-management.md)
 - [Agent 协作的 prompt 与工具设计](multi-agent/concepts/agent-collaboration-prompting.md)
 - [多 agent 研究架构](multi-agent/concepts/multi-agent-research-architecture.md)

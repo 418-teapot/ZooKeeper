@@ -5,11 +5,6 @@ resource: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
 type: concept
 timestamp: 2026-06-18T00:00:00Z
 tags: [wiki, workflow, ingest]
-relations:
-  - "[复利知识 — 持久化知识库的核心价值](wiki-system/concepts/compounding-knowledge.md)"
-  - "[Query → Synthesis → 归档 — 查询即知识生产](wiki-system/concepts/wiki-query-synthesis.md)"
-  - "[Wiki 健康检查 — 知识库的持续质量维护](wiki-system/concepts/wiki-health-check.md)"
-  - "[LLM Wiki — 用 LLM 构建个人知识库的模式](wiki-system/sources/notes/llm-wiki-karpathy.md)"
 status: stable
 last_validated: 2026-06-18T00:00:00Z
 timeliness: current
