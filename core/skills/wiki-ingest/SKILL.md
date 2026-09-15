@@ -5,7 +5,7 @@ description: 用于将外部源文档或对话知识 ingest 到项目 wiki 中�
 
 # Wiki Ingest 技能
 
-将外部源文档或对话发现的知识 ingest 到 `~/.zoo/wiki/` 中。
+将外部源文档或对话发现的知识 ingest 到 wiki 中。
 
 收到值得归档的源材料时加载此技能，统一委派 kiwi 蒸馏后执行写入。
 
@@ -53,6 +53,8 @@ description: 用于将外部源文档或对话知识 ingest 到项目 wiki 中�
 构造包含 SUMMARY / CONTEXT / ACCEPTANCE 三段的 prompt：
 
 ```
+> 加载 `kiwi-distill` 技能后执行以下知识蒸馏任务。
+
 **SUMMARY:** 将 [源材料简要描述] 蒸馏到 wiki 中
 
 **CONTEXT:**
@@ -72,19 +74,13 @@ description: 用于将外部源文档或对话知识 ingest 到项目 wiki 中�
    - 关于 `overview.md` 是否需要更新的建议
 ```
 
-### 1.3 委派 kiwi
-
-在 subagent prompt 开头告知 kiwi 加载 `kiwi-distill` 技能（kiwi 的技能列表由 `config.toml` 白名单控制，当前仅 `kiwi-distill` 可用）：
-
-> 加载 `kiwi-distill` 技能后执行以下蒸馏任务。
-
 将三段式 prompt 传给 kiwi subagent，不要对 kiwi 做额外约束 — 所有要求已在 ACCEPTANCE 中表达。
 
 ---
 
 ## Phase 2 — 通用写入步骤
 
-kiwi 返回分析后，由调用方 agent 执行写入。写命令必须显式传 `--root`，填该 bundle 的源目录（含 `bundle.toml` 的目录，不知道位置时问用户）；`~/.zoo/wiki` 是只读聚合视图，不直接写入。个人知识同样写入其 bundle 的源目录。
+kiwi 返回分析后，执行写入命令。写命令必须显式传 `--root`，填该 bundle 的源目录（含 `bundle.toml` 的目录，不知道位置时问用户）。
 
 **创建新页面时：**
 1. **创建骨架** — 使用 `zwiki page create`：
@@ -101,10 +97,7 @@ kiwi 返回分析后，由调用方 agent 执行写入。写命令必须显式�
 2. **编辑页面** — 使用 `edit` 工具按照 kiwi 的建议修改已有页面的指定节
 
 **以下步骤创建和更新共用：**
-3. **保存原始材料** — 如果输入为 URL 或文件，保存原文副本到 bundle 源的 `raw/`：
-    ```bash
-    curl -sL "<url>" -o <bundle源目录>/raw/$(date +%F)-<slug>.md
-    ```
+3. **保存原始材料** — 如果输入为 URL 或文件，保存原文副本到 bundle 源的 `raw/$(date +%F)-<slug>.md`
 4. **更新 overview.md** — 如果 kiwi 的分析建议更新，则执行
 5. **更新交叉引用** — 按照 kiwi 的建议，在已有页面正文中添加指回新页面的内联链接（使用域前缀路径，如 `<domain>/concepts/<file>.md`）。`relations`、反向链接与各级索引均由 zwiki 自动派生，无需手工维护；`page create`/`page set` 会自动记录日志，需要说明时加 `--note`
 

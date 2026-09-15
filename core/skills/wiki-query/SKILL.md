@@ -1,14 +1,9 @@
 ---
 name: wiki-query
-description: 从 ~/.zoo/wiki/ 中查询知识并合成答案。查询 wiki 覆盖的项目知识时加载此技能，替代盲目的代码库或网络探索。
+description: 从 wiki 中查询知识并合成答案。查询 wiki 覆盖的项目知识时加载此技能，替代盲目的代码库或网络探索。
 ---
 
 # Wiki Query 技能
-
-从 `~/.zoo/wiki/` 中查询知识并合成答案。
-查询 wiki 覆盖的项目知识时加载此技能，替代盲目的代码库或网络探索。
-
----
 
 ## Phase 0 — 覆盖判断
 
