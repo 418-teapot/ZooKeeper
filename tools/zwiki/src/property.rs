@@ -94,119 +94,16 @@ pub fn set(page: &Path, name: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Set (or remove) a frontmatter block-list field.
+/// Delete a frontmatter property together with its indented continuation
+/// lines.
 ///
-/// Replaces the field's key line and any indented continuation lines with
-/// a YAML block list (`  - item` per value).  When `items` is empty the
-/// field is removed entirely.  Returns `true` when the file content
-/// changed on disk.
-///
-/// Writes atomically (temp file → rename).
-pub fn set_block_list(
-    page: &Path,
-    name: &str,
-    items: &[String],
-) -> Result<bool, String> {
-    let content =
-        fs::read_to_string(page).map_err(|e| format!("无法读取文件: {e}"))?;
-
-    // The opening delimiter must be the very first line; otherwise a body
-    // containing two horizontal rules would be mistaken for a frontmatter
-    // block and the field would be injected mid-body.
-    if wiki::frontmatter_inner_range(&content).is_none() {
-        return Err("文件缺少有效的 frontmatter".to_string());
-    }
-
-    let lines: Vec<&str> = content.lines().collect();
-
-    // Find frontmatter boundaries: first `---` to second `---`
-    let mut fm_start: Option<usize> = None;
-    let mut fm_end: Option<usize> = None;
-    for (i, line) in lines.iter().enumerate() {
-        if line.trim() == "---" {
-            if fm_start.is_none() {
-                fm_start = Some(i);
-            } else if fm_end.is_none() {
-                fm_end = Some(i);
-                break;
-            }
-        }
-    }
-
-    let (Some(start), Some(end)) = (fm_start, fm_end) else {
-        return Err("文件缺少有效的 frontmatter".to_string());
-    };
-
-    let mut new_lines: Vec<String> = Vec::new();
-
-    // Lines before frontmatter (including opening `---`)
-    for line in &lines[..=start] {
-        new_lines.push((*line).to_string());
-    }
-
-    let mut found = false;
-    let mut skipping = false;
-
-    // Frontmatter body
-    for line in &lines[start + 1..end] {
-        // A field's block list continues until a non-indented line.
-        if skipping {
-            if line.starts_with(' ') || line.starts_with('\t') {
-                continue;
-            }
-            skipping = false;
-        }
-
-        let is_field = !line.starts_with(' ')
-            && !line.starts_with('\t')
-            && line.split_once(':').is_some_and(|(key, _)| key.trim() == name);
-
-        if is_field {
-            found = true;
-            skipping = true;
-            if !items.is_empty() {
-                new_lines.push(format!("{name}:"));
-                for item in items {
-                    new_lines.push(format!("  - {item}"));
-                }
-            }
-        } else {
-            new_lines.push((*line).to_string());
-        }
-    }
-
-    // Field absent but values provided — insert before closing `---`
-    if !found && !items.is_empty() {
-        new_lines.push(format!("{name}:"));
-        for item in items {
-            new_lines.push(format!("  - {item}"));
-        }
-    }
-
-    // Closing `---`
-    new_lines.push(lines[end].to_string());
-
-    // Lines after frontmatter
-    for line in &lines[end + 1..] {
-        new_lines.push((*line).to_string());
-    }
-
-    let mut new_content = new_lines.join("\n");
-    if content.ends_with('\n') && !new_content.ends_with('\n') {
-        new_content.push('\n');
-    }
-
-    if new_content == content {
-        return Ok(false);
-    }
-
-    zutil::fileio::write_atomic(page, &new_content)
-        .map_err(|e| format!("写入文件失败: {e}"))?;
-
-    Ok(true)
-}
-
-/// Delete a frontmatter property (remove its line).
+/// The field's own line is removed, as are the directly following indented
+/// lines that belong to it (block list items such as `  - value`, or nested
+/// mappings) and blank lines between them.  Scanning stops at the first
+/// non-indented, non-empty line, which begins either the next field or the
+/// closing `---`.  Inline values
+/// (`key: value`, `key: [a, b]`) have no continuation lines and their own
+/// line is removed on its own.
 ///
 /// Writes atomically (temp file → rename).
 pub fn delete(page: &Path, name: &str) -> Result<(), String> {
@@ -241,13 +138,30 @@ pub fn delete(page: &Path, name: &str) -> Result<(), String> {
         new_lines.push(line.to_string());
     }
 
-    // Frontmatter body — skip the line matching `name:`
+    // Frontmatter body — drop the line matching `name:` and, when that line
+    // is a top-level field, its indented continuation lines as well.  The
+    // closing `---` lies outside this slice, so the scan cannot cross it.
+    let mut in_continuation = false;
     for line in &lines[start + 1..end] {
+        let indented = line.starts_with(' ') || line.starts_with('\t');
+        if in_continuation {
+            // Blank lines belong to the field too: YAML allows them
+            // between block-list items, so skip until a non-indented,
+            // non-empty line ends the field.
+            if indented || line.trim().is_empty() {
+                continue;
+            }
+            in_continuation = false;
+        }
+
         let should_skip =
             line.split_once(':').is_some_and(|(key, _)| key.trim() == name);
-        if !should_skip {
-            new_lines.push(line.to_string());
+        if should_skip {
+            // Only a top-level field owns the indented lines that follow it.
+            in_continuation = !indented;
+            continue;
         }
+        new_lines.push(line.to_string());
     }
 
     // Closing `---`
@@ -296,6 +210,7 @@ pub fn downgrade_status(status: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
     use std::fs;
     use std::path::PathBuf;
 
@@ -416,88 +331,6 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // set_block_list
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_set_block_list_creates_field() {
-        let dir = temp_dir("bl_create");
-        let path = make_page(&dir, "test.md", SAMPLE);
-        let items = vec!["a.md".to_string(), "b.md".to_string()];
-        let changed = set_block_list(&path, "relations", &items).unwrap();
-        assert!(changed);
-
-        let content = fs::read_to_string(&path).unwrap();
-        assert!(content.contains("relations:\n  - a.md\n  - b.md"));
-        // Other fields preserved.
-        assert!(content.contains("title: Test Page"));
-    }
-
-    #[test]
-    fn test_set_block_list_is_idempotent() {
-        let dir = temp_dir("bl_idem");
-        let path = make_page(
-            &dir,
-            "test.md",
-            "---\ntitle: T\nrelations:\n  - a.md\n---\n\nBody.\n",
-        );
-        let items = vec!["a.md".to_string()];
-        assert!(!set_block_list(&path, "relations", &items).unwrap());
-    }
-
-    #[test]
-    fn test_set_block_list_replaces_inline_array() {
-        let dir = temp_dir("bl_inline");
-        let path = make_page(
-            &dir,
-            "test.md",
-            "---\ntitle: T\nrelations: [a.md, b.md]\nstatus: draft\n---\n\nBody.\n",
-        );
-        let items = vec!["c.md".to_string()];
-        assert!(set_block_list(&path, "relations", &items).unwrap());
-
-        let content = fs::read_to_string(&path).unwrap();
-        assert!(content.contains("relations:\n  - c.md"));
-        assert!(!content.contains("a.md"));
-        assert!(content.contains("status: draft"));
-    }
-
-    #[test]
-    fn test_set_block_list_empty_removes_field() {
-        let dir = temp_dir("bl_remove");
-        let path = make_page(
-            &dir,
-            "test.md",
-            "---\ntitle: T\nrelations:\n  - a.md\n  - b.md\nstatus: draft\n---\n\nBody.\n",
-        );
-        assert!(set_block_list(&path, "relations", &[]).unwrap());
-
-        let content = fs::read_to_string(&path).unwrap();
-        assert!(!content.contains("relations"));
-        assert!(content.contains("status: draft"));
-    }
-
-    #[test]
-    fn test_set_block_list_no_frontmatter() {
-        let dir = temp_dir("bl_no_fm");
-        let path = make_page(&dir, "test.md", "# Just body\n");
-        let items = vec!["a.md".to_string()];
-        assert!(set_block_list(&path, "relations", &items).is_err());
-    }
-
-    #[test]
-    fn test_set_block_list_body_rules_not_frontmatter() {
-        // A page without frontmatter whose body contains two `---` rules
-        // must be rejected instead of having the field injected mid-body.
-        let dir = temp_dir("bl_body_rules");
-        let content = "# Body\n\nBefore.\n\n---\n\nMiddle.\n\n---\n\nAfter.\n";
-        let path = make_page(&dir, "test.md", content);
-        let items = vec!["a.md".to_string()];
-        assert!(set_block_list(&path, "relations", &items).is_err());
-        assert_eq!(fs::read_to_string(&path).unwrap(), content);
-    }
-
-    // -------------------------------------------------------------------
     // delete
     // -------------------------------------------------------------------
 
@@ -534,5 +367,95 @@ mod tests {
         let path = make_page(&dir, "test.md", "# Just body\n");
         let result = delete(&path, "title");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_delete_block_list_field_removes_continuation_lines() {
+        let dir = temp_dir("delete_block_list");
+        let content = concat!(
+            "---\n",
+            "title: Test Page\n",
+            "tags:\n",
+            "  - old\n",
+            "sources:\n",
+            "  - a\n",
+            "  - b\n",
+            "status: draft\n",
+            "---\n",
+            "\n",
+            "Body content.\n",
+        );
+        let path = make_page(&dir, "test.md", content);
+
+        delete(&path, "sources").unwrap();
+
+        let after = fs::read_to_string(&path).unwrap();
+        assert!(
+            !after.contains("- a") && !after.contains("- b"),
+            "orphan block list items leaked:\n{after}"
+        );
+
+        // Neighbouring fields are untouched; the deleted field is gone.
+        let fm = wiki::parse_frontmatter(&after);
+        let tags = fm.get("tags").and_then(Value::as_array);
+        assert_eq!(tags.map(Vec::len), Some(1));
+        assert_eq!(
+            tags.and_then(|v| v.first()).and_then(Value::as_str),
+            Some("old")
+        );
+        assert_eq!(fm.get("title").and_then(Value::as_str), Some("Test Page"));
+        assert_eq!(fm.get("status").and_then(Value::as_str), Some("draft"));
+        assert!(!fm.contains_key("sources"));
+    }
+
+    #[test]
+    fn test_delete_block_list_field_with_blank_line() {
+        let dir = temp_dir("delete_block_list_blank");
+        let content = concat!(
+            "---\n",
+            "title: Test Page\n",
+            "sources:\n",
+            "  - a\n",
+            "\n",
+            "  - b\n",
+            "status: draft\n",
+            "---\n",
+            "\n",
+            "Body content.\n",
+        );
+        let path = make_page(&dir, "test.md", content);
+
+        delete(&path, "sources").unwrap();
+
+        let after = fs::read_to_string(&path).unwrap();
+        assert!(
+            !after.contains("- a") && !after.contains("- b"),
+            "orphan block list items leaked:\n{after}"
+        );
+        assert_eq!(
+            after,
+            "---\ntitle: Test Page\nstatus: draft\n---\n\nBody content.\n"
+        );
+    }
+
+    #[test]
+    fn test_delete_block_list_field_at_frontmatter_end() {
+        let dir = temp_dir("delete_block_list_end");
+        let content = concat!(
+            "---\n",
+            "title: Test Page\n",
+            "sources:\n",
+            "  - a\n",
+            "  - b\n",
+            "---\n",
+            "\n",
+            "Body content.\n",
+        );
+        let path = make_page(&dir, "test.md", content);
+
+        delete(&path, "sources").unwrap();
+
+        let after = fs::read_to_string(&path).unwrap();
+        assert_eq!(after, "---\ntitle: Test Page\n---\n\nBody content.\n");
     }
 }

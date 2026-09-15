@@ -189,7 +189,7 @@ pub fn validate_rel_path(path_str: &str) -> Result<(), String> {
 
 /// Frontmatter fields whose values carry wiki-relative page paths.
 const FRONTMATTER_PATH_FIELDS: &[&str] =
-    &["relations", "sources", "supersedes", "superseded_by", "contradictions"];
+    &["sources", "supersedes", "superseded_by", "contradictions"];
 
 /// Classification of a single frontmatter line for path-field scoping.
 enum FmLineKind {
@@ -232,17 +232,17 @@ fn frontmatter_key(line: &str) -> Option<String> {
 /// Whether a line inside `field` may carry a page path that must be
 /// rewritten.
 ///
-/// `relations` and `sources` hold bare paths (or markdown-link entries), so
-/// their key and list-item lines are eligible.  `supersedes`,
-/// `superseded_by`, and `contradictions` hold objects whose `path:` value is
-/// the reference, so only lines containing `path:` are eligible — this
-/// leaves sibling fields such as `reason:` or nested `claims:` untouched.
+/// `sources` holds bare paths, so its key and list-item lines are eligible.
+/// `supersedes`, `superseded_by`, and `contradictions` hold objects whose
+/// `path:` value is the reference, so only lines containing `path:` are
+/// eligible — this leaves sibling fields such as `reason:` or nested
+/// `claims:` untouched.
 fn line_carries_path(field: &str, category: &FmLineKind, line: &str) -> bool {
     if !FRONTMATTER_PATH_FIELDS.contains(&field) {
         return false;
     }
     match field {
-        "relations" | "sources" => {
+        "sources" => {
             matches!(category, FmLineKind::Key | FmLineKind::ListItem)
         }
         _ => line.contains("path:"),
@@ -329,7 +329,7 @@ fn rewrite_body_references(body: &str, old_rel: &str, new_rel: &str) -> String {
 /// Body references keep the literal replacement of markdown inline links
 /// `[text](old_rel)` and backtick-wrapped `` `old_rel` ``.  Frontmatter
 /// references are rewritten field-by-field after locating the frontmatter
-/// block, so bare paths in `relations`/`sources` and `path:` values in
+/// block, so bare paths in `sources` and `path:` values in
 /// `supersedes`/`superseded_by`/`contradictions` are updated without
 /// touching a same-shaped string elsewhere.
 ///
@@ -590,7 +590,7 @@ mod tests {
             &fm_page(
                 "Referencer",
                 "concept",
-                "relations:\n- [Foo](concepts/foo.md)\nsupersedes:\n  - path: concepts/foo.md\n    reason: outdated\n",
+                "supersedes:\n  - path: concepts/foo.md\n    reason: outdated\n",
                 "See [Foo](concepts/foo.md) and check `concepts/foo.md`.\n",
             ),
         );
@@ -610,10 +610,6 @@ mod tests {
         assert!(
             ref_content.contains("`concepts/bar.md`"),
             "backtick reference should be updated"
-        );
-        assert!(
-            ref_content.contains("[Foo](concepts/bar.md)"),
-            "relations entry should be updated"
         );
         assert!(
             ref_content.contains("path: concepts/bar.md"),
@@ -657,7 +653,7 @@ mod tests {
 
         make_page(&wiki_root, old_rel, &fm_page("Foo", "concept", "", "# Foo"));
 
-        // Referencer with only body links (no frontmatter relations).
+        // Referencer with only body links (no frontmatter path fields).
         make_page(
             &wiki_root,
             "concepts/ref.md",
@@ -679,7 +675,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // Same-domain rename — all four frontmatter reference types
+    // Same-domain rename — all frontmatter reference types
     // -------------------------------------------------------------------
 
     #[test]
@@ -690,10 +686,9 @@ mod tests {
 
         make_page(&wiki_root, old_rel, &fm_page("Foo", "concept", "", "# Foo"));
 
-        // A page that references foo in ALL four frontmatter fields.
+        // A page that references foo in all three path-carrying
+        // frontmatter fields.
         let ref_fm = "\
-relations:
-- [Foo](concepts/foo.md)
 supersedes:
   - path: concepts/foo.md
     reason: outdated
@@ -715,13 +710,12 @@ contradictions:
 
         let _result = execute_move(&wiki_root, old_rel, new_rel).unwrap();
         let ref_content = read_file(&wiki_root.join("concepts/ref.md"));
-        assert!(ref_content.contains("[Foo](concepts/bar.md)"));
 
-        // Count occurrences of the new path to verify all four were updated.
+        // Count occurrences of the new path to verify all three were updated.
         let count_new = ref_content.matches("concepts/bar.md").count();
         assert_eq!(
-            count_new, 4,
-            "all four frontmatter entries should be updated"
+            count_new, 3,
+            "all three frontmatter entries should be updated"
         );
 
         assert!(!ref_content.contains("concepts/foo.md"));
@@ -763,7 +757,7 @@ contradictions:
             &fm_page(
                 "Ref",
                 "concept",
-                "relations:\n- [Foo](concepts/foo.md)\n",
+                "",
                 "See [Foo](concepts/foo.md).\nRefer to `concepts/foo.md`.\n",
             ),
         );
@@ -1139,14 +1133,14 @@ contradictions:
         let old_rel = "concepts/foo.md";
         let new_rel = "concepts/bar.md";
 
-        // Page that links to itself in body and relations.
+        // Page that links to itself in its body.
         make_page(
             &wiki_root,
             old_rel,
             &fm_page(
                 "Foo",
                 "concept",
-                "relations:\n- [Foo](concepts/foo.md)\n",
+                "",
                 "See [Foo](concepts/foo.md) and check `concepts/foo.md`.\n",
             ),
         );
@@ -1165,10 +1159,6 @@ contradictions:
         assert!(
             moved.contains("`concepts/bar.md`"),
             "backtick self-reference should be updated"
-        );
-        assert!(
-            moved.contains("[Foo](concepts/bar.md)"),
-            "relations self-link should be updated"
         );
         assert!(
             !moved.contains("concepts/foo.md"),
@@ -1388,7 +1378,7 @@ contradictions:
             &fm_page(
                 "Ref Inline",
                 "concept",
-                "relations: [concepts/foo.md]\nsources: [concepts/foo.md]\n",
+                "sources: [concepts/foo.md]\n",
                 "# Ref\n",
             ),
         );
@@ -1400,7 +1390,7 @@ contradictions:
             &fm_page(
                 "Ref Block",
                 "concept",
-                "relations:\n- concepts/foo.md\nsources:\n- concepts/foo.md\n",
+                "sources:\n- concepts/foo.md\n",
                 "# Ref\n",
             ),
         );
@@ -1412,7 +1402,7 @@ contradictions:
             &fm_page(
                 "Ref Block Indent",
                 "concept",
-                "relations:\n  - concepts/foo.md\nsources:\n  - concepts/foo.md\n",
+                "sources:\n  - concepts/foo.md\n",
                 "# Ref\n",
             ),
         );
@@ -1463,7 +1453,7 @@ contradictions:
             &fm_page(
                 "Ref",
                 "concept",
-                "relations: [concepts/foo.md,concepts/foo.md]\n",
+                "sources: [concepts/foo.md,concepts/foo.md]\n",
                 "# Ref\n",
             ),
         );

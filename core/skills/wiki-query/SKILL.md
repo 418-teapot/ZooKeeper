@@ -107,9 +107,9 @@ zwiki search "<query>" [--type <type>] [--domain <domain>]
 
 > Phase 3 逐页读取时直接解析 frontmatter 中的 `contradictions` 字段（`[{path, claims, detected, resolution}]` 数组）。矛盾不改变引用决策（不跳过页面），仅标注。
 
-### Relations 递归
+### 关联递归
 
-如果页面有 `relations` frontmatter（domain-prefixed 路径如 `shared/concepts/foo.md`），可递归读取。agent 根据上下文预算自行判断何时停止。
+页面间的关联通过正文内联链接表达。需要扩大阅读范围时，可跟随正文中的内联链接与 `## Backlinks` 节递归读取。agent 根据上下文预算自行判断何时停止。
 
 ### 合成答案
 

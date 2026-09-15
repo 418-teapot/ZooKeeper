@@ -12,18 +12,6 @@ fn normalize_path(path: &str) -> String {
         .map_or_else(|| path.to_string(), ToString::to_string)
 }
 
-/// Truncate a note string to at most 60 characters.
-///
-/// If truncation occurs, the last character is replaced with `…`
-/// for a total of exactly 60 characters.
-fn truncate_note(note: &str) -> String {
-    if note.chars().count() <= 60 {
-        return note.to_string();
-    }
-    let truncated: String = note.chars().take(59).collect();
-    format!("{truncated}…")
-}
-
 /// Map action names to Chinese verbs.
 fn action_to_chinese(action: &str) -> &str {
     match action {
@@ -47,6 +35,19 @@ fn format_entry(path: &str, action: &str, note: &str) -> String {
     } else {
         format!("* **{verb}**: {path} — {note}")
     }
+}
+
+/// Collapse a multi-line note into a single line.
+///
+/// Line breaks (`\n` / `\r\n`) become a single space and empty segments
+/// are dropped, so a note never splits its log entry across lines or
+/// introduces a spurious `## ` section boundary.
+fn flatten_note(note: &str) -> String {
+    note.split(['\n', '\r'])
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Insert a new entry line into the log content under the right date group.
@@ -129,8 +130,8 @@ pub fn add_entry_at(
     // Normalize path (strip wiki/ prefix)
     let path = normalize_path(path);
 
-    // Truncate note to 60 chars
-    let note = note.map_or_else(String::new, truncate_note);
+    // Keep the full note text but flatten it onto a single line
+    let note = note.map_or_else(String::new, flatten_note);
 
     // Format entry
     let entry = format_entry(&path, action, &note);
@@ -239,30 +240,6 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // truncate_note
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_truncate_note_within_limit() {
-        let note = "short note";
-        assert_eq!(truncate_note(note), "short note");
-    }
-
-    #[test]
-    fn test_truncate_note_exact_limit() {
-        let note = "a".repeat(60);
-        assert_eq!(truncate_note(&note), note);
-    }
-
-    #[test]
-    fn test_truncate_note_exceeds_limit() {
-        let note = "a".repeat(61);
-        let result = truncate_note(&note);
-        assert_eq!(result.chars().count(), 60);
-        assert!(result.ends_with('…'), "result should end with …: {result}");
-    }
-
-    // -------------------------------------------------------------------
     // action_to_chinese
     // -------------------------------------------------------------------
 
@@ -302,6 +279,27 @@ mod tests {
     fn test_format_entry_unknown_action() {
         let result = format_entry("concepts/foo.md", "review", "needs review");
         assert_eq!(result, "* **review**: concepts/foo.md — needs review");
+    }
+
+    // -------------------------------------------------------------------
+    // insert_entry
+    // -------------------------------------------------------------------
+
+    // -------------------------------------------------------------------
+    // flatten_note
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_flatten_note_single_line_unchanged() {
+        assert_eq!(flatten_note("plain note"), "plain note");
+    }
+
+    #[test]
+    fn test_flatten_note_collapses_line_breaks() {
+        assert_eq!(flatten_note("a\nb"), "a b");
+        assert_eq!(flatten_note("a\r\nb"), "a b");
+        assert_eq!(flatten_note("a\n\nb"), "a b");
+        assert_eq!(flatten_note("a\nb\r\nc"), "a b c");
     }
 
     // -------------------------------------------------------------------
@@ -431,22 +429,21 @@ mod tests {
     }
 
     #[test]
-    fn test_add_entry_note_truncated() {
-        let wiki = temp_dir("note_truncated");
+    fn test_add_entry_keeps_long_note_intact() {
+        let wiki = temp_dir("note_intact");
 
         let long_note = "x".repeat(100);
         add_entry_at(&wiki, "concepts/test.md", "edit", Some(&long_note))
             .unwrap();
 
         let content = fs::read_to_string(monthly_log_path(&wiki)).unwrap();
-        let expected_note = truncate_note(&long_note);
         assert!(
-            content.contains(&expected_note),
-            "should contain truncated note: {content}"
+            content.contains(&long_note),
+            "should contain full note: {content}"
         );
         assert!(
-            !content.contains(&long_note),
-            "should NOT contain original long note"
+            !content.contains('…'),
+            "note should not be truncated: {content}"
         );
     }
 
@@ -470,6 +467,69 @@ mod tests {
         assert!(
             !content.contains("wiki/concepts/test.md"),
             "path should NOT have wiki/ prefix"
+        );
+    }
+
+    #[test]
+    fn test_add_entry_flattens_multiline_note() {
+        let wiki = temp_dir("flatten_multiline_note");
+
+        add_entry_at(
+            &wiki,
+            "concepts/test.md",
+            "edit",
+            Some("first line\n## 2026-10-01\nsecond line"),
+        )
+        .unwrap();
+
+        let content = fs::read_to_string(monthly_log_path(&wiki)).unwrap();
+
+        // The entry occupies exactly one line.
+        let entry_lines: Vec<&str> = content
+            .lines()
+            .filter(|l| l.contains("concepts/test.md"))
+            .collect();
+        assert_eq!(
+            entry_lines.len(),
+            1,
+            "entry must be a single line: {content}"
+        );
+        assert_eq!(
+            entry_lines[0],
+            "* **编辑**: concepts/test.md — first line ## 2026-10-01 second line"
+        );
+
+        // A heading embedded in the note must not become a section boundary.
+        assert!(
+            !content.contains("\n## 2026-10-01"),
+            "note heading must not leak into the log: {content}"
+        );
+    }
+
+    #[test]
+    fn test_multiline_note_does_not_break_followup_entries() {
+        let wiki = temp_dir("flatten_followup");
+
+        add_entry_at(&wiki, "first.md", "create", Some("line one\nline two"))
+            .unwrap();
+        add_entry_at(&wiki, "second.md", "create", Some("plain")).unwrap();
+
+        let content = fs::read_to_string(monthly_log_path(&wiki)).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+
+        // Only the real date section exists.
+        let sections = lines.iter().filter(|l| l.starts_with("## ")).count();
+        assert_eq!(sections, 1, "only one date section expected: {content}");
+
+        // The follow-up entry is appended directly after the first.
+        let first_idx =
+            lines.iter().position(|l| l.contains("first.md")).unwrap();
+        let second_idx =
+            lines.iter().position(|l| l.contains("second.md")).unwrap();
+        assert_eq!(
+            second_idx,
+            first_idx + 1,
+            "second entry should directly follow the first: {content}"
         );
     }
 

@@ -8,7 +8,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use regex::Regex;
-use serde_json::Value;
 
 use crate::display::{CheckResults, IndexSyncResult, Issue};
 use crate::wiki;
@@ -22,8 +21,7 @@ use crate::wiki::{Page, resolve_wiki_link};
 /// is considered a stub rather than having real content.
 const DEFAULT_STUB_THRESHOLD: usize = 100;
 
-/// System files that should not be referenced in `relations` fields or
-/// markdown links.
+/// System files that must not be targeted by markdown links.
 ///
 /// `overview.md` is excluded from this list — it is a synthesis page
 /// that other pages may legitimately reference.
@@ -382,48 +380,20 @@ pub fn check_frontmatter(pages: &[Page]) -> Vec<Issue> {
 }
 
 // ---------------------------------------------------------------------------
-// check_related_field
+// check_system_file_links
 // ---------------------------------------------------------------------------
 
-/// Check that `relations` frontmatter fields and markdown links don't point
-/// to system files (index.md, SCHEMA.md, etc.).
-pub fn check_related_field(pages: &[Page]) -> Vec<Issue> {
+/// Check that markdown links in page bodies don't point to system files
+/// (index.md, SCHEMA.md, etc.).
+///
+/// Pages express cross-references through inline body links, so this is the
+/// only place such references can be inspected.
+pub fn check_system_file_links(pages: &[Page]) -> Vec<Issue> {
     let system_names: HashSet<&str> = SYSTEM_FILES.iter().copied().collect();
     let link_re = Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").unwrap();
     let mut results: Vec<Issue> = Vec::new();
 
     for page in pages {
-        // Check frontmatter `relations` field.
-        if let Some(related) = page.frontmatter.get("relations") {
-            let items: Vec<&str> = match related {
-                Value::String(s) => vec![s.as_str()],
-                Value::Array(arr) => {
-                    arr.iter().filter_map(|v| v.as_str()).collect()
-                }
-                _ => Vec::new(),
-            };
-            for target in items {
-                // Parse markdown-link wrapper to extract target path.
-                let bare_target = wiki::parse_related_entry(target);
-                let fname = Path::new(&bare_target)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("");
-                if system_names.contains(fname)
-                    || bare_target.starts_with("logs/")
-                {
-                    results.push(Issue {
-                        page: page.rel.clone(),
-                        category: "related_to_system_file".to_string(),
-                        details: format!(
-                            "Frontmatter 'relations' field points to system file '{target}' — \
-                             this is not allowed"
-                        ),
-                    });
-                }
-            }
-        }
-
         // Check markdown links in body text.
         for cap in link_re.captures_iter(&page.body) {
             let link_text = &cap[1];
@@ -1070,7 +1040,7 @@ pub fn run_all(root: &Path) -> CheckResults {
         index_sync: check_index_sync(&pages, root),
         log_coverage: check_log_coverage(&pages, root),
         frontmatter: check_frontmatter(&pages),
-        related_field: check_related_field(&pages),
+        system_file_links: check_system_file_links(&pages),
         source_field: check_source_field(&pages),
         missing_inline_links: check_missing_inline_links(&pages, root),
         duplicate_inline_links: check_duplicate_inline_links(&pages, root),
@@ -1789,39 +1759,26 @@ last_validated: not-a-date\n---\nBody.\n";
     }
 
     // =======================================================================
-    // check_related_field
+    // check_system_file_links
     // =======================================================================
 
     #[test]
-    fn test_related_field_valid() {
+    fn test_system_file_links_valid() {
         let pages = vec![make_page(
             "concepts/valid.md",
-            "---\ntitle: Valid\ntype: concept\nrelations: [concepts/other.md]\n---\nSee [other](concepts/other.md).\n",
+            "---\ntitle: Valid\ntype: concept\n---\nSee [other](concepts/other.md).\n",
         )];
-        let issues = check_related_field(&pages);
+        let issues = check_system_file_links(&pages);
         assert!(issues.is_empty());
     }
 
     #[test]
-    fn test_related_field_related_to_system_file() {
-        let pages = vec![make_page(
-            "concepts/bad.md",
-            "---\ntitle: Bad\ntype: concept\nrelations: [index.md, concepts/foo.md]\n---\nBody.\n",
-        )];
-        let issues = check_related_field(&pages);
-        assert!(
-            issues.iter().any(|i| i.category == "related_to_system_file"),
-            "should detect relations field pointing to system file"
-        );
-    }
-
-    #[test]
-    fn test_related_field_markdown_link_to_system_file() {
+    fn test_system_file_links_markdown_link_to_system_file() {
         let pages = vec![make_page(
             "concepts/badlink.md",
             "---\ntitle: Bad\ntype: concept\n---\nSee [schema](SCHEMA.md) and [index](index.md).\n",
         )];
-        let issues = check_related_field(&pages);
+        let issues = check_system_file_links(&pages);
         assert!(
             issues.iter().any(|i| i.category == "markdown_link_to_system_file"),
             "should detect markdown link to system file"
@@ -1830,12 +1787,12 @@ last_validated: not-a-date\n---\nBody.\n";
     }
 
     #[test]
-    fn test_related_field_external_ignored() {
+    fn test_system_file_links_external_ignored() {
         let pages = vec![make_page(
             "concepts/external.md",
             "---\ntitle: External\ntype: concept\n---\nSee [example](https://example.com).\n",
         )];
-        let issues = check_related_field(&pages);
+        let issues = check_system_file_links(&pages);
         assert!(issues.is_empty(), "external URLs should be ignored");
     }
 
@@ -2146,22 +2103,19 @@ last_validated: not-a-date\n---\nBody.\n";
 
     #[test]
     fn test_body_sections_to_check_keeps_first_section() {
-        let body = "## Overview\nContent.\n\n## Relations\nRelated.\n";
+        let body = "## Overview\nContent.\n\n## Details\nStuff.\n";
         let result = body_sections_to_check(body);
         assert!(result.contains("## Overview"));
-        // Relations is not in SKIP_LINK_CHECK_SECTIONS, so it is kept.
-        assert!(result.contains("## Relations"));
+        // Details is not in SKIP_LINK_CHECK_SECTIONS, so it is kept.
+        assert!(result.contains("## Details"));
     }
 
     #[test]
     fn test_body_sections_to_check_all_skipped() {
-        let body = "## Relations\nR1\n\n## Backlinks\nB1\n\n## References\nRef1\n\n## Notes\nN1\n";
+        let body = "## Overview\nR1\n\n## Backlinks\nB1\n\n## References\nRef1\n\n## Notes\nN1\n";
         let result = body_sections_to_check(body);
-        // First section (before any `\n## ` split) is always kept: "## Relations\nR1\n\n".
-        assert!(
-            result.contains("## Relations"),
-            "first section is always kept"
-        );
+        // First section (before any `\n## ` split) is always kept: "## Overview\nR1\n\n".
+        assert!(result.contains("## Overview"), "first section is always kept");
         // Backlinks, References, Notes should be removed.
         assert!(
             !result.contains("## Backlinks"),
@@ -2172,21 +2126,6 @@ last_validated: not-a-date\n---\nBody.\n";
             "References should be removed"
         );
         assert!(!result.contains("## Notes"), "Notes should be removed");
-    }
-
-    #[test]
-    fn test_related_field_markdown_link_format() {
-        // Markdown-link format entries should have path extracted for
-        // system-file checking.
-        let pages = vec![make_page(
-            "concepts/foo.md",
-            "---\ntitle: Foo\nrelations:\n- \"[Home](index.md)\"\n---\nBody.\n",
-        )];
-        let issues = check_related_field(&pages);
-        assert!(
-            issues.iter().any(|i| i.category == "related_to_system_file"),
-            "should detect system file even inside markdown-link wrapper"
-        );
     }
 
     // =======================================================================

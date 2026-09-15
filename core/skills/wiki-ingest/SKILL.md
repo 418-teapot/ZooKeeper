@@ -70,7 +70,7 @@ description: 用于将外部源文档或对话知识 ingest 到项目 wiki 中�
 **ACCEPTANCE:**
 返回一份结构化分析，描述：
   - 要创建/更新的页面路径、完整 frontmatter、完整页面内容（遵循 SCHEMA.md 规范）
-   - 需要更新的交叉引用（在哪些已有页面的正文中添加指回新页面的内联链接；`relations` 与反向链接由 `zwiki check` 自动派生，kiwi 无需处理）
+   - 需要更新的交叉引用（在哪些已有页面的正文中添加指回新页面的内联链接；页面关联即正文内联链接；反向链接由 `zwiki check` 自动派生，kiwi 无需处理）
    - 关于 `overview.md` 是否需要更新的建议
 ```
 
@@ -99,7 +99,7 @@ kiwi 返回分析后，执行写入命令。写命令必须显式传 `--root`，
 **以下步骤创建和更新共用：**
 3. **保存原始材料** — 如果输入为 URL 或文件，保存原文副本到 bundle 源的 `raw/$(date +%F)-<slug>.md`
 4. **更新 overview.md** — 如果 kiwi 的分析建议更新，则执行
-5. **更新交叉引用** — 按照 kiwi 的建议，在已有页面正文中添加指回新页面的内联链接（使用域前缀路径，如 `<domain>/concepts/<file>.md`）。`relations`、反向链接与各级索引均由 zwiki 自动派生，无需手工维护；`page create`/`page set` 会自动记录日志，需要说明时加 `--note`
+5. **更新交叉引用** — 按照 kiwi 的建议，在已有页面正文中添加指回新页面的内联链接（使用域前缀路径，如 `<domain>/concepts/<file>.md`）。页面关联即正文内联链接，反向链接与各级索引均由 zwiki 自动派生，无需手工维护；`page create`/`page set` 会自动记录日志，需要说明时加 `--note`
 
 ---
 

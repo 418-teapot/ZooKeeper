@@ -1145,7 +1145,7 @@ fn dispatch_check_root_dir(dir: &Path, json_mode: bool) -> i32 {
     i32::from(total > 0)
 }
 
-/// Sync relations, backlinks, and apply timeliness updates (`mark_stale` +
+/// Sync backlinks and apply timeliness updates (`mark_stale` +
 /// `invalidate_by_source`) across a set of pages under `root`.  When
 /// `suppress_eprint` is true, informational eprintln messages are suppressed
 /// (used in `json_mode` for the no-arg check path).
@@ -1176,14 +1176,6 @@ fn sync_derived_metadata(
         .filter(|p| wiki::bundle_on_path(root, &p.rel).is_none())
         .cloned()
         .collect();
-
-    // Sync relations from prose inline links before rebuilding backlinks,
-    // so the reverse index sees the freshly written metadata.
-    let relations_synced =
-        backlinks::sync_relations(root, &writable, &bundles, suppress_eprint);
-    if relations_synced > 0 && !suppress_eprint {
-        eprintln!("已同步 {relations_synced} 个页面的 relations");
-    }
 
     // Sync backlinks.  The reverse index is built from all pages so that
     // bundle pages contribute their outbound links, but only writable
@@ -1310,9 +1302,9 @@ fn dispatch_check_no_arg_inner(
         total_issues += health_issues + lint_issues;
     }
 
-    // Sync relations/backlinks and apply timeliness updates across the
-    // entire wiki root before printing the aggregate output.  Read-only
-    // roots skip all writes.
+    // Sync backlinks and apply timeliness updates across the entire wiki
+    // root before printing the aggregate output.  Read-only roots skip all
+    // writes.
     if read_only {
         eprintln!("只读根，已跳过派生元数据同步");
     } else {
@@ -1432,7 +1424,7 @@ pub(crate) fn format_health_lint_json(
             },
             "log_coverage": fmt_issues(&health.log_coverage),
             "frontmatter": fmt_issues(&health.frontmatter),
-            "related_field": fmt_issues(&health.related_field),
+            "system_file_links": fmt_issues(&health.system_file_links),
             "source_field": fmt_issues(&health.source_field),
             "missing_inline_links": fmt_issues(&health.missing_inline_links),
             "duplicate_inline_links": fmt_issues(&health.duplicate_inline_links),
@@ -2044,7 +2036,7 @@ mod tests {
             "--action",
             "create",
         ]);
-        assert!(result.is_err(), "log must no longer be a recognized command");
+        assert!(result.is_err(), "log is not a recognized command");
     }
 
     // -------------------------------------------------------------------
@@ -3336,7 +3328,7 @@ bundle validation process.\n"
         std::fs::create_dir_all(dir.join("logs")).unwrap();
         std::fs::write(dir.join("logs/.gitkeep"), "").unwrap();
 
-        // Page A links to page B via relations + inline link.
+        // Page A links to page B via an inline link.
         let page_a = format!(
             "---
 title: Page A
@@ -3346,7 +3338,6 @@ tags: []
 status: draft
 last_validated: 2026-07-01T00:00:00Z
 timeliness: current
-relations: [page_b.md]
 ---
 
 # Page A

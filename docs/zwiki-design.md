@@ -43,8 +43,8 @@ bundle 源；root 含 `zwiki.lock`（store）或缺 `bundle.toml` 一律拒写�
   页面 `description`），bundle 根索引列出所有域与根级页面，store 根索引
   列出所有已安装 bundle（附 manifest `description`）。`page create` /
   `page move` / `domain create` 即时重建受影响的索引；`check` 全量重建。
-- **relations**：frontmatter `relations` 由 `check` 从正文内联链接派生
-  （空集则删除字段）；页面间的关联通过在正文写内联链接表达。
+- **页面关联**：通过在正文写内联链接表达；zwiki 在需要时（反向索
+  引、健康检查、链接检查）从正文按需派生。
 - **反向链接**：页面 `## Backlinks` 区由 `check` 整体重建；`page move`
   后即时重建受影响的页面。
 - **日志**：`logs/YYYY-MM.md` 条目由写命令（`page create`/`set`/`unset`/

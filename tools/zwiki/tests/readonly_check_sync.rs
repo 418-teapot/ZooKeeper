@@ -1,9 +1,8 @@
 //! Integration test: `zwiki check` on an installed store (a root carrying
 //! `zwiki.lock`) or on an aggregate root containing an installed bundle
-//! skips derived-metadata writes inside bundles (relations and backlinks)
-//! and notes the skip.  A writable root check would instead rewrite
-//! `page_a.md` (add a `relations` field and a `## Backlinks` section), so
-//! the two behaviors are distinguishable.
+//! skips derived-metadata writes inside bundles (backlinks) and notes the
+//! skip.  A writable root check would instead rewrite `page_b.md` (add a
+//! `## Backlinks` section), so the two behaviors are distinguishable.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -39,8 +38,8 @@ fn test_check_on_store_root_skips_derived_sync() {
     let page_b = page("Page B", "Body of page B.");
     std::fs::write(bundle.join("page_b.md"), &page_b).unwrap();
 
-    // page_a links to page_b; a writable check would derive `relations` and
-    // add a `## Backlinks` section to page_b.
+    // page_a links to page_b; a writable check would add a `## Backlinks`
+    // section to page_b.
     let page_a =
         page("Page A", "See [Page B](page_b.md) for related information.");
     let page_a_path = bundle.join("page_a.md");
@@ -59,7 +58,6 @@ fn test_check_on_store_root_skips_derived_sync() {
 
     let after_a = std::fs::read_to_string(&page_a_path).unwrap();
     assert_eq!(after_a, page_a, "read-only check must not rewrite page_a");
-    assert!(!after_a.contains("relations:"), "no derived relations written");
 
     let after_b = std::fs::read_to_string(bundle.join("page_b.md")).unwrap();
     assert_eq!(after_b, page_b, "read-only check must not rewrite page_b");
@@ -136,7 +134,6 @@ fn test_aggregate_root_check_skips_bundle_pages() {
     assert_eq!(after_a, page_a, "bundle page_a must not be rewritten");
     let after_b = std::fs::read_to_string(&page_b_path).unwrap();
     assert_eq!(after_b, page_b, "bundle page_b must not be rewritten");
-    assert!(!after_a.contains("relations:"), "no derived relations");
     assert!(!after_b.contains("## Backlinks"), "no derived backlinks");
 }
 

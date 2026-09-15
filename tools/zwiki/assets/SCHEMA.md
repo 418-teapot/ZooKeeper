@@ -64,7 +64,6 @@
 | `resource` | 否 | string | 外部资产 URI |
 | `sources` | 否 | string[] | 参考的源文档标识列表（用于 analysis / synthesis 类型） |
 | `tags` | 是 | string[] | 标签列表，如 `[permission, config]` |
-| `relations` | 否 | string[] | 相关页面列表，由 `zwiki check` 从正文内联链接派生，勿手工编辑 |
 | `status` | 是 | string | 状态：`draft` / `review` / `stable` / `deprecated` |
 | `last_validated` | 是 | string | 验证时间，ISO 8601 datetime，区别于 timestamp（编辑≠验证） |
 | `timeliness` | 是 | string | 时效性标记：`current` / `stale`（仅两档，新页面默认 current） |
@@ -121,7 +120,7 @@ freshness_days: 90
 
 ### 路径与交叉引用规则
 
-页面路径一律**相对所在 bundle 的根目录**、带域前缀（如 `<domain>/concepts/foo.md`），不带 store 或源目录前缀。页面间的关联通过正文内联链接表达；frontmatter `relations` 由 `zwiki check` 自动派生，Backlinks 节由 `zwiki check` 自动维护：
+页面路径一律**相对所在 bundle 的根目录**、带域前缀（如 `<domain>/concepts/foo.md`），不带 store 或源目录前缀。页面间的关联通过正文内联链接表达，`zwiki check` 按需从正文派生关联关系；Backlinks 节由 `zwiki check` 自动维护：
 
 - **内联链接：**
   ```
@@ -202,7 +201,7 @@ freshness_days: 90
 - 条目：`* **动词**: 路径 — 说明`，每条占一行
 - `<动词>`：`创建` / `编辑` / `移动`
 - `<路径>`：被操作对象的路径，相对 bundle 根目录。非文件事件写 `—`
-- `<说明>`：简短说明（不超过 60 字），来自写命令的 `--note`
+- `<说明>`：简短说明，来自写命令的 `--note`，按原文完整记录
 
 示例：
 

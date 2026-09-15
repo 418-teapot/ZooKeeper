@@ -27,7 +27,7 @@ pub const fn count_health_issues(r: &CheckResults) -> usize {
         + r.index_sync.in_index_not_on_disk.len()
         + r.log_coverage.len()
         + r.frontmatter.len()
-        + r.related_field.len()
+        + r.system_file_links.len()
         + r.source_field.len()
         + r.missing_inline_links.len()
         + r.duplicate_inline_links.len()
@@ -70,7 +70,7 @@ pub struct CheckResults {
     pub index_sync: IndexSyncResult,
     pub log_coverage: Vec<Issue>,
     pub frontmatter: Vec<Issue>,
-    pub related_field: Vec<Issue>,
+    pub system_file_links: Vec<Issue>,
     pub source_field: Vec<Issue>,
     pub missing_inline_links: Vec<Issue>,
     pub duplicate_inline_links: Vec<Issue>,
@@ -195,9 +195,9 @@ fn fmt_frontmatter(issues: &[Issue]) -> Vec<String> {
     lines
 }
 
-fn fmt_related_field(issues: &[Issue]) -> Vec<String> {
+fn fmt_system_file_links(issues: &[Issue]) -> Vec<String> {
     let mut lines = Vec::new();
-    lines.push(format!("## Relations 字段完整性（{}）", issues.len()));
+    lines.push(format!("## 系统文件链接（{}）", issues.len()));
     lines.push(String::new());
     lines.push("| 页面 | 问题 | 详情 |".to_string());
     lines.push("|---|---|---|".to_string());
@@ -276,7 +276,7 @@ fn fmt_duplicate_inline_links(issues: &[Issue]) -> Vec<String> {
     lines.push(format!("## 重复内联链接（{}）", issues.len()));
     lines.push(String::new());
     lines.push(
-        "以下页面在正文中多次链接到同一个目标页面（Relations/Backlinks/References/Notes 已排除）："
+        "以下页面在正文中多次链接到同一个目标页面（Backlinks/References/Notes 已排除）："
             .to_string(),
     );
     lines.push(String::new());
@@ -380,8 +380,8 @@ pub fn format_full_report(health: &CheckResults, lint: &LintResults) -> String {
         if !health.frontmatter.is_empty() {
             lines.extend(fmt_frontmatter(&health.frontmatter));
         }
-        if !health.related_field.is_empty() {
-            lines.extend(fmt_related_field(&health.related_field));
+        if !health.system_file_links.is_empty() {
+            lines.extend(fmt_system_file_links(&health.system_file_links));
         }
         if !health.source_field.is_empty() {
             lines.extend(fmt_source_field(&health.source_field));
@@ -767,9 +767,9 @@ mod tests {
             category: "missing_field:type".into(),
             details: String::new(),
         });
-        health.related_field.push(Issue {
+        health.system_file_links.push(Issue {
             page: "bad-related.md".into(),
-            category: "related_to_system".into(),
+            category: "markdown_link_to_system_file".into(),
             details: String::new(),
         });
         health.source_field.push(Issue {

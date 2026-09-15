@@ -31,7 +31,7 @@ Read the full content + frontmatter of each candidate page (pay special attentio
 
 ### 2.3: Load Related Pages
 
-For each candidate page, read the pages listed in its frontmatter `relations` field (direct relations only, depth 1, no recursion). Also read their content + lifecycle fields.
+For each candidate page, read the pages it links to via inline body links (direct links only, depth 1, no recursion). Also read their content + lifecycle fields.
 
 ### 2.4: Establish Claim Map & Learn Density Patterns
 
@@ -107,7 +107,7 @@ Before finalizing, review your draft against ALL criteria below. If a criterion 
 - If unsure whether something is noise, flag it under `## Notes` with `> **待确认:** ...` rather than including it in main text.
 
 ### 4.5 Cross-Reference Check
-- For every recommended page, identify at least 1 existing wiki page it should link to via `related`. If none exists, explain why.
+- For every recommended page, identify at least 1 existing wiki page it should link to via inline body links. If none exists, explain why.
 - All cross-reference paths are wiki-root-relative and domain-prefixed (e.g. `foo/concepts/bar.md` NOT `wiki/foo/concepts/bar.md`).
 - **Inline links in page body:** each independent reading entry point (a section reachable via search or TOC) should have at least one link to each referenced concept. Short pages need only first occurrence.
 - **Verify no duplicate inline links:** after adding the first-occurrence link, scan the rest of the page body and remove any additional inline links to the same target — only the first occurrence in each independent section should carry a link.
@@ -208,7 +208,7 @@ Revise, then re-check. After 2 iterations, if a criterion still fails, flag it e
 
 Explain to the calling agent what should be created/updated:
 - What pages to create or update (full paths including domain prefix, frontmatter, page content following SCHEMA.md conventions). If a similar page already exists, recommend updating it instead of creating a duplicate — describe what sections to add or revise
-- What cross-references to update (which existing pages should gain an inline link to the new page; `relations` and backlinks are derived by `zwiki check`, not hand-edited)
+- What cross-references to update (which existing pages should gain an inline link to the new page; page relations are expressed as inline body links; backlinks are derived by `zwiki check`, not hand-edited)
 - Whether `overview.md` needs rewriting
 
 ### Supersede Proposals
@@ -293,7 +293,7 @@ Before returning your analysis, confirm ALL of the following:
 ### Format Compliance (SCHEMA.md rules)
 - [ ] All recommended frontmatter includes: title, type, timestamp, tags, status
 - [ ] Cross-reference paths are wiki-root-relative and domain-prefixed (e.g. `foo/concepts/bar.md`)
-- [ ] No references to system files (index.md, overview.md, SCHEMA.md) in any page's `related` field
+- [ ] No links to system files (index.md, overview.md, SCHEMA.md) in any page's body
 - [ ] Every recommended knowledge page has a corresponding `<domain>/sources/<type>/<slug>.md` entry recording the ingested raw material
 - [ ] Uncertainty is marked with `> **待确认:**` blockquote, not stated as fact
 

@@ -1,11 +1,11 @@
 //! Bidirectional backlinks — reverse index and automatic section maintenance.
 //!
-//! Scans all wiki pages, extracts cross-references (frontmatter `relations`,
-//! inline markdown links `[text](path.md)`, and backtick-wrapped paths
-//! `` `path.md` ``), builds a reverse index, and optionally writes
+//! Scans all wiki pages, extracts cross-references (inline markdown links
+//! `[text](path.md)`, backtick-wrapped paths `` `path.md` ``, and frontmatter
+//! reference fields), builds a reverse index, and optionally writes
 //! `## Backlinks` sections into each page.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
@@ -98,14 +98,13 @@ fn target_exists_in_any_bundle(
 // strip_derived_metadata_sections
 // ---------------------------------------------------------------------------
 
-/// Remove the `## Relations` and `## Backlinks` sections from `body`.
+/// Remove the generated `## Backlinks` section from `body`.
 ///
-/// `relations` is derived from prose links, so a page's own `## Relations`
-/// listing (if present) and the generated `## Backlinks` section must not
-/// feed back into the derived set.
+/// The `## Backlinks` section is a metadata declaration, not prose
+/// cross-references, so it must not feed back into link extraction.
 #[must_use]
 pub fn strip_derived_metadata_sections(body: &str) -> String {
-    strip_section(&strip_section(body, "Relations"), "Backlinks")
+    strip_section(body, "Backlinks")
 }
 
 /// Remove a `## <heading>` section from `content`.
@@ -124,11 +123,37 @@ fn strip_section(content: &str, heading: &str) -> String {
 // extract_links
 // ---------------------------------------------------------------------------
 
+/// Resolve a `sources` entry to a bare path.
+///
+/// Entries come in two shapes: a plain path (`path/to.md`) or a markdown
+/// link (`[Name](path/to.md)`).  The block-list frontmatter parser keeps
+/// surrounding quotes, so a quoted markdown link is unquoted before the
+/// target is read.
+fn source_path(value: &str) -> &str {
+    let trimmed = value.trim();
+    let unquoted = trimmed
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .or_else(|| {
+            trimmed.strip_prefix('\'').and_then(|s| s.strip_suffix('\''))
+        })
+        .unwrap_or(trimmed);
+
+    if let Some(rest) = unquoted.strip_prefix('[')
+        && let Some(close) = rest.find("](")
+    {
+        let after = &rest[close + 2..];
+        if let Some(end) = after.find(')') {
+            return after[..end].trim();
+        }
+    }
+    unquoted
+}
+
 /// Extract cross-reference link targets from `content`, checking existence
 /// against `wiki_root`.
 ///
 /// Sources:
-/// - Frontmatter `relations` field
 /// - Frontmatter `sources` field (derived pages reference their sources)
 /// - Frontmatter `supersedes`/`superseded_by`/`contradictions` fields
 /// - Inline markdown links `[text](path.md)` in body text
@@ -150,33 +175,18 @@ pub fn extract_links(
     let body = wiki::strip_frontmatter(content);
     let clean_body = strip_derived_metadata_sections(&body);
 
-    // Frontmatter relations field
-    if let Some(Value::Array(related)) = fm.get("relations") {
-        for val in related {
-            if let Some(s) = val.as_str() {
-                let bare = wiki::parse_related_entry(s);
-                if std::path::Path::new(&bare)
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
-                {
-                    links.push(bare);
-                }
-            }
-        }
-    }
-
-    // 1a-bis. Frontmatter sources field.  A derived page names its source
+    // Frontmatter sources field.  A derived page names its source
     // pages here, so a source page must see the derived pages as backlinks
     // (and a move must find those referrers).
     if let Some(Value::Array(sources)) = fm.get("sources") {
         for val in sources {
             if let Some(s) = val.as_str() {
-                let bare = wiki::parse_related_entry(s);
-                if std::path::Path::new(&bare)
+                let bare = source_path(s);
+                if std::path::Path::new(bare)
                     .extension()
                     .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
                 {
-                    links.push(bare);
+                    links.push(bare.to_string());
                 }
             }
         }
@@ -240,131 +250,6 @@ pub fn extract_links(
         .into_iter()
         .filter(|ln| is_valid_wiki_target(wiki_root, ln, bundles))
         .collect()
-}
-
-// ---------------------------------------------------------------------------
-// derive_relation_link_targets / sync_relations
-// ---------------------------------------------------------------------------
-
-/// Derive a page's `relations` targets from its inline body links.
-///
-/// The `## Relations` and `## Backlinks` sections are excluded — they are
-/// declarations/generated output, not prose cross-references — and only
-/// existing wiki targets are kept.  Targets appear in first-occurrence
-/// order with duplicates collapsed, paired with the link's display text.
-#[must_use]
-pub fn derive_relation_link_targets(
-    wiki_root: &Path,
-    page: &wiki::Page,
-    bundles: &wiki::BundleSet,
-) -> Vec<(String, String)> {
-    let clean = strip_derived_metadata_sections(&page.body);
-    let md_re =
-        Regex::new(r"\[([^\]]+)\]\(([^)]+\.md)\)").expect("valid regex");
-    let mut targets: Vec<(String, String)> = Vec::new();
-    // A page's bundle-relative path, used to drop self-links that appear
-    // in bundle-relative form on installed pages.
-    let self_relative = bundles.strip_prefix(&page.rel);
-
-    for cap in md_re.captures_iter(&clean) {
-        let display = cap[1].trim();
-        let target = cap[2].trim();
-        if target.starts_with("http://")
-            || target.starts_with("https://")
-            || target.starts_with("mailto:")
-        {
-            continue;
-        }
-        if !is_valid_wiki_target(wiki_root, target, bundles) {
-            continue;
-        }
-        // A page must not relate to itself, whether the link is written
-        // with or without the bundle prefix.
-        if target == page.rel || self_relative.is_some_and(|rel| rel == target)
-        {
-            continue;
-        }
-        if !targets.iter().any(|(_, t)| t == target) {
-            targets.push((display.to_string(), target.to_string()));
-        }
-    }
-
-    targets
-}
-
-/// Synchronize each page's frontmatter `relations` field from its inline
-/// body links.
-///
-/// Existing entries whose target is still linked keep their original form
-/// and order; newly discovered targets are appended.  Pages whose derived
-/// set is empty have the field removed.  Returns the number of pages whose
-/// content changed.  When `suppress_eprint` is true, warning messages are
-/// suppressed (used under `--json`).
-pub fn sync_relations(
-    wiki_root: &Path,
-    pages: &[wiki::Page],
-    bundles: &wiki::BundleSet,
-    suppress_eprint: bool,
-) -> usize {
-    let mut updated = 0;
-    for page in pages {
-        match sync_page_relations(wiki_root, page, bundles) {
-            Ok(true) => updated += 1,
-            Ok(false) => {}
-            Err(e) => {
-                if !suppress_eprint {
-                    eprintln!("警告: 同步 relations 失败 {}: {e}", page.rel);
-                }
-            }
-        }
-    }
-    updated
-}
-
-/// Recompute and write a single page's `relations` field.
-fn sync_page_relations(
-    wiki_root: &Path,
-    page: &wiki::Page,
-    bundles: &wiki::BundleSet,
-) -> Result<bool, String> {
-    let derived = derive_relation_link_targets(wiki_root, page, bundles);
-    let derived_targets: HashSet<&str> =
-        derived.iter().map(|(_, t)| t.as_str()).collect();
-
-    let mut entries: Vec<String> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-
-    // Keep still-linked entries in their original form and order.
-    if let Some(Value::Array(arr)) = page.frontmatter.get("relations") {
-        for val in arr {
-            if let Some(s) = val.as_str() {
-                let bare = wiki::parse_related_entry(s);
-                if derived_targets.contains(bare.as_str()) && seen.insert(bare)
-                {
-                    entries.push(s.to_string());
-                }
-            }
-        }
-    }
-
-    // Append newly discovered targets.
-    for (display, target) in &derived {
-        if seen.insert(target.clone()) {
-            entries.push(format_relation_entry(display, target));
-        }
-    }
-
-    crate::property::set_block_list(&page.path, "relations", &entries)
-}
-
-/// Render a derived `relations` entry as a single-quoted YAML scalar.
-///
-/// The display text is author-controlled and may contain double quotes; a
-/// double-quoted scalar would then be invalid YAML.  Single-quoted style
-/// keeps `"` literal and escapes an embedded `'` by doubling it.
-fn format_relation_entry(display: &str, target: &str) -> String {
-    let escaped = display.replace('\'', "''");
-    format!("'[{escaped}]({target})'")
 }
 
 // ---------------------------------------------------------------------------
@@ -901,17 +786,6 @@ mod tests {
     // -------------------------------------------------------------------
 
     #[test]
-    fn test_extract_links_from_related_frontmatter() {
-        let content =
-            "---\ntitle: Test\nrelations: [foo.md, bar.md]\n---\n\nBody.";
-        let dir = temp_dir("extract_related");
-        write(&dir.join("foo.md"), "# Foo");
-        write(&dir.join("bar.md"), "# Bar");
-        let result = extract_links(&dir, content, &no_bundles());
-        assert_eq!(result, vec!["bar.md", "foo.md"]);
-    }
-
-    #[test]
     fn test_extract_links_from_markdown_links() {
         let content = "See [Foo](foo.md) and [Bar](bar.md).";
         let dir = temp_dir("extract_mdlinks");
@@ -957,8 +831,7 @@ mod tests {
 
     #[test]
     fn test_extract_links_deduplicates() {
-        let content =
-            "---\nrelations: [foo.md]\n---\n\nSee [Foo](foo.md) and `foo.md`.";
+        let content = "See [Foo](foo.md) and `foo.md`.";
         let dir = temp_dir("extract_dedup");
         write(&dir.join("foo.md"), "# Foo");
         let result = extract_links(&dir, content, &no_bundles());
@@ -973,6 +846,30 @@ mod tests {
         write(&dir.join("z.md"), "# Z");
         let result = extract_links(&dir, content, &no_bundles());
         assert_eq!(result, vec!["a.md", "z.md"]);
+    }
+
+    // -------------------------------------------------------------------
+    // 3a. extract_links from sources field
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_links_from_sources_bare_paths() {
+        let content = "---\nsources:\n  - alpha.md\n  - beta.md\n---\n\nBody.";
+        let dir = temp_dir("extract_sources_bare");
+        write(&dir.join("alpha.md"), "# Alpha");
+        write(&dir.join("beta.md"), "# Beta");
+        let result = extract_links(&dir, content, &no_bundles());
+        assert_eq!(result, vec!["alpha.md", "beta.md"]);
+    }
+
+    #[test]
+    fn test_extract_links_from_sources_markdown_links() {
+        let content = "---\nsources:\n  - \"[Alpha](alpha.md)\"\n  - \"[Beta](beta.md)\"\n---\n\nBody.";
+        let dir = temp_dir("extract_sources_mdlink");
+        write(&dir.join("alpha.md"), "# Alpha");
+        write(&dir.join("beta.md"), "# Beta");
+        let result = extract_links(&dir, content, &no_bundles());
+        assert_eq!(result, vec!["alpha.md", "beta.md"]);
     }
 
     // -------------------------------------------------------------------
@@ -1037,7 +934,7 @@ Body.";
             make_page(
                 &dir,
                 "concepts/a.md",
-                "---\nrelations: [b.md]\n---\n\n# A\n\nSee [B](b.md).",
+                "---\n---\n\n# A\n\nSee [B](b.md).",
             ),
             make_page(&dir, "concepts/b.md", "# B\n\nNo links."),
         ];
@@ -1132,13 +1029,6 @@ Body.";
     // -------------------------------------------------------------------
     // find_insertion_point
     // -------------------------------------------------------------------
-
-    #[test]
-    fn test_find_insertion_point_ignores_relations() {
-        let content = "# Title\n\n## Relations\n\n- `foo.md`\n\nBody.";
-        // `## Relations` is not an insertion anchor.
-        assert!(find_insertion_point(content).is_none());
-    }
 
     #[test]
     fn test_find_insertion_point_after_details() {
@@ -1421,7 +1311,7 @@ Body.";
         let link_source = make_page(
             &dir,
             "core/docs/link_source.md",
-            "---\ntitle: Link Source\nrelations: [shared/concepts/target.md]\n---\n\n# Link Source\n\nLinks to [target](shared/concepts/target.md).",
+            "---\ntitle: Link Source\n---\n\n# Link Source\n\nLinks to [target](shared/concepts/target.md).",
         );
         let pages = vec![target_core, target_other, link_source];
         let bundles = wiki::BundleSet::discover(&dir);
@@ -1538,7 +1428,7 @@ Body.";
     // -------------------------------------------------------------------
 
     fn setup_backlinks_pages(dir: &Path) -> Vec<PathBuf> {
-        // Page A links to target.md via relations + inline link.
+        // Page A links to target.md via an inline link.
         write(
             &dir.join("page_a.md"),
             "---
@@ -1549,7 +1439,6 @@ tags: []
 status: draft
 last_validated: 2026-07-01T00:00:00Z
 timeliness: current
-relations: [target.md]
 ---
 
 # Page A
@@ -1584,7 +1473,6 @@ tags: []
 status: draft
 last_validated: 2026-07-01T00:00:00Z
 timeliness: current
-relations: [other.md]
 ---
 
 # Page C
@@ -1707,14 +1595,15 @@ Body.",
     #[test]
     fn test_build_backlinks_for_no_references() {
         let dir = temp_dir("backlinks_for_noref");
-        // Only page A which links to target.md, but query other.md.
+        // Page A links to target.md; the query asks about other.md.
         write(
             &dir.join("page_a.md"),
             "---
 title: Page A
 type: concept
-relations: [target.md]
----",
+---
+
+See [Target](target.md).",
         );
         let paths = discover_pages_backlinks(&dir);
         let pages: Vec<wiki::Page> =
@@ -1723,260 +1612,5 @@ relations: [target.md]
         let result =
             build_backlinks_for("other.md", &dir, &pages, &no_bundles());
         assert!(result.is_empty(), "other.md has no references");
-    }
-
-    // -------------------------------------------------------------------
-    // derive_relation_link_targets / sync_relations
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn test_derive_relation_link_targets_body_order_and_dedup() {
-        let dir = temp_dir("derive_targets");
-        write(&dir.join("a.md"), "---\ntitle: A\n---\n\nA.\n");
-        write(&dir.join("b.md"), "---\ntitle: B\n---\n\nB.\n");
-        let page = make_page(
-            &dir,
-            "src.md",
-            "---\ntitle: Src\n---\n\n# Src\n\nSee [B](b.md) then \
-             [A](a.md) and [B again](b.md).\n",
-        );
-        let targets = derive_relation_link_targets(&dir, &page, &no_bundles());
-        assert_eq!(
-            targets,
-            vec![
-                ("B".to_string(), "b.md".to_string()),
-                ("A".to_string(), "a.md".to_string()),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_derive_relation_link_targets_excludes_metadata_sections() {
-        let dir = temp_dir("derive_sections");
-        for name in ["w.md", "x.md", "y.md", "z.md"] {
-            write(&dir.join(name), "---\ntitle: T\n---\n\nBody.\n");
-        }
-        let page = make_page(
-            &dir,
-            "src.md",
-            "---\ntitle: Src\n---\n\n# Src\n\nProse [Z](z.md).\n\n\
-             ## References\n\n- [W](w.md)\n\n\
-             ## Relations\n\n- [X](x.md)\n\n\
-             ## Backlinks\n\n- [Y](y.md)\n",
-        );
-        let targets = derive_relation_link_targets(&dir, &page, &no_bundles());
-        assert_eq!(
-            targets,
-            vec![
-                ("Z".to_string(), "z.md".to_string()),
-                ("W".to_string(), "w.md".to_string()),
-            ],
-            "References are kept; Relations/Backlinks are excluded"
-        );
-    }
-
-    #[test]
-    fn test_sync_relations_creates_in_body_order_and_is_idempotent() {
-        let dir = temp_dir("sync_relations_create");
-        write(&dir.join("a.md"), "---\ntitle: A\n---\n\nA.\n");
-        write(&dir.join("b.md"), "---\ntitle: B\n---\n\nB.\n");
-        let page = make_page(
-            &dir,
-            "src.md",
-            "---\ntitle: Src\nstatus: draft\n---\n\n# Src\n\n\
-             See [B](b.md) and [A](a.md).\n",
-        );
-        assert_eq!(
-            sync_relations(
-                &dir,
-                std::slice::from_ref(&page),
-                &no_bundles(),
-                false
-            ),
-            1
-        );
-
-        let content = fs::read_to_string(&page.path).unwrap();
-        assert!(
-            content.contains("relations:\n  - '[B](b.md)'\n  - '[A](a.md)'"),
-            "relations derived in body order: {content}"
-        );
-        assert!(content.contains("status: draft"), "field preserved");
-
-        let re_read = wiki::read_page_at(&page.path, &dir).unwrap();
-        assert_eq!(
-            sync_relations(&dir, &[re_read], &no_bundles(), false),
-            0,
-            "second run is a no-op"
-        );
-    }
-
-    #[test]
-    fn test_sync_relations_preserves_existing_order() {
-        let dir = temp_dir("sync_relations_order");
-        for name in ["a.md", "b.md", "c.md"] {
-            write(&dir.join(name), "---\ntitle: T\n---\n\nBody.\n");
-        }
-        let page = make_page(
-            &dir,
-            "src.md",
-            "---\ntitle: Src\nrelations:\n  - \"[A](a.md)\"\n  - \"[C](c.md)\"\n---\n\n\
-             # Src\n\nSee [C](c.md), [A](a.md) and [B](b.md).\n",
-        );
-        assert_eq!(
-            sync_relations(
-                &dir,
-                std::slice::from_ref(&page),
-                &no_bundles(),
-                false
-            ),
-            1
-        );
-
-        let content = fs::read_to_string(&page.path).unwrap();
-        let a_pos = content.find("[A](a.md)").unwrap();
-        let c_pos = content.find("[C](c.md)").unwrap();
-        let b_pos = content.find("[B](b.md)").unwrap();
-        assert!(
-            a_pos < c_pos && c_pos < b_pos,
-            "existing order kept, new target appended: {content}"
-        );
-    }
-
-    #[test]
-    fn test_sync_relations_drops_stale_and_removes_empty_field() {
-        let dir = temp_dir("sync_relations_drop");
-        write(&dir.join("a.md"), "---\ntitle: A\n---\n\nBody.\n");
-        write(&dir.join("gone.md"), "---\ntitle: G\n---\n\nBody.\n");
-
-        let page = make_page(
-            &dir,
-            "src.md",
-            "---\ntitle: Src\nrelations:\n  - \"[A](a.md)\"\n  - \"[G](gone.md)\"\n---\n\n\
-             # Src\n\nSee [A](a.md).\n",
-        );
-        assert_eq!(
-            sync_relations(
-                &dir,
-                std::slice::from_ref(&page),
-                &no_bundles(),
-                false
-            ),
-            1
-        );
-        let content = fs::read_to_string(&page.path).unwrap();
-        assert!(!content.contains("gone.md"), "stale entry dropped: {content}");
-        assert!(content.contains("[A](a.md)"));
-
-        let empty = make_page(
-            &dir,
-            "empty.md",
-            "---\ntitle: E\nrelations:\n  - \"[A](a.md)\"\n---\n\n\
-             # E\n\nNo links here.\n",
-        );
-        assert_eq!(
-            sync_relations(
-                &dir,
-                std::slice::from_ref(&empty),
-                &no_bundles(),
-                false
-            ),
-            1
-        );
-        let content = fs::read_to_string(&empty.path).unwrap();
-        assert!(
-            !content.contains("relations"),
-            "empty derived set removes the field: {content}"
-        );
-    }
-
-    #[test]
-    fn test_sync_relations_single_quotes_display_with_double_quote() {
-        let dir = temp_dir("sync_relations_quote");
-        write(&dir.join("target.md"), "---\ntitle: T\n---\n\nT.\n");
-        let page = make_page(
-            &dir,
-            "src.md",
-            "---\ntitle: Src\n---\n\n# Src\n\nHe said \"hi\" about \
-             [Target](target.md).\n",
-        );
-        assert_eq!(
-            sync_relations(
-                &dir,
-                std::slice::from_ref(&page),
-                &no_bundles(),
-                false
-            ),
-            1
-        );
-
-        let content = fs::read_to_string(&page.path).unwrap();
-        // Frontmatter inner block lives between the first two `---` lines.
-        let inner = content.split("---").nth(1).unwrap();
-        let parsed: serde_yaml::Value = serde_yaml::from_str(inner)
-            .expect("frontmatter must stay valid YAML");
-        let relations = parsed
-            .get("relations")
-            .and_then(|v| v.as_sequence())
-            .expect("relations array");
-        assert_eq!(relations.len(), 1);
-        assert!(
-            relations[0].as_str().unwrap().contains("(target.md)"),
-            "entry should reference the target: {content}"
-        );
-    }
-
-    #[test]
-    fn test_derive_relation_link_targets_excludes_self_link() {
-        let dir = temp_dir("derive_self_link");
-        write(&dir.join("other.md"), "---\ntitle: O\n---\n\nO.\n");
-        let page = make_page(
-            &dir,
-            "src.md",
-            "---\ntitle: Src\n---\n\n# Src\n\nSee [Self](src.md) and \
-             [Other](other.md).\n",
-        );
-        let targets = derive_relation_link_targets(&dir, &page, &no_bundles());
-        assert_eq!(
-            targets,
-            vec![("Other".to_string(), "other.md".to_string())],
-            "a page must not relate to itself"
-        );
-    }
-
-    #[test]
-    fn test_derive_relation_link_targets_excludes_bundle_self_link() {
-        let dir = temp_dir("derive_bundle_self");
-        write_bundle_manifest(&dir, "core");
-        let rel = "core/shared/x.md";
-        write(&dir.join("core/shared/y.md"), "---\ntitle: Y\n---\n\nY.\n");
-        let page = make_page(
-            &dir,
-            rel,
-            "---\ntitle: X\n---\n\n# X\n\nSee [Self](shared/x.md) and \
-             [Other](shared/y.md).\n",
-        );
-        let bundles = wiki::BundleSet::discover(&dir);
-        let targets = derive_relation_link_targets(&dir, &page, &bundles);
-        assert_eq!(
-            targets,
-            vec![("Other".to_string(), "shared/y.md".to_string())],
-            "bundle-relative self link is excluded"
-        );
-    }
-
-    #[test]
-    fn test_extract_links_ignores_relations_section() {
-        let dir = temp_dir("extract_relations_section");
-        for name in ["a.md", "b.md"] {
-            write(&dir.join(name), "---\ntitle: T\n---\n\nBody.\n");
-        }
-        let content = "---\ntitle: S\n---\n\n# S\n\nSee [A](a.md).\n\n\
-                       ## Relations\n\n- [B](b.md)\n";
-        assert_eq!(
-            extract_links(&dir, content, &no_bundles()),
-            vec!["a.md"],
-            "manual Relations entries must not become links"
-        );
     }
 }
