@@ -367,6 +367,15 @@ reasoning = true
 context = 256000
 output  = 128000
 
+[provider.MoonShot.models."kimi-for-coding"]
+name      = "kimi-for-coding"
+id        = "kimi-for-coding"
+reasoning = true
+
+[provider.MoonShot.models."kimi-for-coding".limit]
+context = 1000000
+output  = 128000
+
 # ── OpenAI ────────────────────────────────────────────────────────────────────
 
 [provider.OpenAI]
