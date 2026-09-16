@@ -8,17 +8,15 @@
  *  - result assembly (one `Q<n>: <question> => <core rendering>` line per
  *    question, and the structured `details` written back through the host
  *    context's details slot);
- *  - the presentation paths, driven through a fake `ui.custom` that mounts
- *    the REAL dialog headless: the TUI answer flow, the non-TUI `no-ui`
- *    fallback, an already-aborted signal (the UI is never opened), an
- *    abort mid-form (answers already committed survive), a host that closes
- *    the overlay without reporting, a `ui.custom` that rejects (the tool
- *    still never throws), and the `guardAnswers` replacement of a
- *    structurally illegal `answered` slot.
+ *  - the contribution's own paths, driven through a fake `ui.custom` that
+ *    mounts the REAL dialog headless: the non-TUI `no-ui` fallback, a real
+ *    answer run, a `ui.custom` that rejects, and the `guardAnswers`
+ *    replacement of a structurally illegal `answered` slot.
  *
  * Also the unit descriptor's pi-only fail-closed behaviour (no
  * `piSwitchHost` → zero tools) and the internal gate that keeps two forms
- * from mounting on top of each other.
+ * from mounting on top of each other.  The presentation contract itself
+ * (`presentAskForm`) is covered in `src/adapters/pi/ask-form.test.ts`.
  *
  * @module
  */
@@ -28,65 +26,15 @@ import { describe, it } from "node:test";
 import type {
   AskDialogComponent,
   AskDialogOutcome,
-  AskDialogThemeLike,
-  AskDialogTuiLike,
-} from "../adapters/pi/tui/ask-dialog.js";
+} from "../adapters/pi/ask-form.js";
+import { formHarness } from "../adapters/pi/ask-form-harness.js";
 import type { AskResult, NormalizedQuestion } from "../core/ask.js";
 import type { ActiveSet, Deps } from "../core/slots.js";
-import {
-  assembleAskResults,
-  guardAnswers,
-  parseAskArgs,
-  presentAskForm,
-  unit,
-} from "./ask.js";
+import { assembleAskResults, guardAnswers, parseAskArgs, unit } from "./ask.js";
 
 // ---------------------------------------------------------------------------
-// Fakes
+// Test helpers
 // ---------------------------------------------------------------------------
-
-/** A TUI that swallows render requests. */
-function fakeTui(): AskDialogTuiLike {
-  return { requestRender() {}, terminal: { rows: 24, columns: 80 } };
-}
-
-/** An identity theme — no ANSI, so the assembled text matches literally. */
-function fakeTheme(): AskDialogThemeLike {
-  return { fg: (_color, text) => text, bold: (text) => text };
-}
-
-/** A `ui.custom` surface that mounts the real dialog and exposes it. */
-function overlayHarness(): {
-  custom(factory: unknown, options: unknown): unknown;
-  /** The mounted component (undefined until the factory ran). */
-  component(): AskDialogComponent | undefined;
-  /** Resolve the pending `ui.custom` call with an arbitrary outcome. */
-  resolve(outcome: AskDialogOutcome | undefined): void;
-} {
-  let mounted: AskDialogComponent | undefined;
-  let resolver: ((outcome: AskDialogOutcome | undefined) => void) | undefined;
-  return {
-    custom(factory, _options) {
-      // The promise resolver is installed BEFORE the factory runs: a dialog
-      // that closes during its own mount (the abort-before-mount replay)
-      // must not lose its result.
-      const pending = new Promise<AskDialogOutcome | undefined>((resolve) => {
-        resolver = resolve;
-      });
-      mounted = (
-        factory as (
-          tui: unknown,
-          theme: unknown,
-          keybindings: unknown,
-          done: (outcome: AskDialogOutcome) => void,
-        ) => AskDialogComponent
-      )(fakeTui(), fakeTheme(), {}, (outcome) => resolver?.(outcome));
-      return pending;
-    },
-    component: () => mounted,
-    resolve: (outcome) => resolver?.(outcome),
-  };
-}
 
 /** Let the queued tool bodies run (microtask-safe, no timers involved). */
 async function settle(turns = 6): Promise<void> {
@@ -336,146 +284,6 @@ describe("ask tool — guardAnswers", () => {
 });
 
 // ---------------------------------------------------------------------------
-// presentAskForm
-// ---------------------------------------------------------------------------
-
-describe("ask tool — presentAskForm", () => {
-  const two = parseAskArgs({
-    questions: [
-      { question: "One?", options: [{ label: "A1" }] },
-      { question: "Two?", options: [{ label: "A2" }, { label: "B2" }] },
-    ],
-  });
-
-  it("drives the real dialog through the fake overlay to a result", async () => {
-    const overlay = overlayHarness();
-    const running = presentAskForm({ questions: two, custom: overlay.custom });
-    const component = overlay.component();
-    assert.ok(component, "the dialog mounted");
-    component.handleInput("\r"); // answer Q1 -> active Q2
-    component.handleInput("\x1b[B"); // cursor onto B2
-    component.handleInput("\r"); // answer Q2 -> Submit page
-    component.handleInput("\r"); // submit
-    const results = await running;
-    assert.deepEqual(results, [
-      { status: "answered", answer: ["A1"], wasCustom: false },
-      { status: "answered", answer: ["B2"], wasCustom: false },
-    ]);
-  });
-
-  it("an already-aborted signal never opens the UI", async () => {
-    const overlay = overlayHarness();
-    const controller = new AbortController();
-    controller.abort();
-    const results = await presentAskForm({
-      questions: two,
-      custom: overlay.custom,
-      signal: controller.signal,
-    });
-    assert.equal(overlay.component(), undefined);
-    assert.deepEqual(
-      results,
-      two.map(() => ({ status: "unavailable", reason: "aborted" })),
-    );
-  });
-
-  it("aborting mid-form keeps committed answers and aborts the rest", async () => {
-    const overlay = overlayHarness();
-    const controller = new AbortController();
-    const running = presentAskForm({
-      questions: two,
-      custom: overlay.custom,
-      signal: controller.signal,
-    });
-    overlay.component()?.handleInput("\r"); // Q1 answered
-    controller.abort();
-    assert.deepEqual(await running, [
-      { status: "answered", answer: ["A1"], wasCustom: false },
-      { status: "unavailable", reason: "aborted" },
-    ]);
-  });
-
-  it("a host that closes the overlay without a result yields aborted", async () => {
-    const overlay = overlayHarness();
-    const running = presentAskForm({ questions: two, custom: overlay.custom });
-    overlay.resolve(undefined);
-    assert.deepEqual(await running, [
-      { status: "unavailable", reason: "aborted" },
-      { status: "unavailable", reason: "aborted" },
-    ]);
-  });
-
-  it("aborts before the dialog mounts as soon as it does mount", async () => {
-    const controller = new AbortController();
-    let resolveCustom:
-      | ((outcome: AskDialogOutcome | undefined) => void)
-      | undefined;
-    const custom = (factory: unknown, _options: unknown) =>
-      new Promise<AskDialogOutcome | undefined>((resolve) => {
-        resolveCustom = resolve;
-        // The signal fires while the factory is still running — the dialog
-        // has no handle yet, so the abort is replayed onto it once mounted.
-        controller.abort();
-        (
-          factory as (
-            tui: unknown,
-            theme: unknown,
-            kb: unknown,
-            done: (outcome: AskDialogOutcome) => void,
-          ) => AskDialogComponent
-        )(fakeTui(), fakeTheme(), {}, (outcome) => resolveCustom?.(outcome));
-      });
-    const running = presentAskForm({
-      questions: two,
-      custom,
-      signal: controller.signal,
-    });
-    const results = await running;
-    assert.deepEqual(results, [
-      { status: "unavailable", reason: "aborted" },
-      { status: "unavailable", reason: "aborted" },
-    ]);
-  });
-
-  it("a rejecting ui.custom yields aborted slots, never a throw", async () => {
-    const exploding = () => Promise.reject(new Error("overlay torn down"));
-    const results = await presentAskForm({ questions: two, custom: exploding });
-    assert.deepEqual(results, [
-      { status: "unavailable", reason: "aborted" },
-      { status: "unavailable", reason: "aborted" },
-    ]);
-  });
-
-  it("a ui.custom whose factory throws yields aborted slots", async () => {
-    const custom = (_factory: unknown, _options: unknown) => {
-      throw new Error("host has no overlay");
-    };
-    const results = await presentAskForm({ questions: two, custom });
-    assert.deepEqual(
-      results,
-      two.map(() => ({ status: "unavailable", reason: "aborted" })),
-    );
-  });
-
-  it("passes the timeout budget into the dialog title", async () => {
-    const overlay = overlayHarness();
-    const running = presentAskForm({
-      questions: two,
-      custom: overlay.custom,
-      timeoutSeconds: 42,
-    });
-    const lines = overlay.component()?.render(60) ?? [];
-    assert.match(lines.join("\n"), /Ask \(42s\)/);
-    overlay.component()?.handleInput("\x1b");
-    const results = await running;
-    assert.deepEqual(results, [
-      { status: "declined" },
-      { status: "unavailable", reason: "aborted" },
-    ]);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // The tool contribution
 // ---------------------------------------------------------------------------
 
@@ -511,10 +319,10 @@ describe("ask tool — contribution", () => {
 
   it("assembles a real dialog run into text + details", async () => {
     const tool = unitTools()[0];
-    const overlay = overlayHarness();
+    const form = formHarness();
     const hostCtx: { details?: unknown } = {};
-    const running = tool.execute(args, { mode: "tui", ui: overlay }, hostCtx);
-    const component = overlay.component();
+    const running = tool.execute(args, { mode: "tui", ui: form }, hostCtx);
+    const component = form.component();
     assert.ok(component);
     key(component, "\r"); // Q1 = A1 -> Q2
     key(component, "\x1b"); // decline Q2
@@ -537,7 +345,7 @@ describe("ask tool — contribution", () => {
 
   it("drops a forged answered slot reported by the dialog", async () => {
     const tool = unitTools()[0];
-    const overlay = {
+    const form = {
       custom: (_factory: unknown, _options: unknown) =>
         Promise.resolve({
           results: [
@@ -548,18 +356,14 @@ describe("ask tool — contribution", () => {
         }),
     };
     const hostCtx: { details?: unknown } = {};
-    const text = await tool.execute(
-      args,
-      { mode: "tui", ui: overlay },
-      hostCtx,
-    );
+    const text = await tool.execute(args, { mode: "tui", ui: form }, hostCtx);
     assert.match(text, /Q1: One\? => User unavailable \(aborted\)/);
     assert.match(text, /Q2: Two\? => User declined to answer/);
   });
 
   it("hands the dialog the sanitized question and labels", async () => {
     const tool = unitTools()[0];
-    const overlay = overlayHarness();
+    const form = formHarness();
     const running = tool.execute(
       {
         questions: [
@@ -569,9 +373,9 @@ describe("ask tool — contribution", () => {
           },
         ],
       },
-      { mode: "tui", ui: overlay },
+      { mode: "tui", ui: form },
     );
-    const component = overlay.component();
+    const component = form.component();
     assert.ok(component, "the dialog mounted");
     // The identity theme adds no ANSI of its own, so any escape in the panel
     // would have come from the model's text.
@@ -622,7 +426,7 @@ describe("ask tool — contribution", () => {
     let onScreen = 0;
     let maxOnScreen = 0;
     const dismiss: Array<(outcome: AskDialogOutcome) => void> = [];
-    const overlay = {
+    const form = {
       custom: (_factory: unknown, _options: unknown) => {
         onScreen += 1;
         maxOnScreen = Math.max(maxOnScreen, onScreen);
@@ -642,12 +446,12 @@ describe("ask tool — contribution", () => {
       closure: "submit" as const,
     });
 
-    const first = tool.execute(args, { mode: "tui", ui: overlay }, {});
+    const first = tool.execute(args, { mode: "tui", ui: form }, {});
     await settle();
     assert.equal(dismiss.length, 1, "the first call draws the form");
 
     // Dispatched while the first form is still on screen: it must wait.
-    const second = tool.execute(args, { mode: "tui", ui: overlay }, {});
+    const second = tool.execute(args, { mode: "tui", ui: form }, {});
     await settle();
     assert.equal(onScreen, 1, "the second call never stacks a form");
 
@@ -666,18 +470,18 @@ describe("ask tool — contribution", () => {
     // corrected at once instead of queueing behind the open dialog.
     const tool = unitTools()[0];
     const dismiss: Array<(outcome: AskDialogOutcome) => void> = [];
-    const overlay = {
+    const form = {
       custom: (_factory: unknown, _options: unknown) =>
         new Promise<AskDialogOutcome>((resolve) => {
           dismiss.push((outcome) => resolve(outcome));
         }),
     };
-    const first = tool.execute(args, { mode: "tui", ui: overlay }, {});
+    const first = tool.execute(args, { mode: "tui", ui: form }, {});
     await settle();
     assert.equal(dismiss.length, 1, "the first call draws the form");
 
     await assert.rejects(
-      () => tool.execute({ questions: [] }, { mode: "tui", ui: overlay }, {}),
+      () => tool.execute({ questions: [] }, { mode: "tui", ui: form }, {}),
       /ask \u5de5\u5177\u53c2\u6570\u9519\u8bef/,
     );
     assert.equal(
@@ -699,7 +503,7 @@ describe("ask tool — contribution", () => {
     const tool = unitTools()[0];
     let customCalls = 0;
     const dismiss: Array<(outcome: AskDialogOutcome) => void> = [];
-    const overlay = {
+    const form = {
       custom: (_factory: unknown, _options: unknown) => {
         customCalls += 1;
         return new Promise<AskDialogOutcome>((resolve) => {
@@ -708,10 +512,10 @@ describe("ask tool — contribution", () => {
       },
     };
     const controller = new AbortController();
-    const first = tool.execute(args, { mode: "tui", ui: overlay }, {});
+    const first = tool.execute(args, { mode: "tui", ui: form }, {});
     const second = tool.execute(
       args,
-      { mode: "tui", ui: overlay },
+      { mode: "tui", ui: form },
       { signal: controller.signal },
     );
     controller.abort();
@@ -795,16 +599,13 @@ describe("ask tool — unit descriptor", () => {
     );
     assert.equal(contributions.kind, "tool");
     const tool = contributions.tools[0];
-    const overlay = overlayHarness();
+    const form = formHarness();
     const running = tool.execute(
       { questions: [{ question: "One?", options: [{ label: "A" }] }] },
-      { mode: "tui", ui: overlay },
+      { mode: "tui", ui: form },
     );
-    assert.match(
-      (overlay.component()?.render(60) ?? []).join("\n"),
-      /Ask \(7s\)/,
-    );
-    overlay.component()?.handleInput("\x1b");
+    assert.match((form.component()?.render(60) ?? []).join("\n"), /Ask \(7s\)/);
+    form.component()?.handleInput("\x1b");
     assert.match(await running, /User declined to answer/);
   });
 });

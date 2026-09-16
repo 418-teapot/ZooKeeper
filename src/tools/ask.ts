@@ -3,9 +3,9 @@
  *
  * The tool is a thin host adapter over the framework-independent ask
  * protocol (`src/core/ask.ts`): it parses the model's questions through the
- * core normalizer, mounts the pi dialog (`src/adapters/pi/tui/ask-dialog.ts`)
- * for the whole form, then maps the per-question results back onto the tool
- * result —
+ * core normalizer, hands the whole form to the pi adapter
+ * (`src/adapters/pi/ask-form.ts`) to mount and collect, then maps the
+ * per-question results back onto the tool result —
  * `content` as one line per question (question text + the core's
  * `formatResultForModel` rendering) and `details` as the structured
  * `{question, result}` pairs.
@@ -28,14 +28,11 @@
 
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import {
-  type AskDialog,
-  type AskDialogOutcome,
   type AskDialogQuestion,
-  type AskDialogThemeLike,
-  type AskDialogTuiLike,
-  createAskDialog,
+  fallbackResults,
+  presentAskForm,
   toOneLine,
-} from "../adapters/pi/tui/ask-dialog.js";
+} from "../adapters/pi/ask-form.js";
 import type { AskResult, NormalizedQuestion } from "../core/ask.js";
 import {
   formatResultForModel,
@@ -77,7 +74,7 @@ export interface AskToolCtxLike {
   mode?: unknown;
   /** The pi UI surface (only `custom` is used). */
   ui?: {
-    custom?: (factory: unknown, options: unknown) => unknown;
+    custom?: (factory: unknown, options?: unknown) => unknown;
   };
 }
 
@@ -287,22 +284,8 @@ export function guardAnswers(
 }
 
 // ---------------------------------------------------------------------------
-// Dialog presentation
+// Result hand-back
 // ---------------------------------------------------------------------------
-
-/** Overlay sizing for the ask form. */
-const ASK_OVERLAY_OPTIONS = {
-  overlay: true,
-  overlayOptions: { width: "80%", minWidth: 50, anchor: "center" },
-};
-
-/** All-unavailable results (no dialog was ever mounted, or none reported). */
-function fallbackResults(
-  questions: AskDialogQuestion[],
-  reason: "timeout" | "aborted" | "no-ui",
-): AskResult[] {
-  return questions.map(() => ({ status: "unavailable", reason }) as AskResult);
-}
 
 /**
  * Return the model-facing text and write the structured details back.
@@ -317,75 +300,6 @@ function handBack(
 ): string {
   if (hostCtx !== undefined) hostCtx.details = assembly.details;
   return assembly.text;
-}
-
-/**
- * Mount the dialog and wait for the user's decision.
- *
- * The host's abort signal is wired to the dialog's `abort()` handle so a
- * cancellation closes the form and preserves the answers already committed.
- * An abort that lands before the dialog mounts is applied as soon as it
- * does; a signal that is already aborted never opens the UI at all.
- *
- * `ui.custom` rejects when the factory throws or the host force-closes the
- * overlay, so the await is guarded: the tool never throws, and a form that
- * never reported is reported as a system-side abort (whatever the user had
- * committed is unrecoverable on that path).
- *
- * @param opts - Questions, pi's `ui.custom` surface, the optional timeout
- *   seconds, and the optional abort signal.
- * @returns One result per question.
- */
-export async function presentAskForm(opts: {
-  questions: AskDialogQuestion[];
-  custom: (factory: unknown, options: unknown) => unknown;
-  timeoutSeconds?: number;
-  signal?: AbortSignal;
-}): Promise<AskResult[]> {
-  const { questions, custom } = opts;
-  if (opts.signal?.aborted) return fallbackResults(questions, "aborted");
-
-  let dialog: AskDialog | undefined;
-  let abortBeforeMount = false;
-  const onAbort = () => {
-    if (dialog === undefined) abortBeforeMount = true;
-    else dialog.abort();
-  };
-  opts.signal?.addEventListener("abort", onAbort, { once: true });
-  try {
-    const outcome = (await custom(
-      (tui: unknown, theme: unknown, _keybindings: unknown, done: unknown) => {
-        dialog = createAskDialog({
-          questions,
-          tui: tui as AskDialogTuiLike,
-          theme: theme as AskDialogThemeLike,
-          done: (result: AskDialogOutcome) => {
-            (done as (outcome: AskDialogOutcome) => void)(result);
-          },
-          ...(opts.timeoutSeconds !== undefined
-            ? { timeoutSeconds: opts.timeoutSeconds }
-            : {}),
-        });
-        if (abortBeforeMount) dialog.abort();
-        return dialog.component;
-      },
-      ASK_OVERLAY_OPTIONS,
-    )) as AskDialogOutcome | undefined;
-    // A host that closes the overlay without reporting a result treated the
-    // form as gone — the unanswered questions are aborted, and any answer
-    // the user had already committed is simply absent from the report.
-    return outcome?.results ?? fallbackResults(questions, "aborted");
-  } catch (error) {
-    // pi rejects `ui.custom` when its factory throws or the host tears the
-    // overlay down by force: nothing was ever reported, so every question is
-    // unavailable for a system-side reason rather than a user refusal.
-    log("ask-tool", "custom_rejected", "", undefined, "warn", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return fallbackResults(questions, "aborted");
-  } finally {
-    opts.signal?.removeEventListener("abort", onAbort);
-  }
 }
 
 // ---------------------------------------------------------------------------
