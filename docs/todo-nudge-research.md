@@ -1,235 +1,95 @@
-> Path note (2026-06-28): prompt files have since moved to src/agents/<name>.ts; paths below reflect the pre-refactor layout.
+# Todo 机制调研：oh-my-openagent / oh-my-opencode-slim / oh-my-pi 与 ZooKeeper 现状
 
-# Todo Nudge 机制调研报告：编排器中的进度跟踪与行为引导
-
-**版本:** 1.0  
-**日期:** 2026-06-10  
-**分类:** 技术架构文档 / Agent 行为塑形
+**版本:** 2.0（完全重写，替代 2026-06 的 1.0 版）
+**日期:** 2026-09-16
+**调研对象 HEAD:** oh-my-openagent（包名 oh-my-opencode v5.0.0-beta.65）、oh-my-opencode-slim `3013dc25`、oh-my-pi（pi-mono fork）、ZooKeeper 当前工作区
 
 ---
 
 ## 目录
 
-1. [背景与动机](#1-背景与动机)
-2. [问题定义](#2-问题定义)
-3. [调研方法](#3-调研方法)
-4. [oh-my-openagent 的实现](#4-oh-my-openagent-的实现)
-5. [oh-my-opencode-slim 的实现](#5-oh-my-opencode-slim-的实现)
-6. [机制分类与全景对比](#6-机制分类与全景对比)
-7. [关键设计差异分析](#7-关键设计差异分析)
-8. [ZooKeeper 的方案设计](#8-zookeeper-的方案设计)
-9. [已知 Gap 与权衡](#9-已知-gap-与权衡)
-10. [实施计划](#10-实施计划)
-11. [总结](#11-总结)
+1. [总览](#1-总览)
+2. [oh-my-openagent 的实现](#2-oh-my-openagent-的实现)
+3. [oh-my-opencode-slim 的实现](#3-oh-my-opencode-slim-的实现)
+4. [oh-my-pi 的实现](#4-oh-my-pi-的实现)
+5. [三方对比](#5-三方对比)
+6. [ZooKeeper 现状](#6-zookeeper-现状)
+7. [缺口对照](#7-缺口对照)
 
 ---
 
-## 1. 背景与动机
+## 1. 总览
 
-### 1.1 核心问题
+三个项目对"todo 行为塑形"的切入点完全不同：
 
-在多 Agent 编排系统中，编排器（Orchestrator）将任务委托给子 Agent 执行。但编排器本身面临一个**进度跟踪困境**：
-
-```
-用户：实现 X 功能并添加集成测试
-
-编排器创建 todo list：
-  □ 实现 X 功能
-  □ 添加集成测试
-
-编排器委派子 Agent：
-  task("实现 X 功能...")
-
-子 Agent 完成 → 返回结果
-
-编排器此时应该做什么？
-  ① 验证子 Agent 的工作（build/test/lint）
-  ② 标记第一个 todo 完成
-  ③ 开始第二个 todo
-```
-
-实际观察发现，编排器经常在步骤 ① 上花费精力，但**忘记步骤 ②**，导致：
-- todo list 状态过时
-- 编排器可能重复执行已完成的任务
-- 用户界面显示的进度与实际不符
-- 编排器在任务切换时产生混乱
-
-### 1.2 为什么这是个问题
-
-**认知负荷视角**：编排器需要同时维护多个状态——当前验证结果、子 Agent 的 session ID、下一个任务的上下文、todo 的当前状态。LLM 容易在状态切换时丢失某个维度。
-
-**行为惯性视角**：验证子 Agent 的工作是一个"显式"动作（运行测试命令），而标记 todo 是一个"显式但容易遗忘"的动作。LLM 倾向于完成当前正在做的事（验证），然后直接进入下一个委派，跳过"收尾"动作。
-
-**进度可见性视角**：todo list 是用户观察编排器工作状态的主要入口。如果 todo 状态过时，用户对系统的信任度下降。
-
-### 1.3 ZooKeeper 的现状
-
-当前 ZooKeeper 的 build agent 在以下方面依赖"软指令"（prompt 中的文字描述）来引导编排器行为：
-
-**build.md 第 16-23 行的 verify-iterate section**：
-```
-== Verify-Iterate Pattern (CRITICAL) ==
-After subagent code changes, you MUST verify: build, tests, lint. If verification fails, resume the same subagent via task_id...
-
-NO exceptions. Common rationalizations that are WRONG:
-- "It's just a one-liner" — one-liners break builds
-- "The subagent already tested it" — you must verify independently
-- "The change is trivial" — trivial changes still need verification
-- "Time pressure" — verification is faster than debugging a broken deploy
-```
-
-这个 section 要求编排器在委派后验证，但没有提及 todo 状态更新。且它作为静态 prompt 的一部分**每轮注入**，token 效率不高且容易在长会话中被 agent 忽略。
-
-**build.md 第 1-14 行的角色定义**：
-```
-You are an orchestrator — a conductor, not a musician. You DELEGATE, VERIFY, and ITERATE.
-```
-
-这定义了编排器的职责，但缺乏"进度跟踪"这一维度的行为引导。
-
-### 1.4 调研目标
-
-在 `docs/agent-framework-comparison.md` 中提到，oh-my-openagent 和 oh-my-opencode-slim 都有关于 todo 的 hook。本次调研的目标是：
-
-1. 研究业界成熟的 todo 提醒机制
-2. 理解不同设计的取舍和风险
-3. 为 ZooKeeper 设计一套适合的方案
+| 维度 | oh-my-openagent | oh-my-opencode-slim | oh-my-pi |
+|---|---|---|---|
+| 定位 | OpenCode 插件（包名 oh-my-opencode） | OpenCode 插件 | pi-mono 的 fork，完整 agent 产品 |
+| todo 数据模型 | 宿主 OpenCode 的 todo（4 状态） | 宿主 OpenCode 的 todo（4 状态） | **自有 todo 工具**（5 状态 + 阶段分组，9 操作） |
+| 自动续跑 | `todo-continuation-enforcer` + atlas + goal + senpi 四条链 | `orchestrator-wake` 一条链 | `TodoTracker.checkCompletion` 内建于会话 |
+| 续跑触发 | `session.idle` 事件 | `session.idle` / `session.status` 事件 + 5 分钟定时器 | 助手回合终止时同步检查 |
+| 停滞/失败保护 | 停滞 3 次停、连败 5 次停、指数退避冷却 | 指纹不变 2 次停 | 提醒上限 3 次（可配） |
+| todo 卫生 | 压缩保活、描述覆写、读取拦截、格式校验、通知门控 | 无独立卫生机制 | 中途 nudge、prewalk 门、失败提醒 |
+| 委派后提醒 | atlas verification reminder（`tool.execute.after` 的 `task`） | 无 | 无（子代理不持有 todo） |
+| 配置哲学 | blacklist（`disabled_hooks`，全默认启用） | 单开关段 `backgroundJobs.orchestratorWake` | settings 4 个 `todo.*` 键 |
 
 ---
 
-## 2. 问题定义
+## 2. oh-my-openagent 的实现
 
-将"编排器维护 todo 状态"这个需求拆解为具体场景：
+代码在 `packages/omo-opencode/`（OpenCode 侧）与 `packages/omo-senpi/`（pi 侧组件包）。todo 机制共有四条自动续跑链 + 六类卫生机制。
 
-### 2.1 场景 A：子 Agent 任务完成
+### 2.1 自动续跑主链：`todo-continuation-enforcer`
 
-```
-时序：
-  t0: build 调 task() → 委派子 Agent
-  t1: 子 Agent 返回结果
-  t2: build 验证结果（run build/test）
-  t3: build 应该标记 todo 完成 ← 这里经常遗漏
+**位置:** `packages/omo-opencode/src/hooks/todo-continuation-enforcer/`（14 个生产文件）
 
-问题：如何在 t1 后提醒 build 更新 todo？
-```
+**触发:** 挂载 OpenCode 全局 `event` hook（`event-hook-dispatcher.ts:45`），`handler.ts` 路由：
 
-### 2.2 场景 B：编排器直接编辑源码
+- `session.error`（`handler.ts:76-117`）：识别 abort（`wasCancelled`）、token-limit、不可重试错误
+- `session.idle`（`handler.ts:119-132`）→ `handleSessionIdle()`
+- `session.compacted` → 武装 compaction guard；`session.deleted` → 清状态
+- 其它事件（`message.updated` / `tool.execute.*`）→ 跟踪"注入后是否有回应"
 
-```
-时序：
-  t0: build 判断"这个改动很小，自己改"
-  t1: build 调 edit/write 修改了某个 src 文件
-  t2: build 应该意识到违规 + 更新 todo
-  t3: 或者更好的是撤销改动并重新委派
+**判定门控**（`idle-event.ts`，按顺序全部通过才注入）：
 
-问题：如何识别 build 违规并提醒？违规后 todo 状态是否应该更新？
-```
+| 步骤 | 位置 | 条件 |
+|---|---|---|
+| 早退 | `idle-event.ts:42-70` | 全部完成 / 恢复中 / 被取消 / token-limit / 不可恢复错误 |
+| abort 窗口 | `idle-event.ts:72-80` | abort 后 3000ms 内不注入 |
+| 后台任务 | `idle-event.ts:82-90` | 有 running/pending 后台任务则跳过 |
+| 消息检查 | `idle-event.ts:92-115` | 最后消息被 abort、有未回答的 question 工具调用 |
+| todo 判定 | `idle-event.ts:117-139` | `client.session.todo()`；空列表或无未完成 → 不注入 |
+| 失败计数 | `idle-event.ts:146-158` | 连败 ≥ 5 停止（5 分钟窗口后清零） |
+| 冷却 | `idle-event.ts:160-165` | `5000ms * 2^min(failures,5)` 指数退避 |
+| agent 跳过 | `idle-event.ts:203-215` | 跳过 `["prometheus","compaction","plan"]` |
+| 用户停止 | `idle-event.ts:217-220` | `/stop-continuation` 命令守卫 |
+| 停滞 | `idle-event.ts:222-237` | 停滞计数 ≥ 3 停止；`continuationBlockReason` 暂停 |
+| 倒计时 | `idle-event.ts:238-248` | TUI toast 倒计时 2 秒 |
 
-### 2.3 场景 C：编排器做完一轮工作
+**未完成判定**（`todo.ts:3-10`）——`completed` / `cancelled` / `blocked` / `deleted` 之外都算未完成：
 
-```
-时序：
-  t0: build 完成第一个 todo
-  t1: todowrite 标记完成
-  t2: build 开始思考下一步
-  t3: build 调 bash 跑测试验证
-  t4: build 调 read 看结果
-  t5: 验证通过后，build 应该准备委派下一个 todo
-
-问题：从 t1 到 t5，build 可能在多个工具调用中"迷失"，是否需要持续提醒？
-```
-
-### 2.4 场景 D：编排器在 todo 未完成时停止
-
-```
-时序：
-  t0: build 完成了大部分 todo
-  t1: build 认为"已经足够好了"，停止工作
-  t2: 但实际上还有 2 个 todo 未完成
-
-问题：如何检测并强制编排器继续？
+```ts
+export function getIncompleteCount(todos: Todo[]): number {
+  return todos.filter(
+    (todo) =>
+      todo.status !== "completed"
+      && todo.status !== "cancelled"
+      && todo.status !== "blocked"
+      && todo.status !== "deleted",
+  ).length
+}
 ```
 
----
+**停滞判定**（`stagnation-detection.ts:6-35` + `session-state.ts:116-199`）：进度定义为"未完成数减少 / 完成数增加 / todo 快照变化"，快照只比较 `{id → status}`（内容/优先级变化不算进度）；连续 3 次注入无进度即停止。注入后若"助手有回应但 todo 无进展"置 `continuationBlockReason="directive-response"`，窗口内出现真实用户消息置 `"user-interruption"`，两者都暂停续跑直到真实进展。
 
-## 3. 调研方法
+**注入前再校验**（`continuation-injection.ts:111-199`）：重新读 todo 确认仍有未完成、agent 不在跳过列表、有写权限（`edit`/`write` 非 deny）、无后台任务、未被取消。
 
-### 3.1 调研对象
-
-| 框架 | Todo 相关机制数 | 代码规模 |
-|------|--------------|---------|
-| **oh-my-openagent (OMO)** | 2 个独立机制 | Continuation Enforcer ~2061 行，Verification Reminder ~50 行 |
-| **oh-my-opencode-slim (slim)** | 2 个独立机制 | todo-hygiene ~879 行，auto-continuation ~200 行 |
-
-### 3.2 分析维度
-
-1. **触发时机**：什么时候注入提醒？
-2. **注入点**：在哪里注入？（工具输出 / 用户消息 / 系统消息）
-3. **状态管理**：是否追踪 session 状态？
-4. **文案风格**：温和引导还是强硬命令？
-5. **覆盖场景**：能解决哪些场景？遗漏哪些？
-6. **实现成本**：代码量、依赖的 API、复杂度
-
----
-
-## 4. oh-my-openagent 的实现
-
-### 4.1 Todo Continuation Enforcer
-
-**位置**：`src/hooks/todo-continuation-enforcer/`  
-**规模**：14 个文件，~2061 行代码  
-**Hook 点**：`event` (`session.idle` / `session.error` / `session.compacted` / `session.deleted`)
-
-#### 核心机制
+**注入的 prompt 原文**（`constants.ts:7-14` + 动态后缀 `continuation-injection.ts:168-175`）：
 
 ```
-event hook (session.idle)
-  │
-  ├─ Check: session 是否 idle + 有未完成 todos?
-  │    └─ 否 → return
-  │
-  ├─ Check: last assistant message 是否问题?
-  │    └─ 是 → return (等用户回答)
-  │
-  ├─ Check: 是否达到 maxContinuations 上限?
-  │    └─ 是 → return
-  │
-  ├─ Check: 是否在 abort 抑制窗内?
-  │    └─ 是 → return
-  │
-  ├─ Check: 是否有 pending injection?
-  │    └─ 是 → return
-  │
-  ↓ 全部通过
+[SYSTEM DIRECTIVE: OH-MY-OPENCODE - TODO CONTINUATION]
 
-Phase 1: 倒计时通知 (noReply=true)
-  ┌─────────────────────────────────────────────┐
-  │ ⎔ Auto-continue: 3 incomplete todos         │
-  │   remaining — resuming in 3s — Esc×2 to     │
-  │   cancel                                    │
-  └─────────────────────────────────────────────┘
-       ⋮ (3 秒)
-Phase 2: 实际注入
-  session.prompt() {
-    text: "Incomplete tasks remain in your todo list.
-           Continue working on the next pending task.
-           - Proceed without asking for permission
-           - Mark each task complete when finished
-           - Do not stop until all tasks are done
-           - If you believe all work is already complete,
-             the system is questioning your completion claim.
-             Critically re-examine each todo item from a
-             skeptical perspective, verify the work was
-             actually done correctly, and update the todo
-             list accordingly."
-  }
-```
-
-#### 关键代码
-
-**constants.ts** — 提醒文案：
-```typescript
-export const CONTINUATION_PROMPT = `Incomplete tasks remain in your todo list. Continue working on the next pending task.
+Incomplete tasks remain in your todo list. Continue working on the next pending task.
 
 - Proceed without asking for permission
 - Mark each task complete when finished
@@ -237,1137 +97,454 @@ export const CONTINUATION_PROMPT = `Incomplete tasks remain in your todo list. C
 - If you believe all work is already complete, the system is questioning your
   completion claim. Critically re-examine each todo item from a skeptical
   perspective, verify the work was actually done correctly, and update the
-  todo list accordingly.`;
+  todo list accordingly.
+
+[Status: 3/7 completed, 4 remaining]
+
+Remaining tasks:
+- [pending] ...
+- [in_progress] ...
 ```
 
-**session-state.ts** — 状态管理：
-```typescript
-declare function setInterval(callback: () => void, delay?: number): TimerHandle
+### 2.2 续跑链二：atlas（boulder/计划文件）
 
-const SESSION_STATE_TTL_MS = 10 * 60 * 1000  // 10 分钟
-const SESSION_STATE_PRUNE_INTERVAL_MS = 2 * 60 * 1000  // 每 2 分钟清理
+**位置:** `packages/omo-opencode/src/hooks/atlas/`。同为 `session.idle`，但面向"计划文件驱动"的 boulder 工作模式（与 enforcer 按会话类型分流）。常量：`CONTINUATION_COOLDOWN_MS=5000`、`MAX_CONSECUTIVE_PROMPT_FAILURES=10`。
 
-function startPruneInterval(): void {
-  setInterval(() => {
-    const now = Date.now()
-    for (const [sessionID, tracked] of sessions.entries()) {
-      if (now - tracked.lastAccessedAt > SESSION_STATE_TTL_MS) {
-        sessions.delete(sessionID)
-      }
-    }
-  }, SESSION_STATE_PRUNE_INTERVAL_MS)
-}
-```
-
-**handler.ts** — 事件处理：
-```typescript
-if (eventType === "session.deleted") {
-  sessionStateStore.cleanup(sessionID)
-}
-```
-
-#### 设计特点
-
-1. **强硬语气**："the system is questioning your completion claim. Critically re-examine each todo item from a skeptical perspective"
-2. **自动触发**：不需要用户手动启用
-3. **状态追踪**：记录已续接次数，防止无限循环
-4. **安全门控**：5 个条件全部通过才触发
-5. **可中断**：用户按 Esc×2 可取消
-6. **Session TTL**：10 分钟后自动清理状态
-7. **注入点**：`session.prompt()` — 在 session 级别注入，agent 无法拒绝
-
-#### 解决的问题
-
-- **场景 D**：编排器在 todo 未完成时停止
-- 当 build agent "认为完成了"就停止，Continuation Enforcer 会强制它继续
-
-#### 不解决的问题
-
-- **场景 A**：子 Agent 任务完成后，如何立即提醒更新 todo？（依赖 Continuation Enforcer 兜底，但响应时间长）
-- **场景 B**：编排器违规直接编辑后的提醒（不解决 todo 状态）
-- **场景 C**：编排器在多个工具调用中迷失（只在 idle 时触发）
-
-#### 实现代价
-
-- **高代码量**：~2061 行，14 个文件
-- **状态管理**：需要追踪续接次数、abort 窗、pending 状态
-- **依赖多个 API**：`session.todo()`、`session.messages()`、`session.prompt()`
-
----
-
-### 4.2 Standalone Verification Reminder
-
-**位置**：`src/hooks/atlas/system-reminder-templates.ts`  
-**规模**：~50 行（纯字符串模板）  
-**Hook 点**：`tool.execute.after` (当 tool === "task" 时触发)
-
-#### 核心机制
+**注入文本原文**（`atlas/system-reminder-templates.ts:25-35`）：
 
 ```
-build 调 task()
-  └─ general 返回结果
+[SYSTEM DIRECTIVE: OH-MY-OPENCODE - BOULDER CONTINUATION]
 
-tool.execute.after (当 Atlas 检测到 task() 执行后)
-  ↓
-注入 StandaloneVerificationReminder 到 toolOutput.output
-  ┌─────────────────────────────────────────────┐
-  │ ---                                         │
-  │ **VERIFICATION_REMINDER**                   │
-  │                                             │
-  │ **THE SUBAGENT JUST CLAIMED THIS TASK IS    │
-  │ DONE. THEY ARE PROBABLY LYING.**            │
-  │                                             │
-  │ ...（Phase 1-4 的详细验证流程）              │
-  │                                             │
-  │ **STEP 5: CHECK YOUR PROGRESS DIRECTLY      │
-  │ (EVERY TIME - NO EXCEPTIONS)**              │
-  │ Do NOT rely on memory. Run `todoread` NOW.  │
-  │                                             │
-  │ **STEP 6: UPDATE TODO STATUS (IMMEDIATELY)**│
-  │ RIGHT NOW - Do not delay.                   │
-  │ Verification passed → Mark IMMEDIATELY.     │
-  │                                             │
-  │ **NO TODO = NO TRACKING = INCOMPLETE WORK.**│
-  │ Use todowrite aggressively.                 │
-  │ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━    │
-  └─────────────────────────────────────────────┘
+You have an active work plan with incomplete tasks. Continue working.
+
+RULES:
+- **FIRST**: Read the plan file NOW. If the last completed task is still
+  unchecked, mark it `- [x]` IMMEDIATELY before anything else
+- Proceed without asking for permission
+- Use the notepad at .omo/notepads/{PLAN_NAME}/ to record learnings
+- Do not stop until all tasks are complete
+- If a task is blocked by missing external input, unavailable credentials,
+  access limits, or a decision only the user can make, you MUST edit the
+  plan file in this turn and change that task's checkbox from `- [ ]` to
+  `- [~]` before moving on
+- A text-only explanation of a blocker is NOT progress. The `- [~]`
+  checkbox edit is mandatory and must happen via a real file-editing tool call
 ```
 
-#### 关键代码
+### 2.3 续跑链三：goal hook（opt-in）
 
-**system-reminder-templates.ts**：
-```typescript
-export const VERIFICATION_REMINDER = `**THE SUBAGENT JUST CLAIMED THIS TASK IS DONE. THEY ARE PROBABLY LYING.**
+**位置:** `packages/omo-opencode/src/hooks/goal/`。默认关闭，需 `goal.enabled: true`；`default_mode.goal: true` 会从首条主会话消息自动建 goal。`session.idle` 续跑，注入 `"Continue working toward the active thread goal."` + `<untrusted_objective>` + 时间/token 用量 + 完成前审计要求（`goal/prompt.ts:3-31`）。
 
-Subagents say "done" when code has errors, tests pass trivially, logic is wrong,
-or they quietly added features nobody asked for. This happens EVERY TIME.
-Assume the work is broken until YOU prove otherwise.
+### 2.4 pi 侧续跑：senpi `ulw-execute-continuation`
 
----
+**位置:** `packages/omo-senpi/src/components/ulw-execute-continuation/`。
 
-**PHASE 1: READ THE CODE FIRST (before running anything)**
+- **触发:** pi 的 `agent_settled` 事件（`index.ts:75-133`），判定基于 `agent_end` 记录与 `findContinuableBoulderWork()`
+- **终止条件:** `blockedBy !== null`（终态）；连续续跑 ≥ 8 次（`CONTINUATION_LIMIT`）；签名未变（防重复注入）
+- **投递:** 经 `idle-injection-coordinator.ts` 协调——多个来源的注入请求按 `SOURCE_RANK` 排序合并，"N ready → 1 injection"
+
+**注入文本**（`index.ts:178-211`）：
+
+```
+<omo-senpi-ulw-execute-continuation>
+You are mid-flight on a ulw-execute work plan; this turn is an automatic
+continuation. Do NOT ask whether to continue — the contract is
+auto-continue until every top-level checkbox is `- [x]`.
 ...
-
-**PHASE 2: RUN AUTOMATED CHECKS**
+- Remaining top-level checkboxes: {remaining} of {total}
+- [Status: {completed}/{total}, next: {nextLabel}]
 ...
-
-**PHASE 3: HANDS-ON QA (MANDATORY for user-facing changes)**
-...
-
-**PHASE 4: GATE DECISION**
-...`;
+</omo-senpi-ulw-execute-continuation>
 ```
 
-```typescript
-export function buildStandaloneVerificationReminder(sessionId: string): string {
-  return `
----
+### 2.5 pi 侧提醒：`todo-fanout-reminder`
 
-${buildVerificationReminder(sessionId)}
+**位置:** `omo-senpi/src/components/todo-fanout-reminder/`。`tool_result` 事件、仅 `todo` 工具的 `init`/`append` op 触发，每会话一次，flag `omo-senpi-todo-fanout-reminder-disabled` 可关。
 
+**注入文本原文**（`reminder.ts:1-9`）：
+
+```
+<system-reminder>
+ultrawork mode is active and this session just started its todo list.
+Before working any todo:
+1. SIZE the work: weigh the todo count, each task's scope, and the total effort.
+2. COMPUTE the fan-out decision: delegate to parallel subagents only when
+   the parallelism gain beats spawn and coordination overhead - independent
+   parts with disjoint write scopes fan out, interdependent or trivial
+   parts do not.
+3. TELL the user the decision either way: ... Never delegate silently and
+   never grind through a fan-out-shaped task silently.
+4. KEEP the todo list fresh: mark start/done the instant each task
+   transitions, append newly discovered steps the moment they surface,
+   drop abandoned ones. A stale todo list is a defect.
+</system-reminder>
+```
+
+### 2.6 卫生机制一：`compaction-todo-preserver`（压缩保活）
+
+**位置:** `packages/omo-opencode/src/hooks/compaction-todo-preserver/hook.ts`（245 行）。
+
+- **capture:** `experimental.session.compacting`（压缩前）快照 todo
+- **restore:** `session.compacted` 事件后用 `Todo.update` 写回
+- **保留逻辑**（`hook.ts:40-61`）：只保留"详细 todo"——Atlas 的两条 bootstrap todo（`orchestrate-plan` / `pass-final-wave`）不算详细；空快照与纯 bootstrap 快照被丢弃；当前列表为空或仅为 bootstrap 且快照含详细 todo 时才覆盖恢复
+- **晚到防护:** 压缩后才到达的 `todowrite` 若又写回纯 bootstrap 列表，则用恢复快照替换其工具参数（`tool.execute.before`，`hook.ts:214-242`）
+
+### 2.7 卫生机制二：`todo-description-override`（工具描述覆写）
+
+**位置:** `hooks/todo-description-override/description.ts:1-38`。`tool.definition` hook 命中 `todowrite` 时覆写其 description，注入写作规范：
+
+```
+Each todo title MUST encode four elements: WHERE, WHY, HOW, and EXPECTED RESULT.
+Format: "[WHERE] [HOW] to [WHY] - expect [RESULT]"
+## Granularity Rules
+Each todo MUST be a single atomic action completable in 1-3 tool calls.
+## Task Management
+- One in_progress at a time. Complete it before starting the next.
+- Mark completed immediately after finishing each item.
+- Skip this tool for single trivial tasks (one-step, obvious action).
+```
+
+### 2.8 卫生机制三：`tasks-todowrite-disabler`（读取拦截）
+
+**位置:** `hooks/tasks-todowrite-disabler/`。`tool.execute.before` 拦截；仅当 `experimental.task_system` 开启时生效，拦截 `TodoRead` 并抛错，引导改用 Task 系列工具。`TodoWrite` 故意不拦——它是保持 todo 面板同步的唯一路径（issue #3764）。
+
+### 2.9 卫生机制四：`plan-format-validator`（计划格式校验）
+
+**位置:** `hooks/plan-format-validator/hook.ts`。`tool.execute.before` 拦截 `Write`/`Edit`，用正则校验计划文件的复选框格式（`HEADING_TODOS` / `TOPLEVEL_CHECKBOX` / `TODO_TASK` / `FINAL_WAVE_TASK`），与 `getPlanProgress()` 解析计数对比，并规范化 `**Effort:**` 字段。
+
+### 2.10 卫生机制五：`session-todo-status`（通知门控）
+
+**位置:** `hooks/session-todo-status.ts:12-30`。`hasIncompleteTodos()` 判定（`completed`/`cancelled` 之外即未完成）；消费者 `session-notification.ts` 默认 `skipIfIncompleteTodos: true`——**还有未完成 todo 就不发"会话完成"通知**。
+
+### 2.11 委派后验证提醒
+
+**位置:** `atlas/tool-execute-after-subagent-completion.ts:100-118`。`tool.execute.after` 的 `task()` 返回且无 boulder state 时追加 `<system-reminder>`，核心步骤：
+
+```
 **STEP 5: CHECK YOUR PROGRESS DIRECTLY (EVERY TIME - NO EXCEPTIONS)**
-
-Do NOT rely on memory or cached state. Run \`todoread\` NOW to see exact current state.
-Count pending vs completed tasks. This is your ground truth for what comes next.
-
+Do NOT rely on memory or cached state. Run `todoread` NOW ...
 **STEP 6: UPDATE TODO STATUS (IMMEDIATELY)**
-
 RIGHT NOW - Do not delay. Verification passed → Mark IMMEDIATELY.
-
-1. Run \`todoread\` to see your todo list
-2. Mark the completed task as \`completed\` using \`todowrite\`
-
+1. Run `todoread` to see your todo list
+2. Mark the completed task as `completed` using `todowrite`
 **DO THIS BEFORE ANYTHING ELSE. Unmarked = Untracked = Lost progress.**
-
-**STEP 7: EXECUTE QA TASKS (IF ANY)**
 ...
+**NO TODO = NO TRACKING = INCOMPLETE WORK. Use todowrite aggressively.**
+```
 
-**STEP 8: PROCEED TO NEXT PENDING TASK**
+boulder 模式下的 `buildCompletionGate()` 要求先 `Edit` 计划文件复选框再 `Read` 复核："你的完成在复选框被标记前不被记录"。
+
+### 2.12 配置开关
+
+| 开关 | 默认 |
+|---|---|
+| `disabled_hooks: string[]`（blacklist，所有 hook 统一开关） | 全部启用 |
+| `experimental.task_system` | 关闭（disabler 不生效） |
+| `goal.enabled` | 关闭（opt-in） |
+| enforcer `skipAgents` 构造参数 | `["prometheus","compaction","plan"]` |
+| `/stop-continuation` 运行时命令 | — |
+| `notification.skipIfIncompleteTodos` | `true` |
+
+---
+
+## 3. oh-my-opencode-slim 的实现
+
+HEAD `3013dc25`。现行 todo 机制只有一条主链 `orchestrator-wake` + system prompt 规则；不存在委派后 todo 提醒，也不存在独立的卫生 hook。
+
+### 3.1 `orchestrator-wake`（todo 门控的周期唤醒）
+
+**位置:** `src/hooks/orchestrator-wake/index.ts`（1717 行）+ `wake-gate.ts`（进程级单飞门，`globalThis[Symbol.for(...)]` 存储，`MAX_TRACKED_SESSIONS=256`）。
+
+**触发:** OpenCode `event` hook（`src/index.ts:1504` 转发）：
+
+```ts
+// index.ts:480-499
+function isIdleEvent(type, properties) {
+  return type === 'session.idle' ||
+    (type === 'session.status' && properties?.status?.type === 'idle');
+}
+```
+
+- idle → `beginContinuousIdle()` 启动计时器（默认连续空闲 5 分钟后评估）
+- busy → 结束 idle spell（wake 自身引发的 busy 保留 cap，外部 busy 重置 cap）
+- `permission.asked` / `question.asked` → 抑制；`chat.message` hook 观察真实用户活动重新武装 cap
+- 会话资格：`shouldManageSession` = 会话 agent 为 `orchestrator`（`src/index.ts:704-705`）
+
+**判定:** 计时器到点后 `evaluate()`（`index.ts:1183`）→ `readHostSnapshot()` 并发调三个 SDK API（`index.ts:895-900`）：
+
+```ts
+const [todoResponse, childrenResponse, statusResponse] = await Promise.all([
+  sessionSdk.todo({ path: { id: sessionID }, ... }),
+  sessionSdk.children({ ... }),
+  sessionSdk.status({ ... }),
+]);
+```
+
+未完成判定（`index.ts:340-359`）：仅 `pending` / `in_progress` 算未完成。checkpoint 分类（`classifyTodoSnapshot`，`index.ts:1114-1127`）：父会话活跃 → 不唤醒；有活跃子会话 → 延后；无未完成 todo → 不唤醒；否则 `wake`。
+
+**上限:** 指纹不变连续达到 `ORCHESTRATOR_WAKE_UNCHANGED_CAP = 2` 即停止（`index.ts:82,1243-1250`）——比 omo 的停滞-3 更保守。
+
+**注入文本原文（三选一）**（`index.ts:51-79`）：
+
+```ts
+// v1 todo 模式
+export const ORCHESTRATOR_WAKE_TEXT =
+  '<system-reminder>\nFinish any incomplete TODOs. Await running agents; if one appears stuck, assess it and cancel/respawn only when justified. Do not respond to this reminder.\n</system-reminder>';
+
+// v2 children 模式
+export const ORCHESTRATOR_CHILDREN_WAKE_TEXT =
+  '<system-reminder>\nCheck on unfinished background child sessions and unreconciled jobs. Await running agents; if one appears stuck, assess it and cancel/respawn only when justified. Do not respond to this reminder.\n</system-reminder>';
+
+// stopped-job 恢复
+export const ORCHESTRATOR_STOPPED_JOB_WAKE_TEXT =
+  '<system-reminder>\nA background job stopped without a terminal result. Consult the Background Job Board, recover or reroute the work as needed, and do not wait for that job as if it were still running. Do not respond to this reminder.\n</system-reminder>';
+```
+
+投递：`sessionSdk.promptAsync` 注入 internal-initiator 文本 part（v2 额外 `delivery: 'queue'`）。
+
+**配置**（`src/config/schema.ts:239-268`）：
+
+| 键 | 默认 |
+|---|---|
+| `backgroundJobs.orchestratorWake.enabled` | `true` |
+| `backgroundJobs.orchestratorWake.intervalMs` | `300000`（下限 60s） |
+| `backgroundJobs.orchestratorWake.mode` | `"auto"`（另可选 `"todo"` / `"children"`） |
+
+### 3.2 System prompt 规则：Todo Continuity
+
+**位置:** `src/agents/orchestrator.ts:217-220`，经 `experimental.chat.system.transform` 注入：
+
+```
+### Todo Continuity
+- When the user adds a new task while a todo list exists, append the new task
+  to the end of the existing todo list instead of replacing the list.
+- Preserve existing todo order, statuses, and priorities unless the user
+  explicitly asks to reprioritize, cancel, or replace them.
+- Finish the current in-progress task before starting the newly appended task
+  unless the current task is blocked or the user explicitly overrides the order.
+```
+
+另有条件段落 "End Turn After Background Tasks"（`orchestrator.ts:244-252`）明示 "wake scheduler resumes you"——prompt 与唤醒机制互相知情。
+
+### 3.3 其它
+
+- **deepwork todo 同步:** `src/skills/deepwork/SKILL.md:79-80`——每个 phase 开始前用该 phase 的交付 todo 替换整个 todo 列表
+- **`todowrite` 权限:** `src/config/schema.ts:37` per-agent `ask|allow|deny`，通用工具权限声明
+- **明确没有:** 委派后 todo 提醒（`rg -i todo src/hooks/post-file-tool-nudge/` 等为空）、压缩保活、工具描述覆写
+
+---
+
+## 4. oh-my-pi 的实现
+
+`badlogic/pi-mono` 的 fork，是完整 agent 产品（自带 TUI、31 内置工具、Rust core），不是插件。todo 机制全部在 `packages/coding-agent/`（TS），crates/ 与 python/ 无 todo 逻辑。**它是三者中唯一自建 todo 工具与数据模型的项目。**
+
+### 4.1 `todo` 工具与数据模型
+
+**位置:** `packages/coding-agent/src/tools/todo.ts`（1365 行）。官方文档 `docs/tools/todo.md`。
+
+**数据模型**（`todo.ts:21-35`）：
+
+```ts
+export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
+TodoItem { content: string; status: TodoStatus; blocker?: string }
+TodoPhase { name: string; tasks: TodoItem[] }
+```
+
+- **单一 op 模型:** 一次调用只执行一个 op：`init | start | done | rm | drop | block | unblock | append | view`（`todo.ts:24`）
+- **自动晋升**（`todo.ts:160-181` `normalizeInProgressTask`）：多个 `in_progress` 时只保留第一个，其余降级 `pending`；没有 `in_progress` 时自动把第一个 `pending` 晋升。blocked 任务永不自动晋升
+- **持久化:** transcript 即事实来源——从分支记录的 tool-result details 中最后一个非 `view` 的 `todo` 结果重建状态（`todo.ts:284` `getLatestTodoPhasesFromEntries`）；不写任何文件
+- **子代理隔离:** 子代理不继承父会话 todo（`task/executor.ts:3841-3844`）
+- **开关门控:** `tools/index.ts:652-653`——`todo.enabled` 设置 + 会话状态双重门控注册
+
+**工具描述**（`prompts/tools/todo.md` 渲染注入）规定：任务用逐字内容字符串、禁止自动生成 ID（无 `task-1`）；`NEVER make a todo call the turn's only tool call`（todo 调用必须与实质工具调用同行）。
+
+### 4.2 `TodoTracker`（会话级进度管理）
+
+**位置:** `packages/coding-agent/src/session/todo-tracker.ts`（399 行）。类 docstring："Owns canonical todo state, eager preludes, and completion reminders."
+
+| 方法 | 触发时机 | 作用 |
+|---|---|---|
+| `syncFromBranch()` | 会话启动 / resume / rewind / fork / compact | 从分支重建 phases |
+| `onToolResult()` | 每次 toolResult | `todo` 调用归零计数；变更型工具（bash/eval/edit/write/ast_edit）成功 +1 |
+| `createEagerTodoPrelude()` | 首条用户消息（或 compaction 后） | 生成 eager prelude + 可选强制 toolChoice |
+| `checkCompletion()` | 助手回合**终止**时 | 有未完成 todo → 注入提醒并 `scheduleAgentContinue` |
+| `takeMidRunNudge()` | 运行中 aside 注入点 | 中途提醒 |
+
+**自动续跑**（`todo-tracker.ts:204-291` `checkCompletion`）：守卫条件——用户强制停止、plan mode、已注入待进展、提醒次数达上限、等待用户回答（`isAwaitingUserAnswer`，识别问句线索，含非 ASCII 问号）、有 pending async wake。
+
+**中途 nudge**（`todo-tracker.ts:296-324`）：自上次 todo 调用起变更型工具成功 ≥ 12 次（`MID_RUN_NUDGE_MUTATION_THRESHOLD`）且本轮 nudge < 2 次时触发。
+
+**prewalk 门**（`session/prewalk.ts:105-181`）：prewalk 场景下未观察到成功的 `todo` 调用就不放行实际编辑动作——强制"先建 todo 再动手"。
+
+### 4.3 注入文本原文
+
+**eager prelude**（`prompts/system/eager-todo.md`，`forced` 仅在 `todo.eager === "always"` 时）：
+
+```
+<system-reminder>
+Before substantive work, create a phased todo.
+You MUST call `todo` first in this turn.
+You MUST initialize the todo list with a single `init` op.
 ...
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-**NO TODO = NO TRACKING = INCOMPLETE WORK. Use todowrite aggressively.**`;
-}
+</system-reminder>
 ```
 
-**tool-execute-after-subagent-completion.ts**（简化版）：
-```typescript
-export async function handleSubagentCompletionAfter(input) {
-  if (input.toolInput.tool !== "task") return;
+**停止时未完成提醒 + 续跑**（`todo-tracker.ts:264-271`）：
 
-  // 检查是否 orchestrator session
-  if (!(await resolveIsCallerOrchestrator(input.toolInput.sessionID))) return;
+```
+<system-reminder>
+You stopped with {N} incomplete todo item(s):
+- <phase>
+  - <task>
 
-  // 注入 verification reminder
-  input.toolOutput.output += `\n<system-reminder>\n${buildStandaloneVerificationReminder(
-    resolvePreferredSessionId(preferredSessionId),
-  )}\n</system-reminder>`;
-}
+Please continue working on these tasks or mark them complete if finished.
+(Reminder {count}/{max})
+</system-reminder>
 ```
 
-#### 设计特点
+**中途 nudge**（`prompts/system/mid-run-todo-nudge.md`）：
 
-1. **强硬语气**："THEY ARE PROBABLY LYING"、"THIS HAPPENS EVERY TIME"、"Assume the work is broken until YOU prove otherwise"
-2. **反谄媚**：直接质疑子 Agent 的可靠性，强制编排器自己验证
-3. **详细步骤**：Phase 1-4 的验证流程 + Step 5-8 的 todo 更新流程
-4. **一次性注入**：只在 task() 返回时注入一次
-5. **无状态**：不追踪 session 状态
-6. **注入点**：`toolOutput.output` — 追加在子 Agent 返回结果后
-7. **约 80 行**：整个 Phase 1-4 + Step 5-8 很长
+```
+<system-reminder>
+{N} todo item(s) still open. If you finished a task since last `todo`
+update, mark it done now so progress stays visible; otherwise keep working.
+</system-reminder>
+```
 
-#### 对比 Continuation Enforcer
+**todo 调用失败提醒**（`agent-session.ts:3360-3367`）：
 
-| 维度 | Continuation Enforcer | Verification Reminder |
-|------|----------------------|----------------------|
-| **解决的问题** | 编排器在 todo 未完成时停止 | 编排器相信子 Agent 的完成声明 |
-| **触发时机** | session 空闲时 | task() 工具返回时 |
-| **Hook 点** | `event (session.idle)` | `tool.execute.after` |
-| **频率** | 低频（只在空闲时触发） | 中/高频（每次 task() 返回） |
-| **状态管理** | 有状态（续接次数、TTL） | 无状态 |
-| **代码量** | ~2061 行 | ~50 行 |
-| **注入点** | `session.prompt()` | `toolOutput.output` |
-| **是否可被编排器拒绝** | 不可拒绝（session 级） | 可以被忽略（只是提示） |
-| **包含 todo 更新指令** | ✅ | ✅ |
+```
+<system-reminder>
+todo failed, so todo progress is not visible to the user.
+Failure: ...
+Fix the todo payload and call todo again before continuing.
+</system-reminder>
+```
 
-#### 解决的问题
+**用户手改 todo 提醒**（`modes/controllers/todo-command-controller.ts:121-131`）：`"The user manually modified the todo list ({action})."`；删除时附加 `"Do NOT recreate or re-populate it unless the user explicitly asks…"`。
 
-- **场景 A**：子 Agent 任务完成后，立即提醒验证 + 更新 todo
-- 在 task() 返回时一次性提供完整的验证流程和 todo 更新指令
+**系统提示词批处理规则**（`prompts/system/system-prompt.md:199-200`）：
 
-#### 不解决的问题
+```
+- Update todos; skip trivial requests.
+- Todo calls NEVER alone: batch each with turn's real calls (`init` with
+  first reads/edits; `done` with next action/final verification).
+  Todo-only assistant turn wastes round trip.
+```
 
-- **场景 B**：编排器违规直接编辑（需要 Direct Work Reminder，见 4.3）
-- **场景 C**：编排器跑完 bash/read 验证后更新 todo（Verification Reminder 已经附着在 task() 返回上，编排器看到验证流程时已经包含 todo 更新指令）
-- **场景 D**：编排器在 todo 未完成时停止（依赖 Continuation Enforcer 兜底）
+### 4.4 配置开关（`config/settings-schema.ts`）
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `todo.enabled` | `true` | todo 工具总开关 |
+| `todo.reminders` | `true` | 停止前提醒完成 todo |
+| `todo.remindersMax` | `3` | 提醒次数上限（可选 1/2/3/5） |
+| `todo.eager` | `"default"` | `default`=不自动建 / `preferred`=首条消息建议 / `always`=强制 |
+| `tasks.todoClearDelay` | `60`（秒） | 完成/放弃的 todo 从 widget 移除的延迟（仅显示层） |
+
+### 4.5 TUI
+
+- **Sticky HUD:** `modes/interactive-mode.ts:432` `TodoHudContainer`，可见性持久化于 transcript 自定义条目
+- **`/todo` 命令:** 支持 `edit/copy/expand/collapse/export/import/append/start/done/drop/rm`（`slash-commands/helpers/todo.ts:119-131`）
 
 ---
 
-### 4.3 DIRECT_WORK_REMINDER
+## 5. 三方对比
 
-**位置**：`src/hooks/atlas/tool-execute-after-direct-work.ts`  
-**规模**：~40 行  
-**Hook 点**：`tool.execute.after` (当 tool 是 edit/write 时)
+### 5.1 机制覆盖矩阵
 
-#### 核心机制
+| 机制 | omo | slim | oh-my-pi |
+|---|---|---|---|
+| 空闲检测自动续跑 | ✅ 4 条链 | ✅ 1 条链 | ✅ 回合终止内建 |
+| 续跑停滞/失败保护 | 停滞3 + 连败5 + 指数退避 | 指纹不变2次 | 提醒上限3次 |
+| 用户取消尊重 | abort 窗口 + `/stop-continuation` | 外部 busy 重置 cap | 用户强制停止检测 |
+| 等待用户回答检测 | pending question 工具 | `permission.asked` 抑制 | 问句线索识别 |
+| 压缩后 todo 保活 | ✅ 快照恢复 + 晚到防护 | ❌ | ✅ transcript 重建（天然免疫） |
+| 委派后 todo 提醒 | ✅ verification reminder | ❌ | ❌ |
+| todo 写作规范注入 | ✅ 工具描述覆写 | prompt 规则（追加不替换） | ✅ 工具描述 + system prompt |
+| 中途（turn 内）nudge | ❌ | ❌ | ✅ 变更计数 ≥12 |
+| 强制先建 todo | ❌ | ❌ | ✅ eager prelude + prewalk 门 |
+| todo 失败可见性 | ❌ | ❌ | ✅ 失败提醒 |
+| 完成通知门控 | ✅ 有未完成不发完成通知 | ❌ | — |
+| 注入合并协调 | senpi idle-injection-coordinator | 单来源无需 | 单来源无需 |
 
-```
-build 调 edit("src/app.ts", ...)
-  └─ edit 返回成功
+### 5.2 设计差异分析
 
-tool.execute.after (Atlas 检测)
-  └─ 工具是 edit/write
-  └─ 路径不在 exclude 列表中（排除 .opencode/、tests/scenarios/）
-  ↓
-注入 DIRECT_WORK_REMINDER 到 toolOutput.output
-  ┌─────────────────────────────────────────────┐
-  │ **DELEGATION REQUIRED** — You just edited   │
-  │ a source file directly.                     │
-  │                                             │
-  │ Did you ACTUALLY need to be the one doing   │
-  │ that?                                       │
-  │                                             │
-  │ - Tiny verification fix during subagent     │
-  │   review → fine, continue.                  │
-  │ - Anything else → **you violated            │
-  │   orchestrator protocol.**                  │
-  │                                             │
-  │ **Atlas does not implement. Atlas           │
-  │ orchestrates.**                             │
-  └─────────────────────────────────────────────┘
-```
+**续跑判定的数据源分歧。** omo 与 slim 都从宿主 API 实时读（`client.session.todo` / SDK 三并发）；oh-my-pi 从 transcript 重建——压缩、fork、重启后状态天然一致，不需要 omo 那种专门的压缩保活 hook。transcript-as-truth 是用数据模型设计消除一整类同步 bug。
 
-#### 关键代码
+**"未完成"的定义分歧。** omo 把 `blocked` 也算完成（不再续跑）；slim 只认 `pending`/`in_progress`；oh-my-pi 的 `blocked` 任务永不自动晋升且不触发续跑。被阻塞任务是否应阻止 agent 停下，三家答案不同。
 
-```typescript
-const ALLOWED_PATH_PATTERNS = [
-  /\.opencode\//,       // opencode config
-  /tests\/scenarios\//, // test scenarios
-];
+**防失控的分层。** omo 最厚：abort 窗口 → 冷却退避 → 连败上限 → 停滞检测 → 回合边界暂停 → 运行时停止命令，共六层。slim 只用"指纹不变 2 次"一层但间隔拉到 5 分钟。oh-my-pi 用提醒次数上限。共同结论：**无上限的自动续跑不可接受**，区别只在预算花在哪。
 
-export async function handleDirectWorkToolAfter(input) {
-  const toolName = input.toolInput.tool;
-  if (toolName !== "edit" && toolName !== "write") return false;
+**prompt 与机制互知。** slim 的 system prompt 明示 "wake scheduler resumes you"，让模型敢在后台任务后结束回合；omo 的续跑 prompt 明示"系统在质疑你的完成声明"。提醒文本都假设模型会对抗——用对抗性措辞（"PROBABLY LYING"、"questioning your completion claim"）而非礼貌请求。
 
-  const filePath = input.toolOutput.metadata?.filePath ?? ...;
-
-  // 允许配置路径
-  if (ALLOWED_PATH_PATTERNS.some(p => p.test(filePath))) return false;
-
-  input.toolOutput.output += DIRECT_WORK_REMINDER;
-  return true;
-}
-```
-
-#### 设计特点
-
-1. **强硬但保留例外**：允许"小型验证修正"，但禁止其他
-2. **自我评估**：引导编排器自己判断是否违规
-3. **允许 edit/write**：不在权限层禁止，因为 Atlas 偶尔需要验证修正
-4. **路径排除**：配置文件和测试场景文件允许编辑
-
-#### 解决的问题
-
-- **场景 B**：编排器违规直接编辑
-- 在违规发生时立即警告编排器
-- 不解决 todo 状态问题（这是 gap）
+**粒度规范。** omo 用 `tool.definition` 覆写把写作规范（WHERE/WHY/HOW/RESULT、1-3 工具调用可完成）钉进工具描述本身，比 system prompt 更靠近行为发生点；oh-my-pi 则在工具描述里禁止"todo-only 回合"以省 round trip。
 
 ---
 
-## 5. oh-my-opencode-slim 的实现
+## 6. ZooKeeper 现状
 
-### 5.1 Auto-continuation
+ZooKeeper 已有自己的 todo 工具（pi 侧）与委派后提醒（双宿主），但没有自动续跑与主动卫生机制。
 
-**位置**：`src/hooks/todo-auto-continuation`  
-**规模**：~879 行  
-**Hook 点**：`event (session.idle)` + `command.execute.before (/auto-continue)`
+### 6.1 `todo` 工具（pi-only）
 
-#### 核心机制
+**位置:** `src/tools/todo.ts`（673 行）+ 状态机域 `src/core/todo/`（types / apply / store / nudge / serialize / view / summary / normalize，8 个模块 + 测试）。
 
-```
-与 OMO 的 Continuation Enforcer 类似，但是:
+- **数据模型与 oh-my-pi 对齐:** 五状态（`pending | in_progress | completed | abandoned | blocked`）+ 阶段分组（`src/core/todo/types.ts:13-25`）；九操作 `init | start | done | rm | drop | block | unblock | append | view`；任务以逐字 content 为身份键
+- **单 op 单调用:** 一次调用一次状态迁移；无目标的 `done`/`drop`/`rm` 在工具边界被禁止，必须显式指定对象（`src/tools/todo.ts` 头部 docstring）
+- **transcript 即事实来源:** 成功的变更调用把 `{op, phases}` 快照写进 tool-result details，重启/分支/压缩后由 `store.restoreFromHistory` 精确重建；内存 store 只是缓存；读写经 `store.serialize` 串行化门（`src/core/todo/store.ts`）
+- **fail-closed 注册:** 宿主不提供 `todoStore` + `toolHost` 时工具不注册——OpenCode 上没有此工具，pi 上由 `src/pi.ts:901` 创建 per-session store（`config.toml` 的 `[zoo.mode.*].tools` 声明启用）
 
-1. opt-in 默认关闭
-   - 需要通过 /auto-continue 命令启用
-   - 或通过 auto_continue 工具让 LLM 自动开启
+### 6.2 委派后提醒：`post-subagent-nudge`（双宿主）
 
-2. 6 重门控（全部通过才触发）
-   ① enabled === true
-   ② 有未完成 todos (session.todo() API)
-   ③ last assistant message 不是问句
-   ④ 续接次数 < maxContinuations (默认 5)
-   ⑤ 不在 abort 抑制窗 (5s)
-   ⑥ 无 pending timer
+**位置:** `src/hooks/post-subagent-nudge/hook.ts` + `src/core/checks.ts` + `src/core/todo/nudge.ts`。
 
-3. 可配置
-   - maxContinuations: 最多连续自动续接次数
-   - cooldownMs: 倒计时毫秒
-   - autoEnable: 是否根据 todo 数量自动启用
-   - autoEnableThreshold: todo 数量阈值
+**触发:** `subagent` 工具的 afterExec——OpenCode 走 `tool.execute.after`，pi 走 `tool_result` handler（compose 驱动，`src/registry.ts:159` 注册）。
 
-4. 两阶段注入
-   - Phase 1: 倒计时通知 (noReply=true)
-   - Phase 2: 3s 后 session.prompt() 注入 continuation prompt
+**注入三段：**
 
-5. 文案温和
-   "... if you need to ask a question or make a deliberate pause, ask the
-   user directly. Otherwise, proceed without confirmation."
-```
+1. **`VERIFY_REMINDER`**（`src/core/prompts.ts:61`）：对抗性验证提醒（"THE SUBAGENT JUST CLAIMED THIS TASK IS DONE. THEY ARE PROBABLY LYING."），要求读代码、跑检查、过门禁后才推进
+2. **todo 三档提醒**——`decideTodoNudge` 纯函数（`src/core/todo/nudge.ts:42-68`）：
+   - 空列表 → 不提醒
+   - 无 active（全 completed/abandoned/blocked）→ `TODO_RESUME_NUDGE`
+   - 恰好 1 in_progress + 0 pending → `TODO_DONE_NUDGE`
+   - 其它 → `TODO_PROGRESS_NUDGE`（"UNMARKED TODO = UNTRACKED WORK = LOST PROGRESS"）
+3. **plan 提醒**——`checkPlanProgress`（`src/core/checks.ts:52-98`）扫 `.zoo/plans/` 下 executing/done 计划，报进度或提示恢复
 
-#### 关键代码
+**todo 读取端口:** `resolveTodoSource`（`src/core/client/todo.ts:86-98`）唯一决定读取后端——host 注入的 store 优先，否则 `client.session.todo`（OpenCode），都没有则 fail-closed 跳过 todo 提醒（验证提醒与 plan 提醒不受影响）。pi 侧 client 为 `{}`，走 transcript store。
 
-**index.ts**：
-```typescript
-const CONTINUATION_PROMPT =
-  '[Auto-continue: enabled - there are incomplete todos remaining. Continue with the next uncompleted item. Press Esc to cancel. If you need to ask a question or make a deliberate pause, ask the user directly. Otherwise, proceed without confirmation.]';
+### 6.3 pi 侧 todo 视图
 
-// 6 重门控
-if (!state.enabled) return;
-if (!hasIncompleteTodos) return;
-if (lastAssistantIsQuestion) return;
-if (consecutiveContinuations >= maxContinuations) return;
-if (inAbortSuppression) return;
-if (pendingTimer) return;  // 已有等待注入的 reminder
-```
+`src/pi.ts:1123-1140` `refreshTodoView`：从 per-session store 刷新 fleet widget 的 todo 缓存并触发重渲染，读失败保留上次良好视图。
 
-#### 与 OMO Continuation Enforcer 的对比
+### 6.4 没有的机制
 
-| 维度 | OMO | slim |
-|------|-----|------|
-| **启用方式** | 默认启用 | opt-in 默认关闭 |
-| **门控数量** | 5 重 | 6 重 |
-| **状态管理复杂度** | 高（14 文件，~2061 行） | 低（单文件，~879 行） |
-| **可中断性** | Esc×2 | Esc 取消 |
-| **连续次数限制** | 是（maxContinuations） | 是（maxContinuations） |
-| **文案语气** | 强硬 | 温和 |
-| **Session TTL** | 10 分钟自动清理 | 无（session 级 state） |
-
-#### 解决的问题
-
-- **场景 D**：编排器在 todo 未完成时停止
-- 与 OMO 相同，但更可控（opt-in + 可配置）
+- **自动续跑:** 无 `session.idle` / `agent_settled` 监听，agent 停下即停下
+- **eager prelude / prewalk 门:** 不主动催建 todo，靠 system prompt 软指令
+- **中途 nudge:** turn 内无 todo  freshness 检查
+- **工具描述覆写 / 写作规范注入:** todo 工具描述是静态的
+- **完成通知门控:** 无会话完成通知机制
 
 ---
 
-### 5.2 Todo Hygiene
-
-**位置**：`src/hooks/todo-hygiene`  
-**规模**：~207 行  
-**Hook 点**：`tool.execute.after (todowrite → 任意非 IGNORE 工具)` + `messages.transform (注入)`
-
-#### 核心机制
-
-```
-build 调 todowrite
-  └─ arming: sessionID 进入 "armed" 集合
-
-build 调任意工具（非 read/glob/grep）
-  └─ checking: sessionID 在 armed 集合中
-  └─ inject: 将 todo nudge 注入
-
-build 再次调 todowrite
-  └─ 重置 armed 状态（新的 cycle 开始）
-```
-
-#### 状态机
-
-```typescript
-type TodoState = "idle" | "armed" | "fired";
-
-interface SessionState {
-  state: TodoState;
-  lastArmedAt: number;  // 最后一次 arm 的时间
-}
-```
-
-#### 注入点选择
-
-slim 使用 `messages.transform` 而不是 `tool.execute.after`，原因是：
-
-```
-tool.execute.after (todowrite arm):
-  todo-hygiene: armed = true
-  return
-
-tool.execute.after (edit call):
-  todo-hygiene: 检查 armed，如果是则注入到 toolOutput.output
-  return
-
-问题：toolOutput.output 会被 compaction 吞掉
-
-messages.transform (每次 LLM turn 前):
-  if sessionID 在 armed 集合中:
-    在最后一条 user message 注入 todo nudge
-    (重写而非追加，天然去重)
-  return
-
-优势：reminder 永远可见，不会被 compaction 吞掉
-```
-
-#### 两种 reminder 文案
-
-```typescript
-// General reminder（多个未完成任务）
-const GENERAL_REMINDER = `
-TODO: You modified files but didn't update the todo list.
-Use todowrite to mark the current status of your task.
-`；
-
-// Final active reminder（只剩最后一个 in_progress，没有 pending）
-const FINAL_ACTIVE_REMINDER = `
-TODO: Your active task is still in_progress.
-If you're finishing the work, mark it completed.
-If you're starting new work, mark it pending.
-`;
-```
-
-#### 关键代码
-
-**index.ts**：
-```typescript
-const TODO_TOOLS = new Set(["todowrite", "todoread"]);
-const IGNORE_TOOLS = new Set(["read", "glob", "grep", "bash"]);
-
-export function createTodoHygieneHook(): HookHandlers {
-  const armedSessions = new Map<string, SessionState>();
-
-  return {
-    "tool.execute.after": async (input, output) => {
-      const toolName = input.tool.toLowerCase();
-
-      // todowrite: arm 状态
-      if (TODO_TOOLS.has(toolName)) {
-        armedSessions.set(input.sessionID, {
-          state: "armed",
-          lastArmedAt: Date.now(),
-        });
-        return;
-      }
-
-      // 非 ignored 工具：检查并 fire
-      if (!IGNORE_TOOLS.has(toolName)) {
-        const session = armedSessions.get(input.sessionID);
-        if (session?.state === "armed") {
-          session.state = "fired";  // 一次性消费
-        }
-      }
-    },
-
-    "messages.transform": async (output) => {
-      if (!output.messages?.length) return;
-
-      const lastUserMessage = output.messages.findLast(
-        m => m.info.role === "user"
-      );
-
-      if (!lastUserMessage) return;
-
-      const sessionId = lastUserMessage.info.id;
-      const session = armedSessions.get(sessionId);
-
-      if (!session || session.state !== "fired") return;
-
-      // 获取 todo 状态
-      const todos = await ctx.client.session.todo({ path: { id: sessionId } });
-
-      const inProgressCount = todos.filter(t => t.status === "in_progress").length;
-      const pendingCount = todos.filter(t => t.status === "pending").length;
-      const isFinalActive = inProgressCount === 1 && pendingCount === 0;
-
-      const reminder = isFinalActive ? FINAL_ACTIVE_REMINDER : GENERAL_REMINDER;
-
-      // 注入到 user message（重写而非追加）
-      lastUserMessage.parts.push({
-        type: "text",
-        text: `<system-reminder type="todo-hygiene">${reminder}</system-reminder>`,
-      });
-
-      // 清理状态
-      armedSessions.delete(sessionId);
-    },
-
-    "session.deleted": async (input) => {
-      armedSessions.delete(input.sessionID);
-    },
-  };
-}
-```
-
-#### 设计特点
-
-1. **状态机**：追踪 armed/fired/idle 状态
-2. **持久 reminder**：reminder 在整个 turn 内一直存在，直到下一次 todowrite 或 session.deleted
-3. **注入点**：`messages.transform` — 每 turn 在 user message 注入（不是 `tool.execute.after`）
-4. **天然去重**：重写而非追加
-5. **API 调用**：`session.todo()` 获取精确状态
-6. **Session 清理**：监听 `session.deleted` 清理事态
-
-#### 解决的问题
-
-- **场景 C**：编排器在多个工具调用中迷失
-- 当编排器刚调过 todowrite，后续做其他工作时，每次 LLM turn 都给一个 gentle reminder
-
-#### 不解决的问题
-
-- **场景 A**：子 Agent 任务完成（不是 todowrite 触发的状态机）
-- **场景 B**：编排器违规直接编辑（违规路径不在 todowrite 的 armed 状态中）
-- **场景 D**：编排器在 todo 未完成时停止（依赖 auto-continuation 兜底）
-
----
-
-## 6. 机制分类与全景对比
-
-### 6.1 按问题分类
-
-| 场景 | OMO 解决方案 | slim 解决方案 | 触发机制 |
-|------|------------|-------------|---------|
-| **A. 子 Agent 任务完成** | Verification Reminder | todo-hygiene（不直接，但 task() 返回后会做其他工具调用） | task() 返回 / 任意工具返回 |
-| **B. 编排器违规直接编辑** | Direct Work Reminder (无 todo 提醒) | post-file-tool-nudge（含 Read） | edit/write 返回 |
-| **C. 编排器做完一轮工作** | Continuation Enforcer（延迟纠正） | todo-hygiene（持续提醒） | session.idle / 任意工具返回 |
-| **D. 编排器在 todo 未完成时停止** | Continuation Enforcer | Auto-continuation | session.idle |
-
-### 6.2 按注入点分类
-
-| 注入点 | 代表机制 | 优势 | 风险 |
-|--------|---------|------|------|
-| `toolOutput.output` | Verification Reminder, Direct Work Reminder | 简单，不污染用户消息 | 可能被 compaction 吞掉 |
-| `session.prompt()` | Continuation Enforcer, Auto-continuation | 不可拒绝，强制编排器行为 | 可能被 agent 忽略（只是 prompt） |
-| `messages.transform` (user message) | todo-hygiene, phase-reminder | 每 turn 重写，天然去重 | 需要新 hook 点 + 状态管理 |
-
-### 6.3 按状态管理分类
-
-| 状态量 | 代表机制 | 代码复杂度 |
-|--------|---------|-----------|
-| **无状态** | Verification Reminder (~50 行), Direct Work Reminder (~40 行), phase-reminder (~90 行) | 低 |
-| **轻状态** | todo-hygiene (~207 行) | 中 |
-| **重状态** | Continuation Enforcer (~2061 行), Auto-continuation (~879 行) | 高 |
-
-### 6.4 全景机制表
-
-将所有发现的机制放在一起：
-
-| # | 机制 | 来自 | 解决的问题 | Hook 点 | 状态管理 | 代码量 |
-|---|------|------|-----------|---------|---------|--------|
-| 1 | Continuation Enforcer | OMO | D (idle) | `event (session.idle)` | 重（TTL、续接次数） | ~2061 |
-| 2 | Standalone Verification Reminder | OMO | A (验证 + todo) | `tool.execute.after (task)` | 无 | ~50 |
-| 3 | DIRECT_WORK_REMINDER | OMO | B (违规) | `tool.execute.after (edit/write)` | 无 | ~40 |
-| 4 | Auto-continuation | slim | D (idle) | `event (session.idle)` + `command.execute.before` | 重（6 重门控） | ~879 |
-| 5 | Todo Hygiene | slim | C (做完工作后 todo) | `tool.execute.after (todowrite)` + `messages.transform` | 中（armed/fired） | ~207 |
-| 6 | Phase Reminder | slim | 委派流程提示 | `messages.transform` | 无 | ~92 |
-
----
-
-## 7. 关键设计差异分析
-
-### 7.1 注入点哲学
-
-**OMO 的选择：`toolOutput.output`**
-
-```
-优势:
-  - 简单：直接追加字符串
-  - 不污染用户消息（用户看不到）
-  - 符合"工具输出是 agent 的内部信息"原则
-
-风险:
-  - compaction 会压缩旧的 toolOutput
-  - 如果编排器做了很多工具调用，早期的 reminder 可能被压缩
-  - 编排器可能在长会话中"忘记"早期看到的提醒
-```
-
-**slim 的选择：`messages.transform` (user message)**
-
-```
-优势:
-  - 每 turn 重写：reminder 永远可见
-  - 天然去重：多次工具调用只保留一份 reminder
-  - 编排器每次决策都能看到提醒
-  - 不会被 compaction 吞掉（因为是 user message 的一部分）
-
-风险:
-  - 需要新的 hook 点（messages.transform）
-  - 需要状态管理（armed/fired）
-  - 污染用户消息（用户可以在聊天界面看到）
-  - 代码复杂度中等
-```
-
-**ZooKeeper 的选择**：
-
-基于"声明式、可预测、轻量"的设计哲学，选择 **OMO 风格的 `toolOutput.output`**，因为：
-- 保持简单（无状态）
-- 不引入新的 hook 点依赖（messages.transform）
-- 与现有的 `tool.execute.after` handler 链兼容
-- 如果 reminder 被 compaction 吞掉，后续的 Continuation Enforcer（P1）会兜底
-
-### 7.2 状态管理哲学
-
-**OMO**：为每个需要追踪的机制都建立完整的状态管理系统
-- Continuation Enforcer: 14 文件，~2061 行，TTL、续接次数、abort 抑制窗
-- 好处：完整覆盖各种边界情况
-- 代价：维护成本高，状态可能泄漏
-
-**slim**：每个机制尽量精简状态
-- todo-hygiene: ~207 行，armed/fired 状态机
-- auto-continuation: ~879 行，复用 session 级 state
-- 好处：代码量适中
-- 代价：边界情况可能漏掉
-
-**ZooKeeper**：无状态优先
-- 每个机制尽量无状态
-- 如果必须有状态，使用 session 级 Map + 监听 `session.deleted` 清理
-- 好处：代码量小，bug 少
-- 代价：某些边界情况无法覆盖（如 compaction 吞掉 reminder）
-
-### 7.3 Orchestrator 直接 edit 的处理
-
-**OMO (Atlas)**：
-- 允许 edit/write（权限层不禁止）
-- 事后警告：注入 DIRECT_WORK_REMINDER
-- 允许"小型验证修正"，但禁止其他
-- Atlas 偶尔需要编辑 `.omo/` 下的 plan 文件
-
-**slim (orchestrator)**：
-- 允许 edit/write（orchestrator 本身可以做实现工作）
-- post-file-tool-nudge 在 Read/Write 后注入 workflow reminder
-- 不限制"违规"，而是持续提醒委派流程
-
-**ZooKeeper (build)**：
-- 选择 OMO 风格（允许 edit/write，hook 层警告违规）
-- build agent 与 OMO Atlas 角色类似（"conductor, not musician"）
-- 配置路径（`.opencode/`, `tests/scenarios/`) 允许编辑
-
-### 7.4 文案风格
-
-**OMO**：强硬、质疑、命令式
-```
-"THEY ARE PROBABLY LYING"
-"NO EXCEPTIONS"
-"DO THIS BEFORE ANYTHING ELSE"
-"the system is questioning your completion claim"
-```
-
-**slim**：温和、陈述、鼓励式
-```
-"if the active task changed or finished, update the todo list"
-"if you need to ask a question... ask the user directly"
-"Proceed without confirmation."
-```
-
-**ZooKeeper 的选择**：强硬风格（OMO 风格）
-- "THE SUBAGENT JUST CLAIMED THIS TASK IS DONE. THEY ARE PROBABLY LYING."
-- "DELEGATION REQUIRED — You just edited a source file directly."
-- "!IMPORTANT! Remember your role: orchestrate, don't implement."
-- 强硬语气在长会话中更容易"穿透" LLM 的行为惯性
-
----
-
-## 8. ZooKeeper 的方案设计
-
-### 8.1 总体架构
-
-四个机制，分两个优先级：
-
-```
-P0 (本次实现):
-  ┌─────────────────────────────────────────┐
-  │ 1. Post-subagent Nudge    ✅ 已实现     │  解决 A (子 Agent 完成后)
-  │ 2. Direct Work Reminder ✅ 已实现        │  解决 B (违规编辑)
-  └─────────────────────────────────────────┘
-
-P1 (后续):
-  ┌─────────────────────────────────────────┐
-  │ 4. Idle Continuation  ❌ 未实现 (P1)    │  解决 D (idle 时强制续接)
-  └─────────────────────────────────────────┘
-```
-
-### 8.2 机制 1: Post-subagent Nudge ✅ 已实现
-
-**位置**: `src/hooks/post-subagent-nudge/`  
-**触发条件**: `tool === "task"`
-**作用**: 从 build.md 拆出 verify-iterate section，在 task() 返回时注入 verify + todo nudge
-**Hook 点**: `tool.execute.after`
-
-#### 设计决策
-
-1. **合并 verify-iterate 和 todo nudge**: 子 Agent 完成后既需要验证也需要更新 todo，合并为一个 nudge
-2. **API 查询 todo 状态**: 区分 general / final_active reminder
-3. **注入到 toolOutput.output**: 与 OMO 一致，不污染 user message
-
-#### 代码设计
-
-```typescript
-// src/hooks/post-subagent-nudge/hook.ts
-
-const VERIFY_REMINDER = `
-**VERIFY NOW — NO EXCEPTIONS**
-
-Run build, tests, and lint to verify the subagent's work.
-- "The subagent already tested it" — you must verify independently
-- "It's just a one-liner" — one-liners break builds
-- "The change is trivial" — trivial changes still need verification
-- If verification fails: resume the same task_id to fix it
-`;
-
-const TODO_GENERAL = `
-**TODO UPDATE REQUIRED — DO THIS NOW**
-
-A subagent just completed work. Before proceeding, mark finished items as
-\`completed\` and set the next item to \`in_progress\`.
-Unmarked = Untracked = Lost progress.
-`;
-
-const TODO_FINAL_ACTIVE = `
-**TODO UPDATE REQUIRED — LAST TASK STILL in_progress**
-
-1 task remains \`in_progress\`, 0 \`pending\`. A subagent just finished work.
-Mark it \`completed\` now, or move unfinished items back to \`pending\`.
-Stale status = Invisible work = Forgotten work.
-`;
-
-export async function nudgePostSubagent(
-  ctx: any,
-  input: { tool: string; sessionID: string },
-  output: { output?: string },
-): Promise<void> {
-  const tool = input.tool.toLowerCase();
-  if (tool !== "task") return;
-  if (!output.output) return;
-
-  // 注入 verify reminder
-  output.output += VERIFY_REMINDER;
-
-  // 查询 todo 状态（API），判断 general / final_active
-  let todos: Array<{ status: string }> = [];
-  try {
-    const response = await ctx.client.session.todo({ path: { id: input.sessionID } });
-    todos = response.data?.todos || [];
-  } catch {
-    // todo API 失败不影响 verify reminder
-  }
-
-  const inProgressCount = todos.filter((t) => t.status === "in_progress").length;
-  const pendingCount = todos.filter((t) => t.status === "pending").length;
-  const isFinalActive = inProgressCount === 1 && pendingCount === 0;
-
-  const todoReminder = isFinalActive ? TODO_FINAL_ACTIVE : TODO_GENERAL;
-  output.output += todoReminder;
-}
-```
-
-#### build.md 变更
-
-删除第 16-17 行（verify-iterate section）：
-
-```toml
-# 删除的内容：
-== Verify-Iterate Pattern (CRITICAL) ==
-After subagent code changes, you MUST verify: build, tests, lint. If verification fails, resume the same subagent via task_id with the error output and correction facts (max 5 rounds). Stop when it passes, or report to the user on max iterations / repeated errors.
-```
-
-#### 测试矩阵
-
-| 场景 | 期望行为 |
-|------|---------|
-| task() 返回 + todos 有多个 in_progress | 注入 verify + TODO_GENERAL |
-| task() 返回 + todos 有 1 个 in_progress, 0 pending | 注入 verify + TODO_FINAL_ACTIVE |
-| task() 返回 + todos 全部 completed | 注入 verify，跳过 todo nudge |
-| task() 返回 + API 失败 | 注入 verify + TODO_GENERAL（fallback） |
-| 非 task() 工具 | 不注入 |
-| output.output 为 null | 不注入 |
-| 连续两次 task() 调用 | 每次都注入（无状态，不去重） |
-
----
-
-### 8.3 机制 2: Direct Work Reminder ✅ 已实现
-
-**位置**: `src/hooks/direct-work-nudge/`  
-**触发条件**: `tool === ("edit" | "write")` 且路径不在排除列表
-**作用**: 警告编排器违规直接编辑
-**Hook 点**: `tool.execute.after`
-
-#### 设计决策
-
-1. **允许 edit/write**：不在权限层禁止，因为 build agent 偶尔需要验证修正
-2. **路径排除**：配置文件和测试场景路径允许编辑
-3. **不合并 todo nudge**：OMO 风格的 Direct Work Reminder 不包含 todo 提醒（todo 问题由 Idle Continuation 兜底）
-
-#### 代码设计
-
-```typescript
-// src/hooks/direct-work-reminder/hook.ts
-
-const ALLOWED_PATH_PATTERNS = [
-  /\.opencode\//,       // opencode config
-  /tests\/scenarios\//, // test scenarios
-];
-
-const DIRECT_WORK_REMINDER = `
-**DELEGATION REQUIRED** — You just edited a source file directly.
-
-Did you ACTUALLY need to be the one doing that?
-
-- Tiny verification fix during subagent review → fine, continue.
-- Anything else → **you violated orchestrator protocol.**
-  Revert the change and delegate it via \`task()\`.
-
-**Build does not implement. Build orchestrates.**
-`;
-
-export function remindDirectWork(
-  _ctx: any,
-  input: { tool: string; sessionID: string },
-  output: { output?: string; metadata?: { filePath?: string } },
-): void {
-  const tool = input.tool.toLowerCase();
-  if (tool !== "edit" && tool !== "write") return;
-  if (!output.output) return;
-
-  const filePath = output.metadata?.filePath || "";
-
-  if (ALLOWED_PATH_PATTERNS.some((p) => p.test(filePath))) return;
-
-  output.output += DIRECT_WORK_REMINDER;
-}
-```
-
-#### 测试矩阵
-
-| 场景 | 期望行为 |
-|------|---------|
-| edit() 编辑 `.opencode/config.json` | 不注入（路径排除） |
-| edit() 编辑 `tests/scenarios/build-delegate.json` | 不注入（路径排除） |
-| edit() 编辑 `src/app.py` | 注入违规提醒 |
-| write() 创建 `src/utils.py` | 注入违规提醒 |
-| 非 edit/write 工具 | 不注入 |
-| output.output 为 null | 不注入 |
-
----
-
-### 8.5 机制 4: Idle Continuation (P1) ❌ 未实现
-
-**触发条件**: `session.idle`（编排器空闲）
-**作用**: 当编排器在 todo 未完成时停止，强制续接
-**Hook 点**: `event (session.idle)` + `command.execute.before (/auto-continue)`
-
-#### 设计决策
-
-1. **opt-in 默认关闭**：借鉴 slim，让用户决定是否需要自动续接
-2. **6 重门控**：enabled + incomplete todos + 非问句 + 次数上限 + abort 窗 + 无 pending timer
-3. **3s 倒计时**：给用户取消的机会
-4. **强硬语气**：借鉴 OMO
-
-#### API 依赖
-
-- `session.todo()` 获取 todo 列表
-- `session.messages()` 检查最后消息
-- `session.prompt()` 注入续接 prompt
-
-#### 实现时机
-
-P1，本次不实现。原因：
-
-1. **复杂度高**：需要状态管理、timer、session 级状态追踪
-2. **opt-in 机制**：需要 `/auto-continue` 命令和 `auto_continue` 工具
-3. **依赖前三个机制先稳定**：如果 build agent 频繁在 todo 未完成时停止，再考虑实现
-
-#### 代码量预估
-
-~350 行 hook + ~500 行测试
-
----
-
-### 8.6 共享模块 ✅ 已实现
-
-**位置**: `src/hooks/shared/todo-nudge.ts`
-
-为了在机制 1 和 2 中复用 todo 查询逻辑，引入共享模块：
-
-```typescript
-// src/hooks/shared/todo-nudge.ts
-
-import type { OpenCodePluginContext } from "@opencode-ai/plugin";
-
-export interface TodoItem {
-  status: "in_progress" | "pending" | "completed";
-}
-
-export async function getTodoState(
-  ctx: OpenCodePluginContext,
-  sessionID: string,
-): Promise<{ todos: TodoItem[]; inProgressCount: number; pendingCount: number }> {
-  const response = await ctx.client.session.todo({ path: { id: sessionID } });
-  const todos = response.data?.todos || [];
-  const inProgressCount = todos.filter((t) => t.status === "in_progress").length;
-  const pendingCount = todos.filter((t) => t.status === "pending").length;
-  return { todos, inProgressCount, pendingCount };
-}
-
-export const TODO_GENERAL = `
-**TODO UPDATE REQUIRED — DO THIS NOW**
-A subagent just completed work. Before proceeding, mark finished items as
-\`completed\` and set the next item to \`in_progress\`.
-Unmarked = Untracked = Lost progress.
-`;
-
-export const TODO_FINAL_ACTIVE = `
-**TODO UPDATE REQUIRED — LAST TASK STILL in_progress**
-1 task remains \`in_progress\`, 0 \`pending\`. A subagent just finished work.
-Mark it \`completed\` now, or move unfinished items back to \`pending\`.
-Stale status = Invisible work = Forgotten work.
-`;
-```
-
----
-
-### 8.7 src/index.ts 变更 ✅ 已实现
-
-当前 `src/index.ts` 已注册以下 handler 链（含全部三个 P0 机制）：
-
-```typescript
-// tool.execute.after hook (tool-output 注入：Mechanism 1 + 2)
-const handlers = [
-  (i, o) => nudgeSubagentOutput(i, o, limits),   // subagent prompt nudge
-  recoverJsonError,                            // JSON error recovery
-  nudgeDirectWork,                             // Mechanism 2
-  (i, o) => nudgePostSubagent(client, i, o),      // Mechanism 1
-];
-
-// experimental.chat.messages.transform hook (user-message 注入：Mechanism 3)
-// Removed: per-turn delegate reminder was removed from the plugin lifecycle
-```
-
----
-
-## 9. 已知 Gap 与权衡
-
-### 9.1 Gap: 编排器做完 bash/read 验证后的 todo 提醒
-
-**场景**：
-
-```
-build 调 todowrite (标记 in_progress)
-build 调 task() 委派子 Agent
-  └─ ✅ 子 Agent 返回，注入 post-subagent nudge (含 verify + todo)
-build 调 bash 跑验证命令
-  └─ ❌ 没有 todo 提醒
-build 调 read 看验证结果
-  └─ ❌ 没有 todo 提醒
-build 验证通过，应该标记 todo 完成
-  └─ ❌ 编排器可能忘了 todo 状态
-```
-
-**slim 的解法**：todo-hygiene 状态机，todowrite arm + 任意工具 fire
-
-**OMO 的解法**：不处理，依赖 Continuation Enforcer 延迟纠正
-
-**ZooKeeper 的选择（P0）**：不处理，依赖 P1 的 Idle Continuation 兜底
-
-### 9.2 权衡：状态管理 vs. 无状态
-
-**选择无状态的代价**：
-
-- reminder 可能被 compaction 吞掉（OMO 风格的问题）
-- 某些边界情况无法覆盖（编排器跑 bash/read 后迷失）
-
-**选择无状态的收益**：
-
-- 代码量小（~295 行 hook vs slim 的 ~1178 行 = todo-hygiene + auto-continuation）
-- bug 风险低（状态可能泄漏）
-- 符合 ZooKeeper "轻量"的设计哲学
-
-### 9.3 权衡：messages.transform vs. tool-output
-
-**选择 tool-output 的代价**：
-
-- reminder 可能不持久（compaction 后消失）
-- 编排器可能在长会话中"忘记"早期看到的提醒
-
-**选择 tool-output 的收益**：
-
-- 不需要新的 hook 点（messages.transform）
-- 不引入新的状态管理
-- 与现有的 handler 链兼容
-
-**Phase Reminder 例外**：
-
-- Phase Reminder 使用 `messages.transform` 注入 user message
-- 因为是每 turn 注入（天然去重），所以即使使用 messages.transform 也不需要状态管理
-- 与 post-subagent / direct-work 的工具输出注入形成互补
-
-### 9.4 待观测的行为模式
-
-实施 P0 后，需要观测以下行为模式，作为是否实施 P1 的依据：
-
-```
-观测点:
-  - build agent 在 todo 未完成时停止的比例
-  - build agent 违规编辑源文件的频率
-  - build agent 在 todo 更新上的遗漏率
-
-决策逻辑:
-  - 如果 build agent 频繁在 todo 未完成时停止 → 优先实施 P1 (Idle Continuation)
-  - 如果 build agent 违规编辑频率高 → 考虑权限层禁止 edit/write
-  - 如果 todo 更新遗漏率高 → 考虑引入 slim 风格的 todo-hygiene
-```
-
----
-
-## 10. 实施计划
-
-### 10.1 P0 文件清单
-
-| 文件 | 操作 | 行数 (hook/test) |
-|------|------|----------------|
-| `core/prompts/build.md` | 删除 verify-iterate section (-8 行) ✅ | — |
-| `src/hooks/shared/todo-nudge.ts` | **新建** ✅ | 40 / — |
-| `src/hooks/post-subagent-nudge/hook.ts` | **新建** ✅ | 80 / 300 |
-| `src/hooks/post-subagent-nudge/index.ts` | **新建** ✅ | 5 / — |
-| `src/hooks/direct-work-nudge/hook.ts` | **新建** ✅ | 50 / 200 |
-| `src/hooks/direct-work-nudge/index.ts` | **新建** ✅ | 5 / — |
-| `src/index.ts` | 修改 ✅ | 20 / — |
-| **总计** | | ~200 / ~500 |
-
-### 10.2 P0 实施顺序
-
-```
-Phase 1: 基础设施
-  ✅ 已实现 — 创建 shared/todo-nudge.ts (TODO_GENERAL, TODO_FINAL_ACTIVE, getTodoState)
-  ✅ 已实现 — 修改 src/index.ts (handler 链支持 async、支持 ctx 传递)
-
-Phase 2: 机制 3 - Direct Work Reminder
-  ✅ 已实现 — 验证：非配置路径的 edit/write 注入违规提醒
-
-Phase 4: 机制 1 - Post-subagent Nudge
-  ✅ 已实现 — 创建 src/hooks/post-subagent-nudge/
-  ✅ 已实现 — 修改 build.md 删除 verify-iterate section
-  ✅ 已实现 — 在 src/index.ts 注册 tool.execute.after hook
-  ✅ 已实现 — 验证：task() 返回后注入 verify + todo nudge
-```
-
-### 10.3 验证方法
-
-```bash
-# 单元测试
-./test.sh
-
-# Lint + format
-./check.sh
-
-# 端到端测试（需要真实 LLM）
-# 观察 build agent 的实际行为：
-#   - 是否在 task() 后验证
-#   - 是否在 task() 后更新 todo
-#   - 是否避免违规编辑源文件
-```
-
-### 10.4 P1 待办 ❌ 未实现
-
-```
-□ 机制 4: Idle Continuation
-   - 实现 /auto-continue 命令
-   - 实现 auto_continue 工具（LLM 自动开启）
-   - 6 重门控
-   - 3s 倒计时 + Esc 取消
-   - 续接次数限制
-   - abort 抑制窗
-   - session 级状态管理
-   - Session TTL 清理
-   - 测试：各种边界情况
-
-预估代码量：~350 行 hook + ~500 行测试
-```
-
----
-
-## 11. 总结
-
-### 11.1 核心发现
-
-**三家对比**：
-
-| 框架 | Todo 相关机制数 | 代码规模 | 注入点风格 | 状态管理 |
-|------|--------------|---------|-----------|---------|
-| OMO | 3 个 | ~2150 行 | `toolOutput.output` | 重（TTL、续接次数） |
-| slim | 3 个 | ~1178 行 | `messages.transform` | 中（armed/fired） |
-| ZooKeeper (P0) | 3 个 | ~295 行 | 混合（`toolOutput` + `messages.transform`） | 无 |
-
-### 11.2 设计原则
-
-ZooKeeper 方案遵循以下原则：
-
-1. **无状态优先**：每个机制尽量无状态，减少 bug 风险
-2. **强硬语气**：借鉴 OMO 的质疑式提醒（"THEY ARE PROBABLY LYING"）
-3. **混合注入点**：
-   - 工作类提醒（verify、违规警告）注入 `toolOutput.output`
-   - 流程类提醒（委派提示）注入 `messages.transform` (user message)
-4. **分层保护**：
-   - P0：主动提醒（task 后、违规时、每 turn）
-   - P1：被动兜底（idle 时强制续接）
-
-### 11.3 与 build.md 的关系
-
-| build.md 现有段落 | 处理方式 |
-|-----------------|---------|
-| 身份声明 ("You are an orchestrator") | **保留** (每轮静态注入) |
-| 委派规则 ("What you MUST delegate") | **保留** (每轮静态注入) |
-| 验证迭代 ("Verify-Iterate Pattern") | **已移出** ✅ — 改为 `tool.execute.after` 中 post-subagent nudge 按需注入 |
-| CONTEXT 约束 ("Why CONTEXT must stay focused") | **保留** (每轮静态注入，帮助 task 格式正确) |
-| Examples | **保留** (每轮静态注入，减少 token 浪费) |
-| Subagent output | **保留** (每轮静态注入) |
-
-### 11.4 与业界对齐
-
-| 机制 | OMO | slim | ZooKeeper |
-|------|-----|------|-----------|
-| 任务完成 → 验证+todo | ✅ | (通过 hygiene 间接) | ✅ post-subagent nudge **已实现** |
-| 违规编辑 → 警告 | ✅ | ✅ | ✅ direct-work reminder **已实现** |
-| 每 turn → 委派提示 | ❌ | ✅ phase-reminder | ❌（已移除） |
-| 任务完成 → todo 更新 | (通过 Idle Enf. 兜底) | ✅ todo-hygiene | (通过 Idle Cont. P1) |
-| idle → 强制续接 | ✅ Continuation Enf. | ✅ Auto-continuation | ✅ Idle Continuation (P1 **未实现**) |
-
-### 11.5 未来方向
-
-1. **P1 Idle Continuation**：如果观测到 build agent 频繁在 todo 未完成时停止，实施 opt-in 的 idle 续接机制
-2. **进一步观察**：如果 todo 更新遗漏率高，考虑引入 slim 风格的 todo-hygiene 状态机
-3. **文案优化**：根据实际行为观察调整提醒文案的语气和措辞
-4. **权限层控制**：如果违规编辑频率高，考虑在 config.toml 中禁止编排器 edit/write
+## 7. 缺口对照
+
+| 能力 | 外部最佳实现 | ZooKeeper 现状 | 差距 |
+|---|---|---|---|
+| todo 工具与状态模型 | oh-my-pi（transcript-as-truth） | 已对齐（pi 侧） | 无 |
+| 委派后 todo 提醒 | omo verification reminder | 已有（三档 + VERIFY_REMINDER） | 无 |
+| 自动续跑 | omo enforcer（六层防失控）/ oh-my-pi checkCompletion | 无 | **有** |
+| 续跑防失控 | omo 停滞3+连败5+退避 | — | 随续跑引入 |
+| 压缩保活 | omo preserver | transcript 恢复天然免疫（pi）；OpenCode 侧无 | 低 |
+| 中途 nudge | oh-my-pi（变更≥12） | 无 | 中 |
+| 写作规范注入 | omo 工具描述覆写 | 无 | 低 |
+| eager prelude | oh-my-pi（todo.eager 三档） | 无 | 中 |
+| 注入协调器 | senpi idle-injection-coordinator | 无（单来源） | 暂不需要 |
+
+**若引入自动续跑，可复用的外部经验（按优先级）：**
+
+1. **判定即读取**（三家一致）：续跑判定必须实时读 todo 状态，不信任模型的完成声明；ZooKeeper 的 `TodoSource` 端口已具备该能力
+2. **防失控底线**：停滞检测（omo 的快照比较只认 `{id → status}` 变化）+ 次数上限 + 用户取消尊重（abort 窗口 / 问句检测）三者缺一不可
+3. **prompt 与机制互知**（slim）：system prompt 告诉模型"停下会被唤醒"，避免模型为逃避续跑而不敢结束回合
+4. **注入文本带状态摘要**（omo/senpi）：`[Status: 3/7 completed]` + 剩余任务列表，让续跑回合免于重新 `view`
+5. **blocked 的语义要先定**：三家对"blocked 是否阻止停止"答案不一，ZooKeeper 的 `decideTodoNudge` 目前把 blocked 归为非 active，续跑设计需显式选择
