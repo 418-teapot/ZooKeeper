@@ -6,7 +6,7 @@ type: concept
 timestamp: 2026-07-21T00:00:00Z
 tags: [context-engineering, retrieval, agentic-search, progressive-disclosure]
 status: stable
-last_validated: 2026-07-21T00:00:00Z
+last_validated: 2026-09-16T01:55:38Z
 timeliness: current
 ---
 
@@ -16,13 +16,13 @@ timeliness: current
 
 ## Overview
 
-随着 agent 自主性增强，上下文检索从"预推理时嵌入检索"转向"运行时即时加载"（详见[Anthropic 上下文工程文章](context-engineering/sources/notes/anthropic-context-engineering.md)）。agent 像人类使用文件系统和书签一样，在需要时才检索相关信息，而非预先记住整个语料。这是[有效上下文构成](context-engineering/concepts/context-anatomy.md)在运行时的对应策略。
+随着 agent 自主性增强，上下文检索从"预推理时嵌入检索"转向"运行时即时加载"——[Anthropic 上下文工程文章](context-engineering/sources/notes/anthropic-context-engineering.md)系统阐述了这一范式转移。agent 像人类使用文件系统和书签一样，在需要时才检索相关信息，而非预先记住整个语料。这是[有效上下文构成](context-engineering/concepts/context-anatomy.md)在运行时的对应策略。
 
 ## Details
 
 ### 渐进式披露
 
-Agent 通过探索增量发现相关上下文：文件大小暗示复杂度、命名约定暗示用途、时间戳可作相关性代理。agent 逐层组装理解，仅在工作记忆中保留必要内容。这种自管理的上下文窗口让 agent 聚焦于相关子集，而非淹没在详尽但可能无关的信息中。
+Agent 通过探索增量发现相关上下文：文件大小暗示复杂度、命名约定暗示用途、时间戳可作相关性代理。agent 逐层组装理解，仅在工作记忆中保留必要内容。这种自管理的上下文窗口让 agent 聚焦于相关子集，而非淹没在详尽但可能无关的信息中。即时检索的效果取决于工具是否提供清晰边界、高信号返回值和可操作的截断提示——[Agent 工具设计](agent-design/concepts/agent-tool-design.md)正是围绕这些接口质量展开。
 
 ### 元数据即信号
 
@@ -36,6 +36,8 @@ Agent 通过探索增量发现相关上下文：文件大小暗示复杂度、�
 
 > 此节由 zwiki 自动维护，请勿手动编辑。
 
+- [Agent 工具设计](agent-design/concepts/agent-tool-design.md)
+- [Anthropic Writing effective tools for agents 工程博客](agent-design/sources/notes/anthropic-writing-tools-for-agents.md)
 - [长程任务的上下文管理](context-engineering/analysis/long-horizon-context-management.md)
 - [有效上下文的构成](context-engineering/concepts/context-anatomy.md)
 - [上下文工程](context-engineering/concepts/context-engineering.md)

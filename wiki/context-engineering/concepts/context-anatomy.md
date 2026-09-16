@@ -6,7 +6,7 @@ type: concept
 timestamp: 2026-07-21T00:00:00Z
 tags: [context-engineering, system-prompt, tool-design, few-shot]
 status: stable
-last_validated: 2026-07-21T00:00:00Z
+last_validated: 2026-09-16T01:55:38Z
 timeliness: current
 ---
 
@@ -31,13 +31,15 @@ Prompt 应在两个失败模式之间找到 Goldilocks 区域：
 
 ### 工具：Token 效率
 
-工具定义了 agent 与信息/动作空间的契约。运行时按需加载相关数据的检索策略见[即时上下文检索](context-engineering/concepts/just-in-time-context-retrieval.md)。优化原则：
+工具定义了 agent 与信息/动作空间的契约。[即时上下文检索](context-engineering/concepts/just-in-time-context-retrieval.md)描述运行时按需加载相关数据的检索策略。优化原则：
 
 - **自包含、健壮、用途清晰** — 类似设计良好的函数
 - **功能无重叠** — 最常见的失败模式是臃肿工具集覆盖过多功能或导致模糊的工具选择
 - **可决断性** — 如果人类工程师无法明确判断某情境下该用哪个工具，agent 也做不到
+- **检索引导** — 分页、过滤、范围选择和截断不仅减少 token，也会引导 agent 使用更细粒度的检索策略
+- **可操作的错误** — 错误响应应提供具体的修正方向，而不是只返回 opaque error code 或 traceback
 
-更完整的工具接口、格式选择、错误预防和模型实测原则见[增强型 LLM](agent-design/concepts/augmented-llm.md)。
+[增强型 LLM](agent-design/concepts/augmented-llm.md)给出了更完整的工具接口、格式选择、错误预防和模型实测原则；[Agent 工具设计](agent-design/concepts/agent-tool-design.md)进一步展开工具边界、响应格式、分页截断和评估方法。
 
 ### 示例：精选而非堆砌
 
@@ -47,7 +49,9 @@ Few-shot 示例是"值千字的画面"，但不应把所有边缘情况塞入 pr
 
 > 此节由 zwiki 自动维护，请勿手动编辑。
 
+- [Agent 工具设计](agent-design/concepts/agent-tool-design.md)
 - [增强型 LLM](agent-design/concepts/augmented-llm.md)
+- [Anthropic Writing effective tools for agents 工程博客](agent-design/sources/notes/anthropic-writing-tools-for-agents.md)
 - [上下文工程](context-engineering/concepts/context-engineering.md)
 - [即时上下文检索](context-engineering/concepts/just-in-time-context-retrieval.md)
 - [Anthropic 上下文工程文章](context-engineering/sources/notes/anthropic-context-engineering.md)

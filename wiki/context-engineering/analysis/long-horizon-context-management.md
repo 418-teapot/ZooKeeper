@@ -44,8 +44,8 @@ Agent 定期将笔记持久化到上下文窗口之外的存储，后续再拉�
 
 专门的子 agent 用干净上下文窗口处理聚焦任务，主 agent 协调高层计划。
 
-- **优点：** 清晰的[关注点分离](agent-design/analysis/agent-skill-plugin-framework.md)——详细搜索上下文隔离在子 agent 内，主 agent 聚焦综合分析；子 agent 可消耗数万 token 但仅返回 1,000–2,000 token 摘要
-- **缺点：** 协调开销；子 agent 间信息传递有损；架构复杂度（评估与生产化权衡见[多 agent 系统的评估与生产可靠性](multi-agent/analysis/multi-agent-evaluation-reliability.md)）
+- **优点：** 清晰的关注点分离——详细搜索上下文隔离在子 agent 内（对应[Agent/Skill/Plugin 判断框架](agent-design/analysis/agent-skill-plugin-framework.md)的上下文隔离维度），主 agent 聚焦综合分析；子 agent 可消耗数万 token 但仅返回 1,000–2,000 token 摘要
+- **缺点：** 协调开销；子 agent 间信息传递有损；架构复杂度——[多 agent 系统的评估与生产可靠性](multi-agent/analysis/multi-agent-evaluation-reliability.md)分析了这些权衡的评估与生产化影响
 - **适用场景：** 复杂研究和分析；并行探索有收益的任务
 
 ## Conclusion

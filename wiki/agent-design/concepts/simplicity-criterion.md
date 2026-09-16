@@ -15,7 +15,7 @@ timeliness: current
 
 ## Overview
 
-简约准则是 [autoresearch](autoresearch/sources/notes/autoresearch.md) 中 agent 的决策启发式，写入 program.md 作为 agent 的行为约束。它防止 agent 在收益递减的局部最优中持续投入复杂代码。这一原则也适用于一般 agentic system：应先采用简单的单次调用或固定 workflow，再根据可测量的结果改进决定是否增加自主性，详见[Agentic System 选择分析](agent-design/analysis/agentic-system-selection.md)。
+简约准则是 [autoresearch](autoresearch/sources/notes/autoresearch.md) 中 agent 的决策启发式，写入 program.md 作为 agent 的行为约束。它防止 agent 在收益递减的局部最优中持续投入复杂代码。这一原则也适用于一般 agentic system：应先采用简单的单次调用或固定 workflow，再根据可测量的结果改进决定是否增加自主性——[Agentic System 选择分析](agent-design/analysis/agentic-system-selection.md)给出了这条复杂度阶梯的完整决策框架。
 
 ## Details
 

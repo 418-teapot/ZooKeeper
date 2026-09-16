@@ -11,7 +11,7 @@ timeliness: current
 
 # 图链接预测 — 基于拓扑结构的缺失链接推断
 
-> 不依赖文本内容，仅从页面间的拓扑结构推断"哪些页面应该互连但未连"。作为 Wiki 健康检查中"缺失交叉引用"检测的互补路径。交叉引用密度是 wiki 产生 n² 级关联价值的前提（见[复利知识](wiki-system/concepts/compounding-knowledge.md)），而图链接预测与锚文本挖掘两条路径互补（详见 [LLM Wiki vs RAG](wiki-system/analysis/llm-wiki-vs-rag.md) 中的价值曲线对比）。
+> 不依赖文本内容，仅从页面间的拓扑结构推断"哪些页面应该互连但未连"。作为 Wiki 健康检查中"缺失交叉引用"检测的互补路径。交叉引用密度是 wiki 产生 n² 级关联价值的前提（[复利知识](wiki-system/concepts/compounding-knowledge.md)论证了这一价值来源），而图链接预测与锚文本挖掘两条路径互补——[LLM Wiki vs RAG](wiki-system/analysis/llm-wiki-vs-rag.md) 中的价值曲线对比解释了两者的分工。
 
 ## Overview
 

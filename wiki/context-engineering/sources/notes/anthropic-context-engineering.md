@@ -25,7 +25,7 @@ timeliness: current
 - [上下文工程](context-engineering/concepts/context-engineering.md)是 prompt engineering 的自然演进——从写好 prompt 到精选整个上下文状态
 - [上下文腐烂](context-engineering/concepts/context-rot.md)使上下文成为有限资源，边际收益递减
 - 指导原则：用尽可能少的高信息量 token，让模型最可能产出期望结果
-- 上下文[构成](context-engineering/concepts/context-anatomy.md)：prompt 高度、工具效率、示例精选
+- 上下文[构成](context-engineering/concepts/context-anatomy.md)：prompt 高度、工具效率、示例精选——其中工具 token 效率明确引用并延伸了[Writing effective tools for agents 工程博客](agent-design/sources/notes/anthropic-writing-tools-for-agents.md)中的工具设计原则
 - [即时检索](context-engineering/concepts/just-in-time-context-retrieval.md)替代预推理嵌入检索，agent 维护轻量标识符按需加载
 - 长程任务三种技术：压缩、结构化笔记、[子 agent 架构](context-engineering/analysis/long-horizon-context-management.md)
 

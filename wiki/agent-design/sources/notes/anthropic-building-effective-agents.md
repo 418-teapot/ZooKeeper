@@ -6,7 +6,7 @@ timestamp: 2026-09-15T06:15:36Z
 resource: https://www.anthropic.com/engineering/building-effective-agents
 tags: [agent-design, workflow, agent, anthropic, tool-design]
 status: stable
-last_validated: 2026-09-15T06:15:36Z
+last_validated: 2026-09-16T01:55:38Z
 timeliness: current
 ---
 
@@ -37,7 +37,7 @@ Workflow 更适合步骤清晰、可预先分解的任务；agent 更适合步�
 
 agentic system 的基本构件是 augmented LLM，即具备检索、工具和记忆能力的 LLM。模型可以生成搜索查询、选择工具，并判断需要保留的信息。
 
-这些能力必须具有清晰、可记录、易测试的接口。工具定义不是外围实现细节，而是 agent 与外部世界之间的主要控制面。
+这些能力必须具有清晰、可记录、易测试的接口。工具定义不是外围实现细节，而是 agent 与外部世界之间的主要控制面。后续的[Writing effective tools for agents 工程博客](agent-design/sources/notes/anthropic-writing-tools-for-agents.md)进一步专门讨论工具边界、响应上下文和评估闭环。
 
 ### Workflow 模式
 
@@ -70,7 +70,7 @@ agent 通常以用户指令或对话开始，在循环中执行以下动作：
 - 从单次 LLM 调用和检索开始；
 - 只有在评估显示简单方案不足时才增加复杂度；
 - 明确展示 agent 的规划过程；
-- 将工具文档、参数设计和测试视为 agent-computer interface 的核心工作；
+- 将工具文档、参数设计和测试视为 [agent-computer interface](agent-design/concepts/agent-computer-interface.md) 的核心工作；
 - 用结果质量和实际任务表现，而不是系统复杂度衡量成功。
 
 ## Backlinks
@@ -79,6 +79,7 @@ agent 通常以用户指令或对话开始，在循环中执行以下动作：
 
 - [Agentic System 选择分析](agent-design/analysis/agentic-system-selection.md)
 - [LLM Workflow 模式](agent-design/analysis/llm-workflow-patterns.md)
+- [Agent-Computer Interface](agent-design/concepts/agent-computer-interface.md)
 - [增强型 LLM](agent-design/concepts/augmented-llm.md)
 - [ZooKeeper Wiki 概览](overview.md)
 

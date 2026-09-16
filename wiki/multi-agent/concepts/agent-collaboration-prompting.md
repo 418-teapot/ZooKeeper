@@ -5,7 +5,7 @@ type: concept
 timestamp: 2026-09-14T02:14:29Z
 tags: [multi-agent, prompt-engineering, tool-design, delegation, evaluation]
 status: stable
-last_validated: 2026-09-14T02:14:29Z
+last_validated: 2026-09-16T01:55:38Z
 timeliness: current
 ---
 
@@ -15,7 +15,7 @@ timeliness: current
 
 ## Overview
 
-单 agent prompt 的局部优化不足以控制[多 agent 系统](multi-agent/analysis/multi-agent-evaluation-reliability.md)的涌现行为。在[多 agent 研究架构](multi-agent/concepts/multi-agent-research-architecture.md)中，lead agent、subagent 和工具接口共同构成协作协议；这些原则提炼自 Anthropic 的[多 agent 研究系统工程实践](multi-agent/sources/notes/anthropic-multi-agent-research-system.md)，是[上下文工程](context-engineering/concepts/context-engineering.md)在协作场景的具体化。改进应从真实失败轨迹出发，以启发式和边界约束引导行为，而不是把所有步骤硬编码成固定流程。
+单 agent prompt 的局部优化不足以控制多 agent 系统的涌现行为。在[多 agent 研究架构](multi-agent/concepts/multi-agent-research-architecture.md)中，lead agent、subagent 和工具接口共同构成协作协议；这些原则提炼自 Anthropic 的[多 agent 研究系统工程实践](multi-agent/sources/notes/anthropic-multi-agent-research-system.md)，是[上下文工程](context-engineering/concepts/context-engineering.md)在协作场景的具体化。改进应从真实失败轨迹出发，以启发式和边界约束引导行为，而不是把所有步骤硬编码成固定流程。
 
 ## Details
 
@@ -39,9 +39,9 @@ prompt 应包含 effort scaling 规则，而不是让 agent 对所有问题采�
 
 ### 工具接口与搜索策略
 
-工具描述应有清晰、互斥的用途，帮助 agent 根据用户意图选择正确工具。agent 应先了解可用工具，再匹配工具与任务；广泛探索使用通用搜索，已有专门数据源时优先使用专用工具。
+工具描述应有清晰、互斥的用途，帮助 agent 根据用户意图选择正确工具；工具的命名空间、互斥边界、响应格式和错误引导还应通过[Agent 工具设计](agent-design/concepts/agent-tool-design.md)中的评估闭环验证。agent 应先了解可用工具，再匹配工具与任务；广泛探索使用通用搜索，已有专门数据源时优先使用专用工具。
 
-搜索过程通常应先宽后窄：先用短而宽泛的查询了解信息版图，再根据发现逐步收窄。过早写出很长、很具体的查询容易返回稀疏结果并锁定错误方向。工具定义本身是 agent-computer interface 的控制面；关于格式开销、参数防错、边界说明和工具使用测试的系统化原则见[增强型 LLM](agent-design/concepts/augmented-llm.md)。
+搜索过程通常应先宽后窄：先用短而宽泛的查询了解信息版图，再根据发现逐步收窄。过早写出很长、很具体的查询容易返回稀疏结果并锁定错误方向。工具定义本身是 [agent-computer interface](agent-design/concepts/agent-computer-interface.md) 的控制面，该页给出了格式开销、参数防错、边界说明和工具使用测试的系统化原则。
 
 ### 用失败轨迹改进系统
 
@@ -59,6 +59,7 @@ extended thinking 可用于让 lead agent 规划工具、判断任务复杂度�
 
 > 此节由 zwiki 自动维护，请勿手动编辑。
 
+- [Agent-Computer Interface](agent-design/concepts/agent-computer-interface.md)
 - [上下文工程](context-engineering/concepts/context-engineering.md)
 - [Anthropic 多 agent 研究系统文章](multi-agent/sources/notes/anthropic-multi-agent-research-system.md)
 - [ZooKeeper Wiki 概览](overview.md)

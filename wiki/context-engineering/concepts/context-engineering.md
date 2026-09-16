@@ -6,7 +6,7 @@ type: concept
 timestamp: 2026-07-21T00:00:00Z
 tags: [context-engineering, agent-design, llm]
 status: stable
-last_validated: 2026-09-14T02:27:26Z
+last_validated: 2026-09-16T01:55:38Z
 timeliness: current
 ---
 
@@ -16,7 +16,7 @@ timeliness: current
 
 ## Overview
 
-上下文工程是 Anthropic 提出的 agent 设计方法论（详见[Anthropic 上下文工程文章](context-engineering/sources/notes/anthropic-context-engineering.md)），将"写好 prompt"升级为"精选整个上下文状态"。它是构建多轮推理 agent 的基础实践。
+上下文工程是 Anthropic 提出的 agent 设计方法论，源自其[上下文工程文章](context-engineering/sources/notes/anthropic-context-engineering.md)，将"写好 prompt"升级为"精选整个上下文状态"。它是构建多轮推理 agent 的基础实践。
 
 ## Details
 
@@ -28,7 +28,7 @@ Prompt engineering 聚焦于编写和组织 LLM 指令（尤其 system prompt）
 
 ### 指导原则
 
-好的上下文工程意味着**用尽可能少的高信息量 token，让模型最可能产出期望结果**。这一原则源于[上下文腐烂](context-engineering/concepts/context-rot.md)的约束——上下文是有限资源，边际收益递减。它适用于上下文的每个组件（[构成](context-engineering/concepts/context-anatomy.md)）、运行时[检索策略](context-engineering/concepts/just-in-time-context-retrieval.md)、以及[长程任务](context-engineering/analysis/long-horizon-context-management.md)的上下文延续。
+好的上下文工程意味着**用尽可能少的高信息量 token，让模型最可能产出期望结果**。这一原则源于[上下文腐烂](context-engineering/concepts/context-rot.md)的约束——上下文是有限资源，边际收益递减。它适用于上下文的每个组件（[构成](context-engineering/concepts/context-anatomy.md)）、运行时[检索策略](context-engineering/concepts/just-in-time-context-retrieval.md)、以及[长程任务](context-engineering/analysis/long-horizon-context-management.md)的上下文延续。工具响应本身也是上下文的一部分：[Agent 工具设计](agent-design/concepts/agent-tool-design.md)展开了工具作为上下文与动作空间接口的边界、返回值和错误消息设计，并强调用真实任务评估。
 
 "最小"不意味着"最短"——agent 仍需足够的 upfront 信息来确保行为一致性。实践中，先用最小 prompt 在最强模型上测试，再根据失败模式逐步添加指令和示例。[多 agent 场景下的协作 prompt 与工具设计](multi-agent/concepts/agent-collaboration-prompting.md)进一步定义了委派契约、effort scaling 与工具启发式。
 
@@ -36,6 +36,7 @@ Prompt engineering 聚焦于编写和组织 LLM 指令（尤其 system prompt）
 
 > 此节由 zwiki 自动维护，请勿手动编辑。
 
+- [Agent 工具设计](agent-design/concepts/agent-tool-design.md)
 - [增强型 LLM](agent-design/concepts/augmented-llm.md)
 - [长程任务的上下文管理](context-engineering/analysis/long-horizon-context-management.md)
 - [有效上下文的构成](context-engineering/concepts/context-anatomy.md)

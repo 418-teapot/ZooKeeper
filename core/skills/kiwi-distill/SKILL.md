@@ -93,6 +93,7 @@ Before finalizing, review your draft against ALL criteria below. If a criterion 
 ### 4.2 Category Check
 - For every page type (concept/entity/analysis/source), ask: "Is this the best fit?" The most common mistake is labeling everything as `concept`. A concrete tool/script/file is an `entity`, not a concept. If a page contains comparison/tradeoff analysis, it should be `analysis`.
 - Before creating a new page, verify that the concept isn't already covered by an existing wiki page with a more authoritative description. If an existing page already describes the concept well, reference it via cross-reference instead of creating a redundant page.
+- **Reverse check — term outgrowing its host:** if your draft needs to reference a concept that exists only as a subsection of a page whose main topic differs (e.g. ACI living inside augmented-llm), and multiple pages need to reference it, propose extracting it into a standalone page (migrate content from the host, leave a pointer paragraph in the host) instead of anchoring links to a topically mismatched host page.
 
 ### 4.3 Density Check
 - Does every page respect its assigned density level? If an L1 page has 6 subsections or an L2 page has 15, compress or split.
@@ -111,6 +112,9 @@ Before finalizing, review your draft against ALL criteria below. If a criterion 
 - All cross-reference paths are wiki-root-relative and domain-prefixed (e.g. `foo/concepts/bar.md` NOT `wiki/foo/concepts/bar.md`).
 - **Inline links in page body:** each independent reading entry point (a section reachable via search or TOC) should have at least one link to each referenced concept. Short pages need only first occurrence.
 - **Verify no duplicate inline links:** after adding the first-occurrence link, scan the rest of the page body and remove any additional inline links to the same target — only the first occurrence in each independent section should carry a link.
+- **Link sentence style:** every inline link must be a grammatical component of its sentence (subject, object, or attributive), and the sentence itself must convey why the target is relevant. Never append bare pointers like 「……见[X]」 or 「（见[X]）」 — a reader who doesn't click should still know why the page matters. Prefer making the linked page the subject: 「[X]展开了工具边界与评估闭环」.
+- **Anchor precision:** each link target must be the concept's home page — the page whose topic IS that concept. Do not link a narrow term to a broad parent page (e.g. link 「上下文资源」 to context-rot, not context-engineering, when the semantics is "context is a finite resource"). If the precise home page doesn't exist, consider proposing its creation (see 4.2 reverse check) rather than settling for a loose anchor.
+- **References is not a substitute:** the References section lists sources; it does not fulfill the inline-link requirement. A concept mentioned in the body must still be linked at first occurrence in the body, even if the same page appears in References (`zwiki check`'s term scan flags missing body links).
 
 ### 4.6 Self-Deletion Check
 
@@ -281,6 +285,10 @@ Before returning your analysis, confirm ALL of the following:
 - [ ] All external references (URLs, citations) are in the References section, not inline in main text
 - [ ] Inline wiki links follow the "independent reading entry point" rule: short pages link at first occurrence; long pages link at first occurrence within each independently-reachable section
 - [ ] **No duplicate inline links:** the page body contains only one inline link per target (first occurrence only), with no repeated links to the same concept/entity later in the page
+- [ ] Every inline link is a grammatical sentence component carrying information about its target — no bare 「见[X]」/「（见[X]）」 pointers
+- [ ] Link anchors are precise: each target page's topic IS the linked concept (no narrow terms anchored to broad parent pages)
+- [ ] Body inline links exist independently of the References section — no concept mentioned in the body is linked only from References
+- [ ] Concepts referenced by multiple pages but buried as subsections of topically mismatched hosts have been evaluated for extraction into standalone pages
 
 ### Density & Conciseness
 - [ ] Every page is within its assigned density level (L1: 40–60 lines, L2: 60–100 lines)

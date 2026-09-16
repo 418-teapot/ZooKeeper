@@ -7,7 +7,7 @@ tags: [multi-agent, evaluation, reliability, production]
 sources:
   - multi-agent/sources/notes/anthropic-multi-agent-research-system.md
 status: stable
-last_validated: 2026-09-14T02:14:29Z
+last_validated: 2026-09-16T01:55:38Z
 timeliness: current
 ---
 
@@ -31,7 +31,9 @@ timeliness: current
 - **来源质量：** 是否优先使用权威或一手来源
 - **工具效率：** 是否选择正确工具，并以合理次数调用
 
-对会改变持久状态的长程任务（上下文管理策略参见[长程任务的上下文管理](context-engineering/analysis/long-horizon-context-management.md)），更适合检查最终状态或离散检查点，而不是逐轮要求固定动作序列。
+工具本身的边界、描述、schema 和返回格式也属于被评估对象——[Agent 工具设计](agent-design/concepts/agent-tool-design.md)给出了这些维度的具体设计原则。工具评估可同时记录调用次数、重复调用、参数错误、工具错误、token 消耗和运行时间；不应把某一条工具调用序列当作唯一正确路径，结果、资源使用和必要的工具行为更适合共同组成 rubric。
+
+对会改变持久状态的长程任务（[长程任务的上下文管理](context-engineering/analysis/long-horizon-context-management.md)给出了对应的上下文管理策略），更适合检查最终状态或离散检查点，而不是逐轮要求固定动作序列。
 
 ### 自动与人工评估
 
@@ -60,8 +62,9 @@ agent 在多个工具调用中持续维护状态，微小失败可能改变后�
 > 此节由 zwiki 自动维护，请勿手动编辑。
 
 - [Agentic System 选择分析](agent-design/analysis/agentic-system-selection.md)
+- [Agent 工具设计](agent-design/concepts/agent-tool-design.md)
+- [Anthropic Writing effective tools for agents 工程博客](agent-design/sources/notes/anthropic-writing-tools-for-agents.md)
 - [长程任务的上下文管理](context-engineering/analysis/long-horizon-context-management.md)
-- [Agent 协作的 prompt 与工具设计](multi-agent/concepts/agent-collaboration-prompting.md)
 - [多 agent 研究架构](multi-agent/concepts/multi-agent-research-architecture.md)
 - [Anthropic 多 agent 研究系统文章](multi-agent/sources/notes/anthropic-multi-agent-research-system.md)
 - [ZooKeeper Wiki 概览](overview.md)

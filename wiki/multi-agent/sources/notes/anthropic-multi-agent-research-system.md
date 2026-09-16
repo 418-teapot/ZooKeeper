@@ -24,12 +24,12 @@ timeliness: current
 
 ## Key Points
 
-- Research 使用 lead agent 规划任务，并创建多个具有明确职责的 subagent 并行探索（见[多 agent 研究架构](multi-agent/concepts/multi-agent-research-architecture.md)）。
-- 并行 subagent 通过独立上下文窗口增加推理容量，同时降低单一路径依赖（见[上下文工程](context-engineering/concepts/context-engineering.md)）。
+- Research 使用 lead agent 规划任务，并创建多个具有明确职责的 subagent 并行探索——[多 agent 研究架构](multi-agent/concepts/multi-agent-research-architecture.md)展开了该架构的角色分工。
+- 并行 subagent 通过独立上下文窗口增加推理容量，同时降低单一路径依赖——每个独立窗口内的信息精选遵循[上下文工程](context-engineering/concepts/context-engineering.md)原则。
 - lead agent 需要根据问题复杂度决定 subagent 数量、工具调用预算和任务边界（详见前述协作 prompt 概念页）。
 - 工具描述与工具选择启发式会直接影响 agent 是否走上有效路径。
-- 评估重点应放在事实准确性、引用准确性、完整性、来源质量和工具效率，而不是固定执行轨迹（见[多 agent 系统的评估与生产可靠性](multi-agent/analysis/multi-agent-evaluation-reliability.md)）。
-- 生产系统需要支持断点恢复、重试、检查点、全链路 tracing 和 rainbow deployment（长程上下文策略见[长程任务的上下文管理](context-engineering/analysis/long-horizon-context-management.md)）。
+- 评估重点应放在事实准确性、引用准确性、完整性、来源质量和工具效率，而不是固定执行轨迹——[多 agent 系统的评估与生产可靠性](multi-agent/analysis/multi-agent-evaluation-reliability.md)将这些维度展开为评分 rubric。
+- 生产系统需要支持断点恢复、重试、检查点、全链路 tracing 和 rainbow deployment——跨调用延续工作所需的上下文策略由[长程任务的上下文管理](context-engineering/analysis/long-horizon-context-management.md)展开。
 - 同步等待简化协调，但会形成瓶颈；异步执行有更高并行潜力，也带来状态一致性和错误传播问题。
 
 ## Details

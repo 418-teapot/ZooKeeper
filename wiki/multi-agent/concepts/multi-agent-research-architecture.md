@@ -31,13 +31,13 @@ timeliness: current
 
 研究问题通常具有开放式、路径依赖和广度优先特征，无法可靠地预先规定所有步骤。独立 subagent 可以从不同方向探索，避免单个 agent 过早锁定某条搜索路径；它们还可以在各自上下文中消化大量工具结果，只向 lead agent 返回压缩后的发现。这与[上下文工程](context-engineering/concepts/context-engineering.md)的最小高信息量 token 原则一致，也是[长程任务的上下文管理中的子 agent 架构技术](context-engineering/analysis/long-horizon-context-management.md)的核心机制。
 
-这同时形成关注点分离：不同 subagent 可以拥有不同的任务 prompt、工具选择和探索轨迹。并行化因此既增加覆盖范围，也把详细搜索上下文隔离在主 agent 之外。orchestrator-workers 是更一般的 workflow 模式；它与本页的研究架构都使用中央 agent 动态拆解任务，但不局限于研究场景，详见[LLM Workflow 模式](agent-design/analysis/llm-workflow-patterns.md)。
+这同时形成关注点分离：不同 subagent 可以拥有不同的任务 prompt、工具选择和探索轨迹。并行化因此既增加覆盖范围，也把详细搜索上下文隔离在主 agent 之外。orchestrator-workers 是更一般的 workflow 模式；它与本页的研究架构都使用中央 agent 动态拆解任务，但不局限于研究场景——[LLM Workflow 模式](agent-design/analysis/llm-workflow-patterns.md)将其作为五种通用 workflow 模式之一展开。
 
 ### 适用边界与成本
 
 该模式适合高价值、可并行化、信息量超过单一上下文窗口的任务。不适合所有 agent 必须共享相同即时上下文，或子任务之间存在密集依赖的任务。
 
-主要成本包括 token 消耗、协调开销、结果传递损失和错误累积。同步等待每批 subagent 完成可以简化协调，但会让一个慢 subagent 阻塞整个研究循环；异步执行能提高并发度，却需要额外处理状态一致性、结果协调和错误传播。这些权衡的评估与生产化影响见[多 agent 系统的评估与生产可靠性](multi-agent/analysis/multi-agent-evaluation-reliability.md)；判断是否采用该模式可参考[Agent/Skill/Plugin 判断框架](agent-design/analysis/agent-skill-plugin-framework.md)的上下文隔离与并行执行维度。
+主要成本包括 token 消耗、协调开销、结果传递损失和错误累积。同步等待每批 subagent 完成可以简化协调，但会让一个慢 subagent 阻塞整个研究循环；异步执行能提高并发度，却需要额外处理状态一致性、结果协调和错误传播。[多 agent 系统的评估与生产可靠性](multi-agent/analysis/multi-agent-evaluation-reliability.md)分析了这些权衡的评估与生产化影响；判断是否采用该模式可参考[Agent/Skill/Plugin 判断框架](agent-design/analysis/agent-skill-plugin-framework.md)的上下文隔离与并行执行维度。
 
 ## Backlinks
 

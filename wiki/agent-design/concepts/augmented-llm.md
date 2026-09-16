@@ -5,7 +5,7 @@ type: concept
 timestamp: 2026-09-15T06:15:36Z
 tags: [agent-design, augmented-llm, tool-use, memory, retrieval, aci]
 status: stable
-last_validated: 2026-09-15T06:15:36Z
+last_validated: 2026-09-16T01:55:38Z
 timeliness: current
 ---
 
@@ -50,27 +50,7 @@ timeliness: current
 
 ### Agent-computer interface
 
-工具定义是 agent-computer interface（ACI），其质量会直接影响 agent 的行动路径。好的工具接口应：
-
-- 明确用途、参数含义、边界和失败行为；
-- 提供必要的输入格式、边缘情况和使用示例；
-- 使用模型熟悉、自然出现的输出格式；
-- 避免无谓的计数、转义和结构化开销；
-- 通过参数设计让常见错误更难发生。
-
-接口设计的目标不是增加规则数量，而是让正确动作成为最容易选择的动作。
-
-### 工具测试
-
-工具不能只按 API 是否能运行来验收，还应观察模型如何实际使用它。测试过程应覆盖：
-
-- 代表性输入；
-- 错误参数和边界条件；
-- 多个相似工具之间的选择；
-- 工具结果返回后的下一步行为；
-- 长路径中工作目录或状态变化后的调用。
-
-根据失败轨迹修改工具名称、描述和参数，比继续堆叠 system prompt 更可能解决工具误用问题。
+工具定义构成 agent 与外部世界交互的控制面。[Agent-Computer Interface](agent-design/concepts/agent-computer-interface.md)给出了这一接口的设计目标与验收方法（含工具测试），[Agent 工具设计](agent-design/concepts/agent-tool-design.md)进一步将其扩展为工具选择、namespace、响应格式和结果导向评估的完整工程闭环。
 
 ### 与上下文工程的关系
 
@@ -81,8 +61,10 @@ timeliness: current
 > 此节由 zwiki 自动维护，请勿手动编辑。
 
 - [LLM Workflow 模式](agent-design/analysis/llm-workflow-patterns.md)
+- [Agent-Computer Interface](agent-design/concepts/agent-computer-interface.md)
+- [Agent 工具设计](agent-design/concepts/agent-tool-design.md)
+- [Anthropic Writing effective tools for agents 工程博客](agent-design/sources/notes/anthropic-writing-tools-for-agents.md)
 - [有效上下文的构成](context-engineering/concepts/context-anatomy.md)
-- [Agent 协作的 prompt 与工具设计](multi-agent/concepts/agent-collaboration-prompting.md)
 - [ZooKeeper Wiki 概览](overview.md)
 
 ## References

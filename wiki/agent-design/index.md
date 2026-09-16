@@ -1,5 +1,7 @@
 ## concept
 
+- [Agent 工具设计](concepts/agent-tool-design.md) — 面向非确定性 agent 设计工具的原则——用清晰边界、高信号返回值、可操作描述和结果导向评估提升工具使用质量。
+- [Agent-Computer Interface](concepts/agent-computer-interface.md) — 确定性软件与非确定性 agent 之间的行为契约——工具定义、参数 schema 与错误反馈共同构成的控制面。
 - [NPC 式分工](concepts/npc.md) — 人类扮演"游戏设计师"编写 NPC 行为脚本，AI agent 扮演 NPC 在脚本约束下自主行动，实现策略与执行的分离。
 - [后验问责制](concepts/post-hoc-accountability.md) — 不阻止 agent 越界编辑，而是在实验记录时捕获偏差并要求合理性说明，通过透明度而非硬限制管理 agent 自主性。
 - [增强型 LLM](concepts/augmented-llm.md) — 通过检索、工具和记忆扩展基础模型能力的 agentic system 构件，也是 agent 与外部世界交互的最小接口单元。
@@ -8,6 +10,7 @@
 ## source
 
 - [Anthropic Building Effective Agents 工程博客](sources/notes/anthropic-building-effective-agents.md) — Anthropic 关于 workflow、agent、增强型 LLM 和可靠 agent 系统设计模式的工程博客摘要。
+- [Anthropic Writing effective tools for agents 工程博客](sources/notes/anthropic-writing-tools-for-agents.md) — Anthropic 关于为 AI agent 选择、命名、描述、实现和评估工具的工程实践。
 
 ## analysis
 

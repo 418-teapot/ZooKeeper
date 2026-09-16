@@ -39,6 +39,7 @@ timeliness: current
 
 > 此节由 zwiki 自动维护，请勿手动编辑。
 
+- [Agent 工具设计](agent-design/concepts/agent-tool-design.md)
 - [长程任务的上下文管理](context-engineering/analysis/long-horizon-context-management.md)
 - [上下文工程](context-engineering/concepts/context-engineering.md)
 - [Anthropic 上下文工程文章](context-engineering/sources/notes/anthropic-context-engineering.md)

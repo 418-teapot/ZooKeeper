@@ -16,7 +16,7 @@ timeliness: current
 
 ## Overview
 
-autoresearch 是一个让 AI agent 自动在小规模单 GPU LLM 训练实验上跑研究的框架。Agent 自主修改训练代码、运行 5 分钟实验、根据 `val_bpb` 指标决定保留/丢弃，整夜无人值守循环迭代。该框架的核心机制（[自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md)、[固定时间预算评估](autoresearch/concepts/fixed-time-budget-evaluation.md)、[单文件修改原则](autoresearch/concepts/single-file-modification.md)、[NPC 式分工](agent-design/concepts/npc.md)、[简约准则](agent-design/concepts/simplicity-criterion.md)）被后续的 oh-my-pi [autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md)架构化。[实验版本管理](autoresearch/concepts/experiment-versioning.md)是框架的 git 原生版本控制方案。详细的设计决策分析见[设计权衡分析](autoresearch/analysis/autoresearch-design-tradeoffs.md)，扩展设计来源于[autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)。
+autoresearch 是一个让 AI agent 自动在小规模单 GPU LLM 训练实验上跑研究的框架。Agent 自主修改训练代码、运行 5 分钟实验、根据 `val_bpb` 指标决定保留/丢弃，整夜无人值守循环迭代。该框架的核心机制（[自主实验循环](autoresearch/concepts/autonomous-experiment-loop.md)、[固定时间预算评估](autoresearch/concepts/fixed-time-budget-evaluation.md)、[单文件修改原则](autoresearch/concepts/single-file-modification.md)、[NPC 式分工](agent-design/concepts/npc.md)、[简约准则](agent-design/concepts/simplicity-criterion.md)）被后续的 oh-my-pi [autoresearch 扩展循环](autoresearch/concepts/autoresearch-extension-loop.md)架构化。[实验版本管理](autoresearch/concepts/experiment-versioning.md)是框架的 git 原生版本控制方案。[设计权衡分析](autoresearch/analysis/autoresearch-design-tradeoffs.md)给出了详细的设计决策分析，扩展设计来源于[autoresearch 设计文档](autoresearch/sources/rfc/autoresearch-design.md)。
 
 - **作者：** Andrej Karpathy (@karpathy)
 - **发布时间：** 2026 年 3 月
