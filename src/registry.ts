@@ -13,7 +13,7 @@
  *   1. hook units — subagent-prompt → subagent-delegation (beforeExec),
  *      subagent-prompt → json-error-nudge → direct-work-nudge →
  *      post-subagent-nudge (afterExec), context-pruning (transform),
- *      reply-strip (textComplete).
+ *      reply-strip (textComplete), todo-continuation (onSettled).
  *   2. tool units — compress, decompress, subagent, ask.
  *   3. command units — go, dcp.
  *   4. agent units — the seven prompt-injection units.
@@ -48,6 +48,7 @@ import { unit as postSubagentNudgeUnit } from "./hooks/post-subagent-nudge/index
 import { unit as replyStripUnit } from "./hooks/reply-strip/index.js";
 import { unit as subagentDelegationUnit } from "./hooks/subagent-delegation/index.js";
 import { unit as subagentPromptUnit } from "./hooks/subagent-prompt/index.js";
+import { unit as todoContinuationUnit } from "./hooks/todo-continuation/index.js";
 import { unit as askToolUnit } from "./tools/ask.js";
 import { unit as compressToolUnit } from "./tools/compress.js";
 import { unit as decompressToolUnit } from "./tools/decompress.js";
@@ -159,6 +160,7 @@ export const REGISTRY: UnitDescriptor[] = [
   postSubagentNudgeUnit,
   contextPruningUnit,
   replyStripUnit,
+  todoContinuationUnit,
   // ── Tool units ──────────────────────────────────────────────────
   compressToolUnit,
   decompressToolUnit,

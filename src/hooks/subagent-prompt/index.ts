@@ -58,6 +58,7 @@ export const unit: HookUnitDescriptor = {
           judge: (req) => judgeSubagentPrompt(req, deps.limits),
         },
       ],
+      onSettled: [],
     };
   },
 };

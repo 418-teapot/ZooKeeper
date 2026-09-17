@@ -2,8 +2,9 @@
  * ZooKeeper Pi extension — profile-driven hooks composed from the unit
  * registry.
  *
- * This extension registers six event hooks plus slash commands, all
- * driven by the active mode profile (`[zoo.mode.<name>]`, parsed by
+ * This extension registers seven unconditional event hooks, three
+ * profile-gated auto-continuation events, and slash commands, all driven
+ * by the active mode profile (`[zoo.mode.<name>]`, parsed by
  * `parseModeProfile`):
  * 1. `session_start` — seeds the `zoo` widget (rendered above the
  *    editor) with the current primary at session startup / resume, so it
@@ -26,7 +27,21 @@
  * 6. `message_end` — strips model-imitated `[mN] ` line-start ref
  *    prefixes from finalized assistant text parts (handler built by
  *    `buildPiMessageEndHandler`).
- * 7. commands — the composed slash commands (e.g. `/dcp`) are registered
+ * 7. `session_tree` — drops this session's cached todo view after tree
+ *    navigation (`/tree`) moves the active leaf, so the next `todo`
+ *    call re-scans the branch the navigation moved to.
+ * 8. auto-continuation — `agent_end` classifies the finished run
+ *    (aborted / awaiting-input / settled) from its terminal message and
+ *    the open-blocking-prompt count kept by `ui_prompt_start` /
+ *    `ui_prompt_end`, then queues the composed settle judge's wake
+ *    reminder as a `followUp` custom message.  Because the run is still
+ *    streaming when `agent_end` fires, pi's own run loop drains the
+ *    queued follow-up within the same `prompt()` call (so a single-shot
+ *    host keeps the session alive to run the continuation).  These
+ *    events are registered only when the profile composes a settle
+ *    contribution (todo-continuation) — a profile without it registers
+ *    none (fail-closed).
+ * 9. commands — the composed slash commands (e.g. `/dcp`) are registered
  *    with pi via `registerCommand`; their chat notifications go through
  *    the single pi tool host's in-session `appendEntry` channel
  *    (`zoo-notice` custom entries — persistent in the session, rendered
@@ -115,6 +130,7 @@ import {
   buildPiCommandRegistrationPlan,
   buildPiContextHandler,
   buildPiMessageEndHandler,
+  buildPiSettledHandler,
   buildPiToolResultHandler,
   loadPiHtmlConverter,
   type PiCommandContext,
@@ -129,12 +145,20 @@ import {
   parseAgentPermissions,
   parseAskConfig,
   parseContextConfig,
+  parseContinuationConfig,
   parseLimits,
   parseModeProfile,
 } from "./core/config-parse.js";
 import type { AgentModeMap, ModeProfile } from "./core/config-types.js";
 import type { HostAdapter } from "./core/context/lens.js";
 import { clearRoundView } from "./core/context/round-view.js";
+import {
+  type Budget,
+  isAwaitingUserAnswer,
+  resolveWorkActions,
+  type StopCause,
+  type TurnToolCall,
+} from "./core/continuation/index.js";
 import {
   isSkillAllowed,
   parseSkillPermissions,
@@ -165,7 +189,7 @@ import { createTodoStore } from "./core/todo/store.js";
 import type { TodoPhase } from "./core/todo/types.js";
 import type { ValidationLimits } from "./core/validate.js";
 import { REGISTRY } from "./registry.js";
-import { log } from "./utils/logger.js";
+import { flushLogs, log } from "./utils/logger.js";
 
 // ---------------------------------------------------------------------------
 // Local minimal interface — duck-type compatible with pi's ExtensionAPI.
@@ -210,6 +234,24 @@ interface ExtensionAPI {
   /** Register a chat-transcript renderer for a custom entry type. */
   registerEntryRenderer(customType: string, renderer: unknown): void;
 
+  /**
+   * Send a custom message into the session, optionally triggering a turn.
+   * `deliverAs: "followUp"` with `triggerTurn: true` injects a message and
+   * starts a new run after the current one settles.
+   */
+  sendMessage(
+    message: {
+      customType: string;
+      content: string | unknown[];
+      display: boolean;
+      details?: unknown;
+    },
+    options?: {
+      triggerTurn?: boolean;
+      deliverAs?: "steer" | "followUp" | "nextTurn";
+    },
+  ): void;
+
   /** Register handler for `before_agent_start`. */
   on(
     event: "before_agent_start",
@@ -249,6 +291,22 @@ interface ExtensionAPI {
    */
   on(
     event: "session_tree",
+    handler: (evt: unknown, ctx: unknown) => void | Promise<void>,
+  ): void;
+  /** Register handler for a low-level agent run's end. */
+  on(
+    event: "agent_end",
+    handler: (evt: unknown, ctx: unknown) => void | Promise<void>,
+  ): void;
+  /** Register handler for when an agent run fully settles. */
+  /** Register handler for a blocking user-facing UI prompt opening. */
+  on(
+    event: "ui_prompt_start",
+    handler: (evt: unknown, ctx: unknown) => void | Promise<void>,
+  ): void;
+  /** Register handler for a blocking user-facing UI prompt closing. */
+  on(
+    event: "ui_prompt_end",
     handler: (evt: unknown, ctx: unknown) => void | Promise<void>,
   ): void;
 }
@@ -777,6 +835,175 @@ export function buildPiNoticeEntryRenderer(): (
   };
 }
 
+// ---------------------------------------------------------------------------
+// Settled-turn analysis
+// ---------------------------------------------------------------------------
+
+/** Message roles that start a fresh conversational turn. */
+const TURN_BOUNDARY_ROLES: ReadonlySet<string> = new Set(["user", "custom"]);
+
+/** The string `role` of a pi message, or `undefined` for a non-message. */
+function messageRole(message: unknown): string | undefined {
+  if (message === null || typeof message !== "object") return undefined;
+  const role = (message as { role?: unknown }).role;
+  return typeof role === "string" ? role : undefined;
+}
+
+/**
+ * Slice the settled turn out of a run's messages.
+ *
+ * A turn starts right after the most recent boundary message — a
+ * `user` message (a real prompt) or a `custom` message (an injected
+ * follow-up such as the continuation wake itself).  Everything after it
+ * is the run the judge is asked about; with no boundary the whole array
+ * is the turn.  Only the LAST boundary is honoured, so a multi-turn
+ * transcript still resolves to the final run.
+ *
+ * @param messages - The `agent_end` payload's message array.
+ * @returns The messages belonging to the settled turn.
+ */
+function settledTurnMessages(messages: readonly unknown[]): unknown[] {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const role = messageRole(messages[i]);
+    if (role !== undefined && TURN_BOUNDARY_ROLES.has(role)) {
+      return messages.slice(i + 1);
+    }
+  }
+  return messages.slice();
+}
+
+/**
+ * pi's mutating tool vocabulary.
+ *
+ * Host vocabulary owned by this adapter: core never hardcodes which tool
+ * names mutate, so pi declares them here.
+ */
+const PI_MUTATING_TOOLS: readonly string[] = ["bash", "edit", "write"];
+
+/**
+ * pi's delegation tool, carrying the target agent at `arguments.agent`.
+ *
+ * `collectTurnToolCalls` fills `TurnToolCall.agent` only for this tool, so
+ * core can read a present `agent` as delegation without knowing the name.
+ */
+const PI_DELEGATION_TOOL = "subagent";
+
+/**
+ * Collect the tool calls the settled turn issued.
+ *
+ * Walks every assistant message's content parts, keeping each
+ * `toolCall` part's name and — only for pi's delegation tool — the
+ * delegated agent from its `arguments.agent`.  Non-assistant messages,
+ * non-object parts, and malformed calls are skipped (fail closed toward
+ * silence).
+ *
+ * @param messages - The settled turn's messages.
+ * @returns The observed tool calls in order.
+ */
+function collectTurnToolCalls(messages: readonly unknown[]): TurnToolCall[] {
+  const calls: TurnToolCall[] = [];
+  for (const message of messages) {
+    if (messageRole(message) !== "assistant") continue;
+    const content = (message as { content?: unknown }).content;
+    if (!Array.isArray(content)) continue;
+    for (const part of content) {
+      if (part === null || typeof part !== "object") continue;
+      const candidate = part as {
+        type?: unknown;
+        name?: unknown;
+        arguments?: unknown;
+      };
+      if (candidate.type !== "toolCall" || typeof candidate.name !== "string") {
+        continue;
+      }
+      const call: TurnToolCall = { name: candidate.name };
+      if (candidate.name === PI_DELEGATION_TOOL) {
+        const args = candidate.arguments;
+        if (args !== null && typeof args === "object") {
+          const agent = (args as { agent?: unknown }).agent;
+          if (typeof agent === "string") call.agent = agent;
+        }
+      }
+      calls.push(call);
+    }
+  }
+  return calls;
+}
+
+/**
+ * The concatenated text of the settled turn's final assistant message.
+ *
+ * Used for the turn-handback heuristic.  A run with no assistant
+ * message (or a message with no text part) yields `""`, which is never
+ * awaiting — fail closed toward silence.
+ *
+ * @param messages - The settled turn's messages.
+ * @returns The final assistant text, or `""` when absent.
+ */
+function finalAssistantText(messages: readonly unknown[]): string {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messageRole(messages[i]) !== "assistant") continue;
+    const content = (messages[i] as { content?: unknown }).content;
+    if (!Array.isArray(content)) return "";
+    return content
+      .filter(
+        (part): part is { text: string } =>
+          part !== null &&
+          typeof part === "object" &&
+          (part as { type?: unknown }).type === "text" &&
+          typeof (part as { text?: unknown }).text === "string",
+      )
+      .map((part) => part.text)
+      .join("");
+  }
+  return "";
+}
+
+/**
+ * Whether the settled turn's ask tool result went unanswered headlessly.
+ *
+ * In a non-TUI host (print / RPC / json mode) the ask tool cannot draw
+ * its dialog, so instead of blocking it resolves every question with the
+ * system-side `{ status: "unavailable", reason: "no-ui" }` slot.  The
+ * agent therefore asked the user something no human could answer: the
+ * run must stop so the user reads the question after the process exits
+ * rather than auto-continuing into possibly-unwanted work.
+ *
+ * Scans the turn's `toolResult` messages for the `ask` tool and reads
+ * the STRUCTURED `details` (`{ questions: [{ result }] }`) rather than
+ * the rendered text, which is only a display rendering.  Only `no-ui` is
+ * treated as a handback: `aborted` already has its own stop channel (the
+ * run reports `stopReason: "aborted"`) and `timeout` is deliberately
+ * excluded (a timed-out dialog may still warrant a continuation).  Every
+ * payload is untrusted, so malformed entries are skipped and a
+ * transcript with no matching result yields `false` — fail closed toward
+ * the ordinary settle logic.
+ *
+ * @param messages - The settled turn's messages.
+ * @returns True when an ask result reports `unavailable`/`no-ui`.
+ */
+function askWentUnanswered(messages: readonly unknown[]): boolean {
+  for (const message of messages) {
+    if (messageRole(message) !== "toolResult") continue;
+    const result = message as { toolName?: unknown; details?: unknown };
+    if (result.toolName !== "ask") continue;
+    const details = result.details;
+    if (details === null || typeof details !== "object") continue;
+    const questions = (details as { questions?: unknown }).questions;
+    if (!Array.isArray(questions)) continue;
+    for (const question of questions) {
+      if (question === null || typeof question !== "object") continue;
+      const slot = (question as { result?: unknown }).result;
+      if (slot === null || typeof slot !== "object") continue;
+      const candidate = slot as { status?: unknown; reason?: unknown };
+      if (candidate.status === "unavailable" && candidate.reason === "no-ui") {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 /**
  * Build the pi hook handlers from an explicit zoo config.
  *
@@ -819,6 +1046,11 @@ export function buildPiHandlers(
   overrides?: {
     /** Subagent driver used in place of the real pi SDK driver. */
     subagentDriver?: SubagentDriver;
+    /**
+     * Test seam: the per-session reminder-budget map to observe and seed.
+     * Defaults to a fresh map when omitted.
+     */
+    remindersUsed?: Map<string, number>;
   },
 ): {
   beforeAgentStart: (
@@ -836,6 +1068,25 @@ export function buildPiHandlers(
   sessionStart: (evt?: unknown, ctx?: unknown) => Promise<void>;
   /** Drop the todo cache after a session-tree navigation. */
   sessionTree: (evt?: unknown, ctx?: unknown) => void;
+  /**
+   * Whether the composition contributes any settle handlers.
+   *
+   * The entry point registers the auto-continuation events only when this
+   * is true, so a profile without the todo-continuation hook stays fully
+   * inert (fail-closed parity with the other profile-driven hooks).
+   */
+  hasSettledHandlers: boolean;
+  /**
+   * Judge a finished run and queue a wake via `sendMessage`.
+   *
+   * `agent_end` fires while the run is still streaming, so the queued
+   * follow-up is drained by the same `prompt()` call.
+   */
+  agentEnd: (evt?: unknown, ctx?: unknown) => Promise<void>;
+  /** Track a blocking user-facing UI prompt span (awaiting-input cause). */
+  uiPromptStart: (evt?: unknown, ctx?: unknown) => void;
+  /** Close a blocking user-facing UI prompt span. */
+  uiPromptEnd: (evt?: unknown, ctx?: unknown) => void;
 } {
   // Mutable holder updated by every event handler so the pi adapter and
   // tool host always see the latest ExtensionContext.
@@ -1303,6 +1554,40 @@ export function buildPiHandlers(
     rawConfig,
   );
 
+  // Auto-continuation wiring.  The composed settle contributions judge a
+  // settled turn; the host classifies the stop cause, tracks the
+  // per-session reminder budget, and delivers a wake as a follow-up custom
+  // message.
+  const settledHandler = buildPiSettledHandler(composed.onSettled);
+  // The per-session reminder ceiling from `[zoo.continuation]`.  No
+  // default is invented: when the section is absent or `max_reminders`
+  // is missing/invalid the parser yields `undefined` and the whole
+  // feature is disabled (fail-closed) — no settle events are registered
+  // and no budget bookkeeping happens.
+  const continuationLimit = parseContinuationConfig(zooConfig)?.maxReminders;
+  const hasSettledHandlers =
+    composed.onSettled.length > 0 && continuationLimit !== undefined;
+  // Reminders already delivered, keyed by session id.  The map is
+  // pluggable so tests can observe and seed it.
+  const remindersUsed = overrides?.remindersUsed ?? new Map<string, number>();
+  // Upper bound on tracked sessions.  pi fires no session-deletion event,
+  // so a long-lived process would otherwise retain one budget entry per
+  // session ever opened.  A Map iterates in insertion order, so the oldest
+  // keys are evicted first once the bound is exceeded (a few lines, and
+  // the budget is only ever a soft reminder ceiling).
+  const REMINDER_SESSIONS_CAP = 100;
+  const trackReminderUsed = (sessionID: string, used: number): void => {
+    remindersUsed.set(sessionID, used);
+    while (remindersUsed.size > REMINDER_SESSIONS_CAP) {
+      const oldest = remindersUsed.keys().next().value;
+      if (oldest === undefined) break;
+      remindersUsed.delete(oldest);
+    }
+  };
+  // Open blocking UI prompt count: a run that ends while this is > 0 was
+  // waiting for the user, not genuinely finished.
+  let uiPromptDepth = 0;
+
   // Apply the active primary's tool-level denies to the current session's
   // active tool set.
   //
@@ -1559,6 +1844,22 @@ export function buildPiHandlers(
   return {
     async beforeAgentStart(evt, ctx?) {
       if (ctx) contextHolder.current = ctx as PiToolHostContext;
+      // Reset the session's reminder budget when a real user message starts
+      // a turn.  pi emits `before_agent_start` only for a top-level user
+      // prompt (`prompt()`); an extension-injected follow-up
+      // (`sendMessage({ triggerTurn: true })`) drives the run through pi's
+      // internal run path and never emits this event.  The
+      // `BeforeAgentStartEvent` payload itself carries no source field, so
+      // the emission boundary is the reliable signal: the counter resets
+      // for every real user turn and never for the injected continuation.
+      const promptSessionId = sessionIdProvider();
+      if (
+        hasSettledHandlers &&
+        promptSessionId !== undefined &&
+        promptSessionId.length > 0
+      ) {
+        trackReminderUsed(promptSessionId, 0);
+      }
       // Drain any pending post-replacement switch operations.  This
       // handler runs in the NEW session's closure (the factory re-ran on
       // `newSession`), so the `piApi` in scope here is the fresh,
@@ -1647,7 +1948,21 @@ export function buildPiHandlers(
       // persisted state file, which must survive a resume.
       if (typeof sessionId === "string" && sessionId.length > 0) {
         clearRoundView(sessionId);
+        // A (re)starting session begins with a fresh reminder budget, so
+        // its previous entry — left by an earlier run of the same session
+        // id — is dropped here.  pi fires no session-deletion event, so the
+        // entries of sessions that never restart are reclaimed by
+        // `trackReminderUsed`'s size cap instead.  Guarded by the feature
+        // flag so a profile without the todo-continuation hook does zero
+        // continuation bookkeeping.
+        if (hasSettledHandlers) remindersUsed.delete(sessionId);
       }
+      // A fresh session (re)bind starts with a clean prompt-depth
+      // count: if a `ui_prompt_end` was ever dropped (extension reload
+      // mid-prompt, host-side cancellation), a stale positive count
+      // would misclassify every later settle as `awaiting-input` and
+      // silently disable continuation for the rest of the process.
+      if (hasSettledHandlers) uiPromptDepth = 0;
       if (
         typeof sessionId === "string" &&
         sessionId.length > 0 &&
@@ -1738,6 +2053,163 @@ export function buildPiHandlers(
       // navigation moved to.
       refreshTodoView();
     },
+    hasSettledHandlers,
+    async agentEnd(evt?, ctx?) {
+      // Continuation is inert without a valid `max_reminders`: the settle
+      // events are never registered, and this guard keeps a direct call
+      // (tests) inert too.
+      if (continuationLimit === undefined) return;
+      // A continuation judge must never break the host session, and a
+      // stale extension context (pi invalidates one on session
+      // replacement / reload) can make even reading `sessionManager`
+      // throw.  Isolate the whole body: log and fail closed.
+      let sessionID: string | undefined;
+      try {
+        if (ctx) contextHolder.current = ctx as PiToolHostContext;
+        sessionID = sessionIdProvider();
+        // The run's terminal message classifies why it ended: an aborted
+        // run reports `stopReason: "aborted"`, a run that ended with a
+        // blocking UI prompt still open was awaiting user input, and
+        // anything else is a genuine settle.
+        const raw = (evt as { messages?: unknown } | undefined)?.messages;
+        const messages = Array.isArray(raw) ? raw : [];
+        const last = messages[messages.length - 1];
+        const aborted =
+          last !== null &&
+          typeof last === "object" &&
+          (last as { role?: unknown }).role === "assistant" &&
+          (last as { stopReason?: unknown }).stopReason === "aborted";
+        // Derive the settled turn's real facts: whether it made mutating
+        // progress and whether its final line hands back to the user.  A
+        // read-only / discussion-only turn, an unreadable transcript, or
+        // a transcript with no assistant message all yield no tool calls
+        // and no final text — both fail toward silence (the suppression
+        // bias: a missed wake is cheaper than talking over a handback).
+        const turn = settledTurnMessages(messages);
+        const toolCalls = collectTurnToolCalls(turn);
+        // An executor agent is one whose permission does not deny `edit`;
+        // delegation to a read-only agent proves no execution, mirroring
+        // the delegation gate's use of the parsed per-agent deny map.
+        const isExecutor = (agent: string): boolean =>
+          !(agentPermissions[agent] ?? []).includes("edit");
+        const progress =
+          resolveWorkActions(toolCalls, {
+            mutatingTools: PI_MUTATING_TOOLS,
+            isExecutorAgent: isExecutor,
+          }).length > 0;
+        // A trailing question / response cue is a genuine handback: treat
+        // it like an open UI prompt so the judge silences the wake.
+        const awaitingUser = isAwaitingUserAnswer(finalAssistantText(turn));
+        // A headless ask could not reach the user (no UI to draw on), so
+        // the turn ends with the question unanswered: stop and let the
+        // user read it after the process exits rather than auto-continuing
+        // into unwanted work.
+        const askUnanswered = askWentUnanswered(turn);
+        const cause: StopCause = aborted
+          ? "aborted"
+          : uiPromptDepth > 0 || awaitingUser || askUnanswered
+            ? "awaiting-input"
+            : "settled";
+        log(
+          "continuation",
+          "settle_received",
+          sessionID ?? "",
+          undefined,
+          "debug",
+          { cause, progress },
+        );
+        // No live pi session to attribute the reminder to → fail closed.
+        if (sessionID === undefined || sessionID.length === 0) {
+          log("continuation", "settle_skipped", "", undefined, "debug", {
+            reason: "no-session",
+          });
+          return;
+        }
+        // Only the orchestrator session is continued; a delegated child
+        // session is driven by its own identity and must not be woken by the
+        // root extension.
+        if (resolveIdentity()?.kind === "subagent") {
+          log("continuation", "settle_skipped", sessionID, undefined, "debug", {
+            reason: "subagent",
+          });
+          return;
+        }
+        const budget: Budget = {
+          limit: continuationLimit,
+          used: remindersUsed.get(sessionID) ?? 0,
+        };
+        // `progress` is derived above from the settled turn's tool calls;
+        // a transcript that could not be read resolves it to `false`,
+        // which silences via `decide`'s no-progress gate.
+        const decision = await settledHandler({
+          sessionID,
+          cause,
+          budget,
+          progress,
+        });
+        if (decision === null || decision.kind !== "wake") return;
+        // Deliver the wake as a queued follow-up WHILE the run is still
+        // streaming.  `agent_end` fires before pi's run loop checks its
+        // queues, so a follow-up queued here is drained by the same
+        // `prompt()` call and the host stays alive to run it.  Delivering
+        // from `agent_settled` (after the loop) instead starts a fresh,
+        // unawaited run that a single-shot host (headless print mode) tears
+        // down before the continuation can act.
+        if (typeof piApi?.sendMessage !== "function") {
+          log(
+            "continuation",
+            "wake_inject_unavailable",
+            sessionID,
+            undefined,
+            "warn",
+          );
+          return;
+        }
+        // Count BEFORE dispatching, mirroring the OpenCode host: a
+        // persistently failing sendMessage burns budget instead of
+        // retrying the wake on every settle.  The queued follow-up run
+        // is fire-and-forget — if it crashes after queueing, the
+        // reminder stays counted (an accepted `agent_end` trade-off,
+        // see the module header).
+        trackReminderUsed(sessionID, budget.used + 1);
+        piApi.sendMessage(
+          {
+            customType: "zoo-continuation",
+            content: decision.text,
+            // Shown in the TUI so the user can see the auto-continuation
+            // fire; the model receives it as a user-role message either
+            // way (pi converts custom messages via convertToLlm).
+            display: true,
+          },
+          { deliverAs: "followUp", triggerTurn: true },
+        );
+        log("continuation", "wake_injected", sessionID, undefined, "info", {
+          used: budget.used + 1,
+          limit: budget.limit,
+        });
+      } catch (err) {
+        log(
+          "continuation",
+          "settle_failed",
+          sessionID ?? "",
+          undefined,
+          "warn",
+          { error: String(err) },
+        );
+      } finally {
+        // A single-shot host can exit right after the last run, before the
+        // periodic flush timer fires; make the settle verdict durable.
+        flushLogs();
+      }
+    },
+    uiPromptStart: (_evt?, ctx?) => {
+      if (ctx) contextHolder.current = ctx as PiToolHostContext;
+      uiPromptDepth += 1;
+    },
+    uiPromptEnd: (_evt?, ctx?) => {
+      if (ctx) contextHolder.current = ctx as PiToolHostContext;
+      if (uiPromptDepth > 0) uiPromptDepth -= 1;
+    },
   };
 }
 
@@ -1788,6 +2260,22 @@ export function zookeeperPi(pi: ExtensionAPI): void {
   pi.on("context", handlers.contextHandler);
   pi.on("message_end", handlers.messageEnd);
   pi.on("session_tree", handlers.sessionTree);
+  // Auto-continuation events are registered only when the profile composes a
+  // settle contribution AND `[zoo.continuation].max_reminders` is valid
+  // (fail-closed parity with the other profile-driven hooks): otherwise no
+  // continuation event is registered.
+  if (handlers.hasSettledHandlers) {
+    log("continuation", "events_registered", "", undefined, "info", {
+      events: ["agent_end", "ui_prompt_start", "ui_prompt_end"],
+    });
+    pi.on("agent_end", handlers.agentEnd);
+    pi.on("ui_prompt_start", handlers.uiPromptStart);
+    pi.on("ui_prompt_end", handlers.uiPromptEnd);
+  } else {
+    log("continuation", "events_skipped", "", undefined, "info", {
+      reason: "feature-disabled",
+    });
+  }
 }
 
 export default zookeeperPi;

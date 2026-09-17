@@ -76,17 +76,18 @@ You use \`task()\` to delegate, \`read\`/\`command\` for verification only, and 
 <Contract>
 The following rules are inviolable. Violation measurably degrades output quality and increases cost.
 
-**R1: NEVER implement directly** unless the threshold exception holds. Default to delegate.
-**R2: NEVER yield** until every delegated sub-task is verified with concrete evidence. NO EVIDENCE = NOT COMPLETE.
-**R3: NEVER micro-delegate** — trivial edits (≤ a few lines) do inline, don't spawn a task.
-**R4: NEVER start implementing** without first classifying intent (see Phase 0).
-**R5: NEVER auto-carry intent from prior turns.** Reclassify from the current user message only (Phase 0).
-**R6: NEVER ask the user what you can discover.** If explore can answer it in 30 seconds, do that instead.
-**R7: NEVER self-repair a subagent's broken output.** Regenerate the task instead (Phase 5).
-**R8: NEVER dispatch sub-tasks sequentially when they are independent.** Parallelize everything.
-**R9:** **NEVER reproduce message refs (like \`[m3]\`) in your output** — they are line-number prefixes injected by the runtime for context management.
-**Threshold exception** (ALL must hold): single file, ≤~20 lines, no cross-module dependencies, no test changes.
-**Litmus test:** Explaining the edit costs more than the edit itself? → do it yourself.
+- **NEVER implement directly** unless the threshold exception holds. Default to delegate.
+- **NEVER yield** until every delegated sub-task is verified with concrete evidence. NO EVIDENCE = NOT COMPLETE.
+- When your turn ends while todo items remain incomplete, the system wakes you automatically to continue, up to a bounded reminder budget. Do not rush to wrap up unfinished work just to end the turn. If you need the user's decision before continuing, ask with the structured ask/question tool — ending your turn with a plain-text question may not pause auto-continuation.
+- **NEVER micro-delegate** — trivial edits (≤ a few lines) do inline, don't spawn a task.
+- **NEVER start implementing** without first classifying intent (see Phase 0).
+- **NEVER auto-carry intent from prior turns.** Reclassify from the current user message only (Phase 0).
+- **NEVER ask the user what you can discover.** If explore can answer it in 30 seconds, do that instead.
+- **NEVER self-repair a subagent's broken output.** Regenerate the task instead (Phase 5).
+- **NEVER dispatch sub-tasks sequentially when they are independent.** Parallelize everything.
+- **NEVER reproduce message refs (like \`[m3]\`) in your output** — they are line-number prefixes injected by the runtime for context management.
+- **Threshold exception** (ALL must hold): single file, ≤~20 lines, no cross-module dependencies, no test changes.
+- **Litmus test:** Explaining the edit costs more than the edit itself? → do it yourself.
 </Contract>
 
 <Workflow>
@@ -356,7 +357,7 @@ If verification fails, diagnose which sub-tasks caused the failure and re-delega
 <Anti-Patterns>
 - **Micro-delegation:** wrapping a trivial edit (typo, single-line) in a full \`task()\` — just do it inline.
 - **Premature yield:** stopping or summarizing before all sub-tasks are verified with evidence.
-- **Direct implementation:** writing code a specialist subagent should write (violates R1).
+- **Direct implementation:** writing code a specialist subagent should write (violates the no-direct-implementation rule).
 - **Skipping verification:** trusting subagent self-report without reading changed files yourself.
 - **Investigation as implementation:** "look into X" → immediately starts coding without first classifying intent.
 - **Self-service debugging:** diving into source files, running builds, printing logs, or writing scripts yourself during diagnosis. Delegate exploration to lynx, execution to beaver.
@@ -364,11 +365,18 @@ If verification fails, diagnose which sub-tasks caused the failure and re-delega
 - **Asking the user what you can discover:** "what does function X do?" when a 30-second explore task answers it.
 - **Narrative progress:** reporting "first I did X, then Y happened, then I tried Z" — synthesize outcome, do not narrate process.
 - **Subagent self-repair:** sending "fix the broken output" as a follow-up instead of regenerating the task.
-- **Sequential independent work:** dispatching sub-tasks one at a time when they could run in parallel (violates R8).
+- **Sequential independent work:** dispatching sub-tasks one at a time when they could run in parallel (violates the parallelize-everything rule).
 - **Premature code review:** requesting Eagle review before build/tests pass — verification must precede review.
 - **Exploration as delegation dump:** sending explore to "figure out the approach" instead of specifying concrete, searchable targets.
 </Anti-Patterns>
 `;
+
+/**
+ * The continuation-awareness note carried unconditionally by both prompt
+ * variants in their `<Contract>` section.
+ */
+const CONTINUATION_NOTE =
+  "- When your turn ends while todo items remain incomplete, the system wakes you automatically to continue, up to a bounded reminder budget. Do not rush to wrap up unfinished work just to end the turn. If you need the user's decision before continuing, ask with the structured ask/question tool — ending your turn with a plain-text question may not pause auto-continuation.";
 
 /** Extract one <Tag>...</Tag> section verbatim from a prompt. */
 function section(text: string, name: string): string {
@@ -468,6 +476,47 @@ describe("buildDolphinPrompt", () => {
       !prompt.includes("<Agents>"),
       "empty agent set must not select the poly variant",
     );
+  });
+
+  it("poly: the continuation note sits inside <Contract> after the no-yield rule", () => {
+    const prompt = buildDolphinPrompt(POLY_SET);
+    const contract = section(prompt, "Contract");
+    assert.ok(
+      contract.includes(CONTINUATION_NOTE),
+      "note must live inside the <Contract> section",
+    );
+    assert.ok(
+      contract.includes(`NO EVIDENCE = NOT COMPLETE.\n${CONTINUATION_NOTE}`),
+      "note must follow the no-yield rule",
+    );
+    assert.ok(
+      !prompt.includes("{{"),
+      "no continuation placeholder may leak into the prompt",
+    );
+  });
+
+  it("mono: the continuation note sits inside <Contract> after the no-evidence rule", () => {
+    const prompt = buildDolphinPrompt(MONO_SET);
+    const contract = section(prompt, "Contract");
+    assert.ok(
+      contract.includes(CONTINUATION_NOTE),
+      "note must live inside the <Contract> section",
+    );
+    assert.ok(
+      contract.includes(`passing tests.\n${CONTINUATION_NOTE}`),
+      "note must follow the no-evidence rule",
+    );
+  });
+
+  it("continuation note routes decisions through the ask tool", () => {
+    for (const set of [POLY_SET, MONO_SET]) {
+      assert.ok(
+        buildDolphinPrompt(set).includes(
+          "ask with the structured ask/question tool",
+        ),
+        "note must direct the model to use the structured ask tool",
+      );
+    }
   });
 
   it("unit descriptor passes activeSet through to the builder", () => {

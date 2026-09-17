@@ -76,6 +76,19 @@ export interface TodoEntry {
 }
 
 /**
+ * Whether a status counts as active work.
+ *
+ * `pending` and `in_progress` are active; `completed`, `abandoned`, and
+ * `blocked` are settled and never active.
+ *
+ * @param status - Status to test.
+ * @returns True when the status denotes active work.
+ */
+export function isActiveTodoStatus(status: TodoStatus): boolean {
+  return status === "pending" || status === "in_progress";
+}
+
+/**
  * Whether a value is one of the five known task statuses.
  *
  * @param value - Value to test.

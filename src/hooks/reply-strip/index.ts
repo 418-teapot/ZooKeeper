@@ -83,6 +83,7 @@ export const unit: HookUnitDescriptor = {
       textComplete: [createReplyStripHandler()],
       toolDefinition: [],
       delegation: [],
+      onSettled: [],
     };
   },
 };

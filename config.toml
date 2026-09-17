@@ -700,6 +700,12 @@ prompt_word_limit = 500
 # 提问超时（秒）
 timeout = 1200
 
+# ── 自动续跑 ──────────────────────────────────────────────────────────────────
+
+[zoo.continuation]
+# 单个会话允许的最大续跑提醒次数
+max_reminders = 3
+
 # ── Variants ──────────────────────────────────────────────────────────────────
 
 [zoo.variants]
@@ -796,6 +802,7 @@ hooks = [
   "reply-strip",
   "subagent-delegation",
   "subagent-prompt",
+  "todo-continuation",
 ]
 tools = [
   "ask",
@@ -828,6 +835,7 @@ hooks = [
   "context-pruning",
   "json-error-nudge",
   "reply-strip",
+  "todo-continuation",
 ]
 tools = [
   "ask",

@@ -490,6 +490,20 @@ export function log(
   }
 }
 
+/**
+ * Force a synchronous flush of the buffered log entries to disk.
+ *
+ * A short-lived host can exit before the periodic 500ms flush timer fires,
+ * dropping the final entries — notably a settle verdict emitted at the very
+ * end of a single-shot run.  Callers that emit the last entry of a process
+ * lifetime can force the write.  No-ops before `initLogger` (nothing has a
+ * durable shard yet), so load-time buffering and test buffers are unaffected.
+ */
+export function flushLogs(): void {
+  if (_host === "") return;
+  flushBuffer();
+}
+
 // ---------------------------------------------------------------------------
 // Testing seams
 // ---------------------------------------------------------------------------

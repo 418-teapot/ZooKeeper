@@ -71,6 +71,7 @@ function makeUnits(): { units: UnitDescriptor[]; calls: string[] } {
           { name: "enhanceSubagentDefinition", handle: async () => {} },
         ],
         delegation: [{ name: "judgeSubagentPrompt", judge: () => null }],
+        onSettled: [],
       };
     }),
     mockUnit("context-pruning", "hook", () => {
@@ -83,6 +84,7 @@ function makeUnits(): { units: UnitDescriptor[]; calls: string[] } {
         textComplete: [],
         toolDefinition: [],
         delegation: [],
+        onSettled: [],
       };
     }),
     mockUnit("compress", "tool", () => {
@@ -283,6 +285,7 @@ describe("composeProfile — gateNeedsCaller aggregation", () => {
       delegation: [
         { name: "judgeDelegationTarget", needsCaller: true, judge: () => null },
       ],
+      onSettled: [],
     }));
     const profile: ModeProfile = {
       name: "td",
@@ -320,6 +323,7 @@ describe("composeProfile — null profile", () => {
       transform: [],
       textComplete: [],
       toolDefinition: [],
+      onSettled: [],
       tools: {},
       commands: {},
       gate: null,
@@ -391,6 +395,7 @@ describe("composeProfile — empty category lists", () => {
       transform: [],
       textComplete: [],
       toolDefinition: [],
+      onSettled: [],
       tools: {},
       commands: {},
       gate: null,
@@ -463,6 +468,7 @@ describe("composeProfile — active set", () => {
         textComplete: [],
         toolDefinition: [],
         delegation: [],
+        onSettled: [],
       };
     });
     composeProfile(ALL_UNITS_PROFILE, [unit], DEPS);

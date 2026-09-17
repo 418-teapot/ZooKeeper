@@ -145,6 +145,7 @@ ZooKeeper/
 
 - **禁止自行提交 git commit**：除非用户明确要求进行 git 提交（如"提交"、"commit"、"push"等），否则绝对不得执行 `git commit`、`git add` + `git commit` 或任何形式的提交操作。运行 `./check.sh` 时其内部的自动格式化修改是可以接受的，但不得主动暂存或提交这些修改。
 - **git 提交必须使用 git-commit skill**：当用户要求提交代码时，必须加载 `git-commit` skill（位于 `core/skills/git-commit/SKILL.md`）来执行提交，不得自行拼写 commit message 或手动执行 `git commit`。
+- **配置值唯一来源 config.toml，解析失败即跳过**：所有影响运行时行为的可调值（阈值、次数上限、超时、开关参数等）一律从 `config.toml` 读取，代码中禁止硬编码默认值兜底（禁止 `DEFAULT_*` 常量、`?? <默认值>` 这类回退）。配置缺失或解析失败时，对应功能必须跳过/关闭（fail-closed），不得以内置默认值继续运行。
 
 ## 开发流程
 

@@ -24,6 +24,7 @@
 import type { ToolHost } from "./client/tool-host.js";
 import type { AgentModeMap, ContextPruningConfig } from "./config-types.js";
 import type { HostAdapter } from "./context/lens.js";
+import type { Budget, Decision, StopCause } from "./continuation/index.js";
 import type { DelegationGate, DelegationJudgeContribution } from "./gate.js";
 import type { HandoffTarget } from "./handoff.js";
 import type { AgentPermissionMap } from "./permissions/deny-tools.js";
@@ -491,6 +492,38 @@ export interface ToolDefinitionContribution {
   handle(view: ToolDefinitionView): void | Promise<void>;
 }
 
+/** Input shape of the auto-continuation settle hook. */
+export interface SettledInput {
+  /** Session whose turn settled. */
+  sessionID: string;
+  /** Why the agent's turn ended. */
+  cause: StopCause;
+  /** The session's reminder budget at settle time. */
+  budget: Budget;
+  /**
+   * Whether the settled turn performed mutating work — a call the host
+   * classifies as mutating, or delegation to an executor subagent.  A
+   * read-only or discussion-only turn is not progress; the tool-name
+   * vocabulary is host-owned, see `resolveWorkActions` in the
+   * continuation module.
+   */
+  progress: boolean;
+}
+
+/**
+ * One named "agent turn settled" handler contributed by a hook unit.
+ *
+ * The handler judges whether the settled turn should be woken to finish
+ * remaining work and returns that {@link Decision}; hosts deliver a
+ * `wake` text and ignore a `silence`.  Judgment lives entirely in the
+ * contributing unit — the host only reads the verdict.
+ */
+export interface SettledContribution {
+  /** Handler label used for logging. */
+  name: string;
+  handle(input: SettledInput): Promise<Decision>;
+}
+
 /**
  * An OpenCode tool definition object, structurally equivalent to the
  * current `CompressToolDefinition` / `DecompressToolDefinition`.
@@ -628,7 +661,7 @@ export interface SkillUnitContributions {
 /**
  * Contributions produced by a hook unit.
  *
- * All five handler slots are required arrays — a unit that does not
+ * All seven handler slots are required arrays — a unit that does not
  * contribute to a slot returns an empty array.
  */
 export interface HookUnitContributions {
@@ -639,6 +672,7 @@ export interface HookUnitContributions {
   textComplete: TextCompleteContribution[];
   toolDefinition: ToolDefinitionContribution[];
   delegation: DelegationJudgeContribution[];
+  onSettled: SettledContribution[];
 }
 
 /** Contributions produced by a tool unit. */
@@ -737,6 +771,8 @@ export interface ComposedResult {
   textComplete: TextCompleteContribution[];
   /** Enabled `tool.definition` enhancers. */
   toolDefinition: ToolDefinitionContribution[];
+  /** Enabled auto-continuation settle handlers. */
+  onSettled: SettledContribution[];
   /** The composed delegation gate, or `null` for an empty judge chain. */
   gate: DelegationGate | null;
   /**

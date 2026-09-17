@@ -56,6 +56,7 @@ describe("vendor smol-toml — config.toml zoo section", () => {
       "reply-strip",
       "subagent-delegation",
       "subagent-prompt",
+      "todo-continuation",
     ]);
     assert.deepEqual(poly.tools, [
       "ask",
@@ -78,6 +79,7 @@ describe("vendor smol-toml — config.toml zoo section", () => {
     assert.equal(zoo.context.dedup.threshold_context, 100000);
     assert.deepEqual(zoo.context.dedup.protected_tools, []);
     assert.equal(zoo.context.compress.max_ranges, 8);
+    assert.equal(zoo.continuation.max_reminders, 3);
     assert.equal(zoo.context.nudge.min_context, "60%");
     assert.deepEqual(zoo.logging, {
       max_file_size_mb: 5,

@@ -50,6 +50,7 @@ function emptyResult(): ComposedResult {
     transform: [],
     textComplete: [],
     toolDefinition: [],
+    onSettled: [],
     tools: {},
     commands: {},
     gate: null,
@@ -85,6 +86,7 @@ function collect(
       result.transform.push(...contributions.transform);
       result.textComplete.push(...contributions.textComplete);
       result.toolDefinition.push(...contributions.toolDefinition);
+      result.onSettled.push(...contributions.onSettled);
       judges.push(...contributions.delegation);
       break;
     case "tool":

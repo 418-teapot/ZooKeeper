@@ -43,6 +43,7 @@ import {
   parseAgentPermissions,
   parseAskConfig,
   parseContextConfig,
+  parseContinuationConfig,
 } from "./config-parse.js";
 
 afterEach(() => {
@@ -1587,5 +1588,86 @@ describe("parseAskConfig", () => {
       timeoutSeconds: 0.5,
     });
     assert.equal(warnCount("ask_config_invalid"), 0);
+  });
+});
+
+// =============================================================================
+// parseContinuationConfig — `[zoo.continuation]` (reminder budget).
+//
+// Contract: absent section → undefined silently; malformed section
+// (non-object, unknown key, missing or present-but-invalid max_reminders)
+// → undefined + exactly one `continuation_config_invalid` warn; valid
+// section → ContinuationConfig with a positive-integer `maxReminders`
+// (never a default).
+// =============================================================================
+
+describe("parseContinuationConfig", () => {
+  it("returns undefined without a warn when the section is absent", () => {
+    assert.equal(parseContinuationConfig({}), undefined);
+    assert.equal(parseContinuationConfig({ continuation: null }), undefined);
+    assert.equal(warnCount("continuation_config_invalid"), 0);
+  });
+
+  it("invalidates the whole section for a non-object value", () => {
+    assert.equal(parseContinuationConfig({ continuation: "3" }), undefined);
+    assert.equal(parseContinuationConfig({ continuation: [1, 2] }), undefined);
+    const warns = warnsOf("continuation_config_invalid");
+    assert.equal(warns.length, 2);
+    assert.equal(warns[0].key, "continuation");
+  });
+
+  it("invalidates the section for an unknown key", () => {
+    assert.equal(
+      parseContinuationConfig({ continuation: { max_reminders: 3, typo: 1 } }),
+      undefined,
+    );
+    const warns = warnsOf("continuation_config_invalid");
+    assert.equal(warns.length, 1);
+    assert.equal(warns[0].key, "typo");
+  });
+
+  it("rejects non-number, zero, negative, and non-integer values", () => {
+    assert.equal(
+      parseContinuationConfig({ continuation: { max_reminders: "3" } }),
+      undefined,
+    );
+    assert.equal(
+      parseContinuationConfig({ continuation: { max_reminders: 0 } }),
+      undefined,
+    );
+    assert.equal(
+      parseContinuationConfig({ continuation: { max_reminders: -5 } }),
+      undefined,
+    );
+    assert.equal(
+      parseContinuationConfig({ continuation: { max_reminders: 2.5 } }),
+      undefined,
+    );
+    assert.equal(warnCount("continuation_config_invalid"), 4);
+    const warns = warnsOf("continuation_config_invalid");
+    assert.equal(warns[0].key, "max_reminders");
+    assert.equal(warns[0].value, "3");
+  });
+
+  it("rejects a present section whose max_reminders key is absent", () => {
+    const result = parseContinuationConfig({ continuation: {} });
+    assert.equal(result, undefined);
+    assert.equal(warnCount("continuation_config_invalid"), 1);
+    assert.equal(
+      warnsOf("continuation_config_invalid")[0].key,
+      "max_reminders",
+    );
+  });
+
+  it("accepts a positive integer", () => {
+    assert.deepEqual(
+      parseContinuationConfig({ continuation: { max_reminders: 3 } }),
+      { maxReminders: 3 },
+    );
+    assert.deepEqual(
+      parseContinuationConfig({ continuation: { max_reminders: 1 } }),
+      { maxReminders: 1 },
+    );
+    assert.equal(warnCount("continuation_config_invalid"), 0);
   });
 });

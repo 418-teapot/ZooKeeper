@@ -486,8 +486,10 @@ describe("DIRECT_WORK_NUDGE contents", () => {
     assert.ok(DIRECT_WORK_NUDGE.includes("this is your job"));
   });
 
-  it("references Contract R1 instead of orchestrator protocol", () => {
-    assert.ok(DIRECT_WORK_NUDGE.includes("Contract R1"));
+  it("references the Contract rule against direct implementation", () => {
+    assert.ok(
+      DIRECT_WORK_NUDGE.includes("Contract rule against direct implementation"),
+    );
     assert.ok(!DIRECT_WORK_NUDGE.includes("orchestrator protocol"));
   });
 
@@ -557,7 +559,9 @@ describe("integration: tool.execute.after → nudgeDirectWorkForAgent", () => {
       { agent: "dolphin" },
     );
     assert.ok(output.output?.includes("DELEGATION REQUIRED"));
-    assert.ok(output.output?.includes("Contract R1"));
+    assert.ok(
+      output.output?.includes("Contract rule against direct implementation"),
+    );
   });
 
   it("edit tool skips nudge when message.updated set beaver", async () => {

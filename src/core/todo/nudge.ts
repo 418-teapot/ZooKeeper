@@ -15,6 +15,7 @@
  */
 
 import type { TodoItemView } from "./types.js";
+import { isActiveTodoStatus } from "./types.js";
 
 /** Which reminder tier applies to the current todo state. */
 export type TodoNudgeTier = "progress" | "done" | "resume";
@@ -42,18 +43,20 @@ export function decideTodoNudge(
     return null;
   }
   let inProgress = 0;
-  let pending = 0;
+  let active = 0;
   for (const item of items) {
+    if (!isActiveTodoStatus(item.status)) {
+      continue;
+    }
+    active += 1;
     if (item.status === "in_progress") {
       inProgress += 1;
-    } else if (item.status === "pending") {
-      pending += 1;
     }
   }
-  if (inProgress + pending === 0) {
+  if (active === 0) {
     return "resume";
   }
-  if (inProgress === 1 && pending === 0) {
+  if (inProgress === 1 && active === 1) {
     return "done";
   }
   return "progress";

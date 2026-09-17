@@ -3986,6 +3986,12 @@ describe("zookeeperPi — thin entry wiring", () => {
       assert.equal(typeof api.handlers.tool_result, "function");
       assert.equal(typeof api.handlers.context, "function");
       assert.equal(typeof api.handlers.message_end, "function");
+      // Auto-continuation events register because the real poly profile
+      // enables the todo-continuation hook.  The judge runs on `agent_end`
+      // (while the run still streams) so pi's own loop drains the wake.
+      assert.equal(typeof api.handlers.agent_end, "function");
+      assert.equal(typeof api.handlers.ui_prompt_start, "function");
+      assert.equal(typeof api.handlers.ui_prompt_end, "function");
 
       // No ctrl+tab cyclic primary-switch shortcut is registered:
       // switching is done exclusively through the /<agent> commands, which

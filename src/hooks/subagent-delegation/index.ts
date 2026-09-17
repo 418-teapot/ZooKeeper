@@ -37,6 +37,7 @@ export const unit: HookUnitDescriptor = {
           judge: judgeDelegationTarget,
         },
       ],
+      onSettled: [],
     };
   },
 };

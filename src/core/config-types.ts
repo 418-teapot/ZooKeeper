@@ -30,6 +30,25 @@ export interface AskConfig {
 }
 
 /**
+ * Auto-continuation configuration (`[zoo.continuation]`).
+ *
+ * Pure type definition for the reminder budget, consumed by the config
+ * parser (`config-parse.ts`) and read by host wiring that delivers the
+ * continuation wake.  The section carries no on/off switch: a missing
+ * section, or one without a valid `max_reminders`, yields `undefined`
+ * from the parser and the host disables continuation entirely (fail to
+ * skip — never a default).
+ */
+export interface ContinuationConfig {
+  /**
+   * Maximum number of continuation reminders for a session (positive
+   * integer).  The parser returns `undefined` (not a config) when this
+   * key is absent or invalid.
+   */
+  maxReminders: number;
+}
+
+/**
  * Per-subsystem gate config for a pruning strategy (dedup / purge-errors).
  *
  * Enablement is decided exclusively by the mode profile — a producer

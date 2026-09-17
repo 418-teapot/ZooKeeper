@@ -30,6 +30,7 @@ import type {
   CompressConfig,
   ContextNudgeConfig,
   ContextPruningConfig,
+  ContinuationConfig,
   DecompressConfig,
   ModeProfile,
 } from "./config-types.js";
@@ -165,6 +166,10 @@ const isOptionalStringArray = (v: unknown): boolean =>
   v === undefined ||
   (Array.isArray(v) && v.every((t: unknown) => typeof t === "string"));
 
+/** Accept a positive finite integer. */
+const isPositiveInteger = (v: unknown): boolean =>
+  typeof v === "number" && Number.isInteger(v) && v > 0;
+
 /** Accept `undefined` or a finite number in `[0, 100]`. */
 const isOptionalPercent = (v: unknown): boolean =>
   v === undefined ||
@@ -249,6 +254,54 @@ export function parseAskConfig(zooConfig: any): AskConfig | undefined {
   }
 
   return { timeoutSeconds: table.timeout as number | undefined };
+}
+
+/**
+ * Extract the auto-continuation config from the `[zoo.continuation]` section.
+ *
+ * Fail to skip with zero invented defaults: an absent section yields
+ * `undefined` silently; a malformed section (non-object, unknown key, or
+ * a missing/invalid `max_reminders` — non-number, non-integer, zero, or
+ * negative) yields `undefined` and exactly one
+ * `continuation_config_invalid` warn.  A valid section always carries a
+ * positive-integer `maxReminders`; hosts disable continuation entirely
+ * when this parser returns `undefined`.
+ *
+ * @param zooConfig - The `zoo` section of the parsed config.toml.
+ * @returns The parsed continuation config, or `undefined` when the
+ *   section is absent or invalid.
+ */
+export function parseContinuationConfig(
+  zooConfig: any,
+): ContinuationConfig | undefined {
+  const ct = zooConfig.continuation as unknown;
+  if (ct == null) return undefined;
+  if (typeof ct !== "object" || Array.isArray(ct)) {
+    warnSectionInvalid("continuation", ["continuation", ct, () => false]);
+    return undefined;
+  }
+
+  const table = ct as Record<string, unknown>;
+  const unknownKey = Object.keys(table).find((key) => key !== "max_reminders");
+  if (unknownKey !== undefined) {
+    warnSectionInvalid("continuation", [
+      unknownKey,
+      table[unknownKey],
+      () => false,
+    ]);
+    return undefined;
+  }
+
+  const keyChecks: KeyCheck[] = [
+    ["max_reminders", table.max_reminders, isPositiveInteger],
+  ];
+  const bad = findBadKey(keyChecks);
+  if (bad) {
+    warnSectionInvalid("continuation", bad);
+    return undefined;
+  }
+
+  return { maxReminders: table.max_reminders as number };
 }
 
 /**
