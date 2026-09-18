@@ -1,12 +1,10 @@
 /**
- * Golden scenarios — mark-sweep producers and release timing (C4/C5).
+ * Golden scenarios — mark producers and release timing (C4/C5).
  *
  * - G-MS-01: dedup — gate, two-turn effect, zero-benefit skip, idempotent
  *   re-runs, and the message-count protection window.
  * - G-MS-02: purge-errors — error-input marking, next-turn replacement,
  *   completed-part exclusion, zero-benefit skip, protected tools.
- * - G-MS-03: sweep — no-arg and numeric modes via /dcp, immediate
- *   effectiveness, and the invalid-count error.
  * - G-MS-04: batch release — accumulation across rounds to the
  *   released_percent threshold, forced flush via pendingViewChange, and
  *   silence when nothing is pending.
@@ -193,60 +191,6 @@ export const G_MS_02: Scenario = {
           protectedTools: ["bash"],
         },
       },
-    },
-  ],
-};
-
-/**
- * G-MS-03 — sweep via /dcp.
- */
-export const G_MS_03: Scenario = {
-  id: "G-MS-03",
-  sessionID: "golden-g-ms-03",
-  config: {
-    protectedMessages: 0,
-    releasedPercent: 0,
-    dedup: {},
-    purgeErrors: {},
-  },
-  rounds: [
-    {
-      label: "dcp-sweep-no-arg",
-      messages: [
-        msg("user", "u0", [textPart("do it")], "golden-g-ms-03"),
-        msg("assistant", "a1", [toolPart("c1", LONG)]),
-        msg("user", "u2", [textPart("again")], "golden-g-ms-03"),
-        msg("assistant", "a2", [toolPart("c2", LONG)]),
-      ],
-      action: { kind: "dcp", args: "sweep" },
-    },
-    {
-      label: "dcp-sweep-numeric-two",
-      messages: [
-        msg("user", "u0", [textPart("do it")], "golden-g-ms-03"),
-        msg("assistant", "a1", [toolPart("c4", LONG)]),
-        msg("user", "u2", [textPart("again")], "golden-g-ms-03"),
-        msg("assistant", "a2", [toolPart("c5", LONG)]),
-        msg("user", "u3", [textPart("more")], "golden-g-ms-03"),
-        msg("assistant", "a3", [toolPart("c6", LONG)]),
-      ],
-      action: { kind: "dcp", args: "sweep 2" },
-    },
-    {
-      label: "dcp-sweep-nothing",
-      messages: [
-        msg("user", "u0", [textPart("do it")], "golden-g-ms-03"),
-        msg("assistant", "a1", [textPart("no tools")]),
-      ],
-      action: { kind: "dcp", args: "sweep" },
-    },
-    {
-      label: "dcp-sweep-invalid-count",
-      messages: [
-        msg("user", "u0", [textPart("do it")], "golden-g-ms-03"),
-        msg("assistant", "a1", [toolPart("c7", LONG)]),
-      ],
-      action: { kind: "dcp", args: "sweep 0" },
     },
   ],
 };

@@ -325,12 +325,11 @@ impl TestFixture {
             ],
             // Pruning fixture: covers all five event families consumed by
             // `build_pruning_summary`. Two `prune_completed` events verify
-            // last-wins snapshot semantics; `sweep_marked` uses the
-            // `totalEstimatedTokens` key; one `marks_released` is forced.
+            // last-wins snapshot semantics; one `marks_released` is forced.
             "ses-003" => vec![
                 r#"{"hook":"context-pruning","event":"prune_completed","level":"info","timestamp":"2025-01-09T16:00:00Z","sessionId":"ses-003","totalReclaimedTokens":5000,"prunedToolCount":5}"#,
                 r#"{"hook":"context-pruning","event":"dedup_marked","level":"info","timestamp":"2025-01-09T16:01:00Z","sessionId":"ses-003","markedCount":40,"markedTokens":4000}"#,
-                r#"{"hook":"context-pruning","event":"sweep_marked","level":"info","timestamp":"2025-01-09T16:02:00Z","sessionId":"ses-003","markedCount":60,"totalEstimatedTokens":6000}"#,
+                r#"{"hook":"context-pruning","event":"sweep_marked","level":"info","timestamp":"2025-01-09T16:02:00Z","sessionId":"ses-003","markedCount":60,"markedTokens":6000}"#,
                 r#"{"hook":"context-pruning","event":"purge-errors_marked","level":"warn","timestamp":"2025-01-09T16:03:00Z","sessionId":"ses-003","markedCount":20,"markedTokens":2000}"#,
                 r#"{"hook":"context-pruning","event":"marks_released","level":"info","timestamp":"2025-01-09T16:04:00Z","sessionId":"ses-003","releasedCount":30,"releasedTokens":3000}"#,
                 r#"{"hook":"context-pruning","event":"marks_released","level":"info","timestamp":"2025-01-09T16:05:00Z","sessionId":"ses-003","releasedCount":20,"releasedTokens":2000,"forced":"view_change"}"#,
@@ -1061,7 +1060,7 @@ fn test_stats_single_session_pruning_json() {
     assert_eq!(parsed["reclaimed"]["tokens"], 12000);
     assert_eq!(parsed["reclaimed"]["tools"], 12);
 
-    // Marked: dedup (markedTokens), sweep (totalEstimatedTokens),
+    // Marked: dedup (markedTokens), sweep (markedTokens),
     // purge-errors (markedTokens) grouped by producer.
     let marked = &parsed["marked"];
     assert_eq!(marked["by_producer"]["dedup"]["count"], 40);

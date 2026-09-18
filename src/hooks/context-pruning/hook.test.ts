@@ -2,7 +2,7 @@
  * Tests for the context-pruning transform handler.
  *
  * Focused suite covering the handler contracts and the pipeline phase
- * wiring (state → history → release → three producers →
+ * wiring (state → history → release → two producers →
  * fold + block maintenance → view render → nudge / manual compress →
  * save):
  *
@@ -97,8 +97,8 @@ const adapter = createV1Adapter();
 /** Session IDs used by tests in this file (for persisted-file cleanup). */
 const TEST_SESSION_IDS = [
   "sess-persist-roundtrip",
-  "sess-sweep-notify",
-  "sess-sweep-below",
+  "sess-release-notify",
+  "sess-release-below",
   "sess-log-effective",
   "sess-release-forced",
   "sess-nudge-basic",
@@ -720,12 +720,12 @@ describe("persistence round-trip via the shared store", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Release notification contract + sweep lifecycle
+// Release notification contract
 // ---------------------------------------------------------------------------
 
 describe("release notification", () => {
   it("notifies exactly once with the cleanup wording on a batch release", () => {
-    const sessionID = "sess-sweep-notify";
+    const sessionID = "sess-release-notify";
     setModelLimit(sessionID, MODEL_LIMIT, "test-model");
 
     const buildTurn = (): TestMessageEntry[] => [
@@ -745,19 +745,18 @@ describe("release notification", () => {
       releasedPercent: 0,
     };
 
-    // Turn N: sweep marks the tool output as pending; nothing releases.
-    contextPruningTransformHandler(adapter, buildTurn(), config, notify);
-    assert.equal(notifyCalls.length, 0, "no release on the marking turn");
+    // Seed one pending mark; the release phase of the first turn flips
+    // it under the open percentage gate and notifies exactly once.
     const state = getContextStateManager().get(sessionID);
-    assert.equal(state.marks.size, 1, "sweep wrote one pending mark");
-    assert.equal(state.marks.get(markKey(1, 1))?.effective, false);
-    const entries = _getBufferForTesting();
-    assert.ok(
-      entries.some((e) => e.event === "sweep_marked"),
-      "sweep_marked log event",
-    );
+    state.marks.set(markKey(1, 1), {
+      anchorOrdinal: 1,
+      regionIndex: 1,
+      content: LONG_OUTPUT,
+      contentTokens: 400,
+      effective: false,
+      markedAt: 1000,
+    });
 
-    // Turn N+1: the pending mark flips and the notify fires exactly once.
     contextPruningTransformHandler(adapter, buildTurn(), config, notify);
     assert.equal(notifyCalls.length, 1, "notify called exactly once");
 
@@ -785,7 +784,7 @@ describe("release notification", () => {
   });
 
   it("keeps marks pending while the releasedPercent gate is closed", () => {
-    const sessionID = "sess-sweep-below";
+    const sessionID = "sess-release-below";
     setModelLimit(sessionID, MODEL_LIMIT, "test-model");
     const buildTurn = (): TestMessageEntry[] => [
       msg("user", "u1", [textPart("do it")], sessionID),
@@ -795,8 +794,17 @@ describe("release notification", () => {
       }),
     ];
 
-    // releasedPercent undefined → the gate stays closed regardless of
-    // pending tokens: the sweep mark accumulates but never flips.
+    // Seed a pending mark; releasedPercent undefined keeps the gate
+    // closed regardless of pending tokens, so it never flips.
+    const state = getContextStateManager().get(sessionID);
+    state.marks.set(markKey(1, 1), {
+      anchorOrdinal: 1,
+      regionIndex: 1,
+      content: LONG_OUTPUT,
+      contentTokens: 400,
+      effective: false,
+      markedAt: 1000,
+    });
     const config = { protectedMessages: 0 };
     for (let turn = 0; turn < 2; turn++) {
       const notifyCalls: string[] = [];
@@ -805,11 +813,8 @@ describe("release notification", () => {
       );
       assert.equal(notifyCalls.length, 0, "no release without releasedPercent");
     }
-    const state = getContextStateManager().get(sessionID);
     const marks = [...state.marks.values()];
-    // The same position cannot be re-marked (first-write-wins), so the
-    // single mark simply stays pending across turns.
-    assert.equal(marks.length, 1, "the sweep mark persists");
+    assert.equal(marks.length, 1, "the mark persists");
     assert.equal(marks[0]?.effective, false, "never released");
   });
 });

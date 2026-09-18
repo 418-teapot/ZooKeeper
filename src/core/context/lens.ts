@@ -79,7 +79,7 @@ export interface Invocation {
  * consistent with `messages`.  `byRegion` is the reverse index — a map
  * from a region address (see `regionKey`) to the invocation whose
  * input or output the region addresses — for per-region consumers
- * (sweep, canon).  A tool region with no reverse-index entry carries
+ * (canon, producers).  A tool region with no reverse-index entry carries
  * no pairing information: producers abstain from it (fail-closed).
  */
 export interface Projection {

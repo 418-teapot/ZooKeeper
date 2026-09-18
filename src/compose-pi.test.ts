@@ -663,13 +663,13 @@ describe("buildPiCommandRegistrationPlan", () => {
       },
     };
     const [reg] = buildPiCommandRegistrationPlan(commands);
-    await reg.handler("sweep 3", {
+    await reg.handler("context", {
       sessionManager: { getSessionId: () => "sess-pi" },
     });
     assert.deepEqual(captured, {
       command: "dcp",
       sessionID: "sess-pi",
-      arguments: "sweep 3",
+      arguments: "context",
     });
   });
 

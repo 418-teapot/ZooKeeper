@@ -241,10 +241,7 @@ impl PruningAccum {
                     return;
                 };
                 let count = field_i64(event, "markedCount");
-                let tokens = event
-                    .get("markedTokens")
-                    .or_else(|| event.get("totalEstimatedTokens"))
-                    .map_or(0, value_to_i64);
+                let tokens = event.get("markedTokens").map_or(0, value_to_i64);
                 let entry =
                     self.marked.entry(producer.to_string()).or_default();
                 entry.0 += count;
@@ -316,9 +313,9 @@ impl PruningAccum {
 /// Consumes five event families:
 /// - `prune_completed` (sent every transform round): a cumulative snapshot —
 ///   only the LAST occurrence is kept (`totalReclaimedTokens`/`prunedToolCount`).
-/// - `*_marked` (`dedup_marked`/`purge-errors_marked`/`sweep_marked`): grouped
-///   by producer (event name minus the `_marked` suffix); the token key is
-///   `markedTokens` or `totalEstimatedTokens`, whichever exists.
+/// - `*_marked` (`dedup_marked`/`purge-errors_marked`): grouped by
+///   producer (event name minus the `_marked` suffix); the token key is
+///   `markedTokens`.
 /// - `marks_released`: accumulates `releasedCount`/`releasedTokens`, counts
 ///   batches, and counts forced releases (events carrying a `forced` field).
 /// - `compress_created`: block count plus accumulated `messageCount`/
@@ -1922,7 +1919,7 @@ mod tests {
             json!({"event": "dedup_marked", "markedCount": 4, "markedTokens": 800}),
             json!({"event": "dedup_marked", "markedCount": 2, "markedTokens": 400}),
             json!({"event": "purge-errors_marked", "markedCount": 3, "markedTokens": 600}),
-            json!({"event": "sweep_marked", "markedCount": 5, "totalEstimatedTokens": 1000}),
+            json!({"event": "sweep_marked", "markedCount": 5, "markedTokens": 1000}),
             json!({"event": "marks_released", "releasedCount": 6, "releasedTokens": 1200}),
             json!({"event": "marks_released", "releasedCount": 2, "releasedTokens": 300, "forced": "view_change"}),
             json!({"event": "compress_created", "blockId": 1, "messageCount": 10, "inTokens": 2000, "outTokens": 500}),
@@ -1977,21 +1974,6 @@ mod tests {
             build_pruning_summary(&events).expect("summary should exist");
         assert_eq!(summary["reclaimed"]["tokens"], 900);
         assert_eq!(summary["reclaimed"]["tools"], 4);
-    }
-
-    #[test]
-    fn test_build_pruning_summary_sweep_total_estimated_tokens_only() {
-        // sweep_marked writes totalEstimatedTokens instead of markedTokens.
-        let events = vec![
-            json!({"event": "sweep_marked", "markedCount": 3, "totalEstimatedTokens": 2400}),
-            json!({"event": "sweep_marked", "markedCount": 2, "totalEstimatedTokens": 600}),
-        ];
-        let summary =
-            build_pruning_summary(&events).expect("summary should exist");
-        let sweep = &summary["marked"]["by_producer"]["sweep"];
-        assert_eq!(sweep["count"], 5);
-        assert_eq!(sweep["tokens"], 3000);
-        assert_eq!(summary["marked"]["total_tokens"], 3000);
     }
 
     #[test]

@@ -525,11 +525,11 @@ plan_enter/plan_exit/write/edit，且 commands 与 strategies 的数组都会
 叠加到该默认清单"。**源码事实与此不符**：
 
 - `DEFAULT_PROTECTED_TOOLS`（config.ts:78-89）只被 `commands.protectedTools`
-  （:664，保护 sweep）与 compress 配置消费
+  （:664）与 compress 配置消费
 - `strategies.deduplication.protectedTools` 默认 **`[]`**（:696），
   `deduplication.ts:42` 只读此键——**dedup 策略实际零保护**，依赖签名
   判等 + 保留最新 + 轮次保护
-- 设计含义：DCP 把保护给钝器（sweep 无差别标记），不给精密仪器
+- 设计含义：DCP 把保护给无差别标记的钝器，不给精密仪器
   （dedup 精确重复）
 
 #### 通知机制的已知坑（源码核实，2026-07-25）
@@ -699,7 +699,7 @@ ACP（`~/Code/Agent/opencode-acp`）是 DCP 的 fork，修复 39 个 bug，
 
 ## 4. ZooKeeper 当前实现
 
-已实现**观测层 + 统一 marks 剪枝核心（手动 sweep + 自动 dedup）+ 批量释放
+已实现**观测层 + 统一 marks 剪枝核心（自动 dedup）+ 批量释放
 + 持久化 + 手动压缩（/dcp compress，机械摘要 MVP）+ 折叠视图观测接线 +
 range 模式 compress 工具（LLM 驱动，§4.8）+ 上下文压力提醒（单锚点
 水位计 nudge，§4.9）+ decompress 召回工具（restore/recall，§4.10）**
@@ -712,8 +712,6 @@ range 模式 compress 工具（LLM 驱动，§4.8）+ 上下文压力提醒（�
 一切剪枝行为建模为 producer `{ selector, range, protection, release }`：
 
 ```
-sweep  = { selector: all,        range: since-last-user|last-N,
-           protection: 0,        release: immediate }
 dedup  = { selector: duplicates, range: session,
            protection: 20 条,   release: batch(released_percent) }
 ```
@@ -739,9 +737,6 @@ dedup  = { selector: duplicates, range: session,
   │   Phase 7 收尾：清 pendingViewChange + 持久化（dirty 时）
   │              + prune_completed 日志
   └─ measureContext (src/core/metrics.ts)
-
-/dcp sweep [N]（command.execute.before）:
-  └─ runSweep → addMark(effective=true)（立即生效，用户主权）
 
 /dcp compress（command.execute.before）:
   └─ 置 state.pendingManualTrigger（in-memory 一次性标志，不落盘）
@@ -792,7 +787,7 @@ interface SessionState {
 |------|------|
 | `src/core/metrics.ts` | 唯一测量模块（findLastCompletedAssistant、CJK 启发式、computeContextReport、缓存命中率）；**系统类为残差法** `max(0, total − user − asst − tool)`（见下方注） |
 | `src/core/context-report.ts` | 纯展示层：`formatContextReport(report, opts)`——**双口径消息数**（`模型可见 X 条 · 存储 Y 条`，相等时单行）；回收两态（`已生效` / `待生效` 分行）；**不区分手动/自动**（release 后本质相同） |
-| `src/commands/dcp/command.ts` | `/dcp` 命令分发：`context`/`sweep [N]`/`compress`/`help`；报告数据源自内存态 `getOrCreateSessionState`，消息计数经 `liveBlocks` 折算 |
+| `src/commands/dcp/command.ts` | `/dcp` 命令分发：`context`/`compress`/`help`；报告数据源自内存态 `getOrCreateSessionState`，消息计数经 `liveBlocks` 折算 |
 | `src/tui.tsx` | `ZookeeperPanel` 侧边栏；**分类分布跑在折叠视图上**（读盘 `loadSessionState` → `liveBlocks` + `previewFold`，纯只读不写状态）；`prunedCallIDs` 只含 effective 标记 |
 
 > **系统类残差法（2026-07-30 修正）**：旧实现用 DCP 式减法（首条已完成
@@ -804,13 +799,11 @@ interface SessionState {
 > （恒 0 且零消费方，"none" 类 part 流入系统残差）；
 > `findFirstCompletedAssistant` 随之删除。
 
-### 4.4 手动剪枝（/dcp sweep）
+### 4.4 手动工具输出剪枝（已移除）
 
-- `/dcp sweep`：标记最后一条非 ignored 用户消息之后的所有工具输出
-- `/dcp sweep N`：回溯标记最近 N 个工具输出
-- 语义 = `{ selector: all, protection: 0, release: immediate }` 的
-  producer（`src/core/pruning/producers/sweep.ts`）；`addMark` 幂等跳过
-  已存在 callID（先到先得：若 dedup 已标 pending，sweep 不覆盖）
+早期实现的 `/dcp sweep [N]` 手动标记子命令及配套的自动标记 producer
+已整体删除：工具输出标记只由 dedup（§4.5）与 purge-errors（§4.6）两个
+producer 产生，手动剪枝只剩 `/dcp compress`（§4.7）。
 
 ### 4.5 自动去重（dedup producer）
 
@@ -1506,7 +1499,7 @@ nudgeGrowthTokens)）不再提示；压缩后按比例调整基线。
 命令通过 `config` hook 动态注册（**不要**在 config.toml/install.py 静态
 声明——OpenCode 在 config 最终化时读取 `config.command`），处理通过
 `command.execute.before` 分发，输出用 `sendIgnoredMessage`
-（`ignored: true`）。当前已实现 `context`/`sweep`/`compress`/`help`；
+（`ignored: true`）。当前已实现 `context`/`compress`/`help`；
 后续可扩展：
 
 | 命令 | 用途 | 依赖 |
@@ -1525,8 +1518,8 @@ nudgeGrowthTokens)）不再提示；压缩后按比例调整基线。
 > 四组（回收/按 producer 标记/释放批次含 forced/压缩块含压缩比），
 > `--sessions N --pruning` 输出 per-session 行 + totals，JSON/表格双
 > 口径；全量 stats 报告在有剪枝事件时自动附条件 section。聚合集中在
-> 纯函数 `build_pruning_summary`（`prune_completed` 取最后一条快照、
-> sweep 兼容 `totalEstimatedTokens` 键）。同批增量：`zinspect impact`
+> 纯函数 `build_pruning_summary`（`prune_completed` 取最后一条快照）。
+> 同批增量：`zinspect impact`
 > 聚合分组键从 hook 级改为 `hook:event` 复合键（修复 `prune_completed`
 > 每轮频发稀释 `marks_released` 信号的问题）。
 
@@ -1595,7 +1588,7 @@ DCP 把策略挂在 compress 工具上（§3.3）；我们没有 compress 工具
 - 签名 = `tool::JSON.stringify(归一化参数)`；归一化 = 剔除 null/undefined +
   键递归排序 + 剔除易变字段（timestamp/ts/date）
 - 同签名组**保留最新**，旧副本写入 `state.marks`（mark-time 估算 tokens
-  随标记固化，公式同 sweep：`estimate(output) − estimate(占位符)`，下限 0）
+  随标记固化，公式：`estimate(output) − estimate(占位符)`，下限 0）
 - 跳过：已标记 callID、保护工具、错误状态的 part（留给 purge-errors）、
   进行中的 part（无完整 output）
 - 参数来源：消息内 tool part 的 `state.input`（全量扫描自带参数，
@@ -1607,7 +1600,6 @@ DCP 把策略挂在 compress 工具上（§3.3）；我们没有 compress 工具
 - **最近 5 步内的工具调用完全不参与签名检测**（DCP 语义：新副本在保护
   期内时，旧副本也不标记——事前过滤，非事后豁免）
 - 回退：会话中无 `step-start` part 时，退化为"保护最近 5 个工具调用"
-- `/dcp sweep` 维持用户消息锚点不变（手动命令语义不同，无需统一）
 
 ### 6.5 配置
 
@@ -1648,7 +1640,7 @@ protected_tools = ["question"]
 
 1. **日志**：`dedup_marked`（标记）、`dedup_released`（批量释放，含
    releasedTokens/promptTokens）、`prune_completed`（含
-   totalReclaimedTokens，sweep+dedup 合计）
+   totalReclaimedTokens，dedup 合计）
 2. **`/dcp context`**：合并回收行 `回收  X tokens（累计回收）`，
    pending 时追加 `，待生效 N 个标记（约 Y tokens）`——**不区分手动/
    自动**（用户决策：release 后无本质区别；数据源自内存态）
@@ -1660,8 +1652,7 @@ protected_tools = ["question"]
 
 初版实现为双 Map（tools + pending），后重写为统一模型（§4.1/§4.2）：
 
-- **标记/替换解耦**：dedup 标记写入 marks（`effective=false`）；
-  sweep 标记写入 marks（`effective=true`，立即生效）
+- **标记/替换解耦**：dedup 标记写入 marks（`effective=false`）
 - **批量释放**：每轮 transform 检查 `Σ pending（派生）≥ promptTokens ×
   release_threshold_percent / 100`，满足则 `releaseBatch` 全部翻转
   （只统计实际翻转），下一轮 Phase 1 替换
@@ -1686,14 +1677,13 @@ Turn N+2: Phase 1 替换已生效标记的输出
 | `config.toml` | `[zoo.context]`（`turn_protection` + `release_threshold_percent`）+ `[zoo.context.dedup]`（`threshold_tokens`/`protected_tools`）+ `[zoo.context.purge_errors]`（`threshold_tokens`/`protected_tools`） |
 | `src/core/pruning/marks.ts` | 新建：marks 单集合 + addMark/releaseBatch + 派生 stats + 持久化（取代旧 state.ts，已删除）；后增 `PruneAction`/`Mark.action`/`byAction`/`{tokens,effective,action}` 严格加载 |
 | `src/core/pruning/producers/dedup.ts` | 新建：runDedup（签名归一化/保护窗/零收益跳过） |
-| `src/core/pruning/producers/sweep.ts` | 新建：runSweep（原 collectSweepCallIDs 迁移，锚点语义不变） |
 | `src/core/pruning/producers/purge-errors.ts` | 新建：runPurgeErrors（错误状态扫描 + 跳过链） |
 | `src/core/pruning/producers/shared.ts` | 新建：collectProtectedCallIDs/netReclaimTokens 共享辅助 |
 | `src/core/pruning/prune.ts` | pruneToolOutputs 只消费 effective 标记；后增 action 判别 + pruneToolErrors |
 | `src/hooks/context-pruning/hook.ts` | 先清后标 + 门控 + 批量释放 + notify 回调；后增三层 Config 表驱动循环 + 双门控 |
 | `src/core/config-parse.ts` | parseContextConfig（两层读取 + 逐字段类型防御）+ notify 注入（fire-and-forget）；后改为三层解析 + release_threshold_percent 顶层读取 |
 | `src/core/context-report.ts` | 合并回收行（FormatContextReportOptions） |
-| `src/core/context/dcp-command.ts` | sweep 走 producer；报告读内存态（2026-08-08 迁入 `src/commands/dcp/command.ts` 并删除，`notifySessionError` 移至 `src/commands/notify.ts`） |
+| `src/core/context/dcp-command.ts` | 报告读内存态（2026-08-08 迁入 `src/commands/dcp/command.ts` 并删除，`notifySessionError` 移至 `src/commands/notify.ts`） |
 | `src/tui.tsx` | prunedCallIDs 只含 effective 标记 |
 | 测试 | marks/producers/hook/command/report 全套（879 TS 测试全绿） |
 
@@ -1729,7 +1719,7 @@ release_threshold_percent=0 时当轮标记当轮释放；ignored 通知
 | **Block 嵌套** | 支持 | 不支持（V3 也不做，扁平块） |
 | **配置层级** | 3 层级联 + JSONC | 单层 config.toml |
 | **消息引用** | mNNNN 格式 | ✅ mNNNN（随 compress 工具交付，§4.8） |
-| **命令系统** | `/dcp` 全套命令 | ✅ 部分（context/sweep/compress/help） |
+| **命令系统** | `/dcp` 全套命令 | ✅ 部分（context/compress/help） |
 | **轮次保护** | step-start 计数，默认 4（disabled） | 消息条数口径，默认 20 条（`protected_messages`，2026-07-30 统一） |
 | **状态模型复杂度** | 高（8 种块间关系） | 低（prune.tools 单通路） |
 
@@ -1758,7 +1748,7 @@ DCP 意味着增加 `dcp.jsonc`，破坏现有配置管理模型。
 
 | 步骤 | 内容 | 设计来源 | 前置 |
 |------|------|---------|------|
-| ~~当前~~ | 观测层 + 手动 sweep + 持久化 | — | ✅ 已完成（§4） |
+| ~~当前~~ | 观测层 + 持久化 | — | ✅ 已完成（§4） |
 | ~~下一步~~ | 自动去重 dedup（统一 marks + 批量释放 + ignored 通知） | §3.5 | ✅ 已完成（§4.5/§6，2026-07-25） |
 | +1 | ~~purge-errors：错误工具调用老化 N 步后标记清除 input~~ | §3.5 / §4.6 | ✅ 已完成（R1-R3 架构落地，§4.6，2026-07-25） |
 | +1.5 | ~~手动压缩 `/dcp compress`：机械摘要 MVP + 三重保护 + 幻影门 + 折叠通路 + 视图变化强制释放 + TUI/报告折叠视图接线 + 系统类残差法~~ | §3.8 / §5.2 | ✅ 已完成（§4.7，2026-07-30） |
@@ -1879,7 +1869,6 @@ ZooKeeper 剪枝 → 插件级，启发式策略 + 手动控制，编排器专�
 
 互补关系：
   - 去重 + 错误清除：在 compaction 之前减少无用内容
-  - 手动 sweep：用户主导的即时回收
   - 手动压缩（§4.7）：用户主导的整段折叠（机械摘要 MVP；LLM 驱动 V3）
   - Nudge（V3）：引导编排器主动管理上下文
 ```

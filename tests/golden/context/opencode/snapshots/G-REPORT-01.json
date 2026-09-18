@@ -394,7 +394,7 @@
       "toolResult": null,
       "toolError": null,
       "notifications": [
-        "━━  用法 ━━\n\n/dcp context    — 显示上下文用量与缓存命中率\n/dcp            — 同上（默认）\n/dcp sweep      — 标记所有工具输出以在下一轮回收\n/dcp sweep N    — 标记最近 N 个工具输出\n/dcp compress   — 在下一轮触发模型驱动的历史压缩"
+        "━━  用法 ━━\n\n/dcp context    — 显示上下文用量与缓存命中率\n/dcp            — 同上（默认）\n/dcp compress   — 在下一轮触发模型驱动的历史压缩"
       ]
     }
   ]

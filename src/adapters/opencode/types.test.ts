@@ -652,7 +652,7 @@ describe("computeContextReport with ignored user messages", () => {
     const msgs: ContextMessageEntry[] = [
       msg("user", undefined, "Hello"),
       ignoredMsg("Ignored /dcp context report"),
-      ignoredMsg("Ignored sweep result"),
+      ignoredMsg("Ignored result"),
       msg("assistant", { input: 500, output: 100 }, "Response"),
     ];
     const report = computeContextReport(msgs);

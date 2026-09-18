@@ -136,7 +136,7 @@ export interface ReleaseResult {
  * the anchor region's kind: a `tool-input` mark (written by the
  * purge-errors producer for a failed call) is replaced with the
  * error-input placeholder; every other mark — tool-output anchors from
- * the dedup and sweep producers — uses the output placeholder.
+ * the dedup producer — uses the output placeholder.
  *
  * @param region - The region the mark anchors to.
  * @returns The verbatim placeholder constant for the region's kind.

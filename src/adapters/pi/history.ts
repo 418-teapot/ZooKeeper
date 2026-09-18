@@ -33,7 +33,7 @@
  * first-class invocation table (`Invocation`) alongside the region view.
  * The call's name, its status resolved from the linked result
  * (`"error"`/`"completed"`, the core vocabulary purge-errors and
- * sweep/dedup interpret), and the positional addresses of both halves
+ * dedup interpret), and the positional addresses of both halves
  * live on the table entry — never on the regions.  A call without a
  * linked result (still in flight) has no status and no output address;
  * a result whose call id matches no `toolCall` block is left unpaired
@@ -152,7 +152,7 @@ function buildResultIndex(
  * Map a pi tool-result error flag to the core-expected status string.
  *
  * Core producers enumerate `"error"` (purge-errors) and `"completed"`
- * (sweep / dedup); pi's only call-state signal is the boolean `isError`
+ * (dedup); pi's only call-state signal is the boolean `isError`
  * flag on the toolResult message, so the flag maps to the core
  * vocabulary verbatim: failed → `"error"`, otherwise `"completed"`.
  *

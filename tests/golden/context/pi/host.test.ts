@@ -73,7 +73,7 @@ describe("pi host — /dcp absence", () => {
         [],
         [],
       ),
-    ).rejects.toThrow("dcp is not available on pi");
+    ).rejects.toThrow("dcp is not wired in the pi golden host");
   });
 });
 

@@ -42,12 +42,12 @@ function toolEntry(output: string, input: unknown = "ls"): ContextMessageEntry {
 
 describe("captureMessage — pruned tool-output classification", () => {
   test("placeholder prefixed by `[mN] ` is classified as pruned", () => {
-    // Snapshot evidence: G-MS-03 round "dcp-sweep-no-arg" — the
-    // renderer's injectLinePrefix adds `[m4] ` before the placeholder in
-    // the live view; the capture must still flag the output as pruned
-    // even though the placeholder is no longer at index 0.  The capture
-    // receives the full `state.output` (placeholder + prefix, 82 chars);
-    // it preserves the full string in the pruned branch.
+    // The renderer's injectLinePrefix adds `[m4] ` before the
+    // placeholder in the live view; the capture must still flag the
+    // output as pruned even though the placeholder is no longer at
+    // index 0.  The capture receives the full `state.output`
+    // (placeholder + prefix, 82 chars); it preserves the full string in
+    // the pruned branch.
     const prefixed = `[m4] ${PRUNED_TOOL_OUTPUT_REPLACEMENT}`;
     const capture = captureMessage(toolEntry(prefixed));
     expect(capture.toolParts.length).toBe(1);

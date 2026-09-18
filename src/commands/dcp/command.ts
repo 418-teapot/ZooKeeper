@@ -1,7 +1,7 @@
 /**
  * `/dcp` command handling logic (self-contained command unit).
  *
- * Provides the `/dcp context|sweep [N]|compress` handler and the
+ * Provides the `/dcp context|compress` handler and the
  * synthetic-message injection used to surface results to the user.
  * The host dependency is typed against the host-agnostic `ToolHost`
  * port instead of any host SDK type, so the handler stays
@@ -16,7 +16,7 @@
  * State comes from the host-agnostic context core: the shared
  * process-wide session-state manager (`getContextStateManager`)
  * supplies the session state, and the fold/measure/release layers
- * drive the report and the sweep.  Pruned tool calls are recognized by
+ * drive the report.  Pruned tool calls are recognized by
  * their placeholder text, so the report needs no mark-to-tool-call-id
  * projection.
  *
@@ -25,19 +25,13 @@
 
 import type { ToolHost } from "../../core/client/tool-host.js";
 import type { ContextPruningConfig } from "../../core/config-types.js";
-import {
-  formatContextReport,
-  formatTokens,
-} from "../../core/context/context-report.js";
+import { formatContextReport } from "../../core/context/context-report.js";
 import {
   computeContextReportLens,
   countFoldedMessages,
 } from "../../core/context/context-report-lens.js";
 import { fold } from "../../core/context/fold.js";
-import type { HostMessage, Projection } from "../../core/context/lens.js";
-import { findLastUserOrdinal } from "../../core/context/lens.js";
-import { netReclaimTokens } from "../../core/context/measure.js";
-import { PRUNED_TOOL_OUTPUT_REPLACEMENT } from "../../core/context/message-parts.js";
+import type { Projection } from "../../core/context/lens.js";
 import {
   pendingCount,
   pendingTokens,
@@ -47,114 +41,16 @@ import { getRoundView } from "../../core/context/round-view.js";
 import {
   getContextStateManager,
   getRuntimeFlaggedState,
-  setPendingViewChange,
 } from "../../core/context/runtime.js";
-import {
-  markKey,
-  RECALL_MAX_CHARS,
-  type SessionState,
-} from "../../core/context/state.js";
+import type { SessionState } from "../../core/context/state.js";
 import { log } from "../../utils/logger.js";
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-/** One new pending mark written by the sweep selection. */
-interface SweepWrite {
-  /** Estimated reclaim tokens of the marked output. */
-  contentTokens: number;
-}
-
-// ---------------------------------------------------------------------------
-// Sweep selection
-// ---------------------------------------------------------------------------
-
-/**
- * Select tool-output regions to mark and write pending marks.
- *
- * No-count mode marks every tool output after the last non-hidden user
- * message; numeric mode walks backward collecting the N most recent tool
- * outputs.  Positions already claimed by a mark are skipped
- * (first-write-wins).  Marks are written pending — the caller arms
- * `setPendingViewChange` so the next transform's release flips them
- * unconditionally.
- *
- * @param state - The session state to write marks into.
- * @param view - The lens transcript of the session messages.
- * @param count - The sweep count; undefined selects the no-count mode.
- * @returns The number of marks written and their total reclaim tokens.
- */
-function sweepToolRegions(
-  state: SessionState,
-  view: HostMessage[],
-  count: number | undefined,
-): SweepWrite[] {
-  const writes: SweepWrite[] = [];
-  const now = Date.now();
-
-  const addMark = (ordinal: number, regionIndex: number, output: string) => {
-    const key = markKey(ordinal, regionIndex);
-    if (state.marks.has(key)) return;
-    const contentTokens = netReclaimTokens(
-      output,
-      PRUNED_TOOL_OUTPUT_REPLACEMENT,
-    );
-    state.marks.set(key, {
-      anchorOrdinal: ordinal,
-      regionIndex,
-      content: output.slice(0, RECALL_MAX_CHARS),
-      contentTokens,
-      effective: false,
-      markedAt: now,
-    });
-    writes.push({ contentTokens });
-  };
-
-  if (count === undefined) {
-    // No-count mode: mark all tool outputs after the last user message.
-    const lastUserOrdinal = findLastUserOrdinal(view);
-    if (lastUserOrdinal < 0) return writes;
-    for (let ordinal = lastUserOrdinal + 1; ordinal < view.length; ordinal++) {
-      const msg = view[ordinal];
-      if (!msg?.regions) continue;
-      for (
-        let regionIndex = 0;
-        regionIndex < msg.regions.length;
-        regionIndex++
-      ) {
-        const region = msg.regions[regionIndex];
-        if (region?.kind !== "tool-output") continue;
-        addMark(ordinal, regionIndex, region.get());
-      }
-    }
-  } else {
-    // Numeric mode: walk backward until N tool outputs are collected.
-    for (let ordinal = view.length - 1; ordinal >= 0; ordinal--) {
-      if (writes.length >= count) break;
-      const msg = view[ordinal];
-      if (!msg?.regions) continue;
-      for (
-        let regionIndex = msg.regions.length - 1;
-        regionIndex >= 0 && writes.length < count;
-        regionIndex--
-      ) {
-        const region = msg.regions[regionIndex];
-        if (region?.kind !== "tool-output") continue;
-        addMark(ordinal, regionIndex, region.get());
-      }
-    }
-  }
-
-  return writes;
-}
 
 // ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
 /**
- * Read the transcript one `/dcp` pass reports and marks over.
+ * Read the transcript one `/dcp` report pass runs over.
  *
  * Two sources, in priority order:
  *
@@ -217,12 +113,6 @@ export async function handleDcpCommand(
 ): Promise<void> {
   const trimmed = args.trim();
 
-  // ── Sweep subcommand ──────────────────────────────────────────────
-  if (trimmed === "sweep" || trimmed.startsWith("sweep ")) {
-    await handleSweepSubcommand(toolHost, sessionID, trimmed);
-    return;
-  }
-
   // ── Compress subcommand ──────────────────────────────────────────
   if (trimmed === "compress") {
     await handleCompressSubcommand(
@@ -241,8 +131,6 @@ export async function handleDcpCommand(
       "",
       "/dcp context    — 显示上下文用量与缓存命中率",
       "/dcp            — 同上（默认）",
-      "/dcp sweep      — 标记所有工具输出以在下一轮回收",
-      "/dcp sweep N    — 标记最近 N 个工具输出",
       "/dcp compress   — 在下一轮触发模型驱动的历史压缩",
     ].join("\n");
 
@@ -314,98 +202,6 @@ export async function handleDcpCommand(
   // `notify` is best-effort by contract (never rejects, failures are
   // logged and swallowed by the host), so no try/catch here.
   await toolHost?.notify(sessionID, formatted);
-}
-
-// ---------------------------------------------------------------------------
-// Sweep subcommand handler
-// ---------------------------------------------------------------------------
-
-/**
- * Parse the numeric argument from a `/dcp sweep N` command.
- *
- * @param trimmed - The full arguments string (e.g. `"sweep 5"`).
- * @returns The count, or `undefined` for no-arg (`"sweep"`).
- */
-export function parseSweepCount(trimmed: string): number | undefined {
-  if (trimmed === "sweep") return undefined;
-  const rest = trimmed.slice(5).trim(); // after "sweep"
-  const n = Number(rest);
-  if (!Number.isFinite(n) || n < 1 || !Number.isInteger(n)) {
-    throw new Error("用法：/dcp sweep [N]，N 为要标记的工具输出数量（正整数）");
-  }
-  return n;
-}
-
-/**
- * Handle the `/dcp sweep` and `/dcp sweep N` subcommands.
- *
- * 1. Parses the count argument (optional).
- * 2. Fetches session messages (lens transcript directly).
- * 3. Selects tool-output regions for marking.
- * 4. Writes pending marks into the shared session state, arms the
- *    pending-view-change flag (the next transform's release flips them
- *    unconditionally, so the marks take effect as soon as the view rolls
- *    over), and persists once.
- * 5. Injects an ignored message reporting how many tools were marked
- *    and the estimated token reclaim.
- * 6. Returns normally — the OpenCode adapter throws the unified
- *    `COMMAND_HANDLED` sentinel afterwards to short-circuit the flow.
- *
- * @param toolHost - Host tool services (fetchHistory / notify).
- * @param sessionID - The current session identifier.
- * @param trimmed - The full arguments string (e.g. `"sweep"`, `"sweep 3"`).
- * @throws Error on API failures or invalid arguments.
- */
-async function handleSweepSubcommand(
-  toolHost: ToolHost | null | undefined,
-  sessionID: string,
-  trimmed: string,
-): Promise<void> {
-  const count = parseSweepCount(trimmed);
-
-  // ── Fetch messages ──────────────────────────────────────────────
-  // Same read as the context report (see `readReportHistory`); the
-  // ordinals the sweep marks are the read's own, which is why a host
-  // read is only used when it shares the transform's source.
-  const view = (await readReportHistory(toolHost, sessionID)).messages;
-
-  // ── Select regions and write pending marks ───────────────────────
-  const manager = getContextStateManager();
-  const state = manager.get(sessionID);
-  const writes = sweepToolRegions(state, view, count);
-
-  if (writes.length === 0) {
-    // ── Nothing to mark ───────────────────────────────────────────
-    const msg = "没有找到可标记的工具输出";
-    await toolHost?.notify(sessionID, msg);
-    return;
-  }
-
-  // Pending marks flip on the next transform's release.  The
-  // pending-view-change flag bypasses the release gate so the marks take
-  // effect as soon as the view rolls over, rather than waiting for the
-  // percentage threshold to open.
-  setPendingViewChange(sessionID);
-  manager.save(sessionID);
-
-  const totalEstimate = writes.reduce((sum, m) => sum + m.contentTokens, 0);
-
-  log("context-command", "sweep_marked", sessionID, undefined, "info", {
-    markedCount: writes.length,
-    totalEstimatedTokens: totalEstimate,
-  });
-
-  // ── Inject result message ───────────────────────────────────────
-  const reportMsg = [
-    `已标记 ${writes.length} 个工具输出，预计可回收 ${formatTokens(totalEstimate)} tokens`,
-    "这些工具的输出将在下一轮 LLM 调用中被替换为占位文本。",
-  ].join("\n");
-
-  // `notify` is best-effort by contract (never rejects, failures are
-  // logged and swallowed by the host), so no try/catch here.
-  await toolHost?.notify(sessionID, reportMsg);
-
-  return;
 }
 
 // ---------------------------------------------------------------------------

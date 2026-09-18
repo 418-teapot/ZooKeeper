@@ -24,7 +24,7 @@
  * **Idempotency.**  A call whose region already holds a mark is never
  * re-marked.  The check covers both region keys of the call — the
  * tool-input key this producer writes and the linked tool-output key the
- * dedup/sweep producers write — so a call claimed by any producer is
+ * dedup producer writes — so a call claimed by any producer is
  * left alone.  The output half comes from the invocation entry's output
  * address; a call whose output is not paired yet (in flight) has no
  * output key to check.
@@ -170,8 +170,8 @@ function addPendingMark(
  * 2. Tool name in `protectedTools` → skip (no default list).
  * 3. A mark already held by either of the call's regions — its
  *    tool-input key or its linked tool-output key — → skip the whole
- *    call (the output-region key covers marks written by the dedup and
- *    sweep producers).
+ *    call (the output-region key covers marks written by the dedup
+ *    producer).
  * 4. Input reclaim not positive — input text estimate does not exceed
  *    the error-input placeholder estimate — → skip the call entirely.
  *
@@ -240,7 +240,7 @@ export function runPurgeErrors(
 
     // Call-level idempotency: an existing mark on either region of the
     // call suppresses the whole call.  The output-region key is never
-    // written here, but the dedup/sweep producers may hold it —
+    // written here, but the dedup producer may hold it —
     // resolved through the invocation's output address.
     if (state.marks.has(markKey(inputRef.ordinal, inputRef.regionIndex))) {
       continue;

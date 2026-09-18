@@ -179,7 +179,7 @@ describe("suicide block protection", () => {
     const mutated = history[1];
     const canonBefore = canon(projectMessages([mutated]), 0);
 
-    // Tool-output prune (sweep/dedup).
+    // Tool-output prune (dedup).
     setRegionText(mutated, 3, PRUNED_TOOL_OUTPUT_REPLACEMENT);
     // Input prune for input-heavy tools.
     setRegionText(mutated, 4, PRUNED_TOOL_ERROR_INPUT_REPLACEMENT);

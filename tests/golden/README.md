@@ -13,9 +13,9 @@
   一化后的可观察输出；`<lane>/snapshots/` 中提交的 JSON 基线是机器
   可判定的回归网——折叠位置、注入格式、占位符文本的细微漂移都会
   被快照比对拦下。当前实现两个 lane：opencode lane（v1 消息形状，
-  19 个场景）与 pi lane（原生 `AgentMessage` 形状，19 个场景：17
+  18 个场景）与 pi lane（原生 `AgentMessage` 形状，20 个场景：17
   个移植场景 + PI-SMOKE-01 + PI-PAIR-01/PI-SUMMARY-01 两个 pi 专属
-  场景；G-MS-03 与 G-REPORT-01 因依赖 /dcp 命令未移植）。
+  场景；G-REPORT-01 因依赖 /dcp 命令未移植）。
 
 新增套件的判据与路径：输出满足上述判据的组件（候选：install.py
 生成的 opencode.json / settings.json），在 `tests/golden/` 下新建
@@ -48,12 +48,12 @@ tests/golden/
 │       │   ├── fold.ts       # G-FOLD-01..04：块折叠/展开视图结构
 │       │   ├── compress.ts   # G-COMP-01..04：压缩生命周期与区间门控
 │       │   ├── decompress.ts # G-DEC-01..02：restore/recall 双路径
-│       │   ├── markSweep.ts  # G-MS-01..04：三个剪除 producer 与释放时序
+│       │   ├── marks.ts      # G-MS-01/02/04：剪除 producer 与释放时序
 │       │   ├── nudgeRefs.ts  # G-NUDGE-01 阈值提醒，G-REF-01 行号注入
 │       │   ├── persistReport.ts  # G-PERSIST-01 重启持久化，G-REPORT-01 报告
 │       │   ├── tools.ts      # G-TOOL-01：工具可观察契约与报错路径
 │       │   ├── conversation.ts   # 工具场景共享会话构造器
-│       │   └── index.ts      # 全部 19 场景的有序注册表
+│       │   └── index.ts      # 全部 18 场景的有序注册表
 │       └── snapshots/        # 提交的 JSON 基线（每场景一份）
 │   └── pi/                   # pi lane（原生 AgentMessage 形状）
 │       ├── types.ts          # pi 消息形状默认化的类型别名
@@ -68,14 +68,14 @@ tests/golden/
 │       │   ├── fold.ts       # G-FOLD-01..04：块折叠/展开视图结构
 │       │   ├── compress.ts   # G-COMP-01..04：压缩生命周期与区间门控
 │       │   ├── decompress.ts # G-DEC-01..02：restore/recall 双路径
-│       │   ├── markSweep.ts  # G-MS-01/02/04：producer 与释放时序（G-MS-03 未移植）
+│       │   ├── marks.ts      # G-MS-01/02/04：producer 与释放时序
 │       │   ├── nudgeRefs.ts  # G-NUDGE-01 阈值提醒，G-REF-01 行号注入
 │       │   ├── persistReport.ts  # G-PERSIST-01 重启持久化（G-REPORT-01 未移植）
 │       │   ├── tools.ts      # G-TOOL-01：工具可观察契约与报错路径
 │       │   ├── conversation.ts   # 工具场景共享会话构造器（pi 行号映射）
 │       │   ├── pair.ts       # PI-PAIR-01：toolCall/toolResult 配对折叠
 │       │   ├── summary.ts    # PI-SUMMARY-01：摘要物化 + validateBlock
-│       │   └── index.ts      # 全部 19 场景的有序注册表
+│       │   └── index.ts      # 全部 20 场景的有序注册表
 │       └── snapshots/        # 提交的 JSON 基线（每场景一份）
 ```
 

@@ -1855,10 +1855,12 @@ describe("buildPiHandlers — registerCommand wiring", () => {
     const dcp = api.commands.find((c) => c.name === "dcp");
     assert.ok(dcp && typeof dcp.handler === "function");
 
-    // "sweep 0" is rejected by the sweep count parser, so the handler
-    // surfaces the failure through notifySessionError → appendEntry.
+    // pi's tool host exposes no history read and no round view is
+    // published, so `/dcp context` fails to resolve its source; the
+    // handler surfaces the failure through notifySessionError →
+    // appendEntry.
     await (dcp.handler as (args: string, ctx: unknown) => Promise<void>)(
-      "sweep 0",
+      "context",
       { sessionManager: { getSessionId: () => "sess-dcp" } },
     );
 
@@ -1867,7 +1869,7 @@ describe("buildPiHandlers — registerCommand wiring", () => {
     );
     assert.ok(entry, "dcp error must be surfaced via appendEntry");
     assert.ok(
-      String((entry.data as any)?.content).includes("用法：/dcp sweep"),
+      String((entry.data as any)?.content).includes("无法获取会话消息"),
     );
   });
 

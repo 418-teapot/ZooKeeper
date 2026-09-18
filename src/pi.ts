@@ -717,7 +717,7 @@ export function buildPiContributions(
     // returns the pruned replacement to pi.  The release notification
     // does not need the client: it posts through the unified pi tool
     // host's `notify` port as a `zoo-notice` appendEntry entry.  The
-    // marking producers (dedup / purge-errors / sweep) have no
+    // marking producers (dedup / purge-errors) have no
     // user-visible notification on pi.
     client: {},
     directory: process.cwd(),

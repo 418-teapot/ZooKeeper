@@ -29,7 +29,7 @@ export interface TextPart {
  * v1 adapter's lens mapping.  Matches the v1 wire shape the
  * OpenCode adapter maps to lens `tool-input` / `tool-output` regions.
  */
-export interface SweepToolPart extends ContextTextPart {
+export interface ToolPart extends ContextTextPart {
   callID?: string;
   state?: {
     input?: unknown;
@@ -56,7 +56,7 @@ export function toolPart(
   input?: unknown,
   tool = "bash",
   status?: string,
-): SweepToolPart {
+): ToolPart {
   return {
     type: "tool",
     callID,
@@ -75,7 +75,7 @@ export function toolPart(
 export function msg(
   role: string,
   id: string,
-  parts: Array<SweepToolPart | TextPart>,
+  parts: Array<ToolPart | TextPart>,
   sessionID?: string,
   tokens?: ContextTokenInfo,
 ): ContextMessageEntry {

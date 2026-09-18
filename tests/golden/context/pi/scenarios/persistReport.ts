@@ -7,7 +7,7 @@
  * - G-PERSIST-01: state written to disk survives a simulated restart —
  *   blocks keep folding and effective marks keep pruning afterwards.
  * - G-REPORT-01 is NOT ported: it drives the /dcp `context` report
- *   command, which does not exist on pi.
+ *   command, and the pi golden host does not wire the /dcp seam.
  *
  * @module
  */

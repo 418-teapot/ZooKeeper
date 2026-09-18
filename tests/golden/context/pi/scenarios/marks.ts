@@ -1,5 +1,5 @@
 /**
- * Golden scenarios — mark-sweep producers and release timing (C4/C5),
+ * Golden scenarios — mark producers and release timing (C4/C5),
  * pi lane.
  *
  * Ported from the opencode lane with pi numbering: a v1 `dupView`
@@ -18,8 +18,6 @@
  *   rounds exercise the producer for real on pi-shaped input: the
  *   error call's input and output live in different messages, paired by
  *   the host call id into the projection's invocation table.
- * - G-MS-03 is NOT ported: it drives the /dcp `sweep` command, which
- *   does not exist on pi.
  * - G-MS-04: batch release — accumulation across rounds to the
  *   released_percent threshold, forced flush via pendingViewChange, and
  *   silence when nothing is pending.
@@ -100,9 +98,8 @@ interface LongPair {
  * The LAST pair's assistant reports `inputTokens` — it is the last
  * completed assistant, so the measured total is dominated by that usage
  * (100200+), opening the purge-errors context gate (configured
- * `thresholdContext: 100000`) while staying below the sweep producer's
- * 0.8-of-limit gate (model limit 200000 → sweep opens at 160000), so
- * the captured marks come from purge-errors alone.
+ * `thresholdContext: 100000`), so the captured marks come from
+ * purge-errors alone.
  *
  * @param sessionID - Session id for the first message.
  * @param pairs - The trailing call pairs, in order.
@@ -253,9 +250,9 @@ export const G_MS_01: Scenario = {
  * model limit (200000) and opens the context gate
  * (`thresholdContext: 100000` → measured total >= 100000), while the
  * message-count floor clears via the six filler triplets (21+ messages);
- * the sweep producer stays closed (opens at 160000), so the captured
- * marks come from purge-errors alone.  Round 2 replays the same view:
- * the released mark writes the error-input placeholder into the linked
+ * the captured marks come from purge-errors alone.  Round 2 replays
+ * the same view: the released mark writes the error-input placeholder
+ * into the linked
  * tool-input region, visible in the captured view.  Rounds 3–5 keep
  * the already-marked ce1 at its original ordinal — the effective mark
  * re-applies its placeholder every turn (the two-turn lifecycle) — and

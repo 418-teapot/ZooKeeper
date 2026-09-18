@@ -3,11 +3,10 @@
  *
  * Carries the 17 ported scenarios (semantic translation of the opencode
  * lane's v1 scenarios into pi-native message shapes and pi numbering;
- * G-MS-03 and G-REPORT-01 are not ported because they drive the /dcp
- * command, which does not exist on pi), plus the smoke scenario and the
- * two pi-specific scenarios (PI-PAIR-01 pair folding, PI-SUMMARY-01
- * summary materialization).  Order mirrors the opencode lane's
- * checklist order.
+ * G-REPORT-01 is not ported because the pi golden host does not wire
+ * the /dcp command seam), plus the smoke scenario and the two
+ * pi-specific scenarios (PI-PAIR-01 pair folding, PI-SUMMARY-01 summary
+ * materialization).  Order mirrors the opencode lane's checklist order.
  *
  * @module
  */
@@ -16,7 +15,7 @@ import type { Scenario } from "../types.js";
 import { G_COMP_01, G_COMP_02, G_COMP_03, G_COMP_04 } from "./compress.js";
 import { G_DEC_01, G_DEC_02 } from "./decompress.js";
 import { G_FOLD_01, G_FOLD_02, G_FOLD_03, G_FOLD_04 } from "./fold.js";
-import { G_MS_01, G_MS_02, G_MS_04 } from "./markSweep.js";
+import { G_MS_01, G_MS_02, G_MS_04 } from "./marks.js";
 import { G_NUDGE_01, G_REF_01 } from "./nudgeRefs.js";
 import { PI_PAIR_01 } from "./pair.js";
 import { G_PERSIST_01 } from "./persistReport.js";

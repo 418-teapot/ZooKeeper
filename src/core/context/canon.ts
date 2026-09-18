@@ -21,7 +21,7 @@
  *    preserved).  A tool region the table does not pair contributes the
  *    empty string.
  *
- * Explicitly excluded: tool-output text (sweep/dedup may replace it
+ * Explicitly excluded: tool-output text (dedup may replace it
  * with a placeholder) and tool-input text (purge-errors may replace
  * it).  Placeholder replacement is the one mutation that lands between
  * the two hash observations — block creation and per-turn validation —

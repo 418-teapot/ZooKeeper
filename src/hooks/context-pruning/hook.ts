@@ -18,9 +18,9 @@
  *    flips the released marks effective.  Runs FIRST so marks written
  *    last turn take effect this turn (the two-turn lifecycle).  The
  *    notify callback and the `marks_released` log fire on a flip.
- * 3. **Producers** — dedup / purge-errors run only when their
- *    configured `thresholdContext` is defined; sweep always runs with
- *    its own defaults.  Marks are pending for the next turn's release.
+ * 3. **Producers** — dedup / purge-errors run when their configured
+ *    `thresholdContext` is defined.  Marks are pending for the next
+ *    turn's release.
  * 4. **Fold** — `fold` computes the folded view; blocks whose span no
  *    longer validates move to the stale status (record retained, with a
  *    diagnostic log of the interval and both hashes), and a view change
@@ -75,7 +75,6 @@ import {
 } from "../../core/context/nudge.js";
 import { runDedup } from "../../core/context/producers/dedup.js";
 import { runPurgeErrors } from "../../core/context/producers/purge-errors.js";
-import { runSweep } from "../../core/context/producers/sweep.js";
 import {
   computeEdits,
   flipReleasedMarks,
@@ -270,12 +269,11 @@ export function contextPruningTransformHandler(
     }
   }
 
-  // ── Phase 3: producers (dedup / purge-errors / sweep) ─────────────
+  // ── Phase 3: producers (dedup / purge-errors) ─────────────────────
   // A producer whose prompt-side threshold is not configured is skipped;
   // configured thresholds are converted to context-limit fractions.
-  // Sweep is ungated here and applies its own defaults (0.8 of the model
-  // limit, no protected tools).  New marks are pending for the NEXT
-  // turn's release (two-turn lifecycle).
+  // New marks are pending for the NEXT turn's release (two-turn
+  // lifecycle).
   const modelLimit = getModelLimit(sessionId);
   const contextLimit = modelLimit?.context;
   const protectedStartOrdinal =
@@ -329,18 +327,6 @@ export function contextPruningTransformHandler(
         },
       );
     }
-  }
-
-  const sweepResult = runSweep(state, snapshot, {
-    contextLimit,
-    protectedStartOrdinal,
-    prunedOrdinals,
-  });
-  if (sweepResult.created > 0) {
-    log("context-pruning", "sweep_marked", sessionId, undefined, "info", {
-      markedCount: sweepResult.created,
-      markedTokens: sweepResult.tokens,
-    });
   }
 
   // ── Phase 4: fold + block maintenance ─────────────────────────────

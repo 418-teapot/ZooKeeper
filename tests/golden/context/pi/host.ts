@@ -272,13 +272,14 @@ async function runTool(
 }
 
 /**
- * The /dcp command seam — pi has no slash-command surface.
+ * The /dcp command seam — this host does not wire it.
  *
- * Throws so the runner captures a clear `toolError` naming the gap
- * instead of silently no-op'ing.
+ * Pi itself registers /dcp (compose-pi `registerCommand`), but the
+ * golden harness has no command surface.  Throws so the runner captures
+ * a clear `toolError` naming the gap instead of silently no-op'ing.
  */
 async function handleDcp(): Promise<void> {
-  throw new Error("dcp is not available on pi");
+  throw new Error("dcp is not wired in the pi golden host");
 }
 
 /**

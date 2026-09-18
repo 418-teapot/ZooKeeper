@@ -1,5 +1,5 @@
 /**
- * Golden scenario registry — the ordered list of all 19 scenarios.
+ * Golden scenario registry — the ordered list of all 18 scenarios.
  *
  * The order matches the checklist's golden-scenario table
  * (`.zoo/plans/semantic-equivalence-checklist-20260814.md`).
@@ -11,7 +11,7 @@ import type { Scenario } from "../types.js";
 import { G_COMP_01, G_COMP_02, G_COMP_03, G_COMP_04 } from "./compress.js";
 import { G_DEC_01, G_DEC_02 } from "./decompress.js";
 import { G_FOLD_01, G_FOLD_02, G_FOLD_03, G_FOLD_04 } from "./fold.js";
-import { G_MS_01, G_MS_02, G_MS_03, G_MS_04 } from "./markSweep.js";
+import { G_MS_01, G_MS_02, G_MS_04 } from "./marks.js";
 import { G_NUDGE_01, G_REF_01 } from "./nudgeRefs.js";
 import { G_PERSIST_01, G_REPORT_01 } from "./persistReport.js";
 import { G_TOOL_01 } from "./tools.js";
@@ -30,7 +30,6 @@ export const ALL_SCENARIOS: Scenario[] = [
   G_DEC_02,
   G_MS_01,
   G_MS_02,
-  G_MS_03,
   G_MS_04,
   G_NUDGE_01,
   G_REF_01,

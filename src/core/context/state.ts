@@ -30,9 +30,9 @@ import type { HashedSpan } from "./spanhash.js";
  * Canonical character cap for persisted text snapshots (~4K tokens).
  *
  * The single source of truth for the truncation length used by the
- * decompress recall path (`truncateRecallSummary`) and by all three prune
+ * decompress recall path (`truncateRecallSummary`) and by both prune
  * producers' mark content snapshots (`producers/dedup.ts`,
- * `producers/sweep.ts`, `producers/purge-errors.ts`), which import this
+ * `producers/purge-errors.ts`), which import this
  * constant.
  */
 export const RECALL_MAX_CHARS = 16000;

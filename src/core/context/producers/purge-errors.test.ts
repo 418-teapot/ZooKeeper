@@ -126,7 +126,7 @@ function piLensPair(): HostMessage[] {
 }
 
 /**
- * Plant a pre-existing output-region mark (e.g. written by sweep/dedup)
+ * Plant a pre-existing output-region mark (e.g. written by dedup)
  * on the given state.
  */
 function seedOutputMark(
@@ -617,7 +617,7 @@ describe("cross-message output lookup via the invocation table", () => {
   });
 
   it("an existing mark on the referenced output region suppresses the call", () => {
-    // The dedup/sweep producers hold the output-region key of the
+    // The dedup producer holds the output-region key of the
     // linked tool-result message; purge-errors must see it through the
     // invocation entry's output address (a layout scan for a
     // same-message sibling on pi would find nothing and re-mark the
