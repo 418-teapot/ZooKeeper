@@ -71,18 +71,17 @@ export const G_DEC_01: Scenario = {
       messages: longConversation(SID),
       action: {
         kind: "compress-tool",
-        // v1 [1, 9) → pi [1, 30): swallows b1 → b2.  In the folded view
-        // (b1 [1, 13) active) line 19 lands on a15's toolCall half, so
-        // the mid-pair gate would reject [1, 30); extending toRef to
-        // m20 (tr15) keeps the pair complete and the range covers
-        // [1, 31).  (The v1 fixture rejected this round on the
-        // protection zone (boundary 16); the pi boundary (38) leaves
-        // room, so the consumption the label names actually happens
-        // here.)
+        // b1 = [1, 13) is active, so the folded view puts its summary
+        // at m2 and numbers the following units from m3.  fromRef m2
+        // (the b1 summary → [1, 13)) + toRef m11 (the a15/tr15 unit
+        // over [29, 31)) resolve to [1, 31), which swallows b1 → b2.
+        // (The v1 fixture rejected this round on the protection zone
+        // (boundary 16); the pi boundary leaves room, so the
+        // consumption the label names actually happens here.)
         ranges: [
           {
             fromRef: "m0002",
-            toRef: "m0020",
+            toRef: "m0011",
             title: "第二段",
             summary: "用户请求执行命令，助手完成了操作。",
           },
@@ -133,16 +132,16 @@ export const G_DEC_01: Scenario = {
       messages: longConversation(SID),
       action: {
         kind: "compress-tool",
-        // v1 [9, 13] → pi fromRef m18 (folded b1 summary) + toRef m28:
-        // [17, 35) swallows the long-summary block → b4.  toRef lands
-        // on the toolResult line (tr17) — a range ending on the
-        // toolCall half (m27) would be rejected by the mid-pair gate.
-        // (The v1 fixture rejected this on the protection zone; on pi
-        // the doubled message count leaves room.)
+        // b1 and b2 are consumed, b3 = [17, 25) is active: the folded
+        // view puts b3's summary at m10 and the a17/tr17 unit over
+        // [33, 35) at m15, so fromRef m10 + toRef m15 → [17, 35)
+        // swallows the long-summary block → b4.  (The v1 fixture
+        // rejected this on the protection zone; on pi the unit view
+        // leaves room.)
         ranges: [
           {
-            fromRef: "m0018",
-            toRef: "m0028",
+            fromRef: "m0010",
+            toRef: "m0015",
             title: "第四段",
             summary: "第四段",
           },

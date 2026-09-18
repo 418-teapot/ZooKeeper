@@ -200,8 +200,8 @@ export function computeContextReportLens(
  * `storageMessageCount` is the number of non-hidden messages in storage.
  * `foldedMessageCount` is the model-visible count over the folded view
  * items: each summary item counts as one (the synthetic user message is
- * not hidden), and each original item counts when its backing message is
- * not hidden.
+ * not hidden), and each original item counts the non-hidden messages
+ * inside its unit interval (a tool call and its result may span two).
  *
  * @param items - The folded view items, in view order.
  * @param messages - The lens transcript aligned 1:1 with the items'
@@ -218,8 +218,10 @@ export function countFoldedMessages(
     if (item.type === "summary") {
       foldedMessageCount += 1;
     } else {
-      const msg = messages[item.ordinal];
-      if (msg && !msg.hidden) foldedMessageCount += 1;
+      for (let ordinal = item.start; ordinal < item.end; ordinal++) {
+        const msg = messages[ordinal];
+        if (msg && !msg.hidden) foldedMessageCount += 1;
+      }
     }
   }
   return { foldedMessageCount, storageMessageCount };

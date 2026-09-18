@@ -118,11 +118,16 @@ function pickInjectableRegion(msg: HostMessage): WritableRegion | undefined {
  * Pure prepend, no marker stripping: the input carries no prior-round
  * markers because the host delivers a fresh per-turn message array, so
  * the render output is never seen as input again.
+ *
+ * @returns True when the prefix was injected; false when the message
+ *   carries no injectable region (the caller tries the next unit
+ *   member).
  */
-function injectLinePrefix(msg: HostMessage, line: number): void {
+function injectLinePrefix(msg: HostMessage, line: number): boolean {
   const region = pickInjectableRegion(msg);
-  if (region === undefined) return;
+  if (region === undefined) return false;
   region.set(refPrefix(line) + region.get());
+  return true;
 }
 
 /**
@@ -142,125 +147,6 @@ export function materializeSummary(
 }
 
 /**
- * Build an index of tool-call / tool-result ordinal pairs.
- */
-function buildToolPairIndex(messages: PiAgentMessage[]): {
-  callOrdinalById: Map<string, number>;
-  resultOrdinalById: Map<string, number>;
-} {
-  const callOrdinalById = new Map<string, number>();
-  const resultOrdinalById = new Map<string, number>();
-  for (let i = 0; i < messages.length; i++) {
-    const message = messages[i];
-    if (message.role === "assistant") {
-      for (const block of message.content) {
-        if (block.type === "toolCall") {
-          callOrdinalById.set(block.id, i);
-        }
-      }
-    } else if (message.role === "toolResult") {
-      resultOrdinalById.set(message.toolCallId, i);
-    }
-  }
-  return { callOrdinalById, resultOrdinalById };
-}
-
-/**
- * Expand summary block intervals so that a tool call and its result are
- * always folded together.
- *
- * Pi represents a tool call and its result as two separate messages,
- * while OpenCode's v1 message shape keeps them in the same message.
- * Whole-message fold semantics therefore require a summary that covers
- * one half of a pair to swallow the other half as well.
- *
- * `validateRange` in `compress.ts` gates both directions (a call inside
- * with its result outside, and a result inside with its call outside)
- * using the projection's invocation table, so a newly created block
- * never cuts a pair.  Host truncation cannot produce a mid-pair state
- * interval either — a revert moves whole blocks to `"stale"`, never
- * truncating one — but state persisted by older plugin versions can
- * still hold a mid-pair block; the expansion costs nothing and keeps
- * every pair-touching summary id-resolvable.
- */
-export function expandSummaryBlocks(
-  items: ViewItem[],
-  messages: PiAgentMessage[],
-): ViewItem[] {
-  const { callOrdinalById, resultOrdinalById } = buildToolPairIndex(messages);
-  const historyLength = messages.length;
-  const covered = new Array<boolean>(historyLength).fill(false);
-  const expandedSummaries: Array<{
-    start: number;
-    end: number;
-    block: BlockSpan;
-  }> = [];
-
-  for (const item of items) {
-    if (item.type !== "summary") continue;
-    let start = item.block.start;
-    let end = item.block.end;
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (let o = start; o < end; o++) {
-        const message = messages[o];
-        if (message.role === "assistant") {
-          for (const block of message.content) {
-            if (block.type !== "toolCall") continue;
-            const resultOrdinal = resultOrdinalById.get(block.id);
-            if (
-              resultOrdinal !== undefined &&
-              (resultOrdinal < start || resultOrdinal >= end)
-            ) {
-              start = Math.min(start, resultOrdinal);
-              end = Math.max(end, resultOrdinal + 1);
-              changed = true;
-            }
-          }
-        } else if (message.role === "toolResult") {
-          const callOrdinal = callOrdinalById.get(message.toolCallId);
-          if (
-            callOrdinal !== undefined &&
-            (callOrdinal < start || callOrdinal >= end)
-          ) {
-            start = Math.min(start, callOrdinal);
-            end = Math.max(end, callOrdinal + 1);
-            changed = true;
-          }
-        }
-      }
-    }
-
-    for (let o = start; o < end; o++) {
-      covered[o] = true;
-    }
-    const block: BlockSpan = { ...item.block, start, end };
-    expandedSummaries.push({ start, end, block });
-  }
-
-  const summaryByStart = new Map<number, BlockSpan>();
-  for (const summary of expandedSummaries) {
-    if (!summaryByStart.has(summary.start)) {
-      summaryByStart.set(summary.start, summary.block);
-    }
-  }
-
-  const out: ViewItem[] = [];
-  for (let o = 0; o < historyLength; o++) {
-    if (covered[o]) {
-      const block = summaryByStart.get(o);
-      if (block !== undefined) {
-        out.push({ type: "summary", block });
-      }
-      continue;
-    }
-    out.push({ type: "original", ordinal: o });
-  }
-  return out;
-}
-
-/**
  * Build a rendered view from already-copied messages.
  *
  * The input array is treated as owned copies: the function mutates the
@@ -273,34 +159,41 @@ function buildRenderedView(
   state: SessionState,
 ): PiAgentMessage[] {
   const lens = history(copies).messages;
-  const view = expandSummaryBlocks(items, copies);
   // Number with the same hidden predicate the context-pruning hook uses
   // when it publishes the round view: that published view is the
   // authoritative coordinate system the compression tools resolve `mN`
   // refs against, so the numbers rendered here must match it.  View item
-  // ordinals still address the transcript, so they index the lens; a lens
-  // slot that is missing (a transcript hole) is treated as hidden.
-  // `expandSummaryBlocks` widens blocks that straddle a tool-call /
-  // tool-result pair, and the published view is numbered before that
-  // expansion — there the published view wins.
-  const numbered = numberView(view, (ordinal) => lens[ordinal]?.hidden ?? true);
+  // intervals address the transcript, so they index the lens; a lens slot
+  // that is missing (a transcript hole) is treated as hidden.
+  const numbered = numberView(
+    items,
+    (ordinal) => lens[ordinal]?.hidden ?? true,
+  );
   const lineByItem = new Map<ViewItem, number>();
   for (const { n, item } of numbered) {
     lineByItem.set(item, n);
   }
 
   const out: PiAgentMessage[] = [];
-  for (const item of view) {
+  for (const item of items) {
     if (item.type === "summary") {
       const id = blockIdOf(state, item.block.start, item.block.end);
       out.push(materializeSummary({ ...item.block, id }, lineByItem.get(item)));
       continue;
     }
+    // An original item is one fold unit — a contiguous message interval
+    // the fold layer keeps indivisible.  Every member renders, and the
+    // unit's single line number is injected once, into the first member
+    // that carries an injectable region (an assistant text prefix ahead
+    // of a later tool result, by message order).
     const line = lineByItem.get(item);
-    if (line !== undefined) {
-      injectLinePrefix(lens[item.ordinal], line);
+    let lineInjected = false;
+    for (let ordinal = item.start; ordinal < item.end; ordinal++) {
+      if (!lineInjected && line !== undefined) {
+        lineInjected = injectLinePrefix(lens[ordinal], line);
+      }
+      out.push(copies[ordinal]);
     }
-    out.push(copies[item.ordinal]);
   }
   return out;
 }
@@ -309,10 +202,9 @@ function buildRenderedView(
  * Render a folded view into a new pi message array.
  *
  * The input array is treated as already edited: a deep copy is made,
- * summary block intervals are expanded so tool-call / tool-result pairs
- * stay together, per-round line-number prefixes are injected into
- * injectable regions, and folded blocks materialize as synthetic user
- * messages.  The original input is never mutated.
+ * per-round line-number prefixes are injected into injectable regions,
+ * and folded blocks materialize as synthetic user messages.  The
+ * original input is never mutated.
  *
  * @param messages - The pi conversation after release-phase edits.
  * @param items - The folded view items, in view order.

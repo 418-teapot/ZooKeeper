@@ -26,7 +26,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m3] total 12",
+              "output": "[m2] total 12",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -36,7 +36,7 @@
         {
           "role": "assistant",
           "toolParts": [],
-          "text": "[m4] done"
+          "text": "[m3] done"
         }
       ],
       "state": {
@@ -79,7 +79,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m3] [Output removed to save context - information superseded or no longer needed]",
+              "output": "[m2] [Output removed to save context - information superseded or no longer needed]",
               "pruned": true,
               "input": null,
               "inputPruned": false
@@ -89,7 +89,7 @@
         {
           "role": "assistant",
           "toolParts": [],
-          "text": "[m4] done"
+          "text": "[m3] done"
         }
       ],
       "state": {
@@ -134,7 +134,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m3] [Output removed to save context - information superseded or no longer needed]",
+              "output": "[m2] [Output removed to save context - information superseded or no longer needed]",
               "pruned": true,
               "input": null,
               "inputPruned": false
@@ -144,12 +144,12 @@
         {
           "role": "user",
           "toolParts": [],
-          "text": "[m4] again"
+          "text": "[m3] again"
         },
         {
           "role": "assistant",
           "toolParts": [],
-          "text": "[m5] done"
+          "text": "[m4] done"
         }
       ],
       "state": {
@@ -192,7 +192,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m3] [Output removed to save context - information superseded or no longer needed]",
+              "output": "[m2] [Output removed to save context - information superseded or no longer needed]",
               "pruned": true,
               "input": null,
               "inputPruned": false
@@ -202,17 +202,17 @@
         {
           "role": "user",
           "toolParts": [],
-          "text": "[m4] again"
+          "text": "[m3] again"
         },
         {
           "role": "assistant",
           "toolParts": [],
-          "text": "[m5] done"
+          "text": "[m4] done"
         },
         {
           "role": "user",
           "toolParts": [],
-          "text": "<internal-reminder>\n**CONTEXT GROWING — 150000 (75% of 200000 window)**\n\nCompressible window: m2–m3 (~23 tokens), both refs inclusive.\nPick your own contiguous sub-range inside — compressing everything is optional.\n`compress` refs are inclusive — both endpoints are compressed.\n\nAt your next natural pause, compress a closed range with the `compress` tool. Timing is your call.\n\nRange selection and segmentation: load the `compress-usage` skill.\n\nUNCOMPRESSED HISTORY = GROWING CONTEXT = SHRINKING HEADROOM.\n</internal-reminder>"
+          "text": "<internal-reminder>\n**CONTEXT GROWING — 150000 (75% of 200000 window)**\n\nCompressible window: m2–m2 (~23 tokens), both refs inclusive.\nPick your own contiguous sub-range inside — compressing everything is optional.\n`compress` refs are inclusive — both endpoints are compressed.\n\nAt your next natural pause, compress a closed range with the `compress` tool. Timing is your call.\n\nRange selection and segmentation: load the `compress-usage` skill.\n\nUNCOMPRESSED HISTORY = GROWING CONTEXT = SHRINKING HEADROOM.\n</internal-reminder>"
         }
       ],
       "state": {

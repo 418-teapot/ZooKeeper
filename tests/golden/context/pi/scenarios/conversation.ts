@@ -5,15 +5,16 @@
  * v1 conversation: first user + 28 tool-heavy exchanges + last user +
  * final assistant) translated to the pi wire shape: each v1 tool
  * exchange becomes TWO pi messages — an assistant message with a
- * `toolCall` block and a `toolResult` message — so the pi conversation
+ * `toolCall` block and a `toolResult` message — so the pi transcript
  * has 59 messages.
  *
- * The pi lane numbers every message as a dense view line (pi has no
- * hidden messages), so the compress-tool refs must use pi line numbers:
- * v1 index 0 (u0) is line 1, v1 index i in 1..28 spans lines 2i
- * (assistant toolCall) and 2i+1 (toolResult), v1 index 29 (u29) is
- * line 58, and v1 index 30 (a30) is line 59.  `makeRange` translates
- * the v1 index-based ranges into this pi address space.
+ * The fold layer pairs each tool call with its linked result into one
+ * indivisible unit, so those 59 messages number as a dense 31-line
+ * view: v1 index i (0..30) occupies exactly one line, `i + 1`.  A unit
+ * holds both halves of one exchange, so a compression range always
+ * covers whole pairs and a ref never addresses a single half.
+ * `makeRange` translates the v1 index-based ranges into this line
+ * space.
  *
  * @module
  */
@@ -35,34 +36,28 @@ export const LONG_OUTPUT = "x".repeat(8000);
 export const SHORT_OUTPUT = "y".repeat(100);
 
 /**
- * First/last pi line of the pi messages translating a v1 index.
+ * First/last pi view line of the pi content translating a v1 index.
  *
- * pi has no hidden messages, so every pi message occupies a dense view
- * line: v1 index 0 → line 1; v1 indices 1..28 → the assistant toolCall
- * at line 2i and its toolResult at line 2i+1; v1 index 29 → line 58;
- * v1 index 30 → line 59.  Out-of-range indices (hallucinated refs)
- * map far beyond the 59-line view.
+ * The fold layer merges a tool call and its linked result into one
+ * unit, so each v1 index occupies a single line and `first === last`:
+ * v1 index i maps to line `i + 1` (v1 index 0 → line 1, v1 index 28 →
+ * line 29, v1 index 29 → line 30, v1 index 30 → line 31).  Out-of-range
+ * indices (hallucinated refs) map beyond the 31-line view.
  *
  * @param v1Index - The v1 conversation index (0..30).
- * @returns The first and last pi line of that v1 message.
+ * @returns The first and last pi line of that v1 index (the same line).
  */
 function piLinesOf(v1Index: number): { first: number; last: number } {
-  if (v1Index === 0) return { first: 1, last: 1 };
-  if (v1Index >= 1 && v1Index <= 28) {
-    return { first: 2 * v1Index, last: 2 * v1Index + 1 };
-  }
-  if (v1Index === 29) return { first: 58, last: 58 };
-  if (v1Index === 30) return { first: 59, last: 59 };
-  return { first: 2 * v1Index + 1, last: 2 * v1Index + 1 };
+  const line = v1Index + 1;
+  return { first: line, last: line };
 }
 
 /**
  * Build the pi line-number ref (zero-padded, like the v1 fixtures) for
- * the first pi message of a v1 index.
+ * a v1 index.
  *
  * @param v1Index - The v1 conversation index.
- * @returns A `mNNNN` ref addressing the first pi message of the v1
- *   message.
+ * @returns A `mNNNN` ref addressing the unit line of the v1 index.
  */
 export function refFor(v1Index: number): string {
   return `m${String(piLinesOf(v1Index).first).padStart(4, "0")}`;
@@ -71,9 +66,11 @@ export function refFor(v1Index: number): string {
 /**
  * Build the pi line-number ref for the LAST pi message of a v1 index.
  *
+ * Under unit addressing a v1 index occupies one line, so this equals
+ * `refFor`; it is kept so range builders read as "start .. end".
+ *
  * @param v1Index - The v1 conversation index.
- * @returns A `mNNNN` ref addressing the last pi message of the v1
- *   message (the toolResult for a tool exchange).
+ * @returns A `mNNNN` ref addressing the unit line of the v1 index.
  */
 export function lastRefFor(v1Index: number): string {
   return `m${String(piLinesOf(v1Index).last).padStart(4, "0")}`;
@@ -139,10 +136,9 @@ function conversation(sessionID: string, output: string): PiAgentMessage[] {
 /**
  * Build a single compress range over the long pi conversation.
  *
- * The v1 index-based range is translated into pi line refs: fromRef
- * addresses the FIRST pi message of the from v1 index (the assistant
- * toolCall), toRef the LAST pi message of the to v1 index (the
- * toolResult), so a range always covers whole tool pairs.
+ * The v1 index-based range is translated into pi line refs: both
+ * endpoints address the single unit line of their v1 index, so the
+ * resolved interval always covers whole tool pairs.
  *
  * @param fromIndex - Start v1 index (inclusive).
  * @param toIndex - End v1 index (inclusive, per the v1 fixture

@@ -531,15 +531,17 @@ function viewLines(
   const lines: ViewLine[] = [];
   for (const { n, item } of numbered) {
     const { start, end } = itemInterval(item);
-    lines.push({
-      ref: `m${n}`,
-      start,
-      end,
-      reclaimTokens:
-        item.type === "original"
-          ? estimateMessageHeuristic(history[item.ordinal])
-          : 0,
-    });
+    // An original item covers a whole unit; a multi-message unit (a tool
+    // call and its result on hosts that split them) frees the sum of its
+    // messages, not just the first one.  A summary item is already
+    // folded and frees nothing new.
+    let reclaimTokens = 0;
+    if (item.type === "original") {
+      for (let ordinal = start; ordinal < end; ordinal++) {
+        reclaimTokens += estimateMessageHeuristic(history[ordinal]);
+      }
+    }
+    lines.push({ ref: `m${n}`, start, end, reclaimTokens });
   }
   return lines;
 }

@@ -84,7 +84,13 @@ export function foldedV1Messages(
         }),
       );
     } else {
-      folded.push(messages[item.ordinal]);
+      // An original item covers one fold unit — a contiguous message
+      // interval.  On the OpenCode projection a unit is always a single
+      // message (a tool call and its result share one message), so the
+      // loop pushes exactly that one entry.
+      for (let ordinal = item.start; ordinal < item.end; ordinal++) {
+        folded.push(messages[ordinal]);
+      }
     }
   }
   return hasSummary ? folded : undefined;

@@ -154,7 +154,8 @@ describe("pi adapter renderView", () => {
     const state = makeState();
     const items: ViewItem[] = messages.map((_, ordinal) => ({
       type: "original" as const,
-      ordinal,
+      start: ordinal,
+      end: ordinal + 1,
     }));
 
     const out = adapter.renderView(messages, items, state);
@@ -176,9 +177,9 @@ describe("pi adapter renderView", () => {
     const block = state.blocks.get(1);
     assert.ok(block);
     const items: ViewItem[] = [
-      { type: "original", ordinal: 0 },
+      { type: "original", start: 0, end: 1 },
       { type: "summary", block },
-      { type: "original", ordinal: 3 },
+      { type: "original", start: 3, end: 4 },
     ];
 
     const out = adapter.renderView(messages, items, state);
@@ -208,7 +209,8 @@ describe("pi adapter render", () => {
     const state = makeState();
     const items: ViewItem[] = messages.map((_, ordinal) => ({
       type: "original" as const,
-      ordinal,
+      start: ordinal,
+      end: ordinal + 1,
     }));
     const edits: RegionEdit[] = [
       { messageOrdinal: 2, regionIndex: 0, text: "pruned output" },

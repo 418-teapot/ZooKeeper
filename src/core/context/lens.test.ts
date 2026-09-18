@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { HostMessage, ViewItem } from "./lens.js";
 import {
+  computeUnits,
   findFirstUserOrdinal,
   findLastUserOrdinal,
   regionsOfKind,
@@ -20,6 +21,7 @@ import {
   makeAssistantMsg,
   makeMsg,
   makeToolMsg,
+  makeToolResultMsg,
   projectMessages,
   setRegionText,
 } from "./lens-testkit.js";
@@ -39,7 +41,7 @@ function regionSurface(msg: HostMessage): Array<[string, string]> {
 /** Narrow a ViewItem to a short description, exercising union narrowing. */
 function describeViewItem(item: ViewItem): string {
   if (item.type === "original") {
-    return `original:${item.ordinal}`;
+    return `original:${item.start}-${item.end}`;
   }
   return `summary:${item.block.start}-${item.block.end}:${item.block.summary}`;
 }
@@ -239,18 +241,23 @@ describe("makeAssistantMsg", () => {
 describe("ViewItem", () => {
   it("narrows the discriminated union on the type field", () => {
     const items: ViewItem[] = [
-      { type: "original", ordinal: 0 },
+      { type: "original", start: 0, end: 1 },
       {
         type: "summary",
         block: { start: 1, end: 4, title: "history", summary: "compressed" },
       },
-      { type: "original", ordinal: 4 },
+      { type: "original", start: 4, end: 5 },
     ];
     assert.deepEqual(items.map(describeViewItem), [
-      "original:0",
+      "original:0-1",
       "summary:1-4:compressed",
-      "original:4",
+      "original:4-5",
     ]);
+  });
+
+  it("allows an original unit spanning more than one message", () => {
+    const item: ViewItem = { type: "original", start: 3, end: 5 };
+    assert.equal(describeViewItem(item), "original:3-5");
   });
 
   it("allows a summary block without a title", () => {
@@ -259,6 +266,120 @@ describe("ViewItem", () => {
       block: { start: 2, end: 5, summary: "s" },
     };
     assert.equal(describeViewItem(item), "summary:2-5:s");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeUnits
+// ---------------------------------------------------------------------------
+
+describe("computeUnits", () => {
+  it("partitions into single messages when no invocation is paired", () => {
+    assert.deepEqual(computeUnits([], 3), [
+      { start: 0, end: 1 },
+      { start: 1, end: 2 },
+      { start: 2, end: 3 },
+    ]);
+    assert.deepEqual(computeUnits([], 0), []);
+  });
+
+  it("merges parallel calls that share one input ordinal into a single unit", () => {
+    // Two calls in message 1, their results in messages 2 and 3 (the pi
+    // cross-message shape).  The shared input links all three messages
+    // into one unit, so a fold range cannot split the batch.
+    const history: HostMessage[] = [
+      makeMsg("user", ["q"]),
+      makeAssistantMsg({
+        toolCalls: [
+          { name: "bash", input: "a", output: "ra", outputRef: { ordinal: 2 } },
+          { name: "read", input: "b", output: "rb", outputRef: { ordinal: 3 } },
+        ],
+      }),
+      makeToolResultMsg("ra"),
+      makeToolResultMsg("rb"),
+      makeMsg("user", ["next"]),
+    ];
+    assert.deepEqual(
+      computeUnits(projectMessages(history).invocations, history.length),
+      [
+        { start: 0, end: 1 },
+        { start: 1, end: 4 },
+        { start: 4, end: 5 },
+      ],
+    );
+  });
+
+  it("partitions consecutive call/result batches at their seams", () => {
+    const history: HostMessage[] = [
+      makeMsg("user", ["q"]),
+      makeAssistantMsg({
+        toolCalls: [
+          { name: "bash", input: "a", output: "ra", outputRef: { ordinal: 2 } },
+        ],
+      }),
+      makeToolResultMsg("ra"),
+      makeAssistantMsg({
+        toolCalls: [
+          { name: "read", input: "b", output: "rb", outputRef: { ordinal: 4 } },
+        ],
+      }),
+      makeToolResultMsg("rb"),
+    ];
+    assert.deepEqual(
+      computeUnits(projectMessages(history).invocations, history.length),
+      [
+        { start: 0, end: 1 },
+        { start: 1, end: 3 },
+        { start: 3, end: 5 },
+      ],
+    );
+  });
+
+  it("keeps an in-flight call without a result as a single message", () => {
+    const history: HostMessage[] = [
+      makeMsg("user", ["q"]),
+      makeAssistantMsg({
+        toolCalls: [{ name: "bash", input: "a", output: "" }],
+      }),
+    ];
+    const projection = projectMessages(history);
+    // Strip the output half to model a call still in flight.
+    projection.invocations[0].output = undefined;
+    assert.deepEqual(computeUnits(projection.invocations, history.length), [
+      { start: 0, end: 1 },
+      { start: 1, end: 2 },
+    ]);
+  });
+
+  it("degenerates to single messages when call and result share an ordinal", () => {
+    // The OpenCode shape: one message holds both regions, so the edge is
+    // a self-edge and the unit is that single message.
+    const history: HostMessage[] = [
+      makeMsg("user", ["q"]),
+      makeToolMsg("bash", "in", "out"),
+    ];
+    assert.deepEqual(
+      computeUnits(projectMessages(history).invocations, history.length),
+      [
+        { start: 0, end: 1 },
+        { start: 1, end: 2 },
+      ],
+    );
+  });
+
+  it("ignores edges whose endpoints fall outside the message range", () => {
+    const invocations = [
+      {
+        name: "bash",
+        status: "completed",
+        input: { ordinal: 0, regionIndex: 0 },
+        output: { ordinal: 9, regionIndex: 0 },
+      },
+    ];
+    assert.deepEqual(computeUnits(invocations, 2), [
+      { start: 0, end: 1 },
+      { start: 1, end: 2 },
+    ]);
   });
 });
 

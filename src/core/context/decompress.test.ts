@@ -334,12 +334,12 @@ describe("applyDecompress", () => {
     applyDecompress(state, 1, history);
     const unfolded = fold(projectMessages(history), state);
     assert.deepEqual(unfolded.items, [
-      { type: "original", ordinal: 0 },
-      { type: "original", ordinal: 1 },
-      { type: "original", ordinal: 2 },
-      { type: "original", ordinal: 3 },
-      { type: "original", ordinal: 4 },
-      { type: "original", ordinal: 5 },
+      { type: "original", start: 0, end: 1 },
+      { type: "original", start: 1, end: 2 },
+      { type: "original", start: 2, end: 3 },
+      { type: "original", start: 3, end: 4 },
+      { type: "original", start: 4, end: 5 },
+      { type: "original", start: 5, end: 6 },
     ]);
   });
 });

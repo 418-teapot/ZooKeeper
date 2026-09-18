@@ -230,6 +230,32 @@ function blockViewRef(items: NumberedItem[], block: Block): string | undefined {
   return start === block.start && end === block.end ? `m${entry.n}` : undefined;
 }
 
+/**
+ * The last line whose whole unit interval ends at or before a boundary.
+ *
+ * The protection gate points the model at the last line it may still
+ * compress.  A boundary ordinal that lands inside a fold unit (a tool
+ * call/result pair) makes `boundary - 1` and `boundary` resolve to the
+ * same unit line, so naming `boundary - 1` would tell the model to move
+ * the end onto a line that line itself still rejects.  The crossing unit
+ * is unreachable and belongs to the protected side, so the free line is
+ * the last item whose interval is wholly before the boundary.
+ *
+ * @param items - The numbered view items of the current round.
+ * @param boundary - First protected ordinal (exclusive end of the free zone).
+ * @returns The ref text (`"m7"`), or undefined when no line is wholly free.
+ */
+function lastFreeRef(
+  items: NumberedItem[],
+  boundary: number,
+): string | undefined {
+  let last: string | undefined;
+  for (const entry of items) {
+    if (itemInterval(entry.item).end <= boundary) last = `m${entry.n}`;
+  }
+  return last;
+}
+
 // ---------------------------------------------------------------------------
 // Protection window
 // ---------------------------------------------------------------------------
@@ -346,7 +372,8 @@ function enrichCoveredOrdinalHint(error: string, state: SessionState): string {
  * Resolve two endpoint refs into a contiguous ordinal interval.
  *
  * Both endpoints are resolved independently through the view layer
- * (`resolveRange`): an original item maps to `[ordinal, ordinal + 1)`, a
+ * (`resolveRange`): an original item maps to its unit interval
+ * `[start, end)`, a
  * summary item to its block's whole interval, and a reversed pair of
  * refs is rejected with an order error.  A failing ref returns the
  * actionable error (enriched with the covered-content hint when active
@@ -412,15 +439,7 @@ function estimateIntervalTokens(
  *    `coveredInactive` as an absorbed record (index line, plus token
  *    netting where its content is still folded), a partially-covered one
  *    is ignored entirely.
- * 4. **Mid-pair** — a range cutting between the two halves of a tool
- *    call is rejected in either direction: a call inside with its linked
- *    result outside, or a result inside with its call outside.  The
- *    projection's invocation table addresses both halves beside the
- *    call, and cutting between them would leave the render to widen the
- *    summary, which loses the block-id label.  Hosts whose pairs always
- *    live in one message (the OpenCode adapter) are structurally
- *    unaffected.
- * 5. **Phantom** — the interval's heuristic estimate must reach
+ * 4. **Phantom** — the interval's heuristic estimate must reach
  *    `thresholdTokens`.
  *
  * Every rejection is worded in the model's address space: the rejected
@@ -433,8 +452,8 @@ function estimateIntervalTokens(
  * not consume anything.  The apply-time gates (no-new-content,
  * negative-benefit) run later on the prepared payload.
  *
- * @param snapshot - The projection snapshot (region view plus the
- *   invocation table feeding the mid-pair gate).
+ * @param snapshot - The projection snapshot (region view the interval
+ *   estimate and the resolved block spans are measured over).
  * @param items - The numbered view items of the current round (the
  *   address space the rejected range is reported back in).
  * @param state - The session state (block collection, read-only here).
@@ -469,10 +488,11 @@ export function validateRange(
   const lastUserBoundary = lastUser >= 0 ? lastUser : history.length;
   const boundary = Math.min(protectedStart, lastUserBoundary);
   if (end > boundary) {
-    // `boundary` is exclusive: the last compressible ordinal is the one
-    // before it, and the model needs that line (or the knowledge that no
-    // such line exists) rather than the raw boundary ordinal.
-    const lastFree = refAtOrdinal(items, boundary - 1);
+    // `boundary` is exclusive: the last compressible line is the last
+    // unit ending at or before it (the unit crossing the boundary is
+    // protected), and the model needs that line (or the knowledge that
+    // no such line exists) rather than the raw boundary ordinal.
+    const lastFree = lastFreeRef(items, boundary);
     if (lastFree === undefined) {
       return failed(
         `${span} 无法压缩：本轮可见的最近对话内容都在保护范围内。` +
@@ -531,52 +551,6 @@ export function validateRange(
       // Partially covered terminal blocks are ordinary content again and
       // ignored entirely.
       coveredInactive.push({ id, block });
-    }
-  }
-
-  // ── Mid-pair gate ──────────────────────────────────────────────────
-  // A tool call and its result must fold as a pair: a range that covers
-  // one half of an invocation but not the other would create a block
-  // whose summary interval the render would have to widen to swallow the
-  // orphaned half — which breaks the block-id label lookup for
-  // decompression.  Both directions are gated: the call inside / result
-  // outside, and the result inside / call outside.  The pairing comes
-  // from the projection's invocation table; calls still in flight (no
-  // linked output) and hosts whose pairs always live in one message (the
-  // OpenCode adapter) are structurally unaffected.
-  for (const invocation of snapshot.invocations) {
-    const output = invocation.output;
-    if (output === undefined) continue;
-    if (
-      invocation.input.ordinal >= start &&
-      invocation.input.ordinal < end &&
-      (output.ordinal < start || output.ordinal >= end)
-    ) {
-      const ref = refAtOrdinal(items, output.ordinal);
-      return failed(
-        `${span} 在工具调用和对应结果之间截断：工具 ${invocation.name} ` +
-          `链接的工具结果在区间之外` +
-          (ref === undefined
-            ? "（该结果不占当轮视图行号）。工具调用与其结果必须成对压缩，请将范围扩展到包含该工具结果。"
-            : `（${ref}）。工具调用与其结果必须成对压缩，请将终点扩展到包含 ${ref}。`),
-      );
-    }
-    // Reverse direction: the range covers the result half while its call
-    // sits before the start boundary (a call always precedes its result,
-    // so the "outside" side can only be below `start`).
-    if (
-      output.ordinal >= start &&
-      output.ordinal < end &&
-      invocation.input.ordinal < start
-    ) {
-      const ref = refAtOrdinal(items, invocation.input.ordinal);
-      return failed(
-        `${span} 在工具调用和对应结果之间截断：工具 ` +
-          `${invocation.name}，其调用在区间之外` +
-          (ref === undefined
-            ? "（该调用不占当轮视图行号）。工具调用与其结果必须成对压缩，请将范围扩展到包含该工具调用。"
-            : `（${ref}）。工具调用与其结果必须成对压缩，请将起点前移到包含 ${ref}。`),
-      );
     }
   }
 
@@ -907,7 +881,7 @@ interface ValidatedRange {
  * the state is untouched.  A single-range call is a length-1 array.
  *
  * @param snapshot - The projection snapshot (region view plus the
- *   invocation table feeding the mid-pair gate and the span hashes).
+ *   invocation table feeding the span hashes).
  * @param items - The numbered view items of the current round.
  * @param state - The session state (mutated only on full-batch success).
  * @param options - Protection windows, phantom threshold, range bound.

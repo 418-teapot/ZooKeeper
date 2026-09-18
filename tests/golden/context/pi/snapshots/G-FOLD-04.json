@@ -31,7 +31,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m4] data five",
+              "output": "[m3] data five",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -94,7 +94,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m4] data five",
+              "output": "[m3] data five",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -104,7 +104,7 @@
         {
           "role": "user",
           "toolParts": [],
-          "text": "[m5] again"
+          "text": "[m4] again"
         },
         {
           "role": "assistant",
@@ -123,7 +123,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m7] data seven",
+              "output": "[m5] data seven",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -186,7 +186,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m4] data five",
+              "output": "[m3] data five",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -196,7 +196,7 @@
         {
           "role": "user",
           "toolParts": [],
-          "text": "[m5] again"
+          "text": "[m4] again"
         },
         {
           "role": "assistant",
@@ -215,7 +215,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m7] data seven",
+              "output": "[m5] data seven",
               "pruned": false,
               "input": null,
               "inputPruned": false

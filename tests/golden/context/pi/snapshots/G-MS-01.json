@@ -33,7 +33,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m3] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "output": "[m2] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -45,7 +45,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m4] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -100,7 +100,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m3] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "output": "[m2] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -112,7 +112,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m4] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -167,7 +167,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m3] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "output": "[m2] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -179,7 +179,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m4] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -234,7 +234,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m3] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "output": "[m2] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -246,7 +246,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m4] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -301,7 +301,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m3] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "output": "[m2] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -313,7 +313,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m4] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -361,7 +361,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m3] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "output": "[m2] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -371,7 +371,7 @@
         {
           "role": "user",
           "toolParts": [],
-          "text": "[m4] again"
+          "text": "again"
         },
         {
           "role": "assistant",
@@ -390,7 +390,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m6] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
               "pruned": false,
               "input": null,
               "inputPruned": false

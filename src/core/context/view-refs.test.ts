@@ -86,9 +86,9 @@ const noneHidden = (): boolean => false;
 describe("numberView — dense per-round numbering", () => {
   it("numbers original items 1..N", () => {
     const items: ViewItem[] = [
-      { type: "original", ordinal: 0 },
-      { type: "original", ordinal: 1 },
-      { type: "original", ordinal: 2 },
+      { type: "original", start: 0, end: 1 },
+      { type: "original", start: 1, end: 2 },
+      { type: "original", start: 2, end: 3 },
     ];
     assert.deepEqual(
       numberView(items, noneHidden).map((n) => n.n),
@@ -98,12 +98,12 @@ describe("numberView — dense per-round numbering", () => {
 
   it("keeps numbering dense across summary items", () => {
     const items: ViewItem[] = [
-      { type: "original", ordinal: 0 },
+      { type: "original", start: 0, end: 1 },
       {
         type: "summary",
         block: { start: 1, end: 4, title: "t", summary: "s" },
       },
-      { type: "original", ordinal: 4 },
+      { type: "original", start: 4, end: 5 },
     ];
     const numbered = numberView(items, noneHidden);
     assert.deepEqual(
@@ -128,7 +128,8 @@ describe("itemAtOrdinal / refAtOrdinal — ordinal → line lookup", () => {
     const numbered = numberView(
       projectMessages(history).messages.map((_, ordinal) => ({
         type: "original" as const,
-        ordinal,
+        start: ordinal,
+        end: ordinal + 1,
       })),
       () => false,
     );
@@ -156,7 +157,8 @@ describe("itemAtOrdinal / refAtOrdinal — ordinal → line lookup", () => {
     const numbered = numberView(
       projectMessages(history).messages.map((_, ordinal) => ({
         type: "original" as const,
-        ordinal,
+        start: ordinal,
+        end: ordinal + 1,
       })),
       (ordinal) => ordinal === 1,
     );
@@ -230,13 +232,13 @@ describe("formatSummaryLabel", () => {
 describe("resolveEndpoint", () => {
   const items = numberView(
     [
-      { type: "original", ordinal: 0 },
+      { type: "original", start: 0, end: 1 },
       {
         type: "summary",
         block: { start: 1, end: 4, title: "t", summary: "s" },
       },
-      { type: "original", ordinal: 4 },
-      { type: "original", ordinal: 5 },
+      { type: "original", start: 4, end: 5 },
+      { type: "original", start: 5, end: 6 },
     ],
     noneHidden,
   );
@@ -261,14 +263,14 @@ describe("resolveEndpoint", () => {
 describe("resolveRange", () => {
   const items = numberView(
     [
-      { type: "original", ordinal: 0 },
-      { type: "original", ordinal: 1 },
+      { type: "original", start: 0, end: 1 },
+      { type: "original", start: 1, end: 2 },
       {
         type: "summary",
         block: { start: 2, end: 5, title: "t", summary: "s" },
       },
-      { type: "original", ordinal: 5 },
-      { type: "original", ordinal: 6 },
+      { type: "original", start: 5, end: 6 },
+      { type: "original", start: 6, end: 7 },
     ],
     noneHidden,
   );
@@ -304,10 +306,10 @@ describe("resolveRange", () => {
 describe("actionable errors", () => {
   const items = numberView(
     [
-      { type: "original", ordinal: 0 },
+      { type: "original", start: 0, end: 1 },
       { type: "summary", block: { start: 1, end: 4, summary: "s" } },
-      { type: "original", ordinal: 4 },
-      { type: "original", ordinal: 5 },
+      { type: "original", start: 4, end: 5 },
+      { type: "original", start: 5, end: 6 },
     ],
     noneHidden,
   );
@@ -350,12 +352,12 @@ describe("swallowed blocks occupy no line", () => {
     // summary item is in the view, so the swallowed block has no line
     // number and the numbering stays dense over what is rendered.
     const items: ViewItem[] = [
-      { type: "original", ordinal: 0 },
+      { type: "original", start: 0, end: 1 },
       {
         type: "summary",
         block: { start: 1, end: 5, title: "outer", summary: "s" },
       },
-      { type: "original", ordinal: 5 },
+      { type: "original", start: 5, end: 6 },
     ];
     const numbered = numberView(items, noneHidden);
     assert.deepEqual(
@@ -375,7 +377,7 @@ describe("swallowed blocks occupy no line", () => {
     // is absent, so the numbering has no gap.
     assert.equal(items.filter((item) => item.type === "summary").length, 1);
     assert.deepEqual(
-      items.map((item) => (item.type === "original" ? item.ordinal : "s")),
+      items.map((item) => (item.type === "original" ? item.start : "s")),
       [0, "s", 5, 6],
     );
     assert.deepEqual(
@@ -392,10 +394,10 @@ describe("swallowed blocks occupy no line", () => {
 describe("restart reproducibility (stateless numbering)", () => {
   it("independent numberView calls on the same view agree", () => {
     const items: ViewItem[] = [
-      { type: "original", ordinal: 0 },
+      { type: "original", start: 0, end: 1 },
       { type: "summary", block: { start: 1, end: 3, summary: "s" } },
-      { type: "original", ordinal: 3 },
-      { type: "original", ordinal: 4 },
+      { type: "original", start: 3, end: 4 },
+      { type: "original", start: 4, end: 5 },
     ];
     // Two "rounds" re-derive identical numbers with no reconciliation:
     // the numbering is a pure function of the view, which is all a
@@ -418,9 +420,9 @@ describe("restart reproducibility (stateless numbering)", () => {
 describe("hidden messages occupy no line", () => {
   it("skips hidden originals so the visible numbering stays dense", () => {
     const items: ViewItem[] = [
-      { type: "original", ordinal: 0 },
-      { type: "original", ordinal: 1 }, // hidden — occupies no line
-      { type: "original", ordinal: 2 },
+      { type: "original", start: 0, end: 1 },
+      { type: "original", start: 1, end: 2 }, // hidden — occupies no line
+      { type: "original", start: 2, end: 3 },
     ];
     const numbered = numberView(items, (ordinal) => ordinal === 1);
     assert.deepEqual(
@@ -428,16 +430,16 @@ describe("hidden messages occupy no line", () => {
       [1, 2],
     );
     assert.deepEqual(
-      numbered.map((x) => (x.item.type === "original" ? x.item.ordinal : -1)),
+      numbered.map((x) => (x.item.type === "original" ? x.item.start : -1)),
       [0, 2],
     );
   });
 
   it("keeps summary items numbered regardless of hidden coverage in the block", () => {
     const items: ViewItem[] = [
-      { type: "original", ordinal: 0 },
+      { type: "original", start: 0, end: 1 },
       { type: "summary", block: { start: 1, end: 3, summary: "s" } },
-      { type: "original", ordinal: 3 },
+      { type: "original", start: 3, end: 4 },
     ];
     const numbered = numberView(
       items,
@@ -453,9 +455,9 @@ describe("hidden messages occupy no line", () => {
   it("reports the visible range when a ref would have landed on a hidden item", () => {
     const items = numberView(
       [
-        { type: "original", ordinal: 0 },
-        { type: "original", ordinal: 1 }, // hidden — occupies no line
-        { type: "original", ordinal: 2 },
+        { type: "original", start: 0, end: 1 },
+        { type: "original", start: 1, end: 2 }, // hidden — occupies no line
+        { type: "original", start: 2, end: 3 },
       ],
       (ordinal) => ordinal === 1,
     );
@@ -464,5 +466,56 @@ describe("hidden messages occupy no line", () => {
     const result = resolveEndpoint("m3", items);
     assert.ok("error" in result);
     assert.ok(result.error.includes("当轮视图共 2 行，有效 m1..m2"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. Unit hidden semantics
+// ---------------------------------------------------------------------------
+
+describe("unit hidden semantics", () => {
+  it("numbers a unit when any of its messages is visible", () => {
+    // The middle unit is a call/result pair where the result message is
+    // hidden; the unit still occupies exactly one line so the call and
+    // its result stay addressable together.
+    const items: ViewItem[] = [
+      { type: "original", start: 0, end: 1 },
+      { type: "original", start: 1, end: 3 },
+      { type: "original", start: 3, end: 4 },
+    ];
+    const numbered = numberView(items, (ordinal) => ordinal === 2);
+    assert.deepEqual(
+      numbered.map((x) => x.n),
+      [1, 2, 3],
+    );
+    const intervals = numbered.map((x) =>
+      x.item.type === "original" ? [x.item.start, x.item.end] : null,
+    );
+    assert.deepEqual(intervals, [
+      [0, 1],
+      [1, 3],
+      [3, 4],
+    ]);
+    // Both messages of the unit address the same line.
+    assert.equal(refAtOrdinal(numbered, 1), "m2");
+    assert.equal(refAtOrdinal(numbered, 2), "m2");
+  });
+
+  it("skips a unit only when every one of its messages is hidden", () => {
+    const items: ViewItem[] = [
+      { type: "original", start: 0, end: 1 },
+      { type: "original", start: 1, end: 3 }, // both hidden
+      { type: "original", start: 3, end: 4 },
+    ];
+    const numbered = numberView(
+      items,
+      (ordinal) => ordinal === 1 || ordinal === 2,
+    );
+    assert.deepEqual(
+      numbered.map((x) => x.n),
+      [1, 2],
+    );
+    assert.equal(itemAtOrdinal(numbered, 1), undefined);
+    assert.equal(itemAtOrdinal(numbered, 2), undefined);
   });
 });

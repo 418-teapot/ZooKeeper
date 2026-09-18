@@ -31,7 +31,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m4] done",
+              "output": "[m3] done",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -93,7 +93,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m4] done",
+              "output": "[m3] done",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -155,7 +155,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m4] done",
+              "output": "[m3] done",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -212,7 +212,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m3] data",
+              "output": "[m2] data",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -236,7 +236,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m5] done",
+              "output": "[m3] done",
               "pruned": false,
               "input": null,
               "inputPruned": false

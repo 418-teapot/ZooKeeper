@@ -132,10 +132,10 @@ export const G_COMP_02: Scenario = {
         kind: "compress-tool",
         ranges: [
           {
-            // v1 m0007 → pi m0012 (first line of v1 index 6), v1 m0003
-            // → pi m0005 (last line of v1 index 2): reversed.
-            fromRef: "m0012",
-            toRef: "m0005",
+            // v1 index 6 (m7) comes after v1 index 2 (m3): the from
+            // ref addresses a later line than the to ref.
+            fromRef: refFor(6),
+            toRef: refFor(2),
             title: "reversed",
             summary: "reversed.",
           },
@@ -165,10 +165,8 @@ export const G_COMP_02: Scenario = {
  *
  * Note: the v1 fixture rejected rounds 3-4 on the protection zone
  * (boundary 11), so the documented three-generation consumption never
- * completed there; the pi boundary (38) leaves room for the wider
- * ranges, so the pi lane realizes the consumption the scenario
- * describes.  Both wider ranges end on a toolResult line (m20 / m4) —
- * a range ending on a toolCall half is rejected by the mid-pair gate.
+ * completed there; the pi boundary leaves room for the wider ranges,
+ * so the pi lane realizes the consumption the scenario describes.
  * The absorbed-record netting branch is live here: a block that stopped
  * folding keeps its record, so the third generation sees b1 still in the
  * map and nets it (its tokens were taken out of b2's figure) while
@@ -197,15 +195,14 @@ export const G_COMP_03: Scenario = {
       messages: longConversation("golden-pi-g-comp-03"),
       action: {
         kind: "compress-tool",
-        // v1 [1, 9) → pi [1, 30): swallows b1 [1, 13) → b2.  In the
-        // folded view (b1 [1, 13) active) line 19 lands on a15's
-        // toolCall half, so the mid-pair gate would reject [1, 30);
-        // extending toRef to m20 (tr15) keeps the pair complete and the
-        // range covers [1, 31).
+        // b1 = [1, 13) is active, so the folded view puts its summary
+        // at m2 and numbers the following units from m3.  fromRef m2
+        // (the b1 summary → [1, 13)) + toRef m11 (the a15/tr15 unit
+        // over [29, 31)) resolve to [1, 31), which swallows b1 → b2.
         ranges: [
           {
             fromRef: "m0002",
-            toRef: "m0020",
+            toRef: "m0011",
             title: "第二段",
             summary: "用户请求执行命令，助手完成了操作。",
           },
@@ -217,16 +214,15 @@ export const G_COMP_03: Scenario = {
       messages: longConversation("golden-pi-g-comp-03"),
       action: {
         kind: "compress-tool",
-        // After b2 = [1, 31) the folded view numbers the first message
-        // after the block as line 3, so fromRef m2 (the b2 summary) +
-        // toRef m4 (a16 + tr16, keeping the pair complete) → [1, 33)
-        // swallows b2 → b3.  (v1's makeRange(1, 11) hit the protection
-        // zone; on pi the doubled message count leaves room for the
-        // third generation.)
+        // After b2 = [1, 31) the folded view puts its summary at m2
+        // and the next unit (a16 + tr16 over [31, 33)) at m3, so
+        // fromRef m2 + toRef m3 → [1, 33) swallows b2 → b3.  (v1's
+        // range hit the protection zone; on pi the unit view leaves
+        // room for the third generation.)
         ranges: [
           {
             fromRef: "m0002",
-            toRef: "m0004",
+            toRef: "m0003",
             title: "第三段",
             summary: "第三段",
           },
@@ -277,10 +273,10 @@ export const G_COMP_04: Scenario = {
         kind: "compress-tool",
         ranges: [
           {
-            // v1 m0008 → pi m0014 (first line of v1 index 7), v1 m0002
-            // → pi m0003 (last line of v1 index 1): reversed.
-            fromRef: "m0014",
-            toRef: "m0003",
+            // v1 index 13 (m14) comes after v1 index 2 (m3): the from
+            // ref addresses a later line than the to ref.
+            fromRef: refFor(13),
+            toRef: refFor(2),
             title: "reversed",
             summary: "reversed.",
           },
@@ -292,7 +288,8 @@ export const G_COMP_04: Scenario = {
       messages: shortConversation("golden-pi-g-comp-04"),
       action: {
         kind: "compress-tool",
-        // v1 [1, 29) → pi [1, 59): end 59 > pi boundary 36.
+        // makeRange(1, 29) resolves to [1, 58): the end ordinal 58
+        // exceeds the protection boundary, so the gate rejects.
         ranges: [makeRange(1, 29, "protected")],
       },
     },
@@ -310,9 +307,8 @@ export const G_COMP_04: Scenario = {
       messages: shortConversation("golden-pi-g-comp-04"),
       action: {
         kind: "compress-tool",
-        // v1 [1, 3) → pi [1, 8): 3 tool pairs ≈ 84 tokens ≥ 80 → the
-        // phantom gate passes and b1 is created (the v1 fixture also
-        // created a block here).
+        // makeRange(1, 3) resolves to [1, 7): 3 tool pairs ≈ 84 tokens
+        // ≥ 80 → the phantom gate passes and b1 is created.
         ranges: [makeRange(1, 3, "phantom")],
       },
     },
@@ -321,16 +317,15 @@ export const G_COMP_04: Scenario = {
       messages: shortConversation("golden-pi-g-comp-04"),
       action: {
         kind: "compress-tool",
-        // v1 [1, 6] → pi fromRef m2 (folded b1 summary) + toRef m14
-        // (tr9): swallows b1 and extends to [1, 19); the 2000-char
-        // summary (~512 tokens with the superseded index line) is not
-        // below the net content (~143 tokens).  toRef lands on the
-        // toolResult line — a range ending on the toolCall half (m13)
-        // would be rejected by the mid-pair gate instead.
+        // b1 = [1, 7) is active: fromRef m2 (the b1 summary →
+        // [1, 7)) + toRef m8 (the a9/tr9 unit over [17, 19)) resolve to
+        // [1, 19); the 2000-char summary (~512 tokens with the
+        // superseded index line) is not below the net content
+        // (~168 tokens), so the negative-benefit gate fires.
         ranges: [
           {
             fromRef: "m0002",
-            toRef: "m0014",
+            toRef: "m0008",
             title: "negative",
             summary: "s".repeat(2000),
           },
@@ -363,14 +358,12 @@ export const G_COMP_04: Scenario = {
       messages: shortConversation("golden-pi-g-comp-04"),
       action: {
         kind: "compress-tool",
-        // v1 [1, 6] → pi fromRef m2 (folded b1 summary) + toRef m14
-        // (tr9): consumes b1 and creates b2 = [1, 19).  toRef lands on
-        // the toolResult line — a range ending on the toolCall half
-        // (m13) would be rejected by the mid-pair gate.
+        // fromRef m2 (the folded b1 summary → [1, 7)) + toRef m8 (the
+        // a9/tr9 unit over [17, 19)) consume b1 and create b2 = [1, 19).
         ranges: [
           {
             fromRef: "m0002",
-            toRef: "m0014",
+            toRef: "m0008",
             title: "已有",
             summary: "用户请求执行命令，助手完成了操作。",
           },
@@ -382,18 +375,18 @@ export const G_COMP_04: Scenario = {
       messages: shortConversation("golden-pi-g-comp-04"),
       action: {
         kind: "compress-tool",
-        // fromRef m2 (the folded b2 summary → b2's whole interval) +
-        // toRef m42 (near the end of the folded view) → [1, 59): the
-        // protection gate rejects with zero state change.  The
-        // ref-based partial-overlap gate itself is unreachable on both
-        // lanes — a block's summary line resolves to its whole interval
-        // and covered ordinals occupy no lines, so a range can never
-        // stop inside a block.  The v1 fixture's registered rejection
-        // here was likewise a protection error.
+        // fromRef m2 (the folded b2 summary → its whole interval
+        // [1, 19)) + toRef m23 (the a30 line, last of the folded view)
+        // → [1, 59): the protection gate rejects with zero state
+        // change.  The ref-based partial-overlap gate itself is
+        // unreachable on both lanes — a block's summary line resolves
+        // to its whole interval and covered ordinals occupy no lines,
+        // so a range can never stop inside a block.  The v1 fixture's
+        // registered rejection here was likewise a protection error.
         ranges: [
           {
             fromRef: "m0002",
-            toRef: "m0042",
+            toRef: "m0023",
             title: "overlap",
             summary: "overlap.",
           },
@@ -405,17 +398,14 @@ export const G_COMP_04: Scenario = {
       messages: shortConversation("golden-pi-g-comp-04"),
       action: {
         kind: "compress-tool",
-        // fromRef m2 (folded b2 summary) + toRef m18 (tr17) → [1, 35):
-        // swallows b2 → b3.  toRef lands on the toolResult line — a
-        // range ending on the toolCall half (m17) would be rejected by
-        // the mid-pair gate, and m19 (a18) would reach into the
-        // protection zone (boundary 36).  (v1 rejected this round on
-        // protection; on pi the doubled message count leaves room for
-        // the consumption.)
+        // fromRef m2 (the folded b2 summary → [1, 19)) + toRef m10 (the
+        // a17/tr17 unit over [33, 35)) resolve to [1, 35), which
+        // swallows b2 → b3.  (v1 rejected this round on protection; on
+        // pi the unit view leaves room for the consumption.)
         ranges: [
           {
             fromRef: "m0002",
-            toRef: "m0018",
+            toRef: "m0010",
             title: "更宽",
             summary: "更宽",
           },
@@ -429,8 +419,8 @@ export const G_COMP_04: Scenario = {
         kind: "compress-tool",
         ranges: [
           {
-            // m0043 is beyond the 25-line folded view (b3 covers [1, 36));
-            // the error names b3 as the covered-content hint.
+            // m0043 is beyond the 15-line folded view (b3 covers
+            // [1, 35)); the error names b3 as the covered-content hint.
             fromRef: "m0043",
             toRef: refFor(6),
             title: "stale",

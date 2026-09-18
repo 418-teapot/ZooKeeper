@@ -135,7 +135,7 @@ describe("freezeNumberedView", () => {
   it("copies summary spans so later block mutations cannot reshape the view", () => {
     const block = { start: 2, end: 5, title: "主题", summary: "摘要" };
     const numbered: NumberedItem[] = [
-      { n: 1, item: { type: "original", ordinal: 0 } },
+      { n: 1, item: { type: "original", start: 0, end: 1 } },
       { n: 2, item: { type: "summary", block } },
     ];
     const frozen = freezeNumberedView(numbered);
@@ -143,7 +143,7 @@ describe("freezeNumberedView", () => {
     block.start = 99;
     block.end = 100;
     block.summary = "改了";
-    assert.deepEqual(frozen[0]?.item, { type: "original", ordinal: 0 });
+    assert.deepEqual(frozen[0]?.item, { type: "original", start: 0, end: 1 });
     assert.deepEqual(frozen[1]?.item, {
       type: "summary",
       block: { start: 2, end: 5, title: "主题", summary: "摘要" },
@@ -155,7 +155,7 @@ describe("publishRoundView / getRoundView", () => {
   it("freezes what it stores and reads it back per session", () => {
     const { snapshot, holders } = liveProjection([{ text: "hi" }]);
     const numbered: NumberedItem[] = [
-      { n: 1, item: { type: "original", ordinal: 0 } },
+      { n: 1, item: { type: "original", start: 0, end: 1 } },
     ];
     publishRoundView("s-a", { projection: snapshot, numbered });
     holders[0].text = "changed";

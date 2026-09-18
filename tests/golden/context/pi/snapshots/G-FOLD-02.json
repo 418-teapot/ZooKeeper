@@ -26,7 +26,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m3] data 3",
+              "output": "[m2] data 3",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -50,7 +50,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m5] data 4",
+              "output": "[m3] data 4",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -74,7 +74,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m7] data 5",
+              "output": "[m4] data 5",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -98,7 +98,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m9] data 6",
+              "output": "[m5] data 6",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -122,7 +122,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m11] data 7",
+              "output": "[m6] data 7",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -146,7 +146,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m13] data 8",
+              "output": "[m7] data 8",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -156,12 +156,12 @@
         {
           "role": "user",
           "toolParts": [],
-          "text": "[m14] 最后一个问题"
+          "text": "[m8] 最后一个问题"
         },
         {
           "role": "assistant",
           "toolParts": [],
-          "text": "[m15] 回答完毕"
+          "text": "[m9] 回答完毕"
         }
       ],
       "state": {
@@ -213,7 +213,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m3] data 3",
+              "output": "[m2] data 3",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -223,7 +223,7 @@
         {
           "role": "user",
           "toolParts": [],
-          "text": "[m4] [Block b2 · 6 条] 第二段\nsecond segment summary."
+          "text": "[m3] [Block b2 · 6 条] 第二段\nsecond segment summary."
         },
         {
           "role": "assistant",
@@ -242,7 +242,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m6] data 7",
+              "output": "[m4] data 7",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -266,7 +266,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m8] data 8",
+              "output": "[m5] data 8",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -276,12 +276,12 @@
         {
           "role": "user",
           "toolParts": [],
-          "text": "[m9] 最后一个问题"
+          "text": "[m6] 最后一个问题"
         },
         {
           "role": "assistant",
           "toolParts": [],
-          "text": "[m10] 回答完毕"
+          "text": "[m7] 回答完毕"
         }
       ],
       "state": {
@@ -341,7 +341,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m3] data 1",
+              "output": "[m2] data 1",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -365,7 +365,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m5] data 2",
+              "output": "[m3] data 2",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -389,7 +389,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m7] data 3",
+              "output": "[m4] data 3",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -399,7 +399,7 @@
         {
           "role": "user",
           "toolParts": [],
-          "text": "[m8] [Block b2 · 6 条] 第二段\nsecond segment summary."
+          "text": "[m5] [Block b2 · 6 条] 第二段\nsecond segment summary."
         },
         {
           "role": "assistant",
@@ -418,7 +418,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m10] data 7",
+              "output": "[m6] data 7",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -442,7 +442,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m12] data 8",
+              "output": "[m7] data 8",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -452,12 +452,12 @@
         {
           "role": "user",
           "toolParts": [],
-          "text": "[m13] 最后一个问题"
+          "text": "[m8] 最后一个问题"
         },
         {
           "role": "assistant",
           "toolParts": [],
-          "text": "[m14] 回答完毕"
+          "text": "[m9] 回答完毕"
         }
       ],
       "state": {
@@ -517,7 +517,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m3] data 1",
+              "output": "[m2] data 1",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -541,7 +541,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m5] data 2",
+              "output": "[m3] data 2",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -565,7 +565,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m7] data 3",
+              "output": "[m4] data 3",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -589,7 +589,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m9] data 4",
+              "output": "[m5] data 4",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -613,7 +613,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m11] data 5",
+              "output": "[m6] data 5",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -637,7 +637,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m13] data 6",
+              "output": "[m7] data 6",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -661,7 +661,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m15] data 7",
+              "output": "[m8] data 7",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -685,7 +685,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m17] data 8",
+              "output": "[m9] data 8",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -695,12 +695,12 @@
         {
           "role": "user",
           "toolParts": [],
-          "text": "[m18] 最后一个问题"
+          "text": "[m10] 最后一个问题"
         },
         {
           "role": "assistant",
           "toolParts": [],
-          "text": "[m19] 回答完毕"
+          "text": "[m11] 回答完毕"
         }
       ],
       "state": {

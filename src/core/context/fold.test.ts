@@ -7,8 +7,8 @@
  * reporting (spanhash linkage), terminal blocks (consumed / stale) never
  * refolding (unfold protection), the defensive overlapping-block merge
  * branch, empty-history and no-block pass-through, hidden-message
- * visibility, exact ordinal correspondence between original items and
- * the transcript, and fold purity.
+ * visibility, unit-granular folding (call/result units; a block whose
+ * boundary falls inside a unit does not fold), and fold purity.
  * Fixtures are built through the lens testkit; block hashes come from
  * `computeSpanHash`.
  */
@@ -19,6 +19,7 @@ import type { HostMessage } from "./lens.js";
 import {
   makeAssistantMsg,
   makeMsg,
+  makeToolResultMsg,
   projectMessages,
   setRegionText,
 } from "./lens-testkit.js";
@@ -79,9 +80,9 @@ describe("basic fold", () => {
     const result = fold(projectMessages(history), state);
     assert.deepEqual(result.items, [
       { type: "summary", block: state.blocks.get(1) },
-      { type: "original", ordinal: 3 },
-      { type: "original", ordinal: 4 },
-      { type: "original", ordinal: 5 },
+      { type: "original", start: 3, end: 4 },
+      { type: "original", start: 4, end: 5 },
+      { type: "original", start: 5, end: 6 },
     ]);
     assert.equal(result.viewChanged, false);
     assert.deepEqual(result.expiredBlockIds, []);
@@ -93,11 +94,11 @@ describe("basic fold", () => {
     state.blocks.set(1, makeBlock(history, 2, 4));
     const result = fold(projectMessages(history), state);
     assert.deepEqual(result.items, [
-      { type: "original", ordinal: 0 },
-      { type: "original", ordinal: 1 },
+      { type: "original", start: 0, end: 1 },
+      { type: "original", start: 1, end: 2 },
       { type: "summary", block: state.blocks.get(1) },
-      { type: "original", ordinal: 4 },
-      { type: "original", ordinal: 5 },
+      { type: "original", start: 4, end: 5 },
+      { type: "original", start: 5, end: 6 },
     ]);
     assert.equal(result.viewChanged, false);
     assert.deepEqual(result.expiredBlockIds, []);
@@ -109,9 +110,9 @@ describe("basic fold", () => {
     state.blocks.set(1, makeBlock(history, 3, 6));
     const result = fold(projectMessages(history), state);
     assert.deepEqual(result.items, [
-      { type: "original", ordinal: 0 },
-      { type: "original", ordinal: 1 },
-      { type: "original", ordinal: 2 },
+      { type: "original", start: 0, end: 1 },
+      { type: "original", start: 1, end: 2 },
+      { type: "original", start: 2, end: 3 },
       { type: "summary", block: state.blocks.get(1) },
     ]);
     assert.equal(result.viewChanged, false);
@@ -131,12 +132,12 @@ describe("adjacent and nested block views", () => {
     state.blocks.set(2, makeBlock(history, 3, 5));
     const result = fold(projectMessages(history), state);
     assert.deepEqual(result.items, [
-      { type: "original", ordinal: 0 },
+      { type: "original", start: 0, end: 1 },
       { type: "summary", block: state.blocks.get(1) },
       { type: "summary", block: state.blocks.get(2) },
-      { type: "original", ordinal: 5 },
-      { type: "original", ordinal: 6 },
-      { type: "original", ordinal: 7 },
+      { type: "original", start: 5, end: 6 },
+      { type: "original", start: 6, end: 7 },
+      { type: "original", start: 7, end: 8 },
     ]);
     assert.equal(result.viewChanged, false);
     assert.deepEqual(result.expiredBlockIds, []);
@@ -149,11 +150,11 @@ describe("adjacent and nested block views", () => {
     state.blocks.set(2, makeBlock(history, 2, 4)); // inside block 1
     const result = fold(projectMessages(history), state);
     assert.deepEqual(result.items, [
-      { type: "original", ordinal: 0 },
+      { type: "original", start: 0, end: 1 },
       { type: "summary", block: state.blocks.get(1) },
-      { type: "original", ordinal: 5 },
-      { type: "original", ordinal: 6 },
-      { type: "original", ordinal: 7 },
+      { type: "original", start: 5, end: 6 },
+      { type: "original", start: 6, end: 7 },
+      { type: "original", start: 7, end: 8 },
     ]);
     assert.equal(result.viewChanged, false);
     assert.deepEqual(result.expiredBlockIds, []);
@@ -178,12 +179,12 @@ describe("hash-invalid blocks silently expand", () => {
     // Silent expansion: no summary item and no tombstone hint; the edited
     // message reappears as a plain original item.
     assert.deepEqual(result.items, [
-      { type: "original", ordinal: 0 },
-      { type: "original", ordinal: 1 },
-      { type: "original", ordinal: 2 },
-      { type: "original", ordinal: 3 },
-      { type: "original", ordinal: 4 },
-      { type: "original", ordinal: 5 },
+      { type: "original", start: 0, end: 1 },
+      { type: "original", start: 1, end: 2 },
+      { type: "original", start: 2, end: 3 },
+      { type: "original", start: 3, end: 4 },
+      { type: "original", start: 4, end: 5 },
+      { type: "original", start: 5, end: 6 },
     ]);
   });
 
@@ -196,9 +197,9 @@ describe("hash-invalid blocks silently expand", () => {
     assert.deepEqual(result.expiredBlockIds, [7]);
     assert.equal(result.viewChanged, true);
     assert.deepEqual(result.items, [
-      { type: "original", ordinal: 0 },
-      { type: "original", ordinal: 1 },
-      { type: "original", ordinal: 2 },
+      { type: "original", start: 0, end: 1 },
+      { type: "original", start: 1, end: 2 },
+      { type: "original", start: 2, end: 3 },
     ]);
   });
 
@@ -211,11 +212,11 @@ describe("hash-invalid blocks silently expand", () => {
     assert.deepEqual(result.expiredBlockIds, [2]);
     assert.equal(result.viewChanged, true);
     assert.deepEqual(result.items, [
-      { type: "original", ordinal: 0 },
+      { type: "original", start: 0, end: 1 },
       { type: "summary", block: state.blocks.get(1) },
-      { type: "original", ordinal: 3 },
-      { type: "original", ordinal: 4 },
-      { type: "original", ordinal: 5 },
+      { type: "original", start: 3, end: 4 },
+      { type: "original", start: 4, end: 5 },
+      { type: "original", start: 5, end: 6 },
     ]);
   });
 });
@@ -240,12 +241,12 @@ describe("terminal blocks never refold", () => {
     block.status = "consumed";
     const result = fold(projectMessages(history), state);
     assert.deepEqual(result.items, [
-      { type: "original", ordinal: 0 },
-      { type: "original", ordinal: 1 },
-      { type: "original", ordinal: 2 },
-      { type: "original", ordinal: 3 },
-      { type: "original", ordinal: 4 },
-      { type: "original", ordinal: 5 },
+      { type: "original", start: 0, end: 1 },
+      { type: "original", start: 1, end: 2 },
+      { type: "original", start: 2, end: 3 },
+      { type: "original", start: 3, end: 4 },
+      { type: "original", start: 4, end: 5 },
+      { type: "original", start: 5, end: 6 },
     ]);
     // A block that already stopped folding is steady state, not a change
     // this round made — and it is never reported as expired.
@@ -286,12 +287,12 @@ describe("terminal blocks never refold", () => {
     assert.deepEqual(result.expiredBlockIds, []);
     assert.equal(result.viewChanged, false);
     assert.deepEqual(result.items, [
-      { type: "original", ordinal: 0 },
-      { type: "original", ordinal: 1 },
-      { type: "original", ordinal: 2 },
-      { type: "original", ordinal: 3 },
+      { type: "original", start: 0, end: 1 },
+      { type: "original", start: 1, end: 2 },
+      { type: "original", start: 2, end: 3 },
+      { type: "original", start: 3, end: 4 },
       { type: "summary", block: state.blocks.get(2) },
-      { type: "original", ordinal: 7 },
+      { type: "original", start: 7, end: 8 },
     ]);
   });
 });
@@ -310,10 +311,10 @@ describe("overlapping surviving blocks merge (defensive branch)", () => {
     // Union [1, 6) is covered by a single summary rendered from the
     // first-appearing block (id 1); ordinals 0, 6, 7 stay original.
     assert.deepEqual(result.items, [
-      { type: "original", ordinal: 0 },
+      { type: "original", start: 0, end: 1 },
       { type: "summary", block: state.blocks.get(1) },
-      { type: "original", ordinal: 6 },
-      { type: "original", ordinal: 7 },
+      { type: "original", start: 6, end: 7 },
+      { type: "original", start: 7, end: 8 },
     ]);
     assert.equal(result.viewChanged, false);
     assert.deepEqual(result.expiredBlockIds, []);
@@ -327,9 +328,9 @@ describe("overlapping surviving blocks merge (defensive branch)", () => {
     state.blocks.set(3, makeBlock(history, 4, 7));
     const result = fold(projectMessages(history), state);
     assert.deepEqual(result.items, [
-      { type: "original", ordinal: 0 },
+      { type: "original", start: 0, end: 1 },
       { type: "summary", block: state.blocks.get(1) },
-      { type: "original", ordinal: 7 },
+      { type: "original", start: 7, end: 8 },
     ]);
   });
 
@@ -340,10 +341,10 @@ describe("overlapping surviving blocks merge (defensive branch)", () => {
     state.blocks.set(2, makeBlock(history, 3, 6)); // overlaps and extends
     const result = fold(projectMessages(history), state);
     assert.deepEqual(result.items, [
-      { type: "original", ordinal: 0 },
+      { type: "original", start: 0, end: 1 },
       { type: "summary", block: state.blocks.get(1) },
-      { type: "original", ordinal: 6 },
-      { type: "original", ordinal: 7 },
+      { type: "original", start: 6, end: 7 },
+      { type: "original", start: 7, end: 8 },
     ]);
   });
 });
@@ -364,9 +365,9 @@ describe("empty history and no blocks pass through", () => {
     const history = makeTranscript(3);
     const result = fold(projectMessages(history), makeState());
     assert.deepEqual(result.items, [
-      { type: "original", ordinal: 0 },
-      { type: "original", ordinal: 1 },
-      { type: "original", ordinal: 2 },
+      { type: "original", start: 0, end: 1 },
+      { type: "original", start: 1, end: 2 },
+      { type: "original", start: 2, end: 3 },
     ]);
     assert.equal(result.viewChanged, false);
     assert.deepEqual(result.expiredBlockIds, []);
@@ -380,9 +381,9 @@ describe("empty history and no blocks pass through", () => {
     ];
     const result = fold(projectMessages(history), makeState());
     assert.deepEqual(result.items, [
-      { type: "original", ordinal: 0 },
-      { type: "original", ordinal: 1 },
-      { type: "original", ordinal: 2 },
+      { type: "original", start: 0, end: 1 },
+      { type: "original", start: 1, end: 2 },
+      { type: "original", start: 2, end: 3 },
     ]);
   });
 
@@ -411,43 +412,132 @@ describe("empty history and no blocks pass through", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 7. Ordinal correspondence
+// 7. Unit correspondence
 // ---------------------------------------------------------------------------
 
-describe("ordinal correspondence", () => {
-  it("original items cover exactly the uncovered ordinals, in order", () => {
+describe("unit correspondence", () => {
+  it("original items cover exactly the uncovered units, in order", () => {
     const history = makeTranscript(8);
     const state = makeState();
     state.blocks.set(1, makeBlock(history, 1, 3));
     state.blocks.set(2, makeBlock(history, 5, 6));
     const result = fold(projectMessages(history), state);
     assert.deepEqual(result.items, [
-      { type: "original", ordinal: 0 },
+      { type: "original", start: 0, end: 1 },
       { type: "summary", block: state.blocks.get(1) },
-      { type: "original", ordinal: 3 },
-      { type: "original", ordinal: 4 },
+      { type: "original", start: 3, end: 4 },
+      { type: "original", start: 4, end: 5 },
       { type: "summary", block: state.blocks.get(2) },
-      { type: "original", ordinal: 6 },
-      { type: "original", ordinal: 7 },
+      { type: "original", start: 6, end: 7 },
+      { type: "original", start: 7, end: 8 },
     ]);
-    // The original ordinals are exactly the complement of the covered
-    // ordinals {1, 2, 5} — each distinct and in bounds.
+    // With no invocations every unit is a single message: the original
+    // intervals are the complement of the covered ordinals {1, 2, 5} —
+    // each a one-message interval, in bounds.
     const originals = result.items
       .filter(
-        (item): item is { type: "original"; ordinal: number } =>
+        (item): item is { type: "original"; start: number; end: number } =>
           item.type === "original",
       )
-      .map((item) => item.ordinal);
-    assert.deepEqual(originals, [0, 3, 4, 6, 7]);
-    assert.equal(new Set(originals).size, originals.length);
-    for (const ordinal of originals) {
-      assert.ok(ordinal >= 0 && ordinal < history.length);
+      .map((item) => [item.start, item.end]);
+    assert.deepEqual(originals, [
+      [0, 1],
+      [3, 4],
+      [4, 5],
+      [6, 7],
+      [7, 8],
+    ]);
+    for (const [start, end] of originals) {
+      assert.equal(end - start, 1);
+      assert.ok(start >= 0 && end <= history.length);
     }
   });
 });
 
 // ---------------------------------------------------------------------------
-// 8. Purity
+// 8. Unit folding
+// ---------------------------------------------------------------------------
+
+/**
+ * A transcript whose middle unit is a two-call batch: assistant message 1
+ * issues two calls whose results land in messages 2 and 3.
+ */
+function batchTranscript(): HostMessage[] {
+  return [
+    makeMsg("user", ["q"]),
+    makeAssistantMsg({
+      toolCalls: [
+        { name: "bash", input: "a", output: "ra", outputRef: { ordinal: 2 } },
+        { name: "read", input: "b", output: "rb", outputRef: { ordinal: 3 } },
+      ],
+    }),
+    makeToolResultMsg("ra"),
+    makeToolResultMsg("rb"),
+    makeMsg("user", ["next"]),
+  ];
+}
+
+describe("unit folding", () => {
+  it("keeps a parallel call batch as one original unit", () => {
+    const history = batchTranscript();
+    const result = fold(projectMessages(history), makeState());
+    assert.deepEqual(result.items, [
+      { type: "original", start: 0, end: 1 },
+      { type: "original", start: 1, end: 4 },
+      { type: "original", start: 4, end: 5 },
+    ]);
+  });
+
+  it("folds a block that covers a whole call/result unit", () => {
+    const history = batchTranscript();
+    const state = makeState();
+    state.blocks.set(1, makeBlock(history, 1, 4));
+    const result = fold(projectMessages(history), state);
+    assert.deepEqual(result.items, [
+      { type: "original", start: 0, end: 1 },
+      { type: "summary", block: state.blocks.get(1) },
+      { type: "original", start: 4, end: 5 },
+    ]);
+  });
+
+  it("does not fold a block whose boundary falls inside a unit", () => {
+    // A block whose end sits mid unit has no seam-aligned interval; fold
+    // leaves it to the silent expansion path and the units stay whole.
+    const history = batchTranscript();
+    const state = makeState();
+    state.blocks.set(1, makeBlock(history, 0, 2));
+    const result = fold(projectMessages(history), state);
+    assert.deepEqual(result.items, [
+      { type: "original", start: 0, end: 1 },
+      { type: "original", start: 1, end: 4 },
+      { type: "original", start: 4, end: 5 },
+    ]);
+    // An off-seam block is neither expired nor a view change: it is not
+    // a hash failure, it just cannot fold.
+    assert.equal(result.viewChanged, false);
+    assert.deepEqual(result.expiredBlockIds, []);
+  });
+
+  it("an off-seam block does not block a later seam-aligned block", () => {
+    // The off-seam block is dropped before the walk, so the aligned block
+    // after its interval still folds.
+    const history = batchTranscript();
+    const state = makeState();
+    state.blocks.set(1, makeBlock(history, 0, 2));
+    state.blocks.set(2, makeBlock(history, 4, 5));
+    const result = fold(projectMessages(history), state);
+    assert.deepEqual(result.items, [
+      { type: "original", start: 0, end: 1 },
+      { type: "original", start: 1, end: 4 },
+      { type: "summary", block: state.blocks.get(2) },
+    ]);
+    assert.equal(result.viewChanged, false);
+    assert.deepEqual(result.expiredBlockIds, []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. Purity
 // ---------------------------------------------------------------------------
 
 describe("fold is pure", () => {

@@ -270,8 +270,8 @@ describe("countFoldedMessages", () => {
     ];
     const items: ViewItem[] = [
       { type: "summary", block: { start: 0, end: 2, summary: "s" } },
-      { type: "original", ordinal: 2 },
-      { type: "original", ordinal: 3 },
+      { type: "original", start: 2, end: 3 },
+      { type: "original", start: 3, end: 4 },
     ];
     const counts = countFoldedMessages(items, messages);
     // storage: non-hidden = 2 (idx 1, 3).  folded: summary=1 + original
@@ -288,7 +288,7 @@ describe("countFoldedMessages", () => {
       makeUser(), // 3
     ];
     const items: ViewItem[] = [
-      { type: "original", ordinal: 0 },
+      { type: "original", start: 0, end: 1 },
       // Block covers ordinals 1..3 (hidden + 2 visible) → one summary.
       { type: "summary", block: { start: 1, end: 4, summary: "s" } },
     ];

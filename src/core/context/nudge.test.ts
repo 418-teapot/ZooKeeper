@@ -62,7 +62,8 @@ function numberedOf(
   messages: HostMessage[],
   items: ViewItem[] = messages.map((_, ordinal) => ({
     type: "original" as const,
-    ordinal,
+    start: ordinal,
+    end: ordinal + 1,
   })),
 ): NumberedItem[] {
   return numberView(items, (ordinal) => messages[ordinal].hidden);
@@ -347,10 +348,10 @@ describe("computeEligibility", () => {
     // The whole window sits inside one folded block and the protection
     // boundary cuts it off: no line is left inside the window.
     const items: ViewItem[] = [
-      { type: "original", ordinal: 0 },
+      { type: "original", start: 0, end: 1 },
       summaryItem(1, 6),
-      { type: "original", ordinal: 6 },
-      { type: "original", ordinal: 7 },
+      { type: "original", start: 6, end: 7 },
+      { type: "original", start: 7, end: 8 },
     ];
     assert.equal(
       computeEligibility(
@@ -424,10 +425,10 @@ describe("computeEligibility", () => {
     // that line plus nothing else: the folded tokens are already spent
     // and the whole window frees nothing new → silent.
     const items: ViewItem[] = [
-      { type: "original", ordinal: 0 },
+      { type: "original", start: 0, end: 1 },
       summaryItem(1, 6),
-      { type: "original", ordinal: 6 },
-      { type: "original", ordinal: 7 },
+      { type: "original", start: 6, end: 7 },
+      { type: "original", start: 7, end: 8 },
     ];
     assert.equal(
       computeEligibility(
@@ -444,12 +445,12 @@ describe("computeEligibility", () => {
     // ordinals 4 and 5 (m3, m4), so reclaim is 5+6 = 11 while the window
     // still starts at the summary's ref — the address the model holds.
     const items: ViewItem[] = [
-      { type: "original", ordinal: 0 },
+      { type: "original", start: 0, end: 1 },
       summaryItem(1, 4),
-      { type: "original", ordinal: 4 },
-      { type: "original", ordinal: 5 },
-      { type: "original", ordinal: 6 },
-      { type: "original", ordinal: 7 },
+      { type: "original", start: 4, end: 5 },
+      { type: "original", start: 5, end: 6 },
+      { type: "original", start: 6, end: 7 },
+      { type: "original", start: 7, end: 8 },
     ];
     assert.deepEqual(
       computeEligibility(
@@ -466,7 +467,7 @@ describe("computeEligibility", () => {
     // (ordinal 6), and `compress` would reject it as reaching into the
     // protected tail — so the window ends at the line before it.
     const items: ViewItem[] = [
-      { type: "original", ordinal: 0 },
+      { type: "original", start: 0, end: 1 },
       summaryItem(1, 7),
     ];
     assert.equal(
@@ -491,11 +492,11 @@ describe("computeEligibility", () => {
     many.push(makeMsg("assistant", ["hhhhhhhhhhhhhhhhhhhhhhhhhhhhhh"]));
     const unfolded = numberedOf(many);
     const foldedItems: ViewItem[] = [
-      { type: "original", ordinal: 0 },
-      { type: "original", ordinal: 1 },
+      { type: "original", start: 0, end: 1 },
+      { type: "original", start: 1, end: 2 },
       summaryItem(2, 21),
-      { type: "original", ordinal: 21 },
-      { type: "original", ordinal: 22 },
+      { type: "original", start: 21, end: 22 },
+      { type: "original", start: 22, end: 23 },
     ];
     const folded = numberedOf(many, foldedItems);
     const cfg = { ...baseConfig, protectedMessages: 0 };

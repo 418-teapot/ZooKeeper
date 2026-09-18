@@ -26,7 +26,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m3] tool-out",
+              "output": "[m2] tool-out",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -36,7 +36,7 @@
         {
           "role": "assistant",
           "toolParts": [],
-          "text": "[m4] text-a\ntext-b"
+          "text": "[m3] text-a\ntext-b"
         },
         {
           "role": "assistant",
@@ -57,7 +57,7 @@
         {
           "role": "user",
           "toolParts": [],
-          "text": "[m7] note m0009 inline"
+          "text": "[m6] note m0009 inline"
         }
       ],
       "state": {
@@ -100,7 +100,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m3] tool-out",
+              "output": "[m2] tool-out",
               "pruned": false,
               "input": null,
               "inputPruned": false
@@ -110,7 +110,7 @@
         {
           "role": "assistant",
           "toolParts": [],
-          "text": "[m4] text-a\ntext-b"
+          "text": "[m3] text-a\ntext-b"
         },
         {
           "role": "assistant",
@@ -131,7 +131,7 @@
         {
           "role": "user",
           "toolParts": [],
-          "text": "[m7] note m0009 inline"
+          "text": "[m6] note m0009 inline"
         }
       ],
       "state": {
@@ -179,7 +179,7 @@
           "toolParts": [
             {
               "tool": "bash",
-              "output": "[m4] done",
+              "output": "[m3] done",
               "pruned": false,
               "input": null,
               "inputPruned": false

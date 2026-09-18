@@ -144,12 +144,19 @@ export function renderView(
       out.push(materializeSummary({ ...item.block, id }, lineByItem.get(item)));
       continue;
     }
-    const msg = entries[item.ordinal];
+    // An original item covers one fold unit.  On the OpenCode projection
+    // a unit is always a single message (a tool call and its result share
+    // one message), so the interval loop pushes exactly one entry and the
+    // unit's line number lands on it.
     const line = lineByItem.get(item);
-    if (line !== undefined) {
-      injectLinePrefix(lens[item.ordinal], line);
+    let lineInjected = false;
+    for (let ordinal = item.start; ordinal < item.end; ordinal++) {
+      if (!lineInjected && line !== undefined) {
+        injectLinePrefix(lens[ordinal], line);
+        lineInjected = true;
+      }
+      out.push(entries[ordinal]);
     }
-    out.push(msg);
   }
   entries.length = 0;
   entries.push(...out);

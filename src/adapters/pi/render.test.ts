@@ -8,8 +8,8 @@
  * - line-number prefixes are injected only on injectable regions;
  * - folded blocks materialize as synthetic user messages with the correct
  *   label and prefix format;
- * - tool-call / tool-result linkage is preserved when a summary covers only
- *   one half of a pair (whole-message fold semantics);
+ * - a fold unit that spans an assistant message and its tool results
+ *   occupies one line and keeps every member in the output;
  * - the input array and every input message object are left untouched.
  */
 import assert from "node:assert/strict";
@@ -125,7 +125,8 @@ describe("pi render", () => {
     const state = makeState();
     const items: ViewItem[] = messages.map((_, ordinal) => ({
       type: "original",
-      ordinal,
+      start: ordinal,
+      end: ordinal + 1,
     }));
 
     const out = render(messages, items, [], state);
@@ -177,7 +178,8 @@ describe("pi render", () => {
     const state = makeState();
     const items: ViewItem[] = messages.map((_, ordinal) => ({
       type: "original",
-      ordinal,
+      start: ordinal,
+      end: ordinal + 1,
     }));
 
     // The predicate the hook applies to its published view, restated here
@@ -187,7 +189,7 @@ describe("pi render", () => {
     const published = numberView(items, (ordinal) => lens[ordinal].hidden);
     const publishedRefs = published.map(
       ({ n, item }) =>
-        `${n}:${item.type === "original" ? item.ordinal : "summary"}`,
+        `${n}:${item.type === "original" ? item.start : "summary"}`,
     );
     assert.deepEqual(
       publishedRefs,
@@ -220,7 +222,8 @@ describe("pi render", () => {
     const state = makeState();
     const items: ViewItem[] = messages.map((_, ordinal) => ({
       type: "original",
-      ordinal,
+      start: ordinal,
+      end: ordinal + 1,
     }));
     const edits: RegionEdit[] = [
       { messageOrdinal: 1, regionIndex: 0, text: "edited answer" },
@@ -250,9 +253,9 @@ describe("pi render", () => {
     const block = state.blocks.get(1);
     assert.ok(block);
     const items: ViewItem[] = [
-      { type: "original", ordinal: 0 },
+      { type: "original", start: 0, end: 1 },
       { type: "summary", block },
-      { type: "original", ordinal: 3 },
+      { type: "original", start: 3, end: 4 },
     ];
 
     const out = render(messages, items, [], state);
@@ -269,7 +272,11 @@ describe("pi render", () => {
     );
   });
 
-  it("expands a folded summary to keep toolCall and toolResult together", () => {
+  it("renders a unit-boundary block without widening its interval", () => {
+    // The fold layer snaps surviving block boundaries to fold units, so a
+    // rendered summary already covers a whole call/result unit; the
+    // adapter no longer widens a half-pair interval (that defense moved
+    // into fold).
     const messages: PiAgentMessage[] = [
       userMessage("question"),
       assistantMessage([toolCallPart("call-1", "bash", { cmd: "ls" })]),
@@ -277,27 +284,72 @@ describe("pi render", () => {
       userMessage("follow-up"),
     ];
     const state = makeState();
-    // Intentionally fold only the assistant toolCall message; the adapter
-    // must expand the block to include its paired toolResult, losing the
-    // original block id because the surviving interval no longer matches.
-    seedBlock(state, messages, 1, 1, 2, "tool round", "did a thing");
+    seedBlock(state, messages, 1, 1, 3, "tool round", "did a thing");
     const block = state.blocks.get(1);
     assert.ok(block);
     const items: ViewItem[] = [
-      { type: "original", ordinal: 0 },
+      { type: "original", start: 0, end: 1 },
       { type: "summary", block },
-      { type: "original", ordinal: 3 },
+      { type: "original", start: 3, end: 4 },
     ];
 
     const out = render(messages, items, [], state);
 
+    // The block interval [1, 3) renders as-is — no expansion, so the
+    // block id stays resolvable and the covered count is unchanged.
     assert.equal(out.length, 3);
     assert.equal((out[0] as PiUserMessage).content, "[m1] question");
     assert.equal(
       (out[1] as PiUserMessage).content,
-      "[m2] [Block 2 条] tool round\ndid a thing",
+      "[m2] [Block b1 · 2 条] tool round\ndid a thing",
     );
     assert.equal((out[2] as PiUserMessage).content, "[m3] follow-up");
+  });
+
+  it("renders a cross-message unit under one line with both messages", () => {
+    // A fold unit may span an assistant message and its tool results.  The
+    // unit occupies one line, the prefix lands on the assistant's content
+    // region (the first injectable region by message order), and every
+    // member message still appears in the output.
+    const messages: PiAgentMessage[] = [
+      userMessage("question"),
+      assistantMessage([
+        textPart("preface"),
+        toolCallPart("call-1", "bash", { cmd: "ls" }),
+      ]),
+      toolResultMessage("call-1", "bash", [textPart("output")]),
+      userMessage("follow-up"),
+    ];
+    const state = makeState();
+    const items: ViewItem[] = [
+      { type: "original", start: 0, end: 1 },
+      { type: "original", start: 1, end: 3 },
+      { type: "original", start: 3, end: 4 },
+    ];
+
+    const out = render(messages, items, [], state);
+
+    // Both members of the unit survive (assistant + toolResult).
+    assert.equal(out.length, 4);
+    assert.equal((out[0] as PiUserMessage).content, "[m1] question");
+    const assistant = out[1] as PiAssistantMessage;
+    assert.equal(
+      (assistant.content[0] as { text: string }).text,
+      "[m2] preface",
+    );
+    // The tool-call arguments are never an injection target.
+    assert.deepEqual(
+      (assistant.content[1] as { arguments: Record<string, unknown> })
+        .arguments,
+      { cmd: "ls" },
+    );
+    // The unit's line number is injected once — the tool result keeps its
+    // raw text.
+    assert.equal(
+      ((out[2] as PiToolResultMessage).content[0] as { text: string }).text,
+      "output",
+    );
+    assert.equal((out[3] as PiUserMessage).content, "[m3] follow-up");
   });
 
   it("never mutates the input array or messages", () => {
@@ -310,7 +362,8 @@ describe("pi render", () => {
     const state = makeState();
     const items: ViewItem[] = messages.map((_, ordinal) => ({
       type: "original",
-      ordinal,
+      start: ordinal,
+      end: ordinal + 1,
     }));
 
     const out = render(messages, items, [], state);
@@ -345,7 +398,8 @@ describe("pi render", () => {
     const state = makeState();
     const items: ViewItem[] = messages.map((_, ordinal) => ({
       type: "original",
-      ordinal,
+      start: ordinal,
+      end: ordinal + 1,
     }));
 
     const out = render(messages, items, [], state);

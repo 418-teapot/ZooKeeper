@@ -2,17 +2,15 @@
  * Golden scenario — tool-call / tool-result pair folding (pi-specific).
  *
  * PI-PAIR-01 exercises the pi pair semantics end to end: pi represents
- * a tool call and its result as TWO messages, so a compression range
- * must keep both halves together.  The compress gate chain rejects a
- * range that cuts a pair at CREATION time with loud Chinese guidance —
- * a range ending right after the toolCall half, with the linked
- * toolResult outside the interval — teaching the model to extend the
- * range instead of letting the render repair the cut silently.  Round 2
- * captures that rejection with zero state change; round 3 compresses
- * both pairs wholesale through the accepted path and the rendered
- * summary keeps its block id (`b1`) because the state block interval
- * matches the rendered summary exactly; round 4 restores the block and
- * the pairs reappear.
+ * a tool call and its result as TWO messages, which the fold layer
+ * merges into one indivisible unit.  Unit addressing is the whole story
+ * of this scenario — a compression range can only name whole lines, so
+ * a "half pair" (one message of a call/result exchange) has no ref and
+ * cannot be expressed at all: there is nothing for a gate to reject.
+ * Round 2 folds the first pair as a unit, round 3 folds the second
+ * pair as a unit so the view carries two independent pair summaries,
+ * and round 4 restores the first block: that pair reappears while the
+ * second keeps folding.
  *
  * @module
  */
@@ -49,11 +47,11 @@ const BASE_CONFIG = {
   dedup: {},
   purgeErrors: {},
   compress: {
-    // The pairView fixture messages are tiny: the full-pair interval
-    // [1, 5) estimates to 10 heuristic tokens and the half-pair [3, 4)
-    // to 3.  A low threshold keeps the phantom gate out of the pair
-    // narrative — the mid-pair gate runs before it anyway and is the
-    // rejection this scenario records.
+    // The pairView fixture messages are tiny: each pair is one unit
+    // whose line covers a1+tr1 ([1, 3), ~5 tokens) and a2+tr2
+    // ([3, 5), ~6 tokens).  A low threshold keeps the phantom gate out
+    // of the pair narrative, which is about unit addressing rather
+    // than token mass.
     thresholdTokens: 5,
     protectedTokens: 0,
     maxRanges: 8,
@@ -64,16 +62,11 @@ const BASE_CONFIG = {
 /**
  * PI-PAIR-01 — tool pairs fold and un-fold as whole units.
  *
- * Round 2 asks to block only the toolCall half of the second pair
- * (a2): the pi lens addresses the linked toolResult (tr2) on the
- * tool-input region, and since tr2 sits outside the [3, 4) interval
- * the mid-pair gate rejects the range with loud guidance — zero state
- * change, nothing to decompress.  Round 3 compresses both pairs
- * wholesale ([1, 5)): the gate accepts, b1 is created, and the same
- * round's transform folds it — the rendered summary carries its block
- * id (`[Block b1 · 4 条]`) because the state block interval matches
- * the rendered summary exactly.  Round 4 restores b1 and the pairs
- * reappear.
+ * Round 2 folds the first pair (m2, the a1/tr1 unit over [1, 3)) into
+ * b1; round 3 folds the second pair (m3, the a2/tr2 unit over [3, 5))
+ * into b2, so the view then carries two independent pair summaries.
+ * Round 4 restores b1: the first pair reappears while b2 keeps
+ * folding.
  */
 export const PI_PAIR_01: Scenario = {
   id: "PI-PAIR-01",
@@ -85,45 +78,43 @@ export const PI_PAIR_01: Scenario = {
       messages: pairView(),
     },
     {
-      label: "reject-half-pair-cut",
+      label: "fold-first-pair",
       messages: pairView(),
       action: {
         kind: "compress-tool",
-        // [3, 4) covers only the a2 toolCall half of the second pair;
-        // its linked toolResult (tr2, ordinal 4) sits outside, so the
-        // mid-pair gate rejects with loud guidance and zero state
-        // change.
+        // m2 is the first pair's single unit line: a1 and its linked
+        // result tr1 both live in the unit [1, 3), so the range names
+        // the whole pair and b1 is created over it.
         ranges: [
           {
-            fromRef: "m0004",
-            toRef: "m0004",
-            title: "对半",
-            summary: "pair summary.",
+            fromRef: "m2",
+            toRef: "m2",
+            title: "第一对",
+            summary: "first pair.",
           },
         ],
       },
     },
     {
-      label: "block-full-pair-accepted",
+      label: "fold-second-pair",
       messages: pairView(),
       action: {
         kind: "compress-tool",
-        // [1, 5) covers both halves of each pair (a1..tr2): the gate
-        // accepts, b1 is created, and the fold renders the summary
-        // with its block id because the rendered interval matches the
-        // state block exactly.
+        // b1 already folds [1, 3), so the second pair is m3 — the
+        // a2/tr2 unit over [3, 5).  It is a separate unit line and a
+        // separate block (b2); neither range can touch a single half.
         ranges: [
           {
-            fromRef: "m0002",
-            toRef: "m0005",
-            title: "双对",
-            summary: "both pairs summary.",
+            fromRef: "m3",
+            toRef: "m3",
+            title: "第二对",
+            summary: "second pair.",
           },
         ],
       },
     },
     {
-      label: "decompress-restores-pair",
+      label: "restore-first-pair",
       messages: pairView(),
       action: { kind: "decompress-tool", blockId: "b1" },
     },

@@ -165,12 +165,15 @@ export interface BlockSpan {
 /**
  * One item of a folded view.
  *
- * `original` references a single transcript message by ordinal;
- * `summary` references a block's span (the right endpoint of a range
- * that lands on a summary item covers the whole block).
+ * `original` covers one fold unit — a contiguous ordinal interval
+ * `[start, end)` that the fold layer treats as indivisible (see
+ * `computeUnits`); on a host that pairs a tool call with its result
+ * across two messages the unit spans both.  `summary` references a
+ * block's span (the right endpoint of a range that lands on a summary
+ * item covers the whole block).
  */
 export type ViewItem =
-  | { type: "original"; ordinal: number }
+  | { type: "original"; start: number; end: number }
   | { type: "summary"; block: BlockSpan };
 
 /**
@@ -291,6 +294,108 @@ export interface HostAdapter<THostConversation> {
     sessionId: string,
     text: string,
   ): THostConversation;
+}
+
+/**
+ * Partition the transcript into indivisible fold units.
+ *
+ * A tool call and its result may live in separate messages (the pi host
+ * projects them that way), yet the model sees them as one exchange that
+ * a fold range must never split.  This derives that granularity from
+ * the invocation table: every invocation with an output contributes an
+ * undirected edge between the ordinal of its input region and the
+ * ordinal of its output region, each connected component's convex hull
+ * `[min, max + 1)` is a candidate unit, overlapping hulls merge, and
+ * the remaining ordinals become single-message units.  The result is a
+ * contiguous, non-overlapping partition of `[0, messageCount)`.
+ *
+ * An in-flight invocation (no output) contributes no edge, so its
+ * message stays a single-message unit.  On a host that pairs call and
+ * result inside one message (OpenCode), every edge is a self-edge and
+ * the whole transcript degenerates to single-message units.  Edges
+ * whose endpoints fall outside `[0, messageCount)` are ignored.
+ *
+ * @param invocations - The invocation table paired with the transcript.
+ * @param messageCount - Length of the transcript (the partition bound).
+ * @returns The unit partition, in ordinal order.
+ */
+export function computeUnits(
+  invocations: Invocation[],
+  messageCount: number,
+): Array<{ start: number; end: number }> {
+  if (messageCount <= 0) return [];
+
+  // Union-find over ordinals; the smaller ordinal stays the root so the
+  // component grouping order is deterministic.
+  const parent = Array.from({ length: messageCount }, (_, i) => i);
+  const find = (x: number): number => {
+    let root = x;
+    while (parent[root] !== root) root = parent[root];
+    while (parent[x] !== root) {
+      const next = parent[x];
+      parent[x] = root;
+      x = next;
+    }
+    return root;
+  };
+  const union = (a: number, b: number): void => {
+    const rootA = find(a);
+    const rootB = find(b);
+    if (rootA === rootB) return;
+    if (rootA < rootB) parent[rootB] = rootA;
+    else parent[rootA] = rootB;
+  };
+
+  for (const invocation of invocations) {
+    const output = invocation.output;
+    if (output === undefined) continue;
+    const inputOrdinal = invocation.input.ordinal;
+    const outputOrdinal = output.ordinal;
+    if (
+      inputOrdinal < 0 ||
+      inputOrdinal >= messageCount ||
+      outputOrdinal < 0 ||
+      outputOrdinal >= messageCount
+    ) {
+      continue;
+    }
+    union(inputOrdinal, outputOrdinal);
+  }
+
+  // Convex hull per component, in first-appearance order.
+  const bounds = new Map<number, { min: number; max: number }>();
+  for (let ordinal = 0; ordinal < messageCount; ordinal++) {
+    const root = find(ordinal);
+    const bound = bounds.get(root);
+    if (bound === undefined) bounds.set(root, { min: ordinal, max: ordinal });
+    else bound.max = ordinal;
+  }
+  const hulls = [...bounds.values()].sort((a, b) => a.min - b.min);
+
+  const units: Array<{ start: number; end: number }> = [];
+  let cursor = 0;
+  for (const hull of hulls) {
+    const start = hull.min;
+    const end = hull.max + 1;
+    const last = units[units.length - 1];
+    if (last !== undefined && start < last.end) {
+      // Overlapping / nested hull: extend the running unit.
+      if (end > last.end) last.end = end;
+      cursor = last.end;
+      continue;
+    }
+    while (cursor < start) {
+      units.push({ start: cursor, end: cursor + 1 });
+      cursor += 1;
+    }
+    units.push({ start, end });
+    cursor = end;
+  }
+  while (cursor < messageCount) {
+    units.push({ start: cursor, end: cursor + 1 });
+    cursor += 1;
+  }
+  return units;
 }
 
 /**

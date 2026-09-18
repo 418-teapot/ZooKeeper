@@ -61,11 +61,13 @@ export type ResolvedEndpoint =
  * Stateless and deterministic: the same items and hidden predicate
  * always produce the same numbering, and independent calls agree — the
  * property that makes line numbers naturally reproducible across a
- * restart.  An original item whose message is hidden is skipped: it
- * stays in the view (raw text, no marker) but occupies no line, so the
- * numbering has no holes.  Summary items always occupy a line — the
- * folded block covers its interval wholesale, hidden members inside do
- * not matter.
+ * restart.  An original item whose entire unit is hidden is skipped: it
+ * stays in the view (raw text, no marker) but occupies no line, while a
+ * unit with at least one visible message keeps its single line even if
+ * another message in it is hidden, so the numbering has no holes and a
+ * call/result unit can never lose one half.  Summary items always
+ * occupy a line — the folded block covers its interval wholesale,
+ * hidden members inside do not matter.
  *
  * @param items - The folded view items, in view order.
  * @param isHidden - Reports whether the message at an ordinal is hidden
@@ -78,7 +80,16 @@ export function numberView(
 ): NumberedItem[] {
   const numbered: NumberedItem[] = [];
   for (const item of items) {
-    if (item.type === "original" && isHidden(item.ordinal)) continue;
+    if (item.type === "original") {
+      let unitHidden = true;
+      for (let ordinal = item.start; ordinal < item.end; ordinal++) {
+        if (!isHidden(ordinal)) {
+          unitHidden = false;
+          break;
+        }
+      }
+      if (unitHidden) continue;
+    }
     numbered.push({ n: numbered.length + 1, item });
   }
   return numbered;
@@ -87,18 +98,19 @@ export function numberView(
 /**
  * The ordinal interval a view item covers.
  *
- * An original item covers exactly its message; a summary item covers the
- * whole interval of the block it folds.  This is the address→content map
- * the view layer is built on: everything that turns an `mN` line into
- * transcript ordinals goes through it, so the compression gates and any
- * window measured over the view agree on what a line stands for.
+ * An original item covers exactly its unit interval; a summary item
+ * covers the whole interval of the block it folds.  This is the
+ * address→content map the view layer is built on: everything that turns
+ * an `mN` line into transcript ordinals goes through it, so the
+ * compression gates and any window measured over the view agree on what
+ * a line stands for.
  *
  * @param item - The view item to measure.
  * @returns The half-open ordinal interval `[start, end)`.
  */
 export function itemInterval(item: ViewItem): { start: number; end: number } {
   return item.type === "original"
-    ? { start: item.ordinal, end: item.ordinal + 1 }
+    ? { start: item.start, end: item.end }
     : { start: item.block.start, end: item.block.end };
 }
 
@@ -106,11 +118,11 @@ export function itemInterval(item: ViewItem): { start: number; end: number } {
  * The view item covering an ordinal, if any of its lines does.
  *
  * The inverse of the address→content map `itemInterval` provides: an
- * ordinal inside an original item's single message maps back to that
- * line, an ordinal folded into a surviving block maps back to the block's
- * summary line.  An ordinal that belongs to no view item — a message
- * swallowed by a folding block's interval, a hidden original — maps to
- * nothing, which is why callers must treat the result as optional.
+ * ordinal inside an original item's unit maps back to that line, an
+ * ordinal folded into a surviving block maps back to the block's summary
+ * line.  An ordinal that belongs to no view item — a message swallowed
+ * by a folding block's interval, a hidden original — maps to nothing,
+ * which is why callers must treat the result as optional.
  *
  * @param items - The numbered view items of the current round.
  * @param ordinal - The transcript ordinal to locate.
@@ -211,11 +223,12 @@ function parseLineNumber(ref: string): number | null {
 /**
  * Resolve a line-number ref to its ordinal interval in the view.
  *
- * A ref addressing an original item maps to `[ordinal, ordinal + 1)`; a
- * ref addressing a summary item maps to the block's full interval, so
- * referencing a summary as an endpoint covers the whole block.  A line
- * outside the round (a hallucinated ref) errors with the valid range; a
- * ref that is not an mN form errors naming the expected format.
+ * A ref addressing an original item maps to its unit interval
+ * `[start, end)`; a ref addressing a summary item maps to the block's
+ * full interval, so referencing a summary as an endpoint covers the
+ * whole block.  A line outside the round (a hallucinated ref) errors
+ * with the valid range; a ref that is not an mN form errors naming the
+ * expected format.
  *
  * Hidden items carry no line number and therefore cannot be addressed —
  * a ref beyond the visible range (which would have landed on a hidden

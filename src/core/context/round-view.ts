@@ -87,7 +87,7 @@ export function freezeNumberedView(numbered: NumberedItem[]): NumberedItem[] {
     n,
     item:
       item.type === "original"
-        ? { type: "original" as const, ordinal: item.ordinal }
+        ? { type: "original" as const, start: item.start, end: item.end }
         : {
             type: "summary" as const,
             block: {

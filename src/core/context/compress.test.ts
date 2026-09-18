@@ -116,10 +116,13 @@ function numberedView(
   return numberedViewOf(projectMessages(history), state);
 }
 
-/** Line ref of the visible original item at the ordinal, or null. */
+/** Line ref of the visible original item covering the ordinal, or null. */
 function ordinalLine(items: NumberedItem[], ordinal: number): string | null {
   const entry = items.find(
-    (item) => item.item.type === "original" && item.item.ordinal === ordinal,
+    (item) =>
+      item.item.type === "original" &&
+      item.item.start <= ordinal &&
+      ordinal < item.item.end,
   );
   return entry === undefined ? null : `m${entry.n}`;
 }
@@ -352,6 +355,58 @@ describe("validateRange — protection-zone gate", () => {
     );
     assert.equal(result.error, null);
   });
+
+  it("names a consistent boundary when it lands inside a tool unit", () => {
+    // Pi-shape transcript: first user, three cross-message tool pairs,
+    // then a trailing user/assistant.  The fold pairs each call with its
+    // result, giving units [0,1) [1,3) [3,5) [5,7) [7,8) [8,9) and lines
+    // m1..m6.  Counting back five non-hidden messages lands the
+    // protection boundary on ordinal 4 — the toolResult half of unit
+    // [3, 5), so the naive `boundary - 1` and `boundary` both resolve to
+    // m3 and the guidance would be self-contradictory.
+    const history: HostMessage[] = [makeMsg("user", ["q0"])];
+    for (let i = 1; i <= 3; i++) {
+      history.push(
+        makeAssistantMsg({
+          toolCalls: [
+            {
+              name: "bash",
+              input: "x",
+              output: "",
+              outputRef: { ordinal: history.length + 1 },
+            },
+          ],
+        }),
+      );
+      history.push(makeToolResultMsg("y".repeat(100)));
+    }
+    history.push(makeMsg("user", ["last question"]));
+    history.push(makeAssistantMsg({ text: "done" }));
+
+    const state = makeState();
+    const items = numberedView(history, state);
+    const options: CompressOptions = {
+      protectedMessages: 5,
+      protectedTokens: 0,
+      thresholdTokens: 20,
+    };
+    const result = validateRange(
+      projectMessages(history),
+      items,
+      state,
+      options,
+      1,
+      6,
+    );
+    assert.ok(result.error !== null);
+    // The crossing unit m3 is protected; the last free line is the
+    // preceding unit m2 whose interval [1, 3) ends at ordinal 3 <= 4.
+    assert.ok(result.error.includes("（从 m3 开始）"), result.error);
+    assert.ok(result.error.includes("请将终点改为 m2 或更早"), result.error);
+    assert.ok(!result.error.includes("请将终点改为 m3"), result.error);
+    const free = resolveSpan(items, state, "m2", "m2");
+    assert.ok(!("error" in free) && free.end <= 4);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -548,7 +603,7 @@ describe("validateRange — phantom gate", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 7b. validateRange — mid-pair gate (the invocation table)
+// 7b. validateRange / compressRanges — full unit coverage
 // ---------------------------------------------------------------------------
 
 /** A bare tool-input-only message (the pi toolCall shape). */
@@ -565,12 +620,11 @@ function makeToolInputMsg(input: string): HostMessage {
  * trailing user and assistant.  Ordinals: 0 user, 1 call-1, 2 result-1,
  * 3 call-2, 4 result-2, 5 user, 6 assistant.
  *
- * With `linked` the invocation table pairs each call message with its
- * result message (the pi projection shape); without it the calls are
- * in flight (no output half) — the gate has no pairing to check and
- * must not fire.
+ * The invocation table pairs each call message with its result message
+ * (the pi projection shape), so the fold treats each pair as one
+ * indivisible unit `[1, 3)` / `[3, 5)`.
  */
-function makePairTranscript(linked: boolean): Projection {
+function makePairTranscript(): Projection {
   const messages = [
     makeMsg("user", ["开场问题"]),
     makeToolInputMsg('{"cmd":"ls"}'),
@@ -585,21 +639,20 @@ function makePairTranscript(linked: boolean): Projection {
       name: "bash",
       status: "completed",
       input: { ordinal: 1, regionIndex: 0 },
-      ...(linked ? { output: { ordinal: 2, regionIndex: 0 } } : {}),
+      output: { ordinal: 2, regionIndex: 0 },
     },
     {
       name: "bash",
       status: "completed",
       input: { ordinal: 3, regionIndex: 0 },
-      ...(linked ? { output: { ordinal: 4, regionIndex: 0 } } : {}),
+      output: { ordinal: 4, regionIndex: 0 },
     },
   ]);
 }
 
 /**
  * Gate options for the pair-transcript tests: no protection window and
- * no phantom threshold, so the mid-pair gate is the only gate that can
- * reject the small fixture ranges.
+ * no phantom threshold, so only the range-shape gates remain in play.
  */
 const PAIR_OPTIONS: CompressOptions = {
   protectedMessages: 0,
@@ -607,65 +660,22 @@ const PAIR_OPTIONS: CompressOptions = {
   thresholdTokens: 0,
 };
 
-describe("validateRange — mid-pair gate", () => {
-  it("rejects a range ending right after a toolCall whose result sits outside", () => {
-    const transcript = makePairTranscript(true);
+describe("validateRange — full unit coverage", () => {
+  it("resolves a pair line to the whole call/result unit interval", () => {
+    const transcript = makePairTranscript();
     const state = makeState();
-    const result = validateRange(
-      transcript,
-      numberedViewOf(transcript, state),
-      state,
-      PAIR_OPTIONS,
-      3,
-      4,
-    );
-    assert.ok(result.error !== null);
-    assert.ok(result.error.includes("在工具调用和对应结果之间截断"));
-    // ordinal 4 (the linked result) is line m5 of this view.
-    assert.ok(result.error.includes("（m5）"), result.error);
-    assert.ok(result.error.includes("请将终点扩展到包含 m5"), result.error);
+    const items = numberedViewOf(transcript, state);
+    // Unit [1, 3) (call-1 + result-1) renders as a single line m2, so
+    // the ref resolves to the whole unit, never to one half.
+    assert.deepEqual(resolveSpan(items, state, "m2", "m2"), {
+      start: 1,
+      end: 3,
+    });
   });
 
-  it("accepts a range extended to include the linked toolResult", () => {
-    const transcript = makePairTranscript(true);
+  it("accepts a range covering exactly one complete unit", () => {
+    const transcript = makePairTranscript();
     const state = makeState();
-    const result = validateRange(
-      transcript,
-      numberedViewOf(transcript, state),
-      state,
-      PAIR_OPTIONS,
-      3,
-      5,
-    );
-    assert.equal(result.error, null);
-  });
-
-  it("rejects a range starting after a toolCall whose call sits before the start", () => {
-    const transcript = makePairTranscript(true);
-    const state = makeState();
-    // [2, 3) covers the result half (ordinal 2) of the first pair while
-    // its call (ordinal 1) stays outside — the reverse of the direction
-    // above, gated the same way.
-    const result = validateRange(
-      transcript,
-      numberedViewOf(transcript, state),
-      state,
-      PAIR_OPTIONS,
-      2,
-      3,
-    );
-    assert.ok(result.error !== null);
-    assert.ok(result.error.includes("在工具调用和对应结果之间截断"));
-    // ordinal 1 (the orphaned call) is line m2 of this view.
-    assert.ok(result.error.includes("（m2）"), result.error);
-    assert.ok(result.error.includes("请将起点前移到包含 m2"), result.error);
-  });
-
-  it("accepts a range covering both halves of a pair (reverse direction)", () => {
-    const transcript = makePairTranscript(true);
-    const state = makeState();
-    // [1, 3) covers call-1 (ordinal 1) together with its result
-    // (ordinal 2) — the range the test above rejects once extended.
     const result = validateRange(
       transcript,
       numberedViewOf(transcript, state),
@@ -676,82 +686,24 @@ describe("validateRange — mid-pair gate", () => {
     );
     assert.equal(result.error, null);
   });
-
-  it("never fires on unpaired result messages", () => {
-    const transcript = makePairTranscript(false);
-    const state = makeState();
-    // Without the invocation table there is no pairing information at
-    // all; a lone result message must not be rejected by this gate
-    // (producers abstain from unpaired regions).
-    const result = validateRange(
-      transcript,
-      numberedViewOf(transcript, state),
-      state,
-      PAIR_OPTIONS,
-      2,
-      3,
-    );
-    assert.equal(result.error, null);
-  });
-
-  it("never fires on in-flight calls (no linked output half)", () => {
-    const transcript = makePairTranscript(false);
-    const state = makeState();
-    // The same ordinal range that triggers the mid-pair gate when the
-    // pairing is present passes untouched while the call is still in
-    // flight — the gate consumes only invocation output addresses.
-    const result = validateRange(
-      transcript,
-      numberedViewOf(transcript, state),
-      state,
-      PAIR_OPTIONS,
-      3,
-      4,
-    );
-    assert.equal(result.error, null);
-  });
 });
 
-describe("compressRanges — mid-pair gate batch semantics", () => {
-  it("rejects the whole batch when any range cuts a pair, with zero state change", () => {
-    const transcript = makePairTranscript(true);
+describe("compressRanges — full unit coverage", () => {
+  it("compresses exactly one complete call/result unit", () => {
+    const transcript = makePairTranscript();
     const state = makeState();
     const items = numberView(
       fold(transcript, state).items,
       (ordinal) => transcript.messages[ordinal].hidden,
     );
+    // m2 addresses unit [1, 3) — call-1 plus its result, indivisible.
     const result = compressRanges(transcript, items, state, PAIR_OPTIONS, [
-      // [3, 4) covers only the a2 toolCall half of the second pair; its
-      // linked result (ordinal 4) sits outside → mid-pair rejection.
-      { fromRef: "m4", toRef: "m4", title: "对半", summary: "摘要。" },
-      // [1, 3) is a complete pair — valid on its own, but the batch is
-      // atomic: the mid-pair range rejects the whole call.
-      { fromRef: "m2", toRef: "m3", title: "整对", summary: "摘要。" },
+      { fromRef: "m2", toRef: "m2", title: "整对", summary: "摘要。" },
     ]);
-    assert.equal(result.created.length, 0);
-    assert.equal(result.failed.length, 1);
-    assert.ok(
-      result.failed[0].error.includes("在工具调用和对应结果之间截断"),
-      result.failed[0].error,
-    );
-    assert.equal(state.blocks.size, 0);
-  });
-
-  it("accepts paired ranges covering both halves of every call", () => {
-    const transcript = makePairTranscript(true);
-    const state = makeState();
-    const items = numberView(
-      fold(transcript, state).items,
-      (ordinal) => transcript.messages[ordinal].hidden,
-    );
-    const result = compressRanges(transcript, items, state, PAIR_OPTIONS, [
-      // [1, 3) covers call-1 (ordinal 1) with its result (ordinal 2).
-      { fromRef: "m2", toRef: "m3", title: "整对一", summary: "摘要一。" },
-      // [3, 5) covers call-2 (ordinal 3) with its result (ordinal 4).
-      { fromRef: "m4", toRef: "m5", title: "整对二", summary: "摘要二。" },
-    ]);
-    assert.equal(result.created.length, 2);
     assert.equal(result.failed.length, 0);
+    assert.equal(result.created.length, 1);
+    assert.equal(result.created[0].start, 1);
+    assert.equal(result.created[0].end, 3);
   });
 });
 

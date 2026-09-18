@@ -72,10 +72,11 @@ export const G_TOOL_01: Scenario = {
       messages: longConversation(SID),
       action: {
         kind: "compress-tool",
-        // v1 [9, 13] + [13, 17] → pi [34, 44) + [42, 52) in the folded
-        // view (b1 = [1, 19) active): the first range runs into the pi
-        // protection boundary (38) and the batch is rejected — the same
-        // rejection shape the v1 snapshot registered.
+        // With b1 = [1, 19) active, the folded view puts its summary
+        // at m2, so makeRange(9, 13) resolves to m10..m14 and
+        // makeRange(13, 17) to m14..m18 — both reach into the
+        // protection window and the batch is rejected, the same
+        // protection rejection shape the v1 snapshot registered.
         ranges: [makeRange(9, 13, "主题一"), makeRange(13, 17, "主题二")],
       },
     },
