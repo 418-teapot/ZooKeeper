@@ -2,7 +2,7 @@
 title: 简约准则
 description: 自主实验中变更评估准则：复杂度成本必须与收益 magnitude 相称，小幅改进若需大量 hacky 代码则不值得。
 type: concept
-timestamp: 2026-06-19T00:00:00Z
+timestamp: 2026-09-18T02:37:58Z
 tags: [autoresearch, design-principle, complexity-tradeoff]
 status: stable
 last_validated: 2026-09-15T06:31:27Z

@@ -3,7 +3,7 @@ title: Wiki 健康检查 — 知识库的持续质量维护
 description: 定期让 LLM 扫描 wiki 结构并建议修正，检测矛盾、过时内容、孤立页面和缺失交叉引用等质量问题。
 resource: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
 type: concept
-timestamp: 2026-06-18T00:00:00Z
+timestamp: 2026-09-18T02:37:58Z
 tags: [wiki, maintenance, quality]
 status: stable
 last_validated: 2026-06-18T00:00:00Z

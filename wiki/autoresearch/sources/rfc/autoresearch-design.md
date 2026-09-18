@@ -2,7 +2,7 @@
 title: autoresearch 设计文档
 description: oh-my-pi 的 autoresearch 扩展完整设计文档，涵盖架构设计、核心循环、类型系统和状态管理等 19 个章节。
 type: source
-timestamp: 2026-06-19T00:00:00Z
+timestamp: 2026-09-18T02:37:58Z
 resource: raw/2026-06-19-autoresearch-design.md
 tags: [autoresearch, design, rfc, oh-my-pi]
 status: stable

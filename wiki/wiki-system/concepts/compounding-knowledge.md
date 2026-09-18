@@ -3,7 +3,7 @@ title: 复利知识 — 持久化知识库的核心价值
 description: 解释 LLM Wiki 通过预编译交叉引用和持久化中间产物实现知识复利增长的核心价值，区别于 RAG 每次查询从零推导的模式。
 resource: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
 type: concept
-timestamp: 2026-06-18T00:00:00Z
+timestamp: 2026-09-18T02:37:58Z
 tags: [wiki, knowledge-base, design-principle]
 status: stable
 last_validated: 2026-06-18T00:00:00Z

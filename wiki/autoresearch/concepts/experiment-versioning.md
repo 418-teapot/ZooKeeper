@@ -3,7 +3,7 @@ title: 实验版本管理
 description: 使用 git 分支和 commit 作为自主实验的版本控制系统，每个 session 一个独立分支，每次实验一个 commit，失败则 reset。
 resource: https://github.com/karpathy/autoresearch
 type: concept
-timestamp: 2026-06-19T00:00:00Z
+timestamp: 2026-09-18T02:37:58Z
 tags: [autoresearch, versioning, git, experiment-tracking]
 status: stable
 last_validated: 2026-06-19T00:00:00Z

@@ -2,7 +2,7 @@
 title: train.py
 description: autoresearch 中唯一由 AI agent 修改的文件，包含 GPT 模型、MuonAdamW 优化器和训练循环的核心实验画布。
 type: entity
-timestamp: 2026-06-19T00:00:00Z
+timestamp: 2026-09-18T02:37:58Z
 tags: [autoresearch, file, model, training]
 status: stable
 last_validated: 2026-06-19T00:00:00Z

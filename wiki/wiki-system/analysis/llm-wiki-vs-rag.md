@@ -3,12 +3,12 @@ title: LLM Wiki vs RAG — 两种知识管理范式的对比
 description: LLM Wiki 与 RAG 两种知识管理哲学在知识状态、增长方式和价值曲线上的系统对比。
 resource: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
 type: analysis
-timestamp: 2026-06-18T00:00:00Z
+timestamp: 2026-09-18T02:37:58Z
 tags: [wiki, rag, comparison, knowledge-management]
 sources:
   - wiki-system/sources/notes/llm-wiki-karpathy.md
 status: stable
-last_validated: 2026-06-18T00:00:00Z
+last_validated: 2026-09-18
 timeliness: current
 ---
 

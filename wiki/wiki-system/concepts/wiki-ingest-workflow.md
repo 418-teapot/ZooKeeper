@@ -3,7 +3,7 @@ title: Wiki Ingest 工作流 — 源材料的增量整合
 description: 将新源材料结构性整合进已有知识库的核心写入操作，通过交叉引用和摘要更新让整个知识库更丰富。
 resource: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
 type: concept
-timestamp: 2026-06-18T00:00:00Z
+timestamp: 2026-09-18T02:37:58Z
 tags: [wiki, workflow, ingest]
 status: stable
 last_validated: 2026-06-18T00:00:00Z

@@ -2,7 +2,7 @@
 title: MAD 置信度算法
 description: 使用 Median Absolute Deviation 作为噪声底限，计算实验改善是否真实而非随机噪声的统计算法，对异常值鲁棒。
 type: concept
-timestamp: 2026-06-19T00:00:00Z
+timestamp: 2026-09-18T02:37:58Z
 tags: [autoresearch, statistics, confidence, algorithm]
 status: stable
 last_validated: 2026-06-19T00:00:00Z

@@ -3,7 +3,7 @@ title: 固定时间预算评估
 description: 以固定 wall-clock 时间（5 分钟）作为实验控制变量，结合 val_bpb 指标实现不同架构和超参在同等时间成本下的公平比较。
 resource: https://github.com/karpathy/autoresearch
 type: concept
-timestamp: 2026-06-19T00:00:00Z
+timestamp: 2026-09-18T02:37:58Z
 tags: [autoresearch, evaluation, metric, fair-comparison]
 status: stable
 last_validated: 2026-06-19T00:00:00Z

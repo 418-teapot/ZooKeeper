@@ -2,12 +2,12 @@
 title: 性能调优设计模式
 description: 从 Linux 内核调优和 GPU 计算领域的 AI agent 系统中提炼的六个通用性能调优设计模式。
 type: analysis
-timestamp: 2026-06-19T00:00:00Z
+timestamp: 2026-09-18T02:37:58Z
 tags: [performance-tuning, design-pattern, linux-kernel, gpu, ai-agent]
 sources:
   - autoresearch/sources/rfc/autoresearch-design.md
 status: stable
-last_validated: 2026-06-19T00:00:00Z
+last_validated: 2026-09-18
 timeliness: current
 ---
 

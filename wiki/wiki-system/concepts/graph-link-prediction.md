@@ -2,7 +2,7 @@
 title: 图链接预测 — 基于拓扑结构的缺失链接推断
 description: 不依赖文本内容，仅从页面间拓扑结构推断哪些页面应该互连但未连，作为 Wiki 健康检查中缺失交叉引用检测的互补路径。
 type: concept
-timestamp: 2026-06-19T00:00:00Z
+timestamp: 2026-09-18T02:37:58Z
 tags: [wiki, graph-theory, link-prediction, health-check]
 status: stable
 last_validated: 2026-06-19T00:00:00Z

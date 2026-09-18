@@ -2,7 +2,7 @@
 title: prepare.py
 description: 固定不变的基础设施文件，负责数据下载、BPE tokenizer 训练和 val_bpb 评估，确保实验可比性。
 type: entity
-timestamp: 2026-06-19T00:00:00Z
+timestamp: 2026-09-18T02:37:58Z
 tags: [autoresearch, file, data, evaluation]
 status: stable
 last_validated: 2026-06-19T00:00:00Z

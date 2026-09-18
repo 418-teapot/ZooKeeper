@@ -2,7 +2,7 @@
 title: LLM Wiki — 用 LLM 构建个人知识库的模式
 description: Karpathy 提出的用 LLM 增量构建和维护结构化交叉引用 markdown wiki 的知识管理模式。
 type: source
-timestamp: 2026-06-18T00:00:00Z
+timestamp: 2026-09-18T02:37:58Z
 resource: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
 tags: [wiki, knowledge-base, llm, pattern]
 status: stable
