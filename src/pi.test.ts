@@ -960,7 +960,7 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
     });
     assert.ok(injected.startsWith("<Role>"));
     assert.ok(
-      injected.includes("You are a codebase exploration agent"),
+      injected.includes("你是 lynx"),
       "lynx subagent prompt must be prepended",
     );
     assert.ok(injected.endsWith("base"));
