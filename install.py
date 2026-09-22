@@ -23,7 +23,7 @@ from installer.envfile import (
     parse_env_file,
     parse_toml,
 )
-from installer.jsonio import load_json_or_empty, write_json
+from installer.jsonio import write_json
 from installer.mode import mode_state_path, write_mode_state
 from installer.opencode import build_config, parse_mode_profile
 from installer.output import bold, error, header, info, warn
@@ -33,7 +33,7 @@ from installer.pi import (
     build_pi_settings,
 )
 from installer.thinking import validate_thinking
-from installer.variants import collect_variants
+from installer.variants import builtin_providers, collect_variants
 
 
 def main() -> None:
@@ -102,11 +102,6 @@ def main() -> None:
     except Exception as e:
         error(f"无法解析 {toml_path}: {e}")
         sys.exit(1)
-    # Snapshot the full set of provider names from config.toml before
-    # _filter_missing_entries mutates toml_data (called below in the
-    # 生成配置 section).  Used later for idempotent prune of Pi models.
-    all_provider_names = list(toml_data.get("provider", {}).keys())
-
     # ── Backup existing configs ──────────────────────────────────────
     header("备份已有配置")
 
@@ -224,8 +219,8 @@ def main() -> None:
         )
 
         # Build the pi models config once; the provider names are reused
-        # to warn when the default provider was pruned, and the result is
-        # merged into models.json below.
+        # to warn when the default provider was pruned, and the result
+        # becomes models.json below.
         zk_providers = build_pi_models_config(toml_data, env).get(
             "providers", {}
         )
@@ -239,11 +234,21 @@ def main() -> None:
         defaults = toml_data.get("defaults")
         if isinstance(defaults, dict):
             defaults_model = defaults.get("model")
+        # Builtin providers resolve through pi's own login state, so their
+        # config name must map to the pi provider id for defaults.model
+        # references.  The raw pi_id value is passed through unchanged so
+        # build_pi_settings can report a missing/empty pi_id accurately
+        # instead of mistaking it for a pruned provider.
+        builtin_pi_ids: dict[str, object] = {
+            name: data.get("pi_id")
+            for name, data in builtin_providers(toml_data).items()
+        }
         pi_settings = build_pi_settings(
             pi_extension_path,
             defaults_model,
             env,
             pi_provider_names=list(zk_providers),
+            builtin_providers=builtin_pi_ids,
         )
         os.makedirs(os.path.dirname(pi_settings_path), exist_ok=True)
         try:
@@ -252,29 +257,16 @@ def main() -> None:
         except OSError as e:
             warn(f"写入 Pi 设置失败: {e}")
 
-        # ── Pi provider — models.json (silent generation, no success message) ─
-        # Read existing models.json (treat missing/invalid as empty dict)
-        pi_models = load_json_or_empty(
-            pi_models_path, "读取 Pi models.json 失败"
-        )
-
-        pi_models.setdefault("providers", {})
-
-        # Prune: remove ZooKeeper-managed providers that appear in config.toml
-        # but were filtered out this run (e.g. env vars missing).  User-defined
-        # providers (not in all_provider_names) are preserved.
-        for name in list(pi_models["providers"]):
-            if name in all_provider_names and name not in zk_providers:
-                del pi_models["providers"][name]
-
-        # Merge: ZooKeeper providers overwrite by name, preserve others
-        merged_providers = {**pi_models["providers"], **zk_providers}
-        pi_models["providers"] = merged_providers
+        # ── Pi provider — models.json (full rebuild, silent) ─────────
+        # The file is rebuilt from scratch on every install: config.toml
+        # is the single source of truth for providers, so stale or
+        # hand-edited entries are dropped along with pruned ones.
+        pi_models = {"providers": zk_providers}
         os.makedirs(os.path.dirname(pi_models_path), exist_ok=True)
         try:
             write_json(pi_models_path, pi_models)
             if not zk_providers:
-                warn("未找到可用的 provider 配置（已清理残留条目）")
+                warn("未找到可用的 provider 配置")
         except OSError as e:
             warn(f"写入 Pi models.json 失败: {e}")
 

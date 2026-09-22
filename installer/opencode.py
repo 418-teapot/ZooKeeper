@@ -6,7 +6,11 @@ from typing import Optional
 from installer.envfile import resolve_env_refs_deep
 from installer.output import info, warn
 from installer.thinking import thinking_level
-from installer.variants import collect_agent_variants
+from installer.variants import (
+    builtin_providers,
+    collect_agent_variants,
+    rewrite_builtin_ref,
+)
 
 # npm packages understood by the ``thinking`` translation for OpenCode:
 # each maps to the model-level ``options`` key that turns thinking on for
@@ -210,8 +214,18 @@ def build_config(
     if "$schema" in toml_data:
         config["$schema"] = toml_data["$schema"]
     config["plugin"] = [plugin_uri]
-    if "provider" in toml_data:
-        config["provider"] = toml_data["provider"]
+    # Builtin providers are served by the host's own catalog and login
+    # state, so their definitions are dropped here and their model
+    # references are rewritten to the host provider id at the end of
+    # this function.
+    builtin = builtin_providers(toml_data)
+    raw_providers = toml_data.get("provider")
+    if isinstance(raw_providers, dict):
+        config["provider"] = {
+            name: data
+            for name, data in raw_providers.items()
+            if name not in builtin
+        }
     if profile_agents is not None:
         agents = toml_data.get("agent")
         if isinstance(agents, dict):
@@ -279,5 +293,22 @@ def build_config(
                 variant = subtable.get(model)
                 if variant:
                     agent_data["variant"] = variant
+
+    # Rewrite config-space model references ("OpenAI/gpt-5.5") to the
+    # builtin provider's host id ("openai/gpt-5.5").  This runs after
+    # variant injection, which matches the config-space string, and on
+    # the emitted deep copy only, so the parsed toml_data keeps the
+    # config-space names.
+    if builtin:
+        for key in ("model", "small_model"):
+            if key in config:
+                config[key] = rewrite_builtin_ref(config[key], builtin)
+        agents = config.get("agent")
+        if isinstance(agents, dict):
+            for agent_data in agents.values():
+                if isinstance(agent_data, dict) and "model" in agent_data:
+                    agent_data["model"] = rewrite_builtin_ref(
+                        agent_data["model"], builtin
+                    )
 
     return config

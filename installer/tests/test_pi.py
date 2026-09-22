@@ -207,6 +207,28 @@ def test_build_pi_models_config_non_dict_providers() -> None:
     }
 
 
+def test_build_pi_models_config_builtin_excluded() -> None:
+    """A builtin provider emits no models.json entry and no warning."""
+    toml_data = {
+        "provider": {
+            "OpenAI": {
+                "builtin": True,
+                "pi_id": "openai-codex",
+                "opencode_id": "openai",
+                "models": {"gpt-5.5": {"id": "gpt-5.5"}},
+            },
+            "Dummy": {
+                "npm": "@ai-sdk/anthropic",
+                "options": {"baseURL": "https://api.example.com/v1"},
+                "models": {"m": {"id": "m"}},
+            },
+        }
+    }
+    providers = build_pi_models_config(toml_data, {})["providers"]
+    assert "OpenAI" not in providers
+    assert "Dummy" in providers
+
+
 # ── build_pi_settings ─────────────────────────────────────────────────
 
 
@@ -310,6 +332,80 @@ def test_build_pi_settings_pruned_provider_still_writes(capsys) -> None:
         "defaultModel": "bar",
     }
     assert "Foo" in capsys.readouterr().out
+
+
+def test_build_pi_settings_builtin_provider_maps_to_pi_id(capsys) -> None:
+    """A builtin default provider writes the pi id with no warning."""
+    settings = build_pi_settings(
+        "/abs/src/pi.ts",
+        "OpenAI/gpt-5.5",
+        {},
+        pi_provider_names=[],
+        builtin_providers={"OpenAI": "openai-codex"},
+    )
+    assert settings == {
+        "extensions": ["/abs/src/pi.ts"],
+        "defaultThinkingLevel": "high",
+        "defaultProvider": "openai-codex",
+        "defaultModel": "gpt-5.5",
+    }
+    assert capsys.readouterr().out == ""
+
+
+def test_build_pi_settings_builtin_map_absent_provider_unchanged(
+    capsys,
+) -> None:
+    """A non-builtin provider in pi_provider_names passes through unchanged."""
+    settings = build_pi_settings(
+        "/abs/src/pi.ts",
+        "Dummy/dummy-small",
+        {},
+        pi_provider_names=["Dummy"],
+        builtin_providers={"OpenAI": "openai-codex"},
+    )
+    assert settings == {
+        "extensions": ["/abs/src/pi.ts"],
+        "defaultThinkingLevel": "high",
+        "defaultProvider": "Dummy",
+        "defaultModel": "dummy-small",
+    }
+    assert capsys.readouterr().out == ""
+
+
+def test_build_pi_settings_builtin_missing_pi_id_skips(capsys) -> None:
+    """A builtin default provider without pi_id omits the default fields."""
+    settings = build_pi_settings(
+        "/abs/src/pi.ts",
+        "OpenAI/gpt-5.5",
+        {},
+        pi_provider_names=[],
+        builtin_providers={"OpenAI": None},
+    )
+    assert settings == {
+        "extensions": ["/abs/src/pi.ts"],
+        "defaultThinkingLevel": "high",
+    }
+    out = capsys.readouterr().out
+    assert "内置 provider" in out
+    assert "pi_id" in out
+    # The misleading pruned-provider warning must not be emitted.
+    assert "凭据缺失" not in out
+
+
+def test_build_pi_settings_builtin_empty_pi_id_skips(capsys) -> None:
+    """A builtin default provider with an empty pi_id omits the fields."""
+    settings = build_pi_settings(
+        "/abs/src/pi.ts",
+        "OpenAI/gpt-5.5",
+        {},
+        pi_provider_names=[],
+        builtin_providers={"OpenAI": ""},
+    )
+    assert settings == {
+        "extensions": ["/abs/src/pi.ts"],
+        "defaultThinkingLevel": "high",
+    }
+    assert "pi_id" in capsys.readouterr().out
 
 
 # ── build_pi_agents_config ──────────────────────────────────────────────
@@ -495,6 +591,79 @@ def test_build_pi_agents_config_invalid_model_omits_agent(capsys) -> None:
     assert "dolphin" not in result["agents"]
     assert "beaver" in result["agents"]
     assert "分隔" in capsys.readouterr().out
+
+
+def test_build_pi_agents_config_builtin_provider_uses_pi_id(capsys) -> None:
+    """A builtin provider resolves to its pi id and the models-table id."""
+    toml_data = {
+        "provider": {
+            "OpenAI": {
+                "builtin": True,
+                "pi_id": "openai-codex",
+                "models": {"gpt-5.5": {"id": "gpt-5.5"}},
+            }
+        },
+        "agent": {"dolphin": {"model": "OpenAI/gpt-5.5"}},
+    }
+    result = build_pi_agents_config(toml_data, {})
+    assert result == {
+        "agents": {"dolphin": {"provider": "openai-codex", "model": "gpt-5.5"}}
+    }
+    assert capsys.readouterr().out == ""
+
+
+def test_build_pi_agents_config_builtin_missing_pi_id_omits_agent(
+    capsys,
+) -> None:
+    """A builtin provider without a string pi_id omits the agent."""
+    toml_data = {
+        "provider": {
+            "OpenAI": {
+                "builtin": True,
+                "models": {"gpt-5.5": {"id": "gpt-5.5"}},
+            }
+        },
+        "agent": {"dolphin": {"model": "OpenAI/gpt-5.5"}},
+    }
+    result = build_pi_agents_config(toml_data, {})
+    assert "dolphin" not in result["agents"]
+    assert "pi_id" in capsys.readouterr().out
+
+
+def test_build_pi_agents_config_builtin_empty_pi_id_omits_agent(
+    capsys,
+) -> None:
+    """A builtin provider with an empty pi_id omits the agent."""
+    toml_data = {
+        "provider": {
+            "OpenAI": {
+                "builtin": True,
+                "pi_id": "",
+                "models": {"gpt-5.5": {"id": "gpt-5.5"}},
+            }
+        },
+        "agent": {"dolphin": {"model": "OpenAI/gpt-5.5"}},
+    }
+    result = build_pi_agents_config(toml_data, {})
+    assert "dolphin" not in result["agents"]
+    out = capsys.readouterr().out
+    assert "pi_id" in out
+    assert "内置 provider" in out
+
+
+def test_build_pi_agents_config_non_builtin_provider_unchanged(capsys) -> None:
+    """A normal provider keeps its config name as the provider."""
+    toml_data = {
+        "provider": {
+            "Dummy": {"models": {"dummy-small": {"id": "dummy-small"}}}
+        },
+        "agent": {"dolphin": {"model": "Dummy/dummy-small"}},
+    }
+    result = build_pi_agents_config(toml_data, {})
+    assert result == {
+        "agents": {"dolphin": {"provider": "Dummy", "model": "dummy-small"}}
+    }
+    assert capsys.readouterr().out == ""
 
 
 # ── Full-rebuild semantics on disk ──────────────────────────────────────

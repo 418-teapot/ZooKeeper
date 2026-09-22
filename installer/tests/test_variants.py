@@ -166,3 +166,49 @@ def test_collect_agent_variants_missing_section_returns_empty() -> None:
     """A missing [zoo.variants] or [agent] section yields {}."""
     assert collect_agent_variants({}) == {}
     assert collect_agent_variants({"zoo": {"variants": {"beaver": {}}}}) == {}
+
+
+# ── builtin provider rewriting ──────────────────────────────────────────
+
+
+def _builtin_providers() -> dict:
+    """A builtin provider (no npm/options) plus a plain provider."""
+    return {
+        "OpenAI": {
+            "builtin": True,
+            "opencode_id": "openai",
+            "models": {"gpt-5.5": {}},
+        },
+        "Dummy": {"npm": "@ai-sdk/anthropic", "models": {"dummy-small": {}}},
+    }
+
+
+def test_collect_variants_rewrites_builtin_provider_key() -> None:
+    """A builtin provider key's segment becomes its opencode_id."""
+    variants = {"OpenAI/gpt-5.5": "max", "Dummy/dummy-small": "high"}
+    result = collect_variants(
+        _base_toml(variants, providers=_builtin_providers())
+    )
+    assert result == {"openai/gpt-5.5": "max", "Dummy/dummy-small": "high"}
+
+
+def test_collect_variants_builtin_missing_id_warns_and_keeps(capsys) -> None:
+    """A builtin provider without opencode_id keeps the config-space key."""
+    providers = {"OpenAI": {"builtin": True, "models": {"gpt-5.5": {}}}}
+    result = collect_variants(
+        _base_toml({"OpenAI/gpt-5.5": "max"}, providers=providers)
+    )
+    assert result == {"OpenAI/gpt-5.5": "max"}
+    assert "缺少 opencode_id" in capsys.readouterr().out
+
+
+def test_collect_agent_variants_keys_stay_config_space() -> None:
+    """Per-agent variant keys keep the config provider name, not the host id."""
+    toml_data = _base_toml(
+        {"beaver": {"OpenAI/gpt-5.5": "low"}},
+        providers=_builtin_providers(),
+        agents={"beaver": {}},
+    )
+    assert collect_agent_variants(toml_data) == {
+        "beaver": {"OpenAI/gpt-5.5": "low"}
+    }

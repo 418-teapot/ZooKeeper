@@ -47,9 +47,14 @@ def _convert_provider_to_pi(prov_name: str, prov_data: dict) -> Optional[dict]:
 
     Returns:
         A dictionary in pi ``models.json`` ``providers`` entry format, or
-        ``None`` if the provider should be skipped (e.g. unrecognised
-        ``npm`` type).
+        ``None`` if the provider should be skipped (builtin providers and
+        unrecognised ``npm`` types).
     """
+    # Builtin providers resolve through the host's own auth and model
+    # catalog, so ZooKeeper emits no models.json entry for them.
+    if prov_data.get("builtin") is True:
+        return None
+
     npm = prov_data.get("npm", "")
     if not isinstance(npm, str):
         warn(f"provider.{prov_name} 缺少 npm 字段，跳过")
@@ -238,6 +243,7 @@ def build_pi_settings(
     defaults_model: object,
     env: dict[str, str],
     pi_provider_names: Optional[list[str]] = None,
+    builtin_providers: Optional[dict[str, object]] = None,
 ) -> dict:
     """Build the pi ``settings.json`` dictionary from scratch.
 
@@ -264,6 +270,11 @@ def build_pi_settings(
         pi_provider_names: Names of providers emitted in this run's
             ``models.json``; used to warn when the default provider was
             filtered out.
+        builtin_providers: Mapping of builtin provider names to their raw
+            ``pi_id`` value.  When the default provider is builtin with a
+            non-empty string ``pi_id``, that id is written and no
+            pruned-provider warning is emitted; a builtin provider whose
+            ``pi_id`` is missing or empty is skipped with a warning.
 
     Returns:
         The settings dictionary.  Always contains ``extensions`` and
@@ -293,7 +304,17 @@ def build_pi_settings(
         return settings
 
     provider, model_id = split
-    if pi_provider_names is not None and provider not in pi_provider_names:
+    builtin_map = builtin_providers or {}
+    if provider in builtin_map:
+        pi_id = builtin_map[provider]
+        if not isinstance(pi_id, str) or not pi_id:
+            warn(
+                f"默认模型 provider '{provider}' 是内置 provider"
+                "但缺少 pi_id 字段，跳过 defaultProvider/defaultModel"
+            )
+            return settings
+        provider = pi_id
+    elif pi_provider_names is not None and provider not in pi_provider_names:
         warn(
             f"默认模型 provider '{provider}' 不在本次生成的 pi providers 中"
             "（可能因凭据缺失被跳过），仍写入 defaultProvider/defaultModel"
@@ -388,6 +409,22 @@ def build_pi_agents_config(toml_data: dict, env: dict[str, str]) -> dict:
             )
             continue
 
-        resolved_agents[name] = {"provider": provider, "model": model_id}
+        # Builtin providers are referenced by their pi provider id; the
+        # validation above still applies so agent references are checked.
+        resolved_provider = provider
+        if provider_data.get("builtin") is True:
+            pi_id = provider_data.get("pi_id")
+            if not isinstance(pi_id, str) or not pi_id:
+                warn(
+                    f"agent.{name} 的 provider '{provider}' 是内置 provider"
+                    "但缺少 pi_id 字段，跳过"
+                )
+                continue
+            resolved_provider = pi_id
+
+        resolved_agents[name] = {
+            "provider": resolved_provider,
+            "model": model_id,
+        }
 
     return {"agents": resolved_agents}

@@ -3,6 +3,65 @@
 from installer.output import warn
 
 
+def builtin_providers(toml_data: dict) -> dict[str, dict]:
+    """Return the ``[provider.*]`` tables marked ``builtin = true``.
+
+    A builtin provider is served by the host's own catalog and login
+    state, so the installer emits no definition for it.  Model
+    references written with the config provider name must be rewritten
+    to the host id when a host file is generated.
+
+    Args:
+        toml_data: The parsed TOML dictionary from ``parse_toml``.
+
+    Returns:
+        A dict mapping each builtin provider's config name to its table.
+    """
+    providers = toml_data.get("provider")
+    if not isinstance(providers, dict):
+        return {}
+    return {
+        name: data
+        for name, data in providers.items()
+        if isinstance(data, dict) and data.get("builtin") is True
+    }
+
+
+def rewrite_builtin_ref(model: object, builtin: dict[str, dict]) -> object:
+    """Rewrite the provider segment of a host model reference.
+
+    When *model* has the form ``"Provider/model"`` and *Provider* names
+    a builtin provider, the segment is replaced by that provider's
+    ``opencode_id`` so the host resolves its own builtin entry.  A
+    builtin provider without a string ``opencode_id`` keeps the original
+    reference and warns in Chinese.  Any other value passes through
+    unchanged.
+
+    Args:
+        model: The model reference to rewrite (any type).
+        builtin: The builtin provider tables from :func:`builtin_providers`.
+
+    Returns:
+        The rewritten reference, or *model* unchanged.
+    """
+    if not isinstance(model, str):
+        return model
+    provider, sep, rest = model.partition("/")
+    if not sep or not provider or not rest:
+        return model
+    data = builtin.get(provider)
+    if not isinstance(data, dict):
+        return model
+    opencode_id = data.get("opencode_id")
+    if not isinstance(opencode_id, str) or not opencode_id:
+        warn(
+            f"builtin provider {provider} 缺少 opencode_id，"
+            f"模型引用 {model} 保持原值"
+        )
+        return model
+    return f"{opencode_id}/{rest}"
+
+
 def _validate_variant_key(
     key: object,
     variant_name: object,
@@ -72,6 +131,7 @@ def collect_variants(toml_data: dict) -> dict[str, str]:
         return {}
 
     valid: dict[str, str] = {}
+    builtin = builtin_providers(toml_data)
     for key, variant_name in variants.items():
         if isinstance(variant_name, dict):
             # Per-agent subtable ([zoo.variants.<agent>]); collected
@@ -84,7 +144,9 @@ def collect_variants(toml_data: dict) -> dict[str, str]:
             key, variant_name, providers, "zoo.variants"
         ):
             continue
-        valid[key] = variant_name
+        # The returned mapping is written to the host state cache, so its
+        # keys must use the host reference format (builtin provider ids).
+        valid[str(rewrite_builtin_ref(key, builtin))] = variant_name
     return valid
 
 

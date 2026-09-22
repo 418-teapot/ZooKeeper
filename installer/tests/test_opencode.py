@@ -481,3 +481,132 @@ def test_build_config_leaves_parsed_toml_data_untouched(tmp_path) -> None:
     toml_data = _toml_with_model("@ai-sdk/anthropic", {"thinking": "high"})
     build_config(toml_data, str(tmp_path), {})
     assert toml_data["provider"]["P"]["models"]["m"] == {"thinking": "high"}
+
+
+# ── build_config: builtin providers ─────────────────────────────────────
+
+
+def _toml_with_builtin(
+    builtin_provider: dict,
+    *,
+    defaults: Optional[dict] = None,
+    agents: Optional[dict] = None,
+) -> dict:
+    """Build a toml dict with one builtin provider plus optional sections."""
+    toml_data: dict = {"provider": {"OpenAI": builtin_provider}}
+    if defaults is not None:
+        toml_data["defaults"] = defaults
+    if agents is not None:
+        toml_data["agent"] = agents
+    return toml_data
+
+
+def test_build_config_drops_builtin_provider(tmp_path) -> None:
+    """A ``builtin = true`` provider is not emitted in the provider section."""
+    toml_data = {
+        "provider": {
+            "OpenAI": {"builtin": True, "opencode_id": "openai"},
+            "Dummy": {"npm": "@ai-sdk/anthropic", "models": {}},
+        }
+    }
+    config = build_config(toml_data, str(tmp_path), {})
+    assert "OpenAI" not in config["provider"]
+    assert "Dummy" in config["provider"]
+
+
+def test_build_config_all_builtin_providers_yield_empty_section(
+    tmp_path,
+) -> None:
+    """An empty provider section remains when every provider is builtin."""
+    toml_data = {
+        "provider": {"OpenAI": {"builtin": True, "opencode_id": "openai"}}
+    }
+    config = build_config(toml_data, str(tmp_path), {})
+    assert config["provider"] == {}
+
+
+def test_build_config_rewrites_top_level_builtin_models(tmp_path) -> None:
+    """[defaults] model/small_model builtin refs use the host provider id."""
+    toml_data = _toml_with_builtin(
+        {"builtin": True, "opencode_id": "openai"},
+        defaults={
+            "model": "OpenAI/gpt-5.5",
+            "small_model": "OpenAI/gpt-5.5-mini",
+        },
+    )
+    config = build_config(toml_data, str(tmp_path), {})
+    assert config["model"] == "openai/gpt-5.5"
+    assert config["small_model"] == "openai/gpt-5.5-mini"
+
+
+def test_build_config_rewrites_agent_builtin_model(tmp_path) -> None:
+    """An agent's builtin model ref is rewritten to the host provider id."""
+    toml_data = _toml_with_builtin(
+        {"builtin": True, "opencode_id": "openai"},
+        agents={"beaver": {"model": "OpenAI/gpt-5.5"}},
+    )
+    config = build_config(
+        toml_data, str(tmp_path), {}, profile_agents=["beaver"]
+    )
+    assert config["agent"]["beaver"]["model"] == "openai/gpt-5.5"
+
+
+def test_build_config_variant_matches_before_rewrite(tmp_path) -> None:
+    """Variant injection matches the config-space ref, then the ref is rewritten."""
+    toml_data = _toml_with_builtin(
+        {
+            "builtin": True,
+            "opencode_id": "openai",
+            "models": {"gpt-5.5": {}},
+        },
+        agents={"beaver": {"model": "OpenAI/gpt-5.5"}},
+    )
+    toml_data["zoo"] = {"variants": {"beaver": {"OpenAI/gpt-5.5": "low"}}}
+    config = build_config(
+        toml_data, str(tmp_path), {}, profile_agents=["beaver"]
+    )
+    assert config["agent"]["beaver"]["model"] == "openai/gpt-5.5"
+    assert config["agent"]["beaver"]["variant"] == "low"
+
+
+def test_build_config_builtin_missing_id_warns_and_keeps(
+    tmp_path, capsys
+) -> None:
+    """A builtin provider without opencode_id keeps the config-space ref."""
+    toml_data = _toml_with_builtin(
+        {"builtin": True},
+        agents={"beaver": {"model": "OpenAI/gpt-5.5"}},
+    )
+    config = build_config(
+        toml_data, str(tmp_path), {}, profile_agents=["beaver"]
+    )
+    assert config["agent"]["beaver"]["model"] == "OpenAI/gpt-5.5"
+    assert "缺少 opencode_id" in capsys.readouterr().out
+
+
+def test_build_config_non_builtin_model_unchanged(tmp_path) -> None:
+    """A non-builtin provider reference is emitted verbatim."""
+    toml_data = {
+        "provider": {
+            "Dummy": {"npm": "@ai-sdk/anthropic", "models": {"m": {}}}
+        },
+        "defaults": {"model": "Dummy/m"},
+        "agent": {"beaver": {"model": "Dummy/m"}},
+    }
+    config = build_config(
+        toml_data, str(tmp_path), {}, profile_agents=["beaver"]
+    )
+    assert config["model"] == "Dummy/m"
+    assert config["agent"]["beaver"]["model"] == "Dummy/m"
+
+
+def test_build_config_builtin_rewrite_leaves_toml_untouched(tmp_path) -> None:
+    """The builtin rewrite only touches the emitted copy, not the parsed TOML."""
+    toml_data = _toml_with_builtin(
+        {"builtin": True, "opencode_id": "openai"},
+        defaults={"model": "OpenAI/gpt-5.5"},
+        agents={"beaver": {"model": "OpenAI/gpt-5.5"}},
+    )
+    build_config(toml_data, str(tmp_path), {}, profile_agents=["beaver"])
+    assert toml_data["defaults"]["model"] == "OpenAI/gpt-5.5"
+    assert toml_data["agent"]["beaver"]["model"] == "OpenAI/gpt-5.5"
