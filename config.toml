@@ -412,12 +412,12 @@ reasoning = true
 context = 1000000
 output  = 384000
 
-[provider.OpenCodeGo.models."deepseek-flash"]
-name      = "deepseek-flash"
-id        = "deepseek-flash"
+[provider.OpenCodeGo.models."deepseek-v4.1-flash"]
+name      = "deepseek-v4.1-flash"
+id        = "deepseek-v4.1-flash"
 reasoning = true
 
-[provider.OpenCodeGo.models."deepseek-flash".limit]
+[provider.OpenCodeGo.models."deepseek-v4.1-flash".limit]
 context = 1000000
 output  = 384000
 
