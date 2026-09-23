@@ -385,13 +385,11 @@ pi_id       = "openai-codex"
 opencode_id = "openai"
 
 [provider.OpenAI.models."gpt-6-astra"]
-
+[provider.OpenAI.models."gpt-6-sol"]
+[provider.OpenAI.models."gpt-6-luna"]
 [provider.OpenAI.models."gpt-5.6-sol"]
-
 [provider.OpenAI.models."gpt-5.6-terra"]
-
 [provider.OpenAI.models."gpt-5.6-luna"]
-
 [provider.OpenAI.models."gpt-5.5"]
 
 # ── OpenCodeGo ────────────────────────────────────────────────────────────────
