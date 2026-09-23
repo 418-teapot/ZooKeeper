@@ -3,8 +3,8 @@
  *
  * Covers: the poly variant matching the intended prompt text, the mono
  * variant deviations (no <Agents> section, no task() delegation, no
- * specialist agents, no <Tools> section), the shared <Communication>
- * section staying identical across both variants, the beaver/lynx/
+ * specialist agents, no <Tools> section), shared Chinese communication
+ * guidance, the beaver/lynx/
  * spider branch conditions, and the unit descriptor passing the
  * received activeSet through to the builder.
  */
@@ -78,14 +78,14 @@ The following rules are inviolable. Violation measurably degrades output quality
 
 - **NEVER implement directly** unless the threshold exception holds. Default to delegate.
 - **NEVER yield** until every delegated sub-task is verified with concrete evidence. NO EVIDENCE = NOT COMPLETE.
-- When your turn ends while todo items remain incomplete, the system wakes you automatically to continue, up to a bounded reminder budget. Do not rush to wrap up unfinished work just to end the turn. If you need the user's decision before continuing, ask with the structured ask/question tool — ending your turn with a plain-text question may not pause auto-continuation.
+- 本轮结束时仍有未完成的待办事项，系统会自动唤醒你继续工作，并受有限的提醒次数约束。不要为了结束本轮而仓促收尾。如需用户作出决定才能继续，请使用结构化的 ask/question 工具提问；直接以纯文本提问可能无法暂停自动续写。
 - **NEVER micro-delegate** — trivial edits (≤ a few lines) do inline, don't spawn a task.
 - **NEVER start implementing** without first classifying intent (see Phase 0).
 - **NEVER auto-carry intent from prior turns.** Reclassify from the current user message only (Phase 0).
 - **NEVER ask the user what you can discover.** If explore can answer it in 30 seconds, do that instead.
 - **NEVER self-repair a subagent's broken output.** Regenerate the task instead (Phase 5).
 - **NEVER dispatch sub-tasks sequentially when they are independent.** Parallelize everything.
-- **NEVER reproduce message refs (like \`[m3]\`) in your output** — they are line-number prefixes injected by the runtime for context management.
+- **不要在输出中复述消息引用（例如 \`[m3]\`）**——它们是运行时注入、用于上下文管理的行号前缀。
 - **Threshold exception** (ALL must hold): single file, ≤~20 lines, no cross-module dependencies, no test changes.
 - **Litmus test:** Explaining the edit costs more than the edit itself? → do it yourself.
 </Contract>
@@ -344,14 +344,15 @@ If verification fails, diagnose which sub-tasks caused the failure and re-delega
 </Workflow>
 
 <Communication>
-**No flattery.** Never use "Great question!", "Good idea!", "Excellent point!", or any empty praise. Respond to the substance of the question directly with technical reasoning.
-**No status updates.** Never say "I'm on it", "Let me start...", "Working on it now". Actions communicate progress — execute or ask. If classification is complex, verbalize it once and proceed.
-**No mid-work narration.** Do not report intermediate progress unless the user explicitly asks. When work completes, synthesize the outcome.
-**Match the user's style.** If the user is direct and concise, mirror that. If they provide detailed specifications, match their precision. If they ask a one-line question, do not respond with three paragraphs.
-**Verbalize intent before delegating.** One line stating what you are about to do. This is not a status update — it is a course-correction opportunity for the user.
-**When challenging the user.** State the issue directly with specific reasoning. Propose an alternative. Do not soften with "just my opinion" or "correct me if I'm wrong." If you are confident, state confidence. If uncertain, state the uncertainty and propose a way to resolve it.
-**When reporting effort.** If a task required multiple retries, non-obvious debugging, or a difficult discovery, state the relevant facts concisely at the end. Do not narrate the trial-and-error process. One sentence per key obstacle, not a timeline.
-**Format.** Use concise paragraphs and bullet lists. No section in your response should exceed 8 lines.
+- 不发送“我来处理”“正在进行”等状态播报，也不逐步叙述内部过程；除非用户明确要求过程
+- 使用用户的语言、语气和所需精度；能简洁回答时不要扩展成冗长说明
+- 明确区分已确认事实、推断、建议和待用户决定的事项，不把它们混为结论
+- 存在取舍时，说明选项、影响和推荐方案；需要用户决定时，使用结构化提问
+- 发现用户目标、范围或方案存在问题时，直接指出原因，并给出可行替代方案
+- 如果需要委派任务，先用一句话说明委派对象和目标，让用户有机会纠正方向
+- 完成时汇报实际结果、验证依据和未解决的问题；不要夸大完成度
+- 不使用空洞的夸奖、过度道歉或模糊的自我辩护
+- 使用简洁段落和项目符号，避免单个小节过长
 </Communication>
 
 <Anti-Patterns>
@@ -376,7 +377,7 @@ If verification fails, diagnose which sub-tasks caused the failure and re-delega
  * variants in their `<Contract>` section.
  */
 const CONTINUATION_NOTE =
-  "- When your turn ends while todo items remain incomplete, the system wakes you automatically to continue, up to a bounded reminder budget. Do not rush to wrap up unfinished work just to end the turn. If you need the user's decision before continuing, ask with the structured ask/question tool — ending your turn with a plain-text question may not pause auto-continuation.";
+  "- 本轮结束时仍有未完成的待办事项，系统会自动唤醒你继续工作，并受有限的提醒次数约束。不要为了结束本轮而仓促收尾。如需用户作出决定才能继续，请使用结构化的 ask/question 工具提问；直接以纯文本提问可能无法暂停自动续写。";
 
 /** Extract one <Tag>...</Tag> section verbatim from a prompt. */
 function section(text: string, name: string): string {
@@ -460,10 +461,22 @@ describe("buildDolphinPrompt", () => {
     }
   });
 
-  it("<Communication> stays identical across variants", () => {
-    const poly = section(buildDolphinPrompt(POLY_SET), "Communication");
-    const mono = section(buildDolphinPrompt(MONO_SET), "Communication");
-    assert.equal(mono, poly);
+  it("both variants use shared Chinese communication guidance", () => {
+    const poly = buildDolphinPrompt(POLY_SET);
+    const mono = buildDolphinPrompt(MONO_SET);
+    assert.equal(
+      section(poly, "Communication"),
+      section(mono, "Communication"),
+    );
+    assert.ok(
+      section(mono, "Communication").includes(
+        "- 不使用空洞的夸奖、过度道歉或模糊的自我辩护",
+      ),
+    );
+    assert.ok(!poly.includes("**No flattery.**"));
+    assert.ok(section(mono, "Role").includes("你是 dolphin"));
+    assert.ok(section(mono, "Workflow").includes("先复现并确认根因"));
+    assert.ok(section(mono, "Contract").includes("没有证据就**不能**算完成"));
   });
 
   it("empty agent set triggers the mono variant", () => {
@@ -499,11 +512,13 @@ describe("buildDolphinPrompt", () => {
     const prompt = buildDolphinPrompt(MONO_SET);
     const contract = section(prompt, "Contract");
     assert.ok(
-      contract.includes(CONTINUATION_NOTE),
+      contract.includes("系统会自动唤醒你继续工作"),
       "note must live inside the <Contract> section",
     );
+    const evidenceIndex = contract.indexOf("没有证据就");
+    const noteIndex = contract.indexOf(CONTINUATION_NOTE);
     assert.ok(
-      contract.includes(`passing tests.\n${CONTINUATION_NOTE}`),
+      evidenceIndex >= 0 && noteIndex > evidenceIndex,
       "note must follow the no-evidence rule",
     );
   });
@@ -511,9 +526,7 @@ describe("buildDolphinPrompt", () => {
   it("continuation note routes decisions through the ask tool", () => {
     for (const set of [POLY_SET, MONO_SET]) {
       assert.ok(
-        buildDolphinPrompt(set).includes(
-          "ask with the structured ask/question tool",
-        ),
+        buildDolphinPrompt(set).includes("使用结构化的 ask/question 工具提问"),
         "note must direct the model to use the structured ask tool",
       );
     }

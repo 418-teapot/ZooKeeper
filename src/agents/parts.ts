@@ -142,4 +142,4 @@ export const DELEGATION_LEAF_EXAMPLE = `Example (codebase search):
  * arguments while still suppressing verbatim echo in free text.
  */
 export const MSG_REF_NO_ECHO =
-  "**NEVER reproduce message refs (like `[m3]`) in your output** — they are line-number prefixes injected by the runtime for context management.";
+  "**不要在输出中复述消息引用（例如 `[m3]`）**——它们是运行时注入、用于上下文管理的行号前缀。";
