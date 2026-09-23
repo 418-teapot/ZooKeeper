@@ -430,22 +430,24 @@ advisor 跑自己的 `Agent` 循环，不经过主 session 的 `LoopGuards`（is
 
 ## 15. 对 ZooKeeper 的启示
 
-ZooKeeper 是同时适配 OpenCode 和 pi 的编排器插件，循环行为目前靠 prompt 指令维持。本次调研可借鉴的模式，按"不依赖平台新能力 → 需要平台 hook"排序：
+ZooKeeper（同时适配 OpenCode 与 pi 的编排器插件）已具备引擎雏形：`onSettled` slot + 汇聚 runner（首个 wake 胜出、逐策略崩溃隔离、fail-closed）+ 预算记账 + 双宿主续写注入，唯一策略是 todo-continuation（`src/core/continuation/`、`src/hooks/todo-continuation/`）。
 
-**prompt/设计层即可借鉴：**
+本调研的结论已转化为设计决策，完整方案见 `docs/loop-engine-design.md`。各模式的取舍：
 
-1. **完成信号结构化**（OMO goal hook）：让执行方以结构化形式（工具返回/固定格式）汇报完成与证据，替代自由文本——编排器不再需要扫描推断。
-2. **进展门抑制自激**（OMP todo-tracker）：任何"提醒后继续"机制都必须以"上轮有工具级实质进展"为复位条件，否则提醒本身会触发空转。
-3. **条件坏了 ≠ 条件为假**（OMP `/loop`）：凡是靠外部信号（测试退出码、构建结果）决定循环去向的地方，把"信号源本身出错"单列为 error 分支，不与"条件不成立"合并。
-4. **纠正消息适配投递通道**（OMP advisor guard）：给 subagent 的纠正指令必须走该通道实际会保留的消息形式，否则纠正静默丢失。
+**已采用：**
 
-**需要 hook/事件能力的模式：**
+1. **settled 事件驱动续写**（OMO goal / Senpi ulw-loop / OMP 共同原则）：在宿主"彻底安静"的事件上做续写决策，加防重入——ZooKeeper 双宿主适配已对齐。
+2. **fail-closed 与联锁强制**：预算上限由引擎执行而非策略自觉；信息不足时倾向沉默。
+3. **沉默可解释**：每次不唤醒都有机器可读原因（引擎原因与策略原因分层）。
+4. **进展门抑制自激**（OMP todo-tracker）：但定位为**策略的观测输入**而非引擎强制门——等待外部事件的循环不应被进展门挡死（第一性原理推导，见设计文档 §3）。
 
-5. **settled 事件驱动续写**（OMO goal / Senpi ulw-loop）：在宿主"彻底安静"的事件上做续写决策，加防重入与去抖；OpenCode 对应 `session.idle`，pi 对应 `agent_settled`/`agent_end` + `triggerTurn`。
-6. **重复工具调用熔断**（OMO loop-detector / OMP ToolCallLoopGuard）：规范化签名 + 连续计数，阈值内注入纠正、超阈值终止。
-7. **磁盘 ledger 恢复**（OMO ulw-loop）：循环状态落盘（append-only + 原子写），崩溃/压缩后按磁盘恢复而非重新规划。
+**暂缓（待引擎迁移完成后重审）：**
 
-**明确不建议照搬的：** ralph-loop 的 promise 文本协议 + 扫描检测层——goal hook 的工具调用方案在同一仓库内展示了更简的替代；autoresearch 的完整实验框架（SQLite + MAD + git 分支）对编排场景过重，其 METRIC/ASI"零依赖文本协议"思想可按需取用。
+5. **结构化完成信号**（OMO goal hook：工具调用优于文本扫描）：作为未来 debug 循环的退出机制候选。
+6. **重复工具调用熔断**（OMO loop-detector / OMP ToolCallLoopGuard）： ZooKeeper 的 subagent 调度在进程内，暂无同等失控面，第二个 controller 出现时重审。
+7. **磁盘 ledger 恢复**（OMO ulw-loop）：当前额度状态为内存级，暂无跨进程恢复需求。
+
+**明确不采用：** ralph-loop 的 promise 文本协议 + 扫描检测层——goal hook 的工具调用方案在同一仓库内展示了更简的替代；autoresearch 的完整实验框架（SQLite + MAD + git 分支）对编排场景过重，其 METRIC/ASI"零依赖文本协议"思想可按需取用。
 
 ---
 
