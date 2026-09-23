@@ -33,10 +33,7 @@ import config from "../config.toml" with { type: "toml" };
 import { createV1Adapter } from "./adapters/opencode/adapter.js";
 import { createOpenCodeHandoffTarget } from "./adapters/opencode/handoff-target.js";
 import { createV1ToolHost } from "./adapters/opencode/tool-host.js";
-import {
-  assembleOpenCodeHooks,
-  buildSettledRunner,
-} from "./compose-opencode.js";
+import { assembleOpenCodeHooks } from "./compose-opencode.js";
 import { composeProfile } from "./core/compose.js";
 import {
   initPluginLogger,
@@ -51,12 +48,12 @@ import type { ModeProfile } from "./core/config-types.js";
 import { setModelLimit } from "./core/context/model-limits.js";
 import { cleanupSession } from "./core/context/runtime.js";
 import {
-  type Budget,
+  createLoopEngine,
   isAwaitingUserAnswer,
   resolveWorkActions,
   type StopCause,
   type TurnToolCall,
-} from "./core/continuation/index.js";
+} from "./core/loop/index.js";
 import { sessionAgentRegistry } from "./core/session-agent.js";
 import type { Deps } from "./core/slots.js";
 import { derivePrimaries } from "./core/subagent/identity.js";
@@ -64,7 +61,7 @@ import { REGISTRY } from "./registry.js";
 import { log } from "./utils/logger.js";
 
 // ---------------------------------------------------------------------------
-// Session-idle continuation classification
+// Session-idle loop classification
 // ---------------------------------------------------------------------------
 
 /** Tool names that pose a question to the user and wait for an answer. */
@@ -85,7 +82,7 @@ const ABORT_ERROR_NAMES: ReadonlySet<string> = new Set([
  * characters + 12 base62 characters, mirroring OpenCode's identifier
  * encoding).  `promptAsync` honors a caller-supplied id, so the host can
  * recognize the resulting `message.updated` as its own injected
- * continuation by `info.id` — the only stable discriminator that event
+ * wake by `info.id` — the only stable discriminator that event
  * carries: `message.updated` transports message identity, not content
  * (text arrives separately via `message.part.updated`).
  *
@@ -202,7 +199,7 @@ function isUnansweredQuestionPart(part: Record<string, unknown>): boolean {
  * Messages are scanned backward: the first real user message terminates
  * the search (the question was answered or the turn interrupted), and
  * the first assistant message decides it.  Synthetic user messages (our
- * own continuation injections, block summaries) are skipped so they do
+ * own wake injections, block summaries) are skipped so they do
  * not mask a still-pending question.
  *
  * Exported for unit testing.
@@ -264,7 +261,7 @@ interface TurnOutcome {
  * Collect the settled turn's tool calls and final assistant text.
  *
  * The turn begins after the last user message: every user message is a
- * turn boundary.  The host's own continuation injection also arrives as
+ * turn boundary.  The host's own wake injection also arrives as
  * a user message (a recorded id echo with customType-less text parts),
  * so it too starts a fresh turn — which is exactly the turn being
  * classified.  Tool calls from assistant messages in that span are
@@ -357,6 +354,7 @@ export async function buildPlugin(input: any, zooConfig: any, rawConfig?: any) {
   const deps: Deps = {
     limits,
     contextConfig,
+    continuationConfig: parseContinuationConfig(zooConfig),
     agentModes,
     agentPermissions,
     client,
@@ -373,25 +371,21 @@ export async function buildPlugin(input: any, zooConfig: any, rawConfig?: any) {
   const composed = composeProfile(modeProfile, REGISTRY, deps);
   const profileHooks = assembleOpenCodeHooks(composed, deps, modeProfile);
 
-  // ── Auto-continuation state ───────────────────────────────────────
-  // The profile contributes the judgment (`onSettled`); this host owns
-  // the settle-cause classification and the per-session reminder
-  // budget.  All state is per plugin instance and keyed by session.
-  // The reminder ceiling from `[zoo.continuation]`.  No default is
-  // invented: when the section is absent or `max_reminders` is
-  // missing/invalid the parser yields `undefined` and the continuation
-  // branch never acts (fail-closed).
-  const maxReminders = parseContinuationConfig(zooConfig)?.maxReminders;
-  const hasSettledContributions =
-    composed.onSettled.length > 0 && maxReminders !== undefined;
-  const settledRunner = buildSettledRunner(composed.onSettled);
-  // Reminders already delivered per session.  Cleared by a real user
-  // message, never by this host's own injected continuation.
-  const continuationUsed = new Map<string, number>();
+  // ── Loop-engine state ─────────────────────────────────────────────
+  // The profile contributes the strategies (`onSettled`); each strategy
+  // declares its own wake allowance (`maxWakes`) and reads its own config,
+  // so the engine needs no configuration of its own.  This host owns the
+  // settle-cause classification and the wake delivery.  The engine is
+  // built whenever the profile contributes at least one strategy
+  // (fail-closed: no contribution, no engine, no settle branch).
+  const engine =
+    composed.onSettled.length > 0
+      ? createLoopEngine(composed.onSettled)
+      : undefined;
   // Sessions with an observed abort (`session.error`), consumed once at
   // the next idle so the classification does not linger.
   const abortedSessions = new Set<string>();
-  // Sessions with an in-flight continuation whose next user
+  // Sessions with an in-flight wake whose next user
   // `message.updated` is this host's own `promptAsync` echo.  Keyed by
   // session, valued by the injected user message id: an incoming user
   // message is swallowed only when its id matches, so a real user
@@ -413,7 +407,7 @@ export async function buildPlugin(input: any, zooConfig: any, rawConfig?: any) {
   }
 
   /**
-   * Classify why a session's turn ended for auto-continuation, and whether
+   * Classify why a session's turn ended for the loop, and whether
    * the settled turn actually made mutating progress.
    *
    * The `session.error` flag is checked first (cheap and explicit);
@@ -437,7 +431,7 @@ export async function buildPlugin(input: any, zooConfig: any, rawConfig?: any) {
       return { cause: "aborted", progress: false };
     }
     if (typeof client?.session?.messages !== "function") {
-      log("continuation", "cause_unobservable", sessionID, undefined, "warn", {
+      log("loop", "cause_unobservable", sessionID, undefined, "warn", {
         reason: "session.messages unavailable",
       });
       return null;
@@ -449,19 +443,14 @@ export async function buildPlugin(input: any, zooConfig: any, rawConfig?: any) {
         ? res
         : (res as { data?: unknown } | undefined)?.data;
       if (!Array.isArray(data)) {
-        log(
-          "continuation",
-          "cause_unobservable",
-          sessionID,
-          undefined,
-          "warn",
-          { reason: "messages payload not an array" },
-        );
+        log("loop", "cause_unobservable", sessionID, undefined, "warn", {
+          reason: "messages payload not an array",
+        });
         return null;
       }
       messages = data as IdleMessageEntry[];
     } catch (err) {
-      log("continuation", "cause_unobservable", sessionID, undefined, "warn", {
+      log("loop", "cause_unobservable", sessionID, undefined, "warn", {
         reason: "messages fetch failed",
         error: String(err),
       });
@@ -507,7 +496,7 @@ export async function buildPlugin(input: any, zooConfig: any, rawConfig?: any) {
           sessionAgentRegistry.bind(info.sessionID, info.agent);
         }
         // Budget bookkeeping: only a real user message resets the
-        // per-session reminder counter.  This host's own continuation
+        // per-session reminder counter.  This host's own wake
         // also arrives as a user message, carrying the id recorded in
         // `injectedEchoMessages`; it is swallowed only when the ids
         // match, so a real user message in the delivery window is never
@@ -518,10 +507,10 @@ export async function buildPlugin(input: any, zooConfig: any, rawConfig?: any) {
           } else if (info.role === "user") {
             const echoID = injectedEchoMessages.get(info.sessionID);
             if (echoID !== undefined && info.id === echoID) {
-              // Consume-once: the injected continuation echo.
+              // Consume-once: the injected wake echo.
               injectedEchoMessages.delete(info.sessionID);
             } else if (info.synthetic !== true) {
-              continuationUsed.delete(info.sessionID);
+              engine?.reset(info.sessionID);
             }
           }
         }
@@ -549,13 +538,13 @@ export async function buildPlugin(input: any, zooConfig: any, rawConfig?: any) {
         const info = properties?.info as { id?: string } | undefined;
         if (info?.id) {
           cleanupSession(info.id);
-          continuationUsed.delete(info.id);
+          engine?.reset(info.id);
           abortedSessions.delete(info.id);
           injectedEchoMessages.delete(info.id);
         }
       }
 
-      // Auto-continuation: a dolphin turn settled with unfinished work.
+      // Loop settle: a dolphin turn settled with unfinished work.
       // Fail-closed — only the orchestrator session, and only when the
       // active profile contributed a settle judge.
       if (type === "session.idle") {
@@ -563,36 +552,25 @@ export async function buildPlugin(input: any, zooConfig: any, rawConfig?: any) {
           ?.sessionID;
         if (typeof sessionID !== "string") return;
         if (resolveAgent(sessionID) !== "dolphin") return;
-        if (!hasSettledContributions || maxReminders === undefined) return;
+        if (engine === undefined) return;
 
         const outcome = await classifyStopCause(sessionID);
         if (outcome === null) return;
 
-        const budget: Budget = {
-          limit: maxReminders,
-          used: continuationUsed.get(sessionID) ?? 0,
-        };
-        const decision = await settledRunner({
+        const decision = await engine.run({
           sessionID,
           cause: outcome.cause,
-          budget,
           progress: outcome.progress,
         });
-        if (decision === null || decision.kind !== "wake") return;
+        if (decision === null) return;
 
         if (typeof client?.session?.promptAsync !== "function") {
-          log(
-            "continuation",
-            "wake_inject_unavailable",
-            sessionID,
-            undefined,
-            "warn",
-          );
+          log("loop", "wake_inject_unavailable", sessionID, undefined, "warn");
           return;
         }
         // Count the reminder before dispatch so a delivery failure
         // cannot become an unbounded retry loop.
-        continuationUsed.set(sessionID, budget.used + 1);
+        engine.record(sessionID, decision.name);
         // Tag the injected message so its echo is recognizable by
         // `info.id` when the corresponding `message.updated` arrives.
         const messageID = newInjectedMessageID();
@@ -606,22 +584,17 @@ export async function buildPlugin(input: any, zooConfig: any, rawConfig?: any) {
               parts: [{ type: "text", text: decision.text }],
             },
           });
-          log("continuation", "wake_injected", sessionID, undefined, "info", {
-            used: budget.used + 1,
-            limit: maxReminders,
+          log("loop", "wake_injected", sessionID, undefined, "info", {
+            handler: decision.name,
+            used: engine.used(sessionID, decision.name),
             cause: outcome.cause,
             progress: outcome.progress,
           });
         } catch (err) {
           injectedEchoMessages.delete(sessionID);
-          log(
-            "continuation",
-            "wake_inject_failed",
-            sessionID,
-            undefined,
-            "warn",
-            { error: String(err) },
-          );
+          log("loop", "wake_inject_failed", sessionID, undefined, "warn", {
+            error: String(err),
+          });
         }
       }
     },

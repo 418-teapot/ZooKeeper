@@ -22,11 +22,15 @@
  */
 
 import type { ToolHost } from "./client/tool-host.js";
-import type { AgentModeMap, ContextPruningConfig } from "./config-types.js";
+import type {
+  AgentModeMap,
+  ContextPruningConfig,
+  ContinuationConfig,
+} from "./config-types.js";
 import type { HostAdapter } from "./context/lens.js";
-import type { Budget, Decision, StopCause } from "./continuation/index.js";
 import type { DelegationGate, DelegationJudgeContribution } from "./gate.js";
 import type { HandoffTarget } from "./handoff.js";
+import type { Decision, StopCause } from "./loop/index.js";
 import type { AgentPermissionMap } from "./permissions/deny-tools.js";
 import type { SubagentDriver } from "./subagent/driver.js";
 import type { TodoStateStore } from "./todo/store.js";
@@ -136,6 +140,16 @@ export interface Deps {
   limits: ValidationLimits;
   /** Unified context-pruning configuration (`[zoo.context]`). */
   contextConfig: ContextPruningConfig;
+  /**
+   * Auto-continuation budget (`[zoo.continuation]`), parsed fail-closed.
+   *
+   * The continuation strategy reads its own wake allowance from here; a
+   * missing/invalid section yields `undefined` and the unit contributes
+   * no settle handler (fail-closed at the contribution level).  The host
+   * never feeds this to the engine — the engine reads each strategy's
+   * declared `maxWakes` instead.
+   */
+  continuationConfig?: ContinuationConfig;
   /**
    * Per-agent mode map (`[agent.*].mode`), parsed fail-closed.
    *
@@ -492,21 +506,39 @@ export interface ToolDefinitionContribution {
   handle(view: ToolDefinitionView): void | Promise<void>;
 }
 
-/** Input shape of the auto-continuation settle hook. */
+/**
+ * The strategy view of a stopped turn.
+ *
+ * The engine consults a strategy only after its interlocks pass, so a
+ * strategy never sees the stop cause or the budget: it receives the
+ * session and the observed facts (whether the turn made mutating
+ * progress) and returns a wake/silence verdict.
+ */
 export interface SettledInput {
-  /** Session whose turn settled. */
+  /** Session whose turn stopped. */
   sessionID: string;
-  /** Why the agent's turn ended. */
-  cause: StopCause;
-  /** The session's reminder budget at settle time. */
-  budget: Budget;
   /**
    * Whether the settled turn performed mutating work — a call the host
    * classifies as mutating, or delegation to an executor subagent.  A
    * read-only or discussion-only turn is not progress; the tool-name
-   * vocabulary is host-owned, see `resolveWorkActions` in the
-   * continuation module.
+   * vocabulary is host-owned, see `resolveWorkActions` in the loop
+   * module.
    */
+  progress: boolean;
+}
+
+/**
+ * The host's report of a stopped turn, before the engine's interlocks.
+ *
+ * Carries the stop cause the engine needs to decide whether any strategy
+ * may be consulted; the engine reads its own budget state.
+ */
+export interface SettleRequest {
+  /** Session whose turn stopped. */
+  sessionID: string;
+  /** Why the agent's turn ended. */
+  cause: StopCause;
+  /** Whether the settled turn performed mutating work. */
   progress: boolean;
 }
 
@@ -516,11 +548,19 @@ export interface SettledInput {
  * The handler judges whether the settled turn should be woken to finish
  * remaining work and returns that {@link Decision}; hosts deliver a
  * `wake` text and ignore a `silence`.  Judgment lives entirely in the
- * contributing unit — the host only reads the verdict.
+ * contributing unit — the engine only reads the verdict.  The unit also
+ * declares its own wake allowance, so the engine can enforce the budget
+ * interlock without any configuration of its own.
  */
 export interface SettledContribution {
-  /** Handler label used for logging. */
+  /** Handler label used for logging and budget accounting. */
   name: string;
+  /**
+   * Maximum number of wakes the engine may deliver for this strategy per
+   * session.  A strategy whose allowance is spent is skipped so later
+   * strategies may still win.
+   */
+  maxWakes: number;
   handle(input: SettledInput): Promise<Decision>;
 }
 
@@ -771,7 +811,7 @@ export interface ComposedResult {
   textComplete: TextCompleteContribution[];
   /** Enabled `tool.definition` enhancers. */
   toolDefinition: ToolDefinitionContribution[];
-  /** Enabled auto-continuation settle handlers. */
+  /** Enabled loop settle handlers. */
   onSettled: SettledContribution[];
   /** The composed delegation gate, or `null` for an empty judge chain. */
   gate: DelegationGate | null;

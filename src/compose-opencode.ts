@@ -27,8 +27,8 @@
  *
  * The exported helper functions (`buildToolHooks`,
  * `injectAgentPrompts`, `registerProfileToolsInConfig`, `registerSkills`,
- * `runAfterHandlers`, `buildSettledRunner`) are shared with the config
- * hook and kept public for unit tests.  `normalizeToolName` is shared
+ * `runAfterHandlers`) are shared with the config hook and kept public for
+ * unit tests.  `normalizeToolName` is shared
  * with the tool registration path and kept public for unit tests.
  *
  * @module
@@ -40,7 +40,6 @@ import { fileURLToPath } from "node:url";
 import { createV1ToolHost } from "./adapters/opencode/tool-host.js";
 import { getAgentName } from "./core/client/agent.js";
 import type { ContextPruningConfig, ModeProfile } from "./core/config-types.js";
-import { type Decision, runSettled } from "./core/continuation/index.js";
 import type {
   ActiveSet,
   AfterExecInput,
@@ -51,8 +50,6 @@ import type {
   CommandInput,
   ComposedResult,
   Deps,
-  SettledContribution,
-  SettledInput,
   TextCompleteInput,
   TextCompleteOutput,
   ToolArgDefinition,
@@ -292,33 +289,6 @@ export async function runAfterHandlers(
       });
     }
   }
-}
-
-// ---------------------------------------------------------------------------
-// Settled-turn runner
-// ---------------------------------------------------------------------------
-
-/**
- * Build a runner over the composed `onSettled` contributions.
- *
- * A thin wrapper over the shared {@link runSettled} runner: each
- * contribution judges the settled turn independently and returns a
- * {@link Decision}.  Handlers run in registration order with per-handler
- * error isolation (a throwing handler is logged as `handler_crashed` and
- * never blocks the next).  The runner returns the first `wake` decision
- * or `null` when every handler stays silent (an empty list is also
- * `null` — fail-closed, the host must not invent a wake).
- *
- * Exported for unit testing.
- *
- * @param onSettled - The composed settle contributions, in registry order.
- * @returns An async runner mapping a settle input to the first wake
- *   decision, or `null` when nothing wakes.
- */
-export function buildSettledRunner(
-  onSettled: SettledContribution[],
-): (input: SettledInput) => Promise<Decision | null> {
-  return (input) => runSettled(onSettled, input);
 }
 
 // ---------------------------------------------------------------------------

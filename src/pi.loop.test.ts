@@ -1,9 +1,7 @@
 /**
- * Tests for the pi host's auto-continuation wiring.
+ * Tests for the pi host's loop settle wiring.
  *
- * Covers `buildPiSettledHandler` (first-wake selection, monotone silence,
- * per-handler crash isolation, no-op with no contributions) and the
- * `buildPiHandlers` settle/stop-cause/budget wiring: a finished run with
+ * Covers the `buildPiHandlers` settle/stop-cause/budget wiring: a finished run with
  * unfinished todos queues exactly one `sendMessage` follow-up carrying the
  * core-rendered text from `agent_end` (while the run still streams, so
  * pi's own loop drains it); an awaiting-input span, an aborted run, an
@@ -20,12 +18,10 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { buildPiSettledHandler } from "./compose-pi.js";
-import { CONTINUATION_PROMPT } from "./core/continuation/index.js";
 import { sessionAgentRegistry } from "./core/session-agent.js";
-import type { SettledInput } from "./core/slots.js";
 import { _resetForTesting as resetIdentityForTesting } from "./core/subagent/identity.js";
 import { resetRegistry } from "./core/subagent/registry.js";
+import { CONTINUATION_PROMPT } from "./hooks/todo-continuation/decide.js";
 import { buildPiHandlers } from "./pi.js";
 import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
 
@@ -194,90 +190,10 @@ const ZOO_NO_SETTLE = {
 };
 
 // ---------------------------------------------------------------------------
-// buildPiSettledHandler
-// ---------------------------------------------------------------------------
-
-describe("buildPiSettledHandler", () => {
-  const input: SettledInput = {
-    sessionID: "s1",
-    cause: "settled",
-    budget: { limit: 3, used: 0 },
-    progress: true,
-  };
-
-  it("returns the first wake decision and never calls later contributions", async () => {
-    const calls: string[] = [];
-    const handler = buildPiSettledHandler([
-      {
-        name: "silent",
-        handle: async () => {
-          calls.push("silent");
-          return { kind: "silence", reason: "no-active" };
-        },
-      },
-      {
-        name: "waker",
-        handle: async () => {
-          calls.push("waker");
-          return { kind: "wake", text: "go" };
-        },
-      },
-      {
-        name: "after",
-        handle: async () => {
-          calls.push("after");
-          return { kind: "wake", text: "late" };
-        },
-      },
-    ]);
-    const decision = await handler(input);
-    assert.deepEqual(decision, { kind: "wake", text: "go" });
-    assert.deepEqual(calls, ["silent", "waker"]);
-  });
-
-  it("returns null when every contribution silences", async () => {
-    const handler = buildPiSettledHandler([
-      {
-        name: "a",
-        handle: async () => ({ kind: "silence", reason: "empty" }),
-      },
-    ]);
-    assert.equal(await handler(input), null);
-  });
-
-  it("isolates a crashing contribution and continues", async () => {
-    const handler = buildPiSettledHandler([
-      {
-        name: "boom",
-        handle: async () => {
-          throw new Error("nope");
-        },
-      },
-      {
-        name: "waker",
-        handle: async () => ({ kind: "wake", text: "go" }),
-      },
-    ]);
-    const decision = await handler(input);
-    assert.deepEqual(decision, { kind: "wake", text: "go" });
-    const crashed = _getBufferForTesting().filter(
-      (entry) => entry.event === "handler_crashed",
-    );
-    assert.equal(crashed.length, 1);
-    assert.equal(crashed[0].handler, "boom");
-  });
-
-  it("is a no-op with no contributions", async () => {
-    const handler = buildPiSettledHandler([]);
-    assert.equal(await handler(input), null);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // buildPiHandlers — settle wiring
 // ---------------------------------------------------------------------------
 
-describe("buildPiHandlers — auto-continuation", () => {
+describe("buildPiHandlers — loop settle", () => {
   it("queues the wake as a followUp from agent_end so pi's run loop drains it", async () => {
     const api = mockApi();
     const handlers = buildPiHandlers(ZOO, api as any);
@@ -290,7 +206,7 @@ describe("buildPiHandlers — auto-continuation", () => {
 
     assert.equal(api.sent.length, 1);
     const { message, options } = api.sent[0];
-    assert.equal(message.customType, "zoo-continuation");
+    assert.equal(message.customType, "zoo-loop-wake");
     assert.equal(message.display, true);
     assert.ok(message.content.startsWith(CONTINUATION_PROMPT));
     assert.ok(message.content.includes("Wire source"));
@@ -407,7 +323,7 @@ describe("buildPiHandlers — auto-continuation", () => {
 
   it("drops a session's budget on session_start so it restarts fresh", async () => {
     const api = mockApi();
-    const reminders = new Map<string, number>();
+    const reminders = new Map<string, Map<string, number>>();
     const handlers = buildPiHandlers(ZOO_LIMIT_1, api as any, undefined, {
       remindersUsed: reminders,
     });
@@ -415,7 +331,7 @@ describe("buildPiHandlers — auto-continuation", () => {
 
     await handlers.agentEnd(RUN_ENDED, c);
     assert.equal(api.sent.length, 1);
-    assert.equal(reminders.get("sess-del"), 1);
+    assert.equal(reminders.get("sess-del")?.get("todoContinuation"), 1);
 
     // The same session starting again begins with a fresh budget.
     await handlers.sessionStart({ type: "session_start" }, c);
@@ -425,10 +341,12 @@ describe("buildPiHandlers — auto-continuation", () => {
     assert.equal(api.sent.length, 2);
   });
 
-  it("caps the budget map, evicting the oldest-inserted sessions", async () => {
+  it("caps the budget store, evicting the oldest-inserted sessions", async () => {
     const api = mockApi();
-    const reminders = new Map<string, number>();
-    for (let i = 0; i < 100; i += 1) reminders.set(`s${i}`, 1);
+    const reminders = new Map<string, Map<string, number>>();
+    for (let i = 0; i < 100; i += 1) {
+      reminders.set(`s${i}`, new Map([["todoContinuation", 1]]));
+    }
     const handlers = buildPiHandlers(ZOO, api as any, undefined, {
       remindersUsed: reminders,
     });
@@ -437,12 +355,18 @@ describe("buildPiHandlers — auto-continuation", () => {
 
     assert.equal(reminders.size, 100);
     assert.equal(reminders.has("s0"), false, "oldest entry evicted");
-    assert.equal(reminders.get("s100"), 1, "new entry retained");
+    assert.equal(
+      reminders.get("s100")?.get("todoContinuation"),
+      1,
+      "new entry retained",
+    );
   });
 
   it("performs no continuation bookkeeping when the feature is disabled", async () => {
     const api = mockApi();
-    const reminders = new Map<string, number>([["sess-keep", 1]]);
+    const reminders = new Map<string, Map<string, number>>([
+      ["sess-keep", new Map([["todoContinuation", 1]])],
+    ]);
     const handlers = buildPiHandlers(ZOO_NO_SETTLE, api as any, undefined, {
       remindersUsed: reminders,
     });
@@ -459,12 +383,15 @@ describe("buildPiHandlers — auto-continuation", () => {
       settleCtx("sess-keep", ACTIVE_BRANCH),
     );
 
-    assert.deepEqual([...reminders.entries()], [["sess-keep", 1]]);
+    assert.equal(reminders.get("sess-keep")?.get("todoContinuation"), 1);
+    assert.equal(reminders.size, 1);
   });
 
   it("performs no bookkeeping when max_reminders is absent", async () => {
     const api = mockApi();
-    const reminders = new Map<string, number>([["sess-keep", 1]]);
+    const reminders = new Map<string, Map<string, number>>([
+      ["sess-keep", new Map([["todoContinuation", 1]])],
+    ]);
     const handlers = buildPiHandlers(
       ZOO_NO_CONTINUATION,
       api as any,
@@ -484,7 +411,8 @@ describe("buildPiHandlers — auto-continuation", () => {
       settleCtx("sess-keep", ACTIVE_BRANCH),
     );
 
-    assert.deepEqual([...reminders.entries()], [["sess-keep", 1]]);
+    assert.equal(reminders.get("sess-keep")?.get("todoContinuation"), 1);
+    assert.equal(reminders.size, 1);
   });
 });
 

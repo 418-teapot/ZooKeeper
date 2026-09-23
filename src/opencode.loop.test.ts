@@ -1,5 +1,5 @@
 /**
- * Tests for the OpenCode `session.idle` auto-continuation wiring.
+ * Tests for the OpenCode `session.idle` loop settle wiring.
  *
  * Covers the settled-turn wake path end to end through `buildPlugin`'s
  * persistent `event` hook: a dolphin idle with unfinished todos wakes
@@ -8,17 +8,12 @@
  * exhausted budget, and a profile without an `onSettled` contribution or
  * without a valid `[zoo.continuation].max_reminders` all stay silent.  A
  * real user message resets the per-session budget, the host's own
- * injected continuation echo never does.
+ * injected wake echo never does.
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { buildSettledRunner } from "./compose-opencode.js";
-import {
-  CONTINUATION_PROMPT,
-  type Decision,
-} from "./core/continuation/index.js";
 import { sessionAgentRegistry } from "./core/session-agent.js";
-import type { SettledContribution, SettledInput } from "./core/slots.js";
+import { CONTINUATION_PROMPT } from "./hooks/todo-continuation/decide.js";
 import {
   buildPlugin,
   hasUnansweredQuestion,
@@ -65,7 +60,7 @@ const CONTINUATION_PROFILE = {
 };
 
 /**
- * Build a `[zoo]` config with the continuation profile enabled.
+ * Build a `[zoo]` config with the loop profile enabled.
  *
  * @param maxReminders - The `[zoo.continuation].max_reminders` value.
  * @param hooks - The profile hooks list.
@@ -89,7 +84,7 @@ type PromptCall = {
 };
 
 /**
- * Build a stub OpenCode client exposing the APIs the continuation path
+ * Build a stub OpenCode client exposing the APIs the loop path
  * reads (`session.todo`, `session.messages`, `session.promptAsync`).
  *
  * @param opts - Per-test overrides for todos and the transcript.
@@ -160,7 +155,7 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("session.idle — dolphin wake path", () => {
-  it("wakes once with the core continuation text", async () => {
+  it("wakes once with the core reminder text", async () => {
     const { client, calls } = makeClient();
     const plugin = await buildPlugin({ client }, zooConfig());
     await bindAgent(plugin, "dolphin");
@@ -537,7 +532,7 @@ describe("session.idle — reminder budget", () => {
     const echoID = calls[0].body.messageID;
     assert.ok(echoID, "the injected message carries an id");
 
-    // The continuation echo is a user message too — it must not reset.
+    // The wake echo is a user message too — it must not reset.
     await plugin.event({
       event: {
         type: "message.updated",
@@ -664,64 +659,5 @@ describe("lastAssistantAborted", () => {
       false,
     );
     assert.equal(lastAssistantAborted([]), false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// buildSettledRunner
-// ---------------------------------------------------------------------------
-
-describe("buildSettledRunner", () => {
-  const input: SettledInput = {
-    sessionID: "s1",
-    cause: "settled",
-    budget: { limit: 3, used: 0 },
-    progress: true,
-  };
-
-  function handler(
-    name: string,
-    fn: (i: SettledInput) => Promise<Decision>,
-  ): SettledContribution {
-    return { name, handle: fn };
-  }
-
-  it("returns the first wake decision", async () => {
-    const runner = buildSettledRunner([
-      handler("a", async () => ({ kind: "silence", reason: "empty" })),
-      handler("b", async () => ({ kind: "wake", text: "go" })),
-    ]);
-    assert.deepEqual(await runner(input), { kind: "wake", text: "go" });
-  });
-
-  it("returns null when every handler stays silent", async () => {
-    const runner = buildSettledRunner([
-      handler("a", async () => ({ kind: "silence", reason: "empty" })),
-      handler("b", async () => ({ kind: "silence", reason: "no-active" })),
-    ]);
-    assert.equal(await runner(input), null);
-  });
-
-  it("returns null for an empty contribution list", async () => {
-    const runner = buildSettledRunner([]);
-    assert.equal(await runner(input), null);
-  });
-
-  it("isolates a throwing handler and continues", async () => {
-    let reached = false;
-    const runner = buildSettledRunner([
-      handler("boom", async () => {
-        throw new Error("handler failed");
-      }),
-      handler("ok", async () => {
-        reached = true;
-        return { kind: "wake", text: "after crash" };
-      }),
-    ]);
-    assert.deepEqual(await runner(input), {
-      kind: "wake",
-      text: "after crash",
-    });
-    assert.equal(reached, true);
   });
 });

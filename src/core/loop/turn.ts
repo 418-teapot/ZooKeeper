@@ -1,26 +1,17 @@
 /**
- * Auto-continuation decision — a pure function over todo task views.
+ * Settled-turn facts shared by the loop engine and its strategies.
  *
- * When an agent's turn settles while work remains in its todo list, the
- * orchestrator should wake the agent and press it to finish.  This module
- * owns the entire judgment: it inspects the flattened task list, the
- * reason the turn ended, the session's reminder budget, and whether the
- * settled turn actually made mutating progress, and returns either a
- * reminder to deliver or an explicit silence with the gate that
- * suppressed it.  Host layers only translate their events into these
- * inputs and deliver the resulting text.
- *
- * The function is total and side-effect free: the same inputs always
- * produce the same output, there is no module state, and no host, file
- * system, or process API is touched.  Budget bookkeeping (counting a
- * reminder as used, resetting progress) belongs to the host; this module
- * only reads the current budget.
+ * These helpers describe a turn that stopped: why it ended, which of its
+ * tool calls count as real mutating work, and whether its final line
+ * hands the conversation back to the user.  They are total and
+ * side-effect free — the same inputs always produce the same output, no
+ * module state is touched, and no host, file system, or process API is
+ * used.  Tool-name vocabulary stays host-owned: each host declares which
+ * of its names mutate and how to tell whether a delegated agent may
+ * mutate, so core never hardcodes a tool name.
  *
  * @module
  */
-
-import type { TodoItemView } from "../todo/types.js";
-import { isActiveTodoStatus } from "../todo/types.js";
 
 /** Why the agent's turn ended. */
 export type StopCause = "settled" | "awaiting-input" | "aborted";
@@ -52,74 +43,6 @@ export interface WorkVocabulary {
   mutatingTools: readonly string[];
   /** Whether a delegated agent name is an executor (may mutate). */
   isExecutorAgent: (agent: string) => boolean;
-}
-
-/** Reminder budget for one session: how many wakes are allowed, and used. */
-export interface Budget {
-  /** Maximum number of continuation reminders for the session. */
-  limit: number;
-  /** Reminders already consumed for the session. */
-  used: number;
-}
-
-/** Why a continuation reminder was withheld. */
-export type SilenceReason =
-  | "not-settled"
-  | "empty"
-  | "no-active"
-  | "no-progress"
-  | "budget-exhausted";
-
-/** The outcome of a continuation judgment. */
-export type Decision =
-  | { kind: "wake"; text: string }
-  | { kind: "silence"; reason: SilenceReason };
-
-/**
- * Fixed directive prepended to every continuation reminder.
- *
- * The wording is deliberately adversarial: it anticipates the model
- * claiming the work is done and pushes it to re-verify rather than
- * silently accept the claim.
- */
-export const CONTINUATION_PROMPT =
-  "Incomplete tasks remain in your todo list. " +
-  "Continue working on the next pending task.\n" +
-  "- Proceed without asking for permission\n" +
-  "- Mark each task complete when finished\n" +
-  "- Do not stop until all tasks are done\n" +
-  "- If you believe all work is already complete, the system is " +
-  "questioning your completion claim. Critically re-examine each todo " +
-  "item from a skeptical perspective, verify the work was actually done " +
-  "correctly, and update the todo list accordingly.";
-
-function isRemaining(status: TodoItemView["status"]): boolean {
-  return status !== "completed" && status !== "abandoned";
-}
-
-/**
- * Render the continuation reminder for an unfinished todo list.
- *
- * The text is the fixed `CONTINUATION_PROMPT` followed by a compact status
- * summary and the list of tasks that are neither completed nor abandoned
- * (blocked tasks are still reported, since they remain unresolved).
- *
- * @param tasks - The task views to summarize.
- * @returns The reminder text.
- */
-function renderContinuation(tasks: readonly TodoItemView[]): string {
-  const completed = tasks.filter((task) => task.status === "completed").length;
-  const remaining = tasks.filter((task) => isRemaining(task.status));
-
-  const lines = [
-    CONTINUATION_PROMPT,
-    "",
-    `[Status: ${completed}/${tasks.length} completed, ` +
-      `${remaining.length} remaining]`,
-    "Remaining tasks:",
-    ...remaining.map((task) => `- [${task.status}] ${task.content}`),
-  ];
-  return lines.join("\n");
 }
 
 /**
@@ -158,9 +81,9 @@ export function resolveWorkActions(
 // --- Turn-handback detection -------------------------------------------
 // Ported and extended from oh-my-pi's `isAwaitingUserAnswer`.  The
 // heuristic answers "is the last line of the assistant turn addressed at
-// the user, awaiting a reply?" so the continuation wake can be suppressed
-// when the turn is a genuine handback rather than a stall.  The bias is
-// toward suppression: a false positive only silences one continuation
+// the user, awaiting a reply?" so a strategy can suppress its wake when
+// the turn is a genuine handback rather than a stall.  The bias is
+// toward suppression: a false positive only silences one loop
 // wake (cheap), whereas a false negative talks over a question the user
 // still has to answer.  This is why the Chinese cue patterns are
 // deliberately broad and why a statement that merely opens with a
@@ -261,7 +184,7 @@ function lastNonEmptyLine(text: string): string | undefined {
  * Only the last non-empty line is inspected: a question buried mid-turn is
  * part of the work, not a handback. Empty text is never awaiting. The
  * detection is intentionally broad (see the suppression-bias note above)
- * — a false positive merely skips one continuation wake.
+ * — a false positive merely skips one loop wake.
  *
  * @param finalText - The settled assistant turn's full text.
  * @returns `true` when the last non-empty line solicits a user reply.
@@ -270,52 +193,4 @@ export function isAwaitingUserAnswer(finalText: string): boolean {
   const lastLine = lastNonEmptyLine(finalText);
   if (lastLine === undefined) return false;
   return isQuestionLine(lastLine) || isResponseCueLine(lastLine);
-}
-
-/**
- * Decide whether to wake the agent to continue its unfinished todos.
- *
- * Gates short-circuit in a fixed order, each producing a distinct silence
- * reason:
- * 1. the turn did not settle (`"not-settled"`);
- * 2. the todo list is empty (`"empty"`);
- * 3. no task is active — pending or in-progress (`"no-active"`); a list of
- *    only completed, abandoned, and/or blocked tasks does not warrant a
- *    wake;
- * 4. the settled turn made no mutating progress (`"no-progress"`); a turn
- *    that only read, discussed, updated its todo list, or delegated to a
- *    read-only agent has not advanced the work and may be handing the turn
- *    back;
- * 5. the session budget is spent (`"budget-exhausted"`).
- *
- * Otherwise the agent is woken with a rendered reminder.
- *
- * @param tasks - Flattened task views for the current todo list.
- * @param cause - Why the agent's turn ended.
- * @param budget - The session's reminder budget.
- * @param progress - Whether the settled turn performed mutating work.
- * @returns The wake decision with its text, or silence with its reason.
- */
-export function decide(
-  tasks: readonly TodoItemView[],
-  cause: StopCause,
-  budget: Budget,
-  progress: boolean,
-): Decision {
-  if (cause !== "settled") {
-    return { kind: "silence", reason: "not-settled" };
-  }
-  if (tasks.length === 0) {
-    return { kind: "silence", reason: "empty" };
-  }
-  if (!tasks.some((task) => isActiveTodoStatus(task.status))) {
-    return { kind: "silence", reason: "no-active" };
-  }
-  if (!progress) {
-    return { kind: "silence", reason: "no-progress" };
-  }
-  if (budget.used >= budget.limit) {
-    return { kind: "silence", reason: "budget-exhausted" };
-  }
-  return { kind: "wake", text: renderContinuation(tasks) };
 }

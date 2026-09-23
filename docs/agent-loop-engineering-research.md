@@ -430,7 +430,7 @@ advisor 跑自己的 `Agent` 循环，不经过主 session 的 `LoopGuards`（is
 
 ## 15. 对 ZooKeeper 的启示
 
-ZooKeeper（同时适配 OpenCode 与 pi 的编排器插件）已具备引擎雏形：`onSettled` slot + 汇聚 runner（首个 wake 胜出、逐策略崩溃隔离、fail-closed）+ 预算记账 + 双宿主续写注入，唯一策略是 todo-continuation（`src/core/continuation/`、`src/hooks/todo-continuation/`）。
+ZooKeeper（同时适配 OpenCode 与 pi 的编排器插件）已将引擎落地：`onSettled` slot + 引擎（停稳/预算联锁、首个 wake 胜出、逐策略崩溃隔离、fail-closed、按策略分账记账）+ 双宿主续写注入，唯一策略是 todo-continuation（`src/core/loop/`、`src/hooks/todo-continuation/`）。
 
 本调研的结论已转化为设计决策，完整方案见 `docs/loop-engine-design.md`。各模式的取舍：
 

@@ -3,17 +3,19 @@
  *
  * Locks the descriptor shape and the `onSettled` contribution's
  * judgment-as-read contract: the handler reads the session's todos
- * through the injected source and returns the core `decide` verdict —
- * waking on a settled turn with active work, silencing on a non-settled
- * cause, an exhausted budget, an empty list, or a missing todo source.
+ * through the injected source and returns the todo strategy's verdict —
+ * waking on an active list with progress, silencing on an empty list, no
+ * active work, no progress, or a missing todo source, and that a missing
+ * continuation config contributes no handler at all.  The engine-level
+ * interlocks (not-settled, budget-exhausted) are covered at the core
+ * layer (`src/core/loop/engine.test.ts`).
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { Budget } from "../../core/continuation/decide.js";
-import { CONTINUATION_PROMPT } from "../../core/continuation/index.js";
 import type { Deps } from "../../core/slots.js";
 import type { TodoStateStore } from "../../core/todo/store.js";
 import type { TodoPhase } from "../../core/todo/types.js";
+import { CONTINUATION_PROMPT } from "./decide.js";
 import { unit } from "./index.js";
 
 /** A todo list with work in flight. */
@@ -31,9 +33,6 @@ const ACTIVE_PHASES: TodoPhase[] = [
 const DONE_PHASES: TodoPhase[] = [
   { name: "Implement", tasks: [{ content: "Ship it", status: "completed" }] },
 ];
-
-/** A budget with room to spare. */
-const OPEN_BUDGET: Budget = { limit: 3, used: 0 };
 
 /**
  * Build a store-shaped fake serving the given phases on every read.
@@ -55,6 +54,7 @@ function makeDeps(partial: Record<string, unknown>): Deps {
   return {
     limits: {},
     contextConfig: {},
+    continuationConfig: { maxReminders: 3 },
     client: {},
     directory: "",
     resolveAgent: () => undefined,
@@ -66,15 +66,10 @@ function makeDeps(partial: Record<string, unknown>): Deps {
  * Compose the unit and run its `onSettled` handler with the given inputs.
  *
  * @param deps - Dependencies handed to `unit.create`.
- * @param cause - The settle cause.
- * @param budget - The session budget.
+ * @param progress - Whether the settled turn made mutating progress.
  * @returns The handler's decision.
  */
-async function settle(
-  deps: Deps,
-  cause: "settled" | "awaiting-input" | "aborted" = "settled",
-  budget: Budget = OPEN_BUDGET,
-) {
+async function settle(deps: Deps, progress = true) {
   const composed = unit.create(deps, {
     agents: new Set(),
     skills: new Set(),
@@ -83,12 +78,7 @@ async function settle(
     commands: new Set(),
   });
   assert.equal(composed.onSettled.length, 1);
-  return composed.onSettled[0].handle({
-    sessionID: "s1",
-    cause,
-    budget,
-    progress: true,
-  });
+  return composed.onSettled[0].handle({ sessionID: "s1", progress });
 }
 
 describe("todo-continuation unit — descriptor", () => {
@@ -113,11 +103,37 @@ describe("todo-continuation unit — descriptor", () => {
     assert.deepEqual(composed.delegation, []);
     assert.equal(composed.onSettled.length, 1);
     assert.equal(composed.onSettled[0].name, "todoContinuation");
+    assert.equal(composed.onSettled[0].maxWakes, 3);
+  });
+
+  it("declares the parsed max_reminders as its wake allowance", () => {
+    const composed = unit.create(
+      makeDeps({ continuationConfig: { maxReminders: 5 } }),
+      {
+        agents: new Set(),
+        skills: new Set(),
+        hooks: new Set(["todo-continuation"]),
+        tools: new Set(),
+        commands: new Set(),
+      },
+    );
+    assert.equal(composed.onSettled[0].maxWakes, 5);
+  });
+
+  it("contributes no settle handler without a valid config", () => {
+    const composed = unit.create(makeDeps({ continuationConfig: undefined }), {
+      agents: new Set(),
+      skills: new Set(),
+      hooks: new Set(["todo-continuation"]),
+      tools: new Set(),
+      commands: new Set(),
+    });
+    assert.deepEqual(composed.onSettled, []);
   });
 });
 
 describe("todo-continuation unit — onSettled judgment", () => {
-  it("wakes a settled turn with active todos and budget room", async () => {
+  it("wakes an active list that made progress", async () => {
     const decision = await settle(
       makeDeps({ todoStore: fakeStore(ACTIVE_PHASES) }),
     );
@@ -127,12 +143,12 @@ describe("todo-continuation unit — onSettled judgment", () => {
     assert.ok(decision.text.includes("Wire source"));
   });
 
-  it("silences an aborted turn via the not-settled gate", async () => {
+  it("silences a turn that made no progress", async () => {
     const decision = await settle(
       makeDeps({ todoStore: fakeStore(ACTIVE_PHASES) }),
-      "aborted",
+      false,
     );
-    assert.deepEqual(decision, { kind: "silence", reason: "not-settled" });
+    assert.deepEqual(decision, { kind: "silence", reason: "no-progress" });
   });
 
   it("silences a settled turn with no active work", async () => {
@@ -140,15 +156,6 @@ describe("todo-continuation unit — onSettled judgment", () => {
       makeDeps({ todoStore: fakeStore(DONE_PHASES) }),
     );
     assert.deepEqual(decision, { kind: "silence", reason: "no-active" });
-  });
-
-  it("silences a settled turn when the budget is exhausted", async () => {
-    const decision = await settle(
-      makeDeps({ todoStore: fakeStore(ACTIVE_PHASES) }),
-      "settled",
-      { limit: 3, used: 3 },
-    );
-    assert.deepEqual(decision, { kind: "silence", reason: "budget-exhausted" });
   });
 
   it("treats a missing todo source as an empty list", async () => {

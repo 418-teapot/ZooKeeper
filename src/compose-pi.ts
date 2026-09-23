@@ -61,7 +61,6 @@ import type {
   PiToolResultResult,
 } from "./adapters/pi/types.js";
 import { setModelLimit } from "./core/context/model-limits.js";
-import { type Decision, runSettled } from "./core/continuation/index.js";
 import type { DelegationGate } from "./core/gate.js";
 import type {
   ComposedResult,
@@ -102,7 +101,6 @@ export type {
 import type {
   AfterExecInput,
   AfterExecOutput,
-  SettledInput,
   TransformOutput,
 } from "./core/slots.js";
 
@@ -657,31 +655,6 @@ export function buildPiMessageEndHandler(
       },
     };
   };
-}
-
-// ---------------------------------------------------------------------------
-// Settle slot assembly
-// ---------------------------------------------------------------------------
-
-/**
- * Build the pi settle judge from the composed `onSettled` contributions.
- *
- * The host adapter (not pi) supplies the session id, stop cause, and
- * current budget as a {@link SettledInput}.  A thin wrapper over the shared {@link runSettled}
- * runner: each contribution runs in registration order with per-handler
- * error isolation (a crash is logged as `handler_crashed` and never blocks
- * the next); the first `wake` verdict is returned, and when every
- * contribution silences, `null` is returned.  The judgment itself stays
- * entirely in the contributing units — this function only reads their
- * verdicts.
- *
- * @param onSettled - The composed settle contributions.
- * @returns The settle judging function (null when nothing wakes).
- */
-export function buildPiSettledHandler(
-  onSettled: ComposedResult["onSettled"],
-): (input: SettledInput) => Promise<Decision | null> {
-  return (input) => runSettled(onSettled, input);
 }
 
 // ---------------------------------------------------------------------------

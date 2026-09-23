@@ -3,7 +3,7 @@
  * registry.
  *
  * This extension registers seven unconditional event hooks, three
- * profile-gated auto-continuation events, and slash commands, all driven
+ * profile-gated loop settle events, and slash commands, all driven
  * by the active mode profile (`[zoo.mode.<name>]`, parsed by
  * `parseModeProfile`):
  * 1. `session_start` — seeds the `zoo` widget (rendered above the
@@ -30,14 +30,14 @@
  * 7. `session_tree` — drops this session's cached todo view after tree
  *    navigation (`/tree`) moves the active leaf, so the next `todo`
  *    call re-scans the branch the navigation moved to.
- * 8. auto-continuation — `agent_end` classifies the finished run
+ * 8. loop settle — `agent_end` classifies the finished run
  *    (aborted / awaiting-input / settled) from its terminal message and
  *    the open-blocking-prompt count kept by `ui_prompt_start` /
  *    `ui_prompt_end`, then queues the composed settle judge's wake
  *    reminder as a `followUp` custom message.  Because the run is still
  *    streaming when `agent_end` fires, pi's own run loop drains the
  *    queued follow-up within the same `prompt()` call (so a single-shot
- *    host keeps the session alive to run the continuation).  These
+ *    host keeps the session alive to run the wake).  These
  *    events are registered only when the profile composes a settle
  *    contribution (todo-continuation) — a profile without it registers
  *    none (fail-closed).
@@ -130,7 +130,6 @@ import {
   buildPiCommandRegistrationPlan,
   buildPiContextHandler,
   buildPiMessageEndHandler,
-  buildPiSettledHandler,
   buildPiToolResultHandler,
   loadPiHtmlConverter,
   type PiCommandContext,
@@ -153,12 +152,12 @@ import type { AgentModeMap, ModeProfile } from "./core/config-types.js";
 import type { HostAdapter } from "./core/context/lens.js";
 import { clearRoundView } from "./core/context/round-view.js";
 import {
-  type Budget,
+  createLoopEngine,
   isAwaitingUserAnswer,
   resolveWorkActions,
   type StopCause,
   type TurnToolCall,
-} from "./core/continuation/index.js";
+} from "./core/loop/index.js";
 import {
   isSkillAllowed,
   parseSkillPermissions,
@@ -650,6 +649,10 @@ export function buildPiContributions(
 } {
   const limits = parseLimits(zooConfig);
   const contextConfig = parseContextConfig(zooConfig);
+  // The auto-continuation budget, parsed fail to skip.  The owning
+  // strategy reads it through deps and declares it as its own wake
+  // allowance (`maxWakes`); the engine is never configured with it.
+  const continuationConfig = parseContinuationConfig(zooConfig);
   // The ask-tool timeout (seconds), parsed fail to skip.  Injected only
   // here (pi host) — the ask tool is not registered on OpenCode.
   const askConfig = parseAskConfig(zooConfig);
@@ -670,6 +673,7 @@ export function buildPiContributions(
   const deps: Deps = {
     limits,
     contextConfig,
+    continuationConfig,
     agentModes,
     agentPermissions,
     askTimeoutSeconds: askConfig?.timeoutSeconds,
@@ -854,7 +858,7 @@ function messageRole(message: unknown): string | undefined {
  *
  * A turn starts right after the most recent boundary message — a
  * `user` message (a real prompt) or a `custom` message (an injected
- * follow-up such as the continuation wake itself).  Everything after it
+ * follow-up such as the loop wake itself).  Everything after it
  * is the run the judge is asked about; with no boundary the whole array
  * is the turn.  Only the LAST boundary is honoured, so a multi-turn
  * transcript still resolves to the final run.
@@ -974,7 +978,7 @@ function finalAssistantText(messages: readonly unknown[]): string {
  * the rendered text, which is only a display rendering.  Only `no-ui` is
  * treated as a handback: `aborted` already has its own stop channel (the
  * run reports `stopReason: "aborted"`) and `timeout` is deliberately
- * excluded (a timed-out dialog may still warrant a continuation).  Every
+ * excluded (a timed-out dialog may still warrant a wake).  Every
  * payload is untrusted, so malformed entries are skipped and a
  * transcript with no matching result yields `false` — fail closed toward
  * the ordinary settle logic.
@@ -1047,10 +1051,10 @@ export function buildPiHandlers(
     /** Subagent driver used in place of the real pi SDK driver. */
     subagentDriver?: SubagentDriver;
     /**
-     * Test seam: the per-session reminder-budget map to observe and seed.
-     * Defaults to a fresh map when omitted.
+     * Test seam: the per-(session, strategy) reminder-budget store to
+     * observe and seed.  Defaults to a fresh store when omitted.
      */
-    remindersUsed?: Map<string, number>;
+    remindersUsed?: Map<string, Map<string, number>>;
   },
 ): {
   beforeAgentStart: (
@@ -1071,8 +1075,8 @@ export function buildPiHandlers(
   /**
    * Whether the composition contributes any settle handlers.
    *
-   * The entry point registers the auto-continuation events only when this
-   * is true, so a profile without the todo-continuation hook stays fully
+   * The entry point registers the loop settle events only when this is
+   * true, so a profile without a settle-contributing hook stays fully
    * inert (fail-closed parity with the other profile-driven hooks).
    */
   hasSettledHandlers: boolean;
@@ -1554,36 +1558,31 @@ export function buildPiHandlers(
     rawConfig,
   );
 
-  // Auto-continuation wiring.  The composed settle contributions judge a
-  // settled turn; the host classifies the stop cause, tracks the
-  // per-session reminder budget, and delivers a wake as a follow-up custom
-  // message.
-  const settledHandler = buildPiSettledHandler(composed.onSettled);
-  // The per-session reminder ceiling from `[zoo.continuation]`.  No
-  // default is invented: when the section is absent or `max_reminders`
-  // is missing/invalid the parser yields `undefined` and the whole
-  // feature is disabled (fail-closed) — no settle events are registered
-  // and no budget bookkeeping happens.
-  const continuationLimit = parseContinuationConfig(zooConfig)?.maxReminders;
-  const hasSettledHandlers =
-    composed.onSettled.length > 0 && continuationLimit !== undefined;
-  // Reminders already delivered, keyed by session id.  The map is
-  // pluggable so tests can observe and seed it.
-  const remindersUsed = overrides?.remindersUsed ?? new Map<string, number>();
+  // Loop-engine wiring.  The composed strategies judge a stopped turn;
+  // each declares its own wake allowance (`maxWakes`) and reads its own
+  // config, so the engine needs no configuration of its own.  This host
+  // classifies the stop cause and delivers a wake as a follow-up custom
+  // message.  The engine is built whenever the profile contributes at
+  // least one strategy (fail-closed: no contribution, no engine, no
+  // settle events registered).
+  //
   // Upper bound on tracked sessions.  pi fires no session-deletion event,
   // so a long-lived process would otherwise retain one budget entry per
-  // session ever opened.  A Map iterates in insertion order, so the oldest
-  // keys are evicted first once the bound is exceeded (a few lines, and
-  // the budget is only ever a soft reminder ceiling).
+  // session ever opened; the engine evicts the oldest-inserted sessions
+  // once the bound is exceeded (the budget is only ever a soft reminder
+  // ceiling).  The backing map is pluggable so tests can observe and seed
+  // it.
   const REMINDER_SESSIONS_CAP = 100;
-  const trackReminderUsed = (sessionID: string, used: number): void => {
-    remindersUsed.set(sessionID, used);
-    while (remindersUsed.size > REMINDER_SESSIONS_CAP) {
-      const oldest = remindersUsed.keys().next().value;
-      if (oldest === undefined) break;
-      remindersUsed.delete(oldest);
-    }
-  };
+  const engine =
+    composed.onSettled.length > 0
+      ? createLoopEngine(composed.onSettled, {
+          cap: REMINDER_SESSIONS_CAP,
+          store: overrides?.remindersUsed,
+        })
+      : undefined;
+  // Derived from the engine itself so the registration gate and the
+  // runtime gate can never diverge.
+  const hasSettledHandlers = engine !== undefined;
   // Open blocking UI prompt count: a run that ends while this is > 0 was
   // waiting for the user, not genuinely finished.
   let uiPromptDepth = 0;
@@ -1851,14 +1850,14 @@ export function buildPiHandlers(
       // internal run path and never emits this event.  The
       // `BeforeAgentStartEvent` payload itself carries no source field, so
       // the emission boundary is the reliable signal: the counter resets
-      // for every real user turn and never for the injected continuation.
+      // for every real user turn and never for the injected wake.
       const promptSessionId = sessionIdProvider();
       if (
-        hasSettledHandlers &&
+        engine !== undefined &&
         promptSessionId !== undefined &&
         promptSessionId.length > 0
       ) {
-        trackReminderUsed(promptSessionId, 0);
+        engine.reset(promptSessionId);
       }
       // Drain any pending post-replacement switch operations.  This
       // handler runs in the NEW session's closure (the factory re-ran on
@@ -1951,17 +1950,17 @@ export function buildPiHandlers(
         // A (re)starting session begins with a fresh reminder budget, so
         // its previous entry — left by an earlier run of the same session
         // id — is dropped here.  pi fires no session-deletion event, so the
-        // entries of sessions that never restart are reclaimed by
-        // `trackReminderUsed`'s size cap instead.  Guarded by the feature
-        // flag so a profile without the todo-continuation hook does zero
-        // continuation bookkeeping.
-        if (hasSettledHandlers) remindersUsed.delete(sessionId);
+        // entries of sessions that never restart are reclaimed by the
+        // engine's size cap instead.  Guarded by the engine's presence so
+        // a profile without the todo-continuation hook does zero loop
+        // bookkeeping.
+        if (engine !== undefined) engine.reset(sessionId);
       }
       // A fresh session (re)bind starts with a clean prompt-depth
       // count: if a `ui_prompt_end` was ever dropped (extension reload
       // mid-prompt, host-side cancellation), a stale positive count
       // would misclassify every later settle as `awaiting-input` and
-      // silently disable continuation for the rest of the process.
+      // silently disable the loop for the rest of the process.
       if (hasSettledHandlers) uiPromptDepth = 0;
       if (
         typeof sessionId === "string" &&
@@ -2055,11 +2054,11 @@ export function buildPiHandlers(
     },
     hasSettledHandlers,
     async agentEnd(evt?, ctx?) {
-      // Continuation is inert without a valid `max_reminders`: the settle
-      // events are never registered, and this guard keeps a direct call
-      // (tests) inert too.
-      if (continuationLimit === undefined) return;
-      // A continuation judge must never break the host session, and a
+      // The loop is inert without a settle strategy: the settle events are
+      // never registered, and this guard keeps a direct call (tests) inert
+      // too.
+      if (engine === undefined) return;
+      // A loop judge must never break the host session, and a
       // stale extension context (pi invalidates one on session
       // replacement / reload) can make even reading `sessionManager`
       // throw.  Isolate the whole body: log and fail closed.
@@ -2110,17 +2109,13 @@ export function buildPiHandlers(
           : uiPromptDepth > 0 || awaitingUser || askUnanswered
             ? "awaiting-input"
             : "settled";
-        log(
-          "continuation",
-          "settle_received",
-          sessionID ?? "",
-          undefined,
-          "debug",
-          { cause, progress },
-        );
+        log("loop", "settle_received", sessionID ?? "", undefined, "debug", {
+          cause,
+          progress,
+        });
         // No live pi session to attribute the reminder to → fail closed.
         if (sessionID === undefined || sessionID.length === 0) {
-          log("continuation", "settle_skipped", "", undefined, "debug", {
+          log("loop", "settle_skipped", "", undefined, "debug", {
             reason: "no-session",
           });
           return;
@@ -2129,40 +2124,25 @@ export function buildPiHandlers(
         // session is driven by its own identity and must not be woken by the
         // root extension.
         if (resolveIdentity()?.kind === "subagent") {
-          log("continuation", "settle_skipped", sessionID, undefined, "debug", {
+          log("loop", "settle_skipped", sessionID, undefined, "debug", {
             reason: "subagent",
           });
           return;
         }
-        const budget: Budget = {
-          limit: continuationLimit,
-          used: remindersUsed.get(sessionID) ?? 0,
-        };
         // `progress` is derived above from the settled turn's tool calls;
         // a transcript that could not be read resolves it to `false`,
-        // which silences via `decide`'s no-progress gate.
-        const decision = await settledHandler({
-          sessionID,
-          cause,
-          budget,
-          progress,
-        });
-        if (decision === null || decision.kind !== "wake") return;
+        // which silences via the todo strategy's no-progress gate.
+        const decision = await engine.run({ sessionID, cause, progress });
+        if (decision === null) return;
         // Deliver the wake as a queued follow-up WHILE the run is still
         // streaming.  `agent_end` fires before pi's run loop checks its
         // queues, so a follow-up queued here is drained by the same
         // `prompt()` call and the host stays alive to run it.  Delivering
         // from `agent_settled` (after the loop) instead starts a fresh,
         // unawaited run that a single-shot host (headless print mode) tears
-        // down before the continuation can act.
+        // down before the loop can act.
         if (typeof piApi?.sendMessage !== "function") {
-          log(
-            "continuation",
-            "wake_inject_unavailable",
-            sessionID,
-            undefined,
-            "warn",
-          );
+          log("loop", "wake_inject_unavailable", sessionID, undefined, "warn");
           return;
         }
         // Count BEFORE dispatching, mirroring the OpenCode host: a
@@ -2171,31 +2151,26 @@ export function buildPiHandlers(
         // is fire-and-forget — if it crashes after queueing, the
         // reminder stays counted (an accepted `agent_end` trade-off,
         // see the module header).
-        trackReminderUsed(sessionID, budget.used + 1);
+        engine.record(sessionID, decision.name);
         piApi.sendMessage(
           {
-            customType: "zoo-continuation",
+            customType: "zoo-loop-wake",
             content: decision.text,
-            // Shown in the TUI so the user can see the auto-continuation
+            // Shown in the TUI so the user can see the loop wake
             // fire; the model receives it as a user-role message either
             // way (pi converts custom messages via convertToLlm).
             display: true,
           },
           { deliverAs: "followUp", triggerTurn: true },
         );
-        log("continuation", "wake_injected", sessionID, undefined, "info", {
-          used: budget.used + 1,
-          limit: budget.limit,
+        log("loop", "wake_injected", sessionID, undefined, "info", {
+          handler: decision.name,
+          used: engine.used(sessionID, decision.name),
         });
       } catch (err) {
-        log(
-          "continuation",
-          "settle_failed",
-          sessionID ?? "",
-          undefined,
-          "warn",
-          { error: String(err) },
-        );
+        log("loop", "settle_failed", sessionID ?? "", undefined, "warn", {
+          error: String(err),
+        });
       } finally {
         // A single-shot host can exit right after the last run, before the
         // periodic flush timer fires; make the settle verdict durable.
@@ -2260,19 +2235,18 @@ export function zookeeperPi(pi: ExtensionAPI): void {
   pi.on("context", handlers.contextHandler);
   pi.on("message_end", handlers.messageEnd);
   pi.on("session_tree", handlers.sessionTree);
-  // Auto-continuation events are registered only when the profile composes a
-  // settle contribution AND `[zoo.continuation].max_reminders` is valid
-  // (fail-closed parity with the other profile-driven hooks): otherwise no
-  // continuation event is registered.
+  // Loop settle events are registered only when the profile composes a
+  // settle contribution (fail-closed parity with the other profile-driven
+  // hooks): otherwise no settle event is registered.
   if (handlers.hasSettledHandlers) {
-    log("continuation", "events_registered", "", undefined, "info", {
+    log("loop", "events_registered", "", undefined, "info", {
       events: ["agent_end", "ui_prompt_start", "ui_prompt_end"],
     });
     pi.on("agent_end", handlers.agentEnd);
     pi.on("ui_prompt_start", handlers.uiPromptStart);
     pi.on("ui_prompt_end", handlers.uiPromptEnd);
   } else {
-    log("continuation", "events_skipped", "", undefined, "info", {
+    log("loop", "events_skipped", "", undefined, "info", {
       reason: "feature-disabled",
     });
   }
