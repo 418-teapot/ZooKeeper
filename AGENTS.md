@@ -43,6 +43,8 @@
 
 ```sh
 uv run python install.py  # 读取 config.toml 和 .env，生成宿主配置
+
+# 这些命令的输出会很长，需要精简终端输出，可以保存日志到文件中
 ./check.sh                # 自动格式化并执行 Python/TypeScript/Rust 严格检查
 ./test.sh                 # 执行 Python、Rust、TypeScript 测试和覆盖率检查
 ./build.sh                # Rust 工具和 zweb addon 的 release 构建
