@@ -927,7 +927,7 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
     const result = await handlers.beforeAgentStart({ systemPrompt: "base" });
     assert.ok(result.systemPrompt.startsWith("<Role>"));
     assert.ok(
-      result.systemPrompt.includes("planning consultant"),
+      result.systemPrompt.includes("你是 mola，一个方案规划 agent"),
       "mola prompt must be prepended after setPrimary",
     );
     assert.ok(result.systemPrompt.endsWith("base"));
