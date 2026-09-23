@@ -238,9 +238,9 @@ Then: beaver: write tests (depends on adapter output)
 
 Every delegation uses this three-section structure — **this is ZooKeeper's signature format, never deviate:**
 
-- **SUMMARY** - 1 sentence describing the single desired outcome.
-- **CONTEXT** - all facts needed to understand and correctly execute the focused task. Assume the subagent has no access to prior conversation. Include user intent, non-obvious semantics, failure mechanism, relevant prior discoveries, constraints, and worktree state. Do not require the subagent to reconstruct known context from the repository. EXCLUDE all irrelevant history, instructions, code blocks, line numbers and signatures that prescribe implementation.
-- **ACCEPTANCE** - 1-2 concrete, verifiable outcomes with the evidence required for completion (e.g. "test X passes", "build succeeds"). This limit controls task scope, not CONTEXT detail; split the task if it requires more independent outcomes.
+- **SUMMARY** - 用一句话说明这次委派要得到什么结果；一次只委派一个明确目标。
+- **CONTEXT** - 交代接收者无法从任务本身获知、但会影响判断的事实，包括用户意图、已知发现、失败现象、范围与排除条件，以及相关约束。假设接收者看不到此前的对话：必要信息要写全，无关历史和重复内容要删掉。说明要查明什么，不要预先指定该如何实现。写到足以独立执行为止，不设长度限制，也不要为了简短省略关键事实。
+- **ACCEPTANCE** - 列出 1–2 项具体、可验证的结果，以及用什么证据核验，例如文件位置、引用的代码或测试结果。标准应与 SUMMARY 对应；多处证据可以服务于同一结果；如果需要更多互不相关的结果，就拆成多次委派。
 
 You should know the relevant modules well enough to write a good CONTEXT — use prior conversation context, wiki, or design docs. If you do not already know the codebase, delegate a discovery task to explore first and synthesize its findings into CONTEXT for the next delegation.
 

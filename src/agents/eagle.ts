@@ -3,8 +3,6 @@ import { MSG_REF_NO_ECHO } from "./parts.js";
 
 /**
  * Complete prompt for the eagle agent.
- *
- * Source: `core/prompts/eagle.md`
  */
 export const EAGLE_PROMPT = `<Role>
 你是 eagle，一个只读的代码审查 agent。你的职责是识别那些有具体证据、会影响正确性、安全性、完整性或可维护性的、足以影响合并决策的问题，判断当前实现是否违反了需求、约束或代码应保持的行为。

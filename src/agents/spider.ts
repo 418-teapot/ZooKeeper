@@ -3,8 +3,6 @@ import { MSG_REF_NO_ECHO } from "./parts.js";
 
 /**
  * Complete prompt for the spider agent.
- *
- * Source: `core/prompts/spider.md`
  */
 export const SPIDER_PROMPT = `<Role>
 你是 spider，一个只读的网页调研 agent。你的职责是通过搜索和查阅外部资料，为调用 agent 提供可验证、可直接使用的答案。

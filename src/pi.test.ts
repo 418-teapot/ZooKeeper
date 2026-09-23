@@ -27,6 +27,7 @@ import {
   waitForHydration,
 } from "./adapters/pi/hydrate.js";
 import { TRANSCRIPT_UNAVAILABLE_NOTICE } from "./adapters/pi/tui/transcript.js";
+import { BEAVER_PROMPT } from "./agents/beaver.js";
 import type { ToolHost } from "./core/client/tool-host.js";
 import { project } from "./core/context/lens.js";
 import {
@@ -941,12 +942,7 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
       });
       injected = result.systemPrompt;
     });
-    assert.ok(injected.startsWith("<Role>"));
-    assert.ok(
-      injected.includes("You are a code implementation agent"),
-      "beaver subagent prompt must be prepended",
-    );
-    assert.ok(injected.endsWith("base"));
+    assert.equal(injected, `${BEAVER_PROMPT}\n\nbase`);
   });
 
   it("subagent resolves by the same name lookup when not the default primary", async () => {
