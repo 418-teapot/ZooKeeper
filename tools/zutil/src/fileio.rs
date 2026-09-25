@@ -114,6 +114,34 @@ pub fn acquire_file_lock(path: &Path) -> io::Result<std::fs::File> {
     Ok(file)
 }
 
+/// Try to acquire an exclusive cross-process file lock on `path`
+/// without blocking.
+///
+/// Behaves like [`acquire_file_lock`], but returns immediately with an
+/// error of kind [`io::ErrorKind::WouldBlock`] when another holder already
+/// owns the lock, rather than waiting for it to be released.  The lock is
+/// released when the returned `File` is dropped.
+///
+/// This function is only available when the `file-lock` feature is enabled.
+///
+/// # Errors
+///
+/// Returns an I/O error if the file cannot be opened or created, or if the
+/// lock is already held by another opener (including another descriptor in
+/// the same process).
+#[cfg(feature = "file-lock")]
+pub fn try_acquire_file_lock(path: &Path) -> io::Result<std::fs::File> {
+    use fs2::FileExt;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .read(true)
+        .open(path)?;
+    file.try_lock_exclusive()?;
+    Ok(file)
+}
+
 /// Acquire an exclusive cross-process file lock, run `f`, then release.
 ///
 /// Convenience wrapper around [`acquire_file_lock`] that drops the lock
@@ -222,6 +250,32 @@ mod tests {
         // Re-acquire after drop should succeed.
         let file2 = acquire_file_lock(&lock_path).unwrap();
         drop(file2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "file-lock")]
+    #[test]
+    fn test_try_acquire_file_lock_conflict() {
+        let dir = std::env::temp_dir()
+            .join(format!("zutil-test-try-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let lock_path = dir.join(".test-try.flock");
+
+        // A non-blocking acquisition succeeds while nobody holds the lock.
+        let held = try_acquire_file_lock(&lock_path).unwrap();
+
+        // A second attempt must not block: it fails immediately with a
+        // would-block error because the lock is still held.
+        let err = try_acquire_file_lock(&lock_path).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
+
+        // Releasing the holder lets a later attempt succeed again.
+        drop(held);
+        let again = try_acquire_file_lock(&lock_path).unwrap();
+        drop(again);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

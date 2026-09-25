@@ -2775,6 +2775,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "zdebug"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "nix",
+ "serde_json",
+ "sha2",
+ "shlex",
+ "signal-hook",
+ "tempfile",
+ "zutil",
+]
+
+[[package]]
 name = "zerocopy"
 version = "0.8.52"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -19,7 +19,7 @@ section "Binaries"
 BIN_DIR="$SCRIPT_DIR/tools/bin"
 mkdir -p "$BIN_DIR"
 
-for bin in zwiki zlog zfind zinspect ztrace; do
+for bin in zwiki zlog zfind zinspect ztrace zdebug; do
     path="target/release/$bin"
     if [ -f "$path" ]; then
         cp "$path" "$BIN_DIR/$bin"

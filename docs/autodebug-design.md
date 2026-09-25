@@ -1,7 +1,7 @@
 # AutoDebug 设计：证据驱动的自主调试循环
 
 **日期:** 2026-09-24
-**状态:** 设计已确认，待实现
+**状态:** zdebug 状态基底已实现（2026-09-25，`tools/zdebug/`）；策略层与 `/debug` 命令待实现
 **前置文档:** `docs/loop-engine-design.md`（loop 引擎抽象，本文档是它的第二个策略）、`docs/agent-loop-engineering-research.md`（OMO/OMP 机制调研）
 **参考实现:** auto-debug 项目（Python，证据驱动调查状态机，本文档的状态基底来源）、oh-my-pi（OMP）的 autoresearch 扩展（触发与形态参照）
 
@@ -165,7 +165,7 @@ CLI 一次实现同时服务 agent 与策略两个消费者；仓库已有 tools
 
 ### 6.2 存储与发现
 
-存储布局见 §1。Case 发现规则：策略在会话工作区扫描 `.zoo/debug/`——唯一活跃 Case 即绑定；多个活跃 Case → 沉默（`ambiguous`），fail-closed 不猜测；需要并行调试会话时用 git worktree 隔离工作区。
+存储布局见 §1。Case 发现规则：策略在会话工作区扫描 `.zoo/debug/`，凡含 `case.jsonl` 的目录即视为一个 Case（不按生命周期过滤，CLOSED Case 同样能被发现）——唯一 Case 即绑定；多个 Case → 沉默（`ambiguous`），fail-closed 不猜测；需要并行调试会话时用 git worktree 隔离工作区。绑定后由策略按生命周期处理（CLOSED → 沉默，见 §7.1）。
 
 ### 6.3 事件词汇与校验
 
@@ -187,9 +187,18 @@ zdebug claim add|assess|relate
 zdebug experiment plan|run
 zdebug evidence add|relate|invalidate
 zdebug artifact add|invalidate
+zdebug doctor                            # 环境自检（git 可用性、平台信息）
 ```
 
 全局 `--json`（策略消费 `case status --json` 与 `experiment run` 结果）。
+
+**CLI 契约**（策略层与脚本消费的接口约定，实现见 `tools/zdebug/src/cli.rs`）：
+
+- **输出协议**：成功时 stdout 输出 `{"ok": true, "result": ...}`；业务错误时 stderr 输出 `{"ok": false, "code", "message", "details"}`。JSON 键按 canonical 序（排序键、紧凑分隔符）。非 `--json` 模式下错误渲染为 `error[code]: message`；`doctor` 另有中文人类可读报告；
+- **退出码**：成功 0；业务错误（`ZdebugError`，含 `CASE_BUSY`/`CASE_CLOSED`/`VERIFY_FAILED` 等校验拒绝）退出 2。注意这与 §3 verify 判据的退出码语义（0/1/>1）是两个层面：判据命令的退出码由 `experiment run` 记录在 Attempt 元数据与 JSON `exit_code` 字段中，**不改变 zdebug 进程自身的退出码**（实验失败时 `experiment run` 仍退出 0）；
+- **JSON 值参数**：`--scope` / `--interpretations` / `--context` 接受内联 JSON 或文件路径（存在即按文件读，否则按内联解析）——对 Python 参考实现是超集；
+- **`--script -`**：`experiment plan` 的 `--script -` 从 stdin 读取脚本内容；
+- **`case init --workspace`** 可重复；`--case-dir` 做 `~` 展开。
 
 ### 6.5 runner（实验执行）
 
@@ -204,7 +213,7 @@ zdebug artifact add|invalidate
 ```
 1. 会话工作区发现 .zoo/debug Case：
      无            → silence("no-case")
-     多个活跃       → silence("ambiguous")
+     多个          → silence("ambiguous")
 2. Case CLOSED     → silence("closed")
 3. 指定了验证实验   → zdebug experiment run 重跑（超时包裹）：
      退出 0         → silence("converged")
@@ -260,7 +269,7 @@ auto-debug 是被动状态机，缺的两样恰好都是 loop 引擎的本职：
 1. **触发器**：它没有"停稳时重新求值"的动作源；settled 事件正是引擎提供的；
 2. **自动收敛语义**：它的 close 靠 agent 簿记走门禁；loop 不需要 close，只需要"指定验证实验的最新 Attempt 转绿"——机器执行、level-triggered 重观测，而不是查 agent 上次报告的结论。
 
-因此 zdebug 相对 auto-debug 只有两处增量：`--verify` 判据声明（含 update-verify 留痕）与 `case status --json` 机器视图。
+因此 zdebug 相对 auto-debug 的增量只有一组：verify 判据声明——`case init --verify` 写入 `case-created` 的 verify 字段，`case update-verify` 追加增量事件 `case-verify-updated` 留痕。（`case status --json` 不算增量：Python 版的全局 `--json` 本就覆盖它。）
 
 ### 9.3 与 oh-my-pi autoresearch 的对照
 
@@ -314,6 +323,7 @@ auto-debug 是被动状态机，缺的两样恰好都是 loop 引擎的本职：
 - **引擎级暂缓项不变**：节奏联锁（退避）、预算落盘、多策略仲裁升级。autodebug 与 todo-continuation 目标正交（todo 拥有任务列表，autodebug 拥有 Case 未收敛），维持"首个 wake 胜出"；
 - **verify 统计强度内建**：当前 flaky 强度由命令作者负责；若成为问题源，评估 `case init --verify-runs N` 内建重复执行；
 - **会话恢复后的自动续跑**：autoresearch 刻意"恢复后不自动续跑"；我们由 settled 事件自然恢复（Case 在磁盘上），差异待实践检验；
+- **verify 判据的可执行化**：zdebug 目前只把 `--verify` 存为命令字符串，没有入口把它物化为可由 `experiment run` 重跑的 Experiment。策略层实现时需决定：zdebug 增加直接执行判据命令的入口，还是策略将其包装为 Experiment；
 - **与 todo 策略的协作**：调试会话中 agent 自建 todo 时两策略同活跃，正交分区是否足够，待真实运行数据。
 
 ---

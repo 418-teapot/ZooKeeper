@@ -111,6 +111,7 @@ if [ "$HAS_CARGO_LLVM_COV" -eq 1 ] && has_llvm_tools; then
     COV_ZFIND=$(crate_cov 'zfind/src/')
     COV_ZINSPECT=$(crate_cov 'zinspect/src/')
     COV_ZTRACE=$(crate_cov 'ztrace/src/')
+    COV_ZDEBUG=$(crate_cov 'zdebug/src/')
     COV_TOTAL=$(echo "$COV_OUTPUT" | awk '/^TOTAL/ {print $4}' | tr -d '%')
 
     check_cov() {
@@ -137,6 +138,7 @@ if [ "$HAS_CARGO_LLVM_COV" -eq 1 ] && has_llvm_tools; then
     check_cov "zfind"     "$COV_ZFIND"    90 || FAILED=1
     check_cov "zinspect"  "$COV_ZINSPECT" 90 || FAILED=1
     check_cov "ztrace"    "$COV_ZTRACE"   85 || FAILED=1
+    check_cov "zdebug"    "$COV_ZDEBUG"   85 || FAILED=1
     check_cov "total"     "$COV_TOTAL"    85 || true
   fi
 else

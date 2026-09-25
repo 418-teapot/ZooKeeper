@@ -77,8 +77,8 @@ describe("createLoopEngine — construction", () => {
     assert.throws(
       () =>
         createLoopEngine([
-          handler("dup", async () => null),
-          handler("dup", async () => null),
+          handler("dup", async () => ({ kind: "wake", text: "go" })),
+          handler("dup", async () => ({ kind: "wake", text: "go" })),
         ]),
       /duplicate strategy name "dup"/,
     );
