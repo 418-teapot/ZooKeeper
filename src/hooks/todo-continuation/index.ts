@@ -6,8 +6,9 @@
  * strategy: it reads the session's todos fresh through the shared
  * `TodoSource` port at settle time and delegates the judgment to the pure
  * {@link decide} control law, contributing the resulting verdict on the
- * `onSettled` slot.  The engine has already filtered non-settled turns, so
- * the handler sees only the session and the observed progress fact.
+ * `onSettled` slot.  The engine has already filtered non-settled turns
+ * and released its awaiting-progress lock, so the handler judges the
+ * task list alone.
  *
  * The unit owns its own budget: it reads the parsed `[zoo.continuation]`
  * config through `deps` and declares the reminder allowance as its
@@ -69,7 +70,7 @@ export const unit: HookUnitDescriptor = {
           maxWakes,
           handle: async (input) => {
             const tasks = source ? await source(input.sessionID) : [];
-            return decide(tasks, input.progress);
+            return decide(tasks);
           },
         },
       ],

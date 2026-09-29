@@ -83,7 +83,7 @@ function mockStore(
 // ---------------------------------------------------------------------------
 
 describe("todoSourceFromStore", () => {
-  it("flattens multiple phases preserving order and drops blocker", async () => {
+  it("flattens multiple phases preserving order and carries blocker", async () => {
     const store = mockStore({
       s1: [
         {
@@ -109,7 +109,11 @@ describe("todoSourceFromStore", () => {
     const view = await todoSourceFromStore(store)("s1");
     assert.deepEqual(view, [
       { content: "Init repo", status: "completed" },
-      { content: "Wait for API", status: "blocked" },
+      {
+        content: "Wait for API",
+        status: "blocked",
+        blocker: "missing key",
+      },
       { content: "Write code", status: "in_progress" },
       { content: "Add tests", status: "pending" },
     ]);

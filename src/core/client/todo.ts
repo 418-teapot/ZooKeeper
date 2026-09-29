@@ -52,9 +52,9 @@ export type TodoSource = (sessionID: string) => Promise<TodoItemView[]>;
 /**
  * Serve the flat view from the per-session todo state store.
  *
- * Flattens the store's phases into a single list, preserving phase
- * order and task order; the `blocker` note is dropped since the view
- * only carries content and status.
+ * Flattens the store's phases into a single list, preserving phase order
+ * and task order; the `blocker` note rides along so reminders can state
+ * what a blocked task waits on.
  *
  * @param store - Todo state store backing the reads.
  * @returns A `TodoSource` bound to the store.
@@ -62,10 +62,15 @@ export type TodoSource = (sessionID: string) => Promise<TodoItemView[]>;
 export function todoSourceFromStore(store: TodoStateStore): TodoSource {
   return async (sessionID) =>
     (await store.get(sessionID)).flatMap((phase) =>
-      phase.tasks.map((task) => ({
-        content: task.content,
-        status: task.status,
-      })),
+      phase.tasks.map((task) =>
+        task.blocker === undefined
+          ? { content: task.content, status: task.status }
+          : {
+              content: task.content,
+              status: task.status,
+              blocker: task.blocker,
+            },
+      ),
     );
 }
 

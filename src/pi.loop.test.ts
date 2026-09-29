@@ -1,15 +1,22 @@
 /**
  * Tests for the pi host's loop settle wiring.
  *
- * Covers the `buildPiHandlers` settle/stop-cause/budget wiring: a finished run with
- * unfinished todos queues exactly one `sendMessage` follow-up carrying the
- * core-rendered text from `agent_end` (while the run still streams, so
- * pi's own loop drains it); an awaiting-input span, an aborted run, an
- * unidentifiable session, and an exhausted budget all stay silent; a real
- * user turn resets the per-session reminder counter; a stale extension
- * context is swallowed; and a profile without settle contributions or
- * without a valid `[zoo.continuation].max_reminders` leaves the handler a
- * no-op.
+ * Covers the `buildPiHandlers` settle/stop-cause/budget wiring: the todo
+ * list is the sole wake authority — a finished run with unfinished
+ * active work queues a `sendMessage` follow-up carrying the core-rendered
+ * text from `agent_end` (while the run still streams, so pi's own loop
+ * drains it) whatever the run did: read-only calls, a subagent
+ * delegation, even no tool call at all; prose never suppresses a wake
+ * because a genuine wait on the user is declared through the `blocked`
+ * status (a fully blocked list silences, and a mixed list renders the
+ * waiting-on reason).  Structural exemptions stay silent: an aborted
+ * run, an open blocking UI prompt, a headless unanswered ask, an
+ * unidentifiable session.  A delivered wake locks the session: a
+ * text-only reply to a wake stays silent without spending budget, any
+ * tool activity releases the lock, and a real user turn clears both the
+ * lock and the budget.  A stale extension context is swallowed, and a
+ * profile without settle contributions or without a valid
+ * `[zoo.continuation].max_reminders` leaves the handler a no-op.
  *
  * Also covers the budget-map lifecycle: a `session_start` drops a
  * (re)starting session's stale entry, the size cap evicts the
@@ -123,19 +130,19 @@ function runEnded(messages: unknown[]) {
   return { type: "agent_end", messages };
 }
 
-/** A normal (settled, non-aborted) finished run that made mutating progress. */
+/** A normal (settled, non-aborted) finished run that made tool activity. */
 const RUN_ENDED = runEnded([assistant([toolCallPart("bash")])]);
 
 /**
- * Per-agent permission denies used to exercise the executor predicate:
- * `beaver` may edit (executor), `lynx` is edit-denied (read-only).
+ * A settled run whose final turn answers a wake in prose only: the turn
+ * after its last user boundary carries no tool call.
  */
-const AGENT_PERMISSIONS = {
-  agent: {
-    beaver: { permission: { fetch: "deny" } },
-    lynx: { permission: { edit: "deny" } },
-  },
-};
+function textOnlyRun(): unknown {
+  return runEnded([
+    userMessage("continue"),
+    assistant([textPart("Everything is already done.")]),
+  ]);
+}
 
 /** A session transcript branch carrying one active todo snapshot. */
 const ACTIVE_BRANCH = [
@@ -149,6 +156,58 @@ const ACTIVE_BRANCH = [
           {
             name: "Implement",
             tasks: [{ content: "Wire source", status: "in_progress" }],
+          },
+        ],
+      },
+    },
+  },
+];
+
+/** A branch whose only remaining task is blocked on the user. */
+const BLOCKED_BRANCH = [
+  {
+    message: {
+      role: "toolResult",
+      toolName: "todo",
+      details: {
+        op: "init",
+        phases: [
+          {
+            name: "Ship",
+            tasks: [
+              { content: "Wire source", status: "completed" },
+              {
+                content: "Await sign-off",
+                status: "blocked",
+                blocker: "user sign-off",
+              },
+            ],
+          },
+        ],
+      },
+    },
+  },
+];
+
+/** A branch mixing one active and one blocked task with a blocker. */
+const MIXED_BRANCH = [
+  {
+    message: {
+      role: "toolResult",
+      toolName: "todo",
+      details: {
+        op: "init",
+        phases: [
+          {
+            name: "Ship",
+            tasks: [
+              { content: "Wire source", status: "pending" },
+              {
+                content: "Await sign-off",
+                status: "blocked",
+                blocker: "user approval",
+              },
+            ],
           },
         ],
       },
@@ -172,6 +231,9 @@ const ZOO = {
 
 /** The same profile with a one-reminder budget. */
 const ZOO_LIMIT_1 = { ...ZOO, continuation: { max_reminders: 1 } };
+
+/** The same profile with a two-reminder budget. */
+const ZOO_LIMIT_2 = { ...ZOO, continuation: { max_reminders: 2 } };
 
 /** The same profile without any `[zoo.continuation]` section. */
 const ZOO_NO_CONTINUATION = { mode: { poly: { ...ZOO.mode.poly } } };
@@ -442,6 +504,14 @@ describe("buildPiHandlers — settled-turn facts", () => {
     return silent.at(-1)?.reason;
   }
 
+  /** The engine interlock reason recorded for the last settle. */
+  function interlockReason(): unknown {
+    const interlocked = _getBufferForTesting().filter(
+      (entry) => entry.event === "settle_interlock",
+    );
+    return interlocked.at(-1)?.reason;
+  }
+
   /** The `cause` recorded by the host for the last settle. */
   function settleReceivedCause(): unknown {
     const received = _getBufferForTesting().filter(
@@ -463,7 +533,9 @@ describe("buildPiHandlers — settled-turn facts", () => {
     assert.equal(api.sent.length, 1);
   });
 
-  it("silences a turn whose only tool call is the todo tool", async () => {
+  it("wakes a turn whose only tool call is the todo tool", async () => {
+    // The old no-progress false-negative hole: a planning turn is still
+    // activity, and wakefulness is the list's call, not the turn's.
     const api = mockApi();
     const handlers = buildPiHandlers(ZOO, api as any);
     const evt = runEnded([
@@ -473,38 +545,31 @@ describe("buildPiHandlers — settled-turn facts", () => {
 
     await handlers.agentEnd(evt, settleCtx("sess-todo", ACTIVE_BRANCH));
 
-    assert.equal(api.sent.length, 0);
-    assert.equal(settleSilenceReason(), "no-progress");
-  });
-
-  it("wakes a turn that delegated to an executor subagent", async () => {
-    const api = mockApi();
-    const handlers = buildPiHandlers(ZOO, api as any, AGENT_PERMISSIONS);
-    const evt = runEnded([
-      userMessage("delegate"),
-      assistant([toolCallPart("subagent", { agent: "beaver" })]),
-    ]);
-
-    await handlers.agentEnd(evt, settleCtx("sess-beaver", ACTIVE_BRANCH));
-
     assert.equal(api.sent.length, 1);
+    assert.equal(settleReceivedCause(), "settled");
   });
 
-  it("silences a turn that delegated to a read-only subagent", async () => {
-    const api = mockApi();
-    const handlers = buildPiHandlers(ZOO, api as any, AGENT_PERMISSIONS);
-    const evt = runEnded([
-      userMessage("search"),
-      assistant([toolCallPart("subagent", { agent: "lynx" })]),
-    ]);
+  it("wakes a turn that delegated to a subagent, whatever the agent", async () => {
+    // The executor/read-only distinction is gone: any tool call counts
+    // as activity and the list decides wakefulness.
+    for (const agent of ["beaver", "lynx"]) {
+      const api = mockApi();
+      const handlers = buildPiHandlers(ZOO, api as any);
+      const evt = runEnded([
+        userMessage("delegate"),
+        assistant([toolCallPart("subagent", { agent })]),
+      ]);
 
-    await handlers.agentEnd(evt, settleCtx("sess-lynx", ACTIVE_BRANCH));
+      await handlers.agentEnd(evt, settleCtx(`sess-${agent}`, ACTIVE_BRANCH));
 
-    assert.equal(api.sent.length, 0);
-    assert.equal(settleSilenceReason(), "no-progress");
+      assert.equal(api.sent.length, 1, `delegation to ${agent} must wake`);
+    }
   });
 
-  it("classifies a Chinese approval solicitation as awaiting-input", async () => {
+  it("wakes a turn whose final text solicits the user's approval", async () => {
+    // Prose never classifies a wait: a genuine stop on the user is
+    // declared through a blocked task, so an approval solicitation in
+    // otherwise-active turns is just a settled turn.
     const api = mockApi();
     const handlers = buildPiHandlers(ZOO, api as any);
     const evt = runEnded([
@@ -517,8 +582,8 @@ describe("buildPiHandlers — settled-turn facts", () => {
 
     await handlers.agentEnd(evt, settleCtx("sess-await-text", ACTIVE_BRANCH));
 
-    assert.equal(api.sent.length, 0);
-    assert.equal(settleReceivedCause(), "awaiting-input");
+    assert.equal(api.sent.length, 1);
+    assert.equal(settleReceivedCause(), "settled");
   });
 
   it("leaves an ordinary final text turn unaffected", async () => {
@@ -535,7 +600,9 @@ describe("buildPiHandlers — settled-turn facts", () => {
     assert.equal(settleReceivedCause(), "settled");
   });
 
-  it("silences when the transcript carries no messages", async () => {
+  it("wakes when the event carries no transcript messages", async () => {
+    // No tool activity does not imply silence: without a prior wake
+    // there is no lock, and the list alone decides.
     const api = mockApi();
     const handlers = buildPiHandlers(ZOO, api as any);
 
@@ -544,35 +611,137 @@ describe("buildPiHandlers — settled-turn facts", () => {
       settleCtx("sess-empty", ACTIVE_BRANCH),
     );
 
-    assert.equal(api.sent.length, 0);
-    assert.equal(settleSilenceReason(), "no-progress");
+    assert.equal(api.sent.length, 1);
+    assert.equal(settleReceivedCause(), "settled");
   });
 
-  it("silences when the transcript has no assistant message", async () => {
+  it("wakes when the turn has no assistant message", async () => {
     const api = mockApi();
     const handlers = buildPiHandlers(ZOO, api as any);
     const evt = runEnded([userMessage("only a prompt")]);
 
     await handlers.agentEnd(evt, settleCtx("sess-noassistant", ACTIVE_BRANCH));
 
-    assert.equal(api.sent.length, 0);
-    assert.equal(settleSilenceReason(), "no-progress");
+    assert.equal(api.sent.length, 1);
   });
 
-  it("scopes progress to the turn after the last user message", async () => {
+  it("scopes activity to the turn after the last user message", async () => {
+    // After a wake locks the session, only the settled turn counts as
+    // activity: the earlier turn's edit must not release the lock.
+    const api = mockApi();
+    const handlers = buildPiHandlers(ZOO_LIMIT_2, api as any);
+    const c = settleCtx("sess-scope", ACTIVE_BRANCH);
+
+    await handlers.agentEnd(RUN_ENDED, c);
+    assert.equal(api.sent.length, 1, "the working run wakes");
+
+    await handlers.agentEnd(
+      runEnded([
+        userMessage("do work"),
+        assistant([toolCallPart("edit", { filePath: "a.ts" })]),
+        userMessage("anything left?"),
+        assistant([textPart("The work is complete.")]),
+      ]),
+      c,
+    );
+
+    assert.equal(api.sent.length, 1, "the text-only tail keeps the lock");
+    assert.equal(interlockReason(), "awaiting-activity");
+  });
+
+  it("stays silent on a text-only reply to a wake without spending budget", async () => {
+    const api = mockApi();
+    const handlers = buildPiHandlers(ZOO_LIMIT_2, api as any);
+    const c = settleCtx("sess-lock", ACTIVE_BRANCH);
+
+    await handlers.agentEnd(RUN_ENDED, c);
+    assert.equal(api.sent.length, 1, "the working run wakes and locks");
+
+    await handlers.agentEnd(textOnlyRun(), c);
+    assert.equal(api.sent.length, 1, "the prose-only answer stays silent");
+    assert.equal(interlockReason(), "awaiting-activity");
+
+    // A later active run still wakes: the silenced reply left the
+    // second allowance untouched.
+    await handlers.agentEnd(RUN_ENDED, c);
+    assert.equal(api.sent.length, 2, "the text-only reply spent no budget");
+  });
+
+  it("releases the lock when the reply makes a read-only tool call", async () => {
     const api = mockApi();
     const handlers = buildPiHandlers(ZOO, api as any);
-    // The earlier turn edited a file; the settled turn only read.
-    const evt = runEnded([
-      assistant([toolCallPart("edit", { filePath: "a.ts" })]),
-      userMessage("now just look"),
-      assistant([toolCallPart("read", { filePath: "a.ts" })]),
-    ]);
+    const c = settleCtx("sess-unlock", ACTIVE_BRANCH);
 
-    await handlers.agentEnd(evt, settleCtx("sess-turn", ACTIVE_BRANCH));
+    await handlers.agentEnd(RUN_ENDED, c);
+    assert.equal(api.sent.length, 1, "the working run wakes and locks");
+
+    await handlers.agentEnd(
+      runEnded([
+        userMessage("continue"),
+        assistant([toolCallPart("read", { filePath: "a.ts" })]),
+      ]),
+      c,
+    );
+
+    assert.equal(api.sent.length, 2, "read-only activity releases the lock");
+    assert.ok(
+      api.sent[1].message.content.startsWith(CONTINUATION_PROMPT),
+      "the re-evaluated wake carries the reminder again",
+    );
+  });
+
+  it("a real user turn clears the lock along with the budget", async () => {
+    const api = mockApi();
+    const handlers = buildPiHandlers(ZOO_LIMIT_1, api as any);
+    const c = settleCtx("sess-lock-reset", ACTIVE_BRANCH);
+
+    await handlers.agentEnd(RUN_ENDED, c);
+    assert.equal(api.sent.length, 1, "the working run wakes and locks");
+
+    await handlers.agentEnd(textOnlyRun(), c);
+    assert.equal(api.sent.length, 1, "the text-only reply stays silent");
+
+    // A real user prompt resets the budget AND clears the lock, so even
+    // a text-only settle under the fresh budget wakes again.
+    await handlers.beforeAgentStart({ systemPrompt: "base" }, c);
+    await handlers.agentEnd(textOnlyRun(), c);
+
+    assert.equal(api.sent.length, 2, "the user turn cleared the lock too");
+  });
+
+  it("stays silent when every remaining task is blocked", async () => {
+    // A blocked task is the agent's own declaration that it waits on
+    // the user — the list silences the loop, no prose needed.
+    const api = mockApi();
+    const handlers = buildPiHandlers(ZOO, api as any);
+
+    await handlers.agentEnd(
+      RUN_ENDED,
+      settleCtx("sess-blocked", BLOCKED_BRANCH),
+    );
 
     assert.equal(api.sent.length, 0);
-    assert.equal(settleSilenceReason(), "no-progress");
+    assert.equal(settleSilenceReason(), "no-active");
+  });
+
+  it("renders the waiting-on reason when a mixed list wakes", async () => {
+    const api = mockApi();
+    const handlers = buildPiHandlers(ZOO, api as any);
+
+    await handlers.agentEnd(RUN_ENDED, settleCtx("sess-mixed", MIXED_BRANCH));
+
+    assert.equal(api.sent.length, 1);
+    const content = api.sent[0].message.content;
+    assert.ok(
+      content.includes(
+        "- [blocked] Await sign-off (waiting on: user approval)",
+      ),
+      "the store carries the blocker into the reminder",
+    );
+    assert.ok(
+      content.includes("Wire source"),
+      "the active task stays in the reminder",
+    );
   });
 
   it("classifies a headless ask (no-ui) as awaiting-input", async () => {

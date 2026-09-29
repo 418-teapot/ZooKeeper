@@ -46,12 +46,15 @@ export interface TodoPhase {
 /**
  * Flattened, phase-agnostic view of a single todo entry.
  *
- * Consumed by progress checks that only need content and status,
- * regardless of which source (state store or host client) produced it.
+ * Consumed by progress checks that need at most content, status, and the
+ * block reason, regardless of which source (state store or host client)
+ * produced it.
  */
 export interface TodoItemView {
   content: string;
   status: TodoStatus;
+  /** Why the task is blocked; absent unless the source carries it. */
+  blocker?: string;
 }
 
 /** One phase entry of a canonical `init` list. */

@@ -4,11 +4,12 @@
  * Locks the descriptor shape and the `onSettled` contribution's
  * judgment-as-read contract: the handler reads the session's todos
  * through the injected source and returns the todo strategy's verdict —
- * waking on an active list with progress, silencing on an empty list, no
- * active work, no progress, or a missing todo source, and that a missing
+ * waking on an active list (activity is not the strategy's concern),
+ * silencing on an empty list, no active work, or a missing todo source,
+ * propagating block reasons into the wake text, and that a missing
  * continuation config contributes no handler at all.  The engine-level
- * interlocks (not-settled, budget-exhausted) are covered at the core
- * layer (`src/core/loop/engine.test.ts`).
+ * interlocks (not-settled, budget-exhausted, awaiting-progress lock) are
+ * covered at the core layer (`src/core/loop/engine.test.ts`).
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
@@ -32,6 +33,21 @@ const ACTIVE_PHASES: TodoPhase[] = [
 /** A fully settled todo list (no active work). */
 const DONE_PHASES: TodoPhase[] = [
   { name: "Implement", tasks: [{ content: "Ship it", status: "completed" }] },
+];
+
+/** An active task alongside one blocked on the user, with its reason. */
+const MIXED_PHASES: TodoPhase[] = [
+  {
+    name: "Deploy",
+    tasks: [
+      { content: "Ship the binary", status: "pending" },
+      {
+        content: "Await the API key",
+        status: "blocked",
+        blocker: "user provides the key",
+      },
+    ],
+  },
 ];
 
 /**
@@ -66,10 +82,10 @@ function makeDeps(partial: Record<string, unknown>): Deps {
  * Compose the unit and run its `onSettled` handler with the given inputs.
  *
  * @param deps - Dependencies handed to `unit.create`.
- * @param progress - Whether the settled turn made mutating progress.
+ * @param hadActivity - Whether the settled turn made any tool call.
  * @returns The handler's decision.
  */
-async function settle(deps: Deps, progress = true) {
+async function settle(deps: Deps, hadActivity = true) {
   const composed = unit.create(deps, {
     agents: new Set(),
     skills: new Set(),
@@ -78,7 +94,7 @@ async function settle(deps: Deps, progress = true) {
     commands: new Set(),
   });
   assert.equal(composed.onSettled.length, 1);
-  return composed.onSettled[0].handle({ sessionID: "s1", progress });
+  return composed.onSettled[0].handle({ sessionID: "s1", hadActivity });
 }
 
 describe("todo-continuation unit — descriptor", () => {
@@ -133,7 +149,7 @@ describe("todo-continuation unit — descriptor", () => {
 });
 
 describe("todo-continuation unit — onSettled judgment", () => {
-  it("wakes an active list that made progress", async () => {
+  it("wakes an active list regardless of turn activity", async () => {
     const decision = await settle(
       makeDeps({ todoStore: fakeStore(ACTIVE_PHASES) }),
     );
@@ -141,14 +157,30 @@ describe("todo-continuation unit — onSettled judgment", () => {
     if (decision.kind !== "wake") return;
     assert.ok(decision.text.startsWith(CONTINUATION_PROMPT));
     assert.ok(decision.text.includes("Wire source"));
-  });
 
-  it("silences a turn that made no progress", async () => {
-    const decision = await settle(
+    const idle = await settle(
       makeDeps({ todoStore: fakeStore(ACTIVE_PHASES) }),
       false,
     );
-    assert.deepEqual(decision, { kind: "silence", reason: "no-progress" });
+    assert.equal(
+      idle.kind,
+      "wake",
+      "the activity fact belongs to the engine's lock, not this gate",
+    );
+  });
+
+  it("propagates store block reasons into the wake text", async () => {
+    const decision = await settle(
+      makeDeps({ todoStore: fakeStore(MIXED_PHASES) }),
+    );
+    assert.equal(decision.kind, "wake");
+    if (decision.kind !== "wake") return;
+    assert.ok(
+      decision.text.includes(
+        "- [blocked] Await the API key (waiting on: user provides the key)",
+      ),
+      decision.text,
+    );
   });
 
   it("silences a settled turn with no active work", async () => {

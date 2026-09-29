@@ -41,7 +41,7 @@ ZooKeeper 把这个共享的控制问题做成一个**通用引擎 + 可插拔�
 | **内环 / 外环** | 内环 = agent 自身的"推理 → 工具 → 观察"循环；外环 = 本引擎，在内环停下后决定再次驱动还是真正停止 |
 | **停稳（settled）** | agent 彻底停稳：不是中途、不是被打断、不是在等用户回答。宿主保证此刻不再有自动重试、压缩或排队的续写 |
 | **策略（strategy）** | 一个可插拔控制器，对应一种自主循环，判断"这次停稳该不该再次驱动"，并给出唤醒文字或沉默原因 |
-| **联锁（interlock）** | 不依赖策略正确性、由引擎独立起作用的硬约束（停稳才动作、额度上限） |
+| **联锁（interlock）** | 不依赖策略正确性、由引擎独立起作用的硬约束（停稳才动作、待进展锁、额度上限） |
 | **唤醒（wake）/ 续写（continuation）** | 外环的驱动动作：向会话注入一段"继续工作"的消息，触发宿主再跑一轮内环。是执行手段，不是控制问题本身 |
 | **沉默（silence）** | 引擎/策略决定不唤醒，附一个机器可读原因进日志 |
 | **额度（budget）** | 按 (会话, 策略) 分账的自动唤醒次数上限 |
@@ -107,17 +107,20 @@ K8s 把控制论带进了软件工程：`Desired State → Observe → Compare �
 
 ```
 宿主事件（session.idle / agent_end）
-        │  适配层：翻译为 SettleRequest { sessionID, cause, progress }
+        │  适配层：翻译为 SettleRequest { sessionID, cause, hadActivity }
         ▼
-┌─ 引擎（src/core/loop/）──────────────────────────┐
-│ 联锁 1: cause ≠ settled → 沉默(not-settled)      │
-│ 联锁 2: 逐策略额度检查 → 跳过(budget-exhausted)  │
-│ 询问: 逐个调用策略 handle({sessionID, progress}) │
-│ 汇聚: 首个 wake 胜出；崩溃隔离；全沉默 → null    │
-└──────────────────────────────────────────────────┘
+┌─ 引擎（src/core/loop/）────────────────────────────┐
+│ 联锁 1: cause ≠ settled → 沉默(not-settled)        │
+│ 解锁: 本轮有任何工具活动 → 清该会话全部锁          │
+│ 联锁 2: 策略被锁且本轮无活动 → 跳过该策略          │
+│ （awaiting-activity），不烧额度；其余策略照常      │
+│ 联锁 3: 逐策略额度检查 → 跳过(budget-exhausted)    │
+│ 询问: 逐个调用策略 handle({sessionID, hadActivity})│
+│ 汇聚: 首个 wake 胜出；崩溃隔离；全沉默 → null      │
+└────────────────────────────────────────────────────┘
         │  Wake { name, text } 或 null
         ▼
-适配层：先 record 记账 → 投递 wake 文本到会话
+适配层：先 record（记账并对该策略上待进展锁）→ 投递 wake 文本到会话
 ```
 
 ### 所有权三角
@@ -132,7 +135,7 @@ K8s 把控制论带进了软件工程：`Desired State → Observe → Compare �
 
 ## 4. 引擎（core/loop）
 
-引擎约 200 行，全部职责在 `src/core/loop/engine.ts`；`turn.ts` 是纯事实助手（`StopCause`、`resolveWorkActions`、`isAwaitingUserAnswer`），策略契约类型定义在 `src/core/slots.ts:517-565`。
+引擎约 270 行，全部职责在 `src/core/loop/engine.ts`（含 `StopCause` 这一纯事实类型）；策略契约类型定义在 `src/core/slots.ts:517-564`。
 
 ### 4.1 接口
 
@@ -142,32 +145,33 @@ createLoopEngine(contributions: SettledContribution[], options?: { cap?, store? 
 
 interface LoopEngine {
   run(request: SettleRequest): Promise<Wake | null>;  // 判断一次停稳
-  record(sessionID, name): void;   // 唤醒投递前记账（先记账后派发）
-  reset(sessionID): void;          // 真实用户回合/会话重启时重置额度
+  record(sessionID, name): void;   // 唤醒投递前记账并对该 (会话, 策略) 上待进展锁（先记账后派发）
+  reset(sessionID): void;          // 真实用户回合/会话重启时重置额度并清锁
   used(sessionID, name): number;   // 读取已用额度（日志用）
 }
 ```
 
-- `SettleRequest { sessionID, cause: StopCause, progress: boolean }`——宿主上报的停稳事实；`StopCause = "settled" | "awaiting-input" | "aborted"`（`turn.ts:19`）。
+- `SettleRequest { sessionID, cause: StopCause, hadActivity: boolean }`——宿主上报的停稳事实；`StopCause = "settled" | "awaiting-input" | "aborted"`（`engine.ts:47`）。
 - `Wake { name, text }`——胜出策略名 + 唤醒文字。宿主需要名字来把这次唤醒记到对应策略的账上。
-- 构造时拒绝重名策略：策略名是预算账户键，重名会让一个策略的唤醒消耗另一个策略的额度（`engine.ts:161-167`）。
-- `cap` 是可选的会话数上限：Map 按插入序迭代，超额时淘汰最旧会话——为不发射"会话删除"事件的宿主（pi）提供的廉价 LRU 兜底（`engine.ts:67-80`）。
+- 构造时拒绝重名策略：策略名是预算账户键，重名会让一个策略的唤醒消耗另一个策略的额度（`engine.ts:181-189`）。
+- `cap` 是可选的会话数上限：Map 按插入序迭代，超额时淘汰最旧会话及其锁与额度——为不发射"会话删除"事件的宿主（pi）提供的廉价 LRU 兜底（`engine.ts:96-103, 254-268`）。
 
 ### 4.2 判定顺序与汇聚语义
 
-`run()` 的固定顺序（`engine.ts:167-200`）：
+`run()` 的固定顺序（`engine.ts:200-252`）：
 
 1. **停稳联锁**：`cause !== "settled"` → 记 `not-settled`，返回 `null`，**不询问任何策略**；
-2. **逐策略额度联锁**：按注册顺序遍历，某策略已用额度 ≥ 其 `maxWakes` → 记 `budget-exhausted`（带策略名），**跳过该策略**，后续策略仍可胜出；
-3. **询问与汇聚**：逐个 `await handle(input)`，首个 `wake` 直接胜出返回；每个策略的沉默记 `settle_silent`；
-4. **崩溃隔离**：策略抛错记 `handler_crashed`（error 级）后继续下一策略——崩溃表现为沉默而非唤醒。
+2. **待进展联锁**：锁按 **(会话, 策略)** 键控。`record` 投递记账时只给该会话的**该策略**上"待进展锁"；本次 settle 若 `hadActivity` 为真 → 清除该会话全部锁——一次活动应答所有挂起的唤醒（保持 oh-my-pi "任何工具结果即解锁"的语义）；若为假 → 锁定中的策略逐个记 `awaiting-activity`（带策略名）并**跳过——不咨询该策略、不消耗额度、保持锁**，未锁定的策略照常咨询，不再整体沉默。锁与额度同生命周期：`reset` 与 cap 驱逐一并清除；
+3. **逐策略额度联锁**：按注册顺序遍历，某策略已用额度 ≥ 其 `maxWakes` → 记 `budget-exhausted`（带策略名），**跳过该策略**，后续策略仍可胜出；
+4. **询问与汇聚**：逐个 `await handle(input)`，首个 `wake` 直接胜出返回；每个策略的沉默记 `settle_silent`；
+5. **崩溃隔离**：策略抛错记 `handler_crashed`（error 级）后继续下一策略——崩溃表现为沉默而非唤醒。
 
-联锁先于策略门是有意为之：额度耗尽的停稳，无论 todo 列表状态如何，日志真因都是 `budget-exhausted`，而不是被策略门（`empty`/`no-progress` 等）掩盖。
+联锁先于策略门是有意为之：额度耗尽的停稳，无论 todo 列表状态如何，日志真因都是 `budget-exhausted`，而不是被策略门（`empty`/`no-active`）掩盖；对唤醒的纯文本回复同理——由待进展锁以 `awaiting-activity` 拦下**其自身策略**（其他未锁定策略照常咨询），既到不了策略门，也烧不掉额度。
 
 ### 4.3 沉默原因词汇分层
 
-- **引擎面**：`EngineSilenceReason = "not-settled" | "budget-exhausted"`（`engine.ts:37`）——引擎只认识自己的词汇；
-- **策略面**：`Decision<R extends string = string>` 泛型让每个策略钉住自己的沉默词汇（`engine.ts:48-51`）。
+- **引擎面**：`EngineSilenceReason = "not-settled" | "budget-exhausted" | "awaiting-activity"`（`engine.ts:55-58`）——引擎只认识自己的词汇；
+- **策略面**：`Decision<R extends string = string>` 泛型让每个策略钉住自己的沉默词汇（`engine.ts:69-72`）。
 
 每次不唤醒都有机器可读原因且归属明确（引擎原因 or 哪个策略的哪个门），这是不变量 4 的落地。
 
@@ -181,7 +185,7 @@ interface LoopEngine {
 // src/core/slots.ts
 interface SettledInput {              // 策略视野：停稳事实，无 cause 无预算
   sessionID: string;
-  progress: boolean;                  // 本轮是否有 mutating 工作（观测事实）
+  hadActivity: boolean;               // 本轮是否发生过任何工具调用（观测事实）
 }
 
 interface SettledContribution {
@@ -194,27 +198,26 @@ interface SettledContribution {
 要点：
 
 - **`maxWakes` 是策略的参数**，随贡献一起声明。额度上限表达的是"这个策略该多执着"，只有策略自己知道；引擎只执行上限，不持有配置（决策 D5，见 §7）。
-- **`progress` 是观测事实，不是门**。它是世界状态的一部分，作为输入交给策略自行决定是否使用——等待外部事件的循环就不该被进展门挡死。todo 策略把它当门用，只是 todo 策略自己的选择。
+- **`hadActivity` 是观测事实，不是策略门**。引擎用它解除待进展锁；策略拿到它但不必使用——唤醒与否的权威在策略自己的状态（对 todo 策略是任务列表），等待外部事件的循环就不该被进展门挡死。
 - **策略拿不到 cause 和预算**：引擎保证只在停稳且有额度时来问，策略视野里这两样东西干脆不存在（`SettledInput` 没有对应字段），从类型上消除了"策略自觉检查"的依赖。
 
 ### 5.2 todo-continuation 的判断逻辑
 
-`src/hooks/todo-continuation/decide.ts:104-118`，纯函数，门顺序固定：
+`src/hooks/todo-continuation/decide.ts:107-115`，纯函数，门顺序固定：
 
 ```
 任务列表为空            → silence("empty")
 无 active 项            → silence("no-active")     // active = pending | in_progress
-本轮无 mutating 进展    → silence("no-progress")   // 自激抑制：纯文本确认不算进展
 否则                    → wake(renderContinuation(tasks))
 ```
 
-- `no-progress` 门防的是**自激**：agent 只用文字"确认收到提醒"而不做实际工作时，不允许 1/3→2/3→3/3 空转烧完额度（omp todo-tracker 的同款教训，见其 issue #2590）。
+- **自激抑制由引擎的待进展锁承担**：唤醒投递后，用纯文本回复该唤醒的停稳被锁跳过其自身策略且不烧额度（锁按 (会话, 策略) 键控，其他策略不受连坐），策略无需判断"这轮算不算进展"，任务列表是唯一权威；真正等待用户的情况由 agent 声明 blocked 状态表达（blocked 不是 active，唤醒自然停止），任务快照中 blocked 项追加 `(waiting on: ...)` 渲染等待原因。
 - wake 文案 = 固定对抗式指令 `CONTINUATION_PROMPT` + 当前任务快照（`[Status: X/Y completed, Z remaining]` + 逐条状态），由策略构造（不变量 5）。
 - 任务来源：`resolveTodoSource` 优先读宿主 todoStore，其次有 `session.todo` 能力的 client，都没有则视为空列表 → `empty` 沉默。
 
 ### 5.3 fail-closed 落在贡献级
 
-`src/hooks/todo-continuation/index.ts:56-75`：`[zoo.continuation].max_reminders` 缺失或非法时，该单元贡献**空槽**（`onSettled: []`）→ 宿主看到无策略贡献 → 不构建引擎 → 整个功能静默关闭。链条上没有任何环节"带着猜测继续运行"。
+`src/hooks/todo-continuation/index.ts:44-57`：`[zoo.continuation].max_reminders` 缺失或非法时，该单元贡献**空槽**（`onSettled: []`）→ 宿主看到无策略贡献 → 不构建引擎 → 整个功能静默关闭。链条上没有任何环节"带着猜测继续运行"。
 
 ---
 
@@ -223,7 +226,7 @@ interface SettledContribution {
 适配层把两个宿主（OpenCode / pi）的事件与能力翻译为引擎的统一词汇。两宿主的共同职责：
 
 1. **事件翻译**：把宿主的"agent 停了"事件推导为 `StopCause`；
-2. **观测采集**：把本轮工具调用归约为 `progress` 布尔——mutating 工具调用（`bash`/`edit`/`write`，词汇由宿主注入）或委派给 executor 子代理（无 edit 权限的 agent）算进展；
+2. **观测采集**：把本轮工具调用归约为 `hadActivity` 布尔——任何工具调用（含只读工具与 todo 更新）都算活动，只有纯文本轮次算无活动；宿主过滤掉格式不良的 tool part 后直接计数，工具名不进入 core；
 3. **身份门禁**：只有编排主会话的停稳才进入循环；
 4. **额度重置**：真实用户回合开始 = 新的工作意图，额度归零重新计；
 5. **投递**：`engine.record` 先记账，再投递 wake 文本——投递失败不会变成无界重试。
@@ -246,7 +249,7 @@ interface SettledContribution {
 |---|------|------|
 | D1 | 单一通用引擎 + 可插拔策略，引擎与首个策略（todo-continuation）同建 | 每种自主循环共享同一组联锁与汇聚语义；只有一份引擎内核，策略即插即用 |
 | D2 | 联锁（停稳+额度）归引擎强制，判断归策略 | §2.2：LLM 执行器不可证收敛，不失控不能押在策略正确性上 |
-| D3 | `progress` 是观测输入，不是引擎强制的门 | 等待外部事件的循环不该被进展门挡死；是否使用由策略自定 |
+| D3 | `hadActivity` 是观测输入：引擎只用它解除待进展锁，策略不必拿它当门 | 等待外部事件的循环不该被进展门挡死；自激抑制（对唤醒的纯文本回复）统一由引擎的待进展锁承担，判断权威留在策略自己的状态 |
 | D4 | 词汇分层：引擎面用 loop 词汇（`core/loop`、customType `zoo-loop-wake`），用户面/策略面保留 continuation（`[zoo.continuation]`、`todo-continuation`） | 引擎是通用机制，continuation 是首个策略的用户语义；改名不改变用户契约 |
 | D5 | 额度上限归策略（贡献携带 `maxWakes`），引擎只执行不持有配置 | 初版曾把 `max_reminders` 作为引擎构造参数，是**所有权倒置**：上限是策略的参数（对照 omp todo-reminder 的 `remindersMax` 属于 todo-tracker 自己的配置）。配置缺失 → 策略不贡献（fail-closed 落在贡献级） |
 | D6 | 预算状态归引擎，重置时机归宿主 | 曾考虑把预算状态退回宿主；控制器拥有自己的记忆才是对的（状态归引擎），宿主持有的只是"什么时候该重新开始"的知识（重置时机） |
@@ -262,7 +265,7 @@ interface SettledContribution {
 
 | channel | 事件 | 含义 |
 |---------|------|------|
-| `loop` | `settle_interlock` | 引擎联锁拦截（`not-settled` / `budget-exhausted`，后者带策略名） |
+| `loop` | `settle_interlock` | 引擎联锁拦截（`not-settled` / `budget-exhausted`（带策略名）/ `awaiting-activity`（带策略名）） |
 | `loop` | `settle_silent` | 某策略沉默（带策略自有原因） |
 | `loop` | `settle_skipped` | 宿主身份门禁跳过（pi） |
 | `plugin` | `handler_crashed` | 策略崩溃（error 级，已被隔离） |
@@ -274,11 +277,10 @@ interface SettledContribution {
 
 | 文件 | 覆盖 |
 |------|------|
-| `src/core/loop/engine.test.ts` | 联锁顺序、重名拒绝、首个 wake 胜出、崩溃隔离、按策略分账、cap 淘汰 |
-| `src/core/loop/turn.test.ts` | `resolveWorkActions`（executor/只读/未知 agent）、`isAwaitingUserAnswer` |
+| `src/core/loop/engine.test.ts` | 联锁顺序、待进展锁（上锁/解锁/静默不烧额度/随 reset 与 cap 清除）、重名拒绝、首个 wake 胜出、崩溃隔离、按策略分账、cap 淘汰 |
 | `src/hooks/todo-continuation/decide.test.ts` | 门顺序、wake 文案、纯函数性 |
 | `src/hooks/todo-continuation/index.test.ts` | `maxWakes` 声明、缺配置不贡献 |
-| `src/opencode.loop.test.ts` / `src/pi.loop.test.ts` | 双宿主端到端：唤醒、门禁、进展观测、预算/echo/重置 |
+| `src/opencode.loop.test.ts` / `src/pi.loop.test.ts` | 双宿主端到端：唤醒、门禁、活动观测、预算/echo/重置 |
 
 引擎级联锁在 core 层测，策略单元测试不重复覆盖（分层测试，见 `index.test.ts` 头注释）。
 

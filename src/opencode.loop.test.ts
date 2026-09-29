@@ -2,13 +2,18 @@
  * Tests for the OpenCode `session.idle` loop settle wiring.
  *
  * Covers the settled-turn wake path end to end through `buildPlugin`'s
- * persistent `event` hook: a dolphin idle with unfinished todos wakes
- * exactly once via `promptAsync` with the core-rendered text, while
- * non-dolphin sessions, awaiting-input turns, aborted turns, an
- * exhausted budget, and a profile without an `onSettled` contribution or
- * without a valid `[zoo.continuation].max_reminders` all stay silent.  A
- * real user message resets the per-session budget, the host's own
- * injected wake echo never does.
+ * persistent `event` hook: the todo list is the sole wake authority — a
+ * dolphin idle with unfinished active work wakes via `promptAsync` with
+ * the core-rendered text whatever the settled turn did (read-only, no,
+ * or delegating), and prose never suppresses the wake because a real
+ * wait on the user is declared through the `blocked` status.  Structural
+ * exemptions stay silent: aborted turns and turns ending at an
+ * unanswered question tool.  A delivered wake locks the session: a
+ * text-only reply to a wake stays silent without spending budget, any
+ * tool activity releases the lock, and a real user message clears both
+ * the lock and the budget.  Non-dolphin sessions, an exhausted budget,
+ * and a profile without an `onSettled` contribution or without a valid
+ * `[zoo.continuation].max_reminders` all stay silent.
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
@@ -50,6 +55,15 @@ const WORKED_TURN = [
   },
 ];
 
+/**
+ * The host's injected wake, echoed back into the transcript as a user
+ * message (the turn boundary of the reply being classified).
+ */
+const WAKE_ECHO = {
+  info: { role: "user" },
+  parts: [{ type: "text", text: CONTINUATION_PROMPT }],
+};
+
 /** The profile that enables the todo-continuation settle judge. */
 const CONTINUATION_PROFILE = {
   agents: ["dolphin"],
@@ -87,27 +101,42 @@ type PromptCall = {
  * Build a stub OpenCode client exposing the APIs the loop path
  * reads (`session.todo`, `session.messages`, `session.promptAsync`).
  *
+ * The transcript is mutable through `setTranscript` so one test can
+ * replay a sequence of settles (wake, then the turn the wake triggered).
+ *
  * @param opts - Per-test overrides for todos and the transcript.
- * @returns The client and the recorded `promptAsync` calls.
+ * @returns The client, the recorded `promptAsync` calls, and a transcript
+ *   setter.
  */
 function makeClient(
   opts: {
     todos?: Array<Record<string, unknown>>;
     messages?: Array<Record<string, unknown>>;
   } = {},
-): { client: Record<string, any>; calls: PromptCall[] } {
+): {
+  client: Record<string, any>;
+  calls: PromptCall[];
+  setTranscript(messages: Array<Record<string, unknown>>): void;
+} {
   const calls: PromptCall[] = [];
+  let transcript = opts.messages ?? WORKED_TURN;
   const client = {
     session: {
       todo: async () => ({ data: opts.todos ?? ACTIVE_TODOS }),
-      messages: async () => ({ data: opts.messages ?? WORKED_TURN }),
+      messages: async () => ({ data: transcript }),
       promptAsync: async (input: PromptCall) => {
         calls.push(input);
         return {};
       },
     },
   };
-  return { client, calls };
+  return {
+    client,
+    calls,
+    setTranscript: (messages) => {
+      transcript = messages;
+    },
+  };
 }
 
 /**
@@ -293,18 +322,10 @@ describe("session.idle — awaiting-input classification", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Work-progress classification
+// Settled turns: the todo list is the sole wake authority
 // ---------------------------------------------------------------------------
 
-describe("session.idle — work-progress classification", () => {
-  /** Agent permission tables mirroring config.toml: lynx is read-only. */
-  const PERMISSIONS = {
-    agent: {
-      beaver: { mode: "subagent", permission: {} },
-      lynx: { mode: "subagent", permission: { edit: "deny" } },
-    },
-  };
-
+describe("session.idle — the list decides wakefulness", () => {
   /**
    * Build a transcript with a user boundary and one assistant message
    * carrying the given parts.
@@ -329,42 +350,41 @@ describe("session.idle — work-progress classification", () => {
           { type: "text", text: "Step done." },
         ]),
       });
-      const plugin = await buildPlugin({ client }, zooConfig(), PERMISSIONS);
+      const plugin = await buildPlugin({ client }, zooConfig());
       await bindAgent(plugin, "dolphin");
 
       await idle(plugin);
 
-      assert.equal(calls.length, 1, `${tool} should count as progress`);
+      assert.equal(calls.length, 1, `${tool} should count as activity`);
     }
   });
 
-  it("stays silent when the settled turn only updated the todo list", async () => {
-    const { client, calls } = makeClient({
-      messages: turnWith([
-        { type: "tool", tool: "todo", state: { status: "completed" } },
-        { type: "text", text: "Updated the list." },
-      ]),
-    });
-    const plugin = await buildPlugin({ client }, zooConfig(), PERMISSIONS);
-    await bindAgent(plugin, "dolphin");
+  it("wakes when the settled turn's only tool call is read-only", async () => {
+    // The old no-progress false-negative hole: a read-only or planning
+    // turn is still activity, and wakefulness is the list's call.
+    for (const tool of ["read", "grep", "todo"]) {
+      const { client, calls } = makeClient({
+        messages: turnWith([
+          { type: "tool", tool, state: { status: "completed" } },
+          { type: "text", text: "Just looked around." },
+        ]),
+      });
+      const plugin = await buildPlugin({ client }, zooConfig());
+      await bindAgent(plugin, "dolphin");
 
-    await idle(plugin);
+      await idle(plugin);
 
-    assert.equal(calls.length, 0);
+      assert.equal(calls.length, 1, `${tool} + active list must wake`);
+    }
   });
 
-  it("wakes for a task delegation to an executor subagent", async () => {
+  it("wakes even when the settled turn made no tool call at all", async () => {
+    // Without a prior wake there is no lock, so a pure-text settle with
+    // unfinished active work still wakes: prose is never a stop signal.
     const { client, calls } = makeClient({
-      messages: turnWith([
-        {
-          type: "tool",
-          tool: "task",
-          state: { status: "completed", input: { subagent_type: "beaver" } },
-        },
-        { type: "text", text: "Delegated the work." },
-      ]),
+      messages: turnWith([{ type: "text", text: "Everything is done." }]),
     });
-    const plugin = await buildPlugin({ client }, zooConfig(), PERMISSIONS);
+    const plugin = await buildPlugin({ client }, zooConfig());
     await bindAgent(plugin, "dolphin");
 
     await idle(plugin);
@@ -372,48 +392,39 @@ describe("session.idle — work-progress classification", () => {
     assert.equal(calls.length, 1);
   });
 
-  it("stays silent for a task delegation to a read-only subagent", async () => {
-    const { client, calls } = makeClient({
-      messages: turnWith([
-        {
-          type: "tool",
-          tool: "task",
-          state: { status: "completed", input: { subagent_type: "lynx" } },
-        },
-        { type: "text", text: "Delegated a search." },
-      ]),
-    });
-    const plugin = await buildPlugin({ client }, zooConfig(), PERMISSIONS);
-    await bindAgent(plugin, "dolphin");
+  it("wakes for a task delegation whatever the delegated agent", async () => {
+    // The executor/read-only distinction is gone: any tool call is
+    // activity, the list decides wakefulness.
+    for (const agent of ["beaver", "lynx"]) {
+      const { client, calls } = makeClient({
+        messages: turnWith([
+          {
+            type: "tool",
+            tool: "task",
+            state: { status: "completed", input: { subagent_type: agent } },
+          },
+          { type: "text", text: "Delegated." },
+        ]),
+      });
+      const plugin = await buildPlugin({ client }, zooConfig());
+      await bindAgent(plugin, "dolphin");
 
-    await idle(plugin);
+      await idle(plugin);
 
-    assert.equal(calls.length, 0);
+      assert.equal(calls.length, 1, `delegation to ${agent} must wake`);
+    }
   });
 
-  it("stays silent when the final text solicits the user's approval", async () => {
+  it("wakes even when the final text solicits the user's approval", async () => {
+    // A genuine wait on the user is declared through a blocked task,
+    // never guessed from the turn's prose.
     const { client, calls } = makeClient({
       messages: turnWith([
         { type: "tool", tool: "write", state: { status: "completed" } },
         { type: "text", text: "请确认是否继续。" },
       ]),
     });
-    const plugin = await buildPlugin({ client }, zooConfig(), PERMISSIONS);
-    await bindAgent(plugin, "dolphin");
-
-    await idle(plugin);
-
-    assert.equal(calls.length, 0);
-  });
-
-  it("wakes when the final text is an ordinary status report", async () => {
-    const { client, calls } = makeClient({
-      messages: turnWith([
-        { type: "tool", tool: "write", state: { status: "completed" } },
-        { type: "text", text: "Implemented the change." },
-      ]),
-    });
-    const plugin = await buildPlugin({ client }, zooConfig(), PERMISSIONS);
+    const plugin = await buildPlugin({ client }, zooConfig());
     await bindAgent(plugin, "dolphin");
 
     await idle(plugin);
@@ -435,12 +446,208 @@ describe("session.idle — work-progress classification", () => {
         },
       },
     };
-    const plugin = await buildPlugin({ client }, zooConfig(), PERMISSIONS);
+    const plugin = await buildPlugin({ client }, zooConfig());
     await bindAgent(plugin, "dolphin");
 
     await idle(plugin);
 
     assert.equal(calls.length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Blocked tasks: the declared wait on the user
+// ---------------------------------------------------------------------------
+
+describe("session.idle — blocked tasks", () => {
+  it("stays silent when every remaining task is blocked", async () => {
+    const { client, calls } = makeClient({
+      todos: [
+        {
+          content: "Wire source",
+          status: "completed",
+          priority: "high",
+          id: "1",
+        },
+        {
+          content: "Await sign-off",
+          status: "blocked",
+          priority: "medium",
+          id: "2",
+        },
+      ],
+    });
+    const plugin = await buildPlugin({ client }, zooConfig());
+    await bindAgent(plugin, "dolphin");
+
+    await idle(plugin);
+
+    assert.equal(calls.length, 0, "a blocked list waits on the user");
+  });
+
+  it("wakes a mixed list and renders blocked lines without a suffix", async () => {
+    // The OpenCode todo payload carries no blocker field, so the
+    // waiting-on suffix is absent there by construction.
+    const { client, calls } = makeClient({
+      todos: [
+        {
+          content: "Update tests",
+          status: "pending",
+          priority: "high",
+          id: "1",
+        },
+        {
+          content: "Await sign-off",
+          status: "blocked",
+          priority: "medium",
+          id: "2",
+        },
+      ],
+    });
+    const plugin = await buildPlugin({ client }, zooConfig());
+    await bindAgent(plugin, "dolphin");
+
+    await idle(plugin);
+
+    assert.equal(calls.length, 1);
+    const text = calls[0].body.parts[0].text;
+    assert.ok(text.includes("- [blocked] Await sign-off"));
+    assert.ok(
+      !text.includes("(waiting on:"),
+      "the client payload carries no blocker field, so no suffix",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Awaiting-progress lock
+// ---------------------------------------------------------------------------
+
+describe("session.idle — awaiting-progress lock", () => {
+  /** Consume the wake's user-message echo exactly as the host would. */
+  async function feedWakeEcho(
+    plugin: Record<string, any>,
+    messageID: string | undefined,
+  ): Promise<void> {
+    await plugin.event({
+      event: {
+        type: "message.updated",
+        properties: {
+          info: {
+            id: messageID,
+            role: "user",
+            sessionID: "s1",
+            agent: "dolphin",
+          },
+        },
+      },
+    });
+  }
+
+  /** An assistant message carrying the given parts. */
+  function assistantTurn(
+    parts: Array<Record<string, unknown>>,
+  ): Record<string, unknown> {
+    return { info: { role: "assistant" }, parts };
+  }
+
+  it("stays silent on a text-only reply to a wake without spending budget", async () => {
+    const { client, calls, setTranscript } = makeClient();
+    const plugin = await buildPlugin({ client }, zooConfig(2));
+    await bindAgent(plugin, "dolphin");
+
+    await idle(plugin);
+    assert.equal(calls.length, 1, "the working settle wakes");
+    await feedWakeEcho(plugin, calls[0].body.messageID);
+
+    // The woken turn merely answers in prose: silence, and the lock
+    // holds.
+    setTranscript([
+      ...WORKED_TURN,
+      WAKE_ECHO,
+      assistantTurn([{ type: "text", text: "All work is complete." }]),
+    ]);
+    await idle(plugin);
+    assert.equal(calls.length, 1, "a text-only reply to a wake stays silent");
+
+    // A later active turn still wakes: the silenced reply left the
+    // second allowance untouched.
+    setTranscript([
+      ...WORKED_TURN,
+      WAKE_ECHO,
+      assistantTurn([
+        { type: "tool", tool: "edit", state: { status: "completed" } },
+        { type: "text", text: "Verified and continued." },
+      ]),
+    ]);
+    await idle(plugin);
+    assert.equal(calls.length, 2, "the text-only silence spent no budget");
+  });
+
+  it("releases the lock when the reply makes a read-only tool call", async () => {
+    const { client, calls, setTranscript } = makeClient();
+    const plugin = await buildPlugin({ client }, zooConfig(2));
+    await bindAgent(plugin, "dolphin");
+
+    await idle(plugin);
+    assert.equal(calls.length, 1);
+    await feedWakeEcho(plugin, calls[0].body.messageID);
+
+    // Any tool call releases the lock — reads and todo updates
+    // included — and the list is re-judged normally.
+    setTranscript([
+      ...WORKED_TURN,
+      WAKE_ECHO,
+      assistantTurn([
+        { type: "tool", tool: "read", state: { status: "completed" } },
+        { type: "text", text: "Checked once more." },
+      ]),
+    ]);
+    await idle(plugin);
+
+    assert.equal(calls.length, 2, "read-only activity releases the lock");
+    assert.ok(calls[1].body.parts[0].text.startsWith(CONTINUATION_PROMPT));
+  });
+
+  it("clears the lock along with the budget on a real user message", async () => {
+    const { client, calls, setTranscript } = makeClient();
+    const plugin = await buildPlugin({ client }, zooConfig(1));
+    await bindAgent(plugin, "dolphin");
+
+    await idle(plugin);
+    assert.equal(calls.length, 1, "the working settle wakes");
+    await feedWakeEcho(plugin, calls[0].body.messageID);
+
+    setTranscript([
+      ...WORKED_TURN,
+      WAKE_ECHO,
+      assistantTurn([{ type: "text", text: "All work is complete." }]),
+    ]);
+    await idle(plugin);
+    assert.equal(calls.length, 1, "the lock silences the text-only reply");
+
+    // A genuine user turn resets the budget AND clears the lock, so
+    // even a text-only settle under the fresh budget wakes again.
+    await plugin.event({
+      event: {
+        type: "message.updated",
+        properties: {
+          info: {
+            id: "msg_user_real",
+            role: "user",
+            sessionID: "s1",
+            agent: "dolphin",
+          },
+        },
+      },
+    });
+    setTranscript([
+      { info: { role: "user" }, parts: [{ type: "text", text: "keep going" }] },
+      assistantTurn([{ type: "text", text: "Nothing left to add." }]),
+    ]);
+    await idle(plugin);
+
+    assert.equal(calls.length, 2, "a real user turn clears the lock too");
   });
 });
 

@@ -511,20 +511,19 @@ export interface ToolDefinitionContribution {
  *
  * The engine consults a strategy only after its interlocks pass, so a
  * strategy never sees the stop cause or the budget: it receives the
- * session and the observed facts (whether the turn made mutating
- * progress) and returns a wake/silence verdict.
+ * session and the turn's activity fact and returns a wake/silence
+ * verdict.
  */
 export interface SettledInput {
   /** Session whose turn stopped. */
   sessionID: string;
   /**
-   * Whether the settled turn performed mutating work — a call the host
-   * classifies as mutating, or delegation to an executor subagent.  A
-   * read-only or discussion-only turn is not progress; the tool-name
-   * vocabulary is host-owned, see `resolveWorkActions` in the loop
-   * module.
+   * Whether the settled turn made ANY tool call at all — reads and todo
+   * updates count; only a pure-text turn is activity-free. The engine
+   * uses it to release its awaiting-progress lock; strategies judge
+   * wakefulness from their own state, not from this fact.
    */
-  progress: boolean;
+  hadActivity: boolean;
 }
 
 /**
@@ -538,8 +537,8 @@ export interface SettleRequest {
   sessionID: string;
   /** Why the agent's turn ended. */
   cause: StopCause;
-  /** Whether the settled turn performed mutating work. */
-  progress: boolean;
+  /** Whether the settled turn made any tool call. */
+  hadActivity: boolean;
 }
 
 /**

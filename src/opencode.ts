@@ -47,13 +47,7 @@ import {
 import type { ModeProfile } from "./core/config-types.js";
 import { setModelLimit } from "./core/context/model-limits.js";
 import { cleanupSession } from "./core/context/runtime.js";
-import {
-  createLoopEngine,
-  isAwaitingUserAnswer,
-  resolveWorkActions,
-  type StopCause,
-  type TurnToolCall,
-} from "./core/loop/index.js";
+import { createLoopEngine, type StopCause } from "./core/loop/index.js";
 import { sessionAgentRegistry } from "./core/session-agent.js";
 import type { Deps } from "./core/slots.js";
 import { derivePrimaries } from "./core/subagent/identity.js";
@@ -140,43 +134,6 @@ function isToolPart(part: Record<string, unknown>): boolean {
 }
 
 /**
- * OpenCode's mutating tool vocabulary.
- *
- * Host vocabulary owned by this adapter: core never hardcodes which tool
- * names mutate, so OpenCode declares them here.
- */
-const OPENCODE_MUTATING_TOOLS: readonly string[] = ["bash", "edit", "write"];
-
-/**
- * OpenCode's delegation tool, naming the target agent in its input.
- *
- * `getPartAgent` is consulted only for this tool, so a present
- * `TurnToolCall.agent` marks delegation for core without it knowing the
- * name.
- */
-const OPENCODE_DELEGATION_TOOL = "task";
-
-/**
- * Extract the delegated agent name from the delegation tool's part.
- *
- * OpenCode's `task` tool names the target in `state.input.subagent_type`;
- * a few variants also expose `input.agent`, so both are probed.  Callers
- * must only consult this for `OPENCODE_DELEGATION_TOOL` parts.
- *
- * @param part - A raw tool part.
- * @returns The delegated agent name, or `undefined` when absent.
- */
-function getPartAgent(part: Record<string, unknown>): string | undefined {
-  const container = part.state ?? part;
-  const input = (container as { input?: unknown }).input;
-  if (input === null || typeof input !== "object") return undefined;
-  const raw =
-    (input as Record<string, unknown>).subagent_type ??
-    (input as Record<string, unknown>).agent;
-  return typeof raw === "string" ? raw : undefined;
-}
-
-/**
  * Whether a message part is an unanswered question-tool call.
  *
  * A question tool that has not reached the `completed` state is still
@@ -249,31 +206,20 @@ export function lastAssistantAborted(
   return false;
 }
 
-/** Facts extracted from the settled assistant turn. */
-interface TurnOutcome {
-  /** Tool calls issued after the last user message, in order. */
-  calls: TurnToolCall[];
-  /** Concatenated text of the last assistant message (empty when none). */
-  finalText: string;
-}
-
 /**
- * Collect the settled turn's tool calls and final assistant text.
+ * Count the well-formed tool calls the settled turn issued.
  *
  * The turn begins after the last user message: every user message is a
- * turn boundary.  The host's own wake injection also arrives as
- * a user message (a recorded id echo with customType-less text parts),
- * so it too starts a fresh turn — which is exactly the turn being
- * classified.  Tool calls from assistant messages in that span are
- * gathered; `finalText` is the concatenated text of the last assistant
- * message, so a tool-only closing message yields an empty string.
+ * turn boundary.  The host's own wake injection also arrives as a user
+ * message (a recorded id echo with customType-less text parts), so it
+ * too starts a fresh turn — which is exactly the turn being
+ * classified.  Only well-formed tool parts (ones carrying a name) are
+ * counted; tool names are never inspected further.
  *
  * @param messages - The session transcript in chronological order.
- * @returns The turn's tool calls and final assistant text.
+ * @returns The number of tool calls in the turn.
  */
-function collectTurnOutcome(
-  messages: readonly IdleMessageEntry[],
-): TurnOutcome {
+function countTurnToolCalls(messages: readonly IdleMessageEntry[]): number {
   let start = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i]?.info?.role === "user") {
@@ -281,31 +227,17 @@ function collectTurnOutcome(
       break;
     }
   }
-  const calls: TurnToolCall[] = [];
-  let finalText = "";
+  let count = 0;
   for (let i = start; i < messages.length; i++) {
     const message = messages[i];
     if (message?.info?.role !== "assistant") continue;
     const parts = Array.isArray(message.parts) ? message.parts : [];
-    let messageText = "";
     for (const part of parts) {
-      if (isToolPart(part)) {
-        const name = getPartToolName(part);
-        if (name !== undefined) {
-          calls.push({
-            name,
-            agent:
-              name === OPENCODE_DELEGATION_TOOL
-                ? getPartAgent(part)
-                : undefined,
-          });
-        }
-      }
-      if (typeof part.text === "string") messageText += part.text;
+      if (!isToolPart(part)) continue;
+      if (getPartToolName(part) !== undefined) count++;
     }
-    finalText = messageText;
   }
-  return { calls, finalText };
+  return count;
 }
 
 // ---------------------------------------------------------------------------
@@ -394,41 +326,33 @@ export async function buildPlugin(input: any, zooConfig: any, rawConfig?: any) {
   // into a later real user message.
   const injectedEchoMessages = new Map<string, string>();
 
-  // An agent is an executor when its tool-level permission deny list does
-  // not include `edit`; a read-only delegate (e.g. lynx) must not count
-  // as work progress.
-  const isExecutor = (agent: string): boolean =>
-    !(agentPermissions[agent] ?? []).includes("edit");
-
-  /** The classified settle outcome plus the turn's work-progress fact. */
+  /** The classified settle outcome plus the turn's activity fact. */
   interface IdleOutcome {
     cause: StopCause;
-    progress: boolean;
+    hadActivity: boolean;
   }
 
   /**
-   * Classify why a session's turn ended for the loop, and whether
-   * the settled turn actually made mutating progress.
+   * Classify why a session's turn ended for the loop, and whether the
+   * settled turn made any tool call.
    *
    * The `session.error` flag is checked first (cheap and explicit);
    * otherwise the transcript is inspected for an aborted last assistant
-   * turn, an unanswered question tool call, or a final assistant text that
-   * hands the turn back to the user.  The same transcript fetch also
-   * yields the settled turn's tool calls, which are reduced to real work
-   * actions (`resolveWorkActions`) against the parsed agent deny map — a
-   * `task`/`subagent` delegation only counts when the target is an
-   * executor.  When the transcript cannot be read (API absent, rejects,
-   * or a non-array payload) the signal is unobservable, so the caller must
-   * fail closed and skip — returning `null` here.
+   * turn or an unanswered question tool call.  The same transcript fetch
+   * yields the settled turn's tool calls, reduced to the plain activity
+   * fact the engine uses for its awaiting-progress lock.  When the
+   * transcript cannot be read (API absent, rejects, or a non-array
+   * payload) the signal is unobservable, so the caller must fail closed
+   * and skip — returning `null` here.
    *
    * @param sessionID - The settled session.
-   * @returns The cause and progress, or `null` when unobservable.
+   * @returns The cause and activity fact, or `null` when unobservable.
    */
   async function classifyStopCause(
     sessionID: string,
   ): Promise<IdleOutcome | null> {
     if (abortedSessions.delete(sessionID)) {
-      return { cause: "aborted", progress: false };
+      return { cause: "aborted", hadActivity: false };
     }
     if (typeof client?.session?.messages !== "function") {
       log("loop", "cause_unobservable", sessionID, undefined, "warn", {
@@ -456,20 +380,14 @@ export async function buildPlugin(input: any, zooConfig: any, rawConfig?: any) {
       });
       return null;
     }
-    const outcome = collectTurnOutcome(messages);
-    const progress =
-      resolveWorkActions(outcome.calls, {
-        mutatingTools: OPENCODE_MUTATING_TOOLS,
-        isExecutorAgent: isExecutor,
-      }).length > 0;
-    if (lastAssistantAborted(messages)) return { cause: "aborted", progress };
-    if (
-      hasUnansweredQuestion(messages) ||
-      isAwaitingUserAnswer(outcome.finalText)
-    ) {
-      return { cause: "awaiting-input", progress };
+    const hadActivity = countTurnToolCalls(messages) > 0;
+    if (lastAssistantAborted(messages)) {
+      return { cause: "aborted", hadActivity };
     }
-    return { cause: "settled", progress };
+    if (hasUnansweredQuestion(messages)) {
+      return { cause: "awaiting-input", hadActivity };
+    }
+    return { cause: "settled", hadActivity };
   }
 
   return {
@@ -560,7 +478,7 @@ export async function buildPlugin(input: any, zooConfig: any, rawConfig?: any) {
         const decision = await engine.run({
           sessionID,
           cause: outcome.cause,
-          progress: outcome.progress,
+          hadActivity: outcome.hadActivity,
         });
         if (decision === null) return;
 
@@ -588,7 +506,7 @@ export async function buildPlugin(input: any, zooConfig: any, rawConfig?: any) {
             handler: decision.name,
             used: engine.used(sessionID, decision.name),
             cause: outcome.cause,
-            progress: outcome.progress,
+            hadActivity: outcome.hadActivity,
           });
         } catch (err) {
           injectedEchoMessages.delete(sessionID);

@@ -151,13 +151,7 @@ import {
 import type { AgentModeMap, ModeProfile } from "./core/config-types.js";
 import type { HostAdapter } from "./core/context/lens.js";
 import { clearRoundView } from "./core/context/round-view.js";
-import {
-  createLoopEngine,
-  isAwaitingUserAnswer,
-  resolveWorkActions,
-  type StopCause,
-  type TurnToolCall,
-} from "./core/loop/index.js";
+import { createLoopEngine, type StopCause } from "./core/loop/index.js";
 import {
   isSkillAllowed,
   parseSkillPermissions,
@@ -877,90 +871,32 @@ function settledTurnMessages(messages: readonly unknown[]): unknown[] {
 }
 
 /**
- * pi's mutating tool vocabulary.
+ * Count the well-formed tool calls the settled turn issued.
  *
- * Host vocabulary owned by this adapter: core never hardcodes which tool
- * names mutate, so pi declares them here.
- */
-const PI_MUTATING_TOOLS: readonly string[] = ["bash", "edit", "write"];
-
-/**
- * pi's delegation tool, carrying the target agent at `arguments.agent`.
- *
- * `collectTurnToolCalls` fills `TurnToolCall.agent` only for this tool, so
- * core can read a present `agent` as delegation without knowing the name.
- */
-const PI_DELEGATION_TOOL = "subagent";
-
-/**
- * Collect the tool calls the settled turn issued.
- *
- * Walks every assistant message's content parts, keeping each
- * `toolCall` part's name and — only for pi's delegation tool — the
- * delegated agent from its `arguments.agent`.  Non-assistant messages,
- * non-object parts, and malformed calls are skipped (fail closed toward
- * silence).
+ * Walks every assistant message's content parts, counting each
+ * well-formed `toolCall` part; tool names are never inspected further.
+ * Non-assistant messages, non-object parts, and malformed calls are
+ * skipped.
  *
  * @param messages - The settled turn's messages.
- * @returns The observed tool calls in order.
+ * @returns The number of observed tool calls.
  */
-function collectTurnToolCalls(messages: readonly unknown[]): TurnToolCall[] {
-  const calls: TurnToolCall[] = [];
+function countTurnToolCalls(messages: readonly unknown[]): number {
+  let count = 0;
   for (const message of messages) {
     if (messageRole(message) !== "assistant") continue;
     const content = (message as { content?: unknown }).content;
     if (!Array.isArray(content)) continue;
     for (const part of content) {
       if (part === null || typeof part !== "object") continue;
-      const candidate = part as {
-        type?: unknown;
-        name?: unknown;
-        arguments?: unknown;
-      };
+      const candidate = part as { type?: unknown; name?: unknown };
       if (candidate.type !== "toolCall" || typeof candidate.name !== "string") {
         continue;
       }
-      const call: TurnToolCall = { name: candidate.name };
-      if (candidate.name === PI_DELEGATION_TOOL) {
-        const args = candidate.arguments;
-        if (args !== null && typeof args === "object") {
-          const agent = (args as { agent?: unknown }).agent;
-          if (typeof agent === "string") call.agent = agent;
-        }
-      }
-      calls.push(call);
+      count++;
     }
   }
-  return calls;
-}
-
-/**
- * The concatenated text of the settled turn's final assistant message.
- *
- * Used for the turn-handback heuristic.  A run with no assistant
- * message (or a message with no text part) yields `""`, which is never
- * awaiting — fail closed toward silence.
- *
- * @param messages - The settled turn's messages.
- * @returns The final assistant text, or `""` when absent.
- */
-function finalAssistantText(messages: readonly unknown[]): string {
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    if (messageRole(messages[i]) !== "assistant") continue;
-    const content = (messages[i] as { content?: unknown }).content;
-    if (!Array.isArray(content)) return "";
-    return content
-      .filter(
-        (part): part is { text: string } =>
-          part !== null &&
-          typeof part === "object" &&
-          (part as { type?: unknown }).type === "text" &&
-          typeof (part as { text?: unknown }).text === "string",
-      )
-      .map((part) => part.text)
-      .join("");
-  }
-  return "";
+  return count;
 }
 
 /**
@@ -2078,27 +2014,15 @@ export function buildPiHandlers(
           typeof last === "object" &&
           (last as { role?: unknown }).role === "assistant" &&
           (last as { stopReason?: unknown }).stopReason === "aborted";
-        // Derive the settled turn's real facts: whether it made mutating
-        // progress and whether its final line hands back to the user.  A
-        // read-only / discussion-only turn, an unreadable transcript, or
-        // a transcript with no assistant message all yield no tool calls
-        // and no final text — both fail toward silence (the suppression
-        // bias: a missed wake is cheaper than talking over a handback).
+        // Derive the settled turn's facts: whether it made any tool call
+        // at all.  An unreadable transcript, or one with no assistant
+        // message, simply yields no activity — silence is NOT implied by
+        // it: the todo list is the authority on wakefulness, and the
+        // engine consults `hadActivity` only while the session's
+        // awaiting-progress lock is held.  A fresh settle with no prior
+        // wake is judged against the list regardless of activity.
         const turn = settledTurnMessages(messages);
-        const toolCalls = collectTurnToolCalls(turn);
-        // An executor agent is one whose permission does not deny `edit`;
-        // delegation to a read-only agent proves no execution, mirroring
-        // the delegation gate's use of the parsed per-agent deny map.
-        const isExecutor = (agent: string): boolean =>
-          !(agentPermissions[agent] ?? []).includes("edit");
-        const progress =
-          resolveWorkActions(toolCalls, {
-            mutatingTools: PI_MUTATING_TOOLS,
-            isExecutorAgent: isExecutor,
-          }).length > 0;
-        // A trailing question / response cue is a genuine handback: treat
-        // it like an open UI prompt so the judge silences the wake.
-        const awaitingUser = isAwaitingUserAnswer(finalAssistantText(turn));
+        const hadActivity = countTurnToolCalls(turn) > 0;
         // A headless ask could not reach the user (no UI to draw on), so
         // the turn ends with the question unanswered: stop and let the
         // user read it after the process exits rather than auto-continuing
@@ -2106,12 +2030,12 @@ export function buildPiHandlers(
         const askUnanswered = askWentUnanswered(turn);
         const cause: StopCause = aborted
           ? "aborted"
-          : uiPromptDepth > 0 || awaitingUser || askUnanswered
+          : uiPromptDepth > 0 || askUnanswered
             ? "awaiting-input"
             : "settled";
         log("loop", "settle_received", sessionID ?? "", undefined, "debug", {
           cause,
-          progress,
+          hadActivity,
         });
         // No live pi session to attribute the reminder to → fail closed.
         if (sessionID === undefined || sessionID.length === 0) {
@@ -2129,10 +2053,10 @@ export function buildPiHandlers(
           });
           return;
         }
-        // `progress` is derived above from the settled turn's tool calls;
-        // a transcript that could not be read resolves it to `false`,
-        // which silences via the todo strategy's no-progress gate.
-        const decision = await engine.run({ sessionID, cause, progress });
+        // `hadActivity` is derived above from the settled turn's tool
+        // calls; the engine's interlocks and the todo strategy's gates
+        // decide the rest.
+        const decision = await engine.run({ sessionID, cause, hadActivity });
         if (decision === null) return;
         // Deliver the wake as a queued follow-up WHILE the run is still
         // streaming.  `agent_end` fires before pi's run loop checks its
