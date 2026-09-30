@@ -22,19 +22,20 @@
  * Three required sections (SUMMARY / CONTEXT / ACCEPTANCE) with concise
  * structural guidance. Used by all agents that can delegate.
  */
-export const DELEGATION_FORMAT_TEXT = `- **SUMMARY** - 用一句话说明这次委派要得到什么结果；一次只委派一个明确目标。
-- **CONTEXT** - 交代接收者无法从任务本身获知、但会影响判断的事实，包括用户意图、已知发现、失败现象、范围与排除条件，以及相关约束。假设接收者看不到此前的对话：必要信息要写全，无关历史和重复内容要删掉。说明要查明什么，不要预先指定该如何实现。写到足以独立执行为止，不设长度限制，也不要为了简短省略关键事实。
-- **ACCEPTANCE** - 列出 1–2 项具体、可验证的结果，以及用什么证据核验，例如文件位置、引用的代码或测试结果。标准应与 SUMMARY 对应；多处证据可以服务于同一结果；如果需要更多互不相关的结果，就拆成多次委派。
+export const DELEGATION_FORMAT_TEXT = `**SUMMARY:** 用一句话说明这次委派要得到什么结果；一次只委派一个明确目标。
+
+**CONTEXT:** 交代接收者无法从任务本身获知、但会影响判断的事实，包括用户意图、已知发现、失败现象、范围与排除条件，以及相关约束。假设接收者看不到此前的对话：必要信息要写全，无关历史和重复内容要删掉。说明要查明什么，不要预先指定该如何实现。写到接收者能够独立执行为止，不设长度限制，不要为了简短省略关键事实；同时避免加入与当前结果无关的背景。
+
+**ACCEPTANCE:** 列出 1–2 项具体、可验证的结果，以及用什么证据核验，例如文件位置、引用的代码或测试结果。标准应与 SUMMARY 对应；多处证据可以服务于同一结果；如果需要更多互不相关的结果，就拆成多次委派。
 `;
 
 // ---------------------------------------------------------------------------
 // Subagent prompt hint
 // ---------------------------------------------------------------------------
 
-export const SUBAGENT_PROMPT_HINT = `Format:
-${DELEGATION_FORMAT_TEXT}
+export const SUBAGENT_PROMPT_HINT = `所有委派目标都必须遵循此格式：
 
-Required for all delegation targets, regardless of agent type.`;
+${DELEGATION_FORMAT_TEXT}`;
 
 /**
  * Format guidance shown in the `task` tool's `prompt` parameter description.
@@ -44,15 +45,15 @@ Required for all delegation targets, regardless of agent type.`;
 // Agent role descriptions — shared across all agents that reference them
 // ---------------------------------------------------------------------------
 
-export const LYNX_AGENT_LINE = `- **lynx** — codebase search, file discovery, signature lookups, structural analysis.`;
+export const LYNX_AGENT_LINE = `- **lynx** — 只读代码库探索：查找实现、调用关系和结构，并提供可定位的代码依据。`;
 
-export const SPIDER_AGENT_LINE = `- **spider** — web research, URL fetching, API documentation lookup.`;
+export const SPIDER_AGENT_LINE = `- **spider** — 只读网页调研：查找外部资料和 API 文档，并提供带 URL 的可核查依据。`;
 
-export const BEAVER_AGENT_LINE = `- **beaver** — code writing, editing, bug fixes, refactoring, test creation.`;
+export const BEAVER_AGENT_LINE = `- **beaver** — 代码实现：编写或修改代码、补充测试，并验证变更结果。`;
 
-export const EAGLE_AGENT_LINE = `- **eagle** — loaded via the \`code-review\` skill. Use for code review. Always dispatch two Eagle calls in parallel for independent perspectives.`;
+export const EAGLE_AGENT_LINE = `- **eagle** — 只读代码审查：识别有具体证据、足以影响合并决策的问题；需要审查时加载 \`code-review\` skill。`;
 
-export const KIWI_AGENT_LINE = `- **kiwi** — loaded via the \`wiki-ingest\` skill. Use for knowledge distillation from external URLs and documents.`;
+export const KIWI_AGENT_LINE = `- **kiwi** — 只读知识分析：整理和核验外部 URL、文档或 wiki 内容；按任务加载相应的 wiki skill。`;
 
 // ---------------------------------------------------------------------------
 // Leaf subagent listing — shared across beaver + mola
@@ -65,12 +66,10 @@ export const KIWI_AGENT_LINE = `- **kiwi** — loaded via the \`wiki-ingest\` sk
  * for information gathering.  This header introduces them with their
  * one-line roles.
  */
-export const DELEGATION_LEAF_AGENTS_HEADER = `Two subagents are available for information gathering via \`task()\`:
+export const DELEGATION_LEAF_AGENTS_HEADER = `通过委派工具可以调用以下两个子 agent 收集信息：
 
 ${LYNX_AGENT_LINE}
 ${SPIDER_AGENT_LINE}
-
-Delegation uses the same three-section format as the dolphin orchestrator:
 `;
 
 // ---------------------------------------------------------------------------
@@ -84,11 +83,11 @@ Delegation uses the same three-section format as the dolphin orchestrator:
  * subagents (lynx/spider) for information gathering.  Consumed by
  * beaver and mola with their own identity closing lines.
  */
-export const DELEGATION_DISCIPLINE_TEXT = `Key discipline:
+export const DELEGATION_DISCIPLINE_TEXT = `委派时遵守以下原则：
 
-- **Parallelize independent searches** — dispatch lynx (codebase) and spider (web) simultaneously when both are needed.
-- **One \`task()\` = one focused outcome** — split if multiple unrelated goals hide inside a single search.
-- **Information gathering only** — lynx and spider return raw findings; you synthesize them into your implementation. Do not delegate implementation work or design decisions.
+- 委派应**只**把可以从代码库或资料中查明的具体问题交给 lynx 或 spider，**不得**让它们评估最佳方案、调查整体策略，或替你做设计判断
+- lynx 和 spider **只**负责返回发现及其依据；由你整合结果，完成自己的规划或实现。**不得**把实现工作或方案设计交给它们
+- 彼此独立且都确实需要的搜索可以并行；依赖前一项结果的搜索**必须**等前一项完成后再进行
 `;
 
 // ---------------------------------------------------------------------------
@@ -101,27 +100,46 @@ export const DELEGATION_DISCIPLINE_TEXT = `Key discipline:
  * Shows a concrete SUMMARY / CONTEXT / ACCEPTANCE block for a lynx
  * codebase-search task. Uses a generic scenario (error-handling audit)
  * so agents pattern-match the structure, not project-specific symbols.
- * The BAD/GOOD contrast teaches the real failure mode for leaf
- * delegation: turning a search into a consultation by front-loading
- * background the subagent never asked for.
  */
-export const DELEGATION_LEAF_EXAMPLE = `Example (codebase search):
+export const DELEGATION_LEAF_EXAMPLE = `代码库搜索示例：
 
-**SUMMARY:** List every function in \`src/\` that catches an exception and silently returns a default value.
+**SUMMARY:** 找出 \`src/\` 下捕获异常后静默返回默认值的所有 catch 块。
 
-**CONTEXT:** A user reported that request failures disappear without logs and callers receive apparently valid fallback values. Existing investigation suggests the failure is caused by catch blocks that return defaults such as \`null\`, \`false\`, \`[]\`, \`{}\`, \`0\`, or an empty string without logging or rethrowing. Search all source files under \`src/\`, including callbacks and anonymous functions. Include catches whose return occurs through a local helper or conditional branch when the exception can still be silently converted into a default. Exclude catch blocks that always rethrow, return an explicit error/result object, or log and intentionally recover. This is a discovery task only: identify matching code and evidence; do not recommend an error-handling design or modify files.
+**CONTEXT:** 用户反馈请求失败后没有日志，调用方却收到了看似有效的返回值。需要确认代码库中是否存在捕获异常后静默返回默认值的处理。
+
+- 搜索范围：\`src/\` 下的所有源文件，包括回调函数和匿名函数。
+- 匹配条件：catch 捕获异常后，既没有重新抛出异常，也没有通过现有日志机制记录异常，同时直接或间接向调用方返回 \`null\`、\`false\`、\`[]\`、\`{}\`、\`0\` 或空字符串等默认值。间接返回包括通过局部辅助函数或条件分支返回。
+- 排除条件：始终重新抛出异常、返回明确错误或结果对象，或记录日志后有意恢复的 catch。
+- 任务边界：这是一项只读代码库探索任务，只报告匹配代码及其依据，不修改文件，不提出错误处理方案。
 
 **ACCEPTANCE:**
-1. Report every match as \`file: line\`, with the catch statement and default return statement quoted.
-2. For indirect or conditional returns, briefly show why the caught exception can reach the default-return path.
+1. 对每个匹配项报告 \`path/to/file:line\`，引用 catch 语句和默认返回路径，并标明所在函数。
+2. 对间接或条件返回，说明捕获的异常如何到达默认返回路径；如果没有匹配项，说明搜索范围和使用过的搜索方式。
 
-> BAD — underspecified because it makes the subagent reconstruct known intent:
-> **CONTEXT:** Find catch blocks that return defaults.
->
-> BAD — turns a scoped search into an open-ended consultation:
-> **CONTEXT:** We're improving observability across the codebase. Investigate our error-handling strategy and recommend where to add logging, rethrow exceptions, introduce error codes, or redesign fallback behavior.
->
-> GOOD — self-contained but still limited to one searchable outcome`;
+---
+
+常见反例：
+
+反例一：上下文不足
+
+> **SUMMARY:** ...
+> **CONTEXT:** 这个问题可能与错误处理有关，请调查。
+> **ACCEPTANCE:** ...
+> 说明：没有说明现象、判断标准、排除条件或任务边界。
+
+反例二：目标或验收不清
+
+> **SUMMARY:** 调查代码库中的错误处理问题。
+> **CONTEXT:** ...
+> **ACCEPTANCE:** 报告调查结果。
+> 说明：没有明确搜索范围、证据格式，以及间接返回是否算匹配。
+
+反例三：越过信息收集边界
+
+> **SUMMARY:** ...
+> **CONTEXT:** 调查整个代码库的错误处理策略，并建议在哪里加日志、重新抛出异常或重设计兜底逻辑。
+> **ACCEPTANCE:** ...
+> 说明：这已经要求 agent 做方案设计，而不是收集事实。`;
 
 // ---------------------------------------------------------------------------
 // Message ref no-echo instruction

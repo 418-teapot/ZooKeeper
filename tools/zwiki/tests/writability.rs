@@ -311,10 +311,13 @@ fn test_bundle_install_places_content_directly_in_store() {
         "[package]\nname = \"test-install-bundle\"\nversion = \"1.0.0\"\n\n[export]\ninclude = [\"**/*\"]\n",
     )
     .unwrap();
-    let doc = "---\ntitle: Doc\ntype: concept\ntimestamp: 2026-07-01T00:00:00Z\ntags: []\nstatus: draft\nlast_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# Doc Content\n\nThis document has enough text to pass the health and lint checks that zwiki runs during bundle installation. It contains well over one hundred characters.\n";
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let doc = "---\ntitle: Doc\ntype: concept\ntimestamp: {{timestamp}}\ntags: []\nstatus: draft\nlast_validated: {{timestamp}}\ntimeliness: current\n---\n\n# Doc Content\n\nThis document has enough text to pass the health and lint checks that zwiki runs during bundle installation. It contains well over one hundred characters.\n"
+        .replace("{{timestamp}}", &now);
     std::fs::write(
         src.join("index.md"),
-        "---\ntitle: Index\ntype: concept\ntimestamp: 2026-07-01T00:00:00Z\ntags: []\nstatus: draft\nlast_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# Index\n\n- [Doc](doc.md)\n",
+        "---\ntitle: Index\ntype: concept\ntimestamp: {{timestamp}}\ntags: []\nstatus: draft\nlast_validated: {{timestamp}}\ntimeliness: current\n---\n\n# Index\n\n- [Doc](doc.md)\n"
+            .replace("{{timestamp}}", &now),
     )
     .unwrap();
     std::fs::write(src.join("doc.md"), doc).unwrap();

@@ -3107,15 +3107,15 @@ mod tests {
         dir
     }
 
-    /// Page content with full frontmatter + sufficient body text (>100 chars)
-    /// to pass health and lint checks.
+    /// Page template with full frontmatter and sufficient body text (>100 chars)
+    /// to pass health and lint checks when stamped with the current time.
     const PAGE_OK: &str = "---
 title: Proper Page
 type: concept
-timestamp: 2026-07-01T00:00:00Z
+timestamp: {{timestamp}}
 tags: []
 status: draft
-last_validated: 2026-07-01T00:00:00Z
+last_validated: {{timestamp}}
 timeliness: current
 ---
 
@@ -3190,7 +3190,12 @@ title: Bundle Index
         )
         .unwrap();
         // Add a discoverable page with full frontmatter + body.
-        std::fs::write(bundle_dir.join("doc.md"), PAGE_OK).unwrap();
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        std::fs::write(
+            bundle_dir.join("doc.md"),
+            PAGE_OK.replace("{{timestamp}}", &now),
+        )
+        .unwrap();
 
         let lock = bundle::ZwikiLock {
             entries: vec![bundle::ZwikiLockEntry {

@@ -10,6 +10,7 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import { DELEGATION_LEAF_AGENTS_HEADER } from "./agents/parts.js";
 import {
   buildToolHooks,
   COMMAND_HANDLED,
@@ -420,8 +421,10 @@ describe("poly full profile — registration parity", () => {
     await plugin.config(config);
     // Poly mode: lynx/spider present → delegation sections in the prompt.
     assert.ok(
-      config.agent.mola.prompt.includes("Two subagents are available"),
-      "poly mola prompt must teach task() delegation",
+      config.agent.mola.prompt.includes(
+        DELEGATION_LEAF_AGENTS_HEADER.trimEnd(),
+      ),
+      "poly mola prompt must teach delegation",
     );
   });
 

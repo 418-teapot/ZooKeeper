@@ -972,7 +972,8 @@ mod tests {
         assert_eq!(metadata["status"], "completed");
         assert!(metadata["signal"].is_null());
         assert_eq!(metadata["attempt_id"], "EX-001-A001");
-        assert_eq!(metadata["interpreter"], json!(["/bin/sh"]));
+        let resolved_interpreter = fs::canonicalize("/bin/sh").unwrap();
+        assert_eq!(metadata["interpreter"], json!([resolved_interpreter]));
 
         let attempt_dir =
             case_dir.join("artifacts/experiments/EX-001/EX-001-A001");

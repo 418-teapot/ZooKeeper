@@ -17,8 +17,10 @@ pub struct BundleTestParser {
     pub cmd: BundleCommand,
 }
 
-/// Helper to write a file in tests.
+/// Write a fixture, resolving timestamp placeholders to the current time.
 pub fn w(path: PathBuf, content: &str) {
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let content = content.replace("{{timestamp}}", &now);
     std::fs::write(path, content).unwrap();
 }
 
@@ -135,9 +137,9 @@ pub fn serve_update_bundle(
     (port, handle)
 }
 
-pub const DOC_M0: &str = "---\ntitle: Doc\ntype: concept\ntimestamp: 2026-07-01T00:00:00Z\ntags: []\nstatus: draft\nlast_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# Doc Content\n\nThis document has enough text to pass the health and lint checks that zwiki runs during bundle installation. It contains well over one hundred characters.\n";
-pub const RDM0: &str = "---\ntitle: Readme\ntype: concept\ntimestamp: 2026-07-01T00:00:00Z\ntags: []\nstatus: draft\nlast_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# Readme\n\nThis readme has enough text to pass the health and lint checks that zwiki runs during bundle installation. It contains well over one hundred characters.\n";
-pub const IDX0: &str = "---\ntitle: Index\ntype: concept\ntimestamp: 2026-07-01T00:00:00Z\ntags: []\nstatus: draft\nlast_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# Index\n\n- [Doc](doc.md)\n- [Readme](readme.md)\n";
-pub const DOC_U0: &str = "---\ntitle: Doc\ntype: concept\ntimestamp: 2026-07-01T00:00:00Z\ntags: []\nstatus: draft\nlast_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# Updated Doc Content\n\nThis document has been updated to test force reinstall. It has enough text to pass health and lint checks during reinstall.\n";
-pub const NEW_M0: &str = "---\ntitle: New\ntype: concept\ntimestamp: 2026-07-01T00:00:00Z\ntags: []\nstatus: draft\nlast_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# New File\n\nThis new file is added during the force reinstall test step. It has enough text to pass health and lint checks.\n";
-pub const IDX_U0: &str = "---\ntitle: Index\ntype: concept\ntimestamp: 2026-07-01T00:00:00Z\ntags: []\nstatus: draft\nlast_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# Index\n\n- [Doc](doc.md)\n- [Readme](readme.md)\n- [New](new.md)\n";
+pub const DOC_M0: &str = "---\ntitle: Doc\ntype: concept\ntimestamp: {{timestamp}}\ntags: []\nstatus: draft\nlast_validated: {{timestamp}}\ntimeliness: current\n---\n\n# Doc Content\n\nThis document has enough text to pass the health and lint checks that zwiki runs during bundle installation. It contains well over one hundred characters.\n";
+pub const RDM0: &str = "---\ntitle: Readme\ntype: concept\ntimestamp: {{timestamp}}\ntags: []\nstatus: draft\nlast_validated: {{timestamp}}\ntimeliness: current\n---\n\n# Readme\n\nThis readme has enough text to pass the health and lint checks that zwiki runs during bundle installation. It contains well over one hundred characters.\n";
+pub const IDX0: &str = "---\ntitle: Index\ntype: concept\ntimestamp: {{timestamp}}\ntags: []\nstatus: draft\nlast_validated: {{timestamp}}\ntimeliness: current\n---\n\n# Index\n\n- [Doc](doc.md)\n- [Readme](readme.md)\n";
+pub const DOC_U0: &str = "---\ntitle: Doc\ntype: concept\ntimestamp: {{timestamp}}\ntags: []\nstatus: draft\nlast_validated: {{timestamp}}\ntimeliness: current\n---\n\n# Updated Doc Content\n\nThis document has been updated to test force reinstall. It has enough text to pass health and lint checks during reinstall.\n";
+pub const NEW_M0: &str = "---\ntitle: New\ntype: concept\ntimestamp: {{timestamp}}\ntags: []\nstatus: draft\nlast_validated: {{timestamp}}\ntimeliness: current\n---\n\n# New File\n\nThis new file is added during the force reinstall test step. It has enough text to pass health and lint checks.\n";
+pub const IDX_U0: &str = "---\ntitle: Index\ntype: concept\ntimestamp: {{timestamp}}\ntags: []\nstatus: draft\nlast_validated: {{timestamp}}\ntimeliness: current\n---\n\n# Index\n\n- [Doc](doc.md)\n- [Readme](readme.md)\n- [New](new.md)\n";

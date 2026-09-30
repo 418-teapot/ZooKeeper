@@ -623,16 +623,14 @@ version = "0.5.0"
 include = ["*.md"]
 "#;
         std::fs::write(src_dir.join("bundle.toml"), bundle_toml).unwrap();
-        std::fs::write(
+        w(
             src_dir.join("page.md"),
-            "---\ntitle: Page\ntype: concept\ntimestamp: 2026-07-01T00:00:00Z\ntags: []\nstatus: draft\nlast_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# JSON\n\nThis page has enough text to pass the health and lint checks that zwiki runs during bundle installation. It contains well over one hundred characters.\n",
-        )
-        .unwrap();
-        std::fs::write(
+            "---\ntitle: Page\ntype: concept\ntimestamp: {{timestamp}}\ntags: []\nstatus: draft\nlast_validated: {{timestamp}}\ntimeliness: current\n---\n\n# JSON\n\nThis page has enough text to pass the health and lint checks that zwiki runs during bundle installation. It contains well over one hundred characters.\n",
+        );
+        w(
             src_dir.join("index.md"),
-            "---\ntitle: Index\ntype: concept\ntimestamp: 2026-07-01T00:00:00Z\ntags: []\nstatus: draft\nlast_validated: 2026-07-01T00:00:00Z\ntimeliness: current\n---\n\n# Index\n\n- [Page](page.md)\n",
-        )
-        .unwrap();
+            "---\ntitle: Index\ntype: concept\ntimestamp: {{timestamp}}\ntags: []\nstatus: draft\nlast_validated: {{timestamp}}\ntimeliness: current\n---\n\n# Index\n\n- [Page](page.md)\n",
+        );
         std::fs::create_dir_all(src_dir.join("logs")).unwrap();
         std::fs::write(src_dir.join("logs/2026-07.md"), "# Log\n").unwrap();
 
