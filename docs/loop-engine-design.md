@@ -217,7 +217,7 @@ interface SettledContribution {
 
 ### 5.3 fail-closed 落在贡献级
 
-`src/hooks/todo-continuation/index.ts:44-57`：`[zoo.continuation].max_reminders` 缺失或非法时，该单元贡献**空槽**（`onSettled: []`）→ 宿主看到无策略贡献 → 不构建引擎 → 整个功能静默关闭。链条上没有任何环节"带着猜测继续运行"。
+`src/hooks/todo-continuation/index.ts:44-57`：`[zoo.continuation].max_wakes` 缺失或非法时，该单元贡献**空槽**（`onSettled: []`）→ 宿主看到无策略贡献 → 不构建引擎 → 整个功能静默关闭。链条上没有任何环节"带着猜测继续运行"。
 
 ---
 
@@ -251,7 +251,7 @@ interface SettledContribution {
 | D2 | 联锁（停稳+额度）归引擎强制，判断归策略 | §2.2：LLM 执行器不可证收敛，不失控不能押在策略正确性上 |
 | D3 | `hadActivity` 是观测输入：引擎只用它解除待进展锁，策略不必拿它当门 | 等待外部事件的循环不该被进展门挡死；自激抑制（对唤醒的纯文本回复）统一由引擎的待进展锁承担，判断权威留在策略自己的状态 |
 | D4 | 词汇分层：引擎面用 loop 词汇（`core/loop`、customType `zoo-loop-wake`），用户面/策略面保留 continuation（`[zoo.continuation]`、`todo-continuation`） | 引擎是通用机制，continuation 是首个策略的用户语义；改名不改变用户契约 |
-| D5 | 额度上限归策略（贡献携带 `maxWakes`），引擎只执行不持有配置 | 初版曾把 `max_reminders` 作为引擎构造参数，是**所有权倒置**：上限是策略的参数（对照 omp todo-reminder 的 `remindersMax` 属于 todo-tracker 自己的配置）。配置缺失 → 策略不贡献（fail-closed 落在贡献级） |
+| D5 | 额度上限归策略（贡献携带 `maxWakes`），引擎只执行不持有配置 | 初版曾把 `max_wakes` 作为引擎构造参数，是**所有权倒置**：上限是策略的参数（对照 omp todo-reminder 的 `remindersMax` 属于 todo-tracker 自己的配置）。配置缺失 → 策略不贡献（fail-closed 落在贡献级） |
 | D6 | 预算状态归引擎，重置时机归宿主 | 曾考虑把预算状态退回宿主；控制器拥有自己的记忆才是对的（状态归引擎），宿主持有的只是"什么时候该重新开始"的知识（重置时机） |
 | D7 | 汇聚语义：首个 wake 胜出 + 逐策略预算跳过 | 当前只有一个策略，简单语义足够；多策略并存时的仲裁语义是暂缓项（§9） |
 | D8 | 完成信号方向：结构化工具调用优于文本扫描 | OMO 同仓库对照：ralph-loop 的 `<promise>` 文本协议催生了 400+ 行检测代码，goal hook 改用 `update_goal(complete)` 工具调用后整片消失。未来策略的退出机制按此方向设计 |
@@ -280,7 +280,7 @@ interface SettledContribution {
 | `src/core/loop/engine.test.ts` | 联锁顺序、待进展锁（上锁/解锁/静默不烧额度/随 reset 与 cap 清除）、重名拒绝、首个 wake 胜出、崩溃隔离、按策略分账、cap 淘汰 |
 | `src/hooks/todo-continuation/decide.test.ts` | 门顺序、wake 文案、纯函数性 |
 | `src/hooks/todo-continuation/index.test.ts` | `maxWakes` 声明、缺配置不贡献 |
-| `src/opencode.loop.test.ts` / `src/pi.loop.test.ts` | 双宿主端到端：唤醒、门禁、活动观测、预算/echo/重置 |
+| `src/hooks/auto-debug/opencode.loop.test.ts` / `src/hooks/auto-debug/pi.loop.test.ts` | 双宿主端到端：唤醒、门禁、活动观测、预算/echo/重置 |
 
 引擎级联锁在 core 层测，策略单元测试不重复覆盖（分层测试，见 `index.test.ts` 头注释）。
 

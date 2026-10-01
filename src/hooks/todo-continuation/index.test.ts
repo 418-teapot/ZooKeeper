@@ -70,7 +70,7 @@ function makeDeps(partial: Record<string, unknown>): Deps {
   return {
     limits: {},
     contextConfig: {},
-    continuationConfig: { maxReminders: 3 },
+    continuationConfig: { maxWakes: 3 },
     client: {},
     directory: "",
     resolveAgent: () => undefined,
@@ -122,9 +122,9 @@ describe("todo-continuation unit — descriptor", () => {
     assert.equal(composed.onSettled[0].maxWakes, 3);
   });
 
-  it("declares the parsed max_reminders as its wake allowance", () => {
+  it("declares the parsed max_wakes as its wake allowance", () => {
     const composed = unit.create(
-      makeDeps({ continuationConfig: { maxReminders: 5 } }),
+      makeDeps({ continuationConfig: { maxWakes: 5 } }),
       {
         agents: new Set(),
         skills: new Set(),

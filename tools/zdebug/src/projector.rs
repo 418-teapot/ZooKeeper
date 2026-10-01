@@ -9,15 +9,16 @@
 //! `## Verify` sections expose state the reference keeps in the model but
 //! does not print, so the view stays a complete recovery record.
 //!
-//! The projection is a pure function of the state, so equal states always
-//! yield byte-identical output. [`project`] writes that output to
-//! `summary.md` through [`atomic_write`]. There is no hand-editable
-//! region: the file can always be rebuilt from the event log.
+//! The projection is a function of the state and the Case's stored
+//! Experiment procedures, so an unchanged Case always yields
+//! byte-identical output. [`project`] writes that output to `summary.md`
+//! through [`atomic_write`]. There is no hand-editable region: the file
+//! can always be rebuilt from the event log.
 
 use std::io;
 use std::path::Path;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::artifacts::is_invalidated;
 use crate::model::State;
@@ -29,8 +30,11 @@ pub const SUMMARY_FILE: &str = "summary.md";
 // ── Entry points ─────────────────────────────────────────────────────────────
 
 /// Render the full `summary.md` view of `state`.
+///
+/// The verification section resolves the Experiment pointer against the
+/// procedure stored under `case_dir`.
 #[must_use]
-pub fn render(state: &State) -> String {
+pub fn render(state: &State, case_dir: &Path) -> String {
     let mut lines = Vec::new();
     push_header(&mut lines, state);
     push_workspaces(&mut lines, state);
@@ -41,9 +45,35 @@ pub fn render(state: &State) -> String {
     push_artifacts(&mut lines, state);
     push_workspace_state(&mut lines, state);
     push_recoveries(&mut lines, state);
-    push_verify(&mut lines, state);
+    push_verify(&mut lines, state, case_dir);
     lines.push(String::new());
     lines.join("\n")
+}
+
+/// Resolve the verification pointer into
+/// `{"experiment","command","timeout_ms"}`.
+///
+/// Returns JSON `null` when the Case declares no verification criterion;
+/// the command is read from the pointed Experiment's stored procedure. An
+/// Experiment planned before timeouts existed carries no `timeout_ms` and
+/// renders it as `null`.
+#[must_use]
+pub fn verify_view(case_dir: &Path, state: &State) -> Value {
+    let Some(experiment_id) = &state.verify else {
+        return Value::Null;
+    };
+    let experiment = state.experiments.get(experiment_id);
+    let command = experiment
+        .and_then(|experiment| experiment_command(case_dir, experiment));
+    let timeout_ms = experiment
+        .and_then(|experiment| experiment.get("timeout_ms"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    json!({
+        "experiment": experiment_id,
+        "command": command,
+        "timeout_ms": timeout_ms,
+    })
 }
 
 /// Write the projected `summary.md` of `state` into `case_dir`.
@@ -52,7 +82,7 @@ pub fn render(state: &State) -> String {
 ///
 /// Returns an I/O error when the summary file cannot be written.
 pub fn project(case_dir: &Path, state: &State) -> io::Result<()> {
-    atomic_write(&case_dir.join(SUMMARY_FILE), &render(state))
+    atomic_write(&case_dir.join(SUMMARY_FILE), &render(state, case_dir))
 }
 
 // ── Sections ─────────────────────────────────────────────────────────────────
@@ -325,19 +355,36 @@ fn push_recoveries(lines: &mut Vec<String>, state: &State) {
     }
 }
 
-/// Append the verification criterion that decides convergence.
-fn push_verify(lines: &mut Vec<String>, state: &State) {
+/// Append the verification Experiment that decides convergence.
+fn push_verify(lines: &mut Vec<String>, state: &State, case_dir: &Path) {
     lines.push(String::new());
     lines.push("## Verify".to_owned());
     lines.push(String::new());
-    let Some(verify) = &state.verify else {
+    let Some(experiment_id) = &state.verify else {
         lines.push("- None".to_owned());
         return;
     };
-    let command = verify.get("command").and_then(Value::as_str).unwrap_or("");
-    let source = verify.get("source").and_then(Value::as_str).unwrap_or("");
+    let experiment = state.experiments.get(experiment_id);
+    let command = experiment
+        .and_then(|experiment| experiment_command(case_dir, experiment))
+        .unwrap_or_default();
+    let timeout_ms = experiment
+        .and_then(|experiment| experiment.get("timeout_ms"))
+        .and_then(Value::as_u64);
+    lines.push(format!("- Experiment: `{experiment_id}`"));
     lines.push(format!("- Command: `{command}`"));
-    lines.push(format!("- Source: `{source}`"));
+    lines.push(timeout_ms.map_or_else(
+        || "- Timeout: None".to_owned(),
+        |ms| format!("- Timeout: `{ms} ms`"),
+    ));
+}
+
+/// Read the command stored as an Experiment's procedure.
+fn experiment_command(case_dir: &Path, experiment: &Value) -> Option<String> {
+    let artifact =
+        experiment.get("procedure_artifact").and_then(Value::as_str)?;
+    let text = std::fs::read_to_string(case_dir.join(artifact)).ok()?;
+    Some(text.trim_end().to_owned())
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -424,7 +471,6 @@ mod tests {
                         },
                         {"kind": "directory", "path": "/ws-b"},
                     ],
-                    "verify": {"command": "pytest -q", "source": "user"},
                     "default_interpreter": "bash",
                 }),
             ),
@@ -483,7 +529,7 @@ mod tests {
                 json!({
                     "id": "EX-001",
                     "question": "does disabling pooling fix it?",
-                    "procedure_artifact": "AR-001",
+                    "procedure_artifact": "artifacts/experiments/EX-001/procedure",
                     "related_claims": ["CL-001"],
                 }),
             ),
@@ -540,7 +586,7 @@ mod tests {
         ]
     }
 
-    /// Events 13-17: criterion dispositions through recovery.
+    /// Events 13-18: criterion dispositions through the verify pointer.
     fn closure_events() -> Vec<Value> {
         vec![
             event(
@@ -590,6 +636,11 @@ mod tests {
                 17,
                 json!({"reason": "truncated-tail", "artifact": "AR-001"}),
             ),
+            event(
+                "case-verify-updated",
+                18,
+                json!({"experiment": "EX-001", "source": "user"}),
+            ),
         ]
     }
 
@@ -606,15 +657,26 @@ mod tests {
         replay(&events()).expect("sample event stream replays")
     }
 
+    /// Create a Case directory holding the sample Experiment procedure.
+    fn case_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let procedure =
+            dir.path().join("artifacts/experiments/EX-001/procedure");
+        std::fs::create_dir_all(procedure.parent().unwrap()).unwrap();
+        std::fs::write(&procedure, "pytest -q\n").unwrap();
+        dir
+    }
+
     #[test]
     fn test_render_contains_all_sections() {
-        let rendered = render(&sample_state());
+        let dir = case_dir();
+        let rendered = render(&sample_state(), dir.path());
         let expected = [
             "# Auto Debug Case: case-1",
             "- Lifecycle: `OPEN`",
             "- Title: bug",
             "- Objective: fix concurrency",
-            "- Event sequence: 17",
+            "- Event sequence: 18",
             "## Workspaces",
             "- `/ws-a`",
             "## Deliverables",
@@ -635,7 +697,7 @@ mod tests {
             "- CL-001 `refines` CL-002",
             "## Experiments",
             "- **EX-001**: does disabling pooling fix it?",
-            "  Procedure: `AR-001`",
+            "  Procedure: `artifacts/experiments/EX-001/procedure`",
             "  - EX-001-A001: `finished`",
             "## Evidence",
             "- **EV-001** `valid`: ten green runs",
@@ -649,8 +711,9 @@ mod tests {
             "## Recoveries",
             "- {\"artifact\":\"AR-001\",\"reason\":\"truncated-tail\"}",
             "## Verify",
+            "- Experiment: `EX-001`",
             "- Command: `pytest -q`",
-            "- Source: `user`",
+            "- Timeout: None",
         ];
         for section in expected {
             assert!(rendered.contains(section), "missing line: {section}");
@@ -658,13 +721,44 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_view_reports_timeout_and_backward_compat() {
+        let dir = case_dir();
+        // An Experiment planned before timeouts existed renders `null`.
+        let before = verify_view(dir.path(), &sample_state());
+        assert_eq!(before["experiment"], "EX-001");
+        assert_eq!(before["command"], "pytest -q");
+        assert_eq!(before["timeout_ms"], Value::Null);
+
+        // A timed Experiment exposes its declared limit in the view.
+        let mut events = events();
+        events[6] = event(
+            "experiment-planned",
+            7,
+            json!({
+                "id": "EX-001",
+                "question": "does disabling pooling fix it?",
+                "procedure_artifact": "artifacts/experiments/EX-001/procedure",
+                "related_claims": ["CL-001"],
+                "timeout_ms": 2500,
+            }),
+        );
+        let state = replay(&events).unwrap();
+        assert_eq!(verify_view(dir.path(), &state)["timeout_ms"], 2500);
+        let rendered = render(&state, dir.path());
+        assert!(
+            rendered.contains("- Timeout: `2500 ms`"),
+            "missing timeout line: {rendered}"
+        );
+    }
+
+    #[test]
     fn test_render_is_idempotent_and_project_writes_same() {
         let state = sample_state();
-        let first = render(&state);
-        assert_eq!(first, render(&state));
-        assert_eq!(first, render(&replay(&events()).unwrap()));
+        let dir = case_dir();
+        let first = render(&state, dir.path());
+        assert_eq!(first, render(&state, dir.path()));
+        assert_eq!(first, render(&replay(&events()).unwrap(), dir.path()));
 
-        let dir = tempfile::tempdir().unwrap();
         project(dir.path(), &state).unwrap();
         let written =
             std::fs::read_to_string(dir.path().join(SUMMARY_FILE)).unwrap();

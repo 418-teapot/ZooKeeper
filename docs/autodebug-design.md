@@ -1,7 +1,7 @@
 # AutoDebug 设计：证据驱动的自主调试循环
 
 **日期:** 2026-09-24
-**状态:** zdebug 状态基底已实现（2026-09-25，`tools/zdebug/`）；策略层与 `/debug` 命令待实现
+**状态:** 已落地（2026-09-25：zdebug 状态基底 `tools/zdebug/`、策略层 `src/hooks/auto-debug/`、`/debug` 命令 `src/commands/debug/` 与 `[zoo.autodebug]` 配置均已实现并通过验证）
 **前置文档:** `docs/loop-engine-design.md`（loop 引擎抽象，本文档是它的第二个策略）、`docs/agent-loop-engineering-research.md`（OMO/OMP 机制调研）
 **参考实现:** auto-debug 项目（Python，证据驱动调查状态机，本文档的状态基底来源）、oh-my-pi（OMP）的 autoresearch 扩展（触发与形态参照）
 
@@ -9,16 +9,17 @@
 
 ## 这是什么
 
-ZooKeeper 要给 coding agent 增加一个**自主调试循环**。用户用一条命令启动调查：
+ZooKeeper 要给 coding agent 增加一个**自主调试循环**。用户启动一次调查，并把验证判据声明为实验：
 
 ```
-/debug 支付并发测试间歇失败 --verify 'pytest tests/test_payment.py::test_concurrent_charge'
+/debug 支付并发测试间歇失败
+zdebug case update-verify --command 'pytest tests/test_payment.py::test_concurrent_charge' --source user --timeout 120
 ```
 
 此后：
 
 1. agent 开始调查，过程中的假设、实验、证据全部经 `zdebug` 命令行工具落到仓库里的 `.zoo/debug/` 目录——**状态在磁盘上，不在对话里**；
-2. 每当 agent 停稳，loop 引擎**重新执行**那条 verify 命令：测试还红，就把 agent 再次唤醒继续；转绿，循环自动收敛；
+2. 每当 agent 停稳，loop 引擎**重新执行**那条验证实验：测试还红，就把 agent 再次唤醒继续；转绿，循环自动收敛；
 3. 唤醒次数有引擎强制的上限，失控在结构上不可能。
 
 一句话：**用户声明"什么叫修好"，机器每轮重新验证，agent 在验证通过之前一直被驱动，验证通过或预算耗尽即停。**
@@ -44,18 +45,19 @@ ZooKeeper 要给 coding agent 增加一个**自主调试循环**。用户用一�
 
 ## 1. 一个完整例子
 
-用户发现支付服务并发测试间歇失败，在会话里输入：
+用户发现支付服务并发测试间歇失败，在会话里输入调查目标，并声明验证判据：
 
 ```
-/debug 支付并发测试间歇失败 --verify 'for i in {1..10}; do pytest tests/test_payment.py::test_concurrent_charge || exit 1; done'
+/debug 支付并发测试间歇失败
+zdebug case update-verify --command 'for i in {1..10}; do pytest tests/test_payment.py::test_concurrent_charge || exit 1; done' --source user --timeout 600
 ```
 
 （间歇性失败，所以 verify 命令连跑 10 次——判据的强度由命令本身表达。）
 
-命令处理器调用 `zdebug case init`，工作区出现：
+命令处理器把 `/debug` 的 arguments 原文整段作为 objective 调用 `zdebug case init`；`update-verify` 把判据命令物化为验证实验并让 Case 指向它。工作区出现：
 
 ```
-.zoo/debug/CASE-1/
+.zoo/debug/<case-id>/
 ├── case.jsonl      # 权威事件记录（append-only，禁止手改）
 ├── summary.md      # 机器生成的调查现状视图（禁止手改）
 └── artifacts/      # 实验脚本副本、stdout/stderr、git 快照
@@ -88,7 +90,7 @@ agent 每停稳一次，引擎就问策略一次"要不要继续"。策略重跑
 | 概念 | 含义 |
 |------|------|
 | **Case** | 一次调试调查的容器，存于 `.zoo/debug/<case-id>/`。Goal 的载体 |
-| **verify（验证实验）** | 创建 Case 时用户声明的判定命令。**退出码即收敛判据**：0=已解决，1=未解决，>1=判据本身出错 |
+| **verify（验证实验）** | Case 的判定判据：一个指向验证 Experiment 的指针（`case update-verify --command`，或 `case init --verify` sugar 物化）。**该实验的退出码即收敛判据**：0=已解决，1=未解决，>1=判据本身出错 |
 | **Claim / Experiment / Evidence** | agent 的调查词汇：可证伪的假设、预先声明的实验、不可变的观察。全部经 zdebug 命令落盘 |
 | **case.jsonl / summary.md** | 事件溯源：append-only 事件是权威记录；summary.md 是机器生成的恢复视图，可重建 |
 | **策略（strategy）** | loop 引擎的可插拔控制器。autodebug 策略在 agent 停稳时回答"唤醒还是沉默" |
@@ -101,7 +103,7 @@ agent 每停稳一次，引擎就问策略一次"要不要继续"。策略重跑
 
 ```
 用户 /debug 命令（唯一激活入口）
-   │  zdebug case init --verify '<cmd>'
+   │  zdebug case init（objective 原文透传）
    ▼
 agent（经 bash 调用 zdebug，宿主权限层可见）
    │  case / deliverable / claim / experiment / evidence / artifact ...
@@ -165,7 +167,7 @@ CLI 一次实现同时服务 agent 与策略两个消费者；仓库已有 tools
 
 ### 6.2 存储与发现
 
-存储布局见 §1。Case 发现规则：策略在会话工作区扫描 `.zoo/debug/`，凡含 `case.jsonl` 的目录即视为一个 Case（不按生命周期过滤，CLOSED Case 同样能被发现）——唯一 Case 即绑定；多个 Case → 沉默（`ambiguous`），fail-closed 不猜测；需要并行调试会话时用 git worktree 隔离工作区。绑定后由策略按生命周期处理（CLOSED → 沉默，见 §7.1）。
+存储布局见 §1。Case 发现规则：策略在会话工作区扫描 `.zoo/debug/`，只认名字为 `CASE-<正整数>` 的目录——循环 Case 的命名空间就是这一可预测的编号空间，其他名字的目录不参与发现；取编号最大的一个绑定（最新调查接管循环，不按生命周期挑选），无匹配 → 沉默（`no-case`）。绑定后由策略按生命周期处理（最大号 CLOSED → 沉默，见 §7.1）。
 
 ### 6.3 事件词汇与校验
 
@@ -198,7 +200,11 @@ zdebug doctor                            # 环境自检（git 可用性、平台
 - **退出码**：成功 0；业务错误（`ZdebugError`，含 `CASE_BUSY`/`CASE_CLOSED`/`VERIFY_FAILED` 等校验拒绝）退出 2。注意这与 §3 verify 判据的退出码语义（0/1/>1）是两个层面：判据命令的退出码由 `experiment run` 记录在 Attempt 元数据与 JSON `exit_code` 字段中，**不改变 zdebug 进程自身的退出码**（实验失败时 `experiment run` 仍退出 0）；
 - **JSON 值参数**：`--scope` / `--interpretations` / `--context` 接受内联 JSON 或文件路径（存在即按文件读，否则按内联解析）——对 Python 参考实现是超集；
 - **`--script -`**：`experiment plan` 的 `--script -` 从 stdin 读取脚本内容；
-- **`case init --workspace`** 可重复；`--case-dir` 做 `~` 展开。
+- **`case init --workspace`** 可重复；`--case-dir` 做 `~` 展开；
+- **verify 判据即实验**：`case update-verify --command '<cmd>' --source user|agent --timeout <秒>` 把命令写成临时脚本、复用 `experiment plan` 的物化路径（`plan_experiment`），append `experiment-planned` 与 `case-verify-updated` 两事件，后者载荷为 `{experiment, source}`——Case 的 verify 因而是指向该 Experiment 的指针（model 层 `verify: Option<String>` 存实验 ID）。`--timeout` 必填：判据时限是判据自身的知识，由声明者给出、zdebug 在 `experiment run` 时自持执行（超时杀整棵进程树，Attempt 落盘带 `timed_out` 标记，`run` 以业务错误 `TIMED_OUT` exit 2 退出）。`case init --verify '<cmd>'` 保留为 sugar（需同时给 `--verify-timeout`），走同一物化路径、`source=user`；二次 `update-verify` 产生新实验并迁移指针，旧实验历史保留。旧 `{command, source}` 判据载荷已废弃，无兼容层；
+- **verify 的渲染**：`case status --json` 渲染为 `{"experiment": id, "command": str, "timeout_ms": int}`（command 读自被指实验的 procedure），未声明时渲染为 `null`；`summary.md` 的 Verify 段渲染 `- Experiment:`、`- Command:` 与 `- Timeout:`。
+
+**`/debug` 宿主命令**：`/debug <objective>` 把 arguments 原文整段透传为 `case init` 的 objective——零 flag 解析、不接受 `--verify`；CASE-ID 为工作区内顺序编号 `CASE-N`（扫 `.zoo/debug/` 取最大序号 +1，遇 `CASE_EXISTS` 重试），title 为 objective 折叠空白后的全文（截断是渲染层职责）；zdebug 不可用或返回业务错误时抛出中文报错。poly 与 mono 双 profile 启用（见 §8.1）。
 
 ### 6.5 runner（实验执行）
 
@@ -211,30 +217,37 @@ zdebug doctor                            # 环境自检（git 可用性、平台
 引擎保证只在停稳且有额度时询问策略。`handle()`：
 
 ```
-1. 会话工作区发现 .zoo/debug Case：
-     无            → silence("no-case")
-     多个          → silence("ambiguous")
-2. Case CLOSED     → silence("closed")
-3. 指定了验证实验   → zdebug experiment run 重跑（超时包裹）：
+1. 会话工作区发现 .zoo/debug Case（只认 CASE-<正整数> 目录，取最大编号）：
+     无匹配        → silence("no-case")
+```
+
+策略发现与 CLI 自动定位的规则不同是**有意**的：策略无人值守，任何停稳都必须给出可归因的判定，所以多 Case 时取最大编号接管循环；CLI 是交互场景，保持参考实现语义——恰好一个 Case 才自动定位，多个报 `CASE_AMBIGUOUS` 要求显式 `--case-id`（skill 的「Case 在哪里」一节已说明该定位规则）。
+
+```
+2. 绑定 Case CLOSED → silence("closed")
+3. 无 verify 指针或时限 → silence("no-verify")（判据未物化即无循环，不唤醒）
+4. 有 verify 指针（含正整数 timeout_ms）→ zdebug experiment run <id> 重跑
+   （TS 侧不限时；判据时限 timeout_ms 由 zdebug 强制——超时杀整树并记录 TIMED_OUT Attempt）：
      退出 0         → silence("converged")
      退出 1         → wake(...)
-     >1/超时/调用失败 → silence("verify-error")
-4. 未指定验证实验   → 交付门禁兜底（解释类调查）：
-     required criterion 未结清 → wake(...)
-     全部结清       → silence("converged")
+     >1/超时/调用失败（含 CASE_BUSY、二进制缺失） → silence("verify-error")
 ```
+
+策略内无重试：`verify-error` 不唤醒，下一轮 settle 自然重试。
+
+收敛（`converged`）不等于停止：Case 保持 OPEN 时，每次 settle 仍会重跑验证实验并向日志追加一个 Attempt——这是持续的回归监视，不是循环失控。关闭入口是用户的 `zdebug case close`（§8）：调查结束后关闭 Case，策略随即走 `closed` 沉默，不再产生任何运行。
 
 ### 7.2 wake 文案
 
-Case 快照（目标 + verify 命令 + 最新 Attempt 结果摘要）+ claim 评估分布 + 未结清 criterion + summary.md 尾部 N 条 + 续写指令 + "经 zdebug 记录发现"的提醒。唤醒依据是磁盘状态快照，不是对话记忆。
+四部分：判据重跑结果一行（实验 ID、Attempt ID、退出码）+ 读取指引（先 `zdebug case status` 并读 `.zoo/debug/<case-id>/summary.md` 恢复现状）+ 续写指令 + "经 zdebug 记录发现"的提醒。唤醒不注入 Case 快照——接手读 Case 是 skill 纪律，注入只是用机制替纪律付 token；唯一必须携带的新事实是"判据刚被重跑、结果仍红"。唤醒依据是磁盘状态，不是对话记忆。
 
 ### 7.3 配置与 fail-closed
 
-`[zoo.autodebug]`：`max_wakes`（缺失/非法 → 策略不贡献，整个功能静默关闭）、`verify_timeout_ms`、wake 注入的 summary 尾部长度。zdebug 二进制不可用 → 不贡献。
+`[zoo.autodebug]`：`max_wakes`（缺失/非法 → 策略不贡献，整个功能静默关闭）。判据时限来自 Case 自身声明的 `timeout_ms`，缺该值（或非正整数）按判据未物化沉默。zdebug 二进制不可用 → 不贡献。
 
 ### 7.4 verify 契约
 
-判据命令必须**窄、幂等、判定性**（复现脚本而非全量套件）；flaky 场景的统计强度由命令作者负责（如 §1 的连跑 10 次范式）。每次停稳重跑的成本成立：一次谓词求值的代价永远小于一次无谓唤醒（一整轮 LLM 推理）。
+判据命令必须**窄、幂等、判定性**（复现脚本而非全量套件）；flaky 场景的统计强度由命令作者负责（如 §1 的连跑 10 次范式）。判据必须同时声明时限（`--timeout`，单位秒）：时长上界是判据自身的知识，由写判据的人给出，执行者（zdebug）强制之——无时限的判据视为未物化，循环不激活。每次停稳重跑的成本成立：一次谓词求值的代价永远小于一次无谓唤醒（一整轮 LLM 推理）。
 
 ## 8. 触发与停止
 
@@ -242,7 +255,7 @@ Case 快照（目标 + verify 命令 + 最新 Attempt 结果摘要）+ claim 评
 
 **激活语义只有一个：Case 存在即激活。** 触发归约为"谁创建 Case"，答案是只有用户：
 
-- `/debug <objective> [--verify '<cmd>']`：双宿主斜杠命令，处理器调 `zdebug case init`；verify 未给出时 Case 以无验证实验状态创建（收敛走交付门禁兜底），可后续 `update-verify` 补充；
+- `/debug <objective>`：双宿主斜杠命令，arguments 原文整段透传为 `zdebug case init` 的 objective（零 flag 解析、不接受 `--verify`）；Case 创建时没有 verify 指针，判据随后经 `case update-verify --command '<cmd>' --source user|agent`（或 `case init --verify` sugar）声明——无判据的 Case 只让策略沉默（`no-verify`），不构成循环；
 - **skill 明文禁止 agent 自主 `case init`**——对齐 autoresearch 的严格立场（其实验工具默认不激活、测试断言无隐式激活钩子）。承认这是约定而非强制（zdebug 在 PATH 上，agent 技术上可调），接受"能但不能"的语义；
 - 不做隐式激活（检测到测试失败自动建 Case）——违反不变量 4。
 
@@ -269,7 +282,7 @@ auto-debug 是被动状态机，缺的两样恰好都是 loop 引擎的本职：
 1. **触发器**：它没有"停稳时重新求值"的动作源；settled 事件正是引擎提供的；
 2. **自动收敛语义**：它的 close 靠 agent 簿记走门禁；loop 不需要 close，只需要"指定验证实验的最新 Attempt 转绿"——机器执行、level-triggered 重观测，而不是查 agent 上次报告的结论。
 
-因此 zdebug 相对 auto-debug 的增量只有一组：verify 判据声明——`case init --verify` 写入 `case-created` 的 verify 字段，`case update-verify` 追加增量事件 `case-verify-updated` 留痕。（`case status --json` 不算增量：Python 版的全局 `--json` 本就覆盖它。）
+因此 zdebug 相对 auto-debug 的增量只有一组：verify 判据声明——`case update-verify`（及 `case init --verify` sugar）把命令物化为验证 Experiment，并 append `experiment-planned` + `case-verify-updated`，使 Case 的 verify 指针指向该实验。（`case status --json` 不算增量：Python 版的全局 `--json` 本就覆盖它。）
 
 ### 9.3 与 oh-my-pi autoresearch 的对照
 
@@ -279,11 +292,11 @@ auto-debug 是被动状态机，缺的两样恰好都是 loop 引擎的本职：
 
 | Goal 类型 | 例子 | 收敛判据 |
 |---|---|---|
-| 修复类 | "测试修到绿" | verify 命令转绿（创建时声明） |
+| 修复类 | "测试修到绿" | 验证实验转绿（Case 创建后声明） |
 | 定位类 | "哪个 commit 引入回归" | 对候选结论的确认实验（调查中 `update-verify` 产生） |
-| 解释类 | "给出根因分析" | 交付门禁：required criterion 全部结清 |
+| 解释类 | "给出根因分析" | 把结论断言物化为验证实验（调查中 `update-verify`；不声明则策略沉默） |
 
-三类归约为同一形态——**退出码谓词或它的投影**，策略与引擎零分支。
+三类归约为同一形态——**Case 验证实验的退出码谓词**，策略与引擎零分支：无 verify 指针时策略沉默（`no-verify`），不做任何判定。
 
 ## 10. 关键决策与理由
 
@@ -292,20 +305,20 @@ auto-debug 是被动状态机，缺的两样恰好都是 loop 引擎的本职：
 | # | 决策 | 理由 |
 |---|------|------|
 | D10 | 状态基底采用 auto-debug 事件溯源模型，Rust 实现 | 事件溯源/校验/投影/runner 是经测试验证的承重机制；平行发明只会劣质重造（本设计早期方案即犯此错，已纠正） |
-| D11 | 收敛 = settled 时重跑验证实验，退出码语义（0 收敛 / 1 继续 / >1 或超时 error 沉默） | 不变量 3、5：外部执行 + level-triggered 重观测 |
+| D11 | 收敛 = settled 时重跑 Case verify 指针所指的验证实验，退出码语义（0 收敛 / 1 继续 / >1、超时或调用失败 error 沉默） | 不变量 3、5：外部执行 + level-triggered 重观测 |
 | D12 | 判据以用户声明为准；agent 可提议更新，留痕可见 | 不变量 6：判定的外部性包括来源 |
 | D13 | 暴露完整 CLI 词汇，不做薄视图 | 薄视图造成双重心智模型；基底即真模型 |
 | D14 | 三类目标归约为退出码谓词，无 kind 分支 | 扩展靠谓词组合而非 schema 演化 |
 | D15 | CLI 二进制形态，否决宿主工具与 N-API addon | §6.1：双宿主零适配、过权限层可见、agent 可触达 |
-| D16 | cwd 发现 + 歧义沉默；并行会话靠 worktree 隔离 | CLI 拿不到 sessionID；歧义猜测违反 fail-closed |
+| D16 | cwd 发现 + 只认 `CASE-<n>` 命名空间并取最大编号 | CLI 拿不到 sessionID；编号空间可预测，不做猜测 |
 | D17 | 仅 `/debug` 命令激活，skill 禁止 agent 自主建 Case | autoresearch 的严格立场 + 不变量 4 |
 | D18 | 过程记录 = summary.md 投影（机器生成），agent 零簿记 | 簿记纪律依赖自觉必失败；实验/证据经 CLI 产生即记录 |
-| D19 | 交付门禁保证诚实但不 gate 循环 | 循环终止只看机器可执行判定；`CLOSED ≠ 已修复` 语义保留给 Case 生命周期 |
+| D19 | 交付门禁保证诚实但不参与循环判定；无验证实验不构成循环 | 早期设计曾考虑以"required criterion 全部结清"作为无验证实验 Case 的收敛路径，as-built 取消该路径：循环终止只看机器可执行的验证实验，无 verify 指针的 Case 策略沉默（`no-verify`）；`CLOSED ≠ 已修复` 语义保留给 Case 生命周期 |
 | D20 | 引擎零改动 | 策略完全长在引擎的 `SettledContribution` 抽象上——第二策略是对该抽象的第一次实战检验 |
 
 ## 11. 可观测性与测试
 
-**日志**：策略沉默经 `loop` channel 的 `settle_silent` 事件可归因：`no-case` / `ambiguous` / `closed` / `converged` / `verify-error`；引擎联锁词汇不变（`not-settled` / `budget-exhausted`）。任何一次不唤醒都能回答"为什么"。
+**日志**：策略沉默经 `loop` channel 的 `settle_silent` 事件可归因：`no-case` / `discovery-error` / `closed` / `no-verify` / `converged` / `verify-error`；引擎联锁词汇不变（`not-settled` / `budget-exhausted`）。任何一次不唤醒都能回答"为什么"。
 
 **测试布局**：
 
@@ -323,7 +336,6 @@ auto-debug 是被动状态机，缺的两样恰好都是 loop 引擎的本职：
 - **引擎级暂缓项不变**：节奏联锁（退避）、预算落盘、多策略仲裁升级。autodebug 与 todo-continuation 目标正交（todo 拥有任务列表，autodebug 拥有 Case 未收敛），维持"首个 wake 胜出"；
 - **verify 统计强度内建**：当前 flaky 强度由命令作者负责；若成为问题源，评估 `case init --verify-runs N` 内建重复执行；
 - **会话恢复后的自动续跑**：autoresearch 刻意"恢复后不自动续跑"；我们由 settled 事件自然恢复（Case 在磁盘上），差异待实践检验；
-- **verify 判据的可执行化**：zdebug 目前只把 `--verify` 存为命令字符串，没有入口把它物化为可由 `experiment run` 重跑的 Experiment。策略层实现时需决定：zdebug 增加直接执行判据命令的入口，还是策略将其包装为 Experiment；
 - **与 todo 策略的协作**：调试会话中 agent 自建 todo 时两策略同活跃，正交分区是否足够，待真实运行数据。
 
 ---

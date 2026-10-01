@@ -35,17 +35,33 @@ export interface AskConfig {
  * Pure type definition for the reminder budget, consumed by the config
  * parser (`config-parse.ts`) and read by host wiring that delivers the
  * continuation wake.  The section carries no on/off switch: a missing
- * section, or one without a valid `max_reminders`, yields `undefined`
+ * section, or one without a valid `max_wakes`, yields `undefined`
  * from the parser and the host disables continuation entirely (fail to
  * skip — never a default).
  */
 export interface ContinuationConfig {
   /**
-   * Maximum number of continuation reminders for a session (positive
+   * Maximum number of continuation wakes for a session (positive
    * integer).  The parser returns `undefined` (not a config) when this
    * key is absent or invalid.
    */
-  maxReminders: number;
+  maxWakes: number;
+}
+
+/**
+ * Auto-debug loop configuration (`[zoo.autodebug]`).
+ *
+ * Pure type definition for the debug-strategy budget, consumed by the
+ * config parser (`config-parse.ts`) and read by the auto-debug strategy
+ * that delivers the debug wake.  The section carries no on/off switch:
+ * it is strictly parsed, so a missing section, a section with any
+ * missing or invalid key, or an unknown key yields `undefined` from the
+ * parser and the strategy contributes nothing (fail to skip — never a
+ * default).
+ */
+export interface AutoDebugConfig {
+  /** Maximum number of debug wakes for a session (positive integer). */
+  maxWakes: number;
 }
 
 /**

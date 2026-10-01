@@ -4021,8 +4021,8 @@ describe("zookeeperPi — thin entry wiring", () => {
       );
       assert.equal(
         (init.skills as string[]).length,
-        12,
-        "real poly profile composes 12 skills",
+        13,
+        "real poly profile composes 13 skills",
       );
       assert.deepEqual(init.limits, {
         contextWordLimit: 200,
@@ -4048,9 +4048,9 @@ describe("zookeeperPi — thin entry wiring", () => {
         skillPaths: string[];
       };
       // The default primary (dolphin) denies the beaver-*/kiwi-*/mola-*
-      // skill globs in config.toml, so 4 of the 12 profile skills are
+      // skill globs in config.toml, so 4 of the 13 profile skills are
       // filtered out at session bind.
-      assert.equal(resources.skillPaths.length, 8);
+      assert.equal(resources.skillPaths.length, 9);
       for (const path of resources.skillPaths) {
         assert.ok(
           !/beaver-|kiwi-|mola-/.test(path),

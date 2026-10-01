@@ -42,6 +42,7 @@ import {
   parseAgentModes,
   parseAgentPermissions,
   parseAskConfig,
+  parseAutoDebugConfig,
   parseContextConfig,
   parseContinuationConfig,
 } from "./config-parse.js";
@@ -1595,9 +1596,9 @@ describe("parseAskConfig", () => {
 // parseContinuationConfig — `[zoo.continuation]` (reminder budget).
 //
 // Contract: absent section → undefined silently; malformed section
-// (non-object, unknown key, missing or present-but-invalid max_reminders)
+// (non-object, unknown key, missing or present-but-invalid max_wakes)
 // → undefined + exactly one `continuation_config_invalid` warn; valid
-// section → ContinuationConfig with a positive-integer `maxReminders`
+// section → ContinuationConfig with a positive-integer `maxWakes`
 // (never a default).
 // =============================================================================
 
@@ -1618,7 +1619,7 @@ describe("parseContinuationConfig", () => {
 
   it("invalidates the section for an unknown key", () => {
     assert.equal(
-      parseContinuationConfig({ continuation: { max_reminders: 3, typo: 1 } }),
+      parseContinuationConfig({ continuation: { max_wakes: 3, typo: 1 } }),
       undefined,
     );
     const warns = warnsOf("continuation_config_invalid");
@@ -1628,30 +1629,41 @@ describe("parseContinuationConfig", () => {
 
   it("rejects non-number, zero, negative, and non-integer values", () => {
     assert.equal(
-      parseContinuationConfig({ continuation: { max_reminders: "3" } }),
+      parseContinuationConfig({ continuation: { max_wakes: "3" } }),
       undefined,
     );
     assert.equal(
-      parseContinuationConfig({ continuation: { max_reminders: 0 } }),
+      parseContinuationConfig({ continuation: { max_wakes: 0 } }),
       undefined,
     );
     assert.equal(
-      parseContinuationConfig({ continuation: { max_reminders: -5 } }),
+      parseContinuationConfig({ continuation: { max_wakes: -5 } }),
       undefined,
     );
     assert.equal(
-      parseContinuationConfig({ continuation: { max_reminders: 2.5 } }),
+      parseContinuationConfig({ continuation: { max_wakes: 2.5 } }),
       undefined,
     );
     assert.equal(warnCount("continuation_config_invalid"), 4);
     const warns = warnsOf("continuation_config_invalid");
-    assert.equal(warns[0].key, "max_reminders");
+    assert.equal(warns[0].key, "max_wakes");
     assert.equal(warns[0].value, "3");
   });
 
-  it("rejects a present section whose max_reminders key is absent", () => {
+  it("rejects a present section whose max_wakes key is absent", () => {
     const result = parseContinuationConfig({ continuation: {} });
     assert.equal(result, undefined);
+    assert.equal(warnCount("continuation_config_invalid"), 1);
+    assert.equal(warnsOf("continuation_config_invalid")[0].key, "max_wakes");
+  });
+
+  it("treats max_reminders as an unknown key", () => {
+    assert.equal(
+      parseContinuationConfig({
+        continuation: { max_wakes: 3, max_reminders: 5 },
+      }),
+      undefined,
+    );
     assert.equal(warnCount("continuation_config_invalid"), 1);
     assert.equal(
       warnsOf("continuation_config_invalid")[0].key,
@@ -1661,13 +1673,117 @@ describe("parseContinuationConfig", () => {
 
   it("accepts a positive integer", () => {
     assert.deepEqual(
-      parseContinuationConfig({ continuation: { max_reminders: 3 } }),
-      { maxReminders: 3 },
+      parseContinuationConfig({ continuation: { max_wakes: 3 } }),
+      { maxWakes: 3 },
     );
     assert.deepEqual(
-      parseContinuationConfig({ continuation: { max_reminders: 1 } }),
-      { maxReminders: 1 },
+      parseContinuationConfig({ continuation: { max_wakes: 1 } }),
+      { maxWakes: 1 },
     );
     assert.equal(warnCount("continuation_config_invalid"), 0);
+  });
+});
+
+// =============================================================================
+// parseAutoDebugConfig — `[zoo.autodebug]` (debug-loop budget + wake payload).
+//
+// Contract: absent section → undefined silently; malformed section
+// (non-object, unknown key, or a missing/invalid `max_wakes`, which must
+// be a positive integer) → undefined + exactly one
+// `autodebug_config_invalid` warn; valid section → AutoDebugConfig with
+// the positive-integer `max_wakes` (never a default).  Both
+// `verify_timeout_ms` and `summary_tail_lines` are unknown and invalidate
+// the section.
+// =============================================================================
+
+describe("parseAutoDebugConfig", () => {
+  /** A fully-specified, valid section used to isolate one bad key. */
+  const valid = {
+    max_wakes: 3,
+  };
+
+  it("returns undefined without a warn when the section is absent", () => {
+    assert.equal(parseAutoDebugConfig({}), undefined);
+    assert.equal(parseAutoDebugConfig({ autodebug: null }), undefined);
+    assert.equal(warnCount("autodebug_config_invalid"), 0);
+  });
+
+  it("invalidates the whole section for a non-object value", () => {
+    assert.equal(parseAutoDebugConfig({ autodebug: "3" }), undefined);
+    assert.equal(parseAutoDebugConfig({ autodebug: [1, 2] }), undefined);
+    const warns = warnsOf("autodebug_config_invalid");
+    assert.equal(warns.length, 2);
+    assert.equal(warns[0].key, "autodebug");
+  });
+
+  it("invalidates the section for an unknown key", () => {
+    assert.equal(
+      parseAutoDebugConfig({ autodebug: { ...valid, typo: 1 } }),
+      undefined,
+    );
+    const warns = warnsOf("autodebug_config_invalid");
+    assert.equal(warns.length, 1);
+    assert.equal(warns[0].key, "typo");
+  });
+
+  it("rejects a section whose max_wakes key is absent", () => {
+    const result = parseAutoDebugConfig({ autodebug: {} });
+    assert.equal(result, undefined);
+    assert.equal(warnCount("autodebug_config_invalid"), 1);
+    assert.equal(warnsOf("autodebug_config_invalid")[0].key, "max_wakes");
+  });
+
+  it("rejects non-number, zero, negative, and non-integer max_wakes", () => {
+    assert.equal(
+      parseAutoDebugConfig({ autodebug: { ...valid, max_wakes: "3" } }),
+      undefined,
+    );
+    assert.equal(
+      parseAutoDebugConfig({ autodebug: { ...valid, max_wakes: 0 } }),
+      undefined,
+    );
+    assert.equal(
+      parseAutoDebugConfig({ autodebug: { ...valid, max_wakes: -5 } }),
+      undefined,
+    );
+    assert.equal(
+      parseAutoDebugConfig({ autodebug: { ...valid, max_wakes: 2.5 } }),
+      undefined,
+    );
+    assert.equal(warnCount("autodebug_config_invalid"), 4);
+    const warns = warnsOf("autodebug_config_invalid");
+    assert.equal(warns[0].key, "max_wakes");
+    assert.equal(warns[0].value, "3");
+  });
+
+  it("treats verify_timeout_ms as an unknown key", () => {
+    assert.equal(
+      parseAutoDebugConfig({ autodebug: { ...valid, verify_timeout_ms: 0 } }),
+      undefined,
+    );
+    assert.equal(warnCount("autodebug_config_invalid"), 1);
+    assert.equal(
+      warnsOf("autodebug_config_invalid")[0].key,
+      "verify_timeout_ms",
+    );
+  });
+
+  it("treats summary_tail_lines as an unknown key", () => {
+    assert.equal(
+      parseAutoDebugConfig({ autodebug: { ...valid, summary_tail_lines: 40 } }),
+      undefined,
+    );
+    assert.equal(warnCount("autodebug_config_invalid"), 1);
+    assert.equal(
+      warnsOf("autodebug_config_invalid")[0].key,
+      "summary_tail_lines",
+    );
+  });
+
+  it("accepts a fully-specified section", () => {
+    assert.deepEqual(parseAutoDebugConfig({ autodebug: valid }), {
+      maxWakes: 3,
+    });
+    assert.equal(warnCount("autodebug_config_invalid"), 0);
   });
 });

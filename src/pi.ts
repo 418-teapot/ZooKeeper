@@ -143,6 +143,7 @@ import {
   parseAgentModes,
   parseAgentPermissions,
   parseAskConfig,
+  parseAutoDebugConfig,
   parseContextConfig,
   parseContinuationConfig,
   parseLimits,
@@ -626,6 +627,13 @@ export function buildPiContributions(
      */
     onSubagentRunChange?: () => void;
     /**
+     * Test seam: workspace root the auto-debug strategy scans for Cases.
+     * Defaults to the process working directory on the real host.
+     */
+    directory?: string;
+    /** Test seam: `zdebug` runner for the auto-debug strategy. */
+    zdebugExec?: Deps["zdebugExec"];
+    /**
      * Native HTML→Markdown converter loader for the fetch tool (only
      * supplied by the real pi entry point).  Undefined without it — the
      * fetch tool unit contributes no tools (fail-closed, matching
@@ -647,6 +655,10 @@ export function buildPiContributions(
   // strategy reads it through deps and declares it as its own wake
   // allowance (`maxWakes`); the engine is never configured with it.
   const continuationConfig = parseContinuationConfig(zooConfig);
+  // The auto-debug wake budget, parsed fail to skip.  The owning strategy
+  // reads it through deps and contributes no settle handler when the
+  // section is absent or invalid.
+  const autoDebugConfig = parseAutoDebugConfig(zooConfig);
   // The ask-tool timeout (seconds), parsed fail to skip.  Injected only
   // here (pi host) — the ask tool is not registered on OpenCode.
   const askConfig = parseAskConfig(zooConfig);
@@ -668,6 +680,7 @@ export function buildPiContributions(
     limits,
     contextConfig,
     continuationConfig,
+    autoDebugConfig,
     agentModes,
     agentPermissions,
     askTimeoutSeconds: askConfig?.timeoutSeconds,
@@ -718,7 +731,8 @@ export function buildPiContributions(
     // marking producers (dedup / purge-errors) have no
     // user-visible notification on pi.
     client: {},
-    directory: process.cwd(),
+    zdebugExec: hostDeps?.zdebugExec,
+    directory: hostDeps?.directory ?? process.cwd(),
     resolveAgent: buildPiResolveAgent(modeProfile, agentModes),
     toolHost: hostDeps?.toolHost,
     // The `/go` handoff target.  `getCommandCtx` reads the mutable pi
@@ -991,6 +1005,13 @@ export function buildPiHandlers(
      * observe and seed.  Defaults to a fresh store when omitted.
      */
     remindersUsed?: Map<string, Map<string, number>>;
+    /**
+     * Test seam: workspace root the auto-debug strategy scans for
+     * Cases.  Defaults to the process working directory.
+     */
+    directory?: string;
+    /** Test seam: `zdebug` runner for the auto-debug strategy. */
+    zdebugExec?: Deps["zdebugExec"];
   },
 ): {
   beforeAgentStart: (
@@ -1435,6 +1456,10 @@ export function buildPiHandlers(
       adapter,
       toolHost,
       piSwitchHost,
+      // Test seams: workspace root and `zdebug` runner for the auto-debug
+      // strategy.  Both default to the real host behaviour when omitted.
+      directory: overrides?.directory,
+      zdebugExec: overrides?.zdebugExec,
       // The `/go` handoff target reads the latest pi command context
       // through this supplier: the command handler refreshes the shared
       // holder immediately before the handler body runs.

@@ -13,9 +13,10 @@
  *   1. hook units — subagent-prompt → subagent-delegation (beforeExec),
  *      subagent-prompt → json-error-nudge → direct-work-nudge →
  *      post-subagent-nudge (afterExec), context-pruning (transform),
- *      reply-strip (textComplete), todo-continuation (onSettled).
+ *      reply-strip (textComplete), todo-continuation → auto-debug
+ *      (onSettled).
  *   2. tool units — compress, decompress, subagent, ask.
- *   3. command units — go, dcp.
+ *   3. command units — go, dcp, switch, debug.
  *   4. agent units — the seven prompt-injection units.
  *   5. skill units — one data-only unit per directory under
  *      core/skills/, discovered at module load (see below).
@@ -38,9 +39,11 @@ import { unit as lynxUnit } from "./agents/lynx.js";
 import { unit as molaUnit } from "./agents/mola.js";
 import { unit as spiderUnit } from "./agents/spider.js";
 import { unit as dcpCommandUnit } from "./commands/dcp/index.js";
+import { unit as debugCommandUnit } from "./commands/debug/index.js";
 import { unit as goCommandUnit } from "./commands/go/index.js";
 import { unit as switchCommandUnit } from "./commands/switch/index.js";
 import type { SkillUnitDescriptor, UnitDescriptor } from "./core/slots.js";
+import { unit as autoDebugUnit } from "./hooks/auto-debug/index.js";
 import { unit as contextPruningUnit } from "./hooks/context-pruning/index.js";
 import { unit as directWorkNudgeUnit } from "./hooks/direct-work-nudge/index.js";
 import { unit as jsonErrorNudgeUnit } from "./hooks/json-error-nudge/index.js";
@@ -161,6 +164,7 @@ export const REGISTRY: UnitDescriptor[] = [
   contextPruningUnit,
   replyStripUnit,
   todoContinuationUnit,
+  autoDebugUnit,
   // ── Tool units ──────────────────────────────────────────────────
   compressToolUnit,
   decompressToolUnit,
@@ -172,6 +176,7 @@ export const REGISTRY: UnitDescriptor[] = [
   goCommandUnit,
   dcpCommandUnit,
   switchCommandUnit,
+  debugCommandUnit,
   // ── Agent units ─────────────────────────────────────────────────
   dolphinUnit,
   molaUnit,

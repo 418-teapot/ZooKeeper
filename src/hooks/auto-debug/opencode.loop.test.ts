@@ -13,18 +13,31 @@
  * tool activity releases the lock, and a real user message clears both
  * the lock and the budget.  Non-dolphin sessions, an exhausted budget,
  * and a profile without an `onSettled` contribution or without a valid
- * `[zoo.continuation].max_reminders` all stay silent.
+ * `[zoo.continuation].max_wakes` all stay silent.
+ *
+ * A second suite drives the auto-debug strategy end to end against a
+ * real `zdebug` release binary and an on-disk Case: verify exit 0
+ * converges silently, exit 1 wakes with the re-run verdict, a
+ * broken criterion (exit > 1) silences as `verify-error`, a spent wake
+ * budget stops further wakes, and an aborted turn is interdicted before
+ * the strategy is consulted.
  */
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
-import { sessionAgentRegistry } from "./core/session-agent.js";
-import { CONTINUATION_PROMPT } from "./hooks/todo-continuation/decide.js";
+import { afterEach, beforeEach, describe, it } from "node:test";
+import { sessionAgentRegistry } from "../../core/session-agent.js";
 import {
   buildPlugin,
   hasUnansweredQuestion,
   lastAssistantAborted,
-} from "./opencode.js";
-import { _resetForTesting } from "./utils/logger.js";
+} from "../../opencode.js";
+import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
+import { CONTINUATION_PROMPT } from "../todo-continuation/decide.js";
+import {
+  type CaseFixture,
+  createCaseFixture,
+  requireZdebugBinary,
+  zdebugExec,
+} from "./e2e-fixture.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -76,14 +89,14 @@ const CONTINUATION_PROFILE = {
 /**
  * Build a `[zoo]` config with the loop profile enabled.
  *
- * @param maxReminders - The `[zoo.continuation].max_reminders` value.
+ * @param maxWakes - The `[zoo.continuation].max_wakes` value.
  * @param hooks - The profile hooks list.
  * @returns The zoo config.
  */
-function zooConfig(maxReminders = 3, hooks = ["todo-continuation"]) {
+function zooConfig(maxWakes = 3, hooks = ["todo-continuation"]) {
   return {
     mode: { poly: { ...CONTINUATION_PROFILE, hooks } },
-    continuation: { max_reminders: maxReminders },
+    continuation: { max_wakes: maxWakes },
   };
 }
 
@@ -220,12 +233,12 @@ describe("session.idle — dolphin wake path", () => {
     assert.equal(calls.length, 0);
   });
 
-  it("stays inert without a valid max_reminders", async () => {
+  it("stays inert without a valid max_wakes", async () => {
     for (const continuation of [
       undefined,
       {},
-      { max_reminders: 0 },
-      { max_reminders: "3" },
+      { max_wakes: 0 },
+      { max_wakes: "3" },
     ]) {
       const { client, calls } = makeClient();
       const plugin = await buildPlugin(
@@ -803,6 +816,171 @@ describe("session.idle — reminder budget", () => {
       2,
       "a real user message in the echo window resets the budget",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Auto-debug end to end (real zdebug binary + on-disk Case)
+// ---------------------------------------------------------------------------
+
+/** A profile enabling only the auto-debug settle strategy. */
+const AUTODEBUG_PROFILE = {
+  agents: [],
+  skills: [],
+  hooks: ["auto-debug"],
+  tools: [],
+  commands: [],
+};
+
+/**
+ * Build a `[zoo]` config enabling the auto-debug strategy.
+ *
+ * @param maxWakes - The `[zoo.autodebug].max_wakes` allowance.
+ * @returns The zoo config.
+ */
+function autoDebugZooConfig(maxWakes = 3) {
+  return {
+    mode: { poly: { ...AUTODEBUG_PROFILE } },
+    autodebug: {
+      max_wakes: maxWakes,
+    },
+  };
+}
+
+describe("session.idle — auto-debug end to end", () => {
+  let origDebug: string | undefined;
+
+  // The strategy's silence reason is only observable at debug level.
+  beforeEach(() => {
+    origDebug = process.env.ZOO_DEBUG;
+    process.env.ZOO_DEBUG = "1";
+    // Fail loudly, never skip, when the release binary is missing.
+    requireZdebugBinary();
+  });
+  afterEach(() => {
+    if (origDebug === undefined) delete process.env.ZOO_DEBUG;
+    else process.env.ZOO_DEBUG = origDebug;
+  });
+
+  /** The auto-debug strategy's silence reason for the last settle. */
+  function silenceReason(): unknown {
+    const silent = _getBufferForTesting().filter(
+      (entry) =>
+        entry.event === "settle_silent" && entry.handler === "autoDebug",
+    );
+    return silent.at(-1)?.reason;
+  }
+
+  /**
+   * Build the plugin over a fixture workspace, wiring the real binary.
+   *
+   * @param fixture - The workspace/Case fixture.
+   * @param maxWakes - The auto-debug wake allowance.
+   * @returns The plugin and its recorded wake calls.
+   */
+  async function pluginFor(fixture: CaseFixture, maxWakes = 3) {
+    const { client, calls } = makeClient();
+    const plugin = await buildPlugin(
+      { client, directory: fixture.workspace },
+      autoDebugZooConfig(maxWakes),
+      undefined,
+      { zdebugExec },
+    );
+    return { plugin, calls };
+  }
+
+  it("converges silently when the verification experiment passes", async () => {
+    const fixture = await createCaseFixture({ verifyCommand: "exit 0" });
+    try {
+      const { plugin, calls } = await pluginFor(fixture);
+      await bindAgent(plugin, "dolphin");
+
+      await idle(plugin);
+
+      assert.equal(calls.length, 0);
+      assert.equal(silenceReason(), "converged");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("wakes with the re-run verdict while verify still fails", async () => {
+    const fixture = await createCaseFixture({ verifyCommand: "exit 1" });
+    try {
+      const { plugin, calls } = await pluginFor(fixture);
+      await bindAgent(plugin, "dolphin");
+
+      await idle(plugin);
+
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].body.agent, "dolphin");
+      const text = calls[0].body.parts[0].text;
+      assert.ok(
+        text.includes("判据重跑结果"),
+        "wake carries the re-run verdict",
+      );
+      assert.ok(
+        text.includes(".zoo/debug/CASE-1/summary.md"),
+        "wake points at the Case summary",
+      );
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("silences verify-error when the criterion itself is broken", async () => {
+    const fixture = await createCaseFixture({ verifyCommand: "exit 3" });
+    try {
+      const { plugin, calls } = await pluginFor(fixture);
+      await bindAgent(plugin, "dolphin");
+
+      await idle(plugin);
+
+      assert.equal(calls.length, 0);
+      assert.equal(silenceReason(), "verify-error");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("stops waking once the auto-debug budget is spent", async () => {
+    const fixture = await createCaseFixture({ verifyCommand: "exit 1" });
+    try {
+      const { plugin, calls } = await pluginFor(fixture, 1);
+      await bindAgent(plugin, "dolphin");
+
+      await idle(plugin);
+      assert.equal(calls.length, 1, "the first settle wakes");
+
+      await idle(plugin);
+      assert.equal(calls.length, 1, "a spent budget silences the second");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("honors the abort interlock before consulting the strategy", async () => {
+    const fixture = await createCaseFixture({ verifyCommand: "exit 1" });
+    try {
+      const { plugin, calls } = await pluginFor(fixture);
+      await bindAgent(plugin, "dolphin");
+
+      await plugin.event({
+        event: {
+          type: "session.error",
+          properties: {
+            sessionID: "s1",
+            error: { name: "MessageAbortedError" },
+          },
+        },
+      });
+      await idle(plugin);
+
+      assert.equal(calls.length, 0);
+      assert.equal(silenceReason(), undefined, "strategy never consulted");
+    } finally {
+      fixture.dispose();
+    }
   });
 });
 

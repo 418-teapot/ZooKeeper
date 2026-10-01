@@ -39,6 +39,7 @@ import {
   initPluginLogger,
   parseAgentModes,
   parseAgentPermissions,
+  parseAutoDebugConfig,
   parseContextConfig,
   parseContinuationConfig,
   parseLimits,
@@ -257,9 +258,21 @@ function countTurnToolCalls(messages: readonly IdleMessageEntry[]): number {
  *
  * @param input - OpenCode plugin input (client, directory, ...).
  * @param zooConfig - The `zoo` section of config.toml.
+ * @param rawConfig - The whole parsed config root (agent tables).
+ * @param overrides - Optional host-dependency overrides.  Only used by
+ *   tests: the auto-debug end-to-end suite injects a `zdebug` runner that
+ *   points at a built binary so no `PATH` lookup is needed.
  * @returns Plugin hooks object.
  */
-export async function buildPlugin(input: any, zooConfig: any, rawConfig?: any) {
+export async function buildPlugin(
+  input: any,
+  zooConfig: any,
+  rawConfig?: any,
+  overrides?: {
+    /** Test seam: `zdebug` runner for the auto-debug strategy. */
+    zdebugExec?: Deps["zdebugExec"];
+  },
+) {
   const limits = parseLimits(zooConfig);
   const contextConfig = parseContextConfig(zooConfig);
   const modeProfile: ModeProfile | null = parseModeProfile(zooConfig);
@@ -287,10 +300,12 @@ export async function buildPlugin(input: any, zooConfig: any, rawConfig?: any) {
     limits,
     contextConfig,
     continuationConfig: parseContinuationConfig(zooConfig),
+    autoDebugConfig: parseAutoDebugConfig(zooConfig),
     agentModes,
     agentPermissions,
     client,
     directory,
+    zdebugExec: overrides?.zdebugExec,
     resolveAgent,
     toolHost: createV1ToolHost(client, resolveAgent),
     adapter: createV1Adapter(),

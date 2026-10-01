@@ -16,7 +16,14 @@
  * tool activity releases the lock, and a real user turn clears both the
  * lock and the budget.  A stale extension context is swallowed, and a
  * profile without settle contributions or without a valid
- * `[zoo.continuation].max_reminders` leaves the handler a no-op.
+ * `[zoo.continuation].max_wakes` leaves the handler a no-op.
+ *
+ * A second suite drives the auto-debug strategy end to end against a
+ * real `zdebug` release binary and an on-disk Case: verify exit 0
+ * converges silently, exit 1 wakes with the re-run verdict, a
+ * broken criterion (exit > 1) silences as `verify-error`, a spent wake
+ * budget stops further wakes, and an aborted run is interdicted before
+ * the strategy is consulted.
  *
  * Also covers the budget-map lifecycle: a `session_start` drops a
  * (re)starting session's stale entry, the size cap evicts the
@@ -25,12 +32,18 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { sessionAgentRegistry } from "./core/session-agent.js";
-import { _resetForTesting as resetIdentityForTesting } from "./core/subagent/identity.js";
-import { resetRegistry } from "./core/subagent/registry.js";
-import { CONTINUATION_PROMPT } from "./hooks/todo-continuation/decide.js";
-import { buildPiHandlers } from "./pi.js";
-import { _getBufferForTesting, _resetForTesting } from "./utils/logger.js";
+import { sessionAgentRegistry } from "../../core/session-agent.js";
+import { _resetForTesting as resetIdentityForTesting } from "../../core/subagent/identity.js";
+import { resetRegistry } from "../../core/subagent/registry.js";
+import { buildPiHandlers } from "../../pi.js";
+import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
+import { CONTINUATION_PROMPT } from "../todo-continuation/decide.js";
+import {
+  type CaseFixture,
+  createCaseFixture,
+  requireZdebugBinary,
+  zdebugExec,
+} from "./e2e-fixture.js";
 
 afterEach(() => {
   _resetForTesting();
@@ -226,14 +239,14 @@ const ZOO = {
       commands: [],
     },
   },
-  continuation: { max_reminders: 3 },
+  continuation: { max_wakes: 3 },
 };
 
 /** The same profile with a one-reminder budget. */
-const ZOO_LIMIT_1 = { ...ZOO, continuation: { max_reminders: 1 } };
+const ZOO_LIMIT_1 = { ...ZOO, continuation: { max_wakes: 1 } };
 
 /** The same profile with a two-reminder budget. */
-const ZOO_LIMIT_2 = { ...ZOO, continuation: { max_reminders: 2 } };
+const ZOO_LIMIT_2 = { ...ZOO, continuation: { max_wakes: 2 } };
 
 /** The same profile without any `[zoo.continuation]` section. */
 const ZOO_NO_CONTINUATION = { mode: { poly: { ...ZOO.mode.poly } } };
@@ -449,7 +462,7 @@ describe("buildPiHandlers — loop settle", () => {
     assert.equal(reminders.size, 1);
   });
 
-  it("performs no bookkeeping when max_reminders is absent", async () => {
+  it("performs no bookkeeping when max_wakes is absent", async () => {
     const api = mockApi();
     const reminders = new Map<string, Map<string, number>>([
       ["sess-keep", new Map([["todoContinuation", 1]])],
@@ -475,6 +488,165 @@ describe("buildPiHandlers — loop settle", () => {
 
     assert.equal(reminders.get("sess-keep")?.get("todoContinuation"), 1);
     assert.equal(reminders.size, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildPiHandlers — auto-debug end to end (real zdebug binary + Case)
+// ---------------------------------------------------------------------------
+
+/** A profile enabling only the auto-debug settle strategy. */
+const AUTODEBUG_ZOO_PROFILE = {
+  agents: [],
+  skills: [],
+  hooks: ["auto-debug"],
+  tools: [],
+  commands: [],
+};
+
+/**
+ * Build a `[zoo]` config enabling the auto-debug strategy.
+ *
+ * @param maxWakes - The `[zoo.autodebug].max_wakes` allowance.
+ * @returns The zoo config.
+ */
+function autoDebugZoo(maxWakes = 3) {
+  return {
+    mode: { poly: { ...AUTODEBUG_ZOO_PROFILE } },
+    autodebug: {
+      max_wakes: maxWakes,
+    },
+  };
+}
+
+describe("buildPiHandlers — auto-debug end to end", () => {
+  let origDebug: string | undefined;
+
+  // The strategy's silence reason is only observable at debug level.
+  beforeEach(() => {
+    origDebug = process.env.ZOO_DEBUG;
+    process.env.ZOO_DEBUG = "1";
+    // Fail loudly, never skip, when the release binary is missing.
+    requireZdebugBinary();
+  });
+  afterEach(() => {
+    if (origDebug === undefined) delete process.env.ZOO_DEBUG;
+    else process.env.ZOO_DEBUG = origDebug;
+  });
+
+  /** The auto-debug strategy's silence reason for the last settle. */
+  function silenceReason(): unknown {
+    const silent = _getBufferForTesting().filter(
+      (entry) =>
+        entry.event === "settle_silent" && entry.handler === "autoDebug",
+    );
+    return silent.at(-1)?.reason;
+  }
+
+  /**
+   * Build pi handlers over a fixture workspace, wiring the real binary.
+   *
+   * @param fixture - The workspace/Case fixture.
+   * @param maxWakes - The auto-debug wake allowance.
+   * @returns The recorded pi API and the built handlers.
+   */
+  function handlersFor(fixture: CaseFixture, maxWakes = 3) {
+    const api = mockApi();
+    const handlers = buildPiHandlers(
+      autoDebugZoo(maxWakes),
+      api as any,
+      undefined,
+      { directory: fixture.workspace, zdebugExec },
+    );
+    return { api, handlers };
+  }
+
+  it("converges silently when the verification experiment passes", async () => {
+    const fixture = await createCaseFixture({ verifyCommand: "exit 0" });
+    try {
+      const { api, handlers } = handlersFor(fixture);
+
+      await handlers.agentEnd(RUN_ENDED, settleCtx("ad-converged"));
+
+      assert.equal(api.sent.length, 0);
+      assert.equal(silenceReason(), "converged");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("wakes with the re-run verdict while verify still fails", async () => {
+    const fixture = await createCaseFixture({ verifyCommand: "exit 1" });
+    try {
+      const { api, handlers } = handlersFor(fixture);
+
+      await handlers.agentEnd(RUN_ENDED, settleCtx("ad-wake"));
+
+      assert.equal(api.sent.length, 1);
+      const { message, options } = api.sent[0];
+      assert.equal(message.customType, "zoo-loop-wake");
+      assert.ok(
+        message.content.includes("判据重跑结果"),
+        "wake carries the re-run verdict",
+      );
+      assert.ok(
+        message.content.includes(".zoo/debug/CASE-1/summary.md"),
+        "wake points at the Case summary",
+      );
+      assert.deepEqual(options, { deliverAs: "followUp", triggerTurn: true });
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("silences verify-error when the criterion itself is broken", async () => {
+    const fixture = await createCaseFixture({ verifyCommand: "exit 3" });
+    try {
+      const { api, handlers } = handlersFor(fixture);
+
+      await handlers.agentEnd(RUN_ENDED, settleCtx("ad-verify-error"));
+
+      assert.equal(api.sent.length, 0);
+      assert.equal(silenceReason(), "verify-error");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("stops waking once the auto-debug budget is spent", async () => {
+    const fixture = await createCaseFixture({ verifyCommand: "exit 1" });
+    try {
+      const { api, handlers } = handlersFor(fixture, 1);
+      const c = settleCtx("ad-budget");
+
+      await handlers.agentEnd(RUN_ENDED, c);
+      assert.equal(api.sent.length, 1, "the first settle wakes");
+
+      await handlers.agentEnd(RUN_ENDED, c);
+      assert.equal(api.sent.length, 1, "a spent budget silences the second");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("honors the abort interlock before consulting the strategy", async () => {
+    const fixture = await createCaseFixture({ verifyCommand: "exit 1" });
+    try {
+      const { api, handlers } = handlersFor(fixture);
+
+      await handlers.agentEnd(
+        {
+          type: "agent_end",
+          messages: [{ role: "assistant", stopReason: "aborted" }],
+        },
+        settleCtx("ad-aborted"),
+      );
+
+      assert.equal(api.sent.length, 0);
+      assert.equal(silenceReason(), undefined, "strategy never consulted");
+    } finally {
+      fixture.dispose();
+    }
   });
 });
 

@@ -12,10 +12,10 @@
 //! `model.py` one-for-one, including the anti-self-deception checks that
 //! keep claims and criteria tied to actually available evidence.
 //!
-//! Two increments extend the reference event vocabulary: a `case-created`
-//! event may carry a user-declared verification criterion, and the new
-//! `case-verify-updated` event replaces that criterion with a recorded
-//! reason (the append-only log is the audit trail).
+//! One increment extends the reference event vocabulary: the
+//! `case-verify-updated` event points the verification criterion at a
+//! planned Experiment (the append-only log is the audit trail), and the
+//! provenance `source` records who declared it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -85,8 +85,8 @@ pub struct State {
     pub claim_relations: Vec<Value>,
     /// Recovery records, in append order.
     pub recoveries: Vec<Value>,
-    /// Current verification criterion, if the Case declares one.
-    pub verify: Option<Map<String, Value>>,
+    /// Experiment id the verification criterion points at, if declared.
+    pub verify: Option<String>,
     /// Reason recorded by `case-closed`, if the Case was ever closed.
     pub close_reason: Option<String>,
     /// Sequence number of the last applied event.
@@ -123,9 +123,11 @@ impl State {
     /// Render the state as the JSON object the CLI reports.
     ///
     /// The fields mirror the reference Python `State.to_dict`, plus the
-    /// `verify` criterion and `close_reason` this crate tracks as
+    /// `verify` pointer and `close_reason` this crate tracks as
     /// increments, so a consumer can serialize a status or verify result
-    /// without reaching into the struct.
+    /// without reaching into the struct. The `verify` pointer is rendered
+    /// as `{"experiment": id}`; callers that need the Experiment's command
+    /// resolve the pointer against the Case directory.
     #[must_use]
     pub fn to_dict(&self) -> Value {
         json!({
@@ -145,7 +147,7 @@ impl State {
             "evidence_relations": self.evidence_relations,
             "claim_relations": self.claim_relations,
             "recoveries": self.recoveries,
-            "verify": self.verify,
+            "verify": self.verify.as_ref().map(|id| json!({"experiment": id})),
             "close_reason": self.close_reason,
             "last_seq": self.last_seq,
         })
@@ -360,7 +362,6 @@ fn handle_case_created(
         .map(str::to_owned);
     let workspaces = required_array(payload, "workspaces")?.to_vec();
     let baseline = required_array(payload, "baseline")?.to_vec();
-    let verify = optional_verify(payload)?;
 
     case_id.clone_into(&mut state.case_id);
     state.title = title;
@@ -368,7 +369,6 @@ fn handle_case_created(
     state.default_interpreter = default_interpreter;
     state.workspaces = workspaces;
     state.baseline = baseline;
-    state.verify = verify;
     Ok(())
 }
 
@@ -966,22 +966,27 @@ fn handle_case_recovered(state: &mut State, payload: &Map<String, Value>) {
     state.recoveries.push(Value::Object(payload.clone()));
 }
 
-/// Replace the verification criterion, requiring a recorded reason.
+/// Point the verification criterion at a planned Experiment.
 fn handle_case_verify_updated(
     state: &mut State,
     payload: &Map<String, Value>,
 ) -> Result<(), ZdebugError> {
-    let verify = payload
-        .get("verify")
-        .ok_or_else(|| invalid_event("Missing field: verify"))?;
-    let criterion = parse_verify(verify)?;
-    if !is_truthy(payload.get("reason")) {
+    let experiment = str_field(payload, "experiment")?;
+    if experiment.is_empty() {
         return Err(ZdebugError::new(
-            "MISSING_REASON",
-            "verify update requires a reason",
+            "INVALID_VERIFY",
+            "verify requires an experiment",
         ));
     }
-    state.verify = Some(criterion);
+    require(state.experiments.get(experiment), "experiment", experiment)?;
+    let source = str_field(payload, "source")?;
+    if !VERIFY_SOURCES.contains(&source) {
+        return Err(ZdebugError::new(
+            "INVALID_VERIFY_SOURCE",
+            format!("Invalid verify source: {source}"),
+        ));
+    }
+    state.verify = Some(experiment.to_owned());
     Ok(())
 }
 
@@ -1152,44 +1157,6 @@ fn incomplete_criteria(deliverable: &Map<String, Value>) -> Vec<Value> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-/// Validate and clone a verification criterion object.
-fn parse_verify(value: &Value) -> Result<Map<String, Value>, ZdebugError> {
-    let object = value.as_object().ok_or_else(|| {
-        ZdebugError::new("INVALID_VERIFY", "verify must be an object")
-    })?;
-    let has_command = object
-        .get("command")
-        .and_then(Value::as_str)
-        .is_some_and(|command| !command.is_empty());
-    if !has_command {
-        return Err(ZdebugError::new(
-            "INVALID_VERIFY",
-            "verify requires a non-empty command",
-        ));
-    }
-    let source =
-        object.get("source").and_then(Value::as_str).ok_or_else(|| {
-            ZdebugError::new("INVALID_VERIFY", "verify requires a source")
-        })?;
-    if !VERIFY_SOURCES.contains(&source) {
-        return Err(ZdebugError::new(
-            "INVALID_VERIFY_SOURCE",
-            format!("Invalid verify source: {source}"),
-        ));
-    }
-    Ok(object.clone())
-}
-
-/// Read an optional verification criterion from a `case-created` payload.
-fn optional_verify(
-    payload: &Map<String, Value>,
-) -> Result<Option<Map<String, Value>>, ZdebugError> {
-    payload
-        .get("verify")
-        .filter(|value| !value.is_null())
-        .map_or(Ok(None), |value| parse_verify(value).map(Some))
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -1398,68 +1365,10 @@ mod tests {
     }
 
     #[test]
-    fn test_case_created_parses_verify() {
-        let mut state = State::default();
-        apply_event(
-            &mut state,
-            &event(
-                "case-created",
-                1,
-                json!({
-                    "title": "t",
-                    "objective": "o",
-                    "workspaces": [],
-                    "baseline": [],
-                    "verify": {"command": "pytest -q", "source": "user"},
-                }),
-            ),
-        )
-        .unwrap();
-        let verify = state.verify.as_ref().unwrap();
-        assert_eq!(verify["command"], "pytest -q");
-        assert_eq!(verify["source"], "user");
-    }
-
-    #[test]
-    fn test_case_created_verify_requires_command() {
-        let mut state = State::default();
-        let err = apply_event(
-            &mut state,
-            &event(
-                "case-created",
-                1,
-                json!({
-                    "title": "t",
-                    "objective": "o",
-                    "workspaces": [],
-                    "baseline": [],
-                    "verify": {"source": "user"},
-                }),
-            ),
-        )
-        .unwrap_err();
-        assert_eq!(err.code(), "INVALID_VERIFY");
-    }
-
-    #[test]
-    fn test_case_created_verify_rejects_bad_source() {
-        let mut state = State::default();
-        let err = apply_event(
-            &mut state,
-            &event(
-                "case-created",
-                1,
-                json!({
-                    "title": "t",
-                    "objective": "o",
-                    "workspaces": [],
-                    "baseline": [],
-                    "verify": {"command": "true", "source": "robot"},
-                }),
-            ),
-        )
-        .unwrap_err();
-        assert_eq!(err.code(), "INVALID_VERIFY_SOURCE");
+    fn test_case_created_has_no_verify_pointer() {
+        let state = created();
+        assert!(state.verify.is_none());
+        assert!(state.to_dict()["verify"].is_null());
     }
 
     #[test]
@@ -1521,7 +1430,6 @@ mod tests {
                     "objective": "fix",
                     "workspaces": [],
                     "baseline": [],
-                    "verify": {"command": "true", "source": "user"},
                 }),
             ),
             event(
@@ -1651,7 +1559,6 @@ mod tests {
         assert_eq!(state.lifecycle, "CLOSED");
         assert_eq!(state.close_reason.as_deref(), Some("completed"));
         assert_eq!(state.last_seq, 14);
-        assert_eq!(state.verify.as_ref().unwrap()["command"], "true");
         assert_eq!(state.claims["CL-001"]["assessment"], "established");
         assert_eq!(
             state.deliverables["DL-001"]["criteria"]["CR-001"]["disposition"],
@@ -2189,6 +2096,27 @@ mod tests {
     }
 
     #[test]
+    fn test_experiment_planned_without_timeout_is_backward_compatible() {
+        let mut state = created();
+        // An event planned before timeouts existed has no `timeout_ms` key.
+        apply(
+            &mut state,
+            "experiment-planned",
+            json!({"id": "EX-001", "question": "q"}),
+        )
+        .unwrap();
+        assert!(state.experiments["EX-001"].get("timeout_ms").is_none());
+        // A timed plan records the declared limit.
+        apply(
+            &mut state,
+            "experiment-planned",
+            json!({"id": "EX-002", "question": "q", "timeout_ms": 750}),
+        )
+        .unwrap();
+        assert_eq!(state.experiments["EX-002"]["timeout_ms"], 750);
+    }
+
+    #[test]
     fn test_duplicate_experiment_rejected() {
         let mut state = created();
         apply(
@@ -2644,44 +2572,61 @@ mod tests {
     }
 
     #[test]
-    fn test_case_verify_updated() {
+    fn test_case_verify_updated_points_at_experiment() {
         let mut state = created();
         apply(
             &mut state,
-            "case-verify-updated",
-            json!({
-                "verify": {"command": "pytest -x", "source": "agent"},
-                "reason": "narrower reproduction",
-            }),
+            "experiment-planned",
+            json!({"id": "EX-001", "question": "q"}),
         )
         .unwrap();
-        let verify = state.verify.as_ref().unwrap();
-        assert_eq!(verify["command"], "pytest -x");
-        assert_eq!(verify["source"], "agent");
+        apply(
+            &mut state,
+            "case-verify-updated",
+            json!({"experiment": "EX-001", "source": "agent"}),
+        )
+        .unwrap();
+        assert_eq!(state.verify.as_deref(), Some("EX-001"));
+        assert_eq!(state.to_dict()["verify"], json!({"experiment": "EX-001"}));
     }
 
     #[test]
-    fn test_case_verify_updated_requires_reason() {
+    fn test_case_verify_updated_requires_experiment() {
         let mut state = created();
         let err = apply(
             &mut state,
             "case-verify-updated",
-            json!({"verify": {"command": "true", "source": "agent"}}),
+            json!({"source": "agent"}),
         )
         .unwrap_err();
-        assert_eq!(err.code(), "MISSING_REASON");
+        assert_eq!(err.code(), "INVALID_EVENT");
+    }
+
+    #[test]
+    fn test_case_verify_updated_rejects_unknown_experiment() {
+        let mut state = created();
+        let err = apply(
+            &mut state,
+            "case-verify-updated",
+            json!({"experiment": "EX-404", "source": "agent"}),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "EXPERIMENT_NOT_FOUND");
     }
 
     #[test]
     fn test_case_verify_updated_rejects_bad_source() {
         let mut state = created();
+        apply(
+            &mut state,
+            "experiment-planned",
+            json!({"id": "EX-001", "question": "q"}),
+        )
+        .unwrap();
         let err = apply(
             &mut state,
             "case-verify-updated",
-            json!({
-                "verify": {"command": "true", "source": "robot"},
-                "reason": "r",
-            }),
+            json!({"experiment": "EX-001", "source": "robot"}),
         )
         .unwrap_err();
         assert_eq!(err.code(), "INVALID_VERIFY_SOURCE");

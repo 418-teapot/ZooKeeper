@@ -5,8 +5,8 @@
  *
  * The parser's syntax behavior is covered by upstream's own test suite;
  * this file guards the contract ZooKeeper depends on: extracting the
- * `[zoo.*]` section (and the poly profile's five arrays) from the real
- * config.toml, plus a multi-line array smoke check.
+ * `[zoo.*]` section (and the poly and mono profiles' five arrays) from
+ * the real config.toml, plus a multi-line array smoke check.
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -35,6 +35,7 @@ describe("vendor smol-toml — config.toml zoo section", () => {
       "kiwi",
     ]);
     assert.deepEqual(poly.skills, [
+      "auto-debug",
       "beaver-tdd",
       "code-review",
       "compress-usage",
@@ -49,6 +50,7 @@ describe("vendor smol-toml — config.toml zoo section", () => {
       "wiki-verify",
     ]);
     assert.deepEqual(poly.hooks, [
+      "auto-debug",
       "context-pruning",
       "direct-work-nudge",
       "json-error-nudge",
@@ -66,7 +68,36 @@ describe("vendor smol-toml — config.toml zoo section", () => {
       "subagent",
       "todo",
     ]);
-    assert.deepEqual(poly.commands, ["go", "dcp", "switch"]);
+    assert.deepEqual(poly.commands, ["go", "dcp", "switch", "debug"]);
+  });
+
+  it("extracts the mono profile lists", () => {
+    const mono = (parsed.zoo as any).mode.mono;
+    assert.deepEqual(mono.agents, ["dolphin", "mola"]);
+    assert.deepEqual(mono.skills, [
+      "auto-debug",
+      "compress-usage",
+      "first-principles",
+      "git-commit",
+      "grill",
+      "mola-plan",
+      "wiki-query",
+    ]);
+    assert.deepEqual(mono.hooks, [
+      "auto-debug",
+      "context-pruning",
+      "json-error-nudge",
+      "reply-strip",
+      "todo-continuation",
+    ]);
+    assert.deepEqual(mono.tools, [
+      "ask",
+      "compress",
+      "decompress",
+      "fetch",
+      "todo",
+    ]);
+    assert.deepEqual(mono.commands, ["go", "dcp", "switch", "debug"]);
   });
 
   it("extracts the validation / context / logging sections", () => {
@@ -79,7 +110,7 @@ describe("vendor smol-toml — config.toml zoo section", () => {
     assert.equal(zoo.context.dedup.threshold_context, 100000);
     assert.deepEqual(zoo.context.dedup.protected_tools, []);
     assert.equal(zoo.context.compress.max_ranges, 8);
-    assert.equal(zoo.continuation.max_reminders, 3);
+    assert.equal(zoo.continuation.max_wakes, 3);
     assert.equal(zoo.context.nudge.min_context, "60%");
     assert.deepEqual(zoo.logging, {
       max_file_size_mb: 5,

@@ -36,13 +36,13 @@ import { decide } from "./decide.js";
  * Resolves the todo source once and contributes one `onSettled` handler
  * that reads the session's tasks at settle time and returns the todo
  * strategy's verdict.  All other slots stay empty.  Without a valid
- * `[zoo.continuation].max_reminders` the `onSettled` slot stays empty too.
+ * `[zoo.continuation].max_wakes` the `onSettled` slot stays empty too.
  */
 export const unit: HookUnitDescriptor = {
   name: "todo-continuation",
   kind: "hook",
   create(deps) {
-    const maxWakes = deps.continuationConfig?.maxReminders;
+    const maxWakes = deps.continuationConfig?.maxWakes;
     if (maxWakes === undefined) {
       return {
         kind: "hook",

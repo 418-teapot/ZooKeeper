@@ -27,6 +27,7 @@ import type {
   AgentColorMap,
   AgentModeMap,
   AskConfig,
+  AutoDebugConfig,
   CompressConfig,
   ContextNudgeConfig,
   ContextPruningConfig,
@@ -261,10 +262,10 @@ export function parseAskConfig(zooConfig: any): AskConfig | undefined {
  *
  * Fail to skip with zero invented defaults: an absent section yields
  * `undefined` silently; a malformed section (non-object, unknown key, or
- * a missing/invalid `max_reminders` — non-number, non-integer, zero, or
+ * a missing/invalid `max_wakes` — non-number, non-integer, zero, or
  * negative) yields `undefined` and exactly one
  * `continuation_config_invalid` warn.  A valid section always carries a
- * positive-integer `maxReminders`; hosts disable continuation entirely
+ * positive-integer `maxWakes`; hosts disable continuation entirely
  * when this parser returns `undefined`.
  *
  * @param zooConfig - The `zoo` section of the parsed config.toml.
@@ -282,7 +283,7 @@ export function parseContinuationConfig(
   }
 
   const table = ct as Record<string, unknown>;
-  const unknownKey = Object.keys(table).find((key) => key !== "max_reminders");
+  const unknownKey = Object.keys(table).find((key) => key !== "max_wakes");
   if (unknownKey !== undefined) {
     warnSectionInvalid("continuation", [
       unknownKey,
@@ -293,7 +294,7 @@ export function parseContinuationConfig(
   }
 
   const keyChecks: KeyCheck[] = [
-    ["max_reminders", table.max_reminders, isPositiveInteger],
+    ["max_wakes", table.max_wakes, isPositiveInteger],
   ];
   const bad = findBadKey(keyChecks);
   if (bad) {
@@ -301,7 +302,58 @@ export function parseContinuationConfig(
     return undefined;
   }
 
-  return { maxReminders: table.max_reminders as number };
+  return { maxWakes: table.max_wakes as number };
+}
+
+/**
+ * Extract the auto-debug config from the `[zoo.autodebug]` section.
+ *
+ * Fail to skip with zero invented defaults: an absent section yields
+ * `undefined` silently; a malformed section (non-object, unknown key, or
+ * a missing/invalid `max_wakes` — which must be a positive integer)
+ * yields `undefined` and exactly one `autodebug_config_invalid` warn.  A
+ * valid section always carries the positive-integer `max_wakes`; the
+ * auto-debug strategy contributes nothing when this parser returns
+ * `undefined`.  A `verify_timeout_ms` key is rejected as unknown: the
+ * per-run bound now derives from each Case's declared criterion timeout,
+ * not from config.  `summary_tail_lines` is likewise unknown: the wake
+ * text no longer injects a summary tail.
+ *
+ * @param zooConfig - The `zoo` section of the parsed config.toml.
+ * @returns The parsed auto-debug config, or `undefined` when the section
+ *   is absent or invalid.
+ */
+export function parseAutoDebugConfig(
+  zooConfig: any,
+): AutoDebugConfig | undefined {
+  const ad = zooConfig.autodebug as unknown;
+  if (ad == null) return undefined;
+  if (typeof ad !== "object" || Array.isArray(ad)) {
+    warnSectionInvalid("autodebug", ["autodebug", ad, () => false]);
+    return undefined;
+  }
+
+  const table = ad as Record<string, unknown>;
+  const unknownKey = Object.keys(table).find((key) => key !== "max_wakes");
+  if (unknownKey !== undefined) {
+    warnSectionInvalid("autodebug", [
+      unknownKey,
+      table[unknownKey],
+      () => false,
+    ]);
+    return undefined;
+  }
+
+  const keyChecks: KeyCheck[] = [
+    ["max_wakes", table.max_wakes, isPositiveInteger],
+  ];
+  const bad = findBadKey(keyChecks);
+  if (bad) {
+    warnSectionInvalid("autodebug", bad);
+    return undefined;
+  }
+
+  return { maxWakes: table.max_wakes as number };
 }
 
 /**

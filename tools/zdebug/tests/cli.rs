@@ -128,6 +128,21 @@ impl Workspace {
         }
     }
 
+    /// Spawn `zdebug` in `cwd` with `TMPDIR` overridden for the child.
+    fn run_with_tmpdir(tmpdir: &Path, cwd: &Path, args: &[&str]) -> Run {
+        let output = Command::new(ZDEBUG)
+            .args(args)
+            .current_dir(cwd)
+            .env("TMPDIR", tmpdir)
+            .output()
+            .expect("spawn zdebug");
+        Run {
+            code: output.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        }
+    }
+
     /// Run a command with `--json` expected to succeed, returning `result`.
     fn ok(&self, args: &[&str]) -> Value {
         let mut full = vec!["--json"];
@@ -688,14 +703,27 @@ fn plan_reads_procedure_from_stdin() {
 
 // ── Increments ───────────────────────────────────────────────────────────────
 
-/// `case init --verify` records a criterion visible in `case status`.
+/// `case init --verify` materializes an Experiment that `experiment run`
+/// executes, and points the Case criterion at it.
 #[test]
-fn init_verify_is_recorded_and_visible_in_status() {
+fn init_verify_materializes_runnable_experiment() {
     let ws = Workspace::new();
-    ws.init_case(&["--verify", "cargo test"]);
+    ws.init_case(&["--verify", "echo verified", "--verify-timeout", "5"]);
+
     let status = ws.ok(&["case", "status", "--json"]);
-    assert_eq!(status["verify"]["command"].as_str(), Some("cargo test"));
-    assert_eq!(status["verify"]["source"].as_str(), Some("user"));
+    let experiment = status["verify"]["experiment"]
+        .as_str()
+        .expect("verify experiment pointer");
+    assert_eq!(experiment, "EX-001");
+    assert_eq!(status["verify"]["command"].as_str(), Some("echo verified"));
+    assert_eq!(status["verify"]["timeout_ms"].as_i64(), Some(5000));
+
+    let metadata = ws.ok(&["experiment", "run", experiment]);
+    assert_eq!(metadata["exit_code"].as_i64(), Some(0));
+    let stdout = ws.file(
+        ".zoo/debug/CASE-1/artifacts/experiments/EX-001/EX-001-A001/stdout.log",
+    );
+    assert_eq!(fs::read_to_string(stdout).expect("read stdout"), "verified\n");
 }
 
 /// The pre-fix `--workspaces` spelling is rejected.
@@ -754,52 +782,175 @@ fn case_dir_expands_leading_tilde() {
     assert!(!cwd.path().join("~").exists());
 }
 
-/// `case update-verify` replaces the criterion and leaves an audit event.
+/// A second `update-verify` plans a new Experiment, migrates the pointer,
+/// and keeps the earlier Experiment in history.
 #[test]
-fn update_verify_replaces_criterion_and_records_reason() {
+fn update_verify_migrates_pointer_and_keeps_history() {
     let ws = Workspace::new();
-    ws.init_case(&["--verify", "cargo test"]);
+    ws.init_case(&["--verify", "true", "--verify-timeout", "1"]);
+
     ws.ok(&[
         "case",
         "update-verify",
-        "--verify",
-        "pytest -q",
-        "--reason",
-        "narrowed scope",
+        "--command",
+        "echo second",
+        "--source",
+        "user",
+        "--timeout",
+        "2.5",
     ]);
 
     let status = ws.ok(&["case", "status", "--json"]);
-    assert_eq!(status["verify"]["command"].as_str(), Some("pytest -q"));
-    assert_eq!(status["verify"]["source"].as_str(), Some("agent"));
+    assert_eq!(status["verify"]["experiment"].as_str(), Some("EX-002"));
+    assert_eq!(status["verify"]["command"].as_str(), Some("echo second"));
+    assert_eq!(status["verify"]["timeout_ms"].as_i64(), Some(2500));
+    assert!(status["experiments"].get("EX-001").is_some());
+    assert!(status["experiments"].get("EX-002").is_some());
 
     let log = fs::read_to_string(ws.file(".zoo/debug/CASE-1/case.jsonl"))
         .expect("read event log");
-    let updated = log
+    let updated: Vec<Value> = log
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).expect("event json"))
-        .find(|event| event["type"].as_str() == Some("case-verify-updated"))
-        .expect("case-verify-updated event");
-    assert_eq!(updated["payload"]["reason"].as_str(), Some("narrowed scope"));
+        .filter(|event| event["type"].as_str() == Some("case-verify-updated"))
+        .collect();
+    assert_eq!(updated.len(), 2);
+    assert_eq!(updated[0]["payload"]["experiment"].as_str(), Some("EX-001"));
+    assert_eq!(updated[0]["payload"]["source"].as_str(), Some("user"));
+    assert_eq!(updated[1]["payload"]["experiment"].as_str(), Some("EX-002"));
+    assert_eq!(updated[1]["payload"]["source"].as_str(), Some("user"));
+}
+
+/// Without a declared criterion the verification pointer stays null.
+#[test]
+fn status_verify_is_null_without_criterion() {
+    let ws = Workspace::new();
+    ws.init_case(&[]);
+    let status = ws.ok(&["case", "status", "--json"]);
+    assert!(status["verify"].is_null());
+}
+
+/// The replayed log and `case status --json` agree on the verify pointer.
+#[test]
+fn replay_matches_status_verify() {
+    let ws = Workspace::new();
+    ws.init_case(&["--verify", "echo replay", "--verify-timeout", "0.5"]);
+    let status = ws.ok(&["case", "status", "--json"]);
+
+    let store = EventStore::new(&ws.file(".zoo/debug/CASE-1"));
+    let (events, tail) = store.read_events(false).expect("read events");
+    assert!(tail.is_empty());
+    let state = zdebug::model::replay(&events).expect("replay");
     assert_eq!(
-        updated["payload"]["verify"]["command"].as_str(),
-        Some("pytest -q")
+        state.verify.as_deref(),
+        status["verify"]["experiment"].as_str()
     );
+    assert_eq!(state.to_dict()["verify"], json!({"experiment": "EX-001"}));
 }
 
 /// `case status --json` exposes the lifecycle, criterion, and five tables.
 #[test]
 fn status_json_exposes_lifecycle_verify_and_tables() {
     let ws = Workspace::new();
-    ws.init_case(&["--verify", "true"]);
+    ws.init_case(&["--verify", "true", "--verify-timeout", "1"]);
     let status = ws.ok(&["case", "status", "--json"]);
 
     assert_eq!(status["lifecycle"].as_str(), Some("OPEN"));
     assert_eq!(status["verify"]["command"].as_str(), Some("true"));
+    assert_eq!(status["verify"]["experiment"].as_str(), Some("EX-001"));
+    assert_eq!(status["verify"]["timeout_ms"].as_i64(), Some(1000));
     for key in
         ["deliverables", "claims", "experiments", "evidence", "artifacts"]
     {
         assert!(status.get(key).is_some(), "missing status table: {key}");
     }
+}
+
+/// `summary.md` renders the verification Experiment's declared limit.
+#[test]
+fn summary_renders_verify_timeout() {
+    let ws = Workspace::new();
+    ws.init_case(&["--verify", "true", "--verify-timeout", "1"]);
+
+    let summary = fs::read_to_string(ws.file(".zoo/debug/CASE-1/summary.md"))
+        .expect("read summary");
+    assert!(summary.contains("- Timeout: `1000 ms`"), "summary: {summary}");
+}
+
+/// `case update-verify` without `--timeout` is rejected before any write.
+#[test]
+fn update_verify_requires_timeout() {
+    let ws = Workspace::new();
+    ws.init_case(&[]);
+
+    let failure = ws.run(&[
+        "case",
+        "update-verify",
+        "--command",
+        "true",
+        "--source",
+        "user",
+    ]);
+    assert_ne!(failure.code, 0, "unexpected success: {}", failure.stdout);
+    assert!(failure.stderr.contains("--timeout"), "stderr: {}", failure.stderr);
+    let status = ws.ok(&["case", "status", "--json"]);
+    assert!(status["verify"].is_null(), "status: {status}");
+}
+
+/// A `sleep` that outlives its Experiment is killed and reported as a
+/// `TIMED_OUT` business error, with the Attempt still recorded.
+#[test]
+fn experiment_run_times_out_with_business_error() {
+    let ws = Workspace::new();
+    ws.init_case(&[]);
+    ws.write(
+        "interpretations.json",
+        r#"[{"when":"done","meaning":"observe"}]"#,
+    );
+    ws.write(
+        "procedure.sh",
+        "#!/bin/sh\nprintf 'started\\n'\nsleep 30 &\nwait\n",
+    );
+    ws.ok(&[
+        "experiment",
+        "plan",
+        "--id",
+        "EX-001",
+        "--question",
+        "observe",
+        "--interpretations",
+        "interpretations.json",
+        "--script",
+        "procedure.sh",
+        "--timeout",
+        "1",
+    ]);
+
+    let failure = ws.run(&["experiment", "run", "EX-001", "--json"]);
+    assert_eq!(failure.code, 2, "stderr: {}", failure.stderr);
+    let error = failure.error();
+    assert_eq!(error["code"].as_str(), Some("TIMED_OUT"));
+
+    let attempt_dir =
+        ws.file(".zoo/debug/CASE-1/artifacts/experiments/EX-001/EX-001-A001");
+    let execution: Value = serde_json::from_str(
+        &fs::read_to_string(attempt_dir.join("execution.json"))
+            .expect("read execution.json"),
+    )
+    .expect("parse execution.json");
+    assert_eq!(execution["timed_out"], true);
+    // Partial output produced before the kill is retained.
+    assert_eq!(
+        fs::read_to_string(attempt_dir.join("stdout.log"))
+            .expect("read stdout"),
+        "started\n"
+    );
+
+    let status = ws.ok(&["case", "status", "--json"]);
+    assert_eq!(
+        status["experiments"]["EX-001"]["attempts"][0]["timed_out"],
+        true
+    );
 }
 
 // ── Exit-code contract ───────────────────────────────────────────────────────
@@ -869,4 +1020,58 @@ fn business_error_without_json_renders_code() {
         failure.stderr
     );
     assert!(failure.stdout.is_empty(), "stdout: {}", failure.stdout);
+}
+
+/// A `case init --verify` that cannot materialize its criterion reports
+/// the already-created Case and how to recover rather than leaving the
+/// caller to collide with `CASE_EXISTS` on retry.
+#[test]
+fn init_verify_setup_failure_reports_case_and_recovery() {
+    let ws = Workspace::new();
+    // A regular file as `TMPDIR` makes staging the verify script fail.
+    let bogus_tmp = ws.file("not-a-dir");
+    fs::write(&bogus_tmp, "").unwrap();
+    let root = ws.path().to_string_lossy().into_owned();
+
+    let run = Workspace::run_with_tmpdir(
+        &bogus_tmp,
+        ws.path(),
+        &[
+            "--json",
+            "case",
+            "init",
+            CASE_ID,
+            "--title",
+            "test",
+            "--objective",
+            "test objective",
+            "--workspace",
+            &root,
+            "--verify",
+            "echo verified",
+            "--verify-timeout",
+            "1",
+        ],
+    );
+    let error = run.error();
+    assert_eq!(error["code"].as_str(), Some("VERIFY_SETUP_FAILED"));
+    let message = error["message"].as_str().unwrap();
+    assert!(message.contains(CASE_ID), "message: {message}");
+    assert!(message.contains("case update-verify"), "message: {message}");
+    assert_eq!(error["details"]["case_id"].as_str(), Some(CASE_ID));
+
+    // The Case survives without a verify pointer, so the retry collides.
+    let status = ws.ok(&["case", "status", "--case-id", CASE_ID]);
+    assert!(status["verify"].is_null(), "status: {status}");
+    let retry = ws.run(&[
+        "--json",
+        "case",
+        "init",
+        CASE_ID,
+        "--title",
+        "t",
+        "--objective",
+        "o",
+    ]);
+    assert_eq!(retry.error()["code"].as_str(), Some("CASE_EXISTS"));
 }

@@ -13,7 +13,9 @@
 //! equivalent of the Python `start_new_session` option, which makes the
 //! child a process-group leader), and forwarding uses `killpg` from the
 //! safe `nix` wrapper because `libc::kill` requires an `unsafe` block that
-//! this crate forbids.
+//! this crate forbids. An Experiment may declare a wall-clock `timeout_ms`;
+//! when it elapses the whole process group is killed and the Attempt is
+//! recorded with `timed_out: true`.
 //!
 //! Recovery of an Attempt that was left `running` by a crashed runner is
 //! not this module's job; the model's `ATTEMPT_RUNNING` rule rejects a new
@@ -58,6 +60,9 @@ const INTERPRETER_VERSION_TIMEOUT: Duration = Duration::from_secs(5);
 /// Poll interval while waiting for an interpreter version probe to exit.
 const VERSION_PROBE_POLL: Duration = Duration::from_millis(10);
 
+/// Poll interval while waiting for an Attempt that has a timeout.
+const ATTEMPT_POLL: Duration = Duration::from_millis(10);
+
 // ── Planning ─────────────────────────────────────────────────────────────────
 
 /// The inputs a caller must supply to plan an Experiment.
@@ -82,6 +87,8 @@ pub struct PlanSpec<'a> {
     pub script: &'a Path,
     /// Explicit interpreter command line, if the shebang should be ignored.
     pub interpreter: Option<&'a str>,
+    /// Wall-clock limit in milliseconds, or `None` to run unbounded.
+    pub timeout_ms: Option<u64>,
     /// Working directory the procedure should run from.
     pub cwd: &'a Path,
 }
@@ -138,6 +145,7 @@ pub fn plan_experiment(
         "procedure_artifact": relative_case_path(&procedure_path, &case_dir)?,
         "procedure_sha256": sha256_file(staged.path())?,
         "interpreter": spec.interpreter,
+        "timeout_ms": spec.timeout_ms,
         "cwd": resolve_path(spec.cwd).to_string_lossy(),
     });
     // Reject the plan before creating the Experiment directory, so a
@@ -260,23 +268,28 @@ pub fn run_experiment(
         &mut state,
     )?;
     let procedure = case_dir.join(&run.procedure_artifact);
-    let (exit_code, caught) = run_child(
+    let outcome = run_child(
         &run.interpreter,
         &procedure,
         &run.run_cwd,
         &run.environment,
         &run.stdout_path,
         &run.stderr_path,
+        experiment_timeout(&experiment),
     )?;
-    finish_attempt(
+    let timed_out = outcome.timed_out;
+    let metadata = finish_attempt(
         &case_dir,
         experiment_id,
         &run,
-        exit_code,
-        caught,
+        outcome,
         &repository,
         &mut state,
-    )
+    )?;
+    if timed_out {
+        return Err(timeout_error(experiment_id, &metadata));
+    }
+    Ok(metadata)
 }
 
 /// An Attempt's identity and inputs, resolved before it is spawned.
@@ -382,16 +395,27 @@ fn begin_attempt(
     })
 }
 
+/// The recorded outcome of a finished or killed child process.
+#[derive(Clone, Copy)]
+struct AttemptOutcome {
+    /// The child's exit code, or the negated terminating signal.
+    exit_code: i64,
+    /// The signal `zdebug` caught while the child ran, or `0`.
+    caught: i32,
+    /// Whether the Experiment's timeout killed the process group.
+    timed_out: bool,
+}
+
 /// Record the Attempt's outcome and return its `execution.json`.
 fn finish_attempt(
     case_dir: &Path,
     experiment_id: &str,
     run: &AttemptRun,
-    exit_code: i64,
-    caught: i32,
+    outcome: AttemptOutcome,
     repository: &CaseRepository,
     state: &mut State,
 ) -> Result<Value, ZdebugError> {
+    let AttemptOutcome { exit_code, caught, timed_out } = outcome;
     let signal = if caught == 0 { Value::Null } else { json!(caught) };
     let finished_at = utc_now();
     let after = workspace_snapshots(state, case_dir);
@@ -417,6 +441,7 @@ fn finish_attempt(
         },
         "exit_code": exit_code,
         "signal": signal,
+        "timed_out": timed_out,
         "workspace_before": run.before,
         "workspace_after": after,
     });
@@ -431,6 +456,7 @@ fn finish_attempt(
         "finished_at": finished_at,
         "exit_code": exit_code,
         "signal": signal,
+        "timed_out": timed_out,
         "workspace_after": after,
         "stdout_sha256": sha256_file(&run.stdout_path)?,
         "stderr_sha256": sha256_file(&run.stderr_path)?,
@@ -442,6 +468,30 @@ fn finish_attempt(
         &finished_payload,
     )?;
     Ok(metadata)
+}
+
+/// The configured wall-clock limit of `experiment`, if any.
+fn experiment_timeout(experiment: &Value) -> Option<Duration> {
+    experiment
+        .get("timeout_ms")
+        .and_then(Value::as_u64)
+        .filter(|ms| *ms > 0)
+        .map(Duration::from_millis)
+}
+
+/// Build the `TIMED_OUT` business error for an Attempt killed by its limit.
+fn timeout_error(experiment_id: &str, metadata: &Value) -> ZdebugError {
+    let attempt_id =
+        metadata.get("attempt_id").and_then(Value::as_str).unwrap_or_default();
+    let details = BTreeMap::from([
+        ("experiment_id".to_owned(), json!(experiment_id)),
+        ("attempt_id".to_owned(), json!(attempt_id)),
+    ]);
+    ZdebugError::with_details(
+        "TIMED_OUT",
+        format!("Experiment {experiment_id} exceeded its timeout"),
+        details,
+    )
 }
 
 /// Resolve the Attempt's working directory from the override or the plan.
@@ -459,8 +509,10 @@ fn experiment_cwd(
     Ok(resolve_path(Path::new(planned)))
 }
 
-/// Start and wait for the procedure, returning its exit code and the
-/// signal `zdebug` received while it ran (`0` when none did).
+/// Start and wait for the procedure, returning its [`AttemptOutcome`].
+///
+/// When `timeout` elapses, the whole process group is killed with `SIGKILL`
+/// so descendants cannot outlive the Attempt.
 fn run_child(
     interpreter: &[String],
     procedure: &Path,
@@ -468,7 +520,8 @@ fn run_child(
     environment: &BTreeMap<String, String>,
     stdout_path: &Path,
     stderr_path: &Path,
-) -> Result<(i64, i32), ZdebugError> {
+    timeout: Option<Duration>,
+) -> Result<AttemptOutcome, ZdebugError> {
     let stdout = fs::File::create(stdout_path)?;
     let stderr = fs::File::create(stderr_path)?;
     let mut signals = Signals::new(FORWARDED_SIGNALS)?;
@@ -493,13 +546,27 @@ fn run_child(
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
         .process_group(0);
+    let mut timed_out = false;
     let exit_code = match command.spawn() {
         Ok(mut child) => {
-            child_pgid.store(
-                i32::try_from(child.id()).unwrap_or(i32::MAX),
-                Ordering::SeqCst,
-            );
-            child.wait().map_or(127, exit_code_of)
+            let pgid = i32::try_from(child.id()).unwrap_or(i32::MAX);
+            child_pgid.store(pgid, Ordering::SeqCst);
+            let deadline = timeout.map(|limit| Instant::now() + limit);
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => break exit_code_of(status),
+                    Ok(None) => {
+                        if deadline
+                            .is_some_and(|deadline| Instant::now() >= deadline)
+                        {
+                            timed_out = kill_expired_process_group(pgid);
+                            break child.wait().map_or(127, exit_code_of);
+                        }
+                        std::thread::sleep(ATTEMPT_POLL);
+                    }
+                    Err(_) => break child.wait().map_or(127, exit_code_of),
+                }
+            }
         }
         Err(err) => {
             // Mirror the reference runner: the spawn failure is recorded as
@@ -510,7 +577,22 @@ fn run_child(
     };
     handle.close();
     let _ = forwarder.join();
-    Ok((exit_code, caught.load(Ordering::SeqCst)))
+    Ok(AttemptOutcome {
+        exit_code,
+        caught: caught.load(Ordering::SeqCst),
+        timed_out,
+    })
+}
+
+/// Kill an Attempt's process group after its deadline elapsed and report
+/// whether it actually timed out.
+///
+/// A successful `killpg` proves the group still existed, so the child
+/// outlived the deadline and the Attempt is a timeout. `ESRCH` means the
+/// group vanished inside the poll window because the child exited on its
+/// own, so its real exit status stands.
+fn kill_expired_process_group(pgid: i32) -> bool {
+    killpg(Pid::from_raw(pgid), Signal::SIGKILL).is_ok()
 }
 
 /// Forward every received signal to the child's process group until the
@@ -799,6 +881,16 @@ mod tests {
         script: &Path,
         id: Option<&str>,
     ) -> Result<Value, ZdebugError> {
+        plan_spec_with_timeout(case_dir, script, id, None)
+    }
+
+    /// Plan an Experiment with an optional id and wall-clock limit.
+    fn plan_spec_with_timeout(
+        case_dir: &Path,
+        script: &Path,
+        id: Option<&str>,
+        timeout_ms: Option<u64>,
+    ) -> Result<Value, ZdebugError> {
         let interpretations =
             vec![json!({"when": "done", "meaning": "observe"})];
         let related_claims: Vec<String> = Vec::new();
@@ -813,6 +905,7 @@ mod tests {
             interpretations: &interpretations,
             script,
             interpreter: None,
+            timeout_ms,
             cwd: &cwd,
         };
         plan_experiment(case_dir, &spec)
@@ -847,6 +940,7 @@ mod tests {
                 interpretations: &interpretations,
                 script: &script,
                 interpreter: Some("/bin/sh"),
+                timeout_ms: None,
                 cwd: &case_dir,
             };
             plan_experiment(&case_dir, &spec).unwrap()
@@ -887,6 +981,7 @@ mod tests {
             interpretations: &interpretations,
             script: &script,
             interpreter: None,
+            timeout_ms: None,
             cwd: &case_dir,
         };
         let err = plan_experiment(&case_dir, &spec).unwrap_err();
@@ -1063,6 +1158,133 @@ mod tests {
         // No signal reached the runner itself, so this is not "interrupted".
         assert_eq!(metadata["status"], "completed");
         assert!(metadata["signal"].is_null());
+        assert_eq!(metadata["timed_out"], false);
+    }
+
+    #[test]
+    fn test_plan_records_timeout_ms() {
+        let _guard = run_guard();
+        let dir = tempfile::tempdir().unwrap();
+        let case_dir = dir.path().join("case");
+        init_case(&case_dir);
+        let script = dir.path().join("procedure.sh");
+        fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
+
+        let event = plan_spec_with_timeout(
+            &case_dir,
+            &script,
+            Some("EX-001"),
+            Some(1500),
+        )
+        .unwrap();
+        assert_eq!(event["payload"]["timeout_ms"], 1500);
+    }
+
+    #[test]
+    fn test_run_timeout_kills_process_group_and_marks_attempt() {
+        let _guard = run_guard();
+        let dir = tempfile::tempdir().unwrap();
+        let case_dir = dir.path().join("case");
+        init_case(&case_dir);
+        let pidfile = dir.path().join("grand.pid");
+        let script = dir.path().join("procedure.sh");
+        fs::write(
+            &script,
+            "#!/bin/sh\n\
+             sleep 30 &\n\
+             grand=$!\n\
+             printf '%s' \"$grand\" > \"$PIDFILE\"\n\
+             wait \"$grand\"\n",
+        )
+        .unwrap();
+        plan_spec_with_timeout(&case_dir, &script, Some("EX-001"), Some(1000))
+            .unwrap();
+
+        let mut overrides = BTreeMap::new();
+        overrides.insert(
+            "PIDFILE".to_owned(),
+            pidfile.to_string_lossy().into_owned(),
+        );
+
+        let start = Instant::now();
+        let err =
+            run_experiment(&case_dir, "EX-001", None, &overrides).unwrap_err();
+        assert_eq!(err.code(), "TIMED_OUT");
+        // The limit kills far sooner than the background `sleep 30`.
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "timeout did not fire promptly: {:?}",
+            start.elapsed()
+        );
+
+        let attempt_dir =
+            case_dir.join("artifacts/experiments/EX-001/EX-001-A001");
+        let execution: Value = serde_json::from_str(
+            &fs::read_to_string(attempt_dir.join("execution.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(execution["timed_out"], true);
+        assert_eq!(execution["exit_code"], -9);
+        assert_eq!(last_event(&case_dir)["payload"]["timed_out"], true);
+
+        let (events, _) =
+            EventStore::new(&case_dir).read_events(false).unwrap();
+        let state = model::replay(&events).unwrap();
+        assert_eq!(
+            state.experiments["EX-001"]["attempts"][0]["timed_out"],
+            true
+        );
+
+        // The background grandchild shares the killed process group, so it
+        // cannot outlive the Attempt.
+        let grandchild: i32 =
+            fs::read_to_string(&pidfile).unwrap().parse().unwrap();
+        let pid = Pid::from_raw(grandchild);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while nix::sys::signal::kill(pid, None::<Signal>).is_ok()
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            nix::sys::signal::kill(pid, None::<Signal>).is_err(),
+            "grandchild {grandchild} survived the timeout"
+        );
+    }
+
+    #[test]
+    fn test_kill_expired_group_marks_timeout_while_child_runs() {
+        let _guard = run_guard();
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "sleep 30"]).process_group(0);
+        let mut child = command.spawn().unwrap();
+        let pgid = i32::try_from(child.id()).unwrap();
+
+        assert!(
+            kill_expired_process_group(pgid),
+            "a live process group must be recorded as a timeout"
+        );
+
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn test_kill_expired_group_skips_timeout_once_child_is_reaped() {
+        let _guard = run_guard();
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "exit 0"]).process_group(0);
+        let mut child = command.spawn().unwrap();
+        let pgid = i32::try_from(child.id()).unwrap();
+
+        // Reap the child so its process group no longer exists. This is the
+        // race outcome: the child exited between `try_wait` and the kill, so
+        // there is nothing left to kill and its exit status must stand.
+        let _ = child.wait().unwrap();
+
+        assert!(
+            !kill_expired_process_group(pgid),
+            "a vanished process group must not be recorded as a timeout"
+        );
     }
 
     #[test]

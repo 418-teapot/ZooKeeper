@@ -23,7 +23,7 @@ use std::fs;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::builder::PossibleValuesParser;
 use clap::{ArgGroup, Args, Parser, Subcommand};
@@ -35,6 +35,7 @@ use zdebug::artifacts::{
 use zdebug::case::{ArtifactProblem, CaseRepository, VerifyReport};
 use zdebug::git::capture_snapshot;
 use zdebug::model::State;
+use zdebug::projector;
 use zdebug::runner::{PlanSpec, plan_experiment, run_experiment};
 use zdebug::util::{
     ZdebugError, canonical_json, expand_user, next_id, read_json, validate_id,
@@ -62,6 +63,29 @@ const ASSESSMENT_VALUES: [&str; 4] =
 const CLOSE_REASON_VALUES: [&str; 3] =
     ["completed", "partially-blocked", "cancelled"];
 const VERIFY_SOURCE_VALUES: [&str; 2] = ["user", "agent"];
+
+/// Parse a strictly positive duration in seconds into whole milliseconds.
+///
+/// The CLI takes seconds as an integer or fractional count (`120`, `0.5`),
+/// following the `timeout`/`sleep` convention, while the Case stores the
+/// equivalent millisecond `u64`. A value that is not a finite positive
+/// number, or that is under one millisecond, is rejected.
+fn positive_seconds(value: &str) -> Result<u64, String> {
+    let seconds: f64 = value
+        .parse()
+        .map_err(|_| format!("`{value}` is not a number of seconds"))?;
+    let duration = Duration::try_from_secs_f64(seconds).map_err(|_| {
+        format!("timeout must be a positive number of seconds, got `{value}`")
+    })?;
+    let millis = u64::try_from(duration.as_millis())
+        .map_err(|_| format!("timeout is too large: `{value}` seconds"))?;
+    if millis == 0 {
+        return Err(format!(
+            "timeout must be at least 0.001 seconds, got `{value}`"
+        ));
+    }
+    Ok(millis)
+}
 
 // ── Entry point ──────────────────────────────────────────────────────────────
 
@@ -208,8 +232,15 @@ struct CaseInitArgs {
     #[arg(long)]
     default_interpreter: Option<String>,
     /// Initial verification command declared by the user.
-    #[arg(long)]
+    #[arg(long, requires = "verify_timeout_ms")]
     verify: Option<String>,
+    /// Wall-clock limit for the initial verification, in seconds.
+    #[arg(
+        long = "verify-timeout",
+        value_name = "SECONDS",
+        value_parser = positive_seconds
+    )]
+    verify_timeout_ms: Option<u64>,
 }
 
 #[derive(Args)]
@@ -236,10 +267,7 @@ struct CaseUpdateVerifyArgs {
     locator: CaseLocator,
     /// The replacement verification command.
     #[arg(long)]
-    verify: String,
-    /// Why the criterion changed.
-    #[arg(long)]
-    reason: String,
+    command: String,
     /// Who declared the replacement criterion.
     #[arg(
         long,
@@ -247,6 +275,13 @@ struct CaseUpdateVerifyArgs {
         value_parser = PossibleValuesParser::new(VERIFY_SOURCE_VALUES)
     )]
     source: String,
+    /// Wall-clock limit for the verification Experiment, in seconds.
+    #[arg(
+        long = "timeout",
+        value_name = "SECONDS",
+        value_parser = positive_seconds
+    )]
+    timeout_ms: u64,
 }
 
 #[derive(Subcommand)]
@@ -422,6 +457,13 @@ struct ExperimentPlanArgs {
     /// Explicit interpreter command line.
     #[arg(long)]
     interpreter: Option<String>,
+    /// Wall-clock limit for the Experiment, in seconds.
+    #[arg(
+        long = "timeout",
+        value_name = "SECONDS",
+        value_parser = positive_seconds
+    )]
+    timeout_ms: Option<u64>,
     /// Working directory the procedure runs from.
     #[arg(long)]
     cwd: Option<PathBuf>,
@@ -678,10 +720,6 @@ fn case_init(
             ));
         }
     }
-    let verify = args
-        .verify
-        .as_ref()
-        .map(|command| json!({"command": command, "source": "user"}));
     let repository = CaseRepository::new(&case_dir);
     let state = repository.initialize(
         &args.case_id,
@@ -689,9 +727,53 @@ fn case_init(
         &args.objective,
         &workspaces,
         args.default_interpreter.as_deref(),
-        verify.as_ref(),
     )?;
-    Ok(Report::value(state.to_dict()))
+    let state = match (args.verify.as_deref(), args.verify_timeout_ms) {
+        (Some(command), Some(timeout_ms)) => {
+            let cwd = verify_cwd(&state, &context.cwd);
+            let experiment =
+                plan_verify_experiment(&repository, command, &cwd, timeout_ms)
+                    .map_err(|err| verify_step_failed(&args.case_id, &err))?;
+            repository
+                .update_verify(&experiment, "user")
+                .map_err(|err| verify_step_failed(&args.case_id, &err))?
+        }
+        // `--verify` requires `--verify-timeout`; this guard keeps the
+        // invariant explicit if the arguments are assembled programmatically.
+        (Some(_), None) => {
+            return Err(ZdebugError::new(
+                "MISSING_VERIFY_TIMEOUT",
+                "--verify requires --verify-timeout",
+            ));
+        }
+        (None, _) => state,
+    };
+    Ok(case_report(&repository, &state))
+}
+
+/// Annotate a failure that happened after `case init` created the Case.
+///
+/// `case init` persists the Case before it records the verification
+/// criterion, so a failure in that second step leaves an existing Case
+/// with no `verify` pointer. Retrying the same command would only hit
+/// `CASE_EXISTS`, therefore the error names the Case and tells the caller
+/// how to record the criterion without recreating it.
+fn verify_step_failed(case_id: &str, source: &ZdebugError) -> ZdebugError {
+    let details = BTreeMap::from([
+        ("case_id".to_owned(), json!(case_id)),
+        ("cause_code".to_owned(), json!(source.code())),
+        ("cause".to_owned(), json!(source.message())),
+    ]);
+    ZdebugError::with_details(
+        "VERIFY_SETUP_FAILED",
+        format!(
+            "Case {case_id} was created but its verification criterion \
+             was not recorded; run `zdebug case update-verify --case-id \
+             {case_id} --command '<cmd>' --source user --timeout '<n>'` \
+             to record it"
+        ),
+        details,
+    )
 }
 
 /// Report the machine-readable Case view.
@@ -699,8 +781,9 @@ fn case_status(
     context: &Context,
     locator: &CaseLocator,
 ) -> Result<Report, ZdebugError> {
-    let state = repository(locator, context)?.status()?;
-    Ok(Report::value(state.to_dict()))
+    let repository = repository(locator, context)?;
+    let state = repository.status()?;
+    Ok(case_report(&repository, &state))
 }
 
 /// Close the Case after the artifact and delivery gates pass.
@@ -761,15 +844,119 @@ fn case_repair_view(
     Ok(Report::value(json!({"summary": path.display().to_string()})))
 }
 
-/// Replace the verification criterion with a recorded reason.
+/// Materialize the replacement criterion and point the Case at it.
 fn case_update_verify(
     context: &Context,
     args: &CaseUpdateVerifyArgs,
 ) -> Result<Report, ZdebugError> {
-    let verify = json!({"command": args.verify, "source": args.source});
-    let state = repository(&args.locator, context)?
-        .update_verify(&verify, &args.reason)?;
-    Ok(Report::value(state.to_dict()))
+    let repository = repository(&args.locator, context)?;
+    let state = repository.status()?;
+    let cwd = verify_cwd(&state, &context.cwd);
+    let experiment = plan_verify_experiment(
+        &repository,
+        &args.command,
+        &cwd,
+        args.timeout_ms,
+    )?;
+    let state = repository.update_verify(&experiment, &args.source)?;
+    Ok(case_report(&repository, &state))
+}
+
+/// Render a Case state with its verification pointer resolved.
+fn case_report(repository: &CaseRepository, state: &State) -> Report {
+    let mut value = state.to_dict();
+    value["verify"] = projector::verify_view(repository.case_dir(), state);
+    Report::value(value)
+}
+
+/// The workspace a verification Experiment runs from.
+fn verify_cwd(state: &State, fallback: &Path) -> PathBuf {
+    state
+        .workspaces
+        .first()
+        .and_then(Value::as_str)
+        .map_or_else(|| fallback.to_path_buf(), PathBuf::from)
+}
+
+/// Materialize a verification command as a planned Experiment.
+///
+/// The command is staged as a shell procedure and copied into the Case by
+/// [`plan_experiment`]; the returned value is the new Experiment id.
+fn plan_verify_experiment(
+    repository: &CaseRepository,
+    command: &str,
+    cwd: &Path,
+    timeout_ms: u64,
+) -> Result<String, ZdebugError> {
+    let staged = stage_verify_script(command)?;
+    let interpretations = vec![
+        json!({"exit_code": 0, "meaning": "verification passed"}),
+        json!({"exit_code_nonzero": true, "meaning": "verification failed"}),
+    ];
+    let spec = PlanSpec {
+        id: None,
+        question: "Does the verification command pass?",
+        related_claims: &[],
+        controlled: &[],
+        variable: None,
+        interpretations: &interpretations,
+        script: &staged,
+        interpreter: None,
+        timeout_ms: Some(timeout_ms),
+        cwd,
+    };
+    let planned = plan_experiment(repository.case_dir(), &spec);
+    let _ = fs::remove_file(&staged);
+    let event = planned?;
+    event
+        .get("payload")
+        .and_then(|payload| payload.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            ZdebugError::new(
+                "INVALID_EXPERIMENT",
+                "Planned verification Experiment has no id",
+            )
+        })
+}
+
+/// Write `command` to a temporary shell script for [`plan_experiment`].
+///
+/// The script is created with owner-only permissions because the command
+/// text may carry sensitive arguments; non-Unix hosts use the platform
+/// default.
+fn stage_verify_script(command: &str) -> Result<PathBuf, ZdebugError> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |delta| delta.as_nanos());
+    let path = env::temp_dir()
+        .join(format!("zdebug-verify.{}.{nanos}.tmp", std::process::id()));
+    write_private(&path, format!("{command}\n").as_bytes())?;
+    Ok(path)
+}
+
+/// Create `path` with owner-only permissions and write `content`.
+#[cfg(unix)]
+fn write_private(path: &Path, content: &[u8]) -> Result<(), ZdebugError> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(content)?;
+    Ok(())
+}
+
+/// Create `path` and write `content` with the platform defaults.
+#[cfg(not(unix))]
+fn write_private(path: &Path, content: &[u8]) -> Result<(), ZdebugError> {
+    fs::write(path, content)?;
+    Ok(())
 }
 
 // ── Deliverable handlers ─────────────────────────────────────────────────────
@@ -949,6 +1136,7 @@ fn experiment_plan(
         interpretations: &interpretations,
         script: source.path(),
         interpreter: args.interpreter.as_deref(),
+        timeout_ms: args.timeout_ms,
         cwd: &cwd,
     };
     plan_experiment(repository.case_dir(), &spec)?;
@@ -1553,10 +1741,12 @@ mod tests {
         let update = parse(&[
             "case",
             "update-verify",
-            "--verify",
+            "--command",
             "cmd",
-            "--reason",
-            "why",
+            "--source",
+            "user",
+            "--timeout",
+            "1",
         ]);
         assert!(matches!(update, Command::Case(CaseCommand::UpdateVerify(_))));
     }
@@ -1751,8 +1941,8 @@ mod tests {
                 "zdebug",
                 "case",
                 "update-verify",
-                "--reason",
-                "r"
+                "--source",
+                "user"
             ])
             .is_err()
         );
@@ -1775,6 +1965,137 @@ mod tests {
                 "q",
                 "--script",
                 "s.sh",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn test_positive_seconds_converts_and_validates() {
+        assert_eq!(positive_seconds("120").unwrap(), 120_000);
+        assert_eq!(positive_seconds("0.5").unwrap(), 500);
+        assert_eq!(positive_seconds("0.001").unwrap(), 1);
+        for bad in ["0", "-1", "0.0001", "abc", "nan", "inf"] {
+            assert!(
+                positive_seconds(bad).is_err(),
+                "expected `{bad}` to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_timeout_arguments_parse_seconds_into_milliseconds() {
+        // `--timeout` accepts fractional seconds and stores whole ms.
+        let Command::Case(CaseCommand::UpdateVerify(args)) = parse(&[
+            "case",
+            "update-verify",
+            "--command",
+            "c",
+            "--source",
+            "user",
+            "--timeout",
+            "2.5",
+        ]) else {
+            panic!("expected case update-verify");
+        };
+        assert_eq!(args.timeout_ms, 2500);
+
+        let Command::Experiment(ExperimentCommand::Plan(args)) = parse(&[
+            "experiment",
+            "plan",
+            "--question",
+            "q",
+            "--interpretations",
+            "i.json",
+            "--script",
+            "s.sh",
+            "--timeout",
+            "120",
+        ]) else {
+            panic!("expected experiment plan");
+        };
+        assert_eq!(args.timeout_ms, Some(120_000));
+
+        let Command::Case(CaseCommand::Init(args)) = parse(&[
+            "case",
+            "init",
+            "CASE-1",
+            "--title",
+            "t",
+            "--objective",
+            "o",
+            "--verify",
+            "true",
+            "--verify-timeout",
+            "0.5",
+        ]) else {
+            panic!("expected case init");
+        };
+        assert_eq!(args.verify_timeout_ms, Some(500));
+    }
+
+    #[test]
+    fn test_timeout_arguments_reject_invalid_and_are_required() {
+        for bad in ["0", "-1", "abc", "0.0001"] {
+            assert!(
+                Cli::try_parse_from([
+                    "zdebug",
+                    "case",
+                    "update-verify",
+                    "--command",
+                    "c",
+                    "--source",
+                    "user",
+                    "--timeout",
+                    bad,
+                ])
+                .is_err(),
+                "expected `{bad}` to be rejected"
+            );
+            assert!(
+                Cli::try_parse_from([
+                    "zdebug",
+                    "experiment",
+                    "plan",
+                    "--question",
+                    "q",
+                    "--interpretations",
+                    "i.json",
+                    "--script",
+                    "s.sh",
+                    "--timeout",
+                    bad,
+                ])
+                .is_err(),
+                "expected `{bad}` to be rejected"
+            );
+        }
+        // `case update-verify` requires `--timeout`.
+        assert!(
+            Cli::try_parse_from([
+                "zdebug",
+                "case",
+                "update-verify",
+                "--command",
+                "c",
+                "--source",
+                "user"
+            ])
+            .is_err()
+        );
+        // `case init --verify` requires `--verify-timeout`.
+        assert!(
+            Cli::try_parse_from([
+                "zdebug",
+                "case",
+                "init",
+                "CASE-1",
+                "--title",
+                "t",
+                "--objective",
+                "o",
+                "--verify",
+                "true"
             ])
             .is_err()
         );
@@ -1963,7 +2284,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let case_dir = dir.path().join("case");
         let repository = CaseRepository::new(&case_dir);
-        repository.initialize("CASE-1", "t", "o", &[], None, None).unwrap();
+        repository.initialize("CASE-1", "t", "o", &[], None).unwrap();
         repository
             .append("workspace-finalized", &json!({"snapshots": []}))
             .unwrap();
@@ -2007,7 +2328,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let case_dir = dir.path().join("case");
         let repository = CaseRepository::new(&case_dir);
-        repository.initialize("CASE-1", "t", "o", &[], None, None).unwrap();
+        repository.initialize("CASE-1", "t", "o", &[], None).unwrap();
         let log = case_dir.join(CASE_FILE);
         let before = fs::read_to_string(&log).unwrap().lines().count();
 
@@ -2033,7 +2354,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let case_dir = dir.path().join("case");
         let repository = CaseRepository::new(&case_dir);
-        repository.initialize("CASE-1", "t", "o", &[], None, None).unwrap();
+        repository.initialize("CASE-1", "t", "o", &[], None).unwrap();
 
         let original = dir.path().join("first.txt");
         fs::write(&original, "original").unwrap();
@@ -2072,5 +2393,18 @@ mod tests {
             repository.status().unwrap().artifacts["AR-001"]["sha256"].as_str(),
             Some(digest.as_str())
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_stage_verify_script_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let path = stage_verify_script("echo secret").unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode();
+        // Owner read/write only, regardless of the process umask.
+        assert_eq!(mode & 0o777, 0o600);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "echo secret\n");
+        fs::remove_file(&path).unwrap();
     }
 }

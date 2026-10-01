@@ -120,15 +120,15 @@ impl CaseRepository {
     /// Create a new Case, its baseline snapshots, and its first projection.
     ///
     /// A `case-created` event is written exclusively: an existing Case is
-    /// rejected with `CASE_EXISTS`. A `verify` criterion is recorded only
-    /// when `verify` is `Some`.
+    /// rejected with `CASE_EXISTS`. A verification criterion is declared
+    /// later with [`Self::update_verify`], so the pointer always names a
+    /// planned Experiment.
     ///
     /// # Errors
     ///
     /// Returns `CASE_EXISTS` when the log already exists, `INVALID_ID` for
-    /// a malformed `case_id`, `INVALID_VERIFY` when the criterion is
-    /// malformed, `CASE_BUSY` when another operation holds the lock, or an
-    /// I/O error from the snapshot capture or the write.
+    /// a malformed `case_id`, `CASE_BUSY` when another operation holds the
+    /// lock, or an I/O error from the snapshot capture or the write.
     pub fn initialize(
         &self,
         case_id: &str,
@@ -136,7 +136,6 @@ impl CaseRepository {
         objective: &str,
         workspaces: &[String],
         default_interpreter: Option<&str>,
-        verify: Option<&Value>,
     ) -> Result<State, ZdebugError> {
         let resolved: Vec<String> = workspaces
             .iter()
@@ -151,16 +150,13 @@ impl CaseRepository {
             .collect();
 
         let _lock = self.store.lock()?;
-        let mut payload = json!({
+        let payload = json!({
             "title": title,
             "objective": objective,
             "workspaces": resolved,
             "baseline": baseline,
             "default_interpreter": default_interpreter,
         });
-        if let Some(verify) = verify {
-            payload["verify"] = verify.clone();
-        }
         self.store.initialize_locked(case_id, &payload)?;
         let state = self.load()?;
         self.project(&state)?;
@@ -307,21 +303,21 @@ impl CaseRepository {
         self.append("workspace-finalized", &json!({"snapshots": snapshots}))
     }
 
-    /// Replace the verification criterion, recording why it changed.
+    /// Point the verification criterion at a planned Experiment.
     ///
     /// # Errors
     ///
-    /// Returns `INVALID_VERIFY` or `INVALID_VERIFY_SOURCE` for a malformed
-    /// criterion, `MISSING_REASON` when `reason` is empty, plus
+    /// Returns `INVALID_VERIFY` when `experiment` is empty,
+    /// `INVALID_VERIFY_SOURCE` for an unknown `source`, plus
     /// [`Self::append`]'s errors.
     pub fn update_verify(
         &self,
-        verify: &Value,
-        reason: &str,
+        experiment: &str,
+        source: &str,
     ) -> Result<State, ZdebugError> {
         self.append(
             "case-verify-updated",
-            &json!({"verify": verify, "reason": reason}),
+            &json!({"experiment": experiment, "source": source}),
         )
     }
 
@@ -503,7 +499,7 @@ mod tests {
     /// Create an empty open Case with no workspaces or baseline.
     fn init(repository: &CaseRepository) {
         repository
-            .initialize("CASE-1", "title", "objective", &[], None, None)
+            .initialize("CASE-1", "title", "objective", &[], None)
             .unwrap();
     }
 
@@ -517,14 +513,14 @@ mod tests {
         let _guard = guard();
         let (_dir, repository) = repo();
         let state = repository
-            .initialize("CASE-1", "title", "objective", &[], None, None)
+            .initialize("CASE-1", "title", "objective", &[], None)
             .unwrap();
         assert_eq!(state.case_id, "CASE-1");
         assert_eq!(state.lifecycle, "OPEN");
         assert!(repository.case_dir().join("summary.md").is_file());
 
         let err = repository
-            .initialize("CASE-1", "again", "again", &[], None, None)
+            .initialize("CASE-1", "again", "again", &[], None)
             .unwrap_err();
         assert_eq!(err.code(), "CASE_EXISTS");
         // The rejected second init did not append a second event.
@@ -532,21 +528,14 @@ mod tests {
     }
 
     #[test]
-    fn test_initialize_records_verify_criterion() {
+    fn test_initialize_records_default_interpreter() {
         let _guard = guard();
         let (_dir, repository) = repo();
         let state = repository
-            .initialize(
-                "CASE-1",
-                "title",
-                "objective",
-                &[],
-                Some("bash"),
-                Some(&json!({"command": "cargo test", "source": "user"})),
-            )
+            .initialize("CASE-1", "title", "objective", &[], Some("bash"))
             .unwrap();
         assert_eq!(state.default_interpreter.as_deref(), Some("bash"));
-        assert_eq!(state.verify.as_ref().unwrap()["command"], "cargo test");
+        assert!(state.verify.is_none());
     }
 
     #[test]
@@ -830,37 +819,36 @@ mod tests {
     }
 
     #[test]
-    fn test_update_verify_records_reason() {
+    fn test_update_verify_points_at_experiment() {
         let _guard = guard();
         let (_dir, repository) = repo();
         init(&repository);
-        let state = repository
-            .update_verify(
-                &json!({"command": "cargo test", "source": "agent"}),
-                "narrowed scope",
+        repository
+            .append(
+                "experiment-planned",
+                &json!({"id": "EX-001", "question": "q"}),
             )
             .unwrap();
-        assert_eq!(state.verify.as_ref().unwrap()["command"], "cargo test");
-        assert_eq!(state.verify.as_ref().unwrap()["source"], "agent");
+        let state = repository.update_verify("EX-001", "agent").unwrap();
+        assert_eq!(state.verify.as_deref(), Some("EX-001"));
 
         let (events, _) =
             EventStore::new(repository.case_dir()).read_events(false).unwrap();
         let last = events.last().unwrap();
         assert_eq!(last["type"], "case-verify-updated");
-        assert_eq!(last["payload"]["reason"], "narrowed scope");
+        assert_eq!(last["payload"]["experiment"], "EX-001");
+        assert_eq!(last["payload"]["source"], "agent");
     }
 
     #[test]
-    fn test_update_verify_requires_reason() {
+    fn test_update_verify_rejects_unknown_experiment() {
         let _guard = guard();
         let (_dir, repository) = repo();
         init(&repository);
         let before = log_bytes(&repository);
 
-        let err = repository
-            .update_verify(&json!({"command": "true", "source": "agent"}), "")
-            .unwrap_err();
-        assert_eq!(err.code(), "MISSING_REASON");
+        let err = repository.update_verify("EX-404", "agent").unwrap_err();
+        assert_eq!(err.code(), "EXPERIMENT_NOT_FOUND");
         assert_eq!(log_bytes(&repository), before);
     }
 

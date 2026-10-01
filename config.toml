@@ -636,7 +636,13 @@ timeout = 1200
 
 [zoo.continuation]
 # 单个会话允许的最大续跑提醒次数
-max_reminders = 3
+max_wakes = 3
+
+# ── 自动调试 ──────────────────────────────────────────────────────────────────
+
+[zoo.autodebug]
+# 单个会话允许的最大调试续跑次数
+max_wakes = 3
 
 # ── Variants ──────────────────────────────────────────────────────────────────
 
@@ -713,6 +719,7 @@ agents = [
   "kiwi",
 ]
 skills = [
+  "auto-debug",
   "beaver-tdd",
   "code-review",
   "compress-usage",
@@ -727,6 +734,7 @@ skills = [
   "wiki-verify",
 ]
 hooks = [
+  "auto-debug",
   "context-pruning",
   "direct-work-nudge",
   "json-error-nudge",
@@ -748,6 +756,7 @@ commands = [
   "go",
   "dcp",
   "switch",
+  "debug",
 ]
 
 [zoo.mode.mono]
@@ -756,6 +765,7 @@ agents = [
   "mola",
 ]
 skills = [
+  "auto-debug",
   "compress-usage",
   "first-principles",
   "git-commit",
@@ -764,6 +774,7 @@ skills = [
   "wiki-query",
 ]
 hooks = [
+  "auto-debug",
   "context-pruning",
   "json-error-nudge",
   "reply-strip",
@@ -780,4 +791,5 @@ commands = [
   "go",
   "dcp",
   "switch",
+  "debug",
 ]
