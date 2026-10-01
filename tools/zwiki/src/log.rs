@@ -474,11 +474,13 @@ mod tests {
     fn test_add_entry_flattens_multiline_note() {
         let wiki = temp_dir("flatten_multiline_note");
 
+        // The embedded heading uses a past date so it can never
+        // collide with the real section heading, which is today.
         add_entry_at(
             &wiki,
             "concepts/test.md",
             "edit",
-            Some("first line\n## 2026-10-01\nsecond line"),
+            Some("first line\n## 1999-01-01\nsecond line"),
         )
         .unwrap();
 
@@ -496,12 +498,12 @@ mod tests {
         );
         assert_eq!(
             entry_lines[0],
-            "* **编辑**: concepts/test.md — first line ## 2026-10-01 second line"
+            "* **编辑**: concepts/test.md — first line ## 1999-01-01 second line"
         );
 
         // A heading embedded in the note must not become a section boundary.
         assert!(
-            !content.contains("\n## 2026-10-01"),
+            !content.contains("\n## 1999-01-01"),
             "note heading must not leak into the log: {content}"
         );
     }
