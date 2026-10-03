@@ -1,9 +1,9 @@
 /**
  * Direct Work Nudge hook for ZooKeeper OpenCode plugin.
  *
- * After every edit/write tool call, appends a protocol reminder telling the
- * orchestrator to delegate work via `task()` instead of doing it directly.
- * Also injects todo progress and plan progress nudges for edit/write tools.
+ * After every edit/write tool call, appends a reminder to recheck the
+ * delivery boundary and verification evidence. Also injects todo progress
+ * and plan progress nudges for edit/write tools.
  * The prompt constants live in `src/core/prompts.ts`.
  *
  * `nudgeDirectWork` is agent-agnostic — it fires for any agent.  The
@@ -26,7 +26,7 @@ import { log } from "../../utils/logger.js";
 // ---------------------------------------------------------------------------
 
 /**
- * Append a protocol nudge to edit/write tool output.
+ * Append a delivery-boundary nudge to edit/write tool output.
  *
  * Fires on edit/write/grep/glob tool calls regardless of agent identity.
  * Agent gating is the caller's responsibility — the hook unit resolves

@@ -56,14 +56,28 @@ function section(text: string, name: string): string {
   return match[0];
 }
 
+/** Assert that top-level prompt sections appear in the expected order. */
+function assertSectionOrder(text: string, names: string[]): void {
+  let previous = -1;
+  for (const name of names) {
+    const current = text.indexOf(`<${name}>`);
+    assert.ok(current > previous, `<${name}> must follow the previous section`);
+    previous = current;
+  }
+}
+
 describe("buildDolphinPrompt", () => {
-  it("poly prompt contains the delegation contract and Chinese agent guidance", () => {
+  it("poly prompt contains the closed-delivery contract", () => {
     const poly = buildDolphinPrompt(POLY_SET);
     assert.ok(poly.includes("<Agents>"));
     assert.ok(poly.includes("**beaver** — 代码实现"));
     assert.ok(poly.includes("**lynx** — 只读代码库探索"));
     assert.ok(poly.includes("**spider** — 只读网页调研"));
     assert.ok(poly.includes("**SUMMARY:**"));
+    assert.ok(poly.includes("封闭的交付单元"));
+    assert.ok(poly.includes("开放问题"));
+    assert.ok(poly.includes("持续维护一个交付闭环"));
+    assert.ok(!poly.includes("默认优先委派"));
     assert.ok(poly.includes("代码库搜索示例："));
   });
 
@@ -78,6 +92,18 @@ describe("buildDolphinPrompt", () => {
         `${agent} must enable the poly variant`,
       );
     }
+  });
+
+  it("poly agent inventory follows the active profile", () => {
+    const set: ActiveSet = {
+      ...MONO_SET,
+      agents: new Set(["dolphin", "mola", "beaver"]),
+    };
+    const prompt = buildDolphinPrompt(set);
+    assert.ok(prompt.includes("**beaver** — 代码实现"));
+    assert.ok(!prompt.includes("**lynx** — 只读代码库探索"));
+    assert.ok(!prompt.includes("**eagle** — 只读代码审查"));
+    assert.ok(!prompt.includes("**kiwi** — 只读知识分析"));
   });
 
   it("mono variant removes delegation content and tools", () => {
@@ -102,6 +128,23 @@ describe("buildDolphinPrompt", () => {
       assert.ok(!line.startsWith("|"));
       assert.ok(!line.startsWith("- [ ]"));
     }
+  });
+
+  it("aligns poly section order and keeps its rules in place", () => {
+    const poly = buildDolphinPrompt(POLY_SET);
+
+    assertSectionOrder(poly, [
+      "Role",
+      "Agents",
+      "Workflow",
+      "Communication",
+      "Contract",
+    ]);
+    assert.ok(!poly.includes("<Anti-Patterns>"));
+    assert.ok(section(poly, "Workflow").includes("每轮开始时"));
+    assert.ok(section(poly, "Workflow").includes("重新核对"));
+    assert.ok(!section(poly, "Workflow").includes("阶段 0"));
+    assert.ok(!section(poly, "Communication").includes("不发送"));
   });
 
   it("both variants use the shared Chinese communication guidance", () => {
@@ -131,9 +174,8 @@ describe("buildDolphinPrompt", () => {
     const polyContract = section(buildDolphinPrompt(POLY_SET), "Contract");
     assert.ok(polyContract.includes(CONTINUATION_NOTE));
     assert.ok(
-      polyContract.includes(
-        `NO EVIDENCE = NOT COMPLETE.\n${CONTINUATION_NOTE}`,
-      ),
+      polyContract.indexOf("没有证据就") <
+        polyContract.indexOf(CONTINUATION_NOTE),
     );
 
     const monoContract = section(buildDolphinPrompt(MONO_SET), "Contract");

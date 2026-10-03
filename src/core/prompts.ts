@@ -21,33 +21,30 @@
 /**
  * Full nudge text appended to edit/write tool output.
  *
- * Reminds the orchestrator that direct editing violates protocol and should
- * be delegated via `task()`.
+ * Helps dolphin re-evaluate the delivery boundary after a direct edit without
+ * treating delegation as a mandatory action.
  */
 export const DIRECT_WORK_NUDGE = `<internal-reminder>
-**DELEGATION REQUIRED** — You just edited a source file directly.
+你刚刚直接修改了文件。根据当前任务的边界重新核对：
 
-Did you ACTUALLY need to be the one doing that?
-
-- Documentation, design docs, research reports, prompts → **fine, this is your job.** Continue.
-- Tiny verification fix during subagent review → fine, continue.
-- Anything else → **you violated the Contract rule against direct implementation.**
-  Revert the change and delegate it via \`task()\`.
-
-**Dolphin does not implement. Dolphin orchestrates.**
+- 这是范围明确、局部且可验证的结果吗？如果是，继续完成并验证，不要撤销符合请求的改动。
+- 这是仍需探索才能确定范围或验收条件的开放问题吗？如果是，**停止**改动并**回退**，重新获取必要事实，并进行委派。
 </internal-reminder>`;
 
 /**
  * Nudge text appended to grep/glob tool output for the dolphin agent.
  *
- * Distinguishes between codebase discovery (delegate to the lynx agent)
- * and simple verification (fine to proceed).
+ * Distinguishes an independently requested exploration result from local
+ * investigation needed to complete or verify a bounded task.
  */
 export const SEARCH_DELEGATE_NUDGE = `<internal-reminder>
-**POTENTIAL DELEGATION OPPORTUNITY** — You just searched the codebase.
+你刚刚搜索了代码库。根据搜索的目的重新判断：
 
-- **Codebase discovery** (finding files, searching across multiple files, exploring structure) → delegate to the \`lynx\` agent via \`task()\`.
-- **Verification** (confirming a change in a specific file, checking if a pattern exists in a known file) → fine, continue.
+- 如果搜索结果本身就是用户要得到的代码位置、调用关系或结构分析，应将封闭的探索结果交给 lynx。
+- 如果搜索只是完成已明确实现或核验结果所需的局部调查，可以继续当前工作。
+- 如果搜索会决定任务范围或验收条件，先整理为可独立验收的事实结果，再继续实施。
+
+不要因为执行过搜索就自动委派，也不要用无目标的搜索代替明确的交付结果。
 </internal-reminder>`;
 
 // ---------------------------------------------------------------------------
@@ -58,51 +55,20 @@ export const SEARCH_DELEGATE_NUDGE = `<internal-reminder>
  * Reminder text injected after every task() call, instructing the
  * orchestrator to verify the subagent's work before proceeding.
  */
-export const VERIFY_REMINDER =
-  "**THE SUBAGENT JUST CLAIMED THIS TASK IS DONE. THEY ARE PROBABLY LYING.**\n" +
-  "\n" +
-  'Subagents say "done" when code has errors, tests pass trivially, logic is wrong,\n' +
-  "or they quietly added features nobody asked for. This happens EVERY TIME.\n" +
-  "Assume the work is broken until YOU prove otherwise.\n" +
-  "\n" +
-  "**PHASE 1: READ THE CODE FIRST (before running anything)**\n" +
-  "\n" +
-  "1. See exactly which files changed. Any file outside expected scope = scope creep.\n" +
-  "2. `Read` EVERY changed file - no exceptions, no skimming.\n" +
-  "3. For EACH file, critically ask:\n" +
-  "   - Does this code ACTUALLY do what the task required?\n" +
-  "   - Any stubs, TODOs, placeholders, hardcoded values?\n" +
-  "   - Logic errors? Trace the happy path AND the error path in your head.\n" +
-  "   - Scope creep? Did the subagent touch things or add features NOT in the task spec?\n" +
-  "4. Cross-check every claim:\n" +
-  '   - Said "Updated X" - READ X. Actually updated, or just superficially touched?\n' +
-  '   - Said "Added tests" - READ the tests. Do they test REAL behavior or just `expect(true).toBe(true)`?\n' +
-  '   - Said "Follows patterns" - OPEN a reference file. Does it ACTUALLY match?\n' +
-  "\n" +
-  "**If you cannot explain what every changed line does, you have NOT reviewed it.**\n" +
-  "\n" +
-  "**PHASE 2: RUN AUTOMATED CHECKS (targeted, then broad)**\n" +
-  "\n" +
-  "1. `lsp_diagnostics` on EACH changed file - ZERO new errors\n" +
-  "2. Run tests for changed modules FIRST, then full suite\n" +
-  "3. Build/typecheck - exit 0\n" +
-  "\n" +
-  "If Phase 1 found issues but Phase 2 passes: Phase 2 is WRONG. The code has bugs that tests don't cover. Fix the code.\n" +
-  "\n" +
-  "**PHASE 3: GATE DECISION - Should you proceed to the next task?**\n" +
-  "\n" +
-  "Answer honestly:\n" +
-  "1. Can I explain what EVERY changed line does? (If no - back to Phase 1)\n" +
-  "2. Did I SEE it work with my own eyes? (If user-facing and no - run it yourself)\n" +
-  "3. Am I confident nothing existing is broken? (If no - run broader tests)\n" +
-  "\n" +
-  'ALL three must be YES. "Probably" = NO. "I think so" = NO. Investigate until CERTAIN.\n' +
-  "\n" +
-  "- **All 3 YES** - Proceed: mark task complete, move to next.\n" +
-  "- **Any NO** - Reject: resume with `task_id`, fix the specific issue.\n" +
-  '- **Unsure** - Reject: "unsure" = "no". Investigate until you have a definitive answer.\n' +
-  "\n" +
-  "**DO NOT proceed to the next task until all 3 phases are complete and the gate passes.";
+export const VERIFY_REMINDER = `子 agent 声称完成了工作，它很可能在撒谎。先把返回的结果作为待核验结果处理，完成结论以实际验收证据为准。
+
+对照原委派的 SUMMARY、CONTEXT 和 ACCEPTANCE，确认：
+- 交付目标、范围和非目标保持一致；
+- ACCEPTANCE 中的每一项都有可观察、可复核的证据；
+- 返回内容直接对应完整交付结果，并满足验收条件。
+
+根据结果类型选择核验方式：
+- 代码改动：阅读实际改动，运行相称的诊断、测试和构建；
+- 代码探索：检查文件路径、行号和对应代码依据；
+- 网页调研：检查实际 URL、来源与结论的对应关系；
+- 其他结果：确认返回内容直接满足 ACCEPTANCE。
+
+验收证据完整时，重新检查整个交付目标，再决定继续、并行、调整路径或收尾。发现范围偏移、证据缺口或结果不完整时，明确缺口，并选择补充同一交付单元、创建新的封闭交付单元、直接处理局部修正、请求用户决定或报告阻塞。`;
 
 // ---------------------------------------------------------------------------
 // Todo-update nudges

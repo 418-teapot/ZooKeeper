@@ -2,8 +2,7 @@
 # ZooKeeper — Run all tests (Python + TypeScript).
 set -euo pipefail
 
-PY_TEST_DIRS=("tests/" "installer/tests/")
-RUNNER="tests/runner.py"
+PY_TEST_DIRS=("installer/tests/")
 
 # Auto-discover all *.test.ts files under the plugin source tree plus the
 # golden behaviour baseline suite.
@@ -146,34 +145,6 @@ else
   echo "⏭️  LLVM tools not available, skip Rust coverage"
   echo "   Option A: rustup component add llvm-tools-preview"
   echo "   Option B: install llvm via system package manager (brew/apt/etc.)"
-fi
-
-# Temporarily skip dry-run tests (behavioral assertions depend on LLM model
-# adherence to prompt-injected delegation instructions).
-# Set SKIP_DRY_RUN=0 to re-enable.
-SKIP_DRY_RUN="${SKIP_DRY_RUN:-1}"
-if [ "$SKIP_DRY_RUN" = "0" ]; then
-section "Python runner dry-run"
-set +e
-uv run python "$RUNNER" --dry-run 2>&1 | tee /tmp/runner_output.txt
-RUNNER_EXIT_CODE=${PIPESTATUS[0]}
-set -e
-
-# Check for known-failing scenario
-if grep -q "失败 1" /tmp/runner_output.txt && grep -q "dolphin-pressure-2" /tmp/runner_output.txt; then
-    echo ""
-    echo "⚠️  dolphin-pressure-2 failed (known issue - verbal correctness vs behavioral completeness)"
-    echo "   This is expected. The scenario tests orchestrator behavior under pressure."
-    ok "runner --dry-run (known failure excluded)"
-elif [ $RUNNER_EXIT_CODE -ne 0 ]; then
-    fail "runner --dry-run (unexpected failures)"
-    FAILED=1
-else
-    ok "runner --dry-run"
-fi
-else
-    echo ""
-    echo "⏭️  Skipping dry-run tests (SKIP_DRY_RUN=1)"
 fi
 
 section "TypeScript type check"

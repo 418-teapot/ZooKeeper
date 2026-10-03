@@ -149,7 +149,7 @@ async function applyReminder(
  */
 function assertHasReminder(obj: { output?: string }, message?: string): void {
   assert.ok(
-    obj.output?.includes("DELEGATION REQUIRED"),
+    obj.output?.includes("你刚刚直接修改了文件"),
     message ?? "expected output to contain nudge",
   );
 }
@@ -162,7 +162,7 @@ function assertHasSearchReminder(
   message?: string,
 ): void {
   assert.ok(
-    obj.output?.includes("POTENTIAL DELEGATION OPPORTUNITY"),
+    obj.output?.includes("你刚刚搜索了代码库"),
     message ?? "expected output to contain search delegation nudge",
   );
 }
@@ -288,7 +288,7 @@ describe("fires on any path (no path exemptions)", () => {
     assertHasReminder(obj);
   });
 
-  it('fires on "tests/scenarios/x.json"', async () => {
+  it('fires on "tests/data/x.json"', async () => {
     const obj: { output?: string } = { output: "updated test data" };
     await nudgeDirectWork({ tool: "edit", sessionID: "s1" }, obj);
     assertHasReminder(obj);
@@ -314,13 +314,13 @@ describe("consecutive calls", () => {
     // First call
     await nudgeDirectWork({ tool: "edit", sessionID: "s1" }, obj);
     const out1 = obj.output as string;
-    const countAfterFirst = out1.split("DELEGATION REQUIRED").length - 1;
+    const countAfterFirst = out1.split("你刚刚直接修改了文件").length - 1;
     assert.equal(countAfterFirst, 1);
 
     // Second call — reminder appended again
     await nudgeDirectWork({ tool: "edit", sessionID: "s1" }, obj);
     const out2 = obj.output as string;
-    const countAfterSecond = out2.split("DELEGATION REQUIRED").length - 1;
+    const countAfterSecond = out2.split("你刚刚直接修改了文件").length - 1;
     assert.equal(countAfterSecond, 2);
   });
 });
@@ -376,7 +376,7 @@ describe("nudgeDirectWorkForAgent (dolphin-gated wrapper)", () => {
       { agent: "beaver" },
     );
     assert.equal(output.output, "beaver edited a file");
-    assert.ok(!output.output?.includes("DELEGATION REQUIRED"));
+    assert.ok(!output.output?.includes("你刚刚直接修改了文件"));
   });
 
   it("skips the nudge when agent is undefined (unknown session)", async () => {
@@ -389,7 +389,7 @@ describe("nudgeDirectWorkForAgent (dolphin-gated wrapper)", () => {
       {},
     );
     assert.equal(output.output, "edited without known agent");
-    assert.ok(!output.output?.includes("DELEGATION REQUIRED"));
+    assert.ok(!output.output?.includes("你刚刚直接修改了文件"));
   });
 
   it('logs nudge_skipped with reason "not_dolphin" for non-dolphin agents', async () => {
@@ -473,24 +473,10 @@ describe("nudgeDirectWorkForAgent (dolphin-gated wrapper)", () => {
 // ---------------------------------------------------------------------------
 
 describe("DIRECT_WORK_NUDGE contents", () => {
-  it('contains "DELEGATION REQUIRED"', () => {
-    assert.ok(DIRECT_WORK_NUDGE.includes("DELEGATION REQUIRED"));
-  });
-
-  it('contains "Dolphin does not implement"', () => {
-    assert.ok(DIRECT_WORK_NUDGE.includes("Dolphin does not implement"));
-  });
-
-  it("contains documentation exception", () => {
-    assert.ok(DIRECT_WORK_NUDGE.includes("Documentation"));
-    assert.ok(DIRECT_WORK_NUDGE.includes("this is your job"));
-  });
-
-  it("references the Contract rule against direct implementation", () => {
-    assert.ok(
-      DIRECT_WORK_NUDGE.includes("Contract rule against direct implementation"),
-    );
-    assert.ok(!DIRECT_WORK_NUDGE.includes("orchestrator protocol"));
+  it("describes the closed-delivery check", () => {
+    assert.ok(DIRECT_WORK_NUDGE.includes("范围明确、局部且可验证"));
+    assert.ok(DIRECT_WORK_NUDGE.includes("开放问题"));
+    assert.ok(!DIRECT_WORK_NUDGE.includes("Dolphin does not implement"));
   });
 
   it("wraps content in <internal-reminder> tags", () => {
@@ -500,20 +486,10 @@ describe("DIRECT_WORK_NUDGE contents", () => {
 });
 
 describe("SEARCH_DELEGATE_NUDGE contents", () => {
-  it('contains "POTENTIAL DELEGATION OPPORTUNITY"', () => {
-    assert.ok(
-      SEARCH_DELEGATE_NUDGE.includes("POTENTIAL DELEGATION OPPORTUNITY"),
-    );
-  });
-
-  it("contains codebase discovery guidance", () => {
-    assert.ok(SEARCH_DELEGATE_NUDGE.includes("Codebase discovery"));
-    assert.ok(SEARCH_DELEGATE_NUDGE.includes("`lynx` agent"));
-  });
-
-  it("contains verification exception", () => {
-    assert.ok(SEARCH_DELEGATE_NUDGE.includes("Verification"));
-    assert.ok(SEARCH_DELEGATE_NUDGE.includes("fine, continue"));
+  it("describes task-shaped search routing", () => {
+    assert.ok(SEARCH_DELEGATE_NUDGE.includes("用户要得到的代码位置"));
+    assert.ok(SEARCH_DELEGATE_NUDGE.includes("局部调查"));
+    assert.ok(SEARCH_DELEGATE_NUDGE.includes("不要因为执行过搜索就自动委派"));
   });
 
   it("wraps content in <internal-reminder> tags", () => {
@@ -558,10 +534,8 @@ describe("integration: tool.execute.after → nudgeDirectWorkForAgent", () => {
       output,
       { agent: "dolphin" },
     );
-    assert.ok(output.output?.includes("DELEGATION REQUIRED"));
-    assert.ok(
-      output.output?.includes("Contract rule against direct implementation"),
-    );
+    assert.ok(output.output?.includes("你刚刚直接修改了文件"));
+    assert.ok(output.output?.includes("开放问题"));
   });
 
   it("edit tool skips nudge when message.updated set beaver", async () => {
@@ -885,7 +859,7 @@ describe("plan nudge scenarios", () => {
         planDir: baseDir,
       });
       assert.ok(
-        result.output?.includes("POTENTIAL DELEGATION OPPORTUNITY"),
+        result.output?.includes("你刚刚搜索了代码库"),
         "grep should still include search delegation nudge",
       );
       assert.equal(

@@ -1,7 +1,7 @@
 /**
  * Post-subagent nudge hook for ZooKeeper plugin.
  *
- * After every `task()` tool execution, appends a verification reminder and
+ * After every subagent tool execution, appends a verification reminder and
  * delegates todo and plan progress nudges to `checkTodoProgress` and
  * `checkPlanProgress` from `src/core/checks.ts`.
  *
@@ -18,7 +18,7 @@ import { log } from "../../utils/logger.js";
 // ---------------------------------------------------------------------------
 
 /**
- * Nudge the orchestrator after a task() call.
+ * Nudge dolphin after a subagent call.
  *
  * Injects `VERIFY_REMINDER`, then delegates to `checkTodoProgress` and
  * `checkPlanProgress` for additional nudges. Both check functions handle

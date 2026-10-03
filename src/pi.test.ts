@@ -274,7 +274,7 @@ describe("buildPiContributions — profile-driven selection", () => {
     const dolphin = composed.agents.find((a) => a.name === "dolphin");
     assert.ok(dolphin, "dolphin must be composed");
     assert.ok(dolphin.prompt.startsWith("<Role>"));
-    assert.ok(dolphin.prompt.includes("DELEGATE"));
+    assert.ok(dolphin.prompt.includes("持续维护一个交付闭环"));
   });
 
   it("poly full profile → full-registry composition incl. hooks/tools/commands", () => {
@@ -737,7 +737,7 @@ describe("buildPiHandlers — prompt injection + skill discovery", () => {
 
     // The default primary (first in profile array order) is dolphin:
     // its orchestrator prompt is the prepended one.
-    assert.ok(result.systemPrompt.includes("orchestrator"));
+    assert.ok(result.systemPrompt.includes("对最终交付负责"));
 
     const resources = await handlers.resourcesDiscover();
     assert.equal(resources.skillPaths.length, 11);
@@ -912,7 +912,7 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
     const result = await handlers.beforeAgentStart({ systemPrompt: "base" });
     assert.ok(result.systemPrompt.startsWith("<Role>"));
     assert.ok(
-      result.systemPrompt.includes("orchestrator"),
+      result.systemPrompt.includes("对最终交付负责"),
       "dolphin prompt must be prepended",
     );
     assert.ok(result.systemPrompt.endsWith("base"));
