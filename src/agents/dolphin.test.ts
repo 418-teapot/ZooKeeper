@@ -76,15 +76,24 @@ describe("buildDolphinPrompt", () => {
     assert.ok(poly.includes("**SUMMARY:**"));
     assert.ok(poly.includes("全局判断和交付连续性的有限资源"));
     assert.ok(poly.includes("可验收的结果"));
-    assert.ok(poly.includes("可验收结果作为判断单位"));
-    assert.ok(poly.includes("默认委派"));
+    assert.ok(poly.includes("交付单元"));
+    assert.ok(poly.includes("路由判断针对完整的交付单元"));
+    assert.ok(poly.includes("工具调用不是交付结果"));
+    assert.ok(poly.includes("模型记忆、未经核验的 URL"));
+    assert.ok(poly.includes("当前上下文、工作区或可追溯的委派结果"));
+    assert.ok(poly.includes("获取新证据"));
+    assert.ok(poly.includes("路由记录：交付单元"));
+    assert.ok(poly.includes("没有职责匹配的 agent"));
+    assert.ok(poly.includes("停止条件"));
+    assert.ok(poly.includes("有职责匹配的 agent 时"));
+    assert.ok(poly.includes("未经核验的候选材料"));
     assert.ok(poly.includes("之前已经在同一工作上消耗的材料和尝试仍计入判断"));
     assert.ok(poly.includes("你只对关键结论做定点核验"));
     assert.ok(poly.includes("代码库搜索示例："));
   });
 
   it("each leaf agent enables the poly variant", () => {
-    for (const agent of ["beaver", "lynx", "spider"]) {
+    for (const agent of ["beaver", "lynx", "spider", "eagle", "kiwi"]) {
       const set: ActiveSet = {
         ...MONO_SET,
         agents: new Set(["dolphin", "mola", agent]),
