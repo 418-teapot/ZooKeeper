@@ -1,22 +1,26 @@
 /**
  * Tests for the pi host's loop settle wiring.
  *
- * Covers the `buildPiHandlers` settle/stop-cause/budget wiring: the todo
- * list is the sole wake authority — a finished run with unfinished
- * active work queues a `sendMessage` follow-up carrying the core-rendered
- * text from `agent_end` (while the run still streams, so pi's own loop
- * drains it) whatever the run did: read-only calls, a subagent
- * delegation, even no tool call at all; prose never suppresses a wake
- * because a genuine wait on the user is declared through the `blocked`
- * status (a fully blocked list silences, and a mixed list renders the
- * waiting-on reason).  Structural exemptions stay silent: an aborted
- * run, an open blocking UI prompt, a headless unanswered ask, an
- * unidentifiable session.  A delivered wake locks the session: a
- * text-only reply to a wake stays silent without spending budget, any
- * tool activity releases the lock, and a real user turn clears both the
- * lock and the budget.  A stale extension context is swallowed, and a
- * profile without settle contributions or without a valid
- * `[zoo.continuation].max_wakes` leaves the handler a no-op.
+ * Covers the `buildPiHandlers` settle/stop-cause/budget wiring at pi's
+ * pre-settle boundary: `agent_end` only records the finished run, then
+ * the `agent_before_settle` judge returns a `zoo-loop-wake`
+ * custom-message entry with `continue: true` (pi commits it and runs the
+ * continuation before `prompt()` returns).  The todo list is the sole
+ * wake authority — a completed run with unfinished active work wakes
+ * whatever the run did: read-only calls, a subagent delegation, even no
+ * tool call at all; prose never suppresses a wake because a genuine wait
+ * on the user is declared through the `blocked` status (a fully blocked
+ * list silences, and a mixed list renders the waiting-on reason).
+ * Structural exemptions stay silent: a non-`completed` outcome — an
+ * aborted or errored run (pi reports the outcome itself, so a user Esc
+ * recorded as `stopReason: "error"` no longer wakes) — an open blocking
+ * UI prompt, a headless unanswered ask, an unidentifiable session.  A
+ * delivered wake locks the session: a text-only reply to a wake stays
+ * silent without spending budget, any tool activity releases the lock,
+ * and a real user turn clears both the lock and the budget.  A stale
+ * extension context is swallowed, and a profile without settle
+ * contributions or without a valid `[zoo.continuation].max_wakes` leaves
+ * the handler a no-op.
  *
  * A second suite drives the auto-debug strategy end to end against a
  * real `zdebug` release binary and an on-disk Case: verify exit 0
@@ -35,7 +39,11 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { sessionAgentRegistry } from "../../core/session-agent.js";
 import { _resetForTesting as resetIdentityForTesting } from "../../core/subagent/identity.js";
 import { resetRegistry } from "../../core/subagent/registry.js";
-import { buildPiHandlers } from "../../pi.js";
+import {
+  buildPiHandlers,
+  type PiBoundaryResult,
+  type PiCustomMessageEntryDraft,
+} from "../../pi.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import { CONTINUATION_PROMPT } from "../todo-continuation/decide.js";
 import {
@@ -53,24 +61,12 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// Test doubles
+// Test doubles and helpers
 // ---------------------------------------------------------------------------
 
-/** One recorded `sendMessage` call. */
-interface SentCall {
-  message: { customType: string; content: string; display: boolean };
-  options: { deliverAs?: string; triggerTurn?: boolean } | undefined;
-}
-
-/** A minimal pi ExtensionAPI double recording the injected messages. */
+/** A minimal pi ExtensionAPI double (the settle wiring needs no methods). */
 function mockApi(): {
-  handlers: Record<string, (...args: any[]) => unknown>;
-  sent: SentCall[];
   on(event: string, handler: (...args: any[]) => unknown): void;
-  sendMessage(
-    message: SentCall["message"],
-    options?: SentCall["options"],
-  ): void;
   registerTool(tool: unknown): void;
   registerCommand(name: string, options: unknown): void;
   appendEntry(customType: string, data?: unknown): void;
@@ -78,17 +74,8 @@ function mockApi(): {
   setActiveTools(names: string[]): void;
   registerEntryRenderer(customType: string, renderer: unknown): void;
 } {
-  const handlers: Record<string, (...args: any[]) => unknown> = {};
-  const sent: SentCall[] = [];
   return {
-    handlers,
-    sent,
-    on(event, handler) {
-      handlers[event] = handler;
-    },
-    sendMessage(message, options) {
-      sent.push({ message, options });
-    },
+    on(_event, _handler) {},
     registerTool(_tool) {},
     registerCommand(_name, _options) {},
     appendEntry(_customType, _data) {},
@@ -108,6 +95,56 @@ function settleCtx(sessionID: string, branch: unknown[] = []) {
       getBranch: () => branch,
     },
   };
+}
+
+/**
+ * Drive the loop wiring the way pi does: `agent_end` records the run,
+ * then the pre-settle boundary hands the judge the outcome pi derived
+ * from the run's terminal stop reason.
+ *
+ * @param handlers - The built pi handlers.
+ * @param evt - The `agent_end` event carrying the run's messages.
+ * @param ctx - The extension context.
+ * @param outcome - The outcome pi reports at the boundary.
+ * @returns The boundary result the judge returned.
+ */
+async function settle(
+  handlers: ReturnType<typeof buildPiHandlers>,
+  evt: unknown,
+  ctx: unknown,
+  outcome: "completed" | "aborted" | "error" = "completed",
+): Promise<PiBoundaryResult> {
+  await handlers.agentEnd(evt, ctx);
+  return handlers.beforeSettle({ type: "agent_before_settle", outcome }, ctx);
+}
+
+/** The wake entries a boundary result carries (empty means silence). */
+function wakes(result: PiBoundaryResult): PiCustomMessageEntryDraft[] {
+  return (result.entries ?? []) as PiCustomMessageEntryDraft[];
+}
+
+/** The `cause` recorded by the host for the last settle. */
+function settleReceivedCause(): unknown {
+  const received = _getBufferForTesting().filter(
+    (entry) => entry.event === "settle_received",
+  );
+  return received.at(-1)?.cause;
+}
+
+/** The silence reason recorded by the runner for the last settle. */
+function settleSilenceReason(): unknown {
+  const silent = _getBufferForTesting().filter(
+    (entry) => entry.event === "settle_silent",
+  );
+  return silent.at(-1)?.reason;
+}
+
+/** The engine interlock reason recorded for the last settle. */
+function interlockReason(): unknown {
+  const interlocked = _getBufferForTesting().filter(
+    (entry) => entry.event === "settle_interlock",
+  );
+  return interlocked.at(-1)?.reason;
 }
 
 /** An assistant message carrying the given content parts. */
@@ -269,23 +306,49 @@ const ZOO_NO_SETTLE = {
 // ---------------------------------------------------------------------------
 
 describe("buildPiHandlers — loop settle", () => {
-  it("queues the wake as a followUp from agent_end so pi's run loop drains it", async () => {
+  it("returns the wake as a boundary entry with continue so pi runs it", async () => {
     const api = mockApi();
     const handlers = buildPiHandlers(ZOO, api as any);
     assert.equal(handlers.hasSettledHandlers, true);
 
-    // The wake must be delivered from `agent_end` (while the run is still
-    // streaming), never after the loop: a single-shot host tears the session
-    // down once `prompt()` returns, before an unawaited post-loop run can act.
-    await handlers.agentEnd(RUN_ENDED, settleCtx("sess-1", ACTIVE_BRANCH));
+    // The wake must be committed at pi's pre-settle boundary: pi runs the
+    // continuation before `prompt()` returns, so a single-shot host keeps
+    // the session alive to act on it.
+    const result = await settle(
+      handlers,
+      RUN_ENDED,
+      settleCtx("sess-1", ACTIVE_BRANCH),
+    );
 
-    assert.equal(api.sent.length, 1);
-    const { message, options } = api.sent[0];
-    assert.equal(message.customType, "zoo-loop-wake");
-    assert.equal(message.display, true);
-    assert.ok(message.content.startsWith(CONTINUATION_PROMPT));
-    assert.ok(message.content.includes("Wire source"));
-    assert.deepEqual(options, { deliverAs: "followUp", triggerTurn: true });
+    assert.equal(result.continue, true);
+    const entries = wakes(result);
+    assert.equal(entries.length, 1);
+    const entry = entries[0];
+    assert.equal(entry.type, "custom_message");
+    assert.equal(entry.customType, "zoo-loop-wake");
+    assert.equal(entry.display, true);
+    assert.ok(entry.content.startsWith(CONTINUATION_PROMPT));
+    assert.ok(entry.content.includes("Wire source"));
+  });
+
+  it("preserves boundary entries earlier handlers contributed", async () => {
+    const api = mockApi();
+    const handlers = buildPiHandlers(ZOO, api as any);
+    const ctx = settleCtx("sess-prior", ACTIVE_BRANCH);
+    handlers.agentEnd(RUN_ENDED, ctx);
+
+    // pi adopts a handler's returned `entries` as the new accumulated
+    // list without merging, so the wake must re-emit the drafts the
+    // boundary event already carries.
+    const prior = { type: "custom", customType: "other-ext", data: 1 };
+    const result = await handlers.beforeSettle(
+      { type: "agent_before_settle", outcome: "completed", entries: [prior] },
+      ctx,
+    );
+
+    assert.equal(result.continue, true);
+    assert.deepEqual(result.entries?.[0], prior);
+    assert.equal(wakes(result).length, 2);
   });
 
   it("stays silent when the run ended awaiting user input", async () => {
@@ -294,9 +357,9 @@ describe("buildPiHandlers — loop settle", () => {
     const c = settleCtx("sess-await", ACTIVE_BRANCH);
 
     handlers.uiPromptStart({ type: "ui_prompt_start" }, c);
-    await handlers.agentEnd(RUN_ENDED, c);
+    const result = await settle(handlers, RUN_ENDED, c);
 
-    assert.equal(api.sent.length, 0);
+    assert.equal(wakes(result).length, 0);
   });
 
   it("stays silent when the run was aborted", async () => {
@@ -304,15 +367,31 @@ describe("buildPiHandlers — loop settle", () => {
     const handlers = buildPiHandlers(ZOO, api as any);
     const c = settleCtx("sess-aborted", ACTIVE_BRANCH);
 
-    await handlers.agentEnd(
+    const result = await settle(
+      handlers,
       {
         type: "agent_end",
         messages: [{ role: "assistant", stopReason: "aborted" }],
       },
       c,
+      "aborted",
     );
 
-    assert.equal(api.sent.length, 0);
+    assert.equal(wakes(result).length, 0);
+  });
+
+  it("stays silent when pi reports the run as an error", async () => {
+    // The regression: pi records a user-aborted run's terminal message as
+    // `stopReason: "error"`, and the outcome it reports at the boundary is
+    // the authority — re-deriving the outcome from the transcript used to
+    // misclassify the abort as settled and wake into a dead run.
+    const api = mockApi();
+    const handlers = buildPiHandlers(ZOO, api as any);
+    const c = settleCtx("sess-error", ACTIVE_BRANCH);
+
+    const result = await settle(handlers, RUN_ENDED, c, "error");
+
+    assert.equal(wakes(result).length, 0);
   });
 
   it("stays silent when the session cannot be identified", async () => {
@@ -325,9 +404,9 @@ describe("buildPiHandlers — loop settle", () => {
       },
     };
 
-    await handlers.agentEnd(RUN_ENDED, c);
+    const result = await settle(handlers, RUN_ENDED, c);
 
-    assert.equal(api.sent.length, 0);
+    assert.equal(wakes(result).length, 0);
   });
 
   it("stays silent when the reminder budget is exhausted", async () => {
@@ -335,10 +414,11 @@ describe("buildPiHandlers — loop settle", () => {
     const handlers = buildPiHandlers(ZOO_LIMIT_1, api as any);
     const c = settleCtx("sess-budget", ACTIVE_BRANCH);
 
-    await handlers.agentEnd(RUN_ENDED, c);
-    await handlers.agentEnd(RUN_ENDED, c);
+    const first = await settle(handlers, RUN_ENDED, c);
+    const second = await settle(handlers, RUN_ENDED, c);
 
-    assert.equal(api.sent.length, 1);
+    assert.equal(wakes(first).length, 1);
+    assert.equal(wakes(second).length, 0);
   });
 
   it("resets the budget on a real user turn, allowing another wake", async () => {
@@ -346,14 +426,14 @@ describe("buildPiHandlers — loop settle", () => {
     const handlers = buildPiHandlers(ZOO_LIMIT_1, api as any);
     const c = settleCtx("sess-reset", ACTIVE_BRANCH);
 
-    await handlers.agentEnd(RUN_ENDED, c);
-    await handlers.agentEnd(RUN_ENDED, c);
-    assert.equal(api.sent.length, 1, "second run is budget-exhausted");
+    await settle(handlers, RUN_ENDED, c);
+    const spent = await settle(handlers, RUN_ENDED, c);
+    assert.equal(wakes(spent).length, 0, "second run is budget-exhausted");
 
     // A real user prompt starts a fresh budget.
     await handlers.beforeAgentStart({ systemPrompt: "base" }, c);
-    await handlers.agentEnd(RUN_ENDED, c);
-    assert.equal(api.sent.length, 2, "a user turn grants a fresh reminder");
+    const fresh = await settle(handlers, RUN_ENDED, c);
+    assert.equal(wakes(fresh).length, 1, "a user turn grants a fresh reminder");
   });
 
   it("never propagates a stale-context error out of the judge", async () => {
@@ -367,9 +447,9 @@ describe("buildPiHandlers — loop settle", () => {
       },
     };
 
-    await handlers.agentEnd(RUN_ENDED, stale);
+    const result = await settle(handlers, RUN_ENDED, stale);
 
-    assert.equal(api.sent.length, 0);
+    assert.equal(wakes(result).length, 0);
     const failed = _getBufferForTesting().filter(
       (entry) => entry.event === "settle_failed",
     );
@@ -381,9 +461,13 @@ describe("buildPiHandlers — loop settle", () => {
     const handlers = buildPiHandlers(ZOO_NO_SETTLE, api as any);
     assert.equal(handlers.hasSettledHandlers, false);
 
-    await handlers.agentEnd(RUN_ENDED, settleCtx("sess-none", ACTIVE_BRANCH));
+    const result = await settle(
+      handlers,
+      RUN_ENDED,
+      settleCtx("sess-none", ACTIVE_BRANCH),
+    );
 
-    assert.equal(api.sent.length, 0);
+    assert.equal(wakes(result).length, 0);
   });
 
   it("is a no-op when no valid continuation config is present", async () => {
@@ -391,9 +475,13 @@ describe("buildPiHandlers — loop settle", () => {
     const handlers = buildPiHandlers(ZOO_NO_CONTINUATION, api as any);
     assert.equal(handlers.hasSettledHandlers, false);
 
-    await handlers.agentEnd(RUN_ENDED, settleCtx("sess-noconf", ACTIVE_BRANCH));
+    const result = await settle(
+      handlers,
+      RUN_ENDED,
+      settleCtx("sess-noconf", ACTIVE_BRANCH),
+    );
 
-    assert.equal(api.sent.length, 0);
+    assert.equal(wakes(result).length, 0);
   });
 
   it("drops a session's budget on session_start so it restarts fresh", async () => {
@@ -404,16 +492,15 @@ describe("buildPiHandlers — loop settle", () => {
     });
     const c = settleCtx("sess-del", ACTIVE_BRANCH);
 
-    await handlers.agentEnd(RUN_ENDED, c);
-    assert.equal(api.sent.length, 1);
+    await settle(handlers, RUN_ENDED, c);
     assert.equal(reminders.get("sess-del")?.get("todoContinuation"), 1);
 
     // The same session starting again begins with a fresh budget.
     await handlers.sessionStart({ type: "session_start" }, c);
     assert.equal(reminders.has("sess-del"), false);
 
-    await handlers.agentEnd(RUN_ENDED, c);
-    assert.equal(api.sent.length, 2);
+    await settle(handlers, RUN_ENDED, c);
+    assert.equal(reminders.get("sess-del")?.get("todoContinuation"), 1);
   });
 
   it("caps the budget store, evicting the oldest-inserted sessions", async () => {
@@ -426,7 +513,7 @@ describe("buildPiHandlers — loop settle", () => {
       remindersUsed: reminders,
     });
 
-    await handlers.agentEnd(RUN_ENDED, settleCtx("s100", ACTIVE_BRANCH));
+    await settle(handlers, RUN_ENDED, settleCtx("s100", ACTIVE_BRANCH));
 
     assert.equal(reminders.size, 100);
     assert.equal(reminders.has("s0"), false, "oldest entry evicted");
@@ -564,11 +651,15 @@ describe("buildPiHandlers — auto-debug end to end", () => {
   it("converges silently when the verification experiment passes", async () => {
     const fixture = await createCaseFixture({ verifyCommand: "exit 0" });
     try {
-      const { api, handlers } = handlersFor(fixture);
+      const { handlers } = handlersFor(fixture);
 
-      await handlers.agentEnd(RUN_ENDED, settleCtx("ad-converged"));
+      const result = await settle(
+        handlers,
+        RUN_ENDED,
+        settleCtx("ad-converged"),
+      );
 
-      assert.equal(api.sent.length, 0);
+      assert.equal(wakes(result).length, 0);
       assert.equal(silenceReason(), "converged");
     } finally {
       fixture.dispose();
@@ -578,22 +669,22 @@ describe("buildPiHandlers — auto-debug end to end", () => {
   it("wakes with the re-run verdict while verify still fails", async () => {
     const fixture = await createCaseFixture({ verifyCommand: "exit 1" });
     try {
-      const { api, handlers } = handlersFor(fixture);
+      const { handlers } = handlersFor(fixture);
 
-      await handlers.agentEnd(RUN_ENDED, settleCtx("ad-wake"));
+      const result = await settle(handlers, RUN_ENDED, settleCtx("ad-wake"));
 
-      assert.equal(api.sent.length, 1);
-      const { message, options } = api.sent[0];
-      assert.equal(message.customType, "zoo-loop-wake");
+      const entries = wakes(result);
+      assert.equal(entries.length, 1);
+      assert.equal(entries[0].customType, "zoo-loop-wake");
       assert.ok(
-        message.content.includes("判据重跑结果"),
+        entries[0].content.includes("判据重跑结果"),
         "wake carries the re-run verdict",
       );
       assert.ok(
-        message.content.includes(".zoo/debug/CASE-1/summary.md"),
+        entries[0].content.includes(".zoo/debug/CASE-1/summary.md"),
         "wake points at the Case summary",
       );
-      assert.deepEqual(options, { deliverAs: "followUp", triggerTurn: true });
+      assert.equal(result.continue, true);
     } finally {
       fixture.dispose();
     }
@@ -602,11 +693,15 @@ describe("buildPiHandlers — auto-debug end to end", () => {
   it("silences verify-error when the criterion itself is broken", async () => {
     const fixture = await createCaseFixture({ verifyCommand: "exit 3" });
     try {
-      const { api, handlers } = handlersFor(fixture);
+      const { handlers } = handlersFor(fixture);
 
-      await handlers.agentEnd(RUN_ENDED, settleCtx("ad-verify-error"));
+      const result = await settle(
+        handlers,
+        RUN_ENDED,
+        settleCtx("ad-verify-error"),
+      );
 
-      assert.equal(api.sent.length, 0);
+      assert.equal(wakes(result).length, 0);
       assert.equal(silenceReason(), "verify-error");
     } finally {
       fixture.dispose();
@@ -616,14 +711,18 @@ describe("buildPiHandlers — auto-debug end to end", () => {
   it("stops waking once the auto-debug budget is spent", async () => {
     const fixture = await createCaseFixture({ verifyCommand: "exit 1" });
     try {
-      const { api, handlers } = handlersFor(fixture, 1);
+      const { handlers } = handlersFor(fixture, 1);
       const c = settleCtx("ad-budget");
 
-      await handlers.agentEnd(RUN_ENDED, c);
-      assert.equal(api.sent.length, 1, "the first settle wakes");
+      const first = await settle(handlers, RUN_ENDED, c);
+      assert.equal(wakes(first).length, 1, "the first settle wakes");
 
-      await handlers.agentEnd(RUN_ENDED, c);
-      assert.equal(api.sent.length, 1, "a spent budget silences the second");
+      const second = await settle(handlers, RUN_ENDED, c);
+      assert.equal(
+        wakes(second).length,
+        0,
+        "a spent budget silences the second",
+      );
     } finally {
       fixture.dispose();
     }
@@ -632,17 +731,19 @@ describe("buildPiHandlers — auto-debug end to end", () => {
   it("honors the abort interlock before consulting the strategy", async () => {
     const fixture = await createCaseFixture({ verifyCommand: "exit 1" });
     try {
-      const { api, handlers } = handlersFor(fixture);
+      const { handlers } = handlersFor(fixture);
 
-      await handlers.agentEnd(
+      const result = await settle(
+        handlers,
         {
           type: "agent_end",
           messages: [{ role: "assistant", stopReason: "aborted" }],
         },
         settleCtx("ad-aborted"),
+        "aborted",
       );
 
-      assert.equal(api.sent.length, 0);
+      assert.equal(wakes(result).length, 0);
       assert.equal(silenceReason(), undefined, "strategy never consulted");
     } finally {
       fixture.dispose();
@@ -668,30 +769,6 @@ describe("buildPiHandlers — settled-turn facts", () => {
     else process.env.ZOO_DEBUG = origDebug;
   });
 
-  /** The silence reason recorded by the runner for the last settle. */
-  function settleSilenceReason(): unknown {
-    const silent = _getBufferForTesting().filter(
-      (entry) => entry.event === "settle_silent",
-    );
-    return silent.at(-1)?.reason;
-  }
-
-  /** The engine interlock reason recorded for the last settle. */
-  function interlockReason(): unknown {
-    const interlocked = _getBufferForTesting().filter(
-      (entry) => entry.event === "settle_interlock",
-    );
-    return interlocked.at(-1)?.reason;
-  }
-
-  /** The `cause` recorded by the host for the last settle. */
-  function settleReceivedCause(): unknown {
-    const received = _getBufferForTesting().filter(
-      (entry) => entry.event === "settle_received",
-    );
-    return received.at(-1)?.cause;
-  }
-
   it("wakes a turn that issued an edit call", async () => {
     const api = mockApi();
     const handlers = buildPiHandlers(ZOO, api as any);
@@ -700,9 +777,13 @@ describe("buildPiHandlers — settled-turn facts", () => {
       assistant([toolCallPart("edit", { filePath: "a.ts" })]),
     ]);
 
-    await handlers.agentEnd(evt, settleCtx("sess-edit", ACTIVE_BRANCH));
+    const result = await settle(
+      handlers,
+      evt,
+      settleCtx("sess-edit", ACTIVE_BRANCH),
+    );
 
-    assert.equal(api.sent.length, 1);
+    assert.equal(wakes(result).length, 1);
   });
 
   it("wakes a turn whose only tool call is the todo tool", async () => {
@@ -715,9 +796,13 @@ describe("buildPiHandlers — settled-turn facts", () => {
       assistant([toolCallPart("todo", { op: "init" })]),
     ]);
 
-    await handlers.agentEnd(evt, settleCtx("sess-todo", ACTIVE_BRANCH));
+    const result = await settle(
+      handlers,
+      evt,
+      settleCtx("sess-todo", ACTIVE_BRANCH),
+    );
 
-    assert.equal(api.sent.length, 1);
+    assert.equal(wakes(result).length, 1);
     assert.equal(settleReceivedCause(), "settled");
   });
 
@@ -732,9 +817,13 @@ describe("buildPiHandlers — settled-turn facts", () => {
         assistant([toolCallPart("subagent", { agent })]),
       ]);
 
-      await handlers.agentEnd(evt, settleCtx(`sess-${agent}`, ACTIVE_BRANCH));
+      const result = await settle(
+        handlers,
+        evt,
+        settleCtx(`sess-${agent}`, ACTIVE_BRANCH),
+      );
 
-      assert.equal(api.sent.length, 1, `delegation to ${agent} must wake`);
+      assert.equal(wakes(result).length, 1, `delegation to ${agent} must wake`);
     }
   });
 
@@ -752,9 +841,13 @@ describe("buildPiHandlers — settled-turn facts", () => {
       ]),
     ]);
 
-    await handlers.agentEnd(evt, settleCtx("sess-await-text", ACTIVE_BRANCH));
+    const result = await settle(
+      handlers,
+      evt,
+      settleCtx("sess-await-text", ACTIVE_BRANCH),
+    );
 
-    assert.equal(api.sent.length, 1);
+    assert.equal(wakes(result).length, 1);
     assert.equal(settleReceivedCause(), "settled");
   });
 
@@ -766,9 +859,13 @@ describe("buildPiHandlers — settled-turn facts", () => {
       assistant([toolCallPart("bash"), textPart("All changes applied.")]),
     ]);
 
-    await handlers.agentEnd(evt, settleCtx("sess-plain", ACTIVE_BRANCH));
+    const result = await settle(
+      handlers,
+      evt,
+      settleCtx("sess-plain", ACTIVE_BRANCH),
+    );
 
-    assert.equal(api.sent.length, 1);
+    assert.equal(wakes(result).length, 1);
     assert.equal(settleReceivedCause(), "settled");
   });
 
@@ -778,12 +875,13 @@ describe("buildPiHandlers — settled-turn facts", () => {
     const api = mockApi();
     const handlers = buildPiHandlers(ZOO, api as any);
 
-    await handlers.agentEnd(
+    const result = await settle(
+      handlers,
       { type: "agent_end" },
       settleCtx("sess-empty", ACTIVE_BRANCH),
     );
 
-    assert.equal(api.sent.length, 1);
+    assert.equal(wakes(result).length, 1);
     assert.equal(settleReceivedCause(), "settled");
   });
 
@@ -792,9 +890,13 @@ describe("buildPiHandlers — settled-turn facts", () => {
     const handlers = buildPiHandlers(ZOO, api as any);
     const evt = runEnded([userMessage("only a prompt")]);
 
-    await handlers.agentEnd(evt, settleCtx("sess-noassistant", ACTIVE_BRANCH));
+    const result = await settle(
+      handlers,
+      evt,
+      settleCtx("sess-noassistant", ACTIVE_BRANCH),
+    );
 
-    assert.equal(api.sent.length, 1);
+    assert.equal(wakes(result).length, 1);
   });
 
   it("scopes activity to the turn after the last user message", async () => {
@@ -804,10 +906,11 @@ describe("buildPiHandlers — settled-turn facts", () => {
     const handlers = buildPiHandlers(ZOO_LIMIT_2, api as any);
     const c = settleCtx("sess-scope", ACTIVE_BRANCH);
 
-    await handlers.agentEnd(RUN_ENDED, c);
-    assert.equal(api.sent.length, 1, "the working run wakes");
+    const first = await settle(handlers, RUN_ENDED, c);
+    assert.equal(wakes(first).length, 1, "the working run wakes");
 
-    await handlers.agentEnd(
+    const second = await settle(
+      handlers,
       runEnded([
         userMessage("do work"),
         assistant([toolCallPart("edit", { filePath: "a.ts" })]),
@@ -817,7 +920,7 @@ describe("buildPiHandlers — settled-turn facts", () => {
       c,
     );
 
-    assert.equal(api.sent.length, 1, "the text-only tail keeps the lock");
+    assert.equal(wakes(second).length, 0, "the text-only tail keeps the lock");
     assert.equal(interlockReason(), "awaiting-activity");
   });
 
@@ -826,17 +929,17 @@ describe("buildPiHandlers — settled-turn facts", () => {
     const handlers = buildPiHandlers(ZOO_LIMIT_2, api as any);
     const c = settleCtx("sess-lock", ACTIVE_BRANCH);
 
-    await handlers.agentEnd(RUN_ENDED, c);
-    assert.equal(api.sent.length, 1, "the working run wakes and locks");
+    const first = await settle(handlers, RUN_ENDED, c);
+    assert.equal(wakes(first).length, 1, "the working run wakes and locks");
 
-    await handlers.agentEnd(textOnlyRun(), c);
-    assert.equal(api.sent.length, 1, "the prose-only answer stays silent");
+    const second = await settle(handlers, textOnlyRun(), c);
+    assert.equal(wakes(second).length, 0, "the prose-only answer stays silent");
     assert.equal(interlockReason(), "awaiting-activity");
 
     // A later active run still wakes: the silenced reply left the
     // second allowance untouched.
-    await handlers.agentEnd(RUN_ENDED, c);
-    assert.equal(api.sent.length, 2, "the text-only reply spent no budget");
+    const third = await settle(handlers, RUN_ENDED, c);
+    assert.equal(wakes(third).length, 1, "the text-only reply spent no budget");
   });
 
   it("releases the lock when the reply makes a read-only tool call", async () => {
@@ -844,10 +947,11 @@ describe("buildPiHandlers — settled-turn facts", () => {
     const handlers = buildPiHandlers(ZOO, api as any);
     const c = settleCtx("sess-unlock", ACTIVE_BRANCH);
 
-    await handlers.agentEnd(RUN_ENDED, c);
-    assert.equal(api.sent.length, 1, "the working run wakes and locks");
+    const first = await settle(handlers, RUN_ENDED, c);
+    assert.equal(wakes(first).length, 1, "the working run wakes and locks");
 
-    await handlers.agentEnd(
+    const second = await settle(
+      handlers,
       runEnded([
         userMessage("continue"),
         assistant([toolCallPart("read", { filePath: "a.ts" })]),
@@ -855,9 +959,13 @@ describe("buildPiHandlers — settled-turn facts", () => {
       c,
     );
 
-    assert.equal(api.sent.length, 2, "read-only activity releases the lock");
+    assert.equal(
+      wakes(second).length,
+      1,
+      "read-only activity releases the lock",
+    );
     assert.ok(
-      api.sent[1].message.content.startsWith(CONTINUATION_PROMPT),
+      wakes(second)[0].content.startsWith(CONTINUATION_PROMPT),
       "the re-evaluated wake carries the reminder again",
     );
   });
@@ -867,18 +975,18 @@ describe("buildPiHandlers — settled-turn facts", () => {
     const handlers = buildPiHandlers(ZOO_LIMIT_1, api as any);
     const c = settleCtx("sess-lock-reset", ACTIVE_BRANCH);
 
-    await handlers.agentEnd(RUN_ENDED, c);
-    assert.equal(api.sent.length, 1, "the working run wakes and locks");
+    const first = await settle(handlers, RUN_ENDED, c);
+    assert.equal(wakes(first).length, 1, "the working run wakes and locks");
 
-    await handlers.agentEnd(textOnlyRun(), c);
-    assert.equal(api.sent.length, 1, "the text-only reply stays silent");
+    const second = await settle(handlers, textOnlyRun(), c);
+    assert.equal(wakes(second).length, 0, "the text-only reply stays silent");
 
     // A real user prompt resets the budget AND clears the lock, so even
     // a text-only settle under the fresh budget wakes again.
     await handlers.beforeAgentStart({ systemPrompt: "base" }, c);
-    await handlers.agentEnd(textOnlyRun(), c);
+    const third = await settle(handlers, textOnlyRun(), c);
 
-    assert.equal(api.sent.length, 2, "the user turn cleared the lock too");
+    assert.equal(wakes(third).length, 1, "the user turn cleared the lock too");
   });
 
   it("stays silent when every remaining task is blocked", async () => {
@@ -887,12 +995,13 @@ describe("buildPiHandlers — settled-turn facts", () => {
     const api = mockApi();
     const handlers = buildPiHandlers(ZOO, api as any);
 
-    await handlers.agentEnd(
+    const result = await settle(
+      handlers,
       RUN_ENDED,
       settleCtx("sess-blocked", BLOCKED_BRANCH),
     );
 
-    assert.equal(api.sent.length, 0);
+    assert.equal(wakes(result).length, 0);
     assert.equal(settleSilenceReason(), "no-active");
   });
 
@@ -900,18 +1009,22 @@ describe("buildPiHandlers — settled-turn facts", () => {
     const api = mockApi();
     const handlers = buildPiHandlers(ZOO, api as any);
 
-    await handlers.agentEnd(RUN_ENDED, settleCtx("sess-mixed", MIXED_BRANCH));
+    const result = await settle(
+      handlers,
+      RUN_ENDED,
+      settleCtx("sess-mixed", MIXED_BRANCH),
+    );
 
-    assert.equal(api.sent.length, 1);
-    const content = api.sent[0].message.content;
+    const entries = wakes(result);
+    assert.equal(entries.length, 1);
     assert.ok(
-      content.includes(
+      entries[0].content.includes(
         "- [blocked] Await sign-off (waiting on: user approval)",
       ),
       "the store carries the blocker into the reminder",
     );
     assert.ok(
-      content.includes("Wire source"),
+      entries[0].content.includes("Wire source"),
       "the active task stays in the reminder",
     );
   });
@@ -933,9 +1046,13 @@ describe("buildPiHandlers — settled-turn facts", () => {
       ]),
     ]);
 
-    await handlers.agentEnd(evt, settleCtx("sess-ask-noui", ACTIVE_BRANCH));
+    const result = await settle(
+      handlers,
+      evt,
+      settleCtx("sess-ask-noui", ACTIVE_BRANCH),
+    );
 
-    assert.equal(api.sent.length, 0);
+    assert.equal(wakes(result).length, 0);
     assert.equal(settleReceivedCause(), "awaiting-input");
   });
 
@@ -953,9 +1070,13 @@ describe("buildPiHandlers — settled-turn facts", () => {
       ]),
     ]);
 
-    await handlers.agentEnd(evt, settleCtx("sess-ask-answered", ACTIVE_BRANCH));
+    const result = await settle(
+      handlers,
+      evt,
+      settleCtx("sess-ask-answered", ACTIVE_BRANCH),
+    );
 
-    assert.equal(api.sent.length, 1);
+    assert.equal(wakes(result).length, 1);
     assert.equal(settleReceivedCause(), "settled");
   });
 
@@ -971,12 +1092,13 @@ describe("buildPiHandlers — settled-turn facts", () => {
         ]),
       ]);
 
-      await handlers.agentEnd(
+      const result = await settle(
+        handlers,
         evt,
         settleCtx(`sess-ask-${reason}`, ACTIVE_BRANCH),
       );
 
-      assert.equal(api.sent.length, 1, `${reason} should still wake`);
+      assert.equal(wakes(result).length, 1, `${reason} should still wake`);
       assert.equal(settleReceivedCause(), "settled");
     }
   });
@@ -993,12 +1115,13 @@ describe("buildPiHandlers — settled-turn facts", () => {
       askResultMessage([null, 42, { result: "x" }]),
     ]);
 
-    await handlers.agentEnd(
+    const result = await settle(
+      handlers,
       evt,
       settleCtx("sess-ask-malformed", ACTIVE_BRANCH),
     );
 
-    assert.equal(api.sent.length, 1);
+    assert.equal(wakes(result).length, 1);
     assert.equal(settleReceivedCause(), "settled");
   });
 });

@@ -2,7 +2,7 @@
  * ZooKeeper Pi extension — profile-driven hooks composed from the unit
  * registry.
  *
- * This extension registers seven unconditional event hooks, three
+ * This extension registers seven unconditional event hooks, five
  * profile-gated loop settle events, and slash commands, all driven
  * by the active mode profile (`[zoo.mode.<name>]`, parsed by
  * `parseModeProfile`):
@@ -30,17 +30,24 @@
  * 7. `session_tree` — drops this session's cached todo view after tree
  *    navigation (`/tree`) moves the active leaf, so the next `todo`
  *    call re-scans the branch the navigation moved to.
- * 8. loop settle — `agent_end` classifies the finished run
- *    (aborted / awaiting-input / settled) from its terminal message and
- *    the open-blocking-prompt count kept by `ui_prompt_start` /
- *    `ui_prompt_end`, then queues the composed settle judge's wake
- *    reminder as a `followUp` custom message.  Because the run is still
- *    streaming when `agent_end` fires, pi's own run loop drains the
- *    queued follow-up within the same `prompt()` call (so a single-shot
- *    host keeps the session alive to run the wake).  These
- *    events are registered only when the profile composes a settle
- *    contribution (todo-continuation) — a profile without it registers
- *    none (fail-closed).
+ * 8. loop settle — the `agent_before_settle` boundary handler judges a
+ *    run as it is about to settle, using pi's own activity outcome
+ *    (`completed` / `aborted` / `error`) plus the open-blocking-prompt
+ *    count kept by `ui_prompt_start` / `ui_prompt_end`.  A wake is
+ *    returned as a `zoo-loop-wake` custom-message entry with
+ *    `continue: true`, which pi commits and runs before the enclosing
+ *    `prompt()` returns, so a single-shot host keeps the session alive
+ *    to run the wake (headless print mode settles through the same
+ *    `_runAgentPrompt` path).  Judging at the boundary makes a stale
+ *    wake impossible: the verdict takes effect within the run that
+ *    produced it (no queue survives into a later run) and pi does not
+ *    fire the boundary for a user abort.  `agent_end` only records the
+ *    run's terminal messages — the boundary event carries no transcript
+ *    — for the judge to derive activity and handback facts, and
+ *    `agent_settled` flushes the log once the run has fully settled.
+ *    These events are registered only when the profile composes a
+ *    settle contribution (todo-continuation) — a profile without it
+ *    registers none (fail-closed).
  * 9. commands — the composed slash commands (e.g. `/dcp`) are registered
  *    with pi via `registerCommand`; their chat notifications go through
  *    the single pi tool host's in-session `appendEntry` channel
@@ -191,6 +198,36 @@ import { flushLogs, log } from "./utils/logger.js";
 // ---------------------------------------------------------------------------
 
 /**
+ * A `zoo-loop-wake` custom-message entry draft for the boundary result.
+ *
+ * Mirrors pi's `CustomMessageEntryDraft`: pi commits the draft as a
+ * persistent custom message that the model reads as a user-role message
+ * and the TUI renders when `display` is set.
+ */
+export interface PiCustomMessageEntryDraft {
+  type: "custom_message";
+  customType: string;
+  content: string;
+  display: boolean;
+}
+
+/**
+ * The pre-settle boundary result this extension returns.
+ *
+ * Mirrors pi's `BoundaryResult`.  pi's `emitBoundary` hands each handler
+ * the drafts accumulated so far via the event's `entries` and adopts the
+ * handler's returned array wholesale — there is no runner-side merge — so
+ * a handler that appends a draft must re-emit the drafts it received, or
+ * it silently drops earlier extensions' boundary contributions.  The last
+ * non-undefined `continue` wins, and pi runs the continuation before the
+ * enclosing `prompt()` returns.
+ */
+export interface PiBoundaryResult {
+  entries?: Array<PiCustomMessageEntryDraft | Record<string, unknown>>;
+  continue?: boolean;
+}
+
+/**
  * Minimal structural type for pi's ExtensionAPI.
  *
  * Only defines the `on` method with overloaded event signatures that
@@ -227,24 +264,6 @@ interface ExtensionAPI {
 
   /** Register a chat-transcript renderer for a custom entry type. */
   registerEntryRenderer(customType: string, renderer: unknown): void;
-
-  /**
-   * Send a custom message into the session, optionally triggering a turn.
-   * `deliverAs: "followUp"` with `triggerTurn: true` injects a message and
-   * starts a new run after the current one settles.
-   */
-  sendMessage(
-    message: {
-      customType: string;
-      content: string | unknown[];
-      display: boolean;
-      details?: unknown;
-    },
-    options?: {
-      triggerTurn?: boolean;
-      deliverAs?: "steer" | "followUp" | "nextTurn";
-    },
-  ): void;
 
   /** Register handler for `before_agent_start`. */
   on(
@@ -292,7 +311,22 @@ interface ExtensionAPI {
     event: "agent_end",
     handler: (evt: unknown, ctx: unknown) => void | Promise<void>,
   ): void;
+  /**
+   * Register handler for the pre-settle boundary: pi consults it just
+   * before a run settles and commits the returned `entries` / `continue`.
+   */
+  on(
+    event: "agent_before_settle",
+    handler: (
+      evt: unknown,
+      ctx: unknown,
+    ) => PiBoundaryResult | Promise<PiBoundaryResult>,
+  ): void;
   /** Register handler for when an agent run fully settles. */
+  on(
+    event: "agent_settled",
+    handler: (evt: unknown, ctx: unknown) => void | Promise<void>,
+  ): void;
   /** Register handler for a blocking user-facing UI prompt opening. */
   on(
     event: "ui_prompt_start",
@@ -959,6 +993,41 @@ function askWentUnanswered(messages: readonly unknown[]): boolean {
 }
 
 /**
+ * Read the activity outcome pi reports on the pre-settle boundary event.
+ *
+ * pi derives it from the run's terminal stop reason, so it is the host's
+ * own first-hand verdict.  pi currently reports three literals
+ * (`"completed"` / `"aborted"` / `"error"`); a missing or non-string
+ * payload returns `undefined`.  Either way the caller treats anything
+ * other than `"completed"` as "not completed" (silence, fail closed), so
+ * a wake requires the explicit `"completed"` outcome.
+ *
+ * @param evt - The `agent_before_settle` event.
+ * @returns The reported outcome, or `undefined` when absent/unreadable.
+ */
+function readActivityOutcome(evt: unknown): string | undefined {
+  const outcome = (evt as { outcome?: unknown } | undefined)?.outcome;
+  return typeof outcome === "string" ? outcome : undefined;
+}
+
+/**
+ * Read the boundary drafts earlier handlers contributed.
+ *
+ * pi adopts a handler's returned `entries` as the new accumulated list
+ * without merging, so the wake draft must be appended to whatever the
+ * event already carries.
+ *
+ * @param evt - The `agent_before_settle` event.
+ * @returns The accumulated drafts, or an empty list when absent/unreadable.
+ */
+function boundaryEntries(evt: unknown): Array<Record<string, unknown>> {
+  const entries = (evt as { entries?: unknown } | undefined)?.entries;
+  return Array.isArray(entries)
+    ? (entries as Array<Record<string, unknown>>)
+    : [];
+}
+
+/**
  * Build the pi hook handlers from an explicit zoo config.
  *
  * `before_agent_start` resolves the current agent identity via the
@@ -1038,12 +1107,24 @@ export function buildPiHandlers(
    */
   hasSettledHandlers: boolean;
   /**
-   * Judge a finished run and queue a wake via `sendMessage`.
+   * Record a finished run's terminal messages for the boundary judge.
    *
-   * `agent_end` fires while the run is still streaming, so the queued
-   * follow-up is drained by the same `prompt()` call.
+   * The `agent_before_settle` event carries no transcript, so the judge
+   * reads the run cached here; the two events fire back to back within
+   * the same run lifecycle.
    */
-  agentEnd: (evt?: unknown, ctx?: unknown) => Promise<void>;
+  agentEnd: (evt?: unknown, ctx?: unknown) => void;
+  /**
+   * Judge a settled run at pi's pre-settle boundary.
+   *
+   * Returns a `zoo-loop-wake` custom-message entry with `continue: true`
+   * when the composed strategy wakes, and nothing when it stays silent.
+   * pi commits the entry and runs the continuation before `prompt()`
+   * returns, so the wake belongs to the run that produced it.
+   */
+  beforeSettle: (evt?: unknown, ctx?: unknown) => Promise<PiBoundaryResult>;
+  /** Flush the log once a run has fully settled. */
+  agentSettled: (evt?: unknown, ctx?: unknown) => void;
   /** Track a blocking user-facing UI prompt span (awaiting-input cause). */
   uiPromptStart: (evt?: unknown, ctx?: unknown) => void;
   /** Close a blocking user-facing UI prompt span. */
@@ -1522,10 +1603,10 @@ export function buildPiHandlers(
   // Loop-engine wiring.  The composed strategies judge a stopped turn;
   // each declares its own wake allowance (`maxWakes`) and reads its own
   // config, so the engine needs no configuration of its own.  This host
-  // classifies the stop cause and delivers a wake as a follow-up custom
-  // message.  The engine is built whenever the profile contributes at
-  // least one strategy (fail-closed: no contribution, no engine, no
-  // settle events registered).
+  // classifies the stop cause at pi's pre-settle boundary and returns a
+  // wake as an injected custom message.  The engine is built whenever
+  // the profile contributes at least one strategy (fail-closed: no
+  // contribution, no engine, no settle events registered).
   //
   // Upper bound on tracked sessions.  pi fires no session-deletion event,
   // so a long-lived process would otherwise retain one budget entry per
@@ -1547,6 +1628,11 @@ export function buildPiHandlers(
   // Open blocking UI prompt count: a run that ends while this is > 0 was
   // waiting for the user, not genuinely finished.
   let uiPromptDepth = 0;
+  // The most recent finished run's terminal messages, recorded by
+  // `agent_end`.  pi's pre-settle boundary event carries no transcript,
+  // so the judge derives the run's activity and handback facts from this
+  // slice; the two events fire back to back in the same run lifecycle.
+  let lastRunMessages: readonly unknown[] = [];
 
   // Apply the active primary's tool-level denies to the current session's
   // active tool set.
@@ -1806,12 +1892,12 @@ export function buildPiHandlers(
       if (ctx) contextHolder.current = ctx as PiToolHostContext;
       // Reset the session's reminder budget when a real user message starts
       // a turn.  pi emits `before_agent_start` only for a top-level user
-      // prompt (`prompt()`); an extension-injected follow-up
-      // (`sendMessage({ triggerTurn: true })`) drives the run through pi's
-      // internal run path and never emits this event.  The
-      // `BeforeAgentStartEvent` payload itself carries no source field, so
-      // the emission boundary is the reliable signal: the counter resets
-      // for every real user turn and never for the injected wake.
+      // prompt (`prompt()`); a wake continued at the pre-settle boundary
+      // resumes the run through `agent.continue()` and never emits this
+      // event.  The `BeforeAgentStartEvent` payload itself carries no
+      // source field, so the emission boundary is the reliable signal:
+      // the counter resets for every real user turn and never for the
+      // injected wake.
       const promptSessionId = sessionIdProvider();
       if (
         engine !== undefined &&
@@ -2014,11 +2100,23 @@ export function buildPiHandlers(
       refreshTodoView();
     },
     hasSettledHandlers,
-    async agentEnd(evt?, ctx?) {
-      // The loop is inert without a settle strategy: the settle events are
-      // never registered, and this guard keeps a direct call (tests) inert
-      // too.
+    agentEnd(evt?, ctx?) {
+      // Passive record only: the judge runs at the pre-settle boundary.
+      // The loop is inert without a settle strategy (the settle events are
+      // never registered), and this guard keeps a direct call (tests)
+      // inert too.
       if (engine === undefined) return;
+      if (ctx) contextHolder.current = ctx as PiToolHostContext;
+      // The run's terminal messages feed the boundary judge.  An
+      // unreadable payload records an empty run, which yields no activity
+      // and no handback fact (silence is the todo list's call, not the
+      // transcript's).
+      const raw = (evt as { messages?: unknown } | undefined)?.messages;
+      lastRunMessages = Array.isArray(raw) ? raw : [];
+    },
+    async beforeSettle(evt?, ctx?): Promise<PiBoundaryResult> {
+      // Same registration gate as `agent_end`: no strategy, no judge.
+      if (engine === undefined) return {};
       // A loop judge must never break the host session, and a
       // stale extension context (pi invalidates one on session
       // replacement / reload) can make even reading `sessionManager`
@@ -2027,39 +2125,38 @@ export function buildPiHandlers(
       try {
         if (ctx) contextHolder.current = ctx as PiToolHostContext;
         sessionID = sessionIdProvider();
-        // The run's terminal message classifies why it ended: an aborted
-        // run reports `stopReason: "aborted"`, a run that ended with a
-        // blocking UI prompt still open was awaiting user input, and
-        // anything else is a genuine settle.
-        const raw = (evt as { messages?: unknown } | undefined)?.messages;
-        const messages = Array.isArray(raw) ? raw : [];
-        const last = messages[messages.length - 1];
-        const aborted =
-          last !== null &&
-          typeof last === "object" &&
-          (last as { role?: unknown }).role === "assistant" &&
-          (last as { stopReason?: unknown }).stopReason === "aborted";
-        // Derive the settled turn's facts: whether it made any tool call
-        // at all.  An unreadable transcript, or one with no assistant
-        // message, simply yields no activity — silence is NOT implied by
-        // it: the todo list is the authority on wakefulness, and the
-        // engine consults `hadActivity` only while the session's
-        // awaiting-progress lock is held.  A fresh settle with no prior
-        // wake is judged against the list regardless of activity.
-        const turn = settledTurnMessages(messages);
+        // pi computes the outcome from the run's terminal stop reason, so
+        // it is the host's own verdict: only a run that completed may
+        // wake.  An aborted run's terminal message is often recorded as
+        // `stopReason: "error"` (a user Esc), so re-deriving the outcome
+        // from the transcript misclassified it as settled; pi reports it
+        // as `outcome: "error"` here, and pi does not fire this boundary
+        // at all for a user abort.
+        const outcome = readActivityOutcome(evt);
+        // Derive the settled turn's facts from the messages `agent_end`
+        // recorded: whether it made any tool call at all.  An unreadable
+        // transcript, or one with no assistant message, simply yields no
+        // activity — silence is NOT implied by it: the todo list is the
+        // authority on wakefulness, and the engine consults `hadActivity`
+        // only while the session's awaiting-progress lock is held.  A
+        // fresh settle with no prior wake is judged against the list
+        // regardless of activity.
+        const turn = settledTurnMessages(lastRunMessages);
         const hadActivity = countTurnToolCalls(turn) > 0;
         // A headless ask could not reach the user (no UI to draw on), so
         // the turn ends with the question unanswered: stop and let the
         // user read it after the process exits rather than auto-continuing
         // into unwanted work.
         const askUnanswered = askWentUnanswered(turn);
-        const cause: StopCause = aborted
-          ? "aborted"
-          : uiPromptDepth > 0 || askUnanswered
-            ? "awaiting-input"
-            : "settled";
+        const cause: StopCause =
+          outcome !== "completed"
+            ? "aborted"
+            : uiPromptDepth > 0 || askUnanswered
+              ? "awaiting-input"
+              : "settled";
         log("loop", "settle_received", sessionID ?? "", undefined, "debug", {
           cause,
+          outcome,
           hadActivity,
         });
         // No live pi session to attribute the reminder to → fail closed.
@@ -2067,7 +2164,7 @@ export function buildPiHandlers(
           log("loop", "settle_skipped", "", undefined, "debug", {
             reason: "no-session",
           });
-          return;
+          return {};
         }
         // Only the orchestrator session is continued; a delegated child
         // session is driven by its own identity and must not be woken by the
@@ -2076,55 +2173,52 @@ export function buildPiHandlers(
           log("loop", "settle_skipped", sessionID, undefined, "debug", {
             reason: "subagent",
           });
-          return;
+          return {};
         }
         // `hadActivity` is derived above from the settled turn's tool
         // calls; the engine's interlocks and the todo strategy's gates
         // decide the rest.
         const decision = await engine.run({ sessionID, cause, hadActivity });
-        if (decision === null) return;
-        // Deliver the wake as a queued follow-up WHILE the run is still
-        // streaming.  `agent_end` fires before pi's run loop checks its
-        // queues, so a follow-up queued here is drained by the same
-        // `prompt()` call and the host stays alive to run it.  Delivering
-        // from `agent_settled` (after the loop) instead starts a fresh,
-        // unawaited run that a single-shot host (headless print mode) tears
-        // down before the loop can act.
-        if (typeof piApi?.sendMessage !== "function") {
-          log("loop", "wake_inject_unavailable", sessionID, undefined, "warn");
-          return;
-        }
-        // Count BEFORE dispatching, mirroring the OpenCode host: a
-        // persistently failing sendMessage burns budget instead of
-        // retrying the wake on every settle.  The queued follow-up run
-        // is fire-and-forget — if it crashes after queueing, the
-        // reminder stays counted (an accepted `agent_end` trade-off,
-        // see the module header).
+        if (decision === null) return {};
+        // Count BEFORE returning the entry, mirroring the OpenCode host:
+        // once pi adopts the boundary result the verdict has taken effect,
+        // so the wake must already be counted — re-judging this settle
+        // must not produce a second reminder.  pi commits the entry and
+        // runs the continuation within this run, so the verdict and its
+        // effect cannot diverge and no queued reminder outlives the run
+        // that produced it.
         engine.record(sessionID, decision.name);
-        piApi.sendMessage(
-          {
-            customType: "zoo-loop-wake",
-            content: decision.text,
-            // Shown in the TUI so the user can see the loop wake
-            // fire; the model receives it as a user-role message either
-            // way (pi converts custom messages via convertToLlm).
-            display: true,
-          },
-          { deliverAs: "followUp", triggerTurn: true },
-        );
         log("loop", "wake_injected", sessionID, undefined, "info", {
           handler: decision.name,
           used: engine.used(sessionID, decision.name),
         });
+        return {
+          entries: [
+            ...boundaryEntries(evt),
+            {
+              type: "custom_message",
+              customType: "zoo-loop-wake",
+              content: decision.text,
+              // Shown in the TUI so the user can see the loop wake fire;
+              // the model receives it as a user-role message either way
+              // (pi converts custom messages via convertToLlm).
+              display: true,
+            },
+          ],
+          continue: true,
+        };
       } catch (err) {
         log("loop", "settle_failed", sessionID ?? "", undefined, "warn", {
           error: String(err),
         });
-      } finally {
-        // A single-shot host can exit right after the last run, before the
-        // periodic flush timer fires; make the settle verdict durable.
-        flushLogs();
+        return {};
       }
+    },
+    agentSettled(_evt?, ctx?) {
+      if (ctx) contextHolder.current = ctx as PiToolHostContext;
+      // A single-shot host can exit right after the last run, before the
+      // periodic flush timer fires; make the verdict durable.
+      flushLogs();
     },
     uiPromptStart: (_evt?, ctx?) => {
       if (ctx) contextHolder.current = ctx as PiToolHostContext;
@@ -2189,9 +2283,17 @@ export function zookeeperPi(pi: ExtensionAPI): void {
   // hooks): otherwise no settle event is registered.
   if (handlers.hasSettledHandlers) {
     log("loop", "events_registered", "", undefined, "info", {
-      events: ["agent_end", "ui_prompt_start", "ui_prompt_end"],
+      events: [
+        "agent_end",
+        "agent_before_settle",
+        "agent_settled",
+        "ui_prompt_start",
+        "ui_prompt_end",
+      ],
     });
     pi.on("agent_end", handlers.agentEnd);
+    pi.on("agent_before_settle", handlers.beforeSettle);
+    pi.on("agent_settled", handlers.agentSettled);
     pi.on("ui_prompt_start", handlers.uiPromptStart);
     pi.on("ui_prompt_end", handlers.uiPromptEnd);
   } else {
