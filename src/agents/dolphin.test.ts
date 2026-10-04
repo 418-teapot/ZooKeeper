@@ -67,17 +67,19 @@ function assertSectionOrder(text: string, names: string[]): void {
 }
 
 describe("buildDolphinPrompt", () => {
-  it("poly prompt contains the closed-delivery contract", () => {
+  it("poly prompt contains the global routing contract", () => {
     const poly = buildDolphinPrompt(POLY_SET);
     assert.ok(poly.includes("<Agents>"));
     assert.ok(poly.includes("**beaver** — 代码实现"));
     assert.ok(poly.includes("**lynx** — 只读代码库探索"));
     assert.ok(poly.includes("**spider** — 只读网页调研"));
     assert.ok(poly.includes("**SUMMARY:**"));
-    assert.ok(poly.includes("封闭的交付单元"));
-    assert.ok(poly.includes("开放问题"));
-    assert.ok(poly.includes("持续维护一个交付闭环"));
-    assert.ok(!poly.includes("默认优先委派"));
+    assert.ok(poly.includes("全局判断和交付连续性的有限资源"));
+    assert.ok(poly.includes("可验收的结果"));
+    assert.ok(poly.includes("可验收结果作为判断单位"));
+    assert.ok(poly.includes("默认委派"));
+    assert.ok(poly.includes("之前已经在同一工作上消耗的材料和尝试仍计入判断"));
+    assert.ok(poly.includes("你只对关键结论做定点核验"));
     assert.ok(poly.includes("代码库搜索示例："));
   });
 
