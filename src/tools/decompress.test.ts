@@ -15,6 +15,10 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import {
+  buildToolHooks,
+  registerProfileToolsInConfig,
+} from "../compose-opencode.js";
 import type { ToolHost } from "../core/client/tool-host.js";
 import { parseContextConfig } from "../core/config-parse.js";
 import type { ContextPruningConfig } from "../core/config-types.js";
@@ -35,11 +39,7 @@ import {
   type Block,
   RECALL_MAX_CHARS,
 } from "../core/context/state.js";
-import {
-  buildPlugin,
-  buildToolHooks,
-  registerProfileToolsInConfig,
-} from "../opencode.js";
+import { buildPlugin } from "../opencode.js";
 import { _resetForTesting } from "../utils/logger.js";
 import { createDecompressTool, unit as decompressUnit } from "./decompress.js";
 

@@ -27,6 +27,7 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import { createV1Adapter } from "../../adapters/opencode/adapter.js";
 import type { ToolHost } from "../../core/client/tool-host.js";
 import type { HostAdapter, HostMessage } from "../../core/context/lens.js";
 import { project } from "../../core/context/lens.js";
@@ -51,7 +52,6 @@ import {
 import { computeSpanHash } from "../../core/context/spanhash.js";
 import { allocateBlockId, markKey } from "../../core/context/state.js";
 import type { ActiveSet, Deps } from "../../core/slots.js";
-import { createV1Adapter } from "../../opencode.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import {
   contextPruningTransformHandler,

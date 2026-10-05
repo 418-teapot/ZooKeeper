@@ -17,6 +17,10 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import {
+  buildToolHooks,
+  registerProfileToolsInConfig,
+} from "../compose-opencode.js";
 import type { ToolHost } from "../core/client/tool-host.js";
 import { parseContextConfig } from "../core/config-parse.js";
 import { fold } from "../core/context/fold.js";
@@ -33,11 +37,7 @@ import {
 } from "../core/context/runtime.js";
 import type { Block, SessionState } from "../core/context/state.js";
 import { numberView } from "../core/context/view-refs.js";
-import {
-  buildPlugin,
-  buildToolHooks,
-  registerProfileToolsInConfig,
-} from "../opencode.js";
+import { buildPlugin } from "../opencode.js";
 import { _resetForTesting } from "../utils/logger.js";
 import {
   type CompressToolDefinition,

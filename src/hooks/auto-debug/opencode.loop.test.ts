@@ -25,11 +25,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { sessionAgentRegistry } from "../../core/session-agent.js";
-import {
-  buildPlugin,
-  hasUnansweredQuestion,
-  lastAssistantAborted,
-} from "../../opencode.js";
+import { buildPlugin } from "../../opencode.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import { CONTINUATION_PROMPT } from "../todo-continuation/decide.js";
 import {
@@ -981,68 +977,5 @@ describe("session.idle — auto-debug end to end", () => {
     } finally {
       fixture.dispose();
     }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Classification helpers
-// ---------------------------------------------------------------------------
-
-describe("hasUnansweredQuestion", () => {
-  it("detects a pending question in the last assistant turn", () => {
-    assert.equal(
-      hasUnansweredQuestion([
-        {
-          info: { role: "assistant" },
-          parts: [{ type: "tool", name: "ask_user_question", state: {} }],
-        },
-      ]),
-      true,
-    );
-  });
-
-  it("returns false once a real user message follows", () => {
-    assert.equal(
-      hasUnansweredQuestion([
-        {
-          info: { role: "assistant" },
-          parts: [{ type: "tool", tool: "question", state: {} }],
-        },
-        { info: { role: "user" } },
-      ]),
-      false,
-    );
-  });
-
-  it("skips synthetic user messages when scanning backward", () => {
-    assert.equal(
-      hasUnansweredQuestion([
-        { info: { role: "assistant" } },
-        { info: { role: "user", synthetic: true } },
-        {
-          info: { role: "assistant" },
-          parts: [{ type: "tool", tool: "question", state: {} }],
-        },
-      ]),
-      true,
-    );
-  });
-});
-
-describe("lastAssistantAborted", () => {
-  it("reports the last assistant message error name", () => {
-    assert.equal(
-      lastAssistantAborted([
-        { info: { role: "assistant", error: { name: "MessageAbortedError" } } },
-      ]),
-      true,
-    );
-    assert.equal(
-      lastAssistantAborted([
-        { info: { role: "assistant", error: { name: "ApiError" } } },
-      ]),
-      false,
-    );
-    assert.equal(lastAssistantAborted([]), false);
   });
 });
