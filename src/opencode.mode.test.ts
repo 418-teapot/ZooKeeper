@@ -875,3 +875,51 @@ describe("null profile — skip profile-driven registration", () => {
     assert.equal(plugin["experimental.text.complete"], undefined);
   });
 });
+
+// ---------------------------------------------------------------------------
+// System transform — runtime model prompt variant
+// ---------------------------------------------------------------------------
+
+describe("experimental.chat.system.transform — model prompt variant", () => {
+  /** Base and gpt wordings for one dolphin prompt line. */
+  const BASE = "- 有职责匹配的 agent 时，**不得**因省事自行接管其工作；";
+  const GPT =
+    "- 职责匹配只决定可以委派给谁，不决定一定委派或不委派；**不得**因为下一步动作更方便，或因为存在匹配的 agent，就跳过完整交付成本判断；";
+
+  /** Transform input envelope with the given model id. */
+  function input(modelId: string) {
+    return {
+      sessionID: "sess-variant",
+      model: { id: modelId, limit: { context: 1000, output: 100 } },
+    };
+  }
+
+  it("swaps system entries to the gpt variant and back", async () => {
+    const plugin = await makePlugin({});
+    const output = { system: [`<Contract>\n${BASE}\n</Contract>`] };
+
+    await plugin["experimental.chat.system.transform"](
+      input("openai/gpt-5.5"),
+      output,
+    );
+    assert.ok(output.system[0].includes(GPT));
+    assert.ok(!output.system[0].includes(BASE));
+
+    await plugin["experimental.chat.system.transform"](
+      input("claude-x"),
+      output,
+    );
+    assert.ok(output.system[0].includes(BASE));
+    assert.ok(!output.system[0].includes(GPT));
+  });
+
+  it("leaves entries without the variant lines untouched", async () => {
+    const plugin = await makePlugin({});
+    const output = { system: ["plain system prompt"] };
+    await plugin["experimental.chat.system.transform"](
+      input("gpt-5.5"),
+      output,
+    );
+    assert.deepEqual(output.system, ["plain system prompt"]);
+  });
+});

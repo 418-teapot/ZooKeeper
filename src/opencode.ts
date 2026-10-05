@@ -49,6 +49,7 @@ import type { ModeProfile } from "./core/config-types.js";
 import { setModelLimit } from "./core/context/model-limits.js";
 import { cleanupSession } from "./core/context/runtime.js";
 import { createLoopEngine, type StopCause } from "./core/loop/index.js";
+import { applyModelVariant } from "./core/prompt-variant.js";
 import { sessionAgentRegistry } from "./core/session-agent.js";
 import type { Deps } from "./core/slots.js";
 import { derivePrimaries } from "./core/subagent/identity.js";
@@ -537,7 +538,7 @@ export async function buildPlugin(
         sessionID?: string;
         model: { id: string; limit: { context: number; output: number } };
       },
-      _output: { system: string[] },
+      output: { system: string[] },
     ) {
       // Capture the active model's context window per session so the
       // pruning nudge phase can resolve percentage thresholds against
@@ -549,6 +550,13 @@ export async function buildPlugin(
           input.model.limit.context,
           input.model.id,
         );
+      }
+      // Swap the model-conditional prompt wording in the live system
+      // prompt so a session that switches models follows the switch.
+      // The config hook bakes the base wording; this is the runtime
+      // correction.  Missing model info fails closed to the base wording.
+      for (let i = 0; i < output.system.length; i += 1) {
+        output.system[i] = applyModelVariant(output.system[i], input.model?.id);
       }
     },
 

@@ -918,6 +918,28 @@ describe("buildPiHandlers — identity-dispatch prompt injection", () => {
     assert.ok(result.systemPrompt.endsWith("base"));
   });
 
+  it("selects the gpt prompt variant from the context model", async () => {
+    // Independent wordings: the base line every model gets and the gpt
+    // line the gpt family gets.
+    const BASE = "- 有职责匹配的 agent 时，**不得**因省事自行接管其工作；";
+    const GPT =
+      "- 职责匹配只决定可以委派给谁，不决定一定委派或不委派；**不得**因为下一步动作更方便，或因为存在匹配的 agent，就跳过完整交付成本判断；";
+
+    const handlers = buildPiHandlers(POLY_ZOO, undefined, MODES_RAW);
+    assert.equal(getPrimary(), "dolphin");
+
+    const gpt = await handlers.beforeAgentStart(
+      { systemPrompt: "base" },
+      { model: { id: "openai/gpt-5.5" } },
+    );
+    assert.ok(gpt.systemPrompt.includes(GPT), "gpt model uses the gpt line");
+    assert.ok(!gpt.systemPrompt.includes(BASE));
+
+    const unknown = await handlers.beforeAgentStart({ systemPrompt: "base" });
+    assert.ok(unknown.systemPrompt.includes(BASE), "no model falls back");
+    assert.ok(!unknown.systemPrompt.includes(GPT));
+  });
+
   it("setPrimary to the other configured primary switches the injected prompt", async () => {
     // Composition seeds the default primary (dolphin).  A runtime switch
     // (setPrimary after build) must be reflected by the next

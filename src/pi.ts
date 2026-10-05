@@ -164,6 +164,7 @@ import {
   isSkillAllowed,
   parseSkillPermissions,
 } from "./core/permissions/skill-permissions.js";
+import { applyModelVariant } from "./core/prompt-variant.js";
 import { sessionAgentRegistry } from "./core/session-agent.js";
 import type {
   ComposedResult,
@@ -1025,6 +1026,25 @@ function boundaryEntries(evt: unknown): Array<Record<string, unknown>> {
   return Array.isArray(entries)
     ? (entries as Array<Record<string, unknown>>)
     : [];
+}
+
+/**
+ * Read the live model id from pi's handler context.
+ *
+ * pi exposes the active model on the extension context (`ctx.model.id`) —
+ * the same duck-typed source `capturePiModelLimit` reads.  A missing
+ * context, model, or string id resolves to undefined so the caller can
+ * fail closed to the base prompt wording.
+ *
+ * @param ctx - The pi handler context (typed loosely on purpose).
+ * @returns The model id, or undefined when pi did not expose one.
+ */
+function resolveContextModelId(ctx: unknown): string | undefined {
+  if (!ctx || typeof ctx !== "object") return undefined;
+  const model = (ctx as { model?: unknown }).model;
+  if (!model || typeof model !== "object") return undefined;
+  const id = (model as { id?: unknown }).id;
+  return typeof id === "string" ? id : undefined;
 }
 
 /**
@@ -1950,7 +1970,7 @@ export function buildPiHandlers(
         systemPrompt:
           agentPrompt === undefined
             ? evt.systemPrompt
-            : `${agentPrompt}\n\n${evt.systemPrompt}`,
+            : `${applyModelVariant(agentPrompt, resolveContextModelId(ctx))}\n\n${evt.systemPrompt}`,
       };
     },
     async sessionStart(_evt?, ctx?) {

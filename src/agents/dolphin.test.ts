@@ -8,7 +8,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ActiveSet, Deps } from "../core/slots.js";
-import { buildDolphinPrompt, unit } from "./dolphin.js";
+import {
+  buildDolphinPrompt,
+  DOLPHIN_PROMPT_VARIANTS,
+  unit,
+} from "./dolphin.js";
 
 /** Minimal deps for unit descriptor instantiation. */
 const DEPS: Deps = {
@@ -212,5 +216,33 @@ describe("buildDolphinPrompt", () => {
       unit.create(DEPS, MONO_SET).agents[0].prompt,
       buildDolphinPrompt(MONO_SET),
     );
+  });
+});
+
+describe("dolphin prompt variant defaults", () => {
+  /** Base and gpt wordings, written out independently of the constants. */
+  const BASE_WORKFLOW = "- 获取新证据：委派给职责匹配的可用 agent；";
+  const BASE_CONTRACT =
+    "- 有职责匹配的 agent 时，**不得**因省事自行接管其工作；";
+  const GPT_WORKFLOW =
+    "- 获取新证据：先用低成本方式确认材料的规模、范围和筛选难度；";
+  const GPT_CONTRACT = "- 职责匹配只决定可以委派给谁，不决定一定委派或不委派；";
+
+  it("ships the base wording in the default poly prompt", () => {
+    const poly = buildDolphinPrompt(POLY_SET);
+    assert.ok(poly.includes(BASE_WORKFLOW));
+    assert.ok(poly.includes(BASE_CONTRACT));
+    assert.ok(!poly.includes(GPT_WORKFLOW));
+    assert.ok(!poly.includes(GPT_CONTRACT));
+  });
+
+  it("exports one variant pair per swapped line", () => {
+    assert.equal(DOLPHIN_PROMPT_VARIANTS.length, 2);
+    for (const pair of DOLPHIN_PROMPT_VARIANTS) {
+      assert.ok(pair.base.length > 0);
+      assert.ok(pair.gpt.length > 0);
+      assert.ok(!pair.base.includes(pair.gpt));
+      assert.ok(!pair.gpt.includes(pair.base));
+    }
   });
 });

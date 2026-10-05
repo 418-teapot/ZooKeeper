@@ -1,3 +1,4 @@
+import type { PromptVariantPair } from "../core/prompt-variant.js";
 import type { ActiveSet, AgentUnitDescriptor } from "../core/slots.js";
 import {
   BEAVER_AGENT_LINE,
@@ -15,6 +16,37 @@ import {
  */
 const CONTINUATION_NOTE =
   "本轮结束时仍有未完成的待办事项，系统会自动唤醒你继续工作，并受有限的提醒次数约束。不要为了结束本轮而仓促收尾。如需用户作出决定才能继续，请使用结构化的 ask/question 工具提问；直接以纯文本提问可能无法暂停自动续写。";
+
+/**
+ * Workflow「选择执行者」line for evidence acquisition.
+ *
+ * The base wording delegates to a role-matching agent; the gpt wording
+ * compares the full delivery cost first.
+ */
+export const DOLPHIN_EVIDENCE_ROUTE_PAIR: PromptVariantPair = {
+  base: "- 获取新证据：委派给职责匹配的可用 agent；",
+  gpt: "- 获取新证据：先用低成本方式确认材料的规模、范围和筛选难度；确认这些因素都在可控范围内后，再比较当前 agent 直接处理与委派的完整交付成本，选择成本更低者；如果规模或筛选难度无法确认，且材料可能超出当前上下文，优先委派给职责匹配的可用 agent；",
+};
+
+/**
+ * Contract line on role matching.
+ *
+ * The base wording forbids self-takeover for a role-matching agent; the
+ * gpt wording makes role matching a permission rather than an obligation.
+ */
+export const DOLPHIN_CONTRACT_ROUTE_PAIR: PromptVariantPair = {
+  base: "- 有职责匹配的 agent 时，**不得**因省事自行接管其工作；",
+  gpt: "- 职责匹配只决定可以委派给谁，不决定一定委派或不委派；**不得**因为下一步动作更方便，或因为存在匹配的 agent，就跳过完整交付成本判断；",
+};
+
+/**
+ * Every dolphin prompt line pair swapped at runtime by the active model
+ * family (see `applyModelVariant`).
+ */
+export const DOLPHIN_PROMPT_VARIANTS: readonly PromptVariantPair[] = [
+  DOLPHIN_EVIDENCE_ROUTE_PAIR,
+  DOLPHIN_CONTRACT_ROUTE_PAIR,
+];
 
 /**
  * Role guidance for poly mode.
@@ -110,7 +142,7 @@ const POLY_WORKFLOW_SECTION = `<Workflow>
 ## 选择执行者
 
 - 使用已有证据：当前 agent 直接处理或定点核验；
-- 获取新证据：先用低成本方式确认材料的规模、范围和筛选难度；确认这些因素都在可控范围内后，再比较当前 agent 直接处理与委派的完整交付成本，选择成本更低者；如果规模或筛选难度无法确认，且材料可能超出当前上下文，优先委派给职责匹配的可用 agent；
+${DOLPHIN_EVIDENCE_ROUTE_PAIR.base}
 - 修改交付物：委派给职责匹配的可用 agent；
 - 审查或核验结果：委派给能够独立检查的可用 agent；
 - 没有职责匹配的 agent：当前 agent 按路由记录中的范围和停止条件处理；
@@ -190,7 +222,7 @@ const POLY_CONTRACT_SECTION = `<Contract>
 - 没有证据就**不能**算完成；
 - 开始新的交付单元、收到新证据、发现新的未知或准备扩大原范围前，**必须**先写路由记录；
 - 路由记录**必须**基于已经呈现且可追溯的证据，**不得**用模型记忆、未经核验的候选材料、动作很小、工具方便或自评快速替代依据；
-- 职责匹配只决定可以委派给谁，不决定一定委派或不委派；不能因为下一步动作更方便，或因为存在匹配的 agent，就跳过完整交付成本判断；
+${DOLPHIN_CONTRACT_ROUTE_PAIR.base}
 - 没有职责匹配的 agent 时，亲自处理**必须**受路由记录中的范围、停止条件和验收证据约束；
 - **不得**为了满足流程、使用可用 agent 或追求并行而制造额外工作；
 - ${MSG_REF_NO_ECHO}
