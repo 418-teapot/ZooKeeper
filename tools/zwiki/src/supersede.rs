@@ -48,8 +48,8 @@ pub fn link_supersede_at(
     append_frontmatter_block(&old_abs, "superseded_by", new_rel, reason)?;
 
     // Mark the old page as validated at the moment of supersedure so that
-    // `check_cascade_stale` can distinguish pages reviewed post-supersedure
-    // from those that still need attention.
+    // the unified freshness judgment can distinguish pages reviewed
+    // post-supersedure from those that still need attention.
     let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     property::set(&old_abs, "last_validated", &now)
         .map_err(|e| format!("写入 last_validated 失败: {e}"))?;

@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::freshness;
 use crate::wiki;
 
 /// A stale source–derived page pair.
@@ -63,7 +64,7 @@ pub fn cmd_verify(root: &Path, json: bool, domain: Option<&str>) {
 /// Applies the optional domain filter, sorts the results, and returns
 /// them so tests can exercise the logic without capturing stdout.
 /// The per-page stale-source scan is delegated to
-/// [`wiki::stale_sources`].
+/// [`freshness::stale_sources`].
 pub fn collect_stale_pairs(
     root: &Path,
     domain: Option<&str>,
@@ -85,7 +86,7 @@ pub fn collect_stale_pairs(
             }
         }
 
-        let pairs = wiki::stale_sources(page, &by_rel);
+        let pairs = freshness::stale_sources(page, &by_rel);
         for (source_rel, _) in pairs {
             let lv_str = page
                 .frontmatter

@@ -70,7 +70,7 @@
 | `supersedes` | 否 | object[] | 取代关系：本页推翻哪些页面，每项含 `path`（相对 bundle 根目录）和 `reason` |
 | `superseded_by` | 否 | object[] | 被取代关系：本页被哪些页面推翻，每项含 `path` 和 `reason` |
 | `contradictions` | 否 | object[] | 矛盾记录，每项含 `path`（冲突页面路径）、`claims`（冲突声明列表）、`detected`（发现日期）、`resolution`（`unresolved` 或具体解决说明） |
-| `freshness_days` | 否 | integer | 时效阈值覆写（天数），默认 180 天，`source` 类型永不过期 |
+| `freshness_days` | 否 | integer | 时效阈值覆写（天数）；默认按类型：`concept`/`entity` 180 天，`analysis`/`synthesis` 90 天，`source` 类型永不过期 |
 
 示例：
 

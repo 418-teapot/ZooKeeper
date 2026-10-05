@@ -490,37 +490,56 @@ fn fmt_stale_pages(issues: &[Issue]) -> Vec<String> {
     let mut lines = Vec::new();
     lines.push(format!("## 过时页面（{}）", issues.len()));
     lines.push(String::new());
-    lines.push("| 页面 | 时间戳 | 状态 | 距今天数 |".to_string());
-    lines.push("|---|---|---|---|".to_string());
+    lines.push("| 页面 | 验证时间 | 原因 |".to_string());
+    lines.push("|---|---|---|".to_string());
     for issue in issues {
         let details: serde_json::Value =
             serde_json::from_str(&issue.details).unwrap_or_default();
-        let timestamp = details["timestamp"].as_str().unwrap_or("");
-        let status = details["status"].as_str().unwrap_or("");
-        let days = details["days_since_update"].as_i64().unwrap_or(0);
+        let last_validated = details["last_validated"].as_str().unwrap_or("");
         lines.push(format!(
-            "| `{}` | {} | {} | {} |",
-            issue.page, timestamp, status, days
+            "| `{}` | {} | {} |",
+            issue.page,
+            last_validated,
+            format_reasons(&details),
         ));
     }
     lines.push(String::new());
     lines
 }
 
+/// Join the `reasons` array of an issue's details into a display string.
+fn format_reasons(details: &serde_json::Value) -> String {
+    details["reasons"]
+        .as_array()
+        .map(|arr| {
+            arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", ")
+        })
+        .unwrap_or_default()
+}
+
 fn fmt_cascade_stale(issues: &[Issue]) -> Vec<String> {
     let mut lines = Vec::new();
     lines.push(format!("## 级联过时（{}）", issues.len()));
     lines.push(String::new());
-    lines.push("| 引用页面 | 被取代页面 | 取代为 |".to_string());
+    lines.push("| 引用页面 | 被取代页面 | 原因 |".to_string());
     lines.push("|---|---|---|".to_string());
     for issue in issues {
         let details: serde_json::Value =
             serde_json::from_str(&issue.details).unwrap_or_default();
-        let superseded_page = details["superseded_page"].as_str().unwrap_or("");
-        let superseded_by = details["superseded_by"].as_str().unwrap_or("");
+        let superseded = details["superseded_pages"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
         lines.push(format!(
-            "| `{}` | `{}` | `{}` |",
-            issue.page, superseded_page, superseded_by
+            "| `{}` | `{}` | {} |",
+            issue.page,
+            superseded,
+            format_reasons(&details),
         ));
     }
     lines.push(String::new());
@@ -652,7 +671,8 @@ mod tests {
             page: "concepts/old.md".into(),
             category: "stale".into(),
             details:
-                r#"{"timestamp":"2020-01-01","status":"draft","days_since_update":2000}"#.into(),
+                r#"{"last_validated":"2020-01-01","reasons":["time_expired"]}"#
+                    .into(),
         });
         let report = format_full_report(&health, &lint);
 
@@ -811,12 +831,14 @@ mod tests {
             page: "stale.md".into(),
             category: "stale".into(),
             details:
-                r#"{"timestamp":"2020-01-01","status":"draft","days_since_update":2000}"#.into(),
+                r#"{"last_validated":"2020-01-01","reasons":["time_expired"]}"#
+                    .into(),
         });
         lint.cascade_stale.push(Issue {
             page: "cascade.md".into(),
-            category: "stale".into(),
-            details: r#"{"superseded_page":"old.md","superseded_by":"new.md"}"#
+            category: "cascade_stale".into(),
+            details: r#"{"reasons":["unreviewed_supersede"],\
+                         "superseded_pages":["old.md"]}"#
                 .into(),
         });
 

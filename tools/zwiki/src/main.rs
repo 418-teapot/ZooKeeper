@@ -10,6 +10,7 @@ mod backlinks;
 mod bundle;
 mod contradictions;
 mod display;
+mod freshness;
 mod health;
 mod index;
 mod lint;
@@ -1192,12 +1193,18 @@ fn sync_derived_metadata(
         eprintln!("已同步 {updated} 个页面的反向链接");
     }
 
-    // Apply timeliness updates (mark_stale + invalidate_by_source) to
-    // writable pages only.
-    let stale_updates: Vec<health::StaleUpdate> = health::mark_stale(all_pages)
-        .into_iter()
-        .filter(|u| wiki::bundle_on_path(root, &u.rel).is_none())
-        .collect();
+    // Apply timeliness updates derived from the unified freshness verdict
+    // (time decay, newer sources, unreviewed supersedes) to writable
+    // pages only.  The reverse index is reused for supersede detection.
+    let reference_date = chrono::Utc::now().date_naive();
+    let freshness_ctx =
+        freshness::FreshnessContext::new(all_pages, reference_date)
+            .with_reverse_index(&bl_index);
+    let stale_updates: Vec<health::StaleUpdate> =
+        health::mark_stale(all_pages, &freshness_ctx)
+            .into_iter()
+            .filter(|u| wiki::bundle_on_path(root, &u.rel).is_none())
+            .collect();
     let stale_count =
         stale_updates.iter().filter(|u| u.new_timeliness == "stale").count();
     let current_count =
@@ -3215,10 +3222,10 @@ title: Bundle Index
 
     #[test]
     fn test_dispatch_check_no_arg_inner_default_timeliness_writes() {
-        // Verify that `zwiki check` (no source) writes timeliness
-        // updates to page frontmatter by default.  The page has
-        // last_validated far enough in the past (>180d) that mark_stale
-        // marks it stale, changing timeliness from "current" to "stale".
+        // Verify that `zwiki check` (no source) materialises timeliness
+        // from the unified freshness verdict by default.  The page is
+        // freshly validated, so the verdict is fresh and a stale marker is
+        // rewritten to current.
         let dir = temp_dir("check_inner_timeliness");
         // A writable parent must contain bundle.toml; without it the root
         // is read-only for check and no derived metadata is written.
@@ -3237,23 +3244,20 @@ title: Bundle Index
         )
         .unwrap();
 
-        // Page with a recent timestamp (kept within the 90d lint threshold
-        // by deriving it from today) but an old last_validated (> 180d), so
-        // mark_stale flags it stale while lint's check_stale_pages does not.
-        // Hardcoding a fixed past timestamp would drift past the 90d
-        // threshold as wall-clock time advances and break this test.
-        let timestamp =
-            chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        // Validation time is derived from today so the page stays fresh
+        // regardless of wall-clock drift.  The stale `timeliness` marker is
+        // what the check must correct.
+        let today = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
         let page_content = format!(
             "\
 ---
 title: Timeliness Test
 type: concept
-timestamp: {timestamp}
+timestamp: {today}
 tags: []
 status: draft
-last_validated: 2025-01-01T00:00:00Z
-timeliness: current
+last_validated: {today}
+timeliness: stale
 ---
 
 # Timeliness Test
@@ -3279,14 +3283,15 @@ bundle validation process.\n"
         };
 
         let code = dispatch_check_no_arg_inner(&dir, &lock, false);
-        assert_eq!(code, 0, "valid bundle with stale page should return 0");
+        assert_eq!(code, 0, "fresh page should return 0");
 
         // Verify timeliness was updated in the file content.
         let content =
             std::fs::read_to_string(bundle_dir.join("doc.md")).unwrap();
         assert!(
-            content.contains("timeliness: stale"),
-            "doc.md should have timeliness: stale after check, got: {content:?}"
+            content.contains("timeliness: current"),
+            "doc.md should have timeliness: current after check, \
+             got: {content:?}"
         );
     }
 

@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use regex::Regex;
 
 use crate::display::{CheckResults, IndexSyncResult, Issue};
+use crate::freshness::{self, FreshnessContext};
 use crate::wiki;
 use crate::wiki::{Page, resolve_wiki_link};
 
@@ -896,67 +897,26 @@ pub struct StaleUpdate {
     pub new_timeliness: String,
 }
 
-/// Recompute timeliness for all pages based on `last_validated` and
-/// `freshness_days` (or the default 180-day threshold).
+/// Recompute timeliness for all pages from the unified freshness verdict
+/// (time decay, newer sources, and unreviewed supersedes).
 ///
-/// Rules:
-/// - Source-type pages are never stale (always compute to "current").
-/// - Pages whose `last_validated` is missing or unparseable are skipped.
-/// - Pages whose computed value matches the existing `timeliness` are
-///   omitted (idempotent).
-/// - `freshness_days` overrides the default 180-day threshold.
-pub fn mark_stale(pages: &[Page]) -> Vec<StaleUpdate> {
-    use chrono::Utc;
-
-    let now = Utc::now().date_naive();
-    let default_threshold: i64 = 180;
+/// Pages the judgment skips (deprecated, missing/unparseable
+/// `last_validated`) are left untouched.  Pages whose computed value
+/// already matches the existing `timeliness` are omitted (idempotent).
+pub fn mark_stale(pages: &[Page], ctx: &FreshnessContext) -> Vec<StaleUpdate> {
     let mut updates: Vec<StaleUpdate> = Vec::new();
 
     for page in pages {
-        let fm = &page.frontmatter;
-
-        // Source-type pages never go stale.
-        if let Some(type_val) = fm.get("type").and_then(|v| v.as_str())
-            && type_val == "source"
-        {
-            let existing =
-                fm.get("timeliness").and_then(|v| v.as_str()).unwrap_or("");
-            if existing != "current" {
-                updates.push(StaleUpdate {
-                    path: page.path.clone(),
-                    rel: page.rel.clone(),
-                    new_timeliness: "current".to_string(),
-                });
-            }
-            continue;
-        }
-
-        // Parse last_validated — skip if missing or unparseable.
-        let Some(lv_str) = fm.get("last_validated").and_then(|v| v.as_str())
-        else {
-            continue;
-        };
-        let Some(lv_date) = wiki::parse_date(lv_str) else {
+        let Some(verdict) = ctx.judge(page) else {
             continue;
         };
 
-        // Determine threshold: freshness_days or default 180.
-        let threshold = fm
-            .get("freshness_days")
-            .and_then(|v| {
-                v.as_i64()
-                    .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
-            })
-            .unwrap_or(default_threshold);
-
-        // Compute new timeliness.
-        let days_since = (now - lv_date).num_days();
-        let new_timeliness =
-            if days_since > threshold { "stale" } else { "current" };
-
-        // Only include if the value actually changes.
-        let existing =
-            fm.get("timeliness").and_then(|v| v.as_str()).unwrap_or("");
+        let new_timeliness = verdict.timeliness();
+        let existing = page
+            .frontmatter
+            .get("timeliness")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if existing != new_timeliness {
             updates.push(StaleUpdate {
                 path: page.path.clone(),
@@ -1004,7 +964,7 @@ pub fn invalidate_by_source(pages: &[Page]) -> Vec<InvalidateUpdate> {
     let mut updates: Vec<InvalidateUpdate> = Vec::new();
 
     for page in pages {
-        let pairs = wiki::stale_sources(page, &by_rel);
+        let pairs = freshness::stale_sources(page, &by_rel);
         if pairs.is_empty() {
             continue;
         }
@@ -1089,6 +1049,12 @@ mod tests {
             body,
             raw: content.to_string(),
         }
+    }
+
+    /// Run `mark_stale` with a context anchored at the current date.
+    fn mark_stale_now(pages: &[Page]) -> Vec<StaleUpdate> {
+        let ctx = FreshnessContext::new(pages, chrono::Utc::now().date_naive());
+        mark_stale(pages, &ctx)
     }
 
     fn page_paths_to_pages(paths: &[PathBuf], base: &Path) -> Vec<Page> {
@@ -1653,7 +1619,7 @@ mod tests {
              last_validated: {today}\n---\nBody.\n"
         );
         let pages = vec![make_page("concepts/recent.md", &content)];
-        let updates = mark_stale(&pages);
+        let updates = mark_stale_now(&pages);
         assert!(
             updates.is_empty(),
             "recent page should stay current, got {updates:?}"
@@ -1667,7 +1633,7 @@ mod tests {
 tags: [test]\nstatus: draft\ntimeliness: current\n\
 last_validated: 2020-01-01T00:00:00Z\n---\nBody.\n";
         let pages = vec![make_page("concepts/old.md", content)];
-        let updates = mark_stale(&pages);
+        let updates = mark_stale_now(&pages);
         assert_eq!(updates.len(), 1, "old page should become stale");
         assert_eq!(updates[0].rel, "concepts/old.md");
         assert_eq!(updates[0].new_timeliness, "stale");
@@ -1680,7 +1646,7 @@ last_validated: 2020-01-01T00:00:00Z\n---\nBody.\n";
 tags: [test]\nstatus: draft\ntimeliness: current\n\
 last_validated: 2020-01-01\n---\nBody.\n";
         let pages = vec![make_page("sources/ref.md", content)];
-        let updates = mark_stale(&pages);
+        let updates = mark_stale_now(&pages);
         assert!(
             updates.is_empty(),
             "source page should never become stale, got {updates:?}"
@@ -1705,7 +1671,7 @@ last_validated: 2020-01-01\n---\nBody.\n";
              freshness_days: 1\nlast_validated: {three_days_ago}\n---\nBody.\n"
         );
         let pages = vec![make_page("concepts/fresh.md", &content)];
-        let updates = mark_stale(&pages);
+        let updates = mark_stale_now(&pages);
         assert_eq!(
             updates.len(),
             1,
@@ -1722,7 +1688,7 @@ last_validated: 2020-01-01\n---\nBody.\n";
 tags: [test]\nstatus: draft\ntimeliness: stale\n\
 last_validated: 2020-01-01T00:00:00Z\n---\nBody.\n";
         let pages = vec![make_page("concepts/stale.md", content)];
-        let updates = mark_stale(&pages);
+        let updates = mark_stale_now(&pages);
         assert!(
             updates.is_empty(),
             "already stale page should not produce update, got {updates:?}"
@@ -1736,7 +1702,7 @@ last_validated: 2020-01-01T00:00:00Z\n---\nBody.\n";
 tags: [test]\nstatus: draft\ntimeliness: current\n\
 last_validated: not-a-date\n---\nBody.\n";
         let pages = vec![make_page("concepts/no-date.md", content)];
-        let updates = mark_stale(&pages);
+        let updates = mark_stale_now(&pages);
         assert!(
             updates.is_empty(),
             "invalid last_validated should be skipped, got {updates:?}"
