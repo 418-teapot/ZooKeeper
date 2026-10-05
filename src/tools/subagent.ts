@@ -15,8 +15,8 @@
  *
  * The tool contains no delegation policy and no prompt-formatting policy:
  * the composed delegation gate (contributed by hook-unit judges) is
- * applied at the tool registration boundary by the pi adapter
- * (`wrapToolsWithDelegationGate` in `src/compose-pi.ts`), and the
+ * enforced on pi's native `tool_call` event (the adapter's `toolCall`
+ * handler in `src/adapters/pi/handlers.ts`), and the
  * subagent-prompt format hint (when the subagent-prompt hook unit is enabled) is
  * appended to the `prompt` argument's description by the composed
  * `tool.definition` contributions at each host's definition boundary

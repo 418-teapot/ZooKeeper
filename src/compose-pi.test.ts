@@ -8,8 +8,8 @@
  * limit capture, empty array, crash isolation), the pure helper
  * `extractText`, the native converter loader (`loadPiHtmlConverter`), the
  * command-slot assembly
- * (`buildPiCommandRegistrationPlan`), the gate wrapper
- * (`wrapToolsWithDelegationGate`), and the registration-boundary
+ * (`buildPiCommandRegistrationPlan`), the event-key registration
+ * (`registerPiHandlers`), and the registration-boundary
  * tool-definition application (`applyToolDefinitionContributions`), plus the
  * pi composition boundary of the `todo` tool (profile-enabled and host-port
  * gated: it registers only when the host supplies both its transcript scan
@@ -18,6 +18,7 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
+import type { ExtensionAPI, PiEventHandlers } from "./adapters/pi/types.js";
 import { SUBAGENT_PROMPT_HINT } from "./agents/parts.js";
 import {
   applyToolDefinitionContributions,
@@ -27,16 +28,18 @@ import {
   buildPiToolResultHandler,
   extractText,
   loadPiHtmlConverter,
+  PI_GATE_EVENT_KEYS,
+  PI_RESIDENT_EVENT_KEYS,
+  PI_SETTLE_EVENT_KEYS,
   type PiAgentMessage,
   type PiAssistantMessage,
   type PiContentPart,
   type PiToolResultEvent,
-  wrapToolsWithDelegationGate,
+  registerPiHandlers,
 } from "./compose-pi.js";
 import type { ToolHost } from "./core/client/tool-host.js";
 import { composeProfile } from "./core/compose.js";
 import type { ModeProfile } from "./core/config-types.js";
-import type { DelegationGate, DelegationRequest } from "./core/gate.js";
 import type {
   AfterExecContribution,
   AfterExecInput,
@@ -46,10 +49,7 @@ import type {
   ToolContribution,
   TransformOutput,
 } from "./core/slots.js";
-import {
-  _resetForTesting as _resetIdentityForTesting,
-  setPrimary,
-} from "./core/subagent/identity.js";
+import { _resetForTesting as _resetIdentityForTesting } from "./core/subagent/identity.js";
 import { createTodoStore } from "./core/todo/store.js";
 import { createReplyStripHandler } from "./hooks/reply-strip/index.js";
 import { enhanceSubagentDefinition } from "./hooks/subagent-prompt/index.js";
@@ -713,252 +713,6 @@ describe("buildPiCommandRegistrationPlan", () => {
 });
 
 // ---------------------------------------------------------------------------
-// wrapToolsWithDelegationGate
-// ---------------------------------------------------------------------------
-
-/** A subagent-shaped tool contribution whose inner execute records calls. */
-function fakeSubagentTool(): {
-  tool: ToolContribution;
-  calls: { count: number };
-} {
-  const calls = { count: 0 };
-  return {
-    tool: {
-      name: "subagent",
-      description: "delegate to a subagent",
-      required: ["agent", "description", "prompt"],
-      async execute(args) {
-        calls.count += 1;
-        // Mirror the real tool's boundary: non-string arguments fail the
-        // inner validation.
-        const raw = args as Record<string, unknown>;
-        if (typeof raw.agent !== "string" || raw.agent.length === 0) {
-          throw new Error("agent 必须是字符串");
-        }
-        return `ran ${raw.agent}`;
-      },
-    },
-    calls,
-  };
-}
-
-describe("wrapToolsWithDelegationGate", () => {
-  it("returns the tools unchanged for a null gate (empty strategy chain)", () => {
-    const { tool } = fakeSubagentTool();
-    const tools = wrapToolsWithDelegationGate({ subagent: tool }, null, false);
-    assert.equal(tools.subagent, tool, "no wrapper must be installed");
-  });
-
-  it("returns the tools unchanged when no subagent tool is present", () => {
-    const compress: ToolContribution = {
-      name: "compress",
-      description: "compress",
-      async execute() {
-        return "compressed";
-      },
-    };
-    const gate: DelegationGate = () => null;
-    const tools = wrapToolsWithDelegationGate({ compress }, gate, false);
-    assert.equal(tools.compress, compress, "foreign tools must pass through");
-  });
-
-  it("blocks a refused delegation: returns the reason and never runs the inner execute", async () => {
-    const { tool, calls } = fakeSubagentTool();
-    const gate: DelegationGate = () => ({
-      judge: "judgeDelegationTarget",
-      reason: "delegation refused",
-    });
-    const tools = wrapToolsWithDelegationGate({ subagent: tool }, gate, true);
-
-    const result = await tools.subagent.execute(
-      { agent: "eagle", description: "t", prompt: "p" },
-      { sessionManager: { getSessionId: () => "sess-gate" } },
-    );
-    assert.equal(result, "delegation refused");
-    assert.equal(calls.count, 0, "the inner execute must not run");
-
-    // The refusal is a warn log entry carrying caller/target/judge/reason.
-    const blocked = _getBufferForTesting().filter(
-      (e) => e.event === "delegation_blocked",
-    );
-    assert.equal(blocked.length, 1);
-    assert.equal(blocked[0].level, "warn");
-    assert.equal(blocked[0].judge, "judgeDelegationTarget");
-    assert.equal(blocked[0].reason, "delegation refused");
-    assert.equal(blocked[0].sessionId, "sess-gate");
-  });
-
-  it("reads the session id off a class-instance session manager (this-bound)", async () => {
-    // Regression: the real pi SessionManager is a class instance whose
-    // getSessionId reads `this.sessionId`.  An earlier implementation
-    // extracted the method and called it bare (`id()`), which dropped the
-    // receiver and threw on the refusal path.  Arrow-function mocks bind
-    // no `this` and never exposed the bug.
-    class FakeSessionManager {
-      readonly sessionId: string;
-      constructor(sessionId: string) {
-        this.sessionId = sessionId;
-      }
-      getSessionId(): string {
-        return this.sessionId;
-      }
-    }
-    const { tool, calls } = fakeSubagentTool();
-    const gate: DelegationGate = () => ({
-      judge: "judgeDelegationTarget",
-      reason: "delegation refused",
-    });
-    const tools = wrapToolsWithDelegationGate({ subagent: tool }, gate, true);
-
-    const result = await tools.subagent.execute(
-      { agent: "eagle", description: "t", prompt: "p" },
-      { sessionManager: new FakeSessionManager("sess-class") },
-    );
-    assert.equal(result, "delegation refused");
-    assert.equal(calls.count, 0, "the inner execute must not run");
-
-    const blocked = _getBufferForTesting().filter(
-      (e) => e.event === "delegation_blocked",
-    );
-    assert.equal(blocked.length, 1);
-    assert.equal(blocked[0].sessionId, "sess-class");
-  });
-
-  it("resolves the caller from the identity core and the request from the args", async () => {
-    const { tool, calls } = fakeSubagentTool();
-    let received: DelegationRequest | undefined;
-    const gate: DelegationGate = (req) => {
-      received = req;
-      return null;
-    };
-    const tools = wrapToolsWithDelegationGate({ subagent: tool }, gate, true);
-
-    setPrimary("dolphin");
-    const result = await tools.subagent.execute(
-      { agent: "beaver", description: "t", prompt: "do the task" },
-      {},
-    );
-    assert.equal(result, "ran beaver");
-    assert.equal(calls.count, 1, "an allowed delegation must reach the tool");
-    assert.deepEqual(received, {
-      caller: "dolphin",
-      target: "beaver",
-      prompt: "do the task",
-    });
-  });
-
-  it("passes non-string args through to the inner tool's validation (undef fields)", async () => {
-    const { tool, calls } = fakeSubagentTool();
-    let received: DelegationRequest | undefined;
-    const gate: DelegationGate = (req) => {
-      received = req;
-      return null;
-    };
-    const tools = wrapToolsWithDelegationGate({ subagent: tool }, gate, true);
-    setPrimary("dolphin");
-
-    // The gate sees absent target/prompt; the args reach the inner tool
-    // verbatim, whose validation reports the malformed fields.
-    await assert.rejects(
-      async () =>
-        tools.subagent.execute(
-          { agent: 42, description: "t", prompt: "p" } as never,
-          {},
-        ),
-      /agent 必须是字符串/,
-    );
-    // The non-string field is left out of the gate request (undefined), a
-    // string sibling still reaches the request, and the args travel to the
-    // inner tool verbatim for its own validation to reject.
-    assert.equal(received?.target, undefined);
-    assert.equal(received?.prompt, "p");
-    assert.equal(calls.count, 1, "the inner validation must have run");
-  });
-
-  it("unresolvable caller → undefined, judges skip caller-dependent checks", async () => {
-    const { tool } = fakeSubagentTool();
-    let received: DelegationRequest | undefined;
-    const gate: DelegationGate = (req) => {
-      received = req;
-      return null;
-    };
-    // No setPrimary → resolveIdentity() is undefined.
-    const tools = wrapToolsWithDelegationGate({ subagent: tool }, gate, true);
-    await tools.subagent.execute(
-      { agent: "beaver", description: "t", prompt: "p" },
-      {},
-    );
-    assert.equal(received?.caller, undefined);
-  });
-
-  it("skips caller resolution entirely when needsCaller is false", async () => {
-    const { tool, calls } = fakeSubagentTool();
-    let received: DelegationRequest | undefined;
-    const gate: DelegationGate = (req) => {
-      received = req;
-      return null;
-    };
-    // The caller resolves fine, but needsCaller=false means the wrapper
-    // never resolves it — the gate sees caller === undefined regardless.
-    setPrimary("dolphin");
-    const tools = wrapToolsWithDelegationGate({ subagent: tool }, gate, false);
-    const result = await tools.subagent.execute(
-      { agent: "beaver", description: "t", prompt: "p" },
-      {},
-    );
-    assert.equal(result, "ran beaver");
-    assert.equal(calls.count, 1, "an allowed delegation must reach the tool");
-    assert.deepEqual(received, {
-      caller: undefined,
-      target: "beaver",
-      prompt: "p",
-    });
-  });
-
-  it("preserves the other tool fields on the wrapped contribution", async () => {
-    const { tool } = fakeSubagentTool();
-    const withRender = {
-      ...tool,
-      renderCall: () => ({ kind: "call" }),
-      renderResult: () => ({ kind: "result" }),
-    };
-    const gate: DelegationGate = () => null;
-    const tools = wrapToolsWithDelegationGate(
-      { subagent: withRender },
-      gate,
-      false,
-    );
-    const wrapped = tools.subagent;
-    assert.equal(wrapped.name, "subagent");
-    assert.equal(wrapped.description, tool.description);
-    assert.deepEqual(wrapped.required, tool.required);
-    assert.equal(wrapped.renderCall, withRender.renderCall);
-    assert.equal(wrapped.renderResult, withRender.renderResult);
-  });
-
-  it("does not wrap the subagent tool when the gate passes through other tools unchanged", async () => {
-    // Only the subagent entry is wrapped: a sibling tool keeps its exact
-    // identity while the subagent execute is replaced.
-    const { tool } = fakeSubagentTool();
-    const compress: ToolContribution = {
-      name: "compress",
-      description: "compress",
-      async execute() {
-        return "compressed";
-      },
-    };
-    const gate: DelegationGate = () => null;
-    const tools = wrapToolsWithDelegationGate(
-      { subagent: tool, compress },
-      gate,
-      false,
-    );
-    assert.equal(tools.compress, compress);
-    assert.notEqual(tools.subagent, tool);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // applyToolDefinitionContributions
 // ---------------------------------------------------------------------------
 
@@ -1162,7 +916,7 @@ describe("pi composition — the todo tool registration boundary", () => {
     assert.equal(tools.todo?.renderResult, renderResult);
   });
 
-  it("the pi assembly boundaries pass the composed todo tool through untouched", () => {
+  it("the pi definition boundary passes the composed todo tool through untouched", () => {
     const tools = composeTools({
       toolHost: piToolHost(),
       todoStore: createTodoStore(async () => []),
@@ -1175,11 +929,6 @@ describe("pi composition — the todo tool registration boundary", () => {
       { name: "enhanceSubagentDefinition", handle: enhanceSubagentDefinition },
     ]);
     assert.equal(enhanced.todo, todo, "no enhancer may rewrite the todo tool");
-
-    // The delegation gate only wraps the subagent tool.
-    const gate: DelegationGate = () => null;
-    const gated = wrapToolsWithDelegationGate(enhanced, gate, true);
-    assert.equal(gated.todo, todo, "the todo tool must stay unwrapped");
   });
 });
 
@@ -1211,5 +960,227 @@ describe("loadPiHtmlConverter", () => {
     );
     assert.equal(warnings.length, 1);
     assert.equal(warnings[0]?.level, "warn");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// registerPiHandlers
+// ---------------------------------------------------------------------------
+
+/** A pi `on` recorder: every event key and the handler bound to it. */
+function recordingPi(): {
+  registrations: Array<[string, unknown]>;
+  on(event: string, handler: unknown): void;
+} {
+  const registrations: Array<[string, unknown]> = [];
+  return {
+    registrations,
+    on(event, handler) {
+      registrations.push([event, handler]);
+    },
+  };
+}
+
+/** A handler stub; `hasSettledHandlers` / `hasGateHandlers` decide the
+ * settle- and gate-key registration gates. */
+function stubHandlers(
+  hasSettledHandlers: boolean,
+  hasGateHandlers = false,
+): PiEventHandlers {
+  return {
+    beforeAgentStart: async () => ({ systemPrompt: "" }),
+    resourcesDiscover: async () => ({ skillPaths: [] }),
+    toolResult: async () => undefined,
+    contextHandler: async () => undefined,
+    messageEnd: () => undefined,
+    toolCall: () => undefined,
+    sessionStart: async () => {},
+    sessionTree: () => {},
+    hasSettledHandlers,
+    hasGateHandlers,
+    agentEnd: () => {},
+    beforeSettle: async () => ({}),
+    agentSettled: () => {},
+    uiPromptStart: () => {},
+    uiPromptEnd: () => {},
+  };
+}
+
+describe("registerPiHandlers", () => {
+  it("binds each resident key to its own handler, in order", () => {
+    const pi = recordingPi();
+    const handlers = stubHandlers(false);
+    registerPiHandlers(pi as unknown as ExtensionAPI, handlers);
+    assert.deepEqual(
+      pi.registrations.map(([event]) => event),
+      [...PI_RESIDENT_EVENT_KEYS],
+      "only the resident keys register without a settle handler",
+    );
+    // Each key must carry ITS handler, not a neighbour's: a swapped pair
+    // would silently disable one event and mis-fire another.
+    const expected: Record<string, unknown> = {
+      session_start: handlers.sessionStart,
+      before_agent_start: handlers.beforeAgentStart,
+      resources_discover: handlers.resourcesDiscover,
+      tool_result: handlers.toolResult,
+      context: handlers.contextHandler,
+      message_end: handlers.messageEnd,
+      session_tree: handlers.sessionTree,
+    };
+    for (const [event, handler] of pi.registrations) {
+      assert.equal(handler, expected[event], `${event} must bind its handler`);
+    }
+  });
+
+  it("adds the settle keys when the composition contributes a settle handler", () => {
+    const pi = recordingPi();
+    const handlers = stubHandlers(true);
+    registerPiHandlers(pi as unknown as ExtensionAPI, handlers);
+    assert.deepEqual(
+      pi.registrations.map(([event]) => event),
+      [...PI_RESIDENT_EVENT_KEYS, ...PI_SETTLE_EVENT_KEYS],
+    );
+    const byKey = new Map(pi.registrations);
+    assert.equal(byKey.get("agent_end"), handlers.agentEnd);
+    assert.equal(byKey.get("agent_before_settle"), handlers.beforeSettle);
+    assert.equal(byKey.get("agent_settled"), handlers.agentSettled);
+    assert.equal(byKey.get("ui_prompt_start"), handlers.uiPromptStart);
+    assert.equal(byKey.get("ui_prompt_end"), handlers.uiPromptEnd);
+  });
+
+  it("adds the gate key only when the composition contributes a gate", () => {
+    // Gate only: the resident keys plus `tool_call` bound to its handler.
+    const pi = recordingPi();
+    const handlers = stubHandlers(false, true);
+    registerPiHandlers(pi as unknown as ExtensionAPI, handlers);
+    assert.deepEqual(
+      pi.registrations.map(([event]) => event),
+      [...PI_RESIDENT_EVENT_KEYS, ...PI_GATE_EVENT_KEYS],
+    );
+    assert.equal(new Map(pi.registrations).get("tool_call"), handlers.toolCall);
+
+    // Both gates on: resident, gate, then settle.
+    const both = recordingPi();
+    registerPiHandlers(
+      both as unknown as ExtensionAPI,
+      stubHandlers(true, true),
+    );
+    assert.deepEqual(
+      both.registrations.map(([event]) => event),
+      [
+        ...PI_RESIDENT_EVENT_KEYS,
+        ...PI_GATE_EVENT_KEYS,
+        ...PI_SETTLE_EVENT_KEYS,
+      ],
+    );
+
+    // No gate → the key stays unregistered (fail-closed).
+    const none = recordingPi();
+    registerPiHandlers(
+      none as unknown as ExtensionAPI,
+      stubHandlers(false, false),
+    );
+    assert.ok(
+      !none.registrations.some(([event]) => event === "tool_call"),
+      "a gate-less profile must not register tool_call",
+    );
+  });
+
+  it("keeps the resident, gate and settle key tables disjoint and complete", () => {
+    assert.deepEqual(
+      [...PI_RESIDENT_EVENT_KEYS].sort(),
+      [
+        "before_agent_start",
+        "context",
+        "message_end",
+        "resources_discover",
+        "session_start",
+        "session_tree",
+        "tool_result",
+      ],
+      "the resident key set is the registration contract with pi",
+    );
+    assert.deepEqual(
+      [...PI_SETTLE_EVENT_KEYS].sort(),
+      [
+        "agent_before_settle",
+        "agent_end",
+        "agent_settled",
+        "ui_prompt_end",
+        "ui_prompt_start",
+      ],
+      "the settle key set is the registration contract with pi",
+    );
+    assert.deepEqual(
+      [...PI_GATE_EVENT_KEYS].sort(),
+      ["tool_call"],
+      "the gate key set is the registration contract with pi",
+    );
+    const union = new Set<string>([
+      ...PI_RESIDENT_EVENT_KEYS,
+      ...PI_GATE_EVENT_KEYS,
+      ...PI_SETTLE_EVENT_KEYS,
+    ]);
+    assert.equal(union.size, 13, "no key may appear in both tables");
+  });
+
+  it("records the registration decision in the loop log", () => {
+    registerPiHandlers(
+      recordingPi() as unknown as ExtensionAPI,
+      stubHandlers(true),
+    );
+    const registered = _getBufferForTesting().filter(
+      (entry) => entry.hook === "loop" && entry.event === "events_registered",
+    );
+    assert.equal(registered.length, 1);
+    assert.deepEqual(registered[0]?.events, [...PI_SETTLE_EVENT_KEYS]);
+    assert.equal(
+      _getBufferForTesting().filter(
+        (e) => e.hook === "loop" && e.event === "events_skipped",
+      ).length,
+      0,
+    );
+
+    _resetForTesting();
+    registerPiHandlers(
+      recordingPi() as unknown as ExtensionAPI,
+      stubHandlers(false),
+    );
+    const skipped = _getBufferForTesting().filter(
+      (entry) => entry.hook === "loop" && entry.event === "events_skipped",
+    );
+    assert.equal(skipped.length, 1);
+    assert.equal(skipped[0]?.reason, "feature-disabled");
+    assert.equal(
+      _getBufferForTesting().filter(
+        (e) => e.hook === "loop" && e.event === "events_registered",
+      ).length,
+      0,
+    );
+  });
+
+  it("records the gate registration decision in the subagent-tool log", () => {
+    registerPiHandlers(
+      recordingPi() as unknown as ExtensionAPI,
+      stubHandlers(false, true),
+    );
+    const registered = _getBufferForTesting().filter(
+      (entry) =>
+        entry.hook === "subagent-tool" && entry.event === "events_registered",
+    );
+    assert.equal(registered.length, 1);
+    assert.deepEqual(registered[0]?.events, [...PI_GATE_EVENT_KEYS]);
+
+    _resetForTesting();
+    registerPiHandlers(
+      recordingPi() as unknown as ExtensionAPI,
+      stubHandlers(false, false),
+    );
+    const skipped = _getBufferForTesting().filter(
+      (entry) =>
+        entry.hook === "subagent-tool" && entry.event === "events_skipped",
+    );
+    assert.equal(skipped.length, 1);
+    assert.equal(skipped[0]?.reason, "feature-disabled");
   });
 });

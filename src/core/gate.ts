@@ -12,9 +12,8 @@
  * capability and contains no delegation policy; the policy lives entirely
  * in the hook-contributed judges.  The gate belongs to the path, not the
  * mechanism — on both hosts the adapter layer applies it at the entry
- * boundary (the `tool.execute.before` event on OpenCode, the tool
- * registration wrapper on pi), so the decision is independent of the
- * entry point.
+ * boundary (the `tool.execute.before` event on OpenCode, the `tool_call`
+ * event on pi), so the decision is independent of the entry point.
  *
  * @module
  */

@@ -36,14 +36,11 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import type { PiBoundaryResult } from "../../adapters/pi/types.js";
+import { buildPiHandlers } from "../../adapters/pi/wire.js";
 import { sessionAgentRegistry } from "../../core/session-agent.js";
 import { _resetForTesting as resetIdentityForTesting } from "../../core/subagent/identity.js";
 import { resetRegistry } from "../../core/subagent/registry.js";
-import {
-  buildPiHandlers,
-  type PiBoundaryResult,
-  type PiCustomMessageEntryDraft,
-} from "../../pi.js";
 import { _getBufferForTesting, _resetForTesting } from "../../utils/logger.js";
 import { CONTINUATION_PROMPT } from "../todo-continuation/decide.js";
 import {
@@ -118,9 +115,17 @@ async function settle(
   return handlers.beforeSettle({ type: "agent_before_settle", outcome }, ctx);
 }
 
+/** A wake entry as the loop host writes it: a plain-text custom message. */
+interface WakeEntry {
+  type: "custom_message";
+  customType: string;
+  display: boolean;
+  content: string;
+}
+
 /** The wake entries a boundary result carries (empty means silence). */
-function wakes(result: PiBoundaryResult): PiCustomMessageEntryDraft[] {
-  return (result.entries ?? []) as PiCustomMessageEntryDraft[];
+function wakes(result: PiBoundaryResult): WakeEntry[] {
+  return (result.entries ?? []) as unknown as WakeEntry[];
 }
 
 /** The `cause` recorded by the host for the last settle. */

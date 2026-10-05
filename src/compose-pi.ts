@@ -28,31 +28,38 @@
  *    host's in-session `appendEntry` channel (`zoo-notice` custom
  *    entries) — persistent, rendered by the entry renderer, and never
  *    part of the LLM context.
- *  - `tools` — the composed tool contributions are gate-wrapped at the
- *    registration boundary (`wrapToolsWithDelegationGate`): the composed
- *    delegation gate (the strategy contributed by hook-unit judges) is
- *    enforced by wrapping the subagent tool's `execute`, so the tool
- *    itself stays policy-free (the gate belongs to the path, not the
- *    mechanism — mirroring the OpenCode host's `tool.execute.before`
- *    enforcement).  The composed `tool.definition` contributions run at
- *    the same boundary (`applyToolDefinitionContributions`), enriching
- *    the tool arguments' descriptions (e.g. the subagent-prompt hint) before
- *    pi registers the tools — pi has no native `tool.definition` event,
- *    so the OpenCode chain is applied here instead.
+ *  - `tools` — the composed `tool.definition` contributions run at the
+ *    registration boundary (`applyToolDefinitionContributions`),
+ *    enriching the tool arguments' descriptions (e.g. the subagent-prompt
+ *    hint) before pi registers the tools — pi has no native
+ *    `tool.definition` event, so the OpenCode chain is applied here
+ *    instead.  The delegation gate is enforced separately on pi's native
+ *    `tool_call` event (see `event keys`), so the tools stay policy-free
+ *    (the gate belongs to the path, not the mechanism).
+ *  - `event keys` — the resident, gate and settle event keys this
+ *    extension registers, each paired with the handler the wiring
+ *    produced (`registerPiHandlers`); the gate keys register only when
+ *    the composition contributes a delegation gate, and the settle keys
+ *    only when it contributes a settle handler.
  *
- * pi event and message shapes (pi 0.84.x) are declared as local
- * duck-typed interfaces — the pi package is never imported.
+ * pi event and message shapes are type-only imports from the pi package
+ * (see `src/adapters/pi/types.ts`); the transcript union and narrowed
+ * handler contexts stay local there.  No runtime pi import exists.
  *
  * @module
  */
 
 import type {
+  ExtensionAPI,
   PiAgentMessage,
+  PiCommandContext,
   PiContentPart,
   PiContextEvent,
   PiContextHandlerContext,
   PiContextResult,
+  PiEventHandlers,
   PiImagePart,
+  PiMessageEndContext,
   PiMessageEndEvent,
   PiMessageEndResult,
   PiTextPart,
@@ -61,7 +68,6 @@ import type {
   PiToolResultResult,
 } from "./adapters/pi/types.js";
 import { setModelLimit } from "./core/context/model-limits.js";
-import type { DelegationGate } from "./core/gate.js";
 import type {
   ComposedResult,
   TextCompleteContribution,
@@ -72,7 +78,6 @@ import type {
   ToolDefinitionContribution,
   ToolDefinitionView,
 } from "./core/slots.js";
-import { resolveIdentity } from "./core/subagent/identity.js";
 import { loadHtmlConverter } from "./core/webfetch/native.js";
 import type { HtmlConverter } from "./core/webfetch/pipeline.js";
 import { log } from "./utils/logger.js";
@@ -82,11 +87,13 @@ import { log } from "./utils/logger.js";
 export type {
   PiAgentMessage,
   PiAssistantMessage,
+  PiCommandContext,
   PiContentPart,
   PiContextEvent,
   PiContextHandlerContext,
   PiContextResult,
   PiImagePart,
+  PiMessageEndContext,
   PiMessageEndEvent,
   PiMessageEndResult,
   PiTextPart,
@@ -134,123 +141,8 @@ export function loadPiHtmlConverter(
 }
 
 // ---------------------------------------------------------------------------
-// Tool-slot delegation gate wrapping
+// Tool-definition application
 // ---------------------------------------------------------------------------
-
-/**
- * Resolve a best-effort session id from a pi tool execution context.
- *
- * pi passes its `ExtensionContext` (which carries a session manager) as
- * the tool context of the contributed tool's `execute`.  The wrapper
- * reads the session id off it for logging only; when the surface is
- * absent (test invocations, structural drift) it degrades to an empty
- * string.
- *
- * @param toolCtx - The pi tool execution context (opaque to this layer).
- * @returns The session id, or an empty string when unresolvable.
- */
-function toolSessionId(toolCtx: unknown): string {
-  const manager =
-    toolCtx && typeof toolCtx === "object"
-      ? (toolCtx as { sessionManager?: unknown }).sessionManager
-      : undefined;
-  if (
-    !manager ||
-    typeof manager !== "object" ||
-    typeof (manager as { getSessionId?: unknown }).getSessionId !== "function"
-  ) {
-    return "";
-  }
-  // Invoke the method WITH the manager as receiver: a real pi session
-  // manager is a class instance whose getSessionId reads `this.sessionId`,
-  // so extracting the method and calling it bare would drop `this` and
-  // throw.
-  const sessionID = (manager as { getSessionId(): unknown }).getSessionId();
-  return typeof sessionID === "string" ? sessionID : "";
-}
-
-/**
- * Wrap the composed tools so the delegation gate runs at the registration
- * boundary.
- *
- * The strategy gate (contributed by hook-unit judges) belongs to the
- * path, not the mechanism: the subagent tool itself is policy-free, and
- * the composed gate is enforced here — where the tool registers with pi
- * — so the tool never observes the policy (mirroring the OpenCode host,
- * which applies the same gate on `tool.execute.before`).
- *
- * A `null` gate (an empty judge chain — a valid profile that enables no
- * delegation judges) passes the tools through unchanged, as do tool sets
- * that contain no `subagent` entry.  Otherwise the subagent tool's
- * `execute` is wrapped: the request is built from the arguments (a
- * non-string `agent` / `prompt` is left undefined, deferring to the
- * inner tool's own argument validation), the caller comes from
- * `resolveIdentity` only when at least one judge needs it (`needsCaller`,
- * mirroring the OpenCode boundary, which resolves the caller only when
- * `composed.gateNeedsCaller` is set — a judge that needs the caller
- * opts in by declaring `needsCaller`; otherwise the caller is left
- * undefined and the judges skip caller-dependent checks), and a refusal
- * logs a warn (with caller / target / judge / reason, session id
- * best-effort) and returns the reason text (pi tool convention: never
- * throw).  All other tool fields are preserved.
- *
- * @param tools - The composed tool contributions keyed by name.
- * @param gate - The composed delegation gate, or `null` for no strategy.
- * @param needsCaller - Whether at least one judge needs the caller; when
- *   false the caller is left undefined and never resolved.
- * @returns The tools, with the subagent execute gate-wrapped when a gate
- *   applies.
- */
-export function wrapToolsWithDelegationGate(
-  tools: Record<string, ToolContribution>,
-  gate: DelegationGate | null,
-  needsCaller: boolean,
-): Record<string, ToolContribution> {
-  // No strategy (valid config) or no subagent tool → nothing to wrap.
-  if (gate === null) return tools;
-  const subagent = tools.subagent;
-  if (subagent === undefined) return tools;
-
-  return {
-    ...tools,
-    subagent: {
-      ...subagent,
-      execute: async (args, toolCtx, hostCtx) => {
-        // Build the request.  A non-string field is left undefined so the
-        // inner tool's argument validation reports it (preserving the
-        // current boundary semantics).
-        const raw =
-          args && typeof args === "object"
-            ? (args as Record<string, unknown>)
-            : {};
-        const target = typeof raw.agent === "string" ? raw.agent : undefined;
-        const prompt = typeof raw.prompt === "string" ? raw.prompt : undefined;
-        // The caller comes from the identity core only when at least one
-        // judge needs it; otherwise it is left undefined (OpenCode parity).
-        const caller = needsCaller ? resolveIdentity()?.name : undefined;
-
-        const refusal = gate({ caller, target, prompt });
-        if (refusal !== null) {
-          log(
-            "subagent-tool",
-            "delegation_blocked",
-            toolSessionId(toolCtx),
-            undefined,
-            "warn",
-            {
-              caller: caller ?? null,
-              target: target ?? null,
-              judge: refusal.judge,
-              reason: refusal.reason,
-            },
-          );
-          return refusal.reason;
-        }
-        return subagent.execute(args, toolCtx, hostCtx);
-      },
-    },
-  };
-}
 
 /**
  * Extract the raw tool arguments onto a neutral per-argument map.
@@ -574,16 +466,6 @@ export function buildPiContextHandler(
 // ---------------------------------------------------------------------------
 
 /**
- * Minimal duck-type shape of the pi `message_end` handler context.
- *
- * Only the session id is read off it (for log attribution); the rest of
- * pi's `ExtensionContext` is irrelevant here.
- */
-export interface PiMessageEndContext {
-  sessionManager?: { getSessionId(): string };
-}
-
-/**
  * Build the pi `message_end` handler from the composed text-finalization
  * contributions.
  *
@@ -661,17 +543,6 @@ export function buildPiMessageEndHandler(
 // Command slot assembly
 // ---------------------------------------------------------------------------
 
-/**
- * Minimal duck-type shape of the pi command-handler context.
- *
- * pi passes its `ExtensionCommandContext` (see
- * `createCommandContext` in the pi runner) to a registered command
- * handler; ZooKeeper only reads the session id off it.
- */
-export interface PiCommandContext {
-  sessionManager?: { getSessionId(): string };
-}
-
 /** One pi `registerCommand` registration assembled from a contribution. */
 export interface PiCommandRegistration {
   /** Command name (invocation name, e.g. `"dcp"`). */
@@ -715,4 +586,149 @@ export function buildPiCommandRegistrationPlan(
       });
     },
   }));
+}
+
+// ---------------------------------------------------------------------------
+// Event-key registration
+// ---------------------------------------------------------------------------
+
+/**
+ * The pi event keys registered on every session bind.
+ *
+ * The keys are the registration contract with pi; holding them here (and
+ * not in the extension entry) is what makes this module the single place
+ * that knows pi's event names.
+ */
+export const PI_RESIDENT_EVENT_KEYS = [
+  "session_start",
+  "before_agent_start",
+  "resources_discover",
+  "tool_result",
+  "context",
+  "message_end",
+  "session_tree",
+] as const;
+
+/**
+ * The pi event keys registered only when the profile composes a settle
+ * handler (`PiEventHandlers.hasSettledHandlers`).
+ */
+export const PI_SETTLE_EVENT_KEYS = [
+  "agent_end",
+  "agent_before_settle",
+  "agent_settled",
+  "ui_prompt_start",
+  "ui_prompt_end",
+] as const;
+
+/**
+ * The pi event keys registered only when the profile composes a
+ * delegation gate (`PiEventHandlers.hasGateHandlers`).
+ */
+export const PI_GATE_EVENT_KEYS = ["tool_call"] as const;
+
+/** Any pi event key this extension registers. */
+export type PiEventKey =
+  | (typeof PI_RESIDENT_EVENT_KEYS)[number]
+  | (typeof PI_GATE_EVENT_KEYS)[number]
+  | (typeof PI_SETTLE_EVENT_KEYS)[number];
+
+/** A handler as `pi.on` receives it; each key's real shape is declared
+ * structurally on `ExtensionAPI`. */
+type PiEventHandler = (...args: never[]) => unknown;
+
+/**
+ * The handler bound to each resident event key.
+ *
+ * The `Record` over the key union keeps the table complete: adding a key
+ * to {@link PI_RESIDENT_EVENT_KEYS} without its handler fails to compile.
+ */
+const RESIDENT_HANDLERS: Record<
+  (typeof PI_RESIDENT_EVENT_KEYS)[number],
+  (handlers: PiEventHandlers) => PiEventHandler
+> = {
+  session_start: (handlers) => handlers.sessionStart,
+  before_agent_start: (handlers) => handlers.beforeAgentStart,
+  resources_discover: (handlers) => handlers.resourcesDiscover,
+  tool_result: (handlers) => handlers.toolResult,
+  context: (handlers) => handlers.contextHandler,
+  message_end: (handlers) => handlers.messageEnd,
+  session_tree: (handlers) => handlers.sessionTree,
+};
+
+/** The handler bound to each settle event key. */
+const SETTLE_HANDLERS: Record<
+  (typeof PI_SETTLE_EVENT_KEYS)[number],
+  (handlers: PiEventHandlers) => PiEventHandler
+> = {
+  agent_end: (handlers) => handlers.agentEnd,
+  agent_before_settle: (handlers) => handlers.beforeSettle,
+  agent_settled: (handlers) => handlers.agentSettled,
+  ui_prompt_start: (handlers) => handlers.uiPromptStart,
+  ui_prompt_end: (handlers) => handlers.uiPromptEnd,
+};
+
+/** The handler bound to each gate event key. */
+const GATE_HANDLERS: Record<
+  (typeof PI_GATE_EVENT_KEYS)[number],
+  (handlers: PiEventHandlers) => PiEventHandler
+> = {
+  tool_call: (handlers) => handlers.toolCall,
+};
+
+/**
+ * Register the built handlers on pi under their event keys.
+ *
+ * The handlers come from the host wiring (`buildPiHandlers`); this
+ * function owns the key → handler pairing and the registration order.  A
+ * profile that composes no delegation gate registers no gate key, and a
+ * profile that composes no settle handler registers no settle key, so
+ * each feature stays fully inert on its own.  Registration is deliberately
+ * not error-tolerant: pi's event surface is the extension's only
+ * attachment point, so a broken registration must surface at load time
+ * rather than leave the session silently unwired.
+ *
+ * @param pi - pi ExtensionAPI instance.
+ * @param handlers - The handlers built by `buildPiHandlers`.
+ */
+export function registerPiHandlers(
+  pi: ExtensionAPI,
+  handlers: PiEventHandlers,
+): void {
+  // `on` is overloaded per event key and cannot resolve a runtime-valued
+  // key; the tables above pair every key with its handler, so only this
+  // call needs the broader signature.
+  const on = (event: PiEventKey, handler: PiEventHandler): void => {
+    (pi.on as unknown as (event: string, handler: PiEventHandler) => void)(
+      event,
+      handler,
+    );
+  };
+  for (const event of PI_RESIDENT_EVENT_KEYS) {
+    on(event, RESIDENT_HANDLERS[event](handlers));
+  }
+  if (handlers.hasGateHandlers) {
+    log("subagent-tool", "events_registered", "", undefined, "info", {
+      events: [...PI_GATE_EVENT_KEYS],
+    });
+    for (const event of PI_GATE_EVENT_KEYS) {
+      on(event, GATE_HANDLERS[event](handlers));
+    }
+  } else {
+    log("subagent-tool", "events_skipped", "", undefined, "info", {
+      reason: "feature-disabled",
+    });
+  }
+  if (!handlers.hasSettledHandlers) {
+    log("loop", "events_skipped", "", undefined, "info", {
+      reason: "feature-disabled",
+    });
+    return;
+  }
+  log("loop", "events_registered", "", undefined, "info", {
+    events: [...PI_SETTLE_EVENT_KEYS],
+  });
+  for (const event of PI_SETTLE_EVENT_KEYS) {
+    on(event, SETTLE_HANDLERS[event](handlers));
+  }
 }
