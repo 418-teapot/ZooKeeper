@@ -63,7 +63,7 @@ cp AGENTS.md            "$STAGING/zookeeper/"
 cp README.md            "$STAGING/zookeeper/"
 cp -r src               "$STAGING/zookeeper/"
 cp -r vendor            "$STAGING/zookeeper/"
-cp -r core              "$STAGING/zookeeper/"
+cp -r skills            "$STAGING/zookeeper/"
 cp -r wiki              "$STAGING/zookeeper/"
 
 # ── Step 4: Package tarball ───────────────────────────────────────────────

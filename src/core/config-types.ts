@@ -158,7 +158,7 @@ export interface ModeProfile {
   name: string;
   /** Agent names whose prompts are injected (subset of config.agent). */
   agents: string[];
-  /** Skill directory names registered from core/skills/. */
+  /** Skill directory names registered from skills/. */
   skills: string[];
   /** Hook unit names (subagent-prompt, subagent-delegation, ...). */
   hooks: string[];

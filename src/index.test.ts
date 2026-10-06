@@ -639,7 +639,7 @@ describe("registerSkills", () => {
     // normal case works and the catch block is structured correctly:
     //   - ENOENT is silently ignored
     //   - Other errors are logged as warnings (never thrown)
-    // The real core/skills directory exists, so readdirSync succeeds.
+    // The real skills directory exists, so readdirSync succeeds.
     const pluginConfig: Record<string, any> = {};
     registerSkills(pluginConfig, [...ALL_SKILLS]);
     assert.ok(pluginConfig.skills.paths.length >= 4);

@@ -5,7 +5,7 @@
  * sorted data-only unit generation from skill subdirectories,
  * exclusion of non-directory entries, symlink-to-directory following,
  * broken-link skipping, and fail-closed empty results for a missing
- * directory or a non-directory path.  The real core/skills/ contents are
+ * directory or a non-directory path.  The real skills/ contents are
  * exercised by the behavior tests (`registerSkills` in
  * `src/index.test.ts`, `collectSkillPaths` in `src/pi.test.ts`).
  */

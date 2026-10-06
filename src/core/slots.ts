@@ -752,7 +752,7 @@ export interface AgentContribution {
   prompt: string;
 }
 
-/** A skill registration contribution (directory under core/skills/). */
+/** A skill registration contribution (directory under skills/). */
 export interface SkillContribution {
   /** Skill directory name (registry key). */
   name: string;

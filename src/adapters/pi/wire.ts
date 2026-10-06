@@ -409,14 +409,14 @@ export function buildPiContributions(
  *
  * pi's `loadSkillsFromDir` discovers a skill when a directory contains
  * SKILL.md.  A skill registers only when its directory name appears in
- * `profileSkills` AND the directory actually exists under core/skills/
+ * `profileSkills` AND the directory actually exists under skills/
  * (mirroring the OpenCode adapter's fail-closed `registerSkills`).
  *
  * @param profileSkills - Skill directory names declared by the profile.
  * @returns Absolute paths of the existing, profile-listed directories.
  */
 export function collectSkillPaths(profileSkills: string[]): string[] {
-  const skillsDir = resolve(__dirname, "../../../core/skills");
+  const skillsDir = resolve(__dirname, "../../../skills");
   const paths: string[] = [];
   try {
     for (const entry of readdirSync(skillsDir)) {

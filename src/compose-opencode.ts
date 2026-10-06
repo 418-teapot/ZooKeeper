@@ -62,7 +62,7 @@ import { REGISTRY } from "./registry.js";
 import { log } from "./utils/logger.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const CORE_DIR = resolve(__dirname, "../core");
+const ROOT_DIR = resolve(__dirname, "..");
 
 // ---------------------------------------------------------------------------
 // Unified slash-command sentinel
@@ -135,7 +135,7 @@ export function injectAgentPrompts(
 }
 
 /**
- * Register the skills named by `profileSkills` from the core/skills/ directory.
+ * Register the skills named by `profileSkills` from the skills/ directory.
  *
  * Fail-closed: a skill registers only when its directory name appears in
  * `profileSkills`.  Absent names are skipped silently — config.toml (the
@@ -147,7 +147,7 @@ export function injectAgentPrompts(
 export function registerSkills(config: any, profileSkills: string[]): void {
   config.skills ??= {};
   config.skills.paths ??= [];
-  const skillsDir = resolve(CORE_DIR, "skills");
+  const skillsDir = resolve(ROOT_DIR, "skills");
   try {
     for (const entry of readdirSync(skillsDir)) {
       const skillPath = resolve(skillsDir, entry);
