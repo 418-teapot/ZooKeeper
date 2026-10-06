@@ -37,7 +37,7 @@ timeliness: current
 
 工具返回值应优先提供能影响下一步行动的信息，而不是底层实现细节。语义化名称通常比 UUID 或其他难以解释的标识符更容易被 agent 正确检索和复用；只有在后续工具确实需要技术标识符时才应返回它们。
 
-需要同时支持人类可读性和后续调用时，可以提供由 agent 选择的响应格式，例如 `concise` 与 `detailed`。格式应服务于任务，而不是单纯追求结构化程度；JSON、XML 或 Markdown 的最佳选择需要通过评估确认。
+需要同时支持人类可读性和后续调用时，可以提供由 agent 选择的响应格式，例如 `concise` 与 `detailed`。格式应服务于任务，而不是单纯追求结构化程度；JSON、XML 或 Markdown 的最佳选择需要通过评估确认。对于工具描述、错误消息和 Agent 间指令等高误读成本文本，[面向理解的 LLM 输出设计](agent-design/syntheses/llm-output-for-understanding.md)将术语一致、主动表达和单步操作落实为可使用的写作约束。
 
 工具还应对大结果提供分页、范围选择、过滤和截断，并为截断结果说明如何继续获取信息；这些机制支撑了[即时上下文检索](context-engineering/concepts/just-in-time-context-retrieval.md)所依赖的渐进式探索。输入校验错误也应返回具体、可执行的修正建议，而不是只暴露错误码或堆栈。
 
@@ -75,6 +75,7 @@ timeliness: current
 - [Agent-Computer Interface](agent-design/concepts/agent-computer-interface.md)
 - [增强型 LLM](agent-design/concepts/augmented-llm.md)
 - [Anthropic Writing effective tools for agents 工程博客](agent-design/sources/notes/anthropic-writing-tools-for-agents.md)
+- [面向理解的 LLM 输出设计](agent-design/syntheses/llm-output-for-understanding.md)
 - [有效上下文的构成](context-engineering/concepts/context-anatomy.md)
 - [上下文工程](context-engineering/concepts/context-engineering.md)
 - [即时上下文检索](context-engineering/concepts/just-in-time-context-retrieval.md)

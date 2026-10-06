@@ -41,7 +41,7 @@ Wiki 按领域组织，每个领域独立维护 6 类页面（concepts/entities/
 | wiki-system | 8 | 复利知识、ingest 工作流、query→synthesis 归档、健康检查、图链接预测；LLM Wiki vs RAG 对比、Karpathy 蒸馏示例；Karpathy LLM Wiki 原始材料 |
 | context-engineering | 6 | 上下文工程系列（上下文工程、上下文腐烂、有效上下文构成、即时检索、长程管理）；Anthropic 上下文工程文章 |
 | multi-agent | 4 | [多 agent 研究架构](multi-agent/concepts/multi-agent-research-architecture.md)、[协作 prompt](multi-agent/concepts/agent-collaboration-prompting.md)、[评估与生产可靠性](multi-agent/analysis/multi-agent-evaluation-reliability.md)；Anthropic multi-agent research 工程博客 |
-| agent-design | 11 | [NPC 式分工](agent-design/concepts/npc.md)、后验问责制、简约准则、[增强型 LLM](agent-design/concepts/augmented-llm.md)、[Agent-Computer Interface](agent-design/concepts/agent-computer-interface.md)（工具接口的设计目标与验收）、[Agent 工具设计](agent-design/concepts/agent-tool-design.md)（工具边界、namespace、响应上下文、token 效率和评估闭环）；[Agent/Skill/Plugin 判断框架](agent-design/analysis/agent-skill-plugin-framework.md)、[五种 LLM workflow 模式](agent-design/analysis/llm-workflow-patterns.md)、[单次调用/workflow/自主 agent 的选择阶梯](agent-design/analysis/agentic-system-selection.md) |
+| agent-design | 12 | [NPC 式分工](agent-design/concepts/npc.md)、后验问责制、简约准则、[增强型 LLM](agent-design/concepts/augmented-llm.md)、[Agent-Computer Interface](agent-design/concepts/agent-computer-interface.md)（工具接口的设计目标与验收）、[Agent 工具设计](agent-design/concepts/agent-tool-design.md)（工具边界、namespace、响应上下文、token 效率和评估闭环）；[面向理解的 LLM 输出设计](agent-design/syntheses/llm-output-for-understanding.md)（受控表达、输出形式与临时定制产物）、[Agent/Skill/Plugin 判断框架](agent-design/analysis/agent-skill-plugin-framework.md)、[五种 LLM workflow 模式](agent-design/analysis/llm-workflow-patterns.md)、[单次调用/workflow/自主 agent 的选择阶梯](agent-design/analysis/agentic-system-selection.md) |
 
 ### 外部参考知识
 

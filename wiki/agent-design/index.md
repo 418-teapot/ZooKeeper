@@ -17,3 +17,7 @@
 - [Agent/Skill/Plugin 判断框架](analysis/agent-skill-plugin-framework.md) — 通过六个维度评估一个能力应实现为 Agent、Skill 还是 Plugin Extension 的结构化判断框架。
 - [Agentic System 选择分析](analysis/agentic-system-selection.md) — 在单次 LLM 调用、固定 workflow 和自主 agent 之间选择的复杂度阶梯与风险权衡。
 - [LLM Workflow 模式](analysis/llm-workflow-patterns.md) — Prompt chaining、routing、parallelization、orchestrator-workers 和 evaluator-optimizer 五种可组合的 LLM workflow 控制结构。
+
+## synthesis
+
+- [面向理解的 LLM 输出设计](syntheses/llm-output-for-understanding.md) — 用 ASD-STE100 风格约束和合适的输出形式，降低技术内容的理解与监督成本。

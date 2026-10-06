@@ -27,7 +27,7 @@ Prompt 应在两个失败模式之间找到 Goldilocks 区域：
 - **过低（过于模糊）** — 提供空泛的高层指导，缺乏具体信号，或错误假设共享上下文
 - **过高（过于刚性）** — 硬编码复杂的 if-else 逻辑以诱导精确行为，导致脆弱性和维护成本
 
-最优高度：足够具体以有效引导行为，又足够灵活以提供强启发式。建议用 XML 标签或 Markdown 标题将 prompt 组织为独立段落，追求充分描述期望行为的最小信息集。
+最优高度：足够具体以有效引导行为，又足够灵活以提供强启发式。建议用 XML 标签或 Markdown 标题将 prompt 组织为独立段落，追求充分描述期望行为的最小信息集。输出格式也应根据理解任务选择；[面向理解的 LLM 输出设计](agent-design/syntheses/llm-output-for-understanding.md)说明如何组合清晰文本、图表、交互网页和定制视频，降低读者的理解成本。
 
 ### 工具：Token 效率
 
@@ -52,6 +52,7 @@ Few-shot 示例是"值千字的画面"，但不应把所有边缘情况塞入 pr
 - [Agent 工具设计](agent-design/concepts/agent-tool-design.md)
 - [增强型 LLM](agent-design/concepts/augmented-llm.md)
 - [Anthropic Writing effective tools for agents 工程博客](agent-design/sources/notes/anthropic-writing-tools-for-agents.md)
+- [面向理解的 LLM 输出设计](agent-design/syntheses/llm-output-for-understanding.md)
 - [上下文工程](context-engineering/concepts/context-engineering.md)
 - [即时上下文检索](context-engineering/concepts/just-in-time-context-retrieval.md)
 - [Anthropic 上下文工程文章](context-engineering/sources/notes/anthropic-context-engineering.md)
