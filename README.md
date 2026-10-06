@@ -31,12 +31,13 @@
 
 ### 技能管理
 
-插件内置 13 个技能，存放在 `skills/` 目录下（每个技能为一个独立子目录），会根据任务类型按需自动加载：
+插件内置 14 个技能，存放在 `skills/` 目录下（每个技能为一个独立子目录），会根据任务类型按需自动加载：
 
 - `auto-debug` — 证据驱动的自主调试
 - `beaver-tdd` — 测试驱动开发
 - `code-review` — 代码审查
 - `compress-usage` — compress/decompress 工具操作规程
+- `explain` - 模型输出约束
 - `first-principles` — 第一性原理根因思考
 - `git-commit` — 标准化的 Git 提交
 - `grill` — 计划/设计审查，沿决策树逐层质询直至达成共识

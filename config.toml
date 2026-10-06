@@ -476,6 +476,7 @@ color = "#FFA500"
 "**/*.md" = "allow"
 [agent.mola.permission.skill]
 "*"                = "deny"
+"explain"          = "allow"
 "first-principles" = "allow"
 "grill"            = "allow"
 "mola-plan"        = "allow"
