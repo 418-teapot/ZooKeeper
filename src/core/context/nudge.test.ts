@@ -24,6 +24,7 @@ import { makeMsg } from "./lens-testkit.js";
 import {
   computeEligibility,
   creditReclaim,
+  type EligibilityConfig,
   evaluateNudge,
   type NudgeConfig,
   type NudgeInjectOptions,
@@ -210,6 +211,31 @@ describe("evaluateNudge gates", () => {
     );
   });
 
+  it("persists the anchor but injects nothing when a layer is unconfigured", () => {
+    const state = makeNewState();
+    const opts = (messages: HostMessage[]): NudgeInjectOptions => ({
+      ...injectOpts(messages),
+      protectedMessages: undefined,
+    });
+    evaluateNudge(
+      state,
+      lensNudgeMessages(140000),
+      NUDGE_CONFIG,
+      opts(lensNudgeMessages(140000)),
+    );
+    const grown = lensNudgeMessages(150000);
+    assert.equal(
+      evaluateNudge(state, grown, NUDGE_CONFIG, opts(grown)),
+      null,
+      "no window → no injection",
+    );
+    assert.equal(
+      state.nudges?.lastNudgeTokens,
+      150000,
+      "anchor still persisted",
+    );
+  });
+
   it("keeps the text-only assistant gate (no usage at all)", () => {
     // A text-only assistant without usage is not completed either.
     const plain = [makeMsg("user", ["hello"]), makeMsg("assistant", ["ok"])];
@@ -316,6 +342,22 @@ describe("computeEligibility", () => {
     protectedTokens: 0,
     thresholdTokens: 0,
   };
+
+  it("returns null when a protection input is unconfigured", () => {
+    const numbered = numberedOf(lensEligMessages);
+    const missing: EligibilityConfig[] = [
+      { protectedTokens: 0, thresholdTokens: 0 },
+      { protectedMessages: 2, thresholdTokens: 0 },
+      { protectedMessages: 2, protectedTokens: 0 },
+    ];
+    for (const config of missing) {
+      assert.equal(
+        computeEligibility(lensEligMessages, numbered, config),
+        null,
+        "an unconfigured layer fails closed",
+      );
+    }
+  });
 
   it("computes the window between the first-user boundary and the protection", () => {
     // Unfolded view: one line per message, so the window is lines m2..m6

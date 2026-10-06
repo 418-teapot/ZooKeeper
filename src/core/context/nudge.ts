@@ -120,11 +120,11 @@ export type NudgeLevel = "gentle" | "urgent";
  */
 export interface EligibilityConfig {
   /** Number of most recent non-hidden messages to protect. */
-  protectedMessages: number;
+  protectedMessages?: number;
   /** Token budget protected from the end of the session (CJK heuristic). */
-  protectedTokens: number;
+  protectedTokens?: number;
   /** Minimum estimated tokens a window must carry to bypass the phantom gate. */
-  thresholdTokens: number;
+  thresholdTokens?: number;
 }
 
 /**
@@ -563,9 +563,10 @@ function viewLines(
  * interval that is already a summary contributes nothing, so repeated
  * compressions never re-bill the same tokens.
  *
- * Returns `null` when there is no user message, no view line, the window
- * is empty, or the estimate falls below `config.thresholdTokens` (a
- * compress in this window would be a no-op the gates reject).
+ * Returns `null` when a protection input is missing, there is no user
+ * message, no view line, the window is empty, or the estimate falls
+ * below `config.thresholdTokens` (a compress in this window would be a
+ * no-op the gates reject).
  *
  * @param history - The transcript the view was folded from.
  * @param numbered - This round's numbered folded view.
@@ -578,6 +579,13 @@ export function computeEligibility(
   numbered: NumberedItem[],
   config: EligibilityConfig,
 ): NudgeEligibility | null {
+  if (
+    config.protectedMessages === undefined ||
+    config.protectedTokens === undefined ||
+    config.thresholdTokens === undefined
+  ) {
+    return null;
+  }
   const lastUser = findLastUserOrdinal(history);
   const boundary = Math.min(
     computeProtectedStartOrdinal(

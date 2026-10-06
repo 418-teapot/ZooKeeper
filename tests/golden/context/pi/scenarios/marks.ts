@@ -266,6 +266,9 @@ export const G_MS_02: Scenario = {
   config: {
     protectedMessages: 0,
     releasedPercent: 0,
+    // The producers' protection window requires the compress section's
+    // token-protection layer.
+    compress: { protectedTokens: 0, thresholdTokens: 0 },
     dedup: {},
     purgeErrors: { thresholdContext: 100000 },
   },
@@ -345,6 +348,7 @@ export const G_MS_02: Scenario = {
       config: {
         protectedMessages: 0,
         releasedPercent: 0,
+        compress: { protectedTokens: 0, thresholdTokens: 0 },
         dedup: {},
         purgeErrors: {
           thresholdContext: 100000,

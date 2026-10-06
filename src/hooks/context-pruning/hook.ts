@@ -69,6 +69,7 @@ import { findLastCompletedAssistant } from "../../core/context/measure.js";
 import { getModelLimit } from "../../core/context/model-limits.js";
 import {
   computeEligibility,
+  type EligibilityConfig,
   evaluateNudge,
   readLevel,
   resolveThresholds,
@@ -276,13 +277,14 @@ export function contextPruningTransformHandler(
   // lifecycle).
   const modelLimit = getModelLimit(sessionId);
   const contextLimit = modelLimit?.context;
+  const protectedTokens = config.compress?.protectedTokens;
   const protectedStartOrdinal =
-    config.protectedMessages === undefined
+    config.protectedMessages === undefined || protectedTokens === undefined
       ? undefined
       : computeProtectedStartOrdinal(
           view,
           config.protectedMessages,
-          config.compress?.protectedTokens ?? 0,
+          protectedTokens,
         );
   const covered = coveredOrdinalsOf(state, snapshot);
   const prunedOrdinals = (ordinal: number): boolean => covered.has(ordinal);
@@ -400,10 +402,10 @@ export function contextPruningTransformHandler(
   }
   // Window protection inputs shared by the nudge decision, its log line,
   // and the manual-compress window: all three measure the same window.
-  const eligibilityConfig = {
-    protectedMessages: config.protectedMessages ?? 0,
-    protectedTokens: config.compress?.protectedTokens ?? 0,
-    thresholdTokens: config.compress?.thresholdTokens ?? 0,
+  const eligibilityConfig: EligibilityConfig = {
+    protectedMessages: config.protectedMessages,
+    protectedTokens: config.compress?.protectedTokens,
+    thresholdTokens: config.compress?.thresholdTokens,
   };
 
   // ── Phase 6: nudge — context-pressure reminders ───────────────────

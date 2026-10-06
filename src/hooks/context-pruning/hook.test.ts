@@ -1329,6 +1329,34 @@ describe("context-nudge injection", () => {
     );
     assert.equal(messages.length, 4, "no compress tool → no nudge");
 
+    // Gate 3: the nudge section and the compress tool are present, but
+    // no `[zoo.context.compress]` window is configured.
+    const sessionID3 = "sess-nudge-no-window";
+    setModelLimit(sessionID3, NUDGE_LIMIT, "test-model");
+    const noWindowConfig = {
+      protectedMessages: 2,
+      nudge: NUDGE_CONFIG,
+      dedup: {},
+      purgeErrors: {},
+    };
+    messages = nudgeMessages(sessionID3, 140000);
+    contextPruningTransformHandler(
+      adapter,
+      messages,
+      noWindowConfig,
+      undefined,
+      true,
+    );
+    messages = nudgeMessages(sessionID3, 150000);
+    contextPruningTransformHandler(
+      adapter,
+      messages,
+      noWindowConfig,
+      undefined,
+      true,
+    );
+    assert.equal(messages.length, 4, "unconfigured window → no nudge");
+
     const entries = _getBufferForTesting();
     assert.ok(
       !entries.some((e) => e.event === "nudge_injected"),
@@ -1562,16 +1590,36 @@ describe("config gating combinations", () => {
     );
   });
 
-  it("runs dedup and leaves the mark pending when releasedPercent is undefined", () => {
-    const sessionID = "sess-dedup-marked";
+  it("skips dedup when the token-protection layer is unconfigured", () => {
+    const sessionID = "sess-dedup-no-compress";
     setModelLimit(sessionID, MODEL_LIMIT, "test-model");
-
-    // Turn N: dedup writes one pending mark; release gate is closed.
     contextPruningTransformHandler(adapter, dedupTranscript(sessionID), {
       protectedMessages: 0,
       dedup: { thresholdContext: 100000 },
       purgeErrors: {},
     });
+    const state = getContextStateManager().get(sessionID);
+    assert.equal(state.marks.size, 0, "unconfigured protection → skip");
+    assert.ok(
+      !_getBufferForTesting().some((e) => e.event === "dedup_marked"),
+      "no dedup_marked log",
+    );
+  });
+
+  it("runs dedup and leaves the mark pending when releasedPercent is undefined", () => {
+    const sessionID = "sess-dedup-marked";
+    setModelLimit(sessionID, MODEL_LIMIT, "test-model");
+
+    // The compress section supplies the token-protection layer.
+    const config = {
+      protectedMessages: 0,
+      compress: { protectedTokens: 0, thresholdTokens: 0 },
+      dedup: { thresholdContext: 100000 },
+      purgeErrors: {},
+    };
+
+    // Turn N: dedup writes one pending mark; release gate is closed.
+    contextPruningTransformHandler(adapter, dedupTranscript(sessionID), config);
     const state = getContextStateManager().get(sessionID);
     assert.equal(state.marks.size, 1, "one pending dedup mark");
     assert.equal(state.marks.get(markKey(21, 1))?.effective, false);
@@ -1579,11 +1627,7 @@ describe("config gating combinations", () => {
     // Turn N+1: the release gate is still closed and the position is
     // already claimed (first-write-wins), so the mark stays pending —
     // it never flips and is never re-marked.
-    contextPruningTransformHandler(adapter, dedupTranscript(sessionID), {
-      protectedMessages: 0,
-      dedup: { thresholdContext: 100000 },
-      purgeErrors: {},
-    });
+    contextPruningTransformHandler(adapter, dedupTranscript(sessionID), config);
     assert.equal(
       state.marks.get(markKey(21, 1))?.effective,
       false,
@@ -1601,6 +1645,7 @@ describe("config gating combinations", () => {
     const config = {
       protectedMessages: 0,
       releasedPercent: 0,
+      compress: { protectedTokens: 0, thresholdTokens: 0 },
       dedup: { thresholdContext: 100000 },
       purgeErrors: {},
     };
